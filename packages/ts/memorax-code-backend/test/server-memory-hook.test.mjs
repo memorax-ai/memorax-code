@@ -94,7 +94,7 @@ test("Codex Hook retrieves automatic memory once per exact turn", async () => {
   }
 });
 
-test("memory hook writeback reads prompt and reply from the exact Codex rollout turn", async () => {
+test("memory hook writeback accepts repeated authority metadata in the exact Codex rollout turn", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-hook-rollout-source-"));
   const workspace = join(root, "memorax-code");
   await mkdir(workspace, { recursive: true });
@@ -102,7 +102,13 @@ test("memory hook writeback reads prompt and reply from the exact Codex rollout 
     turnId: "turn-1",
     prompt: "Remember this persisted Codex turn.\n",
     reply: "Stored persisted Codex answer.\n",
-  }]);
+  }], {
+    prefixRecords: [{
+      timestamp: "2026-07-16T00:00:00.500Z",
+      type: "session_meta",
+      payload: { id: "session-hook" },
+    }],
+  });
   const { fetchImpl, requests } = memoraxAddFetch();
   const events = [];
   const controller = createCodexMemoryHookRuntime({

@@ -217,6 +217,41 @@ test("Codex rollout reader uses the file header authority across imported histor
   assert.deepEqual(execResult.turn.activities, []);
 });
 
+test("Codex rollout reader treats repeated authority session metadata as idempotent", () => {
+  const usage = tokenUsage({
+    input_tokens: 30,
+    cached_input_tokens: 12,
+    cache_write_input_tokens: 0,
+    output_tokens: 6,
+    reasoning_output_tokens: 2,
+  });
+  const transcript = jsonLines([
+    sessionMeta("session-1", "vscode"),
+    sessionMeta("session-1", "vscode"),
+    taskStarted("turn-1"),
+    turnContext("turn-1"),
+    userMessage("Prompt from a resumed session."),
+    tokenCount(usage),
+    sessionMeta("session-1", "vscode"),
+    agentMessage("Reply from a resumed session.", "final_answer"),
+  ]);
+
+  assert.deepEqual(codexRolloutTurnFromJsonLines(transcript, {
+    sessionId: "session-1",
+    turnId: "turn-1",
+  }), {
+    ok: true,
+    turn: {
+      sessionId: "session-1",
+      turnId: "turn-1",
+      userPrompt: "Prompt from a resumed session.",
+      assistantReply: "Reply from a resumed session.",
+      activities: [],
+      usage,
+    },
+  });
+});
+
 test("Codex interrupted rollout reader preserves visible partial output, usage, and activities", () => {
   const baseline = tokenUsage({
     input_tokens: 100,
@@ -498,24 +533,18 @@ test("Codex rollout reader fails closed for session, turn, and content mismatche
     sessionId: "session-1",
     turnId: "turn-1",
   }), { ok: false, reason: "transcript_session_mismatch" });
-  for (const ambiguousImportedSessionMeta of [
+  assert.deepEqual(codexRolloutTurnFromJsonLines(jsonLines([
     sessionMeta("session-1"),
     { type: "session_meta", payload: {} },
-  ]) {
-    assert.deepEqual(codexRolloutTurnFromJsonLines(jsonLines([
-      sessionMeta("session-1"),
-      ambiguousImportedSessionMeta,
-      taskStarted("turn-1"),
-      userMessage("Prompt."),
-      agentMessage("Reply.", "final_answer"),
-    ]), {
-      sessionId: "session-1",
-      turnId: "turn-1",
-    }), { ok: false, reason: "transcript_session_mismatch" });
-  }
+    taskStarted("turn-1"),
+    userMessage("Prompt."),
+    agentMessage("Reply.", "final_answer"),
+  ]), {
+    sessionId: "session-1",
+    turnId: "turn-1",
+  }), { ok: false, reason: "transcript_session_mismatch" });
   for (const trailingSessionMeta of [
     sessionMeta("other-session"),
-    sessionMeta("session-1"),
     { type: "session_meta", payload: {} },
   ]) {
     assert.deepEqual(codexRolloutTurnFromJsonLines(jsonLines([

@@ -209,11 +209,10 @@ function scanCodexRolloutTurn(transcript: string, targetTurnId: string): CodexRo
         authoritySessionId = nonBlankString(payload.id);
         authoritySource = stringValue(payload.source)?.toLowerCase();
       } else {
-        composite = true;
         const importedSessionId = nonBlankString(payload.id);
-        if (targetBoundarySeen
-          || !importedSessionId
-          || importedSessionId === authoritySessionId) {
+        if (importedSessionId && importedSessionId === authoritySessionId) continue;
+        composite = true;
+        if (targetBoundarySeen || !importedSessionId) {
           ambiguousSessionMetadata = true;
         }
       }
