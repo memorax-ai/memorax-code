@@ -29,6 +29,8 @@ test("manifest reuses capture-cwd for compact and keeps one serialized UserPromp
   assert.match(runtime, /RETRIEVAL_BACKEND_TIMEOUT_MS = 12_000/);
   assert.match(runtime, /DEFAULT_BACKEND_TIMEOUT_MS = 5_000/);
   assert.match(runtime, /path === "\/memory\/turn-start" \? RETRIEVAL_BACKEND_TIMEOUT_MS : DEFAULT_BACKEND_TIMEOUT_MS/);
+  assert.match(runtime, /scheduleMissingRepoMemoryBuild\(normalizedInput/);
+  assert.match(runtime, /pluginRoot: process\.env\.PLUGIN_ROOT/);
   assert.equal(manifest.hooks.SessionStart.length, 1);
   assert.deepEqual(sessionCommands, [
     "node \"$PLUGIN_ROOT/hooks/runtime-hook.mjs\" ensure-backend",

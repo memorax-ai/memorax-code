@@ -46,6 +46,12 @@ If the directory is not a git repository, do not create `.repo_memory/` and do n
 - If you only want file inspection, continue by inspecting files without repo memory.
 ```
 
+## Automatic First Build
+
+On each eligible `UserPromptSubmit`, the supported client Hook checks the selected Git worktree for `.repo_memory/PROFILE.md`. If the profile is absent, it silently starts the packaged `maintain` helper in the background; the Hook does not wait for collection, authoring, or validation to finish.
+
+This automatic path is only a first-build trigger. It skips non-Git and projectless workspaces, deduplicates an active Repo Memory job, and fails without blocking the user's prompt. Once `PROFILE.md` exists, the Hook does not validate it or evaluate whether it is stale. Relevant `repo-read` operations own later validation and policy-based incremental maintenance, while explicit build, rebuild, and update requests keep their normal routing.
+
 ## Path Convention
 
 `<skill-dir>` means the parent directory of the `references/` directory containing this file. Resolve it before running scripts, for example:
@@ -247,7 +253,7 @@ Generate memory that the `memorax-code` repo-read operation can consume progress
 - `resources/*.md` are compact human-readable routing resources with search-grade descriptions.
 - `raw/*.json` contains optional build/debug evidence for deep inspection when compact resources are insufficient.
 
-Do not duplicate the daily retrieval workflow here. The `repo-read` operation owns trigger timing, silent background-maintenance handoff, and task-specific search behavior.
+Do not duplicate the daily retrieval workflow here. The client Hook owns the missing-profile first-build trigger. The `repo-read` operation owns later validation, policy-based background-maintenance handoff, and task-specific search behavior.
 
 ## Trust Rules
 

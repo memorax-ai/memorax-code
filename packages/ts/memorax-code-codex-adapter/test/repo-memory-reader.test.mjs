@@ -42,10 +42,13 @@ test("memorax-code repo-read reference silently schedules supervised maintenance
   assert.match(openaiYaml, /Use \$memorax-code to route/);
 });
 
-test("memorax-code repo-read delegates deterministic maintenance decisions only on relevant demand", () => {
+test("memorax-code separates Hook first-build checks from repo-read maintenance policy", () => {
   const skill = readFileSync(join(readerSkillRoot, "references", "repo-read.md"), "utf8");
 
-  assert.match(skill, /Only a relevant `repo-read` invokes `maintain`/);
+  assert.match(skill, /`UserPromptSubmit` Hook checks whether the selected Git worktree has/);
+  assert.match(skill, /profile is absent, the Hook silently invokes `maintain`/);
+  assert.match(skill, /only a relevant `repo-read` invokes `maintain`/);
+  assert.match(skill, /does not evaluate update staleness/);
   assert.match(skill, /Commit arrival, PR merge, and elapsed time alone do not invoke it/);
   assert.match(skill, /validates the generated bundle, evaluates the configured local update policy/);
   assert.match(skill, /provider network access/);

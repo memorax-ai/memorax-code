@@ -5,6 +5,7 @@ import {
 } from "../../memorax-code-adapter-common/src/hooks/memory-skill-reminder-hook.mjs";
 import { resolveBackendConnection } from "../../memorax-code-adapter-common/src/backend-connection.mjs";
 import { readStdinJson, stringOption } from "../../memorax-code-adapter-common/src/config-utils.mjs";
+import { scheduleMissingRepoMemoryBuild } from "../../memorax-code-adapter-common/src/repo-memory/repo-memory-auto-build.mjs";
 import { isRepoMemoryJobWorker } from "../../memorax-code-adapter-common/src/repo-memory/repo-memory-job-context.mjs";
 import { buildRepoProcedureMemoryContext } from "../../memorax-code-adapter-common/src/repo-memory/repo-procedure-memory-context.mjs";
 import { buildRepoUserProfilePreferencesContext } from "../../memorax-code-adapter-common/src/repo-memory/repo-user-profile-context.mjs";
@@ -22,12 +23,19 @@ const DEFAULT_BACKEND_TIMEOUT_MS = 5_000;
 
 try {
   const input = await readStdinJson();
-  const turnStart = turnStartBody(input);
+  const resolvedWorkspaceKind = resolveCodexWorkspaceKind(input);
+  const normalizedInput = resolvedWorkspaceKind
+    ? { ...input, workspaceKind: resolvedWorkspaceKind }
+    : input;
+  scheduleMissingRepoMemoryBuild(normalizedInput, {
+    adapterDir: "codex",
+    debugEnv: "MEMORAX_CODE_CODEX_HOOK_DEBUG",
+    pluginRoot: process.env.PLUGIN_ROOT,
+    sessionKeyPrefix: "codex",
+  });
+  const turnStart = turnStartBody(normalizedInput);
   if (turnStart) {
     const turnStartResult = await recordTurnStart(turnStart);
-    const normalizedInput = turnStart.workspaceKind
-      ? { ...input, workspaceKind: turnStart.workspaceKind }
-      : input;
     await runMemorySkillReminderHook({
       additionalReminderContext: PERSONAL_MEMORY_REMINDER_CONTEXT,
       adapterDir: "codex",

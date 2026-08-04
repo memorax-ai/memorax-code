@@ -167,6 +167,13 @@ Supported policies are `every-commit`, `commit-count`, `daily`,
 `pull-request`, `pull-request-or-daily`, and `adaptive`. Invalid policy values
 fall back to `adaptive`.
 
+These settings control incremental maintenance of an existing Repo Memory
+bundle. On an eligible `UserPromptSubmit`, the client Hook independently checks
+the selected Git worktree for `.repo_memory/PROFILE.md`; when it is missing,
+the Hook silently starts the initial background build. The check skips non-Git
+and Codex projectless workspaces, does not wait for the build, and does not use
+the policy fields above to decide whether an existing profile is stale.
+
 ## Local traces
 
 `[trace.codex]` and `[trace.claude]` support the same fields:

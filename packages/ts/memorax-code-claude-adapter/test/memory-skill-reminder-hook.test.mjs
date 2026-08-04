@@ -23,6 +23,7 @@ test("Claude memory skill metadata uses the plugin-namespaced invocation", async
 
 test("UserPromptSubmit manifest declares the Claude memory reminder hook", async () => {
   const manifest = JSON.parse(await readFile(join(packageRoot, "hooks", "hooks.json"), "utf8"));
+  const runtime = await readFile(hookPath, "utf8");
   const commands = manifest.hooks.UserPromptSubmit[0].hooks.map((hook) => hook.command);
 
   assert.deepEqual(commands, [
@@ -31,6 +32,8 @@ test("UserPromptSubmit manifest declares the Claude memory reminder hook", async
     "node \"${CLAUDE_PLUGIN_ROOT}/hooks/runtime-hook.mjs\" memory-skill-reminder",
   ]);
   assert.equal(manifest.hooks.UserPromptSubmit[0].hooks[2].timeout, undefined);
+  assert.match(runtime, /scheduleMissingRepoMemoryBuild\(input/);
+  assert.match(runtime, /pluginRoot: process\.env\.CLAUDE_PLUGIN_ROOT/);
 });
 
 test("Claude memory skill reminder mirrors due context to the Backend trace contract", async () => {

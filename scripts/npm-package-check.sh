@@ -109,6 +109,7 @@ for relative in [
     "lib/memorax-code-adapter-common/src/clients/codex-command.mjs",
     "lib/memorax-code-adapter-common/src/repo-memory/repo-procedure-memory-context.mjs",
     "lib/memorax-code-adapter-common/src/repo-memory/repo-user-profile-context.mjs",
+    "lib/memorax-code-adapter-common/src/repo-memory/repo-memory-auto-build.mjs",
     "lib/memorax-code-adapter-common/src/repo-memory/repo-memory-job-supervisor.mjs",
     "lib/memorax-code-adapter-common/src/repo-memory/repo-memory-job-worker.mjs",
     "lib/memorax-code-adapter-common/src/repo-memory/repo-memory-update-policy-evaluator.mjs",
@@ -124,6 +125,7 @@ for relative in [
     "lib/memorax-code-codex-adapter/assets/composer-icon.png",
     "lib/memorax-code-codex-adapter/assets/logo.png",
     "lib/memorax-code-codex-adapter/hooks/hooks.json",
+    "lib/memorax-code-codex-adapter/hooks/repo-memory-job.mjs",
     "lib/memorax-code-codex-adapter/hooks/runtime-hook.mjs",
     "lib/memorax-code-codex-adapter/hooks/runtime-shell.json",
     "lib/memorax-code-codex-adapter/runtime-hooks/memory-skill-reminder.mjs",
@@ -134,16 +136,19 @@ for relative in [
     "lib/memorax-code-claude-adapter/hooks/runtime-hook.mjs",
     "lib/memorax-code-claude-adapter/hooks/runtime-shell.json",
     "lib/memorax-code-claude-adapter/hooks/repo-memory-job.mjs",
+    "lib/memorax-code-claude-adapter/runtime-hooks/memory-skill-reminder.mjs",
     "lib/memorax-code-claude-adapter/runtime-hooks/memory-turn.mjs",
     "lib/memorax-code-claude-adapter/skills/memorax-code/SKILL.md",
     "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/hooks/hooks.json",
     "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/hooks/runtime-hook.mjs",
     "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/hooks/runtime-shell.json",
     "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/hooks/repo-memory-job.mjs",
+    "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/runtime-hooks/memory-skill-reminder.mjs",
     "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/runtime-hooks/memory-turn.mjs",
     "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/backend-connection.mjs",
     "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/runtime-record.mjs",
     "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/hooks/ensure-backend-runner.mjs",
+    "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/repo-memory/repo-memory-auto-build.mjs",
     "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/repo-memory/repo-procedure-memory-context.mjs",
     "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/repo-memory/repo-user-profile-context.mjs",
     "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/skills/memorax-code/SKILL.md",
@@ -283,6 +288,7 @@ for relative in \
   lib/memorax-code-adapter-common/src/clients/codex-command.mjs \
   lib/memorax-code-adapter-common/src/repo-memory/repo-procedure-memory-context.mjs \
   lib/memorax-code-adapter-common/src/repo-memory/repo-user-profile-context.mjs \
+  lib/memorax-code-adapter-common/src/repo-memory/repo-memory-auto-build.mjs \
   lib/memorax-code-adapter-common/src/repo-memory/repo-memory-job-supervisor.mjs \
   lib/memorax-code-adapter-common/src/repo-memory/repo-memory-job-worker.mjs \
   lib/memorax-code-adapter-common/src/repo-memory/repo-memory-update-policy-evaluator.mjs \
@@ -293,18 +299,23 @@ for relative in \
   lib/memorax-code-backend/dist/memory-service.js \
   lib/memorax-code-codex-adapter/hooks/runtime-hook.mjs \
   lib/memorax-code-codex-adapter/hooks/runtime-shell.json \
+  lib/memorax-code-codex-adapter/hooks/repo-memory-job.mjs \
+  lib/memorax-code-codex-adapter/runtime-hooks/memory-skill-reminder.mjs \
   lib/memorax-code-codex-adapter/runtime-hooks/memory-writeback.mjs \
   lib/memorax-code-claude-adapter/hooks/runtime-hook.mjs \
   lib/memorax-code-claude-adapter/hooks/runtime-shell.json \
   lib/memorax-code-claude-adapter/hooks/repo-memory-job.mjs \
+  lib/memorax-code-claude-adapter/runtime-hooks/memory-skill-reminder.mjs \
   lib/memorax-code-claude-adapter/runtime-hooks/memory-turn.mjs \
   lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/hooks/runtime-hook.mjs \
   lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/hooks/runtime-shell.json \
   lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/hooks/repo-memory-job.mjs \
+  lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/runtime-hooks/memory-skill-reminder.mjs \
   lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/runtime-hooks/memory-turn.mjs \
   lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/backend-connection.mjs \
   lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/runtime-record.mjs \
   lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/hooks/ensure-backend-runner.mjs \
+  lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/repo-memory/repo-memory-auto-build.mjs \
   lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/repo-memory/repo-procedure-memory-context.mjs \
   lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/repo-memory/repo-user-profile-context.mjs \
   lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/skills/memorax-code/SKILL.md
@@ -359,7 +370,10 @@ generation_manifest = json.loads((generation / "generation.json").read_text())
 assert generation_manifest["generationId"] == current["generationId"]
 assert generation_manifest["contentDigest"] == current["contentDigest"]
 assert (generation / "lib" / "memorax-code-codex-adapter" / "runtime-hooks" / "memory-writeback.mjs").exists()
+assert (generation / "lib" / "memorax-code-codex-adapter" / "runtime-hooks" / "memory-skill-reminder.mjs").exists()
 assert (generation / "lib" / "memorax-code-claude-adapter" / "runtime-hooks" / "memory-turn.mjs").exists()
+assert (generation / "lib" / "memorax-code-claude-adapter" / "runtime-hooks" / "memory-skill-reminder.mjs").exists()
+assert (generation / "lib" / "memorax-code-adapter-common" / "src" / "repo-memory" / "repo-memory-auto-build.mjs").exists()
 assert current_path.stat().st_mode & 0o777 == 0o600
 PY_POSTINSTALL
 
@@ -512,7 +526,9 @@ assert (install_path / "skills" / "memorax-code" / "SKILL.md").exists()
 assert (install_path / "hooks" / "runtime-hook.mjs").exists()
 assert (install_path / "hooks" / "runtime-shell.json").exists()
 assert (install_path / "runtime-hooks" / "memory-turn.mjs").exists()
+assert (install_path / "runtime-hooks" / "memory-skill-reminder.mjs").exists()
 assert (install_path / "hooks" / "repo-memory-job.mjs").exists()
+assert (install_path / "memorax-code-adapter-common" / "src" / "repo-memory" / "repo-memory-auto-build.mjs").exists()
 state = json.loads((memorax_code_home / "adapters" / "claude-code" / "state.json").read_text())
 assert state["version"] == 1
 assert state["runtime"] == "claude-code"

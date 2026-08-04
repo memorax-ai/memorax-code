@@ -39,6 +39,17 @@ test("client Hook generations stage immutably and activate atomically", async ()
       JSON.parse(await readFile(join(first.generationPath, "generation.json"), "utf8")).contentDigest,
       first.contentDigest,
     );
+    assert.equal(
+      (await readFile(join(
+        first.generationPath,
+        "lib",
+        "memorax-code-adapter-common",
+        "src",
+        "repo-memory",
+        "repo-memory-auto-build.mjs",
+      ), "utf8")).includes("generation-a:repo-memory-auto-build"),
+      true,
+    );
 
     await writeRuntimePackage(packageRoot, "1.2.3", "generation-b");
     const second = stageClientHookRuntimeGeneration({ packageRoot, memoraxCodeHome });
@@ -528,6 +539,24 @@ async function writeRuntimePackage(packageRoot, version, marker) {
       `export const marker = ${JSON.stringify(marker)};\n`,
     );
   }
+  await mkdir(join(
+    packageRoot,
+    "lib",
+    "memorax-code-adapter-common",
+    "src",
+    "repo-memory",
+  ), { recursive: true });
+  await writeFile(
+    join(
+      packageRoot,
+      "lib",
+      "memorax-code-adapter-common",
+      "src",
+      "repo-memory",
+      "repo-memory-auto-build.mjs",
+    ),
+    `export const marker = ${JSON.stringify(`${marker}:repo-memory-auto-build`)};\n`,
+  );
   for (const [adapter, components] of Object.entries({
     "memorax-code-codex-adapter": [
       "capture-cwd",

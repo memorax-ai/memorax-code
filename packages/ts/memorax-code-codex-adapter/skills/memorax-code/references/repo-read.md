@@ -6,7 +6,9 @@ Use existing `.repo_memory/` as a routing layer for repository identity, archite
 
 Select this reference for broad repo introduction, history, architecture background, cross-module routing, PR/issue context, design rationale, or stale-memory awareness. Skip this reference for narrow tasks with a clear live-code target.
 
-Only a relevant `repo-read` invokes `maintain`. Commit arrival, PR merge, and elapsed time alone do not invoke it. Explicit build, rebuild, or update requests still route through `SKILL.md` to `repo-build.md` or `repo-update.md`.
+An eligible client `UserPromptSubmit` Hook checks whether the selected Git worktree has `.repo_memory/PROFILE.md`. When the profile is absent, the Hook silently invokes `maintain` to start the first background build. It skips non-Git and projectless workspaces, does not validate an existing bundle, and does not evaluate update staleness.
+
+For an existing profile, only a relevant `repo-read` invokes `maintain` to validate the bundle and evaluate incremental maintenance. Commit arrival, PR merge, and elapsed time alone do not invoke it. Explicit build, rebuild, or update requests still route through `SKILL.md` to `repo-build.md` or `repo-update.md`.
 
 ## Repository And Helper
 
@@ -25,7 +27,7 @@ Derive memory as `<repo>/.repo_memory`; never ask for a memory-directory path. I
 node '<skill-dir>/../../hooks/repo-memory-job.mjs' maintain --repo '<repo>'
 ```
 
-Use it only when it is a regular file. It validates the generated bundle, evaluates the configured local update policy without provider network access, and atomically selects one outcome:
+Use it only when it is a regular file. The missing-profile Hook and `repo-read` share this helper. It validates the generated bundle, evaluates the configured local update policy without provider network access, and atomically selects one outcome:
 
 - `bundle_missing` or `bundle_invalid`: start supervised build;
 - a triggered policy decision: start supervised update;

@@ -97,6 +97,13 @@ Generated `.repo_memory/` content, personal procedures, and profile preferences
 remain local and are Git-ignored by the supported workflow. Review and redact
 all diagnostic artifacts before sharing them.
 
+On an eligible prompt in a Git worktree, a missing `.repo_memory/PROFILE.md`
+starts a background Repo Memory build through the active Codex or Claude Code
+client. That worker uses the client's existing model and provider boundary to
+inspect the repository and may use authenticated `gh` or `glab` commands for
+PR, MR, and issue evidence. The generated bundle remains local; provider CLI
+traffic and model-provider traffic are separate from MemoraX memory traffic.
+
 ## Uninstall and Retention
 
 Use:

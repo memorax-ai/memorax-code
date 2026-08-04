@@ -4,6 +4,8 @@ import {
   runMemorySkillReminderHook,
 } from "../../memorax-code-adapter-common/src/hooks/memory-skill-reminder-hook.mjs";
 import { resolveBackendConnection } from "../../memorax-code-adapter-common/src/backend-connection.mjs";
+import { readStdinJson } from "../../memorax-code-adapter-common/src/config-utils.mjs";
+import { scheduleMissingRepoMemoryBuild } from "../../memorax-code-adapter-common/src/repo-memory/repo-memory-auto-build.mjs";
 import { isRepoMemoryJobWorker } from "../../memorax-code-adapter-common/src/repo-memory/repo-memory-job-context.mjs";
 import { buildRepoProcedureMemoryContext } from "../../memorax-code-adapter-common/src/repo-memory/repo-procedure-memory-context.mjs";
 import { buildRepoUserProfilePreferencesContext } from "../../memorax-code-adapter-common/src/repo-memory/repo-user-profile-context.mjs";
@@ -19,6 +21,14 @@ const personalMemoryContextOptions = {
   sessionKeyPrefix: "claude",
 };
 
+const input = await readStdinJson();
+scheduleMissingRepoMemoryBuild(input, {
+  adapterDir: "claude-code",
+  debugEnv: "MEMORAX_CODE_CLAUDE_HOOK_DEBUG",
+  pluginRoot: process.env.CLAUDE_PLUGIN_ROOT,
+  sessionKeyPrefix: "claude",
+});
+
 await runMemorySkillReminderHook({
   additionalReminderContext: personalMemoryReminderContext(MEMORY_SKILL_INVOCATION),
   adapterDir: "claude-code",
@@ -30,7 +40,7 @@ await runMemorySkillReminderHook({
   remindOnFirstTurn: true,
   runtime: "claude-code",
   supplementalReminderAfterCompact: true,
-});
+}, input);
 
 async function recordReminder(reminder) {
   const promptId = reminder.turnId;
