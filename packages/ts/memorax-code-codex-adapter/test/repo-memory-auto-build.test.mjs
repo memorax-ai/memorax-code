@@ -2,8 +2,9 @@ import { strict as assert } from "node:assert";
 import { spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import {
   resolveGitWorktreeRoot,
   scheduleMissingRepoMemoryBuild,
@@ -12,6 +13,13 @@ import {
   markerPathForRepo,
   writeRepoMemoryJobMarker,
 } from "../../memorax-code-adapter-common/src/repo-memory/repo-memory-job-marker.mjs";
+
+const codexPackageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const codexMemorySkillReminderPath = join(codexPackageRoot, "runtime-hooks", "memory-skill-reminder.mjs");
+const claudeMemorySkillReminderPath = resolve(
+  codexPackageRoot,
+  "../memorax-code-claude-adapter/runtime-hooks/memory-skill-reminder.mjs",
+);
 
 test("repo memory auto-build resolves normal and linked Git worktrees without invoking Git", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-auto-build-root-"));
@@ -84,6 +92,71 @@ test("repo memory auto-build schedules maintain only when PROFILE.md is missing"
   } finally {
     restoreEnv("MEMORAX_CODE_HOME", previousHome);
     restoreEnv("MEMORAX_CODE_AUTO_BUILD_TEST_LOG", previousLog);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Codex and Claude runtime Hook components schedule only a missing profile", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-auto-build-runtime-hooks-"));
+  try {
+    const repo = await createRepo(root);
+    const canonicalRepo = await realpath(repo);
+    const pluginRoot = await createFakePlugin(root);
+    const memoraxCodeHome = join(root, "memorax-code");
+    const logPath = join(root, "auto-build.log");
+    const input = {
+      hook_event_name: "UserPromptSubmit",
+      cwd: join(repo, "src"),
+      workspace_kind: "git",
+    };
+
+    const codex = runMemorySkillReminderComponent(codexMemorySkillReminderPath, input, {
+      client: "codex",
+      logPath,
+      memoraxCodeHome,
+      pluginRoot,
+    });
+    assert.equal(codex.status, 0, codex.stderr || codex.stdout);
+    const [codexInvocation] = await waitForLines(logPath, 1);
+    assert.deepEqual(JSON.parse(codexInvocation), {
+      args: ["maintain", "--repo", canonicalRepo],
+      client: "codex",
+      cwd: canonicalRepo,
+    });
+
+    const claude = runMemorySkillReminderComponent(claudeMemorySkillReminderPath, input, {
+      client: "claude",
+      logPath,
+      memoraxCodeHome,
+      pluginRoot,
+    });
+    assert.equal(claude.status, 0, claude.stderr || claude.stdout);
+    const invocations = await waitForLines(logPath, 2);
+    assert.deepEqual(JSON.parse(invocations[1]), {
+      args: ["maintain", "--repo", canonicalRepo],
+      client: "claude",
+      cwd: canonicalRepo,
+    });
+
+    await mkdir(join(repo, ".repo_memory"));
+    await writeFile(join(repo, ".repo_memory", "PROFILE.md"), "# Existing Repo Memory\n");
+    const existingCodex = runMemorySkillReminderComponent(codexMemorySkillReminderPath, input, {
+      client: "codex-existing",
+      logPath,
+      memoraxCodeHome,
+      pluginRoot,
+    });
+    const existingClaude = runMemorySkillReminderComponent(claudeMemorySkillReminderPath, input, {
+      client: "claude-existing",
+      logPath,
+      memoraxCodeHome,
+      pluginRoot,
+    });
+    assert.equal(existingCodex.status, 0, existingCodex.stderr || existingCodex.stdout);
+    assert.equal(existingClaude.status, 0, existingClaude.stderr || existingClaude.stdout);
+    await delay(100);
+    assert.equal((await readFile(logPath, "utf8")).trim().split(/\r?\n/).length, 2);
+  } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
@@ -178,10 +251,31 @@ async function createFakePlugin(root) {
   await writeFile(hookPath, [
     'import { appendFileSync } from "node:fs";',
     "const path = process.env.MEMORAX_CODE_AUTO_BUILD_TEST_LOG;",
-    "appendFileSync(path, `${JSON.stringify({ args: process.argv.slice(2), cwd: process.cwd() })}\\n`);",
+    "appendFileSync(path, `${JSON.stringify({ args: process.argv.slice(2), client: process.env.MEMORAX_CODE_AUTO_BUILD_TEST_CLIENT, cwd: process.cwd() })}\\n`);",
     "",
   ].join("\n"));
   return pluginRoot;
+}
+
+function runMemorySkillReminderComponent(scriptPath, input, options) {
+  const env = {
+    ...process.env,
+    MEMORAX_CODE_AUTO_BUILD_TEST_CLIENT: options.client,
+    MEMORAX_CODE_AUTO_BUILD_TEST_LOG: options.logPath,
+    MEMORAX_CODE_BACKEND_URL: "http://127.0.0.1:1",
+    MEMORAX_CODE_CLAUDE_MEMORY_HOOK_TIMEOUT_MS: "100",
+    MEMORAX_CODE_CODEX_MEMORY_HOOK_TIMEOUT_MS: "100",
+    MEMORAX_CODE_HOME: options.memoraxCodeHome,
+    CLAUDE_PLUGIN_ROOT: options.pluginRoot,
+    PLUGIN_ROOT: options.pluginRoot,
+  };
+  delete env.PLUGIN_DATA;
+  return spawnSync(process.execPath, [scriptPath], {
+    encoding: "utf8",
+    env,
+    input: `${JSON.stringify(input)}\n`,
+    timeout: 5000,
+  });
 }
 
 async function writeWorkspaceState(memoraxCodeHome, repo) {
@@ -208,17 +302,22 @@ function runGit(cwd, args) {
 }
 
 async function waitForFile(path) {
+  return (await waitForLines(path, 1))[0];
+}
+
+async function waitForLines(path, count) {
   const deadline = Date.now() + 3000;
   while (Date.now() < deadline) {
     try {
       const value = await readFile(path, "utf8");
-      if (value.trim()) return value.trim().split(/\r?\n/)[0];
+      const lines = value.trim().split(/\r?\n/).filter(Boolean);
+      if (lines.length >= count) return lines;
     } catch (error) {
       if (error?.code !== "ENOENT") throw error;
     }
     await delay(25);
   }
-  throw new Error(`timed out waiting for ${path}`);
+  throw new Error(`timed out waiting for ${count} line(s) in ${path}`);
 }
 
 function delay(ms) {
