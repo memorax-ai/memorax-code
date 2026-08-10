@@ -22,6 +22,7 @@ const ROOT_MARKDOWN_FILES = [
   "CONTRIBUTING.md",
   "SECURITY.md",
   "AGENTS.md",
+  "ARCHITECTURE.md",
 ];
 const NPM_README = join("packages", "npm", "memorax-code", "README.md");
 const SHIPPED_DOCS_MANIFEST = join(

@@ -44,6 +44,17 @@ test("documentation contract checks the root installation guide", async (t) => {
   );
 });
 
+test("documentation contract checks the root architecture guide", async (t) => {
+  const root = await fixture(t);
+  await writeFile(
+    join(root, "ARCHITECTURE.md"),
+    "# Architecture\n\n[Missing](missing.md)\n",
+  );
+  assert.ok(
+    checkDocumentation(root).some((error) => error.includes("links to missing path")),
+  );
+});
+
 test("documentation contract rejects personal absolute paths", async (t) => {
   const root = await fixture(t);
   await writeFile(

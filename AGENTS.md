@@ -20,27 +20,19 @@ precedence over generated memory or historical context.
 - Use isolated `MEMORAX_CODE_HOME`, `CODEX_HOME`, and `CLAUDE_CONFIG_DIR`
   locations for lifecycle, install, migration, or destructive tests.
 
-## 2. Module Ownership
+## 2. Architecture Routing
 
-- `packages/ts/memorax-code-backend` owns Backend lifecycle, typed Hook HTTP,
-  the memory service, MemoraX transport, local trace, Memory Viewer, and
-  writeback reconciliation.
-- `packages/ts/memorax-code-adapter-common` owns durable runtime records,
-  cross-process configuration primitives, and shared Hook and Repo Memory
-  helpers. It does not interpret client transcripts or plugin policy.
-- `packages/ts/memorax-code-codex-adapter` owns the Codex plugin, Hooks,
-  native session/workspace observation, diagnostics, and bundled skill.
-- `packages/ts/memorax-code-claude-adapter` owns the Claude Code plugin, Hooks,
-  native observation, and diagnostics. The shared skill is materialized from
-  the canonical bundled source during packaging.
-- `packages/npm/memorax-code` owns the public CLI and npm installation, update,
-  uninstall, postinstall, staging, and package layout.
-- `scripts` and `.github` own repeatable repository checks and CI, not runtime
-  behavior.
+[ARCHITECTURE.md](ARCHITECTURE.md) is the canonical map for system shape,
+package ownership, runtime flows, Backend source and test placement, dependency
+direction, stable root surfaces, and executable architecture contracts.
 
-The Backend is not a model runtime or provider proxy. Codex and Claude Code
-retain ownership of provider credentials, models, native tools, provider
-traffic, and transcript creation.
+Read it before adding or moving modules or tests, changing entrypoints,
+control/data flow, state or authority, packaging/materialization, or
+cross-package or cross-capability dependencies.
+
+Preserve the documented boundaries. When an intentional architecture change is
+required, update `ARCHITECTURE.md` and the affected executable contract in the
+same change, then run the matching verification profile in Section 5.
 
 ## 3. Hook, Session, and Scope Invariants
 
@@ -101,15 +93,23 @@ traffic, and transcript creation.
 Run the smallest relevant check first, then expand when a change crosses
 boundaries:
 
-- Backend: `npm run typecheck --prefix packages/ts/memorax-code-backend` and
+- **Backend**: `npm run typecheck --prefix packages/ts/memorax-code-backend` and
   `npm test --prefix packages/ts/memorax-code-backend`.
-- Codex: `npm test --prefix packages/ts/memorax-code-codex-adapter`.
-- Claude Code: `npm test --prefix packages/ts/memorax-code-claude-adapter`.
-- Shared Hook or adapter behavior: run both adapter suites and affected Backend
-  tests.
-- Documentation: `make docs-check`.
-- Install, update, uninstall, CLI, or artifacts: `make npm-package-check`.
-- Broad cross-layer changes: `make test`.
+- **Codex**: `npm test --prefix packages/ts/memorax-code-codex-adapter`.
+- **Claude Code**:
+  `npm test --prefix packages/ts/memorax-code-claude-adapter`.
+- **Adapter-common/shared Hook**: `adapter-common` has no standalone suite. Run
+  affected Backend tests and both adapter suites; add `make npm-package-check`
+  when staged runtime or package layout changes.
+- **Trace/local-only boundary**: for trace, provider, or outbound transport,
+  run `make test-npm-package` in addition to affected package tests.
+- **Documentation**: `make docs-check`.
+- **Install/artifacts**: for install, update, uninstall, CLI, or artifacts, run
+  `make npm-package-check`.
+- **Broad cross-layer**: `make test`.
+
+If the change edits tracked documentation, also run the **Documentation**
+profile even when another profile applies.
 
 Real-client and MemoraX-backed checks are explicit opt-in tests. Keep their
 credentials and artifacts outside Git and redact results before sharing.
