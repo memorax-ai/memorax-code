@@ -4,7 +4,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { invokeMemoraxMemoryProvider } from "../dist/memorax-adapter.js";
+import { invokeMemoraxMemoryProvider } from "../dist/provider/memorax/adapter.js";
 import { listen } from "./helpers.mjs";
 
 function testRepositoryScope(baseUserId = "user-1", repositorySlug = "memorax-code") {

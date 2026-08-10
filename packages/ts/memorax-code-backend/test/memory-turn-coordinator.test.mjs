@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createMemoryTurnCoordinator } from "../dist/memory-turn-coordinator.js";
+import { createMemoryTurnCoordinator } from "../dist/memory/turn-coordinator.js";
 
 test("memory turn coordinator isolates identical client turn keys", () => {
   const coordinator = createMemoryTurnCoordinator({

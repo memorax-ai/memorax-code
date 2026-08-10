@@ -7,7 +7,7 @@ import {
   claudeLocalProjectsRoot,
   clearClaudeLocalTranscriptProjections,
   readClaudeLocalTranscriptHistory,
-} from "../dist/claude-local-transcript.js";
+} from "../dist/viewer/history/claude-transcript.js";
 
 test.beforeEach(() => clearClaudeLocalTranscriptProjections());
 

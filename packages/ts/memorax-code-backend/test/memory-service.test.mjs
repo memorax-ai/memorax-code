@@ -3,8 +3,8 @@ import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { createBackendState } from "../dist/backend-state.js";
-import { createMemoryService } from "../dist/memory-service.js";
+import { createBackendState } from "../dist/app/state.js";
+import { createMemoryService } from "../dist/memory/service.js";
 
 test("Backend state does not own the memory service", () => {
   const state = createBackendState("127.0.0.1");

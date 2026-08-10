@@ -9,13 +9,13 @@ import { test } from "node:test";
 import { promisify } from "node:util";
 import {
   resolveConfiguredRepositoryMemoryForSession,
-} from "../dist/repository-memory-context.js";
+} from "../dist/memory/repository-session.js";
 import {
   repositoryMemoryScopeCanUpgradeFromDegradedGit,
   repositoryMemoryScopeContainsWorkspace,
   repositoryMemoryScopesMatch,
   resolveRepositoryMemoryScope,
-} from "../dist/repository-memory-scope.js";
+} from "../dist/repository/scope.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -69,7 +69,7 @@ test("workspace scope resolution does not require a Git executable", async () =>
     ["origin", "https://github.com/example-org/memorax-code.git"],
   ]);
   await mkdir(emptyPath, { recursive: true });
-  const moduleUrl = new URL("../dist/repository-memory-scope.js", import.meta.url).href;
+  const moduleUrl = new URL("../dist/repository/scope.js", import.meta.url).href;
   const source = [
     `import { resolveRepositoryMemoryScope } from ${JSON.stringify(moduleUrl)};`,
     `const result = await resolveRepositoryMemoryScope(${JSON.stringify({

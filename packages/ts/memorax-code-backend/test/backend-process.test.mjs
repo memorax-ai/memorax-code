@@ -3,7 +3,7 @@ import test from "node:test";
 import {
   managedServiceCommandLine,
   probeProcessCommandLine,
-} from "../dist/backend-process.js";
+} from "../dist/lifecycle/backend/process.js";
 
 const MANAGED_COMMAND = [
   '"C:\\Program Files\\nodejs\\node.exe"',

@@ -1,4 +1,4 @@
 #!/usr/bin/env node
-import { runBackendCli } from "./server-cli.js";
+import { runBackendCli } from "./entrypoints/backend-cli.js";
 
 runBackendCli(process.argv);

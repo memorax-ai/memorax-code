@@ -9,7 +9,7 @@ import {
   activateClientHookRuntimeGeneration,
   stageClientHookRuntimeGeneration,
 } from "../../memorax-code-adapter-common/src/hooks/hook-runtime-generation.mjs";
-import { startMemoraxCodeService } from "../dist/memorax-code-lifecycle.js";
+import { startMemoraxCodeService } from "../dist/lifecycle/orchestrator.js";
 import { freePort } from "./helpers.mjs";
 
 const cliPath = fileURLToPath(new URL("../dist/memorax-code.js", import.meta.url));

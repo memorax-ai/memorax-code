@@ -27,6 +27,7 @@ test("local-only trace gate scans untracked provider transport consumers", async
   try {
     await mkdir(scriptsDir, { recursive: true });
     await mkdir(sourceDir, { recursive: true });
+    await mkdir(join(sourceDir, "memory"), { recursive: true });
     await copyFile(checker, copiedChecker);
     const initialized = spawnSync("git", ["init", "--quiet"], {
       cwd: root,
@@ -34,9 +35,9 @@ test("local-only trace gate scans untracked provider transport consumers", async
     });
     assert.equal(initialized.status, 0, initialized.stderr);
     await writeFile(
-      join(sourceDir, "unreviewed-provider-client.ts"),
+      join(sourceDir, "memory", "unreviewed-provider-client.ts"),
       [
-        'import { callMemoAdd } from "./memorax-adapter.js";',
+        'import { callMemoAdd } from "../provider/memorax/adapter.js";',
         "export const send = callMemoAdd;",
         "",
       ].join("\n"),
@@ -45,6 +46,95 @@ test("local-only trace gate scans untracked provider transport consumers", async
     const result = await runChecker(undefined, copiedChecker);
     assert.equal(result.code, 1);
     assert.match(result.stderr, /unreviewed-provider-client\.ts: undeclared network-capable production module/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("local-only trace gate rejects same-directory provider transport bridges", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-local-trace-provider-sibling-"));
+  const scriptsDir = join(root, "scripts");
+  const copiedChecker = join(scriptsDir, "check-local-trace-only.mjs");
+  const providerDir = join(
+    root,
+    "packages",
+    "ts",
+    "memorax-code-backend",
+    "src",
+    "provider",
+    "memorax",
+  );
+  try {
+    await mkdir(scriptsDir, { recursive: true });
+    await mkdir(providerDir, { recursive: true });
+    await copyFile(checker, copiedChecker);
+    const initialized = spawnSync("git", ["init", "--quiet"], {
+      cwd: root,
+      encoding: "utf8",
+    });
+    assert.equal(initialized.status, 0, initialized.stderr);
+    await writeFile(join(providerDir, "unreviewed-trace-bridge.ts"), [
+      'import { postMemoraxJson } from "./http.js";',
+      'import { readCurrentTraceTurn } from "../../trace/store.js";',
+      "export async function publish(value) {",
+      "  const turn = readCurrentTraceTurn();",
+      "  return await postMemoraxJson('/v1/events', { turn, value });",
+      "}",
+      "",
+    ].join("\n"));
+
+    const result = await runChecker(undefined, copiedChecker);
+    assert.equal(result.code, 1);
+    assert.match(
+      result.stderr,
+      /provider\/memorax\/unreviewed-trace-bridge\.ts: undeclared network-capable production module \(provider transport import\)/,
+    );
+    assert.match(
+      result.stderr,
+      /provider\/memorax\/unreviewed-trace-bridge\.ts: unreviewed trace-aware outbound bridge/,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("local-only trace gate does not grant runtime network authority to lifecycle contracts", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-local-trace-contracts-network-"));
+  const scriptsDir = join(root, "scripts");
+  const copiedChecker = join(scriptsDir, "check-local-trace-only.mjs");
+  const lifecycleDir = join(
+    root,
+    "packages",
+    "ts",
+    "memorax-code-backend",
+    "src",
+    "lifecycle",
+  );
+  try {
+    await mkdir(scriptsDir, { recursive: true });
+    await mkdir(lifecycleDir, { recursive: true });
+    await copyFile(checker, copiedChecker);
+    const initialized = spawnSync("git", ["init", "--quiet"], {
+      cwd: root,
+      encoding: "utf8",
+    });
+    assert.equal(initialized.status, 0, initialized.stderr);
+    await writeFile(join(lifecycleDir, "contracts.ts"), [
+      "export type Runtime = {",
+      "  fetch?: typeof fetch;",
+      "};",
+      "export async function publish() {",
+      "  return await fetch('https://collector.example/v1/events');",
+      "}",
+      "",
+    ].join("\n"));
+
+    const result = await runChecker(undefined, copiedChecker);
+    assert.equal(result.code, 1);
+    assert.match(
+      result.stderr,
+      /lifecycle\/contracts\.ts: undeclared network-capable production module \(fetch\)/,
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -81,7 +171,7 @@ test("local-only trace gate checks every shipped runtime tree in staged artifact
   const root = await mkdtemp(join(tmpdir(), "memorax-code-local-trace-network-artifact-"));
   const stagedFiles = [
     ["package/lib/undeclared-npm-runtime.mjs", "undeclared-npm-runtime.mjs"],
-    ["package/lib/memorax-code-backend/dist/undeclared-backend-runtime.js", "undeclared-backend-runtime.ts"],
+    ["package/lib/memorax-code-backend/dist/memory/undeclared-backend-runtime.js", "undeclared-backend-runtime.ts"],
     ["package/lib/memorax-code-codex-adapter/hooks/undeclared-codex-hook.mjs", "undeclared-codex-hook.mjs"],
     ["package/lib/memorax-code-codex-adapter/skills/memorax-code/scripts/undeclared-skill.py", "undeclared-skill.py"],
     ["package/lib/memorax-code-claude-adapter/hooks/undeclared-claude-hook.mjs", "undeclared-claude-hook.mjs"],
@@ -120,14 +210,15 @@ test("local-only trace gate rejects an unreviewed trace-aware outbound transport
   try {
     await mkdir(scriptsDir, { recursive: true });
     await mkdir(sourceDir, { recursive: true });
+    await mkdir(join(sourceDir, "provider", "memorax"), { recursive: true });
     await copyFile(checker, copiedChecker);
     const initialized = spawnSync("git", ["init", "--quiet"], {
       cwd: root,
       encoding: "utf8",
     });
     assert.equal(initialized.status, 0, initialized.stderr);
-    await writeFile(join(sourceDir, "memorax-http.ts"), [
-      'import { readCurrentTraceTurn } from "./trace-store.js";',
+    await writeFile(join(sourceDir, "provider", "memorax", "http.ts"), [
+      'import { readCurrentTraceTurn } from "../../trace/store.js";',
       "export async function request() {",
       "  readCurrentTraceTurn();",
       "  return await fetch('https://memorax.example/v1/status');",
@@ -137,7 +228,7 @@ test("local-only trace gate rejects an unreviewed trace-aware outbound transport
 
     const result = await runChecker(undefined, copiedChecker);
     assert.equal(result.code, 1);
-    assert.match(result.stderr, /memorax-http\.ts: unreviewed trace-aware outbound bridge/);
+    assert.match(result.stderr, /provider\/memorax\/http\.ts: unreviewed trace-aware outbound bridge/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -151,6 +242,7 @@ test("local-only trace gate rejects an unreviewed trace-aware MemoraX caller", a
   try {
     await mkdir(scriptsDir, { recursive: true });
     await mkdir(sourceDir, { recursive: true });
+    await mkdir(join(sourceDir, "memory"), { recursive: true });
     await copyFile(checker, copiedChecker);
     const initialized = spawnSync("git", ["init", "--quiet"], {
       cwd: root,
@@ -158,10 +250,10 @@ test("local-only trace gate rejects an unreviewed trace-aware MemoraX caller", a
     });
     assert.equal(initialized.status, 0, initialized.stderr);
     await writeFile(
-      join(sourceDir, "automatic-memory-retrieval.ts"),
+      join(sourceDir, "memory", "automatic-retrieval.ts"),
       [
-        'import { invokeMemoraxMemoryProvider } from "./memorax-adapter.js";',
-        'import { readCurrentTraceTurn } from "./trace-store.js";',
+        'import { invokeMemoraxMemoryProvider } from "../provider/memorax/adapter.js";',
+        'import { readCurrentTraceTurn } from "../trace/store.js";',
         "export async function publish(input, slot, options) {",
         "  await readCurrentTraceTurn(options);",
         "  return invokeMemoraxMemoryProvider(input, slot, options);",
@@ -172,7 +264,7 @@ test("local-only trace gate rejects an unreviewed trace-aware MemoraX caller", a
 
     const result = await runChecker(undefined, copiedChecker);
     assert.equal(result.code, 1);
-    assert.match(result.stderr, /automatic-memory-retrieval\.ts: unreviewed trace-aware outbound bridge/);
+    assert.match(result.stderr, /memory\/automatic-retrieval\.ts: unreviewed trace-aware outbound bridge/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -186,6 +278,7 @@ test("local-only trace gate rejects direct network capability in trace core", as
   try {
     await mkdir(scriptsDir, { recursive: true });
     await mkdir(sourceDir, { recursive: true });
+    await mkdir(join(sourceDir, "trace"), { recursive: true });
     await copyFile(checker, copiedChecker);
     const initialized = spawnSync("git", ["init", "--quiet"], {
       cwd: root,
@@ -193,13 +286,13 @@ test("local-only trace gate rejects direct network capability in trace core", as
     });
     assert.equal(initialized.status, 0, initialized.stderr);
     await writeFile(
-      join(sourceDir, "trace-store.ts"),
+      join(sourceDir, "trace", "store.ts"),
       "export async function append() { return await fetch('https://collector.example/v1/events'); }\n",
     );
 
     const result = await runChecker(undefined, copiedChecker);
     assert.equal(result.code, 1);
-    assert.match(result.stderr, /trace-store\.ts: local trace core depends on network capability/);
+    assert.match(result.stderr, /trace\/store\.ts: local trace core depends on network capability/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -213,6 +306,7 @@ test("local-only trace gate rejects provider transport imports in trace core", a
   try {
     await mkdir(scriptsDir, { recursive: true });
     await mkdir(sourceDir, { recursive: true });
+    await mkdir(join(sourceDir, "trace"), { recursive: true });
     await copyFile(checker, copiedChecker);
     const initialized = spawnSync("git", ["init", "--quiet"], {
       cwd: root,
@@ -220,9 +314,9 @@ test("local-only trace gate rejects provider transport imports in trace core", a
     });
     assert.equal(initialized.status, 0, initialized.stderr);
     await writeFile(
-      join(sourceDir, "trace-store.ts"),
+      join(sourceDir, "trace", "store.ts"),
       [
-        'import { postMemoraxJson } from "./memorax-http.js";',
+        'import { postMemoraxJson } from "../provider/memorax/http.js";',
         "export const publish = postMemoraxJson;",
         "",
       ].join("\n"),
@@ -230,7 +324,7 @@ test("local-only trace gate rejects provider transport imports in trace core", a
 
     const result = await runChecker(undefined, copiedChecker);
     assert.equal(result.code, 1);
-    assert.match(result.stderr, /trace-store\.ts: local trace core depends on network capability/);
+    assert.match(result.stderr, /trace\/store\.ts: local trace core depends on network capability/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

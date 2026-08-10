@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { resolveCodexWorkspaceRoot } from "../dist/codex-workspace-links.js";
+import { resolveCodexWorkspaceRoot } from "../dist/clients/codex/workspace-links.js";
 
 async function writeJson(path, value) {
   await mkdir(dirname(path), { recursive: true });

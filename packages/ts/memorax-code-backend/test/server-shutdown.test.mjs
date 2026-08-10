@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { createBackendState } from "../dist/backend-state.js";
+import { createBackendState } from "../dist/app/state.js";
 import { createBackendServer } from "../dist/server.js";
 import { listen } from "./helpers.mjs";
 

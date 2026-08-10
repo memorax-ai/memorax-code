@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { runMemoryCli } from "./memory-cli.js";
+import { runMemoryCli } from "./memory/cli.js";
 
 runMemoryCli(process.argv.slice(2)).then((result) => {
   if (!process.argv.includes("--json") && result.ok && result.action === "memory.search") {

@@ -15,7 +15,7 @@ import {
   memoraxConfigFromEnv,
   seedMissingMemoraxCodeConfig,
   startupRetrieveTimeoutMs,
-} from "../dist/memorax-config.js";
+} from "../dist/provider/memorax/config.js";
 import {
   normalizeMemoraxBaseUrl,
 } from "../../memorax-code-adapter-common/src/memorax-defaults.mjs";

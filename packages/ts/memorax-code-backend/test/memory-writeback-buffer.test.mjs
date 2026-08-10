@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
-import { createMemoryWritebackBufferRuntime } from "../dist/memory-writeback-buffer.js";
+import { createMemoryWritebackBufferRuntime } from "../dist/memory/writeback-buffer.js";
 
 const writebackBuffer = createMemoryWritebackBufferRuntime();
 

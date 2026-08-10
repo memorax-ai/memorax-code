@@ -3,7 +3,7 @@ import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/pr
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { prepareClientPluginRemovalCleanup } from "../dist/client-plugin-removal.js";
+import { prepareClientPluginRemovalCleanup } from "../dist/lifecycle/client-plugin-removal.js";
 
 test("package-removal cleanup is prepared before shutdown and removes both client plugins", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-client-plugin-removal-"));

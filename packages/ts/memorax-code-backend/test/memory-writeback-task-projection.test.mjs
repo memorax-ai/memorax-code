@@ -8,8 +8,8 @@ import {
   createMemoryWritebackTaskProjection,
   pendingMemoryWritebackTasks,
   projectMemoryWritebackTasks,
-} from "../dist/memory-writeback-task-projection.js";
-import { clientTracePaths } from "../dist/trace-config.js";
+} from "../dist/memory/writeback-task-projection.js";
+import { clientTracePaths } from "../dist/trace/config.js";
 
 test("writeback task projection prefers an explicit origin over task fallback", () => {
   const tasks = projectMemoryWritebackTasks([

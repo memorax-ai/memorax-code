@@ -4,12 +4,12 @@ import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { memoryProjectRoot, resolveMemoryProject } from "../dist/memory-project.js";
-import { listMemoryViewerDataWithHistory } from "../dist/memory-viewer-store.js";
+import { memoryProjectRoot, resolveMemoryProject } from "../dist/memory/project.js";
+import { listMemoryViewerDataWithHistory } from "../dist/viewer/store.js";
 import {
   REPO_MEMORY_READINESS_MAX_CONCURRENT_VALIDATIONS,
   repoMemoryReadinessForProject,
-} from "../dist/repo-memory-readiness.js";
+} from "../dist/repository/readiness.js";
 
 test("repo memory readiness reports the stable public status contract", async () => {
   const base = {

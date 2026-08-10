@@ -3,7 +3,7 @@ import { test } from "node:test";
 import {
   codexSessionTurnIndexFromJsonLines,
   readCodexSessionTurnIndex,
-} from "../dist/codex-session-turn-index.js";
+} from "../dist/clients/codex/session-turn-index.js";
 
 test("Codex session turn index counts unique top-level turn boundaries and ignores tool activity", () => {
   const transcript = jsonLines([

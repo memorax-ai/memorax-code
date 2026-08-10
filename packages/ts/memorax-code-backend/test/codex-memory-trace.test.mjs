@@ -3,18 +3,18 @@ import { mkdir, mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from "
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { test } from "node:test";
-import { loadMemoraxCodeConfig } from "../dist/memorax-code-config.js";
+import { loadMemoraxCodeConfig } from "../dist/config/memorax-code.js";
 import { createBackendServer } from "../dist/server.js";
-import { createBackendState } from "../dist/backend-state.js";
+import { createBackendState } from "../dist/app/state.js";
 import {
   claudeTracePaths,
   codexTraceConfigFromEnv,
   sanitizeTracePathSegment,
   tracePaths,
-} from "../dist/trace-config.js";
+} from "../dist/trace/config.js";
 import {
   traceContextFromHookBody,
-} from "../dist/trace-context.js";
+} from "../dist/trace/context.js";
 import {
   markCurrentCodexTurnOutcome,
   readCurrentCodexTurn,
@@ -22,7 +22,7 @@ import {
   recordCodexTraceEvent,
   pruneExpiredCodexTraceSessions,
   writeCurrentCodexTurn,
-} from "../dist/trace-store.js";
+} from "../dist/trace/store.js";
 
 test("codex trace config defaults to enabled and reads config.toml overrides", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-codex-trace-config-"));

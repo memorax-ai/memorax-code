@@ -3,7 +3,7 @@ import { test } from "node:test";
 import {
   memoryWritebackAddParts,
   writebackMessagesContentChars,
-} from "../dist/memory-writeback-chunk.js";
+} from "../dist/memory/writeback-chunk.js";
 
 test("memory writeback chunking emits structured lineage without repeating user context", () => {
   const parts = memoryWritebackAddParts({

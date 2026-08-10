@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { foldMemoryViewerSupersededTurnStarts } from "../dist/memory-viewer-history-projection.js";
-import { projectMemoryViewerUserData } from "../dist/memory-viewer-user-projection.js";
+import { foldMemoryViewerSupersededTurnStarts } from "../dist/viewer/projection/history.js";
+import { projectMemoryViewerUserData } from "../dist/viewer/projection/user.js";
 
 const PROJECT_ID = `repo:${"a".repeat(32)}`;
 

@@ -6,10 +6,10 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { test } from "node:test";
 import { promisify } from "node:util";
-import { runMemoryCli } from "../dist/memory-cli.js";
-import { traceContextFromClaudeHookBody, traceContextFromHookBody } from "../dist/trace-context.js";
-import { claudeTracePaths, tracePaths } from "../dist/trace-config.js";
-import { writeCurrentClaudeTurn, writeCurrentCodexTurn } from "../dist/trace-store.js";
+import { runMemoryCli } from "../dist/memory/cli.js";
+import { traceContextFromClaudeHookBody, traceContextFromHookBody } from "../dist/trace/context.js";
+import { claudeTracePaths, tracePaths } from "../dist/trace/config.js";
+import { writeCurrentClaudeTurn, writeCurrentCodexTurn } from "../dist/trace/store.js";
 import { listen } from "./helpers.mjs";
 
 const execFileAsync = promisify(execFile);

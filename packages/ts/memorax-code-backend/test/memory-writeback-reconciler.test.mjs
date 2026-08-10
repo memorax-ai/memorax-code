@@ -6,15 +6,15 @@ import test from "node:test";
 import {
   reconcileMemoryWritebackStatuses,
   startMemoryWritebackReconciler,
-} from "../dist/memory-writeback-reconciler.js";
+} from "../dist/memory/writeback-reconciler.js";
 import {
   createMemoryWritebackTaskProjection,
-} from "../dist/memory-writeback-task-projection.js";
+} from "../dist/memory/writeback-task-projection.js";
 import {
   clearMemoryViewerEvents,
   listMemoryViewerDataWithHistory,
   recordMemoryViewerEvent,
-} from "../dist/memory-viewer-store.js";
+} from "../dist/viewer/store.js";
 
 const MEMORAX_ENV = {
   MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",

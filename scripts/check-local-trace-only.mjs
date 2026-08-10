@@ -24,24 +24,24 @@ const productionRoots = [
 
 const reviewedNetworkSources = new Set([
   "packages/ts/memorax-code-adapter-common/src/hooks/ensure-backend-runner.mjs",
-  "packages/ts/memorax-code-backend/src/automatic-memory-retrieval.ts",
-  "packages/ts/memorax-code-backend/src/automatic-memory-writeback.ts",
-  "packages/ts/memorax-code-backend/src/backend-status.ts",
-  "packages/ts/memorax-code-backend/src/claude-memory-hook-runtime.ts",
-  "packages/ts/memorax-code-backend/src/codex-memory-hook-runtime.ts",
-  "packages/ts/memorax-code-backend/src/memory-writeback-buffer.ts",
-  "packages/ts/memorax-code-backend/src/memorax-adapter.ts",
-  "packages/ts/memorax-code-backend/src/memorax-http.ts",
-  "packages/ts/memorax-code-backend/src/memory-cli.ts",
-  "packages/ts/memorax-code-backend/src/memory-viewer-user-html.ts",
-  "packages/ts/memorax-code-backend/src/memory-writeback-reconciler.ts",
-  "packages/ts/memorax-code-backend/src/server-health.ts",
-  "packages/ts/memorax-code-backend/src/server-http.ts",
-  "packages/ts/memorax-code-backend/src/server-json.ts",
-  "packages/ts/memorax-code-backend/src/server-memory-hook.ts",
-  "packages/ts/memorax-code-backend/src/server-memory-viewer.ts",
-  "packages/ts/memorax-code-backend/src/server.ts",
-  "packages/ts/memorax-code-backend/src/service.ts",
+  "packages/ts/memorax-code-backend/src/app/backend-server.ts",
+  "packages/ts/memorax-code-backend/src/clients/claude/memory-hook-runtime.ts",
+  "packages/ts/memorax-code-backend/src/clients/codex/memory-hook-runtime.ts",
+  "packages/ts/memorax-code-backend/src/lifecycle/backend/service.ts",
+  "packages/ts/memorax-code-backend/src/lifecycle/backend/status.ts",
+  "packages/ts/memorax-code-backend/src/memory/automatic-retrieval.ts",
+  "packages/ts/memorax-code-backend/src/memory/automatic-writeback.ts",
+  "packages/ts/memorax-code-backend/src/memory/cli.ts",
+  "packages/ts/memorax-code-backend/src/memory/writeback-buffer.ts",
+  "packages/ts/memorax-code-backend/src/memory/writeback-reconciler.ts",
+  "packages/ts/memorax-code-backend/src/provider/memorax/adapter.ts",
+  "packages/ts/memorax-code-backend/src/provider/memorax/http.ts",
+  "packages/ts/memorax-code-backend/src/transport/http/health.ts",
+  "packages/ts/memorax-code-backend/src/transport/http/json.ts",
+  "packages/ts/memorax-code-backend/src/transport/http/memory-hook.ts",
+  "packages/ts/memorax-code-backend/src/transport/http/request.ts",
+  "packages/ts/memorax-code-backend/src/viewer/http/public-routes.ts",
+  "packages/ts/memorax-code-backend/src/viewer/ui/user-html.ts",
   "packages/ts/memorax-code-claude-adapter/runtime-hooks/memory-skill-reminder.mjs",
   "packages/ts/memorax-code-claude-adapter/runtime-hooks/memory-turn.mjs",
   "packages/ts/memorax-code-claude-adapter/src/cli.mjs",
@@ -52,31 +52,40 @@ const reviewedNetworkSources = new Set([
 ]);
 
 const localTraceCoreSources = new Set([
-  "packages/ts/memorax-code-backend/src/memory-reminder-trace-recorder.ts",
-  "packages/ts/memorax-code-backend/src/trace-config.ts",
-  "packages/ts/memorax-code-backend/src/trace-context.ts",
-  "packages/ts/memorax-code-backend/src/trace-store.ts",
+  "packages/ts/memorax-code-backend/src/memory/reminder-trace-recorder.ts",
+  "packages/ts/memorax-code-backend/src/trace/config.ts",
+  "packages/ts/memorax-code-backend/src/trace/context.ts",
+  "packages/ts/memorax-code-backend/src/trace/store.ts",
 ]);
 
 const providerTransportSources = new Set([
-  "packages/ts/memorax-code-backend/src/memorax-adapter.ts",
-  "packages/ts/memorax-code-backend/src/memorax-http.ts",
+  "packages/ts/memorax-code-backend/src/provider/memorax/adapter.ts",
+  "packages/ts/memorax-code-backend/src/provider/memorax/http.ts",
 ]);
 
 const reviewedTraceAwareOutboundSources = new Set([
   // Reads the current turn only to resolve workspace scope; memory payload
-  // construction remains centralized in memorax-adapter.ts.
-  "packages/ts/memorax-code-backend/src/memory-cli.ts",
+  // construction remains centralized in provider/memorax/adapter.ts.
+  "packages/ts/memorax-code-backend/src/memory/cli.ts",
   // Reads pending task identity and sends only that task ID to the status API.
-  "packages/ts/memorax-code-backend/src/memory-writeback-reconciler.ts",
+  "packages/ts/memorax-code-backend/src/memory/writeback-reconciler.ts",
 ]);
+
+const providerTransportSourcePrefix =
+  "packages/ts/memorax-code-backend/src/provider/memorax/";
+const lifecycleContractsSource =
+  "packages/ts/memorax-code-backend/src/lifecycle/contracts.ts";
+const lifecycleFetchTypeProperty = /^\s*fetch\?:\s*typeof\s+fetch;\s*$/m;
+const nestedProviderTransportImport =
+  /from\s+["'](?:\.\.?\/)+provider\/memorax\/(?:adapter|http)\.js["']/;
+const siblingProviderTransportImport =
+  /from\s+["']\.\/(?:adapter|http)\.js["']/;
 
 const networkCapabilityPatterns = [
   [/\bfetch(?:Impl)?\b/, "fetch"],
   [/\b(?:WebSocket|XMLHttpRequest)\b/, "browser network API"],
   [/node:(?:http|https|http2|net|tls|dgram)\b/, "Node network module"],
   [/(?:^|[^A-Za-z0-9_])(?:curl|wget)(?:[^A-Za-z0-9_]|$)/m, "external network command"],
-  [/from\s+["']\.\/memorax-(?:adapter|http)\.js["']/, "provider transport import"],
 ];
 
 const outboundCapabilityPatterns = [
@@ -88,7 +97,7 @@ const outboundCapabilityPatterns = [
 ];
 
 const localTraceStorageDependency =
-  /(?:from\s+["']\.\/trace-(?:config|store)\.js["']|\bclientTracePaths\b|\bmemoraxCodeHomeForTrace\b)/;
+  /(?:from\s+["'](?:\.\.?\/)+trace\/(?:config|store)\.js["']|\bclientTracePaths\b|\bmemoraxCodeHomeForTrace\b)/;
 
 export async function collectLocalTraceOnlyFailures({
   repoRoot = defaultRepoRoot,
@@ -169,12 +178,19 @@ async function inspectFile(path, displayPath, options) {
 }
 
 function inspectProductionSource(content, sourcePath, failures) {
+  const networkCapabilityContent = sourcePath === lifecycleContractsSource
+    ? content.replace(lifecycleFetchTypeProperty, "")
+    : content;
   const capabilities = networkCapabilityPatterns
-    .filter(([pattern]) => pattern.test(content))
+    .filter(([pattern]) => pattern.test(networkCapabilityContent))
     .map(([, label]) => label);
   const outboundCapabilities = outboundCapabilityPatterns
     .filter(([pattern]) => pattern.test(content))
     .map(([, label]) => label);
+  if (importsProviderTransport(content, sourcePath)) {
+    capabilities.push("provider transport import");
+    outboundCapabilities.push("provider transport import");
+  }
   if (capabilities.length > 0) {
     if (localTraceCoreSources.has(sourcePath)) {
       failures.push(`${sourcePath}: local trace core depends on network capability (${capabilities.join(", ")})`);
@@ -189,6 +205,14 @@ function inspectProductionSource(content, sourcePath, failures) {
   ) {
     failures.push(`${sourcePath}: unreviewed trace-aware outbound bridge`);
   }
+}
+
+function importsProviderTransport(content, sourcePath) {
+  return nestedProviderTransportImport.test(content)
+    || (
+      sourcePath.startsWith(providerTransportSourcePrefix)
+      && siblingProviderTransportImport.test(content)
+    );
 }
 
 async function walk(root, visitor, failures, directory = root) {

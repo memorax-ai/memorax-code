@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createAutomaticMemoryWritebackRuntime } from "../dist/automatic-memory-writeback.js";
+import { createAutomaticMemoryWritebackRuntime } from "../dist/memory/automatic-writeback.js";
 
 const WRITEBACK_ENV = {
   MEMORAX_CODE_MEMORY_WRITEBACK_ENABLED: "true",

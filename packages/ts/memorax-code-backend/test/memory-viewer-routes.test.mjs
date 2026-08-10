@@ -4,13 +4,13 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { resolveMemoryProject } from "../dist/memory-project.js";
-import { authorized, memoryViewerSessionCookieHeader } from "../dist/server-http.js";
-import { handleMemoryViewerRequest } from "../dist/server-memory-viewer.js";
+import { resolveMemoryProject } from "../dist/memory/project.js";
+import { authorized, memoryViewerSessionCookieHeader } from "../dist/transport/http/request.js";
+import { handleMemoryViewerRequest } from "../dist/viewer/http/public-routes.js";
 import {
   clearMemoryViewerEvents,
   recordMemoryViewerEvent,
-} from "../dist/memory-viewer-store.js";
+} from "../dist/viewer/store.js";
 
 test.beforeEach(() => clearMemoryViewerEvents());
 

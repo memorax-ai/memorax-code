@@ -5,7 +5,7 @@ import {
   codexRolloutTurnFromJsonLines,
   readCodexInterruptedRolloutTurn,
   readCodexRolloutTurn,
-} from "../dist/codex-rollout-turn.js";
+} from "../dist/clients/codex/rollout-turn.js";
 
 test("Codex rollout reader selects the exact open turn and preserves prompt and final reply text", () => {
   const transcript = jsonLines([

@@ -4,7 +4,7 @@ import {
   claudeInterruptedTranscriptTurnFromJsonLines,
   claudeTranscriptMemoryActivitiesFromJsonLines,
   claudeTranscriptTurnFromJsonLines,
-} from "../dist/claude-transcript-turn.js";
+} from "../dist/clients/claude/transcript-turn.js";
 
 const SESSION_ID = "session-claude-exact";
 const PROMPT_ID = "prompt-claude-exact";

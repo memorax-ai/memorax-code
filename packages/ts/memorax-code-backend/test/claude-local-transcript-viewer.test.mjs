@@ -6,12 +6,12 @@ import test from "node:test";
 import {
   clearClaudeLocalTranscriptProjections,
   readClaudeLocalTranscriptHistory,
-} from "../dist/claude-local-transcript.js";
+} from "../dist/viewer/history/claude-transcript.js";
 import {
   clearMemoryViewerEvents,
   listMemoryViewerDataWithHistory,
-} from "../dist/memory-viewer-store.js";
-import { projectMemoryViewerUserData } from "../dist/memory-viewer-user-projection.js";
+} from "../dist/viewer/store.js";
+import { projectMemoryViewerUserData } from "../dist/viewer/projection/user.js";
 
 test.beforeEach(() => {
   clearClaudeLocalTranscriptProjections();

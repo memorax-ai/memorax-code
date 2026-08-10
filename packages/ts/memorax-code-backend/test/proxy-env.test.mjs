@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { withLoopbackProxyBypass } from "../dist/proxy-env.js";
+import { withLoopbackProxyBypass } from "../dist/config/proxy-env.js";
 
 test("withLoopbackProxyBypass preserves existing bypasses and adds exact loopback hosts", () => {
   const env = withLoopbackProxyBypass({

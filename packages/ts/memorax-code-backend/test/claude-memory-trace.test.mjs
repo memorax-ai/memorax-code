@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/p
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { loadMemoraxCodeConfig, renderDefaultMemoraxCodeConfig } from "../dist/memorax-code-config.js";
+import { loadMemoraxCodeConfig, renderDefaultMemoraxCodeConfig } from "../dist/config/memorax-code.js";
 import {
   claudeTraceConfigFromEnv,
   claudeTracePaths,
@@ -11,8 +11,8 @@ import {
   clientTracePaths,
   codexTraceConfigFromEnv,
   tracePaths,
-} from "../dist/trace-config.js";
-import { traceContextFromClaudeHookBody } from "../dist/trace-context.js";
+} from "../dist/trace/config.js";
+import { traceContextFromClaudeHookBody } from "../dist/trace/context.js";
 import {
   markCurrentClaudeTurnOutcome,
   markCurrentCodexTurnOutcome,
@@ -25,7 +25,7 @@ import {
   recordTraceEvent,
   writeCurrentClaudeTurn,
   writeCurrentCodexTurn,
-} from "../dist/trace-store.js";
+} from "../dist/trace/store.js";
 
 test("claude trace config defaults to enabled and reads isolated overrides", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-claude-trace-config-"));

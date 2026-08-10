@@ -13,9 +13,9 @@ import {
   startBackendService,
   stopBackendService,
   terminateProcessTree,
-} from "../dist/service.js";
-import { removeBackendServiceStateIfOwnedAtPath } from "../dist/backend-service-record.js";
-import { backendShutdownRequestPath } from "../dist/backend-shutdown-request.js";
+} from "../dist/lifecycle/backend/service.js";
+import { removeBackendServiceStateIfOwnedAtPath } from "../dist/lifecycle/backend/record.js";
+import { backendShutdownRequestPath } from "../dist/lifecycle/backend/shutdown-request.js";
 
 function successfulProcessProbe(commandLine) {
   return { status: "ok", commandLine };

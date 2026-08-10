@@ -18,8 +18,8 @@ import {
   ensurePrivateDirectory,
   writePrivateJsonRecord,
 } from "../../memorax-code-adapter-common/src/runtime-record.mjs";
-import { isAdapterReady } from "../dist/memorax-code-lifecycle.js";
-import { runBackendTokenCommand } from "../dist/server-cli.js";
+import { isAdapterReady } from "../dist/lifecycle/orchestrator.js";
+import { runBackendTokenCommand } from "../dist/entrypoints/backend-cli.js";
 import {
   backendServiceEndpoint,
   readBackendServiceState,
@@ -27,8 +27,8 @@ import {
   startBackendService,
   stopBackendService,
   writeBackendToken,
-} from "../dist/service.js";
-import { runBackendStatus } from "../dist/backend-status.js";
+} from "../dist/lifecycle/backend/service.js";
+import { runBackendStatus } from "../dist/lifecycle/backend/status.js";
 import { freePort } from "./helpers.mjs";
 
 test("automatic Backend recovery only targets loopback lifecycle endpoints", () => {

@@ -6,12 +6,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { backendEnv } from "../dist/backend-env.js";
+import { backendEnv } from "../dist/config/backend-env.js";
 import {
   createBackendState,
   memoryViewerClaudeProjectsRootFromEnv,
-} from "../dist/backend-state.js";
-import { startBackendInstallWatchdog } from "../dist/install-watchdog.js";
+} from "../dist/app/state.js";
+import { startBackendInstallWatchdog } from "../dist/lifecycle/install-watchdog.js";
 import { createBackendServer } from "../dist/server.js";
 import { listen } from "./helpers.mjs";
 

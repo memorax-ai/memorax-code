@@ -7,7 +7,7 @@ import {
   backendShutdownRequestPath,
   startBackendShutdownRequestWatcher,
   writeBackendShutdownRequest,
-} from "../dist/backend-shutdown-request.js";
+} from "../dist/lifecycle/backend/shutdown-request.js";
 
 test("shutdown request watcher ignores stale instances and consumes the current instance", async () => {
   const memoraxCodeHome = await mkdtemp(join(tmpdir(), "memorax-code-backend-shutdown-request-"));

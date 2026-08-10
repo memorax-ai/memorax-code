@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { isRecord } from "../dist/utils.js";
+import { isRecord } from "../dist/shared/record.js";
 
 test("isRecord accepts plain records and rejects arrays or nullish values", () => {
   assert.equal(isRecord({ key: "value" }), true);

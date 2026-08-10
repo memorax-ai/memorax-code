@@ -7,7 +7,7 @@ import {
   clearIncrementalJsonlProjections,
   readIncrementalJsonlProjection,
   readIncrementalJsonlProjectionSnapshot,
-} from "../dist/incremental-jsonl-projection.js";
+} from "../dist/shared/incremental-jsonl-projection.js";
 
 test.beforeEach(() => clearIncrementalJsonlProjections());
 

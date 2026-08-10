@@ -4,9 +4,9 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { createBackendState } from "../dist/backend-state.js";
-import { retrieveAutomaticMemoryContext } from "../dist/automatic-memory-retrieval.js";
-import { memoraxConfigFromEnv } from "../dist/memorax-config.js";
+import { createBackendState } from "../dist/app/state.js";
+import { retrieveAutomaticMemoryContext } from "../dist/memory/automatic-retrieval.js";
+import { memoraxConfigFromEnv } from "../dist/provider/memorax/config.js";
 import { createBackendServer } from "../dist/server.js";
 import { listen } from "./helpers.mjs";
 

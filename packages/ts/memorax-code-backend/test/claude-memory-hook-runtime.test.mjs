@@ -3,9 +3,9 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { createClaudeMemoryHookRuntime } from "../dist/claude-memory-hook-runtime.js";
-import { claudeTracePaths } from "../dist/trace-config.js";
-import { readOpenClaudeTurn } from "../dist/trace-store.js";
+import { createClaudeMemoryHookRuntime } from "../dist/clients/claude/memory-hook-runtime.js";
+import { claudeTracePaths } from "../dist/trace/config.js";
+import { readOpenClaudeTurn } from "../dist/trace/store.js";
 
 const SESSION_ID = "session-claude-hook";
 const PROMPT_ID = "prompt-claude-hook";

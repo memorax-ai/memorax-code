@@ -3,8 +3,8 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { createCodexMemoryHookRuntime } from "../dist/codex-memory-hook-runtime.js";
-import { tracePaths } from "../dist/trace-config.js";
+import { createCodexMemoryHookRuntime } from "../dist/clients/codex/memory-hook-runtime.js";
+import { tracePaths } from "../dist/trace/config.js";
 
 test("memory hook trace records the Codex session turn index at start and end", async () => {
   const memoraxCodeHome = await mkdtemp(join(tmpdir(), "memorax-code-hook-turn-index-"));

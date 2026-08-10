@@ -1,4 +1,4 @@
-import { runBackendCli } from "./server-cli.js";
+import { runBackendCli } from "./entrypoints/backend-cli.js";
 
 const markerIndex = process.argv.indexOf("--memorax-code-backend-instance");
 const instanceId = markerIndex >= 0 ? process.argv[markerIndex + 1] : undefined;

@@ -4,10 +4,10 @@ import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { createBackendState } from "../dist/backend-state.js";
+import { createBackendState } from "../dist/app/state.js";
 import { createBackendServer } from "../dist/server.js";
-import { createCodexMemoryHookRuntime } from "../dist/codex-memory-hook-runtime.js";
-import { clientTracePaths, tracePaths } from "../dist/trace-config.js";
+import { createCodexMemoryHookRuntime } from "../dist/clients/codex/memory-hook-runtime.js";
+import { clientTracePaths, tracePaths } from "../dist/trace/config.js";
 import { listen } from "./helpers.mjs";
 
 const TEST_WORKSPACE = fileURLToPath(new URL("..", import.meta.url));

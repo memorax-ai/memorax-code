@@ -11,7 +11,7 @@ import {
   isCodexPluginActive,
   isCodexPluginStaged,
   removeCodexPlugin,
-} from "../dist/codex-plugin-install.js";
+} from "../dist/clients/codex/plugin-install.js";
 
 const cliPath = fileURLToPath(new URL("../dist/memorax-code.js", import.meta.url));
 const bundledCodexManifestPath = fileURLToPath(new URL(

@@ -7,12 +7,12 @@ import {
   clearActiveManagedClients,
   readActiveManagedClients,
   writeActiveManagedClients,
-} from "../dist/active-client-selection.js";
+} from "../dist/lifecycle/active-clients.js";
 import {
   loadManagedClientsConfig,
   parseManagedClients,
   resolveManagedClients,
-} from "../dist/client-selection.js";
+} from "../dist/lifecycle/client-selection.js";
 
 test("managed clients default to both integrations", () => {
   assert.deepEqual(resolveManagedClients([], {}), { codex: true, claude: true });

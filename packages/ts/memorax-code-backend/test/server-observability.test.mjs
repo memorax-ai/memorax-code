@@ -6,13 +6,13 @@ import { test } from "node:test";
 import {
   composeMemoryObservabilityHooks,
   createBackendMemoryObservability,
-} from "../dist/server-observability.js";
-import { claudeTracePaths, tracePaths } from "../dist/trace-config.js";
+} from "../dist/app/memory-observability.js";
+import { claudeTracePaths, tracePaths } from "../dist/trace/config.js";
 import {
   clearMemoryViewerEvents,
   listMemoryViewerEvents,
   listMemoryViewerEventsWithHistory,
-} from "../dist/memory-viewer-store.js";
+} from "../dist/viewer/store.js";
 
 test("createBackendMemoryObservability preserves an existing memory hook", () => {
   const existingHook = { recordEvent() {} };

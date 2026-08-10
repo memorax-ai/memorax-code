@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   stripCodexPreambleSegments,
-} from "../dist/codex-effective-prompt.js";
+} from "../dist/clients/codex/effective-prompt.js";
 
 const AGENTS_BLOCK = [
   "# AGENTS.md instructions for /repo",

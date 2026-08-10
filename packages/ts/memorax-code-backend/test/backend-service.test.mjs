@@ -6,14 +6,14 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { createBackendState } from "../dist/backend-state.js";
-import { runBackendStatus } from "../dist/backend-status.js";
+import { createBackendState } from "../dist/app/state.js";
+import { runBackendStatus } from "../dist/lifecycle/backend/status.js";
 import { createBackendServer } from "../dist/server.js";
-import { renderDefaultMemoraxCodeConfig } from "../dist/memorax-code-config.js";
-import { backendServiceLogs, isProcessAlive, readBackendToken, startBackendService, stopBackendService, terminateProcessTree, writeBackendToken } from "../dist/service.js";
+import { renderDefaultMemoraxCodeConfig } from "../dist/config/memorax-code.js";
+import { backendServiceLogs, isProcessAlive, readBackendToken, startBackendService, stopBackendService, terminateProcessTree, writeBackendToken } from "../dist/lifecycle/backend/service.js";
 import { buildClaudeMarketplace } from "../../memorax-code-claude-adapter/scripts/build-marketplace.mjs";
 import { fetchStreamUntil, freePort, listen, readStreamUntil } from "./helpers.mjs";
-import { writeActiveManagedClients } from "../dist/active-client-selection.js";
+import { writeActiveManagedClients } from "../dist/lifecycle/active-clients.js";
 
 async function prepareActiveCodexPlugin(codexHome, skillNames = ["memorax-code"]) {
   const pluginRoot = join(
