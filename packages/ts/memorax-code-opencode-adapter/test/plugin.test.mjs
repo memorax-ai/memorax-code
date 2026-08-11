@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { test } from "node:test";
 import { createMemoraxOpenCodePlugin } from "../src/plugin.mjs";
+import { OPENCODE_REPO_MEMORY_AGENT } from "../src/repo-memory-server-runner.mjs";
 
 test("chat.message retrieves memory and injects it into the system prompt", async () => {
   const requests = [];
@@ -174,6 +175,56 @@ test("chat.message ignores compaction and synthetic-only messages", async () => 
   );
 
   assert.equal(requests.length, 0);
+});
+
+test("the managed Repo Memory agent is isolated from normal prompt handling", async () => {
+  const requests = [];
+  let reminderCalls = 0;
+  const plugin = createMemoraxOpenCodePlugin({
+    backendConnection: { url: "http://127.0.0.1:8787" },
+    fetchImpl: responseSequence(requests, []),
+    memorySkillReminderEvaluator: async () => {
+      reminderCalls += 1;
+      return { additionalContext: "must not be injected" };
+    },
+  });
+  const hooks = await plugin(pluginInput());
+  const output = promptOutput("repo-memory-user", "Maintain Repo Memory");
+
+  await hooks["chat.message"]({
+    sessionID: "repo-memory-session",
+    agent: OPENCODE_REPO_MEMORY_AGENT,
+  }, output);
+
+  assert.equal(reminderCalls, 0);
+  assert.equal(requests.length, 0);
+  assert.equal(output.message.system, undefined);
+});
+
+test("config registers the managed Repo Memory agent without replacing other agents", async () => {
+  const plugin = createPluginWithoutReminders();
+  const hooks = await plugin(pluginInput());
+  const config = {
+    agent: {
+      existing: { description: "Keep me." },
+      [OPENCODE_REPO_MEMORY_AGENT]: { permission: { edit: "deny" } },
+    },
+  };
+
+  await hooks.config(config);
+
+  assert.deepEqual(config.agent.existing, { description: "Keep me." });
+  assert.deepEqual(config.agent[OPENCODE_REPO_MEMORY_AGENT], {
+    description: "Managed MemoraX Code Repo Memory maintenance agent.",
+    mode: "subagent",
+    permission: {
+      edit: "allow",
+      bash: "allow",
+      webfetch: "allow",
+      doom_loop: "allow",
+      external_directory: "allow",
+    },
+  });
 });
 
 test("chat.message reuses shared reminder cadence and personal memory contexts", async () => {
@@ -346,6 +397,7 @@ test("shell.env overwrites the OpenCode session identity and prepends the manage
       MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT: "codex",
       MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID: "old-session",
       MEMORAX_CODE_MEMORY_CLI_SESSION_ID: "old-session",
+      MEMORAX_CODE_OPENCODE_SERVER_URL: "http://127.0.0.1:1/",
       PATH: ["/usr/bin", "/bin"].join(delimiter),
     },
   };
@@ -355,6 +407,7 @@ test("shell.env overwrites the OpenCode session identity and prepends the manage
   assert.equal(output.env.MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT, "opencode");
   assert.equal(output.env.MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID, "session-2");
   assert.equal(output.env.MEMORAX_CODE_MEMORY_CLI_SESSION_ID, "session-2");
+  assert.equal(output.env.MEMORAX_CODE_OPENCODE_SERVER_URL, "http://127.0.0.1:4096/");
   assert.equal(output.env.PATH, [cliBinDir, "/usr/bin", "/bin"].join(delimiter));
 });
 
@@ -507,6 +560,7 @@ function pluginInput(overrides = {}) {
     project: { vcs: "git" },
     directory: "/repo/directory",
     worktree: "/repo/worktree",
+    serverUrl: new URL("http://127.0.0.1:4096"),
     ...overrides,
   };
 }

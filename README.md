@@ -128,16 +128,17 @@ the current repository.
 
 OpenCode support covers the shared skill, explicit Search and Add, automatic
 retrieval when enabled, completed-turn writeback, periodic Skill reminders,
-and User Profile and Procedure Memory guidance. Background Repo Memory
-maintenance is not currently part of the OpenCode integration; active Repo
-Memory operations through the skill remain available.
+and User Profile and Procedure Memory guidance. A repo-read can maintain Repo
+Memory in the background according to policy. Unlike Codex and Claude Code,
+OpenCode does not yet initialize a missing bundle automatically on the first
+prompt.
 
 | Capability | What it does |
 | --- | --- |
 | **Background memory writeback** | Extracts reusable knowledge from completed turns and writes it to Coding Memory in the background. |
 | **Preference continuity** | Records User Profile preferences and injects them into future tasks on a configured cadence. |
 | **Procedure reuse** | Records reusable task procedures and reminds future agents to apply them. |
-| **Background Repo Memory maintenance** | In Codex and Claude Code, automatically organizes repository structure, entry points, and history evidence in the background, then updates them according to policy. |
+| **Background Repo Memory maintenance** | Maintains repository structure, entry points, and history evidence in the background when Repo Memory is read. Codex and Claude Code also initialize a missing bundle on the first eligible prompt. |
 | **Active memory control** | Lets you search and add memory through the bundled MemoraX Code skill or the CLI. |
 | **Client integration** | Uses Codex and Claude Code Hooks or OpenCode plugin events to trigger supported retrieval and writeback flows. |
 | **Local visualization** | Uses the local Memory Viewer to summarize activity counts, retrieval, and writeback status. |

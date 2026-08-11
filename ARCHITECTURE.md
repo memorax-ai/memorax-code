@@ -94,7 +94,7 @@ relationships; the arrow labels distinguish them. It is not an import graph.
 | `packages/ts/memorax-code-adapter-common` | Shared source for Backend connection authority, private runtime records, cross-process locking and configuration, Hook generations, Hook launch helpers, and Repo/Personal Memory helpers | Backend composition, native transcript interpretation, MemoraX request execution, or client plugin policy | `packages/ts/memorax-code-adapter-common/src/backend-connection.mjs`, `src/runtime-record.mjs`, `src/hooks`, and `src/repo-memory` |
 | `packages/ts/memorax-code-codex-adapter` | Codex plugin artifact, Hook shells and runtimes, session/workspace observation, diagnostics, and the canonical shared skill | Codex rollout semantics or Backend-side writeback authority | `.codex-plugin`, `hooks`, `runtime-hooks`, `src`, and `skills/memorax-code` |
 | `packages/ts/memorax-code-claude-adapter` | Claude Code plugin artifact, Hook shells and runtimes, configuration, installer, marketplace source, and diagnostics | Claude transcript semantics or Backend memory orchestration | `.claude-plugin`, `hooks`, `runtime-hooks`, `scripts`, and `src/plugin-install.mjs` |
-| `packages/ts/memorax-code-opencode-adapter` | OpenCode plugin runtime, managed thin-loader installation, SDK message retrieval, shell-session identity, and a materialized shared skill | OpenCode message interpretation inside the Backend, model-provider configuration, or background Repo Memory maintenance | `src/plugin.mjs`, `src/plugin-install.mjs`, and the OpenCode materialization mapping in `scripts/npm-source-files.mjs` |
+| `packages/ts/memorax-code-opencode-adapter` | OpenCode plugin runtime, managed thin-loader installation, SDK message retrieval, shell-session identity, a materialized shared skill, and supervised repo-read maintenance | OpenCode message interpretation inside the Backend or model-provider configuration | `src/plugin.mjs`, `src/plugin-install.mjs`, and the OpenCode materialization mapping in `scripts/npm-source-files.mjs` |
 | `packages/npm/memorax-code` | Installed executable wrappers, update, preinstall/postinstall, npm manifest, and release-package source | Backend lifecycle semantics, uninstall orchestration, or artifact staging | `bin`, `lib/run-entrypoint.mjs`, and `package.json` |
 | `scripts` | Backend build orchestration, staging/materialization, package layout, documentation, and local-only data gates | Product runtime authority | Package-build/check scripts and executable contract scripts |
 | `.github` | Issue and pull-request contribution templates | Product runtime behavior | `.github/ISSUE_TEMPLATE` and `.github/pull_request_template.md` |
@@ -326,16 +326,19 @@ sequenceDiagram
 ### 3.5 Repo Memory coordination
 
 Repo Memory is repository-local guidance under `.repo_memory`, not a MemoraX
-provider response. A turn-start result exposes a worktree to maintenance-aware
-adapter Hooks only for a verified Git scope; the Viewer separately projects
-Repo Memory readiness. Those Hooks may schedule a missing bundle build using
-adapter-common supervision, locking, and job-policy helpers. They must use the
-Backend-resolved worktree rather than an arbitrary Hook `cwd`.
+provider response. In Codex and Claude Code, a turn-start result exposes a
+worktree to maintenance-aware adapter Hooks only for a verified Git scope; the
+Viewer separately projects Repo Memory readiness. Those Hooks may schedule a
+missing bundle build using adapter-common supervision, locking, and job-policy
+helpers. They must use the Backend-resolved worktree rather than an arbitrary
+Hook `cwd`.
 
-OpenCode supports active Repo Memory operations through the shared skill, but
-its plugin does not own supervised background Repo Memory maintenance. Its
-automatic runtime contract covers prompt retrieval, shared reminder injection,
-and completed-turn writeback.
+A relevant repo-read can invoke supervised maintenance in all three clients.
+The runner validates the bundle and selects a background build, update, or
+no-op according to policy. OpenCode supports this on-demand path through the
+shared skill, but does not yet initialize a missing bundle automatically on the
+first prompt. Its automatic plugin runtime otherwise covers prompt retrieval,
+shared reminder injection, and completed-turn writeback.
 
 ## 4. Backend Modular Monolith
 

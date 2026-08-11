@@ -52,6 +52,7 @@ const reviewedNetworkSources = new Set([
   "packages/ts/memorax-code-codex-adapter/src/cli.mjs",
   "packages/ts/memorax-code-codex-adapter/skills/memorax-code/scripts/detect_updates.py",
   "packages/ts/memorax-code-opencode-adapter/src/plugin.mjs",
+  "packages/ts/memorax-code-opencode-adapter/src/repo-memory-server-runner.mjs",
 ]);
 
 const localTraceCoreSources = new Set([

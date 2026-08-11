@@ -24,6 +24,10 @@ export function openCodeSkillPath(configDir = defaultOpenCodeConfigDir()) {
   return join(configDir, "skills", "memorax-code");
 }
 
+export function openCodeRepoMemoryHelperPath(configDir = defaultOpenCodeConfigDir()) {
+  return join(configDir, "hooks", "repo-memory-job.mjs");
+}
+
 function stringOption(value) {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }

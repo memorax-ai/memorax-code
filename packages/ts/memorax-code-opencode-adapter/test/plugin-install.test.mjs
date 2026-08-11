@@ -1,4 +1,5 @@
 import { strict as assert } from "node:assert";
+import { spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -59,16 +60,35 @@ test("OpenCode plugin install materializes a managed loader, canonical skill, an
     assert.match(loader, new RegExp(escapeRegex(`"openCodeConfigDir":${JSON.stringify(fixture.openCodeConfigDir)}`)));
     assert.match(loader, new RegExp(escapeRegex(`"memoraxCodeCommand":${JSON.stringify(fixture.memoraxCodeCommand)}`)));
     assert.match(loader, /"cliBinDir":"\/managed\/bin"/);
+    const repoMemoryHelperLoader = await readFile(installed.repoMemoryHelperPath, "utf8");
+    assert.match(repoMemoryHelperLoader, /^\/\/ Managed by MemoraX Code/);
+    assert.match(
+      repoMemoryHelperLoader,
+      new RegExp(escapeRegex(JSON.stringify(pathToFileURL(fixture.repoMemoryHelperSourcePath).href))),
+    );
+    assert.doesNotMatch(repoMemoryHelperLoader, /process\.argv/);
+    const helperRun = spawnSync(
+      process.execPath,
+      [installed.repoMemoryHelperPath, "maintain", "--repo", fixture.root],
+      { encoding: "utf8" },
+    );
+    assert.equal(helperRun.status, 0, helperRun.stderr);
+    assert.deepEqual(JSON.parse(helperRun.stdout), ["maintain", "--repo", fixture.root]);
     assert.equal(await readFile(join(installed.skillPath, "SKILL.md"), "utf8"), "# MemoraX Code\n");
     assert.equal(await readFile(join(installed.skillPath, "references", "search.md"), "utf8"), "search\n");
     const state = JSON.parse(await readFile(installed.statePath, "utf8"));
     assert.equal(state.runtime, "opencode");
     assert.equal(state.openCodeConfigDir, fixture.openCodeConfigDir);
+    assert.equal(state.repoMemoryHelperPath, installed.repoMemoryHelperPath);
+    assert.equal(state.repoMemoryHelperSourcePath, fixture.repoMemoryHelperSourcePath);
+    assert.match(state.repoMemoryHelperSourceSha256, /^[a-f0-9]{64}$/);
 
     const status = readOpenCodePluginStatus(fixture.options);
     assert.equal(status.ok, true);
     assert.equal(status.installed, true);
     assert.equal(status.current, true);
+    assert.equal(status.repoMemoryHelperExists, true);
+    assert.equal(status.repoMemoryHelperCurrent, true);
 
     const unchanged = ensureOpenCodePluginInstalled(fixture.options);
     assert.equal(unchanged.ok, true);
@@ -81,6 +101,87 @@ test("OpenCode plugin install materializes a managed loader, canonical skill, an
     assert.equal(updated.changed, true);
     assert.equal(updated.restartRequired, true);
     assert.match(await readFile(updated.pluginPath, "utf8"), /Plugin source SHA-256: [a-f0-9]{64}/);
+
+    await writeFile(
+      fixture.repoMemoryHelperSourcePath,
+      "process.stdout.write(JSON.stringify(['updated', ...process.argv.slice(2)]));\n",
+    );
+    assert.equal(readOpenCodePluginStatus(fixture.options).repoMemoryHelperCurrent, false);
+    const helperUpdated = ensureOpenCodePluginInstalled(fixture.options);
+    assert.equal(helperUpdated.changed, true);
+    assert.equal(helperUpdated.restartRequired, false);
+    assert.match(
+      await readFile(helperUpdated.repoMemoryHelperPath, "utf8"),
+      /Repo Memory helper source SHA-256: [a-f0-9]{64}/,
+    );
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("OpenCode plugin install refuses to overwrite an unmanaged Repo Memory helper", async () => {
+  const fixture = await createFixture("helper-conflict");
+  const helperPath = join(fixture.openCodeConfigDir, "hooks", "repo-memory-job.mjs");
+  try {
+    await mkdir(join(fixture.openCodeConfigDir, "hooks"), { recursive: true });
+    await writeFile(helperPath, "console.log('user helper');\n");
+
+    const result = ensureOpenCodePluginInstalled(fixture.options);
+
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, "repo_memory_helper_conflict");
+    assert.equal(result.conflictPath, helperPath);
+    assert.equal(await readFile(helperPath, "utf8"), "console.log('user helper');\n");
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("OpenCode plugin install upgrades a legacy v1 state with the managed helper", async () => {
+  const fixture = await createFixture("legacy-state");
+  try {
+    const installed = ensureOpenCodePluginInstalled(fixture.options);
+    const legacyState = JSON.parse(await readFile(installed.statePath, "utf8"));
+    delete legacyState.repoMemoryHelperPath;
+    delete legacyState.repoMemoryHelperSourcePath;
+    delete legacyState.repoMemoryHelperSourceSha256;
+    await writeFile(installed.statePath, `${JSON.stringify(legacyState)}\n`);
+    await rm(installed.repoMemoryHelperPath);
+
+    const legacyStatus = readOpenCodePluginStatus(fixture.options);
+    assert.equal(legacyStatus.ok, true);
+    assert.equal(legacyStatus.installed, false);
+    assert.equal(legacyStatus.reason, "repo_memory_helper_missing");
+
+    const upgraded = ensureOpenCodePluginInstalled(fixture.options);
+    assert.equal(upgraded.ok, true);
+    assert.equal(upgraded.changed, true);
+    assert.equal(upgraded.restartRequired, false);
+    assert.equal(readOpenCodePluginStatus(fixture.options).current, true);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("OpenCode plugin path migration moves the recorded managed helper", async () => {
+  const fixture = await createFixture("path-migration");
+  try {
+    const installed = ensureOpenCodePluginInstalled(fixture.options);
+    const migratedConfigDir = join(fixture.root, "Migrated OpenCode Config");
+
+    const migrated = ensureOpenCodePluginInstalled({
+      ...fixture.options,
+      openCodeConfigDir: migratedConfigDir,
+    });
+
+    assert.equal(migrated.ok, true);
+    assert.equal(migrated.changed, true);
+    await assert.rejects(readFile(installed.repoMemoryHelperPath), /ENOENT/);
+    assert.match(await readFile(migrated.repoMemoryHelperPath, "utf8"), /^\/\/ Managed by MemoraX Code/);
+    assert.equal(
+      readOpenCodePluginStatus({ ...fixture.options, openCodeConfigDir: migratedConfigDir }).current,
+      true,
+    );
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
   }
@@ -118,6 +219,10 @@ test("OpenCode plugin removal deletes only the recorded managed artifacts", asyn
     assert.equal(disabledStatus.ok, true);
     assert.equal(disabledStatus.reason, "not_enabled");
     assert.match(await readFile(installed.pluginPath, "utf8"), /^\/\/ Managed by MemoraX Code/);
+    assert.match(
+      await readFile(installed.repoMemoryHelperPath, "utf8"),
+      /^\/\/ Managed by MemoraX Code/,
+    );
 
     const removed = removeOpenCodePluginInstallation(fixture.options);
 
@@ -125,8 +230,30 @@ test("OpenCode plugin removal deletes only the recorded managed artifacts", asyn
     assert.equal(await readFile(unrelatedConfig, "utf8"), "{ // user config\n}\n");
     await assert.rejects(readFile(installed.pluginPath), /ENOENT/);
     await assert.rejects(readFile(join(installed.skillPath, "SKILL.md")), /ENOENT/);
+    await assert.rejects(readFile(installed.repoMemoryHelperPath), /ENOENT/);
     await assert.rejects(readFile(installed.statePath), /ENOENT/);
     assert.equal(readOpenCodePluginStatus(fixture.options).managed, false);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("OpenCode plugin removal preserves all artifacts when the recorded helper is unmanaged", async () => {
+  const fixture = await createFixture("unmanaged-helper-removal");
+  try {
+    const installed = ensureOpenCodePluginInstalled(fixture.options);
+    await writeFile(installed.repoMemoryHelperPath, "console.log('replacement');\n");
+
+    const removed = removeOpenCodePluginInstallation(fixture.options);
+
+    assert.equal(removed.ok, false);
+    assert.equal(removed.reason, "repo_memory_helper_not_managed");
+    assert.match(await readFile(installed.pluginPath, "utf8"), /^\/\/ Managed by MemoraX Code/);
+    assert.equal(
+      await readFile(installed.repoMemoryHelperPath, "utf8"),
+      "console.log('replacement');\n",
+    );
+    assert.equal(JSON.parse(await readFile(installed.statePath, "utf8")).enabled, true);
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
   }
@@ -165,12 +292,23 @@ async function createFixture(name) {
   const openCodeConfigDir = join(root, "OpenCode Config With Spaces");
   const memoraxCodeHome = join(root, "memorax-code");
   const pluginSourcePath = join(root, "Adapter With Spaces", "plugin.mjs");
+  const repoMemoryHelperSourcePath = join(
+    root,
+    "Adapter With Spaces",
+    "hooks",
+    "repo-memory-job.mjs",
+  );
   const memoraxCodeCommand = join(root, "Package With Spaces", "bin", "memorax-code.mjs");
   const skillSourcePath = join(root, "canonical-skill");
   await mkdir(join(skillSourcePath, "references"), { recursive: true });
   await mkdir(join(root, "Adapter With Spaces"), { recursive: true });
+  await mkdir(join(root, "Adapter With Spaces", "hooks"), { recursive: true });
   await mkdir(join(root, "Package With Spaces", "bin"), { recursive: true });
   await writeFile(pluginSourcePath, "export function createMemoraxOpenCodePlugin() {}\n");
+  await writeFile(
+    repoMemoryHelperSourcePath,
+    "process.stdout.write(JSON.stringify(process.argv.slice(2)));\n",
+  );
   await writeFile(memoraxCodeCommand, "#!/usr/bin/env node\n");
   await writeFile(join(skillSourcePath, "SKILL.md"), "# MemoraX Code\n");
   await writeFile(join(skillSourcePath, "references", "search.md"), "search\n");
@@ -179,10 +317,12 @@ async function createFixture(name) {
     openCodeConfigDir,
     memoraxCodeCommand,
     pluginSourcePath,
+    repoMemoryHelperSourcePath,
     options: {
       openCodeConfigDir,
       memoraxCodeHome,
       pluginSourcePath,
+      repoMemoryHelperSourcePath,
       skillSourcePath,
       memoraxCodeCommand,
       cliBinDir: "/managed/bin",

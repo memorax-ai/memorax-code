@@ -153,6 +153,8 @@ for relative in [
     "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/skills/memorax-code/SKILL.md",
     "lib/memorax-code-opencode-adapter/src/plugin.mjs",
     "lib/memorax-code-opencode-adapter/src/plugin-install.mjs",
+    "lib/memorax-code-opencode-adapter/src/repo-memory-server-runner.mjs",
+    "lib/memorax-code-opencode-adapter/hooks/repo-memory-job.mjs",
     "lib/memorax-code-opencode-adapter/skills/memorax-code/SKILL.md",
     "lib/memorax-code-backend/dist/service-entrypoint.js",
     "lib/memorax-code-backend/dist/memorax-cli.js",
@@ -320,6 +322,8 @@ for relative in \
   lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/skills/memorax-code/SKILL.md \
   lib/memorax-code-opencode-adapter/src/plugin.mjs \
   lib/memorax-code-opencode-adapter/src/plugin-install.mjs \
+  lib/memorax-code-opencode-adapter/src/repo-memory-server-runner.mjs \
+  lib/memorax-code-opencode-adapter/hooks/repo-memory-job.mjs \
   lib/memorax-code-opencode-adapter/skills/memorax-code/SKILL.md
 do
   test -f "$package_install_root/$relative"
@@ -378,8 +382,10 @@ assert current_path.stat().st_mode & 0o777 == 0o600
 opencode_config = Path(sys.argv[1]) / ".config" / "opencode-memorax-code-package-check"
 assert (opencode_config / "plugins" / "memorax-code.js").is_file()
 assert (opencode_config / "skills" / "memorax-code" / "SKILL.md").is_file()
+assert (opencode_config / "hooks" / "repo-memory-job.mjs").is_file()
 opencode_state = json.loads((home / ".memorax-code" / "adapters" / "opencode" / "state.json").read_text())
 assert opencode_state["enabled"] is True
+assert Path(opencode_state["repoMemoryHelperPath"]) == opencode_config / "hooks" / "repo-memory-job.mjs"
 PY_POSTINSTALL
 
 "$prefix/bin/memorax-code" stop \

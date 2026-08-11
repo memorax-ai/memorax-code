@@ -213,10 +213,11 @@ only when the Backend has authorized a Git worktree and that worktree has no
 unavailable, the Hook skips the initial build instead of falling back to its
 local `cwd`.
 
-OpenCode supports active Repo Memory operations through the installed skill,
-but its plugin does not currently run background Repo Memory maintenance. Its
-automatic integration covers retrieval, shared reminder and personal-memory
-context injection, and completed-turn writeback.
+OpenCode runs supervised background maintenance when the installed skill
+selects repo-read. The configured policy may select a build, update, or no-op.
+OpenCode does not yet initialize a missing bundle automatically on the first
+prompt. Its automatic integration otherwise covers retrieval, shared reminder
+and personal-memory context injection, and completed-turn writeback.
 
 ## Local traces
 
