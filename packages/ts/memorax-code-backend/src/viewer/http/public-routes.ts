@@ -46,7 +46,7 @@ export async function handleMemoryViewerRequest(
 ): Promise<boolean> {
   if (req.method === "GET" && url.pathname === "/memory-viewer") {
     if (!memoryViewerUserClient(url)) {
-      json(res, 400, { ok: false, error: "client must be codex or claude-code" });
+      json(res, 400, { ok: false, error: "client must be codex, claude-code, or opencode" });
       return true;
     }
     res.writeHead(200, {
@@ -85,7 +85,7 @@ export async function handleMemoryViewerRequest(
   const memoraxCodeHome = viewerMemoraxCodeHome(options);
   const selectedClient = memoryViewerUserClient(url);
   if (!selectedClient) {
-    json(res, 400, { ok: false, error: "client must be codex or claude-code" });
+    json(res, 400, { ok: false, error: "client must be codex, claude-code, or opencode" });
     return true;
   }
   const requestedProject = projectFilter(url);
@@ -115,7 +115,7 @@ export async function handleMemoryViewerRequest(
   conditionalViewerJson(req, res, {
     ok: true,
     selectedClient: selectedClient.publicClient,
-    availableClients: ["codex", "claude-code"],
+    availableClients: ["codex", "claude-code", "opencode"],
     summary: projection.summary,
     activities: projection.activities.slice(0, 100),
     projects,
@@ -134,17 +134,17 @@ function viewerMemoraxCodeHome(
 
 function memoryViewerUserClient(url: URL): {
   traceClient: TraceClient;
-  publicClient: "codex" | "claude-code";
+  publicClient: "codex" | "claude-code" | "opencode";
 } | undefined {
   const value = url.searchParams.get("client");
   const traceClient = value === null ? "codex" : traceClientFromPublicValue(value.trim().toLowerCase());
   return traceClient
-    ? { traceClient, publicClient: traceClient === "claude" ? "claude-code" : "codex" }
+    ? { traceClient, publicClient: traceClient === "claude" ? "claude-code" : traceClient }
     : undefined;
 }
 
 function traceClientFromPublicValue(value: unknown): TraceClient | undefined {
-  if (value === "codex") return "codex";
+  if (value === "codex" || value === "opencode") return value;
   return value === "claude" || value === "claude-code" || value === "cc"
     ? "claude"
     : undefined;
