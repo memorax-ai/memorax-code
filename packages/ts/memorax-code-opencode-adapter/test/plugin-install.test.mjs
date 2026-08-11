@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 import { test } from "node:test";
 import { defaultOpenCodeConfigDir } from "../src/adapter-paths.mjs";
 import {
+  defaultMemoraxCodeCommand,
   defaultOpenCodeCliBinDir,
   disableOpenCodePlugin,
   ensureOpenCodePluginInstalled,
@@ -31,10 +32,14 @@ test("OpenCode CLI path discovery recognizes the staged npm package layout", asy
     const packageRoot = join(root, "prefix", "lib", "node_modules", "@memorax", "memorax-code");
     const adapterRoot = join(packageRoot, "lib", "memorax-code-opencode-adapter");
     const commandBin = join(root, "prefix", "bin");
+    const lifecycleCommand = join(packageRoot, "bin", "memorax-code.mjs");
     await mkdir(adapterRoot, { recursive: true });
     await mkdir(commandBin, { recursive: true });
+    await mkdir(join(packageRoot, "bin"), { recursive: true });
     await writeFile(join(commandBin, "memorax-cli"), "#!/bin/sh\n");
+    await writeFile(lifecycleCommand, "#!/usr/bin/env node\n");
     assert.equal(defaultOpenCodeCliBinDir(adapterRoot), commandBin);
+    assert.equal(defaultMemoraxCodeCommand(adapterRoot), lifecycleCommand);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -51,6 +56,8 @@ test("OpenCode plugin install materializes a managed loader, canonical skill, an
     assert.match(loader, /^\/\/ Managed by MemoraX Code/);
     assert.match(loader, new RegExp(escapeRegex(JSON.stringify(pathToFileURL(fixture.pluginSourcePath).href))));
     assert.match(loader, new RegExp(escapeRegex(`"memoraxCodeHome":${JSON.stringify(fixture.options.memoraxCodeHome)}`)));
+    assert.match(loader, new RegExp(escapeRegex(`"openCodeConfigDir":${JSON.stringify(fixture.openCodeConfigDir)}`)));
+    assert.match(loader, new RegExp(escapeRegex(`"memoraxCodeCommand":${JSON.stringify(fixture.memoraxCodeCommand)}`)));
     assert.match(loader, /"cliBinDir":"\/managed\/bin"/);
     assert.equal(await readFile(join(installed.skillPath, "SKILL.md"), "utf8"), "# MemoraX Code\n");
     assert.equal(await readFile(join(installed.skillPath, "references", "search.md"), "utf8"), "search\n");
@@ -158,21 +165,26 @@ async function createFixture(name) {
   const openCodeConfigDir = join(root, "OpenCode Config With Spaces");
   const memoraxCodeHome = join(root, "memorax-code");
   const pluginSourcePath = join(root, "Adapter With Spaces", "plugin.mjs");
+  const memoraxCodeCommand = join(root, "Package With Spaces", "bin", "memorax-code.mjs");
   const skillSourcePath = join(root, "canonical-skill");
   await mkdir(join(skillSourcePath, "references"), { recursive: true });
   await mkdir(join(root, "Adapter With Spaces"), { recursive: true });
+  await mkdir(join(root, "Package With Spaces", "bin"), { recursive: true });
   await writeFile(pluginSourcePath, "export function createMemoraxOpenCodePlugin() {}\n");
+  await writeFile(memoraxCodeCommand, "#!/usr/bin/env node\n");
   await writeFile(join(skillSourcePath, "SKILL.md"), "# MemoraX Code\n");
   await writeFile(join(skillSourcePath, "references", "search.md"), "search\n");
   return {
     root,
     openCodeConfigDir,
+    memoraxCodeCommand,
     pluginSourcePath,
     options: {
       openCodeConfigDir,
       memoraxCodeHome,
       pluginSourcePath,
       skillSourcePath,
+      memoraxCodeCommand,
       cliBinDir: "/managed/bin",
     },
   };

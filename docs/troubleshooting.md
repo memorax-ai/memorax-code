@@ -124,6 +124,15 @@ start command to reconcile missing or stale managed assets, then restart or
 refresh OpenCode. MemoraX Code does not add plugin entries to `opencode.json`
 or `opencode.jsonc`.
 
+An enabled managed plugin normally attempts to restore an unavailable local
+loopback Backend when OpenCode loads it. A prompt stops waiting after the
+plugin instance's single five-second recovery budget and skips automatic
+memory handling for that turn, but the Backend start continues in the
+background. If that recovery is skipped or fails, use `memorax-code status` and
+`memorax-code logs`, then run the start command above. Automatic recovery
+intentionally skips remote URLs, invalid connection authority, and stale
+loaders whose recorded package command no longer exists.
+
 An already-open client may keep its loaded plugin shell while a later prompt
 uses the updated Hook runtime. Restart or refresh the client to load a changed
 plugin manifest, icon, or bundled skill.

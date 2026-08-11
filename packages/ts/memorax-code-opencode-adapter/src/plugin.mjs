@@ -1,7 +1,10 @@
 import { delimiter } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { resolveBackendConnection } from "../../memorax-code-adapter-common/src/backend-connection.mjs";
 import { readAdapterState } from "../../memorax-code-adapter-common/src/config-utils.mjs";
+import { ensureBackendAvailable } from "../../memorax-code-adapter-common/src/hooks/ensure-backend-runner.mjs";
 
+const DEFAULT_BACKEND_PROMPT_WAIT_TIMEOUT_MS = 5_000;
 const TURN_START_TIMEOUT_MS = 12_000;
 const WRITEBACK_TIMEOUT_MS = 5_000;
 const MAX_PENDING_TURNS = 256;
@@ -12,6 +15,39 @@ export function createMemoraxOpenCodePlugin(options = {}) {
     const workspaceKind = project?.vcs === "git" ? "project" : "local";
     const pendingTurns = new Map();
     const inFlight = new Set();
+    const backendPromptWaitTimeoutMs = positiveInteger(
+      options.backendPromptWaitTimeoutValue,
+      DEFAULT_BACKEND_PROMPT_WAIT_TIMEOUT_MS,
+    );
+    let backendEnsurePromise;
+    let backendEnsureSettled = false;
+    let backendPromptGatePromise;
+
+    function ensureBackendReady() {
+      if (!managedPluginEnabled(options)) return Promise.resolve();
+      if (!backendEnsurePromise) {
+        const ensureOptions = backendEnsureOptions(options);
+        if (!ensureOptions) return Promise.resolve();
+        backendEnsurePromise = ensureBackendAvailable(ensureOptions)
+          .catch((error) => {
+            debug(options, "opencode backend recovery failed", error);
+          })
+          .then(() => {
+            backendEnsureSettled = true;
+          });
+        backendPromptGatePromise = Promise.race([
+          backendEnsurePromise.then(() => true),
+          delay(backendPromptWaitTimeoutMs, false, { ref: false }),
+        ]);
+      }
+      return backendEnsurePromise;
+    }
+
+    async function backendReadyForPrompt() {
+      ensureBackendReady();
+      if (!backendEnsurePromise || backendEnsureSettled) return true;
+      return await backendPromptGatePromise;
+    }
 
     function track(task) {
       const observed = task.catch((error) => {
@@ -22,6 +58,8 @@ export function createMemoraxOpenCodePlugin(options = {}) {
     }
 
     async function flushSession(sessionId) {
+      if (!pluginEnabled(options)) return;
+      await ensureBackendReady();
       if (!pluginEnabled(options)) return;
       const turns = [...pendingTurns.values()].filter((turn) => turn.sessionId === sessionId);
       if (turns.length === 0) return;
@@ -54,6 +92,8 @@ export function createMemoraxOpenCodePlugin(options = {}) {
       }
     }
 
+    void ensureBackendReady();
+
     return {
       "chat.message": async (input, output) => {
         if (!pluginEnabled(options)) return;
@@ -61,6 +101,15 @@ export function createMemoraxOpenCodePlugin(options = {}) {
         const sessionId = stringValue(input?.sessionID);
         const prompt = textParts(output?.parts);
         if (!sessionId || !userMessageId || !prompt) return;
+        if (!await backendReadyForPrompt()) {
+          debug(
+            options,
+            "opencode turn start skipped",
+            `Backend recovery exceeded the ${backendPromptWaitTimeoutMs} ms interaction budget`,
+          );
+          return;
+        }
+        if (!pluginEnabled(options)) return;
         try {
           const result = await postBackend(options, "/memory/turn-start", {
             version: 1,
@@ -115,7 +164,10 @@ export function createMemoraxOpenCodePlugin(options = {}) {
         }
       },
       async dispose() {
-        await Promise.allSettled([...inFlight]);
+        await Promise.allSettled([
+          ...inFlight,
+          ...(backendEnsurePromise ? [backendEnsurePromise] : []),
+        ]);
       },
     };
   };
@@ -187,13 +239,45 @@ function stringValue(value) {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
+function positiveInteger(value, fallback) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 function pluginEnabled(options) {
   const statePath = stringValue(options.statePath);
   if (!statePath) return true;
+  return managedPluginEnabled(options);
+}
+
+function managedPluginEnabled(options) {
+  const statePath = stringValue(options.statePath);
+  if (!statePath) return false;
   const state = readAdapterState(statePath);
   return state?.unreadable !== true
     && state?.version === 1
     && state?.runtime === "opencode"
     && state?.integration === "plugin"
     && state?.enabled === true;
+}
+
+function backendEnsureOptions(options) {
+  const memoraxCodeHome = stringValue(options.memoraxCodeHome);
+  const openCodeConfigDir = stringValue(options.openCodeConfigDir);
+  const memoraxCodeCommand = stringValue(options.memoraxCodeCommand);
+  if (!memoraxCodeHome || !openCodeConfigDir || !memoraxCodeCommand) return undefined;
+  return {
+    backendConnection: options.backendConnection,
+    healthTimeoutValue: options.healthTimeoutValue,
+    startTimeoutValue: options.startTimeoutValue,
+    memoraxCodeCommand,
+    resolveHomes: () => ({ memoraxCodeHome, openCodeConfigDir }),
+    buildStartArgs: (homes, recoveryArguments) => [
+      "start",
+      "--home", homes.memoraxCodeHome,
+      "--opencode-config-dir", homes.openCodeConfigDir,
+      ...recoveryArguments,
+    ],
+    debug: (message) => debug(options, "opencode backend recovery skipped", message),
+  };
 }

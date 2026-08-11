@@ -39,6 +39,11 @@ Please allow time for triage and remediation before public disclosure.
 - Hook, lifecycle, connection, PID, token, session, and workspace authority
   records are security-sensitive local state. Do not hand-edit or publish
   them.
+- The managed OpenCode plugin may recover an unavailable Backend only through
+  its package-recorded absolute `memorax-code` command and the currently
+  resolved loopback HTTP authority. It preserves the existing lifecycle lock
+  and client selection; remote or invalid authority and removed commands fail
+  open without starting a process.
 - Initial Repo Memory builds use only the Git worktree returned by an
   authenticated Backend turn-start request. Backend or workspace-scope
   failures skip the build; client Hooks do not fall back to their local `cwd`.

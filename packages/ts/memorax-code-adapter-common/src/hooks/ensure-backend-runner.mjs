@@ -14,10 +14,15 @@ export async function runEnsureBackendHook(options) {
   if (isRepoMemoryJobWorker() || ensureDisabled(options.ensureBackendValue)) return;
 
   const input = await readStdinJson();
+  await ensureBackendAvailable(options, input);
+}
+
+export async function ensureBackendAvailable(options, input = {}) {
   const homes = options.resolveHomes(input);
   let connection;
   try {
-    connection = resolveBackendConnection({ memoraxCodeHome: homes.memoraxCodeHome });
+    connection = options.backendConnection
+      ?? resolveBackendConnection({ memoraxCodeHome: homes.memoraxCodeHome });
   } catch (error) {
     options.debug?.(error instanceof Error ? error.message : String(error));
     return;

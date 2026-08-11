@@ -93,6 +93,16 @@ The plugin and skill use OpenCode's automatic discovery. MemoraX Code does not
 add entries to or otherwise modify `opencode.json` or `opencode.jsonc`. Restart
 or refresh OpenCode after installation or after those managed assets change.
 
+The managed loader records the exact MemoraX Code home, OpenCode configuration
+directory, and installed `memorax-code` entrypoint. When the enabled plugin
+loads, it performs a best-effort Backend health check and uses that entrypoint
+to restore an unavailable loopback Backend. A prompt waits no more than the
+plugin instance's single five-second recovery budget; if that budget expires,
+automatic memory handling for that turn is skipped while recovery continues in
+the background. This preserves the configured client selection. Remote Backend
+URLs, invalid connection authority, and a removed package command are not
+recovered automatically.
+
 ## MemoraX connection
 
 MemoraX is the required remote-memory service:
