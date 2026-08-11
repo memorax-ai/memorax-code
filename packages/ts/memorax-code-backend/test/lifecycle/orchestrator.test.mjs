@@ -307,7 +307,7 @@ test("memorax-code keeps Codex and Backend healthy after a managed Claude runtim
     "--port", String(port),
     "--codex-home", codexHome,
     "--claude-home", claudeHome,
-    "--clients", "all",
+    "--clients", "codex,claude",
   ];
   try {
     await Promise.all([
@@ -396,6 +396,7 @@ test("memorax-code uninstall preserves temporary Claude cleanup scope after plug
     assert.deepEqual(JSON.parse(await readFile(activeClientsPath, "utf8")), {
       codex: false,
       claude: true,
+      opencode: false,
     });
 
     const retried = await runCli(cliPath, [

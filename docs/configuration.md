@@ -38,12 +38,12 @@ are not a compatibility contract.
 
 ## New configuration
 
-The generated template selects both clients, disables automatic retrieval,
+The generated template selects all three clients, disables automatic retrieval,
 enables automatic writeback, sets the preferred language to Chinese (`zh`),
 uses a five-turn skill reminder and the adaptive repository-update policy, and
-enables content-bearing local traces for both clients. npm installation may
-narrow `[clients]` to clients detected on the host. The tables below list all
-fallbacks, including tuning fields omitted from the generated file.
+enables content-bearing local traces for Codex and Claude Code. npm installation
+may narrow `[clients]` to clients detected on the host. The tables below list
+all fallbacks, including tuning fields omitted from the generated file.
 
 On POSIX systems MemoraX Code creates `$MEMORAX_CODE_HOME` with mode `0700`
 and a new `config.toml` with mode `0600`. Windows relies on the current user's
@@ -51,15 +51,16 @@ filesystem ACLs.
 
 ## Client selection
 
-If `[clients]` is absent, lifecycle commands select both clients. If it is
-present, `codex` and `claude` are boolean fields and an omitted client is
-disabled. The command-line override is:
+If `[clients]` is absent, lifecycle commands select Codex, Claude Code, and
+OpenCode. If it is present, `codex`, `claude`, and `opencode` are boolean fields
+and an omitted client is disabled. The command-line override accepts a
+comma-separated subset:
 
 ```text
---clients codex|claude|codex,claude|all|none
+--clients codex|claude|opencode|<comma-separated subset>|all|none
 ```
 
-A normal npm install or reinstall refreshes `[clients]` from the runnable
+A normal npm install or reinstall refreshes `[clients]` from the available
 clients detected at that time. Update-mode postinstall runs preserve enabled
 clients and also probe each disabled client. An interactive update offers each
 runnable disabled integration for activation with a default of yes. Declining
@@ -69,9 +70,28 @@ configuration instead of being permanently disabled. When an update newly
 enables Codex, it requests initial Hook activation after the client-selection
 prompt.
 
-Client selection controls plugin and Hook lifecycle only. It does not change
-Codex or Claude Code provider settings. `--clients none` runs the Backend
-without managing either client integration.
+Client selection controls managed client-integration lifecycle only. It does
+not change Codex, Claude Code, or OpenCode provider settings. `--clients none`
+runs the Backend without managing a client integration.
+
+## OpenCode integration paths
+
+OpenCode Desktop is detected through its configuration directory, so a
+standalone `opencode` executable does not need to be in `PATH`. The default
+managed paths are:
+
+```text
+~/.config/opencode/plugins/memorax-code.js
+~/.config/opencode/skills/memorax-code/
+```
+
+Set `OPENCODE_CONFIG_DIR` to override the complete OpenCode configuration root.
+Otherwise, `XDG_CONFIG_HOME` replaces `~/.config` when set. The managed adapter
+record lives at `$MEMORAX_CODE_HOME/adapters/opencode/state.json`.
+
+The plugin and skill use OpenCode's automatic discovery. MemoraX Code does not
+add entries to or otherwise modify `opencode.json` or `opencode.jsonc`. Restart
+or refresh OpenCode after installation or after those managed assets change.
 
 ## MemoraX connection
 
@@ -164,8 +184,8 @@ Command arguments override the other add defaults.
 
 `[memory.skill_reminder].interval_turns` defaults to `5`; its environment
 override is `MEMORAX_CODE_MEMORY_SKILL_REMINDER_INTERVAL_TURNS`. A positive
-value controls the reminder cadence for both clients, beginning with the first
-eligible prompt.
+value controls the reminder cadence for Codex and Claude Code, beginning with
+the first eligible prompt.
 
 | Field | Environment override | Fallback |
 | --- | --- | --- |
@@ -177,10 +197,14 @@ Supported policies are `every-commit`, `commit-count`, `daily`,
 `pull-request`, `pull-request-or-daily`, and `adaptive`. Invalid policy values
 fall back to `adaptive`.
 
-The first eligible prompt starts a background build only when the Backend has
-authorized a Git worktree and that worktree has no `.repo_memory/PROFILE.md`.
-If the Backend or workspace authority is unavailable, the Hook skips the
-initial build instead of falling back to its local `cwd`.
+In Codex and Claude Code, the first eligible prompt starts a background build
+only when the Backend has authorized a Git worktree and that worktree has no
+`.repo_memory/PROFILE.md`. If the Backend or workspace authority is
+unavailable, the Hook skips the initial build instead of falling back to its
+local `cwd`.
+
+OpenCode supports active Repo Memory operations through the installed skill,
+but its plugin does not currently run background Repo Memory maintenance.
 
 ## Local traces
 

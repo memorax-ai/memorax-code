@@ -14,6 +14,7 @@ export type MemoraxCodeConfig = Readonly<{
   clients?: Readonly<{
     codex?: boolean;
     claude?: boolean;
+    opencode?: boolean;
   }>;
   memorax?: Readonly<{
     endpoint?: string;
@@ -106,6 +107,7 @@ export function renderDefaultMemoraxCodeConfig(): string {
     "[clients]",
     "codex = true",
     "claude = true",
+    "opencode = true",
     "",
     "# MemoraX remote-memory connection. Credentials may also come from the environment.",
     "[memorax]",
@@ -228,6 +230,7 @@ function normalizeMemoraxCodeConfig(value: unknown): MemoraxCodeConfig {
     clients: prune({
       codex: booleanField(clients, "codex"),
       claude: booleanField(clients, "claude"),
+      opencode: booleanField(clients, "opencode"),
     }),
     memorax: prune({
       endpoint: stringField(memorax, "endpoint"),
@@ -304,7 +307,7 @@ function validateRawLifecycleConfig(value: unknown, path: string): void {
   if (rawClients !== undefined) {
     const clients = tableValue(rawClients);
     if (!clients) throw invalidLifecycleConfig(path, "clients must be a table");
-    for (const field of ["codex", "claude"] as const) {
+    for (const field of ["codex", "claude", "opencode"] as const) {
       if (clients[field] !== undefined && typeof clients[field] !== "boolean") {
         throw invalidLifecycleConfig(path, `clients.${field} must be a boolean`);
       }

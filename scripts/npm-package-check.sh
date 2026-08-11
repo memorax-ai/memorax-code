@@ -5,7 +5,8 @@ unset \
   MEMORAX_CODE_HOME \
   CODEX_HOME \
   CLAUDE_CONFIG_DIR \
-  CLAUDE_HOME
+  CLAUDE_HOME \
+  OPENCODE_CONFIG_DIR
 
 out_dir="${1:-dist/npm}"
 
@@ -151,6 +152,7 @@ for relative in [
     "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/repo-memory/repo-user-profile-context.mjs",
     "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/skills/memorax-code/SKILL.md",
     "lib/memorax-code-opencode-adapter/src/plugin.mjs",
+    "lib/memorax-code-opencode-adapter/src/plugin-install.mjs",
     "lib/memorax-code-opencode-adapter/skills/memorax-code/SKILL.md",
     "lib/memorax-code-backend/dist/service-entrypoint.js",
     "lib/memorax-code-backend/dist/memorax-cli.js",
@@ -247,6 +249,7 @@ export MEMORAX_CODE_HOME="$home_dir/.memorax-code"
 export CODEX_HOME="$home_dir/.codex-memorax-code-package-check"
 export CLAUDE_CONFIG_DIR="$home_dir/.claude-memorax-code-package-check"
 export CLAUDE_HOME="$CLAUDE_CONFIG_DIR"
+export OPENCODE_CONFIG_DIR="$home_dir/.config/opencode-memorax-code-package-check"
 package_install_port="$(node -e 'const net = require("node:net"); const server = net.createServer(); server.listen(0, "127.0.0.1", () => { console.log(server.address().port); server.close(); });')"
 export MEMORAX_CODE_BACKEND_PORT="$package_install_port"
 
@@ -316,6 +319,7 @@ for relative in \
   lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/repo-memory/repo-user-profile-context.mjs \
   lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/skills/memorax-code/SKILL.md \
   lib/memorax-code-opencode-adapter/src/plugin.mjs \
+  lib/memorax-code-opencode-adapter/src/plugin-install.mjs \
   lib/memorax-code-opencode-adapter/skills/memorax-code/SKILL.md
 do
   test -f "$package_install_root/$relative"
@@ -370,6 +374,11 @@ assert generation_manifest["contentDigest"] == current["contentDigest"]
 assert (generation / "lib" / "memorax-code-codex-adapter" / "runtime-hooks" / "memory-writeback.mjs").exists()
 assert (generation / "lib" / "memorax-code-claude-adapter" / "runtime-hooks" / "memory-turn.mjs").exists()
 assert current_path.stat().st_mode & 0o777 == 0o600
+opencode_config = Path(sys.argv[1]) / ".config" / "opencode-memorax-code-package-check"
+assert (opencode_config / "plugins" / "memorax-code.js").is_file()
+assert (opencode_config / "skills" / "memorax-code" / "SKILL.md").is_file()
+opencode_state = json.loads((home / ".memorax-code" / "adapters" / "opencode" / "state.json").read_text())
+assert opencode_state["enabled"] is True
 PY_POSTINSTALL
 
 "$prefix/bin/memorax-code" stop \
@@ -610,6 +619,7 @@ done
 
 MEMORAX_CODE_NPM_POSTINSTALL_UPDATE=1 \
 MEMORAX_CODE_SKIP_CLAUDE_ADAPTER_INSTALL=1 \
+MEMORAX_CODE_SKIP_OPENCODE_ADAPTER_INSTALL=1 \
 MEMORAX_CODE_HOME="$codex_memorax_code_home" \
 CODEX_HOME="$codex_home" \
 MEMORAX_CODE_BACKEND_PORT="$codex_port" \

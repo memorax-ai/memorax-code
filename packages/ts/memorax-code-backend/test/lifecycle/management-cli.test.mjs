@@ -503,6 +503,7 @@ test("unqualified Backend recovery preserves both configured client integrations
     assert.deepEqual(JSON.parse(await readFile(activeClientsPath, "utf8")), {
       codex: true,
       claude: true,
+      opencode: false,
     });
 
     const backendOnlyStop = await runCli(cliPath, [
@@ -513,6 +514,7 @@ test("unqualified Backend recovery preserves both configured client integrations
     assert.deepEqual(JSON.parse(await readFile(activeClientsPath, "utf8")), {
       codex: true,
       claude: true,
+      opencode: false,
     });
 
     const recovered = await runCli(cliPath, ["start", "--json", ...commonArgs], { env });
@@ -523,9 +525,10 @@ test("unqualified Backend recovery preserves both configured client integrations
     assert.deepEqual(JSON.parse(await readFile(activeClientsPath, "utf8")), {
       codex: true,
       claude: true,
+      opencode: false,
     });
   } finally {
-    await runCli(cliPath, ["stop", "--json", ...commonArgs, "--clients", "all"], { env });
+    await runCli(cliPath, ["stop", "--json", ...commonArgs, "--clients", "codex,claude"], { env });
     await rm(home, { recursive: true, force: true });
     await rm(codexHome, { recursive: true, force: true });
     await rm(claudeHome, { recursive: true, force: true });
@@ -570,6 +573,7 @@ test("partial client stop preserves Backend until an explicit Backend-only stop"
     assert.deepEqual(JSON.parse(await readFile(join(home, "runtime", "backend", "managed-clients.json"), "utf8")), {
       codex: false,
       claude: true,
+      opencode: false,
     });
 
     const backendOnlyStopped = await runCli(cliPath, ["stop", "--json", ...commonArgs, "--clients", "none"]);
@@ -580,6 +584,7 @@ test("partial client stop preserves Backend until an explicit Backend-only stop"
     assert.deepEqual(JSON.parse(await readFile(join(home, "runtime", "backend", "managed-clients.json"), "utf8")), {
       codex: false,
       claude: true,
+      opencode: false,
     });
   } finally {
     await runCli(cliPath, ["stop", "--json", ...commonArgs, "--clients", "none"]);
@@ -715,6 +720,7 @@ test("failed Backend start preserves selected clients and direct Claude settings
     assert.deepEqual(JSON.parse(await readFile(join(home, "runtime", "backend", "managed-clients.json"), "utf8")), {
       codex: false,
       claude: true,
+      opencode: false,
     });
     assert.equal(await readFile(join(claudeHome, "settings.json"), "utf8"), originalSettings);
 

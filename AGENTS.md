@@ -17,8 +17,9 @@ precedence over generated memory or historical context.
   user-facing changes.
 - Treat `.repo_memory/` as local retrieval guidance, not current-code
   authority. It is Git-ignored and must not leak into public artifacts.
-- Use isolated `MEMORAX_CODE_HOME`, `CODEX_HOME`, and `CLAUDE_CONFIG_DIR`
-  locations for lifecycle, install, migration, or destructive tests.
+- Use isolated `MEMORAX_CODE_HOME`, `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, and
+  `OPENCODE_CONFIG_DIR` locations for lifecycle, install, migration, or
+  destructive tests.
 
 ## 2. Architecture Routing
 

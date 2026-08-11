@@ -15,7 +15,10 @@ export type AdapterReport = {
   error?: string;
   memoraxCodeHome?: string;
   codexHome?: string;
+  openCodeConfigDir?: string;
   installPath?: string;
+  pluginPath?: string;
+  skillPath?: string;
   state?: {
     version?: number;
     enabled?: boolean;
@@ -27,6 +30,7 @@ export type AdapterReport = {
   backendUrlMatches?: boolean;
   codexSkills?: { ok?: boolean; status?: string };
   claudeSkills?: { ok?: boolean; status?: string };
+  opencodeSkills?: { ok?: boolean; status?: string };
   pluginInstall?: AdapterPluginLifecycleReport;
   pluginRemove?: AdapterPluginLifecycleReport;
   pluginStatus?: AdapterReport;

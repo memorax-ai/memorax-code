@@ -47,7 +47,7 @@ flowchart LR
   subgraph Adapters["Client deployment adapters"]
     CodexAdapter["Codex adapter<br/>plugin, Hooks, canonical skill"]
     ClaudeAdapter["Claude adapter<br/>plugin, Hooks, installer"]
-    OpenCodeAdapter["OpenCode adapter<br/>plugin and skill artifact"]
+    OpenCodeAdapter["OpenCode adapter<br/>plugin, installer, skill artifact"]
   end
 
   Common["adapter-common<br/>records, locks, Hook and Repo Memory helpers"]
@@ -93,7 +93,7 @@ relationships; the arrow labels distinguish them. It is not an import graph.
 | `packages/ts/memorax-code-adapter-common` | Shared source for Backend connection authority, private runtime records, cross-process locking and configuration, Hook generations, Hook launch helpers, and Repo/Personal Memory helpers | Backend composition, native transcript interpretation, MemoraX request execution, or client plugin policy | `packages/ts/memorax-code-adapter-common/src/backend-connection.mjs`, `src/runtime-record.mjs`, `src/hooks`, and `src/repo-memory` |
 | `packages/ts/memorax-code-codex-adapter` | Codex plugin artifact, Hook shells and runtimes, session/workspace observation, diagnostics, and the canonical shared skill | Codex rollout semantics or Backend-side writeback authority | `.codex-plugin`, `hooks`, `runtime-hooks`, `src`, and `skills/memorax-code` |
 | `packages/ts/memorax-code-claude-adapter` | Claude Code plugin artifact, Hook shells and runtimes, configuration, installer, marketplace source, and diagnostics | Claude transcript semantics or Backend memory orchestration | `.claude-plugin`, `hooks`, `runtime-hooks`, `scripts`, and `src/plugin-install.mjs` |
-| `packages/ts/memorax-code-opencode-adapter` | OpenCode plugin runtime, shell-session identity, and a materialized shared skill | OpenCode message interpretation inside the Backend, installation lifecycle, or model-provider configuration | `src/plugin.mjs` and the OpenCode materialization mapping in `scripts/npm-source-files.mjs` |
+| `packages/ts/memorax-code-opencode-adapter` | OpenCode plugin runtime, managed thin-loader installation, shell-session identity, and a materialized shared skill | OpenCode message interpretation inside the Backend or model-provider configuration | `src/plugin.mjs`, `src/plugin-install.mjs`, and the OpenCode materialization mapping in `scripts/npm-source-files.mjs` |
 | `packages/npm/memorax-code` | Installed executable wrappers, update, preinstall/postinstall, npm manifest, and release-package source | Backend lifecycle semantics, uninstall orchestration, or artifact staging | `bin`, `lib/run-entrypoint.mjs`, and `package.json` |
 | `scripts` | Backend build orchestration, staging/materialization, package layout, documentation, and local-only data gates | Product runtime authority | Package-build/check scripts and executable contract scripts |
 | `.github` | Issue and pull-request contribution templates | Product runtime behavior | `.github/ISSUE_TEMPLATE` and `.github/pull_request_template.md` |
@@ -121,9 +121,11 @@ the owner of their behavior.
 Client integration is deliberately not physically symmetric. Codex plugin
 material belongs to the Codex adapter, while current install, activation, and
 Hook-trust glue lives in Backend `clients/codex`. The Claude Code installer
-lives in the Claude adapter and is loaded by its Backend lifecycle
-participant. Preserve the participant contract and each client's actual
-authority instead of forcing matching directory shapes.
+lives in the Claude adapter. The OpenCode adapter installs an auto-discovered
+thin loader and shared skill without editing OpenCode provider configuration.
+Both installers are loaded by their Backend lifecycle participants. Preserve
+the participant contract and each client's actual authority instead of forcing
+matching directory shapes.
 
 ## 3. Runtime Flows
 
@@ -160,14 +162,23 @@ The principal control-plane locations are:
 - `packages/ts/memorax-code-backend/src/lifecycle` for start, stop, restart,
   status, uninstall, client selection, participants, and locks;
 - `packages/ts/memorax-code-backend/src/lifecycle/backend` for Backend process,
-  PID/token/connection records, cleanup, status probing, and shutdown; and
+  PID/token/connection records, cleanup, status probing, and shutdown;
 - `packages/ts/memorax-code-adapter-common/src/hooks` for immutable Hook
-  generation and launch selection.
+  generation and launch selection; and
+- each adapter lifecycle participant for client-specific preparation, status,
+  disablement, and removal. OpenCode's participant delegates plugin and skill
+  materialization to `memorax-code-opencode-adapter/src/plugin-install.mjs`.
 
 Staging and activation are separate decisions. A failed Backend start must not
 replace the currently authoritative Hook generation. Cross-process lifecycle
 decisions use durable records and bounded locks rather than relying on one
 process's in-memory serialization.
+
+OpenCode lifecycle discovery is based on its Desktop configuration directory,
+not a standalone CLI executable. The installer records managed ownership under
+`$MEMORAX_CODE_HOME/adapters/opencode`, writes the auto-discovered plugin and
+skill artifacts under the OpenCode configuration directory, and leaves model
+and provider configuration untouched.
 
 ### 3.2 Hook and retrieval data flow
 
@@ -305,6 +316,7 @@ src/
   clients/
     codex/                Codex native interpretation and lifecycle adapters
     claude/               Claude native interpretation and lifecycle participant
+    opencode/             OpenCode lifecycle participant
   config/                 Backend and proxy/config interpretation
   entrypoints/            process and management-CLI orchestration
   lifecycle/
@@ -340,6 +352,7 @@ entrypoints and compatibility facades. It is not another implementation area.
 | `src/lifecycle/backend` | Managed process, PID/token/connection records, status probing, cleanup, and shutdown requests | Helper contracts do not depend back on the full service implementation |
 | `src/clients/codex` | Codex rollout, prompt, turn-index, and workspace interpretation; Hook memory runtime; plugin integration glue; and lifecycle participant | No Claude format fallback; request runtime remains HTTP-composition independent |
 | `src/clients/claude` | Claude transcript/turn interpretation, Hook memory runtime, and lifecycle participant | No Codex format fallback; request runtime remains HTTP-composition independent |
+| `src/clients/opencode` | OpenCode lifecycle participant | Request-time memory flow remains independent from plugin installation |
 | `src/memory` | Memory commands, retrieval, writeback, turn coordination, repository session pinning, manual CLI, buffering/chunking, task projection, and reconciliation | Client-neutral modules do not parse native transcript formats |
 | `src/repository` | Read-only repository identity and Repo Memory readiness | Scope derivation does not execute Git or use synchronous filesystem reads |
 | `src/provider/memorax` | MemoraX config interpretation, query/add/status payloads, HTTP transport, and normalized results | Independent from server routing and plugin lifecycle |
@@ -442,7 +455,7 @@ and
 
 | Concern | Authority | Derived or non-authoritative views |
 | --- | --- | --- |
-| Models, model-provider credentials, native tools, and model-provider traffic | Codex or Claude Code | Backend and adapters must not proxy or persist this authority |
+| Models, model-provider credentials, native tools, and model-provider traffic | Codex, Claude Code, or OpenCode | Backend and adapters must not proxy or persist this authority |
 | Hook command identity | Versioned, client-qualified command plus validated required session/turn fields | Parsed HTTP request objects |
 | Automatic writeback content | Codex rollout JSONL or Claude Code transcript JSONL for the matching client | Hook text, trace, latest-Turn guesses, and the other client's format are not fallbacks |
 | Workspace and repository identity | Backend read-only resolution held by the live repository-session runtime; its only permitted scope transition is the same-root degraded-direct-`.git` to verified-Git upgrade | Project labels, Viewer catalog entries, and Hook `cwd` |
@@ -561,13 +574,17 @@ flowchart TD
 - The Claude Code skill and marketplace and the OpenCode skill artifact are
   materialized from canonical sources; packaging may rewrite contained
   relative imports for the staged topology.
+- OpenCode lifecycle installation writes only a managed thin loader and the
+  materialized skill into the client's auto-discovery directories. It does not
+  edit `opencode.json` or `opencode.jsonc`, and it does not require a standalone
+  `opencode` command in `PATH`.
 - The npm wrappers use `packages/npm/memorax-code/lib/run-entrypoint.mjs` to
   locate staged Backend or adapter entrypoints.
 - Artifact gates reject undeclared paths, unsafe symlinks, cache/build debris,
   and local-only data-boundary violations.
-- Installed-package tests isolate `MEMORAX_CODE_HOME`, `CODEX_HOME`, and
-  `CLAUDE_CONFIG_DIR` so lifecycle and client integration checks do not reuse
-  developer state.
+- Installed-package tests isolate `MEMORAX_CODE_HOME`, `CODEX_HOME`,
+  `CLAUDE_CONFIG_DIR`, and `OPENCODE_CONFIG_DIR` so lifecycle and client
+  integration checks do not reuse developer state.
 
 Root architecture and contributor guidance are repository documents, while
 `shipped-docs.json` remains the authority for user documentation included in

@@ -8,7 +8,12 @@ export function readActiveManagedClients(memoraxCodeHome: string): ManagedClient
   try {
     const value = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
     if (typeof value.codex !== "boolean" || typeof value.claude !== "boolean") return undefined;
-    return { codex: value.codex, claude: value.claude };
+    if (value.opencode !== undefined && typeof value.opencode !== "boolean") return undefined;
+    return {
+      codex: value.codex,
+      claude: value.claude,
+      opencode: value.opencode === true,
+    };
   } catch {
     return undefined;
   }

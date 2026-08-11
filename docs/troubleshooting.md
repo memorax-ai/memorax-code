@@ -10,9 +10,10 @@ memorax-code-claude doctor
 memorax-code logs
 ```
 
-`status` checks the Backend and client integrations. `memory status` checks
-credentials, scope, and memory switches without printing secrets. Each client
-`doctor` checks its plugin, skill, workspace, and Backend connection.
+`memorax-code status` checks the Backend and selected client integrations,
+including OpenCode. `memorax-cli status` checks credentials, scope, and memory
+switches without printing secrets. Codex and Claude Code additionally provide
+client-specific `doctor` commands.
 
 ## Installed, but memory is unavailable
 
@@ -103,14 +104,34 @@ This reconciles the Claude Code marketplace plugin and Hooks. If the plugin is
 still missing or stale, restart or refresh Claude Code. Do not manually copy
 Hooks into Claude settings.
 
+## OpenCode plugin or skill is inactive
+
+```sh
+memorax-code start --clients opencode
+memorax-code status --clients opencode
+```
+
+OpenCode does not require a standalone `opencode` command in `PATH`. Its
+Desktop integration is auto-discovered from these default managed locations:
+
+```text
+~/.config/opencode/plugins/memorax-code.js
+~/.config/opencode/skills/memorax-code/
+```
+
+The paths follow `OPENCODE_CONFIG_DIR` or `XDG_CONFIG_HOME` when set. Rerun the
+start command to reconcile missing or stale managed assets, then restart or
+refresh OpenCode. MemoraX Code does not add plugin entries to `opencode.json`
+or `opencode.jsonc`.
+
 An already-open client may keep its loaded plugin shell while a later prompt
 uses the updated Hook runtime. Restart or refresh the client to load a changed
 plugin manifest, icon, or bundled skill.
 
-## Hooks cannot reach localhost on macOS
+## A client integration cannot reach localhost on macOS
 
-If shell requests work but Hook diagnostics fail, a global proxy or client
-environment may be intercepting `127.0.0.1` or `localhost`.
+If shell requests work but client integration diagnostics fail, a global proxy
+or client environment may be intercepting `127.0.0.1` or `localhost`.
 
 ```sh
 memorax-code start
@@ -179,10 +200,10 @@ when repository isolation matters.
 
 ## Model-provider requests fail while MemoraX Code is healthy
 
-MemoraX Code does not proxy Codex or Claude Code model requests. If
-`memorax-code status` and the relevant client doctor are healthy, inspect the
-provider URL, credentials, model selection, and network settings owned by that
-client. Do not copy model-provider credentials into
+MemoraX Code does not proxy Codex, Claude Code, or OpenCode model requests. If
+`memorax-code status` and any available client-specific doctor are healthy,
+inspect the provider URL, credentials, model selection, and network settings
+owned by that client. Do not copy model-provider credentials into
 `$MEMORAX_CODE_HOME`.
 
 ## Safe issue reports

@@ -70,8 +70,8 @@ export function runBackendCli(argv = process.argv): void {
       `Usage: ${usageName} [${commands}] [--backend-url URL] [--backend-token TOKEN] [--home DIR]`,
       "[--host HOST] [--port PORT] [--rotate] [--show]",
       "[--codex-command CMD]",
-      "[--codex-home DIR] [--claude-home DIR]",
-      "[--clients codex|claude|codex,claude|all|none]",
+      "[--codex-home DIR] [--claude-home DIR] [--opencode-config-dir DIR]",
+      "[--clients codex|claude|opencode|CLIENT,...|all|none]",
       "[--json]",
       "[--marketplace-path FILE] [--plugin-source-path DIR] [--claude-command CMD] [--help]",
       "[--yes]",
@@ -517,6 +517,7 @@ function printMemoraxCodeStatus(report: MemoraxCodeStatusReport): void {
     backendLog(`Codex adapter: ${adapterStatusLine(report.codexAdapter)}`);
   }
   if (report.claudeAdapter) backendLog(`Claude adapter: ${claudeAdapterStatusLine(report.claudeAdapter, report.codexAdapter)}`);
+  if (report.opencodeAdapter) backendLog(`OpenCode adapter: ${adapterStatusLine(report.opencodeAdapter)}`);
   if (!suppressBackendGuidance()) {
     for (const line of statusGuidance(report)) backendLog(line);
   }
@@ -623,6 +624,7 @@ function printLifecycleResult(report: MemoraxCodeLifecycleReport): void {
   }
   if (report.codexAdapter) backendLog(`Codex adapter: ${adapterStatusLine(report.codexAdapter)}`);
   if (report.claudeAdapter) backendLog(`Claude adapter: ${adapterStatusLine(report.claudeAdapter)}`);
+  if (report.opencodeAdapter) backendLog(`OpenCode adapter: ${adapterStatusLine(report.opencodeAdapter)}`);
   if (report.codexPlugin) {
     const removed = report.codexPlugin.removedPaths.length;
     const marketplace = report.codexPlugin.marketplaceChanged ? " marketplace=updated" : " marketplace=unchanged";
@@ -681,13 +683,15 @@ function lifecycleGuidance(report: MemoraxCodeLifecycleReport): string[] {
         "Run `memorax-code logs` for details, then retry `memorax-code start`.",
       ];
     }
-    if (!report.codexAdapter && !report.claudeAdapter) {
+    if (!report.codexAdapter && !report.claudeAdapter && !report.opencodeAdapter) {
       return [
         green("Backend is running."),
         "Adapters were not changed for this command.",
       ];
     }
-    if ((!report.codexAdapter || isAdapterReady(report.codexAdapter)) && (!report.claudeAdapter || isAdapterReady(report.claudeAdapter))) {
+    if ((!report.codexAdapter || isAdapterReady(report.codexAdapter))
+      && (!report.claudeAdapter || isAdapterReady(report.claudeAdapter))
+      && (!report.opencodeAdapter || isAdapterReady(report.opencodeAdapter))) {
       return [
         green("Backend is running and adapters are enabled."),
         green("Existing sessions with the stable plugin shell select the active Hook runtime on their next user prompt."),
@@ -705,6 +709,7 @@ function lifecycleGuidance(report: MemoraxCodeLifecycleReport): string[] {
         green("Backend is stopped."),
         ...(report.codexAdapter ? [green("Codex Hook integration is stopped; provider config was not changed.")] : []),
         ...(report.claudeAdapter ? [green("Claude Code Hook integration is stopped; provider config was not changed.")] : []),
+        ...(report.opencodeAdapter ? [green("OpenCode plugin integration is stopped; provider config was not changed.")] : []),
       ]
       : [
         red("Backend did not stop cleanly."),
@@ -730,13 +735,7 @@ function lifecycleGuidance(report: MemoraxCodeLifecycleReport): string[] {
         "Run `memorax-code status` and `memorax-code logs` before retrying.",
       ];
     }
-    const clientName = report.codexAdapter && report.claudeAdapter
-      ? "Codex and Claude Code"
-      : report.codexAdapter
-        ? "Codex"
-        : report.claudeAdapter
-          ? "Claude Code"
-          : undefined;
+    const clientName = lifecycleClientName(report);
     const npmPackageRemoved = report.npmPackageRemoval?.ok === true
       && report.npmPackageRemoval.skipped !== true;
     return [
@@ -746,9 +745,7 @@ function lifecycleGuidance(report: MemoraxCodeLifecycleReport): string[] {
           ? [green(`MemoraX Code has been uninstalled from ${clientName}.`)]
           : []),
       ...(clientName
-        ? [green(report.codexAdapter && report.claudeAdapter
-          ? "Restart or refresh Codex and Claude Code so they drop the removed adapter plugins."
-          : `Restart or refresh ${clientName} so it drops the removed adapter plugin.`)]
+        ? [green(`Restart or refresh ${clientName} so it drops the removed adapter plugin${selectedLifecycleClientNames(report).length === 1 ? "" : "s"}.`)]
         : []),
     ];
   }
@@ -790,6 +787,12 @@ function statusGuidance(report: MemoraxCodeStatusReport): string[] {
       "Run `memorax-code start`, then restart or refresh Claude Code.",
     ];
   }
+  if (report.opencodeAdapter && !isAdapterReady(report.opencodeAdapter)) {
+    return [
+      red("OpenCode adapter is not enabled."),
+      "Run `memorax-code start`, then restart or refresh OpenCode.",
+    ];
+  }
   return [
     red("MemoraX Code needs attention."),
     "Run `memorax-code status` and `memorax-code logs` for details.",
@@ -826,10 +829,28 @@ function adapterStatusLine(report: AdapterReport): string {
     return `not ok endpoint_mismatch configured=${report.configuredBackendUrl ?? "missing"} expected=${report.expectedBackendUrl ?? "unknown"}`;
   }
   const enabled = isAdapterReady(report);
-  const skillStatus = report.codexSkills?.status ?? report.claudeSkills?.status;
+  const skillStatus = report.codexSkills?.status
+    ?? report.claudeSkills?.status
+    ?? report.opencodeSkills?.status;
   const skills = skillStatus ? ` skills=${skillStatus}` : "";
   const changed = report.changed === true ? " changed" : "";
-  return `${enabled ? "ok" : "not enabled"} integration=hooks${skills}${changed}`;
+  const integration = report.integration ?? report.state?.integration ?? "hooks";
+  return `${enabled ? "ok" : "not enabled"} integration=${integration}${skills}${changed}`;
+}
+
+function selectedLifecycleClientNames(report: MemoraxCodeLifecycleReport): string[] {
+  return [
+    report.codexAdapter ? "Codex" : undefined,
+    report.claudeAdapter ? "Claude Code" : undefined,
+    report.opencodeAdapter ? "OpenCode" : undefined,
+  ].filter((name): name is string => name !== undefined);
+}
+
+function lifecycleClientName(report: MemoraxCodeLifecycleReport): string | undefined {
+  const names = selectedLifecycleClientNames(report);
+  if (names.length < 2) return names[0];
+  if (names.length === 2) return `${names[0]} and ${names[1]}`;
+  return `${names.slice(0, -1).join(", ")}, and ${names.at(-1)}`;
 }
 
 function claudeAdapterStatusLine(report: AdapterReport, codexAdapter?: AdapterReport): string {

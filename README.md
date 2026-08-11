@@ -31,10 +31,10 @@ Coding agents are good at the task in front of them, but a new session often
 starts without the architecture, failed attempts, repository rules, or working
 preferences established before it.
 
-MemoraX Code gives Codex and Claude Code a shared memory layer for that context.
-It can recall prior engineering knowledge, capture reusable lessons from
-completed work, maintain repository knowledge, and carry your procedures and
-preferences into future sessions.
+MemoraX Code gives Codex, Claude Code, and OpenCode a shared memory layer for
+that context. It can recall prior engineering knowledge, capture reusable
+lessons from completed work, maintain repository knowledge, and carry your
+procedures and preferences into future sessions.
 
 The goal is not to remember everything. It is to bring back the small amount of
 memory relevant to the current task so the agent can reach useful investigation
@@ -42,8 +42,8 @@ and validation sooner.
 
 ## Quick Start
 
-Prepare Node.js 24+ and either Codex or Claude Code. Python 3 is required for
-Repo Memory operations.
+Prepare Node.js 24+ and at least one of Codex, Claude Code, or OpenCode Desktop.
+Python 3 is required for Repo Memory operations.
 
 ### Install and Connect
 
@@ -60,18 +60,25 @@ npm install -g @memorax/memorax-code --foreground-scripts
 ```
 
 Keep `--foreground-scripts` so the complete setup remains visible. The
-installer automatically detects runnable Codex and Claude Code clients and
-connects the clients it finds. Follow the prompts to enter your Base User ID,
-preferred language, and API key. Codex users must also approve Hook activation
-and trust when prompted.
+installer automatically detects available Codex, Claude Code, and OpenCode
+Desktop clients and connects the clients it finds. Follow the prompts to enter
+your Base User ID, preferred language, and API key. Codex users must also
+approve Hook activation and trust when prompted.
+
+OpenCode Desktop is detected from its configuration directory; a standalone
+`opencode` command does not need to be in `PATH`. By default, the installer
+places a managed plugin loader at
+`~/.config/opencode/plugins/memorax-code.js` and the shared skill at
+`~/.config/opencode/skills/memorax-code/`. It does not modify `opencode.json`
+or `opencode.jsonc`. Restart or refresh OpenCode after installation.
 
 If setup is skipped or cannot prompt, the package remains installed but
 MemoraX-backed search, retrieval, and writeback remain unavailable.
 
 ### Try Cross-Session Memory
 
-Clone the example repository from the product website, then open Codex or
-Claude Code in the project directory:
+Clone the example repository from the product website, then open Codex, Claude
+Code, or OpenCode in the project directory:
 
 ```bash
 git clone https://github.com/SWE-agent/test-repo.git
@@ -79,7 +86,9 @@ cd test-repo
 ```
 
 Invoke the Skill as `$memorax-code` in Codex or `/memorax-code` in Claude Code.
-The prompts below use its product name and work in either client.
+In OpenCode, ask the agent to use the `memorax-code` skill by name; OpenCode
+auto-discovers the installed skill directory. The prompts below use its product
+name and work in all three clients.
 
 Send these prompts in order in the same session:
 
@@ -117,14 +126,19 @@ the current repository.
 
 ## Product Capabilities
 
+OpenCode support currently covers the shared skill and explicit Search and Add.
+Automatic retrieval, completed-turn writeback, and background Repo Memory
+maintenance are not part of this initial integration; active Repo Memory
+operations through the skill remain available.
+
 | Capability | What it does |
 | --- | --- |
 | **Background memory writeback** | Extracts reusable knowledge from completed turns and writes it to Coding Memory in the background. |
 | **Preference continuity** | Records User Profile preferences and injects them into future tasks on a configured cadence. |
 | **Procedure reuse** | Records reusable task procedures and reminds future agents to apply them. |
-| **Background Repo Memory maintenance** | Automatically organizes repository structure, entry points, and history evidence in the background, then updates them according to policy to reduce repeated searching and summarization. |
-| **Active memory control** | Lets you search and add memory through the bundled MemoraX Code skill (`$memorax-code` in Codex or `/memorax-code` in Claude Code) or the CLI. |
-| **Hook integration** | Uses Codex and Claude Code Hooks to trigger memory retrieval, reminders, and writeback. |
+| **Background Repo Memory maintenance** | In Codex and Claude Code, automatically organizes repository structure, entry points, and history evidence in the background, then updates them according to policy. |
+| **Active memory control** | Lets you search and add memory through the bundled MemoraX Code skill or the CLI. |
+| **Client integration** | Uses Codex and Claude Code Hooks for automatic flows; OpenCode's plugin binds the installed skill and CLI to the native session. |
 | **Local visualization** | Uses the local Memory Viewer to summarize activity counts, retrieval, and writeback status. |
 
 ## Your Memory, Your Control
@@ -156,8 +170,8 @@ memorax-code update
 ```
 
 The command follows the installed release channel and preserves configuration.
-Restart or refresh Codex and Claude Code when a release changes plugin assets
-or skills.
+Restart or refresh Codex, Claude Code, and OpenCode when a release changes
+plugin assets or skills.
 
 ## Uninstall
 

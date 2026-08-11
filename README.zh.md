@@ -30,16 +30,16 @@
 Coding Agent 擅长解决眼前的问题，但新会话不会自动继承此前积累的架构认知、踩坑经验、仓库规则
 和协作偏好。
 
-MemoraX Code 让 Codex 和 Claude Code 共享一套能够持续积累的记忆。它会沉淀代码任务中的工程经验，
-持续整理仓库知识，并在后续任务中找回相关的工作流程和偏好。
+MemoraX Code 让 Codex、Claude Code 和 OpenCode 共享一套能够持续积累的记忆。它会沉淀代码任务中的
+工程经验，持续整理仓库知识，并在后续任务中找回相关的工作流程和偏好。
 
 它追求的不是“记得更多”，而是在需要时带回与当前任务相关的 Memory，让 Agent 减少重复搜索和试错，
 更快进入问题定位与事实验证。
 
 ## 快速开始
 
-开始前，请确保已安装 Node.js 24 或更高版本，以及 Codex 或 Claude Code。
-Repo Memory 操作还需要 Python 3。
+开始前，请确保已安装 Node.js 24 或更高版本，以及 Codex、Claude Code 或 OpenCode Desktop
+中的至少一个。Repo Memory 操作还需要 Python 3。
 
 ### 安装与接入
 
@@ -54,15 +54,20 @@ Repo Memory 操作还需要 Python 3。
 npm install -g @memorax/memorax-code --foreground-scripts
 ```
 
-请保留 `--foreground-scripts`，以便查看完整的安装过程。安装器会自动检测本机可用的 Codex
-和 Claude Code，并为检测到的客户端启用集成。按照终端提示输入 Base User ID、偏好语言和
-API Key；Codex 用户还需按提示完成 Hook 的激活和信任确认。
+请保留 `--foreground-scripts`，以便查看完整的安装过程。安装器会自动检测本机可用的 Codex、
+Claude Code 和 OpenCode Desktop，并为检测到的客户端启用集成。按照终端提示输入 Base User ID、
+偏好语言和 API Key；Codex 用户还需按提示完成 Hook 的激活和信任确认。
+
+OpenCode Desktop 通过配置目录进行检测，不要求独立的 `opencode` 命令位于 `PATH`。默认情况下，
+安装器会将受管插件 loader 放到 `~/.config/opencode/plugins/memorax-code.js`，并将共享 Skill
+放到 `~/.config/opencode/skills/memorax-code/`。安装器不会修改 `opencode.json` 或
+`opencode.jsonc`。安装完成后，请重启或刷新 OpenCode。
 
 如果跳过配置或安装过程无法交互，npm 包仍会安装，但 MemoraX 搜索、召回和写回功能无法使用。
 
 ### 体验跨会话记忆
 
-克隆示例仓库，并在项目目录中打开 Codex 或 Claude Code：
+克隆示例仓库，并在项目目录中打开 Codex、Claude Code 或 OpenCode：
 
 ```bash
 git clone https://github.com/SWE-agent/test-repo.git
@@ -70,7 +75,8 @@ cd test-repo
 ```
 
 在 Codex 中使用 `$memorax-code`，在 Claude Code 中使用 `/memorax-code` 调用该 Skill。
-下面的指令使用产品名称，两端均可直接理解。
+在 OpenCode 中，直接让 Agent 使用名为 `memorax-code` 的 Skill；OpenCode 会自动发现已安装的
+Skill 目录。下面的指令使用产品名称，三个客户端均可直接理解。
 
 在同一个会话中依次发送以下指令：
 
@@ -102,14 +108,17 @@ cd test-repo
 
 ## 产品能力
 
+OpenCode 初始集成支持共享 Skill 和主动 Search/Add；暂不包含自动召回、完成 Turn 后的自动写回和
+Repo Memory 后台维护。通过 Skill 主动执行 Repo Memory 操作仍然可用。
+
 | 能力 | 作用 |
 | --- | --- |
 | **后台写入记忆** | 任务完成后，在后台提取可复用知识并写入 Coding Memory。 |
 | **用户偏好延续** | 在 User Profile 中记录用户偏好，并按设定周期将其带入后续任务。 |
 | **Procedure 自动复用** | 记录可复用的任务流程，并在后续任务中自动提醒 Agent 按流程执行。 |
-| **Repo Memory 后台整理** | 在后台整理仓库结构、代码入口和历史证据，并按策略自动更新，避免反复搜索和总结。 |
-| **主动记忆控制** | 使用内置的 MemoraX Code Skill（Codex 中为 `$memorax-code`，Claude Code 中为 `/memorax-code`）或 CLI，主动查找和添加记忆。 |
-| **Hook 集成** | 借助 Codex 和 Claude Code 的 Hook 触发记忆检索、提醒和写入。 |
+| **Repo Memory 后台整理** | 在 Codex 和 Claude Code 中，在后台整理仓库结构、代码入口和历史证据，并按策略自动更新。 |
+| **主动记忆控制** | 使用内置的 MemoraX Code Skill 或 CLI，主动查找和添加记忆。 |
+| **客户端集成** | 借助 Codex 和 Claude Code 的 Hook 触发自动流程；OpenCode 插件负责将已安装的 Skill 和 CLI 绑定到原生会话。 |
 | **本地可视化** | 通过本地 Memory Viewer 查看活动统计、召回与写入状态。 |
 
 ## 你的记忆，由你控制
@@ -136,8 +145,8 @@ MemoraX 云端不会接收模型服务商凭据或本地 Backend Token。
 memorax-code update
 ```
 
-该命令会沿用当前发布通道并保留配置。如果新版本修改了插件资产或 skill，请重启或刷新
-Codex 和 Claude Code。
+该命令会沿用当前发布通道并保留配置。如果新版本修改了插件资产或 Skill，请重启或刷新
+Codex、Claude Code 和 OpenCode。
 
 ## 卸载
 

@@ -24,6 +24,7 @@ import { loadManagedClientsConfig, resolveManagedClients, type ManagedClients } 
 import { clearActiveManagedClients, readActiveManagedClients, writeActiveManagedClients } from "./active-clients.js";
 import { codexAdapterLifecycle } from "../clients/codex/lifecycle.js";
 import { claudeAdapterLifecycle } from "../clients/claude/lifecycle.js";
+import { openCodeAdapterLifecycle } from "../clients/opencode/lifecycle.js";
 import type {
   AdapterReport,
 } from "./participant.js";
@@ -38,6 +39,7 @@ export type MemoraxCodeStatusReport = {
   backend: Awaited<ReturnType<typeof runBackendStatus>>;
   codexAdapter?: AdapterReport;
   claudeAdapter?: AdapterReport;
+  opencodeAdapter?: AdapterReport;
 };
 
 export type MemoraxCodeLifecycleReport = {
@@ -48,6 +50,7 @@ export type MemoraxCodeLifecycleReport = {
   backend?: Awaited<ReturnType<typeof startBackendService | typeof stopBackendService>>;
   codexAdapter?: AdapterReport;
   claudeAdapter?: AdapterReport;
+  opencodeAdapter?: AdapterReport;
   codexPlugin?: Awaited<ReturnType<typeof codexAdapterLifecycle.remove>>;
   npmPackageRemoval?: NpmPackageRemovalReport;
   removesPlugin?: boolean;
@@ -118,16 +121,22 @@ export async function collectMemoraxCodeStatus(
   const claudeAdapter = clients.claude
     ? await claudeAdapterLifecycle.status({ argv, serviceOptions, backendUrl })
     : undefined;
+  const opencodeAdapter = clients.opencode
+    ? await openCodeAdapterLifecycle.status({ argv, serviceOptions, backendUrl })
+    : undefined;
   const codexReady = codexAdapter ? isAdapterReady(codexAdapter) : true;
   const claudeReady = claudeAdapter ? isAdapterReady(claudeAdapter) : true;
+  const opencodeReady = opencodeAdapter ? isAdapterReady(opencodeAdapter) : true;
   return {
     ok: backend.ok
       && codexReady
+      && opencodeReady
       && (isOptionalUnconfiguredClaudeAdapter(claudeAdapter, codexAdapter) || claudeReady),
     action: "status",
     backend,
     ...(codexAdapter ? { codexAdapter } : {}),
     ...(claudeAdapter ? { claudeAdapter } : {}),
+    ...(opencodeAdapter ? { opencodeAdapter } : {}),
   };
 }
 
@@ -186,7 +195,10 @@ async function startMemoraxCodeServiceLocked(
   const deselectedClaude = previousClients?.claude && !clients.claude
     ? await claudeAdapterLifecycle.disable({ argv, serviceOptions })
     : undefined;
-  if (deselectedCodex?.ok === false || deselectedClaude?.ok === false) {
+  const deselectedOpenCode = previousClients?.opencode && !clients.opencode
+    ? await openCodeAdapterLifecycle.disable({ argv, serviceOptions })
+    : undefined;
+  if (deselectedCodex?.ok === false || deselectedClaude?.ok === false || deselectedOpenCode?.ok === false) {
     return {
       ok: false,
       action: "start",
@@ -196,6 +208,7 @@ async function startMemoraxCodeServiceLocked(
       ),
       ...(deselectedCodex ? { codexAdapter: deselectedCodex } : {}),
       ...(deselectedClaude ? { claudeAdapter: deselectedClaude } : {}),
+      ...(deselectedOpenCode ? { opencodeAdapter: deselectedOpenCode } : {}),
     };
   }
   // The marker is a conservative cleanup scope, not a readiness signal. Persist
@@ -233,21 +246,41 @@ async function startMemoraxCodeServiceLocked(
   const claudeAdapter = clients.claude
     ? await claudeAdapterLifecycle.prepareEnable({ argv, serviceOptions, backendUrl })
     : undefined;
+  const opencodeAdapter = clients.opencode
+    ? await openCodeAdapterLifecycle.prepareEnable({ argv, serviceOptions, backendUrl })
+    : undefined;
+  if (opencodeAdapter?.ok === false) {
+    return {
+      ok: false,
+      action: "start",
+      backend: await recoverBackendAfterStartPreparationFailure(
+        serviceOptions,
+        "opencode_adapter_enable_failed",
+      ),
+      ...(codexAdapter ? { codexAdapter } : {}),
+      ...(claudeAdapter ? { claudeAdapter } : {}),
+      opencodeAdapter,
+    };
+  }
   const backendStartOptions: BackendServiceOptions = {
     ...serviceOptions,
     claudeProjectsRoot: claudeProjectsRootForStart(argv, claudeAdapter),
   };
   const backend = await startBackendService(backendStartOptions);
   if (!backend.ok) {
-    const disabled = codexAdapter
+    const disabledCodex = codexAdapter
       ? await codexAdapterLifecycle.disable({ argv, serviceOptions })
+      : undefined;
+    const disabledOpenCode = opencodeAdapter
+      ? await openCodeAdapterLifecycle.disable({ argv, serviceOptions })
       : undefined;
     return {
       ok: false,
       action: "start",
       backend,
-      ...(disabled ? { codexAdapter: disabled } : {}),
+      ...(disabledCodex ? { codexAdapter: disabledCodex } : {}),
       ...(claudeAdapter ? { claudeAdapter } : {}),
+      ...(disabledOpenCode ? { opencodeAdapter: disabledOpenCode } : {}),
     };
   }
   return {
@@ -256,6 +289,7 @@ async function startMemoraxCodeServiceLocked(
     backend,
     ...(codexAdapter ? { codexAdapter } : {}),
     ...(claudeAdapter ? { claudeAdapter } : {}),
+    ...(opencodeAdapter ? { opencodeAdapter } : {}),
   };
 }
 
@@ -314,10 +348,13 @@ async function executeMemoraxCodeStop(
     ? {
       codex: activeClients.codex && !clients.codex,
       claude: activeClients.claude && !clients.claude,
+      opencode: activeClients.opencode && !clients.opencode,
     }
     : undefined;
-  const hasRemainingClients = remaining?.codex === true || remaining?.claude === true;
-  const backendOnlyStop = !clients.codex && !clients.claude;
+  const hasRemainingClients = remaining?.codex === true
+    || remaining?.claude === true
+    || remaining?.opencode === true;
+  const backendOnlyStop = !clients.codex && !clients.claude && !clients.opencode;
   const needsBackendStop = backendOnlyStop || !hasRemainingClients;
   // A true partial stop keeps the shared Backend for remaining clients. Every
   // other stop establishes Backend shutdown before mutating client state.
@@ -340,12 +377,20 @@ async function executeMemoraxCodeStop(
   const claudeAdapter = clients.claude
     ? await claudeAdapterLifecycle.disable({ argv, serviceOptions })
     : undefined;
-  const adaptersOk = codexAdapter?.ok !== false && claudeAdapter?.ok !== false;
+  const opencodeAdapter = clients.opencode
+    ? await openCodeAdapterLifecycle.disable({ argv, serviceOptions })
+    : undefined;
+  const adaptersOk = codexAdapter?.ok !== false
+    && claudeAdapter?.ok !== false
+    && opencodeAdapter?.ok !== false;
   const backend = stoppedBackend
     ?? (adaptersOk
       ? preservedBackendResult(serviceOptions, "active_clients_remaining")
       : preservedBackendResult(serviceOptions, "adapter_disable_failed"));
-  const ok = backend.ok && codexAdapter?.ok !== false && claudeAdapter?.ok !== false;
+  const ok = backend.ok
+    && codexAdapter?.ok !== false
+    && claudeAdapter?.ok !== false
+    && opencodeAdapter?.ok !== false;
   return {
     report: {
       ok,
@@ -353,6 +398,7 @@ async function executeMemoraxCodeStop(
       backend,
       ...(codexAdapter ? { codexAdapter } : {}),
       ...(claudeAdapter ? { claudeAdapter } : {}),
+      ...(opencodeAdapter ? { opencodeAdapter } : {}),
     },
     remainingClients: remaining && hasRemainingClients ? remaining : undefined,
   };
@@ -426,8 +472,12 @@ async function uninstallMemoraxCodeServiceLocked(
   const claudePlugin = clients.claude
     ? await claudeAdapterLifecycle.remove({ argv, serviceOptions })
     : undefined;
+  const opencodePlugin = clients.opencode
+    ? await openCodeAdapterLifecycle.remove({ argv, serviceOptions })
+    : undefined;
   const pluginCleanupOk = codexPlugin?.ok !== false
-    && claudePlugin?.ok !== false;
+    && claudePlugin?.ok !== false
+    && opencodePlugin?.ok !== false;
   const npmPackageRemoval = !pluginCleanupOk
     ? skippedNpmPackageRemoval("plugin_cleanup_failed")
     : canRemoveSharedPackage
@@ -436,6 +486,9 @@ async function uninstallMemoraxCodeServiceLocked(
   const claudeAdapter = stopped.claudeAdapter && claudePlugin
     ? { ...stopped.claudeAdapter, pluginRemove: claudePlugin }
     : stopped.claudeAdapter;
+  const opencodeAdapter = stopped.opencodeAdapter && opencodePlugin
+    ? { ...stopped.opencodeAdapter, pluginRemove: opencodePlugin }
+    : stopped.opencodeAdapter;
   const ok = pluginCleanupOk && npmPackageRemoval.ok !== false;
   if (ok) commitActiveManagedClients(memoraxCodeHome, stopExecution.remainingClients);
   return {
@@ -444,8 +497,9 @@ async function uninstallMemoraxCodeServiceLocked(
     action: "uninstall",
     ...(codexPlugin ? { codexPlugin } : {}),
     ...(claudeAdapter ? { claudeAdapter } : {}),
+    ...(opencodeAdapter ? { opencodeAdapter } : {}),
     npmPackageRemoval,
-    removesPlugin: codexPlugin?.ok === true || claudePlugin?.ok === true,
+    removesPlugin: codexPlugin?.ok === true || claudePlugin?.ok === true || opencodePlugin?.ok === true,
     removesUserState: false,
   };
 }
@@ -560,7 +614,9 @@ function argValue(argv: string[], name: string): string | undefined {
 }
 
 function includesManagedClients(selection: ManagedClients, required: ManagedClients): boolean {
-  return (!required.codex || selection.codex) && (!required.claude || selection.claude);
+  return (!required.codex || selection.codex)
+    && (!required.claude || selection.claude)
+    && (!required.opencode || selection.opencode);
 }
 
 function preservedBackendResult(
@@ -653,14 +709,15 @@ async function withMemoraxCodeLifecycleLock(
 }
 
 export function isAdapterReady(report: AdapterReport): boolean {
-  const hookIntegration = report.integration === "hooks" || report.state?.integration === "hooks";
-  return hookIntegration
+  const integration = report.integration ?? report.state?.integration;
+  return (integration === "hooks" || integration === "plugin")
     && report.ok !== false
     && report.installed === true
     && report.enabled === true
     && report.backendUrlMatches !== false
     && report.codexSkills?.ok !== false
-    && report.claudeSkills?.ok !== false;
+    && report.claudeSkills?.ok !== false
+    && report.opencodeSkills?.ok !== false;
 }
 
 

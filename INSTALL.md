@@ -8,8 +8,8 @@ installation. For a source checkout and contributor setup, see
 ## Requirements
 
 - Node.js 24 or newer and npm.
-- At least one of Codex or Claude Code installed in the environment where
-  MemoraX Code will run.
+- At least one of Codex, Claude Code, or OpenCode Desktop installed in the
+  environment where MemoraX Code will run.
 - Python 3 only when using Repo Memory operations.
 
 MemoraX-backed search, retrieval, and writeback additionally require a MemoraX
@@ -48,7 +48,8 @@ Backend status, and client guidance visible.
 
 The installer:
 
-1. Detects runnable Codex and Claude Code clients independently.
+1. Detects runnable Codex and Claude Code clients and the OpenCode Desktop
+   configuration directory independently.
 2. Enables every detected client without asking for a client selector.
 3. Prompts for the MemoraX connection and preferred language when at least one
    client was detected.
@@ -57,7 +58,7 @@ The installer:
 
 Read the final summary. npm can finish installing the package even when a
 client integration or MemoraX configuration still needs attention.
-MemoraX Code does not read or change either client's model-provider URL,
+MemoraX Code does not read or change the clients' model-provider URL,
 credentials, model, or login mode.
 
 Do not use `--ignore-scripts` for a normal install or update. It skips the
@@ -73,10 +74,22 @@ For Codex, enable **MemoraX Code Codex Adapter** from Plugins or `/plugins` if
 it is not already enabled. Claude Code registration is handled by the
 installer.
 
+For OpenCode Desktop, no standalone `opencode` CLI is required in `PATH`. The
+installer uses OpenCode's auto-discovery directories and, by default, writes:
+
+```text
+~/.config/opencode/plugins/memorax-code.js
+~/.config/opencode/skills/memorax-code/
+```
+
+These locations follow `OPENCODE_CONFIG_DIR` or `XDG_CONFIG_HOME` when set.
+MemoraX Code does not modify `opencode.json` or `opencode.jsonc`. Restart or
+refresh OpenCode after installation so it discovers the plugin and skill.
+
 Open the client in a real project directory and submit at least one prompt
-before using the client doctor as the final verification. Until the Hooks have
-observed a workspace session, workspace capture can correctly report that it
-still needs attention.
+before treating client diagnostics as final verification. Until the client
+integration has observed a workspace session, workspace capture can correctly
+report that it still needs attention.
 
 ## 4. Verify the Installation
 
@@ -88,18 +101,18 @@ memorax-code status
 memorax-cli status
 ```
 
-Then run the doctor command for each installed client:
+Codex and Claude Code also provide client-specific doctor commands:
 
 ```bash
 memorax-code-codex doctor
 memorax-code-claude doctor
 ```
 
-`memorax-code status` checks the local Backend and selected client
-integrations. `memorax-cli status` checks whether the local MemoraX
-configuration, workspace scope, and memory switches resolve without printing
-the API key. It does not send a test request to MemoraX; the first real search
-or write verifies remote connectivity and credentials.
+`memorax-code status` checks the local Backend and every selected client
+integration, including OpenCode. `memorax-cli status` checks whether the local
+MemoraX configuration, workspace scope, and memory switches resolve without
+printing the API key. It does not send a test request to MemoraX; the first real
+search or write verifies remote connectivity and credentials.
 
 ## Skipped or Non-Interactive Setup
 
@@ -151,7 +164,8 @@ memorax-code uninstall
 ```
 
 Do not start with `npm uninstall -g`. npm does not provide MemoraX Code with an
-uninstall lifecycle in which to disable managed Hooks and stop the Backend.
+uninstall lifecycle in which to remove managed client integrations and stop
+the Backend.
 The product command removes the managed integrations and global package while
 retaining `$MEMORAX_CODE_HOME` configuration and local traces, Claude plugin
 data, client provider configuration, and memories stored in MemoraX. Review
