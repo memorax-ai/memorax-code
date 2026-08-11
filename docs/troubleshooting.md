@@ -7,13 +7,14 @@ memorax-code status
 memorax-cli status
 memorax-code-codex doctor
 memorax-code-claude doctor
+memorax-code-opencode doctor
 memorax-code logs
 ```
 
 `memorax-code status` checks the Backend and selected client integrations,
 including OpenCode. `memorax-cli status` checks credentials, scope, and memory
-switches without printing secrets. Codex and Claude Code additionally provide
-client-specific `doctor` commands.
+switches without printing secrets. Each supported client also provides a
+client-specific `doctor` command.
 
 ## Installed, but memory is unavailable
 
@@ -109,6 +110,7 @@ Hooks into Claude settings.
 ```sh
 memorax-code start --clients opencode
 memorax-code status --clients opencode
+memorax-code-opencode doctor
 ```
 
 OpenCode does not require a standalone `opencode` command in `PATH`. Its
@@ -129,9 +131,10 @@ loopback Backend when OpenCode loads it. A prompt stops waiting after the
 plugin instance's single five-second recovery budget and skips automatic
 memory handling for that turn, but the Backend start continues in the
 background. If that recovery is skipped or fails, use `memorax-code status` and
-`memorax-code logs`, then run the start command above. Automatic recovery
-intentionally skips remote URLs, invalid connection authority, and stale
-loaders whose recorded package command no longer exists.
+`memorax-code logs`, then run the start command above. If doctor reports no
+plugin runtime evidence, restart or refresh OpenCode and rerun it. Automatic
+recovery intentionally skips remote URLs, invalid connection authority, and
+stale loaders whose recorded package command no longer exists.
 
 An already-open client may keep its loaded plugin shell while a later prompt
 uses the updated Hook runtime. Restart or refresh the client to load a changed
@@ -146,6 +149,7 @@ or client environment may be intercepting `127.0.0.1` or `localhost`.
 memorax-code start
 memorax-code-codex doctor
 memorax-code-claude doctor
+memorax-code-opencode doctor
 /usr/sbin/scutil --proxy
 /bin/launchctl getenv NO_PROXY
 /bin/launchctl getenv no_proxy
@@ -162,6 +166,7 @@ memorax-cli status
 memorax-cli search --query 'test'
 memorax-code-codex doctor
 memorax-code-claude doctor
+memorax-code-opencode doctor
 ```
 
 Common causes are:
@@ -225,6 +230,7 @@ memorax-code status --json
 memorax-cli status --json
 memorax-code-codex doctor --json
 memorax-code-claude doctor --json
+memorax-code-opencode doctor --json
 ```
 
 Include the MemoraX Code version, operating system, affected client,

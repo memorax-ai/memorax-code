@@ -16,6 +16,10 @@ export function adapterStatePath(memoraxCodeHome = defaultMemoraxCodeHome()) {
   return join(memoraxCodeHome, "adapters", "opencode", "state.json");
 }
 
+export function openCodeWorkspaceStatePath(memoraxCodeHome = defaultMemoraxCodeHome()) {
+  return join(memoraxCodeHome, "adapters", "opencode", "workspaces.json");
+}
+
 export function openCodePluginPath(configDir = defaultOpenCodeConfigDir()) {
   return join(configDir, "plugins", "memorax-code.js");
 }

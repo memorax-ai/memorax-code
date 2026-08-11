@@ -94,7 +94,7 @@ relationships; the arrow labels distinguish them. It is not an import graph.
 | `packages/ts/memorax-code-adapter-common` | Shared source for Backend connection authority, private runtime records, cross-process locking and configuration, Hook generations, Hook launch helpers, and Repo/Personal Memory helpers | Backend composition, native transcript interpretation, MemoraX request execution, or client plugin policy | `packages/ts/memorax-code-adapter-common/src/backend-connection.mjs`, `src/runtime-record.mjs`, `src/hooks`, and `src/repo-memory` |
 | `packages/ts/memorax-code-codex-adapter` | Codex plugin artifact, Hook shells and runtimes, session/workspace observation, diagnostics, and the canonical shared skill | Codex rollout semantics or Backend-side writeback authority | `.codex-plugin`, `hooks`, `runtime-hooks`, `src`, and `skills/memorax-code` |
 | `packages/ts/memorax-code-claude-adapter` | Claude Code plugin artifact, Hook shells and runtimes, configuration, installer, marketplace source, and diagnostics | Claude transcript semantics or Backend memory orchestration | `.claude-plugin`, `hooks`, `runtime-hooks`, `scripts`, and `src/plugin-install.mjs` |
-| `packages/ts/memorax-code-opencode-adapter` | OpenCode plugin runtime, managed thin-loader installation, SDK message retrieval, shell-session identity, a materialized shared skill, and supervised repo-read maintenance | OpenCode message interpretation inside the Backend or model-provider configuration | `src/plugin.mjs`, `src/plugin-install.mjs`, and the OpenCode materialization mapping in `scripts/npm-source-files.mjs` |
+| `packages/ts/memorax-code-opencode-adapter` | OpenCode plugin runtime, managed thin-loader installation, SDK message retrieval, shell-session identity, workspace runtime evidence and diagnostics, a materialized shared skill, and supervised repo-read maintenance | OpenCode message interpretation inside the Backend or model-provider configuration | `src/plugin.mjs`, `src/plugin-install.mjs`, `src/cli.mjs`, and the OpenCode materialization mapping in `scripts/npm-source-files.mjs` |
 | `packages/npm/memorax-code` | Installed executable wrappers, update, preinstall/postinstall, npm manifest, and release-package source | Backend lifecycle semantics, uninstall orchestration, or artifact staging | `bin`, `lib/run-entrypoint.mjs`, and `package.json` |
 | `scripts` | Backend build orchestration, staging/materialization, package layout, documentation, and local-only data gates | Product runtime authority | Package-build/check scripts and executable contract scripts |
 | `.github` | Issue and pull-request contribution templates | Product runtime behavior | `.github/ISSUE_TEMPLATE` and `.github/pull_request_template.md` |
@@ -191,6 +191,13 @@ Recovery uses the package-recorded `memorax-code start` entrypoint, exact
 MemoraX Code home and OpenCode configuration directory, and the existing
 lifecycle lock. It does not replace persistent client selection, directly
 spawn the Backend, or recover a remote or invalid connection authority.
+
+The enabled OpenCode plugin records content-free workspace runtime evidence on
+plugin load and real user messages under its adapter state directory. The
+OpenCode doctor combines managed-artifact status, that local evidence, and a
+live Backend health check. This evidence proves only that the plugin executed
+in a workspace; it is not session, transcript, repository-scope, or lifecycle
+authority.
 
 ### 3.2 Hook and retrieval data flow
 
@@ -625,7 +632,8 @@ flowchart TD
   edit `opencode.json` or `opencode.jsonc`, and it does not require a standalone
   `opencode` command in `PATH`.
 - The npm wrappers use `packages/npm/memorax-code/lib/run-entrypoint.mjs` to
-  locate staged Backend or adapter entrypoints.
+  locate staged Backend or adapter entrypoints, including each client-specific
+  diagnostics CLI.
 - Artifact gates reject undeclared paths, unsafe symlinks, cache/build debris,
   and local-only data-boundary violations.
 - Installed-package tests isolate `MEMORAX_CODE_HOME`, `CODEX_HOME`,

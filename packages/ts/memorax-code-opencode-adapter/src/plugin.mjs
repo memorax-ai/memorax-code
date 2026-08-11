@@ -3,6 +3,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { resolveBackendConnection } from "../../memorax-code-adapter-common/src/backend-connection.mjs";
 import { readAdapterState } from "../../memorax-code-adapter-common/src/config-utils.mjs";
 import { ensureBackendAvailable } from "../../memorax-code-adapter-common/src/hooks/ensure-backend-runner.mjs";
+import { recordWorkspaceEvidence } from "../../memorax-code-adapter-common/src/hooks/capture-cwd-hook.mjs";
 import {
   evaluateMemorySkillReminder,
   markSupplementalReminderForSession,
@@ -35,6 +36,8 @@ export function createMemoraxOpenCodePlugin(options = {}) {
     let backendEnsurePromise;
     let backendEnsureSettled = false;
     let backendPromptGatePromise;
+
+    recordOpenCodeWorkspaceEvidence(options, workspaceRoot, "plugin.load");
 
     function ensureBackendReady() {
       if (!managedPluginEnabled(options)) return Promise.resolve();
@@ -130,6 +133,7 @@ export function createMemoraxOpenCodePlugin(options = {}) {
         const sessionId = stringValue(input?.sessionID);
         const prompt = textParts(output?.parts);
         if (!sessionId || !userMessageId || !prompt) return;
+        recordOpenCodeWorkspaceEvidence(options, workspaceRoot, "chat.message", sessionId);
         const reminderResult = await evaluateReminder(reminderEvaluator, reminderOptions, {
           hookEventName: "UserPromptSubmit",
           sessionId,
@@ -390,4 +394,22 @@ function backendEnsureOptions(options) {
     ],
     debug: (message) => debug(options, "opencode backend recovery skipped", message),
   };
+}
+
+function recordOpenCodeWorkspaceEvidence(options, cwd, event, sessionId) {
+  if (!managedPluginEnabled(options)) return;
+  try {
+    recordWorkspaceEvidence({
+      adapterDir: "opencode",
+      memoraxCodeHome: options.memoraxCodeHome,
+      runtime: "opencode",
+      sessionKeyPrefix: "opencode",
+    }, {
+      event,
+      session_id: sessionId,
+      cwd,
+    });
+  } catch (error) {
+    debug(options, "opencode workspace evidence failed", error);
+  }
 }

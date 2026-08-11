@@ -180,7 +180,7 @@ test -x "$memorax_code_bin"
 test -f "$package_install_root/node_modules/smol-toml/package.json"
 test ! -e "$package_install_root/node_modules/typescript/package.json"
 test "$("$memorax_code_bin" --version)" = "memorax-code $baseline_version"
-for command in memorax-code memorax-cli memorax-code-backend memorax-code-codex memorax-code-claude; do
+for command in memorax-code memorax-cli memorax-code-backend memorax-code-codex memorax-code-claude memorax-code-opencode; do
   test -x "$npm_prefix/bin/$command"
   "$npm_prefix/bin/$command" --help >/dev/null
 done

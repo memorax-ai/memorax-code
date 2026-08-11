@@ -131,7 +131,8 @@ retrieval when enabled, completed-turn writeback, periodic Skill reminders,
 and User Profile and Procedure Memory guidance. A repo-read can maintain Repo
 Memory in the background according to policy. Unlike Codex and Claude Code,
 OpenCode does not yet initialize a missing bundle automatically on the first
-prompt.
+prompt. Use `memorax-code-opencode doctor` to verify the managed integration,
+plugin runtime evidence, and Backend health.
 
 | Capability | What it does |
 | --- | --- |

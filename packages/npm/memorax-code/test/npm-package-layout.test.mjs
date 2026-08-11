@@ -10,6 +10,7 @@ test("single npm package layout accepts declared paths and rejects unknown trees
   assert.equal(isAllowedNpmPackPath("LICENSE"), true);
   assert.equal(isAllowedNpmPackPath("bin/memorax-cli.mjs"), true);
   assert.equal(isAllowedNpmPackPath("bin/memorax-code-npm-preinstall.mjs"), true);
+  assert.equal(isAllowedNpmPackPath("bin/memorax-code-opencode.mjs"), true);
   assert.equal(isAllowedNpmPackPath("lib/node-version.mjs"), true);
   assert.equal(isAllowedNpmPackPath("lib/resolve-claude-command.mjs"), true);
   assert.equal(isAllowedNpmPackPath("lib/vscode-extension-command.mjs"), true);

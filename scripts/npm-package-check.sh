@@ -58,6 +58,7 @@ expected_bins = {
     "memorax-code-backend": "bin/memorax-code-backend.mjs",
     "memorax-code-claude": "bin/memorax-code-claude.mjs",
     "memorax-code-codex": "bin/memorax-code-codex.mjs",
+    "memorax-code-opencode": "bin/memorax-code-opencode.mjs",
 }
 assert package_manifest.get("bin") == expected_bins, package_manifest.get("bin")
 for relative in expected_bins.values():
@@ -153,6 +154,7 @@ for relative in [
     "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/skills/memorax-code/SKILL.md",
     "lib/memorax-code-opencode-adapter/src/plugin.mjs",
     "lib/memorax-code-opencode-adapter/src/plugin-install.mjs",
+    "lib/memorax-code-opencode-adapter/src/cli.mjs",
     "lib/memorax-code-opencode-adapter/src/repo-memory-server-runner.mjs",
     "lib/memorax-code-opencode-adapter/hooks/repo-memory-job.mjs",
     "lib/memorax-code-opencode-adapter/skills/memorax-code/SKILL.md",
@@ -322,6 +324,7 @@ for relative in \
   lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/skills/memorax-code/SKILL.md \
   lib/memorax-code-opencode-adapter/src/plugin.mjs \
   lib/memorax-code-opencode-adapter/src/plugin-install.mjs \
+  lib/memorax-code-opencode-adapter/src/cli.mjs \
   lib/memorax-code-opencode-adapter/src/repo-memory-server-runner.mjs \
   lib/memorax-code-opencode-adapter/hooks/repo-memory-job.mjs \
   lib/memorax-code-opencode-adapter/skills/memorax-code/SKILL.md
@@ -475,6 +478,7 @@ node -e '
 ' "$home_dir/memorax-cli-status.json"
 "$prefix/bin/memorax-code-codex" --help >/dev/null
 "$prefix/bin/memorax-code-claude" --help >/dev/null
+"$prefix/bin/memorax-code-opencode" --help >/dev/null
 
 claude_home="$home_dir/.claude-memorax-code-package-check"
 claude_memorax_code_home="$home_dir/.memorax-code-claude-package-check"

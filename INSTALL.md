@@ -101,11 +101,12 @@ memorax-code status
 memorax-cli status
 ```
 
-Codex and Claude Code also provide client-specific doctor commands:
+Each supported client also provides a client-specific doctor command:
 
 ```bash
 memorax-code-codex doctor
 memorax-code-claude doctor
+memorax-code-opencode doctor
 ```
 
 `memorax-code status` checks the local Backend and every selected client
@@ -181,6 +182,7 @@ memorax-code status
 memorax-cli status
 memorax-code-codex doctor
 memorax-code-claude doctor
+memorax-code-opencode doctor
 memorax-code logs
 ```
 

@@ -87,7 +87,9 @@ managed paths are:
 
 Set `OPENCODE_CONFIG_DIR` to override the complete OpenCode configuration root.
 Otherwise, `XDG_CONFIG_HOME` replaces `~/.config` when set. The managed adapter
-record lives at `$MEMORAX_CODE_HOME/adapters/opencode/state.json`.
+record lives at `$MEMORAX_CODE_HOME/adapters/opencode/state.json`. Content-free
+plugin runtime evidence lives beside it in `workspaces.json` and records only
+the observed event, workspace, optional session identifier, and timestamp.
 
 The plugin and skill use OpenCode's automatic discovery. MemoraX Code does not
 add entries to or otherwise modify `opencode.json` or `opencode.jsonc`. Restart
@@ -280,6 +282,7 @@ memorax-cli status
 memorax-cli status --json
 memorax-code-codex doctor
 memorax-code-claude doctor
+memorax-code-opencode doctor
 ```
 
 The status commands do not print the MemoraX API key or Backend token.

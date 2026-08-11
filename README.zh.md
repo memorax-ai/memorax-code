@@ -111,7 +111,8 @@ Skill 目录。下面的指令使用产品名称，三个客户端均可直接�
 OpenCode 集成支持共享 Skill、主动 Search/Add、启用后的自动召回、完成 Turn 后的自动写回，
 以及周期性的 Skill 提醒和 User Profile、Procedure Memory 指引。执行 repo-read 时可按策略在
 后台维护 Repo Memory；但与 Codex、Claude Code 不同，OpenCode 暂不会在首个 Prompt 自动初始化
-缺失的 bundle。
+缺失的 bundle。可运行 `memorax-code-opencode doctor` 检查受管集成、插件运行证据和 Backend
+健康状态。
 
 | 能力 | 作用 |
 | --- | --- |

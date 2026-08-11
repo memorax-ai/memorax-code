@@ -74,6 +74,12 @@ export async function runClaudeAdapterCli() {
   await import(pathToFileURL(entrypoint).href);
 }
 
+export async function runOpenCodeAdapterCli() {
+  if (!ensureSupportedNodeRuntime()) return;
+  const entrypoint = join(packageRoot, "lib", "memorax-code-opencode-adapter", "src", "cli.mjs");
+  await import(pathToFileURL(entrypoint).href);
+}
+
 function ensureSupportedNodeRuntime() {
   const message = unsupportedNodeVersionMessage();
   if (!message) return true;

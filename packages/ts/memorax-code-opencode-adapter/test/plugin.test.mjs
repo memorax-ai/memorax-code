@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter } from "node:path";
 import { join } from "node:path";
@@ -131,6 +131,67 @@ test("managed plugin starts the Backend once and bounds prompt waiting", async (
     assert.equal(requests.length, 2);
   } finally {
     await writeFile(releasePath, "release\n").catch(() => undefined);
+    await hooks?.dispose();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("managed plugin records load and real user message workspace evidence", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-opencode-runtime-evidence-"));
+  const memoraxCodeHome = join(root, "memorax-code-home");
+  const workspace = join(root, "workspace");
+  const statePath = join(root, "state.json");
+  const requests = [];
+  let hooks;
+  try {
+    await mkdir(workspace, { recursive: true });
+    const canonicalWorkspace = await realpath(workspace);
+    await writeFile(statePath, JSON.stringify({
+      version: 1,
+      runtime: "opencode",
+      integration: "plugin",
+      enabled: true,
+    }));
+    const plugin = createPluginWithoutReminders({
+      statePath,
+      memoraxCodeHome,
+      backendConnection: { url: "http://127.0.0.1:8787" },
+      fetchImpl: responseSequence(requests, [{ ok: true }]),
+    });
+    hooks = await plugin(pluginInput({ directory: workspace, worktree: workspace }));
+
+    const workspaceStatePath = join(
+      memoraxCodeHome,
+      "adapters",
+      "opencode",
+      "workspaces.json",
+    );
+    const loadedState = JSON.parse(await readFile(workspaceStatePath, "utf8"));
+    assert.equal(loadedState.latest.event, "plugin.load");
+    assert.equal(loadedState.latest.cwd, canonicalWorkspace);
+    await assert.rejects(
+      readFile(join(memoraxCodeHome, "adapters", "opencode", "session-registry.json")),
+      /ENOENT/,
+    );
+
+    await hooks["chat.message"]({
+      sessionID: "repo-memory-session",
+      agent: OPENCODE_REPO_MEMORY_AGENT,
+    }, promptOutput("repo-memory-user", "Maintain Repo Memory"));
+    assert.equal(
+      JSON.parse(await readFile(workspaceStatePath, "utf8")).latest.event,
+      "plugin.load",
+    );
+
+    await hooks["chat.message"](
+      { sessionID: "runtime-session" },
+      promptOutput("runtime-user", "Check runtime diagnostics"),
+    );
+    const promptedState = JSON.parse(await readFile(workspaceStatePath, "utf8"));
+    assert.equal(promptedState.latest.event, "chat.message");
+    assert.equal(promptedState.latest.sessionId, "runtime-session");
+    assert.equal(promptedState.sessions["runtime-session"].cwd, canonicalWorkspace);
+  } finally {
     await hooks?.dispose();
     await rm(root, { recursive: true, force: true });
   }

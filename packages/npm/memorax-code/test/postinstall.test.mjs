@@ -2026,7 +2026,7 @@ test("postinstall reports unavailable status and prints red diagnostics instead 
     assert.match(run.result.stderr, /\[MemoraX Code Backend\]: claude adapter: ok integration=hooks skills=ok/);
     assert.match(run.result.stderr, /Backend and selected adapters: .*Unavailable/);
     assert.match(run.result.stderr, /MemoraX Code is not enabled for new client sessions/);
-    assert.match(run.result.stderr, /Check `memorax-code status`, `memorax-code-codex status`, and `memorax-code-claude status`/);
+    assert.match(run.result.stderr, /Check `memorax-code status`, `memorax-code-codex status`, `memorax-code-claude status`, and `memorax-code-opencode status`/);
     assert.doesNotMatch(run.result.stderr, /Restart or refresh Codex/);
     assert.doesNotMatch(run.result.stderr, /enable the MemoraX Code Codex Adapter plugin/);
     assert.match(run.result.stderr, /\[MemoraX Code Install\]: Common commands:/);

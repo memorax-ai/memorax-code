@@ -56,6 +56,7 @@ for (const requiredPath of [
   "package.json",
   "README.md",
   "bin/memorax-code-npm-preinstall.mjs",
+  "bin/memorax-code-opencode.mjs",
   "lib/client-hook-runtime.mjs",
   "lib/node-version.mjs",
   "lib/npm-invocation.mjs",
@@ -92,6 +93,7 @@ for (const requiredPath of [
   "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/backend-connection.mjs",
   "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/runtime-record.mjs",
   "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/hooks/ensure-backend-runner.mjs",
+  "lib/memorax-code-opencode-adapter/src/cli.mjs",
 ]) {
   if (!paths.has(requiredPath)) {
     throw new Error(`npm pack is missing required runtime entrypoint: ${requiredPath}`);

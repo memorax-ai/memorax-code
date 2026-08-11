@@ -15,6 +15,7 @@ const packageFiles = new Set([
   "bin/memorax-code-claude.mjs",
   "bin/memorax-code-plugin-postinstall.mjs",
   "bin/memorax-code-codex.mjs",
+  "bin/memorax-code-opencode.mjs",
   "bin/memorax-code-npm-preinstall.mjs",
   "bin/memorax-code.mjs",
   "bin/memorax-cli.mjs",

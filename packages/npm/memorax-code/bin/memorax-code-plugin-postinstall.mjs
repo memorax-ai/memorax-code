@@ -1190,10 +1190,15 @@ function enabledClientText({ codexAdapterEnabled = true, claudeAdapterEnabled = 
   return `${labels.slice(0, -1).join(", ")}, or ${labels.at(-1)}`;
 }
 
-function statusCommandText({ codexAdapterEnabled = true, claudeAdapterEnabled = true } = {}) {
+function statusCommandText({
+  codexAdapterEnabled = true,
+  claudeAdapterEnabled = true,
+  opencodeAdapterEnabled = true,
+} = {}) {
   const commands = ["`memorax-code status`"];
   if (codexAdapterEnabled) commands.push("`memorax-code-codex status`");
   if (claudeAdapterEnabled) commands.push("`memorax-code-claude status`");
+  if (opencodeAdapterEnabled) commands.push("`memorax-code-opencode status`");
   if (commands.length === 1) return commands[0];
   if (commands.length === 2) return `${commands[0]} and ${commands[1]}`;
   return `${commands.slice(0, -1).join(", ")}, and ${commands.at(-1)}`;
@@ -1275,7 +1280,7 @@ function readMemoraxInstallStatus() {
 
 function printUnavailableDiagnostics({ codexSkipReason, claudeSkipReason, opencodeSkipReason } = {}) {
   logRed("MemoraX Code is not enabled for new client sessions.");
-  logRed("Check `memorax-code status`, `memorax-code-codex status`, and `memorax-code-claude status` for Backend and adapter details.");
+  logRed("Check `memorax-code status`, `memorax-code-codex status`, `memorax-code-claude status`, and `memorax-code-opencode status` for Backend and adapter details.");
   logRed("If Codex, Claude Code, or OpenCode is open, restart or refresh it after fixing the reported status.");
   if (codexSkipReason) printCodexSkippedDiagnostics(codexSkipReason);
   if (claudeSkipReason) printClaudeSkippedDiagnostics(claudeSkipReason);
@@ -1329,7 +1334,11 @@ function printLifecycleLockFailureSuggestions() {
   printCommonCommands();
 }
 
-function printCommonCommands({ codexAdapterEnabled = true, claudeAdapterEnabled = true } = {}) {
+function printCommonCommands({
+  codexAdapterEnabled = true,
+  claudeAdapterEnabled = true,
+  opencodeAdapterEnabled = true,
+} = {}) {
   log("Common commands:");
   log("- `memorax-code status`: check the local backend and adapter state.");
   log("- `memorax-cli status`: check required MemoraX configuration and effective memory switches.");
@@ -1337,6 +1346,7 @@ function printCommonCommands({ codexAdapterEnabled = true, claudeAdapterEnabled 
   log("- `memorax-code stop`: stop the local memory backend and disable managed client integrations.");
   if (codexAdapterEnabled) log("- `memorax-code-codex sessions`: verify recent native Codex session registration.");
   if (claudeAdapterEnabled) log("- `memorax-code-claude sessions`: verify recent native Claude Code session registration.");
+  if (opencodeAdapterEnabled) log("- `memorax-code-opencode doctor`: verify the managed OpenCode plugin, runtime evidence, and Backend health.");
 }
 
 function memoraxCodeEnabled(statusResult, {

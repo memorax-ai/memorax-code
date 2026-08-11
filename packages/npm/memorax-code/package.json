@@ -24,7 +24,8 @@
     "memorax-cli": "bin/memorax-cli.mjs",
     "memorax-code-backend": "bin/memorax-code-backend.mjs",
     "memorax-code-claude": "bin/memorax-code-claude.mjs",
-    "memorax-code-codex": "bin/memorax-code-codex.mjs"
+    "memorax-code-codex": "bin/memorax-code-codex.mjs",
+    "memorax-code-opencode": "bin/memorax-code-opencode.mjs"
   },
   "files": [
     "bin",

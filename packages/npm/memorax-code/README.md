@@ -51,6 +51,7 @@ Memory bundle automatically on the first prompt.
 memorax-code --version
 memorax-code status
 memorax-cli status
+memorax-code-opencode doctor
 ```
 
 For configuration or troubleshooting, see the documentation shipped with the
