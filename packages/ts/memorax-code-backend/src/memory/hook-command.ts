@@ -35,6 +35,7 @@ const WRITEBACK_KEYS: Readonly<Record<MemoryHookClient, ReadonlySet<string>>> = 
 const SKILL_REMINDER_KEYS: Readonly<Partial<Record<MemoryHookClient, ReadonlySet<string>>>> = {
   codex: new Set([...BASE_COMMAND_KEYS, "turnId", "transcriptPath", "content", "triggers"]),
   "claude-code": new Set([...BASE_COMMAND_KEYS, "promptId", "transcriptPath", "content", "triggers"]),
+  opencode: new Set([...BASE_COMMAND_KEYS, "userMessageId", "content", "triggers"]),
 };
 
 type MemoryHookCommandBase<Client extends MemoryHookClient> = Readonly<{
@@ -106,7 +107,16 @@ export type ClaudeSkillReminderCommand = MemoryHookCommandBase<"claude-code"> & 
   triggers: SkillReminderTrigger[];
 }>;
 
-export type SkillReminderCommand = CodexSkillReminderCommand | ClaudeSkillReminderCommand;
+export type OpenCodeSkillReminderCommand = MemoryHookCommandBase<"opencode"> & Readonly<{
+  userMessageId: string;
+  content: string;
+  triggers: SkillReminderTrigger[];
+}>;
+
+export type SkillReminderCommand =
+  | CodexSkillReminderCommand
+  | ClaudeSkillReminderCommand
+  | OpenCodeSkillReminderCommand;
 
 export type MemoryHookCommandParseResult<Command> =
   | { ok: true; command: Command }
@@ -224,10 +234,25 @@ export function parseSkillReminderCommand(
   if (!isRecord(value)) return invalidCommand();
   const base = parseCommandBase(value, SKILL_REMINDER_KEYS);
   if (!base) return invalidCommand();
-  const transcriptPath = requiredStringField(value, "transcriptPath");
   const content = requiredContentField(value, "content");
   const triggers = skillReminderTriggers(value.triggers);
-  if (!transcriptPath || !content || !triggers) return invalidCommand();
+  if (!content || !triggers) return invalidCommand();
+  if (base.client === "opencode") {
+    const userMessageId = requiredStringField(value, "userMessageId");
+    if (!userMessageId) return invalidCommand();
+    return {
+      ok: true,
+      command: {
+        ...base,
+        client: "opencode",
+        userMessageId,
+        content,
+        triggers,
+      },
+    };
+  }
+  const transcriptPath = requiredStringField(value, "transcriptPath");
+  if (!transcriptPath) return invalidCommand();
   if (base.client === "codex") {
     const turnId = requiredStringField(value, "turnId");
     if (!turnId) return invalidCommand();

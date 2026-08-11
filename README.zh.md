@@ -108,8 +108,9 @@ Skill 目录。下面的指令使用产品名称，三个客户端均可直接�
 
 ## 产品能力
 
-OpenCode 集成支持共享 Skill、主动 Search/Add、启用后的自动召回和完成 Turn 后的自动写回；
-暂不包含 Repo Memory 后台维护。通过 Skill 主动执行 Repo Memory 操作仍然可用。
+OpenCode 集成支持共享 Skill、主动 Search/Add、启用后的自动召回、完成 Turn 后的自动写回，
+以及周期性的 Skill 提醒和 User Profile、Procedure Memory 指引；暂不包含 Repo Memory
+后台维护。通过 Skill 主动执行 Repo Memory 操作仍然可用。
 
 | 能力 | 作用 |
 | --- | --- |

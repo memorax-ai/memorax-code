@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { createOpenCodeMemoryHookRuntime } from "../../../dist/clients/opencode/memory-hook-runtime.js";
 import { openCodeMessageTurn } from "../../../dist/clients/opencode/message-turn.js";
 import {
+  parseSkillReminderCommand,
   parseTurnStartCommand,
   parseWritebackCommand,
 } from "../../../dist/memory/hook-command.js";
@@ -30,6 +31,14 @@ test("OpenCode Hook commands keep a closed client-specific schema", () => {
     assistantMessageId: "assistant-1",
     messages: [],
   }).ok, true);
+  assert.equal(parseSkillReminderCommand({
+    version: 1,
+    client: "opencode",
+    sessionId: "session-1",
+    userMessageId: "user-1",
+    content: "Use the memorax-code skill.",
+    triggers: ["cadence"],
+  }).ok, true);
   assert.equal(parseTurnStartCommand({
     version: 1,
     client: "opencode",
@@ -46,6 +55,23 @@ test("OpenCode Hook commands keep a closed client-specific schema", () => {
     assistantMessageId: "assistant-1",
     messages: [],
     lastAssistantMessage: "Hook text is not OpenCode writeback authority.",
+  }).ok, false);
+  assert.equal(parseSkillReminderCommand({
+    version: 1,
+    client: "opencode",
+    sessionId: "session-1",
+    userMessageId: "user-1",
+    transcriptPath: "/tmp/transcript.jsonl",
+    content: "Do not accept another client's transcript field.",
+    triggers: ["cadence"],
+  }).ok, false);
+  assert.equal(parseSkillReminderCommand({
+    version: 1,
+    client: "opencode",
+    sessionId: "session-1",
+    turnId: "user-1",
+    content: "OpenCode reminder commands must use userMessageId.",
+    triggers: ["cadence"],
   }).ok, false);
 });
 

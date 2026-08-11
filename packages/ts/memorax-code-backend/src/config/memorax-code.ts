@@ -134,7 +134,7 @@ export function renderDefaultMemoraxCodeConfig(): string {
     "[memory.add]",
     `output_language = "${MEMORAX_DEFAULT_MEMORY_OUTPUT_LANGUAGE}" # Language for newly generated MemoraX memories.`,
     "",
-    "# Controls how often Codex and Claude Code native client sessions see the MemoraX Code skill reminder.",
+    "# Controls how often Codex, Claude Code, and OpenCode native client sessions see the MemoraX Code skill reminder.",
     "[memory.skill_reminder]",
     "interval_turns = 5 # Show the MemoraX Code skill reminder every N native client turns, starting on the first turn.",
     "",

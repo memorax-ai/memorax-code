@@ -127,7 +127,8 @@ the current repository.
 ## Product Capabilities
 
 OpenCode support covers the shared skill, explicit Search and Add, automatic
-retrieval when enabled, and completed-turn writeback. Background Repo Memory
+retrieval when enabled, completed-turn writeback, periodic Skill reminders,
+and User Profile and Procedure Memory guidance. Background Repo Memory
 maintenance is not currently part of the OpenCode integration; active Repo
 Memory operations through the skill remain available.
 

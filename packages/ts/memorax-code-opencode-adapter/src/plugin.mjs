@@ -3,11 +3,20 @@ import { setTimeout as delay } from "node:timers/promises";
 import { resolveBackendConnection } from "../../memorax-code-adapter-common/src/backend-connection.mjs";
 import { readAdapterState } from "../../memorax-code-adapter-common/src/config-utils.mjs";
 import { ensureBackendAvailable } from "../../memorax-code-adapter-common/src/hooks/ensure-backend-runner.mjs";
+import {
+  evaluateMemorySkillReminder,
+  markSupplementalReminderForSession,
+  personalMemoryReminderContext,
+} from "../../memorax-code-adapter-common/src/hooks/memory-skill-reminder-hook.mjs";
+import { buildRepoProcedureMemoryContext } from "../../memorax-code-adapter-common/src/repo-memory/repo-procedure-memory-context.mjs";
+import { buildRepoUserProfilePreferencesContext } from "../../memorax-code-adapter-common/src/repo-memory/repo-user-profile-context.mjs";
 
 const DEFAULT_BACKEND_PROMPT_WAIT_TIMEOUT_MS = 5_000;
 const TURN_START_TIMEOUT_MS = 12_000;
+const REMINDER_TRACE_TIMEOUT_MS = 1_000;
 const WRITEBACK_TIMEOUT_MS = 5_000;
 const MAX_PENDING_TURNS = 256;
+const MEMORY_SKILL_INVOCATION = "the `memorax-code` skill";
 
 export function createMemoraxOpenCodePlugin(options = {}) {
   return async ({ client, project, directory, worktree }) => {
@@ -15,6 +24,8 @@ export function createMemoraxOpenCodePlugin(options = {}) {
     const workspaceKind = project?.vcs === "git" ? "project" : "local";
     const pendingTurns = new Map();
     const inFlight = new Set();
+    const reminderOptions = memorySkillReminderOptions(options);
+    const reminderEvaluator = options.memorySkillReminderEvaluator ?? evaluateMemorySkillReminder;
     const backendPromptWaitTimeoutMs = positiveInteger(
       options.backendPromptWaitTimeoutValue,
       DEFAULT_BACKEND_PROMPT_WAIT_TIMEOUT_MS,
@@ -49,9 +60,9 @@ export function createMemoraxOpenCodePlugin(options = {}) {
       return await backendPromptGatePromise;
     }
 
-    function track(task) {
+    function track(task, failureMessage) {
       const observed = task.catch((error) => {
-        debug(options, "opencode writeback failed", error);
+        debug(options, failureMessage, error);
       });
       inFlight.add(observed);
       void observed.finally(() => inFlight.delete(observed));
@@ -101,15 +112,25 @@ export function createMemoraxOpenCodePlugin(options = {}) {
         const sessionId = stringValue(input?.sessionID);
         const prompt = textParts(output?.parts);
         if (!sessionId || !userMessageId || !prompt) return;
+        const reminderResult = await evaluateReminder(reminderEvaluator, reminderOptions, {
+          hookEventName: "UserPromptSubmit",
+          sessionId,
+          turnId: userMessageId,
+          cwd: workspaceRoot,
+          workspaceKind,
+        }, options);
         if (!await backendReadyForPrompt()) {
           debug(
             options,
             "opencode turn start skipped",
             `Backend recovery exceeded the ${backendPromptWaitTimeoutMs} ms interaction budget`,
           );
+          appendSystemContexts(output, reminderResult?.additionalContext);
           return;
         }
         if (!pluginEnabled(options)) return;
+        let retrievalContext;
+        let turnStartAccepted = false;
         try {
           const result = await postBackend(options, "/memory/turn-start", {
             version: 1,
@@ -120,6 +141,7 @@ export function createMemoraxOpenCodePlugin(options = {}) {
             cwd: workspaceRoot,
             workspaceKind,
           }, TURN_START_TIMEOUT_MS);
+          turnStartAccepted = true;
           if (!pluginEnabled(options)) return;
           const turn = { sessionId, userMessageId };
           pendingTurns.set(turnKey(turn), turn);
@@ -128,16 +150,17 @@ export function createMemoraxOpenCodePlugin(options = {}) {
             if (typeof oldest !== "string") break;
             pendingTurns.delete(oldest);
           }
-          const additionalContext = stringValue(result?.additionalContext);
-          if (additionalContext) {
-            const existing = stringValue(output.message.system);
-            output.message.system = existing
-              ? `${existing}\n\n${additionalContext}`
-              : additionalContext;
-          }
+          retrievalContext = stringValue(result?.additionalContext);
         } catch (error) {
           debug(options, "opencode turn start failed", error);
         }
+        if (turnStartAccepted && reminderResult?.reminder) {
+          track(
+            recordReminder(options, reminderResult.reminder),
+            "opencode reminder trace failed",
+          );
+        }
+        appendSystemContexts(output, retrievalContext, reminderResult?.additionalContext);
       },
       "shell.env": async (input, output) => {
         if (!pluginEnabled(options)) return;
@@ -158,9 +181,13 @@ export function createMemoraxOpenCodePlugin(options = {}) {
       },
       event({ event }) {
         if (!pluginEnabled(options)) return;
+        if (event?.type === "session.compacted") {
+          markSupplementalReminderForSession(reminderOptions, event.properties?.sessionID);
+          return;
+        }
         if (event?.type === "session.status" && event.properties?.status?.type === "idle") {
           const sessionId = stringValue(event.properties.sessionID);
-          if (sessionId) track(flushSession(sessionId));
+          if (sessionId) track(flushSession(sessionId), "opencode writeback failed");
         }
       },
       async dispose() {
@@ -213,6 +240,36 @@ function turnKey(turn) {
   return JSON.stringify([turn.sessionId, turn.userMessageId]);
 }
 
+async function evaluateReminder(evaluator, reminderOptions, input, options) {
+  try {
+    return await evaluator(reminderOptions, input);
+  } catch (error) {
+    debug(options, "opencode memory reminder failed", error);
+    return undefined;
+  }
+}
+
+function appendSystemContexts(output, ...contexts) {
+  const additions = contexts.map(stringValue).filter(Boolean);
+  if (additions.length === 0) return;
+  const existing = stringValue(output?.message?.system);
+  output.message.system = [existing, ...additions].filter(Boolean).join("\n\n");
+}
+
+function recordReminder(options, reminder) {
+  if (!reminder.turnId) return Promise.resolve();
+  return postBackend(options, "/memory/skill-reminder", {
+    version: 1,
+    client: "opencode",
+    sessionId: reminder.sessionId,
+    userMessageId: reminder.turnId,
+    cwd: reminder.cwd,
+    workspaceKind: reminder.workspaceKind,
+    content: reminder.content,
+    triggers: reminder.triggers,
+  }, REMINDER_TRACE_TIMEOUT_MS);
+}
+
 async function postBackend(options, path, body, timeoutMs) {
   const connection = options.backendConnection ?? resolveBackendConnection(options);
   const headers = { "content-type": "application/json", connection: "close" };
@@ -259,6 +316,26 @@ function managedPluginEnabled(options) {
     && state?.runtime === "opencode"
     && state?.integration === "plugin"
     && state?.enabled === true;
+}
+
+function memorySkillReminderOptions(options) {
+  const personalMemoryContextOptions = {
+    adapterDir: "opencode",
+    debugEnv: "MEMORAX_CODE_OPENCODE_PLUGIN_DEBUG",
+    sessionKeyPrefix: "opencode",
+  };
+  return {
+    additionalReminderContext: personalMemoryReminderContext(MEMORY_SKILL_INVOCATION),
+    adapterDir: "opencode",
+    buildCadenceReminderContext: (input) => buildRepoProcedureMemoryContext(input, personalMemoryContextOptions),
+    buildPersonalMemoryContext: (input) => buildRepoUserProfilePreferencesContext(input, personalMemoryContextOptions),
+    debugEnv: "MEMORAX_CODE_OPENCODE_PLUGIN_DEBUG",
+    memoraxCodeHome: options.memoraxCodeHome,
+    memorySkillInvocation: MEMORY_SKILL_INVOCATION,
+    remindOnFirstTurn: true,
+    runtime: "opencode",
+    supplementalReminderAfterCompact: true,
+  };
 }
 
 function backendEnsureOptions(options) {

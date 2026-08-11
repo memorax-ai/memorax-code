@@ -194,8 +194,8 @@ Command arguments override the other add defaults.
 
 `[memory.skill_reminder].interval_turns` defaults to `5`; its environment
 override is `MEMORAX_CODE_MEMORY_SKILL_REMINDER_INTERVAL_TURNS`. A positive
-value controls the reminder cadence for Codex and Claude Code, beginning with
-the first eligible prompt.
+value controls the reminder cadence for Codex, Claude Code, and OpenCode,
+beginning with the first eligible prompt.
 
 | Field | Environment override | Fallback |
 | --- | --- | --- |
@@ -215,7 +215,8 @@ local `cwd`.
 
 OpenCode supports active Repo Memory operations through the installed skill,
 but its plugin does not currently run background Repo Memory maintenance. Its
-automatic integration covers retrieval and completed-turn writeback.
+automatic integration covers retrieval, shared reminder and personal-memory
+context injection, and completed-turn writeback.
 
 ## Local traces
 

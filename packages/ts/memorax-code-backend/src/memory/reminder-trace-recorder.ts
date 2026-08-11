@@ -6,6 +6,7 @@ import {
 import {
   traceContextFromClaudeHookBody,
   traceContextFromHookBody,
+  traceContextFromOpenCodeHookBody,
   type TraceContext,
 } from "../trace/context.js";
 import { recordTraceEvent } from "../trace/store.js";
@@ -39,7 +40,7 @@ export function createMemoryReminderTraceRecorder(
         env: options.env,
         traceContext,
         type: "skill_reminder",
-        source: request.client === "codex" ? "codex-hook" : "claude-hook",
+        source: reminderSource(request),
         operation: "reminder",
         ok: true,
         request: {
@@ -53,7 +54,7 @@ export function createMemoryReminderTraceRecorder(
       options.diagnosticLogger?.("memory_hook.skill_reminder", {
         client: request.client,
         sessionId: request.sessionId,
-        turnId: request.client === "codex" ? request.turnId : request.promptId,
+        turnId: reminderTurnId(request),
         triggers: request.triggers,
         contentChars: request.content.length,
       });
@@ -64,7 +65,20 @@ export function createMemoryReminderTraceRecorder(
 
 function traceContextForReminder(command: SkillReminderCommand): TraceContext | undefined {
   if (command.client === "codex") return traceContextFromHookBody(command);
-  return traceContextFromClaudeHookBody(command);
+  if (command.client === "claude-code") return traceContextFromClaudeHookBody(command);
+  return traceContextFromOpenCodeHookBody(command);
+}
+
+function reminderSource(command: SkillReminderCommand): string {
+  if (command.client === "codex") return "codex-hook";
+  if (command.client === "claude-code") return "claude-hook";
+  return "opencode-plugin";
+}
+
+function reminderTurnId(command: SkillReminderCommand): string {
+  if (command.client === "codex") return command.turnId;
+  if (command.client === "claude-code") return command.promptId;
+  return command.userMessageId;
 }
 
 async function recordTraceBestEffort(

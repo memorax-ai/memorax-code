@@ -23,15 +23,30 @@ export function personalMemoryReminderContext(memorySkillInvocation) {
 export async function runMemorySkillReminderHook(options, hookInput) {
   try {
     const input = hookInput ?? await readStdinJson();
+    const result = await evaluateMemorySkillReminder(options, input);
+    if (!result) return;
+    process.stdout.write(`${JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: "UserPromptSubmit",
+        additionalContext: result.additionalContext,
+      },
+    })}\n`);
+    if (result.reminder) await notifyReminder(options, result.reminder);
+  } catch (error) {
+    debugError(options, error);
+  }
+}
+
+export async function evaluateMemorySkillReminder(options, input) {
+  try {
     const sessionId = stringOption(input.session_id) ?? stringOption(input.sessionId);
-    if (!sessionId) return;
+    if (!sessionId) return undefined;
     const transcriptPath = stringOption(input.transcript_path) ?? stringOption(input.transcriptPath);
-    if (options.requireTranscriptPath && !transcriptPath) return;
+    if (options.requireTranscriptPath && !transcriptPath) return undefined;
     const hookEventName = stringOption(input.hook_event_name) ?? stringOption(input.hookEventName) ?? "UserPromptSubmit";
+    if (hookEventName !== "UserPromptSubmit") return undefined;
 
-    const memoraxCodeHome = process.env.MEMORAX_CODE_HOME || defaultMemoraxCodeHome();
-    if (hookEventName !== "UserPromptSubmit") return;
-
+    const memoraxCodeHome = resolveMemoraxCodeHome(options);
     const statePath = join(memoraxCodeHome, "adapters", options.adapterDir, "memory-skill-reminders.json");
     const turnId = stringOption(input.turn_id)
       ?? stringOption(input.turnId)
@@ -64,34 +79,30 @@ export async function runMemorySkillReminderHook(options, hookInput) {
         turnCount: sessionState?.turnCount,
       };
     });
-    if (update.duplicate) return;
+    if (update.duplicate) return undefined;
     const { memoryReminderDue, supplementalReminderDue } = update;
 
     const baseAdditionalContext = stringOption(options.baseAdditionalContext);
-    if (baseAdditionalContext || memoryReminderDue || supplementalReminderDue) {
-      const cadenceReminderContext = memoryReminderDue
-        ? await buildCadenceReminderContext(options, input)
-        : undefined;
-      const personalMemoryContext = supplementalReminderDue || (memoryReminderDue && update.turnCount === 1)
-        ? await buildPersonalMemoryContext(options, input)
-        : undefined;
-      const reminderContext = stringOption(combinedReminderContext(options, {
-        memoryReminderDue,
-        supplementalReminderDue,
-      }, cadenceReminderContext, personalMemoryContext));
-      const additionalContext = [baseAdditionalContext, reminderContext].filter(Boolean).join("\n\n");
-      const triggers = [
-        ...(memoryReminderDue ? ["cadence"] : []),
-        ...(supplementalReminderDue ? ["post_compaction"] : []),
-      ];
-      process.stdout.write(`${JSON.stringify({
-        hookSpecificOutput: {
-          hookEventName: "UserPromptSubmit",
-          additionalContext,
-        },
-      })}\n`);
-      if (reminderContext) {
-        await notifyReminder(options, {
+    if (!baseAdditionalContext && !memoryReminderDue && !supplementalReminderDue) return undefined;
+    const cadenceReminderContext = memoryReminderDue
+      ? await buildCadenceReminderContext(options, input)
+      : undefined;
+    const personalMemoryContext = supplementalReminderDue || (memoryReminderDue && update.turnCount === 1)
+      ? await buildPersonalMemoryContext(options, input)
+      : undefined;
+    const reminderContext = stringOption(combinedReminderContext(options, {
+      memoryReminderDue,
+      supplementalReminderDue,
+    }, cadenceReminderContext, personalMemoryContext));
+    const additionalContext = [baseAdditionalContext, reminderContext].filter(Boolean).join("\n\n");
+    const triggers = [
+      ...(memoryReminderDue ? ["cadence"] : []),
+      ...(supplementalReminderDue ? ["post_compaction"] : []),
+    ];
+    return {
+      additionalContext,
+      ...(reminderContext ? {
+        reminder: {
           sessionId,
           turnId,
           transcriptPath,
@@ -99,13 +110,12 @@ export async function runMemorySkillReminderHook(options, hookInput) {
           workspaceKind: stringOption(input.workspace_kind) ?? stringOption(input.workspaceKind),
           content: reminderContext,
           triggers,
-        });
-      }
-    }
+        },
+      } : {}),
+    };
   } catch (error) {
-    if (process.env[options.debugEnv] === "1") {
-      console.error(error instanceof Error ? error.message : String(error));
-    }
+    debugError(options, error);
+    return undefined;
   }
 }
 
@@ -125,21 +135,28 @@ export function markSupplementalReminderAfterCompact(options, input) {
     const hookEventName = stringOption(input.hook_event_name) ?? stringOption(input.hookEventName);
     if (hookEventName !== "SessionStart" || stringOption(input.source) !== "compact") return;
     const sessionId = stringOption(input.session_id) ?? stringOption(input.sessionId);
-    if (!sessionId) return;
-    const memoraxCodeHome = process.env.MEMORAX_CODE_HOME || defaultMemoraxCodeHome();
+    markSupplementalReminderForSession(options, sessionId);
+  } catch (error) {
+    debugError(options, error);
+  }
+}
+
+export function markSupplementalReminderForSession(options, sessionId) {
+  try {
+    const normalizedSessionId = stringOption(sessionId);
+    if (!normalizedSessionId) return;
+    const memoraxCodeHome = resolveMemoraxCodeHome(options);
     const statePath = join(memoraxCodeHome, "adapters", options.adapterDir, "memory-skill-reminders.json");
     withJsonFileLock(statePath, () => {
       const existing = readJsonFile(statePath);
       atomicWriteJson(statePath, markSupplementalReminderPending(
         existing?.unreadable ? undefined : existing?.value,
         options.runtime,
-        sessionId,
+        normalizedSessionId,
       ));
     });
   } catch (error) {
-    if (process.env[options.debugEnv] === "1") {
-      console.error(error instanceof Error ? error.message : String(error));
-    }
+    debugError(options, error);
   }
 }
 
@@ -187,6 +204,18 @@ function memoryReminderContext(options) {
 
 function defaultMemoraxCodeHome() {
   return process.env.HOME ? join(process.env.HOME, ".memorax-code") : ".memorax-code";
+}
+
+function resolveMemoraxCodeHome(options) {
+  return stringOption(options.memoraxCodeHome)
+    ?? process.env.MEMORAX_CODE_HOME
+    ?? defaultMemoraxCodeHome();
+}
+
+function debugError(options, error) {
+  if (process.env[options.debugEnv] === "1") {
+    console.error(error instanceof Error ? error.message : String(error));
+  }
 }
 
 function nextReminderState(existing, runtime, sessionId, turnId) {

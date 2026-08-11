@@ -244,6 +244,7 @@ test("Backend memory hook endpoints write client-isolated trace events", async (
     MEMORAX_CODE_HOME: undefined,
     MEMORAX_CODE_CLAUDE_TRACE_ENABLED: undefined,
     MEMORAX_CODE_CODEX_TRACE_ENABLED: undefined,
+    MEMORAX_CODE_OPENCODE_TRACE_ENABLED: undefined,
   });
   const originalFetch = globalThis.fetch;
   globalThis.fetch = fetchImpl;
@@ -363,6 +364,23 @@ test("Backend memory hook endpoints write client-isolated trace events", async (
     assert.equal(claudeReminder.status, 200);
     assert.deepEqual(await claudeReminder.json(), { ok: true });
 
+    const openCodeReminder = await originalFetch(`${url}/memory/skill-reminder`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        version: 1,
+        client: "opencode",
+        sessionId: "session-trace-hook",
+        userMessageId: "turn-trace-hook",
+        cwd: TEST_WORKSPACE,
+        workspaceKind: "project",
+        content: "MemoraX Code reminder: use the memorax-code skill in OpenCode.",
+        triggers: ["post_compaction"],
+      }),
+    });
+    assert.equal(openCodeReminder.status, 200);
+    assert.deepEqual(await openCodeReminder.json(), { ok: true });
+
     const writeback = await originalFetch(`${url}/memory/writeback`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -417,6 +435,23 @@ test("Backend memory hook endpoints write client-isolated trace events", async (
     assert.deepEqual(claudeEvents[0].response, {
       role: "developer",
       content: "MemoraX Code reminder: use the skill in Claude when prior work could help.",
+    });
+    const openCodeEventsPath = clientTracePaths("opencode", sessionHome).eventsJsonl("session-trace-hook");
+    await waitForFile(openCodeEventsPath, /skill_reminder/, "OpenCode reminder trace event was not written");
+    const openCodeEvents = (await readFile(openCodeEventsPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(openCodeEvents.length, 1);
+    assert.equal(openCodeEvents[0].type, "skill_reminder");
+    assert.equal(openCodeEvents[0].source, "opencode-plugin");
+    assert.equal(openCodeEvents[0].operation, "reminder");
+    assert.equal(openCodeEvents[0].trace.client, "opencode");
+    assert.equal(openCodeEvents[0].trace.session_id, "session-trace-hook");
+    assert.equal(openCodeEvents[0].trace.turn_id, "turn-trace-hook");
+    assert.equal(openCodeEvents[0].trace.context_origin, "opencode-hook-body");
+    assert.equal(openCodeEvents[0].trace.transcript_path, undefined);
+    assert.deepEqual(openCodeEvents[0].request.triggers, ["post_compaction"]);
+    assert.deepEqual(openCodeEvents[0].response, {
+      role: "developer",
+      content: "MemoraX Code reminder: use the memorax-code skill in OpenCode.",
     });
     const turnEnd = events.find((event) => event.type === "turn_end");
     assert.equal(turnEnd.source, "codex-hook");

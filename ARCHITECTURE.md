@@ -237,8 +237,12 @@ Important distinctions:
 - Client-specific runtimes interpret native formats. Client-neutral memory
   coordination does not parse, mix, or guess those formats.
 - OpenCode's awaited `chat.message` plugin event supplies the correlated user
-  prompt and injects accepted retrieval context into that message's system
-  context. Its `shell.env` event binds the native session identity and makes
+  prompt and injects accepted retrieval plus shared Skill reminder, User
+  Profile, and Procedure Memory context into that message's system context. Its
+  stable `session.compacted` event marks a durable supplemental reminder for
+  the next real user message; synthetic and compaction messages do not consume
+  that pending state. Local reminder evaluation remains independent of Backend
+  recovery. Its `shell.env` event binds the native session identity and makes
   the packaged memory CLI available to agent-run shell commands.
 
 ### 3.3 Manual memory CLI flow
@@ -330,8 +334,8 @@ Backend-resolved worktree rather than an arbitrary Hook `cwd`.
 
 OpenCode supports active Repo Memory operations through the shared skill, but
 its plugin does not own supervised background Repo Memory maintenance. Its
-automatic runtime contract covers prompt retrieval and completed-turn
-writeback.
+automatic runtime contract covers prompt retrieval, shared reminder injection,
+and completed-turn writeback.
 
 ## 4. Backend Modular Monolith
 
@@ -513,10 +517,10 @@ repository-session bindings, in-flight provider operations, Viewer projection
 caches, and background reconciliation promises.
 
 Durable local state includes configuration, private runtime records, active
-client selection, client-qualified trace JSONL, and Repo Memory. State shared
-across processes requires a bounded lock, atomic replacement, or version
-validation appropriate to its record. An in-memory mutex is not cross-process
-authority.
+client selection, client-qualified trace JSONL, reminder cadence state, and Repo
+Memory. State shared across processes requires a bounded lock, atomic
+replacement, or version validation appropriate to its record. An in-memory
+mutex is not cross-process authority.
 
 Backend-owned remote memory state is limited to MemoraX memories and
 asynchronous writeback tasks. The provider adapter is the network boundary for
