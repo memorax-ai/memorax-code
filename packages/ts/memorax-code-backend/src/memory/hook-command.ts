@@ -3,7 +3,7 @@ import { isRecord } from "../shared/record.js";
 export const MEMORY_HOOK_COMMAND_VERSION = 1 as const;
 export const INVALID_MEMORY_HOOK_COMMAND = "invalid memory Hook command";
 
-export type MemoryHookClient = "codex" | "claude-code";
+export type MemoryHookClient = "codex" | "claude-code" | "opencode";
 
 const BASE_COMMAND_KEYS = [
   "version",
@@ -15,8 +15,9 @@ const BASE_COMMAND_KEYS = [
 const TURN_START_KEYS: Readonly<Record<MemoryHookClient, ReadonlySet<string>>> = {
   codex: new Set([...BASE_COMMAND_KEYS, "turnId", "prompt", "transcriptPath"]),
   "claude-code": new Set([...BASE_COMMAND_KEYS, "promptId", "prompt", "transcriptPath"]),
+  opencode: new Set([...BASE_COMMAND_KEYS, "userMessageId", "prompt"]),
 };
-const WRITEBACK_KEYS: Readonly<Record<MemoryHookClient, ReadonlySet<string>>> = {
+const WRITEBACK_KEYS: Readonly<Partial<Record<MemoryHookClient, ReadonlySet<string>>>> = {
   codex: new Set([...BASE_COMMAND_KEYS, "turnId", "lastAssistantMessage", "transcriptPath"]),
   "claude-code": new Set([
     ...BASE_COMMAND_KEYS,
@@ -25,7 +26,7 @@ const WRITEBACK_KEYS: Readonly<Record<MemoryHookClient, ReadonlySet<string>>> = 
     "transcriptPath",
   ]),
 };
-const SKILL_REMINDER_KEYS: Readonly<Record<MemoryHookClient, ReadonlySet<string>>> = {
+const SKILL_REMINDER_KEYS: Readonly<Partial<Record<MemoryHookClient, ReadonlySet<string>>>> = {
   codex: new Set([...BASE_COMMAND_KEYS, "turnId", "transcriptPath", "content", "triggers"]),
   "claude-code": new Set([...BASE_COMMAND_KEYS, "promptId", "transcriptPath", "content", "triggers"]),
 };
@@ -50,7 +51,12 @@ export type ClaudeTurnStartCommand = MemoryHookCommandBase<"claude-code"> & Read
   transcriptPath: string;
 }>;
 
-export type TurnStartCommand = CodexTurnStartCommand | ClaudeTurnStartCommand;
+export type OpenCodeTurnStartCommand = MemoryHookCommandBase<"opencode"> & Readonly<{
+  userMessageId: string;
+  prompt: string;
+}>;
+
+export type TurnStartCommand = CodexTurnStartCommand | ClaudeTurnStartCommand | OpenCodeTurnStartCommand;
 
 export type MemoryHookTurnStartResult = Readonly<{
   ok: true;
@@ -101,11 +107,11 @@ export function parseTurnStartCommand(
   const base = parseCommandBase(value, TURN_START_KEYS);
   if (!base) return invalidCommand();
   const prompt = requiredStringField(value, "prompt");
-  const transcriptPath = requiredStringField(value, "transcriptPath");
-  if (!prompt || !transcriptPath) return invalidCommand();
+  if (!prompt) return invalidCommand();
   if (base.client === "codex") {
+    const transcriptPath = requiredStringField(value, "transcriptPath");
     const turnId = optionalStringField(value, "turnId");
-    if (!turnId.ok) return invalidCommand();
+    if (!transcriptPath || !turnId.ok) return invalidCommand();
     return {
       ok: true,
       command: {
@@ -117,8 +123,22 @@ export function parseTurnStartCommand(
       },
     };
   }
+  if (base.client === "opencode") {
+    const userMessageId = requiredStringField(value, "userMessageId");
+    if (!userMessageId) return invalidCommand();
+    return {
+      ok: true,
+      command: {
+        ...base,
+        client: "opencode",
+        userMessageId,
+        prompt,
+      },
+    };
+  }
   const promptId = requiredStringField(value, "promptId");
-  if (!promptId) return invalidCommand();
+  const transcriptPath = requiredStringField(value, "transcriptPath");
+  if (!promptId || !transcriptPath) return invalidCommand();
   return {
     ok: true,
     command: {
@@ -194,6 +214,7 @@ export function parseSkillReminderCommand(
       },
     };
   }
+  if (base.client !== "claude-code") return invalidCommand();
   const promptId = requiredStringField(value, "promptId");
   if (!promptId) return invalidCommand();
   return {
@@ -211,12 +232,13 @@ export function parseSkillReminderCommand(
 
 function parseCommandBase(
   value: Record<string, unknown>,
-  allowedKeys: Readonly<Record<MemoryHookClient, ReadonlySet<string>>>,
+  allowedKeys: Readonly<Partial<Record<MemoryHookClient, ReadonlySet<string>>>>,
 ): MemoryHookCommandBase<MemoryHookClient> | undefined {
   if (value.version !== MEMORY_HOOK_COMMAND_VERSION) return undefined;
   const client = value.client;
-  if (client !== "codex" && client !== "claude-code") return undefined;
-  if (Object.keys(value).some((key) => !allowedKeys[client].has(key))) return undefined;
+  if (client !== "codex" && client !== "claude-code" && client !== "opencode") return undefined;
+  const clientKeys = allowedKeys[client];
+  if (!clientKeys || Object.keys(value).some((key) => !clientKeys.has(key))) return undefined;
   const sessionId = requiredStringField(value, "sessionId");
   if (!sessionId) return undefined;
   const cwd = optionalStringField(value, "cwd");

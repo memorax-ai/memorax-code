@@ -28,6 +28,7 @@ const reviewedNetworkSources = new Set([
   "packages/ts/memorax-code-backend/src/app/backend-server.ts",
   "packages/ts/memorax-code-backend/src/clients/claude/memory-hook-runtime.ts",
   "packages/ts/memorax-code-backend/src/clients/codex/memory-hook-runtime.ts",
+  "packages/ts/memorax-code-backend/src/clients/opencode/memory-hook-runtime.ts",
   "packages/ts/memorax-code-backend/src/lifecycle/backend/service.ts",
   "packages/ts/memorax-code-backend/src/lifecycle/backend/status.ts",
   "packages/ts/memorax-code-backend/src/memory/automatic-retrieval.ts",
@@ -50,6 +51,7 @@ const reviewedNetworkSources = new Set([
   "packages/ts/memorax-code-codex-adapter/runtime-hooks/memory-writeback.mjs",
   "packages/ts/memorax-code-codex-adapter/src/cli.mjs",
   "packages/ts/memorax-code-codex-adapter/skills/memorax-code/scripts/detect_updates.py",
+  "packages/ts/memorax-code-opencode-adapter/src/plugin.mjs",
 ]);
 
 const localTraceCoreSources = new Set([

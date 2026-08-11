@@ -126,10 +126,10 @@ the current repository.
 
 ## Product Capabilities
 
-OpenCode support currently covers the shared skill and explicit Search and Add.
-Automatic retrieval, completed-turn writeback, and background Repo Memory
-maintenance are not part of this initial integration; active Repo Memory
-operations through the skill remain available.
+OpenCode support covers the shared skill, explicit Search and Add, and automatic
+retrieval when enabled. Completed-turn writeback and background Repo Memory
+maintenance are not yet part of the integration; active Repo Memory operations
+through the skill remain available.
 
 | Capability | What it does |
 | --- | --- |
@@ -138,7 +138,7 @@ operations through the skill remain available.
 | **Procedure reuse** | Records reusable task procedures and reminds future agents to apply them. |
 | **Background Repo Memory maintenance** | In Codex and Claude Code, automatically organizes repository structure, entry points, and history evidence in the background, then updates them according to policy. |
 | **Active memory control** | Lets you search and add memory through the bundled MemoraX Code skill or the CLI. |
-| **Client integration** | Uses Codex and Claude Code Hooks for automatic flows; OpenCode's plugin binds the installed skill and CLI to the native session. |
+| **Client integration** | Uses Codex and Claude Code Hooks for automatic flows; OpenCode plugin events inject automatic retrieval and bind the installed skill and CLI to the native session. |
 | **Local visualization** | Uses the local Memory Viewer to summarize activity counts, retrieval, and writeback status. |
 
 ## Your Memory, Your Control

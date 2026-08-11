@@ -28,6 +28,7 @@ test("memory service exposes a sealed Hook facade and closes idempotently", asyn
     },
     env: {
       MEMORAX_CODE_CODEX_TRACE_ENABLED: "false",
+      MEMORAX_CODE_OPENCODE_TRACE_ENABLED: "false",
       MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
       MEMORAX_CODE_MEMORAX_API_KEY: "secret",
       MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
@@ -64,6 +65,15 @@ test("memory service exposes a sealed Hook facade and closes idempotently", asyn
       transcriptPath: join(memoraxCodeHome, "missing-claude-transcript.jsonl"),
     });
     assert.equal(diagnosticEvents.some((event) => event.message === "claude_memory_hook.turn_start"), true);
+    await service.recordTurnStart({
+      version: 1,
+      client: "opencode",
+      sessionId: "session-opencode-memory-service",
+      userMessageId: "user-opencode-memory-service",
+      prompt: "Record this exact OpenCode turn in the runtime.",
+      cwd: firstWorkspace,
+    });
+    assert.equal(diagnosticEvents.some((event) => event.message === "opencode_memory.turn_start"), true);
 
     await assert.rejects(service.recordTurnStart({
       version: 1,

@@ -1469,6 +1469,8 @@ test("postinstall seeds default MemoraX Code config on first install when memory
     assert.match(config, /\[trace\.claude\]/);
     assert.match(config, /enabled = true # Enable local Claude session memory trace collection\./);
     assert.match(config, /capture_content = true # Store content in local Claude trace events\./);
+    assert.match(config, /\[trace\.opencode\]/);
+    assert.match(config, /capture_content = true # Store content in local OpenCode trace events\./);
     assert.deepEqual(activeTomlSections(config), [
       "clients",
       "memorax",
@@ -1479,6 +1481,7 @@ test("postinstall seeds default MemoraX Code config on first install when memory
       "memory.writeback",
       "trace.claude",
       "trace.codex",
+      "trace.opencode",
     ]);
     assert.doesNotMatch(
       config,

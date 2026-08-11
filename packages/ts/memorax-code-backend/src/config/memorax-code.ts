@@ -85,6 +85,13 @@ export type MemoraxCodeConfig = Readonly<{
       max_event_chars?: number;
       max_file_bytes?: number;
     }>;
+    opencode?: Readonly<{
+      enabled?: boolean;
+      capture_content?: boolean;
+      retention_days?: number;
+      max_event_chars?: number;
+      max_file_bytes?: number;
+    }>;
   }>;
 }>;
 
@@ -145,6 +152,10 @@ export function renderDefaultMemoraxCodeConfig(): string {
     "[trace.claude]",
     "enabled = true # Enable local Claude session memory trace collection.",
     "capture_content = true # Store content in local Claude trace events.",
+    "",
+    "[trace.opencode]",
+    "enabled = true # Enable local OpenCode session memory trace collection.",
+    "capture_content = true # Store content in local OpenCode trace events.",
     "",
   ].join("\n");
 }
@@ -225,6 +236,7 @@ function normalizeMemoraxCodeConfig(value: unknown): MemoraxCodeConfig {
   const repoUpdate = recordValue(memory?.repo_update);
   const traceCodex = recordValue(trace?.codex);
   const traceClaude = recordValue(trace?.claude);
+  const traceOpenCode = recordValue(trace?.opencode);
 
   return (prune({
     clients: prune({
@@ -294,6 +306,13 @@ function normalizeMemoraxCodeConfig(value: unknown): MemoraxCodeConfig {
         retention_days: numberField(traceClaude, "retention_days"),
         max_event_chars: numberField(traceClaude, "max_event_chars"),
         max_file_bytes: numberField(traceClaude, "max_file_bytes"),
+      }),
+      opencode: prune({
+        enabled: booleanField(traceOpenCode, "enabled"),
+        capture_content: booleanField(traceOpenCode, "capture_content"),
+        retention_days: numberField(traceOpenCode, "retention_days"),
+        max_event_chars: numberField(traceOpenCode, "max_event_chars"),
+        max_file_bytes: numberField(traceOpenCode, "max_file_bytes"),
       }),
     }),
   }) ?? {}) as MemoraxCodeConfig;

@@ -117,6 +117,13 @@ test("Backend memory hook endpoints reject commands outside the closed schema", 
     lastAssistantMessage: "Claude writeback.",
     transcriptPath: "/tmp/claude.jsonl",
   };
+  const openCodeTurnStart = {
+    version: 1,
+    client: "opencode",
+    sessionId: "session-opencode-turn-start",
+    userMessageId: "user-opencode-turn-start",
+    prompt: "OpenCode turn start.",
+  };
   try {
     for (const [caseName, path, body] of [
       ["unversioned command", "/memory/turn-start", {
@@ -187,6 +194,10 @@ test("Backend memory hook endpoints reject commands outside the closed schema", 
       ["invalid optional Claude workspace kind", "/memory/writeback", {
         ...claudeWriteback,
         workspaceKind: {},
+      }],
+      ["transcript field on OpenCode turn-start", "/memory/turn-start", {
+        ...openCodeTurnStart,
+        transcriptPath: "/tmp/opencode.jsonl",
       }],
     ]) {
       const response = await fetch(`${url}${path}`, {

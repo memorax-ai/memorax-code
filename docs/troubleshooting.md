@@ -168,12 +168,13 @@ MemoraX Code reads filesystem Git metadata without executing Git. Linked
 worktrees share the remote repository identity; non-Git workspaces use the
 normalized folder name. Resolution never falls back to the bare base user ID.
 
-A live Codex or Claude Code session remains pinned to the repository or local
-workspace resolved at the start of the session. Starting the client from a
-parent workspace and then entering a nested Git repository does not rebind the
-session. The only in-session scope upgrade is from a direct `.git` directory
-whose internal metadata was malformed or incomplete to a verified Git
-repository at the same canonical workspace root and for the same Base User ID.
+A live Codex, Claude Code, or OpenCode session remains pinned to the repository
+or local workspace resolved at the start of the session. Starting the client
+from a parent workspace and then entering a nested Git repository does not
+rebind the session. The only in-session scope upgrade is from a direct `.git`
+directory whose internal metadata was malformed or incomplete to a verified
+Git repository at the same canonical workspace root and for the same Base User
+ID.
 
 During that degraded state, MemoraX Code reports
 `workspaceScopeFallbackReason: git_metadata_invalid` for manual CLI operations

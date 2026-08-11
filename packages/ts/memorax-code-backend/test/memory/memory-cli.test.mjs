@@ -7,9 +7,17 @@ import { tmpdir } from "node:os";
 import { test } from "node:test";
 import { promisify } from "node:util";
 import { runMemoryCli } from "../../dist/memory/cli.js";
-import { traceContextFromClaudeHookBody, traceContextFromHookBody } from "../../dist/trace/context.js";
-import { claudeTracePaths, tracePaths } from "../../dist/trace/config.js";
-import { writeCurrentClaudeTurn, writeCurrentCodexTurn } from "../../dist/trace/store.js";
+import {
+  traceContextFromClaudeHookBody,
+  traceContextFromHookBody,
+  traceContextFromOpenCodeHookBody,
+} from "../../dist/trace/context.js";
+import { claudeTracePaths, openCodeTracePaths, tracePaths } from "../../dist/trace/config.js";
+import {
+  writeCurrentClaudeTurn,
+  writeCurrentCodexTurn,
+  writeCurrentTraceTurn,
+} from "../../dist/trace/store.js";
 import { listen } from "../support/helpers.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -173,7 +181,7 @@ test("memory CLI rejects a nested repository outside the current turn scope", as
   assert.equal(result.workspaceScopeReason, "workspace_scope_mismatch");
   assert.equal(
     result.userAction,
-    "Start a new Codex or Claude Code session from the target repository or local workspace.",
+    "Start a new Codex, Claude Code, or OpenCode session from the target repository or local workspace.",
   );
   assert.equal(requestCount, 0);
 });
@@ -294,7 +302,7 @@ test("memory CLI gives the same scope recovery guidance for a Claude turn", asyn
   assert.equal(result.workspaceScopeReason, "workspace_scope_mismatch");
   assert.equal(
     result.userAction,
-    "Start a new Codex or Claude Code session from the target repository or local workspace.",
+    "Start a new Codex, Claude Code, or OpenCode session from the target repository or local workspace.",
   );
   assert.equal(requestCount, 0);
 });
@@ -773,6 +781,66 @@ test("memory CLI search binds to Claude trace without writing the same-id Codex 
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
+});
+
+test("memory CLI search binds to OpenCode trace instead of an inherited Codex thread", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-cli-opencode-trace-"));
+  const sessionId = "shared-opencode-cli-session";
+  const codexWorkspace = join(root, "codex-workspace");
+  const openCodeWorkspace = join(root, "opencode-workspace");
+  const openCodeNestedCwd = join(openCodeWorkspace, "src");
+  await Promise.all([
+    mkdir(codexWorkspace, { recursive: true }),
+    mkdir(openCodeNestedCwd, { recursive: true }),
+  ]);
+  await writeCurrentCodexTurn(traceContextFromHookBody({
+    session_id: sessionId,
+    turn_id: "codex-turn",
+    cwd: codexWorkspace,
+  }), { memoraxCodeHome: root });
+  await writeCurrentTraceTurn(traceContextFromOpenCodeHookBody({
+    sessionId,
+    userMessageId: "opencode-user-message",
+    cwd: openCodeWorkspace,
+  }), {
+    client: "opencode",
+    memoraxCodeHome: root,
+  });
+  const requests = [];
+
+  const result = await runMemoryCli(["search", "--query", "OpenCode trace bridge"], {
+    env: {
+      CODEX_THREAD_ID: sessionId,
+      MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT: "opencode",
+      MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID: sessionId,
+      MEMORAX_CODE_HOME: root,
+      MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
+      MEMORAX_CODE_MEMORAX_API_KEY: "secret",
+      MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
+    },
+    cwd: openCodeNestedCwd,
+    fetchImpl: async (_url, init) => {
+      requests.push(JSON.parse(init.body));
+      return new Response(JSON.stringify({ success: true, data: { data: [] } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].user_id, "user-1@opencode-workspace");
+  const events = (await readFile(openCodeTracePaths(root).eventsJsonl(sessionId), "utf8"))
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  assert.equal(events.length, 1);
+  assert.equal(events[0].type, "memory_cli_search");
+  assert.equal(events[0].trace.client, "opencode");
+  assert.equal(events[0].trace.turn_id, "opencode-user-message");
+  assert.equal(events[0].trace.context_origin, "current-turn-file");
+  await assert.rejects(readFile(tracePaths(root).eventsJsonl(sessionId), "utf8"));
 });
 
 test("memory CLI search does not trace to a different Codex thread current turn", async () => {

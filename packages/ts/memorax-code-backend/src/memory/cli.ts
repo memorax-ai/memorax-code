@@ -281,7 +281,7 @@ async function resolveMemoryCliRepositoryMemory(options: MemoryCliOptions): Prom
   });
   if (!commandMemory.ok || !commandMemory.memory.scope) return commandMemory;
   if (turnMemory?.ok && (!turnMemory.memory.scope || !repositoryMemoryScopesMatch(commandMemory.memory.scope, turnMemory.memory.scope))) {
-    const clientLabel = traceBinding?.client === "claude" ? "Claude" : "Codex";
+    const clientLabel = traceClientLabel(traceBinding?.client);
     return {
       ok: false,
       reason: "workspace_scope_mismatch",
@@ -297,9 +297,9 @@ function memoryCliRepositoryFailure(
   fields: Pick<MemoryCliResult, "query"> = {},
 ): MemoryCliResult {
   const userAction = failure.reason === "workspace_scope_mismatch"
-    ? "Start a new Codex or Claude Code session from the target repository or local workspace."
+    ? "Start a new Codex, Claude Code, or OpenCode session from the target repository or local workspace."
     : failure.reason === "workspace_scope_unavailable"
-      ? "Start a new Codex or Claude Code session from the target repository or local workspace. If the problem continues, make sure its .git metadata is readable and valid."
+      ? "Start a new Codex, Claude Code, or OpenCode session from the target repository or local workspace. If the problem continues, make sure its .git metadata is readable and valid."
       : undefined;
   return {
     ok: false,
@@ -399,6 +399,12 @@ function memoryCliTraceBinding(
 
 function memoryCliTraceEventType(event: MemoryObservabilityEvent): string {
   return event.operation === "writeback" ? "memory_cli_add" : "memory_cli_search";
+}
+
+function traceClientLabel(client: TraceClient | undefined): string {
+  if (client === "claude") return "Claude";
+  if (client === "opencode") return "OpenCode";
+  return "Codex";
 }
 
 function memoryAddContentOptions(

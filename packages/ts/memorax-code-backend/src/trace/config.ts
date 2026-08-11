@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { loadMemoraxCodeConfig, type MemoraxCodeConfig } from "../config/memorax-code.js";
 import { isTraceClient, type TraceClient } from "./context.js";
 
-export const TRACE_CLIENTS: readonly TraceClient[] = ["codex", "claude"];
+export const TRACE_CLIENTS: readonly TraceClient[] = ["codex", "claude", "opencode"];
 
 export type ClientTraceConfig = Readonly<{
   enabled: boolean;
@@ -16,6 +16,7 @@ export type ClientTraceConfig = Readonly<{
 
 export type CodexTraceConfig = ClientTraceConfig;
 export type ClaudeTraceConfig = ClientTraceConfig;
+export type OpenCodeTraceConfig = ClientTraceConfig;
 
 export type ClientTracePaths = Readonly<{
   root: string;
@@ -29,6 +30,7 @@ export type ClientTracePaths = Readonly<{
 
 export type CodexTracePaths = ClientTracePaths;
 export type ClaudeTracePaths = ClientTracePaths;
+export type OpenCodeTracePaths = ClientTracePaths;
 
 export const CODEX_TRACE_DEFAULT_CONFIG: CodexTraceConfig = {
   enabled: true,
@@ -39,6 +41,14 @@ export const CODEX_TRACE_DEFAULT_CONFIG: CodexTraceConfig = {
 };
 
 export const CLAUDE_TRACE_DEFAULT_CONFIG: ClaudeTraceConfig = {
+  enabled: true,
+  captureContent: true,
+  retentionDays: 7,
+  maxEventChars: 20_000,
+  maxFileBytes: 52_428_800,
+};
+
+export const OPENCODE_TRACE_DEFAULT_CONFIG: OpenCodeTraceConfig = {
   enabled: true,
   captureContent: true,
   retentionDays: 7,
@@ -67,6 +77,13 @@ export function claudeTraceConfigFromEnv(
   return clientTraceConfigFromEnv("claude", env, fileConfig);
 }
 
+export function openCodeTraceConfigFromEnv(
+  env: Record<string, string | undefined> = process.env,
+  fileConfig?: MemoraxCodeConfig,
+): OpenCodeTraceConfig {
+  return clientTraceConfigFromEnv("opencode", env, fileConfig);
+}
+
 export function clientTraceConfigFromEnv(
   client: TraceClient,
   env: Record<string, string | undefined> = process.env,
@@ -75,8 +92,16 @@ export function clientTraceConfigFromEnv(
   assertTraceClient(client);
   const config = fileConfig ?? loadMemoraxCodeConfig(memoraxCodeHomeForTrace(env), { warn: () => undefined });
   const section = config.trace?.[client];
-  const defaults = client === "claude" ? CLAUDE_TRACE_DEFAULT_CONFIG : CODEX_TRACE_DEFAULT_CONFIG;
-  const prefix = client === "claude" ? "MEMORAX_CODE_CLAUDE_TRACE" : "MEMORAX_CODE_CODEX_TRACE";
+  const defaults = client === "claude"
+    ? CLAUDE_TRACE_DEFAULT_CONFIG
+    : client === "opencode"
+      ? OPENCODE_TRACE_DEFAULT_CONFIG
+      : CODEX_TRACE_DEFAULT_CONFIG;
+  const prefix = client === "claude"
+    ? "MEMORAX_CODE_CLAUDE_TRACE"
+    : client === "opencode"
+      ? "MEMORAX_CODE_OPENCODE_TRACE"
+      : "MEMORAX_CODE_CODEX_TRACE";
   return {
     enabled: booleanValue(env[`${prefix}_ENABLED`], section?.enabled ?? defaults.enabled),
     captureContent: booleanValue(env[`${prefix}_CAPTURE_CONTENT`], section?.capture_content ?? defaults.captureContent),
@@ -96,6 +121,10 @@ export function tracePaths(memoraxCodeHome = memoraxCodeHomeForTrace(process.env
 
 export function claudeTracePaths(memoraxCodeHome = memoraxCodeHomeForTrace(process.env)): ClaudeTracePaths {
   return clientTracePaths("claude", memoraxCodeHome);
+}
+
+export function openCodeTracePaths(memoraxCodeHome = memoraxCodeHomeForTrace(process.env)): OpenCodeTracePaths {
+  return clientTracePaths("opencode", memoraxCodeHome);
 }
 
 export function clientTracePaths(

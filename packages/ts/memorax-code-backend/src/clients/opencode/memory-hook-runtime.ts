@@ -1,0 +1,157 @@
+import { retrieveAutomaticMemoryContext } from "../../memory/automatic-retrieval.js";
+import type {
+  MemoryHookTurnStartResult,
+  OpenCodeTurnStartCommand,
+} from "../../memory/hook-command.js";
+import type { MemoryDiagnosticLogger, MemoryObservabilityHook } from "../../memory/observability.js";
+import {
+  createRepositoryMemorySessionRuntime,
+  resolvedRepoMemoryWorktree,
+  type ConfiguredRepositoryMemoryResult,
+  type RepositoryMemorySessionRuntime,
+} from "../../memory/repository-session.js";
+import { traceContextFromOpenCodeHookBody } from "../../trace/context.js";
+import {
+  recordTraceEvent,
+  traceTurnEventId,
+  writeCurrentTraceTurn,
+} from "../../trace/store.js";
+
+export type OpenCodeMemoryHookRuntimeOptions = {
+  diagnosticLogger?: MemoryDiagnosticLogger;
+  env?: Record<string, string | undefined>;
+  fetchImpl?: typeof fetch;
+  now?: () => number;
+  maxEntries?: number;
+  memoryObservability?: MemoryObservabilityHook;
+  memoraxCodeHome?: string;
+  repositoryMemorySession?: RepositoryMemorySessionRuntime;
+};
+
+export type OpenCodeMemoryHookRuntime = {
+  recordTurnStart(command: OpenCodeTurnStartCommand): Promise<MemoryHookTurnStartResult>;
+  close(): void;
+};
+
+const OPENCODE_MEMORY_TURN_CLIENT = "opencode" as const;
+
+export function createOpenCodeMemoryHookRuntime(
+  options: OpenCodeMemoryHookRuntimeOptions = {},
+): OpenCodeMemoryHookRuntime {
+  const now = options.now ?? (() => Date.now());
+  const repositoryMemorySession = options.repositoryMemorySession ?? createRepositoryMemorySessionRuntime();
+  const ownsRepositoryMemorySession = options.repositoryMemorySession === undefined;
+  const retrievalTurns = new Set<string>();
+  const retrievalTurnLimit = positiveInteger(options.maxEntries, 256);
+
+  return {
+    async recordTurnStart(command) {
+      const createdAt = now();
+      const traceContext = traceContextFromOpenCodeHookBody(command, new Date(createdAt).toISOString());
+      const repositoryMemory = await resolveHookRepositoryMemory(
+        command,
+        options,
+        repositoryMemorySession,
+      );
+      const repoMemoryWorktree = resolvedRepoMemoryWorktree(repositoryMemory);
+      await recordTraceBestEffort("opencode_memory.turn_start_event", recordTraceEvent({
+        eventId: traceTurnEventId(traceContext, "turn_start"),
+        memoraxCodeHome: options.memoraxCodeHome,
+        env: options.env,
+        traceContext,
+        type: "turn_start",
+        source: "opencode-plugin",
+        operation: "query",
+        ok: true,
+        request: {
+          prompt: command.prompt,
+          cwd: command.cwd,
+        },
+      }), options.diagnosticLogger);
+      await recordTraceBestEffort("opencode_memory.current_turn_write", writeCurrentTraceTurn(
+        traceContext,
+        {
+          client: "opencode",
+          memoraxCodeHome: options.memoraxCodeHome,
+          env: options.env,
+          now: () => new Date(now()),
+        },
+      ), options.diagnosticLogger);
+      options.diagnosticLogger?.("opencode_memory.turn_start", {
+        sessionId: command.sessionId,
+        userMessageId: command.userMessageId,
+        workspace: repositoryMemory.ok ? repositoryMemory.memory.scope?.repositorySlug : undefined,
+        workspaceScopeReason: repositoryMemory.ok ? undefined : repositoryMemory.reason,
+      });
+
+      const retrievalKey = JSON.stringify([command.sessionId, command.userMessageId]);
+      if (retrievalTurns.has(retrievalKey)) {
+        return {
+          ok: true,
+          ...(repoMemoryWorktree ? { repoMemoryWorktree } : {}),
+        };
+      }
+      retrievalTurns.add(retrievalKey);
+      while (retrievalTurns.size > retrievalTurnLimit) {
+        const oldest = retrievalTurns.values().next().value;
+        if (typeof oldest !== "string") break;
+        retrievalTurns.delete(oldest);
+      }
+      const retrieval = await retrieveAutomaticMemoryContext({
+        diagnosticLogger: options.diagnosticLogger,
+        env: options.env ?? process.env,
+        fetchImpl: options.fetchImpl,
+        memoryObservability: options.memoryObservability,
+        memoryObservabilitySource: "opencode_plugin_retrieval",
+        query: command.prompt,
+        repositoryMemory,
+        sessionKey: command.sessionId,
+        traceContext,
+      });
+      return {
+        ok: true,
+        ...(repoMemoryWorktree ? { repoMemoryWorktree } : {}),
+        ...(retrieval.context ? { additionalContext: retrieval.context } : {}),
+      };
+    },
+    close() {
+      retrievalTurns.clear();
+      if (ownsRepositoryMemorySession) repositoryMemorySession.close();
+    },
+  };
+}
+
+async function resolveHookRepositoryMemory(
+  command: OpenCodeTurnStartCommand,
+  options: OpenCodeMemoryHookRuntimeOptions,
+  repositoryMemorySession: RepositoryMemorySessionRuntime,
+): Promise<ConfiguredRepositoryMemoryResult> {
+  return await repositoryMemorySession.resolve({
+    client: OPENCODE_MEMORY_TURN_CLIENT,
+    sessionId: command.sessionId,
+    workspaceRoot: command.cwd,
+    workspaceKind: command.workspaceKind,
+    memoraxCodeHome: options.memoraxCodeHome ?? options.env?.MEMORAX_CODE_HOME,
+    env: options.env,
+  });
+}
+
+async function recordTraceBestEffort(
+  label: string,
+  promise: Promise<unknown>,
+  diagnosticLogger?: MemoryDiagnosticLogger,
+): Promise<void> {
+  try {
+    await promise;
+  } catch (error) {
+    diagnosticLogger?.("opencode_trace.write_failed", {
+      label,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+function positiveInteger(value: unknown, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}

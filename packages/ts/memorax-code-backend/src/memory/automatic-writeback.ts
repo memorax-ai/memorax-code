@@ -31,7 +31,7 @@ import type {
 } from "../repository/scope.js";
 import type { TraceContext } from "../trace/context.js";
 
-export type AutomaticMemoryWritebackClient = "codex" | "claude-code";
+export type AutomaticMemoryWritebackClient = "codex" | "claude-code" | "opencode";
 
 export type AutomaticMemoryWritebackOptions = {
   client: AutomaticMemoryWritebackClient;

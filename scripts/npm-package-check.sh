@@ -359,6 +359,7 @@ assert config_sections == {
     "memory.writeback",
     "trace.claude",
     "trace.codex",
+    "trace.opencode",
 }
 assert 'output_language = "zh"' in config_text
 assert memorax_code_config.stat().st_mode & 0o777 == 0o600

@@ -108,7 +108,7 @@ Skill 目录。下面的指令使用产品名称，三个客户端均可直接�
 
 ## 产品能力
 
-OpenCode 初始集成支持共享 Skill 和主动 Search/Add；暂不包含自动召回、完成 Turn 后的自动写回和
+OpenCode 集成支持共享 Skill、主动 Search/Add 和启用后的自动召回；暂不包含完成 Turn 后的自动写回和
 Repo Memory 后台维护。通过 Skill 主动执行 Repo Memory 操作仍然可用。
 
 | 能力 | 作用 |
@@ -118,7 +118,7 @@ Repo Memory 后台维护。通过 Skill 主动执行 Repo Memory 操作仍然可
 | **Procedure 自动复用** | 记录可复用的任务流程，并在后续任务中自动提醒 Agent 按流程执行。 |
 | **Repo Memory 后台整理** | 在 Codex 和 Claude Code 中，在后台整理仓库结构、代码入口和历史证据，并按策略自动更新。 |
 | **主动记忆控制** | 使用内置的 MemoraX Code Skill 或 CLI，主动查找和添加记忆。 |
-| **客户端集成** | 借助 Codex 和 Claude Code 的 Hook 触发自动流程；OpenCode 插件负责将已安装的 Skill 和 CLI 绑定到原生会话。 |
+| **客户端集成** | 借助 Codex 和 Claude Code 的 Hook 触发自动流程；OpenCode 插件事件负责注入自动召回，并将已安装的 Skill 和 CLI 绑定到原生会话。 |
 | **本地可视化** | 通过本地 Memory Viewer 查看活动统计、召回与写入状态。 |
 
 ## 你的记忆，由你控制

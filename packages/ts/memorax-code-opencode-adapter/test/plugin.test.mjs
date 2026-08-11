@@ -6,10 +6,84 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { createMemoraxOpenCodePlugin } from "../src/plugin.mjs";
 
+test("chat.message retrieves memory and injects it into the system prompt", async () => {
+  const requests = [];
+  const plugin = createMemoraxOpenCodePlugin({
+    backendConnection: { url: "http://127.0.0.1:8787", token: "test-token" },
+    fetchImpl: responseSequence(requests, [{ ok: true, additionalContext: "Remember the repository boundary." }]),
+  });
+  const hooks = await plugin(pluginInput());
+  const output = {
+    message: { id: "user-1", system: "Existing system context" },
+    parts: [
+      { type: "text", text: "First prompt line" },
+      { type: "text", text: "ignored", synthetic: true },
+      { type: "text", text: "Second prompt line" },
+    ],
+  };
+
+  await hooks["chat.message"]({ sessionID: "session-1" }, output);
+
+  assert.equal(output.message.system, "Existing system context\n\nRemember the repository boundary.");
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].url, "http://127.0.0.1:8787/memory/turn-start");
+  assert.equal(requests[0].options.headers["x-memorax-code-backend-token"], "test-token");
+  assert.deepEqual(requests[0].body, {
+    version: 1,
+    client: "opencode",
+    sessionId: "session-1",
+    userMessageId: "user-1",
+    prompt: "First prompt line\n\nSecond prompt line",
+    cwd: "/repo/worktree",
+    workspaceKind: "project",
+  });
+});
+
+test("chat.message does not mistake a user diff summary for compaction", async () => {
+  const requests = [];
+  const plugin = createMemoraxOpenCodePlugin({
+    backendConnection: { url: "http://127.0.0.1:8787" },
+    fetchImpl: responseSequence(requests, [{ ok: true }]),
+  });
+  const hooks = await plugin(pluginInput());
+  const output = {
+    message: {
+      id: "user-with-summary",
+      summary: { title: "Edited files", body: "One change", diffs: [] },
+    },
+    parts: [{ type: "text", text: "Keep recalling memory." }],
+  };
+
+  await hooks["chat.message"]({ sessionID: "session-with-summary" }, output);
+
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].body.prompt, "Keep recalling memory.");
+});
+
+test("chat.message ignores compaction and synthetic-only messages", async () => {
+  const requests = [];
+  const plugin = createMemoraxOpenCodePlugin({
+    backendConnection: { url: "http://127.0.0.1:8787" },
+    fetchImpl: responseSequence(requests, []),
+  });
+  const hooks = await plugin(pluginInput());
+
+  await hooks["chat.message"](
+    { sessionID: "session-compaction" },
+    { message: { id: "user-compaction" }, parts: [{ type: "compaction", auto: true }] },
+  );
+  await hooks["chat.message"](
+    { sessionID: "session-synthetic" },
+    { message: { id: "user-synthetic" }, parts: [{ type: "text", text: "generated", synthetic: true }] },
+  );
+
+  assert.equal(requests.length, 0);
+});
+
 test("shell.env overwrites the OpenCode session identity and prepends the managed CLI path", async () => {
   const cliBinDir = "/memorax/bin";
   const plugin = createMemoraxOpenCodePlugin({ cliBinDir });
-  const hooks = await plugin({});
+  const hooks = await plugin(pluginInput());
   const output = {
     env: {
       MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT: "codex",
@@ -30,19 +104,23 @@ test("shell.env overwrites the OpenCode session identity and prepends the manage
 test("a loaded plugin follows the managed enabled state without an OpenCode restart", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-opencode-plugin-state-"));
   const statePath = join(root, "state.json");
+  const requests = [];
   try {
     await writeState(false);
-    const plugin = createMemoraxOpenCodePlugin({ statePath });
-    const hooks = await plugin({});
-    const disabledOutput = { env: {} };
-    await hooks["shell.env"]({ sessionID: "session-disabled" }, disabledOutput);
-    assert.equal(disabledOutput.env.MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT, undefined);
+    const plugin = createMemoraxOpenCodePlugin({
+      statePath,
+      backendConnection: { url: "http://127.0.0.1:8787" },
+      fetchImpl: responseSequence(requests, [{ ok: true }]),
+    });
+    const hooks = await plugin(pluginInput());
+    const disabledOutput = { message: { id: "user-disabled" }, parts: [{ type: "text", text: "ignored" }] };
+    await hooks["chat.message"]({ sessionID: "session-disabled" }, disabledOutput);
+    assert.equal(requests.length, 0);
 
     await writeState(true);
-    const enabledOutput = { env: {} };
-    await hooks["shell.env"]({ sessionID: "session-enabled" }, enabledOutput);
-    assert.equal(enabledOutput.env.MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT, "opencode");
-    assert.equal(enabledOutput.env.MEMORAX_CODE_MEMORY_CLI_SESSION_ID, "session-enabled");
+    const enabledOutput = { message: { id: "user-enabled" }, parts: [{ type: "text", text: "remember" }] };
+    await hooks["chat.message"]({ sessionID: "session-enabled" }, enabledOutput);
+    assert.equal(requests.length, 1);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -57,3 +135,24 @@ test("a loaded plugin follows the managed enabled state without an OpenCode rest
     }));
   }
 });
+
+function pluginInput(overrides = {}) {
+  return {
+    client: { session: { async messages() { return { data: [] }; } } },
+    project: { vcs: "git" },
+    directory: "/repo/directory",
+    worktree: "/repo/worktree",
+    ...overrides,
+  };
+}
+
+function responseSequence(requests, responses) {
+  return async (url, options) => {
+    requests.push({ url: String(url), options, body: JSON.parse(options.body) });
+    const body = responses.shift() ?? { ok: true };
+    return new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+}

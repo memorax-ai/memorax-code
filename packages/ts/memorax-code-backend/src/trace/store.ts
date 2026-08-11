@@ -90,6 +90,7 @@ type ExistingTraceJson = Record<string, unknown> & {
   updated_at?: unknown;
   codex?: unknown;
   claude?: unknown;
+  opencode?: unknown;
 };
 
 const eventCounters = new Map<string, number>();
