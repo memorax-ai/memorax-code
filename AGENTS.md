@@ -76,9 +76,9 @@ same change, then run the matching verification profile in Section 5.
   local.
 - Memory Viewer is a content-free local projection, not memory, transcript,
   session, or lifecycle authority.
-- `memorax-code` is the shared user-facing skill. Changes must work in both
-  Codex and Claude Code packaging and must keep triggers, metadata, references,
-  and resource paths valid.
+- `memorax-code` is the shared user-facing skill. Changes must work in Codex,
+  Claude Code, and OpenCode packaging and must keep triggers, metadata,
+  references, and resource paths valid.
 - Packaged skills must address product users. Do not include maintainer
   runbooks, private paths, unpublished plans, secrets, internal fixtures, or
   local diagnostic artifacts.
@@ -98,9 +98,11 @@ boundaries:
 - **Codex**: `npm test --prefix packages/ts/memorax-code-codex-adapter`.
 - **Claude Code**:
   `npm test --prefix packages/ts/memorax-code-claude-adapter`.
+- **OpenCode**:
+  `npm test --prefix packages/ts/memorax-code-opencode-adapter`.
 - **Adapter-common/shared Hook**: `adapter-common` has no standalone suite. Run
-  affected Backend tests and both adapter suites; add `make npm-package-check`
-  when staged runtime or package layout changes.
+  affected Backend tests and all three adapter suites; add
+  `make npm-package-check` when staged runtime or package layout changes.
 - **Trace/local-only boundary**: for trace, provider, or outbound transport,
   run `make test-npm-package` in addition to affected package tests.
 - **Documentation**: `make docs-check`.

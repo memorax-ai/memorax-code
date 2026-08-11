@@ -67,6 +67,7 @@ expected_library_dirs = {
     "memorax-code-claude-adapter",
     "memorax-code-claude-marketplace",
     "memorax-code-codex-adapter",
+    "memorax-code-opencode-adapter",
 }
 actual_library_dirs = {
     path.name
@@ -149,6 +150,8 @@ for relative in [
     "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/repo-memory/repo-procedure-memory-context.mjs",
     "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/repo-memory/repo-user-profile-context.mjs",
     "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/skills/memorax-code/SKILL.md",
+    "lib/memorax-code-opencode-adapter/src/plugin.mjs",
+    "lib/memorax-code-opencode-adapter/skills/memorax-code/SKILL.md",
     "lib/memorax-code-backend/dist/service-entrypoint.js",
     "lib/memorax-code-backend/dist/memorax-cli.js",
     "lib/memorax-code-backend/dist/jsonl-append.js",
@@ -311,7 +314,9 @@ for relative in \
   lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/repo-memory/repo-memory-auto-build.mjs \
   lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/repo-memory/repo-procedure-memory-context.mjs \
   lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/repo-memory/repo-user-profile-context.mjs \
-  lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/skills/memorax-code/SKILL.md
+  lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/skills/memorax-code/SKILL.md \
+  lib/memorax-code-opencode-adapter/src/plugin.mjs \
+  lib/memorax-code-opencode-adapter/skills/memorax-code/SKILL.md
 do
   test -f "$package_install_root/$relative"
 done

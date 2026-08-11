@@ -1,7 +1,7 @@
 {
   "name": "@memorax/memorax-code",
   "version": "0.1.2",
-  "description": "MemoraX Code CLI, local memory backend, Codex and Claude Code adapters, skills, and Memory Viewer.",
+  "description": "MemoraX Code CLI, local memory backend, Codex, Claude Code, and OpenCode adapters, skills, and Memory Viewer.",
   "license": "MIT",
   "type": "module",
   "homepage": "https://github.com/memorax-ai/memorax-code#readme",
@@ -15,6 +15,7 @@
   "keywords": [
     "agent",
     "codex",
+    "opencode",
     "memory",
     "memorax"
   ],

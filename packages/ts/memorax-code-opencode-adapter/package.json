@@ -1,0 +1,10 @@
+{
+  "name": "@memorax-code/opencode-adapter",
+  "version": "0.1.2",
+  "private": true,
+  "type": "module",
+  "description": "OpenCode plugin adapter for MemoraX Code memory services.",
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  }
+}

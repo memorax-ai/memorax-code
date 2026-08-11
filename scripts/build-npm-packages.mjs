@@ -68,6 +68,7 @@ async function stageMainPackage(destination) {
     "lib/memorax-code-adapter-common",
     "lib/memorax-code-codex-adapter",
     "lib/memorax-code-claude-adapter",
+    "lib/memorax-code-opencode-adapter",
   ]) {
     await mkdir(join(destination, path), { recursive: true });
   }
@@ -96,6 +97,10 @@ async function stageMainPackage(destination) {
   await copyFile(
     "packages/ts/memorax-code-claude-adapter/package.json",
     join(destination, "lib/memorax-code-claude-adapter/package.json"),
+  );
+  await copyFile(
+    "packages/ts/memorax-code-opencode-adapter/package.json",
+    join(destination, "lib/memorax-code-opencode-adapter/package.json"),
   );
 
   await buildClaudeMarketplace({
@@ -171,6 +176,8 @@ async function validateStaging(packageRoot) {
     "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/backend-connection.mjs",
     "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/runtime-record.mjs",
     "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/hooks/ensure-backend-runner.mjs",
+    "lib/memorax-code-opencode-adapter/src/plugin.mjs",
+    "lib/memorax-code-opencode-adapter/skills/memorax-code/SKILL.md",
   ]) {
     if (!(await stat(join(packageRoot, requiredPath)).catch(() => undefined))?.isFile()) {
       throw new Error(`staged npm package is missing required runtime entrypoint: ${requiredPath}`);

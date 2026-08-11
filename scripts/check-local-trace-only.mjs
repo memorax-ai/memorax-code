@@ -20,6 +20,7 @@ const productionRoots = [
   "packages/ts/memorax-code-claude-adapter/runtime-hooks/",
   "packages/ts/memorax-code-claude-adapter/scripts/",
   "packages/ts/memorax-code-claude-adapter/src/",
+  "packages/ts/memorax-code-opencode-adapter/src/",
 ];
 
 const reviewedNetworkSources = new Set([
@@ -298,6 +299,12 @@ function sourcePathForArtifact(rawPath) {
       return `packages/ts/memorax-code-codex-adapter/skills/memorax-code/${pluginPath.slice("skills/memorax-code/".length)}`;
     }
     return `packages/ts/memorax-code-claude-adapter/${pluginPath}`;
+  }
+  if (path.startsWith("lib/memorax-code-opencode-adapter/skills/memorax-code/")) {
+    return `packages/ts/memorax-code-codex-adapter/skills/memorax-code/${path.slice("lib/memorax-code-opencode-adapter/skills/memorax-code/".length)}`;
+  }
+  if (path.startsWith("lib/memorax-code-opencode-adapter/")) {
+    return `packages/ts/memorax-code-opencode-adapter/${path.slice("lib/memorax-code-opencode-adapter/".length)}`;
   }
   if (path.startsWith("lib/") && !path.slice("lib/".length).includes("/")) {
     return `packages/npm/memorax-code/${path}`;

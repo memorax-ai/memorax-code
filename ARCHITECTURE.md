@@ -24,14 +24,14 @@ authoritative.
 
 ## 2. System Shape and Package Ownership
 
-MemoraX Code integrates Codex and Claude Code with one local Backend. The
-Backend is a capability-oriented modular monolith. The clients retain
-ownership of models, model-provider credentials, native tools, model-provider
-traffic, and native transcript creation.
+MemoraX Code integrates Codex, Claude Code, and OpenCode with one local
+Backend. The Backend is a capability-oriented modular monolith. The clients
+retain ownership of models, model-provider credentials, native tools,
+model-provider traffic, and native transcript or message creation.
 
 Around the Backend are:
 
-- two client deployment adapters;
+- three client deployment adapters;
 - one lower-level shared runtime source layer;
 - one npm assembly and installed-CLI layer; and
 - repository automation that builds, validates, stages, and tests artifacts.
@@ -41,11 +41,13 @@ flowchart LR
   subgraph Clients["Client-owned runtimes"]
     Codex["Codex"]
     Claude["Claude Code"]
+    OpenCode["OpenCode"]
   end
 
   subgraph Adapters["Client deployment adapters"]
     CodexAdapter["Codex adapter<br/>plugin, Hooks, canonical skill"]
     ClaudeAdapter["Claude adapter<br/>plugin, Hooks, installer"]
+    OpenCodeAdapter["OpenCode adapter<br/>plugin and skill artifact"]
   end
 
   Common["adapter-common<br/>records, locks, Hook and Repo Memory helpers"]
@@ -61,15 +63,18 @@ flowchart LR
   Common -. "runtime source" .-> Build
   CodexAdapter -. "artifact source" .-> Build
   ClaudeAdapter -. "artifact source" .-> Build
+  OpenCodeAdapter -. "artifact source" .-> Build
   Build -->|"assembles"| Artifact
   Artifact -->|"launches"| Backend
 
   Backend --> Common
   CodexAdapter --> Common
   ClaudeAdapter --> Common
+  OpenCodeAdapter --> Common
 
   Codex --> CodexAdapter
   Claude --> ClaudeAdapter
+  OpenCode --> OpenCodeAdapter
   CodexAdapter -. "versioned local Hook HTTP" .-> Backend
   ClaudeAdapter -. "versioned local Hook HTTP" .-> Backend
 
@@ -88,18 +93,19 @@ relationships; the arrow labels distinguish them. It is not an import graph.
 | `packages/ts/memorax-code-adapter-common` | Shared source for Backend connection authority, private runtime records, cross-process locking and configuration, Hook generations, Hook launch helpers, and Repo/Personal Memory helpers | Backend composition, native transcript interpretation, MemoraX request execution, or client plugin policy | `packages/ts/memorax-code-adapter-common/src/backend-connection.mjs`, `src/runtime-record.mjs`, `src/hooks`, and `src/repo-memory` |
 | `packages/ts/memorax-code-codex-adapter` | Codex plugin artifact, Hook shells and runtimes, session/workspace observation, diagnostics, and the canonical shared skill | Codex rollout semantics or Backend-side writeback authority | `.codex-plugin`, `hooks`, `runtime-hooks`, `src`, and `skills/memorax-code` |
 | `packages/ts/memorax-code-claude-adapter` | Claude Code plugin artifact, Hook shells and runtimes, configuration, installer, marketplace source, and diagnostics | Claude transcript semantics or Backend memory orchestration | `.claude-plugin`, `hooks`, `runtime-hooks`, `scripts`, and `src/plugin-install.mjs` |
+| `packages/ts/memorax-code-opencode-adapter` | OpenCode plugin runtime, shell-session identity, and a materialized shared skill | OpenCode message interpretation inside the Backend, installation lifecycle, or model-provider configuration | `src/plugin.mjs` and the OpenCode materialization mapping in `scripts/npm-source-files.mjs` |
 | `packages/npm/memorax-code` | Installed executable wrappers, update, preinstall/postinstall, npm manifest, and release-package source | Backend lifecycle semantics, uninstall orchestration, or artifact staging | `bin`, `lib/run-entrypoint.mjs`, and `package.json` |
 | `scripts` | Backend build orchestration, staging/materialization, package layout, documentation, and local-only data gates | Product runtime authority | Package-build/check scripts and executable contract scripts |
 | `.github` | Issue and pull-request contribution templates | Product runtime behavior | `.github/ISSUE_TEMPLATE` and `.github/pull_request_template.md` |
 
-`memorax-code-adapter-common` is a source layer consumed by the Backend and
-both adapters; it is not an independently deployed service. The npm artifact
+`memorax-code-adapter-common` is a source layer consumed by the Backend and all
+three adapters; it is not an independently deployed service. The npm artifact
 assembles all runtime trees, but package assembly does not make the npm wrapper
 the owner of their behavior.
 
 ### 2.2 Physical dependency directions
 
-- The Backend and both adapters may import adapter-common. Adapter-common must
+- The Backend and all three adapters may import adapter-common. Adapter-common must
   not import those higher-level components back.
 - Adapter Hook runtimes do not import Backend implementation. They communicate
   through versioned, client-qualified local HTTP commands.
@@ -109,8 +115,8 @@ the owner of their behavior.
 - The npm layer locates staged entrypoints. `scripts` owns how source is
   materialized into that staged layout.
 - The canonical user-facing `memorax-code` skill lives in the Codex adapter.
-  Packaging materializes the Claude artifact from that source; do not maintain
-  a second independent skill copy.
+  Packaging materializes the Claude Code and OpenCode artifacts from that
+  source; do not maintain independent skill copies.
 
 Client integration is deliberately not physically symmetric. Codex plugin
 material belongs to the Codex adapter, while current install, activation, and
@@ -528,6 +534,7 @@ flowchart TD
   CommonSource["adapter-common runtime source"]
   CodexSource["Codex adapter and canonical skill"]
   ClaudeSource["Claude adapter"]
+  OpenCodeSource["OpenCode adapter"]
   Stage["npm staging tree"]
   Materialize["skill and marketplace materialization"]
   Gates["layout, source, symlink, and local-only gates"]
@@ -540,6 +547,7 @@ flowchart TD
   CommonSource --> Stage
   CodexSource --> Stage
   ClaudeSource --> Stage
+  OpenCodeSource --> Stage
   Stage --> Materialize
   Materialize --> Gates
   Gates --> Pack
@@ -550,8 +558,9 @@ flowchart TD
   committed.
 - Adapter-common and adapter `.mjs` runtime trees are staged from declared,
   tracked source.
-- The Claude skill and marketplace are materialized from canonical sources;
-  packaging may rewrite contained relative imports for the staged topology.
+- The Claude Code skill and marketplace and the OpenCode skill artifact are
+  materialized from canonical sources; packaging may rewrite contained
+  relative imports for the staged topology.
 - The npm wrappers use `packages/npm/memorax-code/lib/run-entrypoint.mjs` to
   locate staged Backend or adapter entrypoints.
 - Artifact gates reject undeclared paths, unsafe symlinks, cache/build debris,
@@ -594,12 +603,12 @@ Placement rules:
   root-surface, public-route, delegation, and dependency-cycle contracts.
 - Backend behavior tests build and exercise `dist`; architecture tests inspect
   `src` directly.
-- The Backend suite discovers nested tests recursively. Codex and Claude Code
-  adapter suites currently discover only flat `test/*.test.mjs`; their package
-  scripts must change before tests are nested.
+- The Backend suite discovers nested tests recursively. Codex, Claude Code, and
+  OpenCode adapter suites currently discover only flat `test/*.test.mjs`; their
+  package scripts must change before tests are nested.
 - Adapter-common has no standalone suite. Its changes are verified through all
-  affected consumers: Backend, both adapters, and package checks when staged
-  runtime layout is involved.
+  affected consumers: Backend, all three adapters, and package checks when
+  staged runtime layout is involved.
 - Before moving, splitting, or renaming tests, search `scripts` and `.github`
   for explicit paths and test-name patterns.
 
@@ -614,8 +623,8 @@ uses those named profiles rather than copying commands here.
 | Hook HTTP or adapter-visible command schema | `test/transport/http` and affected adapter suites | Backend source boundaries and package shape when staged | Backend + Adapter-common/shared Hook; add Install/artifacts when staged package shape changes |
 | Backend root entrypoint or compatibility facade | Entrypoint, architecture, and npm package tests | Source boundaries and package shape | Backend + Install/artifacts |
 | Client-native parsing or identity | `test/clients/<client>` | Source boundaries | Backend |
-| Client adapter plugin or Hook deployment | Matching adapter suite and affected Backend contract tests | Package shape when staged | Codex or Claude Code; add Adapter-common/shared Hook for shared Hook source and Install/artifacts for staged package shape |
-| Adapter-common | Affected Backend tests and both adapter suites | Package shape when staged layout changes | Adapter-common/shared Hook; add Install/artifacts when staged runtime or package layout changes |
+| Client adapter plugin or Hook deployment | Matching adapter suite and affected Backend contract tests | Package shape when staged | Codex, Claude Code, or OpenCode; add Adapter-common/shared Hook for shared Hook source and Install/artifacts for staged package shape |
+| Adapter-common | Affected Backend tests and all three adapter suites | Package shape when staged layout changes | Adapter-common/shared Hook; add Install/artifacts when staged runtime or package layout changes |
 | MemoraX provider, trace, or outbound transport | Matching Backend tests | Local-only trace boundary | Backend + Trace/local-only boundary |
 | Test relocation | Moved owning suite | Platform-specific consumers | Matching named profile |
 | Packaging/materialization | npm package tests and artifact gates | Package shape and local-only trace boundary | Install/artifacts |

@@ -19,6 +19,11 @@ test("single npm package layout accepts declared paths and rejects unknown trees
     isAllowedNpmPackPath("lib/memorax-code-codex-adapter/skills/memorax-code/SKILL.md"),
     true,
   );
+  assert.equal(isAllowedNpmPackPath("lib/memorax-code-opencode-adapter/src/plugin.mjs"), true);
+  assert.equal(
+    isAllowedNpmPackPath("lib/memorax-code-opencode-adapter/skills/memorax-code/SKILL.md"),
+    true,
+  );
   assert.equal(isAllowedNpmPackPath("lib/temporary-build/output.js"), false);
   assert.equal(isAllowedNpmPackPath("lib/unknown-runtime.mjs"), false);
   assert.equal(isAllowedNpmPackPath("bin/unknown-command.mjs"), false);

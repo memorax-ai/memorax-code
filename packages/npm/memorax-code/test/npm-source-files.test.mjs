@@ -52,6 +52,24 @@ test("Claude shared skill stages directly from tracked Codex skill sources", () 
   );
 });
 
+test("OpenCode shared skill stages directly from tracked Codex skill sources", () => {
+  assert.ok(npmMainSourceTrees.some((mapping) => (
+    mapping.source === "packages/ts/memorax-code-codex-adapter/skills/memorax-code"
+    && mapping.destination === "lib/memorax-code-opencode-adapter/skills/memorax-code"
+  )));
+  assert.equal(
+    npmMainSourceTrees.some((mapping) => mapping.source === "packages/ts/memorax-code-opencode-adapter/skills"),
+    false,
+  );
+});
+
+test("OpenCode adapter runtime is a declared npm source tree", () => {
+  assert.ok(npmMainSourceTrees.some((mapping) => (
+    mapping.source === "packages/ts/memorax-code-opencode-adapter/src"
+    && mapping.destination === "lib/memorax-code-opencode-adapter/src"
+  )));
+});
+
 test("Codex plugin assets are declared npm source trees", () => {
   assert.ok(npmMainSourceTrees.some((mapping) => (
     mapping.source === "packages/ts/memorax-code-codex-adapter/assets"
