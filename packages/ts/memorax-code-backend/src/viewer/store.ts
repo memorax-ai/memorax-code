@@ -1213,7 +1213,7 @@ function memoryViewerClient(input: MemoryObservabilityEvent): TraceClient {
   if (input.traceContext?.client === "codex") return "codex";
   if (input.traceContext?.client === "opencode") return "opencode";
   if (input.source === "claude_hook_retrieval" || input.source === "claude_hook_writeback") return "claude";
-  if (input.source === "opencode_plugin_retrieval") return "opencode";
+  if (input.source === "opencode_plugin_retrieval" || input.source === "opencode_plugin_writeback") return "opencode";
   return "codex";
 }
 

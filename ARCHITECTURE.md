@@ -94,7 +94,7 @@ relationships; the arrow labels distinguish them. It is not an import graph.
 | `packages/ts/memorax-code-adapter-common` | Shared source for Backend connection authority, private runtime records, cross-process locking and configuration, Hook generations, Hook launch helpers, and Repo/Personal Memory helpers | Backend composition, native transcript interpretation, MemoraX request execution, or client plugin policy | `packages/ts/memorax-code-adapter-common/src/backend-connection.mjs`, `src/runtime-record.mjs`, `src/hooks`, and `src/repo-memory` |
 | `packages/ts/memorax-code-codex-adapter` | Codex plugin artifact, Hook shells and runtimes, session/workspace observation, diagnostics, and the canonical shared skill | Codex rollout semantics or Backend-side writeback authority | `.codex-plugin`, `hooks`, `runtime-hooks`, `src`, and `skills/memorax-code` |
 | `packages/ts/memorax-code-claude-adapter` | Claude Code plugin artifact, Hook shells and runtimes, configuration, installer, marketplace source, and diagnostics | Claude transcript semantics or Backend memory orchestration | `.claude-plugin`, `hooks`, `runtime-hooks`, `scripts`, and `src/plugin-install.mjs` |
-| `packages/ts/memorax-code-opencode-adapter` | OpenCode plugin runtime, managed thin-loader installation, automatic retrieval, shell-session identity, and a materialized shared skill | OpenCode writeback content interpretation inside the Backend or model-provider configuration | `src/plugin.mjs`, `src/plugin-install.mjs`, and the OpenCode materialization mapping in `scripts/npm-source-files.mjs` |
+| `packages/ts/memorax-code-opencode-adapter` | OpenCode plugin runtime, managed thin-loader installation, SDK message retrieval, shell-session identity, and a materialized shared skill | OpenCode message interpretation inside the Backend, model-provider configuration, or background Repo Memory maintenance | `src/plugin.mjs`, `src/plugin-install.mjs`, and the OpenCode materialization mapping in `scripts/npm-source-files.mjs` |
 | `packages/npm/memorax-code` | Installed executable wrappers, update, preinstall/postinstall, npm manifest, and release-package source | Backend lifecycle semantics, uninstall orchestration, or artifact staging | `bin`, `lib/run-entrypoint.mjs`, and `package.json` |
 | `scripts` | Backend build orchestration, staging/materialization, package layout, documentation, and local-only data gates | Product runtime authority | Package-build/check scripts and executable contract scripts |
 | `.github` | Issue and pull-request contribution templates | Product runtime behavior | `.github/ISSUE_TEMPLATE` and `.github/pull_request_template.md` |
@@ -106,8 +106,8 @@ the owner of their behavior.
 
 ### 2.2 Physical dependency directions
 
-- The Backend and all three adapters may import adapter-common. Adapter-common must
-  not import those higher-level components back.
+- The Backend and all three adapters may import adapter-common. Adapter-common
+  must not import those higher-level components back.
 - Adapter Hook and plugin runtimes do not import Backend implementation. They
   communicate through versioned, client-qualified local HTTP commands.
 - Backend lifecycle may load adapter configuration or installers through
@@ -210,9 +210,11 @@ sequenceDiagram
 Important distinctions:
 
 - Hook or plugin event fields supply protocol, correlation, and retrieval
-  input. They are not automatic writeback content authority.
-- Codex rollout JSONL and Claude Code transcript JSONL are the content
-  authorities for their respective clients.
+  input. Their prompt or event text is not automatic writeback content
+  authority; OpenCode's separately supplied SDK records are validated as
+  client-native content.
+- Codex rollout JSONL, Claude Code transcript JSONL, and OpenCode SDK session
+  message records are the content authorities for their respective clients.
 - Required client/session/turn identity and repository scope fail closed when
   incomplete, conflicting, or unprovable.
 - A malformed or incomplete direct `.git` directory is the sole documented
@@ -222,7 +224,7 @@ Important distinctions:
 - Local mode may authorize loopback requests without a configured token. Token
   authentication is required when configuration or exposure mode demands it.
 - Client-specific runtimes interpret native formats. Client-neutral memory
-  coordination does not parse or guess either format.
+  coordination does not parse, mix, or guess those formats.
 - OpenCode's awaited `chat.message` plugin event supplies the correlated user
   prompt and injects accepted retrieval context into that message's system
   context. Its `shell.env` event binds the native session identity and makes
@@ -248,9 +250,10 @@ Writeback is a separate branch, not the tail of every memory operation.
 
 ```mermaid
 sequenceDiagram
-  participant Hook as client Stop Hook
+  participant Client as supported client
+  participant Integration as adapter Hook or plugin
+  participant Authority as client-native content authority
   participant Service as memory service
-  participant Native as rollout/transcript reader
   participant Coordinator as turn coordinator
   participant Scope as repository scope
   participant Runtime as automatic writeback runtime
@@ -260,9 +263,17 @@ sequenceDiagram
   participant Reconciler as status reconciler
   participant Trace as local trace
 
-  Hook->>Service: client-qualified writeback correlation
-  Service->>Native: read the exact completed native Turn
-  Native->>Coordinator: native content and correlation plus scope resolver
+  Client->>Integration: completion signal and correlation
+  alt OpenCode
+    Integration->>Authority: fetch session messages through the client SDK
+    Authority-->>Integration: matching user and completed assistant records
+    Integration->>Service: correlation and SDK message records
+  else Codex or Claude Code
+    Integration->>Service: client-qualified writeback correlation
+    Service->>Authority: read the exact rollout or transcript Turn
+    Authority-->>Service: matching native Turn
+  end
+  Service->>Coordinator: validated native content and correlation plus scope resolver
   Coordinator->>Scope: resolve and revalidate current scope
   Scope-->>Coordinator: current repository identity
   Coordinator->>Runtime: enqueue the materialized Turn
@@ -280,8 +291,15 @@ sequenceDiagram
 - Retrieval events do not enter reconciliation.
 - Local enqueue acceptance is the metadata-consumption point; provider I/O may
   occur later through the automatic writeback runtime.
-- Buffering and chunking belong to the memory capability; transcript parsing
-  remains client-specific.
+- Buffering and chunking belong to the memory capability; rollout, transcript,
+  and SDK message parsing remains client-specific.
+- OpenCode writeback accepts only the matching SDK user and completed assistant
+  records for the correlated session and parent message. It rejects errored,
+  summary, compaction, incomplete, or identity-mismatched messages and does not
+  fall back to plugin prompt text or local database guesses.
+- Because OpenCode completion notification is an event callback, the plugin
+  tracks idle-triggered SDK and writeback work and drains already-started tasks
+  during plugin disposal.
 - When a degraded direct-`.git` scope upgrades to verified Git scope, the
   buffer runtime cancels and discards pending fallback turns for the same
   client and session before buffering under the Git scope. It does not migrate
@@ -293,15 +311,16 @@ sequenceDiagram
 ### 3.5 Repo Memory coordination
 
 Repo Memory is repository-local guidance under `.repo_memory`, not a MemoraX
-provider response. A turn-start result exposes a worktree to adapter Hooks only
-for a verified Git scope; the Viewer separately projects Repo Memory readiness.
-Adapter Hooks may schedule a missing bundle build using adapter-common
-supervision, locking, and job-policy helpers. They must use the
+provider response. A turn-start result exposes a worktree to maintenance-aware
+adapter Hooks only for a verified Git scope; the Viewer separately projects
+Repo Memory readiness. Those Hooks may schedule a missing bundle build using
+adapter-common supervision, locking, and job-policy helpers. They must use the
 Backend-resolved worktree rather than an arbitrary Hook `cwd`.
 
 OpenCode supports active Repo Memory operations through the shared skill, but
 its plugin does not own supervised background Repo Memory maintenance. Its
-automatic runtime contract currently covers prompt retrieval.
+automatic runtime contract covers prompt retrieval and completed-turn
+writeback.
 
 ## 4. Backend Modular Monolith
 
@@ -325,7 +344,7 @@ src/
   clients/
     codex/                Codex native interpretation and lifecycle adapters
     claude/               Claude native interpretation and lifecycle participant
-    opencode/             OpenCode retrieval runtime and lifecycle participant
+    opencode/             OpenCode SDK message interpretation and lifecycle participant
   config/                 Backend and proxy/config interpretation
   entrypoints/            process and management-CLI orchestration
   lifecycle/
@@ -361,7 +380,7 @@ entrypoints and compatibility facades. It is not another implementation area.
 | `src/lifecycle/backend` | Managed process, PID/token/connection records, status probing, cleanup, and shutdown requests | Helper contracts do not depend back on the full service implementation |
 | `src/clients/codex` | Codex rollout, prompt, turn-index, and workspace interpretation; Hook memory runtime; plugin integration glue; and lifecycle participant | No Claude format fallback; request runtime remains HTTP-composition independent |
 | `src/clients/claude` | Claude transcript/turn interpretation, Hook memory runtime, and lifecycle participant | No Codex format fallback; request runtime remains HTTP-composition independent |
-| `src/clients/opencode` | OpenCode plugin memory retrieval runtime and lifecycle participant | Request runtime remains HTTP-composition independent and does not infer writeback content |
+| `src/clients/opencode` | OpenCode SDK message validation and text materialization, plugin memory runtime, and lifecycle participant | No Hook-text, database, rollout, or transcript fallback; request runtime remains HTTP-composition independent |
 | `src/memory` | Memory commands, retrieval, writeback, turn coordination, repository session pinning, manual CLI, buffering/chunking, task projection, and reconciliation | Client-neutral modules do not parse native transcript formats |
 | `src/repository` | Read-only repository identity and Repo Memory readiness | Scope derivation does not execute Git or use synchronous filesystem reads |
 | `src/provider/memorax` | MemoraX config interpretation, query/add/status payloads, HTTP transport, and normalized results | Independent from server routing and plugin lifecycle |
@@ -466,7 +485,7 @@ and
 | --- | --- | --- |
 | Models, model-provider credentials, native tools, and model-provider traffic | Codex, Claude Code, or OpenCode | Backend and adapters must not proxy or persist this authority |
 | Hook command identity | Versioned, client-qualified command plus validated required session/turn fields | Parsed HTTP request objects |
-| Automatic writeback content | Codex rollout JSONL or Claude Code transcript JSONL for the matching client | Hook text, trace, latest-Turn guesses, and the other client's format are not fallbacks |
+| Automatic writeback content | Codex rollout JSONL, Claude Code transcript JSONL, or OpenCode SDK session messages for the matching client and Turn | Hook or plugin text, trace, latest-Turn guesses, local database guesses, and another client's format are not fallbacks |
 | Workspace and repository identity | Backend read-only resolution held by the live repository-session runtime; its only permitted scope transition is the same-root degraded-direct-`.git` to verified-Git upgrade | Project labels, Viewer catalog entries, and Hook `cwd` |
 | Backend connection and managed-process ownership | Versioned private connection/token/PID records plus lifecycle lock/version validation | In-memory state in any one process |
 | MemoraX memory result and asynchronous task state | Normalized response from `provider/memorax` | Observability, trace, Viewer, and task projections |

@@ -40,9 +40,9 @@ paths are `~/.config/opencode/plugins/memorax-code.js` and
 `~/.config/opencode/skills/memorax-code/`. The installer does not modify
 `opencode.json` or `opencode.jsonc`.
 
-OpenCode support covers the shared skill, explicit Search/Add, and automatic
-retrieval when enabled. Completed-turn writeback and background Repo Memory
-maintenance are not yet part of the integration.
+OpenCode support covers the shared skill, Search/Add, automatic retrieval when
+enabled, and completed-turn writeback. Background Repo Memory maintenance is
+not currently part of the OpenCode integration.
 
 ## Verify
 

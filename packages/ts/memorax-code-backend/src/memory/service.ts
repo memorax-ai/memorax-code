@@ -11,6 +11,7 @@ import {
 } from "../clients/claude/memory-hook-runtime.js";
 import {
   createOpenCodeMemoryHookRuntime,
+  type OpenCodeMemoryHookWritebackResult,
 } from "../clients/opencode/memory-hook-runtime.js";
 import { createMemoryTurnCoordinator } from "./turn-coordinator.js";
 import {
@@ -29,7 +30,8 @@ export type MemoryServiceOptions = Omit<
 
 type MemoryHookWritebackResult =
   | CodexMemoryHookWritebackResult
-  | ClaudeMemoryHookWritebackResult;
+  | ClaudeMemoryHookWritebackResult
+  | OpenCodeMemoryHookWritebackResult;
 
 export type MemoryService = {
   recordTurnStart(command: TurnStartCommand): Promise<MemoryHookTurnStartResult>;
@@ -65,6 +67,7 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
   const openCodeHook = createOpenCodeMemoryHookRuntime({
     ...options,
     repositoryMemorySession,
+    turnCoordinator,
   });
   let closed = false;
   return {
@@ -85,6 +88,8 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
           return await codexHook.writeback(command);
         case "claude-code":
           return await claudeHook.writeback(command);
+        case "opencode":
+          return await openCodeHook.writeback(command);
       }
       return unsupportedMemoryHookCommand(command);
     },

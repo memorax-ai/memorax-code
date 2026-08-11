@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter } from "node:path";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { test } from "node:test";
 import { createMemoraxOpenCodePlugin } from "../src/plugin.mjs";
 
@@ -134,6 +135,101 @@ test("a loaded plugin follows the managed enabled state without an OpenCode rest
       enabled,
     }));
   }
+});
+
+test("idle reads authoritative SDK messages and dispose drains the pending writeback", async () => {
+  const requests = [];
+  let releaseMessages;
+  const messagesReady = new Promise((resolve) => {
+    releaseMessages = resolve;
+  });
+  const clientCalls = [];
+  const input = pluginInput({
+    client: {
+      session: {
+        async messages(options) {
+          clientCalls.push(options);
+          await messagesReady;
+          return {
+            data: [
+              {
+                info: { id: "user-3", role: "user", sessionID: "session-3" },
+                parts: [{ type: "text", text: "Implement the adapter." }],
+              },
+              {
+                info: {
+                  id: "assistant-3",
+                  role: "assistant",
+                  sessionID: "session-3",
+                  parentID: "user-3",
+                  time: { completed: 123 },
+                },
+                parts: [{ type: "text", text: "Implemented." }],
+              },
+            ],
+          };
+        },
+      },
+    },
+  });
+  const plugin = createMemoraxOpenCodePlugin({
+    backendConnection: { url: "http://127.0.0.1:8787" },
+    fetchImpl: responseSequence(requests, [{ ok: true }, { ok: true }]),
+  });
+  const hooks = await plugin(input);
+  await hooks["chat.message"](
+    { sessionID: "session-3" },
+    { message: { id: "user-3" }, parts: [{ type: "text", text: "Implement the adapter." }] },
+  );
+
+  hooks.event({
+    event: {
+      type: "session.status",
+      properties: { sessionID: "session-3", status: { type: "idle" } },
+    },
+  });
+  let disposed = false;
+  const disposing = hooks.dispose().then(() => {
+    disposed = true;
+  });
+  await delay(10);
+  assert.equal(disposed, false);
+
+  releaseMessages();
+  await disposing;
+
+  assert.deepEqual(clientCalls, [{
+    path: { id: "session-3" },
+    query: { directory: "/repo/directory" },
+    throwOnError: true,
+  }]);
+  assert.equal(requests.length, 2);
+  assert.equal(requests[1].url, "http://127.0.0.1:8787/memory/writeback");
+  assert.deepEqual(requests[1].body, {
+    version: 1,
+    client: "opencode",
+    sessionId: "session-3",
+    userMessageId: "user-3",
+    assistantMessageId: "assistant-3",
+    messages: [
+      {
+        info: { id: "user-3", role: "user", sessionID: "session-3" },
+        parts: [{ type: "text", text: "Implement the adapter." }],
+      },
+      {
+        info: {
+          id: "assistant-3",
+          role: "assistant",
+          sessionID: "session-3",
+          parentID: "user-3",
+          time: { completed: 123 },
+        },
+        parts: [{ type: "text", text: "Implemented." }],
+      },
+    ],
+    cwd: "/repo/worktree",
+    workspaceKind: "project",
+  });
 });
 
 function pluginInput(overrides = {}) {

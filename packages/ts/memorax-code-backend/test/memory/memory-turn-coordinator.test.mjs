@@ -13,14 +13,17 @@ test("memory turn coordinator isolates identical client turn keys", () => {
   try {
     coordinator.recordTurnStart(turnStart("codex"));
     coordinator.recordTurnStart(turnStart("claude-code"));
+    coordinator.recordTurnStart(turnStart("opencode"));
 
-    assert.equal(coordinator.size(), 2);
+    assert.equal(coordinator.size(), 3);
     assert.equal(coordinator.size("codex"), 1);
     assert.equal(coordinator.size("claude-code"), 1);
+    assert.equal(coordinator.size("opencode"), 1);
     assert.equal(coordinator.getTurn(turnKey("codex"))?.client, "codex");
     assert.equal(coordinator.discardTurn(turnKey("codex"), "interrupted"), true);
     assert.equal(coordinator.getTurn(turnKey("codex")), undefined);
     assert.equal(coordinator.getTurn(turnKey("claude-code"))?.client, "claude-code");
+    assert.equal(coordinator.getTurn(turnKey("opencode"))?.client, "opencode");
   } finally {
     coordinator.close();
   }

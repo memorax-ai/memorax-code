@@ -205,7 +205,7 @@ local `cwd`.
 
 OpenCode supports active Repo Memory operations through the installed skill,
 but its plugin does not currently run background Repo Memory maintenance. Its
-automatic integration currently covers retrieval.
+automatic integration covers retrieval and completed-turn writeback.
 
 ## Local traces
 

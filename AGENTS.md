@@ -40,9 +40,10 @@ same change, then run the matching verification profile in Section 5.
 - Hook commands are versioned and client-qualified. Required session, turn, or
   prompt correlation must be validated at the HTTP boundary; incomplete,
   conflicting, unknown, or client-inapplicable identities fail closed.
-- Codex rollout JSONL and Claude Code transcript JSONL are the only content
-  authorities for their respective automatic writeback. Hook text, local
-  trace, latest-turn guesses, or the other client's format are not fallbacks.
+- Codex rollout JSONL, Claude Code transcript JSONL, and matching OpenCode SDK
+  session-message records are the only content authorities for their
+  respective automatic writeback. Hook or plugin text, local trace,
+  latest-turn guesses, or another client's format are not fallbacks.
 - Session, turn metadata, trace, and operational identity always include the
   client. Equal native IDs from different clients must remain isolated.
 - A live session is pinned to its resolved workspace and repository scope.

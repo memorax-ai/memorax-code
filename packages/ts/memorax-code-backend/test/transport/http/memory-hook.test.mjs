@@ -124,6 +124,14 @@ test("Backend memory hook endpoints reject commands outside the closed schema", 
     userMessageId: "user-opencode-turn-start",
     prompt: "OpenCode turn start.",
   };
+  const openCodeWriteback = {
+    version: 1,
+    client: "opencode",
+    sessionId: "session-opencode-writeback",
+    userMessageId: "user-opencode-writeback",
+    assistantMessageId: "assistant-opencode-writeback",
+    messages: [],
+  };
   try {
     for (const [caseName, path, body] of [
       ["unversioned command", "/memory/turn-start", {
@@ -198,6 +206,14 @@ test("Backend memory hook endpoints reject commands outside the closed schema", 
       ["transcript field on OpenCode turn-start", "/memory/turn-start", {
         ...openCodeTurnStart,
         transcriptPath: "/tmp/opencode.jsonl",
+      }],
+      ["Hook assistant text on OpenCode writeback", "/memory/writeback", {
+        ...openCodeWriteback,
+        lastAssistantMessage: "Hook text is not OpenCode writeback authority.",
+      }],
+      ["invalid OpenCode messages container", "/memory/writeback", {
+        ...openCodeWriteback,
+        messages: {},
       }],
     ]) {
       const response = await fetch(`${url}${path}`, {

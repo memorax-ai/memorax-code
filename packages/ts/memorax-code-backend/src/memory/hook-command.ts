@@ -17,13 +17,19 @@ const TURN_START_KEYS: Readonly<Record<MemoryHookClient, ReadonlySet<string>>> =
   "claude-code": new Set([...BASE_COMMAND_KEYS, "promptId", "prompt", "transcriptPath"]),
   opencode: new Set([...BASE_COMMAND_KEYS, "userMessageId", "prompt"]),
 };
-const WRITEBACK_KEYS: Readonly<Partial<Record<MemoryHookClient, ReadonlySet<string>>>> = {
+const WRITEBACK_KEYS: Readonly<Record<MemoryHookClient, ReadonlySet<string>>> = {
   codex: new Set([...BASE_COMMAND_KEYS, "turnId", "lastAssistantMessage", "transcriptPath"]),
   "claude-code": new Set([
     ...BASE_COMMAND_KEYS,
     "promptId",
     "lastAssistantMessage",
     "transcriptPath",
+  ]),
+  opencode: new Set([
+    ...BASE_COMMAND_KEYS,
+    "userMessageId",
+    "assistantMessageId",
+    "messages",
   ]),
 };
 const SKILL_REMINDER_KEYS: Readonly<Partial<Record<MemoryHookClient, ReadonlySet<string>>>> = {
@@ -76,7 +82,13 @@ export type ClaudeWritebackCommand = MemoryHookCommandBase<"claude-code"> & Read
   transcriptPath: string;
 }>;
 
-export type WritebackCommand = CodexWritebackCommand | ClaudeWritebackCommand;
+export type OpenCodeWritebackCommand = MemoryHookCommandBase<"opencode"> & Readonly<{
+  userMessageId: string;
+  assistantMessageId: string;
+  messages: readonly unknown[];
+}>;
+
+export type WritebackCommand = CodexWritebackCommand | ClaudeWritebackCommand | OpenCodeWritebackCommand;
 
 export type SkillReminderTrigger = "cadence" | "post_compaction";
 
@@ -157,6 +169,23 @@ export function parseWritebackCommand(
   if (!isRecord(value)) return invalidCommand();
   const base = parseCommandBase(value, WRITEBACK_KEYS);
   if (!base) return invalidCommand();
+  if (base.client === "opencode") {
+    const userMessageId = requiredStringField(value, "userMessageId");
+    const assistantMessageId = requiredStringField(value, "assistantMessageId");
+    if (!userMessageId || !assistantMessageId || !Array.isArray(value.messages)) {
+      return invalidCommand();
+    }
+    return {
+      ok: true,
+      command: {
+        ...base,
+        client: "opencode",
+        userMessageId,
+        assistantMessageId,
+        messages: value.messages,
+      },
+    };
+  }
   const lastAssistantMessage = requiredStringField(value, "lastAssistantMessage");
   if (!lastAssistantMessage) return invalidCommand();
   if (base.client === "codex") {
