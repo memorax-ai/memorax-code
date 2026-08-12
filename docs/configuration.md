@@ -209,17 +209,16 @@ Supported policies are `every-commit`, `commit-count`, `daily`,
 `pull-request`, `pull-request-or-daily`, and `adaptive`. Invalid policy values
 fall back to `adaptive`.
 
-In Codex and Claude Code, the first eligible prompt starts a background build
-only when the Backend has authorized a Git worktree and that worktree has no
-`.repo_memory/PROFILE.md`. If the Backend or workspace authority is
-unavailable, the Hook skips the initial build instead of falling back to its
-local `cwd`.
+In Codex, Claude Code, and OpenCode, the first eligible prompt starts a
+background build only when the Backend has authorized a Git worktree and that
+worktree has no `.repo_memory/PROFILE.md`. If the Backend or workspace
+authority is unavailable, the client integration skips that attempt instead
+of falling back to its local workspace path.
 
-OpenCode runs supervised background maintenance when the installed skill
-selects repo-read. The configured policy may select a build, update, or no-op.
-OpenCode does not yet initialize a missing bundle automatically on the first
-prompt. Its automatic integration otherwise covers retrieval, shared reminder
-and personal-memory context injection, and completed-turn writeback.
+A relevant repo-read runs supervised maintenance in all three clients. The
+configured policy may select a build, update, or no-op. OpenCode executes the
+job through its active Desktop server and does not require a standalone
+`opencode` executable in `PATH`.
 
 ## Local traces
 

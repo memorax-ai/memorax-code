@@ -41,9 +41,9 @@ paths are `~/.config/opencode/plugins/memorax-code.js` and
 `opencode.json` or `opencode.jsonc`.
 
 OpenCode support covers the shared skill, Search/Add, automatic retrieval when
-enabled, completed-turn writeback, and supervised background Repo Memory
-maintenance during repo-read. OpenCode does not yet initialize a missing Repo
-Memory bundle automatically on the first prompt.
+enabled, completed-turn writeback, supervised background Repo Memory
+maintenance during repo-read, and automatic background initialization of a
+missing Repo Memory bundle on the first eligible prompt.
 
 ## Verify
 

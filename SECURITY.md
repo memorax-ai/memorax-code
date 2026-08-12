@@ -46,7 +46,8 @@ Please allow time for triage and remediation before public disclosure.
   open without starting a process.
 - Initial Repo Memory builds use only the Git worktree returned by an
   authenticated Backend turn-start request. Backend or workspace-scope
-  failures skip the build; client Hooks do not fall back to their local `cwd`.
+  failures skip the build; client integrations do not fall back to
+  adapter-local workspace input.
 - MemoraX-backed Search, Add, and automatic writeback may downgrade malformed
   or incomplete internal metadata in a direct `.git` directory to the
   canonical workspace folder identity. The CLI exposes the fallback reason,

@@ -14,7 +14,7 @@ export function scheduleMissingRepoMemoryBuild(repo, options = {}) {
     const child = spawn(process.execPath, [jobHookPath, "maintain", "--repo", repoPath], {
       cwd: repoPath,
       detached: true,
-      env: process.env,
+      env: options.env ?? process.env,
       stdio: "ignore",
       windowsHide: true,
     });

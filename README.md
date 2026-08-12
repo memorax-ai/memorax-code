@@ -128,18 +128,18 @@ the current repository.
 
 OpenCode support covers the shared skill, explicit Search and Add, automatic
 retrieval when enabled, completed-turn writeback, periodic Skill reminders,
-and User Profile and Procedure Memory guidance. A repo-read can maintain Repo
-Memory in the background according to policy. Unlike Codex and Claude Code,
-OpenCode does not yet initialize a missing bundle automatically on the first
-prompt. Use `memorax-code-opencode doctor` to verify the managed integration,
-plugin runtime evidence, and Backend health.
+User Profile and Procedure Memory guidance, and supervised Repo Memory
+maintenance. A repo-read maintains Repo Memory according to policy, while the
+first eligible prompt initializes a missing bundle in the background. Use
+`memorax-code-opencode doctor` to verify the managed integration, plugin
+runtime evidence, and Backend health.
 
 | Capability | What it does |
 | --- | --- |
 | **Background memory writeback** | Extracts reusable knowledge from completed turns and writes it to Coding Memory in the background. |
 | **Preference continuity** | Records User Profile preferences and injects them into future tasks on a configured cadence. |
 | **Procedure reuse** | Records reusable task procedures and reminds future agents to apply them. |
-| **Background Repo Memory maintenance** | Maintains repository structure, entry points, and history evidence in the background when Repo Memory is read. Codex and Claude Code also initialize a missing bundle on the first eligible prompt. |
+| **Background Repo Memory maintenance** | Maintains repository structure, entry points, and history evidence in the background when Repo Memory is read, and initializes a missing bundle on the first eligible prompt in Codex, Claude Code, and OpenCode. |
 | **Active memory control** | Lets you search and add memory through the bundled MemoraX Code skill or the CLI. |
 | **Client integration** | Uses Codex and Claude Code Hooks or OpenCode plugin events to trigger supported retrieval and writeback flows. |
 | **Local visualization** | Uses the local Memory Viewer to summarize activity counts, retrieval, and writeback status. |
