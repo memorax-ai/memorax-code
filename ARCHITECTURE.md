@@ -315,13 +315,15 @@ sequenceDiagram
   occur later through the automatic writeback runtime.
 - Buffering and chunking belong to the memory capability; rollout, transcript,
   and SDK message parsing remains client-specific.
-- OpenCode writeback accepts only the matching SDK user and completed assistant
-  records for the correlated session and parent message. It rejects errored,
-  summary, compaction, incomplete, or identity-mismatched messages and does not
-  fall back to plugin prompt text or local database guesses.
-- Because OpenCode completion notification is an event callback, the plugin
-  tracks idle-triggered SDK and writeback work and drains already-started tasks
-  during plugin disposal.
+- OpenCode terminal handling accepts only matching SDK user and completed
+  assistant records for the correlated session and parent message. An exact
+  `MessageAbortedError` closes the Turn as interrupted without writeback; other
+  errors, summary, compaction, incomplete, or identity-mismatched messages are
+  rejected. It does not fall back to plugin prompt text or local database
+  guesses.
+- Because OpenCode terminal notifications are event callbacks, the plugin
+  serializes idle- and interruption-triggered SDK reads per session, tracks
+  the resulting work, and drains already-started tasks during plugin disposal.
 - When a degraded direct-`.git` scope upgrades to verified Git scope, the
   buffer runtime cancels and discards pending fallback turns for the same
   client and session before buffering under the Git scope. It does not migrate

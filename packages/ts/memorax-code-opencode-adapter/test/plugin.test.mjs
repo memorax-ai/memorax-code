@@ -673,6 +673,124 @@ test("idle reads authoritative SDK messages and dispose drains the pending write
   });
 });
 
+test("message.updated finalizes only MessageAbortedError and serializes with idle", async () => {
+  const requests = [];
+  const clientCalls = [];
+  let markFirstMessagesStarted;
+  let releaseFirstMessages;
+  const firstMessagesStarted = new Promise((resolve) => {
+    markFirstMessagesStarted = resolve;
+  });
+  const firstMessagesReady = new Promise((resolve) => {
+    releaseFirstMessages = resolve;
+  });
+  const interruptedMessages = [
+    {
+      info: { id: "user-interrupted", role: "user", sessionID: "session-interrupted" },
+      parts: [{ type: "text", text: "Stop this Turn." }],
+    },
+    {
+      info: {
+        id: "assistant-interrupted",
+        role: "assistant",
+        sessionID: "session-interrupted",
+        parentID: "user-interrupted",
+        time: { completed: 123 },
+        error: {
+          name: "MessageAbortedError",
+          data: { message: "The user interrupted this Turn." },
+        },
+      },
+      parts: [],
+    },
+  ];
+  const plugin = createPluginWithoutReminders({
+    backendConnection: { url: "http://127.0.0.1:8787" },
+    fetchImpl: responseSequence(requests, [{ ok: true }, { ok: true, scheduled: false, reason: "interrupted" }]),
+  });
+  const hooks = await plugin(pluginInput({
+    client: {
+      session: {
+        async messages(options) {
+          clientCalls.push(options);
+          if (clientCalls.length === 1) {
+            markFirstMessagesStarted();
+            await firstMessagesReady;
+            return { data: [] };
+          }
+          return { data: interruptedMessages };
+        },
+      },
+    },
+  }));
+
+  await hooks["chat.message"](
+    { sessionID: "session-interrupted" },
+    promptOutput("user-interrupted", "Stop this Turn."),
+  );
+  hooks.event({
+    event: {
+      type: "message.updated",
+      properties: {
+        info: {
+          id: "assistant-unknown-error",
+          role: "assistant",
+          sessionID: "session-interrupted",
+          parentID: "user-interrupted",
+          time: { completed: 122 },
+          error: { name: "UnknownError" },
+        },
+      },
+    },
+  });
+  await delay(0);
+  assert.equal(clientCalls.length, 0);
+  assert.equal(requests.length, 1);
+
+  hooks.event({
+    event: {
+      type: "session.status",
+      properties: { sessionID: "session-interrupted", status: { type: "idle" } },
+    },
+  });
+  await firstMessagesStarted;
+  hooks.event({
+    event: {
+      type: "message.updated",
+      properties: { info: interruptedMessages[1].info },
+    },
+  });
+  await delay(0);
+  assert.equal(clientCalls.length, 1, "the abort refresh waits for the idle refresh");
+
+  releaseFirstMessages();
+  await hooks.dispose();
+
+  assert.equal(clientCalls.length, 2);
+  assert.equal(requests.length, 2);
+  assert.equal(requests[1].url, "http://127.0.0.1:8787/memory/writeback");
+  assert.deepEqual(requests[1].body, {
+    version: 1,
+    client: "opencode",
+    sessionId: "session-interrupted",
+    userMessageId: "user-interrupted",
+    assistantMessageId: "assistant-interrupted",
+    messages: interruptedMessages,
+    cwd: "/repo/worktree",
+    workspaceKind: "project",
+  });
+
+  hooks.event({
+    event: {
+      type: "session.status",
+      properties: { sessionID: "session-interrupted", status: { type: "idle" } },
+    },
+  });
+  await hooks.dispose();
+  assert.equal(clientCalls.length, 2);
+  assert.equal(requests.length, 2);
+});
+
 function pluginInput(overrides = {}) {
   return {
     client: { session: { async messages() { return { data: [] }; } } },

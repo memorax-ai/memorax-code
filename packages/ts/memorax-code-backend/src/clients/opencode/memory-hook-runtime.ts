@@ -37,6 +37,7 @@ import {
 
 export type OpenCodeMemoryHookWritebackSkipReason =
   | "turn_metadata_mismatch"
+  | "interrupted"
   | "config_missing"
   | OpenCodeMessageTurnFailureReason
   | RepositoryMemoryScopeFailureReason
@@ -195,6 +196,52 @@ export function createOpenCodeMemoryHookRuntime(
         });
         return { ok: true, scheduled: false, reason: materialized.reason };
       }
+      if (materialized.turn.outcome === "interrupted") {
+        if (!entry) {
+          options.diagnosticLogger?.("opencode_memory.writeback", {
+            scheduled: false,
+            reason: "turn_metadata_mismatch",
+            sessionId: command.sessionId,
+            userMessageId: command.userMessageId,
+            assistantMessageId: command.assistantMessageId,
+          });
+          return { ok: true, scheduled: false, reason: "turn_metadata_mismatch" };
+        }
+        const traceContext = entry.traceContext;
+        await recordTraceBestEffort("opencode_memory.interrupted_turn_end_event", recordTraceEvent({
+          eventId: traceTurnEventId(traceContext, "turn_end"),
+          memoraxCodeHome: options.memoraxCodeHome,
+          env: options.env,
+          traceContext,
+          type: "turn_end",
+          source: "opencode-plugin",
+          operation: "reply",
+          ok: true,
+          outcome: "interrupted",
+          response: {
+            assistantMessage: materialized.turn.assistantReply,
+          },
+        }), options.diagnosticLogger);
+        await recordTraceBestEffort(
+          "opencode_memory.interrupted_current_turn_close",
+          markCurrentTraceTurnOutcome(traceContext, "interrupted", {
+            client: "opencode",
+            memoraxCodeHome: options.memoraxCodeHome,
+            env: options.env,
+          }),
+          options.diagnosticLogger,
+        );
+        turnCoordinator.discardTurn(key, "interrupted");
+        options.diagnosticLogger?.("opencode_memory.writeback", {
+          scheduled: false,
+          reason: "interrupted",
+          metadataDisposition: "consumed",
+          sessionId: command.sessionId,
+          userMessageId: command.userMessageId,
+          assistantMessageId: command.assistantMessageId,
+        });
+        return { ok: true, scheduled: false, reason: "interrupted" };
+      }
       const traceContext = entry?.traceContext
         ?? traceContextFromOpenCodeHookBody(command, new Date(now()).toISOString());
       await recordTraceBestEffort("opencode_memory.turn_end_event", recordTraceEvent({
@@ -206,7 +253,7 @@ export function createOpenCodeMemoryHookRuntime(
         source: "opencode-plugin",
         operation: "writeback",
         ok: true,
-        outcome: "completed",
+        outcome: materialized.turn.outcome,
         response: {
           content: materialized.turn.assistantReply,
         },

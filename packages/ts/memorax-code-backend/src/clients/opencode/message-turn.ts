@@ -6,6 +6,7 @@ export type OpenCodeMessageTurn = Readonly<{
   assistantMessageId: string;
   userPrompt: string;
   assistantReply: string;
+  outcome: "completed" | "interrupted";
 }>;
 
 export type OpenCodeMessageTurnFailureReason =
@@ -50,7 +51,9 @@ export function openCodeMessageTurn(
   if (!Number.isFinite(assistantTime?.completed)) {
     return { ok: false, reason: "assistant_not_completed" };
   }
-  if (assistant.info.error !== undefined && assistant.info.error !== null) {
+  const assistantError = assistant.info.error;
+  const interrupted = isRecord(assistantError) && assistantError.name === "MessageAbortedError";
+  if (assistantError !== undefined && assistantError !== null && !interrupted) {
     return { ok: false, reason: "assistant_error" };
   }
   if (assistant.info.summary === true) {
@@ -62,7 +65,7 @@ export function openCodeMessageTurn(
   const userPrompt = messageText(user, input.sessionId, input.userMessageId);
   if (!userPrompt) return { ok: false, reason: "user_prompt_missing" };
   const assistantReply = messageText(assistant, input.sessionId, input.assistantMessageId);
-  if (!assistantReply) return { ok: false, reason: "assistant_message_missing" };
+  if (!assistantReply && !interrupted) return { ok: false, reason: "assistant_message_missing" };
   return {
     ok: true,
     turn: {
@@ -71,6 +74,7 @@ export function openCodeMessageTurn(
       assistantMessageId: input.assistantMessageId,
       userPrompt,
       assistantReply,
+      outcome: interrupted ? "interrupted" : "completed",
     },
   };
 }
