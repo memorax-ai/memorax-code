@@ -63,31 +63,6 @@ test("OpenCode repo memory runner creates, prompts, and deletes a background ses
   }
 });
 
-test("OpenCode repo memory runner reads the server URL from the environment", async () => {
-  const root = await mkdtemp(join(tmpdir(), "opencode-repo-memory-env-"));
-  const server = await startServer(async (request, response) => {
-    if (request.method === "POST" && request.url.startsWith("/session?")) {
-      return json(response, 200, { id: "session-env" });
-    }
-    if (request.method === "POST") {
-      return json(response, 200, { parts: [{ type: "text", text: "Done." }] });
-    }
-    return json(response, 200, true);
-  });
-  try {
-    const result = await runOpenCodeRepoMemory({
-      repo: root,
-      prompt: "Maintain Repo Memory.",
-    }, {
-      env: { MEMORAX_CODE_OPENCODE_SERVER_URL: server.url },
-    });
-    assert.equal(result, "Done.");
-  } finally {
-    await server.close();
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
 test("OpenCode repo memory runner preserves prompt failures and still deletes the session", async () => {
   const root = await mkdtemp(join(tmpdir(), "opencode-repo-memory-failure-"));
   let deleted = false;

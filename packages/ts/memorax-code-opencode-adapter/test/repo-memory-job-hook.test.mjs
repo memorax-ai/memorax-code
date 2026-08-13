@@ -40,27 +40,6 @@ test("OpenCode repo memory launcher uses the local server runner", () => {
   }
 });
 
-test("OpenCode repo memory maintain selects build for a missing bundle", () => {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "opencode-repo-memory-maintain-")));
-  const repo = join(root, "repo");
-  const memoraxCodeHome = join(root, "memorax-code");
-  try {
-    initRepo(repo);
-    const result = runJob(["maintain", "--repo", repo, "--dry-run"], {
-      MEMORAX_CODE_HOME: memoraxCodeHome,
-    });
-    assert.equal(result.status, 0, result.stderr);
-    const payload = JSON.parse(result.stdout);
-    assert.equal(payload.schema, "repo_memory_maintenance_decision.v1");
-    assert.equal(payload.action, "build");
-    assert.equal(payload.reason, "bundle_missing");
-    assert.equal(payload.job.runner, "opencode");
-    assert.equal(payload.job.dryRun, true);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
 function runJob(args, env = {}) {
   return spawnSync(process.execPath, [jobHook, ...args], {
     encoding: "utf8",

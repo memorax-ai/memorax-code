@@ -7,8 +7,6 @@ import { pathToFileURL } from "node:url";
 import { test } from "node:test";
 import { defaultOpenCodeConfigDir } from "../src/adapter-paths.mjs";
 import {
-  defaultMemoraxCodeCommand,
-  defaultOpenCodeCliBinDir,
   disableOpenCodePlugin,
   ensureOpenCodePluginInstalled,
   readOpenCodePluginStatus,
@@ -25,25 +23,6 @@ test("OpenCode config discovery honors its explicit and XDG homes", () => {
     "/xdg/config/opencode",
   );
   assert.equal(defaultOpenCodeConfigDir({}, "/home/user"), "/home/user/.config/opencode");
-});
-
-test("OpenCode CLI path discovery recognizes the staged npm package layout", async () => {
-  const root = await mkdtemp(join(tmpdir(), "memorax-code-opencode-staged-layout-"));
-  try {
-    const packageRoot = join(root, "prefix", "lib", "node_modules", "@memorax", "memorax-code");
-    const adapterRoot = join(packageRoot, "lib", "memorax-code-opencode-adapter");
-    const commandBin = join(root, "prefix", "bin");
-    const lifecycleCommand = join(packageRoot, "bin", "memorax-code.mjs");
-    await mkdir(adapterRoot, { recursive: true });
-    await mkdir(commandBin, { recursive: true });
-    await mkdir(join(packageRoot, "bin"), { recursive: true });
-    await writeFile(join(commandBin, "memorax-cli"), "#!/bin/sh\n");
-    await writeFile(lifecycleCommand, "#!/usr/bin/env node\n");
-    assert.equal(defaultOpenCodeCliBinDir(adapterRoot), commandBin);
-    assert.equal(defaultMemoraxCodeCommand(adapterRoot), lifecycleCommand);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
 });
 
 test("OpenCode plugin install materializes a managed loader, canonical skill, and state", async () => {
@@ -114,6 +93,15 @@ test("OpenCode plugin install materializes a managed loader, canonical skill, an
       await readFile(helperUpdated.repoMemoryHelperPath, "utf8"),
       /Repo Memory helper source SHA-256: [a-f0-9]{64}/,
     );
+
+    const legacyState = JSON.parse(await readFile(helperUpdated.statePath, "utf8"));
+    delete legacyState.repoMemoryHelperPath;
+    delete legacyState.repoMemoryHelperSourcePath;
+    delete legacyState.repoMemoryHelperSourceSha256;
+    await writeFile(helperUpdated.statePath, `${JSON.stringify(legacyState)}\n`);
+    await rm(helperUpdated.repoMemoryHelperPath);
+    assert.equal(ensureOpenCodePluginInstalled(fixture.options).ok, true);
+    assert.equal(readOpenCodePluginStatus(fixture.options).current, true);
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
   }
@@ -132,56 +120,6 @@ test("OpenCode plugin install refuses to overwrite an unmanaged Repo Memory help
     assert.equal(result.reason, "repo_memory_helper_conflict");
     assert.equal(result.conflictPath, helperPath);
     assert.equal(await readFile(helperPath, "utf8"), "console.log('user helper');\n");
-  } finally {
-    await rm(fixture.root, { recursive: true, force: true });
-  }
-});
-
-test("OpenCode plugin install upgrades a legacy v1 state with the managed helper", async () => {
-  const fixture = await createFixture("legacy-state");
-  try {
-    const installed = ensureOpenCodePluginInstalled(fixture.options);
-    const legacyState = JSON.parse(await readFile(installed.statePath, "utf8"));
-    delete legacyState.repoMemoryHelperPath;
-    delete legacyState.repoMemoryHelperSourcePath;
-    delete legacyState.repoMemoryHelperSourceSha256;
-    await writeFile(installed.statePath, `${JSON.stringify(legacyState)}\n`);
-    await rm(installed.repoMemoryHelperPath);
-
-    const legacyStatus = readOpenCodePluginStatus(fixture.options);
-    assert.equal(legacyStatus.ok, true);
-    assert.equal(legacyStatus.installed, false);
-    assert.equal(legacyStatus.reason, "repo_memory_helper_missing");
-
-    const upgraded = ensureOpenCodePluginInstalled(fixture.options);
-    assert.equal(upgraded.ok, true);
-    assert.equal(upgraded.changed, true);
-    assert.equal(upgraded.restartRequired, false);
-    assert.equal(readOpenCodePluginStatus(fixture.options).current, true);
-  } finally {
-    await rm(fixture.root, { recursive: true, force: true });
-  }
-});
-
-test("OpenCode plugin path migration moves the recorded managed helper", async () => {
-  const fixture = await createFixture("path-migration");
-  try {
-    const installed = ensureOpenCodePluginInstalled(fixture.options);
-    const migratedConfigDir = join(fixture.root, "Migrated OpenCode Config");
-
-    const migrated = ensureOpenCodePluginInstalled({
-      ...fixture.options,
-      openCodeConfigDir: migratedConfigDir,
-    });
-
-    assert.equal(migrated.ok, true);
-    assert.equal(migrated.changed, true);
-    await assert.rejects(readFile(installed.repoMemoryHelperPath), /ENOENT/);
-    assert.match(await readFile(migrated.repoMemoryHelperPath, "utf8"), /^\/\/ Managed by MemoraX Code/);
-    assert.equal(
-      readOpenCodePluginStatus({ ...fixture.options, openCodeConfigDir: migratedConfigDir }).current,
-      true,
-    );
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
   }

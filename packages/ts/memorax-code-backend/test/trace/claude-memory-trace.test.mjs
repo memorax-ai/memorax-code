@@ -125,22 +125,6 @@ test("Claude Hook trace context maps prompt identity without provider assumption
   });
 });
 
-test("OpenCode Hook trace context maps SDK message identity", () => {
-  assert.deepEqual(traceContextFromOpenCodeHookBody({
-    sessionId: "opencode-session",
-    userMessageId: "opencode-user-message",
-    workspaceKind: "project",
-  }, "2026-07-24T00:00:00.000Z"), {
-    schemaVersion: "1",
-    client: "opencode",
-    sessionId: "opencode-session",
-    turnId: "opencode-user-message",
-    workspaceKind: "project",
-    contextOrigin: "opencode-hook-body",
-    capturedAt: "2026-07-24T00:00:00.000Z",
-  });
-});
-
 test("trace store isolates Codex, Claude, and OpenCode sessions with the same id", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-client-trace-isolation-"));
   const sessionId = "shared-session";

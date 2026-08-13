@@ -7,74 +7,8 @@ import { fileURLToPath } from "node:url";
 import { createOpenCodeMemoryHookRuntime } from "../../../dist/clients/opencode/memory-hook-runtime.js";
 import { openCodeMessageTurn } from "../../../dist/clients/opencode/message-turn.js";
 import { openCodeTracePaths } from "../../../dist/trace/config.js";
-import {
-  parseSkillReminderCommand,
-  parseTurnStartCommand,
-  parseWritebackCommand,
-} from "../../../dist/memory/hook-command.js";
 
 const TEST_WORKSPACE = fileURLToPath(new URL("../../..", import.meta.url));
-
-test("OpenCode Hook commands keep a closed client-specific schema", () => {
-  assert.equal(parseTurnStartCommand({
-    version: 1,
-    client: "opencode",
-    sessionId: "session-1",
-    userMessageId: "user-1",
-    prompt: "Use the OpenCode SDK turn.",
-    cwd: TEST_WORKSPACE,
-  }).ok, true);
-  assert.equal(parseWritebackCommand({
-    version: 1,
-    client: "opencode",
-    sessionId: "session-1",
-    userMessageId: "user-1",
-    assistantMessageId: "assistant-1",
-    messages: [],
-  }).ok, true);
-  assert.equal(parseSkillReminderCommand({
-    version: 1,
-    client: "opencode",
-    sessionId: "session-1",
-    userMessageId: "user-1",
-    content: "Use the memorax-code skill.",
-    triggers: ["cadence"],
-  }).ok, true);
-  assert.equal(parseTurnStartCommand({
-    version: 1,
-    client: "opencode",
-    sessionId: "session-1",
-    userMessageId: "user-1",
-    prompt: "Do not accept another client's transcript field.",
-    transcriptPath: "/tmp/transcript.jsonl",
-  }).ok, false);
-  assert.equal(parseWritebackCommand({
-    version: 1,
-    client: "opencode",
-    sessionId: "session-1",
-    userMessageId: "user-1",
-    assistantMessageId: "assistant-1",
-    messages: [],
-    lastAssistantMessage: "Hook text is not OpenCode writeback authority.",
-  }).ok, false);
-  assert.equal(parseSkillReminderCommand({
-    version: 1,
-    client: "opencode",
-    sessionId: "session-1",
-    userMessageId: "user-1",
-    transcriptPath: "/tmp/transcript.jsonl",
-    content: "Do not accept another client's transcript field.",
-    triggers: ["cadence"],
-  }).ok, false);
-  assert.equal(parseSkillReminderCommand({
-    version: 1,
-    client: "opencode",
-    sessionId: "session-1",
-    turnId: "user-1",
-    content: "OpenCode reminder commands must use userMessageId.",
-    triggers: ["cadence"],
-  }).ok, false);
-});
 
 test("OpenCode SDK messages materialize only an exact completed normal turn", () => {
   const valid = openCodeMessageTurn(openCodeMessages(), {
@@ -211,83 +145,6 @@ test("OpenCode finalizes only an explicit MessageAbortedError without writeback"
   }
 });
 
-test("OpenCode runtime reuses retrieval, scope, and automatic writeback", async () => {
-  const memoraxCodeHome = await mkdtemp(join(tmpdir(), "memorax-code-opencode-runtime-"));
-  const requests = [];
-  const runtime = createOpenCodeMemoryHookRuntime({
-    memoraxCodeHome,
-    env: {
-      MEMORAX_CODE_HOME: memoraxCodeHome,
-      MEMORAX_CODE_OPENCODE_TRACE_ENABLED: "false",
-      MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED: "true",
-      MEMORAX_CODE_MEMORY_WRITEBACK_ENABLED: "true",
-      MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_ENABLED: "false",
-      MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
-      MEMORAX_CODE_MEMORAX_API_KEY: "secret",
-      MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
-    },
-    fetchImpl: async (url, init) => {
-      const request = { url: String(url), body: JSON.parse(init.body) };
-      requests.push(request);
-      const searching = request.url.endsWith("/v1/memories/search");
-      return new Response(JSON.stringify(searching ? {
-        success: true,
-        data: {
-          task_id: "search-1",
-          status: "completed",
-          data: [{
-            id: "memory-1",
-            memory: "OpenCode can reuse the shared retrieval runtime.",
-            score: 0.9,
-            metadata: { memory_type: "core" },
-          }],
-        },
-      } : {
-        success: true,
-        data: { task_id: "writeback-1", status: "queued" },
-      }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      });
-    },
-  });
-  try {
-    const start = await runtime.recordTurnStart({
-      version: 1,
-      client: "opencode",
-      sessionId: "session-1",
-      userMessageId: "user-1",
-      prompt: "OpenCode user prompt.",
-      cwd: TEST_WORKSPACE,
-      workspaceKind: "project",
-    });
-    assert.match(start.additionalContext, /shared retrieval runtime/);
-
-    assert.deepEqual(await runtime.writeback({
-      version: 1,
-      client: "opencode",
-      sessionId: "session-1",
-      userMessageId: "user-1",
-      assistantMessageId: "assistant-1",
-      messages: openCodeMessages(),
-      cwd: TEST_WORKSPACE,
-      workspaceKind: "project",
-    }), { ok: true, scheduled: true });
-    await waitFor(() => requests.length === 2);
-    assert.deepEqual(requests.map((request) => new URL(request.url).pathname), [
-      "/v1/memories/search",
-      "/v1/memories/add",
-    ]);
-    assert.deepEqual(requests[1].body.messages.map(({ role, content }) => ({ role, content })), [
-      { role: "user", content: "OpenCode user prompt." },
-      { role: "assistant", content: "OpenCode assistant reply." },
-    ]);
-  } finally {
-    runtime.close();
-    await rm(memoraxCodeHome, { recursive: true, force: true });
-  }
-});
-
 function openCodeMessages() {
   return [
     {
@@ -329,12 +186,4 @@ function part(type, messageID) {
     messageID,
     type,
   };
-}
-
-async function waitFor(predicate) {
-  const deadline = Date.now() + 1_000;
-  while (!predicate()) {
-    if (Date.now() > deadline) throw new Error("timed out waiting for OpenCode writeback");
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
 }

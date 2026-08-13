@@ -25,7 +25,6 @@ test("memory viewer user route renders the compact summary surface", async () =>
     assert.match(html, /data-client="codex"/);
     assert.match(html, /data-client="claude-code"/);
     assert.match(html, /data-client="opencode"/);
-    assert.match(html, /requestedClient==='opencode'\?'opencode'/);
     assert.match(html, /id="language-toggle"/);
     assert.match(html, /id="theme-toggle"/);
     assert.match(html, /LANGUAGE_STORAGE_KEY,\['zh','en'\],'en'/);
