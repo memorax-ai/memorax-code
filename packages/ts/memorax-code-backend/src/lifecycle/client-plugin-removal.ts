@@ -18,11 +18,23 @@ type ClaudePluginInstaller = {
   removeClaudePluginInstallation: (options: Record<string, unknown>) => ClaudePluginRemovalReport;
 };
 
+type OpenCodePluginRemovalReport = {
+  ok: boolean;
+  action: string;
+  reason?: string;
+  message?: string;
+};
+
+type OpenCodePluginInstaller = {
+  removeOpenCodePluginInstallation: (options: Record<string, unknown>) => OpenCodePluginRemovalReport;
+};
+
 export type ClientPluginRemovalOptions = {
   memoraxCodeHome?: string;
   homeDir?: string;
   codexHome?: string;
   claudeHome?: string;
+  openCodeConfigDir?: string;
   codexCommand?: string;
   claudeCommand?: string;
 };
@@ -32,6 +44,7 @@ export type ClientPluginRemovalReport = {
   action: "client-plugin-removal-cleanup";
   codexPlugin: BackendRemovalCleanupReport | ClientPluginRemovalFailure;
   claudePlugin: ClaudePluginRemovalReport | ClientPluginRemovalFailure;
+  opencodePlugin: OpenCodePluginRemovalReport | ClientPluginRemovalFailure;
 };
 
 type ClientPluginRemovalFailure = {
@@ -45,13 +58,14 @@ export async function prepareClientPluginRemovalCleanup(
   options: ClientPluginRemovalOptions = {},
 ): Promise<() => Promise<ClientPluginRemovalReport>> {
   const claudePluginInstaller = await loadClaudePluginInstaller();
+  const openCodePluginInstaller = await loadOpenCodePluginInstaller();
   const home = resolveHome(options.homeDir);
   const memoraxCodeHome = resolve(options.memoraxCodeHome ?? process.env.MEMORAX_CODE_HOME ?? join(home, ".memorax-code"));
   const claudeState = await readJsonRecord(join(memoraxCodeHome, "adapters", "claude-code", "state.json"));
   const claudeHome = options.claudeHome ?? stringField(claudeState, "claudeHome");
 
   return async () => {
-    const [codexPlugin, claudePlugin] = await Promise.all([
+    const [codexPlugin, claudePlugin, opencodePlugin] = await Promise.all([
       cleanupCodexAfterBackendRemoval({
         memoraxCodeHome,
         homeDir: home,
@@ -65,18 +79,31 @@ export async function prepareClientPluginRemovalCleanup(
           ...(options.claudeCommand ? { claudeCommand: options.claudeCommand } : {}),
         }))
         .catch((error) => removalFailure("claude-plugin-remove", error)),
+      Promise.resolve()
+        .then(() => openCodePluginInstaller.removeOpenCodePluginInstallation({
+          memoraxCodeHome,
+          ...(options.openCodeConfigDir
+            ? { openCodeConfigDir: options.openCodeConfigDir }
+            : {}),
+        }))
+        .catch((error) => removalFailure("opencode-plugin-remove", error)),
     ]);
     return {
-      ok: codexPlugin.ok && claudePlugin.ok,
+      ok: codexPlugin.ok && claudePlugin.ok && opencodePlugin.ok,
       action: "client-plugin-removal-cleanup",
       codexPlugin,
       claudePlugin,
+      opencodePlugin,
     };
   };
 }
 
 async function loadClaudePluginInstaller(): Promise<ClaudePluginInstaller> {
   return await import(new URL("../../../memorax-code-claude-adapter/src/plugin-install.mjs", import.meta.url).href);
+}
+
+async function loadOpenCodePluginInstaller(): Promise<OpenCodePluginInstaller> {
+  return await import(new URL("../../../memorax-code-opencode-adapter/src/plugin-install.mjs", import.meta.url).href);
 }
 
 async function readJsonRecord(path: string): Promise<Record<string, unknown> | undefined> {

@@ -1,6 +1,6 @@
 # MemoraX Code Coding Memory Search
 
-Use these instructions only to search reusable coding memory through `memorax-cli`. Invoke the skill as `$memorax-code` in Codex or `/memorax-code` in Claude Code; do not route memory operations through the lifecycle-only `memorax-code` CLI. Do not call MemoraX HTTP endpoints directly, print credentials, or edit memory storage by hand.
+Use these instructions only to search reusable coding memory through `memorax-cli`. Invoke the skill as `$memorax-code` in Codex or `/memorax-code` in Claude Code. In OpenCode, ask the agent to use the `memorax-code` skill by name. Do not route memory operations through the lifecycle-only `memorax-code` CLI. Do not call MemoraX HTTP endpoints directly, print credentials, or edit memory storage by hand.
 
 ## Scope
 

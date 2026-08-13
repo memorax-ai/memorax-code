@@ -226,6 +226,7 @@ async function startRawBackendServer(
         memoraxCodeHome: state.sessionHome,
         codexHome: argValue(argv, "--codex-home"),
         claudeHome: argValue(argv, "--claude-home"),
+        openCodeConfigDir: argValue(argv, "--opencode-config-dir"),
         codexCommand: argValue(argv, "--codex-command"),
         claudeCommand: argValue(argv, "--claude-command"),
       })
@@ -246,6 +247,8 @@ async function startRawBackendServer(
         codexReason: "reason" in cleanup.codexPlugin ? cleanup.codexPlugin.reason : undefined,
         claudeOk: cleanup.claudePlugin.ok,
         claudeReason: cleanup.claudePlugin.reason,
+        opencodeOk: cleanup.opencodePlugin.ok,
+        opencodeReason: cleanup.opencodePlugin.reason,
       });
     }
     server.close(() => {
