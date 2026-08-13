@@ -11,7 +11,7 @@ export function scheduleMissingRepoMemoryBuild(repo, options = {}) {
 
     const jobHookPath = join(pluginRoot, "hooks", "repo-memory-job.mjs");
     if (!existsSync(jobHookPath)) return false;
-    const child = spawn(process.execPath, [jobHookPath, "maintain", "--repo", repoPath], {
+    const child = spawn(options.nodePath ?? process.execPath, [jobHookPath, "maintain", "--repo", repoPath], {
       cwd: repoPath,
       detached: true,
       env: options.env ?? process.env,

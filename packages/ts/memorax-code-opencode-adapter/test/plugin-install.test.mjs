@@ -38,6 +38,7 @@ test("OpenCode plugin install materializes a managed loader, canonical skill, an
     assert.match(loader, new RegExp(escapeRegex(`"memoraxCodeHome":${JSON.stringify(fixture.options.memoraxCodeHome)}`)));
     assert.match(loader, new RegExp(escapeRegex(`"openCodeConfigDir":${JSON.stringify(fixture.openCodeConfigDir)}`)));
     assert.match(loader, new RegExp(escapeRegex(`"memoraxCodeCommand":${JSON.stringify(fixture.memoraxCodeCommand)}`)));
+    assert.match(loader, new RegExp(escapeRegex(`"nodePath":${JSON.stringify(process.execPath)}`)));
     assert.match(loader, /"cliBinDir":"\/managed\/bin"/);
     const repoMemoryHelperLoader = await readFile(installed.repoMemoryHelperPath, "utf8");
     assert.match(repoMemoryHelperLoader, /^\/\/ Managed by MemoraX Code/);

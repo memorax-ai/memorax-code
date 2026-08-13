@@ -407,6 +407,9 @@ function resolvePaths(options) {
     cliBinDir: stringOption(options.cliBinDir)
       ? resolve(options.cliBinDir)
       : defaultOpenCodeCliBinDir(),
+    nodePath: stringOption(options.nodePath)
+      ? resolve(options.nodePath)
+      : process.execPath,
     memoraxCodeCommand: stringOption(options.memoraxCodeCommand)
       ? resolve(options.memoraxCodeCommand)
       : defaultMemoraxCodeCommand(),
@@ -499,6 +502,7 @@ function createManagedLoader(paths, pluginSourceSha256) {
     statePath: paths.statePath,
     openCodeConfigDir: paths.openCodeConfigDir,
     ...(paths.memoraxCodeCommand ? { memoraxCodeCommand: paths.memoraxCodeCommand } : {}),
+    nodePath: paths.nodePath,
     ...(paths.cliBinDir ? { cliBinDir: paths.cliBinDir } : {}),
   };
   return [

@@ -193,6 +193,7 @@ export function createMemoraxOpenCodePlugin(options = {}) {
               debugEnv: "MEMORAX_CODE_OPENCODE_PLUGIN_DEBUG",
               pluginRoot: options.openCodeConfigDir,
               env: repoMemoryEnv,
+              nodePath: options.nodePath,
             });
           }
           const turn = { sessionId, userMessageId };
@@ -460,6 +461,7 @@ function backendEnsureOptions(options) {
     healthTimeoutValue: options.healthTimeoutValue,
     startTimeoutValue: options.startTimeoutValue,
     memoraxCodeCommand,
+    nodePath: options.nodePath,
     resolveHomes: () => ({ memoraxCodeHome, openCodeConfigDir }),
     buildStartArgs: (homes, recoveryArguments) => [
       "start",

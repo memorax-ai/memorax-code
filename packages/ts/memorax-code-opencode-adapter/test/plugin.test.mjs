@@ -98,6 +98,7 @@ test("a real prompt retrieves context and idle writes the exact SDK turn", async
 
 test("chat.message starts missing Repo Memory for the Backend-authorized worktree", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-opencode-auto-build-"));
+  const nodePath = process.execPath;
   const backendRepo = join(root, "backend-repo");
   const pluginWorktree = join(root, "plugin-worktree");
   const memoraxCodeHome = join(root, "memorax-code-home");
@@ -124,9 +125,11 @@ test("chat.message starts missing Repo Memory for the Backend-authorized worktre
     const plugin = createPluginWithoutReminders({
       memoraxCodeHome,
       openCodeConfigDir,
+      nodePath,
       backendConnection: { url: "http://127.0.0.1:8787" },
       fetchImpl: responseSequence([], [{ ok: true, repoMemoryWorktree: backendRepo }]),
     });
+    process.execPath = join(root, "opencode");
     hooks = await plugin(pluginInput({ directory: pluginWorktree, worktree: pluginWorktree }));
 
     await hooks["chat.message"](
@@ -143,6 +146,7 @@ test("chat.message starts missing Repo Memory for the Backend-authorized worktre
       serverUrl: "http://127.0.0.1:4096/",
     });
   } finally {
+    process.execPath = nodePath;
     await hooks?.dispose();
     await rm(root, { recursive: true, force: true });
   }
@@ -150,6 +154,7 @@ test("chat.message starts missing Repo Memory for the Backend-authorized worktre
 
 test("managed plugin starts the Backend once and bounds prompt waiting", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-opencode-backend-start-"));
+  const nodePath = process.execPath;
   const statePath = join(root, "state.json");
   const callsPath = join(root, "lifecycle-calls.jsonl");
   const startedPath = join(root, "lifecycle-started");
@@ -175,6 +180,7 @@ test("managed plugin starts the Backend once and bounds prompt waiting", async (
       memoraxCodeHome: join(root, "memorax-code-home"),
       openCodeConfigDir: join(root, "opencode-config"),
       memoraxCodeCommand,
+      nodePath,
       backendConnection: { url: "http://127.0.0.1:9", source: "option" },
       healthTimeoutValue: "50",
       startTimeoutValue: "1000",
@@ -182,6 +188,7 @@ test("managed plugin starts the Backend once and bounds prompt waiting", async (
       fetchImpl: responseSequence(requests, [{ ok: true }]),
       memorySkillReminderEvaluator: async () => ({ additionalContext: "Local reminder context." }),
     });
+    process.execPath = join(root, "opencode");
     hooks = await plugin(pluginInput());
     await waitForFile(startedPath);
 
@@ -207,6 +214,7 @@ test("managed plugin starts the Backend once and bounds prompt waiting", async (
     );
     assert.equal(requests.length, 1);
   } finally {
+    process.execPath = nodePath;
     await writeFile(releasePath, "release\n").catch(() => undefined);
     await hooks?.dispose();
     await rm(root, { recursive: true, force: true });
