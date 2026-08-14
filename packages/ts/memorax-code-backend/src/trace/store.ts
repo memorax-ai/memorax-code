@@ -28,8 +28,17 @@ export type TraceTurnOutcome = "completed" | "interrupted";
 export type TraceCurrentTurnState = "open" | TraceTurnOutcome;
 export type CodexTurnOutcome = TraceTurnOutcome;
 export type CodexCurrentTurnState = TraceCurrentTurnState;
+export type DshTurnOutcome = TraceTurnOutcome;
+export type DshCurrentTurnState = TraceCurrentTurnState;
 export type TraceTurnActivity = CodexTurnActivity | ClaudeTurnActivity;
-export type TraceTurnTokenUsage = CodexTurnTokenUsage | ClaudeTurnTokenUsage;
+export type DshTurnTokenUsage = Readonly<{
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  reasoningTokens?: number;
+}>;
+export type TraceTurnTokenUsage = CodexTurnTokenUsage | ClaudeTurnTokenUsage | DshTurnTokenUsage;
 
 export type TraceEventInput = Readonly<{
   eventId?: string;
@@ -54,6 +63,7 @@ export type TraceEventInput = Readonly<{
 
 export type CodexTraceEventInput = TraceEventInput;
 export type ClaudeTraceEventInput = TraceEventInput;
+export type DshTraceEventInput = TraceEventInput;
 export type TraceEventWriteResult =
   | { written: true; path: string }
   | { written: false; reason: string };
@@ -70,6 +80,7 @@ export type TraceCurrentTurnOptions = Readonly<{
 
 export type CodexCurrentTurnOptions = Omit<TraceCurrentTurnOptions, "client">;
 export type ClaudeCurrentTurnOptions = Omit<TraceCurrentTurnOptions, "client">;
+export type DshCurrentTurnOptions = Omit<TraceCurrentTurnOptions, "client">;
 export type TraceCurrentTurnReadOptions = TraceCurrentTurnOptions & Readonly<{
   client: TraceClient;
 }>;
@@ -84,6 +95,7 @@ export type TraceRetentionOptions = Readonly<{
 
 export type CodexTraceRetentionOptions = Omit<TraceRetentionOptions, "client">;
 export type ClaudeTraceRetentionOptions = Omit<TraceRetentionOptions, "client">;
+export type DshTraceRetentionOptions = Omit<TraceRetentionOptions, "client">;
 
 type ExistingTraceJson = Record<string, unknown> & {
   created_at?: unknown;
@@ -160,6 +172,12 @@ export async function recordClaudeTraceEvent(
   return recordTraceEventForClient("claude", input);
 }
 
+export async function recordDshTraceEvent(
+  input: DshTraceEventInput,
+): Promise<TraceEventWriteResult> {
+  return recordTraceEventForClient("dsh", input);
+}
+
 export function traceTurnEventId(
   traceContext: TraceContext | undefined,
   type: "turn_start" | "turn_end" | "turn_materialized",
@@ -223,6 +241,13 @@ export async function writeCurrentClaudeTurn(
   return writeCurrentTraceTurn(traceContext, { ...options, client: "claude" });
 }
 
+export async function writeCurrentDshTurn(
+  traceContext: TraceContext | undefined,
+  options: DshCurrentTurnOptions = {},
+): Promise<{ written: true } | { written: false; reason: string }> {
+  return writeCurrentTraceTurn(traceContext, { ...options, client: "dsh" });
+}
+
 export async function readCurrentTraceTurn(
   options: TraceCurrentTurnReadOptions,
 ): Promise<
@@ -251,6 +276,15 @@ export async function readCurrentClaudeTurn(
   | { ok: false; reason: "disabled" | "missing" | "invalid" | "stale" | "session_mismatch" }
 > {
   return readCurrentTraceTurn({ ...options, client: "claude" });
+}
+
+export async function readCurrentDshTurn(
+  options: DshCurrentTurnOptions = {},
+): Promise<
+  | { ok: true; traceContext: TraceContext }
+  | { ok: false; reason: "disabled" | "missing" | "invalid" | "stale" | "session_mismatch" }
+> {
+  return readCurrentTraceTurn({ ...options, client: "dsh" });
 }
 
 export async function readOpenTraceTurn(
@@ -286,6 +320,16 @@ export async function readOpenClaudeTurn(
   | { ok: false; reason: "closed"; outcome: TraceTurnOutcome }
 > {
   return readOpenTraceTurn({ ...options, client: "claude" });
+}
+
+export async function readOpenDshTurn(
+  options: DshCurrentTurnOptions = {},
+): Promise<
+  | { ok: true; traceContext: TraceContext }
+  | { ok: false; reason: "disabled" | "missing" | "invalid" | "stale" | "session_mismatch" }
+  | { ok: false; reason: "closed"; outcome: DshTurnOutcome }
+> {
+  return readOpenTraceTurn({ ...options, client: "dsh" });
 }
 
 export async function markCurrentTraceTurnOutcome(
@@ -330,6 +374,14 @@ export async function markCurrentClaudeTurnOutcome(
   options: ClaudeCurrentTurnOptions = {},
 ): Promise<{ updated: true } | { updated: false; reason: string }> {
   return markCurrentTraceTurnOutcome(traceContext, outcome, { ...options, client: "claude" });
+}
+
+export async function markCurrentDshTurnOutcome(
+  traceContext: TraceContext | undefined,
+  outcome: DshTurnOutcome,
+  options: DshCurrentTurnOptions = {},
+): Promise<{ updated: true } | { updated: false; reason: string }> {
+  return markCurrentTraceTurnOutcome(traceContext, outcome, { ...options, client: "dsh" });
 }
 
 async function readCurrentTraceTurnRecord(
@@ -488,6 +540,12 @@ export async function pruneExpiredClaudeTraceSessions(
   options: ClaudeTraceRetentionOptions = {},
 ): Promise<void> {
   return pruneExpiredTraceSessionsForClient({ ...options, client: "claude" });
+}
+
+export async function pruneExpiredDshTraceSessions(
+  options: DshTraceRetentionOptions = {},
+): Promise<void> {
+  return pruneExpiredTraceSessionsForClient({ ...options, client: "dsh" });
 }
 
 function buildTraceEvent(

@@ -3,7 +3,7 @@ import { isRecord } from "../shared/record.js";
 export const MEMORY_HOOK_COMMAND_VERSION = 1 as const;
 export const INVALID_MEMORY_HOOK_COMMAND = "invalid memory Hook command";
 
-export type MemoryHookClient = "codex" | "claude-code";
+export type MemoryHookClient = "codex" | "claude-code" | "dsh";
 
 const BASE_COMMAND_KEYS = [
   "version",
@@ -15,6 +15,7 @@ const BASE_COMMAND_KEYS = [
 const TURN_START_KEYS: Readonly<Record<MemoryHookClient, ReadonlySet<string>>> = {
   codex: new Set([...BASE_COMMAND_KEYS, "turnId", "prompt", "transcriptPath"]),
   "claude-code": new Set([...BASE_COMMAND_KEYS, "promptId", "prompt", "transcriptPath"]),
+  dsh: new Set([...BASE_COMMAND_KEYS, "turnId", "prompt", "transcriptPath"]),
 };
 const WRITEBACK_KEYS: Readonly<Record<MemoryHookClient, ReadonlySet<string>>> = {
   codex: new Set([...BASE_COMMAND_KEYS, "turnId", "lastAssistantMessage", "transcriptPath"]),
@@ -24,10 +25,18 @@ const WRITEBACK_KEYS: Readonly<Record<MemoryHookClient, ReadonlySet<string>>> = 
     "lastAssistantMessage",
     "transcriptPath",
   ]),
+  dsh: new Set([
+    ...BASE_COMMAND_KEYS,
+    "turnId",
+    "userText",
+    "assistantText",
+    "transcriptPath",
+  ]),
 };
 const SKILL_REMINDER_KEYS: Readonly<Record<MemoryHookClient, ReadonlySet<string>>> = {
   codex: new Set([...BASE_COMMAND_KEYS, "turnId", "transcriptPath", "content", "triggers"]),
   "claude-code": new Set([...BASE_COMMAND_KEYS, "promptId", "transcriptPath", "content", "triggers"]),
+  dsh: new Set([...BASE_COMMAND_KEYS, "turnId", "transcriptPath", "content", "triggers"]),
 };
 
 type MemoryHookCommandBase<Client extends MemoryHookClient> = Readonly<{
@@ -50,7 +59,13 @@ export type ClaudeTurnStartCommand = MemoryHookCommandBase<"claude-code"> & Read
   transcriptPath: string;
 }>;
 
-export type TurnStartCommand = CodexTurnStartCommand | ClaudeTurnStartCommand;
+export type DshTurnStartCommand = MemoryHookCommandBase<"dsh"> & Readonly<{
+  turnId: string;
+  prompt: string;
+  transcriptPath?: string;
+}>;
+
+export type TurnStartCommand = CodexTurnStartCommand | ClaudeTurnStartCommand | DshTurnStartCommand;
 
 export type MemoryHookTurnStartResult = Readonly<{
   ok: true;
@@ -70,7 +85,14 @@ export type ClaudeWritebackCommand = MemoryHookCommandBase<"claude-code"> & Read
   transcriptPath: string;
 }>;
 
-export type WritebackCommand = CodexWritebackCommand | ClaudeWritebackCommand;
+export type DshWritebackCommand = MemoryHookCommandBase<"dsh"> & Readonly<{
+  turnId: string;
+  userText: string;
+  assistantText: string;
+  transcriptPath?: string;
+}>;
+
+export type WritebackCommand = CodexWritebackCommand | ClaudeWritebackCommand | DshWritebackCommand;
 
 export type SkillReminderTrigger = "cadence" | "post_compaction";
 
@@ -101,11 +123,11 @@ export function parseTurnStartCommand(
   const base = parseCommandBase(value, TURN_START_KEYS);
   if (!base) return invalidCommand();
   const prompt = requiredStringField(value, "prompt");
-  const transcriptPath = requiredStringField(value, "transcriptPath");
-  if (!prompt || !transcriptPath) return invalidCommand();
+  if (!prompt) return invalidCommand();
   if (base.client === "codex") {
     const turnId = optionalStringField(value, "turnId");
-    if (!turnId.ok) return invalidCommand();
+    const transcriptPath = requiredStringField(value, "transcriptPath");
+    if (!turnId.ok || !transcriptPath) return invalidCommand();
     return {
       ok: true,
       command: {
@@ -117,8 +139,24 @@ export function parseTurnStartCommand(
       },
     };
   }
+  if (base.client === "dsh") {
+    const turnId = requiredStringField(value, "turnId");
+    const transcriptPath = optionalStringField(value, "transcriptPath");
+    if (!turnId || !transcriptPath.ok) return invalidCommand();
+    return {
+      ok: true,
+      command: {
+        ...base,
+        client: "dsh",
+        turnId,
+        prompt,
+        ...(transcriptPath.value ? { transcriptPath: transcriptPath.value } : {}),
+      },
+    };
+  }
   const promptId = requiredStringField(value, "promptId");
-  if (!promptId) return invalidCommand();
+  const transcriptPath = requiredStringField(value, "transcriptPath");
+  if (!promptId || !transcriptPath) return invalidCommand();
   return {
     ok: true,
     command: {
@@ -137,9 +175,9 @@ export function parseWritebackCommand(
   if (!isRecord(value)) return invalidCommand();
   const base = parseCommandBase(value, WRITEBACK_KEYS);
   if (!base) return invalidCommand();
-  const lastAssistantMessage = requiredStringField(value, "lastAssistantMessage");
-  if (!lastAssistantMessage) return invalidCommand();
   if (base.client === "codex") {
+    const lastAssistantMessage = requiredStringField(value, "lastAssistantMessage");
+    if (!lastAssistantMessage) return invalidCommand();
     const turnId = optionalStringField(value, "turnId");
     const transcriptPath = optionalStringField(value, "transcriptPath");
     if (!turnId.ok || !transcriptPath.ok) return invalidCommand();
@@ -154,9 +192,28 @@ export function parseWritebackCommand(
       },
     };
   }
+  if (base.client === "dsh") {
+    const turnId = requiredStringField(value, "turnId");
+    const userText = requiredStringField(value, "userText");
+    const assistantText = requiredStringField(value, "assistantText");
+    const transcriptPath = optionalStringField(value, "transcriptPath");
+    if (!turnId || !userText || !assistantText || !transcriptPath.ok) return invalidCommand();
+    return {
+      ok: true,
+      command: {
+        ...base,
+        client: "dsh",
+        turnId,
+        userText,
+        assistantText,
+        ...(transcriptPath.value ? { transcriptPath: transcriptPath.value } : {}),
+      },
+    };
+  }
+  const lastAssistantMessage = requiredStringField(value, "lastAssistantMessage");
   const promptId = requiredStringField(value, "promptId");
   const transcriptPath = requiredStringField(value, "transcriptPath");
-  if (!promptId || !transcriptPath) return invalidCommand();
+  if (!lastAssistantMessage || !promptId || !transcriptPath) return invalidCommand();
   return {
     ok: true,
     command: {
@@ -194,6 +251,7 @@ export function parseSkillReminderCommand(
       },
     };
   }
+  if (base.client === "dsh") return invalidCommand();
   const promptId = requiredStringField(value, "promptId");
   if (!promptId) return invalidCommand();
   return {
@@ -215,7 +273,7 @@ function parseCommandBase(
 ): MemoryHookCommandBase<MemoryHookClient> | undefined {
   if (value.version !== MEMORY_HOOK_COMMAND_VERSION) return undefined;
   const client = value.client;
-  if (client !== "codex" && client !== "claude-code") return undefined;
+  if (client !== "codex" && client !== "claude-code" && client !== "dsh") return undefined;
   if (Object.keys(value).some((key) => !allowedKeys[client].has(key))) return undefined;
   const sessionId = requiredStringField(value, "sessionId");
   if (!sessionId) return undefined;

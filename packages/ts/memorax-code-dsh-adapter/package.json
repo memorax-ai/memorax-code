@@ -1,0 +1,32 @@
+{
+  "name": "@memorax/memorax-code-dsh-adapter",
+  "version": "0.1.2",
+  "private": true,
+  "type": "module",
+  "description": "DeepSeek Harness (DSH) cordis plugin and session bridge for MemoraX Code memory.",
+  "main": "src/index.mjs",
+  "exports": {
+    ".": "./src/index.mjs",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "cordis.patch.yml"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "license": "MIT"
+}

@@ -7,9 +7,10 @@ import {
 export type TraceContextOrigin =
   | "codex-hook-body"
   | "claude-hook-body"
+  | "dsh-hook-body"
   | "current-turn-file"
   | "manual";
-export type TraceClient = "codex" | "claude";
+export type TraceClient = "codex" | "claude" | "dsh";
 
 export type TraceRelatedTurn = Readonly<{
   turnId?: string;
@@ -82,6 +83,28 @@ export function traceContextFromClaudeHookBody(
   });
 }
 
+export function traceContextFromDshHookBody(
+  body: unknown,
+  capturedAt = new Date().toISOString(),
+): TraceContext | undefined {
+  if (!isRecord(body)) return undefined;
+  const sessionId = stringField(body, "session_id") ?? stringField(body, "sessionId");
+  if (!sessionId) return undefined;
+  const cwd = stringField(body, "cwd");
+  return pruneTraceContext({
+    schemaVersion: "1",
+    client: "dsh",
+    sessionId,
+    turnId: stringField(body, "turn_id") ?? stringField(body, "turnId"),
+    transcriptPath: stringField(body, "transcript_path") ?? stringField(body, "transcriptPath"),
+    cwd,
+    memoryProject: resolveMemoryProject(cwd),
+    workspaceKind: stringField(body, "workspace_kind") ?? stringField(body, "workspaceKind"),
+    contextOrigin: "dsh-hook-body",
+    capturedAt,
+  });
+}
+
 export function traceContextFromCurrentTurnRecord(
   value: unknown,
 ): TraceContext | undefined {
@@ -142,7 +165,7 @@ function pruneRecord<T extends Record<string, unknown>>(value: T): T {
 }
 
 export function isTraceClient(value: unknown): value is TraceClient {
-  return value === "codex" || value === "claude";
+  return value === "codex" || value === "claude" || value === "dsh";
 }
 
 function stringField(record: Record<string, unknown>, key: string): string | undefined {

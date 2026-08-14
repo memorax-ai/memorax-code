@@ -30,7 +30,7 @@
 Coding Agent 擅长解决眼前的问题，但新会话不会自动继承此前积累的架构认知、踩坑经验、仓库规则
 和协作偏好。
 
-MemoraX Code 让 Codex 和 Claude Code 共享一套能够持续积累的记忆。它会沉淀代码任务中的工程经验，
+MemoraX Code 让 Codex、Claude Code 和 DeepSeek Harness（DSH）共享一套能够持续积累的记忆。它会沉淀代码任务中的工程经验，
 持续整理仓库知识，并在后续任务中找回相关的工作流程和偏好。
 
 它追求的不是“记得更多”，而是在需要时带回与当前任务相关的 Memory，让 Agent 减少重复搜索和试错，
@@ -38,7 +38,7 @@ MemoraX Code 让 Codex 和 Claude Code 共享一套能够持续积累的记忆�
 
 ## 快速开始
 
-开始前，请确保已安装 Node.js 24 或更高版本，以及 Codex 或 Claude Code。
+开始前，请确保已安装 Node.js 24 或更高版本，以及 Codex、Claude Code 或 DeepSeek Harness（DSH）。
 Repo Memory 操作还需要 Python 3。
 
 ### 安装与接入
@@ -59,6 +59,17 @@ npm install -g @memorax/memorax-code --foreground-scripts
 API Key；Codex 用户还需按提示完成 Hook 的激活和信任确认。
 
 如果跳过配置或安装过程无法交互，npm 包仍会安装，但 MemoraX 搜索、召回和写回功能无法使用。
+
+#### 3. 接入 DeepSeek Harness（可选）
+
+将 DSH 适配器安装到某个 profile，即可为 DSH 会话启用自动记忆召回和写回：
+
+```bash
+dsh plugin --profile <name> add @memorax/memorax-code-dsh-adapter
+```
+
+适配器通过 `MEMORAX_CODE_BACKEND_URL` 与 `MEMORAX_CODE_BACKEND_TOKEN` 访问与 npm 包相同的
+Backend。当 Backend 不可达时它静默降级，绝不阻塞 DSH 对话。
 
 ### 体验跨会话记忆
 
@@ -109,7 +120,7 @@ cd test-repo
 | **Procedure 自动复用** | 记录可复用的任务流程，并在后续任务中自动提醒 Agent 按流程执行。 |
 | **Repo Memory 后台整理** | 在后台整理仓库结构、代码入口和历史证据，并按策略自动更新，避免反复搜索和总结。 |
 | **主动记忆控制** | 使用内置的 MemoraX Code Skill（Codex 中为 `$memorax-code`，Claude Code 中为 `/memorax-code`）或 CLI，主动查找和添加记忆。 |
-| **Hook 集成** | 借助 Codex 和 Claude Code 的 Hook 触发记忆检索、提醒和写入。 |
+| **Hook 集成** | 借助 Codex、Claude Code 和 DSH 的 Hook 触发记忆检索、提醒和写入。 |
 | **本地可视化** | 通过本地 Memory Viewer 查看活动统计、召回与写入状态。 |
 
 ## 你的记忆，由你控制

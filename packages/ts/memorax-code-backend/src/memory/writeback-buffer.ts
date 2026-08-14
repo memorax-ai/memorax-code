@@ -11,8 +11,10 @@ import {
 } from "../repository/scope.js";
 import type { TraceContext } from "../trace/context.js";
 
+export type MemoryWritebackBufferClient = "codex" | "claude-code" | "dsh";
+
 export type MemoryWritebackBufferDecision = {
-  client: "codex" | "claude-code";
+  client: MemoryWritebackBufferClient;
   sessionKey: string;
   idempotencyKey: string;
   messages: WritebackMessage[];

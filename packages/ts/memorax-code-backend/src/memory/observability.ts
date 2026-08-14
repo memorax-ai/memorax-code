@@ -7,6 +7,8 @@ export type MemoryObservabilitySource =
   | "codex_hook_retrieval"
   | "claude_hook_retrieval"
   | "claude_hook_writeback"
+  | "dsh_hook_retrieval"
+  | "dsh_hook_writeback"
   | "memory_cli"
   | "writeback_reconciler"
   | "unknown";

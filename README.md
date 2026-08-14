@@ -31,10 +31,10 @@ Coding agents are good at the task in front of them, but a new session often
 starts without the architecture, failed attempts, repository rules, or working
 preferences established before it.
 
-MemoraX Code gives Codex and Claude Code a shared memory layer for that context.
-It can recall prior engineering knowledge, capture reusable lessons from
-completed work, maintain repository knowledge, and carry your procedures and
-preferences into future sessions.
+MemoraX Code gives Codex, Claude Code, and DeepSeek Harness (DSH) a shared
+memory layer for that context. It can recall prior engineering knowledge,
+capture reusable lessons from completed work, maintain repository knowledge,
+and carry your procedures and preferences into future sessions.
 
 The goal is not to remember everything. It is to bring back the small amount of
 memory relevant to the current task so the agent can reach useful investigation
@@ -42,8 +42,8 @@ and validation sooner.
 
 ## Quick Start
 
-Prepare Node.js 24+ and either Codex or Claude Code. Python 3 is required for
-Repo Memory operations.
+Prepare Node.js 24+ and Codex, Claude Code, or DeepSeek Harness (DSH). Python 3
+is required for Repo Memory operations.
 
 ### Install and Connect
 
@@ -67,6 +67,19 @@ and trust when prompted.
 
 If setup is skipped or cannot prompt, the package remains installed but
 MemoraX-backed search, retrieval, and writeback remain unavailable.
+
+#### 3. Connect DeepSeek Harness (optional)
+
+Install the DSH adapter into a profile to enable automatic memory retrieval and
+writeback for DSH sessions:
+
+```bash
+dsh plugin --profile <name> add @memorax/memorax-code-dsh-adapter
+```
+
+The adapter reads the same Backend as the npm package through
+`MEMORAX_CODE_BACKEND_URL` and `MEMORAX_CODE_BACKEND_TOKEN`. It fails silently
+when the Backend is unreachable so it never blocks a DSH turn.
 
 ### Try Cross-Session Memory
 
@@ -124,7 +137,7 @@ the current repository.
 | **Procedure reuse** | Records reusable task procedures and reminds future agents to apply them. |
 | **Background Repo Memory maintenance** | Automatically organizes repository structure, entry points, and history evidence in the background, then updates them according to policy to reduce repeated searching and summarization. |
 | **Active memory control** | Lets you search and add memory through the bundled MemoraX Code skill (`$memorax-code` in Codex or `/memorax-code` in Claude Code) or the CLI. |
-| **Hook integration** | Uses Codex and Claude Code Hooks to trigger memory retrieval, reminders, and writeback. |
+| **Hook integration** | Uses Codex, Claude Code, and DSH hooks to trigger memory retrieval, reminders, and writeback. |
 | **Local visualization** | Uses the local Memory Viewer to summarize activity counts, retrieval, and writeback status. |
 
 ## Your Memory, Your Control

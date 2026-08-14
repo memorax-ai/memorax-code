@@ -73,6 +73,22 @@ Client selection controls plugin and Hook lifecycle only. It does not change
 Codex or Claude Code provider settings. `--clients none` runs the Backend
 without managing either client integration.
 
+DeepSeek Harness (DSH) is not part of `[clients]`. It is a standalone adapter
+installed into a DSH profile:
+
+```sh
+dsh plugin --profile <name> add @memorax/memorax-code-dsh-adapter
+```
+
+The adapter forwards DSH `turn/start` and `turn/end` events to the same
+Backend. It resolves its connection from `MEMORAX_CODE_BACKEND_URL`,
+`MEMORAX_CODE_BACKEND_HOST`/`PORT`, and `MEMORAX_CODE_BACKEND_TOKEN`, and
+times out requests with `MEMORAX_CODE_DSH_HOOK_TIMEOUT_MS` (default `5000`).
+Set `MEMORAX_CODE_DSH_RETRIEVAL_INJECT=true` to inject retrieved context back
+into the DSH conversation; `MEMORAX_CODE_DSH_HOOK_DEBUG=true` prints adapter
+diagnostics to stderr. When the Backend is unreachable the adapter fails
+silently and never blocks a DSH turn.
+
 ## MemoraX connection
 
 MemoraX is the required remote-memory service:
@@ -210,15 +226,15 @@ initial build instead of falling back to its local `cwd`.
 
 ## Local traces
 
-`[trace.codex]` and `[trace.claude]` support the same fields:
+`[trace.codex]`, `[trace.claude]`, and `[trace.dsh]` support the same fields:
 
-| Field | Codex environment | Claude environment | Fallback |
-| --- | --- | --- | --- |
-| `enabled` | `MEMORAX_CODE_CODEX_TRACE_ENABLED` | `MEMORAX_CODE_CLAUDE_TRACE_ENABLED` | `true` |
-| `capture_content` | `MEMORAX_CODE_CODEX_TRACE_CAPTURE_CONTENT` | `MEMORAX_CODE_CLAUDE_TRACE_CAPTURE_CONTENT` | `true` |
-| `retention_days` | `MEMORAX_CODE_CODEX_TRACE_RETENTION_DAYS` | `MEMORAX_CODE_CLAUDE_TRACE_RETENTION_DAYS` | `7` |
-| `max_event_chars` | `MEMORAX_CODE_CODEX_TRACE_MAX_EVENT_CHARS` | `MEMORAX_CODE_CLAUDE_TRACE_MAX_EVENT_CHARS` | `20000` |
-| `max_file_bytes` | `MEMORAX_CODE_CODEX_TRACE_MAX_FILE_BYTES` | `MEMORAX_CODE_CLAUDE_TRACE_MAX_FILE_BYTES` | `52428800` |
+| Field | Codex environment | Claude environment | DSH environment | Fallback |
+| --- | --- | --- | --- | --- |
+| `enabled` | `MEMORAX_CODE_CODEX_TRACE_ENABLED` | `MEMORAX_CODE_CLAUDE_TRACE_ENABLED` | `MEMORAX_CODE_DSH_TRACE_ENABLED` | `true` |
+| `capture_content` | `MEMORAX_CODE_CODEX_TRACE_CAPTURE_CONTENT` | `MEMORAX_CODE_CLAUDE_TRACE_CAPTURE_CONTENT` | `MEMORAX_CODE_DSH_TRACE_CAPTURE_CONTENT` | `true` |
+| `retention_days` | `MEMORAX_CODE_CODEX_TRACE_RETENTION_DAYS` | `MEMORAX_CODE_CLAUDE_TRACE_RETENTION_DAYS` | `MEMORAX_CODE_DSH_TRACE_RETENTION_DAYS` | `7` |
+| `max_event_chars` | `MEMORAX_CODE_CODEX_TRACE_MAX_EVENT_CHARS` | `MEMORAX_CODE_CLAUDE_TRACE_MAX_EVENT_CHARS` | `MEMORAX_CODE_DSH_TRACE_MAX_EVENT_CHARS` | `20000` |
+| `max_file_bytes` | `MEMORAX_CODE_CODEX_TRACE_MAX_FILE_BYTES` | `MEMORAX_CODE_CLAUDE_TRACE_MAX_FILE_BYTES` | `MEMORAX_CODE_DSH_TRACE_MAX_FILE_BYTES` | `52428800` |
 
 Content capture can include prompts, responses, recalled memory, writeback
 content, reminder text, and local paths. Set `capture_content=false` for
