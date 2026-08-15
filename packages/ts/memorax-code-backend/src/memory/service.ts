@@ -19,6 +19,8 @@ import {
   createRepositoryMemorySessionRuntime,
 } from "./repository-session.js";
 import type {
+  DshTurnDiscardCommand,
+  MemoryHookTurnDiscardResult,
   MemoryHookTurnStartResult,
   TurnStartCommand,
   WritebackCommand,
@@ -37,6 +39,7 @@ type MemoryHookWritebackResult =
 export type MemoryService = {
   recordTurnStart(command: TurnStartCommand): Promise<MemoryHookTurnStartResult>;
   writebackTurn(command: WritebackCommand): Promise<MemoryHookWritebackResult>;
+  discardTurn(command: DshTurnDiscardCommand): Promise<MemoryHookTurnDiscardResult>;
   drain(): Promise<void>;
   close(): void;
 };
@@ -93,6 +96,9 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
           return await dshHook.writeback(command);
       }
       return unsupportedMemoryHookCommand(command);
+    },
+    async discardTurn(command) {
+      return await dshHook.discardTurn(command);
     },
     async drain() {
       await automaticWriteback.drain();

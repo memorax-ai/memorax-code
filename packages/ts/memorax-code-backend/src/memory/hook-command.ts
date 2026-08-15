@@ -33,6 +33,11 @@ const WRITEBACK_KEYS: Readonly<Record<MemoryHookClient, ReadonlySet<string>>> = 
     "transcriptPath",
   ]),
 };
+const TURN_DISCARD_KEYS: Readonly<Record<MemoryHookClient, ReadonlySet<string>>> = {
+  codex: new Set([...BASE_COMMAND_KEYS, "turnId"]),
+  "claude-code": new Set([...BASE_COMMAND_KEYS, "turnId"]),
+  dsh: new Set([...BASE_COMMAND_KEYS, "turnId"]),
+};
 const SKILL_REMINDER_KEYS: Readonly<Record<MemoryHookClient, ReadonlySet<string>>> = {
   codex: new Set([...BASE_COMMAND_KEYS, "turnId", "transcriptPath", "content", "triggers"]),
   "claude-code": new Set([...BASE_COMMAND_KEYS, "promptId", "transcriptPath", "content", "triggers"]),
@@ -93,6 +98,15 @@ export type DshWritebackCommand = MemoryHookCommandBase<"dsh"> & Readonly<{
 }>;
 
 export type WritebackCommand = CodexWritebackCommand | ClaudeWritebackCommand | DshWritebackCommand;
+
+export type DshTurnDiscardCommand = MemoryHookCommandBase<"dsh"> & Readonly<{
+  turnId: string;
+}>;
+
+export type MemoryHookTurnDiscardResult = Readonly<{
+  ok: true;
+  discarded: boolean;
+}>;
 
 export type SkillReminderTrigger = "cadence" | "post_compaction";
 
@@ -222,6 +236,24 @@ export function parseWritebackCommand(
       promptId,
       lastAssistantMessage,
       transcriptPath,
+    },
+  };
+}
+
+export function parseTurnDiscardCommand(
+  value: unknown,
+): MemoryHookCommandParseResult<DshTurnDiscardCommand> {
+  if (!isRecord(value)) return invalidCommand();
+  const base = parseCommandBase(value, TURN_DISCARD_KEYS);
+  if (!base || base.client !== "dsh") return invalidCommand();
+  const turnId = requiredStringField(value, "turnId");
+  if (!turnId) return invalidCommand();
+  return {
+    ok: true,
+    command: {
+      ...base,
+      client: "dsh",
+      turnId,
     },
   };
 }

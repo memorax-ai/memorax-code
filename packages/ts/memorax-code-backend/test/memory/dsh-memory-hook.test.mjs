@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import {
+  parseTurnDiscardCommand,
   parseTurnStartCommand,
   parseWritebackCommand,
 } from "../../dist/memory/hook-command.js";
@@ -81,6 +82,35 @@ test("parseWritebackCommand rejects a DSH command missing assistant text", () =>
     userText: "Fix the build",
   });
   assert.equal(result.ok, false);
+});
+
+test("parseTurnDiscardCommand accepts a DSH discard command and rejects other clients", () => {
+  const result = parseTurnDiscardCommand({
+    version: 1,
+    client: "dsh",
+    sessionId: "session-dsh",
+    turnId: "dsh-0-3",
+  });
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.command, {
+    version: 1,
+    client: "dsh",
+    sessionId: "session-dsh",
+    turnId: "dsh-0-3",
+  });
+
+  assert.equal(parseTurnDiscardCommand({
+    version: 1,
+    client: "dsh",
+    sessionId: "session-dsh",
+  }).ok, false);
+
+  assert.equal(parseTurnDiscardCommand({
+    version: 1,
+    client: "codex",
+    sessionId: "session-dsh",
+    turnId: "dsh-0-3",
+  }).ok, false);
 });
 
 test("DSH memory service records a turn start and schedules an inline writeback", async () => {
@@ -274,6 +304,221 @@ test("DSH writeback without matching turn metadata is rejected", async () => {
       )),
       true,
     );
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(requests.length, 0);
+  } finally {
+    service.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("DSH writeback with a mismatched prompt is rejected and does not consume metadata", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-dsh-prompt-mismatch-"));
+  const memoraxCodeHome = join(root, "home");
+  const workspace = join(root, "workspace");
+  await Promise.all([
+    mkdir(memoraxCodeHome, { recursive: true }),
+    mkdir(join(workspace, ".git"), { recursive: true }),
+  ]);
+  const diagnosticEvents = [];
+  const requests = [];
+  const service = createMemoryService({
+    diagnosticLogger(message, fields) {
+      diagnosticEvents.push({ message, fields });
+    },
+    env: {
+      MEMORAX_CODE_HOME: memoraxCodeHome,
+      MEMORAX_CODE_DSH_TRACE_ENABLED: "false",
+      MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED: "false",
+      MEMORAX_CODE_MEMORY_WRITEBACK_ENABLED: "true",
+      MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_ENABLED: "false",
+      MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
+      MEMORAX_CODE_MEMORAX_API_KEY: "secret",
+      MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
+    },
+    fetchImpl: async (url, init) => {
+      requests.push({ url: String(url), body: JSON.parse(init.body) });
+      return new Response(JSON.stringify({
+        success: true,
+        data: { task_id: "dsh-task", status: "queued" },
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+    memoraxCodeHome,
+  });
+  try {
+    await service.recordTurnStart({
+      version: 1,
+      client: "dsh",
+      sessionId: "session-dsh",
+      turnId: "dsh-0-0",
+      prompt: "Remember this turn.",
+      cwd: workspace,
+    });
+
+    assert.deepEqual(await service.writebackTurn({
+      version: 1,
+      client: "dsh",
+      sessionId: "session-dsh",
+      turnId: "dsh-0-0",
+      userText: "A forged different prompt.",
+      assistantText: "I will remember this turn.",
+      cwd: workspace,
+    }), { ok: true, scheduled: false, reason: "prompt_mismatch" });
+    assert.equal(
+      diagnosticEvents.some((event) => (
+        event.message === "dsh_memory_hook.writeback"
+        && event.fields?.reason === "prompt_mismatch"
+      )),
+      true,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(requests.length, 0);
+
+    // The rejected writeback must not consume metadata, so the correct
+    // userText can still be written back afterwards.
+    assert.deepEqual(await service.writebackTurn({
+      version: 1,
+      client: "dsh",
+      sessionId: "session-dsh",
+      turnId: "dsh-0-0",
+      userText: "Remember this turn.",
+      assistantText: "I will remember this turn.",
+      cwd: workspace,
+    }), { ok: true, scheduled: true });
+    await waitFor(() => requests.length === 1, "matching writeback did not reach MemoraX add");
+    await service.drain();
+  } finally {
+    service.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("DSH writeback accepts a userText that extends the started prompt", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-dsh-prompt-prefix-"));
+  const memoraxCodeHome = join(root, "home");
+  const workspace = join(root, "workspace");
+  await Promise.all([
+    mkdir(memoraxCodeHome, { recursive: true }),
+    mkdir(join(workspace, ".git"), { recursive: true }),
+  ]);
+  const requests = [];
+  const service = createMemoryService({
+    env: {
+      MEMORAX_CODE_HOME: memoraxCodeHome,
+      MEMORAX_CODE_DSH_TRACE_ENABLED: "false",
+      MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED: "false",
+      MEMORAX_CODE_MEMORY_WRITEBACK_ENABLED: "true",
+      MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_ENABLED: "false",
+      MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
+      MEMORAX_CODE_MEMORAX_API_KEY: "secret",
+      MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
+    },
+    fetchImpl: async (url, init) => {
+      requests.push({ url: String(url), body: JSON.parse(init.body) });
+      return new Response(JSON.stringify({
+        success: true,
+        data: { task_id: "dsh-task", status: "queued" },
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+    memoraxCodeHome,
+  });
+  try {
+    await service.recordTurnStart({
+      version: 1,
+      client: "dsh",
+      sessionId: "session-dsh",
+      turnId: "dsh-0-0",
+      prompt: "Fix the build.",
+      cwd: workspace,
+    });
+    assert.deepEqual(await service.writebackTurn({
+      version: 1,
+      client: "dsh",
+      sessionId: "session-dsh",
+      turnId: "dsh-0-0",
+      userText: "Fix the build.\n\nAlso run the tests.",
+      assistantText: "Done.",
+      cwd: workspace,
+    }), { ok: true, scheduled: true });
+    await waitFor(() => requests.length === 1, "prefix writeback did not reach MemoraX add");
+    await service.drain();
+  } finally {
+    service.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("DSH discard removes turn metadata and closes the current turn", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-dsh-discard-"));
+  const memoraxCodeHome = join(root, "home");
+  const workspace = join(root, "workspace");
+  await Promise.all([
+    mkdir(memoraxCodeHome, { recursive: true }),
+    mkdir(join(workspace, ".git"), { recursive: true }),
+  ]);
+  const diagnosticEvents = [];
+  const requests = [];
+  const service = createMemoryService({
+    diagnosticLogger(message, fields) {
+      diagnosticEvents.push({ message, fields });
+    },
+    env: {
+      MEMORAX_CODE_HOME: memoraxCodeHome,
+      MEMORAX_CODE_DSH_TRACE_ENABLED: "false",
+      MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED: "false",
+      MEMORAX_CODE_MEMORY_WRITEBACK_ENABLED: "true",
+      MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_ENABLED: "false",
+      MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
+      MEMORAX_CODE_MEMORAX_API_KEY: "secret",
+      MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
+    },
+    fetchImpl: async (url) => {
+      requests.push({ url: String(url) });
+      return new Response(JSON.stringify({
+        success: true,
+        data: { task_id: "dsh-task", status: "queued" },
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+    memoraxCodeHome,
+  });
+  try {
+    await service.recordTurnStart({
+      version: 1,
+      client: "dsh",
+      sessionId: "session-dsh",
+      turnId: "dsh-0-0",
+      prompt: "Interrupted turn.",
+      cwd: workspace,
+    });
+    assert.deepEqual(await service.discardTurn({
+      version: 1,
+      client: "dsh",
+      sessionId: "session-dsh",
+      turnId: "dsh-0-0",
+    }), { ok: true, discarded: true });
+    assert.equal(
+      diagnosticEvents.some((event) => event.message === "dsh_memory_hook.turn_discarded"),
+      true,
+    );
+
+    assert.deepEqual(await service.writebackTurn({
+      version: 1,
+      client: "dsh",
+      sessionId: "session-dsh",
+      turnId: "dsh-0-0",
+      userText: "Interrupted turn.",
+      assistantText: "Reply.",
+      cwd: workspace,
+    }), { ok: true, scheduled: false, reason: "turn_metadata_missing" });
     await new Promise((resolve) => setTimeout(resolve, 50));
     assert.equal(requests.length, 0);
   } finally {

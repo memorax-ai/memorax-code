@@ -83,6 +83,65 @@ test("Backend memory hook endpoints record and write back a turn", async () => {
   }
 });
 
+test("Backend DSH turn-discard endpoint discards turn metadata", async () => {
+  const sessionHome = await mkdtemp(join(tmpdir(), "memorax-code-hook-http-dsh-discard-"));
+  const restoreEnv = withEnv({
+    ...WRITEBACK_ENV,
+    MEMORAX_CODE_HOME: undefined,
+    MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED: "false",
+    MEMORAX_CODE_DSH_TRACE_ENABLED: "false",
+  });
+  const originalFetch = globalThis.fetch;
+  const state = createBackendState("127.0.0.1", { sessionHome });
+  const server = createBackendServer(state);
+  const url = await listen(server);
+  try {
+    const start = await originalFetch(`${url}/memory/turn-start`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        version: 1,
+        client: "dsh",
+        sessionId: "session-dsh-discard",
+        turnId: "dsh-0-1",
+        prompt: "Interrupted prompt.",
+        cwd: TEST_WORKSPACE,
+      }),
+    });
+    assert.equal(start.status, 200);
+
+    const discard = await originalFetch(`${url}/memory/turn-discard`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        version: 1,
+        client: "dsh",
+        sessionId: "session-dsh-discard",
+        turnId: "dsh-0-1",
+      }),
+    });
+    assert.equal(discard.status, 200);
+    assert.deepEqual(await discard.json(), { ok: true, discarded: true });
+
+    const replayDiscard = await originalFetch(`${url}/memory/turn-discard`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        version: 1,
+        client: "dsh",
+        sessionId: "session-dsh-discard",
+        turnId: "dsh-0-1",
+      }),
+    });
+    assert.equal(replayDiscard.status, 200);
+    assert.deepEqual(await replayDiscard.json(), { ok: true, discarded: false });
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    restoreEnv();
+    await rm(sessionHome, { recursive: true, force: true });
+  }
+});
+
 test("Backend memory hook endpoints reject commands outside the closed schema", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-hook-http-contract-"));
   const state = createBackendState("127.0.0.1", { sessionHome: root });

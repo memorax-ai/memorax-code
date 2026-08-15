@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { MemoryReminderTraceRecorder } from "../../memory/reminder-trace-recorder.js";
 import {
+  parseTurnDiscardCommand,
   parseTurnStartCommand,
   parseWritebackCommand,
 } from "../../memory/hook-command.js";
@@ -24,6 +25,7 @@ export async function handleMemoryHookRequest(
     url.pathname !== "/memory/turn-start"
     && url.pathname !== "/memory/skill-reminder"
     && url.pathname !== "/memory/writeback"
+    && url.pathname !== "/memory/turn-discard"
   ) return false;
   const body = await readJson(req);
   if (url.pathname === "/memory/skill-reminder") {
@@ -37,6 +39,15 @@ export async function handleMemoryHookRequest(
       return true;
     }
     json(res, 200, await dependencies.memoryService.recordTurnStart(parsed.command));
+    return true;
+  }
+  if (url.pathname === "/memory/turn-discard") {
+    const parsed = parseTurnDiscardCommand(body);
+    if (!parsed.ok) {
+      json(res, 400, { ok: false, error: parsed.error });
+      return true;
+    }
+    json(res, 200, await dependencies.memoryService.discardTurn(parsed.command));
     return true;
   }
   const parsed = parseWritebackCommand(body);

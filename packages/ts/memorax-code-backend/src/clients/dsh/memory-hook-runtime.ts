@@ -6,8 +6,10 @@ import {
   type AutomaticMemoryWritebackRuntime,
 } from "../../memory/automatic-writeback.js";
 import type {
+  DshTurnDiscardCommand,
   DshTurnStartCommand,
   DshWritebackCommand,
+  MemoryHookTurnDiscardResult,
   MemoryHookTurnStartResult,
 } from "../../memory/hook-command.js";
 import type { MemoryDiagnosticLogger, MemoryObservabilityHook } from "../../memory/observability.js";
@@ -46,6 +48,7 @@ type DshMemoryHookWritebackSkipReason =
   | "turn_id_missing"
   | "user_text_missing"
   | "assistant_text_missing"
+  | "prompt_mismatch"
   | "turn_metadata_missing"
   | "turn_metadata_mismatch"
   | "config_missing"
@@ -74,6 +77,7 @@ export type DshMemoryHookRuntimeOptions = {
 export type DshMemoryHookRuntime = {
   recordTurnStart(command: DshTurnStartCommand): Promise<MemoryHookTurnStartResult>;
   writeback(command: DshWritebackCommand): Promise<DshMemoryHookWritebackResult>;
+  discardTurn(command: DshTurnDiscardCommand): Promise<MemoryHookTurnDiscardResult>;
   size(): number;
   close(): void;
 };
@@ -133,6 +137,7 @@ export function createDshMemoryHookRuntime(
         cwd: turn.cwd,
         workspaceKind: turn.workspaceKind,
         transcriptPath: turn.transcriptPath,
+        prompt: turn.prompt,
         createdAt: turn.createdAt,
         traceContext: turn.traceContext,
         repositoryMemory,
@@ -214,6 +219,15 @@ export function createDshMemoryHookRuntime(
         });
         return skipped("turn_metadata_missing");
       }
+      if (entry.prompt !== undefined && !dshPromptMatches(entry.prompt, request.userText)) {
+        options.diagnosticLogger?.("dsh_memory_hook.writeback", {
+          scheduled: false,
+          reason: "prompt_mismatch",
+          sessionId: request.sessionId,
+          turnId: request.turnId,
+        });
+        return skipped("prompt_mismatch");
+      }
       const traceContext = traceContextForWriteback(request, entry);
       await recordDshTurnEnd(
         options,
@@ -261,6 +275,20 @@ export function createDshMemoryHookRuntime(
         contentSource: "dsh_session_event",
       });
       return { ok: true, scheduled: true };
+    },
+    async discardTurn(command) {
+      turnCoordinator.pruneExpired();
+      if (!command.sessionId || !command.turnId) return { ok: true, discarded: false };
+      const key = dshTurnKey(command.sessionId, command.turnId);
+      const entry = turnCoordinator.getTurn(key);
+      if (!entry) return { ok: true, discarded: false };
+      await recordDshTurnInterrupted(options, entry.traceContext);
+      turnCoordinator.discardTurn(key, "interrupted");
+      options.diagnosticLogger?.("dsh_memory_hook.turn_discarded", {
+        sessionId: command.sessionId,
+        turnId: command.turnId,
+      });
+      return { ok: true, discarded: true };
     },
     size() {
       return turnCoordinator.size(DSH_MEMORY_TURN_CLIENT);
@@ -379,6 +407,31 @@ async function recordDshTurnEnd(
   ), options.diagnosticLogger);
 }
 
+async function recordDshTurnInterrupted(
+  options: DshMemoryHookRuntimeOptions,
+  traceContext: TraceContext | undefined,
+): Promise<void> {
+  await recordTraceBestEffort("dsh_memory_hook.turn_end_event", recordDshTraceEvent({
+    eventId: traceTurnEventId(traceContext, "turn_end"),
+    memoraxCodeHome: options.memoraxCodeHome,
+    env: options.env,
+    traceContext,
+    type: "turn_end",
+    source: "dsh-hook",
+    operation: "reply",
+    ok: true,
+    outcome: "interrupted",
+  }), options.diagnosticLogger);
+  await recordTraceBestEffort("dsh_memory_hook.current_turn_close", markCurrentDshTurnOutcome(
+    traceContext,
+    "interrupted",
+    {
+      memoraxCodeHome: options.memoraxCodeHome,
+      env: options.env,
+    },
+  ), options.diagnosticLogger);
+}
+
 function traceContextForWriteback(
   request: DshMemoryHookWritebackRequest,
   entry: MemoryTurnState | undefined,
@@ -400,6 +453,10 @@ function dshTurnKey(sessionId: string, turnId: string) {
     sessionId,
     clientTurnId: turnId,
   } as const;
+}
+
+function dshPromptMatches(startedPrompt: string, userText: string): boolean {
+  return userText === startedPrompt || userText.startsWith(startedPrompt);
 }
 
 function claimAutomaticRetrievalTurn(

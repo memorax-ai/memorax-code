@@ -16,6 +16,7 @@ export function createSessionBridge({ dispatch, debug = () => {} }) {
         userText: undefined,
         assistantText: undefined,
         turnStarted: false,
+        dispatchTail: undefined,
       });
     },
     onSessionEvent(session, event) {
@@ -82,32 +83,62 @@ export function createSessionBridge({ dispatch, debug = () => {} }) {
     const userText = state.userText;
     const assistantText = state.assistantText;
     const turn = state.turn;
+    const turnStarted = state.turnStarted;
     state.turn = undefined;
     state.userText = undefined;
     state.assistantText = undefined;
     state.turnStarted = false;
-    if (!userText || !assistantText || turn === undefined) return;
-    if (!turnEndCompleted(data)) return;
-    dispatchWriteback(state, turn, userText, assistantText);
+    if (turn === undefined) return;
+    if (turnEndCompleted(data)) {
+      if (!userText || !assistantText) return;
+      dispatchWriteback(state, turn, userText, assistantText);
+    } else if (turnStarted) {
+      dispatchTurnDiscard(state, turn);
+    }
   }
 
   function dispatchTurnStart(state) {
     const body = buildTurnStartCommand(state);
     if (!body) return;
-    void dispatch("/memory/turn-start", body).then((result) => {
+    void enqueue(state, () => dispatch("/memory/turn-start", body)).then((result) => {
+      if (!result?.ok) {
+        debug("turn-start dispatch rejected", resultFailureMessage(result));
+        return;
+      }
       const additionalContext = stringValue(result?.body?.additionalContext);
       if (additionalContext) pendingContext.set(state.sessionId, additionalContext);
     }).catch((error) => {
-      debug("turn-start dispatch failed", error instanceof Error ? error.message : String(error));
+      debug("turn-start dispatch failed", errorMessage(error));
     });
   }
 
   function dispatchWriteback(state, turn, userText, assistantText) {
     const body = buildWritebackCommand(state, turn, userText, assistantText);
     if (!body) return;
-    void dispatch("/memory/writeback", body).catch((error) => {
-      debug("writeback dispatch failed", error instanceof Error ? error.message : String(error));
+    void enqueue(state, () => dispatch("/memory/writeback", body)).then((result) => {
+      if (!result?.ok) debug("writeback dispatch rejected", resultFailureMessage(result));
+    }).catch((error) => {
+      debug("writeback dispatch failed", errorMessage(error));
     });
+  }
+
+  function dispatchTurnDiscard(state, turn) {
+    const body = buildTurnDiscardCommand(state, turn);
+    if (!body) return;
+    void enqueue(state, () => dispatch("/memory/turn-discard", body)).then((result) => {
+      if (!result?.ok) debug("turn-discard dispatch rejected", resultFailureMessage(result));
+    }).catch((error) => {
+      debug("turn-discard dispatch failed", errorMessage(error));
+    });
+  }
+
+  function enqueue(state, operation) {
+    const previous = state.dispatchTail
+      ? state.dispatchTail.catch(() => undefined)
+      : Promise.resolve();
+    const current = previous.then(operation);
+    state.dispatchTail = current;
+    return current;
   }
 }
 
@@ -145,6 +176,17 @@ export function buildWritebackCommand(state, turn, userText, assistantText) {
   };
 }
 
+export function buildTurnDiscardCommand(state, turn) {
+  const sessionId = stringValue(state?.sessionId);
+  if (!sessionId || turn === undefined) return undefined;
+  return {
+    version: MEMORY_HOOK_COMMAND_VERSION,
+    client: "dsh",
+    sessionId,
+    turnId: buildTurnId(sessionId, state?.firstLiveSeq, turn),
+  };
+}
+
 export function extractMessageText(message) {
   if (!isRecord(message)) return "";
   const blocks = Array.isArray(message.content) ? message.content : [];
@@ -172,6 +214,16 @@ function stringValue(value) {
 function nonNegativeInteger(value, fallback) {
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+function resultFailureMessage(result) {
+  if (typeof result?.error === "string" && result.error) return result.error;
+  if (typeof result?.status === "number") return `status ${result.status}`;
+  return "unknown backend failure";
+}
+
+function errorMessage(error) {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function isRecord(value) {
