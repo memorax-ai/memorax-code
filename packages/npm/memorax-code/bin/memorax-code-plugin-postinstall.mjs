@@ -101,7 +101,7 @@ if (updatePostinstall && previousClients !== undefined) {
 } else {
   log(detectedClientMessage(installClients, dshProfiles));
 }
-if (dshDetected) log(`DeepSeek Harness profiles: found (${dshProfiles.map((profile) => profile.name).join(", ")}); the native plugin will be reconciled by \`memorax-code start\`.`);
+if (dshDetected) log(`DeepSeek Harness profiles: found (${dshProfiles.map((profile) => profile.name).join(", ")}); compatibility will be checked and supported profiles reconciled by \`memorax-code start\`.`);
 if (requestedClients.includes("codex") && !skipCodexPluginInstall && !codexPreflight.ok) {
   log("Codex runtime was not detected; skipping its adapter setup.");
 }

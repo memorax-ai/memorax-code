@@ -44,7 +44,9 @@ and validation sooner.
 
 Prepare Node.js 24+ and at least one supported harness: Codex, Claude Code, or
 DeepSeek Harness. Python 3 is required for Repo Memory operations. DSH profile
-plugin management also requires `pnpm` on `PATH`.
+plugin management also requires `pnpm` on `PATH`. This release supports DSH
+`0.1.0-rc.6` exactly; other versions' profiles are not reconciled, any existing
+MemoraX DSH authority is disabled, and Codex or Claude Code setup continues.
 
 ### Install and Connect
 

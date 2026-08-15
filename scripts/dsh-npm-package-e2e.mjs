@@ -230,6 +230,7 @@ async function main() {
   const packageMetadata = await readJson(join(installedAdapter, ".memorax-code-package.json"));
   const dshState = await readJson(dshStatePath);
   assert.equal(dshState.enabled, true, "npm postinstall did not enable the DSH integration");
+  assert.equal(dshState.dshVersion, dsh.version, "DSH lifecycle state did not record the preflighted version");
   assert.deepEqual(dshState.profiles, ["headless"]);
   assert.equal(await realpath(dshState.adapterRoot), await realpath(sourceAdapterRoot));
   assert.equal(await realpath(packageMetadata.sourceAdapterRoot), await realpath(sourceAdapterRoot));

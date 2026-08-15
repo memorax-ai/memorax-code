@@ -28,6 +28,9 @@ test("DSH lifecycle reconciles existing profiles and preserves a disabled author
       memoraxCodeCommand: fixture.memoraxCodeCommand,
       runDsh(invocation) {
         invocations.push(invocation);
+        if (invocation.args[0] === "--version") {
+          return { status: 0, stdout: "0.1.0-rc.6\n" };
+        }
         activateAdapter(fixture.dshHome, invocation.args[2], invocation.args[4]);
         return { status: 0 };
       },
@@ -35,10 +38,12 @@ test("DSH lifecycle reconciles existing profiles and preserves a disabled author
 
     assert.equal(installed.ok, true);
     assert.equal(installed.enabled, true);
+    assert.equal(installed.dshVersion, "0.1.0-rc.6");
     assert.deepEqual(installed.detectedProfiles, ["headless", "web"]);
     assert.deepEqual(installed.installedProfiles, ["headless", "web"]);
     assert.equal(existsSync(join(fixture.dshHome, "skills", "memorax-code")), false);
     assert.deepEqual(invocations.map(({ args }) => args), [
+      ["--version"],
       ["plugin", "--profile", "headless", "add", `file:${fixture.adapterRoot}`],
       ["plugin", "--profile", "web", "add", `file:${fixture.adapterRoot}`],
     ]);
@@ -48,7 +53,9 @@ test("DSH lifecycle reconciles existing profiles and preserves a disabled author
     assert.equal(metadata.memoraxCodeCommand, fixture.memoraxCodeCommand);
     assert.equal(metadata.memoraxCodeHome, fixture.memoraxCodeHome);
     assert.equal(metadata.dshHome, fixture.dshHome);
+    assert.equal(metadata.dshVersion, "0.1.0-rc.6");
     assert.equal(metadata.sourceAdapterRoot, fixture.adapterRoot);
+    assert.equal(readJson(fixture.statePath).dshVersion, "0.1.0-rc.6");
 
     const disabled = disableDshPluginInstallation({
       ...fixture.options,
@@ -68,10 +75,10 @@ test("DSH lifecycle reconciles existing profiles and preserves a disabled author
       ...fixture.options,
       enabled: false,
       memoraxCodeCommand: fixture.memoraxCodeCommand,
-      runDsh(invocation) {
+      runDsh: compatibleDsh((invocation) => {
         activateAdapter(fixture.dshHome, invocation.args[2], invocation.args[4]);
         return { status: 0 };
-      },
+      }),
     });
     assert.equal(reconciled.ok, true);
     assert.equal(reconciled.enabled, false);
@@ -127,7 +134,10 @@ test("DSH install fails closed on an unmanaged same-name profile plugin", () => 
     activateAdapter(fixture.dshHome, "web", `file:${fixture.adapterRoot}`);
     const report = ensureDshPluginInstalled({
       ...fixture.options,
-      runDsh() {
+      runDsh(invocation) {
+        if (invocation.args[0] === "--version") {
+          return { status: 0, stdout: "0.1.0-rc.6\n" };
+        }
         called = true;
         return { status: 0 };
       },
@@ -150,11 +160,11 @@ test("DSH lifecycle reuses its persisted command across later processes", () => 
       ...fixture.options,
       env: {},
       dshCommand: customDsh,
-      runDsh(invocation) {
+      runDsh: compatibleDsh((invocation) => {
         commands.push(invocation.command);
         activateAdapter(fixture.dshHome, invocation.args[2], invocation.args[4]);
         return { status: 0 };
-      },
+      }),
     });
     assert.equal(installed.ok, true);
     assert.equal(readJson(fixture.statePath).dshCommand, customDsh);
@@ -174,11 +184,11 @@ test("DSH lifecycle reuses its persisted command across later processes", () => 
       ...fixture.options,
       env: {},
       enabled: false,
-      runDsh(invocation) {
+      runDsh: compatibleDsh((invocation) => {
         commands.push(invocation.command);
         activateAdapter(fixture.dshHome, invocation.args[2], invocation.args[4]);
         return { status: 0 };
-      },
+      }),
     });
     assert.equal(restored.ok, true);
     assert.equal(restored.state.dshCommand, customDsh);
@@ -193,10 +203,10 @@ test("DSH lifecycle owns a partial native add so uninstall and reinstall recover
   try {
     const failed = ensureDshPluginInstalled({
       ...fixture.options,
-      runDsh(invocation) {
+      runDsh: compatibleDsh((invocation) => {
         addAdapterDependency(fixture.dshHome, invocation.args[2], invocation.args[4]);
         return { status: 7 };
-      },
+      }),
     });
     assert.equal(failed.ok, false);
     assert.deepEqual(failed.state.profiles, ["web"]);
@@ -216,10 +226,10 @@ test("DSH lifecycle owns a partial native add so uninstall and reinstall recover
 
     const reinstalled = ensureDshPluginInstalled({
       ...fixture.options,
-      runDsh(invocation) {
+      runDsh: compatibleDsh((invocation) => {
         activateAdapter(fixture.dshHome, invocation.args[2], invocation.args[4]);
         return { status: 0 };
-      },
+      }),
     });
     assert.equal(reinstalled.ok, true);
     assert.deepEqual(reinstalled.state.profiles, ["web"]);
@@ -244,6 +254,10 @@ test("DSH lifecycle resolves a Windows npm shim without a command shell", () => 
       },
       runDsh(invocation) {
         assert.equal(invocation.command, "C:\\node.exe");
+        if (invocation.args.at(-1) === "--version") {
+          assert.deepEqual(invocation.args, [cli, "--version"]);
+          return { status: 0, stdout: "0.1.0-rc.6\n" };
+        }
         assert.deepEqual(invocation.args, [
           cli,
           "plugin",
@@ -267,10 +281,10 @@ test("DSH disable publishes the inert sentinel before reporting native removal f
   try {
     const installed = ensureDshPluginInstalled({
       ...fixture.options,
-      runDsh(invocation) {
+      runDsh: compatibleDsh((invocation) => {
         activateAdapter(fixture.dshHome, invocation.args[2], invocation.args[4]);
         return { status: 0 };
-      },
+      }),
     });
     assert.equal(installed.ok, true);
     const disabled = disableDshPluginInstallation({
@@ -287,6 +301,56 @@ test("DSH disable publishes the inert sentinel before reporting native removal f
     assert.equal(readDshPluginStatus(fixture.options).enabled, false);
   } finally {
     fixture.cleanup();
+  }
+});
+
+test("DSH install leaves unsupported versions untouched and disables prior authority", () => {
+  const fresh = createFixture(["web"]);
+  try {
+    const profilePath = join(fresh.dshHome, "profiles", "web", "package.json");
+    activateAdapter(fresh.dshHome, "web", `file:${fresh.adapterRoot}`);
+    const before = readFileSync(profilePath, "utf8");
+    const unsupported = ensureDshPluginInstalled({
+      ...fresh.options,
+      runDsh() {
+        return { status: 0, stdout: "0.1.0-rc.7\n" };
+      },
+    });
+    assert.equal(unsupported.ok, true);
+    assert.equal(unsupported.skipped, true);
+    assert.equal(unsupported.reason, "unsupported_dsh_version");
+    assert.equal(unsupported.dshVersion, "0.1.0-rc.7");
+    assert.deepEqual(unsupported.supportedDshVersions, ["0.1.0-rc.6"]);
+    assert.equal(readFileSync(profilePath, "utf8"), before);
+    assert.equal(existsSync(fresh.statePath), false);
+    assert.equal(existsSync(join(fresh.adapterRoot, ".memorax-code-package.json")), false);
+  } finally {
+    fresh.cleanup();
+  }
+
+  const managed = createFixture(["web"]);
+  try {
+    const installed = ensureDshPluginInstalled({
+      ...managed.options,
+      runDsh: compatibleDsh((invocation) => {
+        activateAdapter(managed.dshHome, invocation.args[2], invocation.args[4]);
+        return { status: 0 };
+      }),
+    });
+    assert.equal(installed.ok, true);
+    assert.equal(readJson(managed.statePath).enabled, true);
+
+    const unsupported = ensureDshPluginInstalled({
+      ...managed.options,
+      runDsh() {
+        return { status: 0, stdout: "0.1.0-rc.7\n" };
+      },
+    });
+    assert.equal(unsupported.skipped, true);
+    assert.equal(readJson(managed.statePath).enabled, false);
+    assert.equal(readDshPluginStatus(managed.options).enabled, false);
+  } finally {
+    managed.cleanup();
   }
 });
 
@@ -326,6 +390,12 @@ function createFixture(profiles) {
     },
     cleanup: () => rmSync(root, { recursive: true, force: true }),
   };
+}
+
+function compatibleDsh(runPlugin) {
+  return (invocation) => invocation.args.length === 1 && invocation.args[0] === "--version"
+    ? { status: 0, stdout: "0.1.0-rc.6\n" }
+    : runPlugin(invocation);
 }
 
 function writeProfile(dshHome, name, overrides = {}) {

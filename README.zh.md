@@ -40,7 +40,8 @@ MemoraX Code 让 Codex、Claude Code 和 DeepSeek Harness（DSH）共享一套�
 
 开始前，请确保已安装 Node.js 24 或更高版本，以及至少一个受支持的 Harness：
 Codex、Claude Code 或 DeepSeek Harness。Repo Memory 操作还需要 Python 3；管理 DSH Profile
-插件还要求 `pnpm` 已加入 `PATH`。
+插件还要求 `pnpm` 已加入 `PATH`。当前版本仅支持 DSH `0.1.0-rc.6`；检测到其他版本时不会
+协调其 Profile，已有的 MemoraX DSH authority 会被禁用，同时继续接入 Codex 或 Claude Code。
 
 ### 安装与接入
 

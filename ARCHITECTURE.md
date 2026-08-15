@@ -178,6 +178,9 @@ replace the currently authoritative Hook generation. Cross-process lifecycle
 decisions use durable records and bounded locks rather than relying on one
 process's in-memory serialization. DSH profile integration has its own managed
 state and remains a native Cordis installation rather than a Hook generation.
+Before mutating a DSH profile, the npm lifecycle checks the selected native
+CLI version and leaves unsupported installations inert without blocking the
+other clients or the shared Backend.
 
 ### 3.2 Adapter and retrieval data flow
 

@@ -49,7 +49,11 @@ DSH is intentionally outside `[clients]`: the installer and lifecycle wrapper
 discover existing valid profiles and manage the native Cordis bundle in each
 one. They do not create profiles. A later `memorax-code update` or
 `memorax-code start` reconciles profiles created after the original install.
-DSH profile plugin management requires `pnpm` on `PATH`.
+DSH profile plugin management requires `pnpm` on `PATH`. This release accepts
+DSH `0.1.0-rc.6` exactly. Before changing a profile, the lifecycle wrapper
+checks the selected `dsh --version`; an unavailable or unsupported DSH is left
+with unchanged profiles while any existing MemoraX DSH authority is disabled.
+Codex, Claude Code, and the shared Backend continue to start.
 
 On POSIX systems MemoraX Code creates `$MEMORAX_CODE_HOME` with mode `0700`
 and a new `config.toml` with mode `0600`. Windows relies on the current user's

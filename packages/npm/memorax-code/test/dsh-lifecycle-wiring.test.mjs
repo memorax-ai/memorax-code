@@ -67,6 +67,22 @@ test("targeted Hook-client stop preserves an enabled DSH Backend consumer", () =
   }
 });
 
+test("unsupported DSH does not block the shared Backend or mutate its profile", () => {
+  const fixture = createFixture();
+  try {
+    const started = runCli(fixture, "start", {
+      env: { MEMORAX_CODE_TEST_DSH_VERSION: "0.1.0-rc.7" },
+    });
+    assert.equal(started.status, 0, started.stderr);
+    assert.match(started.stderr, /DSH integration skipped: version 0\.1\.0-rc\.7 is unsupported/);
+    assert.equal(existsSync(fixture.statePath), false);
+    assert.equal(profileHasAdapter(fixture.profilePath), false);
+    assert.match(readFileSync(fixture.backendLog, "utf8"), /^start enabled=false external=false$/m);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test("main CLI restores custom DSH authority after its installer environment disappears", () => {
   const fixture = createFixture();
   try {
@@ -102,7 +118,10 @@ test("a concurrent user stop is ordered after an in-flight DSH Backend recovery"
   const fixture = createFixture();
   try {
     assert.equal(runCli(fixture, "start").status, 0);
-    const revision = readJson(fixture.statePath).updatedAt;
+    const legacyState = readJson(fixture.statePath);
+    delete legacyState.dshVersion;
+    writeFileSync(fixture.statePath, `${JSON.stringify(legacyState, null, 2)}\n`);
+    const revision = legacyState.updatedAt;
     writeFileSync(fixture.backendLog, "");
     const recovery = spawnCli(fixture, "start", {
       args: ["--clients", "none"],
@@ -118,6 +137,7 @@ test("a concurrent user stop is ordered after an in-flight DSH Backend recovery"
     assert.equal(stopped.status, 0, stopped.stderr);
     const recovered = await recovery;
     assert.equal(recovered.code, 0, recovered.stderr);
+    assert.equal(readJson(fixture.statePath).dshVersion, "0.1.0-rc.6");
     assert.equal(readJson(fixture.statePath).enabled, false);
     assert.equal(profileHasAdapter(fixture.profilePath), false);
     assert.deepEqual(readFileSync(fixture.backendLog, "utf8").trim().split("\n"), [
@@ -201,9 +221,10 @@ function createFixture() {
   const backendEntrypoint = join(libRoot, "memorax-code-backend", "dist", "memorax-code.js");
   mkdirSync(dirname(backendEntrypoint), { recursive: true });
   writeFileSync(backendEntrypoint, [
-    "import { appendFileSync, readFileSync } from 'node:fs';",
+    "import { appendFileSync, existsSync, readFileSync } from 'node:fs';",
     "import { join } from 'node:path';",
-    "const state = JSON.parse(readFileSync(join(process.env.MEMORAX_CODE_HOME, 'adapters', 'dsh', 'state.json'), 'utf8'));",
+    "const statePath = join(process.env.MEMORAX_CODE_HOME, 'adapters', 'dsh', 'state.json');",
+    "const state = existsSync(statePath) ? JSON.parse(readFileSync(statePath, 'utf8')) : { enabled: false };",
     "const delay = Number(process.env.MEMORAX_CODE_TEST_BACKEND_DELAY_MS || 0);",
     `if (delay > 0) appendFileSync(${JSON.stringify(backendLog)}, process.argv[2] + '-begin enabled=' + state.enabled + '\\n');`,
     "if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));",
@@ -217,6 +238,10 @@ function createFixture() {
     "import { readFileSync, writeFileSync } from 'node:fs';",
     "import { join } from 'node:path';",
     "const args = process.argv.slice(2);",
+    "if (args.length === 1 && args[0] === '--version') {",
+    "  console.log(process.env.MEMORAX_CODE_TEST_DSH_VERSION || '0.1.0-rc.6');",
+    "  process.exit(0);",
+    "}",
     "const profile = args[args.indexOf('--profile') + 1];",
     "const operation = args[3];",
     "const manifestPath = join(process.env.DSH_HOME, 'profiles', profile, 'package.json');",

@@ -23,6 +23,9 @@ const {
 const STATE_VERSION = 1;
 const RUNTIME = "dsh";
 const ADAPTER_PACKAGE_NAME = "@memorax-code/dsh-adapter";
+const DSH_SUPPORTED_VERSIONS = Object.freeze(["0.1.0-rc.6"]);
+const DSH_SUPPORTED_VERSION_SET = new Set(DSH_SUPPORTED_VERSIONS);
+const DSH_VERSION_TIMEOUT_MS = 10_000;
 const DEFAULT_COMMAND_TIMEOUT_MS = 120_000;
 const DEFAULT_LIFECYCLE_LOCK_TIMEOUT_MS = 600_000;
 
@@ -146,8 +149,6 @@ function ensureDshPluginInstalledUnlocked(paths, options) {
   const state = readAdapterState(paths.statePath);
   const stateProblem = validateState(state, paths);
   if (stateProblem) return { ...stateProblem, action: "dsh-plugin-install" };
-  const sourceProblem = validateSources(paths);
-  if (sourceProblem) return { ...sourceProblem, action: "dsh-plugin-install" };
 
   const profiles = discoverDshProfiles({ ...options, dshHome: paths.dshHome });
   if (profiles.length === 0) {
@@ -166,6 +167,31 @@ function ensureDshPluginInstalledUnlocked(paths, options) {
     };
   }
 
+  const dshCommand = resolveDshCommand(options, paths, state);
+  const compatibility = inspectDshCompatibility(options, paths, dshCommand);
+  if (compatibility.compatible !== true) {
+    const nextState = state?.enabled === true
+      ? disabledState(state, state.profiles)
+      : state;
+    if (nextState && nextState !== state) atomicWriteJson(paths.statePath, nextState);
+    return {
+      ok: true,
+      action: "dsh-plugin-install",
+      runtime: RUNTIME,
+      installed: false,
+      enabled: false,
+      managed: Boolean(state),
+      skipped: true,
+      detectedProfiles: profiles.map((profile) => profile.name),
+      statePath: paths.statePath,
+      ...(nextState ? { state: nextState } : {}),
+      ...compatibility,
+    };
+  }
+
+  const sourceProblem = validateSources(paths);
+  if (sourceProblem) return { ...sourceProblem, action: "dsh-plugin-install" };
+
   const previouslyManaged = new Set(state?.profiles ?? []);
   const conflicts = profiles
     .filter((profile) => profileMentionsAdapter(profile) && !previouslyManaged.has(profile.name))
@@ -182,13 +208,13 @@ function ensureDshPluginInstalledUnlocked(paths, options) {
   }
 
   const memoraxCodeCommand = resolveMemoraxCodeCommand(options.memoraxCodeCommand);
-  const dshCommand = resolveDshCommand(options, paths, state);
   atomicWriteJson(join(paths.adapterRoot, ".memorax-code-package.json"), {
     version: 1,
     memoraxCodeCommand,
     memoraxCodeHome: paths.memoraxCodeHome,
     dshHome: paths.dshHome,
     dshCommand,
+    dshVersion: compatibility.dshVersion,
     sourceAdapterRoot: paths.adapterRoot,
   });
 
@@ -203,6 +229,7 @@ function ensureDshPluginInstalledUnlocked(paths, options) {
     adapterRoot: paths.adapterRoot,
     memoraxCodeCommand,
     dshCommand,
+    dshVersion: compatibility.dshVersion,
     // Claim each target before invoking DSH so an interrupted or partially
     // successful native add remains repairable and removable on the next run.
     profiles: profiles.map((profile) => profile.name).sort(),
@@ -261,6 +288,8 @@ function ensureDshPluginInstalledUnlocked(paths, options) {
     enabled,
     managed: true,
     detectedProfiles: profiles.map((profile) => profile.name),
+    dshVersion: compatibility.dshVersion,
+    supportedDshVersions: [...DSH_SUPPORTED_VERSIONS],
     installedProfiles,
     failedProfiles,
     statePath: paths.statePath,
@@ -273,6 +302,15 @@ function activateDshPluginInstallationUnlocked(paths, options) {
   const stateProblem = validateState(state, paths);
   if (stateProblem) return { ...stateProblem, action: "dsh-plugin-activate" };
   if (!state) return notManaged(paths, "dsh-plugin-activate");
+  if (!DSH_SUPPORTED_VERSION_SET.has(state.dshVersion)) {
+    return {
+      ok: false,
+      action: "dsh-plugin-activate",
+      runtime: RUNTIME,
+      reason: "dsh_version_not_verified",
+      statePath: paths.statePath,
+    };
+  }
   const profiles = discoverDshProfiles({ ...options, dshHome: paths.dshHome });
   const profileByName = new Map(profiles.map((profile) => [profile.name, profile]));
   if (state.profiles.length === 0
@@ -431,6 +469,7 @@ function validateState(state, paths) {
     || typeof state.adapterRoot !== "string"
     || typeof state.memoraxCodeCommand !== "string"
     || typeof state.dshCommand !== "string"
+    || (state.dshVersion !== undefined && !nonEmpty(state.dshVersion))
     || !timestampString(state.updatedAt)
     || !Array.isArray(state.profiles)
     || !state.profiles.every(validProfileName)) {
@@ -494,7 +533,9 @@ function runDsh(options, paths, args, command) {
     args: executable.args,
     cwd: paths.adapterRoot,
     env,
-    timeout: options.commandTimeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS,
+    timeout: args.length === 1 && args[0] === "--version"
+      ? options.versionCommandTimeoutMs ?? DSH_VERSION_TIMEOUT_MS
+      : options.commandTimeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS,
   };
   if (typeof options.runDsh === "function") {
     try {
@@ -511,6 +552,38 @@ function runDsh(options, paths, args, command) {
     timeout: invocation.timeout,
     windowsHide: true,
   });
+}
+
+function inspectDshCompatibility(options, paths, command) {
+  const result = runDsh(options, paths, ["--version"], command);
+  if (result.status !== 0 || result.error) {
+    return {
+      compatible: false,
+      reason: "dsh_version_unavailable",
+      supportedDshVersions: [...DSH_SUPPORTED_VERSIONS],
+    };
+  }
+  const output = typeof result.stdout === "string" ? result.stdout.trim() : "";
+  if (!output || output.includes("\n") || output.includes("\r")) {
+    return {
+      compatible: false,
+      reason: "dsh_version_unavailable",
+      supportedDshVersions: [...DSH_SUPPORTED_VERSIONS],
+    };
+  }
+  if (!DSH_SUPPORTED_VERSION_SET.has(output)) {
+    return {
+      compatible: false,
+      reason: "unsupported_dsh_version",
+      dshVersion: output,
+      supportedDshVersions: [...DSH_SUPPORTED_VERSIONS],
+    };
+  }
+  return {
+    compatible: true,
+    dshVersion: output,
+    supportedDshVersions: [...DSH_SUPPORTED_VERSIONS],
+  };
 }
 
 function commandFailure(name, result, contractReason) {

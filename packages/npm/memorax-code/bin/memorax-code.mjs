@@ -221,6 +221,7 @@ async function runDshLifecycle(args) {
           printDshLifecycleFailure("prepare", prepared);
           return 1;
         }
+        if (prepared.skipped === true) printDshLifecycleSkip(prepared);
         const backendCode = await runBackendEntrypointChild("memorax-code.js", args);
         if (backendCode !== 0) return backendCode;
         if (prepared.installed !== true) return 0;
@@ -278,6 +279,14 @@ function hasExplicitClientSelection(args) {
 function printDshLifecycleFailure(operation, report) {
   const reason = typeof report?.reason === "string" ? ` (${report.reason})` : "";
   console.error(`memorax-code: DSH plugin ${operation} failed${reason}`);
+}
+
+function printDshLifecycleSkip(report) {
+  if (report.reason === "unsupported_dsh_version") {
+    console.error(`memorax-code: DSH integration skipped: version ${report.dshVersion ?? "unknown"} is unsupported (supported: ${(report.supportedDshVersions ?? []).join(", ") || "none"})`);
+  } else if (report.reason === "dsh_version_unavailable") {
+    console.error("memorax-code: DSH integration skipped: could not determine the DSH version");
+  }
 }
 
 function shouldStageClientHookRuntime(args) {
