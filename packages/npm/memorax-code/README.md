@@ -1,15 +1,14 @@
 # @memorax/memorax-code
 
-MemoraX Code adds one shared persistent coding memory layer to Codex, Claude
-Code, and DeepSeek Harness (DSH).
+MemoraX Code adds one shared persistent coding memory layer to supported coding
+agent harnesses, including Codex, Claude Code, and DeepSeek Harness (DSH).
 
 ## Requirements
 
 - Node.js 24 or newer and npm.
-- Codex, Claude Code, or DSH `0.1.0-rc.6` exactly.
+- At least one supported coding agent harness.
 - A MemoraX account, Base User ID, and API key for memory features.
 - Python 3 only for Repo Memory operations.
-- `pnpm` on `PATH` when managing the profile-local DSH plugin.
 
 ## Install
 
@@ -22,17 +21,9 @@ npm install -g @memorax/memorax-code --foreground-scripts
 
 Keep `--foreground-scripts` so npm displays the complete setup.
 
-The installer automatically detects Codex and Claude Code plus existing valid
-DSH profiles, then configures every harness it finds. It does not create DSH
-profiles. Follow the prompts to enter your MemoraX Base User ID, preferred
-language, and API key. When Codex is detected, review and approve its Hook
-activation. Other DSH versions' profiles are not reconciled, any existing
-MemoraX DSH authority is disabled, and Codex or Claude Code setup continues.
-
-DSH Search, Add, automatic retrieval, and writeback work in every integrated
-profile. Building or maintaining Repo Memory from DSH additionally requires an
-existing profile that includes `@deepseek-ai/dsh-headless`; initialize that
-profile through DSH, then rerun `memorax-code start`.
+The installer automatically detects supported harnesses and configures every
+one it finds. Follow the prompts to enter your MemoraX Base User ID, preferred
+language, and API key, and complete any harness-native approval it requests.
 
 Entering the MemoraX credentials after the installer's disclosure enables the
 core memory features and automatic writeback. If setup is skipped or cannot
@@ -40,9 +31,7 @@ prompt, the package remains installed, but MemoraX-backed memory is not
 configured.
 
 After the first installation, restart or refresh the detected harnesses before
-opening a new session. In Codex, enable **MemoraX Code Codex Adapter** from
-Plugins or `/plugins` if it is not already enabled. In DSH, invoke the bundled
-skill as `/memorax-code`.
+opening a new session.
 
 ## Verify
 

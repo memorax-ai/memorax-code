@@ -17,8 +17,8 @@ precedence over generated memory or historical context.
   user-facing changes.
 - Treat `.repo_memory/` as local retrieval guidance, not current-code
   authority. It is Git-ignored and must not leak into public artifacts.
-- Use isolated `MEMORAX_CODE_HOME`, `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, and
-  `DSH_HOME` locations for lifecycle, install, migration, or destructive tests.
+- Use isolated `MEMORAX_CODE_HOME`, `CODEX_HOME`, and `CLAUDE_CONFIG_DIR`
+  locations for lifecycle, install, migration, or destructive tests.
 
 ## 2. Architecture Routing
 
@@ -36,22 +36,14 @@ same change, then run the matching verification profile in Section 5.
 
 ## 3. Hook, Session, and Scope Invariants
 
-- Codex and Claude Code Hook commands and DSH Cordis-adapter commands are
-  versioned and client-qualified. Required session, turn, or prompt
-  correlation must be validated at the HTTP boundary; incomplete, conflicting,
-  unknown, or client-inapplicable identities fail closed. DSH is not a Hook
-  bridge.
-- Codex rollout JSONL, Claude Code transcript JSONL, and the exact persisted DSH
-  Session Event Log interval are the only content authorities for their
-  respective automatic writeback. Hook text, local trace, latest-turn guesses,
-  another client's format, or an unverified live-event accumulation are not
-  fallbacks.
-- DSH automatic retrieval and writeback support only non-delegated agent
-  sessions. An ordinary user fork may retain `parentSession` lineage; reject
-  subagent-origin or positive-delegation-depth sessions.
-- Session, turn metadata, operational identity, and trace identity where
-  supported always include the client. Equal native IDs from different clients
-  must remain isolated.
+- Hook commands are versioned and client-qualified. Required session, turn, or
+  prompt correlation must be validated at the HTTP boundary; incomplete,
+  conflicting, unknown, or client-inapplicable identities fail closed.
+- Codex rollout JSONL and Claude Code transcript JSONL are the only content
+  authorities for their respective automatic writeback. Hook text, local
+  trace, latest-turn guesses, or the other client's format are not fallbacks.
+- Session, turn metadata, trace, and operational identity always include the
+  client. Equal native IDs from different clients must remain isolated.
 - A live session is pinned to its resolved workspace and repository scope.
   Linked worktrees of one repository may share repository scope; unrelated
   repositories and genuine non-Git workspaces keep separate local identity.
@@ -67,10 +59,10 @@ same change, then run the matching verification profile in Section 5.
 - Consume turn metadata only after the matching downstream operation is
   accepted. Rejection, missing content, interruption, or concurrent
   replacement must retain or discard metadata with an explicit reason.
-- Backend connection, token, PID, Hook generation, managed adapter state, and
-  lifecycle authority use versioned private records. Cross-process
-  read/modify/write requires bounded locking or equivalent version validation;
-  in-memory serialization is not sufficient.
+- Backend connection, token, PID, Hook generation, and lifecycle authority use
+  versioned private records. Cross-process read/modify/write requires bounded
+  locking or equivalent version validation; in-memory serialization is not
+  sufficient.
 - Keep the default Backend on loopback. External binding requires explicit
   opt-in and authentication.
 
@@ -84,10 +76,9 @@ same change, then run the matching verification profile in Section 5.
   local.
 - Memory Viewer is a content-free local projection, not memory, transcript,
   session, or lifecycle authority.
-- `memorax-code` is the shared user-facing skill. Its canonical Codex source is
-  staged for Codex and materialized for Claude Code and DSH; changes must keep
-  each client's triggers, metadata, references, and resource paths valid
-  without maintaining independent copies.
+- `memorax-code` is the shared user-facing skill. Changes must work in both
+  Codex and Claude Code packaging and must keep triggers, metadata, references,
+  and resource paths valid.
 - Packaged skills must address product users. Do not include maintainer
   runbooks, private paths, unpublished plans, secrets, internal fixtures, or
   local diagnostic artifacts.
@@ -107,12 +98,9 @@ boundaries:
 - **Codex**: `npm test --prefix packages/ts/memorax-code-codex-adapter`.
 - **Claude Code**:
   `npm test --prefix packages/ts/memorax-code-claude-adapter`.
-- **DSH**: `npm test --prefix packages/ts/memorax-code-dsh-adapter`.
-- **DSH package E2E (explicit opt-in)**:
-  `MEMORAX_CODE_DSH_E2E=1 MEMORAX_CODE_DSH_E2E_DSH_ROOT=<checkout> MEMORAX_CODE_DSH_COMMAND=<absolute-dsh-cli> node scripts/dsh-npm-package-e2e.mjs`.
 - **Adapter-common/shared Hook**: `adapter-common` has no standalone suite. Run
-  affected Backend tests and all affected adapter suites; add
-  `make npm-package-check` when staged runtime or package layout changes.
+  affected Backend tests and both adapter suites; add `make npm-package-check`
+  when staged runtime or package layout changes.
 - **Trace/local-only boundary**: for trace, provider, or outbound transport,
   run `make test-npm-package` in addition to affected package tests.
 - **Documentation**: `make docs-check`.

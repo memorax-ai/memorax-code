@@ -43,10 +43,7 @@ and validation sooner.
 ## Quick Start
 
 Prepare Node.js 24+ and at least one supported harness: Codex, Claude Code, or
-DeepSeek Harness. Python 3 is required for Repo Memory operations. DSH profile
-plugin management also requires `pnpm` on `PATH`. This release supports DSH
-`0.1.0-rc.6` exactly; other versions' profiles are not reconciled, any existing
-MemoraX DSH authority is disabled, and Codex or Claude Code setup continues.
+DeepSeek Harness. Python 3 is required for Repo Memory operations.
 
 ### Install and Connect
 
@@ -63,34 +60,25 @@ npm install -g @memorax/memorax-code --foreground-scripts
 ```
 
 Keep `--foreground-scripts` so the complete setup remains visible. The
-installer automatically detects runnable Codex and Claude Code clients plus
-existing valid DSH profiles, then connects every harness it finds. It does not
-create DSH profiles. Follow the prompts to enter your Base User ID, preferred
-language, and API key. Codex users must also approve Hook activation and trust
-when prompted.
+installer automatically detects supported harnesses and connects every one it
+finds. Follow the prompts to enter your Base User ID, preferred language, and
+API key, and complete any harness-native approval it requests.
 
 If setup is skipped or cannot prompt, the package remains installed but
 MemoraX-backed search, retrieval, and writeback remain unavailable.
 
-DSH Search, Add, automatic retrieval, and writeback work in every integrated
-profile. Building or maintaining Repo Memory from DSH additionally requires an
-existing profile that includes `@deepseek-ai/dsh-headless`; initialize that
-profile through DSH, then rerun `memorax-code start`. MemoraX Code never creates
-the profile for you.
-
 ### Try Cross-Session Memory
 
-Clone the example repository from the product website, then open Codex,
-Claude Code, or DSH in the project directory:
+Clone the example repository from the product website, then open a supported
+coding agent in the project directory:
 
 ```bash
 git clone https://github.com/SWE-agent/test-repo.git
 cd test-repo
 ```
 
-Invoke the Skill as `$memorax-code` in Codex or `/memorax-code` in Claude Code
-and DSH. The prompts below use its product name and work in every supported
-harness.
+Invoke the bundled MemoraX Code skill. The prompts below use its product name
+and work in every supported harness.
 
 Send these prompts in order in the same session:
 
@@ -114,9 +102,8 @@ the current repository.
 > The prompts above are only for quick verification. In normal use, you do not
 > need to invoke the MemoraX Code skill to add memory manually. It writes
 > relevant memory in the background and guides agents to search when useful.
-> For Codex and Claude Code, you can view content-free local activity and status
-> in the [Memory Viewer](http://127.0.0.1:8787/memory-viewer). DSH activity is
-> not projected there in this release.
+> Where available, you can view content-free local activity and status in the
+> [Memory Viewer](http://127.0.0.1:8787/memory-viewer).
 
 ## Four Clear Memory Boundaries
 
@@ -135,9 +122,9 @@ the current repository.
 | **Preference continuity** | Records User Profile preferences and injects them into future tasks on a configured cadence. |
 | **Procedure reuse** | Records reusable task procedures and reminds future agents to apply them. |
 | **Background Repo Memory maintenance** | Automatically organizes repository structure, entry points, and history evidence in the background, then updates them according to policy to reduce repeated searching and summarization. |
-| **Active memory control** | Lets you search and add memory through the bundled MemoraX Code skill (`$memorax-code` in Codex or `/memorax-code` in Claude Code and DSH) or the CLI. |
-| **Native harness integration** | Uses Codex and Claude Code Hooks plus DSH's native Cordis events to trigger retrieval and writeback without proxying model traffic. |
-| **Local visualization** | Uses the local Memory Viewer to summarize Codex and Claude Code activity counts, retrieval, and writeback status. DSH activity is not projected there in this release. |
+| **Active memory control** | Lets you search and add memory through the bundled MemoraX Code skill or the CLI. |
+| **Native harness integration** | Uses each supported harness's native extension points to trigger retrieval and writeback without proxying model traffic. |
+| **Local visualization** | Uses the local Memory Viewer to summarize supported local activity, retrieval, and writeback status. |
 
 ## Your Memory, Your Control
 
@@ -167,10 +154,10 @@ For a global npm installation:
 memorax-code update
 ```
 
-The command follows the installed release channel and preserves configuration.
-Restart or refresh every connected harness when a release changes plugin
-assets or skills. `memorax-code update` also reconciles DSH profiles created
-after the original installation.
+The command follows the installed release channel, preserves configuration,
+and reconciles supported harnesses discovered after the original installation.
+Restart or refresh connected harnesses when a release changes plugin assets or
+skills.
 
 ## Uninstall
 
@@ -181,9 +168,9 @@ memorax-code uninstall
 ```
 
 This removes managed integrations and the global package while retaining
-`MEMORAX_CODE_HOME` (default `~/.memorax-code`), Claude and DSH user data,
-provider configuration, and memories stored in MemoraX. Remove retained local
-or cloud data separately only after reviewing what you still need.
+`MEMORAX_CODE_HOME` (default `~/.memorax-code`), harness user data, provider
+configuration, and memories stored in MemoraX. Remove retained local or cloud
+data separately only after reviewing what you still need.
 
 ## Documentation
 
