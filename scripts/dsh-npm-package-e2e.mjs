@@ -21,8 +21,13 @@ import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "no
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const OPT_IN_ENV = "MEMORAX_CODE_DSH_E2E";
+const DSH_SPEC_ENV = "MEMORAX_CODE_DSH_E2E_DSH_SPEC";
 const DSH_ROOT_ENV = "MEMORAX_CODE_DSH_E2E_DSH_ROOT";
 const DSH_COMMAND_ENV = "MEMORAX_CODE_DSH_COMMAND";
+const MEMORAX_TARBALL_ENV = "MEMORAX_CODE_DSH_E2E_MEMORAX_TARBALL";
+const DSH_PACKAGE_NAME = "@deepseek-ai/dsh";
+const DSH_MOCK_PACKAGE_NAME = "@deepseek-ai/dsh-llm-mock-server";
+const PINNED_PNPM_SPEC = "pnpm@11.7.0";
 const RECALL_MARKER = "MEMORAX_DSH_E2E_RECALL_7D49";
 const REASONING_MARKER = "MEMORAX_DSH_E2E_REASONING_B31C";
 const VISIBLE_REPLY = "MEMORAX_DSH_E2E_VISIBLE_REPLY_5A62";
@@ -35,14 +40,27 @@ const COMMAND_TIMEOUT_MS = 120_000;
 const BUILD_TIMEOUT_MS = 300_000;
 const USAGE = `Usage:
   ${OPT_IN_ENV}=1 \\
+  ${DSH_SPEC_ENV}=@deepseek-ai/dsh@<exact-version> \\
+    node scripts/dsh-npm-package-e2e.mjs
+
+Source-checkout fallback:
+  ${OPT_IN_ENV}=1 \\
   ${DSH_ROOT_ENV}=/path/to/deepseek-harness \\
   ${DSH_COMMAND_ENV}=/path/to/dsh \\
     node scripts/dsh-npm-package-e2e.mjs
 
-Runs an isolated npm-package E2E against a real DeepSeek Harness checkout.
+Optional:
+  ${MEMORAX_TARBALL_ENV}=/absolute/path/to/memorax-code.tgz
+
+Runs an isolated npm-package E2E against an exact npm DSH release or a matching
+DSH source checkout and CLI. Registry mode also installs the matching published
+LLM mock package and the E2E-pinned pnpm version into the isolated
+npm prefix; it never uses a floating dist-tag or the host pnpm installation.
 The test starts real DSH, Cordis, persistence, and MemoraX Code Backend code;
 only the DeepSeek-compatible LLM endpoint and MemoraX HTTP endpoint are mocked.
-Run pnpm run build in a source checkout before using its apps/cli/lib/bin.js.
+Without ${MEMORAX_TARBALL_ENV}, the MemoraX Code package is built from this
+checkout. Run pnpm run build in a DSH source checkout before using its
+apps/cli/lib/bin.js.
 `;
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -71,22 +89,7 @@ async function main() {
   if (process.env[OPT_IN_ENV] !== "1") {
     throw new Error(`${OPT_IN_ENV}=1 is required; this real-client E2E never runs by default\n\n${USAGE}`);
   }
-
-  const dshRoot = await requiredDirectory(DSH_ROOT_ENV);
-  const dshCommand = await requiredExecutable(DSH_COMMAND_ENV);
-  const dshManifest = await readJson(join(dshRoot, "apps/cli/package.json"));
-  assert.equal(dshManifest?.name, "@deepseek-ai/dsh", `${DSH_ROOT_ENV} does not contain the DSH CLI source`);
-  const sourceDshCommand = join(dshRoot, "apps/cli/lib/bin.js");
-  if (await exists(sourceDshCommand) && dshCommand === await realpath(sourceDshCommand)) {
-    for (const path of [
-      join(dshRoot, "packages/typert/registry/lib/index.js"),
-      join(dshRoot, "packages/api/gateway/lib/index.js"),
-    ]) await assertFile(path, "run pnpm run build in the DSH source checkout before this E2E");
-  }
-  const mockLlmModulePath = join(dshRoot, "packages/test-support/llm-mock-server/lib/index.js");
-  await assertFile(mockLlmModulePath, "build the DSH mock LLM package before running this E2E");
-  const { startMockLlmServer } = await import(pathToFileURL(mockLlmModulePath).href);
-  assert.equal(typeof startMockLlmServer, "function", "DSH mock LLM module does not export startMockLlmServer");
+  const dshRequest = requestedDshHarness();
 
   isolatedRoot = await mkdtemp(join(tmpdir(), "memorax-code-dsh-npm-e2e-"));
   const home = join(isolatedRoot, "home");
@@ -112,7 +115,30 @@ async function main() {
   ].map((path) => mkdir(path, { recursive: true })));
   await writeFile(npmUserConfig, "", "utf8");
   await writeFile(join(workspace, "README.md"), "# isolated DSH E2E workspace\n", "utf8");
-  await run("git", ["init", "--quiet"], { cwd: workspace, env: sanitizedEnvironment() });
+  const isolatedEnv = {
+    ...sanitizedEnvironment(),
+    HOME: home,
+    CODEX_HOME: codexHome,
+    CLAUDE_CONFIG_DIR: claudeHome,
+    CLAUDE_HOME: claudeHome,
+    DSH_HOME: dshHome,
+    NPM_CONFIG_PREFIX: npmPrefix,
+    NPM_CONFIG_CACHE: npmCache,
+    NPM_CONFIG_USERCONFIG: npmUserConfig,
+    NPM_CONFIG_UPDATE_NOTIFIER: "false",
+    NPM_CONFIG_FUND: "false",
+    NPM_CONFIG_AUDIT: "false",
+    PATH: `${npmBinDirectory(npmPrefix)}${delimiter}${process.env.PATH ?? ""}`,
+  };
+  await run("git", ["init", "--quiet"], { cwd: workspace, env: isolatedEnv });
+
+  const dsh = await resolveDshHarness(dshRequest, {
+    env: isolatedEnv,
+    npmPrefix,
+    workspace,
+  });
+  const { startMockLlmServer } = await import(pathToFileURL(dsh.mockLlmModulePath).href);
+  assert.equal(typeof startMockLlmServer, "function", "DSH mock LLM module does not export startMockLlmServer");
 
   llmServer = await startMockLlmServer({
     sequence: ["tool_call_success", "reasoning_success"],
@@ -127,21 +153,10 @@ async function main() {
   const backendPort = await reserveFreePort();
 
   runtimeEnv = {
-    ...sanitizedEnvironment(),
-    HOME: home,
-    CODEX_HOME: codexHome,
-    CLAUDE_CONFIG_DIR: claudeHome,
-    CLAUDE_HOME: claudeHome,
-    DSH_HOME: dshHome,
-    NPM_CONFIG_PREFIX: npmPrefix,
-    NPM_CONFIG_CACHE: npmCache,
-    NPM_CONFIG_USERCONFIG: npmUserConfig,
-    NPM_CONFIG_UPDATE_NOTIFIER: "false",
-    NPM_CONFIG_FUND: "false",
-    NPM_CONFIG_AUDIT: "false",
+    ...isolatedEnv,
     MEMORAX_CODE_HOME: memoraxCodeHome,
     MEMORAX_CODE_BACKEND_PORT: String(backendPort),
-    MEMORAX_CODE_DSH_COMMAND: dshCommand,
+    MEMORAX_CODE_DSH_COMMAND: dsh.command,
     MEMORAX_CODE_SKIP_CODEX_PLUGIN_INSTALL: "1",
     MEMORAX_CODE_SKIP_CLAUDE_ADAPTER_INSTALL: "1",
     MEMORAX_CODE_MEMORAX_ENDPOINT: memoraxServer.baseUrl,
@@ -157,11 +172,10 @@ async function main() {
     DEEPSEEK_API_KEY,
     DSH_TELEMETRY_DISABLED: "1",
     DSH_PERMISSION_MODE: "danger-full-access",
-    PATH: `${join(npmPrefix, "bin")}${delimiter}${process.env.PATH ?? ""}`,
   };
 
   progress("initializing an isolated real DSH headless profile");
-  await run(dshCommand, ["--profile", "headless", "--dump-default-config"], {
+  await run(dsh.command, ["--profile", "headless", "--dump-default-config"], {
     cwd: workspace,
     env: runtimeEnv,
   });
@@ -177,29 +191,11 @@ async function main() {
     "",
   ].join("\n"), "utf8");
 
-  const stageName = `dsh-npm-e2e-${process.pid}-${randomUUID().replaceAll("-", "")}`;
-  const stageRelative = join("dist", stageName);
-  stageRoot = join(repoRoot, stageRelative);
-  assertWithin(join(repoRoot, "dist"), stageRoot, "npm staging directory");
-  progress("building and packing the real MemoraX Code npm package");
-  await run(join(repoRoot, "scripts/build-npm-packages.sh"), [stageRelative], {
-    cwd: repoRoot,
+  const memoraxPackage = await prepareMemoraxPackage({
     env: runtimeEnv,
-    timeoutMs: BUILD_TIMEOUT_MS,
-  });
-  const pack = await run("npm", [
-    "pack",
-    join(stageRoot, "memorax-code"),
-    "--pack-destination",
     tarballRoot,
-    "--json",
-  ], { cwd: workspace, env: runtimeEnv });
-  const packReport = JSON.parse(pack.stdout);
-  assert.equal(Array.isArray(packReport), true, "npm pack did not return an array report");
-  assert.equal(packReport.length, 1, "npm pack must produce exactly one tarball");
-  assert.equal(packReport[0]?.name, "@memorax/memorax-code");
-  const tarball = join(tarballRoot, requiredString(packReport[0]?.filename, "npm pack filename"));
-  await assertFile(tarball);
+    workspace,
+  });
 
   progress("installing the tarball with real npm lifecycle scripts");
   await run("npm", [
@@ -207,7 +203,7 @@ async function main() {
     "-g",
     "--prefix",
     npmPrefix,
-    tarball,
+    memoraxPackage.tarball,
     "--foreground-scripts",
     "--loglevel",
     "warn",
@@ -243,7 +239,7 @@ async function main() {
 
   progress("running the first real DSH agent Turn through retrieval, skill, and writeback");
   const firstLlmStart = llmServer.requests.length;
-  await runHeadless(dshCommand, workspace, runtimeEnv, FIRST_PROMPT);
+  await runHeadless(dsh.command, workspace, runtimeEnv, FIRST_PROMPT);
   await waitFor(() => memoraxRequests("/v1/memories/add").length >= 1, "first MemoraX Add");
   const firstLlmRequests = llmServer.requests.slice(firstLlmStart);
   assert.ok(firstLlmRequests.length >= 2, "the first Turn did not complete its skill tool round trip");
@@ -268,7 +264,7 @@ async function main() {
   backendPid = restartedPid;
 
   const secondLlmStart = llmServer.requests.length;
-  await runHeadless(dshCommand, workspace, runtimeEnv, SECOND_PROMPT);
+  await runHeadless(dsh.command, workspace, runtimeEnv, SECOND_PROMPT);
   await waitFor(() => memoraxRequests("/v1/memories/add").length >= 2, "second MemoraX Add");
   const secondLlmRequests = llmServer.requests.slice(secondLlmStart);
   assert.ok(secondLlmRequests.length >= 1, "the restarted DSH process made no model request");
@@ -278,7 +274,7 @@ async function main() {
   assert.notEqual(secondSession.id, firstSession.id, "a new DSH process reused the first session");
 
   progress("creating a later DSH profile and reconciling it with memorax-code start");
-  await run(dshCommand, ["--profile", "web", "--dump-default-config"], {
+  await run(dsh.command, ["--profile", "web", "--dump-default-config"], {
     cwd: workspace,
     env: runtimeEnv,
   });
@@ -300,7 +296,7 @@ async function main() {
   await assertProfileNotIntegrated(headlessProfile);
   await assertProfileNotIntegrated(webProfile);
 
-  await runHeadless(dshCommand, workspace, runtimeEnv, STOPPED_PROMPT);
+  await runHeadless(dsh.command, workspace, runtimeEnv, STOPPED_PROMPT);
   await new Promise((resolveDelay) => setTimeout(resolveDelay, 300));
   assert.equal(memoraxServer.requests.length, requestsBeforeStop, "DSH emitted MemoraX traffic after stop");
   assert.equal(await exists(backendStatePath), false, "DSH revived the Backend after stop");
@@ -320,7 +316,11 @@ async function main() {
 
   process.stdout.write(`${JSON.stringify({
     ok: true,
-    dshVersion: dshManifest.version,
+    dshDistribution: dsh.distribution,
+    dshVersion: dsh.version,
+    ...(dsh.requestedVersion ? { requestedDshVersion: dsh.requestedVersion } : {}),
+    ...(dsh.pnpmVersion ? { pnpmVersion: dsh.pnpmVersion } : {}),
+    memoraxPackageSource: memoraxPackage.source,
     npmPackageInstalledByPostinstall: true,
     firstTurnSkillRoundTrip: true,
     exactWritebackMessages: true,
@@ -333,6 +333,169 @@ async function main() {
     memoraxSearches: memoraxRequests("/v1/memories/search").length,
     memoraxAdds: memoraxRequests("/v1/memories/add").length,
   }, null, 2)}\n`);
+}
+
+async function prepareMemoraxPackage(options) {
+  const supplied = optionalString(process.env[MEMORAX_TARBALL_ENV]);
+  if (supplied) {
+    const tarball = await requiredFilePath(supplied, MEMORAX_TARBALL_ENV);
+    assert.match(tarball, /\.tgz$/, `${MEMORAX_TARBALL_ENV} must name an npm .tgz package`);
+    progress(`using the prebuilt MemoraX Code tarball ${tarball}`);
+    return { source: "prebuilt-tarball", tarball };
+  }
+
+  const stageName = `dsh-npm-e2e-${process.pid}-${randomUUID().replaceAll("-", "")}`;
+  const stageRelative = join("dist", stageName);
+  stageRoot = join(repoRoot, stageRelative);
+  assertWithin(join(repoRoot, "dist"), stageRoot, "npm staging directory");
+  progress("building and packing the real MemoraX Code npm package");
+  await run(join(repoRoot, "scripts/build-npm-packages.sh"), [stageRelative], {
+    cwd: repoRoot,
+    env: options.env,
+    timeoutMs: BUILD_TIMEOUT_MS,
+  });
+  const pack = await run("npm", [
+    "pack",
+    join(stageRoot, "memorax-code"),
+    "--pack-destination",
+    options.tarballRoot,
+    "--json",
+  ], {
+    cwd: options.workspace,
+    env: options.env,
+    timeoutMs: BUILD_TIMEOUT_MS,
+  });
+  const packReport = JSON.parse(pack.stdout);
+  assert.equal(Array.isArray(packReport), true, "npm pack did not return an array report");
+  assert.equal(packReport.length, 1, "npm pack must produce exactly one tarball");
+  assert.equal(packReport[0]?.name, "@memorax/memorax-code");
+  const tarball = join(
+    options.tarballRoot,
+    requiredString(packReport[0]?.filename, "npm pack filename"),
+  );
+  await assertFile(tarball);
+  return { source: "checkout-build", tarball };
+}
+
+function requestedDshHarness() {
+  const spec = optionalString(process.env[DSH_SPEC_ENV]);
+  const root = optionalString(process.env[DSH_ROOT_ENV]);
+  const command = optionalString(process.env[DSH_COMMAND_ENV]);
+  if (spec) {
+    if (root || command) {
+      fail(`${DSH_SPEC_ENV} cannot be combined with ${DSH_ROOT_ENV} or ${DSH_COMMAND_ENV}`);
+    }
+    const requestedVersion = exactDshVersion(spec);
+    if (!requestedVersion) {
+      fail(`${DSH_SPEC_ENV} must be ${DSH_PACKAGE_NAME}@<exact-version>; ranges and dist-tags are not accepted`);
+    }
+    return { distribution: "npm", spec, requestedVersion };
+  }
+  if (!root || !command) {
+    fail(`set ${DSH_SPEC_ENV}, or set both ${DSH_ROOT_ENV} and ${DSH_COMMAND_ENV}`);
+  }
+  return { distribution: "source" };
+}
+
+async function resolveDshHarness(request, options) {
+  if (request.distribution === "npm") {
+    return resolveNpmDshHarness(request, options);
+  }
+  const dshRoot = await requiredDirectory(DSH_ROOT_ENV);
+  const dshCommand = await requiredExecutable(DSH_COMMAND_ENV);
+  const dshManifest = await readJson(join(dshRoot, "apps/cli/package.json"));
+  assert.equal(dshManifest?.name, DSH_PACKAGE_NAME, `${DSH_ROOT_ENV} does not contain the DSH CLI source`);
+  const sourceDshCommand = join(dshRoot, "apps/cli/lib/bin.js");
+  if (await exists(sourceDshCommand) && dshCommand === await realpath(sourceDshCommand)) {
+    for (const path of [
+      join(dshRoot, "packages/typert/registry/lib/index.js"),
+      join(dshRoot, "packages/api/gateway/lib/index.js"),
+    ]) await assertFile(path, "run pnpm run build in the DSH source checkout before this E2E");
+  }
+  const version = await commandVersion(dshCommand, options);
+  assert.equal(version, dshManifest.version, "DSH source manifest and CLI versions differ");
+  const mockLlmModulePath = join(dshRoot, "packages/test-support/llm-mock-server/lib/index.js");
+  await assertFile(mockLlmModulePath, "build the DSH mock LLM package before running this E2E");
+  return {
+    command: dshCommand,
+    distribution: "source",
+    mockLlmModulePath,
+    version,
+  };
+}
+
+async function resolveNpmDshHarness(request, options) {
+  progress(`installing ${request.spec}, its matching LLM mock, and ${PINNED_PNPM_SPEC}`);
+  await run("npm", [
+    "install",
+    "-g",
+    "--prefix",
+    options.npmPrefix,
+    request.spec,
+    `${DSH_MOCK_PACKAGE_NAME}@${request.requestedVersion}`,
+    PINNED_PNPM_SPEC,
+    "--foreground-scripts",
+    "--loglevel",
+    "warn",
+  ], {
+    cwd: options.workspace,
+    env: options.env,
+    timeoutMs: BUILD_TIMEOUT_MS,
+  });
+
+  const dshRoot = await installedGlobalPackageRoot(options.npmPrefix, DSH_PACKAGE_NAME);
+  const dshManifest = await readJson(join(dshRoot, "package.json"));
+  assert.equal(dshManifest?.name, DSH_PACKAGE_NAME);
+  assert.equal(dshManifest?.version, request.requestedVersion, "installed DSH version differs from the requested version");
+  const dshCommand = await requiredExecutablePath(globalBinPath(options.npmPrefix, "dsh"), "installed DSH CLI");
+  const version = await commandVersion(dshCommand, options);
+  assert.equal(version, request.requestedVersion, "installed DSH manifest and CLI versions differ");
+
+  const mockRoot = await installedGlobalPackageRoot(options.npmPrefix, DSH_MOCK_PACKAGE_NAME);
+  const mockManifest = await readJson(join(mockRoot, "package.json"));
+  assert.equal(mockManifest?.name, DSH_MOCK_PACKAGE_NAME);
+  assert.equal(mockManifest?.version, version, "DSH and its LLM mock package versions differ");
+  const mockLlmModulePath = join(mockRoot, "lib", "index.js");
+  await assertFile(mockLlmModulePath);
+
+  const pnpmCommand = await requiredExecutablePath(globalBinPath(options.npmPrefix, "pnpm"), "isolated pnpm CLI");
+  const pnpmVersion = await commandVersion(pnpmCommand, options);
+  assert.equal(pnpmVersion, PINNED_PNPM_SPEC.slice("pnpm@".length));
+  return {
+    command: dshCommand,
+    distribution: "npm",
+    mockLlmModulePath,
+    pnpmVersion,
+    requestedVersion: request.requestedVersion,
+    version,
+  };
+}
+
+async function commandVersion(command, options) {
+  const result = await run(command, ["--version"], {
+    cwd: options.workspace,
+    env: options.env,
+  });
+  const version = requiredString(result.stdout, `${commandLabel(command)} --version`).trim();
+  assert.equal(version.includes("\n"), false, `${commandLabel(command)} --version returned multiple lines`);
+  return version;
+}
+
+function exactDshVersion(spec) {
+  const prefix = `${DSH_PACKAGE_NAME}@`;
+  if (!spec.startsWith(prefix)) return undefined;
+  const version = spec.slice(prefix.length);
+  return /^\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.test(version)
+    ? version
+    : undefined;
+}
+
+function npmBinDirectory(prefix) {
+  return process.platform === "win32" ? prefix : join(prefix, "bin");
+}
+
+function globalBinPath(prefix, name) {
+  return join(npmBinDirectory(prefix), process.platform === "win32" ? `${name}.cmd` : name);
 }
 
 async function runHeadless(command, cwd, env, prompt) {
@@ -506,13 +669,18 @@ function memoraxRequests(path) {
 }
 
 async function installedPackageRoot(prefix) {
+  return installedGlobalPackageRoot(prefix, "@memorax/memorax-code");
+}
+
+async function installedGlobalPackageRoot(prefix, packageName) {
+  const packagePath = packageName.split("/");
   for (const path of [
-    join(prefix, "lib", "node_modules", "@memorax", "memorax-code"),
-    join(prefix, "node_modules", "@memorax", "memorax-code"),
+    join(prefix, "lib", "node_modules", ...packagePath),
+    join(prefix, "node_modules", ...packagePath),
   ]) {
     if (await exists(join(path, "package.json"))) return path;
   }
-  throw new Error("npm did not install @memorax/memorax-code under the isolated prefix");
+  throw new Error(`npm did not install ${packageName} under the isolated prefix`);
 }
 
 async function reserveFreePort() {
@@ -609,9 +777,19 @@ async function requiredDirectory(name) {
 
 async function requiredExecutable(name) {
   const value = requiredString(process.env[name], name);
+  return requiredExecutablePath(value, name);
+}
+
+async function requiredFilePath(value, label) {
+  const path = await realpath(resolve(value));
+  assert.equal((await stat(path)).isFile(), true, `${label} is not a file`);
+  return path;
+}
+
+async function requiredExecutablePath(value, label) {
   const path = await realpath(resolve(value));
   await access(path, process.platform === "win32" ? fsConstants.F_OK : fsConstants.X_OK);
-  assert.equal((await stat(path)).isFile(), true, `${name} is not a file`);
+  assert.equal((await stat(path)).isFile(), true, `${label} is not a file`);
   return path;
 }
 
@@ -634,6 +812,10 @@ async function readJson(path) {
 function requiredString(value, label) {
   assert.ok(typeof value === "string" && value.trim(), `${label} is required`);
   return value.trim();
+}
+
+function optionalString(value) {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
 function assertIncludesJson(value, marker, label) {
