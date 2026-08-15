@@ -1,0 +1,3 @@
+- insert:
+    - id: memorax-code
+      name: '@memorax-code/dsh-adapter'

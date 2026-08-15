@@ -1,0 +1,27 @@
+{
+  "name": "@memorax-code/dsh-adapter",
+  "version": "0.1.2",
+  "private": true,
+  "type": "module",
+  "description": "DeepSeek Harness native memory adapter for MemoraX Code.",
+  "main": "src/index.mjs",
+  "exports": {
+    ".": "./src/index.mjs"
+  },
+  "files": [
+    ".memorax-code-package.json",
+    "cordis.patch.yml",
+    "hooks",
+    "src",
+    "skills",
+    "memorax-code-adapter-common/src"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  }
+}

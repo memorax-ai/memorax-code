@@ -9,6 +9,10 @@ import {
   type ClaudeMemoryHookRuntimeOptions,
   type ClaudeMemoryHookWritebackResult,
 } from "../clients/claude/memory-hook-runtime.js";
+import {
+  createDshMemoryHookRuntime,
+  type DshMemoryHookWritebackResult,
+} from "../clients/dsh/memory-hook-runtime.js";
 import { createMemoryTurnCoordinator } from "./turn-coordinator.js";
 import {
   createRepositoryMemorySessionRuntime,
@@ -26,7 +30,8 @@ export type MemoryServiceOptions = Omit<
 
 type MemoryHookWritebackResult =
   | CodexMemoryHookWritebackResult
-  | ClaudeMemoryHookWritebackResult;
+  | ClaudeMemoryHookWritebackResult
+  | DshMemoryHookWritebackResult;
 
 export type MemoryService = {
   recordTurnStart(command: TurnStartCommand): Promise<MemoryHookTurnStartResult>;
@@ -59,6 +64,11 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
     repositoryMemorySession,
     turnCoordinator,
   });
+  const dshHook = createDshMemoryHookRuntime({
+    ...options,
+    repositoryMemorySession,
+    turnCoordinator,
+  });
   let closed = false;
   return {
     async recordTurnStart(command) {
@@ -67,6 +77,8 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
           return await codexHook.recordTurnStart(command);
         case "claude-code":
           return await claudeHook.recordTurnStart(command);
+        case "dsh":
+          return await dshHook.recordTurnStart(command);
       }
       return unsupportedMemoryHookCommand(command);
     },
@@ -76,6 +88,8 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
           return await codexHook.writeback(command);
         case "claude-code":
           return await claudeHook.writeback(command);
+        case "dsh":
+          return await dshHook.writeback(command);
       }
       return unsupportedMemoryHookCommand(command);
     },
@@ -87,6 +101,7 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
       closed = true;
       codexHook.close();
       claudeHook.close();
+      dshHook.close();
       turnCoordinator.close();
       repositoryMemorySession.close();
       automaticWriteback.close();

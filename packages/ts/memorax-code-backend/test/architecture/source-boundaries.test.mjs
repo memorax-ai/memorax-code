@@ -40,6 +40,8 @@ const rules = [
       "clients/claude/memory-hook-runtime.ts",
       "clients/claude/transcript-turn.ts",
       "clients/codex/memory-hook-runtime.ts",
+      "clients/dsh/memory-hook-runtime.ts",
+      "clients/dsh/session-turn.ts",
       "memory/turn-coordinator.ts",
       "memory/service.ts",
       "memory/writeback-buffer.ts",
@@ -59,6 +61,7 @@ const rules = [
       "memory/automatic-writeback.ts",
       "clients/claude/memory-hook-runtime.ts",
       "clients/codex/memory-hook-runtime.ts",
+      "clients/dsh/memory-hook-runtime.ts",
       "provider/memorax/adapter.ts",
       "memory/turn-coordinator.ts",
       "memory/service.ts",
@@ -77,7 +80,12 @@ const rules = [
   },
   {
     name: "Hook memory runtimes use normalized automatic writeback",
-    importers: ["clients/claude/memory-hook-runtime.ts", "clients/codex/memory-hook-runtime.ts", "memory/turn-coordinator.ts"],
+    importers: [
+      "clients/claude/memory-hook-runtime.ts",
+      "clients/codex/memory-hook-runtime.ts",
+      "clients/dsh/memory-hook-runtime.ts",
+      "memory/turn-coordinator.ts",
+    ],
     forbidden: ["memory/writeback"],
   },
   {
@@ -91,9 +99,23 @@ const rules = [
     forbidden: ["node:http", "server-", "entrypoints/", "transport/http/", "app/state"],
   },
   {
+    name: "DSH memory hook runtime stays independent from HTTP and Backend composition",
+    importers: ["clients/dsh/memory-hook-runtime.ts", "clients/dsh/session-turn.ts"],
+    forbidden: ["node:http", "server-", "entrypoints/", "transport/http/", "app/state"],
+  },
+  {
     name: "memory turn coordinator stays independent from HTTP, Backend composition, and client transcripts",
     importers: ["memory/turn-coordinator.ts"],
-    forbidden: ["node:http", "server-", "entrypoints/", "transport/http/", "app/state", "clients/codex/rollout", "clients/claude/"],
+    forbidden: [
+      "node:http",
+      "server-",
+      "entrypoints/",
+      "transport/http/",
+      "app/state",
+      "clients/codex/rollout",
+      "clients/claude/",
+      "clients/dsh/",
+    ],
   },
   {
     name: "writeback reconciliation stays independent from HTTP, Backend composition, and Viewer models",
