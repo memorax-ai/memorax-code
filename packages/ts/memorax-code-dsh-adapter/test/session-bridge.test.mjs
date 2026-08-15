@@ -916,3 +916,59 @@ async function flushMicrotasks() {
     await new Promise((resolve) => setImmediate(resolve));
   }
 }
+test("a late turn-start response cannot inject context after turn/end", async () => {
+  let releaseTurnStart;
+  const dispatched = [];
+  const bridge = createSessionBridge({
+    dispatch: (path, body) => {
+      dispatched.push({ path, body });
+      if (path === "/memory/turn-start") {
+        return new Promise((resolve) => { releaseTurnStart = resolve; });
+      }
+      return Promise.resolve({ ok: true, body: { ok: true } });
+    },
+    debug: () => {},
+  });
+
+  const sess = session("session-late-response");
+  bridge.onSessionCreated(sess);
+  bridge.onSessionEvent(sess, { type: "turn/start", data: { turn: 0 } });
+  bridge.onSessionEvent(sess, { type: "user/message", data: textMessage("query") });
+  bridge.onSessionEvent(sess, { type: "assistant/message", data: assistantData("reply") });
+  bridge.onSessionEvent(sess, { type: "turn/end", data: { turn: 0, reason: { kind: "completed" } } });
+
+  // The turn is over; only now does the turn-start response arrive carrying
+  // retrieval context for the finished turn.
+  await flushMicrotasks();
+  assert.equal(typeof releaseTurnStart, "function", "turn-start dispatch must have been issued");
+  releaseTurnStart({ ok: true, body: { ok: true, additionalContext: "stale context" } });
+  for (let i = 0; i < 10; i++) await Promise.resolve();
+  await flushMicrotasks();
+
+  assert.equal(bridge.takePendingContext("session-late-response"), undefined,
+    "a response for a finished turn must not land in pendingContext");
+});
+
+test("an out-of-order user message keeps its text when turn/start arrives late", async () => {
+  const dispatched = [];
+  const bridge = createSessionBridge({
+    dispatch: (path, body) => {
+      dispatched.push({ path, body });
+      return Promise.resolve({ ok: true, body: { ok: true } });
+    },
+    debug: () => {},
+  });
+
+  const sess = session("session-out-of-order");
+  bridge.onSessionCreated(sess);
+  // The first user message arrives BEFORE the turn/start event, so the bridge
+  // has text but no turn id to dispatch with.
+  bridge.onSessionEvent(sess, { type: "user/message", data: textMessage("early bird text") });
+  // Now the turn id arrives for the same turn.
+  bridge.onSessionEvent(sess, { type: "turn/start", data: { turn: 0 } });
+  await flushMicrotasks();
+
+  const turnStart = dispatched.find((entry) => entry.path === "/memory/turn-start");
+  assert.ok(turnStart, "the carried text must be dispatched once the turn id is known");
+  assert.equal(turnStart.body.prompt, "early bird text");
+});

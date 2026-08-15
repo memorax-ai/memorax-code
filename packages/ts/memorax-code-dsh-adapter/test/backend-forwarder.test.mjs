@@ -163,3 +163,28 @@ test("createBackendForwarder returns a forward function bound to the connection"
   assert.equal(result.body.additionalContext, "ctx");
   assert.equal(received[0].client, "dsh");
 });
+
+test("a 2xx without a JSON body is a failure, not a silent success", async (t) => {
+  // The session bridge reads body.ok/scheduled/reason from the parsed payload;
+  // an empty or malformed body must surface as a dispatch failure instead of
+  // being reported as an accepted turn-start/writeback.
+  for (const raw of ["", "not json at all", "\"just a string\"", "42"]) {
+    const server = createServer((req, res) => {
+      req.resume();
+      req.on("end", () => {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(raw);
+      });
+    });
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address();
+    t.after(() => new Promise((resolve) => server.close(resolve)));
+
+    await assert.rejects(
+      postBackend("/memory/turn-start", { version: 1 }, {
+        backendUrl: `http://127.0.0.1:${port}`,
+      }),
+      (error) => error instanceof DshBackendError && error.code === DSH_BACKEND_HTTP_ERROR,
+    );
+  }
+});

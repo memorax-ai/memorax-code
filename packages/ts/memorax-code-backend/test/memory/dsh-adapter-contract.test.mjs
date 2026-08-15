@@ -147,3 +147,69 @@ test("adapter authority record matches the adapter-common authority record shape
     return { connection, issues };
   }
 });
+
+test("Backend result envelopes carry the exact fields the adapter consumes", async (t) => {
+  // The adapter reads additionalContext (session-bridge), scheduled/reason
+  // (writeback skip), and discarded (turn-discard) straight off Backend
+  // response bodies. Both sides define those names independently, and a
+  // rename would fail silently — this test runs the real Backend runtime and
+  // pins the response keys against the adapter's consumption.
+  const { createDshMemoryHookRuntime } = await import("../../dist/clients/dsh/memory-hook-runtime.js");
+  const { mkdtempSync, rmSync, readFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+
+  const home = mkdtempSync(join(tmpdir(), "dsh-contract-envelope-"));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const runtime = createDshMemoryHookRuntime({
+    memoraxCodeHome: home,
+    env: {
+      MEMORAX_CODE_HOME: home,
+      MEMORAX_CODE_DSH_TRACE_ENABLED: "false",
+      MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED: "false",
+      MEMORAX_CODE_MEMORY_WRITEBACK_ENABLED: "false",
+    },
+  });
+  t.after(() => runtime.close());
+
+  const turnStart = await runtime.recordTurnStart({
+    version: BACKEND_COMMAND_VERSION, client: "dsh",
+    sessionId: "contract-envelope", turnId: "dsh-0-0", prompt: "hello", cwd: "/repo",
+  });
+  assert.equal(turnStart.ok, true);
+  assert.ok(!("additionalContext" in turnStart) || typeof turnStart.additionalContext === "string",
+    "turn-start responses expose additionalContext as a string when present");
+
+  const writeback = await runtime.writeback({
+    version: BACKEND_COMMAND_VERSION, client: "dsh",
+    sessionId: "contract-envelope", turnId: "dsh-0-0",
+    userText: "hello", assistantText: "world", cwd: "/repo",
+  });
+  assert.equal(writeback.ok, true);
+  assert.equal(writeback.scheduled, false);
+  assert.equal(typeof writeback.reason, "string",
+    "skipped writebacks must carry the reason field the adapter debug-logs");
+
+  const discard = await runtime.discardTurn({
+    version: BACKEND_COMMAND_VERSION, client: "dsh",
+    sessionId: "contract-envelope", turnId: "dsh-0-0",
+  });
+  assert.equal(discard.ok, true);
+  assert.equal(typeof discard.discarded, "boolean",
+    "turn-discard responses must carry the discarded field the adapter debug-logs");
+});
+
+test("both sides hardcode the same Backend token header name", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const TOKEN_HEADER = "x-memorax-code-backend-token";
+  const adapterSource = await readFile(
+    new URL("../../../memorax-code-dsh-adapter/src/backend-forwarder.mjs", import.meta.url), "utf8",
+  );
+  const backendSource = await readFile(
+    new URL("../../src/transport/http/request.ts", import.meta.url), "utf8",
+  );
+  assert.ok(adapterSource.includes(TOKEN_HEADER),
+    "the adapter must still send the token header the Backend expects");
+  assert.ok(backendSource.includes(TOKEN_HEADER),
+    "the Backend must still accept the token header the adapter sends");
+});

@@ -12,10 +12,13 @@ const BASE_COMMAND_KEYS = [
   "cwd",
   "workspaceKind",
 ] as const;
+// DSH deliberately accepts NO transcriptPath in any command: DSH turns are
+// inline text and have no transcript file, so a client-supplied path would be
+// an unbacked "trusted provenance" string injected into local trace records.
 const TURN_START_KEYS: Readonly<Record<MemoryHookClient, ReadonlySet<string>>> = {
   codex: new Set([...BASE_COMMAND_KEYS, "turnId", "prompt", "transcriptPath"]),
   "claude-code": new Set([...BASE_COMMAND_KEYS, "promptId", "prompt", "transcriptPath"]),
-  dsh: new Set([...BASE_COMMAND_KEYS, "turnId", "prompt", "transcriptPath"]),
+  dsh: new Set([...BASE_COMMAND_KEYS, "turnId", "prompt"]),
 };
 const WRITEBACK_KEYS: Readonly<Record<MemoryHookClient, ReadonlySet<string>>> = {
   codex: new Set([...BASE_COMMAND_KEYS, "turnId", "lastAssistantMessage", "transcriptPath"]),
@@ -30,7 +33,6 @@ const WRITEBACK_KEYS: Readonly<Record<MemoryHookClient, ReadonlySet<string>>> = 
     "turnId",
     "userText",
     "assistantText",
-    "transcriptPath",
   ]),
 };
 const TURN_DISCARD_KEYS: Readonly<Record<MemoryHookClient, ReadonlySet<string>>> = {
@@ -66,7 +68,6 @@ export type ClaudeTurnStartCommand = MemoryHookCommandBase<"claude-code"> & Read
 export type DshTurnStartCommand = MemoryHookCommandBase<"dsh"> & Readonly<{
   turnId: string;
   prompt: string;
-  transcriptPath?: string;
 }>;
 
 export type TurnStartCommand = CodexTurnStartCommand | ClaudeTurnStartCommand | DshTurnStartCommand;
@@ -99,7 +100,6 @@ export type DshWritebackCommand = MemoryHookCommandBase<"dsh"> & Readonly<{
   turnId: string;
   userText: string;
   assistantText: string;
-  transcriptPath?: string;
 }>;
 
 export type WritebackCommand = CodexWritebackCommand | ClaudeWritebackCommand | DshWritebackCommand;
@@ -160,8 +160,7 @@ export function parseTurnStartCommand(
   }
   if (base.client === "dsh") {
     const turnId = requiredStringField(value, "turnId");
-    const transcriptPath = optionalStringField(value, "transcriptPath");
-    if (!turnId || !transcriptPath.ok) return invalidCommand();
+    if (!turnId) return invalidCommand();
     return {
       ok: true,
       command: {
@@ -169,7 +168,6 @@ export function parseTurnStartCommand(
         client: "dsh",
         turnId,
         prompt,
-        ...(transcriptPath.value ? { transcriptPath: transcriptPath.value } : {}),
       },
     };
   }
@@ -215,8 +213,7 @@ export function parseWritebackCommand(
     const turnId = requiredStringField(value, "turnId");
     const userText = requiredStringField(value, "userText");
     const assistantText = requiredStringField(value, "assistantText");
-    const transcriptPath = optionalStringField(value, "transcriptPath");
-    if (!turnId || !userText || !assistantText || !transcriptPath.ok) return invalidCommand();
+    if (!turnId || !userText || !assistantText) return invalidCommand();
     return {
       ok: true,
       command: {
@@ -225,7 +222,6 @@ export function parseWritebackCommand(
         turnId,
         userText,
         assistantText,
-        ...(transcriptPath.value ? { transcriptPath: transcriptPath.value } : {}),
       },
     };
   }

@@ -65,6 +65,13 @@ export function createSessionBridge({ dispatch, debug = () => {} }) {
       pendingContext.delete(sessionId);
       pendingRetrieval.delete(sessionId);
       sessionIncarnations.set(sessionId, generation);
+      // Long-lived DSH processes see one session per task; keep the
+      // incarnation table bounded or it grows without limit.
+      while (sessionIncarnations.size > 512) {
+        const oldest = sessionIncarnations.keys().next().value;
+        if (oldest === undefined) break;
+        sessionIncarnations.delete(oldest);
+      }
       sessions.set(sessionId, {
         sessionId,
         cwd,
@@ -96,14 +103,30 @@ export function createSessionBridge({ dispatch, debug = () => {} }) {
             // Backend, permanently losing that turn's writeback.
             break;
           }
+          // Any turn-start response still in flight belongs to a turn that is
+          // no longer current; bump the generation so it cannot resolve into
+          // pendingContext for whatever turn comes next.
+          state.generation += 1;
+          // Out-of-order events: the first user/message arrived BEFORE this
+          // turn/start, accumulated text, and could not dispatch (no turn id
+          // yet). Keep that text instead of dropping the turn's first prompt.
+          const carryUndispatchedText = previousTurn === undefined
+            && previousTurnStarted
+            && state.userText !== undefined;
           state.turn = nextTurn;
-          state.userText = undefined;
-          state.assistantText = undefined;
-          state.turnStarted = false;
+          if (!carryUndispatchedText) {
+            state.userText = undefined;
+            state.assistantText = undefined;
+            state.turnStarted = false;
+          }
           pendingContext.delete(state.sessionId);
           pendingRetrieval.delete(state.sessionId);
           if (previousTurn !== undefined && previousTurnStarted) {
             dispatchTurnDiscard(state, previousTurn);
+          }
+          if (carryUndispatchedText) {
+            state.turnStarted = false;
+            dispatchTurnStart(state);
           }
           break;
         }
@@ -207,6 +230,10 @@ export function createSessionBridge({ dispatch, debug = () => {} }) {
     state.userText = undefined;
     state.assistantText = undefined;
     state.turnStarted = false;
+    // The turn is over: a turn-start response still in flight for it must not
+    // resolve into pendingContext afterwards (it would leak the finished
+    // turn's retrieval context into an unrelated later LLM call).
+    state.generation += 1;
     if (turn === undefined) return;
     if (turnEndCompleted(data)) {
       if (!userText || !assistantText) {
@@ -226,12 +253,15 @@ export function createSessionBridge({ dispatch, debug = () => {} }) {
     const deferred = createDeferred();
     pendingRetrieval.set(state.sessionId, deferred);
     void enqueue(state, () => dispatch(MEMORY_HOOK_PATHS.turnStart, body)).then((result) => {
-      if (state.disposed || state.generation !== generation) {
+      // Transport failures are always reported, even when the turn already
+      // ended: swallowing them behind the generation guard would hide real
+      // Backend outages behind ordinary fast-failing turns.
+      if (!result?.ok) {
+        debug("turn-start dispatch rejected", resultFailureMessage(result));
         deferred.resolve(undefined);
         return;
       }
-      if (!result?.ok) {
-        debug("turn-start dispatch rejected", resultFailureMessage(result));
+      if (state.disposed || state.generation !== generation) {
         deferred.resolve(undefined);
         return;
       }
@@ -402,6 +432,12 @@ function boundedWait(promise, timeoutMs) {
 }
 
 function nonNegativeInteger(value, fallback) {
+  // Number(null), Number("") and Number([]) all coerce to 0, which would
+  // alias a malformed turn id / firstLiveSeq to turn 0; only genuine numbers
+  // or non-empty numeric strings may coerce.
+  if (value === null || value === "" || typeof value === "boolean" || typeof value === "object") {
+    return fallback;
+  }
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed >= 0 ? parsed : fallback;
 }

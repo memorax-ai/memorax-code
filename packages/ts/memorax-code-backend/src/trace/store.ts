@@ -76,6 +76,18 @@ export type TraceCurrentTurnOptions = Readonly<{
   expectedSessionId?: string;
   allowStale?: boolean;
   now?: () => Date;
+  // When present the current-turn record pins the started prompt as a
+  // sha256 plus its character length. The DSH writeback recovery path
+  // verifies the writeback userText against this attestation: the hash keeps
+  // the prompt out of the trace file while still allowing the same
+  // prefix-match semantics as the in-memory coordinator check
+  // (exact prompt, or prompt + MESSAGE_JOIN_DELIMITER + further messages).
+  promptAttestation?: TracePromptAttestation;
+}>;
+
+export type TracePromptAttestation = Readonly<{
+  sha256: string;
+  chars: number;
 }>;
 
 export type CodexCurrentTurnOptions = Omit<TraceCurrentTurnOptions, "client">;
@@ -207,14 +219,16 @@ export async function writeCurrentTraceTurn(
   if (!traceContext?.sessionId) return { written: false, reason: "missing_trace_context" };
   const paths = clientTracePaths(client, memoraxCodeHome);
   const capturedAt = (options.now?.() ?? new Date()).toISOString();
-  const record = `${JSON.stringify({
+  const record = `${JSON.stringify(pruneRecord({
     schema_version: "1",
     turn_state: "open",
+    prompt_sha256: options.promptAttestation?.sha256,
+    prompt_chars: options.promptAttestation?.chars,
     trace: traceContextJson({
       ...traceContext,
       capturedAt,
     }),
-  }, null, 2)}\n`;
+  }), null, 2)}\n`;
   await mkdir(paths.root, { recursive: true });
   await mkdir(paths.sessionDir(traceContext.sessionId), { recursive: true });
   await Promise.all([
@@ -251,12 +265,12 @@ export async function writeCurrentDshTurn(
 export async function readCurrentTraceTurn(
   options: TraceCurrentTurnReadOptions,
 ): Promise<
-  | { ok: true; traceContext: TraceContext }
+  | { ok: true; traceContext: TraceContext; promptAttestation?: TracePromptAttestation }
   | { ok: false; reason: "disabled" | "missing" | "invalid" | "stale" | "session_mismatch" }
 > {
   const current = await readCurrentTraceTurnRecord(options);
   return current.ok
-    ? { ok: true, traceContext: current.traceContext }
+    ? { ok: true, traceContext: current.traceContext, promptAttestation: current.promptAttestation }
     : current;
 }
 
@@ -290,7 +304,7 @@ export async function readCurrentDshTurn(
 export async function readOpenTraceTurn(
   options: TraceCurrentTurnReadOptions,
 ): Promise<
-  | { ok: true; traceContext: TraceContext }
+  | { ok: true; traceContext: TraceContext; promptAttestation?: TracePromptAttestation }
   | { ok: false; reason: "disabled" | "missing" | "invalid" | "stale" | "session_mismatch" }
   | { ok: false; reason: "closed"; outcome: TraceTurnOutcome }
 > {
@@ -299,13 +313,17 @@ export async function readOpenTraceTurn(
   if (current.turnState !== "open") {
     return { ok: false, reason: "closed", outcome: current.turnState };
   }
-  return { ok: true, traceContext: current.traceContext };
+  return {
+    ok: true,
+    traceContext: current.traceContext,
+    promptAttestation: current.promptAttestation,
+  };
 }
 
 export async function readOpenCodexTurn(
   options: CodexCurrentTurnOptions = {},
 ): Promise<
-  | { ok: true; traceContext: TraceContext }
+  | { ok: true; traceContext: TraceContext; promptAttestation?: TracePromptAttestation }
   | { ok: false; reason: "disabled" | "missing" | "invalid" | "stale" | "session_mismatch" }
   | { ok: false; reason: "closed"; outcome: CodexTurnOutcome }
 > {
@@ -315,7 +333,7 @@ export async function readOpenCodexTurn(
 export async function readOpenClaudeTurn(
   options: ClaudeCurrentTurnOptions = {},
 ): Promise<
-  | { ok: true; traceContext: TraceContext }
+  | { ok: true; traceContext: TraceContext; promptAttestation?: TracePromptAttestation }
   | { ok: false; reason: "disabled" | "missing" | "invalid" | "stale" | "session_mismatch" }
   | { ok: false; reason: "closed"; outcome: TraceTurnOutcome }
 > {
@@ -325,7 +343,7 @@ export async function readOpenClaudeTurn(
 export async function readOpenDshTurn(
   options: DshCurrentTurnOptions = {},
 ): Promise<
-  | { ok: true; traceContext: TraceContext }
+  | { ok: true; traceContext: TraceContext; promptAttestation?: TracePromptAttestation }
   | { ok: false; reason: "disabled" | "missing" | "invalid" | "stale" | "session_mismatch" }
   | { ok: false; reason: "closed"; outcome: DshTurnOutcome }
 > {
@@ -387,7 +405,7 @@ export async function markCurrentDshTurnOutcome(
 async function readCurrentTraceTurnRecord(
   options: TraceCurrentTurnReadOptions,
 ): Promise<
-  | { ok: true; traceContext: TraceContext; turnState: TraceCurrentTurnState }
+  | { ok: true; traceContext: TraceContext; turnState: TraceCurrentTurnState; promptAttestation?: TracePromptAttestation }
   | { ok: false; reason: "disabled" | "missing" | "invalid" | "stale" | "session_mismatch" }
 > {
   const client = options.client;
@@ -441,7 +459,7 @@ async function readCurrentTraceTurnPath(
   allowStale: boolean,
   expectedClient: TraceClient,
 ): Promise<
-  | { ok: true; traceContext: TraceContext; turnState: TraceCurrentTurnState }
+  | { ok: true; traceContext: TraceContext; turnState: TraceCurrentTurnState; promptAttestation?: TracePromptAttestation }
   | { ok: false; reason: "missing" | "invalid" | "stale" }
 > {
   let raw: unknown;
@@ -464,6 +482,25 @@ async function readCurrentTraceTurnPath(
     ok: true,
     traceContext,
     turnState,
+    promptAttestation: promptAttestationFromRecord(raw),
+  };
+}
+
+function promptAttestationFromRecord(raw: Record<string, unknown>): TracePromptAttestation | undefined {
+  const sha256 = normalizedString(raw.prompt_sha256);
+  const chars = Number(raw.prompt_chars);
+  // Both fields must be present and well-formed together; a record carrying
+  // only one of them (hand-edited or torn write) attests nothing.
+  if (!sha256 || !/^[0-9a-f]{64}$/.test(sha256) || !Number.isInteger(chars) || chars < 0) {
+    return undefined;
+  }
+  return { sha256, chars };
+}
+
+export function tracePromptAttestation(prompt: string): TracePromptAttestation {
+  return {
+    sha256: createHash("sha256").update(prompt).digest("hex"),
+    chars: prompt.length,
   };
 }
 

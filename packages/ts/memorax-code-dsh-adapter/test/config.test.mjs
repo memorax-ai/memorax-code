@@ -263,6 +263,44 @@ test("an invalid token record warns, yields no token, and keeps the authority UR
   }
 });
 
+test("an invalid rotatedAt rejects the token record like the canonical reader", () => {
+  const home = tempHome();
+  try {
+    writeAuthority(home, { version: 1, url: "http://127.0.0.1:9001", tokenPath: backendTokenPath(home) });
+
+    // Codex round 8, config.mjs:180 — a present-but-invalid rotatedAt must
+    // reject the whole record. Accepting it here would make this mirror trust
+    // a token file adapter-common's readBackendTokenRecord refuses.
+    writeToken(home, { version: 1, token: "t", createdAt: "2026-01-01T00:00:00.000Z", rotatedAt: "not-a-date" });
+    const issues = [];
+    const rejected = resolveBackendConnection({}, { MEMORAX_CODE_HOME: home }, {
+      onAuthorityIssue: (reason) => issues.push(reason),
+    });
+    assert.equal(rejected.backendUrl, "http://127.0.0.1:9001");
+    assert.equal(rejected.token, undefined);
+    assert.equal(rejected.tokenSource, "none");
+    assert.equal(issues.length, 1);
+    assert.match(issues[0], /rotatedAt/);
+
+    // A well-formed rotatedAt (token rotation happened) keeps the record valid.
+    writeToken(home, {
+      version: 1,
+      token: "rotated",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      rotatedAt: "2026-02-01T00:00:00.000Z",
+    });
+    const rotated = resolveBackendConnection({}, { MEMORAX_CODE_HOME: home }, {
+      onAuthorityIssue: (reason) => issues.push(reason),
+    });
+    assert.equal(rotated.backendUrl, "http://127.0.0.1:9001");
+    assert.equal(rotated.token, "rotated");
+    assert.equal(rotated.tokenSource, "authority-file");
+    assert.equal(issues.length, 1, "a valid rotatedAt must not report an issue");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test("an environment token overrides the authority token", () => {
   const home = tempHome();
   try {
@@ -285,4 +323,33 @@ test("cordis bundle patch timeoutMs matches the adapter default", () => {
   const match = /^\s*timeoutMs:\s*(\d+)\s*$/m.exec(patch);
   assert.ok(match, "cordis.patch.yml must declare a timeoutMs config default");
   assert.equal(Number(match[1]), DEFAULT_TIMEOUT_MS);
+});
+
+test("the persisted token follows a configured URL that equals the authority URL", () => {
+  const home = tempHome();
+  try {
+    // Canonical adapter-common semantics: the managed token is attached when
+    // the SELECTED url equals the authority url, regardless of which source
+    // (config/env/authority) produced it. Gating on the source would drop the
+    // token and 401 every request for a user who configured the identical URL.
+    writeAuthority(home, { version: 1, url: "http://127.0.0.1:9001", tokenPath: backendTokenPath(home) });
+    writeToken(home, { version: 1, token: "managed-token", createdAt: "2026-01-01T00:00:00.000Z" });
+
+    const connection = resolveBackendConnection({ backendUrl: "http://127.0.0.1:9001" }, {
+      MEMORAX_CODE_HOME: home,
+    });
+    assert.equal(connection.backendUrl, "http://127.0.0.1:9001");
+    assert.equal(connection.urlSource, "config");
+    assert.equal(connection.token, "managed-token");
+    assert.equal(connection.tokenSource, "authority-file");
+
+    // A configured URL that is NOT the authority URL still gets no token.
+    const other = resolveBackendConnection({ backendUrl: "http://127.0.0.1:9999" }, {
+      MEMORAX_CODE_HOME: home,
+    });
+    assert.equal(other.token, undefined);
+    assert.equal(other.tokenSource, "none");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
 });

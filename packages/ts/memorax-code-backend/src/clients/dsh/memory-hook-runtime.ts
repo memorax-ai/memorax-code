@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { retrieveAutomaticMemoryContext } from "../../memory/automatic-retrieval.js";
 import {
   createAutomaticMemoryWritebackRuntime,
@@ -30,9 +31,11 @@ import {
   markCurrentDshTurnOutcome,
   readOpenDshTurn,
   recordDshTraceEvent,
+  tracePromptAttestation,
   traceTurnEventId,
   writeCurrentDshTurn,
   type DshTurnOutcome,
+  type TracePromptAttestation,
 } from "../../trace/store.js";
 
 type DshMemoryHookTurnStart = Omit<DshTurnStartCommand, "version" | "client"> & {
@@ -85,6 +88,17 @@ export type DshMemoryHookRuntime = {
 
 const DSH_MEMORY_TURN_CLIENT = "dsh" as const;
 
+// The coordinator entry is only read with allowStale: true on the recovery
+// path, which skips the 30-minute current-turn TTL entirely. A recovery is a
+// crash/restart fallback, not an indefinite replay credential, so it still
+// gets its own (much wider) hard deadline.
+export const DSH_TURN_RECOVERY_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+// Upper bound for the in-memory recovery tombstones below; a cap keeps a
+// pathological session from growing the map without bound. Oldest entries are
+// evicted first (Map iteration order is insertion order).
+const RECOVERED_TURN_TOMBSTONE_LIMIT = 512;
+
 export function createDshMemoryHookRuntime(
   options: DshMemoryHookRuntimeOptions = {},
 ): DshMemoryHookRuntime {
@@ -113,6 +127,13 @@ export function createDshMemoryHookRuntime(
   const automaticRetrievalTurns = new Set<string>();
   const automaticRetrievalTurnLimit = positiveInteger(options.maxEntries, 256);
   const writebackLocks = new Map<string, Promise<unknown>>();
+  // Recovery writebacks leave no coordinator entry behind (there was none to
+  // consume), so their only durable replay gate is closing the on-disk
+  // attestation — which is best-effort and can fail silently (disk full,
+  // permissions, one of the two record files). This in-memory tombstone set is
+  // the second gate: a turn recovered once in this process is never accepted
+  // through the recovery path again.
+  const recoveredTurnCompletions = new Map<string, number>();
 
   async function materializeDshTurn(
     coordinatorKey: ReturnType<typeof dshTurnKey>,
@@ -121,6 +142,8 @@ export function createDshMemoryHookRuntime(
     const entry = turnCoordinator.getTurn(coordinatorKey);
     let metadata: MemoryTurnState | undefined = entry;
     let metadataSource: "coordinator" | "current_turn_trace" = "coordinator";
+    let attestedTraceContext: TraceContext | undefined = entry?.traceContext;
+    let recoveryKey: string | undefined;
     if (entry) {
       if (entry.prompt !== undefined && !dshPromptMatches(entry.prompt, request.userText)) {
         options.diagnosticLogger?.("dsh_memory_hook.writeback", {
@@ -137,14 +160,29 @@ export function createDshMemoryHookRuntime(
       // current-turn trace written at turn-start still attests that this exact
       // session/turn reached an accepted turn-start. Recover the writeback
       // from that attestation instead of silently dropping it.
+      const recoveryKeyForCheck = recoveredTurnKey(request.sessionId, request.turnId);
+      if (recoveredTurnCompletions.has(recoveryKeyForCheck)) {
+        // This exact turn was already recovered (and scheduled) once in this
+        // process: the attestation close is best-effort, so the tombstone is
+        // what makes a replayed recovery writeback fail closed.
+        options.diagnosticLogger?.("dsh_memory_hook.writeback", {
+          scheduled: false,
+          reason: "turn_metadata_missing",
+          metadataSource: "current_turn_trace",
+          replayedRecovery: true,
+          sessionId: request.sessionId,
+          turnId: request.turnId,
+        });
+        return skipped("turn_metadata_missing");
+      }
       const attestation = await readOpenDshTurn({
         memoraxCodeHome: options.memoraxCodeHome,
         env: options.env,
         expectedSessionId: request.sessionId,
         allowStale: true,
       });
-      const attested = attestation.ok && attestation.traceContext.turnId === request.turnId;
-      if (!attested) {
+      recoveryKey = recoveredTurnKey(request.sessionId, request.turnId);
+      if (!attestation.ok || attestation.traceContext.turnId !== request.turnId) {
         options.diagnosticLogger?.("dsh_memory_hook.writeback", {
           scheduled: false,
           reason: "turn_metadata_missing",
@@ -153,19 +191,68 @@ export function createDshMemoryHookRuntime(
         });
         return skipped("turn_metadata_missing");
       }
+      // allowStale skips the current-turn TTL, so enforce the recovery window
+      // here: an attestation older than DSH_TURN_RECOVERY_WINDOW_MS (or one
+      // whose capturedAt cannot be parsed) is not a valid writeback credential.
+      const capturedAtMs = Date.parse(attestation.traceContext.capturedAt);
+      if (!Number.isFinite(capturedAtMs) || now() - capturedAtMs > DSH_TURN_RECOVERY_WINDOW_MS) {
+        options.diagnosticLogger?.("dsh_memory_hook.writeback", {
+          scheduled: false,
+          reason: "turn_metadata_missing",
+          metadataSource: "current_turn_trace",
+          attestationExpired: true,
+          sessionId: request.sessionId,
+          turnId: request.turnId,
+        });
+        return skipped("turn_metadata_missing");
+      }
+      // Without an attested cwd there is nothing to bind the recovered turn's
+      // repository scope to, and the fallback would be the writeback request's
+      // self-reported cwd — the exact trust hole the attestation exists to
+      // close. Refuse the recovery instead.
+      if (!attestation.traceContext.cwd) {
+        options.diagnosticLogger?.("dsh_memory_hook.writeback", {
+          scheduled: false,
+          reason: "turn_metadata_missing",
+          metadataSource: "current_turn_trace",
+          attestedCwdMissing: true,
+          sessionId: request.sessionId,
+          turnId: request.turnId,
+        });
+        return skipped("turn_metadata_missing");
+      }
+      // The attestation is only a valid writeback credential when it also pins
+      // the started prompt. Without this check the recovery path would accept
+      // any userText for an attested turnId; records that predate the
+      // prompt attestation field (or carry a torn record) fail closed here.
+      if (!attestation.promptAttestation
+        || !attestedPromptMatches(attestation.promptAttestation, request.userText)) {
+        options.diagnosticLogger?.("dsh_memory_hook.writeback", {
+          scheduled: false,
+          reason: "prompt_mismatch",
+          metadataSource: "current_turn_trace",
+          sessionId: request.sessionId,
+          turnId: request.turnId,
+        });
+        return skipped("prompt_mismatch");
+      }
+      attestedTraceContext = attestation.traceContext;
       metadata = undefined;
       metadataSource = "current_turn_trace";
     }
-    const traceContext = traceContextForWriteback(request, entry);
-    await recordDshTurnEnd(options, traceContext, request.assistantText);
+    // Repository binding comes from what turn-start attested (coordinator
+    // entry first, then the trace attestation). The writeback request's own
+    // cwd is only a last-resort fallback: a later request must not be able to
+    // re-bind an already-started turn to an unrelated workspace.
+    const traceContext = traceContextForWriteback(request, entry, attestedTraceContext);
     const writeback = await turnCoordinator.completeMaterializedTurn({
       key: coordinatorKey,
       metadata,
       resolveRepositoryMemory: () => resolveCurrentHookRepositoryMemory(
-        entry,
         request,
         options,
         repositoryMemorySession,
+        attestedTraceContext,
       ),
       userText: request.userText,
       assistantText: request.assistantText,
@@ -180,6 +267,11 @@ export function createDshMemoryHookRuntime(
       },
     });
     if (!writeback.scheduled) {
+      // The writeback was not accepted. Deliberately keep the current-turn
+      // attestation OPEN: closing it here would turn a transient rejection
+      // (for example a disabled writeback config) into a permanent one,
+      // because the retry could no longer recover the turn after the
+      // coordinator entry is gone.
       options.diagnosticLogger?.("dsh_memory_hook.writeback", {
         scheduled: false,
         reason: writeback.reason,
@@ -189,6 +281,13 @@ export function createDshMemoryHookRuntime(
         turnId: request.turnId,
       });
       return skipped(writeback.reason);
+    }
+    await recordDshTurnEnd(options, traceContext, request.assistantText);
+    if (metadataSource === "current_turn_trace" && recoveryKey !== undefined) {
+      // No coordinator entry existed to consume, so the (best-effort)
+      // attestation close above is the only durable gate against replaying
+      // this exact writeback. Tombstone the turn in memory as well.
+      rememberRecoveredCompletion(recoveredTurnCompletions, recoveryKey, now());
     }
     options.diagnosticLogger?.("dsh_memory_hook.writeback", {
       scheduled: true,
@@ -230,6 +329,17 @@ export function createDshMemoryHookRuntime(
             turnId: turn.turnId,
             previousCreatedAt: existing.createdAt,
           });
+          // The replaced incarnation already claimed automatic retrieval under
+          // this (sessionId, turnId). Release the claim so the new prompt can
+          // claim it again; without this the self-healed turn would silently
+          // lose its retrieval context while the stale claim rots in the set.
+          releaseAutomaticRetrievalTurn(automaticRetrievalTurns, turn.sessionId, turn.turnId);
+          // Close the replaced incarnation's attestation before overwriting
+          // it: the new turn's current-turn write below is best-effort, and if
+          // it fails the OPEN record would still vouch for the OLD prompt —
+          // letting a writeback carrying the old prompt through the recovery
+          // path after an eviction/restart.
+          await recordDshTurnInterrupted(options, existing.traceContext);
           turnCoordinator.discardTurn(coordinatorKey, "rolled_back");
         } else {
           return { ok: true, fresh: false };
@@ -243,7 +353,6 @@ export function createDshMemoryHookRuntime(
       clientTurnId: turn.turnId,
       cwd: turn.cwd,
       workspaceKind: turn.workspaceKind,
-      transcriptPath: turn.transcriptPath,
       prompt: turn.prompt,
       createdAt: turn.createdAt,
       traceContext: turn.traceContext,
@@ -257,7 +366,29 @@ export function createDshMemoryHookRuntime(
     command: DshTurnDiscardCommand,
   ): Promise<MemoryHookTurnDiscardResult> {
     const entry = turnCoordinator.getTurn(key);
-    if (!entry) return { ok: true, discarded: false };
+    if (!entry) {
+      // The coordinator entry is gone (Backend restart or cap eviction), but
+      // the on-disk attestation may still be OPEN for this exact turn. Close
+      // it now: an open attestation for a discarded turn would let a delayed
+      // or replayed writeback pass the recovery check and write a turn the
+      // client explicitly abandoned.
+      const attestation = await readOpenDshTurn({
+        memoraxCodeHome: options.memoraxCodeHome,
+        env: options.env,
+        expectedSessionId: command.sessionId,
+        allowStale: true,
+      });
+      if (attestation.ok && attestation.traceContext.turnId === command.turnId) {
+        await recordDshTurnInterrupted(options, attestation.traceContext);
+        releaseAutomaticRetrievalTurn(automaticRetrievalTurns, command.sessionId, command.turnId);
+        options.diagnosticLogger?.("dsh_memory_hook.turn_discarded", {
+          sessionId: command.sessionId,
+          turnId: command.turnId,
+          metadataSource: "current_turn_trace",
+        });
+      }
+      return { ok: true, discarded: false };
+    }
     await recordDshTurnInterrupted(options, entry.traceContext);
     turnCoordinator.discardTurn(key, "interrupted");
     releaseAutomaticRetrievalTurn(automaticRetrievalTurns, command.sessionId, command.turnId);
@@ -292,6 +423,7 @@ export function createDshMemoryHookRuntime(
       );
       if (!materialized.fresh) return { ok: true };
       const { repositoryMemory, repoMemoryWorktree } = materialized;
+      const promptAttestation = tracePromptAttestation(turn.prompt);
       options.diagnosticLogger?.("dsh_memory_hook.turn_start", {
         sessionId: turn.sessionId,
         turnId: turn.turnId,
@@ -300,29 +432,51 @@ export function createDshMemoryHookRuntime(
         workspace: repositoryMemory.ok ? repositoryMemory.memory.scope?.repositorySlug : undefined,
         workspaceScopeReason: repositoryMemory.ok ? undefined : repositoryMemory.reason,
       });
-      await recordTraceBestEffort("dsh_memory_hook.turn_start_event", recordDshTraceEvent({
-        eventId: traceTurnEventId(turn.traceContext, "turn_start"),
-        memoraxCodeHome: options.memoraxCodeHome,
-        env: options.env,
-        traceContext: turn.traceContext,
-        type: "turn_start",
-        source: "unknown",
-        operation: "query",
-        ok: true,
-        request: {
-          prompt: turn.prompt,
-          cwd: turn.cwd,
-          transcriptPath: turn.transcriptPath,
-        },
-      }), options.diagnosticLogger);
-      await recordTraceBestEffort("dsh_memory_hook.current_turn_write", writeCurrentDshTurn(
-        turn.traceContext,
-        {
+      // Both trace writes share the turn's serialization lock with
+      // materializeTurnStart / writeback / discard. Writing them unlocked
+      // allowed this race: ESC-discard runs mark(turn) against a record that
+      // has not been written yet, then the turn-start write lands afterwards
+      // and leaves an OPEN attestation for a turn that was already discarded.
+      await runSerialized(writebackLocks, dshTurnLockKey(coordinatorKey), async () => {
+        await recordTraceBestEffort("dsh_memory_hook.turn_start_event", recordDshTraceEvent({
+          eventId: traceTurnEventId(turn.traceContext, "turn_start"),
           memoraxCodeHome: options.memoraxCodeHome,
           env: options.env,
-          now: () => new Date(now()),
-        },
-      ), options.diagnosticLogger);
+          traceContext: turn.traceContext,
+          type: "turn_start",
+          source: "unknown",
+          operation: "query",
+          ok: true,
+          request: {
+            // Hash only, never the prompt text: with the default
+            // captureContent=true the event file would otherwise store the
+            // plaintext right next to the hashed attestation, destroying the
+            // secret the recovery path's prompt check relies on.
+            promptChars: promptAttestation.chars,
+            promptSha256: promptAttestation.sha256,
+            cwd: turn.cwd,
+          },
+        }), options.diagnosticLogger);
+        await recordTraceBestEffort("dsh_memory_hook.current_turn_write", writeCurrentDshTurn(
+          turn.traceContext,
+          {
+            memoraxCodeHome: options.memoraxCodeHome,
+            env: options.env,
+            now: () => new Date(now()),
+            // Pin the started prompt so the writeback recovery path can verify
+            // the userText it is asked to schedule (hash only: the trace file
+            // never receives the prompt itself).
+            promptAttestation,
+          },
+        ), options.diagnosticLogger);
+        if (!turnCoordinator.getTurn(coordinatorKey)) {
+          // A concurrent discard won the lock between materializeTurnStart and
+          // this write: the entry is gone but the attestation we just wrote is
+          // OPEN. Close it now instead of leaving a replay credential for an
+          // abandoned turn.
+          await recordDshTurnInterrupted(options, turn.traceContext);
+        }
+      });
       if (!claimAutomaticRetrievalTurn(
         automaticRetrievalTurns,
         automaticRetrievalTurnLimit,
@@ -404,16 +558,18 @@ async function resolveHookRepositoryMemory(
 }
 
 async function resolveCurrentHookRepositoryMemory(
-  entry: MemoryTurnState | undefined,
   request: DshMemoryHookWritebackRequest,
   options: DshMemoryHookRuntimeOptions,
   repositoryMemorySession: RepositoryMemorySessionRuntime,
+  attestedTraceContext: TraceContext | undefined,
 ): Promise<ConfiguredRepositoryMemoryResult> {
   return await repositoryMemorySession.resolve({
     client: DSH_MEMORY_TURN_CLIENT,
     sessionId: request.sessionId,
-    workspaceRoot: request.cwd ?? entry?.cwd,
-    workspaceKind: request.workspaceKind ?? entry?.workspaceKind,
+    // The cwd/workspaceKind attested at turn-start win over the writeback
+    // request: a writeback cannot re-bind the turn to another workspace.
+    workspaceRoot: attestedTraceContext?.cwd ?? request.cwd,
+    workspaceKind: attestedTraceContext?.workspaceKind ?? request.workspaceKind,
     memoraxCodeHome: options.memoraxCodeHome ?? options.env?.MEMORAX_CODE_HOME,
     env: options.env,
   });
@@ -428,7 +584,6 @@ function turnStartFromCommand(
     turnId: command.turnId,
     cwd: command.cwd,
     workspaceKind: command.workspaceKind,
-    transcriptPath: command.transcriptPath,
     prompt: command.prompt,
     createdAt,
     traceContext: traceContextFromDshHookBody({
@@ -436,7 +591,6 @@ function turnStartFromCommand(
       turnId: command.turnId,
       cwd: command.cwd,
       workspaceKind: command.workspaceKind,
-      transcriptPath: command.transcriptPath,
     }, new Date(createdAt).toISOString()),
   };
 }
@@ -451,13 +605,11 @@ function writebackRequestFromCommand(
     assistantText: command.assistantText,
     cwd: command.cwd,
     workspaceKind: command.workspaceKind,
-    transcriptPath: command.transcriptPath,
     traceContext: traceContextFromDshHookBody({
       sessionId: command.sessionId,
       turnId: command.turnId,
       cwd: command.cwd,
       workspaceKind: command.workspaceKind,
-      transcriptPath: command.transcriptPath,
     }),
   };
 }
@@ -483,7 +635,7 @@ async function recordDshTurnEnd(
       assistantMessage: assistantText,
     },
   }), options.diagnosticLogger);
-  await recordTraceBestEffort("dsh_memory_hook.current_turn_close", markCurrentDshTurnOutcome(
+  const closed = await recordTraceBestEffort("dsh_memory_hook.current_turn_close", markCurrentDshTurnOutcome(
     traceContext,
     outcome,
     {
@@ -491,6 +643,33 @@ async function recordDshTurnEnd(
       env: options.env,
     },
   ), options.diagnosticLogger);
+  if (closed && !closed.updated) {
+    // The attestation was not closed (not_current_turn / record missing), and
+    // recordTraceBestEffort would have swallowed this silently. After a
+    // recovery writeback this is the replay gate failing — surface it.
+    options.diagnosticLogger?.("dsh_memory_hook.current_turn_close_missed", {
+      reason: closed.reason,
+      turnId: traceContext?.turnId,
+    });
+  }
+}
+
+function recoveredTurnKey(sessionId: string, turnId: string): string {
+  return JSON.stringify([sessionId, turnId]);
+}
+
+function rememberRecoveredCompletion(
+  tombstones: Map<string, number>,
+  key: string,
+  timestamp: number,
+): void {
+  tombstones.delete(key);
+  tombstones.set(key, timestamp);
+  while (tombstones.size > RECOVERED_TURN_TOMBSTONE_LIMIT) {
+    const oldest = tombstones.keys().next().value;
+    if (typeof oldest !== "string") return;
+    tombstones.delete(oldest);
+  }
 }
 
 async function recordDshTurnInterrupted(
@@ -521,15 +700,19 @@ async function recordDshTurnInterrupted(
 function traceContextForWriteback(
   request: DshMemoryHookWritebackRequest,
   entry: MemoryTurnState | undefined,
+  attestedTraceContext: TraceContext | undefined,
 ): TraceContext | undefined {
-  if (!entry?.traceContext) return request.traceContext;
-  if (!request.traceContext) return entry.traceContext;
+  // The context recorded at turn-start is the turn's canonical provenance;
+  // the writeback request may only fill fields the attestation lacks.
+  const base = entry?.traceContext ?? attestedTraceContext;
+  if (!base) return request.traceContext;
+  if (!request.traceContext) return base;
   return {
-    ...entry.traceContext,
     ...request.traceContext,
-    transcriptPath: request.traceContext.transcriptPath ?? entry.traceContext.transcriptPath,
-    cwd: request.traceContext.cwd ?? entry.traceContext.cwd,
-    workspaceKind: request.traceContext.workspaceKind ?? entry.traceContext.workspaceKind,
+    ...base,
+    transcriptPath: base.transcriptPath ?? request.traceContext.transcriptPath,
+    cwd: base.cwd ?? request.traceContext.cwd,
+    workspaceKind: base.workspaceKind ?? request.traceContext.workspaceKind,
   };
 }
 
@@ -571,6 +754,26 @@ function dshPromptMatches(startedPrompt: string, userText: string): boolean {
   if (userText === startedPrompt) return true;
   if (!startedPrompt) return false;
   return userText.startsWith(startedPrompt + PROMPT_DELIMITER);
+}
+
+// Hash-based mirror of dshPromptMatches for the trace-recovery path: the
+// current-turn record stores only sha256(prompt) and prompt.length, never the
+// prompt itself. The writeback userText is accepted when it is exactly the
+// started prompt, or the started prompt followed by the join delimiter and
+// further messages — the same shape the in-memory coordinator accepts.
+function attestedPromptMatches(attestation: TracePromptAttestation, userText: string): boolean {
+  if (userText.length === attestation.chars) {
+    return sha256Hex(userText) === attestation.sha256;
+  }
+  if (userText.length < attestation.chars + PROMPT_DELIMITER.length) return false;
+  if (userText.slice(attestation.chars, attestation.chars + PROMPT_DELIMITER.length) !== PROMPT_DELIMITER) {
+    return false;
+  }
+  return sha256Hex(userText.slice(0, attestation.chars)) === attestation.sha256;
+}
+
+function sha256Hex(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
 }
 
 function claimAutomaticRetrievalTurn(

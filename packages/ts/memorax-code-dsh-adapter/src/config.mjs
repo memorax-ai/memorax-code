@@ -58,10 +58,14 @@ export function resolveBackendConnection(config = {}, env = process.env, options
     ?? stringValue(env.MEMORAX_CODE_BACKEND_TOKEN);
   // The persisted token is only trusted when the selected URL really came
   // from the authority record: sending the managed token to a user-supplied
-  // URL would leak it to an arbitrary destination.
-  const persistedToken = !envToken
-    && selected.source === "authority"
-    && authority?.tokenPath
+  // URL would leak it to an arbitrary destination. Canonical form (adapter-
+  // common): the token follows the URL when the SELECTED url equals the
+  // authority url, regardless of which source produced it. A user-configured
+  // URL that is byte-identical to the managed Backend URL is that Backend, so
+  // attaching the token leaks nothing — and gating on `source === "authority"`
+  // instead would drop the token and 401 every request in exactly that setup.
+  const authorityMatches = authority?.url === selected.url;
+  const persistedToken = !envToken && authorityMatches && authority?.tokenPath
     ? readBackendToken(authority.tokenPath, memoraxCodeHome, onAuthorityIssue)
     : undefined;
   const token = envToken ?? persistedToken;
@@ -123,7 +127,7 @@ function readBackendConnectionAuthority(memoraxCodeHome, onAuthorityIssue) {
     return undefined;
   }
   if (value.version !== BACKEND_CONNECTION_VERSION) {
-    onAuthorityIssue?.(`backend connection record version ${String(value.version)} is unsupported`, path);
+    onAuthorityIssue?.("backend connection record version is unsupported", path);
     return undefined;
   }
   if (Object.keys(value).some((key) => !BACKEND_CONNECTION_KEYS.has(key))) {
@@ -153,6 +157,10 @@ function readBackendToken(expectedPath, memoraxCodeHome, onAuthorityIssue) {
   try {
     value = JSON.parse(readFileSync(path, "utf8"));
   } catch {
+    // Every other failure mode of this record reports through onAuthorityIssue;
+    // an unreadable/corrupt token file must too, or the adapter silently runs
+    // token-less and 401s forever with no diagnostic trail.
+    onAuthorityIssue?.("backend token record is unreadable or not valid JSON", path);
     return undefined;
   }
   if (!isRecord(value)) {
@@ -160,7 +168,7 @@ function readBackendToken(expectedPath, memoraxCodeHome, onAuthorityIssue) {
     return undefined;
   }
   if (value.version !== BACKEND_TOKEN_VERSION) {
-    onAuthorityIssue?.(`backend token record version ${String(value.version)} is unsupported`, path);
+    onAuthorityIssue?.("backend token record version is unsupported", path);
     return undefined;
   }
   if (Object.keys(value).some((key) => !BACKEND_TOKEN_KEYS.has(key))) {
@@ -176,6 +184,16 @@ function readBackendToken(expectedPath, memoraxCodeHome, onAuthorityIssue) {
   if (!createdAt || !Number.isFinite(Date.parse(createdAt))) {
     onAuthorityIssue?.("backend token record createdAt is invalid", path);
     return undefined;
+  }
+  // Mirrors adapter-common's readBackendTokenRecord: a present-but-invalid
+  // rotatedAt rejects the record. Accepting it here would make this mirror
+  // trust a token file the canonical reader refuses.
+  if (Object.prototype.hasOwnProperty.call(value, "rotatedAt")) {
+    const rotatedAt = stringValue(value.rotatedAt);
+    if (!rotatedAt || !Number.isFinite(Date.parse(rotatedAt))) {
+      onAuthorityIssue?.("backend token record rotatedAt is invalid", path);
+      return undefined;
+    }
   }
   return token;
 }

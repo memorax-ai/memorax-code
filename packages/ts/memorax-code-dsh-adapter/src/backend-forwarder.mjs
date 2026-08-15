@@ -46,6 +46,17 @@ export async function postBackend(path, body, options = {}) {
       { status: response.status },
     );
   }
+  if (parsed === undefined || parsed === null || typeof parsed !== "object") {
+    // A 2xx without a parseable JSON object is not a success: the session
+    // bridge reads body.ok/scheduled/reason/discarded from this payload, and
+    // swallowing a malformed body here would report every skip/rejection as
+    // an accepted dispatch with zero visibility.
+    throw new DshBackendError(
+      `Backend answered ${path} with HTTP ${response.status} but no JSON body`,
+      DSH_BACKEND_HTTP_ERROR,
+      { status: response.status },
+    );
+  }
   return { ok: true, status: response.status, body: parsed };
 }
 
