@@ -102,6 +102,7 @@ for relative in [
     "lib/npm-invocation.mjs",
     "lib/package-transition.mjs",
     "lib/setup-reconcile.mjs",
+    "lib/trial-pow.mjs",
     "lib/trial-provision-contract.mjs",
     "lib/windows-cli-invocation.mjs",
     "lib/memorax-code-adapter-common/src/backend-connection.mjs",
@@ -313,6 +314,7 @@ for relative in \
   lib/npm-invocation.mjs \
   lib/package-transition.mjs \
   lib/setup-reconcile.mjs \
+  lib/trial-pow.mjs \
   lib/trial-provision-contract.mjs \
   lib/windows-cli-invocation.mjs \
   lib/memorax-code-adapter-common/src/backend-connection.mjs \
