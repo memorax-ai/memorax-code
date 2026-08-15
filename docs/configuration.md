@@ -295,6 +295,8 @@ dsh plugin --profile <profile> why @memorax-code/dsh-adapter
 dsh --profile <profile> --dump-config
 ```
 
-The status commands do not print the MemoraX API key or Backend token. The
-central `memorax-code status` report does not yet merge DSH profile status; use
-the native DSH commands above after install or update.
+The status commands do not print the MemoraX API key or Backend token.
+`memorax-code status` includes a content-free `dshAdapter` projection with the
+selected DSH version, compatibility, and managed/discovered profile state. Use
+the native DSH commands only when that summary is insufficient after install or
+update.

@@ -25,6 +25,8 @@ const RUNTIME = "dsh";
 const ADAPTER_PACKAGE_NAME = "@memorax-code/dsh-adapter";
 const DSH_SUPPORTED_VERSIONS = Object.freeze(["0.1.0-rc.6"]);
 const DSH_SUPPORTED_VERSION_SET = new Set(DSH_SUPPORTED_VERSIONS);
+const DSH_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+const DSH_VERSION_MAX_LENGTH = 128;
 const DSH_VERSION_TIMEOUT_MS = 10_000;
 const DEFAULT_COMMAND_TIMEOUT_MS = 120_000;
 const DEFAULT_LIFECYCLE_LOCK_TIMEOUT_MS = 600_000;
@@ -63,6 +65,98 @@ export function disableDshPluginInstallation(options = {}) {
 export function readDshPluginStatus(options = {}) {
   const paths = resolvePaths(options);
   return readDshPluginStatusUnlocked(paths, options);
+}
+
+export function collectDshAdapterStatus(options = {}) {
+  try {
+    const paths = resolvePaths(options);
+    const state = readAdapterState(paths.statePath);
+    const stateProblem = validateState(state, paths);
+    const discoveredProfiles = discoverDshProfiles({ ...options, dshHome: paths.dshHome });
+    const managedNames = new Set(stateProblem ? [] : state?.profiles ?? []);
+    const profileByName = new Map(discoveredProfiles.map((profile) => [profile.name, profile]));
+    const profiles = [...new Set([...managedNames, ...profileByName.keys()])]
+      .sort((left, right) => left.localeCompare(right))
+      .map((name) => {
+        const profile = profileByName.get(name);
+        return {
+          name,
+          managed: managedNames.has(name),
+          exists: Boolean(profile),
+          installed: profileHasAdapter(profile),
+        };
+      });
+    const managed = Boolean(state) && !stateProblem;
+    const installed = profiles.length > 0
+      && profiles.every((profile) => profile.managed && profile.exists && profile.installed);
+    const base = {
+      integration: "plugin",
+      managed,
+      installed,
+      enabled: false,
+      profiles,
+    };
+    if (stateProblem) {
+      return { ok: false, ...base, reason: stateProblem.reason };
+    }
+    if (!state && profiles.length === 0) {
+      return { ok: true, ...base, skipped: true, reason: "no_existing_profiles" };
+    }
+
+    const dshCommand = resolveDshCommand(options, paths, state);
+    const compatibility = inspectDshCompatibility(options, paths, dshCommand);
+    const version = compatibility.dshVersion;
+    if (compatibility.reason === "dsh_version_unavailable") {
+      return {
+        ok: false,
+        ...base,
+        compatible: false,
+        reason: compatibility.reason,
+      };
+    }
+    if (compatibility.compatible !== true) {
+      return {
+        ok: true,
+        ...base,
+        ...(version ? { version } : {}),
+        compatible: false,
+        skipped: true,
+        reason: compatibility.reason,
+      };
+    }
+    if (!state) {
+      return {
+        ok: true,
+        ...base,
+        version,
+        compatible: true,
+        skipped: true,
+        reason: "not_managed",
+      };
+    }
+    return {
+      ok: true,
+      ...base,
+      enabled: state.enabled === true && installed,
+      version,
+      compatible: true,
+      ...(state.enabled !== true
+        ? { reason: "disabled" }
+        : !installed
+          ? { reason: "profile_drift" }
+          : {}),
+    };
+  } catch {
+    return {
+      ok: false,
+      integration: "plugin",
+      managed: false,
+      installed: false,
+      enabled: false,
+      profiles: [],
+      reason: "dsh_status_unavailable",
+    };
+  }
 }
 
 /**
@@ -564,7 +658,9 @@ function inspectDshCompatibility(options, paths, command) {
     };
   }
   const output = typeof result.stdout === "string" ? result.stdout.trim() : "";
-  if (!output || output.includes("\n") || output.includes("\r")) {
+  if (!output
+    || output.length > DSH_VERSION_MAX_LENGTH
+    || !DSH_VERSION_PATTERN.test(output)) {
     return {
       compatible: false,
       reason: "dsh_version_unavailable",

@@ -78,6 +78,49 @@ export async function runBackendEntrypointChild(relativeEntrypoint, args, option
   });
 }
 
+export async function captureBackendEntrypoint(relativeEntrypoint, args, options = {}) {
+  if (!ensureSupportedNodeRuntime()) return { code: 1, stdout: "", stderr: "" };
+  let child;
+  try {
+    const entrypoint = prepareBackendEntrypoint(relativeEntrypoint);
+    child = spawn(process.execPath, [entrypoint, ...args], {
+      env: options.env ?? process.env,
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+    });
+  } catch (error) {
+    return {
+      code: 1,
+      stdout: "",
+      stderr: `memorax-code: failed to start status command: ${error instanceof Error ? error.message : String(error)}\n`,
+    };
+  }
+  let stdout = "";
+  let stderr = "";
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+  child.stdout.on("data", (chunk) => { stdout += chunk; });
+  child.stderr.on("data", (chunk) => { stderr += chunk; });
+  return await new Promise((resolve) => {
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    };
+    child.once("error", (error) => finish({
+      code: 1,
+      stdout,
+      stderr: `${stderr}memorax-code: failed to start status command: ${error.message}\n`,
+    }));
+    child.once("close", (code, signal) => finish({
+      code: signal ? 1 : code ?? 1,
+      stdout,
+      stderr: signal ? `${stderr}memorax-code: status command exited from signal ${signal}\n` : stderr,
+    }));
+  });
+}
+
 function prepareBackendEntrypoint(relativeEntrypoint) {
   ensureCodexCommandEnv();
   ensureClaudeCommandEnv();

@@ -12,6 +12,7 @@ import { join } from "node:path";
 import test from "node:test";
 import {
   activateDshPluginInstallation,
+  collectDshAdapterStatus,
   disableDshPluginInstallation,
   discoverDshProfiles,
   ensureDshPluginInstalled,
@@ -49,6 +50,13 @@ test("DSH lifecycle reconciles existing profiles and preserves a disabled author
     ]);
     assert.ok(invocations.every((invocation) => invocation.env.DSH_HOME === fixture.dshHome));
     assert.equal(readDshPluginStatus(fixture.options).enabled, true);
+    const readyStatus = collectDshAdapterStatus({
+      ...fixture.options,
+      runDsh: compatibleDsh(() => assert.fail("status must not mutate a DSH profile")),
+    });
+    assert.equal(readyStatus.enabled, true);
+    assert.equal(readyStatus.version, "0.1.0-rc.6");
+    assert.deepEqual(readyStatus.profiles.map((profile) => profile.name), ["headless", "web"]);
     const metadata = readJson(join(fixture.adapterRoot, ".memorax-code-package.json"));
     assert.equal(metadata.memoraxCodeCommand, fixture.memoraxCodeCommand);
     assert.equal(metadata.memoraxCodeHome, fixture.memoraxCodeHome);
@@ -56,6 +64,21 @@ test("DSH lifecycle reconciles existing profiles and preserves a disabled author
     assert.equal(metadata.dshVersion, "0.1.0-rc.6");
     assert.equal(metadata.sourceAdapterRoot, fixture.adapterRoot);
     assert.equal(readJson(fixture.statePath).dshVersion, "0.1.0-rc.6");
+
+    writeProfile(fixture.dshHome, "later");
+    const stateBeforeStatus = readFileSync(fixture.statePath, "utf8");
+    const driftStatus = collectDshAdapterStatus({
+      ...fixture.options,
+      runDsh: compatibleDsh(() => assert.fail("status must not reconcile a DSH profile")),
+    });
+    assert.equal(driftStatus.enabled, false);
+    assert.equal(driftStatus.reason, "profile_drift");
+    assert.deepEqual(driftStatus.profiles, [
+      { name: "headless", managed: true, exists: true, installed: true },
+      { name: "later", managed: false, exists: true, installed: false },
+      { name: "web", managed: true, exists: true, installed: true },
+    ]);
+    assert.equal(readFileSync(fixture.statePath, "utf8"), stateBeforeStatus);
 
     const disabled = disableDshPluginInstallation({
       ...fixture.options,
@@ -70,7 +93,6 @@ test("DSH lifecycle reconciles existing profiles and preserves a disabled author
     assert.equal(readJson(fixture.statePath).enabled, false);
     assert.equal(readDshPluginStatus(fixture.options).enabled, false);
 
-    writeProfile(fixture.dshHome, "later");
     const reconciled = ensureDshPluginInstalled({
       ...fixture.options,
       enabled: false,
@@ -324,6 +346,14 @@ test("DSH install leaves unsupported versions untouched and disables prior autho
     assert.equal(readFileSync(profilePath, "utf8"), before);
     assert.equal(existsSync(fresh.statePath), false);
     assert.equal(existsSync(join(fresh.adapterRoot, ".memorax-code-package.json")), false);
+    const malformed = collectDshAdapterStatus({
+      ...fresh.options,
+      runDsh() {
+        return { status: 0, stdout: "\u001b[31m0.1.0-rc.6\n" };
+      },
+    });
+    assert.equal(malformed.reason, "dsh_version_unavailable");
+    assert.equal(Object.hasOwn(malformed, "version"), false);
   } finally {
     fresh.cleanup();
   }

@@ -8,6 +8,7 @@ import { stagePackagedClientHookRuntime } from "../lib/client-hook-runtime.mjs";
 import { unsupportedNodeVersionMessage } from "../lib/node-version.mjs";
 import { resolveNpmInvocation } from "../lib/npm-invocation.mjs";
 import {
+  captureBackendEntrypoint,
   runBackendEntrypoint,
   runBackendEntrypointChild,
 } from "../lib/run-entrypoint.mjs";
@@ -179,10 +180,97 @@ if (shouldStageClientHookRuntime(process.argv.slice(2))
   }
 }
 
+const unifiedStatusExitCode = await runUnifiedStatus(process.argv.slice(2));
+if (unifiedStatusExitCode !== undefined) process.exit(unifiedStatusExitCode);
+
 const dshLifecycleExitCode = await runDshLifecycle(process.argv.slice(2));
 if (dshLifecycleExitCode !== undefined) process.exit(dshLifecycleExitCode);
 
 await runBackendEntrypoint("memorax-code.js");
+
+async function runUnifiedStatus(args) {
+  if (args[0] !== "status" || args.includes("--help") || args.includes("-h")) {
+    return undefined;
+  }
+  let memoraxCodeHome;
+  try {
+    memoraxCodeHome = requestedMemoraxCodeHome(args);
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    return 1;
+  }
+  const { collectDshAdapterStatus } = await import("../lib/dsh-plugin-install.mjs");
+  const dshAdapter = collectDshAdapterStatus({ memoraxCodeHome });
+  const backend = await captureBackendEntrypoint("memorax-code.js", args);
+  if (backend.stderr) process.stderr.write(backend.stderr);
+
+  if (args.includes("--json")) {
+    let report;
+    try {
+      report = JSON.parse(backend.stdout);
+    } catch {
+      console.error("memorax-code: Backend status did not return valid JSON");
+      return 1;
+    }
+    if (!validBackendStatusReport(report)) {
+      console.error("memorax-code: Backend status returned an incompatible JSON report");
+      return 1;
+    }
+    console.log(JSON.stringify({ ...report, dshAdapter }, null, 2));
+    return backend.code;
+  }
+
+  if (backend.stdout) {
+    process.stdout.write(backend.stdout);
+    if (!backend.stdout.endsWith("\n")) process.stdout.write("\n");
+  }
+  printDshAdapterStatus(dshAdapter);
+  return backend.code;
+}
+
+function printDshAdapterStatus(report) {
+  const profiles = Array.isArray(report.profiles) ? report.profiles : [];
+  const installedProfiles = profiles.filter((profile) => (
+    profile.managed && profile.exists && profile.installed
+  )).length;
+  const version = report.version ? ` version=${report.version}` : "";
+  const profileCount = ` profiles=${installedProfiles}/${profiles.length}`;
+  const status = report.ok !== true
+    ? `not ok ${report.reason ?? "unavailable"}`
+    : report.enabled === true
+      ? "ok"
+      : report.skipped === true
+        ? `skipped ${report.reason ?? "not-managed"}`
+        : `not enabled ${report.reason ?? "not-ready"}`;
+  console.log(`DSH adapter: ${status} integration=plugin${version}${profileCount}`);
+  if (profiles.length > 0) {
+    console.log(`DSH profiles: ${profiles.map((profile) => {
+      const name = statusText(profile.name);
+      if (!profile.exists) return `${name}=missing`;
+      if (!profile.managed) return `${name}=unmanaged`;
+      return `${name}=${profile.installed ? "installed" : "incomplete"}`;
+    }).join(", ")}`);
+  }
+}
+
+function validBackendStatusReport(value) {
+  return Boolean(value
+    && typeof value === "object"
+    && !Array.isArray(value)
+    && value.action === "status"
+    && typeof value.ok === "boolean"
+    && value.backend
+    && typeof value.backend === "object"
+    && !Array.isArray(value.backend));
+}
+
+function statusText(value) {
+  const sanitized = String(value).replace(
+    /[\u0000-\u001f\u007f-\u009f\u200e\u200f\u2028-\u202e\u2066-\u2069]/g,
+    "?",
+  );
+  return sanitized.length <= 120 ? sanitized : `${sanitized.slice(0, 117)}...`;
+}
 
 async function runDshLifecycle(args) {
   const command = args[0];
@@ -305,16 +393,16 @@ function dshAdapterRecoveryRevision() {
 }
 
 function requestedMemoraxCodeHome(args) {
-  const inline = args.find((arg) => arg.startsWith("--home="));
-  if (inline) {
-    const value = inline.slice("--home=".length);
-    if (!value.trim()) throw new Error("--home requires a directory");
-    return resolve(value);
-  }
   const index = args.indexOf("--home");
   if (index >= 0) {
     const value = args[index + 1];
     if (!value || value.startsWith("--")) throw new Error("--home requires a directory");
+    return resolve(value);
+  }
+  const inline = args.find((arg) => arg.startsWith("--home="));
+  if (inline) {
+    const value = inline.slice("--home=".length);
+    if (!value.trim()) throw new Error("--home requires a directory");
     return resolve(value);
   }
   return resolve(process.env.MEMORAX_CODE_HOME || join(homedir(), ".memorax-code"));

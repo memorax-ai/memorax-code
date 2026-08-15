@@ -235,6 +235,19 @@ async function main() {
   assert.equal(await realpath(dshState.adapterRoot), await realpath(sourceAdapterRoot));
   assert.equal(await realpath(packageMetadata.sourceAdapterRoot), await realpath(sourceAdapterRoot));
   assert.equal(await realpath(packageMetadata.dshHome), await realpath(dshHome));
+  const initialStatus = JSON.parse((await runMemoraxCode([
+    "status",
+    "--home",
+    memoraxCodeHome,
+    "--port",
+    String(backendPort),
+    "--clients",
+    "none",
+    "--json",
+  ], workspace)).stdout);
+  assert.equal(initialStatus.dshAdapter?.enabled, true);
+  assert.equal(initialStatus.dshAdapter?.version, dsh.version);
+  assert.deepEqual(initialStatus.dshAdapter?.profiles?.map((profile) => profile.name), ["headless"]);
   const initialBackendState = await readJson(backendStatePath);
   backendPid = safePid(initialBackendState.pid, "postinstall Backend PID");
 
@@ -279,12 +292,46 @@ async function main() {
     cwd: workspace,
     env: runtimeEnv,
   });
-  await runMemoraxCode(["start", "--home", memoraxCodeHome, "--port", String(backendPort), "--clients", "none", "--json"], workspace);
   const webProfile = join(dshHome, "profiles", "web");
+  const webManifestPath = join(webProfile, "package.json");
+  const stateBeforeDriftStatus = await readFile(dshStatePath, "utf8");
+  const webBeforeDriftStatus = await readFile(webManifestPath, "utf8");
+  const driftStatus = JSON.parse((await runMemoraxCode([
+    "status",
+    "--home",
+    memoraxCodeHome,
+    "--port",
+    String(backendPort),
+    "--clients",
+    "none",
+    "--json",
+  ], workspace)).stdout);
+  assert.equal(driftStatus.ok, true);
+  assert.equal(driftStatus.dshAdapter?.enabled, false);
+  assert.equal(driftStatus.dshAdapter?.reason, "profile_drift");
+  assert.deepEqual(driftStatus.dshAdapter?.profiles, [
+    { name: "headless", managed: true, exists: true, installed: true },
+    { name: "web", managed: false, exists: true, installed: false },
+  ]);
+  assert.equal(await readFile(dshStatePath, "utf8"), stateBeforeDriftStatus);
+  assert.equal(await readFile(webManifestPath, "utf8"), webBeforeDriftStatus);
+  await runMemoraxCode(["start", "--home", memoraxCodeHome, "--port", String(backendPort), "--clients", "none", "--json"], workspace);
   await assertProfileIntegrated(webProfile);
   const expandedState = await readJson(dshStatePath);
   assert.equal(expandedState.enabled, true);
   assert.deepEqual(expandedState.profiles, ["headless", "web"]);
+  const expandedStatus = JSON.parse((await runMemoraxCode([
+    "status",
+    "--home",
+    memoraxCodeHome,
+    "--port",
+    String(backendPort),
+    "--clients",
+    "none",
+    "--json",
+  ], workspace)).stdout);
+  assert.equal(expandedStatus.dshAdapter?.enabled, true);
+  assert.deepEqual(expandedStatus.dshAdapter?.profiles?.map((profile) => profile.name), ["headless", "web"]);
 
   progress("stopping MemoraX Code and proving DSH cannot revive the Backend");
   const requestsBeforeStop = memoraxServer.requests.length;

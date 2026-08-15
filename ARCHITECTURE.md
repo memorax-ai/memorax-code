@@ -162,8 +162,8 @@ The principal control-plane locations are:
 
 - `packages/npm/memorax-code/bin` for installed package scripts and wrappers;
 - `packages/npm/memorax-code/lib/dsh-plugin-install.mjs` for managed DSH
-  profile discovery, native plugin installation, skill installation, and
-  removal;
+  profile discovery, native plugin installation, skill installation, removal,
+  and the read-only public status projection;
 - `packages/ts/memorax-code-backend/src/entrypoints/backend-cli.ts` for
   process-facing command orchestration;
 - `packages/ts/memorax-code-backend/src/lifecycle` for start, stop, restart,
@@ -180,7 +180,10 @@ process's in-memory serialization. DSH profile integration has its own managed
 state and remains a native Cordis installation rather than a Hook generation.
 Before mutating a DSH profile, the npm lifecycle checks the selected native
 CLI version and leaves unsupported installations inert without blocking the
-other clients or the shared Backend.
+other clients or the shared Backend. The public npm wrapper merges a read-only
+DSH projection into `memorax-code status`; the Backend remains the owner of the
+Backend, Codex, and Claude Code status fields, and DSH diagnostics do not alter
+their top-level readiness result.
 
 ### 3.2 Adapter and retrieval data flow
 
@@ -636,12 +639,11 @@ Placement rules:
   root-surface, public-route, delegation, and dependency-cycle contracts.
 - Backend behavior tests build and exercise `dist`; architecture tests inspect
   `src` directly.
-- The Backend suite discovers nested tests recursively. Codex, Claude Code, and
-  DSH adapter suites currently discover only flat `test/*.test.mjs`; their
-  package scripts must change before tests are nested.
+- The Backend suite discovers nested tests recursively. Adapter suites
+  currently discover only flat `test/*.test.mjs`; their package scripts must
+  change before tests are nested.
 - Adapter-common has no standalone suite. Its changes are verified through all
-  affected consumers: Backend, the three adapters, and package checks when
-  staged runtime layout is involved.
+  affected consumers and package checks when staged runtime layout is involved.
 - Before moving, splitting, or renaming tests, search `scripts` and `.github`
   for explicit paths and test-name patterns.
 
@@ -656,7 +658,7 @@ uses those named profiles rather than copying commands here.
 | Hook or native-adapter HTTP command schema | `test/transport/http` and affected adapter suites | Backend source boundaries and package shape when staged | Backend + Adapter-common/shared Hook; add Install/artifacts when staged package shape changes |
 | Backend root entrypoint or compatibility facade | Entrypoint, architecture, and npm package tests | Source boundaries and package shape | Backend + Install/artifacts |
 | Client-native parsing or identity | `test/clients/<client>` | Source boundaries | Backend |
-| Client adapter deployment | Matching adapter suite and affected Backend contract tests | Package shape when staged | Codex, Claude Code, or DSH; add Adapter-common/shared Hook for shared source and Install/artifacts for staged package shape |
+| Client adapter deployment | Matching adapter suite and affected Backend contract tests | Package shape when staged | Matching adapter profile; add Adapter-common/shared Hook for shared source and Install/artifacts for staged package shape |
 | Adapter-common | Affected Backend tests and all affected adapter suites | Package shape when staged layout changes | Adapter-common/shared Hook; add Install/artifacts when staged runtime or package layout changes |
 | MemoraX provider, trace, or outbound transport | Matching Backend tests | Local-only trace boundary | Backend + Trace/local-only boundary |
 | Test relocation | Moved owning suite | Platform-specific consumers | Matching named profile |

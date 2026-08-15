@@ -105,21 +105,12 @@ memorax-code-codex doctor
 memorax-code-claude doctor
 ```
 
-For each DSH profile that existed during installation, verify the native
-bundle directly:
-
-```bash
-dsh plugin --profile <profile> why @memorax-code/dsh-adapter
-dsh --profile <profile> --dump-config
-```
-
-`memorax-code status` checks the local Backend and selected Codex/Claude Code
-integrations. DSH profile state is reported by installation/update output and
-the native `dsh plugin` command in this release. `memorax-cli status` checks
-whether the local MemoraX
-configuration, workspace scope, and memory switches resolve without printing
-the API key. It does not send a test request to MemoraX; the first real search
-or write verifies remote connectivity and credentials.
+`memorax-code status` checks the local Backend and selected harness
+integrations, including a content-free DSH adapter and profile summary.
+`memorax-cli status` checks whether the local MemoraX configuration, workspace
+scope, and memory switches resolve without printing the API key. It does not
+send a test request to MemoraX; the first real search or write verifies remote
+connectivity and credentials.
 
 ## Skipped or Non-Interactive Setup
 

@@ -26,10 +26,38 @@ test("main CLI keeps DSH inert until Backend success and disables it before stop
     assert.equal(readJson(fixture.statePath).enabled, true);
     assert.equal(profileHasAdapter(fixture.profilePath), true);
 
+    const jsonStatus = runCli(fixture, "status", { args: ["--json"] });
+    assert.equal(jsonStatus.status, 0, jsonStatus.stderr);
+    const statusReport = JSON.parse(jsonStatus.stdout);
+    assert.equal(statusReport.ok, true);
+    assert.deepEqual(statusReport.dshAdapter, {
+      ok: true,
+      integration: "plugin",
+      managed: true,
+      installed: true,
+      enabled: true,
+      profiles: [{ name: "headless", managed: true, exists: true, installed: true }],
+      version: "0.1.0-rc.6",
+      compatible: true,
+    });
+    const textStatus = runCli(fixture, "status");
+    assert.equal(textStatus.status, 0, textStatus.stderr);
+    assert.match(textStatus.stdout, /DSH adapter: ok integration=plugin version=0\.1\.0-rc\.6 profiles=1\/1/);
+    assert.match(textStatus.stdout, /DSH profiles: headless=installed/);
+    const incompatibleStatus = runCli(fixture, "status", {
+      args: ["--json"],
+      env: { MEMORAX_CODE_TEST_BACKEND_STATUS_JSON: "{}" },
+    });
+    assert.equal(incompatibleStatus.status, 1);
+    assert.match(incompatibleStatus.stderr, /Backend status returned an incompatible JSON report/);
+
     const stopped = runCli(fixture, "stop");
     assert.equal(stopped.status, 0, stopped.stderr);
     assert.equal(readJson(fixture.statePath).enabled, false);
     assert.equal(profileHasAdapter(fixture.profilePath), false);
+    const stoppedStatus = runCli(fixture, "status", { args: ["--json"] });
+    assert.equal(stoppedStatus.status, 0, stoppedStatus.stderr);
+    assert.equal(JSON.parse(stoppedStatus.stdout).dshAdapter.reason, "disabled");
 
     const restarted = runCli(fixture, "restart");
     assert.equal(restarted.status, 0, restarted.stderr);
@@ -78,6 +106,18 @@ test("unsupported DSH does not block the shared Backend or mutate its profile", 
     assert.equal(existsSync(fixture.statePath), false);
     assert.equal(profileHasAdapter(fixture.profilePath), false);
     assert.match(readFileSync(fixture.backendLog, "utf8"), /^start enabled=false external=false$/m);
+    const profileBeforeStatus = readFileSync(fixture.profilePath, "utf8");
+    const status = runCli(fixture, "status", {
+      args: ["--json"],
+      env: { MEMORAX_CODE_TEST_DSH_VERSION: "0.1.0-rc.7" },
+    });
+    assert.equal(status.status, 0, status.stderr);
+    const report = JSON.parse(status.stdout);
+    assert.equal(report.ok, true);
+    assert.equal(report.dshAdapter.compatible, false);
+    assert.equal(report.dshAdapter.reason, "unsupported_dsh_version");
+    assert.equal(existsSync(fixture.statePath), false);
+    assert.equal(readFileSync(fixture.profilePath, "utf8"), profileBeforeStatus);
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
   }
@@ -225,6 +265,11 @@ function createFixture() {
     "import { join } from 'node:path';",
     "const statePath = join(process.env.MEMORAX_CODE_HOME, 'adapters', 'dsh', 'state.json');",
     "const state = existsSync(statePath) ? JSON.parse(readFileSync(statePath, 'utf8')) : { enabled: false };",
+    "if (process.argv[2] === 'status') {",
+    "  if (process.argv.includes('--json')) console.log(process.env.MEMORAX_CODE_TEST_BACKEND_STATUS_JSON || JSON.stringify({ ok: true, action: 'status', backend: { ok: true, url: 'http://127.0.0.1:8787' } }));",
+    "  else console.log('[MemoraX Code Backend]: fixture ready');",
+    "  process.exit(0);",
+    "}",
     "const delay = Number(process.env.MEMORAX_CODE_TEST_BACKEND_DELAY_MS || 0);",
     `if (delay > 0) appendFileSync(${JSON.stringify(backendLog)}, process.argv[2] + '-begin enabled=' + state.enabled + '\\n');`,
     "if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));",

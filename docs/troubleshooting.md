@@ -12,11 +12,11 @@ dsh --profile <profile> --dump-config
 memorax-code logs
 ```
 
-`status` checks the Backend and Codex/Claude Code integrations. `memorax-cli
-status` checks credentials, scope, and memory switches without printing
-secrets. Each client `doctor` checks its plugin, skill, workspace, and Backend
-connection. DSH profile state is currently inspected with DSH's native
-commands rather than merged into the central status report.
+`memorax-code status` checks the Backend and Codex/Claude Code integrations and
+includes a content-free DSH adapter and profile summary. `memorax-cli status`
+checks credentials, scope, and memory switches without printing secrets. Each
+client `doctor` checks its plugin, skill, workspace, and Backend connection. Use
+DSH's native commands only when the central summary is insufficient.
 
 ## Installed, but memory is unavailable
 
@@ -135,10 +135,11 @@ profile. If only Repo Memory build or maintenance fails, ensure at least one
 managed profile includes `@deepseek-ai/dsh-headless`, then rerun
 `memorax-code start`.
 
-The central `memorax-code status` report does not yet include per-profile DSH
-state. Inspect `--dump-config` locally because a profile can contain private
-provider configuration; share only the smallest redacted excerpt needed for a
-diagnosis.
+`memorax-code status` reports the selected DSH version, compatibility, and a
+content-free state for every managed or discovered profile. Inspect
+`--dump-config` only when that summary is insufficient because a profile can
+contain private provider configuration; share only the smallest redacted
+excerpt needed for a diagnosis.
 
 ## Hooks cannot reach localhost on macOS
 
@@ -233,10 +234,10 @@ dsh plugin --profile <profile> why @memorax-code/dsh-adapter
 
 Include the MemoraX Code version, operating system, affected client,
 reproduction steps, failing command, and the smallest relevant log excerpt.
-For DSH, state the affected profile explicitly. The central JSON status does
-not yet contain DSH profile diagnostics; inspect `dsh --profile <profile>
---dump-config` locally and share only a minimal redacted excerpt when it is
-necessary.
+For DSH, the central JSON status includes a content-free `dshAdapter` summary.
+State the affected profile explicitly; inspect `dsh --profile <profile>
+--dump-config` locally and share only a minimal redacted excerpt when the
+summary is insufficient.
 
 Never attach API keys, Backend tokens, environment files, complete client
 configuration, private transcripts, raw trace files, or unreviewed local
