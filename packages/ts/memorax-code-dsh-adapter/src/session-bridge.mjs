@@ -28,9 +28,13 @@ export function createSessionBridge({ dispatch, debug = () => {} }) {
       if (!state || !isRecord(event)) return;
       switch (event.type) {
         case "turn/start": {
+          const nextTurn = nonNegativeInteger(event.data?.turn);
           const previousTurn = state.turn;
           const previousTurnStarted = state.turnStarted;
-          state.turn = nonNegativeInteger(event.data?.turn);
+          if (nextTurn === undefined && previousTurn !== undefined && previousTurnStarted) {
+            break;
+          }
+          state.turn = nextTurn;
           state.userText = undefined;
           state.assistantText = undefined;
           state.turnStarted = false;

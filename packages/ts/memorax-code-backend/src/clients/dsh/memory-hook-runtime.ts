@@ -533,13 +533,12 @@ async function runSerialized<T>(
   }
 }
 
-const PROMPT_DELIMITER_PATTERN = /[\s\p{P}]/u;
+const PROMPT_DELIMITER = "\n\n";
 
 function dshPromptMatches(startedPrompt: string, userText: string): boolean {
   if (userText === startedPrompt) return true;
-  if (!startedPrompt || !userText.startsWith(startedPrompt)) return false;
-  const boundary = userText[startedPrompt.length];
-  return boundary !== undefined && PROMPT_DELIMITER_PATTERN.test(boundary);
+  if (!startedPrompt) return false;
+  return userText.startsWith(startedPrompt + PROMPT_DELIMITER);
 }
 
 function claimAutomaticRetrievalTurn(

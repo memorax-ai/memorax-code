@@ -400,7 +400,7 @@ test("DSH runtime serializes concurrent turn-starts and rejects a conflicting pr
   }
 });
 
-test("DSH runtime requires a prompt delimiter for a longer writeback user text", async () => {
+test("DSH runtime requires the exact bridge delimiter for a longer writeback user text", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-dsh-prompt-delimiter-"));
   const events = [];
   const runtime = createDshMemoryHookRuntime({
@@ -434,6 +434,12 @@ test("DSH runtime requires a prompt delimiter for a longer writeback user text",
     });
 
     assert.deepEqual(await runtime.writeback(writeback("Fix the build. now")), {
+      ok: true,
+      scheduled: false,
+      reason: "prompt_mismatch",
+    });
+
+    assert.deepEqual(await runtime.writeback(writeback("Fix the build.\n\nAlso run the tests.")), {
       ok: true,
       scheduled: false,
       reason: "config_missing",

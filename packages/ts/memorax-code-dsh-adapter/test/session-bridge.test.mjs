@@ -530,6 +530,66 @@ test("disposing a session mid-turn discards the active turn", async () => {
   assert.equal(calls[1].body.turnId, "dsh-3-1");
 });
 
+test("a malformed turn/start without a turn id is rejected while a turn is active", async () => {
+  const calls = [];
+  const bridge = createSessionBridge({
+    dispatch: async (path, body) => {
+      calls.push({ path, body });
+      return { ok: true, body: {} };
+    },
+  });
+
+  bridge.onSessionCreated(session("session-malformed-start"));
+  bridge.onSessionEvent(session("session-malformed-start"), { type: "turn/start", data: { turn: 1 } });
+  bridge.onSessionEvent(session("session-malformed-start"), { type: "user/message", data: textMessage("first") });
+  bridge.onSessionEvent(session("session-malformed-start"), { type: "turn/start", data: {} });
+  bridge.onSessionEvent(session("session-malformed-start"), { type: "assistant/message", data: assistantData("reply") });
+  bridge.onSessionEvent(session("session-malformed-start"), { type: "turn/end", data: { turn: 1, reason: { kind: "completed" } } });
+
+  await flushMicrotasks();
+  assert.deepEqual(calls.map((call) => call.path), ["/memory/turn-start", "/memory/writeback"]);
+  assert.equal(calls[1].body.turnId, "dsh-3-1");
+  assert.equal(calls[1].body.userText, "first");
+  assert.equal(calls[1].body.assistantText, "reply");
+});
+
+test("a malformed turn/start with a non-integer turn id is rejected while a turn is active", async () => {
+  const calls = [];
+  const bridge = createSessionBridge({
+    dispatch: async (path, body) => {
+      calls.push({ path, body });
+      return { ok: true, body: {} };
+    },
+  });
+
+  bridge.onSessionCreated(session("session-malformed-turn-int"));
+  bridge.onSessionEvent(session("session-malformed-turn-int"), { type: "turn/start", data: { turn: 0 } });
+  bridge.onSessionEvent(session("session-malformed-turn-int"), { type: "user/message", data: textMessage("query") });
+  bridge.onSessionEvent(session("session-malformed-turn-int"), { type: "turn/start", data: { turn: "nope" } });
+
+  await flushMicrotasks();
+  assert.deepEqual(calls.map((call) => call.path), ["/memory/turn-start"]);
+});
+
+test("a malformed turn/start is tolerated when no turn is active", async () => {
+  const calls = [];
+  const bridge = createSessionBridge({
+    dispatch: async (path, body) => {
+      calls.push({ path, body });
+      return { ok: true, body: {} };
+    },
+  });
+
+  bridge.onSessionCreated(session("session-malformed-start-idle"));
+  bridge.onSessionEvent(session("session-malformed-start-idle"), { type: "turn/start", data: {} });
+  bridge.onSessionEvent(session("session-malformed-start-idle"), { type: "turn/start", data: { turn: 3 } });
+  bridge.onSessionEvent(session("session-malformed-start-idle"), { type: "user/message", data: textMessage("query") });
+
+  await flushMicrotasks();
+  assert.deepEqual(calls.map((call) => call.path), ["/memory/turn-start"]);
+  assert.equal(calls[0].body.turnId, "dsh-3-3");
+});
+
 test("a turn/end without a turn id does not clobber the active turn", async () => {
   const calls = [];
   const bridge = createSessionBridge({
