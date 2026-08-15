@@ -144,6 +144,13 @@ preserve the provisioned mark and account/project identity, and explicit Key
 recovery stores the replacement Key before any recovery request. Rebinding to a
 different trial identity requires an explicit credential clear.
 
+Trial provisioning is a foreground setup operation, never an npm lifecycle
+operation. It sends the persisted mark and generated Key only to fixed paths on
+one validated HTTPS service origin, rejects redirects, and refuses to run when
+Node TLS certificate verification is explicitly disabled. Request and response
+bodies are bounded, and response parsing never propagates server messages,
+raw bodies, request objects, or complete credentials into errors.
+
 ## Local Data and Diagnostics
 
 `MEMORAX_CODE_HOME` defaults to `~/.memorax-code` and contains configuration,

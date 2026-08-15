@@ -40,6 +40,10 @@ export function mapTrialProvisionResponse(response, options) {
   return redactedProvisionOperation(() => mapResponse(response, options));
 }
 
+export function safeTrialRegisterUrl(value) {
+  return httpsUrl(value);
+}
+
 function mapResponse(response, options) {
   const mappingOptions = snapshotMappingOptions(options);
   const expectedPluginMark = mappingOptions.expectedPluginMark;
@@ -78,7 +82,7 @@ function mapResponse(response, options) {
       || snapshot.warn_remaining_threshold % snapshot.warn_remaining_step !== 0)) {
     fail("invalid_warn_remaining_threshold");
   }
-  if (!httpsUrl(snapshot.register_url)) fail("invalid_register_url");
+  if (!safeTrialRegisterUrl(snapshot.register_url)) fail("invalid_register_url");
 
   return Object.freeze({
     accountId,
