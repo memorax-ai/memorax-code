@@ -39,6 +39,27 @@ test("Windows Claude npm shim resolves the official global CLI entrypoint", () =
   });
 });
 
+test("Windows DSH npm shim resolves the official global CLI entrypoint", () => {
+  const shim = "C:\\npm\\dsh.cmd";
+  const cli = "C:\\npm\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js";
+  const options = {
+    platform: "win32",
+    resolvedCommand: shim,
+    nodePath: "C:\\node.exe",
+    env: {},
+    existsSync: (candidate) => candidate === cli,
+  };
+  const expected = { command: "C:\\node.exe", args: [cli, "plugin", "--profile", "web", "add", "."] };
+  assert.deepEqual(
+    resolveWindowsCliInvocation("dsh", ["plugin", "--profile", "web", "add", "."], options),
+    expected,
+  );
+  assert.deepEqual(
+    resolveAdapterCommonCliInvocation("dsh", ["plugin", "--profile", "web", "add", "."], options),
+    expected,
+  );
+});
+
 test("Windows Claude npm shim resolves the official native executable", () => {
   const exe = "C:\\npm\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe";
   assert.deepEqual(resolveWindowsCliInvocation("claude", ["-p", "hello"], {

@@ -1,0 +1,585 @@
+import { spawnSync } from "node:child_process";
+import {
+  existsSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+} from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { resolveWindowsCliInvocation } from "./windows-cli-invocation.mjs";
+
+const PACKAGE_LIB = dirname(fileURLToPath(import.meta.url));
+const stagedCommon = join(PACKAGE_LIB, "memorax-code-adapter-common", "src", "config-utils.mjs");
+const sourceCommon = resolve(PACKAGE_LIB, "../../../ts/memorax-code-adapter-common/src/config-utils.mjs");
+const {
+  atomicWriteJson,
+  readAdapterState,
+  withJsonFileLock,
+  withJsonFileLockAsync,
+} = await import(pathToFileURL(existsSync(stagedCommon) ? stagedCommon : sourceCommon).href);
+
+const STATE_VERSION = 1;
+const RUNTIME = "dsh";
+const ADAPTER_PACKAGE_NAME = "@memorax-code/dsh-adapter";
+const DEFAULT_COMMAND_TIMEOUT_MS = 120_000;
+const DEFAULT_LIFECYCLE_LOCK_TIMEOUT_MS = 600_000;
+
+export function discoverDshProfiles(options = {}) {
+  const paths = resolvePaths(options);
+  let entries;
+  try {
+    entries = readdirSync(paths.profilesRoot, { withFileTypes: true });
+  } catch (error) {
+    if (error?.code === "ENOENT") return [];
+    throw error;
+  }
+  return entries
+    .filter((entry) => entry.isDirectory() && validProfileName(entry.name))
+    .map((entry) => readProfile(entry.name, join(paths.profilesRoot, entry.name)))
+    .filter(Boolean)
+    .sort((left, right) => left.name.localeCompare(right.name));
+}
+
+export function ensureDshPluginInstalled(options = {}) {
+  const paths = resolvePaths(options);
+  return withJsonFileLock(paths.statePath, () => ensureDshPluginInstalledUnlocked(paths, options));
+}
+
+export function activateDshPluginInstallation(options = {}) {
+  const paths = resolvePaths(options);
+  return withJsonFileLock(paths.statePath, () => activateDshPluginInstallationUnlocked(paths, options));
+}
+
+export function disableDshPluginInstallation(options = {}) {
+  const paths = resolvePaths(options);
+  return withJsonFileLock(paths.statePath, () => disableDshPluginInstallationUnlocked(paths, options, false));
+}
+
+export function readDshPluginStatus(options = {}) {
+  const paths = resolvePaths(options);
+  return readDshPluginStatusUnlocked(paths, options);
+}
+
+/**
+ * Serialize one product lifecycle command with adapter recovery and DSH state
+ * mutation. The callback must use the supplied unlocked operations only.
+ */
+export function withDshPluginLifecycleLock(options = {}, operation) {
+  if (typeof operation !== "function") {
+    throw new TypeError("DSH lifecycle lock requires an operation");
+  }
+  const paths = resolvePaths(options);
+  return withJsonFileLockAsync(paths.statePath, () => operation(Object.freeze({
+    discoverProfiles: () => discoverDshProfiles({ ...options, dshHome: paths.dshHome }),
+    status: () => readDshPluginStatusUnlocked(paths, options),
+    ensureInstalled: (overrides = {}) => ensureDshPluginInstalledUnlocked(
+      paths,
+      { ...options, ...overrides },
+    ),
+    activate: (overrides = {}) => activateDshPluginInstallationUnlocked(
+      paths,
+      { ...options, ...overrides },
+    ),
+    disable: (overrides = {}) => disableDshPluginInstallationUnlocked(
+      paths,
+      { ...options, ...overrides },
+      false,
+    ),
+    remove: (overrides = {}) => disableDshPluginInstallationUnlocked(
+      paths,
+      { ...options, ...overrides },
+      true,
+    ),
+  })), {
+    timeoutMs: options.lifecycleLockTimeoutMs ?? DEFAULT_LIFECYCLE_LOCK_TIMEOUT_MS,
+  });
+}
+
+function readDshPluginStatusUnlocked(paths, options) {
+  const state = readAdapterState(paths.statePath);
+  const stateProblem = validateState(state, paths);
+  if (stateProblem) return { ...stateProblem, action: "dsh-plugin-status" };
+  if (!state) {
+    return {
+      ok: true,
+      action: "dsh-plugin-status",
+      runtime: RUNTIME,
+      installed: false,
+      enabled: false,
+      managed: false,
+      profiles: [],
+      statePath: paths.statePath,
+    };
+  }
+
+  const profiles = discoverDshProfiles({ ...options, dshHome: paths.dshHome });
+  const profileByName = new Map(profiles.map((profile) => [profile.name, profile]));
+  const managedProfiles = state.profiles.map((name) => {
+    const profile = profileByName.get(name);
+    return { name, exists: Boolean(profile), installed: profileHasAdapter(profile) };
+  });
+  const installed = state.profiles.length > 0
+    && managedProfiles.every((profile) => profile.installed);
+  return {
+    ok: true,
+    action: "dsh-plugin-status",
+    runtime: RUNTIME,
+    installed,
+    enabled: state.enabled === true && installed,
+    managed: true,
+    current: installed,
+    authorityEnabled: state.enabled === true,
+    revision: state.updatedAt,
+    profiles: managedProfiles,
+    statePath: paths.statePath,
+  };
+}
+
+export function removeDshPluginInstallation(options = {}) {
+  const paths = resolvePaths(options);
+  return withJsonFileLock(paths.statePath, () => disableDshPluginInstallationUnlocked(paths, options, true));
+}
+
+function ensureDshPluginInstalledUnlocked(paths, options) {
+  const state = readAdapterState(paths.statePath);
+  const stateProblem = validateState(state, paths);
+  if (stateProblem) return { ...stateProblem, action: "dsh-plugin-install" };
+  const sourceProblem = validateSources(paths);
+  if (sourceProblem) return { ...sourceProblem, action: "dsh-plugin-install" };
+
+  const profiles = discoverDshProfiles({ ...options, dshHome: paths.dshHome });
+  if (profiles.length === 0) {
+    if (state) atomicWriteJson(paths.statePath, disabledState(state, []));
+    return {
+      ok: true,
+      action: "dsh-plugin-install",
+      runtime: RUNTIME,
+      installed: false,
+      enabled: false,
+      managed: Boolean(state),
+      skipped: true,
+      reason: "no_existing_profiles",
+      detectedProfiles: [],
+      statePath: paths.statePath,
+    };
+  }
+
+  const previouslyManaged = new Set(state?.profiles ?? []);
+  const conflicts = profiles
+    .filter((profile) => profileMentionsAdapter(profile) && !previouslyManaged.has(profile.name))
+    .map((profile) => profile.name);
+  if (conflicts.length > 0) {
+    return {
+      ok: false,
+      action: "dsh-plugin-install",
+      runtime: RUNTIME,
+      reason: "profile_plugin_conflict",
+      profiles: conflicts,
+      statePath: paths.statePath,
+    };
+  }
+
+  const memoraxCodeCommand = resolveMemoraxCodeCommand(options.memoraxCodeCommand);
+  const dshCommand = resolveDshCommand(options, paths, state);
+  atomicWriteJson(join(paths.adapterRoot, ".memorax-code-package.json"), {
+    version: 1,
+    memoraxCodeCommand,
+    memoraxCodeHome: paths.memoraxCodeHome,
+    dshHome: paths.dshHome,
+    dshCommand,
+    sourceAdapterRoot: paths.adapterRoot,
+  });
+
+  const now = new Date().toISOString();
+  const pendingState = {
+    version: STATE_VERSION,
+    runtime: RUNTIME,
+    integration: "plugin",
+    enabled: false,
+    dshHome: paths.dshHome,
+    memoraxCodeHome: paths.memoraxCodeHome,
+    adapterRoot: paths.adapterRoot,
+    memoraxCodeCommand,
+    dshCommand,
+    // Claim each target before invoking DSH so an interrupted or partially
+    // successful native add remains repairable and removable on the next run.
+    profiles: profiles.map((profile) => profile.name).sort(),
+    installedAt: state?.installedAt ?? now,
+    updatedAt: now,
+  };
+  atomicWriteJson(paths.statePath, pendingState);
+
+  const installedProfiles = [];
+  const failedProfiles = [];
+  for (const profile of profiles) {
+    if (!readProfile(profile.name, profile.path)) {
+      failedProfiles.push({ name: profile.name, reason: "profile_disappeared" });
+      continue;
+    }
+    const result = runDsh(options, paths, [
+      "plugin",
+      "--profile",
+      profile.name,
+      "add",
+      `file:${paths.adapterRoot}`,
+    ], dshCommand);
+    const installed = result.status === 0
+      && !result.error
+      && profileHasAdapter(readProfile(profile.name, profile.path));
+    if (installed) installedProfiles.push(profile.name);
+    else failedProfiles.push(commandFailure(
+      profile.name,
+      result,
+      result.status === 0 ? "dsh_bundle_not_activated" : undefined,
+    ));
+  }
+
+  const currentProfiles = discoverDshProfiles({ ...options, dshHome: paths.dshHome });
+  const pendingProfiles = new Set(pendingState.profiles);
+  const managedProfiles = currentProfiles
+    .filter((profile) => pendingProfiles.has(profile.name))
+    .map((profile) => profile.name)
+    .sort();
+  const enabled = options.enabled !== false
+    && failedProfiles.length === 0
+    && managedProfiles.length > 0;
+  const nextState = {
+    ...pendingState,
+    enabled,
+    profiles: managedProfiles,
+    updatedAt: new Date().toISOString(),
+  };
+  atomicWriteJson(paths.statePath, nextState);
+
+  return {
+    ok: failedProfiles.length === 0,
+    action: "dsh-plugin-install",
+    runtime: RUNTIME,
+    installed: failedProfiles.length === 0 && managedProfiles.length > 0,
+    enabled,
+    managed: true,
+    detectedProfiles: profiles.map((profile) => profile.name),
+    installedProfiles,
+    failedProfiles,
+    statePath: paths.statePath,
+    state: nextState,
+  };
+}
+
+function activateDshPluginInstallationUnlocked(paths, options) {
+  const state = readAdapterState(paths.statePath);
+  const stateProblem = validateState(state, paths);
+  if (stateProblem) return { ...stateProblem, action: "dsh-plugin-activate" };
+  if (!state) return notManaged(paths, "dsh-plugin-activate");
+  const profiles = discoverDshProfiles({ ...options, dshHome: paths.dshHome });
+  const profileByName = new Map(profiles.map((profile) => [profile.name, profile]));
+  if (state.profiles.length === 0
+    || state.profiles.some((name) => !profileHasAdapter(profileByName.get(name)))) {
+    return {
+      ok: false,
+      action: "dsh-plugin-activate",
+      runtime: RUNTIME,
+      reason: "managed_profiles_not_installed",
+      statePath: paths.statePath,
+    };
+  }
+  const nextState = { ...state, enabled: true, updatedAt: new Date().toISOString() };
+  atomicWriteJson(paths.statePath, nextState);
+  return {
+    ok: true,
+    action: "dsh-plugin-activate",
+    runtime: RUNTIME,
+    installed: true,
+    enabled: true,
+    managed: true,
+    profiles: [...state.profiles],
+    statePath: paths.statePath,
+    state: nextState,
+  };
+}
+
+function disableDshPluginInstallationUnlocked(paths, options, removeState) {
+  const state = readAdapterState(paths.statePath);
+  const action = removeState ? "dsh-plugin-remove" : "dsh-plugin-disable";
+  const stateProblem = validateState(state, paths);
+  if (stateProblem) return { ...stateProblem, action };
+  if (!state) return notManaged(paths, action);
+
+  const disabled = disabledState(state, state.profiles);
+  atomicWriteJson(paths.statePath, disabled);
+  const dshCommand = resolveDshCommand(options, paths, state);
+  const profiles = discoverDshProfiles({ ...options, dshHome: paths.dshHome });
+  const profileByName = new Map(profiles.map((profile) => [profile.name, profile]));
+  const removedProfiles = [];
+  const failedProfiles = [];
+  for (const name of state.profiles) {
+    const profile = profileByName.get(name);
+    if (!profile || !profileMentionsAdapter(profile)) {
+      removedProfiles.push(name);
+      continue;
+    }
+    const result = runDsh(
+      options,
+      paths,
+      ["plugin", "--profile", name, "remove", ADAPTER_PACKAGE_NAME],
+      dshCommand,
+    );
+    const removed = result.status === 0
+      && !result.error
+      && !profileMentionsAdapter(readProfile(name, profile.path));
+    if (removed) removedProfiles.push(name);
+    else failedProfiles.push(commandFailure(
+      name,
+      result,
+      result.status === 0 ? "dsh_bundle_not_removed" : undefined,
+    ));
+  }
+
+  if (failedProfiles.length > 0) {
+    atomicWriteJson(paths.statePath, disabledState(disabled, failedProfiles.map((profile) => profile.name).sort()));
+    return {
+      ok: false,
+      action,
+      runtime: RUNTIME,
+      enabled: false,
+      removedProfiles,
+      failedProfiles,
+      statePath: paths.statePath,
+    };
+  }
+
+  if (removeState) rmSync(paths.statePath, { force: true });
+  else atomicWriteJson(paths.statePath, disabledState(disabled, []));
+  return {
+    ok: true,
+    action,
+    runtime: RUNTIME,
+    removed: removeState,
+    installed: false,
+    enabled: false,
+    managed: !removeState,
+    removedProfiles,
+    statePath: paths.statePath,
+  };
+}
+
+function resolvePaths(options) {
+  const env = options.env ?? process.env;
+  const homeDir = options.homeDir ?? homedir();
+  const memoraxCodeHome = resolveHomePath(
+    options.memoraxCodeHome ?? nonEmpty(env.MEMORAX_CODE_HOME) ?? join(homeDir, ".memorax-code"),
+    homeDir,
+  );
+  const adapterRoot = resolve(options.adapterRoot ?? join(PACKAGE_LIB, "memorax-code-dsh-adapter"));
+  const statePath = resolve(options.statePath ?? join(memoraxCodeHome, "adapters", RUNTIME, "state.json"));
+  const configuredDshHome = options.dshHome ?? nonEmpty(env.DSH_HOME);
+  const dshHome = configuredDshHome === undefined
+    ? persistedDshHome({ statePath, memoraxCodeHome, adapterRoot }, homeDir)
+      ?? resolveHomePath(join(homeDir, ".dsh"), homeDir)
+    : resolveHomePath(configuredDshHome, homeDir);
+  return {
+    env,
+    dshHome,
+    memoraxCodeHome,
+    adapterRoot,
+    profilesRoot: join(dshHome, "profiles"),
+    statePath,
+  };
+}
+
+function persistedDshHome(paths, homeDir) {
+  const state = readAdapterState(paths.statePath);
+  const value = nonEmpty(state?.dshHome);
+  if (!value) return undefined;
+  const dshHome = resolveHomePath(value, homeDir);
+  return validateState(state, { ...paths, dshHome }) ? undefined : dshHome;
+}
+
+function validateSources(paths) {
+  let manifest;
+  try {
+    manifest = JSON.parse(readFileSync(join(paths.adapterRoot, "package.json"), "utf8"));
+  } catch {
+    return { ok: false, runtime: RUNTIME, reason: "adapter_source_invalid" };
+  }
+  const patch = manifest?.dsh?.bundle?.patch;
+  if (manifest?.name !== ADAPTER_PACKAGE_NAME || typeof patch !== "string" || !patch.trim()) {
+    return { ok: false, runtime: RUNTIME, reason: "adapter_source_invalid" };
+  }
+  for (const path of [
+    resolve(paths.adapterRoot, patch),
+    join(paths.adapterRoot, "skills", "memorax-code", "SKILL.md"),
+    join(paths.adapterRoot, "skills", "memorax-code", "dsh-definition.json"),
+    join(paths.adapterRoot, "hooks", "repo-memory-job.mjs"),
+  ]) {
+    if (!existsSync(path)) return { ok: false, runtime: RUNTIME, reason: "adapter_source_incomplete" };
+  }
+  return undefined;
+}
+
+function validateState(state, paths) {
+  if (!state) return undefined;
+  if (state.unreadable) return { ok: false, runtime: RUNTIME, reason: "state_unreadable", statePath: paths.statePath };
+  if (state.version !== STATE_VERSION
+    || state.runtime !== RUNTIME
+    || state.integration !== "plugin"
+    || typeof state.enabled !== "boolean"
+    || resolve(state.dshHome ?? "") !== paths.dshHome
+    || resolve(state.memoraxCodeHome ?? "") !== paths.memoraxCodeHome
+    || typeof state.adapterRoot !== "string"
+    || typeof state.memoraxCodeCommand !== "string"
+    || typeof state.dshCommand !== "string"
+    || !timestampString(state.updatedAt)
+    || !Array.isArray(state.profiles)
+    || !state.profiles.every(validProfileName)) {
+    return { ok: false, runtime: RUNTIME, reason: "state_invalid", statePath: paths.statePath };
+  }
+  return undefined;
+}
+
+function disabledState(state, profiles) {
+  return {
+    ...state,
+    enabled: false,
+    profiles,
+    disabledAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function notManaged(paths, action) {
+  return {
+    ok: true,
+    action,
+    runtime: RUNTIME,
+    installed: false,
+    enabled: false,
+    managed: false,
+    skipped: true,
+    reason: "not_managed",
+    statePath: paths.statePath,
+  };
+}
+
+function resolveMemoraxCodeCommand(value) {
+  const configured = nonEmpty(value);
+  return configured && !configured.includes("/") && !configured.includes("\\")
+    ? configured
+    : resolve(configured ?? join(PACKAGE_LIB, "..", "bin", "memorax-code.mjs"));
+}
+
+function resolveDshCommand(options, paths, state) {
+  const command = nonEmpty(options.dshCommand)
+    ?? nonEmpty(paths.env.MEMORAX_CODE_DSH_COMMAND)
+    ?? nonEmpty(state?.dshCommand)
+    ?? "dsh";
+  return command.includes("/") || command.includes("\\") ? resolve(command) : command;
+}
+
+function runDsh(options, paths, args, command) {
+  const env = { ...paths.env, DSH_HOME: paths.dshHome };
+  let executable;
+  try {
+    executable = resolveWindowsCliInvocation(command, args, {
+      ...options.windowsCliResolution,
+      env,
+    });
+  } catch (error) {
+    return { status: 1, error };
+  }
+  const invocation = {
+    command: executable.command,
+    args: executable.args,
+    cwd: paths.adapterRoot,
+    env,
+    timeout: options.commandTimeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS,
+  };
+  if (typeof options.runDsh === "function") {
+    try {
+      return options.runDsh(invocation) ?? { status: 1 };
+    } catch (error) {
+      return { status: 1, error };
+    }
+  }
+  return spawnSync(invocation.command, invocation.args, {
+    cwd: invocation.cwd,
+    env: invocation.env,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: invocation.timeout,
+    windowsHide: true,
+  });
+}
+
+function commandFailure(name, result, contractReason) {
+  return {
+    name,
+    reason: contractReason
+      ? contractReason
+      : result.error?.code === "ENOENT"
+        ? "dsh_not_found"
+        : "dsh_command_failed",
+    status: Number.isInteger(result.status) ? result.status : undefined,
+  };
+}
+
+function readProfile(name, path) {
+  try {
+    const manifest = JSON.parse(readFileSync(join(path, "package.json"), "utf8"));
+    const bundles = manifest?.dsh?.profile?.bundles;
+    if (!Array.isArray(bundles) || !bundles.every((value) => typeof value === "string")) return undefined;
+    return {
+      name,
+      path,
+      dependencies: manifest.dependencies && typeof manifest.dependencies === "object"
+        ? manifest.dependencies
+        : {},
+      bundles,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function profileMentionsAdapter(profile) {
+  return Boolean(profile
+    && (Object.hasOwn(profile.dependencies, ADAPTER_PACKAGE_NAME)
+      || profile.bundles.includes(ADAPTER_PACKAGE_NAME)));
+}
+
+function profileHasAdapter(profile) {
+  return Boolean(profile
+    && Object.hasOwn(profile.dependencies, ADAPTER_PACKAGE_NAME)
+    && profile.bundles.includes(ADAPTER_PACKAGE_NAME));
+}
+
+function validProfileName(value) {
+  return typeof value === "string"
+    && value.length > 0
+    && value !== "."
+    && value !== ".."
+    && value !== "node_modules"
+    && !value.includes("/")
+    && !value.includes("\\");
+}
+
+function resolveHomePath(value, homeDir) {
+  const normalized = String(value);
+  if (normalized === "~") return resolve(homeDir);
+  if (normalized.startsWith("~/") || normalized.startsWith("~\\")) {
+    return resolve(homeDir, normalized.slice(2));
+  }
+  return resolve(normalized);
+}
+
+function nonEmpty(value) {
+  const normalized = String(value ?? "").trim();
+  return normalized || undefined;
+}
+
+function timestampString(value) {
+  const normalized = nonEmpty(value);
+  return normalized && Number.isFinite(Date.parse(normalized)) ? normalized : undefined;
+}

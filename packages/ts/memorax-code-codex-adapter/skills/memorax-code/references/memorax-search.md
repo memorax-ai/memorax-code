@@ -1,10 +1,10 @@
 # MemoraX Code Coding Memory Search
 
-Use these instructions only to search reusable coding memory through `memorax-cli`. Invoke the skill as `$memorax-code` in Codex or `/memorax-code` in Claude Code; do not route memory operations through the lifecycle-only `memorax-code` CLI. Do not call MemoraX HTTP endpoints directly, print credentials, or edit memory storage by hand.
+Use these instructions only to search reusable coding memory through `memorax-cli`. Invoke the skill as `$memorax-code` in Codex or `/memorax-code` in Claude Code and DSH; do not route memory operations through the lifecycle-only `memorax-code` CLI. Do not call MemoraX HTTP endpoints directly, print credentials, or edit memory storage by hand.
 
 ## Scope
 
-Run the CLI from the active task workspace. The installed Hook and session binding supply the authoritative workspace root; do not run `git rev-parse`, infer the root from Git metadata, or substitute an unrelated working directory. Do not make `memorax-cli status` a mandatory preflight; use it only to diagnose a configuration or scope failure.
+Run the CLI from the active task workspace. The installed client adapter and session binding supply the authoritative workspace root; do not run `git rev-parse`, infer the root from Git metadata, or substitute an unrelated working directory. Do not make `memorax-cli status` a mandatory preflight; use it only to diagnose a configuration or scope failure.
 
 Coding memory uses `<MemoraX base user ID>@<normalized repository name>` for Git workspaces and the normalized folder name for genuine non-Git directories. MemoraX Code resolves `.git`, `gitdir`, and `commondir` without executing Git. Linked worktrees share one repository scope; another clone, repository, or non-Git directory retains a different local session key even when its readable name matches.
 

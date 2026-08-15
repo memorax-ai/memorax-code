@@ -17,6 +17,7 @@ const codexAdapterSourceRoot = fileURLToPath(new URL(
   import.meta.url,
 ));
 const clientHookRuntimePath = fileURLToPath(new URL("../lib/client-hook-runtime.mjs", import.meta.url));
+const dshPluginInstallPath = fileURLToPath(new URL("../lib/dsh-plugin-install.mjs", import.meta.url));
 const codexRuntimeShellPath = fileURLToPath(new URL(
   "../../../ts/memorax-code-codex-adapter/hooks/runtime-shell.json",
   import.meta.url,
@@ -88,13 +89,14 @@ async function startMockMemorax({ status = 200, body = { success: true, data: { 
   };
 }
 
-async function runPostinstall({ existingCache = false, explicitCache = false, hookRuntimeFailure, failStartOnce = false, connectionAuthorityFailure = false, runtimeAuthorityFailureCode, officialMode = false, codexConfig, memoraxCodeConfig, memoraxCodeConfigMode, emptyClaudeSettings = false, claudeAvailable = true, claudeVersionFails = false, claudeSettingsText, codexAvailable = true, codexAppOnly = false, vscodeOnly = false, skipCodexPluginInstall = false, skipClaudeAdapterInstall = false, unavailableStatus = false, prefixedStatus = false, input = "", interactive = false, npmCommand = "install", memoraxVerify, memoraxEnv = {}, memoryStatusFixture, hookSnapshot = [], hookUpdatePlan = [], hookFullReview = false, hookFullReviewMissing = false, hookSnapshotFails = false, hookCheckFails = false, hookTrustFails = false, ttyOverride } = {}) {
+async function runPostinstall({ existingCache = false, explicitCache = false, hookRuntimeFailure, failStartOnce = false, connectionAuthorityFailure = false, runtimeAuthorityFailureCode, officialMode = false, codexConfig, memoraxCodeConfig, memoraxCodeConfigMode, emptyClaudeSettings = false, claudeAvailable = true, claudeVersionFails = false, claudeSettingsText, codexAvailable = true, codexAppOnly = false, vscodeOnly = false, dshProfiles = [], skipCodexPluginInstall = false, skipClaudeAdapterInstall = false, unavailableStatus = false, prefixedStatus = false, input = "", interactive = false, npmCommand = "install", memoraxVerify, memoraxEnv = {}, memoryStatusFixture, hookSnapshot = [], hookUpdatePlan = [], hookFullReview = false, hookFullReviewMissing = false, hookSnapshotFails = false, hookCheckFails = false, hookTrustFails = false, ttyOverride } = {}) {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-postinstall-"));
   const binDir = join(root, "bin");
   const codexHome = join(root, "codex-home");
   const claudeHome = join(root, "claude-home");
   const memoraxCodeHome = join(root, "memorax-code-home");
   const home = join(root, "home");
+  const dshHome = join(root, "dsh-home");
   const fakeBin = join(root, "fake-bin");
   const libDir = join(root, "lib");
   const nodeModulesDir = join(root, "node_modules");
@@ -129,6 +131,7 @@ async function runPostinstall({ existingCache = false, explicitCache = false, ho
     await copyFile(join(adapterCommonSourceRoot, file), target);
   }
   await copyFile(clientHookRuntimePath, join(libDir, "client-hook-runtime.mjs"));
+  await copyFile(dshPluginInstallPath, join(libDir, "dsh-plugin-install.mjs"));
   const codexAdapterDir = join(libDir, "memorax-code-codex-adapter");
   const claudeAdapterDir = join(libDir, "memorax-code-claude-adapter");
   for (const adapterDir of [codexAdapterDir, claudeAdapterDir]) {
@@ -386,6 +389,15 @@ async function runPostinstall({ existingCache = false, explicitCache = false, ho
     ? {}
     : { env: { ANTHROPIC_BASE_URL: "https://api.anthropic.com", ANTHROPIC_API_KEY: "test-key" } };
   await writeFile(join(claudeHome, "settings.json"), claudeSettingsText ?? `${JSON.stringify(claudeSettings, null, 2)}\n`);
+  for (const profile of dshProfiles) {
+    const profileRoot = join(dshHome, "profiles", profile);
+    await mkdir(profileRoot, { recursive: true });
+    await writeFile(join(profileRoot, "package.json"), `${JSON.stringify({
+      name: `dsh-profile-${profile}`,
+      private: true,
+      dsh: { profile: { bundles: ["@deepseek-ai/dsh-base"] } },
+    }, null, 2)}\n`);
+  }
 
   let activeHookRuntimeBefore;
   if (hookRuntimeFailure) {
@@ -440,6 +452,7 @@ async function runPostinstall({ existingCache = false, explicitCache = false, ho
     CODEX_HOME: codexHome,
     HOME: home,
     CLAUDE_CONFIG_DIR: claudeHome,
+    DSH_HOME: dshHome,
     MEMORAX_CODE_HOME: memoraxCodeHome,
     PATH: codexAppOnly || vscodeOnly ? fakeBin : `${fakeBin}${delimiter}${process.env.PATH ?? ""}`,
     npm_command: npmCommand,
@@ -1898,6 +1911,28 @@ test("postinstall starts only the common Backend when no supported client is det
     assert.doesNotMatch(run.log, /^(codex|claude) /m);
     assert.match(run.result.stderr, /Backend and selected adapters: .*Enabled/);
     assert.doesNotMatch(run.result.stderr, /Restart or refresh Codex/);
+    const config = await readFile(join(run.memoraxCodeHome, "config.toml"), "utf8");
+    assert.match(config, /\[clients\][^\r\n]*\r?\ncodex = false[^\r\n]*\r?\nclaude = false/m);
+  } finally {
+    await rm(run.root, { recursive: true, force: true });
+  }
+});
+
+test("postinstall treats existing DSH profiles as a supported native harness", async () => {
+  const run = await runPostinstall({
+    codexAvailable: false,
+    claudeAvailable: false,
+    dshProfiles: ["headless", "web"],
+    interactive: true,
+    input: "n\n",
+  });
+  try {
+    assert.equal(run.result.code, 0, run.result.stderr);
+    assert.match(run.result.stderr, /Detected existing DeepSeek Harness profiles/);
+    assert.match(run.result.stderr, /DeepSeek Harness profiles: found \(headless, web\)/);
+    assert.match(run.result.stderr, /Connect MemoraX Code to MemoraX now/);
+    assert.match(run.log, /^memorax-code start --clients none$/m);
+    assert.match(run.log, /^memorax-code status --clients none$/m);
     const config = await readFile(join(run.memoraxCodeHome, "config.toml"), "utf8");
     assert.match(config, /\[clients\][^\r\n]*\r?\ncodex = false[^\r\n]*\r?\nclaude = false/m);
   } finally {

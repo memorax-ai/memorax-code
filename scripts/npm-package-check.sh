@@ -4,6 +4,7 @@ set -euo pipefail
 unset \
   MEMORAX_CODE_HOME \
   CODEX_HOME \
+  DSH_HOME \
   CLAUDE_CONFIG_DIR \
   CLAUDE_HOME
 
@@ -67,6 +68,7 @@ expected_library_dirs = {
     "memorax-code-claude-adapter",
     "memorax-code-claude-marketplace",
     "memorax-code-codex-adapter",
+    "memorax-code-dsh-adapter",
 }
 actual_library_dirs = {
     path.name
@@ -93,6 +95,7 @@ assert 'MEMORAX_DEFAULT_MEMORY_OUTPUT_LANGUAGE = "zh"' in memorax_defaults
 for relative in [
     "bin/memorax-code-npm-preinstall.mjs",
     "lib/client-hook-runtime.mjs",
+    "lib/dsh-plugin-install.mjs",
     "lib/resolve-claude-command.mjs",
     "lib/resolve-codex-command.mjs",
     "lib/vscode-extension-command.mjs",
@@ -149,6 +152,25 @@ for relative in [
     "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/repo-memory/repo-procedure-memory-context.mjs",
     "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/repo-memory/repo-user-profile-context.mjs",
     "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/skills/memorax-code/SKILL.md",
+    "lib/memorax-code-dsh-adapter/package.json",
+    "lib/memorax-code-dsh-adapter/cordis.patch.yml",
+    "lib/memorax-code-dsh-adapter/src/index.mjs",
+    "lib/memorax-code-dsh-adapter/src/backend-client.mjs",
+    "lib/memorax-code-dsh-adapter/hooks/repo-memory-job.mjs",
+    "lib/memorax-code-dsh-adapter/memorax-code-adapter-common/src/backend-connection.mjs",
+    "lib/memorax-code-dsh-adapter/memorax-code-adapter-common/src/config-utils.mjs",
+    "lib/memorax-code-dsh-adapter/memorax-code-adapter-common/src/hooks/ensure-backend-runner.mjs",
+    "lib/memorax-code-dsh-adapter/memorax-code-adapter-common/src/repo-memory/repo-memory-job-context.mjs",
+    "lib/memorax-code-dsh-adapter/memorax-code-adapter-common/src/repo-memory/repo-memory-job-marker.mjs",
+    "lib/memorax-code-dsh-adapter/memorax-code-adapter-common/src/repo-memory/repo-memory-job-supervisor.mjs",
+    "lib/memorax-code-dsh-adapter/memorax-code-adapter-common/src/repo-memory/repo-memory-job-worker.mjs",
+    "lib/memorax-code-dsh-adapter/memorax-code-adapter-common/src/repo-memory/repo-memory-update-policy-evaluator.mjs",
+    "lib/memorax-code-dsh-adapter/memorax-code-adapter-common/src/repo-memory/repo-memory-update-policy.mjs",
+    "lib/memorax-code-dsh-adapter/memorax-code-adapter-common/src/runtime-record.mjs",
+    "lib/memorax-code-dsh-adapter/memorax-code-adapter-common/src/windows-cli-invocation.mjs",
+    "lib/memorax-code-dsh-adapter/skills/memorax-code/SKILL.md",
+    "lib/memorax-code-dsh-adapter/skills/memorax-code/dsh-definition.json",
+    "lib/memorax-code-dsh-adapter/skills/memorax-code/scripts/user_profile_memory.py",
     "lib/memorax-code-backend/dist/service-entrypoint.js",
     "lib/memorax-code-backend/dist/memorax-cli.js",
     "lib/memorax-code-backend/dist/jsonl-append.js",
@@ -242,6 +264,7 @@ fi
 export HOME="$home_dir"
 export MEMORAX_CODE_HOME="$home_dir/.memorax-code"
 export CODEX_HOME="$home_dir/.codex-memorax-code-package-check"
+export DSH_HOME="$home_dir/.dsh-memorax-code-package-check"
 export CLAUDE_CONFIG_DIR="$home_dir/.claude-memorax-code-package-check"
 export CLAUDE_HOME="$CLAUDE_CONFIG_DIR"
 package_install_port="$(node -e 'const net = require("node:net"); const server = net.createServer(); server.listen(0, "127.0.0.1", () => { console.log(server.address().port); server.close(); });')"
@@ -269,6 +292,7 @@ PY_INSTALLED_DOCS
 
 for relative in \
   lib/client-hook-runtime.mjs \
+  lib/dsh-plugin-install.mjs \
   lib/resolve-claude-command.mjs \
   lib/resolve-codex-command.mjs \
   lib/vscode-extension-command.mjs \
@@ -311,7 +335,26 @@ for relative in \
   lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/repo-memory/repo-memory-auto-build.mjs \
   lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/repo-memory/repo-procedure-memory-context.mjs \
   lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/repo-memory/repo-user-profile-context.mjs \
-  lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/skills/memorax-code/SKILL.md
+  lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/skills/memorax-code/SKILL.md \
+  lib/memorax-code-dsh-adapter/package.json \
+  lib/memorax-code-dsh-adapter/cordis.patch.yml \
+  lib/memorax-code-dsh-adapter/src/index.mjs \
+  lib/memorax-code-dsh-adapter/src/backend-client.mjs \
+  lib/memorax-code-dsh-adapter/hooks/repo-memory-job.mjs \
+  lib/memorax-code-dsh-adapter/memorax-code-adapter-common/src/backend-connection.mjs \
+  lib/memorax-code-dsh-adapter/memorax-code-adapter-common/src/config-utils.mjs \
+  lib/memorax-code-dsh-adapter/memorax-code-adapter-common/src/hooks/ensure-backend-runner.mjs \
+  lib/memorax-code-dsh-adapter/memorax-code-adapter-common/src/repo-memory/repo-memory-job-context.mjs \
+  lib/memorax-code-dsh-adapter/memorax-code-adapter-common/src/repo-memory/repo-memory-job-marker.mjs \
+  lib/memorax-code-dsh-adapter/memorax-code-adapter-common/src/repo-memory/repo-memory-job-supervisor.mjs \
+  lib/memorax-code-dsh-adapter/memorax-code-adapter-common/src/repo-memory/repo-memory-job-worker.mjs \
+  lib/memorax-code-dsh-adapter/memorax-code-adapter-common/src/repo-memory/repo-memory-update-policy-evaluator.mjs \
+  lib/memorax-code-dsh-adapter/memorax-code-adapter-common/src/repo-memory/repo-memory-update-policy.mjs \
+  lib/memorax-code-dsh-adapter/memorax-code-adapter-common/src/runtime-record.mjs \
+  lib/memorax-code-dsh-adapter/memorax-code-adapter-common/src/windows-cli-invocation.mjs \
+  lib/memorax-code-dsh-adapter/skills/memorax-code/SKILL.md \
+  lib/memorax-code-dsh-adapter/skills/memorax-code/dsh-definition.json \
+  lib/memorax-code-dsh-adapter/skills/memorax-code/scripts/user_profile_memory.py
 do
   test -f "$package_install_root/$relative"
 done

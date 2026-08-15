@@ -7,11 +7,17 @@ import {
   readdir,
   rm,
   stat,
+  writeFile,
 } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildClaudeMarketplace } from "../packages/ts/memorax-code-claude-adapter/scripts/build-marketplace.mjs";
 import { assertLocalTraceOnly } from "./check-local-trace-only.mjs";
+import {
+  assertDshSkillDefinition,
+  dshRepoMemoryJobSource,
+  materializeDshSkillDefinition,
+} from "./dsh-skill-materialization.mjs";
 import { isAllowedNpmPackPath } from "./npm-package-layout.mjs";
 import { npmShippedDocs } from "./npm-shipped-docs.mjs";
 import {
@@ -68,6 +74,7 @@ async function stageMainPackage(destination) {
     "lib/memorax-code-adapter-common",
     "lib/memorax-code-codex-adapter",
     "lib/memorax-code-claude-adapter",
+    "lib/memorax-code-dsh-adapter",
   ]) {
     await mkdir(join(destination, path), { recursive: true });
   }
@@ -81,6 +88,7 @@ async function stageMainPackage(destination) {
   for (const mapping of npmMainSourceTrees) {
     await copyTree(mapping.source, join(destination, mapping.destination));
   }
+  await materializeDshSkill(destination);
   await copyGeneratedTree(
     "packages/ts/memorax-code-backend/dist",
     join(destination, "lib/memorax-code-backend/dist"),
@@ -97,6 +105,32 @@ async function stageMainPackage(destination) {
     "packages/ts/memorax-code-claude-adapter/package.json",
     join(destination, "lib/memorax-code-claude-adapter/package.json"),
   );
+  await copyFile(
+    "packages/ts/memorax-code-dsh-adapter/package.json",
+    join(destination, "lib/memorax-code-dsh-adapter/package.json"),
+  );
+  await copyFile(
+    "packages/ts/memorax-code-dsh-adapter/cordis.patch.yml",
+    join(destination, "lib/memorax-code-dsh-adapter/cordis.patch.yml"),
+  );
+  for (const source of [
+    "backend-connection.mjs",
+    "config-utils.mjs",
+    "hooks/ensure-backend-runner.mjs",
+    "repo-memory/repo-memory-job-context.mjs",
+    "repo-memory/repo-memory-job-marker.mjs",
+    "repo-memory/repo-memory-job-supervisor.mjs",
+    "repo-memory/repo-memory-job-worker.mjs",
+    "repo-memory/repo-memory-update-policy-evaluator.mjs",
+    "repo-memory/repo-memory-update-policy.mjs",
+    "runtime-record.mjs",
+    "windows-cli-invocation.mjs",
+  ]) {
+    await copyFile(
+      `packages/ts/memorax-code-adapter-common/src/${source}`,
+      join(destination, "lib/memorax-code-dsh-adapter/memorax-code-adapter-common/src", source),
+    );
+  }
 
   await buildClaudeMarketplace({
     outputDir: join(destination, "lib/memorax-code-claude-marketplace"),
@@ -134,6 +168,7 @@ async function validateStaging(packageRoot) {
     "bin/memorax-cli.mjs",
     "bin/memorax-code-npm-preinstall.mjs",
     "lib/client-hook-runtime.mjs",
+    "lib/dsh-plugin-install.mjs",
     "lib/node-version.mjs",
     "lib/resolve-claude-command.mjs",
     "lib/resolve-codex-command.mjs",
@@ -171,10 +206,46 @@ async function validateStaging(packageRoot) {
     "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/backend-connection.mjs",
     "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/runtime-record.mjs",
     "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/hooks/ensure-backend-runner.mjs",
+    "lib/memorax-code-dsh-adapter/package.json",
+    "lib/memorax-code-dsh-adapter/cordis.patch.yml",
+    "lib/memorax-code-dsh-adapter/src/index.mjs",
+    "lib/memorax-code-dsh-adapter/src/backend-client.mjs",
+    "lib/memorax-code-dsh-adapter/hooks/repo-memory-job.mjs",
+    "lib/memorax-code-dsh-adapter/memorax-code-adapter-common/src/backend-connection.mjs",
+    "lib/memorax-code-dsh-adapter/memorax-code-adapter-common/src/config-utils.mjs",
+    "lib/memorax-code-dsh-adapter/memorax-code-adapter-common/src/hooks/ensure-backend-runner.mjs",
+    "lib/memorax-code-dsh-adapter/memorax-code-adapter-common/src/repo-memory/repo-memory-job-context.mjs",
+    "lib/memorax-code-dsh-adapter/memorax-code-adapter-common/src/repo-memory/repo-memory-job-marker.mjs",
+    "lib/memorax-code-dsh-adapter/memorax-code-adapter-common/src/repo-memory/repo-memory-job-supervisor.mjs",
+    "lib/memorax-code-dsh-adapter/memorax-code-adapter-common/src/repo-memory/repo-memory-job-worker.mjs",
+    "lib/memorax-code-dsh-adapter/memorax-code-adapter-common/src/repo-memory/repo-memory-update-policy-evaluator.mjs",
+    "lib/memorax-code-dsh-adapter/memorax-code-adapter-common/src/repo-memory/repo-memory-update-policy.mjs",
+    "lib/memorax-code-dsh-adapter/memorax-code-adapter-common/src/runtime-record.mjs",
+    "lib/memorax-code-dsh-adapter/memorax-code-adapter-common/src/windows-cli-invocation.mjs",
+    "lib/memorax-code-dsh-adapter/skills/memorax-code/SKILL.md",
+    "lib/memorax-code-dsh-adapter/skills/memorax-code/dsh-definition.json",
   ]) {
     if (!(await stat(join(packageRoot, requiredPath)).catch(() => undefined))?.isFile()) {
       throw new Error(`staged npm package is missing required runtime entrypoint: ${requiredPath}`);
     }
+  }
+  const canonicalSkill = await readFile(
+    join(packageRoot, "lib/memorax-code-dsh-adapter/skills/memorax-code/SKILL.md"),
+    "utf8",
+  );
+  assertDshSkillDefinition(await readJson(
+    join(packageRoot, "lib/memorax-code-dsh-adapter/skills/memorax-code/dsh-definition.json"),
+  ), canonicalSkill);
+  const dshRepoRead = await readFile(
+    join(packageRoot, "lib/memorax-code-dsh-adapter/skills/memorax-code/references/repo-read.md"),
+    "utf8",
+  );
+  const canonicalRepoRead = await readFile(
+    join(repoRoot, "packages/ts/memorax-code-codex-adapter/skills/memorax-code/references/repo-read.md"),
+    "utf8",
+  );
+  if (dshRepoRead !== canonicalRepoRead) {
+    throw new Error("staged DSH repo-read must remain byte-identical to the canonical skill");
   }
   await walk(packageRoot, async (path, entry) => {
     const relativePath = relative(packageRoot, path);
@@ -191,6 +262,31 @@ async function validateStaging(packageRoot) {
       throw new Error(`forbidden staged path: ${relativePath}`);
     }
   });
+}
+
+async function materializeDshSkill(packageRoot) {
+  const skillRoot = join(packageRoot, "lib/memorax-code-dsh-adapter/skills/memorax-code");
+  const canonicalSkill = await readFile(join(skillRoot, "SKILL.md"), "utf8");
+  await writeFile(
+    join(skillRoot, "dsh-definition.json"),
+    `${JSON.stringify(materializeDshSkillDefinition(canonicalSkill), null, 2)}\n`,
+    "utf8",
+  );
+  const hooksRoot = join(packageRoot, "lib/memorax-code-dsh-adapter/hooks");
+  await mkdir(hooksRoot, { recursive: true });
+  await writeFile(join(hooksRoot, "repo-memory-job.mjs"), dshRepoMemoryJobSource(), "utf8");
+  if (process.platform !== "win32") {
+    await chmod(join(hooksRoot, "repo-memory-job.mjs"), 0o755);
+  }
+  for (const path of [
+    "scripts/collect_all.py",
+    "scripts/user_profile_memory.py",
+    "scripts/validate_memory.py",
+  ]) {
+    if (!(await stat(join(skillRoot, path)).catch(() => undefined))?.isFile()) {
+      throw new Error(`staged DSH skill is missing a package-local resource: ${path}`);
+    }
+  }
 }
 
 function parseArgs(argv) {

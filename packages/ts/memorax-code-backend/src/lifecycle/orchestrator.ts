@@ -77,6 +77,7 @@ type MemoraxCodeStopExecution = Readonly<{
   remainingClients: ManagedClients | undefined;
 }>;
 
+const EXTERNAL_BACKEND_CLIENT_ACTIVE_ENV = "MEMORAX_CODE_EXTERNAL_BACKEND_CLIENT_ACTIVE";
 
 export async function collectMemoraxCodeStatus(
   backendUrl: string,
@@ -318,7 +319,9 @@ async function executeMemoraxCodeStop(
     : undefined;
   const hasRemainingClients = remaining?.codex === true || remaining?.claude === true;
   const backendOnlyStop = !clients.codex && !clients.claude;
-  const needsBackendStop = backendOnlyStop || !hasRemainingClients;
+  const externalBackendClientActive = externalBackendClientIsActive();
+  const needsBackendStop = !externalBackendClientActive
+    && (backendOnlyStop || !hasRemainingClients);
   // A true partial stop keeps the shared Backend for remaining clients. Every
   // other stop establishes Backend shutdown before mutating client state.
   const stoppedBackend = needsBackendStop
@@ -343,7 +346,12 @@ async function executeMemoraxCodeStop(
   const adaptersOk = codexAdapter?.ok !== false && claudeAdapter?.ok !== false;
   const backend = stoppedBackend
     ?? (adaptersOk
-      ? preservedBackendResult(serviceOptions, "active_clients_remaining")
+      ? preservedBackendResult(
+          serviceOptions,
+          externalBackendClientActive
+            ? "external_client_remaining"
+            : "active_clients_remaining",
+        )
       : preservedBackendResult(serviceOptions, "adapter_disable_failed"));
   const ok = backend.ok && codexAdapter?.ok !== false && claudeAdapter?.ok !== false;
   return {
@@ -408,7 +416,8 @@ async function uninstallMemoraxCodeServiceLocked(
   const { activeClients, clients, memoraxCodeHome } = context;
   const configuredClients = managedClientsFor([], serviceOptions);
   const canRemoveSharedPackage = includesManagedClients(clients, configuredClients)
-    && (!activeClients || includesManagedClients(clients, activeClients));
+    && (!activeClients || includesManagedClients(clients, activeClients))
+    && !externalBackendClientIsActive();
   const stopExecution = await executeMemoraxCodeStop(serviceOptions, argv, context);
   const stopped = stopExecution.report;
   if (!stopped.ok) {
@@ -561,6 +570,12 @@ function argValue(argv: string[], name: string): string | undefined {
 
 function includesManagedClients(selection: ManagedClients, required: ManagedClients): boolean {
   return (!required.codex || selection.codex) && (!required.claude || selection.claude);
+}
+
+function externalBackendClientIsActive(): boolean {
+  return ["1", "true", "yes", "on"].includes(
+    String(process.env[EXTERNAL_BACKEND_CLIENT_ACTIVE_ENV] ?? "").trim().toLowerCase(),
+  );
 }
 
 function preservedBackendResult(

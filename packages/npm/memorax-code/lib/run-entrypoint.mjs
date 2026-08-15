@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { unsupportedNodeVersionMessage } from "./node-version.mjs";
@@ -43,12 +44,7 @@ export function ensureInstallWatchdogEnv(root = packageRoot) {
 
 export async function runBackendEntrypoint(relativeEntrypoint) {
   if (!ensureSupportedNodeRuntime()) return;
-  ensureCodexCommandEnv();
-  ensureClaudeCommandEnv();
-  ensureBundledSkillEnv();
-  ensureClaudeMarketplaceEnv();
-  ensureInstallWatchdogEnv();
-  const entrypoint = join(packageRoot, "lib", "memorax-code-backend", "dist", relativeEntrypoint);
+  const entrypoint = prepareBackendEntrypoint(relativeEntrypoint);
   const previousArgv1 = process.argv[1];
   process.argv[1] = entrypoint;
   try {
@@ -56,6 +52,39 @@ export async function runBackendEntrypoint(relativeEntrypoint) {
   } finally {
     process.argv[1] = previousArgv1;
   }
+}
+
+export async function runBackendEntrypointChild(relativeEntrypoint, args, options = {}) {
+  if (!ensureSupportedNodeRuntime()) return 1;
+  const entrypoint = prepareBackendEntrypoint(relativeEntrypoint);
+  const child = spawn(process.execPath, [entrypoint, ...args], {
+    env: options.env ?? process.env,
+    stdio: "inherit",
+    windowsHide: true,
+  });
+  return await new Promise((resolve) => {
+    child.once("error", (error) => {
+      console.error(`memorax-code: failed to start lifecycle command: ${error.message}`);
+      resolve(1);
+    });
+    child.once("close", (code, signal) => {
+      if (signal) {
+        console.error(`memorax-code: lifecycle command exited from signal ${signal}`);
+        resolve(1);
+      } else {
+        resolve(code ?? 1);
+      }
+    });
+  });
+}
+
+function prepareBackendEntrypoint(relativeEntrypoint) {
+  ensureCodexCommandEnv();
+  ensureClaudeCommandEnv();
+  ensureBundledSkillEnv();
+  ensureClaudeMarketplaceEnv();
+  ensureInstallWatchdogEnv();
+  return join(packageRoot, "lib", "memorax-code-backend", "dist", relativeEntrypoint);
 }
 
 export async function runCodexAdapterCli() {

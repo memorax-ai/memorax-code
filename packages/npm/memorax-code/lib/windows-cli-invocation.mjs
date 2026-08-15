@@ -37,7 +37,11 @@ export function resolveWindowsCliInvocation(command, args, options = {}) {
     .filter(isNodeEntrypoint)
     .find((candidate) => fileExists(candidate));
   if (!cli) {
-    const override = name === "claude" ? "MEMORAX_CODE_CLAUDE_CLI_JS" : "MEMORAX_CODE_CODEX_CLI_JS";
+    const override = name === "claude"
+      ? "MEMORAX_CODE_CLAUDE_CLI_JS"
+      : name === "dsh"
+        ? "MEMORAX_CODE_DSH_CLI_JS"
+        : "MEMORAX_CODE_CODEX_CLI_JS";
     throw new Error(
       `refusing to execute ${pathApi.basename(resolvedCommand)} through a command shell; `
       + `set ${override} to its Node entrypoint`,
@@ -73,6 +77,14 @@ function cliEntrypointCandidates(name, command, env, pathApi) {
       env.CLAUDE_CLI_JS,
       pathApi.join(root, "node_modules", "@anthropic-ai", "claude-code", "cli.js"),
       pathApi.join(root, "..", "@anthropic-ai", "claude-code", "cli.js"),
+    ];
+  }
+  if (name === "dsh") {
+    return [
+      env.MEMORAX_CODE_DSH_CLI_JS,
+      env.DSH_CLI_JS,
+      pathApi.join(root, "node_modules", "@deepseek-ai", "dsh", "lib", "bin.js"),
+      pathApi.join(root, "..", "@deepseek-ai", "dsh", "lib", "bin.js"),
     ];
   }
   return [];

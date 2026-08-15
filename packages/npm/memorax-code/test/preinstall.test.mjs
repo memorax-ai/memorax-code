@@ -47,6 +47,20 @@ test("npm preinstall is a no-op without managed PID authority", async () => {
   }
 });
 
+test("npm preinstall retires an enabled DSH authority even when the Backend is already stopped", async () => {
+  const fixture = await createFixture({ withPid: false, withDshState: true });
+  try {
+    const result = await runPreinstall(fixture);
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(
+      await readFile(fixture.logPath, "utf8"),
+      `stop --home ${fixture.memoraxCodeHome} --clients none --json\n`,
+    );
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test("npm preinstall fails closed when Backend retirement exceeds its total budget", {
   timeout: 3_000,
 }, async () => {
@@ -67,6 +81,7 @@ async function createFixture({
   hangStop = false,
   timeoutMs,
   withPid = true,
+  withDshState = false,
 } = {}) {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-npm-preinstall-"));
   const binDir = join(root, "bin");
@@ -100,6 +115,11 @@ async function createFixture({
   if (withPid) {
     await mkdir(dirname(pidPath), { recursive: true });
     await writeFile(pidPath, "{}\n");
+  }
+  if (withDshState) {
+    const dshStatePath = join(memoraxCodeHome, "adapters", "dsh", "state.json");
+    await mkdir(dirname(dshStatePath), { recursive: true });
+    await writeFile(dshStatePath, "{}\n");
   }
   return { root, memoraxCodeHome, pidPath, logPath };
 }

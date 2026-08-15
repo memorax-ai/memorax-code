@@ -588,6 +588,41 @@ test("partial client stop preserves Backend until an explicit Backend-only stop"
   }
 });
 
+test("an external managed adapter keeps the shared Backend and npm package active", async () => {
+  const home = await mkdtemp(join(tmpdir(), "memorax-code-external-client-home-"));
+  const port = await freePort();
+  const cliPath = fileURLToPath(new URL("../../dist/memorax-code.js", import.meta.url));
+  const commonArgs = ["--home", home, "--port", String(port), "--clients", "none"];
+  const externalEnv = { MEMORAX_CODE_EXTERNAL_BACKEND_CLIENT_ACTIVE: "1" };
+  await writeManagedClientsConfig(home, { codex: false, claude: false });
+  try {
+    const started = await runCli(cliPath, ["start", "--json", ...commonArgs]);
+    assert.equal(started.code, 0, `${started.stdout}\n${started.stderr}`);
+
+    const stopped = await runCli(cliPath, ["stop", "--json", ...commonArgs], { env: externalEnv });
+    assert.equal(stopped.code, 0, `${stopped.stdout}\n${stopped.stderr}`);
+    const stopReport = JSON.parse(stopped.stdout);
+    assert.equal(stopReport.backend.skipped, true);
+    assert.equal(stopReport.backend.reason, "external_client_remaining");
+    assert.equal(await pathExists(join(home, "runtime", "backend", "backend.pid.json")), true);
+
+    const uninstalled = await runCli(cliPath, [
+      "uninstall",
+      "--json",
+      ...commonArgs,
+      "--no-npm-uninstall",
+    ], { env: externalEnv });
+    assert.equal(uninstalled.code, 0, `${uninstalled.stdout}\n${uninstalled.stderr}`);
+    const uninstallReport = JSON.parse(uninstalled.stdout);
+    assert.equal(uninstallReport.backend.reason, "external_client_remaining");
+    assert.equal(uninstallReport.npmPackageRemoval.reason, "partial_client_uninstall");
+    assert.equal(await pathExists(join(home, "runtime", "backend", "backend.pid.json")), true);
+  } finally {
+    await runCli(cliPath, ["stop", "--json", ...commonArgs]);
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
 test("partial stop without an active marker does not invent remaining clients", async () => {
   const home = await mkdtemp(join(tmpdir(), "memorax-code-clients-no-active-home-"));
   const codexHome = await mkdtemp(join(tmpdir(), "memorax-code-clients-no-active-codex-"));

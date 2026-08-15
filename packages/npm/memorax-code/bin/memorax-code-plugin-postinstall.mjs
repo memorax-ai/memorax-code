@@ -18,6 +18,7 @@ import {
   normalizeMemoraxMemoryOutputLanguage,
 } from "../lib/memorax-code-adapter-common/src/memorax-defaults.mjs";
 import { stagePackagedClientHookRuntime } from "../lib/client-hook-runtime.mjs";
+import { discoverDshProfiles } from "../lib/dsh-plugin-install.mjs";
 import { ensureClaudeCommandEnv } from "../lib/resolve-claude-command.mjs";
 import { ensureCodexCommandEnv } from "../lib/resolve-codex-command.mjs";
 import { resolveWindowsCliInvocation } from "../lib/windows-cli-invocation.mjs";
@@ -52,6 +53,8 @@ const scriptedAnswers = (canPrompt() || canPromptForUpdate()) && process.stdin.i
   ? parseScriptedAnswers(readFileSync(0, "utf8"))
   : undefined;
 const previousClients = readPersistedClientSelection();
+const dshProfiles = discoverDshProfiles();
+const dshDetected = dshProfiles.length > 0;
 if (seedMissingMemoraxCodeConfig() === "failed") {
   printPostinstallSummary("not-verified");
   process.exit(0);
@@ -96,8 +99,9 @@ const installClients = detectedClients.filter((client) => selectedClients.includ
 if (updatePostinstall && previousClients !== undefined) {
   log(clientSelectionMessage(selectedClients));
 } else {
-  log(detectedClientMessage(installClients));
+  log(detectedClientMessage(installClients, dshProfiles));
 }
+if (dshDetected) log(`DeepSeek Harness profiles: found (${dshProfiles.map((profile) => profile.name).join(", ")}); the native plugin will be reconciled by \`memorax-code start\`.`);
 if (requestedClients.includes("codex") && !skipCodexPluginInstall && !codexPreflight.ok) {
   log("Codex runtime was not detected; skipping its adapter setup.");
 }
@@ -110,7 +114,7 @@ if (writeClientSelectionConfig(selectedClients) === "failed") {
 }
 const clientMode = clientModeFor(installClients);
 let memoraxConfigResult = "skipped";
-if (installClients.length > 0) {
+if (installClients.length > 0 || dshDetected) {
   memoraxConfigResult = await maybeConfigureMemoraxMemory(scriptedAnswers);
 }
 if (memoraxConfigResult === "configured") {
@@ -953,9 +957,12 @@ function clientSelectionMessage(clients) {
   return "Skipping client adapter setup for this npm postinstall.";
 }
 
-function detectedClientMessage(clients) {
-  if (clients.length === 0) {
+function detectedClientMessage(clients, dshProfiles = []) {
+  if (clients.length === 0 && dshProfiles.length === 0) {
     return "No supported client runtime was detected; starting the shared Backend without client adapters.";
+  }
+  if (clients.length === 0) {
+    return "Detected existing DeepSeek Harness profiles; configuring the native DSH plugin and shared Backend.";
   }
   return `Detected supported client runtimes. ${clientSelectionMessage(clients)}`;
 }
