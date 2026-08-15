@@ -78,11 +78,22 @@ export function atomicWriteJson(path, value) {
 
 export function atomicWriteText(path, value) {
   mkdirSync(dirname(path), { recursive: true });
-  const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
+  const tmp = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  let descriptor;
   try {
-    writeFileSync(tmp, value);
+    descriptor = openSync(tmp, "wx", 0o600);
+    writeFileSync(descriptor, value);
+    closeSync(descriptor);
+    descriptor = undefined;
     renameSync(tmp, path);
   } catch (error) {
+    if (descriptor !== undefined) {
+      try {
+        closeSync(descriptor);
+      } catch {
+        // Best-effort cleanup after an incomplete write.
+      }
+    }
     rmSync(tmp, { force: true });
     throw error;
   }

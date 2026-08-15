@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      # The backend test suite installs its own dependencies via `npm ci`
+      # inside the Makefile (`test-ts` and `test-npm-package`), so no separate
+      # dependency install step is required here.
+      - name: Run tests
+        run: make test
+
+      - name: Check documentation
+        run: make docs-check
+
+  # `make npm-package-check` additionally builds and installs the published
+  # package and runs install/start smoke tests that require a functional
+  # `claude` and `codex` CLI on PATH (the Claude and Codex adapter setup runs
+  # their version probes). A bare GitHub runner does not ship these CLIs, and
+  # `@anthropic-ai/claude-code` does not run its native-binary install script
+  # under the default npm allow-scripts policy. This job is therefore kept
+  # non-blocking; it still exercises package staging, packing, install, and the
+  # CLI smoke checks that do not depend on those client runtimes.
+  npm-package-check:
+    name: npm package check
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Build and verify the npm package
+        run: make npm-package-check

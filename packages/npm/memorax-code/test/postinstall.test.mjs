@@ -1361,7 +1361,9 @@ test("postinstall does not auto-install Codex plugin when no cache exists yet", 
   }
 });
 
-test("postinstall uses the Codex App bundled runtime when no standalone CLI is installed", async () => {
+test("postinstall uses the Codex App bundled runtime when no standalone CLI is installed", {
+  skip: process.platform !== "darwin" && process.platform !== "win32",
+}, async () => {
   const run = await runPostinstall({
     codexAvailable: false,
     codexAppOnly: true,

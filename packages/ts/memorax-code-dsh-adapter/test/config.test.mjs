@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
   DEFAULT_BACKEND_URL,
@@ -74,4 +75,12 @@ test("normalizeHttpUrl rejects non-http URLs and trims trailing slashes", () => 
 
 test("backendUrlFromHostPort returns undefined without host or port", () => {
   assert.equal(backendUrlFromHostPort({}), undefined);
+});
+
+test("cordis bundle patch timeoutMs matches the adapter default", () => {
+  const patchUrl = new URL("../cordis.patch.yml", import.meta.url);
+  const patch = readFileSync(patchUrl, "utf8");
+  const match = /^\s*timeoutMs:\s*(\d+)\s*$/m.exec(patch);
+  assert.ok(match, "cordis.patch.yml must declare a timeoutMs config default");
+  assert.equal(Number(match[1]), DEFAULT_TIMEOUT_MS);
 });

@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { test } from "node:test";
-import { createBackendForwarder, postBackend } from "../src/backend-forwarder.mjs";
+import {
+  DSH_BACKEND_HTTP_ERROR,
+  DSH_BACKEND_NOT_CONFIGURED,
+  DSH_BACKEND_TIMEOUT,
+  DSH_BACKEND_UNREACHABLE,
+  DshBackendError,
+  createBackendForwarder,
+  postBackend,
+} from "../src/backend-forwarder.mjs";
 
 test("postBackend posts the command and returns the parsed response", async (t) => {
   const received = [];
@@ -33,19 +41,73 @@ test("postBackend posts the command and returns the parsed response", async (t) 
   assert.equal(received[0].body.client, "dsh");
 });
 
-test("postBackend swallows connection failures and returns an error result", async () => {
-  const result = await postBackend("/memory/writeback", { version: 1 }, {
-    backendUrl: "http://127.0.0.1:1",
-    timeoutMs: 200,
-  });
-  assert.equal(result.ok, false);
-  assert.equal(typeof result.error, "string");
+test("postBackend throws DshBackendError with unreachable code on connection failures", async () => {
+  await assert.rejects(
+    () => postBackend("/memory/writeback", { version: 1 }, {
+      backendUrl: "http://127.0.0.1:59999",
+      timeoutMs: 200,
+    }),
+    (error) => {
+      assert.ok(error instanceof DshBackendError);
+      assert.equal(error.code, DSH_BACKEND_UNREACHABLE);
+      assert.equal(error.name, "DshBackendError");
+      return true;
+    },
+  );
 });
 
-test("postBackend returns an error when the backend URL is missing", async () => {
-  const result = await postBackend("/memory/turn-start", { version: 1 }, {});
-  assert.equal(result.ok, false);
-  assert.equal(result.error, "backend URL is not configured");
+test("postBackend throws DshBackendError with timeout code when the backend stalls", async (t) => {
+  const server = createServer(() => {});
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+
+  await assert.rejects(
+    () => postBackend("/memory/turn-start", { version: 1 }, {
+      backendUrl: `http://127.0.0.1:${port}`,
+      timeoutMs: 100,
+    }),
+    (error) => {
+      assert.ok(error instanceof DshBackendError);
+      assert.equal(error.code, DSH_BACKEND_TIMEOUT);
+      return true;
+    },
+  );
+});
+
+test("postBackend throws DshBackendError with http_error code on non-2xx responses", async (t) => {
+  const server = createServer((req, res) => {
+    res.writeHead(503, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: "unavailable" }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+
+  await assert.rejects(
+    () => postBackend("/memory/writeback", { version: 1 }, {
+      backendUrl: `http://127.0.0.1:${port}`,
+      timeoutMs: 1000,
+    }),
+    (error) => {
+      assert.ok(error instanceof DshBackendError);
+      assert.equal(error.code, DSH_BACKEND_HTTP_ERROR);
+      assert.equal(error.status, 503);
+      return true;
+    },
+  );
+});
+
+test("postBackend throws DshBackendError when the backend URL is missing", async () => {
+  await assert.rejects(
+    () => postBackend("/memory/turn-start", { version: 1 }, {}),
+    (error) => {
+      assert.ok(error instanceof DshBackendError);
+      assert.equal(error.code, DSH_BACKEND_NOT_CONFIGURED);
+      assert.equal(error.message, "backend URL is not configured");
+      return true;
+    },
+  );
 });
 
 test("createBackendForwarder returns a forward function bound to the connection", async (t) => {

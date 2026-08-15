@@ -70,6 +70,37 @@ test("Backend health reports current lifecycle and security state", async () => 
   }
 });
 
+test("Backend health hides sessionHome from unauthenticated clients when auth is required", async () => {
+  const sessionHome = await mkdtemp(join(tmpdir(), "memorax-code-health-auth-"));
+  const server = createBackendServer(createBackendState("127.0.0.1", {
+    sessionHome,
+    authToken: "secret-token",
+    security: {
+      mode: "local",
+      allowExternalAccess: false,
+    },
+  }));
+  const backendUrl = await listen(server);
+  try {
+    const anonymous = await fetch(new URL("/health", backendUrl));
+    assert.equal(anonymous.status, 200);
+    const anonymousBody = await anonymous.json();
+    assert.equal(anonymousBody.ok, true);
+    assert.equal(anonymousBody.authRequired, true);
+    assert.equal(anonymousBody.state, undefined);
+
+    const authenticated = await fetch(new URL("/health", backendUrl), {
+      headers: { authorization: "Bearer secret-token" },
+    });
+    assert.equal(authenticated.status, 200);
+    const authenticatedBody = await authenticated.json();
+    assert.deepEqual(authenticatedBody.state, { sessionHome });
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    await rm(sessionHome, { recursive: true, force: true });
+  }
+});
+
 test("Backend lifecycle starts writeback reconciliation and persists terminal status", { concurrency: false }, async () => {
   const sessionHome = await mkdtemp(join(tmpdir(), "memorax-code-backend-writeback-reconciler-"));
   const sessionDir = join(sessionHome, "debug", "traces", "codex", "sessions", "session-lifecycle");

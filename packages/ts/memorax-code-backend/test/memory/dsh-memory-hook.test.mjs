@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import {
+  parseSkillReminderCommand,
   parseTurnDiscardCommand,
   parseTurnStartCommand,
   parseWritebackCommand,
@@ -111,6 +112,40 @@ test("parseTurnDiscardCommand accepts a DSH discard command and rejects other cl
     sessionId: "session-dsh",
     turnId: "dsh-0-3",
   }).ok, false);
+});
+
+test("parseSkillReminderCommand rejects DSH and keeps codex and claude-code reminders", () => {
+  assert.equal(parseSkillReminderCommand({
+    version: 1,
+    client: "dsh",
+    sessionId: "session-dsh",
+    turnId: "dsh-0-0",
+    transcriptPath: "/tmp/dsh.jsonl",
+    content: "reminder",
+    triggers: ["cadence"],
+  }).ok, false);
+
+  const codex = parseSkillReminderCommand({
+    version: 1,
+    client: "codex",
+    sessionId: "session-dsh",
+    turnId: "turn-1",
+    transcriptPath: "/tmp/codex.jsonl",
+    content: "reminder",
+    triggers: ["cadence"],
+  });
+  assert.equal(codex.ok, true);
+
+  const claude = parseSkillReminderCommand({
+    version: 1,
+    client: "claude-code",
+    sessionId: "session-dsh",
+    promptId: "prompt-1",
+    transcriptPath: "/tmp/claude.jsonl",
+    content: "reminder",
+    triggers: ["post_compaction"],
+  });
+  assert.equal(claude.ok, true);
 });
 
 test("DSH memory service records a turn start and schedules an inline writeback", async () => {

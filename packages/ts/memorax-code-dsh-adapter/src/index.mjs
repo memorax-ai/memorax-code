@@ -6,8 +6,9 @@ export const name = "memorax-dsh";
 
 export const inject = [];
 
-export function apply(ctx, config = {}) {
-  const connection = resolveBackendConnection(config, process.env);
+export function apply(ctx, config) {
+  const resolvedConfig = config ?? {};
+  const connection = resolveBackendConnection(resolvedConfig, process.env);
   const debug = connection.debug
     ? (message, detail) => console.error(`[memorax-dsh] ${message}`, detail ?? "")
     : () => {};

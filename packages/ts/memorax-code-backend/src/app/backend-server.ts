@@ -93,7 +93,7 @@ export function createBackendServer(
       path: url.pathname,
     });
     try {
-      if (req.method === "GET" && url.pathname === "/health") return handleHealthRequest(state, res);
+      if (req.method === "GET" && url.pathname === "/health") return handleHealthRequest(state, req, res, url);
       if (!authorized(state, req, url)) return json(res, 401, { ok: false, error: "unauthorized" });
       if (
         url.pathname === "/memory-viewer"

@@ -13,6 +13,7 @@ export const RELEASE_VERSION_TARGETS = Object.freeze([
   { file: "packages/ts/memorax-code-backend/package-lock.json", field: ["version"] },
   { file: "packages/ts/memorax-code-backend/package-lock.json", field: ["packages", "", "version"] },
   { file: "packages/ts/memorax-code-codex-adapter/package.json", field: ["version"] },
+  { file: "packages/ts/memorax-code-dsh-adapter/package.json", field: ["version"] },
   { file: "packages/ts/memorax-code-codex-adapter/.codex-plugin/plugin.json", field: ["version"] },
   { file: "packages/ts/memorax-code-codex-adapter/hooks/runtime-shell.json", field: ["shellVersion"] },
   { file: "packages/ts/memorax-code-claude-adapter/package.json", field: ["version"] },

@@ -1,24 +1,49 @@
 import { DEFAULT_TIMEOUT_MS } from "./config.mjs";
 
+export const DSH_BACKEND_UNREACHABLE = "DSH_BACKEND_UNREACHABLE";
+export const DSH_BACKEND_TIMEOUT = "DSH_BACKEND_TIMEOUT";
+export const DSH_BACKEND_HTTP_ERROR = "DSH_BACKEND_HTTP_ERROR";
+export const DSH_BACKEND_NOT_CONFIGURED = "DSH_BACKEND_NOT_CONFIGURED";
+
+export class DshBackendError extends Error {
+  constructor(message, code, options = {}) {
+    super(message);
+    this.name = "DshBackendError";
+    this.code = code;
+    if (options.status !== undefined) this.status = options.status;
+    if (options.cause !== undefined) this.cause = options.cause;
+  }
+}
+
 export async function postBackend(path, body, options = {}) {
   const backendUrl = options.backendUrl;
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  if (!backendUrl) return { ok: false, error: "backend URL is not configured" };
+  if (!backendUrl) {
+    throw new DshBackendError("backend URL is not configured", DSH_BACKEND_NOT_CONFIGURED);
+  }
+  let response;
   try {
     const headers = { "content-type": "application/json", connection: "close" };
     if (options.token) headers["x-memorax-code-backend-token"] = options.token;
     const url = new URL(path, backendUrl.endsWith("/") ? backendUrl : `${backendUrl}/`);
-    const response = await fetch(url, {
+    response = await fetch(url, {
       method: "POST",
       headers,
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(timeoutMs),
     });
-    const parsed = await response.json().catch(() => undefined);
-    return { ok: response.ok, status: response.status, body: parsed };
   } catch (error) {
-    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    throw dshBackendNetworkError(error);
   }
+  const parsed = await response.json().catch(() => undefined);
+  if (!response.ok) {
+    throw new DshBackendError(
+      `Backend rejected ${path} with HTTP ${response.status}`,
+      DSH_BACKEND_HTTP_ERROR,
+      { status: response.status },
+    );
+  }
+  return { ok: true, status: response.status, body: parsed };
 }
 
 export function createBackendForwarder(connection) {
@@ -31,4 +56,13 @@ export function createBackendForwarder(connection) {
       });
     },
   };
+}
+
+function dshBackendNetworkError(error) {
+  const timedOut = error?.name === "TimeoutError" || error?.name === "AbortError";
+  return new DshBackendError(
+    timedOut ? "Backend request timed out" : "Backend is unreachable",
+    timedOut ? DSH_BACKEND_TIMEOUT : DSH_BACKEND_UNREACHABLE,
+    { cause: error },
+  );
 }

@@ -274,6 +274,7 @@ export function createDshMemoryHookRuntime(
         assistantChars: request.assistantText.length,
         contentSource: "dsh_session_event",
       });
+      releaseAutomaticRetrievalTurn(automaticRetrievalTurns, request.sessionId, request.turnId);
       return { ok: true, scheduled: true };
     },
     async discardTurn(command) {
@@ -284,6 +285,7 @@ export function createDshMemoryHookRuntime(
       if (!entry) return { ok: true, discarded: false };
       await recordDshTurnInterrupted(options, entry.traceContext);
       turnCoordinator.discardTurn(key, "interrupted");
+      releaseAutomaticRetrievalTurn(automaticRetrievalTurns, command.sessionId, command.turnId);
       options.diagnosticLogger?.("dsh_memory_hook.turn_discarded", {
         sessionId: command.sessionId,
         turnId: command.turnId,
@@ -474,6 +476,14 @@ function claimAutomaticRetrievalTurn(
     turns.delete(oldest);
   }
   return true;
+}
+
+function releaseAutomaticRetrievalTurn(
+  turns: Set<string>,
+  sessionId: string,
+  turnId: string,
+): void {
+  turns.delete(JSON.stringify([sessionId, turnId]));
 }
 
 function skipped(reason: DshMemoryHookWritebackSkipReason): DshMemoryHookWritebackResult {

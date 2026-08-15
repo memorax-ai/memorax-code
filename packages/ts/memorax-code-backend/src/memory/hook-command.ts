@@ -38,10 +38,9 @@ const TURN_DISCARD_KEYS: Readonly<Record<MemoryHookClient, ReadonlySet<string>>>
   "claude-code": new Set([...BASE_COMMAND_KEYS, "turnId"]),
   dsh: new Set([...BASE_COMMAND_KEYS, "turnId"]),
 };
-const SKILL_REMINDER_KEYS: Readonly<Record<MemoryHookClient, ReadonlySet<string>>> = {
+const SKILL_REMINDER_KEYS: Readonly<Partial<Record<MemoryHookClient, ReadonlySet<string>>>> = {
   codex: new Set([...BASE_COMMAND_KEYS, "turnId", "transcriptPath", "content", "triggers"]),
   "claude-code": new Set([...BASE_COMMAND_KEYS, "promptId", "transcriptPath", "content", "triggers"]),
-  dsh: new Set([...BASE_COMMAND_KEYS, "turnId", "transcriptPath", "content", "triggers"]),
 };
 
 type MemoryHookCommandBase<Client extends MemoryHookClient> = Readonly<{
@@ -283,7 +282,6 @@ export function parseSkillReminderCommand(
       },
     };
   }
-  if (base.client === "dsh") return invalidCommand();
   const promptId = requiredStringField(value, "promptId");
   if (!promptId) return invalidCommand();
   return {
@@ -301,12 +299,14 @@ export function parseSkillReminderCommand(
 
 function parseCommandBase(
   value: Record<string, unknown>,
-  allowedKeys: Readonly<Record<MemoryHookClient, ReadonlySet<string>>>,
+  allowedKeys: Readonly<Partial<Record<MemoryHookClient, ReadonlySet<string>>>>,
 ): MemoryHookCommandBase<MemoryHookClient> | undefined {
   if (value.version !== MEMORY_HOOK_COMMAND_VERSION) return undefined;
   const client = value.client;
   if (client !== "codex" && client !== "claude-code" && client !== "dsh") return undefined;
-  if (Object.keys(value).some((key) => !allowedKeys[client].has(key))) return undefined;
+  const allowed = allowedKeys[client];
+  if (!allowed) return undefined;
+  if (Object.keys(value).some((key) => !allowed.has(key))) return undefined;
   const sessionId = requiredStringField(value, "sessionId");
   if (!sessionId) return undefined;
   const cwd = optionalStringField(value, "cwd");

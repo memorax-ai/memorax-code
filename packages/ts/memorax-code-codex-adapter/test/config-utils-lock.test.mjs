@@ -7,6 +7,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  readdir,
   rm,
   stat,
   utimes,
@@ -16,6 +17,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
+  atomicWriteJson,
+  atomicWriteText,
   withJsonFileLock,
   withJsonFileLockAsync,
 } from "../../memorax-code-adapter-common/src/config-utils.mjs";
@@ -253,3 +256,34 @@ function runWorker(path, args) {
     child.on("close", (code) => resolve({ code, stderr }));
   });
 }
+
+test("atomicWriteText writes private, atomically replaced files with no temp residue", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-atomic-write-text-"));
+  const directory = join(root, "nested");
+  const path = join(directory, "state.json");
+  try {
+    atomicWriteText(path, "first\n");
+    atomicWriteText(path, "second\n");
+    assert.equal(await readFile(path, "utf8"), "second\n");
+    if (process.platform !== "win32") {
+      assert.equal((await stat(path)).mode & 0o777, 0o600);
+    }
+    assert.deepEqual((await readdir(directory)).sort(), ["state.json"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("atomicWriteJson serializes and replaces the target atomically", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-atomic-write-json-"));
+  const path = join(root, "state.json");
+  try {
+    atomicWriteJson(path, { version: 1, enabled: true });
+    assert.deepEqual(JSON.parse(await readFile(path, "utf8")), { version: 1, enabled: true });
+    atomicWriteJson(path, { version: 2 });
+    assert.deepEqual(JSON.parse(await readFile(path, "utf8")), { version: 2 });
+    assert.deepEqual((await readdir(root)).sort(), ["state.json"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

@@ -17,6 +17,8 @@ export function createSessionBridge({ dispatch, debug = () => {} }) {
         assistantText: undefined,
         turnStarted: false,
         dispatchTail: undefined,
+        generation: 0,
+        disposed: false,
       });
     },
     onSessionEvent(session, event) {
@@ -46,6 +48,8 @@ export function createSessionBridge({ dispatch, debug = () => {} }) {
     onSessionDisposed(session) {
       const sessionId = stringValue(session?.id);
       if (!sessionId) return;
+      const state = sessions.get(sessionId);
+      if (state) state.disposed = true;
       sessions.delete(sessionId);
       pendingContext.delete(sessionId);
     },
@@ -100,7 +104,9 @@ export function createSessionBridge({ dispatch, debug = () => {} }) {
   function dispatchTurnStart(state) {
     const body = buildTurnStartCommand(state);
     if (!body) return;
+    const generation = ++state.generation;
     void enqueue(state, () => dispatch("/memory/turn-start", body)).then((result) => {
+      if (state.disposed || state.generation !== generation) return;
       if (!result?.ok) {
         debug("turn-start dispatch rejected", resultFailureMessage(result));
         return;

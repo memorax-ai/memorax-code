@@ -356,6 +356,63 @@ test("buildTurnDiscardCommand builds a minimal discard command", () => {
   });
 });
 
+test("a superseded turn-start response is dropped when a newer turn has started", async () => {
+  let releaseFirst;
+  const firstGate = new Promise((resolve) => { releaseFirst = resolve; });
+  const bridge = createSessionBridge({
+    dispatch: async (path, body) => {
+      assert.equal(path, "/memory/turn-start");
+      if (body.turnId === "dsh-3-1") {
+        await firstGate;
+        return { ok: true, body: { additionalContext: "stale context" } };
+      }
+      return { ok: true, body: {} };
+    },
+  });
+
+  bridge.onSessionCreated(session("session-superseded"));
+  bridge.onSessionEvent(session("session-superseded"), { type: "turn/start", data: { turn: 1 } });
+  bridge.onSessionEvent(session("session-superseded"), { type: "user/message", data: textMessage("first") });
+  bridge.onSessionEvent(session("session-superseded"), { type: "turn/start", data: { turn: 2 } });
+  bridge.onSessionEvent(session("session-superseded"), { type: "user/message", data: textMessage("second") });
+
+  await flushMicrotasks();
+  releaseFirst();
+  await flushMicrotasks();
+
+  assert.equal(bridge.takePendingContext("session-superseded"), undefined);
+});
+
+test("a turn-start completion for a disposed session does not clobber a recreated session", async () => {
+  const release = {};
+  const bridge = createSessionBridge({
+    dispatch: async (path, body) => {
+      assert.equal(path, "/memory/turn-start");
+      await new Promise((resolve) => { release[body.prompt] = resolve; });
+      return { ok: true, body: { additionalContext: `context for ${body.prompt}` } };
+    },
+  });
+
+  bridge.onSessionCreated(session("session-recreated"));
+  bridge.onSessionEvent(session("session-recreated"), { type: "turn/start", data: { turn: 1 } });
+  bridge.onSessionEvent(session("session-recreated"), { type: "user/message", data: textMessage("stale") });
+  await flushMicrotasks();
+  bridge.onSessionDisposed(session("session-recreated"));
+
+  bridge.onSessionCreated(session("session-recreated"));
+  bridge.onSessionEvent(session("session-recreated"), { type: "turn/start", data: { turn: 2 } });
+  bridge.onSessionEvent(session("session-recreated"), { type: "user/message", data: textMessage("fresh") });
+  await flushMicrotasks();
+
+  release.fresh();
+  await flushMicrotasks();
+  assert.equal(bridge.takePendingContext("session-recreated"), "context for fresh");
+
+  release.stale();
+  await flushMicrotasks();
+  assert.equal(bridge.takePendingContext("session-recreated"), undefined);
+});
+
 async function flushMicrotasks() {
   for (let index = 0; index < 4; index += 1) {
     await new Promise((resolve) => setImmediate(resolve));

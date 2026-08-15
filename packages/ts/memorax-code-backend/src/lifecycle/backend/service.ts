@@ -174,6 +174,7 @@ export async function startBackendService(
       options.timeoutMs ?? 5000,
       backendServiceHome(options),
       runtime,
+      token,
     );
     if (canReportRunning(ownership)) {
       return { ok: true, action: "start", alreadyRunning: true, state: existing };
@@ -286,6 +287,7 @@ export async function startBackendService(
     instanceId,
     backendServiceHome(options),
     runtime,
+    token,
   );
   if (!healthy) {
     const terminated = (runtime.terminateProcessTree ?? terminateProcessTree)(state.pid);
@@ -389,6 +391,14 @@ function backendServiceTokenCandidate(options: BackendServiceOptions, endpoint: 
   return token;
 }
 
+function stopBackendToken(options: BackendServiceOptions): string | undefined {
+  try {
+    return readBackendToken(options)?.token;
+  } catch {
+    return undefined;
+  }
+}
+
 export async function stopBackendService(
   options: BackendServiceOptions = {},
   runtime: BackendServiceRuntime = {},
@@ -426,6 +436,7 @@ export async function stopBackendService(
         timeoutMs,
         backendServiceHome(options),
         runtime,
+        stopBackendToken(options),
       );
       if (processAlive(state.pid)) {
         if (!canForceStop(ownership)) {
@@ -483,6 +494,7 @@ async function waitForHealth(
   instanceId: string,
   expectedSessionHome: string,
   runtime: BackendServiceRuntime,
+  token?: string,
 ): Promise<boolean> {
   const budgetMs = Number.isFinite(timeoutMs) ? Math.max(0, Math.trunc(timeoutMs)) : 0;
   const deadline = Date.now() + budgetMs;
@@ -493,6 +505,7 @@ async function waitForHealth(
         new URL("/health", url),
         remainingMs,
         runtime.fetch,
+        token,
       );
       if (health.ok
         && health.body.ok === true
@@ -534,6 +547,7 @@ async function readBackendOwnership(
   timeoutMs: number,
   expectedSessionHome: string,
   runtime: BackendServiceRuntime,
+  token?: string,
 ): Promise<BackendOwnershipEvidence> {
   if (!isTrustedServiceState(state)) return { status: "invalid_state" };
   let health: BackendHealthEvidence = "inconclusive";
@@ -543,6 +557,7 @@ async function readBackendOwnership(
         new URL("/health", state.url),
         timeoutMs,
         runtime.fetch,
+        token,
       );
       if (result.ok) {
         health = result.body.ok === true
@@ -673,6 +688,7 @@ async function readHealthWithTimeout(
   url: URL,
   timeoutMs: number,
   fetchImpl: typeof fetch = fetch,
+  token?: string,
 ): Promise<{
   ok: boolean;
   body: {
@@ -687,7 +703,10 @@ async function readHealthWithTimeout(
   const timeout = setTimeout(() => controller.abort(), boundedTimeoutMs);
   try {
     const response = await fetchImpl(url, {
-      headers: { connection: "close" },
+      headers: {
+        connection: "close",
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+      },
       signal: controller.signal,
     });
     if (!response.ok) return { ok: false, body: {} };

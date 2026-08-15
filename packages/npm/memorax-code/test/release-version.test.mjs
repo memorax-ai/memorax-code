@@ -42,6 +42,13 @@ test("release version check detects drift and write aligns only declared targets
   }
 });
 
+test("release version targets include every adapter package", () => {
+  const targetFiles = RELEASE_VERSION_TARGETS.map((target) => target.file);
+  assert.ok(targetFiles.includes("packages/ts/memorax-code-codex-adapter/package.json"));
+  assert.ok(targetFiles.includes("packages/ts/memorax-code-claude-adapter/package.json"));
+  assert.ok(targetFiles.includes("packages/ts/memorax-code-dsh-adapter/package.json"));
+});
+
 function addFixtureField(files, target, value) {
   const document = files.get(target.file) ?? { fixtureMarker: "preserved" };
   let current = document;
