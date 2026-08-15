@@ -53,7 +53,7 @@ test("a complete turn produces a turn-start and a writeback command", async () =
   const bridge = createSessionBridge({
     dispatch: async (path, body) => {
       calls.push({ path, body });
-      return { ok: true, body: {} };
+      return { ok: true, body: { ok: true } };
     },
   });
 
@@ -95,7 +95,7 @@ test("missing assistant message skips the turn writeback", async () => {
   const bridge = createSessionBridge({
     dispatch: async (path, body) => {
       calls.push({ path, body });
-      return { ok: true, body: {} };
+      return { ok: true, body: { ok: true } };
     },
   });
 
@@ -129,7 +129,7 @@ test("an errored turn with partial assistant output does not write back", async 
   const bridge = createSessionBridge({
     dispatch: async (path, body) => {
       calls.push({ path, body });
-      return { ok: true, body: {} };
+      return { ok: true, body: { ok: true } };
     },
   });
 
@@ -148,7 +148,7 @@ test("a cancelled turn with partial assistant output does not write back", async
   const bridge = createSessionBridge({
     dispatch: async (path, body) => {
       calls.push({ path, body });
-      return { ok: true, body: {} };
+      return { ok: true, body: { ok: true } };
     },
   });
 
@@ -167,7 +167,7 @@ test("synthetic plugin messages do not start a turn", async () => {
   const bridge = createSessionBridge({
     dispatch: async (path, body) => {
       calls.push({ path, body });
-      return { ok: true, body: {} };
+      return { ok: true, body: { ok: true } };
     },
   });
 
@@ -186,7 +186,7 @@ test("additionalContext from turn-start is captured as pending context", async (
   const bridge = createSessionBridge({
     dispatch: async (path) => {
       assert.equal(path, "/memory/turn-start");
-      return { ok: true, body: { additionalContext: "recalled memory" } };
+      return { ok: true, body: { ok: true, additionalContext: "recalled memory" } };
     },
   });
 
@@ -241,7 +241,7 @@ test("replaying the same turn events does not duplicate a writeback", async () =
   const bridge = createSessionBridge({
     dispatch: async (path, body) => {
       calls.push({ path, body });
-      return { ok: true, body: {} };
+      return { ok: true, body: { ok: true } };
     },
   });
 
@@ -267,7 +267,7 @@ test("writeback is serialized behind a slow turn-start and is not lost", async (
         await turnStartGate;
       }
       calls.push({ path, body });
-      return { ok: true, body: {} };
+      return { ok: true, body: { ok: true } };
     },
   });
 
@@ -299,7 +299,7 @@ test("an interrupted turn sends a discard command instead of a writeback", async
   const bridge = createSessionBridge({
     dispatch: async (path, body) => {
       calls.push({ path, body });
-      return { ok: true, body: {} };
+      return { ok: true, body: { ok: true } };
     },
   });
 
@@ -374,9 +374,9 @@ test("a superseded turn-start response is dropped when a newer turn has started"
       calls.push({ path, body });
       if (path === "/memory/turn-start" && body.turnId === "dsh-3-1") {
         await firstGate;
-        return { ok: true, body: { additionalContext: "stale context" } };
+        return { ok: true, body: { ok: true, additionalContext: "stale context" } };
       }
-      return { ok: true, body: {} };
+      return { ok: true, body: { ok: true } };
     },
   });
 
@@ -397,10 +397,10 @@ test("a turn-start completion for a disposed session does not clobber a recreate
   const release = {};
   const bridge = createSessionBridge({
     dispatch: async (path, body) => {
-      if (path === "/memory/turn-discard") return { ok: true, body: {} };
+      if (path === "/memory/turn-discard") return { ok: true, body: { ok: true } };
       assert.equal(path, "/memory/turn-start");
       await new Promise((resolve) => { release[body.prompt] = resolve; });
-      return { ok: true, body: { additionalContext: `context for ${body.prompt}` } };
+      return { ok: true, body: { ok: true, additionalContext: `context for ${body.prompt}` } };
     },
   });
 
@@ -429,7 +429,7 @@ test("a delayed turn/end for an older turn does not clear the newer turn state",
   const bridge = createSessionBridge({
     dispatch: async (path, body) => {
       calls.push({ path, body });
-      return { ok: true, body: {} };
+      return { ok: true, body: { ok: true } };
     },
   });
 
@@ -459,8 +459,8 @@ test("a delayed turn/end for an older turn does not clear the newer turn state",
 test("a new turn start clears stale pending context from the previous turn", async () => {
   const bridge = createSessionBridge({
     dispatch: async (path, body) => {
-      if (body.turnId === "dsh-3-1") return { ok: true, body: { additionalContext: "stale ctx" } };
-      return { ok: true, body: {} };
+      if (body.turnId === "dsh-3-1") return { ok: true, body: { ok: true, additionalContext: "stale ctx" } };
+      return { ok: true, body: { ok: true } };
     },
   });
 
@@ -481,7 +481,7 @@ test("a superseded turn queues a turn-discard for the previous turn", async () =
   const bridge = createSessionBridge({
     dispatch: async (path, body) => {
       calls.push({ path, body });
-      return { ok: true, body: {} };
+      return { ok: true, body: { ok: true } };
     },
   });
 
@@ -505,7 +505,7 @@ test("a completed turn with no assistant text discards its backend metadata", as
   const bridge = createSessionBridge({
     dispatch: async (path, body) => {
       calls.push({ path, body });
-      return { ok: true, body: {} };
+      return { ok: true, body: { ok: true } };
     },
   });
 
@@ -524,7 +524,7 @@ test("disposing a session mid-turn discards the active turn", async () => {
   const bridge = createSessionBridge({
     dispatch: async (path, body) => {
       calls.push({ path, body });
-      return { ok: true, body: {} };
+      return { ok: true, body: { ok: true } };
     },
   });
 
@@ -544,7 +544,7 @@ test("a malformed turn/start without a turn id is rejected while a turn is activ
   const bridge = createSessionBridge({
     dispatch: async (path, body) => {
       calls.push({ path, body });
-      return { ok: true, body: {} };
+      return { ok: true, body: { ok: true } };
     },
   });
 
@@ -567,7 +567,7 @@ test("a malformed turn/start with a non-integer turn id is rejected while a turn
   const bridge = createSessionBridge({
     dispatch: async (path, body) => {
       calls.push({ path, body });
-      return { ok: true, body: {} };
+      return { ok: true, body: { ok: true } };
     },
   });
 
@@ -585,7 +585,7 @@ test("a malformed turn/start is tolerated when no turn is active", async () => {
   const bridge = createSessionBridge({
     dispatch: async (path, body) => {
       calls.push({ path, body });
-      return { ok: true, body: {} };
+      return { ok: true, body: { ok: true } };
     },
   });
 
@@ -604,7 +604,7 @@ test("a turn/end without a turn id does not clobber the active turn", async () =
   const bridge = createSessionBridge({
     dispatch: async (path, body) => {
       calls.push({ path, body });
-      return { ok: true, body: {} };
+      return { ok: true, body: { ok: true } };
     },
   });
 
@@ -640,9 +640,9 @@ test("waitForPendingContext resolves once the turn-start retrieval settles in ti
     dispatch: async (path, body) => {
       if (path === "/memory/turn-start") {
         await new Promise((resolve) => { release[body.prompt] = resolve; });
-        return { ok: true, body: { additionalContext: `ctx:${body.prompt}` } };
+        return { ok: true, body: { ok: true, additionalContext: `ctx:${body.prompt}` } };
       }
-      return { ok: true, body: {} };
+      return { ok: true, body: { ok: true } };
     },
   });
 
@@ -662,9 +662,9 @@ test("waitForPendingContext times out and returns undefined when retrieval is sl
     dispatch: async (path, body) => {
       if (path === "/memory/turn-start") {
         await new Promise((resolve) => { release.resolve = resolve; });
-        return { ok: true, body: { additionalContext: "late ctx" } };
+        return { ok: true, body: { ok: true, additionalContext: "late ctx" } };
       }
-      return { ok: true, body: {} };
+      return { ok: true, body: { ok: true } };
     },
   });
 
@@ -686,9 +686,9 @@ test("re-creating a session without dispose retires the old incarnation", async 
       calls.push({ path, body });
       if (path === "/memory/turn-start" && body.prompt === "stale") {
         await new Promise((resolve) => { release.stale = resolve; });
-        return { ok: true, body: { additionalContext: "stale context" } };
+        return { ok: true, body: { ok: true, additionalContext: "stale context" } };
       }
-      return { ok: true, body: { additionalContext: `ctx:${body.prompt}` } };
+      return { ok: true, body: { ok: true, additionalContext: `ctx:${body.prompt}` } };
     },
   });
 
@@ -726,7 +726,7 @@ test("an identical session/created redelivery keeps the live incarnation", async
   const bridge = createSessionBridge({
     dispatch: async (path, body) => {
       calls.push({ path, body });
-      return { ok: true, body: {} };
+      return { ok: true, body: { ok: true } };
     },
   });
 
@@ -761,9 +761,9 @@ test("re-creating a session clears stale pending context from the previous incar
   const bridge = createSessionBridge({
     dispatch: async (path, body) => {
       if (path === "/memory/turn-start") {
-        return { ok: true, body: { additionalContext: `ctx:${body.prompt}` } };
+        return { ok: true, body: { ok: true, additionalContext: `ctx:${body.prompt}` } };
       }
-      return { ok: true, body: {} };
+      return { ok: true, body: { ok: true } };
     },
   });
 
@@ -782,7 +782,7 @@ test("a turn/start without a turn id does not reset a pending unstarted turn", a
   const bridge = createSessionBridge({
     dispatch: async (path, body) => {
       calls.push({ path, body });
-      return { ok: true, body: {} };
+      return { ok: true, body: { ok: true } };
     },
   });
 
@@ -818,7 +818,7 @@ test("a turn-start response with body.ok=false is treated as rejected (defensive
         // a writeback the Backend would then skip.
         return { ok: true, status: 200, body: { ok: false, error: "conflicting_turn_start" } };
       }
-      return { ok: true, body: {} };
+      return { ok: true, body: { ok: true } };
     },
     debug: (message, detail) => errors.push({ message, detail }),
   });
@@ -834,6 +834,41 @@ test("a turn-start response with body.ok=false is treated as rejected (defensive
   assert.equal(bridge.takePendingContext("session-body-reject"), undefined);
 });
 
+test("a 2xx body with no ok field is a failure, not a fake success", async () => {
+  // Round 10 #2: a misconfigured proxy or a wrong service on the Backend port
+  // can answer 200 with an unrelated JSON object ({ status: "ok" }, {}, ...).
+  // The Backend contract is an explicit ok:true on every accepted command;
+  // anything else must be treated as rejected so the bridge does not mark a
+  // turn as started (or a writeback as sent) that the Backend never accepted.
+  const errors = [];
+  const calls = [];
+  const bridge = createSessionBridge({
+    dispatch: async (path, body) => {
+      calls.push({ path, body });
+      if (path === "/memory/turn-start") {
+        return { ok: true, status: 200, body: { status: "accepted" } };
+      }
+      return { ok: true, status: 200, body: { ok: true } };
+    },
+    debug: (message, detail) => errors.push({ message, detail }),
+  });
+
+  bridge.onSessionCreated(session("session-no-ok"));
+  bridge.onSessionEvent(session("session-no-ok"), { type: "turn/start", data: { turn: 0 } });
+  bridge.onSessionEvent(session("session-no-ok"), { type: "user/message", data: textMessage("query") });
+  // No turn/end here: the generation guard would swallow the body check for a
+  // turn that already ended, and this test pins the response validation itself
+  // (same shape as the body.ok=false test above).
+
+  await flushMicrotasks();
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0].message, "turn-start dispatch rejected");
+  assert.equal(errors[0].detail, "backend response body missing ok:true");
+  assert.equal(bridge.takePendingContext("session-no-ok"), undefined);
+  // The turn never started, so no writeback may be dispatched for it.
+  assert.deepEqual(calls.map((call) => call.path), ["/memory/turn-start"]);
+});
+
 test("a writeback body-level skip reason is surfaced through debug", async () => {
   // The Backend accepts writeback with HTTP 200 and reports skipped
   // scheduling only in the body ({ ok: true, scheduled: false, reason }).
@@ -845,7 +880,7 @@ test("a writeback body-level skip reason is surfaced through debug", async () =>
       if (path === "/memory/writeback") {
         return { ok: true, status: 200, body: { ok: true, scheduled: false, reason: "turn_metadata_missing" } };
       }
-      return { ok: true, body: {} };
+      return { ok: true, body: { ok: true } };
     },
     debug: (message, detail) => errors.push({ message, detail }),
   });
@@ -869,7 +904,7 @@ test("a turn-discard response with discarded=false is surfaced through debug", a
       if (path === "/memory/turn-discard") {
         return { ok: true, status: 200, body: { ok: true, discarded: false } };
       }
-      return { ok: true, body: {} };
+      return { ok: true, body: { ok: true } };
     },
     debug: (message, detail) => errors.push({ message, detail }),
   });
@@ -890,7 +925,7 @@ test("concurrent sessions keep independent turn state", async () => {
   const bridge = createSessionBridge({
     dispatch: async (path, body) => {
       calls.push({ path, body });
-      return { ok: true, body: {} };
+      return { ok: true, body: { ok: true } };
     },
   });
 

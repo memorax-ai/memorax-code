@@ -708,11 +708,18 @@ test("current turn bridge preserves recent context after closing rollout reconci
     });
     assert.equal(recent.ok, true);
     assert.equal(recent.traceContext.turnId, "turn-state");
-    assert.deepEqual(await readOpenCodexTurn({
+    const closedCodex = await readOpenCodexTurn({
       memoraxCodeHome: root,
       expectedSessionId: "session-state",
       now: () => new Date("2026-07-09T00:06:00.000Z"),
-    }), { ok: false, reason: "closed", outcome: "completed" });
+    });
+    assert.equal(closedCodex.ok, false);
+    assert.equal(closedCodex.reason, "closed");
+    assert.equal(closedCodex.outcome, "completed");
+    // Round 10: the closed record carries its traceContext (the DSH
+    // finalized-turn gate compares the turnId on this field).
+    assert.equal(closedCodex.traceContext.sessionId, "session-state");
+    assert.equal(closedCodex.traceContext.turnId, "turn-state");
 
     const closedGlobal = JSON.parse(await readFile(paths.currentTurnPath, "utf8"));
     const closedScoped = JSON.parse(await readFile(paths.sessionCurrentTurnPath("session-state"), "utf8"));

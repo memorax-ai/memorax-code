@@ -306,12 +306,15 @@ export async function readOpenTraceTurn(
 ): Promise<
   | { ok: true; traceContext: TraceContext; promptAttestation?: TracePromptAttestation }
   | { ok: false; reason: "disabled" | "missing" | "invalid" | "stale" | "session_mismatch" }
-  | { ok: false; reason: "closed"; outcome: TraceTurnOutcome }
+  | { ok: false; reason: "closed"; outcome: TraceTurnOutcome; traceContext: TraceContext }
 > {
   const current = await readCurrentTraceTurnRecord(options);
   if (!current.ok) return current;
   if (current.turnState !== "open") {
-    return { ok: false, reason: "closed", outcome: current.turnState };
+    // The traceContext travels with the closed record so callers can decide
+    // WHICH turn was finalized (the DSH turn-start replay gate compares the
+    // turnId before refusing to restart a completed turn).
+    return { ok: false, reason: "closed", outcome: current.turnState, traceContext: current.traceContext };
   }
   return {
     ok: true,
@@ -325,7 +328,7 @@ export async function readOpenCodexTurn(
 ): Promise<
   | { ok: true; traceContext: TraceContext; promptAttestation?: TracePromptAttestation }
   | { ok: false; reason: "disabled" | "missing" | "invalid" | "stale" | "session_mismatch" }
-  | { ok: false; reason: "closed"; outcome: CodexTurnOutcome }
+  | { ok: false; reason: "closed"; outcome: CodexTurnOutcome; traceContext: TraceContext }
 > {
   return readOpenTraceTurn({ ...options, client: "codex" });
 }
@@ -335,7 +338,7 @@ export async function readOpenClaudeTurn(
 ): Promise<
   | { ok: true; traceContext: TraceContext; promptAttestation?: TracePromptAttestation }
   | { ok: false; reason: "disabled" | "missing" | "invalid" | "stale" | "session_mismatch" }
-  | { ok: false; reason: "closed"; outcome: TraceTurnOutcome }
+  | { ok: false; reason: "closed"; outcome: TraceTurnOutcome; traceContext: TraceContext }
 > {
   return readOpenTraceTurn({ ...options, client: "claude" });
 }
@@ -345,7 +348,7 @@ export async function readOpenDshTurn(
 ): Promise<
   | { ok: true; traceContext: TraceContext; promptAttestation?: TracePromptAttestation }
   | { ok: false; reason: "disabled" | "missing" | "invalid" | "stale" | "session_mismatch" }
-  | { ok: false; reason: "closed"; outcome: DshTurnOutcome }
+  | { ok: false; reason: "closed"; outcome: DshTurnOutcome; traceContext: TraceContext }
 > {
   return readOpenTraceTurn({ ...options, client: "dsh" });
 }

@@ -56,7 +56,20 @@ test("DSH runtime releases an automatic retrieval turn when the turn is discarde
 
     assert.deepEqual(await runtime.discardTurn(DISCARD), { ok: true, discarded: true });
 
-    await runtime.recordTurnStart(TURN_START);
+    // Round 10 R10-1: a discarded turn is terminal. Replaying the SAME
+    // turnId is acked fail-silent but must NOT restart the turn, so it
+    // claims no retrieval. (The claim release itself is hygiene — its only
+    // behavioral consumer, a same-key re-claim, is the conflicting-turn-start
+    // self-heal covered by the test below.)
+    assert.deepEqual(await runtime.recordTurnStart(TURN_START), { ok: true });
+    assert.equal(retrievalCount(events), 1);
+    assert.equal(
+      events.some((event) => event.message === "dsh_memory_hook.turn_start_after_finalize"),
+      true,
+    );
+
+    // Successor turns keep claiming retrieval after the discard.
+    await runtime.recordTurnStart({ ...TURN_START, turnId: "dsh-0-1" });
     assert.equal(retrievalCount(events), 2);
   } finally {
     runtime.close();
@@ -288,7 +301,18 @@ test("DSH runtime releases an automatic retrieval turn after a scheduled writeba
       cwd: workspace,
     }), { ok: true, scheduled: true });
 
-    await runtime.recordTurnStart({ ...TURN_START, cwd: workspace });
+    // Round 10 R10-1: a completed turn is terminal. Replaying the SAME
+    // turnId after the writeback must NOT restart it (no second retrieval,
+    // no second writeback credential).
+    assert.deepEqual(await runtime.recordTurnStart({ ...TURN_START, cwd: workspace }), { ok: true });
+    assert.equal(retrievalCount(events), 1);
+    assert.equal(
+      events.some((event) => event.message === "dsh_memory_hook.turn_start_after_finalize"),
+      true,
+    );
+
+    // Successor turns keep claiming retrieval after the completed turn.
+    await runtime.recordTurnStart({ ...TURN_START, turnId: "dsh-0-1", cwd: workspace });
     assert.equal(retrievalCount(events), 2);
     assert.ok(requests.length >= 1);
   } finally {

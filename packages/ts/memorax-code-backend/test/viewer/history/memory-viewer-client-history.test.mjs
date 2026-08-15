@@ -390,6 +390,61 @@ test("memory viewer tags DSH events as their own client and excludes them from t
   assert.equal(claude.events.some((event) => event.client === "dsh"), false);
 });
 
+test("memory viewer loads persisted DSH trace history into the DSH view", async (t) => {
+  // Round 10 #4: the DSH filter used to fall through to the codex+claude
+  // sweep, so live DSH events showed but on-disk DSH trace history never
+  // loaded. The DSH view must read the DSH sessions root, and the DSH
+  // projection key must be its own directory (not the codex one).
+  const memoraxCodeHome = await mkdtemp(join(tmpdir(), "memorax-code-viewer-dsh-history-"));
+  t.after(() => rm(memoraxCodeHome, { recursive: true, force: true }));
+  const projectId = `repo:${"d".repeat(32)}`;
+  await writeTraceEvents(memoraxCodeHome, "dsh", "dsh-history-session", [{
+    type: "memory_retrieve",
+    event_id: "dsh-history-event",
+    timestamp: "2026-07-28T00:02:00.000Z",
+    trace: {
+      session_id: "dsh-history-session",
+      memory_project: { project_id: projectId, project_label: "DSH Project" },
+    },
+    source: "dsh_hook_retrieval",
+    operation: "retrieve",
+    ok: true,
+    response: { items: [{ memory: "Persisted DSH memory." }] },
+  }]);
+  // A codex event with the SAME native ids must stay out of the DSH view and
+  // must not collide with it (identity is client-scoped).
+  await writeTraceEvents(memoraxCodeHome, "codex", "dsh-history-session", [{
+    type: "memory_retrieve",
+    event_id: "dsh-history-event",
+    timestamp: "2026-07-28T00:03:00.000Z",
+    trace: {
+      session_id: "dsh-history-session",
+      memory_project: { project_id: projectId, project_label: "DSH Project" },
+    },
+    source: "direct_overlay",
+    operation: "retrieve",
+    ok: true,
+    response: { items: [{ memory: "Codex memory." }] },
+  }]);
+
+  const dsh = await listMemoryViewerDataWithHistory(memoraxCodeHome, { client: "dsh" });
+  assert.deepEqual(dsh.events.map(({ client, id, content }) => ({ client, id, content })), [{
+    client: "dsh",
+    id: "dsh-trace:dsh-history-event",
+    content: "Persisted DSH memory.",
+  }]);
+  assert.deepEqual(dsh.projectSessions.map((entry) => entry.client), ["dsh"]);
+
+  const all = await listMemoryViewerDataWithHistory(memoraxCodeHome);
+  assert.deepEqual(
+    all.events.map((event) => `${event.client}:${event.id}`).sort(),
+    ["codex:trace:dsh-history-event", "dsh:dsh-trace:dsh-history-event"],
+  );
+
+  const codex = await listMemoryViewerDataWithHistory(memoraxCodeHome, { client: "codex" });
+  assert.equal(codex.events.some((event) => event.client === "dsh"), false);
+});
+
 async function writeTraceEvents(memoraxCodeHome, client, sessionDir, events) {
   const directory = join(memoraxCodeHome, "debug", "traces", client, "sessions", sessionDir);
   const path = join(directory, "events.jsonl");

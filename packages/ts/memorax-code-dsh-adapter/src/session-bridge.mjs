@@ -450,9 +450,16 @@ function resultFailureMessage(result) {
 
 function resultBodyError(result) {
   const body = result?.body;
-  if (!isRecord(body) || body.ok !== false) return undefined;
-  if (typeof body.error === "string" && body.error) return body.error;
-  return "unknown backend rejection";
+  if (!isRecord(body)) return "backend response has no JSON body";
+  // The Backend contract is an explicit ok:true on every accepted command. A
+  // 2xx body WITHOUT ok:true is not a success: a misconfigured proxy or a
+  // future Backend returning an unrelated JSON object would otherwise be
+  // treated as an accepted turn-start/writeback with zero visibility.
+  if (body.ok !== true) {
+    if (body.ok === false && typeof body.error === "string" && body.error) return body.error;
+    return "backend response body missing ok:true";
+  }
+  return undefined;
 }
 
 function writebackSkipReason(result) {

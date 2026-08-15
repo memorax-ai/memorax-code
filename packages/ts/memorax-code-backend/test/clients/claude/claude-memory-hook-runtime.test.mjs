@@ -377,15 +377,19 @@ test("Claude Hooks persist the same immediate trace lifecycle as Codex Hooks", a
     assert.equal(events[1].session_turn_index, 1);
     assert.deepEqual(events[1].activities, [{ index: 1, type: "memory_cli_search" }]);
     assert.deepEqual(events[1].usage, expectedCompletedUsage());
-    assert.deepEqual(await readOpenClaudeTurn({
+    const closedLifecycle = await readOpenClaudeTurn({
       memoraxCodeHome: fixture.root,
       expectedSessionId: SESSION_ID,
       allowStale: true,
-    }), {
-      ok: false,
-      reason: "closed",
-      outcome: "completed",
     });
+    assert.equal(closedLifecycle.ok, false);
+    assert.equal(closedLifecycle.reason, "closed");
+    assert.equal(closedLifecycle.outcome, "completed");
+    // Round 10: the closed record carries its traceContext so callers can
+    // tell WHICH turn was finalized (the DSH finalized-turn gate compares
+    // the turnId before refusing to restart a completed turn).
+    assert.equal(closedLifecycle.traceContext.sessionId, SESSION_ID);
+    assert.equal(closedLifecycle.traceContext.turnId, PROMPT_ID);
     assert.equal(writebacks[0].assistantText, "Trace transcript answer.");
     assert.equal(writebacks[0].traceContext.turnId, PROMPT_ID);
   } finally {
@@ -560,15 +564,16 @@ test("Claude Stop closes trace even when exact transcript validation blocks writ
     assert.equal(events[1].session_turn_index, undefined);
     assert.equal(events[1].activities, undefined);
     assert.equal(events[1].usage, undefined);
-    assert.deepEqual(await readOpenClaudeTurn({
+    const closedUnvalidated = await readOpenClaudeTurn({
       memoraxCodeHome: root,
       expectedSessionId: SESSION_ID,
       allowStale: true,
-    }), {
-      ok: false,
-      reason: "closed",
-      outcome: "completed",
     });
+    assert.equal(closedUnvalidated.ok, false);
+    assert.equal(closedUnvalidated.reason, "closed");
+    assert.equal(closedUnvalidated.outcome, "completed");
+    assert.equal(closedUnvalidated.traceContext.sessionId, SESSION_ID);
+    assert.equal(closedUnvalidated.traceContext.turnId, PROMPT_ID);
     assert.equal(writebacks.length, 0);
   } finally {
     runtime.close();

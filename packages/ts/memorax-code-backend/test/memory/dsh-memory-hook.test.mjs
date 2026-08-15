@@ -248,6 +248,134 @@ test("DSH memory service records a turn start and schedules an inline writeback"
   }
 });
 
+test("DSH reconnect cannot restart a completed turn id (finalized-turn gate)", async () => {
+  // Round 10 #1: writeback consumes the coordinator entry, so its absence
+  // cannot distinguish "never started" from "already finished". A DSH
+  // reconnect replays session events and re-sends the SAME turnId; without
+  // the finalized-turn gate the replayed start would rebuild the entry and
+  // the replayed writeback would schedule a SECOND memory.
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-dsh-finalized-"));
+  const memoraxCodeHome = join(root, "home");
+  const workspace = join(root, "workspace");
+  await Promise.all([
+    mkdir(memoraxCodeHome, { recursive: true }),
+    mkdir(join(workspace, ".git"), { recursive: true }),
+  ]);
+  const diagnosticEvents = [];
+  const requests = [];
+  // Trace stays ENABLED (the default): the on-disk current-turn record is the
+  // gate that survives a Backend restart, so it must be written and closed.
+  const env = {
+    MEMORAX_CODE_HOME: memoraxCodeHome,
+    MEMORAX_CODE_DSH_TRACE_ENABLED: "true",
+    MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED: "false",
+    MEMORAX_CODE_MEMORY_WRITEBACK_ENABLED: "true",
+    MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_ENABLED: "false",
+    MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
+    MEMORAX_CODE_MEMORAX_API_KEY: "secret",
+    MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
+  };
+  const fetchImpl = async (url) => {
+    requests.push({ url: String(url) });
+    return new Response(JSON.stringify({
+      success: true,
+      data: { task_id: "dsh-task", status: "queued" },
+    }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  const makeService = () => createMemoryService({
+    diagnosticLogger(message, fields) {
+      diagnosticEvents.push({ message, fields });
+    },
+    env,
+    fetchImpl,
+    memoraxCodeHome,
+  });
+
+  const service = makeService();
+  try {
+    assert.equal((await service.recordTurnStart({
+      version: 1,
+      client: "dsh",
+      sessionId: "session-dsh",
+      turnId: "dsh-0-1",
+      prompt: "Original prompt.",
+      cwd: workspace,
+    })).ok, true);
+    assert.equal((await service.writebackTurn({
+      version: 1,
+      client: "dsh",
+      sessionId: "session-dsh",
+      turnId: "dsh-0-1",
+      userText: "Original prompt.",
+      assistantText: "Recorded.",
+      cwd: workspace,
+    })).scheduled, true);
+    await waitFor(() => requests.length === 1, "first writeback did not reach MemoraX add");
+
+    // Reconnect replay, same process: the in-memory finalized set must gate
+    // the start (acked fail-silent, no entry rebuilt, no second memory).
+    assert.deepEqual(await service.recordTurnStart({
+      version: 1,
+      client: "dsh",
+      sessionId: "session-dsh",
+      turnId: "dsh-0-1",
+      prompt: "Original prompt.",
+      cwd: workspace,
+    }), { ok: true });
+    assert.equal(
+      diagnosticEvents.some((event) => event.message === "dsh_memory_hook.turn_start_after_finalize"),
+      true,
+    );
+    assert.deepEqual(await service.writebackTurn({
+      version: 1,
+      client: "dsh",
+      sessionId: "session-dsh",
+      turnId: "dsh-0-1",
+      userText: "Original prompt.",
+      assistantText: "Recorded.",
+      cwd: workspace,
+    }), { ok: true, scheduled: false, reason: "turn_metadata_missing" });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(requests.length, 1);
+    await service.drain();
+  } finally {
+    service.close();
+  }
+
+  // Backend restart: the in-memory finalized set is empty again, so the
+  // on-disk current-turn record (closed for this exact turnId) must carry
+  // the gate. Without it a restart would resurrect the turn.
+  const restarted = makeService();
+  try {
+    assert.deepEqual(await restarted.recordTurnStart({
+      version: 1,
+      client: "dsh",
+      sessionId: "session-dsh",
+      turnId: "dsh-0-1",
+      prompt: "Original prompt.",
+      cwd: workspace,
+    }), { ok: true });
+    assert.deepEqual(await restarted.writebackTurn({
+      version: 1,
+      client: "dsh",
+      sessionId: "session-dsh",
+      turnId: "dsh-0-1",
+      userText: "Original prompt.",
+      assistantText: "Recorded.",
+      cwd: workspace,
+    }), { ok: true, scheduled: false, reason: "turn_metadata_missing" });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(requests.length, 1);
+    await restarted.drain();
+  } finally {
+    restarted.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("DSH memory service isolates the same native id from other clients", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-dsh-isolation-"));
   const memoraxCodeHome = join(root, "home");

@@ -258,15 +258,18 @@ test("Claude current-turn state is isolated and closes without changing Codex st
     assert.deepEqual(await markCurrentClaudeTurnOutcome(context, "completed", { memoraxCodeHome: root }), {
       updated: true,
     });
-    assert.deepEqual(await readOpenClaudeTurn({
+    const closedClaude = await readOpenClaudeTurn({
       memoraxCodeHome: root,
       expectedSessionId: context.sessionId,
       allowStale: true,
-    }), {
-      ok: false,
-      reason: "closed",
-      outcome: "completed",
     });
+    assert.equal(closedClaude.ok, false);
+    assert.equal(closedClaude.reason, "closed");
+    assert.equal(closedClaude.outcome, "completed");
+    // Round 10: the closed record carries its traceContext (the DSH
+    // finalized-turn gate compares the turnId on this field).
+    assert.equal(closedClaude.traceContext.sessionId, context.sessionId);
+    assert.equal(closedClaude.traceContext.turnId, context.turnId);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

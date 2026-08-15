@@ -94,10 +94,10 @@ const DSH_MEMORY_TURN_CLIENT = "dsh" as const;
 // gets its own (much wider) hard deadline.
 export const DSH_TURN_RECOVERY_WINDOW_MS = 24 * 60 * 60 * 1000;
 
-// Upper bound for the in-memory recovery tombstones below; a cap keeps a
+// Upper bound for the in-memory finalized-turn set below; a cap keeps a
 // pathological session from growing the map without bound. Oldest entries are
 // evicted first (Map iteration order is insertion order).
-const RECOVERED_TURN_TOMBSTONE_LIMIT = 512;
+const FINALIZED_TURN_LIMIT = 512;
 
 export function createDshMemoryHookRuntime(
   options: DshMemoryHookRuntimeOptions = {},
@@ -127,13 +127,13 @@ export function createDshMemoryHookRuntime(
   const automaticRetrievalTurns = new Set<string>();
   const automaticRetrievalTurnLimit = positiveInteger(options.maxEntries, 256);
   const writebackLocks = new Map<string, Promise<unknown>>();
-  // Recovery writebacks leave no coordinator entry behind (there was none to
-  // consume), so their only durable replay gate is closing the on-disk
-  // attestation — which is best-effort and can fail silently (disk full,
-  // permissions, one of the two record files). This in-memory tombstone set is
-  // the second gate: a turn recovered once in this process is never accepted
-  // through the recovery path again.
-  const recoveredTurnCompletions = new Map<string, number>();
+  // Turns that reached a terminal state (completed writeback or discard) in
+  // this process. Writeback consumes the coordinator entry, so without this
+  // set a replayed turn-start for a COMPLETED turn would rebuild the entry and
+  // let the replayed writeback schedule a second memory. It is also the
+  // in-memory second gate for recovery writebacks (the attestation close on
+  // disk is best-effort and can fail silently).
+  const finalizedTurns = new Map<string, number>();
 
   async function materializeDshTurn(
     coordinatorKey: ReturnType<typeof dshTurnKey>,
@@ -143,7 +143,6 @@ export function createDshMemoryHookRuntime(
     let metadata: MemoryTurnState | undefined = entry;
     let metadataSource: "coordinator" | "current_turn_trace" = "coordinator";
     let attestedTraceContext: TraceContext | undefined = entry?.traceContext;
-    let recoveryKey: string | undefined;
     if (entry) {
       if (entry.prompt !== undefined && !dshPromptMatches(entry.prompt, request.userText)) {
         options.diagnosticLogger?.("dsh_memory_hook.writeback", {
@@ -160,8 +159,8 @@ export function createDshMemoryHookRuntime(
       // current-turn trace written at turn-start still attests that this exact
       // session/turn reached an accepted turn-start. Recover the writeback
       // from that attestation instead of silently dropping it.
-      const recoveryKeyForCheck = recoveredTurnKey(request.sessionId, request.turnId);
-      if (recoveredTurnCompletions.has(recoveryKeyForCheck)) {
+      const recoveryKeyForCheck = finalizedTurnKey(request.sessionId, request.turnId);
+      if (finalizedTurns.has(recoveryKeyForCheck)) {
         // This exact turn was already recovered (and scheduled) once in this
         // process: the attestation close is best-effort, so the tombstone is
         // what makes a replayed recovery writeback fail closed.
@@ -181,7 +180,6 @@ export function createDshMemoryHookRuntime(
         expectedSessionId: request.sessionId,
         allowStale: true,
       });
-      recoveryKey = recoveredTurnKey(request.sessionId, request.turnId);
       if (!attestation.ok || attestation.traceContext.turnId !== request.turnId) {
         options.diagnosticLogger?.("dsh_memory_hook.writeback", {
           scheduled: false,
@@ -283,12 +281,15 @@ export function createDshMemoryHookRuntime(
       return skipped(writeback.reason);
     }
     await recordDshTurnEnd(options, traceContext, request.assistantText);
-    if (metadataSource === "current_turn_trace" && recoveryKey !== undefined) {
-      // No coordinator entry existed to consume, so the (best-effort)
-      // attestation close above is the only durable gate against replaying
-      // this exact writeback. Tombstone the turn in memory as well.
-      rememberRecoveredCompletion(recoveredTurnCompletions, recoveryKey, now());
-    }
+    // Both paths (coordinator entry and trace recovery) end a terminal turn:
+    // record it so a replayed turn-start cannot rebuild the turn and schedule
+    // the same memory twice. For the recovery path this is also the
+    // in-memory second gate when the best-effort attestation close fails.
+    rememberFinalizedTurn(
+      finalizedTurns,
+      finalizedTurnKey(request.sessionId, request.turnId),
+      now(),
+    );
     options.diagnosticLogger?.("dsh_memory_hook.writeback", {
       scheduled: true,
       metadataDisposition: writeback.metadataDisposition,
@@ -316,7 +317,41 @@ export function createDshMemoryHookRuntime(
     }
   > {
     const existing = turnCoordinator.getTurn(coordinatorKey);
-      if (existing) {
+    if (!existing) {
+      // Completed/interrupted turns must not restart. Writeback consumes the
+      // coordinator entry, so its absence cannot distinguish "never started"
+      // from "already finished" — and a DSH reconnect that replays session
+      // events re-sends the SAME turnId, which would otherwise rebuild the
+      // entry and let the replayed writeback schedule a second memory.
+      const finalizationKey = finalizedTurnKey(turn.sessionId, turn.turnId);
+      let finalized = finalizedTurns.has(finalizationKey);
+      if (!finalized) {
+        // After a Backend restart the in-memory set is empty; the on-disk
+        // current-turn record still remembers the last finalized turn.
+        const onDisk = await readOpenDshTurn({
+          memoraxCodeHome: options.memoraxCodeHome,
+          env: options.env,
+          expectedSessionId: turn.sessionId,
+          allowStale: true,
+        });
+        if (!onDisk.ok && onDisk.reason === "closed" && onDisk.traceContext.turnId === turn.turnId) {
+          rememberFinalizedTurn(finalizedTurns, finalizationKey, now());
+          finalized = true;
+        }
+      }
+      if (finalized) {
+        options.diagnosticLogger?.("dsh_memory_hook.turn_start_after_finalize", {
+          sessionId: turn.sessionId,
+          turnId: turn.turnId,
+          promptChars: turn.prompt.length,
+        });
+        // Fail silent like every other DSH hook skip: the replayed start is
+        // acknowledged (ok:true) but no entry is recorded, so any replayed
+        // writeback has nothing to match against.
+        return { ok: true, fresh: false };
+      }
+    }
+    if (existing) {
         if (existing.prompt !== undefined && existing.prompt !== turn.prompt) {
           // Self-heal a colliding turnId instead of dead-ending the turn: the
           // newest start wins. Without this the coordinator would keep
@@ -381,6 +416,7 @@ export function createDshMemoryHookRuntime(
       if (attestation.ok && attestation.traceContext.turnId === command.turnId) {
         await recordDshTurnInterrupted(options, attestation.traceContext);
         releaseAutomaticRetrievalTurn(automaticRetrievalTurns, command.sessionId, command.turnId);
+        rememberFinalizedTurn(finalizedTurns, finalizedTurnKey(command.sessionId, command.turnId), now());
         options.diagnosticLogger?.("dsh_memory_hook.turn_discarded", {
           sessionId: command.sessionId,
           turnId: command.turnId,
@@ -392,6 +428,7 @@ export function createDshMemoryHookRuntime(
     await recordDshTurnInterrupted(options, entry.traceContext);
     turnCoordinator.discardTurn(key, "interrupted");
     releaseAutomaticRetrievalTurn(automaticRetrievalTurns, command.sessionId, command.turnId);
+    rememberFinalizedTurn(finalizedTurns, finalizedTurnKey(command.sessionId, command.turnId), now());
     options.diagnosticLogger?.("dsh_memory_hook.turn_discarded", {
       sessionId: command.sessionId,
       turnId: command.turnId,
@@ -654,21 +691,21 @@ async function recordDshTurnEnd(
   }
 }
 
-function recoveredTurnKey(sessionId: string, turnId: string): string {
+function finalizedTurnKey(sessionId: string, turnId: string): string {
   return JSON.stringify([sessionId, turnId]);
 }
 
-function rememberRecoveredCompletion(
-  tombstones: Map<string, number>,
+function rememberFinalizedTurn(
+  finalized: Map<string, number>,
   key: string,
   timestamp: number,
 ): void {
-  tombstones.delete(key);
-  tombstones.set(key, timestamp);
-  while (tombstones.size > RECOVERED_TURN_TOMBSTONE_LIMIT) {
-    const oldest = tombstones.keys().next().value;
+  finalized.delete(key);
+  finalized.set(key, timestamp);
+  while (finalized.size > FINALIZED_TURN_LIMIT) {
+    const oldest = finalized.keys().next().value;
     if (typeof oldest !== "string") return;
-    tombstones.delete(oldest);
+    finalized.delete(oldest);
   }
 }
 

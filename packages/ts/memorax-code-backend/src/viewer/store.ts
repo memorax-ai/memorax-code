@@ -103,9 +103,7 @@ const events: MemoryViewerEvent[] = [];
 let liveEventsVersion = 0;
 
 type CombinedTraceHistory = Readonly<{
-  codex: readonly MemoryViewerEvent[];
-  claude: readonly MemoryViewerEvent[];
-  claudeLocal: readonly MemoryViewerEvent[];
+  inputs: readonly (readonly MemoryViewerEvent[])[];
   values: MemoryViewerEvent[];
 }>;
 
@@ -480,48 +478,55 @@ async function readTraceHistory(
     return {
       values: combinedTraceHistory(
         `${historyCacheRoot}\u0000client=claude\u0000source=${claudeProjectsRoot || "disabled"}`,
-        EMPTY_MEMORY_VIEWER_HISTORY,
-        claude.values,
-        claudeLocal,
+        [claude.values],
+        [claudeLocal],
       ),
       complete: claude.complete,
       claudeLocal,
     };
   }
 
-  const [codex, claude, claudeLocal] = await Promise.all([
+  if (client === "dsh") {
+    // DSH sessions live in their own trace root; without this branch the
+    // filter fell through to the codex+claude sweep below and the viewer
+    // showed DSH live events but never their on-disk history.
+    const dsh = await readClient("dsh");
+    return { ...dsh, claudeLocal: EMPTY_MEMORY_VIEWER_HISTORY };
+  }
+
+  const [codex, claude, dsh, claudeLocal] = await Promise.all([
     readClient("codex"),
     readClient("claude"),
+    readClient("dsh"),
     claudeLocalPromise,
   ]);
   return {
     values: combinedTraceHistory(
       `${historyCacheRoot}\u0000client=all\u0000source=${claudeProjectsRoot || "disabled"}`,
-      codex.values,
-      claude.values,
-      claudeLocal,
+      [codex.values, claude.values, dsh.values],
+      [claudeLocal],
     ),
-    complete: codex.complete && claude.complete,
+    complete: codex.complete && claude.complete && dsh.complete,
     claudeLocal,
   };
 }
 
 function combinedTraceHistory(
   cacheKey: string,
-  codex: readonly MemoryViewerEvent[],
-  claude: readonly MemoryViewerEvent[],
-  claudeLocal: readonly MemoryViewerEvent[],
+  merged: readonly (readonly MemoryViewerEvent[])[],
+  invalidateOnly: readonly (readonly MemoryViewerEvent[])[] = [],
 ): MemoryViewerEvent[] {
+  const inputs = [...merged, ...invalidateOnly];
   const cached = combinedTraceHistories.get(cacheKey);
-  if (cached?.codex === codex
-    && cached.claude === claude
-    && cached.claudeLocal === claudeLocal) {
+  if (cached?.inputs.length === inputs.length
+    && inputs.every((group, index) => cached.inputs[index] === group)) {
     return cached.values;
   }
   // Native Claude transcripts invalidate this cached identity, but they are
-  // admitted only after retained and live Hook trace events are merged.
-  const values = [...codex, ...claude].sort(compareMemoryViewerEvents);
-  combinedTraceHistories.set(cacheKey, { codex, claude, claudeLocal, values });
+  // admitted only after retained and live Hook trace events are merged, so
+  // they participate in the identity check without being merged into values.
+  const values = merged.flat().sort(compareMemoryViewerEvents);
+  combinedTraceHistories.set(cacheKey, { inputs, values });
   return values;
 }
 
@@ -1226,6 +1231,10 @@ function persistedMemoryViewerEventId(client: TraceClient, eventId: string): str
 
 function memoryViewerProjectionKey(memoraxCodeHome: string, client: TraceClient | undefined): string {
   if (client === "claude") return clientTracePaths("claude", memoraxCodeHome).sessionsRoot;
+  // Each client has its own trace root and its own projection cache entry;
+  // letting DSH fall through to the codex key made the DSH history projection
+  // read (and be invalidated by) the codex sessions directory.
+  if (client === "dsh") return clientTracePaths("dsh", memoraxCodeHome).sessionsRoot;
   const codexSessionsRoot = tracePaths(memoraxCodeHome).sessionsRoot;
   return client === "codex" ? `${codexSessionsRoot}\u0000client=codex` : codexSessionsRoot;
 }
