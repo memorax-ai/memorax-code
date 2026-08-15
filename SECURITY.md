@@ -39,6 +39,12 @@ Please allow time for triage and remediation before public disclosure.
 - Hook, lifecycle, connection, PID, token, session, and workspace authority
   records are security-sensitive local state. Do not hand-edit or publish
   them.
+- Running interactive setup is the consent boundary for initial Codex
+  integration. When no active MemoraX Code Codex plugin exists, setup activates
+  the bundled plugin and trusts its current Hook command hashes without a
+  second Hook-specific prompt. npm lifecycle never grants this trust. Later
+  new or changed Hook hashes remain untrusted until foreground setup displays
+  and approves the exact changed selection.
 - Initial Repo Memory builds use only the Git worktree returned by an
   authenticated Backend turn-start request. Backend or workspace-scope
   failures skip the build; client Hooks do not fall back to their local `cwd`.
@@ -55,10 +61,13 @@ Please allow time for triage and remediation before public disclosure.
 ### MemoraX memory traffic
 
 MemoraX-backed search, retrieval, and writeback require a Base User ID, API
-key, and network access. The installer discloses automatic writeback before
-accepting credentials. Entering valid credentials activates search/add and
-the generated configuration's automatic writeback; automatic retrieval remains
-disabled until explicitly enabled.
+key, and network access. Interactive setup discloses automatic writeback before
+accepting new credentials. Entering locally valid credentials activates
+search/add and the generated configuration's automatic writeback; automatic
+retrieval remains disabled until explicitly enabled. Automatic setup may reuse
+existing effective credentials without collecting or printing them again. Its
+config-only check does not contact MemoraX or prove that the API key is accepted
+remotely.
 
 Memory searches send the query and repository-scoped identity to MemoraX.
 Active adds and automatic writeback send the selected content needed to create
@@ -143,6 +152,13 @@ removes the global npm package when possible. It intentionally retains:
 - Claude plugin data;
 - client provider configuration; and
 - memories already stored in MemoraX.
+
+A complete product uninstall removes the setup-completion routing marker but
+retains the MemoraX configuration, including any API key stored there. After a
+reinstall, automatic setup can reuse that connection and resume the configured
+memory behavior without asking for the values again. Run explicit
+`memorax-code setup`, or securely remove the retained configuration after
+review, if the old connection must not be reused.
 
 Delete retained local data and cloud memories separately after reviewing what
 you need. Running `npm uninstall -g @memorax/memorax-code` first is not

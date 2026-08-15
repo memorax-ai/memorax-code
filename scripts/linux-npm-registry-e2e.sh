@@ -113,14 +113,7 @@ mkdir -p \
   "$workspace" \
   "$HOME" \
   "$CODEX_HOME" \
-  "$CLAUDE_CONFIG_DIR" \
-  "$MEMORAX_CODE_HOME"
-
-printf '%s\n' \
-  '[clients]' \
-  'codex = false' \
-  'claude = false' \
-  >"$MEMORAX_CODE_HOME/config.toml"
+  "$CLAUDE_CONFIG_DIR"
 
 printf '%s\n' \
   'storage: ./storage' \
@@ -171,7 +164,7 @@ npm publish "$baseline_tarball" --access public --tag "$update_channel" --loglev
 npm publish "$next_tarball" --access public --tag "$update_channel" --loglevel warn
 
 cd "$workspace"
-npm install -g "@memorax/memorax-code@$baseline_version" --foreground-scripts --loglevel warn
+npm install -g "@memorax/memorax-code@$baseline_version" --loglevel warn
 
 package_install_root="$npm_prefix/lib/node_modules/@memorax/memorax-code"
 memorax_code_bin="$npm_prefix/bin/memorax-code"
@@ -184,6 +177,31 @@ for command in memorax-code memorax-cli memorax-code-backend memorax-code-codex 
   test -x "$npm_prefix/bin/$command"
   "$npm_prefix/bin/$command" --help >/dev/null
 done
+
+test ! -e "$MEMORAX_CODE_HOME/config.toml"
+test ! -e "$MEMORAX_CODE_HOME/runtime/setup/setup-completion.json"
+test ! -e "$MEMORAX_CODE_HOME/runtime/backend/backend.pid.json"
+test ! -e "$MEMORAX_CODE_HOME/runtime/install/package-transition.json"
+
+MEMORAX_CODE_SETUP_ASSUME_INTERACTIVE=1 \
+MEMORAX_CODE_SKIP_CODEX_PLUGIN_INSTALL=1 \
+MEMORAX_CODE_SKIP_CLAUDE_ADAPTER_INSTALL=1 \
+  "$memorax_code_bin" setup \
+    >"$isolated_root/setup.stdout" 2>"$isolated_root/setup.stderr"
+test -f "$MEMORAX_CODE_HOME/config.toml"
+test -f "$MEMORAX_CODE_HOME/runtime/setup/setup-completion.json"
+test -f "$MEMORAX_CODE_HOME/runtime/backend/backend.pid.json"
+test ! -e "$MEMORAX_CODE_HOME/runtime/install/package-transition.json"
+node --input-type=module - "$MEMORAX_CODE_HOME/runtime/setup/setup-completion.json" "$baseline_version" <<'NODE'
+import { readFileSync } from "node:fs";
+
+const completion = JSON.parse(readFileSync(process.argv[2], "utf8"));
+if (completion?.version !== 1
+  || completion?.state !== "complete"
+  || completion?.completedByVersion !== process.argv[3]) {
+  throw new Error("explicit setup did not commit the expected completion record");
+}
+NODE
 
 printf '\n[linux_e2e_sentinel]\nvalue = "preserve-v1"\n' \
   >>"$MEMORAX_CODE_HOME/config.toml"
@@ -251,6 +269,11 @@ NODE
 backend_state="$MEMORAX_CODE_HOME/runtime/backend/backend.pid.json"
 "$memorax_code_bin" stop --json --clients none --port "$backend_port" \
   >"$isolated_root/initial-stop.json"
+test ! -e "$backend_state"
+
+npm install -g "@memorax/memorax-code@$baseline_version" --loglevel warn
+test ! -e "$backend_state"
+test ! -e "$MEMORAX_CODE_HOME/runtime/install/package-transition.json"
 
 "$memorax_code_bin" start --json --clients none --port "$backend_port" \
   >"$isolated_root/start.json"
@@ -352,6 +375,9 @@ import { writeFileSync } from "node:fs";
 const [path, baselineVersion, updatedVersion] = process.argv.slice(2);
 const report = {
   npmInstallOk: true,
+  npmInstallDidNotInitialize: true,
+  explicitSetupCommitted: true,
+  stoppedReinstallStayedStopped: true,
   packageIdentityExact: true,
   productionDependencyReady: true,
   binShimsRunnable: true,

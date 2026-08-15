@@ -13,6 +13,7 @@ const packageFiles = new Set([
   "bin/memorax-code-backend.mjs",
   "bin/memorax-code-claude.mjs",
   "bin/memorax-code-plugin-postinstall.mjs",
+  "bin/memorax-code-setup.mjs",
   "bin/memorax-code-codex.mjs",
   "bin/memorax-code-npm-preinstall.mjs",
   "bin/memorax-code.mjs",
@@ -32,11 +33,13 @@ function parentPaths(path) {
 }
 const rootLibFiles = new Set([
   "lib/npm-invocation.mjs",
+  "lib/package-transition.mjs",
   "lib/client-hook-runtime.mjs",
   "lib/node-version.mjs",
   "lib/resolve-claude-command.mjs",
   "lib/resolve-codex-command.mjs",
   "lib/run-entrypoint.mjs",
+  "lib/setup-reconcile.mjs",
   "lib/vscode-extension-command.mjs",
   "lib/windows-cli-invocation.mjs",
 ]);

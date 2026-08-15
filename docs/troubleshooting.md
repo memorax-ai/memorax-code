@@ -14,6 +14,119 @@ memorax-code logs
 credentials, scope, and memory switches without printing secrets. Each client
 `doctor` checks its plugin, skill, workspace, and Backend connection.
 
+## Package installed, but setup did not run
+
+This is expected after:
+
+```sh
+npm install -g @memorax/memorax-code
+```
+
+npm installation is deliberately non-interactive. It installs package files
+and, only when replacing a running managed Backend, performs a bounded
+stop/start package transition. It does not detect clients, ask for MemoraX
+credentials, or authorize Hooks.
+
+Start first-use setup from an interactive terminal:
+
+```sh
+memorax-code
+```
+
+If setup was previously completed, the no-argument command shows status
+instead. To run or repair setup explicitly, use:
+
+```sh
+memorax-code setup
+```
+
+After a product uninstall and reinstall, automatic setup reuses a locally valid
+retained MemoraX connection. It is therefore normal for setup to restore the
+client integrations without asking for the Base User ID, preferred language,
+or API key. Run explicit `memorax-code setup` when you intend to replace those
+values.
+
+Setup requires both terminal input and terminal-visible stderr. A pipe,
+background process, or redirected stdin/stderr cannot answer setup prompts;
+the command exits without writing setup completion. Reopen a normal terminal
+and rerun `memorax-code setup`.
+
+## Setup does not complete
+
+Setup writes
+`$MEMORAX_CODE_HOME/runtime/setup/setup-completion.json` only after client and
+Hook reconciliation, Backend start, and final status readiness all succeed.
+Until then, a no-argument `memorax-code` attempts setup again.
+
+If the configuration is safely parseable but its effective MemoraX fields are
+incomplete or invalid, automatic setup asks for replacement values. A malformed
+TOML file cannot be safely updated and remains byte-preserved; fix or restore
+that file before rerunning setup rather than expecting the prompt flow to
+overwrite it.
+
+For an ordinary Backend start failure, setup makes one bounded stop/start
+recovery attempt. It deliberately skips that stop when the error identifies a
+Hook-runtime activation failure, lifecycle-lock contention, or invalid or
+unsupported Backend authority. Use the reported error and these commands
+before changing any state:
+
+```sh
+memorax-code status
+memorax-code logs
+memorax-code-codex doctor
+memorax-code-claude doctor
+```
+
+If the setup-completion record is invalid, wait until all setup commands have
+stopped, preserve a diagnostic copy, move the invalid record aside, and then
+rerun `memorax-code setup`. If it uses a newer unsupported version, install a
+compatible MemoraX Code release instead of replacing the record with an older
+shape.
+
+## npm package transition fails
+
+Package replacement may create:
+
+```text
+$MEMORAX_CODE_HOME/runtime/install/package-transition.json
+```
+
+`retiring` means preinstall proved that the old managed Backend was live and
+recorded the need to restore it, but safe Backend retirement did not finish.
+`retired` means the old Backend stopped, but the new package has not yet
+completed start, status verification, setup-completion handling, and one-time
+transition consumption. Invalid, unsupported, stale, or unfinished records
+fail closed and remain available for diagnosis.
+
+First inspect lifecycle authority:
+
+```sh
+memorax-code status
+memorax-code logs
+```
+
+Do not delete PID, lock, setup-completion, or transition records while a
+process or lifecycle command may own them. If a `retiring` record remains,
+finish a Backend-only stop first. Once status and operating-system inspection
+confirm that its PID authority is gone, preserve the incomplete record for
+diagnosis and move it aside before reinstalling; `retiring` is never consumed
+as if retirement had succeeded.
+
+If postinstall left a `retired` record and the Backend is still running after
+a failed status check, stop only the Backend before retrying the same install:
+
+```sh
+memorax-code stop --clients none
+npm install -g @memorax/memorax-code
+```
+
+The retry consumes a still-valid `retired` transition only after start and
+status both report success. If the record is stale or invalid, preserve a copy
+for diagnosis and confirm that no managed Backend PID remains before moving it
+aside and rerunning installation, followed by `memorax-code setup` when the
+Backend was intentionally left stopped. An unsupported version requires a
+compatible package version rather than manual record conversion.
+
 ## Installed, but memory is unavailable
 
 The package and Backend can be healthy while MemoraX remains unconfigured. Run:
@@ -22,9 +135,20 @@ The package and Backend can be healthy while MemoraX remains unconfigured. Run:
 memorax-cli status
 ```
 
-Configure `endpoint`, `user_id`, and `api_key` under `[memorax]` in
-`$MEMORAX_CODE_HOME/config.toml`, or set their environment equivalents. The
-current default endpoint is `https://platform.memorax.net`.
+Use explicit setup to enter or replace the connection values:
+
+```sh
+memorax-code setup
+memorax-cli status
+```
+
+Configured status validates the effective local values only. It does not
+contact MemoraX or prove that the API key is accepted; the first real memory
+request performs that check.
+
+For manual configuration, set `endpoint`, `user_id`, and `api_key` under
+`[memorax]` in `$MEMORAX_CODE_HOME/config.toml`, or set their environment
+equivalents. The current default endpoint is `https://platform.memorax.net`.
 
 After changing persistent configuration:
 
@@ -87,10 +211,18 @@ memorax-code start --clients codex
 memorax-code-codex doctor
 ```
 
-Codex requires review for new or changed Hook command hashes. A declined or
-non-interactive update can leave Hooks untrusted even though the update
-succeeded. Do not write trust entries directly. If the skill is missing, rerun
-`memorax-code start --clients codex`, then restart or refresh Codex.
+First-use setup, and setup restoring a selected Codex integration whose plugin
+was removed, perform the initial activation and trust automatically. If that
+step fails, `memorax-code codex-plugin activate --yes` is the explicit recovery
+command. Once an installation is active, every later new or changed Hook
+command hash remains untrusted until foreground setup displays and approves
+the exact changed selection. A declined or non-interactive update can
+therefore leave changed Hooks untrusted even though package replacement
+succeeded. npm postinstall never authorizes Hooks. An interactive
+`memorax-code update` reviews them in foreground setup; after a direct npm or
+non-interactive update, run `memorax-code setup`. Do not write trust entries
+directly. If the skill is missing, rerun `memorax-code start --clients codex`,
+then restart or refresh Codex.
 
 ## Claude Code plugin or Hook is inactive
 

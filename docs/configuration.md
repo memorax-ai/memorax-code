@@ -41,8 +41,9 @@ are not a compatibility contract.
 The generated template selects both clients, disables automatic retrieval,
 enables automatic writeback, sets the preferred language to Chinese (`zh`),
 uses a five-turn skill reminder and the adaptive repository-update policy, and
-enables content-bearing local traces for both clients. npm installation may
-narrow `[clients]` to clients detected on the host. The tables below list all
+enables content-bearing local traces for both clients. Interactive setup may
+narrow `[clients]` to clients detected on the host. npm package installation
+does not detect clients or change this selection. The tables below list all
 fallbacks, including tuning fields omitted from the generated file.
 
 On POSIX systems MemoraX Code creates `$MEMORAX_CODE_HOME` with mode `0700`
@@ -59,19 +60,91 @@ disabled. The command-line override is:
 --clients codex|claude|codex,claude|all|none
 ```
 
-A normal npm install or reinstall refreshes `[clients]` from the runnable
-clients detected at that time. Update-mode postinstall runs preserve enabled
-clients and also probe each disabled client. An interactive update offers each
-runnable disabled integration for activation with a default of yes. Declining
-the prompt, or running non-interactively, keeps that integration disabled. A
-selected client that is temporarily unavailable also remains selected in the
-configuration instead of being permanently disabled. When an update newly
-enables Codex, it requests initial Hook activation after the client-selection
-prompt.
+On a fresh interactive setup, MemoraX Code enables every runnable supported
+client it detects. Later setup runs preserve enabled clients and also probe
+each disabled client. Setup offers each runnable disabled integration for
+activation with a default of yes. Declining the prompt keeps that integration
+disabled. A selected client that is temporarily unavailable remains selected
+in the configuration instead of being permanently disabled. When setup newly
+enables Codex, or restores a selected integration whose plugin was removed, it
+activates the bundled Codex Hooks without a second confirmation. New or
+changed Hook command hashes discovered during later updates still require
+foreground review.
+
+`memorax-code update` performs package replacement first. When the managed
+Backend is running and the command has an interactive terminal, it then runs
+setup in update mode to review newly available clients and changed Codex
+Hooks. That review does not ask for MemoraX credentials again. Direct npm
+updates and non-interactive product updates do not change `[clients]` or
+authorize Hooks; run `memorax-code setup` later when review is required.
 
 Client selection controls plugin and Hook lifecycle only. It does not change
 Codex or Claude Code provider settings. `--clients none` runs the Backend
 without managing either client integration.
+
+## Setup, reconciliation, and package-transition state
+
+Interactive setup and npm package installation are separate control-plane
+operations. `npm install -g @memorax/memorax-code` installs or replaces the
+package without reading terminal input. `memorax-code setup` owns client
+detection, prompts, configuration writes, initial Codex Hook activation,
+exact review of later Hook changes, and final readiness.
+
+Setup has three credential-handling modes. The no-argument command enters
+automatic setup when completion is absent; it reuses a locally valid effective
+MemoraX connection and prompts only when that connection is incomplete or
+invalid. Explicit `memorax-code setup` always offers active reconfiguration,
+even when the current connection is locally valid. Setup reached from
+`memorax-code update` preserves the existing MemoraX connection without asking
+for credentials again.
+
+Setup stages the packaged Hook runtime and reconciles the selected clients
+with `memorax-code start` followed by `memorax-code status`. An ordinary start
+failure gets one bounded stop/start recovery attempt. Deterministic Hook
+activation, lifecycle-lock, or persisted runtime-authority failures skip that
+automatic stop so uncertain authority is not overwritten. The staged Hook
+generation becomes active only through a successful lifecycle start.
+
+Successful readiness is recorded in the private, versioned file:
+
+```text
+$MEMORAX_CODE_HOME/runtime/setup/setup-completion.json
+```
+
+The record controls only no-argument CLI routing. If it is absent,
+`memorax-code` starts setup when an interactive terminal is available; if it
+is valid, the command shows status. `memorax-code setup` always runs explicit
+setup. Invalid or unsupported records fail closed. Setup execution, including
+setup reached through the no-argument route, is serialized with the matching
+JSON lock. Completion is written only after the final readiness check
+succeeds.
+
+A complete product uninstall removes this routing marker after removing the
+managed integrations, while preserving `config.toml`. The next no-argument
+launch after reinstall therefore runs automatic setup and can reuse that
+configuration. A normal stop and a partial client uninstall preserve the
+completion record.
+
+Package replacement uses a separate private, versioned record:
+
+```text
+$MEMORAX_CODE_HOME/runtime/install/package-transition.json
+```
+
+When preinstall proves that the managed Backend PID is live, it first writes a
+`retiring` transition, then runs a Backend-only stop. It advances the record to
+`retired` only after the stop succeeds and PID authority disappears.
+Postinstall consumes only a fresh `retired` record, runs `start` and `status`
+without a `--clients` override, and therefore uses the persisted `[clients]`
+selection. It never detects clients, prompts, or authorizes Hooks. On success
+it preserves a valid setup-completion record or creates one when absent, then
+removes the transition record. Any failure retains the transition for explicit
+diagnosis and retry.
+
+When no managed PID exists, preinstall has no install-state side effects. A
+dead or malformed PID may be passed to the Backend-only stop for safe cleanup,
+but it does not schedule a postinstall restart. Consequently, package
+installation does not start a Backend that was already stopped.
 
 ## MemoraX connection
 
@@ -93,6 +166,15 @@ api_key = "your-api-key"
 | `api_key` | `MEMORAX_CODE_MEMORAX_API_KEY` | required |
 | `timeout_ms` | `MEMORAX_CODE_MEMORAX_TIMEOUT_MS` | `5000` ms |
 | `startup_timeout_ms` | `MEMORAX_CODE_MEMORAX_STARTUP_TIMEOUT_MS` | `3000` ms |
+
+Automatic setup determines whether the connection can be reused through the
+same config-only status resolution used by `memorax-cli status`, including the
+precedence documented above. A non-empty Base User ID and API key plus a valid
+`zh` or `en` memory output language form a locally configured connection; an
+omitted output language uses the `zh` fallback. This check does not send a
+network request or prove that the API key is accepted by MemoraX. Explicit
+setup writes persistent values to `config.toml`, but environment variables
+remain higher-precedence overrides.
 
 MemoraX requests send the API key and the query or content required by the
 selected memory operation to the HTTPS endpoint. Override `endpoint` only with
@@ -244,7 +326,9 @@ Common operator settings are:
 
 External binds fail unless explicitly allowed and protected by a Backend
 token. Persistent connection, token, and PID records live under
-`$MEMORAX_CODE_HOME/runtime/backend/`; do not hand-edit them.
+`$MEMORAX_CODE_HOME/runtime/backend/`. Setup completion and in-progress package
+replacement use the private records described above. Do not hand-edit runtime
+records while a setup, npm, or lifecycle command may still be active.
 
 ## Failure behavior and diagnostics
 
@@ -252,12 +336,17 @@ token. Persistent connection, token, and PID records live under
   on startup.
 - Malformed TOML, a non-table root, or invalid `[clients]` types block
   lifecycle mutations before adapters or processes are changed.
+- Automatic setup prompts for MemoraX fields that are incomplete or invalid in
+  an otherwise safely parseable effective configuration. A malformed TOML file
+  remains fail-closed and is not overwritten by the prompt flow.
 - Ordinary memory and trace readers use safe fallbacks when the file cannot be
   read or parsed; memory readers may also warn. Unsupported field types are
   ignored.
 - Targeted configuration updates preserve unrelated and unknown TOML content.
 - Invalid or unsupported Backend runtime records fail closed instead of
   silently falling back to `127.0.0.1:8787`.
+- Invalid or unsupported setup-completion and package-transition records fail
+  closed instead of rerunning setup or restarting a Backend implicitly.
 
 Use these commands before editing state manually:
 

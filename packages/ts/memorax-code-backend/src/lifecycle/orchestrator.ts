@@ -5,6 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { BackendConnectionAuthorityError } from "../../../memorax-code-adapter-common/src/backend-connection.mjs";
 import { RuntimeRecordError } from "../../../memorax-code-adapter-common/src/runtime-record.mjs";
+import { withSetupCompletionLock } from "../../../memorax-code-adapter-common/src/setup-completion.mjs";
 import { runBackendStatus } from "./backend/status.js";
 import {
   readBackendServiceState,
@@ -396,8 +397,37 @@ export async function uninstallMemoraxCodeService(
   serviceOptions: BackendServiceOptions,
   argv: string[],
 ): Promise<MemoraxCodeLifecycleReport> {
-  return withMemoraxCodeLifecycleLock("uninstall", serviceOptions, () =>
-    uninstallMemoraxCodeServiceLocked(serviceOptions, argv));
+  const memoraxCodeHome = memoraxCodeHomeForService(serviceOptions);
+  let report: MemoraxCodeLifecycleReport | undefined;
+  let lifecycleEntered = false;
+  try {
+    return await withSetupCompletionLock(memoraxCodeHome, async (_completion, mutation) => {
+      lifecycleEntered = true;
+      report = await withMemoraxCodeLifecycleLock("uninstall", serviceOptions, () =>
+        uninstallMemoraxCodeServiceLocked(serviceOptions, argv));
+      if (isCompleteSuccessfulUninstall(report)) mutation.clear();
+      return report;
+    });
+  } catch (error) {
+    if (lifecycleEntered && !report) throw error;
+    if (!report) {
+      return {
+        ok: false,
+        action: "uninstall",
+        reason: "setup_completion_lock_failed",
+        message: error instanceof Error ? error.message : String(error),
+        npmPackageRemoval: skippedNpmPackageRemoval("setup_completion_lock_failed"),
+        removesPlugin: false,
+        removesUserState: false,
+      };
+    }
+    return {
+      ...report,
+      ok: false,
+      reason: "setup_completion_clear_failed",
+      message: error instanceof Error ? error.message : String(error),
+    };
+  }
 }
 
 async function uninstallMemoraxCodeServiceLocked(
@@ -452,6 +482,12 @@ async function uninstallMemoraxCodeServiceLocked(
 
 function skippedNpmPackageRemoval(reason: string): NpmPackageRemovalReport {
   return { ok: true, action: "npm-package-remove", skipped: true, reason };
+}
+
+function isCompleteSuccessfulUninstall(report: MemoraxCodeLifecycleReport): boolean {
+  return report.ok
+    && report.npmPackageRemoval !== undefined
+    && report.npmPackageRemoval.reason !== "partial_client_uninstall";
 }
 
 async function removeNpmPackageIfInstalled(argv: string[]): Promise<NpmPackageRemovalReport> {

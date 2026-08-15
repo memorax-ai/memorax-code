@@ -1,0 +1,353 @@
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import test from "node:test";
+import { fileURLToPath } from "node:url";
+
+const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+const setupCompletionRelativePath = join("runtime", "setup", "setup-completion.json");
+
+test("memorax-code with no setup record runs setup without loading the Backend", async () => {
+  const fixture = await createPackageFixture();
+  try {
+    const result = runCli(fixture, [], { assumeInteractive: true });
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.error, undefined);
+    assert.deepEqual(await readJsonLines(fixture.setupLogPath), [{
+      args: [],
+      home: fixture.memoraxCodeHome,
+      reuseExistingMemorax: true,
+    }]);
+    assert.equal(await pathExists(fixture.backendLogPath), false);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("memorax-code with a valid v1 setup record routes no command to status", async () => {
+  const fixture = await createPackageFixture();
+  try {
+    await writeSetupRecord(fixture.memoraxCodeHome, validSetupRecord());
+
+    const result = runCli(fixture);
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.error, undefined);
+    assert.deepEqual(await readJsonLines(fixture.backendLogPath), [{ args: ["status"] }]);
+    assert.equal(await pathExists(fixture.setupLogPath), false);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("memorax-code fails closed for invalid or unsupported setup records", async (t) => {
+  for (const scenario of [
+    {
+      name: "invalid",
+      text: "{not-json\n",
+      pattern: /setup completion record is invalid \(malformed_json\)/,
+    },
+    {
+      name: "unsupported",
+      text: `${JSON.stringify({ ...validSetupRecord(), version: 2 }, null, 2)}\n`,
+      pattern: /setup completion record uses unsupported version 2/,
+    },
+  ]) {
+    await t.test(scenario.name, async () => {
+      const fixture = await createPackageFixture();
+      try {
+        await writeSetupRecordText(fixture.memoraxCodeHome, scenario.text);
+
+        const result = runCli(fixture, [], { assumeInteractive: true });
+
+        assert.equal(result.status, 1);
+        assert.equal(result.error, undefined);
+        assert.match(result.stderr, scenario.pattern);
+        assert.match(result.stderr, /Inspect or repair this private record before running setup again/);
+        assert.equal(await pathExists(fixture.setupLogPath), false);
+        assert.equal(await pathExists(fixture.backendLogPath), false);
+      } finally {
+        await fixture.cleanup();
+      }
+    });
+  }
+});
+
+test("explicit setup runs without automatic reuse even when internal mode flags are inherited", async () => {
+  const fixture = await createPackageFixture();
+  try {
+    await writeSetupRecord(fixture.memoraxCodeHome, validSetupRecord());
+
+    const result = runCli(fixture, ["setup"], {
+      assumeInteractive: true,
+      extraEnv: {
+        MEMORAX_CODE_SETUP_REUSE_EXISTING_MEMORAX: "1",
+        MEMORAX_CODE_SETUP_UPDATE: "1",
+      },
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.error, undefined);
+    assert.deepEqual(await readJsonLines(fixture.setupLogPath), [{
+      args: [],
+      home: fixture.memoraxCodeHome,
+      reuseExistingMemorax: false,
+    }]);
+    assert.equal(await pathExists(fixture.backendLogPath), false);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("setup propagates an explicit home to the setup process", async () => {
+  const fixture = await createPackageFixture();
+  const requestedHome = join(fixture.root, "custom memorax-code home");
+  try {
+    const result = runCli(fixture, ["setup", "--home", requestedHome], { assumeInteractive: true });
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.error, undefined);
+    assert.deepEqual(await readJsonLines(fixture.setupLogPath), [{
+      args: [],
+      home: requestedHome,
+      reuseExistingMemorax: false,
+    }]);
+    assert.equal(await pathExists(join(fixture.memoraxCodeHome, setupCompletionRelativePath)), false);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("non-interactive first use fails quickly without creating setup state", {
+  timeout: 5_000,
+}, async () => {
+  const fixture = await createPackageFixture();
+  try {
+    const startedAt = Date.now();
+    const result = runCli(fixture, [], { timeout: 2_000 });
+    const elapsedMs = Date.now() - startedAt;
+
+    assert.equal(result.status, 1, result.stderr);
+    assert.equal(result.error, undefined);
+    assert.ok(elapsedMs < 2_000, `non-interactive setup routing took ${elapsedMs} ms`);
+    assert.match(result.stderr, /an interactive terminal is required/);
+    assert.equal(await pathExists(join(fixture.memoraxCodeHome, setupCompletionRelativePath)), false);
+    assert.equal(await pathExists(join(fixture.memoraxCodeHome, "runtime", "setup")), false);
+    assert.equal(await pathExists(fixture.setupLogPath), false);
+    assert.equal(await pathExists(fixture.backendLogPath), false);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("setup propagates the setup process exit code", async () => {
+  const fixture = await createPackageFixture();
+  try {
+    const result = runCli(fixture, ["setup"], {
+      assumeInteractive: true,
+      setupExitCode: 7,
+    });
+
+    assert.equal(result.status, 7, result.stderr);
+    assert.equal(result.error, undefined);
+    assert.deepEqual(await readJsonLines(fixture.setupLogPath), [{
+      args: [],
+      home: fixture.memoraxCodeHome,
+      reuseExistingMemorax: false,
+    }]);
+    assert.equal(await pathExists(fixture.backendLogPath), false);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("root help documents setup and update", async () => {
+  const fixture = await createPackageFixture();
+  try {
+    const result = runCli(fixture, ["--help"]);
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.error, undefined);
+    assert.match(result.stdout, /^Usage: memorax-code \[command\] \[options\]/);
+    assert.match(result.stdout, /^  setup\s+Run or repair the interactive setup$/m);
+    assert.match(result.stdout, /^  update\s+Update the globally installed npm package$/m);
+    assert.equal(await pathExists(fixture.setupLogPath), false);
+    assert.equal(await pathExists(fixture.backendLogPath), false);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("setup help describes explicit reconfiguration and repair", async () => {
+  const fixture = await createPackageFixture();
+  try {
+    const result = runCli(fixture, ["setup", "--help"]);
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.error, undefined);
+    assert.match(result.stdout, /^Usage: memorax-code setup \[--home DIR\]/);
+    assert.match(result.stdout, /Explicitly reconfigure or repair MemoraX Code through interactive setup/);
+    assert.equal(await pathExists(fixture.setupLogPath), false);
+    assert.equal(await pathExists(fixture.backendLogPath), false);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("unknown commands are still delegated to the Backend entrypoint", async () => {
+  const fixture = await createPackageFixture();
+  try {
+    const result = runCli(fixture, ["unknown-command"], { backendExitCode: 23 });
+
+    assert.equal(result.status, 23, result.stderr);
+    assert.equal(result.error, undefined);
+    assert.deepEqual(await readJsonLines(fixture.backendLogPath), [{ args: ["unknown-command"] }]);
+    assert.equal(await pathExists(fixture.setupLogPath), false);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+async function createPackageFixture() {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-entrypoint-test-"));
+  const memoraxCodeHome = join(root, "memorax-code-home");
+  const home = join(root, "home");
+  const setupLogPath = join(root, "setup-calls.jsonl");
+  const backendLogPath = join(root, "backend-calls.jsonl");
+  const copiedFiles = [
+    "bin/memorax-code.mjs",
+    "lib/client-hook-runtime.mjs",
+    "lib/node-version.mjs",
+    "lib/npm-invocation.mjs",
+    "lib/resolve-claude-command.mjs",
+    "lib/resolve-codex-command.mjs",
+    "lib/run-entrypoint.mjs",
+    "lib/vscode-extension-command.mjs",
+  ];
+  for (const relativePath of copiedFiles) {
+    const target = join(root, relativePath);
+    await mkdir(dirname(target), { recursive: true });
+    await cp(join(packageRoot, relativePath), target);
+  }
+
+  const adapterCommonSource = join(
+    packageRoot,
+    "..",
+    "..",
+    "ts",
+    "memorax-code-adapter-common",
+    "src",
+  );
+  for (const relativePath of ["config-utils.mjs", "runtime-record.mjs", "setup-completion.mjs"]) {
+    const target = join(root, "lib", "memorax-code-adapter-common", "src", relativePath);
+    await mkdir(dirname(target), { recursive: true });
+    await cp(join(adapterCommonSource, relativePath), target);
+  }
+
+  await writeFile(join(root, "package.json"), `${JSON.stringify({
+    name: "@memorax/memorax-code-entrypoint-test",
+    version: "0.0.0-test",
+    type: "module",
+  }, null, 2)}\n`);
+  await writeFile(join(root, "bin", "memorax-code-setup.mjs"), [
+    "import { appendFileSync } from 'node:fs';",
+    "appendFileSync(process.env.MEMORAX_CODE_TEST_SETUP_LOG, JSON.stringify({",
+    "  args: process.argv.slice(2),",
+    "  home: process.env.MEMORAX_CODE_HOME,",
+    "  reuseExistingMemorax: process.env.MEMORAX_CODE_SETUP_REUSE_EXISTING_MEMORAX === '1',",
+    "  ...(process.env.MEMORAX_CODE_SETUP_UPDATE === undefined ? {} : { updateMode: process.env.MEMORAX_CODE_SETUP_UPDATE }),",
+    "}) + '\\n');",
+    "process.exit(Number(process.env.MEMORAX_CODE_TEST_SETUP_EXIT_CODE ?? 0));",
+    "",
+  ].join("\n"));
+  const backendEntrypoint = join(root, "lib", "memorax-code-backend", "dist", "memorax-code.js");
+  await mkdir(dirname(backendEntrypoint), { recursive: true });
+  await writeFile(backendEntrypoint, [
+    "import { appendFileSync } from 'node:fs';",
+    "appendFileSync(process.env.MEMORAX_CODE_TEST_BACKEND_LOG, JSON.stringify({",
+    "  args: process.argv.slice(2),",
+    "}) + '\\n');",
+    "process.exit(Number(process.env.MEMORAX_CODE_TEST_BACKEND_EXIT_CODE ?? 0));",
+    "",
+  ].join("\n"));
+
+  return {
+    root,
+    memoraxCodeHome,
+    home,
+    setupLogPath,
+    backendLogPath,
+    cleanup: () => rm(root, { recursive: true, force: true }),
+  };
+}
+
+function runCli(fixture, args = [], {
+  assumeInteractive = false,
+  backendExitCode = 0,
+  extraEnv = {},
+  setupExitCode = 0,
+  timeout = 5_000,
+} = {}) {
+  const env = {
+    ...process.env,
+    HOME: fixture.home,
+    MEMORAX_CODE_HOME: fixture.memoraxCodeHome,
+    CODEX_HOME: join(fixture.root, "codex-home"),
+    CLAUDE_CONFIG_DIR: join(fixture.root, "claude-home"),
+    MEMORAX_CODE_CODEX_COMMAND: process.execPath,
+    MEMORAX_CODE_CLAUDE_COMMAND: process.execPath,
+    MEMORAX_CODE_TEST_SETUP_LOG: fixture.setupLogPath,
+    MEMORAX_CODE_TEST_BACKEND_LOG: fixture.backendLogPath,
+    MEMORAX_CODE_TEST_SETUP_EXIT_CODE: String(setupExitCode),
+    MEMORAX_CODE_TEST_BACKEND_EXIT_CODE: String(backendExitCode),
+  };
+  delete env.MEMORAX_CODE_SETUP_REUSE_EXISTING_MEMORAX;
+  delete env.MEMORAX_CODE_SETUP_UPDATE;
+  Object.assign(env, extraEnv);
+  if (assumeInteractive) env.MEMORAX_CODE_SETUP_ASSUME_INTERACTIVE = "1";
+  else delete env.MEMORAX_CODE_SETUP_ASSUME_INTERACTIVE;
+  return spawnSync(
+    process.execPath,
+    [join(fixture.root, "bin", "memorax-code.mjs"), ...args],
+    {
+      encoding: "utf8",
+      env,
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout,
+    },
+  );
+}
+
+function validSetupRecord() {
+  return {
+    version: 1,
+    state: "complete",
+    completedAt: "2026-08-15T08:00:00.000Z",
+    completedByVersion: "0.0.0-test",
+  };
+}
+
+async function writeSetupRecord(memoraxCodeHome, record) {
+  await writeSetupRecordText(memoraxCodeHome, `${JSON.stringify(record, null, 2)}\n`);
+}
+
+async function writeSetupRecordText(memoraxCodeHome, text) {
+  const path = join(memoraxCodeHome, setupCompletionRelativePath);
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, text);
+}
+
+async function readJsonLines(path) {
+  return (await readFile(path, "utf8"))
+    .trim()
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
+}
+
+async function pathExists(path) {
+  return Boolean(await stat(path).catch(() => undefined));
+}
