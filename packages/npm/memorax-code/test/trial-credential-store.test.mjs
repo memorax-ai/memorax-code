@@ -16,10 +16,13 @@ import {
 } from "../../../ts/memorax-code-adapter-common/src/credentials/trial-credential-record.mjs";
 import {
   clearTrialCredentialRecord,
+  createTrialCredentialStorePort,
   createTrialCredentialRecordIfAbsent,
   loadTrialCredentialRecord,
   transitionTrialCredentialRecord,
   trialCredentialNamespace,
+  trialCredentialProvisionLockPath,
+  withTrialCredentialProvisionLock,
 } from "../../../ts/memorax-code-adapter-common/src/credentials/trial-credential-store.mjs";
 
 const API_KEY = `sk_${"C".repeat(43)}`;
@@ -47,6 +50,132 @@ test("credential namespaces isolate normalized MemoraX Code homes without exposi
       resolveHome: (value) => value,
     }),
   );
+});
+
+test("credential provision lock path stays inside the isolated MemoraX Code home", async () => {
+  await withIsolatedHome(async (home) => {
+    assert.equal(
+      trialCredentialProvisionLockPath(home),
+      join(home, "runtime", "credentials", "trial-provision"),
+    );
+  });
+});
+
+test("credential provision lock serializes concurrent provisioning operations", async () => {
+  await withIsolatedHome(async (home) => {
+    const options = {
+      memoraxCodeHome: home,
+      provisionLockOptions: { timeoutMs: 1_000, retryMs: 5 },
+    };
+    const firstEntered = deferred();
+    const releaseFirst = deferred();
+    const events = [];
+    const first = withTrialCredentialProvisionLock(async () => {
+      events.push("first-enter");
+      firstEntered.resolve();
+      await releaseFirst.promise;
+      events.push("first-exit");
+      return "first";
+    }, options);
+
+    await firstEntered.promise;
+    const second = withTrialCredentialProvisionLock(async () => {
+      events.push("second-enter");
+      events.push("second-exit");
+      return "second";
+    }, options);
+    await delay(25);
+    assert.deepEqual(events, ["first-enter"]);
+
+    releaseFirst.resolve();
+    assert.deepEqual(await Promise.all([first, second]), ["first", "second"]);
+    assert.deepEqual(events, [
+      "first-enter",
+      "first-exit",
+      "second-enter",
+      "second-exit",
+    ]);
+  });
+});
+
+test("credential clear waits for an in-flight provisioning lock", async () => {
+  await withIsolatedHome(async (home) => {
+    const storage = memoryBackend(serializeTrialCredentialRecord(readyRecord()));
+    const options = {
+      memoraxCodeHome: home,
+      backend: storage.backend,
+      provisionLockOptions: { timeoutMs: 1_000, retryMs: 5 },
+    };
+    const provisionEntered = deferred();
+    const releaseProvision = deferred();
+    const provisioning = withTrialCredentialProvisionLock(async () => {
+      provisionEntered.resolve();
+      await releaseProvision.promise;
+    }, options);
+
+    await provisionEntered.promise;
+    const clearing = clearTrialCredentialRecord(options);
+    await delay(25);
+    assert.equal(storage.deleteCalls, 0);
+
+    releaseProvision.resolve();
+    await provisioning;
+    assert.deepEqual(await clearing, { deleted: true });
+    assert.equal(storage.deleteCalls, 1);
+    assert.equal(await loadTrialCredentialRecord(options), null);
+  });
+});
+
+test("credential store port binds storage and forwards per-call provision lock controls", async () => {
+  await withIsolatedHome(async (home) => {
+    const storage = memoryBackend();
+    const options = {
+      memoraxCodeHome: home,
+      backend: storage.backend,
+      provisionLockOptions: { timeoutMs: 1_000, retryMs: 5 },
+    };
+    const port = createTrialCredentialStorePort(options);
+    const initial = createInitialTrialCredentialRecord({
+      pluginMark: PLUGIN_MARK,
+      apiKey: API_KEY,
+    });
+    assert.deepEqual(await port.createIfAbsent(initial), { record: initial, created: true });
+    assert.deepEqual(await port.load(), initial);
+
+    const holderEntered = deferred();
+    const releaseHolder = deferred();
+    const holder = withTrialCredentialProvisionLock(async () => {
+      holderEntered.resolve();
+      await releaseHolder.promise;
+    }, options);
+    await holderEntered.promise;
+
+    let timeoutCallbackRan = false;
+    await assert.rejects(
+      port.withProvisionLock(
+        () => { timeoutCallbackRan = true; },
+        { timeoutMs: 20, retryMs: 5 },
+      ),
+      (error) => error?.code === "JSON_FILE_LOCK_TIMEOUT",
+    );
+    assert.equal(timeoutCallbackRan, false);
+
+    const controller = new AbortController();
+    let abortCallbackRan = false;
+    const waiting = port.withProvisionLock(
+      () => { abortCallbackRan = true; },
+      { signal: controller.signal, timeoutMs: 500, retryMs: 5 },
+    );
+    controller.abort();
+    await assert.rejects(waiting, (error) => error?.code === "JSON_FILE_LOCK_ABORTED");
+    assert.equal(abortCallbackRan, false);
+
+    releaseHolder.resolve();
+    await holder;
+    const ready = await port.transition((current) => readyRecord(current));
+    assert.equal(ready.state, "ready");
+    assert.deepEqual(await port.load(), ready);
+  });
 });
 
 test("credential store creates once, transitions, verifies, and explicitly clears one record", async () => {
@@ -434,6 +563,7 @@ function memoryBackend(initial = null, delayMs = 0) {
   let serialized = initial;
   const storage = {
     saveCalls: 0,
+    deleteCalls: 0,
     backend: {
       async load() {
         await delay(delayMs);
@@ -446,6 +576,7 @@ function memoryBackend(initial = null, delayMs = 0) {
       },
       async delete() {
         await delay(delayMs);
+        storage.deleteCalls += 1;
         const deleted = serialized !== null;
         serialized = null;
         return deleted;
@@ -468,6 +599,12 @@ function delay(milliseconds) {
   return milliseconds > 0
     ? new Promise((resolve) => setTimeout(resolve, milliseconds))
     : undefined;
+}
+
+function deferred() {
+  let resolve;
+  const promise = new Promise((complete) => { resolve = complete; });
+  return { promise, resolve };
 }
 
 function redactedBackendError(operation) {

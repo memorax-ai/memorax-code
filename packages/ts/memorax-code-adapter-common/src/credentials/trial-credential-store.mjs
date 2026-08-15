@@ -34,6 +34,48 @@ export function trialCredentialLockPath(memoraxCodeHome) {
   return join(normalizedHome(memoraxCodeHome, resolve), "runtime", "credentials", "trial-credentials");
 }
 
+export function trialCredentialProvisionLockPath(memoraxCodeHome) {
+  return join(normalizedHome(memoraxCodeHome, resolve), "runtime", "credentials", "trial-provision");
+}
+
+export async function withTrialCredentialProvisionLock(operation, options = {}) {
+  if (typeof operation !== "function") {
+    throw new TypeError("Trial credential provisioning lock requires an operation");
+  }
+  const home = resolveStoreHome(options);
+  return await withJsonFileLockAsync(
+    trialCredentialProvisionLockPath(home),
+    operation,
+    options.provisionLockOptions ?? options.lockOptions,
+  );
+}
+
+export function createTrialCredentialStorePort(options = {}) {
+  const configured = isRecord(options) ? { ...options } : {};
+  const configuredProvisionLockOptions = isRecord(configured.provisionLockOptions)
+    ? { ...configured.provisionLockOptions }
+    : isRecord(configured.lockOptions)
+      ? { ...configured.lockOptions }
+      : {};
+  return Object.freeze({
+    load: () => loadTrialCredentialRecord(configured),
+    createIfAbsent: (value) => createTrialCredentialRecordIfAbsent(value, configured),
+    transition: (operation) => transitionTrialCredentialRecord(operation, configured),
+    withProvisionLock(operation, lockOptions = {}) {
+      if (!isRecord(lockOptions)) {
+        throw new TypeError("Trial credential provisioning lock requires valid options");
+      }
+      return withTrialCredentialProvisionLock(operation, {
+        ...configured,
+        provisionLockOptions: {
+          ...configuredProvisionLockOptions,
+          ...lockOptions,
+        },
+      });
+    },
+  });
+}
+
 function createTrialCredentialBackend(options = {}) {
   const home = resolveStoreHome(options);
   const platform = options.platform ?? process.platform;
@@ -115,6 +157,13 @@ export async function transitionTrialCredentialRecord(operation, options = {}) {
 }
 
 export async function clearTrialCredentialRecord(options = {}) {
+  return await withTrialCredentialProvisionLock(
+    () => clearTrialCredentialRecordLocked(options),
+    options,
+  );
+}
+
+async function clearTrialCredentialRecordLocked(options) {
   const home = resolveStoreHome(options);
   const backend = createTrialCredentialBackend({ ...options, memoraxCodeHome: home });
   return withJsonFileLockAsync(

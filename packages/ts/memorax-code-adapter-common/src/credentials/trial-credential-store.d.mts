@@ -1,4 +1,4 @@
-import type { JsonFileLockOptions } from "../config-utils.mjs";
+import type { AsyncJsonFileLockOptions } from "../config-utils.mjs";
 import type { TrialCredentialRecord } from "./trial-credential-record.mjs";
 
 export type TrialCredentialSecureBackend = Readonly<{
@@ -13,12 +13,29 @@ export type TrialCredentialStoreOptions = Readonly<{
   platform?: NodeJS.Platform;
   backend?: TrialCredentialSecureBackend;
   runtime?: Record<string, unknown>;
-  lockOptions?: JsonFileLockOptions;
+  lockOptions?: AsyncJsonFileLockOptions;
+  provisionLockOptions?: AsyncJsonFileLockOptions;
 }>;
 
 export type TrialCredentialNamespaceOptions = Readonly<{
   platform?: NodeJS.Platform;
   resolveHome?: (value: string) => string;
+}>;
+
+export type TrialCredentialStorePort = Readonly<{
+  load(): Promise<TrialCredentialRecord | null>;
+  createIfAbsent(
+    value: unknown,
+  ): Promise<Readonly<{ record: TrialCredentialRecord; created: boolean }>>;
+  transition(
+    operation: (
+      current: TrialCredentialRecord,
+    ) => TrialCredentialRecord | undefined,
+  ): Promise<TrialCredentialRecord>;
+  withProvisionLock<T>(
+    operation: () => T | Promise<T>,
+    options?: AsyncJsonFileLockOptions,
+  ): Promise<T>;
 }>;
 
 export function trialCredentialNamespace(
@@ -27,6 +44,16 @@ export function trialCredentialNamespace(
 ): string;
 
 export function trialCredentialLockPath(memoraxCodeHome: string): string;
+export function trialCredentialProvisionLockPath(memoraxCodeHome: string): string;
+
+export function withTrialCredentialProvisionLock<T>(
+  operation: () => T | Promise<T>,
+  options?: TrialCredentialStoreOptions,
+): Promise<T>;
+
+export function createTrialCredentialStorePort(
+  options?: TrialCredentialStoreOptions,
+): TrialCredentialStorePort;
 
 export function loadTrialCredentialRecord(
   options?: TrialCredentialStoreOptions,
