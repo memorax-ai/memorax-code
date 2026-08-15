@@ -114,6 +114,36 @@ For a persistent disable, set:
 enabled = false
 ```
 
+### Trial credential storage
+
+The versioned trial credential record is separate from `config.toml`. Its
+provisioned `account_id` is account identity and never replaces the Memory ID
+stored as `[memorax].user_id`.
+
+The secure credential layer uses macOS Keychain, Linux Secret Service through
+libsecret, and Windows CurrentUser DPAPI with an atomically replaced encrypted
+file under the current user's local application-data directory. Each
+`MEMORAX_CODE_HOME` resolves to a distinct hashed storage namespace. If the
+required operating-system backend is missing, locked, denied, or corrupt, the
+operation fails explicitly; it never falls back to plaintext storage.
+
+These backends protect credentials at rest and when the relevant operating-
+system session or key store is locked. They are not a process-isolation
+boundary within the same logged-in user. Malicious software running as that OS
+user can generally request access in the user's security context; protect the
+login session and do not run untrusted software.
+
+Within this local storage path, the complete trial API key passes only through
+the secure backend's in-memory input and output. It must not appear in command
+arguments, environment variables, `config.toml`, logs, diagnostics, telemetry,
+or error messages. Ordinary package removal retains an existing secure
+credential record.
+
+Credential creation is atomic and create-if-absent. Versioned state transitions
+preserve the provisioned mark and account/project identity, and explicit Key
+recovery stores the replacement Key before any recovery request. Rebinding to a
+different trial identity requires an explicit credential clear.
+
 ## Local Data and Diagnostics
 
 `MEMORAX_CODE_HOME` defaults to `~/.memorax-code` and contains configuration,
@@ -149,6 +179,7 @@ This stops the managed Backend, removes managed Codex/Claude integrations, and
 removes the global npm package when possible. It intentionally retains:
 
 - `MEMORAX_CODE_HOME`, including configuration and local traces;
+- an operating-system-protected trial credential record, when present;
 - Claude plugin data;
 - client provider configuration; and
 - memories already stored in MemoraX.

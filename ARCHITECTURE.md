@@ -85,7 +85,7 @@ relationships; the arrow labels distinguish them. It is not an import graph.
 | Component | Stable responsibility | Must not own | Primary evidence |
 | --- | --- | --- | --- |
 | `packages/ts/memorax-code-backend` | Local service, Hook HTTP, native client-content interpretation, memory workflows, repository scope, MemoraX adapter, trace, local Viewer with a content-free public HTTP surface, writeback reconciliation, and lifecycle | Model execution, client model-provider credentials, or native transcript creation | `packages/ts/memorax-code-backend/src/app/backend-server.ts`, `packages/ts/memorax-code-backend/src/memory/service.ts`, and the capability directories under `src` |
-| `packages/ts/memorax-code-adapter-common` | Shared source for Backend connection authority, private runtime records, cross-process locking and configuration, Hook generations, Hook launch helpers, and Repo/Personal Memory helpers | Backend composition, native transcript interpretation, MemoraX request execution, or client plugin policy | `packages/ts/memorax-code-adapter-common/src/backend-connection.mjs`, `src/runtime-record.mjs`, `src/hooks`, and `src/repo-memory` |
+| `packages/ts/memorax-code-adapter-common` | Shared source for Backend connection authority, private runtime and secure credential records, cross-process locking and configuration, Hook generations, Hook launch helpers, and Repo/Personal Memory helpers | Backend composition, native transcript interpretation, MemoraX request execution, or client plugin policy | `packages/ts/memorax-code-adapter-common/src/backend-connection.mjs`, `src/runtime-record.mjs`, `src/credentials`, `src/hooks`, and `src/repo-memory` |
 | `packages/ts/memorax-code-codex-adapter` | Codex plugin artifact, Hook shells and runtimes, session/workspace observation, diagnostics, and the canonical shared skill | Codex rollout semantics or Backend-side writeback authority | `.codex-plugin`, `hooks`, `runtime-hooks`, `src`, and `skills/memorax-code` |
 | `packages/ts/memorax-code-claude-adapter` | Claude Code plugin artifact, Hook shells and runtimes, configuration, installer, marketplace source, and diagnostics | Claude transcript semantics or Backend memory orchestration | `.claude-plugin`, `hooks`, `runtime-hooks`, `scripts`, and `src/plugin-install.mjs` |
 | `packages/npm/memorax-code` | Installed executable wrappers, explicit interactive setup, setup reconciliation, package-transition preinstall/postinstall, update, npm manifest, and release-package source | Backend lifecycle semantics, uninstall orchestration, or artifact staging | `bin`, `lib/setup-reconcile.mjs`, `lib/package-transition.mjs`, `lib/run-entrypoint.mjs`, and `package.json` |
@@ -527,6 +527,7 @@ and
 | Backend connection and managed-process ownership | Versioned private connection/token/PID records plus lifecycle lock/version validation | In-memory state in any one process |
 | Setup routing and package-replacement continuity | Versioned private setup-completion and package-transition records plus their JSON locks | Configuration contents, npm output visibility, and the presence of package files |
 | Effective MemoraX connection | Config-only resolution with documented environment-over-file precedence and normalization | Config-file presence, setup completion, and Backend liveness do not establish local configuration or remote API-key acceptance |
+| Trial account credentials | Versioned secure credential record stored through the operating-system credential backend; its `account_id` is account identity | `[memorax].user_id` remains the Memory ID and must not be derived from or overwritten by trial account identity |
 | MemoraX memory result and asynchronous task state | Normalized response from `provider/memorax` | Observability, trace, Viewer, and task projections |
 | Persisted current-turn operational state and trace history | Client-qualified local trace records | Viewer summaries and diagnostics; not native content or general Turn-identity authority |
 | Repo Memory bundle | Repository-local `.repo_memory` files produced by the supervised job | Backend readiness and client-injected guidance |
@@ -541,7 +542,10 @@ repository-session bindings, in-flight provider operations, Viewer projection
 caches, and background reconciliation promises.
 
 Durable local state includes configuration, private runtime records, active
-client selection, client-qualified trace JSONL, and Repo Memory. State shared
+client selection, client-qualified trace JSONL, Repo Memory, and trial
+credentials held in macOS Keychain, Linux Secret Service, or a Windows
+CurrentUser DPAPI-encrypted file. Secure credential mutation is serialized by
+a bounded lock; file-backed ciphertext is atomically replaced. State shared
 across processes requires a bounded lock, atomic replacement, or version
 validation appropriate to its record. An in-memory mutex is not cross-process
 authority.

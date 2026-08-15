@@ -44,6 +44,21 @@ const rootLibFiles = new Set([
   "lib/vscode-extension-command.mjs",
   "lib/windows-cli-invocation.mjs",
 ]);
+const reviewedCredentialFiles = new Set([
+  "linux-secret-service.mjs",
+  "macos-keychain.mjs",
+  "secure-command.mjs",
+  "trial-credential-record.d.mts",
+  "trial-credential-record.mjs",
+  "trial-credential-store.d.mts",
+  "trial-credential-store.mjs",
+  "windows-dpapi.mjs",
+]);
+const credentialRuntimePrefixes = [
+  "lib/memorax-code-adapter-common/src/credentials/",
+  "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/credentials/",
+];
+const sensitivePath = /(?:secret|credential|authorization|api[_-]?key)/i;
 
 export function isAllowedNpmPackPath(rawPath) {
   const path = String(rawPath).replaceAll("\\", "/");
@@ -52,4 +67,16 @@ export function isAllowedNpmPackPath(rawPath) {
     || packageFiles.has(path)
     || rootLibFiles.has(path)
     || packagePrefixes.some((prefix) => path === prefix.slice(0, -1) || path.startsWith(prefix));
+}
+
+export function isReviewedCredentialRuntimePath(rawPath) {
+  const path = String(rawPath).replaceAll("\\", "/");
+  const prefix = credentialRuntimePrefixes.find((candidate) => path.startsWith(candidate));
+  return prefix !== undefined && reviewedCredentialFiles.has(path.slice(prefix.length));
+}
+
+export function isAllowedNpmPackFilePath(rawPath) {
+  const path = String(rawPath).replaceAll("\\", "/");
+  return isAllowedNpmPackPath(path)
+    && (!sensitivePath.test(path) || isReviewedCredentialRuntimePath(path));
 }
