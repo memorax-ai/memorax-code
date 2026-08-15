@@ -3,6 +3,7 @@ import { MEMORY_HOOK_COMMAND_VERSION } from "./config.mjs";
 export function createSessionBridge({ dispatch, debug = () => {} }) {
   const sessions = new Map();
   const pendingContext = new Map();
+  const pendingRetrieval = new Map();
 
   return {
     onSessionCreated(session) {
@@ -34,6 +35,7 @@ export function createSessionBridge({ dispatch, debug = () => {} }) {
           state.assistantText = undefined;
           state.turnStarted = false;
           pendingContext.delete(state.sessionId);
+          pendingRetrieval.delete(state.sessionId);
           if (previousTurn !== undefined && previousTurnStarted) {
             dispatchTurnDiscard(state, previousTurn);
           }
@@ -47,7 +49,11 @@ export function createSessionBridge({ dispatch, debug = () => {} }) {
           break;
         case "turn/end": {
           const eventTurn = nonNegativeInteger(event.data?.turn, undefined);
-          if (eventTurn !== undefined && eventTurn !== state.turn) break;
+          if (eventTurn === undefined) {
+            if (state.turn !== undefined) break;
+          } else if (eventTurn !== state.turn) {
+            break;
+          }
           handleTurnEnd(state, event.data);
           break;
         }
@@ -67,6 +73,7 @@ export function createSessionBridge({ dispatch, debug = () => {} }) {
       }
       sessions.delete(sessionId);
       pendingContext.delete(sessionId);
+      pendingRetrieval.delete(sessionId);
     },
     takePendingContext(sessionId) {
       const key = stringValue(sessionId);
@@ -74,6 +81,25 @@ export function createSessionBridge({ dispatch, debug = () => {} }) {
       const context = pendingContext.get(key);
       pendingContext.delete(key);
       return context;
+    },
+    async waitForPendingContext(sessionId, timeoutMs) {
+      const key = stringValue(sessionId);
+      if (!key) return undefined;
+      const context = pendingContext.get(key);
+      if (context !== undefined) {
+        pendingContext.delete(key);
+        pendingRetrieval.delete(key);
+        return context;
+      }
+      const retrieval = pendingRetrieval.get(key);
+      if (!retrieval) return undefined;
+      pendingRetrieval.delete(key);
+      const additionalContext = await boundedWait(retrieval.promise, timeoutMs);
+      if (additionalContext) {
+        pendingContext.delete(key);
+        return additionalContext;
+      }
+      return undefined;
     },
     sessionCount() {
       return sessions.size;
@@ -123,16 +149,24 @@ export function createSessionBridge({ dispatch, debug = () => {} }) {
     const body = buildTurnStartCommand(state);
     if (!body) return;
     const generation = ++state.generation;
+    const deferred = createDeferred();
+    pendingRetrieval.set(state.sessionId, deferred);
     void enqueue(state, () => dispatch("/memory/turn-start", body)).then((result) => {
-      if (state.disposed || state.generation !== generation) return;
+      if (state.disposed || state.generation !== generation) {
+        deferred.resolve(undefined);
+        return;
+      }
       if (!result?.ok) {
         debug("turn-start dispatch rejected", resultFailureMessage(result));
+        deferred.resolve(undefined);
         return;
       }
       const additionalContext = stringValue(result?.body?.additionalContext);
       if (additionalContext) pendingContext.set(state.sessionId, additionalContext);
+      deferred.resolve(additionalContext);
     }).catch((error) => {
       debug("turn-start dispatch failed", errorMessage(error));
+      deferred.resolve(undefined);
     });
   }
 
@@ -233,6 +267,21 @@ export function turnEndCompleted(data) {
 
 function stringValue(value) {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function createDeferred() {
+  let resolve;
+  const promise = new Promise((res) => { resolve = res; });
+  return { promise, resolve };
+}
+
+function boundedWait(promise, timeoutMs) {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return promise;
+  let timer;
+  const timeout = new Promise((resolve) => {
+    timer = setTimeout(() => resolve(undefined), timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
 function nonNegativeInteger(value, fallback) {

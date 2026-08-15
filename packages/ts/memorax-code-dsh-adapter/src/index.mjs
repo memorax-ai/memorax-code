@@ -6,6 +6,8 @@ export const name = "memorax-dsh";
 
 export const inject = [];
 
+const RETRIEVAL_WAIT_MS = 300;
+
 export function apply(ctx, config) {
   const resolvedConfig = config ?? {};
   const connection = resolveBackendConnection(resolvedConfig, process.env);
@@ -44,7 +46,7 @@ export function apply(ctx, config) {
   if (connection.injectRetrieval) {
     ctx.on("llm/stream", async function* (options, next) {
       try {
-        const context = bridge.takePendingContext(options?.sessionId);
+        const context = await bridge.waitForPendingContext(options?.sessionId, RETRIEVAL_WAIT_MS);
         if (context) {
           options.system = options.system ? `${options.system}\n\n${context}` : context;
         }

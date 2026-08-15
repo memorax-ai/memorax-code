@@ -182,6 +182,47 @@ export function createDshMemoryHookRuntime(
     return { ok: true, scheduled: true };
   }
 
+  async function materializeTurnStart(
+    coordinatorKey: ReturnType<typeof dshTurnKey>,
+    turn: DshMemoryHookTurnStart,
+  ): Promise<
+    | { ok: false; error: "conflicting_turn_start" }
+    | { ok: true; fresh: false }
+    | {
+      ok: true;
+      fresh: true;
+      repositoryMemory: ConfiguredRepositoryMemoryResult;
+      repoMemoryWorktree: string | undefined;
+    }
+  > {
+    const existing = turnCoordinator.getTurn(coordinatorKey);
+    if (existing) {
+      if (existing.prompt !== undefined && existing.prompt !== turn.prompt) {
+        options.diagnosticLogger?.("dsh_memory_hook.turn_start_conflict", {
+          sessionId: turn.sessionId,
+          turnId: turn.turnId,
+        });
+        return { ok: false, error: "conflicting_turn_start" };
+      }
+      return { ok: true, fresh: false };
+    }
+    const repositoryMemory = await resolveHookRepositoryMemory(turn, options, repositoryMemorySession);
+    const repoMemoryWorktree = resolvedRepoMemoryWorktree(repositoryMemory);
+    turnCoordinator.recordTurnStart({
+      client: DSH_MEMORY_TURN_CLIENT,
+      sessionId: turn.sessionId,
+      clientTurnId: turn.turnId,
+      cwd: turn.cwd,
+      workspaceKind: turn.workspaceKind,
+      transcriptPath: turn.transcriptPath,
+      prompt: turn.prompt,
+      createdAt: turn.createdAt,
+      traceContext: turn.traceContext,
+      repositoryMemory,
+    });
+    return { ok: true, fresh: true, repositoryMemory, repoMemoryWorktree };
+  }
+
   async function discardDshTurn(
     key: ReturnType<typeof dshTurnKey>,
     command: DshTurnDiscardCommand,
@@ -215,31 +256,14 @@ export function createDshMemoryHookRuntime(
       }
       turnCoordinator.pruneExpired();
       const coordinatorKey = dshTurnKey(turn.sessionId, turn.turnId);
-      const existing = turnCoordinator.getTurn(coordinatorKey);
-      if (existing) {
-        if (existing.prompt !== undefined && existing.prompt !== turn.prompt) {
-          options.diagnosticLogger?.("dsh_memory_hook.turn_start_conflict", {
-            sessionId: turn.sessionId,
-            turnId: turn.turnId,
-          });
-          return { ok: false, error: "conflicting_turn_start" };
-        }
-        return { ok: true };
-      }
-      const repositoryMemory = await resolveHookRepositoryMemory(turn, options, repositoryMemorySession);
-      const repoMemoryWorktree = resolvedRepoMemoryWorktree(repositoryMemory);
-      turnCoordinator.recordTurnStart({
-        client: DSH_MEMORY_TURN_CLIENT,
-        sessionId: turn.sessionId,
-        clientTurnId: turn.turnId,
-        cwd: turn.cwd,
-        workspaceKind: turn.workspaceKind,
-        transcriptPath: turn.transcriptPath,
-        prompt: turn.prompt,
-        createdAt: turn.createdAt,
-        traceContext: turn.traceContext,
-        repositoryMemory,
-      });
+      const materialized = await runSerialized(
+        writebackLocks,
+        dshTurnLockKey(coordinatorKey),
+        () => materializeTurnStart(coordinatorKey, turn),
+      );
+      if (!materialized.ok) return materialized;
+      if (!materialized.fresh) return { ok: true };
+      const { repositoryMemory, repoMemoryWorktree } = materialized;
       options.diagnosticLogger?.("dsh_memory_hook.turn_start", {
         sessionId: turn.sessionId,
         turnId: turn.turnId,
@@ -509,8 +533,13 @@ async function runSerialized<T>(
   }
 }
 
+const PROMPT_DELIMITER_PATTERN = /[\s\p{P}]/u;
+
 function dshPromptMatches(startedPrompt: string, userText: string): boolean {
-  return userText === startedPrompt || userText.startsWith(startedPrompt);
+  if (userText === startedPrompt) return true;
+  if (!startedPrompt || !userText.startsWith(startedPrompt)) return false;
+  const boundary = userText[startedPrompt.length];
+  return boundary !== undefined && PROMPT_DELIMITER_PATTERN.test(boundary);
 }
 
 function claimAutomaticRetrievalTurn(

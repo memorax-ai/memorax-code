@@ -357,3 +357,89 @@ test("DSH runtime serializes a discard with a writeback for one turn", async () 
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("DSH runtime serializes concurrent turn-starts and rejects a conflicting prompt", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-dsh-turn-start-serial-"));
+  const events = [];
+  let resolveCount = 0;
+  let releaseResolve;
+  const gate = new Promise((resolve) => { releaseResolve = resolve; });
+  const runtime = createDshMemoryHookRuntime({
+    diagnosticLogger(message, fields) {
+      events.push({ message, fields });
+    },
+    env: {
+      MEMORAX_CODE_HOME: root,
+      MEMORAX_CODE_DSH_TRACE_ENABLED: "false",
+      MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED: "false",
+    },
+    memoraxCodeHome: root,
+    repositoryMemorySession: {
+      async resolve() {
+        resolveCount += 1;
+        await gate;
+        return { ok: false, reason: "config_missing", error: "no memorax config" };
+      },
+      close() {},
+    },
+    now: () => 1,
+  });
+  try {
+    const first = runtime.recordTurnStart({ ...TURN_START, prompt: "first prompt" });
+    const second = runtime.recordTurnStart({ ...TURN_START, prompt: "second prompt" });
+    releaseResolve();
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+    assert.equal(resolveCount, 1);
+    const results = [firstResult, secondResult];
+    assert.equal(results.filter((result) => result.ok).length, 1);
+    assert.equal(results.filter((result) => !result.ok && result.error === "conflicting_turn_start").length, 1);
+    assert.equal(events.some((event) => event.message === "dsh_memory_hook.turn_start_conflict"), true);
+  } finally {
+    runtime.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("DSH runtime requires a prompt delimiter for a longer writeback user text", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-dsh-prompt-delimiter-"));
+  const events = [];
+  const runtime = createDshMemoryHookRuntime({
+    diagnosticLogger(message, fields) {
+      events.push({ message, fields });
+    },
+    env: {
+      MEMORAX_CODE_HOME: root,
+      MEMORAX_CODE_DSH_TRACE_ENABLED: "false",
+      MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED: "false",
+    },
+    memoraxCodeHome: root,
+    repositoryMemorySession: notConfiguredRepositoryMemorySession(),
+    now: () => 1,
+  });
+  const writeback = (userText) => ({
+    version: 1,
+    client: "dsh",
+    sessionId: "session-dsh",
+    turnId: "dsh-0-0",
+    userText,
+    assistantText: "reply",
+  });
+  try {
+    await runtime.recordTurnStart({ ...TURN_START, prompt: "Fix the build." });
+
+    assert.deepEqual(await runtime.writeback(writeback("Fix the build.evil")), {
+      ok: true,
+      scheduled: false,
+      reason: "prompt_mismatch",
+    });
+
+    assert.deepEqual(await runtime.writeback(writeback("Fix the build. now")), {
+      ok: true,
+      scheduled: false,
+      reason: "config_missing",
+    });
+  } finally {
+    runtime.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});

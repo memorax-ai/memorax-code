@@ -530,6 +530,85 @@ test("disposing a session mid-turn discards the active turn", async () => {
   assert.equal(calls[1].body.turnId, "dsh-3-1");
 });
 
+test("a turn/end without a turn id does not clobber the active turn", async () => {
+  const calls = [];
+  const bridge = createSessionBridge({
+    dispatch: async (path, body) => {
+      calls.push({ path, body });
+      return { ok: true, body: {} };
+    },
+  });
+
+  bridge.onSessionCreated(session("session-unlabeled-end"));
+  bridge.onSessionEvent(session("session-unlabeled-end"), { type: "turn/start", data: { turn: 1 } });
+  bridge.onSessionEvent(session("session-unlabeled-end"), { type: "user/message", data: textMessage("first") });
+  bridge.onSessionEvent(session("session-unlabeled-end"), { type: "turn/start", data: { turn: 2 } });
+  bridge.onSessionEvent(session("session-unlabeled-end"), { type: "user/message", data: textMessage("second") });
+  bridge.onSessionEvent(session("session-unlabeled-end"), { type: "turn/end", data: { reason: { kind: "completed" } } });
+  bridge.onSessionEvent(session("session-unlabeled-end"), { type: "assistant/message", data: assistantData("second reply") });
+  bridge.onSessionEvent(session("session-unlabeled-end"), { type: "turn/end", data: { turn: 2, reason: { kind: "completed" } } });
+
+  await flushMicrotasks();
+  const writebacks = calls.filter((call) => call.path === "/memory/writeback");
+  assert.equal(writebacks.length, 1);
+  assert.deepEqual(writebacks[0].body, {
+    version: 1,
+    client: "dsh",
+    sessionId: "session-unlabeled-end",
+    turnId: "dsh-3-2",
+    userText: "second",
+    assistantText: "second reply",
+    cwd: "/repo",
+  });
+  const discards = calls.filter((call) => call.path === "/memory/turn-discard");
+  assert.equal(discards.length, 1);
+  assert.equal(discards[0].body.turnId, "dsh-3-1");
+});
+
+test("waitForPendingContext resolves once the turn-start retrieval settles in time", async () => {
+  const release = {};
+  const bridge = createSessionBridge({
+    dispatch: async (path, body) => {
+      if (path === "/memory/turn-start") {
+        await new Promise((resolve) => { release[body.prompt] = resolve; });
+        return { ok: true, body: { additionalContext: `ctx:${body.prompt}` } };
+      }
+      return { ok: true, body: {} };
+    },
+  });
+
+  bridge.onSessionCreated(session("session-wait-ctx"));
+  bridge.onSessionEvent(session("session-wait-ctx"), { type: "turn/start", data: { turn: 1 } });
+  bridge.onSessionEvent(session("session-wait-ctx"), { type: "user/message", data: textMessage("query") });
+
+  const pending = bridge.waitForPendingContext("session-wait-ctx", 200);
+  await flushMicrotasks();
+  release.query();
+  assert.equal(await pending, "ctx:query");
+});
+
+test("waitForPendingContext times out and returns undefined when retrieval is slow", async () => {
+  const release = {};
+  const bridge = createSessionBridge({
+    dispatch: async (path, body) => {
+      if (path === "/memory/turn-start") {
+        await new Promise((resolve) => { release.resolve = resolve; });
+        return { ok: true, body: { additionalContext: "late ctx" } };
+      }
+      return { ok: true, body: {} };
+    },
+  });
+
+  bridge.onSessionCreated(session("session-slow-ctx"));
+  bridge.onSessionEvent(session("session-slow-ctx"), { type: "turn/start", data: { turn: 1 } });
+  bridge.onSessionEvent(session("session-slow-ctx"), { type: "user/message", data: textMessage("query") });
+
+  assert.equal(await bridge.waitForPendingContext("session-slow-ctx", 20), undefined);
+  release.resolve();
+  await flushMicrotasks();
+  assert.equal(bridge.takePendingContext("session-slow-ctx"), "late ctx");
+});
+
 async function flushMicrotasks() {
   for (let index = 0; index < 4; index += 1) {
     await new Promise((resolve) => setImmediate(resolve));
