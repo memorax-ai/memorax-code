@@ -10,7 +10,14 @@ const RETRIEVAL_WAIT_MS = 300;
 
 export function apply(ctx, config) {
   const resolvedConfig = config ?? {};
-  const connection = resolveBackendConnection(resolvedConfig, process.env);
+  const connection = resolveBackendConnection(resolvedConfig, process.env, {
+    onInvalidBackendUrl: (value, source) => console.error(
+      `[memorax-dsh] ignoring invalid ${source} "${value}"; falling back to the next configured Backend URL`,
+    ),
+    onAuthorityIssue: (reason, path) => console.error(
+      `[memorax-dsh] ignoring Backend connection record (${reason}: ${path}); falling back to the default Backend URL`,
+    ),
+  });
   const debug = connection.debug
     ? (message, detail) => console.error(`[memorax-dsh] ${message}`, detail ?? "")
     : () => {};

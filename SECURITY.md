@@ -81,6 +81,18 @@ HTTP surface with a valid Backend token can attempt to submit turn content, so
 the same localhost-is-not-an-isolation-boundary rule and Backend-token
 protections apply.
 
+Two implementation details bound that surface. First, the memory Hook
+endpoints only accept `POST` requests carrying an `application/json` content
+type and refuse any request with an `Origin` header, so ordinary browsers
+(including a hostile web page attempting cross-site requests against the
+loopback Backend) cannot drive turn-start, writeback, or discard commands;
+native clients never send `Origin`. Second, if the in-memory DSH turn
+metadata is gone (Backend restart or the shared 256-turn cap evicting older
+DSH turns), writeback falls back to the local current-turn trace file that the
+accepted turn-start wrote, and is refused when that file does not attest the
+same session and turn. The trace fallback re-resolves the repository scope
+and is reported through diagnostics as `current_turn_trace`.
+
 Automatic writeback bounds each selected message to its configured Add limit,
 then applies a local best-effort detector before hashing, buffering, chunking,
 observability, or network dispatch. Recognized private keys, authorization

@@ -109,6 +109,13 @@ test("Backend DSH turn-discard endpoint discards turn metadata", async () => {
       }),
     });
     assert.equal(start.status, 200);
+    // The adapter treats body.ok=false on turn-start as a hard rejection, so
+    // pin the actual DSH turn-start response shape at the HTTP layer: an
+    // accepted start must answer { ok: true } (plus optional context fields),
+    // never a body-level error.
+    const startBody = await start.json();
+    assert.equal(startBody.ok, true);
+    assert.equal(startBody.error, undefined);
 
     const discard = await originalFetch(`${url}/memory/turn-discard`, {
       method: "POST",
@@ -478,6 +485,80 @@ test("Backend memory hook endpoints write client-isolated trace events", async (
     globalThis.fetch = originalFetch;
     restoreEnv();
     await rm(sessionHome, { recursive: true, force: true });
+  }
+});
+
+test("Backend memory hook endpoints refuse non-JSON content types and browser origins", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-hook-http-hardening-"));
+  const state = createBackendState("127.0.0.1", { sessionHome: root });
+  const server = createBackendServer(state);
+  const url = await listen(server);
+  const dshTurnStart = {
+    version: 1,
+    client: "dsh",
+    sessionId: "session-hook-hardening",
+    turnId: "dsh-0-1",
+    prompt: "Hardening prompt.",
+  };
+  try {
+    // Missing content type.
+    const untyped = await fetch(`${url}/memory/turn-start`, {
+      method: "POST",
+      body: JSON.stringify(dshTurnStart),
+    });
+    assert.equal(untyped.status, 415);
+    assert.deepEqual(await untyped.json(), { ok: false, error: "content-type must be application/json" });
+
+    // text/plain, the shape a cross-site HTML form can send.
+    const textPlain = await fetch(`${url}/memory/turn-start`, {
+      method: "POST",
+      headers: { "content-type": "text/plain" },
+      body: JSON.stringify(dshTurnStart),
+    });
+    assert.equal(textPlain.status, 415);
+
+    // A browser-style Origin header, even with the correct content type.
+    const withOrigin = await fetch(`${url}/memory/turn-start`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: "http://127.0.0.1:8787" },
+      body: JSON.stringify(dshTurnStart),
+    });
+    assert.equal(withOrigin.status, 403);
+    assert.deepEqual(await withOrigin.json(), { ok: false, error: "cross-origin hook requests are not accepted" });
+
+    // Same guard applies to the writeback and discard endpoints.
+    const originWriteback = await fetch(`${url}/memory/writeback`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: "https://evil.example" },
+      body: JSON.stringify({
+        version: 1,
+        client: "dsh",
+        sessionId: "session-hook-hardening",
+        turnId: "dsh-0-1",
+        userText: "poison",
+        assistantText: "poison",
+      }),
+    });
+    assert.equal(originWriteback.status, 403);
+
+    // The normal native-client shape (JSON content type, no Origin) is unaffected.
+    const native = await fetch(`${url}/memory/turn-start`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...dshTurnStart, cwd: TEST_WORKSPACE }),
+    });
+    assert.equal(native.status, 200);
+
+    // Charset parameters on the JSON media type are still accepted.
+    const charset = await fetch(`${url}/memory/turn-start`, {
+      method: "POST",
+      headers: { "content-type": "application/json; charset=utf-8" },
+      body: JSON.stringify({ ...dshTurnStart, turnId: "dsh-0-2", cwd: TEST_WORKSPACE }),
+    });
+    assert.equal(charset.status, 200);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    await rm(root, { recursive: true, force: true });
   }
 });
 

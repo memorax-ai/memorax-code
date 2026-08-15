@@ -30,6 +30,9 @@ export async function postBackend(path, body, options = {}) {
       method: "POST",
       headers,
       body: JSON.stringify(body),
+      // Never follow redirects: a 307/308 would silently forward the Backend
+      // token header and the command body to whatever the redirect targets.
+      redirect: "error",
       signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (error) {

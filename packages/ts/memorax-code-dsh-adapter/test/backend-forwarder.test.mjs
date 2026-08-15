@@ -110,6 +110,34 @@ test("postBackend throws DshBackendError when the backend URL is missing", async
   );
 });
 
+test("postBackend refuses to follow redirects", async (t) => {
+  const redirects = [];
+  const server = createServer((req, res) => {
+    redirects.push(req.url);
+    res.writeHead(307, { location: "http://127.0.0.1:1/evil" });
+    res.end();
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+
+  await assert.rejects(
+    () => postBackend("/memory/turn-start", { version: 1 }, {
+      backendUrl: `http://127.0.0.1:${port}`,
+      token: "secret",
+      timeoutMs: 1000,
+    }),
+    (error) => {
+      // The redirect must abort the request instead of forwarding the token
+      // header and command body to the redirect target.
+      assert.ok(error instanceof DshBackendError);
+      assert.equal(error.code, DSH_BACKEND_UNREACHABLE);
+      return true;
+    },
+  );
+  assert.deepEqual(redirects, ["/memory/turn-start"]);
+});
+
 test("createBackendForwarder returns a forward function bound to the connection", async (t) => {
   const received = [];
   const server = createServer((req, res) => {

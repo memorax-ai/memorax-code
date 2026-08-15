@@ -41,9 +41,11 @@ test("isDirectUserMessage detects the human source kind", () => {
   assert.equal(isDirectUserMessage(undefined), false);
 });
 
-test("buildTurnId combines session first live seq and turn number", () => {
-  assert.equal(buildTurnId("session-1", 7, 2), "dsh-7-2");
-  assert.equal(buildTurnId("session-1", undefined, "3"), "dsh-0-3");
+test("buildTurnId combines session first live seq, incarnation, and turn number", () => {
+  assert.equal(buildTurnId("session-1", 7, 1, 2), "dsh-7-2");
+  assert.equal(buildTurnId("session-1", 7, 2, 2), "dsh-7-g2-2");
+  assert.equal(buildTurnId("session-1", 7, 5, 2), "dsh-7-g5-2");
+  assert.equal(buildTurnId("session-1", undefined, 1, "3"), "dsh-0-3");
 });
 
 test("a complete turn produces a turn-start and a writeback command", async () => {
@@ -317,7 +319,14 @@ test("an interrupted turn sends a discard command instead of a writeback", async
   });
 });
 
-test("resolved backend failures are reported through debug", async () => {
+test("resolved failure envelopes still report through debug (defensive branch)", async () => {
+  // The real forwarder (createBackendForwarder) NEVER resolves { ok: false }:
+  // transport failures throw DshBackendError and successes resolve
+  // { ok: true, status, body }. The throw path is covered by "dispatch
+  // failures are swallowed without throwing" above. This test pins the
+  // bridge's defensive branch so a future forwarder that starts resolving
+  // failure envelopes instead of throwing still reports them instead of
+  // treating them as successes.
   const errors = [];
   const bridge = createSessionBridge({
     dispatch: async (path) => {
@@ -667,6 +676,239 @@ test("waitForPendingContext times out and returns undefined when retrieval is sl
   release.resolve();
   await flushMicrotasks();
   assert.equal(bridge.takePendingContext("session-slow-ctx"), "late ctx");
+});
+
+test("re-creating a session without dispose retires the old incarnation", async () => {
+  const release = {};
+  const calls = [];
+  const bridge = createSessionBridge({
+    dispatch: async (path, body) => {
+      calls.push({ path, body });
+      if (path === "/memory/turn-start" && body.prompt === "stale") {
+        await new Promise((resolve) => { release.stale = resolve; });
+        return { ok: true, body: { additionalContext: "stale context" } };
+      }
+      return { ok: true, body: { additionalContext: `ctx:${body.prompt}` } };
+    },
+  });
+
+  bridge.onSessionCreated(session("session-dirty-rebuild"));
+  bridge.onSessionEvent(session("session-dirty-rebuild"), { type: "turn/start", data: { turn: 1 } });
+  bridge.onSessionEvent(session("session-dirty-rebuild"), { type: "user/message", data: textMessage("stale") });
+  await flushMicrotasks();
+
+  // Same session id, no intervening session/disposed, but a DIFFERENT live
+  // window (firstLiveSeq 9): only a distinguishable payload proves a rebuild.
+  // An identical payload is indistinguishable from a redelivery of the same
+  // incarnation and is covered by the next test.
+  bridge.onSessionCreated(session("session-dirty-rebuild", { firstLiveSeq: 9 }));
+  bridge.onSessionEvent(session("session-dirty-rebuild"), { type: "turn/start", data: { turn: 1 } });
+  bridge.onSessionEvent(session("session-dirty-rebuild"), { type: "user/message", data: textMessage("fresh") });
+  await flushMicrotasks();
+
+  // The stale in-flight response must not leak into the new incarnation.
+  release.stale();
+  await flushMicrotasks();
+  assert.equal(bridge.takePendingContext("session-dirty-rebuild"), "ctx:fresh");
+
+  const paths = calls.map((call) => call.path);
+  assert.equal(paths.filter((path) => path === "/memory/turn-discard").length, 1);
+  const discard = calls.find((call) => call.path === "/memory/turn-discard");
+  // Old incarnation turnId (gen 1, no suffix) is discarded; new incarnation
+  // uses a distinct turnId (gen 2) so the two can never collide.
+  assert.equal(discard.body.turnId, "dsh-3-1");
+  const starts = calls.filter((call) => call.path === "/memory/turn-start");
+  assert.deepEqual(starts.map((call) => call.body.turnId), ["dsh-3-1", "dsh-9-g2-1"]);
+});
+
+test("an identical session/created redelivery keeps the live incarnation", async () => {
+  const calls = [];
+  const bridge = createSessionBridge({
+    dispatch: async (path, body) => {
+      calls.push({ path, body });
+      return { ok: true, body: {} };
+    },
+  });
+
+  bridge.onSessionCreated(session("session-replayed"));
+  bridge.onSessionEvent(session("session-replayed"), { type: "turn/start", data: { turn: 1 } });
+  bridge.onSessionEvent(session("session-replayed"), { type: "user/message", data: textMessage("live") });
+  await flushMicrotasks();
+
+  // Same id, same firstLiveSeq, same cwd: indistinguishable from a replay of
+  // the SAME live incarnation (reconnect, event redelivery, plugin reload).
+  // Retiring the state here would discard the live turn on the Backend and
+  // drop its writeback, so the redelivery must be ignored.
+  bridge.onSessionCreated(session("session-replayed"));
+  bridge.onSessionEvent(session("session-replayed"), { type: "user/message", data: textMessage("more") });
+  bridge.onSessionEvent(session("session-replayed"), { type: "assistant/message", data: assistantData("reply") });
+  bridge.onSessionEvent(session("session-replayed"), { type: "turn/end", data: { turn: 1, reason: { kind: "completed" } } });
+  await flushMicrotasks();
+
+  const starts = calls.filter((call) => call.path === "/memory/turn-start");
+  assert.deepEqual(starts.map((call) => call.body.turnId), ["dsh-3-1"]);
+  // The turn-start was already dispatched at the first message, so its
+  // prompt stays "live"; text that arrived later rides on the writeback,
+  // where the Backend accepts it via the delimiter prefix match.
+  assert.equal(starts[0].body.prompt, "live");
+  const writebacks = calls.filter((call) => call.path === "/memory/writeback");
+  assert.equal(writebacks.length, 1);
+  assert.equal(writebacks[0].body.userText, "live\n\nmore");
+  assert.equal(calls.some((call) => call.path === "/memory/turn-discard"), false);
+});
+
+test("re-creating a session clears stale pending context from the previous incarnation", async () => {
+  const bridge = createSessionBridge({
+    dispatch: async (path, body) => {
+      if (path === "/memory/turn-start") {
+        return { ok: true, body: { additionalContext: `ctx:${body.prompt}` } };
+      }
+      return { ok: true, body: {} };
+    },
+  });
+
+  bridge.onSessionCreated(session("session-stale-pending"));
+  bridge.onSessionEvent(session("session-stale-pending"), { type: "turn/start", data: { turn: 1 } });
+  bridge.onSessionEvent(session("session-stale-pending"), { type: "user/message", data: textMessage("old") });
+  await flushMicrotasks();
+  assert.equal(bridge.takePendingContext("session-stale-pending"), "ctx:old");
+
+  bridge.onSessionCreated(session("session-stale-pending"));
+  assert.equal(bridge.takePendingContext("session-stale-pending"), undefined);
+});
+
+test("a turn/start without a turn id does not reset a pending unstarted turn", async () => {
+  const calls = [];
+  const bridge = createSessionBridge({
+    dispatch: async (path, body) => {
+      calls.push({ path, body });
+      return { ok: true, body: {} };
+    },
+  });
+
+  bridge.onSessionCreated(session("session-pending-start"));
+  bridge.onSessionEvent(session("session-pending-start"), { type: "turn/start", data: { turn: 4 } });
+  // Second start arrives before any user/message: state.turn is set but the
+  // turn has not dispatched. The guard must still ignore this start.
+  bridge.onSessionEvent(session("session-pending-start"), { type: "turn/start", data: {} });
+  bridge.onSessionEvent(session("session-pending-start"), { type: "user/message", data: textMessage("query") });
+  bridge.onSessionEvent(session("session-pending-start"), { type: "assistant/message", data: assistantData("reply") });
+  bridge.onSessionEvent(session("session-pending-start"), { type: "turn/end", data: { turn: 4, reason: { kind: "completed" } } });
+
+  await flushMicrotasks();
+  assert.deepEqual(calls.map((call) => call.path), ["/memory/turn-start", "/memory/writeback"]);
+  assert.equal(calls[0].body.turnId, "dsh-3-4");
+  assert.equal(calls[1].body.turnId, "dsh-3-4");
+  assert.equal(calls[1].body.userText, "query");
+});
+
+test("a turn-start response with body.ok=false is treated as rejected (defensive branch)", async () => {
+  const errors = [];
+  const bridge = createSessionBridge({
+    dispatch: async (path) => {
+      if (path === "/memory/turn-start") {
+        // HTTP 2xx with a body-level rejection. The CURRENT Backend never
+        // sends this for turn-start: it answers { ok: true, ... } and
+        // self-heals turnId conflicts server-side (see
+        // dsh-memory-hook-runtime "turn_start_conflict_replaced"), and
+        // non-2xx statuses make the real forwarder throw before the body is
+        // inspected. This pins the bridge's contract-drift defense: if a
+        // future Backend starts rejecting turn-start in a 2xx body, the
+        // bridge must treat the turn as NOT started instead of proceeding to
+        // a writeback the Backend would then skip.
+        return { ok: true, status: 200, body: { ok: false, error: "conflicting_turn_start" } };
+      }
+      return { ok: true, body: {} };
+    },
+    debug: (message, detail) => errors.push({ message, detail }),
+  });
+
+  bridge.onSessionCreated(session("session-body-reject"));
+  bridge.onSessionEvent(session("session-body-reject"), { type: "turn/start", data: { turn: 0 } });
+  bridge.onSessionEvent(session("session-body-reject"), { type: "user/message", data: textMessage("query") });
+
+  await flushMicrotasks();
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0].message, "turn-start dispatch rejected");
+  assert.equal(errors[0].detail, "conflicting_turn_start");
+  assert.equal(bridge.takePendingContext("session-body-reject"), undefined);
+});
+
+test("a writeback body-level skip reason is surfaced through debug", async () => {
+  // The Backend accepts writeback with HTTP 200 and reports skipped
+  // scheduling only in the body ({ ok: true, scheduled: false, reason }).
+  // Reading the body is what makes turn_metadata_missing / prompt_mismatch
+  // visible instead of silently dropped.
+  const errors = [];
+  const bridge = createSessionBridge({
+    dispatch: async (path) => {
+      if (path === "/memory/writeback") {
+        return { ok: true, status: 200, body: { ok: true, scheduled: false, reason: "turn_metadata_missing" } };
+      }
+      return { ok: true, body: {} };
+    },
+    debug: (message, detail) => errors.push({ message, detail }),
+  });
+
+  bridge.onSessionCreated(session("session-skip"));
+  bridge.onSessionEvent(session("session-skip"), { type: "turn/start", data: { turn: 0 } });
+  bridge.onSessionEvent(session("session-skip"), { type: "user/message", data: textMessage("query") });
+  bridge.onSessionEvent(session("session-skip"), { type: "assistant/message", data: assistantData("reply") });
+  bridge.onSessionEvent(session("session-skip"), { type: "turn/end", data: { turn: 0, reason: { kind: "completed" } } });
+
+  await flushMicrotasks();
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0].message, "writeback skipped by backend");
+  assert.equal(errors[0].detail, "turn_metadata_missing");
+});
+
+test("a turn-discard response with discarded=false is surfaced through debug", async () => {
+  const errors = [];
+  const bridge = createSessionBridge({
+    dispatch: async (path) => {
+      if (path === "/memory/turn-discard") {
+        return { ok: true, status: 200, body: { ok: true, discarded: false } };
+      }
+      return { ok: true, body: {} };
+    },
+    debug: (message, detail) => errors.push({ message, detail }),
+  });
+
+  bridge.onSessionCreated(session("session-discard-miss"));
+  bridge.onSessionEvent(session("session-discard-miss"), { type: "turn/start", data: { turn: 0 } });
+  bridge.onSessionEvent(session("session-discard-miss"), { type: "user/message", data: textMessage("query") });
+  bridge.onSessionEvent(session("session-discard-miss"), { type: "turn/end", data: { turn: 0, reason: { kind: "interrupted" } } });
+
+  await flushMicrotasks();
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0].message, "turn-discard found no live turn metadata");
+  assert.equal(errors[0].detail, "dsh-3-0");
+});
+
+test("concurrent sessions keep independent turn state", async () => {
+  const calls = [];
+  const bridge = createSessionBridge({
+    dispatch: async (path, body) => {
+      calls.push({ path, body });
+      return { ok: true, body: {} };
+    },
+  });
+
+  for (const id of ["session-a", "session-b"]) {
+    bridge.onSessionCreated(session(id));
+    bridge.onSessionEvent(session(id), { type: "turn/start", data: { turn: 0 } });
+    bridge.onSessionEvent(session(id), { type: "user/message", data: textMessage(`q:${id}`) });
+    bridge.onSessionEvent(session(id), { type: "assistant/message", data: assistantData(`a:${id}`) });
+    bridge.onSessionEvent(session(id), { type: "turn/end", data: { turn: 0, reason: { kind: "completed" } } });
+  }
+
+  await flushMicrotasks();
+  assert.equal(bridge.sessionCount(), 2);
+  const writebacks = calls.filter((call) => call.path === "/memory/writeback");
+  assert.deepEqual(
+    writebacks.map((call) => [call.body.sessionId, call.body.userText]).sort(),
+    [["session-a", "q:session-a"], ["session-b", "q:session-b"]],
+  );
 });
 
 async function flushMicrotasks() {

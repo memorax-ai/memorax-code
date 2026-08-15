@@ -87,13 +87,43 @@ action; once published it can be installed with
 `dsh plugin --profile <name> add @memorax/memorax-code-dsh-adapter`.
 
 The adapter forwards DSH `turn/start` and `turn/end` events to the same
-Backend. It resolves its connection from `MEMORAX_CODE_BACKEND_URL`,
-`MEMORAX_CODE_BACKEND_HOST`/`PORT`, and `MEMORAX_CODE_BACKEND_TOKEN`, and
-times out requests with `MEMORAX_CODE_DSH_HOOK_TIMEOUT_MS` (default `5000`).
-Set `MEMORAX_CODE_DSH_RETRIEVAL_INJECT=true` to inject retrieved context back
-into the DSH conversation; `MEMORAX_CODE_DSH_HOOK_DEBUG=true` prints adapter
-diagnostics to stderr. When the Backend is unreachable the adapter fails
-silently and never blocks a DSH turn.
+Backend. It resolves its connection in this order: the plugin's `backendUrl`
+config, `MEMORAX_CODE_BACKEND_URL`, `MEMORAX_CODE_BACKEND_HOST`/`PORT`, the
+managed Backend's connection record under the MemoraX Code home
+(`runtime/backend/backend-connection.json`, which also points at the Backend
+token file when the Backend runs with a token), and finally
+`http://127.0.0.1:8787`. The token comes from `MEMORAX_CODE_BACKEND_TOKEN`,
+the plugin's `backendToken` config, or that token file — but the file's token
+is only used when the URL itself came from the connection record, so a
+managed token is never sent to a manually configured URL. An invalid
+connection record is reported to stderr and skipped, never fatal. Requests
+time out with `MEMORAX_CODE_DSH_HOOK_TIMEOUT_MS` (default `5000`).
+Set `MEMORAX_CODE_DSH_HOOK_DEBUG=true` to print adapter diagnostics to stderr;
+with debug on, Backend-side writeback skips (`turn_metadata_missing`,
+`prompt_mismatch`) are logged too. When the Backend is unreachable the
+adapter fails silently and never blocks a DSH turn.
+
+Retrieval injection into DSH conversations needs BOTH switches, and neither
+one alone is enough:
+
+1. Backend-side automatic retrieval (`[memory.retrieval]` /
+   `MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED`, default `false`). The Backend only
+   computes and returns `additionalContext` when this is enabled.
+2. Adapter-side injection (`MEMORAX_CODE_DSH_RETRIEVAL_INJECT=true`). The
+   adapter only weaves returned context into the live DSH conversation when
+   this is enabled.
+
+With only the Backend switch on, retrieved context is computed but never
+reaches the DSH conversation; with only the adapter switch on, the Backend
+returns nothing to inject. Codex and Claude Code are unaffected by the
+adapter switch.
+
+The Backend keeps DSH turn metadata in memory (exempt from the five-minute
+TTL, but sharing the same 256-turn cap as Codex and Claude Code turns), so a
+very long-running session can evict its oldest DSH turns. If the metadata for
+a writeback is gone, the Backend recovers the turn from the local current-turn
+trace file written at turn-start, and skips the writeback when that file does
+not attest the same session and turn.
 
 ## MemoraX connection
 

@@ -64,6 +64,163 @@ test("DSH runtime releases an automatic retrieval turn when the turn is discarde
   }
 });
 
+test("DSH runtime recovers a writeback from the current-turn trace after a coordinator loss", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-dsh-trace-recovery-"));
+  const workspace = join(root, "workspace");
+  await mkdir(join(workspace, ".git"), { recursive: true });
+  const env = {
+    MEMORAX_CODE_HOME: root,
+    MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED: "false",
+    MEMORAX_CODE_MEMORY_WRITEBACK_ENABLED: "true",
+    MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_ENABLED: "false",
+    MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
+    MEMORAX_CODE_MEMORAX_API_KEY: "secret",
+    MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
+  };
+  const config = memoraxConfigFromEnv(env);
+  assert.equal(config.ok, true);
+  const scope = {
+    schemaVersion: "workspace-memory-scope.v1",
+    baseUserId: config.config.userId,
+    effectiveUserId: `${config.config.userId}@test-repository`,
+    repositoryKey: "workspace-directory:test-repository",
+    repositorySlug: "test-repository",
+    repositoryName: "Test Repository",
+    identitySource: "workspace-directory",
+    scopeKind: "local-directory",
+    boundWorkspaceRoot: workspace,
+  };
+  const events = [];
+  let enqueued = 0;
+  const runtimeOptions = () => ({
+    env,
+    memoraxCodeHome: root,
+    diagnosticLogger(message, fields) {
+      events.push({ message, fields });
+    },
+    automaticWriteback: () => {
+      enqueued += 1;
+      return { accepted: true };
+    },
+    repositoryMemorySession: {
+      async resolve() {
+        return { ok: true, memory: { config: config.config, scope } };
+      },
+      close() {},
+    },
+    now: () => 1,
+  });
+  const firstRuntime = createDshMemoryHookRuntime(runtimeOptions());
+  try {
+    await firstRuntime.recordTurnStart({ ...TURN_START, prompt: "recover me", cwd: workspace });
+  } finally {
+    firstRuntime.close();
+  }
+  // A restart (or coordinator eviction) drops the in-memory turn metadata;
+  // the on-disk current-turn trace still attests the accepted turn-start.
+  const secondRuntime = createDshMemoryHookRuntime(runtimeOptions());
+  try {
+    const recovered = await secondRuntime.writeback({
+      version: 1,
+      client: "dsh",
+      sessionId: TURN_START.sessionId,
+      turnId: TURN_START.turnId,
+      userText: "recover me",
+      assistantText: "recovered reply",
+      cwd: workspace,
+    });
+    assert.deepEqual(recovered, { ok: true, scheduled: true });
+    assert.equal(enqueued, 1);
+    const writebackEvents = events.filter((event) => event.message === "dsh_memory_hook.writeback");
+    assert.equal(writebackEvents.length, 1);
+    assert.equal(writebackEvents[0].fields.metadataSource, "current_turn_trace");
+
+    // A turnId with no attestation is still refused.
+    const unattested = await secondRuntime.writeback({
+      version: 1,
+      client: "dsh",
+      sessionId: TURN_START.sessionId,
+      turnId: "dsh-9-9",
+      userText: "recover me",
+      assistantText: "nope",
+      cwd: workspace,
+    });
+    assert.deepEqual(unattested, { ok: true, scheduled: false, reason: "turn_metadata_missing" });
+
+    // An attestation for a different session does not vouch for this one.
+    const wrongSession = await secondRuntime.writeback({
+      version: 1,
+      client: "dsh",
+      sessionId: "session-other",
+      turnId: TURN_START.turnId,
+      userText: "recover me",
+      assistantText: "nope",
+      cwd: workspace,
+    });
+    assert.deepEqual(wrongSession, { ok: true, scheduled: false, reason: "turn_metadata_missing" });
+  } finally {
+    secondRuntime.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("DSH runtime caps in-memory turn metadata and drops the oldest DSH turns", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-dsh-saturation-"));
+  const events = [];
+  const runtime = createDshMemoryHookRuntime({
+    maxEntries: 4,
+    diagnosticLogger(message, fields) {
+      events.push({ message, fields });
+    },
+    env: {
+      MEMORAX_CODE_HOME: root,
+      MEMORAX_CODE_DSH_TRACE_ENABLED: "false",
+      MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED: "false",
+    },
+    memoraxCodeHome: root,
+    repositoryMemorySession: notConfiguredRepositoryMemorySession(),
+    now: () => 1,
+  });
+  try {
+    for (let turn = 0; turn < 5; turn += 1) {
+      await runtime.recordTurnStart({ ...TURN_START, turnId: `dsh-0-${turn}`, prompt: `turn ${turn}` });
+    }
+    // DSH turns share the coordinator pool: the cap holds and the oldest turn
+    // was evicted.
+    assert.equal(runtime.size(), 4);
+    const cacheSizes = events
+      .filter((event) => event.message === "dsh_memory_hook.turn_start")
+      .map((event) => event.fields.cacheSize);
+    assert.deepEqual(cacheSizes, [1, 2, 3, 4, 4]);
+
+    // The evicted oldest turn has no coordinator metadata and, with trace
+    // disabled, no attestation to recover from.
+    const evicted = await runtime.writeback({
+      version: 1,
+      client: "dsh",
+      sessionId: TURN_START.sessionId,
+      turnId: "dsh-0-0",
+      userText: "turn 0",
+      assistantText: "reply",
+    });
+    assert.deepEqual(evicted, { ok: true, scheduled: false, reason: "turn_metadata_missing" });
+
+    // The newest turn is still covered.
+    const newest = await runtime.writeback({
+      version: 1,
+      client: "dsh",
+      sessionId: TURN_START.sessionId,
+      turnId: "dsh-0-4",
+      userText: "turn 4",
+      assistantText: "reply",
+    });
+    assert.equal(newest.ok, true);
+  } finally {
+    runtime.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("DSH runtime releases an automatic retrieval turn after a scheduled writeback", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-dsh-retrieval-writeback-"));
   const workspace = join(root, "workspace");
@@ -140,7 +297,7 @@ test("DSH runtime releases an automatic retrieval turn after a scheduled writeba
   }
 });
 
-test("DSH runtime rejects a conflicting repeated turn-start and accepts an idempotent one", async () => {
+test("DSH runtime self-heals a conflicting repeated turn-start and accepts an idempotent one", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-dsh-conflicting-turn-start-"));
   const events = [];
   const runtime = createDshMemoryHookRuntime({
@@ -157,13 +314,24 @@ test("DSH runtime rejects a conflicting repeated turn-start and accepts an idemp
     now: () => 1,
   });
   try {
+    // Idempotent replay of the same prompt stays a no-op.
     assert.deepEqual(await runtime.recordTurnStart({ ...TURN_START, prompt: "first turn" }), { ok: true });
     assert.deepEqual(await runtime.recordTurnStart({ ...TURN_START, prompt: "first turn" }), { ok: true });
-    assert.deepEqual(await runtime.recordTurnStart({ ...TURN_START, prompt: "different turn" }), {
-      ok: false,
-      error: "conflicting_turn_start",
+    // A colliding turnId with a new prompt replaces the dead entry instead of
+    // dead-ending the turn with conflicting_turn_start.
+    assert.deepEqual(await runtime.recordTurnStart({ ...TURN_START, prompt: "different turn" }), { ok: true });
+    assert.equal(events.some((event) => event.message === "dsh_memory_hook.turn_start_conflict_replaced"), true);
+    // The replaced turn is gone: a writeback for the new prompt is accepted,
+    // and the writeback for the old prompt no longer matches.
+    const writebackResult = await runtime.writeback({
+      version: 1,
+      client: "dsh",
+      sessionId: TURN_START.sessionId,
+      turnId: TURN_START.turnId,
+      userText: "different turn",
+      assistantText: "reply",
     });
-    assert.equal(events.some((event) => event.message === "dsh_memory_hook.turn_start_conflict"), true);
+    assert.equal(writebackResult.ok, true);
   } finally {
     runtime.close();
     await rm(root, { recursive: true, force: true });
@@ -358,7 +526,7 @@ test("DSH runtime serializes a discard with a writeback for one turn", async () 
   }
 });
 
-test("DSH runtime serializes concurrent turn-starts and rejects a conflicting prompt", async () => {
+test("DSH runtime serializes concurrent turn-starts and self-heals a conflicting prompt", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-dsh-turn-start-serial-"));
   const events = [];
   let resolveCount = 0;
@@ -389,11 +557,16 @@ test("DSH runtime serializes concurrent turn-starts and rejects a conflicting pr
     const second = runtime.recordTurnStart({ ...TURN_START, prompt: "second prompt" });
     releaseResolve();
     const [firstResult, secondResult] = await Promise.all([first, second]);
-    assert.equal(resolveCount, 1);
-    const results = [firstResult, secondResult];
-    assert.equal(results.filter((result) => result.ok).length, 1);
-    assert.equal(results.filter((result) => !result.ok && result.error === "conflicting_turn_start").length, 1);
-    assert.equal(events.some((event) => event.message === "dsh_memory_hook.turn_start_conflict"), true);
+    // The conflicting second start replaces the first entry instead of
+    // dead-ending the turn; serialization keeps the coordinator consistent.
+    assert.deepEqual(firstResult, { ok: true });
+    assert.deepEqual(secondResult, { ok: true });
+    // The first start resolves scope once; the replaced start resolves it again.
+    assert.equal(resolveCount, 2);
+    assert.equal(events.filter((event) => event.message === "dsh_memory_hook.turn_start_conflict_replaced").length, 1);
+    const turnStarts = events.filter((event) => event.message === "dsh_memory_hook.turn_start");
+    assert.equal(turnStarts.length, 2);
+    assert.deepEqual(turnStarts.map((event) => event.fields.promptChars), ["first prompt".length, "second prompt".length]);
   } finally {
     runtime.close();
     await rm(root, { recursive: true, force: true });

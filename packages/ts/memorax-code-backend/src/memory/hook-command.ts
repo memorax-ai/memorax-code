@@ -71,13 +71,16 @@ export type DshTurnStartCommand = MemoryHookCommandBase<"dsh"> & Readonly<{
 
 export type TurnStartCommand = CodexTurnStartCommand | ClaudeTurnStartCommand | DshTurnStartCommand;
 
+// Turn-start is idempotent: a colliding turnId self-heals server-side (the
+// newest start wins, see the DSH runtime's turn_start_conflict_replaced
+// diagnostic), so every runtime answers ok:true. There is deliberately no
+// ok:false variant — an earlier revision carried a dead
+// "conflicting_turn_start" error that no code path ever returned, which
+// invited defensive branches and tests for a shape the Backend never sends.
 export type MemoryHookTurnStartResult = Readonly<{
   ok: true;
   additionalContext?: string;
   repoMemoryWorktree?: string;
-}> | Readonly<{
-  ok: false;
-  error: "conflicting_turn_start";
 }>;
 
 export type CodexWritebackCommand = MemoryHookCommandBase<"codex"> & Readonly<{

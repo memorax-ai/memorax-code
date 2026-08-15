@@ -28,6 +28,7 @@ import type { RepositoryMemoryScopeFailureReason } from "../../repository/scope.
 import { traceContextFromDshHookBody, type TraceContext } from "../../trace/context.js";
 import {
   markCurrentDshTurnOutcome,
+  readOpenDshTurn,
   recordDshTraceEvent,
   traceTurnEventId,
   writeCurrentDshTurn,
@@ -118,29 +119,48 @@ export function createDshMemoryHookRuntime(
     request: DshMemoryHookWritebackRequest,
   ): Promise<DshMemoryHookWritebackResult> {
     const entry = turnCoordinator.getTurn(coordinatorKey);
-    if (!entry) {
-      options.diagnosticLogger?.("dsh_memory_hook.writeback", {
-        scheduled: false,
-        reason: "turn_metadata_missing",
-        sessionId: request.sessionId,
-        turnId: request.turnId,
+    let metadata: MemoryTurnState | undefined = entry;
+    let metadataSource: "coordinator" | "current_turn_trace" = "coordinator";
+    if (entry) {
+      if (entry.prompt !== undefined && !dshPromptMatches(entry.prompt, request.userText)) {
+        options.diagnosticLogger?.("dsh_memory_hook.writeback", {
+          scheduled: false,
+          reason: "prompt_mismatch",
+          sessionId: request.sessionId,
+          turnId: request.turnId,
+        });
+        return skipped("prompt_mismatch");
+      }
+    } else {
+      // The coordinator entry is gone (evicted by the shared turn cap or a
+      // Backend restart). DSH has no transcript file to re-read, but the local
+      // current-turn trace written at turn-start still attests that this exact
+      // session/turn reached an accepted turn-start. Recover the writeback
+      // from that attestation instead of silently dropping it.
+      const attestation = await readOpenDshTurn({
+        memoraxCodeHome: options.memoraxCodeHome,
+        env: options.env,
+        expectedSessionId: request.sessionId,
+        allowStale: true,
       });
-      return skipped("turn_metadata_missing");
-    }
-    if (entry.prompt !== undefined && !dshPromptMatches(entry.prompt, request.userText)) {
-      options.diagnosticLogger?.("dsh_memory_hook.writeback", {
-        scheduled: false,
-        reason: "prompt_mismatch",
-        sessionId: request.sessionId,
-        turnId: request.turnId,
-      });
-      return skipped("prompt_mismatch");
+      const attested = attestation.ok && attestation.traceContext.turnId === request.turnId;
+      if (!attested) {
+        options.diagnosticLogger?.("dsh_memory_hook.writeback", {
+          scheduled: false,
+          reason: "turn_metadata_missing",
+          sessionId: request.sessionId,
+          turnId: request.turnId,
+        });
+        return skipped("turn_metadata_missing");
+      }
+      metadata = undefined;
+      metadataSource = "current_turn_trace";
     }
     const traceContext = traceContextForWriteback(request, entry);
     await recordDshTurnEnd(options, traceContext, request.assistantText);
     const writeback = await turnCoordinator.completeMaterializedTurn({
       key: coordinatorKey,
-      metadata: entry,
+      metadata,
       resolveRepositoryMemory: () => resolveCurrentHookRepositoryMemory(
         entry,
         request,
@@ -164,6 +184,7 @@ export function createDshMemoryHookRuntime(
         scheduled: false,
         reason: writeback.reason,
         metadataDisposition: writeback.metadataDisposition,
+        metadataSource,
         sessionId: request.sessionId,
         turnId: request.turnId,
       });
@@ -172,6 +193,7 @@ export function createDshMemoryHookRuntime(
     options.diagnosticLogger?.("dsh_memory_hook.writeback", {
       scheduled: true,
       metadataDisposition: writeback.metadataDisposition,
+      metadataSource,
       sessionId: request.sessionId,
       turnId: request.turnId,
       promptChars: request.userText.length,
@@ -186,7 +208,6 @@ export function createDshMemoryHookRuntime(
     coordinatorKey: ReturnType<typeof dshTurnKey>,
     turn: DshMemoryHookTurnStart,
   ): Promise<
-    | { ok: false; error: "conflicting_turn_start" }
     | { ok: true; fresh: false }
     | {
       ok: true;
@@ -196,16 +217,24 @@ export function createDshMemoryHookRuntime(
     }
   > {
     const existing = turnCoordinator.getTurn(coordinatorKey);
-    if (existing) {
-      if (existing.prompt !== undefined && existing.prompt !== turn.prompt) {
-        options.diagnosticLogger?.("dsh_memory_hook.turn_start_conflict", {
-          sessionId: turn.sessionId,
-          turnId: turn.turnId,
-        });
-        return { ok: false, error: "conflicting_turn_start" };
+      if (existing) {
+        if (existing.prompt !== undefined && existing.prompt !== turn.prompt) {
+          // Self-heal a colliding turnId instead of dead-ending the turn: the
+          // newest start wins. Without this the coordinator would keep
+          // answering conflicting_turn_start forever, and the writeback for
+          // the live turn could never be accepted. The adapter now avoids
+          // collisions within a process (incarnation-suffixed turnIds), so a
+          // residual conflict means a rebuilt session or adapter restart.
+          options.diagnosticLogger?.("dsh_memory_hook.turn_start_conflict_replaced", {
+            sessionId: turn.sessionId,
+            turnId: turn.turnId,
+            previousCreatedAt: existing.createdAt,
+          });
+          turnCoordinator.discardTurn(coordinatorKey, "rolled_back");
+        } else {
+          return { ok: true, fresh: false };
+        }
       }
-      return { ok: true, fresh: false };
-    }
     const repositoryMemory = await resolveHookRepositoryMemory(turn, options, repositoryMemorySession);
     const repoMemoryWorktree = resolvedRepoMemoryWorktree(repositoryMemory);
     turnCoordinator.recordTurnStart({
@@ -261,7 +290,6 @@ export function createDshMemoryHookRuntime(
         dshTurnLockKey(coordinatorKey),
         () => materializeTurnStart(coordinatorKey, turn),
       );
-      if (!materialized.ok) return materialized;
       if (!materialized.fresh) return { ok: true };
       const { repositoryMemory, repoMemoryWorktree } = materialized;
       options.diagnosticLogger?.("dsh_memory_hook.turn_start", {
@@ -533,7 +561,11 @@ async function runSerialized<T>(
   }
 }
 
-const PROMPT_DELIMITER = "\n\n";
+// The DSH adapter joins the messages of one turn with MESSAGE_JOIN_DELIMITER
+// (memorax-code-dsh-adapter/src/session-bridge.mjs) and the prefix match
+// below depends on that exact delimiter. The cross-package contract test
+// (test/memory/dsh-adapter-contract.test.mjs) fails when either side drifts.
+export const PROMPT_DELIMITER = "\n\n";
 
 function dshPromptMatches(startedPrompt: string, userText: string): boolean {
   if (userText === startedPrompt) return true;
