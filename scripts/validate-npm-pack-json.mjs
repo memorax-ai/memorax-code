@@ -71,6 +71,7 @@ for (const requiredPath of [
   "lib/trial-pow.mjs",
   "lib/trial-provision-client.mjs",
   "lib/trial-provision-contract.mjs",
+  "lib/trial-provision-flow.mjs",
   "lib/vscode-extension-command.mjs",
   "lib/windows-cli-invocation.mjs",
   "lib/memorax-code-adapter-common/src/backend-connection.mjs",

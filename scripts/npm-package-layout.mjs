@@ -43,6 +43,7 @@ const rootLibFiles = new Set([
   "lib/trial-pow.mjs",
   "lib/trial-provision-client.mjs",
   "lib/trial-provision-contract.mjs",
+  "lib/trial-provision-flow.mjs",
   "lib/vscode-extension-command.mjs",
   "lib/windows-cli-invocation.mjs",
 ]);

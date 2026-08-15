@@ -1,0 +1,824 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import {
+  beginTrialCredentialRecovery,
+  completeTrialCredentialProvisioning,
+  createInitialTrialCredentialRecord,
+  createTrialCredentialRecoveryRecord,
+  validateTrialCredentialRecord,
+} from "../../../ts/memorax-code-adapter-common/src/credentials/trial-credential-record.mjs";
+import { TrialProvisionClientError } from "../lib/trial-provision-client.mjs";
+import {
+  ensureTrialCredentialReady,
+  generateTrialApiKey,
+  generateTrialPluginMark,
+  TrialProvisionFlowError,
+} from "../lib/trial-provision-flow.mjs";
+
+const PLUGIN_MARK = `mk_${"a".repeat(32)}`;
+const API_KEY = `sk_${"A".repeat(43)}`;
+const RECOVERY_KEY = `sk_${"B".repeat(43)}`;
+const ACCOUNT_ID = "900719925474099300000000001";
+const PROJECT_ID = "900719925474099300000000002";
+const REGISTER_URL = "https://platform.memorax.net/register";
+
+const recordPort = Object.freeze({
+  createInitial: createInitialTrialCredentialRecord,
+  complete: completeTrialCredentialProvisioning,
+});
+
+function metadata(overrides = {}) {
+  return {
+    accountId: ACCOUNT_ID,
+    projectId: PROJECT_ID,
+    created: true,
+    apiKeyRecovered: false,
+    warnRemainingThreshold: 5000,
+    warnRemainingStep: 1000,
+    registerUrl: REGISTER_URL,
+    ...overrides,
+  };
+}
+
+function challenge(index = 1) {
+  return {
+    powChallenge: `v1.cGF5bG9hZA${index}.c2lnbmF0dXJl${index}`,
+    difficultyBits: 16,
+    algorithm: "sha256",
+    expiresAt: "2026-08-15T12:05:00Z",
+  };
+}
+
+function readyRecord({ apiKey = API_KEY } = {}) {
+  return completeTrialCredentialProvisioning(
+    createInitialTrialCredentialRecord({ pluginMark: PLUGIN_MARK, apiKey }),
+    metadata(),
+  );
+}
+
+function credentialPort(initial = null) {
+  let current = initial;
+  let provisionLock = Promise.resolve();
+  return {
+    async withProvisionLock(operation, options = {}) {
+      const previous = provisionLock;
+      let release;
+      provisionLock = new Promise((resolve) => {
+        release = resolve;
+      });
+      let entered = false;
+      try {
+        await waitForProvisionLock(previous, options);
+        entered = true;
+        return await operation();
+      } finally {
+        if (entered) release();
+        else void previous.then(release, release);
+      }
+    },
+    async load() {
+      return current;
+    },
+    async createIfAbsent(candidate) {
+      if (current !== null) return { record: current, created: false };
+      current = validateTrialCredentialRecord(candidate);
+      return { record: current, created: true };
+    },
+    async transition(operation) {
+      if (current === null) throw new Error("missing");
+      const candidate = operation(current);
+      if (candidate !== undefined) current = validateTrialCredentialRecord(candidate);
+      return current;
+    },
+    get current() {
+      return current;
+    },
+    replace(value) {
+      current = value;
+    },
+  };
+}
+
+async function waitForProvisionLock(previous, options) {
+  if (options.signal?.aborted) throw new Error("lock wait aborted");
+  await new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      options.signal?.removeEventListener?.("abort", onAbort);
+      if (error) reject(error);
+      else resolve();
+    };
+    const timeout = Number.isSafeInteger(options.timeoutMs) && options.timeoutMs > 0
+      ? setTimeout(() => finish(new Error("lock wait timed out")), options.timeoutMs)
+      : undefined;
+    const onAbort = () => finish(new Error("lock wait aborted"));
+    options.signal?.addEventListener?.("abort", onAbort, { once: true });
+    void previous.then(() => finish(), finish);
+    if (options.signal?.aborted) onAbort();
+  });
+}
+
+function fixedRandomBytes(size) {
+  return Uint8Array.from({ length: size }, (_, index) => index);
+}
+
+function flowOptions(overrides = {}) {
+  return {
+    credentialPort: overrides.credentialPort ?? credentialPort(),
+    recordPort,
+    client: overrides.client ?? {
+      requestPowChallenge: async () => challenge(),
+      provision: async () => metadata(),
+    },
+    solvePow: overrides.solvePow ?? (async () => "88405"),
+    randomBytes: overrides.randomBytes ?? fixedRandomBytes,
+    random: overrides.random ?? (() => 0),
+    sleep: overrides.sleep ?? (async () => undefined),
+    now: overrides.now ?? (() => 0),
+    ...overrides,
+  };
+}
+
+test("trial identity generation uses the documented CSPRNG encodings", () => {
+  assert.equal(
+    generateTrialPluginMark(fixedRandomBytes),
+    "mk_000102030405060708090a0b0c0d0e0f",
+  );
+  assert.equal(
+    generateTrialApiKey(fixedRandomBytes),
+    "sk_AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+  );
+});
+
+test("invalid CSPRNG output fails before credential creation or networking", async () => {
+  for (const randomBytes of [
+    () => { throw new Error(API_KEY); },
+    (size) => new Uint8Array(size - 1),
+    (size) => new Uint8Array(size + 1),
+    () => "not random bytes",
+  ]) {
+    let createCalls = 0;
+    let networkCalls = 0;
+    const store = credentialPort();
+    store.createIfAbsent = async () => {
+      createCalls += 1;
+      throw new Error("unexpected create");
+    };
+    await assert.rejects(
+      ensureTrialCredentialReady(flowOptions({
+        credentialPort: store,
+        randomBytes,
+        client: {
+          requestPowChallenge: async () => { networkCalls += 1; },
+          provision: async () => { networkCalls += 1; },
+        },
+      })),
+      (error) => error instanceof TrialProvisionFlowError
+        && error.reason === "identity_generation_failed"
+        && !String(error).includes(API_KEY)
+        && !String(error.stack).includes(API_KEY),
+    );
+    assert.equal(createCalls, 0);
+    assert.equal(networkCalls, 0);
+  }
+});
+
+test("first run saves mark and Key before networking, then commits only server metadata", async () => {
+  const store = credentialPort();
+  const requests = [];
+  const client = {
+    async requestPowChallenge(pluginMark) {
+      assert.equal(store.current?.state, "provisioning");
+      assert.equal(store.current?.plugin_mark, pluginMark);
+      assert.ok(store.current?.api_key);
+      requests.push({ type: "challenge", pluginMark });
+      return challenge();
+    },
+    async provision(request) {
+      assert.equal(store.current?.state, "provisioning");
+      assert.equal(store.current?.api_key, request.apiKey);
+      requests.push({ type: "provision", ...request });
+      return metadata();
+    },
+  };
+
+  const result = await ensureTrialCredentialReady(flowOptions({
+    credentialPort: store,
+    client,
+  }));
+
+  assert.equal(store.current.state, "ready");
+  assert.equal(store.current.account_id, ACCOUNT_ID);
+  assert.equal(store.current.project_id, PROJECT_ID);
+  assert.equal(store.current.api_key, "sk_AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8");
+  assert.equal(requests[1].recoverApiKey, false);
+  assert.equal(requests[1].apiKey, store.current.api_key);
+  assert.deepEqual(result, {
+    status: "ready",
+    provisioned: true,
+    pluginMark: store.current.plugin_mark,
+    accountId: ACCOUNT_ID,
+    projectId: PROJECT_ID,
+    registerUrl: REGISTER_URL,
+  });
+  assert.equal(JSON.stringify(result).includes(store.current.api_key), false);
+});
+
+test("create-if-absent race uses the authoritative stored identity", async () => {
+  const authoritative = createInitialTrialCredentialRecord({
+    pluginMark: PLUGIN_MARK,
+    apiKey: API_KEY,
+  });
+  const store = credentialPort();
+  let discardedCandidate;
+  let createCalls = 0;
+  store.load = async () => null;
+  store.createIfAbsent = async (candidate) => {
+    createCalls += 1;
+    discardedCandidate = candidate;
+    store.replace(authoritative);
+    return { record: authoritative, created: false };
+  };
+  const requests = [];
+  const client = {
+    requestPowChallenge: async (pluginMark) => {
+      requests.push({ pluginMark });
+      return challenge();
+    },
+    provision: async (request) => {
+      requests.push(request);
+      return metadata();
+    },
+  };
+
+  await ensureTrialCredentialReady(flowOptions({ credentialPort: store, client }));
+
+  assert.equal(createCalls, 1);
+  assert.notEqual(discardedCandidate.plugin_mark, PLUGIN_MARK);
+  assert.notEqual(discardedCandidate.api_key, API_KEY);
+  assert.equal(requests[0].pluginMark, PLUGIN_MARK);
+  assert.equal(requests[1].pluginMark, PLUGIN_MARK);
+  assert.equal(requests[1].apiKey, API_KEY);
+});
+
+test("provisioning replay, successful recovery, and mark-only recovery reach ready", async () => {
+  const cases = [
+    {
+      initial: createInitialTrialCredentialRecord({ pluginMark: PLUGIN_MARK, apiKey: API_KEY }),
+      response: metadata({ created: false, apiKeyRecovered: false }),
+      recoverApiKey: false,
+    },
+    {
+      initial: beginTrialCredentialRecovery(readyRecord(), { apiKey: RECOVERY_KEY }),
+      response: metadata({ created: false, apiKeyRecovered: true }),
+      recoverApiKey: true,
+    },
+    {
+      initial: createTrialCredentialRecoveryRecord({ pluginMark: PLUGIN_MARK, apiKey: RECOVERY_KEY }),
+      response: metadata({ created: false, apiKeyRecovered: true }),
+      recoverApiKey: true,
+    },
+  ];
+
+  for (const fixture of cases) {
+    const store = credentialPort(fixture.initial);
+    let request;
+    await ensureTrialCredentialReady(flowOptions({
+      credentialPort: store,
+      client: {
+        requestPowChallenge: async () => challenge(),
+        provision: async (value) => {
+          request = value;
+          return fixture.response;
+        },
+      },
+    }));
+    assert.equal(request.recoverApiKey, fixture.recoverApiKey);
+    assert.equal(store.current.state, "ready");
+    assert.equal(store.current.account_id, ACCOUNT_ID);
+    assert.equal(store.current.project_id, PROJECT_ID);
+  }
+});
+
+test("ready credentials return without randomness, PoW, or network", async () => {
+  const store = credentialPort(readyRecord());
+  const forbidden = () => { throw new Error(API_KEY); };
+
+  const result = await ensureTrialCredentialReady(flowOptions({
+    credentialPort: store,
+    client: {
+      requestPowChallenge: forbidden,
+      provision: forbidden,
+    },
+    solvePow: forbidden,
+    randomBytes: forbidden,
+  }));
+
+  assert.equal(result.status, "ready");
+  assert.equal(result.provisioned, false);
+  assert.equal(JSON.stringify(result).includes(API_KEY), false);
+});
+
+test("recovering state alone enables recovery and accepts an idempotent replay response", async () => {
+  const recovering = beginTrialCredentialRecovery(readyRecord(), { apiKey: RECOVERY_KEY });
+  const store = credentialPort(recovering);
+  const requests = [];
+
+  await ensureTrialCredentialReady(flowOptions({
+    credentialPort: store,
+    client: {
+      requestPowChallenge: async () => challenge(),
+      provision: async (request) => {
+        requests.push(request);
+        return metadata({
+          created: false,
+          apiKeyRecovered: false,
+        });
+      },
+    },
+  }));
+
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].apiKey, RECOVERY_KEY);
+  assert.equal(requests[0].recoverApiKey, true);
+  assert.equal(store.current.state, "ready");
+  assert.equal(store.current.api_key, RECOVERY_KEY);
+  assert.equal(store.current.account_id, ACCOUNT_ID);
+});
+
+test("success flags that conflict with the persisted state fail closed", async () => {
+  for (const [initial, response] of [
+    [createInitialTrialCredentialRecord({ pluginMark: PLUGIN_MARK, apiKey: API_KEY }), metadata({ apiKeyRecovered: true })],
+    [beginTrialCredentialRecovery(readyRecord(), { apiKey: RECOVERY_KEY }), metadata({ created: true, apiKeyRecovered: false })],
+  ]) {
+    const store = credentialPort(initial);
+    await assert.rejects(
+      ensureTrialCredentialReady(flowOptions({
+        credentialPort: store,
+        client: {
+          requestPowChallenge: async () => challenge(),
+          provision: async () => response,
+        },
+      })),
+      (error) => error instanceof TrialProvisionFlowError
+        && error.code === "TRIAL_PROVISION_FLOW_FAILED"
+        && error.reason === "response_state_mismatch",
+    );
+    assert.equal(store.current.state, initial.state);
+  }
+});
+
+test("transient provision failures use the same challenge and identity for three retries", async () => {
+  const store = credentialPort(createInitialTrialCredentialRecord({
+    pluginMark: PLUGIN_MARK,
+    apiKey: API_KEY,
+  }));
+  const requests = [];
+  const delays = [];
+  let attempt = 0;
+  const result = await ensureTrialCredentialReady(flowOptions({
+    credentialPort: store,
+    client: {
+      requestPowChallenge: async () => challenge(),
+      provision: async (request) => {
+        requests.push({ ...request });
+        attempt += 1;
+        if (attempt <= 3) throw new TrialProvisionClientError("server_error", { httpStatus: 500 });
+        return metadata();
+      },
+    },
+    sleep: async (delay) => { delays.push(delay); },
+  }));
+
+  assert.equal(result.status, "ready");
+  assert.equal(requests.length, 4);
+  assert.deepEqual(delays, [1000, 2000, 4000]);
+  assert.deepEqual(new Set(requests.map((request) => request.pluginMark)), new Set([PLUGIN_MARK]));
+  assert.deepEqual(new Set(requests.map((request) => request.apiKey)), new Set([API_KEY]));
+  assert.deepEqual(new Set(requests.map((request) => request.powChallenge)), new Set([challenge().powChallenge]));
+  assert.deepEqual(new Set(requests.map((request) => request.recoverApiKey)), new Set([false]));
+});
+
+test("a malformed success is replayed once with the exact same request", async () => {
+  for (const succeedsOnReplay of [true, false]) {
+    const store = credentialPort(createInitialTrialCredentialRecord({
+      pluginMark: PLUGIN_MARK,
+      apiKey: API_KEY,
+    }));
+    const requests = [];
+    const uncertain = new TrialProvisionClientError("invalid_response", { httpStatus: 200 });
+    const pending = ensureTrialCredentialReady(flowOptions({
+      credentialPort: store,
+      client: {
+        requestPowChallenge: async () => challenge(),
+        provision: async (request) => {
+          requests.push({ ...request });
+          if (requests.length === 1 || !succeedsOnReplay) throw uncertain;
+          return metadata({ created: false });
+        },
+      },
+    }));
+    if (succeedsOnReplay) {
+      assert.equal((await pending).status, "ready");
+    } else {
+      await assert.rejects(pending, (error) => error === uncertain);
+      assert.equal(store.current.state, "provisioning");
+    }
+    assert.equal(requests.length, 2);
+    assert.deepEqual(requests[1], requests[0]);
+  }
+});
+
+test("rate limiting retries only with a bounded Retry-After and mismatch never triggers recovery", async () => {
+  for (const error of [
+    new TrialProvisionClientError("rate_limit_exceeded", {
+      httpStatus: 429,
+      retryAfterExceeded: true,
+    }),
+    new TrialProvisionClientError("trial_api_key_mismatch", { httpStatus: 409 }),
+  ]) {
+    const store = credentialPort(createInitialTrialCredentialRecord({
+      pluginMark: PLUGIN_MARK,
+      apiKey: API_KEY,
+    }));
+    const requests = [];
+    await assert.rejects(
+      ensureTrialCredentialReady(flowOptions({
+        credentialPort: store,
+        client: {
+          requestPowChallenge: async () => challenge(),
+          provision: async (request) => {
+            requests.push(request);
+            throw error;
+          },
+        },
+      })),
+      (caught) => caught === error,
+    );
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].recoverApiKey, false);
+    assert.equal(store.current.state, "provisioning");
+    assert.equal(store.current.api_key, API_KEY);
+  }
+});
+
+test("bounded Retry-After retries three times with the exact same provision request", async () => {
+  const store = credentialPort(createInitialTrialCredentialRecord({
+    pluginMark: PLUGIN_MARK,
+    apiKey: API_KEY,
+  }));
+  const requests = [];
+  const delays = [];
+  const retryAfter = new TrialProvisionClientError("rate_limit_exceeded", {
+    httpStatus: 429,
+    retryAfterMs: 25_000,
+  });
+
+  const result = await ensureTrialCredentialReady(flowOptions({
+    credentialPort: store,
+    client: {
+      requestPowChallenge: async () => challenge(),
+      provision: async (request) => {
+        requests.push({ ...request });
+        if (requests.length <= 3) throw retryAfter;
+        return metadata();
+      },
+    },
+    sleep: async (delay) => { delays.push(delay); },
+  }));
+
+  assert.equal(result.status, "ready");
+  assert.equal(requests.length, 4);
+  assert.deepEqual(delays, [25_000, 25_000, 25_000]);
+  assert.deepEqual(requests.slice(1), [requests[0], requests[0], requests[0]]);
+  assert.equal(requests[0].recoverApiKey, false);
+  assert.equal(store.current.api_key, API_KEY);
+});
+
+test("pow_expired refreshes the challenge at most twice within one bounded flow", async () => {
+  const store = credentialPort(createInitialTrialCredentialRecord({
+    pluginMark: PLUGIN_MARK,
+    apiKey: API_KEY,
+  }));
+  let challengeCalls = 0;
+  let provisionCalls = 0;
+  const seenChallenges = [];
+  const error = new TrialProvisionClientError("pow_expired", { httpStatus: 400 });
+
+  await assert.rejects(
+    ensureTrialCredentialReady(flowOptions({
+      credentialPort: store,
+      client: {
+        requestPowChallenge: async () => challenge(++challengeCalls),
+        provision: async (request) => {
+          provisionCalls += 1;
+          seenChallenges.push(request.powChallenge);
+          throw error;
+        },
+      },
+    })),
+    (caught) => caught === error,
+  );
+
+  assert.equal(challengeCalls, 3);
+  assert.equal(provisionCalls, 3);
+  assert.equal(new Set(seenChallenges).size, 3);
+  assert.equal(store.current.state, "provisioning");
+});
+
+test("internal deadline and caller cancellation have distinct stable reasons", async () => {
+  for (const phase of ["challenge", "pow"]) {
+    const store = credentialPort(createInitialTrialCredentialRecord({
+      pluginMark: PLUGIN_MARK,
+      apiKey: API_KEY,
+    }));
+    const waitForAbort = (signal, error) => new Promise((_, reject) => {
+      signal.addEventListener("abort", () => reject(error), { once: true });
+    });
+    await assert.rejects(
+      ensureTrialCredentialReady(flowOptions({
+        credentialPort: store,
+        now: Date.now,
+        totalTimeoutMs: 20,
+        client: {
+          requestPowChallenge: async (_mark, { signal }) => phase === "challenge"
+            ? waitForAbort(signal, new TrialProvisionClientError("aborted"))
+            : challenge(),
+          provision: async () => metadata(),
+        },
+        solvePow: phase === "pow"
+          ? async (_challenge, _bits, { signal }) => waitForAbort(
+              signal,
+              new Error("worker aborted"),
+            )
+          : async () => "88405",
+      })),
+      (error) => error instanceof TrialProvisionFlowError
+        && error.reason === "deadline_exceeded",
+    );
+  }
+
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(
+    ensureTrialCredentialReady(flowOptions({
+      credentialPort: credentialPort(createInitialTrialCredentialRecord({
+        pluginMark: PLUGIN_MARK,
+        apiKey: API_KEY,
+      })),
+      signal: controller.signal,
+    })),
+    (error) => error instanceof TrialProvisionFlowError && error.reason === "aborted",
+  );
+});
+
+test("slow credential reads cannot return ready after cancellation or deadline", async () => {
+  for (const mode of ["caller", "deadline"]) {
+    const store = credentialPort(readyRecord());
+    const originalLoad = store.load.bind(store);
+    store.load = async () => {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      return await originalLoad();
+    };
+    const controller = new AbortController();
+    let networkCalls = 0;
+    const pending = ensureTrialCredentialReady(flowOptions({
+      credentialPort: store,
+      now: Date.now,
+      totalTimeoutMs: mode === "deadline" ? 20 : 1_000,
+      signal: mode === "caller" ? controller.signal : undefined,
+      client: {
+        requestPowChallenge: async () => { networkCalls += 1; },
+        provision: async () => { networkCalls += 1; },
+      },
+    }));
+    if (mode === "caller") controller.abort();
+    await assert.rejects(
+      pending,
+      (error) => error instanceof TrialProvisionFlowError
+        && error.reason === (mode === "caller" ? "aborted" : "deadline_exceeded"),
+    );
+    assert.equal(networkCalls, 0);
+    assert.equal(store.current.state, "ready");
+  }
+});
+
+test("a ready commit finishes atomically before an expired call reports its deadline", async () => {
+  const store = credentialPort(createInitialTrialCredentialRecord({
+    pluginMark: PLUGIN_MARK,
+    apiKey: API_KEY,
+  }));
+  const originalTransition = store.transition.bind(store);
+  store.transition = async (operation) => {
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    return await originalTransition(operation);
+  };
+
+  await assert.rejects(
+    ensureTrialCredentialReady(flowOptions({
+      credentialPort: store,
+      now: Date.now,
+      totalTimeoutMs: 20,
+    })),
+    (error) => error instanceof TrialProvisionFlowError
+      && error.reason === "deadline_exceeded",
+  );
+  assert.equal(store.current.state, "ready");
+  assert.equal(store.current.account_id, ACCOUNT_ID);
+
+  const result = await ensureTrialCredentialReady(flowOptions({ credentialPort: store }));
+  assert.equal(result.provisioned, false);
+});
+
+test("mixed retry classes stop at the global HTTP request budget", async () => {
+  const store = credentialPort(createInitialTrialCredentialRecord({
+    pluginMark: PLUGIN_MARK,
+    apiKey: API_KEY,
+  }));
+  let challengeCalls = 0;
+  const provisionRequests = [];
+  const delays = [];
+  await assert.rejects(
+    ensureTrialCredentialReady(flowOptions({
+      credentialPort: store,
+      client: {
+        requestPowChallenge: async () => challenge(++challengeCalls),
+        provision: async (request) => {
+          provisionRequests.push({ ...request });
+          if (provisionRequests.length === 1) {
+            throw new TrialProvisionClientError("server_error", { httpStatus: 500 });
+          }
+          if (provisionRequests.length === 2) {
+            throw new TrialProvisionClientError("rate_limit_exceeded", {
+              httpStatus: 429,
+              retryAfterMs: 0,
+            });
+          }
+          if (provisionRequests.length === 3) {
+            throw new TrialProvisionClientError("pow_expired", { httpStatus: 400 });
+          }
+          throw new TrialProvisionClientError("server_error", { httpStatus: 500 });
+        },
+      },
+      maxHttpRequests: 8,
+      sleep: async (delay) => { delays.push(delay); },
+    })),
+    (error) => error instanceof TrialProvisionFlowError
+      && error.reason === "http_budget_exhausted",
+  );
+  assert.equal(challengeCalls, 2);
+  assert.equal(provisionRequests.length, 6);
+  assert.equal(challengeCalls + provisionRequests.length, 8);
+  assert.deepEqual(delays, [1000, 0, 1000, 2000, 4000]);
+  assert.deepEqual(
+    new Set(provisionRequests.map((request) => request.pluginMark)),
+    new Set([PLUGIN_MARK]),
+  );
+  assert.deepEqual(
+    new Set(provisionRequests.map((request) => request.apiKey)),
+    new Set([API_KEY]),
+  );
+  assert.deepEqual(
+    provisionRequests.map((request) => request.powChallenge),
+    [
+      challenge(1).powChallenge,
+      challenge(1).powChallenge,
+      challenge(1).powChallenge,
+      challenge(2).powChallenge,
+      challenge(2).powChallenge,
+      challenge(2).powChallenge,
+    ],
+  );
+  assert.equal(provisionRequests.every((request) => request.recoverApiKey === false), true);
+  assert.equal(store.current.state, "provisioning");
+});
+
+test("concurrent flows serialize provisioning and the second reads ready", async () => {
+  const store = credentialPort(createInitialTrialCredentialRecord({
+    pluginMark: PLUGIN_MARK,
+    apiKey: API_KEY,
+  }));
+  const originalLoad = store.load.bind(store);
+  let loadCalls = 0;
+  store.load = async () => {
+    loadCalls += 1;
+    return await originalLoad();
+  };
+
+  let releaseFirstProvision;
+  const firstProvisionReleased = new Promise((resolve) => {
+    releaseFirstProvision = resolve;
+  });
+  let markFirstProvisionStarted;
+  const firstProvisionStarted = new Promise((resolve) => {
+    markFirstProvisionStarted = resolve;
+  });
+  let challengeCalls = 0;
+  let provisionCalls = 0;
+  const client = {
+    requestPowChallenge: async () => {
+      challengeCalls += 1;
+      return challenge();
+    },
+    provision: async () => {
+      provisionCalls += 1;
+      markFirstProvisionStarted();
+      await firstProvisionReleased;
+      return metadata();
+    },
+  };
+
+  const first = ensureTrialCredentialReady(flowOptions({ credentialPort: store, client }));
+  await firstProvisionStarted;
+  const second = ensureTrialCredentialReady(flowOptions({ credentialPort: store, client }));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(loadCalls, 1);
+  assert.equal(challengeCalls, 1);
+  assert.equal(provisionCalls, 1);
+  releaseFirstProvision();
+
+  const [firstResult, secondResult] = await Promise.all([first, second]);
+  assert.equal(firstResult.provisioned, true);
+  assert.equal(secondResult.provisioned, false);
+  assert.equal(loadCalls, 2);
+  assert.equal(challengeCalls, 1);
+  assert.equal(provisionCalls, 1);
+  assert.equal(store.current.state, "ready");
+  assert.equal(store.current.project_id, PROJECT_ID);
+});
+
+test("caller cancellation and the total deadline both cover provision lock waiting", async () => {
+  for (const mode of ["caller", "deadline"]) {
+    const store = credentialPort(createInitialTrialCredentialRecord({
+      pluginMark: PLUGIN_MARK,
+      apiKey: API_KEY,
+    }));
+    let releaseFirst;
+    const holdFirst = new Promise((resolve) => { releaseFirst = resolve; });
+    let markFirstEntered;
+    const firstEntered = new Promise((resolve) => { markFirstEntered = resolve; });
+    const first = ensureTrialCredentialReady(flowOptions({
+      credentialPort: store,
+      client: {
+        requestPowChallenge: async () => challenge(),
+        provision: async () => {
+          markFirstEntered();
+          await holdFirst;
+          return metadata();
+        },
+      },
+    }));
+    await firstEntered;
+
+    const controller = new AbortController();
+    let networkCalls = 0;
+    const second = ensureTrialCredentialReady(flowOptions({
+      credentialPort: store,
+      now: Date.now,
+      totalTimeoutMs: mode === "deadline" ? 20 : 1_000,
+      signal: mode === "caller" ? controller.signal : undefined,
+      client: {
+        requestPowChallenge: async () => { networkCalls += 1; },
+        provision: async () => { networkCalls += 1; },
+      },
+    }));
+    if (mode === "caller") controller.abort();
+    await assert.rejects(
+      second,
+      (error) => error instanceof TrialProvisionFlowError
+        && error.reason === (mode === "caller" ? "aborted" : "deadline_exceeded"),
+    );
+    assert.equal(networkCalls, 0);
+
+    releaseFirst();
+    assert.equal((await first).provisioned, true);
+    assert.equal(store.current.state, "ready");
+  }
+});
+
+test("a stale response cannot overwrite a concurrently changed credential record", async () => {
+  const initial = createInitialTrialCredentialRecord({ pluginMark: PLUGIN_MARK, apiKey: API_KEY });
+  const store = credentialPort(initial);
+  const originalTransition = store.transition.bind(store);
+  store.transition = async (operation) => {
+    store.replace(createInitialTrialCredentialRecord({
+      pluginMark: `mk_${"b".repeat(32)}`,
+      apiKey: RECOVERY_KEY,
+    }));
+    return originalTransition(operation);
+  };
+
+  await assert.rejects(
+    ensureTrialCredentialReady(flowOptions({ credentialPort: store })),
+    (error) => error instanceof TrialProvisionFlowError
+      && error.reason === "credential_conflict"
+      && !String(error).includes(API_KEY)
+      && !String(error.stack).includes(API_KEY),
+  );
+  assert.equal(store.current.plugin_mark, `mk_${"b".repeat(32)}`);
+  assert.equal(store.current.state, "provisioning");
+});

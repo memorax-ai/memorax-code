@@ -105,6 +105,7 @@ for relative in [
     "lib/trial-pow.mjs",
     "lib/trial-provision-client.mjs",
     "lib/trial-provision-contract.mjs",
+    "lib/trial-provision-flow.mjs",
     "lib/windows-cli-invocation.mjs",
     "lib/memorax-code-adapter-common/src/backend-connection.mjs",
     "lib/memorax-code-adapter-common/src/hooks/client-hook-launcher.mjs",
@@ -318,6 +319,7 @@ for relative in \
   lib/trial-pow.mjs \
   lib/trial-provision-client.mjs \
   lib/trial-provision-contract.mjs \
+  lib/trial-provision-flow.mjs \
   lib/windows-cli-invocation.mjs \
   lib/memorax-code-adapter-common/src/backend-connection.mjs \
   lib/memorax-code-adapter-common/src/hooks/client-hook-launcher.mjs \
