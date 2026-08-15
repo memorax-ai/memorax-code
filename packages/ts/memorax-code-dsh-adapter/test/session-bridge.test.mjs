@@ -359,10 +359,11 @@ test("buildTurnDiscardCommand builds a minimal discard command", () => {
 test("a superseded turn-start response is dropped when a newer turn has started", async () => {
   let releaseFirst;
   const firstGate = new Promise((resolve) => { releaseFirst = resolve; });
+  const calls = [];
   const bridge = createSessionBridge({
     dispatch: async (path, body) => {
-      assert.equal(path, "/memory/turn-start");
-      if (body.turnId === "dsh-3-1") {
+      calls.push({ path, body });
+      if (path === "/memory/turn-start" && body.turnId === "dsh-3-1") {
         await firstGate;
         return { ok: true, body: { additionalContext: "stale context" } };
       }
@@ -387,6 +388,7 @@ test("a turn-start completion for a disposed session does not clobber a recreate
   const release = {};
   const bridge = createSessionBridge({
     dispatch: async (path, body) => {
+      if (path === "/memory/turn-discard") return { ok: true, body: {} };
       assert.equal(path, "/memory/turn-start");
       await new Promise((resolve) => { release[body.prompt] = resolve; });
       return { ok: true, body: { additionalContext: `context for ${body.prompt}` } };
@@ -411,6 +413,121 @@ test("a turn-start completion for a disposed session does not clobber a recreate
   release.stale();
   await flushMicrotasks();
   assert.equal(bridge.takePendingContext("session-recreated"), undefined);
+});
+
+test("a delayed turn/end for an older turn does not clear the newer turn state", async () => {
+  const calls = [];
+  const bridge = createSessionBridge({
+    dispatch: async (path, body) => {
+      calls.push({ path, body });
+      return { ok: true, body: {} };
+    },
+  });
+
+  bridge.onSessionCreated(session("session-stale-end"));
+  bridge.onSessionEvent(session("session-stale-end"), { type: "turn/start", data: { turn: 1 } });
+  bridge.onSessionEvent(session("session-stale-end"), { type: "user/message", data: textMessage("first") });
+  bridge.onSessionEvent(session("session-stale-end"), { type: "turn/start", data: { turn: 2 } });
+  bridge.onSessionEvent(session("session-stale-end"), { type: "user/message", data: textMessage("second") });
+  bridge.onSessionEvent(session("session-stale-end"), { type: "turn/end", data: { turn: 1, reason: { kind: "completed" } } });
+  bridge.onSessionEvent(session("session-stale-end"), { type: "assistant/message", data: assistantData("second reply") });
+  bridge.onSessionEvent(session("session-stale-end"), { type: "turn/end", data: { turn: 2, reason: { kind: "completed" } } });
+
+  await flushMicrotasks();
+  const writebacks = calls.filter((call) => call.path === "/memory/writeback");
+  assert.equal(writebacks.length, 1);
+  assert.deepEqual(writebacks[0].body, {
+    version: 1,
+    client: "dsh",
+    sessionId: "session-stale-end",
+    turnId: "dsh-3-2",
+    userText: "second",
+    assistantText: "second reply",
+    cwd: "/repo",
+  });
+});
+
+test("a new turn start clears stale pending context from the previous turn", async () => {
+  const bridge = createSessionBridge({
+    dispatch: async (path, body) => {
+      if (body.turnId === "dsh-3-1") return { ok: true, body: { additionalContext: "stale ctx" } };
+      return { ok: true, body: {} };
+    },
+  });
+
+  bridge.onSessionCreated(session("session-context-stale"));
+  bridge.onSessionEvent(session("session-context-stale"), { type: "turn/start", data: { turn: 1 } });
+  bridge.onSessionEvent(session("session-context-stale"), { type: "user/message", data: textMessage("first") });
+  await flushMicrotasks();
+
+  bridge.onSessionEvent(session("session-context-stale"), { type: "turn/start", data: { turn: 2 } });
+  bridge.onSessionEvent(session("session-context-stale"), { type: "user/message", data: textMessage("second") });
+  await flushMicrotasks();
+
+  assert.equal(bridge.takePendingContext("session-context-stale"), undefined);
+});
+
+test("a superseded turn queues a turn-discard for the previous turn", async () => {
+  const calls = [];
+  const bridge = createSessionBridge({
+    dispatch: async (path, body) => {
+      calls.push({ path, body });
+      return { ok: true, body: {} };
+    },
+  });
+
+  bridge.onSessionCreated(session("session-supersede-discard"));
+  bridge.onSessionEvent(session("session-supersede-discard"), { type: "turn/start", data: { turn: 1 } });
+  bridge.onSessionEvent(session("session-supersede-discard"), { type: "user/message", data: textMessage("first") });
+  bridge.onSessionEvent(session("session-supersede-discard"), { type: "turn/start", data: { turn: 2 } });
+  bridge.onSessionEvent(session("session-supersede-discard"), { type: "user/message", data: textMessage("second") });
+
+  await flushMicrotasks();
+  assert.deepEqual(calls.map((call) => call.path), [
+    "/memory/turn-start",
+    "/memory/turn-discard",
+    "/memory/turn-start",
+  ]);
+  assert.equal(calls[1].body.turnId, "dsh-3-1");
+});
+
+test("a completed turn with no assistant text discards its backend metadata", async () => {
+  const calls = [];
+  const bridge = createSessionBridge({
+    dispatch: async (path, body) => {
+      calls.push({ path, body });
+      return { ok: true, body: {} };
+    },
+  });
+
+  bridge.onSessionCreated(session("session-tool-only"));
+  bridge.onSessionEvent(session("session-tool-only"), { type: "turn/start", data: { turn: 0 } });
+  bridge.onSessionEvent(session("session-tool-only"), { type: "user/message", data: textMessage("run tools") });
+  bridge.onSessionEvent(session("session-tool-only"), { type: "turn/end", data: { turn: 0, reason: { kind: "completed" } } });
+
+  await flushMicrotasks();
+  assert.deepEqual(calls.map((call) => call.path), ["/memory/turn-start", "/memory/turn-discard"]);
+  assert.equal(calls[1].body.turnId, "dsh-3-0");
+});
+
+test("disposing a session mid-turn discards the active turn", async () => {
+  const calls = [];
+  const bridge = createSessionBridge({
+    dispatch: async (path, body) => {
+      calls.push({ path, body });
+      return { ok: true, body: {} };
+    },
+  });
+
+  bridge.onSessionCreated(session("session-dispose-mid-turn"));
+  bridge.onSessionEvent(session("session-dispose-mid-turn"), { type: "turn/start", data: { turn: 1 } });
+  bridge.onSessionEvent(session("session-dispose-mid-turn"), { type: "user/message", data: textMessage("query") });
+  await flushMicrotasks();
+  bridge.onSessionDisposed(session("session-dispose-mid-turn"));
+  await flushMicrotasks();
+
+  assert.deepEqual(calls.map((call) => call.path), ["/memory/turn-start", "/memory/turn-discard"]);
+  assert.equal(calls[1].body.turnId, "dsh-3-1");
 });
 
 async function flushMicrotasks() {

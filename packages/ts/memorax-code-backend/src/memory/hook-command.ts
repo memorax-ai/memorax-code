@@ -75,6 +75,9 @@ export type MemoryHookTurnStartResult = Readonly<{
   ok: true;
   additionalContext?: string;
   repoMemoryWorktree?: string;
+}> | Readonly<{
+  ok: false;
+  error: "conflicting_turn_start";
 }>;
 
 export type CodexWritebackCommand = MemoryHookCommandBase<"codex"> & Readonly<{

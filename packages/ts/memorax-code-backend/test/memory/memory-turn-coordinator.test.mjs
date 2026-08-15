@@ -402,6 +402,28 @@ test("memory turn coordinator never consumes replacement metadata after async re
   }
 });
 
+test("memory turn coordinator does not expire DSH turns", () => {
+  let now = 100;
+  const coordinator = createMemoryTurnCoordinator({
+    automaticWriteback() {
+      return { accepted: true };
+    },
+    now: () => now,
+    ttlMs: 10,
+    cleanupIntervalMs: 60_000,
+  });
+  try {
+    coordinator.recordTurnStart(turnStart("codex"));
+    coordinator.recordTurnStart(turnStart("dsh"));
+    now = 120;
+    coordinator.pruneExpired();
+    assert.equal(coordinator.size(), 1);
+    assert.equal(coordinator.getTurn(turnKey("dsh"))?.client, "dsh");
+  } finally {
+    coordinator.close();
+  }
+});
+
 function turnStart(client, scope = repositoryScope("repo-a")) {
   return {
     ...turnKey(client),

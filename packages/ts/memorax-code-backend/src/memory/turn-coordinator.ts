@@ -236,6 +236,7 @@ function turnMetadataDisposition(
 
 function cleanupExpired(turns: Map<string, MemoryTurnState>, nowMs: number, ttlMs: number): void {
   for (const [key, turn] of turns.entries()) {
+    if (turn.client === "dsh") continue;
     if (nowMs - turn.createdAt > ttlMs) turns.delete(key);
   }
 }

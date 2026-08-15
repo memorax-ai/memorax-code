@@ -26,21 +26,31 @@ export function createSessionBridge({ dispatch, debug = () => {} }) {
       const state = sessionId ? sessions.get(sessionId) : undefined;
       if (!state || !isRecord(event)) return;
       switch (event.type) {
-        case "turn/start":
+        case "turn/start": {
+          const previousTurn = state.turn;
+          const previousTurnStarted = state.turnStarted;
           state.turn = nonNegativeInteger(event.data?.turn);
           state.userText = undefined;
           state.assistantText = undefined;
           state.turnStarted = false;
+          pendingContext.delete(state.sessionId);
+          if (previousTurn !== undefined && previousTurnStarted) {
+            dispatchTurnDiscard(state, previousTurn);
+          }
           break;
+        }
         case "user/message":
           handleUserMessage(state, event.data);
           break;
         case "assistant/message":
           handleAssistantMessage(state, event.data);
           break;
-        case "turn/end":
+        case "turn/end": {
+          const eventTurn = nonNegativeInteger(event.data?.turn, undefined);
+          if (eventTurn !== undefined && eventTurn !== state.turn) break;
           handleTurnEnd(state, event.data);
           break;
+        }
         default:
           break;
       }
@@ -49,7 +59,12 @@ export function createSessionBridge({ dispatch, debug = () => {} }) {
       const sessionId = stringValue(session?.id);
       if (!sessionId) return;
       const state = sessions.get(sessionId);
-      if (state) state.disposed = true;
+      if (state) {
+        state.disposed = true;
+        if (state.turn !== undefined && state.turnStarted) {
+          dispatchTurnDiscard(state, state.turn);
+        }
+      }
       sessions.delete(sessionId);
       pendingContext.delete(sessionId);
     },
@@ -94,7 +109,10 @@ export function createSessionBridge({ dispatch, debug = () => {} }) {
     state.turnStarted = false;
     if (turn === undefined) return;
     if (turnEndCompleted(data)) {
-      if (!userText || !assistantText) return;
+      if (!userText || !assistantText) {
+        if (turnStarted) dispatchTurnDiscard(state, turn);
+        return;
+      }
       dispatchWriteback(state, turn, userText, assistantText);
     } else if (turnStarted) {
       dispatchTurnDiscard(state, turn);

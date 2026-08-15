@@ -111,6 +111,92 @@ export function createDshMemoryHookRuntime(
   const ownsRepositoryMemorySession = options.repositoryMemorySession === undefined;
   const automaticRetrievalTurns = new Set<string>();
   const automaticRetrievalTurnLimit = positiveInteger(options.maxEntries, 256);
+  const writebackLocks = new Map<string, Promise<unknown>>();
+
+  async function materializeDshTurn(
+    coordinatorKey: ReturnType<typeof dshTurnKey>,
+    request: DshMemoryHookWritebackRequest,
+  ): Promise<DshMemoryHookWritebackResult> {
+    const entry = turnCoordinator.getTurn(coordinatorKey);
+    if (!entry) {
+      options.diagnosticLogger?.("dsh_memory_hook.writeback", {
+        scheduled: false,
+        reason: "turn_metadata_missing",
+        sessionId: request.sessionId,
+        turnId: request.turnId,
+      });
+      return skipped("turn_metadata_missing");
+    }
+    if (entry.prompt !== undefined && !dshPromptMatches(entry.prompt, request.userText)) {
+      options.diagnosticLogger?.("dsh_memory_hook.writeback", {
+        scheduled: false,
+        reason: "prompt_mismatch",
+        sessionId: request.sessionId,
+        turnId: request.turnId,
+      });
+      return skipped("prompt_mismatch");
+    }
+    const traceContext = traceContextForWriteback(request, entry);
+    await recordDshTurnEnd(options, traceContext, request.assistantText);
+    const writeback = await turnCoordinator.completeMaterializedTurn({
+      key: coordinatorKey,
+      metadata: entry,
+      resolveRepositoryMemory: () => resolveCurrentHookRepositoryMemory(
+        entry,
+        request,
+        options,
+        repositoryMemorySession,
+      ),
+      userText: request.userText,
+      assistantText: request.assistantText,
+      writeback: {
+        client: DSH_MEMORY_TURN_CLIENT,
+        sessionKey: request.sessionId,
+        env: options.env ?? process.env,
+        fetchImpl: options.fetchImpl,
+        memoryObservability: options.memoryObservability,
+        memoryObservabilitySource: "dsh_hook_writeback",
+        traceContext,
+      },
+    });
+    if (!writeback.scheduled) {
+      options.diagnosticLogger?.("dsh_memory_hook.writeback", {
+        scheduled: false,
+        reason: writeback.reason,
+        metadataDisposition: writeback.metadataDisposition,
+        sessionId: request.sessionId,
+        turnId: request.turnId,
+      });
+      return skipped(writeback.reason);
+    }
+    options.diagnosticLogger?.("dsh_memory_hook.writeback", {
+      scheduled: true,
+      metadataDisposition: writeback.metadataDisposition,
+      sessionId: request.sessionId,
+      turnId: request.turnId,
+      promptChars: request.userText.length,
+      assistantChars: request.assistantText.length,
+      contentSource: "dsh_session_event",
+    });
+    releaseAutomaticRetrievalTurn(automaticRetrievalTurns, request.sessionId, request.turnId);
+    return { ok: true, scheduled: true };
+  }
+
+  async function discardDshTurn(
+    key: ReturnType<typeof dshTurnKey>,
+    command: DshTurnDiscardCommand,
+  ): Promise<MemoryHookTurnDiscardResult> {
+    const entry = turnCoordinator.getTurn(key);
+    if (!entry) return { ok: true, discarded: false };
+    await recordDshTurnInterrupted(options, entry.traceContext);
+    turnCoordinator.discardTurn(key, "interrupted");
+    releaseAutomaticRetrievalTurn(automaticRetrievalTurns, command.sessionId, command.turnId);
+    options.diagnosticLogger?.("dsh_memory_hook.turn_discarded", {
+      sessionId: command.sessionId,
+      turnId: command.turnId,
+    });
+    return { ok: true, discarded: true };
+  }
 
   return {
     async recordTurnStart(command) {
@@ -128,6 +214,18 @@ export function createDshMemoryHookRuntime(
         return { ok: true };
       }
       turnCoordinator.pruneExpired();
+      const coordinatorKey = dshTurnKey(turn.sessionId, turn.turnId);
+      const existing = turnCoordinator.getTurn(coordinatorKey);
+      if (existing) {
+        if (existing.prompt !== undefined && existing.prompt !== turn.prompt) {
+          options.diagnosticLogger?.("dsh_memory_hook.turn_start_conflict", {
+            sessionId: turn.sessionId,
+            turnId: turn.turnId,
+          });
+          return { ok: false, error: "conflicting_turn_start" };
+        }
+        return { ok: true };
+      }
       const repositoryMemory = await resolveHookRepositoryMemory(turn, options, repositoryMemorySession);
       const repoMemoryWorktree = resolvedRepoMemoryWorktree(repositoryMemory);
       turnCoordinator.recordTurnStart({
@@ -209,94 +307,28 @@ export function createDshMemoryHookRuntime(
       if (!request.userText) return skipped("user_text_missing");
       if (!request.assistantText) return skipped("assistant_text_missing");
       const coordinatorKey = dshTurnKey(request.sessionId, request.turnId);
-      const entry = turnCoordinator.getTurn(coordinatorKey);
-      if (!entry) {
-        options.diagnosticLogger?.("dsh_memory_hook.writeback", {
-          scheduled: false,
-          reason: "turn_metadata_missing",
-          sessionId: request.sessionId,
-          turnId: request.turnId,
-        });
-        return skipped("turn_metadata_missing");
-      }
-      if (entry.prompt !== undefined && !dshPromptMatches(entry.prompt, request.userText)) {
-        options.diagnosticLogger?.("dsh_memory_hook.writeback", {
-          scheduled: false,
-          reason: "prompt_mismatch",
-          sessionId: request.sessionId,
-          turnId: request.turnId,
-        });
-        return skipped("prompt_mismatch");
-      }
-      const traceContext = traceContextForWriteback(request, entry);
-      await recordDshTurnEnd(
-        options,
-        traceContext,
-        request.assistantText,
+      return await runSerialized(
+        writebackLocks,
+        dshTurnLockKey(coordinatorKey),
+        () => materializeDshTurn(coordinatorKey, request),
       );
-      const writeback = await turnCoordinator.completeMaterializedTurn({
-        key: coordinatorKey,
-        metadata: entry,
-        resolveRepositoryMemory: () => resolveCurrentHookRepositoryMemory(
-          entry,
-          request,
-          options,
-          repositoryMemorySession,
-        ),
-        userText: request.userText,
-        assistantText: request.assistantText,
-        writeback: {
-          client: DSH_MEMORY_TURN_CLIENT,
-          sessionKey: request.sessionId,
-          env: options.env ?? process.env,
-          fetchImpl: options.fetchImpl,
-          memoryObservability: options.memoryObservability,
-          memoryObservabilitySource: "dsh_hook_writeback",
-          traceContext,
-        },
-      });
-      if (!writeback.scheduled) {
-        options.diagnosticLogger?.("dsh_memory_hook.writeback", {
-          scheduled: false,
-          reason: writeback.reason,
-          metadataDisposition: writeback.metadataDisposition,
-          sessionId: request.sessionId,
-          turnId: request.turnId,
-        });
-        return skipped(writeback.reason);
-      }
-      options.diagnosticLogger?.("dsh_memory_hook.writeback", {
-        scheduled: true,
-        metadataDisposition: writeback.metadataDisposition,
-        sessionId: request.sessionId,
-        turnId: request.turnId,
-        promptChars: request.userText.length,
-        assistantChars: request.assistantText.length,
-        contentSource: "dsh_session_event",
-      });
-      releaseAutomaticRetrievalTurn(automaticRetrievalTurns, request.sessionId, request.turnId);
-      return { ok: true, scheduled: true };
     },
     async discardTurn(command) {
       turnCoordinator.pruneExpired();
       if (!command.sessionId || !command.turnId) return { ok: true, discarded: false };
       const key = dshTurnKey(command.sessionId, command.turnId);
-      const entry = turnCoordinator.getTurn(key);
-      if (!entry) return { ok: true, discarded: false };
-      await recordDshTurnInterrupted(options, entry.traceContext);
-      turnCoordinator.discardTurn(key, "interrupted");
-      releaseAutomaticRetrievalTurn(automaticRetrievalTurns, command.sessionId, command.turnId);
-      options.diagnosticLogger?.("dsh_memory_hook.turn_discarded", {
-        sessionId: command.sessionId,
-        turnId: command.turnId,
-      });
-      return { ok: true, discarded: true };
+      return await runSerialized(
+        writebackLocks,
+        dshTurnLockKey(key),
+        () => discardDshTurn(key, command),
+      );
     },
     size() {
       return turnCoordinator.size(DSH_MEMORY_TURN_CLIENT);
     },
     close() {
       automaticRetrievalTurns.clear();
+      writebackLocks.clear();
       if (ownsTurnCoordinator) turnCoordinator.close();
       if (ownsRepositoryMemorySession) repositoryMemorySession.close();
       automaticWritebackRuntime?.close?.();
@@ -455,6 +487,26 @@ function dshTurnKey(sessionId: string, turnId: string) {
     sessionId,
     clientTurnId: turnId,
   } as const;
+}
+
+function dshTurnLockKey(key: { client: string; sessionId: string; clientTurnId: string }): string {
+  return JSON.stringify([key.client, key.sessionId, key.clientTurnId.trim()]);
+}
+
+async function runSerialized<T>(
+  locks: Map<string, Promise<unknown>>,
+  key: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const previous = locks.get(key) ?? Promise.resolve();
+  const run = previous.then(operation, operation);
+  const tail = run.then(() => undefined, () => undefined);
+  locks.set(key, tail);
+  try {
+    return await run;
+  } finally {
+    if (locks.get(key) === tail) locks.delete(key);
+  }
 }
 
 function dshPromptMatches(startedPrompt: string, userText: string): boolean {

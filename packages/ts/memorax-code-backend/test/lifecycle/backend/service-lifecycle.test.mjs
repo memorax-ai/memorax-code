@@ -711,6 +711,48 @@ test("current Backend health instance mismatch fails closed despite a matching p
   }
 });
 
+test("stop recovers when the auth token is unavailable and health omits sessionHome", async () => {
+  const home = await mkdtemp(join(tmpdir(), "memorax-code-backend-stop-token-unavailable-"));
+  const runtime = join(home, "runtime", "backend");
+  let alive = true;
+  let terminated = false;
+  try {
+    await mkdir(runtime, { recursive: true });
+    await writeFile(join(runtime, "backend.pid.json"), JSON.stringify({
+      version: 1,
+      pid: process.pid,
+      instanceId: "verified-instance",
+      host: "127.0.0.1",
+      port: 18789,
+      url: "http://127.0.0.1:18789",
+      logPath: join(runtime, "backend.log"),
+      startedAt: "2026-07-15T00:00:00.000Z",
+    }));
+    const result = await stopBackendService({ home, timeoutMs: 50 }, {
+      fetch: async () => new Response(JSON.stringify({
+        ok: true,
+        service: "memorax-code-backend",
+        instanceId: "verified-instance",
+        authRequired: true,
+      }), { status: 200 }),
+      isProcessAlive: () => alive,
+      probeProcessCommandLine: () => successfulProcessProbe(
+        `${process.execPath} /tmp/memorax-code-backend/dist/service-entrypoint.js --memorax-code-backend-instance verified-instance`,
+      ),
+      terminateProcessTree: () => {
+        terminated = true;
+        alive = false;
+        return true;
+      },
+    });
+    assert.equal(result.ok, true, result.error);
+    assert.equal(terminated, true);
+    assert.equal(readBackendServiceState({ home }), undefined);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
 test("stop retains verified Backend state when termination fails or the PID remains alive", async (t) => {
   for (const [name, terminateProcessTree] of [
     ["termination failure", () => false],

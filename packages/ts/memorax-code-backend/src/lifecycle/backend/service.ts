@@ -560,13 +560,7 @@ async function readBackendOwnership(
         token,
       );
       if (result.ok) {
-        health = result.body.ok === true
-          && result.body.service === "memorax-code-backend"
-          && result.body.instanceId === state.instanceId
-          && typeof result.body.state?.sessionHome === "string"
-          && resolve(result.body.state.sessionHome) === resolve(expectedSessionHome)
-          ? "matched"
-          : "conflicting";
+        health = classifyBackendHealth(result.body, state.instanceId, expectedSessionHome);
       }
     } catch {
       // Process evidence can still prove ownership for a hung Backend.
@@ -649,6 +643,27 @@ function describeInconclusiveProcessProbe(
     probe.signal ? `signal ${probe.signal}` : undefined,
   ].filter((value): value is string => value !== undefined);
   return `ownership probe was inconclusive (${details.join(", ")})`;
+}
+
+function classifyBackendHealth(
+  body: {
+    ok?: boolean;
+    service?: string;
+    instanceId?: string;
+    state?: { sessionHome?: string };
+  },
+  expectedInstanceId: string,
+  expectedSessionHome: string,
+): BackendHealthEvidence {
+  if (
+    body.ok !== true
+    || body.service !== "memorax-code-backend"
+    || body.instanceId !== expectedInstanceId
+  ) return "conflicting";
+  if (typeof body.state?.sessionHome !== "string") return "inconclusive";
+  return resolve(body.state.sessionHome) === resolve(expectedSessionHome)
+    ? "matched"
+    : "conflicting";
 }
 
 function isTrustedServiceState(state: BackendServiceState): boolean {
