@@ -355,6 +355,41 @@ test("memory viewer assigns a client to live events and preserves Codex identiti
   assert.equal(new Set(live.map((event) => event.eventKey)).size, 3);
 });
 
+test("memory viewer tags DSH events as their own client and excludes them from the Codex view", async (t) => {
+  const memoraxCodeHome = await mkdtemp(join(tmpdir(), "memorax-code-viewer-dsh-"));
+  t.after(() => rm(memoraxCodeHome, { recursive: true, force: true }));
+  const dshContext = (sessionId) => ({
+    schemaVersion: "1",
+    client: "dsh",
+    sessionId,
+    contextOrigin: "dsh-hook-body",
+    capturedAt: "2026-07-28T00:00:00.000Z",
+  });
+  recordMemoryViewerEvent({
+    eventId: "dsh-live-event",
+    source: "dsh_hook_writeback",
+    operation: "writeback",
+    ok: true,
+    traceContext: dshContext("dsh-session"),
+  });
+  recordMemoryViewerEvent({
+    source: "dsh_hook_retrieval",
+    operation: "retrieve",
+    ok: true,
+    traceContext: dshContext("dsh-session-2"),
+  });
+
+  const live = listMemoryViewerEvents();
+  assert.deepEqual(live.map((event) => event.client), ["dsh", "dsh"]);
+  assert.equal(live[0].id, "dsh-trace:dsh-live-event");
+  assert.match(live[1].id, /^dsh-memory-viewer:/);
+
+  const codex = await listMemoryViewerDataWithHistory(memoraxCodeHome, { client: "codex" });
+  assert.equal(codex.events.some((event) => event.client === "dsh"), false);
+  const claude = await listMemoryViewerDataWithHistory(memoraxCodeHome, { client: "claude" });
+  assert.equal(claude.events.some((event) => event.client === "dsh"), false);
+});
+
 async function writeTraceEvents(memoraxCodeHome, client, sessionDir, events) {
   const directory = join(memoraxCodeHome, "debug", "traces", client, "sessions", sessionDir);
   const path = join(directory, "events.jsonl");

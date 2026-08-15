@@ -71,11 +71,17 @@ MemoraX-backed search, retrieval, and writeback remain unavailable.
 #### 3. Connect DeepSeek Harness (optional)
 
 Install the DSH adapter into a profile to enable automatic memory retrieval and
-writeback for DSH sessions:
+writeback for DSH sessions. The adapter is not yet published to npm; install it
+from a local checkout of the repository:
 
 ```bash
-dsh plugin --profile <name> add @memorax/memorax-code-dsh-adapter
+git clone https://github.com/memorax-ai/memorax-code.git
+dsh plugin --profile <name> add ./memorax-code/packages/ts/memorax-code-dsh-adapter
 ```
+
+Publishing `@memorax/memorax-code-dsh-adapter` to npm is pending maintainer
+action; once published it can be installed with
+`dsh plugin --profile <name> add @memorax/memorax-code-dsh-adapter`.
 
 The adapter reads the same Backend as the npm package through
 `MEMORAX_CODE_BACKEND_URL` and `MEMORAX_CODE_BACKEND_TOKEN`. It fails silently

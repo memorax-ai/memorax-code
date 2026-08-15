@@ -11,18 +11,18 @@ export function resolveBackendConnection(config = {}, env = process.env) {
   const token = stringValue(config.backendToken)
     ?? stringValue(env.MEMORAX_CODE_BACKEND_TOKEN);
   const timeoutMs = positiveInteger(
-    config.timeoutMs,
     env.MEMORAX_CODE_DSH_HOOK_TIMEOUT_MS,
+    config.timeoutMs,
     DEFAULT_TIMEOUT_MS,
   );
   const injectRetrieval = booleanValue(
-    config.injectRetrieval,
     env.MEMORAX_CODE_DSH_RETRIEVAL_INJECT,
+    config.injectRetrieval,
     false,
   );
   const debug = booleanValue(
-    config.debug,
     env.MEMORAX_CODE_DSH_HOOK_DEBUG,
+    config.debug,
     false,
   );
   return { backendUrl, token, timeoutMs, injectRetrieval, debug };

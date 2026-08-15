@@ -46,6 +46,7 @@ type DshMemoryHookWritebackSkipReason =
   | "turn_id_missing"
   | "user_text_missing"
   | "assistant_text_missing"
+  | "turn_metadata_missing"
   | "turn_metadata_mismatch"
   | "config_missing"
   | RepositoryMemoryScopeFailureReason
@@ -204,6 +205,15 @@ export function createDshMemoryHookRuntime(
       if (!request.assistantText) return skipped("assistant_text_missing");
       const coordinatorKey = dshTurnKey(request.sessionId, request.turnId);
       const entry = turnCoordinator.getTurn(coordinatorKey);
+      if (!entry) {
+        options.diagnosticLogger?.("dsh_memory_hook.writeback", {
+          scheduled: false,
+          reason: "turn_metadata_missing",
+          sessionId: request.sessionId,
+          turnId: request.turnId,
+        });
+        return skipped("turn_metadata_missing");
+      }
       const traceContext = traceContextForWriteback(request, entry);
       await recordDshTurnEnd(
         options,

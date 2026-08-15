@@ -62,11 +62,16 @@ API Key；Codex 用户还需按提示完成 Hook 的激活和信任确认。
 
 #### 3. 接入 DeepSeek Harness（可选）
 
-将 DSH 适配器安装到某个 profile，即可为 DSH 会话启用自动记忆召回和写回：
+将 DSH 适配器安装到某个 profile，即可为 DSH 会话启用自动记忆召回和写回。该适配器尚未发布到
+npm，请从仓库的本地检出安装：
 
 ```bash
-dsh plugin --profile <name> add @memorax/memorax-code-dsh-adapter
+git clone https://github.com/memorax-ai/memorax-code.git
+dsh plugin --profile <name> add ./memorax-code/packages/ts/memorax-code-dsh-adapter
 ```
+
+`@memorax/memorax-code-dsh-adapter` 的 npm 发布待维护者操作；发布后即可通过
+`dsh plugin --profile <name> add @memorax/memorax-code-dsh-adapter` 安装。
 
 适配器通过 `MEMORAX_CODE_BACKEND_URL` 与 `MEMORAX_CODE_BACKEND_TOKEN` 访问与 npm 包相同的
 Backend。当 Backend 不可达时它静默降级，绝不阻塞 DSH 对话。

@@ -74,11 +74,17 @@ Codex or Claude Code provider settings. `--clients none` runs the Backend
 without managing either client integration.
 
 DeepSeek Harness (DSH) is not part of `[clients]`. It is a standalone adapter
-installed into a DSH profile:
+installed into a DSH profile. The adapter is not yet published to npm, so
+install it from a local checkout of the repository:
 
 ```sh
-dsh plugin --profile <name> add @memorax/memorax-code-dsh-adapter
+git clone https://github.com/memorax-ai/memorax-code.git
+dsh plugin --profile <name> add ./memorax-code/packages/ts/memorax-code-dsh-adapter
 ```
+
+Publishing `@memorax/memorax-code-dsh-adapter` to npm is pending maintainer
+action; once published it can be installed with
+`dsh plugin --profile <name> add @memorax/memorax-code-dsh-adapter`.
 
 The adapter forwards DSH `turn/start` and `turn/end` events to the same
 Backend. It resolves its connection from `MEMORAX_CODE_BACKEND_URL`,

@@ -78,7 +78,7 @@ export function createSessionBridge({ dispatch, debug = () => {} }) {
     state.assistantText = state.assistantText ? `${state.assistantText}\n\n${text}` : text;
   }
 
-  function handleTurnEnd(state, _data) {
+  function handleTurnEnd(state, data) {
     const userText = state.userText;
     const assistantText = state.assistantText;
     const turn = state.turn;
@@ -87,6 +87,7 @@ export function createSessionBridge({ dispatch, debug = () => {} }) {
     state.assistantText = undefined;
     state.turnStarted = false;
     if (!userText || !assistantText || turn === undefined) return;
+    if (!turnEndCompleted(data)) return;
     dispatchWriteback(state, turn, userText, assistantText);
   }
 
@@ -156,6 +157,12 @@ export function extractMessageText(message) {
 
 export function isDirectUserMessage(message) {
   return isRecord(message) && isRecord(message.source) && message.source.kind === "user";
+}
+
+export function turnEndCompleted(data) {
+  const reason = isRecord(data) && isRecord(data.reason) ? data.reason : undefined;
+  if (!reason) return true;
+  return reason.kind === "completed";
 }
 
 function stringValue(value) {

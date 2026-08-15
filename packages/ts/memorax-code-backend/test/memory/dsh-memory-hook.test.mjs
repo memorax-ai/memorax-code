@@ -148,7 +148,8 @@ test("DSH memory service records a turn start and schedules an inline writeback"
       { role: "assistant", content: "I will remember this turn." },
     ]);
 
-    // Replaying the same completed turn must not produce a duplicate writeback.
+    // Replaying the same completed turn must not produce a duplicate writeback;
+    // its turn metadata is already consumed, so the replay is rejected.
     assert.deepEqual(await service.writebackTurn({
       version: 1,
       client: "dsh",
@@ -157,7 +158,7 @@ test("DSH memory service records a turn start and schedules an inline writeback"
       userText: "Remember this turn.",
       assistantText: "I will remember this turn.",
       cwd: workspace,
-    }), { ok: true, scheduled: true });
+    }), { ok: true, scheduled: false, reason: "turn_metadata_missing" });
     await new Promise((resolve) => setTimeout(resolve, 50));
     assert.equal(requests.length, 1);
 
@@ -214,6 +215,67 @@ test("DSH memory service isolates the same native id from other clients", async 
     assert.equal(diagnosticEvents.some((event) => event.message === "dsh_memory_hook.writeback"), true);
     assert.equal(diagnosticEvents.some((event) => event.message === "codex_memory_hook.writeback"), false);
     assert.equal(diagnosticEvents.some((event) => event.message === "claude_memory_hook.writeback"), false);
+  } finally {
+    service.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("DSH writeback without matching turn metadata is rejected", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-dsh-missing-metadata-"));
+  const memoraxCodeHome = join(root, "home");
+  const workspace = join(root, "workspace");
+  await Promise.all([
+    mkdir(memoraxCodeHome, { recursive: true }),
+    mkdir(join(workspace, ".git"), { recursive: true }),
+  ]);
+  const diagnosticEvents = [];
+  const requests = [];
+  const service = createMemoryService({
+    diagnosticLogger(message, fields) {
+      diagnosticEvents.push({ message, fields });
+    },
+    env: {
+      MEMORAX_CODE_HOME: memoraxCodeHome,
+      MEMORAX_CODE_DSH_TRACE_ENABLED: "false",
+      MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED: "false",
+      MEMORAX_CODE_MEMORY_WRITEBACK_ENABLED: "true",
+      MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_ENABLED: "false",
+      MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
+      MEMORAX_CODE_MEMORAX_API_KEY: "secret",
+      MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
+    },
+    fetchImpl: async (url) => {
+      requests.push({ url: String(url) });
+      return new Response(JSON.stringify({
+        success: true,
+        data: { task_id: "dsh-task", status: "queued" },
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+    memoraxCodeHome,
+  });
+  try {
+    assert.deepEqual(await service.writebackTurn({
+      version: 1,
+      client: "dsh",
+      sessionId: "session-dsh",
+      turnId: "dsh-0-0",
+      userText: "orphan turn.",
+      assistantText: "orphan reply.",
+      cwd: workspace,
+    }), { ok: true, scheduled: false, reason: "turn_metadata_missing" });
+    assert.equal(
+      diagnosticEvents.some((event) => (
+        event.message === "dsh_memory_hook.writeback"
+        && event.fields?.reason === "turn_metadata_missing"
+      )),
+      true,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(requests.length, 0);
   } finally {
     service.close();
     await rm(root, { recursive: true, force: true });

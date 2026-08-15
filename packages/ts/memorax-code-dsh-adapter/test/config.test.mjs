@@ -51,6 +51,20 @@ test("resolveBackendConnection builds a URL from host and port environment", () 
   assert.equal(connection.backendUrl, "http://127.0.0.1:9000");
 });
 
+test("environment overrides the bundle defaults for adapter toggles", () => {
+  const connection = resolveBackendConnection(
+    { timeoutMs: 5000, injectRetrieval: false, debug: false },
+    {
+      MEMORAX_CODE_DSH_HOOK_TIMEOUT_MS: "9000",
+      MEMORAX_CODE_DSH_RETRIEVAL_INJECT: "true",
+      MEMORAX_CODE_DSH_HOOK_DEBUG: "1",
+    },
+  );
+  assert.equal(connection.timeoutMs, 9000);
+  assert.equal(connection.injectRetrieval, true);
+  assert.equal(connection.debug, true);
+});
+
 test("normalizeHttpUrl rejects non-http URLs and trims trailing slashes", () => {
   assert.equal(normalizeHttpUrl("http://127.0.0.1:8787/"), "http://127.0.0.1:8787");
   assert.equal(normalizeHttpUrl("file:///tmp/x"), undefined);

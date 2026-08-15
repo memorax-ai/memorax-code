@@ -7,6 +7,7 @@ import {
   createSessionBridge,
   extractMessageText,
   isDirectUserMessage,
+  turnEndCompleted,
 } from "../src/session-bridge.mjs";
 
 function textMessage(text) {
@@ -103,6 +104,53 @@ test("missing assistant message skips the turn writeback", async () => {
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(calls.length, 1);
   assert.equal(calls[0].path, "/memory/turn-start");
+});
+
+test("turnEndCompleted only accepts a completed turn end reason", () => {
+  assert.equal(turnEndCompleted({ reason: { kind: "completed" } }), true);
+  assert.equal(turnEndCompleted({ reason: { kind: "error" } }), false);
+  assert.equal(turnEndCompleted({ reason: { kind: "cancelled" } }), false);
+  assert.equal(turnEndCompleted({ reason: { kind: "interrupted" } }), false);
+  assert.equal(turnEndCompleted(undefined), true);
+  assert.equal(turnEndCompleted({}), true);
+});
+
+test("an errored turn with partial assistant output does not write back", async () => {
+  const calls = [];
+  const bridge = createSessionBridge({
+    dispatch: async (path, body) => {
+      calls.push({ path, body });
+      return { ok: true, body: {} };
+    },
+  });
+
+  bridge.onSessionCreated(session("session-error"));
+  bridge.onSessionEvent(session("session-error"), { type: "turn/start", data: { turn: 0 } });
+  bridge.onSessionEvent(session("session-error"), { type: "user/message", data: textMessage("run the tests") });
+  bridge.onSessionEvent(session("session-error"), { type: "assistant/message", data: assistantData("partial reply") });
+  bridge.onSessionEvent(session("session-error"), { type: "turn/end", data: { turn: 0, reason: { kind: "error" } } });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(calls.map((call) => call.path), ["/memory/turn-start"]);
+});
+
+test("a cancelled turn with partial assistant output does not write back", async () => {
+  const calls = [];
+  const bridge = createSessionBridge({
+    dispatch: async (path, body) => {
+      calls.push({ path, body });
+      return { ok: true, body: {} };
+    },
+  });
+
+  bridge.onSessionCreated(session("session-cancel"));
+  bridge.onSessionEvent(session("session-cancel"), { type: "turn/start", data: { turn: 0 } });
+  bridge.onSessionEvent(session("session-cancel"), { type: "user/message", data: textMessage("run the tests") });
+  bridge.onSessionEvent(session("session-cancel"), { type: "assistant/message", data: assistantData("partial reply") });
+  bridge.onSessionEvent(session("session-cancel"), { type: "turn/end", data: { turn: 0, reason: { kind: "cancelled" } } });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(calls.map((call) => call.path), ["/memory/turn-start"]);
 });
 
 test("synthetic plugin messages do not start a turn", async () => {

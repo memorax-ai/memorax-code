@@ -4,10 +4,11 @@
     - id: memorax-dsh
       name: '@memorax/memorax-code-dsh-adapter'
       config:
-        # Defaults are resolved per-process in the adapter; environment
-        # variables (MEMORAX_CODE_BACKEND_URL, MEMORAX_CODE_BACKEND_TOKEN,
-        # MEMORAX_CODE_DSH_HOOK_TIMEOUT_MS, MEMORAX_CODE_DSH_RETRIEVAL_INJECT)
-        # take precedence over these neutral defaults.
+        # Neutral bundle defaults. Environment variables
+        # (MEMORAX_CODE_DSH_HOOK_TIMEOUT_MS, MEMORAX_CODE_DSH_RETRIEVAL_INJECT,
+        # MEMORAX_CODE_DSH_HOOK_DEBUG) override these per-process defaults;
+        # the Backend URL and token are resolved config-first with environment
+        # fallback (MEMORAX_CODE_BACKEND_URL, MEMORAX_CODE_BACKEND_TOKEN).
         timeoutMs: 5000
         injectRetrieval: false
         debug: false

@@ -1205,19 +1205,23 @@ function sessionId(value: unknown): string {
 function memoryViewerClient(input: MemoryObservabilityEvent): TraceClient {
   if (input.traceContext?.client === "claude") return "claude";
   if (input.traceContext?.client === "codex") return "codex";
+  if (input.traceContext?.client === "dsh") return "dsh";
   if (input.source === "claude_hook_retrieval" || input.source === "claude_hook_writeback") return "claude";
+  if (input.source === "dsh_hook_retrieval" || input.source === "dsh_hook_writeback") return "dsh";
   return "codex";
 }
 
 function memoryViewerEventId(client: TraceClient, eventId: string | undefined): string {
   if (eventId) return persistedMemoryViewerEventId(client, eventId);
-  return client === "codex"
-    ? `memory-viewer:${randomUUID()}`
-    : `claude-memory-viewer:${randomUUID()}`;
+  if (client === "codex") return `memory-viewer:${randomUUID()}`;
+  if (client === "claude") return `claude-memory-viewer:${randomUUID()}`;
+  return `dsh-memory-viewer:${randomUUID()}`;
 }
 
 function persistedMemoryViewerEventId(client: TraceClient, eventId: string): string {
-  return client === "codex" ? `trace:${eventId}` : `claude-trace:${eventId}`;
+  if (client === "codex") return `trace:${eventId}`;
+  if (client === "claude") return `claude-trace:${eventId}`;
+  return `dsh-trace:${eventId}`;
 }
 
 function memoryViewerProjectionKey(memoraxCodeHome: string, client: TraceClient | undefined): string {
