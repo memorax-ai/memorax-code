@@ -24,14 +24,14 @@ authoritative.
 
 ## 2. System Shape and Package Ownership
 
-MemoraX Code integrates Codex and Claude Code with one local Backend. The
+MemoraX Code integrates Codex, Claude Code, and DSH with one local Backend. The
 Backend is a capability-oriented modular monolith. The clients retain
 ownership of models, model-provider credentials, native tools, model-provider
-traffic, and native transcript creation.
+traffic, and native session-history creation.
 
 Around the Backend are:
 
-- two client deployment adapters;
+- three independent client deployment adapters;
 - one lower-level shared runtime source layer;
 - one npm assembly and installed-CLI layer; and
 - repository automation that builds, validates, stages, and tests artifacts.
@@ -41,37 +41,43 @@ flowchart LR
   subgraph Clients["Client-owned runtimes"]
     Codex["Codex"]
     Claude["Claude Code"]
+    DSH["DSH"]
   end
 
   subgraph Adapters["Client deployment adapters"]
     CodexAdapter["Codex adapter<br/>plugin, Hooks, canonical skill"]
     ClaudeAdapter["Claude adapter<br/>plugin, Hooks, installer"]
+    DshAdapter["DSH adapter<br/>native Cordis plugin"]
   end
 
-  Common["adapter-common<br/>records, locks, Hook and Repo Memory helpers"]
+  Common["adapter-common<br/>records, locks, lifecycle and Repo Memory helpers"]
   Backend["Backend modular monolith"]
   Npm["npm package sources<br/>wrappers and manifest"]
   Build["scripts<br/>build, stage, materialize"]
   Artifact["assembled npm artifact<br/>installed CLI"]
   MemoraX["MemoraX memory API"]
-  Local["local runtime state<br/>trace, history, and Viewer projections"]
+  Local["local runtime state<br/>client state and supported projections"]
 
   Npm --> Build
   Backend -. "compiled runtime source" .-> Build
   Common -. "runtime source" .-> Build
   CodexAdapter -. "artifact source" .-> Build
   ClaudeAdapter -. "artifact source" .-> Build
+  DshAdapter -. "artifact source" .-> Build
   Build -->|"assembles"| Artifact
   Artifact -->|"launches"| Backend
 
   Backend --> Common
   CodexAdapter --> Common
   ClaudeAdapter --> Common
+  DshAdapter --> Common
 
   Codex --> CodexAdapter
   Claude --> ClaudeAdapter
+  DSH --> DshAdapter
   CodexAdapter -. "versioned local Hook HTTP" .-> Backend
   ClaudeAdapter -. "versioned local Hook HTTP" .-> Backend
+  DshAdapter -. "versioned local adapter HTTP" .-> Backend
 
   Backend --> MemoraX
   Backend --> Local
@@ -84,40 +90,44 @@ relationships; the arrow labels distinguish them. It is not an import graph.
 
 | Component | Stable responsibility | Must not own | Primary evidence |
 | --- | --- | --- | --- |
-| `packages/ts/memorax-code-backend` | Local service, Hook HTTP, native client-content interpretation, memory workflows, repository scope, MemoraX adapter, trace, local Viewer with a content-free public HTTP surface, writeback reconciliation, and lifecycle | Model execution, client model-provider credentials, or native transcript creation | `packages/ts/memorax-code-backend/src/app/backend-server.ts`, `packages/ts/memorax-code-backend/src/memory/service.ts`, and the capability directories under `src` |
-| `packages/ts/memorax-code-adapter-common` | Shared source for Backend connection authority, private runtime records, cross-process locking and configuration, Hook generations, Hook launch helpers, and Repo/Personal Memory helpers | Backend composition, native transcript interpretation, MemoraX request execution, or client plugin policy | `packages/ts/memorax-code-adapter-common/src/backend-connection.mjs`, `src/runtime-record.mjs`, `src/hooks`, and `src/repo-memory` |
+| `packages/ts/memorax-code-backend` | Local service, versioned adapter HTTP, native client-content interpretation, memory workflows, repository scope, MemoraX adapter, trace, local Viewer with a content-free public HTTP surface, writeback reconciliation, and lifecycle | Model execution, client model-provider credentials, or native session-history creation | `packages/ts/memorax-code-backend/src/app/backend-server.ts`, `packages/ts/memorax-code-backend/src/memory/service.ts`, and the capability directories under `src` |
+| `packages/ts/memorax-code-adapter-common` | Shared source for Backend connection authority, private runtime records, cross-process locking and configuration, Hook generations, Hook launch helpers, and Repo/Personal Memory helpers | Backend composition, native session-history interpretation, MemoraX request execution, or client plugin policy | `packages/ts/memorax-code-adapter-common/src/backend-connection.mjs`, `src/runtime-record.mjs`, `src/hooks`, and `src/repo-memory` |
 | `packages/ts/memorax-code-codex-adapter` | Codex plugin artifact, Hook shells and runtimes, session/workspace observation, diagnostics, and the canonical shared skill | Codex rollout semantics or Backend-side writeback authority | `.codex-plugin`, `hooks`, `runtime-hooks`, `src`, and `skills/memorax-code` |
 | `packages/ts/memorax-code-claude-adapter` | Claude Code plugin artifact, Hook shells and runtimes, configuration, installer, marketplace source, and diagnostics | Claude transcript semantics or Backend memory orchestration | `.claude-plugin`, `hooks`, `runtime-hooks`, `scripts`, and `src/plugin-install.mjs` |
-| `packages/npm/memorax-code` | Installed executable wrappers, update, preinstall/postinstall, npm manifest, and release-package source | Backend lifecycle semantics, uninstall orchestration, or artifact staging | `bin`, `lib/run-entrypoint.mjs`, and `package.json` |
+| `packages/ts/memorax-code-dsh-adapter` | DSH-native Cordis plugin, turn listeners, Session Event Log interval reading, and Backend client | DSH model execution, persistence implementation, or Backend memory orchestration | `src`, `cordis.patch.yml`, and `package.json` |
+| `packages/npm/memorax-code` | Installed executable wrappers, update, preinstall/postinstall, DSH profile installer, npm manifest, and release-package source | Backend lifecycle semantics, uninstall orchestration, or artifact staging | `bin`, `lib/run-entrypoint.mjs`, `lib/dsh-plugin-install.mjs`, and `package.json` |
 | `scripts` | Backend build orchestration, staging/materialization, package layout, documentation, and local-only data gates | Product runtime authority | Package-build/check scripts and executable contract scripts |
 | `.github` | Issue and pull-request contribution templates | Product runtime behavior | `.github/ISSUE_TEMPLATE` and `.github/pull_request_template.md` |
 
-`memorax-code-adapter-common` is a source layer consumed by the Backend and
-both adapters; it is not an independently deployed service. The npm artifact
+`memorax-code-adapter-common` is a source layer consumed by the Backend and all
+three adapters; it is not an independently deployed service. The npm artifact
 assembles all runtime trees, but package assembly does not make the npm wrapper
 the owner of their behavior.
 
 ### 2.2 Physical dependency directions
 
-- The Backend and both adapters may import adapter-common. Adapter-common must
-  not import those higher-level components back.
-- Adapter Hook runtimes do not import Backend implementation. They communicate
-  through versioned, client-qualified local HTTP commands.
+- The Backend and all three adapters may import adapter-common. Adapter-common
+  must not import those higher-level components back.
+- Adapter runtimes do not import Backend implementation. Codex and Claude Code
+  use Hooks; DSH uses a native Cordis plugin. All communicate through
+  versioned, client-qualified local HTTP commands.
 - Backend lifecycle may load adapter configuration or installers through
   lifecycle participants. Request-time memory processing must not depend on
   plugin installation or install-watchdog behavior.
 - The npm layer locates staged entrypoints. `scripts` owns how source is
   materialized into that staged layout.
 - The canonical user-facing `memorax-code` skill lives in the Codex adapter.
-  Packaging materializes the Claude artifact from that source; do not maintain
-  a second independent skill copy.
+  Packaging materializes the Claude Code and DSH artifacts from that source;
+  do not maintain independent skill copies.
 
 Client integration is deliberately not physically symmetric. Codex plugin
 material belongs to the Codex adapter, while current install, activation, and
 Hook-trust glue lives in Backend `clients/codex`. The Claude Code installer
 lives in the Claude adapter and is loaded by its Backend lifecycle
-participant. Preserve the participant contract and each client's actual
-authority instead of forcing matching directory shapes.
+participant. The DSH Cordis plugin lives in the DSH adapter, while profile
+discovery and managed installation live in the npm layer. Preserve each
+client's native integration and actual authority instead of forcing matching
+directory shapes.
 
 ## 3. Runtime Flows
 
@@ -132,6 +142,7 @@ sequenceDiagram
   participant NPM as npm pre/postinstall
   participant CLI as installed memorax-code CLI
   participant Generation as Hook runtime generation
+  participant DSH as DSH profile integration
   participant Lifecycle as Backend lifecycle
   participant Participants as client participants
   participant Service as managed Backend
@@ -139,6 +150,7 @@ sequenceDiagram
   NPM->>CLI: retire an existing managed Backend before replacement
   NPM->>NPM: detect clients and reconcile configuration
   NPM->>Generation: stage a Hook runtime generation
+  NPM->>DSH: reconcile the native Cordis plugin in existing profiles
   NPM->>CLI: start or reconcile selected integrations
   CLI->>Lifecycle: acquire lifecycle authority and execute command
   Lifecycle->>Participants: prepare client integrations
@@ -149,6 +161,9 @@ sequenceDiagram
 The principal control-plane locations are:
 
 - `packages/npm/memorax-code/bin` for installed package scripts and wrappers;
+- `packages/npm/memorax-code/lib/dsh-plugin-install.mjs` for managed DSH
+  profile discovery, native plugin installation, skill installation, and
+  removal;
 - `packages/ts/memorax-code-backend/src/entrypoints/backend-cli.ts` for
   process-facing command orchestration;
 - `packages/ts/memorax-code-backend/src/lifecycle` for start, stop, restart,
@@ -161,23 +176,24 @@ The principal control-plane locations are:
 Staging and activation are separate decisions. A failed Backend start must not
 replace the currently authoritative Hook generation. Cross-process lifecycle
 decisions use durable records and bounded locks rather than relying on one
-process's in-memory serialization.
+process's in-memory serialization. DSH profile integration has its own managed
+state and remains a native Cordis installation rather than a Hook generation.
 
-### 3.2 Hook and retrieval data flow
+### 3.2 Adapter and retrieval data flow
 
 ```mermaid
 sequenceDiagram
-  participant Client as Codex or Claude Code
-  participant Hook as adapter Hook runtime
-  participant HTTP as Backend Hook HTTP
+  participant Client as Codex, Claude Code, or DSH
+  participant Adapter as Hook or native Cordis adapter
+  participant HTTP as Backend adapter HTTP
   participant Service as memory service
   participant Native as client-native runtime
   participant Scope as repository scope
   participant Provider as MemoraX provider
   participant Obs as local observability sinks
 
-  Client->>Hook: native event and correlation identity
-  Hook->>HTTP: versioned, client-qualified command
+  Client->>Adapter: native event and correlation identity
+  Adapter->>HTTP: versioned, client-qualified command
   HTTP->>HTTP: authorize and validate exact command shape
   HTTP->>Service: normalized memory command
   Service->>Native: resolve client-native authority
@@ -185,16 +201,24 @@ sequenceDiagram
   Native->>Provider: perform automatic retrieval when applicable
   Provider-->>Native: normalized provider result
   Provider->>Obs: emit operational event
-  Native-->>Hook: accepted result and local scope context
-  Hook-->>Client: client-native response or injected context
+  Native-->>Adapter: accepted result and local scope context
+  Adapter-->>Client: client-native response or injected context
 ```
 
 Important distinctions:
 
-- Hook payload is protocol and correlation input. It is not automatic
-  writeback content authority.
-- Codex rollout JSONL and Claude Code transcript JSONL are the content
-  authorities for their respective clients.
+- Codex and Claude Code Hook payloads are protocol and correlation input, not
+  automatic writeback content authority. DSH is not a Hook bridge: its Cordis
+  adapter supplies the persisted Session Event Log header and exact Turn
+  interval for Backend validation.
+- Codex rollout JSONL, Claude Code transcript JSONL, and the exact persisted DSH
+  `turn/start` through `turn/end` interval are the content authorities for their
+  respective clients.
+- DSH accepts only non-delegated agent sessions; an ordinary user fork may
+  retain parent-session lineage without becoming a subagent. Its writeback
+  includes direct-user text and visible model-assistant text from completed
+  Turns; plugin recall, injected context, reasoning, tool arguments, tool
+  results, and incomplete Turns remain local.
 - Required client/session/turn identity and repository scope fail closed when
   incomplete, conflicting, or unprovable.
 - A malformed or incomplete direct `.git` directory is the sole documented
@@ -204,12 +228,12 @@ Important distinctions:
 - Local mode may authorize loopback requests without a configured token. Token
   authentication is required when configuration or exposure mode demands it.
 - Client-specific runtimes interpret native formats. Client-neutral memory
-  coordination does not parse or guess either format.
+  coordination does not parse or guess any client format.
 
 ### 3.3 Manual memory CLI flow
 
 `memorax-cli` enters through Backend `src/memorax-cli.ts` and
-`src/memory/cli.ts`. It does not traverse Hook HTTP or the `MemoryService`
+`src/memory/cli.ts`. It does not traverse adapter HTTP or the `MemoryService`
 composition, but it reuses the repository-scope, MemoraX-provider, and
 local-trace components. Manual Add additionally validates user-supplied
 `--reason` metadata. The direct entrypoint is not permission to fall back to
@@ -226,9 +250,9 @@ Writeback is a separate branch, not the tail of every memory operation.
 
 ```mermaid
 sequenceDiagram
-  participant Hook as client Stop Hook
+  participant Adapter as Stop Hook or DSH turn-end listener
   participant Service as memory service
-  participant Native as rollout/transcript reader
+  participant Native as rollout, transcript, or session-log reader
   participant Coordinator as turn coordinator
   participant Scope as repository scope
   participant Runtime as automatic writeback runtime
@@ -238,7 +262,7 @@ sequenceDiagram
   participant Reconciler as status reconciler
   participant Trace as local trace
 
-  Hook->>Service: client-qualified writeback correlation
+  Adapter->>Service: client-qualified writeback correlation
   Service->>Native: read the exact completed native Turn
   Native->>Coordinator: native content and correlation plus scope resolver
   Coordinator->>Scope: resolve and revalidate current scope
@@ -258,24 +282,32 @@ sequenceDiagram
 - Retrieval events do not enter reconciliation.
 - Local enqueue acceptance is the metadata-consumption point; provider I/O may
   occur later through the automatic writeback runtime.
-- Buffering and chunking belong to the memory capability; transcript parsing
-  remains client-specific.
+- Buffering and chunking belong to the memory capability; native session-history
+  parsing remains client-specific.
+- DSH uses the shared retrieval, buffering, chunking, redaction, and provider
+  paths, but does not currently emit MemoraX operations into local trace,
+  Viewer, or writeback-reconciliation projections.
 - When a degraded direct-`.git` scope upgrades to verified Git scope, the
   buffer runtime cancels and discards pending fallback turns for the same
   client and session before buffering under the Git scope. It does not migrate
   or flush those turns across namespaces.
-- Pending writeback status can be reconstructed from persisted local trace
-  after Backend restart. A still-pending provider status updates in-memory
-  reconciliation policy rather than appending a new trace event.
+- For traced clients, pending writeback status can be reconstructed from
+  persisted local trace after Backend restart. A still-pending provider status
+  updates in-memory reconciliation policy rather than appending a new trace
+  event. DSH pending tasks are not currently reconstructed by this projection.
 
 ### 3.5 Repo Memory coordination
 
 Repo Memory is repository-local guidance under `.repo_memory`, not a MemoraX
-provider response. A turn-start result exposes a worktree to adapter Hooks only
-for a verified Git scope; the Viewer separately projects Repo Memory readiness.
-Adapter Hooks may schedule a missing bundle build using adapter-common
-supervision, locking, and job-policy helpers. They must use the
-Backend-resolved worktree rather than an arbitrary Hook `cwd`.
+provider response. For Codex and Claude Code, a turn-start result exposes a
+worktree to the client adapter only for a verified Git scope; the adapter may
+schedule a missing bundle build using adapter-common supervision, locking, and
+job-policy helpers, and must use that Backend-resolved worktree rather than an
+arbitrary local `cwd`. DSH does not schedule automatic builds from turn-start.
+Its bundled skill explicitly invokes the same supervised job using the
+repository argument parsed by the canonical skill workflow and an enabled,
+managed headless-capable DSH profile. The Viewer separately projects Repo
+Memory readiness for Codex and Claude Code only.
 
 ## 4. Backend Modular Monolith
 
@@ -299,6 +331,7 @@ src/
   clients/
     codex/                Codex native interpretation and lifecycle adapters
     claude/               Claude native interpretation and lifecycle participant
+    dsh/                  DSH Session Event Log interpretation and memory runtime
   config/                 Backend and proxy/config interpretation
   entrypoints/            process and management-CLI orchestration
   lifecycle/
@@ -310,7 +343,7 @@ src/
   shared/                 narrow Backend-local primitives without domain ownership
   trace/                  client-qualified local operational trace
   transport/
-    http/                 shared Backend HTTP and Hook wire adaptation
+    http/                 shared Backend HTTP and adapter wire adaptation
   viewer/
     model.ts              shared public Viewer data contract
     store.ts              local event/history aggregation and orchestration
@@ -329,15 +362,16 @@ entrypoints and compatibility facades. It is not another implementation area.
 | --- | --- | --- |
 | `src/entrypoints` | Direct-execution detection, CLI parsing, command dispatch, process signals, and process-facing orchestration | Does not own memory rules |
 | `src/app` | Backend state/security, runtime resource assembly, observability fan-out, active requests, and graceful shutdown | Does not install plugins or own the lifecycle control plane |
-| `src/transport/http` | Shared Backend HTTP authorization, request/JSON helpers, error mapping, health, and Hook wire adaptation | Viewer endpoints and outbound provider HTTP remain with their capabilities |
+| `src/transport/http` | Shared Backend HTTP authorization, request/JSON helpers, error mapping, health, and adapter wire adaptation | Viewer endpoints and outbound provider HTTP remain with their capabilities |
 | `src/lifecycle` | Contracts, participants, client selection, locks, service orchestration, install watchdog, and client integration removal | Request-time memory flow does not depend on it |
 | `src/lifecycle/backend` | Managed process, PID/token/connection records, status probing, cleanup, and shutdown requests | Helper contracts do not depend back on the full service implementation |
 | `src/clients/codex` | Codex rollout, prompt, turn-index, and workspace interpretation; Hook memory runtime; plugin integration glue; and lifecycle participant | No Claude format fallback; request runtime remains HTTP-composition independent |
 | `src/clients/claude` | Claude transcript/turn interpretation, Hook memory runtime, and lifecycle participant | No Codex format fallback; request runtime remains HTTP-composition independent |
-| `src/memory` | Memory commands, retrieval, writeback, turn coordination, repository session pinning, manual CLI, buffering/chunking, task projection, and reconciliation | Client-neutral modules do not parse native transcript formats |
+| `src/clients/dsh` | DSH Session Event Log Turn interpretation and Cordis-adapter memory runtime | Non-delegated sessions only; no Hook emulation, other-client fallback, trace, or Viewer authority |
+| `src/memory` | Memory commands, retrieval, writeback, turn coordination, repository session pinning, manual CLI, buffering/chunking, task projection, and reconciliation | Client-neutral modules do not parse native session-history formats |
 | `src/repository` | Read-only repository identity and Repo Memory readiness | Scope derivation does not execute Git or use synchronous filesystem reads |
 | `src/provider/memorax` | MemoraX config interpretation, query/add/status payloads, HTTP transport, and normalized results | Independent from server routing and plugin lifecycle |
-| `src/trace` | Client-qualified trace config/context/store, current-turn state, retention, and JSONL persistence | Trace core has no outbound-network authority |
+| `src/trace` | Codex- and Claude-qualified trace config/context/store, current-turn state, retention, and JSONL persistence | Trace core has no outbound-network authority; DSH is not currently a trace source |
 | `src/viewer/model.ts` | Shared Viewer contract | Independent from Viewer Store, routes, and projections |
 | `src/viewer/store.ts` | Local Viewer event/history aggregation and projection orchestration | Derived state is not memory, transcript, session, scope, or lifecycle authority |
 | `src/viewer/history` | Claude native-history reading and shared session-title derivation | Pure history transformations use the model; explicit Store-facing adapters remain narrow |
@@ -377,8 +411,8 @@ graph remains acyclic:
 | `app` and `transport` | The app composes routes; shared HTTP helpers consume the narrow `BackendState` contract |
 | `app` and `lifecycle` | The server reads active-client state; managed-service helpers consume narrow app state/security functions |
 | `clients` and `memory` | Memory service composes client runtimes; client runtimes consume client-neutral memory contracts |
-| `clients` and `lifecycle` | Clients implement lifecycle participants; orchestration consumes those participants |
-| `clients` and `trace` | Client runtimes record trace; trace Store/model code consumes client activity, token, and identity types |
+| `clients` and `lifecycle` | Codex and Claude Code implement lifecycle participants; DSH profile installation remains npm-owned |
+| `clients` and `trace` | Codex and Claude Code runtimes record trace; trace Store/model code consumes their activity, token, and identity types |
 | `memory` and `provider` | Memory invokes the provider; provider emits memory-owned observability contracts |
 | `memory` and `repository` | Memory resolves scope; readiness uses the shared project identity contract |
 | `memory` and `trace` | Memory carries trace context; trace context uses the memory project identity |
@@ -398,7 +432,7 @@ acyclic.
 | `MemoryDiagnosticLogger` | `memory/observability.ts` | Injects diagnostics without binding memory kernels to Backend debug output |
 | `MemoryTurnCoordinator` | `memory/turn-coordinator.ts` | Correlates and validates client-neutral Turns and controls metadata consumption |
 | `RepositoryMemorySessionRuntime` | `memory/repository-session.ts` | Pins and validates repository scope, including the bounded degraded-direct-`.git` to verified-Git upgrade |
-| `AdapterLifecycleParticipant` | `lifecycle/participant.ts` | Lets lifecycle orchestration use client adapters without embedding their implementation details |
+| `AdapterLifecycleParticipant` | `lifecycle/participant.ts` | Lets lifecycle orchestration use Codex and Claude Code adapters without embedding their implementation details |
 | Backend lifecycle contracts | `lifecycle/contracts.ts` | Separate `BackendServiceOptions`, injectable runtime, resolved endpoint, and `BackendServiceResult` from managed-service implementation |
 
 Ports stay with the capability that owns their semantics. A contract used by
@@ -436,17 +470,18 @@ and
 
 | Concern | Authority | Derived or non-authoritative views |
 | --- | --- | --- |
-| Models, model-provider credentials, native tools, and model-provider traffic | Codex or Claude Code | Backend and adapters must not proxy or persist this authority |
-| Hook command identity | Versioned, client-qualified command plus validated required session/turn fields | Parsed HTTP request objects |
-| Automatic writeback content | Codex rollout JSONL or Claude Code transcript JSONL for the matching client | Hook text, trace, latest-Turn guesses, and the other client's format are not fallbacks |
-| Workspace and repository identity | Backend read-only resolution held by the live repository-session runtime; its only permitted scope transition is the same-root degraded-direct-`.git` to verified-Git upgrade | Project labels, Viewer catalog entries, and Hook `cwd` |
+| Models, model-provider credentials, native tools, and model-provider traffic | Codex, Claude Code, or DSH | Backend and adapters must not proxy or persist this authority |
+| Adapter command identity | Versioned, client-qualified command plus validated required session/turn fields; Codex and Claude Code use Hooks while DSH uses Cordis | Parsed HTTP request objects |
+| Automatic writeback content | Matching Codex rollout JSONL, Claude Code transcript JSONL, or exact persisted DSH Session Event Log Turn interval | Hook text, trace, latest-Turn guesses, unverified live-event accumulation, and another client's format are not fallbacks |
+| Workspace and repository identity | Backend read-only resolution held by the live repository-session runtime; its only permitted scope transition is the same-root degraded-direct-`.git` to verified-Git upgrade | Project labels, Viewer catalog entries, and adapter `cwd` |
 | Backend connection and managed-process ownership | Versioned private connection/token/PID records plus lifecycle lock/version validation | In-memory state in any one process |
 | MemoraX memory result and asynchronous task state | Normalized response from `provider/memorax` | Observability, trace, Viewer, and task projections |
-| Persisted current-turn operational state and trace history | Client-qualified local trace records | Viewer summaries and diagnostics; not native content or general Turn-identity authority |
+| Persisted current-turn operational state and trace history | Codex- and Claude-qualified local trace records | Viewer summaries and diagnostics; not native content or general Turn-identity authority; DSH has no current trace projection |
 | Repo Memory bundle | Repository-local `.repo_memory` files produced by the supervised job | Backend readiness and client-injected guidance |
 
 The Viewer is never memory, transcript, session, repository-scope, or
-lifecycle authority.
+lifecycle authority. Its current projection covers Codex and Claude Code, not
+DSH.
 
 ### 6.2 State classes and shutdown ownership
 
@@ -455,10 +490,10 @@ repository-session bindings, in-flight provider operations, Viewer projection
 caches, and background reconciliation promises.
 
 Durable local state includes configuration, private runtime records, active
-client selection, client-qualified trace JSONL, and Repo Memory. State shared
-across processes requires a bounded lock, atomic replacement, or version
-validation appropriate to its record. An in-memory mutex is not cross-process
-authority.
+client selection, Codex/Claude trace JSONL, DSH managed-plugin state, and Repo
+Memory. State shared across processes requires a bounded lock, atomic
+replacement, or version validation appropriate to its record. An in-memory
+mutex is not cross-process authority.
 
 Backend-owned remote memory state is limited to MemoraX memories and
 asynchronous writeback tasks. The provider adapter is the network boundary for
@@ -477,7 +512,7 @@ closing them ad hoc.
 flowchart LR
   Events["memory operational events"]
   Fanout["app/memory-observability"]
-  Trace["client-qualified local trace"]
+  Trace["Codex and Claude local trace"]
   ViewerSink["Viewer live projection"]
   TaskProjection["writeback task projection"]
   NativeHistory["client-owned local native history"]
@@ -501,22 +536,23 @@ Backend composition root decides which local sinks are active. This keeps
 provider and memory code independent from the concrete trace Store, Viewer,
 and Backend debug logger.
 
-Raw native transcript files, transcript paths, and retained trace files stay
-local. Only normalized search, add, and add-status requests cross the MemoraX
-provider boundary. An Add request may carry messages materialized from the
-exact native Turn, but it does not upload the raw file or unrelated transcript
-content. A production module that gains network capability must be explicitly
-reviewed by the local-only gate; trace-core modules must remain network-free,
-and a module must not combine trace storage with outbound authority without a
-reviewed contract.
+Raw native transcript files, DSH Session Event Logs, their paths, and retained
+trace files stay local. Only normalized search, add, and add-status requests
+cross the MemoraX provider boundary. An Add request may carry messages
+materialized from the exact native Turn, but it does not upload the raw file,
+raw log, or unrelated session content. A production module that gains network
+capability must be explicitly reviewed by the local-only gate; trace-core
+modules must remain network-free, and a module must not combine trace storage
+with outbound authority without a reviewed contract.
 
-`/memory-viewer` reads local trace/history/projection state. The local Store
-and history readers may process content-bearing trace or native history only
-to produce the safe public projection. The HTTP response never returns
-conversation or memory text, session or turn identifiers, transcript paths,
-or raw trace details. It never polls MemoraX. Pure read-model projections
-depend on `viewer/model.ts` rather than the aggregate Store, and `viewer/http`
-is constrained to the public route module.
+`/memory-viewer` reads supported local trace/history/projection state. The
+local Store and history readers may process content-bearing trace or native
+history only to produce the safe public projection. The HTTP response never
+returns conversation or memory text, session or turn identifiers, transcript
+paths, or raw trace details. It never polls MemoraX. Pure read-model
+projections depend on `viewer/model.ts` rather than the aggregate Store, and
+`viewer/http` is constrained to the public route module. DSH is intentionally
+absent until a DSH-qualified trace and safe projection contract are defined.
 
 ## 7. Packaging and Distribution
 
@@ -528,6 +564,7 @@ flowchart TD
   CommonSource["adapter-common runtime source"]
   CodexSource["Codex adapter and canonical skill"]
   ClaudeSource["Claude adapter"]
+  DshSource["DSH Cordis adapter"]
   Stage["npm staging tree"]
   Materialize["skill and marketplace materialization"]
   Gates["layout, source, symlink, and local-only gates"]
@@ -540,6 +577,7 @@ flowchart TD
   CommonSource --> Stage
   CodexSource --> Stage
   ClaudeSource --> Stage
+  DshSource --> Stage
   Stage --> Materialize
   Materialize --> Gates
   Gates --> Pack
@@ -550,8 +588,9 @@ flowchart TD
   committed.
 - Adapter-common and adapter `.mjs` runtime trees are staged from declared,
   tracked source.
-- The Claude skill and marketplace are materialized from canonical sources;
-  packaging may rewrite contained relative imports for the staged topology.
+- The Claude Code and DSH skills are materialized from the canonical Codex
+  source; packaging may rewrite contained relative imports for the staged
+  topology. DSH's Cordis bundle is installed into discovered existing profiles.
 - The npm wrappers use `packages/npm/memorax-code/lib/run-entrypoint.mjs` to
   locate staged Backend or adapter entrypoints.
 - Artifact gates reject undeclared paths, unsafe symlinks, cache/build debris,
@@ -594,12 +633,12 @@ Placement rules:
   root-surface, public-route, delegation, and dependency-cycle contracts.
 - Backend behavior tests build and exercise `dist`; architecture tests inspect
   `src` directly.
-- The Backend suite discovers nested tests recursively. Codex and Claude Code
-  adapter suites currently discover only flat `test/*.test.mjs`; their package
-  scripts must change before tests are nested.
+- The Backend suite discovers nested tests recursively. Codex, Claude Code, and
+  DSH adapter suites currently discover only flat `test/*.test.mjs`; their
+  package scripts must change before tests are nested.
 - Adapter-common has no standalone suite. Its changes are verified through all
-  affected consumers: Backend, both adapters, and package checks when staged
-  runtime layout is involved.
+  affected consumers: Backend, the three adapters, and package checks when
+  staged runtime layout is involved.
 - Before moving, splitting, or renaming tests, search `scripts` and `.github`
   for explicit paths and test-name patterns.
 
@@ -611,11 +650,11 @@ uses those named profiles rather than copying commands here.
 | --- | --- | --- | --- |
 | One Backend capability | Matching `test/<area>` | Source boundaries when imports change | Backend |
 | Runtime composition | `test/app` | Backend source boundaries | Backend |
-| Hook HTTP or adapter-visible command schema | `test/transport/http` and affected adapter suites | Backend source boundaries and package shape when staged | Backend + Adapter-common/shared Hook; add Install/artifacts when staged package shape changes |
+| Hook or native-adapter HTTP command schema | `test/transport/http` and affected adapter suites | Backend source boundaries and package shape when staged | Backend + Adapter-common/shared Hook; add Install/artifacts when staged package shape changes |
 | Backend root entrypoint or compatibility facade | Entrypoint, architecture, and npm package tests | Source boundaries and package shape | Backend + Install/artifacts |
 | Client-native parsing or identity | `test/clients/<client>` | Source boundaries | Backend |
-| Client adapter plugin or Hook deployment | Matching adapter suite and affected Backend contract tests | Package shape when staged | Codex or Claude Code; add Adapter-common/shared Hook for shared Hook source and Install/artifacts for staged package shape |
-| Adapter-common | Affected Backend tests and both adapter suites | Package shape when staged layout changes | Adapter-common/shared Hook; add Install/artifacts when staged runtime or package layout changes |
+| Client adapter deployment | Matching adapter suite and affected Backend contract tests | Package shape when staged | Codex, Claude Code, or DSH; add Adapter-common/shared Hook for shared source and Install/artifacts for staged package shape |
+| Adapter-common | Affected Backend tests and all affected adapter suites | Package shape when staged layout changes | Adapter-common/shared Hook; add Install/artifacts when staged runtime or package layout changes |
 | MemoraX provider, trace, or outbound transport | Matching Backend tests | Local-only trace boundary | Backend + Trace/local-only boundary |
 | Test relocation | Moved owning suite | Platform-specific consumers | Matching named profile |
 | Packaging/materialization | npm package tests and artifact gates | Package shape and local-only trace boundary | Install/artifacts |

@@ -1,7 +1,7 @@
 # Security Policy
 
-MemoraX Code is a local-first integration for Codex and Claude Code with an
-optional external bind mode and required communication with MemoraX for
+MemoraX Code is a local-first integration for Codex, Claude Code, and DSH with
+an optional external bind mode and required communication with MemoraX for
 cloud-backed memory. Security reports should distinguish the local Backend,
 client-owned provider traffic, and MemoraX memory traffic.
 
@@ -28,20 +28,26 @@ Please allow time for triage and remediation before public disclosure.
 
 ### Client and local Backend
 
-- Codex and Claude Code own provider credentials, models, native tools, and
-  provider traffic. MemoraX Code does not proxy OpenAI Responses or Anthropic
-  Messages traffic and does not need client provider credentials.
+- Codex, Claude Code, and DSH own provider credentials, models, native tools,
+  and provider traffic. MemoraX Code does not proxy client model traffic and
+  does not need client provider credentials.
 - The managed Backend binds to loopback by default. External binding requires
   explicit opt-in and a Backend token; deployment operators must provide an
   appropriate authenticated and encrypted network boundary.
 - Localhost is not an isolation boundary against hostile software running as
   the same operating-system user.
-- Hook, lifecycle, connection, PID, token, session, and workspace authority
-  records are security-sensitive local state. Do not hand-edit or publish
-  them.
-- Initial Repo Memory builds use only the Git worktree returned by an
-  authenticated Backend turn-start request. Backend or workspace-scope
-  failures skip the build; client Hooks do not fall back to their local `cwd`.
+- DSH uses a native Cordis plugin and versioned local Backend HTTP commands; it
+  is not a Hook bridge. The same Backend authentication policy applies.
+- Hook, Cordis-plugin, lifecycle, connection, PID, token, session, and workspace
+  authority records are security-sensitive local state. Do not hand-edit or
+  publish them.
+- Automatic initial Repo Memory builds in Codex and Claude Code use only the
+  Git worktree returned by an authenticated Backend turn-start request.
+  Backend or workspace-scope failures skip the build; those client adapters do
+  not fall back to an unverified local `cwd`. DSH performs Repo Memory work
+  only after explicit skill invocation: the canonical skill validates its
+  repository argument, and the package helper accepts only an enabled,
+  MemoraX Code-managed headless-capable profile.
 - MemoraX-backed Search, Add, and automatic writeback may downgrade malformed
   or incomplete internal metadata in a direct `.git` directory to the
   canonical workspace folder identity. The CLI exposes the fallback reason,
@@ -63,9 +69,19 @@ disabled until explicitly enabled.
 Memory searches send the query and repository-scoped identity to MemoraX.
 Active adds and automatic writeback send the selected content needed to create
 memory. Automatic writeback may include selected user instructions and the
-matching final assistant response from an exact Codex or Claude Code
-transcript turn. It does not send the retained trace file, raw transcript
-path, or trace-only provenance as part of that payload.
+matching visible assistant response from an exact Codex rollout, Claude Code
+transcript turn, or persisted DSH Session Event Log turn interval. It does not
+send the retained trace file, raw transcript or session-log path, or trace-only
+provenance as part of that payload.
+
+DSH retrieval and writeback are limited to non-delegated agent sessions;
+ordinary user forks may retain parent-session lineage. The Backend validates
+one contiguous `turn/start` through `turn/end` interval and sends only
+direct-user text plus visible model-assistant text from completed Turns.
+Plugin-injected recall, agent instructions, runtime context, reasoning, tool
+arguments, tool results, and incomplete Turns remain local. Unknown required
+DSH events fail closed; explicitly ignorable events may be skipped without
+contributing content.
 
 Automatic writeback bounds each selected message to its configured Add limit,
 then applies a local best-effort detector before hashing, buffering, chunking,
@@ -119,10 +135,16 @@ local paths. Trace files stay under `MEMORAX_CODE_HOME`. The shipped package
 has no trace uploader, collector, receiver, or export command. This does not
 change the separate MemoraX queries and writeback described above.
 
+DSH is not currently a trace or Memory Viewer source. Its Session Event Log
+remains client-owned native history and is read only for the exact writeback
+interval; MemoraX Code does not copy the raw log into its retained trace.
+
 The local `/memory-viewer` surface is a content-free activity summary. It must
 not expose conversation or memory text, session/turn identifiers, paths, or
 raw trace details. Its bootstrap URL contains an access token; do not copy
-that URL into logs, screenshots, or public issues.
+that URL into logs, screenshots, or public issues. DSH activity is currently
+absent from this projection; that absence is not evidence that no DSH memory
+operation occurred.
 
 Generated `.repo_memory/` content, personal procedures, and profile preferences
 remain local and are Git-ignored by the supported workflow. Review and redact
@@ -136,11 +158,13 @@ Use:
 memorax-code uninstall
 ```
 
-This stops the managed Backend, removes managed Codex/Claude integrations, and
-removes the global npm package when possible. It intentionally retains:
+This stops the managed Backend, removes managed Codex, Claude Code, and DSH
+integrations, and removes the global npm package when possible. It
+intentionally retains:
 
 - `MEMORAX_CODE_HOME`, including configuration and local traces;
 - Claude plugin data;
+- client-owned DSH profiles and session logs;
 - client provider configuration; and
 - memories already stored in MemoraX.
 
@@ -155,8 +179,8 @@ cleanup runs.
   retained trace files, private memories, `.env.local`, or machine-specific
   diagnostic state.
 - Preserve workspace traversal and symlink protections, client/session
-  isolation, exact-transcript writeback authority, bounded parsing, and
-  fail-closed behavior for uncertain identity or runtime records.
+  isolation, exact native-writeback authority, bounded parsing, and fail-closed
+  behavior for uncertain identity or runtime records.
 - Use isolated client and MemoraX Code homes for lifecycle or destructive
   tests.
 - Add focused regression coverage for changes to authentication, paths,

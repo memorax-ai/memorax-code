@@ -28,8 +28,8 @@ memorax-code status
 memorax-cli status
 ```
 
-This reconciles the managed Backend and client integrations. Some Hook and CLI
-processes reread configuration sooner, but `memorax-code start` is the
+This reconciles the managed Backend and harness integrations. Some adapter and
+CLI processes reread configuration sooner, but `memorax-code start` is the
 supported consistency boundary.
 
 TOML booleans are `true` or `false`. Environment booleans accept
@@ -38,12 +38,18 @@ are not a compatibility contract.
 
 ## New configuration
 
-The generated template selects both clients, disables automatic retrieval,
+The generated template selects both Hook clients, disables automatic retrieval,
 enables automatic writeback, sets the preferred language to Chinese (`zh`),
 uses a five-turn skill reminder and the adaptive repository-update policy, and
 enables content-bearing local traces for both clients. npm installation may
 narrow `[clients]` to clients detected on the host. The tables below list all
 fallbacks, including tuning fields omitted from the generated file.
+
+DSH is intentionally outside `[clients]`: the installer and lifecycle wrapper
+discover existing valid profiles and manage the native Cordis bundle in each
+one. They do not create profiles. A later `memorax-code update` or
+`memorax-code start` reconciles profiles created after the original install.
+DSH profile plugin management requires `pnpm` on `PATH`.
 
 On POSIX systems MemoraX Code creates `$MEMORAX_CODE_HOME` with mode `0700`
 and a new `config.toml` with mode `0600`. Windows relies on the current user's
@@ -69,9 +75,10 @@ configuration instead of being permanently disabled. When an update newly
 enables Codex, it requests initial Hook activation after the client-selection
 prompt.
 
-Client selection controls plugin and Hook lifecycle only. It does not change
-Codex or Claude Code provider settings. `--clients none` runs the Backend
-without managing either client integration.
+Client selection controls Codex and Claude Code plugin/Hook lifecycle only. It
+does not change their provider settings and does not select DSH profiles.
+`--clients none` runs the Backend without managing either Hook integration;
+DSH remains governed by its separately detected profile installations.
 
 ## MemoraX connection
 
@@ -120,9 +127,10 @@ Automatic prompt retrieval is disabled by default.
 | `memory_type_order` | `MEMORAX_CODE_MEMORAX_MEMORY_TYPE_ORDER` | `core,episodic,semantic,procedural,unclassified` |
 
 The TOML form of `memory_type_order` is an array of strings; the environment
-form is comma-separated. `enabled` controls automatic `UserPromptSubmit`
-retrieval only. Explicit `memorax-cli search` remains available when
-credentials and a trusted workspace scope resolve.
+form is comma-separated. `enabled` controls automatic prompt retrieval: the
+supported Hook event in Codex/Claude Code and DSH's native `agent/pre-step`
+event. Explicit `memorax-cli search` remains available when credentials and a
+trusted workspace scope resolve.
 
 ## Writeback and explicit add
 
@@ -133,7 +141,7 @@ An existing configuration without `enabled` remains disabled.
 | --- | --- | --- |
 | `enabled` | `MEMORAX_CODE_MEMORY_WRITEBACK_ENABLED` | `false` when absent |
 | `buffer_enabled` | `MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_ENABLED` | `true` |
-| `buffer_max_turns` | `MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_MAX_TURNS` | `8`; `-1` disables automatic Hook writeback |
+| `buffer_max_turns` | `MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_MAX_TURNS` | `8`; `-1` disables automatic writeback |
 | `buffer_max_age_ms` | `MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_MAX_AGE_MS` | `600000` |
 | `buffer_max_chars` | `MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_MAX_CHARS` | `128000` |
 | `max_message_chars` | `MEMORAX_CODE_MEMORY_WRITEBACK_MAX_MESSAGE_CHARS` | `64000` |
@@ -190,8 +198,9 @@ entered and do not pass through this detector.
 
 `[memory.skill_reminder].interval_turns` defaults to `5`; its environment
 override is `MEMORAX_CODE_MEMORY_SKILL_REMINDER_INTERVAL_TURNS`. A positive
-value controls the reminder cadence for both clients, beginning with the first
-eligible prompt.
+value controls the Hook reminder cadence for Codex and Claude Code, beginning
+with the first eligible prompt. DSH exposes the same package-local skill
+natively but does not use this Hook reminder cadence.
 
 | Field | Environment override | Fallback |
 | --- | --- | --- |
@@ -203,10 +212,14 @@ Supported policies are `every-commit`, `commit-count`, `daily`,
 `pull-request`, `pull-request-or-daily`, and `adaptive`. Invalid policy values
 fall back to `adaptive`.
 
-The first eligible prompt starts a background build only when the Backend has
-authorized a Git worktree and that worktree has no `.repo_memory/PROFILE.md`.
-If the Backend or workspace authority is unavailable, the Hook skips the
-initial build instead of falling back to its local `cwd`.
+For Codex and Claude Code, the first eligible prompt starts a background build
+only when the Backend has authorized a Git worktree and that worktree has no
+`.repo_memory/PROFILE.md`. If the Backend or workspace authority is
+unavailable, the Hook skips the initial build instead of falling back to its
+local `cwd`. DSH runs Repo Memory maintenance only through an explicit use of
+the bundled skill. Its Search, Add, automatic retrieval, and writeback work in
+every integrated profile, while Repo Memory maintenance additionally requires
+one managed profile that includes `@deepseek-ai/dsh-headless`.
 
 ## Local traces
 
@@ -226,6 +239,10 @@ metadata-only local traces, or `enabled=false` to disable a client's trace.
 Trace files stay under `$MEMORAX_CODE_HOME`; MemoraX Code has no trace upload,
 export, or public collector.
 
+DSH has no MemoraX Code trace or Memory Viewer projection in this release. Its
+native Session Event Log remains local to DSH except for the bounded direct
+user and visible assistant text selected for an enabled memory writeback.
+
 ## Backend runtime settings
 
 Backend connection and process authority is not stored in `config.toml`.
@@ -241,6 +258,8 @@ Common operator settings are:
 | `MEMORAX_CODE_BACKEND_ALLOW_EXTERNAL` | Allow an explicitly intended non-loopback bind |
 | `MEMORAX_CODE_BACKEND_LOOPBACK_AUTH` | Control token use on loopback |
 | `MEMORAX_CODE_BACKEND_LOG` | Override the managed Backend log path |
+| `DSH_HOME` | Select the DSH home whose existing profiles are discovered |
+| `MEMORAX_CODE_DSH_COMMAND` | Override the `dsh` executable used for profile reconciliation |
 
 External binds fail unless explicitly allowed and protected by a Backend
 token. Persistent connection, token, and PID records live under
@@ -268,6 +287,10 @@ memorax-cli status
 memorax-cli status --json
 memorax-code-codex doctor
 memorax-code-claude doctor
+dsh plugin --profile <profile> why @memorax-code/dsh-adapter
+dsh --profile <profile> --dump-config
 ```
 
-The status commands do not print the MemoraX API key or Backend token.
+The status commands do not print the MemoraX API key or Backend token. The
+central `memorax-code status` report does not yet merge DSH profile status; use
+the native DSH commands above after install or update.

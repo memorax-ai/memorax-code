@@ -31,10 +31,10 @@ Coding agents are good at the task in front of them, but a new session often
 starts without the architecture, failed attempts, repository rules, or working
 preferences established before it.
 
-MemoraX Code gives Codex and Claude Code a shared memory layer for that context.
-It can recall prior engineering knowledge, capture reusable lessons from
-completed work, maintain repository knowledge, and carry your procedures and
-preferences into future sessions.
+MemoraX Code gives Codex, Claude Code, and DeepSeek Harness (DSH) one shared
+memory layer for that context. It can recall prior engineering knowledge,
+capture reusable lessons from completed work, maintain repository knowledge,
+and carry your procedures and preferences into future sessions.
 
 The goal is not to remember everything. It is to bring back the small amount of
 memory relevant to the current task so the agent can reach useful investigation
@@ -42,8 +42,9 @@ and validation sooner.
 
 ## Quick Start
 
-Prepare Node.js 24+ and either Codex or Claude Code. Python 3 is required for
-Repo Memory operations.
+Prepare Node.js 24+ and at least one supported harness: Codex, Claude Code, or
+DeepSeek Harness. Python 3 is required for Repo Memory operations. DSH profile
+plugin management also requires `pnpm` on `PATH`.
 
 ### Install and Connect
 
@@ -60,26 +61,34 @@ npm install -g @memorax/memorax-code --foreground-scripts
 ```
 
 Keep `--foreground-scripts` so the complete setup remains visible. The
-installer automatically detects runnable Codex and Claude Code clients and
-connects the clients it finds. Follow the prompts to enter your Base User ID,
-preferred language, and API key. Codex users must also approve Hook activation
-and trust when prompted.
+installer automatically detects runnable Codex and Claude Code clients plus
+existing valid DSH profiles, then connects every harness it finds. It does not
+create DSH profiles. Follow the prompts to enter your Base User ID, preferred
+language, and API key. Codex users must also approve Hook activation and trust
+when prompted.
 
 If setup is skipped or cannot prompt, the package remains installed but
 MemoraX-backed search, retrieval, and writeback remain unavailable.
 
+DSH Search, Add, automatic retrieval, and writeback work in every integrated
+profile. Building or maintaining Repo Memory from DSH additionally requires an
+existing profile that includes `@deepseek-ai/dsh-headless`; initialize that
+profile through DSH, then rerun `memorax-code start`. MemoraX Code never creates
+the profile for you.
+
 ### Try Cross-Session Memory
 
-Clone the example repository from the product website, then open Codex or
-Claude Code in the project directory:
+Clone the example repository from the product website, then open Codex,
+Claude Code, or DSH in the project directory:
 
 ```bash
 git clone https://github.com/SWE-agent/test-repo.git
 cd test-repo
 ```
 
-Invoke the Skill as `$memorax-code` in Codex or `/memorax-code` in Claude Code.
-The prompts below use its product name and work in either client.
+Invoke the Skill as `$memorax-code` in Codex or `/memorax-code` in Claude Code
+and DSH. The prompts below use its product name and work in every supported
+harness.
 
 Send these prompts in order in the same session:
 
@@ -103,8 +112,9 @@ the current repository.
 > The prompts above are only for quick verification. In normal use, you do not
 > need to invoke the MemoraX Code skill to add memory manually. It writes
 > relevant memory in the background and guides agents to search when useful.
-> You can view content-free local activity and status in the
-> [Memory Viewer](http://127.0.0.1:8787/memory-viewer).
+> For Codex and Claude Code, you can view content-free local activity and status
+> in the [Memory Viewer](http://127.0.0.1:8787/memory-viewer). DSH activity is
+> not projected there in this release.
 
 ## Four Clear Memory Boundaries
 
@@ -123,9 +133,9 @@ the current repository.
 | **Preference continuity** | Records User Profile preferences and injects them into future tasks on a configured cadence. |
 | **Procedure reuse** | Records reusable task procedures and reminds future agents to apply them. |
 | **Background Repo Memory maintenance** | Automatically organizes repository structure, entry points, and history evidence in the background, then updates them according to policy to reduce repeated searching and summarization. |
-| **Active memory control** | Lets you search and add memory through the bundled MemoraX Code skill (`$memorax-code` in Codex or `/memorax-code` in Claude Code) or the CLI. |
-| **Hook integration** | Uses Codex and Claude Code Hooks to trigger memory retrieval, reminders, and writeback. |
-| **Local visualization** | Uses the local Memory Viewer to summarize activity counts, retrieval, and writeback status. |
+| **Active memory control** | Lets you search and add memory through the bundled MemoraX Code skill (`$memorax-code` in Codex or `/memorax-code` in Claude Code and DSH) or the CLI. |
+| **Native harness integration** | Uses Codex and Claude Code Hooks plus DSH's native Cordis events to trigger retrieval and writeback without proxying model traffic. |
+| **Local visualization** | Uses the local Memory Viewer to summarize Codex and Claude Code activity counts, retrieval, and writeback status. DSH activity is not projected there in this release. |
 
 ## Your Memory, Your Control
 
@@ -156,8 +166,9 @@ memorax-code update
 ```
 
 The command follows the installed release channel and preserves configuration.
-Restart or refresh Codex and Claude Code when a release changes plugin assets
-or skills.
+Restart or refresh every connected harness when a release changes plugin
+assets or skills. `memorax-code update` also reconciles DSH profiles created
+after the original installation.
 
 ## Uninstall
 
@@ -168,9 +179,9 @@ memorax-code uninstall
 ```
 
 This removes managed integrations and the global package while retaining
-`MEMORAX_CODE_HOME` (default `~/.memorax-code`), Claude plugin data, provider
-configuration, and memories stored in MemoraX. Remove retained local or cloud
-data separately only after reviewing what you still need.
+`MEMORAX_CODE_HOME` (default `~/.memorax-code`), Claude and DSH user data,
+provider configuration, and memories stored in MemoraX. Remove retained local
+or cloud data separately only after reviewing what you still need.
 
 ## Documentation
 

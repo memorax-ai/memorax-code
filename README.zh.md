@@ -30,16 +30,17 @@
 Coding Agent 擅长解决眼前的问题，但新会话不会自动继承此前积累的架构认知、踩坑经验、仓库规则
 和协作偏好。
 
-MemoraX Code 让 Codex 和 Claude Code 共享一套能够持续积累的记忆。它会沉淀代码任务中的工程经验，
-持续整理仓库知识，并在后续任务中找回相关的工作流程和偏好。
+MemoraX Code 让 Codex、Claude Code 和 DeepSeek Harness（DSH）共享一套能够持续积累的记忆。
+它会沉淀代码任务中的工程经验，持续整理仓库知识，并在后续任务中找回相关的工作流程和偏好。
 
 它追求的不是“记得更多”，而是在需要时带回与当前任务相关的 Memory，让 Agent 减少重复搜索和试错，
 更快进入问题定位与事实验证。
 
 ## 快速开始
 
-开始前，请确保已安装 Node.js 24 或更高版本，以及 Codex 或 Claude Code。
-Repo Memory 操作还需要 Python 3。
+开始前，请确保已安装 Node.js 24 或更高版本，以及至少一个受支持的 Harness：
+Codex、Claude Code 或 DeepSeek Harness。Repo Memory 操作还需要 Python 3；管理 DSH Profile
+插件还要求 `pnpm` 已加入 `PATH`。
 
 ### 安装与接入
 
@@ -54,23 +55,28 @@ Repo Memory 操作还需要 Python 3。
 npm install -g @memorax/memorax-code --foreground-scripts
 ```
 
-请保留 `--foreground-scripts`，以便查看完整的安装过程。安装器会自动检测本机可用的 Codex
-和 Claude Code，并为检测到的客户端启用集成。按照终端提示输入 Base User ID、偏好语言和
-API Key；Codex 用户还需按提示完成 Hook 的激活和信任确认。
+请保留 `--foreground-scripts`，以便查看完整的安装过程。安装器会自动检测本机可用的 Codex、
+Claude Code 和已存在的有效 DSH Profile，并为检测到的 Harness 启用集成；安装器不会创建
+DSH Profile。按照终端提示输入 Base User ID、偏好语言和 API Key；Codex 用户还需按提示完成
+Hook 的激活和信任确认。
 
 如果跳过配置或安装过程无法交互，npm 包仍会安装，但 MemoraX 搜索、召回和写回功能无法使用。
 
+DSH 的 Search、Add、自动召回和写回可用于每个已接入的 Profile。通过 DSH 构建或维护 Repo
+Memory 还需要一个已存在且包含 `@deepseek-ai/dsh-headless` 的 Profile；请先通过 DSH 初始化该
+Profile，再运行 `memorax-code start`。MemoraX Code 不会代为创建 Profile。
+
 ### 体验跨会话记忆
 
-克隆示例仓库，并在项目目录中打开 Codex 或 Claude Code：
+克隆示例仓库，并在项目目录中打开 Codex、Claude Code 或 DSH：
 
 ```bash
 git clone https://github.com/SWE-agent/test-repo.git
 cd test-repo
 ```
 
-在 Codex 中使用 `$memorax-code`，在 Claude Code 中使用 `/memorax-code` 调用该 Skill。
-下面的指令使用产品名称，两端均可直接理解。
+在 Codex 中使用 `$memorax-code`，在 Claude Code 和 DSH 中使用 `/memorax-code` 调用该 Skill。
+下面的指令使用产品名称，所有受支持的 Harness 均可直接理解。
 
 在同一个会话中依次发送以下指令：
 
@@ -88,8 +94,9 @@ cd test-repo
 > [!TIP]
 > 上述指令仅用于快速验证。正常使用时，无需主动调用 MemoraX Code Skill 添加记忆；
 > MemoraX Code 会根据当前仓库和任务在后台写入相关记忆，并引导 Agent 在需要时搜索。
-> 你可以通过 [Memory Viewer](http://127.0.0.1:8787/memory-viewer)
-> 查看不含正文的本地活动与状态。
+> 使用 Codex 和 Claude Code 时，可以通过
+> [Memory Viewer](http://127.0.0.1:8787/memory-viewer)
+> 查看不含正文的本地活动与状态；当前版本暂不展示 DSH 活动。
 
 ## 四类 Memory，各有清晰边界
 
@@ -108,9 +115,9 @@ cd test-repo
 | **用户偏好延续** | 在 User Profile 中记录用户偏好，并按设定周期将其带入后续任务。 |
 | **Procedure 自动复用** | 记录可复用的任务流程，并在后续任务中自动提醒 Agent 按流程执行。 |
 | **Repo Memory 后台整理** | 在后台整理仓库结构、代码入口和历史证据，并按策略自动更新，避免反复搜索和总结。 |
-| **主动记忆控制** | 使用内置的 MemoraX Code Skill（Codex 中为 `$memorax-code`，Claude Code 中为 `/memorax-code`）或 CLI，主动查找和添加记忆。 |
-| **Hook 集成** | 借助 Codex 和 Claude Code 的 Hook 触发记忆检索、提醒和写入。 |
-| **本地可视化** | 通过本地 Memory Viewer 查看活动统计、召回与写入状态。 |
+| **主动记忆控制** | 使用内置的 MemoraX Code Skill（Codex 中为 `$memorax-code`，Claude Code 和 DSH 中为 `/memorax-code`）或 CLI，主动查找和添加记忆。 |
+| **Harness 原生集成** | 使用 Codex 和 Claude Code 的 Hook，以及 DSH 的原生 Cordis 事件触发召回和写回，不代理模型流量。 |
+| **本地可视化** | 通过本地 Memory Viewer 查看 Codex 和 Claude Code 的活动统计、召回与写入状态；当前版本暂不展示 DSH 活动。 |
 
 ## 你的记忆，由你控制
 
@@ -136,8 +143,8 @@ MemoraX 云端不会接收模型服务商凭据或本地 Backend Token。
 memorax-code update
 ```
 
-该命令会沿用当前发布通道并保留配置。如果新版本修改了插件资产或 skill，请重启或刷新
-Codex 和 Claude Code。
+该命令会沿用当前发布通道并保留配置。如果新版本修改了插件资产或 Skill，请重启或刷新所有已接入的
+Harness。`memorax-code update` 也会接入首次安装后新建的 DSH Profile。
 
 ## 卸载
 
@@ -148,7 +155,7 @@ memorax-code uninstall
 ```
 
 该命令会移除受管客户端集成和全局 npm 包，同时保留 `MEMORAX_CODE_HOME`
-（默认为 `~/.memorax-code`）、Claude 插件数据、模型服务配置，以及已保存到 MemoraX
+（默认为 `~/.memorax-code`）、Claude 和 DSH 的用户数据、模型服务配置，以及已保存到 MemoraX
 的云端记忆。请在确认不再需要后，分别清理保留的本地或云端数据。
 
 ## 文档

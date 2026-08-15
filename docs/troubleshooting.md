@@ -7,12 +7,16 @@ memorax-code status
 memorax-cli status
 memorax-code-codex doctor
 memorax-code-claude doctor
+dsh plugin --profile <profile> why @memorax-code/dsh-adapter
+dsh --profile <profile> --dump-config
 memorax-code logs
 ```
 
-`status` checks the Backend and client integrations. `memory status` checks
-credentials, scope, and memory switches without printing secrets. Each client
-`doctor` checks its plugin, skill, workspace, and Backend connection.
+`status` checks the Backend and Codex/Claude Code integrations. `memorax-cli
+status` checks credentials, scope, and memory switches without printing
+secrets. Each client `doctor` checks its plugin, skill, workspace, and Backend
+connection. DSH profile state is currently inspected with DSH's native
+commands rather than merged into the central status report.
 
 ## Installed, but memory is unavailable
 
@@ -107,6 +111,32 @@ An already-open client may keep its loaded plugin shell while a later prompt
 uses the updated Hook runtime. Restart or refresh the client to load a changed
 plugin manifest, icon, or bundled skill.
 
+## DSH plugin or profile is inactive
+
+```sh
+memorax-code start
+dsh plugin --profile <profile> why @memorax-code/dsh-adapter
+dsh --profile <profile> --dump-config
+```
+
+`memorax-code start` discovers existing valid DSH profiles and reconciles the
+managed Cordis bundle. It does not create profiles. If the profile did not
+exist during installation, initialize it through DSH first, rerun
+`memorax-code start`, and then restart that profile. The native `why` command
+should resolve `@memorax-code/dsh-adapter`, and the dumped configuration should
+contain its bundle row. Profile plugin reconciliation requires `pnpm` on
+`PATH`.
+
+Search, Add, automatic retrieval, and writeback work in every integrated DSH
+profile. If only Repo Memory build or maintenance fails, ensure at least one
+managed profile includes `@deepseek-ai/dsh-headless`, then rerun
+`memorax-code start`.
+
+The central `memorax-code status` report does not yet include per-profile DSH
+state. Inspect `--dump-config` locally because a profile can contain private
+provider configuration; share only the smallest redacted excerpt needed for a
+diagnosis.
+
 ## Hooks cannot reach localhost on macOS
 
 If shell requests work but Hook diagnostics fail, a global proxy or client
@@ -147,12 +177,13 @@ MemoraX Code reads filesystem Git metadata without executing Git. Linked
 worktrees share the remote repository identity; non-Git workspaces use the
 normalized folder name. Resolution never falls back to the bare base user ID.
 
-A live Codex or Claude Code session remains pinned to the repository or local
-workspace resolved at the start of the session. Starting the client from a
-parent workspace and then entering a nested Git repository does not rebind the
-session. The only in-session scope upgrade is from a direct `.git` directory
-whose internal metadata was malformed or incomplete to a verified Git
-repository at the same canonical workspace root and for the same Base User ID.
+A live Codex, Claude Code, or non-delegated DSH agent session remains pinned to
+the repository or local workspace resolved at the start of the session. Starting
+the harness from a parent workspace and then entering a nested Git repository
+does not rebind the session. The only in-session scope upgrade is from a direct
+`.git` directory whose internal metadata was malformed or incomplete to a
+verified Git repository at the same canonical workspace root and for the same
+Base User ID.
 
 During that degraded state, MemoraX Code reports
 `workspaceScopeFallbackReason: git_metadata_invalid` for manual CLI operations
@@ -179,11 +210,10 @@ when repository isolation matters.
 
 ## Model-provider requests fail while MemoraX Code is healthy
 
-MemoraX Code does not proxy Codex or Claude Code model requests. If
-`memorax-code status` and the relevant client doctor are healthy, inspect the
-provider URL, credentials, model selection, and network settings owned by that
-client. Do not copy model-provider credentials into
-`$MEMORAX_CODE_HOME`.
+MemoraX Code does not proxy Codex, Claude Code, or DSH model requests. If the
+Backend and the relevant native integration are healthy, inspect the provider
+URL, credentials, model selection, and network settings owned by that harness.
+Do not copy model-provider credentials into `$MEMORAX_CODE_HOME`.
 
 ## Safe issue reports
 
@@ -194,10 +224,16 @@ memorax-code status --json
 memorax-cli status --json
 memorax-code-codex doctor --json
 memorax-code-claude doctor --json
+dsh --version
+dsh plugin --profile <profile> why @memorax-code/dsh-adapter
 ```
 
 Include the MemoraX Code version, operating system, affected client,
 reproduction steps, failing command, and the smallest relevant log excerpt.
+For DSH, state the affected profile explicitly. The central JSON status does
+not yet contain DSH profile diagnostics; inspect `dsh --profile <profile>
+--dump-config` locally and share only a minimal redacted excerpt when it is
+necessary.
 
 Never attach API keys, Backend tokens, environment files, complete client
 configuration, private transcripts, raw trace files, or unreviewed local
