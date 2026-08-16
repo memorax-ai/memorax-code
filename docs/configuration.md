@@ -239,15 +239,15 @@ additionally require one managed Profile that includes
 
 ## Local traces
 
-`[trace.codex]` and `[trace.claude]` support the same fields:
+`[trace.codex]`, `[trace.claude]`, and `[trace.dsh]` support the same fields:
 
-| Field | Codex environment | Claude environment | Fallback |
-| --- | --- | --- | --- |
-| `enabled` | `MEMORAX_CODE_CODEX_TRACE_ENABLED` | `MEMORAX_CODE_CLAUDE_TRACE_ENABLED` | `true` |
-| `capture_content` | `MEMORAX_CODE_CODEX_TRACE_CAPTURE_CONTENT` | `MEMORAX_CODE_CLAUDE_TRACE_CAPTURE_CONTENT` | `true` |
-| `retention_days` | `MEMORAX_CODE_CODEX_TRACE_RETENTION_DAYS` | `MEMORAX_CODE_CLAUDE_TRACE_RETENTION_DAYS` | `7` |
-| `max_event_chars` | `MEMORAX_CODE_CODEX_TRACE_MAX_EVENT_CHARS` | `MEMORAX_CODE_CLAUDE_TRACE_MAX_EVENT_CHARS` | `20000` |
-| `max_file_bytes` | `MEMORAX_CODE_CODEX_TRACE_MAX_FILE_BYTES` | `MEMORAX_CODE_CLAUDE_TRACE_MAX_FILE_BYTES` | `52428800` |
+| Field | Codex environment | Claude environment | DSH environment | Fallback |
+| --- | --- | --- | --- | --- |
+| `enabled` | `MEMORAX_CODE_CODEX_TRACE_ENABLED` | `MEMORAX_CODE_CLAUDE_TRACE_ENABLED` | `MEMORAX_CODE_DSH_TRACE_ENABLED` | `true` |
+| `capture_content` | `MEMORAX_CODE_CODEX_TRACE_CAPTURE_CONTENT` | `MEMORAX_CODE_CLAUDE_TRACE_CAPTURE_CONTENT` | `MEMORAX_CODE_DSH_TRACE_CAPTURE_CONTENT` | `true` |
+| `retention_days` | `MEMORAX_CODE_CODEX_TRACE_RETENTION_DAYS` | `MEMORAX_CODE_CLAUDE_TRACE_RETENTION_DAYS` | `MEMORAX_CODE_DSH_TRACE_RETENTION_DAYS` | `7` |
+| `max_event_chars` | `MEMORAX_CODE_CODEX_TRACE_MAX_EVENT_CHARS` | `MEMORAX_CODE_CLAUDE_TRACE_MAX_EVENT_CHARS` | `MEMORAX_CODE_DSH_TRACE_MAX_EVENT_CHARS` | `20000` |
+| `max_file_bytes` | `MEMORAX_CODE_CODEX_TRACE_MAX_FILE_BYTES` | `MEMORAX_CODE_CLAUDE_TRACE_MAX_FILE_BYTES` | `MEMORAX_CODE_DSH_TRACE_MAX_FILE_BYTES` | `52428800` |
 
 Content capture can include prompts, responses, recalled memory, writeback
 content, reminder text, and local paths. Set `capture_content=false` for
@@ -255,9 +255,10 @@ metadata-only local traces, or `enabled=false` to disable a client's trace.
 Trace files stay under `$MEMORAX_CODE_HOME`; MemoraX Code has no trace upload,
 export, or public collector.
 
-DSH has no MemoraX Code trace or Memory Viewer projection in this release. Its
-native Session Event Log remains local to DSH except for the bounded direct
-user and visible assistant text selected for an enabled memory writeback.
+DSH trace contains only normalized lifecycle and memory-operation events. Its
+native Session Event Log and raw events remain local to DSH; MemoraX Code does
+not copy that log into trace. DSH activity is not yet included in Memory
+Viewer.
 
 ## Backend runtime settings
 

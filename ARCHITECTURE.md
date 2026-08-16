@@ -292,17 +292,19 @@ sequenceDiagram
   occur later through the automatic writeback runtime.
 - Buffering and chunking belong to the memory capability; native session-history
   parsing remains client-specific.
-- DSH uses the shared retrieval, buffering, chunking, redaction, and provider
-  paths, but does not currently emit MemoraX operations into local trace,
-  Viewer, or writeback-reconciliation projections.
+- DSH uses the shared retrieval, buffering, chunking, redaction, provider, and
+  client-qualified trace paths. Its normalized Search and Add operations enter
+  DSH trace, while its Viewer and writeback-reconciliation projections remain
+  intentionally disabled until those capabilities are added explicitly.
 - When a degraded direct-`.git` scope upgrades to verified Git scope, the
   buffer runtime cancels and discards pending fallback turns for the same
   client and session before buffering under the Git scope. It does not migrate
   or flush those turns across namespaces.
-- For traced clients, pending writeback status can be reconstructed from
-  persisted local trace after Backend restart. A still-pending provider status
-  updates in-memory reconciliation policy rather than appending a new trace
-  event. DSH pending tasks are not currently reconstructed by this projection.
+- For clients with writeback reconciliation enabled, pending status can be
+  reconstructed from persisted local trace after Backend restart. A
+  still-pending provider status updates in-memory reconciliation policy rather
+  than appending a new trace event. DSH trace retains the accepted task event,
+  but DSH pending tasks are not yet reconstructed by this projection.
 
 ### 3.5 Repo Memory coordination
 
@@ -376,11 +378,11 @@ entrypoints and compatibility facades. It is not another implementation area.
 | `src/lifecycle/backend` | Managed process, PID/token/connection records, status probing, cleanup, and shutdown requests | Helper contracts do not depend back on the full service implementation |
 | `src/clients/codex` | Codex rollout, prompt, turn-index, and workspace interpretation; Hook memory runtime; plugin integration glue; and lifecycle participant | No Claude format fallback; request runtime remains HTTP-composition independent |
 | `src/clients/claude` | Claude transcript/turn interpretation, Hook memory runtime, and lifecycle participant | No Codex format fallback; request runtime remains HTTP-composition independent |
-| `src/clients/dsh` | DSH Session Event Log Turn interpretation, Cordis-adapter memory runtime, and lifecycle participant over the DSH adapter's Profile manager | Non-delegated sessions only; no Hook emulation, other-client fallback, trace, or Viewer authority |
+| `src/clients/dsh` | DSH Session Event Log Turn interpretation, Cordis-adapter memory runtime, and lifecycle participant over the DSH adapter's Profile manager | Non-delegated sessions only; no Hook emulation, other-client fallback, or Viewer authority |
 | `src/memory` | Memory commands, retrieval, writeback, turn coordination, repository session pinning, manual CLI, buffering/chunking, task projection, and reconciliation | Client-neutral modules do not parse native session-history formats |
 | `src/repository` | Read-only repository identity and Repo Memory readiness | Scope derivation does not execute Git or use synchronous filesystem reads |
 | `src/provider/memorax` | MemoraX config interpretation, query/add/status payloads, HTTP transport, and normalized results | Independent from server routing and plugin lifecycle |
-| `src/trace` | Codex- and Claude-qualified trace config/context/store, current-turn state, retention, and JSONL persistence | Trace core has no outbound-network authority; DSH is not currently a trace source |
+| `src/trace` | Client-qualified trace config/context/store, current-turn state, retention, and JSONL persistence for Codex, Claude Code, and DSH | Trace core has no outbound-network authority and does not read native history itself |
 | `src/viewer/model.ts` | Shared Viewer contract | Independent from Viewer Store, routes, and projections |
 | `src/viewer/store.ts` | Local Viewer event/history aggregation and projection orchestration | Derived state is not memory, transcript, session, scope, or lifecycle authority |
 | `src/viewer/history` | Claude native-history reading and shared session-title derivation | Pure history transformations use the model; explicit Store-facing adapters remain narrow |
@@ -421,7 +423,7 @@ graph remains acyclic:
 | `app` and `lifecycle` | The server reads active-client state; managed-service helpers consume narrow app state/security functions |
 | `clients` and `memory` | Memory service composes client runtimes; client runtimes consume client-neutral memory contracts |
 | `clients` and `lifecycle` | Codex, Claude Code, and DSH implement lifecycle participants while retaining client-native deployment behavior |
-| `clients` and `trace` | Codex and Claude Code runtimes record trace; trace Store/model code consumes their activity, token, and identity types |
+| `clients` and `trace` | Codex, Claude Code, and DSH runtimes record client-qualified trace; trace Store/model code consumes their supported activity, token, and identity types |
 | `memory` and `provider` | Memory invokes the provider; provider emits memory-owned observability contracts |
 | `memory` and `repository` | Memory resolves scope; readiness uses the shared project identity contract |
 | `memory` and `trace` | Memory carries trace context; trace context uses the memory project identity |
@@ -485,7 +487,7 @@ and
 | Workspace and repository identity | Backend read-only resolution held by the live repository-session runtime; its only permitted scope transition is the same-root degraded-direct-`.git` to verified-Git upgrade | Project labels, Viewer catalog entries, and adapter `cwd` |
 | Backend connection and managed-process ownership | Versioned private connection/token/PID records plus lifecycle lock/version validation | In-memory state in any one process |
 | MemoraX memory result and asynchronous task state | Normalized response from `provider/memorax` | Observability, trace, Viewer, and task projections |
-| Persisted current-turn operational state and trace history | Codex- and Claude-qualified local trace records | Viewer summaries and diagnostics; not native content or general Turn-identity authority; DSH has no current trace projection |
+| Persisted current-turn operational state and trace history | Client-qualified local trace records | Viewer summaries and diagnostics; not native content or general Turn-identity authority |
 | Repo Memory bundle | Repository-local `.repo_memory` files produced by the supervised job | Backend readiness and client-injected guidance |
 
 The Viewer is never memory, transcript, session, repository-scope, or
@@ -499,8 +501,8 @@ repository-session bindings, in-flight provider operations, Viewer projection
 caches, and background reconciliation promises.
 
 Durable local state includes configuration, private runtime records, active
-client selection, Codex/Claude trace JSONL, DSH managed-plugin state, and Repo
-Memory. State shared across processes requires a bounded lock, atomic
+client selection, client-qualified trace JSONL, DSH managed-plugin state, and
+Repo Memory. State shared across processes requires a bounded lock, atomic
 replacement, or version validation appropriate to its record. An in-memory
 mutex is not cross-process authority.
 
@@ -521,7 +523,7 @@ closing them ad hoc.
 flowchart LR
   Events["memory operational events"]
   Fanout["app/memory-observability"]
-  Trace["Codex and Claude local trace"]
+  Trace["client-qualified local trace"]
   ViewerSink["Viewer live projection"]
   TaskProjection["writeback task projection"]
   NativeHistory["client-owned local native history"]
@@ -531,8 +533,8 @@ flowchart LR
 
   Events --> Fanout
   Fanout --> Trace
-  Fanout --> ViewerSink
-  Fanout --> TaskProjection
+  Fanout -->|"Viewer-supported clients"| ViewerSink
+  Fanout -->|"reconciliation-enabled clients"| TaskProjection
   Trace --> ViewerStore
   NativeHistory --> ViewerStore
   ViewerSink --> ViewerStore
@@ -554,6 +556,12 @@ capability must be explicitly reviewed by the local-only gate; trace-core
 modules must remain network-free, and a module must not combine trace storage
 with outbound authority without a reviewed contract.
 
+For DSH, Cordis `turn/start` establishes only live trace identity. After
+`turn/end`, the adapter flushes persistence and supplies the exact native Turn
+interval; only a Backend-validated interval may produce normalized
+`turn_materialized` content and writeback trace events. The raw Session Event
+Log and its path are never copied into trace.
+
 `/memory-viewer` reads supported local trace/history/projection state. The
 local Store and history readers may process content-bearing trace or native
 history only to produce the safe public projection. The HTTP response never
@@ -561,7 +569,8 @@ returns conversation or memory text, session or turn identifiers, transcript
 paths, or raw trace details. It never polls MemoraX. Pure read-model
 projections depend on `viewer/model.ts` rather than the aggregate Store, and
 `viewer/http` is constrained to the public route module. DSH is intentionally
-absent until a DSH-qualified trace and safe projection contract are defined.
+absent from the Viewer until its safe projection contract is implemented; DSH
+trace events fail closed at the current Viewer boundary.
 
 ## 7. Packaging and Distribution
 

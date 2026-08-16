@@ -129,15 +129,16 @@ the product creates or tightens the home to mode `0700` and newly seeded
 configuration to mode `0600`; Windows relies on the current user's filesystem
 ACLs.
 
-Codex and Claude Code local trace capture is enabled by default and may include
-prompts, responses, recalled memory, writeback content, reminder text, and
-local paths. Trace files stay under `MEMORAX_CODE_HOME`. The shipped package
-has no trace uploader, collector, receiver, or export command. This does not
-change the separate MemoraX queries and writeback described above.
+Codex, Claude Code, and DSH local trace capture is enabled by default and may
+include prompts, responses, recalled memory, writeback content, reminder text,
+and local paths. Trace files stay under `MEMORAX_CODE_HOME`. The shipped
+package has no trace uploader, collector, receiver, or export command. This
+does not change the separate MemoraX queries and writeback described above.
 
-DSH is not currently a trace or Memory Viewer source. Its Session Event Log
-remains client-owned native history and is read only for the exact writeback
-interval; MemoraX Code does not copy the raw log into its retained trace.
+DSH remains absent from Memory Viewer. Its Session Event Log remains
+client-owned native history and is read only for the exact Turn interval;
+MemoraX Code records normalized DSH trace events but does not copy the raw log
+or its path into retained trace.
 
 The local `/memory-viewer` surface is a content-free activity summary. It must
 not expose conversation or memory text, session/turn identifiers, paths, or
