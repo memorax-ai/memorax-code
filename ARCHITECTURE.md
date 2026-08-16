@@ -94,7 +94,7 @@ relationships; the arrow labels distinguish them. It is not an import graph.
 | `packages/ts/memorax-code-adapter-common` | Shared source for Backend connection authority, private runtime records, cross-process locking and configuration, Hook generations, Hook launch helpers, and Repo/Personal Memory helpers | Backend composition, native session-history interpretation, MemoraX request execution, or client plugin policy | `packages/ts/memorax-code-adapter-common/src/backend-connection.mjs`, `src/runtime-record.mjs`, `src/hooks`, and `src/repo-memory` |
 | `packages/ts/memorax-code-codex-adapter` | Codex plugin artifact, Hook shells and runtimes, session/workspace observation, diagnostics, and the canonical shared skill | Codex rollout semantics or Backend-side writeback authority | `.codex-plugin`, `hooks`, `runtime-hooks`, `src`, and `skills/memorax-code` |
 | `packages/ts/memorax-code-claude-adapter` | Claude Code plugin artifact, Hook shells and runtimes, configuration, installer, marketplace source, and diagnostics | Claude transcript semantics or Backend memory orchestration | `.claude-plugin`, `hooks`, `runtime-hooks`, `scripts`, and `src/plugin-install.mjs` |
-| `packages/ts/memorax-code-dsh-adapter` | DSH-native Cordis plugin, turn listeners, Session Event Log interval reading, Backend client, and managed Profile lifecycle | DSH model execution, persistence implementation, or Backend memory orchestration | `src`, `cordis.patch.yml`, and `package.json` |
+| `packages/ts/memorax-code-dsh-adapter` | DSH-native Cordis plugin, personal-context composition, Repo Memory scheduling, turn listeners, Session Event Log interval reading, Backend client, and managed Profile lifecycle | DSH model execution, persistence implementation, or Backend memory orchestration | `src`, `cordis.patch.yml`, and `package.json` |
 | `packages/npm/memorax-code` | Installed executable wrappers, update, preinstall/postinstall, npm manifest, release-package source, and compatibility imports for staged adapters | Backend or adapter lifecycle semantics, status composition, uninstall orchestration, or artifact staging | `bin`, `lib/run-entrypoint.mjs`, `lib/dsh-plugin-install.mjs`, and `package.json` |
 | `scripts` | Backend build orchestration, staging/materialization, package layout, documentation, and local-only data gates | Product runtime authority | Package-build/check scripts and executable contract scripts |
 | `.github` | Issue and pull-request contribution templates | Product runtime behavior | `.github/ISSUE_TEMPLATE` and `.github/pull_request_template.md` |
@@ -307,15 +307,16 @@ sequenceDiagram
 ### 3.5 Repo Memory coordination
 
 Repo Memory is repository-local guidance under `.repo_memory`, not a MemoraX
-provider response. For Codex and Claude Code, a turn-start result exposes a
+provider response. For all three clients, a turn-start result exposes a
 worktree to the client adapter only for a verified Git scope; the adapter may
 schedule a missing bundle build using adapter-common supervision, locking, and
 job-policy helpers, and must use that Backend-resolved worktree rather than an
-arbitrary local `cwd`. DSH does not schedule automatic builds from turn-start.
-Its bundled skill explicitly invokes the same supervised job using the
-repository argument parsed by the canonical skill workflow and an enabled,
-managed headless-capable DSH profile. The Viewer separately projects Repo
-Memory readiness for Codex and Claude Code only.
+arbitrary local `cwd`. DSH schedules through its native pre-step integration;
+its bundled skill also invokes the same supervised job for explicit
+maintenance using the repository argument parsed by the canonical workflow.
+Both DSH paths require an enabled, managed headless-capable Profile for the
+background worker. The Viewer separately projects Repo Memory readiness for
+Codex and Claude Code only.
 
 ## 4. Backend Modular Monolith
 

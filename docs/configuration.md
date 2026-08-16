@@ -210,7 +210,12 @@ entered and do not pass through this detector.
 override is `MEMORAX_CODE_MEMORY_SKILL_REMINDER_INTERVAL_TURNS`. A positive
 value controls the Hook reminder cadence for Codex and Claude Code, beginning
 with the first eligible prompt. DSH exposes the same package-local skill
-natively but does not use this Hook reminder cadence.
+natively rather than through the Hook reminder. The same interval controls
+DSH's trusted repo-scoped Procedure Memory cadence, beginning with the first
+eligible Turn. DSH also applies trusted repo-scoped User Profile preferences
+when it first observes an eligible session and restores them after successful
+context compaction. These local contexts remain separate from automatic
+writeback content.
 
 | Field | Environment override | Fallback |
 | --- | --- | --- |
@@ -222,14 +227,15 @@ Supported policies are `every-commit`, `commit-count`, `daily`,
 `pull-request`, `pull-request-or-daily`, and `adaptive`. Invalid policy values
 fall back to `adaptive`.
 
-For Codex and Claude Code, the first eligible prompt starts a background build
-only when the Backend has authorized a Git worktree and that worktree has no
-`.repo_memory/PROFILE.md`. If the Backend or workspace authority is
-unavailable, the Hook skips the initial build instead of falling back to its
-local `cwd`. DSH runs Repo Memory maintenance only through an explicit use of
-the bundled skill. Its Search, Add, automatic retrieval, and writeback work in
-every integrated profile, while Repo Memory maintenance additionally requires
-one managed profile that includes `@deepseek-ai/dsh-headless`.
+For Codex, Claude Code, and DSH, the first eligible prompt starts a background
+build only when the Backend has authorized a Git worktree and that worktree
+has no `.repo_memory/PROFILE.md`. If the Backend or workspace authority is
+unavailable, the client adapter skips the initial build instead of falling
+back to its local `cwd`. DSH schedules through its native pre-step integration
+instead of a Hook. Its Search, Add, automatic retrieval, and writeback work in
+every integrated Profile, while automatic and explicit Repo Memory maintenance
+additionally require one managed Profile that includes
+`@deepseek-ai/dsh-headless`.
 
 ## Local traces
 
