@@ -281,7 +281,7 @@ async function resolveMemoryCliRepositoryMemory(options: MemoryCliOptions): Prom
   });
   if (!commandMemory.ok || !commandMemory.memory.scope) return commandMemory;
   if (turnMemory?.ok && (!turnMemory.memory.scope || !repositoryMemoryScopesMatch(commandMemory.memory.scope, turnMemory.memory.scope))) {
-    const clientLabel = traceBinding?.client === "claude" ? "Claude" : "Codex";
+    const clientLabel = memoryCliTraceClientLabel(traceBinding?.client);
     return {
       ok: false,
       reason: "workspace_scope_mismatch",
@@ -297,9 +297,9 @@ function memoryCliRepositoryFailure(
   fields: Pick<MemoryCliResult, "query"> = {},
 ): MemoryCliResult {
   const userAction = failure.reason === "workspace_scope_mismatch"
-    ? "Start a new Codex or Claude Code session from the target repository or local workspace."
+    ? "Start a new Codex, Claude Code, or DSH session from the target repository or local workspace."
     : failure.reason === "workspace_scope_unavailable"
-      ? "Start a new Codex or Claude Code session from the target repository or local workspace. If the problem continues, make sure its .git metadata is readable and valid."
+      ? "Start a new Codex, Claude Code, or DSH session from the target repository or local workspace. If the problem continues, make sure its .git metadata is readable and valid."
       : undefined;
   return {
     ok: false,
@@ -395,6 +395,19 @@ function memoryCliTraceBinding(
   return expectedSessionId
     ? { client: "codex", expectedSessionId }
     : undefined;
+}
+
+function memoryCliTraceClientLabel(client: TraceClient | undefined): string {
+  switch (client) {
+    case "codex":
+      return "Codex";
+    case "claude":
+      return "Claude";
+    case "dsh":
+      return "DSH";
+    default:
+      return "coding agent";
+  }
 }
 
 function memoryCliTraceEventType(event: MemoryObservabilityEvent): string {

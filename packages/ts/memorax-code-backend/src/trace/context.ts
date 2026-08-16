@@ -7,9 +7,11 @@ import {
 export type TraceContextOrigin =
   | "codex-hook-body"
   | "claude-hook-body"
+  | "dsh-cordis-turn-start"
+  | "dsh-session-event-log"
   | "current-turn-file"
   | "manual";
-export type TraceClient = "codex" | "claude";
+export type TraceClient = "codex" | "claude" | "dsh";
 
 export type TraceRelatedTurn = Readonly<{
   turnId?: string;
@@ -82,6 +84,20 @@ export function traceContextFromClaudeHookBody(
   });
 }
 
+export function traceContextFromDshTurnStart(
+  body: unknown,
+  capturedAt = new Date().toISOString(),
+): TraceContext | undefined {
+  return traceContextFromDshBody(body, "dsh-cordis-turn-start", capturedAt);
+}
+
+export function traceContextFromDshSessionEventLog(
+  body: unknown,
+  capturedAt = new Date().toISOString(),
+): TraceContext | undefined {
+  return traceContextFromDshBody(body, "dsh-session-event-log", capturedAt);
+}
+
 export function traceContextFromCurrentTurnRecord(
   value: unknown,
 ): TraceContext | undefined {
@@ -142,7 +158,32 @@ function pruneRecord<T extends Record<string, unknown>>(value: T): T {
 }
 
 export function isTraceClient(value: unknown): value is TraceClient {
-  return value === "codex" || value === "claude";
+  return value === "codex" || value === "claude" || value === "dsh";
+}
+
+function traceContextFromDshBody(
+  body: unknown,
+  contextOrigin: Extract<TraceContextOrigin, "dsh-cordis-turn-start" | "dsh-session-event-log">,
+  capturedAt: string,
+): TraceContext | undefined {
+  if (!isRecord(body)) return undefined;
+  const sessionId = stringField(body, "session_id") ?? stringField(body, "sessionId");
+  const turn = body.turn;
+  if (!sessionId || typeof turn !== "number" || !Number.isSafeInteger(turn) || turn <= 0) {
+    return undefined;
+  }
+  const cwd = stringField(body, "cwd");
+  if (!cwd) return undefined;
+  return pruneTraceContext({
+    schemaVersion: "1",
+    client: "dsh",
+    sessionId,
+    turnId: String(turn),
+    cwd,
+    memoryProject: resolveMemoryProject(cwd),
+    contextOrigin,
+    capturedAt,
+  });
 }
 
 function stringField(record: Record<string, unknown>, key: string): string | undefined {

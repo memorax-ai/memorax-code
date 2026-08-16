@@ -61,9 +61,15 @@ test("Backend starts isolated writeback reconcilers for Codex and Claude", { con
     writePendingWritebackTrace(memoraxCodeHome, "codex", "codex-reconcile-task"),
     writePendingWritebackTrace(memoraxCodeHome, "claude", "claude-reconcile-task"),
   ]);
+  const dshTrace = await writePendingWritebackTrace(
+    memoraxCodeHome,
+    "dsh",
+    "dsh-trace-only-task",
+  );
   const restoreEnv = withEnv({
     MEMORAX_CODE_CODEX_TRACE_ENABLED: "true",
     MEMORAX_CODE_CLAUDE_TRACE_ENABLED: "true",
+    MEMORAX_CODE_DSH_TRACE_ENABLED: "true",
     MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
     MEMORAX_CODE_MEMORAX_API_KEY: "secret",
     MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
@@ -112,6 +118,11 @@ test("Backend starts isolated writeback reconcilers for Codex and Claude", { con
       assert.equal(events[1].response.outcome, "saved");
       assert.equal(events[1].response.savedMemoryCount, 1);
     }
+    const dshEvents = (await readFile(dshTrace.eventsPath, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    assert.equal(dshEvents.length, 1, "DSH Trace must not activate reconciliation in this batch");
   } finally {
     await server.shutdown();
     globalThis.fetch = originalFetch;

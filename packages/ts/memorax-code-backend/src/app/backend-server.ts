@@ -39,13 +39,14 @@ type BackendShutdownResources = {
 };
 
 const DEFAULT_BACKEND_SHUTDOWN_TIMEOUT_MS = 4_000;
+const WRITEBACK_RECONCILIATION_CLIENTS = ["codex", "claude"] as const;
 
 export function createBackendServer(
   state = createBackendState(),
   options: BackendServerOptions = {},
 ): BackendServer {
   const memoryEnv = { ...process.env, MEMORAX_CODE_HOME: state.sessionHome };
-  const memoryWritebackTaskProjections = TRACE_CLIENTS.map((client) => createMemoryWritebackTaskProjection({
+  const memoryWritebackTaskProjections = WRITEBACK_RECONCILIATION_CLIENTS.map((client) => createMemoryWritebackTaskProjection({
     memoraxCodeHome: state.sessionHome,
     client,
   }));

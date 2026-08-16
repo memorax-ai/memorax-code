@@ -64,6 +64,8 @@ import type {
   MemoryViewerTurnReference,
 } from "./model.js";
 
+type MemoryViewerClient = Extract<TraceClient, "codex" | "claude">;
+
 export {
   completeMemoryViewerWriteback,
   memoryViewerEventTurnIds,
@@ -117,8 +119,9 @@ const combinedTraceHistories = new Map<string, CombinedTraceHistory>();
 const EMPTY_MEMORY_VIEWER_HISTORY: readonly MemoryViewerEvent[] = Object.freeze([]);
 const claudeTranscriptSources = new Map<string, string | false>();
 
-export function recordMemoryViewerEvent(input: MemoryObservabilityEvent): MemoryViewerEvent {
+export function recordMemoryViewerEvent(input: MemoryObservabilityEvent): MemoryViewerEvent | undefined {
   const client = memoryViewerClient(input);
+  if (!client) return undefined;
   const response = record(input.response);
   const request = record(input.request);
   const items = arrayValue(response?.items);
@@ -436,6 +439,13 @@ async function readTraceHistory(
   client?: TraceClient,
   claudeProjectsRoot: string | false = false,
 ): Promise<MemoryViewerHistorySnapshot> {
+  if (client !== undefined && !isMemoryViewerClient(client)) {
+    return {
+      values: [],
+      complete: true,
+      claudeLocal: EMPTY_MEMORY_VIEWER_HISTORY,
+    };
+  }
   const historyCacheRoot = resolve(memoraxCodeHome);
   const projectsByCwd = new Map<string, MemoryProjectIdentity | undefined>();
   const resolveProjectOnce = (cwd: string | undefined): MemoryProjectIdentity | undefined => {
@@ -446,7 +456,7 @@ async function readTraceHistory(
     projectsByCwd.set(key, identity);
     return identity;
   };
-  const readClient = (traceClient: TraceClient) => readIncrementalJsonlProjectionSnapshot({
+  const readClient = (traceClient: MemoryViewerClient) => readIncrementalJsonlProjectionSnapshot({
     root: clientTracePaths(traceClient, memoraxCodeHome).sessionsRoot,
     filename: "events.jsonl",
     identity: resolveProject,
@@ -881,7 +891,7 @@ function traceEventToViewerEvent(
   value: unknown,
   sessionDir: string,
   resolveProject: typeof resolveMemoryProject,
-  client: TraceClient,
+  client: MemoryViewerClient,
 ): MemoryViewerEvent | undefined {
   const raw = record(value);
   const type = memoryViewerEventType(raw?.type);
@@ -994,7 +1004,7 @@ function memoryViewerTurnOutcome(value: unknown): "completed" | "interrupted" | 
   return value === "completed" || value === "interrupted" ? value : undefined;
 }
 
-function memoryViewerOriginalEventId(value: unknown, client: TraceClient): string {
+function memoryViewerOriginalEventId(value: unknown, client: MemoryViewerClient): string {
   const eventId = stringValue(value);
   if (!eventId) return "";
   return persistedMemoryViewerEventId(client, eventId);
@@ -1202,25 +1212,38 @@ function sessionId(value: unknown): string {
   return safeMemoryViewerSessionId(value);
 }
 
-function memoryViewerClient(input: MemoryObservabilityEvent): TraceClient {
-  if (input.traceContext?.client === "claude") return "claude";
-  if (input.traceContext?.client === "codex") return "codex";
+function memoryViewerClient(input: MemoryObservabilityEvent): MemoryViewerClient | undefined {
+  if (input.traceContext?.client !== undefined) {
+    return isMemoryViewerClient(input.traceContext.client)
+      ? input.traceContext.client
+      : undefined;
+  }
+  if (input.source === "dsh_native_retrieval" || input.source === "dsh_native_writeback") {
+    return undefined;
+  }
   if (input.source === "claude_hook_retrieval" || input.source === "claude_hook_writeback") return "claude";
   return "codex";
 }
 
-function memoryViewerEventId(client: TraceClient, eventId: string | undefined): string {
+function isMemoryViewerClient(client: unknown): client is MemoryViewerClient {
+  return client === "codex" || client === "claude";
+}
+
+function memoryViewerEventId(client: MemoryViewerClient, eventId: string | undefined): string {
   if (eventId) return persistedMemoryViewerEventId(client, eventId);
   return client === "codex"
     ? `memory-viewer:${randomUUID()}`
     : `claude-memory-viewer:${randomUUID()}`;
 }
 
-function persistedMemoryViewerEventId(client: TraceClient, eventId: string): string {
+function persistedMemoryViewerEventId(client: MemoryViewerClient, eventId: string): string {
   return client === "codex" ? `trace:${eventId}` : `claude-trace:${eventId}`;
 }
 
 function memoryViewerProjectionKey(memoraxCodeHome: string, client: TraceClient | undefined): string {
+  if (client !== undefined && !isMemoryViewerClient(client)) {
+    return `${resolve(memoraxCodeHome)}\u0000client=unsupported`;
+  }
   if (client === "claude") return clientTracePaths("claude", memoraxCodeHome).sessionsRoot;
   const codexSessionsRoot = tracePaths(memoraxCodeHome).sessionsRoot;
   return client === "codex" ? `${codexSessionsRoot}\u0000client=codex` : codexSessionsRoot;
