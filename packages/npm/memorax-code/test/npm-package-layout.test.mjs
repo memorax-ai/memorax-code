@@ -25,6 +25,7 @@ test("single npm package layout accepts declared paths and rejects unknown trees
   assert.equal(isAllowedNpmPackPath("lib/trial-provision-client.mjs"), true);
   assert.equal(isAllowedNpmPackPath("lib/trial-provision-contract.mjs"), true);
   assert.equal(isAllowedNpmPackPath("lib/trial-provision-flow.mjs"), true);
+  assert.equal(isAllowedNpmPackPath("lib/trial-setup.mjs"), true);
   assert.equal(isAllowedNpmPackPath("lib/memorax-code-adapter-common/src/memorax-code-config-file.mjs"), true);
   assert.equal(
     isAllowedNpmPackPath("lib/memorax-code-adapter-common/src/credentials/trial-credential-store.mjs"),
