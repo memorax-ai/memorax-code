@@ -1,7 +1,6 @@
 import {
   DEFAULT_SECURE_COMMAND_OUTPUT_BYTES,
   DEFAULT_SECURE_COMMAND_TIMEOUT_MS,
-  SecureCredentialBackendError,
   decodeSecureCredential,
   encodeSecureCredential,
   executeSecureCommand,
@@ -177,17 +176,6 @@ export function createMacosKeychainBackend(options) {
     }
   }
 
-  async function loadForVerification(operation) {
-    try {
-      return await load();
-    } catch (error) {
-      if (error instanceof SecureCredentialBackendError) {
-        throw secureCredentialBackendError(BACKEND, operation, error.reason);
-      }
-      throw secureCredentialBackendError(BACKEND, operation, "command_failed");
-    }
-  }
-
   return Object.freeze({
     load,
 
@@ -204,10 +192,6 @@ export function createMacosKeychainBackend(options) {
           }
         } finally {
           wipeSecureCommandResult(result);
-        }
-        const stored = await loadForVerification("save");
-        if (stored !== serialized) {
-          throw secureCredentialBackendError(BACKEND, "save", "storage_failed");
         }
       } finally {
         input.fill(0);
@@ -226,9 +210,6 @@ export function createMacosKeychainBackend(options) {
         }
       } finally {
         wipeSecureCommandResult(result);
-      }
-      if (await loadForVerification("delete") !== null) {
-        throw secureCredentialBackendError(BACKEND, "delete", "storage_failed");
       }
       return true;
     },

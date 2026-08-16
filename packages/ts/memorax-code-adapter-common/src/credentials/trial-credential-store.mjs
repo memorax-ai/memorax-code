@@ -262,22 +262,16 @@ async function saveVerifiedRecord(backend, record, serialized = undefined) {
 }
 
 function sanitizedBackendError(error, operation) {
-  let reason = "command_failed";
-  try {
-    if (error instanceof SecureCredentialBackendError) reason = error.reason;
-  } catch {
-    reason = "command_failed";
-  }
+  const reason = error instanceof SecureCredentialBackendError
+    ? error.reason
+    : "command_failed";
   return secureCredentialBackendError(STORE_BACKEND, operation, reason);
 }
 
 function sanitizedMutationError(error) {
-  let reason = "invalid_transition";
-  try {
-    if (error instanceof TrialCredentialRecordError) reason = error.reason;
-  } catch {
-    reason = "invalid_transition";
-  }
+  const reason = error instanceof TrialCredentialRecordError
+    ? error.reason
+    : "invalid_transition";
   return new TrialCredentialRecordError(reason);
 }
 
@@ -285,21 +279,11 @@ function isThenable(value) {
   if ((typeof value !== "object" || value === null) && typeof value !== "function") {
     return false;
   }
-  try {
-    return typeof value.then === "function";
-  } catch {
-    throw new TrialCredentialRecordError("invalid_transition");
-  }
+  return typeof value.then === "function";
 }
 
 function suppressRejectedPromise(value) {
-  try {
-    if (value instanceof Promise) {
-      void Promise.prototype.catch.call(value, () => undefined);
-    }
-  } catch {
-    // Best effort: the fixed synchronous-mutation error remains authoritative.
-  }
+  if (value instanceof Promise) void value.catch(() => undefined);
 }
 
 function isProvisioningSeed(record) {

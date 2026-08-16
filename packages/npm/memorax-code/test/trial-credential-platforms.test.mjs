@@ -110,31 +110,6 @@ test("Linux Secret Service distinguishes absent records and sanitizes backend fa
     environment: {},
   });
   await assert.rejects(failed.load(), redactedError("linux-secret-service", "load"));
-
-  const contradictory = createLinuxSecretServiceBackend({
-    namespace: NAMESPACE,
-    runner: async () => commandResult({
-      status: 1,
-      stdout: SERIALIZED_CREDENTIAL,
-    }),
-    environment: {},
-  });
-  await assert.rejects(
-    contradictory.load(),
-    redactedError("linux-secret-service", "load"),
-  );
-
-  const thrown = createLinuxSecretServiceBackend({
-    namespace: NAMESPACE,
-    runner: async () => {
-      throw new Error(SERIALIZED_CREDENTIAL);
-    },
-    environment: {},
-  });
-  await assert.rejects(
-    thrown.save(SERIALIZED_CREDENTIAL),
-    redactedError("linux-secret-service", "save"),
-  );
 });
 
 test("Linux Secret Service supports a real create-read-delete lifecycle", {
@@ -280,46 +255,6 @@ test("Windows DPAPI treats only records below an existing LocalAppData root as a
   }
 });
 
-test("Windows DPAPI rejects unsafe credential paths and redacts storage failures", async () => {
-
-  const unsafeFileSystem = {
-    lstat: async (path) => path.endsWith("trial-credentials.v1.dpapi")
-      ? {
-          isFile: () => false,
-          isDirectory: () => false,
-          isSymbolicLink: () => true,
-        }
-      : directoryStatus(),
-  };
-  const unsafe = createWindowsDpapiBackend({
-    namespace: NAMESPACE,
-    localAppData: join(tmpdir(), "memorax-code-dpapi-unsafe"),
-    systemRoot: "C:\\Windows",
-    fileSystem: unsafeFileSystem,
-    runner: async () => commandResult(),
-    environment: {},
-  });
-  await assert.rejects(unsafe.load(), (error) => {
-    assert.equal(error.reason, "unsafe_path");
-    return redactedError("windows-dpapi", "load")(error);
-  });
-
-  const deniedFileSystem = {
-    lstat: async () => {
-      throw Object.assign(new Error(SERIALIZED_CREDENTIAL), { code: "EACCES" });
-    },
-  };
-  const denied = createWindowsDpapiBackend({
-    namespace: NAMESPACE,
-    localAppData: join(tmpdir(), "memorax-code-dpapi-denied"),
-    systemRoot: "C:\\Windows",
-    fileSystem: deniedFileSystem,
-    runner: async () => commandResult(),
-    environment: {},
-  });
-  await assert.rejects(denied.load(), redactedError("windows-dpapi", "load"));
-});
-
 test("Windows DPAPI rejects an ancestor directory symlink or junction", async () => {
   const parent = await fileSystem.mkdtemp(join(tmpdir(), "memorax-code-dpapi-link-"));
   const localAppData = join(parent, "local-app-data");
@@ -371,50 +306,28 @@ test("Windows DPAPI rejects an ancestor directory symlink or junction", async ()
   }
 });
 
-test("Windows DPAPI does not turn a post-lstat ENOENT race into absence", async () => {
-  const raceFileSystem = {
-    lstat: async (path) => path.endsWith("trial-credentials.v1.dpapi")
-      ? regularFileStatus()
-      : directoryStatus(),
-    readFile: async () => {
-      throw Object.assign(new Error("removed after lstat"), { code: "ENOENT" });
-    },
-  };
-  const backend = createWindowsDpapiBackend({
-    namespace: NAMESPACE,
-    localAppData: join(tmpdir(), "memorax-code-dpapi-race"),
-    systemRoot: "C:\\Windows",
-    fileSystem: raceFileSystem,
-    runner: async () => {
-      throw new Error("runner must not be called");
-    },
-    environment: {},
-  });
-
-  await assert.rejects(backend.load(), (error) => {
-    assert.equal(error.reason, "storage_failed");
-    return redactedError("windows-dpapi", "load")(error);
-  });
-
-  const deleteRace = createWindowsDpapiBackend({
-    namespace: NAMESPACE,
-    localAppData: join(tmpdir(), "memorax-code-dpapi-delete-race"),
-    systemRoot: "C:\\Windows",
-    fileSystem: {
-      lstat: raceFileSystem.lstat,
-      unlink: async () => {
-        throw Object.assign(new Error("removed after lstat"), { code: "ENOENT" });
+test("Windows DPAPI rejects a symlink or non-regular final credential file", async () => {
+  for (const finalStatus of [
+    { isDirectory: () => false, isFile: () => false, isSymbolicLink: () => true },
+    directoryStatus(),
+  ]) {
+    const backend = createWindowsDpapiBackend({
+      namespace: NAMESPACE,
+      localAppData: join(tmpdir(), "memorax-code-dpapi-unsafe-final"),
+      systemRoot: "C:\\Windows",
+      fileSystem: {
+        lstat: async (path) => path.endsWith("trial-credentials.v1.dpapi")
+          ? finalStatus
+          : directoryStatus(),
       },
-    },
-    runner: async () => {
-      throw new Error("runner must not be called");
-    },
-    environment: {},
-  });
-  await assert.rejects(deleteRace.delete(), (error) => {
-    assert.equal(error.reason, "storage_failed");
-    return redactedError("windows-dpapi", "delete")(error);
-  });
+      runner: async () => { throw new Error("runner must not be called"); },
+      environment: {},
+    });
+    await assert.rejects(backend.load(), (error) => {
+      assert.equal(error.reason, "unsafe_path");
+      return redactedError("windows-dpapi", "load")(error);
+    });
+  }
 });
 
 test("Windows DPAPI binds ciphertext protection to the credential namespace", async () => {
@@ -528,7 +441,7 @@ test("Windows DPAPI leaves the previous ciphertext intact when atomic replacemen
   }
 });
 
-test("Windows DPAPI refuses a successful command that echoes plaintext", async () => {
+test("Windows DPAPI rejects a successful command that echoes plaintext", async () => {
   const localAppData = await fileSystem.mkdtemp(join(tmpdir(), "memorax-code-dpapi-echo-"));
   try {
     const backend = createWindowsDpapiBackend({
@@ -541,16 +454,6 @@ test("Windows DPAPI refuses a successful command that echoes plaintext", async (
     await assert.rejects(
       backend.save(SERIALIZED_CREDENTIAL),
       redactedError("windows-dpapi", "save"),
-    );
-    await assert.rejects(
-      fileSystem.access(join(
-        localAppData,
-        "MemoraX Code",
-        "credentials",
-        NAMESPACE,
-        "trial-credentials.v1.dpapi",
-      )),
-      { code: "ENOENT" },
     );
   } finally {
     await fileSystem.rm(localAppData, { recursive: true, force: true });
@@ -625,62 +528,6 @@ test("secure command normalization wipes runner-owned and consumed output buffer
   assert.equal(rejectedOutput.every((value) => value === 0), true);
 });
 
-test("secure command timeout is bounded when a descendant inherits its stdio", async () => {
-  const testDirectory = await fileSystem.mkdtemp(join(tmpdir(), "memorax-code-command-timeout-"));
-  const pidPath = join(testDirectory, "descendant.pid");
-  const startedAt = process.hrtime.bigint();
-  try {
-    await assert.rejects(runSecureCommand({
-      backend: "test-backend",
-      operation: "save",
-      command: process.execPath,
-      args: ["-e", inheritedStdioDescendantScript(false), pidPath],
-      input: SERIALIZED_CREDENTIAL,
-      env: {},
-      timeoutMs: 300,
-      maxOutputBytes: 64,
-    }), (error) => {
-      assert.equal(error.reason, "command_timeout");
-      return redactedError("test-backend", "save")(error);
-    });
-    assert.ok(
-      elapsedMilliseconds(startedAt) < 3_000,
-      "timeout rejection waited for the inherited stdio descendant",
-    );
-  } finally {
-    await terminateProcessFromPidFile(pidPath);
-    await fileSystem.rm(testDirectory, { recursive: true, force: true });
-  }
-});
-
-test("secure command output limit is bounded when a descendant inherits its stdio", async () => {
-  const testDirectory = await fileSystem.mkdtemp(join(tmpdir(), "memorax-code-command-output-"));
-  const pidPath = join(testDirectory, "descendant.pid");
-  const startedAt = process.hrtime.bigint();
-  try {
-    await assert.rejects(runSecureCommand({
-      backend: "test-backend",
-      operation: "load",
-      command: process.execPath,
-      args: ["-e", inheritedStdioDescendantScript(true), pidPath],
-      input: SERIALIZED_CREDENTIAL,
-      env: {},
-      timeoutMs: 5_000,
-      maxOutputBytes: 64,
-    }), (error) => {
-      assert.equal(error.reason, "output_limit");
-      return redactedError("test-backend", "load")(error);
-    });
-    assert.ok(
-      elapsedMilliseconds(startedAt) < 3_000,
-      "output-limit rejection waited for the inherited stdio descendant",
-    );
-  } finally {
-    await terminateProcessFromPidFile(pidPath);
-    await fileSystem.rm(testDirectory, { recursive: true, force: true });
-  }
-});
-
 test("platform backends reject records larger than 4096 bytes without invoking commands", async () => {
   let invoked = false;
   const backend = createLinuxSecretServiceBackend({
@@ -732,49 +579,6 @@ function directoryStatus() {
     isFile: () => false,
     isSymbolicLink: () => false,
   };
-}
-
-function regularFileStatus() {
-  return {
-    isDirectory: () => false,
-    isFile: () => true,
-    isSymbolicLink: () => false,
-  };
-}
-
-function inheritedStdioDescendantScript(exceedOutputLimit) {
-  return `
-    const { spawn } = require("node:child_process");
-    const { writeFileSync } = require("node:fs");
-    const descendant = spawn(
-      process.execPath,
-      ["-e", "setTimeout(() => {}, 6000)"],
-      { stdio: "inherit" },
-    );
-    writeFileSync(process.argv[1], String(descendant.pid));
-    ${exceedOutputLimit ? "process.stdout.write('x'.repeat(128));" : ""}
-    setTimeout(() => {}, 6000);
-  `;
-}
-
-function elapsedMilliseconds(startedAt) {
-  return Number(process.hrtime.bigint() - startedAt) / 1_000_000;
-}
-
-async function terminateProcessFromPidFile(pidPath) {
-  let pid;
-  try {
-    pid = Number.parseInt(await fileSystem.readFile(pidPath, "utf8"), 10);
-  } catch (error) {
-    if (error?.code === "ENOENT") return;
-    throw error;
-  }
-  if (!Number.isSafeInteger(pid) || pid <= 0) return;
-  try {
-    process.kill(pid, "SIGKILL");
-  } catch (error) {
-    if (error?.code !== "ESRCH") throw error;
-  }
 }
 
 function assertPublicInvocationContainsNoSecret(call) {

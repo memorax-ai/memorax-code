@@ -11,6 +11,13 @@ const API_KEY = `sk_${"A".repeat(43)}`;
 const POW_CHALLENGE = "v1.cGF5bG9hZA.c2lnbmF0dXJl";
 const ACCOUNT_ID = "900719925474099300000000001";
 const PROJECT_ID = "900719925474099300000000002";
+const PROVISION_REQUEST = Object.freeze({
+  pluginMark: PLUGIN_MARK,
+  apiKey: API_KEY,
+  powChallenge: POW_CHALLENGE,
+  powNonce: "88405",
+  recoverApiKey: false,
+});
 
 function challengeResponse(overrides = {}) {
   return {
@@ -91,13 +98,7 @@ test("provision sends the exact persisted identity and maps account identity sep
     },
   });
 
-  const result = await client.provision({
-    pluginMark: PLUGIN_MARK,
-    apiKey: API_KEY,
-    powChallenge: POW_CHALLENGE,
-    powNonce: "88405",
-    recoverApiKey: false,
-  });
+  const result = await client.provision(PROVISION_REQUEST);
 
   assert.deepEqual(result, {
     accountId: ACCOUNT_ID,
@@ -198,13 +199,7 @@ test("redirect responses fail without replaying the provision body", async () =>
   });
 
   await assert.rejects(
-    client.provision({
-      pluginMark: PLUGIN_MARK,
-      apiKey: API_KEY,
-      powChallenge: POW_CHALLENGE,
-      powNonce: "88405",
-      recoverApiKey: false,
-    }),
+    client.provision(PROVISION_REQUEST),
     (error) => error instanceof TrialProvisionClientError
       && error.reason === "unexpected_http_status"
       && !String(error).includes(API_KEY),
@@ -229,22 +224,10 @@ test("response reader accepts the byte limit and rejects one additional decompre
       fetchImpl: async () => jsonResponse(body),
     });
     if (!expectedReason) {
-      assert.equal((await client.provision({
-        pluginMark: PLUGIN_MARK,
-        apiKey: API_KEY,
-        powChallenge: POW_CHALLENGE,
-        powNonce: "88405",
-        recoverApiKey: false,
-      })).accountId, ACCOUNT_ID);
+      assert.equal((await client.provision(PROVISION_REQUEST)).accountId, ACCOUNT_ID);
     } else {
       await assert.rejects(
-        client.provision({
-          pluginMark: PLUGIN_MARK,
-          apiKey: API_KEY,
-          powChallenge: POW_CHALLENGE,
-          powNonce: "88405",
-          recoverApiKey: false,
-        }),
+        client.provision(PROVISION_REQUEST),
         (error) => error instanceof TrialProvisionClientError
           && error.reason === expectedReason
           && !String(error).includes(API_KEY),
@@ -253,16 +236,14 @@ test("response reader accepts the byte limit and rejects one additional decompre
   }
 });
 
-test("response reader enforces the streamed byte limit despite a smaller Content-Length", async () => {
+test("response byte limit ignores a forged smaller Content-Length", async () => {
   let cancelCalls = 0;
   const body = new ReadableStream({
     start(controller) {
       controller.enqueue(new Uint8Array(16_384));
       controller.enqueue(new Uint8Array(1));
     },
-    cancel() {
-      cancelCalls += 1;
-    },
+    cancel() { cancelCalls += 1; },
   });
   const client = createTrialProvisionClient({
     serviceBaseUrl: SERVICE_BASE_URL,
@@ -308,7 +289,7 @@ test("attempt timeout covers a stalled response body", async () => {
   );
 });
 
-test("attempt timeout remains authoritative when fetch returns after ignoring abort", async () => {
+test("attempt timeout remains authoritative when fetch returns after abort", async () => {
   let cancelCalls = 0;
   const client = createTrialProvisionClient({
     serviceBaseUrl: SERVICE_BASE_URL,
@@ -317,12 +298,8 @@ test("attempt timeout remains authoritative when fetch returns after ignoring ab
     fetchImpl: async () => {
       await new Promise((resolve) => setTimeout(resolve, 30));
       return new Response(new ReadableStream({
-        start(controller) {
-          controller.enqueue(new TextEncoder().encode("{"));
-        },
-        cancel() {
-          cancelCalls += 1;
-        },
+        start(controller) { controller.enqueue(new TextEncoder().encode("{")); },
+        cancel() { cancelCalls += 1; },
       }), {
         status: 200,
         headers: { "content-type": "application/json" },
@@ -356,13 +333,7 @@ test("stable service errors expose only bounded structured metadata", async () =
   });
 
   await assert.rejects(
-    client.provision({
-      pluginMark: PLUGIN_MARK,
-      apiKey: API_KEY,
-      powChallenge: POW_CHALLENGE,
-      powNonce: "88405",
-      recoverApiKey: false,
-    }),
+    client.provision(PROVISION_REQUEST),
     (error) => {
       assert.equal(error instanceof TrialProvisionClientError, true);
       assert.equal(error.reason, "trial_capacity_exceeded");

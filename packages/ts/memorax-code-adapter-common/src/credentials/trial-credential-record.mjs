@@ -38,13 +38,6 @@ const ERROR_REASONS = new Set([
   "invalid_transition",
 ]);
 
-class TrialCredentialValidationFailure extends Error {
-  constructor(reason) {
-    super(reason);
-    this.reason = reason;
-  }
-}
-
 export class TrialCredentialRecordError extends Error {
   constructor(reason) {
     const safeReason = ERROR_REASONS.has(reason) ? reason : "invalid_record";
@@ -59,19 +52,17 @@ export function parseTrialCredentialRecord(text) {
   if (typeof text !== "string") {
     throw new TypeError("Trial credential record input must be a string");
   }
-  return redactedRecordOperation(() => {
-    let value;
-    try {
-      value = JSON.parse(text);
-    } catch {
-      fail("malformed_json");
-    }
-    return validateRecord(value);
-  });
+  let value;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    fail("malformed_json");
+  }
+  return validateRecord(value);
 }
 
 export function validateTrialCredentialRecord(value) {
-  return redactedRecordOperation(() => validateRecord(value));
+  return validateRecord(value);
 }
 
 export function serializeTrialCredentialRecord(value) {
@@ -80,7 +71,7 @@ export function serializeTrialCredentialRecord(value) {
 }
 
 export function createInitialTrialCredentialRecord(options) {
-  return redactedRecordOperation(() => validateRecord({
+  return validateRecord({
     version: TRIAL_CREDENTIAL_RECORD_VERSION,
     state: "provisioning",
     plugin_mark: options?.pluginMark,
@@ -91,11 +82,11 @@ export function createInitialTrialCredentialRecord(options) {
     warn_remaining_step: null,
     register_url: null,
     last_warned_level: null,
-  }));
+  });
 }
 
 export function createTrialCredentialRecoveryRecord(options) {
-  return redactedRecordOperation(() => validateRecord({
+  return validateRecord({
     version: TRIAL_CREDENTIAL_RECORD_VERSION,
     state: "recovering",
     plugin_mark: options?.pluginMark,
@@ -106,62 +97,58 @@ export function createTrialCredentialRecoveryRecord(options) {
     warn_remaining_step: null,
     register_url: null,
     last_warned_level: null,
-  }));
+  });
 }
 
 export function beginTrialCredentialRecovery(value, options) {
-  return redactedRecordOperation(() => {
-    const record = validateRecord(value);
-    if (record.state !== "ready") fail("invalid_transition");
-    const apiKey = options?.apiKey;
-    if (apiKey === record.api_key) fail("invalid_transition");
-    return validateRecord({
-      ...record,
-      state: "recovering",
-      api_key: apiKey,
-    });
+  const record = validateRecord(value);
+  if (record.state !== "ready") fail("invalid_transition");
+  const apiKey = options?.apiKey;
+  if (apiKey === record.api_key) fail("invalid_transition");
+  return validateRecord({
+    ...record,
+    state: "recovering",
+    api_key: apiKey,
   });
 }
 
 export function completeTrialCredentialProvisioning(value, metadata) {
-  return redactedRecordOperation(() => {
-    const record = validateRecord(value);
-    if (record.state !== "provisioning" && record.state !== "recovering") {
-      fail("invalid_transition");
-    }
-    const metadataRecord = isRecord(metadata);
-    const accountId = metadata?.accountId;
-    const projectId = metadata?.projectId;
-    const warnRemainingThreshold = metadata?.warnRemainingThreshold;
-    const warnRemainingStep = metadata?.warnRemainingStep;
-    const registerUrl = metadata?.registerUrl;
-    const hasLastWarnedLevel = metadataRecord
-      && Object.hasOwn(metadata, "lastWarnedLevel");
-    const suppliedLastWarnedLevel = hasLastWarnedLevel
-      ? metadata.lastWarnedLevel
-      : undefined;
-    if (record.account_id !== null
-      && (accountId !== record.account_id
-        || projectId !== record.project_id)) {
-      fail("invalid_transition");
-    }
-    const warningPolicyChanged = record.warn_remaining_threshold !== null
-      && (warnRemainingThreshold !== record.warn_remaining_threshold
-        || warnRemainingStep !== record.warn_remaining_step);
-    return validateRecord({
-      ...record,
-      state: "ready",
-      account_id: accountId,
-      project_id: projectId,
-      warn_remaining_threshold: warnRemainingThreshold,
-      warn_remaining_step: warnRemainingStep,
-      register_url: registerUrl,
-      last_warned_level: warningPolicyChanged
-        ? null
-        : hasLastWarnedLevel
-          ? suppliedLastWarnedLevel
-          : record.last_warned_level,
-    });
+  const record = validateRecord(value);
+  if (record.state !== "provisioning" && record.state !== "recovering") {
+    fail("invalid_transition");
+  }
+  const metadataRecord = isRecord(metadata);
+  const accountId = metadata?.accountId;
+  const projectId = metadata?.projectId;
+  const warnRemainingThreshold = metadata?.warnRemainingThreshold;
+  const warnRemainingStep = metadata?.warnRemainingStep;
+  const registerUrl = metadata?.registerUrl;
+  const hasLastWarnedLevel = metadataRecord
+    && Object.hasOwn(metadata, "lastWarnedLevel");
+  const suppliedLastWarnedLevel = hasLastWarnedLevel
+    ? metadata.lastWarnedLevel
+    : undefined;
+  if (record.account_id !== null
+    && (accountId !== record.account_id
+      || projectId !== record.project_id)) {
+    fail("invalid_transition");
+  }
+  const warningPolicyChanged = record.warn_remaining_threshold !== null
+    && (warnRemainingThreshold !== record.warn_remaining_threshold
+      || warnRemainingStep !== record.warn_remaining_step);
+  return validateRecord({
+    ...record,
+    state: "ready",
+    account_id: accountId,
+    project_id: projectId,
+    warn_remaining_threshold: warnRemainingThreshold,
+    warn_remaining_step: warnRemainingStep,
+    register_url: registerUrl,
+    last_warned_level: warningPolicyChanged
+      ? null
+      : hasLastWarnedLevel
+        ? suppliedLastWarnedLevel
+        : record.last_warned_level,
   });
 }
 
@@ -290,17 +277,6 @@ function isRecord(value) {
   return prototype === Object.prototype || prototype === null;
 }
 
-function redactedRecordOperation(operation) {
-  try {
-    return operation();
-  } catch (error) {
-    const reason = error instanceof TrialCredentialValidationFailure
-      ? error.reason
-      : "invalid_record";
-    throw new TrialCredentialRecordError(reason);
-  }
-}
-
 function fail(reason) {
-  throw new TrialCredentialValidationFailure(reason);
+  throw new TrialCredentialRecordError(reason);
 }

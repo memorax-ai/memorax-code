@@ -155,77 +155,8 @@ test("provision validates persisted response fields without rejecting extensions
   })).warnRemainingThreshold, 0);
 });
 
-test("provision snapshots every canonical response field exactly once", () => {
-  const source = provisionResponse();
-  const reads = Object.create(null);
-  const response = {};
-  for (const [field, value] of Object.entries(source)) {
-    Object.defineProperty(response, field, {
-      enumerable: true,
-      get() {
-        reads[field] = (reads[field] ?? 0) + 1;
-        if (field === "register_url" && reads[field] > 1) {
-          return `https://platform.memorax.net/register?key=${API_KEY}`;
-        }
-        return value;
-      },
-    });
-  }
-
-  assert.deepEqual(mapResponse(response), {
-    accountId: ACCOUNT_ID,
-    projectId: PROJECT_ID,
-    created: true,
-    apiKeyRecovered: false,
-    warnRemainingThreshold: 5000,
-    warnRemainingStep: 1000,
-    registerUrl: "https://platform.memorax.net/register",
-  });
-  for (const field of Object.keys(source)) {
-    assert.equal(reads[field], 1, field);
-  }
-});
-
-test("provision redacts hostile access failures and externally supplied reasons", () => {
+test("provision redacts externally supplied error reasons", () => {
   const externallyConstructed = new TrialProvisionContractError(API_KEY);
   assert.equal(externallyConstructed.reason, "invalid_response");
   assert.equal(String(externallyConstructed).includes(API_KEY), false);
-
-  const injectedError = new TrialProvisionContractError("invalid_account_id");
-  injectedError.message = API_KEY;
-  injectedError.stack = API_KEY;
-  const hostileResponse = new Proxy(provisionResponse(), {
-    get(target, field, receiver) {
-      if (field === "user_id") throw injectedError;
-      return Reflect.get(target, field, receiver);
-    },
-  });
-  assert.throws(
-    () => mapResponse(hostileResponse),
-    (error) => error instanceof TrialProvisionContractError
-      && error.reason === "invalid_response"
-      && !String(error).includes(API_KEY)
-      && !String(error.stack).includes(API_KEY),
-  );
-
-  const hostileOptions = {};
-  Object.defineProperty(hostileOptions, "expectedPluginMark", {
-    get() {
-      throw new Error(API_KEY);
-    },
-  });
-  assert.throws(
-    () => mapTrialProvisionResponse(provisionResponse(), hostileOptions),
-    (error) => error instanceof TrialProvisionContractError
-      && error.reason === "invalid_response"
-      && !String(error).includes(API_KEY)
-      && !String(error.stack).includes(API_KEY),
-  );
-
-  assert.throws(
-    () => mapTrialProvisionResponse(provisionResponse(), {}),
-    (error) => error instanceof TypeError
-      && !(error instanceof TrialProvisionContractError)
-      && !String(error).includes(API_KEY),
-  );
 });

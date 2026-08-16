@@ -17,15 +17,6 @@ const ERROR_REASONS = new Set([
   "invalid_register_url",
 ]);
 
-class TrialProvisionValidationFailure extends Error {
-  constructor(reason) {
-    super(reason);
-    this.reason = reason;
-  }
-}
-
-class TrialProvisionOptionsError extends TypeError {}
-
 export class TrialProvisionContractError extends Error {
   constructor(reason) {
     const safeReason = ERROR_REASONS.has(reason) ? reason : "invalid_response";
@@ -37,7 +28,7 @@ export class TrialProvisionContractError extends Error {
 }
 
 export function mapTrialProvisionResponse(response, options) {
-  return redactedProvisionOperation(() => mapResponse(response, options));
+  return mapResponse(response, options);
 }
 
 export function safeTrialRegisterUrl(value) {
@@ -45,16 +36,15 @@ export function safeTrialRegisterUrl(value) {
 }
 
 function mapResponse(response, options) {
-  const mappingOptions = snapshotMappingOptions(options);
-  const expectedPluginMark = mappingOptions.expectedPluginMark;
+  const expectedPluginMark = options?.expectedPluginMark;
   if (typeof expectedPluginMark !== "string" || !PLUGIN_MARK_PATTERN.test(expectedPluginMark)) {
-    throw new TrialProvisionOptionsError(
+    throw new TypeError(
       "Trial provision mapping requires a valid expected plugin mark",
     );
   }
-  const expectedApiKey = mappingOptions.expectedApiKey;
+  const expectedApiKey = options?.expectedApiKey;
   if (typeof expectedApiKey !== "string" || !API_KEY_PATTERN.test(expectedApiKey)) {
-    throw new TrialProvisionOptionsError(
+    throw new TypeError(
       "Trial provision mapping requires a valid expected API key",
     );
   }
@@ -95,13 +85,6 @@ function mapResponse(response, options) {
   });
 }
 
-function snapshotMappingOptions(options) {
-  return {
-    expectedPluginMark: options?.expectedPluginMark,
-    expectedApiKey: options?.expectedApiKey,
-  };
-}
-
 function snapshotProvisionResponse(response) {
   if (!isRecord(response)) fail("invalid_response");
   return {
@@ -119,21 +102,7 @@ function snapshotProvisionResponse(response) {
 }
 
 function fail(reason) {
-  throw new TrialProvisionValidationFailure(reason);
-}
-
-function redactedProvisionOperation(operation) {
-  try {
-    return operation();
-  } catch (error) {
-    if (error instanceof TrialProvisionOptionsError) {
-      throw new TypeError(error.message);
-    }
-    if (error instanceof TrialProvisionValidationFailure) {
-      throw new TrialProvisionContractError(error.reason);
-    }
-    throw new TrialProvisionContractError("invalid_response");
-  }
+  throw new TrialProvisionContractError(reason);
 }
 
 function decimalPublicId(value) {

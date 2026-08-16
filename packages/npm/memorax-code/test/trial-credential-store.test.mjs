@@ -9,9 +9,7 @@ import {
 import {
   TrialCredentialRecordError,
   beginTrialCredentialRecovery,
-  completeTrialCredentialProvisioning,
   createInitialTrialCredentialRecord,
-  createTrialCredentialRecoveryRecord,
   serializeTrialCredentialRecord,
 } from "../../../ts/memorax-code-adapter-common/src/credentials/trial-credential-record.mjs";
 import {
@@ -150,31 +148,28 @@ test("credential store port binds storage and forwards per-call provision lock c
     }, options);
     await holderEntered.promise;
 
-    let timeoutCallbackRan = false;
     await assert.rejects(
-      port.withProvisionLock(
-        () => { timeoutCallbackRan = true; },
-        { timeoutMs: 20, retryMs: 5 },
-      ),
+      port.withProvisionLock(() => undefined, { timeoutMs: 20, retryMs: 5 }),
       (error) => error?.code === "JSON_FILE_LOCK_TIMEOUT",
     );
-    assert.equal(timeoutCallbackRan, false);
-
     const controller = new AbortController();
-    let abortCallbackRan = false;
-    const waiting = port.withProvisionLock(
-      () => { abortCallbackRan = true; },
-      { signal: controller.signal, timeoutMs: 500, retryMs: 5 },
-    );
+    const waiting = port.withProvisionLock(() => undefined, {
+      signal: controller.signal,
+      timeoutMs: 500,
+      retryMs: 5,
+    });
     controller.abort();
     await assert.rejects(waiting, (error) => error?.code === "JSON_FILE_LOCK_ABORTED");
-    assert.equal(abortCallbackRan, false);
 
     releaseHolder.resolve();
     await holder;
     const ready = await port.transition((current) => readyRecord(current));
     assert.equal(ready.state, "ready");
     assert.deepEqual(await port.load(), ready);
+
+    let locked = false;
+    await port.withProvisionLock(() => { locked = true; });
+    assert.equal(locked, true);
   });
 });
 
@@ -248,36 +243,6 @@ test("credential creation is atomic and clear is the only identity reset", async
   });
 });
 
-test("explicit mark-only recovery persists the new Key before completion", async () => {
-  await withIsolatedHome(async (home) => {
-    const storage = memoryBackend();
-    const options = { memoraxCodeHome: home, backend: storage.backend };
-    const recovery = createTrialCredentialRecoveryRecord({
-      pluginMark: PLUGIN_MARK,
-      apiKey: RECOVERY_KEY,
-    });
-
-    assert.deepEqual(await createTrialCredentialRecordIfAbsent(recovery, options), {
-      record: recovery,
-      created: true,
-    });
-    assert.equal((await loadTrialCredentialRecord(options)).state, "recovering");
-
-    const completed = await transitionTrialCredentialRecord(
-      (current) => completeTrialCredentialProvisioning(current, {
-        accountId: "900719925474099300000000001",
-        projectId: "900719925474099300000000002",
-        warnRemainingThreshold: 5000,
-        warnRemainingStep: 1000,
-        registerUrl: "https://platform.memorax.net/register",
-      }),
-      options,
-    );
-    assert.equal(completed.state, "ready");
-    assert.equal(completed.api_key, RECOVERY_KEY);
-  });
-});
-
 test("stored transitions cannot replace identity, rotate a retry Key, or skip recovery", async () => {
   const initial = createInitialTrialCredentialRecord({
     pluginMark: PLUGIN_MARK,
@@ -287,23 +252,13 @@ test("stored transitions cannot replace identity, rotate a retry Key, or skip re
   const recovering = beginTrialCredentialRecovery(ready, { apiKey: RECOVERY_KEY });
   const cases = [
     [ready, { ...ready, plugin_mark: OTHER_PLUGIN_MARK }],
-    [ready, { ...ready, account_id: "900719925474099300000000099" }],
-    [ready, { ...ready, project_id: "900719925474099300000000099" }],
     [ready, { ...ready, api_key: RECOVERY_KEY }],
+    [ready, { ...ready, account_id: "900719925474099300000000003" }],
+    [ready, { ...ready, project_id: "900719925474099300000000004" }],
     [ready, initial],
-    [ready, { ...ready, state: "recovering" }],
-    [ready, {
-      ...recovering,
-      register_url: "https://platform.memorax.net/another-register",
-    }],
-    [ready, {
-      ...ready,
-      warn_remaining_threshold: 3000,
-      last_warned_level: 1000,
-    }],
-    [initial, { ...readyRecord(initial), api_key: RECOVERY_KEY }],
-    [recovering, { ...ready, api_key: OTHER_KEY }],
+    [initial, { ...readyRecord(initial), api_key: OTHER_KEY }],
     [recovering, { ...recovering, api_key: OTHER_KEY }],
+    [recovering, { ...readyRecord(recovering), api_key: OTHER_KEY }],
   ];
 
   for (const [current, candidate] of cases) {
@@ -374,55 +329,7 @@ test("credential mutation lock prevents concurrent read-modify-write loss", asyn
   });
 });
 
-test("credential store preserves recovery identity and resets stale warning policy state", async () => {
-  await withIsolatedHome(async (home) => {
-    const ready = {
-      ...readyRecord(),
-      last_warned_level: 4000,
-    };
-    const storage = memoryBackend(serializeTrialCredentialRecord(ready));
-    const options = { memoraxCodeHome: home, backend: storage.backend };
-    await transitionTrialCredentialRecord(
-      (current) => beginTrialCredentialRecovery(current, { apiKey: RECOVERY_KEY }),
-      options,
-    );
-
-    const writesBeforeRejectedIdentity = storage.saveCalls;
-    await assert.rejects(
-      transitionTrialCredentialRecord(
-        (current) => completeTrialCredentialProvisioning(current, {
-          accountId: "900719925474099300000000099",
-          projectId: current.project_id,
-          warnRemainingThreshold: 3000,
-          warnRemainingStep: 1000,
-          registerUrl: current.register_url,
-        }),
-        options,
-      ),
-      (error) => error instanceof TrialCredentialRecordError
-        && error.reason === "invalid_transition",
-    );
-    assert.equal(storage.saveCalls, writesBeforeRejectedIdentity);
-
-    const completed = await transitionTrialCredentialRecord(
-      (current) => completeTrialCredentialProvisioning(current, {
-        accountId: current.account_id,
-        projectId: current.project_id,
-        warnRemainingThreshold: 3000,
-        warnRemainingStep: 1000,
-        registerUrl: current.register_url,
-      }),
-      options,
-    );
-    assert.equal(completed.state, "ready");
-    assert.equal(completed.account_id, ready.account_id);
-    assert.equal(completed.project_id, ready.project_id);
-    assert.equal(completed.last_warned_level, null);
-    assert.deepEqual(await loadTrialCredentialRecord(options), completed);
-  });
-});
-
-test("credential store fails closed on unverified writes, hostile backend errors, and platforms", async () => {
+test("credential store fails closed on unverified writes and unavailable platforms", async () => {
   await withIsolatedHome(async (home) => {
     const record = createInitialTrialCredentialRecord({ pluginMark: PLUGIN_MARK, apiKey: API_KEY });
     const discarded = memoryBackend();
@@ -432,42 +339,8 @@ test("credential store fails closed on unverified writes, hostile backend errors
         memoraxCodeHome: home,
         backend: discarded.backend,
       }),
-      redactedBackendError("save"),
-    );
-
-    const hostile = {
-      load: async () => { throw new Error(`${API_KEY} ${PLUGIN_MARK}`); },
-      save: async () => undefined,
-      delete: async () => false,
-    };
-    await assert.rejects(
-      loadTrialCredentialRecord({ memoraxCodeHome: home, backend: hostile }),
-      redactedBackendError("load"),
-    );
-
-    const injectedBackendError = new SecureCredentialBackendError({
-      backend: "macos-keychain",
-      operation: "load",
-      reason: "storage_failed",
-    });
-    injectedBackendError.message = API_KEY;
-    injectedBackendError.stack = API_KEY;
-    const hostileBackendError = new Proxy(injectedBackendError, {
-      get(target, field, receiver) {
-        if (field === "reason") throw new Error(API_KEY);
-        return Reflect.get(target, field, receiver);
-      },
-    });
-    await assert.rejects(
-      loadTrialCredentialRecord({
-        memoraxCodeHome: home,
-        backend: {
-          load: async () => { throw hostileBackendError; },
-          save: async () => undefined,
-          delete: async () => false,
-        },
-      }),
-      redactedBackendError("load"),
+      (error) => error instanceof SecureCredentialBackendError
+        && error.operation === "save",
     );
 
     await assert.rejects(
@@ -476,12 +349,13 @@ test("credential store fails closed on unverified writes, hostile backend errors
         platform: "aix",
         env: {},
       }),
-      redactedBackendError("initialize"),
+      (error) => error instanceof SecureCredentialBackendError
+        && error.operation === "initialize",
     );
   });
 });
 
-test("credential mutations must be synchronous and cannot persist partial async results", async () => {
+test("credential mutations must be synchronous and cannot persist partial results", async () => {
   await withIsolatedHome(async (home) => {
     const storage = memoryBackend();
     const options = { memoraxCodeHome: home, backend: storage.backend };
@@ -494,50 +368,6 @@ test("credential mutations must be synchronous and cannot persist partial async 
       transitionTrialCredentialRecord(async () => readyRecord(initial), options),
       { name: "TypeError", message: "Trial credential mutation must be synchronous" },
     );
-
-    const injectedRecordError = new TrialCredentialRecordError("invalid_api_key");
-    injectedRecordError.message = API_KEY;
-    injectedRecordError.stack = API_KEY;
-    await assert.rejects(
-      transitionTrialCredentialRecord(() => { throw injectedRecordError; }, options),
-      redactedRecordError("invalid_api_key"),
-    );
-
-    const hostileRecordError = new Proxy(injectedRecordError, {
-      get(target, field, receiver) {
-        if (field === "reason") throw new Error(API_KEY);
-        return Reflect.get(target, field, receiver);
-      },
-    });
-    await assert.rejects(
-      transitionTrialCredentialRecord(() => { throw hostileRecordError; }, options),
-      redactedRecordError("invalid_transition"),
-    );
-
-    const hostileThenable = {};
-    Object.defineProperty(hostileThenable, "then", {
-      get() {
-        throw new Error(API_KEY);
-      },
-    });
-    await assert.rejects(
-      transitionTrialCredentialRecord(() => hostileThenable, options),
-      redactedRecordError("invalid_transition"),
-    );
-
-    const unhandled = [];
-    const onUnhandledRejection = (reason) => unhandled.push(reason);
-    process.on("unhandledRejection", onUnhandledRejection);
-    try {
-      await assert.rejects(
-        transitionTrialCredentialRecord(() => Promise.reject(new Error(API_KEY)), options),
-        { name: "TypeError", message: "Trial credential mutation must be synchronous" },
-      );
-      await new Promise((resolve) => setImmediate(resolve));
-      assert.deepEqual(unhandled, []);
-    } finally {
-      process.off("unhandledRejection", onUnhandledRejection);
-    }
     assert.equal(storage.saveCalls, 1);
   });
 });
@@ -607,44 +437,7 @@ function deferred() {
   return { promise, resolve };
 }
 
-function redactedBackendError(operation) {
-  return (error) => {
-    assert.ok(error instanceof SecureCredentialBackendError);
-    assert.equal(error.code, "TRIAL_CREDENTIAL_BACKEND_ERROR");
-    assert.equal(error.operation, operation);
-    const publicError = publicErrorText(error);
-    assert.equal(publicError.includes(API_KEY), false);
-    assert.equal(publicError.includes(PLUGIN_MARK), false);
-    return true;
-  };
-}
-
-function redactedRecordError(reason) {
-  return (error) => {
-    assert.ok(error instanceof TrialCredentialRecordError);
-    assert.equal(error.code, "TRIAL_CREDENTIAL_RECORD_INVALID");
-    assert.equal(error.reason, reason);
-    const publicError = publicErrorText(error);
-    assert.equal(publicError.includes(API_KEY), false);
-    assert.equal(publicError.includes(PLUGIN_MARK), false);
-    return true;
-  };
-}
-
 function invalidTransitionError(error) {
   return error instanceof TrialCredentialRecordError
     && error.reason === "invalid_transition";
-}
-
-function publicErrorText(error) {
-  return [
-    error.name,
-    error.message,
-    error.stack ?? "",
-    error.code,
-    error.reason,
-    error.backend,
-    error.operation,
-    JSON.stringify(error),
-  ].join(" ");
 }

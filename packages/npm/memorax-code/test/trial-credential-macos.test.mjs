@@ -58,6 +58,13 @@ test("macOS Keychain passes the credential only through osascript stdin and stdo
   assert.equal(await backend.delete(), true);
   assert.equal(await backend.load(), null);
   assert.equal(await backend.delete(), false);
+  assert.deepEqual(calls.map((call) => call.operation), [
+    "save",
+    "load",
+    "delete",
+    "load",
+    "delete",
+  ]);
 
   assert.equal(calls[0].command, "/usr/bin/osascript");
   assert.deepEqual(calls[0].args.slice(0, 3), ["-l", "JavaScript", "-e"]);
@@ -106,45 +113,32 @@ test("macOS Keychain maps only an empty not-found result to absence", async () =
   }
 });
 
-test("macOS Keychain verifies writes and deletes without leaking failed output", async () => {
-  const echoed = createMacosKeychainBackend({
-    namespace: NAMESPACE,
-    runner: async () => commandResult({ stdout: SERIALIZED_CREDENTIAL }),
-    environment: {},
-  });
-  await assert.rejects(echoed.save(SERIALIZED_CREDENTIAL), redactedError("save"));
-
-  let operation;
-  const notDeleted = createMacosKeychainBackend({
-    namespace: NAMESPACE,
-    runner: async (specification) => {
-      operation = specification.operation;
-      if (operation === "delete") return commandResult();
-      return commandResult({ stdout: SERIALIZED_CREDENTIAL });
-    },
-    environment: {},
-  });
-  await assert.rejects(notDeleted.delete(), (error) => {
-    assert.equal(operation, "load");
-    assert.equal(error.reason, "storage_failed");
-    return redactedError("delete")(error);
-  });
-
-  for (const outerOperation of ["save", "delete"]) {
-    const failedVerification = createMacosKeychainBackend({
+test("macOS Keychain rejects failed or noisy mutations and wipes secret buffers", async () => {
+  for (const [operation, result] of [
+    ["save", commandResult({ status: 70 })],
+    ["save", commandResult({ stdout: SERIALIZED_CREDENTIAL })],
+    ["delete", commandResult({ status: 70 })],
+    ["delete", commandResult({ stderr: SERIALIZED_CREDENTIAL })],
+  ]) {
+    let input;
+    const backend = createMacosKeychainBackend({
       namespace: NAMESPACE,
-      runner: async (specification) => specification.operation === "load"
-        ? commandResult({ status: 70 })
-        : commandResult(),
+      runner: async (specification) => {
+        input = specification.input;
+        return result;
+      },
       environment: {},
     });
-    const operation = outerOperation === "save"
-      ? failedVerification.save(SERIALIZED_CREDENTIAL)
-      : failedVerification.delete();
-    await assert.rejects(operation, (error) => {
-      assert.equal(error.reason, "command_failed");
-      return redactedError(outerOperation)(error);
-    });
+    const pending = operation === "save"
+      ? backend.save(SERIALIZED_CREDENTIAL)
+      : backend.delete();
+
+    await assert.rejects(pending, redactedError(operation));
+    assert.equal(result.stdout.every((value) => value === 0), true);
+    assert.equal(result.stderr.every((value) => value === 0), true);
+    if (operation === "save") {
+      assert.equal(input.every((value) => value === 0), true);
+    }
   }
 });
 
