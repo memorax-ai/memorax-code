@@ -25,9 +25,15 @@ export type DshSessionTurnFailureReason =
   | "user_prompt_missing"
   | "assistant_message_missing";
 
+type DshSessionTurnValidationFailureReason = Exclude<
+  DshSessionTurnFailureReason,
+  "turn_not_completed"
+>;
+
 export type DshSessionTurnResult =
   | { ok: true; turn: DshSessionTurn }
-  | { ok: false; reason: DshSessionTurnFailureReason };
+  | { ok: false; reason: DshSessionTurnValidationFailureReason }
+  | { ok: false; reason: "turn_not_completed"; outcome: string };
 
 type DshSessionTurnInput = Readonly<{
   sessionId: string;
@@ -192,10 +198,12 @@ export function dshSessionEventTurn(input: DshSessionTurnInput): DshSessionTurnR
     }
   }
 
+  if (!outcome) return { ok: false, reason: "turn_boundary_mismatch" };
+  if (outcome !== "completed") {
+    return { ok: false, reason: "turn_not_completed", outcome };
+  }
   const userPrompt = userParts.join("\n\n").trim();
   if (!userPrompt) return { ok: false, reason: "user_prompt_missing" };
-  if (!outcome) return { ok: false, reason: "turn_boundary_mismatch" };
-  if (outcome !== "completed") return { ok: false, reason: "turn_not_completed" };
   const assistantReply = assistantParts.join("\n\n").trim();
   if (!assistantReply) return { ok: false, reason: "assistant_message_missing" };
   return {
@@ -214,7 +222,7 @@ export function dshSessionEventTurn(input: DshSessionTurnInput): DshSessionTurnR
 
 function validateSessionHeader(
   input: DshSessionTurnInput,
-): DshSessionTurnFailureReason | undefined {
+): DshSessionTurnValidationFailureReason | undefined {
   const header = input.sessionHeader;
   if (
     header.version !== DSH_SESSION_FORMAT_VERSION

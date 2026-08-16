@@ -7,7 +7,10 @@ import type {
   DshWritebackCommand,
   MemoryHookTurnStartResult,
 } from "../../memory/hook-command.js";
-import type { MemoryDiagnosticLogger } from "../../memory/observability.js";
+import type {
+  MemoryDiagnosticLogger,
+  MemoryObservabilityHook,
+} from "../../memory/observability.js";
 import {
   resolvedRepoMemoryWorktree,
   type ConfiguredRepositoryMemoryResult,
@@ -20,8 +23,21 @@ import {
 import type { RepositoryMemoryScopeFailureReason } from "../../repository/scope.js";
 import {
   dshSessionEventTurn,
+  type DshSessionTurn,
   type DshSessionTurnFailureReason,
 } from "./session-turn.js";
+import {
+  traceContextFromDshSessionEventLog,
+  traceContextFromDshTurnStart,
+  type TraceContext,
+} from "../../trace/context.js";
+import {
+  markCurrentTraceTurnOutcome,
+  recordTraceEvent,
+  traceTurnEventId,
+  writeCurrentTraceTurn,
+  type TraceTurnOutcome,
+} from "../../trace/store.js";
 
 export type DshMemoryHookWritebackSkipReason =
   | "turn_metadata_mismatch"
@@ -40,6 +56,7 @@ export type DshMemoryHookRuntimeOptions = {
   fetchImpl?: typeof fetch;
   now?: () => number;
   maxEntries?: number;
+  memoryObservability?: MemoryObservabilityHook;
   memoraxCodeHome?: string;
   repositoryMemorySession: RepositoryMemorySessionRuntime;
   turnCoordinator: MemoryTurnCoordinator;
@@ -64,6 +81,11 @@ export function createDshMemoryHookRuntime(
   return {
     async recordTurnStart(command) {
       turnCoordinator.pruneExpired();
+      const createdAt = now();
+      const traceContext = traceContextFromDshTurnStart(
+        command,
+        new Date(createdAt).toISOString(),
+      );
       const repositoryMemory = await resolveHookRepositoryMemory(command, options, repositoryMemorySession);
       turnCoordinator.recordTurnStart({
         client: DSH_MEMORY_TURN_CLIENT,
@@ -71,7 +93,8 @@ export function createDshMemoryHookRuntime(
         clientTurnId: String(command.turn),
         cwd: command.cwd,
         eventStartSeq: command.startSeq,
-        createdAt: now(),
+        createdAt,
+        traceContext,
         repositoryMemory,
       });
       options.diagnosticLogger?.("dsh_memory.turn_start", {
@@ -82,6 +105,28 @@ export function createDshMemoryHookRuntime(
         workspace: repositoryMemory.ok ? repositoryMemory.memory.scope?.repositorySlug : undefined,
         workspaceScopeReason: repositoryMemory.ok ? undefined : repositoryMemory.reason,
       });
+      await recordDshTraceBestEffort("dsh_memory.turn_start_event", recordTraceEvent({
+        eventId: traceTurnEventId(traceContext, "turn_start"),
+        memoraxCodeHome: options.memoraxCodeHome,
+        env: options.env,
+        traceContext,
+        type: "turn_start",
+        source: "dsh-cordis",
+        operation: "query",
+        ok: true,
+        request: {
+          start_seq: command.startSeq,
+        },
+      }), options.diagnosticLogger);
+      await recordDshTraceBestEffort("dsh_memory.current_turn_write", writeCurrentTraceTurn(
+        traceContext,
+        {
+          client: "dsh",
+          memoraxCodeHome: options.memoraxCodeHome,
+          env: options.env,
+          now: () => new Date(now()),
+        },
+      ), options.diagnosticLogger);
 
       const repoMemoryWorktree = resolvedRepoMemoryWorktree(repositoryMemory);
       const retrievalKey = JSON.stringify([command.sessionId, command.turn, command.startSeq]);
@@ -101,11 +146,12 @@ export function createDshMemoryHookRuntime(
         diagnosticLogger: options.diagnosticLogger,
         env: options.env ?? process.env,
         fetchImpl: options.fetchImpl,
-        // DSH has no first-class TraceClient yet. Forwarding the shared sink
-        // would make the current Viewer incorrectly classify this as Codex.
+        memoryObservability: options.memoryObservability,
+        memoryObservabilitySource: "dsh_native_retrieval",
         query: command.prompt,
         repositoryMemory,
         sessionKey: command.sessionId,
+        traceContext,
       });
       return {
         ok: true,
@@ -124,6 +170,13 @@ export function createDshMemoryHookRuntime(
       const materialized = dshSessionEventTurn(command);
       if (!materialized.ok) {
         if (materialized.reason === "turn_not_completed") {
+          const traceContext = traceContextFromDshSessionEventLog(command);
+          await recordDshTurnEnd(options, traceContext, {
+            outcome: "interrupted",
+            nativeOutcome: materialized.outcome,
+            startSeq: command.startSeq,
+            endSeq: command.endSeq,
+          });
           const discarded = turnCoordinator.discardTurn(key, "interrupted");
           return skippedWriteback(
             command,
@@ -134,6 +187,15 @@ export function createDshMemoryHookRuntime(
         }
         return skippedWriteback(command, materialized.reason, options);
       }
+
+      const traceContext = traceContextFromDshSessionEventLog(command);
+      await recordDshTurnEnd(options, traceContext, {
+        outcome: "completed",
+        nativeOutcome: materialized.turn.outcome,
+        startSeq: materialized.turn.startSeq,
+        endSeq: materialized.turn.endSeq,
+        turn: materialized.turn,
+      });
 
       const writeback = await turnCoordinator.completeMaterializedTurn({
         key,
@@ -151,8 +213,9 @@ export function createDshMemoryHookRuntime(
           sessionKey: command.sessionId,
           env: options.env ?? process.env,
           fetchImpl: options.fetchImpl,
-          // Keep DSH Search/Add out of the two-client Viewer projection until
-          // its own trace identity and reconciliation projection are defined.
+          memoryObservability: options.memoryObservability,
+          memoryObservabilitySource: "dsh_native_writeback",
+          traceContext,
         },
       });
       if (!writeback.scheduled) {
@@ -176,6 +239,84 @@ export function createDshMemoryHookRuntime(
       retrievalTurns.clear();
     },
   };
+}
+
+async function recordDshTurnEnd(
+  options: DshMemoryHookRuntimeOptions,
+  traceContext: TraceContext | undefined,
+  details: {
+    outcome: TraceTurnOutcome;
+    nativeOutcome: string;
+    startSeq: number;
+    endSeq: number;
+    turn?: DshSessionTurn;
+  },
+): Promise<void> {
+  const eventId = traceTurnEventId(traceContext, "turn_end");
+  const recorded = await recordDshTraceBestEffort("dsh_memory.turn_end_event", recordTraceEvent({
+    eventId,
+    memoraxCodeHome: options.memoraxCodeHome,
+    env: options.env,
+    traceContext,
+    type: "turn_end",
+    source: "dsh-session-event-log",
+    operation: "reply",
+    ok: true,
+    outcome: details.outcome,
+    request: {
+      start_seq: details.startSeq,
+      end_seq: details.endSeq,
+      native_outcome: details.nativeOutcome,
+    },
+  }), options.diagnosticLogger);
+  if (!recorded || (!recorded.written && recorded.reason !== "duplicate_event")) return;
+  if (details.turn && eventId) {
+    await recordDshTraceBestEffort("dsh_memory.turn_materialized_event", recordTraceEvent({
+      eventId: traceTurnEventId(traceContext, "turn_materialized"),
+      memoraxCodeHome: options.memoraxCodeHome,
+      env: options.env,
+      traceContext,
+      type: "turn_materialized",
+      source: "dsh-session-event-log",
+      operation: "reply",
+      ok: true,
+      outcome: details.outcome,
+      request: {
+        original_event_id: eventId,
+        start_seq: details.startSeq,
+        end_seq: details.endSeq,
+        prompt: details.turn.userPrompt,
+      },
+      response: {
+        assistantMessage: details.turn.assistantReply,
+      },
+    }), options.diagnosticLogger);
+  }
+  await recordDshTraceBestEffort("dsh_memory.current_turn_close", markCurrentTraceTurnOutcome(
+    traceContext,
+    details.outcome,
+    {
+      client: "dsh",
+      memoraxCodeHome: options.memoraxCodeHome,
+      env: options.env,
+    },
+  ), options.diagnosticLogger);
+}
+
+async function recordDshTraceBestEffort<T>(
+  label: string,
+  promise: Promise<T>,
+  diagnosticLogger?: MemoryDiagnosticLogger,
+): Promise<T | undefined> {
+  try {
+    return await promise;
+  } catch (error) {
+    diagnosticLogger?.("dsh_trace.write_failed", {
+      label,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return undefined;
+  }
 }
 
 function dshTurnKey(sessionId: string, turn: number) {

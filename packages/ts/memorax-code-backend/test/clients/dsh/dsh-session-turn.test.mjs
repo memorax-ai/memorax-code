@@ -38,13 +38,17 @@ test("DSH turn materialization fails closed across session, workspace, interval,
     ["event sequence", (value) => { value.events[4].seq += 1; }, "event_sequence_mismatch"],
     ["first boundary", (value) => { value.events[0].type = "step/start"; }, "turn_boundary_mismatch"],
     ["turn identity", (value) => { value.events[4].data.turn = 2; }, "turn_identity_mismatch"],
-    ["interrupted turn", (value) => { value.events.at(-1).data.reason = { kind: "interrupted" }; }, "turn_not_completed"],
+    ["interrupted turn", (value) => { value.events.at(-1).data.reason = { kind: "interrupted" }; }, "turn_not_completed", "interrupted"],
     ["unknown required event", (value) => { delete value.events[9].ignorable; }, "unknown_required_event"],
   ];
-  for (const [name, mutate, reason] of cases) {
+  for (const [name, mutate, reason, outcome] of cases) {
     const value = structuredClone(base);
     mutate(value);
-    assert.deepEqual(dshSessionEventTurn(value), { ok: false, reason }, name);
+    assert.deepEqual(dshSessionEventTurn(value), {
+      ok: false,
+      reason,
+      ...(outcome ? { outcome } : {}),
+    }, name);
   }
 });
 
@@ -54,5 +58,16 @@ test("DSH turn materialization never treats plugin recall as the user prompt", (
   assert.deepEqual(dshSessionEventTurn(value), {
     ok: false,
     reason: "user_prompt_missing",
+  });
+});
+
+test("DSH interrupted intervals do not require completed-Turn content", () => {
+  const value = dshTurnInterval({ cwd: CWD });
+  value.events[1].data.source = { kind: "plugin", plugin: "memorax-code", form: "recall" };
+  value.events.at(-1).data.reason = { kind: "interrupted" };
+  assert.deepEqual(dshSessionEventTurn(value), {
+    ok: false,
+    reason: "turn_not_completed",
+    outcome: "interrupted",
   });
 });
