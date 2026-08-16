@@ -1,4 +1,3 @@
-import { spawn } from "node:child_process";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { unsupportedNodeVersionMessage } from "./node-version.mjs";
@@ -52,73 +51,6 @@ export async function runBackendEntrypoint(relativeEntrypoint) {
   } finally {
     process.argv[1] = previousArgv1;
   }
-}
-
-export async function runBackendEntrypointChild(relativeEntrypoint, args, options = {}) {
-  if (!ensureSupportedNodeRuntime()) return 1;
-  const entrypoint = prepareBackendEntrypoint(relativeEntrypoint);
-  const child = spawn(process.execPath, [entrypoint, ...args], {
-    env: options.env ?? process.env,
-    stdio: "inherit",
-    windowsHide: true,
-  });
-  return await new Promise((resolve) => {
-    child.once("error", (error) => {
-      console.error(`memorax-code: failed to start lifecycle command: ${error.message}`);
-      resolve(1);
-    });
-    child.once("close", (code, signal) => {
-      if (signal) {
-        console.error(`memorax-code: lifecycle command exited from signal ${signal}`);
-        resolve(1);
-      } else {
-        resolve(code ?? 1);
-      }
-    });
-  });
-}
-
-export async function captureBackendEntrypoint(relativeEntrypoint, args, options = {}) {
-  if (!ensureSupportedNodeRuntime()) return { code: 1, stdout: "", stderr: "" };
-  let child;
-  try {
-    const entrypoint = prepareBackendEntrypoint(relativeEntrypoint);
-    child = spawn(process.execPath, [entrypoint, ...args], {
-      env: options.env ?? process.env,
-      stdio: ["ignore", "pipe", "pipe"],
-      windowsHide: true,
-    });
-  } catch (error) {
-    return {
-      code: 1,
-      stdout: "",
-      stderr: `memorax-code: failed to start status command: ${error instanceof Error ? error.message : String(error)}\n`,
-    };
-  }
-  let stdout = "";
-  let stderr = "";
-  child.stdout.setEncoding("utf8");
-  child.stderr.setEncoding("utf8");
-  child.stdout.on("data", (chunk) => { stdout += chunk; });
-  child.stderr.on("data", (chunk) => { stderr += chunk; });
-  return await new Promise((resolve) => {
-    let settled = false;
-    const finish = (result) => {
-      if (settled) return;
-      settled = true;
-      resolve(result);
-    };
-    child.once("error", (error) => finish({
-      code: 1,
-      stdout,
-      stderr: `${stderr}memorax-code: failed to start status command: ${error.message}\n`,
-    }));
-    child.once("close", (code, signal) => finish({
-      code: signal ? 1 : code ?? 1,
-      stdout,
-      stderr: signal ? `${stderr}memorax-code: status command exited from signal ${signal}\n` : stderr,
-    }));
-  });
 }
 
 function prepareBackendEntrypoint(relativeEntrypoint) {

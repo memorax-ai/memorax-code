@@ -14,18 +14,20 @@ import {
   resolveManagedClients,
 } from "../../dist/lifecycle/client-selection.js";
 
-test("managed clients default to both integrations", () => {
-  assert.deepEqual(resolveManagedClients([], {}), { codex: true, claude: true });
+test("managed clients default to all integrations", () => {
+  assert.deepEqual(resolveManagedClients([], {}), { codex: true, claude: true, dsh: true });
 });
 
 test("managed clients use persisted config", () => {
   assert.deepEqual(resolveManagedClients([], { clients: { codex: true, claude: false } }), {
     codex: true,
     claude: false,
+    dsh: true,
   });
-  assert.deepEqual(resolveManagedClients([], { clients: { codex: false, claude: true } }), {
+  assert.deepEqual(resolveManagedClients([], { clients: { codex: false, claude: true, dsh: false } }), {
     codex: false,
     claude: true,
+    dsh: false,
   });
 });
 
@@ -35,15 +37,17 @@ test("--clients overrides persisted config", () => {
   ], { clients: { codex: true, claude: false } }), {
     codex: false,
     claude: true,
+    dsh: false,
   });
 });
 
 test("--clients accepts exact client sets", () => {
-  assert.deepEqual(parseManagedClients("codex"), { codex: true, claude: false });
-  assert.deepEqual(parseManagedClients("claude"), { codex: false, claude: true });
-  assert.deepEqual(parseManagedClients("codex,claude"), { codex: true, claude: true });
-  assert.deepEqual(parseManagedClients("all"), { codex: true, claude: true });
-  assert.deepEqual(parseManagedClients("none"), { codex: false, claude: false });
+  assert.deepEqual(parseManagedClients("codex"), { codex: true, claude: false, dsh: false });
+  assert.deepEqual(parseManagedClients("claude"), { codex: false, claude: true, dsh: false });
+  assert.deepEqual(parseManagedClients("dsh"), { codex: false, claude: false, dsh: true });
+  assert.deepEqual(parseManagedClients("codex,claude,dsh"), { codex: true, claude: true, dsh: true });
+  assert.deepEqual(parseManagedClients("all"), { codex: true, claude: true, dsh: true });
+  assert.deepEqual(parseManagedClients("none"), { codex: false, claude: false, dsh: false });
 });
 
 test("--clients rejects missing and unknown values", () => {
@@ -95,6 +99,18 @@ test("managed clients config rejects invalid lifecycle TOML", async () => {
       /clients\.codex must be a boolean/,
     );
 
+    await writeFile(join(home, "config.toml"), [
+      "[clients]",
+      "codex = false",
+      "claude = false",
+      'dsh = "true"',
+      "",
+    ].join("\n"));
+    assert.throws(
+      () => loadManagedClientsConfig(home),
+      /clients\.dsh must be a boolean/,
+    );
+
     await writeFile(join(home, "config.toml"), 'model = "not-a-table"\n');
     assert.deepEqual(loadManagedClientsConfig(home), {});
 
@@ -107,12 +123,17 @@ test("active managed clients persist and clear independently of config", async (
   const home = await mkdtemp(join(tmpdir(), "memorax-code-active-client-selection-"));
   try {
     assert.equal(readActiveManagedClients(home), undefined);
-    writeActiveManagedClients(home, { codex: false, claude: true });
-    assert.deepEqual(readActiveManagedClients(home), { codex: false, claude: true });
+    writeActiveManagedClients(home, { codex: false, claude: true, dsh: true });
+    assert.deepEqual(readActiveManagedClients(home), { codex: false, claude: true, dsh: true });
     assert.deepEqual(
       JSON.parse(await readFile(join(home, "runtime", "backend", "managed-clients.json"), "utf8")),
-      { codex: false, claude: true },
+      { codex: false, claude: true, dsh: true },
     );
+    await writeFile(
+      join(home, "runtime", "backend", "managed-clients.json"),
+      '{"codex":true,"claude":false}\n',
+    );
+    assert.deepEqual(readActiveManagedClients(home), { codex: true, claude: false, dsh: false });
     clearActiveManagedClients(home);
     assert.equal(readActiveManagedClients(home), undefined);
   } finally {

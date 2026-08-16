@@ -9,6 +9,8 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { DSH_SUPPORTED_VERSIONS, isSupportedDshVersion } from "./dsh-version.mjs";
+
 const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
 const ADAPTER_ROOT = resolve(MODULE_DIR, "..");
 const stagedCommonRoot = join(ADAPTER_ROOT, "memorax-code-adapter-common", "src");
@@ -28,8 +30,6 @@ const { resolveWindowsCliInvocation } = await import(
 const STATE_VERSION = 1;
 const RUNTIME = "dsh";
 const ADAPTER_PACKAGE_NAME = "@memorax-code/dsh-adapter";
-const DSH_SUPPORTED_VERSIONS = Object.freeze(["0.1.0-rc.6"]);
-const DSH_SUPPORTED_VERSION_SET = new Set(DSH_SUPPORTED_VERSIONS);
 const DSH_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 const DSH_VERSION_MAX_LENGTH = 128;
 const DSH_VERSION_TIMEOUT_MS = 10_000;
@@ -349,7 +349,7 @@ function activateDshPluginInstallationUnlocked(paths, options) {
   const stateProblem = validateState(state, paths);
   if (stateProblem) return { ...stateProblem, action: "dsh-plugin-activate" };
   if (!state) return notManaged(paths, "dsh-plugin-activate");
-  if (!DSH_SUPPORTED_VERSION_SET.has(state.dshVersion)) {
+  if (!isSupportedDshVersion(state.dshVersion)) {
     return {
       ok: false,
       action: "dsh-plugin-activate",
@@ -622,7 +622,7 @@ function inspectDshCompatibility(options, paths, command) {
       supportedDshVersions: [...DSH_SUPPORTED_VERSIONS],
     };
   }
-  if (!DSH_SUPPORTED_VERSION_SET.has(output)) {
+  if (!isSupportedDshVersion(output)) {
     return {
       compatible: false,
       reason: "unsupported_dsh_version",

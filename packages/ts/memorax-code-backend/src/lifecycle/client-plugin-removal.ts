@@ -6,6 +6,7 @@ import {
   cleanupCodexAfterBackendRemoval,
   type BackendRemovalCleanupReport,
 } from "../clients/codex/plugin-install.js";
+import { withBackendLifecycleLock } from "./lock.js";
 
 type ClaudePluginRemovalReport = {
   ok: boolean;
@@ -18,13 +19,31 @@ type ClaudePluginInstaller = {
   removeClaudePluginInstallation: (options: Record<string, unknown>) => ClaudePluginRemovalReport;
 };
 
+type DshPluginRemovalReport = {
+  ok: boolean;
+  action: string;
+  skipped?: boolean;
+  reason?: string;
+  message?: string;
+};
+
+type DshProfileLifecycleModule = {
+  withDshPluginLifecycleLock<T>(
+    options: Record<string, unknown>,
+    operation: (lifecycle: { remove(): DshPluginRemovalReport }) => T | Promise<T>,
+  ): Promise<T>;
+};
+
 export type ClientPluginRemovalOptions = {
   memoraxCodeHome?: string;
   homeDir?: string;
   codexHome?: string;
   claudeHome?: string;
+  dshHome?: string;
+  dshAdapterRoot?: string;
   codexCommand?: string;
   claudeCommand?: string;
+  dshCommand?: string;
 };
 
 export type ClientPluginRemovalReport = {
@@ -32,6 +51,7 @@ export type ClientPluginRemovalReport = {
   action: "client-plugin-removal-cleanup";
   codexPlugin: BackendRemovalCleanupReport | ClientPluginRemovalFailure;
   claudePlugin: ClaudePluginRemovalReport | ClientPluginRemovalFailure;
+  dshPlugin: DshPluginRemovalReport | ClientPluginRemovalFailure;
 };
 
 type ClientPluginRemovalFailure = {
@@ -45,38 +65,65 @@ export async function prepareClientPluginRemovalCleanup(
   options: ClientPluginRemovalOptions = {},
 ): Promise<() => Promise<ClientPluginRemovalReport>> {
   const claudePluginInstaller = await loadClaudePluginInstaller();
+  const dshProfileLifecycle = await loadDshProfileLifecycle();
   const home = resolveHome(options.homeDir);
   const memoraxCodeHome = resolve(options.memoraxCodeHome ?? process.env.MEMORAX_CODE_HOME ?? join(home, ".memorax-code"));
   const claudeState = await readJsonRecord(join(memoraxCodeHome, "adapters", "claude-code", "state.json"));
   const claudeHome = options.claudeHome ?? stringField(claudeState, "claudeHome");
 
   return async () => {
-    const [codexPlugin, claudePlugin] = await Promise.all([
-      cleanupCodexAfterBackendRemoval({
-        memoraxCodeHome,
-        homeDir: home,
-        codexHome: options.codexHome,
-        codexCommand: options.codexCommand,
-      }).catch((error) => removalFailure("backend-removal-cleanup", error)),
-      Promise.resolve()
-        .then(() => claudePluginInstaller.removeClaudePluginInstallation({
-          memoraxCodeHome,
-          ...(claudeHome ? { claudeHome } : {}),
-          ...(options.claudeCommand ? { claudeCommand: options.claudeCommand } : {}),
-        }))
-        .catch((error) => removalFailure("claude-plugin-remove", error)),
-    ]);
-    return {
-      ok: codexPlugin.ok && claudePlugin.ok,
-      action: "client-plugin-removal-cleanup",
-      codexPlugin,
-      claudePlugin,
-    };
+    try {
+      return await withBackendLifecycleLock({ home: memoraxCodeHome }, async () => {
+        const [codexPlugin, claudePlugin, dshPlugin] = await Promise.all([
+          cleanupCodexAfterBackendRemoval({
+            memoraxCodeHome,
+            homeDir: home,
+            codexHome: options.codexHome,
+            codexCommand: options.codexCommand,
+          }).catch((error) => removalFailure("backend-removal-cleanup", error)),
+          Promise.resolve()
+            .then(() => claudePluginInstaller.removeClaudePluginInstallation({
+              memoraxCodeHome,
+              ...(claudeHome ? { claudeHome } : {}),
+              ...(options.claudeCommand ? { claudeCommand: options.claudeCommand } : {}),
+            }))
+            .catch((error) => removalFailure("claude-plugin-remove", error)),
+          dshProfileLifecycle.withDshPluginLifecycleLock({
+            memoraxCodeHome,
+            homeDir: home,
+            ...(options.dshHome ? { dshHome: options.dshHome } : {}),
+            ...(options.dshAdapterRoot ? { adapterRoot: options.dshAdapterRoot } : {}),
+            ...(options.dshCommand ? { dshCommand: options.dshCommand } : {}),
+          }, (lifecycle) => lifecycle.remove())
+            .catch((error) => removalFailure("dsh-plugin-remove", error)),
+        ]);
+        return {
+          ok: codexPlugin.ok && claudePlugin.ok && dshPlugin.ok,
+          action: "client-plugin-removal-cleanup" as const,
+          codexPlugin,
+          claudePlugin,
+          dshPlugin,
+        };
+      });
+    } catch (error) {
+      const failure = removalFailure("client-plugin-removal-cleanup", error);
+      return {
+        ok: false,
+        action: "client-plugin-removal-cleanup",
+        codexPlugin: failure,
+        claudePlugin: failure,
+        dshPlugin: failure,
+      };
+    }
   };
 }
 
 async function loadClaudePluginInstaller(): Promise<ClaudePluginInstaller> {
   return await import(new URL("../../../memorax-code-claude-adapter/src/plugin-install.mjs", import.meta.url).href);
+}
+
+async function loadDshProfileLifecycle(): Promise<DshProfileLifecycleModule> {
+  return await import(new URL("../../../memorax-code-dsh-adapter/src/profile-lifecycle.mjs", import.meta.url).href);
 }
 
 async function readJsonRecord(path: string): Promise<Record<string, unknown> | undefined> {

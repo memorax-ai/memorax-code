@@ -7,11 +7,7 @@ import { fileURLToPath } from "node:url";
 import { stagePackagedClientHookRuntime } from "../lib/client-hook-runtime.mjs";
 import { unsupportedNodeVersionMessage } from "../lib/node-version.mjs";
 import { resolveNpmInvocation } from "../lib/npm-invocation.mjs";
-import {
-  captureBackendEntrypoint,
-  runBackendEntrypoint,
-  runBackendEntrypointChild,
-} from "../lib/run-entrypoint.mjs";
+import { runBackendEntrypoint } from "../lib/run-entrypoint.mjs";
 
 const nodeVersionError = unsupportedNodeVersionMessage();
 if (nodeVersionError) {
@@ -180,202 +176,7 @@ if (shouldStageClientHookRuntime(process.argv.slice(2))
   }
 }
 
-const unifiedStatusExitCode = await runUnifiedStatus(process.argv.slice(2));
-if (unifiedStatusExitCode !== undefined) process.exit(unifiedStatusExitCode);
-
-const dshLifecycleExitCode = await runDshLifecycle(process.argv.slice(2));
-if (dshLifecycleExitCode !== undefined) process.exit(dshLifecycleExitCode);
-
 await runBackendEntrypoint("memorax-code.js");
-
-async function runUnifiedStatus(args) {
-  if (args[0] !== "status" || args.includes("--help") || args.includes("-h")) {
-    return undefined;
-  }
-  let memoraxCodeHome;
-  try {
-    memoraxCodeHome = requestedMemoraxCodeHome(args);
-  } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
-    return 1;
-  }
-  const { collectDshAdapterStatus } = await import("../lib/dsh-plugin-install.mjs");
-  const dshAdapter = collectDshAdapterStatus({ memoraxCodeHome });
-  const backend = await captureBackendEntrypoint("memorax-code.js", args);
-  if (backend.stderr) process.stderr.write(backend.stderr);
-
-  if (args.includes("--json")) {
-    let report;
-    try {
-      report = JSON.parse(backend.stdout);
-    } catch {
-      console.error("memorax-code: Backend status did not return valid JSON");
-      return 1;
-    }
-    if (!validBackendStatusReport(report)) {
-      console.error("memorax-code: Backend status returned an incompatible JSON report");
-      return 1;
-    }
-    console.log(JSON.stringify({ ...report, dshAdapter }, null, 2));
-    return backend.code;
-  }
-
-  if (backend.stdout) {
-    process.stdout.write(backend.stdout);
-    if (!backend.stdout.endsWith("\n")) process.stdout.write("\n");
-  }
-  printDshAdapterStatus(dshAdapter);
-  return backend.code;
-}
-
-function printDshAdapterStatus(report) {
-  const profiles = Array.isArray(report.profiles) ? report.profiles : [];
-  const installedProfiles = profiles.filter((profile) => (
-    profile.managed && profile.exists && profile.installed
-  )).length;
-  const version = report.version ? ` version=${report.version}` : "";
-  const profileCount = ` profiles=${installedProfiles}/${profiles.length}`;
-  const status = report.ok !== true
-    ? `not ok ${report.reason ?? "unavailable"}`
-    : report.enabled === true
-      ? "ok"
-      : report.skipped === true
-        ? `skipped ${report.reason ?? "not-managed"}`
-        : `not enabled ${report.reason ?? "not-ready"}`;
-  console.log(`DSH adapter: ${status} integration=plugin${version}${profileCount}`);
-  if (profiles.length > 0) {
-    console.log(`DSH profiles: ${profiles.map((profile) => {
-      const name = statusText(profile.name);
-      if (!profile.exists) return `${name}=missing`;
-      if (!profile.managed) return `${name}=unmanaged`;
-      return `${name}=${profile.installed ? "installed" : "incomplete"}`;
-    }).join(", ")}`);
-  }
-}
-
-function validBackendStatusReport(value) {
-  return Boolean(value
-    && typeof value === "object"
-    && !Array.isArray(value)
-    && value.action === "status"
-    && typeof value.ok === "boolean"
-    && value.backend
-    && typeof value.backend === "object"
-    && !Array.isArray(value.backend));
-}
-
-function statusText(value) {
-  const sanitized = String(value).replace(
-    /[\u0000-\u001f\u007f-\u009f\u200e\u200f\u2028-\u202e\u2066-\u2069]/g,
-    "?",
-  );
-  return sanitized.length <= 120 ? sanitized : `${sanitized.slice(0, 117)}...`;
-}
-
-async function runDshLifecycle(args) {
-  const command = args[0];
-  if (!["start", "restart", "stop", "uninstall"].includes(command)
-    || args.includes("--help")
-    || args.includes("-h")) return undefined;
-
-  const { withDshPluginLifecycleLock } = await import("../lib/dsh-plugin-install.mjs");
-  const memoraxCodeHome = requestedMemoraxCodeHome(args);
-  const options = {
-    memoraxCodeHome,
-    memoraxCodeCommand: fileURLToPath(import.meta.url),
-  };
-  const recoveryRevision = dshAdapterRecoveryRevision();
-  try {
-    return await withDshPluginLifecycleLock(options, async (lifecycle) => {
-      const status = lifecycle.status();
-      const detectedProfiles = lifecycle.discoverProfiles();
-      if (isDshAdapterRecovery() && (
-        !recoveryRevision
-        || status.ok !== true
-        || status.enabled !== true
-        || status.revision !== recoveryRevision
-      )) return 0;
-      if (status.ok !== true) {
-        printDshLifecycleFailure("status", status);
-        return 1;
-      }
-      if (status.managed !== true && detectedProfiles.length === 0) {
-        return isDshAdapterRecovery() ? 0 : undefined;
-      }
-
-      if (command === "start" || command === "restart") {
-        const prepared = lifecycle.ensureInstalled({ enabled: false });
-        if (prepared.ok !== true) {
-          printDshLifecycleFailure("prepare", prepared);
-          return 1;
-        }
-        if (prepared.skipped === true) printDshLifecycleSkip(prepared);
-        const backendCode = await runBackendEntrypointChild("memorax-code.js", args);
-        if (backendCode !== 0) return backendCode;
-        if (prepared.installed !== true) return 0;
-        const activated = lifecycle.activate();
-        if (activated.ok !== true) {
-          printDshLifecycleFailure("activate", activated);
-          return 1;
-        }
-        return 0;
-      }
-
-      if (!shouldDisableDsh(args)) {
-        if (status.authorityEnabled !== true) return undefined;
-        return await runBackendEntrypointChild("memorax-code.js", args, {
-          env: {
-            ...process.env,
-            MEMORAX_CODE_EXTERNAL_BACKEND_CLIENT_ACTIVE: "1",
-          },
-        });
-      }
-      const disabled = lifecycle.disable();
-      if (disabled.ok !== true) {
-        printDshLifecycleFailure("disable", disabled);
-        return 1;
-      }
-      const backendCode = await runBackendEntrypointChild("memorax-code.js", args, {
-        env: {
-          ...process.env,
-          MEMORAX_CODE_EXTERNAL_BACKEND_CLIENT_ACTIVE: "0",
-        },
-      });
-      if (backendCode !== 0 || command !== "uninstall") return backendCode;
-      const removed = lifecycle.remove();
-      if (removed.ok !== true) {
-        printDshLifecycleFailure("remove", removed);
-        return 1;
-      }
-      return 0;
-    });
-  } catch (error) {
-    console.error(`memorax-code: DSH lifecycle coordination failed: ${error instanceof Error ? error.message : String(error)}`);
-    return 1;
-  }
-}
-
-function shouldDisableDsh(args) {
-  return !hasExplicitClientSelection(args)
-    || truthyEnv(process.env.MEMORAX_CODE_NPM_PREINSTALL_RETIRE_DSH);
-}
-
-function hasExplicitClientSelection(args) {
-  return args.includes("--clients") || args.some((arg) => arg.startsWith("--clients="));
-}
-
-function printDshLifecycleFailure(operation, report) {
-  const reason = typeof report?.reason === "string" ? ` (${report.reason})` : "";
-  console.error(`memorax-code: DSH plugin ${operation} failed${reason}`);
-}
-
-function printDshLifecycleSkip(report) {
-  if (report.reason === "unsupported_dsh_version") {
-    console.error(`memorax-code: DSH integration skipped: version ${report.dshVersion ?? "unknown"} is unsupported (supported: ${(report.supportedDshVersions ?? []).join(", ") || "none"})`);
-  } else if (report.reason === "dsh_version_unavailable") {
-    console.error("memorax-code: DSH integration skipped: could not determine the DSH version");
-  }
-}
 
 function shouldStageClientHookRuntime(args) {
   if (args.includes("--help") || args.includes("-h")) return false;
@@ -385,11 +186,6 @@ function shouldStageClientHookRuntime(args) {
 
 function isDshAdapterRecovery() {
   return truthyEnv(process.env.MEMORAX_CODE_DSH_ADAPTER_RECOVERY);
-}
-
-function dshAdapterRecoveryRevision() {
-  const value = process.env.MEMORAX_CODE_DSH_ADAPTER_EXPECTED_REVISION;
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
 function requestedMemoraxCodeHome(args) {

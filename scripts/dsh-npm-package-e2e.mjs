@@ -240,7 +240,7 @@ async function main() {
   assert.match(firstSession.content, /skill_content[^\n]*memorax-code/s);
 
   progress("restarting the real Backend, then starting a new DSH process and session");
-  await runMemoraxCode(["restart", "--home", memoraxCodeHome, "--port", String(backendPort), "--clients", "none", "--json"], workspace);
+  await runMemoraxCode(["restart", "--home", memoraxCodeHome, "--port", String(backendPort), "--clients", "dsh", "--json"], workspace);
   const restartedBackendState = await readJson(backendStatePath);
   const restartedPid = safePid(restartedBackendState.pid, "restarted Backend PID");
   assert.notEqual(restartedPid, backendPid, "Backend restart kept the same PID");
@@ -287,10 +287,10 @@ async function main() {
     "--port",
     String(backendPort),
     "--clients",
-    "none",
+    "dsh",
     "--json",
-  ], workspace)).stdout);
-  assert.equal(driftStatus.ok, true);
+  ], workspace, { expectedExitCode: 1 })).stdout);
+  assert.equal(driftStatus.ok, false);
   assert.equal(driftStatus.dshAdapter?.enabled, false);
   assert.equal(driftStatus.dshAdapter?.reason, "profile_drift");
   assert.deepEqual(driftStatus.dshAdapter?.profiles, [
@@ -299,7 +299,7 @@ async function main() {
   ]);
   assert.equal(await readFile(dshStatePath, "utf8"), stateBeforeDriftStatus);
   assert.equal(await readFile(webManifestPath, "utf8"), webBeforeDriftStatus);
-  await runMemoraxCode(["start", "--home", memoraxCodeHome, "--port", String(backendPort), "--clients", "none", "--json"], workspace);
+  await runMemoraxCode(["start", "--home", memoraxCodeHome, "--port", String(backendPort), "--clients", "dsh", "--json"], workspace);
   await assertProfileIntegrated(webProfile);
   const expandedState = await readJson(dshStatePath);
   assert.equal(expandedState.enabled, true);
@@ -491,9 +491,9 @@ async function runHeadless(command, cwd, env, prompt) {
   assert.match(result.stdout, new RegExp(VISIBLE_REPLY), `DSH headless output did not contain ${VISIBLE_REPLY}`);
 }
 
-async function runMemoraxCode(args, cwd) {
+async function runMemoraxCode(args, cwd, options = {}) {
   assert.ok(memoraxCodeEntrypoint, "MemoraX Code entrypoint is unavailable");
-  return run(process.execPath, [memoraxCodeEntrypoint, ...args], { cwd, env: runtimeEnv });
+  return run(process.execPath, [memoraxCodeEntrypoint, ...args], { cwd, env: runtimeEnv, ...options });
 }
 
 function assertExactAdd(request, prompt) {
@@ -690,7 +690,12 @@ async function reserveFreePort() {
   return port;
 }
 
-async function run(command, args, { cwd, env, timeoutMs = COMMAND_TIMEOUT_MS } = {}) {
+async function run(command, args, {
+  cwd,
+  env,
+  timeoutMs = COMMAND_TIMEOUT_MS,
+  expectedExitCode = 0,
+} = {}) {
   const child = spawn(command, args, {
     cwd,
     env: { ...env, PWD: cwd },
@@ -709,7 +714,7 @@ async function run(command, args, { cwd, env, timeoutMs = COMMAND_TIMEOUT_MS } =
     child.once("error", rejectChild);
     child.once("close", (code, signal) => resolveChild({ code, signal }));
   }).finally(() => clearTimeout(timer));
-  if (timedOut || result.code !== 0) {
+  if (timedOut || result.code !== expectedExitCode) {
     throw new Error([
       `${commandLabel(command)} exited ${timedOut ? `after ${timeoutMs} ms` : result.code ?? result.signal}`,
       stdout.trim() ? `stdout:\n${tail(stdout)}` : "",

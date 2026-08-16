@@ -53,8 +53,10 @@ const scriptedAnswers = (canPrompt() || canPromptForUpdate()) && process.stdin.i
   ? parseScriptedAnswers(readFileSync(0, "utf8"))
   : undefined;
 const previousClients = readPersistedClientSelection();
+const persistedDshSelection = readPersistedDshSelection();
 const dshProfiles = discoverDshProfiles();
 const dshDetected = dshProfiles.length > 0;
+const dshSelected = dshDetected && persistedDshSelection !== false;
 if (seedMissingMemoraxCodeConfig() === "failed") {
   printPostinstallSummary("not-verified");
   process.exit(0);
@@ -99,9 +101,9 @@ const installClients = detectedClients.filter((client) => selectedClients.includ
 if (updatePostinstall && previousClients !== undefined) {
   log(clientSelectionMessage(selectedClients));
 } else {
-  log(detectedClientMessage(installClients, dshProfiles));
+  log(detectedClientMessage(installClients, dshSelected ? dshProfiles : []));
 }
-if (dshDetected) log(`DeepSeek Harness profiles: found (${dshProfiles.map((profile) => profile.name).join(", ")}); compatibility will be checked and supported profiles reconciled by \`memorax-code start\`.`);
+if (dshSelected) log(`DeepSeek Harness profiles: found (${dshProfiles.map((profile) => profile.name).join(", ")}); compatibility will be checked and supported profiles reconciled by \`memorax-code start\`.`);
 if (requestedClients.includes("codex") && !skipCodexPluginInstall && !codexPreflight.ok) {
   log("Codex runtime was not detected; skipping its adapter setup.");
 }
@@ -112,9 +114,14 @@ if (writeClientSelectionConfig(selectedClients) === "failed") {
   printPostinstallSummary("not-verified");
   process.exit(0);
 }
-const clientMode = clientModeFor(installClients);
+const clientMode = clientModeFor(installClients, {
+  // Missing clients.dsh means auto-detect. Keep the optional participant in
+  // the active selection even before the first Profile appears.
+  includeDsh: persistedDshSelection !== false,
+  excludeDsh: persistedDshSelection === false,
+});
 let memoraxConfigResult = "skipped";
-if (installClients.length > 0 || dshDetected) {
+if (installClients.length > 0 || dshSelected) {
   memoraxConfigResult = await maybeConfigureMemoraxMemory(scriptedAnswers);
 }
 if (memoraxConfigResult === "configured") {
@@ -612,6 +619,17 @@ function readPersistedClientSelection() {
   }
 }
 
+function readPersistedDshSelection() {
+  const path = memoraxCodeConfigPath();
+  if (!existsSync(path)) return undefined;
+  try {
+    const value = parse(readFileSync(path, "utf8"))?.clients?.dsh;
+    return typeof value === "boolean" ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function writeClientSelectionConfig(clients) {
   const path = memoraxCodeConfigPath();
   return updateConfigFileAtomically({
@@ -933,13 +951,16 @@ function clientLifecycleFlags({ clientMode = "all" } = {}) {
   return ["--clients", clientMode];
 }
 
-function clientModeFor(clients) {
+function clientModeFor(clients, { includeDsh = false, excludeDsh = false } = {}) {
   const hasCodex = clients.includes("codex");
   const hasClaude = clients.includes("claude");
-  if (hasCodex && hasClaude) return "all";
-  if (hasCodex) return "codex";
-  if (hasClaude) return "claude";
-  return "none";
+  if (hasCodex && hasClaude && !excludeDsh) return "all";
+  const selected = [
+    hasCodex ? "codex" : undefined,
+    hasClaude ? "claude" : undefined,
+    includeDsh ? "dsh" : undefined,
+  ].filter(Boolean);
+  return selected.join(",") || "none";
 }
 
 function postinstallClientSkipReason({ explicitlySkipped, selected, enabled }) {

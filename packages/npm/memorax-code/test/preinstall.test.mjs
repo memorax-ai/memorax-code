@@ -16,7 +16,7 @@ test("npm preinstall retires only the managed Backend and verifies PID cleanup",
     assert.equal(result.code, 0, result.stderr);
     assert.equal(
       await readFile(fixture.logPath, "utf8"),
-      `stop --home ${fixture.memoraxCodeHome} --clients none --json\n`,
+      `stop --home ${fixture.memoraxCodeHome} --clients none --json replacement=1\n`,
     );
     assert.match(result.stderr, /Existing managed Backend stopped/);
   } finally {
@@ -54,7 +54,7 @@ test("npm preinstall retires an enabled DSH authority even when the Backend is a
     assert.equal(result.code, 0, result.stderr);
     assert.equal(
       await readFile(fixture.logPath, "utf8"),
-      `stop --home ${fixture.memoraxCodeHome} --clients none --json\n`,
+      `stop --home ${fixture.memoraxCodeHome} --clients none --json replacement=1\n`,
     );
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
@@ -100,7 +100,7 @@ async function createFixture({
   await writeFile(join(binDir, "memorax-code.mjs"), [
     "#!/usr/bin/env node",
     "import { appendFileSync, rmSync } from 'node:fs';",
-    `appendFileSync(${JSON.stringify(logPath)}, process.argv.slice(2).join(" ") + "\\n");`,
+    `appendFileSync(${JSON.stringify(logPath)}, process.argv.slice(2).join(" ") + " replacement=" + (process.env.MEMORAX_CODE_PACKAGE_REPLACEMENT ?? "") + "\\n");`,
     ...(hangStop
       ? ["setInterval(() => {}, 1_000);"]
       : failStop

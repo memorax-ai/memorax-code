@@ -475,7 +475,7 @@ async function assertMemoraxCodeNpmPackageRemoval(packageName) {
   try {
     await mkdir(home, { recursive: true });
     await mkdir(join(home, "memorax-code-home"), { recursive: true });
-    await writeFile(join(home, "memorax-code-home", "config.toml"), "[clients]\ncodex = false\nclaude = false\n");
+    await writeFile(join(home, "memorax-code-home", "config.toml"), "[clients]\ncodex = false\nclaude = false\ndsh = false\n");
     await mkdir(join(packageRoot, "bin"), { recursive: true });
     await mkdir(fakeBin, { recursive: true });
     await writeFile(join(packageRoot, "package.json"), JSON.stringify({ name: packageName, version: "0.1.2" }));
@@ -568,7 +568,7 @@ test("memorax-code uninstall does not remove the npm package when Backend stop f
   let fakeBackend;
   try {
     await mkdir(join(memoraxCodeHome, "runtime", "backend"), { recursive: true });
-    await writeFile(join(memoraxCodeHome, "config.toml"), "[clients]\ncodex = false\nclaude = false\n");
+    await writeFile(join(memoraxCodeHome, "config.toml"), "[clients]\ncodex = false\nclaude = false\ndsh = false\n");
     await mkdir(join(packageRoot, "bin"), { recursive: true });
     await mkdir(fakeBin, { recursive: true });
     await writeFile(join(packageRoot, "package.json"), JSON.stringify({ name: "@memorax/memorax-code", version: "0.1.2" }));

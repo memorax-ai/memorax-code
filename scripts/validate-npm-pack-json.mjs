@@ -97,6 +97,7 @@ for (const requiredPath of [
   "lib/memorax-code-dsh-adapter/cordis.patch.yml",
   "lib/memorax-code-dsh-adapter/src/index.mjs",
   "lib/memorax-code-dsh-adapter/src/backend-client.mjs",
+  "lib/memorax-code-dsh-adapter/src/dsh-version.mjs",
   "lib/memorax-code-dsh-adapter/src/profile-lifecycle.mjs",
   "lib/memorax-code-dsh-adapter/hooks/repo-memory-job.mjs",
   "lib/memorax-code-dsh-adapter/memorax-code-adapter-common/src/backend-connection.mjs",

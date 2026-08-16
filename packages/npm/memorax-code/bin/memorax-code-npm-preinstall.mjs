@@ -30,7 +30,7 @@ const result = spawnSync(
     env: {
       ...process.env,
       MEMORAX_CODE_HOME: memoraxCodeHome,
-      MEMORAX_CODE_NPM_PREINSTALL_RETIRE_DSH: "1",
+      MEMORAX_CODE_PACKAGE_REPLACEMENT: "1",
     },
     stdio: ["ignore", "pipe", "pipe"],
     timeout: PREINSTALL_STOP_TIMEOUT_MS,

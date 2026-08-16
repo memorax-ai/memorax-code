@@ -78,8 +78,8 @@ test("Backend status exposes minimal state and the CLI prints a concise summary"
     assert.match(result.stdout, /^\[MemoraX Code Backend\]: MemoraX Code Backend status: .*Enabled/m);
     assert.match(result.stdout, /^\[MemoraX Code Backend\]: Backend status: .*Enabled/m);
     assert.doesNotMatch(result.stdout, /^\[MemoraX Code Backend\]: Provider:/m);
-    assert.match(result.stdout, /sessions with the stable plugin shell use the active Hook runtime on their next user prompt/i);
-    assert.match(result.stdout, /Restart or refresh a client only if its plugin shell was installed, changed, or newly enabled/);
+    assert.match(result.stdout, /ready for new sessions in the enabled clients/i);
+    assert.match(result.stdout, /Restart or refresh a client only if its integration changed/);
     assert.doesNotMatch(result.stdout, /^\{/m);
     assert.doesNotMatch(result.stdout, /Runtime index:/);
   } finally {
@@ -503,6 +503,7 @@ test("unqualified Backend recovery preserves both configured client integrations
     assert.deepEqual(JSON.parse(await readFile(activeClientsPath, "utf8")), {
       codex: true,
       claude: true,
+      dsh: false,
     });
 
     const backendOnlyStop = await runCli(cliPath, [
@@ -513,6 +514,7 @@ test("unqualified Backend recovery preserves both configured client integrations
     assert.deepEqual(JSON.parse(await readFile(activeClientsPath, "utf8")), {
       codex: true,
       claude: true,
+      dsh: false,
     });
 
     const recovered = await runCli(cliPath, ["start", "--json", ...commonArgs], { env });
@@ -523,6 +525,7 @@ test("unqualified Backend recovery preserves both configured client integrations
     assert.deepEqual(JSON.parse(await readFile(activeClientsPath, "utf8")), {
       codex: true,
       claude: true,
+      dsh: false,
     });
   } finally {
     await runCli(cliPath, ["stop", "--json", ...commonArgs, "--clients", "all"], { env });
@@ -570,6 +573,7 @@ test("partial client stop preserves Backend until an explicit Backend-only stop"
     assert.deepEqual(JSON.parse(await readFile(join(home, "runtime", "backend", "managed-clients.json"), "utf8")), {
       codex: false,
       claude: true,
+      dsh: false,
     });
 
     const backendOnlyStopped = await runCli(cliPath, ["stop", "--json", ...commonArgs, "--clients", "none"]);
@@ -580,6 +584,7 @@ test("partial client stop preserves Backend until an explicit Backend-only stop"
     assert.deepEqual(JSON.parse(await readFile(join(home, "runtime", "backend", "managed-clients.json"), "utf8")), {
       codex: false,
       claude: true,
+      dsh: false,
     });
   } finally {
     await runCli(cliPath, ["stop", "--json", ...commonArgs, "--clients", "none"]);
@@ -588,37 +593,47 @@ test("partial client stop preserves Backend until an explicit Backend-only stop"
   }
 });
 
-test("an external managed adapter keeps the shared Backend and npm package active", async () => {
-  const home = await mkdtemp(join(tmpdir(), "memorax-code-external-client-home-"));
+test("an active DSH participant keeps the shared Backend and npm package active", async () => {
+  const home = await mkdtemp(join(tmpdir(), "memorax-code-dsh-active-client-home-"));
   const port = await freePort();
   const cliPath = fileURLToPath(new URL("../../dist/memorax-code.js", import.meta.url));
-  const commonArgs = ["--home", home, "--port", String(port), "--clients", "none"];
-  const externalEnv = { MEMORAX_CODE_EXTERNAL_BACKEND_CLIENT_ACTIVE: "1" };
   await writeManagedClientsConfig(home, { codex: false, claude: false });
   try {
-    const started = await runCli(cliPath, ["start", "--json", ...commonArgs]);
+    const started = await runCli(cliPath, [
+      "start", "--json", "--home", home, "--port", String(port), "--clients", "none",
+    ]);
     assert.equal(started.code, 0, `${started.stdout}\n${started.stderr}`);
+    await writeFile(
+      join(home, "runtime", "backend", "managed-clients.json"),
+      '{"codex":true,"claude":false,"dsh":true}\n',
+    );
 
-    const stopped = await runCli(cliPath, ["stop", "--json", ...commonArgs], { env: externalEnv });
+    const stopped = await runCli(cliPath, [
+      "stop", "--json", "--home", home, "--port", String(port), "--clients", "codex",
+    ]);
     assert.equal(stopped.code, 0, `${stopped.stdout}\n${stopped.stderr}`);
     const stopReport = JSON.parse(stopped.stdout);
     assert.equal(stopReport.backend.skipped, true);
-    assert.equal(stopReport.backend.reason, "external_client_remaining");
+    assert.equal(stopReport.backend.reason, "active_clients_remaining");
     assert.equal(await pathExists(join(home, "runtime", "backend", "backend.pid.json")), true);
 
     const uninstalled = await runCli(cliPath, [
       "uninstall",
       "--json",
-      ...commonArgs,
+      "--home", home,
+      "--port", String(port),
+      "--clients", "codex",
       "--no-npm-uninstall",
-    ], { env: externalEnv });
+    ]);
     assert.equal(uninstalled.code, 0, `${uninstalled.stdout}\n${uninstalled.stderr}`);
     const uninstallReport = JSON.parse(uninstalled.stdout);
-    assert.equal(uninstallReport.backend.reason, "external_client_remaining");
+    assert.equal(uninstallReport.backend.reason, "active_clients_remaining");
     assert.equal(uninstallReport.npmPackageRemoval.reason, "partial_client_uninstall");
     assert.equal(await pathExists(join(home, "runtime", "backend", "backend.pid.json")), true);
   } finally {
-    await runCli(cliPath, ["stop", "--json", ...commonArgs]);
+    await runCli(cliPath, [
+      "stop", "--json", "--home", home, "--port", String(port), "--clients", "none",
+    ]);
     await rm(home, { recursive: true, force: true });
   }
 });
@@ -750,6 +765,7 @@ test("failed Backend start preserves selected clients and direct Claude settings
     assert.deepEqual(JSON.parse(await readFile(join(home, "runtime", "backend", "managed-clients.json"), "utf8")), {
       codex: false,
       claude: true,
+      dsh: false,
     });
     assert.equal(await readFile(join(claudeHome, "settings.json"), "utf8"), originalSettings);
 
