@@ -14,7 +14,7 @@ export function scheduleMissingRepoMemoryBuild(repo, options = {}) {
     const child = spawn(process.execPath, [jobHookPath, "maintain", "--repo", repoPath], {
       cwd: repoPath,
       detached: true,
-      env: process.env,
+      env: options.env ?? process.env,
       stdio: "ignore",
       windowsHide: true,
     });
@@ -32,7 +32,7 @@ function nonEmptyString(value) {
 }
 
 function debug(options, error) {
-  if (process.env[options.debugEnv] === "1") {
+  if ((options.env ?? process.env)[options.debugEnv] === "1") {
     console.error(error instanceof Error ? error.message : String(error));
   }
 }

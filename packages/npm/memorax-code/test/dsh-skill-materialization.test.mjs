@@ -9,6 +9,7 @@ test("DSH repo-memory helper keeps the native maintenance handoff and fails clos
   assert.match(source, /@deepseek-ai\/dsh-headless/);
   assert.match(source, /no existing DSH headless-capable profile/);
   assert.match(source, /requireEnabledDshRuntime\(pluginRoot\)/);
+  assert.match(source, /process\.env\.MEMORAX_CODE_HOME = runtime\.memoraxCodeHome;\s+const profile/);
   assert.match(source, /selectHeadlessProfile\(runtime\.dshHome, runtime\.profiles\)/);
   assert.doesNotMatch(source, /function assertEnabled/);
   assert.doesNotMatch(source, /function readMetadata/);

@@ -14,6 +14,7 @@ const pluginRoot = dirname(hookDir);
 
 try {
   const runtime = requireEnabledDshRuntime(pluginRoot);
+  process.env.MEMORAX_CODE_HOME = runtime.memoraxCodeHome;
   const profile = selectHeadlessProfile(runtime.dshHome, runtime.profiles);
   if (!profile) throw new Error("no existing DSH headless-capable profile is available");
   const payload = runRepoMemoryJob(process.argv.slice(2), {

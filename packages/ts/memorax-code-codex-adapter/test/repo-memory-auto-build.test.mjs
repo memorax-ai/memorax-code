@@ -37,6 +37,33 @@ test("Repo Memory auto-build schedules maintain only when PROFILE.md is missing"
   }
 });
 
+test("Repo Memory auto-build forwards an explicit child environment", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-repo-auto-build-env-"));
+  const repo = join(root, "repo");
+  const pluginRoot = join(root, "plugin");
+  const logPath = join(root, "job.json");
+  const memoraxCodeHome = join(root, "memorax-code-home");
+  try {
+    await Promise.all([
+      mkdir(repo, { recursive: true }),
+      mkdir(join(pluginRoot, "hooks"), { recursive: true }),
+    ]);
+    await writeFile(join(pluginRoot, "hooks", "repo-memory-job.mjs"), [
+      'import { writeFileSync } from "node:fs";',
+      `writeFileSync(${JSON.stringify(logPath)}, JSON.stringify({ memoraxCodeHome: process.env.MEMORAX_CODE_HOME }));`,
+      "",
+    ].join("\n"));
+
+    assert.equal(scheduleMissingRepoMemoryBuild(repo, {
+      pluginRoot,
+      env: { ...process.env, MEMORAX_CODE_HOME: memoraxCodeHome },
+    }), true);
+    assert.deepEqual(JSON.parse(await waitForFile(logPath)), { memoraxCodeHome });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 async function waitForFile(path) {
   const deadline = Date.now() + 2_000;
   while (Date.now() < deadline) {
