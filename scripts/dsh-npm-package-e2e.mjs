@@ -22,8 +22,6 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const OPT_IN_ENV = "MEMORAX_CODE_DSH_E2E";
 const DSH_SPEC_ENV = "MEMORAX_CODE_DSH_E2E_DSH_SPEC";
-const DSH_ROOT_ENV = "MEMORAX_CODE_DSH_E2E_DSH_ROOT";
-const DSH_COMMAND_ENV = "MEMORAX_CODE_DSH_COMMAND";
 const MEMORAX_TARBALL_ENV = "MEMORAX_CODE_DSH_E2E_MEMORAX_TARBALL";
 const DSH_PACKAGE_NAME = "@deepseek-ai/dsh";
 const DSH_MOCK_PACKAGE_NAME = "@deepseek-ai/dsh-llm-mock-server";
@@ -34,6 +32,7 @@ const VISIBLE_REPLY = "MEMORAX_DSH_E2E_VISIBLE_REPLY_5A62";
 const FIRST_PROMPT = "MEMORAX_DSH_E2E_DIRECT_PROMPT_FIRST";
 const SECOND_PROMPT = "MEMORAX_DSH_E2E_DIRECT_PROMPT_SECOND";
 const STOPPED_PROMPT = "MEMORAX_DSH_E2E_PROMPT_AFTER_STOP";
+const USER_SKILL_OVERRIDE_MARKER = "MEMORAX_DSH_E2E_USER_SKILL_OVERRIDE_9C14";
 const MEMORAX_API_KEY = "memorax-dsh-e2e-key";
 const DEEPSEEK_API_KEY = "deepseek-dsh-e2e-key";
 const COMMAND_TIMEOUT_MS = 120_000;
@@ -43,24 +42,17 @@ const USAGE = `Usage:
   ${DSH_SPEC_ENV}=@deepseek-ai/dsh@<exact-version> \\
     node scripts/dsh-npm-package-e2e.mjs
 
-Source-checkout fallback:
-  ${OPT_IN_ENV}=1 \\
-  ${DSH_ROOT_ENV}=/path/to/deepseek-harness \\
-  ${DSH_COMMAND_ENV}=/path/to/dsh \\
-    node scripts/dsh-npm-package-e2e.mjs
-
 Optional:
   ${MEMORAX_TARBALL_ENV}=/absolute/path/to/memorax-code.tgz
 
-Runs an isolated npm-package E2E against an exact npm DSH release or a matching
-DSH source checkout and CLI. Registry mode also installs the matching published
-LLM mock package and the E2E-pinned pnpm version into the isolated
-npm prefix; it never uses a floating dist-tag or the host pnpm installation.
+Runs an isolated npm-package E2E against an exact npm DSH release. It also
+installs the matching published LLM mock package and the E2E-pinned pnpm
+version into the isolated npm prefix; it never uses a floating dist-tag or the
+host pnpm installation.
 The test starts real DSH, Cordis, persistence, and MemoraX Code Backend code;
 only the DeepSeek-compatible LLM endpoint and MemoraX HTTP endpoint are mocked.
 Without ${MEMORAX_TARBALL_ENV}, the MemoraX Code package is built from this
-checkout. Run pnpm run build in a DSH source checkout before using its
-apps/cli/lib/bin.js.
+checkout.
 `;
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -132,7 +124,7 @@ async function main() {
   };
   await run("git", ["init", "--quiet"], { cwd: workspace, env: isolatedEnv });
 
-  const dsh = await resolveDshHarness(dshRequest, {
+  const dsh = await resolveNpmDshHarness(dshRequest, {
     env: isolatedEnv,
     npmPrefix,
     workspace,
@@ -141,7 +133,14 @@ async function main() {
   assert.equal(typeof startMockLlmServer, "function", "DSH mock LLM module does not export startMockLlmServer");
 
   llmServer = await startMockLlmServer({
-    sequence: ["tool_call_success", "reasoning_success"],
+    sequence: [
+      "tool_call_success",
+      "reasoning_success",
+      "tool_call_success",
+      "reasoning_success",
+      "tool_call_success",
+      "reasoning_success",
+    ],
     repeatLast: true,
     apiKey: DEEPSEEK_API_KEY,
     successText: VISIBLE_REPLY,
@@ -212,42 +211,15 @@ async function main() {
   const packageRoot = await installedPackageRoot(npmPrefix);
   memoraxCodeEntrypoint = join(packageRoot, "bin", "memorax-code.mjs");
   await assertFile(memoraxCodeEntrypoint);
-  const sourceAdapterRoot = join(packageRoot, "lib", "memorax-code-dsh-adapter");
   const headlessProfile = join(dshHome, "profiles", "headless");
-  const installedAdapter = join(headlessProfile, "node_modules", "@memorax-code", "dsh-adapter");
   const dshStatePath = join(memoraxCodeHome, "adapters", "dsh", "state.json");
   const backendStatePath = join(memoraxCodeHome, "runtime", "backend", "backend.pid.json");
 
   await assertProfileIntegrated(headlessProfile);
-  for (const relativePath of [
-    ".memorax-code-package.json",
-    "hooks/repo-memory-job.mjs",
-    "skills/memorax-code/SKILL.md",
-    "skills/memorax-code/dsh-definition.json",
-    "memorax-code-adapter-common/src/backend-connection.mjs",
-    "src/index.mjs",
-  ]) await assertFile(join(installedAdapter, relativePath));
-  const packageMetadata = await readJson(join(installedAdapter, ".memorax-code-package.json"));
   const dshState = await readJson(dshStatePath);
   assert.equal(dshState.enabled, true, "npm postinstall did not enable the DSH integration");
   assert.equal(dshState.dshVersion, dsh.version, "DSH lifecycle state did not record the preflighted version");
   assert.deepEqual(dshState.profiles, ["headless"]);
-  assert.equal(await realpath(dshState.adapterRoot), await realpath(sourceAdapterRoot));
-  assert.equal(await realpath(packageMetadata.sourceAdapterRoot), await realpath(sourceAdapterRoot));
-  assert.equal(await realpath(packageMetadata.dshHome), await realpath(dshHome));
-  const initialStatus = JSON.parse((await runMemoraxCode([
-    "status",
-    "--home",
-    memoraxCodeHome,
-    "--port",
-    String(backendPort),
-    "--clients",
-    "none",
-    "--json",
-  ], workspace)).stdout);
-  assert.equal(initialStatus.dshAdapter?.enabled, true);
-  assert.equal(initialStatus.dshAdapter?.version, dsh.version);
-  assert.deepEqual(initialStatus.dshAdapter?.profiles?.map((profile) => profile.name), ["headless"]);
   const initialBackendState = await readJson(backendStatePath);
   backendPid = safePid(initialBackendState.pid, "postinstall Backend PID");
 
@@ -265,8 +237,6 @@ async function main() {
   const firstSession = await sessionForPrompt(join(dshHome, "sessions"), FIRST_PROMPT);
   assert.match(firstSession.content, new RegExp(RECALL_MARKER));
   assert.match(firstSession.content, new RegExp(REASONING_MARKER));
-  assert.match(firstSession.content, /"type":"tool\/call"/);
-  assert.match(firstSession.content, /"name":"skill"/);
   assert.match(firstSession.content, /skill_content[^\n]*memorax-code/s);
 
   progress("restarting the real Backend, then starting a new DSH process and session");
@@ -277,15 +247,29 @@ async function main() {
   await waitFor(() => !isProcessAlive(backendPid), "pre-restart Backend exit");
   backendPid = restartedPid;
 
+  const userSkillRoot = join(dshHome, "skills", "memorax-code");
+  await mkdir(userSkillRoot, { recursive: true });
+  await writeFile(join(userSkillRoot, "SKILL.md"), [
+    "---",
+    "name: memorax-code",
+    "description: E2E user override for the bundled MemoraX Code skill.",
+    "---",
+    "",
+    `# ${USER_SKILL_OVERRIDE_MARKER}`,
+    "",
+  ].join("\n"), "utf8");
+
   const secondLlmStart = llmServer.requests.length;
   await runHeadless(dsh.command, workspace, runtimeEnv, SECOND_PROMPT);
   await waitFor(() => memoraxRequests("/v1/memories/add").length >= 2, "second MemoraX Add");
   const secondLlmRequests = llmServer.requests.slice(secondLlmStart);
-  assert.ok(secondLlmRequests.length >= 1, "the restarted DSH process made no model request");
+  assert.ok(secondLlmRequests.length >= 2, "the restarted DSH process did not complete its skill tool round trip");
   assertIncludesJson(secondLlmRequests.map((request) => request.body), RECALL_MARKER, "post-restart model request recall");
+  assertIncludesJson(secondLlmRequests.map((request) => request.body), USER_SKILL_OVERRIDE_MARKER, "user skill override");
   assertExactAdd(memoraxRequests("/v1/memories/add")[1], SECOND_PROMPT);
   const secondSession = await sessionForPrompt(join(dshHome, "sessions"), SECOND_PROMPT);
   assert.notEqual(secondSession.id, firstSession.id, "a new DSH process reused the first session");
+  assert.match(secondSession.content, new RegExp(USER_SKILL_OVERRIDE_MARKER));
 
   progress("creating a later DSH profile and reconciling it with memorax-code start");
   await run(dsh.command, ["--profile", "web", "--dump-default-config"], {
@@ -320,18 +304,6 @@ async function main() {
   const expandedState = await readJson(dshStatePath);
   assert.equal(expandedState.enabled, true);
   assert.deepEqual(expandedState.profiles, ["headless", "web"]);
-  const expandedStatus = JSON.parse((await runMemoraxCode([
-    "status",
-    "--home",
-    memoraxCodeHome,
-    "--port",
-    String(backendPort),
-    "--clients",
-    "none",
-    "--json",
-  ], workspace)).stdout);
-  assert.equal(expandedStatus.dshAdapter?.enabled, true);
-  assert.deepEqual(expandedStatus.dshAdapter?.profiles?.map((profile) => profile.name), ["headless", "web"]);
 
   progress("stopping MemoraX Code and proving DSH cannot revive the Backend");
   const requestsBeforeStop = memoraxServer.requests.length;
@@ -344,7 +316,11 @@ async function main() {
   await assertProfileNotIntegrated(headlessProfile);
   await assertProfileNotIntegrated(webProfile);
 
+  const stoppedLlmStart = llmServer.requests.length;
   await runHeadless(dsh.command, workspace, runtimeEnv, STOPPED_PROMPT);
+  const stoppedLlmRequests = llmServer.requests.slice(stoppedLlmStart);
+  assert.ok(stoppedLlmRequests.length >= 2, "DSH did not complete a skill round trip after provider removal");
+  assertIncludesJson(stoppedLlmRequests.map((request) => request.body), USER_SKILL_OVERRIDE_MARKER, "post-removal user skill");
   await new Promise((resolveDelay) => setTimeout(resolveDelay, 300));
   assert.equal(memoraxServer.requests.length, requestsBeforeStop, "DSH emitted MemoraX traffic after stop");
   assert.equal(await exists(backendStatePath), false, "DSH revived the Backend after stop");
@@ -374,8 +350,10 @@ async function main() {
     exactWritebackMessages: true,
     backendRestarted: true,
     newProcessNewSession: true,
+    userSkillOverrideWon: true,
     laterProfileReconciled: true,
     stoppedBackendStayedDown: true,
+    providerRemovalPreservedProfile: true,
     uninstallPreservedProfilesAndSessions: true,
     llmRequests: llmServer.requests.length,
     memoraxSearches: memoraxRequests("/v1/memories/search").length,
@@ -427,49 +405,11 @@ async function prepareMemoraxPackage(options) {
 
 function requestedDshHarness() {
   const spec = optionalString(process.env[DSH_SPEC_ENV]);
-  const root = optionalString(process.env[DSH_ROOT_ENV]);
-  const command = optionalString(process.env[DSH_COMMAND_ENV]);
-  if (spec) {
-    if (root || command) {
-      fail(`${DSH_SPEC_ENV} cannot be combined with ${DSH_ROOT_ENV} or ${DSH_COMMAND_ENV}`);
-    }
-    const requestedVersion = exactDshVersion(spec);
-    if (!requestedVersion) {
-      fail(`${DSH_SPEC_ENV} must be ${DSH_PACKAGE_NAME}@<exact-version>; ranges and dist-tags are not accepted`);
-    }
-    return { distribution: "npm", spec, requestedVersion };
+  const requestedVersion = spec ? exactDshVersion(spec) : undefined;
+  if (!spec || !requestedVersion) {
+    fail(`${DSH_SPEC_ENV} must be ${DSH_PACKAGE_NAME}@<exact-version>; ranges and dist-tags are not accepted`);
   }
-  if (!root || !command) {
-    fail(`set ${DSH_SPEC_ENV}, or set both ${DSH_ROOT_ENV} and ${DSH_COMMAND_ENV}`);
-  }
-  return { distribution: "source" };
-}
-
-async function resolveDshHarness(request, options) {
-  if (request.distribution === "npm") {
-    return resolveNpmDshHarness(request, options);
-  }
-  const dshRoot = await requiredDirectory(DSH_ROOT_ENV);
-  const dshCommand = await requiredExecutable(DSH_COMMAND_ENV);
-  const dshManifest = await readJson(join(dshRoot, "apps/cli/package.json"));
-  assert.equal(dshManifest?.name, DSH_PACKAGE_NAME, `${DSH_ROOT_ENV} does not contain the DSH CLI source`);
-  const sourceDshCommand = join(dshRoot, "apps/cli/lib/bin.js");
-  if (await exists(sourceDshCommand) && dshCommand === await realpath(sourceDshCommand)) {
-    for (const path of [
-      join(dshRoot, "packages/typert/registry/lib/index.js"),
-      join(dshRoot, "packages/api/gateway/lib/index.js"),
-    ]) await assertFile(path, "run pnpm run build in the DSH source checkout before this E2E");
-  }
-  const version = await commandVersion(dshCommand, options);
-  assert.equal(version, dshManifest.version, "DSH source manifest and CLI versions differ");
-  const mockLlmModulePath = join(dshRoot, "packages/test-support/llm-mock-server/lib/index.js");
-  await assertFile(mockLlmModulePath, "build the DSH mock LLM package before running this E2E");
-  return {
-    command: dshCommand,
-    distribution: "source",
-    mockLlmModulePath,
-    version,
-  };
+  return { spec, requestedVersion };
 }
 
 async function resolveNpmDshHarness(request, options) {
@@ -814,18 +754,6 @@ function sanitizedEnvironment() {
       || key === "CLAUDE_HOME") delete env[key];
   }
   return env;
-}
-
-async function requiredDirectory(name) {
-  const value = requiredString(process.env[name], name);
-  const path = await realpath(resolve(value));
-  assert.equal((await stat(path)).isDirectory(), true, `${name} is not a directory`);
-  return path;
-}
-
-async function requiredExecutable(name) {
-  const value = requiredString(process.env[name], name);
-  return requiredExecutablePath(value, name);
 }
 
 async function requiredFilePath(value, label) {

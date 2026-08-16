@@ -52,11 +52,7 @@ test("Claude shared skill stages directly from tracked Codex skill sources", () 
   );
 });
 
-test("DSH stages its runtime and shared skill from tracked sources", () => {
-  assert.ok(npmMainSourceTrees.some((mapping) => (
-    mapping.source === "packages/ts/memorax-code-dsh-adapter/src"
-    && mapping.destination === "lib/memorax-code-dsh-adapter/src"
-  )));
+test("DSH shared skill stages directly from tracked Codex skill sources", () => {
   assert.ok(npmMainSourceTrees.some((mapping) => (
     mapping.source === "packages/ts/memorax-code-codex-adapter/skills/memorax-code"
     && mapping.destination === "lib/memorax-code-dsh-adapter/skills/memorax-code"
