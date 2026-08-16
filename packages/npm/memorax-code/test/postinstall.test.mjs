@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { commandOnPath } from "../lib/vscode-extension-command.mjs";
 
 const postinstallPath = fileURLToPath(new URL("../bin/memorax-code-plugin-postinstall.mjs", import.meta.url));
 const adapterCommonSourceRoot = fileURLToPath(new URL(
@@ -27,6 +28,13 @@ const vscodeExtensionCommandPath = fileURLToPath(new URL("../lib/vscode-extensio
 const windowsCliInvocationPath = fileURLToPath(new URL("../lib/windows-cli-invocation.mjs", import.meta.url));
 const smolTomlPath = fileURLToPath(new URL("../../../ts/memorax-code-backend/node_modules/smol-toml", import.meta.url));
 const memoraxCodePluginId = "memorax-code-codex-adapter@memorax-code";
+
+function pathWithoutCommand(command, pathValue) {
+  return String(pathValue ?? "")
+    .split(delimiter)
+    .filter((root) => root && !commandOnPath(command, root, process.platform, process.env.PATHEXT))
+    .join(delimiter);
+}
 
 function codexHook(name, currentHash, overrides = {}) {
   return {
@@ -88,7 +96,7 @@ async function startMockMemorax({ status = 200, body = { success: true, data: { 
   };
 }
 
-async function runPostinstall({ existingCache = false, explicitCache = false, hookRuntimeFailure, failStartOnce = false, connectionAuthorityFailure = false, runtimeAuthorityFailureCode, officialMode = false, codexConfig, memoraxCodeConfig, memoraxCodeConfigMode, emptyClaudeSettings = false, claudeAvailable = true, claudeVersionFails = false, claudeSettingsText, codexAvailable = true, codexAppOnly = false, vscodeOnly = false, opencodeAvailable = false, opencodeXdgAvailable = false, skipCodexPluginInstall = false, skipClaudeAdapterInstall = false, skipOpenCodeAdapterInstall = false, unavailableStatus = false, prefixedStatus = false, input = "", interactive = false, npmCommand = "install", memoraxVerify, memoraxEnv = {}, memoryStatusFixture, hookSnapshot = [], hookUpdatePlan = [], hookFullReview = false, hookFullReviewMissing = false, hookSnapshotFails = false, hookCheckFails = false, hookTrustFails = false, ttyOverride } = {}) {
+async function runPostinstall({ existingCache = false, explicitCache = false, hookRuntimeFailure, failStartOnce = false, connectionAuthorityFailure = false, runtimeAuthorityFailureCode, officialMode = false, codexConfig, memoraxCodeConfig, memoraxCodeConfigMode, emptyClaudeSettings = false, claudeAvailable = true, claudeVersionFails = false, claudeSettingsText, codexAvailable = true, codexAppOnly = false, vscodeOnly = false, opencodeAvailable = false, opencodeXdgAvailable = false, opencodeCliAvailable = false, skipCodexPluginInstall = false, skipClaudeAdapterInstall = false, skipOpenCodeAdapterInstall = false, unavailableStatus = false, prefixedStatus = false, input = "", interactive = false, npmCommand = "install", memoraxVerify, memoraxEnv = {}, memoryStatusFixture, hookSnapshot = [], hookUpdatePlan = [], hookFullReview = false, hookFullReviewMissing = false, hookSnapshotFails = false, hookCheckFails = false, hookTrustFails = false, ttyOverride } = {}) {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-postinstall-"));
   const binDir = join(root, "bin");
   const codexHome = join(root, "codex-home");
@@ -104,6 +112,7 @@ async function runPostinstall({ existingCache = false, explicitCache = false, ho
   const memoraxServer = memoraxVerify ? await startMockMemorax(memoraxVerify) : undefined;
   await mkdir(binDir, { recursive: true });
   await mkdir(fakeBin, { recursive: true });
+  if (process.platform !== "win32") await symlink(process.execPath, join(fakeBin, "node"));
   await mkdir(libDir, { recursive: true });
   await mkdir(nodeModulesDir, { recursive: true });
   await copyFile(postinstallPath, join(binDir, "memorax-code-plugin-postinstall.mjs"));
@@ -349,14 +358,10 @@ async function runPostinstall({ existingCache = false, explicitCache = false, ho
         "",
       ].join("\n"), { mode: 0o755 });
       await chmod(appCodex, 0o755);
-      await symlink(process.execPath, join(fakeBin, "node"));
     }
   }
   if (vscodeOnly) {
     await writeMockVsCodeRuntimes({ home, logPath });
-    if (process.platform !== "win32") {
-      await symlink(process.execPath, join(fakeBin, "node"));
-    }
   }
   if (claudeAvailable) {
     await writeFile(join(fakeBin, "claude"), [
@@ -368,6 +373,11 @@ async function runPostinstall({ existingCache = false, explicitCache = false, ho
       "",
     ].join("\n"), { mode: 0o755 });
     await chmod(join(fakeBin, "claude"), 0o755);
+  }
+  if (opencodeCliAvailable) {
+    const executable = join(fakeBin, process.platform === "win32" ? "opencode.cmd" : "opencode");
+    await writeFile(executable, "#!/usr/bin/env node\nprocess.exit(0);\n", { mode: 0o755 });
+    await chmod(executable, 0o755);
   }
   const cacheMarketplace = existingCache ? "personal" : explicitCache ? "memorax-code" : undefined;
   if (cacheMarketplace) {
@@ -451,7 +461,9 @@ async function runPostinstall({ existingCache = false, explicitCache = false, ho
     OPENCODE_CONFIG_DIR: opencodeAvailable ? opencodeConfigDir : "",
     XDG_CONFIG_HOME: opencodeXdgAvailable ? xdgConfigHome : "",
     MEMORAX_CODE_HOME: memoraxCodeHome,
-    PATH: codexAppOnly || vscodeOnly ? fakeBin : `${fakeBin}${delimiter}${process.env.PATH ?? ""}`,
+    PATH: codexAppOnly || vscodeOnly
+      ? fakeBin
+      : `${fakeBin}${delimiter}${pathWithoutCommand("opencode", process.env.PATH)}`,
     npm_command: npmCommand,
     MEMORAX_CODE_NPM_POSTINSTALL_VERBOSE: "1",
     MEMORAX_CODE_NPM_POSTINSTALL_ASSUME_INTERACTIVE: interactive ? "1" : "0",
@@ -1104,9 +1116,38 @@ test("postinstall detects OpenCode Desktop from its XDG config directory", async
   const run = await runPostinstall({ opencodeXdgAvailable: true });
   try {
     assert.equal(run.result.code, 0, run.result.stderr);
-    assert.match(run.result.stderr, /OpenCode Desktop configuration: found/);
+    assert.match(run.result.stderr, /OpenCode configuration: found/);
+    assert.match(run.result.stderr, /OpenCode CLI: not detected/);
     assert.match(run.log, /^memorax-code start --clients all$/m);
     assert.match(run.log, /^memorax-code status --clients all$/m);
+    const config = await readFile(join(run.memoraxCodeHome, "config.toml"), "utf8");
+    assert.match(tomlSectionText(config, "clients"), /^opencode = true(?:\s+#.*)?$/m);
+  } finally {
+    await rm(run.root, { recursive: true, force: true });
+  }
+});
+
+test("postinstall detects OpenCode CLI without an existing config directory", async () => {
+  const run = await runPostinstall({ opencodeCliAvailable: true });
+  try {
+    assert.equal(run.result.code, 0, run.result.stderr);
+    assert.match(run.result.stderr, /OpenCode configuration: not detected/);
+    assert.match(run.result.stderr, /OpenCode CLI: found in PATH/);
+    assert.match(run.log, /^memorax-code start --clients all$/m);
+    const config = await readFile(join(run.memoraxCodeHome, "config.toml"), "utf8");
+    assert.match(tomlSectionText(config, "clients"), /^opencode = true(?:\s+#.*)?$/m);
+  } finally {
+    await rm(run.root, { recursive: true, force: true });
+  }
+});
+
+test("postinstall detects OpenCode when Desktop configuration and CLI are both available", async () => {
+  const run = await runPostinstall({ opencodeXdgAvailable: true, opencodeCliAvailable: true });
+  try {
+    assert.equal(run.result.code, 0, run.result.stderr);
+    assert.match(run.result.stderr, /OpenCode configuration: found/);
+    assert.match(run.result.stderr, /OpenCode CLI: found in PATH/);
+    assert.match(run.log, /^memorax-code start --clients all$/m);
     const config = await readFile(join(run.memoraxCodeHome, "config.toml"), "utf8");
     assert.match(tomlSectionText(config, "clients"), /^opencode = true(?:\s+#.*)?$/m);
   } finally {

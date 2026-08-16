@@ -20,6 +20,7 @@ import {
 import { stagePackagedClientHookRuntime } from "../lib/client-hook-runtime.mjs";
 import { ensureClaudeCommandEnv } from "../lib/resolve-claude-command.mjs";
 import { ensureCodexCommandEnv } from "../lib/resolve-codex-command.mjs";
+import { commandOnPath } from "../lib/vscode-extension-command.mjs";
 import { resolveWindowsCliInvocation } from "../lib/windows-cli-invocation.mjs";
 
 const PLUGIN_NAME = "memorax-code-codex-adapter";
@@ -114,7 +115,7 @@ if (requestedClients.includes("claude") && !skipClaudeAdapterInstall && !claudeP
   log("Claude Code runtime was not detected; skipping its adapter setup.");
 }
 if (requestedClients.includes("opencode") && !skipOpenCodeAdapterInstall && !opencodePreflight.ok) {
-  log("OpenCode configuration was not detected; skipping its adapter setup.");
+  log("OpenCode runtime or configuration was not detected; skipping its adapter setup.");
 }
 if (writeClientSelectionConfig(selectedClients) === "failed") {
   printPostinstallSummary("not-verified");
@@ -859,8 +860,16 @@ function runOpenCodePreflight({ integrationSelected = true } = {}) {
   const explicitConfigDir = stringOption(process.env.OPENCODE_CONFIG_DIR);
   const configHome = stringOption(process.env.XDG_CONFIG_HOME) ?? join(homedir(), ".config");
   const configDir = resolve(explicitConfigDir ?? join(configHome, "opencode"));
-  const detected = explicitConfigDir !== undefined || existsSync(configDir);
-  log(`OpenCode Desktop configuration: ${detected ? `found (${configDir})` : "not detected"}`);
+  const configDetected = explicitConfigDir !== undefined || existsSync(configDir);
+  const cliDetected = commandOnPath(
+    "opencode",
+    process.env.PATH,
+    process.platform,
+    process.env.PATHEXT,
+  );
+  const detected = configDetected || cliDetected;
+  log(`OpenCode configuration: ${configDetected ? `found (${configDir})` : "not detected"}`);
+  log(`OpenCode CLI: ${cliDetected ? "found in PATH" : "not detected"}`);
   if (!detected) return { ok: false };
   log(integrationSelected
     ? "Keeping OpenCode provider config unchanged and enabling the shared memory plugin integration."

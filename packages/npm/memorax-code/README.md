@@ -21,7 +21,7 @@ npm install -g @memorax/memorax-code --foreground-scripts
 Keep `--foreground-scripts` so npm displays the complete setup.
 
 The installer automatically detects available Codex, Claude Code, and OpenCode
-Desktop clients and configures each client it finds. Follow the prompts to
+clients and configures each client it finds. Follow the prompts to
 enter your MemoraX Base User ID, preferred language, and API key. When Codex is
 detected, review and approve its Hook activation.
 
@@ -34,9 +34,9 @@ After the first installation, restart or refresh the detected clients before
 opening a new session. In Codex, enable **MemoraX Code Codex Adapter** from
 Plugins or `/plugins` if it is not already enabled.
 
-OpenCode Desktop is detected through its configuration directory; a standalone
-`opencode` executable is not required in `PATH`. The default managed discovery
-paths are `~/.config/opencode/plugins/memorax-code.js` and
+OpenCode is detected through its shared configuration directory or an
+`opencode` CLI in `PATH`; Desktop-only installations do not require the CLI.
+The default managed discovery paths are `~/.config/opencode/plugins/memorax-code.js` and
 `~/.config/opencode/skills/memorax-code/`. The installer does not modify
 `opencode.json` or `opencode.jsonc`.
 

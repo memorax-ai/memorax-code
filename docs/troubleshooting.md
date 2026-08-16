@@ -113,8 +113,9 @@ memorax-code status --clients opencode
 memorax-code-opencode doctor
 ```
 
-OpenCode does not require a standalone `opencode` command in `PATH`. Its
-Desktop integration is auto-discovered from these default managed locations:
+OpenCode Desktop does not require a standalone `opencode` command in `PATH`.
+Installation detects either its shared configuration directory or an
+`opencode` CLI in `PATH`, then writes these default managed locations:
 
 ```text
 ~/.config/opencode/plugins/memorax-code.js

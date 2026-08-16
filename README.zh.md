@@ -55,11 +55,11 @@ npm install -g @memorax/memorax-code --foreground-scripts
 ```
 
 请保留 `--foreground-scripts`，以便查看完整的安装过程。安装器会自动检测本机可用的 Codex、
-Claude Code 和 OpenCode Desktop，并为检测到的客户端启用集成。按照终端提示输入 Base User ID、
+Claude Code 和 OpenCode，并为检测到的客户端启用集成。按照终端提示输入 Base User ID、
 偏好语言和 API Key；Codex 用户还需按提示完成 Hook 的激活和信任确认。
 
-OpenCode Desktop 通过配置目录进行检测，不要求独立的 `opencode` 命令位于 `PATH`。默认情况下，
-安装器会将受管插件 loader 放到 `~/.config/opencode/plugins/memorax-code.js`，并将共享 Skill
+OpenCode 可通过共享配置目录或 `PATH` 中的 `opencode` CLI 检测；仅安装 Desktop 时不要求存在
+CLI。默认情况下，安装器会将受管插件 loader 放到 `~/.config/opencode/plugins/memorax-code.js`，并将共享 Skill
 放到 `~/.config/opencode/skills/memorax-code/`。安装器不会修改 `opencode.json` 或
 `opencode.jsonc`。安装完成后，请重启或刷新 OpenCode。
 

@@ -76,9 +76,10 @@ runs the Backend without managing a client integration.
 
 ## OpenCode integration paths
 
-OpenCode Desktop is detected through its configuration directory, so a
-standalone `opencode` executable does not need to be in `PATH`. The default
-managed paths are:
+OpenCode is detected when its shared configuration directory exists or an
+`opencode` executable is available in `PATH`. Desktop-only installations do
+not require the CLI, and CLI-only installations do not require a pre-existing
+configuration directory. The default managed paths are:
 
 ```text
 ~/.config/opencode/plugins/memorax-code.js

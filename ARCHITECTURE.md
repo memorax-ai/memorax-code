@@ -175,8 +175,10 @@ replace the currently authoritative Hook generation. Cross-process lifecycle
 decisions use durable records and bounded locks rather than relying on one
 process's in-memory serialization.
 
-OpenCode lifecycle discovery is based on its Desktop configuration directory,
-not a standalone CLI executable. The installer records managed ownership under
+OpenCode lifecycle discovery accepts either its shared configuration directory
+or an `opencode` CLI executable in `PATH`, so Desktop-only, CLI-only, and
+combined installations enter the same managed integration. The installer
+records managed ownership under
 `$MEMORAX_CODE_HOME/adapters/opencode`, writes the auto-discovered plugin and
 skill artifacts under the OpenCode configuration directory, and leaves model
 and provider configuration untouched.
