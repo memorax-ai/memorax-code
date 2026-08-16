@@ -1,3 +1,10 @@
 - insert:
+    - id: memorax-code-skill-filesystem
+      name: '@deepseek-ai/dsh-skill-filesystem'
+      config:
+        providerName: memorax-code-bundled
+        includeDefaultRoots: false
+        watch: false
+        bundledSkillDir: !!js "process.getBuiltinModule('node:url').fileURLToPath(new URL('node_modules/@memorax-code/dsh-adapter/skills/', baseUrl))"
     - id: memorax-code
       name: '@memorax-code/dsh-adapter'

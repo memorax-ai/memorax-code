@@ -13,11 +13,7 @@ import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildClaudeMarketplace } from "../packages/ts/memorax-code-claude-adapter/scripts/build-marketplace.mjs";
 import { assertLocalTraceOnly } from "./check-local-trace-only.mjs";
-import {
-  assertDshSkillDefinition,
-  dshRepoMemoryJobSource,
-  materializeDshSkillDefinition,
-} from "./dsh-skill-materialization.mjs";
+import { dshRepoMemoryJobSource } from "./dsh-skill-materialization.mjs";
 import { isAllowedNpmPackPath } from "./npm-package-layout.mjs";
 import { npmShippedDocs } from "./npm-shipped-docs.mjs";
 import {
@@ -88,7 +84,7 @@ async function stageMainPackage(destination) {
   for (const mapping of npmMainSourceTrees) {
     await copyTree(mapping.source, join(destination, mapping.destination));
   }
-  await materializeDshSkill(destination);
+  await materializeDshRepoMemoryHelper(destination);
   await copyGeneratedTree(
     "packages/ts/memorax-code-backend/dist",
     join(destination, "lib/memorax-code-backend/dist"),
@@ -223,19 +219,22 @@ async function validateStaging(packageRoot) {
     "lib/memorax-code-dsh-adapter/memorax-code-adapter-common/src/runtime-record.mjs",
     "lib/memorax-code-dsh-adapter/memorax-code-adapter-common/src/windows-cli-invocation.mjs",
     "lib/memorax-code-dsh-adapter/skills/memorax-code/SKILL.md",
-    "lib/memorax-code-dsh-adapter/skills/memorax-code/dsh-definition.json",
   ]) {
     if (!(await stat(join(packageRoot, requiredPath)).catch(() => undefined))?.isFile()) {
       throw new Error(`staged npm package is missing required runtime entrypoint: ${requiredPath}`);
     }
   }
-  const canonicalSkill = await readFile(
+  const dshSkill = await readFile(
     join(packageRoot, "lib/memorax-code-dsh-adapter/skills/memorax-code/SKILL.md"),
     "utf8",
   );
-  assertDshSkillDefinition(await readJson(
-    join(packageRoot, "lib/memorax-code-dsh-adapter/skills/memorax-code/dsh-definition.json"),
-  ), canonicalSkill);
+  const canonicalSkill = await readFile(
+    join(repoRoot, "packages/ts/memorax-code-codex-adapter/skills/memorax-code/SKILL.md"),
+    "utf8",
+  );
+  if (dshSkill !== canonicalSkill) {
+    throw new Error("staged DSH skill must remain byte-identical to the canonical skill");
+  }
   const dshRepoRead = await readFile(
     join(packageRoot, "lib/memorax-code-dsh-adapter/skills/memorax-code/references/repo-read.md"),
     "utf8",
@@ -264,14 +263,8 @@ async function validateStaging(packageRoot) {
   });
 }
 
-async function materializeDshSkill(packageRoot) {
+async function materializeDshRepoMemoryHelper(packageRoot) {
   const skillRoot = join(packageRoot, "lib/memorax-code-dsh-adapter/skills/memorax-code");
-  const canonicalSkill = await readFile(join(skillRoot, "SKILL.md"), "utf8");
-  await writeFile(
-    join(skillRoot, "dsh-definition.json"),
-    `${JSON.stringify(materializeDshSkillDefinition(canonicalSkill), null, 2)}\n`,
-    "utf8",
-  );
   const hooksRoot = join(packageRoot, "lib/memorax-code-dsh-adapter/hooks");
   await mkdir(hooksRoot, { recursive: true });
   await writeFile(join(hooksRoot, "repo-memory-job.mjs"), dshRepoMemoryJobSource(), "utf8");

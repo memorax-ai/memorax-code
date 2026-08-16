@@ -5,7 +5,6 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { assertLocalTraceOnly } from "./check-local-trace-only.mjs";
-import { assertDshSkillDefinition } from "./dsh-skill-materialization.mjs";
 import { isAllowedNpmPackPath } from "./npm-package-layout.mjs";
 import { loadUndeclaredNpmPackPaths } from "./npm-source-files.mjs";
 
@@ -111,7 +110,6 @@ for (const requiredPath of [
   "lib/memorax-code-dsh-adapter/memorax-code-adapter-common/src/runtime-record.mjs",
   "lib/memorax-code-dsh-adapter/memorax-code-adapter-common/src/windows-cli-invocation.mjs",
   "lib/memorax-code-dsh-adapter/skills/memorax-code/SKILL.md",
-  "lib/memorax-code-dsh-adapter/skills/memorax-code/dsh-definition.json",
 ]) {
   if (!paths.has(requiredPath)) {
     throw new Error(`npm pack is missing required runtime entrypoint: ${requiredPath}`);
@@ -151,12 +149,17 @@ try {
   if (packedManifest.engines?.node !== ">=24") {
     throw new Error("npm pack must require Node.js 24 or newer");
   }
-  const dshSkillRoot = join(extracted, "package", "lib/memorax-code-dsh-adapter/skills/memorax-code");
-  const canonicalSkill = await readFile(join(dshSkillRoot, "SKILL.md"), "utf8");
-  assertDshSkillDefinition(
-    JSON.parse(await readFile(join(dshSkillRoot, "dsh-definition.json"), "utf8")),
-    canonicalSkill,
+  const packedDshSkill = await readFile(
+    join(extracted, "package", "lib/memorax-code-dsh-adapter/skills/memorax-code/SKILL.md"),
+    "utf8",
   );
+  const canonicalSkill = await readFile(
+    join(repoRoot, "packages/ts/memorax-code-codex-adapter/skills/memorax-code/SKILL.md"),
+    "utf8",
+  );
+  if (packedDshSkill !== canonicalSkill) {
+    throw new Error("npm pack DSH skill must remain byte-identical to the canonical skill");
+  }
   await assertLocalTraceOnly({
     repoRoot,
     artifactRoots: [extracted],
