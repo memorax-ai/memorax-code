@@ -294,17 +294,16 @@ sequenceDiagram
   parsing remains client-specific.
 - DSH uses the shared retrieval, buffering, chunking, redaction, provider, and
   client-qualified trace paths. Its normalized Search and Add operations enter
-  DSH trace, while its Viewer and writeback-reconciliation projections remain
-  intentionally disabled until those capabilities are added explicitly.
+  DSH trace and pending Add tasks use the shared writeback-reconciliation
+  projection. Its Viewer projection remains intentionally disabled until that
+  capability is added explicitly.
 - When a degraded direct-`.git` scope upgrades to verified Git scope, the
   buffer runtime cancels and discards pending fallback turns for the same
   client and session before buffering under the Git scope. It does not migrate
   or flush those turns across namespaces.
-- For clients with writeback reconciliation enabled, pending status can be
-  reconstructed from persisted local trace after Backend restart. A
-  still-pending provider status updates in-memory reconciliation policy rather
-  than appending a new trace event. DSH trace retains the accepted task event,
-  but DSH pending tasks are not yet reconstructed by this projection.
+- Pending writeback status can be reconstructed from client-qualified local
+  trace after Backend restart. A still-pending provider status updates
+  in-memory reconciliation policy rather than appending a new trace event.
 
 ### 3.5 Repo Memory coordination
 

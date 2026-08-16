@@ -223,7 +223,7 @@ test("Backend runs DSH Search, normalized Trace, and Add from one native Turn in
   }
 });
 
-test("Backend recovers DSH Trace and writeback from the native log after restart", async () => {
+test("Backend recovers DSH Trace, writeback, and task status across restarts", async () => {
   const sessionHome = await mkdtemp(join(tmpdir(), "memorax-code-dsh-recovery-"));
   const interval = dshTurnInterval({
     sessionId: "session-dsh-recovered",
@@ -231,7 +231,15 @@ test("Backend recovers DSH Trace and writeback from the native log after restart
     turn: 2,
     startSeq: 20,
   });
-  const { fetchImpl, requests } = memoraxAddFetch();
+  const { fetchImpl: addFetch, requests } = memoraxAddFetch();
+  const fetchImpl = async (url, init) => (
+    new URL(String(url)).pathname.includes("/v1/memories/add/status/")
+      ? new Response(JSON.stringify({ status: "processing" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+      : addFetch(url, init)
+  );
   const restoreEnv = withEnv({
     MEMORAX_CODE_HOME: sessionHome,
     MEMORAX_CODE_CODEX_TRACE_ENABLED: "false",
@@ -248,6 +256,7 @@ test("Backend recovers DSH Trace and writeback from the native log after restart
   globalThis.fetch = fetchImpl;
   let firstServer;
   let secondServer;
+  let thirdServer;
   try {
     firstServer = createBackendServer(createBackendState("127.0.0.1", { sessionHome }));
     const firstUrl = await listen(firstServer);
@@ -277,7 +286,10 @@ test("Backend recovers DSH Trace and writeback from the native log after restart
     });
     assert.equal(writeback.status, 200);
     assert.deepEqual(await writeback.json(), { ok: true, scheduled: true });
-    await waitFor(() => requests.length === 1, "recovered DSH writeback did not call MemoraX add");
+    await waitFor(
+      () => requests.some((request) => request.url.endsWith("/v1/memories/add")),
+      "recovered DSH writeback did not call MemoraX add",
+    );
 
     const traceEventsPath = join(
       sessionHome,
@@ -293,6 +305,26 @@ test("Backend recovers DSH Trace and writeback from the native log after restart
       /"type":"memory_writeback"/,
       "recovered DSH writeback did not reach its trace",
     );
+    await secondServer.shutdown();
+    const statusRequests = [];
+    globalThis.fetch = async (url) => {
+      statusRequests.push(String(url));
+      return new Response(JSON.stringify({
+        status: "success",
+        memory: {
+          summary: "Reconciled DSH memory.",
+          events: [{ id: "dsh-reconciled-memory", event: "ADD" }],
+        },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    };
+    thirdServer = createBackendServer(createBackendState("127.0.0.1", { sessionHome }));
+    await listen(thirdServer);
+    await waitForFile(
+      traceEventsPath,
+      /"type":"memory_writeback_status"/,
+      "restarted Backend did not reconcile the DSH writeback task",
+    );
+
     const traceEvents = (await readFile(traceEventsPath, "utf8"))
       .trim()
       .split("\n")
@@ -302,10 +334,18 @@ test("Backend recovers DSH Trace and writeback from the native log after restart
       "turn_end",
       "turn_materialized",
       "memory_writeback",
+      "memory_writeback_status",
     ]);
     assert.equal(traceEvents[0].trace.context_origin, "dsh-cordis-turn-start");
     assert.equal(traceEvents[1].trace.context_origin, "dsh-session-event-log");
     assert.equal(traceEvents[2].request.prompt, "Implement the DSH adapter.");
+    assert.equal(statusRequests.length, 1);
+    assert.match(new URL(statusRequests[0]).pathname, /\/v1\/memories\/add\/status\/hook-memory-add$/);
+    assert.equal(traceEvents[4].trace.client, "dsh");
+    assert.equal(traceEvents[4].source, "writeback_reconciler");
+    assert.equal(traceEvents[4].request.original_event_id, traceEvents[3].event_id);
+    assert.equal(traceEvents[4].response.outcome, "saved");
+    assert.equal(traceEvents[4].response.savedMemoryCount, 1);
     const currentTurn = JSON.parse(await readFile(join(
       sessionHome,
       "debug",
@@ -315,6 +355,7 @@ test("Backend recovers DSH Trace and writeback from the native log after restart
     ), "utf8"));
     assert.equal(currentTurn.turn_state, "completed");
   } finally {
+    await thirdServer?.shutdown();
     await secondServer?.shutdown();
     await firstServer?.shutdown();
     globalThis.fetch = originalFetch;
