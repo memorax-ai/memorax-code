@@ -40,7 +40,7 @@ type DshSessionTurnInput = Readonly<{
 }>;
 
 const DSH_SESSION_FORMAT_VERSION = 0;
-// Mirrors the DSH rc.5/rc.6 generated persistence catalog. Events outside this
+// Mirrors the supported DSH rc.6 generated persistence catalog. Events outside this
 // vocabulary are safe to skip only when their envelope explicitly says so.
 const KNOWN_SESSION_EVENT_TYPES = new Set([
   "agent-preset/selected",
@@ -88,23 +88,10 @@ const KNOWN_SESSION_EVENT_TYPES = new Set([
   "tool-workflow/run-start",
   "web/deepseek-search-llm-request",
 ]);
-const TURN_EVENT_TYPES = new Set([
+const TURN_IDENTITY_REQUIRED_EVENT_TYPES = new Set([
   "turn/start",
   "turn/end",
-  "step/start",
-  "step/end",
-  "assistant/chunk",
   "assistant/message",
-  "tool/call",
-  "tool/result",
-]);
-const STEP_EVENT_TYPES = new Set([
-  "step/start",
-  "step/end",
-  "assistant/chunk",
-  "assistant/message",
-  "tool/call",
-  "tool/result",
 ]);
 
 export function dshSessionEventTurn(input: DshSessionTurnInput): DshSessionTurnResult {
@@ -127,15 +114,13 @@ export function dshSessionEventTurn(input: DshSessionTurnInput): DshSessionTurnR
 
   const userParts: string[] = [];
   const assistantParts: string[] = [];
-  const toolCalls = new Set<string>();
   let outcome: string | undefined;
 
   for (const [index, value] of input.events.entries()) {
     if (!isRecord(value)) return { ok: false, reason: "event_invalid" };
     const type = stringField(value, "type");
     const seq = safeIntegerField(value, "seq", 0);
-    const time = safeIntegerField(value, "time", 0);
-    if (!type || seq === undefined || time === undefined) {
+    if (!type || seq === undefined) {
       return { ok: false, reason: "event_invalid" };
     }
     if (seq !== input.startSeq + index) {
@@ -148,24 +133,17 @@ export function dshSessionEventTurn(input: DshSessionTurnInput): DshSessionTurnR
       if (value.ignorable === true) continue;
       return { ok: false, reason: "unknown_required_event" };
     }
-    if (!isRecord(value.data)) return { ok: false, reason: "event_invalid" };
 
-    const data = value.data;
-    const carriesTurn = Object.prototype.hasOwnProperty.call(data, "turn");
-    const eventTurn = carriesTurn ? safeIntegerField(data, "turn", 1) : undefined;
+    const data = isRecord(value.data) ? value.data : undefined;
+    const carriesTurn = data ? Object.prototype.hasOwnProperty.call(data, "turn") : false;
+    const eventTurn = data && carriesTurn ? safeIntegerField(data, "turn", 1) : undefined;
     if (
       (carriesTurn && eventTurn === undefined)
-      || (TURN_EVENT_TYPES.has(type) && eventTurn === undefined)
+      || (TURN_IDENTITY_REQUIRED_EVENT_TYPES.has(type) && eventTurn === undefined)
     ) return { ok: false, reason: "event_invalid" };
     if (eventTurn !== undefined && eventTurn !== input.turn) {
       return { ok: false, reason: "turn_identity_mismatch" };
     }
-    const carriesStep = Object.prototype.hasOwnProperty.call(data, "step");
-    const eventStep = carriesStep ? safeIntegerField(data, "step", 1) : undefined;
-    if (
-      (carriesStep && eventStep === undefined)
-      || (STEP_EVENT_TYPES.has(type) && eventStep === undefined)
-    ) return { ok: false, reason: "event_invalid" };
     if (
       (type === "turn/start" && index !== 0)
       || (type === "turn/end" && index !== input.events.length - 1)
@@ -177,16 +155,15 @@ export function dshSessionEventTurn(input: DshSessionTurnInput): DshSessionTurnR
       case "turn/start":
         break;
       case "turn/end": {
-        const reason = isRecord(data.reason) ? stringField(data.reason, "kind") : undefined;
+        const reason = data && isRecord(data.reason) ? stringField(data.reason, "kind") : undefined;
         if (!reason) return { ok: false, reason: "event_invalid" };
         outcome = reason;
         break;
       }
-      case "step/start":
-      case "step/end":
-        break;
       case "user/message": {
-        if (value.surfaceOp !== "append") return { ok: false, reason: "event_invalid" };
+        if (!data || value.surfaceOp !== "append") {
+          return { ok: false, reason: "event_invalid" };
+        }
         const message = messageEnvelope(data, "user");
         if (!message) return { ok: false, reason: "event_invalid" };
         if (message.source.kind === "user") {
@@ -196,11 +173,8 @@ export function dshSessionEventTurn(input: DshSessionTurnInput): DshSessionTurnR
         }
         break;
       }
-      case "assistant/chunk":
-        if (!isRecord(data.chunk)) return { ok: false, reason: "event_invalid" };
-        break;
       case "assistant/message": {
-        if (value.surfaceOp !== "append" || !isRecord(data.message)) {
+        if (!data || value.surfaceOp !== "append" || !isRecord(data.message)) {
           return { ok: false, reason: "event_invalid" };
         }
         const message = messageEnvelope(data.message, "assistant");
@@ -215,42 +189,6 @@ export function dshSessionEventTurn(input: DshSessionTurnInput): DshSessionTurnR
         if (text) assistantParts.push(text);
         break;
       }
-      case "tool/call": {
-        const callId = stringField(data, "callId");
-        if (!callId || !stringField(data, "name") || typeof data.arguments !== "string") {
-          return { ok: false, reason: "event_invalid" };
-        }
-        toolCalls.add(callId);
-        break;
-      }
-      case "tool/result": {
-        if (value.surfaceOp !== "append" || !isRecord(data.message)) {
-          return { ok: false, reason: "event_invalid" };
-        }
-        const message = messageEnvelope(data.message, "user");
-        const callId = message && message.source.kind === "tool"
-          ? stringField(message.source, "callId")
-          : undefined;
-        if (!message || !callId || !toolCalls.has(callId)) {
-          return { ok: false, reason: "event_invalid" };
-        }
-        break;
-      }
-      case "todo/write":
-        if (!Array.isArray(data.todos)) return { ok: false, reason: "event_invalid" };
-        break;
-      case "request/header":
-        if (!isRecord(data.header) || !stringField(data, "reason")) {
-          return { ok: false, reason: "event_invalid" };
-        }
-        break;
-      case "request/context":
-        if (!stringField(data, "provider") || !stringField(data, "model")) {
-          return { ok: false, reason: "event_invalid" };
-        }
-        break;
-      case "session/end-seed":
-        break;
     }
   }
 
@@ -305,7 +243,6 @@ type MessageEnvelope = Readonly<{
 function messageEnvelope(value: Record<string, unknown>, role: "user" | "assistant"): MessageEnvelope | undefined {
   if (
     value.role !== role
-    || !stringField(value, "id")
     || !Array.isArray(value.content)
     || !isRecord(value.source)
     || !stringField(value.source, "kind")

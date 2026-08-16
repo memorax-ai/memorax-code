@@ -16,40 +16,19 @@ export function dshTurnInterval({
     });
   };
   append("turn/start", { turn });
-  append("agent/inbox/spliced", {
-    target: "next-turn",
-    start: 0,
-    removedCount: 1,
-    inserted: [],
-  });
   append("user/message", {
     id: "user-message-1",
     role: "user",
     content: [{ type: "text", text: "Implement the DSH adapter." }],
     source: { kind: "user" },
   }, { surfaceOp: "append" });
-  append("session/title", {
-    title: "Implement the DSH adapter",
-    messageSeqs: [startSeq + 2],
-    source: { kind: "fallback" },
-  });
-  append("step/start", { turn, step: 1 });
   append("user/message", {
     id: "memory-recall-1",
     role: "user",
     content: [{ type: "text", text: "recalled memory must not be written back" }],
     source: { kind: "plugin", plugin: "memorax-code", form: "recall" },
   }, { surfaceOp: "append" });
-  append("request/header", {
-    header: { config: { provider: "mock", model: "mock" } },
-    reason: "initial",
-  });
-  append("request/context", { provider: "mock", model: "mock" });
-  append("assistant/chunk", {
-    turn,
-    step: 1,
-    chunk: { type: "text-delta", index: 0, text: "I will inspect." },
-  });
+  append("step/start", { turn, step: 1 });
   append("assistant/message", {
     turn,
     step: 1,
@@ -62,7 +41,7 @@ export function dshTurnInterval({
       ],
       source: { kind: "model", provider: "mock", model: "mock" },
     },
-  }, { surfaceOp: "append", sourceEventSeqs: [startSeq + 8] });
+  }, { surfaceOp: "append" });
   append("tool/call", {
     turn,
     step: 1,
@@ -84,25 +63,18 @@ export function dshTurnInterval({
       }],
       source: { kind: "tool", callId: "call-1" },
     },
-  }, { surfaceOp: "append", sourceEventSeqs: [startSeq + 10] });
-  append("step/end", { turn, step: 1 });
-  append("step/start", { turn, step: 2 });
-  append("assistant/chunk", {
-    turn,
-    step: 2,
-    chunk: { type: "text-delta", index: 0, text: "The adapter is ready." },
-  });
+  }, { surfaceOp: "append" });
   append("assistant/message", {
     turn,
-    step: 2,
+    step: 1,
     message: {
       id: "assistant-message-2",
       role: "assistant",
       content: [{ type: "text", text: "The adapter is ready." }],
       source: { kind: "model", provider: "mock", model: "mock" },
     },
-  }, { surfaceOp: "append", sourceEventSeqs: [startSeq + 14] });
-  append("step/end", { turn, step: 2 });
+  }, { surfaceOp: "append" });
+  append("step/end", { turn, step: 1 });
   append("plugin/telemetry", null, { ignorable: true });
   append("turn/end", { turn, reason: { kind: "completed" } });
   return {

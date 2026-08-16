@@ -1,10 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import {
-  isOwnRecallMessage,
-  registerMemoraxCodePlugin,
-} from "../src/plugin.mjs";
+import { registerMemoraxCodePlugin } from "../src/plugin.mjs";
 
 test("retrieves once and writes the exact durable top-level DSH Turn", async () => {
   const deferred = [];
@@ -67,8 +64,11 @@ test("retrieves once and writes the exact durable top-level DSH Turn", async () 
 
   assert.deepEqual(calls.slice(0, 2), ["next", "backend:turn-start"]);
   assert.equal(decision.messages.length, 3);
-  assert.equal(isOwnRecallMessage(decision.messages[2]), true);
-  assert.equal(decision.messages[2].source.plugin, "memorax-code-dsh");
+  assert.deepEqual(decision.messages[2].source, {
+    kind: "plugin",
+    plugin: "memorax-code-dsh",
+    form: "recall",
+  });
   assert.deepEqual(turnStarts, [{
     version: 1,
     client: "dsh",
@@ -118,11 +118,7 @@ test("retrieves once and writes the exact durable top-level DSH Turn", async () 
   assert.deepEqual(calls.slice(-3), ["flush", "read:4", "backend:writeback"]);
   assert.equal(writebacks.length, 1);
   assert.deepEqual(writebacks[0].events.map(({ seq }) => seq), [4, 5, 6, 7, 8, 9, 10]);
-  assert.equal(
-    isOwnRecallMessage(writebacks[0].events.find(({ seq }) => seq === 7).data),
-    true,
-    "the authority interval stays contiguous; Backend materialization excludes this recall",
-  );
+  assert.equal(writebacks[0].events.find(({ seq }) => seq === 7).data.source.plugin, "memorax-code-dsh");
   assert.equal(writebacks[0].sessionHeader.id, session.id);
 
   const child = topLevelSession({

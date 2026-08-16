@@ -1,7 +1,6 @@
 import {
   createTurnStartCommand,
   createWritebackCommand,
-  exactTurnWindow,
 } from "./protocol.mjs";
 
 export const PLUGIN_NAME = "memorax-code";
@@ -163,11 +162,6 @@ async function captureWriteback(ctx, backendClient, session, turn, state, signal
   signal.throwIfAborted();
   const persisted = await ctx.sessionPersistence.readFrom(session.id, state.startSeq, signal);
   signal.throwIfAborted();
-  const events = exactTurnWindow(persisted?.events, {
-    turn,
-    startSeq: state.startSeq,
-    endSeq: state.endSeq,
-  });
   const cwd = sessionCwd(session);
   if (!cwd) throw new Error("DSH session has no authoritative cwd");
   const command = createWritebackCommand({
@@ -177,7 +171,7 @@ async function captureWriteback(ctx, backendClient, session, turn, state, signal
     endSeq: state.endSeq,
     cwd,
     sessionHeader: persisted?.meta,
-    events,
+    events: persisted?.events,
   });
   await backendClient.writebackTurn(command, { signal });
 }
@@ -190,13 +184,6 @@ export function isMemoryEligibleSession(session) {
     && header.id === session.id
     && header.origin !== "subagent"
     && (header.delegationDepth === undefined || header.delegationDepth === 0);
-}
-
-export function isOwnRecallMessage(message) {
-  return message?.role === "user"
-    && message.source?.kind === "plugin"
-    && message.source.plugin === RECALL_SOURCE_PLUGIN
-    && message.source.form === "recall";
 }
 
 function userPrompt(messages) {

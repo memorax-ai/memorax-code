@@ -1,8 +1,5 @@
 import {
-  createAutomaticMemoryWritebackRuntime,
-  type AutomaticMemoryWritebackEnqueue,
   type AutomaticMemoryWritebackRejectionReason,
-  type AutomaticMemoryWritebackRuntime,
 } from "../../memory/automatic-writeback.js";
 import { retrieveAutomaticMemoryContext } from "../../memory/automatic-retrieval.js";
 import type {
@@ -12,13 +9,11 @@ import type {
 } from "../../memory/hook-command.js";
 import type { MemoryDiagnosticLogger } from "../../memory/observability.js";
 import {
-  createRepositoryMemorySessionRuntime,
   resolvedRepoMemoryWorktree,
   type ConfiguredRepositoryMemoryResult,
   type RepositoryMemorySessionRuntime,
 } from "../../memory/repository-session.js";
 import {
-  createMemoryTurnCoordinator,
   type MemoryTurnCoordinator,
   type MemoryTurnState,
 } from "../../memory/turn-coordinator.js";
@@ -40,53 +35,29 @@ export type DshMemoryHookWritebackResult =
   | { ok: true; scheduled: false; reason: DshMemoryHookWritebackSkipReason };
 
 export type DshMemoryHookRuntimeOptions = {
-  automaticWriteback?: AutomaticMemoryWritebackEnqueue;
   diagnosticLogger?: MemoryDiagnosticLogger;
   env?: Record<string, string | undefined>;
   fetchImpl?: typeof fetch;
   now?: () => number;
-  ttlMs?: number;
   maxEntries?: number;
-  cleanupIntervalMs?: number;
   memoraxCodeHome?: string;
-  repositoryMemorySession?: RepositoryMemorySessionRuntime;
-  turnCoordinator?: MemoryTurnCoordinator;
+  repositoryMemorySession: RepositoryMemorySessionRuntime;
+  turnCoordinator: MemoryTurnCoordinator;
 };
 
 export type DshMemoryHookRuntime = {
   recordTurnStart(command: DshTurnStartCommand): Promise<MemoryHookTurnStartResult>;
   writeback(command: DshWritebackCommand): Promise<DshMemoryHookWritebackResult>;
-  size(): number;
   close(): void;
 };
 
 const DSH_MEMORY_TURN_CLIENT = "dsh" as const;
 
 export function createDshMemoryHookRuntime(
-  options: DshMemoryHookRuntimeOptions = {},
+  options: DshMemoryHookRuntimeOptions,
 ): DshMemoryHookRuntime {
   const now = options.now ?? (() => Date.now());
-  const automaticWritebackRuntime: {
-    enqueue: AutomaticMemoryWritebackEnqueue;
-    discardForScopeUpgrade?: AutomaticMemoryWritebackRuntime["discardForScopeUpgrade"];
-    close?: () => void;
-  } | undefined = options.turnCoordinator
-    ? undefined
-    : options.automaticWriteback
-      ? { enqueue: options.automaticWriteback }
-      : createAutomaticMemoryWritebackRuntime({ diagnosticLogger: options.diagnosticLogger });
-  const turnCoordinator = options.turnCoordinator ?? createMemoryTurnCoordinator({
-    automaticWriteback: automaticWritebackRuntime!.enqueue,
-    now,
-    ttlMs: options.ttlMs,
-    maxEntries: options.maxEntries,
-    cleanupIntervalMs: options.cleanupIntervalMs,
-  });
-  const ownsTurnCoordinator = options.turnCoordinator === undefined;
-  const repositoryMemorySession = options.repositoryMemorySession ?? createRepositoryMemorySessionRuntime({
-    onScopeUpgrade: automaticWritebackRuntime?.discardForScopeUpgrade,
-  });
-  const ownsRepositoryMemorySession = options.repositoryMemorySession === undefined;
+  const { repositoryMemorySession, turnCoordinator } = options;
   const retrievalTurns = new Set<string>();
   const retrievalTurnLimit = positiveInteger(options.maxEntries, 256);
 
@@ -201,14 +172,8 @@ export function createDshMemoryHookRuntime(
       });
       return { ok: true, scheduled: true };
     },
-    size() {
-      return turnCoordinator.size(DSH_MEMORY_TURN_CLIENT);
-    },
     close() {
       retrievalTurns.clear();
-      if (ownsTurnCoordinator) turnCoordinator.close();
-      if (ownsRepositoryMemorySession) repositoryMemorySession.close();
-      automaticWritebackRuntime?.close?.();
     },
   };
 }
