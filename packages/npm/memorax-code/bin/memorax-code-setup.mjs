@@ -11,7 +11,6 @@ import {
   updateConfigFileAtomically,
 } from "../lib/memorax-code-adapter-common/src/memorax-code-config-file.mjs";
 import {
-  MEMORAX_ACCOUNT_URL,
   MEMORAX_DEFAULT_BASE_URL,
   MEMORAX_DEFAULT_MEMORY_OUTPUT_LANGUAGE,
   normalizeMemoraxBaseUrl,
@@ -22,6 +21,7 @@ import { stagePackagedClientHookRuntime } from "../lib/client-hook-runtime.mjs";
 import { ensureClaudeCommandEnv } from "../lib/resolve-claude-command.mjs";
 import { ensureCodexCommandEnv } from "../lib/resolve-codex-command.mjs";
 import { reconcileSetup } from "../lib/setup-reconcile.mjs";
+import { ensureTrialSetupCredential } from "../lib/trial-setup.mjs";
 import { resolveWindowsCliInvocation } from "../lib/windows-cli-invocation.mjs";
 
 const PLUGIN_NAME = "memorax-code-codex-adapter";
@@ -114,7 +114,7 @@ if (writeClientSelectionConfig(selectedClients) === "failed") {
 }
 const clientMode = clientModeFor(installClients);
 let memoraxConfigResult = "skipped";
-if (installClients.length > 0 && !updateMode) {
+if (!updateMode) {
   const existingMemoraxStatus = reuseExistingMemorax
     ? readMemoraxInstallStatus()
     : undefined;
@@ -128,6 +128,10 @@ if (installClients.length > 0 && !updateMode) {
   } else {
     memoraxConfigResult = await maybeConfigureMemoraxMemory(scriptedAnswers);
   }
+}
+if (!updateMode && memoraxConfigResult !== "configured" && memoraxConfigResult !== "preserved") {
+  printPostinstallSummary("not-verified");
+  process.exit(1);
 }
 if (memoraxConfigResult === "configured") {
   if (seedMissingMemoraxCodeConfig() === "failed") {
@@ -200,6 +204,10 @@ if (backendAndAdaptersStatus === "enabled") {
   log("View local memory activity: http://127.0.0.1:8787/memory-viewer");
 }
 if (backendAndAdaptersStatus !== "enabled") process.exit(1);
+if (!updateMode && readMemoraxInstallStatus()?.configured !== true) {
+  logRed("Setup could not verify a ready MemoraX connection after Backend reconciliation.");
+  process.exit(1);
+}
 try {
   const completion = writeSetupCompletionRecord({
     memoraxCodeHome: memoraxCodeHome(),
@@ -243,27 +251,17 @@ async function maybeConfigureMemoraxMemory(scriptedAnswers, { showDisclosure = t
   if (scriptedAnswers) {
     return await configureMemoraxMemoryFromAnswers(scriptedAnswers);
   }
-  let rl = createInterface({ input: process.stdin, output: process.stderr });
+  const rl = createInterface({ input: process.stdin, output: process.stderr });
   try {
-    const configureNow = await rl.question(`${PREFIX} Connect MemoraX Code to MemoraX now? [Y/n] `);
-    if (/^n(?:o)?$/i.test(configureNow.trim())) {
-      log("MemoraX connection skipped. MemoraX Code memory is not fully configured until valid credentials are supplied.");
-      return "skipped";
-    }
-    log(`If you do not have a MemoraX account/API key, register at ${MEMORAX_ACCOUNT_URL}.`);
-    const userId = (await rl.question(`${PREFIX} MemoraX base user ID: `)).trim();
+    const userId = (await rl.question(`${PREFIX} Memory ID: `)).trim();
     const outputLanguage = await questionPreferredLanguage(rl);
-    rl.close();
-    rl = undefined;
-    const apiKey = (await questionMasked(`${PREFIX} MemoraX API key: `)).trim();
     return await writeMemoraxConfigFromInput({
       userId,
-      apiKey,
       endpoint: memoraxInstallEndpoint(),
       outputLanguage,
     });
   } finally {
-    rl?.close();
+    rl.close();
   }
 }
 
@@ -299,26 +297,12 @@ async function chooseUpdateClients(previousClients, detectedClients, scriptedAns
 }
 
 async function configureMemoraxMemoryFromAnswers(answers) {
-  if (answers.length === 0) {
-    log(`No MemoraX connection response was received. Register at ${MEMORAX_ACCOUNT_URL}, then edit \`~/.memorax-code/config.toml\` or rerun \`memorax-code setup\` interactively.`);
-    return "skipped";
-  }
-  log("Connect MemoraX Code to MemoraX now? [Y/n]");
-  const configureNow = String(answers.shift() ?? "").trim();
-  if (/^n(?:o)?$/i.test(configureNow)) {
-    log("MemoraX connection skipped. MemoraX Code memory is not fully configured until valid credentials are supplied.");
-    return "skipped";
-  }
-  log(`If you do not have a MemoraX account/API key, register at ${MEMORAX_ACCOUNT_URL}.`);
-  log("MemoraX base user ID: <provided>");
   const userId = String(answers.shift() ?? "").trim();
+  log(`Memory ID: ${userId ? "<provided>" : "<missing>"}`);
   const outputLanguageAnswer = String(answers.shift() ?? "").trim();
   log(`Preferred language [ZH/en] (used for Memory extraction): ${outputLanguageAnswer ? "<provided>" : "<default>"}`);
-  log("MemoraX API key: <provided>");
-  const apiKey = String(answers.shift() ?? "").trim();
   return await writeMemoraxConfigFromInput({
     userId,
-    apiKey,
     endpoint: memoraxInstallEndpoint(),
     outputLanguage: preferredLanguage(outputLanguageAnswer),
   });
@@ -330,19 +314,31 @@ function printMemoraxDisclosure() {
   log("Newly generated configuration enables automatic writeback. Existing configuration is never enabled implicitly; disable it with `[memory.writeback] enabled = false` or `MEMORAX_CODE_MEMORAX_WRITEBACK_ENABLED=false`.");
 }
 
-async function writeMemoraxConfigFromInput({ userId, apiKey, endpoint, outputLanguage }) {
-  if (!userId || !apiKey) {
-    logRed("MemoraX config was not written because base user ID or API key was empty.");
-    return "skipped";
+async function writeMemoraxConfigFromInput({ userId, endpoint, outputLanguage }) {
+  if (!userId) {
+    logRed("MemoraX config was not written because Memory ID was empty.");
+    return "failed";
   }
   if (!outputLanguage) {
     logRed("MemoraX config was not written because preferred language must be zh or en.");
-    return "skipped";
+    return "failed";
   }
-  if (writeMemoraxConfig({ userId, apiKey, endpoint, outputLanguage }) === "failed") {
+  log("Creating or restoring a secure MemoraX trial credential...");
+  try {
+    await ensureTrialSetupCredential({
+      memoraxCodeHome: memoraxCodeHome(),
+      env: process.env,
+    });
+  } catch (error) {
+    const reason = typeof error?.reason === "string" ? error.reason : "credential_unavailable";
+    logRed(`Secure MemoraX trial setup failed (${reason}).`);
+    return "failed";
+  }
+  if (writeMemoraxConfig({ userId, endpoint, outputLanguage }) === "failed") {
     logRed("MemoraX config was not written because the existing config could not be safely updated.");
-    return "skipped";
+    return "failed";
   }
+  logGreen("Secure MemoraX trial credential is ready.");
   logGreen(`MemoraX config written to ${memoraxCodeConfigPath()}.`);
   log("MemoraX network access will be checked by the first workspace-scoped memory request from a trusted workspace.");
   return "configured";
@@ -370,60 +366,6 @@ function memoraxInstallEndpoint() {
 
 function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-async function questionMasked(prompt) {
-  if (process.stdin.isTTY !== true || typeof process.stdin.setRawMode !== "function") {
-    const rl = createInterface({ input: process.stdin, output: process.stderr });
-    try {
-      return await rl.question(prompt);
-    } finally {
-      rl.close();
-    }
-  }
-  process.stderr.write(prompt);
-  const wasRaw = process.stdin.isRaw === true;
-  process.stdin.setRawMode(true);
-  process.stdin.resume();
-  return await new Promise((resolve, reject) => {
-    let answer = "";
-    const cleanup = () => {
-      process.stdin.off("data", onData);
-      process.stdin.setRawMode(wasRaw);
-      if (!wasRaw) process.stdin.pause();
-    };
-    const finish = () => {
-      cleanup();
-      process.stderr.write("\n");
-      resolve(answer);
-    };
-    const onData = (chunk) => {
-      for (const char of String(chunk)) {
-        if (char === "\u0003") {
-          cleanup();
-          process.stderr.write("\n");
-          reject(new Error("Interrupted"));
-          return;
-        }
-        if (char === "\r" || char === "\n") {
-          finish();
-          return;
-        }
-        if (char === "\u0008" || char === "\u007f") {
-          if (answer.length > 0) {
-            answer = answer.slice(0, -1);
-            process.stderr.write("\b \b");
-          }
-          continue;
-        }
-        if (char >= " " && char !== "\u007f") {
-          answer += char;
-          process.stderr.write("*");
-        }
-      }
-    };
-    process.stdin.on("data", onData);
-  });
 }
 
 function inspectCodexPluginHooksForUpdate() {
@@ -633,7 +575,7 @@ function setManagedClientSelection(text, clients) {
   return setTomlField(withClaude, "clients", "codex", String(clients.includes("codex")));
 }
 
-function writeMemoraxConfig({ userId, apiKey, endpoint, outputLanguage }) {
+function writeMemoraxConfig({ userId, endpoint, outputLanguage }) {
   const path = memoraxCodeConfigPath();
   const fields = [
     {
@@ -641,23 +583,22 @@ function writeMemoraxConfig({ userId, apiKey, endpoint, outputLanguage }) {
       line: `endpoint = "${tomlString(endpoint || MEMORAX_DEFAULT_BASE_URL)}" # MemoraX service URL.`,
     },
     {
-      key: "api_key",
-      line: `api_key = "${tomlString(apiKey)}" # MemoraX API key used by the local Backend.`,
-    },
-    {
       key: "user_id",
-      line: `user_id = "${tomlString(userId)}" # MemoraX base user ID; requests derive a workspace-scoped namespace.`,
+      line: `user_id = "${tomlString(userId)}" # Stable Memory ID; requests derive a workspace-scoped namespace.`,
     },
   ];
   const addFields = [{
     key: "output_language",
     line: `output_language = "${outputLanguage}" # Language for newly generated MemoraX memories.`,
   }];
-  const applyFields = (text) => setTomlSectionFields(
-    setTomlSectionFields(text, "memorax", fields),
-    "memory.add",
-    addFields,
-  );
+  const applyFields = (text) => {
+    const withoutLegacyApiKey = setTomlField(text, "memorax", "api_key", undefined);
+    return setTomlSectionFields(
+      setTomlSectionFields(withoutLegacyApiKey, "memorax", fields),
+      "memory.add",
+      addFields,
+    );
+  };
   return updateConfigFileAtomically({
     path,
     defaultText: applyFields(defaultMemoraxCodeConfig()),
@@ -678,11 +619,10 @@ function defaultMemoraxCodeConfig() {
     "codex = true # Manage the Codex adapter.",
     "claude = true # Manage the Claude adapter.",
     "",
-    "# MemoraX remote-memory connection. Credentials may also come from the environment.",
+    "# MemoraX remote-memory connection.",
     "[memorax]",
     `# endpoint = "${MEMORAX_DEFAULT_BASE_URL}" # MemoraX service URL.`,
-    '# api_key = "" # MemoraX API key used by the local Backend.',
-    '# user_id = "" # MemoraX base user ID; requests derive a workspace-scoped namespace.',
+    '# user_id = "" # Stable Memory ID; requests derive a workspace-scoped namespace.',
     "",
     "# Automatic Hook retrieval is opt-in.",
     "[memory.retrieval]",
@@ -1139,7 +1079,7 @@ function printPostinstallSummary(backendAndAdaptersStatus) {
   }
   if (!memoraxStatus.configured) {
     log("MemoraX memory: Not configured");
-    log(`Package installed, MemoraX not configured. MemoraX Code memory remains unavailable until you connect an account from ${MEMORAX_ACCOUNT_URL}.`);
+    log("Package installed, MemoraX not configured. Run `memorax-code setup` from a terminal to finish setup.");
     return;
   }
   log(`MemoraX memory: ${blueBold("Configured")}`);

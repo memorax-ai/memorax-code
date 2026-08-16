@@ -3,10 +3,14 @@ import {
   MEMORAX_PROVIDER_ID,
   clampInteger,
   memoraxAddOptionsFromContext,
-  memoraxConfigFromEnv,
   parseScore,
+  resolveMemoraxConfigFromEnv,
 } from "./config.js";
-import type { MemoraxAdapterConfig, MemoraxAddOptions } from "./config.js";
+import type {
+  MemoraxAdapterConfig,
+  MemoraxAddOptions,
+  MemoraxConfigResolver,
+} from "./config.js";
 import {
   getMemoraxJson,
   memoraxInvocationFailure,
@@ -50,6 +54,7 @@ export type MemoraxSlotInvocationRequest = {
 
 export type MemoraxAdapterOptions = {
   config?: MemoraxAdapterConfig;
+  configResolver?: MemoraxConfigResolver;
   env?: Record<string, string | undefined>;
   fetchImpl?: typeof fetch;
   diagnosticLogger?: MemoryDiagnosticLogger;
@@ -113,7 +118,9 @@ export async function invokeMemoraxMemoryProvider(
   request: MemoraxSlotInvocationRequest,
   options: MemoraxAdapterOptions = {},
 ): Promise<MemoraxInvocationResult> {
-  const configResult = options.config ? { ok: true as const, config: options.config } : memoraxConfigFromEnv(options.env);
+  const configResult = options.config
+    ? { ok: true as const, config: options.config }
+    : await (options.configResolver ?? resolveMemoraxConfigFromEnv)(options.env);
   if (!configResult.ok) return { ok: false, error: configResult.error };
   const config = configResult.config;
   const providerId = request.provider_id?.trim() || MEMORAX_PROVIDER_ID;

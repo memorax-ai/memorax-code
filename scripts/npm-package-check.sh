@@ -106,6 +106,7 @@ for relative in [
     "lib/trial-provision-client.mjs",
     "lib/trial-provision-contract.mjs",
     "lib/trial-provision-flow.mjs",
+    "lib/trial-setup.mjs",
     "lib/windows-cli-invocation.mjs",
     "lib/memorax-code-adapter-common/src/backend-connection.mjs",
     "lib/memorax-code-adapter-common/src/hooks/client-hook-launcher.mjs",
@@ -320,6 +321,7 @@ for relative in \
   lib/trial-provision-client.mjs \
   lib/trial-provision-contract.mjs \
   lib/trial-provision-flow.mjs \
+  lib/trial-setup.mjs \
   lib/windows-cli-invocation.mjs \
   lib/memorax-code-adapter-common/src/backend-connection.mjs \
   lib/memorax-code-adapter-common/src/hooks/client-hook-launcher.mjs \
@@ -376,10 +378,13 @@ do
   test -f "$package_install_root/$relative"
 done
 
+MEMORAX_CODE_MEMORAX_API_KEY="package-check-key" \
+MEMORAX_CODE_MEMORAX_USER_ID="package-check-user" \
 MEMORAX_CODE_SETUP_ASSUME_INTERACTIVE=1 \
 MEMORAX_CODE_SKIP_CODEX_PLUGIN_INSTALL=1 \
 MEMORAX_CODE_SKIP_CLAUDE_ADAPTER_INSTALL=1 \
-  "$prefix/bin/memorax-code" setup --home "$MEMORAX_CODE_HOME" \
+  "$prefix/bin/memorax-code" \
+    </dev/null \
     >"$home_dir/setup.stdout" 2>"$home_dir/setup.stderr"
 package_install_started=1
 
@@ -413,6 +418,8 @@ assert config_sections == {
     "trace.codex",
 }
 assert 'output_language = "zh"' in config_text
+assert "package-check-key" not in config_text
+assert "package-check-user" not in config_text
 assert "codex = false" in config_text
 assert "claude = false" in config_text
 assert memorax_code_config.stat().st_mode & 0o777 == 0o600
