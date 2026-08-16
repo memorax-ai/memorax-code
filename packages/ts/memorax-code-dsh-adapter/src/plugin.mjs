@@ -2,17 +2,23 @@ import {
   createTurnStartCommand,
   createWritebackCommand,
 } from "./protocol.mjs";
+import { loadDshPersonalContext } from "./personal-context.mjs";
 
 export const PLUGIN_NAME = "memorax-code";
-export const RECALL_SOURCE_PLUGIN = "memorax-code-dsh";
+export const CONTEXT_SOURCE_PLUGIN = "memorax-code-dsh";
 // DSH gives the whole app five seconds to dispose; leave time for downstream
 // persistence and process cleanup after this plugin's accepted writes drain.
 const DEFAULT_WRITEBACK_DRAIN_TIMEOUT_MS = 4_000;
 
 /** Register DSH-native retrieval and durable Turn writeback listeners. */
 export function registerMemoraxCodePlugin(ctx, dependencies) {
+  const assertEnabled = dependencies?.assertEnabled;
   const backendClient = dependencies?.backendClient;
   const createUserMessage = dependencies?.createUserMessage;
+  const loadPersonalContext = dependencies?.loadPersonalContext ?? loadDshPersonalContext;
+  const scheduleRepoMemoryBuild = dependencies?.scheduleRepoMemoryBuild;
+  const intervalTurns = dependencies?.intervalTurns;
+  const isReminderDue = dependencies?.isReminderDue;
   const defer = dependencies?.defer ?? queueMicrotask;
   const debug = dependencies?.debug ?? process.env.MEMORAX_CODE_DSH_DEBUG === "1";
   const drainTimeoutMs = positiveInteger(
@@ -23,8 +29,20 @@ export function registerMemoraxCodePlugin(ctx, dependencies) {
     || typeof backendClient?.writebackTurn !== "function") {
     throw new TypeError("memorax-code DSH plugin requires a Backend client");
   }
+  if (typeof assertEnabled !== "function") {
+    throw new TypeError("memorax-code DSH plugin requires runtime enablement authority");
+  }
   if (typeof createUserMessage !== "function") {
     throw new TypeError("memorax-code DSH plugin requires createUserMessage");
+  }
+  if (typeof loadPersonalContext !== "function") {
+    throw new TypeError("memorax-code DSH plugin requires a personal context loader");
+  }
+  if (!positiveSafeInteger(intervalTurns)) {
+    throw new TypeError("memorax-code DSH plugin requires a positive reminder interval");
+  }
+  if (typeof isReminderDue !== "function") {
+    throw new TypeError("memorax-code DSH plugin requires a reminder policy");
   }
   if (typeof ctx?.sessions?.flush !== "function"
     || typeof ctx?.sessionPersistence?.readFrom !== "function") {
@@ -37,6 +55,7 @@ export function registerMemoraxCodePlugin(ctx, dependencies) {
   }
 
   const turns = new WeakMap();
+  const personalContexts = new WeakMap();
   const writebackTails = new WeakMap();
   const writebackLifetime = new AbortController();
   const pendingWritebacks = new Set();
@@ -44,6 +63,12 @@ export function registerMemoraxCodePlugin(ctx, dependencies) {
 
   ctx.on("session/event", (session, event) => {
     if (!isMemoryEligibleSession(session) || !accepting) return;
+    if (event?.type === "compaction/end") {
+      if (event.data && typeof event.data === "object" && event.data.error === undefined) {
+        personalContextState(personalContexts, session).compactionGeneration += 1;
+      }
+      return;
+    }
     if (event?.type === "turn/start") {
       const turn = event.data?.turn;
       if (!positiveSafeInteger(turn) || !nonNegativeSafeInteger(event.seq)) return;
@@ -90,40 +115,64 @@ export function registerMemoraxCodePlugin(ctx, dependencies) {
   ctx.on("agent/pre-step", async ({ agent, turn, step, signal }, next) => {
     const decision = await next();
     if (decision?.kind !== "enter" || signal?.aborted || !accepting) return decision;
-    if (step !== 1 || !isMemoryEligibleSession(agent?.session)) return decision;
-    const state = turns.get(agent.session)?.get(turn);
-    if (!state || state.invalid || state.closed || state.retrievalAttempted) return decision;
-    state.retrievalAttempted = true;
-    const prompt = userPrompt(decision.messages);
+    if (!isMemoryEligibleSession(agent?.session)) return decision;
     const cwd = sessionCwd(agent.session);
-    if (!prompt || !cwd) return decision;
+    if (!cwd) return decision;
+    if (!runtimeEnabled(assertEnabled, ctx, debug)) return decision;
 
-    try {
-      const command = createTurnStartCommand({
-        sessionId: agent.session.id,
+    const [recallContext, personalContext] = await Promise.all([
+      collectRecallContext({
+        backendClient,
+        ctx,
+        debug,
+        decision,
+        scheduleRepoMemoryBuild,
+        session: agent.session,
+        signal,
+        step,
         turn,
-        startSeq: state.startSeq,
+        turns,
         cwd,
-        prompt,
-      });
-      const response = await backendClient.recordTurnStart(command, { signal });
-      if (signal?.aborted || !accepting) return decision;
-      const additionalContext = nonEmptyString(response?.additionalContext);
-      if (!additionalContext) return decision;
-      return {
-        kind: "enter",
-        messages: [
-          ...decision.messages,
-          createUserMessage({
-            content: [{ type: "text", text: additionalContext }],
-            source: { kind: "plugin", plugin: RECALL_SOURCE_PLUGIN, form: "recall" },
-          }),
-        ],
-      };
-    } catch (error) {
-      debugFailure(ctx, debug, "retrieval", error);
+      }),
+      collectPersonalContext({
+        ctx,
+        debug,
+        intervalTurns,
+        isReminderDue,
+        loadPersonalContext,
+        personalContexts,
+        session: agent.session,
+        signal,
+        step,
+        turn,
+        cwd,
+      }),
+    ]);
+    if (signal?.aborted || !accepting || !runtimeEnabled(assertEnabled, ctx, debug)) {
+      personalContext?.discard();
       return decision;
     }
+    const context = [
+      recallContext,
+      personalContext?.profileContext,
+      personalContext?.procedureContext,
+    ].filter(Boolean).join("\n\n");
+    if (!context) {
+      personalContext?.commit();
+      return decision;
+    }
+    const result = {
+      kind: "enter",
+      messages: [
+        ...decision.messages,
+        createUserMessage({
+          content: [{ type: "text", text: context }],
+          source: { kind: "plugin", plugin: CONTEXT_SOURCE_PLUGIN, form: "context" },
+        }),
+      ],
+    };
+    personalContext?.commit();
+    return result;
   });
 
   if (typeof ctx.effect === "function") {
@@ -132,6 +181,83 @@ export function registerMemoraxCodePlugin(ctx, dependencies) {
       await waitForPending(pendingWritebacks, drainTimeoutMs);
       writebackLifetime.abort(new Error("memorax-code DSH plugin disposed"));
     }, "memorax-code.lifecycle");
+  }
+}
+
+async function collectRecallContext(options) {
+  if (options.step !== 1) return undefined;
+  const state = options.turns.get(options.session)?.get(options.turn);
+  if (!state || state.invalid || state.closed || state.retrievalAttempted) return undefined;
+  state.retrievalAttempted = true;
+  const prompt = userPrompt(options.decision.messages);
+  if (!prompt) return undefined;
+
+  try {
+    const command = createTurnStartCommand({
+      sessionId: options.session.id,
+      turn: options.turn,
+      startSeq: state.startSeq,
+      cwd: options.cwd,
+      prompt,
+    });
+    const response = await options.backendClient.recordTurnStart(command, { signal: options.signal });
+    if (options.signal?.aborted) return undefined;
+    const repoMemoryWorktree = nonEmptyString(response?.repoMemoryWorktree);
+    if (repoMemoryWorktree && typeof options.scheduleRepoMemoryBuild === "function") {
+      try {
+        options.scheduleRepoMemoryBuild(repoMemoryWorktree);
+      } catch (error) {
+        debugFailure(options.ctx, options.debug, "Repo Memory scheduling", error);
+      }
+    }
+    return nonEmptyString(response?.additionalContext);
+  } catch (error) {
+    debugFailure(options.ctx, options.debug, "retrieval", error);
+    return undefined;
+  }
+}
+
+async function collectPersonalContext(options) {
+  const state = personalContextState(options.personalContexts, options.session);
+  const firstObservation = !state.observed;
+  const compactionGeneration = state.compactionGeneration;
+  const includeProfile = firstObservation
+    || state.appliedCompactionGeneration < compactionGeneration;
+  const includeProcedure = firstObservation
+    || (options.step === 1
+      && state.lastProcedureTurn !== options.turn
+      && options.isReminderDue(options.turn, options.intervalTurns));
+  if (!includeProfile && !includeProcedure) return undefined;
+  if (state.lastAttempt?.turn === options.turn
+    && state.lastAttempt?.compactionGeneration === compactionGeneration) return undefined;
+  const attempt = { turn: options.turn, compactionGeneration };
+  state.lastAttempt = attempt;
+
+  try {
+    const result = await options.loadPersonalContext({
+      cwd: options.cwd,
+      includeProfile,
+      includeProcedure,
+    }, { signal: options.signal });
+    options.signal?.throwIfAborted();
+    return {
+      profileContext: nonEmptyString(result?.profileContext),
+      procedureContext: nonEmptyString(result?.procedureContext),
+      commit() {
+        state.observed = true;
+        if (includeProfile) state.appliedCompactionGeneration = compactionGeneration;
+        if (includeProcedure) state.lastProcedureTurn = options.turn;
+      },
+      discard() {
+        if (state.lastAttempt === attempt) state.lastAttempt = undefined;
+      },
+    };
+  } catch (error) {
+    if (options.signal?.aborted && state.lastAttempt === attempt) {
+      state.lastAttempt = undefined;
+    }
+    debugFailure(options.ctx, options.debug, "personal context", error);
+    return undefined;
   }
 }
 
@@ -220,6 +346,19 @@ function turnMap(turns, session) {
   return sessionTurns;
 }
 
+function personalContextState(personalContexts, session) {
+  let state = personalContexts.get(session);
+  if (!state) {
+    state = {
+      observed: false,
+      compactionGeneration: 0,
+      appliedCompactionGeneration: 0,
+    };
+    personalContexts.set(session, state);
+  }
+  return state;
+}
+
 function positiveSafeInteger(value) {
   return Number.isSafeInteger(value) && value > 0;
 }
@@ -234,6 +373,16 @@ function nonNegativeSafeInteger(value) {
 
 function nonEmptyString(value) {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function runtimeEnabled(assertEnabled, ctx, debug) {
+  try {
+    assertEnabled();
+    return true;
+  } catch (error) {
+    debugFailure(ctx, debug, "runtime authority", error);
+    return false;
+  }
 }
 
 function debugFailure(ctx, debug, operation, error) {
