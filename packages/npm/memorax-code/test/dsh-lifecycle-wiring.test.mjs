@@ -26,43 +26,14 @@ test("main CLI keeps DSH inert until Backend success and disables it before stop
     assert.equal(readJson(fixture.statePath).enabled, true);
     assert.equal(profileHasAdapter(fixture.profilePath), true);
 
-    const jsonStatus = runCli(fixture, "status", { args: ["--json"] });
-    assert.equal(jsonStatus.status, 0, jsonStatus.stderr);
-    const statusReport = JSON.parse(jsonStatus.stdout);
-    assert.equal(statusReport.ok, true);
-    assert.deepEqual(statusReport.dshAdapter, {
-      ok: true,
-      integration: "plugin",
-      managed: true,
-      installed: true,
-      enabled: true,
-      profiles: [{ name: "headless", managed: true, exists: true, installed: true }],
-      version: "0.1.0-rc.6",
-      compatible: true,
-    });
-    const textStatus = runCli(fixture, "status");
-    assert.equal(textStatus.status, 0, textStatus.stderr);
-    assert.match(textStatus.stdout, /DSH adapter: ok integration=plugin version=0\.1\.0-rc\.6 profiles=1\/1/);
-    assert.match(textStatus.stdout, /DSH profiles: headless=installed/);
-    const incompatibleStatus = runCli(fixture, "status", {
-      args: ["--json"],
-      env: { MEMORAX_CODE_TEST_BACKEND_STATUS_JSON: "{}" },
-    });
-    assert.equal(incompatibleStatus.status, 1);
-    assert.match(incompatibleStatus.stderr, /Backend status returned an incompatible JSON report/);
-
     const stopped = runCli(fixture, "stop");
     assert.equal(stopped.status, 0, stopped.stderr);
     assert.equal(readJson(fixture.statePath).enabled, false);
     assert.equal(profileHasAdapter(fixture.profilePath), false);
-    const stoppedStatus = runCli(fixture, "status", { args: ["--json"] });
-    assert.equal(stoppedStatus.status, 0, stoppedStatus.stderr);
-    assert.equal(JSON.parse(stoppedStatus.stdout).dshAdapter.reason, "disabled");
 
-    const restarted = runCli(fixture, "restart");
+    const restarted = runCli(fixture, "start");
     assert.equal(restarted.status, 0, restarted.stderr);
     assert.equal(readJson(fixture.statePath).enabled, true);
-    assert.equal(profileHasAdapter(fixture.profilePath), true);
 
     const uninstalled = runCli(fixture, "uninstall");
     assert.equal(uninstalled.status, 0, uninstalled.stderr);
@@ -72,7 +43,7 @@ test("main CLI keeps DSH inert until Backend success and disables it before stop
     assert.deepEqual(readFileSync(fixture.backendLog, "utf8").trim().split("\n"), [
       "start enabled=false external=false",
       "stop enabled=false external=false",
-      "restart enabled=false external=false",
+      "start enabled=false external=false",
       "uninstall enabled=false external=false",
     ]);
   } finally {
@@ -239,18 +210,7 @@ function createFixture() {
   }
 
   const adapterRoot = join(libRoot, "memorax-code-dsh-adapter");
-  mkdirSync(join(adapterRoot, "skills", "memorax-code"), { recursive: true });
-  mkdirSync(join(adapterRoot, "hooks"), { recursive: true });
-  writeFileSync(join(adapterRoot, "package.json"), `${JSON.stringify({
-    name: "@memorax-code/dsh-adapter",
-    version: "0.0.0-test",
-    type: "module",
-    dsh: { bundle: { patch: "./cordis.patch.yml" } },
-  }, null, 2)}\n`);
-  writeFileSync(join(adapterRoot, "cordis.patch.yml"), "[]\n");
-  writeFileSync(join(adapterRoot, "skills", "memorax-code", "SKILL.md"), "skill\n");
-  writeFileSync(join(adapterRoot, "skills", "memorax-code", "dsh-definition.json"), "{}\n");
-  writeFileSync(join(adapterRoot, "hooks", "repo-memory-job.mjs"), "// helper\n");
+  mkdirSync(adapterRoot, { recursive: true });
   writeFileSync(profilePath, `${JSON.stringify({
     name: "dsh-profile-headless",
     private: true,

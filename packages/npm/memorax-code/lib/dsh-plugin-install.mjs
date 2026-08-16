@@ -16,7 +16,6 @@ const sourceCommon = resolve(PACKAGE_LIB, "../../../ts/memorax-code-adapter-comm
 const {
   atomicWriteJson,
   readAdapterState,
-  withJsonFileLock,
   withJsonFileLockAsync,
 } = await import(pathToFileURL(existsSync(stagedCommon) ? stagedCommon : sourceCommon).href);
 
@@ -47,26 +46,6 @@ export function discoverDshProfiles(options = {}) {
     .sort((left, right) => left.name.localeCompare(right.name));
 }
 
-export function ensureDshPluginInstalled(options = {}) {
-  const paths = resolvePaths(options);
-  return withJsonFileLock(paths.statePath, () => ensureDshPluginInstalledUnlocked(paths, options));
-}
-
-export function activateDshPluginInstallation(options = {}) {
-  const paths = resolvePaths(options);
-  return withJsonFileLock(paths.statePath, () => activateDshPluginInstallationUnlocked(paths, options));
-}
-
-export function disableDshPluginInstallation(options = {}) {
-  const paths = resolvePaths(options);
-  return withJsonFileLock(paths.statePath, () => disableDshPluginInstallationUnlocked(paths, options, false));
-}
-
-export function readDshPluginStatus(options = {}) {
-  const paths = resolvePaths(options);
-  return readDshPluginStatusUnlocked(paths, options);
-}
-
 export function collectDshAdapterStatus(options = {}) {
   try {
     const paths = resolvePaths(options);
@@ -74,18 +53,7 @@ export function collectDshAdapterStatus(options = {}) {
     const stateProblem = validateState(state, paths);
     const discoveredProfiles = discoverDshProfiles({ ...options, dshHome: paths.dshHome });
     const managedNames = new Set(stateProblem ? [] : state?.profiles ?? []);
-    const profileByName = new Map(discoveredProfiles.map((profile) => [profile.name, profile]));
-    const profiles = [...new Set([...managedNames, ...profileByName.keys()])]
-      .sort((left, right) => left.localeCompare(right))
-      .map((name) => {
-        const profile = profileByName.get(name);
-        return {
-          name,
-          managed: managedNames.has(name),
-          exists: Boolean(profile),
-          installed: profileHasAdapter(profile),
-        };
-      });
+    const profiles = projectProfileStatus(discoveredProfiles, managedNames, true);
     const managed = Boolean(state) && !stateProblem;
     const installed = profiles.length > 0
       && profiles.every((profile) => profile.managed && profile.exists && profile.installed);
@@ -190,7 +158,7 @@ export function withDshPluginLifecycleLock(options = {}, operation) {
       true,
     ),
   })), {
-    timeoutMs: options.lifecycleLockTimeoutMs ?? DEFAULT_LIFECYCLE_LOCK_TIMEOUT_MS,
+    timeoutMs: DEFAULT_LIFECYCLE_LOCK_TIMEOUT_MS,
   });
 }
 
@@ -207,16 +175,11 @@ function readDshPluginStatusUnlocked(paths, options) {
       enabled: false,
       managed: false,
       profiles: [],
-      statePath: paths.statePath,
     };
   }
 
   const profiles = discoverDshProfiles({ ...options, dshHome: paths.dshHome });
-  const profileByName = new Map(profiles.map((profile) => [profile.name, profile]));
-  const managedProfiles = state.profiles.map((name) => {
-    const profile = profileByName.get(name);
-    return { name, exists: Boolean(profile), installed: profileHasAdapter(profile) };
-  });
+  const managedProfiles = projectProfileStatus(profiles, new Set(state.profiles), false);
   const installed = state.profiles.length > 0
     && managedProfiles.every((profile) => profile.installed);
   return {
@@ -226,17 +189,10 @@ function readDshPluginStatusUnlocked(paths, options) {
     installed,
     enabled: state.enabled === true && installed,
     managed: true,
-    current: installed,
     authorityEnabled: state.enabled === true,
     revision: state.updatedAt,
     profiles: managedProfiles,
-    statePath: paths.statePath,
   };
-}
-
-export function removeDshPluginInstallation(options = {}) {
-  const paths = resolvePaths(options);
-  return withJsonFileLock(paths.statePath, () => disableDshPluginInstallationUnlocked(paths, options, true));
 }
 
 function ensureDshPluginInstalledUnlocked(paths, options) {
@@ -257,7 +213,6 @@ function ensureDshPluginInstalledUnlocked(paths, options) {
       skipped: true,
       reason: "no_existing_profiles",
       detectedProfiles: [],
-      statePath: paths.statePath,
     };
   }
 
@@ -277,14 +232,9 @@ function ensureDshPluginInstalledUnlocked(paths, options) {
       managed: Boolean(state),
       skipped: true,
       detectedProfiles: profiles.map((profile) => profile.name),
-      statePath: paths.statePath,
-      ...(nextState ? { state: nextState } : {}),
       ...compatibility,
     };
   }
-
-  const sourceProblem = validateSources(paths);
-  if (sourceProblem) return { ...sourceProblem, action: "dsh-plugin-install" };
 
   const previouslyManaged = new Set(state?.profiles ?? []);
   const conflicts = profiles
@@ -297,7 +247,6 @@ function ensureDshPluginInstalledUnlocked(paths, options) {
       runtime: RUNTIME,
       reason: "profile_plugin_conflict",
       profiles: conflicts,
-      statePath: paths.statePath,
     };
   }
 
@@ -327,7 +276,6 @@ function ensureDshPluginInstalledUnlocked(paths, options) {
     // Claim each target before invoking DSH so an interrupted or partially
     // successful native add remains repairable and removable on the next run.
     profiles: profiles.map((profile) => profile.name).sort(),
-    installedAt: state?.installedAt ?? now,
     updatedAt: now,
   };
   atomicWriteJson(paths.statePath, pendingState);
@@ -386,8 +334,6 @@ function ensureDshPluginInstalledUnlocked(paths, options) {
     supportedDshVersions: [...DSH_SUPPORTED_VERSIONS],
     installedProfiles,
     failedProfiles,
-    statePath: paths.statePath,
-    state: nextState,
   };
 }
 
@@ -402,7 +348,6 @@ function activateDshPluginInstallationUnlocked(paths, options) {
       action: "dsh-plugin-activate",
       runtime: RUNTIME,
       reason: "dsh_version_not_verified",
-      statePath: paths.statePath,
     };
   }
   const profiles = discoverDshProfiles({ ...options, dshHome: paths.dshHome });
@@ -414,7 +359,6 @@ function activateDshPluginInstallationUnlocked(paths, options) {
       action: "dsh-plugin-activate",
       runtime: RUNTIME,
       reason: "managed_profiles_not_installed",
-      statePath: paths.statePath,
     };
   }
   const nextState = { ...state, enabled: true, updatedAt: new Date().toISOString() };
@@ -427,8 +371,6 @@ function activateDshPluginInstallationUnlocked(paths, options) {
     enabled: true,
     managed: true,
     profiles: [...state.profiles],
-    statePath: paths.statePath,
-    state: nextState,
   };
 }
 
@@ -478,7 +420,6 @@ function disableDshPluginInstallationUnlocked(paths, options, removeState) {
       enabled: false,
       removedProfiles,
       failedProfiles,
-      statePath: paths.statePath,
     };
   }
 
@@ -493,7 +434,6 @@ function disableDshPluginInstallationUnlocked(paths, options, removeState) {
     enabled: false,
     managed: !removeState,
     removedProfiles,
-    statePath: paths.statePath,
   };
 }
 
@@ -529,28 +469,6 @@ function persistedDshHome(paths, homeDir) {
   return validateState(state, { ...paths, dshHome }) ? undefined : dshHome;
 }
 
-function validateSources(paths) {
-  let manifest;
-  try {
-    manifest = JSON.parse(readFileSync(join(paths.adapterRoot, "package.json"), "utf8"));
-  } catch {
-    return { ok: false, runtime: RUNTIME, reason: "adapter_source_invalid" };
-  }
-  const patch = manifest?.dsh?.bundle?.patch;
-  if (manifest?.name !== ADAPTER_PACKAGE_NAME || typeof patch !== "string" || !patch.trim()) {
-    return { ok: false, runtime: RUNTIME, reason: "adapter_source_invalid" };
-  }
-  for (const path of [
-    resolve(paths.adapterRoot, patch),
-    join(paths.adapterRoot, "skills", "memorax-code", "SKILL.md"),
-    join(paths.adapterRoot, "skills", "memorax-code", "dsh-definition.json"),
-    join(paths.adapterRoot, "hooks", "repo-memory-job.mjs"),
-  ]) {
-    if (!existsSync(path)) return { ok: false, runtime: RUNTIME, reason: "adapter_source_incomplete" };
-  }
-  return undefined;
-}
-
 function validateState(state, paths) {
   if (!state) return undefined;
   if (state.unreadable) return { ok: false, runtime: RUNTIME, reason: "state_unreadable", statePath: paths.statePath };
@@ -577,7 +495,6 @@ function disabledState(state, profiles) {
     ...state,
     enabled: false,
     profiles,
-    disabledAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
 }
@@ -592,7 +509,6 @@ function notManaged(paths, action) {
     managed: false,
     skipped: true,
     reason: "not_managed",
-    statePath: paths.statePath,
   };
 }
 
@@ -628,8 +544,8 @@ function runDsh(options, paths, args, command) {
     cwd: paths.adapterRoot,
     env,
     timeout: args.length === 1 && args[0] === "--version"
-      ? options.versionCommandTimeoutMs ?? DSH_VERSION_TIMEOUT_MS
-      : options.commandTimeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS,
+      ? DSH_VERSION_TIMEOUT_MS
+      : DEFAULT_COMMAND_TIMEOUT_MS,
   };
   if (typeof options.runDsh === "function") {
     try {
@@ -722,6 +638,24 @@ function profileHasAdapter(profile) {
   return Boolean(profile
     && Object.hasOwn(profile.dependencies, ADAPTER_PACKAGE_NAME)
     && profile.bundles.includes(ADAPTER_PACKAGE_NAME));
+}
+
+function projectProfileStatus(discoveredProfiles, managedNames, includeUnmanaged) {
+  const profileByName = new Map(discoveredProfiles.map((profile) => [profile.name, profile]));
+  const names = includeUnmanaged
+    ? new Set([...managedNames, ...profileByName.keys()])
+    : managedNames;
+  return [...names]
+    .sort((left, right) => left.localeCompare(right))
+    .map((name) => {
+      const profile = profileByName.get(name);
+      return {
+        name,
+        ...(includeUnmanaged ? { managed: managedNames.has(name) } : {}),
+        exists: Boolean(profile),
+        installed: profileHasAdapter(profile),
+      };
+    });
 }
 
 function validProfileName(value) {
