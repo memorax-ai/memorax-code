@@ -27,12 +27,15 @@ const DSH_PACKAGE_NAME = "@deepseek-ai/dsh";
 const DSH_MOCK_PACKAGE_NAME = "@deepseek-ai/dsh-llm-mock-server";
 const PINNED_PNPM_SPEC = "pnpm@11.7.0";
 const RECALL_MARKER = "MEMORAX_DSH_E2E_RECALL_7D49";
+const USER_PROFILE_MARKER = "MEMORAX_DSH_E2E_USER_PROFILE_C42A";
+const PROCEDURE_MEMORY_MARKER = "MEMORAX_DSH_E2E_PROCEDURE_8F13";
 const REASONING_MARKER = "MEMORAX_DSH_E2E_REASONING_B31C";
 const VISIBLE_REPLY = "MEMORAX_DSH_E2E_VISIBLE_REPLY_5A62";
 const FIRST_PROMPT = "MEMORAX_DSH_E2E_DIRECT_PROMPT_FIRST";
 const SECOND_PROMPT = "MEMORAX_DSH_E2E_DIRECT_PROMPT_SECOND";
 const STOPPED_PROMPT = "MEMORAX_DSH_E2E_PROMPT_AFTER_STOP";
 const USER_SKILL_OVERRIDE_MARKER = "MEMORAX_DSH_E2E_USER_SKILL_OVERRIDE_9C14";
+const REPO_MEMORY_DISPATCH_LOG_ENV = "MEMORAX_CODE_DSH_E2E_REPO_JOB_LOG";
 const MEMORAX_API_KEY = "memorax-dsh-e2e-key";
 const DEEPSEEK_API_KEY = "deepseek-dsh-e2e-key";
 const COMMAND_TIMEOUT_MS = 120_000;
@@ -94,6 +97,8 @@ async function main() {
   const claudeHome = join(isolatedRoot, "claude home");
   const workspace = join(isolatedRoot, "workspace");
   const tarballRoot = join(isolatedRoot, "tarballs");
+  const repoMemoryDispatchLog = join(isolatedRoot, "repo-memory-dispatch.jsonl");
+  const ambientMemoraxCodeHome = join(isolatedRoot, "ambient memorax-code home");
   await Promise.all([
     home,
     memoraxCodeHome,
@@ -107,6 +112,7 @@ async function main() {
   ].map((path) => mkdir(path, { recursive: true })));
   await writeFile(npmUserConfig, "", "utf8");
   await writeFile(join(workspace, "README.md"), "# isolated DSH E2E workspace\n", "utf8");
+  await writeFile(join(workspace, ".gitignore"), ".repo_memory/\n", "utf8");
   const isolatedEnv = {
     ...sanitizedEnvironment(),
     HOME: home,
@@ -123,6 +129,26 @@ async function main() {
     PATH: `${npmBinDirectory(npmPrefix)}${delimiter}${process.env.PATH ?? ""}`,
   };
   await run("git", ["init", "--quiet"], { cwd: workspace, env: isolatedEnv });
+  await run("git", [
+    "-c",
+    "user.name=MemoraX Code DSH E2E",
+    "-c",
+    "user.email=memorax-code-dsh-e2e@example.invalid",
+    "add",
+    "README.md",
+    ".gitignore",
+  ], { cwd: workspace, env: isolatedEnv });
+  await run("git", [
+    "-c",
+    "user.name=MemoraX Code DSH E2E",
+    "-c",
+    "user.email=memorax-code-dsh-e2e@example.invalid",
+    "commit",
+    "--quiet",
+    "-m",
+    "initialize DSH E2E fixture",
+  ], { cwd: workspace, env: isolatedEnv });
+  await writePersonalContextFixtures(workspace);
 
   const dsh = await resolveNpmDshHarness(dshRequest, {
     env: isolatedEnv,
@@ -167,6 +193,7 @@ async function main() {
     MEMORAX_CODE_MEMORY_WRITEBACK_CHUNK_ENABLED: "false",
     MEMORAX_CODE_MEMORY_OUTPUT_LANGUAGE: "en",
     MEMORAX_CODE_DSH_DEBUG: "1",
+    [REPO_MEMORY_DISPATCH_LOG_ENV]: repoMemoryDispatchLog,
     DEEPSEEK_BASE_URL: `${llmServer.baseURL}/v1`,
     DEEPSEEK_API_KEY,
     DSH_TELEMETRY_DISABLED: "1",
@@ -212,6 +239,13 @@ async function main() {
   memoraxCodeEntrypoint = join(packageRoot, "bin", "memorax-code.mjs");
   await assertFile(memoraxCodeEntrypoint);
   const headlessProfile = join(dshHome, "profiles", "headless");
+  const packagedRepoMemoryHelperPath = join(
+    packageRoot,
+    "lib",
+    "memorax-code-dsh-adapter",
+    "hooks",
+    "repo-memory-job.mjs",
+  );
   const dshStatePath = join(memoraxCodeHome, "adapters", "dsh", "state.json");
   const backendStatePath = join(memoraxCodeHome, "runtime", "backend", "backend.pid.json");
 
@@ -222,22 +256,79 @@ async function main() {
   assert.deepEqual(dshState.profiles, ["headless"]);
   const initialBackendState = await readJson(backendStatePath);
   backendPid = safePid(initialBackendState.pid, "postinstall Backend PID");
+  const profileAdapterRoot = await realpath(join(
+    headlessProfile,
+    "node_modules",
+    "@memorax-code",
+    "dsh-adapter",
+  ));
+  const profileRepoMemoryHelperPath = join(profileAdapterRoot, "hooks", "repo-memory-job.mjs");
+  assert.equal((await readJson(join(profileAdapterRoot, "package.json"))).name, "@memorax-code/dsh-adapter");
+  await assertFile(profileRepoMemoryHelperPath);
+
+  progress("checking the packaged DSH Repo Memory helper against canonical runtime authority");
+  await assertFile(packagedRepoMemoryHelperPath);
+  const dryRun = JSON.parse((await run(process.execPath, [
+    packagedRepoMemoryHelperPath,
+    "maintain",
+    "--repo",
+    workspace,
+    "--dry-run",
+  ], {
+    cwd: workspace,
+    env: { ...runtimeEnv, MEMORAX_CODE_HOME: ambientMemoraxCodeHome },
+  })).stdout);
+  assert.equal(dryRun.action, "build");
+  assert.equal(dryRun.reason, "bundle_missing");
+  assert.equal(dryRun.repo, await realpath(workspace));
+  assert.equal(dryRun.job?.dryRun, true);
+  assert.equal(dryRun.job?.runner, "dsh");
+  assertWithin(
+    memoraxCodeHome,
+    requiredString(dryRun.job?.jobPath, "DSH Repo Memory dry-run job path"),
+    "DSH Repo Memory dry-run job path",
+  );
+  assert.equal(
+    await exists(join(ambientMemoraxCodeHome, "repo-memory-jobs")),
+    false,
+    "DSH Repo Memory helper used the ambient home instead of runtime authority",
+  );
 
   progress("running the first real DSH agent Turn through retrieval, skill, and writeback");
   const firstLlmStart = llmServer.requests.length;
-  await runHeadless(dsh.command, workspace, runtimeEnv, FIRST_PROMPT);
+  const repoMemoryHelperSource = await readFile(profileRepoMemoryHelperPath, "utf8");
+  await writeFile(profileRepoMemoryHelperPath, repoMemoryDispatchRecorderSource(), "utf8");
+  try {
+    await runHeadless(dsh.command, workspace, runtimeEnv, FIRST_PROMPT);
+    await waitFor(() => exists(repoMemoryDispatchLog), "first Repo Memory auto-build dispatch");
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 200));
+    const repoMemoryDispatches = await readJsonLines(repoMemoryDispatchLog);
+    assert.deepEqual(repoMemoryDispatches, [{
+      args: ["maintain", "--repo", await realpath(workspace)],
+      cwd: await realpath(workspace),
+      memoraxCodeHome,
+    }], "the first DSH Turn must dispatch one build for the Backend-authorized worktree");
+  } finally {
+    await writeFile(profileRepoMemoryHelperPath, repoMemoryHelperSource, "utf8");
+  }
   await waitFor(() => memoraxRequests("/v1/memories/add").length >= 1, "first MemoraX Add");
   const firstLlmRequests = llmServer.requests.slice(firstLlmStart);
   assert.ok(firstLlmRequests.length >= 2, "the first Turn did not complete its skill tool round trip");
-  assertIncludesJson(firstLlmRequests.map((request) => request.body), RECALL_MARKER, "first model request recall");
+  const firstModelRequest = llmRequestForPrompt(firstLlmRequests, FIRST_PROMPT);
+  assertIncludesJson(firstModelRequest.body, RECALL_MARKER, "first model request recall");
+  assertIncludesJson(firstModelRequest.body, USER_PROFILE_MARKER, "first model request User Profile");
+  assertIncludesJson(firstModelRequest.body, PROCEDURE_MEMORY_MARKER, "first model request Procedure Memory");
   const firstSearch = memoraxRequests("/v1/memories/search")[0];
   assert.equal(firstSearch?.body?.query, FIRST_PROMPT);
   assertExactAdd(memoraxRequests("/v1/memories/add")[0], FIRST_PROMPT);
 
   const firstSession = await sessionForPrompt(join(dshHome, "sessions"), FIRST_PROMPT);
   assert.match(firstSession.content, new RegExp(RECALL_MARKER));
+  assert.match(firstSession.content, new RegExp(USER_PROFILE_MARKER));
+  assert.match(firstSession.content, new RegExp(PROCEDURE_MEMORY_MARKER));
   assert.match(firstSession.content, new RegExp(REASONING_MARKER));
   assert.match(firstSession.content, /skill_content[^\n]*memorax-code/s);
+  await writeFile(join(workspace, ".repo_memory", "PROFILE.md"), "# E2E auto-build dispatch sentinel\n", "utf8");
 
   progress("restarting the real Backend, then starting a new DSH process and session");
   await runMemoraxCode(["restart", "--home", memoraxCodeHome, "--port", String(backendPort), "--clients", "dsh", "--json"], workspace);
@@ -347,6 +438,9 @@ async function main() {
     memoraxPackageSource: memoraxPackage.source,
     npmPackageInstalledByPostinstall: true,
     firstTurnSkillRoundTrip: true,
+    firstTurnPersonalContext: true,
+    repoMemoryAutoBuildDispatchedOnce: true,
+    repoMemoryRuntimeHomeCanonical: true,
     exactWritebackMessages: true,
     backendRestarted: true,
     newProcessNewSession: true,
@@ -491,6 +585,12 @@ async function runHeadless(command, cwd, env, prompt) {
   assert.match(result.stdout, new RegExp(VISIBLE_REPLY), `DSH headless output did not contain ${VISIBLE_REPLY}`);
 }
 
+function llmRequestForPrompt(requests, prompt) {
+  const request = requests.find((candidate) => JSON.stringify(candidate.body).includes(prompt));
+  assert.ok(request, `no model request contains ${prompt}`);
+  return request;
+}
+
 async function runMemoraxCode(args, cwd, options = {}) {
   assert.ok(memoraxCodeEntrypoint, "MemoraX Code entrypoint is unavailable");
   return run(process.execPath, [memoraxCodeEntrypoint, ...args], { cwd, env: runtimeEnv, ...options });
@@ -505,8 +605,67 @@ function assertExactAdd(request, prompt) {
   ]);
   const serialized = JSON.stringify(request.body);
   assert.doesNotMatch(serialized, new RegExp(RECALL_MARKER));
+  assert.doesNotMatch(serialized, new RegExp(USER_PROFILE_MARKER));
+  assert.doesNotMatch(serialized, new RegExp(PROCEDURE_MEMORY_MARKER));
   assert.doesNotMatch(serialized, new RegExp(REASONING_MARKER));
   assert.doesNotMatch(serialized, /skill_content/);
+}
+
+async function writePersonalContextFixtures(workspace) {
+  const profileRoot = join(workspace, ".repo_memory", "user-profile");
+  const procedureRoot = join(workspace, ".repo_memory", "procedure-memory");
+  await Promise.all([
+    mkdir(profileRoot, { recursive: true }),
+    mkdir(procedureRoot, { recursive: true }),
+  ]);
+  await writeFile(join(profileRoot, "preferences.md"), [
+    "---",
+    'schema: "repo_user_profile_memory.v0.1"',
+    'scope: "repo"',
+    'owner: "repo-user-profile-memory"',
+    'trust_state: "user_stated"',
+    'updated_at: "2026-08-16T00:00:00.000Z"',
+    "active_count: 1",
+    "total_count: 1",
+    "---",
+    "",
+    "# Repo-Scoped User Profile And Preferences",
+    "",
+    "## Active Preferences",
+    "",
+    "## Preference pref_dsh_e2e",
+    "",
+    "- Type: `workflow`",
+    "- Status: `active`",
+    "- Confidence: `user_stated`",
+    "- Created: `2026-08-16T00:00:00.000Z`",
+    "- Updated: `2026-08-16T00:00:00.000Z`",
+    `- Description: Apply ${USER_PROFILE_MARKER} during this DSH E2E.`,
+    "- Applies when: Running the isolated DSH E2E.",
+    "- Do not apply when: Outside this isolated fixture.",
+    "- Raw lookup: `preferenceId=pref_dsh_e2e`",
+    "",
+  ].join("\n"), "utf8");
+  await writeFile(join(procedureRoot, "dsh-e2e.md"), [
+    "# DSH E2E Procedure",
+    "",
+    `Use ${PROCEDURE_MEMORY_MARKER} only as an injected-context marker.`,
+    "",
+  ].join("\n"), "utf8");
+}
+
+function repoMemoryDispatchRecorderSource() {
+  return [
+    'import { appendFileSync } from "node:fs";',
+    `const logPath = process.env[${JSON.stringify(REPO_MEMORY_DISPATCH_LOG_ENV)}];`,
+    'if (!logPath) throw new Error("missing DSH E2E Repo Memory dispatch log");',
+    "appendFileSync(logPath, JSON.stringify({",
+    "  args: process.argv.slice(2),",
+    "  cwd: process.cwd(),",
+    "  memoraxCodeHome: process.env.MEMORAX_CODE_HOME,",
+    '}) + "\\n");',
+    "",
+  ].join("\n");
 }
 
 async function assertProfileIntegrated(profileRoot) {
@@ -542,6 +701,13 @@ async function snapshotFiles(root) {
     result.set(relative(root, path), await readFile(path, "utf8"));
   }
   return result;
+}
+
+async function readJsonLines(path) {
+  return (await readFile(path, "utf8"))
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
 }
 
 async function listFiles(root) {

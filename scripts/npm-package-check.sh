@@ -105,6 +105,7 @@ for relative in [
     "lib/memorax-code-adapter-common/src/hooks/client-hook-launcher.mjs",
     "lib/memorax-code-adapter-common/src/clients/codex-plugin-artifact.mjs",
     "lib/memorax-code-adapter-common/src/hooks/hook-runtime-generation.mjs",
+    "lib/memorax-code-adapter-common/src/hooks/memory-skill-reminder-policy.mjs",
     "lib/memorax-code-adapter-common/src/memorax-defaults.mjs",
     "lib/memorax-code-adapter-common/src/runtime-record.mjs",
     "lib/memorax-code-adapter-common/src/hooks/ensure-backend-runner.mjs",
@@ -126,8 +127,19 @@ for relative in [
     "lib/memorax-code-backend/dist/clients/claude/memory-hook-runtime.js",
     "lib/memorax-code-backend/dist/clients/claude/transcript-turn.js",
     "lib/memorax-code-dsh-adapter/src/dsh-version.mjs",
+    "lib/memorax-code-dsh-adapter/src/dsh-message.mjs",
+    "lib/memorax-code-dsh-adapter/src/http-client.mjs",
+    "lib/memorax-code-dsh-adapter/src/index.mjs",
+    "lib/memorax-code-dsh-adapter/src/personal-context-worker.mjs",
+    "lib/memorax-code-dsh-adapter/src/personal-context.mjs",
+    "lib/memorax-code-dsh-adapter/src/plugin.mjs",
     "lib/memorax-code-dsh-adapter/src/profile-lifecycle.mjs",
+    "lib/memorax-code-dsh-adapter/src/protocol.mjs",
     "lib/memorax-code-dsh-adapter/src/runtime-state.mjs",
+    "lib/memorax-code-dsh-adapter/memorax-code-adapter-common/src/hooks/memory-skill-reminder-policy.mjs",
+    "lib/memorax-code-dsh-adapter/memorax-code-adapter-common/src/repo-memory/repo-memory-auto-build.mjs",
+    "lib/memorax-code-dsh-adapter/memorax-code-adapter-common/src/repo-memory/repo-procedure-memory-context.mjs",
+    "lib/memorax-code-dsh-adapter/memorax-code-adapter-common/src/repo-memory/repo-user-profile-context.mjs",
     "lib/memorax-code-codex-adapter/assets/composer-icon.png",
     "lib/memorax-code-codex-adapter/assets/logo.png",
     "lib/memorax-code-codex-adapter/hooks/hooks.json",
@@ -151,6 +163,7 @@ for relative in [
     "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/backend-connection.mjs",
     "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/runtime-record.mjs",
     "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/hooks/ensure-backend-runner.mjs",
+    "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/hooks/memory-skill-reminder-policy.mjs",
     "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/repo-memory/repo-memory-auto-build.mjs",
     "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/repo-memory/repo-procedure-memory-context.mjs",
     "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/repo-memory/repo-user-profile-context.mjs",
@@ -286,6 +299,7 @@ for relative in \
   lib/memorax-code-adapter-common/src/hooks/client-hook-launcher.mjs \
   lib/memorax-code-adapter-common/src/clients/codex-plugin-artifact.mjs \
   lib/memorax-code-adapter-common/src/hooks/hook-runtime-generation.mjs \
+  lib/memorax-code-adapter-common/src/hooks/memory-skill-reminder-policy.mjs \
   lib/memorax-code-adapter-common/src/memorax-defaults.mjs \
   lib/memorax-code-adapter-common/src/runtime-record.mjs \
   lib/memorax-code-adapter-common/src/hooks/ensure-backend-runner.mjs \
@@ -302,9 +316,20 @@ for relative in \
   lib/memorax-code-backend/dist/codex-adapter-lifecycle.js \
   lib/memorax-code-backend/dist/windows-cli-invocation.js \
   lib/memorax-code-backend/dist/memory/service.js \
+  lib/memorax-code-dsh-adapter/src/dsh-message.mjs \
   lib/memorax-code-dsh-adapter/src/dsh-version.mjs \
+  lib/memorax-code-dsh-adapter/src/http-client.mjs \
+  lib/memorax-code-dsh-adapter/src/index.mjs \
+  lib/memorax-code-dsh-adapter/src/personal-context-worker.mjs \
+  lib/memorax-code-dsh-adapter/src/personal-context.mjs \
+  lib/memorax-code-dsh-adapter/src/plugin.mjs \
   lib/memorax-code-dsh-adapter/src/profile-lifecycle.mjs \
+  lib/memorax-code-dsh-adapter/src/protocol.mjs \
   lib/memorax-code-dsh-adapter/src/runtime-state.mjs \
+  lib/memorax-code-dsh-adapter/memorax-code-adapter-common/src/hooks/memory-skill-reminder-policy.mjs \
+  lib/memorax-code-dsh-adapter/memorax-code-adapter-common/src/repo-memory/repo-memory-auto-build.mjs \
+  lib/memorax-code-dsh-adapter/memorax-code-adapter-common/src/repo-memory/repo-procedure-memory-context.mjs \
+  lib/memorax-code-dsh-adapter/memorax-code-adapter-common/src/repo-memory/repo-user-profile-context.mjs \
   lib/memorax-code-codex-adapter/hooks/runtime-hook.mjs \
   lib/memorax-code-codex-adapter/hooks/runtime-shell.json \
   lib/memorax-code-codex-adapter/runtime-hooks/memory-writeback.mjs \
@@ -319,6 +344,7 @@ for relative in \
   lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/backend-connection.mjs \
   lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/runtime-record.mjs \
   lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/hooks/ensure-backend-runner.mjs \
+  lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/hooks/memory-skill-reminder-policy.mjs \
   lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/repo-memory/repo-memory-auto-build.mjs \
   lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/repo-memory/repo-procedure-memory-context.mjs \
   lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/repo-memory/repo-user-profile-context.mjs \
