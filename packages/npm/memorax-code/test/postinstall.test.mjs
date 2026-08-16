@@ -132,6 +132,7 @@ async function runPostinstall({ existingCache = false, explicitCache = false, ho
     "hooks/hook-runtime-generation.mjs",
     "memorax-defaults.mjs",
     "hooks/memory-skill-reminder-hook.mjs",
+    "hooks/memory-skill-reminder-policy.mjs",
     "repo-memory/repo-memory-auto-build.mjs",
     "repo-memory/repo-memory-job-context.mjs",
     "repo-memory/repo-procedure-memory-context.mjs",

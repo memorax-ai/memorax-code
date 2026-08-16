@@ -35,6 +35,7 @@ const STABLE_SHELL_REQUIRED_FILES = Object.freeze([
   "memorax-code-adapter-common/src/hooks/ensure-backend-runner.mjs",
   "memorax-code-adapter-common/src/hooks/hook-runtime-generation.mjs",
   "memorax-code-adapter-common/src/hooks/memory-skill-reminder-hook.mjs",
+  "memorax-code-adapter-common/src/hooks/memory-skill-reminder-policy.mjs",
   "memorax-code-adapter-common/src/repo-memory/repo-memory-auto-build.mjs",
   "memorax-code-adapter-common/src/repo-memory/repo-memory-job-context.mjs",
   "memorax-code-adapter-common/src/repo-memory/repo-procedure-memory-context.mjs",
