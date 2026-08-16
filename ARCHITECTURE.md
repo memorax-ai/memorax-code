@@ -94,8 +94,8 @@ relationships; the arrow labels distinguish them. It is not an import graph.
 | `packages/ts/memorax-code-adapter-common` | Shared source for Backend connection authority, private runtime records, cross-process locking and configuration, Hook generations, Hook launch helpers, and Repo/Personal Memory helpers | Backend composition, native session-history interpretation, MemoraX request execution, or client plugin policy | `packages/ts/memorax-code-adapter-common/src/backend-connection.mjs`, `src/runtime-record.mjs`, `src/hooks`, and `src/repo-memory` |
 | `packages/ts/memorax-code-codex-adapter` | Codex plugin artifact, Hook shells and runtimes, session/workspace observation, diagnostics, and the canonical shared skill | Codex rollout semantics or Backend-side writeback authority | `.codex-plugin`, `hooks`, `runtime-hooks`, `src`, and `skills/memorax-code` |
 | `packages/ts/memorax-code-claude-adapter` | Claude Code plugin artifact, Hook shells and runtimes, configuration, installer, marketplace source, and diagnostics | Claude transcript semantics or Backend memory orchestration | `.claude-plugin`, `hooks`, `runtime-hooks`, `scripts`, and `src/plugin-install.mjs` |
-| `packages/ts/memorax-code-dsh-adapter` | DSH-native Cordis plugin, turn listeners, Session Event Log interval reading, and Backend client | DSH model execution, persistence implementation, or Backend memory orchestration | `src`, `cordis.patch.yml`, and `package.json` |
-| `packages/npm/memorax-code` | Installed executable wrappers, update, preinstall/postinstall, DSH profile installer, npm manifest, and release-package source | Backend lifecycle semantics, uninstall orchestration, or artifact staging | `bin`, `lib/run-entrypoint.mjs`, `lib/dsh-plugin-install.mjs`, and `package.json` |
+| `packages/ts/memorax-code-dsh-adapter` | DSH-native Cordis plugin, turn listeners, Session Event Log interval reading, Backend client, and managed Profile lifecycle | DSH model execution, persistence implementation, or Backend memory orchestration | `src`, `cordis.patch.yml`, and `package.json` |
+| `packages/npm/memorax-code` | Installed executable wrappers, update, preinstall/postinstall, npm manifest, release-package source, and compatibility imports for staged adapters | Backend or adapter lifecycle semantics, status composition, uninstall orchestration, or artifact staging | `bin`, `lib/run-entrypoint.mjs`, `lib/dsh-plugin-install.mjs`, and `package.json` |
 | `scripts` | Backend build orchestration, staging/materialization, package layout, documentation, and local-only data gates | Product runtime authority | Package-build/check scripts and executable contract scripts |
 | `.github` | Issue and pull-request contribution templates | Product runtime behavior | `.github/ISSUE_TEMPLATE` and `.github/pull_request_template.md` |
 
@@ -123,9 +123,9 @@ the owner of their behavior.
 Client integration is deliberately not physically symmetric. Codex plugin
 material belongs to the Codex adapter, while current install, activation, and
 Hook-trust glue lives in Backend `clients/codex`. The Claude Code installer
-lives in the Claude adapter and is loaded by its Backend lifecycle
-participant. The DSH Cordis plugin lives in the DSH adapter, while profile
-discovery and managed installation live in the npm layer. Preserve each
+lives in the Claude adapter and is loaded by its Backend lifecycle participant.
+The DSH Cordis plugin and managed Profile lifecycle live in the DSH adapter
+and are loaded by a third Backend lifecycle participant. Preserve each
 client's native integration and actual authority instead of forcing matching
 directory shapes.
 
@@ -149,21 +149,21 @@ sequenceDiagram
 
   NPM->>CLI: retire an existing managed Backend before replacement
   NPM->>NPM: detect clients and reconcile configuration
-  NPM->>Generation: stage a Hook runtime generation
-  NPM->>DSH: reconcile the native Cordis plugin in existing profiles
   NPM->>CLI: start or reconcile selected integrations
   CLI->>Lifecycle: acquire lifecycle authority and execute command
   Lifecycle->>Participants: prepare client integrations
+  Participants->>Generation: stage selected Hook runtime generations
+  Participants->>DSH: reconcile the native Cordis plugin in selected existing profiles
   Lifecycle->>Service: start and verify readiness
-  Lifecycle-->>Generation: activate only after accepted readiness
+  Lifecycle-->>Participants: activate only after accepted readiness
 ```
 
 The principal control-plane locations are:
 
 - `packages/npm/memorax-code/bin` for installed package scripts and wrappers;
-- `packages/npm/memorax-code/lib/dsh-plugin-install.mjs` for managed DSH
-  profile discovery, native plugin installation, skill installation, removal,
-  and the read-only public status projection;
+- `packages/ts/memorax-code-dsh-adapter/src/profile-lifecycle.mjs` for managed
+  DSH Profile discovery, native plugin installation, activation, removal, and
+  read-only status;
 - `packages/ts/memorax-code-backend/src/entrypoints/backend-cli.ts` for
   process-facing command orchestration;
 - `packages/ts/memorax-code-backend/src/lifecycle` for start, stop, restart,
@@ -176,14 +176,14 @@ The principal control-plane locations are:
 Staging and activation are separate decisions. A failed Backend start must not
 replace the currently authoritative Hook generation. Cross-process lifecycle
 decisions use durable records and bounded locks rather than relying on one
-process's in-memory serialization. DSH profile integration has its own managed
+process's in-memory serialization. DSH Profile integration has its own managed
 state and remains a native Cordis installation rather than a Hook generation.
-Before mutating a DSH profile, the npm lifecycle checks the selected native
-CLI version and leaves unsupported installations inert without blocking the
-other clients or the shared Backend. The public npm wrapper merges a read-only
-DSH projection into `memorax-code status`; the Backend remains the owner of the
-Backend, Codex, and Claude Code status fields, and DSH diagnostics do not alter
-their top-level readiness result.
+Its participant checks the selected native CLI version before mutating a
+Profile and leaves an unavailable, unsupported, or not-yet-configured optional
+integration inert without blocking the other clients. The Backend composes all
+three participant projections into one lifecycle result; drift in an already
+managed DSH Profile affects top-level readiness like drift in another managed
+client integration.
 
 ### 3.2 Adapter and retrieval data flow
 
@@ -337,7 +337,7 @@ src/
   clients/
     codex/                Codex native interpretation and lifecycle adapters
     claude/               Claude native interpretation and lifecycle participant
-    dsh/                  DSH Session Event Log interpretation and memory runtime
+    dsh/                  DSH Session Event Log interpretation, memory runtime, and lifecycle participant
   config/                 Backend and proxy/config interpretation
   entrypoints/            process and management-CLI orchestration
   lifecycle/
@@ -373,7 +373,7 @@ entrypoints and compatibility facades. It is not another implementation area.
 | `src/lifecycle/backend` | Managed process, PID/token/connection records, status probing, cleanup, and shutdown requests | Helper contracts do not depend back on the full service implementation |
 | `src/clients/codex` | Codex rollout, prompt, turn-index, and workspace interpretation; Hook memory runtime; plugin integration glue; and lifecycle participant | No Claude format fallback; request runtime remains HTTP-composition independent |
 | `src/clients/claude` | Claude transcript/turn interpretation, Hook memory runtime, and lifecycle participant | No Codex format fallback; request runtime remains HTTP-composition independent |
-| `src/clients/dsh` | DSH Session Event Log Turn interpretation and Cordis-adapter memory runtime | Non-delegated sessions only; no Hook emulation, other-client fallback, trace, or Viewer authority |
+| `src/clients/dsh` | DSH Session Event Log Turn interpretation, Cordis-adapter memory runtime, and lifecycle participant over the DSH adapter's Profile manager | Non-delegated sessions only; no Hook emulation, other-client fallback, trace, or Viewer authority |
 | `src/memory` | Memory commands, retrieval, writeback, turn coordination, repository session pinning, manual CLI, buffering/chunking, task projection, and reconciliation | Client-neutral modules do not parse native session-history formats |
 | `src/repository` | Read-only repository identity and Repo Memory readiness | Scope derivation does not execute Git or use synchronous filesystem reads |
 | `src/provider/memorax` | MemoraX config interpretation, query/add/status payloads, HTTP transport, and normalized results | Independent from server routing and plugin lifecycle |
@@ -417,7 +417,7 @@ graph remains acyclic:
 | `app` and `transport` | The app composes routes; shared HTTP helpers consume the narrow `BackendState` contract |
 | `app` and `lifecycle` | The server reads active-client state; managed-service helpers consume narrow app state/security functions |
 | `clients` and `memory` | Memory service composes client runtimes; client runtimes consume client-neutral memory contracts |
-| `clients` and `lifecycle` | Codex and Claude Code implement lifecycle participants; DSH profile installation remains npm-owned |
+| `clients` and `lifecycle` | Codex, Claude Code, and DSH implement lifecycle participants while retaining client-native deployment behavior |
 | `clients` and `trace` | Codex and Claude Code runtimes record trace; trace Store/model code consumes their activity, token, and identity types |
 | `memory` and `provider` | Memory invokes the provider; provider emits memory-owned observability contracts |
 | `memory` and `repository` | Memory resolves scope; readiness uses the shared project identity contract |
@@ -438,7 +438,7 @@ acyclic.
 | `MemoryDiagnosticLogger` | `memory/observability.ts` | Injects diagnostics without binding memory kernels to Backend debug output |
 | `MemoryTurnCoordinator` | `memory/turn-coordinator.ts` | Correlates and validates client-neutral Turns and controls metadata consumption |
 | `RepositoryMemorySessionRuntime` | `memory/repository-session.ts` | Pins and validates repository scope, including the bounded degraded-direct-`.git` to verified-Git upgrade |
-| `AdapterLifecycleParticipant` | `lifecycle/participant.ts` | Lets lifecycle orchestration use Codex and Claude Code adapters without embedding their implementation details |
+| `AdapterLifecycleParticipant` | `lifecycle/participant.ts` | Lets lifecycle orchestration use all three client adapters without embedding their implementation details |
 | Backend lifecycle contracts | `lifecycle/contracts.ts` | Separate `BackendServiceOptions`, injectable runtime, resolved endpoint, and `BackendServiceResult` from managed-service implementation |
 
 Ports stay with the capability that owns their semantics. A contract used by

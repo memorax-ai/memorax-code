@@ -38,22 +38,22 @@ are not a compatibility contract.
 
 ## New configuration
 
-The generated template selects both Hook clients, disables automatic retrieval,
-enables automatic writeback, sets the preferred language to Chinese (`zh`),
-uses a five-turn skill reminder and the adaptive repository-update policy, and
-enables content-bearing local traces for both clients. npm installation may
-narrow `[clients]` to clients detected on the host. The tables below list all
-fallbacks, including tuning fields omitted from the generated file.
+The generated template selects Codex, Claude Code, and DSH lifecycle
+management, disables automatic retrieval, enables automatic writeback, sets
+the preferred language to Chinese (`zh`), uses a five-turn skill reminder and
+the adaptive repository-update policy, and enables content-bearing local
+traces for both traced clients. npm installation may narrow `[clients]` to
+clients detected on the host. The tables below list all fallbacks, including
+tuning fields omitted from the generated file.
 
-DSH is intentionally outside `[clients]`: the installer and lifecycle wrapper
-discover existing valid profiles and manage the native Cordis bundle in each
-one. They do not create profiles. A later `memorax-code update` or
-`memorax-code start` reconciles profiles created after the original install.
-DSH profile plugin management requires `pnpm` on `PATH`. This release accepts
-DSH `0.1.0-rc.6` exactly. Before changing a profile, the lifecycle wrapper
-checks the selected `dsh --version`; an unavailable or unsupported DSH is left
-with unchanged profiles while any existing MemoraX DSH authority is disabled.
-Codex, Claude Code, and the shared Backend continue to start.
+DSH participates in `[clients]` while retaining its native Profile and Cordis
+deployment. The DSH adapter discovers existing valid Profiles and manages the
+native bundle in each one; it does not create Profiles. A later
+`memorax-code update` or `memorax-code start` reconciles Profiles created after
+the original install. DSH Profile plugin management requires `pnpm` on `PATH`.
+This release accepts DSH `0.1.0-rc.6` exactly. Before changing a Profile, the
+adapter checks the selected `dsh --version`; an unavailable or unsupported DSH
+is left inert without blocking selected Codex or Claude Code integrations.
 
 On POSIX systems MemoraX Code creates `$MEMORAX_CODE_HOME` with mode `0700`
 and a new `config.toml` with mode `0600`. Windows relies on the current user's
@@ -61,12 +61,15 @@ filesystem ACLs.
 
 ## Client selection
 
-If `[clients]` is absent, lifecycle commands select both clients. If it is
-present, `codex` and `claude` are boolean fields and an omitted client is
-disabled. The command-line override is:
+If `[clients]` is absent, lifecycle commands select all supported clients. If
+it is present, `codex`, `claude`, and `dsh` are boolean fields. An omitted
+Codex or Claude Code field is disabled. An omitted `dsh` field keeps automatic
+local Profile detection enabled so configurations created before DSH support
+continue to discover it; set `dsh = false` to disable DSH lifecycle management.
+The command-line override is:
 
 ```text
---clients codex|claude|codex,claude|all|none
+--clients codex|claude|dsh|<comma-separated-set>|all|none
 ```
 
 A normal npm install or reinstall refreshes `[clients]` from the runnable
@@ -79,10 +82,10 @@ configuration instead of being permanently disabled. When an update newly
 enables Codex, it requests initial Hook activation after the client-selection
 prompt.
 
-Client selection controls Codex and Claude Code plugin/Hook lifecycle only. It
-does not change their provider settings and does not select DSH profiles.
-`--clients none` runs the Backend without managing either Hook integration;
-DSH remains governed by its separately detected profile installations.
+Client selection controls the lifecycle of all three integrations without
+changing any client's model-provider settings. Selecting DSH reconciles its
+discovered Profiles; selecting `none` runs the Backend without managing any
+client integration.
 
 ## MemoraX connection
 
@@ -297,6 +300,8 @@ dsh --profile <profile> --dump-config
 
 The status commands do not print the MemoraX API key or Backend token.
 `memorax-code status` includes a content-free `dshAdapter` projection with the
-selected DSH version, compatibility, and managed/discovered profile state. Use
-the native DSH commands only when that summary is insufficient after install or
-update.
+selected DSH version, compatibility, and managed/discovered Profile state. An
+optional unavailable, unsupported, or not-yet-configured DSH integration is
+reported as skipped; drift in an already managed Profile makes the overall
+status require attention. Use the native DSH commands only when that summary
+is insufficient after install or update.
