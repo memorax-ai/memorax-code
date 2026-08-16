@@ -169,7 +169,7 @@ const claudeSkipReason = postinstallClientSkipReason({
   enabled: claudeClientEnabled,
 });
 
-let backendAndAdaptersStatus = startBackendAndCheck({
+const backendAndAdapters = startBackendAndCheck({
   skipCodexAdapter,
   clientMode,
   codexSkipReason,
@@ -177,11 +177,16 @@ let backendAndAdaptersStatus = startBackendAndCheck({
   claudeAdapterRequired: !skipClaudeAdapter,
   claudeSkipReason,
 });
+const backendAndAdaptersStatus = backendAndAdapters.status;
 if (backendAndAdaptersStatus === "enabled") {
   logGreen(`Client Hook runtime ${stagedHookRuntime.generationId} activated.`);
 }
 if (backendAndAdaptersStatus === "enabled") {
-  printNextSteps({ codexAdapterEnabled: !skipCodexAdapter, claudeAdapterEnabled: !skipClaudeAdapter });
+  printNextSteps({
+    codexAdapterEnabled: !skipCodexAdapter,
+    claudeAdapterEnabled: !skipClaudeAdapter,
+    dshAdapterEnabled: backendAndAdapters.dshAdapterEnabled,
+  });
   printCommonCommands({ codexAdapterEnabled: !skipCodexAdapter, claudeAdapterEnabled: !skipClaudeAdapter });
 }
 printPostinstallSummary(backendAndAdaptersStatus);
@@ -869,18 +874,18 @@ function startBackendAndCheck({ skipCodexAdapter = false, clientMode = "all", co
     if (clientHookRuntimeActivationFailed(started)) {
       logRed("Client Hook runtime activation failed; automatic lifecycle recovery was skipped.");
       logRed("The previously active runtime remains authoritative.");
-      return "not-verified";
+      return { status: "not-verified", dshAdapterEnabled: false };
     }
     if (lifecycleLockFailureCode(started)) {
       logRed("Automatic stop/start recovery is skipped because another MemoraX Code lifecycle command still owns the Backend authority.");
       printLifecycleLockFailureSuggestions();
-      return "not-verified";
+      return { status: "not-verified", dshAdapterEnabled: false };
     }
     const runtimeAuthorityFailure = runtimeAuthorityFailureCode(started);
     if (runtimeAuthorityFailure) {
       logRed("Automatic stop/start recovery is skipped because persisted Backend runtime authority requires explicit repair.");
       printRuntimeAuthorityFailureSuggestions(runtimeAuthorityFailure);
-      return "not-verified";
+      return { status: "not-verified", dshAdapterEnabled: false };
     }
     logRed("Attempting automatic recovery: `memorax-code stop` then `memorax-code start`...");
     runMemoraxCodeCommand(["stop", ...adapterFlags]);
@@ -891,7 +896,7 @@ function startBackendAndCheck({ skipCodexAdapter = false, clientMode = "all", co
       logRed("Diagnostic: running `memorax-code status` so the failure is visible.");
       runMemoraxCodeCommand(statusArgs);
       printFailureSuggestions();
-      return "not-verified";
+      return { status: "not-verified", dshAdapterEnabled: false };
     }
   }
   logGreen(recovered ? "Backend start completed after automatic recovery." : "Backend start completed.");
@@ -900,7 +905,7 @@ function startBackendAndCheck({ skipCodexAdapter = false, clientMode = "all", co
   if (checked.status !== 0) {
     logRed("Backend status check failed during npm postinstall.");
     printFailureSuggestions();
-    return "not-verified";
+    return { status: "not-verified", dshAdapterEnabled: false };
   }
   logGreen("Backend status check completed.");
   const enabled = memoraxCodeEnabled(checked, {
@@ -910,9 +915,17 @@ function startBackendAndCheck({ skipCodexAdapter = false, clientMode = "all", co
   if (!enabled) {
     if (skipCodexAdapter || skipClaudeAdapter) printSkippedAdapterDiagnostics({ codexSkipReason, claudeSkipReason });
     else printUnavailableDiagnostics();
-    return "unavailable";
+    return { status: "unavailable", dshAdapterEnabled: false };
   }
-  return "enabled";
+  return {
+    status: "enabled",
+    dshAdapterEnabled: dshAdapterReady(checked),
+  };
+}
+
+function dshAdapterReady(statusResult) {
+  const output = `${statusResult.stdout ?? ""}\n${statusResult.stderr ?? ""}`;
+  return /\bDSH adapter:\s*ok\b[^\r\n]*\bintegration=plugin\b/im.test(stripAnsi(output));
 }
 
 function pendingClientHookRuntimeEnv() {
@@ -1115,13 +1128,15 @@ function codexClientRunning() {
   });
 }
 
-function printNextSteps({ codexAdapterEnabled = true, claudeAdapterEnabled = true } = {}) {
+function printNextSteps({ codexAdapterEnabled = true, claudeAdapterEnabled = true, dshAdapterEnabled = false } = {}) {
   const clientText = enabledClientText({ codexAdapterEnabled, claudeAdapterEnabled });
   if (clientText && updatePostinstall) {
     logGreen(`${bold("The new Hook runtime is active")}; existing sessions with the stable shell select it on their next user prompt.`);
     log(`Restart or refresh ${clientText} only if its plugin shell was installed, changed, or newly enabled, or if MemoraX Code is not active on the next prompt.`);
   } else if (clientText) {
     logGreen(`${bold(`Restart or refresh ${clientText}`)} before opening a new MemoraX Code session.`);
+  } else if (dshAdapterEnabled) {
+    logGreen(`${bold("Restart or refresh DeepSeek Harness")} before opening a new MemoraX Code session.`);
   } else {
     logGreen(`${bold("MemoraX Code backend is running")}; client adapters were skipped for this install.`);
   }

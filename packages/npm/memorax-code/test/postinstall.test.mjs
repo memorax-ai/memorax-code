@@ -101,7 +101,7 @@ async function startMockMemorax({ status = 200, body = { success: true, data: { 
   };
 }
 
-async function runPostinstall({ existingCache = false, explicitCache = false, hookRuntimeFailure, failStartOnce = false, connectionAuthorityFailure = false, runtimeAuthorityFailureCode, officialMode = false, codexConfig, memoraxCodeConfig, memoraxCodeConfigMode, emptyClaudeSettings = false, claudeAvailable = true, claudeVersionFails = false, claudeSettingsText, codexAvailable = true, codexAppOnly = false, vscodeOnly = false, dshProfiles = [], skipCodexPluginInstall = false, skipClaudeAdapterInstall = false, unavailableStatus = false, prefixedStatus = false, input = "", interactive = false, npmCommand = "install", memoraxVerify, memoraxEnv = {}, memoryStatusFixture, hookSnapshot = [], hookUpdatePlan = [], hookFullReview = false, hookFullReviewMissing = false, hookSnapshotFails = false, hookCheckFails = false, hookTrustFails = false, ttyOverride } = {}) {
+async function runPostinstall({ existingCache = false, explicitCache = false, hookRuntimeFailure, failStartOnce = false, connectionAuthorityFailure = false, runtimeAuthorityFailureCode, officialMode = false, codexConfig, memoraxCodeConfig, memoraxCodeConfigMode, emptyClaudeSettings = false, claudeAvailable = true, claudeVersionFails = false, claudeSettingsText, codexAvailable = true, codexAppOnly = false, vscodeOnly = false, dshProfiles = [], dshStatusUnavailable = false, skipCodexPluginInstall = false, skipClaudeAdapterInstall = false, unavailableStatus = false, prefixedStatus = false, input = "", interactive = false, npmCommand = "install", memoraxVerify, memoraxEnv = {}, memoryStatusFixture, hookSnapshot = [], hookUpdatePlan = [], hookFullReview = false, hookFullReviewMissing = false, hookSnapshotFails = false, hookCheckFails = false, hookTrustFails = false, ttyOverride } = {}) {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-postinstall-"));
   const binDir = join(root, "bin");
   const codexHome = join(root, "codex-home");
@@ -284,6 +284,8 @@ async function runPostinstall({ existingCache = false, explicitCache = false, ho
     "const selectedClients = new Set(clientMode.split(','));",
     "const codexEnabled = clientMode === 'all' || selectedClients.has('codex');",
     "const claudeEnabled = clientMode === 'all' || selectedClients.has('claude');",
+    "const dshSelected = clientMode === 'all' || selectedClients.has('dsh');",
+    `const dshReady = dshSelected && ${JSON.stringify(dshProfiles.length > 0 && !dshStatusUnavailable)};`,
     "if (process.argv[2] === 'status' && process.env.MEMORAX_CODE_TEST_UNAVAILABLE_STATUS === '1') {",
     "  console.error('memorax-code: ok');",
     "  console.error('backend: ok http://127.0.0.1:8787 status=200');",
@@ -303,6 +305,7 @@ async function runPostinstall({ existingCache = false, explicitCache = false, ho
     "  console.error('backend: ok http://127.0.0.1:8787 status=200');",
     "  if (codexEnabled) console.error('codex adapter: ok integration=hooks skills=plugin-managed');",
     "  if (claudeEnabled) console.error('claude adapter: ok integration=hooks skills=ok');",
+    "  if (dshSelected) console.error(dshReady ? 'dsh adapter: ok integration=plugin' : 'dsh adapter: skipped dsh_version_unavailable');",
     "}",
     "process.exit(0);",
     "",
@@ -1953,8 +1956,26 @@ test("postinstall treats existing DSH profiles as a supported native harness", a
     assert.match(run.result.stderr, /Connect MemoraX Code to MemoraX now/);
     assert.match(run.log, /^memorax-code start --clients dsh$/m);
     assert.match(run.log, /^memorax-code status --clients dsh$/m);
+    assert.match(run.result.stderr, /Restart or refresh DeepSeek Harness/);
+    assert.doesNotMatch(run.result.stderr, /client adapters were skipped for this install/);
     const config = await readFile(join(run.memoraxCodeHome, "config.toml"), "utf8");
     assert.match(config, /\[clients\][^\r\n]*\r?\ncodex = false[^\r\n]*\r?\nclaude = false/m);
+  } finally {
+    await rm(run.root, { recursive: true, force: true });
+  }
+});
+
+test("postinstall does not recommend restarting DSH when its adapter was not enabled", async () => {
+  const run = await runPostinstall({
+    codexAvailable: false,
+    claudeAvailable: false,
+    dshProfiles: ["headless"],
+    dshStatusUnavailable: true,
+  });
+  try {
+    assert.equal(run.result.code, 0, run.result.stderr);
+    assert.match(run.result.stderr, /client adapters were skipped for this install/);
+    assert.doesNotMatch(run.result.stderr, /Restart or refresh DeepSeek Harness/);
   } finally {
     await rm(run.root, { recursive: true, force: true });
   }

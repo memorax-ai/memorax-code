@@ -224,7 +224,7 @@ async function main() {
   });
 
   progress("installing the tarball with real npm lifecycle scripts");
-  await run("npm", [
+  const installResult = await run("npm", [
     "install",
     "-g",
     "--prefix",
@@ -234,6 +234,9 @@ async function main() {
     "--loglevel",
     "warn",
   ], { cwd: workspace, env: runtimeEnv, timeoutMs: BUILD_TIMEOUT_MS });
+  const installOutput = `${installResult.stdout}\n${installResult.stderr}`;
+  assert.match(installOutput, /Restart or refresh DeepSeek Harness/);
+  assert.doesNotMatch(installOutput, /client adapters were skipped for this install/);
 
   const packageRoot = await installedPackageRoot(npmPrefix);
   memoraxCodeEntrypoint = join(packageRoot, "bin", "memorax-code.mjs");
