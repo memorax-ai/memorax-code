@@ -5,17 +5,16 @@ coding sessions.
 
 ## Quick Start
 
-You need Node.js 24 or newer and either Codex or Claude Code. Create an API key
-in [MemoraX Console](https://platform.memorax.net/), then run:
+You need Node.js 24 or newer and either Codex or Claude Code. Then run:
 
 ```bash
 npm install -g @memorax/memorax-code
 memorax-code
 ```
 
-The first launch completes any setup that is still needed. If MemoraX has not
-been configured yet, enter your Base User ID, preferred memory language, and
-API key when prompted.
+The first launch completes any setup that is still needed. Enter a Memory ID
+and choose your preferred memory language when prompted; no account or API key
+is required beforehand.
 
 To check the installation or reconfigure later:
 

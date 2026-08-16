@@ -32,6 +32,15 @@ This reconciles the managed Backend and client integrations. Some Hook and CLI
 processes reread configuration sooner, but `memorax-code start` is the
 supported consistency boundary.
 
+The MemoraX API key has one additional setup-managed source. Its precedence is:
+
+```text
+MEMORAX_CODE_MEMORAX_API_KEY > [memorax].api_key > ready secure trial credential
+```
+
+The trial credential is consulted only when a Memory ID is configured and no
+environment or TOML API key is present.
+
 TOML booleans are `true` or `false`. Environment booleans accept
 `true/false`, `1/0`, `yes/no`, and `on/off`. Unknown fields are ignored and
 are not a compatibility contract.
@@ -90,20 +99,29 @@ package without reading terminal input. `memorax-code setup` owns client
 detection, prompts, configuration writes, initial Codex Hook activation,
 exact review of later Hook changes, and final readiness.
 
-Setup has three credential-handling modes. The no-argument command enters
-automatic setup when completion is absent; it reuses a locally valid effective
-MemoraX connection and prompts only when that connection is incomplete or
-invalid. Explicit `memorax-code setup` always offers active reconfiguration,
-even when the current connection is locally valid. Setup reached from
-`memorax-code update` preserves the existing MemoraX connection without asking
-for credentials again.
+Setup has three connection-handling modes. The no-argument command enters
+automatic setup when completion is absent. If a locally ready MemoraX
+connection exists, it asks whether to reuse the saved connection and memory
+preferences. Accepting preserves them. If no ready connection exists, or reuse
+is declined, setup asks for a Memory ID and preferred language, then creates or
+restores a secure trial credential before writing those preferences.
+
+Explicit `memorax-code setup` asks for a Memory ID and language and uses the
+same trial-credential path. After the secure trial credential is ready, it
+removes any `[memorax].api_key` from `config.toml` so that the old manual key
+does not mask the trial connection. An environment API key remains a
+higher-precedence override. Setup reached from `memorax-code update` preserves
+the existing MemoraX connection without asking for memory preferences or
+changing credentials.
 
 Setup stages the packaged Hook runtime and reconciles the selected clients
 with `memorax-code start` followed by `memorax-code status`. An ordinary start
 failure gets one bounded stop/start recovery attempt. Deterministic Hook
 activation, lifecycle-lock, or persisted runtime-authority failures skip that
 automatic stop so uncertain authority is not overwritten. The staged Hook
-generation becomes active only through a successful lifecycle start.
+generation becomes active only through a successful lifecycle start. Outside
+update mode, setup checks config-only MemoraX readiness again after Backend
+reconciliation and does not record completion unless that check succeeds.
 
 Successful readiness is recorded in the private, versioned file:
 
@@ -121,9 +139,9 @@ succeeds.
 
 A complete product uninstall removes this routing marker after removing the
 managed integrations, while preserving `config.toml`. The next no-argument
-launch after reinstall therefore runs automatic setup and can reuse that
-configuration. A normal stop and a partial client uninstall preserve the
-completion record.
+launch after reinstall therefore runs automatic setup and can offer to reuse
+that configuration and its retained secure trial credential. A normal stop and
+a partial client uninstall preserve the completion record.
 
 Package replacement uses a separate private, versioned record:
 
@@ -153,37 +171,41 @@ MemoraX is the required remote-memory service:
 ```toml
 [memorax]
 endpoint = "https://platform.memorax.net"
-user_id = "your-base-user-id"
-api_key = "your-api-key"
+user_id = "your-memory-id"
 # timeout_ms = 5000
 # startup_timeout_ms = 3000
 ```
 
+This is the setup-managed form: the trial API key is not written to
+`config.toml`. A manually managed connection may additionally set `api_key`
+here or supply `MEMORAX_CODE_MEMORAX_API_KEY`.
+
 | Field | Environment override | Fallback |
 | --- | --- | --- |
 | `endpoint` | `MEMORAX_CODE_MEMORAX_ENDPOINT` | `https://platform.memorax.net` |
-| `user_id` | `MEMORAX_CODE_MEMORAX_USER_ID` | required |
-| `api_key` | `MEMORAX_CODE_MEMORAX_API_KEY` | required |
+| `user_id` | `MEMORAX_CODE_MEMORAX_USER_ID` | required Memory ID |
+| `api_key` | `MEMORAX_CODE_MEMORAX_API_KEY` | ready secure trial credential; otherwise required |
 | `timeout_ms` | `MEMORAX_CODE_MEMORAX_TIMEOUT_MS` | `5000` ms |
 | `startup_timeout_ms` | `MEMORAX_CODE_MEMORAX_STARTUP_TIMEOUT_MS` | `3000` ms |
 
 Automatic setup determines whether the connection can be reused through the
 same config-only status resolution used by `memorax-cli status`, including the
-precedence documented above. A non-empty Base User ID and API key plus a valid
-`zh` or `en` memory output language form a locally configured connection; an
-omitted output language uses the `zh` fallback. This check does not send a
-network request or prove that the API key is accepted by MemoraX. Explicit
-setup writes persistent values to `config.toml`, but environment variables
-remain higher-precedence overrides.
+precedence documented above. A non-empty Memory ID, an effective API key from
+one of those sources, and a valid `zh` or `en` memory output language form a
+locally ready connection; an omitted output language uses the `zh` fallback.
+This check does not send a network request or prove that the API key is
+accepted by the memory API. Trial provisioning is a separate foreground
+network operation. Setup writes the endpoint, Memory ID, and language to
+`config.toml`, while environment variables remain higher-precedence overrides.
 
 MemoraX requests send the API key and the query or content required by the
 selected memory operation to the HTTPS endpoint. Override `endpoint` only with
 a compatible MemoraX service you trust.
 
 `startup_timeout_ms` controls synchronous automatic retrieval and is capped at
-10 seconds. `user_id` is a base identity; MemoraX Code derives a
+10 seconds. `user_id` is the stable Memory ID; MemoraX Code derives a
 repository-scoped identity for Git workspaces and a folder-scoped identity for
-non-Git workspaces. It never falls back to the unscoped base identity.
+non-Git workspaces. It never falls back to the unscoped Memory ID.
 
 ## Retrieval
 
@@ -336,9 +358,10 @@ records while a setup, npm, or lifecycle command may still be active.
   on startup.
 - Malformed TOML, a non-table root, or invalid `[clients]` types block
   lifecycle mutations before adapters or processes are changed.
-- Automatic setup prompts for MemoraX fields that are incomplete or invalid in
-  an otherwise safely parseable effective configuration. A malformed TOML file
-  remains fail-closed and is not overwritten by the prompt flow.
+- Automatic setup offers to reuse a locally ready MemoraX connection. If none
+  exists or reuse is declined, it asks for a Memory ID and language and
+  provisions the trial credential. A malformed TOML file remains fail-closed
+  and is not overwritten by the prompt flow.
 - Ordinary memory and trace readers use safe fallbacks when the file cannot be
   read or parsed; memory readers may also warn. Unsupported field types are
   ignored.

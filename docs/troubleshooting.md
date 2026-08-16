@@ -40,11 +40,12 @@ instead. To run or repair setup explicitly, use:
 memorax-code setup
 ```
 
-After a product uninstall and reinstall, automatic setup reuses a locally valid
-retained MemoraX connection. It is therefore normal for setup to restore the
-client integrations without asking for the Base User ID, preferred language,
-or API key. Run explicit `memorax-code setup` when you intend to replace those
-values.
+After a product uninstall and reinstall, automatic setup detects a locally
+ready retained MemoraX connection and asks whether to reuse it. Accepting is
+why setup can restore the client integrations without asking again for the
+Memory ID or preferred language. Run explicit `memorax-code setup` when you
+intend to replace those preferences or move to the setup-managed trial
+connection.
 
 Setup requires both terminal input and terminal-visible stderr. A pipe,
 background process, or redirected stdin/stderr cannot answer setup prompts;
@@ -55,14 +56,23 @@ and rerun `memorax-code setup`.
 
 Setup writes
 `$MEMORAX_CODE_HOME/runtime/setup/setup-completion.json` only after client and
-Hook reconciliation, Backend start, and final status readiness all succeed.
-Until then, a no-argument `memorax-code` attempts setup again.
+Hook reconciliation, Backend start, status, and final config-only MemoraX
+readiness all succeed. Until then, a no-argument `memorax-code` attempts setup
+again.
 
-If the configuration is safely parseable but its effective MemoraX fields are
-incomplete or invalid, automatic setup asks for replacement values. A malformed
-TOML file cannot be safely updated and remains byte-preserved; fix or restore
-that file before rerunning setup rather than expecting the prompt flow to
-overwrite it.
+If the configuration is safely parseable but its effective MemoraX connection
+is not ready, automatic setup asks for a Memory ID and preferred language and
+then creates or restores a trial credential. A malformed TOML file cannot be
+safely updated and remains byte-preserved; fix or restore that file before
+rerunning setup rather than expecting the prompt flow to overwrite it.
+
+If setup reports that secure trial setup failed, confirm that the current
+operating-system credential store is available to the same logged-in user and
+that the MemoraX HTTPS service is reachable, then rerun `memorax-code setup`.
+Setup does not fall back to a plaintext credential or write completion after
+that failure. On Linux, also confirm that `/usr/bin/secret-tool` is installed
+and that the current session can reach an unlocked Secret Service. Minimal
+containers and detached SSH sessions do not necessarily provide either one.
 
 For an ordinary Backend start failure, setup makes one bounded stop/start
 recovery attempt. It deliberately skips that stop when the error identifies a
@@ -129,26 +139,31 @@ compatible package version rather than manual record conversion.
 
 ## Installed, but memory is unavailable
 
-The package and Backend can be healthy while MemoraX remains unconfigured. Run:
+The package and Backend can be healthy while the MemoraX connection remains
+unavailable. Run:
 
 ```sh
 memorax-cli status
 ```
 
-Use explicit setup to enter or replace the connection values:
+Use explicit setup to create or restore the trial connection and enter the
+Memory ID and preferred language:
 
 ```sh
 memorax-code setup
 memorax-cli status
 ```
 
-Configured status validates the effective local values only. It does not
-contact MemoraX or prove that the API key is accepted; the first real memory
-request performs that check.
+Configured status validates the effective local values and loads the effective
+credential without printing it. It does not contact the memory API or prove
+that the API key is accepted; the first real memory request performs that
+check.
 
-For manual configuration, set `endpoint`, `user_id`, and `api_key` under
-`[memorax]` in `$MEMORAX_CODE_HOME/config.toml`, or set their environment
-equivalents. The current default endpoint is `https://platform.memorax.net`.
+For a manually managed connection, set `endpoint`, `user_id`, and `api_key`
+under `[memorax]` in `$MEMORAX_CODE_HOME/config.toml`, or set their environment
+equivalents. An environment API key takes precedence over a TOML API key, and
+either takes precedence over a ready secure trial credential. The current
+default endpoint is `https://platform.memorax.net`.
 
 After changing persistent configuration:
 
@@ -268,7 +283,7 @@ memorax-code-claude doctor
 
 Common causes are:
 
-- missing or invalid MemoraX endpoint, base user ID, or API key;
+- missing or invalid MemoraX endpoint, Memory ID, or effective API key;
 - the global writeback kill switch or CLI add switch disabling `memory add`;
 - no trusted workspace for the current session;
 - an unreadable, malformed, or symlinked Git marker;
@@ -277,14 +292,14 @@ Common causes are:
 
 MemoraX Code reads filesystem Git metadata without executing Git. Linked
 worktrees share the remote repository identity; non-Git workspaces use the
-normalized folder name. Resolution never falls back to the bare base user ID.
+normalized folder name. Resolution never falls back to the bare Memory ID.
 
 A live Codex or Claude Code session remains pinned to the repository or local
 workspace resolved at the start of the session. Starting the client from a
 parent workspace and then entering a nested Git repository does not rebind the
 session. The only in-session scope upgrade is from a direct `.git` directory
 whose internal metadata was malformed or incomplete to a verified Git
-repository at the same canonical workspace root and for the same Base User ID.
+repository at the same canonical workspace root and for the same Memory ID.
 
 During that degraded state, MemoraX Code reports
 `workspaceScopeFallbackReason: git_metadata_invalid` for manual CLI operations

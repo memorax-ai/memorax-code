@@ -88,7 +88,7 @@ relationships; the arrow labels distinguish them. It is not an import graph.
 | `packages/ts/memorax-code-adapter-common` | Shared source for Backend connection authority, private runtime and secure credential records, cross-process locking and configuration, Hook generations, Hook launch helpers, and Repo/Personal Memory helpers | Backend composition, native transcript interpretation, MemoraX request execution, or client plugin policy | `packages/ts/memorax-code-adapter-common/src/backend-connection.mjs`, `src/runtime-record.mjs`, `src/credentials`, `src/hooks`, and `src/repo-memory` |
 | `packages/ts/memorax-code-codex-adapter` | Codex plugin artifact, Hook shells and runtimes, session/workspace observation, diagnostics, and the canonical shared skill | Codex rollout semantics or Backend-side writeback authority | `.codex-plugin`, `hooks`, `runtime-hooks`, `src`, and `skills/memorax-code` |
 | `packages/ts/memorax-code-claude-adapter` | Claude Code plugin artifact, Hook shells and runtimes, configuration, installer, marketplace source, and diagnostics | Claude transcript semantics or Backend memory orchestration | `.claude-plugin`, `hooks`, `runtime-hooks`, `scripts`, and `src/plugin-install.mjs` |
-| `packages/npm/memorax-code` | Installed executable wrappers, explicit interactive setup, trial provisioning and PoW orchestration, setup reconciliation, package-transition preinstall/postinstall, update, npm manifest, and release-package source | Backend lifecycle semantics, uninstall orchestration, or artifact staging | `bin`, `lib/trial-provision-flow.mjs`, `lib/setup-reconcile.mjs`, `lib/package-transition.mjs`, `lib/run-entrypoint.mjs`, and `package.json` |
+| `packages/npm/memorax-code` | Installed executable wrappers, interactive setup, trial provisioning and PoW orchestration, setup reconciliation, package-transition preinstall/postinstall, update, npm manifest, and release-package source | Backend lifecycle semantics, uninstall orchestration, or artifact staging | `bin`, `lib/trial-setup.mjs`, `lib/trial-provision-flow.mjs`, `lib/setup-reconcile.mjs`, `lib/package-transition.mjs`, `lib/run-entrypoint.mjs`, and `package.json` |
 | `scripts` | Backend build orchestration, staging/materialization, package layout, documentation, and local-only data gates | Product runtime authority | Package-build/check scripts and executable contract scripts |
 | `.github` | Issue and pull-request contribution templates | Product runtime behavior | `.github/ISSUE_TEMPLATE` and `.github/pull_request_template.md` |
 
@@ -134,6 +134,7 @@ sequenceDiagram
   participant Transition as package transition
   participant Setup as interactive setup
   participant Config as effective MemoraX config
+  participant Trial as trial provisioning and secure credential
   participant CodexPlugin as Codex plugin trust
   participant CLI as installed memorax-code CLI
   participant Generation as Hook runtime generation
@@ -166,15 +167,24 @@ sequenceDiagram
     Setup->>Config: preserve connection without credential prompts
   else Automatic no-argument setup
     Setup->>Config: resolve local config-only status
-    alt Effective connection is locally configured
-      Config-->>Setup: reuse effective connection
+    alt Effective connection is locally ready
+      Setup->>User: offer saved connection reuse
+      alt Reuse accepted
+        Setup->>Config: preserve connection and preferences
+      else Reuse declined
+        Setup->>User: request Memory ID and language
+        Setup->>Trial: create or restore ready credential
+        Setup->>Config: write endpoint, Memory ID, and language
+      end
     else Effective connection is incomplete or invalid
-      Setup->>User: request connection values and language
-      Setup->>Config: update persistent values atomically
+      Setup->>User: request Memory ID and language
+      Setup->>Trial: create or restore ready credential
+      Setup->>Config: write endpoint, Memory ID, and language
     end
   else Explicit setup
-    Setup->>User: offer active connection reconfiguration
-    Setup->>Config: update accepted persistent values atomically
+    Setup->>User: request Memory ID and language
+    Setup->>Trial: create or restore ready credential
+    Setup->>Config: replace active TOML connection preferences
   end
   alt Selected Codex integration has no active plugin
     Setup->>CodexPlugin: activate bundled plugin and trust current Hook hashes
@@ -191,6 +201,9 @@ sequenceDiagram
   Lifecycle->>Participants: prepare client integrations
   Lifecycle->>Service: start and verify readiness
   Lifecycle-->>Generation: activate only after accepted readiness
+  opt Not product update
+    Setup->>Config: verify config-only readiness again
+  end
   Setup->>Setup: persist completion after readiness
 ```
 
@@ -204,19 +217,26 @@ The no-argument CLI consults versioned setup completion: absence routes to
 automatic interactive setup, validity routes to status, and invalid or
 unsupported state fails closed. Explicit `memorax-code setup` runs regardless
 of completion, while product update uses a separate setup mode. Automatic setup
-reuses only a locally configured effective MemoraX connection reported by the
-config-only status authority; explicit setup offers active reconfiguration,
-and update setup preserves credentials. This local status does not prove remote
-credential acceptance.
+uses the config-only status authority to find a locally ready effective MemoraX
+connection and asks before reusing its connection and memory preferences. If
+none is ready or reuse is declined, it asks only for a Memory ID and language,
+then creates or restores the secure trial credential before writing those
+preferences. Explicit setup follows the same trial path; update setup preserves
+credentials and memory preferences. The local status check does not prove
+remote credential acceptance.
 
-Setup owns client discovery, user prompts, configuration changes, initial
-bundled-Hook activation, exact changed-Hook review, Hook generation staging,
-and readiness reconciliation. Entering interactive setup authorizes initial
-activation for a selected Codex integration without a second confirmation;
+Setup owns client discovery, user prompts, foreground trial provisioning,
+configuration changes, initial bundled-Hook activation, exact changed-Hook
+review, Hook generation staging, and readiness reconciliation. Entering
+interactive setup authorizes initial activation for a selected Codex
+integration without a second confirmation;
 new or changed Hook command hashes on later updates still require foreground
-review. Setup may make one bounded stop/start recovery attempt for an ordinary
-start failure, while deterministic Hook activation, lifecycle-lock, and
-persisted-authority failures remain fail-closed.
+review. Trial provisioning must succeed before setup applies the selected
+Memory ID and language or begins plugin and Backend reconciliation. Setup may
+make one bounded stop/start recovery attempt for an ordinary start failure,
+while deterministic Hook activation, lifecycle-lock, and persisted-authority
+failures remain fail-closed. Outside update mode, setup records completion
+only after a final config-only readiness check.
 
 The principal control-plane locations are:
 
@@ -226,11 +246,12 @@ The principal control-plane locations are:
   non-interactive `retiring -> retired -> consumed` package-replacement state;
 - `packages/npm/memorax-code/lib/setup-reconcile.mjs` for bounded setup
   start/status verification and the narrow ordinary-failure recovery policy;
-- `packages/npm/memorax-code/lib/trial-provision-client.mjs`,
-  `lib/trial-provision-flow.mjs`, and `lib/trial-pow.mjs` for the isolated
-  account-service HTTP boundary, durable credential-state orchestration, and
-  worker-thread PoW computation owned by foreground setup; npm lifecycle does
-  not import these modules;
+- `packages/npm/memorax-code/lib/trial-setup.mjs`,
+  `lib/trial-provision-client.mjs`, `lib/trial-provision-flow.mjs`, and
+  `lib/trial-pow.mjs` for setup composition, the isolated account-service HTTP
+  boundary, durable credential-state orchestration, and worker-thread PoW
+  computation owned by foreground setup; npm lifecycle does not import these
+  modules;
 - `packages/ts/memorax-code-adapter-common/src/setup-completion.mjs` for the
   versioned private completion record and cross-process setup lock;
 - `packages/ts/memorax-code-backend/src/entrypoints/backend-cli.ts` for
@@ -288,7 +309,7 @@ Important distinctions:
   incomplete, conflicting, or unprovable.
 - A malformed or incomplete direct `.git` directory is the sole documented
   folder-scope fallback. That degraded scope may upgrade in-session only to a
-  verified Git scope with the same Base User ID and canonical workspace root;
+  verified Git scope with the same Memory ID and canonical workspace root;
   all other scope changes remain mismatches.
 - Local mode may authorize loopback requests without a configured token. Token
   authentication is required when configuration or exposure mode demands it.
@@ -531,7 +552,7 @@ and
 | Workspace and repository identity | Backend read-only resolution held by the live repository-session runtime; its only permitted scope transition is the same-root degraded-direct-`.git` to verified-Git upgrade | Project labels, Viewer catalog entries, and Hook `cwd` |
 | Backend connection and managed-process ownership | Versioned private connection/token/PID records plus lifecycle lock/version validation | In-memory state in any one process |
 | Setup routing and package-replacement continuity | Versioned private setup-completion and package-transition records plus their JSON locks | Configuration contents, npm output visibility, and the presence of package files |
-| Effective MemoraX connection | Config-only resolution with documented environment-over-file precedence and normalization | Config-file presence, setup completion, and Backend liveness do not establish local configuration or remote API-key acceptance |
+| Effective MemoraX connection | Config-only resolution with environment API key over TOML API key over a ready secure trial credential, plus normalized Memory ID and language | Config-file presence, trial-record presence without `ready`, setup completion, and Backend liveness do not establish local readiness or remote API-key acceptance |
 | Trial account credentials | Versioned secure credential record stored through the operating-system credential backend; its `account_id` is account identity | `[memorax].user_id` remains the Memory ID and must not be derived from or overwritten by trial account identity |
 | MemoraX memory result and asynchronous task state | Normalized response from `provider/memorax` | Observability, trace, Viewer, and task projections |
 | Persisted current-turn operational state and trace history | Client-qualified local trace records | Viewer summaries and diagnostics; not native content or general Turn-identity authority |

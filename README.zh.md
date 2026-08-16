@@ -42,15 +42,15 @@ MemoraX Code 为 Codex 和 Claude Code 提供共享记忆，帮助后续会话�
 开始前，请准备 Node.js 24 或更高版本，以及 Codex 或 Claude Code。只有使用 Repo Memory
 功能时才需要 Python 3。
 
-先在 [MemoraX Console](https://platform.memorax.net/) 创建 API Key，然后运行：
+运行：
 
 ```bash
 npm install -g @memorax/memorax-code
 memorax-code
 ```
 
-首次运行会完成尚未完成的安装引导。尚未配置 MemoraX 时，请按提示填写 Base User ID、
-记忆语言偏好和 API Key。完成初始化后，再次运行 `memorax-code` 会显示当前状态。
+首次运行会完成尚未完成的安装引导。请按提示填写 Memory ID 并选择记忆语言偏好；
+无需提前注册账号或创建 API Key。完成初始化后，再次运行 `memorax-code` 会显示当前状态。
 
 以后需要主动重新配置或再次运行安装引导时，可以运行：
 

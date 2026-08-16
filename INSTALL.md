@@ -11,29 +11,32 @@ installation. For a source checkout and contributor setup, see
 - At least one of Codex or Claude Code installed in the environment where
   MemoraX Code will run.
 - Python 3 only when using Repo Memory operations.
+- On Linux, `/usr/bin/secret-tool` from libsecret and an available Secret
+  Service in the current user session for setup-managed trial credentials.
 
-MemoraX-backed search, retrieval, and writeback additionally require a MemoraX
-account, Base User ID, API key, and network access. The package, local Backend,
-and client adapters can be installed without credentials, but the core memory
-features remain unavailable until the account is connected.
+MemoraX-backed search, retrieval, and writeback additionally require network
+access. First-time setup creates or restores a trial connection after you
+choose a Memory ID and preferred memory language. You do not need to register
+an account or create an API key beforehand. Existing manually managed MemoraX
+connections remain supported through configuration or environment variables.
 
 For Remote SSH, WSL, or Dev Container use, install MemoraX Code inside the same
-remote environment as the client runtime.
+remote environment as the client runtime. On Linux, that environment must also
+have access to the same user's Secret Service; MemoraX Code does not fall back
+to plaintext credential storage.
 
-## 1. Create a MemoraX Key
+## 1. Choose a Memory ID
 
-Sign in to
-[MemoraX Console](https://platform.memorax.net/) and create an API key.
-Keep the key private and enter it only in your local installation terminal.
-Never paste it into a chat, repository, or public issue.
+Setup asks for a stable Memory ID and a preferred memory language. The Memory
+ID becomes the base of each workspace-scoped memory namespace. Choose an ID
+you intend to keep: changing it later starts using a different namespace.
 
 During setup, MemoraX Code explains that automatic writeback from trusted
 workspace sessions sends selected user prompts and matching final assistant
-answers to MemoraX for extraction and storage. Entering your Base User ID,
-preferred language, and API key after that disclosure enables the core
-MemoraX-backed memory features. New configuration enables automatic writeback,
-leaves automatic retrieval disabled, and enables content-bearing local client
-traces. Review
+answers to MemoraX for extraction and storage. Completing trial provisioning
+after that disclosure enables the core MemoraX-backed memory features. New
+configuration enables automatic writeback, leaves automatic retrieval
+disabled, and enables content-bearing local client traces. Review
 [SECURITY.md](SECURITY.md) for the network, local-data, and retention
 boundaries.
 
@@ -79,25 +82,36 @@ the same no-argument command routes to `memorax-code status`. Invalid or newer
 unsupported completion records fail closed instead of guessing whether setup
 finished.
 
-Automatic setup reuses a locally valid effective MemoraX connection, including
-configuration retained across a product uninstall, without asking again for
-the Base User ID, preferred language, or API key. If the effective connection
-is incomplete or invalid, setup asks for replacement connection values. This
-local check does not contact MemoraX; remote connectivity and credentials are
-still verified by the first real memory request.
+Automatic setup first checks for a locally ready MemoraX connection, including
+configuration and secure trial credentials retained across a product
+uninstall. When one is found, setup asks whether to reuse the saved connection
+and memory preferences. Accepting keeps the existing Memory ID, language, and
+credential without asking for them again.
+
+If no ready connection exists, or you decline reuse, setup asks only for a
+Memory ID and preferred language. It then creates or restores a trial
+credential, stores the trial secret outside `config.toml`, and writes the
+endpoint, Memory ID, and language preference to configuration. The initial
+local reuse check does not contact MemoraX; trial provisioning does, and the
+first workspace-scoped memory request verifies use of the connection by the
+memory API.
 
 Setup:
 
 1. detects runnable Codex and Claude Code clients independently;
 2. enables every detected client on a fresh setup and preserves existing
    client intent on later runs;
-3. reuses a locally valid MemoraX connection during automatic setup and prompts
-   when the effective connection is incomplete or invalid;
-4. activates the bundled Codex Hooks when first enabling that integration and
+3. offers to reuse a locally ready connection during automatic setup, or asks
+   for a Memory ID and language before creating or restoring a trial
+   credential;
+4. applies the selected Memory ID and language only after trial credential
+   provisioning succeeds;
+5. activates the bundled Codex Hooks when first enabling that integration and
    requests review for new or changed Hooks on later updates;
-5. stages the packaged Hook runtime, starts the selected integrations, and
+6. stages the packaged Hook runtime, starts the selected integrations, and
    verifies their status; and
-6. writes setup completion only after the final readiness check succeeds.
+7. writes setup completion only after a final local MemoraX readiness check
+   succeeds.
 
 Starting interactive setup is the consent boundary for initial Codex Hook
 activation. When no active MemoraX Code Codex plugin exists, setup activates
@@ -105,8 +119,9 @@ the bundled plugin and trusts its current Hook command hashes without a second
 confirmation. New or changed Hook command hashes in later updates still
 require foreground review.
 
-To deliberately reconfigure the MemoraX connection, or to rerun or repair setup
-even when completion is already recorded, use:
+To replace the Memory ID or language preference, switch from a manually stored
+`config.toml` API key to the setup-managed trial connection, or rerun or repair
+setup even when completion is already recorded, use:
 
 ```bash
 memorax-code setup
@@ -151,9 +166,9 @@ memorax-code-claude doctor
 
 `memorax-code status` checks the local Backend and selected client
 integrations. `memorax-cli status` checks whether the local MemoraX
-configuration, workspace scope, and memory switches resolve without printing
-the API key. It does not send a test request to MemoraX; the first real search
-or write verifies remote connectivity and credentials.
+configuration, effective credential, workspace scope, and memory switches
+resolve without printing the API key. It does not send a test request to the
+memory API; the first real search or write verifies that connection.
 
 ## Incomplete Setup
 
@@ -161,9 +176,10 @@ Package installation can succeed while setup remains incomplete. Run
 `memorax-code setup` from an interactive terminal to resume or repair client,
 Hook, Backend, and MemoraX configuration.
 
-During automatic setup, the absence of MemoraX credential questions is
-expected when the existing effective connection is locally valid. Run explicit
-`memorax-code setup` when you want to replace those retained values.
+During automatic setup, accepting the saved connection avoids asking for the
+Memory ID and language again. Run explicit `memorax-code setup` when you want
+to replace those retained preferences or move to the setup-managed trial
+connection.
 
 If you intentionally manage configuration without the setup prompts, add the
 required MemoraX values to
@@ -225,16 +241,16 @@ memorax-code uninstall
 Do not start with `npm uninstall -g`. npm does not provide MemoraX Code with an
 uninstall lifecycle in which to disable managed Hooks and stop the Backend.
 The product command removes the managed integrations and global package while
-retaining `$MEMORAX_CODE_HOME` configuration and local traces, Claude plugin
-data, client provider configuration, and memories stored in MemoraX. Review
-and remove retained local or cloud data separately only when it is no longer
-needed.
+retaining `$MEMORAX_CODE_HOME` configuration and local traces, the secure trial
+credential, Claude plugin data, client provider configuration, and memories
+stored in MemoraX. Review and remove retained local or cloud data separately
+only when it is no longer needed.
 
 A complete product uninstall clears the setup-completion routing marker without
 deleting the retained configuration. After reinstalling, the next no-argument
-`memorax-code` runs automatic setup, restores the integrations, and reuses a
-locally valid MemoraX connection. A normal `memorax-code stop` and a partial
-client uninstall do not clear setup completion.
+`memorax-code` runs automatic setup, restores the integrations, and offers to
+reuse a locally ready MemoraX connection. A normal `memorax-code stop` and a
+partial client uninstall do not clear setup completion.
 
 ## Troubleshooting
 
