@@ -489,7 +489,7 @@ function resolvePaths(options) {
     homeDir,
   );
   const adapterRoot = resolve(options.adapterRoot ?? ADAPTER_ROOT);
-  const statePath = resolve(options.statePath ?? join(memoraxCodeHome, "adapters", RUNTIME, "state.json"));
+  const statePath = join(memoraxCodeHome, "adapters", RUNTIME, "state.json");
   const configuredDshHome = options.dshHome ?? nonEmpty(env.DSH_HOME);
   const dshHome = configuredDshHome === undefined
     ? persistedDshHome({ statePath, memoraxCodeHome, adapterRoot }, homeDir)
