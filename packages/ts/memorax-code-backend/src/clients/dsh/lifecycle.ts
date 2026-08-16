@@ -24,22 +24,17 @@ type DshProfileLifecycleModule = Readonly<{
 
 export type DshAdapterLifecycleParticipant = AdapterLifecycleParticipant<AdapterReport>;
 
-export const dshAdapterLifecycle = {
-  async status(context) {
-    try {
-      return normalizeDshReport(
-        (await loadDshProfileLifecycle()).collectDshAdapterStatus(dshAdapterOptions(context)),
-      );
-    } catch (error) {
-      return dshFailure("status", error);
-    }
-  },
-  prepareEnable: (context) => runDshLifecyclePhase(context, "prepareEnable"),
-  activate: (context) => runDshLifecyclePhase(context, "activate"),
-  quiesce: (context) => runDshLifecyclePhase(context, "quiesce"),
-  disable: (context) => runDshLifecyclePhase(context, "disable"),
-  remove: (context) => runDshLifecyclePhase(context, "remove"),
-} satisfies DshAdapterLifecycleParticipant;
+export async function collectDshAdapterLifecycleStatus(
+  context: AdapterLifecycleBackendContext,
+): Promise<AdapterReport> {
+  try {
+    return normalizeDshReport(
+      (await loadDshProfileLifecycle()).collectDshAdapterStatus(dshAdapterOptions(context)),
+    );
+  } catch (error) {
+    return dshFailure("status", error);
+  }
+}
 
 /**
  * Keep the DSH state lock for a complete Backend lifecycle command. The caller
@@ -89,28 +84,6 @@ function normalizeDshReport(report: AdapterReport): AdapterReport {
   };
 }
 
-async function runDshLifecyclePhase(
-  context: AdapterLifecycleContext,
-  phase: "prepareEnable" | "activate" | "quiesce" | "disable" | "remove",
-): Promise<AdapterReport> {
-  try {
-    return await withDshAdapterLifecycleLock(context, (participant) => {
-      if (phase === "prepareEnable") {
-        return participant.prepareEnable({ ...context, backendUrl: "" });
-      }
-      if (phase === "activate") {
-        return participant.activate?.({ ...context, backendUrl: "" }) ?? dshMissingPhase(phase);
-      }
-      if (phase === "quiesce") {
-        return participant.quiesce?.(context) ?? dshMissingPhase(phase);
-      }
-      return participant[phase](context);
-    });
-  } catch (error) {
-    return dshFailure(phase, error);
-  }
-}
-
 function dshAdapterOptions(context: AdapterLifecycleContext): Record<string, unknown> {
   const { argv, serviceOptions } = context;
   return {
@@ -134,10 +107,6 @@ function dshFailure(action: string, error: unknown): AdapterReport {
     runtime: "dsh",
     error: error instanceof Error ? error.message : String(error),
   };
-}
-
-function dshMissingPhase(action: string): AdapterReport {
-  return dshFailure(action, new Error(`DSH lifecycle participant does not implement ${action}`));
 }
 
 async function loadDshProfileLifecycle(): Promise<DshProfileLifecycleModule> {

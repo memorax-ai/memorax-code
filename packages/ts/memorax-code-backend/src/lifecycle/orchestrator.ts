@@ -25,7 +25,7 @@ import { clearActiveManagedClients, readActiveManagedClients, writeActiveManaged
 import { codexAdapterLifecycle } from "../clients/codex/lifecycle.js";
 import { claudeAdapterLifecycle } from "../clients/claude/lifecycle.js";
 import {
-  dshAdapterLifecycle,
+  collectDshAdapterLifecycleStatus,
   withDshAdapterLifecycleLock,
   type DshAdapterLifecycleParticipant,
 } from "../clients/dsh/lifecycle.js";
@@ -129,7 +129,7 @@ export async function collectMemoraxCodeStatus(
     ? await claudeAdapterLifecycle.status({ argv, serviceOptions, backendUrl })
     : undefined;
   const dshAdapter = clients.dsh
-    ? await dshAdapterLifecycle.status({ argv, serviceOptions, backendUrl })
+    ? await collectDshAdapterLifecycleStatus({ argv, serviceOptions, backendUrl })
     : undefined;
   const codexReady = codexAdapter ? isAdapterReady(codexAdapter) : true;
   const claudeReady = claudeAdapter ? isAdapterReady(claudeAdapter) : true;
