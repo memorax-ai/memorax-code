@@ -127,6 +127,7 @@ for relative in [
     "lib/memorax-code-backend/dist/clients/claude/transcript-turn.js",
     "lib/memorax-code-dsh-adapter/src/dsh-version.mjs",
     "lib/memorax-code-dsh-adapter/src/profile-lifecycle.mjs",
+    "lib/memorax-code-dsh-adapter/src/runtime-state.mjs",
     "lib/memorax-code-codex-adapter/assets/composer-icon.png",
     "lib/memorax-code-codex-adapter/assets/logo.png",
     "lib/memorax-code-codex-adapter/hooks/hooks.json",
@@ -303,6 +304,7 @@ for relative in \
   lib/memorax-code-backend/dist/memory/service.js \
   lib/memorax-code-dsh-adapter/src/dsh-version.mjs \
   lib/memorax-code-dsh-adapter/src/profile-lifecycle.mjs \
+  lib/memorax-code-dsh-adapter/src/runtime-state.mjs \
   lib/memorax-code-codex-adapter/hooks/runtime-hook.mjs \
   lib/memorax-code-codex-adapter/hooks/runtime-shell.json \
   lib/memorax-code-codex-adapter/runtime-hooks/memory-writeback.mjs \

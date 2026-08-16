@@ -870,8 +870,7 @@ export function isOptionalUnavailableDshAdapter(report: AdapterReport | undefine
         || (report.ok !== false
           && report.skipped === true
           && report.managed !== true
-          && (report.reason === "no_existing_profiles"
-            || report.reason === "unsupported_dsh_version"))),
+          && report.reason === "no_existing_profiles")),
   );
 }
 

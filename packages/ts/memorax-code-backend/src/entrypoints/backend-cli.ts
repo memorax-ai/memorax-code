@@ -873,7 +873,11 @@ function dshAdapterStatusLine(report: AdapterReport): string {
   if (isOptionalUnavailableDshAdapter(report)) {
     return `skipped ${report.reason ?? "not-detected"}`;
   }
-  return adapterStatusLine(report);
+  const version = report.version ?? report.dshVersion;
+  const tested = version && report.dshVersionTested !== undefined
+    ? ` version=${version} tested=${report.dshVersionTested}`
+    : "";
+  return `${adapterStatusLine(report)}${tested}`;
 }
 
 function joinedClientNames(report: MemoraxCodeLifecycleReport): string | undefined {

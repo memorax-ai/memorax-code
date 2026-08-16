@@ -51,9 +51,12 @@ deployment. The DSH adapter discovers existing valid Profiles and manages the
 native bundle in each one; it does not create Profiles. A later
 `memorax-code update` or `memorax-code start` reconciles Profiles created after
 the original install. DSH Profile plugin management requires `pnpm` on `PATH`.
-This release accepts DSH `0.1.0-rc.6` exactly. Before changing a Profile, the
-adapter checks the selected `dsh --version`; an unavailable or unsupported DSH
-is left inert without blocking selected Codex or Claude Code integrations.
+DSH `0.1.0-rc.6` is the tested release baseline. Before changing a Profile,
+the adapter records a well-formed `dsh --version`; a different version is
+reported as untested but is not disabled solely because it changed. The live
+plugin checks the Cordis services it consumes, and incompatible persisted
+Event Log input fails closed at the Backend boundary. An unavailable DSH is
+left inert without blocking selected Codex or Claude Code integrations.
 
 On POSIX systems MemoraX Code creates `$MEMORAX_CODE_HOME` with mode `0700`
 and a new `config.toml` with mode `0600`. Windows relies on the current user's

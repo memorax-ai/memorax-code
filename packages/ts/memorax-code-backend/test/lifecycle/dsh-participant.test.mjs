@@ -37,15 +37,24 @@ test("Backend lifecycle stages, activates, retains, and package-retires the DSH 
     assert.equal(statusReport.dshAdapter.integration, "plugin");
     assert.equal(statusReport.dshAdapter.enabled, true);
 
-    const unsupported = runCli(fixture, "status", ["--clients", "dsh"], {
+    const stateBeforeUpgradeStatus = readFileSync(fixture.statePath, "utf8");
+    const upgraded = runCli(fixture, "status", ["--clients", "dsh"], {
       FAKE_DSH_VERSION: "0.1.0-rc.7",
     });
-    assert.equal(unsupported.status, 1, unsupported.stderr);
-    const unsupportedReport = JSON.parse(unsupported.stdout);
-    assert.equal(unsupportedReport.ok, false);
-    assert.equal(unsupportedReport.dshAdapter.managed, true);
-    assert.equal(unsupportedReport.dshAdapter.reason, "unsupported_dsh_version");
-    assert.equal(readJson(fixture.statePath).enabled, true);
+    assert.equal(upgraded.status, 0, upgraded.stderr);
+    const upgradedReport = JSON.parse(upgraded.stdout);
+    assert.equal(upgradedReport.ok, true);
+    assert.equal(upgradedReport.dshAdapter.enabled, true);
+    assert.equal(upgradedReport.dshAdapter.version, "0.1.0-rc.7");
+    assert.equal(upgradedReport.dshAdapter.dshVersionTested, false);
+    assert.equal(readFileSync(fixture.statePath, "utf8"), stateBeforeUpgradeStatus);
+
+    const reconciled = runCli(fixture, "start", ["--clients", "dsh"], {
+      FAKE_DSH_VERSION: "0.1.0-rc.7",
+    });
+    assert.equal(reconciled.status, 0, reconciled.stderr);
+    assert.equal(JSON.parse(reconciled.stdout).dshAdapter.enabled, true);
+    assert.equal(readJson(fixture.statePath).dshVersion, "0.1.0-rc.7");
 
     const partial = runCli(fixture, "stop", ["--clients", "codex"]);
     assert.equal(partial.status, 0, partial.stderr);

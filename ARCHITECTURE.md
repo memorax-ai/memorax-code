@@ -178,12 +178,14 @@ replace the currently authoritative Hook generation. Cross-process lifecycle
 decisions use durable records and bounded locks rather than relying on one
 process's in-memory serialization. DSH Profile integration has its own managed
 state and remains a native Cordis installation rather than a Hook generation.
-Its participant checks the selected native CLI version before mutating a
-Profile and leaves an unavailable, unsupported, or not-yet-configured optional
-integration inert without blocking the other clients. The Backend composes all
-three participant projections into one lifecycle result; drift in an already
-managed DSH Profile affects top-level readiness like drift in another managed
-client integration.
+Its participant records a well-formed selected native CLI version before
+mutating a Profile, but a version outside the tested release set is diagnostic
+rather than an automatic disable signal. The live Cordis plugin checks its
+required services, and the Backend continues to reject incompatible persisted
+Event Log input. An unavailable or not-yet-configured optional integration does
+not block the other clients. The Backend composes all three participant
+projections into one lifecycle result; drift in an already managed DSH Profile
+affects top-level readiness like drift in another managed client integration.
 
 ### 3.2 Adapter and retrieval data flow
 

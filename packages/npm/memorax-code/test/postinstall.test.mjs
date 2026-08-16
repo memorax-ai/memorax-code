@@ -22,6 +22,10 @@ const dshProfileLifecyclePath = fileURLToPath(new URL(
   "../../../ts/memorax-code-dsh-adapter/src/profile-lifecycle.mjs",
   import.meta.url,
 ));
+const dshRuntimeStatePath = fileURLToPath(new URL(
+  "../../../ts/memorax-code-dsh-adapter/src/runtime-state.mjs",
+  import.meta.url,
+));
 const dshVersionPath = fileURLToPath(new URL(
   "../../../ts/memorax-code-dsh-adapter/src/dsh-version.mjs",
   import.meta.url,
@@ -144,6 +148,7 @@ async function runPostinstall({ existingCache = false, explicitCache = false, ho
   const dshAdapterSourceDir = join(libDir, "memorax-code-dsh-adapter", "src");
   await mkdir(dshAdapterSourceDir, { recursive: true });
   await copyFile(dshProfileLifecyclePath, join(dshAdapterSourceDir, "profile-lifecycle.mjs"));
+  await copyFile(dshRuntimeStatePath, join(dshAdapterSourceDir, "runtime-state.mjs"));
   await copyFile(dshVersionPath, join(dshAdapterSourceDir, "dsh-version.mjs"));
   const codexAdapterDir = join(libDir, "memorax-code-codex-adapter");
   const claudeAdapterDir = join(libDir, "memorax-code-claude-adapter");

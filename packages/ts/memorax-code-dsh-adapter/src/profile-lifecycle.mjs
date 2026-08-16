@@ -9,7 +9,12 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { DSH_SUPPORTED_VERSIONS, isSupportedDshVersion } from "./dsh-version.mjs";
+import {
+  DSH_TESTED_VERSIONS,
+  isTestedDshVersion,
+  parseDshVersion,
+} from "./dsh-version.mjs";
+import { requireEnabledDshRuntime } from "./runtime-state.mjs";
 
 const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
 const ADAPTER_ROOT = resolve(MODULE_DIR, "..");
@@ -30,8 +35,6 @@ const { resolveWindowsCliInvocation } = await import(
 const STATE_VERSION = 1;
 const RUNTIME = "dsh";
 const ADAPTER_PACKAGE_NAME = "@memorax-code/dsh-adapter";
-const DSH_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
-const DSH_VERSION_MAX_LENGTH = 128;
 const DSH_VERSION_TIMEOUT_MS = 10_000;
 const DEFAULT_COMMAND_TIMEOUT_MS = 120_000;
 const DEFAULT_LIFECYCLE_LOCK_TIMEOUT_MS = 600_000;
@@ -80,6 +83,10 @@ export function collectDshAdapterStatus(options = {}) {
     const dshCommand = resolveDshCommand(options, paths, state);
     const compatibility = inspectDshCompatibility(options, paths, dshCommand);
     const version = compatibility.dshVersion;
+    const versionStatus = {
+      dshVersionTested: compatibility.dshVersionTested,
+      testedDshVersions: [...DSH_TESTED_VERSIONS],
+    };
     if (compatibility.reason === "dsh_version_unavailable") {
       return {
         ok: false,
@@ -94,6 +101,7 @@ export function collectDshAdapterStatus(options = {}) {
         ...base,
         ...(version ? { version } : {}),
         compatible: false,
+        ...versionStatus,
         skipped: true,
         reason: compatibility.reason,
       };
@@ -104,9 +112,24 @@ export function collectDshAdapterStatus(options = {}) {
         ...base,
         version,
         compatible: true,
+        ...versionStatus,
         skipped: true,
         reason: "not_managed",
       };
+    }
+    if (state.enabled === true) {
+      try {
+        requireEnabledDshRuntime(paths.adapterRoot);
+      } catch {
+        return {
+          ok: false,
+          ...base,
+          version,
+          compatible: true,
+          ...versionStatus,
+          reason: "runtime_authority_invalid",
+        };
+      }
     }
     return {
       ok: true,
@@ -114,6 +137,7 @@ export function collectDshAdapterStatus(options = {}) {
       enabled: state.enabled === true && installed,
       version,
       compatible: true,
+      ...versionStatus,
       ...(state.enabled !== true
         ? { reason: "disabled" }
         : !installed
@@ -338,7 +362,8 @@ function ensureDshPluginInstalledUnlocked(paths, options) {
     managed: true,
     detectedProfiles: profiles.map((profile) => profile.name),
     dshVersion: compatibility.dshVersion,
-    supportedDshVersions: [...DSH_SUPPORTED_VERSIONS],
+    dshVersionTested: compatibility.dshVersionTested,
+    testedDshVersions: [...DSH_TESTED_VERSIONS],
     installedProfiles,
     failedProfiles,
   };
@@ -349,14 +374,6 @@ function activateDshPluginInstallationUnlocked(paths, options) {
   const stateProblem = validateState(state, paths);
   if (stateProblem) return { ...stateProblem, action: "dsh-plugin-activate" };
   if (!state) return notManaged(paths, "dsh-plugin-activate");
-  if (!isSupportedDshVersion(state.dshVersion)) {
-    return {
-      ok: false,
-      action: "dsh-plugin-activate",
-      runtime: RUNTIME,
-      reason: "dsh_version_not_verified",
-    };
-  }
   const profiles = discoverDshProfiles({ ...options, dshHome: paths.dshHome });
   const profileByName = new Map(profiles.map((profile) => [profile.name, profile]));
   if (state.profiles.length === 0
@@ -508,7 +525,7 @@ function validateState(state, paths) {
     || typeof state.adapterRoot !== "string"
     || typeof state.memoraxCodeCommand !== "string"
     || typeof state.dshCommand !== "string"
-    || (state.dshVersion !== undefined && !nonEmpty(state.dshVersion))
+    || !parseDshVersion(state.dshVersion)
     || !timestampString(state.updatedAt)
     || !Array.isArray(state.profiles)
     || !state.profiles.every(validProfileName)) {
@@ -609,31 +626,22 @@ function inspectDshCompatibility(options, paths, command) {
     return {
       compatible: false,
       reason: "dsh_version_unavailable",
-      supportedDshVersions: [...DSH_SUPPORTED_VERSIONS],
+      testedDshVersions: [...DSH_TESTED_VERSIONS],
     };
   }
-  const output = typeof result.stdout === "string" ? result.stdout.trim() : "";
-  if (!output
-    || output.length > DSH_VERSION_MAX_LENGTH
-    || !DSH_VERSION_PATTERN.test(output)) {
+  const output = parseDshVersion(result.stdout);
+  if (!output) {
     return {
       compatible: false,
       reason: "dsh_version_unavailable",
-      supportedDshVersions: [...DSH_SUPPORTED_VERSIONS],
-    };
-  }
-  if (!isSupportedDshVersion(output)) {
-    return {
-      compatible: false,
-      reason: "unsupported_dsh_version",
-      dshVersion: output,
-      supportedDshVersions: [...DSH_SUPPORTED_VERSIONS],
+      testedDshVersions: [...DSH_TESTED_VERSIONS],
     };
   }
   return {
     compatible: true,
     dshVersion: output,
-    supportedDshVersions: [...DSH_SUPPORTED_VERSIONS],
+    dshVersionTested: isTestedDshVersion(output),
+    testedDshVersions: [...DSH_TESTED_VERSIONS],
   };
 }
 

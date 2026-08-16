@@ -120,15 +120,16 @@ dsh plugin --profile <profile> why @memorax-code/dsh-adapter
 dsh --profile <profile> --dump-config
 ```
 
-`memorax-code start` discovers existing valid DSH profiles and reconciles the
-managed Cordis bundle after confirming DSH `0.1.0-rc.6`. It does not create
-profiles. An unavailable or different DSH version is skipped without changing
-its profiles; any existing MemoraX DSH authority is disabled while the other
-harnesses continue to start. If the profile did not exist during installation,
-initialize it through DSH first, rerun `memorax-code start`, and then restart
-that profile. The native `why` command should resolve
-`@memorax-code/dsh-adapter`, and the dumped configuration should contain its
-bundle row. Profile plugin reconciliation requires `pnpm` on `PATH`.
+`memorax-code start` discovers existing valid DSH profiles, records the current
+well-formed DSH version, and reconciles the managed Cordis bundle. It does not
+create profiles. A version other than the tested release baseline is reported
+as untested but remains eligible; missing Cordis services or incompatible
+persisted events fail closed at their runtime boundaries. If the profile did
+not exist during installation, initialize it through DSH first, rerun
+`memorax-code start`, and then restart that profile. The native `why` command
+should resolve `@memorax-code/dsh-adapter`, and the dumped configuration should
+contain its bundle row. Profile plugin reconciliation requires `pnpm` on
+`PATH`.
 
 Search, Add, automatic retrieval, and writeback work in every integrated DSH
 profile. If only Repo Memory build or maintenance fails, ensure at least one

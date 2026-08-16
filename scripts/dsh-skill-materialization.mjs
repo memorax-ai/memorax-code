@@ -5,6 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runRepoMemoryJob } from "../memorax-code-adapter-common/src/repo-memory/repo-memory-job-supervisor.mjs";
 import { evaluateRepository } from "../memorax-code-adapter-common/src/repo-memory/repo-memory-update-policy-evaluator.mjs";
+import { requireEnabledDshRuntime } from "../src/runtime-state.mjs";
 
 const ADAPTER_PACKAGE_NAME = "@memorax-code/dsh-adapter";
 const HEADLESS_BUNDLE_NAME = "@deepseek-ai/dsh-headless";
@@ -12,9 +13,8 @@ const hookDir = dirname(fileURLToPath(import.meta.url));
 const pluginRoot = dirname(hookDir);
 
 try {
-  const metadata = readMetadata(pluginRoot);
-  const state = assertEnabled(metadata);
-  const profile = selectHeadlessProfile(metadata.dshHome, state.profiles);
+  const runtime = requireEnabledDshRuntime(pluginRoot);
+  const profile = selectHeadlessProfile(runtime.dshHome, runtime.profiles);
   if (!profile) throw new Error("no existing DSH headless-capable profile is available");
   const payload = runRepoMemoryJob(process.argv.slice(2), {
     runner: "dsh",
@@ -23,60 +23,13 @@ try {
     validatorPath: resolve(pluginRoot, "skills/memorax-code/scripts/validate_memory.py"),
     evaluateRepository,
     createCommand({ prompt }) {
-      return [metadata.dshCommand || "dsh", "--profile", profile, prompt];
+      return [runtime.dshCommand, "--profile", profile, prompt];
     },
   });
   process.stdout.write(\`\${JSON.stringify(payload)}\\n\`);
 } catch (error) {
   process.stderr.write(\`\${error instanceof Error ? error.message : String(error)}\\n\`);
   process.exit(1);
-}
-
-function readMetadata(root) {
-  const path = join(root, ".memorax-code-package.json");
-  const metadata = JSON.parse(readFileSync(path, "utf8"));
-  if (metadata?.version !== 1
-    || typeof metadata.memoraxCodeCommand !== "string"
-    || typeof metadata.memoraxCodeHome !== "string"
-    || typeof metadata.dshHome !== "string"
-    || typeof metadata.dshCommand !== "string"
-    || typeof metadata.sourceAdapterRoot !== "string") {
-    throw new Error("invalid MemoraX Code DSH package metadata");
-  }
-  return {
-    ...metadata,
-    memoraxCodeHome: resolve(metadata.memoraxCodeHome),
-    dshHome: resolve(metadata.dshHome),
-    sourceAdapterRoot: resolve(metadata.sourceAdapterRoot),
-  };
-}
-
-function assertEnabled(metadata) {
-  const statePath = join(metadata.memoraxCodeHome, "adapters", "dsh", "state.json");
-  let state;
-  try {
-    state = JSON.parse(readFileSync(statePath, "utf8"));
-  } catch {
-    throw new Error("MemoraX Code DSH integration is not enabled");
-  }
-  if (state?.version !== 1
-    || state.runtime !== "dsh"
-    || state.integration !== "plugin"
-    || state.enabled !== true
-    || resolve(state.memoraxCodeHome || "") !== metadata.memoraxCodeHome
-    || resolve(state.dshHome || "") !== metadata.dshHome) {
-    throw new Error("MemoraX Code DSH integration is not enabled");
-  }
-  if (resolve(state.adapterRoot || "") !== metadata.sourceAdapterRoot
-    || state.memoraxCodeCommand !== metadata.memoraxCodeCommand
-    || state.dshCommand !== metadata.dshCommand
-    || typeof state.updatedAt !== "string"
-    || !Number.isFinite(Date.parse(state.updatedAt))
-    || !Array.isArray(state.profiles)
-    || !state.profiles.every(validProfileName)) {
-    throw new Error("MemoraX Code DSH integration is not enabled");
-  }
-  return state;
 }
 
 function selectHeadlessProfile(dshHome, managedProfiles) {

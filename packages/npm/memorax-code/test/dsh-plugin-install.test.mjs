@@ -167,26 +167,26 @@ test("DSH disable publishes the inert sentinel before reporting native removal f
   }
 });
 
-test("DSH install leaves unsupported versions untouched and disables prior authority", async () => {
+test("DSH accepts well-formed untested versions and rejects malformed version output", async () => {
   const fresh = createFixture(["web"]);
   try {
-    const profilePath = join(fresh.dshHome, "profiles", "web", "package.json");
-    activateAdapter(fresh.dshHome, "web", `file:${fresh.adapterRoot}`);
-    const before = readFileSync(profilePath, "utf8");
-    const unsupported = await runLifecycle({
+    const installed = await runLifecycle({
       ...fresh.options,
-      runDsh() {
-        return { status: 0, stdout: "0.1.0-rc.7\n" };
+      runDsh(invocation) {
+        if (invocation.args[0] === "--version") {
+          return { status: 0, stdout: "0.1.0-rc.7\n" };
+        }
+        activateAdapter(fresh.dshHome, invocation.args[2], invocation.args[4]);
+        return { status: 0 };
       },
     }, "ensureInstalled");
-    assert.equal(unsupported.ok, true);
-    assert.equal(unsupported.skipped, true);
-    assert.equal(unsupported.reason, "unsupported_dsh_version");
-    assert.equal(unsupported.dshVersion, "0.1.0-rc.7");
-    assert.deepEqual(unsupported.supportedDshVersions, ["0.1.0-rc.6"]);
-    assert.equal(readFileSync(profilePath, "utf8"), before);
-    assert.equal(existsSync(fresh.statePath), false);
-    assert.equal(existsSync(join(fresh.adapterRoot, ".memorax-code-package.json")), false);
+    assert.equal(installed.ok, true);
+    assert.equal(installed.enabled, true);
+    assert.equal(installed.dshVersion, "0.1.0-rc.7");
+    assert.equal(installed.dshVersionTested, false);
+    assert.deepEqual(installed.testedDshVersions, ["0.1.0-rc.6"]);
+    assert.equal(readJson(fresh.statePath).dshVersion, "0.1.0-rc.7");
+
     const malformed = collectDshAdapterStatus({
       ...fresh.options,
       runDsh() {
@@ -211,15 +211,44 @@ test("DSH install leaves unsupported versions untouched and disables prior autho
     assert.equal(installed.ok, true);
     assert.equal(readJson(managed.statePath).enabled, true);
 
-    const unsupported = await runLifecycle({
+    const beforeStatus = readFileSync(managed.statePath, "utf8");
+    const upgradedStatus = collectDshAdapterStatus({
       ...managed.options,
       runDsh() {
         return { status: 0, stdout: "0.1.0-rc.7\n" };
       },
+    });
+    assert.equal(upgradedStatus.enabled, true);
+    assert.equal(upgradedStatus.version, "0.1.0-rc.7");
+    assert.equal(upgradedStatus.dshVersionTested, false);
+    assert.equal(readFileSync(managed.statePath, "utf8"), beforeStatus);
+
+    const metadataPath = join(managed.adapterRoot, ".memorax-code-package.json");
+    const metadata = readJson(metadataPath);
+    writeFileSync(metadataPath, `${JSON.stringify({ ...metadata, dshVersion: "0.1.0-rc.5" })}\n`);
+    const inconsistent = collectDshAdapterStatus({
+      ...managed.options,
+      runDsh() {
+        return { status: 0, stdout: "0.1.0-rc.7\n" };
+      },
+    });
+    assert.equal(inconsistent.ok, false);
+    assert.equal(inconsistent.reason, "runtime_authority_invalid");
+    writeFileSync(metadataPath, `${JSON.stringify(metadata)}\n`);
+
+    const reconciled = await runLifecycle({
+      ...managed.options,
+      runDsh(invocation) {
+        if (invocation.args[0] === "--version") {
+          return { status: 0, stdout: "0.1.0-rc.7\n" };
+        }
+        activateAdapter(managed.dshHome, invocation.args[2], invocation.args[4]);
+        return { status: 0 };
+      },
     }, "ensureInstalled");
-    assert.equal(unsupported.skipped, true);
-    assert.equal(readJson(managed.statePath).enabled, false);
-    assert.equal((await runLifecycle(managed.options, "status")).enabled, false);
+    assert.equal(reconciled.ok, true);
+    assert.equal(reconciled.enabled, true);
+    assert.equal(readJson(managed.statePath).dshVersion, "0.1.0-rc.7");
   } finally {
     managed.cleanup();
   }

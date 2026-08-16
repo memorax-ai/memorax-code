@@ -11,7 +11,8 @@ export type AdapterReport = {
   compatible?: boolean;
   version?: string;
   dshVersion?: string;
-  supportedDshVersions?: string[];
+  dshVersionTested?: boolean;
+  testedDshVersions?: string[];
   profiles?: unknown[];
   detectedProfiles?: string[];
   installedProfiles?: string[];

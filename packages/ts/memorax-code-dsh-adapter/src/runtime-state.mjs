@@ -1,14 +1,12 @@
-import { existsSync, readFileSync, realpathSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 
-import { isSupportedDshVersion } from "./dsh-version.mjs";
+import { parseDshVersion } from "./dsh-version.mjs";
 
 const PACKAGE_METADATA_VERSION = 1;
 const STATE_VERSION = 1;
-const DSH_PACKAGE_NAME = "@deepseek-ai/dsh";
-
 /** Read the current durable enablement authority for this installed DSH bundle. */
-export function requireEnabledDshRuntime(pluginRoot, options = {}) {
+export function requireEnabledDshRuntime(pluginRoot) {
   const root = resolveRequiredPath(pluginRoot, "pluginRoot");
   const metadata = readRecord(join(root, ".memorax-code-package.json"));
   if (metadata?.version !== PACKAGE_METADATA_VERSION
@@ -16,7 +14,7 @@ export function requireEnabledDshRuntime(pluginRoot, options = {}) {
     || !nonEmptyString(metadata.memoraxCodeHome)
     || !nonEmptyString(metadata.dshCommand)
     || !nonEmptyString(metadata.dshHome)
-    || !isSupportedDshVersion(metadata.dshVersion)
+    || !parseDshVersion(metadata.dshVersion)
     || !nonEmptyString(metadata.sourceAdapterRoot)) {
     throw disabledError();
   }
@@ -34,42 +32,21 @@ export function requireEnabledDshRuntime(pluginRoot, options = {}) {
     || state.memoraxCodeCommand !== metadata.memoraxCodeCommand
     || state.dshCommand !== metadata.dshCommand
     || state.dshVersion !== metadata.dshVersion
+    || !Array.isArray(state.profiles)
+    || !state.profiles.every(validProfileName)
     || !timestampString(state.updatedAt)) {
     throw disabledError();
   }
-  const hostDshVersion = readHostDshVersion(options.hostEntrypoint ?? process.argv[1]);
-  if (hostDshVersion !== metadata.dshVersion) throw disabledError();
 
   return {
     memoraxCodeCommand: metadata.memoraxCodeCommand,
     memoraxCodeHome,
     dshCommand: metadata.dshCommand,
     dshHome,
+    dshVersion: metadata.dshVersion,
+    profiles: [...state.profiles],
     revision: state.updatedAt,
   };
-}
-
-function readHostDshVersion(entrypoint) {
-  const path = nonEmptyString(entrypoint);
-  if (!path) return undefined;
-  let directory;
-  try {
-    directory = dirname(realpathSync(path));
-  } catch {
-    return undefined;
-  }
-  while (true) {
-    const manifestPath = join(directory, "package.json");
-    if (existsSync(manifestPath)) {
-      const manifest = readRecord(manifestPath);
-      if (manifest?.name !== DSH_PACKAGE_NAME) return undefined;
-      const version = nonEmptyString(manifest.version);
-      return isSupportedDshVersion(version) ? version : undefined;
-    }
-    const parent = dirname(directory);
-    if (parent === directory) return undefined;
-    directory = parent;
-  }
 }
 
 function readRecord(path) {
@@ -101,6 +78,16 @@ function nonEmptyString(value) {
 function timestampString(value) {
   const normalized = nonEmptyString(value);
   return normalized && Number.isFinite(Date.parse(normalized)) ? normalized : undefined;
+}
+
+function validProfileName(value) {
+  return typeof value === "string"
+    && value.length > 0
+    && value !== "."
+    && value !== ".."
+    && value !== "node_modules"
+    && !value.includes("/")
+    && !value.includes("\\");
 }
 
 function disabledError() {
