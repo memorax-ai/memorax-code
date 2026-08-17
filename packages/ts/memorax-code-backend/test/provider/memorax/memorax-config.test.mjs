@@ -99,6 +99,10 @@ test("async MemoraX config resolver prefers environment, TOML, then a ready tria
 
       assert.equal(result.ok, true);
       assert.equal(result.config.apiKey, expectedApiKey);
+      assert.equal(
+        result.config.credentialSource,
+        name === "ready trial credential" ? "trial" : undefined,
+      );
       assert.equal(result.config.userId, expectedUserId);
       assert.notEqual(result.config.userId, READY_TRIAL_CREDENTIAL.account_id);
       assert.equal(loads, expectedLoads);

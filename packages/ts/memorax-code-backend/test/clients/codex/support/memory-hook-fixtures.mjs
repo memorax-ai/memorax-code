@@ -95,7 +95,7 @@ export function memoraxAddFetch() {
   };
 }
 
-export function memoraxSearchFetch(memoryText) {
+export function memoraxSearchFetch(memoryText, responseHeaders = {}) {
   const requests = [];
   return {
     requests,
@@ -118,7 +118,7 @@ export function memoraxSearchFetch(memoryText) {
         },
       }), {
         status: 200,
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", ...responseHeaders },
       });
     },
   };

@@ -8,6 +8,10 @@ import {
 } from "./transcript-turn.js";
 import { retrieveAutomaticMemoryContext } from "../../memory/automatic-retrieval.js";
 import {
+  claimTrialQuotaNotice,
+  type TrialQuotaNoticeClaimer,
+} from "../../memory/trial-quota-notice.js";
+import {
   createAutomaticMemoryWritebackRuntime,
   type AutomaticMemoryWritebackEnqueue,
   type AutomaticMemoryWritebackRejectionReason,
@@ -69,6 +73,7 @@ export type ClaudeMemoryHookRuntimeOptions = {
   diagnosticLogger?: MemoryDiagnosticLogger;
   env?: Record<string, string | undefined>;
   fetchImpl?: typeof fetch;
+  claimQuotaNotice?: TrialQuotaNoticeClaimer;
   now?: () => number;
   ttlMs?: number;
   maxEntries?: number;
@@ -193,6 +198,7 @@ export function createClaudeMemoryHookRuntime(
       }
       const retrieval = await retrieveAutomaticMemoryContext({
         diagnosticLogger: options.diagnosticLogger,
+        claimQuotaNotice: options.claimQuotaNotice ?? claimTrialQuotaNotice,
         env: options.env ?? process.env,
         fetchImpl: options.fetchImpl,
         memoryObservability: options.memoryObservability,
@@ -206,6 +212,7 @@ export function createClaudeMemoryHookRuntime(
         ok: true,
         ...(repoMemoryWorktree ? { repoMemoryWorktree } : {}),
         ...(retrieval.context ? { additionalContext: retrieval.context } : {}),
+        ...(retrieval.userNotice ? { userNotice: retrieval.userNotice } : {}),
       };
     },
     async writeback(command) {

@@ -55,6 +55,7 @@ export type TurnStartCommand = CodexTurnStartCommand | ClaudeTurnStartCommand;
 export type MemoryHookTurnStartResult = Readonly<{
   ok: true;
   additionalContext?: string;
+  userNotice?: string;
   repoMemoryWorktree?: string;
 }>;
 

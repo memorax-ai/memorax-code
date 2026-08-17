@@ -40,6 +40,7 @@ export const MEMORY_CLI_DEFAULT_MAX_MEMORY_CHARS = 2000;
 export type MemoraxAdapterConfig = Readonly<{
   baseUrl: string;
   apiKey: string;
+  credentialSource?: "trial";
   userId: string;
   memoryOutputLanguage: MemoraxMemoryOutputLanguage;
   topK: number;
@@ -196,6 +197,7 @@ function memoraxConfigFromSources(
     config: {
       baseUrl,
       apiKey,
+      ...(trialApiKey ? { credentialSource: "trial" as const } : {}),
       userId,
       memoryOutputLanguage: outputLanguage.value,
       ...searchConfig,

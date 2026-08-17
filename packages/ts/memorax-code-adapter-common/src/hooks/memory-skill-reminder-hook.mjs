@@ -68,7 +68,8 @@ export async function runMemorySkillReminderHook(options, hookInput) {
     const { memoryReminderDue, supplementalReminderDue } = update;
 
     const baseAdditionalContext = stringOption(options.baseAdditionalContext);
-    if (baseAdditionalContext || memoryReminderDue || supplementalReminderDue) {
+    const systemMessage = stringOption(options.systemMessage);
+    if (baseAdditionalContext || memoryReminderDue || supplementalReminderDue || systemMessage) {
       const cadenceReminderContext = memoryReminderDue
         ? await buildCadenceReminderContext(options, input)
         : undefined;
@@ -85,10 +86,11 @@ export async function runMemorySkillReminderHook(options, hookInput) {
         ...(supplementalReminderDue ? ["post_compaction"] : []),
       ];
       process.stdout.write(`${JSON.stringify({
-        hookSpecificOutput: {
+        ...(systemMessage ? { systemMessage } : {}),
+        ...(additionalContext ? { hookSpecificOutput: {
           hookEventName: "UserPromptSubmit",
           additionalContext,
-        },
+        } } : {}),
       })}\n`);
       if (reminderContext) {
         await notifyReminder(options, {

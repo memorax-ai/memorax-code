@@ -11,6 +11,10 @@ import {
   type AutomaticMemoryWritebackRuntime,
 } from "../../memory/automatic-writeback.js";
 import { retrieveAutomaticMemoryContext } from "../../memory/automatic-retrieval.js";
+import {
+  claimTrialQuotaNotice,
+  type TrialQuotaNoticeClaimer,
+} from "../../memory/trial-quota-notice.js";
 import { readCodexSessionTurnIndex } from "./session-turn-index.js";
 import { resolveCodexWorkspaceRoot } from "./workspace-links.js";
 import type {
@@ -87,6 +91,7 @@ export type CodexMemoryHookRuntimeOptions = {
   diagnosticLogger?: MemoryDiagnosticLogger;
   env?: Record<string, string | undefined>;
   fetchImpl?: typeof fetch;
+  claimQuotaNotice?: TrialQuotaNoticeClaimer;
   now?: () => number;
   ttlMs?: number;
   maxEntries?: number;
@@ -210,6 +215,7 @@ export function createCodexMemoryHookRuntime(options: CodexMemoryHookRuntimeOpti
       }
       const retrieval = await retrieveAutomaticMemoryContext({
         diagnosticLogger: options.diagnosticLogger,
+        claimQuotaNotice: options.claimQuotaNotice ?? claimTrialQuotaNotice,
         env: options.env ?? process.env,
         fetchImpl: options.fetchImpl,
         memoryObservability: options.memoryObservability,
@@ -223,6 +229,7 @@ export function createCodexMemoryHookRuntime(options: CodexMemoryHookRuntimeOpti
         ok: true,
         ...(repoMemoryWorktree ? { repoMemoryWorktree } : {}),
         ...(retrieval.context ? { additionalContext: retrieval.context } : {}),
+        ...(retrieval.userNotice ? { userNotice: retrieval.userNotice } : {}),
       };
     },
     async writeback(command) {

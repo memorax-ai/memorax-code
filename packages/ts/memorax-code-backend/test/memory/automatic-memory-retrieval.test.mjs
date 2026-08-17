@@ -84,6 +84,36 @@ test("automatic memory retrieval returns Hook context and emits observability", 
   assert.equal(events[0].traceContext, traceContext);
 });
 
+test("automatic memory retrieval keeps a claimed quota notice out of model context", async () => {
+  const { fetchImpl } = memoraxFetch("Quota notice separation memory.", {
+    "x-memorax-quota-remaining": "4800",
+    "x-memorax-quota-limit": "10000",
+  });
+  let observedQuota;
+  const result = await automaticMemoryRetrieval("Find relevant memory.", {
+    env: BASE_ENV,
+    fetchImpl,
+    claimQuotaNotice: async (_config, quota) => {
+      observedQuota = quota;
+      return "MemoraX Code quota is running low.";
+    },
+  });
+
+  assert.deepEqual(observedQuota, { remaining: 4800, limit: 10000 });
+  assert.equal(result.userNotice, "MemoraX Code quota is running low.");
+  assert.match(result.context, /Quota notice separation memory/);
+  assert.doesNotMatch(result.context, /quota is running low/);
+
+  const withoutVisibleNoticeChannel = await automaticMemoryRetrieval("Find relevant memory.", {
+    env: BASE_ENV,
+    fetchImpl: memoraxFetch("Quota remains transport-only.", {
+      "x-memorax-quota-remaining": "4800",
+      "x-memorax-quota-limit": "10000",
+    }).fetchImpl,
+  });
+  assert.equal(withoutVisibleNoticeChannel.userNotice, undefined);
+});
+
 test("automatic memory retrieval keeps Hook output below the Claude context limit", async () => {
   const { fetchImpl } = memoraxFetch("x".repeat(20_000));
   const result = await automaticMemoryRetrieval("Retrieve bounded Hook context.", {
@@ -229,7 +259,7 @@ test("Claude Hook route retrieves automatic memory once", async () => {
   }
 });
 
-function memoraxFetch(memoryText) {
+function memoraxFetch(memoryText, responseHeaders = {}) {
   const requests = [];
   return {
     requests,
@@ -254,7 +284,7 @@ function memoraxFetch(memoryText) {
         meta: { request_id: "req-1" },
       }), {
         status: 200,
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", ...responseHeaders },
       });
     },
   };

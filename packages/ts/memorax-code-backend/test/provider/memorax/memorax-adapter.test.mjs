@@ -56,7 +56,11 @@ test("MemoraX adapter uses the injected HTTP transport for retrieval", async () 
           },
         }), {
           status: 200,
-          headers: { "content-type": "application/json" },
+          headers: {
+            "content-type": "application/json",
+            "x-memorax-quota-remaining": "24",
+            "x-memorax-quota-limit": "100",
+          },
         });
       },
       repositoryScope: testRepositoryScope(),
@@ -77,6 +81,41 @@ test("MemoraX adapter uses the injected HTTP transport for retrieval", async () 
   assert.match(result.result.tool_result_payload.answer, /Injected HTTP preserves repository-scoped retrieval/);
   assert.match(result.result.prompt_fragments[0].content, /Injected HTTP preserves repository-scoped retrieval/);
   assert.equal(result.result.dispatch_receipt.receipt_id, "memorax:injected-retrieve-task");
+  assert.deepEqual(result.result.quota, { remaining: 24, limit: 100 });
+  assert.equal("quota" in result.result.tool_result_payload, false);
+});
+
+test("MemoraX adapter omits incomplete quota headers", async () => {
+  const result = await invokeMemoraxMemoryProvider(
+    { sessionId: "quota-incomplete", prompt: "fallback prompt" },
+    {
+      provider_id: "memory.memorax",
+      slot: "state_context",
+      operation: "query",
+      query: "project memory",
+    },
+    {
+      env: {
+        MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
+        MEMORAX_CODE_MEMORAX_API_KEY: "secret",
+        MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
+      },
+      fetchImpl: async () => new Response(JSON.stringify({
+        success: true,
+        data: { task_id: "quota-incomplete", status: "completed", data: [] },
+      }), {
+        status: 200,
+        headers: {
+          "content-type": "application/json",
+          "x-memorax-quota-remaining": "24",
+        },
+      }),
+      repositoryScope: testRepositoryScope(),
+    },
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal("quota" in result.result, false);
 });
 
 test("MemoraX adapter rejects real requests without a memory scope", async () => {
@@ -406,7 +445,11 @@ test("MemoraX adapter keeps writeback trace provenance in local observability", 
     const chunks = [];
     for await (const chunk of req) chunks.push(Buffer.from(chunk));
     requests.push(JSON.parse(Buffer.concat(chunks).toString("utf8")));
-    res.writeHead(202, { "content-type": "application/json" });
+    res.writeHead(202, {
+      "content-type": "application/json",
+      "x-memorax-quota-remaining": "23",
+      "x-memorax-quota-limit": "100",
+    });
     res.end(JSON.stringify({
       success: true,
       data: { task_id: "debug-writeback-task", status: "accepted" },
@@ -455,6 +498,8 @@ test("MemoraX adapter keeps writeback trace provenance in local observability", 
     );
 
     assert.equal(result.ok, true);
+    assert.deepEqual(result.result.quota, { remaining: 23, limit: 100 });
+    assert.equal("quota" in result.result.tool_result_payload, false);
     assert.equal(requests.length, 1);
     const events = observabilityEvents;
     assert.equal(events.length, 1);
@@ -466,6 +511,7 @@ test("MemoraX adapter keeps writeback trace provenance in local observability", 
     assert.equal(events[0].request.payload.metadata.idempotency_key, "debug-session:turn-1");
     assert.equal(events[0].request.payload.metadata.source_detail, "privacy_contract_test");
     assert.equal(events[0].response.receiptId, "memorax:debug-writeback-req");
+    assert.doesNotMatch(JSON.stringify(events), /"quota"/);
     assert.doesNotMatch(JSON.stringify(events), /secret-debug-key/);
     const outboundBody = JSON.stringify(requests[0]);
     assert.doesNotMatch(outboundBody, /test\/local-trace|test\/local-workspace/);
