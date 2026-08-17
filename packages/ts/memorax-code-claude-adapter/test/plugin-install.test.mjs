@@ -397,7 +397,13 @@ test("Claude plugin install refreshes an incomplete matching shell", async () =>
     }).ok, true);
 
     const state = JSON.parse(await readFile(join(claudeHome, ".fake-plugin-state.json"), "utf8"));
-    await rm(join(state.plugins[0].installPath, "hooks", "hooks.json"));
+    await rm(join(
+      state.plugins[0].installPath,
+      "memorax-code-adapter-common",
+      "src",
+      "hooks",
+      "memory-skill-reminder-policy.mjs",
+    ));
 
     const updated = ensureClaudePluginInstalled({
       claudeHome,

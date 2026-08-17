@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, rename, rm, symlink, writeFile } from "node:fs/promises
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { test } from "node:test";
+import { after, before, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { buildRepoUserProfilePreferencesContext } from "../../memorax-code-adapter-common/src/repo-memory/repo-user-profile-context.mjs";
 
@@ -19,6 +19,32 @@ const PERSONAL_MEMORY_CONTEXT_OPTIONS = {
   debugEnv: "MEMORAX_CODE_CODEX_HOOK_DEBUG",
   sessionKeyPrefix: "codex",
 };
+const authorizedWorktreeOverrides = new Map();
+const authorizedBackendRequests = [];
+let authorizedBackendUrl;
+const authorizedBackend = createServer(async (request, response) => {
+  let body = "";
+  for await (const chunk of request) body += String(chunk);
+  const parsed = body ? JSON.parse(body) : {};
+  authorizedBackendRequests.push({ path: request.url, body: parsed });
+  const repositoryWorktree = authorizedWorktreeOverrides.has(parsed.sessionId)
+    ? authorizedWorktreeOverrides.get(parsed.sessionId)
+    : parsed.cwd;
+  const result = request.url === "/memory/turn-start" && repositoryWorktree
+    ? { ok: true, repoMemoryWorktree: repositoryWorktree }
+    : { ok: true };
+  response.writeHead(200, { "content-type": "application/json" });
+  response.end(JSON.stringify(result));
+});
+
+before(async () => {
+  await new Promise((resolveListen) => authorizedBackend.listen(0, "127.0.0.1", resolveListen));
+  authorizedBackendUrl = `http://127.0.0.1:${authorizedBackend.address().port}`;
+});
+
+after(async () => {
+  await new Promise((resolveClose) => authorizedBackend.close(resolveClose));
+});
 
 test("active preferences join the first prompt and the first prompt after compact", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-user-profile-context-lifecycle-"));
@@ -157,43 +183,99 @@ test("preference and procedure contexts stay in one ordered payload", async () =
 
 test("the exact injected preference context is sent to the trace reminder endpoint", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-user-profile-context-trace-"));
-  const requests = [];
-  const server = createServer(async (request, response) => {
-    let body = "";
-    for await (const chunk of request) body += String(chunk);
-    requests.push({ path: request.url, body: JSON.parse(body) });
-    response.writeHead(200, { "content-type": "application/json" });
-    response.end('{"ok":true}');
-  });
-  await new Promise((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
-  const address = server.address();
+  const sessionId = "trace-native-thread";
   try {
     const repo = await createRepo(root, "trace");
     const memoraxCodeHome = join(root, "memorax-code");
-    await writeRegistry(memoraxCodeHome, "native-thread");
+    await writeRegistry(memoraxCodeHome, sessionId);
     await writePreferences(repo, [
       preference("pref_language", "用户偏好使用中文交流。", "与用户交流时。", "用户明确要求其他语言。"),
     ]);
 
     const result = await runHook(hookPath, {
       hook_event_name: "UserPromptSubmit",
-      session_id: "native-thread",
+      session_id: sessionId,
       transcript_path: "/tmp/native-thread.jsonl",
       turn_id: "turn-1",
       cwd: repo,
       prompt: "first prompt",
-    }, {
-      MEMORAX_CODE_HOME: memoraxCodeHome,
-      MEMORAX_CODE_BACKEND_URL: `http://127.0.0.1:${address.port}`,
-    });
+    }, { MEMORAX_CODE_HOME: memoraxCodeHome });
 
     const context = reminderContext(result.stdout);
+    const requests = authorizedBackendRequests.filter((request) => request.body.sessionId === sessionId);
     assert.deepEqual(requests.map((request) => request.path), ["/memory/turn-start", "/memory/skill-reminder"]);
     assert.equal(requests[1].body.content, context);
     assert.deepEqual(requests[1].body.triggers, ["cadence"]);
     assert.match(requests[1].body.content, /Description: 用户偏好使用中文交流。/);
   } finally {
-    await new Promise((resolveClose) => server.close(resolveClose));
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("repo-scoped contexts require the Backend-authorized worktree", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-personal-memory-scope-"));
+  const unavailableSession = "scope-unavailable";
+  const authorizedSession = "scope-authorized";
+  try {
+    const hookRepo = await createRepo(root, "hook-scope");
+    const authorizedRepo = await createRepo(root, "authorized-scope");
+    const memoraxCodeHome = join(root, "memorax-code");
+    await writePreferences(hookRepo, [
+      preference("pref_hook", "hook repo profile must not appear", "always", "never"),
+    ]);
+    await writeProcedure(hookRepo, "hook.md", "# Hook repo procedure must not appear");
+    await writePreferences(authorizedRepo, [
+      preference("pref_authorized", "authorized repo profile", "always", "never"),
+    ]);
+    await writeProcedure(authorizedRepo, "authorized.md", "# Authorized repo procedure");
+    authorizedWorktreeOverrides.set(unavailableSession, undefined);
+    authorizedWorktreeOverrides.set(authorizedSession, authorizedRepo);
+
+    const unavailable = await runHook(hookPath, {
+      hook_event_name: "UserPromptSubmit",
+      session_id: unavailableSession,
+      transcript_path: "/tmp/scope-unavailable.jsonl",
+      turn_id: "turn-unavailable",
+      cwd: hookRepo,
+      prompt: "prompt without repository authority",
+    }, { MEMORAX_CODE_HOME: memoraxCodeHome });
+    assert.equal(reminderContext(unavailable.stdout), MEMORY_REMINDER_CONTEXT);
+
+    const authorized = await runHook(hookPath, {
+      hook_event_name: "UserPromptSubmit",
+      session_id: authorizedSession,
+      transcript_path: "/tmp/scope-authorized.jsonl",
+      turn_id: "turn-authorized",
+      cwd: hookRepo,
+      prompt: "prompt with repository authority",
+    }, { MEMORAX_CODE_HOME: memoraxCodeHome });
+    const authorizedContext = reminderContext(authorized.stdout);
+    assert.match(authorizedContext, /Description: authorized repo profile/);
+    assert.match(authorizedContext, /Authorized repo procedure/);
+    assert.doesNotMatch(authorizedContext, /hook repo profile must not appear/);
+    assert.doesNotMatch(authorizedContext, /Hook repo procedure must not appear/);
+
+    const unavailableRequests = authorizedBackendRequests.filter(
+      (request) => request.body.sessionId === unavailableSession,
+    );
+    assert.deepEqual(unavailableRequests.map((request) => request.path), [
+      "/memory/turn-start",
+      "/memory/skill-reminder",
+    ]);
+    assert.equal(unavailableRequests[1].body.cwd, hookRepo);
+    assert.equal(unavailableRequests[1].body.content, MEMORY_REMINDER_CONTEXT);
+    const authorizedRequests = authorizedBackendRequests.filter(
+      (request) => request.body.sessionId === authorizedSession,
+    );
+    assert.deepEqual(authorizedRequests.map((request) => request.path), [
+      "/memory/turn-start",
+      "/memory/skill-reminder",
+    ]);
+    assert.equal(authorizedRequests[1].body.cwd, hookRepo);
+    assert.equal(authorizedRequests[1].body.content, authorizedContext);
+  } finally {
+    authorizedWorktreeOverrides.delete(unavailableSession);
+    authorizedWorktreeOverrides.delete(authorizedSession);
     await rm(root, { recursive: true, force: true });
   }
 });
@@ -359,7 +441,7 @@ function runHook(command, input, env) {
     const childEnv = { ...process.env };
     delete childEnv.MEMORAX_CODE_MEMORY_SKILL_REMINDER_INTERVAL_TURNS;
     delete childEnv.PLUGIN_DATA;
-    childEnv.MEMORAX_CODE_BACKEND_URL = "http://127.0.0.1:1";
+    childEnv.MEMORAX_CODE_BACKEND_URL = authorizedBackendUrl;
     childEnv.MEMORAX_CODE_CODEX_MEMORY_HOOK_TIMEOUT_MS = "100";
     Object.assign(childEnv, env);
     const child = spawn(process.execPath, command, {

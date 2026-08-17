@@ -117,6 +117,41 @@ test("Backend memory hook endpoints reject commands outside the closed schema", 
     lastAssistantMessage: "Claude writeback.",
     transcriptPath: "/tmp/claude.jsonl",
   };
+  const openCodeTurnStart = {
+    version: 1,
+    client: "opencode",
+    sessionId: "session-opencode-turn-start",
+    userMessageId: "user-opencode-turn-start",
+    prompt: "OpenCode turn start.",
+  };
+  const openCodeWriteback = {
+    version: 1,
+    client: "opencode",
+    sessionId: "session-opencode-writeback",
+    userMessageId: "user-opencode-writeback",
+    assistantMessageId: "assistant-opencode-writeback",
+    messages: [],
+  };
+  const dshTurnStart = {
+    version: 1,
+    client: "dsh",
+    sessionId: "session-dsh-turn-start",
+    turn: 1,
+    startSeq: 0,
+    cwd: "/workspace/dsh",
+    prompt: "DSH turn start.",
+  };
+  const dshWriteback = {
+    version: 1,
+    client: "dsh",
+    sessionId: "session-dsh-writeback",
+    turn: 1,
+    startSeq: 0,
+    endSeq: 1,
+    cwd: "/workspace/dsh",
+    sessionHeader: {},
+    events: [],
+  };
   try {
     for (const [caseName, path, body] of [
       ["unversioned command", "/memory/turn-start", {
@@ -188,6 +223,30 @@ test("Backend memory hook endpoints reject commands outside the closed schema", 
         ...claudeWriteback,
         workspaceKind: {},
       }],
+      ["transcript field on OpenCode turn-start", "/memory/turn-start", {
+        ...openCodeTurnStart,
+        transcriptPath: "/tmp/opencode.jsonl",
+      }],
+      ["Hook assistant text on OpenCode writeback", "/memory/writeback", {
+        ...openCodeWriteback,
+        lastAssistantMessage: "Hook text is not OpenCode writeback authority.",
+      }],
+      ["invalid OpenCode messages container", "/memory/writeback", {
+        ...openCodeWriteback,
+        messages: {},
+      }],
+      ["transcript field on DSH turn-start", "/memory/turn-start", {
+        ...dshTurnStart,
+        transcriptPath: "/tmp/dsh.jsonl",
+      }],
+      ["invalid DSH events container", "/memory/writeback", {
+        ...dshWriteback,
+        events: {},
+      }],
+      ["invalid DSH event interval", "/memory/writeback", {
+        ...dshWriteback,
+        endSeq: -1,
+      }],
     ]) {
       const response = await fetch(`${url}${path}`, {
         method: "POST",
@@ -217,6 +276,8 @@ test("Backend memory hook endpoints write client-isolated trace events", async (
     MEMORAX_CODE_HOME: undefined,
     MEMORAX_CODE_CLAUDE_TRACE_ENABLED: undefined,
     MEMORAX_CODE_CODEX_TRACE_ENABLED: undefined,
+    MEMORAX_CODE_DSH_TRACE_ENABLED: undefined,
+    MEMORAX_CODE_OPENCODE_TRACE_ENABLED: undefined,
   });
   const originalFetch = globalThis.fetch;
   globalThis.fetch = fetchImpl;
@@ -336,6 +397,72 @@ test("Backend memory hook endpoints write client-isolated trace events", async (
     assert.equal(claudeReminder.status, 200);
     assert.deepEqual(await claudeReminder.json(), { ok: true });
 
+    const dshReminder = await originalFetch(`${url}/memory/skill-reminder`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        version: 1,
+        client: "dsh",
+        sessionId: "session-trace-hook",
+        turn: 1,
+        cwd: TEST_WORKSPACE,
+        content: "MemoraX Code reminder: use /memorax-code when prior work could help.",
+        triggers: ["cadence"],
+      }),
+    });
+    assert.equal(dshReminder.status, 200);
+    assert.deepEqual(await dshReminder.json(), { ok: true });
+
+    const dshReminderWithTranscript = await originalFetch(`${url}/memory/skill-reminder`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        version: 1,
+        client: "dsh",
+        sessionId: "session-trace-hook",
+        turn: 1,
+        cwd: TEST_WORKSPACE,
+        transcriptPath,
+        content: "DSH reminder commands must not invent transcript authority.",
+        triggers: ["cadence"],
+      }),
+    });
+    assert.equal(dshReminderWithTranscript.status, 200);
+    assert.deepEqual(await dshReminderWithTranscript.json(), { ok: true });
+
+    const mismatchedOpenCodeReminder = await originalFetch(`${url}/memory/skill-reminder`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        version: 1,
+        client: "opencode",
+        sessionId: "session-trace-hook",
+        turnId: "turn-trace-hook",
+        transcriptPath,
+        content: "OpenCode reminder commands must use userMessageId.",
+        triggers: ["post_compaction"],
+      }),
+    });
+    assert.equal(mismatchedOpenCodeReminder.status, 200);
+    assert.deepEqual(await mismatchedOpenCodeReminder.json(), { ok: true });
+
+    const openCodeReminder = await originalFetch(`${url}/memory/skill-reminder`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        version: 1,
+        client: "opencode",
+        sessionId: "session-trace-hook",
+        userMessageId: "turn-trace-hook",
+        cwd: TEST_WORKSPACE,
+        workspaceKind: "project",
+        content: "MemoraX Code reminder: use the memorax-code skill in OpenCode.",
+        triggers: ["post_compaction"],
+      }),
+    });
+    assert.equal(openCodeReminder.status, 200);
+    assert.deepEqual(await openCodeReminder.json(), { ok: true });
+
     const writeback = await originalFetch(`${url}/memory/writeback`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -390,6 +517,39 @@ test("Backend memory hook endpoints write client-isolated trace events", async (
     assert.deepEqual(claudeEvents[0].response, {
       role: "developer",
       content: "MemoraX Code reminder: use the skill in Claude when prior work could help.",
+    });
+    const dshEventsPath = clientTracePaths("dsh", sessionHome).eventsJsonl("session-trace-hook");
+    await waitForFile(dshEventsPath, /skill_reminder/, "DSH reminder trace event was not written");
+    const dshEvents = (await readFile(dshEventsPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(dshEvents.length, 1);
+    assert.equal(dshEvents[0].type, "skill_reminder");
+    assert.equal(dshEvents[0].source, "dsh-cordis");
+    assert.equal(dshEvents[0].operation, "reminder");
+    assert.equal(dshEvents[0].trace.client, "dsh");
+    assert.equal(dshEvents[0].trace.session_id, "session-trace-hook");
+    assert.equal(dshEvents[0].trace.turn_id, "1");
+    assert.equal(dshEvents[0].trace.context_origin, "dsh-cordis-reminder");
+    assert.deepEqual(dshEvents[0].request.triggers, ["cadence"]);
+    assert.deepEqual(dshEvents[0].response, {
+      role: "user",
+      content: "MemoraX Code reminder: use /memorax-code when prior work could help.",
+    });
+    const openCodeEventsPath = clientTracePaths("opencode", sessionHome).eventsJsonl("session-trace-hook");
+    await waitForFile(openCodeEventsPath, /skill_reminder/, "OpenCode reminder trace event was not written");
+    const openCodeEvents = (await readFile(openCodeEventsPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(openCodeEvents.length, 1);
+    assert.equal(openCodeEvents[0].type, "skill_reminder");
+    assert.equal(openCodeEvents[0].source, "opencode-plugin");
+    assert.equal(openCodeEvents[0].operation, "reminder");
+    assert.equal(openCodeEvents[0].trace.client, "opencode");
+    assert.equal(openCodeEvents[0].trace.session_id, "session-trace-hook");
+    assert.equal(openCodeEvents[0].trace.turn_id, "turn-trace-hook");
+    assert.equal(openCodeEvents[0].trace.context_origin, "opencode-hook-body");
+    assert.equal(openCodeEvents[0].trace.transcript_path, undefined);
+    assert.deepEqual(openCodeEvents[0].request.triggers, ["post_compaction"]);
+    assert.deepEqual(openCodeEvents[0].response, {
+      role: "developer",
+      content: "MemoraX Code reminder: use the memorax-code skill in OpenCode.",
     });
     const turnEnd = events.find((event) => event.type === "turn_end");
     assert.equal(turnEnd.source, "codex-hook");

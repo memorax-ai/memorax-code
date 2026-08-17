@@ -34,6 +34,7 @@ import { inspectCodexPluginHooks, trustCodexPluginHooks, type CodexHook } from "
 import {
   collectMemoraxCodeStatus,
   isAdapterReady,
+  isOptionalUnavailableDshAdapter,
   isOptionalUnconfiguredClaudeAdapter,
   restartMemoraxCodeService,
   startMemoraxCodeService,
@@ -70,8 +71,9 @@ export function runBackendCli(argv = process.argv): void {
       `Usage: ${usageName} [${commands}] [--backend-url URL] [--backend-token TOKEN] [--home DIR]`,
       "[--host HOST] [--port PORT] [--rotate] [--show]",
       "[--codex-command CMD]",
-      "[--codex-home DIR] [--claude-home DIR]",
-      "[--clients codex|claude|codex,claude|all|none]",
+      "[--codex-home DIR] [--claude-home DIR] [--dsh-home DIR] [--opencode-config-dir DIR]",
+      "[--dsh-command CMD] [--dsh-adapter-root DIR] [--memorax-code-command CMD]",
+      "[--clients codex|claude|dsh|opencode|CLIENT,...|all|none]",
       "[--json]",
       "[--marketplace-path FILE] [--plugin-source-path DIR] [--claude-command CMD] [--help]",
       "[--yes]",
@@ -226,8 +228,12 @@ async function startRawBackendServer(
         memoraxCodeHome: state.sessionHome,
         codexHome: argValue(argv, "--codex-home"),
         claudeHome: argValue(argv, "--claude-home"),
+        dshHome: argValue(argv, "--dsh-home"),
+        dshAdapterRoot: argValue(argv, "--dsh-adapter-root"),
+        openCodeConfigDir: argValue(argv, "--opencode-config-dir"),
         codexCommand: argValue(argv, "--codex-command"),
         claudeCommand: argValue(argv, "--claude-command"),
+        dshCommand: argValue(argv, "--dsh-command"),
       })
     : undefined;
   const server = createBackendServer(state);
@@ -246,6 +252,10 @@ async function startRawBackendServer(
         codexReason: "reason" in cleanup.codexPlugin ? cleanup.codexPlugin.reason : undefined,
         claudeOk: cleanup.claudePlugin.ok,
         claudeReason: cleanup.claudePlugin.reason,
+        dshOk: cleanup.dshPlugin.ok,
+        dshReason: cleanup.dshPlugin.reason,
+        opencodeOk: cleanup.opencodePlugin.ok,
+        opencodeReason: cleanup.opencodePlugin.reason,
       });
     }
     server.close(() => {
@@ -517,6 +527,8 @@ function printMemoraxCodeStatus(report: MemoraxCodeStatusReport): void {
     backendLog(`Codex adapter: ${adapterStatusLine(report.codexAdapter)}`);
   }
   if (report.claudeAdapter) backendLog(`Claude adapter: ${claudeAdapterStatusLine(report.claudeAdapter, report.codexAdapter)}`);
+  if (report.dshAdapter) backendLog(`DSH adapter: ${dshAdapterStatusLine(report.dshAdapter)}`);
+  if (report.opencodeAdapter) backendLog(`OpenCode adapter: ${adapterStatusLine(report.opencodeAdapter)}`);
   if (!suppressBackendGuidance()) {
     for (const line of statusGuidance(report)) backendLog(line);
   }
@@ -623,6 +635,8 @@ function printLifecycleResult(report: MemoraxCodeLifecycleReport): void {
   }
   if (report.codexAdapter) backendLog(`Codex adapter: ${adapterStatusLine(report.codexAdapter)}`);
   if (report.claudeAdapter) backendLog(`Claude adapter: ${adapterStatusLine(report.claudeAdapter)}`);
+  if (report.dshAdapter) backendLog(`DSH adapter: ${dshAdapterStatusLine(report.dshAdapter)}`);
+  if (report.opencodeAdapter) backendLog(`OpenCode adapter: ${adapterStatusLine(report.opencodeAdapter)}`);
   if (report.codexPlugin) {
     const removed = report.codexPlugin.removedPaths.length;
     const marketplace = report.codexPlugin.marketplaceChanged ? " marketplace=updated" : " marketplace=unchanged";
@@ -681,17 +695,37 @@ function lifecycleGuidance(report: MemoraxCodeLifecycleReport): string[] {
         "Run `memorax-code logs` for details, then retry `memorax-code start`.",
       ];
     }
-    if (!report.codexAdapter && !report.claudeAdapter) {
+    if (!report.codexAdapter && !report.claudeAdapter && !report.dshAdapter && !report.opencodeAdapter) {
       return [
         green("Backend is running."),
         "Adapters were not changed for this command.",
       ];
     }
-    if ((!report.codexAdapter || isAdapterReady(report.codexAdapter)) && (!report.claudeAdapter || isAdapterReady(report.claudeAdapter))) {
+    const optionalDshSkipped = isOptionalUnavailableDshAdapter(report.dshAdapter);
+    if ((!report.codexAdapter || isAdapterReady(report.codexAdapter))
+      && (!report.claudeAdapter || isAdapterReady(report.claudeAdapter))
+      && (!report.dshAdapter
+        || isAdapterReady(report.dshAdapter)
+        || optionalDshSkipped)
+      && (!report.opencodeAdapter || isAdapterReady(report.opencodeAdapter))) {
       return [
-        green("Backend is running and adapters are enabled."),
-        green("Existing sessions with the stable plugin shell select the active Hook runtime on their next user prompt."),
-        "Restart or refresh a client only if its plugin shell was installed, changed, or newly enabled, or MemoraX Code is not active on the next prompt.",
+        green(optionalDshSkipped
+          && !report.codexAdapter
+          && !report.claudeAdapter
+          && !report.opencodeAdapter
+          ? "Backend is running; the optional DSH integration was skipped."
+          : "Backend is running and available client integrations are enabled."),
+        ...(optionalDshSkipped
+          ? [`DSH integration was skipped: ${report.dshAdapter?.reason ?? "not available"}.`]
+          : []),
+        ...(report.codexAdapter || report.claudeAdapter || report.opencodeAdapter
+          ? [
+              green("Existing sessions with the stable plugin shell select the active runtime on their next user prompt."),
+              "Restart or refresh a client only if its plugin shell changed or MemoraX Code is not active on the next prompt.",
+            ]
+          : optionalDshSkipped
+            ? []
+            : [green("New DSH sessions can use MemoraX Code through the active Profile integration.")]),
       ];
     }
     return [
@@ -700,11 +734,17 @@ function lifecycleGuidance(report: MemoraxCodeLifecycleReport): string[] {
     ];
   }
   if (report.action === "stop") {
+    const backendKeptRunning = report.backend?.skipped === true
+      && report.backend.reason === "active_clients_remaining";
     return report.ok
       ? [
-        green("Backend is stopped."),
+        green(backendKeptRunning
+          ? "Backend remains running for the other active client integrations."
+          : "Backend is stopped."),
         ...(report.codexAdapter ? [green("Codex Hook integration is stopped; provider config was not changed.")] : []),
         ...(report.claudeAdapter ? [green("Claude Code Hook integration is stopped; provider config was not changed.")] : []),
+        ...(report.dshAdapter ? [green("DSH Profile integration is stopped.")] : []),
+        ...(report.opencodeAdapter ? [green("OpenCode plugin integration is stopped; provider config was not changed.")] : []),
       ]
       : [
         red("Backend did not stop cleanly."),
@@ -715,7 +755,7 @@ function lifecycleGuidance(report: MemoraxCodeLifecycleReport): string[] {
     return report.ok
       ? [
         green("Backend restarted."),
-        green("Existing sessions with the stable plugin shell use the active Hook runtime on their next user prompt."),
+        green("Available client integrations were reconciled with the restarted Backend."),
         "Restart or refresh a client only if MemoraX Code is not active on the next prompt.",
       ]
       : [
@@ -730,15 +770,12 @@ function lifecycleGuidance(report: MemoraxCodeLifecycleReport): string[] {
         "Run `memorax-code status` and `memorax-code logs` before retrying.",
       ];
     }
-    const clientName = report.codexAdapter && report.claudeAdapter
-      ? "Codex and Claude Code"
-      : report.codexAdapter
-        ? "Codex"
-        : report.claudeAdapter
-          ? "Claude Code"
-          : undefined;
+    const clientName = lifecycleClientName(report);
     const npmPackageRemoved = report.npmPackageRemoval?.ok === true
       && report.npmPackageRemoval.skipped !== true;
+    const removalNoun = report.dshAdapter
+      ? `client integration${selectedLifecycleClientNames(report).length === 1 ? "" : "s"}`
+      : `adapter plugin${selectedLifecycleClientNames(report).length === 1 ? "" : "s"}`;
     return [
       ...(npmPackageRemoved
         ? [green("MemoraX Code has been uninstalled from this npm installation.")]
@@ -746,9 +783,7 @@ function lifecycleGuidance(report: MemoraxCodeLifecycleReport): string[] {
           ? [green(`MemoraX Code has been uninstalled from ${clientName}.`)]
           : []),
       ...(clientName
-        ? [green(report.codexAdapter && report.claudeAdapter
-          ? "Restart or refresh Codex and Claude Code so they drop the removed adapter plugins."
-          : `Restart or refresh ${clientName} so it drops the removed adapter plugin.`)]
+        ? [green(`Restart or refresh ${clientName} so it drops the removed ${removalNoun}.`)]
         : []),
     ];
   }
@@ -757,8 +792,27 @@ function lifecycleGuidance(report: MemoraxCodeLifecycleReport): string[] {
 
 function statusGuidance(report: MemoraxCodeStatusReport): string[] {
   if (report.ok) {
+    const optionalDshSkipped = isOptionalUnavailableDshAdapter(report.dshAdapter);
+    if (report.dshAdapter
+      && !report.codexAdapter
+      && !report.claudeAdapter
+      && !report.opencodeAdapter) {
+      if (optionalDshSkipped) {
+        return [
+          green("Backend is running; the optional DSH integration was skipped."),
+          `DSH integration was skipped: ${report.dshAdapter.reason ?? "not available"}.`,
+        ];
+      }
+      return [
+        green("MemoraX Code is ready for new DSH sessions."),
+        "Restart or refresh DSH only if its Profile integration changed or MemoraX Code is not active on the next prompt.",
+      ];
+    }
     return [
       green("MemoraX Code is ready; sessions with the stable plugin shell use the active Hook runtime on their next user prompt."),
+      ...(optionalDshSkipped
+        ? [`DSH integration was skipped: ${report.dshAdapter?.reason ?? "not available"}.`]
+        : []),
       "Restart or refresh a client only if its plugin shell was installed, changed, or newly enabled, or MemoraX Code is not active on the next prompt.",
     ];
   }
@@ -788,6 +842,20 @@ function statusGuidance(report: MemoraxCodeStatusReport): string[] {
     return [
       red("Claude adapter is not enabled."),
       "Run `memorax-code start`, then restart or refresh Claude Code.",
+    ];
+  }
+  if (report.dshAdapter
+    && !isAdapterReady(report.dshAdapter)
+    && !isOptionalUnavailableDshAdapter(report.dshAdapter)) {
+    return [
+      red("DSH adapter is not enabled."),
+      "Run `memorax-code start`, then retry `memorax-code status`.",
+    ];
+  }
+  if (report.opencodeAdapter && !isAdapterReady(report.opencodeAdapter)) {
+    return [
+      red("OpenCode adapter is not enabled."),
+      "Run `memorax-code start`, then restart or refresh OpenCode.",
     ];
   }
   return [
@@ -826,10 +894,29 @@ function adapterStatusLine(report: AdapterReport): string {
     return `not ok endpoint_mismatch configured=${report.configuredBackendUrl ?? "missing"} expected=${report.expectedBackendUrl ?? "unknown"}`;
   }
   const enabled = isAdapterReady(report);
-  const skillStatus = report.codexSkills?.status ?? report.claudeSkills?.status;
+  const skillStatus = report.codexSkills?.status
+    ?? report.claudeSkills?.status
+    ?? report.opencodeSkills?.status;
   const skills = skillStatus ? ` skills=${skillStatus}` : "";
   const changed = report.changed === true ? " changed" : "";
-  return `${enabled ? "ok" : "not enabled"} integration=hooks${skills}${changed}`;
+  const integration = report.integration ?? report.state?.integration ?? "hooks";
+  return `${enabled ? "ok" : "not enabled"} integration=${integration}${skills}${changed}`;
+}
+
+function selectedLifecycleClientNames(report: MemoraxCodeLifecycleReport): string[] {
+  return [
+    report.codexAdapter ? "Codex" : undefined,
+    report.claudeAdapter ? "Claude Code" : undefined,
+    report.dshAdapter ? "DSH" : undefined,
+    report.opencodeAdapter ? "OpenCode" : undefined,
+  ].filter((name): name is string => name !== undefined);
+}
+
+function lifecycleClientName(report: MemoraxCodeLifecycleReport): string | undefined {
+  const names = selectedLifecycleClientNames(report);
+  if (names.length < 2) return names[0];
+  if (names.length === 2) return `${names[0]} and ${names[1]}`;
+  return `${names.slice(0, -1).join(", ")}, and ${names.at(-1)}`;
 }
 
 function claudeAdapterStatusLine(report: AdapterReport, codexAdapter?: AdapterReport): string {
@@ -837,6 +924,17 @@ function claudeAdapterStatusLine(report: AdapterReport, codexAdapter?: AdapterRe
     return `skipped ${report.reason ?? "not-configured"}`;
   }
   return adapterStatusLine(report);
+}
+
+function dshAdapterStatusLine(report: AdapterReport): string {
+  if (isOptionalUnavailableDshAdapter(report)) {
+    return `skipped ${report.reason ?? "not-detected"}`;
+  }
+  const version = report.version ?? report.dshVersion;
+  const tested = version && report.dshVersionTested !== undefined
+    ? ` version=${version} tested=${report.dshVersionTested}`
+    : "";
+  return `${adapterStatusLine(report)}${tested}`;
 }
 
 function argValue(argv: string[], name: string): string | undefined {

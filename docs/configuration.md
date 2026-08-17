@@ -38,12 +38,13 @@ are not a compatibility contract.
 
 ## New configuration
 
-The generated template selects both clients, disables automatic retrieval,
-enables automatic writeback, sets the preferred language to Chinese (`zh`),
-uses a five-turn skill reminder and the adaptive repository-update policy, and
-enables content-bearing local traces for both clients. npm installation may
-narrow `[clients]` to clients detected on the host. The tables below list all
-fallbacks, including tuning fields omitted from the generated file.
+The generated template selects all four client integrations, disables automatic
+retrieval, enables automatic writeback, sets the preferred language to Chinese
+(`zh`), uses a five-turn skill reminder and the adaptive repository-update
+policy, and enables content-bearing local traces for Codex, Claude Code, and
+OpenCode. npm installation may narrow `[clients]` to clients detected on the
+host. The tables below list all fallbacks, including tuning fields omitted from
+the generated file.
 
 On POSIX systems MemoraX Code creates `$MEMORAX_CODE_HOME` with mode `0700`
 and a new `config.toml` with mode `0600`. Windows relies on the current user's
@@ -51,16 +52,25 @@ filesystem ACLs.
 
 ## Client selection
 
-If `[clients]` is absent, lifecycle commands select both clients. If it is
-present, `codex` and `claude` are boolean fields and an omitted client is
-disabled. The command-line override is:
+If `[clients]` is absent, lifecycle commands select Codex, Claude Code, DSH,
+and OpenCode. If it is present, `codex`, `claude`, `dsh`, and `opencode` are
+boolean fields. Omitted `codex`, `claude`, or `opencode` values are disabled;
+an omitted `dsh` value remains enabled so configurations written before DSH
+support can discover an existing local Harness. Set `dsh = false` explicitly
+to disable that integration. The command-line override accepts a
+comma-separated subset:
 
 ```text
---clients codex|claude|codex,claude|all|none
+--clients codex|claude|dsh|opencode|<comma-separated subset>|all|none
 ```
 
-A normal npm install or reinstall refreshes `[clients]` from the runnable
-clients detected at that time. Update-mode postinstall runs preserve enabled
+A normal npm install or reinstall refreshes `[clients]` from the available
+clients detected at that time. OpenCode is available when its explicit, XDG,
+or default configuration directory exists, or when `opencode` is on `PATH`.
+DSH is available when at least one valid Profile exists under
+`$DSH_HOME/profiles`; `DSH_HOME` defaults to `~/.dsh`. An explicit
+`[clients].dsh = false` is preserved.
+Update-mode postinstall runs preserve enabled
 clients and also probe each disabled client. An interactive update offers each
 runnable disabled integration for activation with a default of yes. Declining
 the prompt, or running non-interactively, keeps that integration disabled. A
@@ -69,9 +79,60 @@ configuration instead of being permanently disabled. When an update newly
 enables Codex, it requests initial Hook activation after the client-selection
 prompt.
 
-Client selection controls plugin and Hook lifecycle only. It does not change
-Codex or Claude Code provider settings. `--clients none` runs the Backend
-without managing either client integration.
+Client selection controls managed client-integration lifecycle only. It does
+not change Codex, Claude Code, DSH, or OpenCode provider settings.
+`--clients none` runs the Backend without managing a client integration.
+
+## DeepSeek Harness integration paths
+
+DSH Profiles are discovered under:
+
+```text
+$DSH_HOME/profiles/<profile-name>/
+```
+
+`DSH_HOME` defaults to `~/.dsh`. The managed ownership record lives at
+`$MEMORAX_CODE_HOME/adapters/dsh/state.json`. Runtime packages are materialized
+under `$MEMORAX_CODE_HOME/adapters/dsh/runtime/generations/` and installed into
+Profiles through DSH's native plugin command. The globally installed npm
+package remains immutable; do not copy or edit the generated state or runtime
+directories by hand.
+
+MemoraX Code is tested with DSH `0.1.0-rc.6`. Other valid semantic versions are
+accepted but appear as untested in status output; compatibility is not
+guaranteed. An unavailable or malformed `dsh --version` result fails Profile
+reconciliation when a Profile exists. Run `memorax-code start --clients dsh`
+after changing `DSH_HOME`, DSH, or its Profiles.
+
+## OpenCode integration paths
+
+The managed OpenCode plugin loader and shared skill use OpenCode's automatic
+discovery directories:
+
+```text
+~/.config/opencode/plugins/memorax-code.js
+~/.config/opencode/skills/memorax-code/
+```
+
+Set `OPENCODE_CONFIG_DIR` to override the complete OpenCode configuration root.
+Otherwise, `XDG_CONFIG_HOME` replaces `~/.config` when set. The managed adapter
+record lives at `$MEMORAX_CODE_HOME/adapters/opencode/state.json`. Content-free
+plugin runtime evidence lives beside it in `workspaces.json` and records only
+the observed event, workspace, optional session identifier, and timestamp.
+
+MemoraX Code does not add entries to or otherwise modify `opencode.json` or
+`opencode.jsonc`. Restart or refresh OpenCode after installation or after these
+managed assets change.
+
+The managed loader records the exact MemoraX Code home, OpenCode configuration
+directory, installed Node runtime, and `memorax-code` entrypoint. When the
+enabled plugin loads, it performs a best-effort Backend health check and uses
+those installed package paths to restore an unavailable loopback Backend. A
+prompt waits no more than the plugin instance's single five-second recovery
+budget; if that budget expires, automatic memory handling for that turn is
+skipped while recovery continues in the background. This preserves the
+configured client selection. Remote Backend URLs, invalid connection
+authority, and a removed package command are not recovered automatically.
 
 ## MemoraX connection
 
@@ -120,20 +181,20 @@ Automatic prompt retrieval is disabled by default.
 | `memory_type_order` | `MEMORAX_CODE_MEMORAX_MEMORY_TYPE_ORDER` | `core,episodic,semantic,procedural,unclassified` |
 
 The TOML form of `memory_type_order` is an array of strings; the environment
-form is comma-separated. `enabled` controls automatic `UserPromptSubmit`
-retrieval only. Explicit `memorax-cli search` remains available when
+form is comma-separated. `enabled` controls automatic prompt retrieval only.
+Explicit `memorax-cli search` remains available when
 credentials and a trusted workspace scope resolve.
 
 ## Writeback and explicit add
 
-New configurations explicitly set automatic transcript writeback to enabled.
+New configurations explicitly set automatic completed-turn writeback to enabled.
 An existing configuration without `enabled` remains disabled.
 
 | Field | Environment override | Fallback |
 | --- | --- | --- |
 | `enabled` | `MEMORAX_CODE_MEMORY_WRITEBACK_ENABLED` | `false` when absent |
 | `buffer_enabled` | `MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_ENABLED` | `true` |
-| `buffer_max_turns` | `MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_MAX_TURNS` | `8`; `-1` disables automatic Hook writeback |
+| `buffer_max_turns` | `MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_MAX_TURNS` | `8`; `-1` disables automatic writeback |
 | `buffer_max_age_ms` | `MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_MAX_AGE_MS` | `600000` |
 | `buffer_max_chars` | `MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_MAX_CHARS` | `128000` |
 | `max_message_chars` | `MEMORAX_CODE_MEMORY_WRITEBACK_MAX_MESSAGE_CHARS` | `64000` |
@@ -190,8 +251,12 @@ entered and do not pass through this detector.
 
 `[memory.skill_reminder].interval_turns` defaults to `5`; its environment
 override is `MEMORAX_CODE_MEMORY_SKILL_REMINDER_INTERVAL_TURNS`. A positive
-value controls the reminder cadence for both clients, beginning with the first
-eligible prompt.
+value controls the native skill reminder cadence for supported client
+sessions, beginning with the first eligible prompt or Turn. The same interval
+controls trusted repo-scoped Procedure Memory. User Profile preferences are
+applied on first observation and restored with a personal-memory reminder
+after successful context compaction. These local contexts remain separate
+from automatic writeback content.
 
 | Field | Environment override | Fallback |
 | --- | --- | --- |
@@ -203,28 +268,43 @@ Supported policies are `every-commit`, `commit-count`, `daily`,
 `pull-request`, `pull-request-or-daily`, and `adaptive`. Invalid policy values
 fall back to `adaptive`.
 
-The first eligible prompt starts a background build only when the Backend has
-authorized a Git worktree and that worktree has no `.repo_memory/PROFILE.md`.
-If the Backend or workspace authority is unavailable, the Hook skips the
-initial build instead of falling back to its local `cwd`.
+In Codex, Claude Code, DSH, and OpenCode, the first eligible prompt starts a
+background build only when the Backend has authorized a Git worktree and that
+worktree has no `.repo_memory/PROFILE.md`. If the Backend or workspace
+authority is unavailable, the client integration skips that attempt instead
+of falling back to its local workspace path. DSH schedules this work through
+its native pre-step integration rather than a Hook.
+
+A relevant repo-read runs supervised maintenance in all four clients. The
+configured policy may select a build, update, or no-op. DSH maintenance
+requires an enabled, managed Profile that includes `@deepseek-ai/dsh-headless`.
+OpenCode executes the job through its active local server. Desktop-only
+installations do not require a standalone `opencode` executable in `PATH`.
 
 ## Local traces
 
-`[trace.codex]` and `[trace.claude]` support the same fields:
+`[trace.codex]`, `[trace.claude]`, `[trace.dsh]`, and `[trace.opencode]`
+support the same fields:
 
-| Field | Codex environment | Claude environment | Fallback |
-| --- | --- | --- | --- |
-| `enabled` | `MEMORAX_CODE_CODEX_TRACE_ENABLED` | `MEMORAX_CODE_CLAUDE_TRACE_ENABLED` | `true` |
-| `capture_content` | `MEMORAX_CODE_CODEX_TRACE_CAPTURE_CONTENT` | `MEMORAX_CODE_CLAUDE_TRACE_CAPTURE_CONTENT` | `true` |
-| `retention_days` | `MEMORAX_CODE_CODEX_TRACE_RETENTION_DAYS` | `MEMORAX_CODE_CLAUDE_TRACE_RETENTION_DAYS` | `7` |
-| `max_event_chars` | `MEMORAX_CODE_CODEX_TRACE_MAX_EVENT_CHARS` | `MEMORAX_CODE_CLAUDE_TRACE_MAX_EVENT_CHARS` | `20000` |
-| `max_file_bytes` | `MEMORAX_CODE_CODEX_TRACE_MAX_FILE_BYTES` | `MEMORAX_CODE_CLAUDE_TRACE_MAX_FILE_BYTES` | `52428800` |
+| Field | Codex environment | Claude environment | DSH environment | OpenCode environment | Fallback |
+| --- | --- | --- | --- | --- | --- |
+| `enabled` | `MEMORAX_CODE_CODEX_TRACE_ENABLED` | `MEMORAX_CODE_CLAUDE_TRACE_ENABLED` | `MEMORAX_CODE_DSH_TRACE_ENABLED` | `MEMORAX_CODE_OPENCODE_TRACE_ENABLED` | `true` |
+| `capture_content` | `MEMORAX_CODE_CODEX_TRACE_CAPTURE_CONTENT` | `MEMORAX_CODE_CLAUDE_TRACE_CAPTURE_CONTENT` | `MEMORAX_CODE_DSH_TRACE_CAPTURE_CONTENT` | `MEMORAX_CODE_OPENCODE_TRACE_CAPTURE_CONTENT` | `true` |
+| `retention_days` | `MEMORAX_CODE_CODEX_TRACE_RETENTION_DAYS` | `MEMORAX_CODE_CLAUDE_TRACE_RETENTION_DAYS` | `MEMORAX_CODE_DSH_TRACE_RETENTION_DAYS` | `MEMORAX_CODE_OPENCODE_TRACE_RETENTION_DAYS` | `7` |
+| `max_event_chars` | `MEMORAX_CODE_CODEX_TRACE_MAX_EVENT_CHARS` | `MEMORAX_CODE_CLAUDE_TRACE_MAX_EVENT_CHARS` | `MEMORAX_CODE_DSH_TRACE_MAX_EVENT_CHARS` | `MEMORAX_CODE_OPENCODE_TRACE_MAX_EVENT_CHARS` | `20000` |
+| `max_file_bytes` | `MEMORAX_CODE_CODEX_TRACE_MAX_FILE_BYTES` | `MEMORAX_CODE_CLAUDE_TRACE_MAX_FILE_BYTES` | `MEMORAX_CODE_DSH_TRACE_MAX_FILE_BYTES` | `MEMORAX_CODE_OPENCODE_TRACE_MAX_FILE_BYTES` | `52428800` |
 
-Content capture can include prompts, responses, recalled memory, writeback
-content, reminder text, and local paths. Set `capture_content=false` for
+Depending on the enabled client capabilities, content capture can include
+prompts, responses, recalled memory, writeback content, reminder text, and
+local paths. Set `capture_content=false` for
 metadata-only local traces, or `enabled=false` to disable a client's trace.
 Trace files stay under `$MEMORAX_CODE_HOME`; MemoraX Code has no trace upload,
 export, or public collector.
+
+DSH trace contains only normalized lifecycle and memory-operation events. Its
+native Session Event Log and raw events remain local to DSH; MemoraX Code does
+not copy that log into trace. DSH activity is not yet included in Memory
+Viewer.
 
 ## Backend runtime settings
 
@@ -268,6 +348,8 @@ memorax-cli status
 memorax-cli status --json
 memorax-code-codex doctor
 memorax-code-claude doctor
+memorax-code status --clients dsh
+memorax-code-opencode doctor
 ```
 
 The status commands do not print the MemoraX API key or Backend token.

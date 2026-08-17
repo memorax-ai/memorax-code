@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -208,6 +208,9 @@ test("memorax-code repo-update reference declares incremental update boundaries"
   assert.match(skill, /Default Settings/);
   assert.match(skill, /User Count Requests/);
   assert.match(skill, /defaults\.json/);
+  assert.match(skill, /repoHistory\.mode/);
+  assert.match(skill, /--history-mode/);
+  assert.match(skill, /effective history policy/);
   assert.match(skill, /--pr-limit/);
   assert.match(skill, /--issue-limit/);
   assert.match(skill, /builder_helpers/);
@@ -227,6 +230,7 @@ test("memorax-code repo-update reference declares incremental update boundaries"
   assert.match(skill, /--hostname <host>/);
   assert.match(skill, /Authenticate with `gh auth login` or `glab auth login`/);
   assert.match(skill, /Do not treat provider fetch failure as no PR\/issue delta/);
+  assert.match(skill, /Do not re-enable commit or provider channels disabled by policy/);
   assert.match(skill, /set `PROFILE\.md\.generated_at` to the successful update time/);
   assert.match(skill, /read-time cooldown policy uses this timestamp/);
 
@@ -313,6 +317,209 @@ test("repo-memory-updater detects only local commits after the stored memory bas
     assert.equal(report.actions.length > 0, true);
     assert.match(report.actions.join("\n"), /resources\/commits\.md/);
     assert.doesNotMatch(report.actions.join("\n"), /full rebuild/i);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+
+test("repo-memory-updater reads PR and issue limits from v2 repoHistory defaults", () => {
+  const root = mkdtempSync(join(tmpdir(), "memorax-code-repo-memory-updater-v2-defaults."));
+  try {
+    const repo = join(root, "repo");
+    const memory = join(repo, ".repo_memory");
+    const tempSkillRoot = join(root, "skill", "memorax-code");
+    const tempScripts = join(tempSkillRoot, "scripts");
+    mkdirSync(repo);
+    mkdirSync(join(memory, "resources"), { recursive: true });
+    mkdirSync(join(memory, "raw"), { recursive: true });
+    mkdirSync(tempScripts, { recursive: true });
+    copyFileSync(detectScript, join(tempScripts, "detect_updates.py"));
+    writeJson(join(tempSkillRoot, "defaults.json"), {
+      schema: "repo_memory_builder_defaults.v2",
+      repoHistory: {
+        mode: "provider",
+        limits: {
+          commits: 11,
+          prs: 5,
+          issues: 6,
+        },
+      },
+      summaryChars: 1234,
+    });
+
+    runGit(repo, ["init", "-b", "main"]);
+    writeFileSync(join(repo, "README.md"), "# Repo\n");
+    runGit(repo, ["add", "README.md"]);
+    runGit(repo, ["commit", "-m", "initial v2 defaults baseline"]);
+    const baselineSha = runGit(repo, ["rev-parse", "HEAD"]);
+
+    writeProfile(memory, baselineSha);
+    writeCommitResource(memory, [{
+      sha: baselineSha,
+      shortSha: baselineSha.slice(0, 12),
+      title: "initial v2 defaults baseline",
+    }]);
+    writePrResource(memory, []);
+    writeIssueResource(memory, []);
+    writeJson(join(memory, "raw", "git-commits.json"), [{ sourceType: "commit", sha: baselineSha }]);
+
+    const result = spawnSync("python3", [join(tempScripts, "detect_updates.py"), "--repo-path", repo, "--provider-mode", "off", "--pretty"], {
+      cwd: packageRoot,
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const report = JSON.parse(result.stdout);
+
+    assert.deepEqual(report.effective_settings.limits, { prs: 5, issues: 6 });
+    assert.equal(report.effective_settings.summary_chars, 1234);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("repo-memory-updater skips commit and provider deltas when repoHistory mode is none", () => {
+  const root = mkdtempSync(join(tmpdir(), "memorax-code-repo-memory-updater-history-none."));
+  try {
+    const repo = join(root, "repo");
+    const memory = join(repo, ".repo_memory");
+    const tempSkillRoot = join(root, "skill", "memorax-code");
+    const tempScripts = join(tempSkillRoot, "scripts");
+    const bin = join(root, "bin");
+    const gh = join(bin, "gh");
+    mkdirSync(repo);
+    mkdirSync(bin);
+    mkdirSync(join(memory, "resources"), { recursive: true });
+    mkdirSync(join(memory, "raw"), { recursive: true });
+    mkdirSync(tempScripts, { recursive: true });
+    copyFileSync(detectScript, join(tempScripts, "detect_updates.py"));
+    writeJson(join(tempSkillRoot, "defaults.json"), {
+      schema: "repo_memory_builder_defaults.v2",
+      repoHistory: {
+        mode: "none",
+        limits: { commits: 11, prs: 5, issues: 6 },
+      },
+      summaryChars: 1234,
+    });
+    writeFileSync(gh, "#!/bin/sh\nprintf 'provider CLI must not be called\\n' >&2\nexit 2\n", { mode: 0o755 });
+
+    runGit(repo, ["init", "-b", "main"]);
+    writeFileSync(join(repo, "README.md"), "# Repo\n");
+    runGit(repo, ["add", "README.md"]);
+    runGit(repo, ["commit", "-m", "initial history none baseline"]);
+    const baselineSha = runGit(repo, ["rev-parse", "HEAD"]);
+    runGit(repo, ["remote", "add", "origin", "git@github.com:owner/repo.git"]);
+    writeFileSync(join(repo, "feature.txt"), "new history that policy disables\n");
+    runGit(repo, ["add", "feature.txt"]);
+    runGit(repo, ["commit", "-m", "new commit ignored by history none"]);
+
+    writeProfile(memory, baselineSha);
+    writeCommitResource(memory, [{
+      sha: baselineSha,
+      shortSha: baselineSha.slice(0, 12),
+      title: "initial history none baseline",
+    }]);
+    writePrResource(memory, [{ number: 42, title: "existing PR baseline", state: "MERGED" }]);
+    writeIssueResource(memory, [{ number: 7, title: "existing issue baseline", state: "CLOSED" }]);
+    writeJson(join(memory, "raw", "git-commits.json"), [{ sourceType: "commit", sha: baselineSha }]);
+
+    const result = spawnSync("python3", [join(tempScripts, "detect_updates.py"), "--repo-path", repo, "--pretty"], {
+      cwd: packageRoot,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH ?? ""}`,
+      },
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const report = JSON.parse(result.stdout);
+
+    assert.equal(report.effective_settings.history.mode, "none");
+    assert.deepEqual(report.effective_settings.history.collect, { commits: false, provider: false });
+    assert.deepEqual(report.deltas.local_commits, []);
+    assert.equal(report.deltas.local_commit_status.status, "skipped");
+    assert.equal(report.deltas.local_commit_status.reason, "history_disabled_by_policy");
+    assert.equal(report.deltas.commit_delta_skipped, "history_disabled_by_policy");
+    assert.equal(report.current.provider.evidence_state, "skipped_by_policy");
+    assert.equal(report.current.provider_fetch.attempted, false);
+    assert.equal(report.current.provider_fetch.reason, "history_disabled_by_policy");
+    assert.deepEqual(report.current.provider_items.pull_requests, []);
+    assert.deepEqual(report.current.provider_items.issues, []);
+    assert.deepEqual(report.deltas.pull_requests.upsert_numbers, []);
+    assert.deepEqual(report.deltas.issues.upsert_numbers, []);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("repo-memory-updater keeps local commits but skips providers when repoHistory mode is local-only", () => {
+  const root = mkdtempSync(join(tmpdir(), "memorax-code-repo-memory-updater-history-local-only."));
+  try {
+    const repo = join(root, "repo");
+    const memory = join(repo, ".repo_memory");
+    const tempSkillRoot = join(root, "skill", "memorax-code");
+    const tempScripts = join(tempSkillRoot, "scripts");
+    const bin = join(root, "bin");
+    const gh = join(bin, "gh");
+    mkdirSync(repo);
+    mkdirSync(bin);
+    mkdirSync(join(memory, "resources"), { recursive: true });
+    mkdirSync(join(memory, "raw"), { recursive: true });
+    mkdirSync(tempScripts, { recursive: true });
+    copyFileSync(detectScript, join(tempScripts, "detect_updates.py"));
+    writeJson(join(tempSkillRoot, "defaults.json"), {
+      schema: "repo_memory_builder_defaults.v2",
+      repoHistory: {
+        mode: "local-only",
+        limits: { commits: 11, prs: 5, issues: 6 },
+      },
+      summaryChars: 1234,
+    });
+    writeFileSync(gh, "#!/bin/sh\nprintf 'provider CLI must not be called\\n' >&2\nexit 2\n", { mode: 0o755 });
+
+    runGit(repo, ["init", "-b", "main"]);
+    writeFileSync(join(repo, "README.md"), "# Repo\n");
+    runGit(repo, ["add", "README.md"]);
+    runGit(repo, ["commit", "-m", "initial local-only baseline"]);
+    const baselineSha = runGit(repo, ["rev-parse", "HEAD"]);
+    runGit(repo, ["remote", "add", "origin", "git@github.com:owner/repo.git"]);
+    writeFileSync(join(repo, "feature.txt"), "new local history\n");
+    runGit(repo, ["add", "feature.txt"]);
+    runGit(repo, ["commit", "-m", "new local-only commit"]);
+    const latestSha = runGit(repo, ["rev-parse", "HEAD"]);
+
+    writeProfile(memory, baselineSha);
+    writeCommitResource(memory, [{
+      sha: baselineSha,
+      shortSha: baselineSha.slice(0, 12),
+      title: "initial local-only baseline",
+    }]);
+    writePrResource(memory, [{ number: 42, title: "existing PR baseline", state: "MERGED" }]);
+    writeIssueResource(memory, [{ number: 7, title: "existing issue baseline", state: "CLOSED" }]);
+    writeJson(join(memory, "raw", "git-commits.json"), [{ sourceType: "commit", sha: baselineSha }]);
+
+    const result = spawnSync("python3", [join(tempScripts, "detect_updates.py"), "--repo-path", repo, "--pretty"], {
+      cwd: packageRoot,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH ?? ""}`,
+      },
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const report = JSON.parse(result.stdout);
+
+    assert.equal(report.effective_settings.history.mode, "local-only");
+    assert.deepEqual(report.effective_settings.history.collect, { commits: true, provider: false });
+    assert.deepEqual(report.deltas.local_commits.map((commit) => commit.sha), [latestSha]);
+    assert.equal(report.deltas.local_commit_status.status, "ok");
+    assert.equal(report.current.provider.evidence_state, "skipped_by_policy");
+    assert.equal(report.current.provider_fetch.attempted, false);
+    assert.equal(report.current.provider_fetch.reason, "history_provider_disabled_by_policy");
+    assert.deepEqual(report.current.provider_items.pull_requests, []);
+    assert.deepEqual(report.current.provider_items.issues, []);
+    assert.deepEqual(report.deltas.pull_requests.upsert_numbers, []);
+    assert.deepEqual(report.deltas.issues.upsert_numbers, []);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

@@ -281,7 +281,7 @@ async function resolveMemoryCliRepositoryMemory(options: MemoryCliOptions): Prom
   });
   if (!commandMemory.ok || !commandMemory.memory.scope) return commandMemory;
   if (turnMemory?.ok && (!turnMemory.memory.scope || !repositoryMemoryScopesMatch(commandMemory.memory.scope, turnMemory.memory.scope))) {
-    const clientLabel = traceBinding?.client === "claude" ? "Claude" : "Codex";
+    const clientLabel = traceClientLabel(traceBinding?.client);
     return {
       ok: false,
       reason: "workspace_scope_mismatch",
@@ -297,9 +297,9 @@ function memoryCliRepositoryFailure(
   fields: Pick<MemoryCliResult, "query"> = {},
 ): MemoryCliResult {
   const userAction = failure.reason === "workspace_scope_mismatch"
-    ? "Start a new Codex or Claude Code session from the target repository or local workspace."
+    ? "Start a new Codex, Claude Code, DSH, or OpenCode session from the target repository or local workspace."
     : failure.reason === "workspace_scope_unavailable"
-      ? "Start a new Codex or Claude Code session from the target repository or local workspace. If the problem continues, make sure its .git metadata is readable and valid."
+      ? "Start a new Codex, Claude Code, DSH, or OpenCode session from the target repository or local workspace. If the problem continues, make sure its .git metadata is readable and valid."
       : undefined;
   return {
     ok: false,
@@ -382,6 +382,11 @@ async function memoryCliObservability(
 function memoryCliTraceBinding(
   env: Record<string, string | undefined>,
 ): MemoryCliTraceBinding | undefined {
+  if (env.DSH_SHELL === "1") {
+    const expectedSessionId = env.DSH_SESSION_ID?.trim();
+    return expectedSessionId ? { client: "dsh", expectedSessionId } : undefined;
+  }
+
   const explicitClientRaw = env.MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT;
   const explicitSessionIdRaw = env.MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID;
   if (explicitClientRaw !== undefined || explicitSessionIdRaw !== undefined) {
@@ -399,6 +404,13 @@ function memoryCliTraceBinding(
 
 function memoryCliTraceEventType(event: MemoryObservabilityEvent): string {
   return event.operation === "writeback" ? "memory_cli_add" : "memory_cli_search";
+}
+
+function traceClientLabel(client: TraceClient | undefined): string {
+  if (client === "claude") return "Claude";
+  if (client === "dsh") return "DSH";
+  if (client === "opencode") return "OpenCode";
+  return client === "codex" ? "Codex" : "coding agent";
 }
 
 function memoryAddContentOptions(

@@ -10,9 +10,14 @@ import {
   clientTraceConfigFromEnv,
   clientTracePaths,
   codexTraceConfigFromEnv,
+  openCodeTraceConfigFromEnv,
+  openCodeTracePaths,
   tracePaths,
 } from "../../dist/trace/config.js";
-import { traceContextFromClaudeHookBody } from "../../dist/trace/context.js";
+import {
+  traceContextFromClaudeHookBody,
+  traceContextFromOpenCodeHookBody,
+} from "../../dist/trace/context.js";
 import {
   markCurrentClaudeTurnOutcome,
   markCurrentCodexTurnOutcome,
@@ -31,6 +36,7 @@ test("claude trace config defaults to enabled and reads isolated overrides", asy
   const root = await mkdtemp(join(tmpdir(), "memorax-code-claude-trace-config-"));
   try {
     assert.match(renderDefaultMemoraxCodeConfig(), /\[trace\.claude\]\nenabled = true/);
+    assert.match(renderDefaultMemoraxCodeConfig(), /\[trace\.opencode\]\nenabled = true/);
     assert.deepEqual(claudeTraceConfigFromEnv({ MEMORAX_CODE_HOME: root }), {
       enabled: true,
       captureContent: true,
@@ -50,6 +56,13 @@ test("claude trace config defaults to enabled and reads isolated overrides", asy
       "retention_days = 3",
       "max_event_chars = 1234",
       "max_file_bytes = 9999",
+      "",
+      "[trace.opencode]",
+      "enabled = false",
+      "capture_content = false",
+      "retention_days = 4",
+      "max_event_chars = 2345",
+      "max_file_bytes = 7777",
       "",
     ].join("\n"), "utf8");
 
@@ -82,6 +95,13 @@ test("claude trace config defaults to enabled and reads isolated overrides", asy
       maxEventChars: 20_000,
       maxFileBytes: 52_428_800,
     });
+    assert.deepEqual(openCodeTraceConfigFromEnv({ MEMORAX_CODE_HOME: root }, config), {
+      enabled: false,
+      captureContent: false,
+      retentionDays: 4,
+      maxEventChars: 2345,
+      maxFileBytes: 7777,
+    });
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -105,7 +125,23 @@ test("Claude Hook trace context maps prompt identity without provider assumption
   });
 });
 
-test("trace store isolates Codex and Claude sessions with the same id", async () => {
+test("OpenCode Hook trace context maps SDK message identity", () => {
+  assert.deepEqual(traceContextFromOpenCodeHookBody({
+    sessionId: "opencode-session",
+    userMessageId: "opencode-user-message",
+    workspaceKind: "project",
+  }, "2026-07-24T00:00:00.000Z"), {
+    schemaVersion: "1",
+    client: "opencode",
+    sessionId: "opencode-session",
+    turnId: "opencode-user-message",
+    workspaceKind: "project",
+    contextOrigin: "opencode-hook-body",
+    capturedAt: "2026-07-24T00:00:00.000Z",
+  });
+});
+
+test("trace store isolates Codex, Claude, and OpenCode sessions with the same id", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-client-trace-isolation-"));
   const sessionId = "shared-session";
   try {
@@ -118,6 +154,10 @@ test("trace store isolates Codex and Claude sessions with the same id", async ()
       sessionId,
       turnId: "codex-turn",
       transcriptPath: "/tmp/codex.jsonl",
+    });
+    const opencode = traceContextFromOpenCodeHookBody({
+      sessionId,
+      userMessageId: "opencode-turn",
     });
     await Promise.all([
       recordClaudeTraceEvent({
@@ -138,25 +178,43 @@ test("trace store isolates Codex and Claude sessions with the same id", async ()
         ok: true,
         request: { query: "codex query" },
       }),
+      recordTraceEvent({
+        memoraxCodeHome: root,
+        traceContext: opencode,
+        type: "memory_retrieve",
+        source: "opencode_plugin_retrieval",
+        operation: "retrieve",
+        ok: true,
+        request: { query: "opencode query" },
+      }),
     ]);
 
     const claudeEvent = JSON.parse(await readFile(claudeTracePaths(root).eventsJsonl(sessionId), "utf8"));
     const codexEvent = JSON.parse(await readFile(tracePaths(root).eventsJsonl(sessionId), "utf8"));
+    const opencodeEvent = JSON.parse(await readFile(openCodeTracePaths(root).eventsJsonl(sessionId), "utf8"));
     assert.equal(claudeEvent.trace.client, "claude");
     assert.equal(claudeEvent.trace.turn_id, "claude-turn");
     assert.equal(claudeEvent.request.query, "claude query");
     assert.equal(codexEvent.trace.client, "codex");
     assert.equal(codexEvent.trace.turn_id, "codex-turn");
     assert.equal(codexEvent.request.query, "codex query");
+    assert.equal(opencodeEvent.trace.client, "opencode");
+    assert.equal(opencodeEvent.trace.turn_id, "opencode-turn");
+    assert.equal(opencodeEvent.request.query, "opencode query");
 
     const claudeTrace = JSON.parse(await readFile(claudeTracePaths(root).traceJson(sessionId), "utf8"));
     const codexTrace = JSON.parse(await readFile(tracePaths(root).traceJson(sessionId), "utf8"));
+    const opencodeTrace = JSON.parse(await readFile(openCodeTracePaths(root).traceJson(sessionId), "utf8"));
     assert.equal(claudeTrace.client, "claude");
     assert.equal(claudeTrace.claude.transcript_path, "/tmp/claude.jsonl");
     assert.equal(claudeTrace.codex, undefined);
     assert.equal(codexTrace.client, "codex");
     assert.equal(codexTrace.codex.transcript_path, "/tmp/codex.jsonl");
     assert.equal(codexTrace.claude, undefined);
+    assert.equal(opencodeTrace.client, "opencode");
+    assert.deepEqual(opencodeTrace.opencode, {});
+    assert.equal(opencodeTrace.codex, undefined);
+    assert.equal(opencodeTrace.claude, undefined);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

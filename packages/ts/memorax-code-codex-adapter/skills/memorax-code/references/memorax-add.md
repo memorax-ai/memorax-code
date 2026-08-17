@@ -1,6 +1,6 @@
 # MemoraX Code Coding Memory Add
 
-Use these instructions only to add reusable coding knowledge through `memorax-cli`. Invoke the skill as `$memorax-code` in Codex or `/memorax-code` in Claude Code; do not route memory operations through the lifecycle-only `memorax-code` CLI. Do not use this authority for personal procedures, interaction preferences, generated repository facts, or one-off task details.
+Use these instructions only to add reusable coding knowledge through `memorax-cli`. Invoke the skill as `$memorax-code` in Codex or `/memorax-code` in Claude Code. In OpenCode, ask the agent to use the `memorax-code` skill by name. Do not route memory operations through the lifecycle-only `memorax-code` CLI. Do not use this authority for personal procedures, interaction preferences, generated repository facts, or one-off task details.
 
 ## Eligible Knowledge
 

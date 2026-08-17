@@ -8,8 +8,12 @@ installation. For a source checkout and contributor setup, see
 ## Requirements
 
 - Node.js 24 or newer and npm.
-- At least one of Codex or Claude Code installed in the environment where
-  MemoraX Code will run.
+- At least one of Codex, Claude Code, DeepSeek Harness (DSH), OpenCode Desktop,
+  or the OpenCode CLI installed in the environment where MemoraX Code will
+  run. DSH integration requires at least one existing Profile and `pnpm` on
+  `PATH` because DSH's native Profile plugin manager delegates package changes
+  to it. The tested DSH baseline is `0.1.0-rc.6`; other valid semantic versions
+  are reported as untested rather than rejected automatically.
 - Python 3 only when using Repo Memory operations.
 
 MemoraX-backed search, retrieval, and writeback additionally require a MemoraX
@@ -48,7 +52,8 @@ Backend status, and client guidance visible.
 
 The installer:
 
-1. Detects runnable Codex and Claude Code clients independently.
+1. Detects runnable Codex and Claude Code clients, existing DSH Profiles, and
+   OpenCode through its configuration directory or CLI.
 2. Enables every detected client without asking for a client selector.
 3. Prompts for the MemoraX connection and preferred language when at least one
    client was detected.
@@ -57,7 +62,7 @@ The installer:
 
 Read the final summary. npm can finish installing the package even when a
 client integration or MemoraX configuration still needs attention.
-MemoraX Code does not read or change either client's model-provider URL,
+MemoraX Code does not read or change the clients' model-provider URL,
 credentials, model, or login mode.
 
 Do not use `--ignore-scripts` for a normal install or update. It skips the
@@ -72,6 +77,14 @@ opening a new MemoraX Code session.
 For Codex, enable **MemoraX Code Codex Adapter** from Plugins or `/plugins` if
 it is not already enabled. Claude Code registration is handled by the
 installer.
+
+OpenCode registration uses its plugin and skill auto-discovery. Restart or
+refresh OpenCode after installation so the managed integration is loaded.
+
+DSH registration is applied to the existing Profiles found under `DSH_HOME`
+(`~/.dsh` by default). Restart or refresh DSH after installation so those
+Profiles load the managed integration. MemoraX Code does not replace the
+Profiles or their session data.
 
 Open the client in a real project directory and submit at least one prompt
 before using the client doctor as the final verification. Until the Hooks have
@@ -88,18 +101,21 @@ memorax-code status
 memorax-cli status
 ```
 
-Then run the doctor command for each installed client:
+Codex, Claude Code, and OpenCode also provide client-specific doctor commands:
 
 ```bash
 memorax-code-codex doctor
 memorax-code-claude doctor
+memorax-code-opencode doctor
 ```
 
 `memorax-code status` checks the local Backend and selected client
-integrations. `memorax-cli status` checks whether the local MemoraX
-configuration, workspace scope, and memory switches resolve without printing
-the API key. It does not send a test request to MemoraX; the first real search
-or write verifies remote connectivity and credentials.
+integrations, including DSH Profile and OpenCode plugin status. DSH uses this
+shared status command rather than a separate doctor binary. `memorax-cli status`
+checks whether the local MemoraX configuration, workspace scope, and
+memory switches resolve without printing the API key. It does not send a test
+request to MemoraX; the first real search or write verifies remote connectivity
+and credentials.
 
 ## Skipped or Non-Interactive Setup
 
@@ -137,10 +153,11 @@ memorax-code update --home /absolute/path/to/memorax-code-home
 
 Follow any Hook review or client refresh guidance printed by the updater. An
 update briefly stops the managed Backend before postinstall starts the new
-version. For a runtime-only update with the stable plugin shell, an in-flight
-turn can finish on its loaded generation and the same session's next user
-prompt can select the newly activated Hook runtime. Restart or refresh the
-client when a release changes its plugin shell, manifest, or bundled skill.
+version. For a runtime-only Hook update with a stable plugin shell, an
+in-flight turn can finish on its loaded generation and the same session's next
+user prompt can select the newly activated Hook runtime. Restart or refresh
+the affected client, including DSH, when a release changes installed plugin
+assets.
 
 ## Uninstall
 
@@ -151,12 +168,13 @@ memorax-code uninstall
 ```
 
 Do not start with `npm uninstall -g`. npm does not provide MemoraX Code with an
-uninstall lifecycle in which to disable managed Hooks and stop the Backend.
+uninstall lifecycle in which to remove managed client integrations and stop
+the Backend.
 The product command removes the managed integrations and global package while
 retaining `$MEMORAX_CODE_HOME` configuration and local traces, Claude plugin
-data, client provider configuration, and memories stored in MemoraX. Review
-and remove retained local or cloud data separately only when it is no longer
-needed.
+data, DSH Profiles and session data, client provider configuration, and
+memories stored in MemoraX. Review and remove retained local or cloud data
+separately only when it is no longer needed.
 
 ## Troubleshooting
 
@@ -167,6 +185,8 @@ memorax-code status
 memorax-cli status
 memorax-code-codex doctor
 memorax-code-claude doctor
+memorax-code status --clients dsh
+memorax-code-opencode doctor
 memorax-code logs
 ```
 

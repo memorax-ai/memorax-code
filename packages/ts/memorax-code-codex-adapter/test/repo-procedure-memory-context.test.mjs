@@ -1,15 +1,36 @@
 import { strict as assert } from "node:assert";
 import { spawn, spawnSync } from "node:child_process";
 import { chmod, mkdir, mkdtemp, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { test } from "node:test";
+import { after, before, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const runtimeHookPath = join(packageRoot, "hooks", "runtime-hook.mjs");
 const hookPath = [runtimeHookPath, "memory-skill-reminder"];
 const captureHookPath = [runtimeHookPath, "capture-cwd"];
+let authorizedBackendUrl;
+const authorizedBackend = createServer(async (request, response) => {
+  let body = "";
+  for await (const chunk of request) body += String(chunk);
+  const parsed = body ? JSON.parse(body) : {};
+  const result = request.url === "/memory/turn-start" && typeof parsed.cwd === "string"
+    ? { ok: true, repoMemoryWorktree: parsed.cwd }
+    : { ok: true };
+  response.writeHead(200, { "content-type": "application/json" });
+  response.end(JSON.stringify(result));
+});
+
+before(async () => {
+  await new Promise((resolveListen) => authorizedBackend.listen(0, "127.0.0.1", resolveListen));
+  authorizedBackendUrl = `http://127.0.0.1:${authorizedBackend.address().port}`;
+});
+
+after(async () => {
+  await new Promise((resolveClose) => authorizedBackend.close(resolveClose));
+});
 
 test("multiple procedure files join the existing first and sixth turn cadence", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-procedure-context-cadence-"));
@@ -235,7 +256,7 @@ function runHook(command, input, env) {
     const childEnv = { ...process.env };
     delete childEnv.MEMORAX_CODE_MEMORY_SKILL_REMINDER_INTERVAL_TURNS;
     delete childEnv.PLUGIN_DATA;
-    childEnv.MEMORAX_CODE_BACKEND_URL = "http://127.0.0.1:1";
+    childEnv.MEMORAX_CODE_BACKEND_URL = authorizedBackendUrl;
     childEnv.MEMORAX_CODE_CODEX_MEMORY_HOOK_TIMEOUT_MS = "100";
     Object.assign(childEnv, env);
     const child = spawn(process.execPath, command, {

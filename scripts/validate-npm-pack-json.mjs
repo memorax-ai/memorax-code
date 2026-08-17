@@ -56,7 +56,9 @@ for (const requiredPath of [
   "package.json",
   "README.md",
   "bin/memorax-code-npm-preinstall.mjs",
+  "bin/memorax-code-opencode.mjs",
   "lib/client-hook-runtime.mjs",
+  "lib/dsh-plugin-install.mjs",
   "lib/node-version.mjs",
   "lib/npm-invocation.mjs",
   "lib/resolve-claude-command.mjs",
@@ -67,9 +69,20 @@ for (const requiredPath of [
   "lib/memorax-code-adapter-common/src/hooks/client-hook-launcher.mjs",
   "lib/memorax-code-adapter-common/src/clients/codex-plugin-artifact.mjs",
   "lib/memorax-code-adapter-common/src/hooks/hook-runtime-generation.mjs",
+  "lib/memorax-code-adapter-common/src/hooks/memory-skill-reminder-policy.mjs",
   "lib/memorax-code-adapter-common/src/memorax-defaults.mjs",
   "lib/memorax-code-adapter-common/src/runtime-record.mjs",
+  "lib/memorax-code-adapter-common/src/config-utils.mjs",
   "lib/memorax-code-adapter-common/src/hooks/ensure-backend-runner.mjs",
+  "lib/memorax-code-adapter-common/src/repo-memory/repo-memory-auto-build.mjs",
+  "lib/memorax-code-adapter-common/src/repo-memory/repo-memory-job-context.mjs",
+  "lib/memorax-code-adapter-common/src/repo-memory/repo-memory-job-marker.mjs",
+  "lib/memorax-code-adapter-common/src/repo-memory/repo-memory-job-supervisor.mjs",
+  "lib/memorax-code-adapter-common/src/repo-memory/repo-memory-job-worker.mjs",
+  "lib/memorax-code-adapter-common/src/repo-memory/repo-procedure-memory-context.mjs",
+  "lib/memorax-code-adapter-common/src/repo-memory/repo-memory-update-policy-evaluator.mjs",
+  "lib/memorax-code-adapter-common/src/repo-memory/repo-memory-update-policy.mjs",
+  "lib/memorax-code-adapter-common/src/repo-memory/repo-user-profile-context.mjs",
   "lib/memorax-code-adapter-common/src/windows-cli-invocation.mjs",
   "lib/memorax-code-backend/dist/server.js",
   "lib/memorax-code-backend/dist/memorax-cli.js",
@@ -92,6 +105,23 @@ for (const requiredPath of [
   "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/backend-connection.mjs",
   "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/runtime-record.mjs",
   "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/hooks/ensure-backend-runner.mjs",
+  "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/hooks/memory-skill-reminder-policy.mjs",
+  "lib/memorax-code-dsh-adapter/package.json",
+  "lib/memorax-code-dsh-adapter/cordis.patch.yml",
+  "lib/memorax-code-dsh-adapter/src/index.mjs",
+  "lib/memorax-code-dsh-adapter/src/backend-client.mjs",
+  "lib/memorax-code-dsh-adapter/src/dsh-message.mjs",
+  "lib/memorax-code-dsh-adapter/src/dsh-version.mjs",
+  "lib/memorax-code-dsh-adapter/src/http-client.mjs",
+  "lib/memorax-code-dsh-adapter/src/personal-context-worker.mjs",
+  "lib/memorax-code-dsh-adapter/src/personal-context.mjs",
+  "lib/memorax-code-dsh-adapter/src/plugin.mjs",
+  "lib/memorax-code-dsh-adapter/src/profile-lifecycle.mjs",
+  "lib/memorax-code-dsh-adapter/src/protocol.mjs",
+  "lib/memorax-code-dsh-adapter/src/runtime-state.mjs",
+  "lib/memorax-code-dsh-adapter/hooks/repo-memory-job.mjs",
+  "lib/memorax-code-dsh-adapter/skills/memorax-code/SKILL.md",
+  "lib/memorax-code-opencode-adapter/src/cli.mjs",
 ]) {
   if (!paths.has(requiredPath)) {
     throw new Error(`npm pack is missing required runtime entrypoint: ${requiredPath}`);
@@ -130,6 +160,17 @@ try {
   );
   if (packedManifest.engines?.node !== ">=24") {
     throw new Error("npm pack must require Node.js 24 or newer");
+  }
+  const packedDshSkill = await readFile(
+    join(extracted, "package", "lib/memorax-code-dsh-adapter/skills/memorax-code/SKILL.md"),
+    "utf8",
+  );
+  const canonicalSkill = await readFile(
+    join(repoRoot, "packages/ts/memorax-code-codex-adapter/skills/memorax-code/SKILL.md"),
+    "utf8",
+  );
+  if (packedDshSkill !== canonicalSkill) {
+    throw new Error("npm pack DSH skill must remain byte-identical to the canonical skill");
   }
   await assertLocalTraceOnly({
     repoRoot,

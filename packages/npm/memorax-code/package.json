@@ -1,7 +1,7 @@
 {
   "name": "@memorax/memorax-code",
   "version": "0.1.2",
-  "description": "MemoraX Code CLI, local memory backend, Codex and Claude Code adapters, skills, and Memory Viewer.",
+  "description": "Persistent coding memory for Codex, Claude Code, DeepSeek Harness, and OpenCode.",
   "license": "MIT",
   "type": "module",
   "homepage": "https://github.com/memorax-ai/memorax-code#readme",
@@ -15,6 +15,9 @@
   "keywords": [
     "agent",
     "codex",
+    "deepseek-harness",
+    "dsh",
+    "opencode",
     "memory",
     "memorax"
   ],
@@ -23,7 +26,8 @@
     "memorax-cli": "bin/memorax-cli.mjs",
     "memorax-code-backend": "bin/memorax-code-backend.mjs",
     "memorax-code-claude": "bin/memorax-code-claude.mjs",
-    "memorax-code-codex": "bin/memorax-code-codex.mjs"
+    "memorax-code-codex": "bin/memorax-code-codex.mjs",
+    "memorax-code-opencode": "bin/memorax-code-opencode.mjs"
   },
   "files": [
     "bin",

@@ -37,8 +37,16 @@ try {
       additionalReminderContext: PERSONAL_MEMORY_REMINDER_CONTEXT,
       adapterDir: "codex",
       baseAdditionalContext: turnStartResult.additionalContext,
-      buildCadenceReminderContext: (hookInput) => buildRepoProcedureMemoryContext(hookInput, personalMemoryContextOptions),
-      buildPersonalMemoryContext: (hookInput) => buildRepoUserProfilePreferencesContext(hookInput, personalMemoryContextOptions),
+      ...(turnStartResult.repoMemoryWorktree ? {
+        buildCadenceReminderContext: (hookInput) => buildRepoProcedureMemoryContext({
+          ...hookInput,
+          cwd: turnStartResult.repoMemoryWorktree,
+        }, personalMemoryContextOptions),
+        buildPersonalMemoryContext: (hookInput) => buildRepoUserProfilePreferencesContext({
+          ...hookInput,
+          cwd: turnStartResult.repoMemoryWorktree,
+        }, personalMemoryContextOptions),
+      } : {}),
       debugEnv: "MEMORAX_CODE_CODEX_HOOK_DEBUG",
       onReminder: turnStartResult.recorded ? recordReminder : undefined,
       remindOnFirstTurn: true,

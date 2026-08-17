@@ -39,7 +39,7 @@ python3 <skill-dir>/scripts/user_profile_memory.py list --repo <repo>
 
 Use only active preferences returned by the script. If the preferences file does not exist, report that no user-profile memory is available; the list operation does not create it.
 
-Mention only preferences relevant to the current request unless the user explicitly asks to list all of them. Stored preferences describe how Codex should interact with the user; they are not repository facts.
+Mention only preferences relevant to the current request unless the user explicitly asks to list all of them. Stored preferences describe how the coding agent should interact with the user; they are not repository facts.
 
 ## Priority
 

@@ -1,9 +1,12 @@
 {
-  "schema": "repo_memory_builder_defaults.v1",
-  "limits": {
-    "commits": 30,
-    "prs": 30,
-    "issues": 30
+  "schema": "repo_memory_builder_defaults.v2",
+  "repoHistory": {
+    "mode": "provider",
+    "limits": {
+      "commits": 30,
+      "prs": 30,
+      "issues": 30
+    }
   },
   "summaryChars": 4000
 }

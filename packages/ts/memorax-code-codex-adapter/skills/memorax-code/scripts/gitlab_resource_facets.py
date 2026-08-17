@@ -117,8 +117,16 @@ def is_git_ancestor(repo_path: Path, ancestor_sha: str, descendant_sha: str) -> 
         return True
     if result.returncode == 1:
         return False
+    stderr = result.stderr.strip()
+    normalized_stderr = stderr.lower()
+    if (
+        "not a valid commit" in normalized_stderr
+        or "no such commit" in normalized_stderr
+        or "not a valid object name" in normalized_stderr
+    ):
+        return False
     raise SystemExit(
-        f"git could not compare {ancestor_sha} with snapshot {descendant_sha} in {repo_path}:\n{result.stderr.strip()}"
+        f"git could not compare {ancestor_sha} with snapshot {descendant_sha} in {repo_path}:\n{stderr}"
     )
 
 

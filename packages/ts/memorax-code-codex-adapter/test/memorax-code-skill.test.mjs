@@ -26,6 +26,7 @@ test("memorax-code is the single progressive router for all memory authorities",
   assert.match(skill, /current-task instructions and temporary plans/);
   assert.match(skill, /Do not call MemoraX HTTP endpoints directly/);
   assert.match(skill, /Invoke this skill as `\$memorax-code` in Codex or `\/memorax-code` in Claude Code/);
+  assert.match(skill, /In OpenCode, ask the agent to use the `memorax-code` skill by name/);
   assert.match(skill, /`memorax-code` is the lifecycle CLI and must not be used for memory search or add/);
 
   for (const reference of [
@@ -62,6 +63,7 @@ test("memorax-code references keep authority and operation boundaries explicit",
   const personalWrite = readSkillFile("references/personal-write.md");
 
   assert.match(memoraxSearch, /memorax-cli search/);
+  assert.match(memoraxSearch, /In OpenCode, ask the agent to use the `memorax-code` skill by name/);
   assert.match(memoraxSearch, /at most one focused search/);
   assert.match(memoraxSearch, /Do not call MemoraX HTTP endpoints directly/);
   assert.match(memoraxSearch, /memorax-cli search --query '/);
@@ -77,6 +79,7 @@ test("memorax-code references keep authority and operation boundaries explicit",
   assert.match(memoraxSearch, /Present its `userNotice` once without pausing the current task/);
   assert.doesNotMatch(memoraxSearch, /--query-file/);
   assert.match(memoraxAdd, /CODE_AGENT_MEMORY/);
+  assert.match(memoraxAdd, /In OpenCode, ask the agent to use the `memorax-code` skill by name/);
   assert.match(memoraxAdd, /Route user-owned ordered actions/);
   assert.match(memoraxAdd, /For a proactive add, write all generated prose/);
   assert.match(memoraxAdd, /language of the user's current request/);
@@ -97,6 +100,7 @@ test("memorax-code references keep authority and operation boundaries explicit",
   assert.match(repoUpdate, /Update existing repo memory from a delta/);
   assert.match(repoUpdate, /scripts\/detect_updates\.py/);
   assert.match(personalRead, /Do not write, normalize, migrate, repair, or delete memory/);
+  assert.match(personalRead, /how the coding agent should interact with the user/);
   assert.match(personalWrite, /Require the user to explicitly ask/);
   assert.match(personalWrite, /may be saved implicitly/);
 });

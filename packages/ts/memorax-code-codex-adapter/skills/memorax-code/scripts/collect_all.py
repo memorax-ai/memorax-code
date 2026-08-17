@@ -13,6 +13,15 @@ from typing import Any, Optional
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULTS_PATH = SCRIPT_DIR.parent / "defaults.json"
 FALLBACK_DEFAULTS = {
+    "repoHistory": {
+        "mode": "provider",
+        "limits": {
+            "commits": 30,
+            "prs": 30,
+            "issues": 30,
+        },
+    },
+    # Kept for compatibility with defaults.json v1.
     "limits": {
         "commits": 30,
         "prs": 30,
@@ -20,6 +29,8 @@ FALLBACK_DEFAULTS = {
     },
     "summaryChars": 4000,
 }
+
+HISTORY_MODES = {"none", "commits-only", "local-only", "provider", "provider-required"}
 
 
 class ProgressBar:
@@ -102,6 +113,7 @@ def write_failure(
     steps: Optional[dict[str, Any]] = None,
     outputs: Optional[dict[str, str]] = None,
     notices: Optional[list[dict[str, Any]]] = None,
+    effective_settings: Optional[dict[str, Any]] = None,
 ) -> int:
     emit_process_output(result)
     step_reports = dict(steps or {})
@@ -121,6 +133,8 @@ def write_failure(
         report["outputs"] = outputs
     if notices:
         report["notices"] = notices
+    if effective_settings is not None:
+        report["effective_settings"] = effective_settings
     write_report(report, pretty)
     return result.returncode or 1
 
@@ -234,15 +248,52 @@ def validate_range(parser: argparse.ArgumentParser, name: str, value: int, minim
         parser.error(f"{name} must be from {minimum} to {maximum}")
 
 
+def default_history_mode(settings: dict[str, Any]) -> str:
+    history = settings.get("repoHistory")
+    if not isinstance(history, dict):
+        return "provider"
+    mode = history.get("mode", "provider")
+    if not isinstance(mode, str) or mode not in HISTORY_MODES:
+        raise ValueError(f"{DEFAULTS_PATH}: repoHistory.mode must be one of {', '.join(sorted(HISTORY_MODES))}")
+    return mode
+
+
+def default_limit(settings: dict[str, Any], key: str) -> int:
+    history = settings.get("repoHistory")
+    if isinstance(history, dict) and isinstance(history.get("limits"), dict) and history["limits"].get(key) is not None:
+        return default_int(settings, ["repoHistory", "limits", key], FALLBACK_DEFAULTS["repoHistory"]["limits"][key])
+    return default_int(settings, ["limits", key], FALLBACK_DEFAULTS["limits"][key])
+
+
+def history_collect(mode: str) -> dict[str, bool]:
+    return {
+        "commits": mode != "none",
+        "provider": mode in {"provider", "provider-required"},
+    }
+
+
+def resolve_history_mode(args: argparse.Namespace, default_mode: str) -> str:
+    mode = args.history_mode or default_mode
+    if args.skip_provider:
+        mode = "local-only"
+    if args.require_provider:
+        mode = "provider-required"
+    return mode
+
+
 def apply_effective_settings(args: argparse.Namespace, parser: argparse.ArgumentParser) -> argparse.Namespace:
     try:
         defaults, source = load_default_settings()
-        default_commit_limit = default_int(defaults, ["limits", "commits"], FALLBACK_DEFAULTS["limits"]["commits"])
-        default_pr_limit = default_int(defaults, ["limits", "prs"], FALLBACK_DEFAULTS["limits"]["prs"])
-        default_issue_limit = default_int(defaults, ["limits", "issues"], FALLBACK_DEFAULTS["limits"]["issues"])
+        default_mode = default_history_mode(defaults)
+        default_commit_limit = default_limit(defaults, "commits")
+        default_pr_limit = default_limit(defaults, "prs")
+        default_issue_limit = default_limit(defaults, "issues")
         default_summary_chars = default_int(defaults, ["summaryChars"], FALLBACK_DEFAULTS["summaryChars"])
     except ValueError as exc:
         parser.error(str(exc))
+
+    history_mode = resolve_history_mode(args, default_mode)
+    collect = history_collect(history_mode)
 
     commit_limit = args.commit_limit if args.commit_limit is not None else default_commit_limit
     pr_limit = args.pr_limit if args.pr_limit is not None else default_pr_limit
@@ -255,7 +306,13 @@ def apply_effective_settings(args: argparse.Namespace, parser: argparse.Argument
     if summary_chars < 100:
         parser.error("--summary-chars must be at least 100")
 
-    overrides: dict[str, int] = {}
+    overrides: dict[str, Any] = {}
+    if args.history_mode is not None:
+        overrides["history_mode"] = args.history_mode
+    if args.skip_provider:
+        overrides["skip_provider"] = True
+    if args.require_provider:
+        overrides["require_provider"] = True
     if args.commit_limit is not None:
         overrides["commit_limit"] = args.commit_limit
     if args.pr_limit is not None:
@@ -269,7 +326,13 @@ def apply_effective_settings(args: argparse.Namespace, parser: argparse.Argument
     args.pr_limit = pr_limit
     args.issue_limit = issue_limit
     args.summary_chars = summary_chars
+    args.history_mode = history_mode
+    args.history_collect = collect
     args.effective_settings = {
+        "history": {
+            "mode": history_mode,
+            "collect": collect,
+        },
         "limits": {
             "commits": commit_limit,
             "prs": pr_limit,
@@ -291,6 +354,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--pr-limit", type=int, default=None, help="Maximum snapshot-filtered PRs/MRs retained")
     parser.add_argument("--issue-limit", type=int, default=None, help="Maximum provider issues retained")
     parser.add_argument("--summary-chars", type=int, default=None)
+    parser.add_argument("--history-mode", choices=sorted(HISTORY_MODES), default=None, help="History evidence policy for this build")
     parser.add_argument("--skip-provider", action="store_true", help="Skip GitHub/GitLab PR/MR/issue collection and build local-only memory")
     parser.add_argument("--require-provider", action="store_true", help="Fail if provider PR/MR/issue evidence cannot be collected")
     parser.add_argument("--pretty", action="store_true", help="Pretty-print JSON")
@@ -302,6 +366,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     args = parser.parse_args(argv)
     if args.skip_provider and args.require_provider:
         parser.error("--skip-provider and --require-provider cannot be used together")
+    if args.history_mode and args.skip_provider and args.history_mode != "local-only":
+        parser.error(f"--skip-provider cannot be combined with --history-mode {args.history_mode}")
+    if args.history_mode and args.require_provider and args.history_mode != "provider-required":
+        parser.error("--require-provider cannot be combined with a non-required history mode")
     args.repo_path = Path(args.repo_path).expanduser().resolve()
     return apply_effective_settings(args, parser)
 
@@ -330,38 +398,50 @@ def main(argv: list[str]) -> int:
     notices = provider_notices(prepare_data)
 
     git_commits_path = raw_dir / "git-commits.json"
-    git_commits = run_step(
-        [
-            sys.executable,
-            str(SCRIPT_DIR / "git_commit_facets.py"),
-            "--repo-path",
-            str(repo),
-            "--snapshot-ref",
-            args.snapshot_ref,
-            "--limit",
-            str(args.commit_limit),
-            "--summary-chars",
-            str(args.summary_chars),
-            "--out",
-            str(git_commits_path),
-        ],
-        repo,
-    )
     outputs = {
         "prepare_report": str(prepare_report_path),
         "git_commits": str(git_commits_path),
     }
-    if git_commits.returncode != 0:
-        progress.fail(1, "git commits failed")
-        return write_failure(
-            "git_commits",
-            git_commits,
-            args.pretty,
-            repo=repo,
-            memory=memory,
-            steps={"prepare": json_step(prepare)},
-            outputs=outputs,
+    if args.history_collect["commits"]:
+        git_commits = run_step(
+            [
+                sys.executable,
+                str(SCRIPT_DIR / "git_commit_facets.py"),
+                "--repo-path",
+                str(repo),
+                "--snapshot-ref",
+                args.snapshot_ref,
+                "--limit",
+                str(args.commit_limit),
+                "--summary-chars",
+                str(args.summary_chars),
+                "--out",
+                str(git_commits_path),
+            ],
+            repo,
         )
+        git_commits_step = json_step(git_commits)
+        if git_commits.returncode != 0:
+            progress.fail(1, "git commits failed")
+            return write_failure(
+                "git_commits",
+                git_commits,
+                args.pretty,
+                repo=repo,
+                memory=memory,
+                steps={"prepare": json_step(prepare)},
+                outputs=outputs,
+            )
+    else:
+        git_commits_path.write_text("[]\n", encoding="utf-8")
+        git_commits_step = {
+            "ok": True,
+            "exit_code": 0,
+            "stdout": "",
+            "stderr": "",
+            "skipped": True,
+            "reason": "history_disabled_by_policy",
+        }
     progress.update(2, "git commits")
 
     provider = provider_report(prepare_data)
@@ -369,11 +449,12 @@ def main(argv: list[str]) -> int:
     provider_facets: dict[str, Any]
     provider_output = raw_dir / provider_raw_name(provider_name)
     provider_script_name = provider_script(provider_name)
-    if args.skip_provider:
+    if not args.history_collect["provider"]:
+        reason = "provider_skipped_by_user" if args.skip_provider else "history_disabled_by_policy" if args.history_mode == "none" else "history_provider_disabled_by_policy"
         provider_facets = {
             "ok": True,
             "skipped": True,
-            "reason": "provider_skipped_by_user",
+            "reason": reason,
             "output": "",
         }
     elif provider["evidence_state"] == "ready" and provider_script_name and provider["repo"]:
@@ -408,12 +489,12 @@ def main(argv: list[str]) -> int:
             "output": str(provider_output),
         }
         if provider_result.returncode != 0:
-            provider_facets["degraded_to_local_only"] = not args.require_provider
+            provider_facets["degraded_to_local_only"] = args.history_mode != "provider-required"
             provider_facets["reason"] = "provider_facets_failed"
             provider_facets["output"] = ""
             if provider_output.exists():
                 provider_output.unlink()
-            if args.require_provider:
+            if args.history_mode == "provider-required":
                 progress.fail(2, "provider facets failed")
                 return write_failure(
                     "provider_facets",
@@ -424,16 +505,17 @@ def main(argv: list[str]) -> int:
                     provider=provider,
                     steps={
                         "prepare": json_step(prepare),
-                        "git_commits": json_step(git_commits),
+                        "git_commits": git_commits_step,
                     },
                     outputs=outputs,
                     notices=[provider_failure_notice(provider, provider_result, continuing=False)],
+                    effective_settings=args.effective_settings,
                 )
             notices.append(provider_failure_notice(provider, provider_result, continuing=True))
         else:
             outputs["provider_facets"] = provider_facets["output"]
     else:
-        if args.require_provider:
+        if args.history_mode == "provider-required":
             provider_result = subprocess.CompletedProcess(
                 args=[],
                 returncode=1,
@@ -450,10 +532,11 @@ def main(argv: list[str]) -> int:
                 provider=provider,
                 steps={
                     "prepare": json_step(prepare),
-                    "git_commits": json_step(git_commits),
+                    "git_commits": git_commits_step,
                 },
                 outputs=outputs,
                 notices=notices,
+                effective_settings=args.effective_settings,
             )
         provider_facets = {
             "ok": True,
@@ -481,7 +564,7 @@ def main(argv: list[str]) -> int:
         "effective_settings": args.effective_settings,
         "steps": {
             "prepare": json_step(prepare),
-            "git_commits": json_step(git_commits),
+            "git_commits": git_commits_step,
             "provider_facets": provider_facets,
         },
         "outputs": outputs,

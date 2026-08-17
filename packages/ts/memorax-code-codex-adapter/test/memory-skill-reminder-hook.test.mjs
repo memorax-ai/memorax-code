@@ -752,6 +752,37 @@ test("concurrent capture Hooks preserve every session and workspace record", asy
   }
 });
 
+test("capture Hook falls back to HOME when MEMORAX_CODE_HOME is empty", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-codex-capture-empty-home-"));
+  const home = join(root, "home");
+  const workspace = join(root, "workspace");
+  const memoraxCodeHome = join(home, ".memorax-code");
+  try {
+    await mkdir(workspace, { recursive: true });
+    const result = await runCaptureHook({
+      hook_event_name: "UserPromptSubmit",
+      session_id: "empty-home-session",
+      turn_id: "empty-home-turn",
+      transcript_path: join(root, "empty-home-session.jsonl"),
+      cwd: workspace,
+    }, { HOME: home, MEMORAX_CODE_HOME: "" });
+
+    assert.equal(result.code, 0, result.stderr);
+    const registry = JSON.parse(await readFile(
+      join(memoraxCodeHome, "adapters", "codex", "session-registry.json"),
+      "utf8",
+    ));
+    const workspaces = JSON.parse(await readFile(
+      join(memoraxCodeHome, "adapters", "codex", "workspaces.json"),
+      "utf8",
+    ));
+    assert.equal(registry.sessions["empty-home-session"].codexSessionId, "empty-home-session");
+    assert.equal(workspaces.sessions["empty-home-session"].sessionId, "empty-home-session");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("concurrent reminder Hooks emit and count one repeated turn only once", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-codex-reminder-concurrent-"));
   const memoraxCodeHome = join(root, "memorax-code");

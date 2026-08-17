@@ -5,7 +5,9 @@ import {
 } from "./hook-command.js";
 import {
   traceContextFromClaudeHookBody,
+  traceContextFromDshSkillReminder,
   traceContextFromHookBody,
+  traceContextFromOpenCodeHookBody,
   type TraceContext,
 } from "../trace/context.js";
 import { recordTraceEvent } from "../trace/store.js";
@@ -39,21 +41,21 @@ export function createMemoryReminderTraceRecorder(
         env: options.env,
         traceContext,
         type: "skill_reminder",
-        source: request.client === "codex" ? "codex-hook" : "claude-hook",
+        source: reminderSource(request),
         operation: "reminder",
         ok: true,
         request: {
           triggers: request.triggers,
         },
         response: {
-          role: "developer",
+          role: request.client === "dsh" ? "user" : "developer",
           content: request.content,
         },
       }), options.diagnosticLogger);
       options.diagnosticLogger?.("memory_hook.skill_reminder", {
         client: request.client,
         sessionId: request.sessionId,
-        turnId: request.client === "codex" ? request.turnId : request.promptId,
+        turnId: traceContext?.turnId,
         triggers: request.triggers,
         contentChars: request.content.length,
       });
@@ -64,7 +66,16 @@ export function createMemoryReminderTraceRecorder(
 
 function traceContextForReminder(command: SkillReminderCommand): TraceContext | undefined {
   if (command.client === "codex") return traceContextFromHookBody(command);
-  return traceContextFromClaudeHookBody(command);
+  if (command.client === "claude-code") return traceContextFromClaudeHookBody(command);
+  if (command.client === "dsh") return traceContextFromDshSkillReminder(command);
+  return traceContextFromOpenCodeHookBody(command);
+}
+
+function reminderSource(command: SkillReminderCommand): string {
+  if (command.client === "codex") return "codex-hook";
+  if (command.client === "claude-code") return "claude-hook";
+  if (command.client === "dsh") return "dsh-cordis";
+  return "opencode-plugin";
 }
 
 async function recordTraceBestEffort(

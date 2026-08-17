@@ -8,7 +8,16 @@ export function readActiveManagedClients(memoraxCodeHome: string): ManagedClient
   try {
     const value = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
     if (typeof value.codex !== "boolean" || typeof value.claude !== "boolean") return undefined;
-    return { codex: value.codex, claude: value.claude };
+    if (value.opencode !== undefined && typeof value.opencode !== "boolean") return undefined;
+    if (value.dsh !== undefined && typeof value.dsh !== "boolean") return undefined;
+    return {
+      codex: value.codex,
+      claude: value.claude,
+      // Records written before DSH became a Backend participant cannot claim
+      // that the Backend was serving DSH.
+      dsh: value.dsh === true,
+      opencode: value.opencode === true,
+    };
   } catch {
     return undefined;
   }

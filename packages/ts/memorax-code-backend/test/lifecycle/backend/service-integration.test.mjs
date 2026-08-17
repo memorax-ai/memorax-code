@@ -139,7 +139,7 @@ test("Backend service keeps Claude native Viewer enrichment behind the live mana
       operation: "query",
       request: { prompt: "Hook managed Claude prompt." },
     })}\n`, "utf8");
-    writeActiveManagedClients(home, { codex: false, claude: true });
+    writeActiveManagedClients(home, { codex: false, claude: true, opencode: false });
     const started = await startBackendService({
       home,
       port,
@@ -152,12 +152,12 @@ test("Backend service keeps Claude native Viewer enrichment behind the live mana
     assert.equal(enabled.summary.searchOperationCount, 1);
     assert.doesNotMatch(JSON.stringify(enabled), /private managed/);
 
-    writeActiveManagedClients(home, { codex: false, claude: false });
+    writeActiveManagedClients(home, { codex: false, claude: false, opencode: false });
     const disabled = await fetch(endpoint).then((response) => response.json());
     assert.equal(disabled.summary.searchOperationCount, 0);
     assert.doesNotMatch(JSON.stringify(disabled), /private managed/);
 
-    writeActiveManagedClients(home, { codex: false, claude: true });
+    writeActiveManagedClients(home, { codex: false, claude: true, opencode: false });
     const reenabled = await fetch(endpoint).then((response) => response.json());
     assert.equal(reenabled.summary.searchOperationCount, 1);
     assert.doesNotMatch(JSON.stringify(reenabled), /private managed/);

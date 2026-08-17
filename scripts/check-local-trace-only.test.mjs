@@ -177,6 +177,9 @@ test("local-only trace gate checks every shipped runtime tree in staged artifact
     ["package/lib/memorax-code-claude-adapter/hooks/undeclared-claude-hook.mjs", "undeclared-claude-hook.mjs"],
     ["package/lib/memorax-code-claude-adapter/scripts/undeclared-claude-script.mjs", "undeclared-claude-script.mjs"],
     ["package/lib/memorax-code-claude-adapter/skills/memorax-code/scripts/undeclared-claude-skill.py", "undeclared-claude-skill.py"],
+    ["package/lib/memorax-code-dsh-adapter/src/undeclared-dsh-plugin.mjs", "undeclared-dsh-plugin.mjs"],
+    ["package/lib/memorax-code-opencode-adapter/src/undeclared-opencode-plugin.mjs", "undeclared-opencode-plugin.mjs"],
+    ["package/lib/memorax-code-opencode-adapter/skills/memorax-code/scripts/undeclared-opencode-skill.py", "undeclared-opencode-skill.py"],
     ["package/lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/hooks/undeclared-marketplace-hook.mjs", "undeclared-marketplace-hook.mjs"],
   ];
   try {

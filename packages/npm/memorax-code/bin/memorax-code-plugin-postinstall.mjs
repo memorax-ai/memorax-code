@@ -18,8 +18,10 @@ import {
   normalizeMemoraxMemoryOutputLanguage,
 } from "../lib/memorax-code-adapter-common/src/memorax-defaults.mjs";
 import { stagePackagedClientHookRuntime } from "../lib/client-hook-runtime.mjs";
+import { discoverDshProfiles } from "../lib/dsh-plugin-install.mjs";
 import { ensureClaudeCommandEnv } from "../lib/resolve-claude-command.mjs";
 import { ensureCodexCommandEnv } from "../lib/resolve-codex-command.mjs";
+import { commandOnPath } from "../lib/vscode-extension-command.mjs";
 import { resolveWindowsCliInvocation } from "../lib/windows-cli-invocation.mjs";
 
 const PLUGIN_NAME = "memorax-code-codex-adapter";
@@ -38,6 +40,7 @@ const RESET = "\x1b[0m";
 if (truthyEnv(process.env.MEMORAX_CODE_SKIP_POSTINSTALL)) process.exit(0);
 const skipCodexPluginInstall = truthyEnv(process.env.MEMORAX_CODE_SKIP_CODEX_PLUGIN_INSTALL);
 const skipClaudeAdapterInstall = truthyEnv(process.env.MEMORAX_CODE_SKIP_CLAUDE_ADAPTER_INSTALL);
+const skipOpenCodeAdapterInstall = truthyEnv(process.env.MEMORAX_CODE_SKIP_OPENCODE_ADAPTER_INSTALL);
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const memoraxCodeBin = join(scriptDir, "memorax-code.mjs");
@@ -52,6 +55,19 @@ const scriptedAnswers = (canPrompt() || canPromptForUpdate()) && process.stdin.i
   ? parseScriptedAnswers(readFileSync(0, "utf8"))
   : undefined;
 const previousClients = readPersistedClientSelection();
+const persistedDshSelection = readPersistedDshSelection();
+let dshProfiles = [];
+let dshProfilesVerified = true;
+try {
+  dshProfiles = discoverDshProfiles();
+} catch (error) {
+  dshProfilesVerified = false;
+  const code = typeof error?.code === "string" ? ` (${error.code})` : "";
+  logRed(`DeepSeek Harness Profile discovery could not be verified${code}; DSH setup was skipped, but other client setup will continue.`);
+}
+const dshSelected = dshProfilesVerified
+  && dshProfiles.length > 0
+  && persistedDshSelection !== false;
 if (seedMissingMemoraxCodeConfig() === "failed") {
   printPostinstallSummary("not-verified");
   process.exit(0);
@@ -70,7 +86,7 @@ try {
   process.exit(0);
 }
 runCommonPreflight();
-const requestedClients = ["codex", "claude"];
+const requestedClients = ["codex", "claude", "opencode"];
 const codexPreflight = requestedClients.includes("codex") && !skipCodexPluginInstall
   ? runCodexPreflight({
       integrationSelected: !updatePostinstall
@@ -85,18 +101,31 @@ const claudePreflight = requestedClients.includes("claude") && !skipClaudeAdapte
         || previousClients.includes("claude"),
     })
   : { ok: true };
+const opencodePreflight = requestedClients.includes("opencode") && !skipOpenCodeAdapterInstall
+  ? runOpenCodePreflight({
+      integrationSelected: !updatePostinstall
+        || previousClients === undefined
+        || previousClients.includes("opencode"),
+    })
+  : { ok: true };
 const detectedClients = requestedClients.filter((client) => {
   if (client === "codex") return !skipCodexPluginInstall && codexPreflight.ok;
-  return !skipClaudeAdapterInstall && claudePreflight.ok;
+  if (client === "claude") return !skipClaudeAdapterInstall && claudePreflight.ok;
+  return !skipOpenCodeAdapterInstall && opencodePreflight.ok;
 });
 const selectedClients = updatePostinstall && previousClients !== undefined
   ? await chooseUpdateClients(previousClients, detectedClients, scriptedAnswers)
   : detectedClients;
 const installClients = detectedClients.filter((client) => selectedClients.includes(client));
 if (updatePostinstall && previousClients !== undefined) {
-  log(clientSelectionMessage(selectedClients));
+  log(clientSelectionMessage(selectedClients, { dshSelected }));
 } else {
-  log(detectedClientMessage(installClients));
+  log(detectedClientMessage(installClients, dshSelected ? dshProfiles : []));
+}
+if (dshSelected) {
+  log(`DeepSeek Harness profiles: found (${dshProfiles.map((profile) => profile.name).join(", ")}); supported profiles will be reconciled by \`memorax-code start\`.`);
+} else if (dshProfiles.length > 0) {
+  log("DeepSeek Harness profiles were detected, but the DSH integration is disabled by [clients].dsh.");
 }
 if (requestedClients.includes("codex") && !skipCodexPluginInstall && !codexPreflight.ok) {
   log("Codex runtime was not detected; skipping its adapter setup.");
@@ -104,13 +133,18 @@ if (requestedClients.includes("codex") && !skipCodexPluginInstall && !codexPrefl
 if (requestedClients.includes("claude") && !skipClaudeAdapterInstall && !claudePreflight.ok) {
   log("Claude Code runtime was not detected; skipping its adapter setup.");
 }
+if (requestedClients.includes("opencode") && !skipOpenCodeAdapterInstall && !opencodePreflight.ok) {
+  log("OpenCode runtime or configuration was not detected; skipping its adapter setup.");
+}
 if (writeClientSelectionConfig(selectedClients) === "failed") {
   printPostinstallSummary("not-verified");
   process.exit(0);
 }
-const clientMode = clientModeFor(installClients);
+const clientMode = clientModeFor(installClients, {
+  includeDsh: dshProfilesVerified && persistedDshSelection !== false,
+});
 let memoraxConfigResult = "skipped";
-if (installClients.length > 0) {
+if (installClients.length > 0 || dshSelected) {
   memoraxConfigResult = await maybeConfigureMemoraxMemory(scriptedAnswers);
 }
 if (memoraxConfigResult === "configured") {
@@ -121,6 +155,7 @@ if (memoraxConfigResult === "configured") {
 }
 const codexClientEnabled = installClients.includes("codex");
 const claudeClientEnabled = installClients.includes("claude");
+const opencodeClientEnabled = installClients.includes("opencode");
 const codexClientNewlyEnabled = codexClientEnabled
   && updatePostinstall
   && previousClients !== undefined
@@ -147,6 +182,7 @@ if (codexClientEnabled && result.status === 0) {
 }
 const skipCodexAdapter = !codexClientEnabled;
 const skipClaudeAdapter = !claudeClientEnabled;
+const skipOpenCodeAdapter = !opencodeClientEnabled;
 const codexSkipReason = postinstallClientSkipReason({
   explicitlySkipped: skipCodexPluginInstall,
   selected: selectedClients.includes("codex"),
@@ -157,21 +193,39 @@ const claudeSkipReason = postinstallClientSkipReason({
   selected: selectedClients.includes("claude"),
   enabled: claudeClientEnabled,
 });
+const opencodeSkipReason = postinstallClientSkipReason({
+  explicitlySkipped: skipOpenCodeAdapterInstall,
+  selected: selectedClients.includes("opencode"),
+  enabled: opencodeClientEnabled,
+});
 
-let backendAndAdaptersStatus = startBackendAndCheck({
+const backendAndAdapters = startBackendAndCheck({
   skipCodexAdapter,
   clientMode,
   codexSkipReason,
   skipClaudeAdapter,
   claudeAdapterRequired: !skipClaudeAdapter,
   claudeSkipReason,
+  skipOpenCodeAdapter,
+  opencodeAdapterRequired: !skipOpenCodeAdapter,
+  opencodeSkipReason,
 });
+const backendAndAdaptersStatus = backendAndAdapters.status;
 if (backendAndAdaptersStatus === "enabled") {
   logGreen(`Client Hook runtime ${stagedHookRuntime.generationId} activated.`);
 }
 if (backendAndAdaptersStatus === "enabled") {
-  printNextSteps({ codexAdapterEnabled: !skipCodexAdapter, claudeAdapterEnabled: !skipClaudeAdapter });
-  printCommonCommands({ codexAdapterEnabled: !skipCodexAdapter, claudeAdapterEnabled: !skipClaudeAdapter });
+  printNextSteps({
+    codexAdapterEnabled: !skipCodexAdapter,
+    claudeAdapterEnabled: !skipClaudeAdapter,
+    dshAdapterEnabled: backendAndAdapters.dshAdapterEnabled,
+    opencodeAdapterEnabled: !skipOpenCodeAdapter,
+  });
+  printCommonCommands({
+    codexAdapterEnabled: !skipCodexAdapter,
+    claudeAdapterEnabled: !skipClaudeAdapter,
+    opencodeAdapterEnabled: !skipOpenCodeAdapter,
+  });
 }
 printPostinstallSummary(backendAndAdaptersStatus);
 if (backendAndAdaptersStatus === "enabled") {
@@ -221,7 +275,7 @@ async function chooseUpdateClients(previousClients, detectedClients, scriptedAns
 
   if (!canPromptForUpdate()) {
     for (const client of availableDisabledClients) {
-      const label = client === "codex" ? "Codex" : "Claude Code";
+      const label = clientLabel(client);
       log(`${label} runtime is available, but its integration remains disabled because this update cannot prompt. Rerun \`memorax-code update\` from an interactive terminal to choose whether to enable it.`);
     }
     return [...previousClients];
@@ -230,7 +284,7 @@ async function chooseUpdateClients(previousClients, detectedClients, scriptedAns
   let rl;
   try {
     for (const client of availableDisabledClients) {
-      const label = client === "codex" ? "Codex" : "Claude Code";
+      const label = clientLabel(client);
       const question = `${label} runtime is available, but its integration is disabled in [clients]. Enable it now? [Y/n]`;
       let answer;
       if (scriptedAnswers) {
@@ -250,7 +304,7 @@ async function chooseUpdateClients(previousClients, detectedClients, scriptedAns
   } finally {
     rl?.close();
   }
-  return ["codex", "claude"].filter((client) => selected.has(client));
+  return ["codex", "claude", "opencode"].filter((client) => selected.has(client));
 }
 
 async function configureMemoraxMemoryFromAnswers(answers) {
@@ -602,7 +656,22 @@ function readPersistedClientSelection() {
   try {
     const clients = parse(readFileSync(path, "utf8"))?.clients;
     if (!clients || typeof clients !== "object" || typeof clients.codex !== "boolean" || typeof clients.claude !== "boolean") return undefined;
-    return [clients.codex ? "codex" : undefined, clients.claude ? "claude" : undefined].filter(Boolean);
+    return [
+      clients.codex ? "codex" : undefined,
+      clients.claude ? "claude" : undefined,
+      clients.opencode === true ? "opencode" : undefined,
+    ].filter(Boolean);
+  } catch {
+    return undefined;
+  }
+}
+
+function readPersistedDshSelection() {
+  const path = memoraxCodeConfigPath();
+  if (!existsSync(path)) return undefined;
+  try {
+    const value = parse(readFileSync(path, "utf8"))?.clients?.dsh;
+    return typeof value === "boolean" ? value : undefined;
   } catch {
     return undefined;
   }
@@ -620,7 +689,8 @@ function writeClientSelectionConfig(clients) {
 }
 
 function setManagedClientSelection(text, clients) {
-  const withClaude = setTomlField(text, "clients", "claude", String(clients.includes("claude")));
+  const withOpenCode = setTomlField(text, "clients", "opencode", String(clients.includes("opencode")));
+  const withClaude = setTomlField(withOpenCode, "clients", "claude", String(clients.includes("claude")));
   return setTomlField(withClaude, "clients", "codex", String(clients.includes("codex")));
 }
 
@@ -668,6 +738,8 @@ function defaultMemoraxCodeConfig() {
     "[clients]",
     "codex = true # Manage the Codex adapter.",
     "claude = true # Manage the Claude adapter.",
+    "dsh = true # Manage the DeepSeek Harness adapter when Profiles exist.",
+    "opencode = true # Manage the OpenCode adapter.",
     "",
     "# MemoraX remote-memory connection. Credentials may also come from the environment.",
     "[memorax]",
@@ -687,7 +759,7 @@ function defaultMemoraxCodeConfig() {
     "[memory.add]",
     `output_language = "${MEMORAX_DEFAULT_MEMORY_OUTPUT_LANGUAGE}" # Language for newly generated MemoraX memories.`,
     "",
-    "# Controls how often Codex and Claude Code native client sessions see the MemoraX Code skill reminder.",
+    "# Controls how often supported native client sessions see the MemoraX Code skill reminder.",
     "[memory.skill_reminder]",
     "interval_turns = 5 # Show the MemoraX Code skill reminder every N native client turns, starting on the first turn.",
     "",
@@ -705,6 +777,14 @@ function defaultMemoraxCodeConfig() {
     "[trace.claude]",
     "enabled = true # Enable local Claude session memory trace collection.",
     "capture_content = true # Store content in local Claude trace events.",
+    "",
+    "[trace.dsh]",
+    "enabled = true # Enable local DSH session memory trace collection.",
+    "capture_content = true # Store content in local DSH trace events.",
+    "",
+    "[trace.opencode]",
+    "enabled = true # Enable local OpenCode session memory trace collection.",
+    "capture_content = true # Store content in local OpenCode trace events.",
     "",
   ].join("\n");
 }
@@ -769,10 +849,13 @@ function runCommonPreflight() {
   const memoraxCodeVersion = runNodeMemoraxCodeCommand(["--version"], { print: false });
   log(`MemoraX Code backend package: ${commandSummary(memoraxCodeVersion) ?? packageVersionSummary()}`);
   if (skipCodexPluginInstall) {
-    log("Codex plugin registration is disabled for this npm postinstall; backend and Claude Code setup can still continue.");
+    log("Codex plugin registration is disabled for this npm postinstall; other client setup can still continue.");
   }
   if (skipClaudeAdapterInstall) {
-    log("Claude Code adapter setup is disabled for this npm postinstall; backend and Codex setup can still continue.");
+    log("Claude Code adapter setup is disabled for this npm postinstall; other client setup can still continue.");
+  }
+  if (skipOpenCodeAdapterInstall) {
+    log("OpenCode adapter setup is disabled for this npm postinstall; other client setup can still continue.");
   }
   return {};
 }
@@ -812,6 +895,27 @@ function runClaudePreflight({ integrationSelected = true } = {}) {
   return { ok: true };
 }
 
+function runOpenCodePreflight({ integrationSelected = true } = {}) {
+  const explicitConfigDir = stringOption(process.env.OPENCODE_CONFIG_DIR);
+  const configHome = stringOption(process.env.XDG_CONFIG_HOME) ?? join(homedir(), ".config");
+  const configDir = resolve(explicitConfigDir ?? join(configHome, "opencode"));
+  const configDetected = explicitConfigDir !== undefined || existsSync(configDir);
+  const cliDetected = commandOnPath(
+    "opencode",
+    process.env.PATH,
+    process.platform,
+    process.env.PATHEXT,
+  );
+  const detected = configDetected || cliDetected;
+  log(`OpenCode configuration: ${configDetected ? `found (${configDir})` : "not detected"}`);
+  log(`OpenCode CLI: ${cliDetected ? "found in PATH" : "not detected"}`);
+  if (!detected) return { ok: false };
+  log(integrationSelected
+    ? "Keeping OpenCode provider config unchanged and enabling the shared memory plugin integration."
+    : "Keeping OpenCode provider config unchanged while checking whether to enable its integration.");
+  return { ok: true };
+}
+
 function installedPluginCache() {
   for (const marketplaceName of [CLI_MARKETPLACE_NAME, PERSONAL_MARKETPLACE_NAME]) {
     const versions = installedPluginCacheVersions(marketplaceName);
@@ -835,7 +939,17 @@ function installedPluginCacheVersions(marketplaceName) {
   }
 }
 
-function startBackendAndCheck({ skipCodexAdapter = false, clientMode = "all", codexSkipReason, skipClaudeAdapter = false, claudeAdapterRequired = !skipClaudeAdapter, claudeSkipReason } = {}) {
+function startBackendAndCheck({
+  skipCodexAdapter = false,
+  clientMode = "all",
+  codexSkipReason,
+  skipClaudeAdapter = false,
+  claudeAdapterRequired = !skipClaudeAdapter,
+  claudeSkipReason,
+  skipOpenCodeAdapter = false,
+  opencodeAdapterRequired = !skipOpenCodeAdapter,
+  opencodeSkipReason,
+} = {}) {
   logGreen("Starting backend with `memorax-code start`...");
   const adapterFlags = clientLifecycleFlags({ clientMode });
   const startArgs = ["start", ...adapterFlags];
@@ -847,18 +961,18 @@ function startBackendAndCheck({ skipCodexAdapter = false, clientMode = "all", co
     if (clientHookRuntimeActivationFailed(started)) {
       logRed("Client Hook runtime activation failed; automatic lifecycle recovery was skipped.");
       logRed("The previously active runtime remains authoritative.");
-      return "not-verified";
+      return { status: "not-verified", dshAdapterEnabled: false };
     }
     if (lifecycleLockFailureCode(started)) {
       logRed("Automatic stop/start recovery is skipped because another MemoraX Code lifecycle command still owns the Backend authority.");
       printLifecycleLockFailureSuggestions();
-      return "not-verified";
+      return { status: "not-verified", dshAdapterEnabled: false };
     }
     const runtimeAuthorityFailure = runtimeAuthorityFailureCode(started);
     if (runtimeAuthorityFailure) {
       logRed("Automatic stop/start recovery is skipped because persisted Backend runtime authority requires explicit repair.");
       printRuntimeAuthorityFailureSuggestions(runtimeAuthorityFailure);
-      return "not-verified";
+      return { status: "not-verified", dshAdapterEnabled: false };
     }
     logRed("Attempting automatic recovery: `memorax-code stop` then `memorax-code start`...");
     runMemoraxCodeCommand(["stop", ...adapterFlags]);
@@ -869,7 +983,7 @@ function startBackendAndCheck({ skipCodexAdapter = false, clientMode = "all", co
       logRed("Diagnostic: running `memorax-code status` so the failure is visible.");
       runMemoraxCodeCommand(statusArgs);
       printFailureSuggestions();
-      return "not-verified";
+      return { status: "not-verified", dshAdapterEnabled: false };
     }
   }
   logGreen(recovered ? "Backend start completed after automatic recovery." : "Backend start completed.");
@@ -878,19 +992,27 @@ function startBackendAndCheck({ skipCodexAdapter = false, clientMode = "all", co
   if (checked.status !== 0) {
     logRed("Backend status check failed during npm postinstall.");
     printFailureSuggestions();
-    return "not-verified";
+    return { status: "not-verified", dshAdapterEnabled: false };
   }
   logGreen("Backend status check completed.");
   const enabled = memoraxCodeEnabled(checked, {
     codexAdapterRequired: !skipCodexAdapter,
     claudeAdapterRequired,
+    opencodeAdapterRequired,
   });
   if (!enabled) {
-    if (skipCodexAdapter || skipClaudeAdapter) printSkippedAdapterDiagnostics({ codexSkipReason, claudeSkipReason });
-    else printUnavailableDiagnostics();
-    return "unavailable";
+    printUnavailableDiagnostics({ codexSkipReason, claudeSkipReason, opencodeSkipReason });
+    return { status: "unavailable", dshAdapterEnabled: false };
   }
-  return "enabled";
+  return {
+    status: "enabled",
+    dshAdapterEnabled: dshAdapterReady(checked),
+  };
+}
+
+function dshAdapterReady(statusResult) {
+  const output = `${statusResult.stdout ?? ""}\n${statusResult.stderr ?? ""}`;
+  return /\bDSH adapter:\s*ok\b[^\r\n]*\bintegration=plugin\b/im.test(stripAnsi(output));
 }
 
 function pendingClientHookRuntimeEnv() {
@@ -929,13 +1051,12 @@ function clientLifecycleFlags({ clientMode = "all" } = {}) {
   return ["--clients", clientMode];
 }
 
-function clientModeFor(clients) {
-  const hasCodex = clients.includes("codex");
-  const hasClaude = clients.includes("claude");
-  if (hasCodex && hasClaude) return "all";
-  if (hasCodex) return "codex";
-  if (hasClaude) return "claude";
-  return "none";
+function clientModeFor(clients, { includeDsh = false } = {}) {
+  const selected = ["codex", "claude", "dsh", "opencode"].filter((client) => (
+    client === "dsh" ? includeDsh : clients.includes(client)
+  ));
+  if (selected.length === 4) return "all";
+  return selected.length > 0 ? selected.join(",") : "none";
 }
 
 function postinstallClientSkipReason({ explicitlySkipped, selected, enabled }) {
@@ -944,20 +1065,49 @@ function postinstallClientSkipReason({ explicitlySkipped, selected, enabled }) {
   return enabled ? undefined : "client-selection";
 }
 
-function clientSelectionMessage(clients) {
+function clientSelectionMessage(clients, { dshSelected = false } = {}) {
+  if (dshSelected) {
+    const labels = [
+      clients.includes("codex") ? "Codex" : undefined,
+      clients.includes("claude") ? "Claude Code" : undefined,
+      "DeepSeek Harness",
+      clients.includes("opencode") ? "OpenCode" : undefined,
+    ].filter(Boolean);
+    return `Configuring MemoraX Code for ${joinedLabels(labels)}.`;
+  }
   const hasCodex = clients.includes("codex");
   const hasClaude = clients.includes("claude");
+  const hasOpenCode = clients.includes("opencode");
+  if (hasCodex && hasClaude && hasOpenCode) return "Configuring MemoraX Code for Codex, Claude Code, and OpenCode.";
   if (hasCodex && hasClaude) return "Configuring MemoraX Code for Codex and Claude Code.";
+  if (hasCodex && hasOpenCode) return "Configuring MemoraX Code for Codex and OpenCode.";
+  if (hasClaude && hasOpenCode) return "Configuring MemoraX Code for Claude Code and OpenCode.";
   if (hasCodex) return "Configuring MemoraX Code for Codex only.";
   if (hasClaude) return "Configuring MemoraX Code for Claude Code only.";
+  if (hasOpenCode) return "Configuring MemoraX Code for OpenCode only.";
   return "Skipping client adapter setup for this npm postinstall.";
 }
 
-function detectedClientMessage(clients) {
-  if (clients.length === 0) {
+function clientLabel(client) {
+  if (client === "codex") return "Codex";
+  if (client === "claude") return "Claude Code";
+  return "OpenCode";
+}
+
+function detectedClientMessage(clients, dshProfiles = []) {
+  if (clients.length === 0 && dshProfiles.length === 0) {
     return "No supported client runtime was detected; starting the shared Backend without client adapters.";
   }
+  if (clients.length === 0) {
+    return "Detected existing DeepSeek Harness profiles; configuring the native DSH plugin and shared Backend.";
+  }
   return `Detected supported client runtimes. ${clientSelectionMessage(clients)}`;
+}
+
+function joinedLabels(labels) {
+  if (labels.length < 2) return labels[0] ?? "";
+  if (labels.length === 2) return `${labels[0]} and ${labels[1]}`;
+  return `${labels.slice(0, -1).join(", ")}, and ${labels.at(-1)}`;
 }
 
 function codexHome() {
@@ -1087,35 +1237,65 @@ function codexClientRunning() {
   });
 }
 
-function printNextSteps({ codexAdapterEnabled = true, claudeAdapterEnabled = true } = {}) {
-  const clientText = enabledClientText({ codexAdapterEnabled, claudeAdapterEnabled });
-  if (clientText && updatePostinstall) {
+function printNextSteps({
+  codexAdapterEnabled = true,
+  claudeAdapterEnabled = true,
+  dshAdapterEnabled = false,
+  opencodeAdapterEnabled = true,
+} = {}) {
+  const hookClientText = enabledClientText({
+    codexAdapterEnabled,
+    claudeAdapterEnabled,
+    opencodeAdapterEnabled,
+  });
+  if (hookClientText && updatePostinstall) {
     logGreen(`${bold("The new Hook runtime is active")}; existing sessions with the stable shell select it on their next user prompt.`);
-    log(`Restart or refresh ${clientText} only if its plugin shell was installed, changed, or newly enabled, or if MemoraX Code is not active on the next prompt.`);
-  } else if (clientText) {
-    logGreen(`${bold(`Restart or refresh ${clientText}`)} before opening a new MemoraX Code session.`);
-  } else {
+    log(`Restart or refresh ${hookClientText} only if its plugin shell was installed, changed, or newly enabled, or if MemoraX Code is not active on the next prompt.`);
+  } else if (hookClientText) {
+    logGreen(`${bold(`Restart or refresh ${hookClientText}`)} before opening a new MemoraX Code session.`);
+  }
+  if (dshAdapterEnabled) {
+    logGreen(`${bold("Restart or refresh DeepSeek Harness")} so its Profiles load the installed MemoraX Code plugin.`);
+  } else if (!hookClientText) {
     logGreen(`${bold("MemoraX Code backend is running")}; client adapters were skipped for this install.`);
   }
   if (codexAdapterEnabled && !updatePostinstall) {
     logGreen(`After restart, ${bold("enable the MemoraX Code Codex Adapter plugin")} from Codex Plugins or CLI \`/plugins\` if it is not already enabled.`);
   }
-  const statusCommands = statusCommandText({ codexAdapterEnabled, claudeAdapterEnabled });
-  log(`If MemoraX Code is not active ${updatePostinstall ? "on the next prompt" : "in new sessions"}, run ${statusCommands}.`);
+  const statusCommands = statusCommandText({ codexAdapterEnabled, claudeAdapterEnabled, opencodeAdapterEnabled });
+  if (hookClientText || !dshAdapterEnabled) {
+    log(`If MemoraX Code is not active ${updatePostinstall ? "on the next prompt" : "in new sessions"}, run ${statusCommands}.`);
+  }
+  if (dshAdapterEnabled) {
+    log("If MemoraX Code is not active after restarting or refreshing DeepSeek Harness, run `memorax-code status`.");
+  }
   log("If npm hides install details, reinstall with `--foreground-scripts`.");
 }
 
-function enabledClientText({ codexAdapterEnabled = true, claudeAdapterEnabled = true } = {}) {
-  if (codexAdapterEnabled && claudeAdapterEnabled) return "Codex or Claude Code";
-  if (codexAdapterEnabled) return "Codex";
-  if (claudeAdapterEnabled) return "Claude Code";
-  return "";
+function enabledClientText({
+  codexAdapterEnabled = true,
+  claudeAdapterEnabled = true,
+  opencodeAdapterEnabled = true,
+} = {}) {
+  const labels = [
+    codexAdapterEnabled ? "Codex" : undefined,
+    claudeAdapterEnabled ? "Claude Code" : undefined,
+    opencodeAdapterEnabled ? "OpenCode" : undefined,
+  ].filter(Boolean);
+  if (labels.length < 2) return labels[0] ?? "";
+  if (labels.length === 2) return `${labels[0]} or ${labels[1]}`;
+  return `${labels.slice(0, -1).join(", ")}, or ${labels.at(-1)}`;
 }
 
-function statusCommandText({ codexAdapterEnabled = true, claudeAdapterEnabled = true } = {}) {
+function statusCommandText({
+  codexAdapterEnabled = true,
+  claudeAdapterEnabled = true,
+  opencodeAdapterEnabled = true,
+} = {}) {
   const commands = ["`memorax-code status`"];
   if (codexAdapterEnabled) commands.push("`memorax-code-codex status`");
   if (claudeAdapterEnabled) commands.push("`memorax-code-claude status`");
+  if (opencodeAdapterEnabled) commands.push("`memorax-code-opencode status`");
   if (commands.length === 1) return commands[0];
   if (commands.length === 2) return `${commands[0]} and ${commands[1]}`;
   return `${commands.slice(0, -1).join(", ")}, and ${commands.at(-1)}`;
@@ -1195,19 +1375,17 @@ function readMemoraxInstallStatus() {
   }
 }
 
-function printUnavailableDiagnostics() {
+function printUnavailableDiagnostics({ codexSkipReason, claudeSkipReason, opencodeSkipReason } = {}) {
   logRed("MemoraX Code is not enabled for new client sessions.");
-  logRed("Check `memorax-code status`, `memorax-code-codex status`, and `memorax-code-claude status` for Backend and adapter details.");
-  logRed("If Codex or Claude Code is open, restart or refresh it after fixing the reported status.");
-  printCommonCommands();
-}
-
-function printSkippedAdapterDiagnostics({ codexSkipReason, claudeSkipReason } = {}) {
+  logRed("Check `memorax-code status`, `memorax-code-codex status`, `memorax-code-claude status`, and `memorax-code-opencode status` for Backend and adapter details.");
+  logRed("If Codex, Claude Code, or OpenCode is open, restart or refresh it after fixing the reported status.");
   if (codexSkipReason) printCodexSkippedDiagnostics(codexSkipReason);
   if (claudeSkipReason) printClaudeSkippedDiagnostics(claudeSkipReason);
+  if (opencodeSkipReason) printOpenCodeSkippedDiagnostics(opencodeSkipReason);
   printCommonCommands({
     codexAdapterEnabled: !codexSkipReason,
     claudeAdapterEnabled: !claudeSkipReason,
+    opencodeAdapterEnabled: !opencodeSkipReason,
   });
 }
 
@@ -1223,10 +1401,15 @@ function printClaudeSkippedDiagnostics() {
   log("Run `memorax-code start` after installing Claude Code, then restart or refresh Claude Code.");
 }
 
+function printOpenCodeSkippedDiagnostics() {
+  logRed("OpenCode adapter setup was skipped for this npm postinstall, so MemoraX Code left the OpenCode integration unchanged.");
+  log("Run `memorax-code start --clients opencode` after installing OpenCode, then restart or refresh OpenCode.");
+}
+
 function printFailureSuggestions() {
   logRed("Suggested recovery: run `memorax-code stop`, then `memorax-code start`, then `memorax-code status`.");
   logRed("If the Backend port is busy, stop the process using 127.0.0.1:8787 and retry `memorax-code start`.");
-  logRed("If client sessions still bypass MemoraX Code, restart or refresh Codex or Claude Code and verify the relevant adapter status.");
+  logRed("If client sessions still bypass MemoraX Code, restart or refresh the affected client and verify the relevant adapter status.");
   printCommonCommands();
 }
 
@@ -1248,7 +1431,11 @@ function printLifecycleLockFailureSuggestions() {
   printCommonCommands();
 }
 
-function printCommonCommands({ codexAdapterEnabled = true, claudeAdapterEnabled = true } = {}) {
+function printCommonCommands({
+  codexAdapterEnabled = true,
+  claudeAdapterEnabled = true,
+  opencodeAdapterEnabled = true,
+} = {}) {
   log("Common commands:");
   log("- `memorax-code status`: check the local backend and adapter state.");
   log("- `memorax-cli status`: check required MemoraX configuration and effective memory switches.");
@@ -1256,9 +1443,14 @@ function printCommonCommands({ codexAdapterEnabled = true, claudeAdapterEnabled 
   log("- `memorax-code stop`: stop the local memory backend and disable managed client integrations.");
   if (codexAdapterEnabled) log("- `memorax-code-codex sessions`: verify recent native Codex session registration.");
   if (claudeAdapterEnabled) log("- `memorax-code-claude sessions`: verify recent native Claude Code session registration.");
+  if (opencodeAdapterEnabled) log("- `memorax-code-opencode doctor`: verify the managed OpenCode plugin, runtime evidence, and Backend health.");
 }
 
-function memoraxCodeEnabled(statusResult, { codexAdapterRequired = true, claudeAdapterRequired = true } = {}) {
+function memoraxCodeEnabled(statusResult, {
+  codexAdapterRequired = true,
+  claudeAdapterRequired = true,
+  opencodeAdapterRequired = true,
+} = {}) {
   const output = `${statusResult.stdout ?? ""}\n${statusResult.stderr ?? ""}`;
   const normalized = stripAnsi(output);
   const backendOk = /MemoraX Code Backend status:\s*Enabled\b/im.test(normalized)
@@ -1268,10 +1460,12 @@ function memoraxCodeEnabled(statusResult, { codexAdapterRequired = true, claudeA
     || /Backend:\s*(?:running|ok)\b/im.test(normalized);
   const codexAdapterOk = /Codex adapter:\s*ok\b/im.test(normalized);
   const claudeAdapterOk = /Claude adapter:\s*ok\b/im.test(normalized);
+  const opencodeAdapterOk = /OpenCode adapter:\s*ok\b/im.test(normalized);
   return backendOk
     && serviceOk
     && (!codexAdapterRequired || codexAdapterOk)
-    && (!claudeAdapterRequired || claudeAdapterOk);
+    && (!claudeAdapterRequired || claudeAdapterOk)
+    && (!opencodeAdapterRequired || opencodeAdapterOk);
 }
 
 function log(message) {

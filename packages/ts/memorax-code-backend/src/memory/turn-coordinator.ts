@@ -25,6 +25,7 @@ export type MemoryTurnStart = MemoryTurnKey & Readonly<{
   cwd?: string;
   workspaceKind?: string;
   transcriptPath?: string;
+  eventStartSeq?: number;
   createdAt: number;
   sessionTurnIndex?: number;
   traceContext?: TraceContext;
@@ -109,6 +110,7 @@ export function createMemoryTurnCoordinator(options: MemoryTurnCoordinatorOption
         cwd: input.cwd,
         workspaceKind: input.workspaceKind,
         transcriptPath: input.transcriptPath,
+        eventStartSeq: input.eventStartSeq,
         createdAt: input.createdAt,
         sessionTurnIndex: input.sessionTurnIndex,
         traceContext: input.traceContext,

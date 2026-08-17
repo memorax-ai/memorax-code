@@ -93,6 +93,43 @@ exit 2
   chmodSync(path, 0o755);
 }
 
+
+function createFakeGithubCliWithNonlocalPrAndIssue(path) {
+  writeFileSync(
+    path,
+    `#!/bin/sh
+set -eu
+if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+  printf '%s\n' 'github.com logged in'
+  exit 0
+fi
+if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
+  printf '%s\n' '[{"number":2},{"number":1}]'
+  exit 0
+fi
+if [ "$1" = "pr" ] && [ "$2" = "view" ] && [ "$3" = "2" ]; then
+  printf '%s\n' '{"number":2,"title":"Nonlocal merge","body":"Missing locally","state":"MERGED","url":"https://example.test/pull/2","updatedAt":"2026-07-04T00:00:00Z","createdAt":"2026-07-04T00:00:00Z","closedAt":"2026-07-04T00:00:00Z","mergedAt":"2026-07-04T00:00:00Z","author":{"login":"tester"},"comments":[],"reviews":[],"latestReviews":[],"reviewDecision":"","files":[{"path":"src/missing.ts"}],"commits":[{"messageHeadline":"missing merge","oid":"f82897ff49f9a3902ecf9da60eec6c24a15abec2"}],"closingIssuesReferences":[],"mergeCommit":{"oid":"f82897ff49f9a3902ecf9da60eec6c24a15abec2"},"baseRefName":"main","headRefName":"missing","headRepository":{"nameWithOwner":"owner/project"},"isDraft":false,"additions":2,"deletions":0,"changedFiles":1}'
+  exit 0
+fi
+if [ "$1" = "pr" ] && [ "$2" = "view" ] && [ "$3" = "1" ]; then
+  printf '%s\n' '{"number":1,"title":"Local merge","body":"Present locally","state":"MERGED","url":"https://example.test/pull/1","updatedAt":"2026-07-03T00:00:00Z","createdAt":"2026-07-03T00:00:00Z","closedAt":"2026-07-03T00:00:00Z","mergedAt":"2026-07-03T00:00:00Z","author":{"login":"tester"},"comments":[],"reviews":[],"latestReviews":[],"reviewDecision":"","files":[{"path":"src/app.ts"}],"commits":[{"messageHeadline":"local merge","oid":"'"$LATEST_SHA"'"}],"closingIssuesReferences":[],"mergeCommit":{"oid":"'"$LATEST_SHA"'"},"baseRefName":"main","headRefName":"local","headRepository":{"nameWithOwner":"owner/project"},"isDraft":false,"additions":1,"deletions":0,"changedFiles":1}'
+  exit 0
+fi
+if [ "$1" = "issue" ] && [ "$2" = "list" ]; then
+  printf '%s\n' '[{"number":7}]'
+  exit 0
+fi
+if [ "$1" = "issue" ] && [ "$2" = "view" ]; then
+  printf '%s\n' '{"number":7,"title":"Provider issue survives PR filtering","body":"Issue body","state":"OPEN","url":"https://example.test/issues/7","updatedAt":"2026-07-03T00:00:00Z","labels":[],"comments":[]}'
+  exit 0
+fi
+printf 'unexpected gh args: %s\n' "$*" >&2
+exit 2
+`,
+  );
+  chmodSync(path, 0o755);
+}
+
 function createRepoFixture(root) {
   const repo = join(root, "repo");
   const bin = join(root, "bin");
@@ -280,6 +317,51 @@ test("collect-all keeps provider facets raw without persistent index outputs", (
   }
 });
 
+
+
+test("GitHub provider skips PRs with nonlocal merge commits without losing issues", () => {
+  const root = mkdtempSync(join(tmpdir(), "memorax-code-repo-memory-provider-nonlocal-pr."));
+  try {
+    const { repo, bin } = createRepoFixture(root);
+    createFakeGithubCliWithNonlocalPrAndIssue(join(bin, "gh"));
+    const latestSha = runGit(repo, ["rev-parse", "HEAD"]);
+
+    const result = spawnSync(
+      "python3",
+      [
+        collectAllScript,
+        "--repo-path",
+        repo,
+        "--commit-limit",
+        "2",
+        "--pr-limit",
+        "1",
+        "--issue-limit",
+        "1",
+        "--pretty",
+      ],
+      {
+        cwd: packageRoot,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          PATH: `${bin}:${process.env.PATH ?? ""}`,
+          LATEST_SHA: latestSha,
+        },
+      },
+    );
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const report = JSON.parse(result.stdout);
+    assert.equal(report.steps.provider_facets.ok, true);
+    assert.deepEqual(report.counts.raw.provider_facets, { issue: 1, pr: 1 });
+    const facets = JSON.parse(readFileSync(join(repo, ".repo_memory", "raw", "github-facets.json"), "utf8"));
+    assert.deepEqual(facets.map((facet) => facet.facetId), ["pr.1", "issue.7"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("collect-all can require provider evidence instead of falling back", () => {
   const root = mkdtempSync(join(tmpdir(), "memorax-code-repo-memory-provider-required."));
   try {
@@ -325,12 +407,99 @@ test("collect-all can skip provider evidence even when provider is ready", () =>
   }
 });
 
+
+
+test("collect-all supports history mode none without collecting commit or provider facets", () => {
+  const root = mkdtempSync(join(tmpdir(), "memorax-code-repo-memory-history-none."));
+  try {
+    const { repo, bin } = createRepoFixture(root);
+    createFakeAuthenticatedGithubCli(join(bin, "gh"));
+
+    const result = runCollectAll(repo, bin, ["--history-mode", "none"]);
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+
+    const report = JSON.parse(result.stdout);
+    assert.equal(report.ok, true);
+    assert.equal(report.effective_settings.history.mode, "none");
+    assert.deepEqual(report.effective_settings.history.collect, { commits: false, provider: false });
+    assert.equal(report.steps.git_commits.skipped, true);
+    assert.equal(report.steps.git_commits.reason, "history_disabled_by_policy");
+    assert.equal(report.steps.provider_facets.skipped, true);
+    assert.equal(report.steps.provider_facets.reason, "history_disabled_by_policy");
+    assert.deepEqual(report.counts.raw.git_commits, {});
+    assert.equal(existsSync(join(repo, ".repo_memory", "raw", "git-commits.json")), true);
+    assert.deepEqual(JSON.parse(readFileSync(join(repo, ".repo_memory", "raw", "git-commits.json"), "utf8")), []);
+    assert.equal(existsSync(join(repo, ".repo_memory", "raw", "github-facets.json")), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("collect-all supports commits-only history mode without provider access", () => {
+  const root = mkdtempSync(join(tmpdir(), "memorax-code-repo-memory-history-commits-only."));
+  try {
+    const { repo, bin } = createRepoFixture(root);
+    createFakeAuthenticatedGithubCli(join(bin, "gh"));
+
+    const result = runCollectAll(repo, bin, ["--history-mode", "commits-only"]);
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+
+    const report = JSON.parse(result.stdout);
+    assert.equal(report.ok, true);
+    assert.equal(report.effective_settings.history.mode, "commits-only");
+    assert.deepEqual(report.effective_settings.history.collect, { commits: true, provider: false });
+    assert.equal(report.steps.git_commits.ok, true);
+    assert.deepEqual(report.counts.raw.git_commits, { commit: 2 });
+    assert.equal(report.steps.provider_facets.skipped, true);
+    assert.equal(report.steps.provider_facets.reason, "history_provider_disabled_by_policy");
+    assert.equal(existsSync(join(repo, ".repo_memory", "raw", "github-facets.json")), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("collect-all maps legacy provider flags to history modes", () => {
+  const root = mkdtempSync(join(tmpdir(), "memorax-code-repo-memory-history-legacy-flags."));
+  try {
+    const { repo, bin } = createRepoFixture(root);
+    createFakeAuthenticatedGithubCli(join(bin, "gh"));
+
+    const skipped = runCollectAll(repo, bin, ["--skip-provider"]);
+    assert.equal(skipped.status, 0, skipped.stderr || skipped.stdout);
+    assert.equal(JSON.parse(skipped.stdout).effective_settings.history.mode, "local-only");
+
+    const required = runCollectAll(repo, bin, ["--reuse", "--require-provider"]);
+    assert.notEqual(required.status, 0);
+    assert.equal(JSON.parse(required.stdout).effective_settings.history.mode, "provider-required");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("collect-all rejects contradictory history mode and provider flag combinations", () => {
+  const root = mkdtempSync(join(tmpdir(), "memorax-code-repo-memory-history-conflict."));
+  try {
+    const { repo, bin } = createRepoFixture(root);
+
+    const skippedNone = runCollectAll(repo, bin, ["--history-mode", "none", "--skip-provider"]);
+    assert.notEqual(skippedNone.status, 0);
+    assert.match(skippedNone.stderr, /--skip-provider cannot be combined with --history-mode none/);
+
+    const skippedCommitsOnly = runCollectAll(repo, bin, ["--history-mode", "commits-only", "--skip-provider"]);
+    assert.notEqual(skippedCommitsOnly.status, 0);
+    assert.match(skippedCommitsOnly.stderr, /--skip-provider cannot be combined with --history-mode commits-only/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("collect-all reports visible defaults from defaults.json", () => {
   const root = mkdtempSync(join(tmpdir(), "memorax-code-repo-memory-defaults."));
   try {
     const defaults = JSON.parse(readFileSync(defaultsPath, "utf8"));
-    assert.equal(defaults.schema, "repo_memory_builder_defaults.v1");
-    assert.deepEqual(defaults.limits, { commits: 30, prs: 30, issues: 30 });
+    assert.equal(defaults.schema, "repo_memory_builder_defaults.v2");
+    assert.equal(defaults.repoHistory.mode, "provider");
+    assert.deepEqual(defaults.repoHistory.limits, { commits: 30, prs: 30, issues: 30 });
     assert.equal(defaults.summaryChars, 4000);
 
     const { repo, bin } = createRepoFixture(root);
@@ -346,6 +515,8 @@ test("collect-all reports visible defaults from defaults.json", () => {
     assert.equal(result.status, 0, result.stderr || result.stdout);
 
     const report = JSON.parse(result.stdout);
+    assert.equal(report.effective_settings.history.mode, "provider");
+    assert.deepEqual(report.effective_settings.history.collect, { commits: true, provider: true });
     assert.deepEqual(report.effective_settings.limits, { commits: 30, prs: 30, issues: 30 });
     assert.equal(report.effective_settings.summary_chars, 4000);
     assert.match(report.effective_settings.source, /defaults\.json$/);

@@ -49,6 +49,21 @@ test("Windows Claude npm shim resolves the official native executable", () => {
   }), { command: exe, args: ["-p", "hello"] });
 });
 
+test("Windows DSH npm shim resolves the official Node entrypoint", () => {
+  const shim = "C:\\MemoraX Code 中文\\bin\\dsh.cmd";
+  const cli = "C:\\MemoraX Code 中文\\bin\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js";
+  assert.deepEqual(resolveAdapterCommonCliInvocation("dsh", ["--version"], {
+    platform: "win32",
+    resolvedCommand: shim,
+    nodePath: "C:\\node.exe",
+    env: {},
+    existsSync: (candidate) => candidate === cli,
+  }), {
+    command: "C:\\node.exe",
+    args: [cli, "--version"],
+  });
+});
+
 test("Windows command discovery prefers cmd after a bare npm shim", () => {
   const output = "C:\\bin\\codex\r\nC:\\bin\\codex.cmd\r\nC:\\bin\\codex.ps1\r\n";
   assert.equal(selectWindowsCommandCandidate("codex", output), "C:\\bin\\codex.cmd");
@@ -80,6 +95,12 @@ test("Windows client shims fail closed without trusted entrypoints", () => {
     env: {},
     existsSync: () => false,
   }), /refusing to execute claude\.cmd.*MEMORAX_CODE_CLAUDE_CLI_JS/);
+  assert.throws(() => resolveAdapterCommonCliInvocation("dsh", [], {
+    platform: "win32",
+    resolvedCommand: "C:\\bin\\dsh.cmd",
+    env: {},
+    existsSync: () => false,
+  }), /refusing to execute dsh\.cmd.*MEMORAX_CODE_DSH_CLI_JS/);
 });
 
 test("native Windows executable invocation remains unchanged", () => {

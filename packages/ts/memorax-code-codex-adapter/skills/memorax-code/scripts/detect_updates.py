@@ -27,7 +27,16 @@ BUILDER_HELPER_FILES = {
     "gitlab_resource_facets": BUILDER_SCRIPTS_DIR / "gitlab_resource_facets.py",
 }
 PREFERRED_REMOTE_NAMES = ("upstream", "origin")
+HISTORY_MODES = {"none", "commits-only", "local-only", "provider", "provider-required"}
 FALLBACK_DEFAULTS = {
+    "repoHistory": {
+        "mode": "provider",
+        "limits": {
+            "prs": 30,
+            "issues": 30,
+        },
+    },
+    # Kept for compatibility with defaults.json v1.
     "limits": {
         "prs": 30,
         "issues": 30,
@@ -69,6 +78,30 @@ def default_int(settings: dict[str, Any], path: list[str], fallback: int) -> int
     return value
 
 
+def default_limit(settings: dict[str, Any], key: str) -> int:
+    history = settings.get("repoHistory")
+    if isinstance(history, dict) and isinstance(history.get("limits"), dict) and history["limits"].get(key) is not None:
+        return default_int(settings, ["repoHistory", "limits", key], FALLBACK_DEFAULTS["repoHistory"]["limits"][key])
+    return default_int(settings, ["limits", key], FALLBACK_DEFAULTS["limits"][key])
+
+
+def default_history_mode(settings: dict[str, Any]) -> str:
+    history = settings.get("repoHistory")
+    if not isinstance(history, dict):
+        return "provider"
+    mode = history.get("mode", "provider")
+    if not isinstance(mode, str) or mode not in HISTORY_MODES:
+        raise ValueError(f"{BUILDER_DEFAULTS_PATH}: repoHistory.mode must be one of {', '.join(sorted(HISTORY_MODES))}")
+    return mode
+
+
+def history_collect(mode: str) -> dict[str, bool]:
+    return {
+        "commits": mode in {"commits-only", "local-only", "provider", "provider-required"},
+        "provider": mode in {"provider", "provider-required"},
+    }
+
+
 def load_default_settings() -> tuple[dict[str, Any], str]:
     if not BUILDER_DEFAULTS_PATH.exists():
         return FALLBACK_DEFAULTS, "hardcoded_fallback"
@@ -86,12 +119,19 @@ def validate_range(parser: argparse.ArgumentParser, name: str, value: int, minim
 def apply_effective_settings(args: argparse.Namespace, parser: argparse.ArgumentParser) -> argparse.Namespace:
     try:
         defaults, source = load_default_settings()
-        default_pr_limit = default_int(defaults, ["limits", "prs"], FALLBACK_DEFAULTS["limits"]["prs"])
-        default_issue_limit = default_int(defaults, ["limits", "issues"], FALLBACK_DEFAULTS["limits"]["issues"])
+        default_mode = default_history_mode(defaults)
+        default_pr_limit = default_limit(defaults, "prs")
+        default_issue_limit = default_limit(defaults, "issues")
         default_summary_chars = default_int(defaults, ["summaryChars"], FALLBACK_DEFAULTS["summaryChars"])
     except ValueError as exc:
         parser.error(str(exc))
 
+    history_mode = args.history_mode or default_mode
+    collect = history_collect(history_mode)
+    if args.provider_mode == "off":
+        if history_mode == "provider-required":
+            parser.error("--provider-mode off cannot be combined with --history-mode provider-required")
+        collect = {**collect, "provider": False}
     pr_limit = args.pr_limit if args.pr_limit is not None else default_pr_limit
     issue_limit = args.issue_limit if args.issue_limit is not None else default_issue_limit
     summary_chars = args.summary_chars if args.summary_chars is not None else default_summary_chars
@@ -101,7 +141,9 @@ def apply_effective_settings(args: argparse.Namespace, parser: argparse.Argument
     if summary_chars < 100:
         parser.error("--summary-chars must be at least 100")
 
-    overrides: dict[str, int] = {}
+    overrides: dict[str, Any] = {}
+    if args.history_mode is not None:
+        overrides["history_mode"] = args.history_mode
     if args.pr_limit is not None:
         overrides["pr_limit"] = args.pr_limit
     if args.issue_limit is not None:
@@ -109,10 +151,16 @@ def apply_effective_settings(args: argparse.Namespace, parser: argparse.Argument
     if args.summary_chars is not None:
         overrides["summary_chars"] = args.summary_chars
 
+    args.history_mode = history_mode
+    args.history_collect = collect
     args.pr_limit = pr_limit
     args.issue_limit = issue_limit
     args.summary_chars = summary_chars
     args.effective_settings = {
+        "history": {
+            "mode": history_mode,
+            "collect": collect,
+        },
         "limits": {
             "prs": pr_limit,
             "issues": issue_limit,
@@ -592,13 +640,13 @@ def cli_evidence_state(command: str, host: str) -> tuple[str, bool]:
     return ("ready", True) if result.returncode == 0 else ("auth_required", True)
 
 
-def provider_report(repo: Path, memory: Path) -> dict[str, Any]:
+def provider_report(repo: Path, memory: Path, *, inspect_cli: bool = True) -> dict[str, Any]:
     remote = provider_from_profile(memory) or parse_code_host_repo(git(repo, ["remote", "-v"], "git could not list remotes"))
     provider = remote["provider"]
     cli = "gh" if provider == "github" else "glab" if provider == "gitlab" else ""
-    evidence_state = "unavailable"
+    evidence_state = "unavailable" if inspect_cli else "skipped_by_policy"
     cli_available = False
-    if cli:
+    if cli and inspect_cli:
         evidence_state, cli_available = cli_evidence_state(cli, remote["host"])
     return {
         "name": provider,
@@ -766,6 +814,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--repo-path", default=".", help="Local git repository path")
     parser.add_argument("--memory-path", help="Existing .repo_memory path; defaults to <repo>/.repo_memory")
     parser.add_argument("--snapshot-ref", default="HEAD", help="Local git ref used for current detection")
+    parser.add_argument("--history-mode", choices=sorted(HISTORY_MODES), default=None, help="History evidence policy for this update")
     parser.add_argument("--provider-mode", choices=["auto", "off"], default="auto", help="Whether to fetch latest provider PR/issue facets when provider evidence is ready")
     parser.add_argument("--pr-limit", type=int, default=None, help="Maximum latest PR/MR candidates to compare")
     parser.add_argument("--issue-limit", type=int, default=None, help="Maximum latest issue candidates to compare")
@@ -793,12 +842,19 @@ def main(argv: list[str]) -> int:
 
     head = git(repo, ["rev-parse", "--verify", f"{args.snapshot_ref}^{{commit}}"], f"git could not resolve {args.snapshot_ref!r}")
     baseline_sha = commit_baseline(memory, repo, head)
-    local_commits, local_commit_status = commit_delta(repo, baseline_sha, head)
+    if args.history_collect["commits"]:
+        local_commits, local_commit_status = commit_delta(repo, baseline_sha, head)
+    else:
+        local_commits, local_commit_status = [], {
+            "status": "skipped",
+            "reason": "history_disabled_by_policy",
+            "message": "Local commit delta detection is disabled by repoHistory.mode.",
+        }
 
     existing_prs = baseline_items(memory, "prs.md", "pr")
     existing_issues = baseline_items(memory, "issues.md", "issue")
-    provider = provider_report(repo, memory)
-    if args.provider_mode == "auto":
+    provider = provider_report(repo, memory, inspect_cli=args.history_collect["provider"])
+    if args.history_collect["provider"]:
         provider_fetch, current_prs, current_issues = fetch_provider_items(
             repo,
             provider,
@@ -808,7 +864,14 @@ def main(argv: list[str]) -> int:
             args.summary_chars,
         )
     else:
-        provider_fetch, current_prs, current_issues = {"attempted": False, "reason": "provider-mode=off"}, [], []
+        reason = (
+            "provider-mode=off"
+            if args.provider_mode == "off"
+            else "history_disabled_by_policy"
+            if args.history_mode == "none"
+            else "history_provider_disabled_by_policy"
+        )
+        provider_fetch, current_prs, current_issues = {"attempted": False, "reason": reason}, [], []
     fetched_prs = current_prs if provider_fetch.get("ok") is True else []
     fetched_issues = current_issues if provider_fetch.get("ok") is True else []
     if not current_prs and provider_fetch.get("ok") is not True:

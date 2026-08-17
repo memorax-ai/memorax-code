@@ -10,6 +10,18 @@ import {
 
 export async function runCaptureCwdHook(options) {
   const input = await readStdinJson();
+  const record = recordWorkspaceEvidence(options, input);
+  if (!record) return;
+
+  if (record.cwd) {
+    const pluginDataPath = pluginDataWorkspacePath();
+    if (pluginDataPath) writeWorkspaceState(pluginDataPath, record, options);
+  }
+  writeSessionRegistry(memoraxCodeSessionRegistryPath(options), record, options);
+  return input;
+}
+
+export function recordWorkspaceEvidence(options, input) {
   const transcriptPath = stringOption(input.transcript_path) ?? stringOption(input.transcriptPath);
   if (options.requireTranscriptPathForTurnEvents && isTurnScopedEvent(input) && !transcriptPath) return;
   const cwd = typeof input.cwd === "string" && input.cwd.trim()
@@ -24,19 +36,12 @@ export async function runCaptureCwdHook(options) {
     capturedAt: new Date().toISOString(),
   };
 
-  const registryPath = memoraxCodeSessionRegistryPath(options);
-
   if (cwd) {
-    const targets = [
-      memoraxCodeWorkspacePath(options),
-      pluginDataWorkspacePath(),
-    ].filter(Boolean);
-
-    for (const target of targets) writeWorkspaceState(target, record, options);
+    const workspacePath = memoraxCodeWorkspacePath(options);
+    if (workspacePath) writeWorkspaceState(workspacePath, record, options);
   }
 
-  writeSessionRegistry(registryPath, record, options);
-  return input;
+  return record;
 }
 
 function isTurnScopedEvent(input) {
@@ -45,17 +50,19 @@ function isTurnScopedEvent(input) {
 }
 
 function memoraxCodeWorkspacePath(options) {
-  const home = memoraxCodeHome();
+  const home = memoraxCodeHome(options);
   return home ? join(home, "adapters", options.adapterDir, "workspaces.json") : undefined;
 }
 
 function memoraxCodeSessionRegistryPath(options) {
-  const home = memoraxCodeHome();
+  const home = memoraxCodeHome(options);
   return home ? join(home, "adapters", options.adapterDir, "session-registry.json") : undefined;
 }
 
-function memoraxCodeHome() {
-  return process.env.MEMORAX_CODE_HOME || (process.env.HOME ? join(process.env.HOME, ".memorax-code") : undefined);
+function memoraxCodeHome(options) {
+  return stringOption(options.memoraxCodeHome)
+    ?? stringOption(process.env.MEMORAX_CODE_HOME)
+    ?? (process.env.HOME ? join(process.env.HOME, ".memorax-code") : undefined);
 }
 
 function pluginDataWorkspacePath() {

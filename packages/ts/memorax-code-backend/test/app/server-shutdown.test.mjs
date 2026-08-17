@@ -55,15 +55,19 @@ test("Backend close is idempotent and waits for observability drain", async () =
   }
 });
 
-test("Backend starts isolated writeback reconcilers for Codex and Claude", { concurrency: false }, async () => {
+test("Backend starts isolated writeback reconcilers for every traced client", { concurrency: false }, async () => {
   const memoraxCodeHome = await mkdtemp(join(tmpdir(), "memorax-code-backend-client-reconcilers-"));
   const traces = await Promise.all([
     writePendingWritebackTrace(memoraxCodeHome, "codex", "codex-reconcile-task"),
     writePendingWritebackTrace(memoraxCodeHome, "claude", "claude-reconcile-task"),
+    writePendingWritebackTrace(memoraxCodeHome, "dsh", "dsh-reconcile-task"),
+    writePendingWritebackTrace(memoraxCodeHome, "opencode", "opencode-reconcile-task"),
   ]);
   const restoreEnv = withEnv({
     MEMORAX_CODE_CODEX_TRACE_ENABLED: "true",
     MEMORAX_CODE_CLAUDE_TRACE_ENABLED: "true",
+    MEMORAX_CODE_DSH_TRACE_ENABLED: "true",
+    MEMORAX_CODE_OPENCODE_TRACE_ENABLED: "true",
     MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
     MEMORAX_CODE_MEMORAX_API_KEY: "secret",
     MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
@@ -71,14 +75,14 @@ test("Backend starts isolated writeback reconcilers for Codex and Claude", { con
   });
   const originalFetch = globalThis.fetch;
   const requests = [];
-  let notifyBothPolled;
-  const bothPolled = new Promise((resolve) => {
-    notifyBothPolled = resolve;
+  let notifyAllPolled;
+  const allPolled = new Promise((resolve) => {
+    notifyAllPolled = resolve;
   });
   globalThis.fetch = async (url) => {
     const taskId = new URL(String(url)).pathname.split("/").at(-1);
     requests.push(taskId);
-    if (requests.length === 2) notifyBothPolled();
+    if (requests.length === 4) notifyAllPolled();
     return new Response(JSON.stringify({
       status: "success",
       memory: {
@@ -92,14 +96,17 @@ test("Backend starts isolated writeback reconcilers for Codex and Claude", { con
   );
   try {
     await Promise.race([
-      bothPolled,
-      new Promise((_, reject) => setTimeout(() => reject(new Error("both client tasks were not polled")), 1_000)),
+      allPolled,
+      new Promise((_, reject) => setTimeout(() => reject(new Error("traced client tasks were not polled")), 1_000)),
     ]);
     await server.shutdown();
 
+    assert.equal(requests.length, 4);
     assert.deepEqual(new Set(requests), new Set([
       "codex-reconcile-task",
       "claude-reconcile-task",
+      "dsh-reconcile-task",
+      "opencode-reconcile-task",
     ]));
     for (const trace of traces) {
       const events = (await readFile(trace.eventsPath, "utf8"))

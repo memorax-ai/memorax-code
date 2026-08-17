@@ -1,9 +1,10 @@
 # Security Policy
 
-MemoraX Code is a local-first integration for Codex and Claude Code with an
-optional external bind mode and required communication with MemoraX for
-cloud-backed memory. Security reports should distinguish the local Backend,
-client-owned provider traffic, and MemoraX memory traffic.
+MemoraX Code is a local-first integration for Codex, Claude Code, DeepSeek
+Harness (DSH), and OpenCode with an optional external bind mode and required
+communication with MemoraX for cloud-backed memory. Security reports should
+distinguish the local Backend, client-owned provider traffic, and MemoraX
+memory traffic.
 
 ## Supported Versions
 
@@ -28,9 +29,9 @@ Please allow time for triage and remediation before public disclosure.
 
 ### Client and local Backend
 
-- Codex and Claude Code own provider credentials, models, native tools, and
-  provider traffic. MemoraX Code does not proxy OpenAI Responses or Anthropic
-  Messages traffic and does not need client provider credentials.
+- Codex, Claude Code, DeepSeek Harness, and OpenCode own provider credentials,
+  models, native tools, and provider traffic. MemoraX Code does not proxy
+  model-provider traffic and does not need client provider credentials.
 - The managed Backend binds to loopback by default. External binding requires
   explicit opt-in and a Backend token; deployment operators must provide an
   appropriate authenticated and encrypted network boundary.
@@ -39,9 +40,29 @@ Please allow time for triage and remediation before public disclosure.
 - Hook, lifecycle, connection, PID, token, session, and workspace authority
   records are security-sensitive local state. Do not hand-edit or publish
   them.
+- The managed OpenCode plugin may recover an unavailable Backend only through
+  its package-recorded Node runtime and absolute `memorax-code` command, and
+  the currently resolved loopback HTTP authority. It preserves the existing
+  lifecycle lock and client selection; remote or invalid authority and removed
+  commands fail open without starting a process.
+- The managed DSH plugin may recover an unavailable loopback Backend only when
+  its package metadata and per-user lifecycle state agree on an enabled
+  authority and exact revision. Lifecycle commands publish disabled authority
+  before mutating Profiles. Missing, disabled, or invalid authority leaves the
+  MemoraX Code plugin inert without blocking DSH startup.
+- The globally installed DSH adapter source is read-only. Managed Profile
+  packages are content-addressed copies under `MEMORAX_CODE_HOME`; Profile
+  mutation goes through DSH's native plugin command. The DSH state record,
+  generated runtime, and Profile manifests are security-sensitive local
+  authority and must not be copied between users or edited by hand.
 - Initial Repo Memory builds use only the Git worktree returned by an
   authenticated Backend turn-start request. Backend or workspace-scope
-  failures skip the build; client Hooks do not fall back to their local `cwd`.
+  failures skip the build; client integrations do not fall back to
+  adapter-local workspace input.
+- Codex and OpenCode read repository-local User Profile and Procedure Memory
+  only from the worktree authorized by the current Backend turn-start result.
+  Without that authority they keep only the generic Skill reminder and do not
+  fall back to the client `cwd` for repository-local content.
 - MemoraX-backed Search, Add, and automatic writeback may downgrade malformed
   or incomplete internal metadata in a direct `.git` directory to the
   canonical workspace folder identity. The CLI exposes the fallback reason,
@@ -61,11 +82,15 @@ the generated configuration's automatic writeback; automatic retrieval remains
 disabled until explicitly enabled.
 
 Memory searches send the query and repository-scoped identity to MemoraX.
+When DSH or OpenCode automatic retrieval is enabled, each eligible direct user
+prompt is used as the search query.
 Active adds and automatic writeback send the selected content needed to create
 memory. Automatic writeback may include selected user instructions and the
-matching final assistant response from an exact Codex or Claude Code
-transcript turn. It does not send the retained trace file, raw transcript
-path, or trace-only provenance as part of that payload.
+matching final assistant response from an exact Codex rollout, Claude Code
+transcript, DSH persisted Session Event Log interval, or OpenCode SDK
+session-message turn. It does not send the retained trace file, raw transcript
+path, raw DSH interval, SDK message records, or trace-only provenance as part
+of that payload.
 
 Automatic writeback bounds each selected message to its configured Add limit,
 then applies a local best-effort detector before hashing, buffering, chunking,
@@ -113,11 +138,17 @@ the product creates or tightens the home to mode `0700` and newly seeded
 configuration to mode `0600`; Windows relies on the current user's filesystem
 ACLs.
 
-Codex and Claude Code local trace capture is enabled by default and may include
-prompts, responses, recalled memory, writeback content, reminder text, and
-local paths. Trace files stay under `MEMORAX_CODE_HOME`. The shipped package
-has no trace uploader, collector, receiver, or export command. This does not
-change the separate MemoraX queries and writeback described above.
+Codex, Claude Code, DSH, and OpenCode local trace capture is enabled by default.
+Depending on the enabled client capabilities, traces may include prompts,
+responses, recalled memory, writeback content, reminder text, and local paths.
+Trace files stay under `MEMORAX_CODE_HOME`. The shipped package has no trace
+uploader, collector, receiver, or export command. This does not change the
+separate MemoraX queries and writeback described above.
+
+DSH remains absent from Memory Viewer in this capability layer. Its Session
+Event Log remains client-owned native history and is read only for the exact
+Turn interval; MemoraX Code records normalized DSH trace events but does not
+copy the raw log or its path into retained trace.
 
 The local `/memory-viewer` surface is a content-free activity summary. It must
 not expose conversation or memory text, session/turn identifiers, paths, or
@@ -136,8 +167,10 @@ Use:
 memorax-code uninstall
 ```
 
-This stops the managed Backend, removes managed Codex/Claude integrations, and
-removes the global npm package when possible. It intentionally retains:
+This stops the managed Backend, removes managed client integrations, and
+removes the global npm package when possible. For DSH it removes only the
+managed MemoraX Code plugin from Profiles; the Profiles and their session data
+remain owned by DSH. It intentionally retains:
 
 - `MEMORAX_CODE_HOME`, including configuration and local traces;
 - Claude plugin data;
