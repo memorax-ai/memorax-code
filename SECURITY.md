@@ -63,12 +63,15 @@ Please allow time for triage and remediation before public disclosure.
 MemoraX-backed search, retrieval, and writeback require a User ID, an
 effective API key, and network access. The API key may come from a ready secure
 trial credential or an explicit environment/TOML value. Interactive setup
-discloses automatic writeback before creating or restoring the trial
-credential. A ready connection activates search/add and the generated
-configuration's automatic writeback; automatic retrieval remains disabled
-until explicitly enabled. Automatic setup asks before reusing existing
-effective credentials and does not collect or print them again. Its config-only
-check does not contact MemoraX or prove that the API key is accepted remotely.
+discloses automatic writeback before asking whether to use an existing account
+or create a trial account. The existing-account path accepts an API key through
+masked terminal input and stores it in the private TOML configuration; the
+trial path creates or restores the operating-system-protected credential. A
+ready connection activates search/add and the generated configuration's
+automatic writeback; automatic retrieval remains disabled until explicitly
+enabled. Automatic setup asks before reusing existing effective credentials
+and does not collect or print them again. Its config-only check does not contact
+MemoraX or prove that the API key is accepted remotely.
 
 Memory searches send the query and repository-scoped identity to MemoraX.
 Active adds and automatic writeback send the selected content needed to create
@@ -115,17 +118,19 @@ For a persistent disable, set:
 enabled = false
 ```
 
-### Trial credential storage
+### MemoraX credential storage
 
 The versioned trial credential record is separate from `config.toml`. Its
 provisioned `account_id` is account identity and never replaces the User ID
 stored as `[memorax].user_id`.
 
-Setup-managed configuration stores only the endpoint, User ID, and language
-preference in `config.toml`. Runtime API-key resolution prefers an explicit
-environment value, then a legacy/manual TOML value, then a ready secure trial
-credential. Trial account and project identifiers never participate in the
-workspace-scoped User ID.
+Trial setup stores only the endpoint, User ID, and language preference in
+`config.toml`. Existing-account setup also stores the entered API key there;
+new POSIX configuration files use mode `0600`, while Windows relies on the
+current user's filesystem ACLs. Runtime API-key resolution prefers an explicit
+environment value, then a TOML value, then a ready secure trial credential.
+Trial account and project identifiers never participate in the workspace-
+scoped User ID.
 
 The secure credential layer uses macOS Keychain, Linux Secret Service through
 libsecret, and Windows CurrentUser DPAPI with an atomically replaced encrypted

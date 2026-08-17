@@ -848,7 +848,7 @@ test("setup update defaults to trusting new Hooks on Enter and trusts only the r
     existingCache: true,
     npmCommand: "update",
     interactive: true,
-    input: "memory-user\n\n\n",
+    input: "memory-user\n\n\n\n",
     hookSnapshot: [existing],
     hookUpdatePlan: [added],
   });
@@ -896,7 +896,7 @@ test("setup update keeps modified Hooks untrusted when authorization is declined
     existingCache: true,
     npmCommand: "update",
     interactive: true,
-    input: "memory-user\n\nn\n",
+    input: "memory-user\n\n\nn\n",
     hookSnapshot: [previous],
     hookUpdatePlan: [changed],
   });
@@ -1020,7 +1020,7 @@ test("setup update does not authorize malformed Hook trust reports", async (t) =
         existingCache: true,
         npmCommand: "update",
         interactive: true,
-        input: "memory-user\n\ny\n",
+        input: "memory-user\n\n\ny\n",
         hookSnapshot: [],
         hookUpdatePlan: [hook],
         hookFullReviewMissing,
@@ -1064,7 +1064,7 @@ test("setup update succeeds with Hooks untrusted when the reviewed batch cannot 
     existingCache: true,
     npmCommand: "update",
     interactive: true,
-    input: "memory-user\n\ny\n",
+    input: "memory-user\n\n\ny\n",
     hookSnapshot: [],
     hookUpdatePlan: [added],
     hookTrustFails: true,
@@ -1662,6 +1662,7 @@ test("setup can write MemoraX memory config before backend start", async () => {
     assert.doesNotMatch(run.result.stderr, /Enable automatic writeback|Enable writeback now/);
     assert.match(run.result.stderr, /User ID: <provided>/);
     assert.match(run.result.stderr, /Preferred language \[ZH\/en\] \(used for Memory extraction\): <provided>/);
+    assert.match(run.result.stderr, /Do you already have a MemoraX account\? \[y\/N\]/);
     assert.doesNotMatch(run.result.stderr, /API key/i);
     assert.match(run.result.stderr, /Secure MemoraX trial credential is ready/);
     assert.doesNotMatch(run.result.stderr, /MemoraX endpoint/);
@@ -1702,6 +1703,32 @@ test("setup can write MemoraX memory config before backend start", async () => {
       config,
       /top_k|k_dense|k_sparse|min_score|max_context_chars|max_item_chars|buffer_|chunk_|max_message_chars|timeout_ms|retention_days|max_event_chars|max_file_bytes/,
     );
+  } finally {
+    await rm(run.root, { recursive: true, force: true });
+  }
+});
+
+test("setup configures an existing MemoraX account without trial provisioning", async () => {
+  const apiKey = `sk_${"R".repeat(43)}`;
+  const run = await runSetup({
+    interactive: true,
+    input: `registered-user\nen\ny\n${apiKey}\n`,
+    trialProvisionFailure: true,
+  });
+  try {
+    assert.equal(run.result.code, 0, run.result.stderr);
+    assert.match(run.result.stderr, /Do you already have a MemoraX account\? \[y\/N\]/);
+    assert.match(run.result.stderr, /MemoraX API key: <provided>/);
+    assert.match(run.result.stderr, /Existing MemoraX account connection configured/);
+    assert.doesNotMatch(run.result.stderr, /Creating or restoring a secure MemoraX trial credential/);
+    assert.doesNotMatch(`${run.result.stdout}\n${run.result.stderr}`, new RegExp(apiKey));
+    assert.doesNotMatch(run.log, /^trial-provision$/m);
+    const config = await readFile(join(run.memoraxCodeHome, "config.toml"), "utf8");
+    assert.match(config, /user_id = "registered-user"/);
+    assert.match(config, /output_language = "en"/);
+    assert.ok(config.includes(`api_key = "${apiKey}" # MemoraX API key used by the local Backend.`));
+    assert.equal((await stat(join(run.memoraxCodeHome, "config.toml"))).mode & 0o777, 0o600);
+    await assertSetupComplete(run);
   } finally {
     await rm(run.root, { recursive: true, force: true });
   }

@@ -251,17 +251,31 @@ async function maybeConfigureMemoraxMemory(scriptedAnswers, { showDisclosure = t
   if (scriptedAnswers) {
     return await configureMemoraxMemoryFromAnswers(scriptedAnswers);
   }
-  const rl = createInterface({ input: process.stdin, output: process.stderr });
+  let rl = createInterface({ input: process.stdin, output: process.stderr });
   try {
     const userId = (await rl.question(`${PREFIX} User ID (used for your memories): `)).trim();
     const outputLanguage = await questionPreferredLanguage(rl);
+    const existingAccount = await questionExistingMemoraxAccount(rl);
+    if (existingAccount) {
+      rl.close();
+      rl = undefined;
+      const apiKey = (await questionMasked(`${PREFIX} MemoraX API key: `)).trim();
+      return await writeMemoraxConfigFromInput({
+        userId,
+        endpoint: memoraxInstallEndpoint(),
+        outputLanguage,
+        existingAccount,
+        apiKey,
+      });
+    }
     return await writeMemoraxConfigFromInput({
       userId,
       endpoint: memoraxInstallEndpoint(),
       outputLanguage,
+      existingAccount,
     });
   } finally {
-    rl.close();
+    rl?.close();
   }
 }
 
@@ -301,10 +315,18 @@ async function configureMemoraxMemoryFromAnswers(answers) {
   log(`User ID: ${userId ? "<provided>" : "<missing>"}`);
   const outputLanguageAnswer = String(answers.shift() ?? "").trim();
   log(`Preferred language [ZH/en] (used for Memory extraction): ${outputLanguageAnswer ? "<provided>" : "<default>"}`);
+  log("Do you already have a MemoraX account? [y/N]");
+  const existingAccount = /^y(?:es)?$/i.test(String(answers.shift() ?? "").trim());
+  const apiKey = existingAccount
+    ? String(answers.shift() ?? "").trim()
+    : undefined;
+  if (existingAccount) log(`MemoraX API key: ${apiKey ? "<provided>" : "<missing>"}`);
   return await writeMemoraxConfigFromInput({
     userId,
     endpoint: memoraxInstallEndpoint(),
     outputLanguage: preferredLanguage(outputLanguageAnswer),
+    existingAccount,
+    apiKey,
   });
 }
 
@@ -314,7 +336,13 @@ function printMemoraxDisclosure() {
   log("Newly generated configuration enables automatic writeback. Existing configuration is never enabled implicitly; disable it with `[memory.writeback] enabled = false` or `MEMORAX_CODE_MEMORAX_WRITEBACK_ENABLED=false`.");
 }
 
-async function writeMemoraxConfigFromInput({ userId, endpoint, outputLanguage }) {
+async function writeMemoraxConfigFromInput({
+  userId,
+  endpoint,
+  outputLanguage,
+  existingAccount,
+  apiKey,
+}) {
   if (!userId) {
     logRed("MemoraX config was not written because User ID was empty.");
     return "failed";
@@ -322,6 +350,20 @@ async function writeMemoraxConfigFromInput({ userId, endpoint, outputLanguage })
   if (!outputLanguage) {
     logRed("MemoraX config was not written because preferred language must be zh or en.");
     return "failed";
+  }
+  if (existingAccount) {
+    if (!apiKey) {
+      logRed("MemoraX config was not written because API key was empty.");
+      return "failed";
+    }
+    if (writeMemoraxConfig({ userId, endpoint, outputLanguage, apiKey }) === "failed") {
+      logRed("MemoraX config was not written because the existing config could not be safely updated.");
+      return "failed";
+    }
+    logGreen("Existing MemoraX account connection configured.");
+    logGreen(`MemoraX config written to ${memoraxCodeConfigPath()}.`);
+    log("MemoraX network access will be checked by the first workspace-scoped memory request from a trusted workspace.");
+    return "configured";
   }
   log("Creating or restoring a secure MemoraX trial credential...");
   try {
@@ -351,6 +393,65 @@ async function questionPreferredLanguage(rl) {
     if (language) return language;
     logRed("Preferred language must be zh or en.");
   }
+}
+
+async function questionExistingMemoraxAccount(rl) {
+  const answer = await rl.question(`${PREFIX} Do you already have a MemoraX account? [y/N] `);
+  return /^y(?:es)?$/i.test(answer.trim());
+}
+
+async function questionMasked(prompt) {
+  if (process.stdin.isTTY !== true || typeof process.stdin.setRawMode !== "function") {
+    const rl = createInterface({ input: process.stdin, output: process.stderr });
+    try {
+      return await rl.question(prompt);
+    } finally {
+      rl.close();
+    }
+  }
+  process.stderr.write(prompt);
+  const wasRaw = process.stdin.isRaw === true;
+  process.stdin.setRawMode(true);
+  process.stdin.resume();
+  return await new Promise((resolve, reject) => {
+    let answer = "";
+    const cleanup = () => {
+      process.stdin.off("data", onData);
+      process.stdin.setRawMode(wasRaw);
+      if (!wasRaw) process.stdin.pause();
+    };
+    const finish = () => {
+      cleanup();
+      process.stderr.write("\n");
+      resolve(answer);
+    };
+    const onData = (chunk) => {
+      for (const char of String(chunk)) {
+        if (char === "\u0003") {
+          cleanup();
+          process.stderr.write("\n");
+          reject(new Error("Interrupted"));
+          return;
+        }
+        if (char === "\r" || char === "\n") {
+          finish();
+          return;
+        }
+        if (char === "\u0008" || char === "\u007f") {
+          if (answer.length > 0) {
+            answer = answer.slice(0, -1);
+            process.stderr.write("\b \b");
+          }
+          continue;
+        }
+        if (char >= " " && char !== "\u007f") {
+          answer += char;
+          process.stderr.write("*");
+        }
+      }
+    };
+    process.stdin.on("data", onData);
+  });
 }
 
 function preferredLanguage(value) {
@@ -575,7 +676,7 @@ function setManagedClientSelection(text, clients) {
   return setTomlField(withClaude, "clients", "codex", String(clients.includes("codex")));
 }
 
-function writeMemoraxConfig({ userId, endpoint, outputLanguage }) {
+function writeMemoraxConfig({ userId, endpoint, outputLanguage, apiKey }) {
   const path = memoraxCodeConfigPath();
   const fields = [
     {
@@ -592,9 +693,14 @@ function writeMemoraxConfig({ userId, endpoint, outputLanguage }) {
     line: `output_language = "${outputLanguage}" # Language for newly generated MemoraX memories.`,
   }];
   const applyFields = (text) => {
-    const withoutLegacyApiKey = setTomlField(text, "memorax", "api_key", undefined);
+    const withSelectedApiKey = apiKey
+      ? setTomlSectionFields(text, "memorax", [{
+        key: "api_key",
+        line: `api_key = "${tomlString(apiKey)}" # MemoraX API key used by the local Backend.`,
+      }])
+      : setTomlField(text, "memorax", "api_key", undefined);
     return setTomlSectionFields(
-      setTomlSectionFields(withoutLegacyApiKey, "memorax", fields),
+      setTomlSectionFields(withSelectedApiKey, "memorax", fields),
       "memory.add",
       addFields,
     );

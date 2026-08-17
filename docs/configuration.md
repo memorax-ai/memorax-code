@@ -103,16 +103,19 @@ Setup has three connection-handling modes. The no-argument command enters
 automatic setup when completion is absent. If a locally ready MemoraX
 connection exists, it asks whether to reuse the saved connection and memory
 preferences. Accepting preserves them. If no ready connection exists, or reuse
-is declined, setup asks for a User ID and preferred language, then creates or
-restores a secure trial credential before writing those preferences.
+is declined, setup asks for a User ID, preferred language, and whether the user
+already has a MemoraX account. Selecting an existing account prompts for its
+API key, writes it with the connection preferences, and skips trial
+provisioning. Selecting no, or pressing Enter, creates or restores a secure
+trial credential and writes the preferences without a TOML API key.
 
-Explicit `memorax-code setup` asks for a User ID and language and uses the
-same trial-credential path. After the secure trial credential is ready, it
-removes any `[memorax].api_key` from `config.toml` so that the old manual key
-does not mask the trial connection. An environment API key remains a
-higher-precedence override. Setup reached from `memorax-code update` preserves
-the existing MemoraX connection without asking for memory preferences or
-changing credentials.
+Explicit `memorax-code setup` offers the same existing-account or trial choice.
+After the secure trial credential is ready, setup removes any
+`[memorax].api_key` from `config.toml` so that an old manual key does not mask
+the trial connection. An environment API key remains a higher-precedence
+override. Setup reached from `memorax-code update` preserves the existing
+MemoraX connection without asking for memory preferences or changing
+credentials.
 
 Setup stages the packaged Hook runtime and reconciles the selected clients
 with `memorax-code start` followed by `memorax-code status`. An ordinary start
@@ -176,9 +179,10 @@ user_id = "your-user-id"
 # startup_timeout_ms = 3000
 ```
 
-This is the setup-managed form: the trial API key is not written to
-`config.toml`. A manually managed connection may additionally set `api_key`
-here or supply `MEMORAX_CODE_MEMORAX_API_KEY`.
+This is the trial setup-managed form: the trial API key is not written to
+`config.toml`. When the user selects an existing MemoraX account, interactive
+setup additionally writes its entered `api_key` here. A manually managed
+connection may also set `api_key` or supply `MEMORAX_CODE_MEMORAX_API_KEY`.
 
 | Field | Environment override | Fallback |
 | --- | --- | --- |
@@ -195,8 +199,9 @@ one of those sources, and a valid `zh` or `en` memory output language form a
 locally ready connection; an omitted output language uses the `zh` fallback.
 This check does not send a network request or prove that the API key is
 accepted by the memory API. Trial provisioning is a separate foreground
-network operation. Setup writes the endpoint, User ID, and language to
-`config.toml`, while environment variables remain higher-precedence overrides.
+network operation. The trial path writes the endpoint, User ID, and language
+to `config.toml`; the existing-account path also writes the entered API key.
+Environment variables remain higher-precedence overrides.
 
 MemoraX requests send the API key and the query or content required by the
 selected memory operation to the HTTPS endpoint. Override `endpoint` only with
@@ -359,9 +364,10 @@ records while a setup, npm, or lifecycle command may still be active.
 - Malformed TOML, a non-table root, or invalid `[clients]` types block
   lifecycle mutations before adapters or processes are changed.
 - Automatic setup offers to reuse a locally ready MemoraX connection. If none
-  exists or reuse is declined, it asks for a User ID and language and
-  provisions the trial credential. A malformed TOML file remains fail-closed
-  and is not overwritten by the prompt flow.
+  exists or reuse is declined, it asks for a User ID, language, and account
+  choice, then configures the entered existing-account API key or provisions a
+  trial credential. A malformed TOML file remains fail-closed and is not
+  overwritten by the prompt flow.
 - Ordinary memory and trace readers use safe fallbacks when the file cannot be
   read or parsed; memory readers may also warn. Unsupported field types are
   ignored.

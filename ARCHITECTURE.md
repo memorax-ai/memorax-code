@@ -172,19 +172,34 @@ sequenceDiagram
       alt Reuse accepted
         Setup->>Config: preserve connection and preferences
       else Reuse declined
-        Setup->>User: request User ID and language
+        Setup->>User: request User ID, language, and account choice
+        alt Existing MemoraX account
+          Setup->>User: request API key
+          Setup->>Config: write endpoint, User ID, language, and API key
+        else No existing account
+          Setup->>Trial: create or restore ready credential
+          Setup->>Config: write endpoint, User ID, and language
+        end
+      end
+    else Effective connection is incomplete or invalid
+      Setup->>User: request User ID, language, and account choice
+      alt Existing MemoraX account
+        Setup->>User: request API key
+        Setup->>Config: write endpoint, User ID, language, and API key
+      else No existing account
         Setup->>Trial: create or restore ready credential
         Setup->>Config: write endpoint, User ID, and language
       end
-    else Effective connection is incomplete or invalid
-      Setup->>User: request User ID and language
-      Setup->>Trial: create or restore ready credential
-      Setup->>Config: write endpoint, User ID, and language
     end
   else Explicit setup
-    Setup->>User: request User ID and language
-    Setup->>Trial: create or restore ready credential
-    Setup->>Config: replace active TOML connection preferences
+    Setup->>User: request User ID, language, and account choice
+    alt Existing MemoraX account
+      Setup->>User: request API key
+      Setup->>Config: replace TOML connection and API key
+    else No existing account
+      Setup->>Trial: create or restore ready credential
+      Setup->>Config: replace active TOML connection preferences
+    end
   end
   alt Selected Codex integration has no active plugin
     Setup->>CodexPlugin: activate bundled plugin and trust current Hook hashes
@@ -219,11 +234,13 @@ unsupported state fails closed. Explicit `memorax-code setup` runs regardless
 of completion, while product update uses a separate setup mode. Automatic setup
 uses the config-only status authority to find a locally ready effective MemoraX
 connection and asks before reusing its connection and memory preferences. If
-none is ready or reuse is declined, it asks only for a User ID and language,
-then creates or restores the secure trial credential before writing those
-preferences. Explicit setup follows the same trial path; update setup preserves
-credentials and memory preferences. The local status check does not prove
-remote credential acceptance.
+none is ready or reuse is declined, it asks for a User ID, language, and
+whether the user already has a MemoraX account. An existing-account choice
+stores the entered API key with the connection preferences and skips trial
+provisioning. Otherwise setup creates or restores the secure trial credential
+and writes the preferences without a TOML API key. Explicit setup offers the
+same choice; update setup preserves credentials and memory preferences. The
+local status check does not prove remote credential acceptance.
 
 Setup owns client discovery, user prompts, foreground trial provisioning,
 configuration changes, initial bundled-Hook activation, exact changed-Hook
@@ -231,12 +248,14 @@ review, Hook generation staging, and readiness reconciliation. Entering
 interactive setup authorizes initial activation for a selected Codex
 integration without a second confirmation;
 new or changed Hook command hashes on later updates still require foreground
-review. Trial provisioning must succeed before setup applies the selected
-User ID and language or begins plugin and Backend reconciliation. Setup may
-make one bounded stop/start recovery attempt for an ordinary start failure,
-while deterministic Hook activation, lifecycle-lock, and persisted-authority
-failures remain fail-closed. Outside update mode, setup records completion
-only after a final config-only readiness check.
+review. The selected MemoraX connection path must complete before plugin and
+Backend reconciliation begins. Trial provisioning must succeed before setup
+applies the selected User ID and language; the existing-account path writes the
+entered API key and preferences together. Setup may make one bounded stop/start
+recovery attempt for an ordinary start failure, while deterministic Hook
+activation, lifecycle-lock, and persisted-authority failures remain
+fail-closed. Outside update mode, setup records completion only after a final
+config-only readiness check.
 
 The principal control-plane locations are:
 
