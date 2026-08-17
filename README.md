@@ -134,14 +134,6 @@ the current repository.
 | **Client integration** | Integrates with Codex, Claude Code, and OpenCode to trigger memory retrieval, reminders, and writeback. |
 | **Local visualization** | Uses the local Memory Viewer to summarize activity counts, retrieval, and writeback status. |
 
-> [!NOTE]
-> Experimental DeepSeek Harness source integration can route retrieval and
-> completed-turn writeback through [Patchouli](https://github.com/memorax-ai/dsh-patchouli)
-> when available, and use native DSH hooks otherwise. It is not yet a formally
-> packaged DSH plugin: the production Cordis entrypoint, DSH Profile lifecycle,
-> npm delivery, and installed-DSH end-to-end coverage are still pending. The
-> global npm installer currently supports only Codex, Claude Code, and OpenCode.
-
 ## Your Memory, Your Control
 
 MemoraX is required for cloud-backed memory. Entering a Base User ID and API

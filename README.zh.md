@@ -118,13 +118,6 @@ cd test-repo
 | **客户端集成** | 与 Codex、Claude Code 和 OpenCode 集成，触发记忆检索、提醒和写入。 |
 | **本地可视化** | 通过本地 Memory Viewer 查看活动统计、召回与写入状态。 |
 
-> [!NOTE]
-> 实验性的 DeepSeek Harness 源码集成可以在
-> [Patchouli](https://github.com/memorax-ai/dsh-patchouli) 存在时经由其中台完成召回和已完成
-> Turn 的写回，否则使用原生 DSH hooks。它目前还不是正式打包的 DSH 插件：生产 Cordis
-> 入口、DSH Profile 生命周期、npm 交付和已安装 DSH 的端到端测试仍待完成。全局 npm
-> 安装器目前只支持 Codex、Claude Code 和 OpenCode。
-
 ## 你的记忆，由你控制
 
 云端记忆依赖 MemoraX。用户在阅读安装披露后输入 Base User ID 和 API Key，会启用
