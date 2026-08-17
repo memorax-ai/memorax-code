@@ -173,7 +173,31 @@ test("root help documents setup and update", async () => {
     assert.equal(result.error, undefined);
     assert.match(result.stdout, /^Usage: memorax-code \[command\] \[options\]/);
     assert.match(result.stdout, /^  setup\s+Run or repair the interactive setup$/m);
+    assert.match(result.stdout, /^  account\s+Manage local MemoraX account information$/m);
     assert.match(result.stdout, /^  update\s+Update the globally installed npm package$/m);
+    assert.equal(await pathExists(fixture.setupLogPath), false);
+    assert.equal(await pathExists(fixture.backendLogPath), false);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("account command reveals only the requested local trial Mark ID", async () => {
+  const fixture = await createPackageFixture();
+  const markId = `mk_${"a".repeat(64)}`;
+  const apiKey = `sk_${"S".repeat(43)}`;
+  try {
+    const result = runCli(fixture, ["account", "--show-mark-id"], {
+      extraEnv: {
+        MEMORAX_CODE_TEST_MARK_ID: markId,
+        MEMORAX_CODE_TEST_API_KEY: apiKey,
+      },
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.error, undefined);
+    assert.equal(result.stdout, `Mark ID: ${markId}\n`);
+    assert.doesNotMatch(`${result.stdout}\n${result.stderr}`, new RegExp(apiKey));
     assert.equal(await pathExists(fixture.setupLogPath), false);
     assert.equal(await pathExists(fixture.backendLogPath), false);
   } finally {
@@ -252,6 +276,21 @@ async function createPackageFixture() {
     version: "0.0.0-test",
     type: "module",
   }, null, 2)}\n`);
+  await writeFile(join(root, "lib", "trial-setup.mjs"), [
+    "export async function loadReadyTrialSetupCredential(options = {}) {",
+    "  if (options.memoraxCodeHome !== process.env.MEMORAX_CODE_TEST_EXPECTED_ACCOUNT_HOME) {",
+    "    throw new Error('unexpected MemoraX Code home');",
+    "  }",
+    "  const markId = process.env.MEMORAX_CODE_TEST_MARK_ID;",
+    "  if (!markId) return undefined;",
+    "  return {",
+    "    status: 'ready',",
+    "    markId,",
+    "    apiKey: process.env.MEMORAX_CODE_TEST_API_KEY,",
+    "  };",
+    "}",
+    "",
+  ].join("\n"));
   await writeFile(join(root, "bin", "memorax-code-setup.mjs"), [
     "import { appendFileSync } from 'node:fs';",
     "appendFileSync(process.env.MEMORAX_CODE_TEST_SETUP_LOG, JSON.stringify({",
@@ -303,6 +342,9 @@ function runCli(fixture, args = [], {
     MEMORAX_CODE_TEST_BACKEND_LOG: fixture.backendLogPath,
     MEMORAX_CODE_TEST_SETUP_EXIT_CODE: String(setupExitCode),
     MEMORAX_CODE_TEST_BACKEND_EXIT_CODE: String(backendExitCode),
+    MEMORAX_CODE_TEST_EXPECTED_ACCOUNT_HOME: fixture.memoraxCodeHome,
+    MEMORAX_CODE_TEST_MARK_ID: "",
+    MEMORAX_CODE_TEST_API_KEY: "",
   };
   delete env.MEMORAX_CODE_SETUP_REUSE_EXISTING_MEMORAX;
   delete env.MEMORAX_CODE_SETUP_UPDATE;

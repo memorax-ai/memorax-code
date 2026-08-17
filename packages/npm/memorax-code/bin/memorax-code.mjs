@@ -42,6 +42,7 @@ function printMainHelp() {
 
 Commands:
   setup       Run or repair the interactive setup
+  account     Manage local MemoraX account information
   start       Reconcile selected integrations and start the Backend
   status      Show Backend and integration status
   stop        Stop the Backend and selected integrations
@@ -53,6 +54,18 @@ Commands:
 
 Run \`memorax-code\` with no command to start setup on first use or show status after setup.
 Run \`memorax-code <command> --help\` for command-specific options.`);
+}
+
+function printAccountHelp() {
+  console.log(`Usage: memorax-code account --show-mark-id [--home DIR]
+
+Show the Mark ID for the ready local trial identity. Run this command directly
+in your local terminal and keep its output private.
+
+Options:
+  --show-mark-id  Show the complete local trial Mark ID
+  --home DIR      Read the specified MemoraX Code home
+  -h, --help      Show this help message`);
 }
 
 function printSetupHelp() {
@@ -75,6 +88,39 @@ function npmCommandCwd() {
     if (candidate && existsSync(candidate)) return candidate;
   }
   return "/";
+}
+
+async function runAccountCommand(args) {
+  if (args.includes("--help") || args.includes("-h")) {
+    printAccountHelp();
+    return 0;
+  }
+  let memoraxCodeHome;
+  try {
+    memoraxCodeHome = requestedMemoraxCodeHome(args);
+    assertAccountArgs(args);
+  } catch (error) {
+    console.error(`memorax-code account: ${error instanceof Error ? error.message : String(error)}`);
+    printAccountHelp();
+    return 2;
+  }
+
+  try {
+    const { loadReadyTrialSetupCredential } = await loadTrialSetupApi();
+    const credential = await loadReadyTrialSetupCredential({
+      memoraxCodeHome,
+      env: process.env,
+    });
+    if (!credential) {
+      console.error("memorax-code account: no ready local trial identity was found");
+      return 1;
+    }
+    console.log(`Mark ID: ${credential.markId}`);
+    return 0;
+  } catch {
+    console.error("memorax-code account: unable to read the secure local trial identity");
+    return 1;
+  }
 }
 
 async function runUpdateCommand(args) {
@@ -233,6 +279,24 @@ async function routeDefaultCommand() {
   }
 }
 
+function assertAccountArgs(args) {
+  let showMarkId = false;
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--show-mark-id") {
+      showMarkId = true;
+    } else if (arg === "--home") {
+      const value = args[++index];
+      if (!value || value.startsWith("--")) throw new Error("--home requires a directory");
+    } else if (arg.startsWith("--home=")) {
+      if (!arg.slice("--home=".length).trim()) throw new Error("--home requires a directory");
+    } else {
+      throw new Error(`unknown option ${arg}`);
+    }
+  }
+  if (!showMarkId) throw new Error("--show-mark-id is required");
+}
+
 function assertSetupArgs(args) {
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
@@ -261,6 +325,10 @@ async function loadSetupCompletionApi() {
     "setup-completion.mjs",
   );
   return await import(pathToFileURL(modulePath).href);
+}
+
+async function loadTrialSetupApi() {
+  return await import(pathToFileURL(join(packageRoot(), "lib", "trial-setup.mjs")).href);
 }
 
 async function spawnSetupProcess(memoraxCodeHome, { updateMode = false, reuseExistingMemorax = false } = {}) {
@@ -309,6 +377,10 @@ if (process.argv.length === 3 && (process.argv[2] === "--help" || process.argv[2
 
 if (process.argv[2] === "setup") {
   process.exit(await runSetupCommand(process.argv.slice(3)));
+}
+
+if (process.argv[2] === "account") {
+  process.exit(await runAccountCommand(process.argv.slice(3)));
 }
 
 if (process.argv.length === 2) {
