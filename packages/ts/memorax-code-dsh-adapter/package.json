@@ -3,7 +3,7 @@
   "version": "0.1.2",
   "private": true,
   "type": "module",
-  "description": "DeepSeek Harness native memory adapter for MemoraX Code.",
+  "description": "DeepSeek Harness native and Patchouli memory adapter for MemoraX Code.",
   "scripts": {
     "test": "node --test test/*.test.mjs"
   }

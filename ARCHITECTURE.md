@@ -29,10 +29,12 @@ Backend. The Backend is a capability-oriented modular monolith. The clients
 retain ownership of models, model-provider credentials, native tools,
 model-provider traffic, and native transcript or message creation.
 
-The source tree also contains a DeepSeek Harness (DSH) native Turn bridge.
-It consumes DSH's persisted Session Event Log through a Cordis listener and
-the same versioned local Backend protocol; its deployment lifecycle is kept
-separate from this request-time integration.
+The source tree also contains a DeepSeek Harness (DSH) Turn bridge. It uses
+native Cordis listeners when Patchouli is absent. When the `patchouli` service
+is present, it removes those listeners and registers MemoraX as a Patchouli
+provider instead. Both modes use the same versioned local Backend protocol and
+the persisted Session Event Log; their deployment lifecycle remains separate
+from this request-time integration.
 
 Around the Backend are:
 
@@ -103,7 +105,7 @@ relationships; the arrow labels distinguish them. It is not an import graph.
 | `packages/ts/memorax-code-adapter-common` | Shared source for Backend connection authority, private runtime records, cross-process locking and configuration, Hook generations, Hook launch helpers, and Repo/Personal Memory helpers | Backend composition, native transcript interpretation, MemoraX request execution, or client plugin policy | `packages/ts/memorax-code-adapter-common/src/backend-connection.mjs`, `src/runtime-record.mjs`, `src/hooks`, and `src/repo-memory` |
 | `packages/ts/memorax-code-codex-adapter` | Codex plugin artifact, Hook shells and runtimes, session/workspace observation, diagnostics, and the canonical shared skill | Codex rollout semantics or Backend-side writeback authority | `.codex-plugin`, `hooks`, `runtime-hooks`, `src`, and `skills/memorax-code` |
 | `packages/ts/memorax-code-claude-adapter` | Claude Code plugin artifact, Hook shells and runtimes, configuration, installer, marketplace source, and diagnostics | Claude transcript semantics or Backend memory orchestration | `.claude-plugin`, `hooks`, `runtime-hooks`, `scripts`, and `src/plugin-install.mjs` |
-| `packages/ts/memorax-code-dsh-adapter` | DSH Cordis Turn listener, exact persisted-event interval validation, and the local Backend wire protocol | DSH Profile mutation, Backend-side event interpretation, or MemoraX request execution | `src/plugin.mjs`, `src/protocol.mjs`, and `test/plugin-integration.test.mjs` |
+| `packages/ts/memorax-code-dsh-adapter` | Mutually exclusive native/Patchouli DSH integration, exact persisted-event interval validation, and the local Backend wire protocol | DSH Profile mutation, Backend-side event interpretation, Patchouli storage, or MemoraX request execution | `src/plugin.mjs`, `src/patchouli-provider.mjs`, `src/protocol.mjs`, and adapter tests |
 | `packages/ts/memorax-code-opencode-adapter` | OpenCode plugin runtime, managed thin-loader installation, automatic retrieval, SDK-backed writeback, shell-session identity, workspace runtime evidence and diagnostics, a materialized shared skill, and supervised Repo Memory maintenance and missing-bundle initialization | OpenCode message interpretation inside the Backend or model-provider configuration | `src/plugin.mjs`, `src/plugin-install.mjs`, `src/cli.mjs`, `src/repo-memory-server-runner.mjs`, and the OpenCode materialization mapping in `scripts/npm-source-files.mjs` |
 | `packages/npm/memorax-code` | Installed executable wrappers, update, preinstall/postinstall, npm manifest, and release-package source | Backend lifecycle semantics, uninstall orchestration, or artifact staging | `bin`, `lib/run-entrypoint.mjs`, and `package.json` |
 | `scripts` | Backend build orchestration, staging/materialization, package layout, documentation, and local-only data gates | Product runtime authority | Package-build/check scripts and executable contract scripts |
@@ -327,7 +329,7 @@ sequenceDiagram
     Projection->>Trace: read persisted writeback history
     Reconciler->>Provider: query writeback status
     Reconciler->>Trace: append terminal status when completed
-  else DSH native bridge
+  else DSH bridge
     Note over Runtime,Trace: no Trace, task projection, or reconciliation in this layer
   end
 ```
@@ -338,9 +340,14 @@ sequenceDiagram
 - Buffering and chunking belong to the memory capability; rollout, transcript,
   DSH event-interval, and SDK message parsing remains client-specific.
 - DSH accepts only a contiguous native interval bounded by the matching
-  `turn/start` and completed `turn/end`. The Backend materializes direct user
-  text and visible model-assistant text; plugin recall, tools, reasoning, and
-  incomplete Turns are excluded. Only non-delegated sessions are eligible.
+  `turn/start` and completed `turn/end`. Without Patchouli, the adapter flushes
+  and reads that interval itself. With Patchouli, the official Agent Loop
+  connector supplies the same durable header and interval as generic
+  `{ meta, data }`, and the MemoraX provider validates it before using the same
+  Backend command. The two modes never run concurrently. The Backend
+  materializes direct user text and visible model-assistant text; plugin recall,
+  tools, reasoning, and incomplete Turns are excluded. Only non-delegated
+  sessions are eligible.
 - A valid persisted DSH interval can restore automatic writeback after a
   Backend restart without cached Turn metadata; repository scope is still
   resolved and validated from the persisted Session workspace.

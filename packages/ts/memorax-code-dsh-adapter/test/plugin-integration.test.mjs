@@ -359,11 +359,15 @@ function mockContext(runtime) {
     logger: { warn() {} },
     sessions: { flush: runtime.flush },
     sessionPersistence: { readFrom: runtime.readFrom },
+    get() { return undefined; },
     on(name, callback) {
       const registered = handlers.get(name) ?? [];
       registered.push(callback);
       handlers.set(name, registered);
-      return () => {};
+      return () => {
+        const index = registered.indexOf(callback);
+        if (index >= 0) registered.splice(index, 1);
+      };
     },
     effect(start) {
       const dispose = start();

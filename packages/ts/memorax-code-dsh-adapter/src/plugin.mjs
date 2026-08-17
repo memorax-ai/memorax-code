@@ -2,6 +2,7 @@ import {
   createTurnStartCommand,
   createWritebackCommand,
 } from "./protocol.mjs";
+import { mountPatchouliProvider } from "./patchouli-provider.mjs";
 
 export const PLUGIN_NAME = "memorax-code";
 export const RECALL_SOURCE_PLUGIN = "memorax-code-dsh";
@@ -9,8 +10,55 @@ export const RECALL_SOURCE_PLUGIN = "memorax-code-dsh";
 // persistence and process cleanup after this plugin's accepted writes drain.
 const DEFAULT_WRITEBACK_DRAIN_TIMEOUT_MS = 4_000;
 
-/** Register DSH-native retrieval and durable Turn writeback listeners. */
+/** Keep exactly one DSH integration active as the Patchouli service changes. */
 export function registerMemoraxCodePlugin(ctx, dependencies) {
+  if (typeof ctx?.get !== "function" || typeof ctx?.on !== "function"
+    || typeof ctx?.effect !== "function") {
+    throw new TypeError("memorax-code DSH plugin requires a Cordis context");
+  }
+
+  let closing = false;
+  let active = mountIntegration(ctx.get("patchouli"));
+  let transition = Promise.resolve();
+  const disposeServiceListener = ctx.on("internal/service", (name, value) => {
+    if (name !== "patchouli" || closing) return;
+    const operation = transition.catch(() => undefined).then(async () => {
+      if (closing
+        || (value === undefined && active?.kind === "native")
+        || (active?.kind === "patchouli" && active.service === value)) return;
+      await active?.dispose();
+      active = undefined;
+      if (closing) return;
+      active = mountIntegration(value);
+    });
+    transition = operation;
+    void operation.catch((error) => reportModeFailure(ctx, error));
+  });
+
+  ctx.effect(() => async () => {
+    closing = true;
+    await disposeServiceListener();
+    await transition.catch(() => undefined);
+    await active?.dispose();
+    active = undefined;
+  }, "memorax-code DSH integration mode");
+
+  function mountIntegration(patchouli) {
+    if (patchouli !== undefined) {
+      return {
+        kind: "patchouli",
+        service: patchouli,
+        dispose: mountPatchouliProvider(ctx, patchouli, dependencies),
+      };
+    }
+    return {
+      kind: "native",
+      dispose: mountNativeMemoraxCodePlugin(ctx, dependencies),
+    };
+  }
+}
+
+function mountNativeMemoraxCodePlugin(ctx, dependencies) {
   const backendClient = dependencies?.backendClient;
   const createUserMessage = dependencies?.createUserMessage;
   const defer = dependencies?.defer ?? queueMicrotask;
@@ -38,7 +86,7 @@ export function registerMemoraxCodePlugin(ctx, dependencies) {
   const pendingWritebacks = new Set();
   let accepting = true;
 
-  ctx.on("session/event", (session, event) => {
+  const disposeSessionEvent = ctx.on("session/event", (session, event) => {
     if (!isMemoryEligibleSession(session) || !accepting) return;
     if (event?.type === "turn/start") {
       const turn = event.data?.turn;
@@ -79,11 +127,11 @@ export function registerMemoraxCodePlugin(ctx, dependencies) {
     trackPending(pendingWritebacks, pending);
   });
 
-  ctx.on("session/disposed", (session) => {
+  const disposeSessionDisposed = ctx.on("session/disposed", (session) => {
     turns.delete(session);
   });
 
-  ctx.on("agent/pre-step", async ({ agent, turn, step, signal }, next) => {
+  const disposePreStep = ctx.on("agent/pre-step", async ({ agent, turn, step, signal }, next) => {
     const decision = await next();
     if (decision?.kind !== "enter" || signal?.aborted || !accepting) return decision;
     if (step !== 1 || !isMemoryEligibleSession(agent?.session)) return decision;
@@ -125,14 +173,20 @@ export function registerMemoraxCodePlugin(ctx, dependencies) {
     }
   });
 
-  if (typeof ctx.effect === "function") {
-    ctx.effect(() => async () => {
+  let disposal;
+  return async () => {
+    if (disposal) return await disposal;
+    disposal = (async () => {
       accepting = false;
+      await disposePreStep();
+      await disposeSessionDisposed();
+      await disposeSessionEvent();
       retrievalLifetime.abort(new Error("memorax-code DSH plugin disposed"));
       await waitForPending(pendingWritebacks, drainTimeoutMs);
       writebackLifetime.abort(new Error("memorax-code DSH plugin disposed"));
-    }, "memorax-code.lifecycle");
-  }
+    })();
+    return await disposal;
+  };
 }
 
 function enqueueWriteback(options) {
@@ -240,6 +294,11 @@ function debugFailure(ctx, debug, operation, error) {
   if (!debug) return;
   const detail = error instanceof Error ? error.message : String(error);
   ctx.logger?.warn?.(`memorax-code ${operation} failed: ${detail}`);
+}
+
+function reportModeFailure(ctx, error) {
+  const detail = error instanceof Error ? error.message : String(error);
+  ctx.logger?.error?.(`memorax-code DSH integration switch failed: ${detail}`);
 }
 
 function deferPromise(defer, operation, onFailure) {
