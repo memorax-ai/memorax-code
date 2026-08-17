@@ -34,8 +34,8 @@ test("Codex Hook retrieves automatic memory once per exact turn", async () => {
     reply: "The parser boundary was recalled.",
   }]);
   const { fetchImpl, requests } = memoraxSearchFetch("Keep malformed input fail-closed.", {
-    "x-memorax-quota-remaining": "4800",
-    "x-memorax-quota-limit": "10000",
+    remaining: 4_800,
+    limit: 10_000,
   });
   const events = [];
   const controller = createCodexMemoryHookRuntime({

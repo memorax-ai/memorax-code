@@ -1,31 +1,25 @@
-import { randomBytes as nodeRandomBytes } from "node:crypto";
 import {
   TrialProvisionClientError,
 } from "./trial-provision-client.mjs";
 import { generateTrialPluginIdentity } from "./trial-plugin-mark.mjs";
-import {
-  solveTrialPow,
-  TrialPowError,
-} from "./trial-pow.mjs";
 
 export {
   generateTrialPluginIdentity,
-  generateTrialPluginMark,
+  generateTrialMarkId,
 } from "./trial-plugin-mark.mjs";
 
 const DEFAULT_TOTAL_TIMEOUT_MS = 120_000;
-const DEFAULT_POW_TIMEOUT_MS = 30_000;
-const DEFAULT_MAX_HTTP_REQUESTS = 8;
+const DEFAULT_MAX_HTTP_REQUESTS = 5;
 const MAX_TRANSIENT_RETRIES = 3;
 const MAX_RATE_LIMIT_RETRIES = 3;
-const MAX_POW_EXPIRED_REFRESHES = 2;
 const MAX_UNCERTAIN_SUCCESS_RETRIES = 1;
 const RETRY_DELAYS_MS = Object.freeze([1_000, 2_000, 4_000]);
 const MAX_JITTER_MS = 250;
 const MARK_IDENTITY_FIELDS = Object.freeze([
-  "plugin_mark",
+  "mark_id",
+  "mark_version",
   "app_salt",
-  "machine_id_hash",
+  "machine_id",
   "hostname",
   "platform",
   "arch",
@@ -38,12 +32,10 @@ const CREDENTIAL_FIELDS = Object.freeze([
   "api_key",
   "account_id",
   "project_id",
-  "warn_remaining_threshold",
-  "warn_remaining_step",
-  "register_url",
-  "last_warned_level",
+  "last_warned_write_level",
+  "last_warned_search_level",
 ]);
-const PLUGIN_MARK_PATTERN = /^mk_[0-9a-f]{32}$/;
+const MARK_ID_PATTERN = /^mk_[0-9a-f]{64}$/;
 const API_KEY_PATTERN = /^sk_[A-Za-z0-9_-]{43}$/;
 const FLOW_ERROR_REASONS = new Set([
   "invalid_options",
@@ -55,7 +47,6 @@ const FLOW_ERROR_REASONS = new Set([
   "deadline_exceeded",
   "http_budget_exhausted",
   "aborted",
-  "pow_failed",
   "client_failure",
   "retry_failed",
 ]);
@@ -68,10 +59,6 @@ export class TrialProvisionFlowError extends Error {
     this.code = "TRIAL_PROVISION_FLOW_FAILED";
     this.reason = safeReason;
   }
-}
-
-export function generateTrialApiKey(randomBytes = nodeRandomBytes) {
-  return `sk_${secureRandomBytes(randomBytes, 32).toString("base64url")}`;
 }
 
 export async function ensureTrialCredentialReady(options = {}) {
@@ -89,39 +76,13 @@ export async function ensureTrialCredentialReady(options = {}) {
   } catch (error) {
     throwIfInterrupted(deadline.context);
     if (error instanceof TrialProvisionFlowError
-      || error instanceof TrialProvisionClientError
-      || error instanceof TrialPowError) {
+      || error instanceof TrialProvisionClientError) {
       throw error;
     }
     throw flowError("credential_failure");
   } finally {
     clearTimeout(deadline.timer);
   }
-}
-
-function createFlowDeadline(runtime) {
-  const deadlineController = new AbortController();
-  let deadlineExpired = false;
-  const signal = combinedSignal(runtime.signal, deadlineController.signal);
-  const deadlineAt = readNow(runtime.now) + runtime.totalTimeoutMs;
-  const deadlineTimer = setTimeout(
-    () => {
-      deadlineExpired = true;
-      deadlineController.abort();
-    },
-    runtime.totalTimeoutMs,
-  );
-  return {
-    context: {
-      ...runtime,
-      signal,
-      callerSignal: runtime.signal,
-      deadlineExpired: () => deadlineExpired,
-      deadlineAt,
-      httpRequests: 0,
-    },
-    timer: deadlineTimer,
-  };
 }
 
 async function runTrialCredentialFlow(context) {
@@ -132,31 +93,11 @@ async function runTrialCredentialFlow(context) {
   if (record.state === "ready") return readyResult(record, false);
 
   const snapshot = snapshotCredential(record);
-  let powExpiredRefreshes = 0;
-  let currentChallenge = await requestChallengeWithRetry(snapshot.plugin_mark, context);
-
-  while (true) {
-    assertActive(context);
-    const powNonce = await solveChallenge(currentChallenge, context);
-    let response;
-    try {
-      response = await provisionWithRetry(snapshot, currentChallenge, powNonce, context);
-    } catch (error) {
-      if (!(error instanceof TrialProvisionClientError)
-        || error.reason !== "pow_expired"
-        || powExpiredRefreshes >= MAX_POW_EXPIRED_REFRESHES) {
-        throw error;
-      }
-      powExpiredRefreshes += 1;
-      currentChallenge = await requestChallengeWithRetry(snapshot.plugin_mark, context);
-      continue;
-    }
-
-    validateResponseForSnapshot(snapshot, response);
-    const ready = await commitReadyCredential(snapshot, response, context);
-    assertActive(context);
-    return readyResult(ready, true);
-  }
+  const response = await provisionWithRetry(snapshot, context);
+  validateResponseForSnapshot(snapshot, response);
+  const ready = await commitReadyCredential(snapshot, response, context);
+  assertActive(context);
+  return readyResult(ready, true);
 }
 
 async function loadCredential(context) {
@@ -172,14 +113,14 @@ async function createCredential(context) {
   try {
     const identity = context.generatePluginIdentity();
     seed = context.recordPort.createInitial({
-      pluginMark: identity.pluginMark,
+      markId: identity.markId,
+      markVersion: identity.markVersion,
       appSalt: identity.appSalt,
-      machineIdHash: identity.machineIdHash,
+      machineId: identity.machineId,
       hostname: identity.hostname,
       platform: identity.platform,
       arch: identity.arch,
       macHash: identity.macHash,
-      apiKey: generateTrialApiKey(context.randomBytes),
     });
   } catch (error) {
     if (error instanceof TrialProvisionFlowError) throw error;
@@ -197,71 +138,19 @@ async function createCredential(context) {
   }
 }
 
-async function requestChallengeWithRetry(pluginMark, context) {
-  let transientRetries = 0;
-  let rateLimitRetries = 0;
-  while (true) {
-    consumeHttpRequest(context);
-    try {
-      const challenge = await context.client.requestPowChallenge(pluginMark, {
-        signal: context.signal,
-      });
-      assertActive(context);
-      return challenge;
-    } catch (error) {
-      const clientError = safeClientError(error, context);
-      if (isTransient(clientError) && transientRetries < MAX_TRANSIENT_RETRIES) {
-        await waitForRetry(backoffDelay(transientRetries++, context), context);
-        continue;
-      }
-      if (clientError.reason === "rate_limit_exceeded"
-        && clientError.retryAfterMs !== undefined
-        && clientError.retryAfterExceeded !== true
-        && rateLimitRetries < MAX_RATE_LIMIT_RETRIES) {
-        rateLimitRetries += 1;
-        await waitForRetry(clientError.retryAfterMs, context);
-        continue;
-      }
-      throw clientError;
-    }
-  }
-}
-
-async function solveChallenge(challenge, context) {
-  const remaining = remainingTime(context);
-  if (remaining <= 0) throw flowError("deadline_exceeded");
-  try {
-    return await context.solvePow(
-      challenge?.powChallenge,
-      challenge?.difficultyBits,
-      {
-        signal: context.signal,
-        timeoutMs: Math.min(context.powTimeoutMs, remaining),
-      },
-    );
-  } catch (error) {
-    throwIfInterrupted(context);
-    if (error instanceof TrialPowError) throw error;
-    throw flowError("pow_failed");
-  }
-}
-
-async function provisionWithRetry(snapshot, challenge, powNonce, context) {
+async function provisionWithRetry(snapshot, context) {
   let transientRetries = 0;
   let rateLimitRetries = 0;
   let uncertainSuccessRetries = 0;
   const request = Object.freeze({
-    pluginMark: snapshot.plugin_mark,
+    markId: snapshot.mark_id,
+    markVersion: snapshot.mark_version,
     appSalt: snapshot.app_salt,
-    machineIdHash: snapshot.machine_id_hash,
+    machineId: snapshot.machine_id,
     hostname: snapshot.hostname,
     platform: snapshot.platform,
     arch: snapshot.arch,
     macHash: snapshot.mac_hash,
-    apiKey: snapshot.api_key,
-    powChallenge: challenge?.powChallenge,
-    powNonce,
-    recoverApiKey: snapshot.state === "recovering",
   });
 
   while (true) {
@@ -278,13 +167,13 @@ async function provisionWithRetry(snapshot, challenge, powNonce, context) {
       }
       if (clientError.reason === "rate_limit_exceeded"
         && clientError.retryAfterMs !== undefined
-        && clientError.retryAfterExceeded !== true
         && rateLimitRetries < MAX_RATE_LIMIT_RETRIES) {
         rateLimitRetries += 1;
         await waitForRetry(clientError.retryAfterMs, context);
         continue;
       }
-      if (clientError.reason === "invalid_response"
+      if ((clientError.reason === "invalid_response"
+          || clientError.reason === "response_contract")
         && clientError.httpStatus === 200
         && uncertainSuccessRetries < MAX_UNCERTAIN_SUCCESS_RETRIES) {
         uncertainSuccessRetries += 1;
@@ -298,18 +187,11 @@ async function provisionWithRetry(snapshot, challenge, powNonce, context) {
 function validateResponseForSnapshot(snapshot, response) {
   if (!isRecord(response)
     || typeof response.created !== "boolean"
-    || typeof response.apiKeyRecovered !== "boolean"
     || typeof response.accountId !== "string"
-    || typeof response.projectId !== "string") {
-    throw flowError("response_state_mismatch");
-  }
-  if ((snapshot.state === "provisioning" && response.apiKeyRecovered)
-    || (snapshot.state === "recovering" && response.created)
-    || (response.created && response.apiKeyRecovered)) {
-    throw flowError("response_state_mismatch");
-  }
-  if ((snapshot.account_id !== null && snapshot.account_id !== response.accountId)
-    || (snapshot.project_id !== null && snapshot.project_id !== response.projectId)) {
+    || typeof response.projectId !== "string"
+    || typeof response.apiKey !== "string"
+    || !API_KEY_PATTERN.test(response.apiKey)
+    || snapshot.state !== "provisioning") {
     throw flowError("response_state_mismatch");
   }
 }
@@ -324,9 +206,7 @@ async function commitReadyCredential(snapshot, response, context) {
           return context.recordPort.complete(current, {
             accountId: response.accountId,
             projectId: response.projectId,
-            warnRemainingThreshold: response.warnRemainingThreshold,
-            warnRemainingStep: response.warnRemainingStep,
-            registerUrl: response.registerUrl,
+            apiKey: response.apiKey,
           });
         } catch {
           invalidResponse = true;
@@ -353,7 +233,7 @@ function sameCompletedIdentity(current, snapshot, response) {
   return isRecord(current)
     && current.state === "ready"
     && MARK_IDENTITY_FIELDS.every((field) => current[field] === snapshot[field])
-    && current.api_key === snapshot.api_key
+    && current.api_key === response.apiKey
     && current.account_id === response.accountId
     && current.project_id === response.projectId;
 }
@@ -366,18 +246,15 @@ function snapshotCredential(record) {
 
 function assertCredentialRecord(record) {
   if (!isRecord(record)
-    || (record.state !== "provisioning"
-      && record.state !== "recovering"
-      && record.state !== "ready")
-    || typeof record.plugin_mark !== "string"
-    || !PLUGIN_MARK_PATTERN.test(record.plugin_mark)
-    || typeof record.api_key !== "string"
-    || !API_KEY_PATTERN.test(record.api_key)) {
-    throw flowError("invalid_credential_state");
-  }
-  if (record.state === "ready"
-    && (typeof record.account_id !== "string"
-      || typeof record.project_id !== "string")) {
+    || (record.state !== "provisioning" && record.state !== "ready")
+    || typeof record.mark_id !== "string"
+    || !MARK_ID_PATTERN.test(record.mark_id)
+    || (record.state === "provisioning" && record.api_key !== null)
+    || (record.state === "ready"
+      && (typeof record.api_key !== "string"
+        || !API_KEY_PATTERN.test(record.api_key)
+        || typeof record.account_id !== "string"
+        || typeof record.project_id !== "string"))) {
     throw flowError("invalid_credential_state");
   }
 }
@@ -388,11 +265,33 @@ function readyResult(record, provisioned) {
   return Object.freeze({
     status: "ready",
     provisioned,
-    pluginMark: record.plugin_mark,
+    markId: record.mark_id,
     accountId: record.account_id,
     projectId: record.project_id,
-    registerUrl: record.register_url,
   });
+}
+
+function createFlowDeadline(runtime) {
+  const deadlineController = new AbortController();
+  let deadlineExpired = false;
+  const signal = combinedSignal(runtime.signal, deadlineController.signal);
+  const deadlineAt = readNow(runtime.now) + runtime.totalTimeoutMs;
+  const timer = setTimeout(() => {
+    deadlineExpired = true;
+    deadlineController.abort();
+  }, runtime.totalTimeoutMs);
+  timer.unref?.();
+  return {
+    context: {
+      ...runtime,
+      signal,
+      callerSignal: runtime.signal,
+      deadlineExpired: () => deadlineExpired,
+      deadlineAt,
+      httpRequests: 0,
+    },
+    timer,
+  };
 }
 
 function consumeHttpRequest(context) {
@@ -440,8 +339,7 @@ function backoffDelay(retryIndex, context) {
 function isTransient(error) {
   return error.reason === "transport"
     || error.reason === "timeout"
-    || error.reason === "server_error"
-    || error.reason === "trial_capacity_unavailable";
+    || error.reason === "server_error";
 }
 
 function safeClientError(error, context) {
@@ -470,16 +368,14 @@ function validateOptions(options) {
     "withProvisionLock",
   ])
     || !hasFunctions(recordPort, ["createInitial", "complete"])
-    || !hasFunctions(client, ["requestPowChallenge", "provision"])) {
+    || !hasFunctions(client, ["provision"])) {
     throw flowError("invalid_options");
   }
-  const solvePow = options?.solvePow ?? solveTrialPow;
   const generatePluginIdentity = options?.generatePluginIdentity ?? generateTrialPluginIdentity;
-  const randomBytes = options?.randomBytes ?? nodeRandomBytes;
   const random = options?.random ?? Math.random;
   const sleep = options?.sleep ?? abortableSleep;
   const now = options?.now ?? Date.now;
-  if (![solvePow, generatePluginIdentity, randomBytes, random, sleep, now]
+  if (![generatePluginIdentity, random, sleep, now]
     .every((value) => typeof value === "function")) {
     throw flowError("invalid_options");
   }
@@ -487,42 +383,23 @@ function validateOptions(options) {
     options?.totalTimeoutMs ?? DEFAULT_TOTAL_TIMEOUT_MS,
     600_000,
   );
-  const powTimeoutMs = boundedPositiveInteger(
-    options?.powTimeoutMs ?? Math.min(DEFAULT_POW_TIMEOUT_MS, totalTimeoutMs),
-    totalTimeoutMs,
-  );
   const maxHttpRequests = boundedPositiveInteger(
     options?.maxHttpRequests ?? DEFAULT_MAX_HTTP_REQUESTS,
-    32,
+    16,
   );
   readNow(now);
   return {
     credentialPort,
     recordPort,
     client,
-    solvePow,
     generatePluginIdentity,
-    randomBytes,
     random,
     sleep,
     now,
     totalTimeoutMs,
-    powTimeoutMs,
     maxHttpRequests,
     signal: options?.signal,
   };
-}
-
-function secureRandomBytes(randomBytes, size) {
-  try {
-    const value = randomBytes(size);
-    if (!(value instanceof Uint8Array) || value.byteLength !== size) {
-      throw new Error("invalid random bytes");
-    }
-    return Buffer.from(value);
-  } catch {
-    throw flowError("identity_generation_failed");
-  }
 }
 
 function boundedPositiveInteger(value, maximum) {
@@ -564,9 +441,7 @@ async function abortableSleep(delayMs, options = {}) {
       else resolve();
     };
     const timeout = setTimeout(() => finish(), delayMs);
-    const onAbort = () => {
-      finish(flowError("aborted"));
-    };
+    const onAbort = () => finish(flowError("aborted"));
     options.signal?.addEventListener?.("abort", onAbort, { once: true });
     if (options.signal?.aborted) onAbort();
   });

@@ -147,9 +147,9 @@ or error messages. Ordinary package removal retains an existing secure
 credential record.
 
 Credential creation is atomic and create-if-absent. Versioned state transitions
-preserve the provisioned mark and account/project identity, and explicit Key
-recovery stores the replacement Key before any recovery request. Rebinding to a
-different trial identity requires an explicit credential clear.
+preserve the provisioned mark and commit the Backend-issued API Key and
+account/project identity together. Rebinding to a different trial identity
+requires an explicit credential clear.
 
 Foreground setup creates and securely retains the local identity required for
 trial provisioning. An existing credential record remains authoritative and
@@ -162,16 +162,15 @@ TLS certificate verification is explicitly disabled. Request and response
 bodies are bounded, and response parsing never propagates server messages, raw
 bodies, request objects, or complete credentials into errors.
 
-PoW runs in a worker that receives only the signed challenge and difficulty.
-Retries reuse the same persisted mark, Key, recovery flag, and unexpired
-challenge. Recovery authority comes only from a durable `recovering` record;
-timeouts, server errors, and Key mismatch responses never enable recovery.
-A dedicated cross-process provision operation lock covers credential loading,
-remote retries, and the final `ready` transition; explicit credential clearing
-uses the same lock. Lock waiting is bounded by the provisioning deadline and
-honors caller cancellation. The final transition also rechecks the exact
-credential snapshot under the short credential mutation lock, so a stale
-network response cannot overwrite newer local state.
+Retries reuse the same persisted device identity. If a successful response is
+lost or its API Key cannot be committed, the next attempt requests a new Key
+for that identity; the client does not recover an uncommitted Key. A dedicated
+cross-process provision operation lock covers credential loading, remote
+retries, and the final `ready` transition; explicit credential clearing uses
+the same lock. Lock waiting is bounded by the provisioning deadline and honors
+caller cancellation. The final transition also rechecks the exact credential
+snapshot under the short credential mutation lock, so a stale network response
+cannot overwrite newer local state.
 
 ## Local Data and Diagnostics
 

@@ -88,7 +88,7 @@ relationships; the arrow labels distinguish them. It is not an import graph.
 | `packages/ts/memorax-code-adapter-common` | Shared source for Backend connection authority, private runtime and secure credential records, cross-process locking and configuration, Hook generations, Hook launch helpers, and Repo/Personal Memory helpers | Backend composition, native transcript interpretation, MemoraX request execution, or client plugin policy | `packages/ts/memorax-code-adapter-common/src/backend-connection.mjs`, `src/runtime-record.mjs`, `src/credentials`, `src/hooks`, and `src/repo-memory` |
 | `packages/ts/memorax-code-codex-adapter` | Codex plugin artifact, Hook shells and runtimes, session/workspace observation, diagnostics, and the canonical shared skill | Codex rollout semantics or Backend-side writeback authority | `.codex-plugin`, `hooks`, `runtime-hooks`, `src`, and `skills/memorax-code` |
 | `packages/ts/memorax-code-claude-adapter` | Claude Code plugin artifact, Hook shells and runtimes, configuration, installer, marketplace source, and diagnostics | Claude transcript semantics or Backend memory orchestration | `.claude-plugin`, `hooks`, `runtime-hooks`, `scripts`, and `src/plugin-install.mjs` |
-| `packages/npm/memorax-code` | Installed executable wrappers, interactive setup, trial provisioning and PoW orchestration, setup reconciliation, package-transition preinstall/postinstall, update, npm manifest, and release-package source | Backend lifecycle semantics, uninstall orchestration, or artifact staging | `bin`, `lib/trial-setup.mjs`, `lib/trial-provision-flow.mjs`, `lib/setup-reconcile.mjs`, `lib/package-transition.mjs`, `lib/run-entrypoint.mjs`, and `package.json` |
+| `packages/npm/memorax-code` | Installed executable wrappers, interactive setup, trial provisioning, setup reconciliation, package-transition preinstall/postinstall, update, npm manifest, and release-package source | Backend lifecycle semantics, uninstall orchestration, or artifact staging | `bin`, `lib/trial-setup.mjs`, `lib/trial-provision-flow.mjs`, `lib/setup-reconcile.mjs`, `lib/package-transition.mjs`, `lib/run-entrypoint.mjs`, and `package.json` |
 | `scripts` | Backend build orchestration, staging/materialization, package layout, documentation, and local-only data gates | Product runtime authority | Package-build/check scripts and executable contract scripts |
 | `.github` | Issue and pull-request contribution templates | Product runtime behavior | `.github/ISSUE_TEMPLATE` and `.github/pull_request_template.md` |
 
@@ -247,10 +247,10 @@ The principal control-plane locations are:
 - `packages/npm/memorax-code/lib/setup-reconcile.mjs` for bounded setup
   start/status verification and the narrow ordinary-failure recovery policy;
 - `packages/npm/memorax-code/lib/trial-setup.mjs`,
-  `lib/trial-provision-client.mjs`, `lib/trial-provision-flow.mjs`, and
-  `lib/trial-pow.mjs` for setup composition, the isolated account-service HTTP
-  boundary, durable credential-state orchestration, and worker-thread PoW
-  computation owned by foreground setup; npm lifecycle does not import these
+  `lib/trial-plugin-mark.mjs`, `lib/trial-provision-client.mjs`, and
+  `lib/trial-provision-flow.mjs` for setup composition, device identity,
+  the isolated account-service HTTP boundary, and durable credential-state
+  orchestration owned by foreground setup; npm lifecycle does not import these
   modules;
 - `packages/ts/memorax-code-adapter-common/src/setup-completion.mjs` for the
   versioned private completion record and cross-process setup lock;

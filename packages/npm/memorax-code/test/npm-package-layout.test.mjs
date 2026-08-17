@@ -21,10 +21,8 @@ test("single npm package layout accepts declared paths and rejects unknown trees
   assert.equal(isAllowedNpmPackPath("lib/resolve-claude-command.mjs"), true);
   assert.equal(isAllowedNpmPackPath("lib/vscode-extension-command.mjs"), true);
   assert.equal(isAllowedNpmPackPath("lib/setup-reconcile.mjs"), true);
-  assert.equal(isAllowedNpmPackPath("lib/trial-pow.mjs"), true);
   assert.equal(isAllowedNpmPackPath("lib/trial-plugin-mark.mjs"), true);
   assert.equal(isAllowedNpmPackPath("lib/trial-provision-client.mjs"), true);
-  assert.equal(isAllowedNpmPackPath("lib/trial-provision-contract.mjs"), true);
   assert.equal(isAllowedNpmPackPath("lib/trial-provision-flow.mjs"), true);
   assert.equal(isAllowedNpmPackPath("lib/trial-setup.mjs"), true);
   assert.equal(isAllowedNpmPackPath("lib/memorax-code-adapter-common/src/memorax-code-config-file.mjs"), true);

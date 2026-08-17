@@ -20,6 +20,7 @@ const MEMORY_ID = "memory-user";
 const REPOSITORY_SLUG = "repo-scope";
 const ACCOUNT_ID = "900100000000000001";
 const PROJECT_ID = "900100000000000002";
+const API_KEY = `sk_${"E".repeat(43)}`;
 
 test("trial setup credentials authorize repository-scoped MemoraX writeback", async () => {
   const memoraxCodeHome = await mkdtemp(join(tmpdir(), "memorax-code-trial-e2e-"));
@@ -43,38 +44,39 @@ test("trial setup credentials authorize repository-scoped MemoraX writeback", as
           const path = new URL(url).pathname;
           const body = JSON.parse(String(init?.body));
           provisionPaths.push(path);
-          if (path.endsWith("/pow-challenge")) {
-            return jsonResponse({
-              pow_challenge: "v1.dHJpYWw.Y2hhbGxlbmdl",
-              difficulty_bits: 0,
-              algorithm: "sha256",
-              expires_at: "2099-01-01T00:00:00.000Z",
-            });
-          }
-          assert.equal(body.pow_nonce, "0");
+          assert.equal(path, "/account/api/v1/trial/provision");
+          assert.equal(body.mark_version, 1);
+          assert.equal(body.app_salt, "memorax-plugin-v1");
+          assert.equal(typeof body.machine_id, "string");
+          assert.equal(Object.hasOwn(body, "client_api_key"), false);
+          assert.equal(Object.hasOwn(body, "pow_challenge"), false);
+          assert.equal(Object.hasOwn(body, "recover_api_key"), false);
+          const machineIdHash = createHash("sha256")
+            .update(body.machine_id.trim().toLowerCase(), "utf8")
+            .digest("hex");
           const expectedMark = `mk_${createHash("sha256")
             .update([
               body.app_salt,
-              body.machine_id_hash,
+              machineIdHash,
               body.hostname,
               body.platform,
               body.arch,
               body.mac_hash,
             ].join(""), "utf8")
-            .digest("hex")
-            .slice(0, 32)}`;
-          assert.equal(body.plugin_mark, expectedMark);
+            .digest("hex")}`;
+          assert.equal(body.mark_id, expectedMark);
           return jsonResponse({
-            user_id: ACCOUNT_ID,
-            project_id: PROJECT_ID,
-            plugin_mark: body.plugin_mark,
-            api_key: body.client_api_key,
-            key_prefix: body.client_api_key.slice(0, 10),
-            created: true,
-            api_key_recovered: false,
-            warn_remaining_threshold: 5000,
-            warn_remaining_step: 1000,
-            register_url: "https://platform.memorax.net/register",
+            success: true,
+            data: {
+              account_id: ACCOUNT_ID,
+              project_id: PROJECT_ID,
+              mark_id: body.mark_id,
+              api_key: API_KEY,
+              key_prefix: API_KEY.slice(0, 10),
+              created: true,
+            },
+            error: null,
+            page: null,
           });
         },
       },
@@ -83,10 +85,7 @@ test("trial setup credentials authorize repository-scoped MemoraX writeback", as
     assert.equal(setupResult.status, "ready");
     assert.equal(setupResult.accountId, ACCOUNT_ID);
     assert.equal(setupResult.projectId, PROJECT_ID);
-    assert.deepEqual(provisionPaths, [
-      "/account/api/v1/trial/pow-challenge",
-      "/account/api/v1/trial/provision",
-    ]);
+    assert.deepEqual(provisionPaths, ["/account/api/v1/trial/provision"]);
 
     const credential = await loadTrialCredentialRecord({
       memoraxCodeHome,
@@ -108,12 +107,12 @@ test("trial setup credentials authorize repository-scoped MemoraX writeback", as
       "",
     ].join("\n"), "utf8");
     const configText = await readFile(configPath, "utf8");
-    assert.doesNotMatch(configText, /\b(?:api_key|account_id|project_id|plugin_mark)\b/);
+    assert.doesNotMatch(configText, /\b(?:api_key|account_id|project_id|mark_id)\b/);
     for (const privateValue of [
       credential.api_key,
       credential.account_id,
       credential.project_id,
-      credential.plugin_mark,
+      credential.mark_id,
     ]) {
       assert.equal(configText.includes(privateValue), false);
     }
@@ -147,7 +146,20 @@ test("trial setup credentials authorize repository-scoped MemoraX writeback", as
           });
           return jsonResponse({
             success: true,
-            data: { task_id: "trial-add-task", status: "accepted" },
+            data: {
+              task_id: "trial-add-task",
+              status: "accepted",
+              balances: [{
+                product_code: "memory_api",
+                feature_code: "memory_write",
+                spec_key: "calls",
+                quota_unit: "times",
+                quota_limit: 10_000,
+                reserved: 1,
+                consumed: 0,
+                remaining: 9_999,
+              }],
+            },
           });
         },
       },
@@ -160,6 +172,11 @@ test("trial setup credentials authorize repository-scoped MemoraX writeback", as
     assert.equal(memoryRequests[0].body.user_id, `${MEMORY_ID}@${REPOSITORY_SLUG}`);
     assert.equal(memoryRequests[0].body.memory_output_language, "en");
     assert.notEqual(memoryRequests[0].body.user_id, `${ACCOUNT_ID}@${REPOSITORY_SLUG}`);
+    assert.deepEqual(result.result.quota, {
+      featureCode: "memory_write",
+      remaining: 9_999,
+      limit: 10_000,
+    });
   } finally {
     await rm(memoraxCodeHome, { recursive: true, force: true });
   }

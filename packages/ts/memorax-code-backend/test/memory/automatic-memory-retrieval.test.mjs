@@ -86,8 +86,8 @@ test("automatic memory retrieval returns Hook context and emits observability", 
 
 test("automatic memory retrieval keeps a claimed quota notice out of model context", async () => {
   const { fetchImpl } = memoraxFetch("Quota notice separation memory.", {
-    "x-memorax-quota-remaining": "4800",
-    "x-memorax-quota-limit": "10000",
+    remaining: 4_800,
+    limit: 10_000,
   });
   let observedQuota;
   const result = await automaticMemoryRetrieval("Find relevant memory.", {
@@ -99,7 +99,11 @@ test("automatic memory retrieval keeps a claimed quota notice out of model conte
     },
   });
 
-  assert.deepEqual(observedQuota, { remaining: 4800, limit: 10000 });
+  assert.deepEqual(observedQuota, {
+    featureCode: "memory_search",
+    remaining: 4_800,
+    limit: 10_000,
+  });
   assert.equal(result.userNotice, "MemoraX Code quota is running low.");
   assert.match(result.context, /Quota notice separation memory/);
   assert.doesNotMatch(result.context, /quota is running low/);
@@ -107,8 +111,8 @@ test("automatic memory retrieval keeps a claimed quota notice out of model conte
   const withoutVisibleNoticeChannel = await automaticMemoryRetrieval("Find relevant memory.", {
     env: BASE_ENV,
     fetchImpl: memoraxFetch("Quota remains transport-only.", {
-      "x-memorax-quota-remaining": "4800",
-      "x-memorax-quota-limit": "10000",
+      remaining: 4_800,
+      limit: 10_000,
     }).fetchImpl,
   });
   assert.equal(withoutVisibleNoticeChannel.userNotice, undefined);
@@ -259,7 +263,7 @@ test("Claude Hook route retrieves automatic memory once", async () => {
   }
 });
 
-function memoraxFetch(memoryText, responseHeaders = {}) {
+function memoraxFetch(memoryText, quota = undefined) {
   const requests = [];
   return {
     requests,
@@ -280,13 +284,27 @@ function memoraxFetch(memoryText, responseHeaders = {}) {
             score: 0.95,
             metadata: { memory_type: "core" },
           }],
+          ...(quota ? { balances: [quotaBalance("memory_search", quota)] } : {}),
         },
         meta: { request_id: "req-1" },
       }), {
         status: 200,
-        headers: { "content-type": "application/json", ...responseHeaders },
+        headers: { "content-type": "application/json" },
       });
     },
+  };
+}
+
+function quotaBalance(featureCode, quota) {
+  return {
+    product_code: "memory_api",
+    feature_code: featureCode,
+    spec_key: "calls",
+    quota_unit: "times",
+    quota_limit: quota.limit,
+    reserved: 1,
+    consumed: 0,
+    remaining: quota.remaining,
   };
 }
 

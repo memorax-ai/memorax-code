@@ -1,6 +1,9 @@
 import {
   transitionTrialCredentialRecord,
 } from "../../../memorax-code-adapter-common/src/credentials/trial-credential-store.mjs";
+import {
+  MEMORAX_ACCOUNT_URL,
+} from "../../../memorax-code-adapter-common/src/memorax-defaults.mjs";
 import { defaultMemoraxCodeHome } from "../config/memorax-code.js";
 import type { MemoraxAdapterConfig } from "../provider/memorax/config.js";
 import type { MemoraxQuotaSnapshot } from "../provider/memorax/quota.js";
@@ -10,6 +13,8 @@ type TransitionTrialCredential = typeof transitionTrialCredentialRecord;
 const DEFAULT_NOTICE_TIMEOUT_MS = 6_000;
 const SECURE_OPERATION_TIMEOUT_MS = 1_500;
 const LOCK_TIMEOUT_MS = 500;
+const WARNING_THRESHOLD = 5_000;
+const WARNING_STEP = 1_000;
 
 export type TrialQuotaNoticeOptions = Readonly<{
   diagnosticLogger?: MemoryDiagnosticLogger;
@@ -36,38 +41,37 @@ export const claimTrialQuotaNotice: TrialQuotaNoticeClaimer = async (
   const timeoutMs = positiveTimeout(options.timeoutMs);
   const controller = new AbortController();
   let timeout: ReturnType<typeof setTimeout> | undefined;
-  let claimed: Readonly<{ pluginMark: string; registerUrl: string }> | undefined;
+  let claimed: Readonly<{ markId: string }> | undefined;
+  const warningField = quota.featureCode === "memory_write"
+    ? "last_warned_write_level"
+    : "last_warned_search_level";
 
   try {
     await Promise.race([
       transitionCredential((current) => {
         if (current.state !== "ready"
-          || current.api_key !== config.apiKey
-          || current.warn_remaining_threshold === null
-          || current.warn_remaining_step === null
-          || current.register_url === null) {
+          || current.api_key !== config.apiKey) {
           return undefined;
         }
-        if (quota.remaining > current.warn_remaining_threshold) {
-          return current.last_warned_level === null
+        const lastWarnedLevel = current[warningField];
+        if (quota.remaining > WARNING_THRESHOLD) {
+          return lastWarnedLevel === null
             ? undefined
-            : { ...current, last_warned_level: null };
+            : { ...current, [warningField]: null };
         }
         const level = quotaWarningLevel(
           quota.remaining,
-          current.warn_remaining_threshold,
-          current.warn_remaining_step,
+          WARNING_THRESHOLD,
+          WARNING_STEP,
         );
         if (level === undefined
-          || (current.last_warned_level !== null
-            && level >= current.last_warned_level)) {
+          || (lastWarnedLevel !== null && level >= lastWarnedLevel)) {
           return undefined;
         }
         claimed = {
-          pluginMark: current.plugin_mark,
-          registerUrl: current.register_url,
+          markId: current.mark_id,
         };
-        return { ...current, last_warned_level: level };
+        return { ...current, [warningField]: level };
       }, {
         memoraxCodeHome: defaultMemoraxCodeHome(env),
         env,
@@ -106,17 +110,18 @@ function quotaWarningLevel(
   threshold: number,
   step: number,
 ): number | undefined {
-  if (remaining <= 0 || threshold === 0 || remaining > threshold) return undefined;
+  if (remaining < 0 || threshold === 0 || remaining > threshold) return undefined;
   return Math.min(threshold, Math.ceil(remaining / step) * step);
 }
 
 function quotaNotice(
-  credential: Readonly<{ pluginMark: string; registerUrl: string }>,
+  credential: Readonly<{ markId: string }>,
   quota: MemoraxQuotaSnapshot,
 ): string {
+  const quotaName = quota.featureCode === "memory_write" ? "memory write" : "memory search";
   return [
-    `MemoraX Code quota is running low: ${quota.remaining} of ${quota.limit} remaining.`,
-    `Register or manage your account at ${credential.registerUrl}`,
-    `(Plugin ID: ${credential.pluginMark}).`,
+    `MemoraX Code ${quotaName} quota is running low: ${quota.remaining} of ${quota.limit} remaining.`,
+    `Register or manage your account at ${MEMORAX_ACCOUNT_URL}`,
+    `(Mark ID: ${credential.markId}).`,
   ].join(" ");
 }

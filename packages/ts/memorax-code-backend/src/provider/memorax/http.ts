@@ -1,7 +1,7 @@
 import type { MemoraxAdapterConfig } from "./config.js";
 import { isRecord } from "../../shared/record.js";
 import {
-  memoraxQuotaFromHeaders,
+  memoraxQuotaFromResponse,
   type MemoraxQuotaSnapshot,
 } from "./quota.js";
 
@@ -54,7 +54,12 @@ export async function postMemoraxJson(
     }
     const body = await response.json().catch(() => null);
     validateMemoraxEnvelope(body);
-    const quota = memoraxQuotaFromHeaders(response.headers);
+    const featureCode = path === "/v1/memories/add"
+      ? "memory_write"
+      : path === "/v1/memories/search"
+        ? "memory_search"
+        : undefined;
+    const quota = featureCode ? memoraxQuotaFromResponse(body, featureCode) : undefined;
     return { body, ...(quota ? { quota } : {}) };
   } catch (error) {
     throw normalizeMemoraxRequestError(error, controller.signal.aborted);

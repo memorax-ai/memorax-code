@@ -18,11 +18,11 @@ import {
 } from "../../../ts/memorax-code-adapter-common/src/credentials/windows-dpapi.mjs";
 
 const API_KEY = `sk_${"S".repeat(43)}`;
-const PLUGIN_MARK = `mk_${"a".repeat(32)}`;
+const MARK_ID = `mk_${"a".repeat(64)}`;
 const SERIALIZED_CREDENTIAL = JSON.stringify({
   version: 1,
   state: "provisioning",
-  plugin_mark: PLUGIN_MARK,
+  mark_id: MARK_ID,
   api_key: API_KEY,
 });
 const NAMESPACE = "test-0123456789abcdef";
@@ -177,7 +177,7 @@ test("Windows DPAPI passes plaintext only through PowerShell stdin and stores on
     const diskBytes = await fileSystem.readFile(credentialPath);
     assert.deepEqual(diskBytes, ciphertext);
     assert.equal(diskBytes.includes(Buffer.from(API_KEY)), false);
-    assert.equal(diskBytes.includes(Buffer.from(PLUGIN_MARK)), false);
+    assert.equal(diskBytes.includes(Buffer.from(MARK_ID)), false);
     assert.equal(await backend.load(), SERIALIZED_CREDENTIAL);
     assert.equal(await backend.delete(), true);
     assert.equal(await backend.delete(), false);
@@ -588,7 +588,7 @@ function assertPublicInvocationContainsNoSecret(call) {
     env: call.env,
   });
   assert.equal(publicInvocation.includes(API_KEY), false);
-  assert.equal(publicInvocation.includes(PLUGIN_MARK), false);
+  assert.equal(publicInvocation.includes(MARK_ID), false);
   assert.equal(publicInvocation.includes(SERIALIZED_CREDENTIAL), false);
 }
 
@@ -604,7 +604,7 @@ function redactedError(backend, operation) {
     assert.equal(error.operation, operation);
     const publicError = `${error.name} ${error.message} ${error.stack ?? ""}`;
     assert.equal(publicError.includes(API_KEY), false);
-    assert.equal(publicError.includes(PLUGIN_MARK), false);
+    assert.equal(publicError.includes(MARK_ID), false);
     assert.equal(publicError.includes(SERIALIZED_CREDENTIAL), false);
     return true;
   };

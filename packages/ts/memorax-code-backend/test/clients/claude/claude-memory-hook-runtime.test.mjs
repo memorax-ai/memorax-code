@@ -709,14 +709,20 @@ test("Claude automatic retrieval counts each prompt id once per session", async 
             score: 0.9,
             metadata: { memory_type: "core" },
           }],
+          balances: [{
+            product_code: "memory_api",
+            feature_code: "memory_search",
+            spec_key: "calls",
+            quota_unit: "times",
+            quota_limit: 10_000,
+            reserved: 1,
+            consumed: 0,
+            remaining: 4_800,
+          }],
         },
       }), {
         status: 200,
-        headers: {
-          "content-type": "application/json",
-          "x-memorax-quota-remaining": "4800",
-          "x-memorax-quota-limit": "10000",
-        },
+        headers: { "content-type": "application/json" },
       });
     },
     maxEntries: 2,

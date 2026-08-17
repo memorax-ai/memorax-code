@@ -3,9 +3,10 @@ export const TRIAL_CREDENTIAL_RECORD_VERSION = 1;
 const RECORD_KEYS = Object.freeze([
   "version",
   "state",
-  "plugin_mark",
+  "mark_id",
+  "mark_version",
   "app_salt",
-  "machine_id_hash",
+  "machine_id",
   "hostname",
   "platform",
   "arch",
@@ -13,22 +14,15 @@ const RECORD_KEYS = Object.freeze([
   "api_key",
   "account_id",
   "project_id",
-  "warn_remaining_threshold",
-  "warn_remaining_step",
-  "register_url",
-  "last_warned_level",
+  "last_warned_write_level",
+  "last_warned_search_level",
 ]);
 const RECORD_KEY_SET = new Set(RECORD_KEYS);
-const PLUGIN_MARK_PATTERN = /^mk_[0-9a-f]{32}$/;
+const MARK_ID_PATTERN = /^mk_[0-9a-f]{64}$/;
+const MACHINE_ID_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
 const SHA256_HEX_PATTERN = /^[0-9a-f]{64}$/;
 const API_KEY_PATTERN = /^sk_[A-Za-z0-9_-]{43}$/;
-const API_KEY_IN_TEXT_PATTERN = /sk_[A-Za-z0-9_-]{43}/;
 const DECIMAL_PUBLIC_ID_PATTERN = /^[0-9]+$/;
-const MAX_APP_SALT_LENGTH = 256;
-const MAX_HOSTNAME_LENGTH = 255;
-const MAX_PLATFORM_LENGTH = 32;
-const MAX_ARCH_LENGTH = 32;
-const MAX_REGISTER_URL_DECODE_PASSES = 8;
 const ERROR_REASONS = new Set([
   "malformed_json",
   "invalid_record",
@@ -37,9 +31,10 @@ const ERROR_REASONS = new Set([
   "unsupported_version",
   "invalid_version",
   "invalid_state",
-  "invalid_plugin_mark",
+  "invalid_mark_id",
+  "invalid_mark_version",
   "invalid_app_salt",
-  "invalid_machine_id_hash",
+  "invalid_machine_id",
   "invalid_hostname",
   "invalid_platform",
   "invalid_arch",
@@ -48,9 +43,6 @@ const ERROR_REASONS = new Set([
   "invalid_shape",
   "invalid_account_id",
   "invalid_project_id",
-  "invalid_warn_remaining_threshold",
-  "invalid_warn_remaining_step",
-  "invalid_register_url",
   "invalid_last_warned_level",
   "invalid_transition",
 ]);
@@ -91,93 +83,31 @@ export function createInitialTrialCredentialRecord(options) {
   return validateRecord({
     version: TRIAL_CREDENTIAL_RECORD_VERSION,
     state: "provisioning",
-    plugin_mark: options?.pluginMark,
+    mark_id: options?.markId,
+    mark_version: options?.markVersion,
     app_salt: options?.appSalt,
-    machine_id_hash: options?.machineIdHash,
+    machine_id: options?.machineId,
     hostname: options?.hostname,
     platform: options?.platform,
     arch: options?.arch,
     mac_hash: options?.macHash,
-    api_key: options?.apiKey,
+    api_key: null,
     account_id: null,
     project_id: null,
-    warn_remaining_threshold: null,
-    warn_remaining_step: null,
-    register_url: null,
-    last_warned_level: null,
-  });
-}
-
-export function createTrialCredentialRecoveryRecord(options) {
-  return validateRecord({
-    version: TRIAL_CREDENTIAL_RECORD_VERSION,
-    state: "recovering",
-    plugin_mark: options?.pluginMark,
-    app_salt: options?.appSalt,
-    machine_id_hash: options?.machineIdHash,
-    hostname: options?.hostname,
-    platform: options?.platform,
-    arch: options?.arch,
-    mac_hash: options?.macHash,
-    api_key: options?.apiKey,
-    account_id: null,
-    project_id: null,
-    warn_remaining_threshold: null,
-    warn_remaining_step: null,
-    register_url: null,
-    last_warned_level: null,
-  });
-}
-
-export function beginTrialCredentialRecovery(value, options) {
-  const record = validateRecord(value);
-  if (record.state !== "ready") fail("invalid_transition");
-  const apiKey = options?.apiKey;
-  if (apiKey === record.api_key) fail("invalid_transition");
-  return validateRecord({
-    ...record,
-    state: "recovering",
-    api_key: apiKey,
+    last_warned_write_level: null,
+    last_warned_search_level: null,
   });
 }
 
 export function completeTrialCredentialProvisioning(value, metadata) {
   const record = validateRecord(value);
-  if (record.state !== "provisioning" && record.state !== "recovering") {
-    fail("invalid_transition");
-  }
-  const metadataRecord = isRecord(metadata);
-  const accountId = metadata?.accountId;
-  const projectId = metadata?.projectId;
-  const warnRemainingThreshold = metadata?.warnRemainingThreshold;
-  const warnRemainingStep = metadata?.warnRemainingStep;
-  const registerUrl = metadata?.registerUrl;
-  const hasLastWarnedLevel = metadataRecord
-    && Object.hasOwn(metadata, "lastWarnedLevel");
-  const suppliedLastWarnedLevel = hasLastWarnedLevel
-    ? metadata.lastWarnedLevel
-    : undefined;
-  if (record.account_id !== null
-    && (accountId !== record.account_id
-      || projectId !== record.project_id)) {
-    fail("invalid_transition");
-  }
-  const warningPolicyChanged = record.warn_remaining_threshold !== null
-    && (warnRemainingThreshold !== record.warn_remaining_threshold
-      || warnRemainingStep !== record.warn_remaining_step);
+  if (record.state !== "provisioning") fail("invalid_transition");
   return validateRecord({
     ...record,
     state: "ready",
-    account_id: accountId,
-    project_id: projectId,
-    warn_remaining_threshold: warnRemainingThreshold,
-    warn_remaining_step: warnRemainingStep,
-    register_url: registerUrl,
-    last_warned_level: warningPolicyChanged
-      ? null
-      : hasLastWarnedLevel
-        ? suppliedLastWarnedLevel
-        : record.last_warned_level,
+    api_key: metadata?.apiKey,
+    account_id: metadata?.accountId,
+    project_id: metadata?.projectId,
   });
 }
 
@@ -189,141 +119,70 @@ function validateRecord(value) {
   }
   if (RECORD_KEYS.some((key) => !Object.hasOwn(value, key))) fail("missing_fields");
   const snapshot = Object.fromEntries(RECORD_KEYS.map((key) => [key, value[key]]));
+
   if (snapshot.version !== TRIAL_CREDENTIAL_RECORD_VERSION) {
     if (Number.isSafeInteger(snapshot.version) && snapshot.version > 0) {
       fail("unsupported_version");
     }
     fail("invalid_version");
   }
-  if (snapshot.state !== "provisioning"
-    && snapshot.state !== "recovering"
-    && snapshot.state !== "ready") {
+  if (snapshot.state !== "provisioning" && snapshot.state !== "ready") {
     fail("invalid_state");
   }
-  if (typeof snapshot.plugin_mark !== "string"
-    || !PLUGIN_MARK_PATTERN.test(snapshot.plugin_mark)) {
-    fail("invalid_plugin_mark");
+  if (typeof snapshot.mark_id !== "string" || !MARK_ID_PATTERN.test(snapshot.mark_id)) {
+    fail("invalid_mark_id");
   }
-  if (!validBoundedText(snapshot.app_salt, MAX_APP_SALT_LENGTH, false)) {
-    fail("invalid_app_salt");
+  if (snapshot.mark_version !== 1) fail("invalid_mark_version");
+  if (snapshot.app_salt !== "memorax-plugin-v1") fail("invalid_app_salt");
+  if (typeof snapshot.machine_id !== "string"
+    || !MACHINE_ID_PATTERN.test(snapshot.machine_id)) {
+    fail("invalid_machine_id");
   }
-  if (typeof snapshot.machine_id_hash !== "string"
-    || !SHA256_HEX_PATTERN.test(snapshot.machine_id_hash)) {
-    fail("invalid_machine_id_hash");
-  }
-  if (!validBoundedText(snapshot.hostname, MAX_HOSTNAME_LENGTH, true)) {
-    fail("invalid_hostname");
-  }
-  if (!validBoundedText(snapshot.platform, MAX_PLATFORM_LENGTH, false)) {
+  if (!validBoundedText(snapshot.hostname, 120)) fail("invalid_hostname");
+  if (!["windows", "linux", "macos"].includes(snapshot.platform)) {
     fail("invalid_platform");
   }
-  if (!validBoundedText(snapshot.arch, MAX_ARCH_LENGTH, false)) {
-    fail("invalid_arch");
-  }
+  if (!["x86_64", "arm64"].includes(snapshot.arch)) fail("invalid_arch");
   if (typeof snapshot.mac_hash !== "string"
-    || (snapshot.mac_hash !== "" && !SHA256_HEX_PATTERN.test(snapshot.mac_hash))) {
+    || !SHA256_HEX_PATTERN.test(snapshot.mac_hash)) {
     fail("invalid_mac_hash");
   }
-  if (typeof snapshot.api_key !== "string" || !API_KEY_PATTERN.test(snapshot.api_key)) {
-    fail("invalid_api_key");
-  }
 
-  const serverFields = [
-    snapshot.account_id,
-    snapshot.project_id,
-    snapshot.warn_remaining_threshold,
-    snapshot.warn_remaining_step,
-    snapshot.register_url,
-    snapshot.last_warned_level,
-  ];
-  if (serverFields.every((field) => field === null)) {
-    if (snapshot.state === "ready") fail("invalid_shape");
+  if (snapshot.state === "provisioning") {
+    if (snapshot.api_key !== null
+      || snapshot.account_id !== null
+      || snapshot.project_id !== null
+      || snapshot.last_warned_write_level !== null
+      || snapshot.last_warned_search_level !== null) {
+      fail("invalid_shape");
+    }
     return Object.freeze(snapshot);
   }
 
-  if (snapshot.state === "provisioning") fail("invalid_shape");
-
+  if (typeof snapshot.api_key !== "string" || !API_KEY_PATTERN.test(snapshot.api_key)) {
+    fail("invalid_api_key");
+  }
   if (!decimalPublicId(snapshot.account_id)) fail("invalid_account_id");
   if (!decimalPublicId(snapshot.project_id)) fail("invalid_project_id");
-  if (!nonNegativeSafeInteger(snapshot.warn_remaining_threshold)) {
-    fail("invalid_warn_remaining_threshold");
-  }
-  if (!positiveSafeInteger(snapshot.warn_remaining_step)) {
-    fail("invalid_warn_remaining_step");
-  }
-  if (snapshot.warn_remaining_threshold !== 0
-    && (snapshot.warn_remaining_threshold < snapshot.warn_remaining_step
-      || snapshot.warn_remaining_threshold % snapshot.warn_remaining_step !== 0)) {
-    fail("invalid_warn_remaining_threshold");
-  }
-  if (!validRegisterUrl(snapshot.register_url)) fail("invalid_register_url");
-  if (!validLastWarnedLevel(
-    snapshot.last_warned_level,
-    snapshot.warn_remaining_threshold,
-    snapshot.warn_remaining_step,
-  )) {
+  if (!validLastWarnedLevel(snapshot.last_warned_write_level)
+    || !validLastWarnedLevel(snapshot.last_warned_search_level)) {
     fail("invalid_last_warned_level");
   }
   return Object.freeze(snapshot);
 }
 
-function validRegisterUrl(value) {
-  if (typeof value !== "string"
-    || !value
-    || value !== value.trim()
-    || containsApiKey(value)) return false;
-  try {
-    const url = new URL(value);
-    return url.protocol === "https:"
-      && Boolean(url.hostname)
-      && !url.username
-      && !url.password
-      && !containsApiKey(url.href);
-  } catch {
-    return false;
-  }
-}
-
-function containsApiKey(value) {
-  let candidate = value;
-  for (let index = 0; index <= MAX_REGISTER_URL_DECODE_PASSES; index += 1) {
-    if (API_KEY_IN_TEXT_PATTERN.test(candidate)) return true;
-    let decoded;
-    try {
-      decoded = decodeURIComponent(candidate);
-    } catch {
-      return true;
-    }
-    if (decoded === candidate) return false;
-    if (index === MAX_REGISTER_URL_DECODE_PASSES) return true;
-    candidate = decoded;
-  }
-  return true;
-}
-
-function validLastWarnedLevel(value, threshold, step) {
-  if (value === null) return true;
-  return positiveSafeInteger(value)
-    && value <= threshold
-    && (threshold - value) % step === 0;
+function validLastWarnedLevel(value) {
+  return value === null || (Number.isSafeInteger(value) && value >= 0);
 }
 
 function decimalPublicId(value) {
   return typeof value === "string" && DECIMAL_PUBLIC_ID_PATTERN.test(value);
 }
 
-function nonNegativeSafeInteger(value) {
-  return Number.isSafeInteger(value) && value >= 0;
-}
-
-function positiveSafeInteger(value) {
-  return Number.isSafeInteger(value) && value > 0;
-}
-
-function validBoundedText(value, maximumLength, allowEmpty) {
+function validBoundedText(value, maximumLength) {
   return typeof value === "string"
+    && value.length > 0
     && value.length <= maximumLength
-    && (allowEmpty || value.length > 0)
     && value === value.trim()
     && !value.includes("\0");
 }

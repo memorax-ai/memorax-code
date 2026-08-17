@@ -110,22 +110,18 @@ test("async MemoraX config resolver prefers environment, TOML, then a ready tria
   }
 });
 
-test("async MemoraX config resolver rejects non-ready trial credentials", async (t) => {
-  for (const state of ["provisioning", "recovering"]) {
-    await t.test(state, async () => {
-      const resolveConfig = createMemoraxConfigResolver({
-        loadTrialCredential: async () => ({ state }),
-      });
-      const result = await resolveConfig({
-        MEMORAX_CODE_HOME: join(tmpdir(), `memorax-config-${state}`),
-      }, { memorax: { user_id: "memory-id" } });
+test("async MemoraX config resolver rejects a provisioning trial credential", async () => {
+  const resolveConfig = createMemoraxConfigResolver({
+    loadTrialCredential: async () => ({ state: "provisioning" }),
+  });
+  const result = await resolveConfig({
+    MEMORAX_CODE_HOME: join(tmpdir(), "memorax-config-provisioning"),
+  }, { memorax: { user_id: "memory-id" } });
 
-      assert.deepEqual(result, {
-        ok: false,
-        error: "MemoraX trial credential is not ready",
-      });
-    });
-  }
+  assert.deepEqual(result, {
+    ok: false,
+    error: "MemoraX trial credential is not ready",
+  });
 });
 
 test("async MemoraX config resolver caches only a successfully loaded ready credential", async (t) => {

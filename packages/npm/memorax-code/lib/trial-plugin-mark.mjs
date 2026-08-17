@@ -8,11 +8,14 @@ import {
 import { spawnSync } from "node:child_process";
 
 const COMMAND_TIMEOUT_MS = 1_000;
+export const TRIAL_MARK_VERSION = 1;
+export const TRIAL_APP_SALT = "memorax-plugin-v1";
 
 export function generateTrialPluginIdentity() {
-  const platform = normalize(safely(readPlatform));
+  const platform = normalizePlatform(safely(readPlatform));
   return deriveTrialPluginIdentity({
-    appSalt: readAppSalt(),
+    markVersion: TRIAL_MARK_VERSION,
+    appSalt: TRIAL_APP_SALT,
     machineId: readMachineId(platform),
     hostname: safely(readHostname),
     platform,
@@ -21,22 +24,23 @@ export function generateTrialPluginIdentity() {
   });
 }
 
-export function generateTrialPluginMark() {
-  return generateTrialPluginIdentity().pluginMark;
+export function generateTrialMarkId() {
+  return generateTrialPluginIdentity().markId;
 }
 
 export function deriveTrialPluginIdentity(fields = {}) {
   const identity = Object.freeze({
+    markVersion: fields.markVersion ?? TRIAL_MARK_VERSION,
     appSalt: normalizeAppSalt(fields.appSalt),
-    machineIdHash: hashMachineId(fields.machineId),
-    hostname: normalize(fields.hostname),
-    platform: normalize(fields.platform),
-    arch: normalize(fields.arch),
+    machineId: trimmed(fields.machineId),
+    hostname: trimmed(fields.hostname),
+    platform: normalizePlatform(fields.platform),
+    arch: normalizeArch(fields.arch),
     macHash: normalize(fields.macHash),
   });
   const material = [
     identity.appSalt,
-    identity.machineIdHash,
+    hashMachineId(identity.machineId),
     identity.hostname,
     identity.platform,
     identity.arch,
@@ -44,12 +48,12 @@ export function deriveTrialPluginIdentity(fields = {}) {
   ].join("");
   return Object.freeze({
     ...identity,
-    pluginMark: `mk_${sha256Hex(material).slice(0, 32)}`,
+    markId: `mk_${sha256Hex(material)}`,
   });
 }
 
-export function deriveTrialPluginMark(fields = {}) {
-  return deriveTrialPluginIdentity(fields).pluginMark;
+export function deriveTrialMarkId(fields = {}) {
+  return deriveTrialPluginIdentity(fields).markId;
 }
 
 export function createTrialMacHash(entries = []) {
@@ -58,29 +62,14 @@ export function createTrialMacHash(entries = []) {
     .map((entry) => normalizeMac(entry?.mac))
     .filter(Boolean))]
     .sort();
-  return macs.length === 0 ? "" : sha256Hex(macs.join(""));
-}
-
-function readAppSalt() {
-  try {
-    const metadata = JSON.parse(readFileSync(
-      new URL("../package.json", import.meta.url),
-      "utf8",
-    ));
-    if (typeof metadata?.name !== "string" || typeof metadata?.version !== "string") {
-      return "";
-    }
-    return `${metadata.name.trim()}@${metadata.version.trim()}`;
-  } catch {
-    return "";
-  }
+  return sha256Hex(macs.join(""));
 }
 
 function readMachineId(platform) {
   if (platform === "linux") {
     return readFirstFile(["/etc/machine-id", "/var/lib/dbus/machine-id"]);
   }
-  if (platform === "darwin") {
+  if (platform === "macos") {
     const output = runCommand("/usr/sbin/ioreg", [
       "-rd1",
       "-c",
@@ -88,7 +77,7 @@ function readMachineId(platform) {
     ]);
     return output.match(/"IOPlatformUUID"\s*=\s*"([^"]+)"/i)?.[1] ?? "";
   }
-  if (platform === "win32") {
+  if (platform === "windows") {
     const output = runCommand("reg.exe", [
       "query",
       "HKLM\\SOFTWARE\\Microsoft\\Cryptography",
@@ -145,8 +134,24 @@ function normalize(value) {
   return typeof value === "string" ? value.trim().toLowerCase() : "";
 }
 
+function trimmed(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
 function normalizeAppSalt(value) {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function normalizePlatform(value) {
+  const platform = normalize(value);
+  if (platform === "darwin" || platform === "macos") return "macos";
+  if (platform === "win32" || platform === "windows") return "windows";
+  return platform;
+}
+
+function normalizeArch(value) {
+  const arch = normalize(value);
+  return arch === "x64" ? "x86_64" : arch;
 }
 
 function hashMachineId(value) {

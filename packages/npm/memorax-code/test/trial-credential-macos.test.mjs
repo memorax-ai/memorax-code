@@ -9,11 +9,11 @@ import {
 } from "../../../ts/memorax-code-adapter-common/src/credentials/secure-command.mjs";
 
 const API_KEY = `sk_${"M".repeat(43)}`;
-const PLUGIN_MARK = `mk_${"b".repeat(32)}`;
+const MARK_ID = `mk_${"b".repeat(64)}`;
 const SERIALIZED_CREDENTIAL = JSON.stringify({
   version: 1,
   state: "provisioning",
-  plugin_mark: PLUGIN_MARK,
+  mark_id: MARK_ID,
   api_key: API_KEY,
 });
 const NAMESPACE = "test-macos-0123456789abcdef";
@@ -186,7 +186,7 @@ function syntheticCredential() {
   return `${JSON.stringify({
     version: 1,
     state: "provisioning",
-    plugin_mark: `mk_${randomBytes(16).toString("hex")}`,
+    mark_id: `mk_${randomBytes(32).toString("hex")}`,
     api_key: `sk_${randomBytes(32).toString("base64url")}`,
   })}\n`;
 }
@@ -207,7 +207,7 @@ function assertInvocationContainsNoSecret(call) {
     env: call.env,
   });
   assert.equal(publicInvocation.includes(API_KEY), false);
-  assert.equal(publicInvocation.includes(PLUGIN_MARK), false);
+  assert.equal(publicInvocation.includes(MARK_ID), false);
   assert.equal(publicInvocation.includes(SERIALIZED_CREDENTIAL), false);
 }
 
@@ -219,7 +219,7 @@ function redactedError(operation) {
     assert.equal(error.operation, operation);
     const publicError = `${error.name} ${error.message} ${error.stack ?? ""}`;
     assert.equal(publicError.includes(API_KEY), false);
-    assert.equal(publicError.includes(PLUGIN_MARK), false);
+    assert.equal(publicError.includes(MARK_ID), false);
     assert.equal(publicError.includes(SERIALIZED_CREDENTIAL), false);
     return true;
   };

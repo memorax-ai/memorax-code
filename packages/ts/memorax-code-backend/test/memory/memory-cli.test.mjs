@@ -546,11 +546,7 @@ test("memory CLI search reads query file and calls MemoraX search", async () => 
       authorization: req.headers.authorization,
       body: JSON.parse(Buffer.concat(chunks).toString("utf8")),
     });
-    res.writeHead(200, {
-      "content-type": "application/json",
-      "x-memorax-quota-remaining": "4800",
-      "x-memorax-quota-limit": "10000",
-    });
+    res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify({
       success: true,
       data: {
@@ -561,6 +557,16 @@ test("memory CLI search reads query file and calls MemoraX search", async () => 
           memory: "User prefers short direct answers.",
           score: 0.9,
           metadata: { memory_type: "core" },
+        }],
+        balances: [{
+          product_code: "memory_api",
+          feature_code: "memory_search",
+          spec_key: "calls",
+          quota_unit: "times",
+          quota_limit: 10_000,
+          reserved: 1,
+          consumed: 0,
+          remaining: 4_800,
         }],
       },
     }));
@@ -598,7 +604,11 @@ test("memory CLI search reads query file and calls MemoraX search", async () => 
     assert.equal(requests[0].body.k_dense, 6);
     assert.equal(requests[0].body.k_sparse, 6);
     assert.match(result.answer, /short direct answers/);
-    assert.deepEqual(observedQuota, { remaining: 4800, limit: 10000 });
+    assert.deepEqual(observedQuota, {
+      featureCode: "memory_search",
+      remaining: 4_800,
+      limit: 10_000,
+    });
     assert.equal(result.quotaNotice, "MemoraX Code quota is running low.");
   } finally {
     await new Promise((resolve) => server.close(resolve));

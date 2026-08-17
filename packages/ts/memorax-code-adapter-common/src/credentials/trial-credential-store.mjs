@@ -287,15 +287,15 @@ function suppressRejectedPromise(value) {
 }
 
 function isProvisioningSeed(record) {
-  return (record.state === "provisioning" || record.state === "recovering")
-    && record.account_id === null;
+  return record.state === "provisioning" && record.account_id === null;
 }
 
 function assertStoredTransition(current, next) {
   if (!sameFields(current, next, [
-    "plugin_mark",
+    "mark_id",
+    "mark_version",
     "app_salt",
-    "machine_id_hash",
+    "machine_id",
     "hostname",
     "platform",
     "arch",
@@ -305,55 +305,21 @@ function assertStoredTransition(current, next) {
   }
 
   if (current.state === "provisioning") {
-    if (next.state !== "ready" || current.api_key !== next.api_key) invalidTransition();
+    if (next.state !== "ready") invalidTransition();
     return;
   }
 
   if (current.state === "ready") {
-    if (next.state === "ready") {
-      if (current.api_key !== next.api_key
-        || current.account_id !== next.account_id
-        || current.project_id !== next.project_id) {
-        invalidTransition();
-      }
-      assertWarningPolicyReset(current, next);
-      return;
-    }
-    if (next.state === "recovering"
-      && current.api_key !== next.api_key
-      && sameFields(current, next, [
-        "account_id",
-        "project_id",
-        "warn_remaining_threshold",
-        "warn_remaining_step",
-        "register_url",
-        "last_warned_level",
-      ])) {
-      return;
-    }
-    invalidTransition();
-  }
-
-  if (current.state === "recovering") {
-    if (next.state !== "ready" || current.api_key !== next.api_key) invalidTransition();
-    if (current.account_id !== null
-      && (current.account_id !== next.account_id || current.project_id !== next.project_id)) {
+    if (next.state !== "ready"
+      || current.api_key !== next.api_key
+      || current.account_id !== next.account_id
+      || current.project_id !== next.project_id) {
       invalidTransition();
     }
-    assertWarningPolicyReset(current, next);
     return;
   }
 
   invalidTransition();
-}
-
-function assertWarningPolicyReset(current, next) {
-  if (current.warn_remaining_threshold !== null
-    && (current.warn_remaining_threshold !== next.warn_remaining_threshold
-      || current.warn_remaining_step !== next.warn_remaining_step)
-    && next.last_warned_level !== null) {
-    invalidTransition();
-  }
 }
 
 function sameFields(left, right, fields) {

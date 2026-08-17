@@ -1,102 +1,124 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { test } from "node:test";
-import { claimTrialQuotaNotice } from "../../dist/memory/trial-quota-notice.js";
+import test from "node:test";
 import {
-  parseTrialCredentialRecord,
-  serializeTrialCredentialRecord,
+  completeTrialCredentialProvisioning,
+  createInitialTrialCredentialRecord,
 } from "../../../memorax-code-adapter-common/src/credentials/trial-credential-record.mjs";
 import {
-  transitionTrialCredentialRecord,
-} from "../../../memorax-code-adapter-common/src/credentials/trial-credential-store.mjs";
+  claimTrialQuotaNotice,
+} from "../../dist/memory/trial-quota-notice.js";
 
-const API_KEY = `sk_${"a".repeat(43)}`;
-const PLUGIN_MARK = `mk_${"b".repeat(32)}`;
-const REGISTER_URL = "https://platform.memorax.net/register";
+const API_KEY = `sk_${"Q".repeat(43)}`;
+const MARK_ID = `mk_${"a".repeat(64)}`;
 
 test("trial quota notices claim lower levels once and reset after replenishment", async () => {
-  const memoraxCodeHome = await mkdtemp(join(tmpdir(), "memorax-code-quota-notice-"));
-  let stored = serializeTrialCredentialRecord(readyCredential());
-  const backend = {
-    load: async () => stored,
-    save: async (serialized) => { stored = serialized; },
-    delete: async () => true,
+  let current = readyRecord();
+  const transitionCredential = async (operation) => {
+    const next = operation(current);
+    if (next !== undefined) current = next;
+    return current;
   };
-  const transitionCredential = (operation, options) => transitionTrialCredentialRecord(
-    operation,
-    { ...options, backend, platform: "linux" },
-  );
-  const config = { apiKey: API_KEY, credentialSource: "trial" };
   const claim = (remaining) => claimTrialQuotaNotice(
-    config,
-    { remaining, limit: 10_000 },
-    { env: { MEMORAX_CODE_HOME: memoraxCodeHome }, transitionCredential },
+    trialConfig(),
+    { featureCode: "memory_write", remaining, limit: 10_000 },
+    { env: {}, transitionCredential },
   );
 
-  try {
-    const concurrent = (await Promise.all([claim(4_800), claim(4_800)])).filter(Boolean);
-    assert.equal(concurrent.length, 1);
-    assert.match(concurrent[0], /4800 of 10000 remaining/);
-    assert.match(concurrent[0], new RegExp(PLUGIN_MARK));
-    assert.match(concurrent[0], new RegExp(REGISTER_URL.replaceAll(".", "\\.")));
-    assert.doesNotMatch(concurrent[0], new RegExp(API_KEY));
-    assert.equal(currentRecord().last_warned_level, 5_000);
-
-    assert.equal(await claim(4_500), undefined);
-    assert.equal(currentRecord().last_warned_level, 5_000);
-
-    assert.match(await claim(3_800), /3800 of 10000 remaining/);
-    assert.equal(currentRecord().last_warned_level, 4_000);
-
-    assert.equal(await claim(6_000), undefined);
-    assert.equal(currentRecord().last_warned_level, null);
-
-    assert.match(await claim(4_900), /4900 of 10000 remaining/);
-    assert.equal(currentRecord().last_warned_level, 5_000);
-  } finally {
-    await rm(memoraxCodeHome, { recursive: true, force: true });
-  }
-
-  function currentRecord() {
-    return parseTrialCredentialRecord(stored);
-  }
+  const first = await claim(4_999);
+  assert.match(first, /memory write quota is running low: 4999 of 10000 remaining/i);
+  assert.match(first, /https:\/\/platform\.memorax\.net\//);
+  assert.match(first, new RegExp(MARK_ID));
+  assert.equal(current.last_warned_write_level, 5_000);
+  assert.equal(await claim(4_800), undefined);
+  assert.equal(current.last_warned_write_level, 5_000);
+  assert.match(await claim(3_999), /3999 of 10000/);
+  assert.equal(current.last_warned_write_level, 4_000);
+  assert.equal(await claim(6_000), undefined);
+  assert.equal(current.last_warned_write_level, null);
+  assert.match(await claim(5_000), /5000 of 10000/);
 });
 
-test("trial quota notice fails open when the secure transition stalls", async () => {
-  const diagnostics = [];
+test("write and search quota reminders are tracked independently", async () => {
+  let current = readyRecord();
+  const transitionCredential = async (operation) => {
+    const next = operation(current);
+    if (next !== undefined) current = next;
+    return current;
+  };
+  const options = { env: {}, transitionCredential };
+  assert.match(await claimTrialQuotaNotice(
+    trialConfig(),
+    { featureCode: "memory_write", remaining: 4_500, limit: 10_000 },
+    options,
+  ), /memory write quota/i);
+  assert.match(await claimTrialQuotaNotice(
+    trialConfig(),
+    { featureCode: "memory_search", remaining: 4_500, limit: 10_000 },
+    options,
+  ), /memory search quota/i);
+  assert.equal(current.last_warned_write_level, 5_000);
+  assert.equal(current.last_warned_search_level, 5_000);
+});
+
+test("quota exhaustion emits the final zero-level notice", async () => {
+  let current = readyRecord();
   const notice = await claimTrialQuotaNotice(
-    { apiKey: API_KEY, credentialSource: "trial" },
-    { remaining: 4_800, limit: 10_000 },
+    trialConfig(),
+    { featureCode: "memory_search", remaining: 0, limit: 10_000 },
     {
-      diagnosticLogger: (event) => diagnostics.push(event),
-      timeoutMs: 20,
-      transitionCredential: async () => new Promise(() => {}),
+      env: {},
+      transitionCredential: async (operation) => {
+        current = operation(current) ?? current;
+        return current;
+      },
     },
   );
+  assert.match(notice, /0 of 10000 remaining/);
+  assert.equal(current.last_warned_search_level, 0);
+});
 
-  assert.equal(notice, undefined);
+test("quota notices ignore non-trial credentials and fail open on store errors", async () => {
+  let calls = 0;
+  assert.equal(await claimTrialQuotaNotice(
+    { ...trialConfig(), credentialSource: undefined },
+    { featureCode: "memory_search", remaining: 1, limit: 10_000 },
+    { transitionCredential: async () => { calls += 1; } },
+  ), undefined);
+  assert.equal(calls, 0);
+
+  const diagnostics = [];
+  assert.equal(await claimTrialQuotaNotice(
+    trialConfig(),
+    { featureCode: "memory_search", remaining: 1, limit: 10_000 },
+    {
+      env: {},
+      diagnosticLogger: (event) => diagnostics.push(event),
+      transitionCredential: async () => { throw new Error("store unavailable"); },
+    },
+  ), undefined);
   assert.deepEqual(diagnostics, ["memorax_quota_notice.update_failed"]);
 });
 
-function readyCredential() {
-  return {
-    version: 1,
-    state: "ready",
-    plugin_mark: PLUGIN_MARK,
-    app_salt: "@memorax/memorax-code@1.0.0",
-    machine_id_hash: "c".repeat(64),
-    hostname: "test-host",
+function readyRecord() {
+  return completeTrialCredentialProvisioning(createInitialTrialCredentialRecord({
+    markId: MARK_ID,
+    markVersion: 1,
+    appSalt: "memorax-plugin-v1",
+    machineId: "550e8400-e29b-41d4-a716-446655440000",
+    hostname: "developer-laptop",
     platform: "linux",
-    arch: "x64",
-    mac_hash: "d".repeat(64),
-    api_key: API_KEY,
-    account_id: "900100000000000001",
-    project_id: "900100000000000002",
-    warn_remaining_threshold: 5_000,
-    warn_remaining_step: 1_000,
-    register_url: REGISTER_URL,
-    last_warned_level: null,
+    arch: "x86_64",
+    macHash: "c".repeat(64),
+  }), {
+    apiKey: API_KEY,
+    accountId: "1",
+    projectId: "2",
+  });
+}
+
+function trialConfig() {
+  return {
+    credentialSource: "trial",
+    apiKey: API_KEY,
   };
 }

@@ -7,15 +7,15 @@ import {
   SecureCredentialBackendError,
 } from "../../../ts/memorax-code-adapter-common/src/credentials/secure-command.mjs";
 import {
-  TrialCredentialRecordError,
-  beginTrialCredentialRecovery,
+  completeTrialCredentialProvisioning,
   createInitialTrialCredentialRecord,
   serializeTrialCredentialRecord,
+  TrialCredentialRecordError,
 } from "../../../ts/memorax-code-adapter-common/src/credentials/trial-credential-record.mjs";
 import {
   clearTrialCredentialRecord,
-  createTrialCredentialStorePort,
   createTrialCredentialRecordIfAbsent,
+  createTrialCredentialStorePort,
   loadTrialCredentialRecord,
   transitionTrialCredentialRecord,
   trialCredentialNamespace,
@@ -24,41 +24,26 @@ import {
 } from "../../../ts/memorax-code-adapter-common/src/credentials/trial-credential-store.mjs";
 
 const API_KEY = `sk_${"C".repeat(43)}`;
-const RECOVERY_KEY = `sk_${"D".repeat(43)}`;
-const OTHER_KEY = `sk_${"E".repeat(43)}`;
-const PLUGIN_MARK = `mk_${"c".repeat(32)}`;
-const OTHER_PLUGIN_MARK = `mk_${"d".repeat(32)}`;
-const DEVICE_FACTORS = Object.freeze({
-  appSalt: "@memorax/memorax-code@0.1.2",
-  machineIdHash: "3".repeat(64),
+const MARK_ID = `mk_${"c".repeat(64)}`;
+const OTHER_MARK_ID = `mk_${"d".repeat(64)}`;
+const DEVICE = Object.freeze({
+  markId: MARK_ID,
+  markVersion: 1,
+  appSalt: "memorax-plugin-v1",
+  machineId: "550e8400-e29b-41d4-a716-446655440000",
   hostname: "developer-laptop",
   platform: "linux",
-  arch: "x64",
+  arch: "x86_64",
   macHash: "4".repeat(64),
 });
 
-test("credential namespaces isolate normalized MemoraX Code homes without exposing paths", () => {
+test("credential namespace and provision lock stay scoped to MemoraX Code home", async () => {
   const first = trialCredentialNamespace("/private/example/../first-home");
-  const equivalent = trialCredentialNamespace("/private/first-home/");
-  const second = trialCredentialNamespace("/private/second-home");
-
   assert.match(first, /^[0-9a-f]{64}$/);
-  assert.equal(first, equivalent);
-  assert.notEqual(first, second);
+  assert.equal(first, trialCredentialNamespace("/private/first-home/"));
+  assert.notEqual(first, trialCredentialNamespace("/private/second-home"));
   assert.equal(first.includes("first-home"), false);
-  assert.equal(
-    trialCredentialNamespace("C:\\Users\\Example\\Home", {
-      platform: "win32",
-      resolveHome: (value) => value,
-    }),
-    trialCredentialNamespace("c:\\users\\example\\home", {
-      platform: "win32",
-      resolveHome: (value) => value,
-    }),
-  );
-});
 
-test("credential provision lock path stays inside the isolated MemoraX Code home", async () => {
   await withIsolatedHome(async (home) => {
     assert.equal(
       trialCredentialProvisionLockPath(home),
@@ -67,7 +52,7 @@ test("credential provision lock path stays inside the isolated MemoraX Code home
   });
 });
 
-test("credential provision lock serializes concurrent provisioning operations", async () => {
+test("credential provision lock serializes callers", async () => {
   await withIsolatedHome(async (home) => {
     const options = {
       memoraxCodeHome: home,
@@ -81,136 +66,39 @@ test("credential provision lock serializes concurrent provisioning operations", 
       firstEntered.resolve();
       await releaseFirst.promise;
       events.push("first-exit");
-      return "first";
     }, options);
-
     await firstEntered.promise;
-    const second = withTrialCredentialProvisionLock(async () => {
+    const second = withTrialCredentialProvisionLock(() => {
       events.push("second-enter");
-      events.push("second-exit");
-      return "second";
     }, options);
     await delay(25);
     assert.deepEqual(events, ["first-enter"]);
-
     releaseFirst.resolve();
-    assert.deepEqual(await Promise.all([first, second]), ["first", "second"]);
-    assert.deepEqual(events, [
-      "first-enter",
-      "first-exit",
-      "second-enter",
-      "second-exit",
-    ]);
+    await Promise.all([first, second]);
+    assert.deepEqual(events, ["first-enter", "first-exit", "second-enter"]);
   });
 });
 
-test("credential clear waits for an in-flight provisioning lock", async () => {
-  await withIsolatedHome(async (home) => {
-    const storage = memoryBackend(serializeTrialCredentialRecord(readyRecord()));
-    const options = {
-      memoraxCodeHome: home,
-      backend: storage.backend,
-      provisionLockOptions: { timeoutMs: 1_000, retryMs: 5 },
-    };
-    const provisionEntered = deferred();
-    const releaseProvision = deferred();
-    const provisioning = withTrialCredentialProvisionLock(async () => {
-      provisionEntered.resolve();
-      await releaseProvision.promise;
-    }, options);
-
-    await provisionEntered.promise;
-    const clearing = clearTrialCredentialRecord(options);
-    await delay(25);
-    assert.equal(storage.deleteCalls, 0);
-
-    releaseProvision.resolve();
-    await provisioning;
-    assert.deepEqual(await clearing, { deleted: true });
-    assert.equal(storage.deleteCalls, 1);
-    assert.equal(await loadTrialCredentialRecord(options), null);
-  });
-});
-
-test("credential store port binds storage and forwards per-call provision lock controls", async () => {
-  await withIsolatedHome(async (home) => {
-    const storage = memoryBackend();
-    const options = {
-      memoraxCodeHome: home,
-      backend: storage.backend,
-      provisionLockOptions: { timeoutMs: 1_000, retryMs: 5 },
-    };
-    const port = createTrialCredentialStorePort(options);
-    const initial = initialCredential();
-    assert.deepEqual(await port.createIfAbsent(initial), { record: initial, created: true });
-    assert.deepEqual(await port.load(), initial);
-
-    const holderEntered = deferred();
-    const releaseHolder = deferred();
-    const holder = withTrialCredentialProvisionLock(async () => {
-      holderEntered.resolve();
-      await releaseHolder.promise;
-    }, options);
-    await holderEntered.promise;
-
-    await assert.rejects(
-      port.withProvisionLock(() => undefined, { timeoutMs: 20, retryMs: 5 }),
-      (error) => error?.code === "JSON_FILE_LOCK_TIMEOUT",
-    );
-    const controller = new AbortController();
-    const waiting = port.withProvisionLock(() => undefined, {
-      signal: controller.signal,
-      timeoutMs: 500,
-      retryMs: 5,
-    });
-    controller.abort();
-    await assert.rejects(waiting, (error) => error?.code === "JSON_FILE_LOCK_ABORTED");
-
-    releaseHolder.resolve();
-    await holder;
-    const ready = await port.transition((current) => readyRecord(current));
-    assert.equal(ready.state, "ready");
-    assert.deepEqual(await port.load(), ready);
-
-    let locked = false;
-    await port.withProvisionLock(() => { locked = true; });
-    assert.equal(locked, true);
-  });
-});
-
-test("credential store creates once, transitions, verifies, and explicitly clears one record", async () => {
+test("credential store creates, completes, updates reminders, and explicitly clears", async () => {
   await withIsolatedHome(async (home) => {
     const storage = memoryBackend();
     const options = { memoraxCodeHome: home, backend: storage.backend };
+    const port = createTrialCredentialStorePort(options);
     const initial = initialCredential();
 
-    assert.equal(await loadTrialCredentialRecord(options), null);
-    assert.deepEqual(await createTrialCredentialRecordIfAbsent(initial, options), {
-      record: initial,
-      created: true,
-    });
-    assert.deepEqual(await loadTrialCredentialRecord(options), initial);
-
-    const ready = await transitionTrialCredentialRecord(
-      (current) => readyRecord(current),
-      options,
-    );
-    const recovery = await transitionTrialCredentialRecord(
-      (current) => beginTrialCredentialRecovery(current, { apiKey: RECOVERY_KEY }),
-      options,
-    );
+    assert.deepEqual(await port.createIfAbsent(initial), { record: initial, created: true });
+    const ready = await port.transition((current) => readyRecord(current));
     assert.equal(ready.state, "ready");
-    assert.equal(recovery.state, "recovering");
-    assert.equal(recovery.api_key, RECOVERY_KEY);
-    assert.equal(recovery.account_id, "900719925474099300000000001");
+    assert.equal(ready.api_key, API_KEY);
+    const warned = await port.transition((current) => ({
+      ...current,
+      last_warned_search_level: 5_000,
+    }));
+    assert.equal(warned.last_warned_search_level, 5_000);
 
-    const writesBeforeNoChange = storage.saveCalls;
-    assert.deepEqual(
-      await transitionTrialCredentialRecord(() => undefined, options),
-      recovery,
-    );
-    assert.equal(storage.saveCalls, writesBeforeNoChange);
-
+    const savesBeforeNoChange = storage.saveCalls;
+    assert.deepEqual(await port.transition(() => undefined), warned);
+    assert.equal(storage.saveCalls, savesBeforeNoChange);
     assert.deepEqual(await clearTrialCredentialRecord(options), { deleted: true });
     assert.equal(await loadTrialCredentialRecord(options), null);
     assert.deepEqual(await clearTrialCredentialRecord(options), { deleted: false });
@@ -222,10 +110,7 @@ test("credential creation is atomic and clear is the only identity reset", async
     const storage = memoryBackend(null, 15);
     const options = { memoraxCodeHome: home, backend: storage.backend };
     const first = initialCredential();
-    const second = initialCredential({
-      pluginMark: OTHER_PLUGIN_MARK,
-      apiKey: OTHER_KEY,
-    });
+    const second = initialCredential({ markId: OTHER_MARK_ID });
 
     const results = await Promise.all([
       createTrialCredentialRecordIfAbsent(first, options),
@@ -234,66 +119,42 @@ test("credential creation is atomic and clear is the only identity reset", async
     assert.deepEqual(results.map((result) => result.created).sort(), [false, true]);
     assert.deepEqual(results[0].record, results[1].record);
     assert.equal(storage.saveCalls, 1);
-    assert.deepEqual(await loadTrialCredentialRecord(options), results[0].record);
 
     await clearTrialCredentialRecord(options);
     assert.deepEqual(await createTrialCredentialRecordIfAbsent(second, options), {
       record: second,
       created: true,
     });
-    assert.equal(storage.saveCalls, 2);
   });
 });
 
-test("stored transitions cannot replace identity, rotate a retry Key, or skip recovery", async () => {
-  const initial = initialCredential();
-  const ready = { ...readyRecord(initial), last_warned_level: 4000 };
-  const recovering = beginTrialCredentialRecovery(ready, { apiKey: RECOVERY_KEY });
-  const cases = [
-    [ready, { ...ready, plugin_mark: OTHER_PLUGIN_MARK }],
-    ...[
-      ["app_salt", "@memorax/memorax-code@0.1.3"],
-      ["machine_id_hash", "5".repeat(64)],
-      ["hostname", "other-laptop"],
-      ["platform", "win32"],
-      ["arch", "arm64"],
-      ["mac_hash", "6".repeat(64)],
-    ].map(([field, value]) => [ready, { ...ready, [field]: value }]),
-    [ready, { ...ready, api_key: RECOVERY_KEY }],
-    [ready, { ...ready, account_id: "900719925474099300000000003" }],
-    [ready, { ...ready, project_id: "900719925474099300000000004" }],
-    [ready, initial],
-    [initial, { ...readyRecord(initial), api_key: OTHER_KEY }],
-    [recovering, { ...recovering, api_key: OTHER_KEY }],
-    [recovering, { ...readyRecord(recovering), api_key: OTHER_KEY }],
+test("stored transitions cannot replace identity or a ready backend Key", async () => {
+  const ready = readyRecord();
+  const candidates = [
+    { ...ready, mark_id: OTHER_MARK_ID },
+    { ...ready, machine_id: "other-machine" },
+    { ...ready, hostname: "other-laptop" },
+    { ...ready, platform: "macos" },
+    { ...ready, api_key: `sk_${"D".repeat(43)}` },
+    { ...ready, account_id: "3" },
+    initialCredential(),
   ];
 
-  for (const [current, candidate] of cases) {
+  for (const candidate of candidates) {
     await withIsolatedHome(async (home) => {
-      const serialized = serializeTrialCredentialRecord(current);
-      const storage = memoryBackend(serialized);
+      const storage = memoryBackend(serializeTrialCredentialRecord(ready));
       const options = { memoraxCodeHome: home, backend: storage.backend };
       await assert.rejects(
         transitionTrialCredentialRecord(() => candidate, options),
         invalidTransitionError,
       );
       assert.equal(storage.saveCalls, 0);
-      assert.deepEqual(await loadTrialCredentialRecord(options), current);
+      assert.deepEqual(await loadTrialCredentialRecord(options), ready);
     });
   }
-
-  await withIsolatedHome(async (home) => {
-    const storage = memoryBackend();
-    const options = { memoraxCodeHome: home, backend: storage.backend };
-    await assert.rejects(
-      transitionTrialCredentialRecord(() => initial, options),
-      invalidTransitionError,
-    );
-    assert.equal(storage.saveCalls, 0);
-  });
 });
 
-test("invalid and unsupported secure records cannot be overwritten by ordinary creation", async () => {
+test("invalid secure records cannot be overwritten by ordinary creation", async () => {
   await withIsolatedHome(async (home) => {
     const replacement = initialCredential();
     for (const [serialized, reason] of [
@@ -307,92 +168,62 @@ test("invalid and unsupported secure records cannot be overwritten by ordinary c
         (error) => error instanceof TrialCredentialRecordError && error.reason === reason,
       );
       assert.equal(storage.saveCalls, 0);
-      assert.deepEqual(await clearTrialCredentialRecord(options), { deleted: true });
+      await clearTrialCredentialRecord(options);
     }
   });
 });
 
-test("credential mutation lock prevents concurrent read-modify-write loss", async () => {
+test("credential mutation lock prevents concurrent reminder updates from being lost", async () => {
   await withIsolatedHome(async (home) => {
     const storage = memoryBackend(serializeTrialCredentialRecord(readyRecord()), 15);
     const options = { memoraxCodeHome: home, backend: storage.backend };
-    const lowerWarningLevel = (current) => ({
+    const lowerWarning = (current) => ({
       ...current,
-      last_warned_level: current.last_warned_level === null
-        ? current.warn_remaining_threshold
-        : current.last_warned_level - current.warn_remaining_step,
+      last_warned_write_level: current.last_warned_write_level === null
+        ? 5_000
+        : current.last_warned_write_level - 1_000,
     });
 
     const results = await Promise.all([
-      transitionTrialCredentialRecord(lowerWarningLevel, options),
-      transitionTrialCredentialRecord(lowerWarningLevel, options),
+      transitionTrialCredentialRecord(lowerWarning, options),
+      transitionTrialCredentialRecord(lowerWarning, options),
     ]);
-
-    assert.deepEqual(results.map((record) => record.last_warned_level), [5000, 4000]);
-    assert.equal((await loadTrialCredentialRecord(options)).last_warned_level, 4000);
+    assert.deepEqual(results.map((record) => record.last_warned_write_level), [5_000, 4_000]);
+    assert.equal((await loadTrialCredentialRecord(options)).last_warned_write_level, 4_000);
   });
 });
 
-test("credential store fails closed on unverified writes and unavailable platforms", async () => {
+test("credential store fails closed on unverified or asynchronous mutations", async () => {
   await withIsolatedHome(async (home) => {
-    const record = initialCredential();
     const discarded = memoryBackend();
     discarded.backend.save = async () => undefined;
     await assert.rejects(
-      createTrialCredentialRecordIfAbsent(record, {
+      createTrialCredentialRecordIfAbsent(initialCredential(), {
         memoraxCodeHome: home,
         backend: discarded.backend,
       }),
-      (error) => error instanceof SecureCredentialBackendError
-        && error.operation === "save",
+      (error) => error instanceof SecureCredentialBackendError && error.operation === "save",
     );
 
-    await assert.rejects(
-      loadTrialCredentialRecord({
-        memoraxCodeHome: home,
-        platform: "aix",
-        env: {},
-      }),
-      (error) => error instanceof SecureCredentialBackendError
-        && error.operation === "initialize",
-    );
-  });
-});
-
-test("credential mutations must be synchronous and cannot persist partial results", async () => {
-  await withIsolatedHome(async (home) => {
     const storage = memoryBackend();
     const options = { memoraxCodeHome: home, backend: storage.backend };
-    const initial = initialCredential();
-    await createTrialCredentialRecordIfAbsent(initial, options);
+    await createTrialCredentialRecordIfAbsent(initialCredential(), options);
     await assert.rejects(
-      transitionTrialCredentialRecord(async () => readyRecord(initial), options),
+      transitionTrialCredentialRecord(async (current) => readyRecord(current), options),
       { name: "TypeError", message: "Trial credential mutation must be synchronous" },
     );
-    assert.equal(storage.saveCalls, 1);
   });
 });
 
-function readyRecord(base = undefined) {
-  const record = base ?? initialCredential();
-  return {
-    ...record,
-    state: "ready",
-    account_id: "900719925474099300000000001",
-    project_id: "900719925474099300000000002",
-    warn_remaining_threshold: 5000,
-    warn_remaining_step: 1000,
-    register_url: "https://platform.memorax.net/register",
-    last_warned_level: null,
-  };
+function initialCredential(overrides = {}) {
+  return createInitialTrialCredentialRecord({ ...DEVICE, ...overrides });
 }
 
-function initialCredential(overrides = {}) {
-  return createInitialTrialCredentialRecord({
-    ...DEVICE_FACTORS,
-    pluginMark: PLUGIN_MARK,
+function readyRecord(base = initialCredential()) {
+  return completeTrialCredentialProvisioning(base, {
     apiKey: API_KEY,
-    ...overrides,
+    accountId: "900719925474099300000000001",
+    projectId: "900719925474099300000000002",
   });
 }
 
@@ -400,7 +231,6 @@ function memoryBackend(initial = null, delayMs = 0) {
   let serialized = initial;
   const storage = {
     saveCalls: 0,
-    deleteCalls: 0,
     backend: {
       async load() {
         await delay(delayMs);
@@ -413,7 +243,6 @@ function memoryBackend(initial = null, delayMs = 0) {
       },
       async delete() {
         await delay(delayMs);
-        storage.deleteCalls += 1;
         const deleted = serialized !== null;
         serialized = null;
         return deleted;

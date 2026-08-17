@@ -1,37 +1,15 @@
-import {
-  mapTrialProvisionResponse,
-  safeTrialRegisterUrl,
-} from "./trial-provision-contract.mjs";
-
 const DEFAULT_SERVICE_BASE_URL = "https://platform.memorax.net";
-const CHALLENGE_PATH = "/account/api/v1/trial/pow-challenge";
 const PROVISION_PATH = "/account/api/v1/trial/provision";
-const DEFAULT_CHALLENGE_TIMEOUT_MS = 10_000;
-const DEFAULT_PROVISION_TIMEOUT_MS = 15_000;
+const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_MAX_RESPONSE_BYTES = 16_384;
 const MAX_REQUEST_BYTES = 4_096;
 const MAX_RETRY_AFTER_MS = 120_000;
-const PLUGIN_MARK_PATTERN = /^mk_[0-9a-f]{32}$/;
+const MARK_ID_PATTERN = /^mk_[0-9a-f]{64}$/;
 const API_KEY_PATTERN = /^sk_[A-Za-z0-9_-]{43}$/;
+const MACHINE_ID_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
-const POW_CHALLENGE_PATTERN = /^v1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
-const POW_NONCE_PATTERN = /^(?:0|[1-9][0-9]{0,18})$/;
-const MAX_POW_NONCE = 9_223_372_036_854_775_807n;
 const JSON_CONTENT_TYPE_PATTERN = /^(?:application\/json|[^;\s]+\/[^;\s]+\+json)(?:\s*;|$)/i;
 
-const SERVER_ERROR_STATUS = new Map([
-  ["rate_limit_exceeded", 429],
-  ["trial_capacity_exceeded", 429],
-  ["trial_ip_capacity_exceeded", 429],
-  ["trial_capacity_unavailable", 503],
-  ["trial_disabled", 503],
-  ["pow_expired", 400],
-  ["pow_invalid", 400],
-  ["trial_api_key_mismatch", 409],
-  ["plugin_mark_already_claimed", 409],
-  ["trial_expired", 410],
-  ["account_inactive", 403],
-]);
 const LOCAL_ERROR_REASONS = new Set([
   "invalid_options",
   "invalid_service_url",
@@ -44,8 +22,9 @@ const LOCAL_ERROR_REASONS = new Set([
   "response_too_large",
   "invalid_response",
   "response_contract",
-  "unexpected_http_status",
+  "rate_limit_exceeded",
   "server_error",
+  "server_rejected",
 ]);
 const TLS_ERROR_CODES = new Set([
   "CERT_HAS_EXPIRED",
@@ -58,9 +37,7 @@ const TLS_ERROR_CODES = new Set([
 
 export class TrialProvisionClientError extends Error {
   constructor(reason, fields = {}) {
-    const safeReason = SERVER_ERROR_STATUS.has(reason) || LOCAL_ERROR_REASONS.has(reason)
-      ? reason
-      : "invalid_response";
+    const safeReason = LOCAL_ERROR_REASONS.has(reason) ? reason : "invalid_response";
     super(`Trial provision request failed (${safeReason})`);
     this.name = "TrialProvisionClientError";
     this.code = "TRIAL_PROVISION_CLIENT_FAILED";
@@ -75,9 +52,6 @@ export class TrialProvisionClientError extends Error {
       && fields.retryAfterMs <= MAX_RETRY_AFTER_MS) {
       this.retryAfterMs = fields.retryAfterMs;
     }
-    if (fields.retryAfterExceeded === true) this.retryAfterExceeded = true;
-    const registerUrl = safeTrialRegisterUrl(fields.registerUrl);
-    if (registerUrl) this.registerUrl = registerUrl;
   }
 }
 
@@ -91,12 +65,7 @@ export function createTrialProvisionClient(options = {}) {
   if (readEnvironmentValue(env, "NODE_TLS_REJECT_UNAUTHORIZED") === "0") {
     throw clientError("tls_unsafe");
   }
-  const challengeTimeoutMs = positiveBoundedInteger(
-    options?.challengeTimeoutMs ?? DEFAULT_CHALLENGE_TIMEOUT_MS,
-  );
-  const provisionTimeoutMs = positiveBoundedInteger(
-    options?.provisionTimeoutMs ?? DEFAULT_PROVISION_TIMEOUT_MS,
-  );
+  const timeoutMs = positiveBoundedInteger(options?.timeoutMs ?? DEFAULT_TIMEOUT_MS);
   const maxResponseBytes = positiveBoundedInteger(
     options?.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES,
     DEFAULT_MAX_RESPONSE_BYTES,
@@ -105,50 +74,30 @@ export function createTrialProvisionClient(options = {}) {
   if (typeof now !== "function") throw clientError("invalid_options");
 
   return Object.freeze({
-    async requestPowChallenge(pluginMark, requestOptions = {}) {
-      const mark = validPluginMark(pluginMark);
-      const response = await postJson({
-        url: `${serviceBaseUrl}${CHALLENGE_PATH}`,
-        body: { plugin_mark: mark },
-        timeoutMs: challengeTimeoutMs,
-        maxResponseBytes,
-        fetchImpl,
-        now,
-        signal: requestOptions?.signal,
-      });
-      return mapChallengeResponse(response);
-    },
-
     async provision(request, requestOptions = {}) {
       const snapshot = snapshotProvisionRequest(request);
       const response = await postJson({
         url: `${serviceBaseUrl}${PROVISION_PATH}`,
         body: {
-          plugin_mark: snapshot.pluginMark,
+          mark_id: snapshot.markId,
+          mark_version: snapshot.markVersion,
           app_salt: snapshot.appSalt,
-          machine_id_hash: snapshot.machineIdHash,
+          machine_id: snapshot.machineId,
           hostname: snapshot.hostname,
           platform: snapshot.platform,
           arch: snapshot.arch,
           mac_hash: snapshot.macHash,
-          client_api_key: snapshot.apiKey,
-          pow_challenge: snapshot.powChallenge,
-          pow_nonce: snapshot.powNonce,
-          recover_api_key: snapshot.recoverApiKey,
-          display_name: null,
         },
-        timeoutMs: provisionTimeoutMs,
+        timeoutMs,
         maxResponseBytes,
         fetchImpl,
         now,
         signal: requestOptions?.signal,
       });
       try {
-        return mapTrialProvisionResponse(response, {
-          expectedPluginMark: snapshot.pluginMark,
-          expectedApiKey: snapshot.apiKey,
-        });
-      } catch {
+        return mapProvisionResponse(response, snapshot.markId);
+      } catch (error) {
+        if (error instanceof TrialProvisionClientError) throw error;
         throw clientError("response_contract", { httpStatus: 200 });
       }
     },
@@ -233,37 +182,90 @@ async function interpretResponse(response, options) {
     }
     throw clientError("invalid_response", { httpStatus: status });
   }
-  if (status === 200) {
-    if (!JSON_CONTENT_TYPE_PATTERN.test(contentType)) {
-      throw clientError("invalid_response", { httpStatus: status });
-    }
-    const body = tryParseJsonRecord(text);
-    if (!body) throw clientError("invalid_response", { httpStatus: status });
-    return body;
-  }
+  const body = JSON_CONTENT_TYPE_PATTERN.test(contentType)
+    ? tryParseJsonRecord(text)
+    : undefined;
 
-  let body;
-  if (JSON_CONTENT_TYPE_PATTERN.test(contentType)) {
-    body = tryParseJsonRecord(text);
+  if (status !== 200) {
+    throw responseError(status, retryAfter, body, options.now);
   }
-  const serverCode = typeof body?.code === "string" ? body.code : undefined;
-  const expectedStatus = SERVER_ERROR_STATUS.get(serverCode);
-  if (expectedStatus !== undefined) {
-    if (expectedStatus !== status) {
-      throw clientError("unexpected_http_status", { httpStatus: status });
-    }
-    const parsedRetryAfter = parseRetryAfter(retryAfter, options.now);
-    throw clientError(serverCode, {
-      httpStatus: status,
-      retryAfterMs: parsedRetryAfter.value,
-      retryAfterExceeded: parsedRetryAfter.exceeded,
-      registerUrl: isRecord(body.details) ? body.details.register_url : undefined,
-    });
+  if (!body) throw clientError("invalid_response", { httpStatus: status });
+  if (body.success === false) {
+    throw responseError(status, retryAfter, body, options.now);
+  }
+  return body;
+}
+
+function responseError(status, retryAfter, body, now) {
+  const retryAfterMs = retryAfterFromResponse(retryAfter, body, now);
+  if (status === 429) {
+    return clientError("rate_limit_exceeded", { httpStatus: status, retryAfterMs });
   }
   if (status >= 500) {
-    throw clientError("server_error", { httpStatus: status });
+    return clientError("server_error", { httpStatus: status, retryAfterMs });
   }
-  throw clientError("unexpected_http_status", { httpStatus: status });
+  return clientError("server_rejected", { httpStatus: status, retryAfterMs });
+}
+
+function mapProvisionResponse(envelope, expectedMarkId) {
+  if (!isRecord(envelope) || envelope.success !== true || !isRecord(envelope.data)) {
+    throw clientError("response_contract", { httpStatus: 200 });
+  }
+  const data = envelope.data;
+  const accountId = decimalPublicId(data.account_id);
+  const projectId = decimalPublicId(data.project_id);
+  const apiKey = typeof data.api_key === "string" && API_KEY_PATTERN.test(data.api_key)
+    ? data.api_key
+    : undefined;
+  const keyPrefix = typeof data.key_prefix === "string" && data.key_prefix.trim()
+    ? data.key_prefix.trim()
+    : undefined;
+  if (!accountId
+    || !projectId
+    || data.mark_id !== expectedMarkId
+    || !apiKey
+    || !keyPrefix
+    || !apiKey.startsWith(keyPrefix)
+    || typeof data.created !== "boolean") {
+    throw clientError("response_contract", { httpStatus: 200 });
+  }
+  return Object.freeze({
+    accountId,
+    projectId,
+    apiKey,
+    created: data.created,
+  });
+}
+
+function snapshotProvisionRequest(request) {
+  let snapshot;
+  try {
+    snapshot = {
+      markId: request?.markId,
+      markVersion: request?.markVersion,
+      appSalt: request?.appSalt,
+      machineId: request?.machineId,
+      hostname: request?.hostname,
+      platform: request?.platform,
+      arch: request?.arch,
+      macHash: request?.macHash,
+    };
+  } catch {
+    throw clientError("invalid_request");
+  }
+  if (typeof snapshot.markId !== "string" || !MARK_ID_PATTERN.test(snapshot.markId)
+    || snapshot.markVersion !== 1
+    || snapshot.appSalt !== "memorax-plugin-v1"
+    || typeof snapshot.machineId !== "string"
+    || !MACHINE_ID_PATTERN.test(snapshot.machineId)
+    || !validBoundedString(snapshot.hostname, 120)
+    || !["windows", "linux", "macos"].includes(snapshot.platform)
+    || !["x86_64", "arm64"].includes(snapshot.arch)
+    || typeof snapshot.macHash !== "string"
+    || !SHA256_PATTERN.test(snapshot.macHash)) {
+    throw clientError("invalid_request");
+  }
+  return snapshot;
 }
 
 async function readBoundedResponseText(response, options) {
@@ -321,102 +323,37 @@ async function readBoundedResponseText(response, options) {
   }
 }
 
-function mapChallengeResponse(value) {
-  if (!isRecord(value)) throw clientError("invalid_response");
-  const snapshot = {
-    powChallenge: value.pow_challenge,
-    difficultyBits: value.difficulty_bits,
-    algorithm: value.algorithm,
-    expiresAt: value.expires_at,
-  };
-  if (typeof snapshot.powChallenge !== "string"
-    || snapshot.powChallenge.length > 1024
-    || !POW_CHALLENGE_PATTERN.test(snapshot.powChallenge)
-    || !Number.isInteger(snapshot.difficultyBits)
-    || snapshot.difficultyBits < 0
-    || snapshot.difficultyBits > 28
-    || snapshot.algorithm !== "sha256"
-    || typeof snapshot.expiresAt !== "string"
-    || !snapshot.expiresAt
-    || !Number.isFinite(Date.parse(snapshot.expiresAt))) {
-    throw clientError("invalid_response");
-  }
-  return Object.freeze(snapshot);
+function retryAfterFromResponse(header, body, now) {
+  const fromHeader = parseRetryAfter(header, now);
+  if (fromHeader !== undefined) return fromHeader;
+  const error = isRecord(body?.error) ? body.error : undefined;
+  const seconds = error?.retry_after_seconds;
+  if (!Number.isSafeInteger(seconds) || seconds < 0) return undefined;
+  const delay = seconds * 1000;
+  return Number.isSafeInteger(delay) && delay <= MAX_RETRY_AFTER_MS ? delay : undefined;
 }
 
-function snapshotProvisionRequest(request) {
-  let snapshot;
-  try {
-    snapshot = {
-      pluginMark: request?.pluginMark,
-      appSalt: request?.appSalt,
-      machineIdHash: request?.machineIdHash,
-      hostname: request?.hostname,
-      platform: request?.platform,
-      arch: request?.arch,
-      macHash: request?.macHash,
-      apiKey: request?.apiKey,
-      powChallenge: request?.powChallenge,
-      powNonce: request?.powNonce,
-      recoverApiKey: request?.recoverApiKey,
-    };
-  } catch {
-    throw clientError("invalid_request");
+function parseRetryAfter(value, now) {
+  if (typeof value !== "string" || !value.trim()) return undefined;
+  const text = value.trim();
+  let delay;
+  if (/^[0-9]+$/.test(text)) {
+    const seconds = Number(text);
+    if (!Number.isSafeInteger(seconds)) return undefined;
+    delay = seconds * 1000;
+  } else {
+    if (!/[A-Za-z]/.test(text)) return undefined;
+    let current;
+    try {
+      current = now();
+    } catch {
+      return undefined;
+    }
+    const at = Date.parse(text);
+    if (!Number.isFinite(at) || !Number.isFinite(current)) return undefined;
+    delay = Math.max(0, at - current);
   }
-  snapshot.pluginMark = validPluginMark(snapshot.pluginMark);
-  snapshot.appSalt = validBoundedString(snapshot.appSalt, 256, false);
-  snapshot.machineIdHash = validSha256(snapshot.machineIdHash, false);
-  snapshot.hostname = validBoundedString(snapshot.hostname, 255, true);
-  snapshot.platform = validBoundedString(snapshot.platform, 32, false);
-  snapshot.arch = validBoundedString(snapshot.arch, 32, false);
-  snapshot.macHash = validSha256(snapshot.macHash, true);
-  if (typeof snapshot.apiKey !== "string" || !API_KEY_PATTERN.test(snapshot.apiKey)) {
-    throw clientError("invalid_request");
-  }
-  if (typeof snapshot.powChallenge !== "string"
-    || snapshot.powChallenge.length > 1024
-    || !POW_CHALLENGE_PATTERN.test(snapshot.powChallenge)) {
-    throw clientError("invalid_request");
-  }
-  if (!validPowNonce(snapshot.powNonce) || typeof snapshot.recoverApiKey !== "boolean") {
-    throw clientError("invalid_request");
-  }
-  return snapshot;
-}
-
-function validPluginMark(value) {
-  if (typeof value !== "string" || !PLUGIN_MARK_PATTERN.test(value)) {
-    throw clientError("invalid_request");
-  }
-  return value;
-}
-
-function validSha256(value, allowEmpty) {
-  if ((allowEmpty && value === "")
-    || (typeof value === "string" && SHA256_PATTERN.test(value))) {
-    return value;
-  }
-  throw clientError("invalid_request");
-}
-
-function validBoundedString(value, maxLength, allowEmpty) {
-  if (typeof value !== "string"
-    || value.length > maxLength
-    || value.includes("\0")
-    || value !== value.trim()
-    || (!allowEmpty && value.length === 0)) {
-    throw clientError("invalid_request");
-  }
-  return value;
-}
-
-function validPowNonce(value) {
-  if (typeof value !== "string" || !POW_NONCE_PATTERN.test(value)) return false;
-  try {
-    return BigInt(value) <= MAX_POW_NONCE;
-  } catch {
-    return false;
-  }
+  return Number.isSafeInteger(delay) && delay <= MAX_RETRY_AFTER_MS ? delay : undefined;
 }
 
 function validateServiceBaseUrl(value) {
@@ -444,6 +381,18 @@ function validateServiceBaseUrl(value) {
   }
 }
 
+function validBoundedString(value, maxLength) {
+  return typeof value === "string"
+    && value.length > 0
+    && value.length <= maxLength
+    && !value.includes("\0")
+    && value === value.trim();
+}
+
+function decimalPublicId(value) {
+  return typeof value === "string" && /^[0-9]+$/.test(value) ? value : undefined;
+}
+
 function tryParseJsonRecord(text) {
   try {
     const value = JSON.parse(text);
@@ -451,32 +400,6 @@ function tryParseJsonRecord(text) {
   } catch {
     return undefined;
   }
-}
-
-function parseRetryAfter(value, now) {
-  if (typeof value !== "string" || !value.trim()) return {};
-  const text = value.trim();
-  let delay;
-  if (/^[0-9]+$/.test(text)) {
-    const seconds = Number(text);
-    if (!Number.isSafeInteger(seconds)) return { exceeded: true };
-    delay = seconds * 1000;
-  } else {
-    if (!/[A-Za-z]/.test(text)) return {};
-    let current;
-    try {
-      current = now();
-    } catch {
-      return {};
-    }
-    const at = Date.parse(text);
-    if (!Number.isFinite(at) || !Number.isFinite(current)) return {};
-    delay = Math.max(0, at - current);
-  }
-  if (!Number.isSafeInteger(delay) || delay > MAX_RETRY_AFTER_MS) {
-    return { exceeded: true };
-  }
-  return { value: delay };
 }
 
 function positiveBoundedInteger(value, maximum = 120_000) {

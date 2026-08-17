@@ -1,88 +1,58 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import test from "node:test";
 import {
   createTrialMacHash,
   deriveTrialPluginIdentity,
-  deriveTrialPluginMark,
-  generateTrialPluginIdentity,
-  generateTrialPluginMark,
+  generateTrialMarkId,
+  TRIAL_APP_SALT,
+  TRIAL_MARK_VERSION,
 } from "../lib/trial-plugin-mark.mjs";
 
-const FIELDS = Object.freeze({
-  appSalt: "@memorax/memorax-code@0.1.2",
-  machineId: "8de277067b3544d4b65c267d0edab928",
-  hostname: "Developer-Laptop",
-  platform: "Linux",
-  arch: "X64",
-  macHash: "39d902aba3f789635208452e37cfacc66f2b3673eb4f23a98f1457b832d78a2a",
+const DEVICE = Object.freeze({
+  markVersion: 1,
+  appSalt: "memorax-plugin-v1",
+  machineId: "550e8400-e29b-41d4-a716-446655440000",
+  hostname: "DESKTOP-DEMO",
+  platform: "windows",
+  arch: "x86_64",
+  macHash: "b".repeat(64),
 });
+const GOLDEN_MARK_ID = "mk_e07c335dfbdd06d4752cf8a17e7d4f82555bf4828d82a8efa7cc5b527d4c858e";
 
-test("plugin identity matches the service material golden vector", () => {
-  assert.deepEqual(deriveTrialPluginIdentity(FIELDS), {
-    appSalt: "@memorax/memorax-code@0.1.2",
-    machineIdHash: "9c68dde752b9d1abaa475e2cd895eb0fbc8e29b05e3cab1430c01cc964c38c3d",
-    hostname: "developer-laptop",
-    platform: "linux",
-    arch: "x64",
-    macHash: "39d902aba3f789635208452e37cfacc66f2b3673eb4f23a98f1457b832d78a2a",
-    pluginMark: "mk_8eddbf5e4d57a29b783ababa63bd16b8",
+test("trial identity matches the backend v1 golden vector", () => {
+  assert.deepEqual(deriveTrialPluginIdentity(DEVICE), {
+    ...DEVICE,
+    markId: GOLDEN_MARK_ID,
   });
+  assert.equal(TRIAL_MARK_VERSION, 1);
+  assert.equal(TRIAL_APP_SALT, "memorax-plugin-v1");
 });
 
-test("plugin mark has the required format and every field affects it", () => {
-  const baseline = deriveTrialPluginMark(FIELDS);
-  assert.match(baseline, /^mk_[0-9a-f]{32}$/);
-
-  for (const field of Object.keys(FIELDS)) {
-    assert.notEqual(
-      deriveTrialPluginMark({ ...FIELDS, [field]: `${FIELDS[field]}changed` }),
-      baseline,
-      field,
-    );
-  }
+test("trial identity normalizes Node platform and architecture names", () => {
+  const identity = deriveTrialPluginIdentity({
+    ...DEVICE,
+    platform: "win32",
+    arch: "x64",
+  });
+  assert.equal(identity.platform, "windows");
+  assert.equal(identity.arch, "x86_64");
+  assert.equal(identity.markId, GOLDEN_MARK_ID);
 });
 
-test("machine fields are trimmed and lowercased while app salt keeps package casing", () => {
-  assert.equal(
-    deriveTrialPluginMark({
-      ...FIELDS,
-      machineId: `  ${FIELDS.machineId.toUpperCase()}  `,
-      hostname: `  ${FIELDS.hostname.toUpperCase()}  `,
-      platform: "  LINUX  ",
-      arch: "  x64  ",
-      macHash: `  ${FIELDS.macHash.toUpperCase()}  `,
-    }),
-    deriveTrialPluginMark(FIELDS),
-  );
-  assert.notEqual(
-    deriveTrialPluginMark({ ...FIELDS, appSalt: FIELDS.appSalt.toUpperCase() }),
-    deriveTrialPluginMark(FIELDS),
-  );
-});
-
-test("MAC hashing ignores internal and invalid entries, then deduplicates and sorts", () => {
+test("MAC hashing is stable and always returns a SHA-256 value", () => {
   const entries = [
-    { internal: false, mac: " AA:BB:CC:DD:EE:FF " },
-    { internal: false, mac: "11-22-33-44-55-66" },
-    { internal: false, mac: "aa-bb-cc-dd-ee-ff" },
-    { internal: true, mac: "22:22:22:22:22:22" },
-    { internal: false, mac: "00:00:00:00:00:00" },
-    { internal: false, mac: "not-a-mac" },
+    { internal: false, mac: "BB:00:00:00:00:02" },
+    { internal: false, mac: "aa:00:00:00:00:01" },
+    { internal: false, mac: "BB:00:00:00:00:02" },
+    { internal: true, mac: "cc:00:00:00:00:03" },
   ];
-  const expected = createHash("sha256")
-    .update("112233445566aabbccddeeff", "utf8")
-    .digest("hex");
-
-  assert.equal(createTrialMacHash(entries), expected);
-  assert.equal(createTrialMacHash([...entries].reverse()), expected);
-  assert.equal(createTrialMacHash([]), "");
+  assert.equal(createTrialMacHash(entries), createTrialMacHash([...entries].reverse()));
+  assert.equal(
+    createTrialMacHash([]),
+    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  );
 });
 
-test("runtime generation returns only normalized provision inputs", () => {
-  const identity = generateTrialPluginIdentity();
-  assert.match(identity.pluginMark, /^mk_[0-9a-f]{32}$/);
-  assert.match(identity.machineIdHash, /^(?:|[0-9a-f]{64})$/);
-  assert.equal(Object.hasOwn(identity, "machineId"), false);
-  assert.equal(generateTrialPluginMark().startsWith("mk_"), true);
+test("generated mark IDs use the public mk_<sha256> format", () => {
+  assert.match(generateTrialMarkId(), /^mk_[0-9a-f]{64}$/);
 });

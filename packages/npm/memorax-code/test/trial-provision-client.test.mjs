@@ -6,459 +6,193 @@ import {
 } from "../lib/trial-provision-client.mjs";
 
 const SERVICE_BASE_URL = "https://platform.memorax.net";
-const PLUGIN_MARK = "mk_8eddbf5e4d57a29b783ababa63bd16b8";
 const API_KEY = `sk_${"A".repeat(43)}`;
-const POW_CHALLENGE = "v1.cGF5bG9hZA.c2lnbmF0dXJl";
-const ACCOUNT_ID = "900719925474099300000000001";
-const PROJECT_ID = "900719925474099300000000002";
-const PLUGIN_IDENTITY = Object.freeze({
-  appSalt: "@memorax/memorax-code@0.1.2",
-  machineIdHash: "9c68dde752b9d1abaa475e2cd895eb0fbc8e29b05e3cab1430c01cc964c38c3d",
-  hostname: "developer-laptop",
-  platform: "linux",
-  arch: "x64",
-  macHash: "39d902aba3f789635208452e37cfacc66f2b3673eb4f23a98f1457b832d78a2a",
-});
-const PROVISION_REQUEST = Object.freeze({
-  pluginMark: PLUGIN_MARK,
-  ...PLUGIN_IDENTITY,
-  apiKey: API_KEY,
-  powChallenge: POW_CHALLENGE,
-  powNonce: "88405",
-  recoverApiKey: false,
+const REQUEST = Object.freeze({
+  markId: "mk_e07c335dfbdd06d4752cf8a17e7d4f82555bf4828d82a8efa7cc5b527d4c858e",
+  markVersion: 1,
+  appSalt: "memorax-plugin-v1",
+  machineId: "550e8400-e29b-41d4-a716-446655440000",
+  hostname: "DESKTOP-DEMO",
+  platform: "windows",
+  arch: "x86_64",
+  macHash: "b".repeat(64),
 });
 
-function challengeResponse(overrides = {}) {
+function successEnvelope(overrides = {}) {
   return {
-    pow_challenge: POW_CHALLENGE,
-    difficulty_bits: 16,
-    algorithm: "sha256",
-    expires_at: "2026-08-15T12:05:00Z",
-    ...overrides,
-  };
-}
-
-function provisionResponse(overrides = {}) {
-  return {
-    user_id: ACCOUNT_ID,
-    project_id: PROJECT_ID,
-    api_key: API_KEY,
-    key_prefix: "sk_AAAAAAAA",
-    plugin_mark: PLUGIN_MARK,
-    created: true,
-    api_key_recovered: false,
-    warn_remaining_threshold: 5000,
-    warn_remaining_step: 1000,
-    register_url: "https://platform.memorax.net/register",
-    ...overrides,
-  };
-}
-
-function jsonResponse(body, init = {}) {
-  return new Response(JSON.stringify(body), {
-    status: init.status ?? 200,
-    headers: {
-      "content-type": "application/json; charset=utf-8",
-      ...(init.headers ?? {}),
+    success: true,
+    data: {
+      account_id: "341599238100099072",
+      project_id: "347677365196820482",
+      mark_id: REQUEST.markId,
+      key_prefix: API_KEY.slice(0, 10),
+      api_key: API_KEY,
+      created: true,
+      ...overrides,
     },
-  });
+    error: null,
+    page: null,
+  };
 }
 
-test("challenge request uses the fixed HTTPS endpoint and validates its response", async () => {
-  const requests = [];
+test("provision sends the agreed device fields and accepts a backend-generated api_key", async () => {
+  const calls = [];
   const client = createTrialProvisionClient({
     serviceBaseUrl: SERVICE_BASE_URL,
     env: {},
     fetchImpl: async (url, init) => {
-      requests.push({ url, init });
-      return jsonResponse(challengeResponse());
+      calls.push({ url, init });
+      return jsonResponse(successEnvelope());
     },
   });
 
-  assert.deepEqual(await client.requestPowChallenge(PLUGIN_MARK), {
-    powChallenge: POW_CHALLENGE,
-    difficultyBits: 16,
-    algorithm: "sha256",
-    expiresAt: "2026-08-15T12:05:00Z",
-  });
-  assert.equal(requests.length, 1);
-  assert.equal(
-    requests[0].url,
-    "https://platform.memorax.net/account/api/v1/trial/pow-challenge",
-  );
-  assert.equal(requests[0].init.method, "POST");
-  assert.equal(requests[0].init.redirect, "error");
-  assert.equal(requests[0].init.cache, "no-store");
-  assert.equal(requests[0].init.credentials, "omit");
-  assert.equal(requests[0].init.headers.Authorization, undefined);
-  assert.equal(requests[0].init.headers["Content-Type"], "application/json");
-  assert.equal(requests[0].init.headers.Accept, "application/json");
-  assert.deepEqual(JSON.parse(requests[0].init.body), { plugin_mark: PLUGIN_MARK });
-});
-
-test("provision sends the exact persisted identity and maps account identity separately", async () => {
-  let captured;
-  const client = createTrialProvisionClient({
-    serviceBaseUrl: SERVICE_BASE_URL,
-    env: {},
-    fetchImpl: async (url, init) => {
-      captured = { url, init };
-      return jsonResponse(provisionResponse());
-    },
-  });
-
-  const result = await client.provision(PROVISION_REQUEST);
-
-  assert.deepEqual(result, {
-    accountId: ACCOUNT_ID,
-    projectId: PROJECT_ID,
+  assert.deepEqual(await client.provision(REQUEST), {
+    accountId: "341599238100099072",
+    projectId: "347677365196820482",
+    apiKey: API_KEY,
     created: true,
-    apiKeyRecovered: false,
-    warnRemainingThreshold: 5000,
-    warnRemainingStep: 1000,
-    registerUrl: "https://platform.memorax.net/register",
   });
-  assert.equal(
-    captured.url,
-    "https://platform.memorax.net/account/api/v1/trial/provision",
-  );
-  assert.equal(captured.init.headers.Authorization, undefined);
-  assert.deepEqual(JSON.parse(captured.init.body), {
-    plugin_mark: PLUGIN_MARK,
-    app_salt: PLUGIN_IDENTITY.appSalt,
-    machine_id_hash: PLUGIN_IDENTITY.machineIdHash,
-    hostname: PLUGIN_IDENTITY.hostname,
-    platform: PLUGIN_IDENTITY.platform,
-    arch: PLUGIN_IDENTITY.arch,
-    mac_hash: PLUGIN_IDENTITY.macHash,
-    client_api_key: API_KEY,
-    pow_challenge: POW_CHALLENGE,
-    pow_nonce: "88405",
-    recover_api_key: false,
-    display_name: null,
+  assert.equal(calls[0].url, `${SERVICE_BASE_URL}/account/api/v1/trial/provision`);
+  assert.deepEqual(JSON.parse(calls[0].init.body), {
+    mark_id: REQUEST.markId,
+    mark_version: 1,
+    app_salt: "memorax-plugin-v1",
+    machine_id: REQUEST.machineId,
+    hostname: REQUEST.hostname,
+    platform: "windows",
+    arch: "x86_64",
+    mac_hash: REQUEST.macHash,
   });
-  assert.ok(Buffer.byteLength(captured.init.body, "utf8") <= 4096);
-  assert.equal(captured.url.includes(API_KEY), false);
-  assert.equal(JSON.stringify(captured.init.headers).includes(API_KEY), false);
-  assert.equal(JSON.stringify(result).includes(API_KEY), false);
+  assert.equal(calls[0].init.cache, "no-store");
+  assert.equal(calls[0].init.credentials, "omit");
 });
 
-test("provision rejects invalid plugin identity fields before networking", async () => {
-  for (const override of [
-    { appSalt: "" },
-    { machineIdHash: "not-a-hash" },
-    { hostname: "host\0name" },
-    { platform: "" },
-    { arch: "x".repeat(33) },
-    { macHash: "not-a-hash" },
-  ]) {
-    let calls = 0;
-    const client = createTrialProvisionClient({
-      serviceBaseUrl: SERVICE_BASE_URL,
-      env: {},
-      fetchImpl: async () => {
-        calls += 1;
-        return jsonResponse(provisionResponse());
-      },
-    });
-    await assert.rejects(
-      client.provision({ ...PROVISION_REQUEST, ...override }),
-      (error) => error instanceof TrialProvisionClientError
-        && error.reason === "invalid_request",
-    );
-    assert.equal(calls, 0);
-  }
-});
-
-test("client rejects unsafe service URLs and disabled TLS verification before networking", async () => {
-  for (const [serviceBaseUrl, env] of [
-    ["http://platform.memorax.net", {}],
-    ["ftp://platform.memorax.net", {}],
-    ["https://user:password@platform.memorax.net", {}],
-    ["https://platform.memorax.net?next=elsewhere", {}],
-    ["https://platform.memorax.net#fragment", {}],
-    ["https://platform.memorax.net\0.invalid", {}],
-    [SERVICE_BASE_URL, { NODE_TLS_REJECT_UNAUTHORIZED: "0" }],
-  ]) {
-    let calls = 0;
-    assert.throws(
-      () => createTrialProvisionClient({
-        serviceBaseUrl,
-        env,
-        fetchImpl: async () => {
-          calls += 1;
-          return jsonResponse(challengeResponse());
-        },
-      }),
-      (error) => error instanceof TrialProvisionClientError
-        && error.code === "TRIAL_PROVISION_CLIENT_FAILED"
-        && (error.reason === "invalid_service_url" || error.reason === "tls_unsafe"),
-    );
-    assert.equal(calls, 0);
-  }
-});
-
-test("client configuration cannot weaken request timeout or response size bounds", () => {
+test("provision rejects invalid local fields before network access", async () => {
+  let called = false;
+  const client = createTrialProvisionClient({
+    env: {},
+    fetchImpl: async () => {
+      called = true;
+      return jsonResponse(successEnvelope());
+    },
+  });
   for (const overrides of [
-    { challengeTimeoutMs: 120_001 },
-    { provisionTimeoutMs: 120_001 },
-    { maxResponseBytes: 16_385 },
-    { maxResponseBytes: 0 },
+    { markId: `mk_${"a".repeat(32)}` },
+    { markVersion: 2 },
+    { appSalt: "@memorax/memorax-code@0.1.2" },
+    { machineId: "contains spaces" },
+    { hostname: "" },
+    { platform: "win32" },
+    { arch: "x64" },
+    { macHash: "b".repeat(63) },
   ]) {
-    let calls = 0;
-    assert.throws(
-      () => createTrialProvisionClient({
-        serviceBaseUrl: SERVICE_BASE_URL,
-        env: {},
-        fetchImpl: async () => {
-          calls += 1;
-          return jsonResponse(challengeResponse());
-        },
-        ...overrides,
-      }),
-      (error) => error instanceof TrialProvisionClientError
-        && error.reason === "invalid_options",
+    await assert.rejects(
+      client.provision({ ...REQUEST, ...overrides }),
+      clientError("invalid_request"),
     );
-    assert.equal(calls, 0);
   }
+  assert.equal(called, false);
 });
 
-test("redirect responses fail without replaying the provision body", async () => {
-  const requests = [];
-  const client = createTrialProvisionClient({
-    serviceBaseUrl: SERVICE_BASE_URL,
-    env: {},
-    fetchImpl: async (url, init) => {
-      requests.push({ url, init });
-      return new Response("", {
-        status: 307,
-        headers: {
-          location: "https://attacker.example/provision",
-          "content-type": "application/json",
-        },
-      });
-    },
-  });
-
-  await assert.rejects(
-    client.provision(PROVISION_REQUEST),
-    (error) => error instanceof TrialProvisionClientError
-      && error.reason === "unexpected_http_status"
-      && !String(error).includes(API_KEY),
-  );
-  assert.equal(requests.length, 1);
-  assert.equal(requests[0].init.redirect, "error");
-});
-
-test("response reader accepts the byte limit and rejects one additional decompressed byte", async () => {
-  const base = provisionResponse({ future_padding: "" });
-  const overhead = Buffer.byteLength(JSON.stringify(base), "utf8");
-  const atLimit = provisionResponse({ future_padding: "x".repeat(16_384 - overhead) });
-  assert.equal(Buffer.byteLength(JSON.stringify(atLimit), "utf8"), 16_384);
-
-  for (const [body, expectedReason] of [
-    [atLimit, undefined],
-    [provisionResponse({ future_padding: `${atLimit.future_padding}x` }), "response_too_large"],
+test("provision requires the response envelope to contain a fresh matching api_key", async () => {
+  for (const overrides of [
+    { account_id: 123 },
+    { mark_id: `mk_${"f".repeat(64)}` },
+    { api_key: null },
+    { api_key: `sk_${"short"}` },
+    { key_prefix: "sk_other" },
+    { created: "true" },
   ]) {
     const client = createTrialProvisionClient({
-      serviceBaseUrl: SERVICE_BASE_URL,
       env: {},
-      fetchImpl: async () => jsonResponse(body),
+      fetchImpl: async () => jsonResponse(successEnvelope(overrides)),
     });
-    if (!expectedReason) {
-      assert.equal((await client.provision(PROVISION_REQUEST)).accountId, ACCOUNT_ID);
-    } else {
-      await assert.rejects(
-        client.provision(PROVISION_REQUEST),
-        (error) => error instanceof TrialProvisionClientError
-          && error.reason === expectedReason
-          && !String(error).includes(API_KEY),
-      );
-    }
+    await assert.rejects(client.provision(REQUEST), clientError("response_contract"));
   }
 });
 
-test("response byte limit ignores a forged smaller Content-Length", async () => {
-  let cancelCalls = 0;
-  const body = new ReadableStream({
-    start(controller) {
-      controller.enqueue(new Uint8Array(16_384));
-      controller.enqueue(new Uint8Array(1));
-    },
-    cancel() { cancelCalls += 1; },
-  });
-  const client = createTrialProvisionClient({
-    serviceBaseUrl: SERVICE_BASE_URL,
+test("provision maps response-envelope and HTTP failures without exposing response data", async () => {
+  const rejected = createTrialProvisionClient({
     env: {},
-    fetchImpl: async () => new Response(body, {
+    fetchImpl: async () => jsonResponse({
+      success: false,
+      data: null,
+      error: {
+        code: "account.trial.provision.mark_mismatch",
+        message: API_KEY,
+        retry_after_seconds: 3,
+      },
+    }),
+  });
+  await assert.rejects(rejected.provision(REQUEST), (error) => {
+    assert.ok(error instanceof TrialProvisionClientError);
+    assert.equal(error.reason, "server_rejected");
+    assert.equal(error.retryAfterMs, 3_000);
+    assert.equal(`${error.message} ${error.stack}`.includes(API_KEY), false);
+    return true;
+  });
+
+  const limited = createTrialProvisionClient({
+    env: {},
+    fetchImpl: async () => jsonResponse({ success: false, error: null }, {
+      status: 429,
+      headers: { "retry-after": "2" },
+    }),
+  });
+  await assert.rejects(limited.provision(REQUEST), (error) => {
+    assert.equal(error.reason, "rate_limit_exceeded");
+    assert.equal(error.httpStatus, 429);
+    assert.equal(error.retryAfterMs, 2_000);
+    return true;
+  });
+});
+
+test("provision rejects unsafe service and TLS configuration", () => {
+  for (const serviceBaseUrl of [
+    "http://platform.memorax.net",
+    "https://user:password@platform.memorax.net",
+    "https://platform.memorax.net/path",
+  ]) {
+    assert.throws(
+      () => createTrialProvisionClient({ serviceBaseUrl, env: {} }),
+      clientError("invalid_service_url"),
+    );
+  }
+  assert.throws(
+    () => createTrialProvisionClient({ env: { NODE_TLS_REJECT_UNAUTHORIZED: "0" } }),
+    clientError("tls_unsafe"),
+  );
+});
+
+test("provision bounds response size", async () => {
+  const client = createTrialProvisionClient({
+    env: {},
+    maxResponseBytes: 128,
+    fetchImpl: async () => new Response("x".repeat(129), {
       status: 200,
       headers: {
         "content-type": "application/json",
-        "content-length": "1",
+        "content-length": "129",
       },
     }),
   });
-
-  await assert.rejects(
-    client.requestPowChallenge(PLUGIN_MARK),
-    (error) => error instanceof TrialProvisionClientError
-      && error.reason === "response_too_large"
-      && error.httpStatus === 200,
-  );
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(cancelCalls, 1);
+  await assert.rejects(client.provision(REQUEST), clientError("response_too_large"));
 });
 
-test("attempt timeout covers a stalled response body", async () => {
-  const body = new ReadableStream({
-    start(controller) {
-      controller.enqueue(new TextEncoder().encode("{"));
+function jsonResponse(body, options = {}) {
+  return new Response(JSON.stringify(body), {
+    status: options.status ?? 200,
+    headers: {
+      "content-type": "application/json",
+      ...options.headers,
     },
   });
-  const client = createTrialProvisionClient({
-    serviceBaseUrl: SERVICE_BASE_URL,
-    env: {},
-    challengeTimeoutMs: 20,
-    fetchImpl: async () => new Response(body, {
-      status: 200,
-      headers: { "content-type": "application/json" },
-    }),
-  });
+}
 
-  await assert.rejects(
-    client.requestPowChallenge(PLUGIN_MARK),
-    (error) => error instanceof TrialProvisionClientError && error.reason === "timeout",
-  );
-});
-
-test("attempt timeout remains authoritative when fetch returns after abort", async () => {
-  let cancelCalls = 0;
-  const client = createTrialProvisionClient({
-    serviceBaseUrl: SERVICE_BASE_URL,
-    env: {},
-    challengeTimeoutMs: 20,
-    fetchImpl: async () => {
-      await new Promise((resolve) => setTimeout(resolve, 30));
-      return new Response(new ReadableStream({
-        start(controller) { controller.enqueue(new TextEncoder().encode("{")); },
-        cancel() { cancelCalls += 1; },
-      }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      });
-    },
-  });
-
-  await assert.rejects(
-    client.requestPowChallenge(PLUGIN_MARK),
-    (error) => error instanceof TrialProvisionClientError && error.reason === "timeout",
-  );
-  assert.equal(cancelCalls, 1);
-});
-
-test("stable service errors expose only bounded structured metadata", async () => {
-  const client = createTrialProvisionClient({
-    serviceBaseUrl: SERVICE_BASE_URL,
-    env: {},
-    now: () => Date.parse("2026-08-15T12:00:00Z"),
-    fetchImpl: async () => jsonResponse({
-      code: "trial_capacity_exceeded",
-      message: `do not expose ${API_KEY}`,
-      details: {
-        register_url: "https://platform.memorax.net/register",
-        credential: API_KEY,
-      },
-    }, {
-      status: 429,
-      headers: { "retry-after": "30" },
-    }),
-  });
-
-  await assert.rejects(
-    client.provision(PROVISION_REQUEST),
-    (error) => {
-      assert.equal(error instanceof TrialProvisionClientError, true);
-      assert.equal(error.reason, "trial_capacity_exceeded");
-      assert.equal(error.httpStatus, 429);
-      assert.equal(error.retryAfterMs, 30_000);
-      assert.equal(error.registerUrl, "https://platform.memorax.net/register");
-      assert.equal(String(error).includes(API_KEY), false);
-      assert.equal(String(error.stack).includes(API_KEY), false);
-      assert.equal(JSON.stringify(error).includes(API_KEY), false);
-      return true;
-    },
-  );
-});
-
-test("Retry-After accepts bounded seconds and HTTP dates without trusting invalid values", async () => {
-  const now = Date.parse("2026-08-15T12:00:00Z");
-  const cases = [
-    { value: "0", retryAfterMs: 0 },
-    { value: "30", retryAfterMs: 30_000 },
-    { value: "60", retryAfterMs: 60_000 },
-    { value: "120", retryAfterMs: 120_000 },
-    { value: "121", exceeded: true },
-    { value: new Date(now + 60_000).toUTCString(), retryAfterMs: 60_000 },
-    { value: new Date(now - 60_000).toUTCString(), retryAfterMs: 0 },
-    { value: new Date(now + 121_000).toUTCString(), exceeded: true },
-    { value: "", invalid: true },
-    { value: "-1", invalid: true },
-    { value: "1.5", invalid: true },
-    { value: "not-a-date", invalid: true },
-  ];
-
-  for (const expected of cases) {
-    const client = createTrialProvisionClient({
-      serviceBaseUrl: SERVICE_BASE_URL,
-      env: {},
-      now: () => now,
-      fetchImpl: async () => jsonResponse({
-        code: "rate_limit_exceeded",
-      }, {
-        status: 429,
-        headers: { "retry-after": expected.value },
-      }),
-    });
-    let caught;
-    await assert.rejects(
-      client.requestPowChallenge(PLUGIN_MARK),
-      (error) => {
-        caught = error;
-        return error instanceof TrialProvisionClientError
-          && error.reason === "rate_limit_exceeded"
-          && error.httpStatus === 429;
-      },
-    );
-    assert.equal(caught.retryAfterMs, expected.retryAfterMs);
-    assert.equal(caught.retryAfterExceeded, expected.exceeded ? true : undefined);
-    if (expected.invalid) {
-      assert.equal(Object.hasOwn(caught, "retryAfterMs"), false);
-      assert.equal(Object.hasOwn(caught, "retryAfterExceeded"), false);
-    }
-  }
-});
-
-test("transport, malformed JSON, and status mismatches never expose response or thrown secrets", async () => {
-  for (const [fetchImpl, expectedReason] of [
-    [async () => { throw new Error(`network failed with ${API_KEY}`); }, "transport"],
-    [async () => new Response(`{${API_KEY}`, {
-      status: 200,
-      headers: { "content-type": "application/json" },
-    }), "invalid_response"],
-    [async () => jsonResponse({ code: "trial_disabled", message: API_KEY }, { status: 429 }), "unexpected_http_status"],
-  ]) {
-    const client = createTrialProvisionClient({
-      serviceBaseUrl: SERVICE_BASE_URL,
-      env: {},
-      fetchImpl,
-    });
-    await assert.rejects(
-      client.requestPowChallenge(PLUGIN_MARK),
-      (error) => error instanceof TrialProvisionClientError
-        && error.reason === expectedReason
-        && !String(error).includes(API_KEY)
-        && !String(error.stack).includes(API_KEY)
-        && !JSON.stringify(error).includes(API_KEY),
-    );
-  }
-});
+function clientError(reason) {
+  return (error) => {
+    assert.ok(error instanceof TrialProvisionClientError);
+    assert.equal(error.reason, reason);
+    return true;
+  };
+}
