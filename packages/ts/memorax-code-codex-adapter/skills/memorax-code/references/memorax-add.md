@@ -83,6 +83,6 @@ Do not add speculation, assistant-only praise, or a current instruction merely b
 
 ## Output
 
-If a successful Add returns `quotaNotice`, or prints it as a `Warning:` line in the default CLI output, present the complete warning once and prominently before the normal result summary. Do not reduce it to a remaining-quota metric or omit its account URL or Mark ID. Treat it as user-facing operational output, not coding memory content, and continue the current task.
+If a successful Add returns `quotaNotice`, or prints it as a `Warning:` line in the default CLI output, present the complete warning once and prominently before the normal result summary. Do not reduce it to a remaining-quota metric or omit its account URL or local Mark ID retrieval instructions. Never run `memorax-code account --show-mark-id` for the user, ask for its output, or reproduce a Mark ID in chat. Treat the warning as user-facing operational output, not coding memory content, and continue the current task.
 
 After an add request is accepted, confirm briefly that it was submitted for processing and identify the reusable coding lesson at a high level. If add is disabled or fails, report the issue and continue without bypassing the CLI.

@@ -28,7 +28,9 @@ test("trial quota notices claim lower levels once and reset after replenishment"
   const first = await claim(9_999);
   assert.match(first, /memory write quota is running low: 9999 of 10000 remaining/i);
   assert.match(first, /https:\/\/platform\.memorax\.net\//);
-  assert.match(first, new RegExp(MARK_ID));
+  assert.match(first, /memorax-code account --show-mark-id/);
+  assert.match(first, /do not paste it into chat/i);
+  assert.doesNotMatch(first, new RegExp(MARK_ID));
   assert.equal(current.last_warned_write_level, 9_999);
   assert.equal(await claim(9_999), undefined);
   assert.equal(current.last_warned_write_level, 9_999);

@@ -51,7 +51,7 @@ export const claimTrialQuotaNotice: TrialQuotaNoticeClaimer = async (
   const timeoutMs = positiveTimeout(options.timeoutMs);
   const controller = new AbortController();
   let timeout: ReturnType<typeof setTimeout> | undefined;
-  let claimed: Readonly<{ markId: string }> | undefined;
+  let claimed = false;
   const warningField = quota.featureCode === "memory_write"
     ? "last_warned_write_level"
     : "last_warned_search_level";
@@ -78,9 +78,7 @@ export const claimTrialQuotaNotice: TrialQuotaNoticeClaimer = async (
           || (lastWarnedLevel !== null && level >= lastWarnedLevel)) {
           return undefined;
         }
-        claimed = {
-          markId: current.mark_id,
-        };
+        claimed = true;
         return { ...current, [warningField]: level };
       }, {
         memoraxCodeHome: defaultMemoraxCodeHome(env),
@@ -106,7 +104,7 @@ export const claimTrialQuotaNotice: TrialQuotaNoticeClaimer = async (
     if (timeout) clearTimeout(timeout);
   }
 
-  return claimed ? quotaNotice(claimed, quota) : undefined;
+  return claimed ? quotaNotice(quota) : undefined;
 };
 
 export function createPendingTrialQuotaNoticeRuntime(
@@ -159,14 +157,12 @@ function quotaWarningLevel(
   return Math.min(threshold, Math.ceil(remaining / step) * step);
 }
 
-function quotaNotice(
-  credential: Readonly<{ markId: string }>,
-  quota: MemoraxQuotaSnapshot,
-): string {
+function quotaNotice(quota: MemoraxQuotaSnapshot): string {
   const quotaName = quota.featureCode === "memory_write" ? "memory write" : "memory search";
   return [
     `MemoraX Code ${quotaName} quota is running low: ${quota.remaining} of ${quota.limit} remaining.`,
-    `Register or manage your account at ${MEMORAX_ACCOUNT_URL}`,
-    `(Mark ID: ${credential.markId}).`,
+    `Visit ${MEMORAX_ACCOUNT_URL} to register or manage your account.`,
+    "To retrieve your Mark ID, run `memorax-code account --show-mark-id` directly in your local terminal.",
+    "Keep it private and do not paste it into chat.",
   ].join(" ");
 }

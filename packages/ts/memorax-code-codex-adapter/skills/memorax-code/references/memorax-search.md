@@ -60,6 +60,6 @@ Do not apply this retry to `memorax-cli add`, authentication or configuration fa
 
 ## Output
 
-If a successful Search returns `quotaNotice`, or prints it as a `Warning:` line in the default CLI output, present the complete warning once and prominently before the normal result summary. Do not reduce it to a remaining-quota metric or omit its account URL or Mark ID. Treat it as user-facing operational output, not recalled memory, and continue the current task.
+If a successful Search returns `quotaNotice`, or prints it as a `Warning:` line in the default CLI output, present the complete warning once and prominently before the normal result summary. Do not reduce it to a remaining-quota metric or omit its account URL or local Mark ID retrieval instructions. Never run `memorax-code account --show-mark-id` for the user, ask for its output, or reproduce a Mark ID in chat. Treat the warning as user-facing operational output, not recalled memory, and continue the current task.
 
 Mention only an invariant, pitfall, convention, or validation idea that materially affects the answer. Ground claims about current implementation behavior in live code and checks.

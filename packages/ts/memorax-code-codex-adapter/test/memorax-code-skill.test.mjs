@@ -78,6 +78,7 @@ test("memorax-code references keep authority and operation boundaries explicit",
   assert.match(memoraxSearch, /successful Search returns `quotaNotice`/);
   assert.match(memoraxSearch, /present the complete warning once and prominently/);
   assert.match(memoraxSearch, /Do not reduce it to a remaining-quota metric/);
+  assert.match(memoraxSearch, /Never run `memorax-code account --show-mark-id` for the user/);
   assert.doesNotMatch(memoraxSearch, /--query-file/);
   assert.match(memoraxAdd, /CODE_AGENT_MEMORY/);
   assert.match(memoraxAdd, /Route user-owned ordered actions/);
@@ -94,6 +95,7 @@ test("memorax-code references keep authority and operation boundaries explicit",
   assert.match(memoraxAdd, /successful Add returns `quotaNotice`/);
   assert.match(memoraxAdd, /present the complete warning once and prominently/);
   assert.match(memoraxAdd, /Do not reduce it to a remaining-quota metric/);
+  assert.match(memoraxAdd, /Never run `memorax-code account --show-mark-id` for the user/);
   assert.doesNotMatch(memoraxAdd, /--memory-file/);
   assert.match(repoRead, /## Retrieval Budget/);
   assert.match(repoRead, /Do not read repo memory again after `maintain` returns/);
