@@ -292,7 +292,17 @@ function isProvisioningSeed(record) {
 }
 
 function assertStoredTransition(current, next) {
-  if (current.plugin_mark !== next.plugin_mark) invalidTransition();
+  if (!sameFields(current, next, [
+    "plugin_mark",
+    "app_salt",
+    "machine_id_hash",
+    "hostname",
+    "platform",
+    "arch",
+    "mac_hash",
+  ])) {
+    invalidTransition();
+  }
 
   if (current.state === "provisioning") {
     if (next.state !== "ready" || current.api_key !== next.api_key) invalidTransition();

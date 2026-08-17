@@ -151,12 +151,16 @@ preserve the provisioned mark and account/project identity, and explicit Key
 recovery stores the replacement Key before any recovery request. Rebinding to a
 different trial identity requires an explicit credential clear.
 
+Foreground setup creates and securely retains the local identity required for
+trial provisioning. An existing credential record remains authoritative and
+is not regenerated during ordinary package updates or setup retries.
+
 Trial provisioning is a foreground setup operation, never an npm lifecycle
-operation. It sends the persisted mark and generated Key only to fixed paths on
-one validated HTTPS service origin, rejects redirects, and refuses to run when
-Node TLS certificate verification is explicitly disabled. Request and response
-bodies are bounded, and response parsing never propagates server messages,
-raw bodies, request objects, or complete credentials into errors.
+operation. It sends the bounded provisioning request only to fixed paths on one
+validated HTTPS service origin, rejects redirects, and refuses to run when Node
+TLS certificate verification is explicitly disabled. Request and response
+bodies are bounded, and response parsing never propagates server messages, raw
+bodies, request objects, or complete credentials into errors.
 
 PoW runs in a worker that receives only the signed challenge and difficulty.
 Retries reuse the same persisted mark, Key, recovery flag, and unexpired

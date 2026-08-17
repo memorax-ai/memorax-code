@@ -28,6 +28,14 @@ const RECOVERY_KEY = `sk_${"D".repeat(43)}`;
 const OTHER_KEY = `sk_${"E".repeat(43)}`;
 const PLUGIN_MARK = `mk_${"c".repeat(32)}`;
 const OTHER_PLUGIN_MARK = `mk_${"d".repeat(32)}`;
+const DEVICE_FACTORS = Object.freeze({
+  appSalt: "@memorax/memorax-code@0.1.2",
+  machineIdHash: "3".repeat(64),
+  hostname: "developer-laptop",
+  platform: "linux",
+  arch: "x64",
+  macHash: "4".repeat(64),
+});
 
 test("credential namespaces isolate normalized MemoraX Code homes without exposing paths", () => {
   const first = trialCredentialNamespace("/private/example/../first-home");
@@ -133,10 +141,7 @@ test("credential store port binds storage and forwards per-call provision lock c
       provisionLockOptions: { timeoutMs: 1_000, retryMs: 5 },
     };
     const port = createTrialCredentialStorePort(options);
-    const initial = createInitialTrialCredentialRecord({
-      pluginMark: PLUGIN_MARK,
-      apiKey: API_KEY,
-    });
+    const initial = initialCredential();
     assert.deepEqual(await port.createIfAbsent(initial), { record: initial, created: true });
     assert.deepEqual(await port.load(), initial);
 
@@ -177,7 +182,7 @@ test("credential store creates once, transitions, verifies, and explicitly clear
   await withIsolatedHome(async (home) => {
     const storage = memoryBackend();
     const options = { memoraxCodeHome: home, backend: storage.backend };
-    const initial = createInitialTrialCredentialRecord({ pluginMark: PLUGIN_MARK, apiKey: API_KEY });
+    const initial = initialCredential();
 
     assert.equal(await loadTrialCredentialRecord(options), null);
     assert.deepEqual(await createTrialCredentialRecordIfAbsent(initial, options), {
@@ -216,11 +221,8 @@ test("credential creation is atomic and clear is the only identity reset", async
   await withIsolatedHome(async (home) => {
     const storage = memoryBackend(null, 15);
     const options = { memoraxCodeHome: home, backend: storage.backend };
-    const first = createInitialTrialCredentialRecord({
-      pluginMark: PLUGIN_MARK,
-      apiKey: API_KEY,
-    });
-    const second = createInitialTrialCredentialRecord({
+    const first = initialCredential();
+    const second = initialCredential({
       pluginMark: OTHER_PLUGIN_MARK,
       apiKey: OTHER_KEY,
     });
@@ -244,14 +246,19 @@ test("credential creation is atomic and clear is the only identity reset", async
 });
 
 test("stored transitions cannot replace identity, rotate a retry Key, or skip recovery", async () => {
-  const initial = createInitialTrialCredentialRecord({
-    pluginMark: PLUGIN_MARK,
-    apiKey: API_KEY,
-  });
+  const initial = initialCredential();
   const ready = { ...readyRecord(initial), last_warned_level: 4000 };
   const recovering = beginTrialCredentialRecovery(ready, { apiKey: RECOVERY_KEY });
   const cases = [
     [ready, { ...ready, plugin_mark: OTHER_PLUGIN_MARK }],
+    ...[
+      ["app_salt", "@memorax/memorax-code@0.1.3"],
+      ["machine_id_hash", "5".repeat(64)],
+      ["hostname", "other-laptop"],
+      ["platform", "win32"],
+      ["arch", "arm64"],
+      ["mac_hash", "6".repeat(64)],
+    ].map(([field, value]) => [ready, { ...ready, [field]: value }]),
     [ready, { ...ready, api_key: RECOVERY_KEY }],
     [ready, { ...ready, account_id: "900719925474099300000000003" }],
     [ready, { ...ready, project_id: "900719925474099300000000004" }],
@@ -288,10 +295,7 @@ test("stored transitions cannot replace identity, rotate a retry Key, or skip re
 
 test("invalid and unsupported secure records cannot be overwritten by ordinary creation", async () => {
   await withIsolatedHome(async (home) => {
-    const replacement = createInitialTrialCredentialRecord({
-      pluginMark: PLUGIN_MARK,
-      apiKey: API_KEY,
-    });
+    const replacement = initialCredential();
     for (const [serialized, reason] of [
       ["{not-json", "malformed_json"],
       [JSON.stringify({ ...replacement, version: 2 }), "unsupported_version"],
@@ -331,7 +335,7 @@ test("credential mutation lock prevents concurrent read-modify-write loss", asyn
 
 test("credential store fails closed on unverified writes and unavailable platforms", async () => {
   await withIsolatedHome(async (home) => {
-    const record = createInitialTrialCredentialRecord({ pluginMark: PLUGIN_MARK, apiKey: API_KEY });
+    const record = initialCredential();
     const discarded = memoryBackend();
     discarded.backend.save = async () => undefined;
     await assert.rejects(
@@ -359,10 +363,7 @@ test("credential mutations must be synchronous and cannot persist partial result
   await withIsolatedHome(async (home) => {
     const storage = memoryBackend();
     const options = { memoraxCodeHome: home, backend: storage.backend };
-    const initial = createInitialTrialCredentialRecord({
-      pluginMark: PLUGIN_MARK,
-      apiKey: API_KEY,
-    });
+    const initial = initialCredential();
     await createTrialCredentialRecordIfAbsent(initial, options);
     await assert.rejects(
       transitionTrialCredentialRecord(async () => readyRecord(initial), options),
@@ -373,10 +374,7 @@ test("credential mutations must be synchronous and cannot persist partial result
 });
 
 function readyRecord(base = undefined) {
-  const record = base ?? createInitialTrialCredentialRecord({
-    pluginMark: PLUGIN_MARK,
-    apiKey: API_KEY,
-  });
+  const record = base ?? initialCredential();
   return {
     ...record,
     state: "ready",
@@ -387,6 +385,15 @@ function readyRecord(base = undefined) {
     register_url: "https://platform.memorax.net/register",
     last_warned_level: null,
   };
+}
+
+function initialCredential(overrides = {}) {
+  return createInitialTrialCredentialRecord({
+    ...DEVICE_FACTORS,
+    pluginMark: PLUGIN_MARK,
+    apiKey: API_KEY,
+    ...overrides,
+  });
 }
 
 function memoryBackend(initial = null, delayMs = 0) {

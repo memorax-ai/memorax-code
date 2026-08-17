@@ -2,10 +2,16 @@ import { randomBytes as nodeRandomBytes } from "node:crypto";
 import {
   TrialProvisionClientError,
 } from "./trial-provision-client.mjs";
+import { generateTrialPluginIdentity } from "./trial-plugin-mark.mjs";
 import {
   solveTrialPow,
   TrialPowError,
 } from "./trial-pow.mjs";
+
+export {
+  generateTrialPluginIdentity,
+  generateTrialPluginMark,
+} from "./trial-plugin-mark.mjs";
 
 const DEFAULT_TOTAL_TIMEOUT_MS = 120_000;
 const DEFAULT_POW_TIMEOUT_MS = 30_000;
@@ -16,10 +22,19 @@ const MAX_POW_EXPIRED_REFRESHES = 2;
 const MAX_UNCERTAIN_SUCCESS_RETRIES = 1;
 const RETRY_DELAYS_MS = Object.freeze([1_000, 2_000, 4_000]);
 const MAX_JITTER_MS = 250;
+const MARK_IDENTITY_FIELDS = Object.freeze([
+  "plugin_mark",
+  "app_salt",
+  "machine_id_hash",
+  "hostname",
+  "platform",
+  "arch",
+  "mac_hash",
+]);
 const CREDENTIAL_FIELDS = Object.freeze([
   "version",
   "state",
-  "plugin_mark",
+  ...MARK_IDENTITY_FIELDS,
   "api_key",
   "account_id",
   "project_id",
@@ -53,10 +68,6 @@ export class TrialProvisionFlowError extends Error {
     this.code = "TRIAL_PROVISION_FLOW_FAILED";
     this.reason = safeReason;
   }
-}
-
-export function generateTrialPluginMark(randomBytes = nodeRandomBytes) {
-  return `mk_${secureRandomBytes(randomBytes, 16).toString("hex")}`;
 }
 
 export function generateTrialApiKey(randomBytes = nodeRandomBytes) {
@@ -159,8 +170,15 @@ async function loadCredential(context) {
 async function createCredential(context) {
   let seed;
   try {
+    const identity = context.generatePluginIdentity();
     seed = context.recordPort.createInitial({
-      pluginMark: generateTrialPluginMark(context.randomBytes),
+      pluginMark: identity.pluginMark,
+      appSalt: identity.appSalt,
+      machineIdHash: identity.machineIdHash,
+      hostname: identity.hostname,
+      platform: identity.platform,
+      arch: identity.arch,
+      macHash: identity.macHash,
       apiKey: generateTrialApiKey(context.randomBytes),
     });
   } catch (error) {
@@ -234,6 +252,12 @@ async function provisionWithRetry(snapshot, challenge, powNonce, context) {
   let uncertainSuccessRetries = 0;
   const request = Object.freeze({
     pluginMark: snapshot.plugin_mark,
+    appSalt: snapshot.app_salt,
+    machineIdHash: snapshot.machine_id_hash,
+    hostname: snapshot.hostname,
+    platform: snapshot.platform,
+    arch: snapshot.arch,
+    macHash: snapshot.mac_hash,
     apiKey: snapshot.api_key,
     powChallenge: challenge?.powChallenge,
     powNonce,
@@ -328,7 +352,7 @@ function sameCredentialSnapshot(current, snapshot) {
 function sameCompletedIdentity(current, snapshot, response) {
   return isRecord(current)
     && current.state === "ready"
-    && current.plugin_mark === snapshot.plugin_mark
+    && MARK_IDENTITY_FIELDS.every((field) => current[field] === snapshot[field])
     && current.api_key === snapshot.api_key
     && current.account_id === response.accountId
     && current.project_id === response.projectId;
@@ -450,11 +474,13 @@ function validateOptions(options) {
     throw flowError("invalid_options");
   }
   const solvePow = options?.solvePow ?? solveTrialPow;
+  const generatePluginIdentity = options?.generatePluginIdentity ?? generateTrialPluginIdentity;
   const randomBytes = options?.randomBytes ?? nodeRandomBytes;
   const random = options?.random ?? Math.random;
   const sleep = options?.sleep ?? abortableSleep;
   const now = options?.now ?? Date.now;
-  if (![solvePow, randomBytes, random, sleep, now].every((value) => typeof value === "function")) {
+  if (![solvePow, generatePluginIdentity, randomBytes, random, sleep, now]
+    .every((value) => typeof value === "function")) {
     throw flowError("invalid_options");
   }
   const totalTimeoutMs = boundedPositiveInteger(
@@ -475,6 +501,7 @@ function validateOptions(options) {
     recordPort,
     client,
     solvePow,
+    generatePluginIdentity,
     randomBytes,
     random,
     sleep,

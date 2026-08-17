@@ -6,6 +6,12 @@ export type TrialCredentialRecord = Readonly<{
   version: 1;
   state: TrialCredentialRecordState;
   plugin_mark: string;
+  app_salt: string;
+  machine_id_hash: string;
+  hostname: string;
+  platform: string;
+  arch: string;
+  mac_hash: string;
   api_key: string;
   account_id: string | null;
   project_id: string | null;
@@ -24,6 +30,12 @@ export type TrialCredentialRecordInvalidReason =
   | "invalid_version"
   | "invalid_state"
   | "invalid_plugin_mark"
+  | "invalid_app_salt"
+  | "invalid_machine_id_hash"
+  | "invalid_hostname"
+  | "invalid_platform"
+  | "invalid_arch"
+  | "invalid_mac_hash"
   | "invalid_api_key"
   | "invalid_shape"
   | "invalid_account_id"
@@ -46,11 +58,23 @@ export function serializeTrialCredentialRecord(value: unknown): string;
 
 export function createInitialTrialCredentialRecord(options: Readonly<{
   pluginMark: string;
+  appSalt: string;
+  machineIdHash: string;
+  hostname: string;
+  platform: string;
+  arch: string;
+  macHash: string;
   apiKey: string;
 }>): TrialCredentialRecord;
 
 export function createTrialCredentialRecoveryRecord(options: Readonly<{
   pluginMark: string;
+  appSalt: string;
+  machineIdHash: string;
+  hostname: string;
+  platform: string;
+  arch: string;
+  macHash: string;
   apiKey: string;
 }>): TrialCredentialRecord;
 

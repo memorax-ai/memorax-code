@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -51,6 +52,18 @@ test("trial setup credentials authorize repository-scoped MemoraX writeback", as
             });
           }
           assert.equal(body.pow_nonce, "0");
+          const expectedMark = `mk_${createHash("sha256")
+            .update([
+              body.app_salt,
+              body.machine_id_hash,
+              body.hostname,
+              body.platform,
+              body.arch,
+              body.mac_hash,
+            ].join(""), "utf8")
+            .digest("hex")
+            .slice(0, 32)}`;
+          assert.equal(body.plugin_mark, expectedMark);
           return jsonResponse({
             user_id: ACCOUNT_ID,
             project_id: PROJECT_ID,

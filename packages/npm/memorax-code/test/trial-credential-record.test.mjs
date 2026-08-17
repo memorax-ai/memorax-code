@@ -16,6 +16,12 @@ const RECORD_KEYS = [
   "version",
   "state",
   "plugin_mark",
+  "app_salt",
+  "machine_id_hash",
+  "hostname",
+  "platform",
+  "arch",
+  "mac_hash",
   "api_key",
   "account_id",
   "project_id",
@@ -30,12 +36,26 @@ const RECOVERY_API_KEY = `sk_${"B".repeat(43)}`;
 const ACCOUNT_ID = "900719925474099312345678901";
 const PROJECT_ID = "900719925474099312345678902";
 const REGISTER_URL = "https://platform.memorax.net/register";
+const DEVICE_FACTORS = Object.freeze({
+  appSalt: "@memorax/memorax-code@0.1.2",
+  machineIdHash: "1".repeat(64),
+  hostname: "developer-laptop",
+  platform: "linux",
+  arch: "x64",
+  macHash: "2".repeat(64),
+});
 
 function initialRecord(overrides = {}) {
   return {
     version: TRIAL_CREDENTIAL_RECORD_VERSION,
     state: "provisioning",
     plugin_mark: PLUGIN_MARK,
+    app_salt: DEVICE_FACTORS.appSalt,
+    machine_id_hash: DEVICE_FACTORS.machineIdHash,
+    hostname: DEVICE_FACTORS.hostname,
+    platform: DEVICE_FACTORS.platform,
+    arch: DEVICE_FACTORS.arch,
+    mac_hash: DEVICE_FACTORS.macHash,
     api_key: API_KEY,
     account_id: null,
     project_id: null,
@@ -77,6 +97,7 @@ function expectInvalid(operation, reason, secrets = [API_KEY, RECOVERY_API_KEY])
 
 test("initial provisioning has the exact v1 shape and no server metadata", () => {
   const record = createInitialTrialCredentialRecord({
+    ...DEVICE_FACTORS,
     pluginMark: PLUGIN_MARK,
     apiKey: API_KEY,
   });
@@ -88,6 +109,7 @@ test("initial provisioning has the exact v1 shape and no server metadata", () =>
 
 test("explicit recovery has a durable new Key before any network request", () => {
   const record = createTrialCredentialRecoveryRecord({
+    ...DEVICE_FACTORS,
     pluginMark: PLUGIN_MARK,
     apiKey: RECOVERY_API_KEY,
   });
@@ -191,6 +213,29 @@ test("mark and API Key formats are exact and case-sensitive where required", () 
       "invalid_api_key",
       [typeof api_key === "string" ? api_key : API_KEY],
     );
+  }
+});
+
+test("device factors are required canonical bounded values", () => {
+  assert.equal(
+    validateTrialCredentialRecord(initialRecord({ hostname: "", mac_hash: "" })).hostname,
+    "",
+  );
+
+  for (const [field, values, reason] of [
+    ["app_salt", ["", " app", "app ", "a".repeat(257), "app\0salt", null], "invalid_app_salt"],
+    ["machine_id_hash", ["1".repeat(63), "A".repeat(64), "", null], "invalid_machine_id_hash"],
+    ["hostname", [" host", "host ", "h".repeat(256), "host\0name", null], "invalid_hostname"],
+    ["platform", ["", " linux", "linux ", "p".repeat(33), "lin\0ux", null], "invalid_platform"],
+    ["arch", ["", " x64", "x64 ", "a".repeat(33), "x\u000064", null], "invalid_arch"],
+    ["mac_hash", ["2".repeat(63), "B".repeat(64), "mac\0hash", null], "invalid_mac_hash"],
+  ]) {
+    for (const value of values) {
+      expectInvalid(
+        () => validateTrialCredentialRecord(initialRecord({ [field]: value })),
+        reason,
+      );
+    }
   }
 });
 
@@ -334,6 +379,7 @@ test("register URL is HTTPS without userinfo or embedded API Keys", () => {
 
 test("provision transitions preserve local credentials and retained reminder state", () => {
   const initial = createInitialTrialCredentialRecord({
+    ...DEVICE_FACTORS,
     pluginMark: PLUGIN_MARK,
     apiKey: API_KEY,
   });
@@ -348,6 +394,16 @@ test("provision transitions preserve local credentials and retained reminder sta
   assert.deepEqual(ready, completeRecord({ last_warned_level: 4000 }));
   assert.equal(ready.plugin_mark, PLUGIN_MARK);
   assert.equal(ready.api_key, API_KEY);
+  for (const field of [
+    "app_salt",
+    "machine_id_hash",
+    "hostname",
+    "platform",
+    "arch",
+    "mac_hash",
+  ]) {
+    assert.equal(ready[field], initial[field]);
+  }
 
   const recovery = beginTrialCredentialRecovery(ready, { apiKey: RECOVERY_API_KEY });
   assert.deepEqual(recovery, {

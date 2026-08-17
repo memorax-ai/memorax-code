@@ -6,13 +6,22 @@ import {
 } from "../lib/trial-provision-client.mjs";
 
 const SERVICE_BASE_URL = "https://platform.memorax.net";
-const PLUGIN_MARK = `mk_${"a".repeat(32)}`;
+const PLUGIN_MARK = "mk_8eddbf5e4d57a29b783ababa63bd16b8";
 const API_KEY = `sk_${"A".repeat(43)}`;
 const POW_CHALLENGE = "v1.cGF5bG9hZA.c2lnbmF0dXJl";
 const ACCOUNT_ID = "900719925474099300000000001";
 const PROJECT_ID = "900719925474099300000000002";
+const PLUGIN_IDENTITY = Object.freeze({
+  appSalt: "@memorax/memorax-code@0.1.2",
+  machineIdHash: "9c68dde752b9d1abaa475e2cd895eb0fbc8e29b05e3cab1430c01cc964c38c3d",
+  hostname: "developer-laptop",
+  platform: "linux",
+  arch: "x64",
+  macHash: "39d902aba3f789635208452e37cfacc66f2b3673eb4f23a98f1457b832d78a2a",
+});
 const PROVISION_REQUEST = Object.freeze({
   pluginMark: PLUGIN_MARK,
+  ...PLUGIN_IDENTITY,
   apiKey: API_KEY,
   powChallenge: POW_CHALLENGE,
   powNonce: "88405",
@@ -116,6 +125,12 @@ test("provision sends the exact persisted identity and maps account identity sep
   assert.equal(captured.init.headers.Authorization, undefined);
   assert.deepEqual(JSON.parse(captured.init.body), {
     plugin_mark: PLUGIN_MARK,
+    app_salt: PLUGIN_IDENTITY.appSalt,
+    machine_id_hash: PLUGIN_IDENTITY.machineIdHash,
+    hostname: PLUGIN_IDENTITY.hostname,
+    platform: PLUGIN_IDENTITY.platform,
+    arch: PLUGIN_IDENTITY.arch,
+    mac_hash: PLUGIN_IDENTITY.macHash,
     client_api_key: API_KEY,
     pow_challenge: POW_CHALLENGE,
     pow_nonce: "88405",
@@ -126,6 +141,33 @@ test("provision sends the exact persisted identity and maps account identity sep
   assert.equal(captured.url.includes(API_KEY), false);
   assert.equal(JSON.stringify(captured.init.headers).includes(API_KEY), false);
   assert.equal(JSON.stringify(result).includes(API_KEY), false);
+});
+
+test("provision rejects invalid plugin identity fields before networking", async () => {
+  for (const override of [
+    { appSalt: "" },
+    { machineIdHash: "not-a-hash" },
+    { hostname: "host\0name" },
+    { platform: "" },
+    { arch: "x".repeat(33) },
+    { macHash: "not-a-hash" },
+  ]) {
+    let calls = 0;
+    const client = createTrialProvisionClient({
+      serviceBaseUrl: SERVICE_BASE_URL,
+      env: {},
+      fetchImpl: async () => {
+        calls += 1;
+        return jsonResponse(provisionResponse());
+      },
+    });
+    await assert.rejects(
+      client.provision({ ...PROVISION_REQUEST, ...override }),
+      (error) => error instanceof TrialProvisionClientError
+        && error.reason === "invalid_request",
+    );
+    assert.equal(calls, 0);
+  }
 });
 
 test("client rejects unsafe service URLs and disabled TLS verification before networking", async () => {

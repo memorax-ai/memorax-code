@@ -13,6 +13,7 @@ const MAX_REQUEST_BYTES = 4_096;
 const MAX_RETRY_AFTER_MS = 120_000;
 const PLUGIN_MARK_PATTERN = /^mk_[0-9a-f]{32}$/;
 const API_KEY_PATTERN = /^sk_[A-Za-z0-9_-]{43}$/;
+const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const POW_CHALLENGE_PATTERN = /^v1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
 const POW_NONCE_PATTERN = /^(?:0|[1-9][0-9]{0,18})$/;
 const MAX_POW_NONCE = 9_223_372_036_854_775_807n;
@@ -124,6 +125,12 @@ export function createTrialProvisionClient(options = {}) {
         url: `${serviceBaseUrl}${PROVISION_PATH}`,
         body: {
           plugin_mark: snapshot.pluginMark,
+          app_salt: snapshot.appSalt,
+          machine_id_hash: snapshot.machineIdHash,
+          hostname: snapshot.hostname,
+          platform: snapshot.platform,
+          arch: snapshot.arch,
+          mac_hash: snapshot.macHash,
           client_api_key: snapshot.apiKey,
           pow_challenge: snapshot.powChallenge,
           pow_nonce: snapshot.powNonce,
@@ -342,6 +349,12 @@ function snapshotProvisionRequest(request) {
   try {
     snapshot = {
       pluginMark: request?.pluginMark,
+      appSalt: request?.appSalt,
+      machineIdHash: request?.machineIdHash,
+      hostname: request?.hostname,
+      platform: request?.platform,
+      arch: request?.arch,
+      macHash: request?.macHash,
       apiKey: request?.apiKey,
       powChallenge: request?.powChallenge,
       powNonce: request?.powNonce,
@@ -351,6 +364,12 @@ function snapshotProvisionRequest(request) {
     throw clientError("invalid_request");
   }
   snapshot.pluginMark = validPluginMark(snapshot.pluginMark);
+  snapshot.appSalt = validBoundedString(snapshot.appSalt, 256, false);
+  snapshot.machineIdHash = validSha256(snapshot.machineIdHash, false);
+  snapshot.hostname = validBoundedString(snapshot.hostname, 255, true);
+  snapshot.platform = validBoundedString(snapshot.platform, 32, false);
+  snapshot.arch = validBoundedString(snapshot.arch, 32, false);
+  snapshot.macHash = validSha256(snapshot.macHash, true);
   if (typeof snapshot.apiKey !== "string" || !API_KEY_PATTERN.test(snapshot.apiKey)) {
     throw clientError("invalid_request");
   }
@@ -367,6 +386,25 @@ function snapshotProvisionRequest(request) {
 
 function validPluginMark(value) {
   if (typeof value !== "string" || !PLUGIN_MARK_PATTERN.test(value)) {
+    throw clientError("invalid_request");
+  }
+  return value;
+}
+
+function validSha256(value, allowEmpty) {
+  if ((allowEmpty && value === "")
+    || (typeof value === "string" && SHA256_PATTERN.test(value))) {
+    return value;
+  }
+  throw clientError("invalid_request");
+}
+
+function validBoundedString(value, maxLength, allowEmpty) {
+  if (typeof value !== "string"
+    || value.length > maxLength
+    || value.includes("\0")
+    || value !== value.trim()
+    || (!allowEmpty && value.length === 0)) {
     throw clientError("invalid_request");
   }
   return value;

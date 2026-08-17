@@ -3,24 +3,40 @@ import test from "node:test";
 import {
   beginTrialCredentialRecovery,
   completeTrialCredentialProvisioning,
-  createInitialTrialCredentialRecord,
-  createTrialCredentialRecoveryRecord,
+  createInitialTrialCredentialRecord as createInitialRecord,
+  createTrialCredentialRecoveryRecord as createRecoveryRecord,
   validateTrialCredentialRecord,
 } from "../../../ts/memorax-code-adapter-common/src/credentials/trial-credential-record.mjs";
 import { TrialProvisionClientError } from "../lib/trial-provision-client.mjs";
 import {
   ensureTrialCredentialReady,
   generateTrialApiKey,
-  generateTrialPluginMark,
   TrialProvisionFlowError,
 } from "../lib/trial-provision-flow.mjs";
 
-const PLUGIN_MARK = `mk_${"a".repeat(32)}`;
+const PLUGIN_MARK = "mk_8eddbf5e4d57a29b783ababa63bd16b8";
 const API_KEY = `sk_${"A".repeat(43)}`;
 const RECOVERY_KEY = `sk_${"B".repeat(43)}`;
 const ACCOUNT_ID = "900719925474099300000000001";
 const PROJECT_ID = "900719925474099300000000002";
 const REGISTER_URL = "https://platform.memorax.net/register";
+const PLUGIN_IDENTITY = Object.freeze({
+  pluginMark: PLUGIN_MARK,
+  appSalt: "@memorax/memorax-code@0.1.2",
+  machineIdHash: "9c68dde752b9d1abaa475e2cd895eb0fbc8e29b05e3cab1430c01cc964c38c3d",
+  hostname: "developer-laptop",
+  platform: "linux",
+  arch: "x64",
+  macHash: "39d902aba3f789635208452e37cfacc66f2b3673eb4f23a98f1457b832d78a2a",
+});
+
+function createInitialTrialCredentialRecord(options = {}) {
+  return createInitialRecord({ ...PLUGIN_IDENTITY, ...options });
+}
+
+function createTrialCredentialRecoveryRecord(options = {}) {
+  return createRecoveryRecord({ ...PLUGIN_IDENTITY, ...options });
+}
 
 const recordPort = Object.freeze({
   createInitial: createInitialTrialCredentialRecord,
@@ -134,6 +150,7 @@ function flowOptions(overrides = {}) {
       provision: async () => metadata(),
     },
     solvePow: overrides.solvePow ?? (async () => "88405"),
+    generatePluginIdentity: overrides.generatePluginIdentity ?? (() => PLUGIN_IDENTITY),
     randomBytes: overrides.randomBytes ?? fixedRandomBytes,
     random: overrides.random ?? (() => 0),
     sleep: overrides.sleep ?? (async () => undefined),
@@ -142,11 +159,7 @@ function flowOptions(overrides = {}) {
   };
 }
 
-test("trial identity generation uses the documented CSPRNG encodings", () => {
-  assert.equal(
-    generateTrialPluginMark(fixedRandomBytes),
-    "mk_000102030405060708090a0b0c0d0e0f",
-  );
+test("trial API Key generation uses the documented CSPRNG encoding", () => {
   assert.equal(
     generateTrialApiKey(fixedRandomBytes),
     "sk_AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
@@ -186,6 +199,33 @@ test("invalid CSPRNG output fails before credential creation or networking", asy
   }
 });
 
+test("plugin identity generation failure stops before credential creation or networking", async () => {
+  let createCalls = 0;
+  let networkCalls = 0;
+  const store = credentialPort();
+  store.createIfAbsent = async () => {
+    createCalls += 1;
+    throw new Error("unexpected create");
+  };
+
+  await assert.rejects(
+    ensureTrialCredentialReady(flowOptions({
+      credentialPort: store,
+      generatePluginIdentity: () => { throw new Error(API_KEY); },
+      client: {
+        requestPowChallenge: async () => { networkCalls += 1; },
+        provision: async () => { networkCalls += 1; },
+      },
+    })),
+    (error) => error instanceof TrialProvisionFlowError
+      && error.reason === "identity_generation_failed"
+      && !String(error).includes(API_KEY)
+      && !String(error.stack).includes(API_KEY),
+  );
+  assert.equal(createCalls, 0);
+  assert.equal(networkCalls, 0);
+});
+
 test("first run saves mark and Key before networking, then commits only server metadata", async () => {
   const store = credentialPort();
   const requests = [];
@@ -216,6 +256,17 @@ test("first run saves mark and Key before networking, then commits only server m
   assert.equal(store.current.api_key, "sk_AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8");
   assert.equal(requests[1].recoverApiKey, false);
   assert.equal(requests[1].apiKey, store.current.api_key);
+  for (const field of [
+    "pluginMark",
+    "appSalt",
+    "machineIdHash",
+    "hostname",
+    "platform",
+    "arch",
+    "macHash",
+  ]) {
+    assert.equal(requests[1][field], PLUGIN_IDENTITY[field]);
+  }
   assert.deepEqual(result, {
     status: "ready",
     provisioned: true,
@@ -254,7 +305,14 @@ test("create-if-absent race uses the authoritative stored identity", async () =>
     },
   };
 
-  await ensureTrialCredentialReady(flowOptions({ credentialPort: store, client }));
+  await ensureTrialCredentialReady(flowOptions({
+    credentialPort: store,
+    client,
+    generatePluginIdentity: () => ({
+      ...PLUGIN_IDENTITY,
+      pluginMark: `mk_${"b".repeat(32)}`,
+    }),
+  }));
 
   assert.equal(createCalls, 1);
   assert.notEqual(discardedCandidate.plugin_mark, PLUGIN_MARK);
@@ -293,6 +351,7 @@ test("provisioning replay, successful recovery, and mark-only recovery reach rea
     let request;
     await ensureTrialCredentialReady(flowOptions({
       credentialPort: store,
+      generatePluginIdentity: () => { throw new Error("unexpected identity generation"); },
       client: {
         requestPowChallenge: async () => challenge(),
         provision: async (value) => {
@@ -364,6 +423,7 @@ test("ready credentials return without randomness, PoW, or network", async () =>
       provision: forbidden,
     },
     solvePow: forbidden,
+    generatePluginIdentity: forbidden,
     randomBytes: forbidden,
   }));
 
@@ -770,10 +830,10 @@ test("a stale response cannot overwrite a changed credential snapshot", async ()
     pluginMark: PLUGIN_MARK,
     apiKey: API_KEY,
   }));
-  const replacement = createInitialTrialCredentialRecord({
-    pluginMark: `mk_${"b".repeat(32)}`,
-    apiKey: RECOVERY_KEY,
-  });
+  const replacement = completeTrialCredentialProvisioning(
+    createInitialTrialCredentialRecord({ hostname: "other-laptop", apiKey: API_KEY }),
+    metadata(),
+  );
   const originalTransition = store.transition.bind(store);
   store.transition = async (operation) => {
     store.replace(replacement);

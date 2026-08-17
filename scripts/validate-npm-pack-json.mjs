@@ -69,6 +69,7 @@ for (const requiredPath of [
   "lib/resolve-codex-command.mjs",
   "lib/setup-reconcile.mjs",
   "lib/trial-pow.mjs",
+  "lib/trial-plugin-mark.mjs",
   "lib/trial-provision-client.mjs",
   "lib/trial-provision-contract.mjs",
   "lib/trial-provision-flow.mjs",

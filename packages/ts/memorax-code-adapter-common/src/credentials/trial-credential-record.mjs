@@ -4,6 +4,12 @@ const RECORD_KEYS = Object.freeze([
   "version",
   "state",
   "plugin_mark",
+  "app_salt",
+  "machine_id_hash",
+  "hostname",
+  "platform",
+  "arch",
+  "mac_hash",
   "api_key",
   "account_id",
   "project_id",
@@ -14,9 +20,14 @@ const RECORD_KEYS = Object.freeze([
 ]);
 const RECORD_KEY_SET = new Set(RECORD_KEYS);
 const PLUGIN_MARK_PATTERN = /^mk_[0-9a-f]{32}$/;
+const SHA256_HEX_PATTERN = /^[0-9a-f]{64}$/;
 const API_KEY_PATTERN = /^sk_[A-Za-z0-9_-]{43}$/;
 const API_KEY_IN_TEXT_PATTERN = /sk_[A-Za-z0-9_-]{43}/;
 const DECIMAL_PUBLIC_ID_PATTERN = /^[0-9]+$/;
+const MAX_APP_SALT_LENGTH = 256;
+const MAX_HOSTNAME_LENGTH = 255;
+const MAX_PLATFORM_LENGTH = 32;
+const MAX_ARCH_LENGTH = 32;
 const MAX_REGISTER_URL_DECODE_PASSES = 8;
 const ERROR_REASONS = new Set([
   "malformed_json",
@@ -27,6 +38,12 @@ const ERROR_REASONS = new Set([
   "invalid_version",
   "invalid_state",
   "invalid_plugin_mark",
+  "invalid_app_salt",
+  "invalid_machine_id_hash",
+  "invalid_hostname",
+  "invalid_platform",
+  "invalid_arch",
+  "invalid_mac_hash",
   "invalid_api_key",
   "invalid_shape",
   "invalid_account_id",
@@ -75,6 +92,12 @@ export function createInitialTrialCredentialRecord(options) {
     version: TRIAL_CREDENTIAL_RECORD_VERSION,
     state: "provisioning",
     plugin_mark: options?.pluginMark,
+    app_salt: options?.appSalt,
+    machine_id_hash: options?.machineIdHash,
+    hostname: options?.hostname,
+    platform: options?.platform,
+    arch: options?.arch,
+    mac_hash: options?.macHash,
     api_key: options?.apiKey,
     account_id: null,
     project_id: null,
@@ -90,6 +113,12 @@ export function createTrialCredentialRecoveryRecord(options) {
     version: TRIAL_CREDENTIAL_RECORD_VERSION,
     state: "recovering",
     plugin_mark: options?.pluginMark,
+    app_salt: options?.appSalt,
+    machine_id_hash: options?.machineIdHash,
+    hostname: options?.hostname,
+    platform: options?.platform,
+    arch: options?.arch,
+    mac_hash: options?.macHash,
     api_key: options?.apiKey,
     account_id: null,
     project_id: null,
@@ -174,6 +203,26 @@ function validateRecord(value) {
   if (typeof snapshot.plugin_mark !== "string"
     || !PLUGIN_MARK_PATTERN.test(snapshot.plugin_mark)) {
     fail("invalid_plugin_mark");
+  }
+  if (!validBoundedText(snapshot.app_salt, MAX_APP_SALT_LENGTH, false)) {
+    fail("invalid_app_salt");
+  }
+  if (typeof snapshot.machine_id_hash !== "string"
+    || !SHA256_HEX_PATTERN.test(snapshot.machine_id_hash)) {
+    fail("invalid_machine_id_hash");
+  }
+  if (!validBoundedText(snapshot.hostname, MAX_HOSTNAME_LENGTH, true)) {
+    fail("invalid_hostname");
+  }
+  if (!validBoundedText(snapshot.platform, MAX_PLATFORM_LENGTH, false)) {
+    fail("invalid_platform");
+  }
+  if (!validBoundedText(snapshot.arch, MAX_ARCH_LENGTH, false)) {
+    fail("invalid_arch");
+  }
+  if (typeof snapshot.mac_hash !== "string"
+    || (snapshot.mac_hash !== "" && !SHA256_HEX_PATTERN.test(snapshot.mac_hash))) {
+    fail("invalid_mac_hash");
   }
   if (typeof snapshot.api_key !== "string" || !API_KEY_PATTERN.test(snapshot.api_key)) {
     fail("invalid_api_key");
@@ -269,6 +318,14 @@ function nonNegativeSafeInteger(value) {
 
 function positiveSafeInteger(value) {
   return Number.isSafeInteger(value) && value > 0;
+}
+
+function validBoundedText(value, maximumLength, allowEmpty) {
+  return typeof value === "string"
+    && value.length <= maximumLength
+    && (allowEmpty || value.length > 0)
+    && value === value.trim()
+    && !value.includes("\0");
 }
 
 function isRecord(value) {
