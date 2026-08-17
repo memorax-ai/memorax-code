@@ -1,7 +1,15 @@
 #!/usr/bin/env node
 import { runMemoryCli } from "./memory/cli.js";
+import { runMemoryTui } from "./memory/tui.js";
 
-runMemoryCli(process.argv.slice(2)).then((result) => {
+const args = process.argv.slice(2);
+
+if (args[0] === "tui") {
+  runMemoryTui().then((code) => process.exit(code)).catch((error) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  });
+} else runMemoryCli(args).then((result) => {
   if (!process.argv.includes("--json") && result.ok && result.action === "memory.search") {
     if (result.userNotice) console.warn(`Warning: ${result.userNotice}`);
     console.log(result.answer?.trim() || "No memory context returned.");

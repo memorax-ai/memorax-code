@@ -7,12 +7,13 @@ import { runBackendEntrypoint } from "../lib/run-entrypoint.mjs";
 const args = process.argv.slice(2);
 
 if (args.length === 1 && (args[0] === "--help" || args[0] === "-h")) {
-  console.log(`Usage: memorax-cli [status|search|add] [options]
+  console.log(`Usage: memorax-cli [status|search|add|tui] [options]
 
 Memory commands:
   status [--json] [--config-only]
   search --query TEXT [--session-id ID] [--limit N] [--json]
   add --memory TEXT --type TYPE --reason REASON [--session-id ID] [--content-type code]
+  tui
 
 Run the command from the active task workspace so MemoraX Code can enforce its repository scope.`);
   process.exit(0);

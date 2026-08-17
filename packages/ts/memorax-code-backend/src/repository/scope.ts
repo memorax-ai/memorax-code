@@ -121,6 +121,15 @@ export async function resolveRepositoryMemoryScope(input: {
   };
 }
 
+export async function resolveRepositoryWorkspaceRoot(workspaceRoot?: string): Promise<string | undefined> {
+  const workspace = await resolveWorkspace(workspaceRoot);
+  if (!workspace) return undefined;
+  const repository = await resolveGitRepository(workspace);
+  return repository.kind === "repository" || repository.kind === "degraded"
+    ? repository.workspaceRoot
+    : undefined;
+}
+
 export function repositoryMemoryScopesMatch(
   left: RepositoryMemoryScope,
   right: RepositoryMemoryScope,

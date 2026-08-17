@@ -267,13 +267,15 @@ Important distinctions:
 
 ### 3.3 Manual memory CLI flow
 
-`memorax-cli` enters through Backend `src/memorax-cli.ts` and
-`src/memory/cli.ts`. It does not traverse Hook HTTP or the `MemoryService`
-composition, but it reuses the repository-scope, MemoraX-provider, and
-local-trace components. Manual Add additionally validates user-supplied
-`--reason` metadata. The direct entrypoint is not permission to fall back to
-unscoped provider calls or to reconstruct identity from unrelated process
-state.
+`memorax-cli` enters through Backend `src/memorax-cli.ts`. Its status, search,
+and add commands route through `src/memory/cli.ts`; `tui` routes through
+`src/memory/tui.ts` for local Repo Memory browsing and direct Markdown editing,
+then delegates Cloud Memory search and add operations back to `memory/cli.ts`.
+Neither route traverses Hook HTTP or the `MemoryService` composition, but both
+reuse the repository-scope, MemoraX-provider, and local-trace components.
+Manual Add additionally validates user-supplied `--reason` metadata. The
+direct entrypoint is not permission to fall back to unscoped provider calls or
+to reconstruct identity from unrelated process state.
 
 After a degraded direct `.git` directory is repaired, each CLI operation
 resolves the verified Git scope immediately; no client-session restart is
@@ -468,7 +470,7 @@ entrypoints and compatibility facades. It is not another implementation area.
 | Root module | Role |
 | --- | --- |
 | `memorax-code.ts` | Management CLI process entrypoint |
-| `memorax-cli.ts` | Manual memory CLI process entrypoint |
+| `memorax-cli.ts` | Manual memory CLI and terminal browser process entrypoint |
 | `service-entrypoint.ts` | Guarded managed-child-process entrypoint |
 | `server.ts` | `memorax-code-backend` executable and stable `createBackendServer` export facade |
 | `codex-adapter-lifecycle.ts` | Compatibility re-export of the Codex lifecycle participant |

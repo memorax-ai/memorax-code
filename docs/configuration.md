@@ -157,6 +157,22 @@ form is comma-separated. `enabled` controls automatic prompt retrieval only.
 Explicit `memorax-cli search` remains available when
 credentials and a trusted workspace scope resolve.
 
+### Terminal Memory browser
+
+`memorax-cli tui` opens an interactive terminal browser for the current
+workspace scope. Its first screen lists the local `.repo_memory/` profile and
+human-readable commit, pull-request, and issue resources; select a resource to
+read its Markdown in the terminal. Press `s` to search cloud memories. Search
+results can be selected with the keyboard and opened in `$VISUAL`, `$EDITOR`,
+or `vi`. Saving sends a new explicit `memory add` request with replacement
+provenance; it does not update or delete the original cloud memory. This uses
+the same Search and Add configuration and gates as the non-interactive CLI.
+While reading a local Repo Memory resource, `e` instead opens its Markdown file
+for direct local editing and reloads it when the editor closes.
+When the start directory has no Repo Memory of its own, the TUI lists bundles in
+its direct child folders as a Memory root; it does not recursively scan deeper
+directories.
+
 ## Writeback and explicit add
 
 New configurations explicitly set automatic completed-turn writeback to enabled.

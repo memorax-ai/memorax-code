@@ -8,6 +8,16 @@ import { test } from "node:test";
 import { promisify } from "node:util";
 import { runMemoryCli } from "../../dist/memory/cli.js";
 import {
+  memoryTuiItemFromUnknown,
+  memoryTuiAddReason,
+  memoryTuiDraftType,
+  memoryTuiReplacementReason,
+  parseMarkdownSections,
+  parseRepoMemoryRecords,
+  repoMemoryDocuments,
+  repoMemoryWorkspaces,
+} from "../../dist/memory/tui.js";
+import {
   traceContextFromClaudeHookBody,
   traceContextFromHookBody,
   traceContextFromOpenCodeHookBody,
@@ -21,6 +31,121 @@ import {
 import { listen } from "../support/helpers.mjs";
 
 const execFileAsync = promisify(execFile);
+
+test("memory TUI normalizes searchable memory items for direct replacement", () => {
+  const item = memoryTuiItemFromUnknown({
+    id: "memory-42",
+    summary: "Keep repository scope aligned with the active workspace.",
+    updated_at: "2026-08-17T10:30:00Z",
+    metadata: { memory_type: "procedural" },
+  });
+
+  assert.deepEqual(item, {
+    id: "memory-42",
+    text: "Keep repository scope aligned with the active workspace.",
+    timestamp: "2026-08-17T10:30:00Z",
+    type: "procedural",
+  });
+  assert.equal(
+    memoryTuiReplacementReason(item),
+    "Manual replacement for memory memory-42 from terminal TUI.",
+  );
+  assert.equal(memoryTuiAddReason(), "Manual addition from terminal TUI.");
+  assert.equal(memoryTuiDraftType("repository"), "core");
+  assert.equal(memoryTuiDraftType("procedural"), "procedural");
+});
+
+test("memory TUI lists local Repo Memory documents from the current workspace", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-tui-repo-memory-"));
+  const workspace = join(root, "workspace");
+  await createRepositoryMetadata(workspace, "workspace");
+  await mkdir(join(workspace, "nested"), { recursive: true });
+  await mkdir(join(workspace, ".repo_memory", "resources"), { recursive: true });
+  await writeFile(join(workspace, ".repo_memory", "PROFILE.md"), "# Workspace profile\n");
+  await writeFile(join(workspace, ".repo_memory", "resources", "commits.md"), "# Commits\n");
+
+  const documents = await repoMemoryDocuments(join(workspace, "nested"));
+
+  assert.deepEqual(documents.map((document) => document.title), [
+    "Repository profile",
+    "Recent commits",
+  ]);
+  assert.equal(documents[0].description, "Architecture, ownership, and operating rules.");
+});
+
+test("memory TUI lists Repo Memory folders directly below a Memory root", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-tui-memory-root-"));
+  const alpha = join(root, "alpha");
+  const beta = join(root, "beta");
+  const nested = join(root, "nested", "hidden");
+  await mkdir(join(alpha, ".repo_memory"), { recursive: true });
+  await mkdir(join(beta, ".repo_memory", "resources"), { recursive: true });
+  await mkdir(join(nested, ".repo_memory"), { recursive: true });
+  await createRepositoryMetadata(alpha, "alpha");
+  await createRepositoryMetadata(beta, "beta");
+  await createRepositoryMetadata(nested, "hidden");
+  await writeFile(join(alpha, ".repo_memory", "PROFILE.md"), "# Alpha\n");
+  await writeFile(join(beta, ".repo_memory", "PROFILE.md"), "# Beta\n");
+  await writeFile(join(beta, ".repo_memory", "resources", "commits.md"), "# Commits\n");
+  await writeFile(join(nested, ".repo_memory", "PROFILE.md"), "# Hidden\n");
+
+  const workspaces = await repoMemoryWorkspaces(root);
+
+  assert.deepEqual(workspaces.map((workspace) => [workspace.name, workspace.documents.length]), [
+    ["alpha", 1],
+    ["beta", 2],
+  ]);
+});
+
+test("memory TUI opens each commit resource section as an individual record", () => {
+  const records = parseRepoMemoryRecords(`---
+schema: "repo_memory_commit_resource.v0.1"
+---
+
+# Commit Resource Snapshot
+
+## Commit abc1234: first commit
+
+- SHA: \`abc1234full\`
+- Description: First detail.
+
+---
+
+## Commit def5678: second commit
+
+- SHA: \`def5678full\`
+- Description: Second detail.
+`);
+
+  assert.deepEqual(records.map((record) => [record.id, record.title]), [
+    ["abc1234", "first commit"],
+    ["def5678", "second commit"],
+  ]);
+  assert.match(records[0].content, /First detail/);
+  assert.match(records[1].content, /Second detail/);
+  assert.doesNotMatch(records[0].content, /^## Commit/);
+});
+
+test("memory TUI opens repository profile Markdown headings as individual sections", () => {
+  const sections = parseMarkdownSections(`---
+schema: "repo_memory_profile.v0.1"
+---
+
+# Profile
+
+## Identity
+
+The repository identity.
+
+## Architecture
+
+The repository architecture.
+`);
+
+  assert.deepEqual(sections.map((section) => section.title), ["Identity", "Architecture"]);
+  assert.equal(sections[0].content, "The repository identity.");
+  assert.equal(sections[1].content, "The repository architecture.");
+});
 
 test("memory CLI status reports configured MemoraX and enabled add gate by default", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-cli-default-status-"));

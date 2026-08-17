@@ -97,6 +97,25 @@ cd test-repo
 > 你可以通过 [Memory Viewer](http://127.0.0.1:8787/memory-viewer)
 > 查看不含正文的本地活动与状态。
 
+### 在终端浏览和替代 Memory
+
+在希望管理其 Memory 的工作区中运行：
+
+```bash
+memorax-cli tui
+```
+
+首屏会列出当前 Git 工作区的本地 Repo Memory：Profile、提交、PR 和 Issue。选中后按
+`Enter` 打开阅读。按 `s` 搜索云端 Memory；用 `j`/`k` 或方向键选择结果，再按 `e` 编辑。
+MemoraX Code 会打开 `$VISUAL`、`$EDITOR` 或 `nano`；保存草稿会新建一条替代 Memory，原
+Memory 不会被修改。按 `a` 新增 Memory，按 `t` 切换 Memory 类型。
+
+阅读本地 Repo Memory 时，按 `e` 会直接编辑其 Markdown 源文件；关闭编辑器后 TUI 会重新
+加载内容。这与 Cloud Memory 中新建替代 Memory 的编辑方式不同。
+
+若启动目录本身没有 Repo Memory，TUI 会列出其下一层 folder 中的 Repo Memory。选中 folder
+后进入该项目的资源；扫描不会继续递归到更深的目录。
+
 ## 四类 Memory，各有清晰边界
 
 | Memory | 回答的问题 | 典型内容 |
