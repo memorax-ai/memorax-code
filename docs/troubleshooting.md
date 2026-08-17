@@ -186,6 +186,22 @@ search. Automatic writeback requires `[memory.writeback] enabled = true` and
 must not be disabled by
 `MEMORAX_CODE_MEMORAX_WRITEBACK_ENABLED=false`.
 
+## Trial quota warning requests a Mark ID
+
+Quota warnings intentionally do not include the complete trial Mark ID. If the
+MemoraX account page requires it, run this command yourself in a local
+terminal:
+
+```sh
+memorax-code account --show-mark-id
+```
+
+The command reads a ready local trial identity and prints only its Mark ID. Do
+not ask an Agent to run it or paste the output into a conversation, screenshot,
+or log. If no ready local trial identity exists, use `memorax-code setup`; a
+TOML connection copied from another computer does not include that computer's
+device-local Mark ID.
+
 ## Backend does not start
 
 ```sh

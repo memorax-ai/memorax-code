@@ -104,9 +104,9 @@ The packaged default uses `https://platform.memorax.net`. An endpoint override
 is a separate trust decision; configure only a compatible MemoraX service you
 trust.
 
-Treat the MemoraX API key, User ID, repository identity, queries, selected
-writeback content, and saved memories as sensitive. Disable writes immediately
-with:
+Treat the MemoraX API key, trial Mark ID, User ID, repository identity,
+queries, selected writeback content, and saved memories as sensitive. Disable
+writes immediately with:
 
 ```bash
 MEMORAX_CODE_MEMORAX_WRITEBACK_ENABLED=false
@@ -125,6 +125,12 @@ The versioned trial credential record is separate from `config.toml`. Its
 provisioned `account_id` is account identity and never replaces the User ID
 stored as `[memorax].user_id`. Account identity, project identity, device mark,
 and quota-warning state remain only in that secure record.
+
+Routine quota warnings, status, and diagnostics do not expose the complete
+trial Mark ID. When registration requires it, the user can explicitly run
+`memorax-code account --show-mark-id` directly in a local terminal. That
+command prints the Mark ID but not the API key. Do not ask an Agent to run it,
+paste its output into a conversation, or include it in screenshots or logs.
 
 Trial setup stores the endpoint, User ID, language preference, and a portable
 copy of the API key in `config.toml`. Existing-account setup stores the entered
