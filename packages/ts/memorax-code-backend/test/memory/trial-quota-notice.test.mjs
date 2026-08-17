@@ -6,6 +6,7 @@ import {
 } from "../../../memorax-code-adapter-common/src/credentials/trial-credential-record.mjs";
 import {
   claimTrialQuotaNotice,
+  createPendingTrialQuotaNoticeRuntime,
 } from "../../dist/memory/trial-quota-notice.js";
 
 const API_KEY = `sk_${"Q".repeat(43)}`;
@@ -24,18 +25,18 @@ test("trial quota notices claim lower levels once and reset after replenishment"
     { env: {}, transitionCredential },
   );
 
-  const first = await claim(4_999);
-  assert.match(first, /memory write quota is running low: 4999 of 10000 remaining/i);
+  const first = await claim(9_999);
+  assert.match(first, /memory write quota is running low: 9999 of 10000 remaining/i);
   assert.match(first, /https:\/\/platform\.memorax\.net\//);
   assert.match(first, new RegExp(MARK_ID));
-  assert.equal(current.last_warned_write_level, 5_000);
-  assert.equal(await claim(4_800), undefined);
-  assert.equal(current.last_warned_write_level, 5_000);
-  assert.match(await claim(3_999), /3999 of 10000/);
-  assert.equal(current.last_warned_write_level, 4_000);
-  assert.equal(await claim(6_000), undefined);
+  assert.equal(current.last_warned_write_level, 9_999);
+  assert.equal(await claim(9_999), undefined);
+  assert.equal(current.last_warned_write_level, 9_999);
+  assert.match(await claim(9_998), /9998 of 10000/);
+  assert.equal(current.last_warned_write_level, 9_998);
+  assert.equal(await claim(10_000), undefined);
   assert.equal(current.last_warned_write_level, null);
-  assert.match(await claim(5_000), /5000 of 10000/);
+  assert.match(await claim(9_999), /9999 of 10000/);
 });
 
 test("write and search quota reminders are tracked independently", async () => {
@@ -48,16 +49,16 @@ test("write and search quota reminders are tracked independently", async () => {
   const options = { env: {}, transitionCredential };
   assert.match(await claimTrialQuotaNotice(
     trialConfig(),
-    { featureCode: "memory_write", remaining: 4_500, limit: 10_000 },
+    { featureCode: "memory_write", remaining: 9_999, limit: 10_000 },
     options,
   ), /memory write quota/i);
   assert.match(await claimTrialQuotaNotice(
     trialConfig(),
-    { featureCode: "memory_search", remaining: 4_500, limit: 10_000 },
+    { featureCode: "memory_search", remaining: 9_999, limit: 10_000 },
     options,
   ), /memory search quota/i);
-  assert.equal(current.last_warned_write_level, 5_000);
-  assert.equal(current.last_warned_search_level, 5_000);
+  assert.equal(current.last_warned_write_level, 9_999);
+  assert.equal(current.last_warned_search_level, 9_999);
 });
 
 test("quota exhaustion emits the final zero-level notice", async () => {
@@ -97,6 +98,32 @@ test("quota notices ignore non-trial credentials and fail open on store errors",
     },
   ), undefined);
   assert.deepEqual(diagnostics, ["memorax_quota_notice.update_failed"]);
+});
+
+test("pending write quota notices keep the lowest snapshot and are claimed once", async () => {
+  const claimed = [];
+  const runtime = createPendingTrialQuotaNoticeRuntime({
+    claimQuotaNotice: async (_config, quota) => {
+      claimed.push(quota);
+      return `Quota notice: ${quota.remaining} remaining.`;
+    },
+  });
+  try {
+    runtime.queue({ featureCode: "memory_write", remaining: 9_999, limit: 10_000 });
+    runtime.queue({ featureCode: "memory_write", remaining: 10_000, limit: 10_000 });
+    runtime.queue({ featureCode: "memory_search", remaining: 1, limit: 10_000 });
+    runtime.queue({ featureCode: "memory_write", remaining: 9_998, limit: 10_000 });
+
+    assert.equal(await runtime.claim(trialConfig()), "Quota notice: 9998 remaining.");
+    assert.equal(await runtime.claim(trialConfig()), undefined);
+    assert.deepEqual(claimed, [{
+      featureCode: "memory_write",
+      remaining: 9_998,
+      limit: 10_000,
+    }]);
+  } finally {
+    runtime.close();
+  }
 });
 
 function readyRecord() {

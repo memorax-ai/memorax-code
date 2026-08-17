@@ -13,8 +13,8 @@ type TransitionTrialCredential = typeof transitionTrialCredentialRecord;
 const DEFAULT_NOTICE_TIMEOUT_MS = 6_000;
 const SECURE_OPERATION_TIMEOUT_MS = 1_500;
 const LOCK_TIMEOUT_MS = 500;
-const WARNING_THRESHOLD = 5_000;
-const WARNING_STEP = 1_000;
+const WARNING_THRESHOLD = 9_999;
+const WARNING_STEP = 1;
 
 export type TrialQuotaNoticeOptions = Readonly<{
   diagnosticLogger?: MemoryDiagnosticLogger;
@@ -28,6 +28,16 @@ export type TrialQuotaNoticeClaimer = (
   quota: MemoraxQuotaSnapshot,
   options?: TrialQuotaNoticeOptions,
 ) => Promise<string | undefined>;
+
+export type PendingTrialQuotaNoticeRuntimeOptions = TrialQuotaNoticeOptions & Readonly<{
+  claimQuotaNotice?: TrialQuotaNoticeClaimer;
+}>;
+
+export type PendingTrialQuotaNoticeRuntime = Readonly<{
+  queue(quota: MemoraxQuotaSnapshot): void;
+  claim(config: MemoraxAdapterConfig): Promise<string | undefined>;
+  close(): void;
+}>;
 
 export const claimTrialQuotaNotice: TrialQuotaNoticeClaimer = async (
   config,
@@ -98,6 +108,41 @@ export const claimTrialQuotaNotice: TrialQuotaNoticeClaimer = async (
 
   return claimed ? quotaNotice(claimed, quota) : undefined;
 };
+
+export function createPendingTrialQuotaNoticeRuntime(
+  options: PendingTrialQuotaNoticeRuntimeOptions = {},
+): PendingTrialQuotaNoticeRuntime {
+  const {
+    claimQuotaNotice = claimTrialQuotaNotice,
+    ...noticeOptions
+  } = options;
+  let pendingQuota: MemoraxQuotaSnapshot | undefined;
+  let closed = false;
+
+  return {
+    queue(quota) {
+      if (closed || quota.featureCode !== "memory_write") return;
+      if (!pendingQuota || quota.remaining < pendingQuota.remaining) {
+        pendingQuota = { ...quota };
+      }
+    },
+    async claim(config) {
+      if (closed || !pendingQuota) return undefined;
+      const quota = pendingQuota;
+      pendingQuota = undefined;
+      try {
+        return await claimQuotaNotice(config, quota, noticeOptions);
+      } catch {
+        options.diagnosticLogger?.("memorax_quota_notice.claim_failed", {});
+        return undefined;
+      }
+    },
+    close() {
+      closed = true;
+      pendingQuota = undefined;
+    },
+  };
+}
 
 function positiveTimeout(value: number | undefined): number {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0

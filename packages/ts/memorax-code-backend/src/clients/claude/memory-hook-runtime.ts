@@ -9,6 +9,8 @@ import {
 import { retrieveAutomaticMemoryContext } from "../../memory/automatic-retrieval.js";
 import {
   claimTrialQuotaNotice,
+  createPendingTrialQuotaNoticeRuntime,
+  type PendingTrialQuotaNoticeRuntime,
   type TrialQuotaNoticeClaimer,
 } from "../../memory/trial-quota-notice.js";
 import {
@@ -80,6 +82,7 @@ export type ClaudeMemoryHookRuntimeOptions = {
   cleanupIntervalMs?: number;
   memoryObservability?: MemoryObservabilityHook;
   memoraxCodeHome?: string;
+  pendingQuotaNotice?: PendingTrialQuotaNoticeRuntime;
   repositoryMemorySession?: RepositoryMemorySessionRuntime;
   turnCoordinator?: MemoryTurnCoordinator;
   transcriptReadAttempts?: number;
@@ -101,6 +104,12 @@ export function createClaudeMemoryHookRuntime(
   options: ClaudeMemoryHookRuntimeOptions = {},
 ): ClaudeMemoryHookRuntime {
   const now = options.now ?? (() => Date.now());
+  const pendingQuotaNotice = options.pendingQuotaNotice ?? createPendingTrialQuotaNoticeRuntime({
+    claimQuotaNotice: options.claimQuotaNotice,
+    diagnosticLogger: options.diagnosticLogger,
+    env: options.env,
+  });
+  const ownsPendingQuotaNotice = options.pendingQuotaNotice === undefined;
   const automaticWritebackRuntime: {
     enqueue: AutomaticMemoryWritebackEnqueue;
     discardForScopeUpgrade?: AutomaticMemoryWritebackRuntime["discardForScopeUpgrade"];
@@ -109,7 +118,10 @@ export function createClaudeMemoryHookRuntime(
     ? undefined
     : options.automaticWriteback
       ? { enqueue: options.automaticWriteback }
-      : createAutomaticMemoryWritebackRuntime({ diagnosticLogger: options.diagnosticLogger });
+      : createAutomaticMemoryWritebackRuntime({
+        diagnosticLogger: options.diagnosticLogger,
+        queueQuotaNotice: pendingQuotaNotice.queue,
+      });
   const turnCoordinator = options.turnCoordinator ?? createMemoryTurnCoordinator({
     automaticWriteback: automaticWritebackRuntime!.enqueue,
     now,
@@ -185,17 +197,21 @@ export function createClaudeMemoryHookRuntime(
           now: () => new Date(now()),
         },
       ), options.diagnosticLogger);
-      if (!claimAutomaticRetrievalPrompt(
+      const processTurnStart = claimAutomaticRetrievalPrompt(
         automaticRetrievalPrompts,
         automaticRetrievalPromptLimit,
         turn.sessionId,
         turn.promptId,
-      )) {
+      );
+      if (!processTurnStart) {
         return {
           ok: true,
           ...(repoMemoryWorktree ? { repoMemoryWorktree } : {}),
         };
       }
+      const pendingUserNotice = repositoryMemory.ok
+        ? await pendingQuotaNotice.claim(repositoryMemory.memory.config)
+        : undefined;
       const retrieval = await retrieveAutomaticMemoryContext({
         diagnosticLogger: options.diagnosticLogger,
         claimQuotaNotice: options.claimQuotaNotice ?? claimTrialQuotaNotice,
@@ -208,11 +224,12 @@ export function createClaudeMemoryHookRuntime(
         sessionKey: turn.sessionId,
         traceContext: turn.traceContext,
       });
+      const userNotice = [pendingUserNotice, retrieval.userNotice].filter(Boolean).join("\n");
       return {
         ok: true,
         ...(repoMemoryWorktree ? { repoMemoryWorktree } : {}),
         ...(retrieval.context ? { additionalContext: retrieval.context } : {}),
-        ...(retrieval.userNotice ? { userNotice: retrieval.userNotice } : {}),
+        ...(userNotice ? { userNotice } : {}),
       };
     },
     async writeback(command) {
@@ -312,6 +329,7 @@ export function createClaudeMemoryHookRuntime(
       if (ownsTurnCoordinator) turnCoordinator.close();
       if (ownsRepositoryMemorySession) repositoryMemorySession.close();
       automaticWritebackRuntime?.close?.();
+      if (ownsPendingQuotaNotice) pendingQuotaNotice.close();
     },
   };
 }
