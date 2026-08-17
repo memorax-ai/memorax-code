@@ -82,8 +82,8 @@ test("memorax-code references keep authority and operation boundaries explicit",
   assert.match(memoraxAdd, /CODE_AGENT_MEMORY/);
   assert.match(memoraxAdd, /In OpenCode, ask the agent to use the `memorax-code` skill by name/);
   assert.match(memoraxAdd, /Route user-owned ordered actions/);
-  assert.match(memoraxAdd, /For a proactive add, write all generated prose/);
-  assert.match(memoraxAdd, /language of the user's current request/);
+  assert.match(memoraxAdd, /Before composing a proactive add, determine `memory_output_language`/);
+  assert.match(memoraxAdd, /natural-language instructions in the user's current request/);
   assert.match(memoraxAdd, /preserve exact code, API, path, workflow, and project identifiers/);
   assert.match(memoraxAdd, /memorax-cli add[\s\S]*--memory '/);
   assert.match(memoraxAdd, /`workspace_scope_mismatch` or `workspace_scope_unavailable`/);
@@ -122,6 +122,41 @@ test("memorax-code search guidance preserves semantic roles and exact anchors", 
   assert.match(memoraxSearch, /Trace producer version: after an upgrade/);
   assert.match(memoraxSearch, /Task context after upgrade: can an already-open task keep old injected context/);
   assert.match(memoraxSearch, /Desktop SDK authority: without a native CLI/);
+});
+
+test("memorax-code add guidance selects one audited request-language branch", () => {
+  const memoraxAdd = readSkillFile("references/memorax-add.md");
+  const bashBlocks = [...memoraxAdd.matchAll(/```bash\n([\s\S]*?)\n```/g)].map((match) => match[1]);
+  const zhBlocks = bashBlocks.filter((block) => block.startsWith("# memorax-memory-language: zh; source=current_user_request\n"));
+  const enBlocks = bashBlocks.filter((block) => block.startsWith("# memorax-memory-language: en; source=current_user_request\n"));
+
+  assert.match(memoraxAdd, /determine `memory_output_language` as exactly `zh` or `en`/);
+  assert.match(memoraxAdd, /Use only the current user request for this decision/);
+  assert.match(memoraxAdd, /use exactly one matching language branch below/);
+  assert.match(memoraxAdd, /never combine the Chinese and English examples/);
+  assert.match(memoraxAdd, /If the comment says `zh`[\s\S]*contains no meaningful Chinese, rewrite it before invoking the CLI/);
+  assert.match(memoraxAdd, /keep fixed keys such as `repo`, `scope`, `status`, `signal`, and `problem` in English/);
+  assert.equal(bashBlocks.length, 4);
+  assert.equal(zhBlocks.length, 2);
+  assert.equal(enBlocks.length, 2);
+
+  for (const block of bashBlocks) {
+    const lines = block.split("\n");
+    assert.match(lines[0], /^# memorax-memory-language: (?:zh|en); source=current_user_request$/);
+    assert.equal(lines[1], "memorax-cli add \\");
+    assert.match(block, /--memory '/);
+    assert.match(block, /--type procedural/);
+    assert.match(block, /--reason '/);
+  }
+
+  for (const block of zhBlocks) {
+    assert.match(block, /--memory '[^']*[\p{Script=Han}]/u);
+    assert.match(block, /--reason '[^']*[\p{Script=Han}]/u);
+  }
+
+  for (const block of enBlocks) {
+    assert.doesNotMatch(block, /[\p{Script=Han}]/u);
+  }
 });
 
 test("memorax-code retries read-only search once after transport or sandbox failure", () => {
