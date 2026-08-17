@@ -12,7 +12,7 @@ npm install -g @memorax/memorax-code
 memorax-code
 ```
 
-The first launch completes any setup that is still needed. Enter a Memory ID
+The first launch completes any setup that is still needed. Enter a User ID
 and choose your preferred memory language when prompted; no account or API key
 is required beforehand.
 

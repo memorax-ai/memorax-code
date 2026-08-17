@@ -253,7 +253,7 @@ async function maybeConfigureMemoraxMemory(scriptedAnswers, { showDisclosure = t
   }
   const rl = createInterface({ input: process.stdin, output: process.stderr });
   try {
-    const userId = (await rl.question(`${PREFIX} Memory ID: `)).trim();
+    const userId = (await rl.question(`${PREFIX} User ID (used for your memories): `)).trim();
     const outputLanguage = await questionPreferredLanguage(rl);
     return await writeMemoraxConfigFromInput({
       userId,
@@ -298,7 +298,7 @@ async function chooseUpdateClients(previousClients, detectedClients, scriptedAns
 
 async function configureMemoraxMemoryFromAnswers(answers) {
   const userId = String(answers.shift() ?? "").trim();
-  log(`Memory ID: ${userId ? "<provided>" : "<missing>"}`);
+  log(`User ID: ${userId ? "<provided>" : "<missing>"}`);
   const outputLanguageAnswer = String(answers.shift() ?? "").trim();
   log(`Preferred language [ZH/en] (used for Memory extraction): ${outputLanguageAnswer ? "<provided>" : "<default>"}`);
   return await writeMemoraxConfigFromInput({
@@ -316,7 +316,7 @@ function printMemoraxDisclosure() {
 
 async function writeMemoraxConfigFromInput({ userId, endpoint, outputLanguage }) {
   if (!userId) {
-    logRed("MemoraX config was not written because Memory ID was empty.");
+    logRed("MemoraX config was not written because User ID was empty.");
     return "failed";
   }
   if (!outputLanguage) {
@@ -584,7 +584,7 @@ function writeMemoraxConfig({ userId, endpoint, outputLanguage }) {
     },
     {
       key: "user_id",
-      line: `user_id = "${tomlString(userId)}" # Stable Memory ID; requests derive a workspace-scoped namespace.`,
+      line: `user_id = "${tomlString(userId)}" # Stable User ID; requests derive a workspace-scoped namespace.`,
     },
   ];
   const addFields = [{
@@ -622,7 +622,7 @@ function defaultMemoraxCodeConfig() {
     "# MemoraX remote-memory connection.",
     "[memorax]",
     `# endpoint = "${MEMORAX_DEFAULT_BASE_URL}" # MemoraX service URL.`,
-    '# user_id = "" # Stable Memory ID; requests derive a workspace-scoped namespace.',
+    '# user_id = "" # Stable User ID; requests derive a workspace-scoped namespace.',
     "",
     "# Automatic Hook retrieval is opt-in.",
     "[memory.retrieval]",

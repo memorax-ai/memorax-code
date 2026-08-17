@@ -172,17 +172,17 @@ sequenceDiagram
       alt Reuse accepted
         Setup->>Config: preserve connection and preferences
       else Reuse declined
-        Setup->>User: request Memory ID and language
+        Setup->>User: request User ID and language
         Setup->>Trial: create or restore ready credential
-        Setup->>Config: write endpoint, Memory ID, and language
+        Setup->>Config: write endpoint, User ID, and language
       end
     else Effective connection is incomplete or invalid
-      Setup->>User: request Memory ID and language
+      Setup->>User: request User ID and language
       Setup->>Trial: create or restore ready credential
-      Setup->>Config: write endpoint, Memory ID, and language
+      Setup->>Config: write endpoint, User ID, and language
     end
   else Explicit setup
-    Setup->>User: request Memory ID and language
+    Setup->>User: request User ID and language
     Setup->>Trial: create or restore ready credential
     Setup->>Config: replace active TOML connection preferences
   end
@@ -219,7 +219,7 @@ unsupported state fails closed. Explicit `memorax-code setup` runs regardless
 of completion, while product update uses a separate setup mode. Automatic setup
 uses the config-only status authority to find a locally ready effective MemoraX
 connection and asks before reusing its connection and memory preferences. If
-none is ready or reuse is declined, it asks only for a Memory ID and language,
+none is ready or reuse is declined, it asks only for a User ID and language,
 then creates or restores the secure trial credential before writing those
 preferences. Explicit setup follows the same trial path; update setup preserves
 credentials and memory preferences. The local status check does not prove
@@ -232,7 +232,7 @@ interactive setup authorizes initial activation for a selected Codex
 integration without a second confirmation;
 new or changed Hook command hashes on later updates still require foreground
 review. Trial provisioning must succeed before setup applies the selected
-Memory ID and language or begins plugin and Backend reconciliation. Setup may
+User ID and language or begins plugin and Backend reconciliation. Setup may
 make one bounded stop/start recovery attempt for an ordinary start failure,
 while deterministic Hook activation, lifecycle-lock, and persisted-authority
 failures remain fail-closed. Outside update mode, setup records completion
@@ -309,7 +309,7 @@ Important distinctions:
   incomplete, conflicting, or unprovable.
 - A malformed or incomplete direct `.git` directory is the sole documented
   folder-scope fallback. That degraded scope may upgrade in-session only to a
-  verified Git scope with the same Memory ID and canonical workspace root;
+  verified Git scope with the same User ID and canonical workspace root;
   all other scope changes remain mismatches.
 - Local mode may authorize loopback requests without a configured token. Token
   authentication is required when configuration or exposure mode demands it.
@@ -552,8 +552,8 @@ and
 | Workspace and repository identity | Backend read-only resolution held by the live repository-session runtime; its only permitted scope transition is the same-root degraded-direct-`.git` to verified-Git upgrade | Project labels, Viewer catalog entries, and Hook `cwd` |
 | Backend connection and managed-process ownership | Versioned private connection/token/PID records plus lifecycle lock/version validation | In-memory state in any one process |
 | Setup routing and package-replacement continuity | Versioned private setup-completion and package-transition records plus their JSON locks | Configuration contents, npm output visibility, and the presence of package files |
-| Effective MemoraX connection | Config-only resolution with environment API key over TOML API key over a ready secure trial credential, plus normalized Memory ID and language | Config-file presence, trial-record presence without `ready`, setup completion, and Backend liveness do not establish local readiness or remote API-key acceptance |
-| Trial account credentials | Versioned secure credential record stored through the operating-system credential backend; its `account_id` is account identity | `[memorax].user_id` remains the Memory ID and must not be derived from or overwritten by trial account identity |
+| Effective MemoraX connection | Config-only resolution with environment API key over TOML API key over a ready secure trial credential, plus normalized User ID and language | Config-file presence, trial-record presence without `ready`, setup completion, and Backend liveness do not establish local readiness or remote API-key acceptance |
+| Trial account credentials | Versioned secure credential record stored through the operating-system credential backend; its `account_id` is account identity | `[memorax].user_id` remains the User ID and must not be derived from or overwritten by trial account identity |
 | MemoraX memory result and asynchronous task state | Normalized response from `provider/memorax` | Observability, trace, Viewer, and task projections |
 | Persisted current-turn operational state and trace history | Client-qualified local trace records | Viewer summaries and diagnostics; not native content or general Turn-identity authority |
 | Repo Memory bundle | Repository-local `.repo_memory` files produced by the supervised job | Backend readiness and client-injected guidance |

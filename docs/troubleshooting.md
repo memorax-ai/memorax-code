@@ -43,7 +43,7 @@ memorax-code setup
 After a product uninstall and reinstall, automatic setup detects a locally
 ready retained MemoraX connection and asks whether to reuse it. Accepting is
 why setup can restore the client integrations without asking again for the
-Memory ID or preferred language. Run explicit `memorax-code setup` when you
+User ID or preferred language. Run explicit `memorax-code setup` when you
 intend to replace those preferences or move to the setup-managed trial
 connection.
 
@@ -61,7 +61,7 @@ readiness all succeed. Until then, a no-argument `memorax-code` attempts setup
 again.
 
 If the configuration is safely parseable but its effective MemoraX connection
-is not ready, automatic setup asks for a Memory ID and preferred language and
+is not ready, automatic setup asks for a User ID and preferred language and
 then creates or restores a trial credential. A malformed TOML file cannot be
 safely updated and remains byte-preserved; fix or restore that file before
 rerunning setup rather than expecting the prompt flow to overwrite it.
@@ -147,7 +147,7 @@ memorax-cli status
 ```
 
 Use explicit setup to create or restore the trial connection and enter the
-Memory ID and preferred language:
+User ID and preferred language:
 
 ```sh
 memorax-code setup
@@ -283,7 +283,7 @@ memorax-code-claude doctor
 
 Common causes are:
 
-- missing or invalid MemoraX endpoint, Memory ID, or effective API key;
+- missing or invalid MemoraX endpoint, User ID, or effective API key;
 - the global writeback kill switch or CLI add switch disabling `memory add`;
 - no trusted workspace for the current session;
 - an unreadable, malformed, or symlinked Git marker;
@@ -292,14 +292,14 @@ Common causes are:
 
 MemoraX Code reads filesystem Git metadata without executing Git. Linked
 worktrees share the remote repository identity; non-Git workspaces use the
-normalized folder name. Resolution never falls back to the bare Memory ID.
+normalized folder name. Resolution never falls back to the bare User ID.
 
 A live Codex or Claude Code session remains pinned to the repository or local
 workspace resolved at the start of the session. Starting the client from a
 parent workspace and then entering a nested Git repository does not rebind the
 session. The only in-session scope upgrade is from a direct `.git` directory
 whose internal metadata was malformed or incomplete to a verified Git
-repository at the same canonical workspace root and for the same Memory ID.
+repository at the same canonical workspace root and for the same User ID.
 
 During that degraded state, MemoraX Code reports
 `workspaceScopeFallbackReason: git_metadata_invalid` for manual CLI operations

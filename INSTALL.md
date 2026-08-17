@@ -16,7 +16,7 @@ installation. For a source checkout and contributor setup, see
 
 MemoraX-backed search, retrieval, and writeback additionally require network
 access. First-time setup creates or restores a trial connection after you
-choose a Memory ID and preferred memory language. You do not need to register
+choose a User ID and preferred memory language. You do not need to register
 an account or create an API key beforehand. Existing manually managed MemoraX
 connections remain supported through configuration or environment variables.
 
@@ -25,10 +25,10 @@ remote environment as the client runtime. On Linux, that environment must also
 have access to the same user's Secret Service; MemoraX Code does not fall back
 to plaintext credential storage.
 
-## 1. Choose a Memory ID
+## 1. Choose a User ID
 
-Setup asks for a stable Memory ID and a preferred memory language. The Memory
-ID becomes the base of each workspace-scoped memory namespace. Choose an ID
+Setup asks for a stable User ID and a preferred memory language. The User ID
+becomes the base of each workspace-scoped memory namespace. Choose an ID
 you intend to keep: changing it later starts using a different namespace.
 
 During setup, MemoraX Code explains that automatic writeback from trusted
@@ -85,13 +85,13 @@ finished.
 Automatic setup first checks for a locally ready MemoraX connection, including
 configuration and secure trial credentials retained across a product
 uninstall. When one is found, setup asks whether to reuse the saved connection
-and memory preferences. Accepting keeps the existing Memory ID, language, and
+and memory preferences. Accepting keeps the existing User ID, language, and
 credential without asking for them again.
 
 If no ready connection exists, or you decline reuse, setup asks only for a
-Memory ID and preferred language. It then creates or restores a trial
+User ID and preferred language. It then creates or restores a trial
 credential, stores the trial secret outside `config.toml`, and writes the
-endpoint, Memory ID, and language preference to configuration. The initial
+endpoint, User ID, and language preference to configuration. The initial
 local reuse check does not contact MemoraX; trial provisioning does, and the
 first workspace-scoped memory request verifies use of the connection by the
 memory API.
@@ -102,9 +102,9 @@ Setup:
 2. enables every detected client on a fresh setup and preserves existing
    client intent on later runs;
 3. offers to reuse a locally ready connection during automatic setup, or asks
-   for a Memory ID and language before creating or restoring a trial
+   for a User ID and language before creating or restoring a trial
    credential;
-4. applies the selected Memory ID and language only after trial credential
+4. applies the selected User ID and language only after trial credential
    provisioning succeeds;
 5. activates the bundled Codex Hooks when first enabling that integration and
    requests review for new or changed Hooks on later updates;
@@ -119,7 +119,7 @@ the bundled plugin and trusts its current Hook command hashes without a second
 confirmation. New or changed Hook command hashes in later updates still
 require foreground review.
 
-To replace the Memory ID or language preference, switch from a manually stored
+To replace the User ID or language preference, switch from a manually stored
 `config.toml` API key to the setup-managed trial connection, or rerun or repair
 setup even when completion is already recorded, use:
 
@@ -177,7 +177,7 @@ Package installation can succeed while setup remains incomplete. Run
 Hook, Backend, and MemoraX configuration.
 
 During automatic setup, accepting the saved connection avoids asking for the
-Memory ID and language again. Run explicit `memorax-code setup` when you want
+User ID and language again. Run explicit `memorax-code setup` when you want
 to replace those retained preferences or move to the setup-managed trial
 connection.
 

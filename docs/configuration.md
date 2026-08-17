@@ -38,7 +38,7 @@ The MemoraX API key has one additional setup-managed source. Its precedence is:
 MEMORAX_CODE_MEMORAX_API_KEY > [memorax].api_key > ready secure trial credential
 ```
 
-The trial credential is consulted only when a Memory ID is configured and no
+The trial credential is consulted only when a User ID is configured and no
 environment or TOML API key is present.
 
 TOML booleans are `true` or `false`. Environment booleans accept
@@ -103,10 +103,10 @@ Setup has three connection-handling modes. The no-argument command enters
 automatic setup when completion is absent. If a locally ready MemoraX
 connection exists, it asks whether to reuse the saved connection and memory
 preferences. Accepting preserves them. If no ready connection exists, or reuse
-is declined, setup asks for a Memory ID and preferred language, then creates or
+is declined, setup asks for a User ID and preferred language, then creates or
 restores a secure trial credential before writing those preferences.
 
-Explicit `memorax-code setup` asks for a Memory ID and language and uses the
+Explicit `memorax-code setup` asks for a User ID and language and uses the
 same trial-credential path. After the secure trial credential is ready, it
 removes any `[memorax].api_key` from `config.toml` so that the old manual key
 does not mask the trial connection. An environment API key remains a
@@ -171,7 +171,7 @@ MemoraX is the required remote-memory service:
 ```toml
 [memorax]
 endpoint = "https://platform.memorax.net"
-user_id = "your-memory-id"
+user_id = "your-user-id"
 # timeout_ms = 5000
 # startup_timeout_ms = 3000
 ```
@@ -183,19 +183,19 @@ here or supply `MEMORAX_CODE_MEMORAX_API_KEY`.
 | Field | Environment override | Fallback |
 | --- | --- | --- |
 | `endpoint` | `MEMORAX_CODE_MEMORAX_ENDPOINT` | `https://platform.memorax.net` |
-| `user_id` | `MEMORAX_CODE_MEMORAX_USER_ID` | required Memory ID |
+| `user_id` | `MEMORAX_CODE_MEMORAX_USER_ID` | required User ID |
 | `api_key` | `MEMORAX_CODE_MEMORAX_API_KEY` | ready secure trial credential; otherwise required |
 | `timeout_ms` | `MEMORAX_CODE_MEMORAX_TIMEOUT_MS` | `5000` ms |
 | `startup_timeout_ms` | `MEMORAX_CODE_MEMORAX_STARTUP_TIMEOUT_MS` | `3000` ms |
 
 Automatic setup determines whether the connection can be reused through the
 same config-only status resolution used by `memorax-cli status`, including the
-precedence documented above. A non-empty Memory ID, an effective API key from
+precedence documented above. A non-empty User ID, an effective API key from
 one of those sources, and a valid `zh` or `en` memory output language form a
 locally ready connection; an omitted output language uses the `zh` fallback.
 This check does not send a network request or prove that the API key is
 accepted by the memory API. Trial provisioning is a separate foreground
-network operation. Setup writes the endpoint, Memory ID, and language to
+network operation. Setup writes the endpoint, User ID, and language to
 `config.toml`, while environment variables remain higher-precedence overrides.
 
 MemoraX requests send the API key and the query or content required by the
@@ -203,9 +203,9 @@ selected memory operation to the HTTPS endpoint. Override `endpoint` only with
 a compatible MemoraX service you trust.
 
 `startup_timeout_ms` controls synchronous automatic retrieval and is capped at
-10 seconds. `user_id` is the stable Memory ID; MemoraX Code derives a
+10 seconds. `user_id` is the stable User ID; MemoraX Code derives a
 repository-scoped identity for Git workspaces and a folder-scoped identity for
-non-Git workspaces. It never falls back to the unscoped Memory ID.
+non-Git workspaces. It never falls back to the unscoped User ID.
 
 ## Retrieval
 
@@ -359,7 +359,7 @@ records while a setup, npm, or lifecycle command may still be active.
 - Malformed TOML, a non-table root, or invalid `[clients]` types block
   lifecycle mutations before adapters or processes are changed.
 - Automatic setup offers to reuse a locally ready MemoraX connection. If none
-  exists or reuse is declined, it asks for a Memory ID and language and
+  exists or reuse is declined, it asks for a User ID and language and
   provisions the trial credential. A malformed TOML file remains fail-closed
   and is not overwritten by the prompt flow.
 - Ordinary memory and trace readers use safe fallbacks when the file cannot be

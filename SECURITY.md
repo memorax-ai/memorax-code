@@ -60,7 +60,7 @@ Please allow time for triage and remediation before public disclosure.
 
 ### MemoraX memory traffic
 
-MemoraX-backed search, retrieval, and writeback require a Memory ID, an
+MemoraX-backed search, retrieval, and writeback require a User ID, an
 effective API key, and network access. The API key may come from a ready secure
 trial credential or an explicit environment/TOML value. Interactive setup
 discloses automatic writeback before creating or restoring the trial
@@ -100,7 +100,7 @@ The packaged default uses `https://platform.memorax.net`. An endpoint override
 is a separate trust decision; configure only a compatible MemoraX service you
 trust.
 
-Treat the MemoraX API key, Memory ID, repository identity, queries, selected
+Treat the MemoraX API key, User ID, repository identity, queries, selected
 writeback content, and saved memories as sensitive. Disable writes immediately
 with:
 
@@ -118,14 +118,14 @@ enabled = false
 ### Trial credential storage
 
 The versioned trial credential record is separate from `config.toml`. Its
-provisioned `account_id` is account identity and never replaces the Memory ID
+provisioned `account_id` is account identity and never replaces the User ID
 stored as `[memorax].user_id`.
 
-Setup-managed configuration stores only the endpoint, Memory ID, and language
+Setup-managed configuration stores only the endpoint, User ID, and language
 preference in `config.toml`. Runtime API-key resolution prefers an explicit
 environment value, then a legacy/manual TOML value, then a ready secure trial
 credential. Trial account and project identifiers never participate in the
-workspace-scoped Memory ID.
+workspace-scoped User ID.
 
 The secure credential layer uses macOS Keychain, Linux Secret Service through
 libsecret, and Windows CurrentUser DPAPI with an atomically replaced encrypted
@@ -217,7 +217,7 @@ A complete product uninstall removes the setup-completion routing marker but
 retains the MemoraX configuration, including any API key stored there, and the
 secure trial credential. After a reinstall, automatic setup can offer to reuse
 that connection and resume the configured memory behavior without asking for
-the values again. Explicit `memorax-code setup` can replace the Memory ID and
+the values again. Explicit `memorax-code setup` can replace the User ID and
 language but may restore the same retained trial identity. If that credential
 must not be reused, remove it separately through the operating-system secure
 credential backend after reviewing the retained configuration and data.
