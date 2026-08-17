@@ -165,6 +165,10 @@ sequenceDiagram
   Setup->>Setup: detect clients and reconcile client selection
   alt Product update
     Setup->>Config: preserve connection without credential prompts
+    opt Legacy trial connection has no TOML API key
+      Setup->>Trial: load ready credential without provisioning
+      Setup->>Config: backfill portable API-key copy
+    end
   else Automatic no-argument setup
     Setup->>Config: resolve local config-only status
     alt Effective connection is locally ready
@@ -178,7 +182,7 @@ sequenceDiagram
           Setup->>Config: write endpoint, User ID, language, and API key
         else No existing account
           Setup->>Trial: create or restore ready credential
-          Setup->>Config: write endpoint, User ID, and language
+          Setup->>Config: write endpoint, User ID, language, and API key
         end
       end
     else Effective connection is incomplete or invalid
@@ -188,7 +192,7 @@ sequenceDiagram
         Setup->>Config: write endpoint, User ID, language, and API key
       else No existing account
         Setup->>Trial: create or restore ready credential
-        Setup->>Config: write endpoint, User ID, and language
+        Setup->>Config: write endpoint, User ID, language, and API key
       end
     end
   else Explicit setup
@@ -198,7 +202,7 @@ sequenceDiagram
       Setup->>Config: replace TOML connection and API key
     else No existing account
       Setup->>Trial: create or restore ready credential
-      Setup->>Config: replace active TOML connection preferences
+      Setup->>Config: replace TOML connection, preferences, and API key
     end
   end
   alt Selected Codex integration has no active plugin
@@ -238,9 +242,11 @@ none is ready or reuse is declined, it asks for a User ID, language, and
 whether the user already has a MemoraX account. An existing-account choice
 stores the entered API key with the connection preferences and skips trial
 provisioning. Otherwise setup creates or restores the secure trial credential
-and writes the preferences without a TOML API key. Explicit setup offers the
-same choice; update setup preserves credentials and memory preferences. The
-local status check does not prove remote credential acceptance.
+and writes the preferences with a portable TOML copy of its API key. Explicit
+setup offers the same choice. Update setup preserves credentials and memory
+preferences while backfilling a missing portable key from an already-ready
+trial record; accepted connection reuse performs the same migration. The local
+status check does not prove remote credential acceptance.
 
 Setup owns client discovery, user prompts, foreground trial provisioning,
 configuration changes, initial bundled-Hook activation, exact changed-Hook
@@ -571,8 +577,8 @@ and
 | Workspace and repository identity | Backend read-only resolution held by the live repository-session runtime; its only permitted scope transition is the same-root degraded-direct-`.git` to verified-Git upgrade | Project labels, Viewer catalog entries, and Hook `cwd` |
 | Backend connection and managed-process ownership | Versioned private connection/token/PID records plus lifecycle lock/version validation | In-memory state in any one process |
 | Setup routing and package-replacement continuity | Versioned private setup-completion and package-transition records plus their JSON locks | Configuration contents, npm output visibility, and the presence of package files |
-| Effective MemoraX connection | Config-only resolution with environment API key over TOML API key over a ready secure trial credential, plus normalized User ID and language | Config-file presence, trial-record presence without `ready`, setup completion, and Backend liveness do not establish local readiness or remote API-key acceptance |
-| Trial account credentials | Versioned secure credential record stored through the operating-system credential backend; its `account_id` is account identity | `[memorax].user_id` remains the User ID and must not be derived from or overwritten by trial account identity |
+| Effective MemoraX connection | Config-only resolution with environment API key over TOML API key over a ready secure trial credential, plus normalized User ID and language; a setup-marked TOML key matching the local secure record retains trial classification | Config-file presence, trial-record presence without `ready`, setup completion, and Backend liveness do not establish local readiness or remote API-key acceptance |
+| Trial account identity and state | Versioned secure credential record stored through the operating-system credential backend; its API key is also mirrored to private TOML for portability, while `account_id`, project identity, mark, and warning state remain secure-record-only | `[memorax].user_id` remains the User ID and must not be derived from or overwritten by trial account identity |
 | MemoraX memory result and asynchronous task state | Normalized response from `provider/memorax` | Observability, trace, Viewer, and task projections |
 | Persisted current-turn operational state and trace history | Client-qualified local trace records | Viewer summaries and diagnostics; not native content or general Turn-identity authority |
 | Repo Memory bundle | Repository-local `.repo_memory` files produced by the supervised job | Backend readiness and client-injected guidance |

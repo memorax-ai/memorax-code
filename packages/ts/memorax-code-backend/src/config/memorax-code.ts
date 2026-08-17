@@ -18,6 +18,7 @@ export type MemoraxCodeConfig = Readonly<{
   memorax?: Readonly<{
     endpoint?: string;
     api_key?: string;
+    credential_source?: "trial";
     user_id?: string;
     timeout_ms?: number;
     startup_timeout_ms?: number;

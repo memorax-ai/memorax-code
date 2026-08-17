@@ -146,7 +146,12 @@ export function createMemoraxConfigResolver(
     fileConfig?: MemoraxCodeConfig,
   ): Promise<MemoraxConfigResult> => {
     const config = configForEnv(env, fileConfig);
-    if (explicitMemoraxApiKey(env, config) || !memoraxUserId(env, config)) {
+    const environmentApiKey = stringValue(env.MEMORAX_CODE_MEMORAX_API_KEY);
+    const tomlApiKey = stringValue(config.memorax?.api_key);
+    const trialMirror = tomlApiKey && config.memorax?.credential_source === "trial";
+    if (environmentApiKey
+      || !memoraxUserId(env, config)
+      || (tomlApiKey && !trialMirror)) {
       return memoraxConfigFromSources(env, config);
     }
 
@@ -157,18 +162,23 @@ export function createMemoraxConfigResolver(
       try {
         record = await loadTrialCredential({ memoraxCodeHome, env });
       } catch {
+        if (tomlApiKey) return memoraxConfigFromSources(env, config);
         return {
           ok: false,
           error: "MemoraX trial credential could not be loaded from the operating-system secure store",
         };
       }
       if (record?.state !== "ready") {
+        if (tomlApiKey) return memoraxConfigFromSources(env, config);
         return record === null
           ? memoraxConfigFromSources(env, config)
           : { ok: false, error: "MemoraX trial credential is not ready" };
       }
       apiKey = record.api_key;
       readyTrialApiKeys.set(memoraxCodeHome, apiKey);
+    }
+    if (tomlApiKey && tomlApiKey !== apiKey) {
+      return memoraxConfigFromSources(env, config);
     }
     return memoraxConfigFromSources(env, config, apiKey);
   };

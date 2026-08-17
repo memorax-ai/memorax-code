@@ -69,10 +69,11 @@ rerunning setup rather than expecting the prompt flow to overwrite it.
 If setup reports that secure trial setup failed, confirm that the current
 operating-system credential store is available to the same logged-in user and
 that the MemoraX HTTPS service is reachable, then rerun `memorax-code setup`.
-Setup does not fall back to a plaintext credential or write completion after
-that failure. On Linux, also confirm that `/usr/bin/secret-tool` is installed
-and that the current session can reach an unlocked Secret Service. Minimal
-containers and detached SSH sessions do not necessarily provide either one.
+Setup does not skip secure trial persistence or write the TOML API-key copy and
+completion marker after that failure. On Linux, also confirm that
+`/usr/bin/secret-tool` is installed and that the current session can reach an
+unlocked Secret Service. Minimal containers and detached SSH sessions do not
+necessarily provide either one.
 
 For an ordinary Backend start failure, setup makes one bounded stop/start
 recovery attempt. It deliberately skips that stop when the error identifies a
@@ -164,6 +165,14 @@ under `[memorax]` in `$MEMORAX_CODE_HOME/config.toml`, or set their environment
 equivalents. An environment API key takes precedence over a TOML API key, and
 either takes precedence over a ready secure trial credential. The current
 default endpoint is `https://platform.memorax.net`.
+
+Trial setup writes the same API key to private TOML and the operating-system
+secure credential record, alongside a non-secret trial-source marker. Copying
+the TOML connection fields to another computer therefore reuses the key as an
+explicit connection when the original secure record is absent, without copying
+the device-local trial identity or warning history. Product update and accepted
+connection reuse backfill this TOML copy for legacy trial installations that
+still have only the secure record.
 
 After changing persistent configuration:
 

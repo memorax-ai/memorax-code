@@ -28,6 +28,7 @@ const vscodeExtensionCommandPath = fileURLToPath(new URL("../lib/vscode-extensio
 const windowsCliInvocationPath = fileURLToPath(new URL("../lib/windows-cli-invocation.mjs", import.meta.url));
 const smolTomlPath = fileURLToPath(new URL("../../../ts/memorax-code-backend/node_modules/smol-toml", import.meta.url));
 const memoraxCodePluginId = "memorax-code-codex-adapter@memorax-code";
+const trialApiKey = `sk_${"T".repeat(43)}`;
 
 function codexHook(name, currentHash, overrides = {}) {
   return {
@@ -164,7 +165,11 @@ async function runSetup({ existingCache = false, explicitCache = false, hookRunt
     "  }",
     `  mkdirSync(dirname(${JSON.stringify(trialReadyMarker)}), { recursive: true });`,
     `  writeFileSync(${JSON.stringify(trialReadyMarker)}, 'ready\\n');`,
-    "  return { status: 'ready', provisioned: true, accountId: '9001', projectId: '9002' };",
+    `  return { status: 'ready', provisioned: true, accountId: '9001', projectId: '9002', apiKey: ${JSON.stringify(trialApiKey)} };`,
+    "}",
+    "export async function loadReadyTrialSetupCredential() {",
+    `  appendFileSync(${JSON.stringify(logPath)}, 'trial-load\\n');`,
+    `  return { status: 'ready', provisioned: false, accountId: '9001', projectId: '9002', apiKey: ${JSON.stringify(trialApiKey)} };`,
     "}",
     "",
   ].join("\n"));
@@ -1673,12 +1678,15 @@ test("setup can write MemoraX memory config before backend start", async () => {
     assert.match(run.log, /^memorax-code start --clients all$/m);
     assert.match(run.log, /^memorax-cli status --json --config-only$/m);
     assert.ok(run.log.indexOf("trial-provision") < run.log.indexOf("memorax-code start --clients all"));
+    assert.equal(`${run.result.stdout}\n${run.result.stderr}\n${run.log}`.includes(trialApiKey), false);
     assert.equal(run.memoraxRequests.length, 0);
     const config = await readFile(join(run.memoraxCodeHome, "config.toml"), "utf8");
     assert.match(config, /\[memorax\]/);
     assert.ok(config.includes(`endpoint = "${run.memoraxEndpoint}" # MemoraX service URL.`));
     assert.match(config, /user_id = "memorax-user" # Stable User ID; requests derive a workspace-scoped namespace\./);
-    assert.doesNotMatch(config, /api_key|memorax-secret|9001|9002/);
+    assert.ok(config.includes(`api_key = "${trialApiKey}" # MemoraX API key used by the local Backend.`));
+    assert.match(config, /credential_source = "trial" # Keep a matching local secure credential classified as trial\./);
+    assert.doesNotMatch(config, /9001|9002/);
     assert.match(config, /\[memory\.add\]\r?\noutput_language = "en" # Language for newly generated MemoraX memories\./);
     assert.match(
       config,
@@ -1686,7 +1694,7 @@ test("setup can write MemoraX memory config before backend start", async () => {
     );
     assert.match(
       config,
-      /user_id = "memorax-user" # Stable User ID; requests derive a workspace-scoped namespace\.\r?\n\r?\n# Automatic Hook retrieval is opt-in\.\r?\n\[memory\.retrieval\]/,
+      /user_id = "memorax-user" # Stable User ID; requests derive a workspace-scoped namespace\.\r?\ncredential_source = "trial" # Keep a matching local secure credential classified as trial\.\r?\napi_key = "sk_[A-Za-z0-9_-]+" # MemoraX API key used by the local Backend\.\r?\n\r?\n# Automatic Hook retrieval is opt-in\.\r?\n\[memory\.retrieval\]/,
     );
     assert.match(config, /\[memory\.retrieval\]\nenabled = false # Auto-inject retrieved memories into supported client prompts\./);
     assert.match(config, /\[memory\.skill_reminder\]/);
@@ -1727,6 +1735,7 @@ test("setup configures an existing MemoraX account without trial provisioning", 
     assert.match(config, /user_id = "registered-user"/);
     assert.match(config, /output_language = "en"/);
     assert.ok(config.includes(`api_key = "${apiKey}" # MemoraX API key used by the local Backend.`));
+    assert.doesNotMatch(config, /credential_source/);
     assert.equal((await stat(join(run.memoraxCodeHome, "config.toml"))).mode & 0o777, 0o600);
     await assertSetupComplete(run);
   } finally {
@@ -1881,6 +1890,53 @@ test("automatic setup after reinstall reuses a complete MemoraX configuration", 
   }
 });
 
+test("automatic setup backfills a portable API key for a retained trial credential", async () => {
+  const existingConfig = [
+    "[clients]",
+    "codex = true",
+    "claude = true",
+    "",
+    "[memorax]",
+    'endpoint = "https://memorax.example"',
+    'user_id = "existing-user"',
+    "",
+    "[memory.add]",
+    'output_language = "en"',
+    "",
+  ].join("\n");
+  const run = await runSetup({
+    memoraxCodeConfig: existingConfig,
+    reuseExistingMemorax: true,
+    input: "\n",
+    memoryStatusFixture: {
+      output: JSON.stringify({
+        ok: true,
+        action: "memory.status",
+        provider: "memory.memorax",
+        config: {
+          configured: true,
+          writeback: { globalEnabled: true, writebackEnabled: true },
+        },
+      }),
+      exitCode: 0,
+    },
+  });
+  try {
+    assert.equal(run.result.code, 0, run.result.stderr);
+    assert.match(run.result.stderr, /Reusing the existing MemoraX connection and memory preferences/);
+    assert.match(run.result.stderr, /Portable trial API key written to/);
+    assert.match(run.log, /^trial-load$/m);
+    assert.doesNotMatch(run.log, /^trial-provision$/m);
+    assert.equal(`${run.result.stdout}\n${run.result.stderr}\n${run.log}`.includes(trialApiKey), false);
+    const config = await readFile(join(run.memoraxCodeHome, "config.toml"), "utf8");
+    assert.ok(config.includes(`api_key = "${trialApiKey}" # MemoraX API key used by the local Backend.`));
+    assert.match(config, /credential_source = "trial"/);
+    assert.match(config, /user_id = "existing-user"/);
+  } finally {
+    await rm(run.root, { recursive: true, force: true });
+  }
+});
+
 test("automatic setup can decline a reusable MemoraX configuration", async () => {
   const existingConfig = [
     "[clients]",
@@ -1909,7 +1965,8 @@ test("automatic setup can decline a reusable MemoraX configuration", async () =>
     assert.match(run.result.stderr, /User ID: <provided>/);
     const config = await readFile(join(run.memoraxCodeHome, "config.toml"), "utf8");
     assert.match(config, /user_id = "memory-user"/);
-    assert.doesNotMatch(config, /existing-secret|api_key/);
+    assert.ok(config.includes(`api_key = "${trialApiKey}" # MemoraX API key used by the local Backend.`));
+    assert.doesNotMatch(config, /existing-secret/);
   } finally {
     await rm(run.root, { recursive: true, force: true });
   }
@@ -1964,7 +2021,8 @@ test("explicit setup can replace a legacy connection with secure trial configura
     assert.match(run.result.stderr, /User ID: <provided>/);
     const config = await readFile(join(run.memoraxCodeHome, "config.toml"), "utf8");
     assert.match(config, /user_id = "memory-user"/);
-    assert.doesNotMatch(config, /existing-secret|api_key/);
+    assert.ok(config.includes(`api_key = "${trialApiKey}" # MemoraX API key used by the local Backend.`));
+    assert.doesNotMatch(config, /existing-secret/);
   } finally {
     await rm(run.root, { recursive: true, force: true });
   }
@@ -2153,7 +2211,8 @@ test("setup preserves existing optional config instead of backfilling defaults",
     assert.match(tomlSectionText(config, "memory.repo_update"), /^cooldown_hours = 48$/m);
     assert.doesNotMatch(config, /top_k|buffer_max_turns|retention_days/);
     assert.ok(config.includes(`endpoint = "${run.memoraxEndpoint}" # MemoraX service URL.`));
-    assert.doesNotMatch(config, /api_key|old-secret|memorax-secret/);
+    assert.ok(config.includes(`api_key = "${trialApiKey}" # MemoraX API key used by the local Backend.`));
+    assert.doesNotMatch(config, /old-secret|memorax-secret/);
     assert.match(config, /user_id = "memorax-user" # Stable User ID; requests derive a workspace-scoped namespace\./);
     assert.match(config, /\[memory\.add\]\noutput_language = "en" # Language for newly generated MemoraX memories\./);
   } finally {
@@ -2234,7 +2293,8 @@ test("setup does not probe an unscoped MemoraX namespace", async () => {
     assert.equal(run.memoraxRequests.length, 0);
     const config = await readFile(join(run.memoraxCodeHome, "config.toml"), "utf8");
     assert.ok(config.includes(`endpoint = "${run.memoraxEndpoint}" # MemoraX service URL.`));
-    assert.doesNotMatch(config, /api_key|bad-secret/);
+    assert.ok(config.includes(`api_key = "${trialApiKey}" # MemoraX API key used by the local Backend.`));
+    assert.doesNotMatch(config, /bad-secret/);
     assert.match(config, /user_id = "memorax-user" # Stable User ID; requests derive a workspace-scoped namespace\./);
   } finally {
     await rm(run.root, { recursive: true, force: true });

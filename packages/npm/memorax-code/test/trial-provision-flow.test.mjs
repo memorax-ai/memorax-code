@@ -54,6 +54,7 @@ test("fresh provisioning persists identity first and then commits the backend-ge
     markId: IDENTITY.markId,
     accountId: RESPONSE.accountId,
     projectId: RESPONSE.projectId,
+    apiKey: API_KEY,
   });
   assert.equal(store.current.state, "ready");
   assert.equal(store.current.api_key, API_KEY);
@@ -76,6 +77,7 @@ test("a ready credential is reused without another provision request", async () 
   });
   assert.equal(result.provisioned, false);
   assert.equal(result.accountId, RESPONSE.accountId);
+  assert.equal(result.apiKey, API_KEY);
 });
 
 test("a lost provision response retries the same device identity and stores the replacement Key", async () => {

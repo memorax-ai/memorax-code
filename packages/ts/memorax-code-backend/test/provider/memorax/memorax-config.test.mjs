@@ -69,7 +69,15 @@ test("MemoraX config resolver reads credentials from config.toml", async () => {
 });
 
 test("async MemoraX config resolver prefers environment, TOML, then a ready trial credential", async (t) => {
-  for (const [name, env, fileMemorax, expectedApiKey, expectedUserId, expectedLoads] of [
+  for (const [
+    name,
+    env,
+    fileMemorax,
+    expectedApiKey,
+    expectedUserId,
+    expectedLoads,
+    expectedCredentialSource,
+  ] of [
     [
       "environment",
       {
@@ -80,9 +88,19 @@ test("async MemoraX config resolver prefers environment, TOML, then a ready tria
       "env-secret",
       "env-memory-id",
       0,
+      undefined,
     ],
-    ["TOML", {}, { api_key: "file-secret", user_id: "file-memory-id" }, "file-secret", "file-memory-id", 0],
-    ["ready trial credential", {}, { user_id: "stable-memory-id" }, "trial-secret", "stable-memory-id", 1],
+    ["TOML", {}, { api_key: "file-secret", user_id: "file-memory-id" }, "file-secret", "file-memory-id", 0, undefined],
+    [
+      "mirrored trial TOML",
+      {},
+      { api_key: "trial-secret", credential_source: "trial", user_id: "stable-memory-id" },
+      "trial-secret",
+      "stable-memory-id",
+      1,
+      "trial",
+    ],
+    ["ready trial credential", {}, { user_id: "stable-memory-id" }, "trial-secret", "stable-memory-id", 1, "trial"],
   ]) {
     await t.test(name, async () => {
       let loads = 0;
@@ -99,15 +117,33 @@ test("async MemoraX config resolver prefers environment, TOML, then a ready tria
 
       assert.equal(result.ok, true);
       assert.equal(result.config.apiKey, expectedApiKey);
-      assert.equal(
-        result.config.credentialSource,
-        name === "ready trial credential" ? "trial" : undefined,
-      );
+      assert.equal(result.config.credentialSource, expectedCredentialSource);
       assert.equal(result.config.userId, expectedUserId);
       assert.notEqual(result.config.userId, READY_TRIAL_CREDENTIAL.account_id);
       assert.equal(loads, expectedLoads);
     });
   }
+});
+
+test("a portable TOML API key remains usable without the original secure trial record", async () => {
+  const resolveConfig = createMemoraxConfigResolver({
+    loadTrialCredential: async () => {
+      throw new Error("secure store unavailable on this computer");
+    },
+  });
+  const result = await resolveConfig({
+    MEMORAX_CODE_HOME: join(tmpdir(), "memorax-config-portable-key"),
+  }, {
+    memorax: {
+      api_key: "portable-secret",
+      credential_source: "trial",
+      user_id: "memory-id",
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.config.apiKey, "portable-secret");
+  assert.equal(result.config.credentialSource, undefined);
 });
 
 test("async MemoraX config resolver rejects a provisioning trial credential", async () => {

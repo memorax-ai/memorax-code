@@ -66,12 +66,13 @@ trial credential or an explicit environment/TOML value. Interactive setup
 discloses automatic writeback before asking whether to use an existing account
 or create a trial account. The existing-account path accepts an API key through
 masked terminal input and stores it in the private TOML configuration; the
-trial path creates or restores the operating-system-protected credential. A
-ready connection activates search/add and the generated configuration's
-automatic writeback; automatic retrieval remains disabled until explicitly
-enabled. Automatic setup asks before reusing existing effective credentials
-and does not collect or print them again. Its config-only check does not contact
-MemoraX or prove that the API key is accepted remotely.
+trial path creates or restores the operating-system-protected credential and
+mirrors its API key to that private configuration for portability. A ready
+connection activates search/add and the generated configuration's automatic
+writeback; automatic retrieval remains disabled until explicitly enabled.
+Automatic setup asks before reusing existing effective credentials and does
+not collect or print them again. Its config-only check does not contact MemoraX
+or prove that the API key is accepted remotely.
 
 Memory searches send the query and repository-scoped identity to MemoraX.
 Active adds and automatic writeback send the selected content needed to create
@@ -122,22 +123,26 @@ enabled = false
 
 The versioned trial credential record is separate from `config.toml`. Its
 provisioned `account_id` is account identity and never replaces the User ID
-stored as `[memorax].user_id`.
+stored as `[memorax].user_id`. Account identity, project identity, device mark,
+and quota-warning state remain only in that secure record.
 
-Trial setup stores only the endpoint, User ID, and language preference in
-`config.toml`. Existing-account setup also stores the entered API key there;
-new POSIX configuration files use mode `0600`, while Windows relies on the
-current user's filesystem ACLs. Runtime API-key resolution prefers an explicit
-environment value, then a TOML value, then a ready secure trial credential.
-Trial account and project identifiers never participate in the workspace-
-scoped User ID.
+Trial setup stores the endpoint, User ID, language preference, and a portable
+copy of the API key in `config.toml`. Existing-account setup stores the entered
+API key there as well. New POSIX configuration files use mode `0600`, while
+Windows relies on the current user's filesystem ACLs. Runtime API-key
+resolution prefers an explicit environment value, then a TOML value, then a
+ready secure trial credential. With no environment override, a setup-marked
+TOML key that matches the ready secure record retains trial classification;
+ordinary explicit TOML keys do not cause secure-store access. Trial account and
+project identifiers never participate in the workspace-scoped User ID.
 
 The secure credential layer uses macOS Keychain, Linux Secret Service through
 libsecret, and Windows CurrentUser DPAPI with an atomically replaced encrypted
 file under the current user's local application-data directory. Each
 `MEMORAX_CODE_HOME` resolves to a distinct hashed storage namespace. If the
 required operating-system backend is missing, locked, denied, or corrupt, the
-operation fails explicitly; it never falls back to plaintext storage.
+trial provisioning operation fails explicitly; it does not replace the secure
+record with only a plaintext copy.
 
 These backends protect credentials at rest and when the relevant operating-
 system session or key store is locked. They are not a process-isolation
@@ -145,11 +150,15 @@ boundary within the same logged-in user. Malicious software running as that OS
 user can generally request access in the user's security context; protect the
 login session and do not run untrusted software.
 
-Within this local storage path, the complete trial API key passes only through
-the secure backend's in-memory input and output. It must not appear in command
-arguments, environment variables, `config.toml`, logs, diagnostics, telemetry,
-or error messages. Ordinary package removal retains an existing secure
-credential record.
+The complete trial API key is stored in both the operating-system-protected
+record and private `config.toml`. The TOML copy is plaintext protected by the
+current user's file permissions, not encryption; it exists so an activated
+connection can be copied to another computer. It must not appear in command
+arguments, logs, diagnostics, telemetry, or error messages. Never commit,
+publish, or paste the configuration. Ordinary package removal retains both the
+configuration and an existing secure credential record. Product update and
+accepted connection reuse may backfill a missing TOML copy from a ready secure
+record, without provisioning or changing the credential.
 
 Credential creation is atomic and create-if-absent. Versioned state transitions
 preserve the provisioned mark and commit the Backend-issued API Key and

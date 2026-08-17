@@ -19,8 +19,9 @@ explicit command/context value > environment variable > config.toml > code fallb
 ```
 
 Use `config.toml` for durable choices and environment variables for temporary
-overrides or credentials that should not be written to disk. After editing the
-file, run:
+overrides. Trial and existing-account setup write the effective API key to the
+private configuration so that the connection can be moved to another computer.
+After editing the file, run:
 
 ```sh
 memorax-code start
@@ -38,8 +39,11 @@ The MemoraX API key has one additional setup-managed source. Its precedence is:
 MEMORAX_CODE_MEMORAX_API_KEY > [memorax].api_key > ready secure trial credential
 ```
 
-The trial credential is consulted only when a User ID is configured and no
-environment or TOML API key is present.
+With no environment override, setup's `credential_source = "trial"` marker
+causes the secure trial credential to be consulted. A matching TOML key keeps
+the local trial identity; a different key remains an explicit connection, and
+a copied TOML key remains usable on a computer that does not have the original
+secure trial record.
 
 TOML booleans are `true` or `false`. Environment booleans accept
 `true/false`, `1/0`, `yes/no`, and `on/off`. Unknown fields are ignored and
@@ -107,15 +111,16 @@ is declined, setup asks for a User ID, preferred language, and whether the user
 already has a MemoraX account. Selecting an existing account prompts for its
 API key, writes it with the connection preferences, and skips trial
 provisioning. Selecting no, or pressing Enter, creates or restores a secure
-trial credential and writes the preferences without a TOML API key.
+trial credential and writes the preferences plus a portable API-key copy.
 
 Explicit `memorax-code setup` offers the same existing-account or trial choice.
-After the secure trial credential is ready, setup removes any
-`[memorax].api_key` from `config.toml` so that an old manual key does not mask
-the trial connection. An environment API key remains a higher-precedence
-override. Setup reached from `memorax-code update` preserves the existing
-MemoraX connection without asking for memory preferences or changing
-credentials.
+After the secure trial credential is ready, setup replaces any
+`[memorax].api_key` with that credential's current API key. An environment API
+key remains a higher-precedence override. Setup reached from
+`memorax-code update` preserves the existing MemoraX connection without asking
+for memory preferences or changing credentials; for a legacy trial connection
+that has no TOML key, it copies the retained secure key into TOML. Accepting a
+saved trial connection during reinstall performs the same one-time backfill.
 
 Setup stages the packaged Hook runtime and reconciles the selected clients
 with `memorax-code start` followed by `memorax-code status`. An ordinary start
@@ -174,21 +179,25 @@ MemoraX is the required remote-memory service:
 ```toml
 [memorax]
 endpoint = "https://platform.memorax.net"
+api_key = "your-api-key"
+credential_source = "trial"
 user_id = "your-user-id"
 # timeout_ms = 5000
 # startup_timeout_ms = 3000
 ```
 
-This is the trial setup-managed form: the trial API key is not written to
-`config.toml`. When the user selects an existing MemoraX account, interactive
-setup additionally writes its entered `api_key` here. A manually managed
-connection may also set `api_key` or supply `MEMORAX_CODE_MEMORAX_API_KEY`.
+Both trial and existing-account setup write `api_key` here. Trial setup also
+retains the complete versioned trial identity in the operating-system secure
+credential store and writes the non-secret `credential_source = "trial"`
+marker. Existing-account setup removes that marker. A manually managed
+connection may set `api_key` or supply `MEMORAX_CODE_MEMORAX_API_KEY`.
 
 | Field | Environment override | Fallback |
 | --- | --- | --- |
 | `endpoint` | `MEMORAX_CODE_MEMORAX_ENDPOINT` | `https://platform.memorax.net` |
 | `user_id` | `MEMORAX_CODE_MEMORAX_USER_ID` | required User ID |
 | `api_key` | `MEMORAX_CODE_MEMORAX_API_KEY` | ready secure trial credential; otherwise required |
+| `credential_source` | none | omitted; trial setup writes `trial` |
 | `timeout_ms` | `MEMORAX_CODE_MEMORAX_TIMEOUT_MS` | `5000` ms |
 | `startup_timeout_ms` | `MEMORAX_CODE_MEMORAX_STARTUP_TIMEOUT_MS` | `3000` ms |
 
@@ -199,9 +208,15 @@ one of those sources, and a valid `zh` or `en` memory output language form a
 locally ready connection; an omitted output language uses the `zh` fallback.
 This check does not send a network request or prove that the API key is
 accepted by the memory API. Trial provisioning is a separate foreground
-network operation. The trial path writes the endpoint, User ID, and language
-to `config.toml`; the existing-account path also writes the entered API key.
-Environment variables remain higher-precedence overrides.
+network operation. Both paths write the endpoint, User ID, language, and API
+key to `config.toml`. Environment variables remain higher-precedence
+overrides.
+
+After a trial account is activated, its API key can be reused on another
+computer by placing the copied endpoint, User ID, and API key in that
+computer's private `config.toml`. The copied connection works as an explicit
+TOML connection; device-local trial metadata and warning history remain in the
+original operating-system credential store.
 
 MemoraX requests send the API key and the query or content required by the
 selected memory operation to the HTTPS endpoint. Override `endpoint` only with

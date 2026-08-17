@@ -21,7 +21,10 @@ import { stagePackagedClientHookRuntime } from "../lib/client-hook-runtime.mjs";
 import { ensureClaudeCommandEnv } from "../lib/resolve-claude-command.mjs";
 import { ensureCodexCommandEnv } from "../lib/resolve-codex-command.mjs";
 import { reconcileSetup } from "../lib/setup-reconcile.mjs";
-import { ensureTrialSetupCredential } from "../lib/trial-setup.mjs";
+import {
+  ensureTrialSetupCredential,
+  loadReadyTrialSetupCredential,
+} from "../lib/trial-setup.mjs";
 import { resolveWindowsCliInvocation } from "../lib/windows-cli-invocation.mjs";
 
 const PLUGIN_NAME = "memorax-code-codex-adapter";
@@ -112,6 +115,10 @@ if (writeClientSelectionConfig(selectedClients) === "failed") {
   printPostinstallSummary("not-verified");
   process.exit(1);
 }
+if (updateMode && await backfillPortableTrialApiKey() === "failed") {
+  printPostinstallSummary("not-verified");
+  process.exit(1);
+}
 const clientMode = clientModeFor(installClients);
 let memoraxConfigResult = "skipped";
 if (!updateMode) {
@@ -121,7 +128,9 @@ if (!updateMode) {
   if (existingMemoraxStatus?.configured) {
     printMemoraxDisclosure();
     if (await shouldReuseExistingMemoraxConfiguration(scriptedAnswers)) {
-      memoraxConfigResult = "preserved";
+      memoraxConfigResult = await backfillPortableTrialApiKey() === "failed"
+        ? "failed"
+        : "preserved";
     } else {
       memoraxConfigResult = await maybeConfigureMemoraxMemory(scriptedAnswers, { showDisclosure: false });
     }
@@ -366,8 +375,9 @@ async function writeMemoraxConfigFromInput({
     return "configured";
   }
   log("Creating or restoring a secure MemoraX trial credential...");
+  let trialCredential;
   try {
-    await ensureTrialSetupCredential({
+    trialCredential = await ensureTrialSetupCredential({
       memoraxCodeHome: memoraxCodeHome(),
       env: process.env,
     });
@@ -376,7 +386,13 @@ async function writeMemoraxConfigFromInput({
     logRed(`Secure MemoraX trial setup failed (${reason}).`);
     return "failed";
   }
-  if (writeMemoraxConfig({ userId, endpoint, outputLanguage }) === "failed") {
+  if (writeMemoraxConfig({
+    userId,
+    endpoint,
+    outputLanguage,
+    apiKey: trialCredential.apiKey,
+    credentialSource: "trial",
+  }) === "failed") {
     logRed("MemoraX config was not written because the existing config could not be safely updated.");
     return "failed";
   }
@@ -671,12 +687,64 @@ function writeClientSelectionConfig(clients) {
   });
 }
 
+async function backfillPortableTrialApiKey() {
+  const path = memoraxCodeConfigPath();
+  let config;
+  try {
+    config = parse(readFileSync(path, "utf8"));
+  } catch {
+    logRed("Portable trial API key was not written because the existing config could not be safely read.");
+    return "failed";
+  }
+  const memorax = isRecord(config?.memorax) ? config.memorax : undefined;
+  const environmentApiKey = String(process.env.MEMORAX_CODE_MEMORAX_API_KEY ?? "").trim();
+  const tomlApiKey = typeof memorax?.api_key === "string" ? memorax.api_key.trim() : "";
+  const userId = typeof memorax?.user_id === "string" ? memorax.user_id.trim() : "";
+  if (environmentApiKey || tomlApiKey || !userId) return "unchanged";
+
+  let credential;
+  try {
+    credential = await loadReadyTrialSetupCredential({
+      memoraxCodeHome: memoraxCodeHome(),
+      env: process.env,
+    });
+  } catch {
+    log("Portable trial API key was not added because the secure credential could not be read.");
+    return "unchanged";
+  }
+  if (!credential) return "unchanged";
+
+  const applyCredential = (text) => setTomlSectionFields(
+    setTomlSectionFields(text, "memorax", [{
+      key: "api_key",
+      line: `api_key = "${tomlString(credential.apiKey)}" # MemoraX API key used by the local Backend.`,
+    }]),
+    "memorax",
+    [{
+      key: "credential_source",
+      line: 'credential_source = "trial" # Keep a matching local secure credential classified as trial.',
+    }],
+  );
+  if (updateConfigFileAtomically({
+    path,
+    defaultText: applyCredential(defaultMemoraxCodeConfig()),
+    transform: applyCredential,
+    parseToml: parse,
+    warn: (message) => log(message),
+  }) === "failed") {
+    logRed("Portable trial API key was not written because the existing config could not be safely updated.");
+    return "failed";
+  }
+  logGreen(`Portable trial API key written to ${path}.`);
+  return "configured";
+}
+
 function setManagedClientSelection(text, clients) {
   const withClaude = setTomlField(text, "clients", "claude", String(clients.includes("claude")));
   return setTomlField(withClaude, "clients", "codex", String(clients.includes("codex")));
 }
 
-function writeMemoraxConfig({ userId, endpoint, outputLanguage, apiKey }) {
+function writeMemoraxConfig({ userId, endpoint, outputLanguage, apiKey, credentialSource }) {
   const path = memoraxCodeConfigPath();
   const fields = [
     {
@@ -699,8 +767,14 @@ function writeMemoraxConfig({ userId, endpoint, outputLanguage, apiKey }) {
         line: `api_key = "${tomlString(apiKey)}" # MemoraX API key used by the local Backend.`,
       }])
       : setTomlField(text, "memorax", "api_key", undefined);
+    const withCredentialSource = credentialSource === "trial"
+      ? setTomlSectionFields(withSelectedApiKey, "memorax", [{
+        key: "credential_source",
+        line: 'credential_source = "trial" # Keep a matching local secure credential classified as trial.',
+      }])
+      : setTomlField(withSelectedApiKey, "memorax", "credential_source", undefined);
     return setTomlSectionFields(
-      setTomlSectionFields(withSelectedApiKey, "memorax", fields),
+      setTomlSectionFields(withCredentialSource, "memorax", fields),
       "memory.add",
       addFields,
     );

@@ -268,6 +268,7 @@ function readyResult(record, provisioned) {
     markId: record.mark_id,
     accountId: record.account_id,
     projectId: record.project_id,
+    apiKey: record.api_key,
   });
 }
 

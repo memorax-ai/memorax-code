@@ -4,7 +4,10 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { ensureTrialSetupCredential } from "../../../../../npm/memorax-code/lib/trial-setup.mjs";
+import {
+  ensureTrialSetupCredential,
+  loadReadyTrialSetupCredential,
+} from "../../../../../npm/memorax-code/lib/trial-setup.mjs";
 import {
   completeTrialCredentialProvisioning,
   createInitialTrialCredentialRecord,
@@ -85,6 +88,7 @@ test("trial setup credentials authorize repository-scoped MemoraX writeback", as
     assert.equal(setupResult.status, "ready");
     assert.equal(setupResult.accountId, ACCOUNT_ID);
     assert.equal(setupResult.projectId, PROJECT_ID);
+    assert.equal(setupResult.apiKey, API_KEY);
     assert.deepEqual(provisionPaths, ["/account/api/v1/trial/provision"]);
 
     const credential = await loadTrialCredentialRecord({
@@ -96,10 +100,21 @@ test("trial setup credentials authorize repository-scoped MemoraX writeback", as
     assert.equal(credential.account_id, ACCOUNT_ID);
     assert.equal(credential.project_id, PROJECT_ID);
 
+    const restored = await loadReadyTrialSetupCredential({
+      memoraxCodeHome,
+      env,
+      credentialApis: { createTrialCredentialStorePort },
+      credentialStoreOptions: { backend: secureBackend },
+    });
+    assert.equal(restored.apiKey, API_KEY);
+    assert.equal(restored.accountId, ACCOUNT_ID);
+
     const configPath = join(memoraxCodeHome, "config.toml");
     await writeFile(configPath, [
       "[memorax]",
       'endpoint = "https://platform.memorax.net"',
+      `api_key = "${setupResult.apiKey}"`,
+      'credential_source = "trial"',
       `user_id = "${MEMORY_ID}"`,
       "",
       "[memory.add]",
@@ -107,9 +122,10 @@ test("trial setup credentials authorize repository-scoped MemoraX writeback", as
       "",
     ].join("\n"), "utf8");
     const configText = await readFile(configPath, "utf8");
-    assert.doesNotMatch(configText, /\b(?:api_key|account_id|project_id|mark_id)\b/);
+    assert.match(configText, /\bapi_key\b/);
+    assert.equal(configText.includes(credential.api_key), true);
+    assert.doesNotMatch(configText, /\b(?:account_id|project_id|mark_id)\b/);
     for (const privateValue of [
-      credential.api_key,
       credential.account_id,
       credential.project_id,
       credential.mark_id,

@@ -4,12 +4,7 @@ import { ensureTrialCredentialReady } from "./trial-provision-flow.mjs";
 export async function ensureTrialSetupCredential(options = {}) {
   const env = options.env ?? process.env;
   const credentialApis = options.credentialApis ?? await loadCredentialApis();
-  const credentialPort = options.credentialPort
-    ?? credentialApis.createTrialCredentialStorePort({
-      ...options.credentialStoreOptions,
-      memoraxCodeHome: options.memoraxCodeHome,
-      env,
-    });
+  const credentialPort = trialCredentialPort(options, credentialApis, env);
   const recordPort = options.recordPort ?? {
     createInitial: credentialApis.createInitialTrialCredentialRecord,
     complete: credentialApis.completeTrialCredentialProvisioning,
@@ -24,6 +19,30 @@ export async function ensureTrialSetupCredential(options = {}) {
     recordPort,
     client,
   });
+}
+
+export async function loadReadyTrialSetupCredential(options = {}) {
+  const env = options.env ?? process.env;
+  const credentialApis = options.credentialApis ?? await loadCredentialApis();
+  const record = await trialCredentialPort(options, credentialApis, env).load();
+  if (record?.state !== "ready") return undefined;
+  return Object.freeze({
+    status: "ready",
+    provisioned: false,
+    markId: record.mark_id,
+    accountId: record.account_id,
+    projectId: record.project_id,
+    apiKey: record.api_key,
+  });
+}
+
+function trialCredentialPort(options, credentialApis, env) {
+  return options.credentialPort
+    ?? credentialApis.createTrialCredentialStorePort({
+      ...options.credentialStoreOptions,
+      memoraxCodeHome: options.memoraxCodeHome,
+      env,
+    });
 }
 
 async function loadCredentialApis() {
