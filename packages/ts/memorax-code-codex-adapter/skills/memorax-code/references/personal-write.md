@@ -9,8 +9,6 @@ Use these instructions only to save, update, forget, or delete repository-scoped
 
 Store each part under its own authority when a request genuinely contains both. Do not persist current-task instructions or temporary plans.
 
-Keep file names, schema and script field names, type values, command options, and fixed Markdown headings in English. Write human-readable memory content in the user's current interaction language unless the user explicitly requests another storage language. This includes procedure titles and steps and user-profile descriptions, applicability, and exceptions. Preserve exact code identifiers, commands, paths, API names, and quoted literals without translation.
-
 ## Procedure Memory
 
 Before writing, ensure the repository root `.gitignore` contains `.repo_memory/`. Store each procedure topic in its own concise kebab-case file directly under:
@@ -21,27 +19,36 @@ Before writing, ensure the repository root `.gitignore` contains `.repo_memory/`
 
 Do not create a global procedures file, index, event log, generated metadata, or version history. Do not edit `.repo_memory/PROFILE.md`, `.repo_memory/resources/`, `.repo_memory/raw/`, or `.repo_memory/user-profile/`.
 
-Choose the closest existing topic file. Update it when the user refines the same procedure; create a new file only for a distinct topic. Remove superseded wording rather than preserving old versions.
+Choose the closest existing topic file before writing:
+
+- New topic: create a file.
+- Addition or refinement to the same topic: update the existing file.
+- A new rule directly conflicts with or replaces an old rule: update the existing file and remove the superseded content.
+- An old rule references a command, file, or workflow that no longer exists: update the invalid part; delete the file if the entire procedure is obsolete.
+- Equivalent content: do not add a duplicate.
+- If it is unclear whether the change is durable or only applies to the current task: ask the user.
+
+Do not modify existing memory because of a one-time instruction for the current task. Do not scan or clean up unrelated topics.
 
 Use this shape when useful:
 
 ```markdown
-# 代码审查
+# Reviewing Code
 
-Use when: 审查当前仓库中的代码变更时。
+Use when: reviewing changes in this repository.
 
 ## Procedure
 
-1. 创建 PR 前先审查变更。
-2. 解决阻塞性问题。
-3. 审查完成后再创建 PR。
+1. Review the changes before creating a PR.
+2. Resolve blocking findings.
+3. Create the PR only after review is complete.
 
 ## Exceptions
 
-- 优先遵循用户当前提出的更具体指令。
+- Follow a more specific current user instruction first.
 ```
 
-Delete only the topic file or section the user explicitly identifies. Do not retain deleted text in tombstones, backups, inactive entries, or history files.
+Do not retain deleted text in tombstones, backups, inactive entries, or history files. Apply the same rule to superseded text.
 
 ## User-Profile Memory
 
@@ -59,15 +66,26 @@ List existing preferences before adding and perform semantic matching:
 python3 <skill-dir>/scripts/user_profile_memory.py list --repo <repo>
 ```
 
-If equivalent content exists, do not add it again. Update the matching id when an existing entry expresses the same preference differently. Add only a genuinely new preference:
+Handle the semantic match before writing:
+
+- New preference: add a new preference.
+- Equivalent content: do not add a duplicate.
+- Addition or refinement to the same preference: update the existing preference.
+- A new preference directly conflicts with or replaces an old preference in the same scope: update the existing id and remove the superseded content.
+- The user explicitly says a preference no longer applies: delete that preference.
+- Its `Applies when` environment, tool, or workflow no longer exists: update the scope; delete it if the entire preference is obsolete.
+
+Do not modify or delete existing preferences because of a one-time instruction for the current task. Do not scan or clean up unrelated preferences.
+
+Use the matching id for updates. Add only a genuinely new preference:
 
 ```bash
 python3 <skill-dir>/scripts/user_profile_memory.py add \
   --repo <repo> \
   --type communication \
-  --description "用户希望在当前仓库中使用简洁的中文回答。" \
-  --applies-when "回答当前仓库相关问题时。" \
-  --do-not-apply-when "用户明确要求使用其他语言或格式。"
+  --description "User prefers concise Chinese answers for this repository." \
+  --applies-when "Answering questions in this repository." \
+  --do-not-apply-when "The user explicitly requests another language or format."
 ```
 
 Allowed script types are `communication`, `workflow`, `environment`, and `profile`. These type names do not expand this authority: never use `workflow` or `environment` to store an executable repository procedure.
@@ -83,7 +101,7 @@ python3 <skill-dir>/scripts/user_profile_memory.py update \
   --do-not-apply-when <exception>
 ```
 
-If multiple preferences may match, ask the user to choose before updating. Delete only an explicitly identified preference:
+If multiple preferences may match, or it is unclear whether the change is durable, ask the user. Delete only an explicitly identified preference:
 
 ```bash
 python3 <skill-dir>/scripts/user_profile_memory.py delete \
