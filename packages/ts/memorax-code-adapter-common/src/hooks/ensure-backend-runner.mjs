@@ -5,19 +5,18 @@ import {
   localBackendRecoveryArguments,
   resolveBackendConnection,
 } from "../backend-connection.mjs";
-import { readStdinJson } from "../config-utils.mjs";
 import { isRepoMemoryJobWorker } from "../repo-memory/repo-memory-job-context.mjs";
 
 export const DEFAULT_ENSURE_BACKEND_START_TIMEOUT_MS = 90000;
+const HOOK_INPUT_SYMBOL = Symbol.for("memorax-code.client-hook.input.v1");
 
 export async function runEnsureBackendHook(options) {
-  if (isRepoMemoryJobWorker() || ensureDisabled(options.ensureBackendValue)) return;
-
   const input = await readStdinJson();
   await ensureBackendAvailable(options, input);
 }
 
 export async function ensureBackendAvailable(options, input = {}) {
+  if (isRepoMemoryJobWorker() || ensureDisabled(options.ensureBackendValue)) return;
   const homes = options.resolveHomes(input);
   let connection;
   try {
@@ -42,6 +41,7 @@ export async function ensureBackendAvailable(options, input = {}) {
     options.buildStartArgs(homes, recoveryArguments),
     parsePositiveInt(options.startTimeoutValue, DEFAULT_ENSURE_BACKEND_START_TIMEOUT_MS),
     options.nodePath,
+    options.recoveryEnv,
   );
   if (result.code !== 0) {
     options.debug?.(
@@ -111,14 +111,14 @@ function memoraxCodeCommandAvailable(command) {
   return path.split(delimiter).some((dir) => dir && existsSync(join(dir, command)));
 }
 
-function runMemoraxCode(command, args, timeoutMs, nodePath) {
+function runMemoraxCode(command, args, timeoutMs, nodePath, recoveryEnv) {
   return new Promise((resolve) => {
     const childArgs = nodeEntrypoint(command) ? [command, ...args] : args;
     const childCommand = nodeEntrypoint(command) ? (stringValue(nodePath) ?? process.execPath) : command;
     let stderr = "";
     let settled = false;
     const child = spawn(childCommand, childArgs, {
-      env: process.env,
+      env: recoveryEnv === undefined ? process.env : { ...process.env, ...recoveryEnv },
       stdio: ["ignore", "ignore", "pipe"],
     });
     const finish = (result) => {
@@ -145,4 +145,17 @@ function nodeEntrypoint(command) {
 function parsePositiveInt(value, fallback) {
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+async function readStdinJson() {
+  const injected = globalThis[HOOK_INPUT_SYMBOL];
+  if (injected && typeof injected === "object" && !Array.isArray(injected)) return injected;
+  let text = "";
+  for await (const chunk of process.stdin) text += chunk;
+  if (!text.trim()) return {};
+  try {
+    return JSON.parse(text);
+  } catch {
+    return {};
+  }
 }

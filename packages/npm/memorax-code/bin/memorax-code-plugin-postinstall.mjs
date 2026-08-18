@@ -18,6 +18,7 @@ import {
   normalizeMemoraxMemoryOutputLanguage,
 } from "../lib/memorax-code-adapter-common/src/memorax-defaults.mjs";
 import { stagePackagedClientHookRuntime } from "../lib/client-hook-runtime.mjs";
+import { discoverDshProfiles } from "../lib/dsh-plugin-install.mjs";
 import { ensureClaudeCommandEnv } from "../lib/resolve-claude-command.mjs";
 import { ensureCodexCommandEnv } from "../lib/resolve-codex-command.mjs";
 import { commandOnPath } from "../lib/vscode-extension-command.mjs";
@@ -31,9 +32,11 @@ const HOOK_TRUST_SELECTION_ENV = "MEMORAX_CODE_CODEX_HOOK_TRUST_SELECTION_JSON";
 const PREFIX = "[MemoraX Code Install]:";
 const BACKEND_PREFIX = "[MemoraX Code Backend]:";
 const GREEN = "\x1b[32m";
+const BRIGHT_CYAN = "\x1b[96m";
 const BLUE = "\x1b[34m";
 const RED = "\x1b[31m";
 const BOLD = "\x1b[1m";
+const UNDERLINE = "\x1b[4m";
 const RESET = "\x1b[0m";
 
 if (truthyEnv(process.env.MEMORAX_CODE_SKIP_POSTINSTALL)) process.exit(0);
@@ -54,6 +57,19 @@ const scriptedAnswers = (canPrompt() || canPromptForUpdate()) && process.stdin.i
   ? parseScriptedAnswers(readFileSync(0, "utf8"))
   : undefined;
 const previousClients = readPersistedClientSelection();
+const persistedDshSelection = readPersistedDshSelection();
+let dshProfiles = [];
+let dshProfilesVerified = true;
+try {
+  dshProfiles = discoverDshProfiles();
+} catch (error) {
+  dshProfilesVerified = false;
+  const code = typeof error?.code === "string" ? ` (${error.code})` : "";
+  logRed(`DeepSeek Harness Profile discovery could not be verified${code}; DSH setup was skipped, but other client setup will continue.`);
+}
+const dshSelected = dshProfilesVerified
+  && dshProfiles.length > 0
+  && persistedDshSelection !== false;
 if (seedMissingMemoraxCodeConfig() === "failed") {
   printPostinstallSummary("not-verified");
   process.exit(0);
@@ -104,9 +120,14 @@ const selectedClients = updatePostinstall && previousClients !== undefined
   : detectedClients;
 const installClients = detectedClients.filter((client) => selectedClients.includes(client));
 if (updatePostinstall && previousClients !== undefined) {
-  log(clientSelectionMessage(selectedClients));
+  log(clientSelectionMessage(selectedClients, { dshSelected }));
 } else {
-  log(detectedClientMessage(installClients));
+  log(detectedClientMessage(installClients, dshSelected ? dshProfiles : []));
+}
+if (dshSelected) {
+  log(`DeepSeek Harness profiles: found (${dshProfiles.map((profile) => profile.name).join(", ")}); supported profiles will be reconciled by \`memorax-code start\`.`);
+} else if (dshProfiles.length > 0) {
+  log("DeepSeek Harness profiles were detected, but the DSH integration is disabled by [clients].dsh.");
 }
 if (requestedClients.includes("codex") && !skipCodexPluginInstall && !codexPreflight.ok) {
   log("Codex runtime was not detected; skipping its adapter setup.");
@@ -121,9 +142,11 @@ if (writeClientSelectionConfig(selectedClients) === "failed") {
   printPostinstallSummary("not-verified");
   process.exit(0);
 }
-const clientMode = clientModeFor(installClients);
+const clientMode = clientModeFor(installClients, {
+  includeDsh: dshProfilesVerified && persistedDshSelection !== false,
+});
 let memoraxConfigResult = "skipped";
-if (installClients.length > 0) {
+if (installClients.length > 0 || dshSelected) {
   memoraxConfigResult = await maybeConfigureMemoraxMemory(scriptedAnswers);
 }
 if (memoraxConfigResult === "configured") {
@@ -178,7 +201,7 @@ const opencodeSkipReason = postinstallClientSkipReason({
   enabled: opencodeClientEnabled,
 });
 
-let backendAndAdaptersStatus = startBackendAndCheck({
+const backendAndAdapters = startBackendAndCheck({
   skipCodexAdapter,
   clientMode,
   codexSkipReason,
@@ -189,6 +212,7 @@ let backendAndAdaptersStatus = startBackendAndCheck({
   opencodeAdapterRequired: !skipOpenCodeAdapter,
   opencodeSkipReason,
 });
+const backendAndAdaptersStatus = backendAndAdapters.status;
 if (backendAndAdaptersStatus === "enabled") {
   logGreen(`Client Hook runtime ${stagedHookRuntime.generationId} activated.`);
 }
@@ -196,6 +220,7 @@ if (backendAndAdaptersStatus === "enabled") {
   printNextSteps({
     codexAdapterEnabled: !skipCodexAdapter,
     claudeAdapterEnabled: !skipClaudeAdapter,
+    dshAdapterEnabled: backendAndAdapters.dshAdapterEnabled,
     opencodeAdapterEnabled: !skipOpenCodeAdapter,
   });
   printCommonCommands({
@@ -214,26 +239,31 @@ process.exit(0);
 
 async function maybeConfigureMemoraxMemory(scriptedAnswers) {
   printMemoraxDisclosure();
-  if (!canPrompt()) {
+  const promptAvailable = canPrompt();
+  if (promptAvailable && readMemoraxInstallStatus()?.configured) {
+    log("Existing MemoraX credentials detected; keeping the effective configuration unchanged.");
+    return "preserved";
+  }
+  if (!promptAvailable) {
     log(`This install cannot prompt for a MemoraX ID and key. Register at ${MEMORAX_ACCOUNT_URL}, then edit \`~/.memorax-code/config.toml\` or rerun interactively with \`--foreground-scripts\`.`);
     return "skipped";
   }
   if (scriptedAnswers) {
     return await configureMemoraxMemoryFromAnswers(scriptedAnswers);
   }
+  printMemoraxRegistrationLink();
+  printMemoraxUserIdGuidance();
   let rl = createInterface({ input: process.stdin, output: process.stderr });
   try {
-    const configureNow = await rl.question(`${PREFIX} Connect MemoraX Code to MemoraX now? [Y/n] `);
-    if (/^n(?:o)?$/i.test(configureNow.trim())) {
-      log("MemoraX connection skipped. MemoraX Code memory is not fully configured until valid credentials are supplied.");
-      return "skipped";
-    }
-    log(`If you do not have a MemoraX account/API key, register at ${MEMORAX_ACCOUNT_URL}.`);
-    const userId = (await rl.question(`${PREFIX} MemoraX base user ID: `)).trim();
+    const userId = await questionRequiredLine(
+      rl,
+      `${PREFIX} Your MemoraX user ID (required, e.g. your-name): `,
+      "MemoraX user ID is required.",
+    );
     const outputLanguage = await questionPreferredLanguage(rl);
     rl.close();
     rl = undefined;
-    const apiKey = (await questionMasked(`${PREFIX} MemoraX API key: `)).trim();
+    const apiKey = await questionRequiredMasked(`${PREFIX} MemoraX API key (required): `);
     return await writeMemoraxConfigFromInput({
       userId,
       apiKey,
@@ -285,28 +315,27 @@ async function chooseUpdateClients(previousClients, detectedClients, scriptedAns
 }
 
 async function configureMemoraxMemoryFromAnswers(answers) {
-  if (answers.length === 0) {
-    log(`No MemoraX connection response was received. Register at ${MEMORAX_ACCOUNT_URL}, then edit \`~/.memorax-code/config.toml\` or rerun interactively with \`--foreground-scripts\`.`);
-    return "skipped";
-  }
-  log("Connect MemoraX Code to MemoraX now? [Y/n]");
-  const configureNow = String(answers.shift() ?? "").trim();
-  if (/^n(?:o)?$/i.test(configureNow)) {
-    log("MemoraX connection skipped. MemoraX Code memory is not fully configured until valid credentials are supplied.");
-    return "skipped";
-  }
-  log(`If you do not have a MemoraX account/API key, register at ${MEMORAX_ACCOUNT_URL}.`);
-  log("MemoraX base user ID: <provided>");
-  const userId = String(answers.shift() ?? "").trim();
-  const outputLanguageAnswer = String(answers.shift() ?? "").trim();
-  log(`Preferred language [ZH/en] (used for Memory extraction): ${outputLanguageAnswer ? "<provided>" : "<default>"}`);
-  log("MemoraX API key: <provided>");
-  const apiKey = String(answers.shift() ?? "").trim();
+  printMemoraxRegistrationLink();
+  printMemoraxUserIdGuidance();
+  const userId = requiredScriptedAnswer(answers, {
+    prompt: "Your MemoraX user ID (required, e.g. your-name)",
+    requiredMessage: "MemoraX user ID is required.",
+    missingMessage: "No MemoraX user ID response was received; MemoraX configuration is incomplete.",
+  });
+  if (!userId) return "skipped";
+  const outputLanguage = scriptedPreferredLanguage(answers);
+  if (!outputLanguage) return "skipped";
+  const apiKey = requiredScriptedAnswer(answers, {
+    prompt: "MemoraX API key (required)",
+    requiredMessage: "MemoraX API key is required.",
+    missingMessage: "No MemoraX API key response was received; MemoraX configuration is incomplete.",
+  });
+  if (!apiKey) return "skipped";
   return await writeMemoraxConfigFromInput({
     userId,
     apiKey,
     endpoint: memoraxInstallEndpoint(),
-    outputLanguage: preferredLanguage(outputLanguageAnswer),
+    outputLanguage,
   });
 }
 
@@ -316,9 +345,19 @@ function printMemoraxDisclosure() {
   log("Newly generated configuration enables automatic writeback. Existing configuration is never enabled implicitly; disable it with `[memory.writeback] enabled = false` or `MEMORAX_CODE_MEMORAX_WRITEBACK_ENABLED=false`.");
 }
 
+function printMemoraxUserIdGuidance() {
+  log("MemoraX uses one user ID to keep your coding memories consistent across supported agents and devices.");
+  log("Choose a stable ID and use the same value everywhere; MemoraX Code separates repositories automatically.");
+}
+
+function printMemoraxRegistrationLink() {
+  log("No MemoraX account or API key yet?");
+  log(`→ Register here: ${BRIGHT_CYAN}${BOLD}${UNDERLINE}${MEMORAX_ACCOUNT_URL}${RESET}`);
+}
+
 async function writeMemoraxConfigFromInput({ userId, apiKey, endpoint, outputLanguage }) {
   if (!userId || !apiKey) {
-    logRed("MemoraX config was not written because base user ID or API key was empty.");
+    logRed("MemoraX config was not written because MemoraX user ID or API key was empty.");
     return "skipped";
   }
   if (!outputLanguage) {
@@ -332,6 +371,45 @@ async function writeMemoraxConfigFromInput({ userId, apiKey, endpoint, outputLan
   logGreen(`MemoraX config written to ${memoraxCodeConfigPath()}.`);
   log("MemoraX network access will be checked by the first workspace-scoped memory request from a trusted workspace.");
   return "configured";
+}
+
+async function questionRequiredLine(rl, prompt, requiredMessage) {
+  while (true) {
+    const answer = (await rl.question(prompt)).trim();
+    if (answer) return answer;
+    logRed(requiredMessage);
+  }
+}
+
+async function questionRequiredMasked(prompt) {
+  while (true) {
+    const answer = (await questionMasked(prompt)).trim();
+    if (answer) return answer;
+    logRed("MemoraX API key is required.");
+  }
+}
+
+function requiredScriptedAnswer(answers, { prompt, requiredMessage, missingMessage }) {
+  while (answers.length > 0) {
+    const answer = String(answers.shift() ?? "").trim();
+    log(`${prompt}: ${answer ? "<provided>" : "<empty>"}`);
+    if (answer) return answer;
+    logRed(requiredMessage);
+  }
+  logRed(missingMessage);
+  return undefined;
+}
+
+function scriptedPreferredLanguage(answers) {
+  while (answers.length > 0) {
+    const answer = String(answers.shift() ?? "").trim();
+    log(`Preferred language [ZH/en] (used for Memory extraction): ${answer ? "<provided>" : "<default>"}`);
+    const language = preferredLanguage(answer);
+    if (language) return language;
+    logRed("Preferred language must be zh or en.");
+  }
+  logRed("No preferred language response was received; MemoraX configuration is incomplete.");
+  return undefined;
 }
 
 async function questionPreferredLanguage(rl) {
@@ -643,6 +721,17 @@ function readPersistedClientSelection() {
   }
 }
 
+function readPersistedDshSelection() {
+  const path = memoraxCodeConfigPath();
+  if (!existsSync(path)) return undefined;
+  try {
+    const value = parse(readFileSync(path, "utf8"))?.clients?.dsh;
+    return typeof value === "boolean" ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function writeClientSelectionConfig(clients) {
   const path = memoraxCodeConfigPath();
   return updateConfigFileAtomically({
@@ -704,6 +793,7 @@ function defaultMemoraxCodeConfig() {
     "[clients]",
     "codex = true # Manage the Codex adapter.",
     "claude = true # Manage the Claude adapter.",
+    "dsh = true # Manage the DeepSeek Harness adapter when Profiles exist.",
     "opencode = true # Manage the OpenCode adapter.",
     "",
     "# MemoraX remote-memory connection. Credentials may also come from the environment.",
@@ -724,7 +814,7 @@ function defaultMemoraxCodeConfig() {
     "[memory.add]",
     `output_language = "${MEMORAX_DEFAULT_MEMORY_OUTPUT_LANGUAGE}" # Language for newly generated MemoraX memories.`,
     "",
-    "# Controls how often Codex and Claude Code native client sessions see the MemoraX Code skill reminder.",
+    "# Controls how often supported native client sessions see the MemoraX Code skill reminder.",
     "[memory.skill_reminder]",
     "interval_turns = 5 # Show the MemoraX Code skill reminder every N native client turns, starting on the first turn.",
     "",
@@ -742,6 +832,10 @@ function defaultMemoraxCodeConfig() {
     "[trace.claude]",
     "enabled = true # Enable local Claude session memory trace collection.",
     "capture_content = true # Store content in local Claude trace events.",
+    "",
+    "[trace.dsh]",
+    "enabled = true # Enable local DSH session memory trace collection.",
+    "capture_content = true # Store content in local DSH trace events.",
     "",
     "[trace.opencode]",
     "enabled = true # Enable local OpenCode session memory trace collection.",
@@ -922,18 +1016,18 @@ function startBackendAndCheck({
     if (clientHookRuntimeActivationFailed(started)) {
       logRed("Client Hook runtime activation failed; automatic lifecycle recovery was skipped.");
       logRed("The previously active runtime remains authoritative.");
-      return "not-verified";
+      return { status: "not-verified", dshAdapterEnabled: false };
     }
     if (lifecycleLockFailureCode(started)) {
       logRed("Automatic stop/start recovery is skipped because another MemoraX Code lifecycle command still owns the Backend authority.");
       printLifecycleLockFailureSuggestions();
-      return "not-verified";
+      return { status: "not-verified", dshAdapterEnabled: false };
     }
     const runtimeAuthorityFailure = runtimeAuthorityFailureCode(started);
     if (runtimeAuthorityFailure) {
       logRed("Automatic stop/start recovery is skipped because persisted Backend runtime authority requires explicit repair.");
       printRuntimeAuthorityFailureSuggestions(runtimeAuthorityFailure);
-      return "not-verified";
+      return { status: "not-verified", dshAdapterEnabled: false };
     }
     logRed("Attempting automatic recovery: `memorax-code stop` then `memorax-code start`...");
     runMemoraxCodeCommand(["stop", ...adapterFlags]);
@@ -944,7 +1038,7 @@ function startBackendAndCheck({
       logRed("Diagnostic: running `memorax-code status` so the failure is visible.");
       runMemoraxCodeCommand(statusArgs);
       printFailureSuggestions();
-      return "not-verified";
+      return { status: "not-verified", dshAdapterEnabled: false };
     }
   }
   logGreen(recovered ? "Backend start completed after automatic recovery." : "Backend start completed.");
@@ -953,7 +1047,7 @@ function startBackendAndCheck({
   if (checked.status !== 0) {
     logRed("Backend status check failed during npm postinstall.");
     printFailureSuggestions();
-    return "not-verified";
+    return { status: "not-verified", dshAdapterEnabled: false };
   }
   logGreen("Backend status check completed.");
   const enabled = memoraxCodeEnabled(checked, {
@@ -963,9 +1057,17 @@ function startBackendAndCheck({
   });
   if (!enabled) {
     printUnavailableDiagnostics({ codexSkipReason, claudeSkipReason, opencodeSkipReason });
-    return "unavailable";
+    return { status: "unavailable", dshAdapterEnabled: false };
   }
-  return "enabled";
+  return {
+    status: "enabled",
+    dshAdapterEnabled: dshAdapterReady(checked),
+  };
+}
+
+function dshAdapterReady(statusResult) {
+  const output = `${statusResult.stdout ?? ""}\n${statusResult.stderr ?? ""}`;
+  return /\bDSH adapter:\s*ok\b[^\r\n]*\bintegration=plugin\b/im.test(stripAnsi(output));
 }
 
 function pendingClientHookRuntimeEnv() {
@@ -1004,9 +1106,11 @@ function clientLifecycleFlags({ clientMode = "all" } = {}) {
   return ["--clients", clientMode];
 }
 
-function clientModeFor(clients) {
-  const selected = ["codex", "claude", "opencode"].filter((client) => clients.includes(client));
-  if (selected.length === 3) return "all";
+function clientModeFor(clients, { includeDsh = false } = {}) {
+  const selected = ["codex", "claude", "dsh", "opencode"].filter((client) => (
+    client === "dsh" ? includeDsh : clients.includes(client)
+  ));
+  if (selected.length === 4) return "all";
   return selected.length > 0 ? selected.join(",") : "none";
 }
 
@@ -1016,7 +1120,16 @@ function postinstallClientSkipReason({ explicitlySkipped, selected, enabled }) {
   return enabled ? undefined : "client-selection";
 }
 
-function clientSelectionMessage(clients) {
+function clientSelectionMessage(clients, { dshSelected = false } = {}) {
+  if (dshSelected) {
+    const labels = [
+      clients.includes("codex") ? "Codex" : undefined,
+      clients.includes("claude") ? "Claude Code" : undefined,
+      "DeepSeek Harness",
+      clients.includes("opencode") ? "OpenCode" : undefined,
+    ].filter(Boolean);
+    return `Configuring MemoraX Code for ${joinedLabels(labels)}.`;
+  }
   const hasCodex = clients.includes("codex");
   const hasClaude = clients.includes("claude");
   const hasOpenCode = clients.includes("opencode");
@@ -1036,11 +1149,20 @@ function clientLabel(client) {
   return "OpenCode";
 }
 
-function detectedClientMessage(clients) {
-  if (clients.length === 0) {
+function detectedClientMessage(clients, dshProfiles = []) {
+  if (clients.length === 0 && dshProfiles.length === 0) {
     return "No supported client runtime was detected; starting the shared Backend without client adapters.";
   }
+  if (clients.length === 0) {
+    return "Detected existing DeepSeek Harness profiles; configuring the native DSH plugin and shared Backend.";
+  }
   return `Detected supported client runtimes. ${clientSelectionMessage(clients)}`;
+}
+
+function joinedLabels(labels) {
+  if (labels.length < 2) return labels[0] ?? "";
+  if (labels.length === 2) return `${labels[0]} and ${labels[1]}`;
+  return `${labels.slice(0, -1).join(", ")}, and ${labels.at(-1)}`;
 }
 
 function codexHome() {
@@ -1170,25 +1292,46 @@ function codexClientRunning() {
   });
 }
 
-function printNextSteps({ codexAdapterEnabled = true, claudeAdapterEnabled = true, opencodeAdapterEnabled = true } = {}) {
-  const clientText = enabledClientText({ codexAdapterEnabled, claudeAdapterEnabled, opencodeAdapterEnabled });
-  if (clientText && updatePostinstall) {
+function printNextSteps({
+  codexAdapterEnabled = true,
+  claudeAdapterEnabled = true,
+  dshAdapterEnabled = false,
+  opencodeAdapterEnabled = true,
+} = {}) {
+  const hookClientText = enabledClientText({
+    codexAdapterEnabled,
+    claudeAdapterEnabled,
+    opencodeAdapterEnabled,
+  });
+  if (hookClientText && updatePostinstall) {
     logGreen(`${bold("The new Hook runtime is active")}; existing sessions with the stable shell select it on their next user prompt.`);
-    log(`Restart or refresh ${clientText} only if its plugin shell was installed, changed, or newly enabled, or if MemoraX Code is not active on the next prompt.`);
-  } else if (clientText) {
-    logGreen(`${bold(`Restart or refresh ${clientText}`)} before opening a new MemoraX Code session.`);
-  } else {
+    log(`Restart or refresh ${hookClientText} only if its plugin shell was installed, changed, or newly enabled, or if MemoraX Code is not active on the next prompt.`);
+  } else if (hookClientText) {
+    logGreen(`${bold(`Restart or refresh ${hookClientText}`)} before opening a new MemoraX Code session.`);
+  }
+  if (dshAdapterEnabled) {
+    logGreen(`${bold("Restart or refresh DeepSeek Harness")} so its Profiles load the installed MemoraX Code plugin.`);
+  } else if (!hookClientText) {
     logGreen(`${bold("MemoraX Code backend is running")}; client adapters were skipped for this install.`);
   }
   if (codexAdapterEnabled && !updatePostinstall) {
     logGreen(`After restart, ${bold("enable the MemoraX Code Codex Adapter plugin")} from Codex Plugins or CLI \`/plugins\` if it is not already enabled.`);
   }
   const statusCommands = statusCommandText({ codexAdapterEnabled, claudeAdapterEnabled, opencodeAdapterEnabled });
-  log(`If MemoraX Code is not active ${updatePostinstall ? "on the next prompt" : "in new sessions"}, run ${statusCommands}.`);
+  if (hookClientText || !dshAdapterEnabled) {
+    log(`If MemoraX Code is not active ${updatePostinstall ? "on the next prompt" : "in new sessions"}, run ${statusCommands}.`);
+  }
+  if (dshAdapterEnabled) {
+    log("If MemoraX Code is not active after restarting or refreshing DeepSeek Harness, run `memorax-code status`.");
+  }
   log("If npm hides install details, reinstall with `--foreground-scripts`.");
 }
 
-function enabledClientText({ codexAdapterEnabled = true, claudeAdapterEnabled = true, opencodeAdapterEnabled = true } = {}) {
+function enabledClientText({
+  codexAdapterEnabled = true,
+  claudeAdapterEnabled = true,
+  opencodeAdapterEnabled = true,
+} = {}) {
   const labels = [
     codexAdapterEnabled ? "Codex" : undefined,
     claudeAdapterEnabled ? "Claude Code" : undefined,

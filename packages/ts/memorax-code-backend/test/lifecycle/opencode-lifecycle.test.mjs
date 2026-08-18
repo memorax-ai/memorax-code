@@ -38,6 +38,7 @@ test("OpenCode participates in lifecycle selection and status reporting", { time
     assert.deepEqual(JSON.parse(await readFile(activeClientsPath, "utf8")), {
       codex: false,
       claude: false,
+      dsh: false,
       opencode: true,
     });
 
@@ -59,6 +60,7 @@ test("OpenCode participates in lifecycle selection and status reporting", { time
     await writeFile(activeClientsPath, `${JSON.stringify({
       codex: false,
       claude: true,
+      dsh: false,
       opencode: true,
     }, null, 2)}\n`);
     const partiallyStopped = await runCli(cliPath, [
@@ -72,6 +74,7 @@ test("OpenCode participates in lifecycle selection and status reporting", { time
     assert.deepEqual(JSON.parse(await readFile(activeClientsPath, "utf8")), {
       codex: false,
       claude: true,
+      dsh: false,
       opencode: false,
     });
 

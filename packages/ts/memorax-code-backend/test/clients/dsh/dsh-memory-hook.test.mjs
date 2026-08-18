@@ -1,23 +1,26 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { createBackendState } from "../../../dist/app/state.js";
 import { createBackendServer } from "../../../dist/server.js";
+import { clearMemoryViewerEvents } from "../../../dist/viewer/store.js";
 import { listen } from "../../support/helpers.mjs";
 import { createHttpBackendClient } from "../../../../memorax-code-dsh-adapter/src/http-client.mjs";
 import {
   memoraxAddFetch,
   waitFor,
+  waitForFile,
   withEnv,
 } from "../codex/support/memory-hook-fixtures.mjs";
 import { dshTurnInterval } from "./support/dsh-session-fixtures.mjs";
 
 const TEST_WORKSPACE = fileURLToPath(new URL("../../..", import.meta.url));
+const TEST_REPO_ROOT = resolve(TEST_WORKSPACE, "../../..");
 
-test("Backend runs a DSH native Turn through retrieval and automatic writeback", async () => {
+test("Backend runs DSH Search, normalized Trace, and Add from one native Turn interval", async () => {
   const sessionHome = await mkdtemp(join(tmpdir(), "memorax-code-dsh-hook-"));
   const interval = dshTurnInterval({
     sessionId: "session-dsh-http",
@@ -54,6 +57,7 @@ test("Backend runs a DSH native Turn through retrieval and automatic writeback",
     MEMORAX_CODE_HOME: sessionHome,
     MEMORAX_CODE_CODEX_TRACE_ENABLED: "false",
     MEMORAX_CODE_CLAUDE_TRACE_ENABLED: "false",
+    MEMORAX_CODE_DSH_TRACE_ENABLED: "true",
     MEMORAX_CODE_OPENCODE_TRACE_ENABLED: "false",
     MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED: "true",
     MEMORAX_CODE_MEMORY_WRITEBACK_ENABLED: "true",
@@ -87,6 +91,7 @@ test("Backend runs a DSH native Turn through retrieval and automatic writeback",
   try {
     const startBody = await backendClient.recordTurnStart(turnStart);
     assert.equal(startBody.ok, true);
+    assert.equal(startBody.repoMemoryWorktree, TEST_REPO_ROOT);
     assert.match(startBody.additionalContext, /durable Session Event Log/);
 
     const mismatched = structuredClone(interval);
@@ -136,6 +141,73 @@ test("Backend runs a DSH native Turn through retrieval and automatic writeback",
     ]);
     assert.equal(JSON.stringify(requests[1].body).includes("recalled memory"), false);
     assert.equal(JSON.stringify(requests[1].body).includes("private tool result"), false);
+
+    const traceEventsPath = join(
+      sessionHome,
+      "debug",
+      "traces",
+      "dsh",
+      "sessions",
+      interval.sessionId,
+      "events.jsonl",
+    );
+    await waitForFile(
+      traceEventsPath,
+      /"type":"memory_writeback"/,
+      "DSH writeback did not reach its trace",
+    );
+    const traceText = await readFile(traceEventsPath, "utf8");
+    const traceEvents = traceText.trim().split("\n").map((line) => JSON.parse(line));
+    assert.deepEqual(traceEvents.map((event) => event.type), [
+      "turn_start",
+      "memory_retrieve",
+      "turn_end",
+      "turn_materialized",
+      "memory_writeback",
+    ]);
+    assert.equal(traceEvents.every((event) => event.trace.client === "dsh"), true);
+    assert.equal(traceEvents.every((event) => event.trace.turn_id === String(interval.turn)), true);
+    assert.equal(traceEvents[0].trace.context_origin, "dsh-cordis-turn-start");
+    assert.equal(traceEvents[1].source, "dsh_native_retrieval");
+    assert.equal(traceEvents[1].trace.context_origin, "dsh-cordis-turn-start");
+    assert.equal(traceEvents[3].trace.context_origin, "dsh-session-event-log");
+    assert.equal(traceEvents[3].request.prompt, "Implement the DSH adapter.");
+    assert.equal(traceEvents[3].response.assistantMessage, "I will inspect.\n\nThe adapter is ready.");
+    assert.equal(traceEvents[4].source, "dsh_native_writeback");
+    assert.equal(traceEvents[4].trace.context_origin, "dsh-session-event-log");
+    assert.equal(traceText.includes("private tool result"), false);
+
+    const viewerRequest = { headers: { authorization: "Bearer backend-token" } };
+    const codexViewer = await originalFetch(`${url}/memory-viewer/api/summary`, viewerRequest);
+    assert.equal(codexViewer.status, 200);
+    const codexViewerBody = await codexViewer.json();
+    assert.equal(codexViewerBody.summary.searchOperationCount, 0);
+    assert.equal(codexViewerBody.summary.addOperationCount, 0);
+
+    const dshViewer = await originalFetch(
+      `${url}/memory-viewer/api/summary?client=dsh`,
+      viewerRequest,
+    );
+    assert.equal(dshViewer.status, 200);
+    const dshViewerBody = await dshViewer.json();
+    assert.equal(dshViewerBody.summary.turnCount, 1);
+    assert.equal(dshViewerBody.summary.searchOperationCount, 1);
+    assert.equal(dshViewerBody.summary.searchedMemoryCount, 1);
+    assert.equal(dshViewerBody.summary.addOperationCount, 1);
+    assert.equal(dshViewerBody.summary.addedMemoryCount, 0);
+    assert.equal(dshViewerBody.summary.processingCount, 1);
+    assert.equal(dshViewerBody.activities.length, 3);
+
+    const currentTurn = JSON.parse(await readFile(join(
+      sessionHome,
+      "debug",
+      "traces",
+      "dsh",
+      ".current-turn.json",
+    ), "utf8"));
+    assert.equal(currentTurn.turn_state, "completed");
+    assert.equal(currentTurn.trace.client, "dsh");
+    assert.equal(currentTurn.trace.turn_id, String(interval.turn));
   } finally {
     await server.shutdown();
     globalThis.fetch = originalFetch;
@@ -144,7 +216,7 @@ test("Backend runs a DSH native Turn through retrieval and automatic writeback",
   }
 });
 
-test("Backend recovers DSH writeback from the native log without cached turn metadata", async () => {
+test("Backend recovers DSH Trace, writeback, and task status across restarts", async () => {
   const sessionHome = await mkdtemp(join(tmpdir(), "memorax-code-dsh-recovery-"));
   const interval = dshTurnInterval({
     sessionId: "session-dsh-recovered",
@@ -152,11 +224,20 @@ test("Backend recovers DSH writeback from the native log without cached turn met
     turn: 2,
     startSeq: 20,
   });
-  const { fetchImpl, requests } = memoraxAddFetch();
+  const { fetchImpl: addFetch, requests } = memoraxAddFetch();
+  const fetchImpl = async (url, init) => (
+    new URL(String(url)).pathname.includes("/v1/memories/add/status/")
+      ? new Response(JSON.stringify({ status: "processing" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+      : addFetch(url, init)
+  );
   const restoreEnv = withEnv({
     MEMORAX_CODE_HOME: sessionHome,
     MEMORAX_CODE_CODEX_TRACE_ENABLED: "false",
     MEMORAX_CODE_CLAUDE_TRACE_ENABLED: "false",
+    MEMORAX_CODE_DSH_TRACE_ENABLED: "true",
     MEMORAX_CODE_OPENCODE_TRACE_ENABLED: "false",
     MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED: "false",
     MEMORAX_CODE_MEMORY_WRITEBACK_ENABLED: "true",
@@ -167,18 +248,254 @@ test("Backend recovers DSH writeback from the native log without cached turn met
   });
   const originalFetch = globalThis.fetch;
   globalThis.fetch = fetchImpl;
-  const state = createBackendState("127.0.0.1", { sessionHome });
-  const server = createBackendServer(state);
-  const url = await listen(server);
+  let firstServer;
+  let secondServer;
+  let thirdServer;
   try {
-    const writeback = await originalFetch(`${url}/memory/writeback`, {
+    firstServer = createBackendServer(createBackendState("127.0.0.1", { sessionHome }));
+    const firstUrl = await listen(firstServer);
+    const turnStart = await originalFetch(`${firstUrl}/memory/turn-start`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        version: 1,
+        client: "dsh",
+        sessionId: interval.sessionId,
+        turn: interval.turn,
+        startSeq: interval.startSeq,
+        cwd: interval.cwd,
+        prompt: "Start before the Backend restarts.",
+      }),
+    });
+    assert.equal(turnStart.status, 200);
+    assert.equal((await turnStart.json()).ok, true);
+    await firstServer.shutdown();
+
+    secondServer = createBackendServer(createBackendState("127.0.0.1", { sessionHome }));
+    const secondUrl = await listen(secondServer);
+    const writeback = await originalFetch(`${secondUrl}/memory/writeback`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ version: 1, client: "dsh", ...interval }),
     });
     assert.equal(writeback.status, 200);
     assert.deepEqual(await writeback.json(), { ok: true, scheduled: true });
-    await waitFor(() => requests.length === 1, "recovered DSH writeback did not call MemoraX Add");
+    await waitFor(
+      () => requests.some((request) => request.url.endsWith("/v1/memories/add")),
+      "recovered DSH writeback did not call MemoraX add",
+    );
+
+    const traceEventsPath = join(
+      sessionHome,
+      "debug",
+      "traces",
+      "dsh",
+      "sessions",
+      interval.sessionId,
+      "events.jsonl",
+    );
+    await waitForFile(
+      traceEventsPath,
+      /"type":"memory_writeback"/,
+      "recovered DSH writeback did not reach its trace",
+    );
+    await secondServer.shutdown();
+    const statusRequests = [];
+    globalThis.fetch = async (url) => {
+      statusRequests.push(String(url));
+      return new Response(JSON.stringify({
+        status: "success",
+        memory: {
+          summary: "Reconciled DSH memory.",
+          events: [{ id: "dsh-reconciled-memory", event: "ADD" }],
+        },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    };
+    thirdServer = createBackendServer(createBackendState("127.0.0.1", { sessionHome }));
+    const thirdUrl = await listen(thirdServer);
+    await waitForFile(
+      traceEventsPath,
+      /"type":"memory_writeback_status"/,
+      "restarted Backend did not reconcile the DSH writeback task",
+    );
+
+    const traceEvents = (await readFile(traceEventsPath, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    assert.deepEqual(traceEvents.map((event) => event.type), [
+      "turn_start",
+      "turn_end",
+      "turn_materialized",
+      "memory_writeback",
+      "memory_writeback_status",
+    ]);
+    assert.equal(traceEvents[0].trace.context_origin, "dsh-cordis-turn-start");
+    assert.equal(traceEvents[1].trace.context_origin, "dsh-session-event-log");
+    assert.equal(traceEvents[2].request.prompt, "Implement the DSH adapter.");
+    assert.equal(statusRequests.length, 1);
+    assert.match(new URL(statusRequests[0]).pathname, /\/v1\/memories\/add\/status\/hook-memory-add$/);
+    assert.equal(traceEvents[4].trace.client, "dsh");
+    assert.equal(traceEvents[4].source, "writeback_reconciler");
+    assert.equal(traceEvents[4].request.original_event_id, traceEvents[3].event_id);
+    assert.equal(traceEvents[4].response.outcome, "saved");
+    assert.equal(traceEvents[4].response.savedMemoryCount, 1);
+    const currentTurn = JSON.parse(await readFile(join(
+      sessionHome,
+      "debug",
+      "traces",
+      "dsh",
+      ".current-turn.json",
+    ), "utf8"));
+    assert.equal(currentTurn.turn_state, "completed");
+
+    clearMemoryViewerEvents();
+    const viewerResponse = await originalFetch(
+      `${thirdUrl}/memory-viewer/api/summary?client=dsh`,
+    );
+    assert.equal(viewerResponse.status, 200);
+    const viewerText = await viewerResponse.text();
+    const viewer = JSON.parse(viewerText);
+    assert.equal(viewer.summary.turnCount, 1);
+    assert.equal(viewer.summary.searchOperationCount, 0);
+    assert.equal(viewer.summary.addOperationCount, 1);
+    assert.equal(viewer.summary.addedMemoryCount, 1);
+    assert.equal(viewer.summary.processingCount, 0);
+    assert.equal(viewer.activities.length, 2);
+    assert.deepEqual(
+      viewer.activities.map(({ kind, status, count }) => ({ kind, status, count })),
+      [
+        { kind: "add", status: "saved", count: 1 },
+        { kind: "turn", status: "completed", count: null },
+      ],
+    );
+    for (const privateValue of [
+      "Implement the DSH adapter.",
+      "I will inspect.",
+      "The adapter is ready.",
+      "Reconciled DSH memory.",
+      interval.sessionId,
+      "hook-memory-add",
+      "dsh-reconciled-memory",
+      traceEvents[3].event_id,
+      traceEvents[4].event_id,
+      TEST_WORKSPACE,
+    ]) {
+      assert.equal(viewerText.includes(privateValue), false);
+    }
+    for (const field of [
+      "prompt",
+      "answer",
+      "query",
+      "results",
+      "details",
+      "sessionId",
+      "turnId",
+      "taskId",
+      "eventId",
+      "content",
+      "error",
+      "savedMemories",
+      "savedMemoryIds",
+    ]) {
+      assert.equal(viewerText.includes(`"${field}"`), false);
+    }
+  } finally {
+    await thirdServer?.shutdown();
+    await secondServer?.shutdown();
+    await firstServer?.shutdown();
+    globalThis.fetch = originalFetch;
+    restoreEnv();
+    await rm(sessionHome, { recursive: true, force: true });
+  }
+});
+
+test("Backend closes an interrupted DSH Trace without requiring Turn content or scheduling Add", async () => {
+  const sessionHome = await mkdtemp(join(tmpdir(), "memorax-code-dsh-interrupted-trace-"));
+  const interval = dshTurnInterval({
+    sessionId: "session-dsh-interrupted",
+    cwd: TEST_WORKSPACE,
+    turn: 4,
+    startSeq: 60,
+  });
+  interval.events[1].data.source = { kind: "plugin", plugin: "memorax-code", form: "recall" };
+  interval.events.at(-1).data.reason = { kind: "interrupted" };
+  const requests = [];
+  const restoreEnv = withEnv({
+    MEMORAX_CODE_HOME: sessionHome,
+    MEMORAX_CODE_CODEX_TRACE_ENABLED: "false",
+    MEMORAX_CODE_CLAUDE_TRACE_ENABLED: "false",
+    MEMORAX_CODE_DSH_TRACE_ENABLED: "true",
+    MEMORAX_CODE_OPENCODE_TRACE_ENABLED: "false",
+    MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED: "false",
+    MEMORAX_CODE_MEMORY_WRITEBACK_ENABLED: "true",
+    MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_ENABLED: "false",
+    MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
+    MEMORAX_CODE_MEMORAX_API_KEY: "secret",
+    MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
+  });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (...args) => {
+    requests.push(args);
+    throw new Error("interrupted DSH Turn must not call MemoraX");
+  };
+  const server = createBackendServer(createBackendState("127.0.0.1", { sessionHome }));
+  const url = await listen(server);
+  try {
+    const turnStart = await originalFetch(`${url}/memory/turn-start`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        version: 1,
+        client: "dsh",
+        sessionId: interval.sessionId,
+        turn: interval.turn,
+        startSeq: interval.startSeq,
+        cwd: interval.cwd,
+        prompt: "This live prompt is not Event Log authority.",
+      }),
+    });
+    assert.equal(turnStart.status, 200);
+
+    const writeback = await originalFetch(`${url}/memory/writeback`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ version: 1, client: "dsh", ...interval }),
+    });
+    assert.equal(writeback.status, 200);
+    assert.deepEqual(await writeback.json(), {
+      ok: true,
+      scheduled: false,
+      reason: "turn_not_completed",
+    });
+    assert.equal(requests.length, 0);
+
+    const traceEventsPath = join(
+      sessionHome,
+      "debug",
+      "traces",
+      "dsh",
+      "sessions",
+      interval.sessionId,
+      "events.jsonl",
+    );
+    const traceText = await readFile(traceEventsPath, "utf8");
+    const traceEvents = traceText.trim().split("\n").map((line) => JSON.parse(line));
+    assert.deepEqual(traceEvents.map((event) => event.type), ["turn_start", "turn_end"]);
+    assert.equal(traceEvents[1].outcome, "interrupted");
+    assert.equal(traceEvents[1].request.native_outcome, "interrupted");
+    assert.equal(traceEvents[1].trace.context_origin, "dsh-session-event-log");
+    assert.equal(traceText.includes("This live prompt is not Event Log authority."), false);
+    assert.equal(traceText.includes("private tool result"), false);
+
+    const currentTurn = JSON.parse(await readFile(join(
+      sessionHome,
+      "debug",
+      "traces",
+      "dsh",
+      ".current-turn.json",
+    ), "utf8"));
+    assert.equal(currentTurn.turn_state, "interrupted");
   } finally {
     await server.shutdown();
     globalThis.fetch = originalFetch;

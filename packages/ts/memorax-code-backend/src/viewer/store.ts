@@ -64,6 +64,8 @@ import type {
   MemoryViewerTurnReference,
 } from "./model.js";
 
+type MemoryViewerClient = Extract<TraceClient, "codex" | "claude" | "dsh" | "opencode">;
+
 export {
   completeMemoryViewerWriteback,
   memoryViewerEventTurnIds,
@@ -105,6 +107,7 @@ let liveEventsVersion = 0;
 type CombinedTraceHistory = Readonly<{
   codex: readonly MemoryViewerEvent[];
   claude: readonly MemoryViewerEvent[];
+  dsh: readonly MemoryViewerEvent[];
   opencode: readonly MemoryViewerEvent[];
   claudeLocal: readonly MemoryViewerEvent[];
   values: MemoryViewerEvent[];
@@ -118,8 +121,9 @@ const combinedTraceHistories = new Map<string, CombinedTraceHistory>();
 const EMPTY_MEMORY_VIEWER_HISTORY: readonly MemoryViewerEvent[] = Object.freeze([]);
 const claudeTranscriptSources = new Map<string, string | false>();
 
-export function recordMemoryViewerEvent(input: MemoryObservabilityEvent): MemoryViewerEvent {
+export function recordMemoryViewerEvent(input: MemoryObservabilityEvent): MemoryViewerEvent | undefined {
   const client = memoryViewerClient(input);
+  if (!client) return undefined;
   const response = record(input.response);
   const request = record(input.request);
   const items = arrayValue(response?.items);
@@ -437,6 +441,13 @@ async function readTraceHistory(
   client?: TraceClient,
   claudeProjectsRoot: string | false = false,
 ): Promise<MemoryViewerHistorySnapshot> {
+  if (client !== undefined && !isMemoryViewerClient(client)) {
+    return {
+      values: [],
+      complete: true,
+      claudeLocal: EMPTY_MEMORY_VIEWER_HISTORY,
+    };
+  }
   const historyCacheRoot = resolve(memoraxCodeHome);
   const projectsByCwd = new Map<string, MemoryProjectIdentity | undefined>();
   const resolveProjectOnce = (cwd: string | undefined): MemoryProjectIdentity | undefined => {
@@ -447,7 +458,7 @@ async function readTraceHistory(
     projectsByCwd.set(key, identity);
     return identity;
   };
-  const readClient = (traceClient: TraceClient) => readIncrementalJsonlProjectionSnapshot({
+  const readClient = (traceClient: MemoryViewerClient) => readIncrementalJsonlProjectionSnapshot({
     root: clientTracePaths(traceClient, memoraxCodeHome).sessionsRoot,
     filename: "events.jsonl",
     identity: resolveProject,
@@ -467,7 +478,7 @@ async function readTraceHistory(
     },
     compare: compareMemoryViewerEvents,
   });
-  if (client === "codex" || client === "opencode") {
+  if (client === "codex" || client === "dsh" || client === "opencode") {
     const selected = await readClient(client);
     return { ...selected, claudeLocal: EMPTY_MEMORY_VIEWER_HISTORY };
   }
@@ -484,6 +495,7 @@ async function readTraceHistory(
         EMPTY_MEMORY_VIEWER_HISTORY,
         claude.values,
         EMPTY_MEMORY_VIEWER_HISTORY,
+        EMPTY_MEMORY_VIEWER_HISTORY,
         claudeLocal,
       ),
       complete: claude.complete,
@@ -491,9 +503,10 @@ async function readTraceHistory(
     };
   }
 
-  const [codex, claude, opencode, claudeLocal] = await Promise.all([
+  const [codex, claude, dsh, opencode, claudeLocal] = await Promise.all([
     readClient("codex"),
     readClient("claude"),
+    readClient("dsh"),
     readClient("opencode"),
     claudeLocalPromise,
   ]);
@@ -502,10 +515,11 @@ async function readTraceHistory(
       `${historyCacheRoot}\u0000client=all\u0000source=${claudeProjectsRoot || "disabled"}`,
       codex.values,
       claude.values,
+      dsh.values,
       opencode.values,
       claudeLocal,
     ),
-    complete: codex.complete && claude.complete && opencode.complete,
+    complete: codex.complete && claude.complete && dsh.complete && opencode.complete,
     claudeLocal,
   };
 }
@@ -514,20 +528,22 @@ function combinedTraceHistory(
   cacheKey: string,
   codex: readonly MemoryViewerEvent[],
   claude: readonly MemoryViewerEvent[],
+  dsh: readonly MemoryViewerEvent[],
   opencode: readonly MemoryViewerEvent[],
   claudeLocal: readonly MemoryViewerEvent[],
 ): MemoryViewerEvent[] {
   const cached = combinedTraceHistories.get(cacheKey);
   if (cached?.codex === codex
     && cached.claude === claude
+    && cached.dsh === dsh
     && cached.opencode === opencode
     && cached.claudeLocal === claudeLocal) {
     return cached.values;
   }
   // Native Claude transcripts invalidate this cached identity, but they are
   // admitted only after retained and live Hook trace events are merged.
-  const values = [...codex, ...claude, ...opencode].sort(compareMemoryViewerEvents);
-  combinedTraceHistories.set(cacheKey, { codex, claude, opencode, claudeLocal, values });
+  const values = [...codex, ...claude, ...dsh, ...opencode].sort(compareMemoryViewerEvents);
+  combinedTraceHistories.set(cacheKey, { codex, claude, dsh, opencode, claudeLocal, values });
   return values;
 }
 
@@ -887,7 +903,7 @@ function traceEventToViewerEvent(
   value: unknown,
   sessionDir: string,
   resolveProject: typeof resolveMemoryProject,
-  client: TraceClient,
+  client: MemoryViewerClient,
 ): MemoryViewerEvent | undefined {
   const raw = record(value);
   const type = memoryViewerEventType(raw?.type);
@@ -1000,7 +1016,7 @@ function memoryViewerTurnOutcome(value: unknown): "completed" | "interrupted" | 
   return value === "completed" || value === "interrupted" ? value : undefined;
 }
 
-function memoryViewerOriginalEventId(value: unknown, client: TraceClient): string {
+function memoryViewerOriginalEventId(value: unknown, client: MemoryViewerClient): string {
   const eventId = stringValue(value);
   if (!eventId) return "";
   return persistedMemoryViewerEventId(client, eventId);
@@ -1208,26 +1224,39 @@ function sessionId(value: unknown): string {
   return safeMemoryViewerSessionId(value);
 }
 
-function memoryViewerClient(input: MemoryObservabilityEvent): TraceClient {
-  if (input.traceContext?.client === "claude") return "claude";
-  if (input.traceContext?.client === "codex") return "codex";
-  if (input.traceContext?.client === "opencode") return "opencode";
+function memoryViewerClient(input: MemoryObservabilityEvent): MemoryViewerClient | undefined {
+  if (input.traceContext?.client !== undefined) {
+    return isMemoryViewerClient(input.traceContext.client)
+      ? input.traceContext.client
+      : undefined;
+  }
+  if (input.source === "dsh_native_retrieval" || input.source === "dsh_native_writeback") {
+    return undefined;
+  }
   if (input.source === "claude_hook_retrieval" || input.source === "claude_hook_writeback") return "claude";
   if (input.source === "opencode_plugin_retrieval" || input.source === "opencode_plugin_writeback") return "opencode";
   return "codex";
 }
 
-function memoryViewerEventId(client: TraceClient, eventId: string | undefined): string {
+function isMemoryViewerClient(client: unknown): client is MemoryViewerClient {
+  return client === "codex" || client === "claude" || client === "dsh" || client === "opencode";
+}
+
+function memoryViewerEventId(client: MemoryViewerClient, eventId: string | undefined): string {
   if (eventId) return persistedMemoryViewerEventId(client, eventId);
   return `${client === "codex" ? "" : `${client}-`}memory-viewer:${randomUUID()}`;
 }
 
-function persistedMemoryViewerEventId(client: TraceClient, eventId: string): string {
+function persistedMemoryViewerEventId(client: MemoryViewerClient, eventId: string): string {
   return client === "codex" ? `trace:${eventId}` : `${client}-trace:${eventId}`;
 }
 
 function memoryViewerProjectionKey(memoraxCodeHome: string, client: TraceClient | undefined): string {
+  if (client !== undefined && !isMemoryViewerClient(client)) {
+    return `${resolve(memoraxCodeHome)}\u0000client=unsupported`;
+  }
   if (client === "claude") return clientTracePaths("claude", memoraxCodeHome).sessionsRoot;
+  if (client === "dsh") return clientTracePaths("dsh", memoraxCodeHome).sessionsRoot;
   if (client === "opencode") return clientTracePaths("opencode", memoraxCodeHome).sessionsRoot;
   const codexSessionsRoot = tracePaths(memoraxCodeHome).sessionsRoot;
   return client === "codex" ? `${codexSessionsRoot}\u0000client=codex` : codexSessionsRoot;

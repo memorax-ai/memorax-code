@@ -254,6 +254,8 @@ export function createMemoraxOpenCodePlugin(options = {}) {
         output.env.MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT = "opencode";
         if (openCodeServerUrl) {
           output.env.MEMORAX_CODE_OPENCODE_SERVER_URL = openCodeServerUrl;
+          output.env.MEMORAX_CODE_OPENCODE_COMMAND = stringValue(options.openCodeCommand)
+            ?? process.execPath;
         }
         const sessionId = stringValue(input?.sessionID);
         delete output.env.MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID;
@@ -441,6 +443,7 @@ function openCodeRepoMemoryEnv(options, serverUrl, sessionId) {
     ...process.env,
     MEMORAX_CODE_HOME: memoraxCodeHome,
     MEMORAX_CODE_MEMORY_CLI_SESSION_ID: sessionId,
+    MEMORAX_CODE_OPENCODE_COMMAND: stringValue(options.openCodeCommand) ?? process.execPath,
     MEMORAX_CODE_OPENCODE_SERVER_URL: serverUrl,
   };
 }

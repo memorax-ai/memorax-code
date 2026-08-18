@@ -7,6 +7,7 @@ const packagePrefixes = [
   "lib/memorax-code-claude-adapter/",
   "lib/memorax-code-claude-marketplace/",
   "lib/memorax-code-codex-adapter/",
+  "lib/memorax-code-dsh-adapter/",
   "lib/memorax-code-opencode-adapter/",
 ];
 const packageFiles = new Set([
@@ -35,6 +36,7 @@ function parentPaths(path) {
 const rootLibFiles = new Set([
   "lib/npm-invocation.mjs",
   "lib/client-hook-runtime.mjs",
+  "lib/dsh-plugin-install.mjs",
   "lib/node-version.mjs",
   "lib/resolve-claude-command.mjs",
   "lib/resolve-codex-command.mjs",

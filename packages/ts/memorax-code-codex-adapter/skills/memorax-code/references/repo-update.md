@@ -2,7 +2,7 @@
 
 ## Core Principle
 
-Update existing repo memory from a delta, not a full rebuild. Treat the current `.repo_memory/` bundle as the baseline, detect the newest local commits and provider PR/MR/issue changes, then edit only the affected resources.
+Update existing repo memory from a delta, not a full rebuild. Treat the current `.repo_memory/` bundle as the baseline, follow the effective history policy, detect only the enabled local commit and provider PR/MR/issue changes, then edit only the affected resources.
 
 Do not rebuild the whole bundle by default. Return to `SKILL.md` and use `repo-build.md` only when `.repo_memory/PROFILE.md` is missing, the existing memory is structurally unusable, or the user explicitly asks for a full rebuild.
 
@@ -26,9 +26,18 @@ If `.repo_memory/PROFILE.md` is missing, stop and route to `repo-build.md`; do n
 
 ## Default Settings
 
-Updater uses `<skill-dir>/defaults.json` for provider comparison defaults so build and update operations stay aligned. It reads `limits.prs`, `limits.issues`, and `summaryChars`; local commit deltas are not limit-capped because they are computed from the stored baseline commit to current `HEAD`.
+Updater uses `<skill-dir>/defaults.json` so build and update operations stay aligned. It reads `repoHistory.mode`, `repoHistory.limits.prs`, `repoHistory.limits.issues`, and `summaryChars`, with compatibility fallback to legacy `limits.prs` and `limits.issues`; local commit deltas are not limit-capped because they are computed from the stored baseline commit to current `HEAD` when commit history is enabled.
 
-Override one updater run with `--pr-limit`, `--issue-limit`, or `--summary-chars`. Do not edit `defaults.json` for a one-run updater request.
+Override one updater run with `--history-mode`, `--pr-limit`, `--issue-limit`, or `--summary-chars`. Do not edit `defaults.json` for a one-run updater request.
+
+History policy modes:
+
+- `none`: skip local commit deltas and provider PR/MR/issue deltas.
+- `commits-only` or `local-only`: detect local commit deltas and skip provider PR/MR/issue deltas.
+- `provider`: detect local commit deltas and fetch provider PR/MR/issue deltas when provider evidence is ready.
+- `provider-required`: detect local commit deltas and require provider PR/MR/issue evidence rather than silently authoring provider resources without evidence.
+
+Do not re-enable commit or provider channels disabled by policy. Use the detector's `effective_settings.history` block as the authority for which history channels are enabled.
 
 ## User Count Requests
 
@@ -52,13 +61,15 @@ python3 <skill-dir>/scripts/detect_updates.py \
 
 The detector:
 
+- reads the effective history policy from `repoHistory.mode` and reports it in `effective_settings.history`;
 - reads the commit baseline from `PROFILE.md` `local_head`, with a fallback to the nearest stored ancestor commit in `resources/commits.md`;
 - reads PR/MR and issue baselines from `resources/prs.md` and `resources/issues.md`, enriched by existing raw provider facets when available;
-- compares local git `HEAD` against the newest stored commit;
+- compares local git `HEAD` against the newest stored commit only when commit history is enabled;
+- reports `local_commit_status.status: "skipped"` with `reason: "history_disabled_by_policy"` when `repoHistory.mode` disables commit history;
 - reports `local_commit_status.status: "skipped"` with `reason: "missing_baseline_commit"` when no stored local commit baseline can be found;
 - reports `local_commit_status.status: "skipped"` with `reason: "baseline_not_ancestor_of_head"` when history was rebased or force-pushed, instead of silently returning no commit delta;
-- detects provider state from live git remotes and provider CLIs;
-- fetches bounded latest GitHub/GitLab PR/MR/issue facets when provider evidence is available;
+- detects provider state from live git remotes and provider CLIs only when provider history is enabled;
+- fetches bounded latest GitHub/GitLab PR/MR/issue facets only when provider history is enabled and provider evidence is available;
 - reports added or changed PR/MR/issue numbers without editing memory files;
 - reports provider items missing from the current bounded window as `baseline_only_numbers`, not as deletions.
 
@@ -68,7 +79,7 @@ When provider fetch succeeds, the report includes fetched authoring evidence und
 
 The report also includes `builder_helpers` fingerprints for the sibling builder files that updater depends on, including `path`, `exists`, `mtime_ns`, and `size_bytes`. Use this only for compatibility diagnostics; it is not evidence for authoring repo-memory resources.
 
-Use `--provider-mode off` when the user requested a local-only update or provider access is intentionally unavailable.
+Use `--history-mode local-only` or `--history-mode none` when the user requests a one-run history-policy override. `--provider-mode off` remains supported as a compatibility provider-only override when provider access is intentionally unavailable.
 
 ## Provider Sandbox and Transport Failures
 

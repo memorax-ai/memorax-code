@@ -7,6 +7,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const repoRoot = resolve(packageRoot, "../../..");
 const skillRoot = join(packageRoot, "skills", "memorax-code");
 const scriptPath = join(skillRoot, "scripts", "user_profile_memory.py");
 
@@ -76,7 +77,19 @@ test("repo memory skills route user-profile reads and writes", () => {
   assert.match(reference, /\.repo_memory\/user-profile\/preferences\.md/);
   assert.match(reference, /may be saved implicitly/);
   assert.match(reference, /Keep file names, schema and script field names, type values, command options, and fixed Markdown headings in English/);
-  assert.match(reference, /unless the user explicitly requests another storage language/);
+  assert.match(reference, /Write human-readable memory content in the user's current interaction language/);
+  assert.match(reference, /procedure titles and steps and user-profile descriptions, applicability, and exceptions/);
+  assert.match(reference, /Preserve exact code identifiers, commands, paths, API names, and quoted literals without translation/);
+  assert.match(reference, /Handle the semantic match before writing/);
+  assert.match(reference, /New preference: add a new preference/);
+  assert.match(reference, /Equivalent content: do not add a duplicate/);
+  assert.match(reference, /Addition or refinement to the same preference: update the existing preference/);
+  assert.match(reference, /directly conflicts with or replaces an old preference in the same scope: update the existing id and remove the superseded content/);
+  assert.match(reference, /explicitly says a preference no longer applies: delete that preference/);
+  assert.match(reference, /environment, tool, or workflow no longer exists: update the scope; delete it if the entire preference is obsolete/);
+  assert.match(reference, /Do not modify or delete existing preferences because of a one-time instruction/);
+  assert.match(reference, /Do not scan or clean up unrelated preferences/);
+  assert.match(reference, /multiple preferences may match, or it is unclear whether the change is durable, ask the user/);
   assert.match(reference, /never use `workflow` or `environment` to store an executable repository procedure/);
   assert.match(reference, /python3 <skill-dir>\/scripts\/user_profile_memory\.py/);
   assert.match(reference, /Do not preserve deleted text elsewhere/);
@@ -87,6 +100,21 @@ test("repo memory skills route user-profile reads and writes", () => {
   assert.match(readReference, /user_profile_memory\.py list --repo <repo>/);
   assert.match(readReference, /list operation does not create it/);
   assert.match(readReference, /Do not write, normalize, migrate, repair, or delete memory/);
+});
+
+test("root READMEs document personal-memory replacement and deletion", () => {
+  const english = readFileSync(join(repoRoot, "README.md"), "utf8");
+  const chinese = readFileSync(join(repoRoot, "README.zh.md"), "utf8");
+
+  assert.match(english, /Personal Memory and Procedure Memory stay in the current repository under\s+`\.repo_memory\/`/);
+  assert.match(english, /removes the superseded\s+wording/);
+  assert.match(english, /deletes only the named preference,\s+procedure topic, section, or step/);
+  assert.match(english, /One-time task instructions do not change saved memory/);
+
+  assert.match(chinese, /Personal Memory 和 Procedure Memory 保存在当前仓库的 `\.repo_memory\/` 下/);
+  assert.match(chinese, /彻底移除被替代的文字/);
+  assert.match(chinese, /只删除点名的偏好、流程主题、段落或步骤/);
+  assert.match(chinese, /一次性任务指令不会改写已保存的记忆/);
 });
 
 test("repo-user-profile-memory script performs add duplicate update delete with counts", () => {
@@ -371,7 +399,7 @@ test("repo-user-profile-memory script rejects oversized writes without changing 
   }
 });
 
-test("repo-user-profile-memory semantic merge path updates one preference instead of adding a similar one", () => {
+test("documented user-profile lifecycle updates the selected id and physically removes obsolete content", () => {
   const root = mkdtempSync(join(tmpdir(), "memorax-code-user-profile-semantic."));
   try {
     const repo = createRepo(root);
@@ -383,24 +411,66 @@ test("repo-user-profile-memory semantic merge path updates one preference instea
       "--applies-when", "回答当前 repo 的问题。",
       "--do-not-apply-when", "用户明确要求其他语言。",
     ]);
-    const candidates = runProfile("list", repo);
-    assert.equal(candidates.active_count, 1);
-    assert.equal(candidates.preferences[0].id, first.id);
+    const unrelated = runProfile("add", repo, [
+      "--type", "profile",
+      "--description", "用户希望在这个 repo 中被称为 Alex。",
+      "--applies-when", "在这个 repo 中称呼用户。",
+    ]);
+    const duplicate = runProfile("add", repo, [
+      "--type", "communication",
+      "--description", "用户偏好：我喜欢用中文回答。",
+      "--applies-when", "回答当前 repo 的问题。",
+    ]);
+    assert.equal(duplicate.status, "duplicate");
+    assert.equal(duplicate.id, first.id);
+    assert.equal(duplicate.active_count, 2);
 
-    const merged = runProfile("update", repo, [
-      "--id", candidates.preferences[0].id,
+    const candidates = runProfile("list", repo);
+    assert.equal(candidates.active_count, 2);
+    const selected = candidates.preferences.find((preference) => preference.id === first.id);
+    assert.equal(selected?.description, "用户偏好：我喜欢用中文回答。");
+
+    const refined = runProfile("update", repo, [
+      "--id", selected.id,
       "--description", "用户偏好：在这个 repo 里希望我用中文回答，除非明确要求其他语言。",
       "--applies-when", "回答当前 repo 的设计、实现、review 或调试问题。",
       "--do-not-apply-when", "用户明确要求英文或其他语言。",
     ]);
-    assert.equal(merged.id, first.id);
-    assert.equal(merged.active_count, 1);
+    assert.equal(refined.id, first.id);
+    assert.equal(refined.active_count, 2);
 
-    const text = readFileSync(preferences, "utf8");
-    assert.equal((text.match(/^## Preference /gm) ?? []).length, 1);
-    assert.match(text, /active_count: 1/);
+    let text = readFileSync(preferences, "utf8");
+    assert.equal((text.match(/^## Preference /gm) ?? []).length, 2);
+    assert.match(text, /active_count: 2/);
     assert.match(text, /在这个 repo 里希望我用中文回答/);
     assert.doesNotMatch(text, /我喜欢用中文回答/);
+    assert.match(text, /被称为 Alex/);
+
+    const replaced = runProfile("update", repo, [
+      "--id", first.id,
+      "--description", "用户偏好：在这个 repo 里默认使用英文回答。",
+      "--applies-when", "回答当前 repo 的问题。",
+      "--do-not-apply-when", "用户明确要求其他语言。",
+    ]);
+    assert.equal(replaced.id, first.id);
+    assert.equal(replaced.active_count, 2);
+
+    text = readFileSync(preferences, "utf8");
+    assert.match(text, /默认使用英文回答/);
+    assert.doesNotMatch(text, /在这个 repo 里希望我用中文回答/);
+    assert.match(text, /被称为 Alex/);
+
+    const deleted = runProfile("delete", repo, ["--id", first.id]);
+    assert.equal(deleted.status, "deleted");
+    assert.equal(deleted.active_count, 1);
+
+    text = readFileSync(preferences, "utf8");
+    assert.match(text, /active_count: 1/);
+    assert.match(text, new RegExp(unrelated.id));
+    assert.match(text, /被称为 Alex/);
+    assert.doesNotMatch(text, new RegExp(first.id));
+    assert.doesNotMatch(text, /默认使用英文回答/);
+    assert.doesNotMatch(text, /- Status: `(deleted|superseded)`/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

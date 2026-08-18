@@ -7,6 +7,7 @@ import test from "node:test";
 import { resolveMemoryProject } from "../../../dist/memory/project.js";
 import { authorized, memoryViewerSessionCookieHeader } from "../../../dist/transport/http/request.js";
 import { handleMemoryViewerRequest } from "../../../dist/viewer/http/public-routes.js";
+import { memoryViewerObservabilityHook } from "../../../dist/viewer/projection/observability.js";
 import {
   clearMemoryViewerEvents,
   recordMemoryViewerEvent,
@@ -25,6 +26,7 @@ test("memory viewer user route renders the compact summary surface", async () =>
     assert.match(html, /id="client-select"/);
     assert.match(html, /<option value="codex">Codex<\/option>/);
     assert.match(html, /<option value="claude-code">Claude Code<\/option>/);
+    assert.match(html, /<option value="dsh">DeepSeek<\/option>/);
     assert.match(html, /<option value="opencode">OpenCode<\/option>/);
     assert.match(html, /id="language-toggle"/);
     assert.match(html, /id="theme-toggle"/);
@@ -115,6 +117,29 @@ test("memory viewer user API isolates clients and never returns private event co
     request: { payload: { query: "opencode private query" } },
     response: { items: [{ memory: "opencode private memory" }] },
   });
+  memoryViewerObservabilityHook().recordEvent?.({
+    source: "automatic_retrieval",
+    operation: "retrieve",
+    ok: true,
+    traceContext: { client: "dsh", sessionId: "dsh-session", turnId: "1", cwd: repo },
+    request: { payload: { query: "dsh private query" } },
+    response: { items: [{ memory: "dsh private memory" }] },
+  });
+  memoryViewerObservabilityHook().recordEvent?.({
+    source: "dsh_native_writeback",
+    operation: "writeback",
+    ok: true,
+    traceContext: { client: "dsh", sessionId: "dsh-session", turnId: "1", cwd: repo },
+    request: { payload: { messages: [{ role: "user", content: "dsh private writeback" }] } },
+    response: { raw: { data: { task_id: "dsh-private-task", status: "queued" } } },
+  });
+  memoryViewerObservabilityHook().recordEvent?.({
+    source: "dsh_native_writeback",
+    operation: "writeback",
+    ok: true,
+    request: { payload: { messages: [{ role: "user", content: "dsh unscoped private writeback" }] } },
+    response: { raw: { data: { task_id: "dsh-unscoped-task", status: "queued" } } },
+  });
 
   const { url, close } = await viewerServer(memoraxCodeHome, {
     repoMemoryReadiness: async () => ({ status: "not_ready", reason: "bundle_missing" }),
@@ -126,7 +151,7 @@ test("memory viewer user API isolates clients and never returns private event co
     const codexText = await codexResponse.text();
     const codex = JSON.parse(codexText);
     assert.equal(codex.selectedClient, "codex");
-    assert.deepEqual(codex.availableClients, ["codex", "claude-code", "opencode"]);
+    assert.deepEqual(codex.availableClients, ["codex", "claude-code", "dsh", "opencode"]);
     assert.equal(codex.summary.searchOperationCount, 1);
     assert.equal(codex.summary.searchedMemoryCount, 1);
     assert.equal(codex.activities.length, 1);
@@ -137,7 +162,7 @@ test("memory viewer user API isolates clients and never returns private event co
     assert.equal(codex.projects.every((project) => (
       project.repoMemory.status === "not_ready" && project.repoMemory.reason === "bundle_missing"
     )), true);
-    assert.doesNotMatch(codexText, /codex private|other private|claude private|opencode private/i);
+    assert.doesNotMatch(codexText, /codex private|other private|claude private|opencode private|dsh private/i);
     for (const field of ["prompt", "answer", "query", "results", "details", "sessionId", "turnId"]) {
       assert.equal(codexText.includes(`"${field}"`), false);
     }
@@ -148,6 +173,39 @@ test("memory viewer user API isolates clients and never returns private event co
     assert.equal(claude.selectedClient, "claude-code");
     assert.equal(claude.summary.searchOperationCount, 1);
     assert.equal(claude.summary.searchedMemoryCount, 2);
+
+    const dshResponse = await fetch(`${url}/memory-viewer/api/summary?client=dsh`);
+    const dshText = await dshResponse.text();
+    const dsh = JSON.parse(dshText);
+    assert.equal(dsh.selectedClient, "dsh");
+    assert.deepEqual(dsh.availableClients, ["codex", "claude-code", "dsh", "opencode"]);
+    assert.equal(dsh.summary.searchOperationCount, 1);
+    assert.equal(dsh.summary.searchedMemoryCount, 1);
+    assert.equal(dsh.summary.addOperationCount, 1);
+    assert.equal(dsh.summary.processingCount, 1);
+    assert.equal(dsh.activities.length, 2);
+    assert.deepEqual(dsh.projects.map((project) => project.projectLabel), ["Primary-Repo"]);
+    assert.doesNotMatch(
+      dshText,
+      /dsh private|dsh unscoped|dsh-session|dsh-private-task|dsh-unscoped-task/i,
+    );
+    for (const field of [
+      "prompt",
+      "answer",
+      "query",
+      "results",
+      "details",
+      "sessionId",
+      "turnId",
+      "taskId",
+      "eventId",
+      "content",
+      "error",
+      "savedMemories",
+      "savedMemoryIds",
+    ]) {
+      assert.equal(dshText.includes(`"${field}"`), false);
+    }
 
     const opencode = await (await fetch(
       `${url}/memory-viewer/api/summary?client=opencode`,
@@ -209,6 +267,11 @@ test("memory viewer user routes reject explicit invalid clients", async () => {
     assert.equal(
       (await fetch(`${url}/memory-viewer/api/summary?client=unknown`)).status,
       400,
+    );
+    assert.equal((await fetch(`${url}/memory-viewer?client=dsh`)).status, 200);
+    assert.equal(
+      (await fetch(`${url}/memory-viewer/api/summary?client=dsh`)).status,
+      200,
     );
   } finally {
     await close();

@@ -15,6 +15,9 @@ export function createHttpBackendClient(options) {
     recordTurnStart(command, request = {}) {
       return post("/memory/turn-start", command, request.signal);
     },
+    recordSkillReminder(command, request = {}) {
+      return post("/memory/skill-reminder", command, request.signal);
+    },
     writebackTurn(command, request = {}) {
       return post("/memory/writeback", command, request.signal);
     },

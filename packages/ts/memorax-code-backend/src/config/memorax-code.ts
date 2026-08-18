@@ -14,6 +14,7 @@ export type MemoraxCodeConfig = Readonly<{
   clients?: Readonly<{
     codex?: boolean;
     claude?: boolean;
+    dsh?: boolean;
     opencode?: boolean;
   }>;
   memorax?: Readonly<{
@@ -85,6 +86,13 @@ export type MemoraxCodeConfig = Readonly<{
       max_event_chars?: number;
       max_file_bytes?: number;
     }>;
+    dsh?: Readonly<{
+      enabled?: boolean;
+      capture_content?: boolean;
+      retention_days?: number;
+      max_event_chars?: number;
+      max_file_bytes?: number;
+    }>;
     opencode?: Readonly<{
       enabled?: boolean;
       capture_content?: boolean;
@@ -114,6 +122,7 @@ export function renderDefaultMemoraxCodeConfig(): string {
     "[clients]",
     "codex = true",
     "claude = true",
+    "dsh = true",
     "opencode = true",
     "",
     "# MemoraX remote-memory connection. Credentials may also come from the environment.",
@@ -134,7 +143,7 @@ export function renderDefaultMemoraxCodeConfig(): string {
     "[memory.add]",
     `output_language = "${MEMORAX_DEFAULT_MEMORY_OUTPUT_LANGUAGE}" # Language for newly generated MemoraX memories.`,
     "",
-    "# Controls how often Codex, Claude Code, and OpenCode native client sessions see the MemoraX Code skill reminder.",
+    "# Controls how often supported native client sessions see the MemoraX Code skill reminder.",
     "[memory.skill_reminder]",
     "interval_turns = 5 # Show the MemoraX Code skill reminder every N native client turns, starting on the first turn.",
     "",
@@ -152,6 +161,10 @@ export function renderDefaultMemoraxCodeConfig(): string {
     "[trace.claude]",
     "enabled = true # Enable local Claude session memory trace collection.",
     "capture_content = true # Store content in local Claude trace events.",
+    "",
+    "[trace.dsh]",
+    "enabled = true # Enable local DSH session memory trace collection.",
+    "capture_content = true # Store content in local DSH trace events.",
     "",
     "[trace.opencode]",
     "enabled = true # Enable local OpenCode session memory trace collection.",
@@ -236,12 +249,14 @@ function normalizeMemoraxCodeConfig(value: unknown): MemoraxCodeConfig {
   const repoUpdate = recordValue(memory?.repo_update);
   const traceCodex = recordValue(trace?.codex);
   const traceClaude = recordValue(trace?.claude);
+  const traceDsh = recordValue(trace?.dsh);
   const traceOpenCode = recordValue(trace?.opencode);
 
   return (prune({
     clients: prune({
       codex: booleanField(clients, "codex"),
       claude: booleanField(clients, "claude"),
+      dsh: booleanField(clients, "dsh"),
       opencode: booleanField(clients, "opencode"),
     }),
     memorax: prune({
@@ -307,6 +322,13 @@ function normalizeMemoraxCodeConfig(value: unknown): MemoraxCodeConfig {
         max_event_chars: numberField(traceClaude, "max_event_chars"),
         max_file_bytes: numberField(traceClaude, "max_file_bytes"),
       }),
+      dsh: prune({
+        enabled: booleanField(traceDsh, "enabled"),
+        capture_content: booleanField(traceDsh, "capture_content"),
+        retention_days: numberField(traceDsh, "retention_days"),
+        max_event_chars: numberField(traceDsh, "max_event_chars"),
+        max_file_bytes: numberField(traceDsh, "max_file_bytes"),
+      }),
       opencode: prune({
         enabled: booleanField(traceOpenCode, "enabled"),
         capture_content: booleanField(traceOpenCode, "capture_content"),
@@ -326,7 +348,7 @@ function validateRawLifecycleConfig(value: unknown, path: string): void {
   if (rawClients !== undefined) {
     const clients = tableValue(rawClients);
     if (!clients) throw invalidLifecycleConfig(path, "clients must be a table");
-    for (const field of ["codex", "claude", "opencode"] as const) {
+    for (const field of ["codex", "claude", "dsh", "opencode"] as const) {
       if (clients[field] !== undefined && typeof clients[field] !== "boolean") {
         throw invalidLifecycleConfig(path, `clients.${field} must be a boolean`);
       }

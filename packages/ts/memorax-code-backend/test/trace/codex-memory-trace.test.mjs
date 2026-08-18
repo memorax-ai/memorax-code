@@ -9,6 +9,7 @@ import { createBackendState } from "../../dist/app/state.js";
 import {
   claudeTracePaths,
   codexTraceConfigFromEnv,
+  dshTracePaths,
   sanitizeTracePathSegment,
   tracePaths,
 } from "../../dist/trace/config.js";
@@ -731,7 +732,7 @@ test("current turn bridge preserves recent context after closing rollout reconci
   }
 });
 
-test("Backend startup prunes expired Codex and Claude trace sessions", async () => {
+test("Backend startup prunes expired client-qualified trace sessions", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-codex-trace-retention-"));
   let server;
   try {
@@ -742,17 +743,29 @@ test("Backend startup prunes expired Codex and Claude trace sessions", async () 
       "[trace.claude]",
       "retention_days = 1",
       "",
+      "[trace.dsh]",
+      "retention_days = 1",
+      "",
     ].join("\n"), "utf8");
     const oldCodexDir = tracePaths(root).sessionDir("old-session");
     const freshCodexDir = tracePaths(root).sessionDir("fresh-session");
     const oldClaudeDir = claudeTracePaths(root).sessionDir("old-session");
     const freshClaudeDir = claudeTracePaths(root).sessionDir("fresh-session");
-    for (const directory of [oldCodexDir, freshCodexDir, oldClaudeDir, freshClaudeDir]) {
+    const oldDshDir = dshTracePaths(root).sessionDir("old-session");
+    const freshDshDir = dshTracePaths(root).sessionDir("fresh-session");
+    for (const directory of [
+      oldCodexDir,
+      freshCodexDir,
+      oldClaudeDir,
+      freshClaudeDir,
+      oldDshDir,
+      freshDshDir,
+    ]) {
       await mkdir(directory, { recursive: true });
       await writeFile(join(directory, "events.jsonl"), "{}\n", "utf8");
     }
     const oldTime = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
-    for (const directory of [oldCodexDir, oldClaudeDir]) {
+    for (const directory of [oldCodexDir, oldClaudeDir, oldDshDir]) {
       await utimes(directory, oldTime, oldTime);
       await utimes(join(directory, "events.jsonl"), oldTime, oldTime);
     }
@@ -765,9 +778,11 @@ test("Backend startup prunes expired Codex and Claude trace sessions", async () 
     await Promise.all([
       waitForMissing(oldCodexDir),
       waitForMissing(oldClaudeDir),
+      waitForMissing(oldDshDir),
     ]);
     await stat(freshCodexDir);
     await stat(freshClaudeDir);
+    await stat(freshDshDir);
   } finally {
     if (server) await closeServer(server);
     await rm(root, { recursive: true, force: true });

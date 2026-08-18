@@ -307,6 +307,9 @@ function sourcePathForArtifact(rawPath) {
     }
     return `packages/ts/memorax-code-claude-adapter/${pluginPath}`;
   }
+  if (path.startsWith("lib/memorax-code-dsh-adapter/")) {
+    return `packages/ts/memorax-code-dsh-adapter/${path.slice("lib/memorax-code-dsh-adapter/".length)}`;
+  }
   if (path.startsWith("lib/memorax-code-opencode-adapter/skills/memorax-code/")) {
     return `packages/ts/memorax-code-codex-adapter/skills/memorax-code/${path.slice("lib/memorax-code-opencode-adapter/skills/memorax-code/".length)}`;
   }

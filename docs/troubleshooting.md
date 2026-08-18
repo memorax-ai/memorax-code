@@ -7,14 +7,16 @@ memorax-code status
 memorax-cli status
 memorax-code-codex doctor
 memorax-code-claude doctor
+memorax-code status --clients dsh
 memorax-code-opencode doctor
 memorax-code logs
 ```
 
 `memorax-code status` checks the Backend and selected client integrations,
-including OpenCode. `memorax-cli status` checks credentials, scope, and memory
-switches without printing secrets. Each supported client also provides a
-client-specific `doctor` command.
+including DSH and OpenCode. `memorax-cli status` checks credentials, scope, and
+memory switches without printing secrets. Codex, Claude Code, and OpenCode
+also provide client-specific `doctor` commands; DSH uses the shared lifecycle
+status.
 
 ## Installed, but memory is unavailable
 
@@ -105,6 +107,32 @@ This reconciles the Claude Code marketplace plugin and Hooks. If the plugin is
 still missing or stale, restart or refresh Claude Code. Do not manually copy
 Hooks into Claude settings.
 
+## DeepSeek Harness Profile integration is inactive
+
+```sh
+dsh --version
+pnpm --version
+memorax-code start --clients dsh
+memorax-code status --clients dsh
+```
+
+MemoraX Code discovers existing Profiles under `$DSH_HOME/profiles`;
+`DSH_HOME` defaults to `~/.dsh`. A `no_existing_profiles` result means DSH has
+not created a valid Profile in that home. A `dsh_version_unavailable` result
+means the selected `dsh` command did not return a valid semantic version. The
+tested baseline is `0.1.0-rc.6`; another valid version is allowed but marked
+untested. A `pnpm_not_found` result means DSH's native Profile plugin manager
+could not find `pnpm` on `PATH`; install `pnpm`, then rerun the start command.
+
+After repairing the command, Profile manifest, or home selection, rerun the
+start command and restart or refresh DSH. `profile_drift`,
+`profile_manifest_unreadable`, and `runtime_authority_invalid` are managed-state
+failures rather than reasons to edit the Profile or
+`$MEMORAX_CODE_HOME/adapters/dsh/state.json` manually. The lifecycle command
+uses DSH's plugin manager to reconcile the integration. Stop and uninstall
+remove the managed MemoraX Code plugin, not the DSH Profile or its session
+data.
+
 ## OpenCode plugin or skill is inactive
 
 ```sh
@@ -141,6 +169,7 @@ environment may be intercepting `127.0.0.1` or `localhost`.
 memorax-code start
 memorax-code-codex doctor
 memorax-code-claude doctor
+memorax-code status --clients dsh
 memorax-code-opencode doctor
 /usr/sbin/scutil --proxy
 /bin/launchctl getenv NO_PROXY
@@ -158,6 +187,7 @@ memorax-cli status
 memorax-cli search --query 'test'
 memorax-code-codex doctor
 memorax-code-claude doctor
+memorax-code status --clients dsh
 memorax-code-opencode doctor
 ```
 
@@ -174,13 +204,13 @@ MemoraX Code reads filesystem Git metadata without executing Git. Linked
 worktrees share the remote repository identity; non-Git workspaces use the
 normalized folder name. Resolution never falls back to the bare base user ID.
 
-A live Codex, Claude Code, or OpenCode session remains pinned to the repository
-or local workspace resolved at the start of the session. Starting the client
-from a parent workspace and then entering a nested Git repository does not
-rebind the session. The only in-session scope upgrade is from a direct `.git`
-directory whose internal metadata was malformed or incomplete to a verified
-Git repository at the same canonical workspace root and for the same Base User
-ID.
+A live Codex, Claude Code, DSH, or OpenCode session remains pinned to the
+repository or local workspace resolved at the start of the session. Starting
+the client from a parent workspace and then entering a nested Git repository
+does not rebind the session. The only in-session scope upgrade is from a direct
+`.git` directory whose internal metadata was malformed or incomplete to a
+verified Git repository at the same canonical workspace root and for the same
+Base User ID.
 
 During that degraded state, MemoraX Code reports
 `workspaceScopeFallbackReason: git_metadata_invalid` for manual CLI operations
@@ -207,10 +237,10 @@ when repository isolation matters.
 
 ## Model-provider requests fail while MemoraX Code is healthy
 
-MemoraX Code does not proxy Codex or Claude Code model requests. If
-`memorax-code status` and the relevant client doctor are healthy, inspect the
-provider URL, credentials, model selection, and network settings owned by that
-client. Do not copy model-provider credentials into
+MemoraX Code does not proxy Codex, Claude Code, DSH, or OpenCode model
+requests. If `memorax-code status` and the available client-specific doctor
+are healthy, inspect the provider URL, credentials, model selection, and
+network settings owned by that client. Do not copy model-provider credentials into
 `$MEMORAX_CODE_HOME`.
 
 ## Safe issue reports
@@ -222,6 +252,7 @@ memorax-code status --json
 memorax-cli status --json
 memorax-code-codex doctor --json
 memorax-code-claude doctor --json
+memorax-code status --clients dsh --json
 memorax-code-opencode doctor --json
 ```
 

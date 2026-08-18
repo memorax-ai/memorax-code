@@ -230,19 +230,21 @@ writeFileSync(join(memory, "PROFILE.md"), [
   "# Claude Repo Memory",
   "",
 ].join("\\n"));
-const resource = (schema, rawSource) => [
+const resource = (schema, rawSource, source, trustState) => [
   "---",
   'schema: "' + schema + '"',
+  'source: "' + source + '"',
   "resource_count: 0",
+  'trust_state: "' + trustState + '"',
   'raw_source: "' + rawSource + '"',
   "---",
   "",
   "# " + schema,
   "",
 ].join("\\n");
-writeFileSync(join(memory, "resources", "commits.md"), resource("repo_memory_commit_resource.v0.1", "../raw/git-commits.json"));
-writeFileSync(join(memory, "resources", "prs.md"), resource("repo_memory_pr_resource.v0.1", ""));
-writeFileSync(join(memory, "resources", "issues.md"), resource("repo_memory_issue_resource.v0.1", ""));
+writeFileSync(join(memory, "resources", "commits.md"), resource("repo_memory_commit_resource.v0.1", "../raw/git-commits.json", "git_commit_facets", "draft_resource"));
+writeFileSync(join(memory, "resources", "prs.md"), resource("repo_memory_pr_resource.v0.1", "", "provider_skipped_local_only", "unavailable_local_only"));
+writeFileSync(join(memory, "resources", "issues.md"), resource("repo_memory_issue_resource.v0.1", "", "provider_skipped_local_only", "unavailable_local_only"));
 writeFileSync(join(memory, "raw", "git-commits.json"), "[]\\n");
 writeFileSync(process.env.FAKE_CLAUDE_ENV_LOG, JSON.stringify({
   kind: process.env.MEMORAX_CODE_REPO_MEMORY_JOB_KIND,

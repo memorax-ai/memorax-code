@@ -64,7 +64,8 @@ test("memorax-code references keep authority and operation boundaries explicit",
 
   assert.match(memoraxSearch, /memorax-cli search/);
   assert.match(memoraxSearch, /In OpenCode, ask the agent to use the `memorax-code` skill by name/);
-  assert.match(memoraxSearch, /at most one focused search/);
+  assert.match(memoraxSearch, /Run up to two focused first-round searches/);
+  assert.match(memoraxSearch, /only when a second independent fact can change the action/);
   assert.match(memoraxSearch, /Do not call MemoraX HTTP endpoints directly/);
   assert.match(memoraxSearch, /memorax-cli search --query '/);
   assert.match(memoraxSearch, /Linked worktrees share one repository scope/);
@@ -105,20 +106,22 @@ test("memorax-code references keep authority and operation boundaries explicit",
   assert.match(personalWrite, /may be saved implicitly/);
 });
 
-test("memorax-code search guidance combines semantic intent with exact anchors", () => {
+test("memorax-code search guidance preserves semantic roles and exact anchors", () => {
   const memoraxSearch = readSkillFile("references/memorax-search.md");
 
   assert.match(memoraxSearch, /one short natural-language question or intent statement, not a keyword list/);
   assert.match(memoraxSearch, /instead of copying or concatenating nouns from the prompt/);
   assert.match(memoraxSearch, /Follow the user's language/);
-  assert.match(memoraxSearch, /relationship, decision, constraint, behavior, or risk/);
-  assert.match(memoraxSearch, /Include 2-5 stable exact identifiers/);
+  assert.match(memoraxSearch, /Retain at least one distinctive noun phrase/);
+  assert.match(memoraxSearch, /observed symptom, desired outcome, disputed field or hypothesis, or explicit exclusion/);
+  assert.match(memoraxSearch, /every query must use this visible shape/);
+  assert.match(memoraxSearch, /one or two stable exact identifiers/);
   assert.match(memoraxSearch, /integrate them grammatically/);
   assert.match(memoraxSearch, /do not shorten them into ungrammatical fragments/);
 
-  assert.match(memoraxSearch, /What prior decisions define the memorax-code parser API failure boundary/);
-  assert.match(memoraxSearch, /What prior review policies and regression risks apply/);
-  assert.match(memoraxSearch, /Backend、Codex adapter 与 memory 层的职责如何衔接/);
+  assert.match(memoraxSearch, /Trace producer version: after an upgrade/);
+  assert.match(memoraxSearch, /Task context after upgrade: can an already-open task keep old injected context/);
+  assert.match(memoraxSearch, /Desktop SDK authority: without a native CLI/);
 });
 
 test("memorax-code retries read-only search once after transport or sandbox failure", () => {

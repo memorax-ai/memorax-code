@@ -70,6 +70,28 @@ test("OpenCode adapter runtime is a declared npm source tree", () => {
   )));
 });
 
+test("DSH adapter runtime is staged from declared source trees", () => {
+  assert.ok(npmMainSourceTrees.some((mapping) => (
+    mapping.source === "packages/ts/memorax-code-dsh-adapter/src"
+    && mapping.destination === "lib/memorax-code-dsh-adapter/src"
+  )));
+  assert.ok(npmMainSourceTrees.some((mapping) => (
+    mapping.source === "packages/ts/memorax-code-dsh-adapter/hooks"
+    && mapping.destination === "lib/memorax-code-dsh-adapter/hooks"
+  )));
+});
+
+test("DSH shared skill stages directly from tracked Codex skill sources", () => {
+  assert.ok(npmMainSourceTrees.some((mapping) => (
+    mapping.source === "packages/ts/memorax-code-codex-adapter/skills/memorax-code"
+    && mapping.destination === "lib/memorax-code-dsh-adapter/skills/memorax-code"
+  )));
+  assert.equal(
+    npmMainSourceTrees.some((mapping) => mapping.source === "packages/ts/memorax-code-dsh-adapter/skills"),
+    false,
+  );
+});
+
 test("Codex plugin assets are declared npm source trees", () => {
   assert.ok(npmMainSourceTrees.some((mapping) => (
     mapping.source === "packages/ts/memorax-code-codex-adapter/assets"

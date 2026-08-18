@@ -15,6 +15,7 @@ The user selects a repository, not a memory directory. Do not ask for a `.repo_m
 ```text
 <repo>/.repo_memory/
 ├── PROFILE.md
+├── <repo-native-topic>.md conceptual pages
 ├── raw/
 │   ├── prepare-report.json
 │   ├── git-commits.json
@@ -25,9 +26,34 @@ The user selects a repository, not a memory directory. Do not ask for a `.repo_m
     └── issues.md
 ```
 
-Script-generated artifacts: `raw/prepare-report.json`, `raw/git-commits.json`, and optional `raw/github-facets.json` or `raw/gitlab-facets.json`. Agent-authored durable artifacts: `PROFILE.md`, `resources/commits.md`, `resources/prs.md`, and `resources/issues.md`.
+Script-generated artifacts: `raw/prepare-report.json`, `raw/git-commits.json`, and optional `raw/github-facets.json` or `raw/gitlab-facets.json`. Agent-authored durable artifacts: `PROFILE.md`, repository-native supporting conceptual pages when the repository has enough surface area, `resources/commits.md`, `resources/prs.md`, and `resources/issues.md`. Temporary planning artifact `.repo_memory/_plan.md` is allowed during drafting but must be removed before final validation.
 
 User-managed sidecars may coexist under `.repo_memory/procedure-memory/` and `.repo_memory/user-profile/`. Builder scripts preserve them and exclude them from bundle validation; this skill must not create, edit, or summarize their contents as repo-memory evidence.
+
+## Wiki-Style Output Contract
+
+MemoraX repo memory is a wiki-style repository memory backed by raw mechanical evidence. The primary user-facing product is a readable wiki, not a dense schema dump or a history table.
+
+- `PROFILE.md` is the only fixed conceptual wiki file and the wiki landing page: project identity, what the repo contains, how it works, first-use path, Major Areas, Supporting Pages, provider context, and evidence inspected.
+- Do not assume fixed supporting page names. Decide supporting pages and filenames from the repository itself after discovery.
+- For very small repositories, `PROFILE.md` plus 1-2 supporting pages is enough. For most repositories, generate 3-7 Markdown pages total, including `PROFILE.md`. Only exceed 7 pages when the repository clearly has multiple substantial, independent areas that would become confusing if merged.
+- Every durable supporting conceptual page must include frontmatter with `schema: "repo_memory_wiki_page.v0.1"` so validation can scan it.
+- Supporting pages explain concepts, workflows, system areas, change surfaces, setup, verification, and agent routing cautions. They must link claims to inspected docs/source and use conservative wording when lightweight mode did not inspect source.
+- resources/*.md remain compact historical routing cards for commits, PRs/MRs, and issues. They should not be the main architecture explanation.
+- Keep raw JSON as debug evidence only. Do not ask future agents to read raw facets unless compact pages and resources are insufficient.
+
+## Conceptual Page Planning
+
+After discovery and before final wiki writing, create a temporary planning artifact at `.repo_memory/_plan.md`. Keep it compact. Use it to outline intended final pages, each page purpose, source evidence, page boundaries, canonical homes for overlapping concepts, remaining questions, weak evidence, and paths that must be verified before final writing.
+
+- Remove `.repo_memory/_plan.md` before final validation; it is not part of the durable repo memory bundle.
+- Organize pages like human documentation, not a raw file inventory. Use human documentation titles. Do not title pages or headings after source paths, and do not mirror the source tree.
+- Create a page only when a future human or agent needs a canonical explanation for a concept, workflow, system area, or change surface. A page is a durable orientation artifact, not a parking place for exploration facts.
+- Merge rather than split when two pages would repeat the same workflow, types, or source paths; when one page would only explain a subset of another page; or when the distinction is based on source directory layout rather than reader task or concept.
+- Split rather than merge when one page would mix unrelated reader tasks; when a concept has its own workflow, data model, risks, and source-backed change guidance; or when a page would become too long to navigate.
+- Prefer headings inside broader pages before creating many small pages. Avoid thin pages and stub-like pages.
+
+Natural documentation domains are candidates, not a required checklist: architecture, workflows, data model, integrations, operations, testing/evaluation, and extension points. In `_plan.md`, decide which candidates were selected, merged, or skipped and why. Generic names such as `architecture.md`, `runtime-flow.md`, and `developer-workflow.md` are fallback names only when repository vocabulary gives no stronger topic.
 
 ## Repository Prerequisite
 
@@ -60,19 +86,38 @@ Default mechanical collection settings are intentionally visible in `<skill-dir>
 
 ```json
 {
-  "schema": "repo_memory_builder_defaults.v1",
-  "limits": {
-    "commits": 30,
-    "prs": 30,
-    "issues": 30
+  "schema": "repo_memory_builder_defaults.v2",
+  "repoHistory": {
+    "mode": "provider",
+    "limits": {
+      "commits": 30,
+      "prs": 30,
+      "issues": 30
+    }
   },
   "summaryChars": 4000
 }
 ```
 
-To change defaults for future builder runs, edit `defaults.json`, not the Python scripts. To override one run, pass `--commit-limit`, `--pr-limit`, `--issue-limit`, or `--summary-chars` to `collect_all.py`.
+To change defaults for future builder runs, edit `defaults.json`, not the Python scripts. To override one run, pass `--history-mode`, `--commit-limit`, `--pr-limit`, `--issue-limit`, or `--summary-chars` to `collect_all.py`.
 
-Provider collection is best-effort by default. Use `--skip-provider` for an explicit local-only run that does not call GitHub/GitLab, and use `--require-provider` only when the user explicitly requires PR/MR/issue evidence and the run should fail instead of falling back to local-only memory.
+Provider collection is best-effort by default. Use `--history-mode local-only` or `--skip-provider` for an explicit local-only run that does not call GitHub/GitLab, and use `--history-mode provider-required` or `--require-provider` only when the user explicitly requires PR/MR/issue evidence and the run should fail instead of falling back to local-only memory.
+
+## Historical Evidence Policy
+
+Historical evidence collection is configurable per run with `--history-mode` and by default with `repoHistory.mode` in `defaults.json`:
+
+| Mode | Commits | PRs/MRs and issues | Resource file contract |
+|------|---------|--------------------|------------------------|
+| `--history-mode none` | Disabled | Disabled | Write disabled resource files for commits, PRs/MRs, and issues using `source: "history_disabled"`, `resource_count: 0`, and `raw_source: ""`. |
+| `--history-mode commits-only` | Collected locally | Disabled | Write commit resources from `raw/git-commits.json`; write PR/issue files using `source: "provider_skipped_local_only"`, `resource_count: 0`, and `raw_source: ""`. |
+| `--history-mode local-only` | Collected locally | Disabled | Same as commits-only; use when the user wants local Git history but no provider calls. |
+| `--history-mode provider` | Collected locally | Best-effort | Default. Collect provider facets when ready; if provider evidence is unavailable or fails, continue local-only and mark PR/issue resources unavailable. |
+| `--history-mode provider-required` | Collected locally | Required | Fail the collection if provider facets cannot be collected. Use only when the user explicitly requires PR/MR/issue evidence. |
+
+`--skip-provider` is a compatibility alias for `--history-mode local-only`; `--require-provider` is a compatibility alias for `--history-mode provider-required`.
+
+When history or provider evidence is disabled, skipped, unavailable, or degraded, still create `resources/commits.md`, `resources/prs.md`, and `resources/issues.md`; write disabled resource files for any historical channel that was not collected. The disabled or unavailable resource files tell future agents that the builder intentionally did not collect that evidence. For PR/issue files, do not say that no PRs or issues exist unless provider evidence was actually collected and empty.
 
 ## User Count Requests
 
@@ -150,7 +195,7 @@ Do not use a restricted shell sandbox to verify provider/API availability. Verif
 
 ### `scripts/validate_memory.py`
 
-Use this as the final gate after authoring `PROFILE.md` and `resources/*.md`. It accepts either the repository root or the memory root, validates required files, JSON parseability, frontmatter counts, placeholder removal, and provider raw/resource consistency.
+Use this as the final gate after authoring `PROFILE.md`, supporting conceptual pages, and `resources/*.md`. It accepts either the repository root or the memory root, validates required files, JSON parseability, frontmatter counts, placeholder removal, and provider raw/resource consistency.
 
 ```bash
 python3 <skill-dir>/scripts/validate_memory.py <repo-path> --pretty
@@ -200,9 +245,12 @@ Run: `<notice.command>`
    - Form project-level understanding before looking at PR/issue history.
    - Record whether conclusions are doc-derived or code-inspected.
 
-4. **Draft `PROFILE.md`**
+4. **Plan and draft the wiki landing page and conceptual pages**
    - Read [repo-templates.md](repo-templates.md) before writing memory files.
-   - Include repo identity, checkout state, evidence inspected, agent consumption rules, module map, verification gates, architecture boundaries, resource pointers, and retrieval flow.
+   - Create `.repo_memory/_plan.md` after discovery and before final wiki writing. Use it to cluster repository-native conceptual areas, page purposes, evidence, boundaries, canonical homes, merge/split decisions, weak evidence, and path verification needs.
+   - Write `PROFILE.md` as the wiki landing page with repo identity, checkout state, what the repo contains, how it works, first-use path, Major Areas, Supporting Pages, provider context, and evidence inspected.
+   - Create repository-native supporting conceptual pages from the plan. Cover only concepts, workflows, system areas, or change surfaces with enough evidence to deserve canonical pages.
+   - Remove `.repo_memory/_plan.md` before final validation.
    - Record the selected build mode and avoid overstating code-level claims in lightweight mode.
 
 5. **Review raw evidence**
@@ -243,8 +291,9 @@ Every description must say what the item explains, when a future agent should op
 
 Generate memory that the `memorax-code` repo-read operation can consume progressively:
 
-- `PROFILE.md` is the stable entry point and should summarize identity, evidence, architecture, verification gates, and resource pointers.
-- `resources/*.md` are compact human-readable routing resources with search-grade descriptions.
+- `PROFILE.md` is the stable wiki landing page and should summarize identity, evidence, major areas, supporting pages, verification gates, and resource pointers.
+- Supporting conceptual pages are repository-native canonical homes for concepts, workflows, system areas, and change surfaces selected through temporary planning.
+- `resources/*.md` are compact historical routing cards with search-grade descriptions.
 - `raw/*.json` contains optional build/debug evidence for deep inspection when compact resources are insufficient.
 
 Do not duplicate the daily retrieval workflow here. The `repo-read` operation owns trigger timing, silent background-maintenance handoff, and task-specific search behavior.

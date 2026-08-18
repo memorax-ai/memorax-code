@@ -7,6 +7,21 @@ export type AdapterReport = {
   enabled?: boolean;
   managed?: boolean;
   integration?: string;
+  runtime?: string;
+  compatible?: boolean;
+  version?: string;
+  dshVersion?: string;
+  dshVersionTested?: boolean;
+  testedDshVersions?: string[];
+  profiles?: unknown[];
+  detectedProfiles?: string[];
+  installedProfiles?: string[];
+  removedProfiles?: string[];
+  failedProfiles?: unknown[];
+  authorityEnabled?: boolean;
+  previouslyEnabled?: boolean;
+  revision?: string;
+  removed?: boolean;
   statePath?: string;
   changed?: boolean;
   skipped?: boolean;
@@ -56,6 +71,8 @@ export type AdapterLifecycleBackendContext = AdapterLifecycleContext & Readonly<
 export type AdapterLifecycleParticipant<RemoveReport> = Readonly<{
   status(context: AdapterLifecycleBackendContext): Promise<AdapterReport>;
   prepareEnable(context: AdapterLifecycleBackendContext): Promise<AdapterReport>;
+  activate?(context: AdapterLifecycleContext): Promise<AdapterReport>;
+  quiesce?(context: AdapterLifecycleContext): Promise<AdapterReport>;
   disable(context: AdapterLifecycleContext): Promise<AdapterReport>;
   remove(context: AdapterLifecycleContext): Promise<RemoveReport>;
 }>;

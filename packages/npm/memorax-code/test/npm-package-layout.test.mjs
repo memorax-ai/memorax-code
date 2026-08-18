@@ -12,6 +12,7 @@ test("single npm package layout accepts declared paths and rejects unknown trees
   assert.equal(isAllowedNpmPackPath("bin/memorax-code-npm-preinstall.mjs"), true);
   assert.equal(isAllowedNpmPackPath("bin/memorax-code-opencode.mjs"), true);
   assert.equal(isAllowedNpmPackPath("lib/node-version.mjs"), true);
+  assert.equal(isAllowedNpmPackPath("lib/dsh-plugin-install.mjs"), true);
   assert.equal(isAllowedNpmPackPath("lib/resolve-claude-command.mjs"), true);
   assert.equal(isAllowedNpmPackPath("lib/vscode-extension-command.mjs"), true);
   assert.equal(isAllowedNpmPackPath("lib/memorax-code-adapter-common/src/memorax-code-config-file.mjs"), true);
@@ -21,6 +22,7 @@ test("single npm package layout accepts declared paths and rejects unknown trees
     true,
   );
   assert.equal(isAllowedNpmPackPath("lib/memorax-code-opencode-adapter/src/plugin.mjs"), true);
+  assert.equal(isAllowedNpmPackPath("lib/memorax-code-dsh-adapter/src/plugin.mjs"), true);
   assert.equal(
     isAllowedNpmPackPath("lib/memorax-code-opencode-adapter/skills/memorax-code/SKILL.md"),
     true,

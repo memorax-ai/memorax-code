@@ -24,21 +24,15 @@ authoritative.
 
 ## 2. System Shape and Package Ownership
 
-MemoraX Code integrates Codex, Claude Code, and OpenCode with one local
-Backend. The Backend is a capability-oriented modular monolith. The clients
-retain ownership of models, model-provider credentials, native tools,
-model-provider traffic, and native transcript or message creation.
-
-The source tree also contains a DeepSeek Harness (DSH) Turn bridge. It uses
-native Cordis listeners when Patchouli is absent. When the `patchouli` service
-is present, it removes those listeners and registers MemoraX as a Patchouli
-provider instead. Both modes use the same versioned local Backend protocol and
-the persisted Session Event Log; their deployment lifecycle remains separate
-from this request-time integration.
+MemoraX Code integrates Codex, Claude Code, DeepSeek Harness (DSH), and
+OpenCode with one local Backend. The Backend is a capability-oriented modular
+monolith. The clients retain ownership of models, model-provider credentials,
+native tools, model-provider traffic, and native transcript or message
+creation.
 
 Around the Backend are:
 
-- three client deployment adapters and one source-only DSH Turn bridge;
+- four client deployment adapters;
 - one lower-level shared runtime source layer;
 - one npm assembly and installed-CLI layer; and
 - repository automation that builds, validates, stages, and tests artifacts.
@@ -55,7 +49,7 @@ flowchart LR
   subgraph Adapters["Client integrations"]
     CodexAdapter["Codex adapter<br/>plugin, Hooks, canonical skill"]
     ClaudeAdapter["Claude adapter<br/>plugin, Hooks, installer"]
-    DshAdapter["DSH adapter<br/>Cordis Turn bridge"]
+    DshAdapter["DSH adapter<br/>Cordis Turn bridge, Profile lifecycle"]
     OpenCodeAdapter["OpenCode adapter<br/>plugin, installer, skill artifact"]
   end
 
@@ -72,6 +66,7 @@ flowchart LR
   Common -. "runtime source" .-> Build
   CodexAdapter -. "artifact source" .-> Build
   ClaudeAdapter -. "artifact source" .-> Build
+  DshAdapter -. "artifact source" .-> Build
   OpenCodeAdapter -. "artifact source" .-> Build
   Build -->|"assembles"| Artifact
   Artifact -->|"launches"| Backend
@@ -79,6 +74,7 @@ flowchart LR
   Backend --> Common
   CodexAdapter --> Common
   ClaudeAdapter --> Common
+  DshAdapter --> Common
   OpenCodeAdapter --> Common
 
   Codex --> CodexAdapter
@@ -105,21 +101,21 @@ relationships; the arrow labels distinguish them. It is not an import graph.
 | `packages/ts/memorax-code-adapter-common` | Shared source for Backend connection authority, private runtime records, cross-process locking and configuration, Hook generations, Hook launch helpers, and Repo/Personal Memory helpers | Backend composition, native transcript interpretation, MemoraX request execution, or client plugin policy | `packages/ts/memorax-code-adapter-common/src/backend-connection.mjs`, `src/runtime-record.mjs`, `src/hooks`, and `src/repo-memory` |
 | `packages/ts/memorax-code-codex-adapter` | Codex plugin artifact, Hook shells and runtimes, session/workspace observation, diagnostics, and the canonical shared skill | Codex rollout semantics or Backend-side writeback authority | `.codex-plugin`, `hooks`, `runtime-hooks`, `src`, and `skills/memorax-code` |
 | `packages/ts/memorax-code-claude-adapter` | Claude Code plugin artifact, Hook shells and runtimes, configuration, installer, marketplace source, and diagnostics | Claude transcript semantics or Backend memory orchestration | `.claude-plugin`, `hooks`, `runtime-hooks`, `scripts`, and `src/plugin-install.mjs` |
-| `packages/ts/memorax-code-dsh-adapter` | Mutually exclusive native/Patchouli DSH integration, exact persisted-event interval validation, and the local Backend wire protocol | DSH Profile mutation, Backend-side event interpretation, Patchouli storage, or MemoraX request execution | `src/plugin.mjs`, `src/patchouli-provider.mjs`, `src/protocol.mjs`, and adapter tests |
+| `packages/ts/memorax-code-dsh-adapter` | Mutually exclusive native-listener and Patchouli-provider integration, personal-context composition, shared-skill and supervised Repo Memory integration, exact persisted-event interval validation, local Backend wire protocol, Profile lifecycle, per-user runtime-bundle materialization, and durable runtime authority | Backend-side event interpretation, MemoraX request execution, Patchouli routing or aggregation, or DSH session ownership | `src/plugin.mjs`, `src/patchouli-provider.mjs`, `src/profile-lifecycle.mjs`, `hooks/repo-memory-job.mjs`, and the adapter tests |
 | `packages/ts/memorax-code-opencode-adapter` | OpenCode plugin runtime, managed thin-loader installation, automatic retrieval, SDK-backed writeback, shell-session identity, workspace runtime evidence and diagnostics, a materialized shared skill, and supervised Repo Memory maintenance and missing-bundle initialization | OpenCode message interpretation inside the Backend or model-provider configuration | `src/plugin.mjs`, `src/plugin-install.mjs`, `src/cli.mjs`, `src/repo-memory-server-runner.mjs`, and the OpenCode materialization mapping in `scripts/npm-source-files.mjs` |
 | `packages/npm/memorax-code` | Installed executable wrappers, update, preinstall/postinstall, npm manifest, and release-package source | Backend lifecycle semantics, uninstall orchestration, or artifact staging | `bin`, `lib/run-entrypoint.mjs`, and `package.json` |
 | `scripts` | Backend build orchestration, staging/materialization, package layout, documentation, and local-only data gates | Product runtime authority | Package-build/check scripts and executable contract scripts |
 | `.github` | Issue and pull-request contribution templates | Product runtime behavior | `.github/ISSUE_TEMPLATE` and `.github/pull_request_template.md` |
 
 `memorax-code-adapter-common` is a source layer consumed by the Backend and all
-three adapters; it is not an independently deployed service. The npm artifact
+four adapters; it is not an independently deployed service. The npm artifact
 assembles all runtime trees, but package assembly does not make the npm wrapper
 the owner of their behavior.
 
 ### 2.2 Physical dependency directions
 
-- The Backend and the Codex, Claude Code, and OpenCode deployment adapters may
-  import adapter-common. Adapter-common must not import those higher-level
+- The Backend and the Codex, Claude Code, DSH, and OpenCode deployment adapters
+  may import adapter-common. Adapter-common must not import those higher-level
   components back.
 - Adapter Hook and plugin runtimes do not import Backend implementation. They
   communicate through versioned, client-qualified local HTTP commands.
@@ -129,17 +125,18 @@ the owner of their behavior.
 - The npm layer locates staged entrypoints. `scripts` owns how source is
   materialized into that staged layout.
 - The canonical user-facing `memorax-code` skill lives in the Codex adapter.
-  Packaging materializes the Claude Code and OpenCode artifacts from that
+  Packaging materializes the Claude Code, DSH, and OpenCode artifacts from that
   source; do not maintain independent skill copies.
 
 Client integration is deliberately not physically symmetric. Codex plugin
 material belongs to the Codex adapter, while current install, activation, and
 Hook-trust glue lives in Backend `clients/codex`. The Claude Code installer
-lives in the Claude adapter. The OpenCode adapter installs an auto-discovered
-thin loader and shared skill without editing OpenCode provider configuration.
-Both installers are loaded by their Backend lifecycle participants. Preserve
-the participant contract and each client's actual authority instead of forcing
-matching directory shapes.
+lives in the Claude adapter. The DSH adapter owns Profile discovery and
+mutation plus per-user runtime generation materialization. The OpenCode adapter
+installs an auto-discovered thin loader and shared skill without editing
+OpenCode provider configuration. These implementations are loaded by their
+Backend lifecycle participants. Preserve the participant contract and each
+client's actual authority instead of forcing matching directory shapes.
 
 ## 3. Runtime Flows
 
@@ -181,12 +178,28 @@ The principal control-plane locations are:
   generation and launch selection; and
 - each adapter lifecycle participant for client-specific preparation, status,
   disablement, and removal. OpenCode's participant delegates plugin and skill
-  materialization to `memorax-code-opencode-adapter/src/plugin-install.mjs`.
+  materialization to `memorax-code-opencode-adapter/src/plugin-install.mjs`;
+  DSH's participant delegates Profile and runtime-bundle lifecycle to
+  `memorax-code-dsh-adapter/src/profile-lifecycle.mjs`.
 
 Staging and activation are separate decisions. A failed Backend start must not
 replace the currently authoritative Hook generation. Cross-process lifecycle
 decisions use durable records and bounded locks rather than relying on one
 process's in-memory serialization.
+
+DSH lifecycle discovery reads valid Profiles under `DSH_HOME`. The globally
+staged adapter source is immutable; the adapter materializes a content-addressed
+runtime generation under the selected `MEMORAX_CODE_HOME` and asks DSH's native
+plugin command to install that generation into each managed Profile. When DSH
+has an existing Profile but none can run headless work, the same native command
+initializes the standard `headless` Profile and brings it under adapter
+ownership so supervised Repo Memory always has a worker. Removal uninstalls the
+adapter without deleting DSH Profiles. The Backend lifecycle lock is acquired
+before the DSH state lock. Start quiesces the old authority, prepares Profile
+artifacts with authority disabled, and activates them only after Backend
+readiness. Stop, update, and uninstall publish disabled authority before
+Profile mutation. A disabled or invalid runtime stays inert inside DSH rather
+than registering listeners or recovering the Backend.
 
 OpenCode lifecycle discovery accepts either its configuration directory or an
 `opencode` executable on `PATH`, so Desktop-only, CLI-only, and combined
@@ -321,17 +334,13 @@ sequenceDiagram
   Runtime-->>Coordinator: local scheduling accepted or rejected
   Runtime->>Provider: later flush buffered or chunked writeback
   Provider-->>Runtime: accepted task identity
-  alt integration supplies trace observability
-    Runtime->>Obs: emit accepted task event and identity
-    Obs->>Projection: update the live task projection
-    Obs->>Trace: persist the same writeback event
-    Reconciler->>Projection: list live and persisted pending tasks
-    Projection->>Trace: read persisted writeback history
-    Reconciler->>Provider: query writeback status
-    Reconciler->>Trace: append terminal status when completed
-  else DSH bridge
-    Note over Runtime,Trace: no Trace, task projection, or reconciliation in this layer
-  end
+  Runtime->>Obs: emit accepted task event and identity
+  Obs->>Projection: update the live task projection
+  Obs->>Trace: persist the same writeback event
+  Reconciler->>Projection: list live and persisted pending tasks
+  Projection->>Trace: read persisted writeback history
+  Reconciler->>Provider: query writeback status
+  Reconciler->>Trace: append terminal status when completed
 ```
 
 - Retrieval events do not enter reconciliation.
@@ -351,8 +360,12 @@ sequenceDiagram
 - A valid persisted DSH interval can restore automatic writeback after a
   Backend restart without cached Turn metadata; repository scope is still
   resolved and validated from the persisted Session workspace.
-- DSH Search and Add intentionally stay outside Trace, task reconciliation,
-  and Memory Viewer in this source-only bridge layer.
+- DSH uses the shared retrieval, buffering, chunking, redaction, provider, and
+  client-qualified trace paths. Its normalized Search and Add operations enter
+  DSH trace and pending Add tasks use the shared writeback-reconciliation
+  projection. The shared Viewer consumes those normalized DSH operational
+  events live and from retained trace, including reconciled terminal Add
+  status, without reading native DSH history.
 - OpenCode terminal handling accepts only matching SDK user and completed
   assistant records for the correlated session and parent message. An exact
   `MessageAbortedError` closes the Turn as interrupted without writeback; other
@@ -366,35 +379,39 @@ sequenceDiagram
   buffer runtime cancels and discards pending fallback turns for the same
   client and session before buffering under the Git scope. It does not migrate
   or flush those turns across namespaces.
-- For trace-enabled clients, pending writeback status can be reconstructed
-  from persisted local trace after Backend restart. A still-pending provider
-  status updates in-memory reconciliation policy rather than appending a new
-  trace event.
+- Pending writeback status can be reconstructed from client-qualified local
+  trace after Backend restart. A still-pending provider status updates
+  in-memory reconciliation policy rather than appending a new trace event.
 
 ### 3.5 Repo Memory coordination
 
 Repo Memory is repository-local guidance under `.repo_memory`, not a MemoraX
-provider response. In all three clients, an accepted turn-start result exposes
+provider response. In all four clients, an accepted turn-start result exposes
 a worktree to the maintenance-aware adapter integration only for a verified
 Git scope; the Viewer separately projects Repo Memory readiness. Codex and
-Claude Code Hooks and OpenCode's awaited `chat.message` handler may schedule a
-missing bundle build using adapter-common supervision, locking, and job-policy
-helpers. They must use the Backend-resolved worktree rather than adapter-local
-workspace input.
+Claude Code Hooks, DSH's active native or Patchouli integration, and OpenCode's
+awaited `chat.message` handler may schedule a missing bundle build using
+adapter-common supervision, locking, and job-policy helpers. They must use the
+Backend-resolved worktree rather than adapter-local workspace input.
 
 Codex and OpenCode keep the generic shared Skill reminder available when the
-Backend or repository scope is unavailable. Their User Profile and Procedure
-Memory builders are enabled only when the current turn-start result includes a
-Backend-resolved worktree, and those builders read that worktree. The original
-client workspace remains metadata when an accepted turn's reminder is traced;
-it is not repository-local content authority.
+Backend or repository scope is unavailable. Codex, DSH, and OpenCode enable
+their User Profile and Procedure Memory builders only when the current
+turn-start result includes a Backend-resolved worktree, and those builders read
+that worktree. The original client workspace remains metadata when an accepted
+turn's reminder is traced; it is not repository-local content authority.
 
-A relevant repo-read can invoke supervised maintenance in all three clients.
+A relevant repo-read can invoke supervised maintenance in all four clients.
 The runner validates the bundle and selects a background build, update, or
-no-op according to policy. For OpenCode, both on-demand maintenance and
-first-eligible-prompt initialization run through a short-lived subagent session
-on the active OpenCode server; Desktop-only installations do not require a
-standalone OpenCode CLI.
+no-op according to policy. DSH maintenance runs through an enabled, managed
+headless-capable Profile. For OpenCode, both on-demand maintenance and
+first-eligible-prompt initialization run through a short-lived subagent session.
+The detached worker reuses the active OpenCode server when it is reachable.
+Because standalone `opencode run` exposes only process-local server authority,
+the worker owns an authenticated, loopback-only `opencode serve` process when
+session creation cannot reach that authority, and closes it afterward.
+Desktop-only installations with a reachable server do not require a standalone
+OpenCode CLI.
 
 ## 4. Backend Modular Monolith
 
@@ -455,7 +472,7 @@ entrypoints and compatibility facades. It is not another implementation area.
 | `src/lifecycle/backend` | Managed process, PID/token/connection records, status probing, cleanup, and shutdown requests | Helper contracts do not depend back on the full service implementation |
 | `src/clients/codex` | Codex rollout, prompt, turn-index, and workspace interpretation; Hook memory runtime; plugin integration glue; and lifecycle participant | No Claude format fallback; request runtime remains HTTP-composition independent |
 | `src/clients/claude` | Claude transcript/turn interpretation, Hook memory runtime, and lifecycle participant | No Codex format fallback; request runtime remains HTTP-composition independent |
-| `src/clients/dsh` | DSH Session header and exact persisted event-interval interpretation plus its request-time memory runtime | No Hook-text, rollout, transcript, SDK-message, or latest-Turn fallback; request runtime remains HTTP-composition independent |
+| `src/clients/dsh` | DSH Session header and exact persisted event-interval interpretation, request-time memory and normalized trace runtime, and lifecycle-participant delegation | No Hook-text, rollout, transcript, SDK-message, or latest-Turn fallback; Profile mutation stays in the DSH adapter, native Event Log is not Viewer input, and request runtime remains HTTP-composition independent |
 | `src/clients/opencode` | OpenCode SDK message validation and text materialization, plugin memory runtime, and lifecycle participant | No Hook-text, database, rollout, or transcript fallback; request runtime remains HTTP-composition independent |
 | `src/memory` | Memory commands, retrieval, writeback, turn coordination, repository session pinning, manual CLI, buffering/chunking, task projection, and reconciliation | Client-neutral modules do not parse native transcript formats |
 | `src/repository` | Read-only repository identity and Repo Memory readiness | Scope derivation does not execute Git or use synchronous filesystem reads |
@@ -569,7 +586,9 @@ and
 | Repo Memory bundle | Repository-local `.repo_memory` files produced by the supervised job | Backend readiness and client-injected guidance |
 
 The Viewer is never memory, transcript, session, repository-scope, or
-lifecycle authority.
+lifecycle authority. Its projection covers all four clients through
+client-qualified normalized operational events and local trace; only Claude
+Code may supplement trace with its native transcript projection.
 
 ### 6.2 State classes and shutdown ownership
 
@@ -603,15 +622,15 @@ flowchart LR
   Trace["client-qualified local trace"]
   ViewerSink["Viewer live projection"]
   TaskProjection["writeback task projection"]
-  NativeHistory["client-owned local native history"]
+  NativeHistory["Claude client-owned transcript history"]
   ViewerStore["local trace/history projection"]
   UserProjection["content-stripping user projection"]
   PublicViewer["content-free /memory-viewer summary"]
 
   Events --> Fanout
   Fanout --> Trace
-  Fanout --> ViewerSink
-  Fanout --> TaskProjection
+  Fanout -->|"Viewer-supported clients"| ViewerSink
+  Fanout -->|"reconciliation-enabled clients"| TaskProjection
   Trace --> ViewerStore
   NativeHistory --> ViewerStore
   ViewerSink --> ViewerStore
@@ -633,13 +652,23 @@ reviewed by the local-only gate; trace-core modules must remain network-free,
 and a module must not combine trace storage with outbound authority without a
 reviewed contract.
 
+For DSH, Cordis `turn/start` establishes only live trace identity. After
+`turn/end`, either the native adapter flushes and reads the exact Turn interval
+or Patchouli's Agent Loop connector supplies that already-durable interval to
+the registered MemoraX provider. Only a Backend-validated interval may produce
+normalized `turn_materialized` content and writeback trace events. The raw
+Session Event Log and its path are never copied into trace.
+
 `/memory-viewer` reads local trace/history/projection state. The local Store
 and history readers may process content-bearing trace or native history only
 to produce the safe public projection. The HTTP response never returns
 conversation or memory text, session or turn identifiers, transcript paths,
 or raw trace details. It never polls MemoraX. Pure read-model projections
 depend on `viewer/model.ts` rather than the aggregate Store, and `viewer/http`
-is constrained to the public route module.
+is constrained to the public route module. DSH enters the Viewer only through
+normalized, client-qualified operational events and retained DSH trace. The
+Viewer never reads the native DSH Session Event Log or its path, and live DSH
+memory events without a client-qualified TraceContext fail closed.
 
 ## 7. Packaging and Distribution
 
@@ -651,6 +680,7 @@ flowchart TD
   CommonSource["adapter-common runtime source"]
   CodexSource["Codex adapter and canonical skill"]
   ClaudeSource["Claude adapter"]
+  DshSource["DSH adapter"]
   OpenCodeSource["OpenCode adapter"]
   Stage["npm staging tree"]
   Materialize["skill and marketplace materialization"]
@@ -664,6 +694,7 @@ flowchart TD
   CommonSource --> Stage
   CodexSource --> Stage
   ClaudeSource --> Stage
+  DshSource --> Stage
   OpenCodeSource --> Stage
   Stage --> Materialize
   Materialize --> Gates
@@ -675,6 +706,10 @@ flowchart TD
   committed.
 - Adapter-common and adapter `.mjs` runtime trees are staged from declared,
   tracked source.
+- DSH lifecycle treats that staged source as read-only. It materializes a
+  content-addressed generation under `$MEMORAX_CODE_HOME/adapters/dsh/runtime`
+  and installs the generation into managed Profiles; the Profile artifact
+  excludes lifecycle control-plane source.
 - The Claude Code skill and marketplace and the OpenCode skill artifact are
   materialized from canonical sources; packaging may rewrite contained
   relative imports for the staged topology.
@@ -688,8 +723,8 @@ flowchart TD
 - Artifact gates reject undeclared paths, unsafe symlinks, cache/build debris,
   and local-only data-boundary violations.
 - Installed-package tests isolate `MEMORAX_CODE_HOME`, `CODEX_HOME`,
-  `CLAUDE_CONFIG_DIR`, and `OPENCODE_CONFIG_DIR` so lifecycle and client
-  integration checks do not reuse developer state.
+  `CLAUDE_CONFIG_DIR`, `DSH_HOME`, and `OPENCODE_CONFIG_DIR` so lifecycle and
+  client integration checks do not reuse developer state.
 
 Root architecture and contributor guidance are repository documents, while
 `shipped-docs.json` remains the authority for user documentation included in
@@ -725,11 +760,11 @@ Placement rules:
   root-surface, public-route, delegation, and dependency-cycle contracts.
 - Backend behavior tests build and exercise `dist`; architecture tests inspect
   `src` directly.
-- The Backend suite discovers nested tests recursively. Codex, Claude Code, and
-  OpenCode adapter suites currently discover only flat `test/*.test.mjs`; their
-  package scripts must change before tests are nested.
+- The Backend suite discovers nested tests recursively. Codex, Claude Code,
+  DSH, and OpenCode adapter suites currently discover only flat
+  `test/*.test.mjs`; their package scripts must change before tests are nested.
 - Adapter-common has no standalone suite. Its changes are verified through all
-  affected consumers: Backend, all three adapters, and package checks when
+  affected consumers: Backend, all four adapters, and package checks when
   staged runtime layout is involved.
 - Before moving, splitting, or renaming tests, search `scripts` and `.github`
   for explicit paths and test-name patterns.
@@ -745,8 +780,8 @@ uses those named profiles rather than copying commands here.
 | Hook HTTP or adapter-visible command schema | `test/transport/http` and affected adapter suites | Backend source boundaries and package shape when staged | Backend + Adapter-common/shared Hook; add Install/artifacts when staged package shape changes |
 | Backend root entrypoint or compatibility facade | Entrypoint, architecture, and npm package tests | Source boundaries and package shape | Backend + Install/artifacts |
 | Client-native parsing or identity | `test/clients/<client>` | Source boundaries | Backend |
-| Client adapter plugin or Hook deployment | Matching adapter suite and affected Backend contract tests | Package shape when staged | Codex, Claude Code, or OpenCode; add Adapter-common/shared Hook for shared Hook source and Install/artifacts for staged package shape |
-| Adapter-common | Affected Backend tests and all three adapter suites | Package shape when staged layout changes | Adapter-common/shared Hook; add Install/artifacts when staged runtime or package layout changes |
+| Client adapter plugin or Hook deployment | Matching adapter suite and affected Backend contract tests | Package shape when staged | Codex, Claude Code, DSH, or OpenCode; add Adapter-common/shared Hook for shared Hook source and Install/artifacts for staged package shape |
+| Adapter-common | Affected Backend tests and all four adapter suites | Package shape when staged layout changes | Adapter-common/shared Hook; add Install/artifacts when staged runtime or package layout changes |
 | MemoraX provider, trace, or outbound transport | Matching Backend tests | Local-only trace boundary | Backend + Trace/local-only boundary |
 | Test relocation | Moved owning suite | Platform-specific consumers | Matching named profile |
 | Packaging/materialization | npm package tests and artifact gates | Package shape and local-only trace boundary | Install/artifacts |

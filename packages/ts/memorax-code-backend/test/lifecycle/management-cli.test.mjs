@@ -432,6 +432,7 @@ test("persisted clients none keeps lifecycle commands adapter-free", async () =>
     "[clients]",
     "codex = false",
     "claude = false",
+    "dsh = false",
     "",
     "[model]",
     'base_url = "http://127.0.0.1:9999"',
@@ -458,6 +459,7 @@ test("persisted clients none keeps lifecycle commands adapter-free", async () =>
       const report = JSON.parse(result.stdout);
       assert.equal(Object.hasOwn(report, "codexAdapter"), false);
       assert.equal(Object.hasOwn(report, "claudeAdapter"), false);
+      assert.equal(Object.hasOwn(report, "dshAdapter"), false);
       assert.equal(Object.hasOwn(report, "codexPlugin"), false);
       assert.equal(await pathExists(claudeCli.callsPath), false, `${action} must not invoke Claude CLI`);
       assert.equal(await readFile(join(codexHome, "config.toml"), "utf8"), originalCodexConfig);
@@ -503,6 +505,7 @@ test("unqualified Backend recovery preserves both configured client integrations
     assert.deepEqual(JSON.parse(await readFile(activeClientsPath, "utf8")), {
       codex: true,
       claude: true,
+      dsh: false,
       opencode: false,
     });
 
@@ -514,6 +517,7 @@ test("unqualified Backend recovery preserves both configured client integrations
     assert.deepEqual(JSON.parse(await readFile(activeClientsPath, "utf8")), {
       codex: true,
       claude: true,
+      dsh: false,
       opencode: false,
     });
 
@@ -525,6 +529,7 @@ test("unqualified Backend recovery preserves both configured client integrations
     assert.deepEqual(JSON.parse(await readFile(activeClientsPath, "utf8")), {
       codex: true,
       claude: true,
+      dsh: false,
       opencode: false,
     });
   } finally {
@@ -573,6 +578,7 @@ test("partial client stop preserves Backend until an explicit Backend-only stop"
     assert.deepEqual(JSON.parse(await readFile(join(home, "runtime", "backend", "managed-clients.json"), "utf8")), {
       codex: false,
       claude: true,
+      dsh: false,
       opencode: false,
     });
 
@@ -584,6 +590,7 @@ test("partial client stop preserves Backend until an explicit Backend-only stop"
     assert.deepEqual(JSON.parse(await readFile(join(home, "runtime", "backend", "managed-clients.json"), "utf8")), {
       codex: false,
       claude: true,
+      dsh: false,
       opencode: false,
     });
   } finally {
@@ -720,6 +727,7 @@ test("failed Backend start preserves selected clients and direct Claude settings
     assert.deepEqual(JSON.parse(await readFile(join(home, "runtime", "backend", "managed-clients.json"), "utf8")), {
       codex: false,
       claude: true,
+      dsh: false,
       opencode: false,
     });
     assert.equal(await readFile(join(claudeHome, "settings.json"), "utf8"), originalSettings);

@@ -9,10 +9,16 @@ import { promisify } from "node:util";
 import { runMemoryCli } from "../../dist/memory/cli.js";
 import {
   traceContextFromClaudeHookBody,
+  traceContextFromDshTurnStart,
   traceContextFromHookBody,
   traceContextFromOpenCodeHookBody,
 } from "../../dist/trace/context.js";
-import { claudeTracePaths, openCodeTracePaths, tracePaths } from "../../dist/trace/config.js";
+import {
+  claudeTracePaths,
+  dshTracePaths,
+  openCodeTracePaths,
+  tracePaths,
+} from "../../dist/trace/config.js";
 import {
   writeCurrentClaudeTurn,
   writeCurrentCodexTurn,
@@ -181,7 +187,7 @@ test("memory CLI rejects a nested repository outside the current turn scope", as
   assert.equal(result.workspaceScopeReason, "workspace_scope_mismatch");
   assert.equal(
     result.userAction,
-    "Start a new Codex, Claude Code, or OpenCode session from the target repository or local workspace.",
+    "Start a new Codex, Claude Code, DSH, or OpenCode session from the target repository or local workspace.",
   );
   assert.equal(requestCount, 0);
 });
@@ -302,7 +308,7 @@ test("memory CLI gives the same scope recovery guidance for a Claude turn", asyn
   assert.equal(result.workspaceScopeReason, "workspace_scope_mismatch");
   assert.equal(
     result.userAction,
-    "Start a new Codex, Claude Code, or OpenCode session from the target repository or local workspace.",
+    "Start a new Codex, Claude Code, DSH, or OpenCode session from the target repository or local workspace.",
   );
   assert.equal(requestCount, 0);
 });
@@ -841,6 +847,92 @@ test("memory CLI search binds to OpenCode trace instead of an inherited Codex th
   assert.equal(events[0].trace.turn_id, "opencode-user-message");
   assert.equal(events[0].trace.context_origin, "current-turn-file");
   await assert.rejects(readFile(tracePaths(root).eventsJsonl(sessionId), "utf8"));
+});
+
+test("memory CLI binds DSH search and add to the current turn scope", async () => {
+  const requests = [];
+  const fetchImpl = async (url) => {
+    requests.push(new URL(String(url)).pathname);
+    return new Response(
+      JSON.stringify({ success: true, data: { task_id: "dsh-task", status: "queued", data: [] } }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  };
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-cli-dsh-trace-"));
+  const workspace = join(root, "workspace");
+  const nested = join(workspace, "src");
+  const otherWorkspace = join(root, "other");
+  const sessionId = "session-dsh-cli";
+  await Promise.all([
+    mkdir(nested, { recursive: true }),
+    mkdir(otherWorkspace, { recursive: true }),
+  ]);
+  await writeCurrentTraceTurn(traceContextFromDshTurnStart({
+    sessionId,
+    turn: 4,
+    cwd: workspace,
+  }), { client: "dsh", memoraxCodeHome: root });
+  await writeCurrentClaudeTurn(traceContextFromClaudeHookBody({
+    session_id: "unrelated-claude-session",
+    prompt_id: "unrelated-claude-turn",
+    cwd: workspace,
+  }), { memoraxCodeHome: root });
+  const env = {
+    CODEX_THREAD_ID: "unrelated-codex-session",
+    DSH_SHELL: "1",
+    DSH_SESSION_ID: sessionId,
+    MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT: "claude",
+    MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID: "unrelated-claude-session",
+    MEMORAX_CODE_HOME: root,
+    MEMORAX_CODE_MEMORY_CLI_ADD_ENABLED: "true",
+    MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
+    MEMORAX_CODE_MEMORAX_API_KEY: "secret",
+    MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
+  };
+  const run = (args, cwd) => runMemoryCli(args, { cwd, env, fetchImpl });
+
+  const missingSession = await runMemoryCli(["search", "--query", "missing DSH session"], {
+    cwd: nested,
+    env: { ...env, DSH_SESSION_ID: "" },
+    fetchImpl,
+  });
+  assert.equal(missingSession.ok, true);
+  await assert.rejects(readFile(claudeTracePaths(root).eventsJsonl("unrelated-claude-session"), "utf8"));
+
+  const rejected = await run(["search", "--query", "must not cross workspaces"], otherWorkspace);
+  assert.equal(rejected.ok, false);
+  assert.match(rejected.error, /does not match the current DSH turn repository\/workspace scope/);
+  assert.equal(rejected.workspaceScopeReason, "workspace_scope_mismatch");
+  assert.equal(requests.length, 1);
+
+  const search = await run(["search", "--query", "DSH trace bridge"], nested);
+  const add = await run([
+    "add",
+    "--memory",
+    "DSH manual memory.",
+    "--type",
+    "procedural",
+    "--reason",
+    "Verify DSH manual memory binding.",
+  ], nested);
+
+  assert.equal(search.ok, true);
+  assert.equal(add.ok, true);
+  assert.deepEqual(requests, ["/v1/memories/search", "/v1/memories/search", "/v1/memories/add"]);
+  const events = (await readFile(dshTracePaths(root).eventsJsonl(sessionId), "utf8"))
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  assert.deepEqual(events.map((event) => ({
+    type: event.type,
+    source: event.source,
+    client: event.trace.client,
+    sessionId: event.trace.session_id,
+    turnId: event.trace.turn_id,
+  })), [
+    { type: "memory_cli_search", source: "memory_cli", client: "dsh", sessionId, turnId: "4" },
+    { type: "memory_cli_add", source: "memory_cli", client: "dsh", sessionId, turnId: "4" },
+  ]);
 });
 
 test("memory CLI search does not trace to a different Codex thread current turn", async () => {

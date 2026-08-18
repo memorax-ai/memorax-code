@@ -24,6 +24,21 @@ test("npm preinstall retires only the managed Backend and verifies PID cleanup",
   }
 });
 
+test("npm preinstall quiesces managed DSH state without Backend PID authority", async () => {
+  const fixture = await createFixture({ withPid: false, withDshState: true });
+  try {
+    const result = await runPreinstall(fixture);
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(
+      await readFile(fixture.logPath, "utf8"),
+      `stop --home ${fixture.memoraxCodeHome} --clients none --json\n`,
+    );
+    assert.match(result.stderr, /Existing managed Backend stopped/);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test("npm preinstall fails package setup when Backend retirement fails", async () => {
   const fixture = await createFixture({ failStop: true });
   try {
@@ -67,12 +82,14 @@ async function createFixture({
   hangStop = false,
   timeoutMs,
   withPid = true,
+  withDshState = false,
 } = {}) {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-npm-preinstall-"));
   const binDir = join(root, "bin");
   const libDir = join(root, "lib");
   const memoraxCodeHome = join(root, "memorax-code-home");
   const pidPath = join(memoraxCodeHome, "runtime", "backend", "backend.pid.json");
+  const dshStatePath = join(memoraxCodeHome, "adapters", "dsh", "state.json");
   const logPath = join(root, "commands.log");
   await mkdir(binDir, { recursive: true });
   await mkdir(libDir, { recursive: true });
@@ -86,6 +103,7 @@ async function createFixture({
     "#!/usr/bin/env node",
     "import { appendFileSync, rmSync } from 'node:fs';",
     `appendFileSync(${JSON.stringify(logPath)}, process.argv.slice(2).join(" ") + "\\n");`,
+    "if (process.env.MEMORAX_CODE_PACKAGE_REPLACEMENT !== '1') process.exit(9);",
     ...(hangStop
       ? ["setInterval(() => {}, 1_000);"]
       : failStop
@@ -101,7 +119,11 @@ async function createFixture({
     await mkdir(dirname(pidPath), { recursive: true });
     await writeFile(pidPath, "{}\n");
   }
-  return { root, memoraxCodeHome, pidPath, logPath };
+  if (withDshState) {
+    await mkdir(dirname(dshStatePath), { recursive: true });
+    await writeFile(dshStatePath, "{}\n");
+  }
+  return { root, memoraxCodeHome, pidPath, dshStatePath, logPath };
 }
 
 async function runPreinstall(fixture) {

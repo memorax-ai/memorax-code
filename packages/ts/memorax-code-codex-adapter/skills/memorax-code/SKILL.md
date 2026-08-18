@@ -21,6 +21,11 @@ description: >-
 
 Classify the requested memory authority first, then its operation. Load only the matching reference unless the request genuinely spans authorities or operations.
 
+After selecting an operation reference, read it completely in a standalone
+tool call and wait for the full result before constructing or executing that
+operation. Never combine reading a required reference with the command or
+action it governs in the same shell command or tool call.
+
 ## Authority Router
 
 ### MemoraX Code Coding Memory
@@ -51,8 +56,11 @@ Use personal memory for user-owned repository procedures and durable profile or 
 - Route ordered actions, checklists, prerequisites, gates, exceptions, and validation rules to personal procedure memory, even when phrased as "I prefer", "I like", "我的习惯", or "我喜欢".
 - Route preferred name, answer language, tone, verbosity, explanation style, and result presentation to personal profile memory.
 - Route task-learned repairs, coding pitfalls, project engineering conventions, and reusable design lessons to MemoraX Code coding memory.
+- Route prior project discussions, experiment conclusions, saved engineering findings, earlier fixes, and reusable project lessons to MemoraX Code coding memory. Do not route them to repo memory merely because they concern a project. Use repo memory for repository identity, architecture, module maps, commits, PRs, MRs, and issues.
 - Route repository architecture, module maps, commit history, PRs, MRs, and issues to repo memory. Verify claims about current behavior against live code.
+- Use both repo memory and MemoraX Code coding memory only when a request genuinely needs distinct repository evidence and reusable engineering lessons. This can apply to implementation, debugging, refactoring, migration planning, or validation when the answer may depend on repository module maps, commit/PR/issue evidence, and prior fixes, pitfalls, conventions, validation patterns, or design rationale. Do not use both authorities just because a request mentions a repository, file, module, or "previous".
 - Route current-task instructions and temporary plans to the current task only; do not persist them.
+- Current-task-only applies only when completing the request does not depend on prior project state. Do not select it merely because the requested action happens in the current turn. When implementation, debugging, review, experiment continuation, or validation depends on earlier project decisions, results, fixes, constraints, or plans that the user has not explicitly and completely supplied, route to MemoraX Code coding memory.
 - Do not infer an authority from verbs such as "remember", "recall", "refresh", or "update" alone. Ask one focused question when the target remains ambiguous.
 
 Examples:
@@ -77,6 +85,7 @@ For MemoraX Code coding memory, use `memorax-cli` exactly as described by the se
 When explaining Memory Viewer, describe only `/memory-viewer`. It is a
 content-free local summary and must not expose conversation or memory text,
 session or turn identifiers, paths, or trace details. The page never queries
-MemoraX directly; client Hooks are the trace ingress authority.
+MemoraX directly; it projects client-qualified local activity and keeps each
+supported harness isolated.
 
 Never store secrets, credentials, `.env` content, sensitive personal data, raw transcripts, hidden tests, exact patches, temporary target commits, or unsafe destructive commands. Do not announce internal routing or reference loading.

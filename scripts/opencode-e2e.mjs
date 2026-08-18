@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
-import { execFile, spawn } from "node:child_process";
+import { execFile } from "node:child_process";
 import { createServer } from "node:http";
 import {
   access,
   mkdir,
   mkdtemp,
+  readdir,
   readFile,
   realpath,
   rm,
@@ -19,7 +20,7 @@ import { resolveNpmInvocation } from "../packages/npm/memorax-code/lib/npm-invoc
 
 const execFileAsync = promisify(execFile);
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const OPENCODE_VERSION = "1.18.16";
+const OPENCODE_VERSION = "1.18.18";
 const PROMPT = "Reply with exactly: OpenCode E2E completed.";
 const REPLY = "OpenCode E2E completed.";
 
@@ -35,7 +36,6 @@ const userConfigPath = join(openCodeConfigDir, "opencode.jsonc");
 const backendPort = await freePort();
 let memoryStub;
 let modelStub;
-let openCode;
 let memoraxCode;
 
 const inheritedEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => (
@@ -82,9 +82,17 @@ try {
     "-c", "user.email=e2e@memorax.invalid",
     "commit", "--quiet", "-m", "test fixture",
   ], { cwd: workspace, env });
+  const repoMemoryHead = (await run("git", ["rev-parse", "HEAD"], {
+    cwd: workspace,
+    env,
+  })).stdout.trim();
 
   memoryStub = await startMemoryStub();
-  modelStub = await startModelStub(REPLY);
+  modelStub = await startModelStub({
+    reply: REPLY,
+    repoMemoryHead,
+    workspace,
+  });
   env.MEMORAX_CODE_MEMORAX_ENDPOINT = memoryStub.url;
 
   await runNpm(["run", "build", "--prefix", "packages/ts/memorax-code-backend"], {
@@ -107,7 +115,6 @@ try {
     "install", "--prefix", prefix,
     tarball,
     `opencode-ai@${OPENCODE_VERSION}`,
-    `@opencode-ai/sdk@${OPENCODE_VERSION}`,
     "--foreground-scripts",
     "--silent",
   ], { cwd: workspace, env });
@@ -164,34 +171,35 @@ try {
       },
     },
   };
-  openCode = await startOpenCode(opencode, workspace, env, config);
-  const sdkModule = pathToFileURL(join(
-    prefix,
-    "node_modules", "@opencode-ai", "sdk", "dist", "client.js",
-  )).href;
+  const { stdout: openCodeOutput } = await run(opencode, [
+    "run",
+    "--format=json",
+    "--model=test/test-model",
+    "--print-logs",
+    ...PROMPT.split(" "),
+  ], {
+    cwd: workspace,
+    closeStdin: true,
+    env: {
+      ...env,
+      PWD: workspace,
+      OPENCODE_CONFIG_CONTENT: JSON.stringify(config),
+    },
+    timeout: 60_000,
+  });
+  const runEvents = parseJsonLines(openCodeOutput);
+  const sessionId = runEvents.find((event) => typeof event?.sessionID === "string")?.sessionID;
+  assert.equal(typeof sessionId, "string");
+  assert.ok(sessionId);
+  assert.match(openCodeRunText(runEvents), /OpenCode E2E completed/);
+  await waitFor(() => memoryStub.requests.some((request) => request.path === "/v1/memories/add"));
+
   const backendConnectionModule = pathToFileURL(join(
     prefix,
     "node_modules", "@memorax", "memorax-code", "lib",
     "memorax-code-adapter-common", "src", "backend-connection.mjs",
   )).href;
-  const { createOpencodeClient } = await import(sdkModule);
   const { resolveBackendConnection } = await import(backendConnectionModule);
-  const client = createOpencodeClient({ baseUrl: openCode.url, directory: workspace });
-  const sessionResponse = await client.session.create({ body: { title: "MemoraX Code E2E" } });
-  const sessionId = sessionResponse.data?.id;
-  assert.equal(typeof sessionId, "string");
-  assert.ok(sessionId);
-
-  const promptResponse = await client.session.prompt({
-    path: { id: sessionId },
-    body: {
-      model: { providerID: "test", modelID: "test-model" },
-      parts: [{ type: "text", text: PROMPT }],
-    },
-  });
-  assert.equal(promptResponse.data?.info?.role, "assistant");
-  assert.match(messageText(promptResponse.data), /OpenCode E2E completed/);
-  await waitFor(() => memoryStub.requests.some((request) => request.path === "/v1/memories/add"));
 
   assert.deepEqual(
     memoryStub.requests.filter((request) => request.path === "/v1/memories/search").map((request) => request.body.query),
@@ -207,6 +215,24 @@ try {
   ));
   assert.ok(promptModelRequest, "OpenCode did not send the user prompt to the model");
   assert.match(JSON.stringify(promptModelRequest.body), /E2E recalled memory/);
+
+  const repoMemoryJob = await waitFor(async () => {
+    const jobs = await readRepoMemoryJobs(memoraxCodeHome);
+    return jobs.find((job) => job.status === "succeeded" || job.status === "failed");
+  }, 60_000);
+  assert.equal(repoMemoryJob.status, "succeeded", JSON.stringify(repoMemoryJob, null, 2));
+  assert.equal(repoMemoryJob.runner, "opencode");
+  assert.equal(repoMemoryJob.mode, "build");
+  assert.equal(repoMemoryJob.validation?.ok, true);
+  const validatorPath = join(
+    openCodeConfigDir,
+    "skills", "memorax-code", "scripts", "validate_memory.py",
+  );
+  const repoMemoryValidation = JSON.parse((await run("python3", [validatorPath, workspace], {
+    cwd: workspace,
+    env,
+  })).stdout);
+  assert.equal(repoMemoryValidation.ok, true);
 
   const doctor = await runJson(memoraxOpenCode.command, [
     ...memoraxOpenCode.args,
@@ -244,6 +270,7 @@ try {
       || summary.searchOperationCount !== 1
       || summary.searchedMemoryCount !== 1
       || summary.addOperationCount !== 1
+      || candidate.projects?.[0]?.repoMemory?.status !== "ready"
     ) return undefined;
     return candidate;
   });
@@ -260,6 +287,7 @@ try {
     searchedMemoryCount: 1,
     addOperationCount: 1,
   });
+  assert.deepEqual(viewer.projects[0].repoMemory, { status: "ready", reason: "usable" });
   const viewerJson = JSON.stringify(viewer);
   for (const privateValue of [PROMPT, REPLY, "E2E recalled memory", sessionId]) {
     assert.equal(viewerJson.includes(privateValue), false);
@@ -274,8 +302,6 @@ try {
     assert.equal(traceTypes.has(type), true);
   }
 
-  await openCode.close();
-  openCode = undefined;
   const uninstall = await runJson(memoraxCode.command, [
     ...memoraxCode.args,
     "uninstall", "--json",
@@ -296,10 +322,11 @@ try {
     openCodeVersion: OPENCODE_VERSION,
     searchRequests: memoryStub.requests.filter((request) => request.path === "/v1/memories/search").length,
     addRequests: memoryStub.requests.filter((request) => request.path === "/v1/memories/add").length,
+    repoMemoryJobStatus: repoMemoryJob.status,
+    repoMemoryStatus: viewer.projects[0].repoMemory.status,
     viewerActivities: viewer.activities.length,
   }, null, 2));
 } finally {
-  await openCode?.close().catch(() => undefined);
   if (memoraxCode) {
     await run(memoraxCode.command, [
       ...memoraxCode.args,
@@ -350,7 +377,7 @@ async function startMemoryStub() {
   return await listen(server, requests);
 }
 
-async function startModelStub(reply) {
+async function startModelStub(options) {
   const requests = [];
   const server = createServer(async (request, response) => {
     const body = await requestJson(request);
@@ -358,6 +385,15 @@ async function startModelStub(reply) {
     if (request.method !== "POST" || request.url !== "/v1/chat/completions") {
       return json(response, 404, { message: "not found" });
     }
+    const isRepoMemoryBuild = JSON.stringify(body).includes(
+      "This invocation is the authorized background repo-memory worker.",
+    );
+    if (isRepoMemoryBuild) {
+      await writeValidRepoMemoryFixture(options.workspace, options.repoMemoryHead);
+    }
+    const reply = isRepoMemoryBuild
+      ? "Repo Memory built and validated."
+      : options.reply;
     response.writeHead(200, {
       "content-type": "text/event-stream",
       "cache-control": "no-cache",
@@ -378,57 +414,6 @@ async function startModelStub(reply) {
     response.end("data: [DONE]\n\n");
   });
   return await listen(server, requests, "/v1");
-}
-
-async function startOpenCode(command, cwd, childEnv, config) {
-  const port = await freePort();
-  const child = spawn(command, [
-    "serve", "--hostname=127.0.0.1", `--port=${port}`, "--print-logs",
-  ], {
-    cwd,
-    env: { ...childEnv, OPENCODE_CONFIG_CONTENT: JSON.stringify(config) },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  const childExit = new Promise((resolveExit) => child.once("exit", resolveExit));
-  let output = "";
-  child.stdout.setEncoding("utf8");
-  child.stderr.setEncoding("utf8");
-  child.stdout.on("data", (chunk) => { output += chunk; });
-  child.stderr.on("data", (chunk) => { output += chunk; });
-  const url = `http://127.0.0.1:${port}`;
-  try {
-    await waitFor(async () => {
-      if (childStopped(child)) throw new Error(`OpenCode exited early:\n${output}`);
-      return await fetch(`${url}/global/health`).then((response) => response.ok).catch(() => false);
-    }, 20_000);
-  } catch (error) {
-    await terminateChild(child, childExit);
-    throw error;
-  }
-  return {
-    url,
-    close: () => terminateChild(child, childExit),
-  };
-}
-
-async function terminateChild(child, childExit) {
-  if (childStopped(child)) return;
-  child.kill("SIGTERM");
-  let stopTimer;
-  const stopped = await Promise.race([
-    childExit.then(() => true),
-    new Promise((resolveTimeout) => {
-      stopTimer = setTimeout(() => resolveTimeout(false), 5_000);
-    }),
-  ]);
-  clearTimeout(stopTimer);
-  if (stopped || childStopped(child)) return;
-  child.kill("SIGKILL");
-  await childExit;
-}
-
-function childStopped(child) {
-  return child.exitCode !== null || child.signalCode !== null;
 }
 
 async function listen(server, requests, suffix = "") {
@@ -487,13 +472,16 @@ function runNpm(args, options) {
 
 async function run(command, args, options) {
   try {
-    return await execFileAsync(command, args, {
-      ...options,
+    const { closeStdin, ...execOptions } = options;
+    const invocation = execFileAsync(command, args, {
+      ...execOptions,
       encoding: "utf8",
       maxBuffer: 16 * 1024 * 1024,
     });
+    if (closeStdin) invocation.child?.stdin?.end();
+    return await invocation;
   } catch (error) {
-    const detail = [error.stdout, error.stderr].filter(Boolean).join("\n");
+    const detail = [error.message, error.stdout, error.stderr].filter(Boolean).join("\n");
     throw new Error(`${command} ${args.join(" ")} failed${detail ? `:\n${detail}` : ""}`);
   }
 }
@@ -526,12 +514,78 @@ async function freePort() {
   return port;
 }
 
-function messageText(message) {
-  return (message?.parts ?? [])
-    .filter((part) => part?.type === "text" && typeof part.text === "string")
-    .map((part) => part.text)
+function parseJsonLines(output) {
+  return output.trim().split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
+}
+
+function openCodeRunText(events) {
+  return events
+    .filter((event) => event?.type === "text" && typeof event?.part?.text === "string")
+    .map((event) => event.part.text)
     .join("\n")
     .trim();
+}
+
+async function readRepoMemoryJobs(memoraxCodeHome) {
+  const jobsDir = join(memoraxCodeHome, "repo-memory-jobs");
+  const entries = await readdir(jobsDir, { withFileTypes: true }).catch(() => []);
+  const jobs = await Promise.all(entries
+    .filter((entry) => entry.isDirectory() && entry.name !== "in-progress")
+    .map(async (entry) => {
+      try {
+        return JSON.parse(await readFile(join(jobsDir, entry.name, "job.json"), "utf8"));
+      } catch {
+        return undefined;
+      }
+    }));
+  return jobs.filter(Boolean);
+}
+
+async function writeValidRepoMemoryFixture(workspace, head) {
+  const memory = join(workspace, ".repo_memory");
+  await Promise.all([
+    mkdir(join(memory, "raw"), { recursive: true }),
+    mkdir(join(memory, "resources"), { recursive: true }),
+  ]);
+  await Promise.all([
+    writeFile(join(memory, "PROFILE.md"), [
+      "---",
+      'schema: "repo_memory_profile.v0.1"',
+      `local_head: "${head}"`,
+      "---",
+      "",
+      "# Isolated OpenCode E2E Repo Memory",
+      "",
+    ].join("\n")),
+    writeFile(join(memory, "resources", "commits.md"), emptyRepoMemoryResource(
+      "repo_memory_commit_resource.v0.1", "git_commit_facets", "draft_resource",
+      "../raw/git-commits.json",
+    )),
+    writeFile(join(memory, "resources", "prs.md"), emptyRepoMemoryResource(
+      "repo_memory_pr_resource.v0.1", "provider_skipped_local_only",
+      "unavailable_local_only", "",
+    )),
+    writeFile(join(memory, "resources", "issues.md"), emptyRepoMemoryResource(
+      "repo_memory_issue_resource.v0.1", "provider_skipped_local_only",
+      "unavailable_local_only", "",
+    )),
+    writeFile(join(memory, "raw", "git-commits.json"), "[]\n"),
+  ]);
+}
+
+function emptyRepoMemoryResource(schema, source, trustState, rawSource) {
+  return [
+    "---",
+    `schema: "${schema}"`,
+    `source: "${source}"`,
+    "resource_count: 0",
+    `trust_state: "${trustState}"`,
+    `raw_source: "${rawSource}"`,
+    "---",
+    "",
+    `# ${schema}`,
+    "",
+  ].join("\n");
 }
 
 async function assertManagedArtifacts(configDir) {

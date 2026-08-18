@@ -43,6 +43,18 @@ export function createWritebackCommand(input) {
   };
 }
 
+export function createSkillReminderCommand(input) {
+  return {
+    version: MEMORY_HOOK_COMMAND_VERSION,
+    client: MEMORY_HOOK_CLIENT,
+    sessionId: requiredString(input?.sessionId, "sessionId"),
+    turn: positiveSafeInteger(input?.turn, "turn"),
+    cwd: requiredString(input?.cwd, "cwd"),
+    content: requiredString(input?.content, "content"),
+    triggers: skillReminderTriggers(input?.triggers),
+  };
+}
+
 /**
  * Select and verify the exact persisted interval after readFrom(). Later Turns
  * may already be durable, so only the inclusive requested suffix is returned.
@@ -122,4 +134,12 @@ function nonNegativeSafeInteger(value, name) {
 
 function record(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function skillReminderTriggers(value) {
+  if (!Array.isArray(value) || value.length === 0
+    || value.some((trigger) => trigger !== "cadence" && trigger !== "post_compaction")) {
+    throw new TypeError("DSH triggers must be a non-empty array of supported reminder triggers");
+  }
+  return [...new Set(value)];
 }

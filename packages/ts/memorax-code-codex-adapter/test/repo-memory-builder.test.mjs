@@ -1122,3 +1122,74 @@ exit 2
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+
+test("repo-memory build guidance requires wiki-style repository pages", () => {
+  const build = readFileSync(join(packageRoot, "skills", "memorax-code", "references", "repo-build.md"), "utf8");
+  const templates = readFileSync(join(packageRoot, "skills", "memorax-code", "references", "repo-templates.md"), "utf8");
+
+  assert.match(build, /## Wiki-Style Output Contract/);
+  assert.match(build, /wiki-style repository memory/);
+  assert.match(build, /supporting conceptual pages/);
+  assert.match(build, /3-7 Markdown pages total, including `PROFILE\.md`/);
+  assert.match(build, /resources\/\*\.md remain compact historical routing cards/);
+
+  assert.match(templates, /layout: "wiki_landing_page\.v0\.1"/);
+  assert.match(templates, /schema: "repo_memory_wiki_page\.v0\.1"/);
+  assert.match(templates, /## Major Areas/);
+  assert.match(templates, /## Supporting Pages/);
+  assert.match(templates, /Evidence status:/);
+  assert.match(templates, /Agent note:/);
+});
+
+test("repo-memory build plans natural page boundaries before final wiki writing", () => {
+  const build = readFileSync(join(packageRoot, "skills", "memorax-code", "references", "repo-build.md"), "utf8");
+  const templates = readFileSync(join(packageRoot, "skills", "memorax-code", "references", "repo-templates.md"), "utf8");
+
+  assert.match(build, /## Conceptual Page Planning/);
+  assert.match(build, /temporary planning artifact at `\.repo_memory\/_plan\.md`/);
+  assert.match(build, /canonical homes for overlapping concepts/);
+  assert.match(build, /Do not assume fixed supporting page names/);
+  assert.match(build, /Remove `\.repo_memory\/_plan\.md` before final validation/);
+  assert.match(build, /Merge rather than split/);
+  assert.match(build, /Split rather than merge/);
+  assert.match(build, /Natural documentation domains/);
+  assert.match(build, /candidates, not a required checklist/);
+
+  assert.match(templates, /### `\.repo_memory\/_plan\.md`/);
+  assert.match(templates, /selected, merged, or skipped/);
+  assert.match(templates, /### `\.repo_memory\/<repo-native-topic>\.md`/);
+  assert.match(templates, /Name pages from repository vocabulary, not from this template/);
+  assert.match(templates, /generic names are fallback names/);
+  assert.doesNotMatch(templates, /\| Architecture \| \[Architecture\]\(\.\/architecture\.md\)/);
+  assert.doesNotMatch(templates, /\| Runtime Flow \| \[Runtime Flow\]\(\.\/runtime-flow\.md\)/);
+  assert.doesNotMatch(templates, /\| Developer Workflow \| \[Developer Workflow\]\(\.\/developer-workflow\.md\)/);
+});
+
+test("repo-memory build guidance documents configurable history modes and disabled resources", () => {
+  const build = readFileSync(join(packageRoot, "skills", "memorax-code", "references", "repo-build.md"), "utf8");
+  const templates = readFileSync(join(packageRoot, "skills", "memorax-code", "references", "repo-templates.md"), "utf8");
+
+  assert.match(build, /repo_memory_builder_defaults\.v2/);
+  assert.match(build, /"repoHistory"/);
+  assert.match(build, /"mode": "provider"/);
+  assert.match(build, /## Historical Evidence Policy/);
+  assert.match(build, /--history-mode none/);
+  assert.match(build, /--history-mode commits-only/);
+  assert.match(build, /--history-mode local-only/);
+  assert.match(build, /--history-mode provider/);
+  assert.match(build, /--history-mode provider-required/);
+  assert.match(build, /`--skip-provider` is a compatibility alias for `--history-mode local-only`/);
+  assert.match(build, /write disabled resource files/);
+  assert.match(build, /source: "history_disabled"/);
+  assert.match(build, /source: "provider_skipped_local_only"/);
+  assert.match(build, /do not say that no PRs or issues exist/);
+
+  assert.match(templates, /Disabled Or Unavailable Resource Files/);
+  assert.match(templates, /source: "history_disabled"/);
+  assert.match(templates, /source: "provider_skipped_local_only"/);
+  assert.match(templates, /source: "provider_unavailable"/);
+  assert.match(templates, /resource_count: 0/);
+  assert.match(templates, /raw_source: ""/);
+  assert.match(templates, /No provider evidence was collected/);
+});

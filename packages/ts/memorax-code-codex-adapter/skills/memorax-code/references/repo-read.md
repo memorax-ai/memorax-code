@@ -2,7 +2,7 @@
 
 ## Role And Demand Gate
 
-Use existing `.repo_memory/` as a routing layer for repository identity, architecture, history, PR/issue context, remembered fixes, and cross-module search. Live code and tests remain authoritative.
+Use existing `.repo_memory/` as wiki-style repo memory for repository identity, architecture, history, PR/issue context, remembered fixes, and cross-module search. Live code and tests remain authoritative.
 
 Select this reference for broad repo introduction, history, architecture background, cross-module routing, PR/issue context, design rationale, or stale-memory awareness. Skip this reference for narrow tasks with a clear live-code target.
 
@@ -36,20 +36,26 @@ The default policy remains `adaptive(5 commits OR 24 hours)`. A missing or non-a
 
 ## Retrieval
 
-If `.repo_memory/PROFILE.md` is a readable regular file, read it once. Treat its descriptions as routing cues, not proof.
+If `.repo_memory/PROFILE.md` is a readable regular file, read `PROFILE.md` as the wiki landing page once. Treat its descriptions as routing cues, not proof.
 
-Search `PROFILE.md` and `.repo_memory/resources/` with a combined query built from the user's strongest handles: path, basename, symbol, command, PR/issue number, error text, module, branch, environment variable, or config key.
+Extract task-relevant links from `Major Areas` and `Supporting Pages`. Do not assume fixed page names; use `PROFILE.md` links and headings to find the repository-native canonical homes for the user's task. Open at most 2-4 relevant conceptual pages from `.repo_memory/*.md` before searching historical resources.
+
+Search `PROFILE.md`, `.repo_memory/*.md`, and `.repo_memory/resources/` with a combined query built from the user's strongest handles: path, basename, symbol, command, PR/issue number, error text, module, branch, environment variable, or config key.
 
 ```bash
 rg -n '<handle-1>|<handle-2>' \
-  .repo_memory/PROFILE.md .repo_memory/resources
+  .repo_memory/PROFILE.md .repo_memory/*.md .repo_memory/resources
 ```
 
 Use:
 
+- conceptual `.repo_memory/*.md` pages for repository-native canonical homes, workflows, system areas, change surfaces, and verification routing;
+- resources/*.md for historical routing cards;
 - `resources/commits.md` for local history and regressions;
 - `resources/prs.md` for merged or active implementation context;
 - `resources/issues.md` for symptoms, requests, and requirements.
+
+Disabled and unavailable historical resource files are collection state, not repository state. If a resource frontmatter uses `source: "history_disabled"`, `source: "provider_skipped_local_only"`, or `source: "provider_unavailable"` with `resource_count: 0`, do not conclude that there are no commits, PRs, MRs, or issues. Treat the channel as intentionally uncollected or unavailable; answer from available memory only. Ask whether to rebuild with provider history when that context matters.
 
 If a read is missing, unreadable, or structurally mixed, discard conclusions that depend only on the bundle. Do not repair it in the foreground.
 
@@ -58,6 +64,7 @@ If a read is missing, unreadable, or structurally mixed, discard conclusions tha
 - Read `PROFILE.md` at most once.
 - Run at most 2 combined `rg` commands.
 - Stop repo-memory retrieval as soon as the hits are sufficient.
+- Open at most 2-4 relevant conceptual pages total during the bounded memory phase.
 - Open only the matched resource section when `rg` context is insufficient.
 
 Do NOT open these unless the user explicitly asks or a compact hit contains only a `facetId`:

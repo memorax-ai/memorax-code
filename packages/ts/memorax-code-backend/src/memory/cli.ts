@@ -297,9 +297,9 @@ function memoryCliRepositoryFailure(
   fields: Pick<MemoryCliResult, "query"> = {},
 ): MemoryCliResult {
   const userAction = failure.reason === "workspace_scope_mismatch"
-    ? "Start a new Codex, Claude Code, or OpenCode session from the target repository or local workspace."
+    ? "Start a new Codex, Claude Code, DSH, or OpenCode session from the target repository or local workspace."
     : failure.reason === "workspace_scope_unavailable"
-      ? "Start a new Codex, Claude Code, or OpenCode session from the target repository or local workspace. If the problem continues, make sure its .git metadata is readable and valid."
+      ? "Start a new Codex, Claude Code, DSH, or OpenCode session from the target repository or local workspace. If the problem continues, make sure its .git metadata is readable and valid."
       : undefined;
   return {
     ok: false,
@@ -382,6 +382,11 @@ async function memoryCliObservability(
 function memoryCliTraceBinding(
   env: Record<string, string | undefined>,
 ): MemoryCliTraceBinding | undefined {
+  if (env.DSH_SHELL === "1") {
+    const expectedSessionId = env.DSH_SESSION_ID?.trim();
+    return expectedSessionId ? { client: "dsh", expectedSessionId } : undefined;
+  }
+
   const explicitClientRaw = env.MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT;
   const explicitSessionIdRaw = env.MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID;
   if (explicitClientRaw !== undefined || explicitSessionIdRaw !== undefined) {
@@ -403,8 +408,9 @@ function memoryCliTraceEventType(event: MemoryObservabilityEvent): string {
 
 function traceClientLabel(client: TraceClient | undefined): string {
   if (client === "claude") return "Claude";
+  if (client === "dsh") return "DSH";
   if (client === "opencode") return "OpenCode";
-  return "Codex";
+  return client === "codex" ? "Codex" : "coding agent";
 }
 
 function memoryAddContentOptions(

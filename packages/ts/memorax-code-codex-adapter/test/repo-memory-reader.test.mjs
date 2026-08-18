@@ -62,3 +62,30 @@ test("memorax-code repo-read makes maintain the immediate post-read handoff", ()
   assert.match(skill, /If no repo-memory read was possible, run it immediately after detecting that state/);
   assert.match(skill, /The same handoff applies when hits already answer the question or the retrieval budget is exhausted/);
 });
+
+
+test("memorax-code repo-read follows wiki-style progressive reading", () => {
+  const skill = readFileSync(join(readerSkillRoot, "references", "repo-read.md"), "utf8");
+
+  assert.match(skill, /wiki-style repo memory/);
+  assert.match(skill, /PROFILE\.md` as the wiki landing page/);
+  assert.match(skill, /Major Areas/);
+  assert.match(skill, /Supporting Pages/);
+  assert.match(skill, /Open at most 2-4 relevant conceptual pages/);
+  assert.match(skill, /canonical homes/);
+  assert.match(skill, /Do not assume fixed page names/);
+  assert.match(skill, /\.repo_memory\/\*\.md/);
+  assert.match(skill, /resources\/\*\.md for historical routing cards/);
+});
+
+test("memorax-code repo-read treats disabled history resources as collection state", () => {
+  const skill = readFileSync(join(readerSkillRoot, "references", "repo-read.md"), "utf8");
+
+  assert.match(skill, /Disabled and unavailable historical resource files/);
+  assert.match(skill, /source: "history_disabled"/);
+  assert.match(skill, /source: "provider_skipped_local_only"/);
+  assert.match(skill, /source: "provider_unavailable"/);
+  assert.match(skill, /collection state, not repository state/);
+  assert.match(skill, /do not conclude that there are no commits, PRs, MRs, or issues/);
+  assert.match(skill, /Ask whether to rebuild with provider history/);
+});

@@ -276,6 +276,7 @@ test("Backend memory hook endpoints write client-isolated trace events", async (
     MEMORAX_CODE_HOME: undefined,
     MEMORAX_CODE_CLAUDE_TRACE_ENABLED: undefined,
     MEMORAX_CODE_CODEX_TRACE_ENABLED: undefined,
+    MEMORAX_CODE_DSH_TRACE_ENABLED: undefined,
     MEMORAX_CODE_OPENCODE_TRACE_ENABLED: undefined,
   });
   const originalFetch = globalThis.fetch;
@@ -396,6 +397,39 @@ test("Backend memory hook endpoints write client-isolated trace events", async (
     assert.equal(claudeReminder.status, 200);
     assert.deepEqual(await claudeReminder.json(), { ok: true });
 
+    const dshReminder = await originalFetch(`${url}/memory/skill-reminder`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        version: 1,
+        client: "dsh",
+        sessionId: "session-trace-hook",
+        turn: 1,
+        cwd: TEST_WORKSPACE,
+        content: "MemoraX Code reminder: use /memorax-code when prior work could help.",
+        triggers: ["cadence"],
+      }),
+    });
+    assert.equal(dshReminder.status, 200);
+    assert.deepEqual(await dshReminder.json(), { ok: true });
+
+    const dshReminderWithTranscript = await originalFetch(`${url}/memory/skill-reminder`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        version: 1,
+        client: "dsh",
+        sessionId: "session-trace-hook",
+        turn: 1,
+        cwd: TEST_WORKSPACE,
+        transcriptPath,
+        content: "DSH reminder commands must not invent transcript authority.",
+        triggers: ["cadence"],
+      }),
+    });
+    assert.equal(dshReminderWithTranscript.status, 200);
+    assert.deepEqual(await dshReminderWithTranscript.json(), { ok: true });
+
     const mismatchedOpenCodeReminder = await originalFetch(`${url}/memory/skill-reminder`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -483,6 +517,22 @@ test("Backend memory hook endpoints write client-isolated trace events", async (
     assert.deepEqual(claudeEvents[0].response, {
       role: "developer",
       content: "MemoraX Code reminder: use the skill in Claude when prior work could help.",
+    });
+    const dshEventsPath = clientTracePaths("dsh", sessionHome).eventsJsonl("session-trace-hook");
+    await waitForFile(dshEventsPath, /skill_reminder/, "DSH reminder trace event was not written");
+    const dshEvents = (await readFile(dshEventsPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(dshEvents.length, 1);
+    assert.equal(dshEvents[0].type, "skill_reminder");
+    assert.equal(dshEvents[0].source, "dsh-cordis");
+    assert.equal(dshEvents[0].operation, "reminder");
+    assert.equal(dshEvents[0].trace.client, "dsh");
+    assert.equal(dshEvents[0].trace.session_id, "session-trace-hook");
+    assert.equal(dshEvents[0].trace.turn_id, "1");
+    assert.equal(dshEvents[0].trace.context_origin, "dsh-cordis-reminder");
+    assert.deepEqual(dshEvents[0].request.triggers, ["cadence"]);
+    assert.deepEqual(dshEvents[0].response, {
+      role: "user",
+      content: "MemoraX Code reminder: use /memorax-code when prior work could help.",
     });
     const openCodeEventsPath = clientTracePaths("opencode", sessionHome).eventsJsonl("session-trace-hook");
     await waitForFile(openCodeEventsPath, /skill_reminder/, "OpenCode reminder trace event was not written");

@@ -44,9 +44,10 @@ const WRITEBACK_KEYS: Readonly<Record<MemoryHookClient, ReadonlySet<string>>> = 
     "events",
   ]),
 };
-const SKILL_REMINDER_KEYS: Readonly<Partial<Record<MemoryHookClient, ReadonlySet<string>>>> = {
+const SKILL_REMINDER_KEYS: Readonly<Record<MemoryHookClient, ReadonlySet<string>>> = {
   codex: new Set([...BASE_COMMAND_KEYS, "turnId", "transcriptPath", "content", "triggers"]),
   "claude-code": new Set([...BASE_COMMAND_KEYS, "promptId", "transcriptPath", "content", "triggers"]),
+  dsh: new Set(["version", "client", "sessionId", "turn", "cwd", "content", "triggers"]),
   opencode: new Set([...BASE_COMMAND_KEYS, "userMessageId", "content", "triggers"]),
 };
 
@@ -143,6 +144,13 @@ export type ClaudeSkillReminderCommand = MemoryHookCommandBase<"claude-code"> & 
   triggers: SkillReminderTrigger[];
 }>;
 
+export type DshSkillReminderCommand = MemoryHookCommandBase<"dsh"> & Readonly<{
+  turn: number;
+  cwd: string;
+  content: string;
+  triggers: SkillReminderTrigger[];
+}>;
+
 export type OpenCodeSkillReminderCommand = MemoryHookCommandBase<"opencode"> & Readonly<{
   userMessageId: string;
   content: string;
@@ -152,6 +160,7 @@ export type OpenCodeSkillReminderCommand = MemoryHookCommandBase<"opencode"> & R
 export type SkillReminderCommand =
   | CodexSkillReminderCommand
   | ClaudeSkillReminderCommand
+  | DshSkillReminderCommand
   | OpenCodeSkillReminderCommand;
 
 export type MemoryHookCommandParseResult<Command> =
@@ -316,6 +325,21 @@ export function parseSkillReminderCommand(
   const content = requiredContentField(value, "content");
   const triggers = skillReminderTriggers(value.triggers);
   if (!content || !triggers) return invalidCommand();
+  if (base.client === "dsh") {
+    const turn = positiveSafeIntegerField(value, "turn");
+    if (!turn || !base.cwd) return invalidCommand();
+    return {
+      ok: true,
+      command: {
+        ...base,
+        client: "dsh",
+        turn,
+        cwd: base.cwd,
+        content,
+        triggers,
+      },
+    };
+  }
   if (base.client === "opencode") {
     const userMessageId = requiredStringField(value, "userMessageId");
     if (!userMessageId) return invalidCommand();

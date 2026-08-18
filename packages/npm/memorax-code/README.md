@@ -1,11 +1,13 @@
 # @memorax/memorax-code
 
-MemoraX Code adds persistent coding memory to Codex, Claude Code, and OpenCode.
+MemoraX Code adds persistent coding memory to Codex, Claude Code, DeepSeek
+Harness, and OpenCode.
 
 ## Requirements
 
 - Node.js 24 or newer and npm.
-- At least one of Codex, Claude Code, OpenCode Desktop, or the OpenCode CLI.
+- At least one of Codex, Claude Code, DeepSeek Harness, OpenCode Desktop, or
+  the OpenCode CLI.
 - A MemoraX account, Base User ID, and API key for memory features.
 - Python 3 only for Repo Memory operations.
 
@@ -20,19 +22,21 @@ npm install -g @memorax/memorax-code --foreground-scripts
 
 Keep `--foreground-scripts` so npm displays the complete setup.
 
-The installer automatically detects available Codex, Claude Code, and OpenCode
-clients and configures each client it finds. Follow the prompts to enter your
-MemoraX Base User ID, preferred language, and API key. When Codex is detected,
+The installer automatically detects available Codex, Claude Code, DeepSeek
+Harness, and OpenCode installations and configures those it finds. Follow the
+prompts to enter your MemoraX user ID, preferred language, and API key. On an
+interactive first install, a non-empty user ID and API key are required unless
+the effective configuration already supplies both. When Codex is detected,
 review and approve its Hook activation.
 
 Entering the MemoraX credentials after the installer's disclosure enables the
-core memory features and automatic writeback. If setup is skipped or cannot
-prompt, the package remains installed, but MemoraX-backed memory is not
-configured.
+core memory features and automatic writeback. If installation cannot prompt
+and effective credentials are not already configured, the package remains
+installed, but MemoraX-backed memory is not configured.
 
-After the first installation, restart or refresh the detected clients before
-opening a new session. In Codex, enable **MemoraX Code Codex Adapter** from
-Plugins or `/plugins` if it is not already enabled.
+After the first installation, restart or refresh the detected coding agents
+before opening a new session. In Codex, enable **MemoraX Code Codex Adapter**
+from Plugins or `/plugins` if it is not already enabled.
 
 ## Verify
 

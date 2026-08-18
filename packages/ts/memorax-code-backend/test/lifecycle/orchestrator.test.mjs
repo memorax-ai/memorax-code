@@ -396,6 +396,7 @@ test("memorax-code uninstall preserves temporary Claude cleanup scope after plug
     assert.deepEqual(JSON.parse(await readFile(activeClientsPath, "utf8")), {
       codex: false,
       claude: true,
+      dsh: false,
       opencode: false,
     });
 

@@ -68,12 +68,13 @@ export async function pathExists(path) {
   }
 }
 
-export async function writeManagedClientsConfig(home, { codex, claude, opencode = false }) {
+export async function writeManagedClientsConfig(home, { codex, claude, dsh = false, opencode = false }) {
   await mkdir(home, { recursive: true });
   await writeFile(join(home, "config.toml"), [
     "[clients]",
     `codex = ${codex}`,
     `claude = ${claude}`,
+    `dsh = ${dsh}`,
     `opencode = ${opencode}`,
     "",
   ].join("\n"));

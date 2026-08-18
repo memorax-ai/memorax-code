@@ -93,6 +93,7 @@ test("chat.message starts missing Repo Memory for the Backend-authorized worktre
       "  cwd: process.cwd(),",
       "  memoraxCodeHome: process.env.MEMORAX_CODE_HOME,",
       "  parentSessionId: process.env.MEMORAX_CODE_MEMORY_CLI_SESSION_ID,",
+      "  openCodeCommand: process.env.MEMORAX_CODE_OPENCODE_COMMAND,",
       "  serverUrl: process.env.MEMORAX_CODE_OPENCODE_SERVER_URL,",
       "}));",
       "",
@@ -118,6 +119,7 @@ test("chat.message starts missing Repo Memory for the Backend-authorized worktre
       cwd: await realpath(backendRepo),
       memoraxCodeHome,
       parentSessionId: "session-auto-build",
+      openCodeCommand: join(root, "opencode"),
       serverUrl: "http://127.0.0.1:4096/",
     });
   } finally {
@@ -415,6 +417,7 @@ test("shell.env overwrites the OpenCode session identity and prepends the manage
   assert.equal(output.env.MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT, "opencode");
   assert.equal(output.env.MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID, "session-2");
   assert.equal(output.env.MEMORAX_CODE_MEMORY_CLI_SESSION_ID, "session-2");
+  assert.equal(output.env.MEMORAX_CODE_OPENCODE_COMMAND, process.execPath);
   assert.equal(output.env.MEMORAX_CODE_OPENCODE_SERVER_URL, "http://127.0.0.1:4096/");
   assert.equal(output.env.PATH, [cliBinDir, "/usr/bin", "/bin"].join(delimiter));
 });

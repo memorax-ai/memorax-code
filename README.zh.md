@@ -26,6 +26,11 @@
 </p>
 
 <p align="center">
+  <a href="https://discord.gg/eCUS8PpjG"><img src="https://img.shields.io/badge/Discord-Join%20Chat-5865F2?logo=discord&logoColor=white" alt="加入 MemoraX Code Discord 社群"></a>
+  <a href="docs/assets/wechat-group-qr.jpg"><img src="https://img.shields.io/badge/WeChat-Join%20Group-07C160?logo=wechat&logoColor=white" alt="加入 MemoraX Code 微信群"></a>
+</p>
+
+<p align="center">
   <a href="README.md">English</a> · <strong>简体中文</strong>
 </p>
 
@@ -34,16 +39,16 @@
 Coding Agent 擅长解决眼前的问题，但新会话不会自动继承此前积累的架构认知、踩坑经验、仓库规则
 和协作偏好。
 
-MemoraX Code 让 Codex、Claude Code 和 OpenCode 共享一套能够持续积累的记忆。它会沉淀代码任务中的
-工程经验，持续整理仓库知识，并在后续任务中找回相关的工作流程和偏好。
+MemoraX Code 让 Codex、Claude Code、DeepSeek Harness 和 OpenCode 共享一套能够持续积累的记忆。
+它会沉淀代码任务中的工程经验，持续整理仓库知识，并在后续任务中找回相关的工作流程和偏好。
 
 它追求的不是“记得更多”，而是在需要时带回与当前任务相关的 Memory，让 Agent 减少重复搜索和试错，
 更快进入问题定位与事实验证。
 
 ## 快速开始
 
-开始前，请确保已安装 Node.js 24 或更高版本，以及 Codex、Claude Code 或 OpenCode 中的至少一个。
-Repo Memory 操作还需要 Python 3。
+开始前，请确保已安装 Node.js 24 或更高版本，以及 Codex、Claude Code、DeepSeek Harness 或 OpenCode
+中的至少一个。Repo Memory 操作还需要 Python 3。
 
 ### 安装与接入
 
@@ -59,24 +64,40 @@ npm install -g @memorax/memorax-code --foreground-scripts
 ```
 
 请保留 `--foreground-scripts`，以便查看完整的安装过程。安装器会自动检测本机可用的 Codex、
-Claude Code 和 OpenCode，并为检测到的客户端启用集成。按照终端提示输入 Base User ID、偏好语言
-和 API Key；Codex 用户还需按提示完成 Hook 的激活和信任确认。安装完成后，请重启或刷新所有检测到的
-客户端，再开始新会话。
+Claude Code、DeepSeek Harness 和 OpenCode，并为检测到的 Coding Agent 启用集成。按照终端提示输入
+MemoraX User ID、偏好语言和 API Key；首次交互安装时，除非有效配置已经提供 User ID 和 API Key，
+否则两者均不能为空。Codex 用户还需按提示完成 Hook 的激活和信任确认。安装完成后，请重启或刷新
+所有检测到的 Coding Agent，再开始新会话。
 
-如果跳过配置或安装过程无法交互，npm 包仍会安装，但 MemoraX 搜索、召回和写回功能无法使用。
+如果安装过程无法交互，且有效配置尚未提供凭据，npm 包仍会安装，但 MemoraX 搜索、召回和写回
+功能无法使用。
+
+### 安装故障排查
+
+如果首次安装或配置没有正常完成，可以先检查以下常见情况：
+
+| 现象 | 建议处理方式 |
+| --- | --- |
+| 因 Node.js 版本不受支持导致安装失败 | 运行 `node --version` 检查版本，并升级到 Node.js 24 或更高版本后重新安装 MemoraX Code。 |
+| 跳过了交互式配置，或安装过程无法显示配置提示 | 在 `$MEMORAX_CODE_HOME/config.toml` 中配置所需的 MemoraX 参数，或使用文档支持的环境变量，然后运行 `memorax-code start`。 |
+| MemoraX API Key 缺失或尚未配置 | 运行 `memorax-cli status` 检查当前配置，然后通过支持的配置文件或环境变量添加 API Key。不要将 API Key 粘贴到聊天记录或公开 Issue 中。 |
+| 安装完成后搜索、召回或写回仍不可用 | 运行 `memorax-code status` 和 `memorax-cli status`，检查 MemoraX 凭据和 Memory 配置，然后运行 `memorax-code start` 重新启动。 |
+
+有关支持的配置项，请参阅[配置](docs/configuration.md)；
+更详细的诊断步骤请参阅[故障排查](docs/troubleshooting.md)。
 
 ### 体验跨会话记忆
 
-克隆示例仓库，并在项目目录中打开 Codex、Claude Code 或 OpenCode：
+克隆示例仓库，并在项目目录中打开 Codex、Claude Code、DeepSeek Harness 或 OpenCode：
 
 ```bash
 git clone https://github.com/SWE-agent/test-repo.git
 cd test-repo
 ```
 
-在 Codex 中使用 `$memorax-code`，在 Claude Code 中使用 `/memorax-code` 调用该 Skill。
-在 OpenCode 中，直接让 Agent 使用名为 `memorax-code` 的 Skill。下面的指令使用产品名称，三个客户端
-均可直接理解。
+在 Codex 中使用 `$memorax-code`，在 Claude Code 或 DeepSeek Harness 中使用 `/memorax-code`
+调用该 Skill。在 OpenCode 中，直接让 Agent 使用名为 `memorax-code` 的 Skill。下面的指令使用产品名称，
+四个客户端均可直接理解。
 
 在同一个会话中依次发送以下指令：
 
@@ -94,8 +115,8 @@ cd test-repo
 > [!TIP]
 > 上述指令仅用于快速验证。正常使用时，无需主动调用 MemoraX Code Skill 添加记忆；
 > MemoraX Code 会根据当前仓库和任务在后台写入相关记忆，并引导 Agent 在需要时搜索。
-> 你可以通过 [Memory Viewer](http://127.0.0.1:8787/memory-viewer)
-> 查看不含正文的本地活动与状态。
+> 你可以在 [Memory Viewer](http://127.0.0.1:8787/memory-viewer) 中切换 Codex、
+> Claude Code、DeepSeek Harness 和 OpenCode，查看不含正文的本地活动与状态。
 
 ## 四类 Memory，各有清晰边界
 
@@ -106,6 +127,12 @@ cd test-repo
 | **Personal&nbsp;Memory** | Agent 应该如何与你沟通和协作？ | User Profile 中记录的语言、语气、解释深度和结果呈现偏好 |
 | **Procedure&nbsp;Memory** | 这类任务应该如何执行？ | 可复用的步骤、检查清单、前置条件、例外情况和验证要求 |
 
+Personal Memory 和 Procedure Memory 保存在当前仓库的 `.repo_memory/` 下。涉及已有内容时，
+MemoraX Code 会先比较含义：语义相同的请求不重复写入；长期有效的补充或冲突规则会更新匹配项，
+并彻底移除被替代的文字；适用环境失效时先修正范围，只有整条记忆完全过时时才删除。
+用户明确要求忘记时，只删除点名的偏好、流程主题、段落或步骤，其他记忆保持不变。
+一次性任务指令不会改写已保存的记忆；是否长期有效或目标不清楚时，Agent 会先询问。
+
 ## 产品能力
 
 | 能力 | 作用 |
@@ -115,14 +142,24 @@ cd test-repo
 | **Procedure 自动复用** | 记录可复用的任务流程，并在后续任务中自动提醒 Agent 按流程执行。 |
 | **Repo Memory 后台整理** | 在后台整理仓库结构、代码入口和历史证据，并按策略自动更新，避免反复搜索和总结。 |
 | **主动记忆控制** | 使用内置的 MemoraX Code Skill 或 CLI，主动查找和添加记忆。 |
-| **客户端集成** | 与 Codex、Claude Code 和 OpenCode 集成，触发记忆检索、提醒和写入。 |
+| **客户端集成** | 与 Codex、Claude Code、DeepSeek Harness 和 OpenCode 集成，触发记忆检索、提醒和写入。 |
 | **本地可视化** | 通过本地 Memory Viewer 查看活动统计、召回与写入状态。 |
+
+DeepSeek Harness 集成是一个原生 Cordis 插件。当可选的
+[Patchouli](https://github.com/memorax-ai/dsh-patchouli) service 存在时，MemoraX Code
+会注册为 Patchouli 知识 provider，并复用 Patchouli 的 Agent Loop 连接器；否则使用自身的
+Agent Loop listener。两条路径互斥运行，并保持相同的 Backend、Repo Memory、个人记忆、提醒和
+持久化 writeback 行为。
 
 ## 你的记忆，由你控制
 
 云端记忆依赖 MemoraX。用户在阅读安装披露后输入 Base User ID 和 API Key，会启用
 MemoraX 搜索/添加，以及生成配置中的自动写回；不会再出现第二次写回确认。自动召回默认保持关闭，
 需要显式启用。
+
+受支持客户端的本地 trace 默认开启。根据客户端能力，`MEMORAX_CODE_HOME` 下保留的 trace
+可能包含用户指令、Agent 回复、召回的 Memory、提醒文本和本地路径。可通过
+[本地 trace 配置](docs/configuration.md#local-traces)改为仅记录元数据，或关闭对应客户端的 trace。
 
 主动记忆操作会将查询或选中的内容发送至 MemoraX。自动写回会从受信任工作区的任务中，发送经过
 选择的用户指令和对应的 Agent 最终回复，用于提取和保存记忆；它不会上传完整的本地客户端 trace
@@ -142,8 +179,8 @@ MemoraX 云端不会接收模型服务商凭据或本地 Backend Token。
 memorax-code update
 ```
 
-该命令会沿用当前发布通道并保留配置。如果新版本修改了插件资产或 Skill，请重启或刷新
-Codex、Claude Code 和 OpenCode。
+该命令会沿用当前发布通道并保留配置。如果新版本修改了已安装的集成资产，请重启或刷新 Codex、
+Claude Code、DeepSeek Harness 和 OpenCode。
 
 ## 卸载
 

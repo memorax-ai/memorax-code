@@ -7,18 +7,15 @@ import {
   stringOption,
   withJsonFileLock,
 } from "../config-utils.mjs";
+import {
+  isMemorySkillReminderDue,
+  memorySkillReminderContext,
+  personalMemoryReminderContext,
+  resolveMemorySkillReminderIntervalTurns,
+} from "./memory-skill-reminder-policy.mjs";
 
-const DEFAULT_REMINDER_INTERVAL_TURNS = 5;
-const DEFAULT_MEMORY_SKILL_INVOCATION = "$memorax-code";
 export const PERSONAL_MEMORY_REMINDER_CONTEXT = personalMemoryReminderContext();
-
-export function personalMemoryReminderContext(memorySkillInvocation) {
-  const invocation = stringOption(memorySkillInvocation) ?? DEFAULT_MEMORY_SKILL_INVOCATION;
-  return [
-    `MemoraX Code personal-memory reminder: Use ${invocation} when the user states a durable current-repo identity or interaction preference, asks to list or recall stored personal memory, or explicitly asks to save, update, forget, or delete it.`,
-    "Route reusable action sequences and work rules to procedure memory; do not store repository facts, one-off task details, or secrets.",
-  ].join(" ");
-}
+export { personalMemoryReminderContext } from "./memory-skill-reminder-policy.mjs";
 
 export async function runMemorySkillReminderHook(options, hookInput) {
   try {
@@ -63,7 +60,7 @@ export async function evaluateMemorySkillReminder(options, input) {
       );
       if (next.duplicate) return next;
       const sessionState = next.state.sessions[sessionId];
-      const memoryReminderDue = shouldRemind(
+      const memoryReminderDue = isMemorySkillReminderDue(
         sessionState?.turnCount,
         intervalTurns,
         options.remindOnFirstTurn !== false,
@@ -186,7 +183,7 @@ async function buildPersonalMemoryContext(options, input) {
 
 function combinedReminderContext(options, due, cadenceReminderContext, personalMemoryContext) {
   const contexts = [];
-  if (due.memoryReminderDue) contexts.push(memoryReminderContext(options));
+  if (due.memoryReminderDue) contexts.push(memorySkillReminderContext(options.memorySkillInvocation));
   if (due.supplementalReminderDue || personalMemoryContext) {
     const additionalReminderContext = stringOption(options.additionalReminderContext);
     if (additionalReminderContext) contexts.push(additionalReminderContext);
@@ -195,11 +192,6 @@ function combinedReminderContext(options, due, cadenceReminderContext, personalM
   if (due.memoryReminderDue && cadenceReminderContext) contexts.push(cadenceReminderContext);
 
   return contexts.join("\n\n");
-}
-
-function memoryReminderContext(options) {
-  const invocation = stringOption(options.memorySkillInvocation) ?? DEFAULT_MEMORY_SKILL_INVOCATION;
-  return `MemoraX Code reminder: proactively invoke ${invocation} whenever coding memory might help, even when uncertain; follow the skill's router to decide whether any memory operation is needed. Also use ${invocation} for repository-scoped personal memory, and classify the authority before reading or writing.`;
 }
 
 function defaultMemoraxCodeHome() {
@@ -260,47 +252,17 @@ function reminderState(existing, runtime) {
   return state;
 }
 
-function shouldRemind(turnCount, intervalTurns, remindOnFirstTurn) {
-  if (!Number.isInteger(turnCount) || turnCount <= 0) return false;
-  if (remindOnFirstTurn) return (turnCount - 1) % intervalTurns === 0;
-  return turnCount > intervalTurns && (turnCount - 1) % intervalTurns === 0;
-}
-
 function reminderIntervalTurns(memoraxCodeHome) {
-  return positiveInteger(process.env.MEMORAX_CODE_MEMORY_SKILL_REMINDER_INTERVAL_TURNS)
-    ?? configReminderIntervalTurns(join(memoraxCodeHome, "config.toml"))
-    ?? DEFAULT_REMINDER_INTERVAL_TURNS;
+  return resolveMemorySkillReminderIntervalTurns({
+    environmentValue: process.env.MEMORAX_CODE_MEMORY_SKILL_REMINDER_INTERVAL_TURNS,
+    configText: configReminderText(join(memoraxCodeHome, "config.toml")),
+  });
 }
 
-function configReminderIntervalTurns(path) {
+function configReminderText(path) {
   try {
-    return parseReminderIntervalTurns(readFileSync(path, "utf8"));
+    return readFileSync(path, "utf8");
   } catch {
     return undefined;
   }
-}
-
-function parseReminderIntervalTurns(text) {
-  let section = "";
-  for (const rawLine of text.split(/\r?\n/)) {
-    const line = rawLine.split("#", 1)[0].trim();
-    if (!line) continue;
-    const sectionMatch = line.match(/^\[([^\]]+)\]$/);
-    if (sectionMatch) {
-      section = sectionMatch[1].trim();
-      continue;
-    }
-    if (section !== "memory.skill_reminder") continue;
-    const fieldMatch = line.match(/^interval_turns\s*=\s*(.+)$/);
-    if (fieldMatch) return positiveInteger(fieldMatch[1]);
-  }
-  return undefined;
-}
-
-function positiveInteger(value) {
-  if (typeof value !== "string") return undefined;
-  const normalized = value.trim().replaceAll("_", "");
-  if (!/^[1-9]\d*$/.test(normalized)) return undefined;
-  const parsed = Number(normalized);
-  return Number.isSafeInteger(parsed) ? parsed : undefined;
 }

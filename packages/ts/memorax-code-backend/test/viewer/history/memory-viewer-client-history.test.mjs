@@ -43,6 +43,11 @@ test("memory viewer combines client-isolated history without identity collisions
     timestamp: "2026-07-28T00:02:00.000Z",
     response: { items: [{ memory: "OpenCode memory." }] },
   }]);
+  await writeTraceEvents(memoraxCodeHome, "dsh", "shared-session", [{
+    ...shared,
+    timestamp: "2026-07-28T00:03:00.000Z",
+    response: { items: [{ memory: "DSH memory." }] },
+  }]);
 
   const all = await listMemoryViewerDataWithHistory(memoraxCodeHome);
   assert.deepEqual(all.events.map(({ client, id, content }) => ({ client, id, content })), [{
@@ -57,9 +62,13 @@ test("memory viewer combines client-isolated history without identity collisions
     client: "opencode",
     id: "opencode-trace:shared-event",
     content: "OpenCode memory.",
+  }, {
+    client: "dsh",
+    id: "dsh-trace:shared-event",
+    content: "DSH memory.",
   }]);
-  assert.equal(new Set(all.events.map((event) => event.id)).size, 3);
-  assert.equal(new Set(all.events.map((event) => event.eventKey)).size, 3);
+  assert.equal(new Set(all.events.map((event) => event.id)).size, 4);
+  assert.equal(new Set(all.events.map((event) => event.eventKey)).size, 4);
   assert.equal(
     all.events[0].eventKey,
     JSON.stringify(["codex", "shared-session", "trace:shared-event"]),
@@ -80,6 +89,11 @@ test("memory viewer combines client-isolated history without identity collisions
     sessionId: "shared-session",
     eventCount: 1,
   }, {
+    client: "dsh",
+    projectId,
+    sessionId: "shared-session",
+    eventCount: 1,
+  }, {
     client: "opencode",
     projectId,
     sessionId: "shared-session",
@@ -87,10 +101,10 @@ test("memory viewer combines client-isolated history without identity collisions
   }]);
   assert.deepEqual(
     all.activityProjectSessions.map((entry) => entry.client),
-    ["claude", "codex", "opencode"],
+    ["claude", "codex", "dsh", "opencode"],
   );
 
-  for (const client of ["codex", "claude", "opencode"]) {
+  for (const client of ["codex", "claude", "dsh", "opencode"]) {
     const selected = await listMemoryViewerDataWithHistory(memoraxCodeHome, { client });
     assert.deepEqual(selected.events.map((event) => event.client), [client]);
     assert.deepEqual(selected.projectSessions.map((entry) => entry.client), [client]);
@@ -333,7 +347,7 @@ test("memory viewer refreshes either client history while retaining the other cl
   ]);
 });
 
-test("memory viewer assigns a client to live events and preserves Codex identities", () => {
+test("memory viewer assigns a client to live events and preserves client identities", () => {
   const context = (client) => ({
     schemaVersion: "1",
     client,
@@ -364,17 +378,31 @@ test("memory viewer assigns a client to live events and preserves Codex identiti
     traceContext: context("opencode"),
   });
   recordMemoryViewerEvent({
+    eventId: "same-live-event",
+    source: "dsh_native_retrieval",
+    operation: "retrieve",
+    ok: true,
+    traceContext: context("dsh"),
+  });
+  recordMemoryViewerEvent({
     source: "workflow_startup",
     operation: "retrieve",
     ok: true,
   });
 
   const live = listMemoryViewerEvents();
-  assert.deepEqual(live.map((event) => event.client), ["codex", "claude", "opencode", "codex"]);
+  assert.deepEqual(live.map((event) => event.client), [
+    "codex",
+    "claude",
+    "opencode",
+    "dsh",
+    "codex",
+  ]);
   assert.equal(live[0].id, "trace:same-live-event");
   assert.equal(live[1].id, "claude-trace:same-live-event");
   assert.equal(live[2].id, "opencode-trace:same-live-event");
-  assert.equal(new Set(live.map((event) => event.eventKey)).size, 4);
+  assert.equal(live[3].id, "dsh-trace:same-live-event");
+  assert.equal(new Set(live.map((event) => event.eventKey)).size, 5);
 });
 
 async function writeTraceEvents(memoraxCodeHome, client, sessionDir, events) {

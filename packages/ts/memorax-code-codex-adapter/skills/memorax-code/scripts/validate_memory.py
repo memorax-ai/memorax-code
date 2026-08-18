@@ -19,6 +19,7 @@ BASELINE_FILES = [
 
 PROVIDER_RAW_FILES = [Path("raw/github-facets.json"), Path("raw/gitlab-facets.json")]
 PROVIDER_RESOURCE_FILES = [Path("resources/prs.md"), Path("resources/issues.md")]
+DISABLED_RESOURCE_SOURCES = {"history_disabled", "provider_skipped_local_only", "provider_unavailable", "github_resource_facets_unavailable", "gitlab_resource_facets_unavailable", "provider_unavailable_local_only"}
 USER_PROFILE_SIDECAR = Path("user-profile/preferences.md")
 PROCEDURE_SIDECAR_DIRECTORY = "procedure-memory"
 PLACEHOLDER_RE = re.compile(r"\[([^\]\n]+)\]")
@@ -128,6 +129,10 @@ def validate_json(path: Path, memory: Path, errors: list[str], checked: list[str
         errors.append(f"{relative(path, memory)}: could not read JSON: {exc}")
 
 
+def raw_source_points_to_provider(raw_source: Any) -> bool:
+    return isinstance(raw_source, str) and raw_source.endswith(("github-facets.json", "gitlab-facets.json"))
+
+
 def validate_markdown(path: Path, memory: Path, errors: list[str], warnings: list[str], checked: list[str]) -> None:
     checked.append(relative(path, memory))
     try:
@@ -148,7 +153,7 @@ def validate_markdown(path: Path, memory: Path, errors: list[str], warnings: lis
     if path.parent.name != "resources":
         return
 
-    for field in ["resource_count", "raw_source"]:
+    for field in ["source", "resource_count", "trust_state", "raw_source"]:
         if field not in frontmatter:
             errors.append(f"{rel}: frontmatter field '{field}' is missing")
 
@@ -159,6 +164,23 @@ def validate_markdown(path: Path, memory: Path, errors: list[str], warnings: lis
             errors.append(f"{rel}: resource_count is {expected}, but found {actual} item section(s)")
     elif expected is not None:
         errors.append(f"{rel}: resource_count must be an integer")
+
+    source = frontmatter.get("source")
+    raw_source = frontmatter.get("raw_source")
+    if "source" in frontmatter and not source:
+        errors.append(f"{rel}: frontmatter field 'source' must not be empty")
+    if "trust_state" in frontmatter and not frontmatter.get("trust_state"):
+        errors.append(f"{rel}: frontmatter field 'trust_state' must not be empty")
+    if source in DISABLED_RESOURCE_SOURCES and isinstance(expected, int) and expected != 0:
+        errors.append(f"{rel}: disabled or unavailable resource source {source!r} must use resource_count 0")
+    if source in DISABLED_RESOURCE_SOURCES and raw_source:
+        errors.append(f"{rel}: disabled or unavailable resource source {source!r} must use an empty raw_source")
+    if path.name in {"commits.md", "prs.md", "issues.md"} and source not in DISABLED_RESOURCE_SOURCES and raw_source == "":
+        errors.append(f"{rel}: empty raw_source requires a disabled or unavailable source")
+    if path.name in {"prs.md", "issues.md"} and raw_source_points_to_provider(raw_source):
+        provider_path = (path.parent / raw_source).resolve()
+        if not provider_path.exists():
+            errors.append(f"{rel}: provider raw evidence is missing for raw_source {raw_source!r}")
 
 
 def provider_raw_paths(memory: Path) -> list[Path]:
