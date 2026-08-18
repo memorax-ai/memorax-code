@@ -233,6 +233,7 @@ function normalizeMemoraxCodeConfig(value: unknown): MemoraxCodeConfig {
     memorax: prune({
       endpoint: stringField(memorax, "endpoint"),
       api_key: stringField(memorax, "api_key"),
+      credential_source: stringField(memorax, "credential_source") === "trial" ? "trial" : undefined,
       user_id: stringField(memorax, "user_id"),
       timeout_ms: numberField(memorax, "timeout_ms"),
       startup_timeout_ms: numberField(memorax, "startup_timeout_ms"),

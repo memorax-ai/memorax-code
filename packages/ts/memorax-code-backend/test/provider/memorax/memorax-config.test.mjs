@@ -275,6 +275,7 @@ test("MemoraX Code config loader reads config.toml from the configured MemoraX C
     'endpoint = "http://file-memorax.test/"',
     'user_id = "file-user"',
     'api_key = "file-secret"',
+    'credential_source = "trial"',
     "timeout_ms = 7000",
     "",
     "[memory.retrieval]",
@@ -295,6 +296,7 @@ test("MemoraX Code config loader reads config.toml from the configured MemoraX C
   assert.equal(config.memorax?.endpoint, "http://file-memorax.test/");
   assert.equal(config.memorax?.user_id, "file-user");
   assert.equal(config.memorax?.api_key, "file-secret");
+  assert.equal(config.memorax?.credential_source, "trial");
   assert.equal(config.memorax?.timeout_ms, 7000);
   assert.deepEqual(config.memory?.add, {
     content_type: "code",
