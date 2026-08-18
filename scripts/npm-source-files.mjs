@@ -23,6 +23,14 @@ export const npmMainSourceTrees = Object.freeze([
     destination: "lib/memorax-code-dsh-adapter/hooks",
   },
   {
+    source: "packages/ts/memorax-code-hermes-adapter/src",
+    destination: "lib/memorax-code-hermes-adapter/src",
+  },
+  {
+    source: "packages/ts/memorax-code-hermes-adapter/hooks",
+    destination: "lib/memorax-code-hermes-adapter/hooks",
+  },
+  {
     source: "packages/ts/memorax-code-opencode-adapter/src",
     destination: "lib/memorax-code-opencode-adapter/src",
   },

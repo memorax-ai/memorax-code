@@ -14,6 +14,10 @@ import {
   type DshMemoryHookWritebackResult,
 } from "../clients/dsh/memory-hook-runtime.js";
 import {
+  createHermesMemoryHookRuntime,
+  type HermesMemoryHookWritebackResult,
+} from "../clients/hermes/memory-hook-runtime.js";
+import {
   createOpenCodeMemoryHookRuntime,
   type OpenCodeMemoryHookWritebackResult,
 } from "../clients/opencode/memory-hook-runtime.js";
@@ -36,7 +40,8 @@ type MemoryHookWritebackResult =
   | CodexMemoryHookWritebackResult
   | ClaudeMemoryHookWritebackResult
   | OpenCodeMemoryHookWritebackResult
-  | DshMemoryHookWritebackResult;
+  | DshMemoryHookWritebackResult
+  | HermesMemoryHookWritebackResult;
 
 export type MemoryService = {
   recordTurnStart(command: TurnStartCommand): Promise<MemoryHookTurnStartResult>;
@@ -79,6 +84,11 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
     repositoryMemorySession,
     turnCoordinator,
   });
+  const hermesHook = createHermesMemoryHookRuntime({
+    ...options,
+    repositoryMemorySession,
+    turnCoordinator,
+  });
   let closed = false;
   return {
     async recordTurnStart(command) {
@@ -91,6 +101,8 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
           return await openCodeHook.recordTurnStart(command);
         case "dsh":
           return await dshHook.recordTurnStart(command);
+        case "hermes":
+          return await hermesHook.recordTurnStart(command);
       }
       return unsupportedMemoryHookCommand(command);
     },
@@ -104,6 +116,8 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
           return await openCodeHook.writeback(command);
         case "dsh":
           return await dshHook.writeback(command);
+        case "hermes":
+          return await hermesHook.writeback(command);
       }
       return unsupportedMemoryHookCommand(command);
     },
@@ -117,6 +131,7 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
       claudeHook.close();
       openCodeHook.close();
       dshHook.close();
+      hermesHook.close();
       turnCoordinator.close();
       repositoryMemorySession.close();
       automaticWriteback.close();

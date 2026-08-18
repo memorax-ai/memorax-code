@@ -69,6 +69,7 @@ async function stageMainPackage(destination) {
     "lib/memorax-code-codex-adapter",
     "lib/memorax-code-claude-adapter",
     "lib/memorax-code-dsh-adapter",
+    "lib/memorax-code-hermes-adapter",
     "lib/memorax-code-opencode-adapter",
   ]) {
     await mkdir(join(destination, path), { recursive: true });
@@ -106,6 +107,10 @@ async function stageMainPackage(destination) {
   await copyFile(
     "packages/ts/memorax-code-dsh-adapter/cordis.patch.yml",
     join(destination, "lib/memorax-code-dsh-adapter/cordis.patch.yml"),
+  );
+  await copyFile(
+    "packages/ts/memorax-code-hermes-adapter/package.json",
+    join(destination, "lib/memorax-code-hermes-adapter/package.json"),
   );
   await copyFile(
     "packages/ts/memorax-code-opencode-adapter/package.json",
@@ -214,6 +219,12 @@ async function validateStaging(packageRoot) {
     "lib/memorax-code-dsh-adapter/src/runtime-state.mjs",
     "lib/memorax-code-dsh-adapter/hooks/repo-memory-job.mjs",
     "lib/memorax-code-dsh-adapter/skills/memorax-code/SKILL.md",
+    "lib/memorax-code-hermes-adapter/package.json",
+    "lib/memorax-code-hermes-adapter/src/index.mjs",
+    "lib/memorax-code-hermes-adapter/src/profile-lifecycle.mjs",
+    "lib/memorax-code-hermes-adapter/src/hermes-config.mjs",
+    "lib/memorax-code-hermes-adapter/src/hermes-version.mjs",
+    "lib/memorax-code-hermes-adapter/hooks/memorax-code-hermes-hook.mjs",
     "lib/memorax-code-opencode-adapter/src/plugin.mjs",
     "lib/memorax-code-opencode-adapter/src/plugin-install.mjs",
     "lib/memorax-code-opencode-adapter/src/cli.mjs",

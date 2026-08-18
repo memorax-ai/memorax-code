@@ -3,7 +3,7 @@ import { isRecord } from "../shared/record.js";
 export const MEMORY_HOOK_COMMAND_VERSION = 1 as const;
 export const INVALID_MEMORY_HOOK_COMMAND = "invalid memory Hook command";
 
-export type MemoryHookClient = "codex" | "claude-code" | "opencode" | "dsh";
+export type MemoryHookClient = "codex" | "claude-code" | "opencode" | "dsh" | "hermes";
 
 const BASE_COMMAND_KEYS = [
   "version",
@@ -17,6 +17,14 @@ const TURN_START_KEYS: Readonly<Record<MemoryHookClient, ReadonlySet<string>>> =
   "claude-code": new Set([...BASE_COMMAND_KEYS, "promptId", "prompt", "transcriptPath"]),
   opencode: new Set([...BASE_COMMAND_KEYS, "userMessageId", "prompt"]),
   dsh: new Set(["version", "client", "sessionId", "turn", "startSeq", "cwd", "prompt"]),
+  hermes: new Set([
+    ...BASE_COMMAND_KEYS,
+    "turnId",
+    "prompt",
+    "model",
+    "platform",
+    "parentSessionId",
+  ]),
 };
 const WRITEBACK_KEYS: Readonly<Record<MemoryHookClient, ReadonlySet<string>>> = {
   codex: new Set([...BASE_COMMAND_KEYS, "turnId", "lastAssistantMessage", "transcriptPath"]),
@@ -43,12 +51,24 @@ const WRITEBACK_KEYS: Readonly<Record<MemoryHookClient, ReadonlySet<string>>> = 
     "sessionHeader",
     "events",
   ]),
+  hermes: new Set([
+    ...BASE_COMMAND_KEYS,
+    "turnId",
+    "prompt",
+    "completed",
+    "interrupted",
+    "failed",
+    "turnExitReason",
+    "model",
+    "platform",
+  ]),
 };
 const SKILL_REMINDER_KEYS: Readonly<Record<MemoryHookClient, ReadonlySet<string>>> = {
   codex: new Set([...BASE_COMMAND_KEYS, "turnId", "transcriptPath", "content", "triggers"]),
   "claude-code": new Set([...BASE_COMMAND_KEYS, "promptId", "transcriptPath", "content", "triggers"]),
   dsh: new Set(["version", "client", "sessionId", "turn", "cwd", "content", "triggers"]),
   opencode: new Set([...BASE_COMMAND_KEYS, "userMessageId", "content", "triggers"]),
+  hermes: new Set([...BASE_COMMAND_KEYS, "turnId", "content", "triggers"]),
 };
 
 type MemoryHookCommandBase<Client extends MemoryHookClient> = Readonly<{
@@ -83,11 +103,21 @@ export type DshTurnStartCommand = MemoryHookCommandBase<"dsh"> & Readonly<{
   prompt: string;
 }>;
 
+export type HermesTurnStartCommand = MemoryHookCommandBase<"hermes"> & Readonly<{
+  turnId: string;
+  cwd: string;
+  prompt: string;
+  model?: string;
+  platform?: string;
+  parentSessionId?: string;
+}>;
+
 export type TurnStartCommand =
   | CodexTurnStartCommand
   | ClaudeTurnStartCommand
   | OpenCodeTurnStartCommand
-  | DshTurnStartCommand;
+  | DshTurnStartCommand
+  | HermesTurnStartCommand;
 
 export type MemoryHookTurnStartResult = Readonly<{
   ok: true;
@@ -122,11 +152,24 @@ export type DshWritebackCommand = MemoryHookCommandBase<"dsh"> & Readonly<{
   events: readonly unknown[];
 }>;
 
+export type HermesWritebackCommand = MemoryHookCommandBase<"hermes"> & Readonly<{
+  turnId: string;
+  cwd: string;
+  prompt?: string;
+  completed: boolean;
+  interrupted: boolean;
+  failed: boolean;
+  turnExitReason?: string;
+  model?: string;
+  platform?: string;
+}>;
+
 export type WritebackCommand =
   | CodexWritebackCommand
   | ClaudeWritebackCommand
   | OpenCodeWritebackCommand
-  | DshWritebackCommand;
+  | DshWritebackCommand
+  | HermesWritebackCommand;
 
 export type SkillReminderTrigger = "cadence" | "post_compaction";
 
@@ -157,11 +200,18 @@ export type OpenCodeSkillReminderCommand = MemoryHookCommandBase<"opencode"> & R
   triggers: SkillReminderTrigger[];
 }>;
 
+export type HermesSkillReminderCommand = MemoryHookCommandBase<"hermes"> & Readonly<{
+  turnId: string;
+  content: string;
+  triggers: SkillReminderTrigger[];
+}>;
+
 export type SkillReminderCommand =
   | CodexSkillReminderCommand
   | ClaudeSkillReminderCommand
   | DshSkillReminderCommand
-  | OpenCodeSkillReminderCommand;
+  | OpenCodeSkillReminderCommand
+  | HermesSkillReminderCommand;
 
 export type MemoryHookCommandParseResult<Command> =
   | { ok: true; command: Command }
@@ -216,6 +266,28 @@ export function parseTurnStartCommand(
         client: "opencode",
         userMessageId,
         prompt,
+      },
+    };
+  }
+  if (base.client === "hermes") {
+    const turnId = requiredStringField(value, "turnId");
+    const model = optionalStringField(value, "model");
+    const platform = optionalStringField(value, "platform");
+    const parentSessionId = optionalStringField(value, "parentSessionId");
+    if (!turnId || !base.cwd || !model.ok || !platform.ok || !parentSessionId.ok) {
+      return invalidCommand();
+    }
+    return {
+      ok: true,
+      command: {
+        ...base,
+        client: "hermes",
+        turnId,
+        cwd: base.cwd,
+        prompt,
+        ...(model.value ? { model: model.value } : {}),
+        ...(platform.value ? { platform: platform.value } : {}),
+        ...(parentSessionId.value ? { parentSessionId: parentSessionId.value } : {}),
       },
     };
   }
@@ -281,6 +353,40 @@ export function parseWritebackCommand(
         userMessageId,
         assistantMessageId,
         messages: value.messages,
+      },
+    };
+  }
+  if (base.client === "hermes") {
+    const turnId = requiredStringField(value, "turnId");
+    const model = optionalStringField(value, "model");
+    const platform = optionalStringField(value, "platform");
+    const turnExitReason = optionalStringField(value, "turnExitReason");
+    const prompt = optionalStringField(value, "prompt");
+    if (
+      !turnId
+      || !base.cwd
+      || !model.ok
+      || !platform.ok
+      || !turnExitReason.ok
+      || !prompt.ok
+      || typeof value.completed !== "boolean"
+      || typeof value.interrupted !== "boolean"
+      || typeof value.failed !== "boolean"
+    ) return invalidCommand();
+    return {
+      ok: true,
+      command: {
+        ...base,
+        client: "hermes",
+        turnId,
+        cwd: base.cwd,
+        ...(prompt.value ? { prompt: prompt.value } : {}),
+        completed: value.completed,
+        interrupted: value.interrupted,
+        failed: value.failed,
+        ...(turnExitReason.value ? { turnExitReason: turnExitReason.value } : {}),
+        ...(model.value ? { model: model.value } : {}),
+        ...(platform.value ? { platform: platform.value } : {}),
       },
     };
   }
@@ -354,6 +460,20 @@ export function parseSkillReminderCommand(
       },
     };
   }
+  if (base.client === "hermes") {
+    const turnId = requiredStringField(value, "turnId");
+    if (!turnId) return invalidCommand();
+    return {
+      ok: true,
+      command: {
+        ...base,
+        client: "hermes",
+        turnId,
+        content,
+        triggers,
+      },
+    };
+  }
   const transcriptPath = requiredStringField(value, "transcriptPath");
   if (!transcriptPath) return invalidCommand();
   if (base.client === "codex") {
@@ -398,6 +518,7 @@ function parseCommandBase(
     && client !== "claude-code"
     && client !== "opencode"
     && client !== "dsh"
+    && client !== "hermes"
   ) return undefined;
   const clientKeys = allowedKeys[client];
   if (!clientKeys || Object.keys(value).some((key) => !clientKeys.has(key))) return undefined;

@@ -1,0 +1,26 @@
+{
+  "name": "@memorax-code/hermes-memorax-code",
+  "version": "0.1.4",
+  "private": true,
+  "type": "module",
+  "description": "Hermes native memory adapter for MemoraX Code.",
+  "main": "src/index.mjs",
+  "exports": {
+    ".": "./src/index.mjs"
+  },
+  "files": [
+    ".memorax-code-package.json",
+    "hooks/memorax-code-hermes-hook.mjs",
+    "src/index.mjs",
+    "src/profile-lifecycle.mjs",
+    "src/hermes-config.mjs",
+    "src/hermes-version.mjs",
+    "memorax-code-adapter-common/src/backend-connection.mjs",
+    "memorax-code-adapter-common/src/config-utils.mjs",
+    "memorax-code-adapter-common/src/runtime-record.mjs",
+    "memorax-code-adapter-common/src/windows-cli-invocation.mjs"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  }
+}

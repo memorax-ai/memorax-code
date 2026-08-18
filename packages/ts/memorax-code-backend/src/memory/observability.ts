@@ -9,6 +9,8 @@ export type MemoryObservabilitySource =
   | "claude_hook_writeback"
   | "dsh_native_retrieval"
   | "dsh_native_writeback"
+  | "hermes_native_retrieval"
+  | "hermes_native_writeback"
   | "opencode_plugin_retrieval"
   | "opencode_plugin_writeback"
   | "memory_cli"

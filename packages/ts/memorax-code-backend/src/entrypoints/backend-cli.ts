@@ -35,6 +35,7 @@ import {
   collectMemoraxCodeStatus,
   isAdapterReady,
   isOptionalUnavailableDshAdapter,
+  isOptionalUnavailableHermesAdapter,
   isOptionalUnconfiguredClaudeAdapter,
   restartMemoraxCodeService,
   startMemoraxCodeService,
@@ -72,8 +73,9 @@ export function runBackendCli(argv = process.argv): void {
       "[--host HOST] [--port PORT] [--rotate] [--show]",
       "[--codex-command CMD]",
       "[--codex-home DIR] [--claude-home DIR] [--dsh-home DIR] [--opencode-config-dir DIR]",
+      "[--hermes-home DIR] [--hermes-command CMD] [--hermes-adapter-root DIR]",
       "[--dsh-command CMD] [--dsh-adapter-root DIR] [--memorax-code-command CMD]",
-      "[--clients codex|claude|dsh|opencode|CLIENT,...|all|none]",
+      "[--clients codex|claude|dsh|opencode|hermes|CLIENT,...|all|none]",
       "[--json]",
       "[--marketplace-path FILE] [--plugin-source-path DIR] [--claude-command CMD] [--help]",
       "[--yes]",
@@ -230,10 +232,13 @@ async function startRawBackendServer(
         claudeHome: argValue(argv, "--claude-home"),
         dshHome: argValue(argv, "--dsh-home"),
         dshAdapterRoot: argValue(argv, "--dsh-adapter-root"),
+        hermesHome: argValue(argv, "--hermes-home"),
+        hermesAdapterRoot: argValue(argv, "--hermes-adapter-root"),
         openCodeConfigDir: argValue(argv, "--opencode-config-dir"),
         codexCommand: argValue(argv, "--codex-command"),
         claudeCommand: argValue(argv, "--claude-command"),
         dshCommand: argValue(argv, "--dsh-command"),
+        hermesCommand: argValue(argv, "--hermes-command"),
       })
     : undefined;
   const server = createBackendServer(state);
@@ -256,6 +261,8 @@ async function startRawBackendServer(
         dshReason: cleanup.dshPlugin.reason,
         opencodeOk: cleanup.opencodePlugin.ok,
         opencodeReason: cleanup.opencodePlugin.reason,
+        hermesOk: cleanup.hermesPlugin.ok,
+        hermesReason: cleanup.hermesPlugin.reason,
       });
     }
     server.close(() => {
@@ -529,6 +536,7 @@ function printMemoraxCodeStatus(report: MemoraxCodeStatusReport): void {
   if (report.claudeAdapter) backendLog(`Claude adapter: ${claudeAdapterStatusLine(report.claudeAdapter, report.codexAdapter)}`);
   if (report.dshAdapter) backendLog(`DSH adapter: ${dshAdapterStatusLine(report.dshAdapter)}`);
   if (report.opencodeAdapter) backendLog(`OpenCode adapter: ${adapterStatusLine(report.opencodeAdapter)}`);
+  if (report.hermesAdapter) backendLog(`Hermes adapter: ${hermesAdapterStatusLine(report.hermesAdapter)}`);
   if (!suppressBackendGuidance()) {
     for (const line of statusGuidance(report)) backendLog(line);
   }
@@ -637,6 +645,7 @@ function printLifecycleResult(report: MemoraxCodeLifecycleReport): void {
   if (report.claudeAdapter) backendLog(`Claude adapter: ${adapterStatusLine(report.claudeAdapter)}`);
   if (report.dshAdapter) backendLog(`DSH adapter: ${dshAdapterStatusLine(report.dshAdapter)}`);
   if (report.opencodeAdapter) backendLog(`OpenCode adapter: ${adapterStatusLine(report.opencodeAdapter)}`);
+  if (report.hermesAdapter) backendLog(`Hermes adapter: ${hermesAdapterStatusLine(report.hermesAdapter)}`);
   if (report.codexPlugin) {
     const removed = report.codexPlugin.removedPaths.length;
     const marketplace = report.codexPlugin.marketplaceChanged ? " marketplace=updated" : " marketplace=unchanged";
@@ -695,28 +704,40 @@ function lifecycleGuidance(report: MemoraxCodeLifecycleReport): string[] {
         "Run `memorax-code logs` for details, then retry `memorax-code start`.",
       ];
     }
-    if (!report.codexAdapter && !report.claudeAdapter && !report.dshAdapter && !report.opencodeAdapter) {
+    if (!report.codexAdapter
+      && !report.claudeAdapter
+      && !report.dshAdapter
+      && !report.opencodeAdapter
+      && !report.hermesAdapter) {
       return [
         green("Backend is running."),
         "Adapters were not changed for this command.",
       ];
     }
     const optionalDshSkipped = isOptionalUnavailableDshAdapter(report.dshAdapter);
+    const optionalHermesSkipped = isOptionalUnavailableHermesAdapter(report.hermesAdapter);
     if ((!report.codexAdapter || isAdapterReady(report.codexAdapter))
       && (!report.claudeAdapter || isAdapterReady(report.claudeAdapter))
       && (!report.dshAdapter
         || isAdapterReady(report.dshAdapter)
         || optionalDshSkipped)
-      && (!report.opencodeAdapter || isAdapterReady(report.opencodeAdapter))) {
+      && (!report.opencodeAdapter || isAdapterReady(report.opencodeAdapter))
+      && (!report.hermesAdapter
+        || isAdapterReady(report.hermesAdapter)
+        || optionalHermesSkipped)) {
       return [
         green(optionalDshSkipped
           && !report.codexAdapter
           && !report.claudeAdapter
           && !report.opencodeAdapter
+          && !report.hermesAdapter
           ? "Backend is running; the optional DSH integration was skipped."
           : "Backend is running and available client integrations are enabled."),
         ...(optionalDshSkipped
           ? [`DSH integration was skipped: ${report.dshAdapter?.reason ?? "not available"}.`]
+          : []),
+        ...(optionalHermesSkipped
+          ? [`Hermes integration was skipped: ${report.hermesAdapter?.reason ?? "not available"}.`]
           : []),
         ...(report.codexAdapter || report.claudeAdapter || report.opencodeAdapter
           ? [
@@ -725,7 +746,9 @@ function lifecycleGuidance(report: MemoraxCodeLifecycleReport): string[] {
             ]
           : optionalDshSkipped
             ? []
-            : [green("New DSH sessions can use MemoraX Code through the active Profile integration.")]),
+            : report.hermesAdapter
+              ? [green("New Hermes sessions can use MemoraX Code through the active Shell Hook integration.")]
+              : [green("New DSH sessions can use MemoraX Code through the active Profile integration.")]),
       ];
     }
     return [
@@ -745,6 +768,7 @@ function lifecycleGuidance(report: MemoraxCodeLifecycleReport): string[] {
         ...(report.claudeAdapter ? [green("Claude Code Hook integration is stopped; provider config was not changed.")] : []),
         ...(report.dshAdapter ? [green("DSH Profile integration is stopped.")] : []),
         ...(report.opencodeAdapter ? [green("OpenCode plugin integration is stopped; provider config was not changed.")] : []),
+        ...(report.hermesAdapter ? [green("Hermes Shell Hook integration is stopped; Hermes config was not changed.")] : []),
       ]
       : [
         red("Backend did not stop cleanly."),
@@ -773,7 +797,7 @@ function lifecycleGuidance(report: MemoraxCodeLifecycleReport): string[] {
     const clientName = lifecycleClientName(report);
     const npmPackageRemoved = report.npmPackageRemoval?.ok === true
       && report.npmPackageRemoval.skipped !== true;
-    const removalNoun = report.dshAdapter
+    const removalNoun = report.dshAdapter || report.hermesAdapter
       ? `client integration${selectedLifecycleClientNames(report).length === 1 ? "" : "s"}`
       : `adapter plugin${selectedLifecycleClientNames(report).length === 1 ? "" : "s"}`;
     return [
@@ -796,7 +820,8 @@ function statusGuidance(report: MemoraxCodeStatusReport): string[] {
     if (report.dshAdapter
       && !report.codexAdapter
       && !report.claudeAdapter
-      && !report.opencodeAdapter) {
+      && !report.opencodeAdapter
+      && !report.hermesAdapter) {
       if (optionalDshSkipped) {
         return [
           green("Backend is running; the optional DSH integration was skipped."),
@@ -812,6 +837,9 @@ function statusGuidance(report: MemoraxCodeStatusReport): string[] {
       green("MemoraX Code is ready; sessions with the stable plugin shell use the active Hook runtime on their next user prompt."),
       ...(optionalDshSkipped
         ? [`DSH integration was skipped: ${report.dshAdapter?.reason ?? "not available"}.`]
+        : []),
+      ...(isOptionalUnavailableHermesAdapter(report.hermesAdapter)
+        ? [`Hermes integration was skipped: ${report.hermesAdapter?.reason ?? "not available"}.`]
         : []),
       "Restart or refresh a client only if its plugin shell was installed, changed, or newly enabled, or MemoraX Code is not active on the next prompt.",
     ];
@@ -856,6 +884,14 @@ function statusGuidance(report: MemoraxCodeStatusReport): string[] {
     return [
       red("OpenCode adapter is not enabled."),
       "Run `memorax-code start`, then restart or refresh OpenCode.",
+    ];
+  }
+  if (report.hermesAdapter
+    && !isAdapterReady(report.hermesAdapter)
+    && !isOptionalUnavailableHermesAdapter(report.hermesAdapter)) {
+    return [
+      red("Hermes adapter is not enabled."),
+      "Run `memorax-code start`, then retry `memorax-code status`.",
     ];
   }
   return [
@@ -909,6 +945,7 @@ function selectedLifecycleClientNames(report: MemoraxCodeLifecycleReport): strin
     report.claudeAdapter ? "Claude Code" : undefined,
     report.dshAdapter ? "DSH" : undefined,
     report.opencodeAdapter ? "OpenCode" : undefined,
+    report.hermesAdapter ? "Hermes" : undefined,
   ].filter((name): name is string => name !== undefined);
 }
 
@@ -933,6 +970,17 @@ function dshAdapterStatusLine(report: AdapterReport): string {
   const version = report.version ?? report.dshVersion;
   const tested = version && report.dshVersionTested !== undefined
     ? ` version=${version} tested=${report.dshVersionTested}`
+    : "";
+  return `${adapterStatusLine(report)}${tested}`;
+}
+
+function hermesAdapterStatusLine(report: AdapterReport): string {
+  if (isOptionalUnavailableHermesAdapter(report)) {
+    return `skipped ${report.reason ?? "not-detected"}`;
+  }
+  const version = report.version ?? report.hermesVersion;
+  const tested = version && report.hermesVersionTested !== undefined
+    ? ` version=${version} tested=${report.hermesVersionTested}`
     : "";
   return `${adapterStatusLine(report)}${tested}`;
 }

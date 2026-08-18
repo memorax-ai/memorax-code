@@ -20,7 +20,7 @@ import {
 test("DSH trace config has its own defaults, file section, env prefix, and path", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-dsh-trace-config-"));
   try {
-    assert.deepEqual(TRACE_CLIENTS, ["codex", "claude", "dsh", "opencode"]);
+    assert.deepEqual(TRACE_CLIENTS, ["codex", "claude", "dsh", "opencode", "hermes"]);
     assert.match(renderDefaultMemoraxCodeConfig(), /\[trace\.dsh\]\nenabled = true/);
     assert.deepEqual(dshTraceConfigFromEnv({
       MEMORAX_CODE_HOME: root,

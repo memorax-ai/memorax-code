@@ -11,9 +11,11 @@ export type TraceContextOrigin =
   | "dsh-cordis-reminder"
   | "dsh-session-event-log"
   | "opencode-hook-body"
+  | "hermes-hook-body"
+  | "hermes-state-db"
   | "current-turn-file"
   | "manual";
-export type TraceClient = "codex" | "claude" | "dsh" | "opencode";
+export type TraceClient = "codex" | "claude" | "dsh" | "opencode" | "hermes";
 
 export type TraceRelatedTurn = Readonly<{
   turnId?: string;
@@ -129,6 +131,20 @@ export function traceContextFromDshSessionEventLog(
   return traceContextFromDshBody(body, "dsh-session-event-log", capturedAt);
 }
 
+export function traceContextFromHermesHookBody(
+  body: unknown,
+  capturedAt = new Date().toISOString(),
+): TraceContext | undefined {
+  return traceContextFromHermesBody(body, "hermes-hook-body", capturedAt);
+}
+
+export function traceContextFromHermesStateDb(
+  body: unknown,
+  capturedAt = new Date().toISOString(),
+): TraceContext | undefined {
+  return traceContextFromHermesBody(body, "hermes-state-db", capturedAt);
+}
+
 export function traceContextFromCurrentTurnRecord(
   value: unknown,
 ): TraceContext | undefined {
@@ -189,7 +205,37 @@ function pruneRecord<T extends Record<string, unknown>>(value: T): T {
 }
 
 export function isTraceClient(value: unknown): value is TraceClient {
-  return value === "codex" || value === "claude" || value === "dsh" || value === "opencode";
+  return (
+    value === "codex"
+    || value === "claude"
+    || value === "dsh"
+    || value === "opencode"
+    || value === "hermes"
+  );
+}
+
+function traceContextFromHermesBody(
+  body: unknown,
+  contextOrigin: Extract<TraceContextOrigin, "hermes-hook-body" | "hermes-state-db">,
+  capturedAt: string,
+): TraceContext | undefined {
+  if (!isRecord(body)) return undefined;
+  const sessionId = stringField(body, "session_id") ?? stringField(body, "sessionId");
+  const turnId = stringField(body, "turn_id") ?? stringField(body, "turnId");
+  if (!sessionId || !turnId) return undefined;
+  const cwd = stringField(body, "cwd");
+  // Hermes correlation is per-turn; a writeback event carries the native
+  // Turn id recorded at turn start.
+  return pruneTraceContext({
+    schemaVersion: "1",
+    client: "hermes",
+    sessionId,
+    turnId,
+    cwd,
+    memoryProject: resolveMemoryProject(cwd),
+    contextOrigin,
+    capturedAt,
+  });
 }
 
 function traceContextFromDshBody(

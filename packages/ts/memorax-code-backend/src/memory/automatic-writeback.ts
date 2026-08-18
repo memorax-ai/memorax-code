@@ -36,7 +36,7 @@ import {
   type MemoryPayloadRedactionKind,
 } from "./payload-redaction.js";
 
-export type AutomaticMemoryWritebackClient = "codex" | "claude-code" | "opencode" | "dsh";
+export type AutomaticMemoryWritebackClient = "codex" | "claude-code" | "opencode" | "dsh" | "hermes";
 
 export type AutomaticMemoryWritebackOptions = {
   client: AutomaticMemoryWritebackClient;
