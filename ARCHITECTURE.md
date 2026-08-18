@@ -160,7 +160,16 @@ sequenceDiagram
     Transition->>CLI: verify status with persisted clients
     Transition->>Transition: backfill completion if absent and consume once
   end
-  User->>CLI: no-argument launch, explicit setup, or product update
+  User->>CLI: no-argument launch
+  CLI->>CLI: inspect versioned setup completion
+  alt Completion is valid
+    CLI->>Lifecycle: show status
+  else Completion is absent
+    CLI-->>User: instruct memorax-code setup
+  else Completion is invalid or unsupported
+    CLI-->>User: fail closed with repair guidance
+  end
+  User->>CLI: explicit setup or product update
   CLI->>Setup: serialize setup with its invocation mode
   Setup->>Setup: detect clients and reconcile client selection
   alt Product update
@@ -169,7 +178,7 @@ sequenceDiagram
       Setup->>Trial: load ready credential without provisioning
       Setup->>Config: backfill portable API-key copy
     end
-  else Automatic no-argument setup
+  else Interactive setup
     Setup->>Config: resolve local config-only status
     alt Effective connection is locally ready
       Setup->>User: offer saved connection reuse
@@ -194,15 +203,6 @@ sequenceDiagram
         Setup->>Trial: create or restore ready credential
         Setup->>Config: write endpoint, User ID, language, and API key
       end
-    end
-  else Explicit setup
-    Setup->>User: request User ID, language, and account choice
-    alt Existing MemoraX account
-      Setup->>User: request API key
-      Setup->>Config: replace TOML connection and API key
-    else No existing account
-      Setup->>Trial: create or restore ready credential
-      Setup->>Config: replace TOML connection, preferences, and API key
     end
   end
   alt Selected Codex integration has no active plugin
@@ -232,18 +232,18 @@ fresh install and a replacement of an already-stopped Backend leave the
 Backend stopped. Package transition exists only to restore a managed Backend
 that preinstall proved was live before its package files were replaced.
 
-The no-argument CLI consults versioned setup completion: absence routes to
-automatic interactive setup, validity routes to status, and invalid or
-unsupported state fails closed. Explicit `memorax-code setup` runs regardless
-of completion, while product update uses a separate setup mode. Automatic setup
-uses the config-only status authority to find a locally ready effective MemoraX
-connection and asks before reusing its connection and memory preferences. If
-none is ready or reuse is declined, it asks for a User ID, language, and
-whether the user already has a MemoraX account. An existing-account choice
-stores the entered API key with the connection preferences and skips trial
-provisioning. Otherwise setup creates or restores the secure trial credential
-and writes the preferences with a portable TOML copy of its API key. Explicit
-setup offers the same choice. Update setup preserves credentials and memory
+The no-argument CLI consults versioned setup completion: absence prints an
+explicit `memorax-code setup` instruction, validity routes to status, and
+invalid or unsupported state fails closed. Interactive `memorax-code setup`
+runs regardless of completion, while product update uses a separate setup mode.
+Interactive setup uses the config-only status authority to find a locally ready
+effective MemoraX connection and asks before reusing its connection and memory
+preferences. If none is ready or reuse is declined, it asks for a User ID,
+language, and whether the user already has a MemoraX account. An
+existing-account choice stores the entered API key with the connection
+preferences and skips trial provisioning. Otherwise setup creates or restores
+the secure trial credential and writes the preferences with a portable TOML
+copy of its API key. Update setup preserves credentials and memory
 preferences while backfilling a missing portable key from an already-ready
 trial record; accepted connection reuse performs the same migration. The local
 status check does not prove remote credential acceptance.

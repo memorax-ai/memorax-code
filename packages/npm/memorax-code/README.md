@@ -9,12 +9,12 @@ You need Node.js 24 or newer and either Codex or Claude Code. Then run:
 
 ```bash
 npm install -g @memorax/memorax-code
-memorax-code
+memorax-code setup
 ```
 
-The first launch completes any setup that is still needed. Enter a User ID
-and choose your preferred memory language when prompted; no account or API key
-is required beforehand.
+Setup asks for a User ID and your preferred memory language; no account or API
+key is required beforehand. Run the same command again to reuse, reconfigure,
+or repair the installation.
 
 To check the installation or reconfigure later:
 

@@ -30,22 +30,18 @@ credentials, or authorize Hooks.
 Start first-use setup from an interactive terminal:
 
 ```sh
-memorax-code
-```
-
-If setup was previously completed, the no-argument command shows status
-instead. To run or repair setup explicitly, use:
-
-```sh
 memorax-code setup
 ```
 
-After a product uninstall and reinstall, automatic setup detects a locally
-ready retained MemoraX connection and asks whether to reuse it. Accepting is
-why setup can restore the client integrations without asking again for the
-User ID or preferred language. Run explicit `memorax-code setup` when you
-intend to replace those preferences or move to the setup-managed trial
-connection.
+If setup was previously completed, the no-argument `memorax-code` command
+shows status. Otherwise it points back to the setup command without starting
+an interactive flow implicitly.
+
+After a product uninstall and reinstall, setup detects a locally ready retained
+MemoraX connection and asks whether to reuse it. Accepting restores the client
+integrations without asking again for the User ID or preferred language.
+Decline reuse when you intend to replace those preferences or move to the
+setup-managed trial connection.
 
 Setup requires both terminal input and terminal-visible stderr. A pipe,
 background process, or redirected stdin/stderr cannot answer setup prompts;
@@ -57,12 +53,12 @@ and rerun `memorax-code setup`.
 Setup writes
 `$MEMORAX_CODE_HOME/runtime/setup/setup-completion.json` only after client and
 Hook reconciliation, Backend start, status, and final config-only MemoraX
-readiness all succeed. Until then, a no-argument `memorax-code` attempts setup
-again.
+readiness all succeed. Until then, a no-argument `memorax-code` reports that
+setup has not been completed and points to `memorax-code setup`.
 
 If the configuration is safely parseable but its effective MemoraX connection
-is not ready, automatic setup asks for a User ID and preferred language and
-then creates or restores a trial credential. A malformed TOML file cannot be
+is not ready, setup asks for a User ID and preferred language and then creates
+or restores a trial credential. A malformed TOML file cannot be
 safely updated and remains byte-preserved; fix or restore that file before
 rerunning setup rather than expecting the prompt flow to overwrite it.
 

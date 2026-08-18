@@ -70,7 +70,7 @@ trial path creates or restores the operating-system-protected credential and
 mirrors its API key to that private configuration for portability. A ready
 connection activates search/add and the generated configuration's automatic
 writeback; automatic retrieval remains disabled until explicitly enabled.
-Automatic setup asks before reusing existing effective credentials and does
+Interactive setup asks before reusing existing effective credentials and does
 not collect or print them again. Its config-only check does not contact MemoraX
 or prove that the API key is accepted remotely.
 
@@ -234,9 +234,9 @@ removes the global npm package when possible. It intentionally retains:
 
 A complete product uninstall removes the setup-completion routing marker but
 retains the MemoraX configuration, including any API key stored there, and the
-secure trial credential. After a reinstall, automatic setup can offer to reuse
-that connection and resume the configured memory behavior without asking for
-the values again. Explicit `memorax-code setup` can replace the User ID and
+secure trial credential. After a reinstall, `memorax-code setup` can offer to
+reuse that connection and resume the configured memory behavior without asking
+for the values again. Declining reuse allows setup to replace the User ID and
 language but may restore the same retained trial identity. If that credential
 must not be reused, remove it separately through the operating-system secure
 credential backend after reviewing the retained configuration and data.

@@ -46,17 +46,12 @@ MemoraX Code 为 Codex 和 Claude Code 提供共享记忆，帮助后续会话�
 
 ```bash
 npm install -g @memorax/memorax-code
-memorax-code
-```
-
-首次运行会完成尚未完成的安装引导。请按提示填写 User ID 并选择记忆语言偏好；
-无需提前注册账号或创建 API Key。完成初始化后，再次运行 `memorax-code` 会显示当前状态。
-
-以后需要主动重新配置或再次运行安装引导时，可以运行：
-
-```bash
 memorax-code setup
 ```
+
+安装引导会询问 User ID 和记忆语言偏好，无需提前注册账号或创建 API Key。以后需要复用已有
+配置、重新配置或修复安装时，再次运行 `memorax-code setup` 即可。完成初始化后，运行
+`memorax-code` 会显示当前状态。
 
 ## 体验跨会话记忆
 

@@ -48,19 +48,13 @@ Run:
 
 ```bash
 npm install -g @memorax/memorax-code
-memorax-code
-```
-
-The first launch completes any setup that is still needed. Enter a User ID
-and choose your preferred memory language when prompted; no account or API key
-is required beforehand. If setup has already been completed, `memorax-code`
-shows the current status instead.
-
-To reconfigure or run setup again later:
-
-```bash
 memorax-code setup
 ```
+
+Setup asks for a User ID and your preferred memory language; no account or API
+key is required beforehand. Run `memorax-code setup` again whenever you need to
+reuse, reconfigure, or repair the installation. After setup, `memorax-code`
+shows the current status.
 
 ## Try Cross-Session Memory
 

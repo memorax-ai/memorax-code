@@ -9,18 +9,15 @@ import { fileURLToPath } from "node:url";
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const setupCompletionRelativePath = join("runtime", "setup", "setup-completion.json");
 
-test("memorax-code with no setup record runs setup without loading the Backend", async () => {
+test("memorax-code with no setup record prints setup guidance without side effects", async () => {
   const fixture = await createPackageFixture();
   try {
     const result = runCli(fixture, [], { assumeInteractive: true });
 
-    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.status, 1, result.stderr);
     assert.equal(result.error, undefined);
-    assert.deepEqual(await readJsonLines(fixture.setupLogPath), [{
-      args: [],
-      home: fixture.memoraxCodeHome,
-      reuseExistingMemorax: true,
-    }]);
+    assert.match(result.stderr, /setup has not been completed\. Run `memorax-code setup` from an interactive terminal/);
+    assert.equal(await pathExists(fixture.setupLogPath), false);
     assert.equal(await pathExists(fixture.backendLogPath), false);
   } finally {
     await fixture.cleanup();
@@ -76,7 +73,7 @@ test("memorax-code fails closed for invalid or unsupported setup records", async
   }
 });
 
-test("explicit setup runs without automatic reuse even when internal mode flags are inherited", async () => {
+test("explicit setup offers existing configuration reuse and ignores inherited update mode", async () => {
   const fixture = await createPackageFixture();
   try {
     await writeSetupRecord(fixture.memoraxCodeHome, validSetupRecord());
@@ -94,7 +91,7 @@ test("explicit setup runs without automatic reuse even when internal mode flags 
     assert.deepEqual(await readJsonLines(fixture.setupLogPath), [{
       args: [],
       home: fixture.memoraxCodeHome,
-      reuseExistingMemorax: false,
+      reuseExistingMemorax: true,
     }]);
     assert.equal(await pathExists(fixture.backendLogPath), false);
   } finally {
@@ -113,31 +110,9 @@ test("setup propagates an explicit home to the setup process", async () => {
     assert.deepEqual(await readJsonLines(fixture.setupLogPath), [{
       args: [],
       home: requestedHome,
-      reuseExistingMemorax: false,
+      reuseExistingMemorax: true,
     }]);
     assert.equal(await pathExists(join(fixture.memoraxCodeHome, setupCompletionRelativePath)), false);
-  } finally {
-    await fixture.cleanup();
-  }
-});
-
-test("non-interactive first use fails quickly without creating setup state", {
-  timeout: 5_000,
-}, async () => {
-  const fixture = await createPackageFixture();
-  try {
-    const startedAt = Date.now();
-    const result = runCli(fixture, [], { timeout: 2_000 });
-    const elapsedMs = Date.now() - startedAt;
-
-    assert.equal(result.status, 1, result.stderr);
-    assert.equal(result.error, undefined);
-    assert.ok(elapsedMs < 2_000, `non-interactive setup routing took ${elapsedMs} ms`);
-    assert.match(result.stderr, /an interactive terminal is required/);
-    assert.equal(await pathExists(join(fixture.memoraxCodeHome, setupCompletionRelativePath)), false);
-    assert.equal(await pathExists(join(fixture.memoraxCodeHome, "runtime", "setup")), false);
-    assert.equal(await pathExists(fixture.setupLogPath), false);
-    assert.equal(await pathExists(fixture.backendLogPath), false);
   } finally {
     await fixture.cleanup();
   }
@@ -156,7 +131,7 @@ test("setup propagates the setup process exit code", async () => {
     assert.deepEqual(await readJsonLines(fixture.setupLogPath), [{
       args: [],
       home: fixture.memoraxCodeHome,
-      reuseExistingMemorax: false,
+      reuseExistingMemorax: true,
     }]);
     assert.equal(await pathExists(fixture.backendLogPath), false);
   } finally {
@@ -175,6 +150,7 @@ test("root help documents setup and update", async () => {
     assert.match(result.stdout, /^  setup\s+Run or repair the interactive setup$/m);
     assert.match(result.stdout, /^  account\s+Manage local MemoraX account information$/m);
     assert.match(result.stdout, /^  update\s+Update the globally installed npm package$/m);
+    assert.match(result.stdout, /Run `memorax-code setup` to complete first-time setup/);
     assert.equal(await pathExists(fixture.setupLogPath), false);
     assert.equal(await pathExists(fixture.backendLogPath), false);
   } finally {
@@ -205,7 +181,7 @@ test("account command reveals only the requested local trial Mark ID", async () 
   }
 });
 
-test("setup help describes explicit reconfiguration and repair", async () => {
+test("setup help describes configuration reuse and repair", async () => {
   const fixture = await createPackageFixture();
   try {
     const result = runCli(fixture, ["setup", "--help"]);
@@ -213,7 +189,7 @@ test("setup help describes explicit reconfiguration and repair", async () => {
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.error, undefined);
     assert.match(result.stdout, /^Usage: memorax-code setup \[--home DIR\]/);
-    assert.match(result.stdout, /Explicitly reconfigure or repair MemoraX Code through interactive setup/);
+    assert.match(result.stdout, /Run interactive setup to configure, reuse, or repair MemoraX Code/);
     assert.equal(await pathExists(fixture.setupLogPath), false);
     assert.equal(await pathExists(fixture.backendLogPath), false);
   } finally {

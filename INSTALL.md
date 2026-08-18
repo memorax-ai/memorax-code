@@ -73,16 +73,16 @@ safe retirement and restoration of a running managed Backend.
 Run the installed command from an interactive terminal:
 
 ```bash
-memorax-code
+memorax-code setup
 ```
 
 With no arguments, `memorax-code` reads a private setup-completion record. If
-the record is absent, it starts interactive setup. After a successful setup,
-the same no-argument command routes to `memorax-code status`. Invalid or newer
+the record is absent, it tells you to run `memorax-code setup`; after successful
+setup, the no-argument command routes to `memorax-code status`. Invalid or newer
 unsupported completion records fail closed instead of guessing whether setup
 finished.
 
-Automatic setup first checks for a locally ready MemoraX connection, including
+Interactive setup first checks for a locally ready MemoraX connection, including
 configuration and secure trial credentials retained across a product
 uninstall. When one is found, setup asks whether to reuse the saved connection
 and memory preferences. Accepting keeps the existing User ID, language, and
@@ -101,7 +101,7 @@ Setup:
 1. detects runnable Codex and Claude Code clients independently;
 2. enables every detected client on a fresh setup and preserves existing
    client intent on later runs;
-3. offers to reuse a locally ready connection during automatic setup, or asks
+3. offers to reuse a locally ready connection, or asks
    for a User ID and language before creating or restoring a trial
    credential;
 4. applies the selected User ID and language only after trial credential
@@ -127,7 +127,7 @@ setup even when completion is already recorded, use:
 memorax-code setup
 ```
 
-Setup requires terminal input and terminal-visible diagnostics. A first launch
+Setup requires terminal input and terminal-visible diagnostics. A setup command
 whose stdin or stderr is piped, redirected, or detached exits without creating
 setup completion and tells you to rerun `memorax-code setup` in a terminal.
 MemoraX Code does not read or change either client's model-provider URL,
@@ -176,10 +176,9 @@ Package installation can succeed while setup remains incomplete. Run
 `memorax-code setup` from an interactive terminal to resume or repair client,
 Hook, Backend, and MemoraX configuration.
 
-During automatic setup, accepting the saved connection avoids asking for the
-User ID and language again. Run explicit `memorax-code setup` when you want
-to replace those retained preferences or move to the setup-managed trial
-connection.
+During setup, accepting the saved connection avoids asking for the User ID and
+language again. Decline reuse when you want to replace those retained
+preferences or move to the setup-managed trial connection.
 
 If you intentionally manage configuration without the setup prompts, add the
 required MemoraX values to
@@ -248,9 +247,10 @@ only when it is no longer needed.
 
 A complete product uninstall clears the setup-completion routing marker without
 deleting the retained configuration. After reinstalling, the next no-argument
-`memorax-code` runs automatic setup, restores the integrations, and offers to
-reuse a locally ready MemoraX connection. A normal `memorax-code stop` and a
-partial client uninstall do not clear setup completion.
+`memorax-code` points to `memorax-code setup`. Running setup restores the
+integrations and offers to reuse a locally ready MemoraX connection. A normal
+`memorax-code stop` and a partial client uninstall do not clear setup
+completion.
 
 ## Troubleshooting
 

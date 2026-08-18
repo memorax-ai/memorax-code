@@ -103,20 +103,17 @@ package without reading terminal input. `memorax-code setup` owns client
 detection, prompts, configuration writes, initial Codex Hook activation,
 exact review of later Hook changes, and final readiness.
 
-Setup has three connection-handling modes. The no-argument command enters
-automatic setup when completion is absent. If a locally ready MemoraX
-connection exists, it asks whether to reuse the saved connection and memory
-preferences. Accepting preserves them. If no ready connection exists, or reuse
-is declined, setup asks for a User ID, preferred language, and whether the user
-already has a MemoraX account. Selecting an existing account prompts for its
-API key, writes it with the connection preferences, and skips trial
-provisioning. Selecting no, or pressing Enter, creates or restores a secure
-trial credential and writes the preferences plus a portable API-key copy.
-
-Explicit `memorax-code setup` offers the same existing-account or trial choice.
-After the secure trial credential is ready, setup replaces any
-`[memorax].api_key` with that credential's current API key. An environment API
-key remains a higher-precedence override. Setup reached from
+Setup has two connection-handling modes. Interactive `memorax-code setup` first
+checks for a locally ready MemoraX connection and asks whether to reuse its
+saved connection and memory preferences. Accepting preserves them. If no ready
+connection exists, or reuse is declined, setup asks for a User ID, preferred
+language, and whether the user already has a MemoraX account. Selecting an
+existing account prompts for its API key, writes it with the connection
+preferences, and skips trial provisioning. Selecting no, or pressing Enter,
+creates or restores a secure trial credential and writes the preferences plus
+a portable API-key copy. After the secure trial credential is ready, setup
+replaces any `[memorax].api_key` with that credential's current API key. An
+environment API key remains a higher-precedence override. Setup reached from
 `memorax-code update` preserves the existing MemoraX connection without asking
 for memory preferences or changing credentials; for a legacy trial connection
 that has no TOML key, it copies the retained secure key into TOML. Accepting a
@@ -138,18 +135,17 @@ $MEMORAX_CODE_HOME/runtime/setup/setup-completion.json
 ```
 
 The record controls only no-argument CLI routing. If it is absent,
-`memorax-code` starts setup when an interactive terminal is available; if it
-is valid, the command shows status. `memorax-code setup` always runs explicit
-setup. Invalid or unsupported records fail closed. Setup execution, including
-setup reached through the no-argument route, is serialized with the matching
-JSON lock. Completion is written only after the final readiness check
+`memorax-code` tells the user to run `memorax-code setup`; if it is valid, the
+command shows status. Invalid or unsupported records fail closed.
+`memorax-code setup` always runs interactive setup and is serialized with the
+matching JSON lock. Completion is written only after the final readiness check
 succeeds.
 
 A complete product uninstall removes this routing marker after removing the
-managed integrations, while preserving `config.toml`. The next no-argument
-launch after reinstall therefore runs automatic setup and can offer to reuse
-that configuration and its retained secure trial credential. A normal stop and
-a partial client uninstall preserve the completion record.
+managed integrations, while preserving `config.toml`. After reinstall, the
+no-argument command points the user to `memorax-code setup`, which can offer to
+reuse that configuration and its retained secure trial credential. A normal
+stop and a partial client uninstall preserve the completion record.
 
 Package replacement uses a separate private, versioned record:
 
@@ -201,7 +197,7 @@ connection may set `api_key` or supply `MEMORAX_CODE_MEMORAX_API_KEY`.
 | `timeout_ms` | `MEMORAX_CODE_MEMORAX_TIMEOUT_MS` | `5000` ms |
 | `startup_timeout_ms` | `MEMORAX_CODE_MEMORAX_STARTUP_TIMEOUT_MS` | `3000` ms |
 
-Automatic setup determines whether the connection can be reused through the
+Interactive setup determines whether the connection can be reused through the
 same config-only status resolution used by `memorax-cli status`, including the
 precedence documented above. A non-empty User ID, an effective API key from
 one of those sources, and a valid `zh` or `en` memory output language form a
@@ -378,7 +374,7 @@ records while a setup, npm, or lifecycle command may still be active.
   on startup.
 - Malformed TOML, a non-table root, or invalid `[clients]` types block
   lifecycle mutations before adapters or processes are changed.
-- Automatic setup offers to reuse a locally ready MemoraX connection. If none
+- Interactive setup offers to reuse a locally ready MemoraX connection. If none
   exists or reuse is declined, it asks for a User ID, language, and account
   choice, then configures the entered existing-account API key or provisions a
   trial credential. A malformed TOML file remains fail-closed and is not

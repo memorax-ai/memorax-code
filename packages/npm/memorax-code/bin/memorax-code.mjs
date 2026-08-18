@@ -52,7 +52,8 @@ Commands:
   logs        Show Backend logs
   token       Manage the local Backend token
 
-Run \`memorax-code\` with no command to start setup on first use or show status after setup.
+Run \`memorax-code setup\` to complete first-time setup or repair an installation.
+Run \`memorax-code\` with no command to show setup guidance or current status.
 Run \`memorax-code <command> --help\` for command-specific options.`);
 }
 
@@ -71,8 +72,8 @@ Options:
 function printSetupHelp() {
   console.log(`Usage: memorax-code setup [--home DIR]
 
-Explicitly reconfigure or repair MemoraX Code through interactive setup. Existing
-configuration is updated only after safe parsing and atomic-write checks.
+Run interactive setup to configure, reuse, or repair MemoraX Code. Existing
+configuration is reused only after confirmation.
 
 Options:
   --home DIR  Configure the specified MemoraX Code home
@@ -261,7 +262,8 @@ async function routeDefaultCommand() {
     const { readSetupCompletionRecord, setupCompletionPath } = await loadSetupCompletionApi();
     const state = readSetupCompletionRecord(memoraxCodeHome);
     if (state.status === "absent") {
-      return await runSetupCommand([], { reuseExistingMemorax: true });
+      console.error("memorax-code: setup has not been completed. Run `memorax-code setup` from an interactive terminal.");
+      return 1;
     }
     if (state.status !== "valid") {
       const detail = state.status === "unsupported"
@@ -376,7 +378,7 @@ if (process.argv.length === 3 && (process.argv[2] === "--help" || process.argv[2
 }
 
 if (process.argv[2] === "setup") {
-  process.exit(await runSetupCommand(process.argv.slice(3)));
+  process.exit(await runSetupCommand(process.argv.slice(3), { reuseExistingMemorax: true }));
 }
 
 if (process.argv[2] === "account") {

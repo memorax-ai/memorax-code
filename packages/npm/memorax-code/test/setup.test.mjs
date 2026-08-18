@@ -1807,7 +1807,7 @@ test("setup does not trust configured JSON from a failed memory status command",
   }
 });
 
-test("automatic setup does not reuse malformed or incomplete memory status JSON", async (t) => {
+test("interactive setup does not reuse malformed or incomplete memory status JSON", async (t) => {
   for (const scenario of [
     {
       name: "malformed-json",
@@ -1849,7 +1849,7 @@ test("automatic setup does not reuse malformed or incomplete memory status JSON"
   }
 });
 
-test("automatic setup after reinstall reuses a complete MemoraX configuration", async () => {
+test("interactive setup after reinstall reuses a complete MemoraX configuration", async () => {
   const existingConfig = [
     "[clients]",
     "codex = true",
@@ -1890,7 +1890,7 @@ test("automatic setup after reinstall reuses a complete MemoraX configuration", 
   }
 });
 
-test("automatic setup backfills a portable API key for a retained trial credential", async () => {
+test("interactive setup backfills a portable API key for a retained trial credential", async () => {
   const existingConfig = [
     "[clients]",
     "codex = true",
@@ -1937,7 +1937,7 @@ test("automatic setup backfills a portable API key for a retained trial credenti
   }
 });
 
-test("automatic setup can decline a reusable MemoraX configuration", async () => {
+test("interactive setup can decline a reusable MemoraX configuration", async () => {
   const existingConfig = [
     "[clients]",
     "codex = true",
@@ -1972,7 +1972,7 @@ test("automatic setup can decline a reusable MemoraX configuration", async () =>
   }
 });
 
-test("automatic setup asks for a missing MemoraX connection instead of trusting file presence", async () => {
+test("interactive setup asks for a missing MemoraX connection instead of trusting file presence", async () => {
   const run = await runSetup({
     memoraxCodeConfig: [
       "[clients]",
