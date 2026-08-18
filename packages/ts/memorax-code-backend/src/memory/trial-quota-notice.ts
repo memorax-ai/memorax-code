@@ -104,7 +104,7 @@ export const claimTrialQuotaNotice: TrialQuotaNoticeClaimer = async (
     if (timeout) clearTimeout(timeout);
   }
 
-  return claimed ? quotaNotice(quota) : undefined;
+  return claimed ? quotaNotice(quota, config.memoryOutputLanguage) : undefined;
 };
 
 export function createPendingTrialQuotaNoticeRuntime(
@@ -157,10 +157,22 @@ function quotaWarningLevel(
   return Math.min(threshold, Math.ceil(remaining / step) * step);
 }
 
-function quotaNotice(quota: MemoraxQuotaSnapshot): string {
+function quotaNotice(
+  quota: MemoraxQuotaSnapshot,
+  language: MemoraxAdapterConfig["memoryOutputLanguage"],
+): string {
+  if (language === "zh") {
+    const quotaName = quota.featureCode === "memory_write" ? "记忆写入" : "记忆搜索";
+    return [
+      `警告：MemoraX Code ${quotaName}额度不足：剩余 ${quota.remaining}/${quota.limit} 次。`,
+      `请访问 ${MEMORAX_ACCOUNT_URL} 注册或管理账户。`,
+      "如需获取 Mark ID，请直接在本机终端运行 `memorax-code account --show-mark-id`。",
+      "请妥善保管，不要将其粘贴到聊天中。",
+    ].join(" ");
+  }
   const quotaName = quota.featureCode === "memory_write" ? "memory write" : "memory search";
   return [
-    `MemoraX Code ${quotaName} quota is running low: ${quota.remaining} of ${quota.limit} remaining.`,
+    `Warning: MemoraX Code ${quotaName} quota is running low: ${quota.remaining} of ${quota.limit} remaining.`,
     `Visit ${MEMORAX_ACCOUNT_URL} to register or manage your account.`,
     "To retrieve your Mark ID, run `memorax-code account --show-mark-id` directly in your local terminal.",
     "Keep it private and do not paste it into chat.",

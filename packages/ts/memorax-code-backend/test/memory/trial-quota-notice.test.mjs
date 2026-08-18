@@ -26,7 +26,7 @@ test("trial quota notices claim lower levels once and reset after replenishment"
   );
 
   const first = await claim(9_999);
-  assert.match(first, /memory write quota is running low: 9999 of 10000 remaining/i);
+  assert.match(first, /^Warning: MemoraX Code memory write quota is running low: 9999 of 10000 remaining/i);
   assert.match(first, /https:\/\/platform\.memorax\.net\//);
   assert.match(first, /memorax-code account --show-mark-id/);
   assert.match(first, /do not paste it into chat/i);
@@ -61,6 +61,35 @@ test("write and search quota reminders are tracked independently", async () => {
   ), /memory search quota/i);
   assert.equal(current.last_warned_write_level, 9_999);
   assert.equal(current.last_warned_search_level, 9_999);
+});
+
+test("quota notices follow the configured memory output language", async () => {
+  let current = readyRecord();
+  const transitionCredential = async (operation) => {
+    const next = operation(current);
+    if (next !== undefined) current = next;
+    return current;
+  };
+  const options = { env: {}, transitionCredential };
+  const writeNotice = await claimTrialQuotaNotice(
+    trialConfig("zh"),
+    { featureCode: "memory_write", remaining: 9_999, limit: 10_000 },
+    options,
+  );
+  const searchNotice = await claimTrialQuotaNotice(
+    trialConfig("zh"),
+    { featureCode: "memory_search", remaining: 9_999, limit: 10_000 },
+    options,
+  );
+
+  assert.match(writeNotice, /^警告：MemoraX Code 记忆写入额度不足：剩余 9999\/10000 次。/);
+  assert.match(searchNotice, /^警告：MemoraX Code 记忆搜索额度不足：剩余 9999\/10000 次。/);
+  for (const notice of [writeNotice, searchNotice]) {
+    assert.match(notice, /请访问 https:\/\/platform\.memorax\.net\/ 注册或管理账户。/);
+    assert.match(notice, /请直接在本机终端运行 `memorax-code account --show-mark-id`/);
+    assert.match(notice, /不要将其粘贴到聊天中。/);
+    assert.doesNotMatch(notice, /quota is running low/i);
+  }
 });
 
 test("quota exhaustion emits the final zero-level notice", async () => {
@@ -145,9 +174,10 @@ function readyRecord() {
   });
 }
 
-function trialConfig() {
+function trialConfig(memoryOutputLanguage = "en") {
   return {
     credentialSource: "trial",
     apiKey: API_KEY,
+    memoryOutputLanguage,
   };
 }
