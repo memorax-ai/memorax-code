@@ -163,8 +163,8 @@ either takes precedence over a ready secure trial credential. The current
 default endpoint is `https://platform.memorax.net`.
 
 Trial setup writes the same API key to private TOML and the operating-system
-secure credential record, alongside a non-secret trial-source marker. Copying
-the TOML connection fields to another computer therefore reuses the key as an
+secure credential record. Copying the TOML connection fields to another
+computer therefore reuses the key as an
 explicit connection when the original secure record is absent, without copying
 the device-local trial identity or local quota-reminder history. Product update
 and accepted connection reuse backfill this TOML copy for legacy trial

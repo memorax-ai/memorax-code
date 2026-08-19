@@ -391,7 +391,6 @@ async function writeMemoraxConfigFromInput({
     endpoint,
     outputLanguage,
     apiKey: trialCredential.apiKey,
-    credentialSource: "trial",
   }) === "failed") {
     logRed("MemoraX config was not written because the existing config could not be safely updated.");
     return "failed";
@@ -700,7 +699,21 @@ async function backfillPortableTrialApiKey() {
   const environmentApiKey = String(process.env.MEMORAX_CODE_MEMORAX_API_KEY ?? "").trim();
   const tomlApiKey = typeof memorax?.api_key === "string" ? memorax.api_key.trim() : "";
   const userId = typeof memorax?.user_id === "string" ? memorax.user_id.trim() : "";
-  if (environmentApiKey || tomlApiKey || !userId) return "unchanged";
+  if (tomlApiKey || environmentApiKey || !userId) {
+    if (memorax?.credential_source !== "trial") return "unchanged";
+    if (updateConfigFileAtomically({
+      path,
+      defaultText: setTomlField(defaultMemoraxCodeConfig(), "memorax", "credential_source", undefined),
+      transform: (text) => setTomlField(text, "memorax", "credential_source", undefined),
+      parseToml: parse,
+      warn: (message) => log(message),
+    }) === "failed") {
+      logRed("Legacy MemoraX credential marker was not removed because the existing config could not be safely updated.");
+      return "failed";
+    }
+    logGreen(`Legacy MemoraX credential marker removed from ${path}.`);
+    return "configured";
+  }
 
   let credential;
   try {
@@ -714,16 +727,14 @@ async function backfillPortableTrialApiKey() {
   }
   if (!credential) return "unchanged";
 
-  const applyCredential = (text) => setTomlSectionFields(
+  const applyCredential = (text) => setTomlField(
     setTomlSectionFields(text, "memorax", [{
       key: "api_key",
       line: `api_key = "${tomlString(credential.apiKey)}" # MemoraX API key used by the local Backend.`,
     }]),
     "memorax",
-    [{
-      key: "credential_source",
-      line: 'credential_source = "trial" # Keep a matching local secure credential classified as trial.',
-    }],
+    "credential_source",
+    undefined,
   );
   if (updateConfigFileAtomically({
     path,
@@ -744,7 +755,7 @@ function setManagedClientSelection(text, clients) {
   return setTomlField(withClaude, "clients", "codex", String(clients.includes("codex")));
 }
 
-function writeMemoraxConfig({ userId, endpoint, outputLanguage, apiKey, credentialSource }) {
+function writeMemoraxConfig({ userId, endpoint, outputLanguage, apiKey }) {
   const path = memoraxCodeConfigPath();
   const fields = [
     {
@@ -767,14 +778,14 @@ function writeMemoraxConfig({ userId, endpoint, outputLanguage, apiKey, credenti
         line: `api_key = "${tomlString(apiKey)}" # MemoraX API key used by the local Backend.`,
       }])
       : setTomlField(text, "memorax", "api_key", undefined);
-    const withCredentialSource = credentialSource === "trial"
-      ? setTomlSectionFields(withSelectedApiKey, "memorax", [{
-        key: "credential_source",
-        line: 'credential_source = "trial" # Keep a matching local secure credential classified as trial.',
-      }])
-      : setTomlField(withSelectedApiKey, "memorax", "credential_source", undefined);
+    const withoutLegacyCredentialSource = setTomlField(
+      withSelectedApiKey,
+      "memorax",
+      "credential_source",
+      undefined,
+    );
     return setTomlSectionFields(
-      setTomlSectionFields(withCredentialSource, "memorax", fields),
+      setTomlSectionFields(withoutLegacyCredentialSource, "memorax", fields),
       "memory.add",
       addFields,
     );

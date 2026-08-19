@@ -76,7 +76,6 @@ test("async MemoraX config resolver prefers environment, TOML, then a ready tria
     expectedApiKey,
     expectedUserId,
     expectedLoads,
-    expectedCredentialSource,
   ] of [
     [
       "environment",
@@ -88,19 +87,17 @@ test("async MemoraX config resolver prefers environment, TOML, then a ready tria
       "env-secret",
       "env-memory-id",
       0,
-      undefined,
     ],
-    ["TOML", {}, { api_key: "file-secret", user_id: "file-memory-id" }, "file-secret", "file-memory-id", 0, undefined],
+    ["TOML", {}, { api_key: "file-secret", user_id: "file-memory-id" }, "file-secret", "file-memory-id", 0],
     [
-      "mirrored trial TOML",
+      "legacy trial-marked TOML",
       {},
       { api_key: "trial-secret", credential_source: "trial", user_id: "stable-memory-id" },
       "trial-secret",
       "stable-memory-id",
-      1,
-      "trial",
+      0,
     ],
-    ["ready trial credential", {}, { user_id: "stable-memory-id" }, "trial-secret", "stable-memory-id", 1, "trial"],
+    ["ready trial credential", {}, { user_id: "stable-memory-id" }, "trial-secret", "stable-memory-id", 1],
   ]) {
     await t.test(name, async () => {
       let loads = 0;
@@ -117,7 +114,6 @@ test("async MemoraX config resolver prefers environment, TOML, then a ready tria
 
       assert.equal(result.ok, true);
       assert.equal(result.config.apiKey, expectedApiKey);
-      assert.equal(result.config.credentialSource, expectedCredentialSource);
       assert.equal(result.config.userId, expectedUserId);
       assert.notEqual(result.config.userId, READY_TRIAL_CREDENTIAL.account_id);
       assert.equal(loads, expectedLoads);
@@ -143,7 +139,6 @@ test("a portable TOML API key remains usable without the original secure trial r
 
   assert.equal(result.ok, true);
   assert.equal(result.config.apiKey, "portable-secret");
-  assert.equal(result.config.credentialSource, undefined);
 });
 
 test("async MemoraX config resolver rejects a provisioning trial credential", async () => {
@@ -296,7 +291,7 @@ test("MemoraX Code config loader reads config.toml from the configured MemoraX C
   assert.equal(config.memorax?.endpoint, "http://file-memorax.test/");
   assert.equal(config.memorax?.user_id, "file-user");
   assert.equal(config.memorax?.api_key, "file-secret");
-  assert.equal(config.memorax?.credential_source, "trial");
+  assert.equal(config.memorax?.credential_source, undefined);
   assert.equal(config.memorax?.timeout_ms, 7000);
   assert.deepEqual(config.memory?.add, {
     content_type: "code",

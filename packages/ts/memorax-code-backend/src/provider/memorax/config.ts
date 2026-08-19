@@ -40,7 +40,6 @@ export const MEMORY_CLI_DEFAULT_MAX_MEMORY_CHARS = 2000;
 export type MemoraxAdapterConfig = Readonly<{
   baseUrl: string;
   apiKey: string;
-  credentialSource?: "trial";
   userId: string;
   memoryOutputLanguage: MemoraxMemoryOutputLanguage;
   topK: number;
@@ -148,10 +147,9 @@ export function createMemoraxConfigResolver(
     const config = configForEnv(env, fileConfig);
     const environmentApiKey = stringValue(env.MEMORAX_CODE_MEMORAX_API_KEY);
     const tomlApiKey = stringValue(config.memorax?.api_key);
-    const trialMirror = tomlApiKey && config.memorax?.credential_source === "trial";
     if (environmentApiKey
       || !memoraxUserId(env, config)
-      || (tomlApiKey && !trialMirror)) {
+      || tomlApiKey) {
       return memoraxConfigFromSources(env, config);
     }
 
@@ -207,7 +205,6 @@ function memoraxConfigFromSources(
     config: {
       baseUrl,
       apiKey,
-      ...(trialApiKey ? { credentialSource: "trial" as const } : {}),
       userId,
       memoryOutputLanguage: outputLanguage.value,
       ...searchConfig,

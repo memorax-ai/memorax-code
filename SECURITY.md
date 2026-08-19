@@ -139,10 +139,11 @@ copy of the API key in `config.toml`. Existing-account setup stores the entered
 API key there as well. New POSIX configuration files use mode `0600`, while
 Windows relies on the current user's filesystem ACLs. Runtime API-key
 resolution prefers an explicit environment value, then a TOML value, then a
-ready secure trial credential. With no environment override, a setup-marked
-TOML key that matches the ready secure record retains trial classification;
-ordinary explicit TOML keys do not cause secure-store access. Trial account and
-project identifiers never participate in the workspace-scoped User ID.
+ready secure trial credential. A TOML key is used directly regardless of how
+it was issued; the secure trial credential is consulted only when no explicit
+environment or TOML key is available. The plugin does not infer current account
+registration status from the key's original provisioning path. Trial account
+and project identifiers never participate in the workspace-scoped User ID.
 
 The secure credential layer uses macOS Keychain, Linux Secret Service through
 libsecret, and Windows CurrentUser DPAPI with an atomically replaced encrypted

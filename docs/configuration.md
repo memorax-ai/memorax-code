@@ -39,11 +39,11 @@ The MemoraX API key has one additional setup-managed source. Its precedence is:
 MEMORAX_CODE_MEMORAX_API_KEY > [memorax].api_key > ready secure trial credential
 ```
 
-With no environment override, setup's `credential_source = "trial"` marker
-causes the secure trial credential to be consulted. A matching TOML key keeps
-the local trial identity; a different key remains an explicit connection, and
-a copied TOML key remains usable on a computer that does not have the original
-secure trial record.
+A TOML key is used directly regardless of whether it was entered for an
+existing account or copied from a provisioned trial. The ready secure trial
+credential is consulted only when neither an environment nor TOML key is
+available. Legacy `credential_source` fields are ignored by the runtime and
+removed the next time setup reconciles the connection.
 
 TOML booleans are `true` or `false`. Environment booleans accept
 `true/false`, `1/0`, `yes/no`, and `on/off`. Unknown fields are ignored and
@@ -176,7 +176,6 @@ MemoraX is the required remote-memory service:
 [memorax]
 endpoint = "https://platform.memorax.net"
 api_key = "your-api-key"
-credential_source = "trial"
 user_id = "your-user-id"
 # timeout_ms = 5000
 # startup_timeout_ms = 3000
@@ -184,16 +183,16 @@ user_id = "your-user-id"
 
 Both trial and existing-account setup write `api_key` here. Trial setup also
 retains the complete versioned trial identity in the operating-system secure
-credential store and writes the non-secret `credential_source = "trial"`
-marker. Existing-account setup removes that marker. A manually managed
-connection may set `api_key` or supply `MEMORAX_CODE_MEMORAX_API_KEY`.
+credential store. The plugin uses the same TOML key before and after account
+activation and does not classify current account status locally. A manually
+managed connection may set `api_key` or supply
+`MEMORAX_CODE_MEMORAX_API_KEY`.
 
 | Field | Environment override | Fallback |
 | --- | --- | --- |
 | `endpoint` | `MEMORAX_CODE_MEMORAX_ENDPOINT` | `https://platform.memorax.net` |
 | `user_id` | `MEMORAX_CODE_MEMORAX_USER_ID` | required User ID |
 | `api_key` | `MEMORAX_CODE_MEMORAX_API_KEY` | ready secure trial credential; otherwise required |
-| `credential_source` | none | omitted; trial setup writes `trial` |
 | `timeout_ms` | `MEMORAX_CODE_MEMORAX_TIMEOUT_MS` | `5000` ms |
 | `startup_timeout_ms` | `MEMORAX_CODE_MEMORAX_STARTUP_TIMEOUT_MS` | `3000` ms |
 

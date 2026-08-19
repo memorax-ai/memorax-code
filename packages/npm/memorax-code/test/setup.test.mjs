@@ -1685,7 +1685,7 @@ test("setup can write MemoraX memory config before backend start", async () => {
     assert.ok(config.includes(`endpoint = "${run.memoraxEndpoint}" # MemoraX service URL.`));
     assert.match(config, /user_id = "memorax-user" # Stable User ID; requests derive a workspace-scoped namespace\./);
     assert.ok(config.includes(`api_key = "${trialApiKey}" # MemoraX API key used by the local Backend.`));
-    assert.match(config, /credential_source = "trial" # Keep a matching local secure credential classified as trial\./);
+    assert.doesNotMatch(config, /credential_source/);
     assert.doesNotMatch(config, /9001|9002/);
     assert.match(config, /\[memory\.add\]\r?\noutput_language = "en" # Language for newly generated MemoraX memories\./);
     assert.match(
@@ -1694,7 +1694,7 @@ test("setup can write MemoraX memory config before backend start", async () => {
     );
     assert.match(
       config,
-      /user_id = "memorax-user" # Stable User ID; requests derive a workspace-scoped namespace\.\r?\ncredential_source = "trial" # Keep a matching local secure credential classified as trial\.\r?\napi_key = "sk_[A-Za-z0-9_-]+" # MemoraX API key used by the local Backend\.\r?\n\r?\n# Automatic Hook retrieval is opt-in\.\r?\n\[memory\.retrieval\]/,
+      /user_id = "memorax-user" # Stable User ID; requests derive a workspace-scoped namespace\.\r?\napi_key = "sk_[A-Za-z0-9_-]+" # MemoraX API key used by the local Backend\.\r?\n\r?\n# Automatic Hook retrieval is opt-in\.\r?\n\[memory\.retrieval\]/,
     );
     assert.match(config, /\[memory\.retrieval\]\nenabled = false # Auto-inject retrieved memories into supported client prompts\./);
     assert.match(config, /\[memory\.skill_reminder\]/);
@@ -1849,7 +1849,7 @@ test("interactive setup does not reuse malformed or incomplete memory status JSO
   }
 });
 
-test("interactive setup after reinstall reuses a complete MemoraX configuration", async () => {
+test("interactive setup after reinstall reuses a complete MemoraX configuration and removes its legacy source marker", async () => {
   const existingConfig = [
     "[clients]",
     "codex = true",
@@ -1858,6 +1858,7 @@ test("interactive setup after reinstall reuses a complete MemoraX configuration"
     "[memorax]",
     'endpoint = "https://memorax.example"',
     'api_key = "existing-secret"',
+    'credential_source = "trial"',
     'user_id = "existing-user"',
     "",
     "[memory.add]",
@@ -1883,7 +1884,10 @@ test("interactive setup after reinstall reuses a complete MemoraX configuration"
     assert.match(run.log, /^memorax-code codex-plugin activate --yes$/m);
     assert.match(run.result.stderr, /MemoraX memory: .*Configured/);
     assert.match(run.result.stderr, /Automatic writeback: Disabled by effective configuration/);
-    assert.equal(await readFile(join(run.memoraxCodeHome, "config.toml"), "utf8"), existingConfig);
+    assert.equal(
+      await readFile(join(run.memoraxCodeHome, "config.toml"), "utf8"),
+      existingConfig.replace('credential_source = "trial"\n', ""),
+    );
     await assertSetupComplete(run);
   } finally {
     await rm(run.root, { recursive: true, force: true });
@@ -1898,6 +1902,7 @@ test("interactive setup backfills a portable API key for a retained trial creden
     "",
     "[memorax]",
     'endpoint = "https://memorax.example"',
+    'credential_source = "trial"',
     'user_id = "existing-user"',
     "",
     "[memory.add]",
@@ -1930,7 +1935,7 @@ test("interactive setup backfills a portable API key for a retained trial creden
     assert.equal(`${run.result.stdout}\n${run.result.stderr}\n${run.log}`.includes(trialApiKey), false);
     const config = await readFile(join(run.memoraxCodeHome, "config.toml"), "utf8");
     assert.ok(config.includes(`api_key = "${trialApiKey}" # MemoraX API key used by the local Backend.`));
-    assert.match(config, /credential_source = "trial"/);
+    assert.doesNotMatch(config, /credential_source/);
     assert.match(config, /user_id = "existing-user"/);
   } finally {
     await rm(run.root, { recursive: true, force: true });

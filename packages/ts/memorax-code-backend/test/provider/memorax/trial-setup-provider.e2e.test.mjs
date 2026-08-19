@@ -114,7 +114,6 @@ test("trial setup credentials authorize repository-scoped MemoraX writeback", as
       "[memorax]",
       'endpoint = "https://platform.memorax.net"',
       `api_key = "${setupResult.apiKey}"`,
-      'credential_source = "trial"',
       `user_id = "${MEMORY_ID}"`,
       "",
       "[memory.add]",
