@@ -39,6 +39,7 @@ const rootLibFiles = new Set([
   "lib/resolve-claude-command.mjs",
   "lib/resolve-codex-command.mjs",
   "lib/run-entrypoint.mjs",
+  "lib/setup-memory-preferences.mjs",
   "lib/setup-reconcile.mjs",
   "lib/trial-plugin-mark.mjs",
   "lib/trial-provision-client.mjs",

@@ -21,6 +21,7 @@ import { stagePackagedClientHookRuntime } from "../lib/client-hook-runtime.mjs";
 import { ensureClaudeCommandEnv } from "../lib/resolve-claude-command.mjs";
 import { ensureCodexCommandEnv } from "../lib/resolve-codex-command.mjs";
 import { reconcileSetup } from "../lib/setup-reconcile.mjs";
+import { detectSetupMemoryPreferences } from "../lib/setup-memory-preferences.mjs";
 import {
   ensureTrialSetupCredential,
   loadReadyTrialSetupCredential,
@@ -257,13 +258,17 @@ async function shouldReuseExistingMemoraxConfiguration(scriptedAnswers) {
 
 async function maybeConfigureMemoraxMemory(scriptedAnswers, { showDisclosure = true } = {}) {
   if (showDisclosure) printMemoraxDisclosure();
+  const detectedPreferences = detectSetupMemoryPreferences();
   if (scriptedAnswers) {
-    return await configureMemoraxMemoryFromAnswers(scriptedAnswers);
+    return await configureMemoraxMemoryFromAnswers(scriptedAnswers, detectedPreferences);
   }
   let rl = createInterface({ input: process.stdin, output: process.stderr });
   try {
-    const userId = (await rl.question(`${PREFIX} User ID (used for your memories): `)).trim();
-    const outputLanguage = await questionPreferredLanguage(rl);
+    const userId = detectedPreferences.userId
+      ?? (await rl.question(`${PREFIX} User ID (used for your memories): `)).trim();
+    const outputLanguage = detectedPreferences.outputLanguage
+      ?? await questionPreferredLanguage(rl);
+    printDetectedMemoryPreferences(detectedPreferences);
     const existingAccount = await questionExistingMemoraxAccount(rl);
     if (existingAccount) {
       rl.close();
@@ -319,11 +324,21 @@ async function chooseUpdateClients(previousClients, detectedClients, scriptedAns
   return ["codex", "claude"].filter((client) => selected.has(client));
 }
 
-async function configureMemoraxMemoryFromAnswers(answers) {
-  const userId = String(answers.shift() ?? "").trim();
-  log(`User ID: ${userId ? "<provided>" : "<missing>"}`);
-  const outputLanguageAnswer = String(answers.shift() ?? "").trim();
-  log(`Preferred language [ZH/en] (used for Memory extraction): ${outputLanguageAnswer ? "<provided>" : "<default>"}`);
+async function configureMemoraxMemoryFromAnswers(answers, detectedPreferences) {
+  const userId = detectedPreferences.userId
+    ?? String(answers.shift() ?? "").trim();
+  if (!detectedPreferences.userId) {
+    log(`User ID: ${userId ? "<provided>" : "<missing>"}`);
+  }
+  const outputLanguageAnswer = detectedPreferences.outputLanguage
+    ? undefined
+    : String(answers.shift() ?? "").trim();
+  const outputLanguage = detectedPreferences.outputLanguage
+    ?? preferredLanguage(outputLanguageAnswer);
+  if (!detectedPreferences.outputLanguage) {
+    log(`Preferred language [ZH/en] (used for Memory extraction): ${outputLanguageAnswer ? "<provided>" : "<default>"}`);
+  }
+  printDetectedMemoryPreferences(detectedPreferences);
   log("Do you already have a MemoraX account? [y/N]");
   const existingAccount = /^y(?:es)?$/i.test(String(answers.shift() ?? "").trim());
   const apiKey = existingAccount
@@ -333,10 +348,19 @@ async function configureMemoraxMemoryFromAnswers(answers) {
   return await writeMemoraxConfigFromInput({
     userId,
     endpoint: memoraxInstallEndpoint(),
-    outputLanguage: preferredLanguage(outputLanguageAnswer),
+    outputLanguage,
     existingAccount,
     apiKey,
   });
+}
+
+function printDetectedMemoryPreferences(preferences) {
+  if (preferences.userId) {
+    log(`User ID: ${preferences.userId} (detected from the system account).`);
+  }
+  if (preferences.outputLanguage) {
+    log(`Preferred language: ${preferences.outputLanguage} (detected from system settings).`);
+  }
 }
 
 function printMemoraxDisclosure() {

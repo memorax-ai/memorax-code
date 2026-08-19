@@ -101,6 +101,7 @@ for relative in [
     "lib/vscode-extension-command.mjs",
     "lib/npm-invocation.mjs",
     "lib/package-transition.mjs",
+    "lib/setup-memory-preferences.mjs",
     "lib/setup-reconcile.mjs",
     "lib/trial-plugin-mark.mjs",
     "lib/trial-provision-client.mjs",
@@ -315,6 +316,7 @@ for relative in \
   lib/vscode-extension-command.mjs \
   lib/npm-invocation.mjs \
   lib/package-transition.mjs \
+  lib/setup-memory-preferences.mjs \
   lib/setup-reconcile.mjs \
   lib/trial-plugin-mark.mjs \
   lib/trial-provision-client.mjs \

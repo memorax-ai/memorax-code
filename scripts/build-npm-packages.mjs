@@ -143,6 +143,7 @@ async function validateStaging(packageRoot) {
     "lib/package-transition.mjs",
     "lib/resolve-claude-command.mjs",
     "lib/resolve-codex-command.mjs",
+    "lib/setup-memory-preferences.mjs",
     "lib/setup-reconcile.mjs",
     "lib/trial-plugin-mark.mjs",
     "lib/trial-provision-client.mjs",

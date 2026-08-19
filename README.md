@@ -51,8 +51,8 @@ npm install -g @memorax/memorax-code
 memorax-code setup
 ```
 
-Setup asks for a User ID and your preferred memory language; no account or API
-key is required beforehand. Run `memorax-code setup` again whenever you need to
+Setup automatically configures your memory preferences; no account or API key
+is required beforehand. Run `memorax-code setup` again whenever you need to
 reuse, reconfigure, or repair the installation. After setup, `memorax-code`
 shows the current status.
 

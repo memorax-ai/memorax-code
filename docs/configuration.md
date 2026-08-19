@@ -106,14 +106,16 @@ exact review of later Hook changes, and final readiness.
 Setup has two connection-handling modes. Interactive `memorax-code setup` first
 checks for a locally ready MemoraX connection and asks whether to reuse its
 saved connection and memory preferences. Accepting preserves them. If no ready
-connection exists, or reuse is declined, setup asks for a User ID, preferred
-language, and whether the user already has a MemoraX account. Selecting an
-existing account prompts for its API key, writes it with the connection
-preferences, and skips trial provisioning. Selecting no, or pressing Enter,
-creates or restores a secure trial credential and writes the preferences plus
-a portable API-key copy. After the secure trial credential is ready, setup
-replaces any `[memorax].api_key` with that credential's current API key. An
-environment API key remains a higher-precedence override. Setup reached from
+connection exists, or reuse is declined, setup uses the logged-in operating-
+system account name as the User ID and maps the user's system language to `zh`
+or `en`. It asks only for a preference that cannot be detected safely, then
+asks whether the user already has a MemoraX account. Selecting an existing
+account prompts for its API key, writes it with the connection preferences,
+and skips trial provisioning. Selecting no, or pressing Enter, creates or
+restores a secure trial credential and writes the preferences plus a portable
+API-key copy. After the secure trial credential is ready, setup replaces any
+`[memorax].api_key` with that credential's current API key. An environment API
+key remains a higher-precedence override. Setup reached from
 `memorax-code update` preserves the existing MemoraX connection without asking
 for memory preferences or changing credentials; for a legacy trial connection
 that has no TOML key, it copies the retained secure key into TOML. Accepting a
@@ -375,10 +377,11 @@ records while a setup, npm, or lifecycle command may still be active.
 - Malformed TOML, a non-table root, or invalid `[clients]` types block
   lifecycle mutations before adapters or processes are changed.
 - Interactive setup offers to reuse a locally ready MemoraX connection. If none
-  exists or reuse is declined, it asks for a User ID, language, and account
-  choice, then configures the entered existing-account API key or provisions a
-  trial credential. A malformed TOML file remains fail-closed and is not
-  overwritten by the prompt flow.
+  exists or reuse is declined, it detects the User ID and language from the
+  local user environment, asks for any value that could not be detected, and
+  then asks for the account choice. It configures the entered existing-account
+  API key or provisions a trial credential. A malformed TOML file remains
+  fail-closed and is not overwritten by the setup flow.
 - Ordinary memory and trace readers use safe fallbacks when the file cannot be
   read or parsed; memory readers may also warn. Unsupported field types are
   ignored.

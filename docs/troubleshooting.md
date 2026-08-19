@@ -40,8 +40,8 @@ an interactive flow implicitly.
 After a product uninstall and reinstall, setup detects a locally ready retained
 MemoraX connection and asks whether to reuse it. Accepting restores the client
 integrations without asking again for the User ID or preferred language.
-Decline reuse when you intend to replace those preferences or move to the
-setup-managed trial connection.
+Declining reuse replaces those preferences with the current system account and
+language, or asks for a value only when it cannot be detected safely.
 
 Setup requires both terminal input and terminal-visible stderr. A pipe,
 background process, or redirected stdin/stderr cannot answer setup prompts;
@@ -57,10 +57,12 @@ readiness all succeed. Until then, a no-argument `memorax-code` reports that
 setup has not been completed and points to `memorax-code setup`.
 
 If the configuration is safely parseable but its effective MemoraX connection
-is not ready, setup asks for a User ID and preferred language and then creates
-or restores a trial credential. A malformed TOML file cannot be
-safely updated and remains byte-preserved; fix or restore that file before
-rerunning setup rather than expecting the prompt flow to overwrite it.
+is not ready, setup detects the User ID and preferred language from the local
+user environment and then creates or restores a trial credential. A Unix setup
+running as the root account, or another environment where a value cannot be
+read safely, asks for the missing value instead. A malformed TOML file cannot
+be safely updated and remains byte-preserved; fix or restore that file before
+rerunning setup rather than expecting the setup flow to overwrite it.
 
 If setup reports that secure trial setup failed, confirm that the current
 operating-system credential store is available to the same logged-in user and
@@ -143,8 +145,8 @@ unavailable. Run:
 memorax-cli status
 ```
 
-Use explicit setup to create or restore the trial connection and enter the
-User ID and preferred language:
+Use explicit setup to detect the local User ID and preferred language and then
+create or restore the trial connection:
 
 ```sh
 memorax-code setup

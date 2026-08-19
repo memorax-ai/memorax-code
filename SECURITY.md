@@ -64,15 +64,19 @@ MemoraX-backed search, retrieval, and writeback require a User ID, an
 effective API key, and network access. The API key may come from a ready secure
 trial credential or an explicit environment/TOML value. Interactive setup
 discloses automatic writeback before asking whether to use an existing account
-or create a trial account. The existing-account path accepts an API key through
-masked terminal input and stores it in the private TOML configuration; the
-trial path creates or restores the operating-system-protected credential and
-mirrors its API key to that private configuration for portability. A ready
-connection activates search/add and the generated configuration's automatic
-writeback; automatic retrieval remains disabled until explicitly enabled.
-Interactive setup asks before reusing existing effective credentials and does
-not collect or print them again. Its config-only check does not contact MemoraX
-or prove that the API key is accepted remotely.
+or create a trial account. When a new connection is needed, setup derives the
+User ID from the logged-in operating-system account name and maps the user's
+system language to `zh` or `en`; it displays those selected values and asks for
+one only when it cannot be detected safely. The existing-account path accepts
+an API key through masked terminal input and stores it in the private TOML
+configuration; the trial path creates or restores the operating-system-
+protected credential and mirrors its API key to that private configuration for
+portability. A ready connection activates search/add and the generated
+configuration's automatic writeback; automatic retrieval remains disabled
+until explicitly enabled. Interactive setup asks before reusing existing
+effective credentials and does not collect or print them again. Its config-
+effective credentials and does not collect or print them again. Its config-only
+check does not contact MemoraX or prove that the API key is accepted remotely.
 
 Memory searches send the query and repository-scoped identity to MemoraX.
 Active adds and automatic writeback send the selected content needed to create

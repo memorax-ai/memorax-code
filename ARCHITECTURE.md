@@ -133,6 +133,7 @@ sequenceDiagram
   participant NPM as npm install
   participant Transition as package transition
   participant Setup as interactive setup
+  participant System as local OS preferences
   participant Config as effective MemoraX config
   participant Trial as trial provisioning and secure credential
   participant CodexPlugin as Codex plugin trust
@@ -185,7 +186,11 @@ sequenceDiagram
       alt Reuse accepted
         Setup->>Config: preserve connection and preferences
       else Reuse declined
-        Setup->>User: request User ID, language, and account choice
+        Setup->>System: read login username and UI language
+        opt A preference is unavailable
+          Setup->>User: request the missing preference
+        end
+        Setup->>User: request account choice
         alt Existing MemoraX account
           Setup->>User: request API key
           Setup->>Config: write endpoint, User ID, language, and API key
@@ -195,7 +200,11 @@ sequenceDiagram
         end
       end
     else Effective connection is incomplete or invalid
-      Setup->>User: request User ID, language, and account choice
+      Setup->>System: read login username and UI language
+      opt A preference is unavailable
+        Setup->>User: request the missing preference
+      end
+      Setup->>User: request account choice
       alt Existing MemoraX account
         Setup->>User: request API key
         Setup->>Config: write endpoint, User ID, language, and API key
@@ -238,28 +247,30 @@ invalid or unsupported state fails closed. Interactive `memorax-code setup`
 runs regardless of completion, while product update uses a separate setup mode.
 Interactive setup uses the config-only status authority to find a locally ready
 effective MemoraX connection and asks before reusing its connection and memory
-preferences. If none is ready or reuse is declined, it asks for a User ID,
-language, and whether the user already has a MemoraX account. An
-existing-account choice stores the entered API key with the connection
-preferences and skips trial provisioning. Otherwise setup creates or restores
-the secure trial credential and writes the preferences with a portable TOML
-copy of its API key. Update setup preserves credentials and memory
-preferences while backfilling a missing portable key from an already-ready
-trial record; accepted connection reuse performs the same migration. The local
-status check does not prove remote credential acceptance.
+preferences. If none is ready or reuse is declined, it derives the User ID and
+language from the logged-in operating-system account and user language,
+requests only a preference that cannot be detected safely, and asks whether
+the user already has a MemoraX account. An existing-account choice stores the
+entered API key with the connection preferences and skips trial provisioning.
+Otherwise setup creates or restores the secure trial credential and writes the
+preferences with a portable TOML copy of its API key. Update setup preserves
+credentials and memory preferences while backfilling a missing portable key
+from an already-ready trial record; accepted connection reuse performs the same
+migration. The local status check does not prove remote credential acceptance.
 
-Setup owns client discovery, user prompts, foreground trial provisioning,
-configuration changes, initial bundled-Hook activation, exact changed-Hook
-review, Hook generation staging, and readiness reconciliation. Entering
+Setup owns client discovery, local preference detection, user prompts,
+foreground trial provisioning, configuration changes, initial bundled-Hook
+activation, exact changed-Hook review, Hook generation staging, and readiness
+reconciliation. Entering
 interactive setup authorizes initial activation for a selected Codex
 integration without a second confirmation;
 new or changed Hook command hashes on later updates still require foreground
 review. The selected MemoraX connection path must complete before plugin and
 Backend reconciliation begins. Trial provisioning must succeed before setup
-applies the selected User ID and language; the existing-account path writes the
-entered API key and preferences together. Setup may make one bounded stop/start
-recovery attempt for an ordinary start failure, while deterministic Hook
-activation, lifecycle-lock, and persisted-authority failures remain
+applies the detected or entered User ID and language; the existing-account path
+writes the entered API key and preferences together. Setup may make one bounded
+stop/start recovery attempt for an ordinary start failure, while deterministic
+Hook activation, lifecycle-lock, and persisted-authority failures remain
 fail-closed. Outside update mode, setup records completion only after a final
 config-only readiness check.
 
@@ -271,6 +282,8 @@ The principal control-plane locations are:
   non-interactive `retiring -> retired -> consumed` package-replacement state;
 - `packages/npm/memorax-code/lib/setup-reconcile.mjs` for bounded setup
   start/status verification and the narrow ordinary-failure recovery policy;
+- `packages/npm/memorax-code/lib/setup-memory-preferences.mjs` for bounded,
+  non-privileged operating-system account and language detection;
 - `packages/npm/memorax-code/lib/trial-setup.mjs`,
   `lib/trial-plugin-mark.mjs`, `lib/trial-provision-client.mjs`, and
   `lib/trial-provision-flow.mjs` for setup composition, device identity,
