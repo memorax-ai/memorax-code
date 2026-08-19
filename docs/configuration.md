@@ -211,8 +211,9 @@ overrides.
 After a trial account is activated, its API key can be reused on another
 computer by placing the copied endpoint, User ID, and API key in that
 computer's private `config.toml`. The copied connection works as an explicit
-TOML connection; device-local trial metadata and warning history remain in the
-original operating-system credential store.
+TOML connection; device-local trial metadata remains in the original
+operating-system credential store, while local quota-reminder history remains
+in the original computer's private runtime state.
 
 MemoraX requests send the API key and the query or content required by the
 selected memory operation to the HTTPS endpoint. Override `endpoint` only with

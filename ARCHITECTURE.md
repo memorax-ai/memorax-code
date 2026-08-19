@@ -578,7 +578,8 @@ and
 | Backend connection and managed-process ownership | Versioned private connection/token/PID records plus lifecycle lock/version validation | In-memory state in any one process |
 | Setup routing and package-replacement continuity | Versioned private setup-completion and package-transition records plus their JSON locks | Configuration contents, npm output visibility, and the presence of package files |
 | Effective MemoraX connection | Config-only resolution with environment API key over TOML API key over a ready secure trial credential, plus normalized User ID and language; a setup-marked TOML key matching the local secure record retains trial classification | Config-file presence, trial-record presence without `ready`, setup completion, and Backend liveness do not establish local readiness or remote API-key acceptance |
-| Trial account identity and state | Versioned secure credential record stored through the operating-system credential backend; its API key is also mirrored to private TOML for portability, while `account_id`, project identity, mark, and warning state remain secure-record-only | `[memorax].user_id` remains the User ID and must not be derived from or overwritten by trial account identity |
+| Trial account identity and state | Versioned secure credential record stored through the operating-system credential backend; its API key is also mirrored to private TOML for portability, while `account_id`, project identity, and mark remain secure-record-only | `[memorax].user_id` remains the User ID and must not be derived from or overwritten by trial account identity |
+| Quota-reminder deduplication | Versioned private local runtime record keyed by a one-way connection fingerprint; normalized MemoraX balances remain authoritative for the quota amount | Account registration status, raw API keys, and in-memory reminder state are not quota-reminder authority |
 | MemoraX memory result and asynchronous task state | Normalized response from `provider/memorax` | Observability, trace, Viewer, and task projections |
 | Persisted current-turn operational state and trace history | Client-qualified local trace records | Viewer summaries and diagnostics; not native content or general Turn-identity authority |
 | Repo Memory bundle | Repository-local `.repo_memory` files produced by the supervised job | Backend readiness and client-injected guidance |
@@ -592,15 +593,15 @@ Ephemeral process state includes active HTTP requests, turn coordination,
 repository-session bindings, in-flight provider operations, Viewer projection
 caches, and background reconciliation promises.
 
-Durable local state includes configuration, private runtime records, active
-client selection, client-qualified trace JSONL, Repo Memory, and trial
-credentials held in macOS Keychain, Linux Secret Service, or a Windows
-CurrentUser DPAPI-encrypted file. Secure credential mutation is serialized by
-a bounded lock; trial provisioning and explicit credential clearing also share
-a dedicated cross-process operation lock. File-backed ciphertext is atomically
-replaced. State shared across processes requires a bounded lock, atomic
-replacement, or version validation appropriate to its record. An in-memory
-mutex is not cross-process authority.
+Durable local state includes configuration, private runtime records such as
+quota-reminder deduplication, active client selection, client-qualified trace
+JSONL, Repo Memory, and trial credentials held in macOS Keychain, Linux Secret
+Service, or a Windows CurrentUser DPAPI-encrypted file. Secure credential
+mutation is serialized by a bounded lock; trial provisioning and explicit
+credential clearing also share a dedicated cross-process operation lock.
+File-backed ciphertext is atomically replaced. State shared across processes
+requires a bounded lock, atomic replacement, or version validation appropriate
+to its record. An in-memory mutex is not cross-process authority.
 
 Backend-owned remote memory state is limited to MemoraX memories and
 asynchronous writeback tasks. The provider adapter is the network boundary for

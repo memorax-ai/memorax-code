@@ -123,10 +123,12 @@ enabled = false
 
 The versioned trial credential record is separate from `config.toml`. Its
 provisioned `account_id` is account identity and never replaces the User ID
-stored as `[memorax].user_id`. Account identity, project identity, device mark,
-and quota-warning state remain only in that secure record.
+stored as `[memorax].user_id`. Account identity, project identity, and the
+device mark remain only in that secure record. Quota-reminder deduplication is
+stored separately in a private local runtime record containing a one-way
+connection fingerprint and reminder levels, never a raw API key or Mark ID.
 
-Routine quota warnings, status, and diagnostics do not expose the complete
+Routine quota reminders, status, and diagnostics do not expose the complete
 trial Mark ID. When registration requires it, the user can explicitly run
 `memorax-code account --show-mark-id` directly in a local terminal. That
 command prints the Mark ID but not the API key. Do not ask an Agent to run it,

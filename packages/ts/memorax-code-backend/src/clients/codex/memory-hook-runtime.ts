@@ -12,11 +12,11 @@ import {
 } from "../../memory/automatic-writeback.js";
 import { retrieveAutomaticMemoryContext } from "../../memory/automatic-retrieval.js";
 import {
-  claimTrialQuotaNotice,
-  createPendingTrialQuotaNoticeRuntime,
-  type PendingTrialQuotaNoticeRuntime,
-  type TrialQuotaNoticeClaimer,
-} from "../../memory/trial-quota-notice.js";
+  claimQuotaNotice,
+  createPendingQuotaNoticeRuntime,
+  type PendingQuotaNoticeRuntime,
+  type QuotaNoticeClaimer,
+} from "../../memory/quota-notice.js";
 import { readCodexSessionTurnIndex } from "./session-turn-index.js";
 import { resolveCodexWorkspaceRoot } from "./workspace-links.js";
 import type {
@@ -93,14 +93,14 @@ export type CodexMemoryHookRuntimeOptions = {
   diagnosticLogger?: MemoryDiagnosticLogger;
   env?: Record<string, string | undefined>;
   fetchImpl?: typeof fetch;
-  claimQuotaNotice?: TrialQuotaNoticeClaimer;
+  claimQuotaNotice?: QuotaNoticeClaimer;
   now?: () => number;
   ttlMs?: number;
   maxEntries?: number;
   cleanupIntervalMs?: number;
   memoryObservability?: MemoryObservabilityHook;
   memoraxCodeHome?: string;
-  pendingQuotaNotice?: PendingTrialQuotaNoticeRuntime;
+  pendingQuotaNotice?: PendingQuotaNoticeRuntime;
   repositoryMemorySession?: RepositoryMemorySessionRuntime;
   turnCoordinator?: MemoryTurnCoordinator;
 };
@@ -116,7 +116,7 @@ const CODEX_MEMORY_TURN_CLIENT = "codex" as const;
 
 export function createCodexMemoryHookRuntime(options: CodexMemoryHookRuntimeOptions = {}): CodexMemoryHookRuntime {
   const now = options.now ?? (() => Date.now());
-  const pendingQuotaNotice = options.pendingQuotaNotice ?? createPendingTrialQuotaNoticeRuntime({
+  const pendingQuotaNotice = options.pendingQuotaNotice ?? createPendingQuotaNoticeRuntime({
     claimQuotaNotice: options.claimQuotaNotice,
     diagnosticLogger: options.diagnosticLogger,
     env: options.env,
@@ -230,7 +230,7 @@ export function createCodexMemoryHookRuntime(options: CodexMemoryHookRuntimeOpti
         : undefined;
       const retrieval = await retrieveAutomaticMemoryContext({
         diagnosticLogger: options.diagnosticLogger,
-        claimQuotaNotice: options.claimQuotaNotice ?? claimTrialQuotaNotice,
+        claimQuotaNotice: options.claimQuotaNotice ?? claimQuotaNotice,
         env: options.env ?? process.env,
         fetchImpl: options.fetchImpl,
         memoryObservability: options.memoryObservability,

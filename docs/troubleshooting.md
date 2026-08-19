@@ -166,9 +166,9 @@ Trial setup writes the same API key to private TOML and the operating-system
 secure credential record, alongside a non-secret trial-source marker. Copying
 the TOML connection fields to another computer therefore reuses the key as an
 explicit connection when the original secure record is absent, without copying
-the device-local trial identity or warning history. Product update and accepted
-connection reuse backfill this TOML copy for legacy trial installations that
-still have only the secure record.
+the device-local trial identity or local quota-reminder history. Product update
+and accepted connection reuse backfill this TOML copy for legacy trial
+installations that still have only the secure record.
 
 After changing persistent configuration:
 
@@ -182,11 +182,13 @@ search. Automatic writeback requires `[memory.writeback] enabled = true` and
 must not be disabled by
 `MEMORAX_CODE_MEMORAX_WRITEBACK_ENABLED=false`.
 
-## Trial quota warning requests a Mark ID
+## Quota reminder and Mark ID
 
-Quota warnings intentionally do not include the complete trial Mark ID. If the
-MemoraX account page requires it, run this command yourself in a local
-terminal:
+Quota reminders apply to anonymous and registered connections. They use
+percentage thresholds rather than exposing raw quota counts and intentionally
+do not include a complete Mark ID. If this device uses an unregistered
+anonymous identity and the MemoraX account page requires its Mark ID, run this
+command yourself in a local terminal:
 
 ```sh
 memorax-code account --show-mark-id

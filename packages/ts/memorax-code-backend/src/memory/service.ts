@@ -13,7 +13,7 @@ import { createMemoryTurnCoordinator } from "./turn-coordinator.js";
 import {
   createRepositoryMemorySessionRuntime,
 } from "./repository-session.js";
-import { createPendingTrialQuotaNoticeRuntime } from "./trial-quota-notice.js";
+import { createPendingQuotaNoticeRuntime } from "./quota-notice.js";
 import type {
   MemoryHookTurnStartResult,
   TurnStartCommand,
@@ -37,7 +37,7 @@ export type MemoryService = {
 };
 
 export function createMemoryService(options: MemoryServiceOptions = {}): MemoryService {
-  const pendingQuotaNotice = createPendingTrialQuotaNoticeRuntime({
+  const pendingQuotaNotice = createPendingQuotaNoticeRuntime({
     claimQuotaNotice: options.claimQuotaNotice,
     diagnosticLogger: options.diagnosticLogger,
     env: options.env,

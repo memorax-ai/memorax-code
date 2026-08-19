@@ -11,7 +11,7 @@ import {
 import type { ConfiguredRepositoryMemoryResult } from "./repository-session.js";
 import type { TraceContext } from "../trace/context.js";
 import { isRecord } from "../shared/record.js";
-import type { TrialQuotaNoticeClaimer } from "./trial-quota-notice.js";
+import type { QuotaNoticeClaimer } from "./quota-notice.js";
 
 export type AutomaticMemoryRetrievalOptions = {
   diagnosticLogger?: MemoryDiagnosticLogger;
@@ -19,7 +19,7 @@ export type AutomaticMemoryRetrievalOptions = {
   fetchImpl?: typeof fetch;
   memoryObservability?: MemoryObservabilityHook;
   memoryObservabilitySource?: MemoryObservabilitySource;
-  claimQuotaNotice?: TrialQuotaNoticeClaimer;
+  claimQuotaNotice?: QuotaNoticeClaimer;
   query?: string;
   repositoryMemory: ConfiguredRepositoryMemoryResult;
   sessionKey?: string;

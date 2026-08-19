@@ -23,15 +23,15 @@ import {
 import { isTraceClient, type TraceClient } from "../trace/context.js";
 import { readCurrentTraceTurn, recordTraceEvent } from "../trace/store.js";
 import {
-  claimTrialQuotaNotice,
-  type TrialQuotaNoticeClaimer,
-} from "./trial-quota-notice.js";
+  claimQuotaNotice,
+  type QuotaNoticeClaimer,
+} from "./quota-notice.js";
 
 type MemoryCliOptions = {
   cwd?: string;
   env?: Record<string, string | undefined>;
   fetchImpl?: typeof fetch;
-  claimQuotaNotice?: TrialQuotaNoticeClaimer;
+  claimQuotaNotice?: QuotaNoticeClaimer;
 };
 
 type MemoryCliResult = {
@@ -162,7 +162,7 @@ async function memorySearch(args: string[], options: MemoryCliOptions): Promise<
   await observability.flush();
   if (!response.ok) return { ok: false, action: "memory.search", query, error: response.error };
   const quotaNotice = response.result.quota
-    ? await (options.claimQuotaNotice ?? claimTrialQuotaNotice)(
+    ? await (options.claimQuotaNotice ?? claimQuotaNotice)(
       repositoryMemory.memory.config,
       response.result.quota,
       { diagnosticLogger: backendDebug, env: options.env },
@@ -241,7 +241,7 @@ async function memoryAdd(args: string[], options: MemoryCliOptions): Promise<Mem
   await observability.flush();
   if (!response.ok) return { ok: false, action: "memory.add", error: response.error };
   const quotaNotice = response.result.quota
-    ? await (options.claimQuotaNotice ?? claimTrialQuotaNotice)(
+    ? await (options.claimQuotaNotice ?? claimQuotaNotice)(
       repositoryMemory.memory.config,
       response.result.quota,
       { diagnosticLogger: backendDebug, env },
