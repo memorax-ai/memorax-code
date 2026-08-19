@@ -181,37 +181,23 @@ sequenceDiagram
     end
   else Interactive setup
     Setup->>Config: resolve local config-only status
-    alt Effective connection is locally ready
-      Setup->>User: offer saved connection reuse
-      alt Reuse accepted
-        Setup->>Config: preserve connection and preferences
-      else Reuse declined
-        Setup->>System: read login username and UI language
-        opt A preference is unavailable
-          Setup->>User: request the missing preference
-        end
-        Setup->>User: request account choice
-        alt Existing MemoraX account
-          Setup->>User: request API key
-          Setup->>Config: write endpoint, User ID, language, and API key
-        else No existing account
-          Setup->>Trial: create or restore ready credential
-          Setup->>Config: write endpoint, User ID, language, and API key
-        end
+    alt Default mode and effective connection is locally ready
+      Setup->>Config: preserve connection and preferences automatically
+    else Existing-account mode
+      Setup->>System: read login username and UI language
+      Setup->>User: request User ID with detected default
+      opt Language is unavailable
+        Setup->>User: request the missing language
       end
-    else Effective connection is incomplete or invalid
+      Setup->>User: request masked API key
+      Setup->>Config: write endpoint, User ID, language, and API key
+    else Default mode without a ready connection or reconfigure mode
       Setup->>System: read login username and UI language
       opt A preference is unavailable
         Setup->>User: request the missing preference
       end
-      Setup->>User: request account choice
-      alt Existing MemoraX account
-        Setup->>User: request API key
-        Setup->>Config: write endpoint, User ID, language, and API key
-      else No existing account
-        Setup->>Trial: create or restore ready credential
-        Setup->>Config: write endpoint, User ID, language, and API key
-      end
+      Setup->>Trial: create or restore ready credential
+      Setup->>Config: write endpoint, User ID, language, and API key
     end
   end
   alt Selected Codex integration has no active plugin
@@ -246,17 +232,19 @@ explicit `memorax-code setup` instruction, validity routes to status, and
 invalid or unsupported state fails closed. Interactive `memorax-code setup`
 runs regardless of completion, while product update uses a separate setup mode.
 Interactive setup uses the config-only status authority to find a locally ready
-effective MemoraX connection and asks before reusing its connection and memory
-preferences. If none is ready or reuse is declined, it derives the User ID and
-language from the logged-in operating-system account and user language,
-requests only a preference that cannot be detected safely, and asks whether
-the user already has a MemoraX account. An existing-account choice stores the
-entered API key with the connection preferences and skips trial provisioning.
-Otherwise setup creates or restores the secure trial credential and writes the
-preferences with a portable TOML copy of its API key. Update setup preserves
-credentials and memory preferences while backfilling a missing portable key
-from an already-ready trial record; accepted connection reuse performs the same
-migration. The local status check does not prove remote credential acceptance.
+effective MemoraX connection. Default setup preserves a ready connection and
+its memory preferences automatically. If none is ready, it derives the User ID
+and language from the logged-in operating-system account and user language,
+requests only a preference that cannot be detected safely, and creates or
+restores the secure trial credential. `--existing-account` bypasses automatic
+reuse, requests the User ID with the detected account name as its default,
+accepts a masked API key, and skips trial provisioning. `--reconfigure` also
+bypasses automatic reuse, re-detects the preferences, and follows the trial
+path. Both configuration paths write a portable TOML copy of the API key.
+Update setup preserves credentials and memory preferences while backfilling a
+missing portable key from an already-ready trial record; automatic connection
+reuse performs the same migration. The local status check does not prove
+remote credential acceptance.
 
 Setup owns client discovery, local preference detection, user prompts,
 foreground trial provisioning, configuration changes, initial bundled-Hook

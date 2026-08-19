@@ -70,14 +70,16 @@ Options:
 }
 
 function printSetupHelp() {
-  console.log(`Usage: memorax-code setup [--home DIR]
+  console.log(`Usage: memorax-code setup [--existing-account | --reconfigure] [--home DIR]
 
-Run interactive setup to configure, reuse, or repair MemoraX Code. Existing
-configuration is reused only after confirmation.
+Run interactive setup to configure or repair MemoraX Code. A complete existing
+configuration is reused automatically.
 
 Options:
-  --home DIR  Configure the specified MemoraX Code home
-  -h, --help  Show this help message`);
+  --existing-account  Configure an existing account instead of anonymous access
+  --reconfigure       Re-detect memory preferences instead of reusing configuration
+  --home DIR           Configure the specified MemoraX Code home
+  -h, --help           Show this help message`);
 }
 
 function printCommand(command, args) {
@@ -227,15 +229,16 @@ async function runUpdateCommand(args) {
   return await runSetupCommand(["--home", memoraxCodeHome], { updateMode: true });
 }
 
-async function runSetupCommand(args, { updateMode = false, reuseExistingMemorax = false } = {}) {
+async function runSetupCommand(args, { updateMode = false } = {}) {
   if (args.includes("--help") || args.includes("-h")) {
     printSetupHelp();
     return 0;
   }
   let memoraxCodeHome;
+  let setupMode;
   try {
     memoraxCodeHome = requestedMemoraxCodeHome(args);
-    assertSetupArgs(args);
+    setupMode = parseSetupMode(args);
   } catch (error) {
     console.error(`memorax-code setup: ${error instanceof Error ? error.message : String(error)}`);
     printSetupHelp();
@@ -248,7 +251,7 @@ async function runSetupCommand(args, { updateMode = false, reuseExistingMemorax 
   try {
     const { withSetupCompletionLock } = await loadSetupCompletionApi();
     return await withSetupCompletionLock(memoraxCodeHome, async () => (
-      await spawnSetupProcess(memoraxCodeHome, { updateMode, reuseExistingMemorax })
+      await spawnSetupProcess(memoraxCodeHome, { updateMode, setupMode })
     ));
   } catch (error) {
     console.error(`memorax-code setup: ${error instanceof Error ? error.message : String(error)}`);
@@ -299,10 +302,17 @@ function assertAccountArgs(args) {
   if (!showMarkId) throw new Error("--show-mark-id is required");
 }
 
-function assertSetupArgs(args) {
+function parseSetupMode(args) {
+  let setupMode = "automatic";
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
-    if (arg === "--home") {
+    if (arg === "--existing-account" || arg === "--reconfigure") {
+      const requestedMode = arg === "--existing-account" ? "existing-account" : "reconfigure";
+      if (setupMode !== "automatic" && setupMode !== requestedMode) {
+        throw new Error("--existing-account and --reconfigure cannot be used together");
+      }
+      setupMode = requestedMode;
+    } else if (arg === "--home") {
       const value = args[++index];
       if (!value || value.startsWith("--")) throw new Error("--home requires a directory");
     } else if (arg.startsWith("--home=")) {
@@ -311,6 +321,7 @@ function assertSetupArgs(args) {
       throw new Error(`unknown option ${arg}`);
     }
   }
+  return setupMode;
 }
 
 function setupCanPrompt() {
@@ -333,15 +344,16 @@ async function loadTrialSetupApi() {
   return await import(pathToFileURL(join(packageRoot(), "lib", "trial-setup.mjs")).href);
 }
 
-async function spawnSetupProcess(memoraxCodeHome, { updateMode = false, reuseExistingMemorax = false } = {}) {
+async function spawnSetupProcess(memoraxCodeHome, { updateMode = false, setupMode = "automatic" } = {}) {
   const env = {
     ...process.env,
     MEMORAX_CODE_HOME: memoraxCodeHome,
   };
   delete env.MEMORAX_CODE_SETUP_UPDATE;
   delete env.MEMORAX_CODE_SETUP_REUSE_EXISTING_MEMORAX;
+  delete env.MEMORAX_CODE_SETUP_MODE;
   if (updateMode) env.MEMORAX_CODE_SETUP_UPDATE = "1";
-  if (reuseExistingMemorax) env.MEMORAX_CODE_SETUP_REUSE_EXISTING_MEMORAX = "1";
+  if (setupMode !== "automatic") env.MEMORAX_CODE_SETUP_MODE = setupMode;
   const child = spawn(process.execPath, [join(packageRoot(), "bin", "memorax-code-setup.mjs")], {
     stdio: "inherit",
     env,
@@ -378,7 +390,7 @@ if (process.argv.length === 3 && (process.argv[2] === "--help" || process.argv[2
 }
 
 if (process.argv[2] === "setup") {
-  process.exit(await runSetupCommand(process.argv.slice(3), { reuseExistingMemorax: true }));
+  process.exit(await runSetupCommand(process.argv.slice(3)));
 }
 
 if (process.argv[2] === "account") {

@@ -51,10 +51,11 @@ npm install -g @memorax/memorax-code
 memorax-code setup
 ```
 
-Setup automatically configures your memory preferences; no account or API key
-is required beforehand. Run `memorax-code setup` again whenever you need to
-reuse, reconfigure, or repair the installation. After setup, `memorax-code`
-shows the current status.
+Setup automatically detects your User ID and language; no account or API key
+is required beforehand. If you already have a MemoraX account, run
+`memorax-code setup --existing-account` instead. Later setup runs reuse a saved
+configuration automatically; use `memorax-code setup --reconfigure` to replace
+it. After setup, `memorax-code` shows the current status.
 
 ## Try Cross-Session Memory
 

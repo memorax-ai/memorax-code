@@ -109,7 +109,7 @@ async function startMockMemorax({ status = 200, body = { success: true, data: { 
   };
 }
 
-async function runSetup({ existingCache = false, explicitCache = false, hookRuntimeFailure, failStartOnce = false, connectionAuthorityFailure = false, runtimeAuthorityFailureCode, officialMode = false, codexConfig, memoraxCodeConfig, memoraxCodeConfigMode, emptyClaudeSettings = false, claudeAvailable = true, claudeVersionFails = false, claudeSettingsText, codexAvailable = true, codexAppOnly = false, vscodeOnly = false, skipCodexPluginInstall = false, skipClaudeAdapterInstall = false, unavailableStatus = false, prefixedStatus = false, input = "", interactive = true, npmCommand = "install", updateMode = false, reuseExistingMemorax = false, memoraxVerify, memoraxEnv = {}, memoryStatusFixture, trialProvisionFailure = false, hookSnapshot = [], hookUpdatePlan = [], hookFullReview = false, hookFullReviewMissing = false, hookSnapshotFails = false, hookCheckFails = false, hookTrustFails = false, detectedUserId = "memory-user", detectedLanguage = "zh", ttyOverride } = {}) {
+async function runSetup({ existingCache = false, explicitCache = false, hookRuntimeFailure, failStartOnce = false, connectionAuthorityFailure = false, runtimeAuthorityFailureCode, officialMode = false, codexConfig, memoraxCodeConfig, memoraxCodeConfigMode, emptyClaudeSettings = false, claudeAvailable = true, claudeVersionFails = false, claudeSettingsText, codexAvailable = true, codexAppOnly = false, vscodeOnly = false, skipCodexPluginInstall = false, skipClaudeAdapterInstall = false, unavailableStatus = false, prefixedStatus = false, input = "", interactive = true, npmCommand = "install", updateMode = false, setupMode = "automatic", memoraxVerify, memoraxEnv = {}, memoryStatusFixture, trialProvisionFailure = false, hookSnapshot = [], hookUpdatePlan = [], hookFullReview = false, hookFullReviewMissing = false, hookSnapshotFails = false, hookCheckFails = false, hookTrustFails = false, detectedUserId = "memory-user", detectedLanguage = "zh", ttyOverride } = {}) {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-setup-"));
   const binDir = join(root, "bin");
   const codexHome = join(root, "codex-home");
@@ -498,7 +498,7 @@ async function runSetup({ existingCache = false, explicitCache = false, hookRunt
     PATH: codexAppOnly || vscodeOnly ? fakeBin : `${fakeBin}${delimiter}${process.env.PATH ?? ""}`,
     npm_command: npmCommand,
     MEMORAX_CODE_SETUP_UPDATE: updateMode ? "1" : "0",
-    MEMORAX_CODE_SETUP_REUSE_EXISTING_MEMORAX: reuseExistingMemorax ? "1" : "0",
+    MEMORAX_CODE_SETUP_MODE: setupMode,
     MEMORAX_CODE_SETUP_VERBOSE: "1",
     MEMORAX_CODE_SETUP_ASSUME_INTERACTIVE: interactive ? "1" : "0",
     MEMORAX_CODE_SKIP_CODEX_PLUGIN_INSTALL: skipCodexPluginInstall ? "1" : "0",
@@ -824,7 +824,6 @@ test("setup update mode skips MemoraX credentials while reviewing clients and Ho
   const run = await runSetup({
     existingCache: true,
     updateMode: true,
-    reuseExistingMemorax: true,
     memoraxCodeConfig: existingConfig,
     interactive: true,
     input: "n\ny\n",
@@ -908,7 +907,7 @@ test("setup update keeps modified Hooks untrusted when authorization is declined
     existingCache: true,
     npmCommand: "update",
     interactive: true,
-    input: "\nn\n",
+    input: "n\n",
     hookSnapshot: [previous],
     hookUpdatePlan: [changed],
   });
@@ -1669,9 +1668,9 @@ test("setup detects memory preferences before writing MemoraX config", async () 
     assert.match(run.result.stderr, /User ID: memorax-user \(detected from the system account\)/);
     assert.match(run.result.stderr, /Preferred language: en \(detected from system settings\)/);
     assert.doesNotMatch(run.result.stderr, /User ID \(used for your memories\)|Preferred language \[ZH\/en\]/);
-    assert.match(run.result.stderr, /Do you already have a MemoraX account\? \[y\/N\]/);
+    assert.doesNotMatch(run.result.stderr, /Do you already have a MemoraX account/);
     assert.doesNotMatch(run.result.stderr, /API key/i);
-    assert.match(run.result.stderr, /Secure MemoraX trial credential is ready/);
+    assert.match(run.result.stderr, /Secure MemoraX credential is ready/);
     assert.doesNotMatch(run.result.stderr, /MemoraX endpoint/);
     assert.match(run.result.stderr, /MemoraX config written to/);
     assert.match(run.result.stderr, /first workspace-scoped memory request from a trusted workspace/);
@@ -1722,23 +1721,42 @@ test("setup configures an existing MemoraX account without trial provisioning", 
   const apiKey = `sk_${"R".repeat(43)}`;
   const run = await runSetup({
     interactive: true,
-    input: `y\n${apiKey}\n`,
+    input: `\n${apiKey}\n`,
+    setupMode: "existing-account",
+    memoraxCodeConfig: [
+      "[clients]",
+      "codex = true",
+      "claude = true",
+      "",
+      "[memorax]",
+      'endpoint = "https://old-memorax.example"',
+      'api_key = "old-secret"',
+      'user_id = "old-user"',
+      "",
+      "[memory.add]",
+      'output_language = "zh"',
+      "",
+    ].join("\n"),
+    memoraxCodeConfigMode: 0o600,
     detectedUserId: "registered-user",
     detectedLanguage: "en",
     trialProvisionFailure: true,
   });
   try {
     assert.equal(run.result.code, 0, run.result.stderr);
-    assert.match(run.result.stderr, /Do you already have a MemoraX account\? \[y\/N\]/);
+    assert.match(run.result.stderr, /User ID: <default>/);
+    assert.doesNotMatch(run.result.stderr, /Do you already have a MemoraX account/);
+    assert.doesNotMatch(run.result.stderr, /Reusing the existing MemoraX connection/);
     assert.match(run.result.stderr, /MemoraX API key: <provided>/);
     assert.match(run.result.stderr, /Existing MemoraX account connection configured/);
-    assert.doesNotMatch(run.result.stderr, /Creating or restoring a secure MemoraX trial credential/);
+    assert.doesNotMatch(run.result.stderr, /Creating or restoring a secure MemoraX credential/);
     assert.doesNotMatch(`${run.result.stdout}\n${run.result.stderr}`, new RegExp(apiKey));
     assert.doesNotMatch(run.log, /^trial-provision$/m);
     const config = await readFile(join(run.memoraxCodeHome, "config.toml"), "utf8");
     assert.match(config, /user_id = "registered-user"/);
     assert.match(config, /output_language = "en"/);
     assert.ok(config.includes(`api_key = "${apiKey}" # MemoraX API key used by the local Backend.`));
+    assert.doesNotMatch(config, /old-secret|old-user/);
     assert.doesNotMatch(config, /credential_source/);
     assert.equal((await stat(join(run.memoraxCodeHome, "config.toml"))).mode & 0o777, 0o600);
     await assertSetupComplete(run);
@@ -1751,7 +1769,7 @@ test("setup stops before client installation and Backend start when secure trial
   const run = await runSetup({ trialProvisionFailure: true });
   try {
     assert.equal(run.result.code, 1, run.result.stderr);
-    assert.match(run.result.stderr, /Secure MemoraX trial setup failed \(credential_failure\)/);
+    assert.match(run.result.stderr, /Secure MemoraX credential setup failed \(credential_failure\)/);
     assert.doesNotMatch(run.result.stderr, /redacted trial failure/);
     assert.match(run.log, /^trial-provision$/m);
     assert.doesNotMatch(run.log, /^memorax-code (?:codex-plugin install|start|status)/m);
@@ -1782,7 +1800,6 @@ test("setup rejects a non-interactive fresh run without side effects", async () 
 
 test("setup does not trust configured JSON from a failed memory status command", async () => {
   const run = await runSetup({
-    reuseExistingMemorax: true,
     memoryStatusFixture: {
       output: JSON.stringify({
         ok: true,
@@ -1829,7 +1846,6 @@ test("interactive setup does not reuse malformed or incomplete memory status JSO
   ]) {
     await t.test(scenario.name, async () => {
       const run = await runSetup({
-        reuseExistingMemorax: true,
         memoryStatusFixture: {
           output: scenario.output,
           exitCode: 0,
@@ -1851,7 +1867,7 @@ test("interactive setup does not reuse malformed or incomplete memory status JSO
   }
 });
 
-test("interactive setup after reinstall reuses a complete MemoraX configuration and removes its legacy source marker", async () => {
+test("interactive setup after reinstall automatically reuses a complete MemoraX configuration and removes its legacy source marker", async () => {
   const existingConfig = [
     "[clients]",
     "codex = true",
@@ -1873,12 +1889,11 @@ test("interactive setup after reinstall reuses a complete MemoraX configuration 
   const run = await runSetup({
     existingCache: false,
     memoraxCodeConfig: existingConfig,
-    reuseExistingMemorax: true,
   });
   try {
     assert.equal(run.result.code, 0, run.result.stderr);
-    assert.match(run.result.stderr, /Existing MemoraX configuration detected\. Use the saved connection and memory preferences\? \[Y\/n\]/);
     assert.match(run.result.stderr, /Reusing the existing MemoraX connection and memory preferences/);
+    assert.doesNotMatch(run.result.stderr, /Use the saved connection and memory preferences/);
     assert.doesNotMatch(run.result.stderr, /Connect MemoraX Code to MemoraX now/);
     assert.doesNotMatch(run.result.stderr, /No MemoraX connection response was received/);
     assert.doesNotMatch(run.result.stderr, /User ID|Preferred language|MemoraX API key/);
@@ -1913,8 +1928,6 @@ test("interactive setup backfills a portable API key for a retained trial creden
   ].join("\n");
   const run = await runSetup({
     memoraxCodeConfig: existingConfig,
-    reuseExistingMemorax: true,
-    input: "\n",
     memoryStatusFixture: {
       output: JSON.stringify({
         ok: true,
@@ -1944,7 +1957,7 @@ test("interactive setup backfills a portable API key for a retained trial creden
   }
 });
 
-test("interactive setup can decline a reusable MemoraX configuration", async () => {
+test("reconfigure mode replaces a reusable MemoraX configuration", async () => {
   const existingConfig = [
     "[clients]",
     "codex = true",
@@ -1961,14 +1974,12 @@ test("interactive setup can decline a reusable MemoraX configuration", async () 
   ].join("\n");
   const run = await runSetup({
     memoraxCodeConfig: existingConfig,
-    reuseExistingMemorax: true,
-    input: "n\n",
+    setupMode: "reconfigure",
   });
   try {
     assert.equal(run.result.code, 0, run.result.stderr);
-    assert.match(run.result.stderr, /Existing MemoraX configuration detected\. Use the saved connection and memory preferences\? \[Y\/n\]/);
     assert.doesNotMatch(run.result.stderr, /Reusing the existing MemoraX connection and memory preferences/);
-    assert.match(run.result.stderr, /Existing MemoraX configuration was not selected; continuing with MemoraX reconfiguration/);
+    assert.doesNotMatch(run.result.stderr, /Use the saved connection and memory preferences/);
     assert.match(run.result.stderr, /User ID: memory-user \(detected from the system account\)/);
     const config = await readFile(join(run.memoraxCodeHome, "config.toml"), "utf8");
     assert.match(config, /user_id = "memory-user"/);
@@ -1990,19 +2001,18 @@ test("interactive setup asks for a missing MemoraX connection instead of trustin
       'output_language = "en"',
       "",
     ].join("\n"),
-    reuseExistingMemorax: true,
   });
   try {
     assert.equal(run.result.code, 0, run.result.stderr);
     assert.doesNotMatch(run.result.stderr, /Existing MemoraX configuration detected\. Use the saved connection/);
     assert.match(run.result.stderr, /User ID: memory-user \(detected from the system account\)/);
-    assert.match(run.result.stderr, /Secure MemoraX trial credential is ready/);
+    assert.match(run.result.stderr, /Secure MemoraX credential is ready/);
   } finally {
     await rm(run.root, { recursive: true, force: true });
   }
 });
 
-test("explicit setup can replace a legacy connection with secure trial configuration", async () => {
+test("reconfigure mode can replace a legacy connection with a secure credential", async () => {
   const existingConfig = [
     "[clients]",
     "codex = true",
@@ -2019,6 +2029,7 @@ test("explicit setup can replace a legacy connection with secure trial configura
   ].join("\n");
   const run = await runSetup({
     memoraxCodeConfig: existingConfig,
+    setupMode: "reconfigure",
   });
   try {
     assert.equal(run.result.code, 0, run.result.stderr);
@@ -2130,7 +2141,7 @@ test("setup writes the platform endpoint when no override is supplied", async ()
   });
   try {
     assert.equal(run.result.code, 0, run.result.stderr);
-    assert.match(run.result.stderr, /Secure MemoraX trial credential is ready/);
+    assert.match(run.result.stderr, /Secure MemoraX credential is ready/);
     const config = await readFile(join(run.memoraxCodeHome, "config.toml"), "utf8");
     assert.match(config, /endpoint = "https:\/\/platform\.memorax\.net" # MemoraX service URL\./);
     assert.match(config, /output_language = "zh" # Language for newly generated MemoraX memories\./);
@@ -2199,6 +2210,7 @@ test("setup preserves existing optional config instead of backfilling defaults",
   const run = await runSetup({
     memoraxCodeConfig: existingConfig,
     interactive: true,
+    setupMode: "reconfigure",
     detectedUserId: "memorax-user",
     detectedLanguage: "en",
     memoraxVerify: {},
@@ -2232,7 +2244,6 @@ test("setup leaves malformed config byte-identical and emits a redacted warning"
   const malformed = '[memorax]\napi_key = "preserved-sensitive-secret"\nbroken = [\n';
   const run = await runSetup({
     memoraxCodeConfig: malformed,
-    reuseExistingMemorax: true,
     interactive: true,
   });
   try {

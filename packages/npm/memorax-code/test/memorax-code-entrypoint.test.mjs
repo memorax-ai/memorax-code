@@ -73,7 +73,7 @@ test("memorax-code fails closed for invalid or unsupported setup records", async
   }
 });
 
-test("explicit setup offers existing configuration reuse and ignores inherited update mode", async () => {
+test("explicit setup defaults to automatic mode and ignores inherited setup mode", async () => {
   const fixture = await createPackageFixture();
   try {
     await writeSetupRecord(fixture.memoraxCodeHome, validSetupRecord());
@@ -81,6 +81,7 @@ test("explicit setup offers existing configuration reuse and ignores inherited u
     const result = runCli(fixture, ["setup"], {
       assumeInteractive: true,
       extraEnv: {
+        MEMORAX_CODE_SETUP_MODE: "existing-account",
         MEMORAX_CODE_SETUP_REUSE_EXISTING_MEMORAX: "1",
         MEMORAX_CODE_SETUP_UPDATE: "1",
       },
@@ -91,7 +92,7 @@ test("explicit setup offers existing configuration reuse and ignores inherited u
     assert.deepEqual(await readJsonLines(fixture.setupLogPath), [{
       args: [],
       home: fixture.memoraxCodeHome,
-      reuseExistingMemorax: true,
+      setupMode: "automatic",
     }]);
     assert.equal(await pathExists(fixture.backendLogPath), false);
   } finally {
@@ -110,7 +111,7 @@ test("setup propagates an explicit home to the setup process", async () => {
     assert.deepEqual(await readJsonLines(fixture.setupLogPath), [{
       args: [],
       home: requestedHome,
-      reuseExistingMemorax: true,
+      setupMode: "automatic",
     }]);
     assert.equal(await pathExists(join(fixture.memoraxCodeHome, setupCompletionRelativePath)), false);
   } finally {
@@ -131,7 +132,7 @@ test("setup propagates the setup process exit code", async () => {
     assert.deepEqual(await readJsonLines(fixture.setupLogPath), [{
       args: [],
       home: fixture.memoraxCodeHome,
-      reuseExistingMemorax: true,
+      setupMode: "automatic",
     }]);
     assert.equal(await pathExists(fixture.backendLogPath), false);
   } finally {
@@ -181,17 +182,57 @@ test("account command reveals only the requested local trial Mark ID", async () 
   }
 });
 
-test("setup help describes configuration reuse and repair", async () => {
+test("setup help describes automatic, existing-account, and reconfigure modes", async () => {
   const fixture = await createPackageFixture();
   try {
     const result = runCli(fixture, ["setup", "--help"]);
 
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.error, undefined);
-    assert.match(result.stdout, /^Usage: memorax-code setup \[--home DIR\]/);
-    assert.match(result.stdout, /Run interactive setup to configure, reuse, or repair MemoraX Code/);
+    assert.match(result.stdout, /^Usage: memorax-code setup \[--existing-account \| --reconfigure\] \[--home DIR\]/);
+    assert.match(result.stdout, /A complete existing\nconfiguration is reused automatically/);
+    assert.match(result.stdout, /^  --existing-account\s+Configure an existing account instead of anonymous access$/m);
+    assert.match(result.stdout, /^  --reconfigure\s+Re-detect memory preferences instead of reusing configuration$/m);
     assert.equal(await pathExists(fixture.setupLogPath), false);
     assert.equal(await pathExists(fixture.backendLogPath), false);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("setup forwards explicit setup modes", async (t) => {
+  for (const scenario of [
+    { flag: "--existing-account", mode: "existing-account" },
+    { flag: "--reconfigure", mode: "reconfigure" },
+  ]) {
+    await t.test(scenario.mode, async () => {
+      const fixture = await createPackageFixture();
+      try {
+        const result = runCli(fixture, ["setup", scenario.flag], { assumeInteractive: true });
+
+        assert.equal(result.status, 0, result.stderr);
+        assert.deepEqual(await readJsonLines(fixture.setupLogPath), [{
+          args: [],
+          home: fixture.memoraxCodeHome,
+          setupMode: scenario.mode,
+        }]);
+      } finally {
+        await fixture.cleanup();
+      }
+    });
+  }
+});
+
+test("setup rejects conflicting setup modes before starting setup", async () => {
+  const fixture = await createPackageFixture();
+  try {
+    const result = runCli(fixture, ["setup", "--existing-account", "--reconfigure"], {
+      assumeInteractive: true,
+    });
+
+    assert.equal(result.status, 2);
+    assert.match(result.stderr, /--existing-account and --reconfigure cannot be used together/);
+    assert.equal(await pathExists(fixture.setupLogPath), false);
   } finally {
     await fixture.cleanup();
   }
@@ -272,7 +313,7 @@ async function createPackageFixture() {
     "appendFileSync(process.env.MEMORAX_CODE_TEST_SETUP_LOG, JSON.stringify({",
     "  args: process.argv.slice(2),",
     "  home: process.env.MEMORAX_CODE_HOME,",
-    "  reuseExistingMemorax: process.env.MEMORAX_CODE_SETUP_REUSE_EXISTING_MEMORAX === '1',",
+    "  setupMode: process.env.MEMORAX_CODE_SETUP_MODE ?? 'automatic',",
     "  ...(process.env.MEMORAX_CODE_SETUP_UPDATE === undefined ? {} : { updateMode: process.env.MEMORAX_CODE_SETUP_UPDATE }),",
     "}) + '\\n');",
     "process.exit(Number(process.env.MEMORAX_CODE_TEST_SETUP_EXIT_CODE ?? 0));",
@@ -323,6 +364,7 @@ function runCli(fixture, args = [], {
     MEMORAX_CODE_TEST_API_KEY: "",
   };
   delete env.MEMORAX_CODE_SETUP_REUSE_EXISTING_MEMORAX;
+  delete env.MEMORAX_CODE_SETUP_MODE;
   delete env.MEMORAX_CODE_SETUP_UPDATE;
   Object.assign(env, extraEnv);
   if (assumeInteractive) env.MEMORAX_CODE_SETUP_ASSUME_INTERACTIVE = "1";

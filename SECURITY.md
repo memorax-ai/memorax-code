@@ -63,20 +63,20 @@ Please allow time for triage and remediation before public disclosure.
 MemoraX-backed search, retrieval, and writeback require a User ID, an
 effective API key, and network access. The API key may come from a ready secure
 trial credential or an explicit environment/TOML value. Interactive setup
-discloses automatic writeback before asking whether to use an existing account
-or create a trial account. When a new connection is needed, setup derives the
-User ID from the logged-in operating-system account name and maps the user's
-system language to `zh` or `en`; it displays those selected values and asks for
-one only when it cannot be detected safely. The existing-account path accepts
-an API key through masked terminal input and stores it in the private TOML
-configuration; the trial path creates or restores the operating-system-
-protected credential and mirrors its API key to that private configuration for
-portability. A ready connection activates search/add and the generated
-configuration's automatic writeback; automatic retrieval remains disabled
-until explicitly enabled. Interactive setup asks before reusing existing
-effective credentials and does not collect or print them again. Its config-
-effective credentials and does not collect or print them again. Its config-only
-check does not contact MemoraX or prove that the API key is accepted remotely.
+discloses automatic writeback before selecting a connection path. Default setup
+reuses a locally ready effective connection without collecting or printing its
+credentials again. When no ready connection exists, or when `--reconfigure`
+bypasses reuse, setup derives the User ID from the logged-in operating-system
+account name and maps the user's system language to `zh` or `en`; it displays
+those selected values and asks for one only when it cannot be detected safely.
+The explicit `--existing-account` path asks for the User ID with the detected
+account name as its default, accepts an API key through masked terminal input,
+and stores both in the private TOML configuration. The trial path creates or
+restores the operating-system-protected credential and mirrors its API key to
+that private configuration for portability. A ready connection activates
+search/add and the generated configuration's automatic writeback; automatic
+retrieval remains disabled until explicitly enabled. The config-only check
+does not contact MemoraX or prove that the API key is accepted remotely.
 
 Memory searches send the query and repository-scoped identity to MemoraX.
 Active adds and automatic writeback send the selected content needed to create
@@ -170,7 +170,7 @@ connection can be copied to another computer. It must not appear in command
 arguments, logs, diagnostics, telemetry, or error messages. Never commit,
 publish, or paste the configuration. Ordinary package removal retains both the
 configuration and an existing secure credential record. Product update and
-accepted connection reuse may backfill a missing TOML copy from a ready secure
+automatic connection reuse may backfill a missing TOML copy from a ready secure
 record, without provisioning or changing the credential.
 
 Credential creation is atomic and create-if-absent. Versioned state transitions
@@ -241,12 +241,13 @@ removes the global npm package when possible. It intentionally retains:
 
 A complete product uninstall removes the setup-completion routing marker but
 retains the MemoraX configuration, including any API key stored there, and the
-secure trial credential. After a reinstall, `memorax-code setup` can offer to
-reuse that connection and resume the configured memory behavior without asking
-for the values again. Declining reuse allows setup to replace the User ID and
-language but may restore the same retained trial identity. If that credential
-must not be reused, remove it separately through the operating-system secure
-credential backend after reviewing the retained configuration and data.
+secure trial credential. After a reinstall, `memorax-code setup` automatically
+reuses a locally ready connection and resumes the configured memory behavior
+without asking for the values again. `memorax-code setup --reconfigure`
+replaces the User ID and language but may restore the same retained trial
+identity. If that credential must not be reused, remove it separately through
+the operating-system secure credential backend after reviewing the retained
+configuration and data.
 
 Delete retained local data and cloud memories separately after reviewing what
 you need. Running `npm uninstall -g @memorax/memorax-code` first is not

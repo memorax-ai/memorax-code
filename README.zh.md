@@ -49,9 +49,10 @@ npm install -g @memorax/memorax-code
 memorax-code setup
 ```
 
-安装引导会自动配置记忆偏好，无需提前注册账号或创建 API Key。以后需要复用已有配置、重新
-配置或修复安装时，再次运行 `memorax-code setup` 即可。完成初始化后，运行 `memorax-code`
-会显示当前状态。
+安装引导会自动检测 User ID 和语言，无需提前注册账号或创建 API Key。如果您已有 MemoraX
+账号，请改为运行 `memorax-code setup --existing-account`。以后再次运行安装引导时会自动复用
+已有配置；如需替换，请运行 `memorax-code setup --reconfigure`。完成初始化后，运行
+`memorax-code` 会显示当前状态。
 
 ## 体验跨会话记忆
 

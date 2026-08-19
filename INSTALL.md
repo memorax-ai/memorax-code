@@ -84,28 +84,32 @@ finished.
 
 Interactive setup first checks for a locally ready MemoraX connection, including
 configuration and secure trial credentials retained across a product
-uninstall. When one is found, setup asks whether to reuse the saved connection
-and memory preferences. Accepting keeps the existing User ID, language, and
-credential without asking for them again.
+uninstall. When one is found, default setup reuses the saved connection and
+memory preferences automatically without asking for them again.
 
-If no ready connection exists, or you decline reuse, setup asks only for a
-User ID and preferred language. It then creates or restores a trial
-credential, stores the trial secret outside `config.toml`, and writes the
-endpoint, User ID, and language preference to configuration. The initial
-local reuse check does not contact MemoraX; trial provisioning does, and the
-first workspace-scoped memory request verifies use of the connection by the
-memory API.
+If no ready connection exists, setup detects the User ID and preferred
+language, asks only for a value that cannot be detected safely, and creates or
+restores a trial credential. It writes the endpoint, User ID, language, and API
+key to private configuration. The initial local reuse check does not contact
+MemoraX; trial provisioning does, and the first workspace-scoped memory request
+verifies use of the connection by the memory API.
+
+If you already have a MemoraX account, run `memorax-code setup
+--existing-account`. This mode bypasses automatic reuse, asks for the User ID
+with the detected system account name as its default, accepts the API key
+through masked input, and skips trial provisioning. Use `memorax-code setup
+--reconfigure` to bypass automatic reuse and re-detect preferences while
+following the trial path.
 
 Setup:
 
 1. detects runnable Codex and Claude Code clients independently;
 2. enables every detected client on a fresh setup and preserves existing
    client intent on later runs;
-3. offers to reuse a locally ready connection, or asks
-   for a User ID and language before creating or restoring a trial
-   credential;
-4. applies the selected User ID and language only after trial credential
-   provisioning succeeds;
+3. automatically reuses a locally ready connection, or detects a User ID and
+   language before creating or restoring a trial credential;
+4. applies trial preferences only after credential provisioning succeeds, or
+   writes existing-account preferences and the API key together;
 5. activates the bundled Codex Hooks when first enabling that integration and
    requests review for new or changed Hooks on later updates;
 6. stages the packaged Hook runtime, starts the selected integrations, and
@@ -176,9 +180,9 @@ Package installation can succeed while setup remains incomplete. Run
 `memorax-code setup` from an interactive terminal to resume or repair client,
 Hook, Backend, and MemoraX configuration.
 
-During setup, accepting the saved connection avoids asking for the User ID and
-language again. Decline reuse when you want to replace those retained
-preferences or move to the setup-managed trial connection.
+During default setup, a ready saved connection avoids asking for the User ID and
+language again. Use `memorax-code setup --reconfigure` when you want to replace
+those retained preferences or move to the setup-managed trial connection.
 
 If you intentionally manage configuration without the setup prompts, add the
 required MemoraX values to
@@ -248,8 +252,8 @@ only when it is no longer needed.
 A complete product uninstall clears the setup-completion routing marker without
 deleting the retained configuration. After reinstalling, the next no-argument
 `memorax-code` points to `memorax-code setup`. Running setup restores the
-integrations and offers to reuse a locally ready MemoraX connection. A normal
-`memorax-code stop` and a partial client uninstall do not clear setup
+integrations and automatically reuses a locally ready MemoraX connection. A
+normal `memorax-code stop` and a partial client uninstall do not clear setup
 completion.
 
 ## Troubleshooting

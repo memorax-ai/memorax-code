@@ -38,10 +38,10 @@ shows status. Otherwise it points back to the setup command without starting
 an interactive flow implicitly.
 
 After a product uninstall and reinstall, setup detects a locally ready retained
-MemoraX connection and asks whether to reuse it. Accepting restores the client
-integrations without asking again for the User ID or preferred language.
-Declining reuse replaces those preferences with the current system account and
-language, or asks for a value only when it cannot be detected safely.
+MemoraX connection and reuses it automatically without asking again for the
+User ID or preferred language. Run `memorax-code setup --reconfigure` to
+replace the saved connection preferences, or `memorax-code setup
+--existing-account` to enter an existing account's User ID and API key.
 
 Setup requires both terminal input and terminal-visible stderr. A pipe,
 background process, or redirected stdin/stderr cannot answer setup prompts;
@@ -64,7 +64,7 @@ read safely, asks for the missing value instead. A malformed TOML file cannot
 be safely updated and remains byte-preserved; fix or restore that file before
 rerunning setup rather than expecting the setup flow to overwrite it.
 
-If setup reports that secure trial setup failed, confirm that the current
+If setup reports that secure credential setup failed, confirm that the current
 operating-system credential store is available to the same logged-in user and
 that the MemoraX HTTPS service is reachable, then rerun `memorax-code setup`.
 Setup does not skip secure trial persistence or write the TOML API-key copy and
@@ -145,13 +145,16 @@ unavailable. Run:
 memorax-cli status
 ```
 
-Use explicit setup to detect the local User ID and preferred language and then
-create or restore the trial connection:
+Use setup to detect the local User ID and preferred language and then create or
+restore the trial connection:
 
 ```sh
 memorax-code setup
 memorax-cli status
 ```
+
+If you need to enter an existing account instead, run `memorax-code setup
+--existing-account`.
 
 Configured status validates the effective local values and loads the effective
 credential without printing it. It does not contact the memory API or prove
@@ -169,7 +172,7 @@ secure credential record. Copying the TOML connection fields to another
 computer therefore reuses the key as an
 explicit connection when the original secure record is absent, without copying
 the device-local trial identity or local quota-reminder history. Product update
-and accepted connection reuse backfill this TOML copy for legacy trial
+and automatic connection reuse backfill this TOML copy for legacy trial
 installations that still have only the secure record.
 
 After changing persistent configuration:
