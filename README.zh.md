@@ -36,14 +36,18 @@
 
 ## 让每次交互，都成为下一次的起点
 
-Coding Agent 擅长解决眼前的问题，但新会话不会自动继承此前积累的架构认知、踩坑经验、仓库规则
-和协作偏好。
+Coding Agent 擅长解决当前对话中的问题，但新会话往往无法继承此前形成的架构认知、失败经验、
+仓库知识、工作流程和沟通偏好。
 
 MemoraX Code 让 Codex、Claude Code、DeepSeek Harness 和 OpenCode 共享一套能够持续积累的记忆。
 它会沉淀代码任务中的工程经验，持续整理仓库知识，并在后续任务中找回相关的工作流程和偏好。
 
-它追求的不是“记得更多”，而是在需要时带回与当前任务相关的 Memory，让 Agent 减少重复搜索和试错，
-更快进入问题定位与事实验证。
+使用 MemoraX Code，你可以：
+
+- 跨会话延续有价值的工程经验；
+- 让 Codex、Claude Code、DeepSeek Harness 和 OpenCode 共享仓库上下文；
+- 复用偏好的工作流程和协作方式；
+- 通过 Memory Viewer 查看本地活动。
 
 ## 快速开始
 

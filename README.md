@@ -36,9 +36,9 @@
 
 ## Make Every Interaction the Starting Point for the Next
 
-Coding agents are good at the task in front of them, but a new session often
-starts without the architecture, failed attempts, repository rules, or working
-preferences established before it.
+Coding agents are effective in the current conversation, but a new session can
+lose the architecture, failed attempts, repository knowledge, working
+procedures, and communication preferences established earlier.
 
 MemoraX Code gives Codex, Claude Code, DeepSeek Harness, and OpenCode a shared
 memory layer for that context.
@@ -46,9 +46,13 @@ It can recall prior engineering knowledge, capture reusable lessons from
 completed work, maintain repository knowledge, and carry your procedures and
 preferences into future sessions.
 
-The goal is not to remember everything. It is to bring back the small amount of
-memory relevant to the current task so the agent can reach useful investigation
-and validation sooner.
+With MemoraX Code, you can:
+
+- carry useful engineering knowledge across sessions;
+- keep repository context available to Codex, Claude Code, DeepSeek Harness,
+  and OpenCode;
+- reuse your preferred procedures and collaboration style; and
+- inspect local activity through Memory Viewer.
 
 ## Quick Start
 
