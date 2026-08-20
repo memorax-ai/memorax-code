@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import {
+  createMemoraxConfigResolver,
   MEMORY_CLI_DEFAULT_SESSION_ID,
   MEMORAX_DEFAULT_BASE_URL,
   memoryCliSessionId,
@@ -19,6 +20,12 @@ import {
 import {
   normalizeMemoraxBaseUrl,
 } from "../../../../memorax-code-adapter-common/src/memorax-defaults.mjs";
+
+const READY_TRIAL_CREDENTIAL = {
+  state: "ready",
+  api_key: "trial-secret",
+  account_id: "900100000000000001",
+};
 
 test("memory CLI uses its executable name as the default session identity", () => {
   assert.equal(MEMORY_CLI_DEFAULT_SESSION_ID, "memorax-cli");
@@ -61,6 +68,140 @@ test("MemoraX config resolver reads credentials from config.toml", async () => {
   assert.equal(result.config.userId, "file-user");
 });
 
+test("async MemoraX config resolver prefers environment, TOML, then a ready trial credential", async (t) => {
+  for (const [
+    name,
+    env,
+    fileMemorax,
+    expectedApiKey,
+    expectedUserId,
+    expectedLoads,
+  ] of [
+    [
+      "environment",
+      {
+        MEMORAX_CODE_MEMORAX_API_KEY: "env-secret",
+        MEMORAX_CODE_MEMORAX_USER_ID: "env-memory-id",
+      },
+      { api_key: "file-secret", user_id: "file-memory-id" },
+      "env-secret",
+      "env-memory-id",
+      0,
+    ],
+    ["TOML", {}, { api_key: "file-secret", user_id: "file-memory-id" }, "file-secret", "file-memory-id", 0],
+    [
+      "legacy trial-marked TOML",
+      {},
+      { api_key: "trial-secret", credential_source: "trial", user_id: "stable-memory-id" },
+      "trial-secret",
+      "stable-memory-id",
+      0,
+    ],
+    ["ready trial credential", {}, { user_id: "stable-memory-id" }, "trial-secret", "stable-memory-id", 1],
+  ]) {
+    await t.test(name, async () => {
+      let loads = 0;
+      const resolveConfig = createMemoraxConfigResolver({
+        loadTrialCredential: async () => {
+          loads += 1;
+          return READY_TRIAL_CREDENTIAL;
+        },
+      });
+      const result = await resolveConfig({
+        MEMORAX_CODE_HOME: join(tmpdir(), `memorax-config-precedence-${name}`),
+        ...env,
+      }, { memorax: fileMemorax });
+
+      assert.equal(result.ok, true);
+      assert.equal(result.config.apiKey, expectedApiKey);
+      assert.equal(result.config.userId, expectedUserId);
+      assert.notEqual(result.config.userId, READY_TRIAL_CREDENTIAL.account_id);
+      assert.equal(loads, expectedLoads);
+    });
+  }
+});
+
+test("a portable TOML API key remains usable without the original secure trial record", async () => {
+  const resolveConfig = createMemoraxConfigResolver({
+    loadTrialCredential: async () => {
+      throw new Error("secure store unavailable on this computer");
+    },
+  });
+  const result = await resolveConfig({
+    MEMORAX_CODE_HOME: join(tmpdir(), "memorax-config-portable-key"),
+  }, {
+    memorax: {
+      api_key: "portable-secret",
+      credential_source: "trial",
+      user_id: "memory-id",
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.config.apiKey, "portable-secret");
+});
+
+test("async MemoraX config resolver rejects a provisioning trial credential", async () => {
+  const resolveConfig = createMemoraxConfigResolver({
+    loadTrialCredential: async () => ({ state: "provisioning" }),
+  });
+  const result = await resolveConfig({
+    MEMORAX_CODE_HOME: join(tmpdir(), "memorax-config-provisioning"),
+  }, { memorax: { user_id: "memory-id" } });
+
+  assert.deepEqual(result, {
+    ok: false,
+    error: "MemoraX trial credential is not ready",
+  });
+});
+
+test("async MemoraX config resolver caches only a successfully loaded ready credential", async (t) => {
+  await t.test("ready credential", async () => {
+    let loads = 0;
+    const resolveConfig = createMemoraxConfigResolver({
+      loadTrialCredential: async () => {
+        loads += 1;
+        return READY_TRIAL_CREDENTIAL;
+      },
+    });
+    const env = { MEMORAX_CODE_HOME: join(tmpdir(), "memorax-config-ready-cache") };
+    const fileConfig = { memorax: { user_id: "memory-id" } };
+
+    assert.equal((await resolveConfig(env, fileConfig)).ok, true);
+    assert.equal((await resolveConfig(env, fileConfig)).ok, true);
+    assert.equal(loads, 1);
+  });
+
+  for (const [name, firstLoad, expectedError] of [
+    ["missing credential", () => null, /MEMORAX_CODE_MEMORAX_API_KEY is required/],
+    [
+      "secure-store failure",
+      () => { throw new Error("private failure detail"); },
+      /could not be loaded from the operating-system secure store/,
+    ],
+  ]) {
+    await t.test(name, async () => {
+      let loads = 0;
+      const resolveConfig = createMemoraxConfigResolver({
+        loadTrialCredential: async () => {
+          loads += 1;
+          return loads === 1 ? firstLoad() : READY_TRIAL_CREDENTIAL;
+        },
+      });
+      const env = {
+        MEMORAX_CODE_HOME: join(tmpdir(), `memorax-config-no-cache-${name}`),
+      };
+      const fileConfig = { memorax: { user_id: "memory-id" } };
+
+      const first = await resolveConfig(env, fileConfig);
+      assert.equal(first.ok, false);
+      assert.match(first.error, expectedError);
+      assert.equal((await resolveConfig(env, fileConfig)).ok, true);
+      assert.equal(loads, 2);
+    });
+  }
+});
+
 test("seeded MemoraX Code config exposes high-signal choices without a tuning catalog", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-memorax-default-config-"));
   if (process.platform !== "win32") await chmod(root, 0o755);
@@ -77,7 +218,7 @@ test("seeded MemoraX Code config exposes high-signal choices without a tuning ca
   assert.match(config, /\[memorax\]/);
   assert.match(config, /# endpoint = "https:\/\/platform\.memorax\.net" # MemoraX service URL\./);
   assert.match(config, /# api_key = "" # MemoraX API key used by the local Backend\./);
-  assert.match(config, /# user_id = "" # MemoraX base user ID; requests derive a workspace-scoped namespace\./);
+  assert.match(config, /# user_id = "" # MemoraX base username; requests derive a workspace-scoped namespace\./);
   assert.match(config, /\[memory\.retrieval\]\nenabled = false # Auto-inject retrieved memories into supported client prompts\./);
   assert.match(config, /\[memory\.writeback\]/);
   assert.match(config, /enabled = true # Allow supported client sessions to write memories after replies\./);
@@ -129,6 +270,7 @@ test("MemoraX Code config loader reads config.toml from the configured MemoraX C
     'endpoint = "http://file-memorax.test/"',
     'user_id = "file-user"',
     'api_key = "file-secret"',
+    'credential_source = "trial"',
     "timeout_ms = 7000",
     "",
     "[memory.retrieval]",
@@ -149,6 +291,7 @@ test("MemoraX Code config loader reads config.toml from the configured MemoraX C
   assert.equal(config.memorax?.endpoint, "http://file-memorax.test/");
   assert.equal(config.memorax?.user_id, "file-user");
   assert.equal(config.memorax?.api_key, "file-secret");
+  assert.equal(config.memorax?.credential_source, undefined);
   assert.equal(config.memorax?.timeout_ms, 7000);
   assert.deepEqual(config.memory?.add, {
     content_type: "code",

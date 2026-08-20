@@ -1,5 +1,9 @@
 import type { MemoraxAdapterConfig } from "./config.js";
 import { isRecord } from "../../shared/record.js";
+import {
+  memoraxQuotaFromResponse,
+  type MemoraxQuotaSnapshot,
+} from "./quota.js";
 
 export type MemoraxInvocationErrorKind = "http" | "timeout" | "transport" | "response";
 
@@ -9,6 +13,11 @@ export type MemoraxInvocationFailure = {
   errorKind?: MemoraxInvocationErrorKind;
   httpStatus?: number;
   retryAfterMs?: number;
+};
+
+export type MemoraxJsonResponse = {
+  body: unknown;
+  quota?: MemoraxQuotaSnapshot;
 };
 
 type MemoraxRequestError = Error & {
@@ -22,7 +31,7 @@ export async function postMemoraxJson(
   path: string,
   payload: unknown,
   fetchImpl: typeof fetch,
-): Promise<unknown> {
+): Promise<MemoraxJsonResponse> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), config.timeoutMs);
   try {
@@ -43,9 +52,15 @@ export async function postMemoraxJson(
         retryAfterMs,
       });
     }
-    const raw = await response.json().catch(() => null);
-    validateMemoraxEnvelope(raw);
-    return raw;
+    const body = await response.json().catch(() => null);
+    validateMemoraxEnvelope(body);
+    const featureCode = path === "/v1/memories/add"
+      ? "memory_write"
+      : path === "/v1/memories/search"
+        ? "memory_search"
+        : undefined;
+    const quota = featureCode ? memoraxQuotaFromResponse(body, featureCode) : undefined;
+    return { body, ...(quota ? { quota } : {}) };
   } catch (error) {
     throw normalizeMemoraxRequestError(error, controller.signal.aborted);
   } finally {

@@ -3,16 +3,22 @@ import {
   MEMORAX_PROVIDER_ID,
   clampInteger,
   memoraxAddOptionsFromContext,
-  memoraxConfigFromEnv,
   parseScore,
+  resolveMemoraxConfigFromEnv,
 } from "./config.js";
-import type { MemoraxAdapterConfig, MemoraxAddOptions } from "./config.js";
+import type {
+  MemoraxAdapterConfig,
+  MemoraxAddOptions,
+  MemoraxConfigResolver,
+} from "./config.js";
 import {
   getMemoraxJson,
   memoraxInvocationFailure,
   postMemoraxJson,
   type MemoraxInvocationFailure,
+  type MemoraxJsonResponse,
 } from "./http.js";
+import type { MemoraxQuotaSnapshot } from "./quota.js";
 import type {
   MemoryDiagnosticLogger,
   MemoryObservabilityEvent,
@@ -34,7 +40,11 @@ const FORWARDED_WRITEBACK_METADATA_KEYS = [
   "source_detail",
 ] as const;
 export { memoraxConfigFromEnv } from "./config.js";
-export type { MemoraxInvocationErrorKind, MemoraxInvocationFailure } from "./http.js";
+export type {
+  MemoraxInvocationErrorKind,
+  MemoraxInvocationFailure,
+} from "./http.js";
+export type { MemoraxQuotaSnapshot } from "./quota.js";
 
 export type MemoraxSlotInvocationRequest = {
   provider_family?: string;
@@ -50,6 +60,7 @@ export type MemoraxSlotInvocationRequest = {
 
 export type MemoraxAdapterOptions = {
   config?: MemoraxAdapterConfig;
+  configResolver?: MemoraxConfigResolver;
   env?: Record<string, string | undefined>;
   fetchImpl?: typeof fetch;
   diagnosticLogger?: MemoryDiagnosticLogger;
@@ -65,7 +76,7 @@ export type MemoraxAdapterOptions = {
 };
 
 export type MemoraxInvocationResult =
-  | { ok: true; result: Record<string, unknown> }
+  | { ok: true; result: Record<string, unknown> & { quota?: MemoraxQuotaSnapshot } }
   | MemoraxInvocationFailure;
 
 type MemoraxContextBlock = {
@@ -113,7 +124,9 @@ export async function invokeMemoraxMemoryProvider(
   request: MemoraxSlotInvocationRequest,
   options: MemoraxAdapterOptions = {},
 ): Promise<MemoraxInvocationResult> {
-  const configResult = options.config ? { ok: true as const, config: options.config } : memoraxConfigFromEnv(options.env);
+  const configResult = options.config
+    ? { ok: true as const, config: options.config }
+    : await (options.configResolver ?? resolveMemoraxConfigFromEnv)(options.env);
   if (!configResult.ok) return { ok: false, error: configResult.error };
   const config = configResult.config;
   const providerId = request.provider_id?.trim() || MEMORAX_PROVIDER_ID;
@@ -140,7 +153,7 @@ export async function invokeMemoraxMemoryProvider(
   if (!repositoryScope.ok) return repositoryScope;
   const payload = buildMemoraxSearchPayload(config, query, context, repositoryScope.scope);
   try {
-    const raw = await callMemoSearch(config, payload, options.fetchImpl);
+    const { body: raw, quota } = await callMemoSearch(config, payload, options.fetchImpl);
     const items = extractMemoraxSearchItems(raw);
     const contextBlocks = renderMemoraxContextBlocks(items, config);
     const promptFragments = contextBlocks.map((block) => ({
@@ -172,6 +185,7 @@ export async function invokeMemoraxMemoryProvider(
         slot: request.slot || "state_context",
         operation,
         prompt_fragments: promptFragments,
+        ...(quota ? { quota } : {}),
         tool_result_payload: {
           answer: contextBlocks.map((block) => block.content).join("\n\n"),
           items,
@@ -236,7 +250,7 @@ export async function callMemoSearch(
   config: MemoraxAdapterConfig,
   payload: MemoraxSearchPayload,
   fetchImpl: typeof fetch = fetch,
-): Promise<unknown> {
+): Promise<MemoraxJsonResponse> {
   return postMemoraxJson(config, "/v1/memories/search", payload, fetchImpl);
 }
 
@@ -244,7 +258,7 @@ export async function callMemoAdd(
   config: MemoraxAdapterConfig,
   payload: MemoraxAddPayload,
   fetchImpl: typeof fetch = fetch,
-): Promise<unknown> {
+): Promise<MemoraxJsonResponse> {
   return postMemoraxJson(config, "/v1/memories/add", payload, fetchImpl);
 }
 
@@ -319,7 +333,7 @@ async function invokeMemoraxWriteback(
   if (!addOptions.ok) return { ok: false, error: addOptions.error };
   const payload = buildMemoraxAddPayload(config, run, messages, context, idempotencyKey, repositoryScope, addOptions.options);
   try {
-    const raw = await callMemoAdd(config, payload, options.fetchImpl);
+    const { body: raw, quota } = await callMemoAdd(config, payload, options.fetchImpl);
     recordMemoryObservabilityEvent(options, {
       operation: "writeback",
       ok: true,
@@ -341,6 +355,7 @@ async function invokeMemoraxWriteback(
         slot: request.slot || "state_context",
         operation: "writeback",
         prompt_fragments: [],
+        ...(quota ? { quota } : {}),
         tool_result_payload: {
           accepted: true,
           receiptId: memoraxReceiptId(raw),
@@ -455,7 +470,7 @@ function repositoryScopeForConfig(
 ): { ok: true; scope: RepositoryMemoryScope } | { ok: false; error: string } {
   if (!scope) return { ok: false, error: "memory scope is required for MemoraX search/add" };
   if (scope.baseUserId !== config.userId) {
-    return { ok: false, error: "memory scope base user id does not match MemoraX config" };
+    return { ok: false, error: "memory scope base username does not match MemoraX config" };
   }
   if (!scope.effectiveUserId.trim() || !scope.repositorySlug.trim()) {
     return { ok: false, error: "memory scope is invalid" };

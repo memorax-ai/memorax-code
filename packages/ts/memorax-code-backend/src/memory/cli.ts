@@ -76,7 +76,7 @@ export async function runMemoryCli(args: string[], options: MemoryCliOptions = {
 
 async function memoryStatus(options: MemoryCliOptions, configOnly = false): Promise<MemoryCliResult> {
   const env = options.env ?? process.env;
-  const status = memoryConfigStatus(env);
+  const status = await memoryConfigStatus(env);
   if (configOnly) {
     return {
       ok: status.configured,

@@ -1,6 +1,7 @@
 import {
-  memoraxConfigFromEnv,
+  resolveMemoraxConfigFromEnv,
   type MemoraxAdapterConfig,
+  type MemoraxConfigResolver,
 } from "../provider/memorax/config.js";
 import {
   repositoryMemoryScopeCanUpgradeFromDegradedGit,
@@ -63,6 +64,7 @@ export type RepositoryMemorySessionScopeUpgrade = Readonly<{
 }>;
 
 export type RepositoryMemorySessionRuntimeOptions = {
+  configResolver?: MemoraxConfigResolver;
   onScopeUpgrade?: (upgrade: RepositoryMemorySessionScopeUpgrade) => void;
 };
 
@@ -77,6 +79,7 @@ export function createRepositoryMemorySessionRuntime(
     async resolve(input) {
       return await resolveConfiguredRepositoryMemoryForSession({
         owner,
+        configResolver: options.configResolver,
         onScopeUpgrade: options.onScopeUpgrade,
         ...input,
       });
@@ -93,10 +96,11 @@ export async function resolveConfiguredRepositoryMemory(input: {
   workspaceKind?: string;
   memoraxCodeHome?: string;
   env?: Record<string, string | undefined>;
+  configResolver?: MemoraxConfigResolver;
 }): Promise<ConfiguredRepositoryMemoryResult> {
   const sourceEnv = input.env ?? process.env;
   const env = input.memoraxCodeHome ? { ...sourceEnv, MEMORAX_CODE_HOME: input.memoraxCodeHome } : sourceEnv;
-  const configResult = memoraxConfigFromEnv(env);
+  const configResult = await (input.configResolver ?? resolveMemoraxConfigFromEnv)(env);
   if (!configResult.ok) return { ok: false, reason: "config_missing", error: configResult.error };
   const scopeResult = await resolveRepositoryMemoryScope({
     workspaceRoot: input.workspaceRoot,
@@ -112,7 +116,7 @@ export async function resolveConfiguredRepositoryMemoryForSession(
 ): Promise<ConfiguredRepositoryMemoryResult> {
   const sourceEnv = input.env ?? process.env;
   const env = input.memoraxCodeHome ? { ...sourceEnv, MEMORAX_CODE_HOME: input.memoraxCodeHome } : sourceEnv;
-  const configResult = memoraxConfigFromEnv(env);
+  const configResult = await (input.configResolver ?? resolveMemoraxConfigFromEnv)(env);
   if (!configResult.ok) return { ok: false, reason: "config_missing", error: configResult.error };
 
   const sessionId = input.sessionId?.trim();
@@ -122,6 +126,7 @@ export async function resolveConfiguredRepositoryMemoryForSession(
       workspaceKind: input.workspaceKind,
       memoraxCodeHome: input.memoraxCodeHome,
       env,
+      configResolver: input.configResolver,
     });
   }
 

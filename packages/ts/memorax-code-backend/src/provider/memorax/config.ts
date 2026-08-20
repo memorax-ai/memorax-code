@@ -6,6 +6,12 @@ import {
   type MemoraxMemoryOutputLanguage,
 } from "../../../../memorax-code-adapter-common/src/memorax-defaults.mjs";
 import {
+  loadTrialCredentialRecord,
+} from "../../../../memorax-code-adapter-common/src/credentials/trial-credential-store.mjs";
+import type {
+  TrialCredentialRecord,
+} from "../../../../memorax-code-adapter-common/src/credentials/trial-credential-record.mjs";
+import {
   defaultMemoraxCodeHome,
   loadMemoraxCodeConfig,
   type MemoraxCodeConfig,
@@ -45,6 +51,22 @@ export type MemoraxAdapterConfig = Readonly<{
   maxItemChars: number;
   memoryTypeOrder: readonly string[];
   renderByMemoryType: boolean;
+}>;
+
+export type MemoraxConfigResult =
+  | { ok: true; config: MemoraxAdapterConfig }
+  | { ok: false; error: string };
+
+export type MemoraxConfigResolver = (
+  env?: Record<string, string | undefined>,
+  fileConfig?: MemoraxCodeConfig,
+) => Promise<MemoraxConfigResult>;
+
+type MemoraxConfigResolverOptions = Readonly<{
+  loadTrialCredential?: (options: Readonly<{
+    memoraxCodeHome: string;
+    env: Record<string, string | undefined>;
+  }>) => Promise<TrialCredentialRecord | null>;
 }>;
 
 export type MemoraxAddOptions = Readonly<{
@@ -107,13 +129,71 @@ export type MemoraxConfigStatus = Readonly<{
 export function memoraxConfigFromEnv(
   env: Record<string, string | undefined> = process.env,
   fileConfig?: MemoraxCodeConfig,
-): { ok: true; config: MemoraxAdapterConfig } | { ok: false; error: string } {
+): MemoraxConfigResult {
   const config = configForEnv(env, fileConfig);
+  return memoraxConfigFromSources(env, config);
+}
+
+export function createMemoraxConfigResolver(
+  options: MemoraxConfigResolverOptions = {},
+): MemoraxConfigResolver {
+  const loadTrialCredential = options.loadTrialCredential
+    ?? ((storeOptions) => loadTrialCredentialRecord(storeOptions));
+  const readyTrialApiKeys = new Map<string, string>();
+  return async (
+    env: Record<string, string | undefined> = process.env,
+    fileConfig?: MemoraxCodeConfig,
+  ): Promise<MemoraxConfigResult> => {
+    const config = configForEnv(env, fileConfig);
+    const environmentApiKey = stringValue(env.MEMORAX_CODE_MEMORAX_API_KEY);
+    const tomlApiKey = stringValue(config.memorax?.api_key);
+    if (environmentApiKey
+      || !memoraxUserId(env, config)
+      || tomlApiKey) {
+      return memoraxConfigFromSources(env, config);
+    }
+
+    const memoraxCodeHome = defaultMemoraxCodeHome(env);
+    let apiKey = readyTrialApiKeys.get(memoraxCodeHome);
+    if (!apiKey) {
+      let record;
+      try {
+        record = await loadTrialCredential({ memoraxCodeHome, env });
+      } catch {
+        if (tomlApiKey) return memoraxConfigFromSources(env, config);
+        return {
+          ok: false,
+          error: "MemoraX trial credential could not be loaded from the operating-system secure store",
+        };
+      }
+      if (record?.state !== "ready") {
+        if (tomlApiKey) return memoraxConfigFromSources(env, config);
+        return record === null
+          ? memoraxConfigFromSources(env, config)
+          : { ok: false, error: "MemoraX trial credential is not ready" };
+      }
+      apiKey = record.api_key;
+      readyTrialApiKeys.set(memoraxCodeHome, apiKey);
+    }
+    if (tomlApiKey && tomlApiKey !== apiKey) {
+      return memoraxConfigFromSources(env, config);
+    }
+    return memoraxConfigFromSources(env, config, apiKey);
+  };
+}
+
+export const resolveMemoraxConfigFromEnv = createMemoraxConfigResolver();
+
+function memoraxConfigFromSources(
+  env: Record<string, string | undefined>,
+  config: MemoraxCodeConfig,
+  trialApiKey?: string,
+): MemoraxConfigResult {
   const baseUrl = normalizeMemoraxBaseUrl(stringValue(env.MEMORAX_CODE_MEMORAX_ENDPOINT)
     ?? config.memorax?.endpoint
     ?? MEMORAX_DEFAULT_BASE_URL);
-  const apiKey = (stringValue(env.MEMORAX_CODE_MEMORAX_API_KEY) ?? config.memorax?.api_key ?? "").trim();
-  const userId = (stringValue(env.MEMORAX_CODE_MEMORAX_USER_ID) ?? config.memorax?.user_id ?? "").trim();
+  const apiKey = explicitMemoraxApiKey(env, config) ?? trialApiKey ?? "";
+  const userId = memoraxUserId(env, config) ?? "";
   const outputLanguage = memoraxMemoryOutputLanguage(env, config);
   if (!outputLanguage.ok) return outputLanguage;
   if (!apiKey) return { ok: false, error: "MEMORAX_CODE_MEMORAX_API_KEY is required for memory.memorax" };
@@ -131,6 +211,22 @@ export function memoraxConfigFromEnv(
       ...(minScore === undefined ? {} : { minScore }),
     },
   };
+}
+
+function explicitMemoraxApiKey(
+  env: Record<string, string | undefined>,
+  config: MemoraxCodeConfig,
+): string | undefined {
+  return stringValue(env.MEMORAX_CODE_MEMORAX_API_KEY)
+    ?? stringValue(config.memorax?.api_key);
+}
+
+function memoraxUserId(
+  env: Record<string, string | undefined>,
+  config: MemoraxCodeConfig,
+): string | undefined {
+  return stringValue(env.MEMORAX_CODE_MEMORAX_USER_ID)
+    ?? stringValue(config.memorax?.user_id);
 }
 
 function memoraxSearchConfig(
@@ -301,12 +397,13 @@ export function memoraxAddOptionsFromContext(
   };
 }
 
-export function memoryConfigStatus(
+export async function memoryConfigStatus(
   env: Record<string, string | undefined> = process.env,
   fileConfig?: MemoraxCodeConfig,
-): MemoraxConfigStatus {
+  configResolver: MemoraxConfigResolver = resolveMemoraxConfigFromEnv,
+): Promise<MemoraxConfigStatus> {
   const config = configForEnv(env, fileConfig);
-  const configResult = memoraxConfigFromEnv(env, config);
+  const configResult = await configResolver(env, config);
   const baseConfig = configResult.ok ? configResult.config : undefined;
   const addStatus = memoraxAddStatus(env, config);
   const fallbackSearchConfig = {
