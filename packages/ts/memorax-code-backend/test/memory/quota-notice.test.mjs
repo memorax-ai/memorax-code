@@ -17,19 +17,19 @@ test("quota notices persist percentage levels for every MemoraX connection", asy
   const config = accountConfig();
   const quota = (featureCode, remaining) => ({ featureCode, remaining, limit: 10_000 });
 
+  assert.equal(await claimQuotaNotice(config, quota("memory_write", 2_000), options), undefined);
   const concurrent = await Promise.all([
-    claimQuotaNotice(config, quota("memory_write", 2_000), options),
-    claimQuotaNotice(config, quota("memory_write", 2_000), options),
+    claimQuotaNotice(config, quota("memory_write", 1_000), options),
+    claimQuotaNotice(config, quota("memory_write", 1_000), options),
   ]);
   assert.equal(concurrent.filter(Boolean).length, 1);
-  assert.match(concurrent.find(Boolean), /memory write quota has approximately 20% remaining/i);
-  assert.equal(await claimQuotaNotice(config, quota("memory_write", 1_999), options), undefined);
-  assert.match(await claimQuotaNotice(config, quota("memory_write", 1_000), options), /approximately 10% remaining/i);
+  assert.match(concurrent.find(Boolean), /memory write quota has approximately 10% remaining/i);
+  assert.equal(await claimQuotaNotice(config, quota("memory_write", 999), options), undefined);
   assert.match(await claimQuotaNotice(config, quota("memory_write", 0), options), /quota has been used up/i);
 
-  assert.match(await claimQuotaNotice(config, quota("memory_search", 2_000), options), /memory search quota/i);
+  assert.match(await claimQuotaNotice(config, quota("memory_search", 1_000), options), /memory search quota/i);
   assert.equal(await claimQuotaNotice(config, quota("memory_write", 10_000), options), undefined);
-  assert.match(await claimQuotaNotice(config, quota("memory_write", 2_000), options), /approximately 20% remaining/i);
+  assert.match(await claimQuotaNotice(config, quota("memory_write", 1_000), options), /approximately 10% remaining/i);
 });
 
 test("anonymous quota reminders include localized claim guidance without raw counts", async () => {
@@ -42,7 +42,7 @@ test("anonymous quota reminders include localized claim guidance without raw cou
   const options = { env: {}, transitionState };
   const writeNotice = await claimQuotaNotice(
     accountConfig("zh"),
-    { featureCode: "memory_write", remaining: 20, limit: 100 },
+    { featureCode: "memory_write", remaining: 10, limit: 100 },
     options,
   );
   const searchNotice = await claimQuotaNotice(
@@ -51,14 +51,14 @@ test("anonymous quota reminders include localized claim guidance without raw cou
     options,
   );
 
-  assert.match(writeNotice, /^额度提醒：您的 MemoraX Code 记忆写入额度剩余约 20%。/);
+  assert.match(writeNotice, /^额度提醒：您的 MemoraX Code 记忆写入额度剩余约 10%。/);
   assert.match(searchNotice, /^额度提醒：您的 MemoraX Code 记忆搜索额度剩余约 10%。/);
   for (const notice of [writeNotice, searchNotice]) {
     assert.match(notice, /请访问 https:\/\/platform\.memorax\.net\/ 查看额度、注册或管理账户。/);
     assert.match(notice, /尚未注册的匿名身份/);
     assert.match(notice, /memorax-code account --show-mark-id/);
     assert.match(notice, /不要在聊天中分享。/);
-    assert.doesNotMatch(notice, /20\/100|10\/100|试用额度/);
+    assert.doesNotMatch(notice, /10\/100|试用额度/);
   }
 });
 
@@ -69,12 +69,12 @@ test("registered-account quota reminders omit anonymous claim guidance", async (
   };
   const zhNotice = await claimQuotaNotice(
     accountConfig("zh"),
-    { featureCode: "memory_search", remaining: 2_000, limit: 10_000 },
+    { featureCode: "memory_search", remaining: 1_000, limit: 10_000 },
     options,
   );
   const enNotice = await claimQuotaNotice(
     accountConfig("en"),
-    { featureCode: "memory_write", remaining: 2_000, limit: 10_000 },
+    { featureCode: "memory_write", remaining: 1_000, limit: 10_000 },
     options,
   );
 

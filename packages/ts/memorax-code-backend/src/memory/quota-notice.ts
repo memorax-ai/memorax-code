@@ -19,7 +19,7 @@ const QUOTA_NOTICE_STATE_VERSION = 1;
 const DEFAULT_NOTICE_TIMEOUT_MS = 6_000;
 const LOCK_TIMEOUT_MS = 500;
 const ANONYMOUS_QUOTA_LIMIT = 100;
-const NOTICE_LEVELS = [20, 10, 0] as const;
+const NOTICE_LEVELS = [10, 0] as const;
 const QUOTA_NOTICE_STATE_KEYS = new Set([
   "version",
   "connection_fingerprint",
@@ -232,7 +232,6 @@ function quotaNoticeLevel(quota: MemoraxQuotaSnapshot): QuotaNoticeLevel | undef
   if (quota.limit <= 0) return undefined;
   const percentage = quotaRemainingRatio(quota) * 100;
   if (percentage <= 10) return 10;
-  if (percentage <= 20) return 20;
   return undefined;
 }
 
