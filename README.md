@@ -13,7 +13,9 @@
 <h2 align="center">Never lose context. Never start over.</h2>
 
 <p align="center">
-  <sub>Beyond code, it remembers how your architecture evolves and how your engineering unfolds.</sub>
+  <sub>
+    Beyond code, it remembers how your architecture evolves and how your engineering unfolds.
+  </sub>
 </p>
 
 <p align="center">
@@ -32,11 +34,11 @@
   <strong>English</strong> · <a href="README.zh.md">简体中文</a>
 </p>
 
-## Start the Next Task with What You Already Learned
+## Make Every Interaction the Starting Point for the Next
 
-Coding agents are effective in the current conversation, but a new session can
-lose the architecture, failed attempts, repository knowledge, working
-procedures, and communication preferences established earlier.
+Coding agents are good at the task in front of them, but a new session often
+starts without the architecture, failed attempts, repository rules, or working
+preferences established before it.
 
 MemoraX Code gives Codex, Claude Code, DeepSeek Harness, and OpenCode a shared
 memory layer for that context.
@@ -44,13 +46,9 @@ It can recall prior engineering knowledge, capture reusable lessons from
 completed work, maintain repository knowledge, and carry your procedures and
 preferences into future sessions.
 
-With MemoraX Code, you can:
-
-- carry useful engineering knowledge across sessions;
-- keep repository context available to Codex, Claude Code, DeepSeek Harness,
-  and OpenCode;
-- reuse your preferred procedures and collaboration style; and
-- inspect local activity through Memory Viewer.
+The goal is not to remember everything. It is to bring back the small amount of
+memory relevant to the current task so the agent can reach useful investigation
+and validation sooner.
 
 ## Quick Start
 
@@ -60,23 +58,47 @@ Memory operations. Each coding-agent harness retains its own runtime
 requirements; current DeepSeek Harness releases require Node.js
 `^22.19.0 || >=24.0.0`.
 
-Run:
+### Install and Connect
+
+#### 1. Install the Package
 
 ```bash
 npm install -g @memorax/memorax-code
+```
+
+#### 2. Run Setup
+
+```bash
 memorax-code setup
 ```
 
-Setup automatically detects your User ID and language; no account or API key
-is required beforehand. It connects supported Codex, Claude Code, DeepSeek
-Harness, and OpenCode installations that it finds. If you already have a
-MemoraX account, run `memorax-code setup --existing-account` instead. Later
-setup runs reuse a saved configuration automatically; use
-`memorax-code setup --reconfigure` to replace it. Restart or refresh each
-detected coding agent after setup. Running `memorax-code` then shows the
-current status.
+Run setup from a normal interactive terminal. It automatically detects your
+User ID and preferred memory language; no account or API key is required
+beforehand. Setup also detects available Codex, Claude Code, DeepSeek Harness,
+and OpenCode installations and connects those it finds. If you already have a
+MemoraX account, run `memorax-code setup --existing-account` instead.
 
-## Try Cross-Session Memory
+Later setup runs automatically reuse a saved connection and memory preferences.
+Use `memorax-code setup --reconfigure` to replace them. Restart or refresh every
+detected coding agent after setup before starting a new session. Running
+`memorax-code` then shows the current status.
+
+### Installation Troubleshooting
+
+If the initial setup does not work as expected, check these common cases:
+
+| Symptom | Recommended fix |
+| --- | --- |
+| Installation fails with an unsupported Node.js version | Run `node --version` and upgrade to Node.js 20 or later before reinstalling MemoraX Code. |
+| The package installed but setup did not start | This is expected. Run `memorax-code setup` from a normal interactive terminal. |
+| You want to use an existing MemoraX account | Run `memorax-code setup --existing-account` and enter that account's User ID and API key locally. Never paste the key into chats or public issues. |
+| Search, retrieval, or writeback is unavailable after setup | Run `memorax-code status` and `memorax-cli status`, then follow the detailed troubleshooting guide. |
+
+See [Configuration](docs/configuration.md) for supported settings and
+[Troubleshooting](docs/troubleshooting.md) for detailed diagnostics.
+
+
+### Try Cross-Session Memory
 
 Clone the example repository from the product website, then open Codex, Claude
 Code, DeepSeek Harness, or OpenCode in the project directory:
@@ -178,7 +200,6 @@ Read [Configuration](docs/configuration.md) for all settings and
 For a global npm installation:
 
 ```bash
-memorax-code status
 memorax-code update
 ```
 
@@ -194,13 +215,24 @@ Run the product lifecycle before removing the npm package:
 memorax-code uninstall
 ```
 
-## Learn More
+This removes managed integrations and the global package while retaining your
+local configuration, secure MemoraX credentials, client-owned data, and
+memories stored in MemoraX. Remove retained local or cloud data separately only
+after reviewing what you still need.
+
+## Documentation
 
 - [Installation](INSTALL.md)
 - [Configuration](docs/configuration.md)
 - [Troubleshooting](docs/troubleshooting.md)
-- [Security](SECURITY.md)
 - [Contributing](CONTRIBUTING.md)
+- [Security](SECURITY.md)
+
+## Develop and Contribute
+
+Issues and pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md)
+before making a change, and never include API keys, raw transcripts, private
+memory, or local trace artifacts in a public report.
 
 ## License
 

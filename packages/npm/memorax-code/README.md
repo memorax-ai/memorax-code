@@ -3,7 +3,7 @@
 MemoraX Code adds persistent coding memory to Codex, Claude Code, DeepSeek
 Harness, and OpenCode.
 
-## Quick Start
+## Requirements
 
 - Node.js 20 or newer (Node.js 24 LTS recommended) and npm.
 - At least one of Codex, Claude Code, DeepSeek Harness, OpenCode Desktop, or
@@ -12,7 +12,7 @@ Harness, and OpenCode.
 
 ## Install
 
-Run:
+Install the package, then run setup from a normal interactive terminal:
 
 ```bash
 npm install -g @memorax/memorax-code
@@ -26,17 +26,24 @@ configuration automatically; use `memorax-code setup --reconfigure` to replace
 it.
 
 Setup detects supported Codex, Claude Code, DeepSeek Harness, and OpenCode
-installations. Restart or refresh each detected coding agent after setup.
+installations and configures those it finds. Completing setup after its data
+disclosure enables the core memory features and automatic writeback. Restart or
+refresh each detected coding agent after setup. In Codex, enable **MemoraX Code
+Codex Adapter** from Plugins or `/plugins` if it is not already enabled.
 
-To check the installation or reconfigure later:
+## Verify
 
 ```bash
+memorax-code --version
 memorax-code status
-memorax-code setup
+memorax-cli status
 ```
 
-For more help, see `docs/configuration.md` and `docs/troubleshooting.md` in the
-installed package.
+For configuration or troubleshooting, see the documentation shipped with the
+package:
+
+- `docs/configuration.md`
+- `docs/troubleshooting.md`
 
 ## License
 
