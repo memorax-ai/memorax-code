@@ -171,10 +171,10 @@ exact review of later Hook changes, and final readiness.
 Setup has three foreground connection modes. The default `memorax-code setup`
 automatically preserves a locally ready MemoraX connection and its memory
 preferences. If none is ready, it uses the logged-in operating-system account
-name as the User ID, maps the user's system language to `zh` or `en`, asks only
+name as the username, maps the user's system language to `zh` or `en`, asks only
 for a preference that cannot be detected safely, and creates or restores a
 secure trial credential. `memorax-code setup --existing-account` bypasses
-automatic reuse, asks for the User ID with the detected account name as its
+automatic reuse, asks for the username with the detected account name as its
 default, accepts the API key through masked terminal input, and skips trial
 provisioning. `memorax-code setup --reconfigure` also bypasses automatic reuse,
 re-detects the preferences, and follows the trial path; an already-retained
@@ -250,7 +250,7 @@ MemoraX is the required remote-memory service:
 [memorax]
 endpoint = "https://platform.memorax.net"
 api_key = "your-api-key"
-user_id = "your-user-id"
+user_id = "your-username"
 # timeout_ms = 5000
 # startup_timeout_ms = 3000
 ```
@@ -265,24 +265,24 @@ managed connection may set `api_key` or supply
 | Field | Environment override | Fallback |
 | --- | --- | --- |
 | `endpoint` | `MEMORAX_CODE_MEMORAX_ENDPOINT` | `https://platform.memorax.net` |
-| `user_id` | `MEMORAX_CODE_MEMORAX_USER_ID` | required User ID |
+| `user_id` | `MEMORAX_CODE_MEMORAX_USER_ID` | required username |
 | `api_key` | `MEMORAX_CODE_MEMORAX_API_KEY` | ready secure trial credential; otherwise required |
 | `timeout_ms` | `MEMORAX_CODE_MEMORAX_TIMEOUT_MS` | `5000` ms |
 | `startup_timeout_ms` | `MEMORAX_CODE_MEMORAX_STARTUP_TIMEOUT_MS` | `3000` ms |
 
 Interactive setup determines whether the connection can be reused through the
 same config-only status resolution used by `memorax-cli status`, including the
-precedence documented above. A non-empty User ID, an effective API key from
+precedence documented above. A non-empty username, an effective API key from
 one of those sources, and a valid `zh` or `en` memory output language form a
 locally ready connection; an omitted output language uses the `zh` fallback.
 This check does not send a network request or prove that the API key is
 accepted by the memory API. Trial provisioning is a separate foreground
-network operation. Both paths write the endpoint, User ID, language, and API
+network operation. Both paths write the endpoint, username, language, and API
 key to `config.toml`. Environment variables remain higher-precedence
 overrides.
 
 After a trial account is activated, its API key can be reused on another
-computer by placing the copied endpoint, User ID, and API key in that
+computer by placing the copied endpoint, username, and API key in that
 computer's private `config.toml`. The copied connection works as an explicit
 TOML connection; device-local trial metadata remains in the original
 operating-system credential store, while local quota-reminder history remains
@@ -293,9 +293,9 @@ selected memory operation to the HTTPS endpoint. Override `endpoint` only with
 a compatible MemoraX service you trust.
 
 `startup_timeout_ms` controls synchronous automatic retrieval and is capped at
-10 seconds. `user_id` is the stable User ID; MemoraX Code derives a
+10 seconds. `user_id` is the stable username; MemoraX Code derives a
 repository-scoped identity for Git workspaces and a folder-scoped identity for
-non-Git workspaces. It never falls back to the unscoped User ID.
+non-Git workspaces. It never falls back to the unscoped username.
 
 ## Retrieval
 
@@ -469,7 +469,7 @@ records while a setup, npm, or lifecycle command may still be active.
 - Malformed TOML, a non-table root, or invalid `[clients]` types block
   lifecycle mutations before adapters or processes are changed.
 - Default interactive setup automatically reuses a locally ready MemoraX
-  connection. Otherwise it detects the User ID and language from the local user
+  connection. Otherwise it detects the username and language from the local user
   environment, asks for any value that could not be detected, and provisions a
   trial credential. `--existing-account` explicitly selects the entered API-key
   path; `--reconfigure` bypasses reuse and follows the trial path. A malformed

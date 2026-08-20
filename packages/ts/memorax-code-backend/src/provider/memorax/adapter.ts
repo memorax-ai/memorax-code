@@ -470,7 +470,7 @@ function repositoryScopeForConfig(
 ): { ok: true; scope: RepositoryMemoryScope } | { ok: false; error: string } {
   if (!scope) return { ok: false, error: "memory scope is required for MemoraX search/add" };
   if (scope.baseUserId !== config.userId) {
-    return { ok: false, error: "memory scope base user id does not match MemoraX config" };
+    return { ok: false, error: "memory scope base username does not match MemoraX config" };
   }
   if (!scope.effectiveUserId.trim() || !scope.repositorySlug.trim()) {
     return { ok: false, error: "memory scope is invalid" };

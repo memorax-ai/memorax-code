@@ -204,19 +204,19 @@ sequenceDiagram
       Setup->>Config: preserve connection and preferences automatically
     else Existing-account mode
       Setup->>System: read login username and UI language
-      Setup->>User: request User ID with detected default
+      Setup->>User: request username with detected default
       opt Language is unavailable
         Setup->>User: request the missing language
       end
       Setup->>User: request masked API key
-      Setup->>Config: write endpoint, User ID, language, and API key
+      Setup->>Config: write endpoint, username, language, and API key
     else Default mode without a ready connection or reconfigure mode
       Setup->>System: read login username and UI language
       opt A preference is unavailable
         Setup->>User: request the missing preference
       end
       Setup->>Trial: create or restore ready credential
-      Setup->>Config: write endpoint, User ID, language, and API key
+      Setup->>Config: write endpoint, username, language, and API key
     end
   end
   alt Selected Codex integration has no active plugin
@@ -252,11 +252,11 @@ invalid or unsupported state fails closed. Interactive `memorax-code setup`
 runs regardless of completion, while product update uses a separate setup mode.
 Interactive setup uses the config-only status authority to find a locally ready
 effective MemoraX connection. Default setup preserves a ready connection and
-its memory preferences automatically. If none is ready, it derives the User ID
+its memory preferences automatically. If none is ready, it derives the username
 and language from the logged-in operating-system account and user language,
 requests only a preference that cannot be detected safely, and creates or
 restores the secure trial credential. `--existing-account` bypasses automatic
-reuse, requests the User ID with the detected account name as its default,
+reuse, requests the username with the detected account name as its default,
 accepts a masked API key, and skips trial provisioning. `--reconfigure` also
 bypasses automatic reuse, re-detects the preferences, and follows the trial
 path. Both configuration paths write a portable TOML copy of the API key.
@@ -274,7 +274,7 @@ integration without a second confirmation;
 new or changed Hook command hashes on later updates still require foreground
 review. The selected MemoraX connection path must complete before plugin and
 Backend reconciliation begins. Trial provisioning must succeed before setup
-applies the detected or entered User ID and language; the existing-account path
+applies the detected or entered username and language; the existing-account path
 writes the entered API key and preferences together. Setup may make one bounded
 stop/start recovery attempt for an ordinary start failure, while deterministic
 Hook activation, lifecycle-lock, and persisted-authority failures remain
@@ -401,7 +401,7 @@ Important distinctions:
   incomplete, conflicting, or unprovable.
 - A malformed or incomplete direct `.git` directory is the sole documented
   folder-scope fallback. That degraded scope may upgrade in-session only to a
-  verified Git scope with the same User ID and canonical workspace root;
+  verified Git scope with the same username and canonical workspace root;
   all other scope changes remain mismatches.
 - Local mode may authorize loopback requests without a configured token. Token
   authentication is required when configuration or exposure mode demands it.
@@ -713,8 +713,8 @@ and
 | Workspace and repository identity | Backend read-only resolution held by the live repository-session runtime; its only permitted scope transition is the same-root degraded-direct-`.git` to verified-Git upgrade | Project labels, Viewer catalog entries, and Hook `cwd` |
 | Backend connection and managed-process ownership | Versioned private connection/token/PID records plus lifecycle lock/version validation | In-memory state in any one process |
 | Setup routing and package-replacement continuity | Versioned private setup-completion and package-transition records plus their JSON locks | Configuration contents, npm output visibility, and the presence of package files |
-| Effective MemoraX connection | Config-only resolution with environment API key over TOML API key over a ready secure trial credential, plus normalized User ID and language; any TOML API key is used directly regardless of its original provisioning path | Config-file presence, trial-record presence without `ready`, inferred account status, setup completion, and Backend liveness do not establish local readiness or remote API-key acceptance |
-| Trial account identity and state | Versioned secure credential record stored through the operating-system credential backend; its API key is also mirrored to private TOML for portability, while `account_id`, project identity, and mark remain secure-record-only | `[memorax].user_id` remains the User ID and must not be derived from or overwritten by trial account identity |
+| Effective MemoraX connection | Config-only resolution with environment API key over TOML API key over a ready secure trial credential, plus normalized username and language; any TOML API key is used directly regardless of its original provisioning path | Config-file presence, trial-record presence without `ready`, inferred account status, setup completion, and Backend liveness do not establish local readiness or remote API-key acceptance |
+| Trial account identity and state | Versioned secure credential record stored through the operating-system credential backend; its API key is also mirrored to private TOML for portability, while `account_id`, project identity, and mark remain secure-record-only | `[memorax].user_id` remains the username and must not be derived from or overwritten by trial account identity |
 | Quota-reminder deduplication | Versioned private local runtime record keyed by a one-way connection fingerprint; normalized MemoraX balances remain authoritative for the quota amount | Account registration status, raw API keys, and in-memory reminder state are not quota-reminder authority |
 | MemoraX memory result and asynchronous task state | Normalized response from `provider/memorax` | Observability, trace, Viewer, and task projections |
 | Persisted current-turn operational state and trace history | Client-qualified local trace records | Viewer summaries and diagnostics; not native content or general Turn-identity authority |

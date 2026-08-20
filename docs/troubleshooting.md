@@ -43,9 +43,10 @@ an interactive flow implicitly.
 
 After a product uninstall and reinstall, setup detects a locally ready retained
 MemoraX connection and reuses it automatically without asking again for the
-User ID or preferred language. Run `memorax-code setup --reconfigure` to
+username or preferred language. Run `memorax-code setup --reconfigure` to
 replace the saved connection preferences, or `memorax-code setup
---existing-account` to enter an existing account's User ID and API key.
+--existing-account` to enter the username used by an existing MemoraX Code
+setup and that account's API key.
 
 Setup requires both terminal input and terminal-visible stderr. A pipe,
 background process, or redirected stdin/stderr cannot answer setup prompts;
@@ -61,7 +62,7 @@ readiness all succeed. Until then, a no-argument `memorax-code` reports that
 setup has not been completed and points to `memorax-code setup`.
 
 If the configuration is safely parseable but its effective MemoraX connection
-is not ready, setup detects the User ID and preferred language from the local
+is not ready, setup detects the username and preferred language from the local
 user environment and then creates or restores a trial credential. A Unix setup
 running as the root account, or another environment where a value cannot be
 read safely, asks for the missing value instead. A malformed TOML file cannot
@@ -149,7 +150,7 @@ unavailable. Run:
 memorax-cli status
 ```
 
-Use setup to detect the local User ID and preferred language and then create or
+Use setup to detect the local username and preferred language and then create or
 restore the trial connection:
 
 ```sh
@@ -368,7 +369,7 @@ memorax-code-opencode doctor
 
 Common causes are:
 
-- missing or invalid MemoraX endpoint, User ID, or effective API key;
+- missing or invalid MemoraX endpoint, username, or effective API key;
 - the global writeback kill switch or CLI add switch disabling `memory add`;
 - no trusted workspace for the current session;
 - an unreadable, malformed, or symlinked Git marker;
@@ -377,7 +378,7 @@ Common causes are:
 
 MemoraX Code reads filesystem Git metadata without executing Git. Linked
 worktrees share the remote repository identity; non-Git workspaces use the
-normalized folder name. Resolution never falls back to the bare User ID.
+normalized folder name. Resolution never falls back to the bare username.
 
 A live Codex, Claude Code, DSH, or OpenCode session remains pinned to the
 repository or local workspace resolved at the start of the session. Starting
@@ -385,7 +386,7 @@ the client from a parent workspace and then entering a nested Git repository
 does not rebind the session. The only in-session scope upgrade is from a direct
 `.git` directory whose internal metadata was malformed or incomplete to a
 verified Git repository at the same canonical workspace root and for the same
-User ID.
+username.
 
 During that degraded state, MemoraX Code reports
 `workspaceScopeFallbackReason: git_metadata_invalid` for manual CLI operations

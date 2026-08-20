@@ -647,7 +647,7 @@ test("a real Codex-General folder intentionally shares the projectless namespace
   assert.notEqual(projectless.scope.repositoryKey, local.scope.repositoryKey);
 });
 
-test("workspace scope rejects missing roots and empty base user ids", async () => {
+test("workspace scope rejects missing roots and empty base usernames", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-workspace-invalid-"));
 
   const missing = await resolveRepositoryMemoryScope({

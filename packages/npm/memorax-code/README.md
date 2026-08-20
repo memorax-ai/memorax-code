@@ -19,7 +19,7 @@ npm install -g @memorax/memorax-code
 memorax-code setup
 ```
 
-Setup automatically detects your User ID and language; no account or API key
+Setup automatically detects your username and language; no account or API key
 is required beforehand. If you already have a MemoraX account, run
 `memorax-code setup --existing-account` instead. Later setup runs reuse a saved
 configuration automatically; use `memorax-code setup --reconfigure` to replace

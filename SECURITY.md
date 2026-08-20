@@ -73,24 +73,24 @@ Please allow time for triage and remediation before public disclosure.
   or incomplete internal metadata in a direct `.git` directory to the
   canonical workspace folder identity. The CLI exposes the fallback reason,
   effective identity, and a user notice. Within the same live session, only
-  that degraded scope may upgrade to a verified Git scope with the same Base
-  User ID and canonical workspace root. Pending fallback writeback is
+  that degraded scope may upgrade to a verified Git scope with the same base
+  username and canonical workspace root. Pending fallback writeback is
   discarded during the upgrade rather than migrated or flushed. Git pointer
   files, symlinked markers, unreadable metadata, and other conflicting session
   scope remain fail closed.
 
 ### MemoraX memory traffic
 
-MemoraX-backed search, retrieval, and writeback require a User ID, an
+MemoraX-backed search, retrieval, and writeback require a username, an
 effective API key, and network access. The API key may come from a ready secure
 trial credential or an explicit environment/TOML value. Interactive setup
 discloses automatic writeback before selecting a connection path. Default setup
 reuses a locally ready effective connection without collecting or printing its
 credentials again. When no ready connection exists, or when `--reconfigure`
-bypasses reuse, setup derives the User ID from the logged-in operating-system
+bypasses reuse, setup derives the username from the logged-in operating-system
 account name and maps the user's system language to `zh` or `en`; it displays
 those selected values and asks for one only when it cannot be detected safely.
-The explicit `--existing-account` path asks for the User ID with the detected
+The explicit `--existing-account` path asks for the username with the detected
 account name as its default, accepts an API key through masked terminal input,
 and stores both in the private TOML configuration. The trial path creates or
 restores the operating-system-protected credential and mirrors its API key to
@@ -133,7 +133,7 @@ The packaged default uses `https://platform.memorax.net`. An endpoint override
 is a separate trust decision; configure only a compatible MemoraX service you
 trust.
 
-Treat the MemoraX API key, trial Mark ID, User ID, repository identity,
+Treat the MemoraX API key, trial Mark ID, username, repository identity,
 queries, selected writeback content, and saved memories as sensitive. Disable
 writes immediately with:
 
@@ -151,7 +151,7 @@ enabled = false
 ### MemoraX credential storage
 
 The versioned trial credential record is separate from `config.toml`. Its
-provisioned `account_id` is account identity and never replaces the User ID
+provisioned `account_id` is account identity and never replaces the username
 stored as `[memorax].user_id`. Account identity, project identity, and the
 device mark remain only in that secure record. Quota-reminder deduplication is
 stored separately in a private local runtime record containing a one-way
@@ -163,7 +163,7 @@ trial Mark ID. When registration requires it, the user can explicitly run
 command prints the Mark ID but not the API key. Do not ask an Agent to run it,
 paste its output into a conversation, or include it in screenshots or logs.
 
-Trial setup stores the endpoint, User ID, language preference, and a portable
+Trial setup stores the endpoint, username, language preference, and a portable
 copy of the API key in `config.toml`. Existing-account setup stores the entered
 API key there as well. New POSIX configuration files use mode `0600`, while
 Windows relies on the current user's filesystem ACLs. Runtime API-key
@@ -172,7 +172,7 @@ ready secure trial credential. A TOML key is used directly regardless of how
 it was issued; the secure trial credential is consulted only when no explicit
 environment or TOML key is available. The plugin does not infer current account
 registration status from the key's original provisioning path. Trial account
-and project identifiers never participate in the workspace-scoped User ID.
+and project identifiers never participate in the workspace-scoped username.
 
 The secure credential layer uses macOS Keychain, Linux Secret Service through
 libsecret, and Windows CurrentUser DPAPI with an atomically replaced encrypted
@@ -281,7 +281,7 @@ retains the MemoraX configuration, including any API key stored there, and the
 secure trial credential. After a reinstall, `memorax-code setup` automatically
 reuses a locally ready connection and resumes the configured memory behavior
 without asking for the values again. `memorax-code setup --reconfigure`
-replaces the User ID and language but may restore the same retained trial
+replaces the username and language but may restore the same retained trial
 identity. If that credential must not be reused, remove it separately through
 the operating-system secure credential backend after reviewing the retained
 configuration and data.

@@ -51,7 +51,7 @@ same change, then run the matching verification profile in Section 5.
   repositories and genuine non-Git workspaces keep separate local identity.
   The documented direct-`.git` exception may use local-folder scope when its
   internal metadata is malformed or incomplete, then upgrade in-session only
-  to verified Git scope for the same Base User ID and canonical workspace
+  to verified Git scope for the same base username and canonical workspace
   root. Discard pending fallback writeback during that upgrade. Missing,
   unreadable, malformed, or conflicting scope authority outside this narrow
   exception must not silently fall back or rebind.

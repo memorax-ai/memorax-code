@@ -883,7 +883,7 @@ test("setup update mode skips MemoraX credentials while reviewing clients and Ho
     assert.match(run.result.stderr, /Trusted 1 new or changed MemoraX Code Codex Hook/);
     assert.doesNotMatch(run.result.stderr, /Existing MemoraX configuration detected/);
     assert.doesNotMatch(run.result.stderr, /Connect MemoraX Code to MemoraX now/);
-    assert.doesNotMatch(run.result.stderr, /MemoraX base user ID/);
+    assert.doesNotMatch(run.result.stderr, /MemoraX base username/);
     assert.doesNotMatch(run.result.stderr, /Preferred language \[ZH\/en\]/);
     assert.doesNotMatch(run.result.stderr, /MemoraX API key/);
     assert.match(run.log, /^memorax-code codex-plugin hooks .*--json$/m);
@@ -1761,9 +1761,9 @@ test("setup detects memory preferences before writing MemoraX config", async () 
     assert.match(run.result.stderr, /Newly generated configuration enables automatic writeback/);
     assert.doesNotMatch(run.result.stderr, /register|Connect MemoraX Code to MemoraX now/i);
     assert.doesNotMatch(run.result.stderr, /Enable automatic writeback|Enable writeback now/);
-    assert.match(run.result.stderr, /User ID: memorax-user \(detected from the system account\)/);
+    assert.match(run.result.stderr, /Username: memorax-user \(detected from the system account\)/);
     assert.match(run.result.stderr, /Preferred language: en \(detected from system settings\)/);
-    assert.doesNotMatch(run.result.stderr, /User ID \(used for your memories\)|Preferred language \[ZH\/en\]/);
+    assert.doesNotMatch(run.result.stderr, /Username \(used for your memories\)|Preferred language \[ZH\/en\]/);
     assert.doesNotMatch(run.result.stderr, /Do you already have a MemoraX account/);
     assert.doesNotMatch(run.result.stderr, /API key/i);
     assert.match(run.result.stderr, /Secure MemoraX credential is ready/);
@@ -1780,7 +1780,7 @@ test("setup detects memory preferences before writing MemoraX config", async () 
     const config = await readFile(join(run.memoraxCodeHome, "config.toml"), "utf8");
     assert.match(config, /\[memorax\]/);
     assert.ok(config.includes(`endpoint = "${run.memoraxEndpoint}" # MemoraX service URL.`));
-    assert.match(config, /user_id = "memorax-user" # Stable User ID; requests derive a workspace-scoped namespace\./);
+    assert.match(config, /user_id = "memorax-user" # Stable username; requests derive a workspace-scoped namespace\./);
     assert.ok(config.includes(`api_key = "${trialApiKey}" # MemoraX API key used by the local Backend.`));
     assert.doesNotMatch(config, /credential_source/);
     assert.doesNotMatch(config, /9001|9002/);
@@ -1791,7 +1791,7 @@ test("setup detects memory preferences before writing MemoraX config", async () 
     );
     assert.match(
       config,
-      /user_id = "memorax-user" # Stable User ID; requests derive a workspace-scoped namespace\.\r?\napi_key = "sk_[A-Za-z0-9_-]+" # MemoraX API key used by the local Backend\.\r?\n\r?\n# Automatic Hook retrieval is opt-in\.\r?\n\[memory\.retrieval\]/,
+      /user_id = "memorax-user" # Stable username; requests derive a workspace-scoped namespace\.\r?\napi_key = "sk_[A-Za-z0-9_-]+" # MemoraX API key used by the local Backend\.\r?\n\r?\n# Automatic Hook retrieval is opt-in\.\r?\n\[memory\.retrieval\]/,
     );
     assert.match(config, /\[memory\.retrieval\]\nenabled = false # Auto-inject retrieved memories into supported client prompts\./);
     assert.match(config, /\[memory\.skill_reminder\]/);
@@ -1843,7 +1843,7 @@ test("setup configures an existing MemoraX account without trial provisioning", 
   });
   try {
     assert.equal(run.result.code, 0, run.result.stderr);
-    assert.match(run.result.stderr, /User ID: <default>/);
+    assert.match(run.result.stderr, /Username: <default>/);
     assert.doesNotMatch(run.result.stderr, /Do you already have a MemoraX account/);
     assert.doesNotMatch(run.result.stderr, /Reusing the existing MemoraX connection/);
     assert.match(run.result.stderr, /MemoraX API key: <provided>/);
@@ -1915,7 +1915,7 @@ test("setup does not trust configured JSON from a failed memory status command",
   try {
     assert.equal(run.result.code, 1, run.result.stderr);
     assert.doesNotMatch(run.result.stderr, /Existing MemoraX configuration detected/);
-    assert.match(run.result.stderr, /User ID: memory-user \(detected from the system account\)/);
+    assert.match(run.result.stderr, /Username: memory-user \(detected from the system account\)/);
     assert.match(run.result.stderr, /MemoraX memory: Status unavailable/);
     assert.doesNotMatch(run.result.stderr, /MemoraX memory: .*Configured/);
     assert.doesNotMatch(run.result.stderr, /Automatic writeback: .*Enabled/);
@@ -1954,7 +1954,7 @@ test("interactive setup does not reuse malformed or incomplete memory status JSO
         assert.equal(run.result.code, 1, run.result.stderr);
         assert.doesNotMatch(run.result.stderr, /Existing MemoraX configuration detected/);
         assert.doesNotMatch(run.result.stderr, /Reusing the existing MemoraX connection/);
-        assert.match(run.result.stderr, /User ID: memory-user \(detected from the system account\)/);
+        assert.match(run.result.stderr, /Username: memory-user \(detected from the system account\)/);
         assert.doesNotMatch(run.result.stderr, /status-output-secret/);
         assert.match(run.result.stderr, /MemoraX memory: Status unavailable/);
         assert.match(run.result.stderr, /Setup could not verify a ready MemoraX connection/);
@@ -1995,7 +1995,7 @@ test("interactive setup after reinstall automatically reuses a complete MemoraX 
     assert.doesNotMatch(run.result.stderr, /Use the saved connection and memory preferences/);
     assert.doesNotMatch(run.result.stderr, /Connect MemoraX Code to MemoraX now/);
     assert.doesNotMatch(run.result.stderr, /No MemoraX connection response was received/);
-    assert.doesNotMatch(run.result.stderr, /User ID|Preferred language|MemoraX API key/);
+    assert.doesNotMatch(run.result.stderr, /Username|Preferred language|MemoraX API key/);
     assert.doesNotMatch(run.result.stderr, /existing-secret|existing-user/);
     assert.match(run.log, /^memorax-code codex-plugin activate --yes$/m);
     assert.match(run.result.stderr, /MemoraX memory: .*Configured/);
@@ -2081,7 +2081,7 @@ test("reconfigure mode replaces a reusable MemoraX configuration", async () => {
     assert.equal(run.result.code, 0, run.result.stderr);
     assert.doesNotMatch(run.result.stderr, /Reusing the existing MemoraX connection and memory preferences/);
     assert.doesNotMatch(run.result.stderr, /Use the saved connection and memory preferences/);
-    assert.match(run.result.stderr, /User ID: memory-user \(detected from the system account\)/);
+    assert.match(run.result.stderr, /Username: memory-user \(detected from the system account\)/);
     const config = await readFile(join(run.memoraxCodeHome, "config.toml"), "utf8");
     assert.match(config, /user_id = "memory-user"/);
     assert.ok(config.includes(`api_key = "${trialApiKey}" # MemoraX API key used by the local Backend.`));
@@ -2106,7 +2106,7 @@ test("interactive setup asks for a missing MemoraX connection instead of trustin
   try {
     assert.equal(run.result.code, 0, run.result.stderr);
     assert.doesNotMatch(run.result.stderr, /Existing MemoraX configuration detected\. Use the saved connection/);
-    assert.match(run.result.stderr, /User ID: memory-user \(detected from the system account\)/);
+    assert.match(run.result.stderr, /Username: memory-user \(detected from the system account\)/);
     assert.match(run.result.stderr, /Secure MemoraX credential is ready/);
   } finally {
     await rm(run.root, { recursive: true, force: true });
@@ -2135,7 +2135,7 @@ test("reconfigure mode can replace a legacy connection with a secure credential"
   try {
     assert.equal(run.result.code, 0, run.result.stderr);
     assert.doesNotMatch(run.result.stderr, /Existing MemoraX configuration detected\. Use the saved connection/);
-    assert.match(run.result.stderr, /User ID: memory-user \(detected from the system account\)/);
+    assert.match(run.result.stderr, /Username: memory-user \(detected from the system account\)/);
     const config = await readFile(join(run.memoraxCodeHome, "config.toml"), "utf8");
     assert.match(config, /user_id = "memory-user"/);
     assert.ok(config.includes(`api_key = "${trialApiKey}" # MemoraX API key used by the local Backend.`));
@@ -2262,7 +2262,7 @@ test("setup does not report empty MemoraX credentials as configured", async () =
   });
   try {
     assert.equal(run.result.code, 1, run.result.stderr);
-    assert.match(run.result.stderr, /MemoraX config was not written because User ID was empty/);
+    assert.match(run.result.stderr, /MemoraX config was not written because username was empty/);
     assert.match(run.result.stderr, /MemoraX memory: Not configured/);
     assert.doesNotMatch(run.result.stderr, /MemoraX memory: .*Configured/);
     await assertSetupIncomplete(run);
@@ -2337,7 +2337,7 @@ test("setup preserves existing optional config instead of backfilling defaults",
     assert.ok(config.includes(`endpoint = "${run.memoraxEndpoint}" # MemoraX service URL.`));
     assert.ok(config.includes(`api_key = "${trialApiKey}" # MemoraX API key used by the local Backend.`));
     assert.doesNotMatch(config, /old-secret|memorax-secret/);
-    assert.match(config, /user_id = "memorax-user" # Stable User ID; requests derive a workspace-scoped namespace\./);
+    assert.match(config, /user_id = "memorax-user" # Stable username; requests derive a workspace-scoped namespace\./);
     assert.match(config, /\[memory\.add\]\noutput_language = "en" # Language for newly generated MemoraX memories\./);
   } finally {
     await rm(run.root, { recursive: true, force: true });
@@ -2415,7 +2415,7 @@ test("setup does not probe an unscoped MemoraX namespace", async () => {
     assert.ok(config.includes(`endpoint = "${run.memoraxEndpoint}" # MemoraX service URL.`));
     assert.ok(config.includes(`api_key = "${trialApiKey}" # MemoraX API key used by the local Backend.`));
     assert.doesNotMatch(config, /bad-secret/);
-    assert.match(config, /user_id = "memorax-user" # Stable User ID; requests derive a workspace-scoped namespace\./);
+    assert.match(config, /user_id = "memorax-user" # Stable username; requests derive a workspace-scoped namespace\./);
   } finally {
     await rm(run.root, { recursive: true, force: true });
   }

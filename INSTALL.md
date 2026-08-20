@@ -20,7 +20,7 @@ installation. For a source checkout and contributor setup, see
 
 MemoraX-backed search, retrieval, and writeback additionally require network
 access. First-time setup creates or restores a trial connection after detecting
-the User ID and preferred memory language, asking only for a value that cannot
+the username and preferred memory language, asking only for a value that cannot
 be detected safely. You do not need to register an account or create an API key
 beforehand. Existing manually managed MemoraX connections remain supported
 through configuration or environment variables.
@@ -32,9 +32,9 @@ to plaintext credential storage.
 
 ## 1. Establish the Memory Preferences
 
-Setup derives a stable User ID from the logged-in operating-system account and
+Setup derives a stable username from the logged-in operating-system account and
 maps the system language to a supported memory language. It asks only for a
-value that cannot be detected safely. The User ID becomes the base of each
+value that cannot be detected safely. The username becomes the base of each
 workspace-scoped memory namespace. Keep it stable: changing it later starts
 using a different namespace.
 
@@ -96,15 +96,15 @@ configuration and secure trial credentials retained across a product
 uninstall. When one is found, default setup reuses the saved connection and
 memory preferences automatically without asking for them again.
 
-If no ready connection exists, setup detects the User ID and preferred
+If no ready connection exists, setup detects the username and preferred
 language, asks only for a value that cannot be detected safely, and creates or
-restores a trial credential. It writes the endpoint, User ID, language, and API
+restores a trial credential. It writes the endpoint, username, language, and API
 key to private configuration. The initial local reuse check does not contact
 MemoraX; trial provisioning does, and the first workspace-scoped memory request
 verifies use of the connection by the memory API.
 
 If you already have a MemoraX account, run `memorax-code setup
---existing-account`. This mode bypasses automatic reuse, asks for the User ID
+--existing-account`. This mode bypasses automatic reuse, asks for the username
 with the detected system account name as its default, accepts the API key
 through masked input, and skips trial provisioning. Use `memorax-code setup
 --reconfigure` to bypass automatic reuse and re-detect preferences while
@@ -116,7 +116,7 @@ Setup:
    installations independently;
 2. enables every detected client on a fresh setup and preserves existing
    client intent on later runs;
-3. automatically reuses a locally ready connection, or detects a User ID and
+3. automatically reuses a locally ready connection, or detects a username and
    language before creating or restoring a trial credential;
 4. applies trial preferences only after credential provisioning succeeds, or
    writes existing-account preferences and the API key together;
@@ -133,7 +133,7 @@ the bundled plugin and trusts its current Hook command hashes without a second
 confirmation. New or changed Hook command hashes in later updates still
 require foreground review.
 
-To replace the User ID or language preference, switch from a manually stored
+To replace the username or language preference, switch from a manually stored
 `config.toml` API key to the setup-managed trial connection, or rerun or repair
 setup even when completion is already recorded, use:
 
@@ -201,7 +201,7 @@ Package installation can succeed while setup remains incomplete. Run
 `memorax-code setup` from an interactive terminal to resume or repair client,
 Hook, Backend, and MemoraX configuration.
 
-During default setup, a ready saved connection avoids asking for the User ID and
+During default setup, a ready saved connection avoids asking for the username and
 language again. Use `memorax-code setup --reconfigure` when you want to replace
 those retained preferences or move to the setup-managed trial connection.
 

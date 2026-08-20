@@ -305,7 +305,7 @@ async function maybeConfigureMemoraxMemory(scriptedAnswers, {
     const userId = existingAccount
       ? await questionExistingAccountUserId(rl, detectedPreferences.userId)
       : detectedPreferences.userId
-        ?? (await rl.question(`${PREFIX} User ID (used for your memories): `)).trim();
+        ?? (await rl.question(`${PREFIX} Username (used for your memories): `)).trim();
     const outputLanguage = detectedPreferences.outputLanguage
       ?? await questionPreferredLanguage(rl);
     printDetectedMemoryPreferences(detectedPreferences, { includeUserId: !existingAccount });
@@ -373,9 +373,9 @@ async function configureMemoraxMemoryFromAnswers(answers, detectedPreferences, {
     ? userIdAnswer || detectedPreferences.userId
     : detectedPreferences.userId ?? String(answers.shift() ?? "").trim();
   if (existingAccount) {
-    log(`User ID: ${userIdAnswer ? "<provided>" : detectedPreferences.userId ? "<default>" : "<missing>"}`);
+    log(`Username: ${userIdAnswer ? "<provided>" : detectedPreferences.userId ? "<default>" : "<missing>"}`);
   } else if (!detectedPreferences.userId) {
-    log(`User ID: ${userId ? "<provided>" : "<missing>"}`);
+    log(`Username: ${userId ? "<provided>" : "<missing>"}`);
   }
   const outputLanguageAnswer = detectedPreferences.outputLanguage
     ? undefined
@@ -401,7 +401,7 @@ async function configureMemoraxMemoryFromAnswers(answers, detectedPreferences, {
 
 function printDetectedMemoryPreferences(preferences, { includeUserId = true } = {}) {
   if (includeUserId && preferences.userId) {
-    log(`User ID: ${preferences.userId} (detected from the system account).`);
+    log(`Username: ${preferences.userId} (detected from the system account).`);
   }
   if (preferences.outputLanguage) {
     log(`Preferred language: ${preferences.outputLanguage} (detected from system settings).`);
@@ -422,7 +422,7 @@ async function writeMemoraxConfigFromInput({
   apiKey,
 }) {
   if (!userId) {
-    logRed("MemoraX config was not written because User ID was empty.");
+    logRed("MemoraX config was not written because username was empty.");
     return "failed";
   }
   if (!outputLanguage) {
@@ -481,7 +481,7 @@ async function questionPreferredLanguage(rl) {
 
 async function questionExistingAccountUserId(rl, detectedUserId) {
   const defaultLabel = detectedUserId ? ` [${detectedUserId}]` : "";
-  const answer = await rl.question(`${PREFIX} User ID from your existing MemoraX Code setup${defaultLabel}: `);
+  const answer = await rl.question(`${PREFIX} Username from your existing MemoraX Code setup${defaultLabel}: `);
   return answer.trim() || detectedUserId;
 }
 
@@ -857,7 +857,7 @@ function writeMemoraxConfig({ userId, endpoint, outputLanguage, apiKey }) {
     },
     {
       key: "user_id",
-      line: `user_id = "${tomlString(userId)}" # Stable User ID; requests derive a workspace-scoped namespace.`,
+      line: `user_id = "${tomlString(userId)}" # Stable username; requests derive a workspace-scoped namespace.`,
     },
   ];
   const addFields = [{
@@ -908,7 +908,7 @@ function defaultMemoraxCodeConfig() {
     "# MemoraX remote-memory connection.",
     "[memorax]",
     `# endpoint = "${MEMORAX_DEFAULT_BASE_URL}" # MemoraX service URL.`,
-    '# user_id = "" # Stable User ID; requests derive a workspace-scoped namespace.',
+    '# user_id = "" # Stable username; requests derive a workspace-scoped namespace.',
     "",
     "# Automatic Hook retrieval is opt-in.",
     "[memory.retrieval]",

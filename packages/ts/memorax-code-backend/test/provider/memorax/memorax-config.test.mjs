@@ -218,7 +218,7 @@ test("seeded MemoraX Code config exposes high-signal choices without a tuning ca
   assert.match(config, /\[memorax\]/);
   assert.match(config, /# endpoint = "https:\/\/platform\.memorax\.net" # MemoraX service URL\./);
   assert.match(config, /# api_key = "" # MemoraX API key used by the local Backend\./);
-  assert.match(config, /# user_id = "" # MemoraX base user ID; requests derive a workspace-scoped namespace\./);
+  assert.match(config, /# user_id = "" # MemoraX base username; requests derive a workspace-scoped namespace\./);
   assert.match(config, /\[memory\.retrieval\]\nenabled = false # Auto-inject retrieved memories into supported client prompts\./);
   assert.match(config, /\[memory\.writeback\]/);
   assert.match(config, /enabled = true # Allow supported client sessions to write memories after replies\./);

@@ -77,7 +77,7 @@ memorax-code setup
 ```
 
 Run setup from a normal interactive terminal. It automatically detects your
-User ID and preferred memory language; no account or API key is required
+username and preferred memory language; no account or API key is required
 beforehand. Setup also detects available Codex, Claude Code, DeepSeek Harness,
 and OpenCode installations and connects those it finds. If you already have a
 MemoraX account, run `memorax-code setup --existing-account` instead.
@@ -95,7 +95,7 @@ If the initial setup does not work as expected, check these common cases:
 | --- | --- |
 | Installation fails with an unsupported Node.js version | Run `node --version` and upgrade to Node.js 20 or later before reinstalling MemoraX Code. |
 | The package installed but setup did not start | This is expected. Run `memorax-code setup` from a normal interactive terminal. |
-| You want to use an existing MemoraX account | Run `memorax-code setup --existing-account` and enter that account's User ID and API key locally. Never paste the key into chats or public issues. |
+| You want to use an existing MemoraX account | Run `memorax-code setup --existing-account` and enter the username used by your existing MemoraX Code setup and that account's API key locally. Never paste the key into chats or public issues. |
 | Search, retrieval, or writeback is unavailable after setup | Run `memorax-code status` and `memorax-cli status`, then follow the detailed troubleshooting guide. |
 
 See [Configuration](docs/configuration.md) for supported settings and

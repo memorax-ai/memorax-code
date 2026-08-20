@@ -70,7 +70,7 @@ npm install -g @memorax/memorax-code
 memorax-code setup
 ```
 
-请在正常的交互式终端中运行安装引导。它会自动检测 User ID 和记忆语言偏好，无需提前注册账号或
+请在正常的交互式终端中运行安装引导。它会自动检测 username 和记忆语言偏好，无需提前注册账号或
 创建 API Key。安装引导还会检测本机可用的 Codex、Claude Code、DeepSeek Harness 和 OpenCode，
 并为检测到的 Coding Agent 启用集成。如果您已有 MemoraX 账号，请改为运行
 `memorax-code setup --existing-account`。
@@ -87,7 +87,7 @@ memorax-code setup
 | --- | --- |
 | 因 Node.js 版本不受支持导致安装失败 | 运行 `node --version` 检查版本，并升级到 Node.js 20 或更高版本后重新安装 MemoraX Code。 |
 | npm 包已安装，但没有进入安装引导 | 这是正常行为。请在正常的交互式终端中运行 `memorax-code setup`。 |
-| 希望使用已有的 MemoraX 账号 | 运行 `memorax-code setup --existing-account`，并只在本机输入该账号的 User ID 和 API Key。不要将 API Key 粘贴到聊天记录或公开 Issue 中。 |
+| 希望使用已有的 MemoraX 账号 | 运行 `memorax-code setup --existing-account`，并只在本机输入已有 MemoraX Code 配置所使用的 username 和该账号的 API Key。不要将 API Key 粘贴到聊天记录或公开 Issue 中。 |
 | 完成安装引导后，搜索、召回或写回仍不可用 | 运行 `memorax-code status` 和 `memorax-cli status`，然后按照详细的故障排查指南处理。 |
 
 有关支持的配置项，请参阅[配置](docs/configuration.md)；
