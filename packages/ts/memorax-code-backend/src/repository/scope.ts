@@ -47,7 +47,7 @@ export async function resolveRepositoryMemoryScope(input: {
     return {
       ok: false,
       reason: "effective_user_id_invalid",
-      error: "base MemoraX user id is required for workspace-scoped memory",
+      error: "base MemoraX username is required for workspace-scoped memory",
     };
   }
 

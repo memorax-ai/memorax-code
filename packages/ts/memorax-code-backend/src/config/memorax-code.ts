@@ -129,7 +129,7 @@ export function renderDefaultMemoraxCodeConfig(): string {
     "[memorax]",
     `# endpoint = "${MEMORAX_DEFAULT_BASE_URL}" # MemoraX service URL.`,
     '# api_key = "" # MemoraX API key used by the local Backend.',
-    '# user_id = "" # MemoraX base user ID; requests derive a workspace-scoped namespace.',
+    '# user_id = "" # MemoraX base username; requests derive a workspace-scoped namespace.',
     "",
     "# Automatic Hook retrieval is opt-in.",
     "[memory.retrieval]",
