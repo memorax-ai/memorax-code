@@ -9,6 +9,7 @@ import {
   secureCredentialBackendError,
 } from "./secure-command.mjs";
 import {
+  completeTrialCredentialProvisioning,
   TrialCredentialRecordError,
   parseTrialCredentialRecord,
   serializeTrialCredentialRecord,
@@ -60,7 +61,7 @@ export function createTrialCredentialStorePort(options = {}) {
   return Object.freeze({
     load: () => loadTrialCredentialRecord(configured),
     createIfAbsent: (value) => createTrialCredentialRecordIfAbsent(value, configured),
-    transition: (operation) => transitionTrialCredentialRecord(operation, configured),
+    complete: (value, metadata) => completeTrialCredentialRecord(value, metadata, configured),
     withProvisionLock(operation, lockOptions = {}) {
       if (!isRecord(lockOptions)) {
         throw new TypeError("Trial credential provisioning lock requires valid options");
@@ -119,38 +120,27 @@ export async function createTrialCredentialRecordIfAbsent(value, options = {}) {
   );
 }
 
-export async function transitionTrialCredentialRecord(operation, options = {}) {
-  if (typeof operation !== "function") {
-    throw new TypeError("Trial credential mutation requires an operation");
-  }
+export async function completeTrialCredentialRecord(value, metadata, options = {}) {
+  const expected = serializeTrialCredentialRecord(value);
   const home = resolveStoreHome(options);
   const backend = createTrialCredentialBackend({ ...options, memoraxCodeHome: home });
   return withJsonFileLockAsync(
     trialCredentialLockPath(home),
     async () => {
       const current = await loadFromBackend(backend, "load");
-      if (current === null) {
+      if (current === null || serializeTrialCredentialRecord(current) !== expected) {
         throw new TrialCredentialRecordError("invalid_transition");
       }
-      let candidate;
+      let next;
       try {
-        candidate = operation(current);
+        next = completeTrialCredentialProvisioning(current, metadata);
       } catch (error) {
-        throw sanitizedMutationError(error);
+        const reason = error instanceof TrialCredentialRecordError
+          ? error.reason
+          : "invalid_transition";
+        throw new TrialCredentialRecordError(reason);
       }
-      if (isThenable(candidate)) {
-        suppressRejectedPromise(candidate);
-        throw new TypeError("Trial credential mutation must be synchronous");
-      }
-      if (candidate === undefined) return current;
-
-      const next = validateTrialCredentialRecord(candidate);
-      const serialized = serializeTrialCredentialRecord(next);
-      if (serializeTrialCredentialRecord(current) === serialized) {
-        return current;
-      }
-      assertStoredTransition(current, next);
-      return saveVerifiedRecord(backend, next, serialized);
+      return saveVerifiedRecord(backend, next);
     },
     options.lockOptions,
   );
@@ -268,66 +258,8 @@ function sanitizedBackendError(error, operation) {
   return secureCredentialBackendError(STORE_BACKEND, operation, reason);
 }
 
-function sanitizedMutationError(error) {
-  const reason = error instanceof TrialCredentialRecordError
-    ? error.reason
-    : "invalid_transition";
-  return new TrialCredentialRecordError(reason);
-}
-
-function isThenable(value) {
-  if ((typeof value !== "object" || value === null) && typeof value !== "function") {
-    return false;
-  }
-  return typeof value.then === "function";
-}
-
-function suppressRejectedPromise(value) {
-  if (value instanceof Promise) void value.catch(() => undefined);
-}
-
 function isProvisioningSeed(record) {
   return record.state === "provisioning" && record.account_id === null;
-}
-
-function assertStoredTransition(current, next) {
-  if (!sameFields(current, next, [
-    "mark_id",
-    "mark_version",
-    "app_salt",
-    "machine_id",
-    "hostname",
-    "platform",
-    "arch",
-    "mac_hash",
-  ])) {
-    invalidTransition();
-  }
-
-  if (current.state === "provisioning") {
-    if (next.state !== "ready") invalidTransition();
-    return;
-  }
-
-  if (current.state === "ready") {
-    if (next.state !== "ready"
-      || current.api_key !== next.api_key
-      || current.account_id !== next.account_id
-      || current.project_id !== next.project_id) {
-      invalidTransition();
-    }
-    return;
-  }
-
-  invalidTransition();
-}
-
-function sameFields(left, right, fields) {
-  return fields.every((field) => left[field] === right[field]);
-}
-
-function invalidTransition() {
-  throw new TrialCredentialRecordError("invalid_transition");
 }
 
 function nonEmptyString(value) {

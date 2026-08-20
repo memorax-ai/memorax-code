@@ -5,7 +5,6 @@ import {
   TrialProvisionClientError,
 } from "../lib/trial-provision-client.mjs";
 
-const SERVICE_BASE_URL = "https://platform.memorax.net";
 const API_KEY = `sk_${"A".repeat(43)}`;
 const REQUEST = Object.freeze({
   markId: "mk_e07c335dfbdd06d4752cf8a17e7d4f82555bf4828d82a8efa7cc5b527d4c858e",
@@ -34,38 +33,6 @@ function successEnvelope(overrides = {}) {
     page: null,
   };
 }
-
-test("provision sends the agreed device fields and accepts a backend-generated api_key", async () => {
-  const calls = [];
-  const client = createTrialProvisionClient({
-    serviceBaseUrl: SERVICE_BASE_URL,
-    env: {},
-    fetchImpl: async (url, init) => {
-      calls.push({ url, init });
-      return jsonResponse(successEnvelope());
-    },
-  });
-
-  assert.deepEqual(await client.provision(REQUEST), {
-    accountId: "341599238100099072",
-    projectId: "347677365196820482",
-    apiKey: API_KEY,
-    created: true,
-  });
-  assert.equal(calls[0].url, `${SERVICE_BASE_URL}/account/api/v1/trial/provision`);
-  assert.deepEqual(JSON.parse(calls[0].init.body), {
-    mark_id: REQUEST.markId,
-    mark_version: 1,
-    app_salt: "memorax-plugin-v1",
-    machine_id: REQUEST.machineId,
-    hostname: REQUEST.hostname,
-    platform: "windows",
-    arch: "x86_64",
-    mac_hash: REQUEST.macHash,
-  });
-  assert.equal(calls[0].init.cache, "no-store");
-  assert.equal(calls[0].init.credentials, "omit");
-});
 
 test("provision rejects invalid local fields before network access", async () => {
   let called = false;

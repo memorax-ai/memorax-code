@@ -169,16 +169,13 @@ check.
 For a manually managed connection, set `endpoint`, `user_id`, and `api_key`
 under `[memorax]` in `$MEMORAX_CODE_HOME/config.toml`, or set their environment
 equivalents. An environment API key takes precedence over a TOML API key, and
-either takes precedence over a ready secure trial credential. The current
-default endpoint is `https://platform.memorax.net`.
+the current default endpoint is `https://platform.memorax.net`.
 
 Trial setup writes the same API key to private TOML and the operating-system
 secure credential record. Copying the TOML connection fields to another
 computer therefore reuses the key as an
 explicit connection when the original secure record is absent, without copying
-the device-local trial identity or local quota-reminder history. Product update
-and automatic connection reuse backfill this TOML copy for legacy trial
-installations that still have only the secure record.
+the device-local trial identity or local quota-reminder history.
 
 After changing persistent configuration:
 

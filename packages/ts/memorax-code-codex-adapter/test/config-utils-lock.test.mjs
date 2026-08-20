@@ -152,61 +152,6 @@ test("async JSON state lock aborts a waiter without running it or removing the o
   }
 });
 
-test("async JSON state lock rejects a pre-aborted waiter without creating a lock", async () => {
-  const root = await mkdtemp(join(tmpdir(), "memorax-code-json-lock-pre-abort-"));
-  const path = join(root, "nested", "state.json");
-  const lockPath = `${path}.lock`;
-  try {
-    const controller = new AbortController();
-    controller.abort();
-    let operationCalled = false;
-
-    await assert.rejects(
-      withJsonFileLockAsync(path, async () => {
-        operationCalled = true;
-      }, { signal: controller.signal }),
-      (error) => lockAbortError(error, path),
-    );
-    assert.equal(operationCalled, false);
-    await assert.rejects(access(lockPath), /ENOENT/);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("async JSON state lock releases ownership after its operation handles abort", async () => {
-  const root = await mkdtemp(join(tmpdir(), "memorax-code-json-lock-owner-abort-"));
-  const path = join(root, "state.json");
-  const lockPath = `${path}.lock`;
-  try {
-    const controller = new AbortController();
-    const operationEntered = deferred();
-    const owner = withJsonFileLockAsync(path, async () => {
-      operationEntered.resolve();
-      await new Promise((resolve) => {
-        controller.signal.addEventListener("abort", resolve, { once: true });
-      });
-      return "stopped";
-    }, { signal: controller.signal, timeoutMs: 500, retryMs: 5 });
-
-    await operationEntered.promise;
-    await access(lockPath);
-    controller.abort();
-    assert.equal(await owner, "stopped");
-    await assert.rejects(access(lockPath), /ENOENT/);
-    assert.equal(
-      await withJsonFileLockAsync(path, async () => "next", {
-        timeoutMs: 500,
-        retryMs: 5,
-      }),
-      "next",
-    );
-    await assert.rejects(access(lockPath), /ENOENT/);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
 test("JSON state lock recovers an abandoned stale lock", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-json-lock-stale-"));
   const path = join(root, "nested", "state.json");

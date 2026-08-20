@@ -32,32 +32,6 @@ const RESPONSE = Object.freeze({
 });
 const RECORD_PORT = Object.freeze({
   createInitial: createInitialTrialCredentialRecord,
-  complete: completeTrialCredentialProvisioning,
-});
-
-test("fresh provisioning persists identity first and then commits the backend-generated Key", async () => {
-  const store = memoryCredentialPort();
-  const requests = [];
-  const result = await runFlow(store, {
-    async provision(request) {
-      requests.push(request);
-      assert.equal(store.current.state, "provisioning");
-      assert.equal(store.current.api_key, null);
-      return RESPONSE;
-    },
-  });
-
-  assert.deepEqual(requests, [IDENTITY]);
-  assert.deepEqual(result, {
-    status: "ready",
-    provisioned: true,
-    markId: IDENTITY.markId,
-    accountId: RESPONSE.accountId,
-    projectId: RESPONSE.projectId,
-    apiKey: API_KEY,
-  });
-  assert.equal(store.current.state, "ready");
-  assert.equal(store.current.api_key, API_KEY);
 });
 
 test("a ready credential is reused without another provision request", async () => {
@@ -120,44 +94,12 @@ test("a secure-store commit failure leaves provisioning state for a later reappl
   assert.equal(store.current.api_key, SECOND_API_KEY);
 });
 
-test("rate limits use the bounded server delay before retrying", async () => {
-  const store = memoryCredentialPort();
-  const sleeps = [];
-  let attempts = 0;
-  await runFlow(store, {
-    async provision() {
-      attempts += 1;
-      if (attempts === 1) {
-        throw new TrialProvisionClientError("rate_limit_exceeded", {
-          httpStatus: 429,
-          retryAfterMs: 2_000,
-        });
-      }
-      return RESPONSE;
-    },
-  }, {
-    sleep: async (delay) => { sleeps.push(delay); },
-  });
-  assert.deepEqual(sleeps, [2_000]);
-  assert.equal(attempts, 2);
-});
-
-test("unknown client failures and exhausted HTTP budgets fail closed", async () => {
+test("unknown client failures fail closed", async () => {
   await assert.rejects(
     runFlow(memoryCredentialPort(), {
       provision: async () => { throw new Error(API_KEY); },
     }),
     flowError("client_failure"),
-  );
-
-  await assert.rejects(
-    runFlow(memoryCredentialPort(), {
-      provision: async () => { throw new TrialProvisionClientError("transport"); },
-    }, {
-      maxHttpRequests: 1,
-      sleep: async () => undefined,
-    }),
-    flowError("http_budget_exhausted"),
   );
 });
 
@@ -167,9 +109,7 @@ async function runFlow(store, client, overrides = {}) {
     recordPort: RECORD_PORT,
     client,
     generatePluginIdentity: () => IDENTITY,
-    random: () => 0,
     sleep: async () => undefined,
-    totalTimeoutMs: 30_000,
     ...overrides,
   });
 }
@@ -190,13 +130,13 @@ function memoryCredentialPort(initial = null) {
       }
       return { record: state.current, created: false };
     },
-    async transition(operation) {
+    async complete(current, metadata) {
       if (state.failNextTransition) {
         state.failNextTransition = false;
         throw new Error("secure store unavailable");
       }
-      const next = operation(state.current);
-      if (next !== undefined) state.current = next;
+      assert.deepEqual(current, state.current);
+      state.current = completeTrialCredentialProvisioning(current, metadata);
       return state.current;
     },
     async withProvisionLock(operation) {

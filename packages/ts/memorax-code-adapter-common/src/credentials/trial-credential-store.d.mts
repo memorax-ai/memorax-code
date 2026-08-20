@@ -27,10 +27,13 @@ export type TrialCredentialStorePort = Readonly<{
   createIfAbsent(
     value: unknown,
   ): Promise<Readonly<{ record: TrialCredentialRecord; created: boolean }>>;
-  transition(
-    operation: (
-      current: TrialCredentialRecord,
-    ) => TrialCredentialRecord | undefined,
+  complete(
+    value: TrialCredentialRecord,
+    metadata: Readonly<{
+      accountId: string;
+      projectId: string;
+      apiKey: string;
+    }>,
   ): Promise<TrialCredentialRecord>;
   withProvisionLock<T>(
     operation: () => T | Promise<T>,
@@ -64,10 +67,13 @@ export function createTrialCredentialRecordIfAbsent(
   options?: TrialCredentialStoreOptions,
 ): Promise<Readonly<{ record: TrialCredentialRecord; created: boolean }>>;
 
-export function transitionTrialCredentialRecord(
-  operation: (
-    current: TrialCredentialRecord,
-  ) => TrialCredentialRecord | undefined,
+export function completeTrialCredentialRecord(
+  value: TrialCredentialRecord,
+  metadata: Readonly<{
+    accountId: string;
+    projectId: string;
+    apiKey: string;
+  }>,
   options?: TrialCredentialStoreOptions,
 ): Promise<TrialCredentialRecord>;
 

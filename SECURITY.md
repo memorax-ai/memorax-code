@@ -82,8 +82,8 @@ Please allow time for triage and remediation before public disclosure.
 ### MemoraX memory traffic
 
 MemoraX-backed search, retrieval, and writeback require a username, an
-effective API key, and network access. The API key may come from a ready secure
-trial credential or an explicit environment/TOML value. Interactive setup
+effective API key, and network access. The API key comes from an explicit
+environment or private TOML value. Interactive setup
 discloses automatic writeback before selecting a connection path. Default setup
 reuses a locally ready effective connection without collecting or printing its
 credentials again. When no ready connection exists, or when `--reconfigure`
@@ -167,12 +167,10 @@ Trial setup stores the endpoint, username, language preference, and a portable
 copy of the API key in `config.toml`. Existing-account setup stores the entered
 API key there as well. New POSIX configuration files use mode `0600`, while
 Windows relies on the current user's filesystem ACLs. Runtime API-key
-resolution prefers an explicit environment value, then a TOML value, then a
-ready secure trial credential. A TOML key is used directly regardless of how
-it was issued; the secure trial credential is consulted only when no explicit
-environment or TOML key is available. The plugin does not infer current account
-registration status from the key's original provisioning path. Trial account
-and project identifiers never participate in the workspace-scoped username.
+resolution prefers an explicit environment value, then a TOML value. The
+plugin does not infer current account registration status from the key's
+original provisioning path. Trial account and project identifiers never
+participate in the workspace-scoped username.
 
 The secure credential layer uses macOS Keychain, Linux Secret Service through
 libsecret, and Windows CurrentUser DPAPI with an atomically replaced encrypted
@@ -194,9 +192,7 @@ current user's file permissions, not encryption; it exists so an activated
 connection can be copied to another computer. It must not appear in command
 arguments, logs, diagnostics, telemetry, or error messages. Never commit,
 publish, or paste the configuration. Ordinary package removal retains both the
-configuration and an existing secure credential record. Product update and
-automatic connection reuse may backfill a missing TOML copy from a ready secure
-record, without provisioning or changing the credential.
+configuration and an existing secure credential record.
 
 Credential creation is atomic and create-if-absent. Versioned state transitions
 preserve the provisioned mark and commit the Backend-issued API Key and

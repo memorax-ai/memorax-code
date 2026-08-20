@@ -1782,7 +1782,6 @@ test("setup detects memory preferences before writing MemoraX config", async () 
     assert.ok(config.includes(`endpoint = "${run.memoraxEndpoint}" # MemoraX service URL.`));
     assert.match(config, /user_id = "memorax-user" # Stable username; requests derive a workspace-scoped namespace\./);
     assert.ok(config.includes(`api_key = "${trialApiKey}" # MemoraX API key used by the local Backend.`));
-    assert.doesNotMatch(config, /credential_source/);
     assert.doesNotMatch(config, /9001|9002/);
     assert.match(config, /\[memory\.add\]\r?\noutput_language = "en" # Language for newly generated MemoraX memories\./);
     assert.match(
@@ -1856,7 +1855,6 @@ test("setup configures an existing MemoraX account without trial provisioning", 
     assert.match(config, /output_language = "en"/);
     assert.ok(config.includes(`api_key = "${apiKey}" # MemoraX API key used by the local Backend.`));
     assert.doesNotMatch(config, /old-secret|old-user/);
-    assert.doesNotMatch(config, /credential_source/);
     assert.equal((await stat(join(run.memoraxCodeHome, "config.toml"))).mode & 0o777, 0o600);
     await assertSetupComplete(run);
   } finally {
@@ -1966,7 +1964,7 @@ test("interactive setup does not reuse malformed or incomplete memory status JSO
   }
 });
 
-test("interactive setup after reinstall automatically reuses a complete MemoraX configuration and removes its legacy source marker", async () => {
+test("interactive setup after reinstall automatically reuses a complete MemoraX configuration", async () => {
   const existingConfig = [
     "[clients]",
     "codex = true",
@@ -1975,7 +1973,6 @@ test("interactive setup after reinstall automatically reuses a complete MemoraX 
     "[memorax]",
     'endpoint = "https://memorax.example"',
     'api_key = "existing-secret"',
-    'credential_source = "trial"',
     'user_id = "existing-user"',
     "",
     "[memory.add]",
@@ -2002,57 +1999,9 @@ test("interactive setup after reinstall automatically reuses a complete MemoraX 
     assert.match(run.result.stderr, /Automatic writeback: Disabled by effective configuration/);
     assert.equal(
       await readFile(join(run.memoraxCodeHome, "config.toml"), "utf8"),
-      existingConfig
-        .replace("[clients]\n", "[clients]\nopencode = false\n")
-        .replace('credential_source = "trial"\n', ""),
+      existingConfig.replace("[clients]\n", "[clients]\nopencode = false\n"),
     );
     await assertSetupComplete(run);
-  } finally {
-    await rm(run.root, { recursive: true, force: true });
-  }
-});
-
-test("interactive setup backfills a portable API key for a retained trial credential", async () => {
-  const existingConfig = [
-    "[clients]",
-    "codex = true",
-    "claude = true",
-    "",
-    "[memorax]",
-    'endpoint = "https://memorax.example"',
-    'credential_source = "trial"',
-    'user_id = "existing-user"',
-    "",
-    "[memory.add]",
-    'output_language = "en"',
-    "",
-  ].join("\n");
-  const run = await runSetup({
-    memoraxCodeConfig: existingConfig,
-    memoryStatusFixture: {
-      output: JSON.stringify({
-        ok: true,
-        action: "memory.status",
-        provider: "memory.memorax",
-        config: {
-          configured: true,
-          writeback: { globalEnabled: true, writebackEnabled: true },
-        },
-      }),
-      exitCode: 0,
-    },
-  });
-  try {
-    assert.equal(run.result.code, 0, run.result.stderr);
-    assert.match(run.result.stderr, /Reusing the existing MemoraX connection and memory preferences/);
-    assert.match(run.result.stderr, /Portable trial API key written to/);
-    assert.match(run.log, /^trial-load$/m);
-    assert.doesNotMatch(run.log, /^trial-provision$/m);
-    assert.equal(`${run.result.stdout}\n${run.result.stderr}\n${run.log}`.includes(trialApiKey), false);
-    const config = await readFile(join(run.memoraxCodeHome, "config.toml"), "utf8");
-    assert.ok(config.includes(`api_key = "${trialApiKey}" # MemoraX API key used by the local Backend.`));
-    assert.doesNotMatch(config, /credential_source/);
-    assert.match(config, /user_id = "existing-user"/);
   } finally {
     await rm(run.root, { recursive: true, force: true });
   }

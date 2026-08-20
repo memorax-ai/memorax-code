@@ -14,8 +14,6 @@ const RECORD_KEYS = Object.freeze([
   "api_key",
   "account_id",
   "project_id",
-  "last_warned_write_level",
-  "last_warned_search_level",
 ]);
 const RECORD_KEY_SET = new Set(RECORD_KEYS);
 const MARK_ID_PATTERN = /^mk_[0-9a-f]{64}$/;
@@ -43,7 +41,6 @@ const ERROR_REASONS = new Set([
   "invalid_shape",
   "invalid_account_id",
   "invalid_project_id",
-  "invalid_last_warned_level",
   "invalid_transition",
 ]);
 
@@ -94,8 +91,6 @@ export function createInitialTrialCredentialRecord(options) {
     api_key: null,
     account_id: null,
     project_id: null,
-    last_warned_write_level: null,
-    last_warned_search_level: null,
   });
 }
 
@@ -151,9 +146,7 @@ function validateRecord(value) {
   if (snapshot.state === "provisioning") {
     if (snapshot.api_key !== null
       || snapshot.account_id !== null
-      || snapshot.project_id !== null
-      || snapshot.last_warned_write_level !== null
-      || snapshot.last_warned_search_level !== null) {
+      || snapshot.project_id !== null) {
       fail("invalid_shape");
     }
     return Object.freeze(snapshot);
@@ -164,15 +157,7 @@ function validateRecord(value) {
   }
   if (!decimalPublicId(snapshot.account_id)) fail("invalid_account_id");
   if (!decimalPublicId(snapshot.project_id)) fail("invalid_project_id");
-  if (!validLastWarnedLevel(snapshot.last_warned_write_level)
-    || !validLastWarnedLevel(snapshot.last_warned_search_level)) {
-    fail("invalid_last_warned_level");
-  }
   return Object.freeze(snapshot);
-}
-
-function validLastWarnedLevel(value) {
-  return value === null || (Number.isSafeInteger(value) && value >= 0);
 }
 
 function decimalPublicId(value) {

@@ -9,7 +9,6 @@ import {
   loadReadyTrialSetupCredential,
 } from "../../../../../npm/memorax-code/lib/trial-setup.mjs";
 import {
-  completeTrialCredentialProvisioning,
   createInitialTrialCredentialRecord,
 } from "../../../../memorax-code-adapter-common/src/credentials/trial-credential-record.mjs";
 import {
@@ -17,7 +16,6 @@ import {
   loadTrialCredentialRecord,
 } from "../../../../memorax-code-adapter-common/src/credentials/trial-credential-store.mjs";
 import { invokeMemoraxMemoryProvider } from "../../../dist/provider/memorax/adapter.js";
-import { createMemoraxConfigResolver } from "../../../dist/provider/memorax/config.js";
 
 const MEMORY_ID = "memory-user";
 const REPOSITORY_SLUG = "repo-scope";
@@ -36,7 +34,6 @@ test("trial setup credentials authorize repository-scoped MemoraX writeback", as
       memoraxCodeHome,
       env,
       credentialApis: {
-        completeTrialCredentialProvisioning,
         createInitialTrialCredentialRecord,
         createTrialCredentialStorePort,
       },
@@ -132,12 +129,6 @@ test("trial setup credentials authorize repository-scoped MemoraX writeback", as
       assert.equal(configText.includes(privateValue), false);
     }
 
-    const resolveConfig = createMemoraxConfigResolver({
-      loadTrialCredential: (options) => loadTrialCredentialRecord({
-        ...options,
-        backend: secureBackend,
-      }),
-    });
     const memoryRequests = [];
     const result = await invokeMemoraxMemoryProvider(
       { sessionId: "trial-session", prompt: "remember this" },
@@ -151,7 +142,6 @@ test("trial setup credentials authorize repository-scoped MemoraX writeback", as
       },
       {
         env,
-        configResolver: resolveConfig,
         repositoryScope: testRepositoryScope(),
         fetchImpl: async (url, init) => {
           memoryRequests.push({

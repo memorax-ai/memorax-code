@@ -33,35 +33,6 @@ function readyRecord() {
   });
 }
 
-test("credential provisioning stores device identity before the backend-generated API Key", () => {
-  assert.deepEqual(initialRecord(), {
-    version: 1,
-    state: "provisioning",
-    mark_id: IDENTITY.markId,
-    mark_version: 1,
-    app_salt: IDENTITY.appSalt,
-    machine_id: IDENTITY.machineId,
-    hostname: IDENTITY.hostname,
-    platform: IDENTITY.platform,
-    arch: IDENTITY.arch,
-    mac_hash: IDENTITY.macHash,
-    api_key: null,
-    account_id: null,
-    project_id: null,
-    last_warned_write_level: null,
-    last_warned_search_level: null,
-  });
-});
-
-test("credential provisioning commits the backend response without changing identity", () => {
-  const ready = readyRecord();
-  assert.equal(ready.state, "ready");
-  assert.equal(ready.api_key, API_KEY);
-  assert.equal(ready.account_id, "341599238100099072");
-  assert.equal(ready.project_id, "347677365196820482");
-  assert.equal(ready.mark_id, IDENTITY.markId);
-});
-
 test("credential records serialize deterministically and reject unknown fields", () => {
   const ready = readyRecord();
   assert.deepEqual(parseTrialCredentialRecord(serializeTrialCredentialRecord(ready)), ready);
@@ -89,20 +60,6 @@ test("credential records reject invalid identity and state shapes", () => {
   for (const [record, reason] of fixtures) {
     assert.throws(() => validateTrialCredentialRecord(record), recordError(reason));
   }
-});
-
-test("ready credentials accept independent write and search reminder levels", () => {
-  const ready = validateTrialCredentialRecord({
-    ...readyRecord(),
-    last_warned_write_level: 4_000,
-    last_warned_search_level: 0,
-  });
-  assert.equal(ready.last_warned_write_level, 4_000);
-  assert.equal(ready.last_warned_search_level, 0);
-  assert.throws(
-    () => validateTrialCredentialRecord({ ...ready, last_warned_write_level: -1 }),
-    recordError("invalid_last_warned_level"),
-  );
 });
 
 test("only provisioning records can transition to ready", () => {

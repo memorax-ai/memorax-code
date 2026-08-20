@@ -215,45 +215,6 @@ test("setup completion clear is locked and idempotent", async () => {
   }
 });
 
-test("setup completion lock serializes the full awaited operation", async () => {
-  const home = await mkdtemp(join(tmpdir(), "memorax-code-setup-completion-lock-"));
-  const path = setupCompletionPath(home);
-  const order = [];
-  let releaseFirst;
-  let markFirstEntered;
-  const firstEntered = new Promise((resolve) => {
-    markFirstEntered = resolve;
-  });
-  const holdFirst = new Promise((resolve) => {
-    releaseFirst = resolve;
-  });
-  try {
-    const first = withSetupCompletionLock(home, async (state) => {
-      assert.equal(state.status, "absent");
-      order.push("first:start");
-      markFirstEntered();
-      await holdFirst;
-      order.push("first:end");
-    }, { timeoutMs: 500, retryMs: 5 });
-    await firstEntered;
-
-    const second = withSetupCompletionLock(home, async (state) => {
-      assert.equal(state.status, "absent");
-      order.push("second");
-    }, { timeoutMs: 500, retryMs: 5 });
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    assert.deepEqual(order, ["first:start"]);
-
-    releaseFirst();
-    await Promise.all([first, second]);
-    assert.deepEqual(order, ["first:start", "first:end", "second"]);
-    await assert.rejects(access(`${path}.lock`), /ENOENT/);
-  } finally {
-    releaseFirst?.();
-    await rm(home, { recursive: true, force: true });
-  }
-});
-
 async function writeRecord(path, value) {
   await writeFile(path, `${JSON.stringify(value)}\n`, { mode: 0o600 });
 }

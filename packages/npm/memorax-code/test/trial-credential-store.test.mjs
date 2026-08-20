@@ -14,10 +14,10 @@ import {
 } from "../../../ts/memorax-code-adapter-common/src/credentials/trial-credential-record.mjs";
 import {
   clearTrialCredentialRecord,
+  completeTrialCredentialRecord,
   createTrialCredentialRecordIfAbsent,
   createTrialCredentialStorePort,
   loadTrialCredentialRecord,
-  transitionTrialCredentialRecord,
   trialCredentialNamespace,
   trialCredentialProvisionLockPath,
   withTrialCredentialProvisionLock,
@@ -79,7 +79,7 @@ test("credential provision lock serializes callers", async () => {
   });
 });
 
-test("credential store creates, completes, updates reminders, and explicitly clears", async () => {
+test("credential store creates, completes, and explicitly clears", async () => {
   await withIsolatedHome(async (home) => {
     const storage = memoryBackend();
     const options = { memoraxCodeHome: home, backend: storage.backend };
@@ -87,18 +87,9 @@ test("credential store creates, completes, updates reminders, and explicitly cle
     const initial = initialCredential();
 
     assert.deepEqual(await port.createIfAbsent(initial), { record: initial, created: true });
-    const ready = await port.transition((current) => readyRecord(current));
+    const ready = await port.complete(initial, READY_METADATA);
     assert.equal(ready.state, "ready");
     assert.equal(ready.api_key, API_KEY);
-    const warned = await port.transition((current) => ({
-      ...current,
-      last_warned_search_level: 5_000,
-    }));
-    assert.equal(warned.last_warned_search_level, 5_000);
-
-    const savesBeforeNoChange = storage.saveCalls;
-    assert.deepEqual(await port.transition(() => undefined), warned);
-    assert.equal(storage.saveCalls, savesBeforeNoChange);
     assert.deepEqual(await clearTrialCredentialRecord(options), { deleted: true });
     assert.equal(await loadTrialCredentialRecord(options), null);
     assert.deepEqual(await clearTrialCredentialRecord(options), { deleted: false });
@@ -128,30 +119,28 @@ test("credential creation is atomic and clear is the only identity reset", async
   });
 });
 
-test("stored transitions cannot replace identity or a ready backend Key", async () => {
-  const ready = readyRecord();
-  const candidates = [
-    { ...ready, mark_id: OTHER_MARK_ID },
-    { ...ready, machine_id: "other-machine" },
-    { ...ready, hostname: "other-laptop" },
-    { ...ready, platform: "macos" },
-    { ...ready, api_key: `sk_${"D".repeat(43)}` },
-    { ...ready, account_id: "3" },
-    initialCredential(),
-  ];
+test("credential completion requires the exact stored provisioning identity", async () => {
+  await withIsolatedHome(async (home) => {
+    const initial = initialCredential();
+    const storage = memoryBackend(serializeTrialCredentialRecord(initial));
+    const options = { memoraxCodeHome: home, backend: storage.backend };
+    await assert.rejects(
+      completeTrialCredentialRecord(
+        initialCredential({ markId: OTHER_MARK_ID }),
+        READY_METADATA,
+        options,
+      ),
+      invalidTransitionError,
+    );
+    assert.equal(storage.saveCalls, 0);
 
-  for (const candidate of candidates) {
-    await withIsolatedHome(async (home) => {
-      const storage = memoryBackend(serializeTrialCredentialRecord(ready));
-      const options = { memoraxCodeHome: home, backend: storage.backend };
-      await assert.rejects(
-        transitionTrialCredentialRecord(() => candidate, options),
-        invalidTransitionError,
-      );
-      assert.equal(storage.saveCalls, 0);
-      assert.deepEqual(await loadTrialCredentialRecord(options), ready);
-    });
-  }
+    const ready = await completeTrialCredentialRecord(initial, READY_METADATA, options);
+    assert.equal(ready.state, "ready");
+    await assert.rejects(
+      completeTrialCredentialRecord(initial, READY_METADATA, options),
+      invalidTransitionError,
+    );
+  });
 });
 
 test("invalid secure records cannot be overwritten by ordinary creation", async () => {
@@ -173,27 +162,7 @@ test("invalid secure records cannot be overwritten by ordinary creation", async 
   });
 });
 
-test("credential mutation lock prevents concurrent reminder updates from being lost", async () => {
-  await withIsolatedHome(async (home) => {
-    const storage = memoryBackend(serializeTrialCredentialRecord(readyRecord()), 15);
-    const options = { memoraxCodeHome: home, backend: storage.backend };
-    const lowerWarning = (current) => ({
-      ...current,
-      last_warned_write_level: current.last_warned_write_level === null
-        ? 5_000
-        : current.last_warned_write_level - 1_000,
-    });
-
-    const results = await Promise.all([
-      transitionTrialCredentialRecord(lowerWarning, options),
-      transitionTrialCredentialRecord(lowerWarning, options),
-    ]);
-    assert.deepEqual(results.map((record) => record.last_warned_write_level), [5_000, 4_000]);
-    assert.equal((await loadTrialCredentialRecord(options)).last_warned_write_level, 4_000);
-  });
-});
-
-test("credential store fails closed on unverified or asynchronous mutations", async () => {
+test("credential store fails closed when a write cannot be verified", async () => {
   await withIsolatedHome(async (home) => {
     const discarded = memoryBackend();
     discarded.backend.save = async () => undefined;
@@ -204,14 +173,6 @@ test("credential store fails closed on unverified or asynchronous mutations", as
       }),
       (error) => error instanceof SecureCredentialBackendError && error.operation === "save",
     );
-
-    const storage = memoryBackend();
-    const options = { memoraxCodeHome: home, backend: storage.backend };
-    await createTrialCredentialRecordIfAbsent(initialCredential(), options);
-    await assert.rejects(
-      transitionTrialCredentialRecord(async (current) => readyRecord(current), options),
-      { name: "TypeError", message: "Trial credential mutation must be synchronous" },
-    );
   });
 });
 
@@ -220,12 +181,14 @@ function initialCredential(overrides = {}) {
 }
 
 function readyRecord(base = initialCredential()) {
-  return completeTrialCredentialProvisioning(base, {
-    apiKey: API_KEY,
-    accountId: "900719925474099300000000001",
-    projectId: "900719925474099300000000002",
-  });
+  return completeTrialCredentialProvisioning(base, READY_METADATA);
 }
+
+const READY_METADATA = Object.freeze({
+  apiKey: API_KEY,
+  accountId: "900719925474099300000000001",
+  projectId: "900719925474099300000000002",
+});
 
 function memoryBackend(initial = null, delayMs = 0) {
   let serialized = initial;

@@ -33,17 +33,14 @@ This reconciles the managed Backend and client integrations. Some Hook and CLI
 processes reread configuration sooner, but `memorax-code start` is the
 supported consistency boundary.
 
-The MemoraX API key has one additional setup-managed source. Its precedence is:
+The MemoraX API-key precedence is:
 
 ```text
-MEMORAX_CODE_MEMORAX_API_KEY > [memorax].api_key > ready secure trial credential
+MEMORAX_CODE_MEMORAX_API_KEY > [memorax].api_key
 ```
 
 A TOML key is used directly regardless of whether it was entered for an
-existing account or copied from a provisioned trial. The ready secure trial
-credential is consulted only when neither an environment nor TOML key is
-available. Legacy `credential_source` fields are ignored by the runtime and
-removed the next time setup reconciles the connection.
+existing account or copied from a provisioned trial.
 
 TOML booleans are `true` or `false`. Environment booleans accept
 `true/false`, `1/0`, `yes/no`, and `on/off`. Unknown fields are ignored and
@@ -185,9 +182,7 @@ After the secure trial credential is ready, setup replaces any
 `[memorax].api_key` with that credential's current API key. An environment API
 key remains a higher-precedence override. Setup reached from
 `memorax-code update` preserves the existing MemoraX connection without asking
-for memory preferences or changing credentials; for a legacy trial connection
-that has no TOML key, it copies the retained secure key into TOML. Automatic
-connection reuse during reinstall performs the same one-time backfill.
+for memory preferences or changing credentials.
 
 Setup stages the packaged Hook runtime and reconciles the selected clients
 with `memorax-code start` followed by `memorax-code status`. An ordinary start
@@ -266,7 +261,7 @@ managed connection may set `api_key` or supply
 | --- | --- | --- |
 | `endpoint` | `MEMORAX_CODE_MEMORAX_ENDPOINT` | `https://platform.memorax.net` |
 | `user_id` | `MEMORAX_CODE_MEMORAX_USER_ID` | required username |
-| `api_key` | `MEMORAX_CODE_MEMORAX_API_KEY` | ready secure trial credential; otherwise required |
+| `api_key` | `MEMORAX_CODE_MEMORAX_API_KEY` | required |
 | `timeout_ms` | `MEMORAX_CODE_MEMORAX_TIMEOUT_MS` | `5000` ms |
 | `startup_timeout_ms` | `MEMORAX_CODE_MEMORAX_STARTUP_TIMEOUT_MS` | `3000` ms |
 

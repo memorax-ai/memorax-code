@@ -1,11 +1,9 @@
 import { createHash } from "node:crypto";
 import { backendDebug } from "../shared/debug-log.js";
-import { callMemoAddStatus } from "../provider/memorax/adapter.js";
+import { callMemoAddStatus, memoraxConfigFromEnv } from "../provider/memorax/adapter.js";
 import {
   MEMORAX_PROVIDER_ID,
   memoraxWritebackEnabled,
-  resolveMemoraxConfigFromEnv,
-  type MemoraxConfigResolver,
 } from "../provider/memorax/config.js";
 import {
   completeMemoryWritebackTask,
@@ -58,7 +56,6 @@ export async function reconcileMemoryWritebackStatuses(options: {
   concurrency?: number;
   candidateOffset?: number;
   taskProjection?: MemoryWritebackTaskProjection;
-  configResolver?: MemoraxConfigResolver;
 }): Promise<MemoryWritebackReconcileReport> {
   return reconcileMemoryWritebackStatusesWithPolicy(options);
 }
@@ -74,7 +71,6 @@ export function startMemoryWritebackReconciler(options: {
   maxBackoffMs?: number;
   now?: () => number;
   taskProjection?: MemoryWritebackTaskProjection;
-  configResolver?: MemoraxConfigResolver;
 }): MemoryWritebackReconciler {
   let closed = false;
   let active: Promise<MemoryWritebackReconcileReport> | undefined;
@@ -131,12 +127,11 @@ async function reconcileMemoryWritebackStatusesWithPolicy(
     concurrency?: number;
     candidateOffset?: number;
     taskProjection?: MemoryWritebackTaskProjection;
-    configResolver?: MemoraxConfigResolver;
   },
   policy?: ReconcilePolicy,
 ): Promise<MemoryWritebackReconcileReport> {
   const env = { ...(options.env ?? process.env), MEMORAX_CODE_HOME: options.memoraxCodeHome };
-  const config = await (options.configResolver ?? resolveMemoraxConfigFromEnv)(env);
+  const config = memoraxConfigFromEnv(env);
   const taskProjection = resolveTaskProjection(options);
   if (
     !clientTraceConfigFromEnv(taskProjection.client, env).enabled

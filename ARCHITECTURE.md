@@ -194,10 +194,6 @@ sequenceDiagram
   Setup->>Setup: detect clients and reconcile client selection
   alt Product update
     Setup->>Config: preserve connection without credential prompts
-    opt Legacy trial connection has no TOML API key
-      Setup->>Trial: load ready credential without provisioning
-      Setup->>Config: backfill portable API-key copy
-    end
   else Interactive setup
     Setup->>Config: resolve local config-only status
     alt Default mode and effective connection is locally ready
@@ -260,10 +256,8 @@ reuse, requests the username with the detected account name as its default,
 accepts a masked API key, and skips trial provisioning. `--reconfigure` also
 bypasses automatic reuse, re-detects the preferences, and follows the trial
 path. Both configuration paths write a portable TOML copy of the API key.
-Update setup preserves credentials and memory preferences while backfilling a
-missing portable key from an already-ready trial record; automatic connection
-reuse performs the same migration. The local status check does not prove
-remote credential acceptance.
+Update setup preserves credentials and memory preferences. The local status
+check does not prove remote credential acceptance.
 
 Setup owns client discovery, local preference detection, user prompts,
 foreground trial provisioning, configuration changes, initial bundled-Hook
@@ -713,7 +707,7 @@ and
 | Workspace and repository identity | Backend read-only resolution held by the live repository-session runtime; its only permitted scope transition is the same-root degraded-direct-`.git` to verified-Git upgrade | Project labels, Viewer catalog entries, and Hook `cwd` |
 | Backend connection and managed-process ownership | Versioned private connection/token/PID records plus lifecycle lock/version validation | In-memory state in any one process |
 | Setup routing and package-replacement continuity | Versioned private setup-completion and package-transition records plus their JSON locks | Configuration contents, npm output visibility, and the presence of package files |
-| Effective MemoraX connection | Config-only resolution with environment API key over TOML API key over a ready secure trial credential, plus normalized username and language; any TOML API key is used directly regardless of its original provisioning path | Config-file presence, trial-record presence without `ready`, inferred account status, setup completion, and Backend liveness do not establish local readiness or remote API-key acceptance |
+| Effective MemoraX connection | Config-only resolution with an environment API key over a TOML API key, plus normalized username and language | Config-file presence, a secure trial record, inferred account status, setup completion, and Backend liveness do not establish local readiness or remote API-key acceptance |
 | Trial account identity and state | Versioned secure credential record stored through the operating-system credential backend; its API key is also mirrored to private TOML for portability, while `account_id`, project identity, and mark remain secure-record-only | `[memorax].user_id` remains the username and must not be derived from or overwritten by trial account identity |
 | Quota-reminder deduplication | Versioned private local runtime record keyed by a one-way connection fingerprint; normalized MemoraX balances remain authoritative for the quota amount | Account registration status, raw API keys, and in-memory reminder state are not quota-reminder authority |
 | MemoraX memory result and asynchronous task state | Normalized response from `provider/memorax` | Observability, trace, Viewer, and task projections |

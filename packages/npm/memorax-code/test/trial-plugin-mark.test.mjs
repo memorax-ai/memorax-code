@@ -3,7 +3,6 @@ import test from "node:test";
 import {
   createTrialMacHash,
   deriveTrialPluginIdentity,
-  generateTrialMarkId,
   TRIAL_APP_SALT,
   TRIAL_MARK_VERSION,
 } from "../lib/trial-plugin-mark.mjs";
@@ -51,8 +50,4 @@ test("MAC hashing is stable and always returns a SHA-256 value", () => {
     createTrialMacHash([]),
     "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   );
-});
-
-test("generated mark IDs use the public mk_<sha256> format", () => {
-  assert.match(generateTrialMarkId(), /^mk_[0-9a-f]{64}$/);
 });

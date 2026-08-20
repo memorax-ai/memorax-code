@@ -7,7 +7,6 @@ export async function ensureTrialSetupCredential(options = {}) {
   const credentialPort = trialCredentialPort(options, credentialApis, env);
   const recordPort = options.recordPort ?? {
     createInitial: credentialApis.createInitialTrialCredentialRecord,
-    complete: credentialApis.completeTrialCredentialProvisioning,
   };
   const client = options.client ?? createTrialProvisionClient({
     ...options.provisionClientOptions,

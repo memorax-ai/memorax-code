@@ -20,16 +20,12 @@ export type TrialCredentialRecord = TrialCredentialIdentity & (
       api_key: null;
       account_id: null;
       project_id: null;
-      last_warned_write_level: null;
-      last_warned_search_level: null;
     }>
   | Readonly<{
       state: "ready";
       api_key: string;
       account_id: string;
       project_id: string;
-      last_warned_write_level: number | null;
-      last_warned_search_level: number | null;
     }>
 );
 
@@ -53,7 +49,6 @@ export type TrialCredentialRecordInvalidReason =
   | "invalid_shape"
   | "invalid_account_id"
   | "invalid_project_id"
-  | "invalid_last_warned_level"
   | "invalid_transition";
 
 export class TrialCredentialRecordError extends Error {
