@@ -1,6 +1,6 @@
 {
   "name": "memorax-code-claude-adapter",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Memory skill and local hooks for MemoraX Code in Claude Code.",
   "author": {
     "name": "MemoraX Code Maintainers"

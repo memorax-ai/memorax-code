@@ -1,6 +1,6 @@
 {
   "name": "@memorax-code/backend",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "private": true,
   "type": "module",
   "description": "Local memory integration, lifecycle, trace, and diagnostics for MemoraX Code.",

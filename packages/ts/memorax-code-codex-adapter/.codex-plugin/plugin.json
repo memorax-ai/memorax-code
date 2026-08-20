@@ -1,6 +1,6 @@
 {
   "name": "memorax-code-codex-adapter",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Codex adapter, memory skill, and local hooks for MemoraX Code.",
   "author": {
     "name": "MemoraX AI"
