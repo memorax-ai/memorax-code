@@ -35,12 +35,14 @@ try {
       pluginRoot: process.env.CLAUDE_PLUGIN_ROOT,
     });
     const additionalContext = stringValue(response?.additionalContext);
-    if (additionalContext) {
+    const systemMessage = stringValue(response?.userNotice);
+    if (additionalContext || systemMessage) {
       process.stdout.write(`${JSON.stringify({
-        hookSpecificOutput: {
+        ...(systemMessage ? { systemMessage } : {}),
+        ...(additionalContext ? { hookSpecificOutput: {
           hookEventName: "UserPromptSubmit",
           additionalContext,
-        },
+        } } : {}),
       })}\n`);
     }
   } else if (event === "Stop") {

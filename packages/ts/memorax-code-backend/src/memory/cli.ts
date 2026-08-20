@@ -22,11 +22,16 @@ import {
 } from "../repository/scope.js";
 import { isTraceClient, type TraceClient } from "../trace/context.js";
 import { readCurrentTraceTurn, recordTraceEvent } from "../trace/store.js";
+import {
+  claimQuotaNotice,
+  type QuotaNoticeClaimer,
+} from "./quota-notice.js";
 
 type MemoryCliOptions = {
   cwd?: string;
   env?: Record<string, string | undefined>;
   fetchImpl?: typeof fetch;
+  claimQuotaNotice?: QuotaNoticeClaimer;
 };
 
 type MemoryCliResult = {
@@ -45,6 +50,7 @@ type MemoryCliResult = {
   workspaceScopeFallbackReason?: "git_metadata_invalid";
   userAction?: string;
   userNotice?: string;
+  quotaNotice?: string;
   searchEnabled?: boolean;
   addEnabled?: boolean;
   config?: unknown;
@@ -146,6 +152,7 @@ async function memorySearch(args: string[], options: MemoryCliOptions): Promise<
     {
       config: repositoryMemory.memory.config,
       diagnosticLogger: backendDebug,
+      env: options.env,
       fetchImpl: options.fetchImpl,
       observability: observability.hook,
       observabilitySource: "memory_cli",
@@ -154,6 +161,13 @@ async function memorySearch(args: string[], options: MemoryCliOptions): Promise<
   );
   await observability.flush();
   if (!response.ok) return { ok: false, action: "memory.search", query, error: response.error };
+  const quotaNotice = response.result.quota
+    ? await (options.claimQuotaNotice ?? claimQuotaNotice)(
+      repositoryMemory.memory.config,
+      response.result.quota,
+      { diagnosticLogger: backendDebug, env: options.env },
+    )
+    : undefined;
   const payload = isRecord(response.result.tool_result_payload) ? response.result.tool_result_payload : {};
   return {
     ok: true,
@@ -164,6 +178,7 @@ async function memorySearch(args: string[], options: MemoryCliOptions): Promise<
     answer: typeof payload.answer === "string" ? payload.answer : "",
     items: Array.isArray(payload.items) ? payload.items : [],
     receipt: response.result.dispatch_receipt ?? null,
+    ...(quotaNotice ? { quotaNotice } : {}),
   };
 }
 
@@ -225,12 +240,20 @@ async function memoryAdd(args: string[], options: MemoryCliOptions): Promise<Mem
   );
   await observability.flush();
   if (!response.ok) return { ok: false, action: "memory.add", error: response.error };
+  const quotaNotice = response.result.quota
+    ? await (options.claimQuotaNotice ?? claimQuotaNotice)(
+      repositoryMemory.memory.config,
+      response.result.quota,
+      { diagnosticLogger: backendDebug, env },
+    )
+    : undefined;
   return {
     ok: true,
     action: "memory.add",
     provider: "memory.memorax",
     ...memoryCliIdentityFields(repositoryMemory.memory),
     receipt: response.result.dispatch_receipt ?? null,
+    ...(quotaNotice ? { quotaNotice } : {}),
   };
 }
 

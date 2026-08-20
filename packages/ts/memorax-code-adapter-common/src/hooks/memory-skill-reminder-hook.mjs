@@ -23,10 +23,11 @@ export async function runMemorySkillReminderHook(options, hookInput) {
     const result = await evaluateMemorySkillReminder(options, input);
     if (!result) return;
     process.stdout.write(`${JSON.stringify({
-      hookSpecificOutput: {
+      ...(result.systemMessage ? { systemMessage: result.systemMessage } : {}),
+      ...(result.additionalContext ? { hookSpecificOutput: {
         hookEventName: "UserPromptSubmit",
         additionalContext: result.additionalContext,
-      },
+      } } : {}),
     })}\n`);
     if (result.reminder) await notifyReminder(options, result.reminder);
   } catch (error) {
@@ -80,7 +81,8 @@ export async function evaluateMemorySkillReminder(options, input) {
     const { memoryReminderDue, supplementalReminderDue } = update;
 
     const baseAdditionalContext = stringOption(options.baseAdditionalContext);
-    if (!baseAdditionalContext && !memoryReminderDue && !supplementalReminderDue) return undefined;
+    const systemMessage = stringOption(options.systemMessage);
+    if (!baseAdditionalContext && !memoryReminderDue && !supplementalReminderDue && !systemMessage) return undefined;
     const cadenceReminderContext = memoryReminderDue
       ? await buildCadenceReminderContext(options, input)
       : undefined;
@@ -97,7 +99,8 @@ export async function evaluateMemorySkillReminder(options, input) {
       ...(supplementalReminderDue ? ["post_compaction"] : []),
     ];
     return {
-      additionalContext,
+      ...(systemMessage ? { systemMessage } : {}),
+      ...(additionalContext ? { additionalContext } : {}),
       ...(reminderContext ? {
         reminder: {
           sessionId,
