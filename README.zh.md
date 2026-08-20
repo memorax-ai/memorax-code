@@ -70,14 +70,9 @@ npm install -g @memorax/memorax-code
 memorax-code setup
 ```
 
-请在正常的交互式终端中运行安装引导。它会自动检测 username 和记忆语言偏好，无需提前注册账号或
-创建 API Key。安装引导还会检测本机可用的 Codex、Claude Code、DeepSeek Harness 和 OpenCode，
-并为检测到的 Coding Agent 启用集成。如果您已有 MemoraX 账号，请改为运行
-`memorax-code setup --existing-account`。
-
-以后再次运行安装引导时，会自动复用已保存的连接和记忆偏好；如需替换，请运行
-`memorax-code setup --reconfigure`。完成初始化后，请重启或刷新所有检测到的 Coding Agent，
-再开始新会话。运行 `memorax-code` 会显示当前状态。
+安装引导会自动检测本机可用的 Codex、Claude Code、DeepSeek Harness 和 OpenCode，并为检测到的
+Coding Agent 启用集成，无需提前注册账号或创建 API Key。如果您已有 MemoraX 账号，请改为运行
+`memorax-code setup --existing-account`。完成后，请重启或刷新检测到的 Coding Agent。
 
 ### 安装故障排查
 

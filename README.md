@@ -76,16 +76,11 @@ npm install -g @memorax/memorax-code
 memorax-code setup
 ```
 
-Run setup from a normal interactive terminal. It automatically detects your
-username and preferred memory language; no account or API key is required
-beforehand. Setup also detects available Codex, Claude Code, DeepSeek Harness,
-and OpenCode installations and connects those it finds. If you already have a
-MemoraX account, run `memorax-code setup --existing-account` instead.
-
-Later setup runs automatically reuse a saved connection and memory preferences.
-Use `memorax-code setup --reconfigure` to replace them. Restart or refresh every
-detected coding agent after setup before starting a new session. Running
-`memorax-code` then shows the current status.
+Setup automatically detects available Codex, Claude Code, DeepSeek Harness, and
+OpenCode installations and connects those it finds; no account or API key is
+required beforehand. If you already have a MemoraX account, run
+`memorax-code setup --existing-account` instead. Restart or refresh every
+detected coding agent after setup.
 
 ### Installation Troubleshooting
 
