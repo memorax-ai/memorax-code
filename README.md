@@ -140,6 +140,30 @@ the current repository.
 > among Codex, Claude Code, DeepSeek Harness, and OpenCode to view content-free
 > local activity and status.
 
+### Browse and Replace Memory in the Terminal
+
+Run the Memory TUI from the workspace whose memory you want to manage:
+
+```bash
+memorax-cli tui
+```
+
+The first screen lists the local Repo Memory bundle for the current Git
+workspace: its profile, commits, pull requests, and issues. Select an item and
+press `Enter` to read it. Press `s` to search cloud memories; select a result
+with `j`/`k` or the arrow keys, then press `e` to edit it. MemoraX Code opens
+`$VISUAL`, `$EDITOR`, or `nano`; saving the draft queues a new replacement memory
+and leaves the original memory unchanged. Use `a` to add a new memory and `t`
+to select its memory type.
+
+When reading a local Repo Memory resource, press `e` to edit its source Markdown
+file directly. The TUI reloads the resource after the editor closes; this is
+separate from Cloud Memory replacement.
+
+When started from a directory without its own Repo Memory, the TUI also lists
+Repo Memory bundles found directly inside its child folders. Select a folder to
+open its resources; this scan does not recurse further.
+
 ## Four Clear Memory Boundaries
 
 | Memory | The question it answers | Examples |

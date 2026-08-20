@@ -81,7 +81,7 @@ export function runBackendCli(argv = process.argv): void {
       "Common local flow: memorax-code start, memorax-code status, memorax-code logs, memorax-code stop",
       "Uninstall flow: memorax-code uninstall stops the backend, removes only selected client integrations, and removes the npm package when applicable",
       "Codex plugin flow: memorax-code codex-plugin install; memorax-code codex-plugin activate --yes; memorax-code codex-plugin trust-hooks",
-      "Memory CLI: memorax-cli status, memorax-cli search --query TEXT [--session-id ID], memorax-cli add --memory TEXT --type TYPE --reason REASON [--session-id ID] [--content-type code]",
+      "Memory CLI: memorax-cli status, memorax-cli search --query TEXT [--session-id ID], memorax-cli add --memory TEXT --type TYPE --reason REASON [--session-id ID] [--content-type code], memorax-cli tui",
       "Adapter flow: lifecycle commands use --clients when provided, otherwise persisted [clients] config; client provider settings stay client-owned.",
       "",
       "Environment: MEMORAX_CODE_BACKEND_HOST=127.0.0.1 MEMORAX_CODE_BACKEND_PORT=8787",
