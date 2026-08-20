@@ -25,6 +25,7 @@ const productionRoots = [
 ];
 
 const reviewedNetworkSources = new Set([
+  "packages/npm/memorax-code/lib/trial-provision-client.mjs",
   "packages/ts/memorax-code-adapter-common/src/hooks/ensure-backend-runner.mjs",
   "packages/ts/memorax-code-backend/src/app/backend-server.ts",
   "packages/ts/memorax-code-backend/src/clients/claude/memory-hook-runtime.ts",

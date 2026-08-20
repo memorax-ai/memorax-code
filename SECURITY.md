@@ -55,6 +55,12 @@ Please allow time for triage and remediation before public disclosure.
   mutation goes through DSH's native plugin command. The DSH state record,
   generated runtime, and Profile manifests are security-sensitive local
   authority and must not be copied between users or edited by hand.
+- Running interactive setup is the consent boundary for initial Codex
+  integration. When no active MemoraX Code Codex plugin exists, setup activates
+  the bundled plugin and trusts its current Hook command hashes without a
+  second Hook-specific prompt. npm lifecycle never grants this trust. Later
+  new or changed Hook hashes remain untrusted until foreground setup displays
+  and approves the exact changed selection.
 - Initial Repo Memory builds use only the Git worktree returned by an
   authenticated Backend turn-start request. Backend or workspace-scope
   failures skip the build; client integrations do not fall back to
@@ -75,11 +81,23 @@ Please allow time for triage and remediation before public disclosure.
 
 ### MemoraX memory traffic
 
-MemoraX-backed search, retrieval, and writeback require a Base User ID, API
-key, and network access. The installer discloses automatic writeback before
-accepting credentials. Entering valid credentials activates search/add and
-the generated configuration's automatic writeback; automatic retrieval remains
-disabled until explicitly enabled.
+MemoraX-backed search, retrieval, and writeback require a User ID, an
+effective API key, and network access. The API key may come from a ready secure
+trial credential or an explicit environment/TOML value. Interactive setup
+discloses automatic writeback before selecting a connection path. Default setup
+reuses a locally ready effective connection without collecting or printing its
+credentials again. When no ready connection exists, or when `--reconfigure`
+bypasses reuse, setup derives the User ID from the logged-in operating-system
+account name and maps the user's system language to `zh` or `en`; it displays
+those selected values and asks for one only when it cannot be detected safely.
+The explicit `--existing-account` path asks for the User ID with the detected
+account name as its default, accepts an API key through masked terminal input,
+and stores both in the private TOML configuration. The trial path creates or
+restores the operating-system-protected credential and mirrors its API key to
+that private configuration for portability. A ready connection activates
+search/add and the generated configuration's automatic writeback; automatic
+retrieval remains disabled until explicitly enabled. The config-only check
+does not contact MemoraX or prove that the API key is accepted remotely.
 
 Memory searches send the query and repository-scoped identity to MemoraX.
 When DSH or OpenCode automatic retrieval is enabled, each eligible direct user
@@ -115,9 +133,9 @@ The packaged default uses `https://platform.memorax.net`. An endpoint override
 is a separate trust decision; configure only a compatible MemoraX service you
 trust.
 
-Treat the MemoraX API key, Base User ID, repository identity, queries, selected
-writeback content, and saved memories as sensitive. Disable writes immediately
-with:
+Treat the MemoraX API key, trial Mark ID, User ID, repository identity,
+queries, selected writeback content, and saved memories as sensitive. Disable
+writes immediately with:
 
 ```bash
 MEMORAX_CODE_MEMORAX_WRITEBACK_ENABLED=false
@@ -129,6 +147,82 @@ For a persistent disable, set:
 [memory.writeback]
 enabled = false
 ```
+
+### MemoraX credential storage
+
+The versioned trial credential record is separate from `config.toml`. Its
+provisioned `account_id` is account identity and never replaces the User ID
+stored as `[memorax].user_id`. Account identity, project identity, and the
+device mark remain only in that secure record. Quota-reminder deduplication is
+stored separately in a private local runtime record containing a one-way
+connection fingerprint and reminder levels, never a raw API key or Mark ID.
+
+Routine quota reminders, status, and diagnostics do not expose the complete
+trial Mark ID. When registration requires it, the user can explicitly run
+`memorax-code account --show-mark-id` directly in a local terminal. That
+command prints the Mark ID but not the API key. Do not ask an Agent to run it,
+paste its output into a conversation, or include it in screenshots or logs.
+
+Trial setup stores the endpoint, User ID, language preference, and a portable
+copy of the API key in `config.toml`. Existing-account setup stores the entered
+API key there as well. New POSIX configuration files use mode `0600`, while
+Windows relies on the current user's filesystem ACLs. Runtime API-key
+resolution prefers an explicit environment value, then a TOML value, then a
+ready secure trial credential. A TOML key is used directly regardless of how
+it was issued; the secure trial credential is consulted only when no explicit
+environment or TOML key is available. The plugin does not infer current account
+registration status from the key's original provisioning path. Trial account
+and project identifiers never participate in the workspace-scoped User ID.
+
+The secure credential layer uses macOS Keychain, Linux Secret Service through
+libsecret, and Windows CurrentUser DPAPI with an atomically replaced encrypted
+file under the current user's local application-data directory. Each
+`MEMORAX_CODE_HOME` resolves to a distinct hashed storage namespace. If the
+required operating-system backend is missing, locked, denied, or corrupt, the
+trial provisioning operation fails explicitly; it does not replace the secure
+record with only a plaintext copy.
+
+These backends protect credentials at rest and when the relevant operating-
+system session or key store is locked. They are not a process-isolation
+boundary within the same logged-in user. Malicious software running as that OS
+user can generally request access in the user's security context; protect the
+login session and do not run untrusted software.
+
+The complete trial API key is stored in both the operating-system-protected
+record and private `config.toml`. The TOML copy is plaintext protected by the
+current user's file permissions, not encryption; it exists so an activated
+connection can be copied to another computer. It must not appear in command
+arguments, logs, diagnostics, telemetry, or error messages. Never commit,
+publish, or paste the configuration. Ordinary package removal retains both the
+configuration and an existing secure credential record. Product update and
+automatic connection reuse may backfill a missing TOML copy from a ready secure
+record, without provisioning or changing the credential.
+
+Credential creation is atomic and create-if-absent. Versioned state transitions
+preserve the provisioned mark and commit the Backend-issued API Key and
+account/project identity together. Rebinding to a different trial identity
+requires an explicit credential clear.
+
+Foreground setup creates and securely retains the local identity required for
+trial provisioning. An existing credential record remains authoritative and
+is not regenerated during ordinary package updates or setup retries.
+
+Trial provisioning is a foreground setup operation, never an npm lifecycle
+operation. It sends the bounded provisioning request only to fixed paths on one
+validated HTTPS service origin, rejects redirects, and refuses to run when Node
+TLS certificate verification is explicitly disabled. Request and response
+bodies are bounded, and response parsing never propagates server messages, raw
+bodies, request objects, or complete credentials into errors.
+
+Retries reuse the same persisted device identity. If a successful response is
+lost or its API Key cannot be committed, the next attempt requests a new Key
+for that identity; the client does not recover an uncommitted Key. A dedicated
+cross-process provision operation lock covers credential loading, remote
+retries, and the final `ready` transition; explicit credential clearing uses
+the same lock. Lock waiting is bounded by the provisioning deadline and honors
+caller cancellation. The final transition also rechecks the exact credential
+snapshot under the short credential mutation lock, so a stale network response
+cannot overwrite newer local state.
 
 ## Local Data and Diagnostics
 
@@ -177,9 +271,20 @@ managed MemoraX Code plugin from Profiles; the Profiles and their session data
 remain owned by DSH. It intentionally retains:
 
 - `MEMORAX_CODE_HOME`, including configuration and local traces;
+- an operating-system-protected trial credential record, when present;
 - Claude plugin data;
 - client provider configuration; and
 - memories already stored in MemoraX.
+
+A complete product uninstall removes the setup-completion routing marker but
+retains the MemoraX configuration, including any API key stored there, and the
+secure trial credential. After a reinstall, `memorax-code setup` automatically
+reuses a locally ready connection and resumes the configured memory behavior
+without asking for the values again. `memorax-code setup --reconfigure`
+replaces the User ID and language but may restore the same retained trial
+identity. If that credential must not be reused, remove it separately through
+the operating-system secure credential backend after reviewing the retained
+configuration and data.
 
 Delete retained local data and cloud memories separately after reviewing what
 you need. Running `npm uninstall -g @memorax/memorax-code` first is not

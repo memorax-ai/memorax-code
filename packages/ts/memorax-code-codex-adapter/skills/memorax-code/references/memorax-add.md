@@ -83,4 +83,6 @@ Do not add speculation, assistant-only praise, or a current instruction merely b
 
 ## Output
 
+If a successful Add returns `quotaNotice`, or prints it as a quota-reminder line in the default CLI output, present the complete reminder once and prominently before the normal result summary. Do not reduce it to only a percentage or omit its account URL or conditional local Mark ID retrieval instructions. Never run `memorax-code account --show-mark-id` for the user, ask for its output, or reproduce a Mark ID in chat. Treat the reminder as user-facing operational output, not coding memory content, and continue the current task.
+
 After an add request is accepted, confirm briefly that it was submitted for processing and identify the reusable coding lesson at a high level. If add is disabled or fails, report the issue and continue without bypassing the CLI.

@@ -13,9 +13,7 @@
 <h2 align="center">上下文不断档，开发无需重来</h2>
 
 <p align="center">
-  <sub>
-    不止于代码，更记住架构演进与研发脉络。
-  </sub>
+  <sub>不止于代码，更记住架构演进与研发脉络。</sub>
 </p>
 
 <p align="center">
@@ -34,16 +32,20 @@
   <a href="README.md">English</a> · <strong>简体中文</strong>
 </p>
 
-## 让每次交互，都成为下一次的起点
+## 让下一次任务从已有经验开始
 
-Coding Agent 擅长解决眼前的问题，但新会话不会自动继承此前积累的架构认知、踩坑经验、仓库规则
-和协作偏好。
+Coding Agent 擅长解决当前对话中的问题，但新会话往往无法继承此前形成的架构认知、失败经验、
+仓库知识、工作流程和沟通偏好。
 
 MemoraX Code 让 Codex、Claude Code、DeepSeek Harness 和 OpenCode 共享一套能够持续积累的记忆。
 它会沉淀代码任务中的工程经验，持续整理仓库知识，并在后续任务中找回相关的工作流程和偏好。
 
-它追求的不是“记得更多”，而是在需要时带回与当前任务相关的 Memory，让 Agent 减少重复搜索和试错，
-更快进入问题定位与事实验证。
+使用 MemoraX Code，你可以：
+
+- 跨会话延续有价值的工程经验；
+- 让 Codex、Claude Code、DeepSeek Harness 和 OpenCode 共享仓库上下文；
+- 复用偏好的工作流程和协作方式；
+- 通过 Memory Viewer 查看本地活动。
 
 ## 快速开始
 
@@ -52,43 +54,20 @@ DeepSeek Harness 或 OpenCode 中的至少一个。Repo Memory 操作还需要 P
 Harness 仍需满足自身的运行时要求；当前 DeepSeek Harness 版本要求 Node.js
 `^22.19.0 || >=24.0.0`。
 
-### 安装与接入
-
-#### 1. 获取 MemoraX Memory API Key
-
-前往 [MemoraX Console](https://platform.memorax.net/) 注册账号并创建 API Key。请只在本机安装终端中
-输入该 Key，不要将其粘贴到聊天记录或公开 Issue 中。
-
-#### 2. 安装并按提示配置
+运行：
 
 ```bash
-npm install -g @memorax/memorax-code --foreground-scripts
+npm install -g @memorax/memorax-code
+memorax-code setup
 ```
 
-请保留 `--foreground-scripts`，以便查看完整的安装过程。安装器会自动检测本机可用的 Codex、
-Claude Code、DeepSeek Harness 和 OpenCode，并为检测到的 Coding Agent 启用集成。按照终端提示输入
-MemoraX User ID、偏好语言和 API Key；首次交互安装时，除非有效配置已经提供 User ID 和 API Key，
-否则两者均不能为空。Codex 用户还需按提示完成 Hook 的激活和信任确认。安装完成后，请重启或刷新
-所有检测到的 Coding Agent，再开始新会话。
+安装引导会自动检测 User ID 和语言，无需提前注册账号或创建 API Key。如果您已有 MemoraX
+账号，请改为运行 `memorax-code setup --existing-account`。安装引导会连接检测到的 Codex、
+Claude Code、DeepSeek Harness 和 OpenCode。以后再次运行安装引导时会自动复用已有配置；如需替换，
+请运行 `memorax-code setup --reconfigure`。完成初始化后，请重启或刷新检测到的 Coding Agent；
+运行 `memorax-code` 会显示当前状态。
 
-如果安装过程无法交互，且有效配置尚未提供凭据，npm 包仍会安装，但 MemoraX 搜索、召回和写回
-功能无法使用。
-
-### 安装故障排查
-
-如果首次安装或配置没有正常完成，可以先检查以下常见情况：
-
-| 现象 | 建议处理方式 |
-| --- | --- |
-| 因 Node.js 版本不受支持导致安装失败 | 运行 `node --version` 检查版本，并升级到 Node.js 20 或更高版本后重新安装 MemoraX Code。 |
-| 跳过了交互式配置，或安装过程无法显示配置提示 | 在 `$MEMORAX_CODE_HOME/config.toml` 中配置所需的 MemoraX 参数，或使用文档支持的环境变量，然后运行 `memorax-code start`。 |
-| MemoraX API Key 缺失或尚未配置 | 运行 `memorax-cli status` 检查当前配置，然后通过支持的配置文件或环境变量添加 API Key。不要将 API Key 粘贴到聊天记录或公开 Issue 中。 |
-| 安装完成后搜索、召回或写回仍不可用 | 运行 `memorax-code status` 和 `memorax-cli status`，检查 MemoraX 凭据和 Memory 配置，然后运行 `memorax-code start` 重新启动。 |
-
-有关支持的配置项，请参阅[配置](docs/configuration.md)；
-更详细的诊断步骤请参阅[故障排查](docs/troubleshooting.md)。
-
-### 体验跨会话记忆
+## 体验跨会话记忆
 
 克隆示例仓库，并在项目目录中打开 Codex、Claude Code、DeepSeek Harness 或 OpenCode：
 
@@ -149,9 +128,8 @@ MemoraX Code 会先比较含义：语义相同的请求不重复写入；长期�
 
 ## 你的记忆，由你控制
 
-云端记忆依赖 MemoraX。用户在阅读安装披露后输入 Base User ID 和 API Key，会启用
-MemoraX 搜索/添加，以及生成配置中的自动写回；不会再出现第二次写回确认。自动召回默认保持关闭，
-需要显式启用。
+云端记忆依赖 MemoraX。用户在阅读安装引导中的数据披露并完成配置后，会启用 MemoraX
+搜索/添加和自动写回；不会再出现第二次写回确认。自动召回默认保持关闭，需要显式启用。
 
 受支持客户端的本地 trace 默认开启。根据客户端能力，`MEMORAX_CODE_HOME` 下保留的 trace
 可能包含用户指令、Agent 回复、召回的 Memory、提醒文本和本地路径。可通过
@@ -172,6 +150,7 @@ MemoraX 云端不会接收模型服务商凭据或本地 Backend Token。
 全局 npm 安装使用：
 
 ```bash
+memorax-code status
 memorax-code update
 ```
 
@@ -186,22 +165,13 @@ Claude Code、DeepSeek Harness 和 OpenCode。
 memorax-code uninstall
 ```
 
-该命令会移除受管客户端集成和全局 npm 包，同时保留 `MEMORAX_CODE_HOME`
-（默认为 `~/.memorax-code`）、Claude 插件数据、模型服务配置，以及已保存到 MemoraX
-的云端记忆。请在确认不再需要后，分别清理保留的本地或云端数据。
-
-## 文档
+## 了解更多
 
 - [安装指南](INSTALL.md)
 - [配置](docs/configuration.md)
 - [故障排查](docs/troubleshooting.md)
-- [参与贡献](CONTRIBUTING.md)
 - [安全策略](SECURITY.md)
-
-## 开发与贡献
-
-欢迎提交 Issue 和 Pull Request。修改前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)，
-公开报告中不要包含 API Key、原始对话、私有记忆或本地 trace 文件。
+- [参与贡献](CONTRIBUTING.md)
 
 ## 开源许可证
 

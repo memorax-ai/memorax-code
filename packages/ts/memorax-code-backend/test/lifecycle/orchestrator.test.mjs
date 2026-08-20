@@ -6,7 +6,14 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { renderDefaultMemoraxCodeConfig } from "../../dist/config/memorax-code.js";
 import { isProcessAlive, terminateProcessTree } from "../../dist/lifecycle/backend/service.js";
+import { withBackendLifecycleLock } from "../../dist/lifecycle/lock.js";
 import { freePort } from "../support/helpers.mjs";
+import {
+  readSetupCompletionRecord,
+  setupCompletionPath,
+  withSetupCompletionLock,
+  writeSetupCompletionRecord,
+} from "../../../memorax-code-adapter-common/src/setup-completion.mjs";
 
 import {
   pathExists,
@@ -16,6 +23,127 @@ import {
   waitForProcessExit,
   writeManagedClientsConfig,
 } from "./support/backend-service-fixtures.mjs";
+
+test("stop preserves setup completion while complete uninstall clears it and preserves config", async () => {
+  const home = await mkdtemp(join(tmpdir(), "memorax-code-uninstall-completion-home-"));
+  const port = await freePort();
+  const cliPath = fileURLToPath(new URL("../../dist/memorax-code.js", import.meta.url));
+  const config = [
+    "[clients]",
+    "codex = false",
+    "claude = false",
+    "",
+    "[memorax]",
+    'user_id = "saved-user"',
+    "",
+    "[memory.add]",
+    'output_language = "en"',
+    "",
+  ].join("\n");
+  await writeFile(join(home, "config.toml"), config);
+  writeSetupCompletionRecord({
+    memoraxCodeHome: home,
+    completedAt: "2026-08-15T08:00:00.000Z",
+    completedByVersion: "0.1.2",
+  });
+  try {
+    const stopped = await runCli(cliPath, [
+      "stop", "--json",
+      "--home", home,
+      "--port", String(port),
+      "--clients", "none",
+    ]);
+    assert.equal(stopped.code, 0, `${stopped.stdout}\n${stopped.stderr}`);
+    assert.equal(readSetupCompletionRecord(home).status, "valid");
+
+    const uninstalled = await runCli(cliPath, [
+      "uninstall", "--json",
+      "--home", home,
+      "--port", String(port),
+      "--clients", "none",
+      "--no-npm-uninstall",
+    ]);
+    assert.equal(uninstalled.code, 0, `${uninstalled.stdout}\n${uninstalled.stderr}`);
+    assert.equal(JSON.parse(uninstalled.stdout).npmPackageRemoval.reason, "disabled_by_flag");
+    assert.deepEqual(readSetupCompletionRecord(home), { status: "absent" });
+    assert.equal(await readFile(join(home, "config.toml"), "utf8"), config);
+  } finally {
+    await runCli(cliPath, ["stop", "--json", "--home", home, "--port", String(port), "--clients", "none"]);
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("uninstall holds setup completion authority before lifecycle authority", async () => {
+  const home = await mkdtemp(join(tmpdir(), "memorax-code-uninstall-lock-order-home-"));
+  const port = await freePort();
+  const cliPath = fileURLToPath(new URL("../../dist/memorax-code.js", import.meta.url));
+  await writeManagedClientsConfig(home, { codex: false, claude: false });
+  writeSetupCompletionRecord({
+    memoraxCodeHome: home,
+    completedAt: "2026-08-15T08:00:00.000Z",
+    completedByVersion: "0.1.2",
+  });
+  let releaseLifecycle;
+  let markLifecycleEntered;
+  const lifecycleEntered = new Promise((resolve) => {
+    markLifecycleEntered = resolve;
+  });
+  const holdLifecycle = new Promise((resolve) => {
+    releaseLifecycle = resolve;
+  });
+  const lifecycleHolder = withBackendLifecycleLock({ home }, async () => {
+    markLifecycleEntered();
+    await holdLifecycle;
+  });
+  try {
+    await lifecycleEntered;
+    const uninstalling = runCli(cliPath, [
+      "uninstall", "--json",
+      "--home", home,
+      "--port", String(port),
+      "--clients", "none",
+      "--no-npm-uninstall",
+    ]);
+    const setupLockPath = `${setupCompletionPath(home)}.lock`;
+    const lockDeadline = Date.now() + 1000;
+    while (!await pathExists(setupLockPath) && Date.now() < lockDeadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(await pathExists(setupLockPath), true);
+
+    let laterSetupEntered = false;
+    const laterSetup = withSetupCompletionLock(home, (state) => {
+      laterSetupEntered = true;
+      assert.equal(state.status, "absent");
+      writeSetupCompletionRecord({
+        memoraxCodeHome: home,
+        completedAt: "2026-08-15T09:00:00.000Z",
+        completedByVersion: "0.1.3",
+      });
+    }, { timeoutMs: 5000, retryMs: 5 });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.equal(laterSetupEntered, false);
+
+    releaseLifecycle();
+    const uninstalled = await uninstalling;
+    assert.equal(uninstalled.code, 0, `${uninstalled.stdout}\n${uninstalled.stderr}`);
+    await laterSetup;
+    assert.deepEqual(readSetupCompletionRecord(home), {
+      status: "valid",
+      record: {
+        version: 1,
+        state: "complete",
+        completedAt: "2026-08-15T09:00:00.000Z",
+        completedByVersion: "0.1.3",
+      },
+    });
+  } finally {
+    releaseLifecycle?.();
+    await lifecycleHolder;
+    await runCli(cliPath, ["stop", "--json", "--home", home, "--port", String(port), "--clients", "none"]);
+    await rm(home, { recursive: true, force: true });
+  }
+});
 
 test("memorax-code start and stop preserve custom Codex provider config on the Hook lifecycle", async () => {
   const home = await mkdtemp(join(tmpdir(), "memorax-code-lifecycle-home-"));
@@ -368,6 +496,11 @@ test("memorax-code uninstall preserves temporary Claude cleanup scope after plug
   const cliPath = fileURLToPath(new URL("../../dist/memorax-code.js", import.meta.url));
   const pluginCli = await prepareClaudePluginCli(home);
   const activeClientsPath = join(home, "runtime", "backend", "managed-clients.json");
+  writeSetupCompletionRecord({
+    memoraxCodeHome: home,
+    completedAt: "2026-08-15T08:00:00.000Z",
+    completedByVersion: "0.1.2",
+  });
   await writeManagedClientsConfig(home, { codex: true, claude: false });
   await writeFile(join(claudeHome, "settings.json"), `${JSON.stringify({
     env: {
@@ -393,6 +526,7 @@ test("memorax-code uninstall preserves temporary Claude cleanup scope after plug
     ], { env: { ...env, FAKE_CLAUDE_PLUGIN_UNINSTALL_FAIL: "1" } });
     assert.equal(failed.code, 1, `${failed.stdout}\n${failed.stderr}`);
     assert.equal(JSON.parse(failed.stdout).npmPackageRemoval.reason, "plugin_cleanup_failed");
+    assert.equal(readSetupCompletionRecord(home).status, "valid");
     assert.deepEqual(JSON.parse(await readFile(activeClientsPath, "utf8")), {
       codex: false,
       claude: true,

@@ -3,54 +3,40 @@
 MemoraX Code adds persistent coding memory to Codex, Claude Code, DeepSeek
 Harness, and OpenCode.
 
-## Requirements
+## Quick Start
 
 - Node.js 20 or newer (Node.js 24 LTS recommended) and npm.
 - At least one of Codex, Claude Code, DeepSeek Harness, OpenCode Desktop, or
   the OpenCode CLI.
-- A MemoraX account, Base User ID, and API key for memory features.
 - Python 3 only for Repo Memory operations.
 
 ## Install
 
-Create an API key in
-[MemoraX Console](https://platform.memorax.net/), then run:
+Run:
 
 ```bash
-npm install -g @memorax/memorax-code --foreground-scripts
+npm install -g @memorax/memorax-code
+memorax-code setup
 ```
 
-Keep `--foreground-scripts` so npm displays the complete setup.
+Setup automatically detects your User ID and language; no account or API key
+is required beforehand. If you already have a MemoraX account, run
+`memorax-code setup --existing-account` instead. Later setup runs reuse a saved
+configuration automatically; use `memorax-code setup --reconfigure` to replace
+it.
 
-The installer automatically detects available Codex, Claude Code, DeepSeek
-Harness, and OpenCode installations and configures those it finds. Follow the
-prompts to enter your MemoraX user ID, preferred language, and API key. On an
-interactive first install, a non-empty user ID and API key are required unless
-the effective configuration already supplies both. When Codex is detected,
-review and approve its Hook activation.
+Setup detects supported Codex, Claude Code, DeepSeek Harness, and OpenCode
+installations. Restart or refresh each detected coding agent after setup.
 
-Entering the MemoraX credentials after the installer's disclosure enables the
-core memory features and automatic writeback. If installation cannot prompt
-and effective credentials are not already configured, the package remains
-installed, but MemoraX-backed memory is not configured.
-
-After the first installation, restart or refresh the detected coding agents
-before opening a new session. In Codex, enable **MemoraX Code Codex Adapter**
-from Plugins or `/plugins` if it is not already enabled.
-
-## Verify
+To check the installation or reconfigure later:
 
 ```bash
-memorax-code --version
 memorax-code status
-memorax-cli status
+memorax-code setup
 ```
 
-For configuration or troubleshooting, see the documentation shipped with the
-package:
-
-- `docs/configuration.md`
-- `docs/troubleshooting.md`
+For more help, see `docs/configuration.md` and `docs/troubleshooting.md` in the
+installed package.
 
 ## License
 

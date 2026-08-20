@@ -691,6 +691,7 @@ test("Claude automatic retrieval counts each prompt id once per session", async 
   };
   const runtime = createClaudeMemoryHookRuntime({
     automaticWriteback: () => ({ accepted: true }),
+    claimQuotaNotice: async (_config, quota) => `Quota notice: ${quota.remaining} remaining.`,
     env,
     fetchImpl: async (url, init) => {
       requests.push({
@@ -707,6 +708,16 @@ test("Claude automatic retrieval counts each prompt id once per session", async 
             memory: "Deduplicated Claude retrieval context.",
             score: 0.9,
             metadata: { memory_type: "core" },
+          }],
+          balances: [{
+            product_code: "memory_api",
+            feature_code: "memory_search",
+            spec_key: "calls",
+            quota_unit: "times",
+            quota_limit: 10_000,
+            reserved: 1,
+            consumed: 0,
+            remaining: 4_800,
           }],
         },
       }), {
@@ -739,6 +750,8 @@ test("Claude automatic retrieval counts each prompt id once per session", async 
     });
 
     assert.match(first.additionalContext, /Deduplicated Claude retrieval context/);
+    assert.equal(first.userNotice, "Quota notice: 4800 remaining.");
+    assert.doesNotMatch(first.additionalContext, /Quota notice/);
     assert.deepEqual(duplicate, { ok: true });
     assert.match(nextPrompt.additionalContext, /Deduplicated Claude retrieval context/);
     assert.match(otherSession.additionalContext, /Deduplicated Claude retrieval context/);

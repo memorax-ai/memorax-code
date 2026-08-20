@@ -18,17 +18,166 @@ memory switches without printing secrets. Codex, Claude Code, and OpenCode
 also provide client-specific `doctor` commands; DSH uses the shared lifecycle
 status.
 
+## Package installed, but setup did not run
+
+This is expected after:
+
+```sh
+npm install -g @memorax/memorax-code
+```
+
+npm installation is deliberately non-interactive. It installs package files
+and, only when replacing a running managed Backend or managed DSH state,
+performs a bounded package transition. It does not detect clients, ask for
+MemoraX credentials, or authorize Hooks.
+
+Start first-use setup from an interactive terminal:
+
+```sh
+memorax-code setup
+```
+
+If setup was previously completed, the no-argument `memorax-code` command
+shows status. Otherwise it points back to the setup command without starting
+an interactive flow implicitly.
+
+After a product uninstall and reinstall, setup detects a locally ready retained
+MemoraX connection and reuses it automatically without asking again for the
+User ID or preferred language. Run `memorax-code setup --reconfigure` to
+replace the saved connection preferences, or `memorax-code setup
+--existing-account` to enter an existing account's User ID and API key.
+
+Setup requires both terminal input and terminal-visible stderr. A pipe,
+background process, or redirected stdin/stderr cannot answer setup prompts;
+the command exits without writing setup completion. Reopen a normal terminal
+and rerun `memorax-code setup`.
+
+## Setup does not complete
+
+Setup writes
+`$MEMORAX_CODE_HOME/runtime/setup/setup-completion.json` only after client and
+Hook reconciliation, Backend start, status, and final config-only MemoraX
+readiness all succeed. Until then, a no-argument `memorax-code` reports that
+setup has not been completed and points to `memorax-code setup`.
+
+If the configuration is safely parseable but its effective MemoraX connection
+is not ready, setup detects the User ID and preferred language from the local
+user environment and then creates or restores a trial credential. A Unix setup
+running as the root account, or another environment where a value cannot be
+read safely, asks for the missing value instead. A malformed TOML file cannot
+be safely updated and remains byte-preserved; fix or restore that file before
+rerunning setup rather than expecting the setup flow to overwrite it.
+
+If setup reports that secure credential setup failed, confirm that the current
+operating-system credential store is available to the same logged-in user and
+that the MemoraX HTTPS service is reachable, then rerun `memorax-code setup`.
+Setup does not skip secure trial persistence or write the TOML API-key copy and
+completion marker after that failure. On Linux, also confirm that
+`/usr/bin/secret-tool` is installed and that the current session can reach an
+unlocked Secret Service. Minimal containers and detached SSH sessions do not
+necessarily provide either one.
+
+For an ordinary Backend start failure, setup makes one bounded stop/start
+recovery attempt. It deliberately skips that stop when the error identifies a
+Hook-runtime activation failure, lifecycle-lock contention, or invalid or
+unsupported Backend authority. Use the reported error and these commands
+before changing any state:
+
+```sh
+memorax-code status
+memorax-code logs
+memorax-code-codex doctor
+memorax-code-claude doctor
+```
+
+If the setup-completion record is invalid, wait until all setup commands have
+stopped, preserve a diagnostic copy, move the invalid record aside, and then
+rerun `memorax-code setup`. If it uses a newer unsupported version, install a
+compatible MemoraX Code release instead of replacing the record with an older
+shape.
+
+## npm package transition fails
+
+Package replacement may create:
+
+```text
+$MEMORAX_CODE_HOME/runtime/install/package-transition.json
+```
+
+`retiring` means preinstall found a live managed Backend or managed DSH state
+and recorded the need to restore the installation, but safe retirement did not
+finish. `retired` means the old installation was quiesced, but the new package
+has not yet completed start, status verification, setup-completion handling,
+and one-time transition consumption. Invalid, unsupported, stale, or unfinished
+records fail closed and remain available for diagnosis.
+
+First inspect lifecycle authority:
+
+```sh
+memorax-code status
+memorax-code logs
+```
+
+Do not delete PID, lock, setup-completion, or transition records while a
+process or lifecycle command may own them. If a `retiring` record remains,
+finish a Backend-only stop first. Once status and operating-system inspection
+confirm that its PID authority is gone, preserve the incomplete record for
+diagnosis and move it aside before reinstalling; `retiring` is never consumed
+as if retirement had succeeded.
+
+If postinstall left a `retired` record and the Backend is still running after
+a failed status check, stop only the Backend before retrying the same install:
+
+```sh
+memorax-code stop --clients none
+npm install -g @memorax/memorax-code
+```
+
+The retry consumes a still-valid `retired` transition only after start and
+status both report success. If the record is stale or invalid, preserve a copy
+for diagnosis and confirm that no managed Backend PID remains before moving it
+aside and rerunning installation, followed by `memorax-code setup` when the
+Backend was intentionally left stopped. An unsupported version requires a
+compatible package version rather than manual record conversion.
+
 ## Installed, but memory is unavailable
 
-The package and Backend can be healthy while MemoraX remains unconfigured. Run:
+The package and Backend can be healthy while the MemoraX connection remains
+unavailable. Run:
 
 ```sh
 memorax-cli status
 ```
 
-Configure `endpoint`, `user_id`, and `api_key` under `[memorax]` in
-`$MEMORAX_CODE_HOME/config.toml`, or set their environment equivalents. The
-current default endpoint is `https://platform.memorax.net`.
+Use setup to detect the local User ID and preferred language and then create or
+restore the trial connection:
+
+```sh
+memorax-code setup
+memorax-cli status
+```
+
+If you need to enter an existing account instead, run `memorax-code setup
+--existing-account`.
+
+Configured status validates the effective local values and loads the effective
+credential without printing it. It does not contact the memory API or prove
+that the API key is accepted; the first real memory request performs that
+check.
+
+For a manually managed connection, set `endpoint`, `user_id`, and `api_key`
+under `[memorax]` in `$MEMORAX_CODE_HOME/config.toml`, or set their environment
+equivalents. An environment API key takes precedence over a TOML API key, and
+either takes precedence over a ready secure trial credential. The current
+default endpoint is `https://platform.memorax.net`.
+
+Trial setup writes the same API key to private TOML and the operating-system
+secure credential record. Copying the TOML connection fields to another
+computer therefore reuses the key as an
+explicit connection when the original secure record is absent, without copying
+the device-local trial identity or local quota-reminder history. Product update
+and automatic connection reuse backfill this TOML copy for legacy trial
+installations that still have only the secure record.
 
 After changing persistent configuration:
 
@@ -41,6 +190,24 @@ Automatic retrieval is disabled by default and is independent from explicit
 search. Automatic writeback requires `[memory.writeback] enabled = true` and
 must not be disabled by
 `MEMORAX_CODE_MEMORAX_WRITEBACK_ENABLED=false`.
+
+## Quota reminder and Mark ID
+
+Quota reminders apply to anonymous and registered connections. They use
+percentage thresholds rather than exposing raw quota counts and intentionally
+do not include a complete Mark ID. If this device uses an unregistered
+anonymous identity and the MemoraX account page requires its Mark ID, run this
+command yourself in a local terminal:
+
+```sh
+memorax-code account --show-mark-id
+```
+
+The command reads a ready local trial identity and prints only its Mark ID. Do
+not ask an Agent to run it or paste the output into a conversation, screenshot,
+or log. If no ready local trial identity exists, use `memorax-code setup`; a
+TOML connection copied from another computer does not include that computer's
+device-local Mark ID.
 
 ## Backend does not start
 
@@ -91,10 +258,18 @@ memorax-code start --clients codex
 memorax-code-codex doctor
 ```
 
-Codex requires review for new or changed Hook command hashes. A declined or
-non-interactive update can leave Hooks untrusted even though the update
-succeeded. Do not write trust entries directly. If the skill is missing, rerun
-`memorax-code start --clients codex`, then restart or refresh Codex.
+First-use setup, and setup restoring a selected Codex integration whose plugin
+was removed, perform the initial activation and trust automatically. If that
+step fails, `memorax-code codex-plugin activate --yes` is the explicit recovery
+command. Once an installation is active, every later new or changed Hook
+command hash remains untrusted until foreground setup displays and approves
+the exact changed selection. A declined or non-interactive update can
+therefore leave changed Hooks untrusted even though package replacement
+succeeded. npm postinstall never authorizes Hooks. An interactive
+`memorax-code update` reviews them in foreground setup; after a direct npm or
+non-interactive update, run `memorax-code setup`. Do not write trust entries
+directly. If the skill is missing, rerun `memorax-code start --clients codex`,
+then restart or refresh Codex.
 
 ## Claude Code plugin or Hook is inactive
 
@@ -193,7 +368,7 @@ memorax-code-opencode doctor
 
 Common causes are:
 
-- missing or invalid MemoraX endpoint, base user ID, or API key;
+- missing or invalid MemoraX endpoint, User ID, or effective API key;
 - the global writeback kill switch or CLI add switch disabling `memory add`;
 - no trusted workspace for the current session;
 - an unreadable, malformed, or symlinked Git marker;
@@ -202,7 +377,7 @@ Common causes are:
 
 MemoraX Code reads filesystem Git metadata without executing Git. Linked
 worktrees share the remote repository identity; non-Git workspaces use the
-normalized folder name. Resolution never falls back to the bare base user ID.
+normalized folder name. Resolution never falls back to the bare User ID.
 
 A live Codex, Claude Code, DSH, or OpenCode session remains pinned to the
 repository or local workspace resolved at the start of the session. Starting
@@ -210,7 +385,7 @@ the client from a parent workspace and then entering a nested Git repository
 does not rebind the session. The only in-session scope upgrade is from a direct
 `.git` directory whose internal metadata was malformed or incomplete to a
 verified Git repository at the same canonical workspace root and for the same
-Base User ID.
+User ID.
 
 During that degraded state, MemoraX Code reports
 `workspaceScopeFallbackReason: git_metadata_invalid` for manual CLI operations

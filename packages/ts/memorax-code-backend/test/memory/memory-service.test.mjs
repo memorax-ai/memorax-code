@@ -93,6 +93,121 @@ test("memory service exposes a sealed Hook facade and closes idempotently", asyn
   }
 });
 
+test("memory service surfaces automatic Add quota on the next Codex or Claude turn", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-service-quota-"));
+  const memoraxCodeHome = join(root, "home");
+  const workspace = join(root, "workspace");
+  await Promise.all([
+    mkdir(memoraxCodeHome, { recursive: true }),
+    mkdir(workspace, { recursive: true }),
+  ]);
+  const turns = [
+    { turnId: "turn-quota-1", prompt: "Store the first turn.", reply: "First turn stored." },
+    { turnId: "turn-quota-2", prompt: "Store the second turn.", reply: "Second turn stored." },
+    { turnId: "turn-quota-3", prompt: "Show the pending warning.", reply: "Warning shown." },
+  ];
+  const transcriptPath = await writeRollout(root, "session-service-quota", turns);
+  const diagnosticEvents = [];
+  const requests = [];
+  const service = createMemoryService({
+    claimQuotaNotice: async (_config, quota) => `Quota notice: ${quota.remaining} remaining.`,
+    diagnosticLogger(message, fields) {
+      diagnosticEvents.push({ message, fields });
+    },
+    env: {
+      MEMORAX_CODE_HOME: memoraxCodeHome,
+      MEMORAX_CODE_CODEX_TRACE_ENABLED: "false",
+      MEMORAX_CODE_CLAUDE_TRACE_ENABLED: "false",
+      MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED: "false",
+      MEMORAX_CODE_MEMORY_WRITEBACK_ENABLED: "true",
+      MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_ENABLED: "false",
+      MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
+      MEMORAX_CODE_MEMORAX_API_KEY: "secret",
+      MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
+    },
+    fetchImpl: async (url, init) => {
+      const remaining = 9_999 - requests.length;
+      requests.push({ url: String(url), body: JSON.parse(init.body) });
+      return new Response(JSON.stringify({
+        success: true,
+        data: {
+          task_id: `service-quota-${requests.length}`,
+          status: "completed",
+          balances: [{
+            product_code: "memory_api",
+            feature_code: "memory_write",
+            spec_key: "calls",
+            quota_unit: "times",
+            quota_limit: 10_000,
+            reserved: 1,
+            consumed: 0,
+            remaining,
+          }],
+        },
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+    memoraxCodeHome,
+  });
+  const codexTurnStart = (turn) => ({
+    version: 1,
+    client: "codex",
+    sessionId: "session-service-quota",
+    turnId: turn.turnId,
+    prompt: turn.prompt,
+    cwd: workspace,
+    transcriptPath,
+  });
+  const writeback = (turn) => ({
+    version: 1,
+    client: "codex",
+    sessionId: "session-service-quota",
+    turnId: turn.turnId,
+    lastAssistantMessage: turn.reply,
+    cwd: workspace,
+    transcriptPath,
+  });
+  try {
+    await service.recordTurnStart(codexTurnStart(turns[0]));
+    assert.deepEqual(await service.writebackTurn(writeback(turns[0])), {
+      ok: true,
+      scheduled: true,
+    });
+    await waitForAcceptedWritebacks(diagnosticEvents, 1);
+
+    const claudeNotice = await service.recordTurnStart({
+      version: 1,
+      client: "claude-code",
+      sessionId: "session-claude-service-quota",
+      promptId: "prompt-service-quota",
+      prompt: "Show the first pending warning.",
+      cwd: workspace,
+      transcriptPath,
+    });
+    assert.equal(claudeNotice.userNotice, "Quota notice: 9999 remaining.");
+    assert.equal("additionalContext" in claudeNotice, false);
+
+    await service.recordTurnStart(codexTurnStart(turns[1]));
+    assert.deepEqual(await service.writebackTurn(writeback(turns[1])), {
+      ok: true,
+      scheduled: true,
+    });
+    await waitForAcceptedWritebacks(diagnosticEvents, 2);
+
+    const codexNotice = await service.recordTurnStart(codexTurnStart(turns[2]));
+    assert.equal(codexNotice.userNotice, "Quota notice: 9998 remaining.");
+    assert.equal("additionalContext" in codexNotice, false);
+    assert.deepEqual(await service.recordTurnStart(codexTurnStart(turns[2])), { ok: true });
+    assert.equal(requests.length, 2);
+  } finally {
+    await service.drain();
+    service.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("memory service discards fallback writeback when turn start upgrades the session scope", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-service-scope-upgrade-"));
   const memoraxCodeHome = join(root, "home");
@@ -238,4 +353,16 @@ function memoraxAddFetch() {
       });
     },
   };
+}
+
+async function waitForAcceptedWritebacks(events, expected) {
+  const deadline = Date.now() + 1_000;
+  while (Date.now() < deadline) {
+    const accepted = events.filter(({ message, fields }) => (
+      message === "memory.automatic_writeback" && fields?.accepted === true
+    )).length;
+    if (accepted >= expected) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`automatic writeback ${expected} did not settle`);
 }

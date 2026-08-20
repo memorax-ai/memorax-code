@@ -21,6 +21,7 @@ import { createMemoryTurnCoordinator } from "./turn-coordinator.js";
 import {
   createRepositoryMemorySessionRuntime,
 } from "./repository-session.js";
+import { createPendingQuotaNoticeRuntime } from "./quota-notice.js";
 import type {
   MemoryHookTurnStartResult,
   TurnStartCommand,
@@ -29,7 +30,7 @@ import type {
 
 export type MemoryServiceOptions = Omit<
   CodexMemoryHookRuntimeOptions,
-  "automaticWriteback" | "repositoryMemorySession" | "turnCoordinator"
+  "automaticWriteback" | "pendingQuotaNotice" | "repositoryMemorySession" | "turnCoordinator"
 > & Pick<ClaudeMemoryHookRuntimeOptions, "transcriptReadAttempts" | "transcriptRetryDelayMs">;
 
 type MemoryHookWritebackResult =
@@ -46,8 +47,14 @@ export type MemoryService = {
 };
 
 export function createMemoryService(options: MemoryServiceOptions = {}): MemoryService {
+  const pendingQuotaNotice = createPendingQuotaNoticeRuntime({
+    claimQuotaNotice: options.claimQuotaNotice,
+    diagnosticLogger: options.diagnosticLogger,
+    env: options.env,
+  });
   const automaticWriteback = createAutomaticMemoryWritebackRuntime({
     diagnosticLogger: options.diagnosticLogger,
+    queueQuotaNotice: pendingQuotaNotice.queue,
   });
   const repositoryMemorySession = createRepositoryMemorySessionRuntime({
     onScopeUpgrade: automaticWriteback.discardForScopeUpgrade,
@@ -61,11 +68,13 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
   });
   const codexHook = createCodexMemoryHookRuntime({
     ...options,
+    pendingQuotaNotice,
     repositoryMemorySession,
     turnCoordinator,
   });
   const claudeHook = createClaudeMemoryHookRuntime({
     ...options,
+    pendingQuotaNotice,
     repositoryMemorySession,
     turnCoordinator,
   });
@@ -120,6 +129,7 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
       turnCoordinator.close();
       repositoryMemorySession.close();
       automaticWriteback.close();
+      pendingQuotaNotice.close();
     },
   };
 }

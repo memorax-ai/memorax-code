@@ -9,6 +9,10 @@ import { runBackendStatus } from "../../dist/lifecycle/backend/status.js";
 import { createBackendServer } from "../../dist/server.js";
 import { isProcessAlive } from "../../dist/lifecycle/backend/service.js";
 import { freePort, listen } from "../support/helpers.mjs";
+import {
+  readSetupCompletionRecord,
+  writeSetupCompletionRecord,
+} from "../../../memorax-code-adapter-common/src/setup-completion.mjs";
 
 import {
   pathExists,
@@ -818,6 +822,11 @@ test("memorax-code uninstall guidance names only the selected Claude client", as
   try {
     const started = await runCli(cliPath, ["start", "--json", ...commonArgs], { env });
     assert.equal(started.code, 0, `${started.stdout}\n${started.stderr}`);
+    writeSetupCompletionRecord({
+      memoraxCodeHome: home,
+      completedAt: "2026-08-15T08:00:00.000Z",
+      completedByVersion: "0.1.2",
+    });
 
     const uninstalled = await runCli(cliPath, [
       "uninstall",
@@ -832,6 +841,7 @@ test("memorax-code uninstall guidance names only the selected Claude client", as
     assert.match(uninstalled.stdout, /Restart or refresh Claude Code so it drops the removed adapter plugin\./);
     assert.doesNotMatch(uninstalled.stdout, /uninstalled from this npm installation/);
     assert.doesNotMatch(uninstalled.stdout, /Restart or refresh Codex/);
+    assert.equal(readSetupCompletionRecord(home).status, "valid");
 
     const stopped = await runCli(cliPath, ["stop", ...commonArgs, "--clients", "codex"], { env });
     assert.equal(stopped.code, 0, `${stopped.stdout}\n${stopped.stderr}`);

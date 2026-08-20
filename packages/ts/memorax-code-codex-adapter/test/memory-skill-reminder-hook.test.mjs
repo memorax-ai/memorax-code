@@ -401,7 +401,7 @@ test("combined memory hook starts Repo Memory build for the Backend-authorized w
   }
 });
 
-test("automatic retrieval and reminders share one Codex Hook payload", async () => {
+test("automatic retrieval, reminders, and user notices share one Codex Hook payload", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-codex-retrieval-reminder-"));
   const memoraxCodeHome = join(root, "memorax-code");
   const requests = [];
@@ -412,7 +412,13 @@ test("automatic retrieval and reminders share one Codex Hook payload", async () 
     requests.push({ path: req.url, body: requestBody });
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify(req.url === "/memory/turn-start"
-      ? { ok: true, additionalContext: `Retrieved context for ${requestBody.turnId}.` }
+      ? {
+          ok: true,
+          ...(requestBody.turnId === "turn-1"
+            ? { additionalContext: `Retrieved context for ${requestBody.turnId}.` }
+            : {}),
+          userNotice: `Quota notice for ${requestBody.turnId}.`,
+        }
       : { ok: true }));
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -448,12 +454,17 @@ test("automatic retrieval and reminders share one Codex Hook payload", async () 
     }, env);
 
     assert.equal(first.code, 0, first.stderr);
-    assert.equal(
-      reminderContext(first.stdout),
-      `Retrieved context for turn-1.\n\n${MEMORY_REMINDER_CONTEXT}`,
-    );
+    assert.deepEqual(JSON.parse(first.stdout), {
+      systemMessage: "Quota notice for turn-1.",
+      hookSpecificOutput: {
+        hookEventName: "UserPromptSubmit",
+        additionalContext: `Retrieved context for turn-1.\n\n${MEMORY_REMINDER_CONTEXT}`,
+      },
+    });
     assert.equal(second.code, 0, second.stderr);
-    assert.equal(reminderContext(second.stdout), "Retrieved context for turn-2.");
+    assert.deepEqual(JSON.parse(second.stdout), {
+      systemMessage: "Quota notice for turn-2.",
+    });
     assert.deepEqual(requests.map((request) => request.path), [
       "/memory/turn-start",
       "/memory/skill-reminder",
