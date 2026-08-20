@@ -60,30 +60,23 @@ requirements; current DeepSeek Harness releases require Node.js
 
 ### Install and Connect
 
-#### 1. Get a MemoraX Memory Key
-
-Sign up at [MemoraX Console](https://platform.memorax.net/) and create an API
-key. Enter the key only in your local installation terminal; do not paste it
-into chats or public issues.
-
-#### 2. Install and Follow the Prompts
+#### 1. Install the Package
 
 ```bash
-npm install -g @memorax/memorax-code --foreground-scripts
+npm install -g @memorax/memorax-code
 ```
 
-Keep `--foreground-scripts` so the complete setup remains visible. The
-installer automatically detects available Codex, Claude Code, DeepSeek
-Harness, and OpenCode installations and connects those it finds. Follow the
-prompts to enter your MemoraX user ID, preferred language, and API key. On an
-interactive first install, a non-empty user ID and API key are required unless
-the effective configuration already supplies both. Codex users must also
-approve Hook activation and trust when prompted. Restart or refresh every
-detected coding agent after installation before starting a new session.
+#### 2. Run Setup
 
-If installation cannot prompt and effective credentials are not already
-configured, the package remains installed but MemoraX-backed search, retrieval,
-and writeback remain unavailable.
+```bash
+memorax-code setup
+```
+
+Setup automatically detects available Codex, Claude Code, DeepSeek Harness, and
+OpenCode installations and connects those it finds; no account or API key is
+required beforehand. If you already have a MemoraX account, run
+`memorax-code setup --existing-account` instead. Restart or refresh every
+detected coding agent after setup.
 
 ### Installation Troubleshooting
 
@@ -92,9 +85,9 @@ If the initial setup does not work as expected, check these common cases:
 | Symptom | Recommended fix |
 | --- | --- |
 | Installation fails with an unsupported Node.js version | Run `node --version` and upgrade to Node.js 20 or later before reinstalling MemoraX Code. |
-| Interactive setup was skipped or could not prompt | Configure the required MemoraX values in `$MEMORAX_CODE_HOME/config.toml` or through the documented environment variables, then run `memorax-code start`. |
-| MemoraX API key is missing or not configured | Run `memorax-cli status` to check the current configuration, then add the API key through the supported configuration or environment variables. Never paste the key into chats or public issues. |
-| Search, retrieval, or writeback is unavailable after installation | Run `memorax-code status` and `memorax-cli status`. Verify the MemoraX credentials and memory settings, then restart with `memorax-code start`. |
+| The package installed but setup did not start | This is expected. Run `memorax-code setup` from a normal interactive terminal. |
+| You want to use an existing MemoraX account | Run `memorax-code setup --existing-account` and enter the username used by your existing MemoraX Code setup and that account's API key locally. Never paste the key into chats or public issues. |
+| Search, retrieval, or writeback is unavailable after setup | Run `memorax-code status` and `memorax-cli status`, then follow the detailed troubleshooting guide. |
 
 See [Configuration](docs/configuration.md) for supported settings and
 [Troubleshooting](docs/troubleshooting.md) for detailed diagnostics.
@@ -173,10 +166,10 @@ writing when the durable intent or target is unclear.
 
 ## Your Memory, Your Control
 
-MemoraX is required for cloud-backed memory. Entering a Base User ID and API
-key after the installer's disclosure activates MemoraX search/add and the
-generated configuration's automatic writeback; there is no second writeback
-confirmation. Automatic retrieval remains off until explicitly enabled.
+MemoraX is required for cloud-backed memory. Completing setup after its data
+disclosure activates MemoraX search/add and automatic writeback; there is no
+second writeback confirmation. Automatic retrieval remains off until
+explicitly enabled.
 
 Local trace capture is enabled by default for supported clients. Depending on
 client capabilities, retained traces under `MEMORAX_CODE_HOME` may contain
@@ -217,10 +210,10 @@ Run the product lifecycle before removing the npm package:
 memorax-code uninstall
 ```
 
-This removes managed integrations and the global package while retaining
-`MEMORAX_CODE_HOME` (default `~/.memorax-code`), Claude plugin data, provider
-configuration, and memories stored in MemoraX. Remove retained local or cloud
-data separately only after reviewing what you still need.
+This removes managed integrations and the global package while retaining your
+local configuration, secure MemoraX credentials, client-owned data, and
+memories stored in MemoraX. Remove retained local or cloud data separately only
+after reviewing what you still need.
 
 ## Documentation
 

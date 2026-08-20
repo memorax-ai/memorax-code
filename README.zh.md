@@ -54,25 +54,21 @@ Harness 仍需满足自身的运行时要求；当前 DeepSeek Harness 版本要
 
 ### 安装与接入
 
-#### 1. 获取 MemoraX Memory API Key
-
-前往 [MemoraX Console](https://platform.memorax.net/) 注册账号并创建 API Key。请只在本机安装终端中
-输入该 Key，不要将其粘贴到聊天记录或公开 Issue 中。
-
-#### 2. 安装并按提示配置
+#### 1. 安装 npm 包
 
 ```bash
-npm install -g @memorax/memorax-code --foreground-scripts
+npm install -g @memorax/memorax-code
 ```
 
-请保留 `--foreground-scripts`，以便查看完整的安装过程。安装器会自动检测本机可用的 Codex、
-Claude Code、DeepSeek Harness 和 OpenCode，并为检测到的 Coding Agent 启用集成。按照终端提示输入
-MemoraX User ID、偏好语言和 API Key；首次交互安装时，除非有效配置已经提供 User ID 和 API Key，
-否则两者均不能为空。Codex 用户还需按提示完成 Hook 的激活和信任确认。安装完成后，请重启或刷新
-所有检测到的 Coding Agent，再开始新会话。
+#### 2. 运行安装引导
 
-如果安装过程无法交互，且有效配置尚未提供凭据，npm 包仍会安装，但 MemoraX 搜索、召回和写回
-功能无法使用。
+```bash
+memorax-code setup
+```
+
+安装引导会自动检测本机可用的 Codex、Claude Code、DeepSeek Harness 和 OpenCode，并为检测到的
+Coding Agent 启用集成，无需提前注册账号或创建 API Key。如果您已有 MemoraX 账号，请改为运行
+`memorax-code setup --existing-account`。完成后，请重启或刷新检测到的 Coding Agent。
 
 ### 安装故障排查
 
@@ -81,9 +77,9 @@ MemoraX User ID、偏好语言和 API Key；首次交互安装时，除非有效
 | 现象 | 建议处理方式 |
 | --- | --- |
 | 因 Node.js 版本不受支持导致安装失败 | 运行 `node --version` 检查版本，并升级到 Node.js 20 或更高版本后重新安装 MemoraX Code。 |
-| 跳过了交互式配置，或安装过程无法显示配置提示 | 在 `$MEMORAX_CODE_HOME/config.toml` 中配置所需的 MemoraX 参数，或使用文档支持的环境变量，然后运行 `memorax-code start`。 |
-| MemoraX API Key 缺失或尚未配置 | 运行 `memorax-cli status` 检查当前配置，然后通过支持的配置文件或环境变量添加 API Key。不要将 API Key 粘贴到聊天记录或公开 Issue 中。 |
-| 安装完成后搜索、召回或写回仍不可用 | 运行 `memorax-code status` 和 `memorax-cli status`，检查 MemoraX 凭据和 Memory 配置，然后运行 `memorax-code start` 重新启动。 |
+| npm 包已安装，但没有进入安装引导 | 这是正常行为。请在正常的交互式终端中运行 `memorax-code setup`。 |
+| 希望使用已有的 MemoraX 账号 | 运行 `memorax-code setup --existing-account`，并只在本机输入已有 MemoraX Code 配置所使用的 username 和该账号的 API Key。不要将 API Key 粘贴到聊天记录或公开 Issue 中。 |
+| 完成安装引导后，搜索、召回或写回仍不可用 | 运行 `memorax-code status` 和 `memorax-cli status`，然后按照详细的故障排查指南处理。 |
 
 有关支持的配置项，请参阅[配置](docs/configuration.md)；
 更详细的诊断步骤请参阅[故障排查](docs/troubleshooting.md)。
@@ -149,9 +145,8 @@ MemoraX Code 会先比较含义：语义相同的请求不重复写入；长期�
 
 ## 你的记忆，由你控制
 
-云端记忆依赖 MemoraX。用户在阅读安装披露后输入 Base User ID 和 API Key，会启用
-MemoraX 搜索/添加，以及生成配置中的自动写回；不会再出现第二次写回确认。自动召回默认保持关闭，
-需要显式启用。
+云端记忆依赖 MemoraX。用户在阅读安装引导中的数据披露并完成配置后，会启用 MemoraX
+搜索/添加和自动写回；不会再出现第二次写回确认。自动召回默认保持关闭，需要显式启用。
 
 受支持客户端的本地 trace 默认开启。根据客户端能力，`MEMORAX_CODE_HOME` 下保留的 trace
 可能包含用户指令、Agent 回复、召回的 Memory、提醒文本和本地路径。可通过
@@ -186,9 +181,9 @@ Claude Code、DeepSeek Harness 和 OpenCode。
 memorax-code uninstall
 ```
 
-该命令会移除受管客户端集成和全局 npm 包，同时保留 `MEMORAX_CODE_HOME`
-（默认为 `~/.memorax-code`）、Claude 插件数据、模型服务配置，以及已保存到 MemoraX
-的云端记忆。请在确认不再需要后，分别清理保留的本地或云端数据。
+该命令会移除受管客户端集成和全局 npm 包，同时保留本地配置、安全存储的 MemoraX 凭据、
+客户端自身的数据，以及已保存到 MemoraX 的云端记忆。请在确认不再需要后，分别清理保留的
+本地或云端数据。
 
 ## 文档
 

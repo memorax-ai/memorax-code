@@ -15,74 +15,152 @@ installation. For a source checkout and contributor setup, see
   to it. The tested DSH baseline is `0.1.0-rc.6`; other valid semantic versions
   are reported as untested rather than rejected automatically.
 - Python 3 only when using Repo Memory operations.
+- On Linux, `/usr/bin/secret-tool` from libsecret and an available Secret
+  Service in the current user session for setup-managed trial credentials.
 
-MemoraX-backed search, retrieval, and writeback additionally require a MemoraX
-account, Base User ID, API key, and network access. The package, local Backend,
-and client adapters can be installed without credentials, but the core memory
-features remain unavailable until the account is connected.
+MemoraX-backed search, retrieval, and writeback additionally require network
+access. First-time setup creates or restores a trial connection after detecting
+the username and preferred memory language, asking only for a value that cannot
+be detected safely. You do not need to register an account or create an API key
+beforehand. Existing manually managed MemoraX connections remain supported
+through configuration or environment variables.
 
 For Remote SSH, WSL, or Dev Container use, install MemoraX Code inside the same
-remote environment as the client runtime.
+remote environment as the client runtime. On Linux, that environment must also
+have access to the same user's Secret Service; MemoraX Code does not fall back
+to plaintext credential storage.
 
-## 1. Create a MemoraX Key
+## 1. Establish the Memory Preferences
 
-Sign in to
-[MemoraX Console](https://platform.memorax.net/) and create an API key.
-Keep the key private and enter it only in your local installation terminal.
-Never paste it into a chat, repository, or public issue.
+Setup derives a stable username from the logged-in operating-system account and
+maps the system language to a supported memory language. It asks only for a
+value that cannot be detected safely. The username becomes the base of each
+workspace-scoped memory namespace. Keep it stable: changing it later starts
+using a different namespace.
 
 During setup, MemoraX Code explains that automatic writeback from trusted
 workspace sessions sends selected user prompts and matching final assistant
-answers to MemoraX for extraction and storage. Entering your Base User ID,
-preferred language, and API key after that disclosure enables the core
-MemoraX-backed memory features. New configuration enables automatic writeback,
-leaves automatic retrieval disabled, and enables content-bearing local client
-traces. Review
+answers to MemoraX for extraction and storage. Completing trial provisioning
+after that disclosure enables the core MemoraX-backed memory features. New
+configuration enables automatic writeback, leaves automatic retrieval
+disabled, and enables content-bearing local client traces. Review
 [SECURITY.md](SECURITY.md) for the network, local-data, and retention
 boundaries.
 
 ## 2. Install the Package
 
 ```bash
-npm install -g @memorax/memorax-code --foreground-scripts
+npm install -g @memorax/memorax-code
 ```
 
-Keep `--foreground-scripts`. It makes the setup prompts, Hook authorization,
-Backend status, and client guidance visible.
+This command installs package files. npm lifecycle scripts do not ask setup
+questions, inspect new clients, or request Hook authorization.
 
-The installer:
+On a fresh install, or when neither a live managed Backend nor managed DSH
+state exists, package installation does not start the Backend. When replacing
+an active installation, the lifecycle scripts perform only a bounded,
+non-interactive package transition:
 
-1. Detects runnable Codex and Claude Code clients, existing DSH Profiles, and
-   OpenCode through its configuration directory or CLI.
-2. Enables every detected client without asking for a client selector.
-3. Prompts for the MemoraX connection and preferred language when at least one
-   client was detected.
-4. Requests Codex Hook activation and trust when Codex is detected.
-5. Starts the local Backend and prints the final status.
+1. preinstall records that the live Backend or managed DSH state must be
+   restored and quiesces it without changing the persisted client selection;
+2. postinstall starts the new package with the retained active client selection,
+   falling back to persisted `[clients]`, and verifies `memorax-code status`;
+   and
+3. the transition record is consumed only after the replacement is healthy.
 
-Read the final summary. npm can finish installing the package even when a
-client integration or MemoraX configuration still needs attention.
-MemoraX Code does not read or change the clients' model-provider URL,
+If neither a live Backend nor managed DSH state exists, installation does not
+schedule a later restart. A dead or malformed Backend PID is cleaned without
+starting a stopped installation. Failed or incomplete transitions fail closed
+and retain their private recovery record instead of claiming that the new
+package is healthy.
+
+Do not use `--ignore-scripts` for a normal install or update. It bypasses the
+safe retirement and restoration of a running managed Backend.
+
+## 3. Run Setup
+
+Run the installed command from an interactive terminal:
+
+```bash
+memorax-code setup
+```
+
+With no arguments, `memorax-code` reads a private setup-completion record. If
+the record is absent, it tells you to run `memorax-code setup`; after successful
+setup, the no-argument command routes to `memorax-code status`. Invalid or newer
+unsupported completion records fail closed instead of guessing whether setup
+finished.
+
+Interactive setup first checks for a locally ready MemoraX connection, including
+configuration and secure trial credentials retained across a product
+uninstall. When one is found, default setup reuses the saved connection and
+memory preferences automatically without asking for them again.
+
+If no ready connection exists, setup detects the username and preferred
+language, asks only for a value that cannot be detected safely, and creates or
+restores a trial credential. It writes the endpoint, username, language, and API
+key to private configuration. The initial local reuse check does not contact
+MemoraX; trial provisioning does, and the first workspace-scoped memory request
+verifies use of the connection by the memory API.
+
+If you already have a MemoraX account, run `memorax-code setup
+--existing-account`. This mode bypasses automatic reuse, asks for the username
+with the detected system account name as its default, accepts the API key
+through masked input, and skips trial provisioning. Use `memorax-code setup
+--reconfigure` to bypass automatic reuse and re-detect preferences while
+following the trial path.
+
+Setup:
+
+1. detects runnable Codex, Claude Code, DeepSeek Harness, and OpenCode
+   installations independently;
+2. enables every detected client on a fresh setup and preserves existing
+   client intent on later runs;
+3. automatically reuses a locally ready connection, or detects a username and
+   language before creating or restoring a trial credential;
+4. applies trial preferences only after credential provisioning succeeds, or
+   writes existing-account preferences and the API key together;
+5. activates the bundled Codex Hooks when first enabling that integration and
+   requests review for new or changed Hooks on later updates;
+6. stages the packaged Hook runtime, starts the selected integrations, and
+   verifies their status; and
+7. writes setup completion only after a final local MemoraX readiness check
+   succeeds.
+
+Starting interactive setup is the consent boundary for initial Codex Hook
+activation. When no active MemoraX Code Codex plugin exists, setup activates
+the bundled plugin and trusts its current Hook command hashes without a second
+confirmation. New or changed Hook command hashes in later updates still
+require foreground review.
+
+To replace the username or language preference, switch from a manually stored
+`config.toml` API key to the setup-managed trial connection, or rerun or repair
+setup even when completion is already recorded, use:
+
+```bash
+memorax-code setup --reconfigure
+```
+
+Setup requires terminal input and terminal-visible diagnostics. A setup command
+whose stdin or stderr is piped, redirected, or detached exits without creating
+setup completion and tells you to rerun `memorax-code setup` in a terminal.
+MemoraX Code does not read or change any client's model-provider URL,
 credentials, model, or login mode.
 
-Do not use `--ignore-scripts` for a normal install or update. It skips the
-managed Backend retirement, interactive setup, adapter reconciliation, and
-final health check.
+## 4. Finish Client Setup
 
-## 3. Finish Client Setup
-
-After the first installation, restart or refresh every detected client before
+After successful setup, restart or refresh every detected client before
 opening a new MemoraX Code session.
 
 For Codex, enable **MemoraX Code Codex Adapter** from Plugins or `/plugins` if
 it is not already enabled. Claude Code registration is handled by the
-installer.
+setup flow.
 
 OpenCode registration uses its plugin and skill auto-discovery. Restart or
-refresh OpenCode after installation so the managed integration is loaded.
+refresh OpenCode after setup so the managed integration is loaded.
 
 DSH registration is applied to the existing Profiles found under `DSH_HOME`
-(`~/.dsh` by default). Restart or refresh DSH after installation so those
+(`~/.dsh` by default). Restart or refresh DSH after setup so those
 Profiles load the managed integration. MemoraX Code does not replace the
 Profiles or their session data.
 
@@ -91,7 +169,7 @@ before using the client doctor as the final verification. Until the Hooks have
 observed a workspace session, workspace capture can correctly report that it
 still needs attention.
 
-## 4. Verify the Installation
+## 5. Verify the Installation
 
 Run the common checks:
 
@@ -112,23 +190,30 @@ memorax-code-opencode doctor
 `memorax-code status` checks the local Backend and selected client
 integrations, including DSH Profile and OpenCode plugin status. DSH uses this
 shared status command rather than a separate doctor binary. `memorax-cli status`
-checks whether the local MemoraX configuration, workspace scope, and
-memory switches resolve without printing the API key. It does not send a test
-request to MemoraX; the first real search or write verifies remote connectivity
-and credentials.
+checks whether the local MemoraX configuration, effective credential,
+workspace scope, and memory switches resolve without printing the API key. It
+does not send a test request to the memory API; the first real search or write
+verifies that connection.
 
-## Skipped or Non-Interactive Setup
+## Incomplete Setup
 
-If setup was skipped or could not prompt, the package may be installed while
-MemoraX remains unconfigured. In that state, the local Backend and adapters can
-run, but MemoraX-backed search, retrieval, and writeback are unavailable.
+Package installation can succeed while setup remains incomplete. Run
+`memorax-code setup` from an interactive terminal to resume or repair client,
+Hook, Backend, and MemoraX configuration.
 
-Add the required MemoraX values to
+During default setup, a ready saved connection avoids asking for the username and
+language again. Use `memorax-code setup --reconfigure` when you want to replace
+those retained preferences or move to the setup-managed trial connection.
+
+If you intentionally manage configuration without the setup prompts, add the
+required MemoraX values to
 `$MEMORAX_CODE_HOME/config.toml`—`~/.memorax-code/config.toml` by default—or
-provide the documented environment variables. Then reconcile and verify:
+provide the documented environment variables. Then run explicit setup so the
+selected integrations are reconciled, readiness is verified, and setup
+completion is recorded:
 
 ```bash
-memorax-code start
+memorax-code setup
 memorax-code status
 memorax-cli status
 ```
@@ -151,13 +236,26 @@ For a custom state root, pass its absolute path explicitly:
 memorax-code update --home /absolute/path/to/memorax-code-home
 ```
 
-Follow any Hook review or client refresh guidance printed by the updater. An
-update briefly stops the managed Backend before postinstall starts the new
-version. For a runtime-only Hook update with a stable plugin shell, an
-in-flight turn can finish on its loaded generation and the same session's next
-user prompt can select the newly activated Hook runtime. Restart or refresh
-the affected client, including DSH, when a release changes installed plugin
-assets.
+The updater invokes the standard npm install command without an interactive
+npm postinstall. If the managed Backend is running or managed DSH state exists,
+the package transition briefly quiesces the installation, starts the new
+version with the retained active client selection, and verifies status. An
+installation that was already stopped and has no managed DSH state remains
+stopped.
+
+After npm succeeds, an interactive `memorax-code update` runs setup in update
+mode for a running managed home so newly available clients and changed Codex
+Hooks can be reviewed in the foreground. A non-interactive update completes
+the package replacement but tells you to run `memorax-code setup` later. A
+direct `npm install -g @memorax/memorax-code` update performs only the package
+transition; run explicit setup when client or Hook assets need review. Initial
+activation does not weaken this later changed-Hook review.
+
+For a runtime-only update with the stable plugin shell, an in-flight turn can
+finish on its loaded generation and the same session's next user prompt can
+select the newly activated Hook runtime. Restart or refresh the client when a
+release changes its plugin shell, manifest, or bundled skill, including DSH
+Profile assets.
 
 ## Uninstall
 
@@ -171,10 +269,17 @@ Do not start with `npm uninstall -g`. npm does not provide MemoraX Code with an
 uninstall lifecycle in which to remove managed client integrations and stop
 the Backend.
 The product command removes the managed integrations and global package while
-retaining `$MEMORAX_CODE_HOME` configuration and local traces, Claude plugin
-data, DSH Profiles and session data, client provider configuration, and
-memories stored in MemoraX. Review and remove retained local or cloud data
-separately only when it is no longer needed.
+retaining `$MEMORAX_CODE_HOME` configuration and local traces, the secure trial
+credential, Claude plugin data, DSH Profiles and session data, client provider
+configuration, and memories stored in MemoraX. Review and remove retained
+local or cloud data separately only when it is no longer needed.
+
+A complete product uninstall clears the setup-completion routing marker without
+deleting the retained configuration. After reinstalling, the next no-argument
+`memorax-code` points to `memorax-code setup`. Running setup restores the
+integrations and automatically reuses a locally ready MemoraX connection. A
+normal `memorax-code stop` and a partial client uninstall do not clear setup
+completion.
 
 ## Troubleshooting
 

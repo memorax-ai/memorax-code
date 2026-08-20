@@ -98,12 +98,12 @@ relationships; the arrow labels distinguish them. It is not an import graph.
 | Component | Stable responsibility | Must not own | Primary evidence |
 | --- | --- | --- | --- |
 | `packages/ts/memorax-code-backend` | Local service, Hook HTTP, native client-content interpretation, memory workflows, repository scope, MemoraX adapter, trace, local Viewer with a content-free public HTTP surface, writeback reconciliation, and lifecycle | Model execution, client model-provider credentials, or native transcript creation | `packages/ts/memorax-code-backend/src/app/backend-server.ts`, `packages/ts/memorax-code-backend/src/memory/service.ts`, and the capability directories under `src` |
-| `packages/ts/memorax-code-adapter-common` | Shared source for Backend connection authority, private runtime records, cross-process locking and configuration, Hook generations, Hook launch helpers, and Repo/Personal Memory helpers | Backend composition, native transcript interpretation, MemoraX request execution, or client plugin policy | `packages/ts/memorax-code-adapter-common/src/backend-connection.mjs`, `src/runtime-record.mjs`, `src/hooks`, and `src/repo-memory` |
+| `packages/ts/memorax-code-adapter-common` | Shared source for Backend connection authority, private runtime and secure credential records, cross-process locking and configuration, Hook generations, Hook launch helpers, and Repo/Personal Memory helpers | Backend composition, native transcript interpretation, MemoraX request execution, or client plugin policy | `packages/ts/memorax-code-adapter-common/src/backend-connection.mjs`, `src/runtime-record.mjs`, `src/credentials`, `src/hooks`, and `src/repo-memory` |
 | `packages/ts/memorax-code-codex-adapter` | Codex plugin artifact, Hook shells and runtimes, session/workspace observation, diagnostics, and the canonical shared skill | Codex rollout semantics or Backend-side writeback authority | `.codex-plugin`, `hooks`, `runtime-hooks`, `src`, and `skills/memorax-code` |
 | `packages/ts/memorax-code-claude-adapter` | Claude Code plugin artifact, Hook shells and runtimes, configuration, installer, marketplace source, and diagnostics | Claude transcript semantics or Backend memory orchestration | `.claude-plugin`, `hooks`, `runtime-hooks`, `scripts`, and `src/plugin-install.mjs` |
 | `packages/ts/memorax-code-dsh-adapter` | DSH Cordis Turn listener, personal-context composition, shared-skill and supervised Repo Memory integration, exact persisted-event interval validation, local Backend wire protocol, Profile lifecycle, per-user runtime-bundle materialization, and durable runtime authority | Backend-side event interpretation, MemoraX request execution, or DSH provider and session ownership | `src/plugin.mjs`, `src/profile-lifecycle.mjs`, `hooks/repo-memory-job.mjs`, and the adapter tests |
 | `packages/ts/memorax-code-opencode-adapter` | OpenCode plugin runtime, managed thin-loader installation, automatic retrieval, SDK-backed writeback, shell-session identity, workspace runtime evidence and diagnostics, a materialized shared skill, and supervised Repo Memory maintenance and missing-bundle initialization | OpenCode message interpretation inside the Backend or model-provider configuration | `src/plugin.mjs`, `src/plugin-install.mjs`, `src/cli.mjs`, `src/repo-memory-server-runner.mjs`, and the OpenCode materialization mapping in `scripts/npm-source-files.mjs` |
-| `packages/npm/memorax-code` | Installed executable wrappers, update, preinstall/postinstall, npm manifest, and release-package source | Backend lifecycle semantics, uninstall orchestration, or artifact staging | `bin`, `lib/run-entrypoint.mjs`, and `package.json` |
+| `packages/npm/memorax-code` | Installed executable wrappers, interactive setup, trial provisioning, setup reconciliation, package-transition preinstall/postinstall, update, npm manifest, and release-package source | Backend lifecycle semantics, uninstall orchestration, or artifact staging | `bin`, `lib/trial-setup.mjs`, `lib/trial-provision-flow.mjs`, `lib/setup-reconcile.mjs`, `lib/package-transition.mjs`, `lib/run-entrypoint.mjs`, and `package.json` |
 | `scripts` | Backend build orchestration, staging/materialization, package layout, documentation, and local-only data gates | Product runtime authority | Package-build/check scripts and executable contract scripts |
 | `.github` | Issue and pull-request contribution templates | Product runtime behavior | `.github/ISSUE_TEMPLATE` and `.github/pull_request_template.md` |
 
@@ -148,26 +148,157 @@ operations for live client sessions.
 
 ```mermaid
 sequenceDiagram
-  participant NPM as npm pre/postinstall
+  participant User
+  participant NPM as npm install
+  participant Transition as package transition
+  participant Setup as interactive setup
+  participant System as local OS preferences
+  participant Config as effective MemoraX config
+  participant Trial as trial provisioning and secure credential
+  participant CodexPlugin as Codex plugin trust
   participant CLI as installed memorax-code CLI
   participant Generation as Hook runtime generation
   participant Lifecycle as Backend lifecycle
   participant Participants as client participants
   participant Service as managed Backend
 
-  NPM->>CLI: retire an existing managed Backend before replacement
-  NPM->>NPM: detect clients and reconcile configuration
-  NPM->>Generation: stage a Hook runtime generation
-  NPM->>CLI: start or reconcile selected integrations
-  CLI->>Lifecycle: acquire lifecycle authority and execute command
+  User->>NPM: install or replace package files
+  NPM->>Transition: preinstall inspects managed PID authority
+  opt Existing managed Backend is live
+    Transition->>Transition: persist retiring state
+    Transition->>CLI: stop Backend with clients unchanged
+    Transition->>Transition: persist retired state after PID removal
+  end
+  NPM->>Transition: postinstall consumes only a fresh retired state
+  opt This package replacement retired a live Backend
+    Transition->>CLI: start with persisted clients
+    CLI->>Generation: stage packaged Hook runtime
+    CLI->>Lifecycle: acquire authority and start
+    Lifecycle->>Participants: reconcile persisted clients
+    Lifecycle->>Service: start and verify readiness
+    Lifecycle-->>Generation: activate after accepted readiness
+    Transition->>CLI: verify status with persisted clients
+    Transition->>Transition: backfill completion if absent and consume once
+  end
+  User->>CLI: no-argument launch
+  CLI->>CLI: inspect versioned setup completion
+  alt Completion is valid
+    CLI->>Lifecycle: show status
+  else Completion is absent
+    CLI-->>User: instruct memorax-code setup
+  else Completion is invalid or unsupported
+    CLI-->>User: fail closed with repair guidance
+  end
+  User->>CLI: explicit setup or product update
+  CLI->>Setup: serialize setup with its invocation mode
+  Setup->>Setup: detect clients and reconcile client selection
+  alt Product update
+    Setup->>Config: preserve connection without credential prompts
+    opt Legacy trial connection has no TOML API key
+      Setup->>Trial: load ready credential without provisioning
+      Setup->>Config: backfill portable API-key copy
+    end
+  else Interactive setup
+    Setup->>Config: resolve local config-only status
+    alt Default mode and effective connection is locally ready
+      Setup->>Config: preserve connection and preferences automatically
+    else Existing-account mode
+      Setup->>System: read login username and UI language
+      Setup->>User: request username with detected default
+      opt Language is unavailable
+        Setup->>User: request the missing language
+      end
+      Setup->>User: request masked API key
+      Setup->>Config: write endpoint, username, language, and API key
+    else Default mode without a ready connection or reconfigure mode
+      Setup->>System: read login username and UI language
+      opt A preference is unavailable
+        Setup->>User: request the missing preference
+      end
+      Setup->>Trial: create or restore ready credential
+      Setup->>Config: write endpoint, username, language, and API key
+    end
+  end
+  alt Selected Codex integration has no active plugin
+    Setup->>CodexPlugin: activate bundled plugin and trust current Hook hashes
+  else Codex plugin is already active
+    Setup->>CodexPlugin: compare Hook hashes across the update
+    opt Hook commands are new or changed
+      Setup->>User: display exact changed selection for approval
+      User-->>Setup: approve or decline
+    end
+  end
+  Setup->>Generation: stage a Hook runtime generation
+  Setup->>CLI: start and status selected integrations
+  CLI->>Lifecycle: acquire authority and execute command
   Lifecycle->>Participants: prepare client integrations
   Lifecycle->>Service: start and verify readiness
   Lifecycle-->>Generation: activate only after accepted readiness
+  opt Not product update
+    Setup->>Config: verify config-only readiness again
+  end
+  Setup->>Setup: persist completion after readiness
 ```
+
+npm installation is non-interactive. Its lifecycle does not detect new
+clients, modify client selection, ask for credentials, or authorize Hooks. A
+fresh install and a replacement of an already-stopped Backend leave the
+Backend stopped. Package transition exists only to restore a managed Backend
+that preinstall proved was live before its package files were replaced.
+
+The no-argument CLI consults versioned setup completion: absence prints an
+explicit `memorax-code setup` instruction, validity routes to status, and
+invalid or unsupported state fails closed. Interactive `memorax-code setup`
+runs regardless of completion, while product update uses a separate setup mode.
+Interactive setup uses the config-only status authority to find a locally ready
+effective MemoraX connection. Default setup preserves a ready connection and
+its memory preferences automatically. If none is ready, it derives the username
+and language from the logged-in operating-system account and user language,
+requests only a preference that cannot be detected safely, and creates or
+restores the secure trial credential. `--existing-account` bypasses automatic
+reuse, requests the username with the detected account name as its default,
+accepts a masked API key, and skips trial provisioning. `--reconfigure` also
+bypasses automatic reuse, re-detects the preferences, and follows the trial
+path. Both configuration paths write a portable TOML copy of the API key.
+Update setup preserves credentials and memory preferences while backfilling a
+missing portable key from an already-ready trial record; automatic connection
+reuse performs the same migration. The local status check does not prove
+remote credential acceptance.
+
+Setup owns client discovery, local preference detection, user prompts,
+foreground trial provisioning, configuration changes, initial bundled-Hook
+activation, exact changed-Hook review, Hook generation staging, and readiness
+reconciliation. Entering
+interactive setup authorizes initial activation for a selected Codex
+integration without a second confirmation;
+new or changed Hook command hashes on later updates still require foreground
+review. The selected MemoraX connection path must complete before plugin and
+Backend reconciliation begins. Trial provisioning must succeed before setup
+applies the detected or entered username and language; the existing-account path
+writes the entered API key and preferences together. Setup may make one bounded
+stop/start recovery attempt for an ordinary start failure, while deterministic
+Hook activation, lifecycle-lock, and persisted-authority failures remain
+fail-closed. Outside update mode, setup records completion only after a final
+config-only readiness check.
 
 The principal control-plane locations are:
 
-- `packages/npm/memorax-code/bin` for installed package scripts and wrappers;
+- `packages/npm/memorax-code/bin` for installed package scripts, the explicit
+  setup coordinator, and wrappers;
+- `packages/npm/memorax-code/lib/package-transition.mjs` for the locked,
+  non-interactive `retiring -> retired -> consumed` package-replacement state;
+- `packages/npm/memorax-code/lib/setup-reconcile.mjs` for bounded setup
+  start/status verification and the narrow ordinary-failure recovery policy;
+- `packages/npm/memorax-code/lib/setup-memory-preferences.mjs` for bounded,
+  non-privileged operating-system account and language detection;
+- `packages/npm/memorax-code/lib/trial-setup.mjs`,
+  `lib/trial-plugin-mark.mjs`, `lib/trial-provision-client.mjs`, and
+  `lib/trial-provision-flow.mjs` for setup composition, device identity,
+  the isolated account-service HTTP boundary, and durable credential-state
+  orchestration owned by foreground setup; npm lifecycle does not import these
+  modules;
+- `packages/ts/memorax-code-adapter-common/src/setup-completion.mjs` for the
+  versioned private completion record and cross-process setup lock;
 - `packages/ts/memorax-code-backend/src/entrypoints/backend-cli.ts` for
   process-facing command orchestration;
 - `packages/ts/memorax-code-backend/src/lifecycle` for start, stop, restart,
@@ -183,9 +314,14 @@ The principal control-plane locations are:
   `memorax-code-dsh-adapter/src/profile-lifecycle.mjs`.
 
 Staging and activation are separate decisions. A failed Backend start must not
-replace the currently authoritative Hook generation. Cross-process lifecycle
-decisions use durable records and bounded locks rather than relying on one
-process's in-memory serialization.
+replace the currently authoritative Hook generation. Setup completion is a
+CLI-routing marker, not configuration or Backend-health authority. Package
+transition is one-time replacement continuity, not permission to select or
+authorize clients. Cross-process lifecycle decisions use durable records and
+bounded locks rather than relying on one process's in-memory serialization.
+A complete product uninstall clears the setup-completion routing marker while
+retaining user configuration; ordinary stop and partial-client uninstall do
+not clear it.
 
 DSH lifecycle discovery reads valid Profiles under `DSH_HOME`. The globally
 staged adapter source is immutable; the adapter materializes a content-addressed
@@ -265,7 +401,7 @@ Important distinctions:
   incomplete, conflicting, or unprovable.
 - A malformed or incomplete direct `.git` directory is the sole documented
   folder-scope fallback. That degraded scope may upgrade in-session only to a
-  verified Git scope with the same Base User ID and canonical workspace root;
+  verified Git scope with the same username and canonical workspace root;
   all other scope changes remain mismatches.
 - Local mode may authorize loopback requests without a configured token. Token
   authentication is required when configuration or exposure mode demands it.
@@ -576,6 +712,10 @@ and
 | Automatic writeback content | Codex rollout JSONL, Claude Code transcript JSONL, DSH's exact persisted Session Event Log interval, or OpenCode SDK session messages for the matching client and Turn | Hook or plugin text, trace, latest-Turn guesses, local database guesses, and another client's format are not fallbacks |
 | Workspace and repository identity | Backend read-only resolution held by the live repository-session runtime; its only permitted scope transition is the same-root degraded-direct-`.git` to verified-Git upgrade | Project labels, Viewer catalog entries, and Hook `cwd` |
 | Backend connection and managed-process ownership | Versioned private connection/token/PID records plus lifecycle lock/version validation | In-memory state in any one process |
+| Setup routing and package-replacement continuity | Versioned private setup-completion and package-transition records plus their JSON locks | Configuration contents, npm output visibility, and the presence of package files |
+| Effective MemoraX connection | Config-only resolution with environment API key over TOML API key over a ready secure trial credential, plus normalized username and language; any TOML API key is used directly regardless of its original provisioning path | Config-file presence, trial-record presence without `ready`, inferred account status, setup completion, and Backend liveness do not establish local readiness or remote API-key acceptance |
+| Trial account identity and state | Versioned secure credential record stored through the operating-system credential backend; its API key is also mirrored to private TOML for portability, while `account_id`, project identity, and mark remain secure-record-only | `[memorax].user_id` remains the username and must not be derived from or overwritten by trial account identity |
+| Quota-reminder deduplication | Versioned private local runtime record keyed by a one-way connection fingerprint; normalized MemoraX balances remain authoritative for the quota amount | Account registration status, raw API keys, and in-memory reminder state are not quota-reminder authority |
 | MemoraX memory result and asynchronous task state | Normalized response from `provider/memorax` | Observability, trace, Viewer, and task projections |
 | Persisted current-turn operational state and trace history | Client-qualified local trace records | Viewer summaries and diagnostics; not native content or general Turn-identity authority |
 | Repo Memory bundle | Repository-local `.repo_memory` files produced by the supervised job | Backend readiness and client-injected guidance |
@@ -591,9 +731,14 @@ Ephemeral process state includes active HTTP requests, turn coordination,
 repository-session bindings, in-flight provider operations, Viewer projection
 caches, and background reconciliation promises.
 
-Durable local state includes configuration, private runtime records, active
-client selection, client-qualified trace JSONL, reminder cadence state, and Repo
-Memory. State shared across processes requires a bounded lock, atomic
+Durable local state includes configuration, private runtime records such as
+quota-reminder deduplication and reminder cadence state, active client
+selection, client-qualified trace JSONL, Repo Memory, and trial credentials held
+in macOS Keychain, Linux Secret Service, or a Windows CurrentUser
+DPAPI-encrypted file. Secure credential mutation is serialized by a bounded
+lock; trial provisioning and explicit credential clearing also share a
+dedicated cross-process operation lock. File-backed ciphertext is atomically
+replaced. State shared across processes requires a bounded lock, atomic
 replacement, or version validation appropriate to its record. An in-memory
 mutex is not cross-process authority.
 
@@ -714,6 +859,10 @@ flowchart TD
 - The npm wrappers use `packages/npm/memorax-code/lib/run-entrypoint.mjs` to
   locate staged Backend or adapter entrypoints, including each client-specific
   diagnostics CLI.
+- npm lifecycle is non-interactive and limited to safe package-transition
+  continuity. Interactive client detection, initial configuration or valid
+  connection reuse, initial Hook activation, review of later Hook changes, and
+  readiness reconciliation enter through the installed setup command.
 - Artifact gates reject undeclared paths, unsafe symlinks, cache/build debris,
   and local-only data-boundary violations.
 - Installed-package tests isolate `MEMORAX_CODE_HOME`, `CODEX_HOME`,
