@@ -35,8 +35,8 @@ Coding agents are good at the task in front of them, but a new session often
 starts without the architecture, failed attempts, repository rules, or working
 preferences established before it.
 
-MemoraX Code gives Codex, Claude Code, DeepSeek Harness, and OpenCode a shared
-memory layer for that context.
+MemoraX Code gives Codex, Claude Code, DeepSeek Harness, OpenCode, and Hermes
+a shared memory layer for that context.
 It can recall prior engineering knowledge, capture reusable lessons from
 completed work, maintain repository knowledge, and carry your procedures and
 preferences into future sessions.
@@ -48,7 +48,7 @@ and validation sooner.
 ## Quick Start
 
 Prepare Node.js 24+ and at least one of Codex, Claude Code, DeepSeek Harness,
-or OpenCode. Python 3 is required for Repo Memory operations.
+OpenCode, or Hermes. Python 3 is required for Repo Memory operations.
 
 ### Install and Connect
 
@@ -66,7 +66,7 @@ npm install -g @memorax/memorax-code --foreground-scripts
 
 Keep `--foreground-scripts` so the complete setup remains visible. The
 installer automatically detects available Codex, Claude Code, DeepSeek
-Harness, and OpenCode installations and connects those it finds. Follow the
+Harness, OpenCode, and Hermes installations and connects those it finds. Follow the
 prompts to enter your MemoraX user ID, preferred language, and API key. On an
 interactive first install, a non-empty user ID and API key are required unless
 the effective configuration already supplies both. Codex users must also
@@ -80,7 +80,7 @@ and writeback remain unavailable.
 ### Try Cross-Session Memory
 
 Clone the example repository from the product website, then open Codex, Claude
-Code, DeepSeek Harness, or OpenCode in the project directory:
+Code, DeepSeek Harness, OpenCode, or Hermes in the project directory:
 
 ```bash
 git clone https://github.com/SWE-agent/test-repo.git
@@ -88,8 +88,9 @@ cd test-repo
 ```
 
 Invoke the Skill as `$memorax-code` in Codex or `/memorax-code` in Claude Code
-or DeepSeek Harness. In OpenCode, ask the agent to use the `memorax-code` skill
-by name. The prompts below use its product name and work in all four clients.
+or DeepSeek Harness. In OpenCode or Hermes, ask the agent to use the
+`memorax-code` skill by name. The prompts below use its product name and work
+in all supported clients.
 
 Send these prompts in order in the same session:
 
@@ -114,7 +115,7 @@ the current repository.
 > need to invoke the MemoraX Code skill to add memory manually. It writes
 > relevant memory in the background and guides agents to search when useful.
 > In the [Memory Viewer](http://127.0.0.1:8787/memory-viewer), you can switch
-> among Codex, Claude Code, DeepSeek Harness, and OpenCode to view content-free
+> among Codex, Claude Code, DeepSeek Harness, OpenCode, and Hermes to view content-free
 > local activity and status.
 
 ## Four Clear Memory Boundaries
@@ -145,7 +146,7 @@ writing when the durable intent or target is unclear.
 | **Procedure reuse** | Records reusable task procedures and reminds future agents to apply them. |
 | **Background Repo Memory maintenance** | Automatically organizes repository structure, entry points, and history evidence in the background, then updates them according to policy to reduce repeated searching and summarization. |
 | **Active memory control** | Lets you search and add memory through the bundled MemoraX Code skill or the CLI. |
-| **Client integration** | Integrates with Codex, Claude Code, DeepSeek Harness, and OpenCode to trigger memory retrieval, reminders, and writeback. |
+| **Client integration** | Integrates with Codex, Claude Code, DeepSeek Harness, OpenCode, and Hermes to trigger memory retrieval, reminders, and writeback. |
 | **Local visualization** | Uses the local Memory Viewer to summarize activity counts, retrieval, and writeback status. |
 
 ## Your Memory, Your Control
@@ -183,7 +184,7 @@ memorax-code update
 ```
 
 The command follows the installed release channel and preserves configuration.
-Restart or refresh Codex, Claude Code, DeepSeek Harness, and OpenCode when a
+Restart or refresh Codex, Claude Code, DeepSeek Harness, OpenCode, and Hermes when a
 release changes installed integration assets.
 
 ## Uninstall

@@ -86,7 +86,7 @@ export async function handleMemoryViewerRequest(
   const memoraxCodeHome = viewerMemoraxCodeHome(options);
   const selectedClient = memoryViewerUserClient(url);
   if (!selectedClient) {
-    json(res, 400, { ok: false, error: "client must be codex, claude-code, dsh, or opencode" });
+    json(res, 400, { ok: false, error: "client must be codex, claude-code, dsh, opencode, or hermes" });
     return true;
   }
   const requestedProject = projectFilter(url);
@@ -116,7 +116,7 @@ export async function handleMemoryViewerRequest(
   conditionalViewerJson(req, res, {
     ok: true,
     selectedClient: selectedClient.publicClient,
-    availableClients: ["codex", "claude-code", "dsh", "opencode"],
+    availableClients: ["codex", "claude-code", "dsh", "opencode", "hermes"],
     summary: projection.summary,
     activities: projection.activities.slice(0, 100),
     projects,

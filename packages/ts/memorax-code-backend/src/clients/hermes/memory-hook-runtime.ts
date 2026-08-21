@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import {
   type AutomaticMemoryWritebackRejectionReason,
 } from "../../memory/automatic-writeback.js";
@@ -69,6 +72,30 @@ export type HermesMemoryHookRuntime = {
 };
 
 const HERMES_MEMORY_TURN_CLIENT = "hermes" as const;
+
+/**
+ * Resolve the Hermes profile home for writeback materialization. The
+ * environment wins; otherwise the managed adapter state records the home that
+ * installation used (for example via ``--hermes-home``), which the inherited
+ * Backend environment may not carry.
+ */
+function resolvedHermesHome(options: HermesMemoryHookRuntimeOptions): string | undefined {
+  const fromEnv = options.env?.HERMES_HOME;
+  if (fromEnv !== undefined && fromEnv.trim()) return fromEnv;
+  const memoraxCodeHome = options.memoraxCodeHome?.trim()
+    || options.env?.MEMORAX_CODE_HOME?.trim()
+    || join(homedir(), ".memorax-code");
+  try {
+    const state = JSON.parse(
+      readFileSync(join(memoraxCodeHome, "adapters", "hermes", "state.json"), "utf8"),
+    );
+    return typeof state?.hermesHome === "string" && state.hermesHome.trim()
+      ? state.hermesHome
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 export function createHermesMemoryHookRuntime(
   options: HermesMemoryHookRuntimeOptions,
@@ -172,7 +199,7 @@ export function createHermesMemoryHookRuntime(
         completed: command.completed,
         interrupted: command.interrupted,
         failed: command.failed,
-        hermesHome: options.env?.HERMES_HOME,
+        hermesHome: resolvedHermesHome(options),
         turnStartedAt: entry?.createdAt,
         now: now(),
       });

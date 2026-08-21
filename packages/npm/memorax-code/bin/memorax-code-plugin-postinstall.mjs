@@ -43,6 +43,7 @@ if (truthyEnv(process.env.MEMORAX_CODE_SKIP_POSTINSTALL)) process.exit(0);
 const skipCodexPluginInstall = truthyEnv(process.env.MEMORAX_CODE_SKIP_CODEX_PLUGIN_INSTALL);
 const skipClaudeAdapterInstall = truthyEnv(process.env.MEMORAX_CODE_SKIP_CLAUDE_ADAPTER_INSTALL);
 const skipOpenCodeAdapterInstall = truthyEnv(process.env.MEMORAX_CODE_SKIP_OPENCODE_ADAPTER_INSTALL);
+const skipHermesAdapterInstall = truthyEnv(process.env.MEMORAX_CODE_SKIP_HERMES_ADAPTER_INSTALL);
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const memoraxCodeBin = join(scriptDir, "memorax-code.mjs");
@@ -88,7 +89,7 @@ try {
   process.exit(0);
 }
 runCommonPreflight();
-const requestedClients = ["codex", "claude", "opencode"];
+const requestedClients = ["codex", "claude", "opencode", "hermes"];
 const codexPreflight = requestedClients.includes("codex") && !skipCodexPluginInstall
   ? runCodexPreflight({
       integrationSelected: !updatePostinstall
@@ -110,10 +111,18 @@ const opencodePreflight = requestedClients.includes("opencode") && !skipOpenCode
         || previousClients.includes("opencode"),
     })
   : { ok: true };
+const hermesPreflight = requestedClients.includes("hermes") && !skipHermesAdapterInstall
+  ? runHermesPreflight({
+      integrationSelected: !updatePostinstall
+        || previousClients === undefined
+        || previousClients.includes("hermes"),
+    })
+  : { ok: true };
 const detectedClients = requestedClients.filter((client) => {
   if (client === "codex") return !skipCodexPluginInstall && codexPreflight.ok;
   if (client === "claude") return !skipClaudeAdapterInstall && claudePreflight.ok;
-  return !skipOpenCodeAdapterInstall && opencodePreflight.ok;
+  if (client === "opencode") return !skipOpenCodeAdapterInstall && opencodePreflight.ok;
+  return !skipHermesAdapterInstall && hermesPreflight.ok;
 });
 const selectedClients = updatePostinstall && previousClients !== undefined
   ? await chooseUpdateClients(previousClients, detectedClients, scriptedAnswers)
@@ -138,6 +147,9 @@ if (requestedClients.includes("claude") && !skipClaudeAdapterInstall && !claudeP
 if (requestedClients.includes("opencode") && !skipOpenCodeAdapterInstall && !opencodePreflight.ok) {
   log("OpenCode runtime or configuration was not detected; skipping its adapter setup.");
 }
+if (requestedClients.includes("hermes") && !skipHermesAdapterInstall && !hermesPreflight.ok) {
+  log("Hermes runtime or configuration was not detected; skipping its adapter setup.");
+}
 if (writeClientSelectionConfig(selectedClients) === "failed") {
   printPostinstallSummary("not-verified");
   process.exit(0);
@@ -158,6 +170,7 @@ if (memoraxConfigResult === "configured") {
 const codexClientEnabled = installClients.includes("codex");
 const claudeClientEnabled = installClients.includes("claude");
 const opencodeClientEnabled = installClients.includes("opencode");
+const hermesClientEnabled = installClients.includes("hermes");
 const codexClientNewlyEnabled = codexClientEnabled
   && updatePostinstall
   && previousClients !== undefined
@@ -185,6 +198,7 @@ if (codexClientEnabled && result.status === 0) {
 const skipCodexAdapter = !codexClientEnabled;
 const skipClaudeAdapter = !claudeClientEnabled;
 const skipOpenCodeAdapter = !opencodeClientEnabled;
+const skipHermesAdapter = !hermesClientEnabled;
 const codexSkipReason = postinstallClientSkipReason({
   explicitlySkipped: skipCodexPluginInstall,
   selected: selectedClients.includes("codex"),
@@ -200,6 +214,11 @@ const opencodeSkipReason = postinstallClientSkipReason({
   selected: selectedClients.includes("opencode"),
   enabled: opencodeClientEnabled,
 });
+const hermesSkipReason = postinstallClientSkipReason({
+  explicitlySkipped: skipHermesAdapterInstall,
+  selected: selectedClients.includes("hermes"),
+  enabled: hermesClientEnabled,
+});
 
 const backendAndAdapters = startBackendAndCheck({
   skipCodexAdapter,
@@ -211,6 +230,9 @@ const backendAndAdapters = startBackendAndCheck({
   skipOpenCodeAdapter,
   opencodeAdapterRequired: !skipOpenCodeAdapter,
   opencodeSkipReason,
+  skipHermesAdapter,
+  hermesAdapterRequired: !skipHermesAdapter,
+  hermesSkipReason,
 });
 const backendAndAdaptersStatus = backendAndAdapters.status;
 if (backendAndAdaptersStatus === "enabled") {
@@ -222,11 +244,13 @@ if (backendAndAdaptersStatus === "enabled") {
     claudeAdapterEnabled: !skipClaudeAdapter,
     dshAdapterEnabled: backendAndAdapters.dshAdapterEnabled,
     opencodeAdapterEnabled: !skipOpenCodeAdapter,
+    hermesAdapterEnabled: !skipHermesAdapter,
   });
   printCommonCommands({
     codexAdapterEnabled: !skipCodexAdapter,
     claudeAdapterEnabled: !skipClaudeAdapter,
     opencodeAdapterEnabled: !skipOpenCodeAdapter,
+    hermesAdapterEnabled: !skipHermesAdapter,
   });
 }
 printPostinstallSummary(backendAndAdaptersStatus);
@@ -311,7 +335,7 @@ async function chooseUpdateClients(previousClients, detectedClients, scriptedAns
   } finally {
     rl?.close();
   }
-  return ["codex", "claude", "opencode"].filter((client) => selected.has(client));
+  return ["codex", "claude", "opencode", "hermes"].filter((client) => selected.has(client));
 }
 
 async function configureMemoraxMemoryFromAnswers(answers) {
@@ -715,6 +739,7 @@ function readPersistedClientSelection() {
       clients.codex ? "codex" : undefined,
       clients.claude ? "claude" : undefined,
       clients.opencode === true ? "opencode" : undefined,
+      clients.hermes === true ? "hermes" : undefined,
     ].filter(Boolean);
   } catch {
     return undefined;
@@ -745,7 +770,8 @@ function writeClientSelectionConfig(clients) {
 
 function setManagedClientSelection(text, clients) {
   const withOpenCode = setTomlField(text, "clients", "opencode", String(clients.includes("opencode")));
-  const withClaude = setTomlField(withOpenCode, "clients", "claude", String(clients.includes("claude")));
+  const withHermes = setTomlField(withOpenCode, "clients", "hermes", String(clients.includes("hermes")));
+  const withClaude = setTomlField(withHermes, "clients", "claude", String(clients.includes("claude")));
   return setTomlField(withClaude, "clients", "codex", String(clients.includes("codex")));
 }
 
@@ -795,6 +821,7 @@ function defaultMemoraxCodeConfig() {
     "claude = true # Manage the Claude adapter.",
     "dsh = true # Manage the DeepSeek Harness adapter when Profiles exist.",
     "opencode = true # Manage the OpenCode adapter.",
+    "hermes = true # Manage the Hermes adapter when a Hermes installation is detected.",
     "",
     "# MemoraX remote-memory connection. Credentials may also come from the environment.",
     "[memorax]",
@@ -840,6 +867,10 @@ function defaultMemoraxCodeConfig() {
     "[trace.opencode]",
     "enabled = true # Enable local OpenCode session memory trace collection.",
     "capture_content = true # Store content in local OpenCode trace events.",
+    "",
+    "[trace.hermes]",
+    "enabled = true # Enable local Hermes session memory trace collection.",
+    "capture_content = true # Store content in local Hermes trace events.",
     "",
   ].join("\n");
 }
@@ -971,6 +1002,26 @@ function runOpenCodePreflight({ integrationSelected = true } = {}) {
   return { ok: true };
 }
 
+function runHermesPreflight({ integrationSelected = true } = {}) {
+  const explicitHome = stringOption(process.env.HERMES_HOME);
+  const hermesHome = resolve(explicitHome ?? join(homedir(), ".hermes"));
+  const homeDetected = explicitHome !== undefined || existsSync(hermesHome);
+  const cliDetected = commandOnPath(
+    "hermes",
+    process.env.PATH,
+    process.platform,
+    process.env.PATHEXT,
+  );
+  const detected = homeDetected || cliDetected;
+  log(`Hermes home: ${homeDetected ? `found (${hermesHome})` : "not detected"}`);
+  log(`Hermes CLI: ${cliDetected ? "found in PATH" : "not detected"}`);
+  if (!detected) return { ok: false };
+  log(integrationSelected
+    ? "Keeping Hermes config unchanged and enabling the shared shell-hook memory integration."
+    : "Keeping Hermes config unchanged while checking whether to enable its integration.");
+  return { ok: true };
+}
+
 function installedPluginCache() {
   for (const marketplaceName of [CLI_MARKETPLACE_NAME, PERSONAL_MARKETPLACE_NAME]) {
     const versions = installedPluginCacheVersions(marketplaceName);
@@ -1004,6 +1055,9 @@ function startBackendAndCheck({
   skipOpenCodeAdapter = false,
   opencodeAdapterRequired = !skipOpenCodeAdapter,
   opencodeSkipReason,
+  skipHermesAdapter = false,
+  hermesAdapterRequired = !skipHermesAdapter,
+  hermesSkipReason,
 } = {}) {
   logGreen("Starting backend with `memorax-code start`...");
   const adapterFlags = clientLifecycleFlags({ clientMode });
@@ -1054,9 +1108,10 @@ function startBackendAndCheck({
     codexAdapterRequired: !skipCodexAdapter,
     claudeAdapterRequired,
     opencodeAdapterRequired,
+    hermesAdapterRequired,
   });
   if (!enabled) {
-    printUnavailableDiagnostics({ codexSkipReason, claudeSkipReason, opencodeSkipReason });
+    printUnavailableDiagnostics({ codexSkipReason, claudeSkipReason, opencodeSkipReason, hermesSkipReason });
     return { status: "unavailable", dshAdapterEnabled: false };
   }
   return {
@@ -1107,10 +1162,10 @@ function clientLifecycleFlags({ clientMode = "all" } = {}) {
 }
 
 function clientModeFor(clients, { includeDsh = false } = {}) {
-  const selected = ["codex", "claude", "dsh", "opencode"].filter((client) => (
+  const selected = ["codex", "claude", "dsh", "opencode", "hermes"].filter((client) => (
     client === "dsh" ? includeDsh : clients.includes(client)
   ));
-  if (selected.length === 4) return "all";
+  if (selected.length === 5) return "all";
   return selected.length > 0 ? selected.join(",") : "none";
 }
 
@@ -1121,31 +1176,23 @@ function postinstallClientSkipReason({ explicitlySkipped, selected, enabled }) {
 }
 
 function clientSelectionMessage(clients, { dshSelected = false } = {}) {
-  if (dshSelected) {
-    const labels = [
-      clients.includes("codex") ? "Codex" : undefined,
-      clients.includes("claude") ? "Claude Code" : undefined,
-      "DeepSeek Harness",
-      clients.includes("opencode") ? "OpenCode" : undefined,
-    ].filter(Boolean);
-    return `Configuring MemoraX Code for ${joinedLabels(labels)}.`;
+  const labels = [
+    clients.includes("codex") ? "Codex" : undefined,
+    clients.includes("claude") ? "Claude Code" : undefined,
+    dshSelected ? "DeepSeek Harness" : undefined,
+    clients.includes("opencode") ? "OpenCode" : undefined,
+    clients.includes("hermes") ? "Hermes" : undefined,
+  ].filter(Boolean);
+  if (labels.length === 0) {
+    return "Skipping client adapter setup for this npm postinstall.";
   }
-  const hasCodex = clients.includes("codex");
-  const hasClaude = clients.includes("claude");
-  const hasOpenCode = clients.includes("opencode");
-  if (hasCodex && hasClaude && hasOpenCode) return "Configuring MemoraX Code for Codex, Claude Code, and OpenCode.";
-  if (hasCodex && hasClaude) return "Configuring MemoraX Code for Codex and Claude Code.";
-  if (hasCodex && hasOpenCode) return "Configuring MemoraX Code for Codex and OpenCode.";
-  if (hasClaude && hasOpenCode) return "Configuring MemoraX Code for Claude Code and OpenCode.";
-  if (hasCodex) return "Configuring MemoraX Code for Codex only.";
-  if (hasClaude) return "Configuring MemoraX Code for Claude Code only.";
-  if (hasOpenCode) return "Configuring MemoraX Code for OpenCode only.";
-  return "Skipping client adapter setup for this npm postinstall.";
+  return `Configuring MemoraX Code for ${joinedLabels(labels)}.`;
 }
 
 function clientLabel(client) {
   if (client === "codex") return "Codex";
   if (client === "claude") return "Claude Code";
+  if (client === "hermes") return "Hermes";
   return "OpenCode";
 }
 
@@ -1297,11 +1344,13 @@ function printNextSteps({
   claudeAdapterEnabled = true,
   dshAdapterEnabled = false,
   opencodeAdapterEnabled = true,
+  hermesAdapterEnabled = false,
 } = {}) {
   const hookClientText = enabledClientText({
     codexAdapterEnabled,
     claudeAdapterEnabled,
     opencodeAdapterEnabled,
+    hermesAdapterEnabled,
   });
   if (hookClientText && updatePostinstall) {
     logGreen(`${bold("The new Hook runtime is active")}; existing sessions with the stable shell select it on their next user prompt.`);
@@ -1317,7 +1366,12 @@ function printNextSteps({
   if (codexAdapterEnabled && !updatePostinstall) {
     logGreen(`After restart, ${bold("enable the MemoraX Code Codex Adapter plugin")} from Codex Plugins or CLI \`/plugins\` if it is not already enabled.`);
   }
-  const statusCommands = statusCommandText({ codexAdapterEnabled, claudeAdapterEnabled, opencodeAdapterEnabled });
+  const statusCommands = statusCommandText({
+    codexAdapterEnabled,
+    claudeAdapterEnabled,
+    opencodeAdapterEnabled,
+    hermesAdapterEnabled,
+  });
   if (hookClientText || !dshAdapterEnabled) {
     log(`If MemoraX Code is not active ${updatePostinstall ? "on the next prompt" : "in new sessions"}, run ${statusCommands}.`);
   }
@@ -1331,11 +1385,13 @@ function enabledClientText({
   codexAdapterEnabled = true,
   claudeAdapterEnabled = true,
   opencodeAdapterEnabled = true,
+  hermesAdapterEnabled = false,
 } = {}) {
   const labels = [
     codexAdapterEnabled ? "Codex" : undefined,
     claudeAdapterEnabled ? "Claude Code" : undefined,
     opencodeAdapterEnabled ? "OpenCode" : undefined,
+    hermesAdapterEnabled ? "Hermes" : undefined,
   ].filter(Boolean);
   if (labels.length < 2) return labels[0] ?? "";
   if (labels.length === 2) return `${labels[0]} or ${labels[1]}`;
@@ -1346,11 +1402,13 @@ function statusCommandText({
   codexAdapterEnabled = true,
   claudeAdapterEnabled = true,
   opencodeAdapterEnabled = true,
+  hermesAdapterEnabled = false,
 } = {}) {
   const commands = ["`memorax-code status`"];
   if (codexAdapterEnabled) commands.push("`memorax-code-codex status`");
   if (claudeAdapterEnabled) commands.push("`memorax-code-claude status`");
   if (opencodeAdapterEnabled) commands.push("`memorax-code-opencode status`");
+  if (hermesAdapterEnabled) commands.push("`memorax-code-hermes status`");
   if (commands.length === 1) return commands[0];
   if (commands.length === 2) return `${commands[0]} and ${commands[1]}`;
   return `${commands.slice(0, -1).join(", ")}, and ${commands.at(-1)}`;
@@ -1430,17 +1488,19 @@ function readMemoraxInstallStatus() {
   }
 }
 
-function printUnavailableDiagnostics({ codexSkipReason, claudeSkipReason, opencodeSkipReason } = {}) {
+function printUnavailableDiagnostics({ codexSkipReason, claudeSkipReason, opencodeSkipReason, hermesSkipReason } = {}) {
   logRed("MemoraX Code is not enabled for new client sessions.");
-  logRed("Check `memorax-code status`, `memorax-code-codex status`, `memorax-code-claude status`, and `memorax-code-opencode status` for Backend and adapter details.");
-  logRed("If Codex, Claude Code, or OpenCode is open, restart or refresh it after fixing the reported status.");
+  logRed("Check `memorax-code status`, `memorax-code-codex status`, `memorax-code-claude status`, `memorax-code-opencode status`, and `memorax-code-hermes status` for Backend and adapter details.");
+  logRed("If Codex, Claude Code, OpenCode, or Hermes is open, restart or refresh it after fixing the reported status.");
   if (codexSkipReason) printCodexSkippedDiagnostics(codexSkipReason);
   if (claudeSkipReason) printClaudeSkippedDiagnostics(claudeSkipReason);
   if (opencodeSkipReason) printOpenCodeSkippedDiagnostics(opencodeSkipReason);
+  if (hermesSkipReason) printHermesSkippedDiagnostics(hermesSkipReason);
   printCommonCommands({
     codexAdapterEnabled: !codexSkipReason,
     claudeAdapterEnabled: !claudeSkipReason,
     opencodeAdapterEnabled: !opencodeSkipReason,
+    hermesAdapterEnabled: !hermesSkipReason,
   });
 }
 
@@ -1459,6 +1519,11 @@ function printClaudeSkippedDiagnostics() {
 function printOpenCodeSkippedDiagnostics() {
   logRed("OpenCode adapter setup was skipped for this npm postinstall, so MemoraX Code left the OpenCode integration unchanged.");
   log("Run `memorax-code start --clients opencode` after installing OpenCode, then restart or refresh OpenCode.");
+}
+
+function printHermesSkippedDiagnostics() {
+  logRed("Hermes adapter setup was skipped for this npm postinstall, so MemoraX Code left the Hermes integration unchanged.");
+  log("Run `memorax-code start --clients hermes` after installing Hermes, then restart or refresh Hermes.");
 }
 
 function printFailureSuggestions() {
@@ -1490,6 +1555,7 @@ function printCommonCommands({
   codexAdapterEnabled = true,
   claudeAdapterEnabled = true,
   opencodeAdapterEnabled = true,
+  hermesAdapterEnabled = false,
 } = {}) {
   log("Common commands:");
   log("- `memorax-code status`: check the local backend and adapter state.");
@@ -1499,12 +1565,14 @@ function printCommonCommands({
   if (codexAdapterEnabled) log("- `memorax-code-codex sessions`: verify recent native Codex session registration.");
   if (claudeAdapterEnabled) log("- `memorax-code-claude sessions`: verify recent native Claude Code session registration.");
   if (opencodeAdapterEnabled) log("- `memorax-code-opencode doctor`: verify the managed OpenCode plugin, runtime evidence, and Backend health.");
+  if (hermesAdapterEnabled) log("- `memorax-code-hermes status`: verify the managed Hermes hook integration and Backend health.");
 }
 
 function memoraxCodeEnabled(statusResult, {
   codexAdapterRequired = true,
   claudeAdapterRequired = true,
   opencodeAdapterRequired = true,
+  hermesAdapterRequired = true,
 } = {}) {
   const output = `${statusResult.stdout ?? ""}\n${statusResult.stderr ?? ""}`;
   const normalized = stripAnsi(output);
@@ -1516,11 +1584,13 @@ function memoraxCodeEnabled(statusResult, {
   const codexAdapterOk = /Codex adapter:\s*ok\b/im.test(normalized);
   const claudeAdapterOk = /Claude adapter:\s*ok\b/im.test(normalized);
   const opencodeAdapterOk = /OpenCode adapter:\s*ok\b/im.test(normalized);
+  const hermesAdapterOk = /Hermes adapter:\s*ok\b/im.test(normalized);
   return backendOk
     && serviceOk
     && (!codexAdapterRequired || codexAdapterOk)
     && (!claudeAdapterRequired || claudeAdapterOk)
-    && (!opencodeAdapterRequired || opencodeAdapterOk);
+    && (!opencodeAdapterRequired || opencodeAdapterOk)
+    && (!hermesAdapterRequired || hermesAdapterOk);
 }
 
 function log(message) {

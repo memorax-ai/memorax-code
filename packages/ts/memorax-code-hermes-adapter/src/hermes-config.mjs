@@ -36,7 +36,14 @@ export function writeConfigText(path, text) {
 }
 
 export function configContainsCommand(text, command) {
-  return Boolean(findCommandEntryLines(text, command).length > 0);
+  const lines = splitLines(text);
+  const section = findHooksSection(lines);
+  if (section === undefined) return false;
+  return HOOK_EVENTS.every((event) => (
+    entryLinesForEvent(lines, section, event).some((index) => (
+      entryCommand(lines[index]) === command
+    ))
+  ));
 }
 
 /**
@@ -198,19 +205,6 @@ function findHooksSection(lines) {
     return { start: index, end };
   }
   return undefined;
-}
-
-function findCommandEntryLines(text, command) {
-  const lines = splitLines(text);
-  const section = findHooksSection(lines);
-  if (section === undefined) return [];
-  const matches = [];
-  for (const event of HOOK_EVENTS) {
-    for (const index of entryLinesForEvent(lines, section, event)) {
-      if (entryCommand(lines[index]) === command) matches.push(index);
-    }
-  }
-  return matches;
 }
 
 function entryLinesForEvent(lines, section, event) {

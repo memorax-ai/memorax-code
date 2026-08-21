@@ -560,7 +560,11 @@ async function stopMemoraxCodeServiceLocked(
   try {
     if (context.clients.hermes) {
       execution = await withHermesAdapterLifecycleLock({ argv, serviceOptions }, (hermesLifecycle) => (
-        executeMemoraxCodeStop(serviceOptions, argv, context, hermesLifecycle)
+        context.clients.dsh
+          ? withDshAdapterLifecycleLock({ argv, serviceOptions }, (dshLifecycle) => (
+            executeMemoraxCodeStop(serviceOptions, argv, context, hermesLifecycle, dshLifecycle, true)
+          ))
+          : executeMemoraxCodeStop(serviceOptions, argv, context, hermesLifecycle)
       ));
     } else if (context.clients.dsh) {
       execution = await withDshAdapterLifecycleLock({ argv, serviceOptions }, (dshLifecycle) => (
@@ -848,7 +852,11 @@ async function uninstallMemoraxCodeServiceLocked(
   if (context.clients.hermes) {
     try {
       return await withHermesAdapterLifecycleLock({ argv, serviceOptions }, (hermesLifecycle) => (
-        executeMemoraxCodeUninstall(serviceOptions, argv, context, hermesLifecycle)
+        context.clients.dsh
+          ? withDshAdapterLifecycleLock({ argv, serviceOptions }, (dshLifecycle) => (
+            executeMemoraxCodeUninstall(serviceOptions, argv, context, hermesLifecycle, dshLifecycle, true)
+          ))
+          : executeMemoraxCodeUninstall(serviceOptions, argv, context, hermesLifecycle)
       ));
     } catch (error) {
       return hermesLifecycleFailure("uninstall", error);
@@ -872,6 +880,7 @@ async function executeMemoraxCodeUninstall(
   context: MemoraxCodeStopContext,
   hermesLifecycle?: HermesAdapterLifecycleParticipant,
   dshLifecycle?: DshAdapterLifecycleParticipant,
+  dshLocked = hermesLifecycle === undefined && dshLifecycle !== undefined,
 ): Promise<MemoraxCodeLifecycleReport> {
   const { activeClients, clients, memoraxCodeHome } = context;
   const configuredClients = configuredClientsForPackageRemoval(serviceOptions);
@@ -883,7 +892,7 @@ async function executeMemoraxCodeUninstall(
     context,
     hermesLifecycle,
     dshLifecycle,
-    hermesLifecycle === undefined && dshLifecycle !== undefined,
+    dshLocked,
   );
   const stopped = stopExecution.report;
   if (!stopped.ok) {

@@ -331,6 +331,7 @@ test("MEMORAX_CODE_HERMES_COMMAND overrides resolved command", async () => {
       MEMORAX_CODE_HERMES_COMMAND: "custom-hermes",
     };
     env.options.windowsCliResolution = {
+      platform: "win32",
       spawnSync: () => ({ status: 0, stdout: "C:\\Tools\\custom-hermes.exe\n" }),
       existsSync: () => true,
     };

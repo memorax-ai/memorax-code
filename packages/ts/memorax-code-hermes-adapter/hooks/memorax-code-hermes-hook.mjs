@@ -1,9 +1,10 @@
 #!/usr/bin/env node
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
+const PACKAGE_METADATA_FILE = ".memorax-code-package.json";
 const commonCandidates = [
   join(MODULE_DIR, "..", "memorax-code-adapter-common", "src"),
   join(MODULE_DIR, "..", "..", "memorax-code-adapter-common", "src"),
@@ -24,6 +25,34 @@ const { resolveBackendConnection } = await import(
 
 const REQUEST_TIMEOUT_MS = 10_000;
 const COMMAND_VERSION = 1;
+
+function generationMemoraxCodeHome() {
+  try {
+    const metadata = JSON.parse(readFileSync(join(MODULE_DIR, "..", PACKAGE_METADATA_FILE), "utf8"));
+    return typeof metadata?.memoraxCodeHome === "string" && metadata.memoraxCodeHome.trim()
+      ? metadata.memoraxCodeHome.trim()
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The installed hook stays in Hermes config.yaml across Backend restarts and
+ * updates, so the private adapter state is the authority for whether the
+ * integration may talk to the Backend. A missing or unreadable state keeps the
+ * hook active; an explicit disabled state stops all requests.
+ */
+function adapterStateAllowsRequests(memoraxCodeHome) {
+  try {
+    const statePath = join(memoraxCodeHome, "adapters", "hermes", "state.json");
+    if (!existsSync(statePath)) return true;
+    const state = JSON.parse(readFileSync(statePath, "utf8"));
+    return state?.enabled !== false;
+  } catch {
+    return true;
+  }
+}
 
 /**
  * Dispatch one Hermes shell-hook payload to the MemoraX Code Backend.
@@ -48,11 +77,18 @@ export async function runHermesHook(payload, options = {}) {
 
   let connection;
   try {
-    connection = resolveBackendConnection({ env: process.env });
+    connection = resolveBackendConnection({
+      env: process.env,
+      memoraxCodeHome: options.memoraxCodeHome ?? generationMemoraxCodeHome(),
+    });
   } catch (error) {
     options.diagnostic?.("hermes_hook.connection_unavailable", {
       error: error instanceof Error ? error.message : String(error),
     });
+    return undefined;
+  }
+  if (options.respectAdapterState !== false && !adapterStateAllowsRequests(connection.memoraxCodeHome)) {
+    options.diagnostic?.("hermes_hook.adapter_disabled", {});
     return undefined;
   }
 

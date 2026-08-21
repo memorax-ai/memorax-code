@@ -470,13 +470,14 @@ async function runPostinstall({ existingCache = false, explicitCache = false, ho
     } : {}),
     CODEX_HOME: codexHome,
     HOME: home,
+    USERPROFILE: home,
     CLAUDE_CONFIG_DIR: claudeHome,
     OPENCODE_CONFIG_DIR: opencodeAvailable ? opencodeConfigDir : "",
     XDG_CONFIG_HOME: opencodeXdgAvailable ? xdgConfigHome : "",
     MEMORAX_CODE_HOME: memoraxCodeHome,
     PATH: codexAppOnly || vscodeOnly
       ? fakeBin
-      : `${fakeBin}${delimiter}${pathWithoutCommand("opencode", process.env.PATH)}`,
+      : `${fakeBin}${delimiter}${pathWithoutCommand("opencode", pathWithoutCommand("hermes", process.env.PATH))}`,
     npm_command: npmCommand,
     MEMORAX_CODE_NPM_POSTINSTALL_VERBOSE: "1",
     MEMORAX_CODE_NPM_POSTINSTALL_ASSUME_INTERACTIVE: interactive ? "1" : "0",
@@ -497,6 +498,7 @@ async function runPostinstall({ existingCache = false, explicitCache = false, ho
   delete childEnv.CODEX_CLI_PATH;
   delete childEnv.MEMORAX_CODE_CODEX_COMMAND;
   delete childEnv.MEMORAX_CODE_CLAUDE_COMMAND;
+  delete childEnv.HERMES_HOME;
   delete childEnv.MEMORAX_CODE_MEMORAX_API_KEY;
   delete childEnv.MEMORAX_CODE_MEMORAX_USER_ID;
   delete childEnv.MEMORAX_CODE_MEMORAX_WRITEBACK_ENABLED;

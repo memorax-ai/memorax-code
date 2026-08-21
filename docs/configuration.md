@@ -38,11 +38,11 @@ are not a compatibility contract.
 
 ## New configuration
 
-The generated template selects all four client integrations, disables automatic
-retrieval, enables automatic writeback, sets the preferred language to Chinese
-(`zh`), uses a five-turn skill reminder and the adaptive repository-update
-policy, and enables content-bearing local traces for Codex, Claude Code, and
-OpenCode. npm installation may narrow `[clients]` to clients detected on the
+The generated template selects the supported client integrations, disables
+automatic retrieval, enables automatic writeback, sets the preferred language
+to Chinese (`zh`), uses a five-turn skill reminder and the adaptive
+repository-update policy, and enables content-bearing local traces for each
+supported client. npm installation may narrow `[clients]` to clients detected on the
 host. The tables below list all fallbacks, including tuning fields omitted from
 the generated file.
 
@@ -53,20 +53,22 @@ filesystem ACLs.
 ## Client selection
 
 If `[clients]` is absent, lifecycle commands select Codex, Claude Code, DSH,
-and OpenCode. If it is present, `codex`, `claude`, `dsh`, and `opencode` are
-boolean fields. Omitted `codex`, `claude`, or `opencode` values are disabled;
-an omitted `dsh` value remains enabled so configurations written before DSH
-support can discover an existing local Harness. Set `dsh = false` explicitly
-to disable that integration. The command-line override accepts a
-comma-separated subset:
+OpenCode, and Hermes. If it is present, `codex`, `claude`, `dsh`, `opencode`,
+and `hermes` are boolean fields. Omitted `codex`, `claude`, `opencode`, or
+`hermes` values are disabled; an omitted `dsh` value remains enabled so
+configurations written before DSH support can discover an existing local
+Harness. Set `dsh = false` explicitly to disable that integration. The
+command-line override accepts a comma-separated subset:
 
 ```text
---clients codex|claude|dsh|opencode|<comma-separated subset>|all|none
+--clients codex|claude|dsh|opencode|hermes|<comma-separated subset>|all|none
 ```
 
 A normal npm install or reinstall refreshes `[clients]` from the available
 clients detected at that time. OpenCode is available when its explicit, XDG,
 or default configuration directory exists, or when `opencode` is on `PATH`.
+Hermes is available when its home (`HERMES_HOME` or `~/.hermes`) contains a
+native configuration, or when a `hermes` executable is on `PATH`.
 DSH is available when at least one valid Profile exists under
 `$DSH_HOME/profiles`; `DSH_HOME` defaults to `~/.dsh`. An explicit
 `[clients].dsh = false` is preserved.
@@ -80,7 +82,7 @@ enables Codex, it requests initial Hook activation after the client-selection
 prompt.
 
 Client selection controls managed client-integration lifecycle only. It does
-not change Codex, Claude Code, DSH, or OpenCode provider settings.
+not change Codex, Claude Code, DSH, OpenCode, or Hermes provider settings.
 `--clients none` runs the Backend without managing a client integration.
 
 ## DeepSeek Harness integration paths
@@ -279,23 +281,44 @@ authority is unavailable, the client integration skips that attempt instead
 of falling back to its local workspace path. DSH schedules this work through
 its native pre-step integration rather than a Hook.
 
-A relevant repo-read runs supervised maintenance in all four clients. The
+A relevant repo-read runs supervised maintenance in all supported clients. The
 configured policy may select a build, update, or no-op. DSH maintenance
 requires an enabled, managed Profile that includes `@deepseek-ai/dsh-headless`.
 OpenCode executes the job through its active local server. Desktop-only
 installations do not require a standalone `opencode` executable in `PATH`.
 
+## Hermes integration paths
+
+The managed Hermes hook entries and shell-hook allowlist approvals live in the
+Hermes home:
+
+```text
+$HERMES_HOME/config.yaml
+$HERMES_HOME/shell-hooks-allowlist.json
+```
+
+`HERMES_HOME` defaults to `~/.hermes`; lifecycle commands also accept an
+explicit `--hermes-home`. The managed ownership record lives at
+`$MEMORAX_CODE_HOME/adapters/hermes/state.json`, and hook generations are
+materialized under `$MEMORAX_CODE_HOME/adapters/hermes/runtime/generations/`.
+MemoraX Code only manages its own hook entries and allowlist approvals; it does
+not modify Hermes model, provider, or other configuration. Restart or refresh
+Hermes after installation or after these managed assets change. The installed
+hook resolves the MemoraX Code home recorded in its generation metadata, so a
+custom `--home` installation works even when `MEMORAX_CODE_HOME` is absent from
+the Hermes process environment.
+
 ## Local traces
 
-`[trace.codex]`, `[trace.claude]`, `[trace.dsh]`, and `[trace.opencode]`
-support the same fields:
+`[trace.codex]`, `[trace.claude]`, `[trace.dsh]`, `[trace.opencode]`, and
+`[trace.hermes]` support the same fields:
 
-| Field | Codex environment | Claude environment | DSH environment | OpenCode environment | Fallback |
-| --- | --- | --- | --- | --- | --- |
-| `enabled` | `MEMORAX_CODE_CODEX_TRACE_ENABLED` | `MEMORAX_CODE_CLAUDE_TRACE_ENABLED` | `MEMORAX_CODE_DSH_TRACE_ENABLED` | `MEMORAX_CODE_OPENCODE_TRACE_ENABLED` | `true` |
-| `capture_content` | `MEMORAX_CODE_CODEX_TRACE_CAPTURE_CONTENT` | `MEMORAX_CODE_CLAUDE_TRACE_CAPTURE_CONTENT` | `MEMORAX_CODE_DSH_TRACE_CAPTURE_CONTENT` | `MEMORAX_CODE_OPENCODE_TRACE_CAPTURE_CONTENT` | `true` |
-| `retention_days` | `MEMORAX_CODE_CODEX_TRACE_RETENTION_DAYS` | `MEMORAX_CODE_CLAUDE_TRACE_RETENTION_DAYS` | `MEMORAX_CODE_DSH_TRACE_RETENTION_DAYS` | `MEMORAX_CODE_OPENCODE_TRACE_RETENTION_DAYS` | `7` |
-| `max_event_chars` | `MEMORAX_CODE_CODEX_TRACE_MAX_EVENT_CHARS` | `MEMORAX_CODE_CLAUDE_TRACE_MAX_EVENT_CHARS` | `MEMORAX_CODE_DSH_TRACE_MAX_EVENT_CHARS` | `MEMORAX_CODE_OPENCODE_TRACE_MAX_EVENT_CHARS` | `20000` |
+| Field | Codex environment | Claude environment | DSH environment | OpenCode environment | Hermes environment | Fallback |
+| --- | --- | --- | --- | --- | --- | --- |
+| `enabled` | `MEMORAX_CODE_CODEX_TRACE_ENABLED` | `MEMORAX_CODE_CLAUDE_TRACE_ENABLED` | `MEMORAX_CODE_DSH_TRACE_ENABLED` | `MEMORAX_CODE_OPENCODE_TRACE_ENABLED` | `MEMORAX_CODE_HERMES_TRACE_ENABLED` | `true` |
+| `capture_content` | `MEMORAX_CODE_CODEX_TRACE_CAPTURE_CONTENT` | `MEMORAX_CODE_CLAUDE_TRACE_CAPTURE_CONTENT` | `MEMORAX_CODE_DSH_TRACE_CAPTURE_CONTENT` | `MEMORAX_CODE_OPENCODE_TRACE_CAPTURE_CONTENT` | `MEMORAX_CODE_HERMES_TRACE_CAPTURE_CONTENT` | `true` |
+| `retention_days` | `MEMORAX_CODE_CODEX_TRACE_RETENTION_DAYS` | `MEMORAX_CODE_CLAUDE_TRACE_RETENTION_DAYS` | `MEMORAX_CODE_DSH_TRACE_RETENTION_DAYS` | `MEMORAX_CODE_OPENCODE_TRACE_RETENTION_DAYS` | `MEMORAX_CODE_HERMES_TRACE_RETENTION_DAYS` | `7` |
+| `max_event_chars` | `MEMORAX_CODE_CODEX_TRACE_MAX_EVENT_CHARS` | `MEMORAX_CODE_CLAUDE_TRACE_MAX_EVENT_CHARS` | `MEMORAX_CODE_DSH_TRACE_MAX_EVENT_CHARS` | `MEMORAX_CODE_OPENCODE_TRACE_MAX_EVENT_CHARS` | `MEMORAX_CODE_HERMES_TRACE_MAX_EVENT_CHARS` | `20000` |
 | `max_file_bytes` | `MEMORAX_CODE_CODEX_TRACE_MAX_FILE_BYTES` | `MEMORAX_CODE_CLAUDE_TRACE_MAX_FILE_BYTES` | `MEMORAX_CODE_DSH_TRACE_MAX_FILE_BYTES` | `MEMORAX_CODE_OPENCODE_TRACE_MAX_FILE_BYTES` | `52428800` |
 
 Depending on the enabled client capabilities, content capture can include
