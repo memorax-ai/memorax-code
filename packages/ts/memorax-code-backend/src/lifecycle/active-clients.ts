@@ -10,6 +10,7 @@ export function readActiveManagedClients(memoraxCodeHome: string): ManagedClient
     if (typeof value.codex !== "boolean" || typeof value.claude !== "boolean") return undefined;
     if (value.opencode !== undefined && typeof value.opencode !== "boolean") return undefined;
     if (value.dsh !== undefined && typeof value.dsh !== "boolean") return undefined;
+    if (value.hermes !== undefined && typeof value.hermes !== "boolean") return undefined;
     return {
       codex: value.codex,
       claude: value.claude,
@@ -17,6 +18,7 @@ export function readActiveManagedClients(memoraxCodeHome: string): ManagedClient
       // that the Backend was serving DSH.
       dsh: value.dsh === true,
       opencode: value.opencode === true,
+      hermes: value.hermes === true,
     };
   } catch {
     return undefined;

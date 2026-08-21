@@ -6,6 +6,7 @@ import {
 import {
   traceContextFromClaudeHookBody,
   traceContextFromDshSkillReminder,
+  traceContextFromHermesHookBody,
   traceContextFromHookBody,
   traceContextFromOpenCodeHookBody,
   type TraceContext,
@@ -48,7 +49,7 @@ export function createMemoryReminderTraceRecorder(
           triggers: request.triggers,
         },
         response: {
-          role: request.client === "dsh" ? "user" : "developer",
+          role: request.client === "dsh" || request.client === "hermes" ? "user" : "developer",
           content: request.content,
         },
       }), options.diagnosticLogger);
@@ -68,6 +69,7 @@ function traceContextForReminder(command: SkillReminderCommand): TraceContext | 
   if (command.client === "codex") return traceContextFromHookBody(command);
   if (command.client === "claude-code") return traceContextFromClaudeHookBody(command);
   if (command.client === "dsh") return traceContextFromDshSkillReminder(command);
+  if (command.client === "hermes") return traceContextFromHermesHookBody(command);
   return traceContextFromOpenCodeHookBody(command);
 }
 
@@ -75,6 +77,7 @@ function reminderSource(command: SkillReminderCommand): string {
   if (command.client === "codex") return "codex-hook";
   if (command.client === "claude-code") return "claude-hook";
   if (command.client === "dsh") return "dsh-cordis";
+  if (command.client === "hermes") return "hermes-hook";
   return "opencode-plugin";
 }
 

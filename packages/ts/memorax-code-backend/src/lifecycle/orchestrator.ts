@@ -30,6 +30,11 @@ import {
   withDshAdapterLifecycleLock,
   type DshAdapterLifecycleParticipant,
 } from "../clients/dsh/lifecycle.js";
+import {
+  collectHermesAdapterLifecycleStatus,
+  withHermesAdapterLifecycleLock,
+  type HermesAdapterLifecycleParticipant,
+} from "../clients/hermes/lifecycle.js";
 import { openCodeAdapterLifecycle } from "../clients/opencode/lifecycle.js";
 import type {
   AdapterReport,
@@ -47,6 +52,7 @@ export type MemoraxCodeStatusReport = {
   claudeAdapter?: AdapterReport;
   dshAdapter?: AdapterReport;
   opencodeAdapter?: AdapterReport;
+  hermesAdapter?: AdapterReport;
 };
 
 export type MemoraxCodeLifecycleReport = {
@@ -59,6 +65,7 @@ export type MemoraxCodeLifecycleReport = {
   claudeAdapter?: AdapterReport;
   dshAdapter?: AdapterReport;
   opencodeAdapter?: AdapterReport;
+  hermesAdapter?: AdapterReport;
   codexPlugin?: Awaited<ReturnType<typeof codexAdapterLifecycle.remove>>;
   npmPackageRemoval?: NpmPackageRemovalReport;
   removesPlugin?: boolean;
@@ -139,22 +146,28 @@ export async function collectMemoraxCodeStatus(
   const opencodeAdapter = clients.opencode
     ? await openCodeAdapterLifecycle.status({ argv, serviceOptions, backendUrl })
     : undefined;
+  const hermesAdapter = clients.hermes
+    ? await collectHermesAdapterLifecycleStatus({ argv, serviceOptions, backendUrl })
+    : undefined;
   const codexReady = codexAdapter ? isAdapterReady(codexAdapter) : true;
   const claudeReady = claudeAdapter ? isAdapterReady(claudeAdapter) : true;
   const dshReady = dshAdapter ? isAdapterReady(dshAdapter) : true;
   const opencodeReady = opencodeAdapter ? isAdapterReady(opencodeAdapter) : true;
+  const hermesReady = hermesAdapter ? isAdapterReady(hermesAdapter) : true;
   return {
     ok: backend.ok
       && codexReady
       && opencodeReady
       && (isOptionalUnconfiguredClaudeAdapter(claudeAdapter, codexAdapter) || claudeReady)
-      && (isOptionalUnavailableDshAdapter(dshAdapter) || dshReady),
+      && (isOptionalUnavailableDshAdapter(dshAdapter) || dshReady)
+      && (isOptionalUnavailableHermesAdapter(hermesAdapter) || hermesReady),
     action: "status",
     backend,
     ...(codexAdapter ? { codexAdapter } : {}),
     ...(claudeAdapter ? { claudeAdapter } : {}),
     ...(dshAdapter ? { dshAdapter } : {}),
     ...(opencodeAdapter ? { opencodeAdapter } : {}),
+    ...(hermesAdapter ? { hermesAdapter } : {}),
   };
 }
 
@@ -205,6 +218,37 @@ async function startMemoraxCodeServiceLocked(
     : requestedClients;
   const previousClients = readActiveManagedClients(memoraxCodeHome);
   const context = { argv, serviceOptions };
+  if (clients.hermes || previousClients?.hermes) {
+    try {
+      return await withHermesAdapterLifecycleLock(context, (hermesLifecycle) => {
+        if (clients.dsh || previousClients?.dsh || isDshAdapterRecovery()) {
+          return withDshAdapterLifecycleLock(context, (dshLifecycle) => (
+            executeMemoraxCodeStart(
+              serviceOptions,
+              argv,
+              backendUrl,
+              memoraxCodeHome,
+              clients,
+              previousClients,
+              hermesLifecycle,
+              dshLifecycle,
+            )
+          ));
+        }
+        return executeMemoraxCodeStart(
+          serviceOptions,
+          argv,
+          backendUrl,
+          memoraxCodeHome,
+          clients,
+          previousClients,
+          hermesLifecycle,
+        );
+      });
+    } catch (error) {
+      return hermesLifecycleFailure("start", error);
+    }
+  }
   if (clients.dsh || previousClients?.dsh || isDshAdapterRecovery()) {
     try {
       return await withDshAdapterLifecycleLock(context, (dshLifecycle) => (
@@ -215,6 +259,7 @@ async function startMemoraxCodeServiceLocked(
           memoraxCodeHome,
           clients,
           previousClients,
+          undefined,
           dshLifecycle,
         )
       ));
@@ -239,6 +284,7 @@ async function executeMemoraxCodeStart(
   memoraxCodeHome: string,
   clients: ManagedClients,
   previousClients: ManagedClients | undefined,
+  hermesLifecycle?: HermesAdapterLifecycleParticipant,
   dshLifecycle?: DshAdapterLifecycleParticipant,
 ): Promise<MemoraxCodeLifecycleReport> {
   const lifecycleContext = { argv, serviceOptions };
@@ -264,6 +310,19 @@ async function executeMemoraxCodeStart(
       };
     }
   }
+  // Hermes holds its state lock before the DSH lock below, and DSH after it;
+  // callers already own the Backend lifecycle lock, establishing one lock order.
+  const quiescedHermes = hermesLifecycle && (clients.hermes || previousClients?.hermes)
+    ? await hermesLifecycle.quiesce?.(lifecycleContext)
+    : undefined;
+  if (quiescedHermes?.ok === false) {
+    return {
+      ok: false,
+      action: "start",
+      backend: preservedBackendResult(serviceOptions, "hermes_adapter_quiesce_failed", "start"),
+      hermesAdapter: quiescedHermes,
+    };
+  }
   const quiescedDsh = dshLifecycle && (clients.dsh || previousClients?.dsh)
     ? await dshLifecycle.quiesce?.(lifecycleContext)
     : undefined;
@@ -273,19 +332,27 @@ async function executeMemoraxCodeStart(
       action: "start",
       backend: preservedBackendResult(serviceOptions, "dsh_adapter_quiesce_failed", "start"),
       dshAdapter: quiescedDsh,
+      ...(quiescedHermes ? { hermesAdapter: quiescedHermes } : {}),
     };
   }
   const recoverPreparationFailure = (reason: string) => recoverStartPreparationFailure(
     serviceOptions,
     reason,
     dshLifecycle,
+    hermesLifecycle,
     lifecycleBackendContext,
     quiescedDsh,
+    quiescedHermes,
   );
   // A failed Backend ownership check must leave the active client generation
   // and its conservative cleanup marker untouched.
   const stopped = await stopBackendService(serviceOptions);
   if (!stopped.ok) {
+    const restoredHermes = await reactivatePreviouslyEnabledHermes(
+      hermesLifecycle,
+      lifecycleContext,
+      quiescedHermes,
+    );
     const restoredDsh = await reactivatePreviouslyEnabledDsh(
       dshLifecycle,
       lifecycleContext,
@@ -295,6 +362,9 @@ async function executeMemoraxCodeStart(
       ok: false,
       action: "start",
       backend: { ...stopped, action: "start" },
+      ...(restoredHermes || quiescedHermes
+        ? { hermesAdapter: restoredHermes ?? quiescedHermes }
+        : {}),
       ...(restoredDsh || quiescedDsh
         ? { dshAdapter: restoredDsh ?? quiescedDsh }
         : {}),
@@ -312,10 +382,14 @@ async function executeMemoraxCodeStart(
   const deselectedOpenCode = previousClients?.opencode && !clients.opencode
     ? await openCodeAdapterLifecycle.disable({ argv, serviceOptions })
     : undefined;
+  const deselectedHermes = previousClients?.hermes && !clients.hermes && hermesLifecycle
+    ? await hermesLifecycle.disable({ argv, serviceOptions })
+    : undefined;
   if (deselectedCodex?.ok === false
     || deselectedClaude?.ok === false
     || deselectedDsh?.ok === false
-    || deselectedOpenCode?.ok === false) {
+    || deselectedOpenCode?.ok === false
+    || deselectedHermes?.ok === false) {
     const recovery = await recoverPreparationFailure("adapter_disable_failed");
     return {
       ok: false,
@@ -327,6 +401,9 @@ async function executeMemoraxCodeStart(
         ? { dshAdapter: recovery.dshAdapter ?? deselectedDsh }
         : {}),
       ...(deselectedOpenCode ? { opencodeAdapter: deselectedOpenCode } : {}),
+      ...(recovery.hermesAdapter || deselectedHermes
+        ? { hermesAdapter: recovery.hermesAdapter ?? deselectedHermes }
+        : {}),
     };
   }
   // The marker is a conservative cleanup scope, not a readiness signal. Persist
@@ -344,6 +421,7 @@ async function executeMemoraxCodeStart(
       message: error instanceof Error ? error.message : String(error),
       backend: recovery.backend,
       ...(recovery.dshAdapter ? { dshAdapter: recovery.dshAdapter } : {}),
+      ...(recovery.hermesAdapter ? { hermesAdapter: recovery.hermesAdapter } : {}),
     };
   }
   const codexAdapter = clients.codex
@@ -357,6 +435,7 @@ async function executeMemoraxCodeStart(
       backend: recovery.backend,
       codexAdapter,
       ...(recovery.dshAdapter ? { dshAdapter: recovery.dshAdapter } : {}),
+      ...(recovery.hermesAdapter ? { hermesAdapter: recovery.hermesAdapter } : {}),
     };
   }
   const claudeAdapter = clients.claude
@@ -374,6 +453,7 @@ async function executeMemoraxCodeStart(
       ...(codexAdapter ? { codexAdapter } : {}),
       ...(claudeAdapter ? { claudeAdapter } : {}),
       ...(recovery.dshAdapter ? { dshAdapter: recovery.dshAdapter } : {}),
+      ...(recovery.hermesAdapter ? { hermesAdapter: recovery.hermesAdapter } : {}),
       opencodeAdapter,
     };
   }
@@ -390,6 +470,23 @@ async function executeMemoraxCodeStart(
       ...(claudeAdapter ? { claudeAdapter } : {}),
       dshAdapter: recovery.dshAdapter ?? preparedDshAdapter,
       ...(opencodeAdapter ? { opencodeAdapter } : {}),
+      ...(recovery.hermesAdapter ? { hermesAdapter: recovery.hermesAdapter } : {}),
+    };
+  }
+  const preparedHermesAdapter = clients.hermes && hermesLifecycle
+    ? await hermesLifecycle.prepareEnable(lifecycleBackendContext)
+    : undefined;
+  if (preparedHermesAdapter?.ok === false) {
+    const recovery = await recoverPreparationFailure("hermes_adapter_enable_failed");
+    return {
+      ok: false,
+      action: "start",
+      backend: recovery.backend,
+      ...(codexAdapter ? { codexAdapter } : {}),
+      ...(claudeAdapter ? { claudeAdapter } : {}),
+      ...(preparedDshAdapter ? { dshAdapter: preparedDshAdapter } : {}),
+      ...(opencodeAdapter ? { opencodeAdapter } : {}),
+      hermesAdapter: recovery.hermesAdapter ?? preparedHermesAdapter,
     };
   }
   const backendStartOptions: BackendServiceOptions = {
@@ -412,19 +509,26 @@ async function executeMemoraxCodeStart(
       ...(claudeAdapter ? { claudeAdapter } : {}),
       ...(preparedDshAdapter ? { dshAdapter: preparedDshAdapter } : {}),
       ...(disabledOpenCode ? { opencodeAdapter: disabledOpenCode } : {}),
+      ...(preparedHermesAdapter ? { hermesAdapter: preparedHermesAdapter } : {}),
     };
   }
   const dshAdapter = preparedDshAdapter?.installed === true
     ? await dshLifecycle?.activate?.(lifecycleBackendContext)
     : preparedDshAdapter;
+  const hermesAdapter = preparedHermesAdapter?.installed === true
+    ? await hermesLifecycle?.activate?.(lifecycleBackendContext)
+    : preparedHermesAdapter;
   return {
-    ok: claudeAdapter?.ok !== false && dshAdapter?.ok !== false,
+    ok: claudeAdapter?.ok !== false
+      && dshAdapter?.ok !== false
+      && hermesAdapter?.ok !== false,
     action: "start",
     backend,
     ...(codexAdapter ? { codexAdapter } : {}),
     ...(claudeAdapter ? { claudeAdapter } : {}),
     ...(dshAdapter ? { dshAdapter } : {}),
     ...(opencodeAdapter ? { opencodeAdapter } : {}),
+    ...(hermesAdapter ? { hermesAdapter } : {}),
   };
 }
 
@@ -459,13 +563,21 @@ async function stopMemoraxCodeServiceLocked(
   const context = memoraxCodeStopContext(serviceOptions, argv);
   let execution: MemoraxCodeStopExecution;
   try {
-    execution = context.clients.dsh
-      ? await withDshAdapterLifecycleLock({ argv, serviceOptions }, (dshLifecycle) => (
-          executeMemoraxCodeStop(serviceOptions, argv, context, dshLifecycle)
-        ))
-      : await executeMemoraxCodeStop(serviceOptions, argv, context);
+    if (context.clients.hermes) {
+      execution = await withHermesAdapterLifecycleLock({ argv, serviceOptions }, (hermesLifecycle) => (
+        executeMemoraxCodeStop(serviceOptions, argv, context, hermesLifecycle)
+      ));
+    } else if (context.clients.dsh) {
+      execution = await withDshAdapterLifecycleLock({ argv, serviceOptions }, (dshLifecycle) => (
+        executeMemoraxCodeStop(serviceOptions, argv, context, undefined, dshLifecycle, true)
+      ));
+    } else {
+      execution = await executeMemoraxCodeStop(serviceOptions, argv, context);
+    }
   } catch (error) {
-    return dshLifecycleFailure("stop", error);
+    return context.clients.hermes
+      ? hermesLifecycleFailure("stop", error)
+      : dshLifecycleFailure("stop", error);
   }
   if (execution.report.ok) commitActiveManagedClients(context.memoraxCodeHome, execution.remainingClients);
   return execution.report;
@@ -475,7 +587,9 @@ async function executeMemoraxCodeStop(
   serviceOptions: BackendServiceOptions,
   argv: string[],
   context: MemoraxCodeStopContext,
+  hermesLifecycle?: HermesAdapterLifecycleParticipant,
   dshLifecycle?: DshAdapterLifecycleParticipant,
+  dshLocked = false,
 ): Promise<MemoraxCodeStopExecution> {
   const { activeClients, clients } = context;
   const serviceStateFailure = backendServiceStatePreflight(serviceOptions, "stop");
@@ -495,15 +609,108 @@ async function executeMemoraxCodeStop(
       claude: activeClients.claude && !clients.claude,
       dsh: activeClients.dsh && !clients.dsh,
       opencode: activeClients.opencode && !clients.opencode,
+      hermes: activeClients.hermes && !clients.hermes,
     }
     : undefined;
   const hasRemainingClients = remaining?.codex === true
     || remaining?.claude === true
     || remaining?.dsh === true
-    || remaining?.opencode === true;
-  const backendOnlyStop = !clients.codex && !clients.claude && !clients.dsh && !clients.opencode;
+    || remaining?.opencode === true
+    || remaining?.hermes === true;
+  const backendOnlyStop = !clients.codex
+    && !clients.claude
+    && !clients.dsh
+    && !clients.opencode
+    && !clients.hermes;
   const packageReplacement = isPackageReplacement();
   const needsBackendStop = packageReplacement || backendOnlyStop || !hasRemainingClients;
+  if (clients.hermes && hermesLifecycle) {
+    if (clients.dsh && dshLifecycle && !dshLocked) {
+      return await withDshAdapterLifecycleLock({ argv, serviceOptions }, (lockedDsh) => (
+        executeMemoraxCodeStopLockedShared(
+          serviceOptions,
+          argv,
+          context,
+          hermesLifecycle,
+          lockedDsh,
+          remaining,
+          hasRemainingClients,
+          backendOnlyStop,
+          packageReplacement,
+          needsBackendStop,
+        )
+      ));
+    }
+    return executeMemoraxCodeStopLockedShared(
+      serviceOptions,
+      argv,
+      context,
+      hermesLifecycle,
+      dshLifecycle,
+      remaining,
+      hasRemainingClients,
+      backendOnlyStop,
+      packageReplacement,
+      needsBackendStop,
+    );
+  }
+  if (dshLifecycle && !dshLocked) {
+    return await withDshAdapterLifecycleLock({ argv, serviceOptions }, (lockedDsh) => (
+      executeMemoraxCodeStopLockedShared(
+        serviceOptions,
+        argv,
+        context,
+        undefined,
+        lockedDsh,
+        remaining,
+        hasRemainingClients,
+        backendOnlyStop,
+        packageReplacement,
+        needsBackendStop,
+      )
+    ));
+  }
+  return executeMemoraxCodeStopLockedShared(
+    serviceOptions,
+    argv,
+    context,
+    undefined,
+    dshLifecycle,
+    remaining,
+    hasRemainingClients,
+    backendOnlyStop,
+    packageReplacement,
+    needsBackendStop,
+  );
+}
+
+async function executeMemoraxCodeStopLockedShared(
+  serviceOptions: BackendServiceOptions,
+  argv: string[],
+  context: MemoraxCodeStopContext,
+  hermesLifecycle: HermesAdapterLifecycleParticipant | undefined,
+  dshLifecycle: DshAdapterLifecycleParticipant | undefined,
+  remaining: ManagedClients | undefined,
+  hasRemainingClients: boolean,
+  backendOnlyStop: boolean,
+  packageReplacement: boolean,
+  needsBackendStop: boolean,
+): Promise<MemoraxCodeStopExecution> {
+  const { activeClients, clients } = context;
+  const quiescedHermes = clients.hermes && hermesLifecycle
+    ? await hermesLifecycle.quiesce?.({ argv, serviceOptions })
+    : undefined;
+  if (quiescedHermes?.ok === false) {
+    return {
+      report: {
+        ok: false,
+        action: "stop",
+        backend: preservedBackendResult(serviceOptions, "hermes_adapter_quiesce_failed"),
+        hermesAdapter: quiescedHermes,
+      },
+      remainingClients: activeClients,
+    };
+  }
   const quiescedDsh = clients.dsh && dshLifecycle
     ? await dshLifecycle.quiesce?.({ argv, serviceOptions })
     : undefined;
@@ -514,6 +721,7 @@ async function executeMemoraxCodeStop(
         action: "stop",
         backend: preservedBackendResult(serviceOptions, "dsh_adapter_quiesce_failed"),
         dshAdapter: quiescedDsh,
+        ...(quiescedHermes ? { hermesAdapter: quiescedHermes } : {}),
       },
       remainingClients: activeClients,
     };
@@ -525,6 +733,11 @@ async function executeMemoraxCodeStop(
     ? await stopBackendService(serviceOptions)
     : undefined;
   if (stoppedBackend?.ok === false) {
+    const restoredHermes = await reactivatePreviouslyEnabledHermes(
+      hermesLifecycle,
+      { argv, serviceOptions },
+      quiescedHermes,
+    );
     const restoredDsh = await reactivatePreviouslyEnabledDsh(
       dshLifecycle,
       { argv, serviceOptions },
@@ -535,6 +748,9 @@ async function executeMemoraxCodeStop(
         ok: false,
         action: "stop",
         backend: stoppedBackend,
+        ...(restoredHermes || quiescedHermes
+          ? { hermesAdapter: restoredHermes ?? quiescedHermes }
+          : {}),
         ...(restoredDsh || quiescedDsh
           ? { dshAdapter: restoredDsh ?? quiescedDsh }
           : {}),
@@ -554,10 +770,14 @@ async function executeMemoraxCodeStop(
   const opencodeAdapter = clients.opencode
     ? await openCodeAdapterLifecycle.disable({ argv, serviceOptions })
     : undefined;
+  const hermesAdapter = clients.hermes && hermesLifecycle
+    ? await hermesLifecycle.disable({ argv, serviceOptions })
+    : undefined;
   const adaptersOk = codexAdapter?.ok !== false
     && claudeAdapter?.ok !== false
     && dshAdapter?.ok !== false
-    && opencodeAdapter?.ok !== false;
+    && opencodeAdapter?.ok !== false
+    && hermesAdapter?.ok !== false;
   const backend = stoppedBackend
     ?? (adaptersOk
       ? preservedBackendResult(serviceOptions, "active_clients_remaining")
@@ -566,7 +786,8 @@ async function executeMemoraxCodeStop(
     && codexAdapter?.ok !== false
     && claudeAdapter?.ok !== false
     && dshAdapter?.ok !== false
-    && opencodeAdapter?.ok !== false;
+    && opencodeAdapter?.ok !== false
+    && hermesAdapter?.ok !== false;
   return {
     report: {
       ok,
@@ -576,6 +797,7 @@ async function executeMemoraxCodeStop(
       ...(claudeAdapter ? { claudeAdapter } : {}),
       ...(dshAdapter ? { dshAdapter } : {}),
       ...(opencodeAdapter ? { opencodeAdapter } : {}),
+      ...(hermesAdapter ? { hermesAdapter } : {}),
     },
     remainingClients: packageReplacement
       ? activeClients
@@ -659,10 +881,19 @@ async function uninstallMemoraxCodeServiceLocked(
   argv: string[],
 ): Promise<MemoraxCodeLifecycleReport> {
   const context = memoraxCodeStopContext(serviceOptions, argv);
+  if (context.clients.hermes) {
+    try {
+      return await withHermesAdapterLifecycleLock({ argv, serviceOptions }, (hermesLifecycle) => (
+        executeMemoraxCodeUninstall(serviceOptions, argv, context, hermesLifecycle)
+      ));
+    } catch (error) {
+      return hermesLifecycleFailure("uninstall", error);
+    }
+  }
   if (context.clients.dsh) {
     try {
       return await withDshAdapterLifecycleLock({ argv, serviceOptions }, (dshLifecycle) => (
-        executeMemoraxCodeUninstall(serviceOptions, argv, context, dshLifecycle)
+        executeMemoraxCodeUninstall(serviceOptions, argv, context, undefined, dshLifecycle)
       ));
     } catch (error) {
       return dshLifecycleFailure("uninstall", error);
@@ -675,13 +906,21 @@ async function executeMemoraxCodeUninstall(
   serviceOptions: BackendServiceOptions,
   argv: string[],
   context: MemoraxCodeStopContext,
+  hermesLifecycle?: HermesAdapterLifecycleParticipant,
   dshLifecycle?: DshAdapterLifecycleParticipant,
 ): Promise<MemoraxCodeLifecycleReport> {
   const { activeClients, clients, memoraxCodeHome } = context;
   const configuredClients = configuredClientsForPackageRemoval(serviceOptions);
   const canRemoveSharedPackage = includesManagedClients(clients, configuredClients)
     && (!activeClients || includesManagedClients(clients, activeClients));
-  const stopExecution = await executeMemoraxCodeStop(serviceOptions, argv, context, dshLifecycle);
+  const stopExecution = await executeMemoraxCodeStop(
+    serviceOptions,
+    argv,
+    context,
+    hermesLifecycle,
+    dshLifecycle,
+    hermesLifecycle === undefined && dshLifecycle !== undefined,
+  );
   const stopped = stopExecution.report;
   if (!stopped.ok) {
     return {
@@ -704,10 +943,14 @@ async function executeMemoraxCodeUninstall(
   const opencodePlugin = clients.opencode
     ? await openCodeAdapterLifecycle.remove({ argv, serviceOptions })
     : undefined;
+  const hermesPlugin = clients.hermes && hermesLifecycle
+    ? await hermesLifecycle.remove({ argv, serviceOptions })
+    : undefined;
   const pluginCleanupOk = codexPlugin?.ok !== false
     && claudePlugin?.ok !== false
     && dshPlugin?.ok !== false
-    && opencodePlugin?.ok !== false;
+    && opencodePlugin?.ok !== false
+    && hermesPlugin?.ok !== false;
   const npmPackageRemoval = !pluginCleanupOk
     ? skippedNpmPackageRemoval("plugin_cleanup_failed")
     : canRemoveSharedPackage
@@ -720,6 +963,7 @@ async function executeMemoraxCodeUninstall(
   const opencodeAdapter = stopped.opencodeAdapter && opencodePlugin
     ? { ...stopped.opencodeAdapter, pluginRemove: opencodePlugin }
     : stopped.opencodeAdapter;
+  const hermesAdapter = hermesPlugin ?? stopped.hermesAdapter;
   const ok = pluginCleanupOk && npmPackageRemoval.ok !== false;
   if (ok) commitActiveManagedClients(memoraxCodeHome, stopExecution.remainingClients);
   return {
@@ -730,11 +974,13 @@ async function executeMemoraxCodeUninstall(
     ...(claudeAdapter ? { claudeAdapter } : {}),
     ...(dshAdapter ? { dshAdapter } : {}),
     ...(opencodeAdapter ? { opencodeAdapter } : {}),
+    ...(hermesAdapter ? { hermesAdapter } : {}),
     npmPackageRemoval,
     removesPlugin: codexPlugin?.ok === true
       || claudePlugin?.ok === true
       || (dshPlugin?.ok === true && dshPlugin.skipped !== true)
-      || opencodePlugin?.ok === true,
+      || opencodePlugin?.ok === true
+      || (hermesPlugin?.ok === true && hermesPlugin.skipped !== true),
     removesUserState: false,
   };
 }
@@ -833,7 +1079,7 @@ function configuredClientsForPackageRemoval(
 ): ManagedClients {
   const memoraxCodeHome = memoraxCodeHomeForService(serviceOptions);
   const config = loadManagedClientsConfig(memoraxCodeHome);
-  const configured = resolveManagedClients([], config);
+  const baseSelection = resolveManagedClients([], config);
   const legacyDshSelection = config.clients !== undefined
     && config.clients.dsh === undefined;
   const ownsDshIntegration = existsSync(join(
@@ -842,8 +1088,19 @@ function configuredClientsForPackageRemoval(
     "dsh",
     "state.json",
   ));
-  return legacyDshSelection && !ownsDshIntegration
-    ? { ...configured, dsh: false }
+  const legacyHermesSelection = config.clients !== undefined
+    && config.clients.hermes === undefined;
+  const ownsHermesIntegration = existsSync(join(
+    memoraxCodeHome,
+    "adapters",
+    "hermes",
+    "state.json",
+  ));
+  const configured = legacyDshSelection && !ownsDshIntegration
+    ? { ...baseSelection, dsh: false }
+    : baseSelection;
+  return legacyHermesSelection && !ownsHermesIntegration
+    ? { ...configured, hermes: false }
     : configured;
 }
 
@@ -856,7 +1113,7 @@ function memoraxCodeStopContext(
     memoraxCodeHome,
     activeClients: readActiveManagedClients(memoraxCodeHome),
     clients: isPackageReplacement()
-      ? { codex: false, claude: false, dsh: true, opencode: false }
+      ? { codex: false, claude: false, dsh: true, opencode: false, hermes: false }
       : managedClientsFor(argv, serviceOptions, { preferActive: true }),
   };
 }
@@ -879,7 +1136,8 @@ function includesManagedClients(selection: ManagedClients, required: ManagedClie
   return (!required.codex || selection.codex)
     && (!required.claude || selection.claude)
     && (!required.dsh || selection.dsh)
-    && (!required.opencode || selection.opencode);
+    && (!required.opencode || selection.opencode)
+    && (!required.hermes || selection.hermes);
 }
 
 function isPackageReplacement(): boolean {
@@ -936,17 +1194,44 @@ async function recoverStartPreparationFailure(
   serviceOptions: BackendServiceOptions,
   reason: string,
   dshLifecycle: DshAdapterLifecycleParticipant | undefined,
+  hermesLifecycle: HermesAdapterLifecycleParticipant | undefined,
   context: Readonly<{ argv: string[]; serviceOptions: BackendServiceOptions; backendUrl: string }>,
   quiescedDsh: AdapterReport | undefined,
+  quiescedHermes: AdapterReport | undefined,
 ): Promise<{
   backend: Awaited<ReturnType<typeof startBackendService>>;
   dshAdapter?: AdapterReport;
+  hermesAdapter?: AdapterReport;
 }> {
   const backend = await recoverBackendAfterStartPreparationFailure(serviceOptions, reason);
   const dshAdapter = backend.ok
     ? await restorePreviouslyEnabledDsh(dshLifecycle, context, quiescedDsh)
     : undefined;
-  return { backend, ...(dshAdapter ? { dshAdapter } : {}) };
+  const hermesAdapter = backend.ok
+    ? await restorePreviouslyEnabledHermes(hermesLifecycle, context, quiescedHermes)
+    : undefined;
+  return {
+    backend,
+    ...(dshAdapter ? { dshAdapter } : {}),
+    ...(hermesAdapter ? { hermesAdapter } : {}),
+  };
+}
+
+async function restorePreviouslyEnabledHermes(
+  hermesLifecycle: HermesAdapterLifecycleParticipant | undefined,
+  context: Readonly<{ argv: string[]; serviceOptions: BackendServiceOptions; backendUrl: string }>,
+  quiescedHermes: AdapterReport | undefined,
+): Promise<AdapterReport | undefined> {
+  const activated = await reactivatePreviouslyEnabledHermes(
+    hermesLifecycle,
+    context,
+    quiescedHermes,
+  );
+  if (activated?.ok !== false && activated?.enabled === true) return activated;
+  if (!hermesLifecycle || quiescedHermes?.previouslyEnabled !== true) return undefined;
+  const prepared = await hermesLifecycle.prepareEnable(context);
+  if (prepared.ok === false || prepared.installed !== true) return prepared;
+  return await hermesLifecycle.activate?.(context) ?? prepared;
 }
 
 async function restorePreviouslyEnabledDsh(
@@ -985,6 +1270,15 @@ async function reactivatePreviouslyEnabledDsh(
 ): Promise<AdapterReport | undefined> {
   if (!dshLifecycle || quiescedDsh?.previouslyEnabled !== true) return undefined;
   return await dshLifecycle.activate?.(context);
+}
+
+async function reactivatePreviouslyEnabledHermes(
+  hermesLifecycle: HermesAdapterLifecycleParticipant | undefined,
+  context: Readonly<{ argv: string[]; serviceOptions: BackendServiceOptions }>,
+  quiescedHermes: AdapterReport | undefined,
+): Promise<AdapterReport | undefined> {
+  if (!hermesLifecycle || quiescedHermes?.previouslyEnabled !== true) return undefined;
+  return await hermesLifecycle.activate?.(context);
 }
 
 function backendServiceStatePreflight(
@@ -1061,6 +1355,17 @@ export function isOptionalUnavailableDshAdapter(report: AdapterReport | undefine
 }
 
 
+export function isOptionalUnavailableHermesAdapter(report: AdapterReport | undefined): boolean {
+  return Boolean(
+    report
+      && report.ok !== false
+      && report.skipped === true
+      && report.managed !== true
+      && report.reason === "no_existing_profiles",
+  );
+}
+
+
 export function isOptionalUnconfiguredClaudeAdapter(report: AdapterReport | undefined, codexAdapter: AdapterReport | undefined): boolean {
   return Boolean(
     report
@@ -1089,6 +1394,23 @@ function dshLifecycleFailure(
       action,
       integration: "plugin",
       runtime: "dsh",
+      error: error instanceof Error ? error.message : String(error),
+    },
+  };
+}
+
+function hermesLifecycleFailure(
+  action: MemoraxCodeLifecycleReport["action"],
+  error: unknown,
+): MemoraxCodeLifecycleReport {
+  return {
+    ok: false,
+    action,
+    hermesAdapter: {
+      ok: false,
+      action,
+      integration: "plugin",
+      runtime: "hermes",
       error: error instanceof Error ? error.message : String(error),
     },
   };

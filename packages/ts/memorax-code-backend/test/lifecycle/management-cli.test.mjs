@@ -580,6 +580,7 @@ test("partial client stop preserves Backend until an explicit Backend-only stop"
       claude: true,
       dsh: false,
       opencode: false,
+      hermes: false,
     });
 
     const backendOnlyStopped = await runCli(cliPath, ["stop", "--json", ...commonArgs, "--clients", "none"]);
@@ -592,6 +593,7 @@ test("partial client stop preserves Backend until an explicit Backend-only stop"
       claude: true,
       dsh: false,
       opencode: false,
+      hermes: false,
     });
   } finally {
     await runCli(cliPath, ["stop", "--json", ...commonArgs, "--clients", "none"]);

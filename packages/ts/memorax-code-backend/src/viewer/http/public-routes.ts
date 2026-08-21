@@ -19,7 +19,7 @@ import type {
 } from "../model.js";
 
 type ViewerResponse = ServerResponse;
-type MemoryViewerClient = Extract<TraceClient, "codex" | "claude" | "dsh" | "opencode">;
+type MemoryViewerClient = Extract<TraceClient, "codex" | "claude" | "dsh" | "opencode" | "hermes">;
 
 const MEMORY_VIEWER_SESSION_ACTIVITY_WINDOW_MS = 72 * 60 * 60 * 1_000;
 const MEMORY_VIEWER_ACTIVITY_CUTOFF_GRANULARITY_MS = 60_000;
@@ -135,7 +135,7 @@ function viewerMemoraxCodeHome(
 
 function memoryViewerUserClient(url: URL): {
   traceClient: MemoryViewerClient;
-  publicClient: "codex" | "claude-code" | "dsh" | "opencode";
+  publicClient: "codex" | "claude-code" | "dsh" | "opencode" | "hermes";
 } | undefined {
   const value = url.searchParams.get("client");
   const traceClient = value === null ? "codex" : traceClientFromPublicValue(value.trim().toLowerCase());
@@ -145,7 +145,7 @@ function memoryViewerUserClient(url: URL): {
 }
 
 function traceClientFromPublicValue(value: unknown): MemoryViewerClient | undefined {
-  if (value === "codex" || value === "dsh" || value === "opencode") return value;
+  if (value === "codex" || value === "hermes" || value === "dsh" || value === "opencode") return value;
   return value === "claude" || value === "claude-code" || value === "cc"
     ? "claude"
     : undefined;

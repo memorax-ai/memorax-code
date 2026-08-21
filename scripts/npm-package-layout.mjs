@@ -8,6 +8,7 @@ const packagePrefixes = [
   "lib/memorax-code-claude-marketplace/",
   "lib/memorax-code-codex-adapter/",
   "lib/memorax-code-dsh-adapter/",
+  "lib/memorax-code-hermes-adapter/",
   "lib/memorax-code-opencode-adapter/",
 ];
 const packageFiles = new Set([

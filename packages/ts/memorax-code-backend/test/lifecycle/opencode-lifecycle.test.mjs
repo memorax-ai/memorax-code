@@ -40,6 +40,7 @@ test("OpenCode participates in lifecycle selection and status reporting", { time
       claude: false,
       dsh: false,
       opencode: true,
+      hermes: false,
     });
 
     const status = await runCli(cliPath, [
@@ -76,6 +77,7 @@ test("OpenCode participates in lifecycle selection and status reporting", { time
       claude: true,
       dsh: false,
       opencode: false,
+      hermes: false,
     });
 
     const restarted = await runCli(cliPath, [

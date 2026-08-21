@@ -13,6 +13,9 @@ export type AdapterReport = {
   dshVersion?: string;
   dshVersionTested?: boolean;
   testedDshVersions?: string[];
+  hermesVersion?: string;
+  hermesVersionTested?: boolean;
+  testedHermesVersions?: string[];
   profiles?: unknown[];
   detectedProfiles?: string[];
   installedProfiles?: string[];

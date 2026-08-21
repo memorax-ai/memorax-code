@@ -45,6 +45,21 @@ type DshProfileLifecycleModule = {
   ): Promise<T>;
 };
 
+type HermesPluginRemovalReport = {
+  ok: boolean;
+  action: string;
+  skipped?: boolean;
+  reason?: string;
+  message?: string;
+};
+
+type HermesProfileLifecycleModule = {
+  withHermesPluginLifecycleLock<T>(
+    options: Record<string, unknown>,
+    operation: (lifecycle: { remove(): HermesPluginRemovalReport }) => T | Promise<T>,
+  ): Promise<T>;
+};
+
 export type ClientPluginRemovalOptions = {
   memoraxCodeHome?: string;
   homeDir?: string;
@@ -52,10 +67,13 @@ export type ClientPluginRemovalOptions = {
   claudeHome?: string;
   dshHome?: string;
   dshAdapterRoot?: string;
+  hermesHome?: string;
+  hermesAdapterRoot?: string;
   openCodeConfigDir?: string;
   codexCommand?: string;
   claudeCommand?: string;
   dshCommand?: string;
+  hermesCommand?: string;
 };
 
 export type ClientPluginRemovalReport = {
@@ -65,6 +83,7 @@ export type ClientPluginRemovalReport = {
   claudePlugin: ClaudePluginRemovalReport | ClientPluginRemovalFailure;
   dshPlugin: DshPluginRemovalReport | ClientPluginRemovalFailure;
   opencodePlugin: OpenCodePluginRemovalReport | ClientPluginRemovalFailure;
+  hermesPlugin: HermesPluginRemovalReport | ClientPluginRemovalFailure;
 };
 
 type ClientPluginRemovalFailure = {
@@ -79,6 +98,7 @@ export async function prepareClientPluginRemovalCleanup(
 ): Promise<() => Promise<ClientPluginRemovalReport>> {
   const claudePluginInstaller = await loadClaudePluginInstaller();
   const dshProfileLifecycle = await loadDshProfileLifecycle();
+  const hermesProfileLifecycle = await loadHermesProfileLifecycle().catch(() => undefined);
   const openCodePluginInstaller = await loadOpenCodePluginInstaller();
   const home = resolveHome(options.homeDir);
   const memoraxCodeHome = resolve(options.memoraxCodeHome ?? process.env.MEMORAX_CODE_HOME ?? join(home, ".memorax-code"));
@@ -88,7 +108,7 @@ export async function prepareClientPluginRemovalCleanup(
   return async () => {
     try {
       return await withBackendLifecycleLock({ home: memoraxCodeHome }, async () => {
-        const [codexPlugin, claudePlugin, dshPlugin, opencodePlugin] = await Promise.all([
+        const [codexPlugin, claudePlugin, dshPlugin, opencodePlugin, hermesPlugin] = await Promise.all([
           cleanupCodexAfterBackendRemoval({
             memoraxCodeHome,
             homeDir: home,
@@ -118,14 +138,24 @@ export async function prepareClientPluginRemovalCleanup(
                 : {}),
             }))
             .catch((error) => removalFailure("opencode-plugin-remove", error)),
+          hermesProfileLifecycle
+            ? hermesProfileLifecycle.withHermesPluginLifecycleLock({
+                memoraxCodeHome,
+                homeDir: home,
+                ...(options.hermesHome ? { hermesHome: options.hermesHome } : {}),
+                ...(options.hermesAdapterRoot ? { adapterRoot: options.hermesAdapterRoot } : {}),
+                ...(options.hermesCommand ? { hermesCommand: options.hermesCommand } : {}),
+              }, (lifecycle) => lifecycle.remove())
+            : skippedHermesPluginRemoval(),
         ]);
         return {
-          ok: codexPlugin.ok && claudePlugin.ok && dshPlugin.ok && opencodePlugin.ok,
+          ok: codexPlugin.ok && claudePlugin.ok && dshPlugin.ok && opencodePlugin.ok && hermesPlugin.ok,
           action: "client-plugin-removal-cleanup" as const,
           codexPlugin,
           claudePlugin,
           dshPlugin,
           opencodePlugin,
+          hermesPlugin,
         };
       });
     } catch (error) {
@@ -137,6 +167,7 @@ export async function prepareClientPluginRemovalCleanup(
         claudePlugin: failure,
         dshPlugin: failure,
         opencodePlugin: failure,
+        hermesPlugin: failure,
       };
     }
   };
@@ -152,6 +183,19 @@ async function loadOpenCodePluginInstaller(): Promise<OpenCodePluginInstaller> {
 
 async function loadDshProfileLifecycle(): Promise<DshProfileLifecycleModule> {
   return await import(new URL("../../../memorax-code-dsh-adapter/src/profile-lifecycle.mjs", import.meta.url).href);
+}
+
+async function loadHermesProfileLifecycle(): Promise<HermesProfileLifecycleModule> {
+  return await import(new URL("../../../memorax-code-hermes-adapter/src/profile-lifecycle.mjs", import.meta.url).href);
+}
+
+function skippedHermesPluginRemoval(): HermesPluginRemovalReport {
+  return {
+    ok: true,
+    action: "hermes-plugin-remove",
+    skipped: true,
+    reason: "adapter_not_installed",
+  };
 }
 
 async function readJsonRecord(path: string): Promise<Record<string, unknown> | undefined> {

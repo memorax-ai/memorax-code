@@ -31,6 +31,7 @@ const reviewedNetworkSources = new Set([
   "packages/ts/memorax-code-backend/src/clients/claude/memory-hook-runtime.ts",
   "packages/ts/memorax-code-backend/src/clients/codex/memory-hook-runtime.ts",
   "packages/ts/memorax-code-backend/src/clients/dsh/memory-hook-runtime.ts",
+  "packages/ts/memorax-code-backend/src/clients/hermes/memory-hook-runtime.ts",
   "packages/ts/memorax-code-backend/src/clients/opencode/memory-hook-runtime.ts",
   "packages/ts/memorax-code-backend/src/lifecycle/backend/service.ts",
   "packages/ts/memorax-code-backend/src/lifecycle/backend/status.ts",
