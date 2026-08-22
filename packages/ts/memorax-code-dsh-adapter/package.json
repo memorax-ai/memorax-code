@@ -3,7 +3,7 @@
   "version": "0.1.6",
   "private": true,
   "type": "module",
-  "description": "DeepSeek Harness native memory adapter for MemoraX Code.",
+  "description": "DeepSeek Harness native and Patchouli memory adapter for MemoraX Code.",
   "main": "src/index.mjs",
   "exports": {
     ".": "./src/index.mjs"
@@ -39,6 +39,7 @@
     "src/http-client.mjs",
     "src/personal-context-worker.mjs",
     "src/personal-context.mjs",
+    "src/patchouli-provider.mjs",
     "src/plugin.mjs",
     "src/protocol.mjs",
     "src/runtime-state.mjs",

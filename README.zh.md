@@ -142,6 +142,12 @@ MemoraX Code 会先比较含义：语义相同的请求不重复写入；长期�
 | **客户端集成** | 与 Codex、Claude Code、DeepSeek Harness 和 OpenCode 集成，触发记忆检索、提醒和写入。目前 Codex、Claude Code 和 OpenCode 支持自动额度提醒。 |
 | **本地可视化** | 通过本地 Memory Viewer 查看活动统计、召回与写入状态。 |
 
+DeepSeek Harness 集成是一个原生 Cordis 插件。当可选的
+[Patchouli](https://github.com/memorax-ai/dsh-patchouli) service 存在时，MemoraX Code
+会注册为 Patchouli 知识 provider，并复用 Patchouli 的 Agent Loop 连接器；否则使用自身的
+Agent Loop listener。两条路径互斥运行，并保持相同的 Backend、Repo Memory、个人记忆、提醒和
+持久化 writeback 行为。
+
 ## 你的记忆，由你控制
 
 云端记忆依赖 MemoraX。完成安装引导后，会启用 MemoraX 搜索/添加，以及生成配置中的自动写回；

@@ -95,6 +95,7 @@ const PROFILE_BUNDLE_FILES = Object.freeze([
   "src/http-client.mjs",
   "src/personal-context-worker.mjs",
   "src/personal-context.mjs",
+  "src/patchouli-provider.mjs",
   "src/plugin.mjs",
   "src/protocol.mjs",
   "src/runtime-state.mjs",

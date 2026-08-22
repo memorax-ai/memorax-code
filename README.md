@@ -164,6 +164,13 @@ writing when the durable intent or target is unclear.
 | **Client integration** | Integrates with Codex, Claude Code, DeepSeek Harness, and OpenCode to trigger memory retrieval, reminders, and writeback. Automatic quota reminders are currently available in Codex, Claude Code, and OpenCode. |
 | **Local visualization** | Uses the local Memory Viewer to summarize activity counts, retrieval, and writeback status. |
 
+The DeepSeek Harness integration is a native Cordis plugin. When the optional
+[Patchouli](https://github.com/memorax-ai/dsh-patchouli) service is present,
+MemoraX Code registers as a Patchouli knowledge provider and uses Patchouli's
+Agent Loop connector; otherwise it uses its own Agent Loop listeners. These
+two paths are mutually exclusive and retain the same Backend, Repo Memory,
+personal-memory, reminder, and durable writeback behavior.
+
 ## Your Memory, Your Control
 
 MemoraX is required for cloud-backed memory. Completing setup activates

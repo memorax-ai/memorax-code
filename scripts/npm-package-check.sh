@@ -186,6 +186,7 @@ for relative in [
     "lib/memorax-code-dsh-adapter/src/http-client.mjs",
     "lib/memorax-code-dsh-adapter/src/personal-context-worker.mjs",
     "lib/memorax-code-dsh-adapter/src/personal-context.mjs",
+    "lib/memorax-code-dsh-adapter/src/patchouli-provider.mjs",
     "lib/memorax-code-dsh-adapter/src/plugin.mjs",
     "lib/memorax-code-dsh-adapter/src/profile-lifecycle.mjs",
     "lib/memorax-code-dsh-adapter/src/protocol.mjs",

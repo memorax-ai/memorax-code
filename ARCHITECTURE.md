@@ -102,7 +102,7 @@ relationships; the arrow labels distinguish them. It is not an import graph.
 | `packages/ts/memorax-code-adapter-common` | Shared source for Backend connection authority, private runtime, setup-completion and secure credential records, cross-process locking and configuration, Hook generations, Hook launch helpers, and Repo/Personal Memory helpers | Backend composition, native transcript interpretation, MemoraX request execution, or client plugin policy | `packages/ts/memorax-code-adapter-common/src/backend-connection.mjs`, `src/runtime-record.mjs`, `src/setup-completion.mjs`, `src/credentials`, `src/hooks`, and `src/repo-memory` |
 | `packages/ts/memorax-code-codex-adapter` | Codex plugin artifact, Hook shells and runtimes, session/workspace observation, diagnostics, and the canonical shared skill | Codex rollout semantics or Backend-side writeback authority | `.codex-plugin`, `hooks`, `runtime-hooks`, `src`, and `skills/memorax-code` |
 | `packages/ts/memorax-code-claude-adapter` | Claude Code plugin artifact, Hook shells and runtimes, configuration, installer, marketplace source, and diagnostics | Claude transcript semantics or Backend memory orchestration | `.claude-plugin`, `hooks`, `runtime-hooks`, `scripts`, and `src/plugin-install.mjs` |
-| `packages/ts/memorax-code-dsh-adapter` | DSH Cordis Turn listener, personal-context composition, shared-skill and supervised Repo Memory integration, exact persisted-event interval validation, local Backend wire protocol, Profile lifecycle, per-user runtime-bundle materialization, and durable runtime authority | Backend-side event interpretation, MemoraX request execution, or DSH provider and session ownership | `src/plugin.mjs`, `src/profile-lifecycle.mjs`, `hooks/repo-memory-job.mjs`, and the adapter tests |
+| `packages/ts/memorax-code-dsh-adapter` | Mutually exclusive native-listener and Patchouli-provider integration, personal-context composition, shared-skill and supervised Repo Memory integration, exact persisted-event interval validation, local Backend wire protocol, Profile lifecycle, per-user runtime-bundle materialization, and durable runtime authority | Backend-side event interpretation, MemoraX request execution, Patchouli routing or aggregation, or DSH session ownership | `src/plugin.mjs`, `src/patchouli-provider.mjs`, `src/profile-lifecycle.mjs`, `hooks/repo-memory-job.mjs`, and the adapter tests |
 | `packages/ts/memorax-code-opencode-adapter` | OpenCode plugin runtime, managed thin-loader installation, automatic retrieval, SDK-backed writeback, shell-session identity, workspace runtime evidence and diagnostics, a materialized shared skill, and supervised Repo Memory maintenance and missing-bundle initialization | OpenCode message interpretation inside the Backend or model-provider configuration | `src/plugin.mjs`, `src/plugin-install.mjs`, `src/cli.mjs`, `src/repo-memory-server-runner.mjs`, and the OpenCode materialization mapping in `scripts/npm-source-files.mjs` |
 | `packages/npm/memorax-code` | Installed executable wrappers, foreground setup and reconciliation, trial identity and credential provisioning, package-transition handling, update, npm lifecycle scripts, manifest, and release-package source | Backend lifecycle semantics, uninstall orchestration, or artifact staging | `bin`, `lib/setup-reconcile.mjs`, `lib/package-transition.mjs`, `lib/trial-setup.mjs`, `lib/run-entrypoint.mjs`, and `package.json` |
 | `scripts` | Backend build orchestration, staging/materialization, package layout, documentation, and local-only data gates | Product runtime authority | Package-build/check scripts and executable contract scripts |
@@ -401,9 +401,14 @@ sequenceDiagram
 - Buffering and chunking belong to the memory capability; rollout, transcript,
   DSH event-interval, and SDK message parsing remains client-specific.
 - DSH accepts only a contiguous native interval bounded by the matching
-  `turn/start` and completed `turn/end`. The Backend materializes direct user
-  text and visible model-assistant text; plugin recall, tools, reasoning, and
-  incomplete Turns are excluded. Only non-delegated sessions are eligible.
+  `turn/start` and completed `turn/end`. Without Patchouli, the adapter flushes
+  and reads that interval itself. With Patchouli, the official Agent Loop
+  connector supplies the same durable header and interval as generic
+  `{ meta, data }`, and the MemoraX provider validates it before using the same
+  Backend command. The two modes never run concurrently. The Backend
+  materializes direct user text and visible model-assistant text; plugin recall,
+  tools, reasoning, and incomplete Turns are excluded. Only non-delegated
+  sessions are eligible.
 - A valid persisted DSH interval can restore automatic writeback after a
   Backend restart without cached Turn metadata; repository scope is still
   resolved and validated from the persisted Session workspace.
@@ -436,10 +441,10 @@ Repo Memory is repository-local guidance under `.repo_memory`, not a MemoraX
 provider response. In all four clients, an accepted turn-start result exposes
 a worktree to the maintenance-aware adapter integration only for a verified
 Git scope; the Viewer separately projects Repo Memory readiness. Codex and
-Claude Code Hooks, DSH's native pre-step integration, and OpenCode's awaited
-`chat.message` handler may schedule a missing bundle build using adapter-common
-supervision, locking, and job-policy helpers. They must use the Backend-resolved
-worktree rather than adapter-local workspace input.
+Claude Code Hooks, DSH's active native or Patchouli integration, and OpenCode's
+awaited `chat.message` handler may schedule a missing bundle build using
+adapter-common supervision, locking, and job-policy helpers. They must use the
+Backend-resolved worktree rather than adapter-local workspace input.
 
 Codex and OpenCode keep the generic shared Skill reminder available when the
 Backend or repository scope is unavailable. Codex, DSH, and OpenCode enable
@@ -704,10 +709,11 @@ and a module must not combine trace storage with outbound authority without a
 reviewed contract.
 
 For DSH, Cordis `turn/start` establishes only live trace identity. After
-`turn/end`, the adapter flushes persistence and supplies the exact native Turn
-interval; only a Backend-validated interval may produce normalized
-`turn_materialized` content and writeback trace events. The raw Session Event
-Log and its path are never copied into trace.
+`turn/end`, either the native adapter flushes and reads the exact Turn interval
+or Patchouli's Agent Loop connector supplies that already-durable interval to
+the registered MemoraX provider. Only a Backend-validated interval may produce
+normalized `turn_materialized` content and writeback trace events. The raw
+Session Event Log and its path are never copied into trace.
 
 `/memory-viewer` reads local trace/history/projection state. The local Store
 and history readers may process content-bearing trace or native history only
