@@ -15,6 +15,11 @@ import type { MemoryTurnCoordinator } from "../../memory/turn-coordinator.js";
 import { readKimiWireTurn, type KimiWireTurnFailureReason } from "./wire-turn.js";
 import { traceContextFromKimiHookBody, type TraceContext } from "../../trace/context.js";
 import {
+  clearKimiOperationalTurn,
+  readKimiOperationalTurn,
+  writeKimiOperationalTurn,
+} from "./operational-turn.js";
+import {
   markCurrentTraceTurnOutcome,
   readCurrentTraceTurn,
   recordTraceEvent,
@@ -77,6 +82,16 @@ export function createKimiMemoryHookRuntime(
         traceContext,
         repositoryMemory,
       });
+      if (repositoryMemory.ok && repositoryMemory.memory.scope?.boundWorkspaceRoot) {
+        writeKimiOperationalTurn(options.memoraxCodeHome, {
+          sessionId: command.sessionId,
+          promptId: command.promptId,
+          cwd: repositoryMemory.memory.scope.boundWorkspaceRoot,
+          ...(repositoryMemory.memory.scope.scopeKind === "codex-projectless"
+            ? { workspaceKind: "projectless" }
+            : {}),
+        });
+      }
       await recordTraceBestEffort("kimi_memory_hook.turn_start_event", recordTraceEvent({
         eventId: traceTurnEventId(traceContext, "turn_start"),
         memoraxCodeHome: options.memoraxCodeHome,
@@ -136,6 +151,15 @@ export function createKimiMemoryHookRuntime(
         : undefined;
       const materialized = await readKimiWireTurn(command);
       if (!materialized.ok) {
+        if ([
+          "cancelled",
+          "assistant_message_missing",
+          "malformed_record",
+          "prompt_identity_mismatch",
+          "wire_identity_mismatch",
+        ].includes(materialized.reason)) {
+          clearKimiOperationalTurn(options.memoraxCodeHome, command.sessionId, command.promptId);
+        }
         if (materialized.reason === "cancelled") {
           releaseAutomaticRetrievalPrompt(automaticRetrievalPrompts, command.sessionId, command.promptId);
           const traceContext = traceContextForWriteback(command, entry, recoveredTraceContext);
@@ -178,6 +202,7 @@ export function createKimiMemoryHookRuntime(
       if (!writeback.scheduled) {
         return { ok: true, scheduled: false, reason: writeback.reason };
       }
+      clearKimiOperationalTurn(options.memoraxCodeHome, command.sessionId, command.promptId);
       options.diagnosticLogger?.("kimi_memory_hook.writeback", {
         scheduled: true,
         sessionId: command.sessionId,
@@ -304,9 +329,24 @@ async function recoverExactCurrentTurnTraceContext(
     expectedSessionId: command.sessionId,
     allowStale: true,
   });
-  if (!current.ok || current.traceContext.turnId !== command.promptId) return undefined;
-  if (current.traceContext.nativeRequestId && current.traceContext.nativeRequestId !== command.turnId) return undefined;
-  return current.traceContext;
+  if (current.ok) {
+    if (current.traceContext.turnId !== command.promptId) return undefined;
+    if (current.traceContext.nativeRequestId && current.traceContext.nativeRequestId !== command.turnId) return undefined;
+    return current.traceContext;
+  }
+  const operational = readKimiOperationalTurn(options.memoraxCodeHome, command.sessionId, command.promptId);
+  if (!operational) return undefined;
+  return {
+    schemaVersion: "1",
+    client: "kimi",
+    sessionId: operational.sessionId,
+    turnId: operational.promptId,
+    nativeRequestId: command.turnId,
+    cwd: operational.cwd,
+    ...(operational.workspaceKind ? { workspaceKind: operational.workspaceKind } : {}),
+    contextOrigin: "current-turn-file",
+    capturedAt: new Date(operational.updatedAt || Date.now()).toISOString(),
+  };
 }
 
 async function recordTraceBestEffort(

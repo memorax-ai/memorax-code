@@ -152,6 +152,13 @@ test("Backend memory hook endpoints reject commands outside the closed schema", 
     sessionHeader: {},
     events: [],
   };
+  const kimiTurnStart = {
+    version: 1,
+    client: "kimi",
+    sessionId: "session-kimi-turn-start",
+    promptId: "not-a-prompt-hash",
+    prompt: "Kimi turn start.",
+  };
   try {
     for (const [caseName, path, body] of [
       ["unversioned command", "/memory/turn-start", {
@@ -247,6 +254,7 @@ test("Backend memory hook endpoints reject commands outside the closed schema", 
         ...dshWriteback,
         endSeq: -1,
       }],
+      ["invalid Kimi prompt hash", "/memory/turn-start", kimiTurnStart],
     ]) {
       const response = await fetch(`${url}${path}`, {
         method: "POST",

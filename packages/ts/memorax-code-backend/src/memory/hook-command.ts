@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { isRecord } from "../shared/record.js";
 
 export const MEMORY_HOOK_COMMAND_VERSION = 1 as const;
@@ -244,7 +245,7 @@ export function parseTurnStartCommand(
   }
   if (base.client === "kimi") {
     const promptId = requiredStringField(value, "promptId");
-    if (!promptId) return invalidCommand();
+    if (!promptId || sha256(prompt) !== promptId) return invalidCommand();
     return { ok: true, command: { ...base, client: "kimi", promptId, prompt } };
   }
   const promptId = requiredStringField(value, "promptId");
@@ -260,6 +261,10 @@ export function parseTurnStartCommand(
       transcriptPath,
     },
   };
+}
+
+function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
 }
 
 export function parseWritebackCommand(
