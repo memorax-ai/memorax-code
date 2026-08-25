@@ -1,12 +1,12 @@
 # @memorax/memorax-code
 
 MemoraX Code adds persistent coding memory to Codex, Claude Code, DeepSeek
-Harness, and OpenCode.
+Harness, OpenCode, and Kimi Code.
 
 ## Requirements
 
 - Node.js 24 or newer and npm.
-- At least one of Codex, Claude Code, DeepSeek Harness, OpenCode Desktop, or
+- At least one of Codex, Claude Code, DeepSeek Harness, OpenCode Desktop, Kimi Code, or
   the OpenCode CLI.
 - A MemoraX account, Base User ID, and API key for memory features.
 - Python 3 only for Repo Memory operations.
@@ -23,7 +23,9 @@ npm install -g @memorax/memorax-code --foreground-scripts
 Keep `--foreground-scripts` so npm displays the complete setup.
 
 The installer automatically detects available Codex, Claude Code, DeepSeek
-Harness, and OpenCode installations and configures those it finds. Follow the
+Harness, OpenCode, and Kimi Code installations and configures those it finds.
+Enable Kimi explicitly with `--clients kimi` because its native Hook config is
+shared with other local Kimi customizations. Follow the
 prompts to enter your MemoraX user ID, preferred language, and API key. On an
 interactive first install, a non-empty user ID and API key are required unless
 the effective configuration already supplies both. When Codex is detected,
@@ -37,6 +39,10 @@ installed, but MemoraX-backed memory is not configured.
 After the first installation, restart or refresh the detected coding agents
 before opening a new session. In Codex, enable **MemoraX Code Codex Adapter**
 from Plugins or `/plugins` if it is not already enabled.
+
+Kimi Code receives the shared `memorax-code` Skill under its managed user skill
+directory. In Kimi, invoke it as `/memorax-code`; its explicit `search` and `add`
+operations use the configured MemoraX service through `memorax-cli`.
 
 ## Verify
 

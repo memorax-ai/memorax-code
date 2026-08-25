@@ -1,4 +1,4 @@
-.PHONY: test test-ts test-codex-adapter test-claude-adapter test-dsh-adapter test-dsh-e2e test-opencode-adapter test-opencode-e2e test-npm-package docs-check npm-package-build npm-package-check npm-publish-dry-run release-version-check clean
+.PHONY: test test-ts test-codex-adapter test-claude-adapter test-dsh-adapter test-kimi-adapter test-kimi-e2e test-dsh-e2e test-opencode-adapter test-opencode-e2e test-npm-package docs-check npm-package-build npm-package-check npm-publish-dry-run release-version-check clean
 
 NPM ?= npm
 
@@ -11,6 +11,7 @@ test-ts:
 	$(MAKE) test-codex-adapter
 	$(MAKE) test-claude-adapter
 	$(MAKE) test-dsh-adapter
+	$(MAKE) test-kimi-adapter
 	$(MAKE) test-opencode-adapter
 
 test-codex-adapter:
@@ -21,6 +22,12 @@ test-claude-adapter:
 
 test-dsh-adapter:
 	$(NPM) test --prefix packages/ts/memorax-code-dsh-adapter
+
+test-kimi-adapter:
+	$(NPM) test --prefix packages/ts/memorax-code-kimi-adapter
+
+test-kimi-e2e:
+	MEMORAX_CODE_KIMI_E2E=1 node scripts/kimi-npm-package-e2e.mjs
 
 test-dsh-e2e:
 	node scripts/dsh-npm-package-e2e.mjs

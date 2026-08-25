@@ -841,6 +841,10 @@ function defaultMemoraxCodeConfig() {
     "enabled = true # Enable local OpenCode session memory trace collection.",
     "capture_content = true # Store content in local OpenCode trace events.",
     "",
+    "[trace.kimi]",
+    "enabled = true # Enable local Kimi Code session memory trace collection.",
+    "capture_content = true # Store content in local Kimi Code trace events.",
+    "",
   ].join("\n");
 }
 

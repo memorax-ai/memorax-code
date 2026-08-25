@@ -1530,6 +1530,8 @@ test("postinstall seeds default MemoraX Code config during first interactive set
     assert.match(config, /capture_content = true # Store content in local DSH trace events\./);
     assert.match(config, /\[trace\.opencode\]/);
     assert.match(config, /capture_content = true # Store content in local OpenCode trace events\./);
+    assert.match(config, /\[trace\.kimi\]/);
+    assert.match(config, /enabled = true # Enable local Kimi Code session memory trace collection\./);
     assert.deepEqual(activeTomlSections(config), [
       "clients",
       "memorax",
@@ -1541,6 +1543,7 @@ test("postinstall seeds default MemoraX Code config during first interactive set
       "trace.claude",
       "trace.codex",
       "trace.dsh",
+      "trace.kimi",
       "trace.opencode",
     ]);
     assert.doesNotMatch(

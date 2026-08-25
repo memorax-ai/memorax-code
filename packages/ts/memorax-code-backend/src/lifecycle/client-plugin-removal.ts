@@ -30,6 +30,18 @@ type OpenCodePluginInstaller = {
   removeOpenCodePluginInstallation: (options: Record<string, unknown>) => OpenCodePluginRemovalReport;
 };
 
+type KimiPluginRemovalReport = {
+  ok: boolean;
+  action: string;
+  skipped?: boolean;
+  reason?: string;
+  message?: string;
+};
+
+type KimiPluginInstaller = {
+  removeKimiHooksInstallation: (options: Record<string, unknown>) => KimiPluginRemovalReport;
+};
+
 type DshPluginRemovalReport = {
   ok: boolean;
   action: string;
@@ -53,6 +65,8 @@ export type ClientPluginRemovalOptions = {
   dshHome?: string;
   dshAdapterRoot?: string;
   openCodeConfigDir?: string;
+  kimiHome?: string;
+  kimiCommand?: string;
   codexCommand?: string;
   claudeCommand?: string;
   dshCommand?: string;
@@ -65,6 +79,7 @@ export type ClientPluginRemovalReport = {
   claudePlugin: ClaudePluginRemovalReport | ClientPluginRemovalFailure;
   dshPlugin: DshPluginRemovalReport | ClientPluginRemovalFailure;
   opencodePlugin: OpenCodePluginRemovalReport | ClientPluginRemovalFailure;
+  kimiPlugin: KimiPluginRemovalReport | ClientPluginRemovalFailure;
 };
 
 type ClientPluginRemovalFailure = {
@@ -80,6 +95,7 @@ export async function prepareClientPluginRemovalCleanup(
   const claudePluginInstaller = await loadClaudePluginInstaller();
   const dshProfileLifecycle = await loadDshProfileLifecycle();
   const openCodePluginInstaller = await loadOpenCodePluginInstaller();
+  const kimiPluginInstaller = await loadKimiPluginInstaller();
   const home = resolveHome(options.homeDir);
   const memoraxCodeHome = resolve(options.memoraxCodeHome ?? process.env.MEMORAX_CODE_HOME ?? join(home, ".memorax-code"));
   const claudeState = await readJsonRecord(join(memoraxCodeHome, "adapters", "claude-code", "state.json"));
@@ -88,7 +104,7 @@ export async function prepareClientPluginRemovalCleanup(
   return async () => {
     try {
       return await withBackendLifecycleLock({ home: memoraxCodeHome }, async () => {
-        const [codexPlugin, claudePlugin, dshPlugin, opencodePlugin] = await Promise.all([
+        const [codexPlugin, claudePlugin, dshPlugin, opencodePlugin, kimiPlugin] = await Promise.all([
           cleanupCodexAfterBackendRemoval({
             memoraxCodeHome,
             homeDir: home,
@@ -118,14 +134,22 @@ export async function prepareClientPluginRemovalCleanup(
                 : {}),
             }))
             .catch((error) => removalFailure("opencode-plugin-remove", error)),
+          Promise.resolve()
+            .then(() => kimiPluginInstaller.removeKimiHooksInstallation({
+              memoraxCodeHome,
+              ...(options.kimiHome ? { kimiHome: options.kimiHome } : {}),
+              ...(options.kimiCommand ? { kimiCommand: options.kimiCommand } : {}),
+            }))
+            .catch((error) => removalFailure("kimi-hook-remove", error)),
         ]);
         return {
-          ok: codexPlugin.ok && claudePlugin.ok && dshPlugin.ok && opencodePlugin.ok,
+          ok: codexPlugin.ok && claudePlugin.ok && dshPlugin.ok && opencodePlugin.ok && kimiPlugin.ok,
           action: "client-plugin-removal-cleanup" as const,
           codexPlugin,
           claudePlugin,
           dshPlugin,
           opencodePlugin,
+          kimiPlugin,
         };
       });
     } catch (error) {
@@ -137,6 +161,7 @@ export async function prepareClientPluginRemovalCleanup(
         claudePlugin: failure,
         dshPlugin: failure,
         opencodePlugin: failure,
+        kimiPlugin: failure,
       };
     }
   };
@@ -148,6 +173,10 @@ async function loadClaudePluginInstaller(): Promise<ClaudePluginInstaller> {
 
 async function loadOpenCodePluginInstaller(): Promise<OpenCodePluginInstaller> {
   return await import(new URL("../../../memorax-code-opencode-adapter/src/plugin-install.mjs", import.meta.url).href);
+}
+
+async function loadKimiPluginInstaller(): Promise<KimiPluginInstaller> {
+  return await import(new URL("../../../memorax-code-kimi-adapter/src/plugin-install.mjs", import.meta.url).href);
 }
 
 async function loadDshProfileLifecycle(): Promise<DshProfileLifecycleModule> {

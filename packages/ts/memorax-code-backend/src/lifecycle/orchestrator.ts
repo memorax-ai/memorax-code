@@ -30,6 +30,7 @@ import {
   type DshAdapterLifecycleParticipant,
 } from "../clients/dsh/lifecycle.js";
 import { openCodeAdapterLifecycle } from "../clients/opencode/lifecycle.js";
+import { kimiAdapterLifecycle } from "../clients/kimi/lifecycle.js";
 import type {
   AdapterReport,
 } from "./participant.js";
@@ -46,6 +47,7 @@ export type MemoraxCodeStatusReport = {
   claudeAdapter?: AdapterReport;
   dshAdapter?: AdapterReport;
   opencodeAdapter?: AdapterReport;
+  kimiAdapter?: AdapterReport;
 };
 
 export type MemoraxCodeLifecycleReport = {
@@ -58,6 +60,7 @@ export type MemoraxCodeLifecycleReport = {
   claudeAdapter?: AdapterReport;
   dshAdapter?: AdapterReport;
   opencodeAdapter?: AdapterReport;
+  kimiAdapter?: AdapterReport;
   codexPlugin?: Awaited<ReturnType<typeof codexAdapterLifecycle.remove>>;
   npmPackageRemoval?: NpmPackageRemovalReport;
   removesPlugin?: boolean;
@@ -138,14 +141,19 @@ export async function collectMemoraxCodeStatus(
   const opencodeAdapter = clients.opencode
     ? await openCodeAdapterLifecycle.status({ argv, serviceOptions, backendUrl })
     : undefined;
+  const kimiAdapter = clients.kimi
+    ? await kimiAdapterLifecycle.status({ argv, serviceOptions, backendUrl })
+    : undefined;
   const codexReady = codexAdapter ? isAdapterReady(codexAdapter) : true;
   const claudeReady = claudeAdapter ? isAdapterReady(claudeAdapter) : true;
   const dshReady = dshAdapter ? isAdapterReady(dshAdapter) : true;
   const opencodeReady = opencodeAdapter ? isAdapterReady(opencodeAdapter) : true;
+  const kimiReady = kimiAdapter ? isAdapterReady(kimiAdapter) : true;
   return {
     ok: backend.ok
       && codexReady
       && opencodeReady
+      && kimiReady
       && (isOptionalUnconfiguredClaudeAdapter(claudeAdapter, codexAdapter) || claudeReady)
       && (isOptionalUnavailableDshAdapter(dshAdapter) || dshReady),
     action: "status",
@@ -154,6 +162,7 @@ export async function collectMemoraxCodeStatus(
     ...(claudeAdapter ? { claudeAdapter } : {}),
     ...(dshAdapter ? { dshAdapter } : {}),
     ...(opencodeAdapter ? { opencodeAdapter } : {}),
+    ...(kimiAdapter ? { kimiAdapter } : {}),
   };
 }
 
@@ -307,10 +316,14 @@ async function executeMemoraxCodeStart(
   const deselectedOpenCode = previousClients?.opencode && !clients.opencode
     ? await openCodeAdapterLifecycle.disable({ argv, serviceOptions })
     : undefined;
+  const deselectedKimi = previousClients?.kimi && !clients.kimi
+    ? await kimiAdapterLifecycle.disable({ argv, serviceOptions })
+    : undefined;
   if (deselectedCodex?.ok === false
     || deselectedClaude?.ok === false
     || deselectedDsh?.ok === false
-    || deselectedOpenCode?.ok === false) {
+    || deselectedOpenCode?.ok === false
+    || deselectedKimi?.ok === false) {
     const recovery = await recoverPreparationFailure("adapter_disable_failed");
     return {
       ok: false,
@@ -322,6 +335,7 @@ async function executeMemoraxCodeStart(
         ? { dshAdapter: recovery.dshAdapter ?? deselectedDsh }
         : {}),
       ...(deselectedOpenCode ? { opencodeAdapter: deselectedOpenCode } : {}),
+      ...(deselectedKimi ? { kimiAdapter: deselectedKimi } : {}),
     };
   }
   // The marker is a conservative cleanup scope, not a readiness signal. Persist
@@ -360,7 +374,10 @@ async function executeMemoraxCodeStart(
   const opencodeAdapter = clients.opencode
     ? await openCodeAdapterLifecycle.prepareEnable({ argv, serviceOptions, backendUrl })
     : undefined;
-  if (opencodeAdapter?.ok === false) {
+  const kimiAdapter = clients.kimi
+    ? await kimiAdapterLifecycle.prepareEnable({ argv, serviceOptions, backendUrl })
+    : undefined;
+  if (opencodeAdapter?.ok === false || kimiAdapter?.ok === false) {
     const recovery = await recoverPreparationFailure("opencode_adapter_enable_failed");
     return {
       ok: false,
@@ -369,7 +386,8 @@ async function executeMemoraxCodeStart(
       ...(codexAdapter ? { codexAdapter } : {}),
       ...(claudeAdapter ? { claudeAdapter } : {}),
       ...(recovery.dshAdapter ? { dshAdapter: recovery.dshAdapter } : {}),
-      opencodeAdapter,
+      ...(opencodeAdapter ? { opencodeAdapter } : {}),
+      ...(kimiAdapter ? { kimiAdapter } : {}),
     };
   }
   const preparedDshAdapter = clients.dsh && dshLifecycle
@@ -385,6 +403,7 @@ async function executeMemoraxCodeStart(
       ...(claudeAdapter ? { claudeAdapter } : {}),
       dshAdapter: recovery.dshAdapter ?? preparedDshAdapter,
       ...(opencodeAdapter ? { opencodeAdapter } : {}),
+      ...(kimiAdapter ? { kimiAdapter } : {}),
     };
   }
   const backendStartOptions: BackendServiceOptions = {
@@ -399,6 +418,9 @@ async function executeMemoraxCodeStart(
     const disabledOpenCode = opencodeAdapter
       ? await openCodeAdapterLifecycle.disable({ argv, serviceOptions })
       : undefined;
+    const disabledKimi = kimiAdapter
+      ? await kimiAdapterLifecycle.disable({ argv, serviceOptions })
+      : undefined;
     return {
       ok: false,
       action: "start",
@@ -407,6 +429,7 @@ async function executeMemoraxCodeStart(
       ...(claudeAdapter ? { claudeAdapter } : {}),
       ...(preparedDshAdapter ? { dshAdapter: preparedDshAdapter } : {}),
       ...(disabledOpenCode ? { opencodeAdapter: disabledOpenCode } : {}),
+      ...(disabledKimi ? { kimiAdapter: disabledKimi } : {}),
     };
   }
   const dshAdapter = preparedDshAdapter?.installed === true
@@ -420,6 +443,7 @@ async function executeMemoraxCodeStart(
     ...(claudeAdapter ? { claudeAdapter } : {}),
     ...(dshAdapter ? { dshAdapter } : {}),
     ...(opencodeAdapter ? { opencodeAdapter } : {}),
+    ...(kimiAdapter ? { kimiAdapter } : {}),
   };
 }
 
@@ -490,13 +514,17 @@ async function executeMemoraxCodeStop(
       claude: activeClients.claude && !clients.claude,
       dsh: activeClients.dsh && !clients.dsh,
       opencode: activeClients.opencode && !clients.opencode,
+      ...(activeClients.kimi !== undefined
+        ? { kimi: activeClients.kimi === true && clients.kimi !== true }
+        : {}),
     }
     : undefined;
   const hasRemainingClients = remaining?.codex === true
     || remaining?.claude === true
     || remaining?.dsh === true
-    || remaining?.opencode === true;
-  const backendOnlyStop = !clients.codex && !clients.claude && !clients.dsh && !clients.opencode;
+    || remaining?.opencode === true
+    || remaining?.kimi === true;
+  const backendOnlyStop = !clients.codex && !clients.claude && !clients.dsh && !clients.opencode && !clients.kimi;
   const packageReplacement = isPackageReplacement();
   const needsBackendStop = packageReplacement || backendOnlyStop || !hasRemainingClients;
   const quiescedDsh = clients.dsh && dshLifecycle
@@ -549,10 +577,14 @@ async function executeMemoraxCodeStop(
   const opencodeAdapter = clients.opencode
     ? await openCodeAdapterLifecycle.disable({ argv, serviceOptions })
     : undefined;
+  const kimiAdapter = clients.kimi
+    ? await kimiAdapterLifecycle.disable({ argv, serviceOptions })
+    : undefined;
   const adaptersOk = codexAdapter?.ok !== false
     && claudeAdapter?.ok !== false
     && dshAdapter?.ok !== false
-    && opencodeAdapter?.ok !== false;
+    && opencodeAdapter?.ok !== false
+    && kimiAdapter?.ok !== false;
   const backend = stoppedBackend
     ?? (adaptersOk
       ? preservedBackendResult(serviceOptions, "active_clients_remaining")
@@ -561,7 +593,8 @@ async function executeMemoraxCodeStop(
     && codexAdapter?.ok !== false
     && claudeAdapter?.ok !== false
     && dshAdapter?.ok !== false
-    && opencodeAdapter?.ok !== false;
+    && opencodeAdapter?.ok !== false
+    && kimiAdapter?.ok !== false;
   return {
     report: {
       ok,
@@ -571,6 +604,7 @@ async function executeMemoraxCodeStop(
       ...(claudeAdapter ? { claudeAdapter } : {}),
       ...(dshAdapter ? { dshAdapter } : {}),
       ...(opencodeAdapter ? { opencodeAdapter } : {}),
+      ...(kimiAdapter ? { kimiAdapter } : {}),
     },
     remainingClients: remaining && hasRemainingClients ? remaining : undefined,
   };
@@ -668,10 +702,14 @@ async function executeMemoraxCodeUninstall(
   const opencodePlugin = clients.opencode
     ? await openCodeAdapterLifecycle.remove({ argv, serviceOptions })
     : undefined;
+  const kimiPlugin = clients.kimi
+    ? await kimiAdapterLifecycle.remove({ argv, serviceOptions })
+    : undefined;
   const pluginCleanupOk = codexPlugin?.ok !== false
     && claudePlugin?.ok !== false
     && dshPlugin?.ok !== false
-    && opencodePlugin?.ok !== false;
+    && opencodePlugin?.ok !== false
+    && kimiPlugin?.ok !== false;
   const npmPackageRemoval = !pluginCleanupOk
     ? skippedNpmPackageRemoval("plugin_cleanup_failed")
     : canRemoveSharedPackage
@@ -684,6 +722,9 @@ async function executeMemoraxCodeUninstall(
   const opencodeAdapter = stopped.opencodeAdapter && opencodePlugin
     ? { ...stopped.opencodeAdapter, pluginRemove: opencodePlugin }
     : stopped.opencodeAdapter;
+  const kimiAdapter = stopped.kimiAdapter && kimiPlugin
+    ? { ...stopped.kimiAdapter, pluginRemove: kimiPlugin }
+    : stopped.kimiAdapter;
   const ok = pluginCleanupOk && npmPackageRemoval.ok !== false;
   if (ok) commitActiveManagedClients(memoraxCodeHome, stopExecution.remainingClients);
   return {
@@ -694,11 +735,13 @@ async function executeMemoraxCodeUninstall(
     ...(claudeAdapter ? { claudeAdapter } : {}),
     ...(dshAdapter ? { dshAdapter } : {}),
     ...(opencodeAdapter ? { opencodeAdapter } : {}),
+    ...(kimiAdapter ? { kimiAdapter } : {}),
     npmPackageRemoval,
     removesPlugin: codexPlugin?.ok === true
       || claudePlugin?.ok === true
       || (dshPlugin?.ok === true && dshPlugin.skipped !== true)
-      || opencodePlugin?.ok === true,
+      || opencodePlugin?.ok === true
+      || kimiPlugin?.ok === true,
     removesUserState: false,
   };
 }
@@ -837,7 +880,8 @@ function includesManagedClients(selection: ManagedClients, required: ManagedClie
   return (!required.codex || selection.codex)
     && (!required.claude || selection.claude)
     && (!required.dsh || selection.dsh)
-    && (!required.opencode || selection.opencode);
+    && (!required.opencode || selection.opencode)
+    && (!required.kimi || selection.kimi === true);
 }
 
 function isPackageReplacement(): boolean {

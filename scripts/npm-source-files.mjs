@@ -31,6 +31,14 @@ export const npmMainSourceTrees = Object.freeze([
     destination: "lib/memorax-code-opencode-adapter/hooks",
   },
   {
+    source: "packages/ts/memorax-code-kimi-adapter/src",
+    destination: "lib/memorax-code-kimi-adapter/src",
+  },
+  {
+    source: "packages/ts/memorax-code-codex-adapter/skills/memorax-code",
+    destination: "lib/memorax-code-kimi-adapter/skills/memorax-code",
+  },
+  {
     source: "packages/ts/memorax-code-codex-adapter/skills/memorax-code",
     destination: "lib/memorax-code-claude-adapter/skills/memorax-code",
   },
