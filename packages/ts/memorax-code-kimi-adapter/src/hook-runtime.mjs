@@ -35,13 +35,18 @@ export async function runKimiHook(input, options = {}) {
     if (!prompt) return {};
     await flushCompletedTurns({ sessionId, cwd, statePath }, options);
     const correlation = rememberKimiPrompt({ statePath, sessionId, prompt });
-    const response = await postTurnStart({
-      sessionId,
-      cwd,
-      prompt,
-      promptId: correlation?.promptHash,
-    }, options);
-    const reminder = await evaluateMemorySkillReminder(kimiReminderOptions(options), {
+    let response;
+    try {
+      response = await postTurnStart({
+        sessionId,
+        cwd,
+        prompt,
+        promptId: correlation?.promptHash,
+      }, options);
+    } catch (error) {
+      debugError(options, error);
+    }
+    const reminder = await evaluateMemorySkillReminder(kimiReminderOptions(options, response?.repoMemoryWorktree), {
       ...input,
       hook_event_name: "UserPromptSubmit",
       prompt_id: correlation?.reminderId ?? correlation?.promptHash,
@@ -70,7 +75,7 @@ export async function runKimiHook(input, options = {}) {
   return {};
 }
 
-function kimiReminderOptions(options) {
+function kimiReminderOptions(options, resolvedWorktree) {
   return {
     memoraxCodeHome: options.memoraxCodeHome ?? process.env.MEMORAX_CODE_HOME,
     adapterDir: "kimi",
@@ -85,6 +90,8 @@ function kimiReminderOptions(options) {
         adapterDir: "kimi",
         sessionKeyPrefix: "kimi",
         debugEnv: "MEMORAX_CODE_KIMI_HOOK_DEBUG",
+        resolvedWorktree,
+        requireResolvedWorktree: true,
       });
     },
     buildPersonalMemoryContext(input) {
@@ -92,6 +99,8 @@ function kimiReminderOptions(options) {
         adapterDir: "kimi",
         sessionKeyPrefix: "kimi",
         debugEnv: "MEMORAX_CODE_KIMI_HOOK_DEBUG",
+        resolvedWorktree,
+        requireResolvedWorktree: true,
       });
     },
   };
@@ -123,31 +132,40 @@ async function postSkillReminder(reminder, fallbackPromptId, options) {
 async function flushCompletedTurns(input, options) {
   const pending = pendingKimiTurns(input);
   if (!pending.length) return;
-  const wirePath = await resolveKimiWirePath(input.sessionId, options);
+  let wirePath;
+  try {
+    wirePath = await resolveKimiWirePath(input.sessionId, options);
+  } catch (error) {
+    debugError(options, error);
+  }
   if (!wirePath) return;
   await Promise.all(pending.map(async (turn) => {
-    const response = await postBackend("/memory/writeback", {
-      version: 1,
-      client: "kimi",
-      sessionId: input.sessionId,
-      promptId: turn.promptHash,
-      turnId: turn.turnId,
-      wirePath,
-      ...(input.cwd ? { cwd: input.cwd } : {}),
-    }, options, 5_000);
-    if (response?.scheduled === true || [
-      "assistant_message_missing",
-      "cancelled",
-      "malformed_record",
-      "prompt_identity_mismatch",
-      "wire_identity_mismatch",
-    ].includes(response?.reason)) {
-      consumeKimiTurn({
-        statePath: input.statePath,
+    try {
+      const response = await postBackend("/memory/writeback", {
+        version: 1,
+        client: "kimi",
         sessionId: input.sessionId,
-        promptHash: turn.promptHash,
+        promptId: turn.promptHash,
         turnId: turn.turnId,
-      });
+        wirePath,
+        ...(input.cwd ? { cwd: input.cwd } : {}),
+      }, options, 5_000);
+      if (response?.scheduled === true || [
+        "assistant_message_missing",
+        "cancelled",
+        "malformed_record",
+        "prompt_identity_mismatch",
+        "wire_identity_mismatch",
+      ].includes(response?.reason)) {
+        consumeKimiTurn({
+          statePath: input.statePath,
+          sessionId: input.sessionId,
+          promptHash: turn.promptHash,
+          turnId: turn.turnId,
+        });
+      }
+    } catch (error) {
+      debugError(options, error);
     }
   }));
 }
@@ -214,6 +232,12 @@ async function resolveKimiWirePath(sessionId, options) {
 function positiveInteger(value, fallback) {
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function debugError(options, error) {
+  if ((options.env ?? process.env).MEMORAX_CODE_KIMI_HOOK_DEBUG === "1") {
+    console.error(error instanceof Error ? error.message : String(error));
+  }
 }
 
 function idOption(value) {

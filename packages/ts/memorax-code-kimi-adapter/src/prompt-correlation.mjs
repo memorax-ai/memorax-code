@@ -41,7 +41,16 @@ export function rememberKimiPrompt({ statePath, sessionId, prompt, now = Date.no
       reminderId: randomUUID(),
       submittedAt: Number.isFinite(now) ? now : Date.now(),
     };
-    state.sessions[normalizedSessionId] = [...pending, entry].slice(-MAX_PENDING_PER_SESSION);
+    const next = [...pending, entry];
+    // Accepted turns may still be waiting for wire completion and must survive
+    // a burst of new prompts. Bound only prompts that have not been attached
+    // to a native turn yet.
+    while (next.filter((candidate) => !stringOption(candidate?.turnId)).length > MAX_PENDING_PER_SESSION) {
+      const index = next.findIndex((candidate) => !stringOption(candidate?.turnId));
+      if (index < 0) break;
+      next.splice(index, 1);
+    }
+    state.sessions[normalizedSessionId] = next;
     atomicWriteJson(statePath, state);
     return entry;
   });

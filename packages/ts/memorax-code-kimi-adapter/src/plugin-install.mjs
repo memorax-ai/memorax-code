@@ -1,13 +1,18 @@
 import { createHash } from "node:crypto";
 import {
   cpSync,
+  closeSync,
   existsSync,
+  fchmodSync,
+  fchownSync,
   lstatSync,
   mkdirSync,
+  openSync,
   readFileSync,
   readdirSync,
   renameSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
@@ -15,7 +20,6 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import {
   atomicWriteJson,
-  atomicWriteText,
   readAdapterState,
   stringOption,
 } from "../../memorax-code-adapter-common/src/config-utils.mjs";
@@ -67,7 +71,7 @@ export function ensureKimiHooksInstalled(options = {}) {
     };
   }
   const previous = readAdapterState(paths.statePath);
-  const skillManaged = previous?.skillPath === paths.skillPath;
+  const skillManaged = validState(previous, paths) && previous.skillPath === paths.skillPath;
   if (pathPresent(paths.skillPath) && !skillManaged) {
     return {
       ok: false,
@@ -85,7 +89,7 @@ export function ensureKimiHooksInstalled(options = {}) {
   const command = `${shellQuote(options.nodeCommand ?? process.execPath)} ${shellQuote(join(runtime, "memorax-code-kimi-adapter", "src", "hook-runtime.mjs"))}`;
   const currentText = readConfig(paths.configPath);
   const nextText = reconcileHooks(currentText, command, true);
-  if (nextText !== currentText) atomicWriteText(paths.configPath, nextText);
+  if (nextText !== currentText) writeConfigText(paths.configPath, nextText);
   const now = new Date().toISOString();
   const state = {
     version: STATE_VERSION,
@@ -139,15 +143,12 @@ export function readKimiHooksStatus(options = {}) {
       configPath: paths.configPath,
     };
   }
-  if (state.version !== STATE_VERSION || state.configPath !== paths.configPath) {
+  if (!validState(state, paths)) {
     return { ok: false, action: "kimi-hook-status", installed: false, enabled: false, managed: true, reason: "state_invalid", statePath: paths.statePath };
-  }
-  if (state.skillPath && state.skillPath !== paths.skillPath) {
-    return { ok: false, action: "kimi-hook-status", installed: false, enabled: false, managed: true, reason: "state_paths_invalid", statePath: paths.statePath };
   }
   const config = readConfig(paths.configPath);
   const configured = typeof state.hookCommand === "string"
-    && EVENTS.every(([event]) => config.includes(`event = "${event}"`) && config.includes(`command = "${state.hookCommand}"`));
+    && EVENTS.every(([event]) => config.includes(`event = "${event}"`) && config.includes(`command = ${tomlString(state.hookCommand)}`));
   const skillExists = existsSync(join(paths.skillPath, "SKILL.md"));
   const sourceReady = existsSync(join(paths.skillSourcePath, "SKILL.md"));
   const sourceSha256 = sourceReady ? directoryDigest(paths.skillSourcePath) : undefined;
@@ -155,7 +156,8 @@ export function readKimiHooksStatus(options = {}) {
     && sourceSha256 !== undefined
     && state.skillSourceSha256 === sourceSha256
     && safeDirectoryDigest(paths.skillPath) === sourceSha256;
-  const installed = existsSync(state.runtimePath) && existsSync(state.configPath) && skillExists;
+  const runtimeCurrent = runtimeMatches(state.runtimePath);
+  const installed = runtimeCurrent && existsSync(state.configPath) && skillExists;
   const enabled = state.enabled === true && installed && configured && skillCurrent;
   return {
     ok: true,
@@ -182,7 +184,7 @@ export function disableKimiHooks(options = {}) {
   if (!state) return { ok: true, action: "kimi-hook-disable", skipped: true, reason: "not_managed" };
   const current = readConfig(paths.configPath);
   const next = reconcileHooks(current, state.hookCommand, false);
-  if (next !== current) atomicWriteText(paths.configPath, next);
+  if (next !== current) writeConfigText(paths.configPath, next);
   atomicWriteJson(paths.statePath, { ...state, enabled: false, updatedAt: new Date().toISOString() });
   return { ok: true, action: "kimi-hook-disable", installed: true, enabled: false, managed: true, changed: next !== current, statePath: paths.statePath, configPath: paths.configPath };
 }
@@ -191,8 +193,7 @@ export function removeKimiHooksInstallation(options = {}) {
   const paths = resolvePaths(options);
   const state = readAdapterState(paths.statePath);
   if (!state) return { ok: true, action: "kimi-hook-remove", skipped: true, reason: "not_managed", removed: false };
-  if (state.configPath !== paths.configPath || state.runtimePath !== paths.runtimePath
-    || (state.skillPath && state.skillPath !== paths.skillPath)) {
+  if (!validState(state, paths)) {
     return { ok: false, action: "kimi-hook-remove", reason: "state_paths_invalid", statePath: paths.statePath };
   }
   if (pathPresent(paths.skillPath)
@@ -208,7 +209,7 @@ export function removeKimiHooksInstallation(options = {}) {
   }
   const current = readConfig(paths.configPath);
   const next = reconcileHooks(current, state.hookCommand, false);
-  if (next !== current) atomicWriteText(paths.configPath, next);
+  if (next !== current) writeConfigText(paths.configPath, next);
   rmSync(paths.statePath, { force: true });
   rmSync(paths.skillPath, { recursive: true, force: true });
   if (state.runtimePath === paths.runtimePath) rmSync(paths.runtimePath, { recursive: true, force: true });
@@ -223,15 +224,20 @@ export function removeKimiHooksInstallation(options = {}) {
 }
 
 function resolvePaths(options) {
-  const kimiHome = resolve(options.kimiHome ?? defaultKimiHome());
   const memoraxCodeHome = resolve(options.memoraxCodeHome ?? defaultMemoraxCodeHome());
+  const statePath = options.statePath ?? adapterStatePath(memoraxCodeHome);
+  const persisted = readAdapterState(statePath);
+  const persistedHome = typeof persisted?.kimiHome === "string" && persisted.kimiHome.trim()
+    ? persisted.kimiHome
+    : undefined;
+  const kimiHome = resolve(options.kimiHome ?? persistedHome ?? defaultKimiHome());
   const sourceRoot = resolve(options.sourceRoot ?? ADAPTER_ROOT);
   return {
     kimiHome,
     memoraxCodeHome,
     configPath: options.configPath ?? kimiConfigPath(kimiHome),
     skillPath: resolve(options.skillPath ?? kimiSkillPath(kimiHome)),
-    statePath: options.statePath ?? adapterStatePath(memoraxCodeHome),
+    statePath,
     runtimePath: options.runtimePath ?? adapterRuntimePath(memoraxCodeHome),
     sourceRoot,
     commonSourceRoot: resolve(options.commonSourceRoot ?? join(ADAPTER_ROOT, "..", "memorax-code-adapter-common")),
@@ -277,11 +283,24 @@ function materializeSkill(sourcePath, targetPath) {
 
 function runtimeDigest(root) {
   const hash = createHash("sha256");
-  for (const path of [
-    join(root, "memorax-code-kimi-adapter", "src", "hook-runtime.mjs"),
-    join(root, "memorax-code-kimi-adapter", "src", "prompt-correlation.mjs"),
-  ]) hash.update(readFileSync(path));
+  digestTree(root);
   return hash.digest("hex");
+
+  function digestTree(directory) {
+    for (const name of readdirSync(directory).sort()) {
+      if (name === "runtime.sha256") continue;
+      const path = join(directory, name);
+      const metadata = lstatSync(path);
+      const relativePath = relative(root, path);
+      if (metadata.isDirectory()) {
+        hash.update(`d:${relativePath}\n`);
+        digestTree(path);
+      } else if (metadata.isFile()) {
+        hash.update(`f:${relativePath}\n`);
+        hash.update(readFileSync(path));
+      } else throw new Error(`runtime tree contains unsupported entry: ${relativePath}`);
+    }
+  }
 }
 
 function directoryDigest(root) {
@@ -334,7 +353,7 @@ function reconcileHooks(text, hookCommand, enabled) {
       continue;
     }
     let end = index + 1;
-    while (end < lines.length && lines[end].trim() !== "[[hooks]]") end += 1;
+    while (end < lines.length && !isTomlTableHeader(lines[end])) end += 1;
     const block = lines.slice(index, end);
     const marked = retained.at(-1)?.trim() === MANAGED_MARKER;
     if (isManagedBlock(block) || marked) {
@@ -357,6 +376,55 @@ function reconcileHooks(text, hookCommand, enabled) {
 function isManagedBlock(block) {
   const text = block.join("");
   return text.includes("memorax-code-kimi-adapter") && text.includes("hook-runtime.mjs");
+}
+
+function isTomlTableHeader(line) {
+  return /^\s*(?:\[\[.*\]\]|\[.*\])\s*$/.test(line);
+}
+
+function validState(state, paths) {
+  return Boolean(state && typeof state === "object" && !Array.isArray(state)
+    && state.version === STATE_VERSION
+    && state.runtime === "kimi"
+    && state.integration === "hooks"
+    && typeof state.configPath === "string" && state.configPath === paths.configPath
+    && typeof state.runtimePath === "string" && state.runtimePath === paths.runtimePath
+    && typeof state.skillPath === "string" && state.skillPath === paths.skillPath
+    && typeof state.hookCommand === "string"
+    && typeof state.skillSourceSha256 === "string");
+}
+
+function runtimeMatches(path) {
+  try {
+    const recorded = readFileSync(join(path, "runtime.sha256"), "utf8").trim();
+    return Boolean(recorded) && recorded === runtimeDigest(path);
+  } catch {
+    return false;
+  }
+}
+
+function writeConfigText(path, value) {
+  let existing;
+  try { existing = statSync(path); } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const temporary = `${path}.${process.pid}.${Date.now()}.tmp`;
+  let fd;
+  try {
+    fd = openSync(temporary, "wx", existing ? existing.mode & 0o7777 : 0o600);
+    writeFileSync(fd, value, "utf8");
+    if (existing && process.platform !== "win32") {
+      fchownSync(fd, existing.uid, existing.gid);
+      fchmodSync(fd, existing.mode & 0o7777);
+    } else if (!existing && process.platform !== "win32") fchmodSync(fd, 0o600);
+    closeSync(fd);
+    fd = undefined;
+    renameSync(temporary, path);
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+    rmSync(temporary, { force: true });
+  }
 }
 
 function readConfig(path) {
