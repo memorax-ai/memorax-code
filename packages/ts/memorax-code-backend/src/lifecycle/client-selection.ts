@@ -8,7 +8,7 @@ export type ManagedClients = Readonly<{
   kimi?: boolean;
 }>;
 
-const allClients: ManagedClients = Object.freeze({ codex: true, claude: true, dsh: true, opencode: true });
+const allClients: ManagedClients = Object.freeze({ codex: true, claude: true, dsh: true, opencode: true, kimi: true });
 
 export function resolveManagedClients(argv: readonly string[], config: MemoraxCodeConfig = {}): ManagedClients {
   const explicit = argValue(argv, "--clients");
@@ -32,7 +32,7 @@ export function resolveManagedClients(argv: readonly string[], config: MemoraxCo
 export function parseManagedClients(value: string): ManagedClients {
   const normalized = value.trim().toLowerCase();
   if (normalized === "all") return allClients;
-  if (normalized === "none") return { codex: false, claude: false, dsh: false, opencode: false };
+  if (normalized === "none") return { codex: false, claude: false, dsh: false, opencode: false, kimi: false };
 
   const names = normalized.split(",").map((name) => name.trim()).filter(Boolean);
   if (names.length === 0 || names.some((name) => (

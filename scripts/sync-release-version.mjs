@@ -20,6 +20,7 @@ export const RELEASE_VERSION_TARGETS = Object.freeze([
   { file: "packages/ts/memorax-code-claude-adapter/hooks/runtime-shell.json", field: ["shellVersion"] },
   { file: "packages/ts/memorax-code-dsh-adapter/package.json", field: ["version"] },
   { file: "packages/ts/memorax-code-opencode-adapter/package.json", field: ["version"] },
+  { file: "packages/ts/memorax-code-kimi-adapter/package.json", field: ["version"] },
 ]);
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
