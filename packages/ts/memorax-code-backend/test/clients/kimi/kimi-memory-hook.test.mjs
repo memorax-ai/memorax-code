@@ -426,6 +426,61 @@ test("Kimi writeback restores exact scope from the current trace after Backend r
   }
 });
 
+test("Kimi restart recovery keeps the operational scope when trace capture is disabled", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-kimi-operational-recovery-"));
+  const memoraxCodeHome = join(root, "memorax-home");
+  const sessionId = "session-kimi-operational-recovery";
+  const prompt = "Recover without trace capture.";
+  const wirePath = await writeWire(root, sessionId, prompt, "Recovered without trace.");
+  const env = {
+    MEMORAX_CODE_HOME: memoraxCodeHome,
+    MEMORAX_CODE_KIMI_TRACE_ENABLED: "false",
+    MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED: "false",
+    MEMORAX_CODE_MEMORY_WRITEBACK_ENABLED: "true",
+    MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_ENABLED: "false",
+    MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
+    MEMORAX_CODE_MEMORAX_API_KEY: "test-key",
+    MEMORAX_CODE_MEMORAX_USER_ID: "test-user",
+  };
+  const requests = [];
+  const fetchImpl = async (url, request) => {
+    requests.push({ url: String(url), body: JSON.parse(request.body) });
+    return new Response(JSON.stringify({ success: true, data: { task_id: "operational-task", status: "queued" } }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  try {
+    const firstService = createMemoryService({ memoraxCodeHome, env, fetchImpl });
+    const promptId = sha256(prompt);
+    await firstService.recordTurnStart({
+      version: 1,
+      client: "kimi",
+      sessionId,
+      promptId,
+      prompt,
+      cwd: TEST_WORKSPACE,
+    });
+    firstService.close();
+
+    const restartedService = createMemoryService({ memoraxCodeHome, env, fetchImpl });
+    assert.deepEqual(await restartedService.writebackTurn({
+      version: 1,
+      client: "kimi",
+      sessionId,
+      promptId,
+      turnId: "4",
+      wirePath,
+    }), { ok: true, scheduled: true });
+    await restartedService.drain();
+    restartedService.close();
+    assert.equal(requests.length, 1);
+    assert.match(JSON.stringify(requests[0].body), /Recovered without trace/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 async function writeWire(root, sessionId, prompt, reply, options = {}) {
   const wirePath = join(root, sessionId, "agents", "main", "wire.jsonl");
   await mkdir(join(root, sessionId, "agents", "main"), { recursive: true });
