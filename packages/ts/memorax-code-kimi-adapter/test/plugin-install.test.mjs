@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -120,6 +120,31 @@ test("Kimi installer replaces unmarked legacy MemoraX Hook blocks idempotently",
     assert.equal(second, first);
     assert.equal((second.match(/# MemoraX Code Kimi Adapter/g) ?? []).length, 6);
     assert.equal((second.match(/event = \"UserPromptSubmit\"/g) ?? []).length, 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Kimi installer preserves TOML tables, file mode, and persisted custom home", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-kimi-config-boundary-"));
+  const kimiHome = join(root, "custom-kimi");
+  const memoraxCodeHome = join(root, "memorax");
+  const configPath = join(kimiHome, "config.toml");
+  try {
+    await mkdir(kimiHome, { recursive: true });
+    await writeFile(configPath, "[[hooks]]\nevent = \"Notification\"\ncommand = \"keep\"\n\n[providers.example]\nmodel = \"local\"\n");
+    await chmod(configPath, 0o640);
+    const options = { kimiHome, memoraxCodeHome, kimiCommand: process.execPath };
+    ensureKimiHooksInstalled(options);
+    const installedMode = (await stat(configPath)).mode & 0o777;
+    assert.equal(installedMode, 0o640);
+    const configured = await readFile(configPath, "utf8");
+    assert.match(configured, /\[providers\.example\]\nmodel = "local"/);
+    assert.match(configured, /event = "Notification"/);
+
+    assert.equal(readKimiHooksStatus({ memoraxCodeHome }).enabled, true);
+    assert.equal(disableKimiHooks({ memoraxCodeHome }).enabled, false);
+    assert.equal(removeKimiHooksInstallation({ memoraxCodeHome }).removed, true);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

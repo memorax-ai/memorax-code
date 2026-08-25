@@ -117,6 +117,9 @@ function gitExitCode(repoRoot, args) {
 }
 
 function resolveCwd(input, options) {
+  const resolvedWorktree = stringOption(options?.resolvedWorktree);
+  if (resolvedWorktree) return resolvedWorktree;
+  if (options?.requireResolvedWorktree === true) return undefined;
   const cwd = stringOption(input.cwd);
   if (cwd) return cwd;
   const sessionId = stringOption(input.session_id) ?? stringOption(input.sessionId);
