@@ -17,6 +17,10 @@ import {
   createOpenCodeMemoryHookRuntime,
   type OpenCodeMemoryHookWritebackResult,
 } from "../clients/opencode/memory-hook-runtime.js";
+import {
+  createKimiMemoryHookRuntime,
+  type KimiMemoryHookWritebackResult,
+} from "../clients/kimi/memory-hook-runtime.js";
 import { createMemoryTurnCoordinator } from "./turn-coordinator.js";
 import {
   createRepositoryMemorySessionRuntime,
@@ -36,7 +40,8 @@ type MemoryHookWritebackResult =
   | CodexMemoryHookWritebackResult
   | ClaudeMemoryHookWritebackResult
   | OpenCodeMemoryHookWritebackResult
-  | DshMemoryHookWritebackResult;
+  | DshMemoryHookWritebackResult
+  | KimiMemoryHookWritebackResult;
 
 export type MemoryService = {
   recordTurnStart(command: TurnStartCommand): Promise<MemoryHookTurnStartResult>;
@@ -79,6 +84,11 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
     repositoryMemorySession,
     turnCoordinator,
   });
+  const kimiHook = createKimiMemoryHookRuntime({
+    ...options,
+    repositoryMemorySession,
+    turnCoordinator,
+  });
   let closed = false;
   return {
     async recordTurnStart(command) {
@@ -91,6 +101,8 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
           return await openCodeHook.recordTurnStart(command);
         case "dsh":
           return await dshHook.recordTurnStart(command);
+        case "kimi":
+          return await kimiHook.recordTurnStart(command);
       }
       return unsupportedMemoryHookCommand(command);
     },
@@ -104,6 +116,8 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
           return await openCodeHook.writeback(command);
         case "dsh":
           return await dshHook.writeback(command);
+        case "kimi":
+          return await kimiHook.writeback(command);
       }
       return unsupportedMemoryHookCommand(command);
     },
@@ -117,6 +131,7 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
       claudeHook.close();
       openCodeHook.close();
       dshHook.close();
+      kimiHook.close();
       turnCoordinator.close();
       repositoryMemorySession.close();
       automaticWriteback.close();

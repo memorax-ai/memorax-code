@@ -11,6 +11,8 @@ export type MemoryObservabilitySource =
   | "dsh_native_writeback"
   | "opencode_plugin_retrieval"
   | "opencode_plugin_writeback"
+  | "kimi_hook_retrieval"
+  | "kimi_hook_writeback"
   | "memory_cli"
   | "writeback_reconciler"
   | "unknown";

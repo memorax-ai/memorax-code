@@ -62,12 +62,14 @@ test("Backend starts isolated writeback reconcilers for every traced client", { 
     writePendingWritebackTrace(memoraxCodeHome, "claude", "claude-reconcile-task"),
     writePendingWritebackTrace(memoraxCodeHome, "dsh", "dsh-reconcile-task"),
     writePendingWritebackTrace(memoraxCodeHome, "opencode", "opencode-reconcile-task"),
+    writePendingWritebackTrace(memoraxCodeHome, "kimi", "kimi-reconcile-task"),
   ]);
   const restoreEnv = withEnv({
     MEMORAX_CODE_CODEX_TRACE_ENABLED: "true",
     MEMORAX_CODE_CLAUDE_TRACE_ENABLED: "true",
     MEMORAX_CODE_DSH_TRACE_ENABLED: "true",
     MEMORAX_CODE_OPENCODE_TRACE_ENABLED: "true",
+    MEMORAX_CODE_KIMI_TRACE_ENABLED: "true",
     MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
     MEMORAX_CODE_MEMORAX_API_KEY: "secret",
     MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
@@ -82,7 +84,7 @@ test("Backend starts isolated writeback reconcilers for every traced client", { 
   globalThis.fetch = async (url) => {
     const taskId = new URL(String(url)).pathname.split("/").at(-1);
     requests.push(taskId);
-    if (requests.length === 4) notifyAllPolled();
+    if (requests.length === 5) notifyAllPolled();
     return new Response(JSON.stringify({
       status: "success",
       memory: {
@@ -101,12 +103,13 @@ test("Backend starts isolated writeback reconcilers for every traced client", { 
     ]);
     await server.shutdown();
 
-    assert.equal(requests.length, 4);
+    assert.equal(requests.length, 5);
     assert.deepEqual(new Set(requests), new Set([
       "codex-reconcile-task",
       "claude-reconcile-task",
       "dsh-reconcile-task",
       "opencode-reconcile-task",
+      "kimi-reconcile-task",
     ]));
     for (const trace of traces) {
       const events = (await readFile(trace.eventsPath, "utf8"))

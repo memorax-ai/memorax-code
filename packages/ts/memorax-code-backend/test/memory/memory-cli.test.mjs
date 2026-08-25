@@ -11,11 +11,13 @@ import {
   traceContextFromClaudeHookBody,
   traceContextFromDshTurnStart,
   traceContextFromHookBody,
+  traceContextFromKimiHookBody,
   traceContextFromOpenCodeHookBody,
 } from "../../dist/trace/context.js";
 import {
   claudeTracePaths,
   dshTracePaths,
+  kimiTracePaths,
   openCodeTracePaths,
   tracePaths,
 } from "../../dist/trace/config.js";
@@ -187,7 +189,7 @@ test("memory CLI rejects a nested repository outside the current turn scope", as
   assert.equal(result.workspaceScopeReason, "workspace_scope_mismatch");
   assert.equal(
     result.userAction,
-    "Start a new Codex, Claude Code, DSH, or OpenCode session from the target repository or local workspace.",
+    "Start a new Codex, Claude Code, DSH, OpenCode, or Kimi session from the target repository or local workspace.",
   );
   assert.equal(requestCount, 0);
 });
@@ -308,7 +310,7 @@ test("memory CLI gives the same scope recovery guidance for a Claude turn", asyn
   assert.equal(result.workspaceScopeReason, "workspace_scope_mismatch");
   assert.equal(
     result.userAction,
-    "Start a new Codex, Claude Code, DSH, or OpenCode session from the target repository or local workspace.",
+    "Start a new Codex, Claude Code, DSH, OpenCode, or Kimi session from the target repository or local workspace.",
   );
   assert.equal(requestCount, 0);
 });
@@ -847,6 +849,53 @@ test("memory CLI search binds to OpenCode trace instead of an inherited Codex th
   assert.equal(events[0].trace.turn_id, "opencode-user-message");
   assert.equal(events[0].trace.context_origin, "current-turn-file");
   await assert.rejects(readFile(tracePaths(root).eventsJsonl(sessionId), "utf8"));
+});
+
+test("memory CLI binds Kimi search to the explicitly selected Kimi session trace", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-cli-kimi-trace-"));
+  const sessionId = "shared-kimi-cli-session";
+  const kimiWorkspace = join(root, "kimi-workspace");
+  const kimiNestedCwd = join(kimiWorkspace, "src");
+  await mkdir(kimiNestedCwd, { recursive: true });
+  await writeCurrentTraceTurn(traceContextFromKimiHookBody({
+    session_id: sessionId,
+    prompt_id: "kimi-prompt",
+    cwd: kimiWorkspace,
+  }), {
+    client: "kimi",
+    memoraxCodeHome: root,
+  });
+  const requests = [];
+  const result = await runMemoryCli(["search", "--query", "Kimi trace bridge"], {
+    env: {
+      MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT: "kimi",
+      MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID: sessionId,
+      MEMORAX_CODE_HOME: root,
+      MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
+      MEMORAX_CODE_MEMORAX_API_KEY: "secret",
+      MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
+    },
+    cwd: kimiNestedCwd,
+    fetchImpl: async (_url, init) => {
+      requests.push(JSON.parse(init.body));
+      return new Response(JSON.stringify({ success: true, data: { data: [] } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.workspace, "kimi-workspace");
+  assert.equal(requests[0].user_id, "user-1@kimi-workspace");
+  const events = (await readFile(kimiTracePaths(root).eventsJsonl(sessionId), "utf8"))
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  assert.equal(events[0].trace.client, "kimi");
+  assert.equal(events[0].trace.session_id, sessionId);
+  assert.equal(events[0].trace.turn_id, "kimi-prompt");
+  assert.equal(events[0].type, "memory_cli_search");
 });
 
 test("memory CLI binds DSH search and add to the current turn scope", async () => {

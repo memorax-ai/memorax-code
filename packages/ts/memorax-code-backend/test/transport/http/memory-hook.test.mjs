@@ -463,6 +463,23 @@ test("Backend memory hook endpoints write client-isolated trace events", async (
     assert.equal(openCodeReminder.status, 200);
     assert.deepEqual(await openCodeReminder.json(), { ok: true });
 
+    const kimiReminder = await originalFetch(`${url}/memory/skill-reminder`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        version: 1,
+        client: "kimi",
+        sessionId: "session-trace-hook",
+        promptId: "kimi-prompt",
+        cwd: TEST_WORKSPACE,
+        workspaceKind: "project",
+        content: "MemoraX Code reminder: use the memorax-code skill in Kimi.",
+        triggers: ["post_compaction"],
+      }),
+    });
+    assert.equal(kimiReminder.status, 200);
+    assert.deepEqual(await kimiReminder.json(), { ok: true });
+
     const writeback = await originalFetch(`${url}/memory/writeback`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -551,6 +568,15 @@ test("Backend memory hook endpoints write client-isolated trace events", async (
       role: "developer",
       content: "MemoraX Code reminder: use the memorax-code skill in OpenCode.",
     });
+    const kimiEventsPath = clientTracePaths("kimi", sessionHome).eventsJsonl("session-trace-hook");
+    await waitForFile(kimiEventsPath, /skill_reminder/, "Kimi reminder trace event was not written");
+    const kimiEvents = (await readFile(kimiEventsPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(kimiEvents.length, 1);
+    assert.equal(kimiEvents[0].source, "kimi-hook");
+    assert.equal(kimiEvents[0].trace.client, "kimi");
+    assert.equal(kimiEvents[0].trace.session_id, "session-trace-hook");
+    assert.equal(kimiEvents[0].trace.turn_id, "kimi-prompt");
+    assert.equal(kimiEvents[0].trace.context_origin, "kimi-hook-body");
     const turnEnd = events.find((event) => event.type === "turn_end");
     assert.equal(turnEnd.source, "codex-hook");
     assert.equal(turnEnd.trace.session_id, "session-trace-hook");

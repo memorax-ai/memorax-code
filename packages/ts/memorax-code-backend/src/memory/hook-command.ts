@@ -3,7 +3,7 @@ import { isRecord } from "../shared/record.js";
 export const MEMORY_HOOK_COMMAND_VERSION = 1 as const;
 export const INVALID_MEMORY_HOOK_COMMAND = "invalid memory Hook command";
 
-export type MemoryHookClient = "codex" | "claude-code" | "opencode" | "dsh";
+export type MemoryHookClient = "codex" | "claude-code" | "opencode" | "dsh" | "kimi";
 
 const BASE_COMMAND_KEYS = [
   "version",
@@ -17,8 +17,9 @@ const TURN_START_KEYS: Readonly<Record<MemoryHookClient, ReadonlySet<string>>> =
   "claude-code": new Set([...BASE_COMMAND_KEYS, "promptId", "prompt", "transcriptPath"]),
   opencode: new Set([...BASE_COMMAND_KEYS, "userMessageId", "prompt"]),
   dsh: new Set(["version", "client", "sessionId", "turn", "startSeq", "cwd", "prompt"]),
+  kimi: new Set([...BASE_COMMAND_KEYS, "promptId", "prompt"]),
 };
-const WRITEBACK_KEYS: Readonly<Record<MemoryHookClient, ReadonlySet<string>>> = {
+const WRITEBACK_KEYS: Readonly<Partial<Record<MemoryHookClient, ReadonlySet<string>>>> = {
   codex: new Set([...BASE_COMMAND_KEYS, "turnId", "lastAssistantMessage", "transcriptPath"]),
   "claude-code": new Set([
     ...BASE_COMMAND_KEYS,
@@ -43,12 +44,14 @@ const WRITEBACK_KEYS: Readonly<Record<MemoryHookClient, ReadonlySet<string>>> = 
     "sessionHeader",
     "events",
   ]),
+  kimi: new Set([...BASE_COMMAND_KEYS, "promptId", "turnId", "wirePath"]),
 };
-const SKILL_REMINDER_KEYS: Readonly<Record<MemoryHookClient, ReadonlySet<string>>> = {
+const SKILL_REMINDER_KEYS: Readonly<Partial<Record<MemoryHookClient, ReadonlySet<string>>>> = {
   codex: new Set([...BASE_COMMAND_KEYS, "turnId", "transcriptPath", "content", "triggers"]),
   "claude-code": new Set([...BASE_COMMAND_KEYS, "promptId", "transcriptPath", "content", "triggers"]),
   dsh: new Set(["version", "client", "sessionId", "turn", "cwd", "content", "triggers"]),
   opencode: new Set([...BASE_COMMAND_KEYS, "userMessageId", "content", "triggers"]),
+  kimi: new Set([...BASE_COMMAND_KEYS, "promptId", "content", "triggers"]),
 };
 
 type MemoryHookCommandBase<Client extends MemoryHookClient> = Readonly<{
@@ -83,11 +86,17 @@ export type DshTurnStartCommand = MemoryHookCommandBase<"dsh"> & Readonly<{
   prompt: string;
 }>;
 
+export type KimiTurnStartCommand = MemoryHookCommandBase<"kimi"> & Readonly<{
+  promptId: string;
+  prompt: string;
+}>;
+
 export type TurnStartCommand =
   | CodexTurnStartCommand
   | ClaudeTurnStartCommand
   | OpenCodeTurnStartCommand
-  | DshTurnStartCommand;
+  | DshTurnStartCommand
+  | KimiTurnStartCommand;
 
 export type MemoryHookTurnStartResult = Readonly<{
   ok: true;
@@ -122,11 +131,18 @@ export type DshWritebackCommand = MemoryHookCommandBase<"dsh"> & Readonly<{
   events: readonly unknown[];
 }>;
 
+export type KimiWritebackCommand = MemoryHookCommandBase<"kimi"> & Readonly<{
+  promptId: string;
+  turnId: string;
+  wirePath: string;
+}>;
+
 export type WritebackCommand =
   | CodexWritebackCommand
   | ClaudeWritebackCommand
   | OpenCodeWritebackCommand
-  | DshWritebackCommand;
+  | DshWritebackCommand
+  | KimiWritebackCommand;
 
 export type SkillReminderTrigger = "cadence" | "post_compaction";
 
@@ -157,11 +173,18 @@ export type OpenCodeSkillReminderCommand = MemoryHookCommandBase<"opencode"> & R
   triggers: SkillReminderTrigger[];
 }>;
 
+export type KimiSkillReminderCommand = MemoryHookCommandBase<"kimi"> & Readonly<{
+  promptId: string;
+  content: string;
+  triggers: SkillReminderTrigger[];
+}>;
+
 export type SkillReminderCommand =
   | CodexSkillReminderCommand
   | ClaudeSkillReminderCommand
   | DshSkillReminderCommand
-  | OpenCodeSkillReminderCommand;
+  | OpenCodeSkillReminderCommand
+  | KimiSkillReminderCommand;
 
 export type MemoryHookCommandParseResult<Command> =
   | { ok: true; command: Command }
@@ -218,6 +241,11 @@ export function parseTurnStartCommand(
         prompt,
       },
     };
+  }
+  if (base.client === "kimi") {
+    const promptId = requiredStringField(value, "promptId");
+    if (!promptId) return invalidCommand();
+    return { ok: true, command: { ...base, client: "kimi", promptId, prompt } };
   }
   const promptId = requiredStringField(value, "promptId");
   const transcriptPath = requiredStringField(value, "transcriptPath");
@@ -282,6 +310,16 @@ export function parseWritebackCommand(
         assistantMessageId,
         messages: value.messages,
       },
+    };
+  }
+  if (base.client === "kimi") {
+    const promptId = requiredStringField(value, "promptId");
+    const turnId = requiredStringField(value, "turnId");
+    const wirePath = requiredStringField(value, "wirePath");
+    if (!promptId || !turnId || !wirePath) return invalidCommand();
+    return {
+      ok: true,
+      command: { ...base, client: "kimi", promptId, turnId, wirePath },
     };
   }
   const lastAssistantMessage = requiredStringField(value, "lastAssistantMessage");
@@ -354,6 +392,14 @@ export function parseSkillReminderCommand(
       },
     };
   }
+  if (base.client === "kimi") {
+    const promptId = requiredStringField(value, "promptId");
+    if (!promptId) return invalidCommand();
+    return {
+      ok: true,
+      command: { ...base, client: "kimi", promptId, content, triggers },
+    };
+  }
   const transcriptPath = requiredStringField(value, "transcriptPath");
   if (!transcriptPath) return invalidCommand();
   if (base.client === "codex") {
@@ -398,6 +444,7 @@ function parseCommandBase(
     && client !== "claude-code"
     && client !== "opencode"
     && client !== "dsh"
+    && client !== "kimi"
   ) return undefined;
   const clientKeys = allowedKeys[client];
   if (!clientKeys || Object.keys(value).some((key) => !clientKeys.has(key))) return undefined;
