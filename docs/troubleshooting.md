@@ -12,9 +12,29 @@ memorax-code-opencode doctor
 memorax-code logs
 ```
 
+For Kimi Code, use `memorax-code status --clients kimi` and
+`memorax-code start --clients kimi`. Restart Kimi after a lifecycle change.
+The integration edits only the six MemoraX-marked Hook entries in
+`$KIMI_CODE_HOME/config.toml`; provider settings and other Hook entries remain
+client-owned.
+
+Kimi renders a Hook result only when the Hook writes non-empty stdout. The
+MemoraX Kimi Hook emits retrieval and scheduled skill-reminder context, and automatic retrieval is disabled
+by default, so an empty Hook line is expected and does not mean the Hook was
+skipped. Enable `[memory.retrieval].enabled = true` or set
+`MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED=true`, then restart the Backend and
+Kimi. Kimi owns its Hook presentation and does not render Codex's native
+`UserPromptSubmit hook (completed)` status card.
+
+Kimi's shared Skill is discovered from `$KIMI_CODE_HOME/skills/memorax-code/`.
+If `memorax-code start --clients kimi` reports `skill_conflict`, preserve or
+rename the existing user Skill before retrying; the installer never overwrites
+an unmanaged Skill. After a successful refresh, start a new Kimi session so
+`/memorax-code` is discovered.
+
 `memorax-code status` checks the Backend and selected client integrations,
 including DSH and OpenCode. `memorax-cli status` checks credentials, scope, and
-memory switches without printing secrets. Codex, Claude Code, and OpenCode
+memory switches without printing secrets. Codex, Claude Code, OpenCode, and Kimi
 also provide client-specific `doctor` commands; DSH uses the shared lifecycle
 status.
 
@@ -204,7 +224,7 @@ MemoraX Code reads filesystem Git metadata without executing Git. Linked
 worktrees share the remote repository identity; non-Git workspaces use the
 normalized folder name. Resolution never falls back to the bare base user ID.
 
-A live Codex, Claude Code, DSH, or OpenCode session remains pinned to the
+A live Codex, Claude Code, DSH, OpenCode, or Kimi session remains pinned to the
 repository or local workspace resolved at the start of the session. Starting
 the client from a parent workspace and then entering a nested Git repository
 does not rebind the session. The only in-session scope upgrade is from a direct
@@ -237,7 +257,7 @@ when repository isolation matters.
 
 ## Model-provider requests fail while MemoraX Code is healthy
 
-MemoraX Code does not proxy Codex, Claude Code, DSH, or OpenCode model
+MemoraX Code does not proxy Codex, Claude Code, DSH, OpenCode, or Kimi model
 requests. If `memorax-code status` and the available client-specific doctor
 are healthy, inspect the provider URL, credentials, model selection, and
 network settings owned by that client. Do not copy model-provider credentials into

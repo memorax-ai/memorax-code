@@ -28,6 +28,7 @@ test("memory viewer user route renders the compact summary surface", async () =>
     assert.match(html, /<option value="claude-code">Claude Code<\/option>/);
     assert.match(html, /<option value="dsh">DeepSeek<\/option>/);
     assert.match(html, /<option value="opencode">OpenCode<\/option>/);
+    assert.match(html, /<option value="kimi">Kimi<\/option>/);
     assert.match(html, /id="language-toggle"/);
     assert.match(html, /id="theme-toggle"/);
     assert.match(html, /LANGUAGE_STORAGE_KEY,\['zh','en'\],'en'/);
@@ -151,7 +152,7 @@ test("memory viewer user API isolates clients and never returns private event co
     const codexText = await codexResponse.text();
     const codex = JSON.parse(codexText);
     assert.equal(codex.selectedClient, "codex");
-    assert.deepEqual(codex.availableClients, ["codex", "claude-code", "dsh", "opencode"]);
+    assert.deepEqual(codex.availableClients, ["codex", "claude-code", "dsh", "opencode", "kimi"]);
     assert.equal(codex.summary.searchOperationCount, 1);
     assert.equal(codex.summary.searchedMemoryCount, 1);
     assert.equal(codex.activities.length, 1);
@@ -178,7 +179,7 @@ test("memory viewer user API isolates clients and never returns private event co
     const dshText = await dshResponse.text();
     const dsh = JSON.parse(dshText);
     assert.equal(dsh.selectedClient, "dsh");
-    assert.deepEqual(dsh.availableClients, ["codex", "claude-code", "dsh", "opencode"]);
+    assert.deepEqual(dsh.availableClients, ["codex", "claude-code", "dsh", "opencode", "kimi"]);
     assert.equal(dsh.summary.searchOperationCount, 1);
     assert.equal(dsh.summary.searchedMemoryCount, 1);
     assert.equal(dsh.summary.addOperationCount, 1);

@@ -385,10 +385,27 @@ test("memory viewer assigns a client to live events and preserves client identit
     traceContext: context("dsh"),
   });
   recordMemoryViewerEvent({
+    eventId: "same-live-event",
+    source: "memory_cli",
+    operation: "retrieve",
+    ok: true,
+    traceContext: context("kimi"),
+  });
+  recordMemoryViewerEvent({
     source: "workflow_startup",
     operation: "retrieve",
     ok: true,
   });
+  assert.ok(recordMemoryViewerEvent({
+    source: "kimi_hook_retrieval",
+    operation: "retrieve",
+    ok: true,
+  }));
+  assert.ok(recordMemoryViewerEvent({
+    source: "kimi_hook_writeback",
+    operation: "writeback",
+    ok: true,
+  }));
 
   const live = listMemoryViewerEvents();
   assert.deepEqual(live.map((event) => event.client), [
@@ -396,13 +413,20 @@ test("memory viewer assigns a client to live events and preserves client identit
     "claude",
     "opencode",
     "dsh",
+    "kimi",
     "codex",
+    "kimi",
+    "kimi",
   ]);
   assert.equal(live[0].id, "trace:same-live-event");
   assert.equal(live[1].id, "claude-trace:same-live-event");
   assert.equal(live[2].id, "opencode-trace:same-live-event");
   assert.equal(live[3].id, "dsh-trace:same-live-event");
-  assert.equal(new Set(live.map((event) => event.eventKey)).size, 5);
+  assert.equal(live[4].client, "kimi");
+  assert.equal(live[5].client, "codex");
+  assert.equal(live[6].client, "kimi");
+  assert.equal(live[7].client, "kimi");
+  assert.equal(new Set(live.map((event) => event.eventKey)).size, 8);
 });
 
 async function writeTraceEvents(memoraxCodeHome, client, sessionDir, events) {
