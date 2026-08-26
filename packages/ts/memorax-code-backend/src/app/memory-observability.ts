@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { backendDebug } from "../shared/debug-log.js";
 import type { MemoryObservabilityEvent, MemoryObservabilityHook } from "../memory/observability.js";
 import {
-  TRACE_CLIENTS,
+  TRACE_RUNTIME_CLIENTS,
   clientTraceConfigFromEnv,
 } from "../trace/config.js";
 import { recordTraceEvent } from "../trace/store.js";
@@ -58,7 +58,7 @@ function sessionTraceObservabilityHook(
   env: Record<string, string | undefined>,
 ): MemoryObservabilityHook | undefined {
   const enabledClients = new Set(
-    TRACE_CLIENTS.filter((client) => clientTraceConfigFromEnv(client, env).enabled),
+    TRACE_RUNTIME_CLIENTS.filter((client) => clientTraceConfigFromEnv(client, env).enabled),
   );
   if (enabledClients.size === 0) return undefined;
   const pending = new Set<Promise<unknown>>();

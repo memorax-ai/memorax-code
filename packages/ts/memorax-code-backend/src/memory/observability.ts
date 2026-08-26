@@ -11,6 +11,8 @@ export type MemoryObservabilitySource =
   | "dsh_native_writeback"
   | "opencode_plugin_retrieval"
   | "opencode_plugin_writeback"
+  | "codebuddy_hook_retrieval"
+  | "codebuddy_hook_writeback"
   | "memory_cli"
   | "unknown";
 

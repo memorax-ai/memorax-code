@@ -21,7 +21,7 @@ let requestedSignal;
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.on(signal, () => {
     requestedSignal = signal;
-    activeChild?.kill(signal);
+    if (activeChild) terminateClient(activeChild, signal);
   });
 }
 
@@ -56,12 +56,16 @@ async function main(args) {
     runId: workerContext.runId,
   });
   if (initial.status !== "started") throw new Error(`repo memory job cannot start from status ${initial.status}`);
+  const clientTimeoutMs = repoMemoryClientTimeoutMs();
+  const clientKillGraceMs = repoMemoryClientKillGraceMs();
   let state = writeJobState(request.jobPath, {
     ...initial,
     status: "running",
     pid: process.pid,
     workerPid: process.pid,
     workerStartedAt: new Date().toISOString(),
+    clientTimeoutMs,
+    clientKillGraceMs,
   });
 
   if (requestedSignal) {
@@ -70,7 +74,7 @@ async function main(args) {
 
   const runner = runnerName(state.runner);
   const command = normalizedCommand(state.command);
-  const childResult = await runClient(command, {
+const childResult = await runClient(command, {
     captureStdout: finalMessageSource(state.finalMessageSource) === "stdout",
     cwd: repo,
     env: {
@@ -85,9 +89,18 @@ async function main(args) {
       });
     },
     finalMessagePath: state.finalMessagePath,
+    timeoutMs: clientTimeoutMs,
+    killGraceMs: clientKillGraceMs,
   });
   state = readJobState(request.jobPath);
 
+  if (childResult.timedOut) {
+    return finishFailed(request, state, workerContext, `${runner}_timeout`, {
+      timeoutMs: childResult.timeoutMs,
+      elapsedMs: childResult.elapsedMs,
+      signal: childResult.signal,
+    });
+  }
   if (childResult.error) {
     return finishFailed(request, state, workerContext, `${runner}_spawn_failed`, {
       error: childResult.error.message,
@@ -213,6 +226,11 @@ async function waitForOwnedMarker(input) {
 function runClient(command, options) {
   return new Promise((resolveResult) => {
     let settled = false;
+    let timeoutHandle;
+    let killHandle;
+    let timedOut = false;
+    let timeoutMs;
+    const startedAt = Date.now();
     let invocation;
     try {
       invocation = process.platform === "win32" && /\.[cm]?js$/i.test(command[0])
@@ -228,6 +246,7 @@ function runClient(command, options) {
     const child = spawn(invocation.command, invocation.args, {
       cwd: options.cwd,
       env: options.env,
+      detached: process.platform !== "win32",
       stdio: options.captureStdout ? ["ignore", "pipe", "inherit"] : "inherit",
     });
     activeChild = child;
@@ -243,8 +262,10 @@ function runClient(command, options) {
     const finish = (result) => {
       if (settled) return;
       settled = true;
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+      if (killHandle) clearTimeout(killHandle);
       activeChild = undefined;
-      resolveResult(result);
+      resolveResult({ ...result, timedOut, timeoutMs, elapsedMs: Date.now() - startedAt });
     };
     child.once("error", (error) => finish({ code: undefined, signal: undefined, error }));
     child.once("close", (code, signal) => {
@@ -258,8 +279,60 @@ function runClient(command, options) {
       }
       finish({ code, signal, error: undefined });
     });
-    if (requestedSignal) child.kill(requestedSignal);
+    if (Number.isFinite(options.timeoutMs) && options.timeoutMs > 0) {
+      timeoutHandle = setTimeout(() => {
+        timeoutMs = options.timeoutMs;
+        timedOut = true;
+        const terminated = terminateClient(child, "SIGTERM");
+        // A broken or ignored CLI must not leave a detached job behind forever.
+        // The grace period is deliberately short and only targets this child.
+        killHandle = setTimeout(() => {
+          if (!settled) terminateClient(child, "SIGKILL");
+        }, options.killGraceMs);
+        if (!terminated && !settled) {
+          finish({
+            code: undefined,
+            signal: "SIGTERM",
+            error: undefined,
+            timedOut: true,
+            timeoutMs,
+          });
+        }
+      }, options.timeoutMs);
+    }
+    if (requestedSignal) terminateClient(child, requestedSignal);
   });
+}
+
+function terminateClient(child, signal) {
+  if (!child || !Number.isInteger(child.pid) || child.pid <= 0) return false;
+  if (process.platform !== "win32") {
+    try {
+      process.kill(-child.pid, signal);
+      return true;
+    } catch {
+      // The process group may have exited between the timeout and this call.
+    }
+  }
+  try {
+    return child.kill(signal);
+  } catch {
+    return false;
+  }
+}
+
+function repoMemoryClientTimeoutMs(env = process.env) {
+  return positiveEnvInteger(env.MEMORAX_CODE_REPO_MEMORY_JOB_TIMEOUT_MS, 10 * 60 * 1000);
+}
+
+function repoMemoryClientKillGraceMs(env = process.env) {
+  return positiveEnvInteger(env.MEMORAX_CODE_REPO_MEMORY_JOB_KILL_GRACE_MS, 5000);
+}
+
+function positiveEnvInteger(value, fallback) {
+  if (typeof value !== "string" || !/^\d+$/.test(value.trim())) return fallback;
+  const parsed = Number(value.trim());
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function validateBundle(repo, validator) {

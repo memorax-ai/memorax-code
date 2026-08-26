@@ -5,6 +5,7 @@ import { loadMemoraxCodeConfig, type MemoraxCodeConfig } from "../config/memorax
 import { isTraceClient, type TraceClient } from "./context.js";
 
 export const TRACE_CLIENTS: readonly TraceClient[] = ["codex", "claude", "dsh", "opencode"];
+export const TRACE_RUNTIME_CLIENTS: readonly TraceClient[] = [...TRACE_CLIENTS, "codebuddy"];
 
 export type ClientTraceConfig = Readonly<{
   enabled: boolean;
@@ -18,6 +19,7 @@ export type CodexTraceConfig = ClientTraceConfig;
 export type ClaudeTraceConfig = ClientTraceConfig;
 export type DshTraceConfig = ClientTraceConfig;
 export type OpenCodeTraceConfig = ClientTraceConfig;
+export type CodeBuddyTraceConfig = ClientTraceConfig;
 
 export type ClientTracePaths = Readonly<{
   root: string;
@@ -33,6 +35,7 @@ export type CodexTracePaths = ClientTracePaths;
 export type ClaudeTracePaths = ClientTracePaths;
 export type DshTracePaths = ClientTracePaths;
 export type OpenCodeTracePaths = ClientTracePaths;
+export type CodeBuddyTracePaths = ClientTracePaths;
 
 export const CODEX_TRACE_DEFAULT_CONFIG: CodexTraceConfig = {
   enabled: true,
@@ -65,12 +68,14 @@ export const OPENCODE_TRACE_DEFAULT_CONFIG: OpenCodeTraceConfig = {
   maxEventChars: 20_000,
   maxFileBytes: 52_428_800,
 };
+export const CODEBUDDY_TRACE_DEFAULT_CONFIG: CodeBuddyTraceConfig = { ...OPENCODE_TRACE_DEFAULT_CONFIG };
 
 const TRACE_DEFAULT_CONFIGS: Readonly<Record<TraceClient, ClientTraceConfig>> = {
   codex: CODEX_TRACE_DEFAULT_CONFIG,
   claude: CLAUDE_TRACE_DEFAULT_CONFIG,
   dsh: DSH_TRACE_DEFAULT_CONFIG,
   opencode: OPENCODE_TRACE_DEFAULT_CONFIG,
+  codebuddy: CODEBUDDY_TRACE_DEFAULT_CONFIG,
 };
 
 const TRACE_ENV_PREFIXES: Readonly<Record<TraceClient, string>> = {
@@ -78,6 +83,7 @@ const TRACE_ENV_PREFIXES: Readonly<Record<TraceClient, string>> = {
   claude: "MEMORAX_CODE_CLAUDE_TRACE",
   dsh: "MEMORAX_CODE_DSH_TRACE",
   opencode: "MEMORAX_CODE_OPENCODE_TRACE",
+  codebuddy: "MEMORAX_CODE_CODEBUDDY_TRACE",
 };
 
 export const TRACE_CLEANUP_DEBOUNCE_MS = 60 * 60 * 1000;
@@ -113,6 +119,9 @@ export function openCodeTraceConfigFromEnv(
   fileConfig?: MemoraxCodeConfig,
 ): OpenCodeTraceConfig {
   return clientTraceConfigFromEnv("opencode", env, fileConfig);
+}
+export function codeBuddyTraceConfigFromEnv(env: Record<string, string | undefined> = process.env, fileConfig?: MemoraxCodeConfig): CodeBuddyTraceConfig {
+  return clientTraceConfigFromEnv("codebuddy", env, fileConfig);
 }
 
 export function clientTraceConfigFromEnv(
@@ -152,6 +161,9 @@ export function dshTracePaths(memoraxCodeHome = memoraxCodeHomeForTrace(process.
 
 export function openCodeTracePaths(memoraxCodeHome = memoraxCodeHomeForTrace(process.env)): OpenCodeTracePaths {
   return clientTracePaths("opencode", memoraxCodeHome);
+}
+export function codeBuddyTracePaths(memoraxCodeHome = memoraxCodeHomeForTrace(process.env)): CodeBuddyTracePaths {
+  return clientTracePaths("codebuddy", memoraxCodeHome);
 }
 
 export function clientTracePaths(
