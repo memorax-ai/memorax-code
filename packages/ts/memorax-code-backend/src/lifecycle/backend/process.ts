@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const POSIX_PROCESS_PROBE_TIMEOUT_MS = 2_000;
@@ -21,6 +22,7 @@ export type ProcessCommandLineProbeResult =
         | "timeout"
         | "terminated"
         | "spawn_error"
+        | "read_error"
         | "nonzero_exit";
       timeoutMs: number;
       code?: string;
@@ -45,6 +47,7 @@ type ProcessCommandLineProbeSpawnResult = {
 export type ProcessCommandLineProbeRuntime = {
   env?: NodeJS.ProcessEnv;
   platform?: NodeJS.Platform;
+  readFileSync?: (path: string) => Buffer;
   spawnSync?: (
     command: string,
     args: string[],
@@ -99,6 +102,25 @@ export function probeProcessCommandLine(
     : POSIX_PROCESS_PROBE_TIMEOUT_MS;
   if (!Number.isSafeInteger(pid) || pid <= 0) {
     return { status: "inconclusive", reason: "invalid_pid", timeoutMs };
+  }
+  if (platform === "linux") {
+    try {
+      const rawCommandLine = (runtime.readFileSync ?? readFileSync)(`/proc/${pid}/cmdline`);
+      const commandLine = rawCommandLine.toString("utf8").replaceAll("\0", " ").trim();
+      return commandLine
+        ? { status: "ok", commandLine }
+        : { status: "not_found" };
+    } catch (error) {
+      const code = error instanceof Error
+        ? (error as NodeJS.ErrnoException).code
+        : undefined;
+      return {
+        status: "inconclusive",
+        reason: "read_error",
+        timeoutMs,
+        ...(code ? { code } : {}),
+      };
+    }
   }
   const run = runtime.spawnSync ?? runProbeCommand;
   let command: string;

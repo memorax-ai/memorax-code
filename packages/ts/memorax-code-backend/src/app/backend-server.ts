@@ -6,20 +6,16 @@ import {
 } from "node:http";
 import { backendDebug } from "../shared/debug-log.js";
 import { createMemoryReminderTraceRecorder } from "../memory/reminder-trace-recorder.js";
-import { handleMemoryViewerRequest } from "../viewer/http/public-routes.js";
 import { handleMemoryHookRequest } from "../transport/http/memory-hook.js";
 import { createBackendMemoryObservability } from "./memory-observability.js";
 import { createMemoryService } from "../memory/service.js";
 import type { MemoryObservabilityHook } from "../memory/observability.js";
 import { handleHealthRequest } from "../transport/http/health.js";
-import { authorized, memoryViewerSessionCookieHeader, publicErrorMessage, statusCodeFromError } from "../transport/http/request.js";
+import { authorized, publicErrorMessage, statusCodeFromError } from "../transport/http/request.js";
 import { json } from "../transport/http/json.js";
 import { createBackendState, type BackendState } from "./state.js";
 import { TRACE_CLIENTS } from "../trace/config.js";
 import { pruneExpiredTraceSessionsForClient } from "../trace/store.js";
-import { startMemoryWritebackReconciler } from "../memory/writeback-reconciler.js";
-import { createMemoryWritebackTaskProjection } from "../memory/writeback-task-projection.js";
-import { readActiveManagedClients } from "../lifecycle/active-clients.js";
 
 export type BackendServerOptions = {
   memoryObservability?: MemoryObservabilityHook;
@@ -34,7 +30,6 @@ type BackendShutdownResources = {
   activeRequests: Set<Promise<unknown>>;
   memoryObservability?: MemoryObservabilityHook;
   memoryService: ReturnType<typeof createMemoryService>;
-  memoryWritebackReconcilers: readonly ReturnType<typeof startMemoryWritebackReconciler>[];
   timeoutMs: number;
 };
 
@@ -45,15 +40,10 @@ export function createBackendServer(
   options: BackendServerOptions = {},
 ): BackendServer {
   const memoryEnv = { ...process.env, MEMORAX_CODE_HOME: state.sessionHome };
-  const memoryWritebackTaskProjections = TRACE_CLIENTS.map((client) => createMemoryWritebackTaskProjection({
-    memoraxCodeHome: state.sessionHome,
-    client,
-  }));
   const memoryObservability = createBackendMemoryObservability(
     state.sessionHome,
     options.memoryObservability,
     memoryEnv,
-    memoryWritebackTaskProjections.map((projection) => projection.observabilityHook),
   );
   const memoryService = createMemoryService({
     diagnosticLogger: backendDebug,
@@ -79,13 +69,6 @@ export function createBackendServer(
       });
     });
   }
-  const memoryWritebackReconcilers = memoryWritebackTaskProjections.map((taskProjection) => (
-    startMemoryWritebackReconciler({
-      memoraxCodeHome: state.sessionHome,
-      env: memoryEnv,
-      taskProjection,
-    })
-  ));
   const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
     const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "127.0.0.1"}`);
     backendDebug("http.request", {
@@ -95,18 +78,6 @@ export function createBackendServer(
     try {
       if (req.method === "GET" && url.pathname === "/health") return handleHealthRequest(state, res);
       if (!authorized(state, req, url)) return json(res, 401, { ok: false, error: "unauthorized" });
-      if (
-        url.pathname === "/memory-viewer"
-        || url.pathname.startsWith("/memory-viewer/")
-      ) {
-        if (await handleMemoryViewerRequest(url, req, res, {
-          memoraxCodeHome: state.sessionHome,
-          claudeProjectsRoot: readActiveManagedClients(state.sessionHome)?.claude === true
-            ? state.claudeProjectsRoot
-            : false,
-          sessionCookie: memoryViewerSessionCookieHeader(state, req, url),
-        })) return;
-      }
       if (await handleMemoryHookRequest(memoryHookDependencies, url, req, res)) return;
       return json(res, 404, { ok: false, error: "not found" });
     } catch (error) {
@@ -132,7 +103,6 @@ export function createBackendServer(
     activeRequests,
     memoryObservability,
     memoryService,
-    memoryWritebackReconcilers,
     timeoutMs: positiveShutdownTimeout(options.shutdownTimeoutMs),
   });
 }
@@ -168,10 +138,6 @@ async function shutdownBackend(
   resources: BackendShutdownResources,
 ): Promise<void> {
   const deadline = Date.now() + resources.timeoutMs;
-  const reconcilerDrain = settleShutdownWork(
-    "memory_writeback_reconcilers",
-    Promise.all(resources.memoryWritebackReconcilers.map((reconciler) => reconciler.close())),
-  );
   try {
     await waitForShutdownPhase(
       "http_server",
@@ -200,11 +166,6 @@ async function shutdownBackend(
         deadline,
       );
     }
-    await waitForShutdownPhase(
-      "background_work",
-      reconcilerDrain,
-      deadline,
-    );
   } finally {
     resources.memoryService.close();
   }

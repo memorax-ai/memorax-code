@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -51,78 +51,6 @@ test("Backend close is idempotent and waits for observability drain", async () =
     assert.equal(settled, true);
   } finally {
     releaseDrain?.();
-    await rm(memoraxCodeHome, { recursive: true, force: true });
-  }
-});
-
-test("Backend starts isolated writeback reconcilers for every traced client", { concurrency: false }, async () => {
-  const memoraxCodeHome = await mkdtemp(join(tmpdir(), "memorax-code-backend-client-reconcilers-"));
-  const traces = await Promise.all([
-    writePendingWritebackTrace(memoraxCodeHome, "codex", "codex-reconcile-task"),
-    writePendingWritebackTrace(memoraxCodeHome, "claude", "claude-reconcile-task"),
-    writePendingWritebackTrace(memoraxCodeHome, "dsh", "dsh-reconcile-task"),
-    writePendingWritebackTrace(memoraxCodeHome, "opencode", "opencode-reconcile-task"),
-  ]);
-  const restoreEnv = withEnv({
-    MEMORAX_CODE_CODEX_TRACE_ENABLED: "true",
-    MEMORAX_CODE_CLAUDE_TRACE_ENABLED: "true",
-    MEMORAX_CODE_DSH_TRACE_ENABLED: "true",
-    MEMORAX_CODE_OPENCODE_TRACE_ENABLED: "true",
-    MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
-    MEMORAX_CODE_MEMORAX_API_KEY: "secret",
-    MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
-    MEMORAX_CODE_MEMORY_WRITEBACK_ENABLED: "true",
-  });
-  const originalFetch = globalThis.fetch;
-  const requests = [];
-  let notifyAllPolled;
-  const allPolled = new Promise((resolve) => {
-    notifyAllPolled = resolve;
-  });
-  globalThis.fetch = async (url) => {
-    const taskId = new URL(String(url)).pathname.split("/").at(-1);
-    requests.push(taskId);
-    if (requests.length === 4) notifyAllPolled();
-    return new Response(JSON.stringify({
-      status: "success",
-      memory: {
-        summary: `${taskId} memory`,
-        events: [{ id: `${taskId}-memory`, event: "ADD" }],
-      },
-    }), { status: 200, headers: { "content-type": "application/json" } });
-  };
-  const server = createBackendServer(
-    createBackendState("127.0.0.1", { sessionHome: memoraxCodeHome }),
-  );
-  try {
-    await Promise.race([
-      allPolled,
-      new Promise((_, reject) => setTimeout(() => reject(new Error("traced client tasks were not polled")), 1_000)),
-    ]);
-    await server.shutdown();
-
-    assert.equal(requests.length, 4);
-    assert.deepEqual(new Set(requests), new Set([
-      "codex-reconcile-task",
-      "claude-reconcile-task",
-      "dsh-reconcile-task",
-      "opencode-reconcile-task",
-    ]));
-    for (const trace of traces) {
-      const events = (await readFile(trace.eventsPath, "utf8"))
-        .trim()
-        .split("\n")
-        .map((line) => JSON.parse(line));
-      assert.equal(events.length, 2);
-      assert.equal(events[1].type, "memory_writeback_status");
-      assert.equal(events[1].trace.client, trace.client);
-      assert.equal(events[1].response.outcome, "saved");
-      assert.equal(events[1].response.savedMemoryCount, 1);
-    }
-  } finally {
-    await server.shutdown();
-    globalThis.fetch = originalFetch;
-    restoreEnv();
     await rm(memoraxCodeHome, { recursive: true, force: true });
   }
 });
@@ -257,24 +185,4 @@ function withEnv(updates) {
       else process.env[key] = value;
     }
   };
-}
-
-async function writePendingWritebackTrace(memoraxCodeHome, client, taskId) {
-  const sessionId = `${client}-reconcile-session`;
-  const sessionDir = join(memoraxCodeHome, "debug", "traces", client, "sessions", sessionId);
-  const eventsPath = join(sessionDir, "events.jsonl");
-  await mkdir(sessionDir, { recursive: true });
-  await writeFile(eventsPath, `${JSON.stringify({
-    schema_version: "1",
-    event_id: `${client}-reconcile-event`,
-    type: "memory_cli_add",
-    timestamp: "2026-07-28T14:46:04.994Z",
-    trace: { client, session_id: sessionId, turn_id: `${client}-reconcile-turn` },
-    source: "memory_cli",
-    operation: "writeback",
-    ok: true,
-    request: { payload: { messages: [{ role: "user", content: `${client} pending content` }] } },
-    response: { raw: { data: { task_id: taskId, status: "accepted" } } },
-  })}\n`, "utf8");
-  return { client, eventsPath };
 }

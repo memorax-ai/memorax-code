@@ -25,6 +25,7 @@ export type AdapterReport = {
   statePath?: string;
   changed?: boolean;
   skipped?: boolean;
+  optional?: true;
   reason?: string;
   message?: string;
   error?: string;

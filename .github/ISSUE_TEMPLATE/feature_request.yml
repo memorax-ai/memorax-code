@@ -29,7 +29,6 @@ body:
         - Local service start, stop, or status
         - Memory search
         - Memory saving
-        - Memory Viewer
         - Configuration
         - Documentation
         - Other
@@ -43,7 +42,10 @@ body:
       options:
         - Codex
         - Claude Code
-        - Both Codex and Claude Code
+        - DeepSeek Harness
+        - OpenCode
+        - Multiple clients
+        - Not applicable
         - Not sure
     validations:
       required: true

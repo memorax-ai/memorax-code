@@ -12,7 +12,6 @@ export type MemoryObservabilitySource =
   | "opencode_plugin_retrieval"
   | "opencode_plugin_writeback"
   | "memory_cli"
-  | "writeback_reconciler"
   | "unknown";
 
 export type MemoryObservabilityOperation = "query" | "retrieve" | "writeback";

@@ -2,30 +2,18 @@ import { createHash } from "node:crypto";
 import { existsSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 
-export const UNCLASSIFIED_PROJECT_ID = "__unclassified__";
-
 export type MemoryProjectIdentity = Readonly<{
   projectId: string;
   projectLabel: string;
 }>;
 
-type ResolvedMemoryProject = Readonly<{
-  identity: MemoryProjectIdentity;
-  root: string;
-}>;
-
-const PROJECT_ROOT_CACHE_CAPACITY = 512;
-const projectsByCwd = new Map<string, ResolvedMemoryProject>();
-const projectRootsById = new Map<string, string>();
+const projectsByCwd = new Map<string, MemoryProjectIdentity>();
 
 export function resolveMemoryProject(cwd: string | undefined): MemoryProjectIdentity | undefined {
   if (!cwd || !isAbsolute(cwd)) return undefined;
   const normalizedCwd = normalizePath(cwd);
   const cached = projectsByCwd.get(normalizedCwd);
-  if (cached) {
-    rememberProjectRoot(cached.identity.projectId, cached.root);
-    return cached.identity;
-  }
+  if (cached) return cached;
 
   let current = normalizedCwd;
   while (true) {
@@ -36,8 +24,7 @@ export function resolveMemoryProject(cwd: string | undefined): MemoryProjectIden
         projectId: `repo:${createHash("sha256").update(root).digest("hex").slice(0, 32)}`,
         projectLabel: isSafeProjectLabel(label) ? label : "Repository",
       };
-      projectsByCwd.set(normalizedCwd, { identity, root });
-      rememberProjectRoot(identity.projectId, root);
+      projectsByCwd.set(normalizedCwd, identity);
       return identity;
     }
     const parent = dirname(current);
@@ -46,12 +33,6 @@ export function resolveMemoryProject(cwd: string | undefined): MemoryProjectIden
   }
 
   return undefined;
-}
-
-export function memoryProjectRoot(projectId: string): string | undefined {
-  const root = projectRootsById.get(projectId);
-  if (root) rememberProjectRoot(projectId, root);
-  return root;
 }
 
 export function memoryProjectFromUnknown(value: unknown): MemoryProjectIdentity | undefined {
@@ -69,7 +50,7 @@ export function memoryProjectFromUnknown(value: unknown): MemoryProjectIdentity 
   return { projectId, projectLabel };
 }
 
-export function isMemoryProjectId(value: string): boolean {
+function isMemoryProjectId(value: string): boolean {
   return /^repo:[a-f0-9]{32}$/.test(value);
 }
 
@@ -86,16 +67,6 @@ function normalizePath(value: string): string {
     return realpathSync.native(absolute);
   } catch {
     return absolute;
-  }
-}
-
-function rememberProjectRoot(projectId: string, root: string): void {
-  projectRootsById.delete(projectId);
-  projectRootsById.set(projectId, root);
-  while (projectRootsById.size > PROJECT_ROOT_CACHE_CAPACITY) {
-    const oldest = projectRootsById.keys().next().value;
-    if (typeof oldest !== "string") break;
-    projectRootsById.delete(oldest);
   }
 }
 

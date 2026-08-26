@@ -76,8 +76,6 @@ same change, then run the matching verification profile in Section 5.
 - MemoraX receives only documented query/add/writeback payloads. Retained
   trace artifacts, trace-only provenance, and local transcript paths stay
   local.
-- Memory Viewer is a content-free local projection, not memory, transcript,
-  session, or lifecycle authority.
 - `memorax-code` is the shared user-facing skill. Changes must work in Codex,
   Claude Code, and OpenCode packaging and must keep triggers, metadata,
   references, and resource paths valid.

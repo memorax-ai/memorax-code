@@ -1,4 +1,4 @@
-export const MINIMUM_NODE_MAJOR = 24;
+export const MINIMUM_NODE_MAJOR = 20;
 
 export function unsupportedNodeVersionMessage(version = process.versions.node) {
   const value = String(version ?? "").trim();

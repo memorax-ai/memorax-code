@@ -57,11 +57,14 @@ shipped_docs = json.loads(Path(sys.argv[2]).read_text())
 readme = (package_root / "README.md").read_text()
 license_text = (package_root / "LICENSE").read_text()
 package_manifest = json.loads((package_root / "package.json").read_text())
-assert "npm install -g @memorax/memorax-code --foreground-scripts" in readme
+assert "npm install -g @memorax/memorax-code" in readme
+assert "```bash\nmemorax-code setup --existing-account\n```" in readme
+assert "```bash\nmemorax-code setup\n```" in readme
+assert "--foreground-scripts" not in readme
 assert license_text == Path("LICENSE").read_text()
 assert package_manifest["name"] == "@memorax/memorax-code"
 assert package_manifest["license"] == "MIT"
-assert package_manifest.get("engines", {}).get("node") == ">=24"
+assert package_manifest.get("engines", {}).get("node") == ">=20"
 assert "LICENSE" in package_manifest["files"]
 expected_bins = {
     "memorax-code": "bin/memorax-code.mjs",
@@ -108,12 +111,18 @@ assert 'MEMORAX_ACCOUNT_URL = "https://platform.memorax.net/"' in memorax_defaul
 assert 'MEMORAX_DEFAULT_MEMORY_OUTPUT_LANGUAGE = "zh"' in memorax_defaults
 for relative in [
     "bin/memorax-code-npm-preinstall.mjs",
+    "bin/memorax-code-plugin-postinstall.mjs",
+    "bin/memorax-code-setup.mjs",
     "lib/client-hook-runtime.mjs",
     "lib/dsh-plugin-install.mjs",
     "lib/resolve-claude-command.mjs",
     "lib/resolve-codex-command.mjs",
     "lib/vscode-extension-command.mjs",
     "lib/npm-invocation.mjs",
+    "lib/package-transition.mjs",
+    "lib/setup-memory-preferences.mjs",
+    "lib/setup-reconcile.mjs",
+    "lib/trial-setup.mjs",
     "lib/windows-cli-invocation.mjs",
     "lib/memorax-code-adapter-common/src/backend-connection.mjs",
     "lib/memorax-code-adapter-common/src/config-utils.mjs",
@@ -123,6 +132,7 @@ for relative in [
     "lib/memorax-code-adapter-common/src/hooks/memory-skill-reminder-policy.mjs",
     "lib/memorax-code-adapter-common/src/memorax-defaults.mjs",
     "lib/memorax-code-adapter-common/src/runtime-record.mjs",
+    "lib/memorax-code-adapter-common/src/setup-completion.mjs",
     "lib/memorax-code-adapter-common/src/hooks/ensure-backend-runner.mjs",
     "lib/memorax-code-adapter-common/src/clients/claude-command.mjs",
     "lib/memorax-code-adapter-common/src/clients/codex-command.mjs",
@@ -247,6 +257,7 @@ prefix=""
 home_dir=""
 tarball_extract=""
 codex_smoke_started=0
+claude_smoke_started=0
 package_install_started=0
 package_install_port=""
 cleanup() {
@@ -262,6 +273,20 @@ cleanup() {
         --home "$home_dir/.memorax-code" \
         --port "$package_install_port" \
         --clients none \
+        --json >/dev/null 2>&1 || true
+  fi
+  if [[ "$claude_smoke_started" == "1" \
+    && -n "${claude_home:-}" \
+    && -n "${claude_memorax_code_home:-}" \
+    && -n "${claude_port:-}" \
+    && -n "$prefix" \
+    && -x "$prefix/bin/memorax-code" ]]; then
+    CLAUDE_CONFIG_DIR="$claude_home" \
+    MEMORAX_CODE_BACKEND_PORT="$claude_port" \
+      "$prefix/bin/memorax-code" stop \
+        --home "$claude_memorax_code_home" \
+        --port "$claude_port" \
+        --clients claude \
         --json >/dev/null 2>&1 || true
   fi
   if [[ "$codex_smoke_started" == "1" \
@@ -303,8 +328,32 @@ export OPENCODE_CONFIG_DIR="$home_dir/.config/opencode-memorax-code-package-chec
 package_install_port="$(node -e 'const net = require("node:net"); const server = net.createServer(); server.listen(0, "127.0.0.1", () => { console.log(server.address().port); server.close(); });')"
 export MEMORAX_CODE_BACKEND_PORT="$package_install_port"
 
-package_install_started=1
 npm install -g --prefix "$prefix" "$main_tgz" --silent
+
+for unexpected in \
+  "$MEMORAX_CODE_HOME" \
+  "$CODEX_HOME" \
+  "$DSH_HOME" \
+  "$CLAUDE_CONFIG_DIR" \
+  "$OPENCODE_CONFIG_DIR" \
+  "$MEMORAX_CODE_HOME/config.toml" \
+  "$MEMORAX_CODE_HOME/runtime/setup/setup-completion.json" \
+  "$MEMORAX_CODE_HOME/runtime/install/package-transition.json" \
+  "$MEMORAX_CODE_HOME/runtime/backend/backend.pid.json" \
+  "$HOME/.agents/plugins/marketplace.json" \
+  "$CODEX_HOME/.memorax-code/plugins/memorax-code-codex-adapter"
+do
+  if [[ -e "$unexpected" ]]; then
+    echo "npm-package-check: fresh package install created setup state: $unexpected" >&2
+    exit 1
+  fi
+done
+
+if "$prefix/bin/memorax-code" >"$home_dir/before-setup.stdout" 2>"$home_dir/before-setup.stderr"; then
+  echo "npm-package-check: no-argument CLI unexpectedly accepted incomplete setup" >&2
+  exit 1
+fi
+grep -Fq 'setup has not been completed' "$home_dir/before-setup.stderr"
 
 package_install_root="$prefix/lib/node_modules/@memorax/memorax-code"
 cmp LICENSE "$package_install_root/LICENSE"
@@ -324,12 +373,19 @@ assert actual == expected, actual
 PY_INSTALLED_DOCS
 
 for relative in \
+  bin/memorax-code-npm-preinstall.mjs \
+  bin/memorax-code-plugin-postinstall.mjs \
+  bin/memorax-code-setup.mjs \
   lib/client-hook-runtime.mjs \
   lib/dsh-plugin-install.mjs \
   lib/resolve-claude-command.mjs \
   lib/resolve-codex-command.mjs \
   lib/vscode-extension-command.mjs \
   lib/npm-invocation.mjs \
+  lib/package-transition.mjs \
+  lib/setup-memory-preferences.mjs \
+  lib/setup-reconcile.mjs \
+  lib/trial-setup.mjs \
   lib/windows-cli-invocation.mjs \
   lib/memorax-code-adapter-common/src/backend-connection.mjs \
   lib/memorax-code-adapter-common/src/config-utils.mjs \
@@ -339,6 +395,7 @@ for relative in \
   lib/memorax-code-adapter-common/src/hooks/memory-skill-reminder-policy.mjs \
   lib/memorax-code-adapter-common/src/memorax-defaults.mjs \
   lib/memorax-code-adapter-common/src/runtime-record.mjs \
+  lib/memorax-code-adapter-common/src/setup-completion.mjs \
   lib/memorax-code-adapter-common/src/hooks/ensure-backend-runner.mjs \
   lib/memorax-code-adapter-common/src/clients/claude-command.mjs \
   lib/memorax-code-adapter-common/src/clients/codex-command.mjs \
@@ -412,23 +469,35 @@ node --input-type=module -e '
   }
 ' "$package_install_root"
 
-python3 - <<'PY_POSTINSTALL' "$home_dir" "$CODEX_HOME" "$package_version"
+package_install_started=1
+printf '%s\n' 'package-check-user' 'package-check-key' | \
+  MEMORAX_CODE_SETUP_ASSUME_INTERACTIVE=1 \
+  MEMORAX_CODE_SKIP_CODEX_PLUGIN_INSTALL=1 \
+  MEMORAX_CODE_SKIP_CLAUDE_ADAPTER_INSTALL=1 \
+  MEMORAX_CODE_SKIP_OPENCODE_ADAPTER_INSTALL=1 \
+  "$prefix/bin/memorax-code" setup --existing-account \
+    >"$home_dir/setup.stdout" 2>"$home_dir/setup.stderr"
+node --input-type=module - "$MEMORAX_CODE_HOME/config.toml" <<'NODE_DISABLE_DSH'
+import { readFileSync, writeFileSync } from "node:fs";
+
+const path = process.argv[2];
+const source = readFileSync(path, "utf8");
+const updated = source.replace(/^dsh = true\b.*$/m, "dsh = false # Disabled for the stopped-reinstall package check.");
+if (updated === source) throw new Error("package check could not disable DSH in generated config");
+writeFileSync(path, updated, { mode: 0o600 });
+NODE_DISABLE_DSH
+
+python3 - <<'PY_SETUP' "$home_dir" "$CODEX_HOME" "$package_version"
 import json
 import sys
 from pathlib import Path
 
 home = Path(sys.argv[1])
 codex_home = Path(sys.argv[2])
-manifest = codex_home / ".memorax-code" / "plugins" / "memorax-code-codex-adapter" / ".codex-plugin" / "plugin.json"
-manifest_data = json.loads(manifest.read_text())
-shell = json.loads((manifest.parent.parent / "hooks" / "runtime-shell.json").read_text())
-assert manifest_data["name"] == "memorax-code-codex-adapter"
-assert manifest_data["version"] == shell["shellVersion"]
+package_version = sys.argv[3]
+assert not (codex_home / ".memorax-code" / "plugins" / "memorax-code-codex-adapter").exists()
 assert not (codex_home / "plugins" / "memorax-code-codex-adapter").exists()
-marketplace = json.loads((home / ".agents" / "plugins" / "marketplace.json").read_text())
-assert marketplace["name"] == "personal"
-assert marketplace["plugins"][0]["source"]["path"] == "./.codex-memorax-code-package-check/.memorax-code/plugins/memorax-code-codex-adapter"
-assert marketplace["plugins"][0]["source"]["source"] == "local"
+assert not (home / ".agents" / "plugins" / "marketplace.json").exists()
 memorax_code_config = home / ".memorax-code" / "config.toml"
 config_text = memorax_code_config.read_text()
 config_sections = {
@@ -450,8 +519,18 @@ assert config_sections == {
     "trace.kimi",
     "trace.opencode",
 }
-assert 'output_language = "zh"' in config_text
+assert 'user_id = "package-check-user"' in config_text
+assert 'api_key = "package-check-key"' in config_text
+assert 'output_language = "' in config_text
+assert "codex = false" in config_text
+assert "claude = false" in config_text
+assert "dsh = false" in config_text
+assert "opencode = false" in config_text
 assert memorax_code_config.stat().st_mode & 0o777 == 0o600
+completion = json.loads((home / ".memorax-code" / "runtime" / "setup" / "setup-completion.json").read_text())
+assert completion["version"] == 1
+assert completion["state"] == "complete"
+assert completion["completedByVersion"] == package_version
 hook_runtime_root = home / ".memorax-code" / "runtime" / "client-hooks"
 current_path = hook_runtime_root / "current.json"
 current = json.loads(current_path.read_text())
@@ -464,44 +543,87 @@ assert generation_manifest["contentDigest"] == current["contentDigest"]
 assert (generation / "lib" / "memorax-code-codex-adapter" / "runtime-hooks" / "memory-writeback.mjs").exists()
 assert (generation / "lib" / "memorax-code-claude-adapter" / "runtime-hooks" / "memory-turn.mjs").exists()
 assert current_path.stat().st_mode & 0o777 == 0o600
-opencode_config = Path(sys.argv[1]) / ".config" / "opencode-memorax-code-package-check"
-assert (opencode_config / "plugins" / "memorax-code.js").is_file()
-assert (opencode_config / "skills" / "memorax-code" / "SKILL.md").is_file()
-assert (opencode_config / "hooks" / "repo-memory-job.mjs").is_file()
-opencode_state = json.loads((home / ".memorax-code" / "adapters" / "opencode" / "state.json").read_text())
-assert opencode_state["enabled"] is True
-assert Path(opencode_state["repoMemoryHelperPath"]) == opencode_config / "hooks" / "repo-memory-job.mjs"
-PY_POSTINSTALL
+assert (home / ".memorax-code" / "runtime" / "backend" / "backend.pid.json").exists()
+assert not (home / ".memorax-code" / "runtime" / "install" / "package-transition.json").exists()
+PY_SETUP
 
+cp "$MEMORAX_CODE_HOME/config.toml" "$home_dir/legacy-config-before-migration.toml"
+rm "$MEMORAX_CODE_HOME/runtime/setup/setup-completion.json"
+MEMORAX_CODE_SETUP_ASSUME_INTERACTIVE=1 \
+MEMORAX_CODE_SKIP_CODEX_PLUGIN_INSTALL=1 \
+MEMORAX_CODE_SKIP_CLAUDE_ADAPTER_INSTALL=1 \
+MEMORAX_CODE_SKIP_OPENCODE_ADAPTER_INSTALL=1 \
+"$prefix/bin/memorax-code" >/dev/null 2>&1
+cmp "$home_dir/legacy-config-before-migration.toml" "$MEMORAX_CODE_HOME/config.toml"
+test -f "$MEMORAX_CODE_HOME/runtime/setup/setup-completion.json"
+
+"$prefix/bin/memorax-code" >/dev/null
+
+cp "$MEMORAX_CODE_HOME/runtime/setup/setup-completion.json" "$home_dir/setup-completion-before-update.json"
+running_update_pid="$(node -e 'const fs = require("fs"); const state = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); if (!Number.isSafeInteger(state.pid) || state.pid <= 0) process.exit(1); process.stdout.write(String(state.pid));' "$MEMORAX_CODE_HOME/runtime/backend/backend.pid.json")"
+npm install -g --prefix "$prefix" "$main_tgz" --silent
+cmp "$home_dir/setup-completion-before-update.json" "$MEMORAX_CODE_HOME/runtime/setup/setup-completion.json"
+test -f "$MEMORAX_CODE_HOME/runtime/backend/backend.pid.json"
+test ! -e "$MEMORAX_CODE_HOME/runtime/install/package-transition.json"
+python3 - <<'PY_RUNNING_UPDATE' "$MEMORAX_CODE_HOME/runtime/backend/backend.pid.json" "$running_update_pid"
+import json
+import os
+import sys
+from pathlib import Path
+
+state = json.loads(Path(sys.argv[1]).read_text())
+old_pid = int(sys.argv[2])
+new_pid = state.get("pid")
+assert isinstance(new_pid, int) and new_pid > 0, state
+assert new_pid != old_pid, (old_pid, new_pid)
+try:
+    os.kill(old_pid, 0)
+except ProcessLookupError:
+    pass
+else:
+    raise AssertionError(f"pre-update Backend PID {old_pid} is still alive")
+PY_RUNNING_UPDATE
+"$prefix/bin/memorax-code" status \
+  --home "$MEMORAX_CODE_HOME" \
+  --port "$package_install_port" \
+  --clients none \
+  --json >/dev/null
+
+stopped_reinstall_pid="$(node -e 'const fs = require("fs"); const state = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); if (!Number.isSafeInteger(state.pid) || state.pid <= 0) process.exit(1); process.stdout.write(String(state.pid));' "$MEMORAX_CODE_HOME/runtime/backend/backend.pid.json")"
 "$prefix/bin/memorax-code" stop \
   --home "$MEMORAX_CODE_HOME" \
   --port "$package_install_port" \
   --clients none \
   --json >/dev/null
 package_install_started=0
+npm install -g --prefix "$prefix" "$main_tgz" --silent
+test ! -e "$MEMORAX_CODE_HOME/runtime/backend/backend.pid.json"
+test ! -e "$MEMORAX_CODE_HOME/runtime/install/package-transition.json"
+python3 - <<'PY_STOPPED_REINSTALL' "$stopped_reinstall_pid"
+import os
+import sys
 
-skip_prefix="$(mktemp -d)"
-skip_home="$(mktemp -d)"
-MEMORAX_CODE_SKIP_CODEX_PLUGIN_INSTALL=1 \
-HOME="$skip_home" \
-MEMORAX_CODE_HOME="$skip_home/.memorax-code" \
-CODEX_HOME="$skip_home/.codex-skip" \
-CLAUDE_CONFIG_DIR="$skip_home/.claude" \
-CLAUDE_HOME="$skip_home/.claude" \
-  npm install -g --prefix "$skip_prefix" "$main_tgz" --silent
-if [[ -e "$skip_home/.agents/plugins/marketplace.json" || -e "$skip_home/.codex-skip/.memorax-code/plugins/memorax-code-codex-adapter" || -e "$skip_home/.codex-skip/plugins/memorax-code-codex-adapter" ]]; then
-  echo "npm-package-check: postinstall skip still registered Codex plugin" >&2
-  exit 1
-fi
-HOME="$skip_home" \
-MEMORAX_CODE_HOME="$skip_home/.memorax-code" \
-MEMORAX_CODE_BACKEND_PORT="$package_install_port" \
-  "$skip_prefix/bin/memorax-code" stop \
-    --home "$skip_home/.memorax-code" \
-    --port "$package_install_port" \
-    --clients none \
-    --json >/dev/null 2>&1 || true
-rm -rf "$skip_prefix" "$skip_home"
+pid = int(sys.argv[1])
+try:
+    os.kill(pid, 0)
+except ProcessLookupError:
+    pass
+else:
+    raise AssertionError(f"stopped Backend PID {pid} is still alive after package reinstall")
+PY_STOPPED_REINSTALL
+node --input-type=module - "$package_install_port" <<'NODE_STOPPED_REINSTALL_PORT'
+import { createServer } from "node:net";
+
+const port = Number(process.argv[2]);
+const server = createServer();
+server.once("error", (error) => {
+  console.error(`npm-package-check: stopped reinstall left Backend port ${port} unavailable: ${error.message}`);
+  process.exit(1);
+});
+server.listen(port, "127.0.0.1", () => {
+  server.close((error) => process.exit(error ? 1 : 0));
+});
+NODE_STOPPED_REINSTALL_PORT
 
 "$prefix/bin/memorax-code" --help >/dev/null
 test "$("$prefix/bin/memorax-code" --version)" = "memorax-code $package_version"
@@ -510,11 +632,11 @@ if [[ "$package_version" == *-* ]]; then
 else
   default_update_channel="latest"
 fi
-test "$("$prefix/bin/memorax-code" update --dry-run)" = "npm install -g @memorax/memorax-code@${default_update_channel} --foreground-scripts"
-"$prefix/bin/memorax-code" update --preview --dry-run | grep -qx 'npm install -g @memorax/memorax-code@preview --foreground-scripts'
-"$prefix/bin/memorax-code" update --latest --dry-run | grep -qx 'npm install -g @memorax/memorax-code@latest --foreground-scripts'
-test "$("$prefix/bin/memorax-code" update --force --dry-run)" = "npm install -g @memorax/memorax-code@${default_update_channel} --force --foreground-scripts"
-"$prefix/bin/memorax-code" update --latest --force --dry-run | grep -qx 'npm install -g @memorax/memorax-code@latest --force --foreground-scripts'
+test "$("$prefix/bin/memorax-code" update --dry-run)" = "npm install -g @memorax/memorax-code@${default_update_channel}"
+"$prefix/bin/memorax-code" update --preview --dry-run | grep -qx 'npm install -g @memorax/memorax-code@preview'
+"$prefix/bin/memorax-code" update --latest --dry-run | grep -qx 'npm install -g @memorax/memorax-code@latest'
+test "$("$prefix/bin/memorax-code" update --force --dry-run)" = "npm install -g @memorax/memorax-code@${default_update_channel} --force"
+"$prefix/bin/memorax-code" update --latest --force --dry-run | grep -qx 'npm install -g @memorax/memorax-code@latest --force'
 if "$prefix/bin/memorax-code" update --preview --latest --dry-run >"$home_dir/memorax-code-update-conflict.txt" 2>&1; then
   echo "npm-package-check: conflicting update channels unexpectedly succeeded" >&2
   exit 1
@@ -526,7 +648,6 @@ cat > "$update_cwd_root/bin/npm" <<'EOF_NPM_STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$PWD" > "$MEMORAX_CODE_UPDATE_TEST_CWD_FILE"
 printf '%s\n' "$*" > "$MEMORAX_CODE_UPDATE_TEST_ARGS_FILE"
-printf '%s\n' "${MEMORAX_CODE_NPM_POSTINSTALL_UPDATE:-}" > "$MEMORAX_CODE_UPDATE_TEST_MODE_FILE"
 printf '%s\n' "${MEMORAX_CODE_HOME:-}" > "$MEMORAX_CODE_UPDATE_TEST_HOME_FILE"
 EOF_NPM_STUB
 chmod +x "$update_cwd_root/bin/npm"
@@ -538,13 +659,11 @@ update_memorax_code_home="$update_cwd_root/custom memorax-code home"
   MEMORAX_CODE_HOME="$update_cwd_root/wrong-home" \
   MEMORAX_CODE_UPDATE_TEST_CWD_FILE="$update_cwd_root/cwd.txt" \
   MEMORAX_CODE_UPDATE_TEST_ARGS_FILE="$update_cwd_root/args.txt" \
-  MEMORAX_CODE_UPDATE_TEST_MODE_FILE="$update_cwd_root/mode.txt" \
   MEMORAX_CODE_UPDATE_TEST_HOME_FILE="$update_cwd_root/home.txt" \
     "$prefix/bin/memorax-code" update --home "$update_memorax_code_home" >/dev/null
 )
 grep -qx "$home_dir" "$update_cwd_root/cwd.txt"
-grep -Fqx "install -g @memorax/memorax-code@${default_update_channel} --foreground-scripts" "$update_cwd_root/args.txt"
-grep -qx '1' "$update_cwd_root/mode.txt"
+grep -Fqx "install -g @memorax/memorax-code@${default_update_channel}" "$update_cwd_root/args.txt"
 grep -Fqx "$update_memorax_code_home" "$update_cwd_root/home.txt"
 "$prefix/bin/memorax-code-backend" --help >/dev/null
 "$prefix/bin/memorax-cli" --help >/dev/null
@@ -564,23 +683,33 @@ node -e '
 
 claude_home="$home_dir/.claude-memorax-code-package-check"
 claude_memorax_code_home="$home_dir/.memorax-code-claude-package-check"
+claude_port="$(python3 - <<'PY_FREE_PORT'
+import socket
+
+with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+    probe.bind(("127.0.0.1", 0))
+    print(probe.getsockname()[1])
+PY_FREE_PORT
+)"
 mkdir -p "$claude_home" "$claude_memorax_code_home"
 node -e 'require("node:fs").writeFileSync(process.argv[1], JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://api.anthropic.com", ANTHROPIC_API_KEY: "memorax-code-package-check-key" } }, null, 2) + "\n")' "$claude_home/settings.json"
+claude_smoke_started=1
 CLAUDE_CONFIG_DIR="$claude_home" \
-MEMORAX_CODE_BACKEND_PORT=18787 \
+MEMORAX_CODE_BACKEND_PORT="$claude_port" \
   "$prefix/bin/memorax-code" start \
     --home "$claude_memorax_code_home" \
+    --port "$claude_port" \
     --clients claude \
     --json > "$home_dir/claude-start.json"
 
 CLAUDE_CONFIG_DIR="$claude_home" \
-MEMORAX_CODE_BACKEND_PORT=18787 \
+MEMORAX_CODE_BACKEND_PORT="$claude_port" \
   "$prefix/bin/memorax-code-claude" status \
     --memorax-code-home "$claude_memorax_code_home" \
     --claude-home "$claude_home" \
     --json > "$home_dir/claude-status.json"
 
-python3 - <<'PY_CLAUDE' "$home_dir" "$claude_home" "$claude_memorax_code_home"
+python3 - <<'PY_CLAUDE' "$home_dir" "$claude_home" "$claude_memorax_code_home" "$claude_port"
 import json
 import sys
 from pathlib import Path
@@ -588,6 +717,7 @@ from pathlib import Path
 home = Path(sys.argv[1])
 claude_home = Path(sys.argv[2])
 memorax_code_home = Path(sys.argv[3])
+claude_port = int(sys.argv[4])
 start = json.loads((home / "claude-start.json").read_text())
 assert start["ok"] is True
 assert "codexAdapter" not in start
@@ -629,12 +759,13 @@ assert state["version"] == 1
 assert state["runtime"] == "claude-code"
 assert state["integration"] == "hooks"
 assert state["enabled"] is True
-assert state["backendUrl"] == "http://127.0.0.1:18787"
+assert state["backendUrl"] == f"http://127.0.0.1:{claude_port}"
 assert state["claudeSkillDelivery"] == "plugin"
 assert Path(state["claudePluginSkillsRoot"]) == install_path / "skills"
 PY_CLAUDE
 
-CLAUDE_CONFIG_DIR="$claude_home" MEMORAX_CODE_BACKEND_PORT=18787 "$prefix/bin/memorax-code" stop --home "$claude_memorax_code_home" --clients claude --json >/dev/null || true
+CLAUDE_CONFIG_DIR="$claude_home" MEMORAX_CODE_BACKEND_PORT="$claude_port" "$prefix/bin/memorax-code" stop --home "$claude_memorax_code_home" --port "$claude_port" --clients claude --json >/dev/null
+claude_smoke_started=0
 
 codex_home="$home_dir/.codex-memorax-code-package-check"
 CODEX_HOME="$codex_home" "$prefix/bin/memorax-code" codex-plugin install --json > "$home_dir/codex-plugin-install.json"
@@ -678,11 +809,12 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
     print(probe.getsockname()[1])
 PY_FREE_PORT
 )"
-python3 - <<'PY_CODEX_CONFIG' "$codex_home"
+python3 - <<'PY_CODEX_CONFIG' "$codex_home" "$codex_memorax_code_home"
 import sys
 from pathlib import Path
 
 codex_home = Path(sys.argv[1])
+memorax_code_home = Path(sys.argv[2])
 codex_home.mkdir(parents=True, exist_ok=True)
 config_path = codex_home / "config.toml"
 config_path.write_text("\n".join([
@@ -696,6 +828,18 @@ config_path.write_text("\n".join([
     '',
 ]))
 config_path.chmod(0o600)
+
+memorax_code_home.mkdir(parents=True, exist_ok=True)
+memorax_code_config_path = memorax_code_home / "config.toml"
+memorax_code_config_path.write_text("\n".join([
+    "[clients]",
+    "codex = true",
+    "claude = false",
+    "dsh = false",
+    "opencode = false",
+    "",
+]))
+memorax_code_config_path.chmod(0o600)
 PY_CODEX_CONFIG
 
 codex_smoke_started=1
@@ -710,9 +854,6 @@ for attempt in first second; do
       --json > "$home_dir/codex-$attempt-start.json"
 done
 
-MEMORAX_CODE_NPM_POSTINSTALL_UPDATE=1 \
-MEMORAX_CODE_SKIP_CLAUDE_ADAPTER_INSTALL=1 \
-MEMORAX_CODE_SKIP_OPENCODE_ADAPTER_INSTALL=1 \
 MEMORAX_CODE_HOME="$codex_memorax_code_home" \
 CODEX_HOME="$codex_home" \
 MEMORAX_CODE_BACKEND_PORT="$codex_port" \

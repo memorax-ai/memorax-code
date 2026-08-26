@@ -22,18 +22,6 @@ export type ClaudeTurnActivity = Readonly<{
   type: "memory_cli_search" | "memory_cli_add";
 }>;
 
-export type ClaudeTranscriptMemoryActivity = Readonly<{
-  promptId: string;
-  index: number;
-  occurrence: number;
-  type: ClaudeTurnActivity["type"];
-  toolUseId: string;
-  terminalRecordId?: string;
-  timestamp?: string;
-  ok?: boolean;
-  itemCount?: number;
-}>;
-
 export type ClaudeTranscriptTurn = {
   sessionId: string;
   promptId: string;
@@ -237,61 +225,6 @@ export function claudeInterruptedTranscriptTurnFromJsonLines(
     return { ok: false, reason: "user_prompt_missing" };
   }
   return { ok: false, reason: "turn_not_interrupted" };
-}
-
-export function claudeTranscriptMemoryActivitiesFromJsonLines(
-  transcript: string,
-  input: { sessionId: string; includeAuthority?: boolean },
-): ClaudeTranscriptMemoryActivity[] {
-  const requested = requestedTranscriptRecords(transcript, input.sessionId);
-  if (!requested.ok) return [];
-  const records = requested.records;
-  const recordsByUuid = indexRecordsByUuid(records);
-  const terminals = new Map<string, ClaudePromptBranch[]>();
-  const interrupted = new Map<string, ClaudePromptBranch[]>();
-  for (const record of records) {
-    if (isMemoryActivityTerminalAssistantRecord(record)) {
-      const branch = promptBranch(record, recordsByUuid);
-      if (!branch.ambiguous && branch.promptId && branch.userPrompt) {
-        const candidates = terminals.get(branch.promptId) ?? [];
-        candidates.push(branch);
-        terminals.set(branch.promptId, candidates);
-      }
-      continue;
-    }
-    if (!interruptionMarker(record)) continue;
-    const branch = promptBranch(record, recordsByUuid);
-    if (branch.ambiguous
-      || !branch.promptId
-      || !branch.userPrompt
-      || branch.assistantMessages.some((message) => message.stop_reason === "end_turn")) {
-      continue;
-    }
-    const candidates = interrupted.get(branch.promptId) ?? [];
-    candidates.push(branch);
-    interrupted.set(branch.promptId, candidates);
-  }
-
-  const activities: ClaudeTranscriptMemoryActivity[] = [];
-  const promptIds = new Set([...terminals.keys(), ...interrupted.keys()]);
-  for (const promptId of promptIds) {
-    const terminalBranches = maximalTerminalLineages(
-      (terminals.get(promptId) ?? []).map((branch) => ({ branch })),
-    ).map((candidate) => candidate.branch);
-    const interruptedBranches = interrupted.get(promptId) ?? [];
-    const branch = terminalBranches.length === 1
-      ? terminalBranches[0]
-      : terminalBranches.length === 0 && interruptedBranches.length === 1
-        ? interruptedBranches[0]
-        : undefined;
-    if (!branch) continue;
-    activities.push(...claudeMemoryActivityDetails(
-      promptId,
-      branch,
-      input.includeAuthority === true,
-    ));
-  }
-  return activities;
 }
 
 function requestedTranscriptRecords(
@@ -522,90 +455,6 @@ function transcriptRecordTimestamp(record: JsonRecord): string | undefined {
   return timestamp && Number.isFinite(Date.parse(timestamp)) ? timestamp : undefined;
 }
 
-function claudeMemoryActivityDetails(
-  promptId: string,
-  branch: ClaudePromptBranch,
-  includeAuthority: boolean,
-): ClaudeTranscriptMemoryActivity[] {
-  const activities: ClaudeTranscriptMemoryActivity[] = [];
-  const terminalRecordId = includeAuthority
-    ? stringValue(branch.records[0]?.uuid)
-    : undefined;
-  const seenToolUseIds = new Set<string>();
-  let index = 1;
-  for (const record of branch.records.slice().reverse()) {
-    const message = assistantMessageFromRecord(record);
-    if (!message || !Array.isArray(message.content)) continue;
-    for (const block of message.content) {
-      if (!isRecord(block) || block.type !== "tool_use") continue;
-      const toolUseId = stringValue(block.id);
-      if (!toolUseId || seenToolUseIds.has(toolUseId)) continue;
-      seenToolUseIds.add(toolUseId);
-      if (block.name !== "Bash") continue;
-      const toolInput = isRecord(block.input) ? block.input : undefined;
-      const command = toolInput ? stringValue(toolInput.command) : undefined;
-      if (!command) continue;
-      const types = memoryCliCommandTypes(command);
-      if (types.length === 0) continue;
-      const timestamp = canonicalTranscriptActivityTimestamp(record);
-      const result = claudeToolResultDetails(
-        branch.records,
-        toolUseId,
-        types.length === 1 && types[0] === "memory_cli_search",
-      );
-      for (const [occurrence, type] of types.entries()) {
-        activities.push({
-          promptId,
-          index,
-          occurrence: occurrence + 1,
-          type,
-          toolUseId,
-          ...(terminalRecordId ? { terminalRecordId } : {}),
-          ...(timestamp ? { timestamp } : {}),
-          ...(result.ok === undefined ? {} : { ok: result.ok }),
-          ...(type === "memory_cli_search" && result.itemCount !== undefined
-            ? { itemCount: result.itemCount }
-            : {}),
-        });
-      }
-      index += 1;
-    }
-  }
-  return activities;
-}
-
-function canonicalTranscriptActivityTimestamp(record: JsonRecord): string | undefined {
-  const timestamp = transcriptRecordTimestamp(record);
-  return timestamp ? new Date(Date.parse(timestamp)).toISOString() : undefined;
-}
-
-function claudeToolResultDetails(
-  branchRecords: readonly JsonRecord[],
-  toolUseId: string,
-  deriveSearchItemCount: boolean,
-): Readonly<{ ok?: boolean; itemCount?: number }> {
-  const matches: JsonRecord[] = [];
-  let failed = false;
-  for (const record of branchRecords) {
-    const message = isRecord(record.message) ? record.message : undefined;
-    if (message?.role !== "user" || !Array.isArray(message.content)) continue;
-    for (const block of message.content) {
-      if (!isRecord(block)
-        || block.type !== "tool_result"
-        || stringValue(block.tool_use_id ?? block.toolUseId) !== toolUseId) {
-        continue;
-      }
-      matches.push(block);
-      if (block.is_error === true) failed = true;
-    }
-  }
-  if (matches.length === 0) return {};
-  if (failed) return { ok: false };
-  if (!deriveSearchItemCount || matches.length !== 1) return { ok: true };
-  const itemCount = safeMemorySearchItemCount(matches[0]?.content);
-  return itemCount === undefined ? { ok: true } : { ok: true, itemCount };
-}
-
 function memoryCliCommandTypes(command: string): ClaudeTurnActivity["type"][] {
   const activities: ClaudeTurnActivity["type"][] = [];
   for (const segment of shellCommandSegments(command)) {
@@ -752,51 +601,6 @@ function isNamedExecutable(word: string | undefined, name: string): boolean {
   if (!absolute) return false;
   const basename = normalized.slice(normalized.lastIndexOf("/") + 1);
   return basename === name || basename === `${name}.mjs`;
-}
-
-function safeMemorySearchItemCount(content: unknown): number | undefined {
-  if (typeof content !== "string" || content.length > 2 * 1024 * 1024) return undefined;
-  const output = content.trim();
-  if (!output) return undefined;
-  if (output.startsWith("{")) {
-    try {
-      const parsed = JSON.parse(output) as unknown;
-      if (!isRecord(parsed)
-        || parsed.ok !== true
-        || parsed.action !== "memory.search"
-        || !Array.isArray(parsed.items)
-        || parsed.items.length > 100) {
-        return undefined;
-      }
-      return parsed.items.length;
-    } catch {
-      return undefined;
-    }
-  }
-
-  const lines = output.split(/\r?\n/u);
-  if (lines[0] !== "<memories>" || lines.at(-1) !== "</memories>") return undefined;
-  let insideFacts = false;
-  let factsGroups = 0;
-  let itemCount = 0;
-  for (const line of lines.slice(1, -1)) {
-    if (!insideFacts && /^ {2}<facts(?: memory_type="[^"\r\n]*")?>$/u.test(line)) {
-      insideFacts = true;
-      factsGroups += 1;
-      continue;
-    }
-    if (insideFacts && line === "  </facts>") {
-      insideFacts = false;
-      continue;
-    }
-    if (insideFacts && /^ {3}-(?:\[[^\]\r\n]+\] | )\S.*$/u.test(line)) {
-      itemCount += 1;
-      if (itemCount > 100) return undefined;
-      continue;
-    }
-    return undefined;
-  }
-  return !insideFacts && factsGroups > 0 && itemCount > 0 ? itemCount : undefined;
 }
 
 function claudeMemoryActivities(
@@ -963,16 +767,6 @@ function completedAssistantReply(record: JsonRecord): string | undefined {
 
 function isCompletedAssistantRecord(record: JsonRecord): boolean {
   return assistantMessageFromRecord(record)?.stop_reason === "end_turn";
-}
-
-function isMemoryActivityTerminalAssistantRecord(record: JsonRecord): boolean {
-  const message = assistantMessageFromRecord(record);
-  const stopReason = message ? stringValue(message.stop_reason) : undefined;
-  return Boolean(message && (
-    (stopReason && stopReason !== "tool_use")
-    || record.isApiErrorMessage === true
-    || record.error
-  ));
 }
 
 function assistantMessageFromRecord(record: JsonRecord): JsonRecord | undefined {

@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmod, cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { delimiter, dirname, join } from "node:path";
+import { basename, delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
@@ -19,6 +19,7 @@ async function createPackageFixture(version) {
   await cp(join(packageRoot, "lib", "run-entrypoint.mjs"), join(root, "lib", "run-entrypoint.mjs"));
   await cp(join(packageRoot, "lib", "resolve-claude-command.mjs"), join(root, "lib", "resolve-claude-command.mjs"));
   await cp(join(packageRoot, "lib", "resolve-codex-command.mjs"), join(root, "lib", "resolve-codex-command.mjs"));
+  await cp(join(packageRoot, "lib", "windows-cli-invocation.mjs"), join(root, "lib", "windows-cli-invocation.mjs"));
   await cp(join(packageRoot, "lib", "vscode-extension-command.mjs"), join(root, "lib", "vscode-extension-command.mjs"));
   const manifest = JSON.parse(await readFile(join(packageRoot, "package.json"), "utf8"));
   manifest.version = version;
@@ -44,7 +45,7 @@ test("memorax-code update preserves the installed release channel", async (t) =>
         assert.equal(result.status, 0, result.stderr);
         assert.equal(
           result.stdout.trim(),
-          `npm install -g @memorax/memorax-code@${channel} --foreground-scripts`,
+          `npm install -g @memorax/memorax-code@${channel}`,
         );
       } finally {
         await rm(root, { recursive: true, force: true });
@@ -60,14 +61,14 @@ test("memorax-code update supports explicit channel selection and force", async 
     assert.equal(latest.status, 0, latest.stderr);
     assert.equal(
       latest.stdout.trim(),
-      "npm install -g @memorax/memorax-code@latest --foreground-scripts",
+      "npm install -g @memorax/memorax-code@latest",
     );
 
     const previewForce = runUpdate(root, "--force", "--preview", "--dry-run");
     assert.equal(previewForce.status, 0, previewForce.stderr);
     assert.equal(
       previewForce.stdout.trim(),
-      "npm install -g @memorax/memorax-code@preview --force --foreground-scripts",
+      "npm install -g @memorax/memorax-code@preview --force",
     );
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -85,7 +86,7 @@ test("memorax-code update rejects conflicting channels", async () => {
   }
 });
 
-test("memorax-code update propagates an explicit home to npm lifecycle scripts", {
+test("memorax-code update propagates an explicit home to package transition scripts", {
   skip: process.platform === "win32",
 }, async () => {
   const root = await createPackageFixture("0.0.1");
@@ -95,17 +96,18 @@ test("memorax-code update propagates an explicit home to npm lifecycle scripts",
   try {
     await mkdir(fakeBin, { recursive: true });
     const npmStub = join(fakeBin, "npm");
-    await writeFile(npmStub, [
+    const npmStubModule = `${npmStub}.mjs`;
+    await writeFile(npmStubModule, [
       "#!/usr/bin/env node",
       "import { writeFileSync } from 'node:fs';",
       "writeFileSync(process.env.MEMORAX_CODE_UPDATE_CAPTURE, JSON.stringify({",
       "  args: process.argv.slice(2),",
       "  memoraxCodeHome: process.env.MEMORAX_CODE_HOME,",
-      "  updateMode: process.env.MEMORAX_CODE_NPM_POSTINSTALL_UPDATE,",
       "}));",
       "",
     ].join("\n"));
-    await chmod(npmStub, 0o755);
+    await chmod(npmStubModule, 0o755);
+    await symlink(basename(npmStubModule), npmStub);
 
     const result = spawnSync(
       process.execPath,
@@ -126,10 +128,8 @@ test("memorax-code update propagates an explicit home to npm lifecycle scripts",
         "install",
         "-g",
         "@memorax/memorax-code@latest",
-        "--foreground-scripts",
       ],
       memoraxCodeHome,
-      updateMode: "1",
     });
   } finally {
     await rm(root, { recursive: true, force: true });

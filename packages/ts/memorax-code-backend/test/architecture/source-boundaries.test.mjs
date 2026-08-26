@@ -79,7 +79,7 @@ const rules = [
   {
     name: "automatic writeback stays independent from Codex prompt parsing and Backend routing",
     importers: ["memory/automatic-writeback.ts"],
-    forbidden: ["clients/codex/effective-prompt", "server-", "entrypoints/", "transport/http/"],
+    forbidden: ["server-", "entrypoints/", "transport/http/"],
   },
   {
     name: "Hook memory runtimes use normalized automatic writeback",
@@ -118,21 +118,6 @@ const rules = [
     forbidden: ["node:http", "server-", "entrypoints/", "transport/http/", "app/state", "clients/codex/rollout", "clients/claude/", "clients/dsh/", "clients/opencode/"],
   },
   {
-    name: "writeback reconciliation stays independent from HTTP, Backend composition, and Viewer models",
-    importers: ["memory/writeback-reconciler.ts"],
-    forbidden: ["node:http", "server-", "entrypoints/", "transport/http/", "app/state", "viewer/"],
-  },
-  {
-    name: "writeback task projection stays independent from Viewer and provider polling",
-    importers: ["memory/writeback-task-projection.ts"],
-    forbidden: ["viewer/", "provider/memorax/adapter", "server-", "entrypoints/", "transport/http/"],
-  },
-  {
-    name: "public memory viewer routes read local projections without provider access",
-    importers: ["viewer/http/public-routes.ts"],
-    forbidden: ["provider/memorax/", "memory/writeback-reconciler"],
-  },
-  {
     name: "HTTP server stays independent from install watchdog and client plugin lifecycle",
     importers: ["app/backend-server.ts"],
     forbidden: ["lifecycle/install-watchdog", "clients/codex/plugin-install", "lifecycle/client-plugin-removal"],
@@ -141,23 +126,6 @@ const rules = [
     name: "server CLI uses the app server instead of the compatibility entrypoint",
     importers: ["entrypoints/backend-cli.ts"],
     forbidden: ["server"],
-  },
-  {
-    name: "Viewer projections depend on the Viewer model instead of the Store",
-    importers: [
-      "viewer/history/claude-transcript.ts",
-      "viewer/history/session-title.ts",
-      "viewer/projection/activity.ts",
-      "viewer/projection/history.ts",
-      "viewer/projection/user.ts",
-      "viewer/projection/writeback-status.ts",
-    ],
-    forbidden: ["viewer/store"],
-  },
-  {
-    name: "Viewer model stays independent from Viewer projections and storage",
-    importers: ["viewer/model.ts"],
-    forbidden: ["viewer/", "server-", "entrypoints/", "transport/http/"],
   },
   {
     name: "lifecycle contracts stay independent from lifecycle implementations",
@@ -213,16 +181,6 @@ test("backend source root contains only stable entrypoints and compatibility fac
     .sort();
 
   assert.deepEqual(rootModules, backendRootFacades);
-});
-
-test("public memory viewer HTTP ownership contains only the public route", async () => {
-  const entries = await readdir(join(backendSrc, "viewer", "http"), { withFileTypes: true });
-  const routeModules = entries
-    .filter((entry) => entry.isFile() && entry.name.endsWith(".ts"))
-    .map((entry) => entry.name)
-    .sort();
-
-  assert.deepEqual(routeModules, ["public-routes.ts"]);
 });
 
 test("memorax-code lifecycle delegates client implementation details to adapter participants", async () => {

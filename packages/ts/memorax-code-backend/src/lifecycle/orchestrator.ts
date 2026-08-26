@@ -5,6 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { BackendConnectionAuthorityError } from "../../../memorax-code-adapter-common/src/backend-connection.mjs";
 import { RuntimeRecordError } from "../../../memorax-code-adapter-common/src/runtime-record.mjs";
+import { withSetupCompletionLock } from "../../../memorax-code-adapter-common/src/setup-completion.mjs";
 import { runBackendStatus } from "./backend/status.js";
 import {
   readBackendServiceState,
@@ -42,6 +43,7 @@ export type {
 export type MemoraxCodeStatusReport = {
   ok: boolean;
   action: "status";
+  degraded?: true;
   backend: Awaited<ReturnType<typeof runBackendStatus>>;
   codexAdapter?: AdapterReport;
   claudeAdapter?: AdapterReport;
@@ -53,6 +55,7 @@ export type MemoraxCodeStatusReport = {
 export type MemoraxCodeLifecycleReport = {
   ok: boolean;
   action: "start" | "stop" | "restart" | "uninstall";
+  degraded?: true;
   reason?: string;
   message?: string;
   backend?: Awaited<ReturnType<typeof startBackendService | typeof stopBackendService>>;
@@ -91,6 +94,7 @@ type MemoraxCodeStopExecution = Readonly<{
 }>;
 
 const PACKAGE_REPLACEMENT_ENV = "MEMORAX_CODE_PACKAGE_REPLACEMENT";
+const DSH_OPTIONAL_ENV = "MEMORAX_CODE_DSH_ADAPTER_OPTIONAL";
 const DSH_RECOVERY_ENV = "MEMORAX_CODE_DSH_ADAPTER_RECOVERY";
 const DSH_RECOVERY_REVISION_ENV = "MEMORAX_CODE_DSH_ADAPTER_EXPECTED_REVISION";
 
@@ -135,9 +139,12 @@ export async function collectMemoraxCodeStatus(
   const claudeAdapter = clients.claude
     ? await claudeAdapterLifecycle.status({ argv, serviceOptions, backendUrl })
     : undefined;
-  const dshAdapter = clients.dsh
-    ? await collectDshAdapterLifecycleStatus({ argv, serviceOptions, backendUrl })
-    : undefined;
+  const dshAdapter = markOptionalDshAdapter(
+    clients.dsh
+      ? await collectDshAdapterLifecycleStatus({ argv, serviceOptions, backendUrl })
+      : undefined,
+    clients.dsh && isOptionalDshSelection(argv),
+  );
   const opencodeAdapter = clients.opencode
     ? await openCodeAdapterLifecycle.status({ argv, serviceOptions, backendUrl })
     : undefined;
@@ -149,14 +156,16 @@ export async function collectMemoraxCodeStatus(
   const dshReady = dshAdapter ? isAdapterReady(dshAdapter) : true;
   const opencodeReady = opencodeAdapter ? isAdapterReady(opencodeAdapter) : true;
   const kimiReady = kimiAdapter ? isAdapterReady(kimiAdapter) : true;
+  const optionalDshUnavailable = isOptionalUnavailableDshAdapter(dshAdapter);
   return {
     ok: backend.ok
       && codexReady
       && opencodeReady
       && kimiReady
       && (isOptionalUnconfiguredClaudeAdapter(claudeAdapter, codexAdapter) || claudeReady)
-      && (isOptionalUnavailableDshAdapter(dshAdapter) || dshReady),
+      && (optionalDshUnavailable || dshReady),
     action: "status",
+    ...(optionalDshUnavailable ? { degraded: true } : {}),
     backend,
     ...(codexAdapter ? { codexAdapter } : {}),
     ...(claudeAdapter ? { claudeAdapter } : {}),
@@ -202,12 +211,17 @@ async function startMemoraxCodeServiceLocked(
   if (serviceStateFailure) {
     return { ok: false, action: "start", backend: serviceStateFailure };
   }
-  const config = loadManagedClientsConfig(memoraxCodeHome);
-  const requestedClients = resolveManagedClients(argv, config);
+  const packageReplacement = isPackageReplacement();
+  // Active client intent must not bypass strict lifecycle config validation.
+  if (packageReplacement) loadManagedClientsConfig(memoraxCodeHome);
+  const requestedClients = managedClientsFor(argv, serviceOptions, {
+    preferActive: packageReplacement,
+  });
   const clients = isDshAdapterRecovery()
     ? { ...requestedClients, dsh: true }
     : requestedClients;
   const previousClients = readActiveManagedClients(memoraxCodeHome);
+  const optionalDsh = clients.dsh && isOptionalDshSelection(argv);
   const context = { argv, serviceOptions };
   if (clients.dsh || previousClients?.dsh || isDshAdapterRecovery()) {
     try {
@@ -220,6 +234,7 @@ async function startMemoraxCodeServiceLocked(
           clients,
           previousClients,
           dshLifecycle,
+          optionalDsh,
         )
       ));
     } catch (error) {
@@ -244,6 +259,7 @@ async function executeMemoraxCodeStart(
   clients: ManagedClients,
   previousClients: ManagedClients | undefined,
   dshLifecycle?: DshAdapterLifecycleParticipant,
+  optionalDsh = false,
 ): Promise<MemoraxCodeLifecycleReport> {
   const lifecycleContext = { argv, serviceOptions };
   const lifecycleBackendContext = { ...lifecycleContext, backendUrl };
@@ -271,7 +287,7 @@ async function executeMemoraxCodeStart(
   const quiescedDsh = dshLifecycle && (clients.dsh || previousClients?.dsh)
     ? await dshLifecycle.quiesce?.(lifecycleContext)
     : undefined;
-  if (quiescedDsh?.ok === false) {
+  if (quiescedDsh?.ok === false && !optionalDsh) {
     return {
       ok: false,
       action: "start",
@@ -390,10 +406,15 @@ async function executeMemoraxCodeStart(
       ...(kimiAdapter ? { kimiAdapter } : {}),
     };
   }
-  const preparedDshAdapter = clients.dsh && dshLifecycle
-    ? await dshLifecycle.prepareEnable(lifecycleBackendContext)
-    : undefined;
-  if (preparedDshAdapter?.ok === false) {
+  const preparedDshAdapter = markOptionalDshAdapter(
+    quiescedDsh?.ok === false
+      ? quiescedDsh
+      : clients.dsh && dshLifecycle
+        ? await dshLifecycle.prepareEnable(lifecycleBackendContext)
+        : undefined,
+    optionalDsh,
+  );
+  if (preparedDshAdapter?.ok === false && !optionalDsh) {
     const recovery = await recoverPreparationFailure("dsh_adapter_enable_failed");
     return {
       ok: false,
@@ -406,11 +427,7 @@ async function executeMemoraxCodeStart(
       ...(kimiAdapter ? { kimiAdapter } : {}),
     };
   }
-  const backendStartOptions: BackendServiceOptions = {
-    ...serviceOptions,
-    claudeProjectsRoot: claudeProjectsRootForStart(argv, claudeAdapter),
-  };
-  const backend = await startBackendService(backendStartOptions);
+  const backend = await startBackendService(serviceOptions);
   if (!backend.ok) {
     const disabledCodex = codexAdapter
       ? await codexAdapterLifecycle.disable({ argv, serviceOptions })
@@ -432,12 +449,15 @@ async function executeMemoraxCodeStart(
       ...(disabledKimi ? { kimiAdapter: disabledKimi } : {}),
     };
   }
-  const dshAdapter = preparedDshAdapter?.installed === true
+  const dshAdapter = markOptionalDshAdapter(preparedDshAdapter?.installed === true
     ? await dshLifecycle?.activate?.(lifecycleBackendContext)
-    : preparedDshAdapter;
+    : preparedDshAdapter, optionalDsh);
+  const optionalDshUnavailable = isOptionalUnavailableDshAdapter(dshAdapter);
   return {
-    ok: claudeAdapter?.ok !== false && dshAdapter?.ok !== false,
+    ok: claudeAdapter?.ok !== false
+      && (!dshAdapter || isAdapterReady(dshAdapter) || optionalDshUnavailable),
     action: "start",
+    ...(optionalDshUnavailable ? { degraded: true } : {}),
     backend,
     ...(codexAdapter ? { codexAdapter } : {}),
     ...(claudeAdapter ? { claudeAdapter } : {}),
@@ -445,18 +465,6 @@ async function executeMemoraxCodeStart(
     ...(opencodeAdapter ? { opencodeAdapter } : {}),
     ...(kimiAdapter ? { kimiAdapter } : {}),
   };
-}
-
-function claudeProjectsRootForStart(
-  argv: string[],
-  claudeAdapter: AdapterReport | undefined,
-): string | false {
-  if (claudeAdapter?.ok === false || claudeAdapter?.enabled !== true) return false;
-  const claudeHome = argValue(argv, "--claude-home")?.trim()
-    || process.env.CLAUDE_CONFIG_DIR?.trim()
-    || process.env.CLAUDE_HOME?.trim()
-    || join(homedir(), ".claude");
-  return join(resolve(claudeHome), "projects");
 }
 
 function expectedBackendUrl(serviceOptions: BackendServiceOptions): string {
@@ -606,7 +614,9 @@ async function executeMemoraxCodeStop(
       ...(opencodeAdapter ? { opencodeAdapter } : {}),
       ...(kimiAdapter ? { kimiAdapter } : {}),
     },
-    remainingClients: remaining && hasRemainingClients ? remaining : undefined,
+    remainingClients: packageReplacement
+      ? activeClients
+      : remaining && hasRemainingClients ? remaining : undefined,
   };
 }
 
@@ -648,8 +658,37 @@ export async function uninstallMemoraxCodeService(
   serviceOptions: BackendServiceOptions,
   argv: string[],
 ): Promise<MemoraxCodeLifecycleReport> {
-  return withMemoraxCodeLifecycleLock("uninstall", serviceOptions, () =>
-    uninstallMemoraxCodeServiceLocked(serviceOptions, argv));
+  const memoraxCodeHome = memoraxCodeHomeForService(serviceOptions);
+  let report: MemoraxCodeLifecycleReport | undefined;
+  let lifecycleEntered = false;
+  try {
+    return await withSetupCompletionLock(memoraxCodeHome, async (_completion, mutation) => {
+      lifecycleEntered = true;
+      report = await withMemoraxCodeLifecycleLock("uninstall", serviceOptions, () =>
+        uninstallMemoraxCodeServiceLocked(serviceOptions, argv));
+      if (isCompleteSuccessfulUninstall(report)) mutation.clear();
+      return report;
+    });
+  } catch (error) {
+    if (lifecycleEntered && !report) throw error;
+    if (!report) {
+      return {
+        ok: false,
+        action: "uninstall",
+        reason: "setup_completion_lock_failed",
+        message: error instanceof Error ? error.message : String(error),
+        npmPackageRemoval: skippedNpmPackageRemoval("setup_completion_lock_failed"),
+        removesPlugin: false,
+        removesUserState: false,
+      };
+    }
+    return {
+      ...report,
+      ok: false,
+      reason: "setup_completion_clear_failed",
+      message: error instanceof Error ? error.message : String(error),
+    };
+  }
 }
 
 async function uninstallMemoraxCodeServiceLocked(
@@ -748,6 +787,12 @@ async function executeMemoraxCodeUninstall(
 
 function skippedNpmPackageRemoval(reason: string): NpmPackageRemovalReport {
   return { ok: true, action: "npm-package-remove", skipped: true, reason };
+}
+
+function isCompleteSuccessfulUninstall(report: MemoraxCodeLifecycleReport): boolean {
+  return report.ok
+    && report.npmPackageRemoval !== undefined
+    && report.npmPackageRemoval.reason !== "partial_client_uninstall";
 }
 
 async function removeNpmPackageIfInstalled(argv: string[]): Promise<NpmPackageRemovalReport> {
@@ -869,6 +914,11 @@ function commitActiveManagedClients(memoraxCodeHome: string, clients: ManagedCli
 
 function hasExplicitClientSelection(argv: string[]): boolean {
   return argv.includes("--clients");
+}
+
+function isOptionalDshSelection(argv: string[]): boolean {
+  return !isDshAdapterRecovery()
+    && (!hasExplicitClientSelection(argv) || truthyEnv(process.env[DSH_OPTIONAL_ENV]));
 }
 
 function argValue(argv: string[], name: string): string | undefined {
@@ -1053,13 +1103,16 @@ export function isAdapterReady(report: AdapterReport): boolean {
 }
 
 export function isOptionalUnavailableDshAdapter(report: AdapterReport | undefined): boolean {
-  return Boolean(
-    report
-      && report.ok !== false
-      && report.skipped === true
-      && report.managed !== true
-      && report.reason === "no_existing_profiles",
-  );
+  return Boolean(report?.optional === true && !isAdapterReady(report));
+}
+
+function markOptionalDshAdapter(
+  report: AdapterReport | undefined,
+  optional: boolean,
+): AdapterReport | undefined {
+  return report && optional && !isAdapterReady(report)
+    ? { ...report, optional: true }
+    : report;
 }
 
 

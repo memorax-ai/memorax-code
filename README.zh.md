@@ -22,7 +22,7 @@
   <a href="https://code.memorax.net/"><img src="https://img.shields.io/badge/website-code.memorax.net-2563eb" alt="MemoraX Code 产品网站"></a>
   <a href="https://www.npmjs.com/package/@memorax/memorax-code"><img src="https://img.shields.io/npm/v/@memorax/memorax-code.svg" alt="npm 版本"></a>
   <img src="https://img.shields.io/npm/v/@memorax/memorax-code.svg?label=version&color=f59e0b" alt="npm 包版本">
-  <img src="https://img.shields.io/badge/node-%3E%3D24-339933?logo=node.js&logoColor=white" alt="Node.js 24 或更高版本">
+  <img src="https://img.shields.io/badge/node-%3E%3D20-339933?logo=node.js&logoColor=white" alt="Node.js 20 或更高版本">
 </p>
 
 <p align="center">
@@ -47,30 +47,50 @@ MemoraX Code 让 Codex、Claude Code、DeepSeek Harness 和 OpenCode 共享一�
 
 ## 快速开始
 
-开始前，请确保已安装 Node.js 24 或更高版本，以及 Codex、Claude Code、DeepSeek Harness 或 OpenCode
-中的至少一个。Repo Memory 操作还需要 Python 3。
+开始前，请确保已安装 Node.js 20 或更高版本（推荐 Node.js 24 LTS），以及 Codex、Claude Code、
+DeepSeek Harness 或 OpenCode 中的至少一个。Repo Memory 操作还需要 Python 3。各 Coding Agent
+Harness 仍需满足自身的运行时要求；当前 DeepSeek Harness 版本要求 Node.js
+`^22.19.0 || >=24.0.0`。DSH 可全局安装，也可事先通过其官方 `npx` 流程完成初始化。
 
 ### 安装与接入
 
-#### 1. 获取 MemoraX Memory API Key
-
-前往 [MemoraX Console](https://platform.memorax.net/) 注册账号并创建 API Key。请只在本机安装终端中
-输入该 Key，不要将其粘贴到聊天记录或公开 Issue 中。
-
-#### 2. 安装并按提示配置
+#### 1. 安装 npm 包
 
 ```bash
-npm install -g @memorax/memorax-code --foreground-scripts
+npm install -g @memorax/memorax-code
 ```
 
-请保留 `--foreground-scripts`，以便查看完整的安装过程。安装器会自动检测本机可用的 Codex、
-Claude Code、DeepSeek Harness 和 OpenCode，并为检测到的 Coding Agent 启用集成。按照终端提示输入
-MemoraX User ID、偏好语言和 API Key；首次交互安装时，除非有效配置已经提供 User ID 和 API Key，
-否则两者均不能为空。Codex 用户还需按提示完成 Hook 的激活和信任确认。安装完成后，请重启或刷新
-所有检测到的 Coding Agent，再开始新会话。
+#### 2. 注册或接入 MemoraX 账号（推荐）
 
-如果安装过程无法交互，且有效配置尚未提供凭据，npm 包仍会安装，但 MemoraX 搜索、召回和写回
-功能无法使用。
+前往 [MemoraX](https://platform.memorax.net/) 注册账号；已有账号可直接使用，然后运行：
+
+```bash
+memorax-code setup --existing-account
+```
+
+> [!TIP]
+> 跨设备使用时，可在一台已配置设备的 MemoraX Code 配置文件（默认位于
+> `~/.memorax-code/config.toml`）中找到安装引导所需的 MemoraX 用户名和 API Key，
+> 再在其他设备的安装引导中本地输入。该文件包含您的 API Key，请妥善保管，
+> 不要粘贴到聊天记录或公开 Issue 中。
+
+#### 或免账号体验（90 天游客模式）
+
+如果您希望先体验并稍后再接入账号，请运行：
+
+```bash
+memorax-code setup
+```
+
+如果您希望将游客账号激活为正式账号，请先直接在本机终端运行：
+
+```bash
+memorax-code account --show-mark-id
+```
+
+获取 Mark ID 后，再前往 MemoraX 注册。当前暂不支持为已经注册的账号补绑 Mark ID。
+
+两种安装引导都会自动检测受支持的 Coding Agent。完成后，请重启或刷新检测到的 Coding Agent。
 
 ### 安装故障排查
 
@@ -78,10 +98,9 @@ MemoraX User ID、偏好语言和 API Key；首次交互安装时，除非有效
 
 | 现象 | 建议处理方式 |
 | --- | --- |
-| 因 Node.js 版本不受支持导致安装失败 | 运行 `node --version` 检查版本，并升级到 Node.js 24 或更高版本后重新安装 MemoraX Code。 |
-| 跳过了交互式配置，或安装过程无法显示配置提示 | 在 `$MEMORAX_CODE_HOME/config.toml` 中配置所需的 MemoraX 参数，或使用文档支持的环境变量，然后运行 `memorax-code start`。 |
-| MemoraX API Key 缺失或尚未配置 | 运行 `memorax-cli status` 检查当前配置，然后通过支持的配置文件或环境变量添加 API Key。不要将 API Key 粘贴到聊天记录或公开 Issue 中。 |
-| 安装完成后搜索、召回或写回仍不可用 | 运行 `memorax-code status` 和 `memorax-cli status`，检查 MemoraX 凭据和 Memory 配置，然后运行 `memorax-code start` 重新启动。 |
+| 因 Node.js 版本不受支持导致安装失败 | 运行 `node --version` 检查版本，并升级到 Node.js 20 或更高版本后重新安装 MemoraX Code。 |
+| npm 包已安装，但没有进入安装引导 | 这是正常行为。请在正常的交互式终端中选择并运行上方适合您的安装引导命令。 |
+| 完成安装引导后，搜索、召回或写回仍不可用 | 运行 `memorax-code status` 和 `memorax-cli status`，然后按照详细的故障排查指南处理。 |
 
 有关支持的配置项，请参阅[配置](docs/configuration.md)；
 更详细的诊断步骤请参阅[故障排查](docs/troubleshooting.md)。
@@ -115,8 +134,6 @@ cd test-repo
 > [!TIP]
 > 上述指令仅用于快速验证。正常使用时，无需主动调用 MemoraX Code Skill 添加记忆；
 > MemoraX Code 会根据当前仓库和任务在后台写入相关记忆，并引导 Agent 在需要时搜索。
-> 你可以在 [Memory Viewer](http://127.0.0.1:8787/memory-viewer) 中切换 Codex、
-> Claude Code、DeepSeek Harness 和 OpenCode，查看不含正文的本地活动与状态。
 
 ## 四类 Memory，各有清晰边界
 
@@ -142,18 +159,18 @@ MemoraX Code 会先比较含义：语义相同的请求不重复写入；长期�
 | **Procedure 自动复用** | 记录可复用的任务流程，并在后续任务中自动提醒 Agent 按流程执行。 |
 | **Repo Memory 后台整理** | 在后台整理仓库结构、代码入口和历史证据，并按策略自动更新，避免反复搜索和总结。 |
 | **主动记忆控制** | 使用内置的 MemoraX Code Skill 或 CLI，主动查找和添加记忆。 |
-| **客户端集成** | 与 Codex、Claude Code、DeepSeek Harness 和 OpenCode 集成，触发记忆检索、提醒和写入。 |
-| **本地可视化** | 通过本地 Memory Viewer 查看活动统计、召回与写入状态。 |
+| **客户端集成** | 与 Codex、Claude Code、DeepSeek Harness 和 OpenCode 集成，触发记忆检索、提醒和写入。目前 Codex、Claude Code 和 OpenCode 支持自动额度提醒。 |
 
 ## 你的记忆，由你控制
 
-云端记忆依赖 MemoraX。用户在阅读安装披露后输入 Base User ID 和 API Key，会启用
-MemoraX 搜索/添加，以及生成配置中的自动写回；不会再出现第二次写回确认。自动召回默认保持关闭，
-需要显式启用。
+云端记忆依赖 MemoraX。完成安装引导后，会启用 MemoraX 搜索/添加，以及生成配置中的自动写回；
+不会再出现第二次写回确认。自动召回默认保持关闭，需要显式启用。
 
 受支持客户端的本地 trace 默认开启。根据客户端能力，`MEMORAX_CODE_HOME` 下保留的 trace
 可能包含用户指令、Agent 回复、召回的 Memory、提醒文本和本地路径。可通过
 [本地 trace 配置](docs/configuration.md#local-traces)改为仅记录元数据，或关闭对应客户端的 trace。
+
+游客额度提醒可能显示完整的 Mark ID；请将包含该信息的提醒文本和本地 trace 视为敏感信息。
 
 主动记忆操作会将查询或选中的内容发送至 MemoraX。自动写回会从受信任工作区的任务中，发送经过
 选择的用户指令和对应的 Agent 最终回复，用于提取和保存记忆；它不会上传完整的本地客户端 trace
@@ -175,6 +192,18 @@ memorax-code update
 
 该命令会沿用当前发布通道并保留配置。如果新版本修改了已安装的集成资产，请重启或刷新 Codex、
 Claude Code、DeepSeek Harness 和 OpenCode。
+
+### Windows 升级提示
+
+如果您在 Windows 上从 MemoraX Code v0.1.3-v0.1.6 升级到 v0.1.7，请执行：
+
+```powershell
+memorax-code stop
+memorax-code update --latest
+memorax-code
+```
+
+该操作仅需执行一次，后续升级无需重复。
 
 ## 卸载
 

@@ -4,6 +4,10 @@ export type JsonFileLockOptions = Readonly<{
   retryMs?: number;
 }>;
 
+export type AsyncJsonFileLockOptions = JsonFileLockOptions & Readonly<{
+  signal?: AbortSignal;
+}>;
+
 export function readAdapterState(path: string): any;
 export function readJsonFile(path: string): any;
 export function readJsonValue(path: string): any;
@@ -23,5 +27,5 @@ export function withJsonFileLock<T>(
 export function withJsonFileLockAsync<T>(
   path: string,
   operation: () => T | Promise<T>,
-  options?: JsonFileLockOptions,
+  options?: AsyncJsonFileLockOptions,
 ): Promise<T>;

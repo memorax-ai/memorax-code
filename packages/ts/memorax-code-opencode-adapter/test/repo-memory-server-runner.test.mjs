@@ -154,6 +154,7 @@ test("OpenCode repo memory runner owns a temporary server when the inherited ser
       env: {
         MEMORAX_CODE_MEMORY_CLI_SESSION_ID: "parent-fallback",
         MEMORAX_CODE_OPENCODE_COMMAND: "/opt/opencode",
+        OPENCODE_DB: "/shared/opencode.db",
       },
       fetchImpl: async (url, init) => {
         if (url.origin === "http://127.0.0.1:9") throw new TypeError("fetch failed");
@@ -177,6 +178,7 @@ test("OpenCode repo memory runner owns a temporary server when the inherited ser
     assert.deepEqual(spawnCall.args, ["serve", "--hostname=127.0.0.1", "--port=0"]);
     assert.equal(spawnCall.command, "/opt/opencode");
     assert.equal(spawnCall.options.cwd, root);
+    assert.equal(spawnCall.options.env.OPENCODE_DB, ":memory:");
     assert.equal(spawnCall.options.env.OPENCODE_SERVER_USERNAME, "memorax-code");
     assert.match(spawnCall.options.env.OPENCODE_SERVER_PASSWORD, /^[A-Za-z0-9_-]{32}$/);
     assert.deepEqual(requests.map((request) => request.method), ["POST", "POST", "DELETE"]);

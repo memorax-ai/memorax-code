@@ -5,6 +5,17 @@ import { parseDshVersion } from "./dsh-version.mjs";
 
 const PACKAGE_METADATA_VERSION = 1;
 const STATE_VERSION = 1;
+
+export function buildDshCommand(command, args, options = {}) {
+  const executable = nonEmptyString(command);
+  if (!executable) throw new TypeError("DSH command must be a non-empty string");
+  if (!Array.isArray(args)) throw new TypeError("DSH arguments must be an array");
+  if (isNpxCommand(executable)) throw disabledError();
+  return isAbsolute(executable) && /\.(?:cjs|js|mjs)$/i.test(executable)
+    ? [nonEmptyString(options.nodePath) ?? process.execPath, executable, ...args]
+    : [executable, ...args];
+}
+
 /** Read the current durable enablement authority for this installed DSH bundle. */
 export function requireEnabledDshRuntime(pluginRoot) {
   const authority = requireDshRuntimeAuthority(pluginRoot);
@@ -28,6 +39,7 @@ export function requireDshRuntimeAuthority(pluginRoot) {
     || !nonEmptyString(metadata.memoraxCodeCommand)
     || !nonEmptyString(metadata.memoraxCodeHome)
     || !nonEmptyString(metadata.dshCommand)
+    || isNpxCommand(metadata.dshCommand)
     || !nonEmptyString(metadata.dshHome)
     || !parseDshVersion(metadata.dshVersion)
     || !nonEmptyString(metadata.sourceAdapterRoot)
@@ -100,6 +112,15 @@ function resolveString(value) {
 
 function nonEmptyString(value) {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function isNpxCommand(value) {
+  const command = nonEmptyString(value);
+  return Boolean(command && command
+    .split(/[\\/]/)
+    .at(-1)
+    .replace(/\.(?:cmd|bat|exe|com)$/i, "")
+    .toLowerCase() === "npx");
 }
 
 function timestampString(value) {

@@ -29,7 +29,7 @@ locations for lifecycle, install, or destructive tests.
 
 | Area | Owns | Does not own |
 | --- | --- | --- |
-| `memorax-code-backend` | Backend lifecycle, typed Hook HTTP, memory service, MemoraX adapter, local trace, Memory Viewer, writeback reconciliation | Client provider execution or credentials |
+| `memorax-code-backend` | Backend lifecycle, typed Hook HTTP, memory service, MemoraX adapter, and local trace | Client provider execution or credentials |
 | `memorax-code-adapter-common` | Durable runtime records, cross-process configuration primitives, shared Hook and Repo Memory helpers | Client transcript formats or plugin policy |
 | `memorax-code-codex-adapter` | Codex plugin, Hooks, native session/workspace observation, diagnostics, bundled skill | Codex provider configuration or login |
 | `memorax-code-claude-adapter` | Claude Code plugin, Hooks, native observation, diagnostics | Anthropic provider configuration or login |

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import {
+  buildDshCommand,
   requireDshRuntimeAuthority,
   requireEnabledDshRuntime,
 } from "../src/runtime-state.mjs";
@@ -84,6 +85,10 @@ test("re-reads durable DSH authority without pinning the host version", (t) => {
   writeJson(join(pluginRoot, ".memorax-code-package.json"), updatedMetadata);
   writeJson(statePath, updatedState);
   assert.equal(requireEnabledDshRuntime(pluginRoot).dshVersion, "0.1.0-rc.7");
+  assert.throws(
+    () => buildDshCommand("npx", ["@deepseek-ai/dsh", "--version"]),
+    (error) => error?.code === "MEMORAX_CODE_DSH_DISABLED",
+  );
 });
 
 function writeJson(path, value) {
