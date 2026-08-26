@@ -475,6 +475,7 @@ printf '%s\n' 'package-check-user' 'package-check-key' | \
   MEMORAX_CODE_SKIP_CODEX_PLUGIN_INSTALL=1 \
   MEMORAX_CODE_SKIP_CLAUDE_ADAPTER_INSTALL=1 \
   MEMORAX_CODE_SKIP_OPENCODE_ADAPTER_INSTALL=1 \
+  MEMORAX_CODE_SKIP_KIMI_ADAPTER_INSTALL=1 \
   "$prefix/bin/memorax-code" setup --existing-account \
     >"$home_dir/setup.stdout" 2>"$home_dir/setup.stderr"
 node --input-type=module - "$MEMORAX_CODE_HOME/config.toml" <<'NODE_DISABLE_DSH'
@@ -553,6 +554,7 @@ MEMORAX_CODE_SETUP_ASSUME_INTERACTIVE=1 \
 MEMORAX_CODE_SKIP_CODEX_PLUGIN_INSTALL=1 \
 MEMORAX_CODE_SKIP_CLAUDE_ADAPTER_INSTALL=1 \
 MEMORAX_CODE_SKIP_OPENCODE_ADAPTER_INSTALL=1 \
+MEMORAX_CODE_SKIP_KIMI_ADAPTER_INSTALL=1 \
 "$prefix/bin/memorax-code" >/dev/null 2>&1
 cmp "$home_dir/legacy-config-before-migration.toml" "$MEMORAX_CODE_HOME/config.toml"
 test -f "$MEMORAX_CODE_HOME/runtime/setup/setup-completion.json"
