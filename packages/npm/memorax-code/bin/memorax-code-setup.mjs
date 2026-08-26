@@ -1044,7 +1044,7 @@ function runCodeBuddyPreflight({ integrationSelected = true } = {}) {
         : "CodeBuddy CLI";
   log(`${runtimeLabel}: ${commandSummary(version) ?? "not runnable"}`);
   const home = defaultCodeBuddyHome();
-  log(`WorkBuddy data directory: ${existsSync(home) ? `found (${home})` : "not detected"}`);
+  log(`WorkBuddy data directory: ${existsSync(home) ? "found" : "not detected"}`);
   if (version.status !== 0) return { ok: false };
   log(integrationSelected
     ? "Keeping CodeBuddy provider config unchanged and enabling the shared memory Hook integration."
