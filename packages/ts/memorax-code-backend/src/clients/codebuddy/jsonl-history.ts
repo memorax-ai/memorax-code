@@ -12,7 +12,8 @@ export type CodeBuddyTurn = Readonly<{
 export type CodeBuddyActivity = Readonly<{ kind: "tool"; name: string; input?: string; output?: string }>;
 export type CodeBuddyTurnFailureReason =
   | "transcript_unavailable" | "malformed_transcript" | "turn_not_found"
-  | "user_prompt_missing" | "assistant_message_missing" | "turn_ambiguous";
+  | "user_prompt_missing" | "assistant_message_missing" | "turn_ambiguous"
+  | "transcript_path_mismatch";
 export type CodeBuddyTurnResult = { ok: true; turn: CodeBuddyTurn } | { ok: false; reason: CodeBuddyTurnFailureReason; error?: string };
 
 const RECORD_OFFSET = Symbol("codebuddyRecordOffset");
