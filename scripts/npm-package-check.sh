@@ -7,7 +7,8 @@ unset \
   DSH_HOME \
   CLAUDE_CONFIG_DIR \
   CLAUDE_HOME \
-  OPENCODE_CONFIG_DIR
+  OPENCODE_CONFIG_DIR \
+  KIMI_CODE_HOME
 
 out_dir="${1:-dist/npm}"
 
@@ -40,6 +41,7 @@ scripts/build-npm-packages.sh "$out_dir"
   DSH_HOME="$isolated_test_home/.dsh" \
   CLAUDE_CONFIG_DIR="$isolated_test_home/.claude" \
   CLAUDE_HOME="$isolated_test_home/.claude" \
+  KIMI_CODE_HOME="$isolated_test_home/.kimi-code" \
     make test-npm-package
 )
 
@@ -83,6 +85,7 @@ expected_library_dirs = {
     "memorax-code-codex-adapter",
     "memorax-code-dsh-adapter",
     "memorax-code-opencode-adapter",
+    "memorax-code-kimi-adapter",
 }
 actual_library_dirs = {
     path.name
@@ -200,6 +203,11 @@ for relative in [
     "lib/memorax-code-opencode-adapter/src/repo-memory-server-runner.mjs",
     "lib/memorax-code-opencode-adapter/hooks/repo-memory-job.mjs",
     "lib/memorax-code-opencode-adapter/skills/memorax-code/SKILL.md",
+    "lib/memorax-code-kimi-adapter/src/plugin-install.mjs",
+    "lib/memorax-code-kimi-adapter/src/hook-runtime.mjs",
+    "lib/memorax-code-kimi-adapter/src/prompt-correlation.mjs",
+    "lib/memorax-code-kimi-adapter/src/adapter-paths.mjs",
+    "lib/memorax-code-kimi-adapter/skills/memorax-code/SKILL.md",
     "lib/memorax-code-backend/dist/service-entrypoint.js",
     "lib/memorax-code-backend/dist/memorax-cli.js",
     "lib/memorax-code-backend/dist/jsonl-append.js",
@@ -232,7 +240,9 @@ symlinks = sorted(
 assert not symlinks, symlinks
 dsh_skill = package_root / "lib" / "memorax-code-dsh-adapter" / "skills" / "memorax-code" / "SKILL.md"
 codex_skill = package_root / "lib" / "memorax-code-codex-adapter" / "skills" / "memorax-code" / "SKILL.md"
+kimi_skill = package_root / "lib" / "memorax-code-kimi-adapter" / "skills" / "memorax-code" / "SKILL.md"
 assert dsh_skill.read_bytes() == codex_skill.read_bytes()
+assert kimi_skill.read_bytes() == codex_skill.read_bytes()
 PY_STAGED_PACKAGE
 
 tarball_dir="$out_dir/tarballs"
@@ -442,7 +452,12 @@ for relative in \
   lib/memorax-code-opencode-adapter/src/cli.mjs \
   lib/memorax-code-opencode-adapter/src/repo-memory-server-runner.mjs \
   lib/memorax-code-opencode-adapter/hooks/repo-memory-job.mjs \
-  lib/memorax-code-opencode-adapter/skills/memorax-code/SKILL.md
+  lib/memorax-code-opencode-adapter/skills/memorax-code/SKILL.md \
+  lib/memorax-code-kimi-adapter/src/plugin-install.mjs \
+  lib/memorax-code-kimi-adapter/src/hook-runtime.mjs \
+  lib/memorax-code-kimi-adapter/src/prompt-correlation.mjs \
+  lib/memorax-code-kimi-adapter/src/adapter-paths.mjs \
+  lib/memorax-code-kimi-adapter/skills/memorax-code/SKILL.md
 do
   test -f "$package_install_root/$relative"
 done
@@ -460,6 +475,7 @@ printf '%s\n' 'package-check-user' 'package-check-key' | \
   MEMORAX_CODE_SKIP_CODEX_PLUGIN_INSTALL=1 \
   MEMORAX_CODE_SKIP_CLAUDE_ADAPTER_INSTALL=1 \
   MEMORAX_CODE_SKIP_OPENCODE_ADAPTER_INSTALL=1 \
+  MEMORAX_CODE_SKIP_KIMI_ADAPTER_INSTALL=1 \
   "$prefix/bin/memorax-code" setup --existing-account \
     >"$home_dir/setup.stdout" 2>"$home_dir/setup.stderr"
 node --input-type=module - "$MEMORAX_CODE_HOME/config.toml" <<'NODE_DISABLE_DSH'
@@ -501,6 +517,7 @@ assert config_sections == {
     "trace.claude",
     "trace.codex",
     "trace.dsh",
+    "trace.kimi",
     "trace.opencode",
 }
 assert 'user_id = "package-check-user"' in config_text
@@ -537,6 +554,7 @@ MEMORAX_CODE_SETUP_ASSUME_INTERACTIVE=1 \
 MEMORAX_CODE_SKIP_CODEX_PLUGIN_INSTALL=1 \
 MEMORAX_CODE_SKIP_CLAUDE_ADAPTER_INSTALL=1 \
 MEMORAX_CODE_SKIP_OPENCODE_ADAPTER_INSTALL=1 \
+MEMORAX_CODE_SKIP_KIMI_ADAPTER_INSTALL=1 \
 "$prefix/bin/memorax-code" >/dev/null 2>&1
 cmp "$home_dir/legacy-config-before-migration.toml" "$MEMORAX_CODE_HOME/config.toml"
 test -f "$MEMORAX_CODE_HOME/runtime/setup/setup-completion.json"

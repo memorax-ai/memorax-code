@@ -7,6 +7,7 @@ import {
   traceContextFromClaudeHookBody,
   traceContextFromDshSkillReminder,
   traceContextFromHookBody,
+  traceContextFromKimiHookBody,
   traceContextFromOpenCodeHookBody,
   type TraceContext,
 } from "../trace/context.js";
@@ -68,6 +69,12 @@ function traceContextForReminder(command: SkillReminderCommand): TraceContext | 
   if (command.client === "codex") return traceContextFromHookBody(command);
   if (command.client === "claude-code") return traceContextFromClaudeHookBody(command);
   if (command.client === "dsh") return traceContextFromDshSkillReminder(command);
+  if (command.client === "kimi") return traceContextFromKimiHookBody({
+    session_id: command.sessionId,
+    prompt_id: command.promptId,
+    cwd: command.cwd,
+    workspace_kind: command.workspaceKind,
+  });
   return traceContextFromOpenCodeHookBody(command);
 }
 
@@ -75,6 +82,7 @@ function reminderSource(command: SkillReminderCommand): string {
   if (command.client === "codex") return "codex-hook";
   if (command.client === "claude-code") return "claude-hook";
   if (command.client === "dsh") return "dsh-cordis";
+  if (command.client === "kimi") return "kimi-hook";
   return "opencode-plugin";
 }
 

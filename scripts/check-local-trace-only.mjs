@@ -21,6 +21,7 @@ const productionRoots = [
   "packages/ts/memorax-code-claude-adapter/scripts/",
   "packages/ts/memorax-code-claude-adapter/src/",
   "packages/ts/memorax-code-dsh-adapter/src/",
+  "packages/ts/memorax-code-kimi-adapter/src/",
   "packages/ts/memorax-code-opencode-adapter/src/",
 ];
 
@@ -31,6 +32,7 @@ const reviewedNetworkSources = new Set([
   "packages/ts/memorax-code-backend/src/clients/claude/memory-hook-runtime.ts",
   "packages/ts/memorax-code-backend/src/clients/codex/memory-hook-runtime.ts",
   "packages/ts/memorax-code-backend/src/clients/dsh/memory-hook-runtime.ts",
+  "packages/ts/memorax-code-backend/src/clients/kimi/memory-hook-runtime.ts",
   "packages/ts/memorax-code-backend/src/clients/opencode/memory-hook-runtime.ts",
   "packages/ts/memorax-code-backend/src/lifecycle/backend/service.ts",
   "packages/ts/memorax-code-backend/src/lifecycle/backend/status.ts",
@@ -52,6 +54,7 @@ const reviewedNetworkSources = new Set([
   "packages/ts/memorax-code-codex-adapter/src/cli.mjs",
   "packages/ts/memorax-code-codex-adapter/skills/memorax-code/scripts/detect_updates.py",
   "packages/ts/memorax-code-dsh-adapter/src/http-client.mjs",
+  "packages/ts/memorax-code-kimi-adapter/src/hook-runtime.mjs",
   "packages/ts/memorax-code-opencode-adapter/src/cli.mjs",
   "packages/ts/memorax-code-opencode-adapter/src/plugin.mjs",
   "packages/ts/memorax-code-opencode-adapter/src/repo-memory-server-runner.mjs",

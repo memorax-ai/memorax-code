@@ -130,7 +130,7 @@ async function startMockMemorax({ status = 200, body = { success: true, data: { 
   };
 }
 
-async function runSetup({ existingCache = false, explicitCache = false, hookRuntimeFailure, failStartOnce = false, connectionAuthorityFailure = false, runtimeAuthorityFailureCode, officialMode = false, codexConfig, memoraxCodeConfig, memoraxCodeConfigMode, emptyClaudeSettings = false, claudeAvailable = true, claudeVersionFails = false, claudeSettingsText, codexAvailable = true, codexAppOnly = false, vscodeOnly = false, dshProfiles = [], opencodeAvailable = false, opencodeXdgAvailable = false, opencodeCliAvailable = false, skipCodexPluginInstall = false, skipClaudeAdapterInstall = false, skipOpenCodeAdapterInstall = false, unavailableStatus = false, prefixedStatus = false, input = "", interactive = true, npmCommand = "install", updateMode = false, setupMode = "automatic", memoraxVerify, memoraxEnv = {}, memoryStatusFixture, trialProvisionFailure = false, hookSnapshot = [], hookUpdatePlan = [], hookFullReview = false, hookFullReviewMissing = false, hookSnapshotFails = false, hookCheckFails = false, hookTrustFails = false, detectedUserId = "memory-user", detectedLanguage = "zh", ttyOverride } = {}) {
+async function runSetup({ existingCache = false, explicitCache = false, hookRuntimeFailure, failStartOnce = false, connectionAuthorityFailure = false, runtimeAuthorityFailureCode, officialMode = false, codexConfig, memoraxCodeConfig, memoraxCodeConfigMode, emptyClaudeSettings = false, claudeAvailable = true, claudeVersionFails = false, claudeSettingsText, codexAvailable = true, codexAppOnly = false, vscodeOnly = false, dshProfiles = [], opencodeAvailable = false, opencodeXdgAvailable = false, opencodeCliAvailable = false, kimiAvailable = false, skipCodexPluginInstall = false, skipClaudeAdapterInstall = false, skipOpenCodeAdapterInstall = false, skipKimiAdapterInstall = true, unavailableStatus = false, prefixedStatus = false, input = "", interactive = true, npmCommand = "install", updateMode = false, setupMode = "automatic", memoraxVerify, memoraxEnv = {}, memoryStatusFixture, trialProvisionFailure = false, hookSnapshot = [], hookUpdatePlan = [], hookFullReview = false, hookFullReviewMissing = false, hookSnapshotFails = false, hookCheckFails = false, hookTrustFails = false, detectedUserId = "memory-user", detectedLanguage = "zh", ttyOverride } = {}) {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-setup-"));
   const binDir = join(root, "bin");
   const codexHome = join(root, "codex-home");
@@ -451,6 +451,16 @@ async function runSetup({ existingCache = false, explicitCache = false, hookRunt
       "",
     ]);
   }
+  if (kimiAvailable) {
+    await writeMockNodeCommand(join(fakeBin, "kimi"), [
+      "#!/usr/bin/env node",
+      "import { appendFileSync } from 'node:fs';",
+      `appendFileSync(${JSON.stringify(logPath)}, 'kimi ' + process.argv.slice(2).join(' ') + '\\n');`,
+      "if (process.argv[2] === '--version') console.log('kimi 1.0.0-test');",
+      "process.exit(0);",
+      "",
+    ]);
+  }
   if (opencodeCliAvailable) {
     const executable = join(fakeBin, process.platform === "win32" ? "opencode.cmd" : "opencode");
     await writeMockNodeCommand(executable, "#!/usr/bin/env node\nprocess.exit(0);\n");
@@ -548,6 +558,7 @@ async function runSetup({ existingCache = false, explicitCache = false, hookRunt
     MEMORAX_CODE_SKIP_CODEX_PLUGIN_INSTALL: skipCodexPluginInstall ? "1" : "0",
     MEMORAX_CODE_SKIP_CLAUDE_ADAPTER_INSTALL: skipClaudeAdapterInstall ? "1" : "0",
     MEMORAX_CODE_SKIP_OPENCODE_ADAPTER_INSTALL: skipOpenCodeAdapterInstall ? "1" : "0",
+    MEMORAX_CODE_SKIP_KIMI_ADAPTER_INSTALL: skipKimiAdapterInstall ? "1" : "0",
     MEMORAX_CODE_TEST_FAIL_START_ONCE: failStartOnce ? "1" : "0",
     MEMORAX_CODE_TEST_RUNTIME_AUTHORITY_FAILURE: runtimeAuthorityFailureCode
       ?? (connectionAuthorityFailure ? "BACKEND_CONNECTION_AUTHORITY_INVALID" : ""),
@@ -732,7 +743,31 @@ test("setup fresh install auto-detects Codex and skips an unavailable Claude run
     assert.match(run.log, /^dsh-adapter-optional status$/m);
     assert.match(run.result.stderr, /Backend and selected adapters: .*Enabled/);
     const config = await readFile(join(run.memoraxCodeHome, "config.toml"), "utf8");
-    assert.match(config, /\[clients\][^\r\n]*\r?\ncodex = true[^\r\n]*\r?\nclaude = false[^\r\n]*\r?\ndsh = true[^\r\n]*\r?\nopencode = false/m);
+    assert.match(config, /\[clients\][\s\S]*?codex = true/);
+    assert.match(config, /\[clients\][\s\S]*?claude = false/);
+    assert.match(config, /\[clients\][\s\S]*?dsh = true/);
+    assert.match(config, /\[clients\][\s\S]*?opencode = false/);
+    assert.match(config, /\[clients\][\s\S]*?kimi = false/);
+  } finally {
+    await rm(run.root, { recursive: true, force: true });
+  }
+});
+
+
+test("setup detects and persists an available Kimi runtime", async () => {
+  const run = await runSetup({
+    codexAvailable: false,
+    claudeAvailable: false,
+    kimiAvailable: true,
+    skipKimiAdapterInstall: false,
+  });
+  try {
+    assert.equal(run.result.code, 0, run.result.stderr);
+    assert.match(run.log, /^memorax-code start --clients dsh,kimi$/m);
+    assert.match(run.log, /^memorax-code status --clients dsh,kimi$/m);
+    assert.match(run.result.stderr, /Configuring MemoraX Code for Kimi Code/);
+    const config = await readFile(join(run.memoraxCodeHome, "config.toml"), "utf8");
+    assert.match(config, /kimi = true/);
   } finally {
     await rm(run.root, { recursive: true, force: true });
   }
@@ -770,6 +805,8 @@ test("setup seeds the default MemoraX Code config around trial memory preference
     assert.match(config, /capture_content = true # Store content in local DSH trace events\./);
     assert.match(config, /\[trace\.opencode\]/);
     assert.match(config, /capture_content = true # Store content in local OpenCode trace events\./);
+    assert.match(config, /\[trace\.kimi\]/);
+    assert.match(config, /enabled = true # Enable local Kimi Code session memory trace collection\./);
     assert.deepEqual(activeTomlSections(config), [
       "clients",
       "memorax",
@@ -781,6 +818,7 @@ test("setup seeds the default MemoraX Code config around trial memory preference
       "trace.claude",
       "trace.codex",
       "trace.dsh",
+      "trace.kimi",
       "trace.opencode",
     ]);
     assert.doesNotMatch(
@@ -983,7 +1021,7 @@ test("interactive setup after reinstall automatically reuses a complete MemoraX 
     assert.match(run.result.stderr, /Automatic writeback: Disabled by effective configuration/);
     assert.equal(
       await readFile(join(run.memoraxCodeHome, "config.toml"), "utf8"),
-      existingConfig.replace("[clients]\n", "[clients]\nopencode = false\n"),
+      existingConfig.replace("[clients]\n", "[clients]\nkimi = false\nopencode = false\n"),
     );
     await assertSetupComplete(run);
   } finally {
