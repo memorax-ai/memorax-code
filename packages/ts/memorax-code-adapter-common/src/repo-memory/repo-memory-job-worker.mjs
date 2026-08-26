@@ -314,6 +314,18 @@ function terminateClient(child, signal) {
       // The process group may have exited between the timeout and this call.
     }
   }
+  if (process.platform === "win32") {
+    try {
+      const result = spawnSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], {
+        encoding: "utf8",
+        windowsHide: true,
+        stdio: ["ignore", "ignore", "ignore"],
+      });
+      if (result.status === 0) return true;
+    } catch {
+      // Fall through to the direct child termination below.
+    }
+  }
   try {
     return child.kill(signal);
   } catch {
