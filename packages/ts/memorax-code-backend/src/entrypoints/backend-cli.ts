@@ -71,9 +71,9 @@ export function runBackendCli(argv = process.argv): void {
       `Usage: ${usageName} [${commands}] [--backend-url URL] [--backend-token TOKEN] [--home DIR]`,
       "[--host HOST] [--port PORT] [--rotate] [--show]",
       "[--codex-command CMD]",
-      "[--codex-home DIR] [--claude-home DIR] [--dsh-home DIR] [--opencode-config-dir DIR]",
+      "[--codex-home DIR] [--claude-home DIR] [--dsh-home DIR] [--opencode-config-dir DIR] [--codebuddy-home DIR]",
       "[--dsh-command CMD] [--dsh-adapter-root DIR] [--memorax-code-command CMD]",
-      "[--clients codex|claude|dsh|opencode|CLIENT,...|all|none]",
+      "[--clients codex|claude|dsh|opencode|codebuddy|CLIENT,...|all|none]",
       "[--json]",
       "[--marketplace-path FILE] [--plugin-source-path DIR] [--claude-command CMD] [--help]",
       "[--yes]",
@@ -530,6 +530,7 @@ function printMemoraxCodeStatus(report: MemoraxCodeStatusReport): void {
   if (report.claudeAdapter) backendLog(`Claude adapter: ${claudeAdapterStatusLine(report.claudeAdapter, report.codexAdapter)}`);
   if (report.dshAdapter) backendLog(`DSH adapter: ${dshAdapterStatusLine(report.dshAdapter)}`);
   if (report.opencodeAdapter) backendLog(`OpenCode adapter: ${adapterStatusLine(report.opencodeAdapter)}`);
+  if (report.codebuddyAdapter) backendLog(`CodeBuddy adapter: ${adapterStatusLine(report.codebuddyAdapter)}`);
   if (!suppressBackendGuidance()) {
     for (const line of statusGuidance(report)) backendLog(line);
   }
@@ -638,6 +639,7 @@ function printLifecycleResult(report: MemoraxCodeLifecycleReport): void {
   if (report.claudeAdapter) backendLog(`Claude adapter: ${adapterStatusLine(report.claudeAdapter)}`);
   if (report.dshAdapter) backendLog(`DSH adapter: ${dshAdapterStatusLine(report.dshAdapter)}`);
   if (report.opencodeAdapter) backendLog(`OpenCode adapter: ${adapterStatusLine(report.opencodeAdapter)}`);
+  if (report.codebuddyAdapter) backendLog(`CodeBuddy adapter: ${adapterStatusLine(report.codebuddyAdapter)}`);
   if (report.codexPlugin) {
     const removed = report.codexPlugin.removedPaths.length;
     const marketplace = report.codexPlugin.marketplaceChanged ? " marketplace=updated" : " marketplace=unchanged";
@@ -897,7 +899,8 @@ function adapterStatusLine(report: AdapterReport): string {
   const enabled = isAdapterReady(report);
   const skillStatus = report.codexSkills?.status
     ?? report.claudeSkills?.status
-    ?? report.opencodeSkills?.status;
+    ?? report.opencodeSkills?.status
+    ?? report.codebuddySkills?.status;
   const skills = skillStatus ? ` skills=${skillStatus}` : "";
   const changed = report.changed === true ? " changed" : "";
   const integration = report.integration ?? report.state?.integration ?? "hooks";
