@@ -30,6 +30,17 @@ type OpenCodePluginInstaller = {
   removeOpenCodePluginInstallation: (options: Record<string, unknown>) => OpenCodePluginRemovalReport;
 };
 
+type CodeBuddyPluginRemovalReport = {
+  ok: boolean;
+  action: string;
+  reason?: string;
+  message?: string;
+};
+
+type CodeBuddyPluginInstaller = {
+  removeCodeBuddyPluginInstallation: (options: Record<string, unknown>) => CodeBuddyPluginRemovalReport;
+};
+
 type DshPluginRemovalReport = {
   ok: boolean;
   action: string;
@@ -53,6 +64,7 @@ export type ClientPluginRemovalOptions = {
   dshHome?: string;
   dshAdapterRoot?: string;
   openCodeConfigDir?: string;
+  codeBuddyHome?: string;
   codexCommand?: string;
   claudeCommand?: string;
   dshCommand?: string;
@@ -65,6 +77,7 @@ export type ClientPluginRemovalReport = {
   claudePlugin: ClaudePluginRemovalReport | ClientPluginRemovalFailure;
   dshPlugin: DshPluginRemovalReport | ClientPluginRemovalFailure;
   opencodePlugin: OpenCodePluginRemovalReport | ClientPluginRemovalFailure;
+  codebuddyPlugin: CodeBuddyPluginRemovalReport | ClientPluginRemovalFailure;
 };
 
 type ClientPluginRemovalFailure = {
@@ -80,6 +93,7 @@ export async function prepareClientPluginRemovalCleanup(
   const claudePluginInstaller = await loadClaudePluginInstaller();
   const dshProfileLifecycle = await loadDshProfileLifecycle();
   const openCodePluginInstaller = await loadOpenCodePluginInstaller();
+  const codeBuddyPluginInstaller = await loadCodeBuddyPluginInstaller();
   const home = resolveHome(options.homeDir);
   const memoraxCodeHome = resolve(options.memoraxCodeHome ?? process.env.MEMORAX_CODE_HOME ?? join(home, ".memorax-code"));
   const claudeState = await readJsonRecord(join(memoraxCodeHome, "adapters", "claude-code", "state.json"));
@@ -88,7 +102,7 @@ export async function prepareClientPluginRemovalCleanup(
   return async () => {
     try {
       return await withBackendLifecycleLock({ home: memoraxCodeHome }, async () => {
-        const [codexPlugin, claudePlugin, dshPlugin, opencodePlugin] = await Promise.all([
+        const [codexPlugin, claudePlugin, dshPlugin, opencodePlugin, codebuddyPlugin] = await Promise.all([
           cleanupCodexAfterBackendRemoval({
             memoraxCodeHome,
             homeDir: home,
@@ -118,14 +132,21 @@ export async function prepareClientPluginRemovalCleanup(
                 : {}),
             }))
             .catch((error) => removalFailure("opencode-plugin-remove", error)),
+          Promise.resolve()
+            .then(() => codeBuddyPluginInstaller.removeCodeBuddyPluginInstallation({
+              memoraxCodeHome,
+              ...(options.codeBuddyHome ? { codeBuddyHome: options.codeBuddyHome } : {}),
+            }))
+            .catch((error) => removalFailure("codebuddy-plugin-remove", error)),
         ]);
         return {
-          ok: codexPlugin.ok && claudePlugin.ok && dshPlugin.ok && opencodePlugin.ok,
+          ok: codexPlugin.ok && claudePlugin.ok && dshPlugin.ok && opencodePlugin.ok && codebuddyPlugin.ok,
           action: "client-plugin-removal-cleanup" as const,
           codexPlugin,
           claudePlugin,
           dshPlugin,
           opencodePlugin,
+          codebuddyPlugin,
         };
       });
     } catch (error) {
@@ -137,6 +158,7 @@ export async function prepareClientPluginRemovalCleanup(
         claudePlugin: failure,
         dshPlugin: failure,
         opencodePlugin: failure,
+        codebuddyPlugin: failure,
       };
     }
   };
@@ -148,6 +170,10 @@ async function loadClaudePluginInstaller(): Promise<ClaudePluginInstaller> {
 
 async function loadOpenCodePluginInstaller(): Promise<OpenCodePluginInstaller> {
   return await import(new URL("../../../memorax-code-opencode-adapter/src/plugin-install.mjs", import.meta.url).href);
+}
+
+async function loadCodeBuddyPluginInstaller(): Promise<CodeBuddyPluginInstaller> {
+  return await import(new URL("../../../memorax-code-codebuddy-adapter/src/config.mjs", import.meta.url).href);
 }
 
 async function loadDshProfileLifecycle(): Promise<DshProfileLifecycleModule> {

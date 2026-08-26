@@ -536,7 +536,9 @@ function buildTraceEvent(
     ok: input.ok,
     outcome: input.outcome,
     related_turns: input.relatedTurns?.map(relatedTurnJson),
-    activities: input.activities,
+    activities: input.activities === undefined
+      ? undefined
+      : sanitizeTraceValue(input.activities, config, captureContent),
     usage: input.usage,
     session_turn_index: input.sessionTurnIndex,
     request: input.request === undefined ? undefined : sanitizeTraceValue(input.request, config, captureContent),

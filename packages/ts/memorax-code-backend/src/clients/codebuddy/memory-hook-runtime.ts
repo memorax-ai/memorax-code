@@ -40,7 +40,7 @@ export function createCodeBuddyMemoryHookRuntime(options: Options = {}): CodeBud
   const automatic = options.turnCoordinator ? undefined : options.automaticWriteback ? { enqueue: options.automaticWriteback, discardForScopeUpgrade: () => 0, drain: async () => undefined, close: () => undefined } : createAutomaticMemoryWritebackRuntime({ diagnosticLogger: options.diagnosticLogger });
   const coordinator = options.turnCoordinator ?? createMemoryTurnCoordinator({ automaticWriteback: automatic!.enqueue, now, ttlMs: options.ttlMs, maxEntries: options.maxEntries, cleanupIntervalMs: options.cleanupIntervalMs });
   const repository = options.repositoryMemorySession ?? createRepositoryMemorySessionRuntime({ onScopeUpgrade: automatic?.discardForScopeUpgrade });
-  const retrievals = new Set<string>();
+  const retrievals = new Map<string, number>();
   return {
     async recordTurnStart(command) {
       const memory = await resolveRepository(command, options, repository);
@@ -64,8 +64,10 @@ export function createCodeBuddyMemoryHookRuntime(options: Options = {}): CodeBud
       }), options.diagnosticLogger);
       const repoMemoryWorktree = resolvedRepoMemoryWorktree(memory);
       const retrievalKey = `${command.sessionId}:${command.turnId}`;
+      const retrievalNow = now();
+      pruneRetrievals(retrievals, retrievalNow, options.ttlMs ?? 30 * 60 * 1000, options.maxEntries ?? 1000);
       if (retrievals.has(retrievalKey)) return { ok: true, ...(repoMemoryWorktree ? { repoMemoryWorktree } : {}) };
-      retrievals.add(retrievalKey);
+      retrievals.set(retrievalKey, retrievalNow);
       const retrieval = await retrieveAutomaticMemoryContext({ diagnosticLogger: options.diagnosticLogger, env: options.env ?? process.env, fetchImpl: options.fetchImpl, memoryObservability: options.memoryObservability, memoryObservabilitySource: "codebuddy_hook_retrieval", query: command.prompt, repositoryMemory: memory, sessionKey: command.sessionId, traceContext: traceContextFromCodeBuddyHookBody(command) });
       return { ok: true, ...(repoMemoryWorktree ? { repoMemoryWorktree } : {}), ...(retrieval.context ? { additionalContext: retrieval.context } : {}) };
     },
@@ -73,6 +75,10 @@ export function createCodeBuddyMemoryHookRuntime(options: Options = {}): CodeBud
       const entry = coordinator.getTurn({ client: "codebuddy", sessionId: command.sessionId, clientTurnId: command.turnId });
       if (!command.sessionId) return { ok: true, scheduled: false, reason: "missing_session_id" };
       if (!command.turnId) return { ok: true, scheduled: false, reason: "turn_id_missing" };
+      if (entry?.transcriptPath && entry.transcriptPath !== command.transcriptPath) {
+        await recordCodeBuddyTurnEnd(options, traceContextForWriteback(command, entry), undefined, "transcript_path_mismatch");
+        return { ok: true, scheduled: false, reason: "transcript_path_mismatch" };
+      }
       const traceContext = traceContextForWriteback(command, entry);
       const transcript = await readWithRetry({ transcriptPath: command.transcriptPath, sessionId: command.sessionId, turnId: command.turnId }, options);
       if (!transcript.ok) {
@@ -88,6 +94,17 @@ export function createCodeBuddyMemoryHookRuntime(options: Options = {}): CodeBud
     size() { return coordinator.size("codebuddy"); },
     close() { retrievals.clear(); if (!options.turnCoordinator) coordinator.close(); if (!options.repositoryMemorySession) repository.close(); automatic?.close?.(); },
   };
+}
+
+function pruneRetrievals(retrievals: Map<string, number>, nowMs: number, ttlMs: number, maxEntries: number): void {
+  for (const [key, createdAt] of retrievals) {
+    if (nowMs - createdAt >= ttlMs) retrievals.delete(key);
+  }
+  while (retrievals.size >= maxEntries) {
+    const oldest = retrievals.keys().next().value;
+    if (oldest === undefined) break;
+    retrievals.delete(oldest);
+  }
 }
 
 async function resolveRepository(command: { sessionId: string; cwd?: string; workspaceKind?: string }, options: Options, repository: RepositoryMemorySessionRuntime): Promise<ConfiguredRepositoryMemoryResult> {
