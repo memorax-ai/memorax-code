@@ -9,46 +9,132 @@ memorax-code-codex doctor
 memorax-code-claude doctor
 memorax-code status --clients dsh
 memorax-code-opencode doctor
+memorax-code status --clients kimi
 memorax-code logs
 ```
 
-For Kimi Code, use `memorax-code status --clients kimi` and
-`memorax-code start --clients kimi`. Restart Kimi after a lifecycle change.
-The integration edits only the six MemoraX-marked Hook entries in
+To enable Kimi Code, set `kimi = true` under `[clients]`, run
+`memorax-code start`, and restart Kimi. For a Kimi-only diagnostic, use
+`memorax-code status --clients kimi`. The integration edits only the six
+MemoraX-marked Hook entries in
 `$KIMI_CODE_HOME/config.toml`; provider settings and other Hook entries remain
 client-owned.
 
 Kimi renders a Hook result only when the Hook writes non-empty stdout. The
-MemoraX Kimi Hook emits retrieval and scheduled skill-reminder context, and automatic retrieval is disabled
-by default, so an empty Hook line is expected and does not mean the Hook was
-skipped. Enable `[memory.retrieval].enabled = true` or set
+MemoraX Kimi Hook emits retrieval and scheduled skill-reminder context.
+Automatic retrieval is disabled by default, so an empty Hook line is expected
+and does not mean the Hook was skipped. Enable `[memory.retrieval].enabled = true` or set
 `MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED=true`, then restart the Backend and
 Kimi. Kimi owns its Hook presentation and does not render Codex's native
 `UserPromptSubmit hook (completed)` status card.
 
 Kimi's shared Skill is discovered from `$KIMI_CODE_HOME/skills/memorax-code/`.
-If `memorax-code start --clients kimi` reports `skill_conflict`, preserve or
+If `memorax-code start` reports `skill_conflict`, preserve or
 rename the existing user Skill before retrying; the installer never overwrites
 an unmanaged Skill. After a successful refresh, start a new Kimi session so
 `/memorax-code` is discovered.
 
 `memorax-code status` checks the Backend and selected client integrations,
 including DSH and OpenCode. `memorax-cli status` checks credentials, scope, and
-memory switches without printing secrets. Codex, Claude Code, OpenCode, and Kimi
-also provide client-specific `doctor` commands; DSH uses the shared lifecycle
-status.
+memory switches without printing secrets. Codex, Claude Code, and OpenCode
+also provide client-specific `doctor` commands; DSH and Kimi use the shared
+lifecycle status.
+
+## Package installed, but setup did not start
+
+This is expected after:
+
+```sh
+npm install -g @memorax/memorax-code
+```
+
+npm installation is deliberately non-interactive. Start setup from a normal
+terminal:
+
+```sh
+memorax-code setup
+```
+
+If a complete configuration was retained from an earlier installation,
+default setup reuses it automatically. Use `memorax-code setup --reconfigure`
+to replace it, or `memorax-code setup --existing-account` to enter an
+existing MemoraX connection.
+
+Setup requires terminal input and terminal-visible stderr. A pipe, background
+process, or redirected stdin/stderr cannot complete setup; rerun it in a normal
+interactive terminal.
+
+## Setup does not complete
+
+Setup writes
+`$MEMORAX_CODE_HOME/runtime/setup/setup-completion.json` only after
+configuration, client and Hook reconciliation, Backend start, and final
+readiness checks succeed. Until then, running `memorax-code` with no command
+points back to `memorax-code setup`.
+
+If secure credential setup fails, confirm that the operating-system credential
+backend is available to the same logged-in user and that the MemoraX service is
+reachable. On Linux, confirm that `/usr/bin/secret-tool` is installed and the
+session can reach an unlocked Secret Service. Minimal containers and detached
+SSH sessions often do not provide one.
+
+Malformed `config.toml` is preserved rather than overwritten. Repair or
+restore the file, then rerun setup. Invalid setup-completion records also fail
+closed; preserve a diagnostic copy and confirm no setup command is active
+before moving an invalid record aside. An unsupported record version requires
+a compatible MemoraX Code release.
+
+## npm package transition fails
+
+Replacing a running managed installation uses
+`$MEMORAX_CODE_HOME/runtime/install/package-transition.json`. If preinstall
+cannot retire the old Backend, installation stops before package replacement.
+If postinstall cannot start or verify the new Backend, the retired transition
+is retained for a bounded retry.
+
+Do not delete the record while the old Backend or another lifecycle command may
+still own state. After confirming process ownership, retry:
+
+```sh
+memorax-code stop --clients none
+npm install -g @memorax/memorax-code
+```
+
+Fresh and already-stopped installations do not create a transition and remain
+stopped.
+
+On Windows, a Backend started by MemoraX Code 0.1.6 or earlier from an npm
+lifecycle may keep the old global package directory as its working directory.
+Windows then prevents npm from renaming that directory, and update fails with
+an `EBUSY` rename error before the newer package's preinstall can stop the old
+Backend. Upgrade an affected installation with:
+
+```sh
+memorax-code stop
+memorax-code update --latest
+memorax-code
+```
+
+The final command reuses existing configuration and credentials, reconciles
+the client integrations, starts the Backend, and completes the one-time setup
+migration. `memorax-code start` alone does not commit that migration. Once a
+fixed release has started the Backend from its private runtime directory,
+later updates do not require this workaround.
 
 ## Installed, but memory is unavailable
 
 The package and Backend can be healthy while MemoraX remains unconfigured. Run:
 
 ```sh
+memorax-code setup
 memorax-cli status
 ```
 
-Configure `endpoint`, `user_id`, and `api_key` under `[memorax]` in
-`$MEMORAX_CODE_HOME/config.toml`, or set their environment equivalents. The
-current default endpoint is `https://platform.memorax.net`.
+Default setup creates or restores an account-free connection. For an existing
+account, run `memorax-code setup --existing-account`. A manually managed
+connection may instead configure `endpoint`, `user_id`, and `api_key`
+under `[memorax]`, or set their environment equivalents. The current default
+endpoint is `https://platform.memorax.net`.
 
 After changing persistent configuration:
 
@@ -61,6 +147,30 @@ Automatic retrieval is disabled by default and is independent from explicit
 search. Automatic writeback requires `[memory.writeback] enabled = true` and
 must not be disabled by
 `MEMORAX_CODE_MEMORAX_WRITEBACK_ENABLED=false`.
+
+## Quota reminder and Mark ID
+
+Memory write and memory search reminders are tracked independently. A reminder
+is emitted when the corresponding remaining quota reaches 10% or less and
+again at 0%; raw quota counts are not shown.
+
+Automatic quota reminders are currently supported in Codex, Claude Code, and
+OpenCode. DeepSeek Harness does not currently surface these reminders.
+
+A guest reminder displays the complete Mark ID when the ready local trial
+identity matches the active API key. Registered-account reminders do not
+include it. If a guest reminder cannot verify a matching local identity, it
+instead directs you to run this command yourself in a local terminal:
+
+```sh
+memorax-code account --show-mark-id
+```
+
+The command reads a ready local trial identity and prints only its Mark ID. A
+reminder or command output containing the Mark ID is sensitive; do not share it
+in a conversation, screenshot, or log. If no ready local trial identity exists,
+use `memorax-code setup`; a connection copied from another computer does not
+include that computer's device-local Mark ID.
 
 ## Backend does not start
 
@@ -111,9 +221,10 @@ memorax-code start --clients codex
 memorax-code-codex doctor
 ```
 
-Codex requires review for new or changed Hook command hashes. A declined or
-non-interactive update can leave Hooks untrusted even though the update
-succeeded. Do not write trust entries directly. If the skill is missing, rerun
+Codex requires review for new or changed Hook command hashes. A declined,
+non-interactive, or direct npm update can leave changed Hooks untrusted even
+though package replacement succeeded. Run `memorax-code setup` for foreground
+review; do not write trust entries directly. If the skill is missing, rerun
 `memorax-code start --clients codex`, then restart or refresh Codex.
 
 ## Claude Code plugin or Hook is inactive
@@ -136,10 +247,18 @@ memorax-code start --clients dsh
 memorax-code status --clients dsh
 ```
 
+Automatic DSH discovery is optional: an unavailable DSH integration is
+reported as degraded without blocking the Backend or another detected client.
+The explicit commands above are strict and return a failure until DSH is ready.
+
 MemoraX Code discovers existing Profiles under `$DSH_HOME/profiles`;
 `DSH_HOME` defaults to `~/.dsh`. A `no_existing_profiles` result means DSH has
 not created a valid Profile in that home. A `dsh_version_unavailable` result
-means the selected `dsh` command did not return a valid semantic version. The
+means neither the selected DSH command nor an existing Profile-linked DSH
+runtime supplied a valid semantic version. A `dsh_profile_runtime_stale` result
+means that Profile-linked package is invalid or its original package cache is
+no longer available. Repair or relaunch DSH itself, then rerun the MemoraX Code
+start command. MemoraX Code never invokes `npx` or installs or updates DSH. The
 tested baseline is `0.1.0-rc.6`; another valid version is allowed but marked
 untested. A `pnpm_not_found` result means DSH's native Profile plugin manager
 could not find `pnpm` on `PATH`; install `pnpm`, then rerun the start command.

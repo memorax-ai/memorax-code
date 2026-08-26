@@ -520,7 +520,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function printMemoraxCodeStatus(report: MemoraxCodeStatusReport): void {
   const backend = report.backend;
-  backendLog(`MemoraX Code Backend status: ${report.ok ? blueBold("Enabled") : redBold("Unavailable")}`);
+  const degraded = report.degraded === true;
+  backendLog(`MemoraX Code Backend status: ${report.ok ? blueBold(degraded ? "Enabled (degraded)" : "Enabled") : redBold("Unavailable")}`);
   backendLog(report.ok
     ? green("MemoraX Code is ready for new client sessions.")
     : red("MemoraX Code is not ready for new client sessions."));
@@ -624,7 +625,7 @@ export async function runBackendTokenCommand(
 }
 
 function printLifecycleResult(report: MemoraxCodeLifecycleReport): void {
-  const degraded = report.backend?.degraded === true;
+  const degraded = report.degraded === true || report.backend?.degraded === true;
   backendLog(`${lifecycleActionLabel(report.action)}: ${report.ok ? green(degraded ? "ok (degraded)" : "ok") : red("needs attention")}`);
   if (report.message) backendLog(report.message);
   if (report.backend) {
@@ -707,31 +708,31 @@ function lifecycleGuidance(report: MemoraxCodeLifecycleReport): string[] {
         "Adapters were not changed for this command.",
       ];
     }
-    const optionalDshSkipped = isOptionalUnavailableDshAdapter(report.dshAdapter);
+    const optionalDshUnavailable = isOptionalUnavailableDshAdapter(report.dshAdapter);
     if ((!report.codexAdapter || isAdapterReady(report.codexAdapter))
       && (!report.claudeAdapter || isAdapterReady(report.claudeAdapter))
       && (!report.dshAdapter
         || isAdapterReady(report.dshAdapter)
-        || optionalDshSkipped)
+        || optionalDshUnavailable)
       && (!report.opencodeAdapter || isAdapterReady(report.opencodeAdapter))
       && (!report.kimiAdapter || isAdapterReady(report.kimiAdapter))) {
       return [
-        green(optionalDshSkipped
+        green(optionalDshUnavailable
           && !report.codexAdapter
           && !report.claudeAdapter
           && !report.opencodeAdapter
           && !report.kimiAdapter
-          ? "Backend is running; the optional DSH integration was skipped."
+          ? "Backend is running; the optional DSH integration is unavailable."
           : "Backend is running and available client integrations are enabled."),
-        ...(optionalDshSkipped
-          ? [`DSH integration was skipped: ${report.dshAdapter?.reason ?? "not available"}.`]
+        ...(optionalDshUnavailable
+          ? [`DSH integration is unavailable: ${report.dshAdapter?.reason ?? "not available"}.`]
           : []),
         ...(report.codexAdapter || report.claudeAdapter || report.opencodeAdapter || report.kimiAdapter
           ? [
               green("Existing sessions with the stable plugin shell select the active runtime on their next user prompt."),
               "Restart or refresh a client only if its plugin shell changed or MemoraX Code is not active on the next prompt.",
             ]
-          : optionalDshSkipped
+          : optionalDshUnavailable
             ? []
             : [green("New DSH sessions can use MemoraX Code through the active Profile integration.")]),
       ];
@@ -801,16 +802,16 @@ function lifecycleGuidance(report: MemoraxCodeLifecycleReport): string[] {
 
 function statusGuidance(report: MemoraxCodeStatusReport): string[] {
   if (report.ok) {
-    const optionalDshSkipped = isOptionalUnavailableDshAdapter(report.dshAdapter);
+    const optionalDshUnavailable = isOptionalUnavailableDshAdapter(report.dshAdapter);
     if (report.dshAdapter
       && !report.codexAdapter
       && !report.claudeAdapter
       && !report.opencodeAdapter
       && !report.kimiAdapter) {
-      if (optionalDshSkipped) {
+      if (optionalDshUnavailable) {
         return [
-          green("Backend is running; the optional DSH integration was skipped."),
-          `DSH integration was skipped: ${report.dshAdapter.reason ?? "not available"}.`,
+          green("Backend is running; the optional DSH integration is unavailable."),
+          `DSH integration is unavailable: ${report.dshAdapter.reason ?? "not available"}.`,
         ];
       }
       return [
@@ -820,8 +821,8 @@ function statusGuidance(report: MemoraxCodeStatusReport): string[] {
     }
     return [
       green("MemoraX Code is ready; sessions with the stable plugin shell use the active Hook runtime on their next user prompt."),
-      ...(optionalDshSkipped
-        ? [`DSH integration was skipped: ${report.dshAdapter?.reason ?? "not available"}.`]
+      ...(optionalDshUnavailable
+        ? [`DSH integration is unavailable: ${report.dshAdapter?.reason ?? "not available"}.`]
         : []),
       "Restart or refresh a client only if its plugin shell was installed, changed, or newly enabled, or MemoraX Code is not active on the next prompt.",
     ];
@@ -945,7 +946,7 @@ function claudeAdapterStatusLine(report: AdapterReport, codexAdapter?: AdapterRe
 
 function dshAdapterStatusLine(report: AdapterReport): string {
   if (isOptionalUnavailableDshAdapter(report)) {
-    return `skipped ${report.reason ?? "not-detected"}`;
+    return `unavailable ${report.reason ?? "not-detected"}`;
   }
   const version = report.version ?? report.dshVersion;
   const tested = version && report.dshVersionTested !== undefined

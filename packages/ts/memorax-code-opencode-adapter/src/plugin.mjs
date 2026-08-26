@@ -103,13 +103,14 @@ export function createMemoraxOpenCodePlugin(options = {}) {
           && message.info.id === turn.userMessageId
           && message.info.sessionID === sessionId
         ));
-        const assistant = terminalAssistantFor(
+        const terminal = terminalTurnFor(
           messages,
           sessionId,
           turn.userMessageId,
           target?.assistantMessageId,
         );
-        if (!user || !assistant) continue;
+        if (!user || !terminal) continue;
+        const { assistant, evidence } = terminal;
         let result;
         try {
           result = await postBackend(options, "/memory/writeback", {
@@ -118,7 +119,7 @@ export function createMemoraxOpenCodePlugin(options = {}) {
             sessionId,
             userMessageId: turn.userMessageId,
             assistantMessageId: assistant.info.id,
-            messages: [user, assistant],
+            messages: evidence,
             cwd: workspaceRoot,
             workspaceKind,
           }, WRITEBACK_TIMEOUT_MS);
@@ -210,6 +211,7 @@ export function createMemoraxOpenCodePlugin(options = {}) {
           }, TURN_START_TIMEOUT_MS);
           turnStartAccepted = true;
           if (!pluginEnabled(options)) return;
+          void showUserNotice(client, directory, result?.userNotice, options);
           repositoryWorktree = stringValue(result?.repoMemoryWorktree);
           const repoMemoryEnv = openCodeRepoMemoryEnv(options, openCodeServerUrl, sessionId);
           if (repoMemoryEnv) {
@@ -280,10 +282,13 @@ export function createMemoraxOpenCodePlugin(options = {}) {
           return;
         }
         if (event?.type === "message.updated") {
-          const interrupted = interruptedAssistantFromEvent(event, pendingTurns);
+          const interrupted = terminalErrorAssistantFromEvent(event, pendingTurns);
           if (interrupted) {
             track(
-              queueSessionFlush(interrupted.sessionId, interrupted),
+              queueSessionFlush(
+                interrupted.sessionId,
+                interrupted.userMessageId ? interrupted : undefined,
+              ),
               "opencode interrupted turn finalization failed",
             );
           }
@@ -309,18 +314,16 @@ export function createMemoraxOpenCodePlugin(options = {}) {
 export const MemoraxOpenCodePlugin = createMemoraxOpenCodePlugin();
 export default MemoraxOpenCodePlugin;
 
-function terminalAssistantFor(messages, sessionId, userMessageId, assistantMessageId) {
-  return messages
+function terminalTurnFor(messages, sessionId, userMessageId, assistantMessageId) {
+  const lineage = turnLineage(messages, sessionId, userMessageId);
+  if (!lineage || lineage.awaitingContinuation) return undefined;
+  const assistant = lineage.messages
     .filter((message) => (
       message?.info?.role === "assistant"
       && message.info.sessionID === sessionId
-      && message.info.parentID === userMessageId
+      && message.info.parentID === lineage.terminalUserMessageId
       && (!assistantMessageId || message.info.id === assistantMessageId)
       && Number.isFinite(message.info.time?.completed)
-      && (
-        message.info.error === undefined
-        || message.info.error?.name === "MessageAbortedError"
-      )
       && message.info.summary !== true
       && !message.parts?.some((part) => part?.type === "compaction")
     ))
@@ -329,24 +332,127 @@ function terminalAssistantFor(messages, sessionId, userMessageId, assistantMessa
       || String(left.info.id).localeCompare(String(right.info.id))
     ))
     .at(-1);
+  if (!assistant) return undefined;
+  return {
+    assistant,
+    evidence: uniqueMessages([...lineage.evidence, assistant]),
+  };
 }
 
-function interruptedAssistantFromEvent(event, pendingTurns) {
+function turnLineage(messages, sessionId, userMessageId) {
+  const sessionMessages = messages.filter((message) => (
+    message?.info?.sessionID === sessionId
+    && stringValue(message.info.id)
+    && Array.isArray(message.parts)
+  ));
+  const startIndex = sessionMessages.findIndex((message) => (
+    message.info.role === "user" && message.info.id === userMessageId
+  ));
+  if (startIndex < 0) return undefined;
+  const original = sessionMessages[startIndex];
+  const lineageAssistants = new Map();
+  const evidence = [original];
+  let terminalUserMessageId = userMessageId;
+  let awaitingContinuation = false;
+
+  for (const message of sessionMessages.slice(startIndex + 1)) {
+    if (message.info.role === "assistant") {
+      if (message.info.parentID === terminalUserMessageId) {
+        lineageAssistants.set(message.info.id, message);
+      }
+      continue;
+    }
+    if (message.info.role !== "user") continue;
+    if (hasCompactionPart(message.parts)) {
+      const compactionTailId = compactionTailStartId(message, sessionId);
+      if (!compactionTailId || awaitingContinuation) return undefined;
+      const tail = lineageAssistants.get(compactionTailId);
+      if (!tail) return undefined;
+      evidence.push(minimalAssistantEvidence(tail), message);
+      awaitingContinuation = true;
+      continue;
+    }
+    if (isCompactionContinuation(message, sessionId)) {
+      if (!awaitingContinuation) return undefined;
+      terminalUserMessageId = message.info.id;
+      evidence.push(message);
+      awaitingContinuation = false;
+      continue;
+    }
+    break;
+  }
+  return {
+    messages: sessionMessages.slice(startIndex + 1),
+    terminalUserMessageId,
+    awaitingContinuation,
+    evidence,
+  };
+}
+
+function hasCompactionPart(parts) {
+  return parts.some((part) => part?.type === "compaction");
+}
+
+function compactionTailStartId(message, sessionId) {
+  const messageId = stringValue(message?.info?.id);
+  const parts = message?.parts?.filter((part) => (
+    part?.type === "compaction"
+    && part.sessionID === sessionId
+    && part.messageID === messageId
+  )) ?? [];
+  if (parts.length !== 1) return undefined;
+  return stringValue(parts[0].tail_start_id);
+}
+
+function minimalAssistantEvidence(message) {
+  return {
+    info: {
+      id: message.info.id,
+      sessionID: message.info.sessionID,
+      role: message.info.role,
+      parentID: message.info.parentID,
+    },
+    parts: [],
+  };
+}
+
+function isCompactionContinuation(message, sessionId) {
+  const messageId = stringValue(message?.info?.id);
+  return message?.parts?.some((part) => (
+    part?.type === "text"
+    && part.synthetic === true
+    && part.metadata?.compaction_continue === true
+    && part.sessionID === sessionId
+    && part.messageID === messageId
+  )) === true;
+}
+
+function uniqueMessages(messages) {
+  const unique = new Map();
+  for (const message of messages) unique.set(message.info.id, message);
+  return [...unique.values()];
+}
+
+function terminalErrorAssistantFromEvent(event, pendingTurns) {
   const info = event?.properties?.info;
   const sessionId = stringValue(info?.sessionID);
   const userMessageId = stringValue(info?.parentID);
   const assistantMessageId = stringValue(info?.id);
   if (
     info?.role !== "assistant"
-    || info?.error?.name !== "MessageAbortedError"
+    || !stringValue(info?.error?.name)
     || !Number.isFinite(info?.time?.completed)
     || info?.summary === true
     || !sessionId
     || !userMessageId
     || !assistantMessageId
-    || !pendingTurns.has(turnKey({ sessionId, userMessageId }))
   ) return undefined;
-  return { sessionId, userMessageId, assistantMessageId };
+  if (pendingTurns.has(turnKey({ sessionId, userMessageId }))) {
+    return { sessionId, userMessageId, assistantMessageId };
+  }
+  return [...pendingTurns.values()].some((turn) => turn.sessionId === sessionId)
+    ? { sessionId }
+    : undefined;
 }
 
 function textParts(parts) {
@@ -382,6 +488,25 @@ function appendSystemContexts(output, ...contexts) {
   if (additions.length === 0) return;
   const existing = stringValue(output?.message?.system);
   output.message.system = [existing, ...additions].filter(Boolean).join("\n\n");
+}
+
+async function showUserNotice(client, directory, notice, options) {
+  const message = stringValue(notice);
+  if (!message || typeof client?.tui?.showToast !== "function") return;
+  try {
+    await client.tui.showToast({
+      body: {
+        title: "MemoraX Code",
+        message,
+        variant: "warning",
+        duration: 10_000,
+      },
+      query: { directory },
+      throwOnError: true,
+    });
+  } catch (error) {
+    debug(options, "opencode quota reminder failed", error);
+  }
 }
 
 function recordReminder(options, reminder) {

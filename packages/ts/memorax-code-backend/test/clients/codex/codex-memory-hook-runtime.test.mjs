@@ -33,7 +33,10 @@ test("Codex Hook retrieves automatic memory once per exact turn", async () => {
     prompt: "Recall the parser boundary.",
     reply: "The parser boundary was recalled.",
   }]);
-  const { fetchImpl, requests } = memoraxSearchFetch("Keep malformed input fail-closed.");
+  const { fetchImpl, requests } = memoraxSearchFetch("Keep malformed input fail-closed.", {
+    remaining: 4_800,
+    limit: 10_000,
+  });
   const events = [];
   const controller = createCodexMemoryHookRuntime({
     env: {
@@ -43,6 +46,7 @@ test("Codex Hook retrieves automatic memory once per exact turn", async () => {
       MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED: "true",
     },
     automaticWriteback: () => ({ accepted: true }),
+    claimQuotaNotice: async (_config, quota) => `Quota notice: ${quota.remaining} remaining.`,
     fetchImpl,
     memoraxCodeHome: root,
     memoryObservability: { recordEvent: (event) => events.push(event) },
@@ -57,6 +61,8 @@ test("Codex Hook retrieves automatic memory once per exact turn", async () => {
     });
     assert.equal(first.ok, true);
     assert.match(first.additionalContext, /Keep malformed input fail-closed/);
+    assert.equal(first.userNotice, "Quota notice: 4800 remaining.");
+    assert.doesNotMatch(first.additionalContext, /Quota notice/);
     assert.equal(first.repoMemoryWorktree, TEST_REPO_ROOT);
 
     assert.deepEqual(await controller.recordTurnStart({

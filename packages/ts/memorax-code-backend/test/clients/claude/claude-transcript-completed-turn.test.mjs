@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  claudeTranscriptMemoryActivitiesFromJsonLines,
   claudeTranscriptTurnFromJsonLines,
 } from "../../../dist/clients/claude/transcript-turn.js";
 
@@ -276,9 +275,6 @@ test("Claude transcript rejects multiple completed branches for one prompt", () 
     sessionId: SESSION_ID,
     promptId: PROMPT_ID,
   }), { ok: false, reason: "turn_ambiguous" });
-  assert.deepEqual(claudeTranscriptMemoryActivitiesFromJsonLines(transcript, {
-    sessionId: SESSION_ID,
-  }), []);
 });
 
 test("Claude transcript coalesces ancestor and descendant end_turn snapshots", () => {
@@ -339,22 +335,6 @@ test("Claude transcript coalesces ancestor and descendant end_turn snapshots", (
     },
   });
 
-  const activities = claudeTranscriptMemoryActivitiesFromJsonLines(transcript, {
-    sessionId: SESSION_ID,
-  });
-  assert.deepEqual(activities, [{
-    promptId: PROMPT_ID,
-    index: 1,
-    occurrence: 1,
-    type: "memory_cli_search",
-    toolUseId: "tool-lineage-search",
-    timestamp: "2026-07-27T10:00:01.123Z",
-    ok: true,
-  }]);
-  assert.doesNotMatch(
-    JSON.stringify(activities),
-    /private-lineage-query|private lineage reason|private lineage result/,
-  );
 });
 
 test("Claude transcript keeps sibling end_turn lineages ambiguous", () => {
@@ -418,9 +398,6 @@ test("Claude transcript keeps sibling end_turn lineages ambiguous", () => {
     sessionId: SESSION_ID,
     promptId: PROMPT_ID,
   }), { ok: false, reason: "turn_ambiguous" });
-  assert.deepEqual(claudeTranscriptMemoryActivitiesFromJsonLines(transcript, {
-    sessionId: SESSION_ID,
-  }), []);
 });
 
 test("Claude transcript selects the completion whose nearest visible prompt has the exact prompt id", () => {

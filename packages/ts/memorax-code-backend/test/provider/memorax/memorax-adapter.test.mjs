@@ -53,6 +53,7 @@ test("MemoraX adapter uses the injected HTTP transport for retrieval", async () 
               score: 0.95,
               metadata: { memory_type: "core" },
             }],
+            balances: [quotaBalance("memory_search", 24, 100)],
           },
         }), {
           status: 200,
@@ -77,6 +78,47 @@ test("MemoraX adapter uses the injected HTTP transport for retrieval", async () 
   assert.match(result.result.tool_result_payload.answer, /Injected HTTP preserves repository-scoped retrieval/);
   assert.match(result.result.prompt_fragments[0].content, /Injected HTTP preserves repository-scoped retrieval/);
   assert.equal(result.result.dispatch_receipt.receipt_id, "memorax:injected-retrieve-task");
+  assert.deepEqual(result.result.quota, {
+    featureCode: "memory_search",
+    remaining: 24,
+    limit: 100,
+  });
+  assert.equal("quota" in result.result.tool_result_payload, false);
+});
+
+test("MemoraX adapter omits incomplete balance entries", async () => {
+  const result = await invokeMemoraxMemoryProvider(
+    { sessionId: "quota-incomplete", prompt: "fallback prompt" },
+    {
+      provider_id: "memory.memorax",
+      slot: "state_context",
+      operation: "query",
+      query: "project memory",
+    },
+    {
+      env: {
+        MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
+        MEMORAX_CODE_MEMORAX_API_KEY: "secret",
+        MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
+      },
+      fetchImpl: async () => new Response(JSON.stringify({
+        success: true,
+        data: {
+          task_id: "quota-incomplete",
+          status: "completed",
+          data: [],
+          balances: [{ ...quotaBalance("memory_search", 24, 100), quota_limit: null }],
+        },
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+      repositoryScope: testRepositoryScope(),
+    },
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal("quota" in result.result, false);
 });
 
 test("MemoraX adapter rejects real requests without a memory scope", async () => {
@@ -409,7 +451,11 @@ test("MemoraX adapter keeps writeback trace provenance in local observability", 
     res.writeHead(202, { "content-type": "application/json" });
     res.end(JSON.stringify({
       success: true,
-      data: { task_id: "debug-writeback-task", status: "accepted" },
+      data: {
+        task_id: "debug-writeback-task",
+        status: "accepted",
+        balances: [quotaBalance("memory_write", 23, 100)],
+      },
       meta: { request_id: "debug-writeback-req" },
     }));
   });
@@ -455,6 +501,12 @@ test("MemoraX adapter keeps writeback trace provenance in local observability", 
     );
 
     assert.equal(result.ok, true);
+    assert.deepEqual(result.result.quota, {
+      featureCode: "memory_write",
+      remaining: 23,
+      limit: 100,
+    });
+    assert.equal("quota" in result.result.tool_result_payload, false);
     assert.equal(requests.length, 1);
     const events = observabilityEvents;
     assert.equal(events.length, 1);
@@ -466,6 +518,7 @@ test("MemoraX adapter keeps writeback trace provenance in local observability", 
     assert.equal(events[0].request.payload.metadata.idempotency_key, "debug-session:turn-1");
     assert.equal(events[0].request.payload.metadata.source_detail, "privacy_contract_test");
     assert.equal(events[0].response.receiptId, "memorax:debug-writeback-req");
+    assert.doesNotMatch(JSON.stringify(events), /"quota"/);
     assert.doesNotMatch(JSON.stringify(events), /secret-debug-key/);
     const outboundBody = JSON.stringify(requests[0]);
     assert.doesNotMatch(outboundBody, /test\/local-trace|test\/local-workspace/);
@@ -477,6 +530,19 @@ test("MemoraX adapter keeps writeback trace provenance in local observability", 
     await new Promise((resolve) => server.close(resolve));
   }
 });
+
+function quotaBalance(featureCode, remaining, quotaLimit) {
+  return {
+    product_code: "memory_api",
+    feature_code: featureCode,
+    spec_key: "calls",
+    quota_unit: "times",
+    quota_limit: quotaLimit,
+    reserved: 1,
+    consumed: 0,
+    remaining,
+  };
+}
 
 test("MemoraX adapter preserves successful writeback when observability throws", async () => {
   let requestCount = 0;

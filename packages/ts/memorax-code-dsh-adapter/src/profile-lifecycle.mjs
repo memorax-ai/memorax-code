@@ -6,6 +6,7 @@ import {
   lstatSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   readdirSync,
   renameSync,
   rmSync,
@@ -22,6 +23,7 @@ import {
   parseDshVersion,
 } from "./dsh-version.mjs";
 import {
+  buildDshCommand,
   requireDshRuntimeAuthority,
   requireEnabledDshRuntime,
 } from "./runtime-state.mjs";
@@ -49,6 +51,7 @@ const { resolveWindowsCliInvocation } = await import(
 
 const STATE_VERSION = 1;
 const RUNTIME = "dsh";
+const DSH_PACKAGE_NAME = "@deepseek-ai/dsh";
 const ADAPTER_PACKAGE_NAME = "@memorax-code/dsh-memorax-code";
 const HEADLESS_PROFILE_NAME = "headless";
 const HEADLESS_BUNDLE_NAME = "@deepseek-ai/dsh-headless";
@@ -160,14 +163,18 @@ export function collectDshAdapterStatus(options = {}) {
       return { ok: true, ...base, skipped: true, reason: "no_existing_profiles" };
     }
 
-    const dshCommand = resolveDshCommand(options, paths, state);
-    const compatibility = inspectDshCompatibility(options, paths, dshCommand);
+    const { dshCommand, compatibility } = resolveDshStatusCompatibility(
+      options,
+      paths,
+      state,
+    );
     const version = compatibility.dshVersion;
     const versionStatus = {
       dshVersionTested: compatibility.dshVersionTested,
       testedDshVersions: [...DSH_TESTED_VERSIONS],
     };
-    if (compatibility.reason === "dsh_version_unavailable") {
+    if (compatibility.reason === "dsh_version_unavailable"
+      || compatibility.reason === "dsh_profile_runtime_stale") {
       return {
         ok: false,
         ...base,
@@ -327,8 +334,7 @@ function ensureDshPluginInstalledUnlocked(paths, options) {
     };
   }
 
-  const dshCommand = resolveDshCommand(options, paths, state);
-  const compatibility = inspectDshCompatibility(options, paths, dshCommand);
+  const { dshCommand, compatibility } = resolveDshCompatibility(options, paths, state);
   if (compatibility.compatible !== true) {
     const nextState = state?.enabled === true
       ? disabledState(state, state.profiles)
@@ -805,7 +811,13 @@ function disableDshPluginInstallationUnlocked(paths, options, removeState) {
   };
 }
 
-function removeProfileAdapterPackages(paths, options, name, packageNames, dshCommand) {
+function removeProfileAdapterPackages(
+  paths,
+  options,
+  name,
+  packageNames,
+  dshCommand,
+) {
   const profilePath = join(paths.profilesRoot, name);
   let profile = inspectProfile(name, profilePath);
   let failure;
@@ -1049,14 +1061,153 @@ function resolveDshCommand(options, paths, state) {
     ?? nonEmpty(paths.env.MEMORAX_CODE_DSH_COMMAND)
     ?? nonEmpty(state?.dshCommand)
     ?? "dsh";
+  const normalized = normalizeDshCommand(command);
+  if (normalized) return normalized;
+  const profileRuntime = inspectProfileDshRuntime(paths, state);
+  return profileRuntime?.compatibility.compatible === true
+    ? profileRuntime.dshCommand
+    : "dsh";
+}
+
+function resolveDshStatusCompatibility(options, paths, state) {
+  if (state?.enabled !== true) return resolveDshCompatibility(options, paths, state);
+  const dshCommand = normalizeDshCommand(state.dshCommand);
+  if (!dshCommand) {
+    return {
+      dshCommand: state.dshCommand,
+      compatibility: unavailableDshCompatibility("dsh_version_unavailable"),
+    };
+  }
+  const profileRuntime = inspectProfileDshRuntime(paths, state);
+  return profileRuntime?.dshCommand === dshCommand
+    ? profileRuntime
+    : { dshCommand, compatibility: inspectDshCompatibility(options, paths, dshCommand) };
+}
+
+function resolveDshCompatibility(options, paths, state) {
+  const configured = nonEmpty(options.dshCommand)
+    ?? nonEmpty(paths.env.MEMORAX_CODE_DSH_COMMAND);
+  if (configured) {
+    const dshCommand = normalizeDshCommand(configured);
+    return dshCommand
+      ? { dshCommand, compatibility: inspectDshCompatibility(options, paths, dshCommand) }
+      : {
+          dshCommand: configured,
+          compatibility: unavailableDshCompatibility("dsh_version_unavailable"),
+        };
+  }
+
+  const profileRuntime = inspectProfileDshRuntime(paths, state);
+  const attemptedCommands = new Set();
+  let unavailable;
+  for (const value of [state?.dshCommand, "dsh"]) {
+    const dshCommand = normalizeDshCommand(value);
+    if (!dshCommand || attemptedCommands.has(dshCommand)) continue;
+    attemptedCommands.add(dshCommand);
+    if (dshCommand === profileRuntime?.dshCommand) {
+      if (profileRuntime.compatibility.compatible === true) return profileRuntime;
+      continue;
+    }
+    const compatibility = inspectDshCompatibility(options, paths, dshCommand);
+    if (compatibility.compatible === true) return { dshCommand, compatibility };
+    unavailable ??= { dshCommand, compatibility };
+  }
+  if (profileRuntime?.compatibility.compatible === true) return profileRuntime;
+  if (profileRuntime?.compatibility.reason === "dsh_profile_runtime_stale") {
+    return {
+      dshCommand: profileRuntime.dshCommand ?? unavailable?.dshCommand ?? "dsh",
+      compatibility: profileRuntime.compatibility,
+    };
+  }
+  return unavailable ?? {
+    dshCommand: "dsh",
+    compatibility: unavailableDshCompatibility("dsh_version_unavailable"),
+  };
+}
+
+function normalizeDshCommand(value) {
+  const command = nonEmpty(value);
+  if (!command) return undefined;
+  const name = command
+    .split(/[\\/]/)
+    .at(-1)
+    .replace(/\.(?:cmd|bat|exe|com)$/i, "")
+    .toLowerCase();
+  if (name === "npx") return undefined;
   return command.includes("/") || command.includes("\\") ? resolve(command) : command;
+}
+
+function inspectProfileDshRuntime(paths, state) {
+  const packageRoot = join(paths.profilesRoot, "node_modules", ...DSH_PACKAGE_NAME.split("/"));
+  const persistedCommand = normalizeDshCommand(state?.dshCommand);
+  const profileCommand = persistedCommand && isPathInside(persistedCommand, packageRoot)
+    ? persistedCommand
+    : undefined;
+  try {
+    lstatSync(packageRoot);
+  } catch (error) {
+    return error?.code === "ENOENT" && !profileCommand
+      ? undefined
+      : {
+          dshCommand: profileCommand,
+          compatibility: unavailableDshCompatibility("dsh_profile_runtime_stale"),
+        };
+  }
+
+  try {
+    const realPackageRoot = realpathSync(packageRoot);
+    if (!lstatSync(realPackageRoot).isDirectory()) throw new Error("DSH package root is not a directory");
+    const manifest = readJsonObject(join(realPackageRoot, "package.json"));
+    const version = manifest?.name === DSH_PACKAGE_NAME
+      ? parseDshVersion(manifest.version)
+      : undefined;
+    const bin = manifest?.bin !== null
+      && typeof manifest?.bin === "object"
+      && !Array.isArray(manifest.bin)
+      ? nonEmpty(manifest.bin.dsh)
+      : undefined;
+    if (!version || !bin || isAbsolute(bin)) throw new Error("DSH package metadata is invalid");
+
+    const dshCommand = resolve(packageRoot, bin);
+    const realCommand = realpathSync(dshCommand);
+    if (!isPathInside(dshCommand, packageRoot)
+      || !isPathInside(realCommand, realPackageRoot)
+      || !lstatSync(realCommand).isFile()) {
+      throw new Error("DSH package entrypoint is invalid");
+    }
+    return {
+      dshCommand,
+      compatibility: {
+        compatible: true,
+        dshVersion: version,
+        dshVersionTested: isTestedDshVersion(version),
+        testedDshVersions: [...DSH_TESTED_VERSIONS],
+      },
+    };
+  } catch {
+    return {
+      dshCommand: profileCommand,
+      compatibility: unavailableDshCompatibility("dsh_profile_runtime_stale"),
+    };
+  }
+}
+
+function unavailableDshCompatibility(reason) {
+  return {
+    compatible: false,
+    reason,
+    testedDshVersions: [...DSH_TESTED_VERSIONS],
+  };
 }
 
 function runDsh(options, paths, args, command) {
   const env = { ...paths.env, DSH_HOME: paths.dshHome };
   let executable;
   try {
-    executable = resolveWindowsCliInvocation(command, args, {
+    const [launcher, ...launcherArgs] = buildDshCommand(command, args, {
+      nodePath: options.windowsCliResolution?.nodePath,
+    });
+    executable = resolveWindowsCliInvocation(launcher, launcherArgs, {
       ...options.windowsCliResolution,
       env,
     });

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,7 +8,6 @@ import { fileURLToPath } from "node:url";
 import { runBackendStatus } from "../../../dist/lifecycle/backend/status.js";
 import { backendServiceLogs, isProcessAlive, readBackendToken, startBackendService, stopBackendService, terminateProcessTree, writeBackendToken } from "../../../dist/lifecycle/backend/service.js";
 import { freePort, listen } from "../../support/helpers.mjs";
-import { writeActiveManagedClients } from "../../../dist/lifecycle/active-clients.js";
 
 import {
   pathExists,
@@ -37,134 +36,6 @@ test("Backend service manager can start, report logs, and stop a local Backend",
   } finally {
     const stopped = await stopBackendService({ home, port, timeoutMs: 5000 });
     assert.equal(stopped.ok, true);
-  }
-});
-
-test("Backend service keeps Claude native Viewer enrichment behind the live managed-client gate", async () => {
-  const home = await mkdtemp(join(tmpdir(), "memorax-code-service-claude-viewer-home-"));
-  const claudeHome = await mkdtemp(join(tmpdir(), "memorax-code-service-claude-viewer-config-"));
-  const workspace = join(home, "workspace", "Claude-Repo");
-  const projectsRoot = join(claudeHome, "projects");
-  const transcriptDirectory = join(projectsRoot, "encoded-project");
-  const port = await freePort();
-  try {
-    await Promise.all([
-      mkdir(join(workspace, ".git"), { recursive: true }),
-      mkdir(transcriptDirectory, { recursive: true }),
-    ]);
-    await writeFile(
-      join(transcriptDirectory, "native-session.jsonl"),
-      `${[
-        {
-          type: "user",
-          userType: "external",
-          sessionId: "native-session",
-          uuid: "native-user-record",
-          promptId: "native-turn",
-          cwd: workspace,
-          timestamp: new Date().toISOString(),
-          message: { role: "user", content: "private managed Claude prompt" },
-        },
-        {
-          type: "assistant",
-          sessionId: "native-session",
-          uuid: "native-tool-use",
-          parentUuid: "native-user-record",
-          cwd: workspace,
-          timestamp: new Date().toISOString(),
-          message: {
-            role: "assistant",
-            stop_reason: "tool_use",
-            content: [{
-              type: "tool_use",
-              id: "native-memory-search",
-              name: "Bash",
-              input: {
-                command: "memorax-cli search --query private-managed-query",
-              },
-            }],
-          },
-        },
-        {
-          type: "user",
-          userType: "external",
-          sessionId: "native-session",
-          uuid: "native-tool-result",
-          parentUuid: "native-tool-use",
-          cwd: workspace,
-          timestamp: new Date().toISOString(),
-          message: {
-            role: "user",
-            content: [{
-              type: "tool_result",
-              tool_use_id: "native-memory-search",
-              content: [
-                "<memories>",
-                "  <facts memory_type=\"core\">",
-                "   - private managed result",
-                "  </facts>",
-                "</memories>",
-              ].join("\n"),
-            }],
-          },
-        },
-        {
-          type: "assistant",
-          sessionId: "native-session",
-          uuid: "native-final-answer",
-          parentUuid: "native-tool-result",
-          cwd: workspace,
-          timestamp: new Date(Date.now() + 1_000).toISOString(),
-          message: {
-            role: "assistant",
-            stop_reason: "end_turn",
-            content: [{ type: "text", text: "private managed final answer" }],
-          },
-        },
-      ].map((record) => JSON.stringify(record)).join("\n")}\n`,
-      "utf8",
-    );
-    const traceDirectory = join(home, "debug", "traces", "claude", "sessions", "native-session");
-    await mkdir(traceDirectory, { recursive: true });
-    await writeFile(join(traceDirectory, "events.jsonl"), `${JSON.stringify({
-      type: "turn_start",
-      event_id: "managed-hook-start",
-      timestamp: new Date().toISOString(),
-      trace: {
-        client: "claude",
-        session_id: "native-session",
-        turn_id: "native-turn",
-        cwd: workspace,
-      },
-      operation: "query",
-      request: { prompt: "Hook managed Claude prompt." },
-    })}\n`, "utf8");
-    writeActiveManagedClients(home, { codex: false, claude: true, opencode: false });
-    const started = await startBackendService({
-      home,
-      port,
-      timeoutMs: 5000,
-      claudeProjectsRoot: projectsRoot,
-    });
-    assert.equal(started.ok, true);
-    const endpoint = `http://127.0.0.1:${port}/memory-viewer/api/summary?client=claude-code`;
-    const enabled = await fetch(endpoint).then((response) => response.json());
-    assert.equal(enabled.summary.searchOperationCount, 1);
-    assert.doesNotMatch(JSON.stringify(enabled), /private managed/);
-
-    writeActiveManagedClients(home, { codex: false, claude: false, opencode: false });
-    const disabled = await fetch(endpoint).then((response) => response.json());
-    assert.equal(disabled.summary.searchOperationCount, 0);
-    assert.doesNotMatch(JSON.stringify(disabled), /private managed/);
-
-    writeActiveManagedClients(home, { codex: false, claude: true, opencode: false });
-    const reenabled = await fetch(endpoint).then((response) => response.json());
-    assert.equal(reenabled.summary.searchOperationCount, 1);
-    assert.doesNotMatch(JSON.stringify(reenabled), /private managed/);
-  } finally {
-    await stopBackendService({ home, port, timeoutMs: 5000 });
-    await rm(home, { recursive: true, force: true });
-    await rm(claudeHome, { recursive: true, force: true });
   }
 });
 

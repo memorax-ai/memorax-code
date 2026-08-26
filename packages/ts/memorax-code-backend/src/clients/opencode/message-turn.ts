@@ -43,7 +43,7 @@ export function openCodeMessageTurn(
   if (
     stringField(user.info, "sessionID") !== input.sessionId
     || stringField(assistant.info, "sessionID") !== input.sessionId
-    || stringField(assistant.info, "parentID") !== input.userMessageId
+    || !assistantBelongsToTurn(messages, input, assistant)
   ) {
     return { ok: false, reason: "message_identity_mismatch" };
   }
@@ -52,7 +52,7 @@ export function openCodeMessageTurn(
     return { ok: false, reason: "assistant_not_completed" };
   }
   const assistantError = assistant.info.error;
-  const interrupted = isRecord(assistantError) && assistantError.name === "MessageAbortedError";
+  const interrupted = isRecord(assistantError) && stringField(assistantError, "name") !== undefined;
   if (assistantError !== undefined && assistantError !== null && !interrupted) {
     return { ok: false, reason: "assistant_error" };
   }
@@ -77,6 +77,61 @@ export function openCodeMessageTurn(
       outcome: interrupted ? "interrupted" : "completed",
     },
   };
+}
+
+function assistantBelongsToTurn(
+  messages: readonly unknown[],
+  input: { sessionId: string; userMessageId: string },
+  assistant: OpenCodeMessageRecord,
+): boolean {
+  return stringField(assistant.info, "parentID") === terminalUserMessageFor(messages, input);
+}
+
+function terminalUserMessageFor(
+  messages: readonly unknown[],
+  input: { sessionId: string; userMessageId: string },
+): string | undefined {
+  const sessionMessages = messages.filter((message): message is OpenCodeMessageRecord => (
+    isMessageRecord(message)
+    && stringField(message.info, "sessionID") === input.sessionId
+    && messageId(message) !== undefined
+  ));
+  const startIndex = sessionMessages.findIndex((message) => (
+    message.info.role === "user" && messageId(message) === input.userMessageId
+  ));
+  if (startIndex < 0) return undefined;
+  const lineageAssistantIds = new Set<string>();
+  let terminalUserMessageId = input.userMessageId;
+  let awaitingContinuation = false;
+
+  for (const message of sessionMessages.slice(startIndex + 1)) {
+    if (message.info.role === "assistant") {
+      if (stringField(message.info, "parentID") === terminalUserMessageId) {
+        const id = messageId(message);
+        if (id) lineageAssistantIds.add(id);
+      }
+      continue;
+    }
+    if (message.info.role !== "user") continue;
+    if (hasCompactionPart(message.parts)) {
+      const compactionTailId = compactionTailStartId(message, input.sessionId);
+      if (!compactionTailId || !lineageAssistantIds.has(compactionTailId) || awaitingContinuation) {
+        return undefined;
+      }
+      awaitingContinuation = true;
+      continue;
+    }
+    if (isCompactionContinuation(message, input.sessionId)) {
+      if (!awaitingContinuation) return undefined;
+      const id = messageId(message);
+      if (!id) return undefined;
+      terminalUserMessageId = id;
+      awaitingContinuation = false;
+      continue;
+    }
+    break;
+  }
+  return !awaitingContinuation ? terminalUserMessageId : undefined;
 }
 
 type OpenCodeMessageRecord = Readonly<{
@@ -116,6 +171,37 @@ function messageText(
 
 function hasCompactionPart(parts: readonly unknown[]): boolean {
   return parts.some((part) => isRecord(part) && part.type === "compaction");
+}
+
+function compactionTailStartId(
+  message: OpenCodeMessageRecord,
+  sessionId: string,
+): string | undefined {
+  const id = messageId(message);
+  const parts = message.parts.filter((part) => (
+    isRecord(part)
+    && part.type === "compaction"
+    && stringField(part, "sessionID") === sessionId
+    && stringField(part, "messageID") === id
+  ));
+  if (parts.length !== 1 || !isRecord(parts[0])) return undefined;
+  return stringField(parts[0], "tail_start_id");
+}
+
+function isCompactionContinuation(
+  message: OpenCodeMessageRecord,
+  sessionId: string,
+): boolean {
+  const id = messageId(message);
+  return message.parts.some((part) => (
+    isRecord(part)
+    && part.type === "text"
+    && part.synthetic === true
+    && isRecord(part.metadata)
+    && part.metadata.compaction_continue === true
+    && stringField(part, "sessionID") === sessionId
+    && stringField(part, "messageID") === id
+  ));
 }
 
 function stringField(value: Record<string, unknown>, key: string): string | undefined {

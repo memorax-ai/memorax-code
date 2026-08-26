@@ -6,19 +6,15 @@ import {
   clientTraceConfigFromEnv,
 } from "../trace/config.js";
 import { recordTraceEvent } from "../trace/store.js";
-import { memoryViewerObservabilityHook } from "../viewer/projection/observability.js";
 
 export function createBackendMemoryObservability(
   memoraxCodeHome: string,
   existingHook?: MemoryObservabilityHook,
   env: Record<string, string | undefined> = process.env,
-  additionalDefaultHooks: readonly MemoryObservabilityHook[] = [],
 ): MemoryObservabilityHook | undefined {
   if (existingHook) return existingHook;
   const effectiveEnv = { ...env, MEMORAX_CODE_HOME: memoraxCodeHome };
   return composeMemoryObservabilityHooks([
-    ...additionalDefaultHooks,
-    memoryViewerObservabilityHook(),
     sessionTraceObservabilityHook(memoraxCodeHome, effectiveEnv),
   ]);
 }

@@ -42,6 +42,7 @@ test("Claude UserPromptSubmit retrieves memory context with the submitted prompt
   const recorder = await listenRecorder({
     ok: true,
     additionalContext: "Hidden MemoraX Code external memory context.\n\nRemember the Hook boundary.",
+    userNotice: "Your MemoraX trial quota is running low.",
   });
   try {
     const result = await runHook({
@@ -61,6 +62,7 @@ test("Claude UserPromptSubmit retrieves memory context with the submitted prompt
     assert.equal(result.code, 0, result.stderr);
     assert.equal(result.stderr, "");
     assert.deepEqual(JSON.parse(result.stdout), {
+      systemMessage: "Your MemoraX trial quota is running low.",
       hookSpecificOutput: {
         hookEventName: "UserPromptSubmit",
         additionalContext: "Hidden MemoraX Code external memory context.\n\nRemember the Hook boundary.",

@@ -117,12 +117,6 @@ mkdir -p \
   "$MEMORAX_CODE_HOME"
 
 printf '%s\n' \
-  '[clients]' \
-  'codex = false' \
-  'claude = false' \
-  >"$MEMORAX_CODE_HOME/config.toml"
-
-printf '%s\n' \
   'storage: ./storage' \
   'auth:' \
   '  htpasswd:' \
@@ -171,7 +165,7 @@ npm publish "$baseline_tarball" --access public --tag "$update_channel" --loglev
 npm publish "$next_tarball" --access public --tag "$update_channel" --loglevel warn
 
 cd "$workspace"
-npm install -g "@memorax/memorax-code@$baseline_version" --foreground-scripts --loglevel warn
+npm install -g "@memorax/memorax-code@$baseline_version" --loglevel warn
 
 package_install_root="$npm_prefix/lib/node_modules/@memorax/memorax-code"
 memorax_code_bin="$npm_prefix/bin/memorax-code"
@@ -184,6 +178,59 @@ for command in memorax-code memorax-cli memorax-code-backend memorax-code-codex 
   test -x "$npm_prefix/bin/$command"
   "$npm_prefix/bin/$command" --help >/dev/null
 done
+
+test ! -e "$MEMORAX_CODE_HOME/config.toml"
+test ! -e "$MEMORAX_CODE_HOME/runtime/setup/setup-completion.json"
+test ! -e "$MEMORAX_CODE_HOME/runtime/backend/backend.pid.json"
+test ! -e "$MEMORAX_CODE_HOME/runtime/install/package-transition.json"
+if "$memorax_code_bin" >"$isolated_root/before-setup.stdout" 2>"$isolated_root/before-setup.stderr"; then
+  echo "Linux lifecycle E2E: no-argument CLI unexpectedly accepted incomplete setup" >&2
+  exit 1
+fi
+grep -Fq 'setup has not been completed' "$isolated_root/before-setup.stderr"
+
+printf '%s\n' 'linux-e2e-user' 'linux-e2e-key' | \
+  MEMORAX_CODE_SETUP_ASSUME_INTERACTIVE=1 \
+  MEMORAX_CODE_SKIP_CODEX_PLUGIN_INSTALL=1 \
+  MEMORAX_CODE_SKIP_CLAUDE_ADAPTER_INSTALL=1 \
+  MEMORAX_CODE_SKIP_OPENCODE_ADAPTER_INSTALL=1 \
+  "$memorax_code_bin" setup --existing-account \
+    >"$isolated_root/setup.stdout" 2>"$isolated_root/setup.stderr"
+node --input-type=module - "$MEMORAX_CODE_HOME/config.toml" <<'NODE_DISABLE_DSH'
+import { readFileSync, writeFileSync } from "node:fs";
+
+const path = process.argv[2];
+const source = readFileSync(path, "utf8");
+const updated = source.replace(/^dsh = true\b.*$/m, "dsh = false # Disabled for the stopped-reinstall lifecycle check.");
+if (updated === source) throw new Error("Linux lifecycle E2E could not disable DSH in generated config");
+writeFileSync(path, updated, { mode: 0o600 });
+NODE_DISABLE_DSH
+test -f "$MEMORAX_CODE_HOME/config.toml"
+test -f "$MEMORAX_CODE_HOME/runtime/setup/setup-completion.json"
+test -f "$MEMORAX_CODE_HOME/runtime/backend/backend.pid.json"
+test ! -e "$MEMORAX_CODE_HOME/runtime/install/package-transition.json"
+node --input-type=module - \
+  "$MEMORAX_CODE_HOME/config.toml" \
+  "$MEMORAX_CODE_HOME/runtime/setup/setup-completion.json" \
+  "$baseline_version" <<'NODE'
+import { readFileSync } from "node:fs";
+
+const config = readFileSync(process.argv[2], "utf8");
+const completion = JSON.parse(readFileSync(process.argv[3], "utf8"));
+if (!config.includes('user_id = "linux-e2e-user"')
+  || !config.includes('api_key = "linux-e2e-key"')
+  || !config.includes("codex = false")
+  || !config.includes("claude = false")
+  || !config.includes("dsh = false")
+  || !config.includes("opencode = false")) {
+  throw new Error("explicit setup did not write the expected isolated configuration");
+}
+if (completion?.version !== 1
+  || completion?.state !== "complete"
+  || completion?.completedByVersion !== process.argv[4]) {
+  throw new Error("explicit setup did not commit the expected completion record");
+}
+NODE
 
 printf '\n[linux_e2e_sentinel]\nvalue = "preserve-v1"\n' \
   >>"$MEMORAX_CODE_HOME/config.toml"
@@ -251,6 +298,13 @@ NODE
 backend_state="$MEMORAX_CODE_HOME/runtime/backend/backend.pid.json"
 "$memorax_code_bin" stop --json --clients none --port "$backend_port" \
   >"$isolated_root/initial-stop.json"
+test ! -e "$backend_state"
+
+npm install -g "@memorax/memorax-code@$baseline_version" --loglevel warn
+test ! -e "$backend_state"
+test -f "$MEMORAX_CODE_HOME/runtime/setup/setup-completion.json"
+test ! -e "$MEMORAX_CODE_HOME/runtime/install/package-transition.json"
+assert_port_released
 
 "$memorax_code_bin" start --json --clients none --port "$backend_port" \
   >"$isolated_root/start.json"
@@ -320,6 +374,7 @@ assert_port_released
 test -d "$package_install_root"
 test -x "$memorax_code_bin"
 sentinels_match
+test ! -e "$MEMORAX_CODE_HOME/runtime/setup/setup-completion.json"
 
 "$memorax_code_bin" start --json --clients none --port "$backend_port" \
   >"$isolated_root/final-start.json"
@@ -352,9 +407,13 @@ import { writeFileSync } from "node:fs";
 const [path, baselineVersion, updatedVersion] = process.argv.slice(2);
 const report = {
   npmInstallOk: true,
+  npmInstallStayedUninitialized: true,
   packageIdentityExact: true,
   productionDependencyReady: true,
   binShimsRunnable: true,
+  explicitSetupCompleted: true,
+  explicitSetupWroteConfig: true,
+  stoppedReinstallStayedStopped: true,
   backendStartHealthy: true,
   restartReplacedPid: true,
   stopRemovedProcess: true,
@@ -364,6 +423,7 @@ const report = {
   updatedBackendHealthy: true,
   partialUninstallKeptPackage: true,
   partialUninstallKeptState: true,
+  completeUninstallClearedSetupCompletion: true,
   fullUninstallRemovedPackage: true,
   fullUninstallRemovedProcess: true,
   fullUninstallReleasedPort: true,

@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 export const OPENCODE_REPO_MEMORY_AGENT = "memorax-code-repo-memory";
 
 const OWNED_SERVER_USERNAME = "memorax-code";
+const OWNED_SERVER_DATABASE = ":memory:";
 const DEFAULT_SERVER_START_TIMEOUT_MS = 20_000;
 const DEFAULT_SERVER_STOP_TIMEOUT_MS = 5_000;
 const MAX_SERVER_START_OUTPUT = 8_192;
@@ -155,6 +156,7 @@ async function startOwnedOpenCodeServer(input) {
     cwd: input.directory,
     env: {
       ...input.env,
+      OPENCODE_DB: OWNED_SERVER_DATABASE,
       OPENCODE_SERVER_USERNAME: username,
       OPENCODE_SERVER_PASSWORD: password,
     },

@@ -40,6 +40,45 @@ test("chat.message retrieves memory and injects it into the system prompt", asyn
   });
 });
 
+test("chat.message shows userNotice without blocking or injecting it into model context", async () => {
+  const toastCalls = [];
+  const plugin = createPluginWithoutReminders({
+    backendConnection: { url: "http://127.0.0.1:8787" },
+    fetchImpl: responseSequence([], [{
+      ok: true,
+      additionalContext: "Retrieved memory context.",
+      userNotice: "Quota reminder: Memory search has 10% or less remaining.",
+    }]),
+  });
+  const hooks = await plugin(pluginInput({
+    client: {
+      session: { async messages() { return { data: [] }; } },
+      tui: {
+        showToast(options) {
+          toastCalls.push(options);
+          return new Promise(() => {});
+        },
+      },
+    },
+  }));
+  const output = promptOutput("user-quota", "Recall memory.", "Existing system context");
+
+  await hooks["chat.message"]({ sessionID: "session-quota" }, output);
+
+  assert.equal(output.message.system, "Existing system context\n\nRetrieved memory context.");
+  assert.doesNotMatch(output.message.system, /Quota reminder/);
+  assert.deepEqual(toastCalls, [{
+    body: {
+      title: "MemoraX Code",
+      message: "Quota reminder: Memory search has 10% or less remaining.",
+      variant: "warning",
+      duration: 10_000,
+    },
+    query: { directory: "/repo/directory" },
+    throwOnError: true,
+  }]);
+});
+
 test("repo-scoped reminder builders require a Backend-authorized worktree", async () => {
   const evaluations = [];
   const plugin = createMemoraxOpenCodePlugin({
@@ -570,6 +609,111 @@ test("idle reads authoritative SDK messages and dispose drains the pending write
   });
 });
 
+test("idle follows an OpenCode compaction continuation back to the original pending turn", async () => {
+  const requests = [];
+  const messages = compactedMessages();
+  const plugin = createPluginWithoutReminders({
+    backendConnection: { url: "http://127.0.0.1:8787" },
+    fetchImpl: responseSequence(requests, [{ ok: true }, { ok: true }]),
+  });
+  const hooks = await plugin(pluginInput({
+    client: { session: { async messages() { return { data: messages }; } } },
+  }));
+
+  await hooks["chat.message"](
+    { sessionID: "session-compacted-turn" },
+    promptOutput("user-original", "Implement the requested change."),
+  );
+  hooks.event(sessionIdleEvent("session-compacted-turn"));
+  await hooks.dispose();
+
+  assert.equal(requests.length, 2);
+  assert.equal(requests[1].body.userMessageId, "user-original");
+  assert.equal(requests[1].body.assistantMessageId, "assistant-final");
+  assert.deepEqual(
+    requests[1].body.messages.map((message) => message.info.id),
+    ["user-original", "assistant-tail", "user-compaction", "user-continuation", "assistant-final"],
+  );
+  assert.deepEqual(requests[1].body.messages[1], {
+    info: {
+      id: "assistant-tail",
+      sessionID: "session-compacted-turn",
+      role: "assistant",
+      parentID: "user-original",
+    },
+    parts: [],
+  });
+  assert.equal(messages[1].parts[0].type, "tool", "native SDK messages remain unchanged");
+});
+
+test("malformed compaction records remain pending until the SDK lineage is complete", async () => {
+  for (const [name, mutate] of [
+    ["missing tail id", (message) => { delete message.parts[0].tail_start_id; }],
+    ["blank tail id", (message) => { message.parts[0].tail_start_id = " "; }],
+    ["duplicate compaction part", (message) => { message.parts.push({ ...message.parts[0] }); }],
+  ]) {
+    const requests = [];
+    const messages = compactedMessages();
+    mutate(messages[2]);
+    const plugin = createPluginWithoutReminders({
+      backendConnection: { url: "http://127.0.0.1:8787" },
+      fetchImpl: responseSequence(requests, [{ ok: true }, { ok: true }]),
+    });
+    const hooks = await plugin(pluginInput({
+      client: { session: { async messages() { return { data: messages }; } } },
+    }));
+
+    await hooks["chat.message"](
+      { sessionID: "session-compacted-turn" },
+      promptOutput("user-original", "Implement the requested change."),
+    );
+    hooks.event(sessionIdleEvent("session-compacted-turn"));
+    await hooks.dispose();
+
+    assert.deepEqual(
+      requests.map((request) => new URL(request.url).pathname),
+      ["/memory/turn-start"],
+      name,
+    );
+
+    messages[2] = compactedMessages()[2];
+    hooks.event(sessionIdleEvent("session-compacted-turn"));
+    await hooks.dispose();
+
+    assert.equal(requests.length, 2, name);
+    assert.equal(requests[1].body.assistantMessageId, "assistant-final", name);
+  }
+});
+
+test("message.updated finalizes an interrupted compaction continuation", async () => {
+  const requests = [];
+  const messages = compactedMessages();
+  const assistant = messages.at(-1);
+  assistant.info.error = { name: "MessageAbortedError" };
+  assistant.parts = [];
+  const plugin = createPluginWithoutReminders({
+    backendConnection: { url: "http://127.0.0.1:8787" },
+    fetchImpl: responseSequence(requests, [
+      { ok: true },
+      { ok: true, scheduled: false, reason: "interrupted" },
+    ]),
+  });
+  const hooks = await plugin(pluginInput({
+    client: { session: { async messages() { return { data: messages }; } } },
+  }));
+
+  await hooks["chat.message"](
+    { sessionID: "session-compacted-turn" },
+    promptOutput("user-original", "Implement the requested change."),
+  );
+  hooks.event(messageUpdatedEvent(assistant.info));
+  await hooks.dispose();
+
+  assert.equal(requests.length, 2);
+  assert.equal(requests[1].body.userMessageId, "user-original");
+  assert.equal(requests[1].body.assistantMessageId, "assistant-final");
+});
+
 test("idle discards HTTP 413 without starving a runtime-closed retry", async () => {
   const requests = [];
   const names = ["oversized", "retry"];
@@ -630,7 +774,7 @@ test("idle discards HTTP 413 without starving a runtime-closed retry", async () 
   );
 });
 
-test("message.updated finalizes only MessageAbortedError and serializes with idle", async () => {
+test("message.updated finalizes MessageAbortedError and serializes with idle", async () => {
   const requests = [];
   let clientCalls = 0;
   let markIdleStarted;
@@ -678,14 +822,6 @@ test("message.updated finalizes only MessageAbortedError and serializes with idl
     { sessionID: "session-interrupted" },
     promptOutput("user-interrupted", "Stop this Turn."),
   );
-  hooks.event(messageUpdatedEvent({
-    ...assistantInfo,
-    id: "assistant-other-error",
-    error: { name: "UnknownError" },
-  }));
-  await delay(0);
-  assert.equal(clientCalls, 0);
-
   hooks.event(sessionIdleEvent("session-interrupted"));
   await idleStarted;
   const abortEvent = messageUpdatedEvent(assistantInfo);
@@ -704,6 +840,44 @@ test("message.updated finalizes only MessageAbortedError and serializes with idl
     "/memory/writeback",
   ]);
   assert.deepEqual(requests[1].body.messages, interruptedMessages);
+});
+
+test("message.updated closes an explicit provider error without writeback", async () => {
+  const requests = [];
+  const assistantInfo = {
+    id: "assistant-provider-error",
+    role: "assistant",
+    sessionID: "session-provider-error",
+    parentID: "user-provider-error",
+    time: { completed: 123 },
+    error: { name: "UnknownError" },
+  };
+  const messages = [
+    {
+      info: { id: "user-provider-error", role: "user", sessionID: "session-provider-error" },
+      parts: [{ type: "text", text: "Run the request." }],
+    },
+    { info: assistantInfo, parts: [] },
+  ];
+  const hooks = await createPluginWithoutReminders({
+    backendConnection: { url: "http://127.0.0.1:8787" },
+    fetchImpl: responseSequence(requests, [
+      { ok: true },
+      { ok: true, scheduled: false, reason: "interrupted" },
+    ]),
+  })(pluginInput({
+    client: { session: { async messages() { return { data: messages }; } } },
+  }));
+
+  await hooks["chat.message"](
+    { sessionID: "session-provider-error" },
+    promptOutput("user-provider-error", "Run the request."),
+  );
+  hooks.event(messageUpdatedEvent(assistantInfo));
+  await hooks.dispose();
+
+  assert.equal(requests.length, 2);
+  assert.equal(requests[1].body.assistantMessageId, "assistant-provider-error");
 });
 
 function pluginInput(overrides = {}) {
@@ -737,6 +911,73 @@ function promptOutput(id, text, system) {
     message: { id, ...(system ? { system } : {}) },
     parts: [{ type: "text", text }],
   };
+}
+
+function compactedMessages() {
+  const sessionID = "session-compacted-turn";
+  const text = (messageID, value, extra = {}) => ({
+    id: `${messageID}-text`,
+    sessionID,
+    messageID,
+    type: "text",
+    text: value,
+    ...extra,
+  });
+  return [
+    {
+      info: { id: "user-original", sessionID, role: "user", time: { created: 1 } },
+      parts: [text("user-original", "Implement the requested change.")],
+    },
+    {
+      info: {
+        id: "assistant-tail",
+        sessionID,
+        role: "assistant",
+        parentID: "user-original",
+        time: { created: 2, completed: 3 },
+      },
+      parts: [{ id: "assistant-tail-tool", sessionID, messageID: "assistant-tail", type: "tool" }],
+    },
+    {
+      info: { id: "user-compaction", sessionID, role: "user", time: { created: 4 } },
+      parts: [{
+        id: "user-compaction-part",
+        sessionID,
+        messageID: "user-compaction",
+        type: "compaction",
+        auto: true,
+        tail_start_id: "assistant-tail",
+      }],
+    },
+    {
+      info: {
+        id: "assistant-summary",
+        sessionID,
+        role: "assistant",
+        parentID: "user-compaction",
+        summary: true,
+        time: { created: 5, completed: 6 },
+      },
+      parts: [text("assistant-summary", "Internal summary.")],
+    },
+    {
+      info: { id: "user-continuation", sessionID, role: "user", time: { created: 7 } },
+      parts: [text("user-continuation", "Continue.", {
+        synthetic: true,
+        metadata: { compaction_continue: true },
+      })],
+    },
+    {
+      info: {
+        id: "assistant-final",
+        sessionID,
+        role: "assistant",
+        parentID: "user-continuation",
+        time: { created: 8, completed: 9 },
+      },
+      parts: [text("assistant-final", "Implemented and verified.")],
+    },
+  ];
 }
 
 function memoryResponse(requests) {

@@ -254,14 +254,17 @@ test("service spawn error and missing PID fail before writing state", async (t) 
         const child = new EventEmitter();
         child.pid = undefined;
         child.unref = () => undefined;
+        let spawnOptions;
         const result = await startBackendService({ home, timeoutMs: 50 }, {
-          spawnProcess: () => {
+          spawnProcess: (_command, _args, options) => {
+            spawnOptions = options;
             process.nextTick(() => emit(child));
             return child;
           },
         });
         assert.equal(result.ok, false);
         assert.match(result.error, /failed to spawn Backend process/);
+        assert.equal(spawnOptions.cwd, join(home, "runtime", "backend"));
         assert.equal(readBackendServiceState({ home }), undefined);
         if (process.platform !== "win32") {
           assert.equal((await stat(join(home, "runtime", "backend"))).mode & 0o777, 0o700);

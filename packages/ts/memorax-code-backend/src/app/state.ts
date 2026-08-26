@@ -1,10 +1,9 @@
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { backendEnv } from "../config/backend-env.js";
 
 export type BackendState = {
   sessionHome: string;
-  claudeProjectsRoot?: string | false;
   authToken?: string;
   security: BackendSecurityConfig;
 };
@@ -18,7 +17,6 @@ export type BackendSecurityConfig = {
 
 export type BackendStateOptions = {
   sessionHome?: string;
-  claudeProjectsRoot?: string | false;
   authToken?: string;
   security?: Partial<BackendSecurityConfig>;
 };
@@ -26,8 +24,6 @@ export type BackendStateOptions = {
 export function createBackendState(host = "127.0.0.1", options: BackendStateOptions = {}): BackendState {
   const authToken = options.authToken ?? backendEnv("TOKEN");
   const sessionHome = options.sessionHome ?? process.env.MEMORAX_CODE_HOME ?? join(homedir(), ".memorax-code");
-  const claudeProjectsRoot = options.claudeProjectsRoot
-    ?? memoryViewerClaudeProjectsRootFromEnv(process.env);
   const security = {
     ...envBackendSecurity(),
     ...options.security,
@@ -35,19 +31,9 @@ export function createBackendState(host = "127.0.0.1", options: BackendStateOpti
   validateBackendSecurity(host, authToken, security);
   return {
     sessionHome,
-    claudeProjectsRoot,
     authToken,
     security,
   };
-}
-
-export function memoryViewerClaudeProjectsRootFromEnv(
-  env: Record<string, string | undefined>,
-): string | false | undefined {
-  const configured = env.MEMORAX_CODE_MEMORY_VIEWER_CLAUDE_PROJECTS_ROOT?.trim();
-  if (!configured) return undefined;
-  if (configured === "disabled") return false;
-  return resolve(configured);
 }
 
 function envBackendSecurity(): BackendSecurityConfig {

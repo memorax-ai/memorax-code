@@ -142,11 +142,13 @@ test("Windows process command probes report unavailable PowerShell without spawn
   assert.equal(spawned, false);
 });
 
-test("POSIX process command probes retain the two-second budget", () => {
+test("non-Linux POSIX process command probes retain the two-second budget", () => {
+  let command;
   let timeout;
   const result = probeProcessCommandLine(4242, {
-    platform: "linux",
-    spawnSync: (_command, _args, options) => {
+    platform: "darwin",
+    spawnSync: (invokedCommand, _args, options) => {
+      command = invokedCommand;
       timeout = options.timeout;
       return {
         status: 0,
@@ -157,5 +159,63 @@ test("POSIX process command probes retain the two-second budget", () => {
   });
 
   assert.equal(result.status, "ok");
+  assert.equal(command, "ps");
   assert.equal(timeout, 2_000);
+});
+
+test("Linux process command probes read the kernel argv without spawning ps", () => {
+  let requestedPath;
+  let spawned = false;
+  const result = probeProcessCommandLine(4242, {
+    platform: "linux",
+    readFileSync: (path) => {
+      requestedPath = path;
+      return Buffer.from([
+        "/usr/bin/node",
+        "/package/memorax-code-backend/dist/service-entrypoint.js",
+        "--memorax-code-backend-instance",
+        "expected-instance",
+        "",
+      ].join("\0"));
+    },
+    spawnSync: () => {
+      spawned = true;
+      throw new Error("must not spawn");
+    },
+  });
+
+  assert.deepEqual(result, {
+    status: "ok",
+    commandLine: "/usr/bin/node /package/memorax-code-backend/dist/service-entrypoint.js --memorax-code-backend-instance expected-instance",
+  });
+  assert.equal(requestedPath, "/proc/4242/cmdline");
+  assert.equal(spawned, false);
+  assert.equal(managedServiceCommandLine(result.commandLine, "expected-instance"), true);
+});
+
+test("Linux process command probes fail closed when procfs is unavailable", () => {
+  const result = probeProcessCommandLine(4242, {
+    platform: "linux",
+    readFileSync: () => {
+      throw Object.assign(new Error("procfs unavailable"), { code: "ENOENT" });
+    },
+  });
+
+  assert.deepEqual(result, {
+    status: "inconclusive",
+    reason: "read_error",
+    timeoutMs: 2_000,
+    code: "ENOENT",
+  });
+});
+
+test("Linux process command probes reject an empty kernel argv", () => {
+  for (const commandLine of [Buffer.alloc(0), Buffer.from("\0")]) {
+    const result = probeProcessCommandLine(4242, {
+      platform: "linux",
+      readFileSync: () => commandLine,
+    });
+
+    assert.deepEqual(result, { status: "not_found" });
+  }
 });

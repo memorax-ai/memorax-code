@@ -4,7 +4,10 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runRepoMemoryJob } from "../memorax-code-adapter-common/src/repo-memory/repo-memory-job-supervisor.mjs";
 import { evaluateRepository } from "../memorax-code-adapter-common/src/repo-memory/repo-memory-update-policy-evaluator.mjs";
-import { requireEnabledDshRuntime } from "../src/runtime-state.mjs";
+import {
+  buildDshCommand,
+  requireEnabledDshRuntime,
+} from "../src/runtime-state.mjs";
 
 const ADAPTER_PACKAGE_NAME = "@memorax-code/dsh-memorax-code";
 const HEADLESS_BUNDLE_NAME = "@deepseek-ai/dsh-headless";
@@ -23,7 +26,7 @@ try {
     validatorPath: resolve(pluginRoot, "skills/memorax-code/scripts/validate_memory.py"),
     evaluateRepository,
     createCommand({ prompt }) {
-      return [runtime.dshCommand, "--profile", profile, prompt];
+      return buildDshCommand(runtime.dshCommand, ["--profile", profile, prompt]);
     },
   });
   process.stdout.write(`${JSON.stringify(payload)}\n`);

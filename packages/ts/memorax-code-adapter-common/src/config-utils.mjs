@@ -127,14 +127,17 @@ export async function withJsonFileLockAsync(path, operation, options = {}) {
   const timeoutMs = positiveInteger(options.timeoutMs, JSON_FILE_LOCK_TIMEOUT_MS);
   const staleMs = positiveInteger(options.staleMs, JSON_FILE_LOCK_STALE_MS);
   const retryMs = positiveInteger(options.retryMs, JSON_FILE_LOCK_RETRY_MS);
+  const signal = options.signal;
   const lockPath = `${path}.lock`;
   const ownerId = `${process.pid}:${randomUUID()}`;
   const deadline = Date.now() + timeoutMs;
   const observedProcessStarts = new Map();
   const directory = dirname(path);
+  throwIfJsonFileLockAborted(signal, path, lockPath);
   ensurePrivateDirectory(directory, { durableBoundary: directory });
 
   while (!tryAcquireJsonFileLock(lockPath, ownerId)) {
+    throwIfJsonFileLockAborted(signal, path, lockPath);
     if (removeStaleJsonFileLock(lockPath, staleMs, observedProcessStarts)) continue;
     const remainingMs = deadline - Date.now();
     if (remainingMs <= 0) {
@@ -144,10 +147,11 @@ export async function withJsonFileLockAsync(path, operation, options = {}) {
       error.lockPath = lockPath;
       throw error;
     }
-    await sleep(Math.min(retryMs, remainingMs));
+    await sleep(Math.min(retryMs, remainingMs), signal, path, lockPath);
   }
 
   try {
+    throwIfJsonFileLockAborted(signal, path, lockPath);
     return await operation();
   } finally {
     releaseJsonFileLock(lockPath, ownerId);
@@ -381,8 +385,37 @@ function sleepSync(milliseconds) {
   Atomics.wait(LOCK_SLEEP_BUFFER, 0, 0, Math.max(1, Math.trunc(milliseconds)));
 }
 
-function sleep(milliseconds) {
-  return new Promise((resolve) => setTimeout(resolve, Math.max(1, Math.trunc(milliseconds))));
+function sleep(milliseconds, signal, path, lockPath) {
+  const delayMs = Math.max(1, Math.trunc(milliseconds));
+  if (!signal) return new Promise((resolve) => setTimeout(resolve, delayMs));
+  throwIfJsonFileLockAborted(signal, path, lockPath);
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      signal.removeEventListener?.("abort", onAbort);
+      if (error) reject(error);
+      else resolve();
+    };
+    const timeout = setTimeout(() => finish(), delayMs);
+    const onAbort = () => finish(jsonFileLockAbortError(path, lockPath));
+    signal.addEventListener?.("abort", onAbort, { once: true });
+    if (signal.aborted) onAbort();
+  });
+}
+
+function throwIfJsonFileLockAborted(signal, path, lockPath) {
+  if (signal?.aborted) throw jsonFileLockAbortError(path, lockPath);
+}
+
+function jsonFileLockAbortError(path, lockPath) {
+  const error = new Error(`aborted while waiting for JSON state lock: ${lockPath}`);
+  error.code = "JSON_FILE_LOCK_ABORTED";
+  error.path = path;
+  error.lockPath = lockPath;
+  return error;
 }
 
 function positiveInteger(value, fallback) {

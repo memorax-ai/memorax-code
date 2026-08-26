@@ -2,6 +2,9 @@
 import { runMemoryCli } from "./memory/cli.js";
 
 runMemoryCli(process.argv.slice(2)).then((result) => {
+  if (!process.argv.includes("--json") && result.ok && result.quotaNotice) {
+    console.warn(result.quotaNotice);
+  }
   if (!process.argv.includes("--json") && result.ok && result.action === "memory.search") {
     if (result.userNotice) console.warn(`Warning: ${result.userNotice}`);
     console.log(result.answer?.trim() || "No memory context returned.");

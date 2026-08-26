@@ -3,7 +3,6 @@ import type { BackendState } from "../../app/state.js";
 import { backendEnv } from "../../config/backend-env.js";
 
 const DEFAULT_MAX_JSON_BODY_BYTES = 16 * 1024 * 1024;
-const MEMORY_VIEWER_SESSION_COOKIE = "memorax_code_memory_viewer_session";
 
 export class HttpRequestError extends Error {
   constructor(readonly statusCode: number, message: string) {
@@ -60,47 +59,7 @@ export function authorized(state: BackendState, req: IncomingMessage, url: URL):
     ?? (typeof headerToken === "string" ? headerToken : undefined)
     ?? url.searchParams.get("token")
     ?? undefined;
-  if (token === state.authToken) return true;
-  if (
-    url.pathname === "/memory-viewer"
-    || url.pathname.startsWith("/memory-viewer/")
-  ) {
-    const viewerCookie = cookieValue(req.headers.cookie, MEMORY_VIEWER_SESSION_COOKIE);
-    if (viewerCookie === state.authToken) return true;
-  }
-  return false;
-}
-
-export function memoryViewerSessionCookieHeader(
-  state: BackendState,
-  req: Pick<IncomingMessage, "method" | "headers" | "socket">,
-  url: URL,
-): string | undefined {
-  if (
-    !state.authToken
-    || req.method !== "GET"
-    || url.pathname !== "/memory-viewer"
-  ) return undefined;
-  const supplied = url.searchParams.get("token");
-  const authorization = req.headers.authorization;
-  const bearer = authorization?.startsWith("Bearer ") ? authorization.slice("Bearer ".length) : undefined;
-  if (supplied !== state.authToken && bearer !== state.authToken) return undefined;
-  const secure = Boolean((req.socket as { encrypted?: boolean } | undefined)?.encrypted);
-  return `${MEMORY_VIEWER_SESSION_COOKIE}=${encodeURIComponent(state.authToken)}; HttpOnly; SameSite=Strict; Path=/memory-viewer${secure ? "; Secure" : ""}`;
-}
-
-function cookieValue(header: string | undefined, name: string): string | undefined {
-  if (!header) return undefined;
-  for (const part of header.split(";")) {
-    const [rawName, ...rawValue] = part.trim().split("=");
-    if (rawName !== name) continue;
-    try {
-      return decodeURIComponent(rawValue.join("="));
-    } catch {
-      return undefined;
-    }
-  }
-  return undefined;
+  return token === state.authToken;
 }
 
 export function statusCodeFromError(error: unknown): number {

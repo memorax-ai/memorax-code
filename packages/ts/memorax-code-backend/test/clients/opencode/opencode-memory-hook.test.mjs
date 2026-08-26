@@ -103,7 +103,6 @@ test("OpenCode SDK messages materialize only an exact completed normal turn", ()
     ["parent mismatch", (messages) => { messages[1].info.parentID = "other-user"; }, "message_identity_mismatch"],
     ["session mismatch", (messages) => { messages[1].info.sessionID = "other-session"; }, "message_identity_mismatch"],
     ["incomplete assistant", (messages) => { delete messages[1].info.time.completed; }, "assistant_not_completed"],
-    ["other assistant error", (messages) => { messages[1].info.error = { name: "UnknownError" }; }, "assistant_error"],
     ["summary assistant", (messages) => { messages[1].info.summary = true; }, "summary_message"],
     ["compaction turn", (messages) => { messages[0].parts.push(part("compaction", "user-1")); }, "compaction_message"],
   ]) {
@@ -115,6 +114,83 @@ test("OpenCode SDK messages materialize only an exact completed normal turn", ()
       assistantMessageId: "assistant-1",
     }), { ok: false, reason }, name);
   }
+
+  const providerFailure = openCodeMessages();
+  providerFailure[1].info.error = { name: "UnknownError" };
+  providerFailure[1].parts = [];
+  assert.deepEqual(openCodeMessageTurn(providerFailure, {
+    sessionId: "session-1",
+    userMessageId: "user-1",
+    assistantMessageId: "assistant-1",
+  }), {
+    ok: true,
+    turn: {
+      sessionId: "session-1",
+      userMessageId: "user-1",
+      assistantMessageId: "assistant-1",
+      userPrompt: "OpenCode user prompt.",
+      assistantReply: "",
+      outcome: "interrupted",
+    },
+  });
+});
+
+test("OpenCode SDK messages materialize a completed compaction continuation as the original turn", () => {
+  const messages = compactedOpenCodeMessages();
+  assert.deepEqual(openCodeMessageTurn(messages, {
+    sessionId: "session-1",
+    userMessageId: "user-1",
+    assistantMessageId: "assistant-final",
+  }), {
+    ok: true,
+    turn: {
+      sessionId: "session-1",
+      userMessageId: "user-1",
+      assistantMessageId: "assistant-final",
+      userPrompt: "OpenCode user prompt.",
+      assistantReply: "OpenCode final reply.",
+      outcome: "completed",
+    },
+  });
+
+  assert.deepEqual(openCodeMessageTurn(messages, {
+    sessionId: "session-1",
+    userMessageId: "user-1",
+    assistantMessageId: "assistant-tail",
+  }), { ok: false, reason: "message_identity_mismatch" });
+
+  for (const [name, mutate] of [
+    ["unknown compaction tail", (input) => { input[2].parts[0].tail_start_id = "assistant-other"; }],
+    ["unmarked synthetic continuation", (input) => { delete input[3].parts[0].metadata; }],
+    ["unrelated final parent", (input) => { input[4].info.parentID = "user-other"; }],
+  ]) {
+    const invalid = compactedOpenCodeMessages();
+    mutate(invalid);
+    assert.deepEqual(openCodeMessageTurn(invalid, {
+      sessionId: "session-1",
+      userMessageId: "user-1",
+      assistantMessageId: "assistant-final",
+    }), { ok: false, reason: "message_identity_mismatch" }, name);
+  }
+
+  const interrupted = compactedOpenCodeMessages();
+  interrupted[4].info.error = { name: "MessageAbortedError" };
+  interrupted[4].parts = [];
+  assert.deepEqual(openCodeMessageTurn(interrupted, {
+    sessionId: "session-1",
+    userMessageId: "user-1",
+    assistantMessageId: "assistant-final",
+  }), {
+    ok: true,
+    turn: {
+      sessionId: "session-1",
+      userMessageId: "user-1",
+      assistantMessageId: "assistant-final",
+      userPrompt: "OpenCode user prompt.",
+      assistantReply: "",
+      outcome: "interrupted",
+    },
+  });
 });
 
 test("OpenCode finalizes an explicit MessageAbortedError without writeback", async () => {
@@ -175,9 +251,10 @@ test("OpenCode finalizes an explicit MessageAbortedError without writeback", asy
   }
 });
 
-test("OpenCode runtime reuses retrieval, scope, and automatic writeback", async () => {
+test("OpenCode runtime reuses retrieval, scope, writeback, and quota notices", async () => {
   const memoraxCodeHome = await mkdtemp(join(tmpdir(), "memorax-code-opencode-runtime-"));
   const requests = [];
+  let searchCalls = 0;
   const runtime = createOpenCodeMemoryHookRuntime({
     memoraxCodeHome,
     env: {
@@ -190,10 +267,12 @@ test("OpenCode runtime reuses retrieval, scope, and automatic writeback", async 
       MEMORAX_CODE_MEMORAX_API_KEY: "secret",
       MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
     },
+    claimQuotaNotice: async (_config, quota) => `${quota.featureCode}: ${quota.remaining}`,
     fetchImpl: async (url, init) => {
       const request = { url: String(url), body: JSON.parse(init.body) };
       requests.push(request);
       const searching = request.url.endsWith("/v1/memories/search");
+      if (searching) searchCalls += 1;
       return new Response(JSON.stringify(searching ? {
         success: true,
         data: {
@@ -205,10 +284,15 @@ test("OpenCode runtime reuses retrieval, scope, and automatic writeback", async 
             score: 0.9,
             metadata: { memory_type: "core" },
           }],
+          ...(searchCalls === 1 ? { balances: [quotaBalance("memory_search", 10)] } : {}),
         },
       } : {
         success: true,
-        data: { task_id: "writeback-1", status: "queued" },
+        data: {
+          task_id: "writeback-1",
+          status: "queued",
+          balances: [quotaBalance("memory_write", 9)],
+        },
       }), {
         status: 200,
         headers: { "content-type": "application/json" },
@@ -226,6 +310,8 @@ test("OpenCode runtime reuses retrieval, scope, and automatic writeback", async 
       workspaceKind: "project",
     });
     assert.match(start.additionalContext, /shared retrieval runtime/);
+    assert.equal(start.userNotice, "memory_search: 10");
+    assert.doesNotMatch(start.additionalContext, /memory_search/);
 
     assert.deepEqual(await runtime.writeback({
       version: 1,
@@ -246,6 +332,18 @@ test("OpenCode runtime reuses retrieval, scope, and automatic writeback", async 
       { role: "user", content: "OpenCode user prompt." },
       { role: "assistant", content: "OpenCode assistant reply." },
     ]);
+
+    const next = await runtime.recordTurnStart({
+      version: 1,
+      client: "opencode",
+      sessionId: "session-1",
+      userMessageId: "user-2",
+      prompt: "OpenCode second prompt.",
+      cwd: TEST_WORKSPACE,
+      workspaceKind: "project",
+    });
+    assert.equal(next.userNotice, "memory_write: 9");
+    assert.doesNotMatch(next.additionalContext, /memory_write/);
   } finally {
     runtime.close();
     await rm(memoraxCodeHome, { recursive: true, force: true });
@@ -274,6 +372,71 @@ function openCodeMessages() {
       parts: [textPart("assistant-1", "OpenCode assistant reply.")],
     },
   ];
+}
+
+function compactedOpenCodeMessages() {
+  return [
+    openCodeMessages()[0],
+    {
+      info: {
+        id: "assistant-tail",
+        sessionID: "session-1",
+        role: "assistant",
+        parentID: "user-1",
+        time: { created: 2, completed: 3 },
+      },
+      parts: [],
+    },
+    {
+      info: {
+        id: "user-compaction",
+        sessionID: "session-1",
+        role: "user",
+        time: { created: 4 },
+      },
+      parts: [{
+        ...part("compaction", "user-compaction"),
+        auto: true,
+        tail_start_id: "assistant-tail",
+      }],
+    },
+    {
+      info: {
+        id: "user-continuation",
+        sessionID: "session-1",
+        role: "user",
+        time: { created: 5 },
+      },
+      parts: [{
+        ...textPart("user-continuation", "Continue."),
+        synthetic: true,
+        metadata: { compaction_continue: true },
+      }],
+    },
+    {
+      info: {
+        id: "assistant-final",
+        sessionID: "session-1",
+        role: "assistant",
+        parentID: "user-continuation",
+        time: { created: 6, completed: 7 },
+      },
+      parts: [textPart("assistant-final", "OpenCode final reply.")],
+    },
+  ];
+}
+
+function quotaBalance(featureCode, remaining) {
+  return {
+    product_code: "memory_api",
+    feature_code: featureCode,
+    spec_key: "calls",
+    quota_unit: "times",
+    quota_limit: 100,
+    reserved: 0,
+    consumed: 0,
+    remaining,
+  };
 }
 
 function textPart(messageID, text) {
