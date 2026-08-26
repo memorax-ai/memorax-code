@@ -26,7 +26,12 @@ try {
   if (!result) throw new Error(`unknown command: ${parsed.command}`);
   if (parsed.json) console.log(JSON.stringify(result, null, 2));
   else console.log(`${result.action}: ${result.ok ? "ok" : "failed"}\nhome: ${result.codeBuddyHome ?? parsed.home}`);
-  process.exit(result.ok ? 0 : 1);
+  const ready = result.ok === true
+    && result.installed === true
+    && result.enabled === true
+    && result.marketplaceReady === true
+    && result.codebuddySkills?.ok === true;
+  process.exit(parsed.command === "status" ? (ready ? 0 : 1) : (result.ok ? 0 : 1));
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error));
   process.exit(1);

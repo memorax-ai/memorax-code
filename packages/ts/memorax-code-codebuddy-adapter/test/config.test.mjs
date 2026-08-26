@@ -65,6 +65,23 @@ test("installs and removes an isolated CodeBuddy plugin registry entry", async (
   assert.equal(await readFile(join(home, "skills", "user-skill", "SKILL.md"), "utf8"), "user-owned\n");
 });
 
+test("disable and remove are no-ops for an uninstalled CodeBuddy home", async () => {
+  const home = await mkdtemp(join(tmpdir(), "memorax-codebuddy-empty-"));
+  const disabled = await disableCodeBuddyAdapter({ codeBuddyHome: home });
+  assert.equal(disabled.installed, false);
+  assert.equal(await exists(codeBuddySettingsPath(home)), false);
+  const removed = await removeCodeBuddyPluginInstallation({ codeBuddyHome: home });
+  assert.equal(removed.removed, false);
+  assert.equal(await exists(join(home, "plugins", "installed_plugins.json")), false);
+});
+
+test("malformed CodeBuddy registry fails closed", async () => {
+  const home = await mkdtemp(join(tmpdir(), "memorax-codebuddy-malformed-"));
+  await mkdir(join(home, "plugins"), { recursive: true });
+  await writeFile(join(home, "plugins", "installed_plugins.json"), "not-json\n");
+  await assert.rejects(() => enableCodeBuddyAdapter({ codeBuddyHome: home }), /JSON|Unexpected token/);
+});
+
 async function exists(path) {
   try {
     await stat(path);
