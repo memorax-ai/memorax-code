@@ -3,6 +3,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { unsupportedNodeVersionMessage } from "./node-version.mjs";
 import { ensureClaudeCommandEnv } from "./resolve-claude-command.mjs";
 import { ensureCodexCommandEnv } from "./resolve-codex-command.mjs";
+import { ensureCodeBuddyCommandEnv } from "./resolve-codebuddy-command.mjs";
 
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -45,6 +46,7 @@ export async function runBackendEntrypoint(relativeEntrypoint) {
   if (!ensureSupportedNodeRuntime()) return;
   ensureCodexCommandEnv();
   ensureClaudeCommandEnv();
+  ensureCodeBuddyCommandEnv();
   ensureBundledSkillEnv();
   ensureClaudeMarketplaceEnv();
   ensureInstallWatchdogEnv();
@@ -77,6 +79,13 @@ export async function runClaudeAdapterCli() {
 export async function runOpenCodeAdapterCli() {
   if (!ensureSupportedNodeRuntime()) return;
   const entrypoint = join(packageRoot, "lib", "memorax-code-opencode-adapter", "src", "cli.mjs");
+  await import(pathToFileURL(entrypoint).href);
+}
+
+export async function runCodeBuddyAdapterCli() {
+  if (!ensureSupportedNodeRuntime()) return;
+  ensureCodeBuddyCommandEnv();
+  const entrypoint = join(packageRoot, "lib", "memorax-code-codebuddy-adapter", "src", "cli.mjs");
   await import(pathToFileURL(entrypoint).href);
 }
 

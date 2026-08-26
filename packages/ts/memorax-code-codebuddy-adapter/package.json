@@ -1,0 +1,9 @@
+{
+  "name": "@memorax-code/codebuddy-adapter",
+  "version": "0.1.4",
+  "private": true,
+  "type": "module",
+  "description": "CodeBuddy and WorkBuddy Hook adapter for MemoraX Code memory services.",
+  "bin": { "memorax-code-codebuddy": "src/cli.mjs" },
+  "scripts": { "test": "node --test test/*.test.mjs" }
+}
