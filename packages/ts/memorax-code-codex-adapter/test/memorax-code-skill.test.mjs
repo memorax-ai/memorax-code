@@ -78,6 +78,10 @@ test("memorax-code references keep authority and operation boundaries explicit",
   assert.match(memoraxSearch, /Do not change the CLI working directory and retry/);
   assert.match(memoraxSearch, /`workspaceScopeFallbackReason: git_metadata_invalid`/);
   assert.match(memoraxSearch, /Present its `userNotice` once without pausing the current task/);
+  assert.match(memoraxSearch, /successful Search returns `quotaNotice`/);
+  assert.match(memoraxSearch, /present the complete reminder once and prominently/);
+  assert.match(memoraxSearch, /Do not reduce it to only a percentage/);
+  assert.match(memoraxSearch, /Never run `memorax-code account --show-mark-id` for the user/);
   assert.doesNotMatch(memoraxSearch, /--query-file/);
   assert.match(memoraxAdd, /CODE_AGENT_MEMORY/);
   assert.match(memoraxAdd, /In OpenCode, ask the agent to use the `memorax-code` skill by name/);
@@ -92,6 +96,10 @@ test("memorax-code references keep authority and operation boundaries explicit",
   assert.match(memoraxAdd, /Do not change the CLI working directory and retry/);
   assert.match(memoraxAdd, /`workspaceScopeFallbackReason: git_metadata_invalid`/);
   assert.match(memoraxAdd, /Present its `userNotice` once without pausing the current task/);
+  assert.match(memoraxAdd, /successful Add returns `quotaNotice`/);
+  assert.match(memoraxAdd, /present the complete reminder once and prominently/);
+  assert.match(memoraxAdd, /Do not reduce it to only a percentage/);
+  assert.match(memoraxAdd, /Never run `memorax-code account --show-mark-id` for the user/);
   assert.doesNotMatch(memoraxAdd, /--memory-file/);
   assert.match(repoRead, /## Retrieval Budget/);
   assert.match(repoRead, /Do not read repo memory again after `maintain` returns/);

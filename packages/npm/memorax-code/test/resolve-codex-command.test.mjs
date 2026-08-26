@@ -42,7 +42,7 @@ test("Codex command resolution preserves explicit overrides and PATH CLI precede
       platform: "darwin",
       applicationRoots: [join(root, "Applications")],
     }), { command: "codex", source: "path" });
-    assert.ok(appCommand.endsWith("ChatGPT.app/Contents/Resources/codex"));
+    assert.ok(appCommand.replaceAll("\\", "/").endsWith("ChatGPT.app/Contents/Resources/codex"));
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -106,7 +106,90 @@ test("Codex command resolution uses the runnable Windows App plugin runtime", ()
   assert.equal(calls.length, 1);
   assert.equal(calls[0].command, appCommand);
   assert.deepEqual(calls[0].args, ["--version"]);
-  assert.equal(calls[0].options.timeout, 10_000);
+  assert.equal(calls[0].options.timeout, 2_000);
+});
+
+test("Codex command resolution falls back from an inaccessible Windows PATH alias", () => {
+  const pathCommand = "C:\\Users\\tester\\AppData\\Local\\Microsoft\\WindowsApps\\codex.exe";
+  const appCommand = "C:\\Users\\tester\\.codex\\plugins\\.plugin-appserver\\codex.exe";
+  const pathCalls = [];
+  const appCalls = [];
+  const env = {
+    PATH: "C:\\Users\\tester\\AppData\\Local\\Microsoft\\WindowsApps",
+    PATHEXT: ".EXE;.CMD;.BAT;.COM",
+  };
+  const resolved = resolveCodexCommand({
+    env,
+    homeDir: "C:\\Users\\tester",
+    platform: "win32",
+    arch: "x64",
+    pathCommandAvailable: () => true,
+    vscodeExtensionRoots: [],
+    windowsAppProbe(command, args, options) {
+      appCalls.push({ command, args, options });
+      return { status: 0, stdout: "codex-cli 0.146.0-test\r\n", stderr: "" };
+    },
+    windowsAppRuntimePaths: [appCommand],
+    windowsPathExists: (candidate) => candidate === appCommand,
+    windowsPathProbe(command, args, options) {
+      pathCalls.push({ command, args, options });
+      if (command === "where.exe") {
+        return { status: 0, stdout: `${pathCommand}\r\n`, stderr: "" };
+      }
+      return {
+        status: null,
+        stdout: "",
+        stderr: "",
+        error: Object.assign(new Error("spawn EPERM"), { code: "EPERM" }),
+      };
+    },
+  });
+
+  assert.deepEqual(resolved, { command: appCommand, source: "app-bundled" });
+  assert.equal(pathCalls.length, 2);
+  assert.equal(pathCalls[0].command, "where.exe");
+  assert.deepEqual(pathCalls[0].args, ["codex"]);
+  assert.equal(pathCalls[1].command, pathCommand);
+  assert.deepEqual(pathCalls[1].args, ["--version"]);
+  assert.equal(pathCalls[1].options.timeout, 2_000);
+  assert.equal(appCalls.length, 1);
+  assert.equal(appCalls[0].command, appCommand);
+});
+
+test("Codex command resolution keeps a runnable Windows PATH command ahead of the App runtime", () => {
+  const pathCommand = "C:\\tools\\codex.exe";
+  const pathCalls = [];
+  let appProbeCount = 0;
+  const resolved = resolveCodexCommand({
+    env: {
+      PATH: "C:\\tools",
+      PATHEXT: ".EXE;.CMD;.BAT;.COM",
+    },
+    homeDir: "C:\\Users\\tester",
+    platform: "win32",
+    arch: "x64",
+    pathCommandAvailable: () => true,
+    vscodeExtensionRoots: [],
+    windowsAppProbe() {
+      appProbeCount += 1;
+      return { status: 0, stdout: "codex-cli app-test\r\n", stderr: "" };
+    },
+    windowsAppRuntimePaths: ["C:\\Users\\tester\\.codex\\plugins\\.plugin-appserver\\codex.exe"],
+    windowsPathExists: () => true,
+    windowsPathProbe(command, args, options) {
+      pathCalls.push({ command, args, options });
+      if (command === "where.exe") {
+        return { status: 0, stdout: `${pathCommand}\r\n`, stderr: "" };
+      }
+      return { status: 0, stdout: "codex-cli path-test\r\n", stderr: "" };
+    },
+  });
+
+  assert.deepEqual(resolved, { command: "codex", source: "path" });
+  assert.equal(pathCalls.length, 2);
+  assert.equal(pathCalls[1].command, pathCommand);
+  assert.equal(pathCalls[1].options.timeout, 2_000);
+  assert.equal(appProbeCount, 0);
 });
 
 test("Windows Codex App resolution rejects inaccessible and failing plugin runtimes", () => {

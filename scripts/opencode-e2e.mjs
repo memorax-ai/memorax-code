@@ -23,6 +23,8 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const OPENCODE_VERSION = "1.18.18";
 const PROMPT = "Reply with exactly: OpenCode E2E completed.";
 const REPLY = "OpenCode E2E completed.";
+const SECOND_PROMPT = "Reply with exactly: OpenCode E2E second turn completed.";
+const SECOND_REPLY = "OpenCode E2E second turn completed.";
 
 const root = await mkdtemp(join(tmpdir(), "memorax-code-opencode-e2e-"));
 const home = join(root, "home");
@@ -127,7 +129,6 @@ try {
   const opencode = process.platform === "win32"
     ? join(prefix, "node_modules", "opencode-ai", "bin", "opencode.exe")
     : join(binDir, "opencode");
-  await assertManagedArtifacts(openCodeConfigDir);
 
   const startReport = await runJson(memoraxCode.command, [
     ...memoraxCode.args,
@@ -139,6 +140,7 @@ try {
   ], { cwd: workspace, env });
   assert.equal(startReport.ok, true);
   assert.equal(startReport.opencodeAdapter?.enabled, true);
+  await assertManagedArtifacts(openCodeConfigDir);
 
   const config = {
     formatter: false,
@@ -171,7 +173,7 @@ try {
       },
     },
   };
-  const { stdout: openCodeOutput } = await run(opencode, [
+  const { stdout: openCodeOutput, stderr: openCodeError } = await run(opencode, [
     "run",
     "--format=json",
     "--model=test/test-model",
@@ -192,7 +194,32 @@ try {
   assert.equal(typeof sessionId, "string");
   assert.ok(sessionId);
   assert.match(openCodeRunText(runEvents), /OpenCode E2E completed/);
+  assert.doesNotMatch(openCodeError, /opencode quota reminder failed/);
   await waitFor(() => memoryStub.requests.some((request) => request.path === "/v1/memories/add"));
+
+  const { stdout: secondOpenCodeOutput, stderr: secondOpenCodeError } = await run(opencode, [
+    "run",
+    `--session=${sessionId}`,
+    "--format=json",
+    "--model=test/test-model",
+    "--print-logs",
+    ...SECOND_PROMPT.split(" "),
+  ], {
+    cwd: workspace,
+    closeStdin: true,
+    env: {
+      ...env,
+      PWD: workspace,
+      OPENCODE_CONFIG_CONTENT: JSON.stringify(config),
+    },
+    timeout: 60_000,
+  });
+  const secondRunEvents = parseJsonLines(secondOpenCodeOutput);
+  assert.match(openCodeRunText(secondRunEvents), /OpenCode E2E second turn completed/);
+  assert.doesNotMatch(secondOpenCodeError, /opencode quota reminder failed/);
+  await waitFor(() => (
+    memoryStub.requests.filter((request) => request.path === "/v1/memories/add").length === 2
+  ));
 
   const backendConnectionModule = pathToFileURL(join(
     prefix,
@@ -203,18 +230,33 @@ try {
 
   assert.deepEqual(
     memoryStub.requests.filter((request) => request.path === "/v1/memories/search").map((request) => request.body.query),
-    [PROMPT],
+    [PROMPT, SECOND_PROMPT],
   );
-  const add = memoryStub.requests.find((request) => request.path === "/v1/memories/add");
-  assert.deepEqual(add.body.messages.map(({ role, content }) => ({ role, content })), [
-    { role: "user", content: PROMPT },
-    { role: "assistant", content: REPLY },
+  const adds = memoryStub.requests.filter((request) => request.path === "/v1/memories/add");
+  assert.deepEqual(adds.map((request) => (
+    request.body.messages.map(({ role, content }) => ({ role, content }))
+  )), [
+    [
+      { role: "user", content: PROMPT },
+      { role: "assistant", content: REPLY },
+    ],
+    [
+      { role: "user", content: SECOND_PROMPT },
+      { role: "assistant", content: SECOND_REPLY },
+    ],
   ]);
   const promptModelRequest = modelStub.requests.find((request) => (
     JSON.stringify(request.body).includes(PROMPT)
   ));
   assert.ok(promptModelRequest, "OpenCode did not send the user prompt to the model");
   assert.match(JSON.stringify(promptModelRequest.body), /E2E recalled memory/);
+  const secondPromptModelRequest = modelStub.requests.find((request) => (
+    JSON.stringify(request.body).includes(SECOND_PROMPT)
+  ));
+  assert.ok(secondPromptModelRequest, "OpenCode did not send the second user prompt to the model");
+  for (const request of [promptModelRequest, secondPromptModelRequest]) {
+    assert.doesNotMatch(JSON.stringify(request.body), /Quota reminder|额度提醒/);
+  }
 
   const repoMemoryJob = await waitFor(async () => {
     const jobs = await readRepoMemoryJobs(memoraxCodeHome);
@@ -257,44 +299,6 @@ try {
   await waitFor(async () => (
     await readFile(tracePath, "utf8").catch(() => "")
   ).includes('"type":"memory_writeback"'));
-  const viewer = await waitFor(async () => {
-    const response = await fetch(
-      `${connection.url}/memory-viewer/api/summary?client=opencode`,
-      { headers: { "x-memorax-code-backend-token": connection.token } },
-    );
-    if (response.status !== 200) return undefined;
-    const candidate = await response.json();
-    const summary = candidate.summary;
-    if (
-      summary?.turnCount !== 1
-      || summary.searchOperationCount !== 1
-      || summary.searchedMemoryCount !== 1
-      || summary.addOperationCount !== 1
-      || candidate.projects?.[0]?.repoMemory?.status !== "ready"
-    ) return undefined;
-    return candidate;
-  });
-  assert.equal(viewer.ok, true);
-  assert.equal(viewer.selectedClient, "opencode");
-  assert.deepEqual({
-    turnCount: viewer.summary.turnCount,
-    searchOperationCount: viewer.summary.searchOperationCount,
-    searchedMemoryCount: viewer.summary.searchedMemoryCount,
-    addOperationCount: viewer.summary.addOperationCount,
-  }, {
-    turnCount: 1,
-    searchOperationCount: 1,
-    searchedMemoryCount: 1,
-    addOperationCount: 1,
-  });
-  assert.deepEqual(viewer.projects[0].repoMemory, { status: "ready", reason: "usable" });
-  const viewerJson = JSON.stringify(viewer);
-  for (const privateValue of [PROMPT, REPLY, "E2E recalled memory", sessionId]) {
-    assert.equal(viewerJson.includes(privateValue), false);
-  }
-  for (const field of ["prompt", "answer", "query", "results", "details", "sessionId", "turnId"]) {
-    assert.equal(viewerJson.includes(`"${field}"`), false);
-  }
 
   const traceEvents = (await readFile(tracePath, "utf8")).trim().split(/\r?\n/).map(JSON.parse);
   const traceTypes = new Set(traceEvents.map((event) => event.type));
@@ -323,8 +327,6 @@ try {
     searchRequests: memoryStub.requests.filter((request) => request.path === "/v1/memories/search").length,
     addRequests: memoryStub.requests.filter((request) => request.path === "/v1/memories/add").length,
     repoMemoryJobStatus: repoMemoryJob.status,
-    repoMemoryStatus: viewer.projects[0].repoMemory.status,
-    viewerActivities: viewer.activities.length,
   }, null, 2));
 } finally {
   if (memoraxCode) {
@@ -348,6 +350,7 @@ try {
 
 async function startMemoryStub() {
   const requests = [];
+  let addCount = 0;
   const server = createServer(async (request, response) => {
     const body = await requestJson(request);
     requests.push({ method: request.method, path: request.url, body });
@@ -363,13 +366,19 @@ async function startMemoryStub() {
             score: 0.99,
             metadata: { memory_type: "procedural" },
           }],
+          balances: [quotaBalance("memory_search", 10)],
         },
       });
     }
     if (request.method === "POST" && request.url === "/v1/memories/add") {
+      addCount += 1;
       return json(response, 202, {
         success: true,
-        data: { task_id: "opencode-e2e-add", status: "accepted" },
+        data: {
+          task_id: `opencode-e2e-add-${addCount}`,
+          status: "accepted",
+          balances: [quotaBalance("memory_write", 10 - addCount)],
+        },
       });
     }
     return json(response, 404, { message: "not found" });
@@ -393,7 +402,9 @@ async function startModelStub(options) {
     }
     const reply = isRepoMemoryBuild
       ? "Repo Memory built and validated."
-      : options.reply;
+      : JSON.stringify(body).includes(SECOND_PROMPT)
+        ? SECOND_REPLY
+        : options.reply;
     response.writeHead(200, {
       "content-type": "text/event-stream",
       "cache-control": "no-cache",
@@ -450,6 +461,19 @@ function requestJson(request) {
 function json(response, status, body) {
   response.writeHead(status, { "content-type": "application/json" });
   response.end(JSON.stringify(body));
+}
+
+function quotaBalance(featureCode, remaining) {
+  return {
+    product_code: "memory_api",
+    feature_code: featureCode,
+    spec_key: "calls",
+    quota_unit: "times",
+    quota_limit: 100,
+    reserved: 1,
+    consumed: 0,
+    remaining,
+  };
 }
 
 function installedMemoraxCli(binDir, packageRoot, name) {

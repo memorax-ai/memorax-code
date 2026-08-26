@@ -205,6 +205,7 @@ export async function startBackendService(
       process.execPath,
       [serverPath, "--memorax-code-backend-instance", instanceId],
       {
+        cwd: serviceDir(options),
         detached: true,
         env: withLoopbackProxyBypass({
           ...process.env,
@@ -212,11 +213,6 @@ export async function startBackendService(
           MEMORAX_CODE_BACKEND_HOST: host,
           MEMORAX_CODE_BACKEND_PORT: String(port),
           MEMORAX_CODE_BACKEND_INSTANCE_ID: instanceId,
-          ...(options.claudeProjectsRoot === false
-            ? { MEMORAX_CODE_MEMORY_VIEWER_CLAUDE_PROJECTS_ROOT: "disabled" }
-            : typeof options.claudeProjectsRoot === "string" && options.claudeProjectsRoot.trim()
-              ? { MEMORAX_CODE_MEMORY_VIEWER_CLAUDE_PROJECTS_ROOT: resolve(options.claudeProjectsRoot.trim()) }
-              : {}),
           ...(token ? { MEMORAX_CODE_BACKEND_TOKEN: token } : {}),
         }, url),
         stdio: ["ignore", outFd, errFd],

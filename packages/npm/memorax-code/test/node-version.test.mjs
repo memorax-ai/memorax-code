@@ -14,18 +14,18 @@ test("published Node engine matches the enforced runtime minimum", async () => {
   assert.equal(manifest.engines?.node, `>=${MINIMUM_NODE_MAJOR}`);
 });
 
-test("runtime version guard accepts Node 24 and newer", () => {
-  assert.equal(unsupportedNodeVersionMessage("24.0.0"), undefined);
-  assert.equal(unsupportedNodeVersionMessage("25.1.0"), undefined);
+test("runtime version guard accepts Node 20 and newer", () => {
+  assert.equal(unsupportedNodeVersionMessage("20.0.0"), undefined);
+  assert.equal(unsupportedNodeVersionMessage("24.1.0"), undefined);
 });
 
 test("runtime version guard rejects older or unreadable versions", () => {
   assert.match(
-    unsupportedNodeVersionMessage("23.11.1") ?? "",
-    /requires Node\.js 24 or newer.*Node\.js 23\.11\.1/,
+    unsupportedNodeVersionMessage("19.11.1") ?? "",
+    /requires Node\.js 20 or newer.*Node\.js 19\.11\.1/,
   );
   assert.match(
     unsupportedNodeVersionMessage("unknown") ?? "",
-    /requires Node\.js 24 or newer.*Node\.js unknown/,
+    /requires Node\.js 20 or newer.*Node\.js unknown/,
   );
 });

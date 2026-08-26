@@ -21,15 +21,18 @@ const productionRoots = [
   "packages/ts/memorax-code-claude-adapter/scripts/",
   "packages/ts/memorax-code-claude-adapter/src/",
   "packages/ts/memorax-code-dsh-adapter/src/",
+  "packages/ts/memorax-code-kimi-adapter/src/",
   "packages/ts/memorax-code-opencode-adapter/src/",
 ];
 
 const reviewedNetworkSources = new Set([
+  "packages/npm/memorax-code/lib/trial-provision-client.mjs",
   "packages/ts/memorax-code-adapter-common/src/hooks/ensure-backend-runner.mjs",
   "packages/ts/memorax-code-backend/src/app/backend-server.ts",
   "packages/ts/memorax-code-backend/src/clients/claude/memory-hook-runtime.ts",
   "packages/ts/memorax-code-backend/src/clients/codex/memory-hook-runtime.ts",
   "packages/ts/memorax-code-backend/src/clients/dsh/memory-hook-runtime.ts",
+  "packages/ts/memorax-code-backend/src/clients/kimi/memory-hook-runtime.ts",
   "packages/ts/memorax-code-backend/src/clients/opencode/memory-hook-runtime.ts",
   "packages/ts/memorax-code-backend/src/lifecycle/backend/service.ts",
   "packages/ts/memorax-code-backend/src/lifecycle/backend/status.ts",
@@ -37,15 +40,12 @@ const reviewedNetworkSources = new Set([
   "packages/ts/memorax-code-backend/src/memory/automatic-writeback.ts",
   "packages/ts/memorax-code-backend/src/memory/cli.ts",
   "packages/ts/memorax-code-backend/src/memory/writeback-buffer.ts",
-  "packages/ts/memorax-code-backend/src/memory/writeback-reconciler.ts",
   "packages/ts/memorax-code-backend/src/provider/memorax/adapter.ts",
   "packages/ts/memorax-code-backend/src/provider/memorax/http.ts",
   "packages/ts/memorax-code-backend/src/transport/http/health.ts",
   "packages/ts/memorax-code-backend/src/transport/http/json.ts",
   "packages/ts/memorax-code-backend/src/transport/http/memory-hook.ts",
   "packages/ts/memorax-code-backend/src/transport/http/request.ts",
-  "packages/ts/memorax-code-backend/src/viewer/http/public-routes.ts",
-  "packages/ts/memorax-code-backend/src/viewer/ui/user-html.ts",
   "packages/ts/memorax-code-claude-adapter/runtime-hooks/memory-skill-reminder.mjs",
   "packages/ts/memorax-code-claude-adapter/runtime-hooks/memory-turn.mjs",
   "packages/ts/memorax-code-claude-adapter/src/cli.mjs",
@@ -54,6 +54,7 @@ const reviewedNetworkSources = new Set([
   "packages/ts/memorax-code-codex-adapter/src/cli.mjs",
   "packages/ts/memorax-code-codex-adapter/skills/memorax-code/scripts/detect_updates.py",
   "packages/ts/memorax-code-dsh-adapter/src/http-client.mjs",
+  "packages/ts/memorax-code-kimi-adapter/src/hook-runtime.mjs",
   "packages/ts/memorax-code-opencode-adapter/src/cli.mjs",
   "packages/ts/memorax-code-opencode-adapter/src/plugin.mjs",
   "packages/ts/memorax-code-opencode-adapter/src/repo-memory-server-runner.mjs",
@@ -75,8 +76,6 @@ const reviewedTraceAwareOutboundSources = new Set([
   // Reads the current turn only to resolve workspace scope; memory payload
   // construction remains centralized in provider/memorax/adapter.ts.
   "packages/ts/memorax-code-backend/src/memory/cli.ts",
-  // Reads pending task identity and sends only that task ID to the status API.
-  "packages/ts/memorax-code-backend/src/memory/writeback-reconciler.ts",
 ]);
 
 const providerTransportSourcePrefix =
@@ -98,7 +97,7 @@ const networkCapabilityPatterns = [
 
 const outboundCapabilityPatterns = [
   [/\b(?:fetch|fetchImpl)\s*\(/, "HTTP request"],
-  [/\b(?:invokeMemoraxMemoryProvider|callMemo(?:Search|Add(?:Status)?))\s*\(/, "MemoraX request"],
+  [/\b(?:invokeMemoraxMemoryProvider|callMemo(?:Search|Add))\s*\(/, "MemoraX request"],
   [/\bnew\s+(?:WebSocket|XMLHttpRequest)\b/, "browser network request"],
   [/node:(?:https|http2|net|tls|dgram)\b/, "outbound-capable Node network module"],
   [/(?:^|[^A-Za-z0-9_])(?:curl|wget)(?:[^A-Za-z0-9_]|$)/m, "external network command"],

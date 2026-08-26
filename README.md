@@ -22,7 +22,7 @@
   <a href="https://code.memorax.net/"><img src="https://img.shields.io/badge/website-code.memorax.net-2563eb" alt="MemoraX Code website"></a>
   <a href="https://www.npmjs.com/package/@memorax/memorax-code"><img src="https://img.shields.io/npm/v/@memorax/memorax-code.svg" alt="npm version"></a>
   <img src="https://img.shields.io/npm/v/@memorax/memorax-code.svg?label=version&color=f59e0b" alt="npm package version">
-  <img src="https://img.shields.io/badge/node-%3E%3D24-339933?logo=node.js&logoColor=white" alt="Node.js 24 or newer">
+  <img src="https://img.shields.io/badge/node-%3E%3D20-339933?logo=node.js&logoColor=white" alt="Node.js 20 or newer">
 </p>
 
 <p align="center">
@@ -52,35 +52,58 @@ and validation sooner.
 
 ## Quick Start
 
-Prepare Node.js 24+ and at least one of Codex, Claude Code, DeepSeek Harness,
-or OpenCode. Python 3 is required for Repo Memory operations.
+Prepare Node.js 20+ (Node.js 24 LTS recommended) and at least one of Codex,
+Claude Code, DeepSeek Harness, or OpenCode. Python 3 is required for Repo
+Memory operations. Each coding-agent harness retains its own runtime
+requirements; current DeepSeek Harness releases require Node.js
+`^22.19.0 || >=24.0.0`. DSH may be installed globally or initialized
+beforehand through its official `npx` workflow.
 
 ### Install and Connect
 
-#### 1. Get a MemoraX Memory Key
-
-Sign up at [MemoraX Console](https://platform.memorax.net/) and create an API
-key. Enter the key only in your local installation terminal; do not paste it
-into chats or public issues.
-
-#### 2. Install and Follow the Prompts
+#### 1. Install the Package
 
 ```bash
-npm install -g @memorax/memorax-code --foreground-scripts
+npm install -g @memorax/memorax-code
 ```
 
-Keep `--foreground-scripts` so the complete setup remains visible. The
-installer automatically detects available Codex, Claude Code, DeepSeek
-Harness, and OpenCode installations and connects those it finds. Follow the
-prompts to enter your MemoraX user ID, preferred language, and API key. On an
-interactive first install, a non-empty user ID and API key are required unless
-the effective configuration already supplies both. Codex users must also
-approve Hook activation and trust when prompted. Restart or refresh every
-detected coding agent after installation before starting a new session.
+#### 2. Connect a MemoraX Account (Recommended)
 
-If installation cannot prompt and effective credentials are not already
-configured, the package remains installed but MemoraX-backed search, retrieval,
-and writeback remain unavailable.
+[Create a MemoraX account](https://platform.memorax.net/) or use an existing
+one, then run:
+
+```bash
+memorax-code setup --existing-account
+```
+
+> [!TIP]
+> Using MemoraX Code across devices? Find the MemoraX username and API key
+> needed by setup in the MemoraX Code configuration file on a configured device
+> (normally `~/.memorax-code/config.toml`), then enter them locally during setup
+> on another device. This file contains your API key—keep it private and never
+> paste it into chats or public issues.
+
+#### Or Try Without an Account (90-Day Guest Mode)
+
+To start immediately and connect an account later, run:
+
+```bash
+memorax-code setup
+```
+
+To activate your guest account, first run this command directly in your local
+terminal:
+
+```bash
+memorax-code account --show-mark-id
+```
+
+After obtaining the Mark ID, create your MemoraX account. The platform does
+not currently support attaching a Mark ID to an account that has already been
+registered.
+
+Both setup paths automatically detect supported coding agents. Restart or
+refresh every detected coding agent after setup.
 
 ### Installation Troubleshooting
 
@@ -88,10 +111,9 @@ If the initial setup does not work as expected, check these common cases:
 
 | Symptom | Recommended fix |
 | --- | --- |
-| Installation fails with an unsupported Node.js version | Run `node --version` and upgrade to Node.js 24 or later before reinstalling MemoraX Code. |
-| Interactive setup was skipped or could not prompt | Configure the required MemoraX values in `$MEMORAX_CODE_HOME/config.toml` or through the documented environment variables, then run `memorax-code start`. |
-| MemoraX API key is missing or not configured | Run `memorax-cli status` to check the current configuration, then add the API key through the supported configuration or environment variables. Never paste the key into chats or public issues. |
-| Search, retrieval, or writeback is unavailable after installation | Run `memorax-code status` and `memorax-cli status`. Verify the MemoraX credentials and memory settings, then restart with `memorax-code start`. |
+| Installation fails with an unsupported Node.js version | Run `node --version` and upgrade to Node.js 20 or later before reinstalling MemoraX Code. |
+| The package installed but setup did not start | This is expected. Run the appropriate setup command above from a normal interactive terminal. |
+| Search, retrieval, or writeback is unavailable after setup | Run `memorax-code status` and `memorax-cli status`, then follow the detailed troubleshooting guide. |
 
 See [Configuration](docs/configuration.md) for supported settings and
 [Troubleshooting](docs/troubleshooting.md) for detailed diagnostics.
@@ -133,9 +155,6 @@ the current repository.
 > The prompts above are only for quick verification. In normal use, you do not
 > need to invoke the MemoraX Code skill to add memory manually. It writes
 > relevant memory in the background and guides agents to search when useful.
-> In the [Memory Viewer](http://127.0.0.1:8787/memory-viewer), you can switch
-> among Codex, Claude Code, DeepSeek Harness, and OpenCode to view content-free
-> local activity and status.
 
 ## Four Clear Memory Boundaries
 
@@ -165,21 +184,23 @@ writing when the durable intent or target is unclear.
 | **Procedure reuse** | Records reusable task procedures and reminds future agents to apply them. |
 | **Background Repo Memory maintenance** | Automatically organizes repository structure, entry points, and history evidence in the background, then updates them according to policy to reduce repeated searching and summarization. |
 | **Active memory control** | Lets you search and add memory through the bundled MemoraX Code skill or the CLI. |
-| **Client integration** | Integrates with Codex, Claude Code, DeepSeek Harness, and OpenCode to trigger memory retrieval, reminders, and writeback. |
-| **Local visualization** | Uses the local Memory Viewer to summarize activity counts, retrieval, and writeback status. |
+| **Client integration** | Integrates with Codex, Claude Code, DeepSeek Harness, and OpenCode to trigger memory retrieval, reminders, and writeback. Automatic quota reminders are currently available in Codex, Claude Code, and OpenCode. |
 
 ## Your Memory, Your Control
 
-MemoraX is required for cloud-backed memory. Entering a Base User ID and API
-key after the installer's disclosure activates MemoraX search/add and the
-generated configuration's automatic writeback; there is no second writeback
-confirmation. Automatic retrieval remains off until explicitly enabled.
+MemoraX is required for cloud-backed memory. Completing setup activates
+MemoraX search/add and the generated configuration's automatic writeback;
+there is no second writeback confirmation. Automatic retrieval remains off
+until explicitly enabled.
 
 Local trace capture is enabled by default for supported clients. Depending on
 client capabilities, retained traces under `MEMORAX_CODE_HOME` may contain
 prompts, responses, recalled memory, reminder text, and local paths. Use the
 [local trace settings](docs/configuration.md#local-traces) to switch to
 metadata-only capture or disable a client's trace.
+
+Guest quota reminders may display the complete Mark ID. Treat reminder text
+and retained traces containing it as sensitive.
 
 Active memory operations send their query or selected content to MemoraX.
 Automatic writeback sends selected user instructions and the matching final
@@ -205,6 +226,18 @@ memorax-code update
 The command follows the installed release channel and preserves configuration.
 Restart or refresh Codex, Claude Code, DeepSeek Harness, and OpenCode when a
 release changes installed integration assets.
+
+### Windows Upgrade Note
+
+If you are upgrading MemoraX Code v0.1.3-v0.1.6 to v0.1.7 on Windows, run:
+
+```powershell
+memorax-code stop
+memorax-code update --latest
+memorax-code
+```
+
+This one-time step is not required for later upgrades.
 
 ## Uninstall
 

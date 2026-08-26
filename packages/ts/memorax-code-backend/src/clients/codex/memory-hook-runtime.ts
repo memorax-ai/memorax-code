@@ -11,6 +11,12 @@ import {
   type AutomaticMemoryWritebackRuntime,
 } from "../../memory/automatic-writeback.js";
 import { retrieveAutomaticMemoryContext } from "../../memory/automatic-retrieval.js";
+import {
+  claimQuotaNotice,
+  createPendingQuotaNoticeRuntime,
+  type PendingQuotaNoticeRuntime,
+  type QuotaNoticeClaimer,
+} from "../../memory/quota-notice.js";
 import { readCodexSessionTurnIndex } from "./session-turn-index.js";
 import { resolveCodexWorkspaceRoot } from "./workspace-links.js";
 import type {
@@ -87,12 +93,14 @@ export type CodexMemoryHookRuntimeOptions = {
   diagnosticLogger?: MemoryDiagnosticLogger;
   env?: Record<string, string | undefined>;
   fetchImpl?: typeof fetch;
+  claimQuotaNotice?: QuotaNoticeClaimer;
   now?: () => number;
   ttlMs?: number;
   maxEntries?: number;
   cleanupIntervalMs?: number;
   memoryObservability?: MemoryObservabilityHook;
   memoraxCodeHome?: string;
+  pendingQuotaNotice?: PendingQuotaNoticeRuntime;
   repositoryMemorySession?: RepositoryMemorySessionRuntime;
   turnCoordinator?: MemoryTurnCoordinator;
 };
@@ -108,6 +116,12 @@ const CODEX_MEMORY_TURN_CLIENT = "codex" as const;
 
 export function createCodexMemoryHookRuntime(options: CodexMemoryHookRuntimeOptions = {}): CodexMemoryHookRuntime {
   const now = options.now ?? (() => Date.now());
+  const pendingQuotaNotice = options.pendingQuotaNotice ?? createPendingQuotaNoticeRuntime({
+    claimQuotaNotice: options.claimQuotaNotice,
+    diagnosticLogger: options.diagnosticLogger,
+    env: options.env,
+  });
+  const ownsPendingQuotaNotice = options.pendingQuotaNotice === undefined;
   const automaticWritebackRuntime: {
     enqueue: AutomaticMemoryWritebackEnqueue;
     discardForScopeUpgrade?: AutomaticMemoryWritebackRuntime["discardForScopeUpgrade"];
@@ -116,7 +130,10 @@ export function createCodexMemoryHookRuntime(options: CodexMemoryHookRuntimeOpti
     ? undefined
     : options.automaticWriteback
       ? { enqueue: options.automaticWriteback }
-      : createAutomaticMemoryWritebackRuntime({ diagnosticLogger: options.diagnosticLogger });
+      : createAutomaticMemoryWritebackRuntime({
+        diagnosticLogger: options.diagnosticLogger,
+        queueQuotaNotice: pendingQuotaNotice.queue,
+      });
   const turnCoordinator = options.turnCoordinator ?? createMemoryTurnCoordinator({
     automaticWriteback: automaticWritebackRuntime!.enqueue,
     now,
@@ -194,22 +211,26 @@ export function createCodexMemoryHookRuntime(options: CodexMemoryHookRuntimeOpti
         env: options.env,
         now: () => new Date(now()),
       }), options.diagnosticLogger);
-      if (
-        !turn.turnId
-        || !claimAutomaticRetrievalTurn(
+      const processTurnStart = turn.turnId
+        ? claimAutomaticRetrievalTurn(
           automaticRetrievalTurns,
           automaticRetrievalTurnLimit,
           turn.sessionId,
           turn.turnId,
         )
-      ) {
+        : false;
+      if (!processTurnStart) {
         return {
           ok: true,
           ...(repoMemoryWorktree ? { repoMemoryWorktree } : {}),
         };
       }
+      const pendingUserNotice = repositoryMemory.ok
+        ? await pendingQuotaNotice.claim(repositoryMemory.memory.config)
+        : undefined;
       const retrieval = await retrieveAutomaticMemoryContext({
         diagnosticLogger: options.diagnosticLogger,
+        claimQuotaNotice: options.claimQuotaNotice ?? claimQuotaNotice,
         env: options.env ?? process.env,
         fetchImpl: options.fetchImpl,
         memoryObservability: options.memoryObservability,
@@ -219,10 +240,12 @@ export function createCodexMemoryHookRuntime(options: CodexMemoryHookRuntimeOpti
         sessionKey: turn.sessionId,
         traceContext: turn.traceContext,
       });
+      const userNotice = [pendingUserNotice, retrieval.userNotice].filter(Boolean).join("\n");
       return {
         ok: true,
         ...(repoMemoryWorktree ? { repoMemoryWorktree } : {}),
         ...(retrieval.context ? { additionalContext: retrieval.context } : {}),
+        ...(userNotice ? { userNotice } : {}),
       };
     },
     async writeback(command) {
@@ -339,6 +362,7 @@ export function createCodexMemoryHookRuntime(options: CodexMemoryHookRuntimeOpti
       if (ownsTurnCoordinator) turnCoordinator.close();
       if (ownsRepositoryMemorySession) repositoryMemorySession.close();
       automaticWritebackRuntime?.close?.();
+      if (ownsPendingQuotaNotice) pendingQuotaNotice.close();
     },
   };
 }

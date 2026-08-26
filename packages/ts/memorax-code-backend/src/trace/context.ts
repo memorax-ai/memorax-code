@@ -11,9 +11,10 @@ export type TraceContextOrigin =
   | "dsh-cordis-reminder"
   | "dsh-session-event-log"
   | "opencode-hook-body"
+  | "kimi-hook-body"
   | "current-turn-file"
   | "manual";
-export type TraceClient = "codex" | "claude" | "dsh" | "opencode";
+export type TraceClient = "codex" | "claude" | "dsh" | "opencode" | "kimi";
 
 export type TraceRelatedTurn = Readonly<{
   turnId?: string;
@@ -108,6 +109,31 @@ export function traceContextFromOpenCodeHookBody(
   });
 }
 
+export function traceContextFromKimiHookBody(
+  body: unknown,
+  capturedAt = new Date().toISOString(),
+): TraceContext | undefined {
+  if (!isRecord(body)) return undefined;
+  const sessionId = stringField(body, "session_id") ?? stringField(body, "sessionId");
+  const promptId = stringField(body, "prompt_id") ?? stringField(body, "promptId");
+  const nativeRequestId = stringField(body, "turn_id") ?? stringField(body, "turnId");
+  const turnId = promptId ?? nativeRequestId;
+  if (!sessionId || !turnId) return undefined;
+  const cwd = stringField(body, "cwd");
+  return pruneTraceContext({
+    schemaVersion: "1",
+    client: "kimi",
+    sessionId,
+    turnId,
+    ...(nativeRequestId ? { nativeRequestId } : {}),
+    cwd,
+    memoryProject: resolveMemoryProject(cwd),
+    workspaceKind: stringField(body, "workspace_kind") ?? stringField(body, "workspaceKind"),
+    contextOrigin: "kimi-hook-body",
+    capturedAt,
+  });
+}
+
 export function traceContextFromDshTurnStart(
   body: unknown,
   capturedAt = new Date().toISOString(),
@@ -189,7 +215,7 @@ function pruneRecord<T extends Record<string, unknown>>(value: T): T {
 }
 
 export function isTraceClient(value: unknown): value is TraceClient {
-  return value === "codex" || value === "claude" || value === "dsh" || value === "opencode";
+  return value === "codex" || value === "claude" || value === "dsh" || value === "opencode" || value === "kimi";
 }
 
 function traceContextFromDshBody(

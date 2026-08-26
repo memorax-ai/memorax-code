@@ -612,7 +612,7 @@ test("reports pnpm missing from DSH's native Profile plugin manager", async (t) 
   ]);
 });
 
-test("materializes one runtime generation and provisions a web-only headless worker", async (t) => {
+test("uses the DSH runtime already linked by Profiles and refreshes it on reconciliation", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "memorax-code-dsh-runtime-bundle-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const adapterRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -635,7 +635,23 @@ test("materializes one runtime generation and provisions a web-only headless wor
       "@deepseek-ai/dsh-web-app",
     ] } },
   });
+  const dshPackageRoot = join(
+    profilesRoot,
+    "node_modules",
+    "@deepseek-ai",
+    "dsh",
+  );
+  const dshEntrypoint = join(dshPackageRoot, "lib", "bin.js");
+  mkdirSync(dirname(dshEntrypoint), { recursive: true });
+  writeJson(join(dshPackageRoot, "package.json"), {
+    name: "@deepseek-ai/dsh",
+    version: "0.1.0-rc.6",
+    bin: { dsh: "lib/bin.js" },
+  });
+  writeFileSync(dshEntrypoint, "#!/usr/bin/env node\n");
 
+  let directDshVersion;
+  let directProbeCalls = 0;
   let addCalls = 0;
   let packedFiles;
   const options = {
@@ -644,14 +660,25 @@ test("materializes one runtime generation and provisions a web-only headless wor
     memoraxCodeHome,
     memoraxCodeCommand: join(root, "memorax-code.mjs"),
     runDsh(invocation) {
-      if (invocation.args.length === 1 && invocation.args[0] === "--version") {
-        return { status: 0, stdout: "0.1.0-rc.6\n" };
+      if (invocation.command === "dsh") {
+        directProbeCalls += 1;
+        assert.deepEqual(invocation.args, ["--version"]);
+        if (directDshVersion) {
+          return { status: 0, stdout: `${directDshVersion}\n` };
+        }
+        return {
+          status: 1,
+          error: Object.assign(new Error("missing dsh"), { code: "ENOENT" }),
+        };
       }
+      assert.equal(invocation.command, process.execPath);
+      assert.equal(invocation.args[0], dshEntrypoint);
+      const dshArgs = invocation.args.slice(1);
       assert.deepEqual(
-        [invocation.args[0], invocation.args[1], invocation.args[3]],
+        [dshArgs[0], dshArgs[1], dshArgs[3]],
         ["plugin", "--profile", "add"],
       );
-      const profileName = invocation.args[2];
+      const profileName = dshArgs[2];
       if (profileName === "headless") {
         writeProfile(profilesRoot, profileName, [
           "@deepseek-ai/dsh-base",
@@ -661,7 +688,7 @@ test("materializes one runtime generation and provisions a web-only headless wor
       const profileRoot = join(profilesRoot, profileName);
       const profileManifestPath = join(profileRoot, "package.json");
       addCalls += 1;
-      const runtimeBundleRoot = invocation.args[4].slice("file:".length);
+      const runtimeBundleRoot = dshArgs[4].slice("file:".length);
       if (packedFiles === undefined) {
         const pack = spawnSync("npm", [
           "pack",
@@ -678,11 +705,13 @@ test("materializes one runtime generation and provisions a web-only headless wor
         "--no-audit",
         "--no-fund",
         "--package-lock=false",
-        invocation.args[4],
+        dshArgs[4],
       ], { cwd: profileRoot, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
       assert.equal(install.status, 0, install.stderr);
       const manifest = JSON.parse(readFileSync(profileManifestPath, "utf8"));
-      manifest.dsh.profile.bundles.push("@memorax-code/dsh-memorax-code");
+      if (!manifest.dsh.profile.bundles.includes("@memorax-code/dsh-memorax-code")) {
+        manifest.dsh.profile.bundles.push("@memorax-code/dsh-memorax-code");
+      }
       writeJson(profileManifestPath, manifest);
       return { status: 0 };
     },
@@ -702,6 +731,9 @@ test("materializes one runtime generation and provisions a web-only headless wor
   const statePath = join(memoraxCodeHome, "adapters", "dsh", "state.json");
   const firstState = JSON.parse(readFileSync(statePath, "utf8"));
   assert.deepEqual(firstState.profiles, ["headless", "web"]);
+  assert.equal(firstState.dshCommand, dshEntrypoint);
+  assert.equal(firstState.dshVersion, "0.1.0-rc.6");
+  assert.equal(directProbeCalls, 1);
   assert.match(firstState.runtimeBundleRoot, /[/\\]runtime[/\\]generations[/\\][0-9a-f]{64}$/);
   assert.equal(existsSync(join(firstState.runtimeBundleRoot, "src", "profile-lifecycle.mjs")), false);
   assert.equal(existsSync(join(
@@ -744,9 +776,44 @@ test("materializes one runtime generation and provisions a web-only headless wor
   assert.equal(second.ok, true);
   assert.equal(addCalls, 2);
   assert.equal(secondState.runtimeBundleRoot, firstState.runtimeBundleRoot);
+  assert.equal(directProbeCalls, 1);
   assert.deepEqual(
     readdirSync(join(memoraxCodeHome, "adapters", "dsh", "runtime", "generations")),
     [firstState.runtimeBundleRoot.split(/[/\\]/).at(-1)],
+  );
+
+  const activated = await withDshPluginLifecycleLock(options, (lifecycle) => (
+    lifecycle.activate()
+  ));
+  assert.equal(activated.ok, true, JSON.stringify(activated));
+  assert.equal(activated.enabled, true);
+  directDshVersion = "0.1.1-rc.2";
+  rmSync(dshPackageRoot, { recursive: true, force: true });
+  const stale = collectDshAdapterStatus(options);
+  assert.equal(stale.ok, false);
+  assert.equal(stale.reason, "dsh_profile_runtime_stale");
+  assert.equal(directProbeCalls, 1);
+
+  mkdirSync(dirname(dshEntrypoint), { recursive: true });
+  writeJson(join(dshPackageRoot, "package.json"), {
+    name: "@deepseek-ai/dsh",
+    version: "0.1.1-rc.1",
+    bin: { dsh: "lib/bin.js" },
+  });
+  writeFileSync(dshEntrypoint, "#!/usr/bin/env node\n");
+  const updated = await withDshPluginLifecycleLock(options, (lifecycle) => (
+    lifecycle.ensureInstalled({ enabled: false })
+  ));
+  const updatedState = JSON.parse(readFileSync(statePath, "utf8"));
+  assert.equal(updated.ok, true);
+  assert.equal(addCalls, 4);
+  assert.equal(directProbeCalls, 1);
+  assert.equal(updatedState.dshCommand, dshEntrypoint);
+  assert.equal(updatedState.dshVersion, "0.1.1-rc.1");
+  assert.notEqual(updatedState.runtimeBundleRoot, firstState.runtimeBundleRoot);
+  assert.deepEqual(
+    readdirSync(join(memoraxCodeHome, "adapters", "dsh", "runtime", "generations")),
+    [updatedState.runtimeBundleRoot.split(/[/\\]/).at(-1)],
   );
 });
 

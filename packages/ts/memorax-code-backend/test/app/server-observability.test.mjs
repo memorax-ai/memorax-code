@@ -8,11 +8,6 @@ import {
   createBackendMemoryObservability,
 } from "../../dist/app/memory-observability.js";
 import { claudeTracePaths, tracePaths } from "../../dist/trace/config.js";
-import {
-  clearMemoryViewerEvents,
-  listMemoryViewerEvents,
-  listMemoryViewerEventsWithHistory,
-} from "../../dist/viewer/store.js";
 
 test("createBackendMemoryObservability preserves an existing memory hook", () => {
   const existingHook = { recordEvent() {} };
@@ -23,51 +18,6 @@ test("createBackendMemoryObservability preserves an existing memory hook", () =>
   );
 
   assert.equal(observability, existingHook);
-});
-
-test("createBackendMemoryObservability always installs the viewer hook", () => {
-  const disabled = createBackendMemoryObservability("/tmp/memorax-code-observability-test", undefined, {
-    MEMORAX_CODE_CLAUDE_TRACE_ENABLED: "false",
-    MEMORAX_CODE_CODEX_TRACE_ENABLED: "false",
-  });
-  assert.equal(typeof disabled?.recordEvent, "function");
-
-  const trace = createBackendMemoryObservability("/tmp/memorax-code-observability-test");
-  assert.equal(typeof trace?.recordEvent, "function");
-
-  const enabled = createBackendMemoryObservability("/tmp/memorax-code-observability-test", undefined, {
-    MEMORAX_CODE_CLAUDE_TRACE_ENABLED: "false",
-    MEMORAX_CODE_CODEX_TRACE_ENABLED: "false",
-  });
-  assert.equal(typeof enabled?.recordEvent, "function");
-});
-
-test("default memory observability includes operational projection hooks", () => {
-  clearMemoryViewerEvents();
-  const delivered = [];
-  const observability = createBackendMemoryObservability(
-    "/tmp/memorax-code-observability-test",
-    undefined,
-    {
-      MEMORAX_CODE_CLAUDE_TRACE_ENABLED: "false",
-      MEMORAX_CODE_CODEX_TRACE_ENABLED: "false",
-    },
-    [{
-      recordEvent(event) {
-        delivered.push(event);
-      },
-    }],
-  );
-
-  observability.recordEvent({
-    source: "codex_hook_writeback",
-    operation: "writeback",
-    ok: true,
-  });
-
-  const [viewerEvent] = listMemoryViewerEvents();
-  assert.equal(delivered.length, 1);
-  assert.equal(viewerEvent.id, `trace:${delivered[0].eventId}`);
 });
 
 test("memory observability isolates synchronous sink failures", () => {
@@ -164,9 +114,8 @@ test("Codex trace observability failures do not create unhandled rejections", as
   }
 });
 
-test("session trace observability routes Claude events to the trace root and local projection", async () => {
+test("session trace observability routes Claude events to the trace root", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-observability-claude-trace-"));
-  clearMemoryViewerEvents();
   try {
     const sessionId = "session-observability-claude";
     const observability = createBackendMemoryObservability(root, undefined, {
@@ -187,13 +136,6 @@ test("session trace observability routes Claude events to the trace root and loc
       },
       request: { payload: { query: "claude trace query" } },
     });
-    observability.recordEvent({
-      source: "claude_hook_writeback",
-      operation: "writeback",
-      ok: true,
-      response: { raw: { data: { task_id: "claude-task", status: "queued" } } },
-    });
-
     const claudeEventsPath = claudeTracePaths(root).eventsJsonl(sessionId);
     await waitFor(async () => {
       try {
@@ -203,62 +145,7 @@ test("session trace observability routes Claude events to the trace root and loc
       }
     });
     await assert.rejects(readFile(tracePaths(root).eventsJsonl(sessionId), "utf8"));
-    const viewerEvents = listMemoryViewerEvents();
-    assert.deepEqual(viewerEvents.map(({ client, source }) => ({ client, source })), [
-      { client: "claude", source: "claude_hook_retrieval" },
-      { client: "claude", source: "claude_hook_writeback" },
-    ]);
-    assert.equal(viewerEvents.every((event) => event.id.startsWith("claude-trace:")), true);
   } finally {
-    clearMemoryViewerEvents();
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("memory observability correlates live projection and persisted trace events", async () => {
-  const root = await mkdtemp(join(tmpdir(), "memorax-code-observability-correlation-"));
-  clearMemoryViewerEvents();
-  try {
-    const observability = createBackendMemoryObservability(root);
-    observability.recordEvent({
-      source: "automatic_retrieval",
-      operation: "retrieve",
-      ok: true,
-      traceContext: {
-        schemaVersion: "1",
-        client: "codex",
-        sessionId: "session-observability-correlation",
-        turnId: "turn-observability-correlation",
-        contextOrigin: "codex-hook-body",
-        capturedAt: "2026-07-14T00:00:00.000Z",
-      },
-      request: { payload: { query: "shared query" } },
-      response: { items: [{ memory: "shared result" }] },
-    });
-    const [live] = listMemoryViewerEvents();
-    assert.match(live.id, /^trace:memory-observability-/);
-    const eventsPath = join(
-      root,
-      "debug",
-      "traces",
-      "codex",
-      "sessions",
-      "session-observability-correlation",
-      "events.jsonl",
-    );
-    await waitFor(async () => {
-      try {
-        return (await readFile(eventsPath, "utf8")).includes(live.id.slice("trace:".length));
-      } catch {
-        return false;
-      }
-    });
-    const merged = await listMemoryViewerEventsWithHistory(root);
-    assert.equal(merged.length, 1);
-    assert.equal(merged[0].id, live.id);
-    assert.equal(merged[0].content, "shared result");
-  } finally {
-    clearMemoryViewerEvents();
     await rm(root, { recursive: true, force: true });
   }
 });

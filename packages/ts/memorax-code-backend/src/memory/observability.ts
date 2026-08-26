@@ -14,7 +14,6 @@ export type MemoryObservabilitySource =
   | "kimi_hook_retrieval"
   | "kimi_hook_writeback"
   | "memory_cli"
-  | "writeback_reconciler"
   | "unknown";
 
 export type MemoryObservabilityOperation = "query" | "retrieve" | "writeback";

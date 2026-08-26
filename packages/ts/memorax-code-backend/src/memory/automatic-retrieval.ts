@@ -11,6 +11,7 @@ import {
 import type { ConfiguredRepositoryMemoryResult } from "./repository-session.js";
 import type { TraceContext } from "../trace/context.js";
 import { isRecord } from "../shared/record.js";
+import type { QuotaNoticeClaimer } from "./quota-notice.js";
 
 export type AutomaticMemoryRetrievalOptions = {
   diagnosticLogger?: MemoryDiagnosticLogger;
@@ -18,6 +19,7 @@ export type AutomaticMemoryRetrievalOptions = {
   fetchImpl?: typeof fetch;
   memoryObservability?: MemoryObservabilityHook;
   memoryObservabilitySource?: MemoryObservabilitySource;
+  claimQuotaNotice?: QuotaNoticeClaimer;
   query?: string;
   repositoryMemory: ConfiguredRepositoryMemoryResult;
   sessionKey?: string;
@@ -26,6 +28,7 @@ export type AutomaticMemoryRetrievalOptions = {
 
 export type AutomaticMemoryRetrievalResult = {
   context?: string;
+  userNotice?: string;
   retrieved: boolean;
   skipReason?: string;
   error?: string;
@@ -89,6 +92,7 @@ export async function retrieveAutomaticMemoryContext(
   }, {
     config,
     diagnosticLogger: options.diagnosticLogger,
+    env,
     fetchImpl: options.fetchImpl,
     observability: options.memoryObservability,
     observabilitySource: options.memoryObservabilitySource ?? "automatic_retrieval",
@@ -98,6 +102,13 @@ export async function retrieveAutomaticMemoryContext(
   if (!response.ok) return finish(skipped("retrieve_failed", response.error));
 
   const result = response.result ?? {};
+  const userNotice = result.quota && options.claimQuotaNotice
+    ? await options.claimQuotaNotice(
+      config,
+      result.quota,
+      { diagnosticLogger: options.diagnosticLogger, env },
+    )
+    : undefined;
   const payload = isRecord(result.tool_result_payload) ? result.tool_result_payload : {};
   const memoryItems = Array.isArray(payload.items) ? payload.items : [];
   const contextBlocks = Array.isArray(payload.contextBlocks) ? payload.contextBlocks : [];
@@ -110,7 +121,7 @@ export async function retrieveAutomaticMemoryContext(
       itemCount: memoryItems.length,
       contextBlockCount: contextBlocks.length,
       blockChars,
-    }));
+    }, userNotice));
   }
   return finish({
     context,
@@ -118,6 +129,7 @@ export async function retrieveAutomaticMemoryContext(
     itemCount: memoryItems.length,
     contextBlockCount: contextBlocks.length,
     blockChars,
+    ...(userNotice ? { userNotice } : {}),
   });
 }
 
@@ -131,6 +143,7 @@ function skipped(
   skipReason: string,
   error?: string,
   fields: Partial<Pick<AutomaticMemoryRetrievalResult, "itemCount" | "contextBlockCount" | "blockChars">> = {},
+  userNotice?: string,
 ): Omit<AutomaticMemoryRetrievalResult, "latencyMs"> {
   return {
     retrieved: false,
@@ -139,6 +152,7 @@ function skipped(
     contextBlockCount: fields.contextBlockCount ?? 0,
     blockChars: fields.blockChars ?? 0,
     ...(error ? { error } : {}),
+    ...(userNotice ? { userNotice } : {}),
   };
 }
 

@@ -82,10 +82,4 @@ Apply instructions in this order: system and developer instructions, `AGENTS.md`
 
 For MemoraX Code coding memory, use `memorax-cli` exactly as described by the selected reference. Invoke this skill as `$memorax-code` in Codex, `/memorax-code` in Claude Code or Kimi Code. In OpenCode, ask the agent to use the `memorax-code` skill by name. These invocation forms are not shell commands. `memorax-code` is the lifecycle CLI and must not be used for memory search or add. Do not call MemoraX HTTP endpoints directly.
 
-When explaining Memory Viewer, describe only `/memory-viewer`. It is a
-content-free local summary and must not expose conversation or memory text,
-session or turn identifiers, paths, or trace details. The page never queries
-MemoraX directly; it projects client-qualified local activity and keeps each
-supported harness isolated.
-
 Never store secrets, credentials, `.env` content, sensitive personal data, raw transcripts, hidden tests, exact patches, temporary target commits, or unsafe destructive commands. Do not announce internal routing or reference loading.

@@ -7,6 +7,10 @@ import { fileURLToPath } from "node:url";
 import { renderDefaultMemoraxCodeConfig } from "../../dist/config/memorax-code.js";
 import { isProcessAlive, terminateProcessTree } from "../../dist/lifecycle/backend/service.js";
 import { freePort } from "../support/helpers.mjs";
+import {
+  readSetupCompletionRecord,
+  writeSetupCompletionRecord,
+} from "../../../memorax-code-adapter-common/src/setup-completion.mjs";
 
 import {
   pathExists,
@@ -16,6 +20,58 @@ import {
   waitForProcessExit,
   writeManagedClientsConfig,
 } from "./support/backend-service-fixtures.mjs";
+
+test("stop preserves setup completion while complete uninstall clears it and preserves config", async () => {
+  const home = await mkdtemp(join(tmpdir(), "memorax-code-uninstall-completion-home-"));
+  const port = await freePort();
+  const cliPath = fileURLToPath(new URL("../../dist/memorax-code.js", import.meta.url));
+  const config = [
+    "[clients]",
+    "codex = false",
+    "claude = false",
+    "dsh = false",
+    "opencode = false",
+    "",
+    "[memorax]",
+    'user_id = "saved-user"',
+    "",
+  ].join("\n");
+  await writeFile(join(home, "config.toml"), config);
+  writeSetupCompletionRecord({
+    memoraxCodeHome: home,
+    completedAt: "2026-08-15T08:00:00.000Z",
+    completedByVersion: "0.1.5",
+  });
+  try {
+    const stopped = await runCli(cliPath, [
+      "stop", "--json",
+      "--home", home,
+      "--port", String(port),
+      "--clients", "none",
+    ]);
+    assert.equal(stopped.code, 0, `${stopped.stdout}\n${stopped.stderr}`);
+    assert.equal(readSetupCompletionRecord(home).status, "valid");
+
+    const uninstalled = await runCli(cliPath, [
+      "uninstall", "--json",
+      "--home", home,
+      "--port", String(port),
+      "--clients", "none",
+      "--no-npm-uninstall",
+    ]);
+    assert.equal(uninstalled.code, 0, `${uninstalled.stdout}\n${uninstalled.stderr}`);
+    assert.deepEqual(readSetupCompletionRecord(home), { status: "absent" });
+    assert.equal(await readFile(join(home, "config.toml"), "utf8"), config);
+  } finally {
+    await runCli(cliPath, [
+      "stop", "--json",
+      "--home", home,
+      "--port", String(port),
+      "--clients", "none",
+    ]);
+    await rm(home, { recursive: true, force: true });
+  }
+});
 
 test("memorax-code start and stop preserve custom Codex provider config on the Hook lifecycle", async () => {
   const home = await mkdtemp(join(tmpdir(), "memorax-code-lifecycle-home-"));
@@ -254,12 +310,6 @@ test("memorax-code start preserves custom Claude provider settings while enablin
     assert.equal(adapterState.claudeSkillDelivery, "plugin");
     assert.equal(adapterState.claudePluginSkillsRoot, join(pluginCli.pluginInstallPath, "skills"));
     assert.equal(await pathExists(join(claudeHome, "skills", "memorax-code")), false);
-    const viewer = await fetch(`http://127.0.0.1:${port}/memory-viewer/api/summary?client=claude-code`)
-      .then((response) => response.json());
-    assert.equal(viewer.summary.turnCount, 0);
-    assert.equal(viewer.activities.length, 0);
-    assert.doesNotMatch(JSON.stringify(viewer), /private lifecycle Claude prompt|lifecycle-session|lifecycle-turn/);
-
     const status = await runCli(cliPath, [
       "status", "--json",
       "--home", home,
@@ -515,6 +565,41 @@ test("memorax-code start leaves Codex config unchanged before the plugin is inst
     assert.equal(await readFile(join(codexHome, "config.toml"), "utf8"), originalConfig);
   } finally {
     await runCli(cliPath, ["stop", "--json", "--home", home, "--port", String(port), "--codex-home", codexHome, "--clients", "none"]);
+    await rm(home, { recursive: true, force: true });
+    await rm(codexHome, { recursive: true, force: true });
+  }
+});
+
+test("package replacement restores only previously active clients", async () => {
+  const home = await mkdtemp(join(tmpdir(), "memorax-code-package-replacement-home-"));
+  const codexHome = await mkdtemp(join(tmpdir(), "memorax-code-package-replacement-codex-"));
+  const port = await freePort();
+  const cliPath = fileURLToPath(new URL("../../dist/memorax-code.js", import.meta.url));
+  const activeClientsPath = join(home, "runtime", "backend", "managed-clients.json");
+  const inactiveClients = { codex: false, claude: false, dsh: false, opencode: false };
+  await writeManagedClientsConfig(home, { codex: true, claude: false });
+  await mkdir(join(home, "runtime", "backend"), { recursive: true });
+  await writeFile(activeClientsPath, `${JSON.stringify(inactiveClients)}\n`);
+  try {
+    const started = await runCli(cliPath, [
+      "start", "--json",
+      "--home", home,
+      "--port", String(port),
+      "--codex-home", codexHome,
+    ], { env: { MEMORAX_CODE_PACKAGE_REPLACEMENT: "1" } });
+
+    assert.equal(started.code, 0, `${started.stdout}\n${started.stderr}`);
+    const report = JSON.parse(started.stdout);
+    assert.equal(report.ok, true);
+    assert.equal(report.codexAdapter, undefined);
+    assert.deepEqual(JSON.parse(await readFile(activeClientsPath, "utf8")), inactiveClients);
+  } finally {
+    await runCli(cliPath, [
+      "stop", "--json",
+      "--home", home,
+      "--port", String(port),
+      "--clients", "none",
+    ]);
     await rm(home, { recursive: true, force: true });
     await rm(codexHome, { recursive: true, force: true });
   }

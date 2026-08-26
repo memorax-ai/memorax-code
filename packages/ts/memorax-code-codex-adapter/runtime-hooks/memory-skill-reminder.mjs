@@ -53,6 +53,7 @@ try {
       requireTranscriptPath: true,
       runtime: "codex",
       supplementalReminderAfterCompact: true,
+      systemMessage: turnStartResult.userNotice,
     }, normalizedInput);
   }
 } catch (error) {
@@ -83,6 +84,7 @@ async function recordTurnStart(body) {
       recorded: true,
       additionalContext: stringValue(response?.additionalContext),
       repoMemoryWorktree: stringValue(response?.repoMemoryWorktree),
+      userNotice: stringValue(response?.userNotice),
     };
   } catch (error) {
     debugHookError(error);

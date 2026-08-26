@@ -8,9 +8,10 @@ import {
   findVsCodeExtensionCommand,
   isExecutableCommand,
 } from "./vscode-extension-command.mjs";
+import { resolveWindowsCliInvocation } from "./windows-cli-invocation.mjs";
 
 const APP_BUNDLE_NAMES = ["ChatGPT.app", "Codex.app"];
-const WINDOWS_CODEX_APP_PROBE_TIMEOUT_MS = 10_000;
+const WINDOWS_CODEX_DISCOVERY_PROBE_TIMEOUT_MS = 2_000;
 const WINDOWS_CODEX_APP_RUNTIME_SEGMENTS = ["plugins", ".plugin-appserver", "codex.exe"];
 
 export function resolveCodexCommand({
@@ -19,10 +20,12 @@ export function resolveCodexCommand({
   platform = process.platform,
   arch = process.arch,
   applicationRoots = [join(homeDir, "Applications"), "/Applications"],
+  pathCommandAvailable = commandOnPath,
   vscodeExtensionRoots = defaultVsCodeExtensionRoots(homeDir),
   windowsAppProbe = spawnSync,
   windowsAppRuntimePaths,
   windowsPathExists = isExecutableCommand,
+  windowsPathProbe = spawnSync,
 } = {}) {
   const npmOverride = nonEmpty(env.MEMORAX_CODE_CODEX_COMMAND);
   if (npmOverride) return { command: npmOverride, source: "npm-override" };
@@ -30,7 +33,13 @@ export function resolveCodexCommand({
   const configured = nonEmpty(env.CODEX_CLI_PATH);
   if (configured) return { command: configured, source: "configured" };
 
-  if (commandOnPath("codex", env.PATH, platform, env.PATHEXT)) {
+  if (
+    pathCommandAvailable("codex", env.PATH, platform, env.PATHEXT)
+    && (
+      platform !== "win32"
+      || windowsCodexPathCommandIsRunnable("codex", env, windowsPathProbe)
+    )
+  ) {
     return { command: "codex", source: "path" };
   }
 
@@ -77,7 +86,10 @@ export function resolveWindowsCodexAppCommand({
   const codexHome = nonEmpty(env.CODEX_HOME) ?? win32.join(homeDir, ".codex");
   const candidates = runtimePaths ?? [win32.join(codexHome, ...WINDOWS_CODEX_APP_RUNTIME_SEGMENTS)];
   for (const command of candidates) {
-    if (pathExists(command, platform) && windowsCodexCommandIsRunnable(command, env, spawnSyncImpl)) {
+    if (
+      pathExists(command, platform)
+      && windowsCodexCommandIsRunnable(command, ["--version"], env, spawnSyncImpl)
+    ) {
       return command;
     }
   }
@@ -123,17 +135,31 @@ function codexPlatformDirectories(platform, arch) {
   return [];
 }
 
-function windowsCodexCommandIsRunnable(command, env, spawnSyncImpl) {
+function windowsCodexPathCommandIsRunnable(command, env, spawnSyncImpl) {
+  let invocation;
+  try {
+    invocation = resolveWindowsCliInvocation(command, ["--version"], {
+      env,
+      platform: "win32",
+      spawnSync: spawnSyncImpl,
+    });
+  } catch {
+    return false;
+  }
+  return windowsCodexCommandIsRunnable(invocation.command, invocation.args, env, spawnSyncImpl);
+}
+
+function windowsCodexCommandIsRunnable(command, args, env, spawnSyncImpl) {
   let result;
   try {
     result = spawnSyncImpl(
       command,
-      ["--version"],
+      args,
       {
         encoding: "utf8",
         env,
         stdio: ["ignore", "pipe", "pipe"],
-        timeout: WINDOWS_CODEX_APP_PROBE_TIMEOUT_MS,
+        timeout: WINDOWS_CODEX_DISCOVERY_PROBE_TIMEOUT_MS,
         windowsHide: true,
       },
     );

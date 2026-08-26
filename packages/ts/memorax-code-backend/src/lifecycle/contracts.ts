@@ -9,7 +9,6 @@ export type BackendServiceOptions = {
   port?: number;
   timeoutMs?: number;
   authToken?: string;
-  claudeProjectsRoot?: string | false;
 };
 
 export type BackendServiceRuntime = {

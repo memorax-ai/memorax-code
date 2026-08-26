@@ -40,6 +40,14 @@ Please allow time for triage and remediation before public disclosure.
 - Hook, lifecycle, connection, PID, token, session, and workspace authority
   records are security-sensitive local state. Do not hand-edit or publish
   them.
+- npm lifecycle scripts do not prompt for credentials, authorize Hooks, or
+  perform first-time setup. They only retire and restore an already-running
+  managed Backend during package replacement. Credential entry, disclosure,
+  client selection, and Hook review belong to foreground
+  `memorax-code setup` in the logged-in user's interactive terminal.
+- Setup-completion and package-transition records are versioned private
+  authority. Invalid or unsupported records fail closed instead of silently
+  treating a partial setup or interrupted package replacement as complete.
 - The managed OpenCode plugin may recover an unavailable Backend only through
   its package-recorded Node runtime and absolute `memorax-code` command, and
   the currently resolved loopback HTTP authority. It preserves the existing
@@ -75,11 +83,33 @@ Please allow time for triage and remediation before public disclosure.
 
 ### MemoraX memory traffic
 
+The trial-provisioning client sends a versioned device mark and the device
+attributes required by the provision contract to the configured MemoraX
+service. MemoraX returns the API key and account/project assignment; the API
+key is not generated locally. The complete provisioning record is stored by
+the current user's platform credential backend. Foreground setup also writes
+the returned API key to the private `config.toml` so the effective connection
+can be reused and managed with the normal configuration surface. Both copies
+are credentials and must not be logged or published. Account and project
+metadata remain only in secure credential storage. Device-mark metadata is not
+written to the user configuration file; it is read only for explicit account
+inspection and matching anonymous quota reminders.
+
+Quota-reminder deduplication is stored separately in a private local runtime
+record containing a one-way connection fingerprint and reminder levels, never
+a raw API key or Mark ID. An anonymous quota reminder reads the ready secure
+trial credential only when its API key matches the active connection, then
+displays the complete Mark ID in the local coding-agent notice or CLI output.
+Registered-account reminders, status, and diagnostics do not expose it. The
+user can also explicitly run `memorax-code account --show-mark-id` directly in
+a local terminal. Neither path prints the API key. Treat conversations,
+screenshots, and logs containing a displayed Mark ID as sensitive.
+
 MemoraX-backed search, retrieval, and writeback require a Base User ID, API
-key, and network access. The installer discloses automatic writeback before
-accepting credentials. Entering valid credentials activates search/add and
-the generated configuration's automatic writeback; automatic retrieval remains
-disabled until explicitly enabled.
+key, and network access. Foreground setup discloses automatic writeback before
+creating or accepting credentials. Completing setup activates search/add and
+the generated configuration's automatic writeback; automatic retrieval
+remains disabled until explicitly enabled.
 
 Memory searches send the query and repository-scoped identity to MemoraX.
 When DSH or OpenCode automatic retrieval is enabled, each eligible direct user
@@ -115,9 +145,9 @@ The packaged default uses `https://platform.memorax.net`. An endpoint override
 is a separate trust decision; configure only a compatible MemoraX service you
 trust.
 
-Treat the MemoraX API key, Base User ID, repository identity, queries, selected
-writeback content, and saved memories as sensitive. Disable writes immediately
-with:
+Treat the MemoraX API key, trial Mark ID, Base User ID, repository identity,
+queries, selected writeback content, and saved memories as sensitive. Disable
+writes immediately with:
 
 ```bash
 MEMORAX_CODE_MEMORAX_WRITEBACK_ENABLED=false
@@ -147,17 +177,7 @@ separate MemoraX queries and writeback described above.
 
 The DSH Session Event Log remains client-owned native history and is read only
 for the exact Turn interval. MemoraX Code records normalized DSH trace events
-but does not copy the raw log or its path into retained trace. Memory Viewer
-uses only normalized, client-qualified DSH operational events and retained
-trace; it never reads the native Event Log.
-
-The local `/memory-viewer` surface is a content-free activity summary. It must
-not expose conversation or memory text, session/turn identifiers, paths, or
-raw trace details. Its bootstrap URL contains an access token; do not copy
-that URL into logs, screenshots, or public issues. The projection covers
-Codex, Claude Code, DSH, and OpenCode while keeping their identities isolated.
-Live DSH memory events without a client-qualified TraceContext fail closed at
-the Viewer boundary.
+but does not copy the raw log or its path into retained trace.
 
 Generated `.repo_memory/` content, personal procedures, and profile preferences
 remain local and are Git-ignored by the supported workflow. Review and redact
@@ -174,9 +194,12 @@ memorax-code uninstall
 This stops the managed Backend, removes managed client integrations, and
 removes the global npm package when possible. For DSH it removes only the
 managed MemoraX Code plugin from Profiles; the Profiles and their session data
-remain owned by DSH. It intentionally retains:
+remain owned by DSH. A complete product uninstall clears the setup-completion
+record so a later installation requires foreground setup again. It
+intentionally retains:
 
-- `MEMORAX_CODE_HOME`, including configuration and local traces;
+- `MEMORAX_CODE_HOME`, including configuration, secure account-free
+  credentials, and local traces;
 - Claude plugin data;
 - client provider configuration; and
 - memories already stored in MemoraX.

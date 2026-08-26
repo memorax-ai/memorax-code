@@ -20,9 +20,11 @@ import type {
   MemoryObservabilitySource,
 } from "./observability.js";
 import {
+  memoraxConfigFromEnv,
   memoryWritebackBufferEnabled,
   memoryWritebackEnabled,
   memoryWritebackMaxMessageChars,
+  type MemoraxAdapterConfig,
 } from "../provider/memorax/config.js";
 import type { RepositoryMemorySessionScopeUpgrade } from "./repository-session.js";
 import type {
@@ -35,6 +37,7 @@ import {
   redactMemoryPayloadText,
   type MemoryPayloadRedactionKind,
 } from "./payload-redaction.js";
+import type { MemoraxQuotaSnapshot } from "../provider/memorax/quota.js";
 
 export type AutomaticMemoryWritebackClient = "codex" | "claude-code" | "opencode" | "dsh" | "kimi";
 
@@ -89,10 +92,12 @@ export type AutomaticMemoryWritebackRuntime = {
 
 export type AutomaticMemoryWritebackRuntimeOptions = {
   diagnosticLogger?: MemoryDiagnosticLogger;
+  queueQuotaNotice?: (config: MemoraxAdapterConfig, quota: MemoraxQuotaSnapshot) => void;
 };
 
 type AutomaticMemoryWritebackState = {
   diagnosticLogger: MemoryDiagnosticLogger;
+  queueQuotaNotice?: (config: MemoraxAdapterConfig, quota: MemoraxQuotaSnapshot) => void;
   pendingWritebacks: Map<string, number>;
   writebackBuffer: MemoryWritebackBufferRuntime;
   accepting: boolean;
@@ -111,6 +116,7 @@ export function createAutomaticMemoryWritebackRuntime(
 ): AutomaticMemoryWritebackRuntime {
   const state: AutomaticMemoryWritebackState = {
     diagnosticLogger: options.diagnosticLogger ?? (() => {}),
+    queueQuotaNotice: options.queueQuotaNotice,
     pendingWritebacks: new Map(),
     writebackBuffer: createMemoryWritebackBufferRuntime(),
     accepting: true,
@@ -316,6 +322,7 @@ async function enqueueAutomaticMemoryWritebackAsync(
     const parts = memoryWritebackAddParts(decision, options.env ?? process.env);
     for (const [index, part] of parts.entries()) {
       for (let attempt = 1; attempt <= AUTOMATIC_MEMORY_WRITEBACK_MAX_ATTEMPTS; attempt += 1) {
+        const configResult = memoraxConfigFromEnv(options.env);
         const response = await invokeMemoraxMemoryProvider({
           sessionId: decision.sessionKey,
           prompt: part.messages.find((message) => message.role === "user")?.content ?? "",
@@ -334,6 +341,7 @@ async function enqueueAutomaticMemoryWritebackAsync(
             ...(part.chunk ? { chunk: part.chunk } : {}),
           },
         }, {
+          ...(configResult.ok ? { config: configResult.config } : {}),
           env: options.env,
           fetchImpl: options.fetchImpl,
           observability: options.memoryObservability,
@@ -370,7 +378,12 @@ async function enqueueAutomaticMemoryWritebackAsync(
           errorKind: response.ok ? undefined : response.errorKind,
           httpStatus: response.ok ? undefined : response.httpStatus,
         });
-        if (response.ok) break;
+        if (response.ok) {
+          if (response.result.quota && configResult.ok) {
+            queueQuotaNoticeBestEffort(state, configResult.config, response.result.quota);
+          }
+          break;
+        }
         if (!retrying) {
           releasePendingWritebacks(state, [decision.idempotencyKey, ...(decision.dedupeKeys ?? [])]);
           return;
@@ -422,6 +435,18 @@ function trackAutomaticMemoryWriteback(
     () => state.inFlight.delete(writeback),
     () => state.inFlight.delete(writeback),
   );
+}
+
+function queueQuotaNoticeBestEffort(
+  state: AutomaticMemoryWritebackState,
+  config: MemoraxAdapterConfig,
+  quota: MemoraxQuotaSnapshot,
+): void {
+  try {
+    state.queueQuotaNotice?.(config, quota);
+  } catch {
+    state.diagnosticLogger("memory.automatic_writeback.quota_notice_queue_failed", {});
+  }
 }
 
 function hasPendingWriteback(state: AutomaticMemoryWritebackState, idempotencyKey: string): boolean {

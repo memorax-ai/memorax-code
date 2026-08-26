@@ -672,6 +672,18 @@ test("memorax-code lifecycle rejects invalid config before mutating clients or B
     assert.equal(await readFile(join(codexHome, "config.toml"), "utf8"), originalCodexConfig);
     assert.equal(await readFile(join(claudeHome, "settings.json"), "utf8"), originalClaudeSettings);
     assert.equal(await pathExists(pluginCli.callsPath), false);
+
+    const activeClientsPath = join(home, "runtime", "backend", "managed-clients.json");
+    const activeClients = { codex: false, claude: true, dsh: false, opencode: false };
+    await mkdir(join(home, "runtime", "backend"), { recursive: true });
+    await writeFile(activeClientsPath, `${JSON.stringify(activeClients)}\n`);
+    const replacement = await runCli(cliPath, ["start", "--json", ...commonArgs], {
+      env: { ...env, MEMORAX_CODE_PACKAGE_REPLACEMENT: "1" },
+    });
+    assert.equal(replacement.code, 1, `${replacement.stdout}\n${replacement.stderr}`);
+    assert.match(replacement.stderr, /failed to parse MemoraX Code lifecycle config/);
+    assert.deepEqual(JSON.parse(await readFile(activeClientsPath, "utf8")), activeClients);
+    assert.equal(await pathExists(join(home, "runtime", "backend", "backend.pid.json")), false);
   } finally {
     await runCli(cliPath, ["stop", "--json", ...commonArgs, "--clients", "none"], { env });
     await rm(home, { recursive: true, force: true });

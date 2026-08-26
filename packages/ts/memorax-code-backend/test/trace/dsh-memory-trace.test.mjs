@@ -9,18 +9,21 @@ import {
   clientTraceConfigFromEnv,
   dshTraceConfigFromEnv,
   dshTracePaths,
+  kimiTraceConfigFromEnv,
+  kimiTracePaths,
 } from "../../dist/trace/config.js";
 import {
   isTraceClient,
   traceContextFromCurrentTurnRecord,
   traceContextFromDshSessionEventLog,
   traceContextFromDshTurnStart,
+  traceContextFromKimiHookBody,
 } from "../../dist/trace/context.js";
 
 test("DSH trace config has its own defaults, file section, env prefix, and path", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-dsh-trace-config-"));
   try {
-    assert.deepEqual(TRACE_CLIENTS, ["codex", "claude", "dsh", "opencode"]);
+    assert.deepEqual(TRACE_CLIENTS, ["codex", "claude", "dsh", "opencode", "kimi"]);
     assert.match(renderDefaultMemoraxCodeConfig(), /\[trace\.dsh\]\nenabled = true/);
     assert.deepEqual(dshTraceConfigFromEnv({
       MEMORAX_CODE_HOME: root,
@@ -81,9 +84,31 @@ test("DSH trace config has its own defaults, file section, env prefix, and path"
       "events.jsonl",
     ));
     assert.equal(clientTraceConfigFromEnv("dsh", { MEMORAX_CODE_HOME: root }, config).retentionDays, 3);
+    assert.equal(kimiTraceConfigFromEnv({ MEMORAX_CODE_HOME: root }).enabled, true);
+    assert.equal(kimiTracePaths(root).root, join(root, "debug", "traces", "kimi"));
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("Kimi trace contexts keep prompt and native turn identities client-qualified", () => {
+  assert.deepEqual(traceContextFromKimiHookBody({
+    session_id: "session-kimi",
+    prompt_id: "prompt-kimi",
+    turn_id: "7",
+    cwd: "/repo",
+  }, "2026-08-16T00:00:00.000Z"), {
+    schemaVersion: "1",
+    client: "kimi",
+    sessionId: "session-kimi",
+    turnId: "prompt-kimi",
+    nativeRequestId: "7",
+    cwd: "/repo",
+    contextOrigin: "kimi-hook-body",
+    capturedAt: "2026-08-16T00:00:00.000Z",
+  });
+  assert.equal(traceContextFromKimiHookBody({ session_id: "session-kimi" }), undefined);
+  assert.equal(isTraceClient("kimi"), true);
 });
 
 test("DSH trace contexts distinguish Cordis turn start from authoritative Event Log materialization", () => {

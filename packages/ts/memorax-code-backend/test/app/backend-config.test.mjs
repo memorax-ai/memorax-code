@@ -1,16 +1,13 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { backendEnv } from "../../dist/config/backend-env.js";
-import {
-  createBackendState,
-  memoryViewerClaudeProjectsRootFromEnv,
-} from "../../dist/app/state.js";
+import { createBackendState } from "../../dist/app/state.js";
 import { startBackendInstallWatchdog } from "../../dist/lifecycle/install-watchdog.js";
 import { createBackendServer } from "../../dist/server.js";
 import { listen } from "../support/helpers.mjs";
@@ -20,20 +17,6 @@ test("Backend env reads only the canonical contract", () => {
     MEMORAX_CODE_BACKEND_PORT: "9001",
   }), "9001");
   assert.equal(backendEnv("PORT", {}), undefined);
-});
-
-test("Backend parses only an explicitly injected Claude Viewer source", () => {
-  const root = join(tmpdir(), "memorax-code-explicit-claude-projects");
-  assert.equal(memoryViewerClaudeProjectsRootFromEnv({}), undefined);
-  assert.equal(memoryViewerClaudeProjectsRootFromEnv({
-    CLAUDE_CONFIG_DIR: join(tmpdir(), "implicit-claude-home"),
-  }), undefined);
-  assert.equal(memoryViewerClaudeProjectsRootFromEnv({
-    MEMORAX_CODE_MEMORY_VIEWER_CLAUDE_PROJECTS_ROOT: "disabled",
-  }), false);
-  assert.equal(memoryViewerClaudeProjectsRootFromEnv({
-    MEMORAX_CODE_MEMORY_VIEWER_CLAUDE_PROJECTS_ROOT: root,
-  }), root);
 });
 
 test("Backend health reports current lifecycle and security state", async () => {
@@ -66,73 +49,6 @@ test("Backend health reports current lifecycle and security state", async () => 
     });
   } finally {
     await new Promise((resolve) => server.close(resolve));
-    await rm(sessionHome, { recursive: true, force: true });
-  }
-});
-
-test("Backend lifecycle starts writeback reconciliation and persists terminal status", { concurrency: false }, async () => {
-  const sessionHome = await mkdtemp(join(tmpdir(), "memorax-code-backend-writeback-reconciler-"));
-  const sessionDir = join(sessionHome, "debug", "traces", "codex", "sessions", "session-lifecycle");
-  const eventsPath = join(sessionDir, "events.jsonl");
-  const envNames = [
-    "MEMORAX_CODE_CODEX_TRACE_ENABLED",
-    "MEMORAX_CODE_MEMORAX_API_KEY",
-    "MEMORAX_CODE_MEMORAX_ENDPOINT",
-    "MEMORAX_CODE_MEMORAX_USER_ID",
-    "MEMORAX_CODE_MEMORAX_WRITEBACK_ENABLED",
-  ];
-  const previousEnv = new Map(envNames.map((name) => [name, process.env[name]]));
-  const originalFetch = globalThis.fetch;
-  const requests = [];
-  let server;
-  try {
-    await mkdir(sessionDir, { recursive: true });
-    await writeFile(eventsPath, JSON.stringify({
-      type: "memory_writeback",
-      event_id: "writeback-lifecycle",
-      timestamp: "2026-07-24T10:00:00Z",
-      trace: {
-        client: "codex",
-        session_id: "session-lifecycle",
-        turn_id: "turn-lifecycle",
-      },
-      source: "codex_hook_writeback",
-      operation: "writeback",
-      ok: true,
-      request: { payload: { messages: [{ role: "user", content: "Persist lifecycle status." }] } },
-      response: { raw: { data: { task_id: "task-lifecycle", status: "queued" } } },
-    }), "utf8");
-    process.env.MEMORAX_CODE_CODEX_TRACE_ENABLED = "true";
-    process.env.MEMORAX_CODE_MEMORAX_API_KEY = "test-key";
-    process.env.MEMORAX_CODE_MEMORAX_ENDPOINT = "http://memorax.test";
-    process.env.MEMORAX_CODE_MEMORAX_USER_ID = "test-user";
-    process.env.MEMORAX_CODE_MEMORAX_WRITEBACK_ENABLED = "true";
-    globalThis.fetch = async (url) => {
-      requests.push(String(url));
-      return new Response(JSON.stringify({
-        status: "success",
-        memory: {
-          summary: "Lifecycle reconciliation result.",
-          events: [{ id: "memory-lifecycle", event: "ADD" }],
-        },
-      }), { status: 200, headers: { "content-type": "application/json" } });
-    };
-
-    server = createBackendServer(createBackendState("127.0.0.1", { sessionHome }));
-    await listen(server);
-    await waitForFileLines(eventsPath, 2);
-
-    assert.equal(requests.length, 1);
-    assert.match(new URL(requests[0]).pathname, /\/v1\/memories\/add\/status\/task-lifecycle$/);
-    const events = (await readFile(eventsPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
-    assert.equal(events[1].type, "memory_writeback_status");
-    assert.equal(events[1].source, "writeback_reconciler");
-    assert.equal(events[1].request.original_event_id, "writeback-lifecycle");
-    assert.equal(events[1].response.outcome, "saved");
-  } finally {
-    if (server) await new Promise((resolve) => server.close(() => resolve()));
-    globalThis.fetch = originalFetch;
-    for (const [name, value] of previousEnv) restoreEnv(name, value);
     await rm(sessionHome, { recursive: true, force: true });
   }
 });
@@ -387,17 +303,6 @@ function waitForChildExit(child) {
       resolve({ code, signal });
     });
   });
-}
-
-async function waitForFileLines(path, expectedLines) {
-  const deadline = Date.now() + 2_000;
-  while (Date.now() < deadline) {
-    const lines = await readFile(path, "utf8")
-      .then((text) => text.trim().split("\n").filter(Boolean).length);
-    if (lines >= expectedLines) return;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  assert.fail(`timed out waiting for ${expectedLines} lines in ${path}`);
 }
 
 function runCommand(command, args, env) {

@@ -95,7 +95,7 @@ export function memoraxAddFetch() {
   };
 }
 
-export function memoraxSearchFetch(memoryText) {
+export function memoraxSearchFetch(memoryText, quota = undefined) {
   const requests = [];
   return {
     requests,
@@ -115,6 +115,18 @@ export function memoraxSearchFetch(memoryText) {
             score: 0.95,
             metadata: { memory_type: "core" },
           }],
+          ...(quota ? {
+            balances: [{
+              product_code: "memory_api",
+              feature_code: "memory_search",
+              spec_key: "calls",
+              quota_unit: "times",
+              quota_limit: quota.limit,
+              reserved: 1,
+              consumed: 0,
+              remaining: quota.remaining,
+            }],
+          } : {}),
         },
       }), {
         status: 200,
