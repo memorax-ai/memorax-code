@@ -159,12 +159,19 @@ export function createKimiMemoryHookRuntime(
           "wire_identity_mismatch",
         ].includes(materialized.reason)) {
           clearKimiOperationalTurn(options.memoraxCodeHome, command.sessionId, command.promptId);
+          releaseAutomaticRetrievalPrompt(automaticRetrievalPrompts, command.sessionId, command.promptId);
         }
         if (materialized.reason === "cancelled") {
-          releaseAutomaticRetrievalPrompt(automaticRetrievalPrompts, command.sessionId, command.promptId);
           const traceContext = traceContextForWriteback(command, entry, recoveredTraceContext);
           await recordTurnEnd(options, traceContext, undefined, "interrupted");
           turnCoordinator.discardTurn(key, "interrupted");
+        } else if ([
+          "assistant_message_missing",
+          "malformed_record",
+          "prompt_identity_mismatch",
+          "wire_identity_mismatch",
+        ].includes(materialized.reason)) {
+          turnCoordinator.discardTurn(key, "rolled_back");
         }
         options.diagnosticLogger?.("kimi_memory_hook.writeback", {
           scheduled: false,
