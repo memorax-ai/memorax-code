@@ -231,6 +231,7 @@ async function startRawBackendServer(
         dshHome: argValue(argv, "--dsh-home"),
         dshAdapterRoot: argValue(argv, "--dsh-adapter-root"),
         openCodeConfigDir: argValue(argv, "--opencode-config-dir"),
+        codeBuddyHome: argValue(argv, "--codebuddy-home"),
         codexCommand: argValue(argv, "--codex-command"),
         claudeCommand: argValue(argv, "--claude-command"),
         dshCommand: argValue(argv, "--dsh-command"),
