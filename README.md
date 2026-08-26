@@ -40,7 +40,7 @@ Coding agents are good at the task in front of them, but a new session often
 starts without the architecture, failed attempts, repository rules, or working
 preferences established before it.
 
-MemoraX Code gives Codex, Claude Code, DeepSeek Harness, and OpenCode a shared
+MemoraX Code gives Codex, Claude Code, CodeBuddy/WorkBuddy, DeepSeek Harness, and OpenCode a shared
 memory layer for that context.
 It can recall prior engineering knowledge, capture reusable lessons from
 completed work, maintain repository knowledge, and carry your procedures and
@@ -53,9 +53,9 @@ and validation sooner.
 ## Quick Start
 
 Prepare Node.js 20+ (Node.js 24 LTS recommended) and at least one of Codex,
-Claude Code, DeepSeek Harness, or OpenCode. Python 3 is required for Repo
-Memory operations. Each coding-agent harness retains its own runtime
-requirements; current DeepSeek Harness releases require Node.js
+Claude Code, CodeBuddy/WorkBuddy, DeepSeek Harness, or OpenCode. Python 3 is
+required for Repo Memory operations. Each coding-agent harness retains its own
+runtime requirements; current DeepSeek Harness releases require Node.js
 `^22.19.0 || >=24.0.0`. DSH may be installed globally or initialized
 beforehand through its official `npx` workflow.
 
@@ -66,6 +66,15 @@ beforehand through its official `npx` workflow.
 ```bash
 npm install -g @memorax/memorax-code
 ```
+
+Keep `--foreground-scripts` so the complete setup remains visible. The
+installer automatically detects available Codex, Claude Code, CodeBuddy/WorkBuddy, DeepSeek
+Harness, and OpenCode installations and connects those it finds. Follow the
+prompts to enter your MemoraX user ID, preferred language, and API key. On an
+interactive first install, a non-empty user ID and API key are required unless
+the effective configuration already supplies both. Codex users must also
+approve Hook activation and trust when prompted. Restart or refresh every
+detected coding agent after installation before starting a new session.
 
 #### 2. Connect a MemoraX Account (Recommended)
 
@@ -130,8 +139,9 @@ cd test-repo
 ```
 
 Invoke the Skill as `$memorax-code` in Codex or `/memorax-code` in Claude Code
-or DeepSeek Harness. In OpenCode, ask the agent to use the `memorax-code` skill
-by name. The prompts below use its product name and work in all four clients.
+or DeepSeek Harness. In OpenCode, CodeBuddy, or WorkBuddy, ask the agent to use
+the `memorax-code` skill by name. The prompts below use its product name and
+work in all supported clients.
 
 Send these prompts in order in the same session:
 
@@ -155,6 +165,9 @@ the current repository.
 > The prompts above are only for quick verification. In normal use, you do not
 > need to invoke the MemoraX Code skill to add memory manually. It writes
 > relevant memory in the background and guides agents to search when useful.
+> In the [Memory Viewer](http://127.0.0.1:8787/memory-viewer), you can switch
+> among Codex, Claude Code, CodeBuddy/WorkBuddy, DeepSeek Harness, and OpenCode to view content-free
+> local activity and status.
 
 ## Four Clear Memory Boundaries
 
@@ -184,7 +197,8 @@ writing when the durable intent or target is unclear.
 | **Procedure reuse** | Records reusable task procedures and reminds future agents to apply them. |
 | **Background Repo Memory maintenance** | Automatically organizes repository structure, entry points, and history evidence in the background, then updates them according to policy to reduce repeated searching and summarization. |
 | **Active memory control** | Lets you search and add memory through the bundled MemoraX Code skill or the CLI. |
-| **Client integration** | Integrates with Codex, Claude Code, DeepSeek Harness, and OpenCode to trigger memory retrieval, reminders, and writeback. Automatic quota reminders are currently available in Codex, Claude Code, and OpenCode. |
+| **Client integration** | Integrates with Codex, Claude Code, CodeBuddy/WorkBuddy, DeepSeek Harness, and OpenCode to trigger memory retrieval, reminders, and writeback. Automatic quota reminders are currently available in Codex, Claude Code, and OpenCode. |
+| **Local visualization** | Uses the local Memory Viewer to summarize activity counts, retrieval, and writeback status. |
 
 ## Your Memory, Your Control
 
@@ -224,7 +238,7 @@ memorax-code update
 ```
 
 The command follows the installed release channel and preserves configuration.
-Restart or refresh Codex, Claude Code, DeepSeek Harness, and OpenCode when a
+Restart or refresh Codex, Claude Code, CodeBuddy/WorkBuddy, DeepSeek Harness, and OpenCode when a
 release changes installed integration assets.
 
 ### Windows Upgrade Note

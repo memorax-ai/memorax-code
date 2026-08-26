@@ -39,7 +39,7 @@ are not a compatibility contract.
 
 ## New configuration
 
-The generated template selects all four client integrations, disables automatic
+The generated template selects the existing client integrations, including the optional CodeBuddy/WorkBuddy adapter, disables automatic
 retrieval, enables automatic writeback, sets the preferred language to Chinese
 (`zh`), uses a five-turn skill reminder and the adaptive repository-update
 policy, and enables content-bearing local traces for Codex, Claude Code, and
@@ -54,7 +54,7 @@ filesystem ACLs.
 ## Client selection
 
 If `[clients]` is absent, lifecycle commands select Codex, Claude Code, DSH,
-and OpenCode. If it is present, `codex`, `claude`, `dsh`, and `opencode` are
+and OpenCode; CodeBuddy is opt-in unless detected during installation. If it is present, `codex`, `claude`, `dsh`, `opencode`, and `codebuddy` are
 boolean fields. Omitted `codex`, `claude`, or `opencode` values are disabled;
 an omitted `dsh` value remains enabled so configurations written before DSH
 support can discover an existing local Harness. Set `dsh = false` explicitly
@@ -62,7 +62,7 @@ to disable that integration. The command-line override accepts a
 comma-separated subset:
 
 ```text
---clients codex|claude|dsh|opencode|<comma-separated subset>|all|none
+--clients codex|claude|dsh|opencode|codebuddy|<comma-separated subset>|all|none
 ```
 
 Foreground `memorax-code setup` refreshes `[clients]` from the clients
@@ -168,6 +168,23 @@ the observed event, workspace, optional session identifier, and timestamp.
 MemoraX Code does not add entries to or otherwise modify `opencode.json` or
 `opencode.jsonc`. Restart or refresh OpenCode after installation or after these
 managed assets change.
+
+## CodeBuddy and WorkBuddy integration paths
+
+The managed CodeBuddy/WorkBuddy marketplace plugin and shared Skill use the
+native plugin layout:
+
+```text
+~/.workbuddy/plugins/marketplaces/memorax-code-local/plugins/memorax-code-codebuddy-adapter/
+├── hooks/
+└── skills/memorax-code/
+```
+
+`CODEBUDDY_HOME` or `WORKBUDDY_HOME` overrides the default `~/.workbuddy`
+root. The Skill is materialized from the canonical MemoraX Code Skill and is
+owned by the managed marketplace plugin; user files under `~/.workbuddy/skills`
+are not modified. Run `memorax-code-codebuddy status --json` to verify both
+Hook and Skill installation, then restart or refresh WorkBuddy.
 
 The managed loader records the exact MemoraX Code home, OpenCode configuration
 directory, installed Node runtime, and `memorax-code` entrypoint. When the
@@ -319,14 +336,22 @@ Supported policies are `every-commit`, `commit-count`, `daily`,
 `pull-request`, `pull-request-or-daily`, and `adaptive`. Invalid policy values
 fall back to `adaptive`.
 
-In Codex, Claude Code, DSH, and OpenCode, the first eligible prompt starts a
+In Codex, Claude Code, CodeBuddy/WorkBuddy, DSH, and OpenCode, the first eligible prompt starts a
 background build only when the Backend has authorized a Git worktree and that
 worktree has no `.repo_memory/PROFILE.md`. If the Backend or workspace
 authority is unavailable, the client integration skips that attempt instead
 of falling back to its local workspace path. DSH schedules this work through
 its native pre-step integration rather than a Hook.
 
-A relevant repo-read runs supervised maintenance in all four clients. The
+CodeBuddy/WorkBuddy repository jobs run the headless client under a bounded
+worker. `MEMORAX_CODE_REPO_MEMORY_JOB_TIMEOUT_MS` sets the client execution
+limit (default `600000` ms); `MEMORAX_CODE_REPO_MEMORY_JOB_KILL_GRACE_MS` sets
+the grace period before the worker force-terminates a client that ignores
+`SIGTERM` (default `5000` ms). A timeout is recorded as
+`codebuddy_timeout` (or `<runner>_timeout`) in the job state, so a stalled
+headless client cannot leave an active job and repository marker indefinitely.
+
+A relevant repo-read runs supervised maintenance in all supported clients. The
 configured policy may select a build, update, or no-op. DSH maintenance
 requires an enabled, managed Profile that includes `@deepseek-ai/dsh-headless`.
 OpenCode executes the job through its active local server. Desktop-only
@@ -334,7 +359,7 @@ installations do not require a standalone `opencode` executable in `PATH`.
 
 ## Local traces
 
-`[trace.codex]`, `[trace.claude]`, `[trace.dsh]`, and `[trace.opencode]`
+`[trace.codex]`, `[trace.claude]`, `[trace.dsh]`, `[trace.opencode]`, and `[trace.codebuddy]`
 support the same fields:
 
 | Field | Codex environment | Claude environment | DSH environment | OpenCode environment | Fallback |
