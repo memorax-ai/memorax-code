@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveHookCodeBuddyCommand } from "../../memorax-code-adapter-common/src/clients/codebuddy-command.mjs";
 
-const VERSION = "0.1.4";
+const VERSION = "0.1.8";
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const PLUGIN_NAME = "memorax-code-codebuddy-adapter";
 const MARKETPLACE_NAME = "memorax-code-local";
@@ -49,6 +49,8 @@ export async function enableCodeBuddyAdapter(options = {}) {
 export async function disableCodeBuddyAdapter(options = {}) {
   const home = options.codeBuddyHome ?? defaultCodeBuddyHome();
   const registryPath = installedRegistryPath(home);
+  const installed = await pathExists(marketplacePluginPath(home)) || await pathExists(codeBuddyInstallPath(home));
+  if (!installed) return { ok: true, action: "disable", runtime: "codebuddy", installed: false, enabled: false, codeBuddyHome: home, statePath: registryPath, marketplace: MARKETPLACE_NAME, pluginId: PLUGIN_ID };
   await updateSettings(home, (settings) => {
     settings.enabledPlugins = recordValue(settings.enabledPlugins);
     settings.enabledPlugins[PLUGIN_ID] = false;
@@ -72,27 +74,36 @@ export async function readCodeBuddyAdapterStatus(options = {}) {
 
 export async function removeCodeBuddyPluginInstallation(options = {}) {
   const home = options.codeBuddyHome ?? defaultCodeBuddyHome();
+  const installed = await pathExists(marketplacePluginPath(home)) || await pathExists(codeBuddyInstallPath(home));
+  if (!installed) return { ok: true, action: "codebuddy-plugin-remove", runtime: "codebuddy", installed: false, enabled: false, removed: false, codeBuddyHome: home, marketplace: MARKETPLACE_NAME, pluginId: PLUGIN_ID };
   const status = await disableCodeBuddyAdapter({ codeBuddyHome: home });
   await updateSettings(home, (settings) => {
     settings.enabledPlugins = recordValue(settings.enabledPlugins);
     delete settings.enabledPlugins[PLUGIN_ID];
   });
   await updateKnownMarketplace(home, false);
-  const registry = await readRegistry(home);
-  delete registry[PLUGIN_ID];
-  await writeRegistry(home, registry);
+  await updateRegistry(home, (registry) => { delete registry[PLUGIN_ID]; });
   await rm(codeBuddyInstallPath(home), { recursive: true, force: true });
   await rm(legacyCodeBuddyInstallPath(home), { recursive: true, force: true });
   await rm(marketplaceRoot(home), { recursive: true, force: true });
   return { ...status, action: "codebuddy-plugin-remove", installed: false, enabled: false, removed: true };
 }
 
-async function readRegistry(home) { try { const value = JSON.parse(await readFile(installedRegistryPath(home), "utf8")); return value?.plugins && typeof value.plugins === "object" ? value.plugins : {}; } catch { return {}; } }
+async function readRegistry(home) {
+  try {
+    const value = JSON.parse(await readFile(installedRegistryPath(home), "utf8"));
+    if (value?.plugins && typeof value.plugins === "object" && !Array.isArray(value.plugins)) return value.plugins;
+    throw new Error(`invalid CodeBuddy plugin registry: ${installedRegistryPath(home)}`);
+  } catch (error) {
+    if (error?.code === "ENOENT") return {};
+    throw error;
+  }
+}
 async function writeRegistry(home, plugins) { await writeJsonFile(installedRegistryPath(home), { version: 2, plugins }); }
 async function updateLegacyRegistry(home, { installPath, enabled }) {
-  const registry = await readRegistry(home);
-  registry[PLUGIN_ID] = [{ scope: "user", installPath, version: VERSION, enabled, installedAt: new Date().toISOString(), lastUpdated: new Date().toISOString() }];
-  await writeRegistry(home, registry);
+  await updateRegistry(home, (registry) => {
+    registry[PLUGIN_ID] = [{ scope: "user", installPath, version: VERSION, enabled, installedAt: new Date().toISOString(), lastUpdated: new Date().toISOString() }];
+  });
 }
 async function writeMarketplaceManifest(home) {
   const path = join(marketplaceRoot(home), ".codebuddy-plugin", "marketplace.json");
@@ -121,9 +132,40 @@ async function updateKnownMarketplace(home, enabled) {
 }
 async function updateSettings(home, mutate) {
   const path = codeBuddySettingsPath(home);
-  const settings = await readJsonRecord(path);
-  mutate(settings);
-  await writeJsonFile(path, settings);
+  await updateJsonRecord(path, mutate);
+}
+
+async function updateRegistry(home, mutate) {
+  const path = installedRegistryPath(home);
+  await updateJsonRecord(path, (value) => {
+    value.version = 2;
+    value.plugins = recordValue(value.plugins);
+    mutate(value.plugins);
+  });
+}
+
+async function updateJsonRecord(path, mutate) {
+  const lockPath = `${path}.lock`;
+  await mkdir(dirname(path), { recursive: true });
+  let handle;
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    try {
+      handle = await import("node:fs/promises").then(({ open }) => open(lockPath, "wx", 0o600));
+      break;
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+      await new Promise((resolve) => setTimeout(resolve, Math.min(50, 5 + attempt)));
+    }
+  }
+  if (!handle) throw new Error(`timed out acquiring lock: ${lockPath}`);
+  try {
+    const value = await readJsonRecord(path);
+    mutate(value);
+    await writeJsonFile(path, value);
+  } finally {
+    await handle.close();
+    await rm(lockPath, { force: true });
+  }
 }
 async function readJsonRecord(path) {
   try {
