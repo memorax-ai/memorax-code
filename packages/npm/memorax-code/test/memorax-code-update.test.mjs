@@ -19,6 +19,7 @@ async function createPackageFixture(version) {
   await cp(join(packageRoot, "lib", "run-entrypoint.mjs"), join(root, "lib", "run-entrypoint.mjs"));
   await cp(join(packageRoot, "lib", "resolve-claude-command.mjs"), join(root, "lib", "resolve-claude-command.mjs"));
   await cp(join(packageRoot, "lib", "resolve-codex-command.mjs"), join(root, "lib", "resolve-codex-command.mjs"));
+  await cp(join(packageRoot, "lib", "resolve-codebuddy-command.mjs"), join(root, "lib", "resolve-codebuddy-command.mjs"));
   await cp(join(packageRoot, "lib", "windows-cli-invocation.mjs"), join(root, "lib", "windows-cli-invocation.mjs"));
   await cp(join(packageRoot, "lib", "vscode-extension-command.mjs"), join(root, "lib", "vscode-extension-command.mjs"));
   const manifest = JSON.parse(await readFile(join(packageRoot, "package.json"), "utf8"));

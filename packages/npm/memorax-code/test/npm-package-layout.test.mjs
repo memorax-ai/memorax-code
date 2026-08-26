@@ -54,6 +54,11 @@ test("single npm package layout accepts declared paths and rejects unknown trees
   assert.equal(isAllowedNpmPackPath("docs/undeclared.md"), false);
 });
 
+test("CodeBuddy adapter ships the canonical MemoraX skill", () => {
+  assert.equal(isAllowedNpmPackPath("lib/memorax-code-codebuddy-adapter/skills/memorax-code/SKILL.md"), true);
+  assert.equal(isAllowedNpmPackPath("lib/memorax-code-codebuddy-adapter/skills/memorax-code/references/memorax-search.md"), true);
+});
+
 test("credential runtime allowlist accepts only reviewed main and marketplace files", () => {
   const names = [
     "linux-secret-service.mjs",

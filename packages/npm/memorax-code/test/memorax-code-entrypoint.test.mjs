@@ -328,6 +328,7 @@ async function createPackageFixture() {
     "lib/npm-invocation.mjs",
     "lib/resolve-claude-command.mjs",
     "lib/resolve-codex-command.mjs",
+    "lib/resolve-codebuddy-command.mjs",
     "lib/run-entrypoint.mjs",
     "lib/vscode-extension-command.mjs",
     "lib/windows-cli-invocation.mjs",

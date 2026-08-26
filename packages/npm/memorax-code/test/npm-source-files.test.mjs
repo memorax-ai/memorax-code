@@ -92,6 +92,17 @@ test("DSH shared skill stages directly from tracked Codex skill sources", () => 
   );
 });
 
+test("CodeBuddy shared skill stages directly from tracked Codex skill sources", () => {
+  assert.ok(npmMainSourceTrees.some((mapping) => (
+    mapping.source === "packages/ts/memorax-code-codex-adapter/skills/memorax-code"
+    && mapping.destination === "lib/memorax-code-codebuddy-adapter/skills/memorax-code"
+  )));
+  assert.equal(
+    npmMainSourceTrees.some((mapping) => mapping.source === "packages/ts/memorax-code-codebuddy-adapter/skills"),
+    false,
+  );
+});
+
 test("Codex plugin assets are declared npm source trees", () => {
   assert.ok(npmMainSourceTrees.some((mapping) => (
     mapping.source === "packages/ts/memorax-code-codex-adapter/assets"

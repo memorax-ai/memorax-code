@@ -25,6 +25,7 @@ const codexRuntimeShellPath = fileURLToPath(new URL(
 ));
 const claudeCommandResolverPath = fileURLToPath(new URL("../lib/resolve-claude-command.mjs", import.meta.url));
 const codexCommandResolverPath = fileURLToPath(new URL("../lib/resolve-codex-command.mjs", import.meta.url));
+const codeBuddyCommandResolverPath = fileURLToPath(new URL("../lib/resolve-codebuddy-command.mjs", import.meta.url));
 const vscodeExtensionCommandPath = fileURLToPath(new URL("../lib/vscode-extension-command.mjs", import.meta.url));
 const windowsCliInvocationPath = fileURLToPath(new URL("../lib/windows-cli-invocation.mjs", import.meta.url));
 const smolTomlPath = fileURLToPath(new URL("../../../ts/memorax-code-backend/node_modules/smol-toml", import.meta.url));
@@ -130,7 +131,7 @@ async function startMockMemorax({ status = 200, body = { success: true, data: { 
   };
 }
 
-async function runSetup({ existingCache = false, explicitCache = false, hookRuntimeFailure, failStartOnce = false, connectionAuthorityFailure = false, runtimeAuthorityFailureCode, officialMode = false, codexConfig, memoraxCodeConfig, memoraxCodeConfigMode, emptyClaudeSettings = false, claudeAvailable = true, claudeVersionFails = false, claudeSettingsText, codexAvailable = true, codexAppOnly = false, vscodeOnly = false, dshProfiles = [], opencodeAvailable = false, opencodeXdgAvailable = false, opencodeCliAvailable = false, skipCodexPluginInstall = false, skipClaudeAdapterInstall = false, skipOpenCodeAdapterInstall = false, unavailableStatus = false, prefixedStatus = false, input = "", interactive = true, npmCommand = "install", updateMode = false, setupMode = "automatic", memoraxVerify, memoraxEnv = {}, memoryStatusFixture, trialProvisionFailure = false, hookSnapshot = [], hookUpdatePlan = [], hookFullReview = false, hookFullReviewMissing = false, hookSnapshotFails = false, hookCheckFails = false, hookTrustFails = false, detectedUserId = "memory-user", detectedLanguage = "zh", ttyOverride } = {}) {
+async function runSetup({ existingCache = false, explicitCache = false, hookRuntimeFailure, failStartOnce = false, connectionAuthorityFailure = false, runtimeAuthorityFailureCode, officialMode = false, codexConfig, memoraxCodeConfig, memoraxCodeConfigMode, emptyClaudeSettings = false, claudeAvailable = true, claudeVersionFails = false, claudeSettingsText, codexAvailable = true, codexAppOnly = false, vscodeOnly = false, dshProfiles = [], opencodeAvailable = false, opencodeXdgAvailable = false, opencodeCliAvailable = false, codebuddyAvailable = false, skipCodexPluginInstall = false, skipClaudeAdapterInstall = false, skipOpenCodeAdapterInstall = false, skipCodeBuddyAdapterInstall = false, unavailableStatus = false, prefixedStatus = false, input = "", interactive = true, npmCommand = "install", updateMode = false, setupMode = "automatic", memoraxVerify, memoraxEnv = {}, memoryStatusFixture, trialProvisionFailure = false, hookSnapshot = [], hookUpdatePlan = [], hookFullReview = false, hookFullReviewMissing = false, hookSnapshotFails = false, hookCheckFails = false, hookTrustFails = false, detectedUserId = "memory-user", detectedLanguage = "zh", ttyOverride } = {}) {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-setup-"));
   const binDir = join(root, "bin");
   const codexHome = join(root, "codex-home");
@@ -139,6 +140,7 @@ async function runSetup({ existingCache = false, explicitCache = false, hookRunt
   const xdgConfigHome = join(root, "xdg-config");
   const memoraxCodeHome = join(root, "memorax-code-home");
   const home = join(root, "home");
+  const workbuddyHome = join(home, ".workbuddy");
   const fakeBin = join(root, "fake-bin");
   const libDir = join(root, "lib");
   const nodeModulesDir = join(root, "node_modules");
@@ -272,6 +274,7 @@ async function runSetup({ existingCache = false, explicitCache = false, hookRunt
   }, null, 2)}\n`);
   await copyFile(claudeCommandResolverPath, join(libDir, "resolve-claude-command.mjs"));
   await copyFile(codexCommandResolverPath, join(libDir, "resolve-codex-command.mjs"));
+  await copyFile(codeBuddyCommandResolverPath, join(libDir, "resolve-codebuddy-command.mjs"));
   await copyFile(vscodeExtensionCommandPath, join(libDir, "vscode-extension-command.mjs"));
   await copyFile(windowsCliInvocationPath, join(libDir, "windows-cli-invocation.mjs"));
   await symlink(smolTomlPath, join(nodeModulesDir, "smol-toml"), "dir");
@@ -346,10 +349,11 @@ async function runSetup({ existingCache = false, explicitCache = false, hookRunt
     "if (process.argv[2] === 'stop') console.error('fake memorax-code stop output');",
     "const clientsIndex = process.argv.indexOf('--clients');",
     "const clientMode = clientsIndex >= 0 ? process.argv[clientsIndex + 1] : 'all';",
-    "const selectedClients = new Set(clientMode === 'all' ? ['codex', 'claude', 'dsh', 'opencode'] : clientMode.split(','));",
+    "const selectedClients = new Set(clientMode === 'all' ? ['codex', 'claude', 'dsh', 'opencode', 'codebuddy'] : clientMode.split(','));",
     "const codexEnabled = selectedClients.has('codex');",
     "const claudeEnabled = selectedClients.has('claude');",
     "const opencodeEnabled = selectedClients.has('opencode');",
+    "const codebuddyEnabled = selectedClients.has('codebuddy');",
     "const dshEnabled = selectedClients.has('dsh') && process.env.MEMORAX_CODE_TEST_DSH_ENABLED === '1';",
     "if (process.argv[2] === 'status' && process.env.MEMORAX_CODE_TEST_UNAVAILABLE_STATUS === '1') {",
     "  console.error('memorax-code: ok');",
@@ -365,6 +369,7 @@ async function runSetup({ existingCache = false, explicitCache = false, hookRunt
     "    if (codexEnabled) console.error('[MemoraX Code Backend]: Codex adapter: \\x1b[32mok\\x1b[0m integration=hooks skills=plugin-managed');",
     "    if (claudeEnabled) console.error('[MemoraX Code Backend]: Claude adapter: \\x1b[32mok\\x1b[0m integration=hooks skills=ok');",
     "    if (opencodeEnabled) console.error('[MemoraX Code Backend]: OpenCode adapter: \\x1b[32mok\\x1b[0m integration=plugin skills=ok');",
+    "    if (codebuddyEnabled) console.error('[MemoraX Code Backend]: CodeBuddy adapter: \\x1b[32mok\\x1b[0m integration=hooks skills=ok');",
     "    if (dshEnabled) console.error('[MemoraX Code Backend]: DSH adapter: \\x1b[32mok\\x1b[0m integration=plugin profiles=ok');",
     "    process.exit(0);",
     "  }",
@@ -373,6 +378,7 @@ async function runSetup({ existingCache = false, explicitCache = false, hookRunt
     "  if (codexEnabled) console.error('codex adapter: ok integration=hooks skills=plugin-managed');",
     "  if (claudeEnabled) console.error('claude adapter: ok integration=hooks skills=ok');",
     "  if (opencodeEnabled) console.error('opencode adapter: ok integration=plugin skills=ok');",
+    "  if (codebuddyEnabled) console.error('codebuddy adapter: ok integration=hooks skills=ok');",
     "  if (dshEnabled) console.error('dsh adapter: ok integration=plugin profiles=ok');",
     "}",
     "process.exit(0);",
@@ -455,6 +461,17 @@ async function runSetup({ existingCache = false, explicitCache = false, hookRunt
     const executable = join(fakeBin, process.platform === "win32" ? "opencode.cmd" : "opencode");
     await writeMockNodeCommand(executable, "#!/usr/bin/env node\nprocess.exit(0);\n");
   }
+  if (codebuddyAvailable) {
+    await mkdir(workbuddyHome, { recursive: true });
+    await writeMockNodeCommand(join(fakeBin, "codebuddy"), [
+      "#!/usr/bin/env node",
+      "import { appendFileSync } from 'node:fs';",
+      `appendFileSync(${JSON.stringify(logPath)}, 'codebuddy ' + process.argv.slice(2).join(' ') + '\\n');`,
+      "if (process.argv[2] === '--version') console.log('codebuddy 9.9.9-test');",
+      "process.exit(0);",
+      "",
+    ]);
+  }
   const cacheMarketplace = existingCache ? "personal" : explicitCache ? "memorax-code" : undefined;
   if (cacheMarketplace) {
     const cacheDir = join(codexHome, "plugins", "cache", cacheMarketplace, "memorax-code-codex-adapter", "0.1.0");
@@ -536,6 +553,7 @@ async function runSetup({ existingCache = false, explicitCache = false, hookRunt
     CLAUDE_CONFIG_DIR: claudeHome,
     OPENCODE_CONFIG_DIR: opencodeAvailable ? opencodeConfigDir : "",
     XDG_CONFIG_HOME: opencodeXdgAvailable ? xdgConfigHome : "",
+    WORKBUDDY_HOME: workbuddyHome,
     MEMORAX_CODE_HOME: memoraxCodeHome,
     PATH: codexAppOnly || vscodeOnly
       ? fakeBin
@@ -548,6 +566,7 @@ async function runSetup({ existingCache = false, explicitCache = false, hookRunt
     MEMORAX_CODE_SKIP_CODEX_PLUGIN_INSTALL: skipCodexPluginInstall ? "1" : "0",
     MEMORAX_CODE_SKIP_CLAUDE_ADAPTER_INSTALL: skipClaudeAdapterInstall ? "1" : "0",
     MEMORAX_CODE_SKIP_OPENCODE_ADAPTER_INSTALL: skipOpenCodeAdapterInstall ? "1" : "0",
+    MEMORAX_CODE_SKIP_CODEBUDDY_ADAPTER_INSTALL: skipCodeBuddyAdapterInstall ? "1" : "0",
     MEMORAX_CODE_TEST_FAIL_START_ONCE: failStartOnce ? "1" : "0",
     MEMORAX_CODE_TEST_RUNTIME_AUTHORITY_FAILURE: runtimeAuthorityFailureCode
       ?? (connectionAuthorityFailure ? "BACKEND_CONNECTION_AUTHORITY_INVALID" : ""),
@@ -562,6 +581,9 @@ async function runSetup({ existingCache = false, explicitCache = false, hookRunt
   delete childEnv.CODEX_CLI_PATH;
   delete childEnv.MEMORAX_CODE_CODEX_COMMAND;
   delete childEnv.MEMORAX_CODE_CLAUDE_COMMAND;
+  delete childEnv.MEMORAX_CODE_CODEBUDDY_COMMAND;
+  delete childEnv.CODEBUDDY_CLI_PATH;
+  delete childEnv.WORKBUDDY_CODEBUDDY_PATH;
   delete childEnv.MEMORAX_CODE_MEMORAX_API_KEY;
   delete childEnv.MEMORAX_CODE_MEMORAX_USER_ID;
   delete childEnv.MEMORAX_CODE_MEMORAX_WRITEBACK_ENABLED;
@@ -579,6 +601,9 @@ async function runSetup({ existingCache = false, explicitCache = false, hookRunt
   }
   if (!codexAvailable && !codexAppOnly && !vscodeOnly) {
     childEnv.MEMORAX_CODE_CODEX_COMMAND = join(root, "missing-codex");
+  }
+  if (!codebuddyAvailable) {
+    childEnv.MEMORAX_CODE_CODEBUDDY_COMMAND = join(root, "missing-codebuddy");
   }
   const result = await new Promise((resolve) => {
     const child = spawn(process.execPath, [setupEntrypoint], {
@@ -739,6 +764,30 @@ test("setup fresh install auto-detects Codex and skips an unavailable Claude run
 });
 
 
+test("setup fresh install auto-detects CodeBuddy and starts the WorkBuddy adapter", async () => {
+  const run = await runSetup({
+    codexAvailable: false,
+    claudeAvailable: false,
+    codebuddyAvailable: true,
+  });
+  try {
+    assert.equal(run.result.code, 0, run.result.stderr);
+    assert.match(run.log, /^codebuddy --version$/m);
+    assert.match(run.result.stderr, /CodeBuddy CLI: codebuddy 9\.9\.9-test/);
+    assert.match(run.result.stderr, /WorkBuddy data directory: found/);
+    assert.match(run.result.stderr, /Keeping CodeBuddy provider config unchanged and enabling the shared memory Hook integration/);
+    assert.match(run.log, /^memorax-code start --clients dsh,codebuddy$/m);
+    assert.match(run.log, /^memorax-code status --clients dsh,codebuddy$/m);
+    assert.match(run.result.stderr, /CodeBuddy\/WorkBuddy/);
+    const config = await readFile(join(run.memoraxCodeHome, "config.toml"), "utf8");
+    assert.match(config, /codebuddy = true/);
+    assert.match(config, /\[trace\.codebuddy\]/);
+  } finally {
+    await rm(run.root, { recursive: true, force: true });
+  }
+});
+
+
 test("setup seeds the default MemoraX Code config around trial memory preferences", async () => {
   const run = await runSetup({ interactive: true });
   try {
@@ -770,6 +819,8 @@ test("setup seeds the default MemoraX Code config around trial memory preference
     assert.match(config, /capture_content = true # Store content in local DSH trace events\./);
     assert.match(config, /\[trace\.opencode\]/);
     assert.match(config, /capture_content = true # Store content in local OpenCode trace events\./);
+    assert.match(config, /\[trace\.codebuddy\]/);
+    assert.match(config, /capture_content = true # Store content in local CodeBuddy trace events\./);
     assert.deepEqual(activeTomlSections(config), [
       "clients",
       "memorax",
@@ -779,6 +830,7 @@ test("setup seeds the default MemoraX Code config around trial memory preference
       "memory.skill_reminder",
       "memory.writeback",
       "trace.claude",
+      "trace.codebuddy",
       "trace.codex",
       "trace.dsh",
       "trace.opencode",
@@ -983,7 +1035,7 @@ test("interactive setup after reinstall automatically reuses a complete MemoraX 
     assert.match(run.result.stderr, /Automatic writeback: Disabled by effective configuration/);
     assert.equal(
       await readFile(join(run.memoraxCodeHome, "config.toml"), "utf8"),
-      existingConfig.replace("[clients]\n", "[clients]\nopencode = false\n"),
+      existingConfig.replace("[clients]\n", "[clients]\ncodebuddy = false\nopencode = false\n"),
     );
     await assertSetupComplete(run);
   } finally {
@@ -1139,7 +1191,7 @@ test("setup reports unavailable status and prints red diagnostics instead of usa
     assert.match(run.result.stderr, /\[MemoraX Code Backend\]: claude adapter: ok integration=hooks skills=ok/);
     assert.match(run.result.stderr, /Backend and selected adapters: .*Unavailable/);
     assert.match(run.result.stderr, /MemoraX Code is not enabled for new client sessions/);
-    assert.match(run.result.stderr, /Check `memorax-code status`, `memorax-code-codex status`, `memorax-code-claude status`, and `memorax-code-opencode status`/);
+    assert.match(run.result.stderr, /Check `memorax-code status`, the selected adapter status commands, and `memorax-code-codebuddy status`/);
     assert.doesNotMatch(run.result.stderr, /Restart or refresh Codex/);
     assert.doesNotMatch(run.result.stderr, /enable the MemoraX Code Codex Adapter plugin/);
     assert.match(run.result.stderr, /\[MemoraX Code Setup\]: Common commands:/);

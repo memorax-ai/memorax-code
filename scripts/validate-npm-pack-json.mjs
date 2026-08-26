@@ -62,6 +62,7 @@ for (const requiredPath of [
   "bin/memorax-code-plugin-postinstall.mjs",
   "bin/memorax-code-setup.mjs",
   "bin/memorax-code-opencode.mjs",
+  "bin/memorax-code-codebuddy.mjs",
   "lib/client-hook-runtime.mjs",
   "lib/dsh-plugin-install.mjs",
   "lib/node-version.mjs",
@@ -69,6 +70,7 @@ for (const requiredPath of [
   "lib/package-transition.mjs",
   "lib/resolve-claude-command.mjs",
   "lib/resolve-codex-command.mjs",
+  "lib/resolve-codebuddy-command.mjs",
   "lib/setup-memory-preferences.mjs",
   "lib/setup-reconcile.mjs",
   "lib/trial-plugin-mark.mjs",
@@ -147,6 +149,14 @@ for (const requiredPath of [
   "lib/memorax-code-dsh-adapter/hooks/repo-memory-job.mjs",
   "lib/memorax-code-dsh-adapter/skills/memorax-code/SKILL.md",
   "lib/memorax-code-opencode-adapter/src/cli.mjs",
+  "lib/memorax-code-codebuddy-adapter/package.json",
+  "lib/memorax-code-codebuddy-adapter/.codebuddy-plugin/plugin.json",
+  "lib/memorax-code-codebuddy-adapter/hooks/hooks.json",
+  "lib/memorax-code-codebuddy-adapter/hooks/runtime-hook.mjs",
+  "lib/memorax-code-codebuddy-adapter/hooks/common-runtime.mjs",
+  "lib/memorax-code-codebuddy-adapter/hooks/repo-memory-job.mjs",
+  "lib/memorax-code-codebuddy-adapter/src/config.mjs",
+  "lib/memorax-code-codebuddy-adapter/src/cli.mjs",
 ]) {
   if (!paths.has(requiredPath)) {
     throw new Error(`npm pack is missing required runtime entrypoint: ${requiredPath}`);
