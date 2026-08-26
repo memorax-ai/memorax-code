@@ -57,7 +57,7 @@ CodeBuddy/WorkBuddy、DeepSeek Harness 或 OpenCode 中的至少一个。Repo Me
 #### 1. 安装 npm 包
 
 ```bash
-npm install -g @memorax/memorax-code
+npm install -g @memorax/memorax-code --foreground-scripts
 ```
 
 请保留 `--foreground-scripts`，以便查看完整的安装过程。安装器会自动检测本机可用的 Codex、
@@ -113,7 +113,7 @@ memorax-code account --show-mark-id
 
 ### 体验跨会话记忆
 
-克隆示例仓库，并在项目目录中打开 Codex、Claude Code、DeepSeek Harness 或 OpenCode：
+克隆示例仓库，并在项目目录中打开 Codex、Claude Code、CodeBuddy/WorkBuddy、DeepSeek Harness 或 OpenCode：
 
 ```bash
 git clone https://github.com/SWE-agent/test-repo.git
@@ -140,8 +140,7 @@ cd test-repo
 > [!TIP]
 > 上述指令仅用于快速验证。正常使用时，无需主动调用 MemoraX Code Skill 添加记忆；
 > MemoraX Code 会根据当前仓库和任务在后台写入相关记忆，并引导 Agent 在需要时搜索。
-> 你可以在 [Memory Viewer](http://127.0.0.1:8787/memory-viewer) 中切换 Codex、
-> Claude Code、CodeBuddy/WorkBuddy、DeepSeek Harness 和 OpenCode，查看不含正文的本地活动与状态。
+> 本地活动与状态会以受内容控制的 trace 和 reconciliation 记录保存在 `MEMORAX_CODE_HOME` 下。
 
 ## 四类 Memory，各有清晰边界
 
@@ -168,7 +167,7 @@ MemoraX Code 会先比较含义：语义相同的请求不重复写入；长期�
 | **Repo Memory 后台整理** | 在后台整理仓库结构、代码入口和历史证据，并按策略自动更新，避免反复搜索和总结。 |
 | **主动记忆控制** | 使用内置的 MemoraX Code Skill 或 CLI，主动查找和添加记忆。 |
 | **客户端集成** | 与 Codex、Claude Code、CodeBuddy/WorkBuddy、DeepSeek Harness 和 OpenCode 集成，触发记忆检索、提醒和写入。目前 Codex、Claude Code 和 OpenCode 支持自动额度提醒。 |
-| **本地可视化** | 通过本地 Memory Viewer 查看活动统计、召回与写入状态。 |
+| **本地可观测性** | 通过受内容控制的本地 trace 和 reconciliation 记录查看活动统计、召回与写入状态。 |
 
 ## 你的记忆，由你控制
 

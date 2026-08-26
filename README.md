@@ -64,7 +64,7 @@ beforehand through its official `npx` workflow.
 #### 1. Install the Package
 
 ```bash
-npm install -g @memorax/memorax-code
+npm install -g @memorax/memorax-code --foreground-scripts
 ```
 
 Keep `--foreground-scripts` so the complete setup remains visible. The
@@ -131,7 +131,7 @@ See [Configuration](docs/configuration.md) for supported settings and
 ### Try Cross-Session Memory
 
 Clone the example repository from the product website, then open Codex, Claude
-Code, DeepSeek Harness, or OpenCode in the project directory:
+Code, CodeBuddy/WorkBuddy, DeepSeek Harness, or OpenCode in the project directory:
 
 ```bash
 git clone https://github.com/SWE-agent/test-repo.git
@@ -165,9 +165,7 @@ the current repository.
 > The prompts above are only for quick verification. In normal use, you do not
 > need to invoke the MemoraX Code skill to add memory manually. It writes
 > relevant memory in the background and guides agents to search when useful.
-> In the [Memory Viewer](http://127.0.0.1:8787/memory-viewer), you can switch
-> among Codex, Claude Code, CodeBuddy/WorkBuddy, DeepSeek Harness, and OpenCode to view content-free
-> local activity and status.
+> Local activity and status are retained as content-controlled trace and reconciliation records under `MEMORAX_CODE_HOME`.
 
 ## Four Clear Memory Boundaries
 
@@ -198,7 +196,7 @@ writing when the durable intent or target is unclear.
 | **Background Repo Memory maintenance** | Automatically organizes repository structure, entry points, and history evidence in the background, then updates them according to policy to reduce repeated searching and summarization. |
 | **Active memory control** | Lets you search and add memory through the bundled MemoraX Code skill or the CLI. |
 | **Client integration** | Integrates with Codex, Claude Code, CodeBuddy/WorkBuddy, DeepSeek Harness, and OpenCode to trigger memory retrieval, reminders, and writeback. Automatic quota reminders are currently available in Codex, Claude Code, and OpenCode. |
-| **Local visualization** | Uses the local Memory Viewer to summarize activity counts, retrieval, and writeback status. |
+| **Local observability** | Uses content-controlled local trace and reconciliation records to inspect activity counts, retrieval, and writeback status. |
 
 ## Your Memory, Your Control
 
