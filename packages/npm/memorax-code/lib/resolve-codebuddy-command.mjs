@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { join, win32 } from "node:path";
+import { delimiter, join, win32 } from "node:path";
 import {
   commandOnPath,
   isExecutableCommand,
@@ -36,7 +36,7 @@ export function resolveCodeBuddyCommand({
   if (override) return { command: override, source: "configured" };
 
   if (commandOnPath("codebuddy", env.PATH, platform, env.PATHEXT)) {
-    return { command: platform === "win32" ? "codebuddy.exe" : "codebuddy", source: "path" };
+    return { command: findCommandOnPath("codebuddy", env.PATH, platform, env.PATHEXT), source: "path" };
   }
 
   if (platform === "darwin") {
@@ -56,6 +56,22 @@ export function resolveCodeBuddyCommand({
   }
 
   return { command: platform === "win32" ? "codebuddy.exe" : "codebuddy", source: "unavailable" };
+}
+
+function findCommandOnPath(command, pathValue, platform, pathExtValue) {
+  const extensions = platform === "win32"
+    ? String(pathExtValue ?? ".EXE;.CMD;.BAT;.COM").split(";")
+    : [""];
+  const pathDelimiter = platform === "win32" ? ";" : delimiter;
+  const pathJoin = platform === "win32" ? win32.join : join;
+  for (const root of String(pathValue ?? "").split(pathDelimiter)) {
+    if (!root) continue;
+    for (const extension of extensions) {
+      const candidate = pathJoin(root, `${command}${extension}`);
+      if (isExecutableCommand(candidate, platform)) return candidate;
+    }
+  }
+  return platform === "win32" ? "codebuddy.exe" : "codebuddy";
 }
 
 export function ensureCodeBuddyCommandEnv(options = {}) {
