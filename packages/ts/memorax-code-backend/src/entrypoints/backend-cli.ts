@@ -71,9 +71,9 @@ export function runBackendCli(argv = process.argv): void {
       `Usage: ${usageName} [${commands}] [--backend-url URL] [--backend-token TOKEN] [--home DIR]`,
       "[--host HOST] [--port PORT] [--rotate] [--show]",
       "[--codex-command CMD]",
-      "[--codex-home DIR] [--claude-home DIR] [--dsh-home DIR] [--opencode-config-dir DIR]",
+      "[--codex-home DIR] [--claude-home DIR] [--dsh-home DIR] [--opencode-config-dir DIR] [--kimi-home DIR]",
       "[--dsh-command CMD] [--dsh-adapter-root DIR] [--memorax-code-command CMD]",
-      "[--clients codex|claude|dsh|opencode|CLIENT,...|all|none]",
+      "[--clients codex|claude|dsh|opencode|kimi|CLIENT,...|all|none]",
       "[--json]",
       "[--marketplace-path FILE] [--plugin-source-path DIR] [--claude-command CMD] [--help]",
       "[--yes]",
@@ -231,6 +231,8 @@ async function startRawBackendServer(
         dshHome: argValue(argv, "--dsh-home"),
         dshAdapterRoot: argValue(argv, "--dsh-adapter-root"),
         openCodeConfigDir: argValue(argv, "--opencode-config-dir"),
+        kimiHome: argValue(argv, "--kimi-home"),
+        kimiCommand: argValue(argv, "--kimi-command"),
         codexCommand: argValue(argv, "--codex-command"),
         claudeCommand: argValue(argv, "--claude-command"),
         dshCommand: argValue(argv, "--dsh-command"),
@@ -256,6 +258,8 @@ async function startRawBackendServer(
         dshReason: cleanup.dshPlugin.reason,
         opencodeOk: cleanup.opencodePlugin.ok,
         opencodeReason: cleanup.opencodePlugin.reason,
+        kimiOk: cleanup.kimiPlugin.ok,
+        kimiReason: cleanup.kimiPlugin.reason,
       });
     }
     server.close(() => {
@@ -530,6 +534,7 @@ function printMemoraxCodeStatus(report: MemoraxCodeStatusReport): void {
   if (report.claudeAdapter) backendLog(`Claude adapter: ${claudeAdapterStatusLine(report.claudeAdapter, report.codexAdapter)}`);
   if (report.dshAdapter) backendLog(`DSH adapter: ${dshAdapterStatusLine(report.dshAdapter)}`);
   if (report.opencodeAdapter) backendLog(`OpenCode adapter: ${adapterStatusLine(report.opencodeAdapter)}`);
+  if (report.kimiAdapter) backendLog(`Kimi adapter: ${adapterStatusLine(report.kimiAdapter)}`);
   if (!suppressBackendGuidance()) {
     for (const line of statusGuidance(report)) backendLog(line);
   }
@@ -638,6 +643,7 @@ function printLifecycleResult(report: MemoraxCodeLifecycleReport): void {
   if (report.claudeAdapter) backendLog(`Claude adapter: ${adapterStatusLine(report.claudeAdapter)}`);
   if (report.dshAdapter) backendLog(`DSH adapter: ${dshAdapterStatusLine(report.dshAdapter)}`);
   if (report.opencodeAdapter) backendLog(`OpenCode adapter: ${adapterStatusLine(report.opencodeAdapter)}`);
+  if (report.kimiAdapter) backendLog(`Kimi adapter: ${adapterStatusLine(report.kimiAdapter)}`);
   if (report.codexPlugin) {
     const removed = report.codexPlugin.removedPaths.length;
     const marketplace = report.codexPlugin.marketplaceChanged ? " marketplace=updated" : " marketplace=unchanged";
@@ -696,7 +702,7 @@ function lifecycleGuidance(report: MemoraxCodeLifecycleReport): string[] {
         "Run `memorax-code logs` for details, then retry `memorax-code start`.",
       ];
     }
-    if (!report.codexAdapter && !report.claudeAdapter && !report.dshAdapter && !report.opencodeAdapter) {
+    if (!report.codexAdapter && !report.claudeAdapter && !report.dshAdapter && !report.opencodeAdapter && !report.kimiAdapter) {
       return [
         green("Backend is running."),
         "Adapters were not changed for this command.",
@@ -708,18 +714,20 @@ function lifecycleGuidance(report: MemoraxCodeLifecycleReport): string[] {
       && (!report.dshAdapter
         || isAdapterReady(report.dshAdapter)
         || optionalDshUnavailable)
-      && (!report.opencodeAdapter || isAdapterReady(report.opencodeAdapter))) {
+      && (!report.opencodeAdapter || isAdapterReady(report.opencodeAdapter))
+      && (!report.kimiAdapter || isAdapterReady(report.kimiAdapter))) {
       return [
         green(optionalDshUnavailable
           && !report.codexAdapter
           && !report.claudeAdapter
           && !report.opencodeAdapter
+          && !report.kimiAdapter
           ? "Backend is running; the optional DSH integration is unavailable."
           : "Backend is running and available client integrations are enabled."),
         ...(optionalDshUnavailable
           ? [`DSH integration is unavailable: ${report.dshAdapter?.reason ?? "not available"}.`]
           : []),
-        ...(report.codexAdapter || report.claudeAdapter || report.opencodeAdapter
+        ...(report.codexAdapter || report.claudeAdapter || report.opencodeAdapter || report.kimiAdapter
           ? [
               green("Existing sessions with the stable plugin shell select the active runtime on their next user prompt."),
               "Restart or refresh a client only if its plugin shell changed or MemoraX Code is not active on the next prompt.",
@@ -746,6 +754,7 @@ function lifecycleGuidance(report: MemoraxCodeLifecycleReport): string[] {
         ...(report.claudeAdapter ? [green("Claude Code Hook integration is stopped; provider config was not changed.")] : []),
         ...(report.dshAdapter ? [green("DSH Profile integration is stopped.")] : []),
         ...(report.opencodeAdapter ? [green("OpenCode plugin integration is stopped; provider config was not changed.")] : []),
+        ...(report.kimiAdapter ? [green("Kimi Hook integration is stopped; provider config was not changed.")] : []),
       ]
       : [
         red("Backend did not stop cleanly."),
@@ -797,7 +806,8 @@ function statusGuidance(report: MemoraxCodeStatusReport): string[] {
     if (report.dshAdapter
       && !report.codexAdapter
       && !report.claudeAdapter
-      && !report.opencodeAdapter) {
+      && !report.opencodeAdapter
+      && !report.kimiAdapter) {
       if (optionalDshUnavailable) {
         return [
           green("Backend is running; the optional DSH integration is unavailable."),
@@ -859,6 +869,12 @@ function statusGuidance(report: MemoraxCodeStatusReport): string[] {
       "Run `memorax-code start`, then restart or refresh OpenCode.",
     ];
   }
+  if (report.kimiAdapter && !isAdapterReady(report.kimiAdapter)) {
+    return [
+      red("Kimi adapter is not enabled."),
+      "Run `memorax-code start`, then restart Kimi Code.",
+    ];
+  }
   return [
     red("MemoraX Code needs attention."),
     "Run `memorax-code status` and `memorax-code logs` for details.",
@@ -910,6 +926,7 @@ function selectedLifecycleClientNames(report: MemoraxCodeLifecycleReport): strin
     report.claudeAdapter ? "Claude Code" : undefined,
     report.dshAdapter ? "DSH" : undefined,
     report.opencodeAdapter ? "OpenCode" : undefined,
+    report.kimiAdapter ? "Kimi" : undefined,
   ].filter((name): name is string => name !== undefined);
 }
 

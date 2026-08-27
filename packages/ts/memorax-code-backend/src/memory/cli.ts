@@ -320,9 +320,9 @@ function memoryCliRepositoryFailure(
   fields: Pick<MemoryCliResult, "query"> = {},
 ): MemoryCliResult {
   const userAction = failure.reason === "workspace_scope_mismatch"
-    ? "Start a new Codex, Claude Code, DSH, or OpenCode session from the target repository or local workspace."
+    ? "Start a new Codex, Claude Code, DSH, OpenCode, or Kimi session from the target repository or local workspace."
     : failure.reason === "workspace_scope_unavailable"
-      ? "Start a new Codex, Claude Code, DSH, or OpenCode session from the target repository or local workspace. If the problem continues, make sure its .git metadata is readable and valid."
+      ? "Start a new Codex, Claude Code, DSH, OpenCode, or Kimi session from the target repository or local workspace. If the problem continues, make sure its .git metadata is readable and valid."
       : undefined;
   return {
     ok: false,
@@ -433,6 +433,7 @@ function traceClientLabel(client: TraceClient | undefined): string {
   if (client === "claude") return "Claude";
   if (client === "dsh") return "DSH";
   if (client === "opencode") return "OpenCode";
+  if (client === "kimi") return "Kimi";
   return client === "codex" ? "Codex" : "coding agent";
 }
 

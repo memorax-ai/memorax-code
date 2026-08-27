@@ -39,7 +39,7 @@
 Coding Agent 擅长解决眼前的问题，但新会话不会自动继承此前积累的架构认知、踩坑经验、仓库规则
 和协作偏好。
 
-MemoraX Code 让 Codex、Claude Code、DeepSeek Harness 和 OpenCode 共享一套能够持续积累的记忆。
+MemoraX Code 让 Codex、Claude Code、DeepSeek Harness、OpenCode 和 Kimi Code 共享一套能够持续积累的记忆。
 它会沉淀代码任务中的工程经验，持续整理仓库知识，并在后续任务中找回相关的工作流程和偏好。
 
 它追求的不是“记得更多”，而是在需要时带回与当前任务相关的 Memory，让 Agent 减少重复搜索和试错，
@@ -48,7 +48,7 @@ MemoraX Code 让 Codex、Claude Code、DeepSeek Harness 和 OpenCode 共享一�
 ## 快速开始
 
 开始前，请确保已安装 Node.js 20 或更高版本（推荐 Node.js 24 LTS），以及 Codex、Claude Code、
-DeepSeek Harness 或 OpenCode 中的至少一个。Repo Memory 操作还需要 Python 3。各 Coding Agent
+DeepSeek Harness、OpenCode 或 Kimi Code 中的至少一个。Repo Memory 操作还需要 Python 3。各 Coding Agent
 Harness 仍需满足自身的运行时要求；当前 DeepSeek Harness 版本要求 Node.js
 `^22.19.0 || >=24.0.0`。DSH 可全局安装，也可事先通过其官方 `npx` 流程完成初始化。
 
@@ -92,6 +92,10 @@ memorax-code account --show-mark-id
 
 两种安装引导都会自动检测受支持的 Coding Agent。完成后，请重启或刷新检测到的 Coding Agent。
 
+Kimi Code 不会被自动检测，因为它的 Hook 配置可能包含其他本地定制。若要启用，请在
+`~/.memorax-code/config.toml` 的 `[clients]` 下设置 `kimi = true`，然后运行
+`memorax-code start`。
+
 ### 安装故障排查
 
 如果首次安装或配置没有正常完成，可以先检查以下常见情况：
@@ -107,16 +111,16 @@ memorax-code account --show-mark-id
 
 ### 体验跨会话记忆
 
-克隆示例仓库，并在项目目录中打开 Codex、Claude Code、DeepSeek Harness 或 OpenCode：
+克隆示例仓库，并在项目目录中打开 Codex、Claude Code、DeepSeek Harness、OpenCode 或 Kimi Code：
 
 ```bash
 git clone https://github.com/SWE-agent/test-repo.git
 cd test-repo
 ```
 
-在 Codex 中使用 `$memorax-code`，在 Claude Code 或 DeepSeek Harness 中使用 `/memorax-code`
+在 Codex 中使用 `$memorax-code`，在 Claude Code、DeepSeek Harness 或 Kimi Code 中使用 `/memorax-code`
 调用该 Skill。在 OpenCode 中，直接让 Agent 使用名为 `memorax-code` 的 Skill。下面的指令使用产品名称，
-四个客户端均可直接理解。
+五个客户端均可直接理解。
 
 在同一个会话中依次发送以下指令：
 
@@ -159,7 +163,7 @@ MemoraX Code 会先比较含义：语义相同的请求不重复写入；长期�
 | **Procedure 自动复用** | 记录可复用的任务流程，并在后续任务中自动提醒 Agent 按流程执行。 |
 | **Repo Memory 后台整理** | 在后台整理仓库结构、代码入口和历史证据，并按策略自动更新，避免反复搜索和总结。 |
 | **主动记忆控制** | 使用内置的 MemoraX Code Skill 或 CLI，主动查找和添加记忆。 |
-| **客户端集成** | 与 Codex、Claude Code、DeepSeek Harness 和 OpenCode 集成，触发记忆检索、提醒和写入。目前 Codex、Claude Code 和 OpenCode 支持自动额度提醒。 |
+| **客户端集成** | 与 Codex、Claude Code、DeepSeek Harness、OpenCode 和 Kimi Code 集成，触发记忆检索、提醒和写入。目前 Codex、Claude Code 和 OpenCode 支持自动额度提醒。 |
 
 ## 你的记忆，由你控制
 
@@ -191,7 +195,7 @@ memorax-code update
 ```
 
 该命令会沿用当前发布通道并保留配置。如果新版本修改了已安装的集成资产，请重启或刷新 Codex、
-Claude Code、DeepSeek Harness 和 OpenCode。
+Claude Code、DeepSeek Harness、OpenCode 和 Kimi Code。
 
 ### Windows 升级提示
 

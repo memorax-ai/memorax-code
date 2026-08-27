@@ -70,6 +70,20 @@ test("OpenCode adapter runtime is a declared npm source tree", () => {
   )));
 });
 
+test("Kimi adapter runtime is a declared npm source tree", () => {
+  assert.ok(npmMainSourceTrees.some((mapping) => (
+    mapping.source === "packages/ts/memorax-code-kimi-adapter/src"
+    && mapping.destination === "lib/memorax-code-kimi-adapter/src"
+  )));
+});
+
+test("Kimi shared skill stages directly from tracked Codex skill sources", () => {
+  assert.ok(npmMainSourceTrees.some((mapping) => (
+    mapping.source === "packages/ts/memorax-code-codex-adapter/skills/memorax-code"
+    && mapping.destination === "lib/memorax-code-kimi-adapter/skills/memorax-code"
+  )));
+});
+
 test("DSH adapter runtime is staged from declared source trees", () => {
   assert.ok(npmMainSourceTrees.some((mapping) => (
     mapping.source === "packages/ts/memorax-code-dsh-adapter/src"

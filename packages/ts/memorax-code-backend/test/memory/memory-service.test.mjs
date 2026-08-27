@@ -74,6 +74,15 @@ test("memory service exposes a sealed Hook facade and closes idempotently", asyn
       cwd: firstWorkspace,
     });
     assert.equal(diagnosticEvents.some((event) => event.message === "opencode_memory.turn_start"), true);
+    await service.recordTurnStart({
+      version: 1,
+      client: "kimi",
+      sessionId: "session-kimi-memory-service",
+      promptId: "prompt-kimi-memory-service",
+      prompt: "Record this exact Kimi turn in the runtime.",
+      cwd: firstWorkspace,
+    });
+    assert.equal(diagnosticEvents.some((event) => event.message === "kimi_memory_hook.turn_start"), true);
 
     await assert.rejects(service.recordTurnStart({
       version: 1,

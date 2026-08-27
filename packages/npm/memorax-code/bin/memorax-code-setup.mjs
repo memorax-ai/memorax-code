@@ -44,6 +44,7 @@ const DSH_OPTIONAL_ENV = "MEMORAX_CODE_DSH_ADAPTER_OPTIONAL";
 const skipCodexPluginInstall = truthyEnv(process.env.MEMORAX_CODE_SKIP_CODEX_PLUGIN_INSTALL);
 const skipClaudeAdapterInstall = truthyEnv(process.env.MEMORAX_CODE_SKIP_CLAUDE_ADAPTER_INSTALL);
 const skipOpenCodeAdapterInstall = truthyEnv(process.env.MEMORAX_CODE_SKIP_OPENCODE_ADAPTER_INSTALL);
+const skipKimiAdapterInstall = truthyEnv(process.env.MEMORAX_CODE_SKIP_KIMI_ADAPTER_INSTALL);
 const updateMode = truthyEnv(process.env.MEMORAX_CODE_SETUP_UPDATE);
 const setupMode = setupModeFromEnvironment(process.env.MEMORAX_CODE_SETUP_MODE);
 if (!setupMode) {
@@ -100,7 +101,7 @@ try {
   process.exit(1);
 }
 runCommonPreflight();
-const requestedClients = ["codex", "claude", "opencode"];
+const requestedClients = ["codex", "claude", "opencode", "kimi"];
 const codexPreflight = requestedClients.includes("codex") && !skipCodexPluginInstall
   ? runCodexPreflight({
       integrationSelected: !existingSetup || previousClients.includes("codex"),
@@ -116,10 +117,14 @@ const opencodePreflight = requestedClients.includes("opencode") && !skipOpenCode
       integrationSelected: !existingSetup || previousClients.includes("opencode"),
     })
   : { ok: true };
+const kimiPreflight = commandOnPath("kimi", process.env.PATH)
+  ? { ok: true }
+  : { ok: false };
 const detectedClients = requestedClients.filter((client) => {
   if (client === "codex") return !skipCodexPluginInstall && codexPreflight.ok;
   if (client === "claude") return !skipClaudeAdapterInstall && claudePreflight.ok;
-  return !skipOpenCodeAdapterInstall && opencodePreflight.ok;
+  if (client === "opencode") return !skipOpenCodeAdapterInstall && opencodePreflight.ok;
+  return !skipKimiAdapterInstall && kimiPreflight.ok;
 });
 const selectedClients = existingSetup
   ? await chooseUpdateClients(previousClients, detectedClients, scriptedAnswers)
@@ -352,7 +357,7 @@ async function chooseUpdateClients(previousClients, detectedClients, scriptedAns
   } finally {
     rl?.close();
   }
-  return ["codex", "claude", "opencode"].filter((client) => selected.has(client));
+  return ["codex", "claude", "opencode", "kimi"].filter((client) => selected.has(client));
 }
 
 async function configureMemoraxMemoryFromAnswers(answers, detectedPreferences, {
@@ -742,6 +747,7 @@ function readPersistedClientSelection() {
       clients.codex ? "codex" : undefined,
       clients.claude ? "claude" : undefined,
       clients.opencode === true ? "opencode" : undefined,
+      clients.kimi === true ? "kimi" : undefined,
     ].filter(Boolean);
   } catch {
     return undefined;
@@ -773,7 +779,8 @@ function writeClientSelectionConfig(clients) {
 function setManagedClientSelection(text, clients) {
   const withOpenCode = setTomlField(text, "clients", "opencode", String(clients.includes("opencode")));
   const withClaude = setTomlField(withOpenCode, "clients", "claude", String(clients.includes("claude")));
-  return setTomlField(withClaude, "clients", "codex", String(clients.includes("codex")));
+  const withCodex = setTomlField(withClaude, "clients", "codex", String(clients.includes("codex")));
+  return setTomlField(withCodex, "clients", "kimi", String(clients.includes("kimi")));
 }
 
 function writeMemoraxConfig({ userId, endpoint, outputLanguage, apiKey }) {
@@ -870,6 +877,10 @@ function defaultMemoraxCodeConfig() {
     "[trace.opencode]",
     "enabled = true # Enable local OpenCode session memory trace collection.",
     "capture_content = true # Store content in local OpenCode trace events.",
+    "",
+    "[trace.kimi]",
+    "enabled = true # Enable local Kimi Code session memory trace collection.",
+    "capture_content = true # Store content in local Kimi Code trace events.",
     "",
   ].join("\n");
 }
@@ -1157,10 +1168,10 @@ function clientLifecycleFlags({ clientMode = "all" } = {}) {
 }
 
 function clientModeFor(clients, { includeDsh = false } = {}) {
-  const selected = ["codex", "claude", "dsh", "opencode"].filter((client) => (
+  const selected = ["codex", "claude", "dsh", "opencode", "kimi"].filter((client) => (
     client === "dsh" ? includeDsh : clients.includes(client)
   ));
-  if (selected.length === 4) return "all";
+  if (selected.length === 5) return "all";
   return selected.length > 0 ? selected.join(",") : "none";
 }
 
@@ -1177,12 +1188,23 @@ function clientSelectionMessage(clients, { dshSelected = false } = {}) {
       clients.includes("claude") ? "Claude Code" : undefined,
       "DeepSeek Harness",
       clients.includes("opencode") ? "OpenCode" : undefined,
+      clients.includes("kimi") ? "Kimi Code" : undefined,
     ].filter(Boolean);
     return `Configuring MemoraX Code for ${joinedLabels(labels)}.`;
   }
   const hasCodex = clients.includes("codex");
   const hasClaude = clients.includes("claude");
   const hasOpenCode = clients.includes("opencode");
+  const hasKimi = clients.includes("kimi");
+  if (hasKimi) {
+    const labels = [
+      hasCodex ? "Codex" : undefined,
+      hasClaude ? "Claude Code" : undefined,
+      hasOpenCode ? "OpenCode" : undefined,
+      "Kimi Code",
+    ].filter(Boolean);
+    return `Configuring MemoraX Code for ${joinedLabels(labels)}.`;
+  }
   if (hasCodex && hasClaude && hasOpenCode) return "Configuring MemoraX Code for Codex, Claude Code, and OpenCode.";
   if (hasCodex && hasClaude) return "Configuring MemoraX Code for Codex and Claude Code.";
   if (hasCodex && hasOpenCode) return "Configuring MemoraX Code for Codex and OpenCode.";
@@ -1196,6 +1218,7 @@ function clientSelectionMessage(clients, { dshSelected = false } = {}) {
 function clientLabel(client) {
   if (client === "codex") return "Codex";
   if (client === "claude") return "Claude Code";
+  if (client === "kimi") return "Kimi Code";
   return "OpenCode";
 }
 

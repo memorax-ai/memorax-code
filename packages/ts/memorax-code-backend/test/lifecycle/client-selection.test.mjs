@@ -20,6 +20,7 @@ test("managed clients default to all integrations", () => {
     claude: true,
     dsh: true,
     opencode: true,
+    kimi: true,
   });
 });
 
@@ -56,8 +57,8 @@ test("--clients accepts exact client sets", () => {
   assert.deepEqual(parseManagedClients("opencode"), { codex: false, claude: false, dsh: false, opencode: true });
   assert.deepEqual(parseManagedClients("codex,dsh,opencode"), { codex: true, claude: false, dsh: true, opencode: true });
   assert.deepEqual(parseManagedClients("codex,claude,dsh,opencode"), { codex: true, claude: true, dsh: true, opencode: true });
-  assert.deepEqual(parseManagedClients("all"), { codex: true, claude: true, dsh: true, opencode: true });
-  assert.deepEqual(parseManagedClients("none"), { codex: false, claude: false, dsh: false, opencode: false });
+  assert.deepEqual(parseManagedClients("all"), { codex: true, claude: true, dsh: true, opencode: true, kimi: true });
+  assert.deepEqual(parseManagedClients("none"), { codex: false, claude: false, dsh: false, opencode: false, kimi: false });
 });
 
 test("--clients rejects missing and unknown values", () => {

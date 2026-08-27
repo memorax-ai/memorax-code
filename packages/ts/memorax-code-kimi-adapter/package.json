@@ -1,0 +1,10 @@
+{
+  "name": "@memorax-code/kimi-adapter",
+  "version": "0.1.8",
+  "private": true,
+  "type": "module",
+  "description": "Kimi Code wire transcript adapter for MemoraX Code.",
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  }
+}

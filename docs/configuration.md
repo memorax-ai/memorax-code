@@ -39,11 +39,11 @@ are not a compatibility contract.
 
 ## New configuration
 
-The generated template selects all four client integrations, disables automatic
+The generated setup selects four automatically detected client integrations, disables automatic
 retrieval, enables automatic writeback, sets the preferred language to Chinese
 (`zh`), uses a five-turn skill reminder and the adaptive repository-update
-policy, and enables content-bearing local traces for Codex, Claude Code, and
-OpenCode. Foreground setup may narrow `[clients]` to clients detected on the
+policy, and enables content-bearing local traces for all five clients.
+Foreground setup may narrow `[clients]` to clients detected on the
 host. The tables below list all fallbacks, including tuning fields omitted from
 the generated file.
 
@@ -54,7 +54,9 @@ filesystem ACLs.
 ## Client selection
 
 If `[clients]` is absent, lifecycle commands select Codex, Claude Code, DSH,
-and OpenCode. If it is present, `codex`, `claude`, `dsh`, and `opencode` are
+OpenCode, and Kimi Code. Foreground setup does not auto-detect Kimi, so its
+generated `[clients]` table leaves Kimi disabled. If the table is present, `codex`, `claude`, `dsh`,
+`opencode`, and `kimi` are
 boolean fields. Omitted `codex`, `claude`, or `opencode` values are disabled;
 an omitted `dsh` value remains enabled so configurations written before DSH
 support can discover an existing local Harness. Set `dsh = false` explicitly
@@ -62,8 +64,22 @@ to disable that integration. The command-line override accepts a
 comma-separated subset:
 
 ```text
---clients codex|claude|dsh|opencode|<comma-separated subset>|all|none
+--clients codex|claude|dsh|opencode|kimi|<comma-separated subset>|all|none
 ```
+
+## Kimi Code integration
+
+Enable Kimi by setting `kimi = true` under `[clients]`, then run
+`memorax-code start`. The lifecycle
+stores a managed runtime under `$MEMORAX_CODE_HOME/adapters/kimi/runtime/` and
+materializes the canonical `memorax-code` Skill under
+`$KIMI_CODE_HOME/skills/memorax-code/`, then adds only six marked Hook entries
+to `$KIMI_CODE_HOME/config.toml`. Existing provider, Skill, and unrelated Hook
+settings remain client-owned; an unmanaged Skill with the same name is reported
+as a conflict. In Kimi, invoke the Skill as `/memorax-code`. Its explicit
+`search` and `add` operations call the configured MemoraX service through
+`memorax-cli`. `stop` disables the marked Hooks while retaining managed files;
+`uninstall` removes only the managed runtime, Hooks, and unchanged Skill.
 
 Foreground `memorax-code setup` refreshes `[clients]` from the clients
 available at that time. OpenCode is available when its explicit, XDG, or
@@ -79,7 +95,7 @@ selected instead of being permanently disabled. Direct npm installation does
 not detect clients or modify `[clients]`.
 
 Client selection controls managed client-integration lifecycle only. It does
-not change Codex, Claude Code, DSH, or OpenCode provider settings.
+not change Codex, Claude Code, DSH, OpenCode, or Kimi Code provider settings.
 `--clients none` runs the Backend without managing a client integration.
 
 ## Setup and package-transition state
@@ -309,6 +325,11 @@ applied on first observation and restored with a personal-memory reminder
 after successful context compaction. These local contexts remain separate
 from automatic writeback content.
 
+Kimi applies the cadence reminder on `UserPromptSubmit`; its native
+`PostCompact` Hook marks a supplemental reminder for the next user prompt.
+Reminder text is returned as plain Hook context and is also recorded as a
+client-qualified local trace event.
+
 | Field | Environment override | Fallback |
 | --- | --- | --- |
 | `policy` | `MEMORAX_CODE_REPO_MEMORY_UPDATE_POLICY` | `adaptive` |
@@ -326,7 +347,8 @@ authority is unavailable, the client integration skips that attempt instead
 of falling back to its local workspace path. DSH schedules this work through
 its native pre-step integration rather than a Hook.
 
-A relevant repo-read runs supervised maintenance in all four clients. The
+A relevant repo-read runs supervised maintenance in the clients with a
+maintenance-aware adapter. The
 configured policy may select a build, update, or no-op. DSH maintenance
 requires an enabled, managed Profile that includes `@deepseek-ai/dsh-headless`.
 OpenCode executes the job through its active local server. Desktop-only
@@ -334,16 +356,17 @@ installations do not require a standalone `opencode` executable in `PATH`.
 
 ## Local traces
 
-`[trace.codex]`, `[trace.claude]`, `[trace.dsh]`, and `[trace.opencode]`
+`[trace.codex]`, `[trace.claude]`, `[trace.dsh]`, `[trace.opencode]`, and
+`[trace.kimi]`
 support the same fields:
 
-| Field | Codex environment | Claude environment | DSH environment | OpenCode environment | Fallback |
+| Field | Codex environment | Claude environment | DSH environment | OpenCode environment | Kimi environment | Fallback |
 | --- | --- | --- | --- | --- | --- |
-| `enabled` | `MEMORAX_CODE_CODEX_TRACE_ENABLED` | `MEMORAX_CODE_CLAUDE_TRACE_ENABLED` | `MEMORAX_CODE_DSH_TRACE_ENABLED` | `MEMORAX_CODE_OPENCODE_TRACE_ENABLED` | `true` |
-| `capture_content` | `MEMORAX_CODE_CODEX_TRACE_CAPTURE_CONTENT` | `MEMORAX_CODE_CLAUDE_TRACE_CAPTURE_CONTENT` | `MEMORAX_CODE_DSH_TRACE_CAPTURE_CONTENT` | `MEMORAX_CODE_OPENCODE_TRACE_CAPTURE_CONTENT` | `true` |
-| `retention_days` | `MEMORAX_CODE_CODEX_TRACE_RETENTION_DAYS` | `MEMORAX_CODE_CLAUDE_TRACE_RETENTION_DAYS` | `MEMORAX_CODE_DSH_TRACE_RETENTION_DAYS` | `MEMORAX_CODE_OPENCODE_TRACE_RETENTION_DAYS` | `7` |
-| `max_event_chars` | `MEMORAX_CODE_CODEX_TRACE_MAX_EVENT_CHARS` | `MEMORAX_CODE_CLAUDE_TRACE_MAX_EVENT_CHARS` | `MEMORAX_CODE_DSH_TRACE_MAX_EVENT_CHARS` | `MEMORAX_CODE_OPENCODE_TRACE_MAX_EVENT_CHARS` | `20000` |
-| `max_file_bytes` | `MEMORAX_CODE_CODEX_TRACE_MAX_FILE_BYTES` | `MEMORAX_CODE_CLAUDE_TRACE_MAX_FILE_BYTES` | `MEMORAX_CODE_DSH_TRACE_MAX_FILE_BYTES` | `MEMORAX_CODE_OPENCODE_TRACE_MAX_FILE_BYTES` | `52428800` |
+| `enabled` | `MEMORAX_CODE_CODEX_TRACE_ENABLED` | `MEMORAX_CODE_CLAUDE_TRACE_ENABLED` | `MEMORAX_CODE_DSH_TRACE_ENABLED` | `MEMORAX_CODE_OPENCODE_TRACE_ENABLED` | `MEMORAX_CODE_KIMI_TRACE_ENABLED` | `true` |
+| `capture_content` | `MEMORAX_CODE_CODEX_TRACE_CAPTURE_CONTENT` | `MEMORAX_CODE_CLAUDE_TRACE_CAPTURE_CONTENT` | `MEMORAX_CODE_DSH_TRACE_CAPTURE_CONTENT` | `MEMORAX_CODE_OPENCODE_TRACE_CAPTURE_CONTENT` | `MEMORAX_CODE_KIMI_TRACE_CAPTURE_CONTENT` | `true` |
+| `retention_days` | `MEMORAX_CODE_CODEX_TRACE_RETENTION_DAYS` | `MEMORAX_CODE_CLAUDE_TRACE_RETENTION_DAYS` | `MEMORAX_CODE_DSH_TRACE_RETENTION_DAYS` | `MEMORAX_CODE_OPENCODE_TRACE_RETENTION_DAYS` | `MEMORAX_CODE_KIMI_TRACE_RETENTION_DAYS` | `7` |
+| `max_event_chars` | `MEMORAX_CODE_CODEX_TRACE_MAX_EVENT_CHARS` | `MEMORAX_CODE_CLAUDE_TRACE_MAX_EVENT_CHARS` | `MEMORAX_CODE_DSH_TRACE_MAX_EVENT_CHARS` | `MEMORAX_CODE_OPENCODE_TRACE_MAX_EVENT_CHARS` | `MEMORAX_CODE_KIMI_TRACE_MAX_EVENT_CHARS` | `20000` |
+| `max_file_bytes` | `MEMORAX_CODE_CODEX_TRACE_MAX_FILE_BYTES` | `MEMORAX_CODE_CLAUDE_TRACE_MAX_FILE_BYTES` | `MEMORAX_CODE_DSH_TRACE_MAX_FILE_BYTES` | `MEMORAX_CODE_OPENCODE_TRACE_MAX_FILE_BYTES` | `MEMORAX_CODE_KIMI_TRACE_MAX_FILE_BYTES` | `52428800` |
 
 Depending on the enabled client capabilities, content capture can include
 prompts, responses, recalled memory, writeback content, reminder text, and
@@ -355,6 +378,14 @@ export, or public collector.
 DSH trace contains only normalized lifecycle and memory-operation events. Its
 native Session Event Log and raw events remain local to DSH; MemoraX Code does
 not copy that log into trace.
+
+Kimi trace records use the native `session_id` plus prompt and turn identity,
+and are stored under the client-qualified Kimi trace root. Kimi's exact main
+`wire.jsonl` materialization remains the only automatic writeback content
+authority. To bind an explicit Kimi `memorax-cli` invocation to the current
+session, set both `MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT=kimi` and
+`MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID=<session-id>` in that process; the
+CLI then reuses the Kimi current-turn workspace and rejects cross-scope use.
 
 ## Backend runtime settings
 

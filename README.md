@@ -40,7 +40,7 @@ Coding agents are good at the task in front of them, but a new session often
 starts without the architecture, failed attempts, repository rules, or working
 preferences established before it.
 
-MemoraX Code gives Codex, Claude Code, DeepSeek Harness, and OpenCode a shared
+MemoraX Code gives Codex, Claude Code, DeepSeek Harness, OpenCode, and Kimi Code a shared
 memory layer for that context.
 It can recall prior engineering knowledge, capture reusable lessons from
 completed work, maintain repository knowledge, and carry your procedures and
@@ -53,7 +53,7 @@ and validation sooner.
 ## Quick Start
 
 Prepare Node.js 20+ (Node.js 24 LTS recommended) and at least one of Codex,
-Claude Code, DeepSeek Harness, or OpenCode. Python 3 is required for Repo
+Claude Code, DeepSeek Harness, OpenCode, or Kimi Code. Python 3 is required for Repo
 Memory operations. Each coding-agent harness retains its own runtime
 requirements; current DeepSeek Harness releases require Node.js
 `^22.19.0 || >=24.0.0`. DSH may be installed globally or initialized
@@ -105,6 +105,10 @@ registered.
 Both setup paths automatically detect supported coding agents. Restart or
 refresh every detected coding agent after setup.
 
+Kimi Code is not auto-detected because its Hook configuration may contain
+other local customizations. To enable it, set `kimi = true` under `[clients]`
+in `~/.memorax-code/config.toml`, then run `memorax-code start`.
+
 ### Installation Troubleshooting
 
 If the initial setup does not work as expected, check these common cases:
@@ -122,16 +126,17 @@ See [Configuration](docs/configuration.md) for supported settings and
 ### Try Cross-Session Memory
 
 Clone the example repository from the product website, then open Codex, Claude
-Code, DeepSeek Harness, or OpenCode in the project directory:
+Code, DeepSeek Harness, OpenCode, or Kimi Code in the project directory:
 
 ```bash
 git clone https://github.com/SWE-agent/test-repo.git
 cd test-repo
 ```
 
-Invoke the Skill as `$memorax-code` in Codex or `/memorax-code` in Claude Code
-or DeepSeek Harness. In OpenCode, ask the agent to use the `memorax-code` skill
-by name. The prompts below use its product name and work in all four clients.
+Invoke the Skill as `$memorax-code` in Codex or `/memorax-code` in Claude Code,
+DeepSeek Harness, or Kimi Code. In OpenCode, ask the agent to use the
+`memorax-code` skill by name. The prompts below use its product name and work
+in all five clients.
 
 Send these prompts in order in the same session:
 
@@ -184,7 +189,7 @@ writing when the durable intent or target is unclear.
 | **Procedure reuse** | Records reusable task procedures and reminds future agents to apply them. |
 | **Background Repo Memory maintenance** | Automatically organizes repository structure, entry points, and history evidence in the background, then updates them according to policy to reduce repeated searching and summarization. |
 | **Active memory control** | Lets you search and add memory through the bundled MemoraX Code skill or the CLI. |
-| **Client integration** | Integrates with Codex, Claude Code, DeepSeek Harness, and OpenCode to trigger memory retrieval, reminders, and writeback. Automatic quota reminders are currently available in Codex, Claude Code, and OpenCode. |
+| **Client integration** | Integrates with Codex, Claude Code, DeepSeek Harness, OpenCode, and Kimi Code to trigger memory retrieval, reminders, and writeback. Automatic quota reminders are currently available in Codex, Claude Code, and OpenCode. |
 
 ## Your Memory, Your Control
 
