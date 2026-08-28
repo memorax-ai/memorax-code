@@ -12,10 +12,20 @@ const pluginRoot = process.env.CODEBUDDY_PLUGIN_ROOT || dirname(dirname(fileURLT
 const commonRoot = resolveCommonSourceRoot(pluginRoot);
 const { scheduleMissingRepoMemoryBuild } = await import(pathToFileURL(join(commonRoot, "repo-memory", "repo-memory-auto-build.mjs")).href);
 const { isRepoMemoryJobWorker } = await import(pathToFileURL(join(commonRoot, "repo-memory", "repo-memory-job-context.mjs")).href);
+const { buildRepoProcedureMemoryContext } = await import(pathToFileURL(join(commonRoot, "repo-memory", "repo-procedure-memory-context.mjs")).href);
+const { buildRepoUserProfilePreferencesContext } = await import(pathToFileURL(join(commonRoot, "repo-memory", "repo-user-profile-context.mjs")).href);
 const { resolveBackendConnection } = await import(pathToFileURL(join(commonRoot, "backend-connection.mjs")).href);
 const { ensureBackendAvailable, stringValue: commonStringValue } = await import(pathToFileURL(join(commonRoot, "hooks", "ensure-backend-runner.mjs")).href);
+const {
+  evaluateMemorySkillReminder,
+  markSupplementalReminderAfterCompact,
+  personalMemoryReminderContext,
+} = await import(pathToFileURL(join(commonRoot, "hooks", "memory-skill-reminder-hook.mjs")).href);
 
 if (isRepoMemoryJobWorker()) process.exit(0);
+
+const MEMORY_SKILL_INVOCATION = "the `memorax-code-codebuddy-adapter:memorax-code` skill";
+const REMINDER_TRACE_TIMEOUT_MS = 1000;
 
 const input = await readJsonStdin();
 const event = stringValue(input?.hook_event_name) ?? stringValue(input?.hookEventName);
@@ -24,6 +34,18 @@ const transcriptPath = stringValue(input?.transcript_path) ?? stringValue(input?
 if (!event || !sessionId || !transcriptPath) process.exit(0);
 const home = process.env.MEMORAX_CODE_HOME?.trim() || join(homedir(), ".memorax-code");
 const pendingPath = join(home, "adapters", "codebuddy", "pending.json");
+const reminderOptions = {
+  adapterDir: "codebuddy",
+  debugEnv: "MEMORAX_CODE_CODEBUDDY_HOOK_DEBUG",
+  memoraxCodeHome: home,
+  runtime: "codebuddy",
+  supplementalReminderAfterCompact: true,
+};
+const personalMemoryContextOptions = {
+  adapterDir: "codebuddy",
+  debugEnv: "MEMORAX_CODE_CODEBUDDY_HOOK_DEBUG",
+  sessionKeyPrefix: "codebuddy",
+};
 await ensureBackendAvailable({
   ensureBackendValue: process.env.MEMORAX_CODE_CODEBUDDY_ENSURE_BACKEND
     ?? process.env.MEMORAX_CODE_CODEBUDDY_HOOK_ENSURE_BACKEND,
@@ -49,11 +71,14 @@ await ensureBackendAvailable({
   ],
   debug: (message) => { if (process.env.MEMORAX_CODE_CODEBUDDY_HOOK_DEBUG === "1") console.error(message); },
 }, input);
-if (event === "UserPromptSubmit") {
+if (event === "SessionStart") {
+  markSupplementalReminderAfterCompact(reminderOptions, input);
+} else if (event === "UserPromptSubmit") {
   const prompt = stringValue(input.prompt);
   if (!prompt) process.exit(0);
   const boundary = await fileBoundary(transcriptPath);
   const turnId = provisionalTurnId(sessionId, boundary, prompt);
+  const workspaceKind = stringValue(input.workspace_kind) ?? stringValue(input.workspaceKind);
   await updatePending(pendingPath, (state) => {
     const now = Date.now();
     const existing = state[sessionId];
@@ -62,18 +87,40 @@ if (event === "UserPromptSubmit") {
       turnId,
       transcriptPath,
       cwd: stringValue(input.cwd),
-      workspaceKind: stringValue(input.workspace_kind) ?? stringValue(input.workspaceKind),
+      workspaceKind,
       createdAt: existing?.turnId === turnId ? existing.createdAt : now,
       updatedAt: now,
     };
   });
-  const response = await post("/memory/turn-start", { version: 1, client: "codebuddy", sessionId, turnId, transcriptPath, prompt, cwd: stringValue(input.cwd), workspaceKind: stringValue(input.workspace_kind) ?? stringValue(input.workspaceKind) });
-  scheduleMissingRepoMemoryBuild(stringValue(response?.repoMemoryWorktree), {
+  const response = await post("/memory/turn-start", { version: 1, client: "codebuddy", sessionId, turnId, transcriptPath, prompt, cwd: stringValue(input.cwd), workspaceKind });
+  const repoMemoryWorktree = stringValue(response?.repoMemoryWorktree);
+  scheduleMissingRepoMemoryBuild(repoMemoryWorktree, {
     debugEnv: "MEMORAX_CODE_CODEBUDDY_HOOK_DEBUG",
     pluginRoot,
   });
-  const context = stringValue(response?.additionalContext);
+  const reminderResult = await evaluateMemorySkillReminder({
+    ...reminderOptions,
+    additionalReminderContext: personalMemoryReminderContext(MEMORY_SKILL_INVOCATION),
+    memorySkillInvocation: MEMORY_SKILL_INVOCATION,
+    remindOnFirstTurn: true,
+    requireTranscriptPath: true,
+    ...(repoMemoryWorktree ? {
+      buildCadenceReminderContext: (hookInput) => buildRepoProcedureMemoryContext({
+        ...hookInput,
+        cwd: repoMemoryWorktree,
+      }, personalMemoryContextOptions),
+      buildPersonalMemoryContext: (hookInput) => buildRepoUserProfilePreferencesContext({
+        ...hookInput,
+        cwd: repoMemoryWorktree,
+      }, personalMemoryContextOptions),
+    } : {}),
+  }, { ...input, turnId, workspaceKind });
+  const context = [
+    stringValue(response?.additionalContext),
+    stringValue(reminderResult?.additionalContext),
+  ].filter(Boolean).join("\n\n");
   if (context) process.stdout.write(`${JSON.stringify({ hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: context } })}\n`);
+  if (response !== undefined && reminderResult?.reminder) await recordReminder(reminderResult.reminder);
 } else if (event === "Stop") {
   const record = (await readPending(pendingPath))[sessionId];
   if (!record || record.transcriptPath !== transcriptPath) process.exit(0);
@@ -85,7 +132,22 @@ if (event === "UserPromptSubmit") {
   }
 }
 
-async function post(path, body) {
+async function recordReminder(reminder) {
+  if (!reminder.turnId || !reminder.transcriptPath) return;
+  await post("/memory/skill-reminder", {
+    version: 1,
+    client: "codebuddy",
+    sessionId: reminder.sessionId,
+    turnId: reminder.turnId,
+    transcriptPath: reminder.transcriptPath,
+    cwd: reminder.cwd,
+    workspaceKind: reminder.workspaceKind,
+    content: reminder.content,
+    triggers: reminder.triggers,
+  }, REMINDER_TRACE_TIMEOUT_MS);
+}
+
+async function post(path, body, timeoutMs = 12_000) {
   let connection;
   try {
     connection = resolveBackendConnection({ memoraxCodeHome: home });
@@ -95,7 +157,7 @@ async function post(path, body) {
   }
   const headers = { "content-type": "application/json", connection: "close" };
   if (connection.token) headers["x-memorax-code-backend-token"] = connection.token;
-  try { const response = await fetch(new URL(path, connection.url), { method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(12_000) }); return response.ok ? await response.json().catch(() => undefined) : undefined; } catch { return undefined; }
+  try { const response = await fetch(new URL(path, connection.url), { method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(timeoutMs) }); return response.ok ? await response.json().catch(() => undefined) : undefined; } catch { return undefined; }
 }
 async function fileBoundary(path) { try { return (await stat(path)).size; } catch { return 0; } }
 async function readJsonStdin() { try { let text = ""; for await (const chunk of process.stdin) text += chunk; return JSON.parse(text); } catch { return {}; } }

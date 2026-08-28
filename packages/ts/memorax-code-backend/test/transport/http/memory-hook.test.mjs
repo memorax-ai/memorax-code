@@ -313,6 +313,7 @@ test("Backend memory hook endpoints write client-isolated trace events", async (
     MEMORAX_CODE_CLAUDE_TRACE_ENABLED: undefined,
     MEMORAX_CODE_CODEX_TRACE_ENABLED: undefined,
     MEMORAX_CODE_DSH_TRACE_ENABLED: undefined,
+    MEMORAX_CODE_CODEBUDDY_TRACE_ENABLED: undefined,
     MEMORAX_CODE_OPENCODE_TRACE_ENABLED: undefined,
   });
   const originalFetch = globalThis.fetch;
@@ -499,6 +500,29 @@ test("Backend memory hook endpoints write client-isolated trace events", async (
     assert.equal(openCodeReminder.status, 200);
     assert.deepEqual(await openCodeReminder.json(), { ok: true });
 
+    const codeBuddyReminderTurnId = codeBuddyTurnId(
+      "session-trace-hook",
+      0,
+      "MemoraX Code reminder in WorkBuddy.",
+    );
+    const codeBuddyReminder = await originalFetch(`${url}/memory/skill-reminder`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        version: 1,
+        client: "codebuddy",
+        sessionId: "session-trace-hook",
+        turnId: codeBuddyReminderTurnId,
+        transcriptPath,
+        cwd: TEST_WORKSPACE,
+        workspaceKind: "project",
+        content: "MemoraX Code reminder: use the memorax-code-codebuddy-adapter:memorax-code skill in WorkBuddy.",
+        triggers: ["cadence"],
+      }),
+    });
+    assert.equal(codeBuddyReminder.status, 200);
+    assert.deepEqual(await codeBuddyReminder.json(), { ok: true });
+
     const writeback = await originalFetch(`${url}/memory/writeback`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -586,6 +610,23 @@ test("Backend memory hook endpoints write client-isolated trace events", async (
     assert.deepEqual(openCodeEvents[0].response, {
       role: "developer",
       content: "MemoraX Code reminder: use the memorax-code skill in OpenCode.",
+    });
+    const codeBuddyEventsPath = clientTracePaths("codebuddy", sessionHome).eventsJsonl("session-trace-hook");
+    await waitForFile(codeBuddyEventsPath, /skill_reminder/, "CodeBuddy reminder trace event was not written");
+    const codeBuddyEvents = (await readFile(codeBuddyEventsPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(codeBuddyEvents.length, 1);
+    assert.equal(codeBuddyEvents[0].type, "skill_reminder");
+    assert.equal(codeBuddyEvents[0].source, "codebuddy-hook");
+    assert.equal(codeBuddyEvents[0].operation, "reminder");
+    assert.equal(codeBuddyEvents[0].trace.client, "codebuddy");
+    assert.equal(codeBuddyEvents[0].trace.session_id, "session-trace-hook");
+    assert.equal(codeBuddyEvents[0].trace.turn_id, codeBuddyReminderTurnId);
+    assert.equal(codeBuddyEvents[0].trace.context_origin, "codebuddy-hook-body");
+    assert.equal(codeBuddyEvents[0].trace.transcript_path, transcriptPath);
+    assert.deepEqual(codeBuddyEvents[0].request.triggers, ["cadence"]);
+    assert.deepEqual(codeBuddyEvents[0].response, {
+      role: "developer",
+      content: "MemoraX Code reminder: use the memorax-code-codebuddy-adapter:memorax-code skill in WorkBuddy.",
     });
     const turnEnd = events.find((event) => event.type === "turn_end");
     assert.equal(turnEnd.source, "codex-hook");
