@@ -9,6 +9,32 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 const hookPath = fileURLToPath(new URL("../hooks/runtime-hook.mjs", import.meta.url));
+const manifestPath = fileURLToPath(new URL("../hooks/hooks.json", import.meta.url));
+
+test("SessionStart prewarms Backend without starting a memory turn", async () => {
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  const sessionStart = manifest.hooks.SessionStart?.[0];
+  assert.equal(sessionStart?.matcher, "startup|resume|clear|compact");
+  assert.equal(sessionStart?.hooks?.length, 1);
+  assert.match(sessionStart.hooks[0].command, /runtime-hook\.mjs\" turn$/);
+  assert.equal(sessionStart.hooks[0].timeout, 35);
+
+  const root = await mkdtemp(join(tmpdir(), "memorax-codebuddy-hook-"));
+  const transcriptPath = join(root, "session.jsonl");
+  await writeFile(transcriptPath, "");
+  const requests = [];
+  const server = await startServer(requests, { ok: true, service: "memorax-code-backend" });
+  try {
+    const result = await runHook({
+      hook_event_name: "SessionStart", session_id: "session-start", transcript_path: transcriptPath,
+      source: "startup", cwd: root,
+    }, { root, server });
+    assert.equal(result.status, 0);
+    assert.equal(result.stdout, "");
+    assert.deepEqual(requests.map((request) => request.path), ["/health"]);
+    await assert.rejects(readFile(join(root, "adapters", "codebuddy", "pending.json"), "utf8"), { code: "ENOENT" });
+  } finally { await server.close(); }
+});
 
 test("UserPromptSubmit posts turn-start and returns retrieved context", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-codebuddy-hook-"));
