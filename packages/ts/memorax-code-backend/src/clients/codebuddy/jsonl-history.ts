@@ -105,14 +105,24 @@ function parseJsonLines(text: string): ParsedHistoryRecord[] | undefined {
 }
 
 function visibleUserPrompt(record: CodeBuddyHistoryRecord): string | undefined {
-  const content = contentText(record.content);
+  const content = messageContentText(record.content, "input_text");
   if (!content) return undefined;
   const match = content.match(/<user_query>([\s\S]*?)<\/user_query>/);
   return (match?.[1] ?? content).trim() || undefined;
 }
 
 function assistantText(record: CodeBuddyHistoryRecord): string | undefined {
-  return contentText(record.content)?.trim() || undefined;
+  return messageContentText(record.content, "output_text")?.trim() || undefined;
+}
+
+function messageContentText(value: unknown, expectedType: "input_text" | "output_text"): string | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const parts = value.flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const block = item as Record<string, unknown>;
+    return block.type === expectedType && typeof block.text === "string" ? [block.text] : [];
+  });
+  return parts.join("\n") || undefined;
 }
 
 function contentText(value: unknown): string | undefined {

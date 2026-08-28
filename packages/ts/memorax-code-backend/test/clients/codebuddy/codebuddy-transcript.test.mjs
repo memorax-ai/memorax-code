@@ -6,10 +6,16 @@ import { codeBuddyTranscriptTurnFromJsonLines } from "../../../dist/clients/code
 const sessionId = "session-1";
 test("extracts hidden user query and completed assistant branch", () => {
   const lines = [
-    { id: "u1", type: "message", role: "user", sessionId, content: [{ type: "input_text", text: "<system-reminder>hidden</system-reminder><user_query>remember this</user_query>" }] },
+    { id: "u1", type: "message", role: "user", sessionId, content: [
+      { type: "output_text", text: "<user_query>ignore this block</user_query>" },
+      { type: "input_text", text: "<system-reminder>hidden</system-reminder><user_query>remember this</user_query>" },
+    ] },
     { id: "c1", type: "function_call", role: "assistant", parentId: "u1", name: "Bash", arguments: "{}" },
     { id: "r1", type: "function_call_result", parentId: "c1", output: "ok" },
-    { id: "a1", type: "message", role: "assistant", parentId: "r1", status: "completed", content: [{ type: "output_text", text: "done" }] },
+    { id: "a1", type: "message", role: "assistant", parentId: "r1", status: "completed", content: [
+      { type: "input_text", text: "ignore this block" },
+      { type: "output_text", text: "done" },
+    ] },
   ].map(JSON.stringify).join("\n");
   const result = codeBuddyTranscriptTurnFromJsonLines(lines, { sessionId, turnId: provisionalTurnId("remember this") });
   assert.equal(result.ok, true);
