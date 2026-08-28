@@ -1,8 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import {
   disableCodeBuddyAdapter,
   enableCodeBuddyAdapter,
@@ -13,6 +14,23 @@ import {
   codeBuddySettingsPath,
   codeBuddyInstallPath,
 } from "../src/config.mjs";
+
+test("derives the install cache version from the CodeBuddy plugin manifest", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-codebuddy-version-"));
+  const adapterRoot = join(root, "memorax-code-codebuddy-adapter");
+  const configPath = join(adapterRoot, "src", "config.mjs");
+  const commandPath = join(root, "memorax-code-adapter-common", "src", "clients", "codebuddy-command.mjs");
+  await mkdir(join(adapterRoot, "src"), { recursive: true });
+  await mkdir(join(adapterRoot, ".codebuddy-plugin"), { recursive: true });
+  await mkdir(join(root, "memorax-code-adapter-common", "src", "clients"), { recursive: true });
+  await cp(new URL("../src/config.mjs", import.meta.url), configPath);
+  await cp(new URL("../../memorax-code-adapter-common/src/clients/codebuddy-command.mjs", import.meta.url), commandPath);
+  await writeFile(join(adapterRoot, ".codebuddy-plugin", "plugin.json"), '{"version":"9.8.7"}\n');
+  const isolated = await import(pathToFileURL(configPath).href);
+  assert.equal(isolated.codeBuddyInstallPath(join(root, "home")), join(
+    root, "home", "plugins", "cache", "memorax-code-local", "memorax-code-codebuddy-adapter", "9.8.7",
+  ));
+});
 
 test("installs and removes an isolated CodeBuddy plugin registry entry", async () => {
   const home = await mkdtemp(join(tmpdir(), "memorax-codebuddy-"));
@@ -35,10 +53,14 @@ test("installs and removes an isolated CodeBuddy plugin registry entry", async (
   assert.equal(await exists(join(codeBuddyInstallPath(home), "memorax-code-adapter-common", "src", "repo-memory", "repo-memory-job-supervisor.mjs")), true);
   const pluginManifest = JSON.parse(await readFile(join(marketplaceRoot(home), "plugins", "memorax-code-codebuddy-adapter", ".codebuddy-plugin", "plugin.json"), "utf8"));
   assert.deepEqual(pluginManifest.skills, ["./skills/memorax-code"]);
+  assert.equal(codeBuddyInstallPath(home), join(home, "plugins", "cache", "memorax-code-local", "memorax-code-codebuddy-adapter", pluginManifest.version));
   const registry = JSON.parse(await readFile(join(home, "plugins", "installed_plugins.json"), "utf8"));
   assert.equal(registry.version, 2);
   assert.ok(registry.plugins["user-plugin@user-marketplace"]);
   assert.equal(registry.plugins["memorax-code-codebuddy-adapter@memorax-code-local"][0].installPath, codeBuddyInstallPath(home));
+  assert.equal(registry.plugins["memorax-code-codebuddy-adapter@memorax-code-local"][0].version, pluginManifest.version);
+  const marketplace = JSON.parse(await readFile(join(marketplaceRoot(home), ".codebuddy-plugin", "marketplace.json"), "utf8"));
+  assert.equal(marketplace.plugins[0].version, pluginManifest.version);
   const known = JSON.parse(await readFile(knownMarketplacesPath(home), "utf8"));
   assert.equal(known["memorax-code-local"].type, "directory");
   const settings = JSON.parse(await readFile(codeBuddySettingsPath(home), "utf8"));

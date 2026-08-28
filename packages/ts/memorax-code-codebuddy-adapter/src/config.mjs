@@ -1,11 +1,12 @@
+import { readFileSync } from "node:fs";
 import { chmod, cp, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveHookCodeBuddyCommand } from "../../memorax-code-adapter-common/src/clients/codebuddy-command.mjs";
 
-const VERSION = "0.1.8";
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
+const VERSION = readPluginVersion();
 const PLUGIN_NAME = "memorax-code-codebuddy-adapter";
 const MARKETPLACE_NAME = "memorax-code-local";
 const PLUGIN_ID = `${PLUGIN_NAME}@${MARKETPLACE_NAME}`;
@@ -188,6 +189,13 @@ async function writeJsonFile(path, value) {
 }
 async function pathExists(path) { try { await stat(path); return true; } catch { return false; } }
 function recordValue(value) { return value && typeof value === "object" && !Array.isArray(value) ? value : {}; }
+function readPluginVersion() {
+  const manifest = JSON.parse(readFileSync(join(ROOT, ".codebuddy-plugin", "plugin.json"), "utf8"));
+  if (typeof manifest?.version !== "string" || !manifest.version.trim()) {
+    throw new Error("MemoraX Code CodeBuddy plugin manifest has no version.");
+  }
+  return manifest.version.trim();
+}
 function legacyCodeBuddyInstallPath(home) { return join(home, "plugins", "cache", PLUGIN_NAME, VERSION); }
 
 async function materializeCanonicalSkill(destination) {
