@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
@@ -30,7 +31,44 @@ test("UserPromptSubmit posts turn-start and returns retrieved context", async ()
     assert.equal(turnStarts[0].body.sessionId, "session-1");
     assert.equal(turnStarts[0].body.prompt, "remember this");
     const pending = JSON.parse(await readFile(join(root, "adapters", "codebuddy", "pending.json"), "utf8"));
-    assert.match(pending["session-1"].turnId, /^session-1:/);
+    assert.equal(pending["session-1"].version, 1);
+    assert.equal(pending["session-1"].turnId, provisionalTurnId("session-1", 0, "remember this"));
+  } finally { await server.close(); }
+});
+
+test("UserPromptSubmit retries reuse one deterministic pending turn and a new prompt replaces it", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-codebuddy-hook-"));
+  const transcriptPath = join(root, "session.jsonl");
+  await writeFile(transcriptPath, "");
+  const requests = [];
+  const server = await startServer(requests, { additionalContext: "memory context" });
+  const input = {
+    hook_event_name: "UserPromptSubmit", session_id: "session-retry", transcript_path: transcriptPath,
+    prompt: "same prompt", cwd: root,
+  };
+  try {
+    const first = await runHook(input, { root, server });
+    assert.equal(first.status, 0);
+    const firstPending = JSON.parse(await readFile(join(root, "adapters", "codebuddy", "pending.json"), "utf8"));
+
+    const retry = await runHook(input, { root, server });
+    assert.equal(retry.status, 0);
+    assert.deepEqual(JSON.parse(retry.stdout), {
+      hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: "memory context" },
+    });
+    const retryPending = JSON.parse(await readFile(join(root, "adapters", "codebuddy", "pending.json"), "utf8"));
+    assert.equal(retryPending["session-retry"].turnId, firstPending["session-retry"].turnId);
+    assert.equal(retryPending["session-retry"].createdAt, firstPending["session-retry"].createdAt);
+    assert.equal(retryPending["session-retry"].version, 1);
+    assert.equal(Object.keys(retryPending).length, 1);
+
+    const next = await runHook({ ...input, prompt: "next prompt" }, { root, server });
+    assert.equal(next.status, 0);
+    const nextPending = JSON.parse(await readFile(join(root, "adapters", "codebuddy", "pending.json"), "utf8"));
+    assert.equal(nextPending["session-retry"].turnId, provisionalTurnId("session-retry", 0, "next prompt"));
+    assert.notEqual(nextPending["session-retry"].turnId, retryPending["session-retry"].turnId);
+    assert.equal(Object.keys(nextPending).length, 1);
+    assert.equal(requests.filter((request) => request.path === "/memory/turn-start").length, 3);
   } finally { await server.close(); }
 });
 
@@ -110,4 +148,8 @@ function runHook(input, { root, server }) {
     child.on("close", (status, signal) => resolve({ status, signal, stdout: stdout.trim(), stderr }));
     child.stdin.end(JSON.stringify(input));
   });
+}
+
+function provisionalTurnId(sessionId, boundary, prompt) {
+  return `${sessionId}:${boundary}:${createHash("sha256").update(prompt.trim()).digest("hex")}`;
 }

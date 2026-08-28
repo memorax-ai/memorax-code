@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { codeBuddyPromptDigest, parseCodeBuddyTurnId } from "./turn-id.js";
 
 export type CodeBuddyHistoryRecord = Readonly<Record<string, unknown>>;
 export type CodeBuddyTurn = Readonly<{
@@ -20,7 +21,7 @@ const RECORD_OFFSET = Symbol("codebuddyRecordOffset");
 type ParsedHistoryRecord = CodeBuddyHistoryRecord & { [RECORD_OFFSET]?: number };
 
 export async function readCodeBuddyTranscriptTurn(input: {
-  transcriptPath: string; sessionId: string; turnId: string; prompt?: string;
+  transcriptPath: string; sessionId: string; turnId: string;
 }): Promise<CodeBuddyTurnResult> {
   let text: string;
   try { text = await readFile(input.transcriptPath, "utf8"); }
@@ -30,37 +31,26 @@ export async function readCodeBuddyTranscriptTurn(input: {
 
 export function codeBuddyTranscriptTurnFromJsonLines(
   text: string,
-  input: { sessionId: string; turnId: string; prompt?: string },
+  input: { sessionId: string; turnId: string },
 ): CodeBuddyTurnResult {
+  const identity = parseCodeBuddyTurnId(input);
+  if (!identity) return { ok: false, reason: "turn_not_found" };
   const records = parseJsonLines(text);
   if (!records) return { ok: false, reason: "malformed_transcript" };
-  const hasSessionMarkers = records.some((record) => Boolean(stringField(record, "sessionId")));
-  const session = records.filter((record) => hasSessionMarkers
-    ? stringField(record, "sessionId") === input.sessionId
-    : true);
+  const session = records.filter((record) => stringField(record, "sessionId") === input.sessionId);
   const users = session.filter((record) => record.role === "user" && visibleUserPrompt(record));
-  const matching = users.filter((record) => {
+  const candidates = users.filter((record) => {
     const prompt = visibleUserPrompt(record);
-    return Boolean(prompt && (!input.prompt || prompt === input.prompt));
+    return Boolean(
+      prompt
+      && (record[RECORD_OFFSET] ?? Number.MAX_SAFE_INTEGER) >= identity.boundary
+      && codeBuddyPromptDigest(prompt) === identity.promptDigest,
+    );
   });
-  const boundary = turnBoundary(input);
-  const bounded = boundary === undefined
-    ? matching
-    : matching.filter((record) => (record[RECORD_OFFSET] ?? Number.MAX_SAFE_INTEGER) >= boundary);
-  // WorkBuddy can materialize the user record before invoking UserPromptSubmit.
-  // In that race the provisional boundary is already past every matching user
-  // record. Use the latest matching record, while retaining branch validation
-  // below so forks and incomplete turns still fail closed.
-  const provisional = boundary !== undefined
-    && bounded.length === 0
-    && matching.length > 0
-    && matching.every((record) => (record[RECORD_OFFSET] ?? Number.MAX_SAFE_INTEGER) < boundary)
-    ? matching
-    : [];
-  const candidates = bounded.length > 0 ? bounded : provisional;
   if (candidates.length === 0) return { ok: false, reason: "user_prompt_missing" };
-  const latest = candidates[candidates.length - 1];
-  const userId = stringField(latest, "id");
+  if (candidates.length > 1) return { ok: false, reason: "turn_ambiguous" };
+  const user = candidates[0];
+  const userId = stringField(user, "id");
   if (!userId) return { ok: false, reason: "turn_not_found" };
   const branch = records.filter((record) => record.role === "assistant" && record.status === "completed" && belongsTo(record, userId, records));
   if (branch.length !== 1) return { ok: false, reason: branch.length > 1 ? "turn_ambiguous" : "assistant_message_missing" };
@@ -72,10 +62,10 @@ export function codeBuddyTranscriptTurnFromJsonLines(
     turn: {
       sessionId: input.sessionId,
       turnId: input.turnId,
-      userPrompt: visibleUserPrompt(latest)!,
+      userPrompt: visibleUserPrompt(user)!,
       assistantReply: reply,
       activities: activitiesBetween(records, userId, assistant),
-      sessionTurnIndex: users.indexOf(latest) + 1,
+      sessionTurnIndex: users.indexOf(user) + 1,
     },
   };
 }
@@ -114,16 +104,6 @@ function parseJsonLines(text: string): ParsedHistoryRecord[] | undefined {
   return [...withoutId, ...byId.values()];
 }
 
-function turnBoundary(input: { sessionId: string; turnId: string }): number | undefined {
-  const prefix = `${input.sessionId}:`;
-  if (!input.turnId.startsWith(prefix)) return undefined;
-  const remainder = input.turnId.slice(prefix.length);
-  const separator = remainder.indexOf(":");
-  if (separator < 1) return undefined;
-  const boundary = Number(remainder.slice(0, separator));
-  return Number.isSafeInteger(boundary) && boundary >= 0 ? boundary : undefined;
-}
-
 function visibleUserPrompt(record: CodeBuddyHistoryRecord): string | undefined {
   const content = contentText(record.content);
   if (!content) return undefined;
@@ -153,7 +133,7 @@ function belongsTo(record: CodeBuddyHistoryRecord, userId: string, records: read
     const id = stringField(current, "id");
     if (id && seen.has(id)) return false;
     if (id) seen.add(id);
-    const parent: string | undefined = stringField(current, "parentId") ?? stringField(current, "logicalParentId");
+    const parent = stringField(current, "parentId");
     if (!parent) return false;
     if (parent === userId) return true;
     current = records.find((candidate) => stringField(candidate, "id") === parent);

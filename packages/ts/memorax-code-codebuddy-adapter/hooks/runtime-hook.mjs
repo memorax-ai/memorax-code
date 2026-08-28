@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -53,15 +53,17 @@ if (event === "UserPromptSubmit") {
   const prompt = stringValue(input.prompt);
   if (!prompt) process.exit(0);
   const boundary = await fileBoundary(transcriptPath);
-  const turnId = `${sessionId}:${boundary}:${createHash("sha256").update(prompt).digest("hex").slice(0, 16)}:${randomUUID().slice(0, 8)}`;
+  const turnId = provisionalTurnId(sessionId, boundary, prompt);
   await updatePending(pendingPath, (state) => {
     const now = Date.now();
+    const existing = state[sessionId];
     state[sessionId] = {
+      version: 1,
       turnId,
       transcriptPath,
       cwd: stringValue(input.cwd),
       workspaceKind: stringValue(input.workspace_kind) ?? stringValue(input.workspaceKind),
-      createdAt: now,
+      createdAt: existing?.turnId === turnId ? existing.createdAt : now,
       updatedAt: now,
     };
   });
@@ -143,6 +145,17 @@ async function withJsonFileLockAsync(path, operation) {
 }
 function stringValue(value) { return typeof value === "string" && value.trim() ? value.trim() : undefined; }
 
+function provisionalTurnId(sessionId, boundary, prompt) {
+  return `${sessionId}:${boundary}:${createHash("sha256").update(prompt.trim()).digest("hex")}`;
+}
+
+function validProvisionalTurnId(sessionId, turnId) {
+  const prefix = `${sessionId}:`;
+  if (typeof turnId !== "string" || !turnId.startsWith(prefix)) return false;
+  const match = /^(0|[1-9]\d*):[0-9a-f]{64}$/.exec(turnId.slice(prefix.length));
+  return Boolean(match && Number.isSafeInteger(Number(match[1])));
+}
+
 function prunePendingState(state) {
   const now = Date.now();
   const ttl = positiveInteger(process.env.MEMORAX_CODE_CODEBUDDY_PENDING_TTL_MS, 24 * 60 * 60 * 1000);
@@ -152,8 +165,13 @@ function prunePendingState(state) {
       delete state[sessionId];
       continue;
     }
-    const updatedAt = Number(record.updatedAt ?? record.createdAt ?? now);
-    if (!Number.isFinite(updatedAt) || now - updatedAt > ttl) delete state[sessionId];
+    if (record.version !== 1 || !validProvisionalTurnId(sessionId, record.turnId) || !stringValue(record.transcriptPath)) {
+      delete state[sessionId];
+      continue;
+    }
+    if (!Number.isFinite(record.createdAt) || !Number.isFinite(record.updatedAt) || now - record.updatedAt > ttl) {
+      delete state[sessionId];
+    }
   }
   const entries = Object.entries(state).sort(([, left], [, right]) => Number(left.updatedAt ?? left.createdAt ?? 0) - Number(right.updatedAt ?? right.createdAt ?? 0));
   while (entries.length > maxEntries) {

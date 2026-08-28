@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -152,6 +153,21 @@ test("Backend memory hook endpoints reject commands outside the closed schema", 
     sessionHeader: {},
     events: [],
   };
+  const codeBuddyTurnStart = {
+    version: 1,
+    client: "codebuddy",
+    sessionId: "session-codebuddy-turn-start",
+    turnId: codeBuddyTurnId("session-codebuddy-turn-start", 0, "CodeBuddy turn start."),
+    prompt: "CodeBuddy turn start.",
+    transcriptPath: "/tmp/codebuddy.jsonl",
+  };
+  const codeBuddyWriteback = {
+    version: 1,
+    client: "codebuddy",
+    sessionId: "session-codebuddy-writeback",
+    turnId: codeBuddyTurnId("session-codebuddy-writeback", 0, "CodeBuddy writeback."),
+    transcriptPath: "/tmp/codebuddy.jsonl",
+  };
   try {
     for (const [caseName, path, body] of [
       ["unversioned command", "/memory/turn-start", {
@@ -247,6 +263,22 @@ test("Backend memory hook endpoints reject commands outside the closed schema", 
         ...dshWriteback,
         endSeq: -1,
       }],
+      ["malformed CodeBuddy turn id", "/memory/turn-start", {
+        ...codeBuddyTurnStart,
+        turnId: "session-codebuddy-turn-start:0:short",
+      }],
+      ["cross-session CodeBuddy turn id", "/memory/turn-start", {
+        ...codeBuddyTurnStart,
+        turnId: codeBuddyTurnId("other-session", 0, codeBuddyTurnStart.prompt),
+      }],
+      ["prompt-mismatched CodeBuddy turn id", "/memory/turn-start", {
+        ...codeBuddyTurnStart,
+        turnId: codeBuddyTurnId(codeBuddyTurnStart.sessionId, 0, "different prompt"),
+      }],
+      ["non-canonical CodeBuddy boundary", "/memory/writeback", {
+        ...codeBuddyWriteback,
+        turnId: `${codeBuddyWriteback.sessionId}:00:${"a".repeat(64)}`,
+      }],
     ]) {
       const response = await fetch(`${url}${path}`, {
         method: "POST",
@@ -264,6 +296,10 @@ test("Backend memory hook endpoints reject commands outside the closed schema", 
     await rm(root, { recursive: true, force: true });
   }
 });
+
+function codeBuddyTurnId(sessionId, boundary, prompt) {
+  return `${sessionId}:${boundary}:${createHash("sha256").update(prompt.trim()).digest("hex")}`;
+}
 
 test("Backend memory hook endpoints write client-isolated trace events", async () => {
   const { fetchImpl, requests } = memoraxAddFetch();

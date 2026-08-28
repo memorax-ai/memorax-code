@@ -40,7 +40,6 @@ export function createCodeBuddyMemoryHookRuntime(options: Options = {}): CodeBud
   const automatic = options.turnCoordinator ? undefined : options.automaticWriteback ? { enqueue: options.automaticWriteback, discardForScopeUpgrade: () => 0, drain: async () => undefined, close: () => undefined } : createAutomaticMemoryWritebackRuntime({ diagnosticLogger: options.diagnosticLogger });
   const coordinator = options.turnCoordinator ?? createMemoryTurnCoordinator({ automaticWriteback: automatic!.enqueue, now, ttlMs: options.ttlMs, maxEntries: options.maxEntries, cleanupIntervalMs: options.cleanupIntervalMs });
   const repository = options.repositoryMemorySession ?? createRepositoryMemorySessionRuntime({ onScopeUpgrade: automatic?.discardForScopeUpgrade });
-  const retrievals = new Map<string, number>();
   return {
     async recordTurnStart(command) {
       const memory = await resolveRepository(command, options, repository);
@@ -63,11 +62,6 @@ export function createCodeBuddyMemoryHookRuntime(options: Options = {}): CodeBud
         now: () => new Date(now()),
       }), options.diagnosticLogger);
       const repoMemoryWorktree = resolvedRepoMemoryWorktree(memory);
-      const retrievalKey = `${command.sessionId}:${command.turnId}`;
-      const retrievalNow = now();
-      pruneRetrievals(retrievals, retrievalNow, options.ttlMs ?? 30 * 60 * 1000, options.maxEntries ?? 1000);
-      if (retrievals.has(retrievalKey)) return { ok: true, ...(repoMemoryWorktree ? { repoMemoryWorktree } : {}) };
-      retrievals.set(retrievalKey, retrievalNow);
       const retrieval = await retrieveAutomaticMemoryContext({ diagnosticLogger: options.diagnosticLogger, env: options.env ?? process.env, fetchImpl: options.fetchImpl, memoryObservability: options.memoryObservability, memoryObservabilitySource: "codebuddy_hook_retrieval", query: command.prompt, repositoryMemory: memory, sessionKey: command.sessionId, traceContext: traceContextFromCodeBuddyHookBody(command) });
       return { ok: true, ...(repoMemoryWorktree ? { repoMemoryWorktree } : {}), ...(retrieval.context ? { additionalContext: retrieval.context } : {}) };
     },
@@ -92,19 +86,8 @@ export function createCodeBuddyMemoryHookRuntime(options: Options = {}): CodeBud
       return completed.scheduled ? { ok: true, scheduled: true } : { ok: true, scheduled: false, reason: completed.reason };
     },
     size() { return coordinator.size("codebuddy"); },
-    close() { retrievals.clear(); if (!options.turnCoordinator) coordinator.close(); if (!options.repositoryMemorySession) repository.close(); automatic?.close?.(); },
+    close() { if (!options.turnCoordinator) coordinator.close(); if (!options.repositoryMemorySession) repository.close(); automatic?.close?.(); },
   };
-}
-
-function pruneRetrievals(retrievals: Map<string, number>, nowMs: number, ttlMs: number, maxEntries: number): void {
-  for (const [key, createdAt] of retrievals) {
-    if (nowMs - createdAt >= ttlMs) retrievals.delete(key);
-  }
-  while (retrievals.size >= maxEntries) {
-    const oldest = retrievals.keys().next().value;
-    if (oldest === undefined) break;
-    retrievals.delete(oldest);
-  }
 }
 
 async function resolveRepository(command: { sessionId: string; cwd?: string; workspaceKind?: string }, options: Options, repository: RepositoryMemorySessionRuntime): Promise<ConfiguredRepositoryMemoryResult> {

@@ -1,4 +1,5 @@
 import { isRecord } from "../shared/record.js";
+import { codeBuddyPromptDigest, parseCodeBuddyTurnId } from "../clients/codebuddy/turn-id.js";
 
 export const MEMORY_HOOK_COMMAND_VERSION = 1 as const;
 export const INVALID_MEMORY_HOOK_COMMAND = "invalid memory Hook command";
@@ -246,7 +247,7 @@ export function parseTurnStartCommand(
   if (base.client === "codebuddy") {
     const turnId = requiredStringField(value, "turnId");
     const transcriptPath = requiredStringField(value, "transcriptPath");
-    if (!turnId || !transcriptPath) return invalidCommand();
+    if (!turnId || !transcriptPath || !validCodeBuddyTurnId(turnId, base.sessionId, prompt)) return invalidCommand();
     return { ok: true, command: { ...base, client: "codebuddy", turnId, prompt, transcriptPath } };
   }
   const promptId = requiredStringField(value, "promptId");
@@ -317,7 +318,7 @@ export function parseWritebackCommand(
   if (base.client === "codebuddy") {
     const turnId = requiredStringField(value, "turnId");
     const transcriptPath = requiredStringField(value, "transcriptPath");
-    if (!turnId || !transcriptPath) return invalidCommand();
+    if (!turnId || !transcriptPath || !validCodeBuddyTurnId(turnId, base.sessionId)) return invalidCommand();
     return { ok: true, command: { ...base, client: "codebuddy", turnId, transcriptPath } };
   }
   const lastAssistantMessage = requiredStringField(value, "lastAssistantMessage");
@@ -393,7 +394,7 @@ export function parseSkillReminderCommand(
   if (base.client === "codebuddy") {
     const turnId = requiredStringField(value, "turnId");
     const transcriptPath = requiredStringField(value, "transcriptPath");
-    if (!turnId || !transcriptPath) return invalidCommand();
+    if (!turnId || !transcriptPath || !validCodeBuddyTurnId(turnId, base.sessionId)) return invalidCommand();
     return { ok: true, command: { ...base, client: "codebuddy", turnId, transcriptPath, content, triggers } };
   }
   const transcriptPath = requiredStringField(value, "transcriptPath");
@@ -511,6 +512,11 @@ function optionalStringField(
   if (!Object.prototype.hasOwnProperty.call(value, key)) return { ok: true };
   const field = requiredStringField(value, key);
   return field ? { ok: true, value: field } : { ok: false };
+}
+
+function validCodeBuddyTurnId(turnId: string, sessionId: string, prompt?: string): boolean {
+  const identity = parseCodeBuddyTurnId({ sessionId, turnId });
+  return Boolean(identity && (prompt === undefined || identity.promptDigest === codeBuddyPromptDigest(prompt)));
 }
 
 function invalidCommand<Command>(): MemoryHookCommandParseResult<Command> {
