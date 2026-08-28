@@ -119,7 +119,11 @@ if (event === "SessionStart") {
     stringValue(response?.additionalContext),
     stringValue(reminderResult?.additionalContext),
   ].filter(Boolean).join("\n\n");
-  if (context) process.stdout.write(`${JSON.stringify({ hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: context } })}\n`);
+  const systemMessage = stringValue(response?.userNotice);
+  if (context || systemMessage) process.stdout.write(`${JSON.stringify({
+    ...(systemMessage ? { systemMessage } : {}),
+    ...(context ? { hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: context } } : {}),
+  })}\n`);
   if (response !== undefined && reminderResult?.reminder) await recordReminder(reminderResult.reminder);
 } else if (event === "Stop") {
   const record = (await readPending(pendingPath))[sessionId];

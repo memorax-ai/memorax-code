@@ -91,7 +91,12 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
     repositoryMemorySession,
     turnCoordinator,
   });
-  const codeBuddyHook = createCodeBuddyMemoryHookRuntime({ ...options, repositoryMemorySession, turnCoordinator });
+  const codeBuddyHook = createCodeBuddyMemoryHookRuntime({
+    ...options,
+    pendingQuotaNotice,
+    repositoryMemorySession,
+    turnCoordinator,
+  });
   let closed = false;
   return {
     async recordTurnStart(command) {

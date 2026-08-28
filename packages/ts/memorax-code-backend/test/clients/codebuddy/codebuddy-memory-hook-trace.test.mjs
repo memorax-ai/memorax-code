@@ -134,6 +134,7 @@ test("CodeBuddy automatic Search returns basic context when explicitly enabled",
       MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED: "true",
     }),
     automaticWriteback: () => ({ accepted: true }),
+    claimQuotaNotice: async (_config, quota) => `${quota.featureCode}: ${quota.remaining}`,
     fetchImpl: async () => {
       searchCalls += 1;
       return new Response(JSON.stringify({
@@ -142,6 +143,16 @@ test("CodeBuddy automatic Search returns basic context when explicitly enabled",
           task_id: `search-${searchCalls}`,
           status: "completed",
           data: [{ id: "memory-1", memory: "basic retry context", score: 0.9, metadata: { memory_type: "core" } }],
+          balances: [{
+            product_code: "memory_api",
+            feature_code: "memory_search",
+            spec_key: "calls",
+            quota_unit: "times",
+            quota_limit: 10_000,
+            reserved: 1,
+            consumed: 0,
+            remaining: 9_999,
+          }],
         },
       }), { status: 200, headers: { "content-type": "application/json" } });
     },
@@ -150,6 +161,8 @@ test("CodeBuddy automatic Search returns basic context when explicitly enabled",
   try {
     const result = await runtime.recordTurnStart(start);
     assert.match(result.additionalContext, /basic retry context/);
+    assert.equal(result.userNotice, "memory_search: 9999");
+    assert.doesNotMatch(result.additionalContext, /memory_search/);
     assert.equal(searchCalls, 1);
   } finally {
     runtime.close();

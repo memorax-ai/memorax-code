@@ -95,6 +95,36 @@ test("UserPromptSubmit follows the first-and-sixth reminder cadence", async () =
   } finally { await server.close(); }
 });
 
+test("UserPromptSubmit exposes a Backend user notice without model context", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-codebuddy-hook-"));
+  const transcriptPath = join(root, "session.jsonl");
+  await writeFile(transcriptPath, "");
+  const requests = [];
+  let turnStarts = 0;
+  const server = await startServer(requests, ({ path }) => {
+    if (path !== "/memory/turn-start") return { ok: true, service: "memorax-code-backend" };
+    turnStarts += 1;
+    return turnStarts === 2
+      ? { ok: true, userNotice: "MemoraX Code quota is running low." }
+      : { ok: true };
+  });
+  try {
+    const first = await runHook({
+      hook_event_name: "UserPromptSubmit", session_id: "session-notice", transcript_path: transcriptPath,
+      prompt: "first prompt", cwd: root,
+    }, { root, server });
+    assert.match(first.stdout, /MemoraX Code reminder/);
+
+    const second = await runHook({
+      hook_event_name: "UserPromptSubmit", session_id: "session-notice", transcript_path: transcriptPath,
+      prompt: "second prompt", cwd: root,
+    }, { root, server });
+    assert.deepEqual(JSON.parse(second.stdout), {
+      systemMessage: "MemoraX Code quota is running low.",
+    });
+  } finally { await server.close(); }
+});
+
 test("compact restores profile context while cadence turns include profile and procedure context", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-codebuddy-hook-"));
   const repo = join(root, "repo");
