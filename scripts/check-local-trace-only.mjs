@@ -22,6 +22,8 @@ const productionRoots = [
   "packages/ts/memorax-code-claude-adapter/src/",
   "packages/ts/memorax-code-dsh-adapter/src/",
   "packages/ts/memorax-code-opencode-adapter/src/",
+  "packages/ts/memorax-code-codebuddy-adapter/hooks/",
+  "packages/ts/memorax-code-codebuddy-adapter/src/",
 ];
 
 const reviewedNetworkSources = new Set([
@@ -55,6 +57,8 @@ const reviewedNetworkSources = new Set([
   "packages/ts/memorax-code-opencode-adapter/src/cli.mjs",
   "packages/ts/memorax-code-opencode-adapter/src/plugin.mjs",
   "packages/ts/memorax-code-opencode-adapter/src/repo-memory-server-runner.mjs",
+  "packages/ts/memorax-code-backend/src/clients/codebuddy/memory-hook-runtime.ts",
+  "packages/ts/memorax-code-codebuddy-adapter/hooks/runtime-hook.mjs",
 ]);
 
 const localTraceCoreSources = new Set([
