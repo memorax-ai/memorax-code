@@ -30,7 +30,8 @@ test("CodeBuddy repo memory launcher uses non-persistent print mode", async () =
     "--no-session-persistence",
   ]);
   assert.match(payload.prompt, /repo-build operation/);
-  assert.match(payload.prompt, /memorax-code-codebuddy-adapter:memorax-code/);
+  assert.match(payload.prompt, /the `memorax-code` skill/);
+  assert.doesNotMatch(payload.prompt, /memorax-code-codebuddy-adapter:memorax-code/);
   assert.doesNotMatch(payload.prompt, /\$memorax-code/);
 });
 

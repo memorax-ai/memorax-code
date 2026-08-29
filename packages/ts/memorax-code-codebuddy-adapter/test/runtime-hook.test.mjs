@@ -59,7 +59,8 @@ test("UserPromptSubmit posts turn-start, injects the skill reminder, and traces 
     const output = JSON.parse(result.stdout);
     assert.equal(output.hookSpecificOutput.hookEventName, "UserPromptSubmit");
     assert.match(output.hookSpecificOutput.additionalContext, /^memory context\n\nMemoraX Code reminder:/);
-    assert.match(output.hookSpecificOutput.additionalContext, /memorax-code-codebuddy-adapter:memorax-code/);
+    assert.match(output.hookSpecificOutput.additionalContext, /the `memorax-code` skill/);
+    assert.doesNotMatch(output.hookSpecificOutput.additionalContext, /memorax-code-codebuddy-adapter:memorax-code/);
     const turnStarts = requests.filter((request) => request.path === "/memory/turn-start");
     assert.equal(turnStarts.length, 1);
     assert.equal(turnStarts[0].body.client, "codebuddy");

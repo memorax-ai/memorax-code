@@ -24,7 +24,7 @@ const {
 
 if (isRepoMemoryJobWorker()) process.exit(0);
 
-const MEMORY_SKILL_INVOCATION = "the `memorax-code-codebuddy-adapter:memorax-code` skill";
+const MEMORY_SKILL_INVOCATION = "the `memorax-code` skill";
 const REMINDER_TRACE_TIMEOUT_MS = 1000;
 
 const input = await readJsonStdin();
