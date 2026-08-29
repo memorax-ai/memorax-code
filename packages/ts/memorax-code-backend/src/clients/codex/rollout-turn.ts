@@ -39,6 +39,7 @@ export type CodexRolloutTurn = {
 export type CodexRolloutTurnFailureReason =
   | "transcript_unavailable"
   | "transcript_session_mismatch"
+  | "turn_metadata_mismatch"
   | "turn_not_found"
   | "user_prompt_missing"
   | "assistant_message_missing";
@@ -105,6 +106,7 @@ export function codexRolloutTurnFromJsonLines(
   if (!codexRolloutSessionMatches(scan, input.sessionId)) {
     return { ok: false, reason: "transcript_session_mismatch" };
   }
+  if (scan.turnMetadataMismatch) return { ok: false, reason: "turn_metadata_mismatch" };
   if (!scan.targetSeen) return { ok: false, reason: "turn_not_found" };
   if (!scan.userPrompt) return { ok: false, reason: "user_prompt_missing" };
   if (!scan.assistantReply) return { ok: false, reason: "assistant_message_missing" };
@@ -122,6 +124,7 @@ export function codexInterruptedRolloutTurnFromJsonLines(
   if (!codexRolloutSessionMatches(scan, input.sessionId)) {
     return { ok: false, reason: "transcript_session_mismatch" };
   }
+  if (scan.turnMetadataMismatch) return { ok: false, reason: "turn_metadata_mismatch" };
   if (!scan.targetSeen) return { ok: false, reason: "turn_not_found" };
   if (!scan.userPrompt) return { ok: false, reason: "user_prompt_missing" };
   if (!scan.interrupted) return { ok: false, reason: "turn_not_interrupted" };
@@ -143,6 +146,7 @@ type CodexRolloutTurnScan = {
   ambiguousSessionMetadata: boolean;
   composite: boolean;
   targetSeen: boolean;
+  turnMetadataMismatch: boolean;
   userPrompt?: string;
   assistantReply?: string;
   visibleAssistantMessages: string[];
@@ -165,9 +169,12 @@ function scanCodexRolloutTurn(transcript: string, targetTurnId: string): CodexRo
   let targetBoundarySeen = false;
   let activeTurnId: string | undefined;
   let targetSeen = false;
+  let turnMetadataMismatch = false;
   let userPrompt: string | undefined;
   let assistantReply: string | undefined;
   const visibleAssistantMessages: string[] = [];
+  let responseItemUserPrompt: string | undefined;
+  let responseItemAssistantReply: string | undefined;
   let interrupted = false;
   let interruptedAt: string | undefined;
   let rolledBack = false;
@@ -231,6 +238,25 @@ function scanCodexRolloutTurn(transcript: string, targetTurnId: string): CodexRo
       if (activeTurnId === targetTurnId) {
         const activities = activityCandidatesFromResponseItem(payload);
         if (activities.length > 0) targetActivityGroups.push(activities);
+        if (stringValue(payload.type) === "message") {
+          const role = stringValue(payload.role);
+          const message = responseItemMessageText(payload.content, role);
+          const authoritativeMessage = role === "user"
+            || (role === "assistant" && payload.phase === "final_answer");
+          if (authoritativeMessage && message) {
+            const responseTurnId = responseItemTurnId(payload);
+            if (responseTurnId && responseTurnId !== activeTurnId) {
+              turnMetadataMismatch = true;
+              continue;
+            }
+            if (role === "user") {
+              userMessageTurnIds.add(activeTurnId);
+              responseItemUserPrompt = message;
+            } else {
+              responseItemAssistantReply = message;
+            }
+          }
+        }
       }
       continue;
     }
@@ -309,8 +335,9 @@ function scanCodexRolloutTurn(transcript: string, targetTurnId: string): CodexRo
     ambiguousSessionMetadata,
     composite,
     targetSeen,
-    userPrompt,
-    assistantReply,
+    turnMetadataMismatch,
+    userPrompt: responseItemUserPrompt ?? userPrompt,
+    assistantReply: responseItemAssistantReply ?? assistantReply,
     visibleAssistantMessages,
     interrupted,
     interruptedAt,
@@ -322,6 +349,27 @@ function scanCodexRolloutTurn(transcript: string, targetTurnId: string): CodexRo
     turnContextIds,
     userMessageTurnIds,
   };
+}
+
+function responseItemTurnId(payload: JsonRecord): string | undefined {
+  const metadata = isRecord(payload.internal_chat_message_metadata_passthrough)
+    ? payload.internal_chat_message_metadata_passthrough
+    : undefined;
+  return metadata
+    ? stringValue(metadata.turn_id) ?? stringValue(metadata.turnId)
+    : undefined;
+}
+
+function responseItemMessageText(value: unknown, role: string | undefined): string | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const expectedType = role === "user" ? "input_text" : role === "assistant" ? "output_text" : undefined;
+  if (!expectedType) return undefined;
+  const parts = value.flatMap((item): string[] => {
+    if (!isRecord(item) || stringValue(item.type) !== expectedType) return [];
+    const text = nonBlankString(item.text);
+    return text ? [text] : [];
+  });
+  return parts.length > 0 ? parts.join("\n") : undefined;
 }
 
 function codexRolloutSessionMatches(scan: CodexRolloutTurnScan, sessionId: string): boolean {
