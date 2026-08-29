@@ -9,18 +9,21 @@ import { promisify } from "node:util";
 import { runMemoryCli } from "../../dist/memory/cli.js";
 import {
   traceContextFromClaudeHookBody,
+  traceContextFromCodeBuddyHookBody,
   traceContextFromDshTurnStart,
   traceContextFromHookBody,
   traceContextFromOpenCodeHookBody,
 } from "../../dist/trace/context.js";
 import {
   claudeTracePaths,
+  codeBuddyTracePaths,
   dshTracePaths,
   openCodeTracePaths,
   tracePaths,
 } from "../../dist/trace/config.js";
 import {
   writeCurrentClaudeTurn,
+  writeCurrentCodeBuddyTurn,
   writeCurrentCodexTurn,
   writeCurrentTraceTurn,
 } from "../../dist/trace/store.js";
@@ -187,7 +190,7 @@ test("memory CLI rejects a nested repository outside the current turn scope", as
   assert.equal(result.workspaceScopeReason, "workspace_scope_mismatch");
   assert.equal(
     result.userAction,
-    "Start a new Codex, Claude Code, DSH, or OpenCode session from the target repository or local workspace.",
+    "Start a new Codex, Claude Code, WorkBuddy, DSH, or OpenCode session from the target repository or local workspace.",
   );
   assert.equal(requestCount, 0);
 });
@@ -308,7 +311,7 @@ test("memory CLI gives the same scope recovery guidance for a Claude turn", asyn
   assert.equal(result.workspaceScopeReason, "workspace_scope_mismatch");
   assert.equal(
     result.userAction,
-    "Start a new Codex, Claude Code, DSH, or OpenCode session from the target repository or local workspace.",
+    "Start a new Codex, Claude Code, WorkBuddy, DSH, or OpenCode session from the target repository or local workspace.",
   );
   assert.equal(requestCount, 0);
 });
@@ -808,6 +811,74 @@ test("memory CLI search binds to Claude trace without writing the same-id Codex 
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
+});
+
+test("memory CLI search binds to the current WorkBuddy trace and workspace", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-cli-workbuddy-trace-"));
+  const sessionId = "workbuddy-cli-session";
+  const workspace = join(root, "workbuddy-workspace");
+  const nestedCwd = join(workspace, "src");
+  const otherWorkspace = join(root, "other-workspace");
+  await Promise.all([
+    mkdir(nestedCwd, { recursive: true }),
+    mkdir(otherWorkspace, { recursive: true }),
+  ]);
+  await writeCurrentCodeBuddyTurn(traceContextFromCodeBuddyHookBody({
+    session_id: sessionId,
+    turn_id: "workbuddy-turn",
+    cwd: workspace,
+  }), { memoraxCodeHome: root });
+  const requests = [];
+  const env = {
+    MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT: "codebuddy",
+    MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID: sessionId,
+    MEMORAX_CODE_HOME: root,
+    MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
+    MEMORAX_CODE_MEMORAX_API_KEY: "secret",
+    MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
+  };
+  const fetchImpl = async (_url, init) => {
+    requests.push(JSON.parse(init.body));
+    return new Response(JSON.stringify({ success: true, data: { data: [] } }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+
+  const search = await runMemoryCli(["search", "--query", "WorkBuddy trace bridge"], {
+    cwd: nestedCwd,
+    env,
+    fetchImpl,
+  });
+  assert.equal(search.ok, true);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].user_id, "user-1@workbuddy-workspace");
+
+  const rejected = await runMemoryCli(["search", "--query", "must not cross workspaces"], {
+    cwd: otherWorkspace,
+    env,
+    fetchImpl,
+  });
+  assert.equal(rejected.ok, false);
+  assert.match(rejected.error, /does not match the current WorkBuddy turn repository\/workspace scope/);
+  assert.equal(rejected.workspaceScopeReason, "workspace_scope_mismatch");
+  assert.equal(
+    rejected.userAction,
+    "Start a new Codex, Claude Code, WorkBuddy, DSH, or OpenCode session from the target repository or local workspace.",
+  );
+  assert.equal(requests.length, 1);
+
+  const events = (await readFile(codeBuddyTracePaths(root).eventsJsonl(sessionId), "utf8"))
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  assert.equal(events.length, 1);
+  assert.equal(events[0].type, "memory_cli_search");
+  assert.equal(events[0].source, "memory_cli");
+  assert.equal(events[0].trace.client, "codebuddy");
+  assert.equal(events[0].trace.session_id, sessionId);
+  assert.equal(events[0].trace.turn_id, "workbuddy-turn");
+  assert.equal(events[0].trace.context_origin, "current-turn-file");
 });
 
 test("memory CLI search binds to OpenCode trace instead of an inherited Codex thread", async () => {

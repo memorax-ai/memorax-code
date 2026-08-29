@@ -11,7 +11,7 @@ import test from "node:test";
 const hookPath = fileURLToPath(new URL("../hooks/runtime-hook.mjs", import.meta.url));
 const manifestPath = fileURLToPath(new URL("../hooks/hooks.json", import.meta.url));
 
-test("SessionStart prewarms Backend without starting a memory turn", async () => {
+test("SessionStart prewarms Backend and binds later memory CLI commands without starting a turn", async () => {
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
   const sessionStart = manifest.hooks.SessionStart?.[0];
   assert.equal(sessionStart?.matcher, "startup|resume|clear|compact");
@@ -21,17 +21,25 @@ test("SessionStart prewarms Backend without starting a memory turn", async () =>
 
   const root = await mkdtemp(join(tmpdir(), "memorax-codebuddy-hook-"));
   const transcriptPath = join(root, "session.jsonl");
+  const envFile = join(root, "session-env.sh");
   await writeFile(transcriptPath, "");
+  await writeFile(envFile, "export EXISTING_SESSION_VALUE='preserved'\n", "utf8");
   const requests = [];
   const server = await startServer(requests, { ok: true, service: "memorax-code-backend" });
   try {
     const result = await runHook({
-      hook_event_name: "SessionStart", session_id: "session-start", transcript_path: transcriptPath,
+      hook_event_name: "SessionStart", session_id: "session-start-'quoted", transcript_path: transcriptPath,
       source: "startup", cwd: root,
-    }, { root, server });
+    }, { root, server, hookEnv: { CODEBUDDY_ENV_FILE: envFile } });
     assert.equal(result.status, 0);
     assert.equal(result.stdout, "");
     assert.deepEqual(requests.map((request) => request.path), ["/health"]);
+    assert.equal(await readFile(envFile, "utf8"), [
+      "export EXISTING_SESSION_VALUE='preserved'",
+      "export MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT='codebuddy'",
+      "export MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID='session-start-'\"'\"'quoted'",
+      "",
+    ].join("\n"));
     await assert.rejects(readFile(join(root, "adapters", "codebuddy", "pending.json"), "utf8"), { code: "ENOENT" });
   } finally { await server.close(); }
 });
@@ -263,12 +271,18 @@ async function startServer(requests, response) {
   return server;
 }
 
-function runHook(input, { root, server }) {
+function runHook(input, { root, server, hookEnv = {} }) {
   const address = server.address();
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [hookPath], {
       cwd: root,
-      env: { ...process.env, MEMORAX_CODE_HOME: root, MEMORAX_CODE_BACKEND_URL: `http://127.0.0.1:${address.port}` },
+      env: {
+        ...process.env,
+        CODEBUDDY_ENV_FILE: "",
+        MEMORAX_CODE_HOME: root,
+        MEMORAX_CODE_BACKEND_URL: `http://127.0.0.1:${address.port}`,
+        ...hookEnv,
+      },
       stdio: ["pipe", "pipe", "pipe"],
     });
     let stdout = "";

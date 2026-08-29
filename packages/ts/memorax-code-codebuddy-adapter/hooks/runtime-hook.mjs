@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
-import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { dirname } from "node:path";
@@ -46,6 +46,7 @@ const personalMemoryContextOptions = {
   debugEnv: "MEMORAX_CODE_CODEBUDDY_HOOK_DEBUG",
   sessionKeyPrefix: "codebuddy",
 };
+if (event === "SessionStart") await bindMemoryCliTraceSession(sessionId);
 await ensureBackendAvailable({
   ensureBackendValue: process.env.MEMORAX_CODE_CODEBUDDY_ENSURE_BACKEND
     ?? process.env.MEMORAX_CODE_CODEBUDDY_HOOK_ENSURE_BACKEND,
@@ -209,6 +210,22 @@ async function withJsonFileLockAsync(path, operation) {
   }
   try { return await operation(); } finally { await rm(lockPath, { recursive: true, force: true }); }
 }
+async function bindMemoryCliTraceSession(sessionId) {
+  const envFile = stringValue(process.env.CODEBUDDY_ENV_FILE);
+  if (!envFile) return;
+  try {
+    await appendFile(envFile, [
+      "export MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT='codebuddy'",
+      `export MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID=${shellSingleQuote(sessionId)}`,
+      "",
+    ].join("\n"), "utf8");
+  } catch (error) {
+    if (process.env.MEMORAX_CODE_CODEBUDDY_HOOK_DEBUG === "1") {
+      console.error(error instanceof Error ? error.message : String(error));
+    }
+  }
+}
+function shellSingleQuote(value) { return `'${value.replaceAll("'", "'\"'\"'")}'`; }
 function stringValue(value) { return typeof value === "string" && value.trim() ? value.trim() : undefined; }
 
 function provisionalTurnId(sessionId, boundary, prompt) {
