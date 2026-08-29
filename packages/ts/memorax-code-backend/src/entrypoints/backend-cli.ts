@@ -903,9 +903,10 @@ function adapterStatusLine(report: AdapterReport): string {
     ?? report.opencodeSkills?.status
     ?? report.codebuddySkills?.status;
   const skills = skillStatus ? ` skills=${skillStatus}` : "";
+  const hooks = report.codebuddyHooks?.status ? ` hook-runtime=${report.codebuddyHooks.status}` : "";
   const changed = report.changed === true ? " changed" : "";
   const integration = report.integration ?? report.state?.integration ?? "hooks";
-  return `${enabled ? "ok" : "not enabled"} integration=${integration}${skills}${changed}`;
+  return `${enabled ? "ok" : "not enabled"} integration=${integration}${skills}${hooks}${changed}`;
 }
 
 function selectedLifecycleClientNames(report: MemoraxCodeLifecycleReport): string[] {

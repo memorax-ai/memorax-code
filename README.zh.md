@@ -201,6 +201,9 @@ memorax-code update
 该命令会沿用当前发布通道并保留配置。如果新版本修改了已安装的集成资产，请重启或刷新 Codex、
 Claude Code、CodeBuddy/WorkBuddy、DeepSeek Harness 和 OpenCode。
 
+Windows 上，托管的 WorkBuddy 插件默认安装到 `%USERPROFILE%\.codebuddy`。在 WorkBuddy 至少成功
+执行一次已安装 Hook 前，状态会保持为 `hook-runtime=unverified`。
+
 ### Windows 升级提示
 
 如果您在 Windows 上从 MemoraX Code v0.1.3-v0.1.6 升级到 v0.1.7，请执行：

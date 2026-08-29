@@ -64,10 +64,33 @@ test("Windows DSH npm shim resolves the official Node entrypoint", () => {
   });
 });
 
+test("Windows WorkBuddy bare script resolves through Node without a shell", () => {
+  const cli = "C:\\Users\\tester\\AppData\\Local\\Programs\\WorkBuddy\\resources\\app.asar.unpacked\\cli\\bin\\codebuddy";
+  const options = {
+    platform: "win32",
+    resolvedCommand: cli,
+    nodePath: "C:\\Program Files\\nodejs\\node.exe",
+    env: {},
+    existsSync: (candidate) => candidate === cli,
+  };
+  const expected = {
+    command: "C:\\Program Files\\nodejs\\node.exe",
+    args: [cli, "--version"],
+  };
+  assert.deepEqual(resolveWindowsCliInvocation("codebuddy", ["--version"], options), expected);
+  assert.deepEqual(resolveAdapterCommonCliInvocation("codebuddy", ["--version"], options), expected);
+});
+
 test("Windows command discovery prefers cmd after a bare npm shim", () => {
   const output = "C:\\bin\\codex\r\nC:\\bin\\codex.cmd\r\nC:\\bin\\codex.ps1\r\n";
   assert.equal(selectWindowsCommandCandidate("codex", output), "C:\\bin\\codex.cmd");
   assert.equal(selectAdapterCommonCommand("codex", output), "C:\\bin\\codex.cmd");
+});
+
+test("Windows command discovery accepts WorkBuddy's bare CodeBuddy script", () => {
+  const output = "C:\\WorkBuddy\\cli\\bin\\codebuddy\r\n";
+  assert.equal(selectWindowsCommandCandidate("codebuddy", output), "C:\\WorkBuddy\\cli\\bin\\codebuddy");
+  assert.equal(selectAdapterCommonCommand("codebuddy", output), "C:\\WorkBuddy\\cli\\bin\\codebuddy");
 });
 
 test("Windows command discovery rejects bare and PowerShell-only shims", () => {

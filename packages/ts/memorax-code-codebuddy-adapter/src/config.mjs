@@ -1,9 +1,17 @@
 import { readFileSync } from "node:fs";
 import { chmod, cp, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join, relative, sep } from "node:path";
+import { dirname, join, relative, sep, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveHookCodeBuddyCommand } from "../../memorax-code-adapter-common/src/clients/codebuddy-command.mjs";
+import {
+  codeBuddyHookManifestConfigured,
+  materializeCodeBuddyHookManifest,
+} from "./hook-manifest.mjs";
+import {
+  codeBuddyRuntimeObservationPath,
+  readCodeBuddyRuntimeObservation,
+} from "./runtime-observation.mjs";
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const VERSION = readPluginVersion();
@@ -11,7 +19,11 @@ const PLUGIN_NAME = "memorax-code-codebuddy-adapter";
 const MARKETPLACE_NAME = "memorax-code-local";
 const PLUGIN_ID = `${PLUGIN_NAME}@${MARKETPLACE_NAME}`;
 
-export function defaultCodeBuddyHome() { return process.env.CODEBUDDY_HOME?.trim() || process.env.WORKBUDDY_HOME?.trim() || join(homedir(), ".workbuddy"); }
+export function defaultCodeBuddyHome(env = process.env, homeDir = homedir(), platform = process.platform) {
+  return env.CODEBUDDY_HOME?.trim()
+    || env.WORKBUDDY_HOME?.trim()
+    || (platform === "win32" ? win32.join(homeDir, ".codebuddy") : join(homeDir, ".workbuddy"));
+}
 // CodeBuddy stores installed plugin caches under the marketplace namespace.
 export function codeBuddyInstallPath(home = defaultCodeBuddyHome()) { return join(home, "plugins", "cache", MARKETPLACE_NAME, PLUGIN_NAME, VERSION); }
 export function installedRegistryPath(home = defaultCodeBuddyHome()) { return join(home, "plugins", "installed_plugins.json"); }
@@ -22,20 +34,25 @@ export function marketplacePluginPath(home = defaultCodeBuddyHome()) { return jo
 
 export async function enableCodeBuddyAdapter(options = {}) {
   const home = options.codeBuddyHome ?? defaultCodeBuddyHome();
+  const platform = options.platform ?? process.platform;
+  const memoraxCodeHome = options.memoraxCodeHome ?? defaultMemoraxCodeHome();
   const installPath = options.installPath ?? codeBuddyInstallPath(home);
   const localPluginPath = marketplacePluginPath(home);
+  await rm(codeBuddyRuntimeObservationPath(memoraxCodeHome), { force: true });
   await mkdir(dirname(installPath), { recursive: true });
   await rm(installPath, { recursive: true, force: true });
   await rm(legacyCodeBuddyInstallPath(home), { recursive: true, force: true });
   await cp(ROOT, installPath, { recursive: true, force: true, filter: packageCopyFilter(ROOT) });
   await materializeCommonRuntime(installPath);
-  await writePackageMetadata(installPath, options.codeBuddyCommand);
+  await materializeCodeBuddyHookManifest(installPath, platform);
+  await writePackageMetadata(installPath, options.codeBuddyCommand, home);
   await materializeCanonicalSkill(installPath);
   await mkdir(dirname(localPluginPath), { recursive: true });
   await rm(localPluginPath, { recursive: true, force: true });
   await cp(ROOT, localPluginPath, { recursive: true, force: true, filter: packageCopyFilter(ROOT) });
   await materializeCommonRuntime(localPluginPath);
-  await writePackageMetadata(localPluginPath, options.codeBuddyCommand);
+  await materializeCodeBuddyHookManifest(localPluginPath, platform);
+  await writePackageMetadata(localPluginPath, options.codeBuddyCommand, home);
   await materializeCanonicalSkill(localPluginPath);
   await writeMarketplaceManifest(home);
   await updateKnownMarketplace(home, true);
@@ -44,7 +61,7 @@ export async function enableCodeBuddyAdapter(options = {}) {
     settings.enabledPlugins[PLUGIN_ID] = true;
   });
   await updateLegacyRegistry(home, { installPath, enabled: true });
-  return { ok: true, action: "enable", runtime: "codebuddy", integration: "hooks", installed: true, enabled: true, codeBuddyHome: home, installPath, marketplace: MARKETPLACE_NAME, pluginId: PLUGIN_ID, marketplacePath: localPluginPath, codebuddySkills: { ok: true, status: "installed", managed: true, memoraxCode: true, path: join(localPluginPath, "skills", "memorax-code", "SKILL.md") } };
+  return { ok: true, action: "enable", runtime: "codebuddy", integration: "hooks", installed: true, enabled: true, codeBuddyHome: home, installPath, marketplace: MARKETPLACE_NAME, pluginId: PLUGIN_ID, marketplacePath: localPluginPath, codebuddyHooks: { ok: true, configured: true, runtimeObserved: false, status: "unverified" }, codebuddySkills: { ok: true, status: "installed", managed: true, memoraxCode: true, path: join(localPluginPath, "skills", "memorax-code", "SKILL.md") } };
 }
 
 export async function disableCodeBuddyAdapter(options = {}) {
@@ -62,15 +79,26 @@ export async function disableCodeBuddyAdapter(options = {}) {
 
 export async function readCodeBuddyAdapterStatus(options = {}) {
   const home = options.codeBuddyHome ?? defaultCodeBuddyHome();
+  const platform = options.platform ?? process.platform;
+  const memoraxCodeHome = options.memoraxCodeHome ?? defaultMemoraxCodeHome();
   const installPath = codeBuddyInstallPath(home);
+  const localPluginPath = marketplacePluginPath(home);
   const settings = await readJsonRecord(codeBuddySettingsPath(home));
   const known = await readJsonRecord(knownMarketplacesPath(home));
-  const installed = await pathExists(marketplacePluginPath(home)) || await pathExists(installPath);
-  const skillPath = join(marketplacePluginPath(home), "skills", "memorax-code", "SKILL.md");
+  const installedRoots = [];
+  for (const root of [localPluginPath, installPath]) {
+    if (await pathExists(root)) installedRoots.push(root);
+  }
+  const installed = installedRoots.length > 0;
+  const skillPath = join(localPluginPath, "skills", "memorax-code", "SKILL.md");
   const skillInstalled = await pathExists(skillPath);
   const enabled = settings.enabledPlugins?.[PLUGIN_ID] === true;
   const marketplaceReady = Boolean(known[MARKETPLACE_NAME]);
-  return { ok: true, action: "status", runtime: "codebuddy", integration: "hooks", installed, enabled, managed: installed && marketplaceReady, codeBuddyHome: home, installPath, marketplace: MARKETPLACE_NAME, pluginId: PLUGIN_ID, marketplaceReady, codebuddySkills: { ok: skillInstalled, status: skillInstalled ? "installed" : "missing", managed: skillInstalled, memoraxCode: skillInstalled, path: skillPath } };
+  const hookConfigured = installedRoots.length > 0
+    && (await Promise.all(installedRoots.map((root) => codeBuddyHookManifestConfigured(root, platform)))).every(Boolean);
+  const observation = await readCodeBuddyRuntimeObservation(memoraxCodeHome);
+  const runtimeObserved = hookConfigured && observationMatches(observation, home, platform);
+  return { ok: true, action: "status", runtime: "codebuddy", integration: "hooks", installed, enabled, managed: installed && marketplaceReady, codeBuddyHome: home, installPath, marketplace: MARKETPLACE_NAME, pluginId: PLUGIN_ID, marketplaceReady, codebuddyHooks: { ok: hookConfigured, configured: hookConfigured, runtimeObserved, status: hookConfigured ? (runtimeObserved ? "observed" : "unverified") : "invalid", observationPath: codeBuddyRuntimeObservationPath(memoraxCodeHome) }, codebuddySkills: { ok: skillInstalled, status: skillInstalled ? "installed" : "missing", managed: skillInstalled, memoraxCode: skillInstalled, path: skillPath } };
 }
 
 export async function removeCodeBuddyPluginInstallation(options = {}) {
@@ -209,13 +237,14 @@ async function materializeCanonicalSkill(destination) {
   await cp(source, target, { recursive: true, force: true });
 }
 
-async function writePackageMetadata(destination, configuredCommand) {
+async function writePackageMetadata(destination, configuredCommand, codeBuddyHome) {
   const codeBuddyCommand = typeof configuredCommand === "string" && configuredCommand.trim()
     ? configuredCommand.trim()
     : resolveHookCodeBuddyCommand();
   await writeJsonFile(join(destination, ".memorax-code-package.json"), {
     version: 1,
     codeBuddyCommand,
+    codeBuddyHome,
   });
 }
 
@@ -229,4 +258,20 @@ async function materializeCommonRuntime(destination) {
 
 function packageCopyFilter(root) {
   return (source) => !relative(root, source).split(sep).some((part) => part === "test" || part === "node_modules");
+}
+
+function defaultMemoraxCodeHome() {
+  return process.env.MEMORAX_CODE_HOME?.trim() || join(homedir(), ".memorax-code");
+}
+
+function observationMatches(observation, codeBuddyHome, platform) {
+  if (observation?.pluginVersion !== VERSION) return false;
+  const left = comparablePath(observation.codeBuddyHome, platform);
+  const right = comparablePath(codeBuddyHome, platform);
+  return left === right;
+}
+
+function comparablePath(value, platform) {
+  const normalized = String(value ?? "").replaceAll("\\", "/").replace(/\/+$/, "");
+  return platform === "win32" ? normalized.toLowerCase() : normalized;
 }

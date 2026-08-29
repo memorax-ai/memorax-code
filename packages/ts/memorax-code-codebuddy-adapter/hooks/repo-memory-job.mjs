@@ -20,7 +20,7 @@ try {
     evaluateRepository,
     createCommand({ prompt }) {
       const codeBuddy = resolveHookCodeBuddyCommand({
-        pluginRoot: process.env.CODEBUDDY_PLUGIN_ROOT || pluginRoot,
+        pluginRoot,
       });
       return [
         codeBuddy,

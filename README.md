@@ -239,6 +239,9 @@ The command follows the installed release channel and preserves configuration.
 Restart or refresh Codex, Claude Code, CodeBuddy/WorkBuddy, DeepSeek Harness, and OpenCode when a
 release changes installed integration assets.
 
+On Windows, the managed WorkBuddy plugin defaults to `%USERPROFILE%\.codebuddy`.
+Its status remains `hook-runtime=unverified` until WorkBuddy executes the installed Hook at least once.
+
 ### Windows Upgrade Note
 
 If you are upgrading MemoraX Code v0.1.3-v0.1.6 to v0.1.7 on Windows, run:

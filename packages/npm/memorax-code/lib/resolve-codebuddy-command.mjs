@@ -15,11 +15,8 @@ const WORKBUDDY_BUNDLED_SEGMENTS = [
   "codebuddy",
 ];
 const WINDOWS_WORKBUDDY_SEGMENTS = [
-  "resources",
-  "app.asar.unpacked",
-  "cli",
-  "bin",
-  "codebuddy.exe",
+  ["resources", "app.asar.unpacked", "cli", "bin", "codebuddy"],
+  ["resources", "app.asar.unpacked", "cli", "bin", "codebuddy.exe"],
 ];
 
 export function resolveCodeBuddyCommand({
@@ -50,12 +47,14 @@ export function resolveCodeBuddyCommand({
 
   if (platform === "win32") {
     for (const root of windowsRoots) {
-      const command = win32.join(root, ...WINDOWS_WORKBUDDY_SEGMENTS);
-      if (pathExists(command, platform)) return { command, source: "app-bundled" };
+      for (const segments of WINDOWS_WORKBUDDY_SEGMENTS) {
+        const command = win32.join(root, ...segments);
+        if (pathExists(command, platform)) return { command, source: "app-bundled" };
+      }
     }
   }
 
-  return { command: platform === "win32" ? "codebuddy.exe" : "codebuddy", source: "unavailable" };
+  return { command: "codebuddy", source: "unavailable" };
 }
 
 function findCommandOnPath(command, pathValue, platform, pathExtValue) {
@@ -81,10 +80,10 @@ export function ensureCodeBuddyCommandEnv(options = {}) {
   return resolved;
 }
 
-export function defaultCodeBuddyHome(env = process.env, homeDir = homedir()) {
+export function defaultCodeBuddyHome(env = process.env, homeDir = homedir(), platform = process.platform) {
   return nonEmpty(env.CODEBUDDY_HOME)
     ?? nonEmpty(env.WORKBUDDY_HOME)
-    ?? join(homeDir, ".workbuddy");
+    ?? (platform === "win32" ? win32.join(homeDir, ".codebuddy") : join(homeDir, ".workbuddy"));
 }
 
 function defaultWindowsRoots(env, homeDir) {
@@ -93,12 +92,14 @@ function defaultWindowsRoots(env, homeDir) {
   const programFiles = nonEmpty(env.ProgramFiles) ?? "C:\\Program Files";
   const programFilesX86 = nonEmpty(env["ProgramFiles(x86)"]) ?? "C:\\Program Files (x86)";
   for (const root of [
-    join(localAppData, "WorkBuddy"),
-    join(localAppData, "CodeBuddy"),
-    join(programFiles, "WorkBuddy"),
-    join(programFiles, "CodeBuddy"),
-    join(programFilesX86, "WorkBuddy"),
-    join(programFilesX86, "CodeBuddy"),
+    win32.join(localAppData, "Programs", "WorkBuddy"),
+    win32.join(localAppData, "Programs", "CodeBuddy"),
+    win32.join(localAppData, "WorkBuddy"),
+    win32.join(localAppData, "CodeBuddy"),
+    win32.join(programFiles, "WorkBuddy"),
+    win32.join(programFiles, "CodeBuddy"),
+    win32.join(programFilesX86, "WorkBuddy"),
+    win32.join(programFilesX86, "CodeBuddy"),
   ]) {
     if (!roots.includes(root)) roots.push(root);
   }

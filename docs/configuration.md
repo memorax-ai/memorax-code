@@ -175,16 +175,21 @@ The managed CodeBuddy/WorkBuddy marketplace plugin and shared Skill use the
 native plugin layout:
 
 ```text
-~/.workbuddy/plugins/marketplaces/memorax-code-local/plugins/memorax-code-codebuddy-adapter/
+<CODEBUDDY_HOME>/plugins/marketplaces/memorax-code-local/plugins/memorax-code-codebuddy-adapter/
 ├── hooks/
 └── skills/memorax-code/
 ```
 
-`CODEBUDDY_HOME` or `WORKBUDDY_HOME` overrides the default `~/.workbuddy`
-root. The Skill is materialized from the canonical MemoraX Code Skill and is
-owned by the managed marketplace plugin; user files under `~/.workbuddy/skills`
-are not modified. Run `memorax-code-codebuddy status --json` to verify both
-Hook and Skill installation, then restart or refresh WorkBuddy.
+`CODEBUDDY_HOME` or `WORKBUDDY_HOME` overrides the default root. Windows uses
+`%USERPROFILE%\.codebuddy`; other platforms use `~/.workbuddy`. The Skill is
+materialized from the canonical MemoraX Code Skill and is owned by the managed
+marketplace plugin; user files outside that plugin are not modified.
+
+On Windows, setup writes destination-specific native Hook paths so PowerShell
+does not receive a `/c/Users/...` plugin path. `memorax-code-codebuddy status
+--json` reports `codebuddyHooks.status` as `unverified` until a real WorkBuddy
+Hook executes, `observed` afterward, and `invalid` when the installed Hook
+manifest or runtime is incomplete. Restart or refresh WorkBuddy after setup.
 
 The managed loader records the exact MemoraX Code home, OpenCode configuration
 directory, installed Node runtime, and `memorax-code` entrypoint. When the

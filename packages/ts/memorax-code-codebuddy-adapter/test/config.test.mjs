@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
+  defaultCodeBuddyHome,
   disableCodeBuddyAdapter,
   enableCodeBuddyAdapter,
   knownMarketplacesPath,
@@ -14,16 +15,50 @@ import {
   codeBuddySettingsPath,
   codeBuddyInstallPath,
 } from "../src/config.mjs";
+import { codeBuddyHookCommand } from "../src/hook-manifest.mjs";
+import { writeCodeBuddyRuntimeObservation } from "../src/runtime-observation.mjs";
+import { resolveHookCodeBuddyCommand } from "../../memorax-code-adapter-common/src/clients/codebuddy-command.mjs";
+
+test("uses the CodeBuddy CLI home by default on Windows", () => {
+  assert.equal(
+    defaultCodeBuddyHome({}, "C:\\Users\\tester", "win32"),
+    "C:\\Users\\tester\\.codebuddy",
+  );
+  assert.equal(
+    defaultCodeBuddyHome({ WORKBUDDY_HOME: "D:\\WorkBuddyData" }, "C:\\Users\\tester", "win32"),
+    "D:\\WorkBuddyData",
+  );
+});
+
+test("builds a native Windows Hook command without the WorkBuddy root placeholder", () => {
+  assert.equal(
+    codeBuddyHookCommand("C:\\Users\\tester\\.codebuddy\\plugins\\memorax", "win32"),
+    'node "C:/Users/tester/.codebuddy/plugins/memorax/hooks/runtime-hook.mjs" turn',
+  );
+});
+
+test("finds WorkBuddy's bare Windows CLI for Repo Memory jobs", () => {
+  const command = "C:\\Users\\tester\\AppData\\Local\\Programs\\WorkBuddy\\resources\\app.asar.unpacked\\cli\\bin\\codebuddy";
+  assert.equal(resolveHookCodeBuddyCommand({
+    env: { LOCALAPPDATA: "C:\\Users\\tester\\AppData\\Local" },
+    platform: "win32",
+    pathExists: (candidate) => candidate === command,
+  }), command);
+});
 
 test("derives the install cache version from the CodeBuddy plugin manifest", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-codebuddy-version-"));
   const adapterRoot = join(root, "memorax-code-codebuddy-adapter");
   const configPath = join(adapterRoot, "src", "config.mjs");
+  const hookManifestPath = join(adapterRoot, "src", "hook-manifest.mjs");
+  const runtimeObservationPath = join(adapterRoot, "src", "runtime-observation.mjs");
   const commandPath = join(root, "memorax-code-adapter-common", "src", "clients", "codebuddy-command.mjs");
   await mkdir(join(adapterRoot, "src"), { recursive: true });
   await mkdir(join(adapterRoot, ".codebuddy-plugin"), { recursive: true });
   await mkdir(join(root, "memorax-code-adapter-common", "src", "clients"), { recursive: true });
   await cp(new URL("../src/config.mjs", import.meta.url), configPath);
+  await cp(new URL("../src/hook-manifest.mjs", import.meta.url), hookManifestPath);
+  await cp(new URL("../src/runtime-observation.mjs", import.meta.url), runtimeObservationPath);
   await cp(new URL("../../memorax-code-adapter-common/src/clients/codebuddy-command.mjs", import.meta.url), commandPath);
   await writeFile(join(adapterRoot, ".codebuddy-plugin", "plugin.json"), '{"version":"9.8.7"}\n');
   const isolated = await import(pathToFileURL(configPath).href);
@@ -34,22 +69,30 @@ test("derives the install cache version from the CodeBuddy plugin manifest", asy
 
 test("installs and removes an isolated CodeBuddy plugin registry entry", async () => {
   const home = await mkdtemp(join(tmpdir(), "memorax-codebuddy-"));
+  const memoraxCodeHome = await mkdtemp(join(tmpdir(), "memorax-code-home-"));
   await mkdir(join(home, "plugins"), { recursive: true });
   await mkdir(join(home, "skills", "user-skill"), { recursive: true });
   await writeFile(join(home, "skills", "user-skill", "SKILL.md"), "user-owned\n");
   await writeFile(join(home, "plugins", "installed_plugins.json"), JSON.stringify({ version: 2, plugins: {
     "user-plugin@user-marketplace": [{ scope: "user", installPath: "/user/plugin", enabled: true }],
   }}));
-  const enabled = await enableCodeBuddyAdapter({ codeBuddyHome: home });
+  const enabled = await enableCodeBuddyAdapter({ codeBuddyHome: home, platform: "win32" });
   assert.equal(enabled.ok, true);
-  const enabledStatus = await readCodeBuddyAdapterStatus({ codeBuddyHome: home });
+  const enabledStatus = await readCodeBuddyAdapterStatus({
+    codeBuddyHome: home,
+    memoraxCodeHome,
+    platform: "win32",
+  });
   assert.equal(enabledStatus.enabled, true);
   assert.equal(enabledStatus.marketplaceReady, true);
   assert.equal(enabledStatus.codebuddySkills.ok, true);
   assert.equal(enabledStatus.codebuddySkills.memoraxCode, true);
+  assert.equal(enabledStatus.codebuddyHooks.ok, true);
+  assert.equal(enabledStatus.codebuddyHooks.status, "unverified");
   assert.equal(await exists(enabledStatus.codebuddySkills.path), true);
   const installedMetadata = JSON.parse(await readFile(join(codeBuddyInstallPath(home), ".memorax-code-package.json"), "utf8"));
   assert.equal(typeof installedMetadata.codeBuddyCommand, "string");
+  assert.equal(installedMetadata.codeBuddyHome, home);
   assert.equal(await exists(join(codeBuddyInstallPath(home), "memorax-code-adapter-common", "src", "repo-memory", "repo-memory-job-supervisor.mjs")), true);
   const pluginManifest = JSON.parse(await readFile(join(marketplaceRoot(home), "plugins", "memorax-code-codebuddy-adapter", ".codebuddy-plugin", "plugin.json"), "utf8"));
   assert.deepEqual(pluginManifest.skills, ["./skills/memorax-code"]);
@@ -61,6 +104,25 @@ test("installs and removes an isolated CodeBuddy plugin registry entry", async (
   assert.equal(registry.plugins["memorax-code-codebuddy-adapter@memorax-code-local"][0].version, pluginManifest.version);
   const marketplace = JSON.parse(await readFile(join(marketplaceRoot(home), ".codebuddy-plugin", "marketplace.json"), "utf8"));
   assert.equal(marketplace.plugins[0].version, pluginManifest.version);
+  const pluginRoot = join(marketplaceRoot(home), "plugins", "memorax-code-codebuddy-adapter");
+  const hooksManifest = JSON.parse(await readFile(join(pluginRoot, "hooks", "hooks.json"), "utf8"));
+  const expectedHookCommand = codeBuddyHookCommand(pluginRoot, "win32");
+  for (const event of ["SessionStart", "UserPromptSubmit", "Stop"]) {
+    assert.equal(hooksManifest.hooks[event][0].hooks[0].command, expectedHookCommand);
+    assert.doesNotMatch(hooksManifest.hooks[event][0].hooks[0].command, /CODEBUDDY_PLUGIN_ROOT/);
+  }
+  await writeCodeBuddyRuntimeObservation({
+    memoraxCodeHome,
+    codeBuddyHome: home,
+    pluginRoot,
+  });
+  const observedStatus = await readCodeBuddyAdapterStatus({
+    codeBuddyHome: home,
+    memoraxCodeHome,
+    platform: "win32",
+  });
+  assert.equal(observedStatus.codebuddyHooks.status, "observed");
+  assert.equal(observedStatus.codebuddyHooks.runtimeObserved, true);
   const known = JSON.parse(await readFile(knownMarketplacesPath(home), "utf8"));
   assert.equal(known["memorax-code-local"].type, "directory");
   const settings = JSON.parse(await readFile(codeBuddySettingsPath(home), "utf8"));
@@ -116,6 +178,29 @@ test("installs the complete plugin when the package lives under node_modules", a
   ]) {
     assert.equal(await exists(path), true, path);
   }
+});
+
+test("status rejects a Windows plugin that still uses the portable root placeholder", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-codebuddy-invalid-hook-"));
+  const home = join(root, "codebuddy-home");
+  await enableCodeBuddyAdapter({
+    codeBuddyHome: home,
+    memoraxCodeHome: join(root, "memorax-code-home"),
+    platform: "win32",
+  });
+  const pluginRoot = join(marketplaceRoot(home), "plugins", "memorax-code-codebuddy-adapter");
+  const manifestPath = join(pluginRoot, "hooks", "hooks.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  manifest.hooks.SessionStart[0].hooks[0].command = 'node "${CODEBUDDY_PLUGIN_ROOT}/hooks/runtime-hook.mjs" turn';
+  await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+
+  const status = await readCodeBuddyAdapterStatus({
+    codeBuddyHome: home,
+    memoraxCodeHome: join(root, "memorax-code-home"),
+    platform: "win32",
+  });
+  assert.equal(status.codebuddyHooks.ok, false);
+  assert.equal(status.codebuddyHooks.status, "invalid");
 });
 
 test("disable and remove are no-ops for an uninstalled CodeBuddy home", async () => {

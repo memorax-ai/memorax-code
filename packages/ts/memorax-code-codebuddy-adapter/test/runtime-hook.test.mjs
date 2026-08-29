@@ -30,10 +30,20 @@ test("SessionStart prewarms Backend and binds later memory CLI commands without 
     const result = await runHook({
       hook_event_name: "SessionStart", session_id: "session-start-'quoted", transcript_path: transcriptPath,
       source: "startup", cwd: root,
-    }, { root, server, hookEnv: { CODEBUDDY_ENV_FILE: envFile } });
+    }, {
+      root,
+      server,
+      hookEnv: {
+        CODEBUDDY_ENV_FILE: envFile,
+        CODEBUDDY_PLUGIN_ROOT: "/c/Users/incorrect/plugin/root",
+      },
+    });
     assert.equal(result.status, 0);
     assert.equal(result.stdout, "");
     assert.deepEqual(requests.map((request) => request.path), ["/health"]);
+    const observation = JSON.parse(await readFile(join(root, "adapters", "codebuddy", "runtime-observed.json"), "utf8"));
+    assert.equal(observation.version, 1);
+    assert.equal(observation.pluginVersion.length > 0, true);
     assert.equal(await readFile(envFile, "utf8"), [
       "export EXISTING_SESSION_VALUE='preserved'",
       "export MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT='codebuddy'",

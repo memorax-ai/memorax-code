@@ -48,6 +48,13 @@ export type AdapterReport = {
   claudeSkills?: { ok?: boolean; status?: string };
   opencodeSkills?: { ok?: boolean; status?: string };
   codebuddySkills?: { ok?: boolean; status?: string };
+  codebuddyHooks?: {
+    ok?: boolean;
+    status?: string;
+    configured?: boolean;
+    runtimeObserved?: boolean;
+    observationPath?: string;
+  };
   pluginInstall?: AdapterPluginLifecycleReport;
   pluginRemove?: AdapterPluginLifecycleReport;
   pluginStatus?: AdapterReport;

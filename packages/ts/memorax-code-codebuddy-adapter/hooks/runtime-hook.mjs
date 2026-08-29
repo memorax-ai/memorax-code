@@ -7,8 +7,9 @@ import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { pathToFileURL } from "node:url";
 import { resolveCommonSourceRoot } from "./common-runtime.mjs";
+import { writeCodeBuddyRuntimeObservation } from "../src/runtime-observation.mjs";
 
-const pluginRoot = process.env.CODEBUDDY_PLUGIN_ROOT || dirname(dirname(fileURLToPath(import.meta.url)));
+const pluginRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const commonRoot = resolveCommonSourceRoot(pluginRoot);
 const { scheduleMissingRepoMemoryBuild } = await import(pathToFileURL(join(commonRoot, "repo-memory", "repo-memory-auto-build.mjs")).href);
 const { isRepoMemoryJobWorker } = await import(pathToFileURL(join(commonRoot, "repo-memory", "repo-memory-job-context.mjs")).href);
@@ -33,6 +34,20 @@ const sessionId = stringValue(input?.session_id) ?? stringValue(input?.sessionId
 const transcriptPath = stringValue(input?.transcript_path) ?? stringValue(input?.transcriptPath);
 if (!event || !sessionId || !transcriptPath) process.exit(0);
 const home = process.env.MEMORAX_CODE_HOME?.trim() || join(homedir(), ".memorax-code");
+const packageMetadata = await readRecord(join(pluginRoot, ".memorax-code-package.json"));
+const codeBuddyHome = commonStringValue(process.env.CODEBUDDY_HOME)
+  ?? commonStringValue(process.env.WORKBUDDY_HOME)
+  ?? commonStringValue(packageMetadata.codeBuddyHome)
+  ?? commonStringValue(input?.codebuddy_home)
+  ?? commonStringValue(input?.codeBuddyHome)
+  ?? join(homedir(), process.platform === "win32" ? ".codebuddy" : ".workbuddy");
+try {
+  await writeCodeBuddyRuntimeObservation({ memoraxCodeHome: home, codeBuddyHome, pluginRoot });
+} catch (error) {
+  if (process.env.MEMORAX_CODE_CODEBUDDY_HOOK_DEBUG === "1") {
+    console.error(error instanceof Error ? error.message : String(error));
+  }
+}
 const pendingPath = join(home, "adapters", "codebuddy", "pending.json");
 const reminderOptions = {
   adapterDir: "codebuddy",
@@ -55,13 +70,9 @@ await ensureBackendAvailable({
   memoraxCodeCommand: commonStringValue(process.env.MEMORAX_CODE_CODEBUDDY_LIFECYCLE_COMMAND)
     ?? commonStringValue(process.env.MEMORAX_CODE_COMMAND),
   pluginRoot,
-  resolveHomes: (value) => ({
+  resolveHomes: () => ({
     memoraxCodeHome: home,
-    codeBuddyHome: commonStringValue(process.env.CODEBUDDY_HOME)
-      ?? commonStringValue(process.env.WORKBUDDY_HOME)
-      ?? commonStringValue(value?.codebuddy_home)
-      ?? commonStringValue(value?.codeBuddyHome)
-      ?? join(homedir(), ".workbuddy"),
+    codeBuddyHome,
   }),
   buildStartArgs: (homes, recoveryArguments) => [
     "start",
