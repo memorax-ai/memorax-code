@@ -74,7 +74,7 @@ async function main(args) {
 
   const runner = runnerName(state.runner);
   const command = normalizedCommand(state.command);
-const childResult = await runClient(command, {
+  const childResult = await runClient(command, {
     captureStdout: finalMessageSource(state.finalMessageSource) === "stdout",
     cwd: repo,
     env: {
