@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { chmod, cp, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveHookCodeBuddyCommand } from "../../memorax-code-adapter-common/src/clients/codebuddy-command.mjs";
 
@@ -27,13 +27,13 @@ export async function enableCodeBuddyAdapter(options = {}) {
   await mkdir(dirname(installPath), { recursive: true });
   await rm(installPath, { recursive: true, force: true });
   await rm(legacyCodeBuddyInstallPath(home), { recursive: true, force: true });
-  await cp(ROOT, installPath, { recursive: true, force: true, filter: (source) => !source.includes("/test/") && !source.includes("/node_modules/") });
+  await cp(ROOT, installPath, { recursive: true, force: true, filter: packageCopyFilter(ROOT) });
   await materializeCommonRuntime(installPath);
   await writePackageMetadata(installPath, options.codeBuddyCommand);
   await materializeCanonicalSkill(installPath);
   await mkdir(dirname(localPluginPath), { recursive: true });
   await rm(localPluginPath, { recursive: true, force: true });
-  await cp(ROOT, localPluginPath, { recursive: true, force: true, filter: (source) => !source.includes("/test/") && !source.includes("/node_modules/") });
+  await cp(ROOT, localPluginPath, { recursive: true, force: true, filter: packageCopyFilter(ROOT) });
   await materializeCommonRuntime(localPluginPath);
   await writePackageMetadata(localPluginPath, options.codeBuddyCommand);
   await materializeCanonicalSkill(localPluginPath);
@@ -224,5 +224,9 @@ async function materializeCommonRuntime(destination) {
   const target = join(destination, "memorax-code-adapter-common", "src");
   await rm(target, { recursive: true, force: true });
   await mkdir(dirname(target), { recursive: true });
-  await cp(source, target, { recursive: true, force: true, filter: (path) => !path.includes("/test/") && !path.includes("/node_modules/") });
+  await cp(source, target, { recursive: true, force: true, filter: packageCopyFilter(source) });
+}
+
+function packageCopyFilter(root) {
+  return (source) => !relative(root, source).split(sep).some((part) => part === "test" || part === "node_modules");
 }

@@ -87,6 +87,37 @@ test("installs and removes an isolated CodeBuddy plugin registry entry", async (
   assert.equal(await readFile(join(home, "skills", "user-skill", "SKILL.md"), "utf8"), "user-owned\n");
 });
 
+test("installs the complete plugin when the package lives under node_modules", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-codebuddy-node-modules-"));
+  const libraryRoot = join(root, "node_modules", "@memorax", "memorax-code", "lib");
+  const adapterRoot = join(libraryRoot, "memorax-code-codebuddy-adapter");
+  const commonRoot = join(libraryRoot, "memorax-code-adapter-common", "src");
+  await cp(new URL("../", import.meta.url), adapterRoot, { recursive: true });
+  await cp(new URL("../../memorax-code-adapter-common/src/", import.meta.url), commonRoot, { recursive: true });
+  await cp(
+    new URL("../../memorax-code-codex-adapter/skills/memorax-code/", import.meta.url),
+    join(adapterRoot, "skills", "memorax-code"),
+    { recursive: true },
+  );
+  const isolated = await import(pathToFileURL(join(adapterRoot, "src", "config.mjs")).href);
+  const home = join(root, "home");
+
+  await isolated.enableCodeBuddyAdapter({
+    codeBuddyHome: home,
+    codeBuddyCommand: "/opt/workbuddy/bin/codebuddy",
+  });
+
+  const pluginRoot = join(isolated.marketplaceRoot(home), "plugins", "memorax-code-codebuddy-adapter");
+  for (const path of [
+    join(pluginRoot, ".codebuddy-plugin", "plugin.json"),
+    join(pluginRoot, "hooks", "runtime-hook.mjs"),
+    join(pluginRoot, "memorax-code-adapter-common", "src", "backend-connection.mjs"),
+    join(pluginRoot, "skills", "memorax-code", "SKILL.md"),
+  ]) {
+    assert.equal(await exists(path), true, path);
+  }
+});
+
 test("disable and remove are no-ops for an uninstalled CodeBuddy home", async () => {
   const home = await mkdtemp(join(tmpdir(), "memorax-codebuddy-empty-"));
   const disabled = await disableCodeBuddyAdapter({ codeBuddyHome: home });
