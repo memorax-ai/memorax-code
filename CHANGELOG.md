@@ -6,6 +6,16 @@ behavior.
 
 ## Unreleased
 
+## [0.1.9] - 2026-08-28
+
+### Fixed
+
+- Restored Codex automatic writeback for current rollout transcripts by reading
+  authoritative response-item user and final-assistant messages before falling
+  back to legacy event messages.
+- Rejected response-item messages whose embedded Turn ID conflicts with the
+  active Turn, preventing mismatched content from being written to memory.
+
 ## [0.1.8] - 2026-08-24
 
 ### Added
@@ -121,6 +131,7 @@ Later upgrades do not require this workaround.
 - Required a non-empty MemoraX user ID and API key during interactive setup,
   with clearer registration guidance.
 
+[0.1.9]: https://www.npmjs.com/package/@memorax/memorax-code/v/0.1.9
 [0.1.8]: https://www.npmjs.com/package/@memorax/memorax-code/v/0.1.8
 [0.1.7]: https://www.npmjs.com/package/@memorax/memorax-code/v/0.1.7
 [0.1.6]: https://www.npmjs.com/package/@memorax/memorax-code/v/0.1.6
