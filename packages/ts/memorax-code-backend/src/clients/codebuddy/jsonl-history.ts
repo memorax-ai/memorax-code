@@ -16,6 +16,13 @@ export type CodeBuddyTurnFailureReason =
   | "user_prompt_missing" | "assistant_message_missing" | "turn_ambiguous"
   | "transcript_path_mismatch";
 export type CodeBuddyTurnResult = { ok: true; turn: CodeBuddyTurn } | { ok: false; reason: CodeBuddyTurnFailureReason; error?: string };
+export type CodeBuddyInterruptedTurn = CodeBuddyTurn;
+export type CodeBuddyInterruptedTurnFailureReason =
+  | Exclude<CodeBuddyTurnFailureReason, "assistant_message_missing" | "transcript_path_mismatch">
+  | "turn_not_interrupted";
+export type CodeBuddyInterruptedTurnResult =
+  | { ok: true; turn: CodeBuddyInterruptedTurn }
+  | { ok: false; reason: CodeBuddyInterruptedTurnFailureReason; error?: string };
 
 const RECORD_OFFSET = Symbol("codebuddyRecordOffset");
 type ParsedHistoryRecord = CodeBuddyHistoryRecord & { [RECORD_OFFSET]?: number };
@@ -29,10 +36,82 @@ export async function readCodeBuddyTranscriptTurn(input: {
   return codeBuddyTranscriptTurnFromJsonLines(text, input);
 }
 
+export async function readCodeBuddyInterruptedTranscriptTurn(input: {
+  transcriptPath: string; sessionId: string; turnId: string;
+}): Promise<CodeBuddyInterruptedTurnResult> {
+  let text: string;
+  try { text = await readFile(input.transcriptPath, "utf8"); }
+  catch (error) { return { ok: false, reason: "transcript_unavailable", error: error instanceof Error ? error.message : String(error) }; }
+  return codeBuddyInterruptedTranscriptTurnFromJsonLines(text, input);
+}
+
 export function codeBuddyTranscriptTurnFromJsonLines(
   text: string,
   input: { sessionId: string; turnId: string },
 ): CodeBuddyTurnResult {
+  const selected = selectCodeBuddyTurnBranch(text, input);
+  if (!selected.ok) return selected;
+  const branch = selected.records.filter((record) => record.role === "assistant" && record.status === "completed" && belongsTo(record, selected.userId, selected.records));
+  if (branch.length !== 1) return { ok: false, reason: branch.length > 1 ? "turn_ambiguous" : "assistant_message_missing" };
+  const assistant = branch[0];
+  const reply = assistantText(assistant);
+  if (!reply) return { ok: false, reason: "assistant_message_missing" };
+  return {
+    ok: true,
+    turn: {
+      sessionId: input.sessionId,
+      turnId: input.turnId,
+      userPrompt: selected.userPrompt,
+      assistantReply: reply,
+      activities: activitiesBetween(selected.records, selected.userId, assistant),
+      sessionTurnIndex: selected.sessionTurnIndex,
+    },
+  };
+}
+
+export function codeBuddyInterruptedTranscriptTurnFromJsonLines(
+  text: string,
+  input: { sessionId: string; turnId: string },
+): CodeBuddyInterruptedTurnResult {
+  const selected = selectCodeBuddyTurnBranch(text, input);
+  if (!selected.ok) return selected;
+  const assistants = selected.records.filter((record) => (
+    record.role === "assistant"
+    && (record.type === "message" || stringField(record, "status") !== undefined)
+    && belongsTo(record, selected.userId, selected.records)
+  ));
+  if (assistants.length > 1) return { ok: false, reason: "turn_ambiguous" };
+  const assistant = assistants[0];
+  if (assistant && assistant.status !== "incomplete") {
+    return { ok: false, reason: "turn_not_interrupted" };
+  }
+  return {
+    ok: true,
+    turn: {
+      sessionId: input.sessionId,
+      turnId: input.turnId,
+      userPrompt: selected.userPrompt,
+      assistantReply: assistant ? assistantText(assistant) ?? "" : "",
+      activities: assistant ? activitiesBetween(selected.records, selected.userId, assistant) : [],
+      sessionTurnIndex: selected.sessionTurnIndex,
+    },
+  };
+}
+
+type SelectedCodeBuddyTurnBranch = Readonly<{
+  records: ParsedHistoryRecord[];
+  userId: string;
+  userPrompt: string;
+  sessionTurnIndex: number;
+}>;
+
+function selectCodeBuddyTurnBranch(
+  text: string,
+  input: { sessionId: string; turnId: string },
+): { ok: true } & SelectedCodeBuddyTurnBranch | {
+  ok: false;
+  reason: "malformed_transcript" | "turn_not_found" | "user_prompt_missing" | "turn_ambiguous";
+} {
   const identity = parseCodeBuddyTurnId(input);
   if (!identity) return { ok: false, reason: "turn_not_found" };
   const records = parseJsonLines(text);
@@ -51,22 +130,14 @@ export function codeBuddyTranscriptTurnFromJsonLines(
   if (candidates.length > 1) return { ok: false, reason: "turn_ambiguous" };
   const user = candidates[0];
   const userId = stringField(user, "id");
-  if (!userId) return { ok: false, reason: "turn_not_found" };
-  const branch = records.filter((record) => record.role === "assistant" && record.status === "completed" && belongsTo(record, userId, records));
-  if (branch.length !== 1) return { ok: false, reason: branch.length > 1 ? "turn_ambiguous" : "assistant_message_missing" };
-  const assistant = branch[0];
-  const reply = assistantText(assistant);
-  if (!reply) return { ok: false, reason: "assistant_message_missing" };
+  const userPrompt = visibleUserPrompt(user);
+  if (!userId || !userPrompt) return { ok: false, reason: "turn_not_found" };
   return {
     ok: true,
-    turn: {
-      sessionId: input.sessionId,
-      turnId: input.turnId,
-      userPrompt: visibleUserPrompt(user)!,
-      assistantReply: reply,
-      activities: activitiesBetween(records, userId, assistant),
-      sessionTurnIndex: users.indexOf(user) + 1,
-    },
+    records,
+    userId,
+    userPrompt,
+    sessionTurnIndex: users.indexOf(user) + 1,
   };
 }
 

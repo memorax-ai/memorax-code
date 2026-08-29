@@ -1,4 +1,10 @@
-import { readCodeBuddyTranscriptTurn, type CodeBuddyTurn, type CodeBuddyTurnFailureReason } from "./jsonl-history.js";
+import {
+  readCodeBuddyInterruptedTranscriptTurn,
+  readCodeBuddyTranscriptTurn,
+  type CodeBuddyInterruptedTurn,
+  type CodeBuddyTurn,
+  type CodeBuddyTurnFailureReason,
+} from "./jsonl-history.js";
 import { retrieveAutomaticMemoryContext } from "../../memory/automatic-retrieval.js";
 import { createAutomaticMemoryWritebackRuntime, type AutomaticMemoryWritebackEnqueue, type AutomaticMemoryWritebackRejectionReason, type AutomaticMemoryWritebackRuntime } from "../../memory/automatic-writeback.js";
 import {
@@ -15,6 +21,7 @@ import type { RepositoryMemoryScopeFailureReason } from "../../repository/scope.
 import { traceContextFromCodeBuddyHookBody, type TraceContext } from "../../trace/context.js";
 import {
   markCurrentCodeBuddyTurnOutcome,
+  readOpenTraceTurn,
   recordCodeBuddyTraceEvent,
   traceTurnEventId,
   writeCurrentCodeBuddyTurn,
@@ -56,6 +63,7 @@ export function createCodeBuddyMemoryHookRuntime(options: Options = {}): CodeBud
   const repository = options.repositoryMemorySession ?? createRepositoryMemorySessionRuntime({ onScopeUpgrade: automatic?.discardForScopeUpgrade });
   return {
     async recordTurnStart(command) {
+      await reconcilePreviousInterruptedTurn(coordinator, command, options, now);
       const memory = await resolveRepository(command, options, repository);
       const traceContext = traceContextFromCodeBuddyHookBody(command, new Date(now()).toISOString());
       coordinator.recordTurnStart({ client: "codebuddy", sessionId: command.sessionId, clientTurnId: command.turnId, cwd: command.cwd, workspaceKind: command.workspaceKind, transcriptPath: command.transcriptPath, createdAt: now(), traceContext, repositoryMemory: memory });
@@ -190,6 +198,127 @@ async function recordCodeBuddyTurnMaterialization(
     request: { original_event_id: originalEventId, prompt: turn.userPrompt },
     response: { assistantMessage: turn.assistantReply },
   }), options.diagnosticLogger);
+}
+
+async function reconcilePreviousInterruptedTurn(
+  coordinator: MemoryTurnCoordinator,
+  currentTurn: CodeBuddyTurnStartCommand,
+  options: Options,
+  now: () => number,
+): Promise<void> {
+  const candidate = await previousInterruptedTurnCandidate(coordinator, currentTurn, options, now);
+  if (!candidate) return;
+  const transcript = await readCodeBuddyInterruptedTranscriptTurn({
+    transcriptPath: candidate.transcriptPath,
+    sessionId: candidate.sessionId,
+    turnId: candidate.turnId,
+  });
+  if (!transcript.ok) return;
+  await recordCodeBuddyInterruptedTurnEnd(options, candidate.traceContext, transcript.turn);
+  coordinator.discardTurn({
+    client: "codebuddy",
+    sessionId: candidate.sessionId,
+    clientTurnId: candidate.turnId,
+  }, "interrupted");
+  options.diagnosticLogger?.("codebuddy_memory_hook.interrupted_turn_reconciled", {
+    sessionId: candidate.sessionId,
+    turnId: candidate.turnId,
+    assistantChars: transcript.turn.assistantReply.length,
+    activityCount: transcript.turn.activities.length,
+    sessionTurnIndex: transcript.turn.sessionTurnIndex,
+  });
+}
+
+type CodeBuddyInterruptedTurnCandidate = Readonly<{
+  sessionId: string;
+  turnId: string;
+  transcriptPath: string;
+  traceContext: TraceContext;
+}>;
+
+async function previousInterruptedTurnCandidate(
+  coordinator: MemoryTurnCoordinator,
+  currentTurn: CodeBuddyTurnStartCommand,
+  options: Options,
+  now: () => number,
+): Promise<CodeBuddyInterruptedTurnCandidate | undefined> {
+  const open = await readOpenTraceTurn({
+    client: "codebuddy",
+    memoraxCodeHome: options.memoraxCodeHome,
+    env: options.env,
+    expectedSessionId: currentTurn.sessionId,
+    allowStale: true,
+    now: () => new Date(now()),
+  });
+  if (!open.ok && open.reason === "closed") return undefined;
+  if (open.ok && open.traceContext.turnId && open.traceContext.turnId !== currentTurn.turnId) {
+    const turnId = open.traceContext.turnId;
+    const cached = coordinator.getTurn({ client: "codebuddy", sessionId: currentTurn.sessionId, clientTurnId: turnId });
+    return {
+      sessionId: currentTurn.sessionId,
+      turnId,
+      transcriptPath: cached?.transcriptPath
+        ?? open.traceContext.transcriptPath
+        ?? currentTurn.transcriptPath,
+      traceContext: cached?.traceContext ?? open.traceContext,
+    };
+  }
+  const cached = coordinator.latestTurn({
+    client: "codebuddy",
+    sessionId: currentTurn.sessionId,
+    excludeClientTurnId: currentTurn.turnId,
+  });
+  if (!cached) return undefined;
+  const transcriptPath = cached.transcriptPath ?? currentTurn.transcriptPath;
+  const traceContext = cached.traceContext ?? traceContextFromCodeBuddyHookBody({
+    sessionId: cached.sessionId,
+    turnId: cached.clientTurnId,
+    cwd: cached.cwd,
+    workspaceKind: cached.workspaceKind,
+    transcriptPath,
+  }, new Date(cached.createdAt).toISOString());
+  if (!traceContext) return undefined;
+  return {
+    sessionId: cached.sessionId,
+    turnId: cached.clientTurnId,
+    transcriptPath,
+    traceContext,
+  };
+}
+
+async function recordCodeBuddyInterruptedTurnEnd(
+  options: Options,
+  traceContext: TraceContext,
+  turn: CodeBuddyInterruptedTurn,
+): Promise<void> {
+  const recorded = await recordTraceBestEffort(
+    "codebuddy_memory_hook.interrupted_turn_end_event",
+    recordCodeBuddyTraceEvent({
+      eventId: traceTurnEventId(traceContext, "turn_end"),
+      memoraxCodeHome: options.memoraxCodeHome,
+      env: options.env,
+      traceContext,
+      type: "turn_end",
+      source: "codebuddy-transcript",
+      operation: "reply",
+      ok: true,
+      outcome: "interrupted",
+      activities: turn.activities,
+      sessionTurnIndex: turn.sessionTurnIndex,
+      request: { prompt: turn.userPrompt },
+      response: { assistantMessage: turn.assistantReply },
+    }),
+    options.diagnosticLogger,
+  );
+  if (!recorded || (!recorded.written && recorded.reason !== "duplicate_event")) return;
+  await recordTraceBestEffort(
+    "codebuddy_memory_hook.interrupted_current_turn_close",
+    markCurrentCodeBuddyTurnOutcome(traceContext, "interrupted", {
+      memoraxCodeHome: options.memoraxCodeHome,
+      env: options.env,
+    }),
+    options.diagnosticLogger,
+  );
 }
 
 async function recordTraceBestEffort<T>(

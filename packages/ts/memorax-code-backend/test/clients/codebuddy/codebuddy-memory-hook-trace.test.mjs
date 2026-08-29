@@ -88,6 +88,105 @@ test("CodeBuddy runtime traces incomplete assistant and does not write back", as
   assert.equal(current.turn_state, "interrupted");
 });
 
+test("CodeBuddy next turn reconciles the previous interrupted trace without writeback", async () => {
+  const home = await mkdtemp(join(tmpdir(), "memorax-codebuddy-trace-reconcile-"));
+  const transcriptPath = join(home, "session.jsonl");
+  const sessionId = "trace-reconcile";
+  const firstPrompt = "interrupt this turn";
+  const secondPrompt = "continue in the next turn";
+  const firstTurnId = provisionalTurnId(sessionId, firstPrompt);
+  const firstUser = { id: "u1", type: "message", role: "user", sessionId, content: [{ type: "input_text", text: firstPrompt }] };
+  await writeFile(transcriptPath, lines([firstUser]));
+  const writes = [];
+  const diagnostics = [];
+  const runtime = createCodeBuddyMemoryHookRuntime({
+    env: {
+      MEMORAX_CODE_HOME: home,
+      MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED: "false",
+    },
+    automaticWriteback: (request) => {
+      writes.push(request);
+      return { accepted: true };
+    },
+    diagnosticLogger: (event, fields) => diagnostics.push({ event, fields }),
+  });
+  try {
+    await runtime.recordTurnStart(command(sessionId, firstTurnId, transcriptPath, firstPrompt));
+    const beforeSecond = lines([
+      firstUser,
+      { id: "a1", type: "message", role: "assistant", parentId: "u1", status: "incomplete", content: [{ type: "output_text", text: "partial answer" }] },
+    ]);
+    await writeFile(transcriptPath, beforeSecond + lines([
+      { id: "u2", type: "message", role: "user", sessionId, content: [{ type: "input_text", text: secondPrompt }] },
+    ]));
+    const secondTurnId = provisionalTurnId(sessionId, secondPrompt, Buffer.byteLength(beforeSecond, "utf8"));
+    await runtime.recordTurnStart(command(sessionId, secondTurnId, transcriptPath, secondPrompt));
+
+    const events = await readEvents(home, sessionId);
+    assert.deepEqual(events.map((event) => event.type), ["turn_start", "turn_end", "turn_start"]);
+    assert.equal(events[1].trace.turn_id, firstTurnId);
+    assert.equal(events[1].source, "codebuddy-transcript");
+    assert.equal(events[1].outcome, "interrupted");
+    assert.equal(events[1].request.prompt, firstPrompt);
+    assert.equal(events[1].response.assistantMessage, "partial answer");
+    assert.equal(writes.length, 0);
+    assert.equal(runtime.size(), 1);
+    assert.equal(diagnostics.some(({ event }) => event === "codebuddy_memory_hook.interrupted_turn_reconciled"), true);
+    const current = JSON.parse(await readFile(codeBuddyTracePaths(home).sessionCurrentTurnPath(sessionId), "utf8"));
+    assert.equal(current.turn_state, "open");
+    assert.equal(current.trace.turn_id, secondTurnId);
+  } finally {
+    runtime.close();
+  }
+});
+
+test("CodeBuddy next turn restores an assistant-less interrupted trace after runtime restart", async () => {
+  const home = await mkdtemp(join(tmpdir(), "memorax-codebuddy-trace-restart-"));
+  const transcriptPath = join(home, "session.jsonl");
+  const sessionId = "trace-restart";
+  const firstPrompt = "interrupt before restart";
+  const secondPrompt = "continue after restart";
+  const firstTurnId = provisionalTurnId(sessionId, firstPrompt);
+  const firstUser = { id: "u1", type: "message", role: "user", sessionId, content: [{ type: "input_text", text: firstPrompt }] };
+  await writeFile(transcriptPath, lines([firstUser]));
+  const env = {
+    MEMORAX_CODE_HOME: home,
+    MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED: "false",
+  };
+  const firstRuntime = createCodeBuddyMemoryHookRuntime({
+    env,
+    automaticWriteback: () => ({ accepted: true }),
+  });
+  await firstRuntime.recordTurnStart(command(sessionId, firstTurnId, transcriptPath, firstPrompt));
+  firstRuntime.close();
+
+  const firstTranscript = lines([firstUser]);
+  await writeFile(transcriptPath, firstTranscript + lines([
+    { id: "u2", type: "message", role: "user", sessionId, content: [{ type: "input_text", text: secondPrompt }] },
+  ]));
+  const secondTurnId = provisionalTurnId(sessionId, secondPrompt, Buffer.byteLength(firstTranscript, "utf8"));
+  const writes = [];
+  const restarted = createCodeBuddyMemoryHookRuntime({
+    env,
+    automaticWriteback: (request) => {
+      writes.push(request);
+      return { accepted: true };
+    },
+  });
+  try {
+    await restarted.recordTurnStart(command(sessionId, secondTurnId, transcriptPath, secondPrompt));
+    const events = await readEvents(home, sessionId);
+    assert.deepEqual(events.map((event) => event.type), ["turn_start", "turn_end", "turn_start"]);
+    assert.equal(events[1].trace.turn_id, firstTurnId);
+    assert.equal(events[1].outcome, "interrupted");
+    assert.equal(events[1].request.prompt, firstPrompt);
+    assert.equal(writes.length, 0);
+    assert.equal(restarted.size(), 1);
+  } finally {
+    restarted.close();
+  }
+});
+
 test("CodeBuddy runtime writes back the uniquely materialized provisional turn", async () => {
   const home = await mkdtemp(join(tmpdir(), "memorax-codebuddy-runtime-"));
   const transcriptPath = join(home, "session.jsonl");

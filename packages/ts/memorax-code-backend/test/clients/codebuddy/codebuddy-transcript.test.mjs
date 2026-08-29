@@ -1,7 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { codeBuddyTranscriptTurnFromJsonLines } from "../../../dist/clients/codebuddy/jsonl-history.js";
+import {
+  codeBuddyInterruptedTranscriptTurnFromJsonLines,
+  codeBuddyTranscriptTurnFromJsonLines,
+} from "../../../dist/clients/codebuddy/jsonl-history.js";
 
 const sessionId = "session-1";
 test("extracts hidden user query and completed assistant branch", () => {
@@ -29,6 +32,61 @@ test("fails closed on cancelled incomplete assistant", () => {
     { id: "a1", type: "message", role: "assistant", parentId: "u1", status: "incomplete", content: [{ type: "output_text", text: "partial" }] },
   ].map(JSON.stringify).join("\n");
   assert.deepEqual(codeBuddyTranscriptTurnFromJsonLines(lines, { sessionId, turnId: provisionalTurnId("cancel me") }), { ok: false, reason: "assistant_message_missing" });
+});
+
+test("recovers an interrupted turn without assistant material", () => {
+  const lines = [
+    { id: "u1", type: "message", role: "user", sessionId, content: [{ type: "input_text", text: "<user_query>cancel before reply</user_query>" }] },
+  ].map(JSON.stringify).join("\n");
+  assert.deepEqual(
+    codeBuddyInterruptedTranscriptTurnFromJsonLines(lines, {
+      sessionId,
+      turnId: provisionalTurnId("cancel before reply"),
+    }),
+    {
+      ok: true,
+      turn: {
+        sessionId,
+        turnId: provisionalTurnId("cancel before reply"),
+        userPrompt: "cancel before reply",
+        assistantReply: "",
+        activities: [],
+        sessionTurnIndex: 1,
+      },
+    },
+  );
+});
+
+test("recovers the unique incomplete assistant branch", () => {
+  const lines = [
+    { id: "u1", type: "message", role: "user", sessionId, content: [{ type: "input_text", text: "cancel partial reply" }] },
+    { id: "a1", type: "message", role: "assistant", parentId: "u1", status: "incomplete", content: [{ type: "output_text", text: "partial answer" }] },
+  ].map(JSON.stringify).join("\n");
+  const result = codeBuddyInterruptedTranscriptTurnFromJsonLines(lines, {
+    sessionId,
+    turnId: provisionalTurnId("cancel partial reply"),
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.turn.assistantReply, "partial answer");
+});
+
+test("interrupted reader fails closed on completed, ambiguous, or malformed transcripts", () => {
+  const user = { id: "u1", type: "message", role: "user", sessionId, content: [{ type: "input_text", text: "strict interruption" }] };
+  const input = { sessionId, turnId: provisionalTurnId("strict interruption") };
+  const completed = [
+    user,
+    { id: "a1", type: "message", role: "assistant", parentId: "u1", status: "completed", content: [{ type: "output_text", text: "done" }] },
+  ].map(JSON.stringify).join("\n");
+  const ambiguous = [
+    user,
+    { id: "a1", type: "message", role: "assistant", parentId: "u1", status: "incomplete", content: [{ type: "output_text", text: "one" }] },
+    { id: "a2", type: "message", role: "assistant", parentId: "u1", status: "incomplete", content: [{ type: "output_text", text: "two" }] },
+  ].map(JSON.stringify).join("\n");
+  const malformed = `${JSON.stringify(user)}\n{not-json`;
+
+  assert.deepEqual(codeBuddyInterruptedTranscriptTurnFromJsonLines(completed, input), { ok: false, reason: "turn_not_interrupted" });
+  assert.deepEqual(codeBuddyInterruptedTranscriptTurnFromJsonLines(ambiguous, input), { ok: false, reason: "turn_ambiguous" });
+  assert.deepEqual(codeBuddyInterruptedTranscriptTurnFromJsonLines(malformed, input), { ok: false, reason: "malformed_transcript" });
 });
 
 test("fails closed on two completed branches", () => {
