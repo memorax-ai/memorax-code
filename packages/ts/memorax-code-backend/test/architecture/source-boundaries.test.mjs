@@ -205,6 +205,14 @@ test("memorax-cli entrypoint exits naturally instead of forcing process exit", a
   assert.doesNotMatch(source, /process\.exit\s*\(/);
 });
 
+test("backend CLI async completions exit naturally instead of forcing process exit", async () => {
+  const source = await readFile(join(backendSrc, "entrypoints", "backend-cli.ts"), "utf8");
+
+  assert.match(source, /server\.shutdown\(\)\.then\([\s\S]*?process\.exitCode\s*=\s*0/);
+  assert.doesNotMatch(source, /server\.shutdown\(\)\.then\([\s\S]*?process\.exit\(/);
+  assert.doesNotMatch(source, /process\.exit\(result\.ok \? 0 : 1\)/);
+});
+
 test("managed Backend owns automatic-update wakeups instead of client Hooks", async () => {
   const backendCli = await readFile(join(backendSrc, "entrypoints", "backend-cli.ts"), "utf8");
   const scheduler = await readFile(join(

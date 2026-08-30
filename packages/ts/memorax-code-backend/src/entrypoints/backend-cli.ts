@@ -130,19 +130,19 @@ export function runBackendCli(argv = process.argv): void {
     collectMemoraxCodeStatus(backendUrl, backendToken, serviceOptions, argv).then((status) => {
       if (argv.includes("--json")) console.log(JSON.stringify(status, null, 2));
       else printMemoraxCodeStatus(status);
-      process.exit(status.ok ? 0 : 1);
+      process.exitCode = status.ok ? 0 : 1;
     }).catch((error) => {
       console.error(error instanceof Error ? error.message : String(error));
-      process.exit(1);
+      process.exitCode = 1;
     });
   } else if (command === "codex-plugin") {
     runCodexPluginCommand(argv).then((result) => {
       if (argv.includes("--json")) console.log(JSON.stringify(result, null, 2));
       else printCodexPluginInstallResult(result);
-      process.exit(result.ok ? 0 : 1);
+      process.exitCode = result.ok ? 0 : 1;
     }).catch((error) => {
       console.error(error instanceof Error ? error.message : String(error));
-      process.exit(1);
+      process.exitCode = 1;
     });
   } else if (command === "start") {
     startMemoraxCodeService(serviceOptions, argv, () => {
@@ -150,19 +150,19 @@ export function runBackendCli(argv = process.argv): void {
     }).then((result) => {
       if (argv.includes("--json")) console.log(JSON.stringify(result, null, 2));
       else printLifecycleResult(result);
-      process.exit(result.ok ? 0 : 1);
+      process.exitCode = result.ok ? 0 : 1;
     }).catch((error) => {
       console.error(error instanceof Error ? error.message : String(error));
-      process.exit(1);
+      process.exitCode = 1;
     });
   } else if (command === "stop") {
     stopMemoraxCodeService(serviceOptions, argv).then((result) => {
       if (argv.includes("--json")) console.log(JSON.stringify(result, null, 2));
       else printLifecycleResult(result);
-      process.exit(result.ok ? 0 : 1);
+      process.exitCode = result.ok ? 0 : 1;
     }).catch((error) => {
       console.error(error instanceof Error ? error.message : String(error));
-      process.exit(1);
+      process.exitCode = 1;
     });
   } else if (command === "restart") {
     restartMemoraxCodeService(serviceOptions, argv, () => {
@@ -170,31 +170,31 @@ export function runBackendCli(argv = process.argv): void {
     }).then((result) => {
       if (argv.includes("--json")) console.log(JSON.stringify(result, null, 2));
       else printLifecycleResult(result);
-      process.exit(result.ok ? 0 : 1);
+      process.exitCode = result.ok ? 0 : 1;
     }).catch((error) => {
       console.error(error instanceof Error ? error.message : String(error));
-      process.exit(1);
+      process.exitCode = 1;
     });
   } else if (command === "uninstall") {
     uninstallMemoraxCodeService(serviceOptions, argv).then((result) => {
       if (argv.includes("--json")) console.log(JSON.stringify(result, null, 2));
       else printLifecycleResult(result);
-      process.exit(result.ok ? 0 : 1);
+      process.exitCode = result.ok ? 0 : 1;
     }).catch((error) => {
       console.error(error instanceof Error ? error.message : String(error));
-      process.exit(1);
+      process.exitCode = 1;
     });
   } else if (command === "logs") {
     const result = backendServiceLogs(serviceOptions);
     console.log(JSON.stringify(result, null, 2));
-    process.exit(result.ok ? 0 : 1);
+    process.exitCode = result.ok ? 0 : 1;
   } else if (command === "token") {
     runBackendTokenCommand(serviceOptions, argv).then((result) => {
       console.log(JSON.stringify(result, null, 2));
-      process.exit(result.ok ? 0 : 1);
+      process.exitCode = result.ok ? 0 : 1;
     }).catch((error) => {
       console.error(error instanceof Error ? error.message : String(error));
-      process.exit(1);
+      process.exitCode = 1;
     });
   } else if (usageName === "memorax-code") {
     // `memorax-code` is the service-management CLI. An unrecognised or missing subcommand
@@ -316,10 +316,12 @@ function installBackendShutdownControls(
     if (source === "signal") backendDebug("shutdown.signal_received", { signal });
     else backendDebug("shutdown.request_received", { pid: process.pid });
     void server.shutdown().then(
-      () => process.exit(0),
+      () => {
+        process.exitCode = 0;
+      },
       (error) => {
         console.error(error instanceof Error ? error.message : String(error));
-        process.exit(1);
+        process.exitCode = 1;
       },
     );
   };

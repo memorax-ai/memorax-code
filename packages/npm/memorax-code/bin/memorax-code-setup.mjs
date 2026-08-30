@@ -326,7 +326,7 @@ try {
   process.exit(1);
 }
 logGreen("Setup completed successfully.");
-process.exit(0);
+process.exitCode = 0;
 
 async function maybeConfigureMemoraxMemory(scriptedAnswers, {
   existingAccount = false,

@@ -26,7 +26,7 @@ try {
 } catch (error) {
   printCommandOutput(error?.command);
   console.error(`${PREFIX} Package transition could not be completed: ${error instanceof Error ? error.message : String(error)}`);
-  process.exit(1);
+  process.exitCode = 1;
 }
 
 function printCommandOutput(command) {
