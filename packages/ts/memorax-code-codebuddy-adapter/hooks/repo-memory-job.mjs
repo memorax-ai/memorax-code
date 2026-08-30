@@ -1,0 +1,40 @@
+#!/usr/bin/env node
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { pathToFileURL } from "node:url";
+import { resolveCommonSourceRoot } from "./common-runtime.mjs";
+
+const hookDir = dirname(fileURLToPath(import.meta.url));
+const pluginRoot = dirname(hookDir);
+const commonRoot = resolveCommonSourceRoot(pluginRoot);
+const { resolveHookCodeBuddyCommand } = await import(pathToFileURL(join(commonRoot, "clients", "codebuddy-command.mjs")).href);
+const { runRepoMemoryJob } = await import(pathToFileURL(join(commonRoot, "repo-memory", "repo-memory-job-supervisor.mjs")).href);
+const { evaluateRepository } = await import(pathToFileURL(join(commonRoot, "repo-memory", "repo-memory-update-policy-evaluator.mjs")).href);
+
+try {
+  const payload = runRepoMemoryJob(process.argv.slice(2), {
+    runner: "codebuddy",
+    finalMessageSource: "stdout",
+    memorySkillInvocation: "$memorax-code",
+    validatorPath: resolve(pluginRoot, "skills/memorax-code/scripts/validate_memory.py"),
+    evaluateRepository,
+    createCommand({ prompt }) {
+      const codeBuddy = resolveHookCodeBuddyCommand({
+        pluginRoot: process.env.CODEBUDDY_PLUGIN_ROOT || pluginRoot,
+      });
+      return [
+        codeBuddy,
+        "--print",
+        "--output-format",
+        "text",
+        "--dangerously-skip-permissions",
+        "--no-session-persistence",
+        prompt,
+      ];
+    },
+  });
+  process.stdout.write(`${JSON.stringify(payload)}\n`);
+} catch (error) {
+  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+  process.exit(1);
+}

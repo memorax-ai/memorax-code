@@ -1,0 +1,113 @@
+import assert from "node:assert/strict";
+import { createServer } from "node:http";
+import { spawn } from "node:child_process";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import test from "node:test";
+
+const hookPath = fileURLToPath(new URL("../hooks/runtime-hook.mjs", import.meta.url));
+
+test("UserPromptSubmit posts turn-start and returns retrieved context", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-codebuddy-hook-"));
+  const transcriptPath = join(root, "session.jsonl");
+  await writeFile(transcriptPath, "");
+  const requests = [];
+  const server = await startServer(requests, { additionalContext: "memory context" });
+  try {
+    const result = await runHook({
+      hook_event_name: "UserPromptSubmit", session_id: "session-1", transcript_path: transcriptPath,
+      prompt: "remember this", cwd: root,
+    }, { root, server });
+    assert.equal(result.status, 0);
+    assert.deepEqual(JSON.parse(result.stdout), {
+      hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: "memory context" },
+    });
+    const turnStarts = requests.filter((request) => request.path === "/memory/turn-start");
+    assert.equal(turnStarts.length, 1);
+    assert.equal(turnStarts[0].body.client, "codebuddy");
+    assert.equal(turnStarts[0].body.sessionId, "session-1");
+    assert.equal(turnStarts[0].body.prompt, "remember this");
+    const pending = JSON.parse(await readFile(join(root, "adapters", "codebuddy", "pending.json"), "utf8"));
+    assert.match(pending["session-1"].turnId, /^session-1:/);
+  } finally { await server.close(); }
+});
+
+test("Stop posts writeback and clears only an accepted pending turn", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-codebuddy-hook-"));
+  const transcriptPath = join(root, "session.jsonl");
+  await writeFile(transcriptPath, "");
+  const requests = [];
+  const server = await startServer(requests, { ok: true, scheduled: true });
+  try {
+    const start = await runHook({
+      hook_event_name: "UserPromptSubmit", session_id: "session-2", transcript_path: transcriptPath,
+      prompt: "hello", cwd: root,
+    }, { root, server });
+    assert.equal(start.status, 0);
+    const pending = JSON.parse(await readFile(join(root, "adapters", "codebuddy", "pending.json"), "utf8"));
+    const turnId = pending["session-2"].turnId;
+    await writeFile(transcriptPath, [
+      JSON.stringify({ id: "u1", role: "user", sessionId: "session-2", content: "<user_query>hello</user_query>" }),
+      JSON.stringify({ id: "a1", role: "assistant", parentId: "u1", status: "completed", content: "done" }), "",
+    ].join("\n"));
+    const stop = await runHook({
+      hook_event_name: "Stop", session_id: "session-2", transcript_path: transcriptPath, cwd: root,
+    }, { root, server });
+    assert.equal(stop.status, 0);
+    assert.equal(requests.at(-1).path, "/memory/writeback");
+    assert.equal(requests.at(-1).body.turnId, turnId);
+    assert.deepEqual(JSON.parse(await readFile(join(root, "adapters", "codebuddy", "pending.json"), "utf8")), {});
+  } finally { await server.close(); }
+});
+
+test("Stop retains pending state when writeback is not scheduled", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-codebuddy-hook-"));
+  const transcriptPath = join(root, "session.jsonl");
+  await writeFile(transcriptPath, "");
+  const server = await startServer([], { ok: true, scheduled: false, reason: "assistant_message_missing" });
+  try {
+    await runHook({
+      hook_event_name: "UserPromptSubmit", session_id: "session-3", transcript_path: transcriptPath,
+      prompt: "hello", cwd: root,
+    }, { root, server });
+    const before = JSON.parse(await readFile(join(root, "adapters", "codebuddy", "pending.json"), "utf8"));
+    const stop = await runHook({
+      hook_event_name: "Stop", session_id: "session-3", transcript_path: transcriptPath, cwd: root,
+    }, { root, server });
+    assert.equal(stop.status, 0);
+    assert.deepEqual(JSON.parse(await readFile(join(root, "adapters", "codebuddy", "pending.json"), "utf8")), before);
+  } finally { await server.close(); }
+});
+
+async function startServer(requests, response) {
+  const server = createServer(async (request, responseStream) => {
+    let text = "";
+    for await (const chunk of request) text += chunk;
+    requests.push({ path: request.url, body: text ? JSON.parse(text) : undefined });
+    responseStream.writeHead(200, { "content-type": "application/json" });
+    responseStream.end(JSON.stringify(response));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  return server;
+}
+
+function runHook(input, { root, server }) {
+  const address = server.address();
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [hookPath], {
+      cwd: root,
+      env: { ...process.env, MEMORAX_CODE_HOME: root, MEMORAX_CODE_BACKEND_URL: `http://127.0.0.1:${address.port}` },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.on("close", (status, signal) => resolve({ status, signal, stdout: stdout.trim(), stderr }));
+    child.stdin.end(JSON.stringify(input));
+  });
+}

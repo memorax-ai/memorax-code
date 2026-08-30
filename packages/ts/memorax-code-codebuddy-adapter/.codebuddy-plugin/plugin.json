@@ -1,0 +1,7 @@
+{
+  "name": "memorax-code-codebuddy-adapter",
+  "version": "0.1.4",
+  "description": "MemoraX Code memory integration for CodeBuddy and WorkBuddy.",
+  "hooks": "./hooks/hooks.json",
+  "skills": ["./skills/memorax-code"]
+}
