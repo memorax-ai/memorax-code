@@ -12,6 +12,12 @@ behavior.
   managed Backend, so a continuously running installation keeps checking on
   its persisted cadence without requiring a new coding-agent session.
 
+### Fixed
+
+- Stopped `memorax-cli` from exiting with a nonzero status on Windows after
+  printing complete results by letting the Node process drain naturally
+  instead of calling `process.exit()`.
+
 ## [0.1.9] - 2026-08-28
 
 ### Fixed
