@@ -10,12 +10,18 @@ const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 
 async function createPackageFixture(version) {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-update-test-"));
+  const commonRoot = join(packageRoot, "..", "..", "ts", "memorax-code-adapter-common", "src");
   await mkdir(join(root, "bin"), { recursive: true });
   await mkdir(join(root, "lib"), { recursive: true });
+  await mkdir(join(root, "lib", "memorax-code-adapter-common", "src"), { recursive: true });
   await cp(join(packageRoot, "bin", "memorax-code.mjs"), join(root, "bin", "memorax-code.mjs"));
+  await cp(join(packageRoot, "lib", "automatic-update.mjs"), join(root, "lib", "automatic-update.mjs"));
   await cp(join(packageRoot, "lib", "client-hook-runtime.mjs"), join(root, "lib", "client-hook-runtime.mjs"));
   await cp(join(packageRoot, "lib", "node-version.mjs"), join(root, "lib", "node-version.mjs"));
   await cp(join(packageRoot, "lib", "npm-invocation.mjs"), join(root, "lib", "npm-invocation.mjs"));
+  for (const name of ["config-utils.mjs", "runtime-record.mjs", "setup-completion.mjs"]) {
+    await cp(join(commonRoot, name), join(root, "lib", "memorax-code-adapter-common", "src", name));
+  }
   await cp(join(packageRoot, "lib", "run-entrypoint.mjs"), join(root, "lib", "run-entrypoint.mjs"));
   await cp(join(packageRoot, "lib", "resolve-claude-command.mjs"), join(root, "lib", "resolve-claude-command.mjs"));
   await cp(join(packageRoot, "lib", "resolve-codex-command.mjs"), join(root, "lib", "resolve-codex-command.mjs"));

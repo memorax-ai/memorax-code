@@ -32,6 +32,8 @@ const STABLE_SHELL_REQUIRED_FILES = Object.freeze([
   "memorax-code-adapter-common/src/hooks/capture-cwd-hook.mjs",
   "memorax-code-adapter-common/src/hooks/client-hook-launcher.mjs",
   "memorax-code-adapter-common/src/config-utils.mjs",
+  "memorax-code-adapter-common/src/setup-completion.mjs",
+  "memorax-code-adapter-common/src/hooks/automatic-update-scheduler.mjs",
   "memorax-code-adapter-common/src/hooks/ensure-backend-runner.mjs",
   "memorax-code-adapter-common/src/hooks/hook-runtime-generation.mjs",
   "memorax-code-adapter-common/src/hooks/memory-skill-reminder-hook.mjs",

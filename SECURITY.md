@@ -42,12 +42,24 @@ Please allow time for triage and remediation before public disclosure.
   them.
 - npm lifecycle scripts do not prompt for credentials, authorize Hooks, or
   perform first-time setup. They only retire and restore an already-running
-  managed Backend during package replacement. Credential entry, disclosure,
-  client selection, and Hook review belong to foreground
-  `memorax-code setup` in the logged-in user's interactive terminal.
-- Setup-completion and package-transition records are versioned private
-  authority. Invalid or unsupported records fail closed instead of silently
-  treating a partial setup or interrupted package replacement as complete.
+  managed Backend during package replacement. The automatic updater is a
+  separate detached product process and runs only after setup completion.
+- Client-start automatic updates trust releases published under the installed
+  npm package name and its `latest` or `preview` tag. Set
+  `MEMORAX_CODE_AUTO_UPDATE=false` when deployment policy requires manual
+  package review. A changed target is installed by exact version and
+  reconciliation preserves the configured client selection.
+- Codex update reconciliation may trust new or changed Hooks without a prompt
+  only after the current marketplace identity and exact Hook selection are
+  validated. The selection is checked again before and after the config write;
+  identity drift, malformed responses, or concurrent Hook changes fail closed.
+  First-time setup activation and the standalone Hook-trust command remain
+  explicit product operations.
+- Setup-completion, package-transition, and automatic-update records are
+  versioned private authority. Invalid or unsupported setup and transition
+  records fail closed instead of silently treating a partial setup or
+  interrupted package replacement as complete. The automatic-update record
+  controls only cadence and the last local outcome.
 - The managed OpenCode plugin may recover an unavailable Backend only through
   its package-recorded Node runtime and absolute `memorax-code` command, and
   the currently resolved loopback HTTP authority. It preserves the existing

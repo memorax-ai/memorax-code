@@ -99,6 +99,33 @@ migration. `memorax-code start` alone does not commit that migration. Once a
 fixed release has started the Backend from its private runtime directory,
 later updates do not require this workaround.
 
+## Automatic update does not run or repeatedly retries
+
+Background checks start only after setup has written a valid
+`$MEMORAX_CODE_HOME/runtime/setup/setup-completion.json` record and an eligible
+client starts or opens a session. Confirm that
+`MEMORAX_CODE_AUTO_UPDATE` is not set to `false` in that client environment.
+A successful check is reused for one hour; failures retry after 15 minutes.
+
+The latest local outcome is recorded at:
+
+```text
+$MEMORAX_CODE_HOME/runtime/install/automatic-update.json
+```
+
+Do not edit that record while an update may be running. For an immediate
+foreground retry, run `memorax-code update` from an interactive terminal, then
+check `memorax-code status`.
+
+During Codex reconciliation, verified new or changed MemoraX Code Hooks are
+trusted silently. A changed marketplace identity, malformed Hook response, or
+Hook that changes again during the config write is not trusted; automatic
+reconciliation records a failure and retries later. After confirming the
+installed plugin source, use `memorax-code codex-plugin trust-hooks` for an
+explicit diagnostic review, then rerun `memorax-code setup` if needed. Direct
+npm installation replaces package files but does not perform this product
+reconciliation.
+
 ## Installed, but memory is unavailable
 
 The package and Backend can be healthy while MemoraX remains unconfigured. Run:
@@ -199,11 +226,12 @@ memorax-code start --clients codex
 memorax-code-codex doctor
 ```
 
-Codex requires review for new or changed Hook command hashes. A declined,
-non-interactive, or direct npm update can leave changed Hooks untrusted even
-though package replacement succeeded. Run `memorax-code setup` for foreground
-review; do not write trust entries directly. If the skill is missing, rerun
-`memorax-code start --clients codex`, then restart or refresh Codex.
+MemoraX Code update reconciliation silently trusts only the exact new or changed
+Hook hashes returned by Codex after the marketplace identity is verified.
+Direct npm installation does not run that reconciliation and can leave changed
+Hooks untrusted. Use the commands above instead of writing trust entries
+directly. If the skill is missing, rerun `memorax-code start --clients codex`,
+then restart or refresh Codex.
 
 ## Claude Code plugin or Hook is inactive
 

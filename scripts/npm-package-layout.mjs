@@ -37,6 +37,7 @@ function parentPaths(path) {
   return parents;
 }
 const rootLibFiles = new Set([
+  "lib/automatic-update.mjs",
   "lib/npm-invocation.mjs",
   "lib/package-transition.mjs",
   "lib/client-hook-runtime.mjs",

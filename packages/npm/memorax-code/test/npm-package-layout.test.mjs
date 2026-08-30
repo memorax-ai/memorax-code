@@ -17,6 +17,7 @@ test("single npm package layout accepts declared paths and rejects unknown trees
   assert.equal(isAllowedNpmPackPath("bin/memorax-code-plugin-postinstall.mjs"), true);
   assert.equal(isAllowedNpmPackPath("bin/memorax-code-setup.mjs"), true);
   assert.equal(isAllowedNpmPackPath("bin/memorax-code-opencode.mjs"), true);
+  assert.equal(isAllowedNpmPackPath("lib/automatic-update.mjs"), true);
   assert.equal(isAllowedNpmPackPath("lib/node-version.mjs"), true);
   assert.equal(isAllowedNpmPackPath("lib/dsh-plugin-install.mjs"), true);
   assert.equal(isAllowedNpmPackPath("lib/package-transition.mjs"), true);

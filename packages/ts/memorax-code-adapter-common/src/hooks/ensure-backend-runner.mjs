@@ -6,6 +6,7 @@ import {
   resolveBackendConnection,
 } from "../backend-connection.mjs";
 import { isRepoMemoryJobWorker } from "../repo-memory/repo-memory-job-context.mjs";
+import { scheduleAutomaticUpdate } from "./automatic-update-scheduler.mjs";
 
 export const DEFAULT_ENSURE_BACKEND_START_TIMEOUT_MS = 90000;
 const HOOK_INPUT_SYMBOL = Symbol.for("memorax-code.client-hook.input.v1");
@@ -16,8 +17,21 @@ export async function runEnsureBackendHook(options) {
 }
 
 export async function ensureBackendAvailable(options, input = {}) {
-  if (isRepoMemoryJobWorker() || ensureDisabled(options.ensureBackendValue)) return;
+  if (isRepoMemoryJobWorker()) return;
   const homes = options.resolveHomes(input);
+  const command = memoraxCodeCommandInfo(options.memoraxCodeCommand, options.pluginRoot);
+  const scheduleUpdate = () => scheduleAutomaticUpdate({
+    automaticUpdateValue: options.automaticUpdateValue,
+    input,
+    memoraxCodeHome: homes.memoraxCodeHome,
+    memoraxCodeCommand: command.value,
+    nodePath: options.nodePath,
+    debug: options.debug,
+  });
+  if (ensureDisabled(options.ensureBackendValue)) {
+    scheduleUpdate();
+    return;
+  }
   let connection;
   try {
     connection = options.backendConnection
@@ -29,12 +43,12 @@ export async function ensureBackendAvailable(options, input = {}) {
   const healthTimeoutMs = parsePositiveInt(options.healthTimeoutValue, 1500);
   if (await backendHealthy(connection, healthTimeoutMs)) {
     await options.onHealthy?.({ homes, backendUrl: connection.url });
+    scheduleUpdate();
     return;
   }
 
   const recoveryArguments = localBackendRecoveryArguments(connection);
   if (recoveryArguments === undefined) return;
-  const command = memoraxCodeCommandInfo(options.memoraxCodeCommand, options.pluginRoot);
   if (!command.value || command.removed === true || !memoraxCodeCommandAvailable(command.value)) return;
   const result = await runMemoraxCode(
     command.value,
@@ -47,7 +61,9 @@ export async function ensureBackendAvailable(options, input = {}) {
     options.debug?.(
       `MemoraX Code backend start failed with code ${result.code}${result.stderr ? `: ${result.stderr}` : ""}`,
     );
+    return;
   }
+  scheduleUpdate();
 }
 
 export function stringValue(value) {

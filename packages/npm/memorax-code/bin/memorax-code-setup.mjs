@@ -47,9 +47,14 @@ const skipClaudeAdapterInstall = truthyEnv(process.env.MEMORAX_CODE_SKIP_CLAUDE_
 const skipOpenCodeAdapterInstall = truthyEnv(process.env.MEMORAX_CODE_SKIP_OPENCODE_ADAPTER_INSTALL);
 const skipCodeBuddyAdapterInstall = truthyEnv(process.env.MEMORAX_CODE_SKIP_CODEBUDDY_ADAPTER_INSTALL);
 const updateMode = truthyEnv(process.env.MEMORAX_CODE_SETUP_UPDATE);
+const automaticUpdateMode = truthyEnv(process.env.MEMORAX_CODE_SETUP_AUTOMATIC_UPDATE);
 const setupMode = setupModeFromEnvironment(process.env.MEMORAX_CODE_SETUP_MODE);
 if (!setupMode) {
   logRed("Setup mode is invalid.");
+  process.exit(1);
+}
+if (automaticUpdateMode && !updateMode) {
+  logRed("Automatic update setup requires update mode.");
   process.exit(1);
 }
 
@@ -77,13 +82,17 @@ try {
 }
 const dshSelected = dshProfilesVerified
   && dshProfiles.length > 0
-  && persistedDshSelection !== false;
-if (!canPromptOnStderr()) {
+  && (automaticUpdateMode ? persistedDshSelection === true : persistedDshSelection !== false);
+if (automaticUpdateMode && !existingSetup) {
+  logRed("Automatic update setup requires an existing [clients] selection.");
+  process.exit(1);
+}
+if (!automaticUpdateMode && !canPromptOnStderr()) {
   logRed("Setup requires an interactive terminal.");
   log("Run `memorax-code setup` from a terminal, or use `memorax-code status` to inspect an existing setup.");
   process.exit(1);
 }
-const scriptedAnswers = process.stdin.isTTY !== true
+const scriptedAnswers = !automaticUpdateMode && process.stdin.isTTY !== true
   ? parseScriptedAnswers(readFileSync(0, "utf8"))
   : undefined;
 if (seedMissingMemoraxCodeConfig() === "failed") {
@@ -131,9 +140,11 @@ const detectedClients = requestedClients.filter((client) => {
   if (client === "opencode") return !skipOpenCodeAdapterInstall && opencodePreflight.ok;
   return !skipCodeBuddyAdapterInstall && codebuddyPreflight.ok;
 });
-const selectedClients = existingSetup
-  ? await chooseUpdateClients(previousClients, detectedClients, scriptedAnswers)
-  : detectedClients;
+const selectedClients = automaticUpdateMode
+  ? previousClients
+  : existingSetup
+    ? await chooseUpdateClients(previousClients, detectedClients, scriptedAnswers)
+    : detectedClients;
 const installClients = detectedClients.filter((client) => selectedClients.includes(client));
 if (existingSetup) {
   log(clientSelectionMessage(selectedClients, { dshSelected }));
@@ -162,7 +173,9 @@ if (writeClientSelectionConfig(selectedClients) === "failed") {
   process.exit(1);
 }
 const clientMode = clientModeFor(installClients, {
-  includeDsh: dshProfilesVerified && persistedDshSelection !== false,
+  includeDsh: dshProfilesVerified && (automaticUpdateMode
+    ? persistedDshSelection === true
+    : persistedDshSelection !== false),
 });
 let memoraxConfigResult = "skipped";
 if (!updateMode) {
@@ -216,9 +229,19 @@ if (codexClientEnabled && result.status !== 0) {
 
 if (codexClientEnabled && result.status === 0) {
   if (existingSetup && (codexClientNewlyEnabled || codexPluginRequiresActivation)) {
-    activateCodexPluginHooks();
+    const activationResult = activateCodexPluginHooks();
+    if (automaticUpdateMode && activationResult !== "activated") {
+      logRed("Automatic update stopped because the current MemoraX Code Codex Hooks could not be activated and trusted.");
+      printPostinstallSummary("not-verified");
+      process.exit(1);
+    }
   } else if (existingSetup) {
-    await maybeTrustUpdatedCodexPluginHooks(scriptedAnswers, codexHooksBeforeUpdate);
+    const trustResult = maybeTrustUpdatedCodexPluginHooks(codexHooksBeforeUpdate);
+    if (automaticUpdateMode && trustResult !== "trusted" && trustResult !== "unchanged") {
+      logRed("Automatic update stopped because the current MemoraX Code Codex Hooks could not be verified and trusted.");
+      printPostinstallSummary("not-verified");
+      process.exit(1);
+    }
   } else {
     activateCodexPluginHooks();
   }
@@ -576,7 +599,7 @@ function inspectCodexPluginHooksForUpdate() {
   return report?.hooks;
 }
 
-async function maybeTrustUpdatedCodexPluginHooks(scriptedAnswers, previousHooks) {
+function maybeTrustUpdatedCodexPluginHooks(previousHooks) {
   if (!previousHooks) {
     warnUpdatedHookTrustSkipped("Existing Codex hooks could not be inspected before the plugin cache refresh.");
     return "skipped";
@@ -598,21 +621,6 @@ async function maybeTrustUpdatedCodexPluginHooks(scriptedAnswers, previousHooks)
   if (report.hooks.length === 0) return "unchanged";
 
   printUpdatedCodexHooks(report.hooks, previousHooks);
-  if (!canPromptForUpdate()) {
-    warnUpdatedHookTrustSkipped("This update is running without an interactive terminal, so the new or changed Hooks remain untrusted.");
-    return "skipped";
-  }
-  const answer = await updatedHookTrustAnswer(scriptedAnswers);
-  if (answer === undefined) {
-    warnUpdatedHookTrustSkipped("No Hook authorization response was received, so the new or changed Hooks remain untrusted.");
-    return "skipped";
-  }
-  const normalizedAnswer = answer.trim();
-  if (normalizedAnswer && !/^y(?:es)?$/i.test(normalizedAnswer)) {
-    warnUpdatedHookTrustSkipped("Hook authorization was declined, so the new or changed Hooks remain untrusted.");
-    return "skipped";
-  }
-
   const trustEnv = hookTrustCommandEnv(HOOK_TRUST_SELECTION_ENV, report.hooks);
   const trusted = runNodeMemoraxCodeCommand(codexPluginHookArgs("trust-hooks", ["--yes"]), {
     env: trustEnv,
@@ -622,7 +630,7 @@ async function maybeTrustUpdatedCodexPluginHooks(scriptedAnswers, previousHooks)
     logGreen(`Trusted ${report.hooks.length} new or changed MemoraX Code Codex Hook${report.hooks.length === 1 ? "" : "s"}.`);
     return "trusted";
   }
-  warnUpdatedHookTrustSkipped("The reviewed Hooks changed again or could not be written to Codex config.");
+  warnUpdatedHookTrustSkipped("The verified Hooks changed again or could not be written to Codex config.");
   return "failed";
 }
 
@@ -683,26 +691,13 @@ function hookTrustCommandEnv(name, hooks) {
 
 function printUpdatedCodexHooks(hooks, previousHooks) {
   const previousByKey = new Map(previousHooks.map((hook) => [hook.key, hook.currentHash]));
-  log("This MemoraX Code update includes new or changed Codex Hooks that require authorization:");
+  log("This MemoraX Code update includes new or changed Codex Hooks that will be trusted automatically after verification:");
   for (const hook of hooks) {
     const change = previousByKey.has(hook.key) ? "changed" : "new";
     const label = hook.statusMessage ? ` (${hook.statusMessage})` : "";
     log(`- ${change}: ${hook.key}${label}`);
     if (hook.eventName) log(`  event: ${hook.eventName}`);
     if (hook.command) log(`  command: ${hook.command}`);
-  }
-}
-
-async function updatedHookTrustAnswer(scriptedAnswers) {
-  if (scriptedAnswers) {
-    log("Trust these new or changed Codex Hooks? [Y/n]");
-    return scriptedAnswers.shift();
-  }
-  const rl = createInterface({ input: process.stdin, output: process.stderr });
-  try {
-    return await rl.question(`${PREFIX} Trust these new or changed Codex Hooks? [Y/n] `);
-  } finally {
-    rl.close();
   }
 }
 
@@ -726,10 +721,6 @@ function activateCodexPluginHooks() {
   }
   logRed("Codex hook activation failed; run `memorax-code codex-plugin activate --yes` after installation.");
   return "failed";
-}
-
-function canPromptForUpdate() {
-  return canPromptOnStderr();
 }
 
 function canPromptOnStderr() {
