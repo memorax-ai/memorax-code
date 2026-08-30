@@ -135,7 +135,7 @@ for relative in [
     "lib/memorax-code-adapter-common/src/memorax-defaults.mjs",
     "lib/memorax-code-adapter-common/src/runtime-record.mjs",
     "lib/memorax-code-adapter-common/src/setup-completion.mjs",
-    "lib/memorax-code-adapter-common/src/hooks/automatic-update-scheduler.mjs",
+    "lib/memorax-code-adapter-common/src/automatic-update-state.mjs",
     "lib/memorax-code-adapter-common/src/hooks/ensure-backend-runner.mjs",
     "lib/memorax-code-adapter-common/src/clients/claude-command.mjs",
     "lib/memorax-code-adapter-common/src/clients/codex-command.mjs",
@@ -180,7 +180,7 @@ for relative in [
     "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/backend-connection.mjs",
     "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/runtime-record.mjs",
     "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/setup-completion.mjs",
-    "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/hooks/automatic-update-scheduler.mjs",
+    "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/automatic-update-state.mjs",
     "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/hooks/ensure-backend-runner.mjs",
     "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/hooks/memory-skill-reminder-policy.mjs",
     "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/repo-memory/repo-memory-auto-build.mjs",
@@ -411,7 +411,7 @@ for relative in \
   lib/memorax-code-adapter-common/src/memorax-defaults.mjs \
   lib/memorax-code-adapter-common/src/runtime-record.mjs \
   lib/memorax-code-adapter-common/src/setup-completion.mjs \
-  lib/memorax-code-adapter-common/src/hooks/automatic-update-scheduler.mjs \
+  lib/memorax-code-adapter-common/src/automatic-update-state.mjs \
   lib/memorax-code-adapter-common/src/hooks/ensure-backend-runner.mjs \
   lib/memorax-code-adapter-common/src/clients/claude-command.mjs \
   lib/memorax-code-adapter-common/src/clients/codex-command.mjs \
@@ -443,7 +443,7 @@ for relative in \
   lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/backend-connection.mjs \
   lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/runtime-record.mjs \
   lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/setup-completion.mjs \
-  lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/hooks/automatic-update-scheduler.mjs \
+  lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/automatic-update-state.mjs \
   lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/hooks/ensure-backend-runner.mjs \
   lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/hooks/memory-skill-reminder-policy.mjs \
   lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/repo-memory/repo-memory-auto-build.mjs \

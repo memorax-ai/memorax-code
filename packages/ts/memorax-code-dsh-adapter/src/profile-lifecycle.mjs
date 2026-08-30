@@ -101,7 +101,6 @@ const PROFILE_BUNDLE_FILES = Object.freeze([
   "memorax-code-adapter-common/src/backend-connection.mjs",
   "memorax-code-adapter-common/src/config-utils.mjs",
   "memorax-code-adapter-common/src/setup-completion.mjs",
-  "memorax-code-adapter-common/src/hooks/automatic-update-scheduler.mjs",
   "memorax-code-adapter-common/src/hooks/ensure-backend-runner.mjs",
   "memorax-code-adapter-common/src/hooks/memory-skill-reminder-policy.mjs",
   "memorax-code-adapter-common/src/repo-memory/repo-memory-auto-build.mjs",

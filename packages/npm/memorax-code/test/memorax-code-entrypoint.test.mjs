@@ -350,7 +350,7 @@ async function createPackageFixture() {
   );
   for (const relativePath of [
     "config-utils.mjs",
-    "hooks/automatic-update-scheduler.mjs",
+    "automatic-update-state.mjs",
     "runtime-record.mjs",
     "setup-completion.mjs",
   ]) {

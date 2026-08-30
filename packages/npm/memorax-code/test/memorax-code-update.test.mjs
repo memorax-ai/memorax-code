@@ -21,7 +21,7 @@ async function createPackageFixture(version) {
   await cp(join(packageRoot, "lib", "npm-invocation.mjs"), join(root, "lib", "npm-invocation.mjs"));
   for (const name of [
     "config-utils.mjs",
-    "hooks/automatic-update-scheduler.mjs",
+    "automatic-update-state.mjs",
     "runtime-record.mjs",
     "setup-completion.mjs",
   ]) {

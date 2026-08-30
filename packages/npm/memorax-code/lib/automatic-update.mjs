@@ -1,6 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { withJsonFileLockAsync } from "./memorax-code-adapter-common/src/config-utils.mjs";
 import {
@@ -10,12 +9,17 @@ import {
   automaticUpdateStatePath,
   readAutomaticUpdateState,
   writeAutomaticUpdateState,
-} from "./memorax-code-adapter-common/src/hooks/automatic-update-scheduler.mjs";
+} from "./memorax-code-adapter-common/src/automatic-update-state.mjs";
 import {
   readSetupCompletionRecord,
   withSetupCompletionLock,
 } from "./memorax-code-adapter-common/src/setup-completion.mjs";
-import { resolveNpmInvocation } from "./npm-invocation.mjs";
+import {
+  npmCommandCwd,
+  resolveNpmInvocation,
+  runNpmCommand,
+  waitForChildProcess,
+} from "./npm-invocation.mjs";
 
 export {
   AUTOMATIC_UPDATE_CHECK_INTERVAL_MS,
@@ -55,16 +59,16 @@ export async function runAutomaticUpdate(options) {
       packageName,
     }),
     installVersion: async (targetVersion) => (
-      await runNpmCommand({
-        args: ["install", "-g", `${packageName}@${targetVersion}`],
+      await runNpmCommand(["install", "-g", `${packageName}@${targetVersion}`], {
         env: {
           ...env,
           MEMORAX_CODE_AUTOMATIC_UPDATE_PROCESS: "1",
           MEMORAX_CODE_HOME: memoraxCodeHome,
         },
         stdio: "ignore",
+        windowsHide: true,
       })
-    ) === 0,
+    ).exitCode === 0,
     reconcile: async (targetVersion) => await runAutomaticSetup({
       env,
       memoraxCodeHome,
@@ -86,6 +90,15 @@ export async function runAutomaticUpdateCore(options) {
 
   return await withJsonFileLockAsync(path, async () => {
     const nowMs = currentTime(options);
+    const finish = (result, effectiveVersion, retry) => {
+      const state = writeAutomaticUpdateState({
+        memoraxCodeHome,
+        nowMs,
+        installedVersion: effectiveVersion,
+        retry,
+      });
+      return { ...result, state };
+    };
     const state = readAutomaticUpdateState(memoraxCodeHome);
     if (state.status === "valid"
       && state.record.installedVersion === installedVersion
@@ -100,16 +113,7 @@ export async function runAutomaticUpdateCore(options) {
         "targetVersion",
       );
     } catch {
-      const record = writeState({
-        memoraxCodeHome,
-        checkedAtMs: nowMs,
-        installedVersion,
-        targetVersion: null,
-        channel,
-        outcome: "check-failed",
-        retry: true,
-      });
-      return { ok: false, disposition: "failed", reason: "check_failed", state: record };
+      return finish({ ok: false, disposition: "failed", reason: "check_failed" }, installedVersion, true);
     }
 
     let effectiveVersion = installedVersion;
@@ -122,16 +126,7 @@ export async function runAutomaticUpdateCore(options) {
         installed = false;
       }
       if (!installed) {
-        const record = writeState({
-          memoraxCodeHome,
-          checkedAtMs: nowMs,
-          installedVersion,
-          targetVersion,
-          channel,
-          outcome: "update-failed",
-          retry: true,
-        });
-        return { ok: false, disposition: "failed", reason: "update_failed", state: record };
+        return finish({ ok: false, disposition: "failed", reason: "update_failed" }, installedVersion, true);
       }
       effectiveVersion = targetVersion;
       updated = true;
@@ -145,16 +140,7 @@ export async function runAutomaticUpdateCore(options) {
         reconciled = false;
       }
       if (!reconciled) {
-        const record = writeState({
-          memoraxCodeHome,
-          checkedAtMs: nowMs,
-          installedVersion: effectiveVersion,
-          targetVersion,
-          channel,
-          outcome: "reconcile-failed",
-          retry: true,
-        });
-        return { ok: false, disposition: "failed", reason: "reconcile_failed", state: record };
+        return finish({ ok: false, disposition: "failed", reason: "reconcile_failed" }, effectiveVersion, true);
       }
     }
 
@@ -163,16 +149,7 @@ export async function runAutomaticUpdateCore(options) {
       : completedByVersion === effectiveVersion
         ? "up-to-date"
         : "reconciled";
-    const record = writeState({
-      memoraxCodeHome,
-      checkedAtMs: nowMs,
-      installedVersion: effectiveVersion,
-      targetVersion,
-      channel,
-      outcome,
-      retry: false,
-    });
-    return { ok: true, disposition: outcome, state: record };
+    return finish({ ok: true, disposition: outcome }, effectiveVersion, false);
   });
 }
 
@@ -205,26 +182,6 @@ function resolveTargetVersion({ channel, env, packageName }) {
   return version;
 }
 
-async function runNpmCommand({ args, env, stdio }) {
-  let invocation;
-  try {
-    invocation = resolveNpmInvocation(args, { env });
-  } catch {
-    return 1;
-  }
-  const cwd = npmCommandCwd(env);
-  const child = spawn(invocation.command, invocation.args, {
-    cwd,
-    env: { ...env, PWD: cwd },
-    stdio,
-    windowsHide: true,
-  });
-  return await new Promise((resolveExitCode) => {
-    child.on("error", () => resolveExitCode(1));
-    child.on("close", (code, signal) => resolveExitCode(signal ? 1 : (code ?? 1)));
-  });
-}
-
 async function runAutomaticSetup({ env, memoraxCodeHome, packageRoot, targetVersion }) {
   return await withSetupCompletionLock(memoraxCodeHome, async (completion) => {
     if (completion.status !== "valid") return false;
@@ -243,41 +200,10 @@ async function runAutomaticSetup({ env, memoraxCodeHome, packageRoot, targetVers
       stdio: "ignore",
       windowsHide: true,
     });
-    const exitCode = await new Promise((resolveExitCode) => {
-      child.on("error", () => resolveExitCode(1));
-      child.on("close", (code, signal) => resolveExitCode(signal ? 1 : (code ?? 1)));
-    });
-    if (exitCode !== 0) return false;
+    if ((await waitForChildProcess(child)).exitCode !== 0) return false;
     const reconciled = readSetupCompletionRecord(memoraxCodeHome);
     return reconciled.status === "valid"
       && reconciled.record.completedByVersion === targetVersion;
-  });
-}
-
-function npmCommandCwd(env) {
-  for (const candidate of [env.HOME, homedir(), "/"]) {
-    if (candidate && existsSync(candidate)) return candidate;
-  }
-  return "/";
-}
-
-function writeState({
-  memoraxCodeHome,
-  checkedAtMs,
-  installedVersion,
-  targetVersion,
-  channel,
-  outcome,
-  retry,
-}) {
-  return writeAutomaticUpdateState({
-    memoraxCodeHome,
-    checkedAtMs,
-    installedVersion,
-    targetVersion,
-    channel,
-    outcome,
-    retry,
   });
 }
 

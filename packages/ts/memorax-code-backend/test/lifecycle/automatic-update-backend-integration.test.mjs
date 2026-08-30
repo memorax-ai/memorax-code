@@ -32,17 +32,13 @@ test("running managed Backend dispatches an overdue update without a client Sess
       'import { mkdirSync, writeFileSync } from "node:fs";',
       'import { dirname, join } from "node:path";',
       'const home = process.env.MEMORAX_CODE_HOME;',
-      'const checkedAt = new Date();',
+      'const now = Date.now();',
       'const statePath = join(home, "runtime", "install", "automatic-update.json");',
       'mkdirSync(dirname(statePath), { recursive: true });',
       'writeFileSync(statePath, `${JSON.stringify({',
       '  version: 1,',
-      '  checkedAt: checkedAt.toISOString(),',
-      '  nextCheckAt: new Date(checkedAt.getTime() + 8 * 60 * 60 * 1000).toISOString(),',
       '  installedVersion: "0.1.9",',
-      '  targetVersion: "0.1.9",',
-      '  channel: "latest",',
-      '  outcome: "up-to-date",',
+      '  nextCheckAt: new Date(now + 8 * 60 * 60 * 1000).toISOString(),',
       '})}\\n`);',
       'writeFileSync(process.env.MEMORAX_CODE_TEST_UPDATE_RECORD, `${JSON.stringify({',
       '  args: process.argv.slice(2),',
@@ -109,12 +105,8 @@ async function writeOverdueUpdateState(memoraxCodeHome) {
   const now = Date.now();
   await writeFile(path, `${JSON.stringify({
     version: 1,
-    checkedAt: new Date(now - 2 * 60 * 60 * 1_000).toISOString(),
-    nextCheckAt: new Date(now - 60 * 60 * 1_000).toISOString(),
     installedVersion: "0.1.9",
-    targetVersion: "0.1.9",
-    channel: "latest",
-    outcome: "up-to-date",
+    nextCheckAt: new Date(now - 60 * 60 * 1_000).toISOString(),
   })}\n`);
 }
 

@@ -108,7 +108,7 @@ Backend is running. Confirm that `MEMORAX_CODE_AUTO_UPDATE` was not set to
 triggers. A successful check is reused for eight hours; failures retry after 15
 minutes.
 
-The latest local outcome is recorded at:
+The installed version and next check deadline are recorded at:
 
 ```text
 $MEMORAX_CODE_HOME/runtime/install/automatic-update.json
@@ -121,7 +121,7 @@ check `memorax-code status`.
 During Codex reconciliation, verified new or changed MemoraX Code Hooks are
 trusted silently. A changed marketplace identity, malformed Hook response, or
 Hook that changes again during the config write is not trusted; automatic
-reconciliation records a failure and retries later. After confirming the
+reconciliation remains incomplete and retries later. After confirming the
 installed plugin source, use `memorax-code codex-plugin trust-hooks` for an
 explicit diagnostic review, then rerun `memorax-code setup` if needed. Direct
 npm installation replaces package files but does not perform this product

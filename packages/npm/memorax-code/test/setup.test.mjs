@@ -167,7 +167,7 @@ async function runSetup({ existingCache = false, explicitCache = false, hookRunt
     "hooks/capture-cwd-hook.mjs",
     "hooks/client-hook-launcher.mjs",
     "clients/codex-plugin-artifact.mjs",
-    "hooks/automatic-update-scheduler.mjs",
+    "automatic-update-state.mjs",
     "config-utils.mjs",
     "hooks/ensure-backend-runner.mjs",
     "memorax-code-config-file.mjs",

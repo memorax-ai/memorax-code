@@ -1,4 +1,6 @@
+import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
+import { homedir } from "node:os";
 import path from "node:path";
 
 export function resolveNpmInvocation(npmArgs, options = {}) {
@@ -28,4 +30,34 @@ export function resolveNpmInvocation(npmArgs, options = {}) {
     "npm CLI JavaScript entrypoint was not found; set MEMORAX_CODE_NPM_EXEC_PATH, "
     + "npm_execpath, or NPM_CLI_JS before running memorax-code update",
   );
+}
+
+export function npmCommandCwd(env = process.env) {
+  for (const candidate of [env.HOME, homedir(), "/"]) {
+    if (candidate && existsSync(candidate)) return candidate;
+  }
+  return "/";
+}
+
+export async function runNpmCommand(npmArgs, options = {}) {
+  const env = options.env ?? process.env;
+  const invocation = resolveNpmInvocation(npmArgs, options);
+  const cwd = options.cwd ?? npmCommandCwd(env);
+  const child = (options.spawnProcess ?? spawn)(invocation.command, invocation.args, {
+    cwd,
+    env: { ...env, PWD: cwd },
+    stdio: options.stdio ?? "inherit",
+    windowsHide: options.windowsHide ?? false,
+  });
+  return await waitForChildProcess(child);
+}
+
+export async function waitForChildProcess(child) {
+  return await new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", (code, signal) => resolve({
+      exitCode: signal ? 1 : (code ?? 1),
+      signal,
+    }));
+  });
 }

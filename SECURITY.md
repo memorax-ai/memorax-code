@@ -59,7 +59,7 @@ Please allow time for triage and remediation before public disclosure.
   versioned private authority. Invalid or unsupported setup and transition
   records fail closed instead of silently treating a partial setup or
   interrupted package replacement as complete. The automatic-update record
-  controls only cadence and the last local outcome.
+  controls only cadence across Backend process replacement.
 - The managed OpenCode plugin may recover an unavailable Backend only through
   its package-recorded Node runtime and absolute `memorax-code` command, and
   the currently resolved loopback HTTP authority. It preserves the existing

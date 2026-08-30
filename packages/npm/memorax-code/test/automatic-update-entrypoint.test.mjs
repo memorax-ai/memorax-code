@@ -10,57 +10,49 @@ const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 
 test("automatic update installs an exact latest version and runs non-interactive reconciliation", {
   skip: process.platform === "win32",
-}, async () => {
-  const fixture = await createFixture();
-  try {
-    await writeSetupCompletion(fixture.memoraxCodeHome, "0.1.9");
-    const result = runAutomaticUpdate(fixture);
+}, async (t) => {
+  const fixture = await createFixture(t);
+  await writeSetupCompletion(fixture.memoraxCodeHome, "0.1.9");
+  const result = runAutomaticUpdate(fixture);
 
-    assert.equal(result.status, 0, result.stderr);
-    assert.deepEqual(await readJsonLines(fixture.npmLogPath), [
-      ["view", "@memorax/memorax-code@latest", "version", "--json"],
-      ["install", "-g", "@memorax/memorax-code@0.1.10"],
-    ]);
-    assert.deepEqual(await readJsonLines(fixture.setupLogPath), [{
-      automaticUpdateMode: "1",
-      home: fixture.memoraxCodeHome,
-      updateMode: "1",
-    }]);
-    const state = JSON.parse(await readFile(
-      join(fixture.memoraxCodeHome, "runtime", "install", "automatic-update.json"),
-      "utf8",
-    ));
-    assert.equal(state.installedVersion, "0.1.10");
-    assert.equal(state.outcome, "updated");
-  } finally {
-    await fixture.cleanup();
-  }
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(await readJsonLines(fixture.npmLogPath), [
+    ["view", "@memorax/memorax-code@latest", "version", "--json"],
+    ["install", "-g", "@memorax/memorax-code@0.1.10"],
+  ]);
+  assert.deepEqual(await readJsonLines(fixture.setupLogPath), [{
+    automaticUpdateMode: "1",
+    home: fixture.memoraxCodeHome,
+    updateMode: "1",
+  }]);
+  const state = JSON.parse(await readFile(
+    join(fixture.memoraxCodeHome, "runtime", "install", "automatic-update.json"),
+    "utf8",
+  ));
+  assert.equal(state.installedVersion, "0.1.10");
+  assert.deepEqual(Object.keys(state).sort(), ["installedVersion", "nextCheckAt", "version"]);
 });
 
 test("automatic update respects the explicit opt-out", {
   skip: process.platform === "win32",
-}, async () => {
-  const fixture = await createFixture();
-  try {
-    await writeSetupCompletion(fixture.memoraxCodeHome, "0.1.9");
-    const result = runAutomaticUpdate(fixture, { MEMORAX_CODE_AUTO_UPDATE: "false" });
+}, async (t) => {
+  const fixture = await createFixture(t);
+  await writeSetupCompletion(fixture.memoraxCodeHome, "0.1.9");
+  const result = runAutomaticUpdate(fixture, { MEMORAX_CODE_AUTO_UPDATE: "false" });
 
-    assert.equal(result.status, 0, result.stderr);
-    assert.deepEqual(await readJsonLines(fixture.npmLogPath), []);
-    assert.deepEqual(await readJsonLines(fixture.setupLogPath), []);
-  } finally {
-    await fixture.cleanup();
-  }
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(await readJsonLines(fixture.npmLogPath), []);
+  assert.deepEqual(await readJsonLines(fixture.setupLogPath), []);
 });
 
-async function createFixture() {
+async function createFixture(t) {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-automatic-entrypoint-"));
   const memoraxCodeHome = join(root, "memorax-code-home");
   const home = join(root, "home");
   const fakeBin = join(root, "fake-bin");
   const npmLogPath = join(root, "npm.jsonl");
   const setupLogPath = join(root, "setup.jsonl");
-  for (const relativePath of [
+  await Promise.all([
     "bin/memorax-code.mjs",
     "lib/automatic-update.mjs",
     "lib/client-hook-runtime.mjs",
@@ -72,24 +64,23 @@ async function createFixture() {
     "lib/run-entrypoint.mjs",
     "lib/vscode-extension-command.mjs",
     "lib/windows-cli-invocation.mjs",
-  ]) {
+  ].map(async (relativePath) => {
     const target = join(root, relativePath);
     await mkdir(dirname(target), { recursive: true });
     await cp(join(packageRoot, relativePath), target);
-  }
+  }));
   const commonRoot = join(packageRoot, "..", "..", "ts", "memorax-code-adapter-common", "src");
-  for (const relativePath of [
+  await Promise.all([
     "config-utils.mjs",
-    "hooks/automatic-update-scheduler.mjs",
+    "automatic-update-state.mjs",
     "runtime-record.mjs",
     "setup-completion.mjs",
-  ]) {
+  ].map(async (relativePath) => {
     const target = join(root, "lib", "memorax-code-adapter-common", "src", relativePath);
     await mkdir(dirname(target), { recursive: true });
     await cp(join(commonRoot, relativePath), target);
-  }
-  await mkdir(fakeBin, { recursive: true });
-  await mkdir(home, { recursive: true });
+  }));
+  await Promise.all([fakeBin, home].map((path) => mkdir(path, { recursive: true })));
   await writeFile(join(root, "package.json"), `${JSON.stringify({
     name: "@memorax/memorax-code",
     version: "0.1.9",
@@ -126,6 +117,7 @@ async function createFixture() {
   ].join("\n"));
   await chmod(npmModule, 0o755);
   await symlink(basename(npmModule), join(fakeBin, "npm"));
+  t.after(() => rm(root, { recursive: true, force: true }));
   return {
     root,
     memoraxCodeHome,
@@ -133,7 +125,6 @@ async function createFixture() {
     fakeBin,
     npmLogPath,
     setupLogPath,
-    cleanup: () => rm(root, { recursive: true, force: true }),
   };
 }
 

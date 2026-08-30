@@ -200,6 +200,18 @@ test("memorax-code lifecycle delegates client implementation details to adapter 
 
 test("managed Backend owns automatic-update wakeups instead of client Hooks", async () => {
   const backendCli = await readFile(join(backendSrc, "entrypoints", "backend-cli.ts"), "utf8");
+  const scheduler = await readFile(join(
+    backendSrc,
+    "lifecycle",
+    "automatic-update-scheduler.ts",
+  ), "utf8");
+  const stateRecord = await readFile(join(
+    backendRoot,
+    "..",
+    "memorax-code-adapter-common",
+    "src",
+    "automatic-update-state.mjs",
+  ), "utf8");
   const ensureBackendHook = await readFile(join(
     backendRoot,
     "..",
@@ -210,6 +222,8 @@ test("managed Backend owns automatic-update wakeups instead of client Hooks", as
   ), "utf8");
 
   assert.match(backendCli, /startBackendAutomaticUpdateScheduler/);
+  assert.match(scheduler, /spawnProcess/);
+  assert.doesNotMatch(stateRecord, /spawn|startAutomaticUpdateScheduler/);
   assert.doesNotMatch(ensureBackendHook, /AutomaticUpdate|automatic-update-scheduler/);
 });
 

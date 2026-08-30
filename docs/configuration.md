@@ -135,7 +135,8 @@ identity or unverifiable Hook set prevents reconciliation from completing.
 The standalone `memorax-code codex-plugin trust-hooks` command still performs
 explicit review.
 
-Check cadence and the last outcome are stored in another private record:
+The installed version and next check deadline are stored in another private
+record:
 
 ```text
 $MEMORAX_CODE_HOME/runtime/install/automatic-update.json
