@@ -235,10 +235,11 @@ For a global npm installation:
 memorax-code update
 ```
 
-A completed setup also schedules a non-blocking update check when a supported
-client starts or opens a session. Stable installations follow npm `latest`;
-prerelease installations follow `preview`. A successful check is reused for
-one hour, while a failed check or reconciliation is retried after 15 minutes.
+A completed setup enables the managed Backend to schedule non-blocking update
+checks for as long as it remains running; the cadence does not depend on a new
+client session. Stable installations follow npm `latest`; prerelease
+installations follow `preview`. A successful check is reused for eight hours,
+while a failed check or reconciliation is retried after 15 minutes.
 When the published target changes, MemoraX Code installs that exact version and
 reconciles only the clients already enabled in `[clients]`; it never enables a
 newly detected client in the background.
@@ -249,11 +250,12 @@ silently. An identity change or failed Hook check fails closed instead of
 granting broader trust. The standalone `memorax-code codex-plugin trust-hooks`
 diagnostic command keeps its explicit review behavior.
 
-Set `MEMORAX_CODE_AUTO_UPDATE=false` before starting a client to disable
-background checks. The manual command above remains available and follows the
-installed release channel while preserving configuration. Restart or refresh
-a client when a release changes integration assets that the running client has
-already loaded.
+Set `MEMORAX_CODE_AUTO_UPDATE=false` before starting or restarting the managed
+Backend to disable background checks. Client startup Hooks only ensure that the
+Backend is available; they do not own the update cadence. The manual command
+above remains available and follows the installed release channel while
+preserving configuration. Restart or refresh a client when a release changes
+integration assets that the running client has already loaded.
 
 On Windows, the managed WorkBuddy plugin defaults to `%USERPROFILE%\.codebuddy`.
 Its status remains `hook-runtime=unverified` until WorkBuddy executes the installed Hook at least once.

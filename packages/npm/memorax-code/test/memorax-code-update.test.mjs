@@ -19,8 +19,15 @@ async function createPackageFixture(version) {
   await cp(join(packageRoot, "lib", "client-hook-runtime.mjs"), join(root, "lib", "client-hook-runtime.mjs"));
   await cp(join(packageRoot, "lib", "node-version.mjs"), join(root, "lib", "node-version.mjs"));
   await cp(join(packageRoot, "lib", "npm-invocation.mjs"), join(root, "lib", "npm-invocation.mjs"));
-  for (const name of ["config-utils.mjs", "runtime-record.mjs", "setup-completion.mjs"]) {
-    await cp(join(commonRoot, name), join(root, "lib", "memorax-code-adapter-common", "src", name));
+  for (const name of [
+    "config-utils.mjs",
+    "hooks/automatic-update-scheduler.mjs",
+    "runtime-record.mjs",
+    "setup-completion.mjs",
+  ]) {
+    const target = join(root, "lib", "memorax-code-adapter-common", "src", name);
+    await mkdir(dirname(target), { recursive: true });
+    await cp(join(commonRoot, name), target);
   }
   await cp(join(packageRoot, "lib", "run-entrypoint.mjs"), join(root, "lib", "run-entrypoint.mjs"));
   await cp(join(packageRoot, "lib", "resolve-claude-command.mjs"), join(root, "lib", "resolve-claude-command.mjs"));

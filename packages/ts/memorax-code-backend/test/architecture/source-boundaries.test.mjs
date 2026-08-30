@@ -198,6 +198,21 @@ test("memorax-code lifecycle delegates client implementation details to adapter 
   assert.doesNotMatch(source, /memorax-code-(?:codex|claude)-adapter\/src/);
 });
 
+test("managed Backend owns automatic-update wakeups instead of client Hooks", async () => {
+  const backendCli = await readFile(join(backendSrc, "entrypoints", "backend-cli.ts"), "utf8");
+  const ensureBackendHook = await readFile(join(
+    backendRoot,
+    "..",
+    "memorax-code-adapter-common",
+    "src",
+    "hooks",
+    "ensure-backend-runner.mjs",
+  ), "utf8");
+
+  assert.match(backendCli, /startBackendAutomaticUpdateScheduler/);
+  assert.doesNotMatch(ensureBackendHook, /AutomaticUpdate|automatic-update-scheduler/);
+});
+
 test("backend source dependency graph remains acyclic", async () => {
   const modules = await sourceModules();
   const moduleSet = new Set(modules);

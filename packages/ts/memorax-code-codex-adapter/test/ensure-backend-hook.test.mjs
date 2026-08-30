@@ -339,10 +339,9 @@ test("ensure-backend resolves memorax-code command from plugin metadata", async 
   assert.equal((await readArgs(argsPath)).length, 1);
 });
 
-test("durable ensure-backend runtime keeps the plugin metadata command for automatic updates", async () => {
-  const f = await fixture("memorax-code-durable-update-command-");
-  const backend = await healthyBackend();
-  const argsPath = join(f.root, "automatic-update-args.jsonl");
+test("durable ensure-backend runtime keeps the plugin metadata command for Backend recovery", async () => {
+  const f = await fixture("memorax-code-durable-recovery-command-");
+  const argsPath = join(f.root, "recovery-args.jsonl");
   const command = await fakeMemoraxCode(f.root);
   try {
     const stagedPlugin = await stageTestPlugin(f.root, command);
@@ -355,16 +354,13 @@ test("durable ensure-backend runtime keeps the plugin metadata command for autom
       memoraxCodeHome: f.memoraxCodeHome,
       generation,
     });
-    await writeSetupCompletion(f.memoraxCodeHome);
-
     const result = await runHook({
       path: join(stagedPlugin, "hooks", "runtime-hook.mjs"),
       env: {
         CODEX_HOME: f.codexHome,
         MEMORAX_CODE_HOME: f.memoraxCodeHome,
-        MEMORAX_CODE_BACKEND_URL: backend.url,
-        MEMORAX_CODE_AUTO_UPDATE: "1",
-        MEMORAX_CODE_AUTOMATIC_UPDATE_PROCESS: "",
+        MEMORAX_CODE_BACKEND_URL: "http://127.0.0.1:9",
+        MEMORAX_CODE_CODEX_ENSURE_TIMEOUT_MS: "50",
         MEMORAX_CODE_CODEX_LIFECYCLE_COMMAND: "",
         MEMORAX_CODE_COMMAND: "",
         MEMORAX_CODE_TEST_ARGS_PATH: argsPath,
@@ -374,13 +370,14 @@ test("durable ensure-backend runtime keeps the plugin metadata command for autom
     });
 
     assert.equal(result.code, 0, result.stderr);
-    assert.deepEqual(await waitForArgs(argsPath), [[
-      "update",
-      "--automatic",
+    assert.deepEqual(await readArgs(argsPath), [[
+      "start",
       "--home", f.memoraxCodeHome,
+      "--codex-home", f.codexHome,
+      "--host", "127.0.0.1",
+      "--port", "9",
     ]]);
   } finally {
-    await backend.close();
     await rm(f.root, { recursive: true, force: true });
   }
 });
@@ -456,24 +453,4 @@ async function stageTestRuntimePackage(root) {
     }
   }
   return packageRoot;
-}
-
-async function writeSetupCompletion(memoraxCodeHome) {
-  const path = join(memoraxCodeHome, "runtime", "setup", "setup-completion.json");
-  await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, `${JSON.stringify({
-    version: 1,
-    state: "complete",
-    completedAt: "2026-08-30T08:00:00.000Z",
-    completedByVersion: "0.1.9",
-  })}\n`);
-}
-
-async function waitForArgs(path) {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    const args = await readArgs(path);
-    if (args.length > 0) return args;
-    await delay(10);
-  }
-  throw new Error(`timed out waiting for ${path}`);
 }

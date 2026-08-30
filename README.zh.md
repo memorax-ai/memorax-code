@@ -198,19 +198,21 @@ MemoraX 云端不会接收模型服务商凭据或本地 Backend Token。
 memorax-code update
 ```
 
-完成过 setup 后，受支持客户端启动或新建会话时还会在后台调度一次非阻塞更新检查。稳定版跟随
-npm `latest`，预览版跟随 `preview`；成功检查结果复用一小时，检查或 reconciliation 失败后
-15 分钟重试。发现新版本时，MemoraX Code 会安装精确的目标版本，并且只 reconciliation
-`[clients]` 中原本已经启用的客户端，不会在后台顺便启用新检测到的客户端。
+完成过 setup 后，只要托管 Backend 持续运行，它就会自行调度非阻塞更新检查，不依赖客户端
+新建会话。稳定版跟随 npm `latest`，预览版跟随 `preview`；成功检查结果复用八小时，检查或
+reconciliation 失败后 15 分钟重试。发现新版本时，MemoraX Code 会安装精确的目标版本，
+并且只 reconciliation `[clients]` 中原本已经启用的客户端，不会在后台顺便启用新检测到的
+客户端。
 
 在 Codex 下，更新 reconciliation 会先校验当前 MemoraX Code marketplace 身份以及新增或变化
 Hook 的精确哈希，然后静默信任这些 Hook。身份变化或 Hook 校验失败时会失败关闭，不会扩大信任
 范围。独立诊断命令 `memorax-code codex-plugin trust-hooks` 仍保留显式 review 行为。
 
-如需关闭后台检查，请在启动客户端前设置 `MEMORAX_CODE_AUTO_UPDATE=false`。上面的手动更新
-命令仍然可用，会沿用当前发布通道并保留配置。如果新版本修改了运行中客户端已经加载的集成
-资产，请重启或刷新 Codex、Claude Code、CodeBuddy/WorkBuddy、DeepSeek Harness 或
-OpenCode。
+如需关闭后台检查，请在启动或重启托管 Backend 前设置
+`MEMORAX_CODE_AUTO_UPDATE=false`。客户端启动 Hook 只负责确保 Backend 可用，不负责更新
+节奏。上面的手动更新命令仍然可用，会沿用当前发布通道并保留配置。如果新版本修改了运行中
+客户端已经加载的集成资产，请重启或刷新 Codex、Claude Code、CodeBuddy/WorkBuddy、
+DeepSeek Harness 或 OpenCode。
 
 Windows 上，托管的 WorkBuddy 插件默认安装到 `%USERPROFILE%\.codebuddy`。在 WorkBuddy 至少成功
 执行一次已安装 Hook 前，状态会保持为 `hook-runtime=unverified`。

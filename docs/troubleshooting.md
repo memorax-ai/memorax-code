@@ -102,10 +102,11 @@ later updates do not require this workaround.
 ## Automatic update does not run or repeatedly retries
 
 Background checks start only after setup has written a valid
-`$MEMORAX_CODE_HOME/runtime/setup/setup-completion.json` record and an eligible
-client starts or opens a session. Confirm that
-`MEMORAX_CODE_AUTO_UPDATE` is not set to `false` in that client environment.
-A successful check is reused for one hour; failures retry after 15 minutes.
+`$MEMORAX_CODE_HOME/runtime/setup/setup-completion.json` record and the managed
+Backend is running. Confirm that `MEMORAX_CODE_AUTO_UPDATE` was not set to
+`false` when that Backend started. Client SessionStart events are not update
+triggers. A successful check is reused for eight hours; failures retry after 15
+minutes.
 
 The latest local outcome is recorded at:
 

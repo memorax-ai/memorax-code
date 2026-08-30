@@ -116,12 +116,15 @@ is incomplete or no interactive terminal is available, it points to
 product uninstall removes this marker while retaining `config.toml`; stop and
 partial client uninstall preserve it.
 
-After setup completion, an eligible client startup or SessionStart schedules a
-detached update check. Stable installations follow npm `latest`; prerelease
-installations follow `preview`. A successful result is reused for one hour,
+After setup completion, the managed Backend schedules detached update checks
+while it remains running. It reads the next deadline from the private update
+record, so an active Backend continues checking even when the user stays in one
+client session. Stable installations follow npm `latest`; prerelease
+installations follow `preview`. A successful result is reused for eight hours,
 while a failed check, install, or reconciliation retries after 15 minutes. Set
-`MEMORAX_CODE_AUTO_UPDATE=false` in the client environment to disable the
-scheduler.
+`MEMORAX_CODE_AUTO_UPDATE=false` before starting or restarting the managed
+Backend to disable the scheduler. Client startup Hooks only recover an
+unavailable Backend and do not schedule updates.
 
 The updater installs an exact published version and runs an internal
 non-interactive setup mode. That mode preserves `[clients]`, connection data,

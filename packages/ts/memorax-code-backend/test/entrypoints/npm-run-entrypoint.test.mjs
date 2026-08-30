@@ -39,6 +39,13 @@ async function copyNpmEntrypointFixture() {
     join(repoRoot, "packages", "npm", "memorax-code", "lib", "vscode-extension-command.mjs"),
     join(packageRoot, "lib", "vscode-extension-command.mjs"),
   );
+  await mkdir(join(packageRoot, "bin"), { recursive: true });
+  await writeFile(join(packageRoot, "bin", "memorax-code.mjs"), "#!/usr/bin/env node\n");
+  await writeFile(join(packageRoot, "package.json"), `${JSON.stringify({
+    name: "@memorax/memorax-code",
+    version: "0.1.9-test",
+    type: "module",
+  })}\n`);
   return packageRoot;
 }
 
@@ -48,10 +55,16 @@ test("npm wrapper imports backend entrypoints with argv[1] set to the target ent
   const target = join(packageRoot, "lib", "memorax-code-backend", "dist", "memorax-code.js");
   await writeFile(target, [
     "import { writeFileSync } from 'node:fs';",
-    "writeFileSync(process.env.MEMORAX_CODE_TEST_OBSERVED_ARGV, JSON.stringify({ argv1: process.argv[1] }));",
+    "writeFileSync(process.env.MEMORAX_CODE_TEST_OBSERVED_ARGV, JSON.stringify({",
+    "  argv1: process.argv[1],",
+    "  packageRoot: process.env.MEMORAX_CODE_NPM_PACKAGE_ROOT,",
+    "  packageVersion: process.env.MEMORAX_CODE_NPM_PACKAGE_VERSION,",
+    "}));",
   ].join("\n"));
 
   const originalArgv1 = process.argv[1];
+  const originalPackageRoot = process.env.MEMORAX_CODE_NPM_PACKAGE_ROOT;
+  const originalPackageVersion = process.env.MEMORAX_CODE_NPM_PACKAGE_VERSION;
   process.env.MEMORAX_CODE_TEST_OBSERVED_ARGV = observedPath;
   process.argv[1] = join(packageRoot, "bin", "memorax-code.mjs");
   try {
@@ -60,8 +73,14 @@ test("npm wrapper imports backend entrypoints with argv[1] set to the target ent
   } finally {
     process.argv[1] = originalArgv1;
     delete process.env.MEMORAX_CODE_TEST_OBSERVED_ARGV;
+    if (originalPackageRoot === undefined) delete process.env.MEMORAX_CODE_NPM_PACKAGE_ROOT;
+    else process.env.MEMORAX_CODE_NPM_PACKAGE_ROOT = originalPackageRoot;
+    if (originalPackageVersion === undefined) delete process.env.MEMORAX_CODE_NPM_PACKAGE_VERSION;
+    else process.env.MEMORAX_CODE_NPM_PACKAGE_VERSION = originalPackageVersion;
   }
 
   const observed = JSON.parse(await readFile(observedPath, "utf8"));
   assert.equal(observed.argv1, await realpath(target));
+  assert.equal(observed.packageRoot, await realpath(packageRoot));
+  assert.equal(observed.packageVersion, "0.1.9-test");
 });

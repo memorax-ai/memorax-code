@@ -192,11 +192,12 @@ running, package replacement briefly stops it, starts the new version with the
 retained client selection, and verifies status. A stopped installation remains
 stopped.
 
-After setup has completed, supported client startup schedules a detached update
-check. Stable packages follow npm `latest`; prerelease packages follow
-`preview`. Successful checks are throttled for one hour, and failures retry
-after 15 minutes. Set `MEMORAX_CODE_AUTO_UPDATE=false` in the client environment
-to disable this behavior.
+After setup has completed, the managed Backend schedules detached update checks
+while it remains running. The cadence is independent of client sessions.
+Stable packages follow npm `latest`; prerelease packages follow `preview`.
+Successful checks are throttled for eight hours, and failures retry after 15
+minutes. Set `MEMORAX_CODE_AUTO_UPDATE=false` before starting or restarting the
+managed Backend to disable this behavior.
 
 A changed target is installed by exact version. The updater then runs an
 internal non-interactive reconciliation that preserves the existing `[clients]`

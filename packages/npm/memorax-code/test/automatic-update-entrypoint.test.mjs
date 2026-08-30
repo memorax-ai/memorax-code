@@ -78,7 +78,12 @@ async function createFixture() {
     await cp(join(packageRoot, relativePath), target);
   }
   const commonRoot = join(packageRoot, "..", "..", "ts", "memorax-code-adapter-common", "src");
-  for (const relativePath of ["config-utils.mjs", "runtime-record.mjs", "setup-completion.mjs"]) {
+  for (const relativePath of [
+    "config-utils.mjs",
+    "hooks/automatic-update-scheduler.mjs",
+    "runtime-record.mjs",
+    "setup-completion.mjs",
+  ]) {
     const target = join(root, "lib", "memorax-code-adapter-common", "src", relativePath);
     await mkdir(dirname(target), { recursive: true });
     await cp(join(commonRoot, relativePath), target);

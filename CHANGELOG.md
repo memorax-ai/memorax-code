@@ -6,6 +6,12 @@ behavior.
 
 ## Unreleased
 
+### Changed
+
+- Moved automatic-update scheduling from client SessionStart events to the
+  managed Backend, so a continuously running installation keeps checking on
+  its persisted cadence without requiring a new coding-agent session.
+
 ## [0.1.9] - 2026-08-28
 
 ### Fixed

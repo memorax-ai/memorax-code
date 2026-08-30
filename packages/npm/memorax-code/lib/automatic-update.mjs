@@ -4,81 +4,26 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { withJsonFileLockAsync } from "./memorax-code-adapter-common/src/config-utils.mjs";
 import {
-  readJsonRuntimeRecord,
-  writePrivateJsonRecord,
-} from "./memorax-code-adapter-common/src/runtime-record.mjs";
+  AUTOMATIC_UPDATE_CHECK_INTERVAL_MS,
+  AUTOMATIC_UPDATE_RECORD_VERSION,
+  AUTOMATIC_UPDATE_RETRY_INTERVAL_MS,
+  automaticUpdateStatePath,
+  readAutomaticUpdateState,
+  writeAutomaticUpdateState,
+} from "./memorax-code-adapter-common/src/hooks/automatic-update-scheduler.mjs";
 import {
   readSetupCompletionRecord,
   withSetupCompletionLock,
 } from "./memorax-code-adapter-common/src/setup-completion.mjs";
 import { resolveNpmInvocation } from "./npm-invocation.mjs";
 
-export const AUTOMATIC_UPDATE_RECORD_VERSION = 1;
-export const AUTOMATIC_UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1_000;
-export const AUTOMATIC_UPDATE_RETRY_INTERVAL_MS = 15 * 60 * 1_000;
-
-const OUTCOMES = new Set([
-  "up-to-date",
-  "updated",
-  "reconciled",
-  "check-failed",
-  "update-failed",
-  "reconcile-failed",
-]);
-const RECORD_KEYS = new Set([
-  "version",
-  "checkedAt",
-  "nextCheckAt",
-  "installedVersion",
-  "targetVersion",
-  "channel",
-  "outcome",
-]);
-
-export function automaticUpdateStatePath(memoraxCodeHome = defaultMemoraxCodeHome()) {
-  return join(resolve(memoraxCodeHome), "runtime", "install", "automatic-update.json");
-}
-
-export function readAutomaticUpdateState(memoraxCodeHome = defaultMemoraxCodeHome()) {
-  const state = readJsonRuntimeRecord(automaticUpdateStatePath(memoraxCodeHome));
-  if (state.status !== "present") return state;
-  const value = state.value;
-  if (value.version !== AUTOMATIC_UPDATE_RECORD_VERSION) {
-    if (Number.isSafeInteger(value.version) && value.version > 0) {
-      return { status: "unsupported", version: value.version };
-    }
-    return { status: "invalid", reason: "invalid_version" };
-  }
-  if (Object.keys(value).length !== RECORD_KEYS.size
-    || Object.keys(value).some((key) => !RECORD_KEYS.has(key))) {
-    return { status: "invalid", reason: "unknown_or_missing_fields" };
-  }
-  const checkedAt = timestamp(value.checkedAt);
-  const nextCheckAt = timestamp(value.nextCheckAt);
-  const installedVersion = nonEmptyString(value.installedVersion);
-  const targetVersion = value.targetVersion === null ? null : nonEmptyString(value.targetVersion);
-  const channel = value.channel === "latest" || value.channel === "preview"
-    ? value.channel
-    : undefined;
-  if (!checkedAt || !nextCheckAt || Date.parse(nextCheckAt) < Date.parse(checkedAt)) {
-    return { status: "invalid", reason: "invalid_timestamps" };
-  }
-  if (!installedVersion || targetVersion === undefined || !channel || !OUTCOMES.has(value.outcome)) {
-    return { status: "invalid", reason: "invalid_fields" };
-  }
-  return {
-    status: "valid",
-    record: {
-      version: AUTOMATIC_UPDATE_RECORD_VERSION,
-      checkedAt,
-      nextCheckAt,
-      installedVersion,
-      targetVersion,
-      channel,
-      outcome: value.outcome,
-    },
-  };
-}
+export {
+  AUTOMATIC_UPDATE_CHECK_INTERVAL_MS,
+  AUTOMATIC_UPDATE_RECORD_VERSION,
+  AUTOMATIC_UPDATE_RETRY_INTERVAL_MS,
+  automaticUpdateStatePath,
+  readAutomaticUpdateState,
+};
 
 export async function runAutomaticUpdate(options) {
   const memoraxCodeHome = resolve(requiredString(options?.memoraxCodeHome, "memoraxCodeHome"));
@@ -325,21 +270,15 @@ function writeState({
   outcome,
   retry,
 }) {
-  const record = {
-    version: AUTOMATIC_UPDATE_RECORD_VERSION,
-    checkedAt: new Date(checkedAtMs).toISOString(),
-    nextCheckAt: new Date(
-      checkedAtMs + (retry ? AUTOMATIC_UPDATE_RETRY_INTERVAL_MS : AUTOMATIC_UPDATE_CHECK_INTERVAL_MS),
-    ).toISOString(),
+  return writeAutomaticUpdateState({
+    memoraxCodeHome,
+    checkedAtMs,
     installedVersion,
     targetVersion,
     channel,
     outcome,
-  };
-  writePrivateJsonRecord(automaticUpdateStatePath(memoraxCodeHome), record, {
-    durableBoundary: memoraxCodeHome,
+    retry,
   });
-  return record;
 }
 
 function currentTime(options) {
@@ -365,15 +304,4 @@ function nonEmptyString(value) {
 
 function automaticUpdateDisabled(value) {
   return ["0", "false", "no", "off", "disabled"].includes(String(value ?? "").trim().toLowerCase());
-}
-
-function timestamp(value) {
-  const candidate = nonEmptyString(value);
-  return candidate && Number.isFinite(Date.parse(candidate))
-    ? new Date(Date.parse(candidate)).toISOString()
-    : undefined;
-}
-
-function defaultMemoraxCodeHome() {
-  return join(homedir(), ".memorax-code");
 }

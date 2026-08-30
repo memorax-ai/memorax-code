@@ -12,6 +12,7 @@ async function fixture() {
   for (const relativePath of [
     "lib/automatic-update.mjs",
     "lib/memorax-code-adapter-common/src/config-utils.mjs",
+    "lib/memorax-code-adapter-common/src/hooks/automatic-update-scheduler.mjs",
     "lib/memorax-code-adapter-common/src/runtime-record.mjs",
     "lib/memorax-code-adapter-common/src/setup-completion.mjs",
     "lib/npm-invocation.mjs",
@@ -29,7 +30,7 @@ async function fixture() {
   return { root, memoraxCodeHome: join(root, "home"), api };
 }
 
-test("automatic update checks once per successful hourly window", async () => {
+test("automatic update checks once per successful eight-hour window", async () => {
   const fixtureRoot = await fixture();
   const { memoraxCodeHome, api } = fixtureRoot;
   let checks = 0;
@@ -60,7 +61,7 @@ test("automatic update checks once per successful hourly window", async () => {
       installedVersion: "0.1.9",
       completedByVersion: "0.1.9",
       channel: "latest",
-      now: () => Date.parse("2026-08-30T08:30:00.000Z"),
+      now: () => Date.parse("2026-08-30T15:59:59.000Z"),
       resolveTargetVersion: async () => {
         checks += 1;
         return "0.1.10";
@@ -82,7 +83,7 @@ test("automatic update checks once per successful hourly window", async () => {
     assert.equal(reconciles, 0);
     const state = JSON.parse(await readFile(api.automaticUpdateStatePath(memoraxCodeHome), "utf8"));
     assert.equal(state.outcome, "up-to-date");
-    assert.equal(state.nextCheckAt, "2026-08-30T09:00:00.000Z");
+    assert.equal(state.nextCheckAt, "2026-08-30T16:00:00.000Z");
   } finally {
     await rm(fixtureRoot.root, { recursive: true, force: true });
   }

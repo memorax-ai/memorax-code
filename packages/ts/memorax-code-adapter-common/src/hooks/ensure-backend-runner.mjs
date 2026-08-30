@@ -6,7 +6,6 @@ import {
   resolveBackendConnection,
 } from "../backend-connection.mjs";
 import { isRepoMemoryJobWorker } from "../repo-memory/repo-memory-job-context.mjs";
-import { scheduleAutomaticUpdate } from "./automatic-update-scheduler.mjs";
 
 export const DEFAULT_ENSURE_BACKEND_START_TIMEOUT_MS = 90000;
 const HOOK_INPUT_SYMBOL = Symbol.for("memorax-code.client-hook.input.v1");
@@ -24,17 +23,7 @@ export async function ensureBackendAvailable(options, input = {}) {
     options.pluginRoot,
     options.platform,
   );
-  const scheduleUpdate = () => scheduleAutomaticUpdate({
-    automaticUpdateValue: options.automaticUpdateValue,
-    input,
-    memoraxCodeHome: homes.memoraxCodeHome,
-    memoraxCodeCommand: command.value,
-    nodePath: options.nodePath,
-    platform: options.platform,
-    debug: options.debug,
-  });
   if (ensureDisabled(options.ensureBackendValue)) {
-    scheduleUpdate();
     return;
   }
   let connection;
@@ -48,7 +37,6 @@ export async function ensureBackendAvailable(options, input = {}) {
   const healthTimeoutMs = parsePositiveInt(options.healthTimeoutValue, 1500);
   if (await backendHealthy(connection, healthTimeoutMs)) {
     await options.onHealthy?.({ homes, backendUrl: connection.url });
-    scheduleUpdate();
     return;
   }
 
@@ -68,7 +56,6 @@ export async function ensureBackendAvailable(options, input = {}) {
     );
     return;
   }
-  scheduleUpdate();
 }
 
 export function stringValue(value) {
