@@ -36,10 +36,6 @@ async function copyNpmEntrypointFixture() {
     join(packageRoot, "lib", "resolve-claude-command.mjs"),
   );
   await copyFile(
-    join(repoRoot, "packages", "npm", "memorax-code", "lib", "resolve-codebuddy-command.mjs"),
-    join(packageRoot, "lib", "resolve-codebuddy-command.mjs"),
-  );
-  await copyFile(
     join(repoRoot, "packages", "npm", "memorax-code", "lib", "vscode-extension-command.mjs"),
     join(packageRoot, "lib", "vscode-extension-command.mjs"),
   );
