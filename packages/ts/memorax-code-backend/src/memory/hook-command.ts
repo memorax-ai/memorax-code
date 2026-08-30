@@ -173,6 +173,7 @@ export type OpenCodeSkillReminderCommand = MemoryHookCommandBase<"opencode"> & R
   content: string;
   triggers: SkillReminderTrigger[];
 }>;
+
 export type CodeBuddySkillReminderCommand = MemoryHookCommandBase<"codebuddy"> & Readonly<{
   turnId: string;
   transcriptPath: string;

@@ -17,7 +17,10 @@ import {
   createOpenCodeMemoryHookRuntime,
   type OpenCodeMemoryHookWritebackResult,
 } from "../clients/opencode/memory-hook-runtime.js";
-import { createCodeBuddyMemoryHookRuntime, type CodeBuddyMemoryHookWritebackResult } from "../clients/codebuddy/memory-hook-runtime.js";
+import {
+  createCodeBuddyMemoryHookRuntime,
+  type CodeBuddyMemoryHookWritebackResult,
+} from "../clients/codebuddy/memory-hook-runtime.js";
 import { createMemoryTurnCoordinator } from "./turn-coordinator.js";
 import {
   createRepositoryMemorySessionRuntime,
@@ -91,7 +94,11 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
     repositoryMemorySession,
     turnCoordinator,
   });
-  const codeBuddyHook = createCodeBuddyMemoryHookRuntime({ ...options, repositoryMemorySession, turnCoordinator });
+  const codeBuddyHook = createCodeBuddyMemoryHookRuntime({
+    ...options,
+    repositoryMemorySession,
+    turnCoordinator,
+  });
   let closed = false;
   return {
     async recordTurnStart(command) {
