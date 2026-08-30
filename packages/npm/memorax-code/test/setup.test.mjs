@@ -167,6 +167,7 @@ async function runSetup({ existingCache = false, explicitCache = false, hookRunt
     "hooks/capture-cwd-hook.mjs",
     "hooks/client-hook-launcher.mjs",
     "clients/codex-plugin-artifact.mjs",
+    "automatic-update-state.mjs",
     "config-utils.mjs",
     "hooks/ensure-backend-runner.mjs",
     "memorax-code-config-file.mjs",
@@ -692,7 +693,7 @@ function codexVsCodePlatformDirectory() {
 }
 
 
-test("setup update mode skips MemoraX credentials while reviewing clients and Hooks", async () => {
+test("setup update mode skips MemoraX credentials and silently trusts verified Hook changes", async () => {
   const added = codexHook("update-review", "sha256:update-review");
   const existingConfig = [
     "[clients]",
@@ -713,7 +714,7 @@ test("setup update mode skips MemoraX credentials while reviewing clients and Ho
     updateMode: true,
     memoraxCodeConfig: existingConfig,
     interactive: true,
-    input: "n\ny\n",
+    input: "n\n",
     hookSnapshot: [],
     hookUpdatePlan: [added],
   });
@@ -721,7 +722,7 @@ test("setup update mode skips MemoraX credentials while reviewing clients and Ho
     assert.equal(run.result.code, 0, run.result.stderr);
     assert.match(run.result.stderr, /Claude Code runtime is available, but its integration is disabled in \[clients\]\. Enable it now\? \[Y\/n\]/);
     assert.match(run.result.stderr, /Keeping the Claude Code integration disabled/);
-    assert.match(run.result.stderr, /Trust these new or changed Codex Hooks\? \[Y\/n\]/);
+    assert.doesNotMatch(run.result.stderr, /Trust these new or changed Codex Hooks/);
     assert.match(run.result.stderr, /Trusted 1 new or changed MemoraX Code Codex Hook/);
     assert.doesNotMatch(run.result.stderr, /Existing MemoraX configuration detected/);
     assert.doesNotMatch(run.result.stderr, /Connect MemoraX Code to MemoraX now/);
@@ -1196,6 +1197,128 @@ test("setup reports unavailable status and prints red diagnostics instead of usa
     assert.doesNotMatch(run.result.stderr, /enable the MemoraX Code Codex Adapter plugin/);
     assert.match(run.result.stderr, /\[MemoraX Code Setup\]: Common commands:/);
     assert.match(run.result.stderr, /\[MemoraX Code Setup\]: - `memorax-code start`: start or refresh the local memory backend and client integrations/);
+    await assertSetupIncomplete(run);
+  } finally {
+    await rm(run.root, { recursive: true, force: true });
+  }
+});
+
+test("automatic update setup is non-interactive and preserves disabled clients", async () => {
+  const added = codexHook("automatic-update", "sha256:automatic-update");
+  const existingConfig = [
+    "[clients]",
+    "codex = true",
+    "claude = false",
+    "dsh = false",
+    "opencode = false",
+    "codebuddy = false",
+    "",
+    "[memorax]",
+    'endpoint = "https://existing-memorax.example"',
+    'api_key = "existing-api-key"',
+    'user_id = "existing-user-id"',
+    "",
+    "[memory.add]",
+    'output_language = "en"',
+    "",
+  ].join("\n");
+  const run = await runSetup({
+    codebuddyAvailable: true,
+    dshProfiles: ["default"],
+    existingCache: true,
+    hookSnapshot: [],
+    hookUpdatePlan: [added],
+    interactive: false,
+    memoraxCodeConfig: existingConfig,
+    memoraxEnv: { MEMORAX_CODE_SETUP_AUTOMATIC_UPDATE: "1" },
+    opencodeAvailable: true,
+    updateMode: true,
+  });
+  try {
+    assert.equal(run.result.code, 0, run.result.stderr);
+    assert.doesNotMatch(run.result.stderr, /Enable it now\?/);
+    assert.doesNotMatch(run.result.stderr, /Trust these new or changed Codex Hooks\?/);
+    assert.match(run.result.stderr, /Trusted 1 new or changed MemoraX Code Codex Hook/);
+    assert.match(run.log, /^memorax-code start --clients codex$/m);
+    assert.match(run.log, /^memorax-code codex-plugin trust-hooks --yes .*--json$/m);
+    const config = await readFile(join(run.memoraxCodeHome, "config.toml"), "utf8");
+    assert.match(config, /codex = true/);
+    assert.match(config, /claude = false/);
+    assert.match(config, /dsh = false/);
+    assert.match(config, /opencode = false/);
+    assert.match(config, /codebuddy = false/);
+    await assertSetupComplete(run);
+  } finally {
+    await rm(run.root, { recursive: true, force: true });
+  }
+});
+
+test("automatic update setup preserves configured and legacy DSH client intent", async () => {
+  const existingConfig = [
+    "[clients]",
+    "codex = true",
+    "claude = true",
+    "opencode = true",
+    "codebuddy = true",
+    "",
+  ].join("\n");
+  const run = await runSetup({
+    claudeAvailable: false,
+    dshProfiles: ["default"],
+    existingCache: true,
+    interactive: false,
+    memoraxCodeConfig: existingConfig,
+    memoraxEnv: { MEMORAX_CODE_SETUP_AUTOMATIC_UPDATE: "1" },
+    updateMode: true,
+  });
+  try {
+    assert.equal(run.result.code, 0, run.result.stderr);
+    assert.match(run.result.stderr, /DeepSeek Harness profiles: found \(default\)/);
+    assert.match(run.result.stderr, /Claude Code runtime was not detected; skipping its adapter setup/);
+    assert.match(run.result.stderr, /OpenCode runtime or configuration was not detected; skipping its adapter setup/);
+    assert.match(run.result.stderr, /CodeBuddy\/WorkBuddy runtime was not detected; skipping its adapter setup/);
+    assert.match(run.log, /^memorax-code start --clients all$/m);
+    assert.match(run.log, /^memorax-code status --clients all$/m);
+    await assertSetupComplete(run);
+  } finally {
+    await rm(run.root, { recursive: true, force: true });
+  }
+});
+
+test("automatic update setup refuses a changed Codex marketplace identity", async () => {
+  const existingConfig = [
+    "[clients]",
+    "codex = true",
+    "claude = false",
+    "dsh = false",
+    "opencode = false",
+    "codebuddy = false",
+    "",
+    "[memorax]",
+    'endpoint = "https://existing-memorax.example"',
+    'api_key = "existing-api-key"',
+    'user_id = "existing-user-id"',
+    "",
+    "[memory.add]",
+    'output_language = "en"',
+    "",
+  ].join("\n");
+  const run = await runSetup({
+    existingCache: true,
+    hookFullReview: true,
+    hookSnapshot: [codexHook("existing", "sha256:existing", { trustStatus: "trusted" })],
+    hookUpdatePlan: [codexHook("changed", "sha256:changed")],
+    interactive: false,
+    memoraxCodeConfig: existingConfig,
+    memoraxEnv: { MEMORAX_CODE_SETUP_AUTOMATIC_UPDATE: "1" },
+    updateMode: true,
+  });
+  try {
+    assert.equal(run.result.code, 1, run.result.stderr);
+    assert.match(run.result.stderr, /marketplace identity changed/);
+    assert.match(run.result.stderr, /Automatic update stopped because the current MemoraX Code Codex Hooks could not be verified and trusted/);
+    assert.doesNotMatch(run.log, /^memorax-code codex-plugin trust-hooks --yes/m);
+    assert.doesNotMatch(run.log, /^memorax-code start/m);
     await assertSetupIncomplete(run);
   } finally {
     await rm(run.root, { recursive: true, force: true });

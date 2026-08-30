@@ -139,7 +139,7 @@ test("setup propagates the setup process exit code", async () => {
   }
 });
 
-test("update reviews clients and Hooks or migrates a configured legacy install", {
+test("update reconciles clients and verified Hooks or migrates a configured legacy install", {
   skip: process.platform === "win32",
 }, async (t) => {
   for (const [name, completed, configured = false] of [
@@ -188,7 +188,7 @@ test("update reviews clients and Hooks or migrates a configured legacy install",
             setupMode: "automatic",
           }]);
         } else {
-          assert.match(result.stderr, /reviewing client and Hook changes in the foreground/);
+          assert.match(result.stderr, /reconciling clients and verified Codex Hook changes in the foreground/);
           assert.deepEqual(await readJsonLines(fixture.setupLogPath), [{
             args: [],
             home: fixture.memoraxCodeHome,
@@ -323,6 +323,7 @@ async function createPackageFixture() {
   const backendLogPath = join(root, "backend-calls.jsonl");
   const copiedFiles = [
     "bin/memorax-code.mjs",
+    "lib/automatic-update.mjs",
     "lib/client-hook-runtime.mjs",
     "lib/node-version.mjs",
     "lib/npm-invocation.mjs",
@@ -347,7 +348,12 @@ async function createPackageFixture() {
     "memorax-code-adapter-common",
     "src",
   );
-  for (const relativePath of ["config-utils.mjs", "runtime-record.mjs", "setup-completion.mjs"]) {
+  for (const relativePath of [
+    "config-utils.mjs",
+    "automatic-update-state.mjs",
+    "runtime-record.mjs",
+    "setup-completion.mjs",
+  ]) {
     const target = join(root, "lib", "memorax-code-adapter-common", "src", relativePath);
     await mkdir(dirname(target), { recursive: true });
     await cp(join(adapterCommonSource, relativePath), target);

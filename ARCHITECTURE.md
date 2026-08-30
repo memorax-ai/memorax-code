@@ -103,14 +103,14 @@ relationships; the arrow labels distinguish them. It is not an import graph.
 
 | Component | Stable responsibility | Must not own | Primary evidence |
 | --- | --- | --- | --- |
-| `packages/ts/memorax-code-backend` | Local service, Hook HTTP, native client-content interpretation, memory workflows, repository scope, MemoraX adapter, trace, and lifecycle | Model execution, client model-provider credentials, or native transcript creation | `packages/ts/memorax-code-backend/src/app/backend-server.ts`, `packages/ts/memorax-code-backend/src/memory/service.ts`, and the capability directories under `src` |
-| `packages/ts/memorax-code-adapter-common` | Shared source for Backend connection authority, private runtime, setup-completion and secure credential records, cross-process locking and configuration, Hook generations, Hook launch helpers, and Repo/Personal Memory helpers | Backend composition, native transcript interpretation, MemoraX request execution, or client plugin policy | `packages/ts/memorax-code-adapter-common/src/backend-connection.mjs`, `src/runtime-record.mjs`, `src/setup-completion.mjs`, `src/credentials`, `src/hooks`, and `src/repo-memory` |
+| `packages/ts/memorax-code-backend` | Local service, managed automatic-update scheduling, Hook HTTP, native client-content interpretation, memory workflows, repository scope, MemoraX adapter, trace, and lifecycle | Model execution, client model-provider credentials, or native transcript creation | `packages/ts/memorax-code-backend/src/app/backend-server.ts`, `packages/ts/memorax-code-backend/src/lifecycle/automatic-update-scheduler.ts`, `packages/ts/memorax-code-backend/src/memory/service.ts`, and the capability directories under `src` |
+| `packages/ts/memorax-code-adapter-common` | Shared source for Backend connection authority, private runtime, setup-completion, automatic-update and secure credential records, cross-process locking and configuration, Hook generations, Hook launch helpers, and Repo/Personal Memory helpers | Backend composition, native transcript interpretation, MemoraX request execution, or client plugin policy | `packages/ts/memorax-code-adapter-common/src/backend-connection.mjs`, `src/runtime-record.mjs`, `src/setup-completion.mjs`, `src/automatic-update-state.mjs`, `src/credentials`, `src/hooks`, and `src/repo-memory` |
 | `packages/ts/memorax-code-codex-adapter` | Codex plugin artifact, Hook shells and runtimes, session/workspace observation, diagnostics, and the canonical shared skill | Codex rollout semantics or Backend-side writeback authority | `.codex-plugin`, `hooks`, `runtime-hooks`, `src`, and `skills/memorax-code` |
 | `packages/ts/memorax-code-claude-adapter` | Claude Code plugin artifact, Hook shells and runtimes, configuration, installer, marketplace source, and diagnostics | Claude transcript semantics or Backend memory orchestration | `.claude-plugin`, `hooks`, `runtime-hooks`, `scripts`, and `src/plugin-install.mjs` |
 | `packages/ts/memorax-code-dsh-adapter` | DSH Cordis Turn listener, personal-context composition, shared-skill and supervised Repo Memory integration, exact persisted-event interval validation, local Backend wire protocol, Profile lifecycle, per-user runtime-bundle materialization, and durable runtime authority | Backend-side event interpretation, MemoraX request execution, or DSH provider and session ownership | `src/plugin.mjs`, `src/profile-lifecycle.mjs`, `hooks/repo-memory-job.mjs`, and the adapter tests |
 | `packages/ts/memorax-code-opencode-adapter` | OpenCode plugin runtime, managed thin-loader installation, automatic retrieval, SDK-backed writeback, shell-session identity, workspace runtime evidence and diagnostics, a materialized shared skill, and supervised Repo Memory maintenance and missing-bundle initialization | OpenCode message interpretation inside the Backend or model-provider configuration | `src/plugin.mjs`, `src/plugin-install.mjs`, `src/cli.mjs`, `src/repo-memory-server-runner.mjs`, and the OpenCode materialization mapping in `scripts/npm-source-files.mjs` |
 | `packages/ts/memorax-code-codebuddy-adapter` | CodeBuddy/WorkBuddy plugin manifest, SessionStart/UserPromptSubmit/Stop Hooks, native JSONL transcript bridge, memory retrieval/writeback, trace/reconciliation, Skill materialization, and supervised Repo Memory maintenance | CodeBuddy transcript interpretation inside the Backend or model-provider configuration | `.codebuddy-plugin`, `hooks`, `src`, and `skills/memorax-code` |
-| `packages/npm/memorax-code` | Installed executable wrappers, foreground setup and reconciliation, trial identity and credential provisioning, package-transition handling, update, npm lifecycle scripts, manifest, and release-package source | Backend lifecycle semantics, uninstall orchestration, or artifact staging | `bin`, `lib/setup-reconcile.mjs`, `lib/package-transition.mjs`, `lib/trial-setup.mjs`, `lib/run-entrypoint.mjs`, and `package.json` |
+| `packages/npm/memorax-code` | Installed executable wrappers, foreground and automatic update reconciliation, trial identity and credential provisioning, package-transition handling, update, npm lifecycle scripts, manifest, and release-package source | Backend lifecycle semantics, uninstall orchestration, or artifact staging | `bin`, `lib/automatic-update.mjs`, `lib/setup-reconcile.mjs`, `lib/package-transition.mjs`, `lib/trial-setup.mjs`, `lib/run-entrypoint.mjs`, and `package.json` |
 | `scripts` | Backend build orchestration, staging/materialization, package layout, documentation, and local-only data gates | Product runtime authority | Package-build/check scripts and executable contract scripts |
 | `.github` | Issue and pull-request contribution templates | Product runtime behavior | `.github/ISSUE_TEMPLATE` and `.github/pull_request_template.md` |
 
@@ -156,6 +156,7 @@ operations for live client sessions.
 ```mermaid
 sequenceDiagram
   participant User
+  participant Update as detached automatic updater
   participant NPM as npm pre/postinstall
   participant Transition as package-transition record
   participant Setup as foreground setup CLI
@@ -179,6 +180,12 @@ sequenceDiagram
   Lifecycle->>Service: start and verify readiness
   Lifecycle-->>Generation: activate only after accepted readiness
   Setup->>Completion: commit only after final verification
+  loop completed setup while managed Backend remains running
+    Service->>Update: dispatch when persisted deadline is due
+    Update->>NPM: resolve release channel and install exact target
+    Update->>Setup: reconcile retained clients non-interactively
+    Setup->>Completion: commit only after final verification
+  end
 ```
 
 npm lifecycle and foreground setup are separate authority boundaries. Fresh
@@ -188,17 +195,30 @@ records and retires that installation; postinstall restores it with retained
 client intent and consumes the transition only after status succeeds. npm
 lifecycle never detects new clients, accepts credentials, or authorizes Hooks.
 
-`memorax-code setup` owns disclosure, memory preferences, credential creation
-or entry, client discovery, Hook review, Backend reconciliation, and final
-verification. It requires an interactive terminal. A versioned completion
-record is committed only after setup succeeds; the no-argument CLI normally
-uses that record to choose between setup guidance and current status. For a
-legacy installation with a ready effective configuration but no completion
-record, an interactive no-argument invocation validates and reuses that
-configuration, then runs the same foreground setup and reconciliation once to
-commit the record. Without a ready configuration or interactive terminal, it
-continues to show setup guidance. Invalid or unsupported completion and
-package-transition records fail closed.
+Public `memorax-code setup` owns disclosure, memory preferences, credential
+creation or entry, client discovery, first-time Hook activation, Backend
+reconciliation, and final verification. It requires an interactive terminal.
+A versioned completion record is committed only after setup succeeds; the
+no-argument CLI normally uses that record to choose between setup guidance and
+current status. For a legacy installation with a ready effective configuration
+but no completion record, an interactive no-argument invocation validates and
+reuses that configuration, then runs the same foreground setup and
+reconciliation once to commit the record. Without a ready configuration or
+interactive terminal, it continues to show setup guidance. Invalid or
+unsupported completion and package-transition records fail closed.
+
+After completion, the managed Backend reads the persisted automatic-update
+deadline and schedules a detached updater while the service remains running.
+Client startup Hooks only recover an unavailable Backend and do not own update
+cadence. The updater follows the installed release channel, serializes checks
+through the private record and lock, installs an exact published target, and
+invokes an internal non-interactive setup mode. That mode preserves the
+existing client selection and configuration. Codex Hook changes are trusted
+silently only when the marketplace identity remains the same and the exact
+incremental Hook selection survives validation before and after the config
+write. Verification failure leaves reconciliation incomplete for a later
+retry. Package replacement may retire the dispatching Backend; the restored
+Backend resumes scheduling from the same durable record.
 
 The principal control-plane locations are:
 
@@ -206,8 +226,15 @@ The principal control-plane locations are:
   setup, and wrappers;
 - `packages/npm/memorax-code/lib/package-transition.mjs` for npm replacement
   intent and restoration;
+- `packages/npm/memorax-code/lib/automatic-update.mjs` for release-channel
+  checks, exact package installation, cadence state, and non-interactive
+  reconciliation;
 - `packages/ts/memorax-code-adapter-common/src/setup-completion.mjs` for the
   shared setup-completion record;
+- `packages/ts/memorax-code-adapter-common/src/automatic-update-state.mjs`
+  for the shared cadence record;
+- `packages/ts/memorax-code-backend/src/lifecycle/automatic-update-scheduler.ts`
+  for managed Backend scheduling ownership;
 - `packages/ts/memorax-code-backend/src/entrypoints/backend-cli.ts` for
   process-facing command orchestration;
 - `packages/ts/memorax-code-backend/src/lifecycle` for start, stop, restart,
@@ -617,6 +644,7 @@ and
 | Backend connection and managed-process ownership | Versioned private connection/token/PID records plus lifecycle lock/version validation | In-memory state in any one process |
 | Package replacement intent | Versioned private package-transition record plus its bounded lock | npm process state or the presence of installed package files |
 | Completed foreground setup | Versioned private setup-completion record written after final verification | Configuration-file presence, Backend liveness, or detected clients |
+| Automatic update cadence | Versioned private automatic-update record plus its bounded lock | Managed Backend timer state or client process lifetime |
 | Quota reminders | Versioned private local runtime record keyed by a one-way connection fingerprint for deduplication; normalized MemoraX balances for the quota amount; a ready secure trial record matching the active API key for optional anonymous Mark ID text | Account registration status, raw API keys, and in-memory reminder state are not quota-reminder authority |
 | MemoraX memory results and Add acceptance | Normalized response from `provider/memorax` | Observability and trace |
 | Persisted current-turn operational state and trace history | Client-qualified local trace records | Diagnostics; not native content or general Turn-identity authority |
@@ -629,7 +657,8 @@ repository-session bindings, in-flight provider operations, and observability
 writes.
 
 Durable local state includes configuration, private runtime, setup-completion,
-package-transition and trial credential records, active client selection,
+package-transition, automatic-update, and trial credential records, active
+client selection,
 client-qualified trace JSONL, reminder cadence and quota-reminder state, and
 Repo Memory. State shared across processes requires a bounded lock, atomic
 replacement, or version validation appropriate to its record. An in-memory

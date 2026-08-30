@@ -4,10 +4,11 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { runAutomaticUpdate } from "../lib/automatic-update.mjs";
 import { stagePackagedClientHookRuntime } from "../lib/client-hook-runtime.mjs";
 import { unsupportedNodeVersionMessage } from "../lib/node-version.mjs";
-import { resolveNpmInvocation } from "../lib/npm-invocation.mjs";
-import { runBackendEntrypoint } from "../lib/run-entrypoint.mjs";
+import { runNpmCommand } from "../lib/npm-invocation.mjs";
+import { ensureNpmPackageRuntimeEnv, runBackendEntrypoint } from "../lib/run-entrypoint.mjs";
 
 const nodeVersionError = unsupportedNodeVersionMessage();
 if (nodeVersionError) {
@@ -86,13 +87,6 @@ function printCommand(command, args) {
   console.log([command, ...args].join(" "));
 }
 
-function npmCommandCwd() {
-  for (const candidate of [process.env.HOME, homedir(), "/"]) {
-    if (candidate && existsSync(candidate)) return candidate;
-  }
-  return "/";
-}
-
 async function runAccountCommand(args) {
   if (args.includes("--help") || args.includes("-h")) {
     printAccountHelp();
@@ -127,6 +121,7 @@ async function runAccountCommand(args) {
 }
 
 async function runUpdateCommand(args) {
+  let automatic = false;
   let dryRun = false;
   let force = false;
   let requestedChannel;
@@ -134,7 +129,9 @@ async function runUpdateCommand(args) {
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
-    if (arg === "--dry-run") {
+    if (arg === "--automatic") {
+      automatic = true;
+    } else if (arg === "--dry-run") {
       dryRun = true;
     } else if (arg === "--force") {
       force = true;
@@ -173,6 +170,17 @@ async function runUpdateCommand(args) {
   }
 
   const pkg = readPackageJson();
+  if (automatic) {
+    if (dryRun || force || requestedChannel) {
+      console.error("memorax-code update: --automatic cannot be combined with channel, force, or dry-run options");
+      return 2;
+    }
+    return await runAutomaticUpdateCommand({
+      pkg,
+      memoraxCodeHome: requestedHome ?? requestedMemoraxCodeHome([]),
+    });
+  }
+
   const channel = requestedChannel ?? (pkg.version.includes("-") ? "preview" : "latest");
   const npmArgs = ["install", "-g", `${pkg.name}@${channel}`];
   if (force) npmArgs.push("--force");
@@ -183,49 +191,49 @@ async function runUpdateCommand(args) {
   }
 
   console.error(`memorax-code update: running ${["npm", ...npmArgs].join(" ")}`);
-  const cwd = npmCommandCwd();
-  let invocation;
+  let npmResult;
   try {
-    invocation = resolveNpmInvocation(npmArgs);
+    npmResult = await runNpmCommand(npmArgs, {
+      env: {
+        ...process.env,
+        ...(requestedHome ? { MEMORAX_CODE_HOME: requestedHome } : {}),
+      },
+      stdio: "inherit",
+    });
   } catch (error) {
-    console.error(`memorax-code update: ${error instanceof Error ? error.message : String(error)}`);
+    console.error(`memorax-code update: failed to start npm: ${error instanceof Error ? error.message : String(error)}`);
     return 1;
   }
-  const child = spawn(invocation.command, invocation.args, {
-    stdio: "inherit",
-    cwd,
-    env: {
-      ...process.env,
-      PWD: cwd,
-      ...(requestedHome ? { MEMORAX_CODE_HOME: requestedHome } : {}),
-    },
-  });
-  const npmExitCode = await new Promise((resolve) => {
-    child.on("error", (error) => {
-      console.error(`memorax-code update: failed to start npm: ${error.message}`);
-      resolve(1);
-    });
-    child.on("close", (code, signal) => {
-      if (signal) {
-        console.error(`memorax-code update: npm exited from signal ${signal}`);
-        resolve(1);
-      } else {
-        resolve(code ?? 1);
-      }
-    });
-  });
-  if (npmExitCode !== 0) return npmExitCode;
+  if (npmResult.signal) {
+    console.error(`memorax-code update: npm exited from signal ${npmResult.signal}`);
+  }
+  if (npmResult.exitCode !== 0) return npmResult.exitCode;
 
   const memoraxCodeHome = requestedHome ?? requestedMemoraxCodeHome([]);
   if (!existsSync(join(memoraxCodeHome, "runtime", "backend", "backend.pid.json"))) {
-    console.error("memorax-code update: package updated; the managed Backend remains stopped; run `memorax-code setup` from a terminal to review client and Hook changes");
+    console.error("memorax-code update: package updated; the managed Backend remains stopped; run `memorax-code setup` from a terminal to reconcile clients and verify Hook changes");
     return 0;
   }
   if (!setupCanPrompt()) {
-    console.error("memorax-code update: package updated; run `memorax-code setup` from a terminal to review client and Hook changes");
+    console.error("memorax-code update: package updated; run `memorax-code setup` from a terminal to reconcile clients and verify Hook changes");
     return 0;
   }
   return await runSetupCommand(["--home", memoraxCodeHome], { updateMode: true });
+}
+
+async function runAutomaticUpdateCommand({ pkg, memoraxCodeHome }) {
+  try {
+    const result = await runAutomaticUpdate({
+      env: process.env,
+      memoraxCodeHome,
+      packageRoot: packageRoot(),
+      packageName: pkg.name,
+      packageVersion: pkg.version,
+    });
+    return result.ok ? 0 : 1;
+  } catch {
+    return 1;
+  }
 }
 
 async function runSetupCommand(args, { updateMode = false } = {}) {
@@ -259,7 +267,7 @@ async function runSetupCommand(args, { updateMode = false } = {}) {
         return 0;
       }
       if (updateMode) {
-        console.error("memorax-code update: reviewing client and Hook changes in the foreground");
+        console.error("memorax-code update: reconciling clients and verified Codex Hook changes in the foreground");
       }
       return await spawnSetupProcess(memoraxCodeHome, {
         updateMode,
@@ -378,6 +386,7 @@ function hasReadyMemoraxConfiguration(memoraxCodeHome) {
 }
 
 async function spawnSetupProcess(memoraxCodeHome, { updateMode = false, setupMode = "automatic" } = {}) {
+  ensureNpmPackageRuntimeEnv();
   const env = {
     ...process.env,
     MEMORAX_CODE_HOME: memoraxCodeHome,

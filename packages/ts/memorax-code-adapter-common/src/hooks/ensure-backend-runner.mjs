@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
-import { basename, delimiter, join } from "node:path";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { basename, delimiter, isAbsolute, join } from "node:path";
 import {
   localBackendRecoveryArguments,
   resolveBackendConnection,
@@ -16,8 +16,17 @@ export async function runEnsureBackendHook(options) {
 }
 
 export async function ensureBackendAvailable(options, input = {}) {
-  if (isRepoMemoryJobWorker() || ensureDisabled(options.ensureBackendValue)) return;
+  if (isRepoMemoryJobWorker()) return;
   const homes = options.resolveHomes(input);
+  const metadata = packageMetadata(options.pluginRoot);
+  const command = memoraxCodeCommandInfo(
+    options.memoraxCodeCommand,
+    metadata,
+    options.platform,
+  );
+  if (ensureDisabled(options.ensureBackendValue)) {
+    return;
+  }
   let connection;
   try {
     connection = options.backendConnection
@@ -34,19 +43,19 @@ export async function ensureBackendAvailable(options, input = {}) {
 
   const recoveryArguments = localBackendRecoveryArguments(connection);
   if (recoveryArguments === undefined) return;
-  const command = memoraxCodeCommandInfo(options.memoraxCodeCommand, options.pluginRoot);
   if (!command.value || command.removed === true || !memoraxCodeCommandAvailable(command.value)) return;
   const result = await runMemoraxCode(
     command.value,
     options.buildStartArgs(homes, recoveryArguments),
     parsePositiveInt(options.startTimeoutValue, DEFAULT_ENSURE_BACKEND_START_TIMEOUT_MS),
     options.nodePath,
-    options.recoveryEnv,
+    recoveryEnvironment(options.recoveryEnv, metadata),
   );
   if (result.code !== 0) {
     options.debug?.(
       `MemoraX Code backend start failed with code ${result.code}${result.stderr ? `: ${result.stderr}` : ""}`,
     );
+    return;
   }
 }
 
@@ -79,22 +88,48 @@ async function backendHealthy(connection, timeoutMs) {
   }
 }
 
-function memoraxCodeCommandInfo(explicitCommand, pluginRoot) {
+function memoraxCodeCommandInfo(explicitCommand, metadata, platform = process.platform) {
   const explicit = stringValue(explicitCommand);
   if (explicit) return { value: explicit, removed: pathLooksRemoved(explicit) };
-  const metadata = metadataCommand(pluginRoot);
-  if (metadata) return { value: metadata, removed: pathLooksRemoved(metadata) };
+  const command = stringValue(metadata?.memoraxCodeCommand);
+  if (command) return { value: command, removed: pathLooksRemoved(command) };
+  if (platform === "win32") return { value: undefined, removed: false };
   return { value: "memorax-code", removed: false };
 }
 
-function metadataCommand(pluginRoot) {
+function packageMetadata(pluginRoot) {
   const root = stringValue(pluginRoot);
   if (!root) return undefined;
   const path = join(root, ".memorax-code-package.json");
   if (!existsSync(path)) return undefined;
   try {
     const metadata = JSON.parse(readFileSync(path, "utf8"));
-    return stringValue(metadata.memoraxCodeCommand);
+    return metadata && typeof metadata === "object" && !Array.isArray(metadata)
+      ? metadata
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function recoveryEnvironment(recoveryEnv, metadata) {
+  if (stringValue(recoveryEnv?.MEMORAX_CODE_NPM_EXEC_PATH)
+    || stringValue(process.env.MEMORAX_CODE_NPM_EXEC_PATH)) {
+    return recoveryEnv;
+  }
+  const npmExecPath = metadataNpmExecPath(metadata);
+  return npmExecPath
+    ? { ...(recoveryEnv ?? {}), MEMORAX_CODE_NPM_EXEC_PATH: npmExecPath }
+    : recoveryEnv;
+}
+
+function metadataNpmExecPath(metadata) {
+  const npmExecPath = stringValue(metadata?.npmExecPath);
+  if (!npmExecPath || !isAbsolute(npmExecPath) || !/\.(?:cjs|js|mjs)$/i.test(npmExecPath)) {
+    return undefined;
+  }
+  try {
+    return statSync(npmExecPath).isFile() ? npmExecPath : undefined;
   } catch {
     return undefined;
   }

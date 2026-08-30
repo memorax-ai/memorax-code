@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import path from "node:path";
 import test from "node:test";
-import { resolveNpmInvocation } from "../lib/npm-invocation.mjs";
+import { resolveNpmInvocation, runNpmCommand } from "../lib/npm-invocation.mjs";
 
 test("Windows npm invocation runs npm CLI through the current Node executable", () => {
   const npmCli = "C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npm-cli.js";
@@ -62,4 +63,30 @@ test("Unix npm invocation retains the direct command", () => {
     nodePath: "/opt/node/bin/node",
     existsSync: () => false,
   }), { command: "npm", args: ["--version"] });
+});
+
+test("shared npm runner preserves the resolved Windows Node invocation", async () => {
+  const child = new EventEmitter();
+  const calls = [];
+  const npmCli = "C:\\nodejs\\npm-cli.js";
+  const resultPromise = runNpmCommand(["install", "pkg@1.0.0"], {
+    cwd: "C:\\runner-home",
+    env: { npm_execpath: npmCli },
+    platform: "win32",
+    nodePath: "C:\\nodejs\\node.exe",
+    existsSync: (candidate) => candidate === npmCli,
+    spawnProcess(command, args, options) {
+      calls.push({ command, args, options });
+      return child;
+    },
+    stdio: "ignore",
+    windowsHide: true,
+  });
+  child.emit("close", 0, null);
+
+  assert.deepEqual(await resultPromise, { exitCode: 0, signal: null });
+  assert.equal(calls[0].command, "C:\\nodejs\\node.exe");
+  assert.deepEqual(calls[0].args, [npmCli, "install", "pkg@1.0.0"]);
+  assert.equal(calls[0].options.env.PWD, "C:\\runner-home");
+  assert.equal(calls[0].options.windowsHide, true);
 });

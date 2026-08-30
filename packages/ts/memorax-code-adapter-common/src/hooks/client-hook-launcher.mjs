@@ -5,6 +5,7 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   injectClientHookInput,
+  injectClientHookPluginRoot,
   readStdinJson,
   stringOption,
   withJsonFileLock,
@@ -47,6 +48,8 @@ export async function runClientHookLauncher({
     });
     if (!selection) return;
     injectClientHookInput(input);
+    const originalPluginRoot = stringOption(pluginRoot);
+    if (originalPluginRoot) injectClientHookPluginRoot(originalPluginRoot);
     await import(pathToFileURL(selection.modulePath).href);
   } catch (error) {
     if (process.env[debugEnv] === "1") {

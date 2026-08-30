@@ -509,10 +509,12 @@ function mjsFiles(root: string): string[] {
 
 async function writePluginMetadata(pluginSourcePath: string, codexCommand?: string): Promise<void> {
   const normalizedCodexCommand = nonEmpty(codexCommand);
+  const npmExecPath = nonEmpty(process.env.MEMORAX_CODE_NPM_EXEC_PATH);
   const metadata = {
     version: 1,
     memoraxCodeCommand: process.argv[1],
     ...(normalizedCodexCommand ? { codexCommand: normalizedCodexCommand } : {}),
+    ...(npmExecPath ? { npmExecPath } : {}),
     writtenAt: new Date().toISOString(),
   };
   await writeFile(join(pluginSourcePath, ".memorax-code-package.json"), `${JSON.stringify(metadata, null, 2)}\n`, "utf8");

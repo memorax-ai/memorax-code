@@ -144,14 +144,17 @@ test("codex-plugin install uses CODEX_HOME and registers the personal marketplac
   const home = join(root, "home");
   const codexHome = join(home, "codex-home");
   const codexCommand = join(root, "Codex.app", "Contents", "Resources", "codex");
+  const npmExecPath = join(root, "npm-cli.js");
   try {
     await mkdir(home, { recursive: true });
     await mkdir(join(root, "Codex.app", "Contents", "Resources"), { recursive: true });
     await writeFile(codexCommand, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    await writeFile(npmExecPath, "// test npm entrypoint\n");
     const result = await runMemoraxCode(["codex-plugin", "install", "--json"], {
       HOME: home,
       CODEX_HOME: codexHome,
       CODEX_CLI_PATH: codexCommand,
+      MEMORAX_CODE_NPM_EXEC_PATH: npmExecPath,
     });
 
     assert.equal(result.code, 0, `${result.stdout}\n${result.stderr}`);
@@ -173,6 +176,7 @@ test("codex-plugin install uses CODEX_HOME and registers the personal marketplac
     assert.equal(metadata.version, 1);
     assert.match(metadata.memoraxCodeCommand, /memorax-code\.js|memorax-code\.mjs/);
     assert.equal(metadata.codexCommand, codexCommand);
+    assert.equal(metadata.npmExecPath, npmExecPath);
     await assertPluginCodexCommand(stagedPluginRoot, codexCommand);
 
     const stagedPluginData = join(root, "plugin-data-staged");

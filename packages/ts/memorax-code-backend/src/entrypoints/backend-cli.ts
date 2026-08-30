@@ -29,6 +29,10 @@ import {
   resolveBackendInstallWatchdogConfig,
   startBackendInstallWatchdog,
 } from "../lifecycle/install-watchdog.js";
+import {
+  startBackendAutomaticUpdateScheduler,
+  type AutomaticUpdateScheduler,
+} from "../lifecycle/automatic-update-scheduler.js";
 import { activateCodexPlugin, installCodexPlugin } from "../clients/codex/plugin-install.js";
 import { inspectCodexPluginHooks, trustCodexPluginHooks, type CodexHook } from "../clients/codex/plugin-hooks.js";
 import {
@@ -238,6 +242,7 @@ async function startRawBackendServer(
       })
     : undefined;
   const server = createBackendServer(state);
+  let automaticUpdateScheduler: AutomaticUpdateScheduler | undefined;
   let installRemovalStarted = false;
   const installWatchdog = startBackendInstallWatchdog(installWatchdogConfig, async (event) => {
     if (installRemovalStarted) return;
@@ -266,7 +271,10 @@ async function startRawBackendServer(
     });
   });
   installBackendShutdownControls(server, state);
-  server.once("close", () => installWatchdog?.close());
+  server.once("close", () => {
+    automaticUpdateScheduler?.close();
+    installWatchdog?.close();
+  });
   server.on("error", (error: NodeJS.ErrnoException) => {
     if (error.code === "EADDRINUSE") {
       console.error(`memorax-code-backend failed to listen on http://${host}:${port}: address already in use`);
@@ -278,6 +286,15 @@ async function startRawBackendServer(
   });
   server.listen(port, host, () => {
     console.log(`memorax-code-backend listening on http://${host}:${port}`);
+    if (backendEnv("INSTANCE_ID")) {
+      automaticUpdateScheduler = startBackendAutomaticUpdateScheduler({
+        env: process.env,
+        memoraxCodeHome: state.sessionHome,
+        packageRoot: process.env.MEMORAX_CODE_NPM_PACKAGE_ROOT,
+        packageVersion: process.env.MEMORAX_CODE_NPM_PACKAGE_VERSION,
+        debug: (message) => backendDebug("automatic_update.scheduler_failed", { message }),
+      });
+    }
   });
 }
 

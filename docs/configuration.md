@@ -77,12 +77,14 @@ disabled client is offered for activation with a default of yes; declining
 keeps it disabled. A selected client that is temporarily unavailable remains
 selected instead of being permanently disabled. Direct npm installation does
 not detect clients or modify `[clients]`.
+Automatic update reconciliation also preserves the exact persisted selection;
+it does not offer or enable a newly detected client.
 
 Client selection controls managed client-integration lifecycle only. It does
 not change Codex, Claude Code, DSH, or OpenCode provider settings.
 `--clients none` runs the Backend without managing a client integration.
 
-## Setup and package-transition state
+## Setup, automatic update, and package-transition state
 
 npm installation and foreground setup are separate operations.
 `npm install -g @memorax/memorax-code` installs or replaces package files
@@ -104,14 +106,41 @@ Successful setup writes a private versioned record at:
 $MEMORAX_CODE_HOME/runtime/setup/setup-completion.json
 ```
 
-The record controls only no-argument CLI routing. When it is valid, the command
-shows status. When it is absent and an interactive terminal is available,
+The record controls no-argument CLI routing and eligibility for background
+update reconciliation. When it is valid, the command shows status. When it is
+absent and an interactive terminal is available,
 `memorax-code` validates and reuses a complete effective configuration, then
 runs setup and reconciliation once to write the record. If the configuration
 is incomplete or no interactive terminal is available, it points to
 `memorax-code setup`. Invalid and unsupported records fail closed. A complete
 product uninstall removes this marker while retaining `config.toml`; stop and
 partial client uninstall preserve it.
+
+After setup completion, the managed Backend schedules detached update checks
+while it remains running. It reads the next deadline from the private update
+record, so an active Backend continues checking even when the user stays in one
+client session. Stable installations follow npm `latest`; prerelease
+installations follow `preview`. A successful result is reused for eight hours,
+while a failed check, install, or reconciliation retries after 15 minutes. Set
+`MEMORAX_CODE_AUTO_UPDATE=false` before starting or restarting the managed
+Backend to disable the scheduler. Client startup Hooks only recover an
+unavailable Backend and do not schedule updates.
+
+The updater installs an exact published version and runs an internal
+non-interactive setup mode. That mode preserves `[clients]`, connection data,
+and memory preferences. For Codex, only new or changed Hooks returned by the
+incremental check are trusted silently, and the exact Hook selection is
+validated again before and after the config write. A changed marketplace
+identity or unverifiable Hook set prevents reconciliation from completing.
+The standalone `memorax-code codex-plugin trust-hooks` command still performs
+explicit review.
+
+The installed version and next check deadline are stored in another private
+record:
+
+```text
+$MEMORAX_CODE_HOME/runtime/install/automatic-update.json
+```
 
 Replacing a running managed Backend uses a separate private record:
 
@@ -121,8 +150,8 @@ $MEMORAX_CODE_HOME/runtime/install/package-transition.json
 
 Preinstall records and retires the running installation. Postinstall restores
 and verifies it before consuming the record. A fresh or already-stopped
-installation has no transition and remains stopped. Do not edit either runtime
-record by hand.
+installation has no transition and remains stopped. Direct npm installation
+does not run product reconciliation. Do not edit these runtime records by hand.
 
 ## DeepSeek Harness integration paths
 
@@ -394,6 +423,7 @@ Common operator settings are:
 | Environment | Purpose |
 | --- | --- |
 | `MEMORAX_CODE_HOME` | Select the state and configuration root |
+| `MEMORAX_CODE_AUTO_UPDATE` | Set to `false` to disable client-start background update checks |
 | `MEMORAX_CODE_BACKEND_URL` | Override the Backend URL for one command or Hook |
 | `MEMORAX_CODE_BACKEND_HOST` / `MEMORAX_CODE_BACKEND_PORT` | Select the managed bind; default `127.0.0.1:8787` |
 | `MEMORAX_CODE_BACKEND_TOKEN` | Supply a transient Backend token |

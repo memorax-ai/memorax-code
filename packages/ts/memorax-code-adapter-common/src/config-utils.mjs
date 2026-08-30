@@ -24,6 +24,7 @@ const JSON_FILE_LOCK_RETRY_MS = 10;
 const PROCESS_START_TOLERANCE_MS = 5000;
 const LOCK_SLEEP_BUFFER = new Int32Array(new SharedArrayBuffer(4));
 const HOOK_INPUT_SYMBOL = Symbol.for("memorax-code.client-hook.input.v1");
+const HOOK_PLUGIN_ROOT_SYMBOL = Symbol.for("memorax-code.client-hook.plugin-root.v1");
 
 export function readAdapterState(path) {
   const state = readJsonFile(path);
@@ -62,6 +63,16 @@ export function injectClientHookInput(input) {
     throw new TypeError("client Hook input must be an object");
   }
   globalThis[HOOK_INPUT_SYMBOL] = input;
+}
+
+export function injectClientHookPluginRoot(pluginRoot) {
+  const root = stringOption(pluginRoot);
+  if (!root) throw new TypeError("client Hook plugin root must be a non-empty string");
+  globalThis[HOOK_PLUGIN_ROOT_SYMBOL] = root;
+}
+
+export function readClientHookPluginRoot() {
+  return stringOption(globalThis[HOOK_PLUGIN_ROOT_SYMBOL]);
 }
 
 export function sha256(value) {

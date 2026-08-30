@@ -1,6 +1,8 @@
-import { delimiter, dirname, join } from "node:path";
+import { readFileSync } from "node:fs";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { unsupportedNodeVersionMessage } from "./node-version.mjs";
+import { resolveNpmExecPath } from "./npm-invocation.mjs";
 import { ensureClaudeCommandEnv } from "./resolve-claude-command.mjs";
 import { ensureCodexCommandEnv } from "./resolve-codex-command.mjs";
 import { ensureCodeBuddyCommandEnv } from "./resolve-codebuddy-command.mjs";
@@ -42,6 +44,18 @@ export function ensureInstallWatchdogEnv(root = packageRoot) {
   }
 }
 
+export function ensureNpmPackageRuntimeEnv(root = packageRoot, options = {}) {
+  const env = options.env ?? process.env;
+  const resolvedRoot = resolve(root);
+  const metadata = JSON.parse(readFileSync(join(resolvedRoot, "package.json"), "utf8"));
+  const version = typeof metadata.version === "string" ? metadata.version.trim() : "";
+  if (!version) throw new Error("MemoraX Code package version is missing");
+  env.MEMORAX_CODE_NPM_PACKAGE_ROOT = resolvedRoot;
+  env.MEMORAX_CODE_NPM_PACKAGE_VERSION = version;
+  const npmExecPath = resolveNpmExecPath({ ...options, env });
+  if (npmExecPath) env.MEMORAX_CODE_NPM_EXEC_PATH = npmExecPath;
+}
+
 export async function runBackendEntrypoint(relativeEntrypoint) {
   if (!ensureSupportedNodeRuntime()) return;
   ensureCodexCommandEnv();
@@ -50,6 +64,7 @@ export async function runBackendEntrypoint(relativeEntrypoint) {
   ensureBundledSkillEnv();
   ensureClaudeMarketplaceEnv();
   ensureInstallWatchdogEnv();
+  ensureNpmPackageRuntimeEnv();
   const entrypoint = join(packageRoot, "lib", "memorax-code-backend", "dist", relativeEntrypoint);
   const previousArgv1 = process.argv[1];
   process.argv[1] = entrypoint;

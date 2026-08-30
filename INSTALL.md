@@ -192,12 +192,29 @@ running, package replacement briefly stops it, starts the new version with the
 retained client selection, and verifies status. A stopped installation remains
 stopped.
 
-After npm succeeds, an interactive product update reviews newly available
-clients and changed Codex Hooks in foreground setup, but only after setup has
-previously completed. Without that completion, or in a non-interactive update,
-package replacement still completes and the updater tells you to run
+After setup has completed, the managed Backend schedules detached update checks
+while it remains running. The cadence is independent of client sessions.
+Stable packages follow npm `latest`; prerelease packages follow `preview`.
+Successful checks are throttled for eight hours, and failures retry after 15
+minutes. Set `MEMORAX_CODE_AUTO_UPDATE=false` before starting or restarting the
+managed Backend to disable this behavior.
+
+A changed target is installed by exact version. The updater then runs an
+internal non-interactive reconciliation that preserves the existing `[clients]`
+selection, MemoraX connection, and memory configuration. It does not enable a
+newly detected client. For Codex, reconciliation compares the pre-update and
+post-update MemoraX Code Hook sets, requires the same marketplace identity, and
+silently trusts only the exact new or changed Hook hashes returned by the
+check. Identity drift or an unverifiable Hook set fails closed and is retried;
+the standalone `memorax-code codex-plugin trust-hooks` command remains an
+explicit diagnostic workflow.
+
+A manual interactive `memorax-code update` may still offer newly available
+clients, but verified Codex Hook changes no longer require confirmation.
+Without a completed setup, or in a non-interactive manual update, package
+replacement can still complete and the updater tells you to run
 `memorax-code setup` explicitly. Direct npm updates perform only package
-replacement.
+replacement and do not run product reconciliation.
 
 ## Uninstall
 

@@ -2,9 +2,35 @@ import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { delimiter } from "node:path";
+import { delimiter, join } from "node:path";
 import { test } from "node:test";
-import { ensureClaudeMarketplaceEnv, ensureInstallWatchdogEnv, installWatchPathsForPackageRoot } from "../lib/run-entrypoint.mjs";
+import {
+  ensureClaudeMarketplaceEnv,
+  ensureInstallWatchdogEnv,
+  ensureNpmPackageRuntimeEnv,
+  installWatchPathsForPackageRoot,
+} from "../lib/run-entrypoint.mjs";
+
+test("package entrypoint preserves a verified Windows npm CLI path", async () => {
+  const packageRoot = await mkdtemp(`${tmpdir()}/memorax-code-npm-runtime-`);
+  const npmExecPath = "C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npm-cli.js";
+  const env = {};
+  try {
+    await writeFile(join(packageRoot, "package.json"), `${JSON.stringify({ version: "0.1.9-test" })}\n`);
+    ensureNpmPackageRuntimeEnv(packageRoot, {
+      env,
+      platform: "win32",
+      nodePath: "C:\\Program Files\\nodejs\\node.exe",
+      existsSync: (candidate) => candidate === npmExecPath,
+    });
+
+    assert.equal(env.MEMORAX_CODE_NPM_PACKAGE_ROOT, packageRoot);
+    assert.equal(env.MEMORAX_CODE_NPM_PACKAGE_VERSION, "0.1.9-test");
+    assert.equal(env.MEMORAX_CODE_NPM_EXEC_PATH, npmExecPath);
+  } finally {
+    await rm(packageRoot, { recursive: true, force: true });
+  }
+});
 
 test("package entrypoint declares install watchdog paths without overriding user config", async () => {
   const packageRoot = await mkdtemp(`${tmpdir()}/memorax-code-run-entrypoint-`);
