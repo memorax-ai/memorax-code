@@ -15,7 +15,11 @@ export function scheduleAutomaticUpdate(options = {}) {
 
   const memoraxCodeHome = nonEmptyString(options.memoraxCodeHome);
   const command = nonEmptyString(options.memoraxCodeCommand);
-  if (!memoraxCodeHome || !command || !commandAvailable(command, env)) return false;
+  const platform = nonEmptyString(options.platform) ?? process.platform;
+  if (!memoraxCodeHome
+    || !command
+    || !commandAvailable(command, env)
+    || !commandSupported(command, platform)) return false;
 
   let completion;
   try {
@@ -68,6 +72,10 @@ function commandAvailable(command, env) {
   return String(env.PATH ?? "")
     .split(delimiter)
     .some((directory) => directory && existsSync(join(directory, command)));
+}
+
+function commandSupported(command, platform) {
+  return platform !== "win32" || nodeEntrypoint(command);
 }
 
 function nodeEntrypoint(command) {

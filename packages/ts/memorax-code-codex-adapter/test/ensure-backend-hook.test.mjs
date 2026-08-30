@@ -1,18 +1,25 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { access, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { access, cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import {
   DEFAULT_ENSURE_BACKEND_START_TIMEOUT_MS,
   ensureBackendAvailable,
 } from "../../memorax-code-adapter-common/src/hooks/ensure-backend-runner.mjs";
+import {
+  activateClientHookRuntimeGeneration,
+  stageClientHookRuntimeGeneration,
+} from "../../memorax-code-adapter-common/src/hooks/hook-runtime-generation.mjs";
 import { enableCodexAdapter, readCodexAdapterStatus } from "../src/config.mjs";
 
 const pluginRoot = fileURLToPath(new URL("..", import.meta.url));
+const adapterCommonRoot = fileURLToPath(new URL("../../memorax-code-adapter-common/", import.meta.url));
+const claudeAdapterRoot = fileURLToPath(new URL("../../memorax-code-claude-adapter/", import.meta.url));
 const hookPath = join(pluginRoot, "hooks", "runtime-hook.mjs");
 
 test("ensure-backend process ceiling leaves room for lifecycle lock wait and recovery", () => {
@@ -101,13 +108,14 @@ async function hangingMemoraxCode(root) {
 
 function runHook({
   env = {},
+  path = hookPath,
   input = {
     hook_event_name: "SessionStart",
     session_id: "ensure-backend-session",
   },
 } = {}) {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [hookPath, "ensure-backend"], {
+    const child = spawn(process.execPath, [path, "ensure-backend"], {
       env: { ...process.env, ...env },
       stdio: ["pipe", "pipe", "pipe"],
     });
@@ -331,6 +339,52 @@ test("ensure-backend resolves memorax-code command from plugin metadata", async 
   assert.equal((await readArgs(argsPath)).length, 1);
 });
 
+test("durable ensure-backend runtime keeps the plugin metadata command for automatic updates", async () => {
+  const f = await fixture("memorax-code-durable-update-command-");
+  const backend = await healthyBackend();
+  const argsPath = join(f.root, "automatic-update-args.jsonl");
+  const command = await fakeMemoraxCode(f.root);
+  try {
+    const stagedPlugin = await stageTestPlugin(f.root, command);
+    const runtimePackage = await stageTestRuntimePackage(f.root);
+    const generation = stageClientHookRuntimeGeneration({
+      packageRoot: runtimePackage,
+      memoraxCodeHome: f.memoraxCodeHome,
+    });
+    activateClientHookRuntimeGeneration({
+      memoraxCodeHome: f.memoraxCodeHome,
+      generation,
+    });
+    await writeSetupCompletion(f.memoraxCodeHome);
+
+    const result = await runHook({
+      path: join(stagedPlugin, "hooks", "runtime-hook.mjs"),
+      env: {
+        CODEX_HOME: f.codexHome,
+        MEMORAX_CODE_HOME: f.memoraxCodeHome,
+        MEMORAX_CODE_BACKEND_URL: backend.url,
+        MEMORAX_CODE_AUTO_UPDATE: "1",
+        MEMORAX_CODE_AUTOMATIC_UPDATE_PROCESS: "",
+        MEMORAX_CODE_CODEX_LIFECYCLE_COMMAND: "",
+        MEMORAX_CODE_COMMAND: "",
+        MEMORAX_CODE_TEST_ARGS_PATH: argsPath,
+        PATH: "",
+        PLUGIN_ROOT: "",
+      },
+    });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.deepEqual(await waitForArgs(argsPath), [[
+      "update",
+      "--automatic",
+      "--home", f.memoraxCodeHome,
+    ]]);
+  } finally {
+    await backend.close();
+    await rm(f.root, { recursive: true, force: true });
+  }
+});
+
 test("disabled ensure-backend hook exits without state or command changes", async () => {
   const f = await fixture();
   const argsPath = join(f.root, "args.jsonl");
@@ -363,3 +417,63 @@ test("missing metadata command leaves stale plugin Hook inert after backend remo
   });
   assert.equal(result.code, 0, result.stderr);
 });
+
+async function stageTestPlugin(root, command) {
+  const container = join(root, "plugin-cache");
+  const stagedPlugin = join(container, "memorax-code-codex-adapter");
+  const stagedCommon = join(container, "memorax-code-adapter-common");
+  await mkdir(stagedPlugin, { recursive: true });
+  for (const entry of ["hooks", "runtime-hooks", "src", "skills", "package.json"]) {
+    await cp(join(pluginRoot, entry), join(stagedPlugin, entry), { recursive: true });
+  }
+  await cp(join(adapterCommonRoot, "src"), join(stagedCommon, "src"), { recursive: true });
+  await writeFile(join(stagedPlugin, ".memorax-code-package.json"), `${JSON.stringify({
+    version: 1,
+    memoraxCodeCommand: command,
+  })}\n`);
+  return stagedPlugin;
+}
+
+async function stageTestRuntimePackage(root) {
+  const packageRoot = join(root, "runtime-package");
+  await mkdir(packageRoot, { recursive: true });
+  await writeFile(join(packageRoot, "package.json"), `${JSON.stringify({
+    name: "@memorax/memorax-code",
+    version: "0.1.9-test",
+  })}\n`);
+  for (const [sourceRoot, adapter] of [
+    [adapterCommonRoot, "memorax-code-adapter-common"],
+    [pluginRoot, "memorax-code-codex-adapter"],
+    [claudeAdapterRoot, "memorax-code-claude-adapter"],
+  ]) {
+    await cp(join(sourceRoot, "src"), join(packageRoot, "lib", adapter, "src"), { recursive: true });
+    if (adapter !== "memorax-code-adapter-common") {
+      await cp(
+        join(sourceRoot, "runtime-hooks"),
+        join(packageRoot, "lib", adapter, "runtime-hooks"),
+        { recursive: true },
+      );
+    }
+  }
+  return packageRoot;
+}
+
+async function writeSetupCompletion(memoraxCodeHome) {
+  const path = join(memoraxCodeHome, "runtime", "setup", "setup-completion.json");
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, `${JSON.stringify({
+    version: 1,
+    state: "complete",
+    completedAt: "2026-08-30T08:00:00.000Z",
+    completedByVersion: "0.1.9",
+  })}\n`);
+}
+
+async function waitForArgs(path) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const args = await readArgs(path);
+    if (args.length > 0) return args;
+    await delay(10);
+  }
+  throw new Error(`timed out waiting for ${path}`);
+}

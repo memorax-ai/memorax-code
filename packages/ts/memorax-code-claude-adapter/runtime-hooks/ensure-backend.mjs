@@ -2,6 +2,7 @@
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { readClientHookPluginRoot } from "../../memorax-code-adapter-common/src/config-utils.mjs";
 import {
   runEnsureBackendHook,
   stringValue,
@@ -31,6 +32,7 @@ process.exit(0);
 function pluginRoot() {
   return stringValue(process.env.CLAUDE_PLUGIN_ROOT)
     ?? stringValue(process.env.PLUGIN_ROOT)
+    ?? readClientHookPluginRoot()
     ?? dirname(dirname(fileURLToPath(import.meta.url)));
 }
 

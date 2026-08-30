@@ -36,6 +36,29 @@ test("SessionStart schedules a detached automatic update for completed setup", a
   }
 });
 
+test("Windows does not launch an extensionless npm POSIX shim", async () => {
+  const fixture = await createFixture();
+  const command = join(fixture.root, "memorax-code");
+  try {
+    await writeFile(command, "#!/bin/sh\nexit 0\n");
+    await writeSetupCompletion(fixture.memoraxCodeHome);
+
+    const scheduled = scheduleAutomaticUpdate({
+      input: { hook_event_name: "SessionStart" },
+      memoraxCodeCommand: command,
+      memoraxCodeHome: fixture.memoraxCodeHome,
+      platform: "win32",
+      env: process.env,
+    });
+
+    assert.equal(scheduled, false);
+    await delay(25);
+    await assert.rejects(readFile(fixture.recordPath, "utf8"), (error) => error?.code === "ENOENT");
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
 for (const scenario of [
   {
     name: "non-SessionStart Hook event",

@@ -19,13 +19,18 @@ export async function runEnsureBackendHook(options) {
 export async function ensureBackendAvailable(options, input = {}) {
   if (isRepoMemoryJobWorker()) return;
   const homes = options.resolveHomes(input);
-  const command = memoraxCodeCommandInfo(options.memoraxCodeCommand, options.pluginRoot);
+  const command = memoraxCodeCommandInfo(
+    options.memoraxCodeCommand,
+    options.pluginRoot,
+    options.platform,
+  );
   const scheduleUpdate = () => scheduleAutomaticUpdate({
     automaticUpdateValue: options.automaticUpdateValue,
     input,
     memoraxCodeHome: homes.memoraxCodeHome,
     memoraxCodeCommand: command.value,
     nodePath: options.nodePath,
+    platform: options.platform,
     debug: options.debug,
   });
   if (ensureDisabled(options.ensureBackendValue)) {
@@ -95,11 +100,12 @@ async function backendHealthy(connection, timeoutMs) {
   }
 }
 
-function memoraxCodeCommandInfo(explicitCommand, pluginRoot) {
+function memoraxCodeCommandInfo(explicitCommand, pluginRoot, platform = process.platform) {
   const explicit = stringValue(explicitCommand);
   if (explicit) return { value: explicit, removed: pathLooksRemoved(explicit) };
   const metadata = metadataCommand(pluginRoot);
   if (metadata) return { value: metadata, removed: pathLooksRemoved(metadata) };
+  if (platform === "win32") return { value: undefined, removed: false };
   return { value: "memorax-code", removed: false };
 }
 
