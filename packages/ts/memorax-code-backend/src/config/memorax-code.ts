@@ -16,6 +16,7 @@ export type MemoraxCodeConfig = Readonly<{
     claude?: boolean;
     dsh?: boolean;
     opencode?: boolean;
+    codebuddy?: boolean;
   }>;
   memorax?: Readonly<{
     endpoint?: string;
@@ -100,6 +101,13 @@ export type MemoraxCodeConfig = Readonly<{
       max_event_chars?: number;
       max_file_bytes?: number;
     }>;
+    codebuddy?: Readonly<{
+      enabled?: boolean;
+      capture_content?: boolean;
+      retention_days?: number;
+      max_event_chars?: number;
+      max_file_bytes?: number;
+    }>;
   }>;
 }>;
 
@@ -169,6 +177,10 @@ export function renderDefaultMemoraxCodeConfig(): string {
     "[trace.opencode]",
     "enabled = true # Enable local OpenCode session memory trace collection.",
     "capture_content = true # Store content in local OpenCode trace events.",
+    "",
+    "[trace.codebuddy]",
+    "enabled = true # Enable local CodeBuddy session memory trace collection.",
+    "capture_content = true # Store content in local CodeBuddy trace events.",
     "",
   ].join("\n");
 }
@@ -251,6 +263,7 @@ function normalizeMemoraxCodeConfig(value: unknown): MemoraxCodeConfig {
   const traceClaude = recordValue(trace?.claude);
   const traceDsh = recordValue(trace?.dsh);
   const traceOpenCode = recordValue(trace?.opencode);
+  const traceCodeBuddy = recordValue(trace?.codebuddy);
 
   return (prune({
     clients: prune({
@@ -258,6 +271,7 @@ function normalizeMemoraxCodeConfig(value: unknown): MemoraxCodeConfig {
       claude: booleanField(clients, "claude"),
       dsh: booleanField(clients, "dsh"),
       opencode: booleanField(clients, "opencode"),
+      codebuddy: booleanField(clients, "codebuddy"),
     }),
     memorax: prune({
       endpoint: stringField(memorax, "endpoint"),
@@ -336,6 +350,13 @@ function normalizeMemoraxCodeConfig(value: unknown): MemoraxCodeConfig {
         max_event_chars: numberField(traceOpenCode, "max_event_chars"),
         max_file_bytes: numberField(traceOpenCode, "max_file_bytes"),
       }),
+      codebuddy: prune({
+        enabled: booleanField(traceCodeBuddy, "enabled"),
+        capture_content: booleanField(traceCodeBuddy, "capture_content"),
+        retention_days: numberField(traceCodeBuddy, "retention_days"),
+        max_event_chars: numberField(traceCodeBuddy, "max_event_chars"),
+        max_file_bytes: numberField(traceCodeBuddy, "max_file_bytes"),
+      }),
     }),
   }) ?? {}) as MemoraxCodeConfig;
 }
@@ -348,7 +369,7 @@ function validateRawLifecycleConfig(value: unknown, path: string): void {
   if (rawClients !== undefined) {
     const clients = tableValue(rawClients);
     if (!clients) throw invalidLifecycleConfig(path, "clients must be a table");
-    for (const field of ["codex", "claude", "dsh", "opencode"] as const) {
+    for (const field of ["codex", "claude", "dsh", "opencode", "codebuddy"] as const) {
       if (clients[field] !== undefined && typeof clients[field] !== "boolean") {
         throw invalidLifecycleConfig(path, `clients.${field} must be a boolean`);
       }

@@ -17,6 +17,10 @@ import {
   createOpenCodeMemoryHookRuntime,
   type OpenCodeMemoryHookWritebackResult,
 } from "../clients/opencode/memory-hook-runtime.js";
+import {
+  createCodeBuddyMemoryHookRuntime,
+  type CodeBuddyMemoryHookWritebackResult,
+} from "../clients/codebuddy/memory-hook-runtime.js";
 import { createMemoryTurnCoordinator } from "./turn-coordinator.js";
 import {
   createRepositoryMemorySessionRuntime,
@@ -37,7 +41,8 @@ type MemoryHookWritebackResult =
   | CodexMemoryHookWritebackResult
   | ClaudeMemoryHookWritebackResult
   | OpenCodeMemoryHookWritebackResult
-  | DshMemoryHookWritebackResult;
+  | DshMemoryHookWritebackResult
+  | CodeBuddyMemoryHookWritebackResult;
 
 export type MemoryService = {
   recordTurnStart(command: TurnStartCommand): Promise<MemoryHookTurnStartResult>;
@@ -89,6 +94,11 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
     repositoryMemorySession,
     turnCoordinator,
   });
+  const codeBuddyHook = createCodeBuddyMemoryHookRuntime({
+    ...options,
+    repositoryMemorySession,
+    turnCoordinator,
+  });
   let closed = false;
   return {
     async recordTurnStart(command) {
@@ -101,6 +111,8 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
           return await openCodeHook.recordTurnStart(command);
         case "dsh":
           return await dshHook.recordTurnStart(command);
+        case "codebuddy":
+          return await codeBuddyHook.recordTurnStart(command);
       }
       return unsupportedMemoryHookCommand(command);
     },
@@ -114,6 +126,8 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
           return await openCodeHook.writeback(command);
         case "dsh":
           return await dshHook.writeback(command);
+        case "codebuddy":
+          return await codeBuddyHook.writeback(command);
       }
       return unsupportedMemoryHookCommand(command);
     },
@@ -127,6 +141,7 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
       claudeHook.close();
       openCodeHook.close();
       dshHook.close();
+      codeBuddyHook.close();
       turnCoordinator.close();
       repositoryMemorySession.close();
       automaticWriteback.close();

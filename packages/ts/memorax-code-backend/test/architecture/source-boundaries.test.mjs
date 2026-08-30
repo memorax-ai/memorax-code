@@ -44,6 +44,8 @@ const rules = [
       "clients/dsh/session-turn.ts",
       "clients/opencode/memory-hook-runtime.ts",
       "clients/opencode/message-turn.ts",
+      "clients/codebuddy/memory-hook-runtime.ts",
+      "clients/codebuddy/jsonl-history.ts",
       "memory/turn-coordinator.ts",
       "memory/service.ts",
       "memory/writeback-buffer.ts",
@@ -65,6 +67,7 @@ const rules = [
       "clients/codex/memory-hook-runtime.ts",
       "clients/dsh/memory-hook-runtime.ts",
       "clients/opencode/memory-hook-runtime.ts",
+      "clients/codebuddy/memory-hook-runtime.ts",
       "provider/memorax/adapter.ts",
       "memory/turn-coordinator.ts",
       "memory/service.ts",
@@ -104,7 +107,7 @@ const rules = [
   },
   {
     name: "OpenCode memory hook runtime stays independent from HTTP and Backend composition",
-    importers: ["clients/opencode/memory-hook-runtime.ts", "clients/opencode/message-turn.ts"],
+    importers: ["clients/opencode/memory-hook-runtime.ts", "clients/opencode/message-turn.ts", "clients/codebuddy/memory-hook-runtime.ts", "clients/codebuddy/jsonl-history.ts"],
     forbidden: ["node:http", "server-", "entrypoints/", "transport/http/", "app/state"],
   },
   {

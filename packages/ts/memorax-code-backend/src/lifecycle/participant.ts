@@ -47,6 +47,7 @@ export type AdapterReport = {
   codexSkills?: { ok?: boolean; status?: string };
   claudeSkills?: { ok?: boolean; status?: string };
   opencodeSkills?: { ok?: boolean; status?: string };
+  codebuddySkills?: { ok?: boolean; status?: string };
   pluginInstall?: AdapterPluginLifecycleReport;
   pluginRemove?: AdapterPluginLifecycleReport;
   pluginStatus?: AdapterReport;

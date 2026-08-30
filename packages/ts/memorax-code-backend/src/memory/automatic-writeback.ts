@@ -39,7 +39,7 @@ import {
 } from "./payload-redaction.js";
 import type { MemoraxQuotaSnapshot } from "../provider/memorax/quota.js";
 
-export type AutomaticMemoryWritebackClient = "codex" | "claude-code" | "opencode" | "dsh";
+export type AutomaticMemoryWritebackClient = "codex" | "claude-code" | "opencode" | "dsh" | "codebuddy";
 
 export type AutomaticMemoryWritebackOptions = {
   client: AutomaticMemoryWritebackClient;

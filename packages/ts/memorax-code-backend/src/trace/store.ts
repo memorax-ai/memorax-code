@@ -6,6 +6,7 @@ import type {
   ClaudeTurnTokenUsage,
 } from "../clients/claude/transcript-turn.js";
 import type { CodexTurnActivity, CodexTurnTokenUsage } from "../clients/codex/rollout-turn.js";
+import type { CodeBuddyActivity } from "../clients/codebuddy/jsonl-history.js";
 import {
   TRACE_CLEANUP_DEBOUNCE_MS,
   TRACE_CURRENT_TURN_TTL_MS,
@@ -28,7 +29,7 @@ export type TraceTurnOutcome = "completed" | "interrupted";
 export type TraceCurrentTurnState = "open" | TraceTurnOutcome;
 export type CodexTurnOutcome = TraceTurnOutcome;
 export type CodexCurrentTurnState = TraceCurrentTurnState;
-export type TraceTurnActivity = CodexTurnActivity | ClaudeTurnActivity;
+export type TraceTurnActivity = CodexTurnActivity | ClaudeTurnActivity | CodeBuddyActivity;
 export type TraceTurnTokenUsage = CodexTurnTokenUsage | ClaudeTurnTokenUsage;
 
 export type TraceEventInput = Readonly<{
@@ -43,7 +44,7 @@ export type TraceEventInput = Readonly<{
   ok?: boolean;
   outcome?: TraceTurnOutcome;
   relatedTurns?: TraceRelatedTurn[];
-  activities?: TraceTurnActivity[];
+  activities?: readonly TraceTurnActivity[];
   usage?: TraceTurnTokenUsage;
   sessionTurnIndex?: number;
   request?: unknown;
@@ -160,6 +161,16 @@ export async function recordClaudeTraceEvent(
   input: ClaudeTraceEventInput,
 ): Promise<TraceEventWriteResult> {
   return recordTraceEventForClient("claude", input);
+}
+
+export type CodeBuddyTraceEventInput = TraceEventInput;
+export type CodeBuddyCurrentTurnOptions = Omit<TraceCurrentTurnOptions, "client">;
+export type CodeBuddyTurnOutcome = TraceTurnOutcome;
+
+export async function recordCodeBuddyTraceEvent(
+  input: CodeBuddyTraceEventInput,
+): Promise<TraceEventWriteResult> {
+  return recordTraceEventForClient("codebuddy", input);
 }
 
 export function traceTurnEventId(
@@ -332,6 +343,21 @@ export async function markCurrentClaudeTurnOutcome(
   options: ClaudeCurrentTurnOptions = {},
 ): Promise<{ updated: true } | { updated: false; reason: string }> {
   return markCurrentTraceTurnOutcome(traceContext, outcome, { ...options, client: "claude" });
+}
+
+export async function writeCurrentCodeBuddyTurn(
+  traceContext: TraceContext | undefined,
+  options: CodeBuddyCurrentTurnOptions = {},
+): Promise<{ written: true } | { written: false; reason: string }> {
+  return writeCurrentTraceTurn(traceContext, { ...options, client: "codebuddy" });
+}
+
+export async function markCurrentCodeBuddyTurnOutcome(
+  traceContext: TraceContext | undefined,
+  outcome: CodeBuddyTurnOutcome,
+  options: CodeBuddyCurrentTurnOptions = {},
+): Promise<{ updated: true } | { updated: false; reason: string }> {
+  return markCurrentTraceTurnOutcome(traceContext, outcome, { ...options, client: "codebuddy" });
 }
 
 async function readCurrentTraceTurnRecord(
@@ -510,7 +536,9 @@ function buildTraceEvent(
     ok: input.ok,
     outcome: input.outcome,
     related_turns: input.relatedTurns?.map(relatedTurnJson),
-    activities: input.activities,
+    activities: input.activities === undefined
+      ? undefined
+      : sanitizeTraceValue(input.activities, config, captureContent),
     usage: input.usage,
     session_turn_index: input.sessionTurnIndex,
     request: input.request === undefined ? undefined : sanitizeTraceValue(input.request, config, captureContent),
