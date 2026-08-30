@@ -73,6 +73,7 @@ async function stageMainPackage(destination) {
     "lib/memorax-code-claude-adapter",
     "lib/memorax-code-dsh-adapter",
     "lib/memorax-code-opencode-adapter",
+    "lib/memorax-code-codebuddy-adapter",
   ]) {
     await mkdir(join(destination, path), { recursive: true });
   }
@@ -114,6 +115,10 @@ async function stageMainPackage(destination) {
     "packages/ts/memorax-code-opencode-adapter/package.json",
     join(destination, "lib/memorax-code-opencode-adapter/package.json"),
   );
+  await copyFile(
+    "packages/ts/memorax-code-codebuddy-adapter/package.json",
+    join(destination, "lib/memorax-code-codebuddy-adapter/package.json"),
+  );
 
   await buildClaudeMarketplace({
     outputDir: join(destination, "lib/memorax-code-claude-marketplace"),
@@ -150,6 +155,7 @@ async function validateStaging(packageRoot) {
     "bin/memorax-code.mjs",
     "bin/memorax-cli.mjs",
     "bin/memorax-code-opencode.mjs",
+    "bin/memorax-code-codebuddy.mjs",
     "bin/memorax-code-npm-preinstall.mjs",
     "bin/memorax-code-plugin-postinstall.mjs",
     "bin/memorax-code-setup.mjs",
@@ -159,6 +165,7 @@ async function validateStaging(packageRoot) {
     "lib/package-transition.mjs",
     "lib/resolve-claude-command.mjs",
     "lib/resolve-codex-command.mjs",
+    "lib/resolve-codebuddy-command.mjs",
     "lib/setup-memory-preferences.mjs",
     "lib/setup-reconcile.mjs",
     "lib/vscode-extension-command.mjs",
@@ -172,6 +179,7 @@ async function validateStaging(packageRoot) {
     "lib/memorax-code-adapter-common/src/config-utils.mjs",
     "lib/memorax-code-adapter-common/src/hooks/client-hook-launcher.mjs",
     "lib/memorax-code-adapter-common/src/clients/codex-plugin-artifact.mjs",
+    "lib/memorax-code-adapter-common/src/clients/codebuddy-command.mjs",
     "lib/memorax-code-adapter-common/src/hooks/hook-runtime-generation.mjs",
     "lib/memorax-code-adapter-common/src/hooks/memory-skill-reminder-policy.mjs",
     "lib/memorax-code-adapter-common/src/memorax-code-config-file.mjs",
@@ -245,6 +253,14 @@ async function validateStaging(packageRoot) {
     "lib/memorax-code-opencode-adapter/src/repo-memory-server-runner.mjs",
     "lib/memorax-code-opencode-adapter/hooks/repo-memory-job.mjs",
     "lib/memorax-code-opencode-adapter/skills/memorax-code/SKILL.md",
+    "lib/memorax-code-codebuddy-adapter/skills/memorax-code/SKILL.md",
+    "lib/memorax-code-codebuddy-adapter/.codebuddy-plugin/plugin.json",
+    "lib/memorax-code-codebuddy-adapter/hooks/hooks.json",
+    "lib/memorax-code-codebuddy-adapter/hooks/runtime-hook.mjs",
+    "lib/memorax-code-codebuddy-adapter/hooks/common-runtime.mjs",
+    "lib/memorax-code-codebuddy-adapter/hooks/repo-memory-job.mjs",
+    "lib/memorax-code-codebuddy-adapter/src/config.mjs",
+    "lib/memorax-code-codebuddy-adapter/src/cli.mjs",
   ]) {
     if (!(await stat(join(packageRoot, requiredPath)).catch(() => undefined))?.isFile()) {
       throw new Error(`staged npm package is missing required runtime entrypoint: ${requiredPath}`);

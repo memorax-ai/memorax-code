@@ -316,6 +316,9 @@ function sourcePathForArtifact(rawPath) {
   if (path.startsWith("lib/memorax-code-opencode-adapter/")) {
     return `packages/ts/memorax-code-opencode-adapter/${path.slice("lib/memorax-code-opencode-adapter/".length)}`;
   }
+  if (path.startsWith("lib/memorax-code-codebuddy-adapter/")) {
+    return `packages/ts/memorax-code-codebuddy-adapter/${path.slice("lib/memorax-code-codebuddy-adapter/".length)}`;
+  }
   if (path.startsWith("lib/") && !path.slice("lib/".length).includes("/")) {
     return `packages/npm/memorax-code/${path}`;
   }

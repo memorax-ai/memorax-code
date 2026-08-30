@@ -71,6 +71,7 @@ expected_bins = {
     "memorax-code-claude": "bin/memorax-code-claude.mjs",
     "memorax-code-codex": "bin/memorax-code-codex.mjs",
     "memorax-code-opencode": "bin/memorax-code-opencode.mjs",
+    "memorax-code-codebuddy": "bin/memorax-code-codebuddy.mjs",
 }
 assert package_manifest.get("bin") == expected_bins, package_manifest.get("bin")
 for relative in expected_bins.values():
@@ -83,6 +84,7 @@ expected_library_dirs = {
     "memorax-code-codex-adapter",
     "memorax-code-dsh-adapter",
     "memorax-code-opencode-adapter",
+    "memorax-code-codebuddy-adapter",
 }
 actual_library_dirs = {
     path.name
@@ -114,6 +116,7 @@ for relative in [
     "lib/dsh-plugin-install.mjs",
     "lib/resolve-claude-command.mjs",
     "lib/resolve-codex-command.mjs",
+    "lib/resolve-codebuddy-command.mjs",
     "lib/vscode-extension-command.mjs",
     "lib/npm-invocation.mjs",
     "lib/package-transition.mjs",
@@ -125,6 +128,7 @@ for relative in [
     "lib/memorax-code-adapter-common/src/config-utils.mjs",
     "lib/memorax-code-adapter-common/src/hooks/client-hook-launcher.mjs",
     "lib/memorax-code-adapter-common/src/clients/codex-plugin-artifact.mjs",
+    "lib/memorax-code-adapter-common/src/clients/codebuddy-command.mjs",
     "lib/memorax-code-adapter-common/src/hooks/hook-runtime-generation.mjs",
     "lib/memorax-code-adapter-common/src/hooks/memory-skill-reminder-policy.mjs",
     "lib/memorax-code-adapter-common/src/memorax-defaults.mjs",
@@ -200,12 +204,25 @@ for relative in [
     "lib/memorax-code-opencode-adapter/src/repo-memory-server-runner.mjs",
     "lib/memorax-code-opencode-adapter/hooks/repo-memory-job.mjs",
     "lib/memorax-code-opencode-adapter/skills/memorax-code/SKILL.md",
+    "lib/memorax-code-codebuddy-adapter/package.json",
+    "lib/memorax-code-codebuddy-adapter/.codebuddy-plugin/plugin.json",
+    "lib/memorax-code-codebuddy-adapter/hooks/hooks.json",
+    "lib/memorax-code-codebuddy-adapter/hooks/runtime-hook.mjs",
+    "lib/memorax-code-codebuddy-adapter/hooks/common-runtime.mjs",
+    "lib/memorax-code-codebuddy-adapter/hooks/repo-memory-job.mjs",
+    "lib/memorax-code-codebuddy-adapter/skills/memorax-code/SKILL.md",
+    "lib/memorax-code-codebuddy-adapter/skills/memorax-code/references/memorax-search.md",
+    "lib/memorax-code-codebuddy-adapter/skills/memorax-code/references/memorax-add.md",
+    "lib/memorax-code-codebuddy-adapter/src/config.mjs",
+    "lib/memorax-code-codebuddy-adapter/src/cli.mjs",
     "lib/memorax-code-backend/dist/service-entrypoint.js",
     "lib/memorax-code-backend/dist/memorax-cli.js",
     "lib/memorax-code-backend/dist/jsonl-append.js",
 ]:
     assert (package_root / relative).exists(), relative
 manifest = json.loads((package_root / "lib" / "memorax-code-codex-adapter" / ".codex-plugin" / "plugin.json").read_text())
+codebuddy_manifest = json.loads((package_root / "lib" / "memorax-code-codebuddy-adapter" / ".codebuddy-plugin" / "plugin.json").read_text())
+assert codebuddy_manifest["skills"] == ["./skills/memorax-code"]
 claude_manifest = json.loads((package_root / "lib" / "memorax-code-claude-adapter" / ".claude-plugin" / "plugin.json").read_text())
 marketplace_claude_manifest = json.loads((package_root / "lib" / "memorax-code-claude-marketplace" / "plugins" / "memorax-code-claude-adapter" / ".claude-plugin" / "plugin.json").read_text())
 codex_shell = json.loads((package_root / "lib" / "memorax-code-codex-adapter" / "hooks" / "runtime-shell.json").read_text())
@@ -370,6 +387,7 @@ for relative in \
   lib/dsh-plugin-install.mjs \
   lib/resolve-claude-command.mjs \
   lib/resolve-codex-command.mjs \
+  lib/resolve-codebuddy-command.mjs \
   lib/vscode-extension-command.mjs \
   lib/npm-invocation.mjs \
   lib/package-transition.mjs \
@@ -442,7 +460,18 @@ for relative in \
   lib/memorax-code-opencode-adapter/src/cli.mjs \
   lib/memorax-code-opencode-adapter/src/repo-memory-server-runner.mjs \
   lib/memorax-code-opencode-adapter/hooks/repo-memory-job.mjs \
-  lib/memorax-code-opencode-adapter/skills/memorax-code/SKILL.md
+  lib/memorax-code-opencode-adapter/skills/memorax-code/SKILL.md \
+  lib/memorax-code-codebuddy-adapter/package.json \
+  lib/memorax-code-codebuddy-adapter/.codebuddy-plugin/plugin.json \
+  lib/memorax-code-codebuddy-adapter/hooks/hooks.json \
+  lib/memorax-code-codebuddy-adapter/hooks/runtime-hook.mjs \
+  lib/memorax-code-codebuddy-adapter/hooks/common-runtime.mjs \
+  lib/memorax-code-codebuddy-adapter/hooks/repo-memory-job.mjs \
+  lib/memorax-code-codebuddy-adapter/skills/memorax-code/SKILL.md \
+  lib/memorax-code-codebuddy-adapter/skills/memorax-code/references/memorax-search.md \
+  lib/memorax-code-codebuddy-adapter/skills/memorax-code/references/memorax-add.md \
+  lib/memorax-code-codebuddy-adapter/src/config.mjs \
+  lib/memorax-code-codebuddy-adapter/src/cli.mjs
 do
   test -f "$package_install_root/$relative"
 done
@@ -500,6 +529,7 @@ assert config_sections == {
     "memory.writeback",
     "trace.claude",
     "trace.codex",
+    "trace.codebuddy",
     "trace.dsh",
     "trace.opencode",
 }

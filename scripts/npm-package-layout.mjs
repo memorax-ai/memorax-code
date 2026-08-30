@@ -9,6 +9,7 @@ const packagePrefixes = [
   "lib/memorax-code-codex-adapter/",
   "lib/memorax-code-dsh-adapter/",
   "lib/memorax-code-opencode-adapter/",
+  "lib/memorax-code-codebuddy-adapter/",
 ];
 const packageFiles = new Set([
   "bin",
@@ -18,6 +19,7 @@ const packageFiles = new Set([
   "bin/memorax-code-setup.mjs",
   "bin/memorax-code-codex.mjs",
   "bin/memorax-code-opencode.mjs",
+  "bin/memorax-code-codebuddy.mjs",
   "bin/memorax-code-npm-preinstall.mjs",
   "bin/memorax-code.mjs",
   "bin/memorax-cli.mjs",
@@ -42,6 +44,7 @@ const rootLibFiles = new Set([
   "lib/node-version.mjs",
   "lib/resolve-claude-command.mjs",
   "lib/resolve-codex-command.mjs",
+  "lib/resolve-codebuddy-command.mjs",
   "lib/run-entrypoint.mjs",
   "lib/setup-memory-preferences.mjs",
   "lib/setup-reconcile.mjs",
