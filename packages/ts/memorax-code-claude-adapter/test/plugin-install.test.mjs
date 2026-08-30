@@ -16,10 +16,14 @@ test("Claude plugin lifecycle uses the official CLI with the selected config hom
   const marketplacePath = join(root, "Marketplace With Spaces");
   const claudeCommand = join(root, "fake-claude.mjs");
   const callsPath = join(root, "calls.jsonl");
+  const npmExecPath = join(root, "npm-cli.js");
+  const previousNpmExecPath = process.env.MEMORAX_CODE_NPM_EXEC_PATH;
   try {
     await mkdir(join(marketplacePath, ".claude-plugin"), { recursive: true });
     await writeFile(join(marketplacePath, ".claude-plugin", "marketplace.json"), "{}\n");
     await writeFakeClaude(claudeCommand);
+    await writeFile(npmExecPath, "// test npm entrypoint\n");
+    process.env.MEMORAX_CODE_NPM_EXEC_PATH = npmExecPath;
 
     const installed = ensureClaudePluginInstalled({ claudeHome, memoraxCodeHome, marketplacePath, claudeCommand });
     assert.equal(installed.ok, true);
@@ -30,6 +34,7 @@ test("Claude plugin lifecycle uses the official CLI with the selected config hom
     assert.equal(metadata.version, 1);
     assert.equal(metadata.memoraxCodeCommand, process.argv[1]);
     assert.equal(metadata.claudeCommand, claudeCommand);
+    assert.equal(metadata.npmExecPath, npmExecPath);
     await writeFile(join(claudeHome, "settings.json"), `${JSON.stringify({
       extraKnownMarketplaces: { "memorax-code-local": { source: { source: "directory", path: marketplacePath } } },
       enabledPlugins: { "memorax-code-claude-adapter@memorax-code-local": true },
@@ -48,6 +53,8 @@ test("Claude plugin lifecycle uses the official CLI with the selected config hom
       { args: ["plugin", "marketplace", "remove", "memorax-code-local"], claudeConfigDir: claudeHome },
     ]);
   } finally {
+    if (previousNpmExecPath === undefined) delete process.env.MEMORAX_CODE_NPM_EXEC_PATH;
+    else process.env.MEMORAX_CODE_NPM_EXEC_PATH = previousNpmExecPath;
     await rm(root, { recursive: true, force: true });
   }
 });

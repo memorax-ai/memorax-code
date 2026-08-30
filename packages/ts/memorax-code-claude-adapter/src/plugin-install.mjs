@@ -227,10 +227,12 @@ export function ensureClaudePluginInstalled(options = {}) {
 }
 
 function writeInstalledPluginMetadata(installPath, claudeCommand) {
+  const npmExecPath = stringOption(process.env.MEMORAX_CODE_NPM_EXEC_PATH);
   atomicWriteJson(join(installPath, ".memorax-code-package.json"), {
     version: 1,
     memoraxCodeCommand: process.argv[1],
     claudeCommand,
+    ...(npmExecPath ? { npmExecPath } : {}),
     writtenAt: new Date().toISOString(),
   });
 }

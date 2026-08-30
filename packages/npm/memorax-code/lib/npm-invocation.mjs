@@ -4,11 +4,23 @@ import { homedir } from "node:os";
 import path from "node:path";
 
 export function resolveNpmInvocation(npmArgs, options = {}) {
+  const platform = options.platform ?? process.platform;
+  if (platform !== "win32") return { command: "npm", args: npmArgs };
+  const nodePath = options.nodePath ?? process.execPath;
+  const npmCli = resolveNpmExecPath(options);
+  if (npmCli) return { command: nodePath, args: [npmCli, ...npmArgs] };
+  throw new Error(
+    "npm CLI JavaScript entrypoint was not found; set MEMORAX_CODE_NPM_EXEC_PATH, "
+    + "npm_execpath, or NPM_CLI_JS before running memorax-code update",
+  );
+}
+
+export function resolveNpmExecPath(options = {}) {
   const env = options.env ?? process.env;
   const platform = options.platform ?? process.platform;
+  if (platform !== "win32") return undefined;
   const nodePath = options.nodePath ?? process.execPath;
   const fileExists = options.existsSync ?? existsSync;
-  if (platform !== "win32") return { command: "npm", args: npmArgs };
   const pathApi = path.win32;
   const candidates = [
     env.MEMORAX_CODE_NPM_EXEC_PATH,
@@ -23,13 +35,12 @@ export function resolveNpmInvocation(npmArgs, options = {}) {
       "bin",
       "npm-cli.js",
     ),
-  ].filter((candidate) => typeof candidate === "string" && /\.(?:cjs|js|mjs)$/i.test(candidate));
-  const npmCli = candidates.find((candidate) => fileExists(candidate));
-  if (npmCli) return { command: nodePath, args: [npmCli, ...npmArgs] };
-  throw new Error(
-    "npm CLI JavaScript entrypoint was not found; set MEMORAX_CODE_NPM_EXEC_PATH, "
-    + "npm_execpath, or NPM_CLI_JS before running memorax-code update",
-  );
+  ].filter((candidate) => (
+    typeof candidate === "string"
+    && pathApi.isAbsolute(candidate)
+    && /\.(?:cjs|js|mjs)$/i.test(candidate)
+  ));
+  return candidates.find((candidate) => fileExists(candidate));
 }
 
 export function npmCommandCwd(env = process.env) {

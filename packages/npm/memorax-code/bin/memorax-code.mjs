@@ -8,7 +8,7 @@ import { runAutomaticUpdate } from "../lib/automatic-update.mjs";
 import { stagePackagedClientHookRuntime } from "../lib/client-hook-runtime.mjs";
 import { unsupportedNodeVersionMessage } from "../lib/node-version.mjs";
 import { runNpmCommand } from "../lib/npm-invocation.mjs";
-import { runBackendEntrypoint } from "../lib/run-entrypoint.mjs";
+import { ensureNpmPackageRuntimeEnv, runBackendEntrypoint } from "../lib/run-entrypoint.mjs";
 
 const nodeVersionError = unsupportedNodeVersionMessage();
 if (nodeVersionError) {
@@ -386,6 +386,7 @@ function hasReadyMemoraxConfiguration(memoraxCodeHome) {
 }
 
 async function spawnSetupProcess(memoraxCodeHome, { updateMode = false, setupMode = "automatic" } = {}) {
+  ensureNpmPackageRuntimeEnv();
   const env = {
     ...process.env,
     MEMORAX_CODE_HOME: memoraxCodeHome,

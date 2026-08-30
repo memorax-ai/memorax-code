@@ -94,8 +94,9 @@ async function healthyBackend() {
 async function fakeMemoraxCode(root) {
   const command = join(root, "fake-memorax-code.mjs");
   await writeFile(command, [
-    'import { appendFileSync } from "node:fs";',
+    'import { appendFileSync, writeFileSync } from "node:fs";',
     'appendFileSync(process.env.MEMORAX_CODE_TEST_ARGS_PATH, `${JSON.stringify(process.argv.slice(2))}\\n`);',
+    'if (process.env.MEMORAX_CODE_TEST_NPM_PATH) writeFileSync(process.env.MEMORAX_CODE_TEST_NPM_PATH, process.env.MEMORAX_CODE_NPM_EXEC_PATH ?? "");',
   ].join("\n"));
   return command;
 }
@@ -342,9 +343,12 @@ test("ensure-backend resolves memorax-code command from plugin metadata", async 
 test("durable ensure-backend runtime keeps the plugin metadata command for Backend recovery", async () => {
   const f = await fixture("memorax-code-durable-recovery-command-");
   const argsPath = join(f.root, "recovery-args.jsonl");
+  const npmRecordPath = join(f.root, "recovery-npm-path.txt");
+  const npmExecPath = join(f.root, "npm-cli.js");
   const command = await fakeMemoraxCode(f.root);
   try {
-    const stagedPlugin = await stageTestPlugin(f.root, command);
+    await writeFile(npmExecPath, "// test npm entrypoint\n");
+    const stagedPlugin = await stageTestPlugin(f.root, command, { npmExecPath });
     const runtimePackage = await stageTestRuntimePackage(f.root);
     const generation = stageClientHookRuntimeGeneration({
       packageRoot: runtimePackage,
@@ -363,7 +367,9 @@ test("durable ensure-backend runtime keeps the plugin metadata command for Backe
         MEMORAX_CODE_CODEX_ENSURE_TIMEOUT_MS: "50",
         MEMORAX_CODE_CODEX_LIFECYCLE_COMMAND: "",
         MEMORAX_CODE_COMMAND: "",
+        MEMORAX_CODE_NPM_EXEC_PATH: "",
         MEMORAX_CODE_TEST_ARGS_PATH: argsPath,
+        MEMORAX_CODE_TEST_NPM_PATH: npmRecordPath,
         PATH: "",
         PLUGIN_ROOT: "",
       },
@@ -377,6 +383,7 @@ test("durable ensure-backend runtime keeps the plugin metadata command for Backe
       "--host", "127.0.0.1",
       "--port", "9",
     ]]);
+    assert.equal(await readFile(npmRecordPath, "utf8"), npmExecPath);
   } finally {
     await rm(f.root, { recursive: true, force: true });
   }
@@ -415,7 +422,7 @@ test("missing metadata command leaves stale plugin Hook inert after backend remo
   assert.equal(result.code, 0, result.stderr);
 });
 
-async function stageTestPlugin(root, command) {
+async function stageTestPlugin(root, command, metadata = {}) {
   const container = join(root, "plugin-cache");
   const stagedPlugin = join(container, "memorax-code-codex-adapter");
   const stagedCommon = join(container, "memorax-code-adapter-common");
@@ -427,6 +434,7 @@ async function stageTestPlugin(root, command) {
   await writeFile(join(stagedPlugin, ".memorax-code-package.json"), `${JSON.stringify({
     version: 1,
     memoraxCodeCommand: command,
+    ...metadata,
   })}\n`);
   return stagedPlugin;
 }

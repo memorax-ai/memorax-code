@@ -20,6 +20,10 @@ async function copyNpmEntrypointFixture() {
     join(packageRoot, "lib", "node-version.mjs"),
   );
   await copyFile(
+    join(repoRoot, "packages", "npm", "memorax-code", "lib", "npm-invocation.mjs"),
+    join(packageRoot, "lib", "npm-invocation.mjs"),
+  );
+  await copyFile(
     join(repoRoot, "packages", "npm", "memorax-code", "lib", "resolve-codex-command.mjs"),
     join(packageRoot, "lib", "resolve-codex-command.mjs"),
   );
