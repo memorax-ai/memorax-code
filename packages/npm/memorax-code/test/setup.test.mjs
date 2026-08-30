@@ -1253,6 +1253,38 @@ test("automatic update setup is non-interactive and preserves disabled clients",
   }
 });
 
+test("automatic update setup preserves configured and legacy DSH client intent", async () => {
+  const existingConfig = [
+    "[clients]",
+    "codex = true",
+    "claude = true",
+    "opencode = true",
+    "codebuddy = true",
+    "",
+  ].join("\n");
+  const run = await runSetup({
+    claudeAvailable: false,
+    dshProfiles: ["default"],
+    existingCache: true,
+    interactive: false,
+    memoraxCodeConfig: existingConfig,
+    memoraxEnv: { MEMORAX_CODE_SETUP_AUTOMATIC_UPDATE: "1" },
+    updateMode: true,
+  });
+  try {
+    assert.equal(run.result.code, 0, run.result.stderr);
+    assert.match(run.result.stderr, /DeepSeek Harness profiles: found \(default\)/);
+    assert.match(run.result.stderr, /Claude Code runtime was not detected; skipping its adapter setup/);
+    assert.match(run.result.stderr, /OpenCode runtime or configuration was not detected; skipping its adapter setup/);
+    assert.match(run.result.stderr, /CodeBuddy\/WorkBuddy runtime was not detected; skipping its adapter setup/);
+    assert.match(run.log, /^memorax-code start --clients all$/m);
+    assert.match(run.log, /^memorax-code status --clients all$/m);
+    await assertSetupComplete(run);
+  } finally {
+    await rm(run.root, { recursive: true, force: true });
+  }
+});
+
 test("automatic update setup refuses a changed Codex marketplace identity", async () => {
   const existingConfig = [
     "[clients]",

@@ -71,6 +71,7 @@ const codeBuddyCommand = codeBuddyRuntime.command;
 const previousClients = readPersistedClientSelection();
 const existingSetup = previousClients !== undefined;
 const persistedDshSelection = readPersistedDshSelection();
+const dshEnabledByConfig = persistedDshSelection !== false;
 let dshProfiles = [];
 let dshProfilesVerified = true;
 try {
@@ -82,7 +83,7 @@ try {
 }
 const dshSelected = dshProfilesVerified
   && dshProfiles.length > 0
-  && (automaticUpdateMode ? persistedDshSelection === true : persistedDshSelection !== false);
+  && dshEnabledByConfig;
 if (automaticUpdateMode && !existingSetup) {
   logRed("Automatic update setup requires an existing [clients] selection.");
   process.exit(1);
@@ -172,10 +173,9 @@ if (writeClientSelectionConfig(selectedClients) === "failed") {
   printPostinstallSummary("not-verified");
   process.exit(1);
 }
-const clientMode = clientModeFor(installClients, {
-  includeDsh: dshProfilesVerified && (automaticUpdateMode
-    ? persistedDshSelection === true
-    : persistedDshSelection !== false),
+const lifecycleClients = automaticUpdateMode ? selectedClients : installClients;
+const clientMode = clientModeFor(lifecycleClients, {
+  includeDsh: dshProfilesVerified && dshEnabledByConfig,
 });
 let memoraxConfigResult = "skipped";
 if (!updateMode) {
