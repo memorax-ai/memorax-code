@@ -214,6 +214,8 @@ for relative in [
     "lib/memorax-code-codebuddy-adapter/skills/memorax-code/references/memorax-search.md",
     "lib/memorax-code-codebuddy-adapter/skills/memorax-code/references/memorax-add.md",
     "lib/memorax-code-codebuddy-adapter/src/config.mjs",
+    "lib/memorax-code-codebuddy-adapter/src/hook-manifest.mjs",
+    "lib/memorax-code-codebuddy-adapter/src/runtime-observation.mjs",
     "lib/memorax-code-codebuddy-adapter/src/cli.mjs",
     "lib/memorax-code-backend/dist/service-entrypoint.js",
     "lib/memorax-code-backend/dist/memorax-cli.js",
@@ -471,6 +473,8 @@ for relative in \
   lib/memorax-code-codebuddy-adapter/skills/memorax-code/references/memorax-search.md \
   lib/memorax-code-codebuddy-adapter/skills/memorax-code/references/memorax-add.md \
   lib/memorax-code-codebuddy-adapter/src/config.mjs \
+  lib/memorax-code-codebuddy-adapter/src/hook-manifest.mjs \
+  lib/memorax-code-codebuddy-adapter/src/runtime-observation.mjs \
   lib/memorax-code-codebuddy-adapter/src/cli.mjs
 do
   test -f "$package_install_root/$relative"

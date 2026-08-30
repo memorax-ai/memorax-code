@@ -3,7 +3,10 @@ import { chmod, mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
-import { resolveCodeBuddyCommand } from "../lib/resolve-codebuddy-command.mjs";
+import {
+  defaultCodeBuddyHome,
+  resolveCodeBuddyCommand,
+} from "../lib/resolve-codebuddy-command.mjs";
 
 test("CodeBuddy resolver honors an explicit command", () => {
   assert.deepEqual(resolveCodeBuddyCommand({
@@ -32,4 +35,22 @@ test("CodeBuddy resolver reports unavailable without a runtime", () => {
     applicationRoots: ["/nonexistent/Applications"],
     platform: "darwin",
   }).source, "unavailable");
+});
+
+test("CodeBuddy resolver finds the Windows WorkBuddy script under LocalAppData Programs", () => {
+  const root = "C:\\Users\\tester\\AppData\\Local\\Programs\\WorkBuddy";
+  const command = `${root}\\resources\\app.asar.unpacked\\cli\\bin\\codebuddy`;
+  assert.deepEqual(resolveCodeBuddyCommand({
+    env: { PATH: "" },
+    platform: "win32",
+    windowsRoots: [root],
+    pathExists: (candidate) => candidate === command,
+  }), { command, source: "app-bundled" });
+});
+
+test("CodeBuddy resolver defaults Windows plugin state to .codebuddy", () => {
+  assert.equal(
+    defaultCodeBuddyHome({}, "C:\\Users\\tester", "win32"),
+    "C:\\Users\\tester\\.codebuddy",
+  );
 });

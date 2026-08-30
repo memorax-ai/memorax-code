@@ -1096,6 +1096,7 @@ export function isAdapterReady(report: AdapterReport): boolean {
     && report.codexSkills?.ok !== false
     && report.claudeSkills?.ok !== false
     && report.opencodeSkills?.ok !== false
+    && report.codebuddyHooks?.ok !== false
     && report.codebuddySkills?.ok !== false;
 }
 

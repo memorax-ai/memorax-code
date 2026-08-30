@@ -30,6 +30,7 @@ try {
     && result.installed === true
     && result.enabled === true
     && result.marketplaceReady === true
+    && result.codebuddyHooks?.ok === true
     && result.codebuddySkills?.ok === true;
   process.exit(parsed.command === "status" ? (ready ? 0 : 1) : (result.ok ? 0 : 1));
 } catch (error) {

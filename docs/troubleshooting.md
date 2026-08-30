@@ -216,6 +216,25 @@ This reconciles the Claude Code marketplace plugin and Hooks. If the plugin is
 still missing or stale, restart or refresh Claude Code. Do not manually copy
 Hooks into Claude settings.
 
+## CodeBuddy or WorkBuddy Hook is inactive
+
+```sh
+memorax-code start --clients codebuddy
+memorax-code-codebuddy status --json
+```
+
+On Windows, the managed plugin defaults to `%USERPROFILE%\.codebuddy`, while
+`CODEBUDDY_HOME` or `WORKBUDDY_HOME` remains an explicit override. A
+`codebuddyHooks.status` value of `unverified` means the files are configured but
+the current plugin version has not yet produced a real Hook event. Restart or
+refresh WorkBuddy, submit one prompt, and check status again. `observed` means
+the Hook entrypoint and its shared runtime loaded; `invalid` means setup should
+be rerun.
+
+If WorkBuddy still reports a Hook command containing `/c/Users/...`, it is
+loading a stale plugin manifest. Rerun the start command above and fully
+restart WorkBuddy. Do not manually edit the installed Hook command.
+
 ## DeepSeek Harness Profile integration is inactive
 
 ```sh

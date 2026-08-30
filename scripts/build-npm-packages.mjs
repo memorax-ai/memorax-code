@@ -260,6 +260,8 @@ async function validateStaging(packageRoot) {
     "lib/memorax-code-codebuddy-adapter/hooks/common-runtime.mjs",
     "lib/memorax-code-codebuddy-adapter/hooks/repo-memory-job.mjs",
     "lib/memorax-code-codebuddy-adapter/src/config.mjs",
+    "lib/memorax-code-codebuddy-adapter/src/hook-manifest.mjs",
+    "lib/memorax-code-codebuddy-adapter/src/runtime-observation.mjs",
     "lib/memorax-code-codebuddy-adapter/src/cli.mjs",
   ]) {
     if (!(await stat(join(packageRoot, requiredPath)).catch(() => undefined))?.isFile()) {

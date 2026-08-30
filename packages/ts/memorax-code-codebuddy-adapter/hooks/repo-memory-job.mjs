@@ -15,12 +15,12 @@ try {
   const payload = runRepoMemoryJob(process.argv.slice(2), {
     runner: "codebuddy",
     finalMessageSource: "stdout",
-    memorySkillInvocation: "$memorax-code",
+    memorySkillInvocation: "the `memorax-code` skill",
     validatorPath: resolve(pluginRoot, "skills/memorax-code/scripts/validate_memory.py"),
     evaluateRepository,
     createCommand({ prompt }) {
       const codeBuddy = resolveHookCodeBuddyCommand({
-        pluginRoot: process.env.CODEBUDDY_PLUGIN_ROOT || pluginRoot,
+        pluginRoot,
       });
       return [
         codeBuddy,

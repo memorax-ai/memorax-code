@@ -1,6 +1,18 @@
-import { readCodeBuddyTranscriptTurn, type CodeBuddyTurn, type CodeBuddyTurnFailureReason } from "./jsonl-history.js";
+import {
+  readCodeBuddyInterruptedTranscriptTurn,
+  readCodeBuddyTranscriptTurn,
+  type CodeBuddyInterruptedTurn,
+  type CodeBuddyTurn,
+  type CodeBuddyTurnFailureReason,
+} from "./jsonl-history.js";
 import { retrieveAutomaticMemoryContext } from "../../memory/automatic-retrieval.js";
 import { createAutomaticMemoryWritebackRuntime, type AutomaticMemoryWritebackEnqueue, type AutomaticMemoryWritebackRejectionReason, type AutomaticMemoryWritebackRuntime } from "../../memory/automatic-writeback.js";
+import {
+  claimQuotaNotice,
+  createPendingQuotaNoticeRuntime,
+  type PendingQuotaNoticeRuntime,
+  type QuotaNoticeClaimer,
+} from "../../memory/quota-notice.js";
 import type { CodeBuddyTurnStartCommand, CodeBuddyWritebackCommand, MemoryHookTurnStartResult } from "../../memory/hook-command.js";
 import type { MemoryDiagnosticLogger, MemoryObservabilityHook } from "../../memory/observability.js";
 import { createMemoryTurnCoordinator, type MemoryTurnCoordinator, type MemoryTurnWritebackSkipReason } from "../../memory/turn-coordinator.js";
@@ -9,6 +21,7 @@ import type { RepositoryMemoryScopeFailureReason } from "../../repository/scope.
 import { traceContextFromCodeBuddyHookBody, type TraceContext } from "../../trace/context.js";
 import {
   markCurrentCodeBuddyTurnOutcome,
+  readOpenTraceTurn,
   recordCodeBuddyTraceEvent,
   traceTurnEventId,
   writeCurrentCodeBuddyTurn,
@@ -17,6 +30,7 @@ import {
 
 type Options = {
   automaticWriteback?: AutomaticMemoryWritebackEnqueue;
+  claimQuotaNotice?: QuotaNoticeClaimer;
   diagnosticLogger?: MemoryDiagnosticLogger;
   env?: Record<string, string | undefined>;
   fetchImpl?: typeof fetch;
@@ -26,6 +40,7 @@ type Options = {
   cleanupIntervalMs?: number;
   memoryObservability?: MemoryObservabilityHook;
   memoraxCodeHome?: string;
+  pendingQuotaNotice?: PendingQuotaNoticeRuntime;
   repositoryMemorySession?: RepositoryMemorySessionRuntime;
   turnCoordinator?: MemoryTurnCoordinator;
   transcriptReadAttempts?: number;
@@ -37,12 +52,18 @@ export type CodeBuddyMemoryHookRuntime = { recordTurnStart(command: CodeBuddyTur
 
 export function createCodeBuddyMemoryHookRuntime(options: Options = {}): CodeBuddyMemoryHookRuntime {
   const now = options.now ?? (() => Date.now());
-  const automatic = options.turnCoordinator ? undefined : options.automaticWriteback ? { enqueue: options.automaticWriteback, discardForScopeUpgrade: () => 0, drain: async () => undefined, close: () => undefined } : createAutomaticMemoryWritebackRuntime({ diagnosticLogger: options.diagnosticLogger });
+  const pendingQuotaNotice = options.pendingQuotaNotice ?? createPendingQuotaNoticeRuntime({
+    claimQuotaNotice: options.claimQuotaNotice,
+    diagnosticLogger: options.diagnosticLogger,
+    env: options.env,
+  });
+  const ownsPendingQuotaNotice = options.pendingQuotaNotice === undefined;
+  const automatic = options.turnCoordinator ? undefined : options.automaticWriteback ? { enqueue: options.automaticWriteback, discardForScopeUpgrade: () => 0, drain: async () => undefined, close: () => undefined } : createAutomaticMemoryWritebackRuntime({ diagnosticLogger: options.diagnosticLogger, queueQuotaNotice: pendingQuotaNotice.queue });
   const coordinator = options.turnCoordinator ?? createMemoryTurnCoordinator({ automaticWriteback: automatic!.enqueue, now, ttlMs: options.ttlMs, maxEntries: options.maxEntries, cleanupIntervalMs: options.cleanupIntervalMs });
   const repository = options.repositoryMemorySession ?? createRepositoryMemorySessionRuntime({ onScopeUpgrade: automatic?.discardForScopeUpgrade });
-  const retrievals = new Map<string, number>();
   return {
     async recordTurnStart(command) {
+      await reconcilePreviousInterruptedTurn(coordinator, command, options, now);
       const memory = await resolveRepository(command, options, repository);
       const traceContext = traceContextFromCodeBuddyHookBody(command, new Date(now()).toISOString());
       coordinator.recordTurnStart({ client: "codebuddy", sessionId: command.sessionId, clientTurnId: command.turnId, cwd: command.cwd, workspaceKind: command.workspaceKind, transcriptPath: command.transcriptPath, createdAt: now(), traceContext, repositoryMemory: memory });
@@ -63,13 +84,12 @@ export function createCodeBuddyMemoryHookRuntime(options: Options = {}): CodeBud
         now: () => new Date(now()),
       }), options.diagnosticLogger);
       const repoMemoryWorktree = resolvedRepoMemoryWorktree(memory);
-      const retrievalKey = `${command.sessionId}:${command.turnId}`;
-      const retrievalNow = now();
-      pruneRetrievals(retrievals, retrievalNow, options.ttlMs ?? 30 * 60 * 1000, options.maxEntries ?? 1000);
-      if (retrievals.has(retrievalKey)) return { ok: true, ...(repoMemoryWorktree ? { repoMemoryWorktree } : {}) };
-      retrievals.set(retrievalKey, retrievalNow);
-      const retrieval = await retrieveAutomaticMemoryContext({ diagnosticLogger: options.diagnosticLogger, env: options.env ?? process.env, fetchImpl: options.fetchImpl, memoryObservability: options.memoryObservability, memoryObservabilitySource: "codebuddy_hook_retrieval", query: command.prompt, repositoryMemory: memory, sessionKey: command.sessionId, traceContext: traceContextFromCodeBuddyHookBody(command) });
-      return { ok: true, ...(repoMemoryWorktree ? { repoMemoryWorktree } : {}), ...(retrieval.context ? { additionalContext: retrieval.context } : {}) };
+      const pendingUserNotice = memory.ok
+        ? await pendingQuotaNotice.claim(memory.memory.config)
+        : undefined;
+      const retrieval = await retrieveAutomaticMemoryContext({ diagnosticLogger: options.diagnosticLogger, claimQuotaNotice: options.claimQuotaNotice ?? claimQuotaNotice, env: options.env ?? process.env, fetchImpl: options.fetchImpl, memoryObservability: options.memoryObservability, memoryObservabilitySource: "codebuddy_hook_retrieval", query: command.prompt, repositoryMemory: memory, sessionKey: command.sessionId, traceContext: traceContextFromCodeBuddyHookBody(command) });
+      const userNotice = [pendingUserNotice, retrieval.userNotice].filter(Boolean).join("\n");
+      return { ok: true, ...(repoMemoryWorktree ? { repoMemoryWorktree } : {}), ...(retrieval.context ? { additionalContext: retrieval.context } : {}), ...(userNotice ? { userNotice } : {}) };
     },
     async writeback(command) {
       const entry = coordinator.getTurn({ client: "codebuddy", sessionId: command.sessionId, clientTurnId: command.turnId });
@@ -92,19 +112,8 @@ export function createCodeBuddyMemoryHookRuntime(options: Options = {}): CodeBud
       return completed.scheduled ? { ok: true, scheduled: true } : { ok: true, scheduled: false, reason: completed.reason };
     },
     size() { return coordinator.size("codebuddy"); },
-    close() { retrievals.clear(); if (!options.turnCoordinator) coordinator.close(); if (!options.repositoryMemorySession) repository.close(); automatic?.close?.(); },
+    close() { if (!options.turnCoordinator) coordinator.close(); if (!options.repositoryMemorySession) repository.close(); automatic?.close?.(); if (ownsPendingQuotaNotice) pendingQuotaNotice.close(); },
   };
-}
-
-function pruneRetrievals(retrievals: Map<string, number>, nowMs: number, ttlMs: number, maxEntries: number): void {
-  for (const [key, createdAt] of retrievals) {
-    if (nowMs - createdAt >= ttlMs) retrievals.delete(key);
-  }
-  while (retrievals.size >= maxEntries) {
-    const oldest = retrievals.keys().next().value;
-    if (oldest === undefined) break;
-    retrievals.delete(oldest);
-  }
 }
 
 async function resolveRepository(command: { sessionId: string; cwd?: string; workspaceKind?: string }, options: Options, repository: RepositoryMemorySessionRuntime): Promise<ConfiguredRepositoryMemoryResult> {
@@ -189,6 +198,127 @@ async function recordCodeBuddyTurnMaterialization(
     request: { original_event_id: originalEventId, prompt: turn.userPrompt },
     response: { assistantMessage: turn.assistantReply },
   }), options.diagnosticLogger);
+}
+
+async function reconcilePreviousInterruptedTurn(
+  coordinator: MemoryTurnCoordinator,
+  currentTurn: CodeBuddyTurnStartCommand,
+  options: Options,
+  now: () => number,
+): Promise<void> {
+  const candidate = await previousInterruptedTurnCandidate(coordinator, currentTurn, options, now);
+  if (!candidate) return;
+  const transcript = await readCodeBuddyInterruptedTranscriptTurn({
+    transcriptPath: candidate.transcriptPath,
+    sessionId: candidate.sessionId,
+    turnId: candidate.turnId,
+  });
+  if (!transcript.ok) return;
+  await recordCodeBuddyInterruptedTurnEnd(options, candidate.traceContext, transcript.turn);
+  coordinator.discardTurn({
+    client: "codebuddy",
+    sessionId: candidate.sessionId,
+    clientTurnId: candidate.turnId,
+  }, "interrupted");
+  options.diagnosticLogger?.("codebuddy_memory_hook.interrupted_turn_reconciled", {
+    sessionId: candidate.sessionId,
+    turnId: candidate.turnId,
+    assistantChars: transcript.turn.assistantReply.length,
+    activityCount: transcript.turn.activities.length,
+    sessionTurnIndex: transcript.turn.sessionTurnIndex,
+  });
+}
+
+type CodeBuddyInterruptedTurnCandidate = Readonly<{
+  sessionId: string;
+  turnId: string;
+  transcriptPath: string;
+  traceContext: TraceContext;
+}>;
+
+async function previousInterruptedTurnCandidate(
+  coordinator: MemoryTurnCoordinator,
+  currentTurn: CodeBuddyTurnStartCommand,
+  options: Options,
+  now: () => number,
+): Promise<CodeBuddyInterruptedTurnCandidate | undefined> {
+  const open = await readOpenTraceTurn({
+    client: "codebuddy",
+    memoraxCodeHome: options.memoraxCodeHome,
+    env: options.env,
+    expectedSessionId: currentTurn.sessionId,
+    allowStale: true,
+    now: () => new Date(now()),
+  });
+  if (!open.ok && open.reason === "closed") return undefined;
+  if (open.ok && open.traceContext.turnId && open.traceContext.turnId !== currentTurn.turnId) {
+    const turnId = open.traceContext.turnId;
+    const cached = coordinator.getTurn({ client: "codebuddy", sessionId: currentTurn.sessionId, clientTurnId: turnId });
+    return {
+      sessionId: currentTurn.sessionId,
+      turnId,
+      transcriptPath: cached?.transcriptPath
+        ?? open.traceContext.transcriptPath
+        ?? currentTurn.transcriptPath,
+      traceContext: cached?.traceContext ?? open.traceContext,
+    };
+  }
+  const cached = coordinator.latestTurn({
+    client: "codebuddy",
+    sessionId: currentTurn.sessionId,
+    excludeClientTurnId: currentTurn.turnId,
+  });
+  if (!cached) return undefined;
+  const transcriptPath = cached.transcriptPath ?? currentTurn.transcriptPath;
+  const traceContext = cached.traceContext ?? traceContextFromCodeBuddyHookBody({
+    sessionId: cached.sessionId,
+    turnId: cached.clientTurnId,
+    cwd: cached.cwd,
+    workspaceKind: cached.workspaceKind,
+    transcriptPath,
+  }, new Date(cached.createdAt).toISOString());
+  if (!traceContext) return undefined;
+  return {
+    sessionId: cached.sessionId,
+    turnId: cached.clientTurnId,
+    transcriptPath,
+    traceContext,
+  };
+}
+
+async function recordCodeBuddyInterruptedTurnEnd(
+  options: Options,
+  traceContext: TraceContext,
+  turn: CodeBuddyInterruptedTurn,
+): Promise<void> {
+  const recorded = await recordTraceBestEffort(
+    "codebuddy_memory_hook.interrupted_turn_end_event",
+    recordCodeBuddyTraceEvent({
+      eventId: traceTurnEventId(traceContext, "turn_end"),
+      memoraxCodeHome: options.memoraxCodeHome,
+      env: options.env,
+      traceContext,
+      type: "turn_end",
+      source: "codebuddy-transcript",
+      operation: "reply",
+      ok: true,
+      outcome: "interrupted",
+      activities: turn.activities,
+      sessionTurnIndex: turn.sessionTurnIndex,
+      request: { prompt: turn.userPrompt },
+      response: { assistantMessage: turn.assistantReply },
+    }),
+    options.diagnosticLogger,
+  );
+  if (!recorded || (!recorded.written && recorded.reason !== "duplicate_event")) return;
+  await recordTraceBestEffort(
+    "codebuddy_memory_hook.interrupted_current_turn_close",
+    markCurrentCodeBuddyTurnOutcome(traceContext, "interrupted", {
+      memoraxCodeHome: options.memoraxCodeHome,
+      env: options.env,
+    }),
+    options.diagnosticLogger,
+  );
 }
 
 async function recordTraceBestEffort<T>(

@@ -16,6 +16,7 @@ test("CodeBuddy repo memory launcher uses non-persistent print mode", async () =
   await enableCodeBuddyAdapter({ codeBuddyHome: home, codeBuddyCommand: command });
   const result = runInstalledJob(home, ["start", "--mode", "build", "--repo", repo, "--dry-run"], {
     MEMORAX_CODE_HOME: join(root, "memorax-code"),
+    CODEBUDDY_PLUGIN_ROOT: "/c/Users/incorrect/plugin/root",
   });
   assert.equal(result.status, 0, result.stderr);
   const payload = JSON.parse(result.stdout);
@@ -30,7 +31,9 @@ test("CodeBuddy repo memory launcher uses non-persistent print mode", async () =
     "--no-session-persistence",
   ]);
   assert.match(payload.prompt, /repo-build operation/);
-  assert.match(payload.prompt, /\$memorax-code/);
+  assert.match(payload.prompt, /the `memorax-code` skill/);
+  assert.doesNotMatch(payload.prompt, /memorax-code-codebuddy-adapter:memorax-code/);
+  assert.doesNotMatch(payload.prompt, /\$memorax-code/);
 });
 
 test("CodeBuddy repo memory worker materializes and validates a repository bundle", async () => {

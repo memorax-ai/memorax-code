@@ -44,6 +44,9 @@ export function resolveWindowsCliInvocation(
   }
   resolvedCommand ??= command;
   if (/\.(?:exe|com)$/i.test(resolvedCommand)) return { command: resolvedCommand, args };
+  if (isBareCodeBuddyEntrypoint(resolvedCommand, pathApi) && fileExists(resolvedCommand)) {
+    return { command: options.nodePath ?? process.execPath, args: [resolvedCommand, ...args] };
+  }
   if (!/\.(?:cmd|bat)$/i.test(resolvedCommand)) {
     throw new Error(`refusing to execute unsupported Windows command shim: ${resolvedCommand}`);
   }
@@ -122,11 +125,18 @@ export function selectWindowsCommandCandidate(command: string, output: unknown):
     .map((value) => value.trim())
     .filter(Boolean);
   const selected = candidates.find((value) => /\.(?:cmd|bat)$/i.test(value))
-    ?? candidates.find((value) => /\.(?:exe|com)$/i.test(value));
+    ?? candidates.find((value) => /\.(?:exe|com)$/i.test(value))
+    ?? (path.win32.basename(command).toLowerCase() === "codebuddy"
+      ? candidates.find((value) => isBareCodeBuddyEntrypoint(value, path.win32))
+      : undefined);
   if (!selected) {
     throw new Error(`where.exe did not return a safe executable or command shim for ${command}`);
   }
   return selected;
+}
+
+function isBareCodeBuddyEntrypoint(value: string, pathApi: typeof path.win32): boolean {
+  return pathApi.basename(value).toLowerCase() === "codebuddy" && pathApi.extname(value) === "";
 }
 
 export function resolveWindowsNpmInvocation(

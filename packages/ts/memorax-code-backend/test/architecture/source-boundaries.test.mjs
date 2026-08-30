@@ -107,7 +107,12 @@ const rules = [
   },
   {
     name: "OpenCode memory hook runtime stays independent from HTTP and Backend composition",
-    importers: ["clients/opencode/memory-hook-runtime.ts", "clients/opencode/message-turn.ts", "clients/codebuddy/memory-hook-runtime.ts", "clients/codebuddy/jsonl-history.ts"],
+    importers: ["clients/opencode/memory-hook-runtime.ts", "clients/opencode/message-turn.ts"],
+    forbidden: ["node:http", "server-", "entrypoints/", "transport/http/", "app/state"],
+  },
+  {
+    name: "CodeBuddy memory hook runtime stays independent from HTTP and Backend composition",
+    importers: ["clients/codebuddy/memory-hook-runtime.ts", "clients/codebuddy/jsonl-history.ts"],
     forbidden: ["node:http", "server-", "entrypoints/", "transport/http/", "app/state"],
   },
   {

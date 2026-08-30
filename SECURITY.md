@@ -1,7 +1,7 @@
 # Security Policy
 
-MemoraX Code is a local-first integration for Codex, Claude Code, DeepSeek
-Harness (DSH), and OpenCode with an optional external bind mode and required
+MemoraX Code is a local-first integration for Codex, Claude Code, CodeBuddy/WorkBuddy,
+DeepSeek Harness (DSH), and OpenCode with an optional external bind mode and required
 communication with MemoraX for cloud-backed memory. Security reports should
 distinguish the local Backend, client-owned provider traffic, and MemoraX
 memory traffic.
@@ -29,7 +29,7 @@ Please allow time for triage and remediation before public disclosure.
 
 ### Client and local Backend
 
-- Codex, Claude Code, DeepSeek Harness, and OpenCode own provider credentials,
+- Codex, Claude Code, CodeBuddy/WorkBuddy, DeepSeek Harness, and OpenCode own provider credentials,
   models, native tools, and provider traffic. MemoraX Code does not proxy
   model-provider traffic and does not need client provider credentials.
 - The managed Backend binds to loopback by default. External binding requires
@@ -63,6 +63,11 @@ Please allow time for triage and remediation before public disclosure.
   mutation goes through DSH's native plugin command. The DSH state record,
   generated runtime, and Profile manifests are security-sensitive local
   authority and must not be copied between users or edited by hand.
+- The managed CodeBuddy/WorkBuddy plugin reads native JSONL transcripts from the
+  client-owned project history and sends only normalized turn data required for
+  retrieval, trace, or writeback. Repo Memory jobs run a bounded headless
+  CodeBuddy process with `--dangerously-skip-permissions`; use this only for a
+  Backend-authorized Git worktree and never for untrusted source.
 - Initial Repo Memory builds use only the Git worktree returned by an
   authenticated Backend turn-start request. Backend or workspace-scope
   failures skip the build; client integrations do not fall back to
@@ -168,7 +173,7 @@ the product creates or tightens the home to mode `0700` and newly seeded
 configuration to mode `0600`; Windows relies on the current user's filesystem
 ACLs.
 
-Codex, Claude Code, DSH, and OpenCode local trace capture is enabled by default.
+Codex, Claude Code, CodeBuddy/WorkBuddy, DSH, and OpenCode local trace capture is enabled by default.
 Depending on the enabled client capabilities, traces may include prompts,
 responses, recalled memory, writeback content, reminder text, and local paths.
 Trace files stay under `MEMORAX_CODE_HOME`. The shipped package has no trace

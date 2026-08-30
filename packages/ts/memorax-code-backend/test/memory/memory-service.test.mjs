@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -104,8 +105,11 @@ test("memory service surfaces automatic Add quota on the next supported client t
   const turns = [
     { turnId: "turn-quota-1", prompt: "Store the first turn.", reply: "First turn stored." },
     { turnId: "turn-quota-2", prompt: "Store the second turn.", reply: "Second turn stored." },
+    { turnId: "turn-quota-3", prompt: "Store the third turn.", reply: "Third turn stored." },
   ];
   const transcriptPath = await writeRollout(root, "session-service-quota", turns);
+  const codeBuddyTranscriptPath = join(root, "session-codebuddy-service-quota.jsonl");
+  await writeFile(codeBuddyTranscriptPath, "", "utf8");
   const diagnosticEvents = [];
   const requests = [];
   const service = createMemoryService({
@@ -117,6 +121,7 @@ test("memory service surfaces automatic Add quota on the next supported client t
       MEMORAX_CODE_HOME: memoraxCodeHome,
       MEMORAX_CODE_CODEX_TRACE_ENABLED: "false",
       MEMORAX_CODE_CLAUDE_TRACE_ENABLED: "false",
+      MEMORAX_CODE_CODEBUDDY_TRACE_ENABLED: "false",
       MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED: "false",
       MEMORAX_CODE_MEMORY_WRITEBACK_ENABLED: "true",
       MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_ENABLED: "false",
@@ -195,6 +200,27 @@ test("memory service surfaces automatic Add quota on the next supported client t
     });
     await waitForAcceptedWritebacks(diagnosticEvents, 2);
 
+    const codeBuddySessionId = "session-codebuddy-service-quota";
+    const codeBuddyPrompt = "Show the second pending warning.";
+    const codeBuddyNotice = await service.recordTurnStart({
+      version: 1,
+      client: "codebuddy",
+      sessionId: codeBuddySessionId,
+      turnId: codeBuddyTurnId(codeBuddySessionId, codeBuddyPrompt),
+      prompt: codeBuddyPrompt,
+      cwd: workspace,
+      transcriptPath: codeBuddyTranscriptPath,
+    });
+    assert.equal(codeBuddyNotice.userNotice, "Quota notice: 9998 remaining.");
+    assert.equal("additionalContext" in codeBuddyNotice, false);
+
+    await service.recordTurnStart(codexTurnStart(turns[2]));
+    assert.deepEqual(await service.writebackTurn(writeback(turns[2])), {
+      ok: true,
+      scheduled: true,
+    });
+    await waitForAcceptedWritebacks(diagnosticEvents, 3);
+
     const openCodeTurn = {
       version: 1,
       client: "opencode",
@@ -204,10 +230,10 @@ test("memory service surfaces automatic Add quota on the next supported client t
       cwd: workspace,
     };
     const openCodeNotice = await service.recordTurnStart(openCodeTurn);
-    assert.equal(openCodeNotice.userNotice, "Quota notice: 9998 remaining.");
+    assert.equal(openCodeNotice.userNotice, "Quota notice: 9997 remaining.");
     assert.equal("additionalContext" in openCodeNotice, false);
     assert.deepEqual(await service.recordTurnStart(openCodeTurn), { ok: true });
-    assert.equal(requests.length, 2);
+    assert.equal(requests.length, 3);
   } finally {
     await service.drain();
     service.close();
@@ -308,6 +334,10 @@ async function repairGitMetadata(workspace, repositoryName) {
     `[remote "origin"]\n\turl = https://example.test/owner/${repositoryName}.git\n`,
     "utf8",
   );
+}
+
+function codeBuddyTurnId(sessionId, prompt, boundary = 0) {
+  return `${sessionId}:${boundary}:${createHash("sha256").update(prompt.trim()).digest("hex")}`;
 }
 
 async function writeRollout(root, sessionId, turns) {
