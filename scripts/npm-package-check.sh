@@ -43,6 +43,9 @@ scripts/build-npm-packages.sh "$out_dir"
     make test-npm-package
 )
 
+# Keep the live registry from replacing the staged future release during smoke tests.
+export MEMORAX_CODE_AUTO_UPDATE=false
+
 package_version="$(node -e 'const fs = require("fs"); const pkg = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); console.log(pkg.version);' "$out_dir/memorax-code/package.json")"
 
 python3 - <<'PY_STAGED_PACKAGE' "$out_dir/memorax-code" "packages/npm/memorax-code/shipped-docs.json"
