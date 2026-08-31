@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -210,10 +210,6 @@ async function runUpdateCommand(args) {
   if (npmResult.exitCode !== 0) return npmResult.exitCode;
 
   const memoraxCodeHome = requestedHome ?? requestedMemoraxCodeHome([]);
-  if (!existsSync(join(memoraxCodeHome, "runtime", "backend", "backend.pid.json"))) {
-    console.error("memorax-code update: package updated; the managed Backend remains stopped; run `memorax-code setup` from a terminal to reconcile clients and verify Hook changes");
-    return 0;
-  }
   if (!setupCanPrompt()) {
     console.error("memorax-code update: package updated; run `memorax-code setup` from a terminal to reconcile clients and verify Hook changes");
     return 0;
