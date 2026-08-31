@@ -131,7 +131,7 @@ async function startMockMemorax({ status = 200, body = { success: true, data: { 
   };
 }
 
-async function runSetup({ existingCache = false, explicitCache = false, hookRuntimeFailure, failStartOnce = false, connectionAuthorityFailure = false, runtimeAuthorityFailureCode, officialMode = false, codexConfig, memoraxCodeConfig, memoraxCodeConfigMode, emptyClaudeSettings = false, claudeAvailable = true, claudeVersionFails = false, claudeSettingsText, codexAvailable = true, codexAppOnly = false, vscodeOnly = false, dshProfiles = [], opencodeAvailable = false, opencodeXdgAvailable = false, opencodeCliAvailable = false, codebuddyAvailable = false, skipCodexPluginInstall = false, skipClaudeAdapterInstall = false, skipOpenCodeAdapterInstall = false, skipCodeBuddyAdapterInstall = false, unavailableStatus = false, prefixedStatus = false, input = "", interactive = true, npmCommand = "install", updateMode = false, setupMode = "automatic", memoraxVerify, memoraxEnv = {}, memoryStatusFixture, trialProvisionFailure = false, hookSnapshot = [], hookUpdatePlan = [], hookFullReview = false, hookFullReviewMissing = false, hookSnapshotFails = false, hookCheckFails = false, hookTrustFails = false, detectedUserId = "memory-user", detectedLanguage = "zh", ttyOverride } = {}) {
+async function runSetup({ existingCache = false, explicitCache = false, codexRegistered, hookRuntimeFailure, failStartOnce = false, connectionAuthorityFailure = false, runtimeAuthorityFailureCode, officialMode = false, codexConfig, memoraxCodeConfig, memoraxCodeConfigMode, emptyClaudeSettings = false, claudeAvailable = true, claudeVersionFails = false, claudeSettingsText, codexAvailable = true, codexAppOnly = false, vscodeOnly = false, dshProfiles = [], opencodeAvailable = false, opencodeXdgAvailable = false, opencodeCliAvailable = false, codebuddyAvailable = false, skipCodexPluginInstall = false, skipClaudeAdapterInstall = false, skipOpenCodeAdapterInstall = false, skipCodeBuddyAdapterInstall = false, unavailableStatus = false, prefixedStatus = false, input = "", interactive = true, npmCommand = "install", updateMode = false, setupMode = "automatic", memoraxVerify, memoraxEnv = {}, memoryStatusFixture, trialProvisionFailure = false, hookSnapshot = [], hookUpdatePlan = [], hookFullReview = false, hookFullReviewMissing = false, hookSnapshotFails = false, hookCheckFails = false, hookTrustFails = false, detectedUserId = "memory-user", detectedLanguage = "zh", ttyOverride } = {}) {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-setup-"));
   const binDir = join(root, "bin");
   const codexHome = join(root, "codex-home");
@@ -287,6 +287,11 @@ async function runSetup({ existingCache = false, explicitCache = false, hookRunt
     `if (process.env.MEMORAX_CODE_DSH_ADAPTER_OPTIONAL === '1') appendFileSync(${JSON.stringify(logPath)}, 'dsh-adapter-optional ' + process.argv[2] + '\\n');`,
     `if (process.argv[2] === 'codex-plugin') appendFileSync(${JSON.stringify(logPath)}, 'codex-runtime ' + (process.env.CODEX_CLI_PATH ?? '') + '\\n');`,
     "if (process.argv[2] === '--version') { console.log('memorax-code 0.1.1-test'); process.exit(0); }",
+    "if (process.argv[2] === 'codex-plugin' && process.argv[3] === 'registration') {",
+    `  const registered = ${JSON.stringify(codexRegistered ?? (existingCache || explicitCache))};`,
+    "  console.log(JSON.stringify({ ok: true, action: 'codex-plugin-registration', available: registered, registered, enabled: registered, version: registered ? '0.1.0' : undefined }));",
+    "  process.exit(0);",
+    "}",
     `const hookSnapshot = ${JSON.stringify(hookSnapshot)};`,
     `const hookUpdatePlan = ${JSON.stringify(hookUpdatePlan)};`,
     "if (process.argv[2] === 'codex-plugin' && process.argv[3] === 'hooks') {",
@@ -736,6 +741,36 @@ test("setup update mode skips MemoraX credentials and silently trusts verified H
     assert.match(config, /api_key = "existing-api-key"/);
     assert.match(config, /user_id = "existing-user-id"/);
     assert.match(config, /output_language = "en"/);
+  } finally {
+    await rm(run.root, { recursive: true, force: true });
+  }
+});
+
+test("setup repairs missing Codex registration even when the plugin cache exists", async () => {
+  const run = await runSetup({
+    claudeAvailable: false,
+    codexRegistered: false,
+    existingCache: true,
+    interactive: true,
+    memoraxCodeConfig: [
+      "[clients]",
+      "codex = true",
+      "claude = false",
+      "dsh = false",
+      "opencode = false",
+      "codebuddy = false",
+      "",
+    ].join("\n"),
+    updateMode: true,
+  });
+  try {
+    assert.equal(run.result.code, 0, run.result.stderr);
+    assert.match(run.log, /^memorax-code codex-plugin registration --json$/m);
+    assert.match(run.log, /^memorax-code codex-plugin install --json$/m);
+    assert.match(run.log, /^memorax-code codex-plugin activate --yes$/m);
+    assert.doesNotMatch(run.log, /^memorax-code codex-plugin hooks /m);
+    assert.doesNotMatch(run.log, /^memorax-code codex-plugin trust-hooks /m);
+    await assertSetupComplete(run);
   } finally {
     await rm(run.root, { recursive: true, force: true });
   }

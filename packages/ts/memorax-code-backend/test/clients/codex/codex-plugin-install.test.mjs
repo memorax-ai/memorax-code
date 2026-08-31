@@ -784,20 +784,48 @@ test("codex-plugin activate installs through Codex CLI and trusts MemoraX Code h
   const codexHome = join(home, "codex-home");
   const workspace = join(root, "workspace");
   const fakeCodex = join(root, "fake-codex.mjs");
+  const marketplaceRegistrationPath = join(root, "codex-marketplace-registration");
+  const registrationPath = join(root, "codex-plugin-registration");
+  const bundledVersion = JSON.parse(await readFile(bundledCodexManifestPath, "utf8")).version;
   try {
     await mkdir(workspace, { recursive: true });
     await mkdir(codexHome, { recursive: true });
     await writeFile(join(codexHome, "config.toml"), "[hooks.state]\n");
     await writeFile(fakeCodex, `#!/usr/bin/env node
 import { createInterface } from "node:readline";
-import { appendFileSync } from "node:fs";
+import { appendFileSync, existsSync, writeFileSync } from "node:fs";
 
-appendFileSync(${JSON.stringify(join(root, "codex-calls.log"))}, JSON.stringify(process.argv.slice(2)) + "\\n");
-if (process.argv[2] === "plugin" && process.argv[3] === "marketplace" && process.argv[4] === "add") {
+const args = process.argv.slice(2);
+appendFileSync(${JSON.stringify(join(root, "codex-calls.log"))}, JSON.stringify(args) + "\\n");
+if (args[0] === "plugin" && args[1] === "list" && args.includes("--json")) {
+  const registered = existsSync(${JSON.stringify(registrationPath)});
+  const available = existsSync(${JSON.stringify(marketplaceRegistrationPath)});
+  const includeAvailable = args.includes("--available");
+  const entry = {
+    pluginId: "memorax-code-codex-adapter@memorax-code",
+    name: "memorax-code-codex-adapter",
+    marketplaceName: "memorax-code",
+    version: ${JSON.stringify(bundledVersion)},
+    installed: registered,
+    enabled: registered
+  };
+  console.log(JSON.stringify({
+    installed: registered ? [entry] : [],
+    available: includeAvailable && !registered && available ? [entry] : []
+  }));
+  process.exit(0);
+}
+if (args[0] === "plugin" && args[1] === "marketplace" && args[2] === "add") {
+  if (existsSync(${JSON.stringify(marketplaceRegistrationPath)})) {
+    console.error("marketplace is already added from a different source");
+    process.exit(1);
+  }
+  writeFileSync(${JSON.stringify(marketplaceRegistrationPath)}, "registered\\n");
   console.log("Added marketplace");
   process.exit(0);
 }
-if (process.argv[2] === "plugin" && process.argv[3] === "add") {
+if (args[0] === "plugin" && args[1] === "add") {
+  writeFileSync(${JSON.stringify(registrationPath)}, "registered\\n");
   console.log("Added plugin");
   process.exit(0);
 }
@@ -878,6 +906,11 @@ rl.on("line", (line) => {
     assert.equal(report.ok, true);
     assert.equal(report.action, "codex-plugin-activate");
     assert.equal(report.install.registrationMode, "bootstrap");
+    assert.equal(report.registrationBefore.registered, false);
+    assert.equal(report.registrationBefore.enabled, false);
+    assert.equal(report.registration.registered, true);
+    assert.equal(report.registration.enabled, true);
+    assert.equal(report.registration.version, bundledVersion);
     assert.equal(report.trustedHooks, 1);
     assert.equal(report.startsBackend, false);
     const calls = await readFile(join(root, "codex-calls.log"), "utf8");
@@ -959,6 +992,8 @@ rl.on("line", (line) => {
     assert.equal(repeated.code, 0, `${repeated.stdout}\n${repeated.stderr}`);
     const repeatedReport = JSON.parse(repeated.stdout);
     assert.equal(repeatedReport.install.registrationMode, "versioned-update");
+    assert.equal(repeatedReport.registrationBefore.registered, true);
+    assert.equal(repeatedReport.registration.registered, true);
     assert.deepEqual(repeatedReport.marketplaceAdd, {
       ok: true,
       stdout: "",
@@ -1004,6 +1039,49 @@ rl.on("line", (line) => {
       name: "unrelated-plugin",
       custom: "preserved",
     }]);
+
+    await rm(registrationPath, { force: true });
+    const repaired = await runMemoraxCode([
+      "codex-plugin",
+      "activate",
+      "--codex-command",
+      fakeCodex,
+      "--workspace",
+      workspace,
+      "--yes",
+      "--json",
+    ], {
+      HOME: home,
+      CODEX_HOME: codexHome,
+    });
+    assert.equal(repaired.code, 0, `${repaired.stdout}\n${repaired.stderr}`);
+    const repairedReport = JSON.parse(repaired.stdout);
+    assert.equal(repairedReport.install.registrationMode, "versioned-update");
+    assert.equal(repairedReport.registrationBefore.registered, false);
+    assert.equal(repairedReport.registrationBefore.available, true);
+    assert.equal(repairedReport.registration.registered, true);
+    assert.equal(repairedReport.marketplaceAdd.ok, true);
+    assert.equal(repairedReport.marketplaceAdd.skipped, true);
+    assert.equal(repairedReport.marketplaceAdd.reason, "marketplace_registration_preserved");
+    assert.equal(repairedReport.pluginAdd.ok, true);
+    assert.equal(repairedReport.pluginAdd.skipped, undefined);
+    const repairedCalls = (await readFile(join(root, "codex-calls.log"), "utf8"))
+      .trim()
+      .split(/\r?\n/)
+      .map((line) => JSON.parse(line));
+    const registrationInspections = repairedCalls.filter((args) => (
+      args[0] === "plugin" && args[1] === "list"
+    ));
+    assert.equal(registrationInspections.length, 6);
+    assert(registrationInspections.every((args) => (
+      args.join(" ") === "plugin list --available --json"
+    )));
+    assert.equal(repairedCalls.filter((args) => (
+      args[0] === "plugin" && args[1] === "marketplace" && args[2] === "add"
+    )).length, 1);
+    assert.equal(repairedCalls.filter((args) => (
+      args[0] === "plugin" && args[1] === "add"
+    )).length, 2);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

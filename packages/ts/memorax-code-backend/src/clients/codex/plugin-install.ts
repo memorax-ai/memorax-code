@@ -20,7 +20,9 @@ import { resolveWindowsCliInvocation } from "../../shared/windows-cli-invocation
 
 const PLUGIN_NAME = "memorax-code-codex-adapter";
 const CLI_MARKETPLACE_NAME = "memorax-code";
+const PLUGIN_ID = `${PLUGIN_NAME}@${CLI_MARKETPLACE_NAME}`;
 const ADAPTER_COMMON_NAME = "memorax-code-adapter-common";
+const PLUGIN_LIST_TIMEOUT_MS = 10_000;
 
 type MarketplaceEntry = {
   name: string;
@@ -53,6 +55,18 @@ export type CodexPluginActivateOptions = CodexPluginInstallOptions & {
   yes?: boolean;
 };
 
+export type CodexPluginRegistrationReport = {
+  ok: true;
+  action: "codex-plugin-registration";
+  codexHome: string;
+  codexCommand: string;
+  workspace: string;
+  available: boolean;
+  registered: boolean;
+  enabled: boolean;
+  version?: string;
+};
+
 export type CodexPluginInstallReport = {
   ok: boolean;
   action: "codex-plugin-install";
@@ -74,6 +88,8 @@ export type CodexPluginActivateReport = {
   workspace: string;
   marketplaceAdd: CodexPluginCommandResult;
   pluginAdd: CodexPluginCommandResult;
+  registrationBefore: CodexPluginRegistrationReport;
+  registration: CodexPluginRegistrationReport;
   hooks: CodexHook[];
   trustedHooks: number;
   configPath: string;
@@ -245,20 +261,46 @@ export async function activateCodexPlugin(options: CodexPluginActivateOptions = 
   if (!existsSync(join(cliMarketplaceRoot, ".agents", "plugins", "marketplace.json"))) {
     await stageCodexCliMarketplace(install);
   }
+  const registrationBefore = await inspectCodexPluginRegistration({
+    ...options,
+    codexHome: install.codexHome,
+    codexCommand,
+    workspace,
+  });
   let marketplaceAdd: CodexPluginCommandResult;
   let pluginAdd: CodexPluginCommandResult;
-  if (install.registrationMode === "bootstrap") {
-    marketplaceAdd = await runCommand(codexCommand, ["plugin", "marketplace", "add", cliMarketplaceRoot, "--json"], { cwd: workspace, env });
-    if (!marketplaceAdd.ok) {
-      throw new Error(`codex plugin marketplace add failed: ${marketplaceAdd.stderr || marketplaceAdd.stdout || "unknown error"}`);
+  if (!registrationBefore.registered || !registrationBefore.enabled) {
+    if (registrationBefore.available) {
+      marketplaceAdd = skippedPluginCommand("marketplace_registration_preserved");
+    } else {
+      marketplaceAdd = await runCommand(codexCommand, ["plugin", "marketplace", "add", cliMarketplaceRoot, "--json"], { cwd: workspace, env });
+      if (!marketplaceAdd.ok) {
+        throw new Error(`codex plugin marketplace add failed: ${marketplaceAdd.stderr || marketplaceAdd.stdout || "unknown error"}`);
+      }
     }
-    pluginAdd = await runCommand(codexCommand, ["plugin", "add", `${PLUGIN_NAME}@${CLI_MARKETPLACE_NAME}`, "--json"], { cwd: workspace, env });
+    pluginAdd = await runCommand(codexCommand, ["plugin", "add", PLUGIN_ID, "--json"], { cwd: workspace, env });
     if (!pluginAdd.ok) {
       throw new Error(`codex plugin add failed: ${pluginAdd.stderr || pluginAdd.stdout || "unknown error"}`);
     }
   } else {
     marketplaceAdd = skippedPluginCommand("versioned_installation_preserved");
     pluginAdd = skippedPluginCommand("versioned_installation_preserved");
+  }
+  const registration = await inspectCodexPluginRegistration({
+    ...options,
+    codexHome: install.codexHome,
+    codexCommand,
+    workspace,
+  });
+  const expectedVersion = stringField(
+    await readJsonRecord(join(install.pluginSourcePath, ".codex-plugin", "plugin.json")),
+    "version",
+  );
+  if (!registration.registered || !registration.enabled) {
+    throw new Error("Codex plugin registration was not enabled after activation");
+  }
+  if (!expectedVersion || registration.version !== expectedVersion) {
+    throw new Error(`Codex plugin registration version does not match ${expectedVersion ?? "the installed plugin"}`);
   }
   await removePersonalMarketplaceEntry(bootstrapMarketplacePath);
   const hooks = await listMemoraxCodeHooks(codexCommand, workspace, env);
@@ -282,10 +324,38 @@ export async function activateCodexPlugin(options: CodexPluginActivateOptions = 
     workspace,
     marketplaceAdd,
     pluginAdd,
+    registrationBefore,
+    registration,
     hooks,
     trustedHooks: hooks.length,
     configPath,
     startsBackend: false,
+  };
+}
+
+export async function inspectCodexPluginRegistration(
+  options: Pick<CodexPluginActivateOptions, "codexHome" | "homeDir" | "codexCommand" | "workspace"> = {},
+): Promise<CodexPluginRegistrationReport> {
+  const home = resolveHome(options.homeDir);
+  const codexHome = resolveCodexHome(options.codexHome, home);
+  const codexCommand = options.codexCommand ?? process.env.CODEX_CLI_PATH ?? "codex";
+  const workspace = resolve(options.workspace ?? process.cwd());
+  const result = await runCommand(codexCommand, ["plugin", "list", "--available", "--json"], {
+    cwd: workspace,
+    env: { ...process.env, HOME: home, CODEX_HOME: codexHome },
+    timeoutMs: PLUGIN_LIST_TIMEOUT_MS,
+  });
+  if (!result.ok) {
+    throw new Error(`codex plugin list failed: ${result.stderr || result.stdout || "unknown error"}`);
+  }
+  const state = parseCodexPluginList(result.stdout);
+  return {
+    ok: true,
+    action: "codex-plugin-registration",
+    codexHome,
+    codexCommand,
+    workspace,
+    ...state,
   };
 }
 
@@ -589,6 +659,62 @@ function skippedPluginCommand(reason: string): CodexPluginCommandResult {
   return { ok: true, stdout: "", stderr: "", skipped: true, reason };
 }
 
+function parseCodexPluginList(stdout: string): {
+  available: boolean;
+  registered: boolean;
+  enabled: boolean;
+  version?: string;
+} {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    throw new Error("codex plugin list returned invalid JSON");
+  }
+  if (!isRecord(parsed) || !Array.isArray(parsed.installed) || !Array.isArray(parsed.available)) {
+    throw new Error("codex plugin list returned an invalid registry payload");
+  }
+  const installed = matchingPluginEntry(parsed.installed, "installed");
+  const available = matchingPluginEntry(parsed.available, "available");
+  if (!installed) {
+    return {
+      available: available !== undefined,
+      registered: false,
+      enabled: false,
+    };
+  }
+  const version = typeof installed.version === "string" ? nonEmpty(installed.version) : undefined;
+  if (installed.installed !== true
+    || typeof installed.enabled !== "boolean"
+    || !version) {
+    throw new Error("codex plugin list returned an invalid MemoraX Code registration");
+  }
+  return {
+    available: true,
+    registered: true,
+    enabled: installed.enabled,
+    version,
+  };
+}
+
+function matchingPluginEntry(entries: unknown[], collection: string): Record<string, unknown> | undefined {
+  const matches = entries.filter((entry): entry is Record<string, unknown> => isRecord(entry) && (
+    entry.pluginId === PLUGIN_ID
+    || (entry.name === PLUGIN_NAME && entry.marketplaceName === CLI_MARKETPLACE_NAME)
+  ));
+  if (matches.length > 1) {
+    throw new Error(`codex plugin list returned duplicate MemoraX Code ${collection} entries`);
+  }
+  const entry = matches[0];
+  if (!entry) return undefined;
+  if (entry.pluginId !== PLUGIN_ID
+    || entry.name !== PLUGIN_NAME
+    || entry.marketplaceName !== CLI_MARKETPLACE_NAME) {
+    throw new Error(`codex plugin list returned an invalid MemoraX Code ${collection} entry`);
+  }
+  return entry;
+}
+
 function pluginEntry(sourcePath: string): MarketplaceEntry {
   return {
     name: PLUGIN_NAME,
@@ -619,7 +745,11 @@ function marketplaceName(marketplace: MarketplaceFile): string {
   return nonEmpty(typeof marketplace.name === "string" ? marketplace.name : undefined) ?? "personal";
 }
 
-function runCommand(command: string, args: string[], options: { cwd: string; env: NodeJS.ProcessEnv }): Promise<{ ok: boolean; stdout: string; stderr: string }> {
+function runCommand(
+  command: string,
+  args: string[],
+  options: { cwd: string; env: NodeJS.ProcessEnv; timeoutMs?: number },
+): Promise<{ ok: boolean; stdout: string; stderr: string }> {
   return new Promise((resolveResult) => {
     let invocation;
     try {
@@ -639,13 +769,31 @@ function runCommand(command: string, args: string[], options: { cwd: string; env
     });
     let stdout = "";
     let stderr = "";
+    let settled = false;
+    let timeout: NodeJS.Timeout | undefined;
+    const finish = (result: { ok: boolean; stdout: string; stderr: string }) => {
+      if (settled) return;
+      settled = true;
+      if (timeout) clearTimeout(timeout);
+      resolveResult(result);
+    };
+    if (options.timeoutMs) {
+      timeout = setTimeout(() => {
+        child.kill();
+        finish({
+          ok: false,
+          stdout,
+          stderr: stderr || `command timed out after ${options.timeoutMs}ms`,
+        });
+      }, options.timeoutMs);
+    }
     child.stdout.on("data", (chunk) => { stdout += String(chunk); });
     child.stderr.on("data", (chunk) => { stderr += String(chunk); });
     child.on("error", (error) => {
-      resolveResult({ ok: false, stdout, stderr: stderr || error.message });
+      finish({ ok: false, stdout, stderr: stderr || error.message });
     });
     child.on("close", (code) => {
-      resolveResult({ ok: code === 0, stdout, stderr });
+      finish({ ok: code === 0, stdout, stderr });
     });
   });
 }
