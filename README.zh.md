@@ -100,7 +100,48 @@ memorax-code account --show-mark-id
 | --- | --- |
 | 因 Node.js 版本不受支持导致安装失败 | 运行 `node --version` 检查版本，并升级到 Node.js 20 或更高版本后重新安装 MemoraX Code。 |
 | npm 包已安装，但没有进入安装引导 | 这是正常行为。请在正常的交互式终端中选择并运行上方适合您的安装引导命令。 |
+| Windows 提示无法识别 `memorax-code` 或 `memorax-cli` | 按照下方 Windows PATH 步骤处理。这两个命令由同一个包安装，不要单独安装 `memorax-cli` 包。 |
 | 完成安装引导后，搜索、召回或写回仍不可用 | 运行 `memorax-code status` 和 `memorax-cli status`，然后按照详细的故障排查指南处理。 |
+
+#### Windows：找不到 `memorax-code` 或 `memorax-cli`
+
+Windows 上，全局 npm 安装会将命令 shim 放在 npm 的全局 prefix 目录中（通常为
+`%APPDATA%\npm`）。如果该目录不在 `PATH` 中，或者受支持的 Coding Agent 在安装
+Node.js 或 MemoraX Code 之前就已启动，即使包已成功安装，它仍可能提示
+`memorax-cli` 不可用。`memorax-code` 和 `memorax-cli` 都包含在
+`@memorax/memorax-code` 中，不需要单独安装 CLI。
+
+在 PowerShell 中使用 npm 的实际全局 prefix 完成 setup 并验证 CLI：
+
+```powershell
+$NpmGlobalBin = (npm prefix -g).Trim()
+$env:Path = "$NpmGlobalBin;$env:Path"
+& (Join-Path $NpmGlobalBin "memorax-code.cmd") setup
+& (Join-Path $NpmGlobalBin "memorax-cli.cmd") status
+```
+
+前两行只修复当前 PowerShell 进程的 `PATH`。如果用户级持久化 `PATH` 中也缺少
+该目录，可执行一次以下命令：
+
+```powershell
+$NpmGlobalBin = (npm prefix -g).Trim()
+$UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
+$UserEntries = @($UserPath -split ";" | Where-Object { $_ })
+$NormalizedNpmGlobalBin = $NpmGlobalBin.TrimEnd("\")
+
+if (-not ($UserEntries | Where-Object {
+    $_.Trim().TrimEnd("\") -ieq $NormalizedNpmGlobalBin
+})) {
+    [Environment]::SetEnvironmentVariable(
+        "Path",
+        (($UserEntries + $NpmGlobalBin) -join ";"),
+        "User"
+    )
+}
+```
+
+修改持久化 `PATH` 后请打开一个新终端。仅当某个 Coding Agent 在安装期间已经运行，
+或者仍然找不到 `memorax-cli` 时，才需要彻底退出并重启受影响的客户端；无需重新安装 npm 包。
 
 有关支持的配置项，请参阅[配置](docs/configuration.md)；
 更详细的诊断步骤请参阅[故障排查](docs/troubleshooting.md)。
