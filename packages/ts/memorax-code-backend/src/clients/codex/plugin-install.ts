@@ -340,7 +340,7 @@ export async function inspectCodexPluginRegistration(
   const codexHome = resolveCodexHome(options.codexHome, home);
   const codexCommand = options.codexCommand ?? process.env.CODEX_CLI_PATH ?? "codex";
   const workspace = resolve(options.workspace ?? process.cwd());
-  const result = await runCommand(codexCommand, ["plugin", "list", "--json"], {
+  const result = await runCommand(codexCommand, ["plugin", "list", "--available", "--json"], {
     cwd: workspace,
     env: { ...process.env, HOME: home, CODEX_HOME: codexHome },
     timeoutMs: PLUGIN_LIST_TIMEOUT_MS,

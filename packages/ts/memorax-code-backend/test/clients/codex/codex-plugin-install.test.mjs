@@ -795,10 +795,12 @@ test("codex-plugin activate installs through Codex CLI and trusts MemoraX Code h
 import { createInterface } from "node:readline";
 import { appendFileSync, existsSync, writeFileSync } from "node:fs";
 
-appendFileSync(${JSON.stringify(join(root, "codex-calls.log"))}, JSON.stringify(process.argv.slice(2)) + "\\n");
-if (process.argv.slice(2).join(" ") === "plugin list --json") {
+const args = process.argv.slice(2);
+appendFileSync(${JSON.stringify(join(root, "codex-calls.log"))}, JSON.stringify(args) + "\\n");
+if (args[0] === "plugin" && args[1] === "list" && args.includes("--json")) {
   const registered = existsSync(${JSON.stringify(registrationPath)});
   const available = existsSync(${JSON.stringify(marketplaceRegistrationPath)});
+  const includeAvailable = args.includes("--available");
   const entry = {
     pluginId: "memorax-code-codex-adapter@memorax-code",
     name: "memorax-code-codex-adapter",
@@ -809,16 +811,20 @@ if (process.argv.slice(2).join(" ") === "plugin list --json") {
   };
   console.log(JSON.stringify({
     installed: registered ? [entry] : [],
-    available: !registered && available ? [entry] : []
+    available: includeAvailable && !registered && available ? [entry] : []
   }));
   process.exit(0);
 }
-if (process.argv[2] === "plugin" && process.argv[3] === "marketplace" && process.argv[4] === "add") {
+if (args[0] === "plugin" && args[1] === "marketplace" && args[2] === "add") {
+  if (existsSync(${JSON.stringify(marketplaceRegistrationPath)})) {
+    console.error("marketplace is already added from a different source");
+    process.exit(1);
+  }
   writeFileSync(${JSON.stringify(marketplaceRegistrationPath)}, "registered\\n");
   console.log("Added marketplace");
   process.exit(0);
 }
-if (process.argv[2] === "plugin" && process.argv[3] === "add") {
+if (args[0] === "plugin" && args[1] === "add") {
   writeFileSync(${JSON.stringify(registrationPath)}, "registered\\n");
   console.log("Added plugin");
   process.exit(0);
@@ -1063,6 +1069,13 @@ rl.on("line", (line) => {
       .trim()
       .split(/\r?\n/)
       .map((line) => JSON.parse(line));
+    const registrationInspections = repairedCalls.filter((args) => (
+      args[0] === "plugin" && args[1] === "list"
+    ));
+    assert.equal(registrationInspections.length, 6);
+    assert(registrationInspections.every((args) => (
+      args.join(" ") === "plugin list --available --json"
+    )));
     assert.equal(repairedCalls.filter((args) => (
       args[0] === "plugin" && args[1] === "marketplace" && args[2] === "add"
     )).length, 1);
