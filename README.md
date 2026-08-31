@@ -64,17 +64,8 @@ beforehand through its official `npx` workflow.
 #### 1. Install the Package
 
 ```bash
-npm install -g @memorax/memorax-code --foreground-scripts
+npm install -g @memorax/memorax-code
 ```
-
-Keep `--foreground-scripts` so the complete setup remains visible. The
-installer automatically detects available Codex, Claude Code, CodeBuddy/WorkBuddy, DeepSeek
-Harness, and OpenCode installations and connects those it finds. Follow the
-prompts to enter your MemoraX user ID, preferred language, and API key. On an
-interactive first install, a non-empty user ID and API key are required unless
-the effective configuration already supplies both. Codex users must also
-approve Hook activation and trust when prompted. Restart or refresh every
-detected coding agent after installation before starting a new session.
 
 #### 2. Connect a MemoraX Account (Recommended)
 

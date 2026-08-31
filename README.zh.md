@@ -57,14 +57,8 @@ CodeBuddy/WorkBuddy、DeepSeek Harness 或 OpenCode 中的至少一个。Repo Me
 #### 1. 安装 npm 包
 
 ```bash
-npm install -g @memorax/memorax-code --foreground-scripts
+npm install -g @memorax/memorax-code
 ```
-
-请保留 `--foreground-scripts`，以便查看完整的安装过程。安装器会自动检测本机可用的 Codex、
-Claude Code、CodeBuddy/WorkBuddy、DeepSeek Harness 和 OpenCode，并为检测到的 Coding Agent 启用集成。按照终端提示输入
-MemoraX User ID、偏好语言和 API Key；首次交互安装时，除非有效配置已经提供 User ID 和 API Key，
-否则两者均不能为空。Codex 用户还需按提示完成 Hook 的激活和信任确认。安装完成后，请重启或刷新
-所有检测到的 Coding Agent，再开始新会话。
 
 #### 2. 注册或接入 MemoraX 账号（推荐）
 
