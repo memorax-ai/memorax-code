@@ -33,7 +33,11 @@ import {
   startBackendAutomaticUpdateScheduler,
   type AutomaticUpdateScheduler,
 } from "../lifecycle/automatic-update-scheduler.js";
-import { activateCodexPlugin, installCodexPlugin } from "../clients/codex/plugin-install.js";
+import {
+  activateCodexPlugin,
+  inspectCodexPluginRegistration,
+  installCodexPlugin,
+} from "../clients/codex/plugin-install.js";
 import { inspectCodexPluginHooks, trustCodexPluginHooks, type CodexHook } from "../clients/codex/plugin-hooks.js";
 import {
   collectMemoraxCodeStatus,
@@ -431,7 +435,7 @@ function isClientHookRuntimeGeneration(
 }
 
 type CodexPluginCommandReport = Awaited<ReturnType<
-  typeof installCodexPlugin | typeof activateCodexPlugin | typeof inspectCodexPluginHooks | typeof trustCodexPluginHooks
+  typeof installCodexPlugin | typeof activateCodexPlugin | typeof inspectCodexPluginRegistration | typeof inspectCodexPluginHooks | typeof trustCodexPluginHooks
 >>;
 
 async function runCodexPluginCommand(argv: string[]): Promise<CodexPluginCommandReport> {
@@ -444,6 +448,13 @@ async function runCodexPluginCommand(argv: string[]): Promise<CodexPluginCommand
       codexCommand: argValue(argv, "--codex-command"),
       workspace: argValue(argv, "--workspace"),
       yes: argv.includes("--yes"),
+    });
+  }
+  if (subcommand === "registration") {
+    return await inspectCodexPluginRegistration({
+      codexHome: argValue(argv, "--codex-home"),
+      codexCommand: argValue(argv, "--codex-command"),
+      workspace: argValue(argv, "--workspace"),
     });
   }
   if (subcommand === "hooks") {
@@ -487,6 +498,14 @@ function printCodexPluginInstallResult(report: CodexPluginCommandReport): void {
     console.log(`trusted hooks: ${report.trustedHooks}`);
     if (report.requiresFullReview) console.log("incremental trust: blocked by plugin marketplace identity change");
     console.log(`config: ${report.configPath}`);
+    console.log("backend: not started");
+    return;
+  }
+  if (report.action === "codex-plugin-registration") {
+    console.log(`codex home: ${report.codexHome}`);
+    console.log(`registered: ${report.registered ? "yes" : "no"}`);
+    console.log(`enabled: ${report.enabled ? "yes" : "no"}`);
+    if (report.version) console.log(`version: ${report.version}`);
     console.log("backend: not started");
     return;
   }

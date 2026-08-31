@@ -210,7 +210,7 @@ const codexClientNewlyEnabled = codexClientEnabled
   && existingSetup
   && !previousClients.includes("codex");
 const codexPluginRequiresActivation = codexClientEnabled
-  && codexPreflight.pluginCache.versions.length === 0;
+  && codexPreflight.pluginRegistration.ready !== true;
 const codexHooksBeforeUpdate = codexClientEnabled
   && existingSetup
   && !codexClientNewlyEnabled
@@ -981,11 +981,21 @@ function runCodexPreflight({ integrationSelected = true } = {}) {
   }
   const pluginCache = installedPluginCache();
   log(`Existing Codex plugin cache: ${pluginCache.versions.length > 0 ? `found (${pluginCache.versions.join(", ")})` : "not installed"}`);
+  const pluginRegistration = inspectCodexPluginRegistrationForSetup();
+  if (!pluginRegistration.verified) {
+    log("Codex plugin state: could not be verified; setup will attempt a full activation.");
+  } else if (!pluginRegistration.registered) {
+    log("Codex plugin state: not installed in Codex; setup will repair it.");
+  } else if (!pluginRegistration.enabled) {
+    log("Codex plugin state: disabled; setup will attempt to enable it.");
+  } else {
+    log(`Codex plugin state: enabled${pluginRegistration.version ? ` (${pluginRegistration.version})` : ""}.`);
+  }
   log(`Codex client process: ${codexClientRunning() ? "running" : "not detected"}`);
   log(integrationSelected
     ? "Keeping Codex provider config unchanged and enabling the shared memory hook integration."
     : "Keeping Codex provider config unchanged while checking whether to enable its integration.");
-  return { ok: true, pluginCache };
+  return { ok: true, pluginCache, pluginRegistration };
 }
 
 function runClaudePreflight({ integrationSelected = true } = {}) {
@@ -1051,6 +1061,38 @@ function installedPluginCache() {
     }
   }
   return { marketplaceName: CLI_MARKETPLACE_NAME, versions: [] };
+}
+
+function inspectCodexPluginRegistrationForSetup() {
+  const result = runNodeMemoraxCodeCommand(["codex-plugin", "registration", "--json"], {
+    print: false,
+    timeout: 10_000,
+  });
+  if (result.status !== 0) {
+    return { verified: false, ready: false, registered: false, enabled: false };
+  }
+  try {
+    const report = JSON.parse(String(result.stdout ?? ""));
+    if (!report
+      || report.ok !== true
+      || report.action !== "codex-plugin-registration"
+      || typeof report.available !== "boolean"
+      || typeof report.registered !== "boolean"
+      || typeof report.enabled !== "boolean"
+      || (report.version !== undefined && typeof report.version !== "string")) {
+      return { verified: false, ready: false, registered: false, enabled: false };
+    }
+    return {
+      verified: true,
+      ready: report.registered && report.enabled,
+      available: report.available,
+      registered: report.registered,
+      enabled: report.enabled,
+      ...(report.version ? { version: report.version } : {}),
+    };
+  } catch {
+    return { verified: false, ready: false, registered: false, enabled: false };
+  }
 }
 
 function installedPluginCacheVersions(marketplaceName) {
