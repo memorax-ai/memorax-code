@@ -9,7 +9,7 @@ import {
 const NPM_GLOBAL_BIN = "C:\\Users\\tester\\AppData\\Roaming\\npm";
 const SYSTEM_PATH = "C:\\Windows\\System32";
 
-test("Windows setup adds the verified npm global bin to process and user PATH", () => {
+test("Windows setup appends the verified npm global bin without changing command precedence", () => {
   const env = { Path: SYSTEM_PATH };
   const calls = [];
 
@@ -25,7 +25,7 @@ test("Windows setup adds the verified npm global bin to process and user PATH", 
     },
   });
 
-  assert.equal(env.Path, `${NPM_GLOBAL_BIN};${SYSTEM_PATH}`);
+  assert.equal(env.Path, `${SYSTEM_PATH};${NPM_GLOBAL_BIN}`);
   assert.deepEqual(calls, [NPM_GLOBAL_BIN]);
   assert.deepEqual(result, {
     status: "updated",
@@ -66,7 +66,7 @@ test("Windows setup repairs a stale process even when the user PATH is current",
     updateUserPath: () => ({ changed: false }),
   });
 
-  assert.equal(env.PATH, `${NPM_GLOBAL_BIN};${SYSTEM_PATH}`);
+  assert.equal(env.PATH, `${SYSTEM_PATH};${NPM_GLOBAL_BIN}`);
   assert.deepEqual(result, {
     status: "updated",
     processPathChanged: true,
@@ -92,7 +92,7 @@ test("Windows setup is idempotent across repeated repairs", () => {
 
   assert.equal(ensureWindowsNpmGlobalPath(options).status, "updated");
   assert.equal(ensureWindowsNpmGlobalPath(options).status, "unchanged");
-  assert.equal(env.Path, `${NPM_GLOBAL_BIN};${SYSTEM_PATH}`);
+  assert.equal(env.Path, `${SYSTEM_PATH};${NPM_GLOBAL_BIN}`);
 });
 
 test("Windows setup keeps the process repair when the persistent update fails", () => {
@@ -108,7 +108,7 @@ test("Windows setup keeps the process repair when the persistent update fails", 
     },
   });
 
-  assert.equal(env.PATH, `${NPM_GLOBAL_BIN};${SYSTEM_PATH}`);
+  assert.equal(env.PATH, `${SYSTEM_PATH};${NPM_GLOBAL_BIN}`);
   assert.deepEqual(result, {
     status: "warning",
     reason: "user_path_update_failed",
@@ -211,4 +211,9 @@ test("Windows user PATH update passes the global bin without command interpolati
   assert.ok(calls[0].args.includes("-EncodedCommand"));
   assert.equal(calls[0].options.env.MEMORAX_CODE_WINDOWS_NPM_GLOBAL_BIN, NPM_GLOBAL_BIN);
   assert.doesNotMatch(calls[0].args.join(" "), /tester|AppData|Roaming/);
+  const encodedCommand = calls[0].args[calls[0].args.indexOf("-EncodedCommand") + 1];
+  const script = Buffer.from(encodedCommand, "base64").toString("utf16le");
+  assert.match(script, /for \(\$attempt = 0; \$attempt -lt 3; \$attempt\+\+\)/);
+  assert.match(script, /\$latestUserPath = \[Environment\]::GetEnvironmentVariable\("Path", "User"\)/);
+  assert.match(script, /\[string\]::Equals\(\[string\]\$latestUserPath, \[string\]\$userPath/);
 });

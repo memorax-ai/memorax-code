@@ -14,25 +14,49 @@ function Normalize-PathEntry([string]$Value) {
     ).TrimEnd('\')
 }
 
-$userPath = [Environment]::GetEnvironmentVariable("Path", "User")
-$entries = @($userPath -split ";" | Where-Object {
-    -not [string]::IsNullOrWhiteSpace($_)
-})
 $normalizedGlobalBin = Normalize-PathEntry $globalBin
-$present = @($entries | Where-Object {
-    (Normalize-PathEntry $_) -ieq $normalizedGlobalBin
-}).Count -gt 0
+$changed = $false
+$completed = $false
 
-if (-not $present) {
+for ($attempt = 0; $attempt -lt 3; $attempt++) {
+    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    $entries = @($userPath -split ";" | Where-Object {
+        -not [string]::IsNullOrWhiteSpace($_)
+    })
+    $present = @($entries | Where-Object {
+        (Normalize-PathEntry $_) -ieq $normalizedGlobalBin
+    }).Count -gt 0
+
+    if ($present) {
+        $completed = $true
+        break
+    }
+
     $separator = if ([string]::IsNullOrWhiteSpace($userPath) -or $userPath.TrimEnd().EndsWith(";")) { "" } else { ";" }
     $updatedPath = "$userPath$separator$globalBin"
     if ($updatedPath.Length -ge 32767) {
         throw "The updated user PATH would exceed the Windows environment limit."
     }
+
+    $latestUserPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    if (-not [string]::Equals([string]$latestUserPath, [string]$userPath, [StringComparison]::Ordinal)) {
+        continue
+    }
+
     [Environment]::SetEnvironmentVariable("Path", $updatedPath, "User")
+    $changed = $true
+    $writtenUserPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    if ([string]::Equals([string]$writtenUserPath, [string]$updatedPath, [StringComparison]::Ordinal)) {
+        $completed = $true
+        break
+    }
 }
 
-[Console]::Out.Write((@{ changed = -not $present } | ConvertTo-Json -Compress))
+if (-not $completed) {
+    throw "The Windows user PATH changed concurrently; retry setup."
+}
+
+[Console]::Out.Write((@{ changed = $changed } | ConvertTo-Json -Compress))
 `;
 
 export function ensureWindowsNpmGlobalPath(options = {}) {
@@ -67,7 +91,9 @@ export function ensureWindowsNpmGlobalPath(options = {}) {
   const currentPath = typeof env[pathKey] === "string" ? env[pathKey] : "";
   const processPathChanged = !windowsPathContains(currentPath, globalBin, env);
   if (processPathChanged) {
-    env[pathKey] = currentPath ? `${globalBin};${currentPath}` : globalBin;
+    env[pathKey] = currentPath
+      ? `${currentPath}${currentPath.trimEnd().endsWith(";") ? "" : ";"}${globalBin}`
+      : globalBin;
   }
 
   let userPathChanged = false;
