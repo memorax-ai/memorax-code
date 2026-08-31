@@ -42,6 +42,22 @@ Setup requires terminal input and terminal-visible stderr. A pipe, background
 process, or redirected stdin/stderr cannot complete setup; rerun it in a normal
 interactive terminal.
 
+On Windows, interactive setup verifies npm's global command directory and adds
+it to the current setup process and the Windows user `PATH` when needed. If the
+current shell cannot find `memorax-code`, use npm's actual global prefix to
+bootstrap setup:
+
+```powershell
+$NpmGlobalBin = (npm prefix -g).Trim()
+$env:Path = "$NpmGlobalBin;$env:Path"
+& (Join-Path $NpmGlobalBin "memorax-code.cmd") setup
+```
+
+The same npm package installs both `memorax-code` and `memorax-cli`; do not
+install a separate CLI package. Open a new terminal after setup changes the
+user `PATH`. Restart or refresh only coding agents that were already running
+or still cannot find `memorax-cli`.
+
 ## Setup does not complete
 
 Setup writes

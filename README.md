@@ -125,8 +125,10 @@ installed, it may report that `memorax-cli` is unavailable even though the
 package is installed. `memorax-code` and `memorax-cli` are both included in
 `@memorax/memorax-code`; no separate CLI installation is required.
 
-Use npm's actual global prefix to finish setup and verify the CLI in
-PowerShell:
+Interactive setup automatically verifies npm's global command directory and,
+when needed, adds it to the current setup process and the Windows user `PATH`.
+If the current shell cannot start the bare `memorax-code` command, use npm's
+actual global prefix to bootstrap setup and verify the CLI in PowerShell:
 
 ```powershell
 $NpmGlobalBin = (npm prefix -g).Trim()
@@ -135,8 +137,9 @@ $env:Path = "$NpmGlobalBin;$env:Path"
 & (Join-Path $NpmGlobalBin "memorax-cli.cmd") status
 ```
 
-The first two lines repair `PATH` for the current PowerShell process. If the
-global prefix is also missing from the user's persistent `PATH`, add it once:
+The first two lines repair `PATH` for the current PowerShell process. If setup
+reports that it could not update the persistent Windows user `PATH`, add the
+global prefix once:
 
 ```powershell
 $NpmGlobalBin = (npm prefix -g).Trim()
@@ -155,10 +158,10 @@ if (-not ($UserEntries | Where-Object {
 }
 ```
 
-Open a new terminal after changing the persistent `PATH`. Fully exit and
-restart an affected coding agent only if it was already running during
-installation or still cannot find `memorax-cli`; reinstalling the package is
-not required.
+Open a new terminal after setup or the fallback changes the persistent `PATH`.
+Fully exit and restart an affected coding agent only if it was already running
+during installation or still cannot find `memorax-cli`; reinstalling the
+package is not required.
 
 See [Configuration](docs/configuration.md) for supported settings and
 [Troubleshooting](docs/troubleshooting.md) for detailed diagnostics.

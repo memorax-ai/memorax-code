@@ -9,6 +9,7 @@ import { stagePackagedClientHookRuntime } from "../lib/client-hook-runtime.mjs";
 import { unsupportedNodeVersionMessage } from "../lib/node-version.mjs";
 import { runNpmCommand } from "../lib/npm-invocation.mjs";
 import { ensureNpmPackageRuntimeEnv, runBackendEntrypoint } from "../lib/run-entrypoint.mjs";
+import { ensureWindowsNpmGlobalPath } from "../lib/windows-user-path.mjs";
 
 const nodeVersionError = unsupportedNodeVersionMessage();
 if (nodeVersionError) {
@@ -251,6 +252,7 @@ async function runSetupCommand(args, { updateMode = false } = {}) {
     console.error("memorax-code setup: an interactive terminal is required");
     return 1;
   }
+  if (!updateMode) repairWindowsSetupPath();
   try {
     const { withSetupCompletionLock } = await loadSetupCompletionApi();
     return await withSetupCompletionLock(memoraxCodeHome, async (completion) => {
@@ -273,6 +275,28 @@ async function runSetupCommand(args, { updateMode = false } = {}) {
   } catch (error) {
     console.error(`memorax-code setup: ${error instanceof Error ? error.message : String(error)}`);
     return 1;
+  }
+}
+
+function repairWindowsSetupPath() {
+  if (readPackageJson().name !== "@memorax/memorax-code") return;
+  const repair = ensureWindowsNpmGlobalPath();
+  if (repair.userPathChanged) {
+    console.error("memorax-code setup: added npm's global command directory to the Windows user PATH");
+  }
+  if (repair.processPathChanged) {
+    console.error("memorax-code setup: npm global commands are available to the setup process");
+  }
+  if (repair.restartRecommended) {
+    console.error("memorax-code setup: restart or refresh coding agents that were already running so they inherit the updated PATH");
+  }
+  if (repair.status === "warning") {
+    const detail = repair.reason === "npm_prefix_unavailable"
+      ? "the npm global command directory could not be determined"
+      : repair.reason === "global_shims_missing"
+        ? "the installed MemoraX Code command shims could not be verified"
+        : "the Windows user PATH could not be updated";
+    console.error(`memorax-code setup: Windows PATH repair was not completed because ${detail}; setup will continue`);
   }
 }
 

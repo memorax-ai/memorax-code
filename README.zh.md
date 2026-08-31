@@ -111,7 +111,9 @@ Node.js 或 MemoraX Code 之前就已启动，即使包已成功安装，它仍�
 `memorax-cli` 不可用。`memorax-code` 和 `memorax-cli` 都包含在
 `@memorax/memorax-code` 中，不需要单独安装 CLI。
 
-在 PowerShell 中使用 npm 的实际全局 prefix 完成 setup 并验证 CLI：
+交互式 setup 会自动校验 npm 全局命令目录，并在需要时将其加入当前 setup 进程和
+Windows 用户级 `PATH`。如果当前终端无法直接启动 `memorax-code`，可在 PowerShell
+中使用 npm 的实际全局 prefix 启动 setup 并验证 CLI：
 
 ```powershell
 $NpmGlobalBin = (npm prefix -g).Trim()
@@ -120,8 +122,8 @@ $env:Path = "$NpmGlobalBin;$env:Path"
 & (Join-Path $NpmGlobalBin "memorax-cli.cmd") status
 ```
 
-前两行只修复当前 PowerShell 进程的 `PATH`。如果用户级持久化 `PATH` 中也缺少
-该目录，可执行一次以下命令：
+前两行只修复当前 PowerShell 进程的 `PATH`。如果 setup 提示无法更新持久化的
+Windows 用户级 `PATH`，可执行一次以下命令：
 
 ```powershell
 $NpmGlobalBin = (npm prefix -g).Trim()
@@ -140,8 +142,9 @@ if (-not ($UserEntries | Where-Object {
 }
 ```
 
-修改持久化 `PATH` 后请打开一个新终端。仅当某个 Coding Agent 在安装期间已经运行，
-或者仍然找不到 `memorax-cli` 时，才需要彻底退出并重启受影响的客户端；无需重新安装 npm 包。
+setup 或上述兜底命令修改持久化 `PATH` 后，请打开一个新终端。仅当某个 Coding Agent
+在安装期间已经运行，或者仍然找不到 `memorax-cli` 时，才需要彻底退出并重启受影响的
+客户端；无需重新安装 npm 包。
 
 有关支持的配置项，请参阅[配置](docs/configuration.md)；
 更详细的诊断步骤请参阅[故障排查](docs/troubleshooting.md)。

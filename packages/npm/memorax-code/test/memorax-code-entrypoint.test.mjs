@@ -337,6 +337,7 @@ async function createPackageFixture() {
     "lib/run-entrypoint.mjs",
     "lib/vscode-extension-command.mjs",
     "lib/windows-cli-invocation.mjs",
+    "lib/windows-user-path.mjs",
   ];
   for (const relativePath of copiedFiles) {
     const target = join(root, relativePath);

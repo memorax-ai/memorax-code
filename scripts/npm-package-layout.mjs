@@ -55,6 +55,7 @@ const rootLibFiles = new Set([
   "lib/trial-setup.mjs",
   "lib/vscode-extension-command.mjs",
   "lib/windows-cli-invocation.mjs",
+  "lib/windows-user-path.mjs",
 ]);
 const reviewedCredentialFiles = new Set([
   "linux-secret-service.mjs",
