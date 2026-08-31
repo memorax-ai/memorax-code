@@ -80,6 +80,7 @@ for (const requiredPath of [
   "lib/trial-setup.mjs",
   "lib/vscode-extension-command.mjs",
   "lib/windows-cli-invocation.mjs",
+  "lib/windows-user-path.mjs",
   "lib/memorax-code-adapter-common/src/backend-connection.mjs",
   "lib/memorax-code-adapter-common/src/hooks/client-hook-launcher.mjs",
   "lib/memorax-code-adapter-common/src/clients/codex-plugin-artifact.mjs",

@@ -172,6 +172,7 @@ async function validateStaging(packageRoot) {
     "lib/vscode-extension-command.mjs",
     "lib/npm-invocation.mjs",
     "lib/windows-cli-invocation.mjs",
+    "lib/windows-user-path.mjs",
     "lib/trial-plugin-mark.mjs",
     "lib/trial-provision-client.mjs",
     "lib/trial-provision-flow.mjs",

@@ -125,6 +125,7 @@ for relative in [
     "lib/setup-reconcile.mjs",
     "lib/trial-setup.mjs",
     "lib/windows-cli-invocation.mjs",
+    "lib/windows-user-path.mjs",
     "lib/memorax-code-adapter-common/src/backend-connection.mjs",
     "lib/memorax-code-adapter-common/src/config-utils.mjs",
     "lib/memorax-code-adapter-common/src/hooks/client-hook-launcher.mjs",
@@ -402,6 +403,7 @@ for relative in \
   lib/setup-reconcile.mjs \
   lib/trial-setup.mjs \
   lib/windows-cli-invocation.mjs \
+  lib/windows-user-path.mjs \
   lib/memorax-code-adapter-common/src/backend-connection.mjs \
   lib/memorax-code-adapter-common/src/config-utils.mjs \
   lib/memorax-code-adapter-common/src/hooks/client-hook-launcher.mjs \

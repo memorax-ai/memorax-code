@@ -54,6 +54,16 @@ Both setup paths automatically detect supported coding agents. Later setup
 runs reuse a complete saved configuration; use
 `memorax-code setup --reconfigure` to replace it.
 
+On Windows, interactive setup also verifies npm's global command directory and
+adds it to the current setup process and the Windows user `PATH` when needed.
+If the current shell cannot find `memorax-code`, bootstrap setup with:
+
+```powershell
+$NpmGlobalBin = (npm prefix -g).Trim()
+$env:Path = "$NpmGlobalBin;$env:Path"
+& (Join-Path $NpmGlobalBin "memorax-code.cmd") setup
+```
+
 After the first installation, restart or refresh the detected coding agents
 before opening a new session. In Codex, enable **MemoraX Code Codex Adapter**
 from Plugins or `/plugins` if it is not already enabled.

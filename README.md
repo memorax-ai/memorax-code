@@ -113,7 +113,55 @@ If the initial setup does not work as expected, check these common cases:
 | --- | --- |
 | Installation fails with an unsupported Node.js version | Run `node --version` and upgrade to Node.js 20 or later before reinstalling MemoraX Code. |
 | The package installed but setup did not start | This is expected. Run the appropriate setup command above from a normal interactive terminal. |
+| Windows reports that `memorax-code` or `memorax-cli` is not recognized | Follow the Windows PATH steps below. Both commands are installed by the same package; do not install a separate `memorax-cli` package. |
 | Search, retrieval, or writeback is unavailable after setup | Run `memorax-code status` and `memorax-cli status`, then follow the detailed troubleshooting guide. |
+
+#### Windows: `memorax-code` or `memorax-cli` Is Not Found
+
+On Windows, a global npm installation places command shims in npm's global
+prefix (commonly `%APPDATA%\npm`). If that directory is missing from `PATH`,
+or a supported coding agent was started before Node.js or MemoraX Code was
+installed, it may report that `memorax-cli` is unavailable even though the
+package is installed. `memorax-code` and `memorax-cli` are both included in
+`@memorax/memorax-code`; no separate CLI installation is required.
+
+Interactive setup automatically verifies npm's global command directory and,
+when needed, adds it to the current setup process and the Windows user `PATH`.
+If the current shell cannot start the bare `memorax-code` command, use npm's
+actual global prefix to bootstrap setup and verify the CLI in PowerShell:
+
+```powershell
+$NpmGlobalBin = (npm prefix -g).Trim()
+$env:Path = "$NpmGlobalBin;$env:Path"
+& (Join-Path $NpmGlobalBin "memorax-code.cmd") setup
+& (Join-Path $NpmGlobalBin "memorax-cli.cmd") status
+```
+
+The first two lines repair `PATH` for the current PowerShell process. If setup
+reports that it could not update the persistent Windows user `PATH`, add the
+global prefix once:
+
+```powershell
+$NpmGlobalBin = (npm prefix -g).Trim()
+$UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
+$UserEntries = @($UserPath -split ";" | Where-Object { $_ })
+$NormalizedNpmGlobalBin = $NpmGlobalBin.TrimEnd("\")
+
+if (-not ($UserEntries | Where-Object {
+    $_.Trim().TrimEnd("\") -ieq $NormalizedNpmGlobalBin
+})) {
+    [Environment]::SetEnvironmentVariable(
+        "Path",
+        (($UserEntries + $NpmGlobalBin) -join ";"),
+        "User"
+    )
+}
+```
+
+Open a new terminal after setup or the fallback changes the persistent `PATH`.
+Fully exit and restart an affected coding agent only if it was already running
+during installation or still cannot find `memorax-cli`; reinstalling the
+package is not required.
 
 See [Configuration](docs/configuration.md) for supported settings and
 [Troubleshooting](docs/troubleshooting.md) for detailed diagnostics.
