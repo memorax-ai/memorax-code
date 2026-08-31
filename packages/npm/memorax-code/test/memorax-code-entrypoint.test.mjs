@@ -142,10 +142,11 @@ test("setup propagates the setup process exit code", async () => {
 test("update reconciles clients and verified Hooks or migrates a configured legacy install", {
   skip: process.platform === "win32",
 }, async (t) => {
-  for (const [name, completed, configured = false] of [
+  for (const [name, completed, configured = false, writeBackendPid = true] of [
     ["setup incomplete", false],
     ["configured legacy install", false, true],
-    ["setup complete", true],
+    ["setup complete with restored Backend PID", true],
+    ["setup complete with stopped Backend", true, false, false],
   ]) {
     await t.test(name, async () => {
       const fixture = await createPackageFixture();
@@ -157,9 +158,11 @@ test("update reconciles clients and verified Hooks or migrates a configured lega
           "#!/usr/bin/env node",
           "import { mkdirSync, writeFileSync } from 'node:fs';",
           "import { dirname, join } from 'node:path';",
-          "const path = join(process.env.MEMORAX_CODE_HOME, 'runtime', 'backend', 'backend.pid.json');",
-          "mkdirSync(dirname(path), { recursive: true });",
-          "writeFileSync(path, JSON.stringify({ pid: process.pid }) + '\\n');",
+          "if (process.env.MEMORAX_CODE_TEST_WRITE_BACKEND_PID === '1') {",
+          "  const path = join(process.env.MEMORAX_CODE_HOME, 'runtime', 'backend', 'backend.pid.json');",
+          "  mkdirSync(dirname(path), { recursive: true });",
+          "  writeFileSync(path, JSON.stringify({ pid: process.pid }) + '\\n');",
+          "}",
           "",
         ].join("\n"));
         await chmod(npmModule, 0o755);
@@ -172,6 +175,7 @@ test("update reconciles clients and verified Hooks or migrates a configured lega
           assumeInteractive: true,
           extraEnv: {
             PATH: `${fakeBin}${delimiter}${process.env.PATH ?? ""}`,
+            MEMORAX_CODE_TEST_WRITE_BACKEND_PID: writeBackendPid ? "1" : "0",
             ...(configured ? { MEMORAX_CODE_TEST_CONFIGURED: "1" } : {}),
           },
         });
