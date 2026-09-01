@@ -39,7 +39,7 @@
 Coding Agent 擅长解决眼前的问题，但新会话不会自动继承此前积累的架构认知、踩坑经验、仓库规则
 和协作偏好。
 
-MemoraX Code 让 Codex、Claude Code、CodeBuddy/WorkBuddy、DeepSeek Harness 和 OpenCode 共享一套能够持续积累的记忆。
+MemoraX Code 让 Codex、Claude Code、WorkBuddy、DeepSeek Harness 和 OpenCode 共享一套能够持续积累的记忆。
 它会沉淀代码任务中的工程经验，持续整理仓库知识，并在后续任务中找回相关的工作流程和偏好。
 
 它追求的不是“记得更多”，而是在需要时带回与当前任务相关的 Memory，让 Agent 减少重复搜索和试错，
@@ -48,7 +48,7 @@ MemoraX Code 让 Codex、Claude Code、CodeBuddy/WorkBuddy、DeepSeek Harness �
 ## 快速开始
 
 开始前，请确保已安装 Node.js 20 或更高版本（推荐 Node.js 24 LTS），以及 Codex、Claude Code、
-CodeBuddy/WorkBuddy、DeepSeek Harness 或 OpenCode 中的至少一个。Repo Memory 操作还需要 Python 3。
+WorkBuddy、DeepSeek Harness 或 OpenCode 中的至少一个。Repo Memory 操作还需要 Python 3。
 各 Coding Agent Harness 仍需满足自身的运行时要求；当前 DeepSeek Harness 版本要求 Node.js
 `^22.19.0 || >=24.0.0`。DSH 可全局安装，也可事先通过其官方 `npx` 流程完成初始化。
 
@@ -151,7 +151,7 @@ setup 或上述兜底命令修改持久化 `PATH` 后，请打开一个新终端
 
 ### 体验跨会话记忆
 
-克隆示例仓库，并在项目目录中打开 Codex、Claude Code、CodeBuddy/WorkBuddy、DeepSeek Harness 或 OpenCode：
+克隆示例仓库，并在项目目录中打开 Codex、Claude Code、WorkBuddy、DeepSeek Harness 或 OpenCode：
 
 ```bash
 git clone https://github.com/SWE-agent/test-repo.git
@@ -159,7 +159,7 @@ cd test-repo
 ```
 
 在 Codex 中使用 `$memorax-code`，在 Claude Code 或 DeepSeek Harness 中使用 `/memorax-code`
-调用该 Skill。在 OpenCode、CodeBuddy 或 WorkBuddy 中，直接让 Agent 使用名为 `memorax-code` 的 Skill。
+调用该 Skill。在 OpenCode 或 WorkBuddy 中，直接让 Agent 使用名为 `memorax-code` 的 Skill。
 下面的指令使用产品名称，所有客户端均可直接理解。
 
 在同一个会话中依次发送以下指令：
@@ -204,7 +204,7 @@ MemoraX Code 会先比较含义：语义相同的请求不重复写入；长期�
 | **Procedure 自动复用** | 记录可复用的任务流程，并在后续任务中自动提醒 Agent 按流程执行。 |
 | **Repo Memory 后台整理** | 在后台整理仓库结构、代码入口和历史证据，并按策略自动更新，避免反复搜索和总结。 |
 | **主动记忆控制** | 使用内置的 MemoraX Code Skill 或 CLI，主动查找和添加记忆。 |
-| **客户端集成** | 与 Codex、Claude Code、CodeBuddy/WorkBuddy、DeepSeek Harness 和 OpenCode 集成，触发记忆检索、提醒和写入。目前 Codex、Claude Code、CodeBuddy/WorkBuddy 和 OpenCode 支持自动额度提醒。 |
+| **客户端集成** | 与 Codex、Claude Code、WorkBuddy、DeepSeek Harness 和 OpenCode 集成，触发记忆检索、提醒和写入。目前 Codex、Claude Code、WorkBuddy 和 OpenCode 支持自动额度提醒。 |
 | **本地可观测性** | 通过受内容控制的本地 trace 和 reconciliation 记录查看活动统计、召回与写入状态。 |
 
 ## 你的记忆，由你控制
@@ -249,13 +249,11 @@ Hook 的精确哈希，然后静默信任这些 Hook。身份变化或 Hook 校�
 如需关闭后台检查，请在启动或重启托管 Backend 前设置
 `MEMORAX_CODE_AUTO_UPDATE=false`。客户端启动 Hook 只负责确保 Backend 可用，不负责更新
 节奏。上面的手动更新命令仍然可用，会沿用当前发布通道并保留配置。如果新版本修改了运行中
-客户端已经加载的集成资产，请重启或刷新 Codex、Claude Code、CodeBuddy/WorkBuddy、
+客户端已经加载的集成资产，请重启或刷新 Codex、Claude Code、WorkBuddy、
 DeepSeek Harness 或 OpenCode。
 
-Windows 上，托管的 WorkBuddy 插件优先安装到 `%USERPROFILE%\.workbuddy`；如果仅存在旧版
-`%USERPROFILE%\.codebuddy`，则继续沿用该目录以兼容旧 CodeBuddy 安装。
-两者同时存在时，setup 只清理 `.codebuddy` 中旧的 MemoraX 托管插件状态，不影响其他 CodeBuddy
-数据。`CODEBUDDY_HOME` 或 `WORKBUDDY_HOME` 可显式覆盖默认目录。在 WorkBuddy 至少成功执行一次
+Windows 上，托管的 WorkBuddy 插件默认安装到 `%USERPROFILE%\.workbuddy`；
+`WORKBUDDY_HOME` 可显式覆盖默认目录。在 WorkBuddy 至少成功执行一次
 已安装 Hook 前，状态会保持为 `hook-runtime=unverified`。
 
 ### Windows 升级提示
