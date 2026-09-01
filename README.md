@@ -40,7 +40,7 @@ Coding agents are good at the task in front of them, but a new session often
 starts without the architecture, failed attempts, repository rules, or working
 preferences established before it.
 
-MemoraX Code gives Codex, Claude Code, CodeBuddy/WorkBuddy, DeepSeek Harness, and OpenCode a shared
+MemoraX Code gives Codex, Claude Code, WorkBuddy, DeepSeek Harness, and OpenCode a shared
 memory layer for that context.
 It can recall prior engineering knowledge, capture reusable lessons from
 completed work, maintain repository knowledge, and carry your procedures and
@@ -53,7 +53,7 @@ and validation sooner.
 ## Quick Start
 
 Prepare Node.js 20+ (Node.js 24 LTS recommended) and at least one of Codex,
-Claude Code, CodeBuddy/WorkBuddy, DeepSeek Harness, or OpenCode. Python 3 is
+Claude Code, WorkBuddy, DeepSeek Harness, or OpenCode. Python 3 is
 required for Repo Memory operations. Each coding-agent harness retains its own
 runtime requirements; current DeepSeek Harness releases require Node.js
 `^22.19.0 || >=24.0.0`. DSH may be installed globally or initialized
@@ -170,7 +170,7 @@ See [Configuration](docs/configuration.md) for supported settings and
 ### Try Cross-Session Memory
 
 Clone the example repository from the product website, then open Codex, Claude
-Code, CodeBuddy/WorkBuddy, DeepSeek Harness, or OpenCode in the project directory:
+Code, WorkBuddy, DeepSeek Harness, or OpenCode in the project directory:
 
 ```bash
 git clone https://github.com/SWE-agent/test-repo.git
@@ -178,7 +178,7 @@ cd test-repo
 ```
 
 Invoke the Skill as `$memorax-code` in Codex or `/memorax-code` in Claude Code
-or DeepSeek Harness. In OpenCode, CodeBuddy, or WorkBuddy, ask the agent to use
+or DeepSeek Harness. In OpenCode or WorkBuddy, ask the agent to use
 the `memorax-code` skill by name. The prompts below use its product name and
 work in all supported clients.
 
@@ -234,7 +234,7 @@ writing when the durable intent or target is unclear.
 | **Procedure reuse** | Records reusable task procedures and reminds future agents to apply them. |
 | **Background Repo Memory maintenance** | Automatically organizes repository structure, entry points, and history evidence in the background, then updates them according to policy to reduce repeated searching and summarization. |
 | **Active memory control** | Lets you search and add memory through the bundled MemoraX Code skill or the CLI. |
-| **Client integration** | Integrates with Codex, Claude Code, CodeBuddy/WorkBuddy, DeepSeek Harness, and OpenCode to trigger memory retrieval, reminders, and writeback. Automatic quota reminders are currently available in Codex, Claude Code, CodeBuddy/WorkBuddy, and OpenCode. |
+| **Client integration** | Integrates with Codex, Claude Code, WorkBuddy, DeepSeek Harness, and OpenCode to trigger memory retrieval, reminders, and writeback. Automatic quota reminders are currently available in Codex, Claude Code, WorkBuddy, and OpenCode. |
 | **Local observability** | Uses content-controlled local trace and reconciliation records to inspect activity counts, retrieval, and writeback status. |
 
 ## Your Memory, Your Control
@@ -296,7 +296,8 @@ above remains available and follows the installed release channel while
 preserving configuration. Restart or refresh a client when a release changes
 integration assets that the running client has already loaded.
 
-On Windows, the managed WorkBuddy plugin defaults to `%USERPROFILE%\.codebuddy`.
+On Windows, the managed WorkBuddy plugin installs to `%USERPROFILE%\.workbuddy`
+by default. `WORKBUDDY_HOME` remains an explicit override.
 Its status remains `hook-runtime=unverified` until WorkBuddy executes the installed Hook at least once.
 
 ### Windows Upgrade Note

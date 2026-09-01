@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import { appendFile, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -40,7 +41,7 @@ const codeBuddyHome = commonStringValue(process.env.CODEBUDDY_HOME)
   ?? commonStringValue(packageMetadata.codeBuddyHome)
   ?? commonStringValue(input?.codebuddy_home)
   ?? commonStringValue(input?.codeBuddyHome)
-  ?? join(homedir(), process.platform === "win32" ? ".codebuddy" : ".workbuddy");
+  ?? defaultCodeBuddyHome();
 try {
   await writeCodeBuddyRuntimeObservation({ memoraxCodeHome: home, codeBuddyHome, pluginRoot });
 } catch (error) {
@@ -238,6 +239,15 @@ async function bindMemoryCliTraceSession(sessionId) {
 }
 function shellSingleQuote(value) { return `'${value.replaceAll("'", "'\"'\"'")}'`; }
 function stringValue(value) { return typeof value === "string" && value.trim() ? value.trim() : undefined; }
+
+function defaultCodeBuddyHome() {
+  const workBuddyHome = join(homedir(), ".workbuddy");
+  if (process.platform !== "win32") return workBuddyHome;
+  const legacyCodeBuddyHome = join(homedir(), ".codebuddy");
+  return existsSync(workBuddyHome) || !existsSync(legacyCodeBuddyHome)
+    ? workBuddyHome
+    : legacyCodeBuddyHome;
+}
 
 function provisionalTurnId(sessionId, boundary, prompt) {
   return `${sessionId}:${boundary}:${createHash("sha256").update(prompt.trim()).digest("hex")}`;

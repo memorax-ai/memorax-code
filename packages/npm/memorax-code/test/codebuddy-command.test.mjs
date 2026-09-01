@@ -48,9 +48,22 @@ test("CodeBuddy resolver finds the Windows WorkBuddy script under LocalAppData P
   }), { command, source: "app-bundled" });
 });
 
-test("CodeBuddy resolver defaults Windows plugin state to .codebuddy", () => {
+test("CodeBuddy resolver prefers WorkBuddy state and preserves legacy CodeBuddy state", () => {
   assert.equal(
-    defaultCodeBuddyHome({}, "C:\\Users\\tester", "win32"),
+    defaultCodeBuddyHome({}, "C:\\Users\\tester", "win32", () => false),
+    "C:\\Users\\tester\\.workbuddy",
+  );
+  assert.equal(
+    defaultCodeBuddyHome(
+      {},
+      "C:\\Users\\tester",
+      "win32",
+      (path) => path.endsWith("\\.codebuddy"),
+    ),
     "C:\\Users\\tester\\.codebuddy",
+  );
+  assert.equal(
+    defaultCodeBuddyHome({}, "C:\\Users\\tester", "win32", () => true),
+    "C:\\Users\\tester\\.workbuddy",
   );
 });

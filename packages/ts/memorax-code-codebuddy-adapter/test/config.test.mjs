@@ -19,13 +19,31 @@ import { codeBuddyHookCommand } from "../src/hook-manifest.mjs";
 import { writeCodeBuddyRuntimeObservation } from "../src/runtime-observation.mjs";
 import { resolveHookCodeBuddyCommand } from "../../memorax-code-adapter-common/src/clients/codebuddy-command.mjs";
 
-test("uses the CodeBuddy CLI home by default on Windows", () => {
+test("prefers the WorkBuddy home on Windows while preserving a legacy CodeBuddy home", () => {
   assert.equal(
-    defaultCodeBuddyHome({}, "C:\\Users\\tester", "win32"),
+    defaultCodeBuddyHome({}, "C:\\Users\\tester", "win32", () => false),
+    "C:\\Users\\tester\\.workbuddy",
+  );
+  assert.equal(
+    defaultCodeBuddyHome(
+      {},
+      "C:\\Users\\tester",
+      "win32",
+      (path) => path.endsWith("\\.codebuddy"),
+    ),
     "C:\\Users\\tester\\.codebuddy",
   );
   assert.equal(
-    defaultCodeBuddyHome({ WORKBUDDY_HOME: "D:\\WorkBuddyData" }, "C:\\Users\\tester", "win32"),
+    defaultCodeBuddyHome({}, "C:\\Users\\tester", "win32", () => true),
+    "C:\\Users\\tester\\.workbuddy",
+  );
+  assert.equal(
+    defaultCodeBuddyHome(
+      { WORKBUDDY_HOME: "D:\\WorkBuddyData" },
+      "C:\\Users\\tester",
+      "win32",
+      () => false,
+    ),
     "D:\\WorkBuddyData",
   );
 });
@@ -147,6 +165,76 @@ test("installs and removes an isolated CodeBuddy plugin registry entry", async (
   assert.ok(removedRegistry.plugins["user-plugin@user-marketplace"]);
   assert.equal(await exists(marketplaceRoot(home)), false);
   assert.equal(await readFile(join(home, "skills", "user-skill", "SKILL.md"), "utf8"), "user-owned\n");
+});
+
+test("reconciles a managed legacy .codebuddy home when .workbuddy is selected", async () => {
+  const profile = await mkdtemp(join(tmpdir(), "memorax-codebuddy-migration-"));
+  const workBuddyHome = join(profile, ".workbuddy");
+  const legacyHome = join(profile, ".codebuddy");
+  const memoraxCodeHome = join(profile, ".memorax-code");
+  await mkdir(join(legacyHome, "plugins"), { recursive: true });
+  await mkdir(join(legacyHome, "skills", "user-skill"), { recursive: true });
+  await writeFile(join(legacyHome, "skills", "user-skill", "SKILL.md"), "user-owned\n");
+  await writeFile(codeBuddySettingsPath(legacyHome), JSON.stringify({ enabledPlugins: {
+    "user-plugin@user-marketplace": true,
+  }}));
+  await writeFile(knownMarketplacesPath(legacyHome), JSON.stringify({
+    "user-marketplace": { type: "directory", source: { path: "/user/marketplace" } },
+  }));
+  await writeFile(join(legacyHome, "plugins", "installed_plugins.json"), JSON.stringify({ version: 2, plugins: {
+    "user-plugin@user-marketplace": [{ scope: "user", installPath: "/user/plugin", enabled: true }],
+  }}));
+  await enableCodeBuddyAdapter({ codeBuddyHome: legacyHome, platform: "win32" });
+  await mkdir(join(legacyHome, "plugins", "cache", "memorax-code-local", "memorax-code-codebuddy-adapter", "0.1.9"), { recursive: true });
+  await mkdir(join(legacyHome, "plugins", "cache", "memorax-code-codebuddy-adapter", "0.1.9"), { recursive: true });
+  await mkdir(workBuddyHome, { recursive: true });
+
+  const legacyStatus = await readCodeBuddyAdapterStatus({
+    codeBuddyHome: workBuddyHome,
+    memoraxCodeHome,
+    platform: "win32",
+  });
+  assert.equal(legacyStatus.installed, false);
+  assert.equal(legacyStatus.legacyManaged, true);
+  assert.equal(legacyStatus.legacyCodeBuddyHome, legacyHome);
+
+  const disabled = await disableCodeBuddyAdapter({ codeBuddyHome: workBuddyHome, platform: "win32" });
+  assert.equal(disabled.installed, true);
+  assert.equal(disabled.legacyManaged, true);
+  assert.equal(disabled.legacyCodeBuddyHome, legacyHome);
+  const disabledLegacySettings = JSON.parse(await readFile(codeBuddySettingsPath(legacyHome), "utf8"));
+  assert.equal(disabledLegacySettings.enabledPlugins["memorax-code-codebuddy-adapter@memorax-code-local"], false);
+
+  await enableCodeBuddyAdapter({
+    codeBuddyHome: workBuddyHome,
+    memoraxCodeHome,
+    platform: "win32",
+  });
+  assert.equal(await exists(marketplaceRoot(legacyHome)), false);
+  assert.equal(await exists(join(legacyHome, "plugins", "cache", "memorax-code-local", "memorax-code-codebuddy-adapter")), false);
+  assert.equal(await exists(join(legacyHome, "plugins", "cache", "memorax-code-codebuddy-adapter")), false);
+  const migratedLegacySettings = JSON.parse(await readFile(codeBuddySettingsPath(legacyHome), "utf8"));
+  assert.equal(migratedLegacySettings.enabledPlugins["memorax-code-codebuddy-adapter@memorax-code-local"], undefined);
+  assert.equal(migratedLegacySettings.enabledPlugins["user-plugin@user-marketplace"], true);
+  const migratedLegacyKnown = JSON.parse(await readFile(knownMarketplacesPath(legacyHome), "utf8"));
+  assert.equal(migratedLegacyKnown["memorax-code-local"], undefined);
+  assert.ok(migratedLegacyKnown["user-marketplace"]);
+  const migratedLegacyRegistry = JSON.parse(await readFile(join(legacyHome, "plugins", "installed_plugins.json"), "utf8"));
+  assert.equal(migratedLegacyRegistry.plugins["memorax-code-codebuddy-adapter@memorax-code-local"], undefined);
+  assert.ok(migratedLegacyRegistry.plugins["user-plugin@user-marketplace"]);
+  assert.equal(await readFile(join(legacyHome, "skills", "user-skill", "SKILL.md"), "utf8"), "user-owned\n");
+
+  await enableCodeBuddyAdapter({ codeBuddyHome: legacyHome, platform: "win32" });
+  const removed = await removeCodeBuddyPluginInstallation({
+    codeBuddyHome: workBuddyHome,
+    platform: "win32",
+  });
+  assert.equal(removed.removed, true);
+  assert.equal(await exists(marketplaceRoot(workBuddyHome)), false);
+  assert.equal(await exists(marketplaceRoot(legacyHome)), false);
+  const removedLegacyRegistry = JSON.parse(await readFile(join(legacyHome, "plugins", "installed_plugins.json"), "utf8"));
+  assert.equal(removedLegacyRegistry.plugins["memorax-code-codebuddy-adapter@memorax-code-local"], undefined);
+  assert.ok(removedLegacyRegistry.plugins["user-plugin@user-marketplace"]);
 });
 
 test("installs the complete plugin when the package lives under node_modules", async () => {

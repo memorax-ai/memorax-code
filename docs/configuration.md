@@ -209,8 +209,11 @@ native plugin layout:
 └── skills/memorax-code/
 ```
 
-`CODEBUDDY_HOME` or `WORKBUDDY_HOME` overrides the default root. Windows uses
-`%USERPROFILE%\.codebuddy`; other platforms use `~/.workbuddy`. The Skill is
+`CODEBUDDY_HOME` or `WORKBUDDY_HOME` overrides the default root. Windows prefers
+`%USERPROFILE%\.workbuddy` and falls back to an existing `%USERPROFILE%\.codebuddy`
+for legacy CodeBuddy installations. When both homes exist, setup removes only the
+legacy MemoraX-managed plugin state from `.codebuddy`; other platforms use
+`~/.workbuddy`. The Skill is
 materialized from the canonical MemoraX Code Skill and is owned by the managed
 marketplace plugin; user files outside that plugin are not modified.
 
