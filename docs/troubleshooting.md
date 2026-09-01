@@ -268,8 +268,9 @@ memorax-code start --clients codebuddy
 memorax-code-codebuddy status --json
 ```
 
-On Windows, the managed plugin defaults to `%USERPROFILE%\.codebuddy`, while
-`CODEBUDDY_HOME` or `WORKBUDDY_HOME` remains an explicit override. A
+On Windows, the managed plugin prefers `%USERPROFILE%\.workbuddy` and falls back
+to an existing `%USERPROFILE%\.codebuddy` for legacy CodeBuddy installations,
+while `CODEBUDDY_HOME` or `WORKBUDDY_HOME` remains an explicit override. A
 `codebuddyHooks.status` value of `unverified` means the files are configured but
 the current plugin version has not yet produced a real Hook event. Restart or
 refresh WorkBuddy, submit one prompt, and check status again. `observed` means

@@ -296,7 +296,9 @@ above remains available and follows the installed release channel while
 preserving configuration. Restart or refresh a client when a release changes
 integration assets that the running client has already loaded.
 
-On Windows, the managed WorkBuddy plugin defaults to `%USERPROFILE%\.codebuddy`.
+On Windows, the managed WorkBuddy plugin prefers `%USERPROFILE%\.workbuddy`
+and preserves an existing `%USERPROFILE%\.codebuddy` home for legacy CodeBuddy
+installations. `CODEBUDDY_HOME` or `WORKBUDDY_HOME` remains an explicit override.
 Its status remains `hook-runtime=unverified` until WorkBuddy executes the installed Hook at least once.
 
 ### Windows Upgrade Note

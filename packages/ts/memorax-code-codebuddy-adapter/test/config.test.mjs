@@ -19,13 +19,31 @@ import { codeBuddyHookCommand } from "../src/hook-manifest.mjs";
 import { writeCodeBuddyRuntimeObservation } from "../src/runtime-observation.mjs";
 import { resolveHookCodeBuddyCommand } from "../../memorax-code-adapter-common/src/clients/codebuddy-command.mjs";
 
-test("uses the CodeBuddy CLI home by default on Windows", () => {
+test("prefers the WorkBuddy home on Windows while preserving a legacy CodeBuddy home", () => {
   assert.equal(
-    defaultCodeBuddyHome({}, "C:\\Users\\tester", "win32"),
+    defaultCodeBuddyHome({}, "C:\\Users\\tester", "win32", () => false),
+    "C:\\Users\\tester\\.workbuddy",
+  );
+  assert.equal(
+    defaultCodeBuddyHome(
+      {},
+      "C:\\Users\\tester",
+      "win32",
+      (path) => path.endsWith("\\.codebuddy"),
+    ),
     "C:\\Users\\tester\\.codebuddy",
   );
   assert.equal(
-    defaultCodeBuddyHome({ WORKBUDDY_HOME: "D:\\WorkBuddyData" }, "C:\\Users\\tester", "win32"),
+    defaultCodeBuddyHome({}, "C:\\Users\\tester", "win32", () => true),
+    "C:\\Users\\tester\\.workbuddy",
+  );
+  assert.equal(
+    defaultCodeBuddyHome(
+      { WORKBUDDY_HOME: "D:\\WorkBuddyData" },
+      "C:\\Users\\tester",
+      "win32",
+      () => false,
+    ),
     "D:\\WorkBuddyData",
   );
 });

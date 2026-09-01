@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { chmod, cp, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, relative, sep, win32 } from "node:path";
@@ -19,10 +19,20 @@ const PLUGIN_NAME = "memorax-code-codebuddy-adapter";
 const MARKETPLACE_NAME = "memorax-code-local";
 const PLUGIN_ID = `${PLUGIN_NAME}@${MARKETPLACE_NAME}`;
 
-export function defaultCodeBuddyHome(env = process.env, homeDir = homedir(), platform = process.platform) {
-  return env.CODEBUDDY_HOME?.trim()
-    || env.WORKBUDDY_HOME?.trim()
-    || (platform === "win32" ? win32.join(homeDir, ".codebuddy") : join(homeDir, ".workbuddy"));
+export function defaultCodeBuddyHome(
+  env = process.env,
+  homeDir = homedir(),
+  platform = process.platform,
+  pathExists = existsSync,
+) {
+  const configured = env.CODEBUDDY_HOME?.trim() || env.WORKBUDDY_HOME?.trim();
+  if (configured) return configured;
+  if (platform !== "win32") return join(homeDir, ".workbuddy");
+  const workBuddyHome = win32.join(homeDir, ".workbuddy");
+  const legacyCodeBuddyHome = win32.join(homeDir, ".codebuddy");
+  return pathExists(workBuddyHome) || !pathExists(legacyCodeBuddyHome)
+    ? workBuddyHome
+    : legacyCodeBuddyHome;
 }
 // CodeBuddy stores installed plugin caches under the marketplace namespace.
 export function codeBuddyInstallPath(home = defaultCodeBuddyHome()) { return join(home, "plugins", "cache", MARKETPLACE_NAME, PLUGIN_NAME, VERSION); }

@@ -252,8 +252,10 @@ Hook 的精确哈希，然后静默信任这些 Hook。身份变化或 Hook 校�
 客户端已经加载的集成资产，请重启或刷新 Codex、Claude Code、CodeBuddy/WorkBuddy、
 DeepSeek Harness 或 OpenCode。
 
-Windows 上，托管的 WorkBuddy 插件默认安装到 `%USERPROFILE%\.codebuddy`。在 WorkBuddy 至少成功
-执行一次已安装 Hook 前，状态会保持为 `hook-runtime=unverified`。
+Windows 上，托管的 WorkBuddy 插件优先安装到 `%USERPROFILE%\.workbuddy`；如果仅存在旧版
+`%USERPROFILE%\.codebuddy`，则继续沿用该目录以兼容旧 CodeBuddy 安装。
+`CODEBUDDY_HOME` 或 `WORKBUDDY_HOME` 可显式覆盖默认目录。在 WorkBuddy 至少成功执行一次
+已安装 Hook 前，状态会保持为 `hook-runtime=unverified`。
 
 ### Windows 升级提示
 
