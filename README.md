@@ -299,6 +299,8 @@ integration assets that the running client has already loaded.
 On Windows, the managed WorkBuddy plugin prefers `%USERPROFILE%\.workbuddy`
 and preserves an existing `%USERPROFILE%\.codebuddy` home for legacy CodeBuddy
 installations. `CODEBUDDY_HOME` or `WORKBUDDY_HOME` remains an explicit override.
+When both homes exist, setup removes only the legacy MemoraX-managed plugin state
+from `.codebuddy`; unrelated CodeBuddy data remains unchanged.
 Its status remains `hook-runtime=unverified` until WorkBuddy executes the installed Hook at least once.
 
 ### Windows Upgrade Note

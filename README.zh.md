@@ -254,7 +254,8 @@ DeepSeek Harness 或 OpenCode。
 
 Windows 上，托管的 WorkBuddy 插件优先安装到 `%USERPROFILE%\.workbuddy`；如果仅存在旧版
 `%USERPROFILE%\.codebuddy`，则继续沿用该目录以兼容旧 CodeBuddy 安装。
-`CODEBUDDY_HOME` 或 `WORKBUDDY_HOME` 可显式覆盖默认目录。在 WorkBuddy 至少成功执行一次
+两者同时存在时，setup 只清理 `.codebuddy` 中旧的 MemoraX 托管插件状态，不影响其他 CodeBuddy
+数据。`CODEBUDDY_HOME` 或 `WORKBUDDY_HOME` 可显式覆盖默认目录。在 WorkBuddy 至少成功执行一次
 已安装 Hook 前，状态会保持为 `hook-runtime=unverified`。
 
 ### Windows 升级提示
