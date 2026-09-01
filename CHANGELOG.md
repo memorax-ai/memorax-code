@@ -6,6 +6,15 @@ behavior.
 
 ## Unreleased
 
+## [0.1.11] - 2026-09-01
+
+### Fixed
+
+- Updated Windows WorkBuddy setup to prefer `%USERPROFILE%\\.workbuddy` for
+  new installations while safely reconciling only MemoraX-managed plugin state
+  from legacy `%USERPROFILE%\\.codebuddy` homes, preserving unrelated plugins,
+  Skills, and user data.
+
 ## [0.1.10] - 2026-09-01
 
 ### Added
