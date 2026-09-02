@@ -108,6 +108,13 @@ export type MemoraxCodeConfig = Readonly<{
       max_event_chars?: number;
       max_file_bytes?: number;
     }>;
+    trae?: Readonly<{
+      enabled?: boolean;
+      capture_content?: boolean;
+      retention_days?: number;
+      max_event_chars?: number;
+      max_file_bytes?: number;
+    }>;
   }>;
 }>;
 
@@ -181,6 +188,10 @@ export function renderDefaultMemoraxCodeConfig(): string {
     "[trace.codebuddy]",
     "enabled = true # Enable local CodeBuddy session memory trace collection.",
     "capture_content = true # Store content in local CodeBuddy trace events.",
+    "",
+    "[trace.trae]",
+    "enabled = true # Enable local Trae session memory trace collection.",
+    "capture_content = true # Store content in local Trae trace events.",
     "",
   ].join("\n");
 }
@@ -264,6 +275,7 @@ function normalizeMemoraxCodeConfig(value: unknown): MemoraxCodeConfig {
   const traceDsh = recordValue(trace?.dsh);
   const traceOpenCode = recordValue(trace?.opencode);
   const traceCodeBuddy = recordValue(trace?.codebuddy);
+  const traceTrae = recordValue(trace?.trae);
 
   return (prune({
     clients: prune({
@@ -356,6 +368,13 @@ function normalizeMemoraxCodeConfig(value: unknown): MemoraxCodeConfig {
         retention_days: numberField(traceCodeBuddy, "retention_days"),
         max_event_chars: numberField(traceCodeBuddy, "max_event_chars"),
         max_file_bytes: numberField(traceCodeBuddy, "max_file_bytes"),
+      }),
+      trae: prune({
+        enabled: booleanField(traceTrae, "enabled"),
+        capture_content: booleanField(traceTrae, "capture_content"),
+        retention_days: numberField(traceTrae, "retention_days"),
+        max_event_chars: numberField(traceTrae, "max_event_chars"),
+        max_file_bytes: numberField(traceTrae, "max_file_bytes"),
       }),
     }),
   }) ?? {}) as MemoraxCodeConfig;

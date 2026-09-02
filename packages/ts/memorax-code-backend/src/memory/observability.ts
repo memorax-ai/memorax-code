@@ -13,6 +13,8 @@ export type MemoryObservabilitySource =
   | "opencode_plugin_writeback"
   | "codebuddy_hook_retrieval"
   | "codebuddy_hook_writeback"
+  | "trae_hook_retrieval"
+  | "trae_hook_writeback"
   | "memory_cli"
   | "unknown";
 

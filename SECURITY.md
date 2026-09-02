@@ -80,6 +80,12 @@ Please allow time for triage and remediation before public disclosure.
   retrieval, trace, or writeback. Repo Memory jobs run a bounded headless
   CodeBuddy process with `--dangerously-skip-permissions`; use this only for a
   Backend-authorized Git worktree and never for untrusted source.
+- Trae exposes no stable raw Session authority. For Trae only, the validated
+  prompt supplied by `UserPromptSubmit` and final assistant message supplied by
+  the matching `Stop` Hook are the automatic-writeback content authority. They
+  are bound to one active Turn with a prompt-derived Turn ID; a new prompt
+  interrupts the old Turn, and late or mismatched completion events do not
+  write back. Hook fields are not a fallback for any other client.
 - Initial Repo Memory builds use only the Git worktree returned by an
   authenticated Backend turn-start request. Backend or workspace-scope
   failures skip the build; client integrations do not fall back to
@@ -129,15 +135,15 @@ the generated configuration's automatic writeback; automatic retrieval
 remains disabled until explicitly enabled.
 
 Memory searches send the query and repository-scoped identity to MemoraX.
-When DSH or OpenCode automatic retrieval is enabled, each eligible direct user
+When DSH, OpenCode, or Trae automatic retrieval is enabled, each eligible direct user
 prompt is used as the search query.
 Active adds and automatic writeback send the selected content needed to create
 memory. Automatic writeback may include selected user instructions and the
-matching final assistant response from an exact Codex rollout, Claude Code
-transcript, DSH persisted Session Event Log interval, or OpenCode SDK
-session-message turn. It does not send the retained trace file, raw transcript
-path, raw DSH interval, SDK message records, or trace-only provenance as part
-of that payload.
+matching final assistant response from an exact Codex rollout, Claude Code or
+CodeBuddy/WorkBuddy transcript, DSH persisted Session Event Log interval,
+OpenCode SDK session-message Turn, or Trae's validated Hook pair. It does not
+send the retained trace file, raw transcript path, raw DSH interval, SDK
+message records, or trace-only provenance as part of that payload.
 
 Automatic writeback bounds each selected message to its configured Add limit,
 then applies a local best-effort detector before hashing, buffering, chunking,
@@ -185,7 +191,7 @@ the product creates or tightens the home to mode `0700` and newly seeded
 configuration to mode `0600`; Windows relies on the current user's filesystem
 ACLs.
 
-Codex, Claude Code, CodeBuddy/WorkBuddy, DSH, and OpenCode local trace capture is enabled by default.
+Codex, Claude Code, CodeBuddy/WorkBuddy, DSH, OpenCode, and Trae local trace capture is enabled by default.
 Depending on the enabled client capabilities, traces may include prompts,
 responses, recalled memory, writeback content, reminder text, and local paths.
 Trace files stay under `MEMORAX_CODE_HOME`. The shipped package has no trace
@@ -232,7 +238,7 @@ cleanup runs.
   retained trace files, private memories, `.env.local`, or machine-specific
   diagnostic state.
 - Preserve workspace traversal and symlink protections, client/session
-  isolation, exact-transcript writeback authority, bounded parsing, and
+  isolation, each client's documented writeback authority, bounded parsing, and
   fail-closed behavior for uncertain identity or runtime records.
 - Use isolated client and MemoraX Code homes for lifecycle or destructive
   tests.

@@ -75,7 +75,40 @@ test("Backend memory hook endpoints record and write back a turn", async () => {
     });
     assert.equal(writeback.status, 200);
     assert.deepEqual(await writeback.json(), { ok: true, scheduled: true });
-    await waitFor(() => requests.length === 1, "HTTP hook writeback did not call MemoraX add");
+
+    const traePrompt = "HTTP Trae Hook prompt.";
+    const traeTurn = traeTurnId("session-http-trae", traePrompt);
+    const traeStart = await originalFetch(`${url}/memory/turn-start`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        version: 1,
+        client: "trae",
+        sessionId: "session-http-trae",
+        turnId: traeTurn,
+        prompt: traePrompt,
+        cwd: TEST_WORKSPACE,
+      }),
+    });
+    assert.equal(traeStart.status, 200);
+    assert.deepEqual(await traeStart.json(), GIT_TURN_START_RESULT);
+
+    const traeWriteback = await originalFetch(`${url}/memory/writeback`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        version: 1,
+        client: "trae",
+        sessionId: "session-http-trae",
+        turnId: traeTurn,
+        prompt: traePrompt,
+        lastAssistantMessage: "HTTP Trae Hook answer.",
+        cwd: TEST_WORKSPACE,
+      }),
+    });
+    assert.equal(traeWriteback.status, 200);
+    assert.deepEqual(await traeWriteback.json(), { ok: true, scheduled: true });
+    await waitFor(() => requests.length === 2, "HTTP Hook writebacks did not call MemoraX add");
   } finally {
     await new Promise((resolve) => server.close(resolve));
     globalThis.fetch = originalFetch;
@@ -167,6 +200,23 @@ test("Backend memory hook endpoints reject commands outside the closed schema", 
     sessionId: "session-codebuddy-writeback",
     turnId: codeBuddyTurnId("session-codebuddy-writeback", 0, "CodeBuddy writeback."),
     transcriptPath: "/tmp/codebuddy.jsonl",
+  };
+  const traeTurnStart = {
+    version: 1,
+    client: "trae",
+    sessionId: "session-trae-turn-start",
+    turnId: traeTurnId("session-trae-turn-start", "Trae turn start."),
+    prompt: "Trae turn start.",
+    cwd: "/workspace/trae",
+  };
+  const traeWriteback = {
+    version: 1,
+    client: "trae",
+    sessionId: "session-trae-writeback",
+    turnId: traeTurnId("session-trae-writeback", "Trae writeback."),
+    prompt: "Trae writeback.",
+    lastAssistantMessage: "Trae Hook answer.",
+    cwd: "/workspace/trae",
   };
   try {
     for (const [caseName, path, body] of [
@@ -279,6 +329,22 @@ test("Backend memory hook endpoints reject commands outside the closed schema", 
         ...codeBuddyWriteback,
         turnId: `${codeBuddyWriteback.sessionId}:00:${"a".repeat(64)}`,
       }],
+      ["transcript field on Trae turn-start", "/memory/turn-start", {
+        ...traeTurnStart,
+        transcriptPath: "/tmp/trae.jsonl",
+      }],
+      ["cross-session Trae turn id", "/memory/turn-start", {
+        ...traeTurnStart,
+        turnId: traeTurnId("other-session", traeTurnStart.prompt),
+      }],
+      ["prompt-mismatched Trae turn id", "/memory/writeback", {
+        ...traeWriteback,
+        prompt: "Different Trae prompt.",
+      }],
+      ["foreign messages on Trae writeback", "/memory/writeback", {
+        ...traeWriteback,
+        messages: [],
+      }],
     ]) {
       const response = await fetch(`${url}${path}`, {
         method: "POST",
@@ -301,6 +367,10 @@ function codeBuddyTurnId(sessionId, boundary, prompt) {
   return `${sessionId}:${boundary}:${createHash("sha256").update(prompt.trim()).digest("hex")}`;
 }
 
+function traeTurnId(sessionId, prompt, createdAt = 1_700_000_000_000) {
+  return `${sessionId}:${createdAt}:${createHash("sha256").update(prompt.trim()).digest("hex")}`;
+}
+
 test("Backend memory hook endpoints write client-isolated trace events", async () => {
   const { fetchImpl, requests } = memoraxAddFetch();
   const sessionHome = await mkdtemp(join(tmpdir(), "memorax-code-hook-trace-"));
@@ -315,6 +385,7 @@ test("Backend memory hook endpoints write client-isolated trace events", async (
     MEMORAX_CODE_DSH_TRACE_ENABLED: undefined,
     MEMORAX_CODE_CODEBUDDY_TRACE_ENABLED: undefined,
     MEMORAX_CODE_OPENCODE_TRACE_ENABLED: undefined,
+    MEMORAX_CODE_TRAE_TRACE_ENABLED: undefined,
   });
   const originalFetch = globalThis.fetch;
   globalThis.fetch = fetchImpl;
@@ -523,6 +594,27 @@ test("Backend memory hook endpoints write client-isolated trace events", async (
     assert.equal(codeBuddyReminder.status, 200);
     assert.deepEqual(await codeBuddyReminder.json(), { ok: true });
 
+    const traeReminderTurnId = traeTurnId(
+      "session-trace-hook",
+      "MemoraX Code reminder in Trae.",
+    );
+    const traeReminder = await originalFetch(`${url}/memory/skill-reminder`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        version: 1,
+        client: "trae",
+        sessionId: "session-trace-hook",
+        turnId: traeReminderTurnId,
+        cwd: TEST_WORKSPACE,
+        workspaceKind: "project",
+        content: "MemoraX Code reminder: use the memorax-code skill in Trae.",
+        triggers: ["cadence"],
+      }),
+    });
+    assert.equal(traeReminder.status, 200);
+    assert.deepEqual(await traeReminder.json(), { ok: true });
+
     const writeback = await originalFetch(`${url}/memory/writeback`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -627,6 +719,23 @@ test("Backend memory hook endpoints write client-isolated trace events", async (
     assert.deepEqual(codeBuddyEvents[0].response, {
       role: "developer",
       content: "MemoraX Code reminder: use the memorax-code-codebuddy-adapter:memorax-code skill in WorkBuddy.",
+    });
+    const traeEventsPath = clientTracePaths("trae", sessionHome).eventsJsonl("session-trace-hook");
+    await waitForFile(traeEventsPath, /skill_reminder/, "Trae reminder trace event was not written");
+    const traeEvents = (await readFile(traeEventsPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(traeEvents.length, 1);
+    assert.equal(traeEvents[0].type, "skill_reminder");
+    assert.equal(traeEvents[0].source, "trae-hook");
+    assert.equal(traeEvents[0].operation, "reminder");
+    assert.equal(traeEvents[0].trace.client, "trae");
+    assert.equal(traeEvents[0].trace.session_id, "session-trace-hook");
+    assert.equal(traeEvents[0].trace.turn_id, traeReminderTurnId);
+    assert.equal(traeEvents[0].trace.context_origin, "trae-hook-body");
+    assert.equal(traeEvents[0].trace.transcript_path, undefined);
+    assert.deepEqual(traeEvents[0].request.triggers, ["cadence"]);
+    assert.deepEqual(traeEvents[0].response, {
+      role: "developer",
+      content: "MemoraX Code reminder: use the memorax-code skill in Trae.",
     });
     const turnEnd = events.find((event) => event.type === "turn_end");
     assert.equal(turnEnd.source, "codex-hook");

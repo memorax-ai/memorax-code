@@ -339,13 +339,16 @@ sequenceDiagram
 
 Important distinctions:
 
-- Hook or plugin event fields supply protocol, correlation, and retrieval
-  input. Their prompt or event text is not automatic writeback content
-  authority; OpenCode's separately supplied SDK records are validated as
-  client-native content.
-- Codex rollout JSONL, Claude Code transcript JSONL, DSH's exact persisted
-  Session Event Log interval, and OpenCode SDK session message records are the
-  content authorities for their respective clients.
+- Hook or plugin event fields normally supply protocol, correlation, and
+  retrieval input rather than automatic-writeback content. OpenCode's
+  separately supplied SDK records are validated as client-native content. Trae
+  is the narrow exception because it exposes no stable raw Session: its
+  validated, correlated `UserPromptSubmit` prompt and `Stop` final assistant
+  message are the primary Trae content authority, not a fallback.
+- Codex rollout JSONL, Claude Code and CodeBuddy/WorkBuddy transcript JSONL,
+  DSH's exact persisted Session Event Log interval, OpenCode SDK session
+  message records, and Trae's validated Hook pair are the content authorities
+  for their respective clients.
 - Required client/session/turn identity and repository scope fail closed when
   incomplete, conflicting, or unprovable.
 - A malformed or incomplete direct `.git` directory is the sole documented
@@ -366,6 +369,12 @@ Important distinctions:
   pending state. Local reminder evaluation remains independent of Backend
   recovery. Its `shell.env` event binds the native session identity and makes
   the packaged memory CLI available to agent-run shell commands.
+- Trae `UserPromptSubmit` creates a Turn ID from the native session ID, local
+  timestamp, and normalized prompt digest. Only one Turn is active per Session;
+  a new prompt interrupts the previous Turn. A matching `Stop` payload can
+  close and write back that Turn, while a late completion for an interrupted
+  Turn is rejected. This bounded live correlation does not add a pending queue
+  or reconstruct content from unrelated local files.
 
 ### 3.3 Manual memory CLI flow
 
@@ -407,7 +416,11 @@ sequenceDiagram
     Integration->>Authority: flush and read exact startSeq..endSeq interval
     Authority-->>Integration: persisted Session header and events
     Integration->>Service: correlation and exact persisted interval
-  else Codex or Claude Code
+  else Trae
+    Integration->>Authority: correlate UserPromptSubmit and Stop Hook payloads
+    Authority-->>Integration: matching prompt and final assistant message
+    Integration->>Service: validated Hook content and correlation
+  else Codex, Claude Code, or CodeBuddy/WorkBuddy
     Integration->>Service: client-qualified writeback correlation
     Service->>Authority: read the exact rollout or transcript Turn
     Authority-->>Service: matching native Turn
@@ -449,6 +462,11 @@ sequenceDiagram
 - Because OpenCode terminal notifications are event callbacks, the plugin
   serializes idle- and interruption-triggered SDK reads per session, tracks
   the resulting work, and drains already-started tasks during plugin disposal.
+- Trae accepts only the prompt digest bound into the Turn ID and the final
+  assistant message from the matching live Session's `Stop` event. A new prompt
+  marks the prior Turn interrupted before recording the replacement; late Stop
+  events cannot revive it. Because Trae has no raw Session authority, automatic
+  writeback is skipped when this Hook pair does not close cleanly.
 - When a degraded direct-`.git` scope upgrades to verified Git scope, the
   buffer runtime cancels and discards pending fallback turns for the same
   client and session before buffering under the Git scope. It does not migrate
@@ -511,6 +529,7 @@ src/
     dsh/                  DSH native event-interval interpretation
     opencode/             OpenCode retrieval, SDK message interpretation, and lifecycle participant
     codebuddy/            CodeBuddy native JSONL interpretation and lifecycle participant
+    trae/                 Trae Hook-content interpretation
   config/                 Backend and proxy/config interpretation
   entrypoints/            process and management-CLI orchestration
   lifecycle/
@@ -541,6 +560,7 @@ entrypoints and compatibility facades. It is not another implementation area.
 | `src/clients/claude` | Claude transcript/turn interpretation, Hook memory runtime, and lifecycle participant | No Codex format fallback; request runtime remains HTTP-composition independent |
 | `src/clients/dsh` | DSH Session header and exact persisted event-interval interpretation, request-time memory and normalized trace runtime, and lifecycle-participant delegation | No Hook-text, rollout, transcript, SDK-message, or latest-Turn fallback; Profile mutation stays in the DSH adapter, and request runtime remains HTTP-composition independent |
 | `src/clients/opencode` | OpenCode SDK message validation and text materialization, plugin memory runtime, and lifecycle participant | No Hook-text, database, rollout, or transcript fallback; request runtime remains HTTP-composition independent |
+| `src/clients/trae` | Trae Turn-ID validation, Hook-pair memory runtime, interruption handling, and trace normalization | Hook content is authoritative only for the exact validated Trae Turn; no raw-Session guess, pending queue, or cross-client fallback |
 | `src/memory` | Memory commands, retrieval, writeback, turn coordination, repository session pinning, manual CLI, and buffering/chunking | Client-neutral modules do not parse native transcript formats |
 | `src/repository` | Read-only repository identity | Scope derivation does not execute Git or use synchronous filesystem reads |
 | `src/provider/memorax` | MemoraX config interpretation, Search/Add payloads, HTTP transport, and normalized results | Independent from server routing and plugin lifecycle |
@@ -637,9 +657,9 @@ and
 
 | Concern | Authority | Derived or non-authoritative views |
 | --- | --- | --- |
-| Models, model-provider credentials, native tools, and model-provider traffic | Codex, Claude Code, DeepSeek Harness, CodeBuddy/WorkBuddy, or OpenCode | Backend and adapters must not proxy or persist this authority |
+| Models, model-provider credentials, native tools, and model-provider traffic | Codex, Claude Code, DeepSeek Harness, CodeBuddy/WorkBuddy, OpenCode, or Trae | Backend and adapters must not proxy or persist this authority |
 | Hook command identity | Versioned, client-qualified command plus validated required session/turn fields | Parsed HTTP request objects |
-| Automatic writeback content | Codex rollout JSONL, Claude Code transcript JSONL, CodeBuddy/WorkBuddy transcript JSONL, DSH's exact persisted Session Event Log interval, or OpenCode SDK session messages for the matching client and Turn | Hook or plugin text, trace, latest-Turn guesses, local database guesses, and another client's format are not fallbacks |
+| Automatic writeback content | Codex rollout JSONL, Claude Code transcript JSONL, CodeBuddy/WorkBuddy transcript JSONL, DSH's exact persisted Session Event Log interval, OpenCode SDK session messages, or Trae's validated `UserPromptSubmit`/`Stop` Hook pair for the matching client and Turn | Hook or plugin text is not a fallback outside Trae's primary authority; trace, latest-Turn guesses, local database guesses, and another client's format are never fallbacks |
 | Workspace and repository identity | Backend read-only resolution held by the live repository-session runtime; its only permitted scope transition is the same-root degraded-direct-`.git` to verified-Git upgrade | Project labels and Hook `cwd` |
 | Backend connection and managed-process ownership | Versioned private connection/token/PID records plus lifecycle lock/version validation | In-memory state in any one process |
 | Package replacement intent | Versioned private package-transition record plus its bounded lock | npm process state or the presence of installed package files |
