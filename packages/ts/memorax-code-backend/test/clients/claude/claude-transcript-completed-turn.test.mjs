@@ -290,7 +290,7 @@ test("Claude transcript coalesces ancestor and descendant end_turn snapshots", (
         id: "tool-lineage-search",
         name: "Bash",
         input: {
-          command: "memorax-cli search --query private-lineage-query",
+          command: "memorax-cli.cmd search --query private-lineage-query",
           description: "private lineage reason",
         },
       }],

@@ -114,7 +114,7 @@ If the initial setup does not work as expected, check these common cases:
 | Installation fails with an unsupported Node.js version | Run `node --version` and upgrade to Node.js 20 or later before reinstalling MemoraX Code. |
 | The package installed but setup did not start | This is expected. Run the appropriate setup command above from a normal interactive terminal. |
 | Windows reports that `memorax-code` or `memorax-cli` is not recognized | Follow the Windows PATH steps below. Both commands are installed by the same package; do not install a separate `memorax-cli` package. |
-| Search, retrieval, or writeback is unavailable after setup | Run `memorax-code status` and `memorax-cli status`, then follow the detailed troubleshooting guide. |
+| Search, retrieval, or writeback is unavailable after setup | Run `memorax-code status` and the platform memory command (`memorax-cli.cmd status` in Windows PowerShell, `memorax-cli status` on macOS and Linux), then follow the detailed troubleshooting guide. |
 
 #### Windows: `memorax-code` or `memorax-cli` Is Not Found
 
@@ -136,6 +136,11 @@ $env:Path = "$NpmGlobalBin;$env:Path"
 & (Join-Path $NpmGlobalBin "memorax-code.cmd") setup
 & (Join-Path $NpmGlobalBin "memorax-cli.cmd") status
 ```
+
+In Windows PowerShell, use `memorax-cli.cmd` for all MemoraX memory commands,
+including `status`, `search`, and `add`. Do not invoke `memorax-cli.ps1` or
+change PowerShell execution policy; restrictive policies may block npm's
+PowerShell shim even though the `.cmd` shim works normally.
 
 The first two lines repair `PATH` for the current PowerShell process. If setup
 reports that it could not update the persistent Windows user `PATH`, add the

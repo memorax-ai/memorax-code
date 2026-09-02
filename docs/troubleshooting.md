@@ -12,6 +12,12 @@ memorax-code-opencode doctor
 memorax-code logs
 ```
 
+In Windows PowerShell, use `memorax-cli.cmd` everywhere this guide shows
+`memorax-cli`. If an unqualified command fails with `UnauthorizedAccess` or
+`PSSecurityException` because PowerShell selected `memorax-cli.ps1`, rerun the
+same command once with `memorax-cli.cmd`, preserving its arguments and working
+directory. Do not run `Set-ExecutionPolicy` for MemoraX commands.
+
 `memorax-code status` checks the Backend and selected client integrations,
 including DSH and OpenCode. `memorax-cli status` checks credentials, scope, and
 memory switches without printing secrets. Codex, Claude Code, and OpenCode

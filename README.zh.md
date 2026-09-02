@@ -101,7 +101,7 @@ memorax-code account --show-mark-id
 | 因 Node.js 版本不受支持导致安装失败 | 运行 `node --version` 检查版本，并升级到 Node.js 20 或更高版本后重新安装 MemoraX Code。 |
 | npm 包已安装，但没有进入安装引导 | 这是正常行为。请在正常的交互式终端中选择并运行上方适合您的安装引导命令。 |
 | Windows 提示无法识别 `memorax-code` 或 `memorax-cli` | 按照下方 Windows PATH 步骤处理。这两个命令由同一个包安装，不要单独安装 `memorax-cli` 包。 |
-| 完成安装引导后，搜索、召回或写回仍不可用 | 运行 `memorax-code status` 和 `memorax-cli status`，然后按照详细的故障排查指南处理。 |
+| 完成安装引导后，搜索、召回或写回仍不可用 | 运行 `memorax-code status` 和对应平台的记忆命令（Windows PowerShell 使用 `memorax-cli.cmd status`，macOS 和 Linux 使用 `memorax-cli status`），然后按照详细的故障排查指南处理。 |
 
 #### Windows：找不到 `memorax-code` 或 `memorax-cli`
 
@@ -121,6 +121,11 @@ $env:Path = "$NpmGlobalBin;$env:Path"
 & (Join-Path $NpmGlobalBin "memorax-code.cmd") setup
 & (Join-Path $NpmGlobalBin "memorax-cli.cmd") status
 ```
+
+在 Windows PowerShell 中，所有 MemoraX 记忆命令（包括 `status`、`search`
+和 `add`）都应使用 `memorax-cli.cmd`。不要调用 `memorax-cli.ps1`，也不要修改
+PowerShell 执行策略；严格的执行策略可能阻止 npm 的 PowerShell shim，但不影响
+`.cmd` shim 正常工作。
 
 前两行只修复当前 PowerShell 进程的 `PATH`。如果 setup 提示无法更新持久化的
 Windows 用户级 `PATH`，可执行一次以下命令：

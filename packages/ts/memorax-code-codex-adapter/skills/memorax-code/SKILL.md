@@ -74,7 +74,9 @@ Examples:
 
 ## Shared Rules
 
-For MemoraX Code coding memory, run `memorax-cli` from the active task workspace. The installed Hook and session binding supply the authoritative workspace root; do not run Git commands to discover or replace it. The Backend resolves repository scope from that trusted workspace and read-only filesystem Git metadata.
+For MemoraX Code coding memory, run the platform command from the active task workspace. In Windows PowerShell, use `memorax-cli.cmd`; on macOS and Linux, use `memorax-cli`. Never invoke `memorax-cli.ps1`. Never run `Set-ExecutionPolicy` or otherwise change PowerShell execution policy for MemoraX commands. If an unqualified Windows invocation is blocked before the CLI starts with `UnauthorizedAccess` or `PSSecurityException`, retry the same command once with `memorax-cli.cmd`, preserving all arguments, the active workspace, and environment variables.
+
+The installed Hook and session binding supply the authoritative workspace root; do not run Git commands to discover or replace it. The Backend resolves repository scope from that trusted workspace and read-only filesystem Git metadata.
 
 Repo memory and personal memory remain local `.repo_memory` authorities. Resolve their repository root exactly as described by the selected reference, including its Git requirements.
 

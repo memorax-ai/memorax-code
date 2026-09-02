@@ -596,11 +596,11 @@ function isMemoraxCliExecutable(word: string | undefined): boolean {
 function isNamedExecutable(word: string | undefined, name: string): boolean {
   if (!word) return false;
   const normalized = word.replaceAll("\\", "/");
-  if (normalized === name || normalized === `${name}.mjs`) return true;
+  if (normalized === name || normalized === `${name}.cmd` || normalized === `${name}.mjs`) return true;
   const absolute = normalized.startsWith("/") || /^[A-Za-z]:\//u.test(normalized);
   if (!absolute) return false;
   const basename = normalized.slice(normalized.lastIndexOf("/") + 1);
-  return basename === name || basename === `${name}.mjs`;
+  return basename === name || basename === `${name}.cmd` || basename === `${name}.mjs`;
 }
 
 function claudeMemoryActivities(
