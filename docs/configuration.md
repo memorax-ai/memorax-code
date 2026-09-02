@@ -396,16 +396,16 @@ installations do not require a standalone `opencode` executable in `PATH`.
 
 ## Local traces
 
-`[trace.codex]`, `[trace.claude]`, `[trace.dsh]`, `[trace.opencode]`, and `[trace.codebuddy]`
+`[trace.codex]`, `[trace.claude]`, `[trace.dsh]`, `[trace.opencode]`, `[trace.codebuddy]`, and `[trace.trae]`
 support the same fields:
 
-| Field | Codex environment | Claude environment | DSH environment | OpenCode environment | CodeBuddy/WorkBuddy environment | Fallback |
-| --- | --- | --- | --- | --- | --- | --- |
-| `enabled` | `MEMORAX_CODE_CODEX_TRACE_ENABLED` | `MEMORAX_CODE_CLAUDE_TRACE_ENABLED` | `MEMORAX_CODE_DSH_TRACE_ENABLED` | `MEMORAX_CODE_OPENCODE_TRACE_ENABLED` | `MEMORAX_CODE_CODEBUDDY_TRACE_ENABLED` | `true` |
-| `capture_content` | `MEMORAX_CODE_CODEX_TRACE_CAPTURE_CONTENT` | `MEMORAX_CODE_CLAUDE_TRACE_CAPTURE_CONTENT` | `MEMORAX_CODE_DSH_TRACE_CAPTURE_CONTENT` | `MEMORAX_CODE_OPENCODE_TRACE_CAPTURE_CONTENT` | `MEMORAX_CODE_CODEBUDDY_TRACE_CAPTURE_CONTENT` | `true` |
-| `retention_days` | `MEMORAX_CODE_CODEX_TRACE_RETENTION_DAYS` | `MEMORAX_CODE_CLAUDE_TRACE_RETENTION_DAYS` | `MEMORAX_CODE_DSH_TRACE_RETENTION_DAYS` | `MEMORAX_CODE_OPENCODE_TRACE_RETENTION_DAYS` | `MEMORAX_CODE_CODEBUDDY_TRACE_RETENTION_DAYS` | `7` |
-| `max_event_chars` | `MEMORAX_CODE_CODEX_TRACE_MAX_EVENT_CHARS` | `MEMORAX_CODE_CLAUDE_TRACE_MAX_EVENT_CHARS` | `MEMORAX_CODE_DSH_TRACE_MAX_EVENT_CHARS` | `MEMORAX_CODE_OPENCODE_TRACE_MAX_EVENT_CHARS` | `MEMORAX_CODE_CODEBUDDY_TRACE_MAX_EVENT_CHARS` | `20000` |
-| `max_file_bytes` | `MEMORAX_CODE_CODEX_TRACE_MAX_FILE_BYTES` | `MEMORAX_CODE_CLAUDE_TRACE_MAX_FILE_BYTES` | `MEMORAX_CODE_DSH_TRACE_MAX_FILE_BYTES` | `MEMORAX_CODE_OPENCODE_TRACE_MAX_FILE_BYTES` | `MEMORAX_CODE_CODEBUDDY_TRACE_MAX_FILE_BYTES` | `52428800` |
+| Field | Codex environment | Claude environment | DSH environment | OpenCode environment | CodeBuddy/WorkBuddy environment | Trae environment | Fallback |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `enabled` | `MEMORAX_CODE_CODEX_TRACE_ENABLED` | `MEMORAX_CODE_CLAUDE_TRACE_ENABLED` | `MEMORAX_CODE_DSH_TRACE_ENABLED` | `MEMORAX_CODE_OPENCODE_TRACE_ENABLED` | `MEMORAX_CODE_CODEBUDDY_TRACE_ENABLED` | `MEMORAX_CODE_TRAE_TRACE_ENABLED` | `true` |
+| `capture_content` | `MEMORAX_CODE_CODEX_TRACE_CAPTURE_CONTENT` | `MEMORAX_CODE_CLAUDE_TRACE_CAPTURE_CONTENT` | `MEMORAX_CODE_DSH_TRACE_CAPTURE_CONTENT` | `MEMORAX_CODE_OPENCODE_TRACE_CAPTURE_CONTENT` | `MEMORAX_CODE_CODEBUDDY_TRACE_CAPTURE_CONTENT` | `MEMORAX_CODE_TRAE_TRACE_CAPTURE_CONTENT` | `true` |
+| `retention_days` | `MEMORAX_CODE_CODEX_TRACE_RETENTION_DAYS` | `MEMORAX_CODE_CLAUDE_TRACE_RETENTION_DAYS` | `MEMORAX_CODE_DSH_TRACE_RETENTION_DAYS` | `MEMORAX_CODE_OPENCODE_TRACE_RETENTION_DAYS` | `MEMORAX_CODE_CODEBUDDY_TRACE_RETENTION_DAYS` | `MEMORAX_CODE_TRAE_TRACE_RETENTION_DAYS` | `7` |
+| `max_event_chars` | `MEMORAX_CODE_CODEX_TRACE_MAX_EVENT_CHARS` | `MEMORAX_CODE_CLAUDE_TRACE_MAX_EVENT_CHARS` | `MEMORAX_CODE_DSH_TRACE_MAX_EVENT_CHARS` | `MEMORAX_CODE_OPENCODE_TRACE_MAX_EVENT_CHARS` | `MEMORAX_CODE_CODEBUDDY_TRACE_MAX_EVENT_CHARS` | `MEMORAX_CODE_TRAE_TRACE_MAX_EVENT_CHARS` | `20000` |
+| `max_file_bytes` | `MEMORAX_CODE_CODEX_TRACE_MAX_FILE_BYTES` | `MEMORAX_CODE_CLAUDE_TRACE_MAX_FILE_BYTES` | `MEMORAX_CODE_DSH_TRACE_MAX_FILE_BYTES` | `MEMORAX_CODE_OPENCODE_TRACE_MAX_FILE_BYTES` | `MEMORAX_CODE_CODEBUDDY_TRACE_MAX_FILE_BYTES` | `MEMORAX_CODE_TRAE_TRACE_MAX_FILE_BYTES` | `52428800` |
 
 Depending on the enabled client capabilities, content capture can include
 prompts, responses, recalled memory, writeback content, reminder text, and
@@ -417,6 +417,10 @@ export, or public collector.
 DSH trace contains only normalized lifecycle and memory-operation events. Its
 native Session Event Log and raw events remain local to DSH; MemoraX Code does
 not copy that log into trace.
+
+Trae trace contains only normalized lifecycle and memory-operation events from
+the validated Hook pair. Trae does not expose a raw Session authority for
+MemoraX Code to copy.
 
 ## Backend runtime settings
 
