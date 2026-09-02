@@ -144,6 +144,24 @@ test("memorax-code retries read-only search once after transport or sandbox fail
   assert.match(memoraxSearch, /If no approved mode[\s\S]*report the exact CLI failure/);
 });
 
+test("memorax-code selects the Windows cmd shim without changing execution policy", () => {
+  const skill = readSkillFile("SKILL.md");
+  const memoraxSearch = readSkillFile("references/memorax-search.md");
+  const memoraxAdd = readSkillFile("references/memorax-add.md");
+
+  for (const guidance of [skill, memoraxSearch, memoraxAdd]) {
+    assert.match(guidance, /Windows PowerShell[\s\S]*`memorax-cli\.cmd`/);
+    assert.match(guidance, /macOS and Linux[\s\S]*`memorax-cli`/);
+    assert.match(guidance, /Never invoke `memorax-cli\.ps1`/);
+    assert.match(guidance, /Never run `Set-ExecutionPolicy`/);
+  }
+  assert.match(memoraxSearch, /memorax-cli\.cmd search --query '/);
+  assert.match(memoraxAdd, /memorax-cli\.cmd add --memory '/);
+  assert.match(skill, /retry the same command once with `memorax-cli\.cmd`[\s\S]*preserving all arguments, the active workspace, and environment variables/);
+  assert.match(memoraxAdd, /blocked before the CLI starts[\s\S]*retry that command once with `memorax-cli\.cmd`/);
+  assert.match(memoraxAdd, /Do not retry Add after the CLI may have started/);
+});
+
 test("memorax-code uses POSIX-safe direct CLI arguments", () => {
   const memoraxSearch = readSkillFile("references/memorax-search.md");
   const memoraxAdd = readSkillFile("references/memorax-add.md");

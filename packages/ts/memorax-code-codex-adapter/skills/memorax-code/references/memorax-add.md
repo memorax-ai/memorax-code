@@ -17,9 +17,19 @@ Do not add positive repair lessons based only on unverified edits or assistant s
 
 ## Add Workflow
 
+Select the executable before constructing any Add command. In Windows PowerShell, use `memorax-cli.cmd`; on macOS and Linux, use `memorax-cli`. Never invoke `memorax-cli.ps1`. Never run `Set-ExecutionPolicy` or otherwise change PowerShell execution policy for MemoraX commands. If an unqualified Windows invocation is blocked before the CLI starts with `UnauthorizedAccess` or `PSSecurityException`, retry that command once with `memorax-cli.cmd`, preserving all arguments, the active workspace, and environment variables.
+
 For a proactive add, write all generated prose in `--memory`, `--reason`, and the confirmation in the language of the user's current request; preserve exact code, API, path, workflow, and project identifiers.
 
 Run from the active task workspace. Pass the memory and reason directly. Put every dynamically generated `--memory` and `--reason` value in single quotes, never double quotes. Treat `$HOME`, backticks, and `$(command)` as literal text inside those quotes. Replace each literal single quote in a value with the exact POSIX sequence `'\''`.
+
+Windows PowerShell:
+
+```powershell
+memorax-cli.cmd add --memory 'Concise reusable memory.' --type procedural --reason 'Capture reusable coding memory.'
+```
+
+macOS and Linux:
 
 ```bash
 memorax-cli add \
@@ -49,7 +59,7 @@ anchors: <stable repository source, tests, or public docs>
 
 Keep the card under 1,100 characters when practical. It must guide future investigation while still requiring live-code inspection.
 
-Pass a completed multi-line card as one single-quoted `--memory` argument:
+Pass a completed multi-line card as one single-quoted `--memory` argument. On Windows PowerShell, the command must start with `memorax-cli.cmd add`; on macOS and Linux, use the form shown below.
 
 ```bash
 memorax-cli add \
@@ -69,7 +79,7 @@ anchors: stable/source/path' \
   --reason 'Capture verified reusable coding memory.'
 ```
 
-If add fails, report the exact failure and do not retry automatically, bypass the CLI, or call MemoraX directly.
+Except for the pre-start Windows shim correction above, if add fails, report the exact failure and do not retry automatically, bypass the CLI, or call MemoraX directly. Do not retry Add after the CLI may have started.
 
 If a successful Add result reports `workspaceScopeFallbackReason: git_metadata_invalid`, malformed or incomplete metadata inside a direct `.git` directory was downgraded to the normalized local folder scope. Add has already been submitted with the reported `effectiveUserId`. Present its `userNotice` once without pausing the current task or asking the user to repair Git first, then continue the current task. After the repository or `.git` metadata is repaired, later Search, Add, and automatic writeback in the same client session automatically use the restored Git repository scope.
 
