@@ -93,8 +93,12 @@ memorax-code account --show-mark-id
 
 两种安装引导都会自动检测受支持的 Coding Agent。完成后，请重启或刷新检测到的 Coding Agent。
 
-对于 Trae，setup 会安装受管 Skill 和 Global Hooks，但 Trae 没有提供可靠的程序化开关。
-请在 Trae 设置中手动开启一次 **Global Hooks**，然后新建 Trae 会话。
+> [!IMPORTANT]
+> **仅 Trae 用户需要：** setup 会安装受管 Skill 和 Global Hooks，但 Trae 要求用户手动开启
+> Global Hooks 开关。请在 Trae 中打开 **设置 → Hooks → 全局 → 已配置的 Hooks**，开启已注册的
+> Hooks，然后新建 Trae 会话并发送一次 Prompt。运行 `memorax-code status`，确认 Trae Hook
+> runtime 从 `unverified` 变为 `observed`。如果由 Agent 代为安装，Agent 应明确提醒用户完成这项
+> Trae 专属的界面操作；其他受支持的 Coding Agent 不需要执行这一步。
 
 ### 安装故障排查
 
