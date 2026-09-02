@@ -112,6 +112,8 @@ export async function prepareClientPluginRemovalCleanup(
   const memoraxCodeHome = resolve(options.memoraxCodeHome ?? process.env.MEMORAX_CODE_HOME ?? join(home, ".memorax-code"));
   const claudeState = await readJsonRecord(join(memoraxCodeHome, "adapters", "claude-code", "state.json"));
   const claudeHome = options.claudeHome ?? stringField(claudeState, "claudeHome");
+  const traeState = await readJsonRecord(join(memoraxCodeHome, "adapters", "trae", "state.json"));
+  const traeHome = options.traeHome ?? stringField(traeState, "traeHome");
 
   return async () => {
     try {
@@ -154,7 +156,7 @@ export async function prepareClientPluginRemovalCleanup(
             .catch((error) => removalFailure("codebuddy-plugin-remove", error)),
           traePluginInstaller.removeTraeAdapterInstallation({
             memoraxCodeHome,
-            ...(options.traeHome ? { traeHome: options.traeHome } : {}),
+            ...(traeHome ? { traeHome } : {}),
           }).catch((error) => removalFailure("trae-adapter-remove", error)),
         ]);
         return {

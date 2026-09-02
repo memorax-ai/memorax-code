@@ -105,23 +105,59 @@ test("Trae Stop fails closed when its assistant fields conflict", async () => {
   }
 });
 
+test("Trae retains the previous accepted Turn when a replacement start is rejected", async () => {
+  const fixture = await createFixture("rejected-replacement");
+  try {
+    await runHook(fixture, {
+      hook_event_name: "UserPromptSubmit",
+      session_id: "trae-session-4",
+      prompt: "retain the accepted turn",
+      cwd: fixture.root,
+    });
+    const turnsPath = join(fixture.root, "adapters", "trae", "active-turns.json");
+    const before = await readFile(turnsPath, "utf8");
+    fixture.control.rejectNextTurnStart = true;
+
+    const rejected = await runHook(fixture, {
+      hook_event_name: "UserPromptSubmit",
+      session_id: "trae-session-4",
+      prompt: "do not persist this rejected replacement",
+      cwd: fixture.root,
+    });
+
+    assert.equal(rejected.status, 0, rejected.stderr);
+    assert.equal(rejected.stdout, "");
+    assert.equal(await readFile(turnsPath, "utf8"), before);
+    const starts = fixture.requests.filter((request) => request.path === "/memory/turn-start");
+    assert.equal(starts.length, 2);
+    assert.notEqual(starts[0].body.turnId, starts[1].body.turnId);
+  } finally {
+    await fixture.close();
+  }
+});
+
 async function createFixture(name) {
   const root = await mkdtemp(join(tmpdir(), `memorax-code-trae-hook-${name}-`));
   const traeHome = join(root, "trae-home");
   const requests = [];
+  const control = { rejectNextTurnStart: false };
   const server = createServer(async (request, response) => {
     let text = "";
     for await (const chunk of request) text += chunk;
     const received = { path: request.url, body: text ? JSON.parse(text) : undefined };
     requests.push(received);
-    const body = request.url === "/health"
+    const rejectedTurnStart = request.url === "/memory/turn-start" && control.rejectNextTurnStart;
+    if (rejectedTurnStart) control.rejectNextTurnStart = false;
+    const body = rejectedTurnStart
+      ? { ok: false }
+      : request.url === "/health"
       ? { ok: true, service: "memorax-code-backend" }
       : request.url === "/memory/turn-start"
         ? { ok: true, additionalContext: "memory context" }
         : request.url === "/memory/writeback"
           ? { ok: true, scheduled: true }
           : { ok: true };
-    response.writeHead(200, { "content-type": "application/json" });
+    response.writeHead(rejectedTurnStart ? 503 : 200, { "content-type": "application/json" });
     response.end(JSON.stringify(body));
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -136,6 +172,7 @@ async function createFixture(name) {
     root,
     traeHome,
     requests,
+    control,
     runtimePath: state.runtimePath,
     runtimeDigest: state.runtimeDigest,
     server,

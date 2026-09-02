@@ -19,6 +19,7 @@ import {
   readJsonFile,
   stringOption,
   withJsonFileLock,
+  withJsonFileLockAsync,
 } from "../../memorax-code-adapter-common/src/config-utils.mjs";
 import {
   defaultMemoraxCodeHome,
@@ -41,6 +42,10 @@ const REQUIRED_EVENTS = ["SessionStart", "UserPromptSubmit", "Stop"];
 
 export async function enableTraeAdapter(options = {}) {
   const paths = resolvePaths(options);
+  return await withTraeLifecycleLock(paths, () => enableTraeAdapterUnlocked(paths, options));
+}
+
+async function enableTraeAdapterUnlocked(paths, options) {
   const previousState = readAdapterState(paths.statePath);
   const stateProblem = validateState(previousState, paths);
   if (stateProblem) return { ...stateProblem, action: "enable" };
@@ -101,11 +106,15 @@ export async function enableTraeAdapter(options = {}) {
     return failure("install_failed", paths, error);
   }
 
-  return await readTraeAdapterStatus({ ...options, ...paths, changed: !current });
+  return await readTraeAdapterStatusUnlocked(paths, { ...options, changed: !current });
 }
 
 export async function disableTraeAdapter(options = {}) {
   const paths = resolvePaths(options);
+  return await withTraeLifecycleLock(paths, () => disableTraeAdapterUnlocked(paths));
+}
+
+function disableTraeAdapterUnlocked(paths) {
   const state = readAdapterState(paths.statePath);
   const stateProblem = validateState(state, paths);
   if (stateProblem) return { ...stateProblem, action: "disable" };
@@ -150,6 +159,10 @@ export async function disableTraeAdapter(options = {}) {
 
 export async function readTraeAdapterStatus(options = {}) {
   const paths = resolvePaths(options);
+  return await readTraeAdapterStatusUnlocked(paths, options);
+}
+
+async function readTraeAdapterStatusUnlocked(paths, options) {
   const state = readAdapterState(paths.statePath);
   const stateProblem = validateState(state, paths);
   if (stateProblem) return { ...stateProblem, action: "status" };
@@ -216,6 +229,10 @@ export async function readTraeAdapterStatus(options = {}) {
 
 export async function removeTraeAdapterInstallation(options = {}) {
   const paths = resolvePaths(options);
+  return await withTraeLifecycleLock(paths, () => removeTraeAdapterInstallationUnlocked(paths));
+}
+
+async function removeTraeAdapterInstallationUnlocked(paths) {
   const state = readAdapterState(paths.statePath);
   const stateProblem = validateState(state, paths);
   if (stateProblem) return { ...stateProblem, action: "trae-adapter-remove" };
@@ -229,7 +246,7 @@ export async function removeTraeAdapterInstallation(options = {}) {
       statePath: paths.statePath,
     };
   }
-  const disabled = await disableTraeAdapter(options);
+  const disabled = disableTraeAdapterUnlocked(paths);
   if (disabled.ok === false) return { ...disabled, action: "trae-adapter-remove" };
   try {
     rmSync(state.skillPath, { recursive: true, force: true });
@@ -258,7 +275,7 @@ export function traeHookCommand(
   powershellPath = defaultWindowsPowerShellPath(),
 ) {
   if (platform !== "win32") {
-    return `"${nodePath.replaceAll('"', '\\"')}" "${runtimePath.replaceAll('"', '\\"')}" ${HOOK_MARKER}`;
+    return `${posixShellLiteral(nodePath)} ${posixShellLiteral(runtimePath)} ${HOOK_MARKER}`;
   }
   const script = [
     "$ErrorActionPreference='Stop'",
@@ -321,6 +338,9 @@ function resolvePaths(options) {
   return {
     memoraxCodeHome,
     traeHome,
+    lifecycleLockTarget: resolve(
+      options.lifecycleLockTarget ?? join(memoraxCodeHome, "adapters", "trae-lifecycle"),
+    ),
     statePath: resolve(options.statePath ?? traeAdapterStatePath(memoraxCodeHome)),
     hooksPath: resolve(options.hooksPath ?? traeHooksPath(traeHome)),
     skillPath: resolve(options.skillPath ?? traeSkillPath(traeHome)),
@@ -330,6 +350,10 @@ function resolvePaths(options) {
     commonSourcePath: resolve(options.commonSourcePath ?? join(ADAPTER_ROOT, "..", "memorax-code-adapter-common", "src")),
     skillSourcePath: resolve(options.skillSourcePath ?? defaultTraeSkillSourcePath()),
   };
+}
+
+function withTraeLifecycleLock(paths, operation) {
+  return withJsonFileLockAsync(paths.lifecycleLockTarget, operation);
 }
 
 function validateState(state, paths) {
@@ -471,6 +495,10 @@ function managedHookCommand(command) {
 
 function powershellLiteral(value) {
   return `'${String(value).replaceAll("'", "''")}'`;
+}
+
+function posixShellLiteral(value) {
+  return `'${String(value).replaceAll("'", "'\\''")}'`;
 }
 
 function windowsExecutableToken(path) {

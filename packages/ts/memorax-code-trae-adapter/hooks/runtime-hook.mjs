@@ -91,7 +91,8 @@ if (event === "SessionStart") {
   if (!prompt) process.exit(0);
   const cwd = stringValue(input.cwd);
   const workspaceKind = stringValue(input.workspace_kind) ?? stringValue(input.workspaceKind);
-  const activeTurn = writeActiveTurn({ sessionId, prompt, cwd, workspaceKind });
+  const activeTurnPlan = prepareActiveTurn({ sessionId, prompt, cwd, workspaceKind });
+  const activeTurn = activeTurnPlan.record;
   const response = await post("/memory/turn-start", {
     version: 1,
     client: "trae",
@@ -101,6 +102,7 @@ if (event === "SessionStart") {
     cwd,
     workspaceKind,
   });
+  if (response?.ok !== true || !commitActiveTurn(activeTurnPlan)) process.exit(0);
   const repoMemoryWorktree = stringValue(response?.repoMemoryWorktree);
   const reminderResult = await evaluateMemorySkillReminder({
     ...reminderOptions,
@@ -149,7 +151,7 @@ if (event === "SessionStart") {
   if (response?.ok === true && response?.scheduled === true) removeActiveTurn(sessionId, activeTurn.turnId);
 }
 
-function writeActiveTurn({ sessionId, prompt, cwd, workspaceKind }) {
+function prepareActiveTurn({ sessionId, prompt, cwd, workspaceKind }) {
   return withJsonFileLock(activeTurnsPath, () => {
     const state = activeTurnState();
     pruneActiveTurns(state);
@@ -170,11 +172,22 @@ function writeActiveTurn({ sessionId, prompt, cwd, workspaceKind }) {
           createdAt: now,
           updatedAt: now,
         };
-    state.sessions[sessionId] = record;
+    return { record, expectedTurnId: existing?.turnId };
+  });
+}
+
+function commitActiveTurn({ record, expectedTurnId }) {
+  return withJsonFileLock(activeTurnsPath, () => {
+    const state = activeTurnState();
+    pruneActiveTurns(state);
+    const current = validActiveTurn(state.sessions?.[record.sessionId], record.sessionId);
+    if (current?.turnId !== expectedTurnId && current?.turnId !== record.turnId) return false;
+    state.sessions[record.sessionId] = record;
+    const now = Date.now();
     state.updatedAt = new Date(now).toISOString();
     pruneActiveTurns(state);
     atomicWriteJson(activeTurnsPath, state);
-    return record;
+    return true;
   });
 }
 

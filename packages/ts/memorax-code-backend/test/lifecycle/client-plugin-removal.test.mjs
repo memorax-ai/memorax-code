@@ -134,7 +134,6 @@ writeFileSync(path, JSON.stringify(manifest, null, 2) + "\\n");
       dshAdapterRoot,
       dshCommand,
       openCodeConfigDir,
-      traeHome,
     });
     await rm(dshAdapterRoot, { recursive: true, force: true });
     const report = await cleanup();

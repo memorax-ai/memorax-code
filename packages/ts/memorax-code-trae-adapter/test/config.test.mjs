@@ -2,7 +2,9 @@ import { strict as assert } from "node:assert";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, win32 } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { test } from "node:test";
+import { withJsonFileLockAsync } from "../../memorax-code-adapter-common/src/config-utils.mjs";
 import {
   defaultTraeHome,
   traeInstallationDetected,
@@ -63,6 +65,16 @@ test("Trae Hook command hides Windows paths from the sandbox command-line wrappe
   assert.match(
     traeHookCommand("C:\\runtime.mjs", "win32", "C:\\node.exe", "C:\\Windows Directory\\powershell.exe"),
     /^powershell\.exe /,
+  );
+});
+
+test("Trae POSIX Hook command quotes shell metacharacters literally", () => {
+  const nodePath = "/opt/$node/`node`/node's";
+  const runtimePath = "/tmp/$runtime/$(touch marker)/runtime's.mjs";
+
+  assert.equal(
+    traeHookCommand(runtimePath, "linux", nodePath),
+    "'/opt/$node/`node`/node'\\''s' '/tmp/$runtime/$(touch marker)/runtime'\\''s.mjs' --memorax-code-trae-hook-v1",
   );
 });
 
@@ -150,6 +162,39 @@ test("Trae install merges managed Hooks and Skill without changing user Hooks", 
   }
 });
 
+test("Trae lifecycle mutations wait for the shared cross-process lock", async () => {
+  const fixture = await createFixture("lifecycle-lock");
+  let releaseLock;
+  let holder;
+  let pendingInstall;
+  try {
+    let markLocked;
+    const locked = new Promise((resolve) => { markLocked = resolve; });
+    const released = new Promise((resolve) => { releaseLock = resolve; });
+    holder = withJsonFileLockAsync(fixture.options.lifecycleLockTarget, async () => {
+      markLocked();
+      await released;
+    });
+    await locked;
+
+    pendingInstall = enableTraeAdapter(fixture.options);
+    await delay(50);
+    const blockedHooks = await readFile(join(fixture.traeHome, "hooks.json"), "utf8");
+    assert.equal(blockedHooks.includes("--memorax-code-trae-hook-v1"), false);
+
+    releaseLock();
+    releaseLock = undefined;
+    await holder;
+    const installed = await pendingInstall;
+    assert.equal(installed.ok, true);
+    assert.equal(installed.enabled, true);
+  } finally {
+    releaseLock?.();
+    await Promise.allSettled([holder, pendingInstall].filter(Boolean));
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test("Trae disable and removal delete only MemoraX-managed content", async () => {
   const fixture = await createFixture("remove");
   try {
@@ -219,6 +264,7 @@ async function createFixture(name) {
   const root = await mkdtemp(join(tmpdir(), `memorax-code-trae-${name}-`));
   const traeHome = join(root, "Trae Home With Spaces");
   const memoraxCodeHome = join(root, "MemoraX Home");
+  const lifecycleLockTarget = join(root, "locks", "trae-lifecycle");
   const sourceRoot = join(root, "sources");
   const runtimeHookSourcePath = join(sourceRoot, "runtime-hook.mjs");
   const runtimeObservationSourcePath = join(sourceRoot, "runtime-observation.mjs");
@@ -253,6 +299,7 @@ async function createFixture(name) {
     options: {
       traeHome,
       memoraxCodeHome,
+      lifecycleLockTarget,
       runtimeHookSourcePath,
       runtimeObservationSourcePath,
       commonSourcePath,
