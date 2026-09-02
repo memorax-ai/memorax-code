@@ -78,30 +78,32 @@ async function enableTraeAdapterUnlocked(paths, options) {
     && existsSync(runtimePath)
     && directoryDigestIfPresent(paths.skillPath) === skillDigest
     && hooksConfigured(hookManifest, hookCommand);
+  const now = new Date().toISOString();
+  const state = {
+    version: STATE_VERSION,
+    runtime: "trae",
+    integration: "hooks",
+    enabled: true,
+    traeHome: paths.traeHome,
+    hooksPath: paths.hooksPath,
+    skillPath: paths.skillPath,
+    skillDigest,
+    runtimeRoot: paths.runtimeRoot,
+    runtimePath,
+    runtimeDigest,
+    hookCommand,
+    installedAt: stringOption(previousState?.installedAt) ?? now,
+    updatedAt: now,
+  };
 
   try {
+    atomicWriteJson(paths.statePath, { ...state, enabled: false, installPending: true });
     materializeRuntimeGeneration(paths, generationPath, runtimeDigest, options);
     if (directoryDigestIfPresent(paths.skillPath) !== skillDigest) {
       materializeDirectory(paths.skillSourcePath, paths.skillPath);
     }
     updateManagedHooks(paths.hooksPath, hookCommand, true);
-    const now = new Date().toISOString();
-    atomicWriteJson(paths.statePath, {
-      version: STATE_VERSION,
-      runtime: "trae",
-      integration: "hooks",
-      enabled: true,
-      traeHome: paths.traeHome,
-      hooksPath: paths.hooksPath,
-      skillPath: paths.skillPath,
-      skillDigest,
-      runtimeRoot: paths.runtimeRoot,
-      runtimePath,
-      runtimeDigest,
-      hookCommand,
-      installedAt: stringOption(previousState?.installedAt) ?? now,
-      updatedAt: now,
-    });
+    atomicWriteJson(paths.statePath, state);
   } catch (error) {
     return failure("install_failed", paths, error);
   }
@@ -135,11 +137,13 @@ function disableTraeAdapterUnlocked(paths) {
   }
   try {
     updateManagedHooks(paths.hooksPath, undefined, false);
-    atomicWriteJson(paths.statePath, {
+    const disabledState = {
       ...state,
       enabled: false,
       disabledAt: new Date().toISOString(),
-    });
+    };
+    delete disabledState.installPending;
+    atomicWriteJson(paths.statePath, disabledState);
   } catch (error) {
     return failure("disable_failed", paths, error);
   }
@@ -200,6 +204,7 @@ async function readTraeAdapterStatusUnlocked(paths, options) {
       === comparablePath(paths.traeHome, options.platform ?? process.platform);
   const installed = runtimeCurrent && skillCurrent;
   const enabled = state.enabled === true && installed && configured;
+  const installPending = state.installPending === true;
   return {
     ok: true,
     action: "status",
@@ -223,7 +228,11 @@ async function readTraeAdapterStatusUnlocked(paths, options) {
     },
     traeSkills: skillSummary(state.skillPath, skillCurrent),
     globalHooksActivationRequired: configured && !runtimeObserved,
-    ...(!enabled ? { reason: !installed ? "artifacts_missing" : "hooks_not_configured" } : {}),
+    ...(!enabled ? {
+      reason: installPending
+        ? "install_incomplete"
+        : !installed ? "artifacts_missing" : "hooks_not_configured",
+    } : {}),
   };
 }
 

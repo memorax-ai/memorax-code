@@ -162,6 +162,59 @@ test("Trae install merges managed Hooks and Skill without changing user Hooks", 
   }
 });
 
+test("Trae install resumes from a persisted ownership intent", async () => {
+  const fixture = await createFixture("install-recovery");
+  try {
+    const installed = await enableTraeAdapter(fixture.options);
+    const state = JSON.parse(await readFile(installed.statePath, "utf8"));
+    await writeFile(installed.statePath, `${JSON.stringify({
+      ...state,
+      enabled: false,
+      installPending: true,
+    }, null, 2)}\n`);
+    await rm(installed.skillPath, { recursive: true, force: true });
+
+    const incomplete = await readTraeAdapterStatus(fixture.options);
+    assert.equal(incomplete.enabled, false);
+    assert.equal(incomplete.reason, "install_incomplete");
+
+    const recovered = await enableTraeAdapter(fixture.options);
+    assert.equal(recovered.ok, true);
+    assert.equal(recovered.enabled, true);
+    assert.equal(recovered.changed, true);
+    const recoveredState = JSON.parse(await readFile(recovered.statePath, "utf8"));
+    assert.equal(recoveredState.installPending, undefined);
+    assert.equal(await readFile(join(recovered.skillPath, "SKILL.md"), "utf8"), "# MemoraX Code\n");
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("Trae install leaves shared artifacts unchanged when ownership intent cannot be persisted", async () => {
+  const fixture = await createFixture("state-write-failure");
+  try {
+    const blockedStateParent = join(fixture.root, "blocked-state");
+    const hooksPath = join(fixture.traeHome, "hooks.json");
+    const beforeHooks = await readFile(hooksPath, "utf8");
+    await writeFile(blockedStateParent, "not a directory\n");
+
+    const result = await enableTraeAdapter({
+      ...fixture.options,
+      statePath: join(blockedStateParent, "state.json"),
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, "install_failed");
+    assert.equal(await readFile(hooksPath, "utf8"), beforeHooks);
+    await assert.rejects(
+      readFile(join(fixture.traeHome, "skills", "memorax-code", "SKILL.md")),
+      /ENOENT/,
+    );
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test("Trae lifecycle mutations wait for the shared cross-process lock", async () => {
   const fixture = await createFixture("lifecycle-lock");
   let releaseLock;
