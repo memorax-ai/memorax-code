@@ -446,7 +446,7 @@ function activityCandidatesFromResponseItem(payload: JsonRecord): CodexTurnActiv
     });
   }
 
-  const memoryCliPattern = /(?:["']?cmd["']?\s*:\s*\\?["'`]|&&|\|\||;)\s*memorax-cli\s+(search|add)\b/giu;
+  const memoryCliPattern = /(?:["']?cmd["']?\s*:\s*\\?["'`]|&&|\|\||;)\s*memorax-cli(?:\.cmd)?\s+(search|add)\b/giu;
   for (const match of input.matchAll(memoryCliPattern)) {
     candidates.push({
       offset: match.index,

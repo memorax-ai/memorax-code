@@ -160,6 +160,11 @@ test("memorax-code selects the Windows cmd shim without changing execution polic
   assert.match(skill, /retry the same command once with `memorax-cli\.cmd`[\s\S]*preserving all arguments, the active workspace, and environment variables/);
   assert.match(memoraxAdd, /blocked before the CLI starts[\s\S]*retry that command once with `memorax-cli\.cmd`/);
   assert.match(memoraxAdd, /Do not retry Add after the CLI may have started/);
+  for (const reference of [memoraxSearch, memoraxAdd]) {
+    assert.match(reference, /Windows PowerShell:[\s\S]*two single quotes \(`''`\)/);
+    assert.match(reference, /`don't` becomes `'don''t'`/);
+    assert.match(reference, /macOS and Linux:[\s\S]*exact POSIX sequence/);
+  }
 });
 
 test("memorax-code uses POSIX-safe direct CLI arguments", () => {

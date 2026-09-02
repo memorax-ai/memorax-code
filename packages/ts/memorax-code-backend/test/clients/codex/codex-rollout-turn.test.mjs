@@ -237,7 +237,7 @@ test("Codex rollout reader records ordered repo-memory and memory CLI activities
     customToolCall(`const r = await tools.exec_command({ cmd: "sed -n '1,200p' ${pluginRoot}/skills/memorax-code/references/repo-build.md" });`),
     customToolCall(`const r = await tools.exec_command({ cmd: "type ${windowsPluginRoot}\\skills\\memorax-code\\references\\repo-build.md" });`),
     customToolCall(`const r = await tools.exec_command({ cmd: "sed -n '1,200p' ${pluginRoot}/skills/memorax-code/references/repo-read.md && sed -n '1,200p' ${pluginRoot}/skills/memorax-code/references/repo-update.md" });`),
-    customToolCall('const r = await tools.exec_command({"cmd":"memorax-cli search --query \\"prior context\\""});'),
+    customToolCall('const r = await tools.exec_command({"cmd":"memorax-cli.cmd search --query \\"prior context\\""});'),
     customToolCall('const r = await tools.exec_command({ cmd: "git status --short" });'),
     customToolCall('const r = await tools.exec_command({ cmd: "memorax-cli add --message \\"reusable lesson\\"" });'),
     agentMessage("Done.", "final_answer"),

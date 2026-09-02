@@ -52,7 +52,10 @@ State a fact-sized relationship that can change the next action: a target under 
 
 For a complementary first-round pair, each query must stand alone and cover a different decision boundary. Use a complementary pair only when the provided context gives each decision boundary a distinct exact code, API, path, workflow, or project identifier; otherwise keep one focused combined query that preserves both user-stated facts. Do not merely restate the same question with synonyms. If the user describes only one tightly coupled decision, emit exactly one query. Use one or two stable exact identifiers when they sharpen the query, and integrate them grammatically instead of appending search tags or filler. Use only user-provided anchors and stable terms from live code or documentation; do not reconstruct unseen fact wording from recalled memory.
 
-Pass the query directly with `--query`. Put every dynamically generated query in single quotes, never double quotes. Treat `$HOME`, backticks, and `$(command)` as literal text inside those quotes. Replace each literal single quote in the value with the exact POSIX sequence `'\''`.
+Pass the query directly with `--query`. Put every dynamically generated query in single quotes, never double quotes. Apply the escaping rule for the active shell:
+
+- Windows PowerShell: single quotes keep `$HOME`, backticks, and `$(command)` literal. Replace each literal single quote in the value with two single quotes (`''`); for example, `don't` becomes `'don''t'`.
+- macOS and Linux: Treat `$HOME`, backticks, and `$(command)` as literal text inside the quotes. Replace each literal single quote in the value with the exact POSIX sequence `'\''`.
 
 Use these actual output shapes as examples. They are queries themselves, not full user prompts or instructions for the user. Each Chinese/English pair is a language variant: choose the one matching the user, never run both merely because both are shown. The comments explain the example only and are not part of emitted query text.
 

@@ -21,7 +21,10 @@ Select the executable before constructing any Add command. In Windows PowerShell
 
 For a proactive add, write all generated prose in `--memory`, `--reason`, and the confirmation in the language of the user's current request; preserve exact code, API, path, workflow, and project identifiers.
 
-Run from the active task workspace. Pass the memory and reason directly. Put every dynamically generated `--memory` and `--reason` value in single quotes, never double quotes. Treat `$HOME`, backticks, and `$(command)` as literal text inside those quotes. Replace each literal single quote in a value with the exact POSIX sequence `'\''`.
+Run from the active task workspace. Pass the memory and reason directly. Put every dynamically generated `--memory` and `--reason` value in single quotes, never double quotes. Apply the escaping rule for the active shell:
+
+- Windows PowerShell: single quotes keep `$HOME`, backticks, and `$(command)` literal. Replace each literal single quote in a value with two single quotes (`''`); for example, `don't` becomes `'don''t'`.
+- macOS and Linux: Treat `$HOME`, backticks, and `$(command)` as literal text inside the quotes. Replace each literal single quote in a value with the exact POSIX sequence `'\''`.
 
 Windows PowerShell:
 
