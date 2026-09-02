@@ -105,9 +105,15 @@ registered.
 Both setup paths automatically detect supported coding agents. Restart or
 refresh every detected coding agent after setup.
 
-For Trae, setup installs the managed Skill and Global Hooks, but Trae does not
-expose a reliable programmatic switch for Global Hooks. Open Trae Settings,
-enable **Global Hooks** once, then start a new Trae session.
+> [!IMPORTANT]
+> **Trae only:** setup installs the managed Skill and Global Hooks, but Trae
+> requires its Global Hooks switch to be enabled manually. In Trae, open
+> **Settings → Hooks → Global → Configured Hooks** and enable the registered
+> hooks once. Then start a new Trae session and send one prompt. Run
+> `memorax-code status` to confirm the Trae Hook runtime changes from
+> `unverified` to `observed`. If a coding agent performs the installation, it
+> should explicitly remind the user to complete this Trae-only UI step. Other
+> supported coding agents do not require it.
 
 ### Installation Troubleshooting
 
