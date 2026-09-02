@@ -1,13 +1,13 @@
 # @memorax/memorax-code
 
-MemoraX Code adds persistent coding memory to Codex, Claude Code, DeepSeek
-Harness, and OpenCode.
+MemoraX Code adds persistent coding memory to Codex, Claude Code,
+CodeBuddy/WorkBuddy, DeepSeek Harness, OpenCode, and Trae.
 
 ## Requirements
 
 - Node.js 20 or newer (Node.js 24 LTS recommended) and npm.
-- At least one of Codex, Claude Code, DeepSeek Harness, OpenCode Desktop, or
-  the OpenCode CLI.
+- At least one of Codex, Claude Code, CodeBuddy/WorkBuddy, DeepSeek Harness,
+  OpenCode Desktop or CLI, or Trae.
 - Python 3 only for Repo Memory operations.
 
 ## Install
@@ -67,6 +67,9 @@ $env:Path = "$NpmGlobalBin;$env:Path"
 After the first installation, restart or refresh the detected coding agents
 before opening a new session. In Codex, enable **MemoraX Code Codex Adapter**
 from Plugins or `/plugins` if it is not already enabled.
+For Trae, open Settings and enable **Global Hooks** once before starting a new
+Trae session; setup installs the managed Hooks and Skill but cannot switch that
+Trae setting reliably.
 
 ## Verify
 

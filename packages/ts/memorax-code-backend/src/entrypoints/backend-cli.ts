@@ -79,9 +79,9 @@ export function runBackendCli(argv = process.argv): void {
       `Usage: ${usageName} [${commands}] [--backend-url URL] [--backend-token TOKEN] [--home DIR]`,
       "[--host HOST] [--port PORT] [--rotate] [--show]",
       "[--codex-command CMD]",
-      "[--codex-home DIR] [--claude-home DIR] [--dsh-home DIR] [--opencode-config-dir DIR] [--codebuddy-home DIR]",
+      "[--codex-home DIR] [--claude-home DIR] [--dsh-home DIR] [--opencode-config-dir DIR] [--codebuddy-home DIR] [--trae-home DIR]",
       "[--dsh-command CMD] [--dsh-adapter-root DIR] [--memorax-code-command CMD]",
-      "[--clients codex|claude|dsh|opencode|codebuddy|CLIENT,...|all|none]",
+      "[--clients codex|claude|dsh|opencode|codebuddy|trae|CLIENT,...|all|none]",
       "[--json]",
       "[--marketplace-path FILE] [--plugin-source-path DIR] [--claude-command CMD] [--help]",
       "[--yes]",
@@ -240,6 +240,7 @@ async function startRawBackendServer(
         dshAdapterRoot: argValue(argv, "--dsh-adapter-root"),
         openCodeConfigDir: argValue(argv, "--opencode-config-dir"),
         codeBuddyHome: argValue(argv, "--codebuddy-home"),
+        traeHome: argValue(argv, "--trae-home"),
         codexCommand: argValue(argv, "--codex-command"),
         claudeCommand: argValue(argv, "--claude-command"),
         dshCommand: argValue(argv, "--dsh-command"),
@@ -568,6 +569,7 @@ function printMemoraxCodeStatus(report: MemoraxCodeStatusReport): void {
   if (report.dshAdapter) backendLog(`DSH adapter: ${dshAdapterStatusLine(report.dshAdapter)}`);
   if (report.opencodeAdapter) backendLog(`OpenCode adapter: ${adapterStatusLine(report.opencodeAdapter)}`);
   if (report.codebuddyAdapter) backendLog(`CodeBuddy adapter: ${adapterStatusLine(report.codebuddyAdapter)}`);
+  if (report.traeAdapter) backendLog(`Trae adapter: ${adapterStatusLine(report.traeAdapter)}`);
   if (!suppressBackendGuidance()) {
     for (const line of statusGuidance(report)) backendLog(line);
   }
@@ -677,6 +679,7 @@ function printLifecycleResult(report: MemoraxCodeLifecycleReport): void {
   if (report.dshAdapter) backendLog(`DSH adapter: ${dshAdapterStatusLine(report.dshAdapter)}`);
   if (report.opencodeAdapter) backendLog(`OpenCode adapter: ${adapterStatusLine(report.opencodeAdapter)}`);
   if (report.codebuddyAdapter) backendLog(`CodeBuddy adapter: ${adapterStatusLine(report.codebuddyAdapter)}`);
+  if (report.traeAdapter) backendLog(`Trae adapter: ${adapterStatusLine(report.traeAdapter)}`);
   if (report.codexPlugin) {
     const removed = report.codexPlugin.removedPaths.length;
     const marketplace = report.codexPlugin.marketplaceChanged ? " marketplace=updated" : " marketplace=unchanged";
@@ -850,6 +853,9 @@ function statusGuidance(report: MemoraxCodeStatusReport): string[] {
     }
     return [
       green("MemoraX Code is ready; sessions with the stable plugin shell use the active Hook runtime on their next user prompt."),
+      ...(report.traeAdapter?.globalHooksActivationRequired
+        ? ["Trae requires one manual step: open Trae Settings and enable Global Hooks, then start a new Trae session."]
+        : []),
       ...(optionalDshUnavailable
         ? [`DSH integration is unavailable: ${report.dshAdapter?.reason ?? "not available"}.`]
         : []),
@@ -898,6 +904,12 @@ function statusGuidance(report: MemoraxCodeStatusReport): string[] {
       "Run `memorax-code start`, then restart or refresh OpenCode.",
     ];
   }
+  if (report.traeAdapter && !isAdapterReady(report.traeAdapter)) {
+    return [
+      red("Trae adapter is not enabled."),
+      "Run `memorax-code start --clients trae`, then enable Global Hooks in Trae Settings if this is the first setup.",
+    ];
+  }
   return [
     red("MemoraX Code needs attention."),
     "Run `memorax-code status` and `memorax-code logs` for details.",
@@ -937,9 +949,11 @@ function adapterStatusLine(report: AdapterReport): string {
   const skillStatus = report.codexSkills?.status
     ?? report.claudeSkills?.status
     ?? report.opencodeSkills?.status
-    ?? report.codebuddySkills?.status;
+    ?? report.codebuddySkills?.status
+    ?? report.traeSkills?.status;
   const skills = skillStatus ? ` skills=${skillStatus}` : "";
-  const hooks = report.codebuddyHooks?.status ? ` hook-runtime=${report.codebuddyHooks.status}` : "";
+  const hookStatus = report.codebuddyHooks?.status ?? report.traeHooks?.status;
+  const hooks = hookStatus ? ` hook-runtime=${hookStatus}` : "";
   const changed = report.changed === true ? " changed" : "";
   const integration = report.integration ?? report.state?.integration ?? "hooks";
   return `${enabled ? "ok" : "not enabled"} integration=${integration}${skills}${hooks}${changed}`;
@@ -951,6 +965,8 @@ function selectedLifecycleClientNames(report: MemoraxCodeLifecycleReport): strin
     report.claudeAdapter ? "Claude Code" : undefined,
     report.dshAdapter ? "DSH" : undefined,
     report.opencodeAdapter ? "OpenCode" : undefined,
+    report.codebuddyAdapter ? "CodeBuddy/WorkBuddy" : undefined,
+    report.traeAdapter ? "Trae" : undefined,
   ].filter((name): name is string => name !== undefined);
 }
 

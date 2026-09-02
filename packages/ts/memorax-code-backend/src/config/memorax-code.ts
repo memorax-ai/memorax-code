@@ -17,6 +17,7 @@ export type MemoraxCodeConfig = Readonly<{
     dsh?: boolean;
     opencode?: boolean;
     codebuddy?: boolean;
+    trae?: boolean;
   }>;
   memorax?: Readonly<{
     endpoint?: string;
@@ -284,6 +285,7 @@ function normalizeMemoraxCodeConfig(value: unknown): MemoraxCodeConfig {
       dsh: booleanField(clients, "dsh"),
       opencode: booleanField(clients, "opencode"),
       codebuddy: booleanField(clients, "codebuddy"),
+      trae: booleanField(clients, "trae"),
     }),
     memorax: prune({
       endpoint: stringField(memorax, "endpoint"),
@@ -388,7 +390,7 @@ function validateRawLifecycleConfig(value: unknown, path: string): void {
   if (rawClients !== undefined) {
     const clients = tableValue(rawClients);
     if (!clients) throw invalidLifecycleConfig(path, "clients must be a table");
-    for (const field of ["codex", "claude", "dsh", "opencode", "codebuddy"] as const) {
+    for (const field of ["codex", "claude", "dsh", "opencode", "codebuddy", "trae"] as const) {
       if (clients[field] !== undefined && typeof clients[field] !== "boolean") {
         throw invalidLifecycleConfig(path, `clients.${field} must be a boolean`);
       }

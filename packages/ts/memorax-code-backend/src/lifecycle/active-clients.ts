@@ -10,6 +10,7 @@ export function readActiveManagedClients(memoraxCodeHome: string): ManagedClient
     if (typeof value.codex !== "boolean" || typeof value.claude !== "boolean") return undefined;
     if (value.opencode !== undefined && typeof value.opencode !== "boolean") return undefined;
     if (value.codebuddy !== undefined && typeof value.codebuddy !== "boolean") return undefined;
+    if (value.trae !== undefined && typeof value.trae !== "boolean") return undefined;
     if (value.dsh !== undefined && typeof value.dsh !== "boolean") return undefined;
     return {
       codex: value.codex,
@@ -19,6 +20,7 @@ export function readActiveManagedClients(memoraxCodeHome: string): ManagedClient
       dsh: value.dsh === true,
       opencode: value.opencode === true,
       ...(value.codebuddy === true ? { codebuddy: true } : {}),
+      ...(value.trae === true ? { trae: true } : {}),
     };
   } catch {
     return undefined;

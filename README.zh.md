@@ -39,7 +39,8 @@
 Coding Agent 擅长解决眼前的问题，但新会话不会自动继承此前积累的架构认知、踩坑经验、仓库规则
 和协作偏好。
 
-MemoraX Code 让 Codex、Claude Code、WorkBuddy、DeepSeek Harness 和 OpenCode 共享一套能够持续积累的记忆。
+MemoraX Code 让 Codex、Claude Code、WorkBuddy、DeepSeek Harness、OpenCode 和 Trae
+共享一套能够持续积累的记忆。
 它会沉淀代码任务中的工程经验，持续整理仓库知识，并在后续任务中找回相关的工作流程和偏好。
 
 它追求的不是“记得更多”，而是在需要时带回与当前任务相关的 Memory，让 Agent 减少重复搜索和试错，
@@ -48,7 +49,7 @@ MemoraX Code 让 Codex、Claude Code、WorkBuddy、DeepSeek Harness 和 OpenCode
 ## 快速开始
 
 开始前，请确保已安装 Node.js 20 或更高版本（推荐 Node.js 24 LTS），以及 Codex、Claude Code、
-WorkBuddy、DeepSeek Harness 或 OpenCode 中的至少一个。Repo Memory 操作还需要 Python 3。
+WorkBuddy、DeepSeek Harness、OpenCode 或 Trae 中的至少一个。Repo Memory 操作还需要 Python 3。
 各 Coding Agent Harness 仍需满足自身的运行时要求；当前 DeepSeek Harness 版本要求 Node.js
 `^22.19.0 || >=24.0.0`。DSH 可全局安装，也可事先通过其官方 `npx` 流程完成初始化。
 
@@ -91,6 +92,9 @@ memorax-code account --show-mark-id
 获取 Mark ID 后，再前往 MemoraX 注册。当前暂不支持为已经注册的账号补绑 Mark ID。
 
 两种安装引导都会自动检测受支持的 Coding Agent。完成后，请重启或刷新检测到的 Coding Agent。
+
+对于 Trae，setup 会安装受管 Skill 和 Global Hooks，但 Trae 没有提供可靠的程序化开关。
+请在 Trae 设置中手动开启一次 **Global Hooks**，然后新建 Trae 会话。
 
 ### 安装故障排查
 
@@ -156,7 +160,7 @@ setup 或上述兜底命令修改持久化 `PATH` 后，请打开一个新终端
 
 ### 体验跨会话记忆
 
-克隆示例仓库，并在项目目录中打开 Codex、Claude Code、WorkBuddy、DeepSeek Harness 或 OpenCode：
+克隆示例仓库，并在项目目录中打开 Codex、Claude Code、WorkBuddy、DeepSeek Harness、OpenCode 或 Trae：
 
 ```bash
 git clone https://github.com/SWE-agent/test-repo.git
@@ -164,7 +168,7 @@ cd test-repo
 ```
 
 在 Codex 中使用 `$memorax-code`，在 Claude Code 或 DeepSeek Harness 中使用 `/memorax-code`
-调用该 Skill。在 OpenCode 或 WorkBuddy 中，直接让 Agent 使用名为 `memorax-code` 的 Skill。
+调用该 Skill。在 OpenCode、WorkBuddy 或 Trae 中，直接让 Agent 使用名为 `memorax-code` 的 Skill。
 下面的指令使用产品名称，所有客户端均可直接理解。
 
 在同一个会话中依次发送以下指令：
@@ -207,9 +211,9 @@ MemoraX Code 会先比较含义：语义相同的请求不重复写入；长期�
 | **后台写入记忆** | 任务完成后，在后台提取可复用知识并写入 Coding Memory。 |
 | **用户偏好延续** | 在 User Profile 中记录用户偏好，并按设定周期将其带入后续任务。 |
 | **Procedure 自动复用** | 记录可复用的任务流程，并在后续任务中自动提醒 Agent 按流程执行。 |
-| **Repo Memory 后台整理** | 在后台整理仓库结构、代码入口和历史证据，并按策略自动更新，避免反复搜索和总结。 |
+| **Repo Memory 后台整理** | 在支持无头任务的客户端中后台整理仓库结构、代码入口和历史证据，并按策略自动更新，避免反复搜索和总结。Trae 可通过 Skill 使用 Repo Memory，但目前没有可供自动维护使用的无头 worker。 |
 | **主动记忆控制** | 使用内置的 MemoraX Code Skill 或 CLI，主动查找和添加记忆。 |
-| **客户端集成** | 与 Codex、Claude Code、WorkBuddy、DeepSeek Harness 和 OpenCode 集成，触发记忆检索、提醒和写入。目前 Codex、Claude Code、WorkBuddy 和 OpenCode 支持自动额度提醒。 |
+| **客户端集成** | 与 Codex、Claude Code、WorkBuddy、DeepSeek Harness、OpenCode 和 Trae 集成，触发记忆检索、提醒和写入。目前 Codex、Claude Code、WorkBuddy、OpenCode 和 Trae 支持自动额度提醒。 |
 | **本地可观测性** | 通过受内容控制的本地 trace 和 reconciliation 记录查看活动统计、召回与写入状态。 |
 
 ## 你的记忆，由你控制
@@ -255,7 +259,7 @@ Hook 的精确哈希，然后静默信任这些 Hook。身份变化或 Hook 校�
 `MEMORAX_CODE_AUTO_UPDATE=false`。客户端启动 Hook 只负责确保 Backend 可用，不负责更新
 节奏。上面的手动更新命令仍然可用，会沿用当前发布通道并保留配置。如果新版本修改了运行中
 客户端已经加载的集成资产，请重启或刷新 Codex、Claude Code、WorkBuddy、
-DeepSeek Harness 或 OpenCode。
+DeepSeek Harness、OpenCode 或 Trae。
 
 Windows 上，托管的 WorkBuddy 插件默认安装到 `%USERPROFILE%\.workbuddy`；
 `WORKBUDDY_HOME` 可显式覆盖默认目录。在 WorkBuddy 至少成功执行一次

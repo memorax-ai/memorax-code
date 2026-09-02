@@ -21,6 +21,64 @@ import {
   writeManagedClientsConfig,
 } from "./support/backend-service-fixtures.mjs";
 
+test("memorax-code lifecycle installs and disables only managed Trae Hooks", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-lifecycle-trae-"));
+  const home = join(root, "memorax-code-home");
+  const traeHome = join(root, "trae-home");
+  const hooksPath = join(traeHome, "hooks.json");
+  const port = await freePort();
+  const cliPath = fileURLToPath(new URL("../../dist/memorax-code.js", import.meta.url));
+  const userHook = { hooks: [{ type: "command", command: "user-owned-hook" }] };
+  await mkdir(traeHome, { recursive: true });
+  await writeFile(hooksPath, `${JSON.stringify({
+    customSetting: true,
+    hooks: { UserPromptSubmit: [userHook] },
+  }, null, 2)}\n`);
+  const args = [
+    "--home", home,
+    "--port", String(port),
+    "--trae-home", traeHome,
+    "--clients", "trae",
+  ];
+  try {
+    const started = await runCli(cliPath, ["start", "--json", ...args]);
+    assert.equal(started.code, 0, `${started.stdout}\n${started.stderr}`);
+    const startReport = JSON.parse(started.stdout);
+    assert.equal(startReport.ok, true);
+    assert.equal(startReport.backend.ok, true);
+    assert.equal(startReport.traeAdapter.installed, true);
+    assert.equal(startReport.traeAdapter.enabled, true);
+    assert.equal(startReport.traeAdapter.integration, "hooks");
+    assert.equal(startReport.traeAdapter.traeHooks.configured, true);
+    assert.equal(startReport.traeAdapter.traeHooks.runtimeObserved, false);
+    assert.equal(startReport.traeAdapter.globalHooksActivationRequired, true);
+    assert.equal(startReport.traeAdapter.traeSkills.ok, true);
+
+    const installedHooks = JSON.parse(await readFile(hooksPath, "utf8"));
+    assert.equal(installedHooks.customSetting, true);
+    assert.equal(JSON.stringify(installedHooks).includes("user-owned-hook"), true);
+    assert.equal((JSON.stringify(installedHooks).match(/--memorax-code-trae-hook-v1/g) ?? []).length, 3);
+    assert.equal(await pathExists(join(traeHome, "skills", "memorax-code", "SKILL.md")), true);
+
+    const status = await runCli(cliPath, ["status", "--json", ...args]);
+    assert.equal(status.code, 0, `${status.stdout}\n${status.stderr}`);
+    assert.equal(JSON.parse(status.stdout).traeAdapter.enabled, true);
+
+    const stopped = await runCli(cliPath, ["stop", "--json", ...args]);
+    assert.equal(stopped.code, 0, `${stopped.stdout}\n${stopped.stderr}`);
+    const stopReport = JSON.parse(stopped.stdout);
+    assert.equal(stopReport.ok, true);
+    assert.equal(stopReport.traeAdapter.enabled, false);
+    const stoppedHooks = JSON.parse(await readFile(hooksPath, "utf8"));
+    assert.equal(stoppedHooks.customSetting, true);
+    assert.equal(JSON.stringify(stoppedHooks).includes("user-owned-hook"), true);
+    assert.equal(JSON.stringify(stoppedHooks).includes("--memorax-code-trae-hook-v1"), false);
+  } finally {
+    await runCli(cliPath, ["stop", "--json", ...args]);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("stop preserves setup completion while complete uninstall clears it and preserves config", async () => {
   const home = await mkdtemp(join(tmpdir(), "memorax-code-uninstall-completion-home-"));
   const port = await freePort();

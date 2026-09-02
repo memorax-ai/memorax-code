@@ -63,6 +63,7 @@ for (const requiredPath of [
   "bin/memorax-code-setup.mjs",
   "bin/memorax-code-opencode.mjs",
   "bin/memorax-code-codebuddy.mjs",
+  "bin/memorax-code-trae.mjs",
   "lib/client-hook-runtime.mjs",
   "lib/automatic-update.mjs",
   "lib/dsh-plugin-install.mjs",
@@ -164,6 +165,13 @@ for (const requiredPath of [
   "lib/memorax-code-codebuddy-adapter/src/hook-manifest.mjs",
   "lib/memorax-code-codebuddy-adapter/src/runtime-observation.mjs",
   "lib/memorax-code-codebuddy-adapter/src/cli.mjs",
+  "lib/memorax-code-trae-adapter/package.json",
+  "lib/memorax-code-trae-adapter/hooks/runtime-hook.mjs",
+  "lib/memorax-code-trae-adapter/skills/memorax-code/SKILL.md",
+  "lib/memorax-code-trae-adapter/src/adapter-paths.mjs",
+  "lib/memorax-code-trae-adapter/src/cli.mjs",
+  "lib/memorax-code-trae-adapter/src/config.mjs",
+  "lib/memorax-code-trae-adapter/src/runtime-observation.mjs",
 ]) {
   if (!paths.has(requiredPath)) {
     throw new Error(`npm pack is missing required runtime entrypoint: ${requiredPath}`);
@@ -213,6 +221,13 @@ try {
   );
   if (packedDshSkill !== canonicalSkill) {
     throw new Error("npm pack DSH skill must remain byte-identical to the canonical skill");
+  }
+  const packedTraeSkill = await readFile(
+    join(extracted, "package", "lib/memorax-code-trae-adapter/skills/memorax-code/SKILL.md"),
+    "utf8",
+  );
+  if (packedTraeSkill !== canonicalSkill) {
+    throw new Error("npm pack Trae skill must remain byte-identical to the canonical skill");
   }
   await assertLocalTraceOnly({
     repoRoot,

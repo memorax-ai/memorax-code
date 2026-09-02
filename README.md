@@ -40,8 +40,8 @@ Coding agents are good at the task in front of them, but a new session often
 starts without the architecture, failed attempts, repository rules, or working
 preferences established before it.
 
-MemoraX Code gives Codex, Claude Code, WorkBuddy, DeepSeek Harness, and OpenCode a shared
-memory layer for that context.
+MemoraX Code gives Codex, Claude Code, WorkBuddy, DeepSeek Harness,
+OpenCode, and Trae a shared memory layer for that context.
 It can recall prior engineering knowledge, capture reusable lessons from
 completed work, maintain repository knowledge, and carry your procedures and
 preferences into future sessions.
@@ -53,7 +53,7 @@ and validation sooner.
 ## Quick Start
 
 Prepare Node.js 20+ (Node.js 24 LTS recommended) and at least one of Codex,
-Claude Code, WorkBuddy, DeepSeek Harness, or OpenCode. Python 3 is
+Claude Code, WorkBuddy, DeepSeek Harness, OpenCode, or Trae. Python 3 is
 required for Repo Memory operations. Each coding-agent harness retains its own
 runtime requirements; current DeepSeek Harness releases require Node.js
 `^22.19.0 || >=24.0.0`. DSH may be installed globally or initialized
@@ -104,6 +104,10 @@ registered.
 
 Both setup paths automatically detect supported coding agents. Restart or
 refresh every detected coding agent after setup.
+
+For Trae, setup installs the managed Skill and Global Hooks, but Trae does not
+expose a reliable programmatic switch for Global Hooks. Open Trae Settings,
+enable **Global Hooks** once, then start a new Trae session.
 
 ### Installation Troubleshooting
 
@@ -175,7 +179,7 @@ See [Configuration](docs/configuration.md) for supported settings and
 ### Try Cross-Session Memory
 
 Clone the example repository from the product website, then open Codex, Claude
-Code, WorkBuddy, DeepSeek Harness, or OpenCode in the project directory:
+Code, WorkBuddy, DeepSeek Harness, OpenCode, or Trae in the project directory:
 
 ```bash
 git clone https://github.com/SWE-agent/test-repo.git
@@ -183,9 +187,9 @@ cd test-repo
 ```
 
 Invoke the Skill as `$memorax-code` in Codex or `/memorax-code` in Claude Code
-or DeepSeek Harness. In OpenCode or WorkBuddy, ask the agent to use
-the `memorax-code` skill by name. The prompts below use its product name and
-work in all supported clients.
+or DeepSeek Harness. In OpenCode, WorkBuddy, or Trae, ask the agent
+to use the `memorax-code` skill by name. The prompts below use its product name
+and work in all supported clients.
 
 Send these prompts in order in the same session:
 
@@ -237,9 +241,9 @@ writing when the durable intent or target is unclear.
 | **Background memory writeback** | Extracts reusable knowledge from completed turns and writes it to Coding Memory in the background. |
 | **Preference continuity** | Records User Profile preferences and injects them into future tasks on a configured cadence. |
 | **Procedure reuse** | Records reusable task procedures and reminds future agents to apply them. |
-| **Background Repo Memory maintenance** | Automatically organizes repository structure, entry points, and history evidence in the background, then updates them according to policy to reduce repeated searching and summarization. |
+| **Background Repo Memory maintenance** | Automatically organizes repository structure, entry points, and history evidence in supported headless-capable clients, then updates them according to policy to reduce repeated searching and summarization. Trae can use the Skill for Repo Memory, but does not currently expose a headless worker for automatic maintenance. |
 | **Active memory control** | Lets you search and add memory through the bundled MemoraX Code skill or the CLI. |
-| **Client integration** | Integrates with Codex, Claude Code, WorkBuddy, DeepSeek Harness, and OpenCode to trigger memory retrieval, reminders, and writeback. Automatic quota reminders are currently available in Codex, Claude Code, WorkBuddy, and OpenCode. |
+| **Client integration** | Integrates with Codex, Claude Code, WorkBuddy, DeepSeek Harness, OpenCode, and Trae to trigger memory retrieval, reminders, and writeback. Automatic quota reminders are currently available in Codex, Claude Code, WorkBuddy, OpenCode, and Trae. |
 | **Local observability** | Uses content-controlled local trace and reconciliation records to inspect activity counts, retrieval, and writeback status. |
 
 ## Your Memory, Your Control

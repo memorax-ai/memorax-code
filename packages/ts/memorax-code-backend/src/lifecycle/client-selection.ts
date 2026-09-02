@@ -6,9 +6,10 @@ export type ManagedClients = Readonly<{
   dsh: boolean;
   opencode: boolean;
   codebuddy?: boolean;
+  trae?: boolean;
 }>;
 
-const allClients: ManagedClients = Object.freeze({ codex: true, claude: true, dsh: true, opencode: true, codebuddy: true });
+const allClients: ManagedClients = Object.freeze({ codex: true, claude: true, dsh: true, opencode: true, codebuddy: true, trae: true });
 
 export function resolveManagedClients(argv: readonly string[], config: MemoraxCodeConfig = {}): ManagedClients {
   const explicit = argValue(argv, "--clients");
@@ -23,6 +24,7 @@ export function resolveManagedClients(argv: readonly string[], config: MemoraxCo
       dsh: config.clients.dsh !== false,
       opencode: config.clients.opencode === true,
       ...(config.clients.codebuddy === true ? { codebuddy: true } : {}),
+      ...(config.clients.trae === true ? { trae: true } : {}),
     };
   }
 
@@ -36,9 +38,9 @@ export function parseManagedClients(value: string): ManagedClients {
 
   const names = normalized.split(",").map((name) => name.trim()).filter(Boolean);
   if (names.length === 0 || names.some((name) => (
-    name !== "codex" && name !== "claude" && name !== "dsh" && name !== "opencode" && name !== "codebuddy"
+    name !== "codex" && name !== "claude" && name !== "dsh" && name !== "opencode" && name !== "codebuddy" && name !== "trae"
   ))) {
-    throw new Error(`invalid --clients value: ${value}; expected a comma-separated subset of codex, claude, dsh, opencode, codebuddy, or all or none`);
+    throw new Error(`invalid --clients value: ${value}; expected a comma-separated subset of codex, claude, dsh, opencode, codebuddy, trae, or all or none`);
   }
   return {
     codex: names.includes("codex"),
@@ -46,6 +48,7 @@ export function parseManagedClients(value: string): ManagedClients {
     dsh: names.includes("dsh"),
     opencode: names.includes("opencode"),
     ...(names.includes("codebuddy") ? { codebuddy: true } : {}),
+    ...(names.includes("trae") ? { trae: true } : {}),
   };
 }
 

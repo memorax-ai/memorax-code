@@ -17,6 +17,7 @@ test("single npm package layout accepts declared paths and rejects unknown trees
   assert.equal(isAllowedNpmPackPath("bin/memorax-code-plugin-postinstall.mjs"), true);
   assert.equal(isAllowedNpmPackPath("bin/memorax-code-setup.mjs"), true);
   assert.equal(isAllowedNpmPackPath("bin/memorax-code-opencode.mjs"), true);
+  assert.equal(isAllowedNpmPackPath("bin/memorax-code-trae.mjs"), true);
   assert.equal(isAllowedNpmPackPath("lib/automatic-update.mjs"), true);
   assert.equal(isAllowedNpmPackPath("lib/node-version.mjs"), true);
   assert.equal(isAllowedNpmPackPath("lib/dsh-plugin-install.mjs"), true);
@@ -58,6 +59,11 @@ test("single npm package layout accepts declared paths and rejects unknown trees
 test("CodeBuddy adapter ships the canonical MemoraX skill", () => {
   assert.equal(isAllowedNpmPackPath("lib/memorax-code-codebuddy-adapter/skills/memorax-code/SKILL.md"), true);
   assert.equal(isAllowedNpmPackPath("lib/memorax-code-codebuddy-adapter/skills/memorax-code/references/memorax-search.md"), true);
+});
+
+test("Trae adapter ships the canonical MemoraX skill and Hook runtime", () => {
+  assert.equal(isAllowedNpmPackPath("lib/memorax-code-trae-adapter/skills/memorax-code/SKILL.md"), true);
+  assert.equal(isAllowedNpmPackPath("lib/memorax-code-trae-adapter/hooks/runtime-hook.mjs"), true);
 });
 
 test("credential runtime allowlist accepts only reviewed main and marketplace files", () => {
