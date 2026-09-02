@@ -10,6 +10,7 @@ import {
   parseTurnStartCommand,
   parseWritebackCommand,
 } from "../../../dist/memory/hook-command.js";
+import { createRepositoryMemorySessionRuntime } from "../../../dist/memory/repository-session.js";
 import { traeTracePaths } from "../../../dist/trace/config.js";
 
 test("Trae Hook commands keep a closed content-authority schema", () => {
@@ -129,6 +130,69 @@ test("Trae runtime interrupts a replaced active Turn without writing it back", a
     }]);
   } finally {
     runtime.close();
+    await fixture.cleanup();
+  }
+});
+
+test("Trae runtime serializes overlapping Turn starts for one Session", async () => {
+  const fixture = await createFixture("overlapping-starts");
+  const writes = [];
+  const baseRepositoryMemorySession = createRepositoryMemorySessionRuntime();
+  let resolveCalls = 0;
+  let markFirstResolveStarted;
+  let releaseFirstResolve;
+  const firstResolveStarted = new Promise((resolve) => {
+    markFirstResolveStarted = resolve;
+  });
+  const firstResolveGate = new Promise((resolve) => {
+    releaseFirstResolve = resolve;
+  });
+  const repositoryMemorySession = {
+    async resolve(input) {
+      resolveCalls += 1;
+      if (resolveCalls === 1) {
+        markFirstResolveStarted();
+        await firstResolveGate;
+      }
+      return await baseRepositoryMemorySession.resolve(input);
+    },
+    close() {
+      baseRepositoryMemorySession.close();
+    },
+  };
+  const runtime = createTraeMemoryHookRuntime({
+    env: configuredEnv(fixture.home, { MEMORAX_CODE_TRAE_TRACE_ENABLED: "false" }),
+    automaticWriteback: (request) => {
+      writes.push(request);
+      return { accepted: true };
+    },
+    repositoryMemorySession,
+  });
+  const first = turnStart("trae-overlapping-session", "Start the first Trae turn.", fixture.workspace, 1_700_000_000_001);
+  const second = turnStart("trae-overlapping-session", "Replace it with the second Trae turn.", fixture.workspace, 1_700_000_000_002);
+  const starts = [];
+  try {
+    starts.push(runtime.recordTurnStart(first));
+    await firstResolveStarted;
+    starts.push(runtime.recordTurnStart(second));
+    assert.equal(resolveCalls, 1, "the second start must wait for the first Session operation");
+    releaseFirstResolve();
+    await Promise.all(starts);
+
+    assert.deepEqual(await runtime.writeback({
+      ...first,
+      lastAssistantMessage: "The first completion arrived late.",
+    }), { ok: true, scheduled: false, reason: "interrupted" });
+    assert.deepEqual(await runtime.writeback({
+      ...second,
+      lastAssistantMessage: "The second turn completed.",
+    }), { ok: true, scheduled: true });
+    assert.deepEqual(writes.map(({ userText }) => userText), [second.prompt]);
+  } finally {
+    releaseFirstResolve();
+    await Promise.allSettled(starts);
+    runtime.close();
+    repositoryMemorySession.close();
     await fixture.cleanup();
   }
 });

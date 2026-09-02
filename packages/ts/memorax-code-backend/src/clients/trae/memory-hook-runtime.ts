@@ -113,9 +113,10 @@ export function createTraeMemoryHookRuntime(
   const retrievalTurns = new Set<string>();
   const interruptedTurns = new Set<string>();
   const activeTurns = new Map<string, MemoryTurnState>();
+  const turnStartOperations = new Map<string, Promise<MemoryHookTurnStartResult>>();
   const runtimeTurnLimit = positiveInteger(options.maxEntries, 256);
 
-  return {
+  const runtime: TraeMemoryHookRuntime = {
     async recordTurnStart(command) {
       turnCoordinator.pruneExpired();
       const commandKey = traeRuntimeTurnKey(command.sessionId, command.turnId);
@@ -259,10 +260,22 @@ export function createTraeMemoryHookRuntime(
       retrievalTurns.clear();
       interruptedTurns.clear();
       activeTurns.clear();
+      turnStartOperations.clear();
       if (ownsTurnCoordinator) turnCoordinator.close();
       if (ownsRepositoryMemorySession) repositoryMemorySession.close();
       automaticWritebackRuntime?.close?.();
       if (ownsPendingQuotaNotice) pendingQuotaNotice.close();
+    },
+  };
+
+  return {
+    ...runtime,
+    recordTurnStart(command) {
+      return queueSessionTurnStart(
+        turnStartOperations,
+        command.sessionId,
+        () => runtime.recordTurnStart(command),
+      );
     },
   };
 }
@@ -399,6 +412,23 @@ async function recordTraceBestEffort(
       error: error instanceof Error ? error.message : String(error),
     });
   }
+}
+
+function queueSessionTurnStart(
+  operations: Map<string, Promise<MemoryHookTurnStartResult>>,
+  sessionId: string,
+  operation: () => Promise<MemoryHookTurnStartResult>,
+): Promise<MemoryHookTurnStartResult> {
+  const previous: Promise<unknown> = operations.get(sessionId) ?? Promise.resolve();
+  const queued = previous
+    .catch(() => undefined)
+    .then(operation);
+  operations.set(sessionId, queued);
+  const clear = () => {
+    if (operations.get(sessionId) === queued) operations.delete(sessionId);
+  };
+  void queued.then(clear, clear);
+  return queued;
 }
 
 function positiveInteger(value: unknown, fallback: number): number {
