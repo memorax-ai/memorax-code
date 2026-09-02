@@ -285,8 +285,10 @@ client session. Stable installations follow npm `latest`; prerelease
 installations follow `preview`. A successful check is reused for eight hours,
 while a failed check or reconciliation is retried after 15 minutes.
 When the published target changes, MemoraX Code installs that exact version and
-reconciles only the clients already enabled in `[clients]`; it never enables a
-newly detected client in the background.
+preserves every explicit `true` or `false` choice in `[clients]`. If the release
+adds support for a client whose key is absent from an older configuration and
+that client is detected locally, automatic reconciliation enables it by
+default. An explicit `false` remains disabled.
 
 For Codex, update reconciliation verifies the current MemoraX Code marketplace
 identity and the exact new or changed Hook hashes, then trusts those Hooks
