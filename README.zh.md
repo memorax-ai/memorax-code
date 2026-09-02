@@ -248,8 +248,9 @@ memorax-code update
 完成过 setup 后，只要托管 Backend 持续运行，它就会自行调度非阻塞更新检查，不依赖客户端
 新建会话。稳定版跟随 npm `latest`，预览版跟随 `preview`；成功检查结果复用八小时，检查或
 reconciliation 失败后 15 分钟重试。发现新版本时，MemoraX Code 会安装精确的目标版本，
-并且只 reconciliation `[clients]` 中原本已经启用的客户端，不会在后台顺便启用新检测到的
-客户端。
+并保留 `[clients]` 中所有显式的 `true` 或 `false` 选择。如果新版本新增了某个客户端支持、
+旧配置中还没有对应字段，并且本机能够检测到该客户端，自动 reconciliation 会默认启用它；
+显式设置为 `false` 的客户端仍保持关闭。
 
 在 Codex 下，更新 reconciliation 会先校验当前 MemoraX Code marketplace 身份以及新增或变化
 Hook 的精确哈希，然后静默信任这些 Hook。身份变化或 Hook 校验失败时会失败关闭，不会扩大信任

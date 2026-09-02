@@ -194,7 +194,7 @@ sequenceDiagram
   loop completed setup while managed Backend remains running
     Service->>Update: dispatch when persisted deadline is due
     Update->>NPM: resolve release channel and install exact target
-    Update->>Setup: reconcile retained clients non-interactively
+    Update->>Setup: reconcile client intent non-interactively
     Setup->>Completion: commit only after final verification
   end
 ```
@@ -224,12 +224,14 @@ Client startup Hooks only recover an unavailable Backend and do not own update
 cadence. The updater follows the installed release channel, serializes checks
 through the private record and lock, installs an exact published target, and
 invokes an internal non-interactive setup mode. That mode preserves the
-existing client selection and configuration. Codex Hook changes are trusted
-silently only when the marketplace identity remains the same and the exact
-incremental Hook selection survives validation before and after the config
-write. Verification failure leaves reconciliation incomplete for a later
-retry. Package replacement may retire the dispatching Backend; the restored
-Backend resumes scheduling from the same durable record.
+explicit client selection and configuration. A locally detected adapter whose
+key is absent from a legacy `[clients]` table is selected by default, while an
+explicit `false` remains disabled. Codex Hook changes are trusted silently only
+when the marketplace identity remains the same and the exact incremental Hook
+selection survives validation before and after the config write. Verification
+failure leaves reconciliation incomplete for a later retry. Package
+replacement may retire the dispatching Backend; the restored Backend resumes
+scheduling from the same durable record.
 
 The principal control-plane locations are:
 

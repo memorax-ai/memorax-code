@@ -45,6 +45,7 @@ const RED = "\x1b[31m";
 const BOLD = "\x1b[1m";
 const RESET = "\x1b[0m";
 const DSH_OPTIONAL_ENV = "MEMORAX_CODE_DSH_ADAPTER_OPTIONAL";
+const SETUP_CLIENTS = ["codex", "claude", "opencode", "codebuddy", "trae"];
 
 const skipCodexPluginInstall = truthyEnv(process.env.MEMORAX_CODE_SKIP_CODEX_PLUGIN_INSTALL);
 const skipClaudeAdapterInstall = truthyEnv(process.env.MEMORAX_CODE_SKIP_CLAUDE_ADAPTER_INSTALL);
@@ -73,8 +74,10 @@ const claudeRuntime = ensureClaudeCommandEnv();
 const claudeCommand = claudeRuntime.command;
 const codeBuddyRuntime = ensureCodeBuddyCommandEnv();
 const codeBuddyCommand = codeBuddyRuntime.command;
-const previousClients = readPersistedClientSelection();
-const existingSetup = previousClients !== undefined;
+const persistedClientSelection = readPersistedClientSelection();
+const existingSetup = persistedClientSelection !== undefined;
+const previousClients = persistedClientSelection?.selected ?? [];
+const explicitClientChoices = persistedClientSelection?.explicit ?? [];
 const persistedDshSelection = readPersistedDshSelection();
 const dshEnabledByConfig = persistedDshSelection !== false;
 let dshProfiles = [];
@@ -119,7 +122,7 @@ try {
   process.exit(1);
 }
 runCommonPreflight();
-const requestedClients = ["codex", "claude", "opencode", "codebuddy", "trae"];
+const requestedClients = SETUP_CLIENTS;
 const codexPreflight = requestedClients.includes("codex") && !skipCodexPluginInstall
   ? runCodexPreflight({
       integrationSelected: !existingSetup || previousClients.includes("codex"),
@@ -152,11 +155,21 @@ const detectedClients = requestedClients.filter((client) => {
   if (client === "codebuddy") return !skipCodeBuddyAdapterInstall && codebuddyPreflight.ok;
   return !skipTraeAdapterInstall && traePreflight.ok;
 });
+const newlyDetectedClients = existingSetup
+  ? detectedClients.filter((client) => !explicitClientChoices.includes(client))
+  : [];
 const selectedClients = automaticUpdateMode
-  ? previousClients
+  ? requestedClients.filter((client) => (
+      previousClients.includes(client) || newlyDetectedClients.includes(client)
+    ))
   : existingSetup
-    ? await chooseUpdateClients(previousClients, detectedClients, scriptedAnswers)
+    ? await chooseUpdateClients(previousClients, newlyDetectedClients, scriptedAnswers)
     : detectedClients;
+const clientsWithPersistedIntent = existingSetup
+  ? requestedClients.filter((client) => (
+      explicitClientChoices.includes(client) || newlyDetectedClients.includes(client)
+    ))
+  : requestedClients;
 const installClients = detectedClients.filter((client) => selectedClients.includes(client));
 if (existingSetup) {
   log(clientSelectionMessage(selectedClients, { dshSelected }));
@@ -183,7 +196,7 @@ if (requestedClients.includes("codebuddy") && !skipCodeBuddyAdapterInstall && !c
 if (requestedClients.includes("trae") && !skipTraeAdapterInstall && !traePreflight.ok) {
   log("Trae runtime or data directory was not detected; skipping its adapter setup.");
 }
-if (writeClientSelectionConfig(selectedClients) === "failed") {
+if (writeClientSelectionConfig(selectedClients, clientsWithPersistedIntent) === "failed") {
   printPostinstallSummary("not-verified");
   process.exit(1);
 }
@@ -397,16 +410,15 @@ async function maybeConfigureMemoraxMemory(scriptedAnswers, {
   }
 }
 
-async function chooseUpdateClients(previousClients, detectedClients, scriptedAnswers) {
+async function chooseUpdateClients(previousClients, newlyDetectedClients, scriptedAnswers) {
   const selected = new Set(previousClients);
-  const availableDisabledClients = detectedClients.filter((client) => !selected.has(client));
-  if (availableDisabledClients.length === 0) return [...previousClients];
+  if (newlyDetectedClients.length === 0) return [...previousClients];
 
   let rl;
   try {
-    for (const client of availableDisabledClients) {
+    for (const client of newlyDetectedClients) {
       const label = clientLabel(client);
-      const question = `${label} runtime is available, but its integration is disabled in [clients]. Enable it now? [Y/n]`;
+      const question = `${label} runtime is not configured in [clients]. Enable it now? [Y/n]`;
       let answer;
       if (scriptedAnswers) {
         log(question);
@@ -425,7 +437,7 @@ async function chooseUpdateClients(previousClients, detectedClients, scriptedAns
   } finally {
     rl?.close();
   }
-  return ["codex", "claude", "opencode", "codebuddy", "trae"].filter((client) => selected.has(client));
+  return SETUP_CLIENTS.filter((client) => selected.has(client));
 }
 
 async function configureMemoraxMemoryFromAnswers(answers, detectedPreferences, {
@@ -779,13 +791,10 @@ function readPersistedClientSelection() {
   try {
     const clients = parse(readFileSync(path, "utf8"))?.clients;
     if (!clients || typeof clients !== "object" || typeof clients.codex !== "boolean" || typeof clients.claude !== "boolean") return undefined;
-    return [
-      clients.codex ? "codex" : undefined,
-      clients.claude ? "claude" : undefined,
-      clients.opencode === true ? "opencode" : undefined,
-      clients.codebuddy === true ? "codebuddy" : undefined,
-      clients.trae === true ? "trae" : undefined,
-    ].filter(Boolean);
+    return {
+      selected: SETUP_CLIENTS.filter((client) => clients[client] === true),
+      explicit: SETUP_CLIENTS.filter((client) => typeof clients[client] === "boolean"),
+    };
   } catch {
     return undefined;
   }
@@ -802,23 +811,24 @@ function readPersistedDshSelection() {
   }
 }
 
-function writeClientSelectionConfig(clients) {
+function writeClientSelectionConfig(clients, configuredClients = SETUP_CLIENTS) {
   const path = memoraxCodeConfigPath();
   return updateConfigFileAtomically({
     path,
-    defaultText: setManagedClientSelection(defaultMemoraxCodeConfig(), clients),
-    transform: (text) => setManagedClientSelection(text, clients),
+    defaultText: setManagedClientSelection(defaultMemoraxCodeConfig(), clients, configuredClients),
+    transform: (text) => setManagedClientSelection(text, clients, configuredClients),
     parseToml: parse,
     warn: (message) => log(message),
   });
 }
 
-function setManagedClientSelection(text, clients) {
-  const withOpenCode = setTomlField(text, "clients", "opencode", String(clients.includes("opencode")));
-  const withClaude = setTomlField(withOpenCode, "clients", "claude", String(clients.includes("claude")));
-  const withCodeBuddy = setTomlField(withClaude, "clients", "codebuddy", String(clients.includes("codebuddy")));
-  const withTrae = setTomlField(withCodeBuddy, "clients", "trae", String(clients.includes("trae")));
-  return setTomlField(withTrae, "clients", "codex", String(clients.includes("codex")));
+function setManagedClientSelection(text, clients, configuredClients = SETUP_CLIENTS) {
+  let updated = text;
+  for (const client of ["opencode", "claude", "codebuddy", "trae", "codex"]) {
+    if (!configuredClients.includes(client)) continue;
+    updated = setTomlField(updated, "clients", client, String(clients.includes(client)));
+  }
+  return updated;
 }
 
 function writeMemoraxConfig({ userId, endpoint, outputLanguage, apiKey }) {

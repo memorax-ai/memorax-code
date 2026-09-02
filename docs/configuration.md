@@ -56,11 +56,14 @@ filesystem ACLs.
 If `[clients]` is absent, lifecycle commands select Codex, Claude Code, DSH,
 and OpenCode; CodeBuddy/WorkBuddy and Trae are opt-in unless detected during
 foreground setup. If the table is present, `codex`, `claude`, `dsh`,
-`opencode`, `codebuddy`, and `trae` are boolean fields. Omitted `codex`,
-`claude`, `opencode`, `codebuddy`, or `trae` values are disabled; an omitted
-`dsh` value remains enabled so configurations written before DSH support can
-discover an existing local Harness. Set `dsh = false` explicitly to disable
-that integration. The command-line override accepts a comma-separated subset:
+`opencode`, `codebuddy`, and `trae` are boolean fields. Direct lifecycle
+commands treat omitted `codex`, `claude`, `opencode`, `codebuddy`, or `trae`
+values as disabled. Setup and update reconciliation retain an omitted field as
+an undecided choice for client support added after the configuration was
+written. An omitted `dsh` value remains enabled so configurations written
+before DSH support can discover an existing local Harness. Set `dsh = false`
+explicitly to disable that integration. The command-line override accepts a
+comma-separated subset:
 
 ```text
 --clients codex|claude|dsh|opencode|codebuddy|trae|<comma-separated subset>|all|none
@@ -75,13 +78,16 @@ DSH is available when at least one valid Profile exists under
 application is detected. `TRAE_CN_HOME`, then `TRAE_HOME`, overrides its
 default `~/.trae-cn` data home.
 
-On later setup runs, enabled client intent is preserved. Each newly available
-disabled client is offered for activation with a default of yes; declining
-keeps it disabled. A selected client that is temporarily unavailable remains
-selected instead of being permanently disabled. Direct npm installation does
-not detect clients or modify `[clients]`.
-Automatic update reconciliation also preserves the exact persisted selection;
-it does not offer or enable a newly detected client.
+On later setup runs, explicit `true` and `false` client choices are preserved.
+A detected client whose field is absent is offered for activation with a
+default of yes; declining records `false`. An absent client that is not
+detected remains absent, while a selected client that is temporarily
+unavailable remains selected. Direct npm installation does not detect clients
+or modify `[clients]`.
+Automatic update reconciliation preserves explicit choices and silently
+enables a detected client whose field is absent. This lets configurations
+written before an adapter was supported adopt it when its runtime is already
+installed, without overriding an explicit `false`.
 
 Client selection controls managed client-integration lifecycle only. It does
 not change any coding agent's provider settings.
@@ -132,13 +138,14 @@ Backend to disable the scheduler. Client startup Hooks only recover an
 unavailable Backend and do not schedule updates.
 
 The updater installs an exact published version and runs an internal
-non-interactive setup mode. That mode preserves `[clients]`, connection data,
-and memory preferences. For Codex, only new or changed Hooks returned by the
-incremental check are trusted silently, and the exact Hook selection is
-validated again before and after the config write. A changed marketplace
-identity or unverifiable Hook set prevents reconciliation from completing.
-The standalone `memorax-code codex-plugin trust-hooks` command still performs
-explicit review.
+non-interactive setup mode. That mode preserves explicit `[clients]` choices,
+enables detected clients missing from an older configuration, and preserves
+connection data and memory preferences. For Codex, only new or changed Hooks
+returned by the incremental check are trusted silently, and the exact Hook
+selection is validated again before and after the config write. A changed
+marketplace identity or unverifiable Hook set prevents reconciliation from
+completing. The standalone `memorax-code codex-plugin trust-hooks` command
+still performs explicit review.
 
 The installed version and next check deadline are stored in another private
 record:
