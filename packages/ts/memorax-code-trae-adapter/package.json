@@ -1,6 +1,6 @@
 {
   "name": "@memorax-code/trae-adapter",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "private": true,
   "type": "module",
   "description": "Trae Hook adapter for MemoraX Code memory services.",

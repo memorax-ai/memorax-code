@@ -6,6 +6,31 @@ behavior.
 
 ## Unreleased
 
+## [0.1.12] - 2026-09-02
+
+### Added
+
+- Added managed Trae integration with the shared MemoraX Code Skill, native
+  lifecycle Hooks, exact Turn correlation, completed-Turn writeback,
+  interrupted-Turn handling, Skill reminders, optional automatic retrieval,
+  local traces, and supported setup on macOS, Linux, and Windows. Trae users
+  enable Global Hooks once in Trae before the integration can run.
+
+### Changed
+
+- Updates now enable a newly supported coding-agent integration when its
+  runtime is detected and its client setting was previously absent. Explicit
+  enabled and disabled choices remain unchanged; automatic updates reconcile
+  silently, while manual updates prompt for unconfigured detected clients.
+- Clarified Trae activation guidance with the exact Global Hooks UI path and
+  the runtime status check used to confirm that Hooks have been observed.
+
+### Fixed
+
+- Updated Windows PowerShell Skill commands to invoke `memorax-cli.cmd`,
+  avoiding `.ps1` execution-policy failures without requiring users to change
+  PowerShell policy.
+
 ## [0.1.11] - 2026-09-01
 
 ### Fixed
