@@ -1,7 +1,7 @@
 {
   "name": "@memorax/memorax-code",
   "version": "0.1.11",
-  "description": "Persistent coding memory for Codex, Claude Code, CodeBuddy/WorkBuddy, DeepSeek Harness, and OpenCode.",
+  "description": "Persistent coding memory for Codex, Claude Code, CodeBuddy/WorkBuddy, DeepSeek Harness, OpenCode, and Trae.",
   "license": "MIT",
   "type": "module",
   "homepage": "https://github.com/memorax-ai/memorax-code#readme",
@@ -19,6 +19,7 @@
     "dsh",
     "opencode",
     "codebuddy",
+    "trae",
     "memory",
     "memorax"
   ],
@@ -29,7 +30,8 @@
     "memorax-code-claude": "bin/memorax-code-claude.mjs",
     "memorax-code-codex": "bin/memorax-code-codex.mjs",
     "memorax-code-opencode": "bin/memorax-code-opencode.mjs",
-    "memorax-code-codebuddy": "bin/memorax-code-codebuddy.mjs"
+    "memorax-code-codebuddy": "bin/memorax-code-codebuddy.mjs",
+    "memorax-code-trae": "bin/memorax-code-trae.mjs"
   },
   "files": [
     "bin",

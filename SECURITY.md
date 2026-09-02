@@ -1,8 +1,8 @@
 # Security Policy
 
-MemoraX Code is a local-first integration for Codex, Claude Code, CodeBuddy/WorkBuddy,
-DeepSeek Harness (DSH), and OpenCode with an optional external bind mode and required
-communication with MemoraX for cloud-backed memory. Security reports should
+MemoraX Code is a local-first integration for Codex, Claude Code,
+CodeBuddy/WorkBuddy, DeepSeek Harness (DSH), OpenCode, and Trae with an optional
+external bind mode and required communication with MemoraX for cloud-backed memory. Security reports should
 distinguish the local Backend, client-owned provider traffic, and MemoraX
 memory traffic.
 
@@ -29,7 +29,7 @@ Please allow time for triage and remediation before public disclosure.
 
 ### Client and local Backend
 
-- Codex, Claude Code, CodeBuddy/WorkBuddy, DeepSeek Harness, and OpenCode own provider credentials,
+- Codex, Claude Code, CodeBuddy/WorkBuddy, DeepSeek Harness, OpenCode, and Trae own provider credentials,
   models, native tools, and provider traffic. MemoraX Code does not proxy
   model-provider traffic and does not need client provider credentials.
 - The managed Backend binds to loopback by default. External binding requires
@@ -80,12 +80,17 @@ Please allow time for triage and remediation before public disclosure.
   retrieval, trace, or writeback. Repo Memory jobs run a bounded headless
   CodeBuddy process with `--dangerously-skip-permissions`; use this only for a
   Backend-authorized Git worktree and never for untrusted source.
+- The managed Trae adapter merges only marker-owned `SessionStart`,
+  `UserPromptSubmit`, and `Stop` entries into Trae's `hooks.json`, refuses to
+  replace an unmanaged `memorax-code` Skill, and removes only managed assets.
+  Trae owns the application-level Global Hooks switch; MemoraX Code cannot
+  enable it reliably and requires the user to do so once in Trae Settings.
 - Trae exposes no stable raw Session authority. For Trae only, the validated
   prompt supplied by `UserPromptSubmit` and final assistant message supplied by
   the matching `Stop` Hook are the automatic-writeback content authority. They
-  are bound to one active Turn with a prompt-derived Turn ID; a new prompt
-  interrupts the old Turn, and late or mismatched completion events do not
-  write back. Hook fields are not a fallback for any other client.
+  are bound to one active Turn with a prompt-derived Turn ID; a new
+  prompt interrupts the old Turn, and late or mismatched completion events do
+  not write back. Hook fields are not a fallback for any other client.
 - Initial Repo Memory builds use only the Git worktree returned by an
   authenticated Backend turn-start request. Backend or workspace-scope
   failures skip the build; client integrations do not fall back to

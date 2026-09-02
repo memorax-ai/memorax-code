@@ -41,6 +41,17 @@ type CodeBuddyPluginInstaller = {
   removeCodeBuddyPluginInstallation: (options: Record<string, unknown>) => CodeBuddyPluginRemovalReport;
 };
 
+type TraePluginRemovalReport = {
+  ok: boolean;
+  action: string;
+  reason?: string;
+  message?: string;
+};
+
+type TraePluginInstaller = {
+  removeTraeAdapterInstallation: (options: Record<string, unknown>) => Promise<TraePluginRemovalReport>;
+};
+
 type DshPluginRemovalReport = {
   ok: boolean;
   action: string;
@@ -65,6 +76,7 @@ export type ClientPluginRemovalOptions = {
   dshAdapterRoot?: string;
   openCodeConfigDir?: string;
   codeBuddyHome?: string;
+  traeHome?: string;
   codexCommand?: string;
   claudeCommand?: string;
   dshCommand?: string;
@@ -78,6 +90,7 @@ export type ClientPluginRemovalReport = {
   dshPlugin: DshPluginRemovalReport | ClientPluginRemovalFailure;
   opencodePlugin: OpenCodePluginRemovalReport | ClientPluginRemovalFailure;
   codebuddyPlugin: CodeBuddyPluginRemovalReport | ClientPluginRemovalFailure;
+  traePlugin: TraePluginRemovalReport | ClientPluginRemovalFailure;
 };
 
 type ClientPluginRemovalFailure = {
@@ -94,15 +107,18 @@ export async function prepareClientPluginRemovalCleanup(
   const dshProfileLifecycle = await loadDshProfileLifecycle();
   const openCodePluginInstaller = await loadOpenCodePluginInstaller();
   const codeBuddyPluginInstaller = await loadCodeBuddyPluginInstaller();
+  const traePluginInstaller = await loadTraePluginInstaller();
   const home = resolveHome(options.homeDir);
   const memoraxCodeHome = resolve(options.memoraxCodeHome ?? process.env.MEMORAX_CODE_HOME ?? join(home, ".memorax-code"));
   const claudeState = await readJsonRecord(join(memoraxCodeHome, "adapters", "claude-code", "state.json"));
   const claudeHome = options.claudeHome ?? stringField(claudeState, "claudeHome");
+  const traeState = await readJsonRecord(join(memoraxCodeHome, "adapters", "trae", "state.json"));
+  const traeHome = options.traeHome ?? stringField(traeState, "traeHome");
 
   return async () => {
     try {
       return await withBackendLifecycleLock({ home: memoraxCodeHome }, async () => {
-        const [codexPlugin, claudePlugin, dshPlugin, opencodePlugin, codebuddyPlugin] = await Promise.all([
+        const [codexPlugin, claudePlugin, dshPlugin, opencodePlugin, codebuddyPlugin, traePlugin] = await Promise.all([
           cleanupCodexAfterBackendRemoval({
             memoraxCodeHome,
             homeDir: home,
@@ -138,15 +154,20 @@ export async function prepareClientPluginRemovalCleanup(
               ...(options.codeBuddyHome ? { codeBuddyHome: options.codeBuddyHome } : {}),
             }))
             .catch((error) => removalFailure("codebuddy-plugin-remove", error)),
+          traePluginInstaller.removeTraeAdapterInstallation({
+            memoraxCodeHome,
+            ...(traeHome ? { traeHome } : {}),
+          }).catch((error) => removalFailure("trae-adapter-remove", error)),
         ]);
         return {
-          ok: codexPlugin.ok && claudePlugin.ok && dshPlugin.ok && opencodePlugin.ok && codebuddyPlugin.ok,
+          ok: codexPlugin.ok && claudePlugin.ok && dshPlugin.ok && opencodePlugin.ok && codebuddyPlugin.ok && traePlugin.ok,
           action: "client-plugin-removal-cleanup" as const,
           codexPlugin,
           claudePlugin,
           dshPlugin,
           opencodePlugin,
           codebuddyPlugin,
+          traePlugin,
         };
       });
     } catch (error) {
@@ -159,6 +180,7 @@ export async function prepareClientPluginRemovalCleanup(
         dshPlugin: failure,
         opencodePlugin: failure,
         codebuddyPlugin: failure,
+        traePlugin: failure,
       };
     }
   };
@@ -174,6 +196,10 @@ async function loadOpenCodePluginInstaller(): Promise<OpenCodePluginInstaller> {
 
 async function loadCodeBuddyPluginInstaller(): Promise<CodeBuddyPluginInstaller> {
   return await import(new URL("../../../memorax-code-codebuddy-adapter/src/config.mjs", import.meta.url).href);
+}
+
+async function loadTraePluginInstaller(): Promise<TraePluginInstaller> {
+  return await import(new URL("../../../memorax-code-trae-adapter/src/config.mjs", import.meta.url).href);
 }
 
 async function loadDshProfileLifecycle(): Promise<DshProfileLifecycleModule> {

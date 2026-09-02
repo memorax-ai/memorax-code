@@ -9,6 +9,8 @@ memorax-code-codex doctor
 memorax-code-claude doctor
 memorax-code status --clients dsh
 memorax-code-opencode doctor
+memorax-code-codebuddy status --json
+memorax-code-trae status --json
 memorax-code logs
 ```
 
@@ -19,10 +21,11 @@ same command once with `memorax-cli.cmd`, preserving its arguments and working
 directory. Do not run `Set-ExecutionPolicy` for MemoraX commands.
 
 `memorax-code status` checks the Backend and selected client integrations,
-including DSH and OpenCode. `memorax-cli status` checks credentials, scope, and
-memory switches without printing secrets. Codex, Claude Code, and OpenCode
-also provide client-specific `doctor` commands; DSH uses the shared lifecycle
-status.
+including DSH, OpenCode, CodeBuddy/WorkBuddy, and Trae. `memorax-cli status`
+checks credentials, scope, and memory switches without printing secrets.
+Codex, Claude Code, and OpenCode provide client-specific `doctor` commands;
+CodeBuddy/WorkBuddy and Trae provide adapter status commands, and DSH uses the
+shared lifecycle status.
 
 ## Package installed, but setup did not start
 
@@ -182,8 +185,9 @@ Memory write and memory search reminders are tracked independently. A reminder
 is emitted when the corresponding remaining quota reaches 10% or less and
 again at 0%; raw quota counts are not shown.
 
-Automatic quota reminders are currently supported in Codex, Claude Code, and
-OpenCode. DeepSeek Harness does not currently surface these reminders.
+Automatic quota reminders are currently supported in Codex, Claude Code,
+CodeBuddy/WorkBuddy, OpenCode, and Trae. DeepSeek Harness does not currently
+surface these reminders.
 
 A guest reminder displays the complete Mark ID when the ready local trial
 identity matches the active API key. Registered-account reminders do not
@@ -289,6 +293,33 @@ If WorkBuddy still reports a Hook command containing `/c/Users/...`, it is
 loading a stale plugin manifest. Rerun the start command above and fully
 restart WorkBuddy. Do not manually edit the installed Hook command.
 
+## Trae Global Hooks or Skill is inactive
+
+```sh
+memorax-code start --clients trae
+memorax-code-trae status --json
+```
+
+Trae uses `TRAE_CN_HOME`, then `TRAE_HOME`, and otherwise defaults to
+`~/.trae-cn`. Setup merges the managed `SessionStart`, `UserPromptSubmit`, and
+`Stop` entries into `hooks.json` and installs the shared Skill without
+replacing unrelated Hooks. If status reports `globalHooksActivationRequired`
+or a Hook status of `unverified`, open Trae Settings, enable **Global Hooks**
+once, fully restart or refresh Trae, start a new session, and submit one
+prompt. A subsequent status should report `observed`.
+
+If status reports `hooks_invalid`, repair the existing Trae `hooks.json`
+syntax before rerunning the start command. If it reports `skill_conflict`, an
+unmanaged `skills/memorax-code` directory already exists; preserve or move that
+directory deliberately before asking MemoraX Code to manage the Skill. Do not
+copy generated runtime files or edit entries containing
+`--memorax-code-trae-hook-v1` by hand.
+
+Trae currently provides no stable raw Session or headless CLI. Automatic
+writeback therefore requires a matching `UserPromptSubmit` and `Stop` Hook
+pair, and automatic background Repo Memory jobs are not available. Explicit
+Search/Add and Skill-driven Repo Memory remain available.
+
 ## DeepSeek Harness Profile integration is inactive
 
 ```sh
@@ -361,6 +392,7 @@ memorax-code-codex doctor
 memorax-code-claude doctor
 memorax-code status --clients dsh
 memorax-code-opencode doctor
+memorax-code-trae status --json
 /usr/sbin/scutil --proxy
 /bin/launchctl getenv NO_PROXY
 /bin/launchctl getenv no_proxy
@@ -379,6 +411,7 @@ memorax-code-codex doctor
 memorax-code-claude doctor
 memorax-code status --clients dsh
 memorax-code-opencode doctor
+memorax-code-trae status --json
 ```
 
 Common causes are:

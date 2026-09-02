@@ -1,0 +1,9 @@
+{
+  "name": "@memorax-code/trae-adapter",
+  "version": "0.1.11",
+  "private": true,
+  "type": "module",
+  "description": "Trae Hook adapter for MemoraX Code memory services.",
+  "bin": { "memorax-code-trae": "src/cli.mjs" },
+  "scripts": { "test": "node --test test/*.test.mjs" }
+}

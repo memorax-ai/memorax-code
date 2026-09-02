@@ -40,10 +40,13 @@ same change, then run the matching verification profile in Section 5.
 - Hook commands are versioned and client-qualified. Required session, turn, or
   prompt correlation must be validated at the HTTP boundary; incomplete,
   conflicting, unknown, or client-inapplicable identities fail closed.
-- Codex rollout JSONL, Claude Code transcript JSONL, and matching OpenCode SDK
-  session-message records are the only content authorities for their
-  respective automatic writeback. Hook or plugin text, local trace,
-  latest-turn guesses, or another client's format are not fallbacks.
+- Codex rollout JSONL, Claude Code and CodeBuddy/WorkBuddy transcript JSONL,
+  DSH's exact persisted Session Event Log interval, matching OpenCode SDK
+  session-message records, and Trae's validated `UserPromptSubmit`/`Stop` Hook
+  pair are the content authorities for their respective automatic writeback.
+  Hook or plugin text is not a fallback outside Trae's narrow primary-authority
+  exception; local trace, latest-turn guesses, and another client's format are
+  never fallbacks.
 - Session, turn metadata, trace, and operational identity always include the
   client. Equal native IDs from different clients must remain isolated.
 - A live session is pinned to its resolved workspace and repository scope.
@@ -77,8 +80,8 @@ same change, then run the matching verification profile in Section 5.
   trace artifacts, trace-only provenance, and local transcript paths stay
   local.
 - `memorax-code` is the shared user-facing skill. Changes must work in Codex,
-  Claude Code, and OpenCode packaging and must keep triggers, metadata,
-  references, and resource paths valid.
+  Claude Code, DSH, OpenCode, CodeBuddy/WorkBuddy, and Trae packaging and must
+  keep triggers, metadata, references, and resource paths valid.
 - Packaged skills must address product users. Do not include maintainer
   runbooks, private paths, unpublished plans, secrets, internal fixtures, or
   local diagnostic artifacts.
@@ -98,10 +101,16 @@ boundaries:
 - **Codex**: `npm test --prefix packages/ts/memorax-code-codex-adapter`.
 - **Claude Code**:
   `npm test --prefix packages/ts/memorax-code-claude-adapter`.
+- **DeepSeek Harness**:
+  `npm test --prefix packages/ts/memorax-code-dsh-adapter`.
 - **OpenCode**:
   `npm test --prefix packages/ts/memorax-code-opencode-adapter`.
+- **CodeBuddy/WorkBuddy**:
+  `npm test --prefix packages/ts/memorax-code-codebuddy-adapter`.
+- **Trae**:
+  `npm test --prefix packages/ts/memorax-code-trae-adapter`.
 - **Adapter-common/shared Hook**: `adapter-common` has no standalone suite. Run
-  affected Backend tests and all three adapter suites; add
+  affected Backend tests and all six adapter suites; add
   `make npm-package-check` when staged runtime or package layout changes.
 - **Trace/local-only boundary**: for trace, provider, or outbound transport,
   run `make test-npm-package` in addition to affected package tests.

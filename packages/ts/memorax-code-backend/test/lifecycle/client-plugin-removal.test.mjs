@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { prepareClientPluginRemovalCleanup } from "../../dist/lifecycle/client-plugin-removal.js";
+import { enableTraeAdapter } from "../../../memorax-code-trae-adapter/src/config.mjs";
 
 test("package-removal cleanup is prepared before shutdown and removes all client integrations", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-client-plugin-removal-"));
@@ -29,6 +30,9 @@ test("package-removal cleanup is prepared before shutdown and removes all client
   const openCodePlugin = join(openCodeConfigDir, "plugins", "memorax-code.js");
   const openCodeSkill = join(openCodeConfigDir, "skills", "memorax-code");
   const openCodeState = join(memoraxCodeHome, "adapters", "opencode", "state.json");
+  const traeHome = join(home, "trae-home");
+  const traeHooks = join(traeHome, "hooks.json");
+  const traeSkill = join(traeHome, "skills", "memorax-code");
 
   try {
     await mkdir(dirname(codexPluginManifest), { recursive: true });
@@ -38,6 +42,7 @@ test("package-removal cleanup is prepared before shutdown and removes all client
     await mkdir(dirname(openCodeState), { recursive: true });
     await mkdir(dirname(openCodePlugin), { recursive: true });
     await mkdir(openCodeSkill, { recursive: true });
+    await mkdir(traeHome, { recursive: true });
     await mkdir(claudeHome, { recursive: true });
     await mkdir(dirname(dshProfilePath), { recursive: true });
     await mkdir(dshAdapterRoot, { recursive: true });
@@ -95,6 +100,13 @@ test("package-removal cleanup is prepared before shutdown and removes all client
       pluginPath: openCodePlugin,
       skillPath: openCodeSkill,
     })}\n`);
+    await writeFile(traeHooks, `${JSON.stringify({
+      hooks: {
+        UserPromptSubmit: [{ hooks: [{ type: "command", command: "user-owned-trae-hook" }] }],
+      },
+    }, null, 2)}\n`);
+    const traeInstall = await enableTraeAdapter({ memoraxCodeHome, traeHome });
+    assert.equal(traeInstall.ok, true);
     await writeFile(claudeCommand, `#!/usr/bin/env node
 import { appendFileSync } from "node:fs";
 appendFileSync(${JSON.stringify(claudeCalls)}, JSON.stringify(process.argv.slice(2)) + "\\n");
@@ -131,10 +143,16 @@ writeFileSync(path, JSON.stringify(manifest, null, 2) + "\\n");
     assert.equal(report.claudePlugin?.ok, true);
     assert.equal(report.dshPlugin?.ok, true);
     assert.equal(report.opencodePlugin?.ok, true);
+    assert.equal(report.traePlugin?.ok, true);
     await assert.rejects(stat(codexPluginManifest), /ENOENT/);
     await assert.rejects(stat(openCodePlugin), /ENOENT/);
     await assert.rejects(stat(openCodeSkill), /ENOENT/);
     await assert.rejects(stat(openCodeState), /ENOENT/);
+    await assert.rejects(stat(traeSkill), /ENOENT/);
+    await assert.rejects(stat(join(memoraxCodeHome, "adapters", "trae", "state.json")), /ENOENT/);
+    const remainingTraeHooks = JSON.parse(await readFile(traeHooks, "utf8"));
+    assert.equal(JSON.stringify(remainingTraeHooks).includes("user-owned-trae-hook"), true);
+    assert.equal(JSON.stringify(remainingTraeHooks).includes("--memorax-code-trae-hook-v1"), false);
     const calls = (await readFile(claudeCalls, "utf8")).trim().split("\n").map(JSON.parse);
     assert.deepEqual(calls, [
       [

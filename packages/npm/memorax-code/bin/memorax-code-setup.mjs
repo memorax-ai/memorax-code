@@ -22,6 +22,10 @@ import { discoverDshProfiles } from "../lib/dsh-plugin-install.mjs";
 import { ensureClaudeCommandEnv } from "../lib/resolve-claude-command.mjs";
 import { ensureCodexCommandEnv } from "../lib/resolve-codex-command.mjs";
 import { defaultCodeBuddyHome, ensureCodeBuddyCommandEnv } from "../lib/resolve-codebuddy-command.mjs";
+import {
+  defaultTraeHome,
+  traeInstallationDetected,
+} from "../lib/memorax-code-trae-adapter/src/adapter-paths.mjs";
 import { reconcileSetup } from "../lib/setup-reconcile.mjs";
 import { detectSetupMemoryPreferences } from "../lib/setup-memory-preferences.mjs";
 import { ensureTrialSetupCredential } from "../lib/trial-setup.mjs";
@@ -41,12 +45,13 @@ const RED = "\x1b[31m";
 const BOLD = "\x1b[1m";
 const RESET = "\x1b[0m";
 const DSH_OPTIONAL_ENV = "MEMORAX_CODE_DSH_ADAPTER_OPTIONAL";
-const SETUP_CLIENTS = ["codex", "claude", "opencode", "codebuddy"];
+const SETUP_CLIENTS = ["codex", "claude", "opencode", "codebuddy", "trae"];
 
 const skipCodexPluginInstall = truthyEnv(process.env.MEMORAX_CODE_SKIP_CODEX_PLUGIN_INSTALL);
 const skipClaudeAdapterInstall = truthyEnv(process.env.MEMORAX_CODE_SKIP_CLAUDE_ADAPTER_INSTALL);
 const skipOpenCodeAdapterInstall = truthyEnv(process.env.MEMORAX_CODE_SKIP_OPENCODE_ADAPTER_INSTALL);
 const skipCodeBuddyAdapterInstall = truthyEnv(process.env.MEMORAX_CODE_SKIP_CODEBUDDY_ADAPTER_INSTALL);
+const skipTraeAdapterInstall = truthyEnv(process.env.MEMORAX_CODE_SKIP_TRAE_ADAPTER_INSTALL);
 const updateMode = truthyEnv(process.env.MEMORAX_CODE_SETUP_UPDATE);
 const automaticUpdateMode = truthyEnv(process.env.MEMORAX_CODE_SETUP_AUTOMATIC_UPDATE);
 const setupMode = setupModeFromEnvironment(process.env.MEMORAX_CODE_SETUP_MODE);
@@ -138,11 +143,17 @@ const codebuddyPreflight = requestedClients.includes("codebuddy") && !skipCodeBu
       integrationSelected: !existingSetup || previousClients.includes("codebuddy"),
     })
   : { ok: true };
+const traePreflight = requestedClients.includes("trae") && !skipTraeAdapterInstall
+  ? runTraePreflight({
+      integrationSelected: !existingSetup || previousClients.includes("trae"),
+    })
+  : { ok: true };
 const detectedClients = requestedClients.filter((client) => {
   if (client === "codex") return !skipCodexPluginInstall && codexPreflight.ok;
   if (client === "claude") return !skipClaudeAdapterInstall && claudePreflight.ok;
   if (client === "opencode") return !skipOpenCodeAdapterInstall && opencodePreflight.ok;
-  return !skipCodeBuddyAdapterInstall && codebuddyPreflight.ok;
+  if (client === "codebuddy") return !skipCodeBuddyAdapterInstall && codebuddyPreflight.ok;
+  return !skipTraeAdapterInstall && traePreflight.ok;
 });
 const newlyDetectedClients = existingSetup
   ? detectedClients.filter((client) => !explicitClientChoices.includes(client))
@@ -182,6 +193,9 @@ if (requestedClients.includes("opencode") && !skipOpenCodeAdapterInstall && !ope
 if (requestedClients.includes("codebuddy") && !skipCodeBuddyAdapterInstall && !codebuddyPreflight.ok) {
   log("CodeBuddy/WorkBuddy runtime was not detected; skipping its adapter setup.");
 }
+if (requestedClients.includes("trae") && !skipTraeAdapterInstall && !traePreflight.ok) {
+  log("Trae runtime or data directory was not detected; skipping its adapter setup.");
+}
 if (writeClientSelectionConfig(selectedClients, clientsWithPersistedIntent) === "failed") {
   printPostinstallSummary("not-verified");
   process.exit(1);
@@ -219,6 +233,7 @@ const codexClientEnabled = installClients.includes("codex");
 const claudeClientEnabled = installClients.includes("claude");
 const opencodeClientEnabled = installClients.includes("opencode");
 const codebuddyClientEnabled = installClients.includes("codebuddy");
+const traeClientEnabled = installClients.includes("trae");
 const codexClientNewlyEnabled = codexClientEnabled
   && existingSetup
   && !previousClients.includes("codex");
@@ -282,6 +297,11 @@ const codebuddySkipReason = setupClientSkipReason({
   selected: selectedClients.includes("codebuddy"),
   enabled: codebuddyClientEnabled,
 });
+const traeSkipReason = setupClientSkipReason({
+  explicitlySkipped: skipTraeAdapterInstall,
+  selected: selectedClients.includes("trae"),
+  enabled: traeClientEnabled,
+});
 
 const backendAndAdapters = await startBackendAndCheck({
   skipCodexAdapter,
@@ -296,6 +316,9 @@ const backendAndAdapters = await startBackendAndCheck({
   skipCodeBuddyAdapter: !codebuddyClientEnabled,
   codebuddyAdapterRequired: codebuddyClientEnabled,
   codebuddySkipReason,
+  skipTraeAdapter: !traeClientEnabled,
+  traeAdapterRequired: traeClientEnabled,
+  traeSkipReason,
 });
 const backendAndAdaptersStatus = backendAndAdapters.status;
 if (backendAndAdaptersStatus === "enabled") {
@@ -308,12 +331,15 @@ if (backendAndAdaptersStatus === "enabled") {
     dshAdapterEnabled: backendAndAdapters.dshAdapterEnabled,
     opencodeAdapterEnabled: !skipOpenCodeAdapter,
     codebuddyAdapterEnabled: codebuddyClientEnabled,
+    traeAdapterEnabled: traeClientEnabled,
+    traeGlobalHooksActivationRequired: backendAndAdapters.traeGlobalHooksActivationRequired,
   });
   printCommonCommands({
     codexAdapterEnabled: !skipCodexAdapter,
     claudeAdapterEnabled: !skipClaudeAdapter,
     opencodeAdapterEnabled: !skipOpenCodeAdapter,
     codebuddyAdapterEnabled: codebuddyClientEnabled,
+    traeAdapterEnabled: traeClientEnabled,
   });
 }
 printPostinstallSummary(
@@ -798,7 +824,7 @@ function writeClientSelectionConfig(clients, configuredClients = SETUP_CLIENTS) 
 
 function setManagedClientSelection(text, clients, configuredClients = SETUP_CLIENTS) {
   let updated = text;
-  for (const client of ["opencode", "claude", "codebuddy", "codex"]) {
+  for (const client of ["opencode", "claude", "codebuddy", "trae", "codex"]) {
     if (!configuredClients.includes(client)) continue;
     updated = setTomlField(updated, "clients", client, String(clients.includes(client)));
   }
@@ -856,6 +882,7 @@ function defaultMemoraxCodeConfig() {
     "dsh = true # Manage the DeepSeek Harness adapter when Profiles exist.",
     "opencode = true # Manage the OpenCode adapter.",
     "codebuddy = true # Manage the CodeBuddy/WorkBuddy adapter.",
+    "trae = true # Manage the Trae adapter.",
     "",
     "# MemoraX remote-memory connection.",
     "[memorax]",
@@ -904,6 +931,10 @@ function defaultMemoraxCodeConfig() {
     "[trace.codebuddy]",
     "enabled = true # Enable local CodeBuddy session memory trace collection.",
     "capture_content = true # Store content in local CodeBuddy trace events.",
+    "",
+    "[trace.trae]",
+    "enabled = true # Enable local Trae session memory trace collection.",
+    "capture_content = true # Store content in local Trae trace events.",
     "",
   ].join("\n");
 }
@@ -976,6 +1007,9 @@ function runCommonPreflight() {
   }
   if (skipCodeBuddyAdapterInstall) {
     log("CodeBuddy/WorkBuddy adapter setup is disabled for this setup; other client setup can still continue.");
+  }
+  if (skipTraeAdapterInstall) {
+    log("Trae adapter setup is disabled for this setup; other client setup can still continue.");
   }
   return {};
 }
@@ -1065,6 +1099,18 @@ function runCodeBuddyPreflight({ integrationSelected = true } = {}) {
   return { ok: true };
 }
 
+function runTraePreflight({ integrationSelected = true } = {}) {
+  const home = defaultTraeHome();
+  const detected = traeInstallationDetected();
+  log(`Trae data directory: ${existsSync(home) ? `found (${home})` : "not detected"}`);
+  log(`Trae application: ${detected ? "detected" : "not detected"}`);
+  if (!detected) return { ok: false };
+  log(integrationSelected
+    ? "Keeping Trae provider settings unchanged and installing the shared memory Global Hooks and Skill."
+    : "Keeping Trae provider settings unchanged while checking whether to enable its integration.");
+  return { ok: true };
+}
+
 function installedPluginCache() {
   for (const marketplaceName of [CLI_MARKETPLACE_NAME, PERSONAL_MARKETPLACE_NAME]) {
     const versions = installedPluginCacheVersions(marketplaceName);
@@ -1133,6 +1179,9 @@ async function startBackendAndCheck({
   skipCodeBuddyAdapter = false,
   codebuddyAdapterRequired = !skipCodeBuddyAdapter,
   codebuddySkipReason,
+  skipTraeAdapter = false,
+  traeAdapterRequired = !skipTraeAdapter,
+  traeSkipReason,
 } = {}) {
   const adapterFlags = clientLifecycleFlags({ clientMode });
   const startArgs = ["start", ...adapterFlags];
@@ -1154,6 +1203,7 @@ async function startBackendAndCheck({
       claudeAdapterRequired,
       opencodeAdapterRequired,
       codebuddyAdapterRequired,
+      traeAdapterRequired,
     }),
     onEvent: (event) => {
       if (event.type === "start" && event.attempt === 1) {
@@ -1186,6 +1236,8 @@ async function startBackendAndCheck({
           opencodeSkipReason,
           skipCodeBuddyAdapter,
           codebuddySkipReason,
+          skipTraeAdapter,
+          traeSkipReason,
         });
       }
     },
@@ -1197,6 +1249,9 @@ async function startBackendAndCheck({
       : false,
     dshAdapterUnavailable: result.status === "enabled" && statusResult
       ? dshAdapterUnavailable(statusResult)
+      : false,
+    traeGlobalHooksActivationRequired: result.status === "enabled" && statusResult
+      ? traeGlobalHooksActivationRequired(statusResult)
       : false,
   };
 }
@@ -1210,6 +1265,8 @@ function printReconcileFailure(result, {
   opencodeSkipReason,
   skipCodeBuddyAdapter,
   codebuddySkipReason,
+  skipTraeAdapter,
+  traeSkipReason,
 }) {
   if (result.reason === "hook-runtime-activation-failed") {
     logRed("Client Hook runtime activation failed; automatic lifecycle recovery was skipped.");
@@ -1228,6 +1285,7 @@ function printReconcileFailure(result, {
       claudeSkipReason,
       opencodeSkipReason,
       codebuddySkipReason,
+      traeSkipReason,
     });
   }
 }
@@ -1240,6 +1298,11 @@ function dshAdapterReady(statusResult) {
 function dshAdapterUnavailable(statusResult) {
   const output = `${statusResult.stdout ?? ""}\n${statusResult.stderr ?? ""}`;
   return /\bDSH adapter:\s*unavailable\b/im.test(stripAnsi(output));
+}
+
+function traeGlobalHooksActivationRequired(statusResult) {
+  const output = `${statusResult.stdout ?? ""}\n${statusResult.stderr ?? ""}`;
+  return /\bTrae adapter:\s*ok\b[^\r\n]*\bhook-runtime=unverified\b/im.test(stripAnsi(output));
 }
 
 function pendingClientHookRuntimeEnv() {
@@ -1264,10 +1327,10 @@ function clientLifecycleFlags({ clientMode = "all" } = {}) {
 }
 
 function clientModeFor(clients, { includeDsh = false } = {}) {
-  const selected = ["codex", "claude", "dsh", "opencode", "codebuddy"].filter((client) => (
+  const selected = ["codex", "claude", "dsh", "opencode", "codebuddy", "trae"].filter((client) => (
     client === "dsh" ? includeDsh : clients.includes(client)
   ));
-  if (selected.length === 5) return "all";
+  if (selected.length === 6) return "all";
   return selected.length > 0 ? selected.join(",") : "none";
 }
 
@@ -1285,6 +1348,7 @@ function clientSelectionMessage(clients, { dshSelected = false } = {}) {
       "DeepSeek Harness",
       clients.includes("opencode") ? "OpenCode" : undefined,
       clients.includes("codebuddy") ? "CodeBuddy/WorkBuddy" : undefined,
+      clients.includes("trae") ? "Trae" : undefined,
     ].filter(Boolean);
     return `Configuring MemoraX Code for ${joinedLabels(labels)}.`;
   }
@@ -1292,11 +1356,13 @@ function clientSelectionMessage(clients, { dshSelected = false } = {}) {
   const hasClaude = clients.includes("claude");
   const hasOpenCode = clients.includes("opencode");
   const hasCodeBuddy = clients.includes("codebuddy");
+  const hasTrae = clients.includes("trae");
   const labels = [
     hasCodex ? "Codex" : undefined,
     hasClaude ? "Claude Code" : undefined,
     hasOpenCode ? "OpenCode" : undefined,
     hasCodeBuddy ? "CodeBuddy/WorkBuddy" : undefined,
+    hasTrae ? "Trae" : undefined,
   ].filter(Boolean);
   if (labels.length > 0) return `Configuring MemoraX Code for ${joinedLabels(labels)}.`;
   return "Skipping client adapter setup for this setup.";
@@ -1306,7 +1372,8 @@ function clientLabel(client) {
   if (client === "codex") return "Codex";
   if (client === "claude") return "Claude Code";
   if (client === "opencode") return "OpenCode";
-  return "CodeBuddy/WorkBuddy";
+  if (client === "codebuddy") return "CodeBuddy/WorkBuddy";
+  return "Trae";
 }
 
 function detectedClientMessage(clients, dshProfiles = []) {
@@ -1465,12 +1532,15 @@ function printNextSteps({
   dshAdapterEnabled = false,
   opencodeAdapterEnabled = true,
   codebuddyAdapterEnabled = true,
+  traeAdapterEnabled = true,
+  traeGlobalHooksActivationRequired = false,
 } = {}) {
   const clientText = enabledClientText({
     codexAdapterEnabled,
     claudeAdapterEnabled,
     opencodeAdapterEnabled,
     codebuddyAdapterEnabled,
+    traeAdapterEnabled,
   });
   if (clientText && existingSetup) {
     logGreen(`${bold("The new Hook runtime is active")}; existing sessions with the stable shell select it on their next user prompt.`);
@@ -1486,11 +1556,15 @@ function printNextSteps({
   if (codexAdapterEnabled && !existingSetup) {
     logGreen(`After restart, ${bold("enable the MemoraX Code Codex Adapter plugin")} from Codex Plugins or CLI \`/plugins\` if it is not already enabled.`);
   }
+  if (traeAdapterEnabled && traeGlobalHooksActivationRequired) {
+    logGreen(`${bold("Open Trae Settings and enable Global Hooks once")}, then start a new Trae session.`);
+  }
   const statusCommands = statusCommandText({
     codexAdapterEnabled,
     claudeAdapterEnabled,
     opencodeAdapterEnabled,
     codebuddyAdapterEnabled,
+    traeAdapterEnabled,
   });
   if (clientText || !dshAdapterEnabled) {
     log(`If MemoraX Code is not active ${existingSetup ? "on the next prompt" : "in new sessions"}, run ${statusCommands}.`);
@@ -1505,12 +1579,14 @@ function enabledClientText({
   claudeAdapterEnabled = true,
   opencodeAdapterEnabled = true,
   codebuddyAdapterEnabled = true,
+  traeAdapterEnabled = true,
 } = {}) {
   const labels = [
     codexAdapterEnabled ? "Codex" : undefined,
     claudeAdapterEnabled ? "Claude Code" : undefined,
     opencodeAdapterEnabled ? "OpenCode" : undefined,
     codebuddyAdapterEnabled ? "CodeBuddy/WorkBuddy" : undefined,
+    traeAdapterEnabled ? "Trae" : undefined,
   ].filter(Boolean);
   if (labels.length < 2) return labels[0] ?? "";
   if (labels.length === 2) return `${labels[0]} or ${labels[1]}`;
@@ -1522,12 +1598,14 @@ function statusCommandText({
   claudeAdapterEnabled = true,
   opencodeAdapterEnabled = true,
   codebuddyAdapterEnabled = true,
+  traeAdapterEnabled = true,
 } = {}) {
   const commands = ["`memorax-code status`"];
   if (codexAdapterEnabled) commands.push("`memorax-code-codex status`");
   if (claudeAdapterEnabled) commands.push("`memorax-code-claude status`");
   if (opencodeAdapterEnabled) commands.push("`memorax-code-opencode status`");
   if (codebuddyAdapterEnabled) commands.push("`memorax-code-codebuddy status`");
+  if (traeAdapterEnabled) commands.push("`memorax-code-trae status`");
   if (commands.length === 1) return commands[0];
   if (commands.length === 2) return `${commands[0]} and ${commands[1]}`;
   return `${commands.slice(0, -1).join(", ")}, and ${commands.at(-1)}`;
@@ -1607,19 +1685,21 @@ function readMemoraxInstallStatus() {
   }
 }
 
-function printUnavailableDiagnostics({ codexSkipReason, claudeSkipReason, opencodeSkipReason, codebuddySkipReason } = {}) {
+function printUnavailableDiagnostics({ codexSkipReason, claudeSkipReason, opencodeSkipReason, codebuddySkipReason, traeSkipReason } = {}) {
   logRed("MemoraX Code is not enabled for new client sessions.");
-  logRed("Check `memorax-code status`, the selected adapter status commands, and `memorax-code-codebuddy status` for Backend and integration details.");
-  logRed("If Codex, Claude Code, OpenCode, CodeBuddy/WorkBuddy, or DeepSeek Harness is open, restart or refresh it after fixing the reported status.");
+  logRed("Check `memorax-code status` and the selected adapter status commands for Backend and integration details.");
+  logRed("If Codex, Claude Code, OpenCode, CodeBuddy/WorkBuddy, Trae, or DeepSeek Harness is open, restart or refresh it after fixing the reported status.");
   if (codexSkipReason) printCodexSkippedDiagnostics(codexSkipReason);
   if (claudeSkipReason) printClaudeSkippedDiagnostics(claudeSkipReason);
   if (opencodeSkipReason) printOpenCodeSkippedDiagnostics(opencodeSkipReason);
   if (codebuddySkipReason) printCodeBuddySkippedDiagnostics(codebuddySkipReason);
+  if (traeSkipReason) printTraeSkippedDiagnostics(traeSkipReason);
   printCommonCommands({
     codexAdapterEnabled: !codexSkipReason,
     claudeAdapterEnabled: !claudeSkipReason,
     opencodeAdapterEnabled: !opencodeSkipReason,
     codebuddyAdapterEnabled: !codebuddySkipReason,
+    traeAdapterEnabled: !traeSkipReason,
   });
 }
 
@@ -1643,6 +1723,11 @@ function printOpenCodeSkippedDiagnostics() {
 function printCodeBuddySkippedDiagnostics() {
   logRed("CodeBuddy/WorkBuddy adapter setup was skipped for this setup, so MemoraX Code left the CodeBuddy integration unchanged.");
   log("Run `memorax-code start --clients codebuddy` after installing CodeBuddy/WorkBuddy, then restart or refresh it.");
+}
+
+function printTraeSkippedDiagnostics() {
+  logRed("Trae adapter setup was skipped for this setup, so MemoraX Code left Trae unchanged.");
+  log("Run `memorax-code start --clients trae` after installing Trae, then enable Global Hooks in Trae Settings and start a new session.");
 }
 
 function printFailureSuggestions() {
@@ -1675,6 +1760,7 @@ function printCommonCommands({
   claudeAdapterEnabled = true,
   opencodeAdapterEnabled = true,
   codebuddyAdapterEnabled = true,
+  traeAdapterEnabled = true,
 } = {}) {
   log("Common commands:");
   log("- `memorax-code status`: check the local backend and adapter state.");
@@ -1685,6 +1771,7 @@ function printCommonCommands({
   if (claudeAdapterEnabled) log("- `memorax-code-claude sessions`: verify recent native Claude Code session registration.");
   if (opencodeAdapterEnabled) log("- `memorax-code-opencode doctor`: verify the managed OpenCode plugin, runtime evidence, and Backend health.");
   if (codebuddyAdapterEnabled) log("- `memorax-code-codebuddy status`: verify the managed CodeBuddy/WorkBuddy plugin and Hook integration.");
+  if (traeAdapterEnabled) log("- `memorax-code-trae status`: verify the managed Trae Global Hooks and Skill integration.");
 }
 
 function memoraxCodeEnabled(statusResult, {
@@ -1692,6 +1779,7 @@ function memoraxCodeEnabled(statusResult, {
   claudeAdapterRequired = true,
   opencodeAdapterRequired = true,
   codebuddyAdapterRequired = true,
+  traeAdapterRequired = true,
 } = {}) {
   const output = `${statusResult.stdout ?? ""}\n${statusResult.stderr ?? ""}`;
   const normalized = stripAnsi(output);
@@ -1704,12 +1792,14 @@ function memoraxCodeEnabled(statusResult, {
   const claudeAdapterOk = /Claude adapter:\s*ok\b/im.test(normalized);
   const opencodeAdapterOk = /OpenCode adapter:\s*ok\b/im.test(normalized);
   const codebuddyAdapterOk = /CodeBuddy adapter:\s*ok\b/im.test(normalized);
+  const traeAdapterOk = /Trae adapter:\s*ok\b/im.test(normalized);
   return backendOk
     && serviceOk
     && (!codexAdapterRequired || codexAdapterOk)
     && (!claudeAdapterRequired || claudeAdapterOk)
     && (!opencodeAdapterRequired || opencodeAdapterOk)
-    && (!codebuddyAdapterRequired || codebuddyAdapterOk);
+    && (!codebuddyAdapterRequired || codebuddyAdapterOk)
+    && (!traeAdapterRequired || traeAdapterOk);
 }
 
 function log(message) {

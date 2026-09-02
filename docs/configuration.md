@@ -39,13 +39,13 @@ are not a compatibility contract.
 
 ## New configuration
 
-The generated template selects the existing client integrations, including the optional CodeBuddy/WorkBuddy adapter, disables automatic
-retrieval, enables automatic writeback, sets the preferred language to Chinese
-(`zh`), uses a five-turn skill reminder and the adaptive repository-update
-policy, and enables content-bearing local traces for Codex, Claude Code,
-CodeBuddy/WorkBuddy, and OpenCode. Foreground setup may narrow `[clients]` to
-clients detected on the host. The tables below list all fallbacks, including
-tuning fields omitted from the generated file.
+The generated template selects the existing client integrations, including the
+optional CodeBuddy/WorkBuddy and Trae adapters, disables automatic retrieval,
+enables automatic writeback, sets the preferred language to Chinese (`zh`),
+uses a five-turn skill reminder and the adaptive repository-update policy, and
+enables content-bearing local traces for every supported client. Foreground
+setup may narrow `[clients]` to clients detected on the host. The tables below
+list all fallbacks, including tuning fields omitted from the generated file.
 
 On POSIX systems MemoraX Code creates `$MEMORAX_CODE_HOME` with mode `0700`
 and a new `config.toml` with mode `0600`. Windows relies on the current user's
@@ -54,18 +54,19 @@ filesystem ACLs.
 ## Client selection
 
 If `[clients]` is absent, lifecycle commands select Codex, Claude Code, DSH,
-and OpenCode; CodeBuddy is opt-in unless detected during installation. If it
-is present, `codex`, `claude`, `dsh`, `opencode`, and `codebuddy` are boolean
-fields. Direct lifecycle commands treat omitted `codex`, `claude`, `opencode`,
-or `codebuddy` values as disabled. Setup and update reconciliation retain an
-omitted field as an undecided choice for client support added after the
-configuration was written. An omitted `dsh` value remains enabled so
-configurations written before DSH support can discover an existing local
-Harness. Set `dsh = false` explicitly to disable that integration. The
-command-line override accepts a comma-separated subset:
+and OpenCode; CodeBuddy/WorkBuddy and Trae are opt-in unless detected during
+foreground setup. If the table is present, `codex`, `claude`, `dsh`,
+`opencode`, `codebuddy`, and `trae` are boolean fields. Direct lifecycle
+commands treat omitted `codex`, `claude`, `opencode`, `codebuddy`, or `trae`
+values as disabled. Setup and update reconciliation retain an omitted field as
+an undecided choice for client support added after the configuration was
+written. An omitted `dsh` value remains enabled so configurations written
+before DSH support can discover an existing local Harness. Set `dsh = false`
+explicitly to disable that integration. The command-line override accepts a
+comma-separated subset:
 
 ```text
---clients codex|claude|dsh|opencode|codebuddy|<comma-separated subset>|all|none
+--clients codex|claude|dsh|opencode|codebuddy|trae|<comma-separated subset>|all|none
 ```
 
 Foreground `memorax-code setup` refreshes `[clients]` from the clients
@@ -73,7 +74,9 @@ available at that time. OpenCode is available when its explicit, XDG, or
 default configuration directory exists, or when `opencode` is on `PATH`.
 DSH is available when at least one valid Profile exists under
 `$DSH_HOME/profiles`; `DSH_HOME` defaults to `~/.dsh`. An explicit
-`[clients].dsh = false` is preserved.
+`[clients].dsh = false` is preserved. Trae is available when its data home or
+application is detected. `TRAE_CN_HOME`, then `TRAE_HOME`, overrides its
+default `~/.trae-cn` data home.
 
 On later setup runs, explicit `true` and `false` client choices are preserved.
 A detected client whose field is absent is offered for activation with a
@@ -87,7 +90,7 @@ written before an adapter was supported adopt it when its runtime is already
 installed, without overriding an explicit `false`.
 
 Client selection controls managed client-integration lifecycle only. It does
-not change Codex, Claude Code, DSH, OpenCode, or CodeBuddy provider settings.
+not change any coding agent's provider settings.
 `--clients none` runs the Backend without managing a client integration.
 
 ## Setup, automatic update, and package-transition state
@@ -95,8 +98,10 @@ not change Codex, Claude Code, DSH, OpenCode, or CodeBuddy provider settings.
 npm installation and foreground setup are separate operations.
 `npm install -g @memorax/memorax-code` installs or replaces package files
 without reading terminal input. `memorax-code setup` owns client detection,
-connection setup, configuration writes, Codex Hook activation or review, and
-final readiness checks.
+connection setup, configuration writes, client integration activation or
+review, and final readiness checks. Trae setup installs the managed Hook
+entries but cannot turn on Trae's application-level Global Hooks setting; the
+user must enable that setting once in Trae Settings.
 
 Default setup reuses a complete effective connection. Otherwise it detects the
 logged-in operating-system username and maps the system language to `zh` or
@@ -229,6 +234,38 @@ does not receive a `/c/Users/...` plugin path. `memorax-code-codebuddy status
 --json` reports `codebuddyHooks.status` as `unverified` until a real WorkBuddy
 Hook executes, `observed` afterward, and `invalid` when the installed Hook
 manifest or runtime is incomplete. Restart or refresh WorkBuddy after setup.
+
+## Trae integration paths
+
+The managed Trae Global Hooks and shared Skill use Trae's data home:
+
+```text
+~/.trae-cn/hooks.json
+~/.trae-cn/skills/memorax-code/
+```
+
+`TRAE_CN_HOME`, then `TRAE_HOME`, overrides the default root; lifecycle
+commands can override it for one invocation with `--trae-home`. The ownership
+record and content-addressed Hook runtime live under
+`$MEMORAX_CODE_HOME/adapters/trae/`. Setup merges one marked MemoraX Code Hook
+into each of `SessionStart`, `UserPromptSubmit`, and `Stop`, preserves other
+Trae Hooks and settings, and refuses to replace an unmanaged
+`skills/memorax-code` directory. Disable and uninstall remove only entries
+marked as MemoraX Code-owned and the managed Skill.
+
+Trae does not expose a reliable programmatic switch for application-level
+Global Hooks. After the first setup, enable **Global Hooks** once in Trae
+Settings and start a new session. `memorax-code-trae status --json` reports the
+Hook runtime as `unverified` until Trae executes a managed Hook, then as
+`observed`; it also reports when this one-time activation may still be needed.
+
+Trae does not currently expose a stable raw Session or a headless CLI. The
+adapter therefore correlates the prompt from `UserPromptSubmit` with the final
+assistant message from `Stop` and uses that closed, validated Hook pair as
+Trae's automatic-writeback content authority. It does not guess from another
+Turn or maintain a pending queue. The Skill can still perform explicit Repo
+Memory work, but automatic background Repo Memory jobs are unavailable in
+Trae until the client provides a suitable headless worker.
 
 The managed loader records the exact MemoraX Code home, OpenCode configuration
 directory, installed Node runtime, and `memorax-code` entrypoint. When the
@@ -380,12 +417,14 @@ Supported policies are `every-commit`, `commit-count`, `daily`,
 `pull-request`, `pull-request-or-daily`, and `adaptive`. Invalid policy values
 fall back to `adaptive`.
 
-In Codex, Claude Code, CodeBuddy/WorkBuddy, DSH, and OpenCode, the first eligible prompt starts a
-background build only when the Backend has authorized a Git worktree and that
-worktree has no `.repo_memory/PROFILE.md`. If the Backend or workspace
-authority is unavailable, the client integration skips that attempt instead
-of falling back to its local workspace path. DSH schedules this work through
-its native pre-step integration rather than a Hook.
+In Codex, Claude Code, CodeBuddy/WorkBuddy, DSH, and OpenCode, the first
+eligible prompt starts a background build only when the Backend has authorized
+a Git worktree and that worktree has no `.repo_memory/PROFILE.md`. If the
+Backend or workspace authority is unavailable, the client integration skips
+that attempt instead of falling back to its local workspace path. DSH schedules
+this work through its native pre-step integration rather than a Hook. Trae
+receives the shared Skill, User Profile, and Procedure reminders, but does not
+start this background build because Trae has no supported headless worker.
 
 CodeBuddy/WorkBuddy repository jobs run the headless client under a bounded
 worker. `MEMORAX_CODE_REPO_MEMORY_JOB_TIMEOUT_MS` sets the client execution
@@ -395,16 +434,18 @@ the grace period before the worker force-terminates a client that ignores
 `codebuddy_timeout` (or `<runner>_timeout`) in the job state, so a stalled
 headless client cannot leave an active job and repository marker indefinitely.
 
-A relevant repo-read runs supervised maintenance in all supported clients. The
-configured policy may select a build, update, or no-op. DSH maintenance
-requires an enabled, managed Profile that includes `@deepseek-ai/dsh-headless`.
-OpenCode executes the job through its active local server. Desktop-only
-installations do not require a standalone `opencode` executable in `PATH`.
+A relevant repo-read runs supervised maintenance in the five headless-capable
+client integrations. The configured policy may select a build, update, or
+no-op. DSH maintenance requires an enabled, managed Profile that includes
+`@deepseek-ai/dsh-headless`. OpenCode executes the job through its active local
+server. Desktop-only installations do not require a standalone `opencode`
+executable in `PATH`. Trae users can invoke the Skill explicitly, but Trae is
+not an automatic maintenance runner.
 
 ## Local traces
 
-`[trace.codex]`, `[trace.claude]`, `[trace.dsh]`, `[trace.opencode]`, `[trace.codebuddy]`, and `[trace.trae]`
-support the same fields:
+`[trace.codex]`, `[trace.claude]`, `[trace.dsh]`, `[trace.opencode]`,
+`[trace.codebuddy]`, and `[trace.trae]` support the same fields:
 
 | Field | Codex environment | Claude environment | DSH environment | OpenCode environment | CodeBuddy/WorkBuddy environment | Trae environment | Fallback |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -476,6 +517,8 @@ memorax-code-codex doctor
 memorax-code-claude doctor
 memorax-code status --clients dsh
 memorax-code-opencode doctor
+memorax-code-codebuddy status --json
+memorax-code-trae status --json
 ```
 
 The status commands do not print the MemoraX API key or Backend token.

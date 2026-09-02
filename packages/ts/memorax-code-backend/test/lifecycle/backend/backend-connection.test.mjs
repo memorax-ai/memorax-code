@@ -676,3 +676,18 @@ test("CodeBuddy adapter readiness requires a valid Hook configuration but not a 
   assert.equal(isAdapterReady(report), true);
   assert.equal(isAdapterReady({ ...report, codebuddyHooks: { ok: false, status: "invalid" } }), false);
 });
+
+test("Trae adapter readiness requires configured Global Hooks but not a prior observation", () => {
+  const report = {
+    ok: true,
+    installed: true,
+    enabled: true,
+    integration: "hooks",
+    traeSkills: { ok: true, status: "installed" },
+    traeHooks: { ok: true, status: "unverified", runtimeObserved: false },
+    globalHooksActivationRequired: true,
+  };
+  assert.equal(isAdapterReady(report), true);
+  assert.equal(isAdapterReady({ ...report, traeHooks: { ok: false, status: "invalid" } }), false);
+  assert.equal(isAdapterReady({ ...report, traeSkills: { ok: false, status: "missing" } }), false);
+});

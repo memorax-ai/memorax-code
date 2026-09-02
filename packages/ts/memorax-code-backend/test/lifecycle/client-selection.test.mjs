@@ -36,6 +36,13 @@ test("managed clients use persisted config", () => {
     dsh: true,
     opencode: true,
   });
+  assert.deepEqual(resolveManagedClients([], { clients: { codex: false, claude: false, trae: true } }), {
+    codex: false,
+    claude: false,
+    dsh: true,
+    opencode: false,
+    trae: true,
+  });
 });
 
 test("--clients overrides persisted config", () => {
@@ -54,9 +61,10 @@ test("--clients accepts exact client sets", () => {
   assert.deepEqual(parseManagedClients("claude"), { codex: false, claude: true, dsh: false, opencode: false });
   assert.deepEqual(parseManagedClients("dsh"), { codex: false, claude: false, dsh: true, opencode: false });
   assert.deepEqual(parseManagedClients("opencode"), { codex: false, claude: false, dsh: false, opencode: true });
+  assert.deepEqual(parseManagedClients("trae"), { codex: false, claude: false, dsh: false, opencode: false, trae: true });
   assert.deepEqual(parseManagedClients("codex,dsh,opencode"), { codex: true, claude: false, dsh: true, opencode: true });
-  assert.deepEqual(parseManagedClients("codex,claude,dsh,opencode"), { codex: true, claude: true, dsh: true, opencode: true });
-  assert.deepEqual(parseManagedClients("all"), { codex: true, claude: true, dsh: true, opencode: true, codebuddy: true });
+  assert.deepEqual(parseManagedClients("codex,claude,dsh,opencode,trae"), { codex: true, claude: true, dsh: true, opencode: true, trae: true });
+  assert.deepEqual(parseManagedClients("all"), { codex: true, claude: true, dsh: true, opencode: true, codebuddy: true, trae: true });
   assert.deepEqual(parseManagedClients("none"), { codex: false, claude: false, dsh: false, opencode: false });
 });
 
@@ -109,6 +117,17 @@ test("managed clients config rejects invalid lifecycle TOML", async () => {
       /clients\.codex must be a boolean/,
     );
 
+    await writeFile(join(home, "config.toml"), [
+      "[clients]",
+      "codex = false",
+      'trae = "true"',
+      "",
+    ].join("\n"));
+    assert.throws(
+      () => loadManagedClientsConfig(home),
+      /clients\.trae must be a boolean/,
+    );
+
     await writeFile(join(home, "config.toml"), 'model = "not-a-table"\n');
     assert.deepEqual(loadManagedClientsConfig(home), {});
 
@@ -121,11 +140,11 @@ test("active managed clients persist and clear independently of config", async (
   const home = await mkdtemp(join(tmpdir(), "memorax-code-active-client-selection-"));
   try {
     assert.equal(readActiveManagedClients(home), undefined);
-    writeActiveManagedClients(home, { codex: false, claude: true, dsh: true, opencode: true });
-    assert.deepEqual(readActiveManagedClients(home), { codex: false, claude: true, dsh: true, opencode: true });
+    writeActiveManagedClients(home, { codex: false, claude: true, dsh: true, opencode: true, trae: true });
+    assert.deepEqual(readActiveManagedClients(home), { codex: false, claude: true, dsh: true, opencode: true, trae: true });
     assert.deepEqual(
       JSON.parse(await readFile(join(home, "runtime", "backend", "managed-clients.json"), "utf8")),
-      { codex: false, claude: true, dsh: true, opencode: true },
+      { codex: false, claude: true, dsh: true, opencode: true, trae: true },
     );
     clearActiveManagedClients(home);
     assert.equal(readActiveManagedClients(home), undefined);

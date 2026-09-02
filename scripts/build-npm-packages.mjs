@@ -74,6 +74,7 @@ async function stageMainPackage(destination) {
     "lib/memorax-code-dsh-adapter",
     "lib/memorax-code-opencode-adapter",
     "lib/memorax-code-codebuddy-adapter",
+    "lib/memorax-code-trae-adapter",
   ]) {
     await mkdir(join(destination, path), { recursive: true });
   }
@@ -119,6 +120,10 @@ async function stageMainPackage(destination) {
     "packages/ts/memorax-code-codebuddy-adapter/package.json",
     join(destination, "lib/memorax-code-codebuddy-adapter/package.json"),
   );
+  await copyFile(
+    "packages/ts/memorax-code-trae-adapter/package.json",
+    join(destination, "lib/memorax-code-trae-adapter/package.json"),
+  );
 
   await buildClaudeMarketplace({
     outputDir: join(destination, "lib/memorax-code-claude-marketplace"),
@@ -156,6 +161,7 @@ async function validateStaging(packageRoot) {
     "bin/memorax-cli.mjs",
     "bin/memorax-code-opencode.mjs",
     "bin/memorax-code-codebuddy.mjs",
+    "bin/memorax-code-trae.mjs",
     "bin/memorax-code-npm-preinstall.mjs",
     "bin/memorax-code-plugin-postinstall.mjs",
     "bin/memorax-code-setup.mjs",
@@ -268,6 +274,13 @@ async function validateStaging(packageRoot) {
     "lib/memorax-code-codebuddy-adapter/src/hook-manifest.mjs",
     "lib/memorax-code-codebuddy-adapter/src/runtime-observation.mjs",
     "lib/memorax-code-codebuddy-adapter/src/cli.mjs",
+    "lib/memorax-code-trae-adapter/package.json",
+    "lib/memorax-code-trae-adapter/hooks/runtime-hook.mjs",
+    "lib/memorax-code-trae-adapter/skills/memorax-code/SKILL.md",
+    "lib/memorax-code-trae-adapter/src/adapter-paths.mjs",
+    "lib/memorax-code-trae-adapter/src/cli.mjs",
+    "lib/memorax-code-trae-adapter/src/config.mjs",
+    "lib/memorax-code-trae-adapter/src/runtime-observation.mjs",
   ]) {
     if (!(await stat(join(packageRoot, requiredPath)).catch(() => undefined))?.isFile()) {
       throw new Error(`staged npm package is missing required runtime entrypoint: ${requiredPath}`);
