@@ -43,7 +43,15 @@ test("CodeBuddy repo memory worker materializes and validates a repository bundl
   const home = join(root, "workbuddy");
   const memoraxCodeHome = join(root, "memorax-code");
   const command = writeFakeCodeBuddy(join(root, "codebuddy"));
-  await enableCodeBuddyAdapter({ codeBuddyHome: home, codeBuddyCommand: command });
+  const memoraxCodeCommand = realpathSync(new URL(
+    "../../memorax-code-backend/dist/repo-memory.js",
+    import.meta.url,
+  ));
+  await enableCodeBuddyAdapter({
+    codeBuddyHome: home,
+    codeBuddyCommand: command,
+    memoraxCodeCommand,
+  });
   const result = runInstalledJob(home, ["start", "--mode", "build", "--repo", repo], {
     MEMORAX_CODE_HOME: memoraxCodeHome,
     MEMORAX_CODE_CODEBUDDY_COMMAND: command,

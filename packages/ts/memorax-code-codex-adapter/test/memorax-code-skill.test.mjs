@@ -105,9 +105,9 @@ test("memorax-code references keep authority and operation boundaries explicit",
   assert.match(repoRead, /Do not read repo memory again after `maintain` returns/);
   assert.match(repoRead, /Current implementation claims and code edits still require live-code verification/);
   assert.match(repoBuild, /first-time creation, full rebuilds, or full refreshes/);
-  assert.match(repoBuild, /scripts\/collect_all\.py/);
+  assert.match(repoBuild, /scripts\/repo-memory\.mjs collect/);
   assert.match(repoUpdate, /Update existing repo memory from a delta/);
-  assert.match(repoUpdate, /scripts\/detect_updates\.py/);
+  assert.match(repoUpdate, /scripts\/repo-memory\.mjs detect-updates/);
   assert.match(personalRead, /Do not write, normalize, migrate, repair, or delete memory/);
   assert.match(personalRead, /how the coding agent should interact with the user/);
   assert.match(personalWrite, /Require the user to explicitly ask/);

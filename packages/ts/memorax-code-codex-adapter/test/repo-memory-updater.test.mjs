@@ -8,7 +8,7 @@ import { test } from "node:test";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const skillRoot = join(packageRoot, "skills", "memorax-code");
-const detectScript = join(skillRoot, "scripts", "detect_updates.py");
+const repoMemoryScript = join(skillRoot, "scripts", "repo-memory.mjs");
 
 function runGit(cwd, args) {
   const result = spawnSync(
@@ -286,7 +286,7 @@ test("repo-memory-updater detects only local commits after the stored memory bas
       },
     ]);
 
-    const result = spawnSync("python3", [detectScript, "--repo-path", repo, "--pretty"], {
+    const result = spawnSync(process.execPath, [repoMemoryScript, "detect-updates", "--repo-path", repo, "--pretty"], {
       cwd: packageRoot,
       encoding: "utf8",
     });
@@ -302,7 +302,7 @@ test("repo-memory-updater detects only local commits after the stored memory bas
     assert.match(report.builder_helpers.files.defaults.path, /memorax-code\/defaults\.json$/);
     assert.equal(report.builder_helpers.files.defaults.exists, true);
     assert.equal("build_indexes" in report.builder_helpers.files, false);
-    assert.match(report.builder_helpers.files.validate_memory.path, /memorax-code\/scripts\/validate_memory\.py$/);
+    assert.match(report.builder_helpers.files.validate_memory.path, /memorax-code\/scripts\/repo-memory\.mjs$/);
     assert.equal(report.builder_helpers.files.validate_memory.exists, true);
     assert.equal(typeof report.builder_helpers.files.validate_memory.mtime_ns, "number");
     assert.ok(report.builder_helpers.files.validate_memory.mtime_ns > 0);
@@ -334,7 +334,7 @@ test("repo-memory-updater reads PR and issue limits from v2 repoHistory defaults
     mkdirSync(join(memory, "resources"), { recursive: true });
     mkdirSync(join(memory, "raw"), { recursive: true });
     mkdirSync(tempScripts, { recursive: true });
-    copyFileSync(detectScript, join(tempScripts, "detect_updates.py"));
+    copyFileSync(repoMemoryScript, join(tempScripts, "repo-memory.mjs"));
     writeJson(join(tempSkillRoot, "defaults.json"), {
       schema: "repo_memory_builder_defaults.v2",
       repoHistory: {
@@ -364,9 +364,10 @@ test("repo-memory-updater reads PR and issue limits from v2 repoHistory defaults
     writeIssueResource(memory, []);
     writeJson(join(memory, "raw", "git-commits.json"), [{ sourceType: "commit", sha: baselineSha }]);
 
-    const result = spawnSync("python3", [join(tempScripts, "detect_updates.py"), "--repo-path", repo, "--provider-mode", "off", "--pretty"], {
+    const result = spawnSync(process.execPath, [repoMemoryScript, "detect-updates", "--repo-path", repo, "--provider-mode", "off", "--pretty"], {
       cwd: packageRoot,
       encoding: "utf8",
+      env: { ...process.env, MEMORAX_CODE_REPO_MEMORY_SKILL_DIR: tempSkillRoot },
     });
     assert.equal(result.status, 0, result.stderr || result.stdout);
     const report = JSON.parse(result.stdout);
@@ -392,7 +393,7 @@ test("repo-memory-updater skips commit and provider deltas when repoHistory mode
     mkdirSync(join(memory, "resources"), { recursive: true });
     mkdirSync(join(memory, "raw"), { recursive: true });
     mkdirSync(tempScripts, { recursive: true });
-    copyFileSync(detectScript, join(tempScripts, "detect_updates.py"));
+    copyFileSync(repoMemoryScript, join(tempScripts, "repo-memory.mjs"));
     writeJson(join(tempSkillRoot, "defaults.json"), {
       schema: "repo_memory_builder_defaults.v2",
       repoHistory: {
@@ -423,11 +424,12 @@ test("repo-memory-updater skips commit and provider deltas when repoHistory mode
     writeIssueResource(memory, [{ number: 7, title: "existing issue baseline", state: "CLOSED" }]);
     writeJson(join(memory, "raw", "git-commits.json"), [{ sourceType: "commit", sha: baselineSha }]);
 
-    const result = spawnSync("python3", [join(tempScripts, "detect_updates.py"), "--repo-path", repo, "--pretty"], {
+    const result = spawnSync(process.execPath, [repoMemoryScript, "detect-updates", "--repo-path", repo, "--pretty"], {
       cwd: packageRoot,
       encoding: "utf8",
       env: {
         ...process.env,
+        MEMORAX_CODE_REPO_MEMORY_SKILL_DIR: tempSkillRoot,
         PATH: `${bin}:${process.env.PATH ?? ""}`,
       },
     });
@@ -466,7 +468,7 @@ test("repo-memory-updater keeps local commits but skips providers when repoHisto
     mkdirSync(join(memory, "resources"), { recursive: true });
     mkdirSync(join(memory, "raw"), { recursive: true });
     mkdirSync(tempScripts, { recursive: true });
-    copyFileSync(detectScript, join(tempScripts, "detect_updates.py"));
+    copyFileSync(repoMemoryScript, join(tempScripts, "repo-memory.mjs"));
     writeJson(join(tempSkillRoot, "defaults.json"), {
       schema: "repo_memory_builder_defaults.v2",
       repoHistory: {
@@ -498,11 +500,12 @@ test("repo-memory-updater keeps local commits but skips providers when repoHisto
     writeIssueResource(memory, [{ number: 7, title: "existing issue baseline", state: "CLOSED" }]);
     writeJson(join(memory, "raw", "git-commits.json"), [{ sourceType: "commit", sha: baselineSha }]);
 
-    const result = spawnSync("python3", [join(tempScripts, "detect_updates.py"), "--repo-path", repo, "--pretty"], {
+    const result = spawnSync(process.execPath, [repoMemoryScript, "detect-updates", "--repo-path", repo, "--pretty"], {
       cwd: packageRoot,
       encoding: "utf8",
       env: {
         ...process.env,
+        MEMORAX_CODE_REPO_MEMORY_SKILL_DIR: tempSkillRoot,
         PATH: `${bin}:${process.env.PATH ?? ""}`,
       },
     });
@@ -561,7 +564,7 @@ test("repo-memory-updater compares provider PR and issue resources incrementally
     ]);
     writeJson(join(memory, "raw", "git-commits.json"), [{ sourceType: "commit", sha: baselineSha }]);
 
-    const result = spawnSync("python3", [detectScript, "--repo-path", repo, "--pretty"], {
+    const result = spawnSync(process.execPath, [repoMemoryScript, "detect-updates", "--repo-path", repo, "--pretty"], {
       cwd: packageRoot,
       encoding: "utf8",
       env: {
@@ -656,7 +659,7 @@ exit 2
     writeIssueResource(memory, []);
     writeJson(join(memory, "raw", "git-commits.json"), [{ sourceType: "commit", sha: baselineSha }]);
 
-    const result = spawnSync("python3", [detectScript, "--repo-path", repo, "--provider-mode", "off", "--pretty"], {
+    const result = spawnSync(process.execPath, [repoMemoryScript, "detect-updates", "--repo-path", repo, "--provider-mode", "off", "--pretty"], {
       cwd: packageRoot,
       encoding: "utf8",
       env: {
@@ -734,7 +737,7 @@ exit 2
     writeIssueResource(memory, []);
     writeJson(join(memory, "raw", "git-commits.json"), [{ sourceType: "commit", sha: baselineSha }]);
 
-    const result = spawnSync("python3", [detectScript, "--repo-path", repo, "--pretty"], {
+    const result = spawnSync(process.execPath, [repoMemoryScript, "detect-updates", "--repo-path", repo, "--pretty"], {
       cwd: packageRoot,
       encoding: "utf8",
       env: {
@@ -786,7 +789,7 @@ test("repo-memory-updater preserves baseline-only numbers when provider fetch re
     writeIssueResource(memory, [{ number: 7, title: "existing issue", state: "CLOSED" }]);
     writeJson(join(memory, "raw", "git-commits.json"), [{ sourceType: "commit", sha: baselineSha }]);
 
-    const result = spawnSync("python3", [detectScript, "--repo-path", repo, "--pretty"], {
+    const result = spawnSync(process.execPath, [repoMemoryScript, "detect-updates", "--repo-path", repo, "--pretty"], {
       cwd: packageRoot,
       encoding: "utf8",
       env: {
@@ -837,7 +840,7 @@ test("repo-memory-updater reports rewritten history instead of silently skipping
     writeIssueResource(memory, []);
     writeJson(join(memory, "raw", "git-commits.json"), [{ sourceType: "commit", sha: baselineSha }]);
 
-    const result = spawnSync("python3", [detectScript, "--repo-path", repo, "--provider-mode", "off", "--pretty"], {
+    const result = spawnSync(process.execPath, [repoMemoryScript, "detect-updates", "--repo-path", repo, "--provider-mode", "off", "--pretty"], {
       cwd: packageRoot,
       encoding: "utf8",
     });
@@ -900,7 +903,7 @@ exit 2
     writeIssueResource(memory, [{ number: 2, title: "existing issue", state: "CLOSED" }]);
     writeJson(join(memory, "raw", "git-commits.json"), [{ sourceType: "commit", sha: baselineSha }]);
 
-    const result = spawnSync("python3", [detectScript, "--repo-path", repo, "--pretty"], {
+    const result = spawnSync(process.execPath, [repoMemoryScript, "detect-updates", "--repo-path", repo, "--pretty"], {
       cwd: packageRoot,
       encoding: "utf8",
       env: {
@@ -969,7 +972,7 @@ test("repo-memory-updater uses raw provider facets to detect metadata-only updat
       summary: "old provider body",
     }]);
 
-    const result = spawnSync("python3", [detectScript, "--repo-path", repo, "--pretty"], {
+    const result = spawnSync(process.execPath, [repoMemoryScript, "detect-updates", "--repo-path", repo, "--pretty"], {
       cwd: packageRoot,
       encoding: "utf8",
       env: {
@@ -1037,7 +1040,7 @@ test("repo-memory-updater compares provider deltas against raw facets before edi
       commit_headlines: ["metadata-only update"],
     }]);
 
-    const result = spawnSync("python3", [detectScript, "--repo-path", repo, "--pretty"], {
+    const result = spawnSync(process.execPath, [repoMemoryScript, "detect-updates", "--repo-path", repo, "--pretty"], {
       cwd: packageRoot,
       encoding: "utf8",
       env: {
@@ -1074,7 +1077,7 @@ test("repo-memory-updater reports a missing local commit baseline as an assistan
     writeIssueResource(memory, []);
     writeJson(join(memory, "raw", "git-commits.json"), []);
 
-    const result = spawnSync("python3", [detectScript, "--repo-path", repo, "--provider-mode", "off", "--pretty"], {
+    const result = spawnSync(process.execPath, [repoMemoryScript, "detect-updates", "--repo-path", repo, "--provider-mode", "off", "--pretty"], {
       cwd: packageRoot,
       encoding: "utf8",
     });
@@ -1121,7 +1124,7 @@ test("repo-memory-updater falls back to the nearest stored commit when PROFILE l
     writeIssueResource(memory, []);
     writeJson(join(memory, "raw", "git-commits.json"), [{ sourceType: "commit", sha: olderSha }, { sourceType: "commit", sha: newerSha }]);
 
-    const result = spawnSync("python3", [detectScript, "--repo-path", repo, "--provider-mode", "off", "--pretty"], {
+    const result = spawnSync(process.execPath, [repoMemoryScript, "detect-updates", "--repo-path", repo, "--provider-mode", "off", "--pretty"], {
       cwd: packageRoot,
       encoding: "utf8",
     });
@@ -1187,7 +1190,7 @@ exit 2
     writeIssueResource(memory, [{ number: 2, title: "existing issue", state: "CLOSED" }]);
     writeJson(join(memory, "raw", "git-commits.json"), [{ sourceType: "commit", sha: baselineSha }]);
 
-    const result = spawnSync("python3", [detectScript, "--repo-path", repo, "--pretty"], {
+    const result = spawnSync(process.execPath, [repoMemoryScript, "detect-updates", "--repo-path", repo, "--pretty"], {
       cwd: packageRoot,
       encoding: "utf8",
       env: {

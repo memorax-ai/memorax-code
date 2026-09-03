@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { chmod, cp, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, dirname, join, relative, sep, win32 } from "node:path";
+import { basename, dirname, join, relative, resolve, sep, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveHookCodeBuddyCommand } from "../../memorax-code-adapter-common/src/clients/codebuddy-command.mjs";
 import { withJsonFileLockAsync } from "../../memorax-code-adapter-common/src/config-utils.mjs";
@@ -56,14 +56,14 @@ export async function enableCodeBuddyAdapter(options = {}) {
   await cp(ROOT, installPath, { recursive: true, force: true, filter: packageCopyFilter(ROOT) });
   await materializeCommonRuntime(installPath);
   await materializeCodeBuddyHookManifest(installPath, platform);
-  await writePackageMetadata(installPath, options.codeBuddyCommand, home);
+  await writePackageMetadata(installPath, options.codeBuddyCommand, home, options.memoraxCodeCommand);
   await materializeCanonicalSkill(installPath);
   await mkdir(dirname(localPluginPath), { recursive: true });
   await rm(localPluginPath, { recursive: true, force: true });
   await cp(ROOT, localPluginPath, { recursive: true, force: true, filter: packageCopyFilter(ROOT) });
   await materializeCommonRuntime(localPluginPath);
   await materializeCodeBuddyHookManifest(localPluginPath, platform);
-  await writePackageMetadata(localPluginPath, options.codeBuddyCommand, home);
+  await writePackageMetadata(localPluginPath, options.codeBuddyCommand, home, options.memoraxCodeCommand);
   await materializeCanonicalSkill(localPluginPath);
   await writeMarketplaceManifest(home);
   await updateKnownMarketplace(home, true);
@@ -290,15 +290,27 @@ async function materializeCanonicalSkill(destination) {
   await cp(source, target, { recursive: true, force: true });
 }
 
-async function writePackageMetadata(destination, configuredCommand, codeBuddyHome) {
+async function writePackageMetadata(destination, configuredCommand, codeBuddyHome, configuredMemoraxCodeCommand) {
   const codeBuddyCommand = typeof configuredCommand === "string" && configuredCommand.trim()
     ? configuredCommand.trim()
     : resolveHookCodeBuddyCommand();
+  const memoraxCodeCommand = typeof configuredMemoraxCodeCommand === "string" && configuredMemoraxCodeCommand.trim()
+    ? configuredMemoraxCodeCommand.trim()
+    : defaultMemoraxCodeCommand();
   await writeJsonFile(join(destination, ".memorax-code-package.json"), {
     version: 1,
     codeBuddyCommand,
     codeBuddyHome,
+    ...(memoraxCodeCommand ? { memoraxCodeCommand } : {}),
   });
+}
+
+function defaultMemoraxCodeCommand(adapterRoot = ROOT) {
+  const packageRoot = resolve(adapterRoot, "..", "..");
+  return [
+    join(packageRoot, "bin", "memorax-code.mjs"),
+    join(packageRoot, "npm", "memorax-code", "bin", "memorax-code.mjs"),
+  ].find((path) => existsSync(path));
 }
 
 async function materializeCommonRuntime(destination) {

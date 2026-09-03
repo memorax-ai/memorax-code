@@ -133,6 +133,10 @@ test("Trae install merges managed Hooks and Skill without changing user Hooks", 
     assert.equal(installed.traeHooks.runtimeObserved, false);
     assert.equal(installed.globalHooksActivationRequired, true);
     assert.equal(await readFile(join(installed.skillPath, "SKILL.md"), "utf8"), "# MemoraX Code\n");
+    assert.deepEqual(
+      JSON.parse(await readFile(join(installed.skillPath, ".memorax-code-package.json"), "utf8")),
+      { version: 1, memoraxCodeCommand: fixture.options.memoraxCodeCommand },
+    );
 
     const hooks = JSON.parse(await readFile(join(fixture.traeHome, "hooks.json"), "utf8"));
     assert.deepEqual(hooks.custom, { preserved: true });

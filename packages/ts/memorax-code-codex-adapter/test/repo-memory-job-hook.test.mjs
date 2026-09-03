@@ -64,7 +64,7 @@ test("repo memory job launcher writes dry-run command with danger-full-access", 
   assert.match(payload.prompt, new RegExp(head));
   assert.match(payload.prompt, /authorized background repo-memory worker/);
   assert.match(payload.prompt, /GitHub\/GitLab PR, MR, and issue evidence/);
-  assert.match(payload.prompt, /collect_all\.py --reuse/);
+  assert.match(payload.prompt, /repo-memory\.mjs collect --reuse/);
   assert.match(payload.prompt, /procedure-memory/);
   assert.match(payload.prompt, /user-profile/);
   assert.equal(payload.snapshotHead, head);
@@ -313,8 +313,8 @@ test("repo memory maintain degrades to a non-blocking no-op when policy evaluati
   assert.equal(countJobDirs(memoraxCodeHome), 0);
 });
 
-test("repo memory maintain preserves an existing bundle when the validator is unavailable", () => {
-  const root = tempRoot("repo-memory-maintain-validator-unavailable-");
+test("repo memory maintain no longer depends on the Python command override", () => {
+  const root = tempRoot("repo-memory-maintain-without-python-");
   const repo = join(root, "repo");
   const memoraxCodeHome = join(root, "memorax-code");
   const head = initRepo(repo);
@@ -326,11 +326,11 @@ test("repo memory maintain preserves an existing bundle when the validator is un
   });
   assert.equal(result.status, 0, result.stderr);
   const payload = JSON.parse(result.stdout);
-  assert.equal(payload.ok, false);
+  assert.equal(payload.ok, true);
   assert.equal(payload.action, "none");
-  assert.equal(payload.reason, "bundle_validation_failed");
-  assert.equal(payload.bundleStatus, "unknown");
-  assert.equal(payload.validation.reason, "validator_unavailable");
+  assert.equal(payload.reason, "up_to_date");
+  assert.equal(payload.bundleStatus, "usable");
+  assert.equal(payload.validation.ok, true);
   assert.equal(payload.job, undefined);
   assert.equal(countJobDirs(memoraxCodeHome), 0);
 });

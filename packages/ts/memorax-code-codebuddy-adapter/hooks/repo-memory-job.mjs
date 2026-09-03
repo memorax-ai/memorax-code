@@ -16,7 +16,7 @@ try {
     runner: "codebuddy",
     finalMessageSource: "stdout",
     memorySkillInvocation: "the `memorax-code` skill",
-    validatorPath: resolve(pluginRoot, "skills/memorax-code/scripts/validate_memory.py"),
+    validatorPath: resolve(pluginRoot, "skills/memorax-code/scripts/repo-memory.mjs"),
     evaluateRepository,
     createCommand({ prompt }) {
       const codeBuddy = resolveHookCodeBuddyCommand({

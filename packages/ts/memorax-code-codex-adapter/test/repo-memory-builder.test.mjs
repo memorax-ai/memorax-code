@@ -7,10 +7,7 @@ import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const prepareScript = join(packageRoot, "skills", "memorax-code", "scripts", "prepare_repo_memory.py");
-const commitFacetsScript = join(packageRoot, "skills", "memorax-code", "scripts", "git_commit_facets.py");
-const facetsScript = join(packageRoot, "skills", "memorax-code", "scripts", "github_resource_facets.py");
-const gitlabFacetsScript = join(packageRoot, "skills", "memorax-code", "scripts", "gitlab_resource_facets.py");
+const repoMemoryScript = join(packageRoot, "skills", "memorax-code", "scripts", "repo-memory.mjs");
 
 function runGit(cwd, args) {
   const result = spawnSync(
@@ -29,7 +26,7 @@ test("repo-memory prepare gives actionable guidance for non-git folders", () => 
     mkdirSync(folder);
     writeFileSync(join(folder, "README.md"), "# Not git yet\n");
 
-    const result = spawnSync("python3", [prepareScript, folder], {
+    const result = spawnSync(process.execPath, [repoMemoryScript, "prepare", folder], {
       cwd: packageRoot,
       encoding: "utf8",
     });
@@ -60,7 +57,7 @@ test("repo-memory prepare preserves procedure and user-profile sidecars without 
     writeFileSync(join(memory, "procedure-memory", "reviewing-code.md"), "# Reviewing Code\n\n- Read the diff.\n");
     writeFileSync(join(memory, "user-profile", "preferences.md"), "# Preferences\n");
 
-    const result = spawnSync("python3", [prepareScript, repo], {
+    const result = spawnSync(process.execPath, [repoMemoryScript, "prepare", repo], {
       cwd: packageRoot,
       encoding: "utf8",
       env: { ...process.env, PATH: "/usr/bin:/bin" },
@@ -117,7 +114,7 @@ exit 2
     runGit(repo, ["commit", "-m", "initial"]);
     runGit(repo, ["remote", "add", "origin", "git@gitlab.com:group/subgroup/project.git"]);
 
-    const result = spawnSync("python3", [prepareScript, repo], {
+    const result = spawnSync(process.execPath, [repoMemoryScript, "prepare", repo], {
       cwd: packageRoot,
       encoding: "utf8",
       env: {
@@ -153,7 +150,7 @@ exit 2
     assert.equal(savedReport.git_provider, "gitlab");
     assert.equal(savedReport.gitignore_updated, true);
 
-    const second = spawnSync("python3", [prepareScript, repo, "--reuse"], {
+    const second = spawnSync(process.execPath, [repoMemoryScript, "prepare", repo, "--reuse"], {
       cwd: packageRoot,
       encoding: "utf8",
       env: {
@@ -210,7 +207,7 @@ exit 2
     runGit(repo, ["commit", "-m", "initial"]);
     runGit(repo, ["remote", "add", "origin", "git@github.com:owner/project.git"]);
 
-    const result = spawnSync("python3", [prepareScript, repo], {
+    const result = spawnSync(process.execPath, [repoMemoryScript, "prepare", repo], {
       cwd: packageRoot,
       encoding: "utf8",
       env: {
@@ -278,7 +275,7 @@ exit 2
     runGit(repo, ["remote", "add", "fork", "git@github.com:me/project.git"]);
     runGit(repo, ["remote", "add", "origin", "git@github.com:owner/project.git"]);
 
-    const result = spawnSync("python3", [prepareScript, repo], {
+    const result = spawnSync(process.execPath, [repoMemoryScript, "prepare", repo], {
       cwd: packageRoot,
       encoding: "utf8",
       env: {
@@ -339,7 +336,7 @@ exit 2
     runGit(repo, ["commit", "-m", "initial"]);
     runGit(repo, ["remote", "add", "origin", "git@github.example.test:owner/project.git"]);
 
-    const result = spawnSync("python3", [prepareScript, repo], {
+    const result = spawnSync(process.execPath, [repoMemoryScript, "prepare", repo], {
       cwd: packageRoot,
       encoding: "utf8",
       env: {
@@ -404,7 +401,7 @@ exit 2
     runGit(repo, ["remote", "add", "fork", "git@gitlab.example.test:me/project.git"]);
     runGit(repo, ["remote", "add", "origin", "git@gitlab.example.test:group/project.git"]);
 
-    const result = spawnSync("python3", [prepareScript, repo], {
+    const result = spawnSync(process.execPath, [repoMemoryScript, "prepare", repo], {
       cwd: packageRoot,
       encoding: "utf8",
       env: {
@@ -475,7 +472,7 @@ exit 2
     const latestSha = runGit(repo, ["rev-parse", "HEAD"]);
     runGit(repo, ["remote", "add", "origin", "git@github.com:owner/project.git"]);
 
-    const prepare = spawnSync("python3", [prepareScript, repo], {
+    const prepare = spawnSync(process.execPath, [repoMemoryScript, "prepare", repo], {
       cwd: packageRoot,
       encoding: "utf8",
       env: {
@@ -490,9 +487,9 @@ exit 2
     const memoryRoot = join(repo, ".repo_memory");
     const commitRaw = join(memoryRoot, "raw", "git-commits.json");
     const collect = spawnSync(
-      "python3",
+      process.execPath,
       [
-        commitFacetsScript,
+        repoMemoryScript, "git-commits",
         "--repo-path",
         repo,
         "--snapshot-ref",
@@ -562,9 +559,9 @@ exit 2
     );
     chmodSync(gh, 0o755);
     const result = spawnSync(
-      "python3",
+      process.execPath,
       [
-        facetsScript,
+        repoMemoryScript, "github-facets",
         "--repo",
         "owner/repo",
         "--include",
@@ -640,9 +637,9 @@ exit 2
     chmodSync(gh, 0o755);
 
     const result = spawnSync(
-      "python3",
+      process.execPath,
       [
-        facetsScript,
+        repoMemoryScript, "github-facets",
         "--repo",
         "owner/repo",
         "--hostname",
@@ -737,9 +734,9 @@ exit 2
     chmodSync(gh, 0o755);
 
     const result = spawnSync(
-      "python3",
+      process.execPath,
       [
-        facetsScript,
+        repoMemoryScript, "github-facets",
         "--repo",
         "owner/repo",
         "--repo-path",
@@ -816,9 +813,9 @@ exit 2
     chmodSync(glab, 0o755);
 
     const result = spawnSync(
-      "python3",
+      process.execPath,
       [
-        gitlabFacetsScript,
+        repoMemoryScript, "gitlab-facets",
         "--repo",
         "group/project",
         "--include",
@@ -892,9 +889,9 @@ exit 2
     chmodSync(glab, 0o755);
 
     const result = spawnSync(
-      "python3",
+      process.execPath,
       [
-        gitlabFacetsScript,
+        repoMemoryScript, "gitlab-facets",
         "--repo",
         "group/project",
         "--hostname",
@@ -982,9 +979,9 @@ exit 2
     chmodSync(glab, 0o755);
 
     const result = spawnSync(
-      "python3",
+      process.execPath,
       [
-        gitlabFacetsScript,
+        repoMemoryScript, "gitlab-facets",
         "--repo",
         "group/project",
         "--repo-path",
@@ -1081,9 +1078,9 @@ exit 2
     chmodSync(gh, 0o755);
 
     const result = spawnSync(
-      "python3",
+      process.execPath,
       [
-        facetsScript,
+        repoMemoryScript, "github-facets",
         "--repo",
         "owner/repo",
         "--repo-path",

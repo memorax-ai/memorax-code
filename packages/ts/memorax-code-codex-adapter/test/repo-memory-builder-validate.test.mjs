@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const validateScript = join(packageRoot, "skills", "memorax-code", "scripts", "validate_memory.py");
+const repoMemoryScript = join(packageRoot, "skills", "memorax-code", "scripts", "repo-memory.mjs");
 
 function writeJson(path, value) {
   writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
@@ -88,7 +88,7 @@ This profile describes the test repository.
     writeFileSync(join(memory, "procedure-memory", "reviewing-code.md"), "# Procedure [does not need bundle frontmatter]\n");
     mkdirSync(join(memory, "user-profile"));
     writeFileSync(join(memory, "user-profile", "preferences.md"), "# Preferences [are a sidecar]\n");
-    const result = spawnSync("python3", [validateScript, repo, "--pretty"], {
+    const result = spawnSync(process.execPath, [repoMemoryScript, "validate", repo, "--pretty"], {
       cwd: packageRoot,
       encoding: "utf8",
     });
@@ -147,7 +147,7 @@ Issues: [Issue tracker]
     writeJson(join(memory, "raw", "git-commits.json"), []);
     writeJson(join(memory, "raw", "github-facets.json"), []);
 
-    const result = spawnSync("python3", [validateScript, memory, "--pretty"], {
+    const result = spawnSync(process.execPath, [repoMemoryScript, "validate", memory, "--pretty"], {
       cwd: packageRoot,
       encoding: "utf8",
     });
@@ -196,7 +196,7 @@ Run \`memorax-code repo-build [--force] [repo]\` to regenerate the wiki.
     });
     writeJson(join(memory, "raw", "git-commits.json"), []);
 
-    const result = spawnSync("python3", [validateScript, memory, "--pretty"], {
+    const result = spawnSync(process.execPath, [repoMemoryScript, "validate", memory, "--pretty"], {
       cwd: packageRoot,
       encoding: "utf8",
     });
@@ -242,7 +242,7 @@ schema: "repo_memory_profile.v0.1"
     });
     writeJson(join(memory, "raw", "git-commits.json"), []);
 
-    const result = spawnSync("python3", [validateScript, memory, "--pretty"], {
+    const result = spawnSync(process.execPath, [repoMemoryScript, "validate", memory, "--pretty"], {
       cwd: packageRoot,
       encoding: "utf8",
     });
@@ -297,7 +297,7 @@ raw_source: "../raw/git-commits.json"
     });
     writeJson(join(memory, "raw", "git-commits.json"), []);
 
-    const result = spawnSync("python3", [validateScript, memory, "--pretty"], {
+    const result = spawnSync(process.execPath, [repoMemoryScript, "validate", memory, "--pretty"], {
       cwd: packageRoot,
       encoding: "utf8",
     });
@@ -347,7 +347,7 @@ layout: "wiki_landing_page.v0.1"
     });
     writeJson(join(memory, "raw", "git-commits.json"), []);
 
-    const result = spawnSync("python3", [validateScript, memory, "--pretty"], {
+    const result = spawnSync(process.execPath, [repoMemoryScript, "validate", memory, "--pretty"], {
       cwd: packageRoot,
       encoding: "utf8",
     });
@@ -403,7 +403,7 @@ layout: "wiki_landing_page.v0.1"
     });
     writeJson(join(memory, "raw", "git-commits.json"), []);
 
-    const result = spawnSync("python3", [validateScript, memory, "--pretty"], {
+    const result = spawnSync(process.execPath, [repoMemoryScript, "validate", memory, "--pretty"], {
       cwd: packageRoot,
       encoding: "utf8",
     });
@@ -456,7 +456,7 @@ layout: "wiki_landing_page.v0.1"
     });
     writeJson(join(memory, "raw", "git-commits.json"), []);
 
-    const result = spawnSync("python3", [validateScript, repo, "--pretty"], {
+    const result = spawnSync(process.execPath, [repoMemoryScript, "validate", repo, "--pretty"], {
       cwd: packageRoot,
       encoding: "utf8",
     });
@@ -504,7 +504,7 @@ layout: "wiki_landing_page.v0.1"
     });
     writeJson(join(memory, "raw", "git-commits.json"), []);
 
-    const result = spawnSync("python3", [validateScript, memory, "--pretty"], {
+    const result = spawnSync(process.execPath, [repoMemoryScript, "validate", memory, "--pretty"], {
       cwd: packageRoot,
       encoding: "utf8",
     });
@@ -569,7 +569,7 @@ This page routes agents to current source before editing.
     });
     writeJson(join(memory, "raw", "git-commits.json"), []);
 
-    const result = spawnSync("python3", [validateScript, repo, "--pretty"], {
+    const result = spawnSync(process.execPath, [repoMemoryScript, "validate", repo, "--pretty"], {
       cwd: packageRoot,
       encoding: "utf8",
     });

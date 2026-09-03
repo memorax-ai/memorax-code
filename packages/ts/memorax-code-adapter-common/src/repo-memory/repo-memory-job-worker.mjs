@@ -348,9 +348,8 @@ function positiveEnvInteger(value, fallback) {
 }
 
 function validateBundle(repo, validator) {
-  const python = process.env.MEMORAX_CODE_REPO_MEMORY_PYTHON_COMMAND || "python3";
   process.stdout.write("\n[repo-memory-worker] validating generated repo memory\n");
-  const result = spawnSync(python, [validator, repo, "--pretty"], {
+  const result = spawnSync(process.execPath, [validator, "validate", repo, "--pretty"], {
     cwd: repo,
     encoding: "utf8",
     env: process.env,

@@ -13,7 +13,7 @@ try {
     runner: "claude",
     finalMessageSource: "stdout",
     memorySkillInvocation: "/memorax-code-claude-adapter:memorax-code",
-    validatorPath: resolve(pluginRoot, "skills/memorax-code/scripts/validate_memory.py"),
+    validatorPath: resolve(pluginRoot, "skills/memorax-code/scripts/repo-memory.mjs"),
     evaluateRepository,
     createCommand({ prompt }) {
       const claude = resolveHookClaudeCommand({

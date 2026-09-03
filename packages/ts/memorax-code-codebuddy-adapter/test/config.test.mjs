@@ -118,6 +118,7 @@ test("installs and removes an isolated CodeBuddy plugin registry entry", async (
   assert.equal(await exists(enabledStatus.codebuddySkills.path), true);
   const installedMetadata = JSON.parse(await readFile(join(codeBuddyInstallPath(home), ".memorax-code-package.json"), "utf8"));
   assert.equal(typeof installedMetadata.codeBuddyCommand, "string");
+  assert.match(installedMetadata.memoraxCodeCommand, /memorax-code\.mjs$/);
   assert.equal(installedMetadata.codeBuddyHome, home);
   assert.equal(await exists(join(codeBuddyInstallPath(home), "memorax-code-adapter-common", "src", "repo-memory", "repo-memory-job-supervisor.mjs")), true);
   const pluginManifest = JSON.parse(await readFile(join(marketplaceRoot(home), "plugins", "memorax-code-codebuddy-adapter", ".codebuddy-plugin", "plugin.json"), "utf8"));
