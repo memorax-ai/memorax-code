@@ -198,6 +198,21 @@ test("memorax-code lifecycle delegates client implementation details to adapter 
   assert.doesNotMatch(source, /memorax-code-(?:codex|claude)-adapter\/src/);
 });
 
+test("memorax-cli entrypoint exits naturally instead of forcing process exit", async () => {
+  const source = await readFile(join(backendSrc, "memorax-cli.ts"), "utf8");
+
+  assert.equal((source.match(/process\.exitCode\s*=/g) ?? []).length, 2);
+  assert.doesNotMatch(source, /process\.exit\s*\(/);
+});
+
+test("backend CLI async completions exit naturally instead of forcing process exit", async () => {
+  const source = await readFile(join(backendSrc, "entrypoints", "backend-cli.ts"), "utf8");
+
+  assert.match(source, /server\.shutdown\(\)\.then\([\s\S]*?process\.exitCode\s*=\s*0/);
+  assert.doesNotMatch(source, /server\.shutdown\(\)\.then\([\s\S]*?process\.exit\(/);
+  assert.doesNotMatch(source, /process\.exit\(result\.ok \? 0 : 1\)/);
+});
+
 test("managed Backend owns automatic-update wakeups instead of client Hooks", async () => {
   const backendCli = await readFile(join(backendSrc, "entrypoints", "backend-cli.ts"), "utf8");
   const scheduler = await readFile(join(

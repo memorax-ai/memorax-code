@@ -435,35 +435,36 @@ async function spawnSetupProcess(memoraxCodeHome, { updateMode = false, setupMod
   });
 }
 
-if (process.argv[2] === "update") {
-  process.exit(await runUpdateCommand(process.argv.slice(3)));
-}
+let handled = false;
 
-if (process.argv[2] === "--version" || process.argv[2] === "-v") {
+if (process.argv[2] === "update") {
+  process.exitCode = await runUpdateCommand(process.argv.slice(3));
+  handled = true;
+} else if (process.argv[2] === "--version" || process.argv[2] === "-v") {
   const pkg = readPackageJson();
   console.log(`memorax-code ${pkg.version}`);
-  process.exit(0);
-}
-
-if (process.argv.length === 3 && (process.argv[2] === "--help" || process.argv[2] === "-h")) {
+  process.exitCode = 0;
+  handled = true;
+} else if (process.argv.length === 3 && (process.argv[2] === "--help" || process.argv[2] === "-h")) {
   printMainHelp();
-  process.exit(0);
-}
-
-if (process.argv[2] === "setup") {
-  process.exit(await runSetupCommand(process.argv.slice(3)));
-}
-
-if (process.argv[2] === "account") {
-  process.exit(await runAccountCommand(process.argv.slice(3)));
-}
-
-if (process.argv.length === 2) {
+  process.exitCode = 0;
+  handled = true;
+} else if (process.argv[2] === "setup") {
+  process.exitCode = await runSetupCommand(process.argv.slice(3));
+  handled = true;
+} else if (process.argv[2] === "account") {
+  process.exitCode = await runAccountCommand(process.argv.slice(3));
+  handled = true;
+} else if (process.argv.length === 2) {
   const exitCode = await routeDefaultCommand();
-  if (exitCode !== undefined) process.exit(exitCode);
+  if (exitCode !== undefined) {
+    process.exitCode = exitCode;
+    handled = true;
+  }
 }
 
-if (shouldStageClientHookRuntime(process.argv.slice(2))
+if (!handled
+  && shouldStageClientHookRuntime(process.argv.slice(2))
   && !truthyEnv(process.env.MEMORAX_CODE_DEFER_CLIENT_HOOK_RUNTIME_ACTIVATION)) {
   try {
     const memoraxCodeHome = requestedMemoraxCodeHome(process.argv.slice(2));
@@ -485,11 +486,12 @@ if (shouldStageClientHookRuntime(process.argv.slice(2))
     });
   } catch (error) {
     console.error(`memorax-code: failed to stage client Hook runtime: ${error instanceof Error ? error.message : String(error)}`);
-    process.exit(1);
+    process.exitCode = 1;
+    handled = true;
   }
 }
 
-await runBackendEntrypoint("memorax-code.js");
+if (!handled) await runBackendEntrypoint("memorax-code.js");
 
 function shouldStageClientHookRuntime(args) {
   if (args.includes("--help") || args.includes("-h")) return false;
