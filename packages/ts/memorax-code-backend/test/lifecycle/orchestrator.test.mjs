@@ -309,6 +309,57 @@ test("start recovers the Backend when Codex preparation fails after shutdown", a
   }
 });
 
+test("start recovers the Backend when CodeBuddy preparation fails after shutdown", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-start-codebuddy-recovery-"));
+  const home = join(root, "memorax-code-home");
+  const codeBuddyHome = join(root, "blocked-codebuddy-home");
+  const port = await freePort();
+  const cliPath = fileURLToPath(new URL("../../dist/memorax-code.js", import.meta.url));
+  const observedPids = new Set();
+  const commonArgs = ["--home", home, "--port", String(port)];
+  await writeFile(codeBuddyHome, "not a directory\n");
+  try {
+    const initial = await runCli(cliPath, [
+      "start", "--json", ...commonArgs, "--clients", "none",
+    ]);
+    assert.equal(initial.code, 0, `${initial.stdout}\n${initial.stderr}`);
+    observedPids.add(JSON.parse(initial.stdout).backend.state.pid);
+
+    const failed = await runCli(cliPath, [
+      "start", "--json", ...commonArgs,
+      "--codebuddy-home", codeBuddyHome,
+      "--clients", "codebuddy",
+    ]);
+
+    assert.equal(failed.code, 1, `${failed.stdout}\n${failed.stderr}`);
+    assert.equal(failed.stderr, "");
+    const report = JSON.parse(failed.stdout);
+    assert.equal(report.ok, false);
+    assert.equal(report.codebuddyAdapter.ok, false);
+    assert.match(report.codebuddyAdapter.error, /ENOTDIR|not a directory/i);
+    assert.equal(report.dshAdapter, undefined);
+    assert.equal(report.backend.ok, true, report.backend.error);
+    assert.equal(
+      report.backend.reason,
+      "codebuddy_adapter_enable_failed_backend_recovered",
+    );
+    observedPids.add(report.backend.state.pid);
+    const health = await fetch(`http://127.0.0.1:${port}/health`).then(
+      (response) => response.json(),
+    );
+    assert.equal(health.ok, true);
+    assert.equal(health.instanceId, report.backend.state.instanceId);
+  } finally {
+    await runCli(cliPath, ["stop", "--json", ...commonArgs, "--clients", "none"]);
+    for (const pid of observedPids) {
+      if (!Number.isSafeInteger(pid) || !isProcessAlive(pid)) continue;
+      terminateProcessTree(pid);
+      await waitForProcessExit(pid);
+    }
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("memorax-code start preserves custom Claude provider settings while enabling Hooks", async () => {
   const home = await mkdtemp(join(tmpdir(), "memorax-code-lifecycle-claude-home-"));
   const claudeHome = await mkdtemp(join(tmpdir(), "memorax-code-lifecycle-claude-config-"));

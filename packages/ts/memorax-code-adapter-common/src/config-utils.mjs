@@ -108,7 +108,9 @@ export function withJsonFileLock(path, operation, options = {}) {
   const deadline = Date.now() + timeoutMs;
   const observedProcessStarts = new Map();
   const directory = dirname(path);
-  ensurePrivateDirectory(directory, { durableBoundary: directory });
+  if (options.ensurePrivateDirectory !== false) {
+    ensurePrivateDirectory(directory, { durableBoundary: directory });
+  }
 
   while (!tryAcquireJsonFileLock(lockPath, ownerId)) {
     if (removeStaleJsonFileLock(lockPath, staleMs, observedProcessStarts)) continue;
@@ -145,7 +147,9 @@ export async function withJsonFileLockAsync(path, operation, options = {}) {
   const observedProcessStarts = new Map();
   const directory = dirname(path);
   throwIfJsonFileLockAborted(signal, path, lockPath);
-  ensurePrivateDirectory(directory, { durableBoundary: directory });
+  if (options.ensurePrivateDirectory !== false) {
+    ensurePrivateDirectory(directory, { durableBoundary: directory });
+  }
 
   while (!tryAcquireJsonFileLock(lockPath, ownerId)) {
     throwIfJsonFileLockAborted(signal, path, lockPath);

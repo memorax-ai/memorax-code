@@ -426,6 +426,20 @@ async function executeMemoraxCodeStart(
       ...(traeAdapter ? { traeAdapter } : {}),
     };
   }
+  if (codebuddyAdapter?.ok === false) {
+    const recovery = await recoverPreparationFailure("codebuddy_adapter_enable_failed");
+    return {
+      ok: false,
+      action: "start",
+      backend: recovery.backend,
+      ...(codexAdapter ? { codexAdapter } : {}),
+      ...(claudeAdapter ? { claudeAdapter } : {}),
+      ...(recovery.dshAdapter ? { dshAdapter: recovery.dshAdapter } : {}),
+      ...(opencodeAdapter ? { opencodeAdapter } : {}),
+      codebuddyAdapter,
+      ...(traeAdapter ? { traeAdapter } : {}),
+    };
+  }
   if (traeAdapter?.ok === false) {
     const recovery = await recoverPreparationFailure("trae_adapter_enable_failed");
     return {
@@ -494,6 +508,7 @@ async function executeMemoraxCodeStart(
   const optionalDshUnavailable = isOptionalUnavailableDshAdapter(dshAdapter);
   return {
     ok: claudeAdapter?.ok !== false
+      && (!codebuddyAdapter || isAdapterReady(codebuddyAdapter))
       && (!dshAdapter || isAdapterReady(dshAdapter) || optionalDshUnavailable),
     action: "start",
     ...(optionalDshUnavailable ? { degraded: true } : {}),

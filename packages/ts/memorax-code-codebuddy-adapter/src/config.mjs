@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join, relative, sep, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveHookCodeBuddyCommand } from "../../memorax-code-adapter-common/src/clients/codebuddy-command.mjs";
+import { withJsonFileLockAsync } from "../../memorax-code-adapter-common/src/config-utils.mjs";
 import {
   codeBuddyHookManifestConfigured,
   materializeCodeBuddyHookManifest,
@@ -230,27 +231,16 @@ async function updateRegistry(home, mutate) {
 }
 
 async function updateJsonRecord(path, mutate) {
-  const lockPath = `${path}.lock`;
   await mkdir(dirname(path), { recursive: true });
-  let handle;
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    try {
-      handle = await import("node:fs/promises").then(({ open }) => open(lockPath, "wx", 0o600));
-      break;
-    } catch (error) {
-      if (error?.code !== "EEXIST") throw error;
-      await new Promise((resolve) => setTimeout(resolve, Math.min(50, 5 + attempt)));
-    }
-  }
-  if (!handle) throw new Error(`timed out acquiring lock: ${lockPath}`);
-  try {
+  await withJsonFileLockAsync(path, async () => {
     const value = await readJsonRecord(path);
     mutate(value);
     await writeJsonFile(path, value);
-  } finally {
-    await handle.close();
-    await rm(lockPath, { force: true });
-  }
+  }, {
+    timeoutMs: 5000,
+    // WorkBuddy owns this directory; preserve its permission policy.
+    ensurePrivateDirectory: false,
+  });
 }
 
 async function updateJsonRecordIfPresent(path, mutate) {

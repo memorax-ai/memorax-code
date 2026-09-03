@@ -8,19 +8,19 @@ type CodeBuddyConfig = {
 };
 export const codeBuddyAdapterLifecycle = {
   async status({ argv, serviceOptions }) {
-    try { return (await load()).readCodeBuddyAdapterStatus(options(argv, serviceOptions)); }
+    try { return await (await load()).readCodeBuddyAdapterStatus(options(argv, serviceOptions)); }
     catch (error) { return failure("status", error); }
   },
   async prepareEnable({ argv, serviceOptions }) {
-    try { return (await load()).enableCodeBuddyAdapter(options(argv, serviceOptions)); }
+    try { return await (await load()).enableCodeBuddyAdapter(options(argv, serviceOptions)); }
     catch (error) { return failure("enable", error); }
   },
   async disable({ argv, serviceOptions }) {
-    try { return (await load()).disableCodeBuddyAdapter(options(argv, serviceOptions)); }
+    try { return await (await load()).disableCodeBuddyAdapter(options(argv, serviceOptions)); }
     catch (error) { return failure("disable", error); }
   },
   async remove({ argv, serviceOptions }) {
-    try { return (await load()).removeCodeBuddyPluginInstallation(options(argv, serviceOptions)); }
+    try { return await (await load()).removeCodeBuddyPluginInstallation(options(argv, serviceOptions)); }
     catch (error) {
       return {
         ok: false,
