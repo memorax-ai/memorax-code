@@ -84,6 +84,26 @@ test("JSON state lock tightens an existing private state directory", {
   }
 });
 
+test("JSON state lock can preserve an externally owned directory mode", {
+  skip: process.platform === "win32",
+}, async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-json-lock-external-mode-"));
+  const directory = join(root, "external-state");
+  const path = join(directory, "state.json");
+  try {
+    await mkdir(directory, { recursive: true });
+    await chmod(directory, 0o755);
+
+    await withJsonFileLockAsync(path, async () => undefined, {
+      ensurePrivateDirectory: false,
+    });
+
+    assert.equal((await stat(directory)).mode & 0o777, 0o755);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("async JSON state lock serializes the complete awaited operation", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-json-lock-async-"));
   const path = join(root, "state.json");

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { cp, mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -78,6 +78,14 @@ test("derives the install cache version from the CodeBuddy plugin manifest", asy
   await cp(new URL("../src/hook-manifest.mjs", import.meta.url), hookManifestPath);
   await cp(new URL("../src/runtime-observation.mjs", import.meta.url), runtimeObservationPath);
   await cp(new URL("../../memorax-code-adapter-common/src/clients/codebuddy-command.mjs", import.meta.url), commandPath);
+  await cp(
+    new URL("../../memorax-code-adapter-common/src/config-utils.mjs", import.meta.url),
+    join(root, "memorax-code-adapter-common", "src", "config-utils.mjs"),
+  );
+  await cp(
+    new URL("../../memorax-code-adapter-common/src/runtime-record.mjs", import.meta.url),
+    join(root, "memorax-code-adapter-common", "src", "runtime-record.mjs"),
+  );
   await writeFile(join(adapterRoot, ".codebuddy-plugin", "plugin.json"), '{"version":"9.8.7"}\n');
   const isolated = await import(pathToFileURL(configPath).href);
   assert.equal(isolated.codeBuddyInstallPath(join(root, "home")), join(
@@ -306,6 +314,35 @@ test("malformed CodeBuddy registry fails closed", async () => {
   await mkdir(join(home, "plugins"), { recursive: true });
   await writeFile(join(home, "plugins", "installed_plugins.json"), "not-json\n");
   await assert.rejects(() => enableCodeBuddyAdapter({ codeBuddyHome: home }), /JSON|Unexpected token/);
+});
+
+test("recovers an abandoned legacy registry lock without losing user plugins", async () => {
+  const home = await mkdtemp(join(tmpdir(), "memorax-codebuddy-stale-lock-"));
+  const pluginId = "memorax-code-codebuddy-adapter@memorax-code-local";
+  const registryPath = join(home, "plugins", "installed_plugins.json");
+  const lockPath = `${registryPath}.lock`;
+  await mkdir(marketplaceRoot(home), { recursive: true });
+  await writeFile(codeBuddySettingsPath(home), JSON.stringify({
+    enabledPlugins: { [pluginId]: true },
+  }));
+  await writeFile(registryPath, JSON.stringify({
+    version: 2,
+    plugins: {
+      "user-plugin@user-marketplace": [{ scope: "user", enabled: true }],
+      [pluginId]: [{ scope: "user", enabled: true }],
+    },
+  }));
+  await writeFile(lockPath, "");
+  const staleTime = new Date(Date.now() - 60_000);
+  await utimes(lockPath, staleTime, staleTime);
+
+  const disabled = await disableCodeBuddyAdapter({ codeBuddyHome: home });
+
+  assert.equal(disabled.ok, true);
+  const registry = JSON.parse(await readFile(registryPath, "utf8"));
+  assert.ok(registry.plugins["user-plugin@user-marketplace"]);
+  assert.equal(registry.plugins[pluginId][0].enabled, false);
+  assert.equal(await exists(lockPath), false);
 });
 
 async function exists(path) {
