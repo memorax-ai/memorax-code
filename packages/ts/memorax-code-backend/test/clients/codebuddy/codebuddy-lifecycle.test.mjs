@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -7,8 +7,9 @@ import { codeBuddyAdapterLifecycle } from "../../../dist/clients/codebuddy/lifec
 
 test("CodeBuddy lifecycle converts asynchronous adapter failures into its own report", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-codebuddy-lifecycle-failure-"));
-  const codeBuddyHome = join(root, "blocked-home");
-  await writeFile(codeBuddyHome, "not a directory\n");
+  const codeBuddyHome = join(root, "codebuddy-home");
+  await mkdir(codeBuddyHome);
+  await writeFile(join(codeBuddyHome, "settings.json"), "{invalid-json\n");
   try {
     const context = {
       argv: ["--codebuddy-home", codeBuddyHome],
@@ -24,7 +25,7 @@ test("CodeBuddy lifecycle converts asynchronous adapter failures into its own re
       const report = await codeBuddyAdapterLifecycle[method](context);
       assert.equal(report.ok, false, method);
       assert.equal(report.action, action, method);
-      assert.match(report[errorField], /ENOTDIR|not a directory/i, method);
+      assert.match(report[errorField], /JSON|Unexpected|Expected/i, method);
     }
   } finally {
     await rm(root, { recursive: true, force: true });
