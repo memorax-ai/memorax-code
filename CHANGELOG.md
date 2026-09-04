@@ -6,6 +6,24 @@ behavior.
 
 ## Unreleased
 
+## [0.1.13] - 2026-09-04
+
+### Added
+
+- Supported coding agents now briefly identify when recalled Memory materially
+  shaped the final answer, while omitting the notice for unused or merely
+  confirmatory context.
+
+### Fixed
+
+- Recovered abandoned CodeBuddy/WorkBuddy plugin registry locks after
+  interrupted lifecycle operations while preserving unrelated plugin entries.
+- Fixed Repo Memory workers launched from installed packages so supported
+  clients consistently resolve their packaged runtime, including preserving
+  the triggering WorkBuddy plugin root.
+- Preserved existing Repo Memory long-option compatibility, including
+  `--option=value`, during build and update operations.
+
 ## [0.1.12] - 2026-09-02
 
 ### Added

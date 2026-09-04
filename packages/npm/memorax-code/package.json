@@ -1,6 +1,6 @@
 {
   "name": "@memorax/memorax-code",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "description": "Persistent coding memory for Codex, Claude Code, CodeBuddy/WorkBuddy, DeepSeek Harness, OpenCode, and Trae.",
   "license": "MIT",
   "type": "module",
