@@ -54,10 +54,10 @@ and validation sooner.
 
 Prepare Node.js 20+ (Node.js 24 LTS recommended) and at least one of Codex,
 Claude Code, WorkBuddy, DeepSeek Harness, OpenCode, or Trae. Python 3 is
-required for Repo Memory operations. Each coding-agent harness retains its own
-runtime requirements; current DeepSeek Harness releases require Node.js
-`^22.19.0 || >=24.0.0`. DSH may be installed globally or initialized
-beforehand through its official `npx` workflow.
+currently needed only for local User Profile Memory operations. Each
+coding-agent harness retains its own runtime requirements; current DeepSeek
+Harness releases require Node.js `^22.19.0 || >=24.0.0`. DSH may be installed
+globally or initialized beforehand through its official `npx` workflow.
 
 ### Install and Connect
 

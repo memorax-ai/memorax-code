@@ -49,9 +49,9 @@ MemoraX Code 让 Codex、Claude Code、WorkBuddy、DeepSeek Harness、OpenCode �
 ## 快速开始
 
 开始前，请确保已安装 Node.js 20 或更高版本（推荐 Node.js 24 LTS），以及 Codex、Claude Code、
-WorkBuddy、DeepSeek Harness、OpenCode 或 Trae 中的至少一个。Repo Memory 操作还需要 Python 3。
-各 Coding Agent Harness 仍需满足自身的运行时要求；当前 DeepSeek Harness 版本要求 Node.js
-`^22.19.0 || >=24.0.0`。DSH 可全局安装，也可事先通过其官方 `npx` 流程完成初始化。
+WorkBuddy、DeepSeek Harness、OpenCode 或 Trae 中的至少一个。目前只有本地 User Profile Memory
+操作需要 Python 3。各 Coding Agent Harness 仍需满足自身的运行时要求；当前 DeepSeek Harness
+版本要求 Node.js `^22.19.0 || >=24.0.0`。DSH 可全局安装，也可事先通过其官方 `npx` 流程完成初始化。
 
 ### 安装与接入
 

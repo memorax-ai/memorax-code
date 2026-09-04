@@ -7,10 +7,10 @@ import { evaluateRepository } from "../../memorax-code-adapter-common/src/repo-m
 
 const hookDir = dirname(fileURLToPath(import.meta.url));
 const adapterRoot = dirname(hookDir);
-const packagedValidator = resolve(adapterRoot, "skills/memorax-code/scripts/validate_memory.py");
+const packagedValidator = resolve(adapterRoot, "skills/memorax-code/scripts/repo-memory.mjs");
 const validatorPath = existsSync(packagedValidator)
   ? packagedValidator
-  : resolve(adapterRoot, "../memorax-code-codex-adapter/skills/memorax-code/scripts/validate_memory.py");
+  : resolve(adapterRoot, "../memorax-code-codex-adapter/skills/memorax-code/scripts/repo-memory.mjs");
 
 try {
   const payload = runRepoMemoryJob(process.argv.slice(2), {

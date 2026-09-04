@@ -8,11 +8,8 @@ import { test } from "node:test";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const builderSkillRoot = join(packageRoot, "skills", "memorax-code");
-const collectAllScript = join(builderSkillRoot, "scripts", "collect_all.py");
+const repoMemoryScript = join(builderSkillRoot, "scripts", "repo-memory.mjs");
 const defaultsPath = join(builderSkillRoot, "defaults.json");
-const githubFacetsScript = join(builderSkillRoot, "scripts", "github_resource_facets.py");
-const gitlabFacetsScript = join(builderSkillRoot, "scripts", "gitlab_resource_facets.py");
-const prepareScript = join(packageRoot, "skills", "memorax-code", "scripts", "prepare_repo_memory.py");
 const userProfileScript = join(packageRoot, "skills", "memorax-code", "scripts", "user_profile_memory.py");
 
 function runGit(cwd, args) {
@@ -153,9 +150,9 @@ function createRepoFixture(root) {
 
 function runCollectAll(repo, bin, extraArgs = []) {
   return spawnSync(
-    "python3",
+    process.execPath,
     [
-      collectAllScript,
+      repoMemoryScript, "collect",
       "--repo-path",
       repo,
       "--commit-limit",
@@ -269,9 +266,9 @@ test("collect-all keeps provider facets raw without persistent index outputs", (
     const latestSha = runGit(repo, ["rev-parse", "HEAD"]);
 
     const result = spawnSync(
-      "python3",
+      process.execPath,
       [
-        collectAllScript,
+        repoMemoryScript, "collect",
         "--repo-path",
         repo,
         "--commit-limit",
@@ -327,9 +324,9 @@ test("GitHub provider skips PRs with nonlocal merge commits without losing issue
     const latestSha = runGit(repo, ["rev-parse", "HEAD"]);
 
     const result = spawnSync(
-      "python3",
+      process.execPath,
       [
-        collectAllScript,
+        repoMemoryScript, "collect",
         "--repo-path",
         repo,
         "--commit-limit",
@@ -435,6 +432,41 @@ test("collect-all supports history mode none without collecting commit or provid
   }
 });
 
+test("repo-memory CLI accepts inline long-option values", () => {
+  const root = mkdtempSync(join(tmpdir(), "memorax-code-repo-memory-inline-options."));
+  try {
+    const { repo, bin } = createRepoFixture(root);
+    const result = spawnSync(
+      process.execPath,
+      [
+        repoMemoryScript, "collect",
+        `--repo-path=${repo}`,
+        "--history-mode=local-only",
+        "--commit-limit=1",
+        "--pr-limit=7",
+        "--issue-limit=9",
+        "--summary-chars=100",
+        "--pretty",
+      ],
+      {
+        cwd: packageRoot,
+        encoding: "utf8",
+        env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}` },
+      },
+    );
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const report = JSON.parse(result.stdout);
+    assert.equal(report.repo_path, realpathSync(repo));
+    assert.equal(report.effective_settings.history.mode, "local-only");
+    assert.deepEqual(report.effective_settings.limits, { commits: 1, prs: 7, issues: 9 });
+    assert.equal(report.effective_settings.summary_chars, 100);
+    assert.deepEqual(report.counts.raw.git_commits, { commit: 1 });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("collect-all supports commits-only history mode without provider access", () => {
   const root = mkdtempSync(join(tmpdir(), "memorax-code-repo-memory-history-commits-only."));
   try {
@@ -504,8 +536,8 @@ test("collect-all reports visible defaults from defaults.json", () => {
 
     const { repo, bin } = createRepoFixture(root);
     const result = spawnSync(
-      "python3",
-      [collectAllScript, "--repo-path", repo, "--pretty"],
+      process.execPath,
+      [repoMemoryScript, "collect", "--repo-path", repo, "--pretty"],
       {
         cwd: packageRoot,
         encoding: "utf8",
@@ -600,9 +632,9 @@ test("collect-all supports separate commit, PR, and issue limit overrides", () =
   try {
     const { repo, bin } = createRepoFixture(root);
     const result = spawnSync(
-      "python3",
+      process.execPath,
       [
-        collectAllScript,
+        repoMemoryScript, "collect",
         "--repo-path",
         repo,
         "--commit-limit",
@@ -645,9 +677,9 @@ test("provider facet scripts accept separate PR and issue limit overrides", () =
     const env = { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}` };
 
     const github = spawnSync(
-      "python3",
+      process.execPath,
       [
-        githubFacetsScript,
+        repoMemoryScript, "github-facets",
         "--repo",
         "owner/project",
         "--repo-path",
@@ -667,9 +699,9 @@ test("provider facet scripts accept separate PR and issue limit overrides", () =
     assert.doesNotMatch(github.stderr, /unrecognized arguments/);
 
     const gitlab = spawnSync(
-      "python3",
+      process.execPath,
       [
-        gitlabFacetsScript,
+        repoMemoryScript, "gitlab-facets",
         "--repo",
         "owner/project",
         "--repo-path",
@@ -715,7 +747,7 @@ test("collect-all requires --reuse and preserves unknown files in an existing .r
     assert.equal(report.steps.prepare.ok, true);
     assert.equal(readFileSync(unknownFile, "utf8"), '{"ownedBy":"another-tool"}\n');
 
-    const force = spawnSync("python3", [prepareScript, repo, "--force"], {
+    const force = spawnSync(process.execPath, [repoMemoryScript, "prepare", repo, "--force"], {
       cwd: packageRoot,
       encoding: "utf8",
       env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}` },
@@ -751,7 +783,7 @@ test("repo-memory prepare allows a user-profile-only .repo_memory sidecar", () =
     assert.equal(profile.status, 0, profile.stderr || profile.stdout);
     assert.equal(existsSync(join(repo, ".repo_memory", "user-profile", "preferences.md")), true);
 
-    const prepared = spawnSync("python3", [prepareScript, repo], {
+    const prepared = spawnSync(process.execPath, [repoMemoryScript, "prepare", repo], {
       cwd: packageRoot,
       encoding: "utf8",
       env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}` },

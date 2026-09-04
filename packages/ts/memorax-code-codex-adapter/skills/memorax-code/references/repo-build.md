@@ -77,7 +77,7 @@ If the directory is not a git repository, do not create `.repo_memory/` and do n
 `<skill-dir>` means the parent directory of the `references/` directory containing this file. Resolve it before running scripts, for example:
 
 ```bash
-python3 <skill-dir>/scripts/collect_all.py --repo-path <repo-path> --pretty --progress
+node <skill-dir>/scripts/repo-memory.mjs collect --repo-path <repo-path> --pretty --progress
 ```
 
 ## Default Settings
@@ -99,7 +99,7 @@ Default mechanical collection settings are intentionally visible in `<skill-dir>
 }
 ```
 
-To change defaults for future builder runs, edit `defaults.json`, not the Python scripts. To override one run, pass `--history-mode`, `--commit-limit`, `--pr-limit`, `--issue-limit`, or `--summary-chars` to `collect_all.py`.
+To change defaults for future builder runs, edit `defaults.json`, not the runtime code. To override one run, pass `--history-mode`, `--commit-limit`, `--pr-limit`, `--issue-limit`, or `--summary-chars` to `repo-memory.mjs collect`.
 
 Provider collection is best-effort by default. Use `--history-mode local-only` or `--skip-provider` for an explicit local-only run that does not call GitHub/GitLab, and use `--history-mode provider-required` or `--require-provider` only when the user explicitly requires PR/MR/issue evidence and the run should fail instead of falling back to local-only memory.
 
@@ -121,7 +121,7 @@ When history or provider evidence is disabled, skipped, unavailable, or degraded
 
 ## User Count Requests
 
-If the user mentions how many commits, PRs/MRs, or issues to collect, treat that as a one-run override and pass explicit limit flags to `collect_all.py`. Do not edit `defaults.json` for a one-run request.
+If the user mentions how many commits, PRs/MRs, or issues to collect, treat that as a one-run override and pass explicit limit flags to `repo-memory.mjs collect`. Do not edit `defaults.json` for a one-run request.
 
 Examples:
 
@@ -133,7 +133,7 @@ Only edit `defaults.json` when the user asks to change defaults for future build
 
 ## Progress Display
 
-Skill instructions cannot render app-native progress components by themselves. For interactive builder runs, prefer `collect_all.py --progress`; it renders a terminal progress bar on stderr while keeping stdout as the final JSON report. Omit `--progress` only for strict machine-only runs that must avoid stderr progress output.
+Skill instructions cannot render app-native progress components by themselves. For interactive builder runs, prefer `repo-memory.mjs collect --progress`; it renders a terminal progress bar on stderr while keeping stdout as the final JSON report. Omit `--progress` only for strict machine-only runs that must avoid stderr progress output.
 
 The progress bar covers the mechanical collection steps: preparation, local commits, and provider facets. Provider warnings are not terminal notifications; they are returned in the JSON report as structured `notices[]` so the agent can show them as a normal user-visible assistant message. The progress bar does not replace the required provider warning notice, final JSON report review, agent-authored Markdown work, or final validation.
 
@@ -148,33 +148,33 @@ Build mode controls only the local project understanding phase. The mechanical c
 
 ## Tool Roles
 
-### `scripts/collect_all.py`
+### `scripts/repo-memory.mjs collect`
 
 Use this as the primary mechanical path. It prepares the workspace, collects local git commit evidence, collects GitHub/GitLab PR/MR/issue evidence when provider auth is ready, and returns a JSON report describing completed steps and outputs. If provider collection fails after preparation reports `provider_evidence_state: "ready"`, the default behavior is to keep local commit evidence, emit a warning notice, and report `steps.provider_facets.degraded_to_local_only: true`. Only `--require-provider` turns this into a hard failure.
 
 Default run:
 
 ```bash
-python3 <skill-dir>/scripts/collect_all.py --repo-path <repo-path> --snapshot-ref HEAD --pretty --progress
+node <skill-dir>/scripts/repo-memory.mjs collect --repo-path <repo-path> --snapshot-ref HEAD --pretty --progress
 ```
 
 One-run limit override:
 
 ```bash
-python3 <skill-dir>/scripts/collect_all.py --repo-path <repo-path> --snapshot-ref HEAD --commit-limit 50 --pr-limit 20 --issue-limit 20 --pretty --progress
+node <skill-dir>/scripts/repo-memory.mjs collect --repo-path <repo-path> --snapshot-ref HEAD --commit-limit 50 --pr-limit 20 --issue-limit 20 --pretty --progress
 ```
 
 Full refresh of an existing `.repo_memory` bundle:
 
 ```bash
-python3 <skill-dir>/scripts/collect_all.py --repo-path <repo-path> --reuse --snapshot-ref HEAD --pretty --progress
+node <skill-dir>/scripts/repo-memory.mjs collect --repo-path <repo-path> --reuse --snapshot-ref HEAD --pretty --progress
 ```
 
 Local-only memory or hard-required provider evidence:
 
 ```bash
-python3 <skill-dir>/scripts/collect_all.py --repo-path <repo-path> --snapshot-ref HEAD --skip-provider --pretty --progress
-python3 <skill-dir>/scripts/collect_all.py --repo-path <repo-path> --snapshot-ref HEAD --require-provider --pretty --progress
+node <skill-dir>/scripts/repo-memory.mjs collect --repo-path <repo-path> --snapshot-ref HEAD --skip-provider --pretty --progress
+node <skill-dir>/scripts/repo-memory.mjs collect --repo-path <repo-path> --snapshot-ref HEAD --require-provider --pretty --progress
 ```
 
 Tell the user before starting long collection steps. After completion, report collected counts from the JSON report: local commits, PRs/MRs, issues, provider state, skipped steps, notices, and output files.
@@ -189,25 +189,25 @@ Do not silently collapse notices into counts, provider state, or a generic "loca
 
 `gh/glab` provider collection needs external network access. If provider stderr or `notices[]` shows `fetch failed`, timeout, DNS, connection, TLS, `ENOTFOUND`, `EAI_AGAIN`, or similar transport text, report provider evidence unavailable and continue local-only unless `--require-provider` was requested.
 
-Verify provider authentication in the same normal shell with the command reported by `collect_all.py`; for GitHub Enterprise or self-hosted GitLab this may include `--hostname <host>`. Authenticate with `gh auth login` or `glab auth login` (also host-scoped when prompted), then rerun `collect_all.py`; do not paste tokens into the skill or call provider APIs directly.
+Verify provider authentication in the same normal shell with the command reported by `repo-memory.mjs collect`; for GitHub Enterprise or self-hosted GitLab this may include `--hostname <host>`. Authenticate with `gh auth login` or `glab auth login` (also host-scoped when prompted), then rerun `repo-memory.mjs collect`; do not paste tokens into the skill or call provider APIs directly.
 
 Do not use a restricted shell sandbox to verify provider/API availability. Verify in a normal shell or approved network-enabled mode. If only restricted shell access is available, report provider evidence unavailable and continue local-only unless `--require-provider` was requested. Do not treat a provider transport failure as empty PR/issue evidence, no PR/issue changes, bad login, or bypass the scripts with direct APIs, browser scraping, copied credentials, or hand-written raw facets.
 
-### `scripts/validate_memory.py`
+### `scripts/repo-memory.mjs validate`
 
 Use this as the final gate after authoring `PROFILE.md`, supporting conceptual pages, and `resources/*.md`. It accepts either the repository root or the memory root, validates required files, JSON parseability, frontmatter counts, placeholder removal, and provider raw/resource consistency.
 
 ```bash
-python3 <skill-dir>/scripts/validate_memory.py <repo-path> --pretty
+node <skill-dir>/scripts/repo-memory.mjs validate <repo-path> --pretty
 ```
 
 ### Internal scripts
 
-These are invoked by `collect_all.py`. Use them directly only for debugging or narrow recovery:
+These are invoked by `repo-memory.mjs collect`. Use them directly only for debugging or narrow recovery:
 
-- `prepare_repo_memory.py`: validates the target repo, handles `--reuse`, creates `.repo_memory/{raw,resources}`, updates `.gitignore`, and writes `raw/prepare-report.json`.
-- `git_commit_facets.py`: collects local commit facets from the selected snapshot. It needs only local git history.
-- `github_resource_facets.py` and `gitlab_resource_facets.py`: collect provider PR/MR/issue facets when `prepare-report.json` says the provider is ready. They share the same downstream resource shape; GitLab merge requests are normalized into PR resources.
+- `repo-memory.mjs prepare`: validates the target repo, handles `--reuse`, creates `.repo_memory/{raw,resources}`, updates `.gitignore`, and writes `raw/prepare-report.json`.
+- `repo-memory.mjs git-commits`: collects local commit facets from the selected snapshot. It needs only local git history.
+- `repo-memory.mjs github-facets` and `repo-memory.mjs gitlab-facets`: collect provider PR/MR/issue facets when `prepare-report.json` says the provider is ready. They share the same downstream resource shape; GitLab merge requests are normalized into PR resources.
 
 Provider resource facets share this contract: `--snapshot-ref HEAD` filters merged PRs/MRs by merge-commit ancestry against the local snapshot; open and closed-unmerged PRs/MRs are not retained as landed evidence; issues come from the current bounded provider list because issues do not have reliable commit ancestry. For PRs/MRs, `--pr-limit` is the retained count after snapshot filtering.
 
@@ -216,7 +216,7 @@ Provider resource facets share this contract: `--snapshot-ref HEAD` filters merg
 Follow this order manually:
 
 1. **Collect mechanical evidence**
-   - Run `collect_all.py`.
+   - Run `repo-memory.mjs collect`.
    - Use `--reuse` only for a full refresh/rebuild of an existing `.repo_memory`; for latest-change-only updates, prefer `repo-update.md`.
    - Read the returned JSON report and `.repo_memory/raw/prepare-report.json`.
    - Stop if preparation fails. Do not improvise around git/repo safety checks.
@@ -266,7 +266,7 @@ Run: `<notice.command>`
 
 7. **Finalize and validate**
    - Add final pointers and provider snapshot notes to `PROFILE.md`.
-   - Run `validate_memory.py` as the final gate.
+   - Run `repo-memory.mjs validate` as the final gate.
    - Fix authored Markdown placeholders, frontmatter counts, or resource mismatches before reporting success.
 
 ## Refresh/Update Workflow
@@ -276,7 +276,7 @@ For incremental updates to recent commits, PRs/MRs, or issues in an existing `.r
 Use builder refresh only when the user wants a full rebuild/full refresh while preserving the existing memory directory:
 
 ```bash
-python3 <skill-dir>/scripts/collect_all.py --repo-path <repo-path> --reuse --pretty --progress
+node <skill-dir>/scripts/repo-memory.mjs collect --repo-path <repo-path> --reuse --pretty --progress
 ```
 
 Then rewrite affected human-authored resources from the new raw evidence. Preserve useful existing notes only when they are still supported by current raw evidence and live repository inspection. Never append or patch raw/provider JSON by hand; rerun the collection scripts instead.

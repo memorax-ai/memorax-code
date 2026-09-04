@@ -1,5 +1,17 @@
 import { strict as assert } from "node:assert";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -105,9 +117,9 @@ test("memorax-code references keep authority and operation boundaries explicit",
   assert.match(repoRead, /Do not read repo memory again after `maintain` returns/);
   assert.match(repoRead, /Current implementation claims and code edits still require live-code verification/);
   assert.match(repoBuild, /first-time creation, full rebuilds, or full refreshes/);
-  assert.match(repoBuild, /scripts\/collect_all\.py/);
+  assert.match(repoBuild, /scripts\/repo-memory\.mjs collect/);
   assert.match(repoUpdate, /Update existing repo memory from a delta/);
-  assert.match(repoUpdate, /scripts\/detect_updates\.py/);
+  assert.match(repoUpdate, /scripts\/repo-memory\.mjs detect-updates/);
   assert.match(personalRead, /Do not write, normalize, migrate, repair, or delete memory/);
   assert.match(personalRead, /how the coding agent should interact with the user/);
   assert.match(personalWrite, /Require the user to explicitly ask/);
@@ -230,4 +242,93 @@ test("memorax-code declares OpenAI and Claude implicit invocation metadata", () 
   assert.doesNotMatch(claudeYaml, /Use \/memorax-code to route/);
   assert.match(claudeYaml, /~\/\.claude\/skills\/memorax-code/);
   assert.match(claudeYaml, /allow_implicit_invocation: true/);
+});
+
+test("repo-memory launcher uses Node for an extensionless packaged CLI", () => {
+  const root = mkdtempSync(join(tmpdir(), "memorax-code-repo-memory-launcher-"));
+  try {
+    const pluginRoot = join(root, "plugin");
+    const scriptDir = join(pluginRoot, "skills", "memorax-code", "scripts");
+    const command = join(root, "memorax-code");
+    mkdirSync(scriptDir, { recursive: true });
+    copyFileSync(
+      join(skillRoot, "scripts", "repo-memory.mjs"),
+      join(scriptDir, "repo-memory.mjs"),
+    );
+    writeFileSync(
+      command,
+      "#!/usr/bin/env node\nprocess.stdout.write(JSON.stringify(process.argv.slice(2)));\n",
+      { mode: 0o644 },
+    );
+    writeFileSync(
+      join(pluginRoot, ".memorax-code-package.json"),
+      `${JSON.stringify({ version: 1, memoraxCodeCommand: command })}\n`,
+    );
+
+    const result = spawnSync(
+      process.execPath,
+      [join(scriptDir, "repo-memory.mjs"), "validate", join(root, "repo with spaces")],
+      { encoding: "utf8" },
+    );
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.deepEqual(JSON.parse(result.stdout), [
+      "repo-memory",
+      "validate",
+      join(root, "repo with spaces"),
+    ]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("repo-memory launcher resolves the runtime from a Claude marketplace layout", () => {
+  const root = mkdtempSync(join(tmpdir(), "memorax-code-repo-memory-claude-marketplace-"));
+  try {
+    const libRoot = join(root, "lib");
+    const scriptDir = join(
+      libRoot,
+      "memorax-code-claude-marketplace",
+      "plugins",
+      "memorax-code-claude-adapter",
+      "skills",
+      "memorax-code",
+      "scripts",
+    );
+    const runtimeDir = join(libRoot, "memorax-code-backend", "dist", "repo-memory");
+    mkdirSync(scriptDir, { recursive: true });
+    mkdirSync(runtimeDir, { recursive: true });
+    copyFileSync(
+      join(skillRoot, "scripts", "repo-memory.mjs"),
+      join(scriptDir, "repo-memory.mjs"),
+    );
+    writeFileSync(
+      join(libRoot, "memorax-code-backend", "package.json"),
+      `${JSON.stringify({ type: "module" })}\n`,
+    );
+    writeFileSync(
+      join(runtimeDir, "cli.js"),
+      [
+        "export async function runRepoMemoryCli(args, { skillDir }) {",
+        "  process.stdout.write(JSON.stringify({ args, skillDir }));",
+        "  return 0;",
+        "}",
+        "",
+      ].join("\n"),
+    );
+
+    const result = spawnSync(
+      process.execPath,
+      [join(scriptDir, "repo-memory.mjs"), "validate", join(root, "repo")],
+      { encoding: "utf8" },
+    );
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.deepEqual(JSON.parse(result.stdout), {
+      args: ["validate", join(root, "repo")],
+      skillDir: realpathSync(dirname(scriptDir)),
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

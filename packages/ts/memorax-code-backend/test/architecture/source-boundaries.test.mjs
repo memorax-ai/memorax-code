@@ -11,6 +11,7 @@ const backendRootFacades = [
   "jsonl-append.ts",
   "memorax-cli.ts",
   "memorax-code.ts",
+  "repo-memory.ts",
   "server.ts",
   "service-entrypoint.ts",
   "windows-cli-invocation.ts",

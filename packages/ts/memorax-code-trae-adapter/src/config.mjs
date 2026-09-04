@@ -39,6 +39,7 @@ const ADAPTER_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const STATE_VERSION = 1;
 const HOOK_MARKER = "--memorax-code-trae-hook-v1";
 const REQUIRED_EVENTS = ["SessionStart", "UserPromptSubmit", "Stop"];
+const SKILL_PACKAGE_METADATA = ".memorax-code-package.json";
 
 export async function enableTraeAdapter(options = {}) {
   const paths = resolvePaths(options);
@@ -71,12 +72,15 @@ async function enableTraeAdapterUnlocked(paths, options) {
     absoluteRegularFile(options.nodePath) ?? process.execPath,
     options.powershellPath ?? defaultWindowsPowerShellPath(),
   );
-  const skillDigest = directoryDigest(paths.skillSourcePath);
+  const memoraxCodeCommand = stringOption(options.memoraxCodeCommand) ?? defaultMemoraxCodeCommand();
+  const skillDigest = skillDirectoryDigest(paths.skillSourcePath);
+  const skillCurrent = directoryDigestIfPresent(paths.skillPath, SKILL_PACKAGE_METADATA) === skillDigest
+    && skillPackageMetadataCurrent(paths.skillPath, memoraxCodeCommand);
   const current = previousState?.runtimeDigest === runtimeDigest
     && previousState?.skillDigest === skillDigest
     && previousState?.enabled === true
     && existsSync(runtimePath)
-    && directoryDigestIfPresent(paths.skillPath) === skillDigest
+    && skillCurrent
     && hooksConfigured(hookManifest, hookCommand);
   const now = new Date().toISOString();
   const state = {
@@ -99,8 +103,8 @@ async function enableTraeAdapterUnlocked(paths, options) {
   try {
     atomicWriteJson(paths.statePath, { ...state, enabled: false, installPending: true });
     materializeRuntimeGeneration(paths, generationPath, runtimeDigest, options);
-    if (directoryDigestIfPresent(paths.skillPath) !== skillDigest) {
-      materializeDirectory(paths.skillSourcePath, paths.skillPath);
+    if (!skillCurrent) {
+      materializeDirectory(paths.skillSourcePath, paths.skillPath, memoraxCodeCommand);
     }
     updateManagedHooks(paths.hooksPath, hookCommand, true);
     atomicWriteJson(paths.statePath, state);
@@ -195,8 +199,10 @@ async function readTraeAdapterStatusUnlocked(paths, options) {
   }
   const runtimeCurrent = existsSync(state.runtimePath)
     && state.runtimePath === join(state.runtimeRoot, state.runtimeDigest, "hooks", "runtime-hook.mjs");
+  const memoraxCodeCommand = stringOption(options.memoraxCodeCommand) ?? defaultMemoraxCodeCommand();
   const skillCurrent = existsSync(join(state.skillPath, "SKILL.md"))
-    && directoryDigestIfPresent(state.skillPath) === state.skillDigest;
+    && directoryDigestIfPresent(state.skillPath, SKILL_PACKAGE_METADATA) === state.skillDigest
+    && skillPackageMetadataCurrent(state.skillPath, memoraxCodeCommand);
   const configured = Boolean(manifest && hooksConfigured(manifest, state.hookCommand));
   const observation = await readTraeRuntimeObservation(paths.memoraxCodeHome);
   const runtimeObserved = observation?.runtimeDigest === state.runtimeDigest
@@ -515,12 +521,16 @@ function windowsExecutableToken(path) {
   return /^[A-Za-z]:\/[^\s"]+$/.test(normalized) ? normalized : "powershell.exe";
 }
 
-function materializeDirectory(source, destination) {
+function materializeDirectory(source, destination, memoraxCodeCommand) {
   mkdirSync(dirname(destination), { recursive: true });
   const temporaryPath = `${destination}.tmp-${process.pid}-${randomUUID()}`;
   rmSync(temporaryPath, { recursive: true, force: true });
   try {
     cpSync(source, temporaryPath, { recursive: true });
+    atomicWriteJson(
+      join(temporaryPath, SKILL_PACKAGE_METADATA),
+      skillPackageMetadata(memoraxCodeCommand),
+    );
     rmSync(destination, { recursive: true, force: true });
     renameSync(temporaryPath, destination);
   } catch (error) {
@@ -537,24 +547,44 @@ function runtimeSourceDigest(paths) {
   return hash.digest("hex");
 }
 
-function directoryDigest(path) {
+function skillDirectoryDigest(path) {
   const hash = createHash("sha256");
-  hashDirectory(hash, path, "");
+  hashDirectory(hash, path, "", SKILL_PACKAGE_METADATA);
   return hash.digest("hex");
 }
 
-function directoryDigestIfPresent(path) {
+function directoryDigestIfPresent(path, ignoredPath) {
   try {
-    return directoryDigest(path);
+    const hash = createHash("sha256");
+    hashDirectory(hash, path, "", ignoredPath);
+    return hash.digest("hex");
   } catch {
     return undefined;
   }
 }
 
-function hashDirectory(hash, root, prefix) {
+function hashDirectory(hash, root, prefix, ignoredPath) {
   for (const file of regularFiles(root)) {
-    hashFile(hash, file, join(prefix, relative(root, file)).replaceAll("\\", "/"));
+    const label = join(prefix, relative(root, file)).replaceAll("\\", "/");
+    if (label === ignoredPath) continue;
+    hashFile(hash, file, label);
   }
+}
+
+function skillPackageMetadataCurrent(skillPath, memoraxCodeCommand) {
+  try {
+    return readFileSync(join(skillPath, SKILL_PACKAGE_METADATA), "utf8")
+      === `${JSON.stringify(skillPackageMetadata(memoraxCodeCommand), null, 2)}\n`;
+  } catch {
+    return false;
+  }
+}
+
+function skillPackageMetadata(memoraxCodeCommand) {
+  return {
+    version: 1,
+    ...(memoraxCodeCommand ? { memoraxCodeCommand } : {}),
+  };
 }
 
 function hashFile(hash, path, label) {

@@ -16,7 +16,7 @@ installation. For a source checkout and contributor setup, see
   because DSH's native Profile plugin manager delegates package changes to it.
   The tested DSH baseline is `0.1.0-rc.6`; other valid semantic versions are
   reported as untested rather than rejected automatically.
-- Python 3 only when using Repo Memory operations.
+- Python 3 only for local User Profile Memory operations.
 - On Linux, `/usr/bin/secret-tool` from libsecret and an available Secret
   Service in the current user session for setup-managed credentials.
 

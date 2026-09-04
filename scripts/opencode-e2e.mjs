@@ -268,9 +268,9 @@ try {
   assert.equal(repoMemoryJob.validation?.ok, true);
   const validatorPath = join(
     openCodeConfigDir,
-    "skills", "memorax-code", "scripts", "validate_memory.py",
+    "skills", "memorax-code", "scripts", "repo-memory.mjs",
   );
-  const repoMemoryValidation = JSON.parse((await run("python3", [validatorPath, workspace], {
+  const repoMemoryValidation = JSON.parse((await run(process.execPath, [validatorPath, "validate", workspace], {
     cwd: workspace,
     env,
   })).stdout);
