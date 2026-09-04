@@ -8,7 +8,8 @@ import type { CommandOutput, RepoMemoryContext } from "./shared.js";
 import { executeValidate, validateUsage } from "./validate.js";
 
 export async function runRepoMemoryCli(args: string[], context: RepoMemoryContext): Promise<number> {
-  const [command, ...commandArgs] = args;
+  const [command, ...rawCommandArgs] = args;
+  const commandArgs = expandInlineLongOptions(rawCommandArgs);
   let output: CommandOutput;
   if (command === "prepare") output = executePrepare(commandArgs);
   else if (command === "git-commits") output = executeGitCommitFacets(commandArgs);
@@ -29,6 +30,13 @@ export async function runRepoMemoryCli(args: string[], context: RepoMemoryContex
   if (output.stdout) process.stdout.write(output.stdout);
   if (output.stderr) process.stderr.write(output.stderr);
   return output.exitCode;
+}
+
+function expandInlineLongOptions(args: string[]): string[] {
+  return args.flatMap((arg) => {
+    const separator = arg.startsWith("--") ? arg.indexOf("=") : -1;
+    return separator >= 3 ? [arg.slice(0, separator), arg.slice(separator + 1)] : [arg];
+  });
 }
 
 function usage(): string {

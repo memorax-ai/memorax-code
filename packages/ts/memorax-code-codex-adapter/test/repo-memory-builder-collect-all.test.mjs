@@ -432,6 +432,41 @@ test("collect-all supports history mode none without collecting commit or provid
   }
 });
 
+test("repo-memory CLI accepts inline long-option values", () => {
+  const root = mkdtempSync(join(tmpdir(), "memorax-code-repo-memory-inline-options."));
+  try {
+    const { repo, bin } = createRepoFixture(root);
+    const result = spawnSync(
+      process.execPath,
+      [
+        repoMemoryScript, "collect",
+        `--repo-path=${repo}`,
+        "--history-mode=local-only",
+        "--commit-limit=1",
+        "--pr-limit=7",
+        "--issue-limit=9",
+        "--summary-chars=100",
+        "--pretty",
+      ],
+      {
+        cwd: packageRoot,
+        encoding: "utf8",
+        env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}` },
+      },
+    );
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const report = JSON.parse(result.stdout);
+    assert.equal(report.repo_path, realpathSync(repo));
+    assert.equal(report.effective_settings.history.mode, "local-only");
+    assert.deepEqual(report.effective_settings.limits, { commits: 1, prs: 7, issues: 9 });
+    assert.equal(report.effective_settings.summary_chars, 100);
+    assert.deepEqual(report.counts.raw.git_commits, { commit: 1 });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("collect-all supports commits-only history mode without provider access", () => {
   const root = mkdtempSync(join(tmpdir(), "memorax-code-repo-memory-history-commits-only."));
   try {
