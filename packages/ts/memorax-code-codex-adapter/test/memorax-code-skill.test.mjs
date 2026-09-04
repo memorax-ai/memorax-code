@@ -133,7 +133,9 @@ test("memorax-code reports only material current-turn memory impact in Codex and
   assert.match(router, /Prefer one sentence/);
   assert.match(router, /second sentence only when two independent memory points/);
   assert.match(router, /Coding Memory.*Repo Memory.*Procedure Memory.*Profile Memory/s);
-  assert.match(router, /must literally include `MemoraX Code` and at least one exact source name/);
+  assert.match(router, /must literally include `MemoraX Code` and the generic label `Memory`/);
+  assert.match(router, /Do not name or enumerate the specific source type/);
+  assert.match(router, /这次我参考了 MemoraX Code 的 Memory/);
   assert.match(router, /Do not add a heading, card, label, or colon-led report/);
   assert.match(router, /do not include HTML or XML comments, Markdown markers, tags, zero-width text, hidden control text, or metadata/i);
   assert.doesNotMatch(router, /memorax-impact/);

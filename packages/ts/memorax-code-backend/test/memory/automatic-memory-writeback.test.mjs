@@ -87,7 +87,7 @@ test("automatic memory writeback removes natural leading memory impact before li
   try {
     assert.deepEqual(runtime.enqueue({
       ...options,
-      assistantText: impact("This time, I used MemoraX Code Coding Memory to avoid a rejected implementation path."),
+      assistantText: impact("This time, I used MemoraX Code Memory to avoid a rejected implementation path."),
     }), { accepted: true });
 
     await waitFor(() => requests.length === 1, "automatic writeback did not remove memory impact");
@@ -97,18 +97,18 @@ test("automatic memory writeback removes natural leading memory impact before li
 
     assert.deepEqual(runtime.enqueue({
       ...options,
-      assistantText: impact("这次我参考了 MemoraX Code 的 Repo Memory，定位了需要修改的模块。"),
+      assistantText: impact("这次我参考了 MemoraX Code 的 Memory，定位了需要修改的模块。"),
     }), { accepted: true });
 
     assert.deepEqual(runtime.enqueue({
       ...options,
-      assistantText: impact("MemoraX Code Procedure Memory helped me apply the required validation sequence."),
+      assistantText: impact("MemoraX Code Memory helped me apply the required validation sequence."),
     }), { accepted: true });
     assert.deepEqual(runtime.enqueue({
       ...options,
       client: "claude-code",
       sessionKey: "session-memory-impact-claude",
-      assistantText: impact("I referenced MemoraX Code Profile Memory to follow the requested report structure."),
+      assistantText: impact("Memory from MemoraX Code helped me follow the requested report structure."),
     }), { accepted: true });
     await runtime.drain();
 
@@ -137,11 +137,12 @@ test("automatic memory writeback preserves first paragraphs that do not match th
   });
   const assistantTexts = [
     "MemoraX Code provides Coding Memory for prior engineering knowledge.\n\nThis is ordinary product documentation.",
-    "# This time I used MemoraX Code Coding Memory\n\nA heading must remain part of the answer.",
-    "This time, I used MemoraX Code Coding Memory to guide the task.\nThere is no blank line before the result.",
-    "Keep this result.\n\nThis time, I used MemoraX Code Coding Memory later in the answer.",
-    `I used MemoraX Code Coding Memory to ${"x".repeat(600)}\n\nKeep an overlong first paragraph.`,
-    "This time, I used MemoraX Code to guide the task.\n\nThe exact memory source is missing.",
+    "# This time I used MemoraX Code Memory\n\nA heading must remain part of the answer.",
+    "This time, I used MemoraX Code Memory to guide the task.\nThere is no blank line before the result.",
+    "Keep this result.\n\nThis time, I used MemoraX Code Memory later in the answer.",
+    `I used MemoraX Code Memory to ${"x".repeat(600)}\n\nKeep an overlong first paragraph.`,
+    "This time, I used MemoraX Code to guide the task.\n\nThe generic Memory label is missing.",
+    "This time, I used MemoraX Code to inspect the Memory API.\n\nThe product discussion must remain intact.",
   ];
   try {
     for (const [index, assistantText] of assistantTexts.entries()) {
@@ -179,7 +180,7 @@ test("automatic memory writeback preserves natural memory mentions outside the f
     diagnosticLogger: (message, fields) => diagnostics.push({ message, fields }),
   });
   const assistantText = [
-    "I used MemoraX Code Coding Memory to guide the implementation.",
+    "I used MemoraX Code Memory to guide the implementation.",
     "",
     "OpenCode output.",
   ].join("\n");
