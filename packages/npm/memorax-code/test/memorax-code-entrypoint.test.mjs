@@ -218,6 +218,7 @@ test("root help documents setup and update", async () => {
     assert.match(result.stdout, /^  setup\s+Run or repair the interactive setup$/m);
     assert.match(result.stdout, /^  account\s+Manage local MemoraX account information$/m);
     assert.match(result.stdout, /^  update\s+Update the globally installed npm package$/m);
+    assert.doesNotMatch(result.stdout, /repo-memory/);
     assert.match(result.stdout, /Run `memorax-code setup` to complete first-time setup/);
     assert.equal(await pathExists(fixture.setupLogPath), false);
     assert.equal(await pathExists(fixture.backendLogPath), false);

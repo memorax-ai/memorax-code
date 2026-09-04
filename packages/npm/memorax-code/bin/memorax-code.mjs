@@ -53,7 +53,6 @@ Commands:
   uninstall   Remove managed integrations and the npm package
   logs        Show Backend logs
   token       Manage the local Backend token
-  repo-memory Run local Repo Memory helpers
 
 Run \`memorax-code setup\` to complete first-time setup or repair an installation.
 Run \`memorax-code\` with no command to show setup guidance or current status.
