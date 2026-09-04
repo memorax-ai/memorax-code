@@ -65,6 +65,147 @@ test("automatic memory writeback accepts and redacts a normalized completed turn
   }
 });
 
+test("automatic memory writeback removes natural leading memory impact before limiting and dedupe", async () => {
+  const requests = [];
+  const diagnostics = [];
+  const runtime = createAutomaticMemoryWritebackRuntime({
+    diagnosticLogger: (message, fields) => diagnostics.push({ message, fields }),
+  });
+  const answer = "Ship the validated change.";
+  const impact = (paragraph) => `${paragraph}\n\n${answer}`;
+  const options = {
+    client: "codex",
+    sessionKey: "session-memory-impact",
+    userText: "Implement the memory impact summary.",
+    repositoryScope: REPOSITORY_SCOPE,
+    env: {
+      ...WRITEBACK_ENV,
+      MEMORAX_CODE_MEMORY_WRITEBACK_MAX_MESSAGE_CHARS: String(answer.length + 10),
+    },
+    fetchImpl: memoraxFetch(requests),
+  };
+  try {
+    assert.deepEqual(runtime.enqueue({
+      ...options,
+      assistantText: impact("This time, I used MemoraX Code Coding Memory to avoid a rejected implementation path."),
+    }), { accepted: true });
+
+    await waitFor(() => requests.length === 1, "automatic writeback did not remove memory impact");
+
+    assert.equal(requests[0].body.messages[1].content, answer);
+    assert.equal(JSON.stringify(requests[0]).includes("MemoraX Code"), false);
+
+    assert.deepEqual(runtime.enqueue({
+      ...options,
+      assistantText: impact("这次我参考了 MemoraX Code 的 Repo Memory，定位了需要修改的模块。"),
+    }), { accepted: true });
+
+    assert.deepEqual(runtime.enqueue({
+      ...options,
+      assistantText: impact("MemoraX Code Procedure Memory helped me apply the required validation sequence."),
+    }), { accepted: true });
+    assert.deepEqual(runtime.enqueue({
+      ...options,
+      client: "claude-code",
+      sessionKey: "session-memory-impact-claude",
+      assistantText: impact("I referenced MemoraX Code Profile Memory to follow the requested report structure."),
+    }), { accepted: true });
+    await runtime.drain();
+
+    assert.equal(requests.length, 2);
+    assert.deepEqual(requests.map(({ body }) => body.messages[1].content), [answer, answer]);
+    assert.equal(
+      diagnostics.filter(({ message }) => message === "memory.automatic_writeback.impact_stripped").length,
+      4,
+    );
+    assert.equal(
+      diagnostics.every(({ message, fields }) => (
+        message !== "memory.automatic_writeback.impact_stripped" || fields.removedParagraphs === 1
+      )),
+      true,
+    );
+  } finally {
+    runtime.close();
+  }
+});
+
+test("automatic memory writeback preserves first paragraphs that do not match the natural mention contract", async () => {
+  const requests = [];
+  const diagnostics = [];
+  const runtime = createAutomaticMemoryWritebackRuntime({
+    diagnosticLogger: (message, fields) => diagnostics.push({ message, fields }),
+  });
+  const assistantTexts = [
+    "MemoraX Code provides Coding Memory for prior engineering knowledge.\n\nThis is ordinary product documentation.",
+    "# This time I used MemoraX Code Coding Memory\n\nA heading must remain part of the answer.",
+    "This time, I used MemoraX Code Coding Memory to guide the task.\nThere is no blank line before the result.",
+    "Keep this result.\n\nThis time, I used MemoraX Code Coding Memory later in the answer.",
+    `I used MemoraX Code Coding Memory to ${"x".repeat(600)}\n\nKeep an overlong first paragraph.`,
+    "This time, I used MemoraX Code to guide the task.\n\nThe exact memory source is missing.",
+  ];
+  try {
+    for (const [index, assistantText] of assistantTexts.entries()) {
+      assert.deepEqual(runtime.enqueue({
+        client: "codex",
+        sessionKey: `session-memory-impact-preserved-${index}`,
+        userText: `Preserve ordinary first paragraph ${index}.`,
+        assistantText,
+        repositoryScope: REPOSITORY_SCOPE,
+        env: WRITEBACK_ENV,
+        fetchImpl: memoraxFetch(requests),
+      }), { accepted: true });
+    }
+
+    await runtime.drain();
+
+    assert.equal(requests.length, assistantTexts.length);
+    assert.deepEqual(
+      requests.map(({ body }) => body.messages[1].content).sort(),
+      assistantTexts.toSorted(),
+    );
+    assert.equal(
+      diagnostics.some(({ message }) => message === "memory.automatic_writeback.impact_stripped"),
+      false,
+    );
+  } finally {
+    runtime.close();
+  }
+});
+
+test("automatic memory writeback preserves natural memory mentions outside the first client rollout", async () => {
+  const requests = [];
+  const diagnostics = [];
+  const runtime = createAutomaticMemoryWritebackRuntime({
+    diagnosticLogger: (message, fields) => diagnostics.push({ message, fields }),
+  });
+  const assistantText = [
+    "I used MemoraX Code Coding Memory to guide the implementation.",
+    "",
+    "OpenCode output.",
+  ].join("\n");
+  try {
+    assert.deepEqual(runtime.enqueue({
+      client: "opencode",
+      sessionKey: "session-memory-impact-unsupported",
+      userText: "Keep the first rollout client-scoped.",
+      assistantText,
+      repositoryScope: REPOSITORY_SCOPE,
+      env: WRITEBACK_ENV,
+      fetchImpl: memoraxFetch(requests),
+    }), { accepted: true });
+
+    await runtime.drain();
+
+    assert.equal(requests[0].body.messages[1].content, assistantText);
+    assert.equal(
+      diagnostics.some(({ message }) => message === "memory.automatic_writeback.impact_stripped"),
+      false,
+    );
+  } finally {
+    runtime.close();
+  }
+});
+
 test("automatic memory writeback reports synchronous rejection without taking ownership", () => {
   const runtime = createAutomaticMemoryWritebackRuntime();
   try {

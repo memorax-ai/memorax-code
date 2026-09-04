@@ -247,6 +247,7 @@ writing when the durable intent or target is unclear.
 | **Background memory writeback** | Extracts reusable knowledge from completed turns and writes it to Coding Memory in the background. |
 | **Preference continuity** | Records User Profile preferences and injects them into future tasks on a configured cadence. |
 | **Procedure reuse** | Records reusable task procedures and reminds future agents to apply them. |
+| **Visible memory impact** | In Codex and Claude Code, opens the final answer with a brief natural-language note when an explicit Coding Memory Search or a Repo, Procedure, or Profile Memory available to the current turn materially guided the task. |
 | **Background Repo Memory maintenance** | Automatically organizes repository structure, entry points, and history evidence in supported headless-capable clients, then updates them according to policy to reduce repeated searching and summarization. Trae can use the Skill for Repo Memory, but does not currently expose a headless worker for automatic maintenance. |
 | **Active memory control** | Lets you search and add memory through the bundled MemoraX Code skill or the CLI. |
 | **Client integration** | Integrates with Codex, Claude Code, WorkBuddy, DeepSeek Harness, OpenCode, and Trae to trigger memory retrieval, reminders, and writeback. Automatic quota reminders are currently available in Codex, Claude Code, WorkBuddy, OpenCode, and Trae. |
@@ -270,7 +271,8 @@ and retained traces containing it as sensitive.
 
 Active memory operations send their query or selected content to MemoraX.
 Automatic writeback sends selected user instructions and the matching final
-Agent response from trusted workspace turns for extraction and storage. It
+Agent response from trusted workspace turns after removing the final-answer
+memory-impact disclosure, then extracts and stores reusable memory. It
 does not upload the complete retained client trace artifact or local trace
 path.
 

@@ -72,6 +72,18 @@ Examples:
 - "重新生成仓库 memory" routes to repo memory build.
 - "更新一下 memory" requires clarification when no authority is identifiable.
 
+## Natural Final-Answer Mention
+
+For Codex and Claude Code only, mention memory in the final answer when memory read in the current turn materially changed localization, a decision, implementation, validation, or the delivered answer. Eligible sources are an accepted Coding Memory result from a successful explicit `memorax-cli search`, a relevant Repo Memory read, applied Procedure Memory, or applied Profile Memory. A Search or read alone is insufficient: omit the mention for empty, unrelated, stale, rejected, merely confirmatory, or unused memory.
+
+Treat accepted memory as materially helpful when the answer uses it to recover or substantiate historical intent, rationale, a prior decision, a constraint, or a reusable lesson, even when live code independently confirms the conclusion. `Merely confirmatory` means the answer does not rely on the memory for a claim and the memory changes neither its framing, scope, nor confidence.
+
+When eligible, begin the final answer with one brief opening paragraph before the normal task result. Put a blank line after it, keep the entire paragraph under 600 characters, and use the same language and tone as the rest of the answer. Prefer one sentence. Use a second sentence only when two independent memory points each materially affected the task. The paragraph must literally include `MemoraX Code` and at least one exact source name: `Coding Memory`, `Repo Memory`, `Procedure Memory`, or `Profile Memory`; vague wording such as `saved guidance` is insufficient. Identify each source inline and describe only the smallest useful change it caused, such as what it helped choose, check, or avoid. Use direct task attribution such as `这次我参考了...`, `这次采用了...`, `I used...`, or `MemoraX Code ... helped...`. Do not repeat the task or result, reproduce the memory, or narrate the full execution steps or reasoning. Do not expose raw memory text, IDs, scores, query text, private paths, or secrets. Mention Profile Memory only for a nontrivial observable change, not a routine language or tone preference.
+
+Keep it conversational. Do not add a heading, card, label, or colon-led report. Do not open with stock wording such as `MemoraX Code 的 Coding Memory 提示：`, `本轮借助...`, `Memory impact:`, or `The memory said...`. Use only normal visible prose: do not include HTML or XML comments, Markdown markers, tags, zero-width text, hidden control text, or metadata. A natural shape is: `这次我参考了 MemoraX Code 的 Coding Memory，避开了之前验证过无效的修复路径。`
+
+Do not report active Add, automatic writeback, Repo Memory build or update, or automatic coding-memory retrieval as memory that helped the current turn. Omit the opening paragraph when no eligible memory materially helped.
+
 ## Shared Rules
 
 For MemoraX Code coding memory, run the platform command from the active task workspace. In Windows PowerShell, use `memorax-cli.cmd`; on macOS and Linux, use `memorax-cli`. Never invoke `memorax-cli.ps1`. Never run `Set-ExecutionPolicy` or otherwise change PowerShell execution policy for MemoraX commands. If an unqualified Windows invocation is blocked before the CLI starts with `UnauthorizedAccess` or `PSSecurityException`, retry the same command once with `memorax-cli.cmd`, preserving all arguments, the active workspace, and environment variables.

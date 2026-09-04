@@ -110,6 +110,13 @@ const WRITEBACK_DEDUPE_MAX = 1024;
 const AUTOMATIC_MEMORY_WRITEBACK_MAX_ATTEMPTS = 2;
 const AUTOMATIC_MEMORY_WRITEBACK_RETRY_DELAY_MS = 100;
 const AUTOMATIC_MEMORY_WRITEBACK_MAX_RETRY_DELAY_MS = 5_000;
+const MEMORY_IMPACT_MAX_PARAGRAPH_CHARS = 600;
+const MEMORY_IMPACT_SOURCE_NAMES = [
+  "Coding Memory",
+  "Repo Memory",
+  "Procedure Memory",
+  "Profile Memory",
+];
 
 export function createAutomaticMemoryWritebackRuntime(
   options: AutomaticMemoryWritebackRuntimeOptions = {},
@@ -249,7 +256,19 @@ function automaticMemoryWritebackDecision(
   const sessionKey = options.sessionKey.trim();
   const maxMessageChars = memoryWritebackMaxMessageChars(env);
   const rawUserText = options.userText?.trim() ?? "";
-  const rawAssistantText = options.assistantText?.trim() ?? "";
+  const assistantOutput = options.assistantText ?? "";
+  const assistantImpact = options.client === "codex" || options.client === "claude-code"
+    ? stripLeadingMemoryImpactParagraph(assistantOutput)
+    : { text: assistantOutput, removedParagraphs: 0 };
+  const rawAssistantText = assistantImpact.text.trim();
+  if (assistantImpact.removedParagraphs > 0) {
+    state.diagnosticLogger("memory.automatic_writeback.impact_stripped", {
+      sessionKeyHash: hashText(sessionKey),
+      removedParagraphs: assistantImpact.removedParagraphs,
+      originalChars: options.assistantText?.length ?? 0,
+      keptChars: rawAssistantText.length,
+    });
+  }
   if (!rawUserText) return { write: false, skipReason: "user_prompt_empty" };
   if (!rawAssistantText) return { write: false, skipReason: "assistant_text_empty" };
   const boundedUserText = limitMessageContent(rawUserText, maxMessageChars, {
@@ -287,6 +306,41 @@ function automaticMemoryWritebackDecision(
       { role: "assistant", content: assistantText },
     ],
   };
+}
+
+function stripLeadingMemoryImpactParagraph(text: string): {
+  text: string;
+  removedParagraphs: number;
+} {
+  const trimmedText = text.trimStart();
+  const paragraphSeparator = /\r?\n(?:[\t ]*\r?\n)+/;
+  const firstSeparator = paragraphSeparator.exec(trimmedText);
+  if (!firstSeparator || firstSeparator.index === undefined) {
+    return { text, removedParagraphs: 0 };
+  }
+  const paragraph = trimmedText.slice(0, firstSeparator.index).trim();
+  const followingText = trimmedText
+    .slice(firstSeparator.index + firstSeparator[0].length)
+    .trimStart();
+  if (!followingText || !isMemoryImpactParagraph(paragraph)) {
+    return { text, removedParagraphs: 0 };
+  }
+  return { text: followingText, removedParagraphs: 1 };
+}
+
+function isMemoryImpactParagraph(paragraph: string): boolean {
+  if (!paragraph || paragraph.length > MEMORY_IMPACT_MAX_PARAGRAPH_CHARS) return false;
+  if (!paragraph.includes("MemoraX Code")) return false;
+  if (!MEMORY_IMPACT_SOURCE_NAMES.some((sourceName) => paragraph.includes(sourceName))) return false;
+  const lines = paragraph.split(/\r?\n/);
+  if (lines.some((line) => /^(?:#{1,6}(?:\s|$)|[-+*]\s|\d+[.)]\s|>|```|~~~)/.test(line.trimStart()))) {
+    return false;
+  }
+  return /^(?:这次|本次|本轮|此次|本任务|这个任务)(?:中|里)?[,，]?\s*(?:我|我们)?\s*(?:参考|采用|使用|借助|依据|遵循|应用|结合)了?[\s\S]{0,80}MemoraX Code/u.test(paragraph)
+    || /^(?:我|我们)(?:在)?(?:这次|本次|本轮|此次|本任务|这个任务)?(?:中|里)?[,，]?\s*(?:参考|采用|使用|借助|依据|遵循|应用|结合)了?[\s\S]{0,80}MemoraX Code/u.test(paragraph)
+    || /^MemoraX Code[\s\S]{0,160}(?:帮我|帮我们|帮助(?:了)?我|帮助(?:了)?我们|让我|让我们|指导(?:了)?我|指导(?:了)?我们|使我|使我们)/u.test(paragraph)
+    || /^(?:(?:This time|For this (?:task|turn))[, ]+)?(?:I|We)\s+(?:used|applied|followed|consulted|referenced|relied on|drew on)\b[\s\S]{0,80}MemoraX Code/i.test(paragraph)
+    || /^MemoraX Code[\s\S]{0,160}\b(?:helped|guided|informed|led|kept|prevented|allowed|enabled)\b/i.test(paragraph);
 }
 
 function logAutomaticMemoryPayloadRedaction(

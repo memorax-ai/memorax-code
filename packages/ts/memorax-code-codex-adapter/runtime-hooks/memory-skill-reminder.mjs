@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import {
+  MEMORY_IMPACT_REMINDER_CONTEXT,
   PERSONAL_MEMORY_REMINDER_CONTEXT,
   runMemorySkillReminderHook,
 } from "../../memorax-code-adapter-common/src/hooks/memory-skill-reminder-hook.mjs";
@@ -48,6 +49,7 @@ try {
         }, personalMemoryContextOptions),
       } : {}),
       debugEnv: "MEMORAX_CODE_CODEX_HOOK_DEBUG",
+      memoryImpactContext: MEMORY_IMPACT_REMINDER_CONTEXT,
       onReminder: turnStartResult.recorded ? recordReminder : undefined,
       remindOnFirstTurn: true,
       requireTranscriptPath: true,

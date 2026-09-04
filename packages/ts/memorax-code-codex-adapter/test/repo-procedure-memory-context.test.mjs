@@ -62,6 +62,9 @@ test("multiple procedure files join the existing first and sixth turn cadence", 
       assert.match(context, /Trace the public entry point/);
       assert.match(context, /### writing-code\.md/);
       assert.match(context, /Add the focused test first/);
+      assert.match(context, /Natural final-answer mention for Codex and Claude Code:/);
+      assert.match(context, /begin the final answer with one brief opening paragraph/);
+      assert.doesNotMatch(context, /memorax-impact/);
     }
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -150,6 +153,7 @@ test("tracked unignored symlinked and oversized procedure files are skipped", as
       const context = reminderContext(result.stdout);
       assert.match(context, /^MemoraX Code reminder:/);
       assert.doesNotMatch(context, new RegExp(`${name} content must not appear`));
+      assert.doesNotMatch(context, /Natural final-answer mention/);
     }
   } finally {
     await rm(root, { recursive: true, force: true });

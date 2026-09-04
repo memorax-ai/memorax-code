@@ -15,6 +15,22 @@ import {
 } from "./memory-skill-reminder-policy.mjs";
 
 export const PERSONAL_MEMORY_REMINDER_CONTEXT = personalMemoryReminderContext();
+export const MEMORY_IMPACT_REMINDER_CONTEXT = [
+  "Natural final-answer mention for Codex and Claude Code:",
+  "Only when an accepted Coding Memory result from a successful explicit `memorax-cli search`, a relevant Repo Memory read, applied Procedure Memory, or applied Profile Memory materially changes localization, a decision, implementation, validation, or the delivered answer, begin the final answer with one brief opening paragraph before the normal result.",
+  "A Search or read alone is insufficient; omit it for empty, unrelated, stale, rejected, merely confirmatory, or unused memory.",
+  "Treat accepted memory as materially helpful when the answer uses it to recover or substantiate historical intent, rationale, a prior decision, a constraint, or a reusable lesson, even when live code independently confirms the conclusion.",
+  "Merely confirmatory means the answer does not rely on the memory for a claim and the memory changes neither its framing, scope, nor confidence.",
+  "Put a blank line after this opening paragraph, keep the entire paragraph under 600 characters, and match the answer's language and tone. Prefer one sentence; use a second sentence only when two independent memory points each materially affected the task.",
+  "The paragraph must literally include `MemoraX Code` and at least one exact source name: `Coding Memory`, `Repo Memory`, `Procedure Memory`, or `Profile Memory`; vague wording such as `saved guidance` is insufficient.",
+  "Identify the source inline and describe only the smallest useful change it caused, such as what it helped choose, check, or avoid. For example: `这次我参考了 MemoraX Code 的 Procedure Memory，用 PASS/FAIL 矩阵汇报验证结果。`",
+  "Use direct task attribution such as `这次我参考了...`, `这次采用了...`, `I used...`, or `MemoraX Code ... helped...`.",
+  "Do not repeat the task or result, reproduce the memory, or narrate the full execution steps or reasoning.",
+  "Do not report a routine language or tone preference.",
+  "Do not report active Add, automatic writeback, Repo Memory build or update, or automatic Coding Memory retrieval as memory that helped the current turn.",
+  "Do not add a heading, card, label, or colon-led report, and do not open with stock wording such as `MemoraX Code 的 Coding Memory 提示：`, `本轮借助...`, `Memory impact:`, or `The memory said...`.",
+  "Use only normal visible prose. Do not include HTML or XML comments, Markdown markers, tags, zero-width text, hidden control text, or metadata.",
+].join(" ");
 export { personalMemoryReminderContext } from "./memory-skill-reminder-policy.mjs";
 
 export async function runMemorySkillReminderHook(options, hookInput) {
@@ -190,6 +206,10 @@ function combinedReminderContext(options, due, cadenceReminderContext, personalM
   if (due.supplementalReminderDue || personalMemoryContext) {
     const additionalReminderContext = stringOption(options.additionalReminderContext);
     if (additionalReminderContext) contexts.push(additionalReminderContext);
+  }
+  if (personalMemoryContext || (due.memoryReminderDue && cadenceReminderContext)) {
+    const memoryImpactContext = stringOption(options.memoryImpactContext);
+    if (memoryImpactContext) contexts.push(memoryImpactContext);
   }
   if (personalMemoryContext) contexts.push(personalMemoryContext);
   if (due.memoryReminderDue && cadenceReminderContext) contexts.push(cadenceReminderContext);
