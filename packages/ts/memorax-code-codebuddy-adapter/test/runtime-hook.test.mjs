@@ -161,6 +161,8 @@ test("compact restores profile context while cadence turns include profile and p
     }, { root, server });
     assert.match(first.stdout, /Prefer concise answers/);
     assert.match(first.stdout, /Run the focused adapter test first/);
+    assert.match(first.stdout, /Natural final-answer mention for supported coding agents:/);
+    assert.match(first.stdout, /generic label `Memory`/);
 
     const compact = await runHook({
       hook_event_name: "SessionStart", session_id: "session-compact", transcript_path: transcriptPath,
@@ -174,6 +176,7 @@ test("compact restores profile context while cadence turns include profile and p
     }, { root, server });
     assert.match(next.stdout, /MemoraX Code personal-memory reminder/);
     assert.match(next.stdout, /Prefer concise answers/);
+    assert.match(next.stdout, /Natural final-answer mention for supported coding agents:/);
     assert.doesNotMatch(next.stdout, /Run the focused adapter test first/);
 
     const reminders = requests.filter((request) => request.path === "/memory/skill-reminder");

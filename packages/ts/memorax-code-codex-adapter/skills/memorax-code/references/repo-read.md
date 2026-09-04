@@ -101,3 +101,5 @@ Continue into live evidence after the handoff when the user asks about current b
 - issues describe problem context.
 
 Never create, update, delete, or repair repo-memory files in the foreground `repo-read` task.
+
+When a relevant Repo Memory read materially affects the task in a supported coding agent, follow the Natural Final-Answer Mention contract in `SKILL.md`. Reading or maintaining the bundle alone is insufficient.

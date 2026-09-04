@@ -20,6 +20,7 @@ const { resolveBackendConnection } = await import(pathToFileURL(join(commonRoot,
 const { ensureBackendAvailable, stringValue: commonStringValue } = await import(pathToFileURL(join(commonRoot, "hooks", "ensure-backend-runner.mjs")).href);
 const {
   evaluateMemorySkillReminder,
+  MEMORY_IMPACT_REMINDER_CONTEXT,
   markSupplementalReminderAfterCompact,
   personalMemoryReminderContext,
 } = await import(pathToFileURL(join(commonRoot, "hooks", "memory-skill-reminder-hook.mjs")).href);
@@ -118,6 +119,7 @@ if (event === "SessionStart") {
     remindOnFirstTurn: true,
     requireTranscriptPath: true,
     ...(repoMemoryWorktree ? {
+      memoryImpactContext: MEMORY_IMPACT_REMINDER_CONTEXT,
       buildCadenceReminderContext: (hookInput) => buildRepoProcedureMemoryContext({
         ...hookInput,
         cwd: repoMemoryWorktree,

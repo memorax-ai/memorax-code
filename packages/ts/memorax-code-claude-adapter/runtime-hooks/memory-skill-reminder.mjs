@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import {
+  MEMORY_IMPACT_REMINDER_CONTEXT,
   personalMemoryReminderContext,
   runMemorySkillReminderHook,
 } from "../../memorax-code-adapter-common/src/hooks/memory-skill-reminder-hook.mjs";
@@ -25,6 +26,7 @@ await runMemorySkillReminderHook({
   buildCadenceReminderContext: (hookInput) => buildRepoProcedureMemoryContext(hookInput, personalMemoryContextOptions),
   buildPersonalMemoryContext: (hookInput) => buildRepoUserProfilePreferencesContext(hookInput, personalMemoryContextOptions),
   debugEnv: "MEMORAX_CODE_CLAUDE_HOOK_DEBUG",
+  memoryImpactContext: MEMORY_IMPACT_REMINDER_CONTEXT,
   memorySkillInvocation: MEMORY_SKILL_INVOCATION,
   onReminder: recordReminder,
   remindOnFirstTurn: true,

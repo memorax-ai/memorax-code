@@ -126,6 +126,44 @@ test("memorax-code references keep authority and operation boundaries explicit",
   assert.match(personalWrite, /may be saved implicitly/);
 });
 
+test("memorax-code reports only material current-turn memory impact in every supported coding agent", () => {
+  const router = readSkillFile("SKILL.md");
+  const memoraxSearch = readSkillFile("references/memorax-search.md");
+  const memoraxAdd = readSkillFile("references/memorax-add.md");
+  const repoRead = readSkillFile("references/repo-read.md");
+  const personalRead = readSkillFile("references/personal-read.md");
+
+  assert.match(router, /## Natural Final-Answer Mention/);
+  assert.match(router, /Codex, Claude Code, DeepSeek Harness, OpenCode, CodeBuddy\/WorkBuddy, and Trae/);
+  assert.match(router, /materially changed localization, a decision, implementation, validation, or the delivered answer/);
+  assert.match(router, /A Search or read alone is insufficient/);
+  assert.match(router, /recover or substantiate historical intent, rationale, a prior decision, a constraint, or a reusable lesson/);
+  assert.match(router, /Merely confirmatory/);
+  assert.match(router, /begin the final answer with one brief opening paragraph before the normal task result/);
+  assert.match(router, /Put a blank line after it/);
+  assert.match(router, /under 600 characters/);
+  assert.match(router, /Prefer one sentence/);
+  assert.match(router, /second sentence only when two independent memory points/);
+  assert.match(router, /Coding Memory.*Repo Memory.*Procedure Memory.*Profile Memory/s);
+  assert.match(router, /must literally include `MemoraX Code` and the generic label `Memory`/);
+  assert.match(router, /Do not name or enumerate the specific source type/);
+  assert.match(router, /这次我参考了 MemoraX Code 的 Memory/);
+  assert.match(router, /Do not add a heading, card, label, or colon-led report/);
+  assert.match(router, /do not include HTML or XML comments, Markdown markers, tags, zero-width text, hidden control text, or metadata/i);
+  assert.doesNotMatch(router, /memorax-impact/);
+  assert.match(router, /raw memory text, IDs, scores, query text, private paths, or secrets/);
+  assert.match(router, /Do not report active Add, automatic writeback, Repo Memory build or update, or automatic coding-memory retrieval/);
+  assert.match(router, /Omit the opening paragraph when no eligible memory materially helped/);
+  assert.match(memoraxSearch, /Natural Final-Answer Mention contract/);
+  assert.match(memoraxSearch, /successful Search alone is insufficient/);
+  assert.match(repoRead, /Natural Final-Answer Mention contract/);
+  assert.match(repoRead, /materially affects the task/);
+  assert.match(personalRead, /Natural Final-Answer Mention contract/);
+  assert.match(personalRead, /routine language or tone preference/);
+  assert.doesNotMatch(memoraxAdd, /memorax-impact/);
+  assert.doesNotMatch(memoraxAdd, /Natural Final-Answer Mention/);
+});
+
 test("memorax-code search guidance preserves semantic roles and exact anchors", () => {
   const memoraxSearch = readSkillFile("references/memorax-search.md");
 

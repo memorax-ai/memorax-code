@@ -215,6 +215,7 @@ MemoraX Code 会先比较含义：语义相同的请求不重复写入；长期�
 | **后台写入记忆** | 任务完成后，在后台提取可复用知识并写入 Coding Memory。 |
 | **用户偏好延续** | 在 User Profile 中记录用户偏好，并按设定周期将其带入后续任务。 |
 | **Procedure 自动复用** | 记录可复用的任务流程，并在后续任务中自动提醒 Agent 按流程执行。 |
+| **记忆作用反馈** | 在 Codex、Claude Code、WorkBuddy、DeepSeek Harness、OpenCode 和 Trae 中，当本轮主动 Search 的 Coding Memory，或本轮读取、注入的 Repo、Procedure、Profile Memory 确实指导了任务时，Agent 会在最终回复开头用自然语言简要说明。 |
 | **Repo Memory 后台整理** | 在支持无头任务的客户端中后台整理仓库结构、代码入口和历史证据，并按策略自动更新，避免反复搜索和总结。Trae 可通过 Skill 使用 Repo Memory，但目前没有可供自动维护使用的无头 worker。 |
 | **主动记忆控制** | 使用内置的 MemoraX Code Skill 或 CLI，主动查找和添加记忆。 |
 | **客户端集成** | 与 Codex、Claude Code、WorkBuddy、DeepSeek Harness、OpenCode 和 Trae 集成，触发记忆检索、提醒和写入。目前 Codex、Claude Code、WorkBuddy、OpenCode 和 Trae 支持自动额度提醒。 |
@@ -232,7 +233,7 @@ MemoraX Code 会先比较含义：语义相同的请求不重复写入；长期�
 游客额度提醒可能显示完整的 Mark ID；请将包含该信息的提醒文本和本地 trace 视为敏感信息。
 
 主动记忆操作会将查询或选中的内容发送至 MemoraX。自动写回会从受信任工作区的任务中，发送经过
-选择的用户指令和对应的 Agent 最终回复，用于提取和保存记忆；它不会上传完整的本地客户端 trace
+选择的用户指令和对应的 Agent 最终回复，并先移除最终回复中的记忆作用说明，再用于提取和保存记忆；它不会上传完整的本地客户端 trace
 文件或本地 trace 路径。
 
 登录 [MemoraX Console](https://platform.memorax.net/) 后，可以随时查看、修改或删除已经保存的记忆。

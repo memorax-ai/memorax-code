@@ -6,6 +6,7 @@ import { ensureBackendAvailable } from "../../memorax-code-adapter-common/src/ho
 import { recordWorkspaceEvidence } from "../../memorax-code-adapter-common/src/hooks/capture-cwd-hook.mjs";
 import {
   evaluateMemorySkillReminder,
+  MEMORY_IMPACT_REMINDER_CONTEXT,
   markSupplementalReminderForSession,
   personalMemoryReminderContext,
 } from "../../memorax-code-adapter-common/src/hooks/memory-skill-reminder-hook.mjs";
@@ -605,6 +606,7 @@ function memorySkillReminderOptions(options, repositoryWorktree) {
     additionalReminderContext: personalMemoryReminderContext(MEMORY_SKILL_INVOCATION),
     adapterDir: "opencode",
     ...(repositoryWorktree ? {
+      memoryImpactContext: MEMORY_IMPACT_REMINDER_CONTEXT,
       buildCadenceReminderContext: (input) => buildRepoProcedureMemoryContext({
         ...input,
         cwd: repositoryWorktree,

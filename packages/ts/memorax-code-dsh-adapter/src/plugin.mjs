@@ -22,6 +22,7 @@ export function registerMemoraxCodePlugin(ctx, dependencies) {
   const scheduleRepoMemoryBuild = dependencies?.scheduleRepoMemoryBuild;
   const intervalTurns = dependencies?.intervalTurns;
   const isReminderDue = dependencies?.isReminderDue;
+  const memoryImpactContext = nonEmptyString(dependencies?.memoryImpactContext);
   const memoryReminderContext = nonEmptyString(dependencies?.memoryReminderContext);
   const personalMemoryReminderContext = nonEmptyString(dependencies?.personalMemoryReminderContext);
   const defer = dependencies?.defer ?? queueMicrotask;
@@ -49,7 +50,7 @@ export function registerMemoraxCodePlugin(ctx, dependencies) {
   if (typeof isReminderDue !== "function") {
     throw new TypeError("memorax-code DSH plugin requires a reminder policy");
   }
-  if (!memoryReminderContext || !personalMemoryReminderContext) {
+  if (!memoryImpactContext || !memoryReminderContext || !personalMemoryReminderContext) {
     throw new TypeError("memorax-code DSH plugin requires reminder context");
   }
   if (typeof ctx?.sessions?.flush !== "function"
@@ -195,6 +196,7 @@ export function registerMemoraxCodePlugin(ctx, dependencies) {
       intervalTurns,
       isReminderDue,
       loadPersonalContext,
+      memoryImpactContext,
       memoryReminderContext,
       personalContexts,
       personalMemoryReminderContext,
@@ -409,6 +411,7 @@ async function collectPersonalContext(options) {
   if (postCompactionDue || (cadenceDue && firstObservation && profileContext)) {
     reminderParts.push(options.personalMemoryReminderContext);
   }
+  if (profileContext || procedureContext) reminderParts.push(options.memoryImpactContext);
   if (profileContext) reminderParts.push(profileContext);
   if (procedureContext) reminderParts.push(procedureContext);
   return {
