@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -9,12 +9,14 @@ const skillDir = process.env.MEMORAX_CODE_REPO_MEMORY_SKILL_DIR
   ? resolve(process.env.MEMORAX_CODE_REPO_MEMORY_SKILL_DIR)
   : dirname(scriptDir);
 const pluginRoot = resolve(scriptDir, "../../..");
-const directEntrypoint = fileURLToPath(new URL(
+const directEntrypoint = [
   "../../../../memorax-code-backend/dist/repo-memory/cli.js",
-  import.meta.url,
-));
+  "../../../../../../memorax-code-backend/dist/repo-memory/cli.js",
+]
+  .map((path) => fileURLToPath(new URL(path, import.meta.url)))
+  .find((path) => existsSync(path));
 
-if (existsSync(directEntrypoint)) {
+if (directEntrypoint) {
   const { runRepoMemoryCli } = await import(pathToFileURL(directEntrypoint).href);
   process.exitCode = await runRepoMemoryCli(process.argv.slice(2), { skillDir });
 } else {
@@ -24,14 +26,27 @@ if (existsSync(directEntrypoint)) {
     process.exit(1);
   }
   const args = ["repo-memory", ...process.argv.slice(2)];
-  const result = /\.[cm]?js$/i.test(command)
-    ? spawnSync(process.execPath, [command, ...args], { stdio: "inherit", windowsHide: true })
+  const nodeEntrypoint = resolveNodeEntrypoint(command);
+  const result = nodeEntrypoint
+    ? spawnSync(process.execPath, [nodeEntrypoint, ...args], { stdio: "inherit", windowsHide: true })
     : spawnSync(command, args, { stdio: "inherit", windowsHide: true });
   if (result.error) {
     process.stderr.write(`Repo Memory runtime failed: ${result.error.message}\n`);
     process.exitCode = 1;
   } else {
     process.exitCode = result.status ?? 1;
+  }
+}
+
+function resolveNodeEntrypoint(command) {
+  if (/\.[cm]?js$/i.test(command)) return command;
+  try {
+    const resolved = realpathSync(command);
+    if (/\.[cm]?js$/i.test(resolved)) return resolved;
+    const firstLine = readFileSync(resolved, "utf8").split(/\r?\n/, 1)[0];
+    return /^#!.*\bnode(?:\s|$)/.test(firstLine) ? resolved : undefined;
+  } catch {
+    return undefined;
   }
 }
 
