@@ -24,6 +24,8 @@ try {
       });
       return [
         codeBuddy,
+        "--plugin-dir",
+        pluginRoot,
         "--print",
         "--output-format",
         "text",
