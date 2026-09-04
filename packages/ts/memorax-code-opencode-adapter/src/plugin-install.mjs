@@ -30,6 +30,7 @@ import {
 
 const STATE_VERSION = 1;
 const MANAGED_LOADER_HEADER = "// Managed by MemoraX Code. Do not edit.";
+const SKILL_PACKAGE_METADATA = ".memorax-code-package.json";
 const ADAPTER_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 export function ensureOpenCodePluginInstalled(options = {}) {
@@ -69,7 +70,7 @@ export function ensureOpenCodePluginInstalled(options = {}) {
     repoMemoryHelperSourceSha256,
   );
   const pluginCurrent = pluginIsManaged && fileContentsEqual(paths.pluginPath, loader);
-  const skillCurrent = skillIsManaged && directoriesEqual(paths.skillSourcePath, paths.skillPath);
+  const skillCurrent = skillIsManaged && skillContentsCurrent(paths);
   const repoMemoryHelperCurrent = repoMemoryHelperIsManaged
     && fileContentsEqual(paths.repoMemoryHelperPath, repoMemoryHelperLoader);
   const artifactsCurrent = pluginCurrent && skillCurrent && repoMemoryHelperCurrent;
@@ -101,7 +102,9 @@ export function ensureOpenCodePluginInstalled(options = {}) {
   const skillExisted = existsSync(paths.skillPath);
   const repoMemoryHelperExisted = existsSync(paths.repoMemoryHelperPath);
   try {
-    if (!skillCurrent) materializeSkill(paths.skillSourcePath, paths.skillPath);
+    if (!skillCurrent) {
+      materializeSkill(paths.skillSourcePath, paths.skillPath, paths.memoraxCodeCommand);
+    }
     if (!pluginCurrent) atomicWriteText(paths.pluginPath, loader);
     if (!repoMemoryHelperCurrent) {
       atomicWriteText(paths.repoMemoryHelperPath, repoMemoryHelperLoader);
@@ -200,8 +203,7 @@ export function readOpenCodePluginStatus(options = {}) {
     configuredPaths.pluginPath,
     createManagedLoader(configuredPaths, pluginSourceSha256),
   );
-  const skillCurrent = sourcesReady
-    && directoriesEqual(configuredPaths.skillSourcePath, configuredPaths.skillPath);
+  const skillCurrent = sourcesReady && skillContentsCurrent(configuredPaths);
   const repoMemoryHelperCurrent = repoMemoryHelperRecorded
     && sourcesReady
     && fileContentsEqual(
@@ -538,11 +540,15 @@ function createManagedRepoMemoryHelperLoader(paths, sourceSha256) {
   ].join("\n");
 }
 
-function materializeSkill(sourcePath, targetPath) {
+function materializeSkill(sourcePath, targetPath, memoraxCodeCommand) {
   mkdirSync(dirname(targetPath), { recursive: true });
   const stagePath = `${targetPath}.tmp-${process.pid}-${randomUUID()}`;
   try {
     cpSync(sourcePath, stagePath, { recursive: true });
+    atomicWriteJson(
+      join(stagePath, SKILL_PACKAGE_METADATA),
+      skillPackageMetadata(memoraxCodeCommand),
+    );
     rmSync(targetPath, { recursive: true, force: true });
     renameSync(stagePath, targetPath);
   } finally {
@@ -594,6 +600,21 @@ function fileSha256(path) {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
 
+function skillContentsCurrent(paths) {
+  return directoriesEqual(paths.skillSourcePath, paths.skillPath)
+    && fileContentsEqual(
+      join(paths.skillPath, SKILL_PACKAGE_METADATA),
+      `${JSON.stringify(skillPackageMetadata(paths.memoraxCodeCommand), null, 2)}\n`,
+    );
+}
+
+function skillPackageMetadata(memoraxCodeCommand) {
+  return {
+    version: 1,
+    ...(memoraxCodeCommand ? { memoraxCodeCommand } : {}),
+  };
+}
+
 function hasMemoraxCliCommand(directory) {
   return ["memorax-cli", "memorax-cli.cmd", "memorax-cli.exe"]
     .some((name) => existsSync(join(directory, name)));
@@ -621,6 +642,7 @@ function collectDirectoryEntries(root) {
     for (const name of readdirSync(path)) {
       const absolutePath = join(path, name);
       const entryPath = relative(root, absolutePath);
+      if (entryPath === SKILL_PACKAGE_METADATA) continue;
       const stat = lstatSync(absolutePath);
       if (stat.isDirectory()) {
         entries.push({ path: entryPath, kind: "directory", content: "" });

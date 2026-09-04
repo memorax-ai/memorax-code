@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -77,6 +77,17 @@ test("OpenCode plugin install materializes a managed loader, canonical skill, an
     assert.deepEqual(JSON.parse(helperRun.stdout), ["maintain", "--repo", fixture.root]);
     assert.equal(await readFile(join(installed.skillPath, "SKILL.md"), "utf8"), "# MemoraX Code\n");
     assert.equal(await readFile(join(installed.skillPath, "references", "search.md"), "utf8"), "search\n");
+    assert.deepEqual(
+      JSON.parse(await readFile(join(installed.skillPath, ".memorax-code-package.json"), "utf8")),
+      { version: 1, memoraxCodeCommand: fixture.memoraxCodeCommand },
+    );
+    const repoMemoryRun = spawnSync(
+      process.execPath,
+      [join(installed.skillPath, "scripts", "repo-memory.mjs"), "validate", fixture.root],
+      { encoding: "utf8" },
+    );
+    assert.equal(repoMemoryRun.status, 0, repoMemoryRun.stderr);
+    assert.deepEqual(JSON.parse(repoMemoryRun.stdout), ["repo-memory", "validate", fixture.root]);
     const state = JSON.parse(await readFile(installed.statePath, "utf8"));
     assert.equal(state.runtime, "opencode");
     assert.equal(state.openCodeConfigDir, fixture.openCodeConfigDir);
@@ -297,6 +308,7 @@ async function createFixture(name) {
   const memoraxCodeCommand = join(root, "Package With Spaces", "bin", "memorax-code.mjs");
   const skillSourcePath = join(root, "canonical-skill");
   await mkdir(join(skillSourcePath, "references"), { recursive: true });
+  await mkdir(join(skillSourcePath, "scripts"), { recursive: true });
   await mkdir(join(root, "Adapter With Spaces"), { recursive: true });
   await mkdir(join(root, "Adapter With Spaces", "hooks"), { recursive: true });
   await mkdir(join(root, "Package With Spaces", "bin"), { recursive: true });
@@ -305,9 +317,16 @@ async function createFixture(name) {
     repoMemoryHelperSourcePath,
     "process.stdout.write(JSON.stringify(process.argv.slice(2)));\n",
   );
-  await writeFile(memoraxCodeCommand, "#!/usr/bin/env node\n");
+  await writeFile(
+    memoraxCodeCommand,
+    "#!/usr/bin/env node\nprocess.stdout.write(JSON.stringify(process.argv.slice(2)));\n",
+  );
   await writeFile(join(skillSourcePath, "SKILL.md"), "# MemoraX Code\n");
   await writeFile(join(skillSourcePath, "references", "search.md"), "search\n");
+  await copyFile(
+    new URL("../../memorax-code-codex-adapter/skills/memorax-code/scripts/repo-memory.mjs", import.meta.url),
+    join(skillSourcePath, "scripts", "repo-memory.mjs"),
+  );
   return {
     root,
     openCodeConfigDir,

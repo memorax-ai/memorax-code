@@ -315,8 +315,9 @@ async function main() {
   const repoMemoryHead = (await run("git", ["rev-parse", "HEAD"], paths.workspace,
     runtimeEnv)).stdout.trim();
   await writeValidRepoMemoryFixture(paths.workspace, repoMemoryHead);
-  const repoMemoryValidation = JSON.parse((await run("python3", [
-    join(profilePackage, "skills", "memorax-code", "scripts", "validate_memory.py"),
+  const repoMemoryValidation = JSON.parse((await run(process.execPath, [
+    join(profilePackage, "skills", "memorax-code", "scripts", "repo-memory.mjs"),
+    "validate",
     paths.workspace,
   ], paths.workspace, runtimeEnv)).stdout);
   assert.equal(repoMemoryValidation.ok, true);

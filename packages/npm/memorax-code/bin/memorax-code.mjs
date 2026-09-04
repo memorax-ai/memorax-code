@@ -458,6 +458,11 @@ if (process.argv[2] === "account") {
   process.exit(await runAccountCommand(process.argv.slice(3)));
 }
 
+if (process.argv[2] === "repo-memory") {
+  await runBackendEntrypoint("repo-memory.js");
+  process.exit(process.exitCode ?? 0);
+}
+
 if (process.argv.length === 2) {
   const exitCode = await routeDefaultCommand();
   if (exitCode !== undefined) process.exit(exitCode);
