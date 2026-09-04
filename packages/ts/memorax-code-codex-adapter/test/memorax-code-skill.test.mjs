@@ -114,7 +114,7 @@ test("memorax-code references keep authority and operation boundaries explicit",
   assert.match(personalWrite, /may be saved implicitly/);
 });
 
-test("memorax-code reports only material current-turn memory impact in Codex and Claude Code", () => {
+test("memorax-code reports only material current-turn memory impact in every supported coding agent", () => {
   const router = readSkillFile("SKILL.md");
   const memoraxSearch = readSkillFile("references/memorax-search.md");
   const memoraxAdd = readSkillFile("references/memorax-add.md");
@@ -122,7 +122,7 @@ test("memorax-code reports only material current-turn memory impact in Codex and
   const personalRead = readSkillFile("references/personal-read.md");
 
   assert.match(router, /## Natural Final-Answer Mention/);
-  assert.match(router, /Codex and Claude Code only/);
+  assert.match(router, /Codex, Claude Code, DeepSeek Harness, OpenCode, CodeBuddy\/WorkBuddy, and Trae/);
   assert.match(router, /materially changed localization, a decision, implementation, validation, or the delivered answer/);
   assert.match(router, /A Search or read alone is insufficient/);
   assert.match(router, /recover or substantiate historical intent, rationale, a prior decision, a constraint, or a reusable lesson/);

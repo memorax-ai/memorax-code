@@ -448,14 +448,14 @@ test("Claude injects profile and procedure memory on the shared cadence and afte
     assert.ok(firstContext.indexOf("Active repo-scoped user preferences") < firstContext.indexOf("Active repo-scoped procedure memories"));
     assert.match(firstContext, /Description: 用户偏好使用中文交流。/);
     assert.match(firstContext, /Run focused tests before the full suite/);
-    assert.match(firstContext, /Natural final-answer mention for Codex and Claude Code:/);
+    assert.match(firstContext, /Natural final-answer mention for supported coding agents:/);
     assert.match(firstContext, /begin the final answer with one brief opening paragraph/);
     assert.doesNotMatch(firstContext, /memorax-impact/);
 
     const sixthContext = reminderContext(outputs[5].stdout);
     assert.match(sixthContext, /^MemoraX Code reminder:/);
     assert.match(sixthContext, /Run focused tests before the full suite/);
-    assert.match(sixthContext, /Natural final-answer mention for Codex and Claude Code:/);
+    assert.match(sixthContext, /Natural final-answer mention for supported coding agents:/);
     assert.doesNotMatch(sixthContext, /memorax-impact/);
     assert.doesNotMatch(sixthContext, /MemoraX Code personal-memory reminder:/);
     assert.doesNotMatch(sixthContext, /用户偏好使用中文交流/);
@@ -485,7 +485,7 @@ test("Claude injects profile and procedure memory on the shared cadence and afte
     const compactContext = reminderContext(afterCompact.stdout);
     assert.match(compactContext, /^MemoraX Code personal-memory reminder:/);
     assert.match(compactContext, /Description: 用户偏好使用中文交流。/);
-    assert.match(compactContext, /Natural final-answer mention for Codex and Claude Code:/);
+    assert.match(compactContext, /Natural final-answer mention for supported coding agents:/);
     assert.doesNotMatch(compactContext, /memorax-impact/);
     assert.doesNotMatch(compactContext, /^MemoraX Code reminder:/);
     assert.doesNotMatch(compactContext, /Run focused tests before the full suite/);

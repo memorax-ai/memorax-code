@@ -105,4 +105,4 @@ If a successful Search returns `quotaNotice`, or prints it as a quota-reminder l
 
 Mention only an invariant, pitfall, convention, or validation idea that materially affects the answer. Ground claims about current implementation behavior in live code and checks.
 
-When an accepted result materially affects the task in Codex or Claude Code, follow the Natural Final-Answer Mention contract in `SKILL.md`. A successful Search alone is insufficient; do not disclose empty, rejected, merely confirmatory, or unused results.
+When an accepted result materially affects the task in a supported coding agent, follow the Natural Final-Answer Mention contract in `SKILL.md`. A successful Search alone is insufficient; do not disclose empty, rejected, merely confirmatory, or unused results.

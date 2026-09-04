@@ -102,4 +102,4 @@ Continue into live evidence after the handoff when the user asks about current b
 
 Never create, update, delete, or repair repo-memory files in the foreground `repo-read` task.
 
-When a relevant Repo Memory read materially affects the task in Codex or Claude Code, follow the Natural Final-Answer Mention contract in `SKILL.md`. Reading or maintaining the bundle alone is insufficient.
+When a relevant Repo Memory read materially affects the task in a supported coding agent, follow the Natural Final-Answer Mention contract in `SKILL.md`. Reading or maintaining the bundle alone is insufficient.

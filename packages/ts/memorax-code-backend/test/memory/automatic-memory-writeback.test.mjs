@@ -173,34 +173,39 @@ test("automatic memory writeback preserves first paragraphs that do not match th
   }
 });
 
-test("automatic memory writeback preserves natural memory mentions outside the first client rollout", async () => {
+test("automatic memory writeback removes natural memory impact for every supported client", async () => {
   const requests = [];
   const diagnostics = [];
   const runtime = createAutomaticMemoryWritebackRuntime({
     diagnosticLogger: (message, fields) => diagnostics.push({ message, fields }),
   });
+  const answer = "Client-independent output.";
   const assistantText = [
     "I used MemoraX Code Memory to guide the implementation.",
     "",
-    "OpenCode output.",
+    answer,
   ].join("\n");
+  const clients = ["codex", "claude-code", "dsh", "opencode", "codebuddy", "trae"];
   try {
-    assert.deepEqual(runtime.enqueue({
-      client: "opencode",
-      sessionKey: "session-memory-impact-unsupported",
-      userText: "Keep the first rollout client-scoped.",
-      assistantText,
-      repositoryScope: REPOSITORY_SCOPE,
-      env: WRITEBACK_ENV,
-      fetchImpl: memoraxFetch(requests),
-    }), { accepted: true });
+    for (const client of clients) {
+      assert.deepEqual(runtime.enqueue({
+        client,
+        sessionKey: `session-memory-impact-${client}`,
+        userText: `Apply useful memory in ${client}.`,
+        assistantText,
+        repositoryScope: REPOSITORY_SCOPE,
+        env: WRITEBACK_ENV,
+        fetchImpl: memoraxFetch(requests),
+      }), { accepted: true });
+    }
 
     await runtime.drain();
 
-    assert.equal(requests[0].body.messages[1].content, assistantText);
+    assert.equal(requests.length, clients.length);
+    assert.deepEqual(requests.map(({ body }) => body.messages[1].content), clients.map(() => answer));
     assert.equal(
-      diagnostics.some(({ message }) => message === "memory.automatic_writeback.impact_stripped"),
-      false,
+      diagnostics.filter(({ message }) => message === "memory.automatic_writeback.impact_stripped").length,
+      clients.length,
     );
   } finally {
     runtime.close();

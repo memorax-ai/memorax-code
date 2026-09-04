@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { enableTraeAdapter } from "../src/config.mjs";
 
 test("Trae UserPromptSubmit records one Turn and injects memory context", async () => {
-  const fixture = await createFixture("prompt");
+  const fixture = await createFixture("prompt", { withProcedureMemory: true });
   try {
     const result = await runHook(fixture, {
       hook_event_name: "UserPromptSubmit",
@@ -21,6 +21,8 @@ test("Trae UserPromptSubmit records one Turn and injects memory context", async 
     const output = JSON.parse(result.stdout);
     assert.equal(output.hookSpecificOutput.hookEventName, "UserPromptSubmit");
     assert.match(output.hookSpecificOutput.additionalContext, /^memory context\n\nMemoraX Code reminder:/);
+    assert.match(output.hookSpecificOutput.additionalContext, /Natural final-answer mention for supported coding agents:/);
+    assert.match(output.hookSpecificOutput.additionalContext, /Run the focused Trae adapter test first/);
 
     const turnStart = fixture.requests.find((request) => request.path === "/memory/turn-start");
     assert.equal(turnStart.body.client, "trae");
@@ -136,9 +138,11 @@ test("Trae retains the previous accepted Turn when a replacement start is reject
   }
 });
 
-async function createFixture(name) {
+async function createFixture(name, options = {}) {
   const root = await mkdtemp(join(tmpdir(), `memorax-code-trae-hook-${name}-`));
   const traeHome = join(root, "trae-home");
+  const repoMemoryWorktree = options.withProcedureMemory ? join(root, "repo") : undefined;
+  if (repoMemoryWorktree) await createProcedureMemoryRepo(repoMemoryWorktree);
   const requests = [];
   const control = { rejectNextTurnStart: false };
   const server = createServer(async (request, response) => {
@@ -153,7 +157,11 @@ async function createFixture(name) {
       : request.url === "/health"
       ? { ok: true, service: "memorax-code-backend" }
       : request.url === "/memory/turn-start"
-        ? { ok: true, additionalContext: "memory context" }
+        ? {
+            ok: true,
+            additionalContext: "memory context",
+            ...(repoMemoryWorktree ? { repoMemoryWorktree } : {}),
+          }
         : request.url === "/memory/writeback"
           ? { ok: true, scheduled: true }
           : { ok: true };
@@ -173,6 +181,7 @@ async function createFixture(name) {
     traeHome,
     requests,
     control,
+    repoMemoryWorktree,
     runtimePath: state.runtimePath,
     runtimeDigest: state.runtimeDigest,
     server,
@@ -181,6 +190,16 @@ async function createFixture(name) {
       await rm(root, { recursive: true, force: true });
     },
   };
+}
+
+async function createProcedureMemoryRepo(repo) {
+  execFileSync("git", ["init", "--quiet", repo]);
+  await writeFile(join(repo, ".gitignore"), ".repo_memory/\n");
+  await mkdir(join(repo, ".repo_memory", "procedure-memory"), { recursive: true });
+  await writeFile(
+    join(repo, ".repo_memory", "procedure-memory", "testing.md"),
+    "# Testing workflow\n\nRun the focused Trae adapter test first.\n",
+  );
 }
 
 function runHook(fixture, input) {

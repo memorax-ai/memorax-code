@@ -45,4 +45,4 @@ Mention only preferences relevant to the current request unless the user explici
 
 Apply instructions in this order: system and developer instructions, `AGENTS.md`, the current user request, then stored personal memory.
 
-When Procedure Memory or Profile Memory materially affects the task in Codex or Claude Code, follow the Natural Final-Answer Mention contract in `SKILL.md`. Do not disclose memory that was only present but unused, and do not report a routine language or tone preference.
+When Procedure Memory or Profile Memory materially affects the task in a supported coding agent, follow the Natural Final-Answer Mention contract in `SKILL.md`. Do not disclose memory that was only present but unused, and do not report a routine language or tone preference.

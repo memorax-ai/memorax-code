@@ -62,7 +62,7 @@ test("multiple procedure files join the existing first and sixth turn cadence", 
       assert.match(context, /Trace the public entry point/);
       assert.match(context, /### writing-code\.md/);
       assert.match(context, /Add the focused test first/);
-      assert.match(context, /Natural final-answer mention for Codex and Claude Code:/);
+      assert.match(context, /Natural final-answer mention for supported coding agents:/);
       assert.match(context, /begin the final answer with one brief opening paragraph/);
       assert.doesNotMatch(context, /memorax-impact/);
     }

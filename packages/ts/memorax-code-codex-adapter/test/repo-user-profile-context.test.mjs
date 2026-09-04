@@ -76,7 +76,7 @@ test("active preferences join the first prompt and the first prompt after compac
     assert.match(firstContext, /Applies when: 与用户交流时。/);
     assert.match(firstContext, /Do not apply when: 用户明确要求其他语言。/);
     assert.match(firstContext, /Description: 用户偏好先给出结论。/);
-    assert.match(firstContext, /Natural final-answer mention for Codex and Claude Code:/);
+    assert.match(firstContext, /Natural final-answer mention for supported coding agents:/);
     assert.match(firstContext, /begin the final answer with one brief opening paragraph/);
     assert.match(firstContext, /successful explicit `memorax-cli search`/);
     assert.match(firstContext, /automatic Coding Memory retrieval/);
@@ -112,7 +112,7 @@ test("active preferences join the first prompt and the first prompt after compac
     assert.match(compactContext, new RegExp(`^${escapeRegex(PROFILE_REMINDER_CONTEXT)}`));
     assert.doesNotMatch(compactContext, /^MemoraX Code reminder:/);
     assert.match(compactContext, /Description: 用户偏好使用中文交流。/);
-    assert.match(compactContext, /Natural final-answer mention for Codex and Claude Code:/);
+    assert.match(compactContext, /Natural final-answer mention for supported coding agents:/);
     assert.doesNotMatch(compactContext, /memorax-impact/);
     assert.equal(following.stdout, "");
   } finally {

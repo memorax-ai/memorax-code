@@ -252,9 +252,7 @@ function automaticMemoryWritebackDecision(
   const maxMessageChars = memoryWritebackMaxMessageChars(env);
   const rawUserText = options.userText?.trim() ?? "";
   const assistantOutput = options.assistantText ?? "";
-  const assistantImpact = options.client === "codex" || options.client === "claude-code"
-    ? stripLeadingMemoryImpactParagraph(assistantOutput)
-    : { text: assistantOutput, removedParagraphs: 0 };
+  const assistantImpact = stripLeadingMemoryImpactParagraph(assistantOutput);
   const rawAssistantText = assistantImpact.text.trim();
   if (assistantImpact.removedParagraphs > 0) {
     state.diagnosticLogger("memory.automatic_writeback.impact_stripped", {
