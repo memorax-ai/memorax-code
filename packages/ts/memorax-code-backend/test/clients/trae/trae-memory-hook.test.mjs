@@ -232,6 +232,69 @@ test("Trae runtime preserves interruption authority after coordinator metadata e
   }
 });
 
+test("Trae accepts the replacement Turn Stop while its start retrieval is pending", async () => {
+  const fixture = await createFixture("pending-retrieval-stop");
+  const writes = [];
+  let now = 1_700_000_000_000;
+  let searchCalls = 0;
+  let markSecondSearchStarted;
+  let releaseSecondSearch;
+  const secondSearchStarted = new Promise((resolve) => { markSecondSearchStarted = resolve; });
+  const secondSearchGate = new Promise((resolve) => { releaseSecondSearch = resolve; });
+  const runtime = createTraeMemoryHookRuntime({
+    env: configuredEnv(fixture.home, {
+      MEMORAX_CODE_TRAE_TRACE_ENABLED: "false",
+      MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED: "true",
+    }),
+    now: () => now,
+    ttlMs: 5,
+    cleanupIntervalMs: 60_000,
+    automaticWriteback: (request) => { writes.push(request); return { accepted: true }; },
+    fetchImpl: async (url) => {
+      assert.match(String(url), /\/v1\/memories\/search$/);
+      searchCalls += 1;
+      if (searchCalls === 2) {
+        markSecondSearchStarted();
+        await secondSearchGate;
+      }
+      return new Response(JSON.stringify({
+        success: true,
+        data: { task_id: `search-${searchCalls}`, status: "completed", data: [] },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    },
+  });
+  const first = turnStart("trae-pending-session", "Start the first Turn.", fixture.workspace, now);
+  const second = turnStart("trae-pending-session", "Replace it with the second Turn.", fixture.workspace, now + 1);
+  let pendingStart;
+  try {
+    await runtime.recordTurnStart(first);
+    now += 1;
+    pendingStart = runtime.recordTurnStart(second);
+    await secondSearchStarted;
+    // Stop prunes coordinator metadata at this time. The active snapshot must
+    // already refer to the replacement even though its start has not returned.
+    now += 10;
+    assert.deepEqual(await runtime.writeback({
+      ...second,
+      lastAssistantMessage: "The replacement completed before Search returned.",
+    }), { ok: true, scheduled: true });
+    assert.deepEqual(await runtime.writeback({
+      ...first,
+      lastAssistantMessage: "The original completion arrived late.",
+    }), { ok: true, scheduled: false, reason: "interrupted" });
+    assert.deepEqual(writes.map(({ userText }) => userText), [second.prompt]);
+    assert.equal(runtime.size(), 0);
+    assert.equal(searchCalls, 2);
+    releaseSecondSearch();
+    assert.deepEqual(await pendingStart, { ok: true });
+  } finally {
+    releaseSecondSearch();
+    if (pendingStart) await Promise.allSettled([pendingStart]);
+    runtime.close();
+    await fixture.cleanup();
+  }
+});
+
 test("Trae complete Hook payload restores writeback after Backend runtime restart", async () => {
   const fixture = await createFixture("restart");
   const env = configuredEnv(fixture.home, { MEMORAX_CODE_TRAE_TRACE_ENABLED: "false" });
@@ -332,6 +395,7 @@ test("Trae trace records interrupted and completed Turn lifecycles", async () =>
       second.turnId,
     ]);
     assert.equal(events.every((event) => event.trace.client === "trae"), true);
+    assert.equal(events.every((event) => event.source === "trae-hook"), true);
     assert.equal(events.every((event) => event.trace.context_origin === "trae-hook-body"), true);
     assert.equal(writes.length, 1);
     const current = JSON.parse(await readFile(

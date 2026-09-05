@@ -5,18 +5,11 @@ import {
   type CodeBuddyTurn,
   type CodeBuddyTurnFailureReason,
 } from "./jsonl-history.js";
-import { retrieveAutomaticMemoryContext } from "../../memory/automatic-retrieval.js";
-import { createAutomaticMemoryWritebackRuntime, type AutomaticMemoryWritebackEnqueue, type AutomaticMemoryWritebackRejectionReason, type AutomaticMemoryWritebackRuntime } from "../../memory/automatic-writeback.js";
-import {
-  claimQuotaNotice,
-  createPendingQuotaNoticeRuntime,
-  type PendingQuotaNoticeRuntime,
-  type QuotaNoticeClaimer,
-} from "../../memory/quota-notice.js";
+import type { AutomaticMemoryWritebackRejectionReason } from "../../memory/automatic-writeback.js";
+import { createHarnessMemoryRuntime, type HarnessMemoryRuntimeOptions } from "../../memory/harness-runtime.js";
 import type { CodeBuddyTurnStartCommand, CodeBuddyWritebackCommand, MemoryHookTurnStartResult } from "../../memory/hook-command.js";
-import type { MemoryDiagnosticLogger, MemoryObservabilityHook } from "../../memory/observability.js";
-import { createMemoryTurnCoordinator, type MemoryTurnCoordinator, type MemoryTurnWritebackSkipReason } from "../../memory/turn-coordinator.js";
-import { createRepositoryMemorySessionRuntime, resolvedRepoMemoryWorktree, type ConfiguredRepositoryMemoryResult, type RepositoryMemorySessionRuntime } from "../../memory/repository-session.js";
+import type { MemoryDiagnosticLogger } from "../../memory/observability.js";
+import type { MemoryTurnCoordinator, MemoryTurnWritebackSkipReason } from "../../memory/turn-coordinator.js";
 import type { RepositoryMemoryScopeFailureReason } from "../../repository/scope.js";
 import { traceContextFromCodeBuddyHookBody, type TraceContext } from "../../trace/context.js";
 import {
@@ -24,25 +17,10 @@ import {
   readOpenTraceTurn,
   recordCodeBuddyTraceEvent,
   traceTurnEventId,
-  writeCurrentCodeBuddyTurn,
   type TraceEventWriteResult,
 } from "../../trace/store.js";
 
-type Options = {
-  automaticWriteback?: AutomaticMemoryWritebackEnqueue;
-  claimQuotaNotice?: QuotaNoticeClaimer;
-  diagnosticLogger?: MemoryDiagnosticLogger;
-  env?: Record<string, string | undefined>;
-  fetchImpl?: typeof fetch;
-  now?: () => number;
-  ttlMs?: number;
-  maxEntries?: number;
-  cleanupIntervalMs?: number;
-  memoryObservability?: MemoryObservabilityHook;
-  memoraxCodeHome?: string;
-  pendingQuotaNotice?: PendingQuotaNoticeRuntime;
-  repositoryMemorySession?: RepositoryMemorySessionRuntime;
-  turnCoordinator?: MemoryTurnCoordinator;
+type Options = HarnessMemoryRuntimeOptions & {
   transcriptReadAttempts?: number;
   transcriptRetryDelayMs?: number;
 };
@@ -52,44 +30,30 @@ export type CodeBuddyMemoryHookRuntime = { recordTurnStart(command: CodeBuddyTur
 
 export function createCodeBuddyMemoryHookRuntime(options: Options = {}): CodeBuddyMemoryHookRuntime {
   const now = options.now ?? (() => Date.now());
-  const pendingQuotaNotice = options.pendingQuotaNotice ?? createPendingQuotaNoticeRuntime({
-    claimQuotaNotice: options.claimQuotaNotice,
-    diagnosticLogger: options.diagnosticLogger,
-    env: options.env,
-  });
-  const ownsPendingQuotaNotice = options.pendingQuotaNotice === undefined;
-  const automatic = options.turnCoordinator ? undefined : options.automaticWriteback ? { enqueue: options.automaticWriteback, discardForScopeUpgrade: () => 0, drain: async () => undefined, close: () => undefined } : createAutomaticMemoryWritebackRuntime({ diagnosticLogger: options.diagnosticLogger, queueQuotaNotice: pendingQuotaNotice.queue });
-  const coordinator = options.turnCoordinator ?? createMemoryTurnCoordinator({ automaticWriteback: automatic!.enqueue, now, ttlMs: options.ttlMs, maxEntries: options.maxEntries, cleanupIntervalMs: options.cleanupIntervalMs });
-  const repository = options.repositoryMemorySession ?? createRepositoryMemorySessionRuntime({ onScopeUpgrade: automatic?.discardForScopeUpgrade });
+  const memory = createHarnessMemoryRuntime({
+    client: "codebuddy",
+    retrievalSource: "codebuddy_hook_retrieval",
+    writebackSource: "codebuddy_hook_writeback",
+    diagnosticPrefix: "codebuddy_memory_hook",
+    traceFailureEvent: "codebuddy_trace.write_failed",
+    deduplicateRetrieval: false,
+  }, options);
+  const coordinator = memory.turnCoordinator;
   return {
     async recordTurnStart(command) {
       await reconcilePreviousInterruptedTurn(coordinator, command, options, now);
-      const memory = await resolveRepository(command, options, repository);
       const traceContext = traceContextFromCodeBuddyHookBody(command, new Date(now()).toISOString());
-      coordinator.recordTurnStart({ client: "codebuddy", sessionId: command.sessionId, clientTurnId: command.turnId, cwd: command.cwd, workspaceKind: command.workspaceKind, transcriptPath: command.transcriptPath, createdAt: now(), traceContext, repositoryMemory: memory });
-      await recordTraceBestEffort("codebuddy_memory_hook.turn_start_event", recordCodeBuddyTraceEvent({
-        eventId: traceTurnEventId(traceContext, "turn_start"),
-        memoraxCodeHome: options.memoraxCodeHome,
-        env: options.env,
+      return memory.recordTurnStart({
+        sessionId: command.sessionId,
+        clientTurnId: command.turnId,
+        cwd: command.cwd,
+        workspaceKind: command.workspaceKind,
+        transcriptPath: command.transcriptPath,
+        createdAt: now(),
         traceContext,
-        type: "turn_start",
-        source: "unknown",
-        operation: "query",
-        ok: true,
-        request: { prompt: command.prompt, cwd: command.cwd, transcriptPath: command.transcriptPath },
-      }), options.diagnosticLogger);
-      await recordTraceBestEffort("codebuddy_memory_hook.current_turn_write", writeCurrentCodeBuddyTurn(traceContext, {
-        memoraxCodeHome: options.memoraxCodeHome,
-        env: options.env,
-        now: () => new Date(now()),
-      }), options.diagnosticLogger);
-      const repoMemoryWorktree = resolvedRepoMemoryWorktree(memory);
-      const pendingUserNotice = memory.ok
-        ? await pendingQuotaNotice.claim(memory.memory.config)
-        : undefined;
-      const retrieval = await retrieveAutomaticMemoryContext({ diagnosticLogger: options.diagnosticLogger, claimQuotaNotice: options.claimQuotaNotice ?? claimQuotaNotice, env: options.env ?? process.env, fetchImpl: options.fetchImpl, memoryObservability: options.memoryObservability, memoryObservabilitySource: "codebuddy_hook_retrieval", query: command.prompt, repositoryMemory: memory, sessionKey: command.sessionId, traceContext: traceContextFromCodeBuddyHookBody(command) });
-      const userNotice = [pendingUserNotice, retrieval.userNotice].filter(Boolean).join("\n");
-      return { ok: true, ...(repoMemoryWorktree ? { repoMemoryWorktree } : {}), ...(retrieval.context ? { additionalContext: retrieval.context } : {}), ...(userNotice ? { userNotice } : {}) };
+        prompt: command.prompt,
+        retrievalTraceContext: traceContextFromCodeBuddyHookBody(command),
+      });
     },
     async writeback(command) {
       const entry = coordinator.getTurn({ client: "codebuddy", sessionId: command.sessionId, clientTurnId: command.turnId });
@@ -106,19 +70,24 @@ export function createCodeBuddyMemoryHookRuntime(options: Options = {}): CodeBud
         return { ok: true, scheduled: false, reason: transcript.reason };
       }
       await recordCodeBuddyTurnEnd(options, traceContext, transcript.turn);
-      const memory = await resolveRepository({ ...command, cwd: command.cwd ?? entry?.cwd, workspaceKind: command.workspaceKind ?? entry?.workspaceKind }, options, repository);
-      const completed = await coordinator.completeMaterializedTurn({ key: { client: "codebuddy", sessionId: command.sessionId, clientTurnId: command.turnId }, metadata: entry, resolveRepositoryMemory: async () => memory, userText: transcript.turn.userPrompt, assistantText: transcript.turn.assistantReply, writeback: { client: "codebuddy", sessionKey: command.sessionId, env: options.env ?? process.env, fetchImpl: options.fetchImpl, memoryObservability: options.memoryObservability, memoryObservabilitySource: "codebuddy_hook_writeback", traceContext: traceContextFromCodeBuddyHookBody(command) } });
+      const repositoryMemory = await memory.resolveRepositoryMemory({ sessionId: command.sessionId, cwd: command.cwd ?? entry?.cwd, workspaceKind: command.workspaceKind ?? entry?.workspaceKind });
+      const completed = await memory.completeTurn({
+        sessionId: command.sessionId,
+        clientTurnId: command.turnId,
+        metadata: entry,
+        resolveRepositoryMemory: async () => repositoryMemory,
+        userText: transcript.turn.userPrompt,
+        assistantText: transcript.turn.assistantReply,
+        traceContext: traceContextFromCodeBuddyHookBody(command),
+      });
       await recordCodeBuddyTurnMaterialization(options, traceContext, transcript.turn);
       return completed.scheduled ? { ok: true, scheduled: true } : { ok: true, scheduled: false, reason: completed.reason };
     },
-    size() { return coordinator.size("codebuddy"); },
-    close() { if (!options.turnCoordinator) coordinator.close(); if (!options.repositoryMemorySession) repository.close(); automatic?.close?.(); if (ownsPendingQuotaNotice) pendingQuotaNotice.close(); },
+    size() { return memory.size(); },
+    close() { memory.close(); },
   };
 }
 
-async function resolveRepository(command: { sessionId: string; cwd?: string; workspaceKind?: string }, options: Options, repository: RepositoryMemorySessionRuntime): Promise<ConfiguredRepositoryMemoryResult> {
-  return repository.resolve({ client: "codebuddy", sessionId: command.sessionId, workspaceRoot: command.cwd, workspaceKind: command.workspaceKind, memoraxCodeHome: options.memoraxCodeHome ?? options.env?.MEMORAX_CODE_HOME, env: options.env });
-}
 async function readWithRetry(input: { transcriptPath: string; sessionId: string; turnId: string }, options: Options) {
   const attempts = options.transcriptReadAttempts ?? 6;
   let result = await readCodeBuddyTranscriptTurn(input);

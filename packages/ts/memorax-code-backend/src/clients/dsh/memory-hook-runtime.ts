@@ -1,7 +1,7 @@
 import {
   type AutomaticMemoryWritebackRejectionReason,
 } from "../../memory/automatic-writeback.js";
-import { retrieveAutomaticMemoryContext } from "../../memory/automatic-retrieval.js";
+import { createHarnessMemoryRuntime } from "../../memory/harness-runtime.js";
 import type {
   DshTurnStartCommand,
   DshWritebackCommand,
@@ -11,15 +11,8 @@ import type {
   MemoryDiagnosticLogger,
   MemoryObservabilityHook,
 } from "../../memory/observability.js";
-import {
-  resolvedRepoMemoryWorktree,
-  type ConfiguredRepositoryMemoryResult,
-  type RepositoryMemorySessionRuntime,
-} from "../../memory/repository-session.js";
-import {
-  type MemoryTurnCoordinator,
-  type MemoryTurnState,
-} from "../../memory/turn-coordinator.js";
+import type { RepositoryMemorySessionRuntime } from "../../memory/repository-session.js";
+import type { MemoryTurnCoordinator } from "../../memory/turn-coordinator.js";
 import type { RepositoryMemoryScopeFailureReason } from "../../repository/scope.js";
 import {
   dshSessionEventTurn,
@@ -35,7 +28,6 @@ import {
   markCurrentTraceTurnOutcome,
   recordTraceEvent,
   traceTurnEventId,
-  writeCurrentTraceTurn,
   type TraceTurnOutcome,
 } from "../../trace/store.js";
 
@@ -74,9 +66,17 @@ export function createDshMemoryHookRuntime(
   options: DshMemoryHookRuntimeOptions,
 ): DshMemoryHookRuntime {
   const now = options.now ?? (() => Date.now());
-  const { repositoryMemorySession, turnCoordinator } = options;
-  const retrievalTurns = new Set<string>();
-  const retrievalTurnLimit = positiveInteger(options.maxEntries, 256);
+  const harness = createHarnessMemoryRuntime({
+    client: DSH_MEMORY_TURN_CLIENT,
+    retrievalSource: "dsh_native_retrieval",
+    writebackSource: "dsh_native_writeback",
+    diagnosticPrefix: "dsh_memory",
+    traceFailureEvent: "dsh_trace.write_failed",
+    turnStartTraceSource: "dsh-cordis",
+    deduplicateRetrieval: true,
+    quotaNotices: false,
+  }, options);
+  const { turnCoordinator } = harness;
 
   return {
     async recordTurnStart(command) {
@@ -86,78 +86,22 @@ export function createDshMemoryHookRuntime(
         command,
         new Date(createdAt).toISOString(),
       );
-      const repositoryMemory = await resolveHookRepositoryMemory(command, options, repositoryMemorySession);
-      turnCoordinator.recordTurnStart({
-        client: DSH_MEMORY_TURN_CLIENT,
+      return harness.recordTurnStart({
         sessionId: command.sessionId,
         clientTurnId: String(command.turn),
         cwd: command.cwd,
         eventStartSeq: command.startSeq,
         createdAt,
+        prompt: command.prompt,
         traceContext,
-        repositoryMemory,
-      });
-      options.diagnosticLogger?.("dsh_memory.turn_start", {
-        sessionId: command.sessionId,
-        turn: command.turn,
-        startSeq: command.startSeq,
-        cacheSize: turnCoordinator.size(DSH_MEMORY_TURN_CLIENT),
-        workspace: repositoryMemory.ok ? repositoryMemory.memory.scope?.repositorySlug : undefined,
-        workspaceScopeReason: repositoryMemory.ok ? undefined : repositoryMemory.reason,
-      });
-      await recordDshTraceBestEffort("dsh_memory.turn_start_event", recordTraceEvent({
-        eventId: traceTurnEventId(traceContext, "turn_start"),
-        memoraxCodeHome: options.memoraxCodeHome,
-        env: options.env,
-        traceContext,
-        type: "turn_start",
-        source: "dsh-cordis",
-        operation: "query",
-        ok: true,
-        request: {
-          start_seq: command.startSeq,
+        traceRequest: { start_seq: command.startSeq },
+        retrievalKeySuffix: String(command.startSeq),
+        diagnosticFields: {
+          sessionId: command.sessionId,
+          turn: command.turn,
+          startSeq: command.startSeq,
         },
-      }), options.diagnosticLogger);
-      await recordDshTraceBestEffort("dsh_memory.current_turn_write", writeCurrentTraceTurn(
-        traceContext,
-        {
-          client: "dsh",
-          memoraxCodeHome: options.memoraxCodeHome,
-          env: options.env,
-          now: () => new Date(now()),
-        },
-      ), options.diagnosticLogger);
-
-      const repoMemoryWorktree = resolvedRepoMemoryWorktree(repositoryMemory);
-      const retrievalKey = JSON.stringify([command.sessionId, command.turn, command.startSeq]);
-      if (retrievalTurns.has(retrievalKey)) {
-        return {
-          ok: true,
-          ...(repoMemoryWorktree ? { repoMemoryWorktree } : {}),
-        };
-      }
-      retrievalTurns.add(retrievalKey);
-      while (retrievalTurns.size > retrievalTurnLimit) {
-        const oldest = retrievalTurns.values().next().value;
-        if (typeof oldest !== "string") break;
-        retrievalTurns.delete(oldest);
-      }
-      const retrieval = await retrieveAutomaticMemoryContext({
-        diagnosticLogger: options.diagnosticLogger,
-        env: options.env ?? process.env,
-        fetchImpl: options.fetchImpl,
-        memoryObservability: options.memoryObservability,
-        memoryObservabilitySource: "dsh_native_retrieval",
-        query: command.prompt,
-        repositoryMemory,
-        sessionKey: command.sessionId,
-        traceContext,
       });
-      return {
-        ok: true,
-        ...(repoMemoryWorktree ? { repoMemoryWorktree } : {}),
-        ...(retrieval.context ? { additionalContext: retrieval.context } : {}),
-      };
     },
     async writeback(command) {
       turnCoordinator.pruneExpired();
@@ -197,26 +141,20 @@ export function createDshMemoryHookRuntime(
         turn: materialized.turn,
       });
 
-      const writeback = await turnCoordinator.completeMaterializedTurn({
-        key,
+      const writeback = await harness.completeTurn({
+        sessionId: command.sessionId,
+        clientTurnId: String(command.turn),
         metadata: entry,
-        resolveRepositoryMemory: () => resolveCurrentHookRepositoryMemory(
-          entry,
-          command,
-          options,
-          repositoryMemorySession,
-        ),
+        resolveRepositoryMemory: () => harness.resolveRepositoryMemory({
+          sessionId: command.sessionId,
+          cwd: command.cwd,
+          // DSH's persisted session header and exact event interval remain native
+          // authority after a Backend restart, when the in-memory binding is gone.
+          requireBoundScope: entry !== undefined,
+        }),
         userText: materialized.turn.userPrompt,
         assistantText: materialized.turn.assistantReply,
-        writeback: {
-          client: DSH_MEMORY_TURN_CLIENT,
-          sessionKey: command.sessionId,
-          env: options.env ?? process.env,
-          fetchImpl: options.fetchImpl,
-          memoryObservability: options.memoryObservability,
-          memoryObservabilitySource: "dsh_native_writeback",
-          traceContext,
-        },
+        traceContext,
       });
       if (!writeback.scheduled) {
         return skippedWriteback(command, writeback.reason, options, writeback.metadataDisposition);
@@ -236,7 +174,7 @@ export function createDshMemoryHookRuntime(
       return { ok: true, scheduled: true };
     },
     close() {
-      retrievalTurns.clear();
+      harness.close();
     },
   };
 }
@@ -327,38 +265,6 @@ function dshTurnKey(sessionId: string, turn: number) {
   } as const;
 }
 
-async function resolveHookRepositoryMemory(
-  command: DshTurnStartCommand,
-  options: DshMemoryHookRuntimeOptions,
-  repositoryMemorySession: RepositoryMemorySessionRuntime,
-): Promise<ConfiguredRepositoryMemoryResult> {
-  return await repositoryMemorySession.resolve({
-    client: DSH_MEMORY_TURN_CLIENT,
-    sessionId: command.sessionId,
-    workspaceRoot: command.cwd,
-    memoraxCodeHome: options.memoraxCodeHome ?? options.env?.MEMORAX_CODE_HOME,
-    env: options.env,
-  });
-}
-
-async function resolveCurrentHookRepositoryMemory(
-  entry: MemoryTurnState | undefined,
-  command: DshWritebackCommand,
-  options: DshMemoryHookRuntimeOptions,
-  repositoryMemorySession: RepositoryMemorySessionRuntime,
-): Promise<ConfiguredRepositoryMemoryResult> {
-  return await repositoryMemorySession.resolve({
-    client: DSH_MEMORY_TURN_CLIENT,
-    sessionId: command.sessionId,
-    workspaceRoot: command.cwd,
-    // DSH's persisted session header and exact event interval remain native
-    // authority after a Backend restart, when the in-memory binding is gone.
-    requireBoundScope: entry !== undefined,
-    memoraxCodeHome: options.memoraxCodeHome ?? options.env?.MEMORAX_CODE_HOME,
-    env: options.env,
-  });
-}
-
 function skippedWriteback(
   command: DshWritebackCommand,
   reason: DshMemoryHookWritebackSkipReason,
@@ -375,9 +281,4 @@ function skippedWriteback(
     endSeq: command.endSeq,
   });
   return { ok: true, scheduled: false, reason };
-}
-
-function positiveInteger(value: unknown, fallback: number): number {
-  const parsed = Number(value);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }

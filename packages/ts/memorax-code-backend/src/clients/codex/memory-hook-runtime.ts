@@ -4,19 +4,12 @@ import {
   type CodexRolloutTurn,
   type CodexRolloutTurnFailureReason,
 } from "./rollout-turn.js";
+import type { AutomaticMemoryWritebackRejectionReason } from "../../memory/automatic-writeback.js";
 import {
-  createAutomaticMemoryWritebackRuntime,
-  type AutomaticMemoryWritebackEnqueue,
-  type AutomaticMemoryWritebackRejectionReason,
-  type AutomaticMemoryWritebackRuntime,
-} from "../../memory/automatic-writeback.js";
-import { retrieveAutomaticMemoryContext } from "../../memory/automatic-retrieval.js";
-import {
-  claimQuotaNotice,
-  createPendingQuotaNoticeRuntime,
-  type PendingQuotaNoticeRuntime,
-  type QuotaNoticeClaimer,
-} from "../../memory/quota-notice.js";
+  createHarnessMemoryRuntime,
+  type HarnessMemoryRuntime,
+  type HarnessMemoryRuntimeOptions,
+} from "../../memory/harness-runtime.js";
 import { readCodexSessionTurnIndex } from "./session-turn-index.js";
 import { resolveCodexWorkspaceRoot } from "./workspace-links.js";
 import type {
@@ -24,18 +17,12 @@ import type {
   CodexTurnStartCommand,
   CodexWritebackCommand,
 } from "../../memory/hook-command.js";
-import type { MemoryDiagnosticLogger, MemoryObservabilityHook } from "../../memory/observability.js";
-import {
-  createMemoryTurnCoordinator,
-  type MemoryTurnCoordinator,
-  type MemoryTurnState,
+import type { MemoryDiagnosticLogger } from "../../memory/observability.js";
+import type {
+  MemoryTurnCoordinator,
+  MemoryTurnState,
 } from "../../memory/turn-coordinator.js";
-import {
-  createRepositoryMemorySessionRuntime,
-  resolvedRepoMemoryWorktree,
-  type ConfiguredRepositoryMemoryResult,
-  type RepositoryMemorySessionRuntime,
-} from "../../memory/repository-session.js";
+import type { ConfiguredRepositoryMemoryResult } from "../../memory/repository-session.js";
 import type {
   RepositoryMemoryScope,
   RepositoryMemoryScopeFailureReason,
@@ -47,7 +34,6 @@ import {
   readOpenCodexTurn,
   recordCodexTraceEvent,
   traceTurnEventId,
-  writeCurrentCodexTurn,
   type CodexTurnOutcome,
 } from "../../trace/store.js";
 
@@ -88,22 +74,7 @@ type CodexMemoryHookWritebackRequest = Omit<CodexWritebackCommand, "version" | "
   traceContext?: TraceContext;
 };
 
-export type CodexMemoryHookRuntimeOptions = {
-  automaticWriteback?: AutomaticMemoryWritebackEnqueue;
-  diagnosticLogger?: MemoryDiagnosticLogger;
-  env?: Record<string, string | undefined>;
-  fetchImpl?: typeof fetch;
-  claimQuotaNotice?: QuotaNoticeClaimer;
-  now?: () => number;
-  ttlMs?: number;
-  maxEntries?: number;
-  cleanupIntervalMs?: number;
-  memoryObservability?: MemoryObservabilityHook;
-  memoraxCodeHome?: string;
-  pendingQuotaNotice?: PendingQuotaNoticeRuntime;
-  repositoryMemorySession?: RepositoryMemorySessionRuntime;
-  turnCoordinator?: MemoryTurnCoordinator;
-};
+export type CodexMemoryHookRuntimeOptions = HarnessMemoryRuntimeOptions;
 
 export type CodexMemoryHookRuntime = {
   recordTurnStart(command: CodexTurnStartCommand): Promise<MemoryHookTurnStartResult>;
@@ -116,38 +87,15 @@ const CODEX_MEMORY_TURN_CLIENT = "codex" as const;
 
 export function createCodexMemoryHookRuntime(options: CodexMemoryHookRuntimeOptions = {}): CodexMemoryHookRuntime {
   const now = options.now ?? (() => Date.now());
-  const pendingQuotaNotice = options.pendingQuotaNotice ?? createPendingQuotaNoticeRuntime({
-    claimQuotaNotice: options.claimQuotaNotice,
-    diagnosticLogger: options.diagnosticLogger,
-    env: options.env,
-  });
-  const ownsPendingQuotaNotice = options.pendingQuotaNotice === undefined;
-  const automaticWritebackRuntime: {
-    enqueue: AutomaticMemoryWritebackEnqueue;
-    discardForScopeUpgrade?: AutomaticMemoryWritebackRuntime["discardForScopeUpgrade"];
-    close?: () => void;
-  } | undefined = options.turnCoordinator
-    ? undefined
-    : options.automaticWriteback
-      ? { enqueue: options.automaticWriteback }
-      : createAutomaticMemoryWritebackRuntime({
-        diagnosticLogger: options.diagnosticLogger,
-        queueQuotaNotice: pendingQuotaNotice.queue,
-      });
-  const turnCoordinator = options.turnCoordinator ?? createMemoryTurnCoordinator({
-    automaticWriteback: automaticWritebackRuntime!.enqueue,
-    now,
-    ttlMs: options.ttlMs,
-    maxEntries: options.maxEntries,
-    cleanupIntervalMs: options.cleanupIntervalMs,
-  });
-  const ownsTurnCoordinator = options.turnCoordinator === undefined;
-  const repositoryMemorySession = options.repositoryMemorySession ?? createRepositoryMemorySessionRuntime({
-    onScopeUpgrade: automaticWritebackRuntime?.discardForScopeUpgrade,
-  });
-  const ownsRepositoryMemorySession = options.repositoryMemorySession === undefined;
-  const automaticRetrievalTurns = new Set<string>();
-  const automaticRetrievalTurnLimit = positiveInteger(options.maxEntries, 256);
+  const memory = createHarnessMemoryRuntime({
+    client: CODEX_MEMORY_TURN_CLIENT,
+    retrievalSource: "codex_hook_retrieval",
+    writebackSource: "codex_hook_writeback",
+    diagnosticPrefix: "memory_hook",
+    traceFailureEvent: "codex_trace.write_failed",
+    deduplicateRetrieval: true,
+  }, options);
+  const { turnCoordinator } = memory;
 
   return {
     async recordTurnStart(command) {
@@ -163,90 +111,27 @@ export function createCodexMemoryHookRuntime(options: CodexMemoryHookRuntimeOpti
       await reconcilePreviousInterruptedTurn(turnCoordinator, turn, options, now);
       turnCoordinator.pruneExpired();
       const [repositoryMemory, sessionTurnIndex] = await Promise.all([
-        resolveHookRepositoryMemory(turn, options, repositoryMemorySession),
+        resolveHookRepositoryMemory(turn, options, memory),
         resolveSessionTurnIndex(turn, options.diagnosticLogger),
       ]);
-      const repoMemoryWorktree = resolvedRepoMemoryWorktree(repositoryMemory);
-      if (turn.turnId) {
-        turnCoordinator.recordTurnStart({
-          client: CODEX_MEMORY_TURN_CLIENT,
-          sessionId: turn.sessionId,
-          clientTurnId: turn.turnId,
-          cwd: turn.cwd,
-          workspaceKind: turn.workspaceKind,
-          transcriptPath: turn.transcriptPath,
-          createdAt: turn.createdAt,
-          sessionTurnIndex,
-          traceContext: turn.traceContext,
-          repositoryMemory,
-        });
-      }
-      options.diagnosticLogger?.("memory_hook.turn_start", {
+      return await memory.recordTurnStart({
         sessionId: turn.sessionId,
-        turnId: turn.turnId,
-        promptChars: turn.prompt.length,
-        cacheSize: turnCoordinator.size(CODEX_MEMORY_TURN_CLIENT),
-        workspace: repositoryMemory.ok ? repositoryMemory.memory.scope?.repositorySlug : undefined,
-        workspaceScopeReason: repositoryMemory.ok ? undefined : repositoryMemory.reason,
+        clientTurnId: turn.turnId,
+        cwd: turn.cwd,
+        workspaceKind: turn.workspaceKind,
+        transcriptPath: turn.transcriptPath,
+        createdAt: turn.createdAt,
         sessionTurnIndex,
-      });
-      await recordTraceBestEffort("memory_hook.turn_start_event", recordCodexTraceEvent({
-        eventId: traceTurnEventId(turn.traceContext, "turn_start"),
-        memoraxCodeHome: options.memoraxCodeHome,
-        env: options.env,
         traceContext: turn.traceContext,
-        type: "turn_start",
-        source: "unknown",
-        operation: "query",
-        ok: true,
-        sessionTurnIndex,
-        request: {
-          prompt: turn.prompt,
-          cwd: turn.cwd,
-          transcriptPath: turn.transcriptPath,
-        },
-      }), options.diagnosticLogger);
-      await recordTraceBestEffort("memory_hook.current_turn_write", writeCurrentCodexTurn(turn.traceContext, {
-        memoraxCodeHome: options.memoraxCodeHome,
-        env: options.env,
-        now: () => new Date(now()),
-      }), options.diagnosticLogger);
-      const processTurnStart = turn.turnId
-        ? claimAutomaticRetrievalTurn(
-          automaticRetrievalTurns,
-          automaticRetrievalTurnLimit,
-          turn.sessionId,
-          turn.turnId,
-        )
-        : false;
-      if (!processTurnStart) {
-        return {
-          ok: true,
-          ...(repoMemoryWorktree ? { repoMemoryWorktree } : {}),
-        };
-      }
-      const pendingUserNotice = repositoryMemory.ok
-        ? await pendingQuotaNotice.claim(repositoryMemory.memory.config)
-        : undefined;
-      const retrieval = await retrieveAutomaticMemoryContext({
-        diagnosticLogger: options.diagnosticLogger,
-        claimQuotaNotice: options.claimQuotaNotice ?? claimQuotaNotice,
-        env: options.env ?? process.env,
-        fetchImpl: options.fetchImpl,
-        memoryObservability: options.memoryObservability,
-        memoryObservabilitySource: "codex_hook_retrieval",
-        query: turn.prompt,
+        prompt: turn.prompt,
         repositoryMemory,
-        sessionKey: turn.sessionId,
-        traceContext: turn.traceContext,
+        diagnosticFields: {
+          sessionId: turn.sessionId,
+          turnId: turn.turnId,
+          promptChars: turn.prompt.length,
+          sessionTurnIndex,
+        },
       });
-      const userNotice = [pendingUserNotice, retrieval.userNotice].filter(Boolean).join("\n");
-      return {
-        ok: true,
-        ...(repoMemoryWorktree ? { repoMemoryWorktree } : {}),
-        ...(retrieval.context ? { additionalContext: retrieval.context } : {}),
-        ...(userNotice ? { userNotice } : {}),
-      };
     },
     async writeback(command) {
       turnCoordinator.pruneExpired();
@@ -311,27 +196,20 @@ export function createCodexMemoryHookRuntime(options: CodexMemoryHookRuntimeOpti
         });
         return { ok: true, scheduled: false, reason: rollout.reason };
       }
-      const writeback = await turnCoordinator.completeMaterializedTurn({
-        key: codexTurnKey(request.sessionId, request.turnId),
+      const writeback = await memory.completeTurn({
+        sessionId: request.sessionId,
+        clientTurnId: request.turnId,
         metadata: entry,
         resolveRepositoryMemory: () => resolveCurrentHookRepositoryMemory(
           entry,
           request,
           options,
-          repositoryMemorySession,
+          memory,
           recoveredTraceContext,
         ),
         userText: rollout.turn.userPrompt,
         assistantText: rollout.turn.assistantReply,
-        writeback: {
-          client: CODEX_MEMORY_TURN_CLIENT,
-          sessionKey: request.sessionId,
-          env: options.env ?? process.env,
-          fetchImpl: options.fetchImpl,
-          memoryObservability: options.memoryObservability,
-          memoryObservabilitySource: "codex_hook_writeback",
-          traceContext,
-        },
+        traceContext,
       });
       if (!writeback.scheduled) {
         options.diagnosticLogger?.("memory_hook.writeback", {
@@ -355,14 +233,10 @@ export function createCodexMemoryHookRuntime(options: CodexMemoryHookRuntimeOpti
       return { ok: true, scheduled: true };
     },
     size() {
-      return turnCoordinator.size(CODEX_MEMORY_TURN_CLIENT);
+      return memory.size();
     },
     close() {
-      automaticRetrievalTurns.clear();
-      if (ownsTurnCoordinator) turnCoordinator.close();
-      if (ownsRepositoryMemorySession) repositoryMemorySession.close();
-      automaticWritebackRuntime?.close?.();
-      if (ownsPendingQuotaNotice) pendingQuotaNotice.close();
+      memory.close();
     },
   };
 }
@@ -393,7 +267,7 @@ async function resolveSessionTurnIndex(input: {
 async function resolveHookRepositoryMemory(
   entry: Pick<CodexMemoryHookTurnStart, "sessionId" | "cwd" | "workspaceKind">,
   options: CodexMemoryHookRuntimeOptions,
-  repositoryMemorySession: RepositoryMemorySessionRuntime,
+  memory: HarnessMemoryRuntime,
   requireBoundScope = false,
 ): Promise<ConfiguredRepositoryMemoryResult> {
   const memoraxCodeHome = options.memoraxCodeHome ?? options.env?.MEMORAX_CODE_HOME;
@@ -403,24 +277,18 @@ async function resolveHookRepositoryMemory(
       sessionKey: entry.sessionId,
     })
     : undefined;
-  const primary = await repositoryMemorySession.resolve({
-    client: CODEX_MEMORY_TURN_CLIENT,
+  const primary = await memory.resolveRepositoryMemory({
     sessionId: entry.sessionId,
-    workspaceRoot: registeredWorkspace ?? entry.cwd,
+    cwd: registeredWorkspace ?? entry.cwd,
     workspaceKind: entry.workspaceKind,
     requireBoundScope,
-    memoraxCodeHome,
-    env: options.env,
   });
   if (!primary.ok || !registeredWorkspace || !entry.cwd) return primary;
-  return await repositoryMemorySession.resolve({
-    client: CODEX_MEMORY_TURN_CLIENT,
+  return await memory.resolveRepositoryMemory({
     sessionId: entry.sessionId,
-    workspaceRoot: entry.cwd,
+    cwd: entry.cwd,
     workspaceKind: entry.workspaceKind,
     requireBoundScope,
-    memoraxCodeHome,
-    env: options.env,
   });
 }
 
@@ -428,7 +296,7 @@ async function resolveCurrentHookRepositoryMemory(
   entry: MemoryTurnState | undefined,
   request: CodexMemoryHookWritebackRequest,
   options: CodexMemoryHookRuntimeOptions,
-  repositoryMemorySession: RepositoryMemorySessionRuntime,
+  memory: HarnessMemoryRuntime,
   recoveredTraceContext?: TraceContext,
 ): Promise<ConfiguredRepositoryMemoryResult> {
   if (!entry) {
@@ -437,35 +305,29 @@ async function resolveCurrentHookRepositoryMemory(
         sessionId: request.sessionId!,
         cwd: request.cwd,
         workspaceKind: request.workspaceKind,
-      }, options, repositoryMemorySession, true);
+      }, options, memory, true);
     }
     const recovered = await resolveHookRepositoryMemory({
       sessionId: request.sessionId!,
       cwd: recoveredTraceContext.cwd,
       workspaceKind: recoveredTraceContext.workspaceKind,
-    }, options, repositoryMemorySession);
+    }, options, memory);
     if (!recovered.ok || (!request.cwd && !request.workspaceKind)) return recovered;
     return await resolveHookRepositoryMemory({
       sessionId: request.sessionId!,
       cwd: request.cwd ?? recoveredTraceContext.cwd,
       workspaceKind: request.workspaceKind ?? recoveredTraceContext.workspaceKind,
-    }, options, repositoryMemorySession);
+    }, options, memory);
   }
   return !request.cwd
-    ? await repositoryMemorySession.resolve({
-      client: CODEX_MEMORY_TURN_CLIENT,
+    ? await memory.resolveRepositoryMemory({
       sessionId: entry.sessionId,
       workspaceKind: request.workspaceKind ?? entry.workspaceKind,
-      memoraxCodeHome: options.memoraxCodeHome ?? options.env?.MEMORAX_CODE_HOME,
-      env: options.env,
     })
-    : await repositoryMemorySession.resolve({
-      client: CODEX_MEMORY_TURN_CLIENT,
+    : await memory.resolveRepositoryMemory({
       sessionId: entry.sessionId,
-      workspaceRoot: request.cwd,
+      cwd: request.cwd,
       workspaceKind: request.workspaceKind ?? entry.workspaceKind,
-      memoraxCodeHome: options.memoraxCodeHome ?? options.env?.MEMORAX_CODE_HOME,
-      env: options.env,
     });
 }
 
@@ -720,28 +582,6 @@ function codexTurnKey(sessionId: string, turnId: string) {
     sessionId,
     clientTurnId: turnId,
   };
-}
-
-function claimAutomaticRetrievalTurn(
-  turns: Set<string>,
-  limit: number,
-  sessionId: string,
-  turnId: string,
-): boolean {
-  const key = JSON.stringify([sessionId, turnId]);
-  if (turns.has(key)) return false;
-  turns.add(key);
-  while (turns.size > limit) {
-    const oldest = turns.values().next().value;
-    if (typeof oldest !== "string") break;
-    turns.delete(oldest);
-  }
-  return true;
-}
-
-function positiveInteger(value: unknown, fallback: number): number {
-  const parsed = Number(value);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 async function recordTraceBestEffort<T>(

@@ -27,6 +27,39 @@ const WRITEBACK_ENV = {
   MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
 };
 
+test("memory hook observes a Codex start without turn identity without consuming quota or retrieving", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-hook-uncorrelated-start-"));
+  const calls = [];
+  const controller = createCodexMemoryHookRuntime({
+    memoraxCodeHome: root,
+    env: { ...WRITEBACK_ENV, MEMORAX_CODE_HOME: root, MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED: "true" },
+    automaticWriteback: () => { calls.push("writeback"); return { accepted: true }; },
+    pendingQuotaNotice: { claim: async () => { calls.push("quota"); }, queue() {}, close() {} },
+    fetchImpl: async () => { calls.push("search"); throw new Error("unexpected retrieval"); },
+  });
+  const sessionId = "session-without-turn-id";
+  try {
+    assert.deepEqual(await controller.recordTurnStart({
+      sessionId,
+      prompt: "Observe this start without guessing its turn.",
+      cwd: TEST_WORKSPACE,
+      transcriptPath: join(root, "rollout.jsonl"),
+    }), GIT_TURN_START_RESULT);
+    assert.equal(controller.size(), 0);
+    assert.deepEqual(calls, []);
+    const events = (await readFile(tracePaths(root).eventsJsonl(sessionId), "utf8"))
+      .trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(events.length, 1);
+    assert.equal(events[0].type, "turn_start");
+    assert.equal(events[0].trace.session_id, sessionId);
+    assert.equal(events[0].trace.turn_id, undefined);
+    assert.equal(events[0].request.prompt, "Observe this start without guessing its turn.");
+  } finally {
+    controller.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("memory hook turn-start trace failures do not create unhandled rejections", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-hook-trace-unhandled-"));
   const blocker = join(root, "debug");

@@ -6,36 +6,21 @@ import {
   type ClaudeTranscriptTurnFailureReason,
   type ClaudeTranscriptTurnResult,
 } from "./transcript-turn.js";
-import { retrieveAutomaticMemoryContext } from "../../memory/automatic-retrieval.js";
+import type { AutomaticMemoryWritebackRejectionReason } from "../../memory/automatic-writeback.js";
 import {
-  claimQuotaNotice,
-  createPendingQuotaNoticeRuntime,
-  type PendingQuotaNoticeRuntime,
-  type QuotaNoticeClaimer,
-} from "../../memory/quota-notice.js";
-import {
-  createAutomaticMemoryWritebackRuntime,
-  type AutomaticMemoryWritebackEnqueue,
-  type AutomaticMemoryWritebackRejectionReason,
-  type AutomaticMemoryWritebackRuntime,
-} from "../../memory/automatic-writeback.js";
+  createHarnessMemoryRuntime,
+  type HarnessMemoryRuntimeOptions,
+} from "../../memory/harness-runtime.js";
 import type {
   ClaudeTurnStartCommand,
   ClaudeWritebackCommand,
   MemoryHookTurnStartResult,
 } from "../../memory/hook-command.js";
-import type { MemoryDiagnosticLogger, MemoryObservabilityHook } from "../../memory/observability.js";
-import {
-  createMemoryTurnCoordinator,
-  type MemoryTurnCoordinator,
-  type MemoryTurnState,
+import type { MemoryDiagnosticLogger } from "../../memory/observability.js";
+import type {
+  MemoryTurnCoordinator,
+  MemoryTurnState,
 } from "../../memory/turn-coordinator.js";
-import {
-  createRepositoryMemorySessionRuntime,
-  resolvedRepoMemoryWorktree,
-  type ConfiguredRepositoryMemoryResult,
-  type RepositoryMemorySessionRuntime,
-} from "../../memory/repository-session.js";
 import type { RepositoryMemoryScopeFailureReason } from "../../repository/scope.js";
 import { traceContextFromClaudeHookBody, type TraceContext } from "../../trace/context.js";
 import {
@@ -43,7 +28,6 @@ import {
   readOpenClaudeTurn,
   recordClaudeTraceEvent,
   traceTurnEventId,
-  writeCurrentClaudeTurn,
   type TraceEventWriteResult,
 } from "../../trace/store.js";
 
@@ -70,21 +54,7 @@ export type ClaudeMemoryHookWritebackResult =
   | { ok: true; scheduled: true }
   | { ok: true; scheduled: false; reason: ClaudeMemoryHookWritebackSkipReason };
 
-export type ClaudeMemoryHookRuntimeOptions = {
-  automaticWriteback?: AutomaticMemoryWritebackEnqueue;
-  diagnosticLogger?: MemoryDiagnosticLogger;
-  env?: Record<string, string | undefined>;
-  fetchImpl?: typeof fetch;
-  claimQuotaNotice?: QuotaNoticeClaimer;
-  now?: () => number;
-  ttlMs?: number;
-  maxEntries?: number;
-  cleanupIntervalMs?: number;
-  memoryObservability?: MemoryObservabilityHook;
-  memoraxCodeHome?: string;
-  pendingQuotaNotice?: PendingQuotaNoticeRuntime;
-  repositoryMemorySession?: RepositoryMemorySessionRuntime;
-  turnCoordinator?: MemoryTurnCoordinator;
+export type ClaudeMemoryHookRuntimeOptions = HarnessMemoryRuntimeOptions & {
   transcriptReadAttempts?: number;
   transcriptRetryDelayMs?: number;
 };
@@ -104,38 +74,15 @@ export function createClaudeMemoryHookRuntime(
   options: ClaudeMemoryHookRuntimeOptions = {},
 ): ClaudeMemoryHookRuntime {
   const now = options.now ?? (() => Date.now());
-  const pendingQuotaNotice = options.pendingQuotaNotice ?? createPendingQuotaNoticeRuntime({
-    claimQuotaNotice: options.claimQuotaNotice,
-    diagnosticLogger: options.diagnosticLogger,
-    env: options.env,
-  });
-  const ownsPendingQuotaNotice = options.pendingQuotaNotice === undefined;
-  const automaticWritebackRuntime: {
-    enqueue: AutomaticMemoryWritebackEnqueue;
-    discardForScopeUpgrade?: AutomaticMemoryWritebackRuntime["discardForScopeUpgrade"];
-    close?: () => void;
-  } | undefined = options.turnCoordinator
-    ? undefined
-    : options.automaticWriteback
-      ? { enqueue: options.automaticWriteback }
-      : createAutomaticMemoryWritebackRuntime({
-        diagnosticLogger: options.diagnosticLogger,
-        queueQuotaNotice: pendingQuotaNotice.queue,
-      });
-  const turnCoordinator = options.turnCoordinator ?? createMemoryTurnCoordinator({
-    automaticWriteback: automaticWritebackRuntime!.enqueue,
-    now,
-    ttlMs: options.ttlMs,
-    maxEntries: options.maxEntries,
-    cleanupIntervalMs: options.cleanupIntervalMs,
-  });
-  const ownsTurnCoordinator = options.turnCoordinator === undefined;
-  const repositoryMemorySession = options.repositoryMemorySession ?? createRepositoryMemorySessionRuntime({
-    onScopeUpgrade: automaticWritebackRuntime?.discardForScopeUpgrade,
-  });
-  const ownsRepositoryMemorySession = options.repositoryMemorySession === undefined;
-  const automaticRetrievalPrompts = new Set<string>();
-  const automaticRetrievalPromptLimit = positiveInteger(options.maxEntries, 256);
+  const memory = createHarnessMemoryRuntime({
+    client: CLAUDE_MEMORY_TURN_CLIENT,
+    retrievalSource: "claude_hook_retrieval",
+    writebackSource: "claude_hook_writeback",
+    diagnosticPrefix: "claude_memory_hook",
+    traceFailureEvent: "claude_trace.write_failed",
+    deduplicateRetrieval: true,
+  }, options);
+  const { turnCoordinator } = memory;
 
   return {
     async recordTurnStart(command) {
@@ -154,10 +101,7 @@ export function createClaudeMemoryHookRuntime(
       }
       await reconcilePreviousInterruptedTurn(turnCoordinator, turn, options, now);
       turnCoordinator.pruneExpired();
-      const repositoryMemory = await resolveHookRepositoryMemory(turn, options, repositoryMemorySession);
-      const repoMemoryWorktree = resolvedRepoMemoryWorktree(repositoryMemory);
-      turnCoordinator.recordTurnStart({
-        client: CLAUDE_MEMORY_TURN_CLIENT,
+      return await memory.recordTurnStart({
         sessionId: turn.sessionId,
         clientTurnId: turn.promptId,
         cwd: turn.cwd,
@@ -165,72 +109,9 @@ export function createClaudeMemoryHookRuntime(
         transcriptPath: turn.transcriptPath,
         createdAt: turn.createdAt,
         traceContext: turn.traceContext,
-        repositoryMemory,
+        prompt: turn.prompt,
+        diagnosticFields: { sessionId: turn.sessionId, promptId: turn.promptId },
       });
-      options.diagnosticLogger?.("claude_memory_hook.turn_start", {
-        sessionId: turn.sessionId,
-        promptId: turn.promptId,
-        cacheSize: turnCoordinator.size(CLAUDE_MEMORY_TURN_CLIENT),
-        workspace: repositoryMemory.ok ? repositoryMemory.memory.scope?.repositorySlug : undefined,
-        workspaceScopeReason: repositoryMemory.ok ? undefined : repositoryMemory.reason,
-      });
-      await recordTraceBestEffort("claude_memory_hook.turn_start_event", recordClaudeTraceEvent({
-        eventId: traceTurnEventId(turn.traceContext, "turn_start"),
-        memoraxCodeHome: options.memoraxCodeHome,
-        env: options.env,
-        traceContext: turn.traceContext,
-        type: "turn_start",
-        source: "unknown",
-        operation: "query",
-        ok: true,
-        request: {
-          prompt: turn.prompt,
-          cwd: turn.cwd,
-          transcriptPath: turn.transcriptPath,
-        },
-      }), options.diagnosticLogger);
-      await recordTraceBestEffort("claude_memory_hook.current_turn_write", writeCurrentClaudeTurn(
-        turn.traceContext,
-        {
-          memoraxCodeHome: options.memoraxCodeHome,
-          env: options.env,
-          now: () => new Date(now()),
-        },
-      ), options.diagnosticLogger);
-      const processTurnStart = claimAutomaticRetrievalPrompt(
-        automaticRetrievalPrompts,
-        automaticRetrievalPromptLimit,
-        turn.sessionId,
-        turn.promptId,
-      );
-      if (!processTurnStart) {
-        return {
-          ok: true,
-          ...(repoMemoryWorktree ? { repoMemoryWorktree } : {}),
-        };
-      }
-      const pendingUserNotice = repositoryMemory.ok
-        ? await pendingQuotaNotice.claim(repositoryMemory.memory.config)
-        : undefined;
-      const retrieval = await retrieveAutomaticMemoryContext({
-        diagnosticLogger: options.diagnosticLogger,
-        claimQuotaNotice: options.claimQuotaNotice ?? claimQuotaNotice,
-        env: options.env ?? process.env,
-        fetchImpl: options.fetchImpl,
-        memoryObservability: options.memoryObservability,
-        memoryObservabilitySource: "claude_hook_retrieval",
-        query: turn.prompt,
-        repositoryMemory,
-        sessionKey: turn.sessionId,
-        traceContext: turn.traceContext,
-      });
-      const userNotice = [pendingUserNotice, retrieval.userNotice].filter(Boolean).join("\n");
-      return {
-        ok: true,
-        ...(repoMemoryWorktree ? { repoMemoryWorktree } : {}),
-        ...(retrieval.context ? { additionalContext: retrieval.context } : {}),
-        ...(userNotice ? { userNotice } : {}),
-      };
     },
     async writeback(command) {
       turnCoordinator.pruneExpired();
@@ -279,26 +160,18 @@ export function createClaudeMemoryHookRuntime(
         request,
         options.diagnosticLogger,
       );
-      const writeback = await turnCoordinator.completeMaterializedTurn({
-        key: claudeTurnKey(request.sessionId, request.promptId),
+      const writeback = await memory.completeTurn({
+        sessionId: request.sessionId,
+        clientTurnId: request.promptId,
         metadata: entry,
-        resolveRepositoryMemory: () => resolveCurrentHookRepositoryMemory(
-          entry,
-          request,
-          options,
-          repositoryMemorySession,
-        ),
+        resolveRepositoryMemory: () => memory.resolveRepositoryMemory({
+          sessionId: request.sessionId,
+          cwd: request.cwd ?? entry?.cwd,
+          workspaceKind: request.workspaceKind ?? entry?.workspaceKind,
+        }),
         userText: transcript.turn.userPrompt,
         assistantText: transcript.turn.assistantReply,
-        writeback: {
-          client: CLAUDE_MEMORY_TURN_CLIENT,
-          sessionKey: request.sessionId,
-          env: options.env ?? process.env,
-          fetchImpl: options.fetchImpl,
-          memoryObservability: options.memoryObservability,
-          memoryObservabilitySource: "claude_hook_writeback",
-          traceContext,
-        },
+        traceContext,
       });
       if (!writeback.scheduled) {
         options.diagnosticLogger?.("claude_memory_hook.writeback", {
@@ -322,14 +195,10 @@ export function createClaudeMemoryHookRuntime(
       return { ok: true, scheduled: true };
     },
     size() {
-      return turnCoordinator.size(CLAUDE_MEMORY_TURN_CLIENT);
+      return memory.size();
     },
     close() {
-      automaticRetrievalPrompts.clear();
-      if (ownsTurnCoordinator) turnCoordinator.close();
-      if (ownsRepositoryMemorySession) repositoryMemorySession.close();
-      automaticWritebackRuntime?.close?.();
-      if (ownsPendingQuotaNotice) pendingQuotaNotice.close();
+      memory.close();
     },
   };
 }
@@ -354,37 +223,6 @@ function transientTranscriptFailure(reason: ClaudeTranscriptTurnFailureReason): 
     || reason === "turn_not_found"
     || reason === "user_prompt_missing"
     || reason === "assistant_message_missing";
-}
-
-async function resolveHookRepositoryMemory(
-  entry: Pick<ClaudeMemoryHookTurnStart, "sessionId" | "cwd" | "workspaceKind">,
-  options: ClaudeMemoryHookRuntimeOptions,
-  repositoryMemorySession: RepositoryMemorySessionRuntime,
-): Promise<ConfiguredRepositoryMemoryResult> {
-  return await repositoryMemorySession.resolve({
-    client: CLAUDE_MEMORY_TURN_CLIENT,
-    sessionId: entry.sessionId,
-    workspaceRoot: entry.cwd,
-    workspaceKind: entry.workspaceKind,
-    memoraxCodeHome: options.memoraxCodeHome ?? options.env?.MEMORAX_CODE_HOME,
-    env: options.env,
-  });
-}
-
-async function resolveCurrentHookRepositoryMemory(
-  entry: MemoryTurnState | undefined,
-  request: ClaudeMemoryHookWritebackRequest,
-  options: ClaudeMemoryHookRuntimeOptions,
-  repositoryMemorySession: RepositoryMemorySessionRuntime,
-): Promise<ConfiguredRepositoryMemoryResult> {
-  return await repositoryMemorySession.resolve({
-    client: CLAUDE_MEMORY_TURN_CLIENT,
-    sessionId: request.sessionId,
-    workspaceRoot: request.cwd ?? entry?.cwd,
-    workspaceKind: request.workspaceKind ?? entry?.workspaceKind,
-    memoraxCodeHome: options.memoraxCodeHome ?? options.env?.MEMORAX_CODE_HOME,
-    env: options.env,
-  });
 }
 
 function turnStartFromCommand(
@@ -635,23 +473,6 @@ function claudeTurnKey(sessionId: string, promptId: string) {
     sessionId,
     clientTurnId: promptId,
   } as const;
-}
-
-function claimAutomaticRetrievalPrompt(
-  prompts: Set<string>,
-  limit: number,
-  sessionId: string,
-  promptId: string,
-): boolean {
-  const key = JSON.stringify([sessionId, promptId]);
-  if (prompts.has(key)) return false;
-  prompts.add(key);
-  while (prompts.size > limit) {
-    const oldest = prompts.values().next().value;
-    if (typeof oldest !== "string") break;
-    prompts.delete(oldest);
-  }
-  return true;
 }
 
 function traceContextForWriteback(

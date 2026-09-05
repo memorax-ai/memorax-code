@@ -1,41 +1,25 @@
+import type { AutomaticMemoryWritebackRejectionReason } from "../../memory/automatic-writeback.js";
 import {
-  createAutomaticMemoryWritebackRuntime,
-  type AutomaticMemoryWritebackEnqueue,
-  type AutomaticMemoryWritebackRejectionReason,
-  type AutomaticMemoryWritebackRuntime,
-} from "../../memory/automatic-writeback.js";
-import { retrieveAutomaticMemoryContext } from "../../memory/automatic-retrieval.js";
-import {
-  claimQuotaNotice,
-  createPendingQuotaNoticeRuntime,
-  type PendingQuotaNoticeRuntime,
-  type QuotaNoticeClaimer,
-} from "../../memory/quota-notice.js";
+  createHarnessMemoryRuntime,
+  type HarnessMemoryRuntimeOptions,
+} from "../../memory/harness-runtime.js";
 import type {
   MemoryHookTurnStartResult,
   TraeTurnStartCommand,
   TraeWritebackCommand,
 } from "../../memory/hook-command.js";
-import type { MemoryDiagnosticLogger, MemoryObservabilityHook } from "../../memory/observability.js";
-import {
-  createMemoryTurnCoordinator,
-  type MemoryTurnCoordinator,
-  type MemoryTurnState,
-  type MemoryTurnWritebackSkipReason,
+import type { MemoryDiagnosticLogger } from "../../memory/observability.js";
+import type {
+  MemoryTurnCoordinator,
+  MemoryTurnState,
+  MemoryTurnWritebackSkipReason,
 } from "../../memory/turn-coordinator.js";
-import {
-  createRepositoryMemorySessionRuntime,
-  resolvedRepoMemoryWorktree,
-  type ConfiguredRepositoryMemoryResult,
-  type RepositoryMemorySessionRuntime,
-} from "../../memory/repository-session.js";
 import type { RepositoryMemoryScopeFailureReason } from "../../repository/scope.js";
 import { traceContextFromTraeHookBody, type TraceContext } from "../../trace/context.js";
 import {
   markCurrentTraceTurnOutcome,
   recordTraceEvent,
   traceTurnEventId,
-  writeCurrentTraceTurn,
 } from "../../trace/store.js";
 
 export type TraeMemoryHookWritebackSkipReason =
@@ -50,22 +34,7 @@ export type TraeMemoryHookWritebackResult =
   | { ok: true; scheduled: true }
   | { ok: true; scheduled: false; reason: TraeMemoryHookWritebackSkipReason };
 
-export type TraeMemoryHookRuntimeOptions = {
-  automaticWriteback?: AutomaticMemoryWritebackEnqueue;
-  diagnosticLogger?: MemoryDiagnosticLogger;
-  env?: Record<string, string | undefined>;
-  fetchImpl?: typeof fetch;
-  claimQuotaNotice?: QuotaNoticeClaimer;
-  now?: () => number;
-  ttlMs?: number;
-  maxEntries?: number;
-  cleanupIntervalMs?: number;
-  memoryObservability?: MemoryObservabilityHook;
-  memoraxCodeHome?: string;
-  pendingQuotaNotice?: PendingQuotaNoticeRuntime;
-  repositoryMemorySession?: RepositoryMemorySessionRuntime;
-  turnCoordinator?: MemoryTurnCoordinator;
-};
+export type TraeMemoryHookRuntimeOptions = HarnessMemoryRuntimeOptions;
 
 export type TraeMemoryHookRuntime = {
   recordTurnStart(command: TraeTurnStartCommand): Promise<MemoryHookTurnStartResult>;
@@ -80,37 +49,16 @@ export function createTraeMemoryHookRuntime(
   options: TraeMemoryHookRuntimeOptions = {},
 ): TraeMemoryHookRuntime {
   const now = options.now ?? (() => Date.now());
-  const pendingQuotaNotice = options.pendingQuotaNotice ?? createPendingQuotaNoticeRuntime({
-    claimQuotaNotice: options.claimQuotaNotice,
-    diagnosticLogger: options.diagnosticLogger,
-    env: options.env,
-  });
-  const ownsPendingQuotaNotice = options.pendingQuotaNotice === undefined;
-  const automaticWritebackRuntime: {
-    enqueue: AutomaticMemoryWritebackEnqueue;
-    discardForScopeUpgrade?: AutomaticMemoryWritebackRuntime["discardForScopeUpgrade"];
-    close?: () => void;
-  } | undefined = options.turnCoordinator
-    ? undefined
-    : options.automaticWriteback
-      ? { enqueue: options.automaticWriteback }
-      : createAutomaticMemoryWritebackRuntime({
-        diagnosticLogger: options.diagnosticLogger,
-        queueQuotaNotice: pendingQuotaNotice.queue,
-      });
-  const turnCoordinator = options.turnCoordinator ?? createMemoryTurnCoordinator({
-    automaticWriteback: automaticWritebackRuntime!.enqueue,
-    now,
-    ttlMs: options.ttlMs,
-    maxEntries: options.maxEntries,
-    cleanupIntervalMs: options.cleanupIntervalMs,
-  });
-  const ownsTurnCoordinator = options.turnCoordinator === undefined;
-  const repositoryMemorySession = options.repositoryMemorySession ?? createRepositoryMemorySessionRuntime({
-    onScopeUpgrade: automaticWritebackRuntime?.discardForScopeUpgrade,
-  });
-  const ownsRepositoryMemorySession = options.repositoryMemorySession === undefined;
-  const retrievalTurns = new Set<string>();
+  const memory = createHarnessMemoryRuntime({
+    client: TRAE_MEMORY_TURN_CLIENT,
+    retrievalSource: "trae_hook_retrieval",
+    writebackSource: "trae_hook_writeback",
+    diagnosticPrefix: "trae_memory",
+    traceFailureEvent: "trae_trace.write_failed",
+    turnStartTraceSource: "trae-hook",
+    deduplicateRetrieval: true,
+  }, options);
+  const { turnCoordinator } = memory;
   const interruptedTurns = new Set<string>();
   const activeTurns = new Map<string, MemoryTurnState>();
   const turnStartOperations = new Map<string, Promise<MemoryHookTurnStartResult>>();
@@ -136,74 +84,24 @@ export function createTraeMemoryHookRuntime(
       }
       const createdAt = now();
       const traceContext = traceContextFromTraeHookBody(command, new Date(createdAt).toISOString());
-      const repositoryMemory = await resolveHookRepositoryMemory(command, options, repositoryMemorySession);
-      const repoMemoryWorktree = resolvedRepoMemoryWorktree(repositoryMemory);
-      const turn = turnCoordinator.recordTurnStart({
-        client: TRAE_MEMORY_TURN_CLIENT,
+      return await memory.recordTurnStart({
         sessionId: command.sessionId,
         clientTurnId: command.turnId,
         cwd: command.cwd,
         workspaceKind: command.workspaceKind,
         createdAt,
         traceContext,
-        repositoryMemory,
-      });
-      activeTurns.delete(command.sessionId);
-      activeTurns.set(command.sessionId, turn);
-      while (activeTurns.size > runtimeTurnLimit) {
-        const oldestSessionId = activeTurns.keys().next().value;
-        if (typeof oldestSessionId !== "string") break;
-        activeTurns.delete(oldestSessionId);
-      }
-      await recordTraceBestEffort("trae_memory.turn_start_event", recordTraceEvent({
-        eventId: traceTurnEventId(traceContext, "turn_start"),
-        memoraxCodeHome: options.memoraxCodeHome,
-        env: options.env,
-        traceContext,
-        type: "turn_start",
-        source: "trae-hook",
-        operation: "query",
-        ok: true,
-        request: { prompt: command.prompt, cwd: command.cwd },
-      }), options.diagnosticLogger);
-      await recordTraceBestEffort("trae_memory.current_turn_write", writeCurrentTraceTurn(
-        traceContext,
-        {
-          client: "trae",
-          memoraxCodeHome: options.memoraxCodeHome,
-          env: options.env,
-          now: () => new Date(now()),
+        prompt: command.prompt,
+        onTurnRegistered(turn) {
+          activeTurns.delete(command.sessionId);
+          activeTurns.set(command.sessionId, turn);
+          while (activeTurns.size > runtimeTurnLimit) {
+            const oldestSessionId = activeTurns.keys().next().value;
+            if (typeof oldestSessionId !== "string") break;
+            activeTurns.delete(oldestSessionId);
+          }
         },
-      ), options.diagnosticLogger);
-
-      const retrievalKey = JSON.stringify([command.sessionId, command.turnId]);
-      if (retrievalTurns.has(retrievalKey)) {
-        return { ok: true, ...(repoMemoryWorktree ? { repoMemoryWorktree } : {}) };
-      }
-      retrievalTurns.add(retrievalKey);
-      trimBounded(retrievalTurns, runtimeTurnLimit);
-      const pendingUserNotice = repositoryMemory.ok
-        ? await pendingQuotaNotice.claim(repositoryMemory.memory.config)
-        : undefined;
-      const retrieval = await retrieveAutomaticMemoryContext({
-        diagnosticLogger: options.diagnosticLogger,
-        claimQuotaNotice: options.claimQuotaNotice ?? claimQuotaNotice,
-        env: options.env ?? process.env,
-        fetchImpl: options.fetchImpl,
-        memoryObservability: options.memoryObservability,
-        memoryObservabilitySource: "trae_hook_retrieval",
-        query: command.prompt,
-        repositoryMemory,
-        sessionKey: command.sessionId,
-        traceContext,
       });
-      const userNotice = [pendingUserNotice, retrieval.userNotice].filter(Boolean).join("\n");
-      return {
-        ok: true,
-        ...(repoMemoryWorktree ? { repoMemoryWorktree } : {}),
-        ...(retrieval.context ? { additionalContext: retrieval.context } : {}),
-        ...(userNotice ? { userNotice } : {}),
-      };
     },
 
     async writeback(command) {
@@ -220,23 +118,16 @@ export function createTraeMemoryHookRuntime(
       const key = traeTurnKey(command.sessionId, command.turnId);
       const entry = turnCoordinator.getTurn(key) ?? activeTurn;
       const traceContext = entry?.traceContext ?? traceContextFromTraeHookBody(command);
-      const repositoryMemory = await resolveHookRepositoryMemory(command, options, repositoryMemorySession);
+      const repositoryMemory = await memory.resolveRepositoryMemory(command);
       await recordCompletedTurn(traceContext, command, options, now);
-      const completed = await turnCoordinator.completeMaterializedTurn({
-        key,
+      const completed = await memory.completeTurn({
+        sessionId: command.sessionId,
+        clientTurnId: command.turnId,
         metadata: entry,
         resolveRepositoryMemory: async () => repositoryMemory,
         userText: command.prompt,
         assistantText: command.lastAssistantMessage,
-        writeback: {
-          client: "trae",
-          sessionKey: command.sessionId,
-          env: options.env ?? process.env,
-          fetchImpl: options.fetchImpl,
-          memoryObservability: options.memoryObservability,
-          memoryObservabilitySource: "trae_hook_writeback",
-          traceContext,
-        },
+        traceContext,
       });
       await recordMaterializedTurn(traceContext, command, options);
       if (activeTurn?.clientTurnId === command.turnId) activeTurns.delete(command.sessionId);
@@ -253,18 +144,14 @@ export function createTraeMemoryHookRuntime(
     },
 
     size() {
-      return turnCoordinator.size(TRAE_MEMORY_TURN_CLIENT);
+      return memory.size();
     },
 
     close() {
-      retrievalTurns.clear();
       interruptedTurns.clear();
       activeTurns.clear();
       turnStartOperations.clear();
-      if (ownsTurnCoordinator) turnCoordinator.close();
-      if (ownsRepositoryMemorySession) repositoryMemorySession.close();
-      automaticWritebackRuntime?.close?.();
-      if (ownsPendingQuotaNotice) pendingQuotaNotice.close();
+      memory.close();
     },
   };
 
@@ -357,21 +244,6 @@ async function recordMaterializedTurn(
     request: { prompt: command.prompt },
     response: { assistant: command.lastAssistantMessage },
   }), options.diagnosticLogger);
-}
-
-async function resolveHookRepositoryMemory(
-  command: TraeTurnStartCommand | TraeWritebackCommand,
-  options: TraeMemoryHookRuntimeOptions,
-  repository: RepositoryMemorySessionRuntime,
-): Promise<ConfiguredRepositoryMemoryResult> {
-  return await repository.resolve({
-    client: "trae",
-    sessionId: command.sessionId,
-    workspaceRoot: command.cwd,
-    workspaceKind: command.workspaceKind,
-    memoraxCodeHome: options.memoraxCodeHome ?? options.env?.MEMORAX_CODE_HOME,
-    env: options.env,
-  });
 }
 
 function traeTurnKey(sessionId: string, turnId: string): {

@@ -384,6 +384,32 @@ Important distinctions:
   authentication is required when configuration or exposure mode demands it.
 - Client-specific runtimes interpret native formats. Client-neutral memory
   coordination does not parse, mix, or guess those formats.
+- All six clients delegate their common memory lifecycle
+  to `memory/harness-runtime.ts`. Turn start resolves repository scope, records
+  Turn metadata and current-turn trace state, performs optional retrieval,
+  claims supported quota notices, and returns normalized context. Completion passes
+  validated native user/assistant content, exact identity, and a scope resolver
+  to the Turn coordinator. Their client runtimes retain native parsing,
+  correlation guards, retries, interruption recovery, and client-specific
+  materialization and Turn-end trace behavior. Codex also retains workspace
+  registry validation, exact current-turn scope recovery, and native Turn-index
+  resolution. It can provide a pre-resolved scope result, including a failure,
+  without the shared runtime resolving it again. A start observation without a
+  Turn ID can resolve scope and record trace, but cannot register a writable
+  Turn, claim quota notices, or retrieve memory. OpenCode retains SDK message
+  lineage and compaction-continuation validation, interrupted-Turn handling,
+  and the requirement for a prior session scope binding at completion. Its
+  start trace keeps the `opencode-plugin` source; Turn-start diagnostics use
+  the common metadata-registration stage before trace writes. Trae publishes
+  its active Turn snapshot through the synchronous `onTurnRegistered` callback,
+  immediately after coordinator registration and before trace or retrieval
+  can yield to a concurrent Stop. Its per-session start queue, interruption
+  records, and active-state cleanup remain client-owned. DSH supplies a
+  start-trace request containing only `start_seq`, keeps the `dsh-cordis` source,
+  and adds the native start sequence to retrieval deduplication without changing
+  Turn identity. It disables both pending and retrieval quota-notice claims.
+  Persisted event-interval validation, interruption handling, and restart scope
+  recovery remain DSH-owned.
 - OpenCode's awaited `chat.message` plugin event supplies the correlated user
   prompt and injects accepted retrieval plus shared Skill reminder, User
   Profile, and Procedure Memory context into that message's system context.
@@ -595,13 +621,14 @@ entrypoints and compatibility facades. It is not another implementation area.
 | `src/transport/http` | Shared Backend HTTP authorization, request/JSON helpers, error mapping, health, and Hook wire adaptation | Outbound provider HTTP remains with the provider capability |
 | `src/lifecycle` | Contracts, participants, client selection, locks, service orchestration, install watchdog, and client integration removal | Request-time memory flow does not depend on it |
 | `src/lifecycle/backend` | Managed process, PID/token/connection records, status probing, cleanup, and shutdown requests | Helper contracts do not depend back on the full service implementation |
-| `src/clients/codex` | Codex rollout, prompt, turn-index, and workspace interpretation; Hook memory runtime; plugin integration glue; and lifecycle participant | No Claude format fallback; request runtime remains HTTP-composition independent |
-| `src/clients/claude` | Claude transcript/turn interpretation, Hook memory runtime, and lifecycle participant | No Codex format fallback; request runtime remains HTTP-composition independent |
-| `src/clients/dsh` | DSH Session header and exact persisted event-interval interpretation, request-time memory and normalized trace runtime, and lifecycle-participant delegation | No Hook-text, rollout, transcript, SDK-message, or latest-Turn fallback; Profile mutation stays in the DSH adapter, and request runtime remains HTTP-composition independent |
-| `src/clients/opencode` | OpenCode SDK message validation and text materialization, plugin memory runtime, and lifecycle participant | No Hook-text, database, rollout, or transcript fallback; request runtime remains HTTP-composition independent |
-| `src/clients/codebuddy` | CodeBuddy/WorkBuddy native transcript interpretation, Hook memory runtime, and lifecycle participant | No Hook-payload or latest-Turn fallback; plugin mutation stays in the adapter, and request runtime remains HTTP-composition independent |
-| `src/clients/trae` | Trae Turn-ID validation, Hook-pair memory runtime, interruption handling, trace normalization, and lifecycle participant | Hook content is authoritative only for the exact validated Trae Turn; no raw-Session guess, pending queue, or cross-client fallback |
+| `src/clients/codex` | Codex rollout, prompt, turn-index, workspace interpretation and recovery; Hook memory integration through the shared harness runtime; plugin integration glue; and lifecycle participant | No Claude format fallback; request runtime remains HTTP-composition independent |
+| `src/clients/claude` | Claude transcript/turn interpretation, native correlation and interruption recovery, Hook memory integration through the shared harness runtime, and lifecycle participant | No Codex format fallback; request runtime remains HTTP-composition independent |
+| `src/clients/dsh` | DSH Session header and exact persisted event-interval interpretation, memory integration through the shared harness runtime, native interruption and normalized trace handling, and lifecycle-participant delegation | No Hook-text, rollout, transcript, SDK-message, or latest-Turn fallback; Profile mutation stays in the DSH adapter, and request runtime remains HTTP-composition independent |
+| `src/clients/opencode` | OpenCode SDK message validation and text materialization, native interruption handling, plugin memory integration through the shared harness runtime, and lifecycle participant | No Hook-text, database, rollout, or transcript fallback; completion requires a prior session scope binding; request runtime remains HTTP-composition independent |
+| `src/clients/codebuddy` | CodeBuddy/WorkBuddy native transcript interpretation, native correlation and interruption recovery, Hook memory integration through the shared harness runtime, and lifecycle participant | No Hook-payload or latest-Turn fallback; plugin mutation stays in the adapter, and request runtime remains HTTP-composition independent |
+| `src/clients/trae` | Trae Turn-ID validation, Hook-pair memory integration through the shared harness runtime, per-session start ordering and active-Turn interruption handling, trace normalization, and lifecycle participant | Hook content is authoritative only for the exact validated Trae Turn; no raw-Session guess, pending completion queue, or cross-client fallback |
 | `src/memory` | Memory commands, retrieval, writeback, turn coordination, repository session pinning, manual CLI, and buffering/chunking | Client-neutral modules do not parse native transcript formats |
+| `src/memory/harness-runtime.ts` | Common Turn-start and materialized-completion workflows for all six clients; publishes registered Turn state synchronously and owns locally created memory resources while reusing injected shared resources | No client implementation, HTTP, app/lifecycle, or direct provider-transport imports; diagnostics enter through a port and native interpretation stays with each client |
 | `src/repo-memory` | Repo Memory preparation, local and provider facet collection, delta detection, and bundle validation | Writes only deterministic raw evidence and validation output; agents author durable Markdown memory |
 | `src/repository` | Read-only repository identity | Scope derivation does not execute Git or use synchronous filesystem reads |
 | `src/provider/memorax` | MemoraX config interpretation, Search/Add payloads, HTTP transport, and normalized results | Independent from server routing and plugin lifecycle |
@@ -657,6 +684,7 @@ acyclic.
 | Contract | Owned by | Purpose |
 | --- | --- | --- |
 | `MemoryService` | `memory/service.ts` | HTTP-independent command surface for memory operations |
+| `HarnessMemoryRuntime` | `memory/harness-runtime.ts` | Coordinates common Turn-start and validated completion workflows; preserves ownership of injected repository sessions, Turn coordination, writeback, and quota-notice resources |
 | `MemoryObservabilityHook` | `memory/observability.ts` | Emits normalized operational events without importing the concrete trace Store or Backend logging |
 | `MemoryDiagnosticLogger` | `memory/observability.ts` | Injects diagnostics without binding memory kernels to Backend debug output |
 | `MemoryTurnCoordinator` | `memory/turn-coordinator.ts` | Correlates and validates client-neutral Turns and controls metadata consumption |
@@ -671,7 +699,7 @@ multiple directories does not automatically belong in `shared`.
 
 | Contract | Location | Enforces | Inspect or update when |
 | --- | --- | --- | --- |
-| Backend source boundaries | `packages/ts/memorax-code-backend/test/architecture/source-boundaries.test.mjs` | Root facade allowlist, selected direct forbidden imports, lifecycle delegation, and an acyclic relative-import graph | Adding a root surface, crossing capability boundaries, or changing a composition root |
+| Backend source boundaries | `packages/ts/memorax-code-backend/test/architecture/source-boundaries.test.mjs` | Root facade allowlist, selected direct forbidden imports including shared harness neutrality, lifecycle delegation, and an acyclic relative-import graph | Adding a root surface, crossing capability boundaries, or changing a composition root |
 | Local-only trace boundary | `scripts/check-local-trace-only.mjs` and its tests | Reviewed network-capable production modules, trace-core isolation, unreviewed trace-aware outbound bridges, and staged artifact/symlink containment | Moving or adding network code, trace-aware outbound code, or staged paths |
 | Package shape | npm package tests and package-build/check scripts | Executable wrappers, staged runtime layout, canonical source mapping, compatibility paths, and artifact allowlists | Changing entrypoints, packaging sources, materialization, or layout |
 | Documentation contract | `scripts/check-docs.mjs` and its tests | Relative links, personal absolute paths, and shipped-document consistency | Adding a root document or changing document/package layout |

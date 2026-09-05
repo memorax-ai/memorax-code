@@ -38,6 +38,7 @@ const rules = [
     importers: [
       "memory/automatic-retrieval.ts",
       "memory/automatic-writeback.ts",
+      "memory/harness-runtime.ts",
       "clients/claude/memory-hook-runtime.ts",
       "clients/claude/transcript-turn.ts",
       "clients/codex/memory-hook-runtime.ts",
@@ -60,10 +61,27 @@ const rules = [
     forbidden: ["node:http", "server-", "entrypoints/", "transport/http/", "app/state"],
   },
   {
+    name: "shared harness memory runtime stays independent from native clients, HTTP, composition, and provider transport",
+    importers: ["memory/harness-runtime.ts"],
+    forbidden: [
+      "clients/",
+      "node:http",
+      "node:https",
+      "server-",
+      "entrypoints/",
+      "transport/http/",
+      "app/",
+      "lifecycle/",
+      "provider/memorax/adapter",
+      "provider/memorax/http",
+    ],
+  },
+  {
     name: "memory service kernel receives Backend diagnostics through a port",
     importers: [
       "memory/automatic-retrieval.ts",
       "memory/automatic-writeback.ts",
+      "memory/harness-runtime.ts",
       "clients/claude/memory-hook-runtime.ts",
       "clients/codex/memory-hook-runtime.ts",
       "clients/dsh/memory-hook-runtime.ts",

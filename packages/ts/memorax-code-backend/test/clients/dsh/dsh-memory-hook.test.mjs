@@ -5,6 +5,10 @@ import { join, resolve } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { createBackendState } from "../../../dist/app/state.js";
+import { createDshMemoryHookRuntime } from "../../../dist/clients/dsh/memory-hook-runtime.js";
+import { createRepositoryMemorySessionRuntime } from "../../../dist/memory/repository-session.js";
+import { createMemoryService } from "../../../dist/memory/service.js";
+import { createMemoryTurnCoordinator } from "../../../dist/memory/turn-coordinator.js";
 import { createBackendServer } from "../../../dist/server.js";
 import { listen } from "../../support/helpers.mjs";
 import { createHttpBackendClient } from "../../../../memorax-code-dsh-adapter/src/http-client.mjs";
@@ -18,6 +22,161 @@ import { dshTurnInterval } from "./support/dsh-session-fixtures.mjs";
 
 const TEST_WORKSPACE = fileURLToPath(new URL("../../..", import.meta.url));
 const TEST_REPO_ROOT = resolve(TEST_WORKSPACE, "../../..");
+
+test("DSH retrieval deduplicates exact event starts without changing the native Turn identity", async () => {
+  const sessionHome = await mkdtemp(join(tmpdir(), "memorax-code-dsh-retrieval-identity-"));
+  const repositoryMemorySession = createRepositoryMemorySessionRuntime();
+  const turnCoordinator = createMemoryTurnCoordinator({
+    automaticWriteback: () => ({ accepted: true }),
+  });
+  const pendingQuotaCalls = [];
+  let searchCalls = 0;
+  const runtime = createDshMemoryHookRuntime({
+    memoraxCodeHome: sessionHome,
+    repositoryMemorySession,
+    turnCoordinator,
+    pendingQuotaNotice: {
+      queue() {},
+      async claim() {
+        pendingQuotaCalls.push("claim");
+        return "Pending write quota notice.";
+      },
+      close() { pendingQuotaCalls.push("close"); },
+    },
+    env: {
+      MEMORAX_CODE_HOME: sessionHome,
+      MEMORAX_CODE_DSH_TRACE_ENABLED: "false",
+      MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED: "true",
+      MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
+      MEMORAX_CODE_MEMORAX_API_KEY: "secret",
+      MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
+    },
+    fetchImpl: async () => {
+      searchCalls += 1;
+      return new Response(JSON.stringify({
+        success: true,
+        data: {
+          task_id: "dsh-search",
+          status: "completed",
+          data: [{ id: "memory-1", memory: "Use exact DSH event starts.", score: 0.95 }],
+        },
+      }), { headers: { "content-type": "application/json" } });
+    },
+  });
+  const command = {
+    version: 1,
+    client: "dsh",
+    sessionId: "dsh-retrieval-session",
+    turn: 3,
+    startSeq: 40,
+    cwd: TEST_WORKSPACE,
+    prompt: "Implement the DSH adapter.",
+  };
+  const key = { client: "dsh", sessionId: command.sessionId, clientTurnId: String(command.turn) };
+  try {
+    assert.match((await runtime.recordTurnStart(command)).additionalContext, /exact DSH event starts/);
+    assert.equal(searchCalls, 1);
+    assert.equal(turnCoordinator.getTurn(key).eventStartSeq, 40);
+    assert.deepEqual(await runtime.recordTurnStart(command), { ok: true, repoMemoryWorktree: TEST_REPO_ROOT });
+    assert.equal(searchCalls, 1);
+
+    assert.match((await runtime.recordTurnStart({ ...command, startSeq: 41 })).additionalContext, /exact DSH event starts/);
+    assert.equal(searchCalls, 2);
+    assert.equal(turnCoordinator.size("dsh"), 1);
+    assert.equal(turnCoordinator.getTurn(key).clientTurnId, "3");
+    assert.equal(turnCoordinator.getTurn(key).eventStartSeq, 41);
+    assert.deepEqual(pendingQuotaCalls, []);
+  } finally {
+    runtime.close();
+    turnCoordinator.close();
+    repositoryMemorySession.close();
+    await rm(sessionHome, { recursive: true, force: true });
+    assert.deepEqual(pendingQuotaCalls, []);
+  }
+});
+
+test("DSH leaves pending write and retrieval quota notices unclaimed for other clients", async () => {
+  const sessionHome = await mkdtemp(join(tmpdir(), "memorax-code-dsh-quota-"));
+  const claimed = [];
+  const interval = dshTurnInterval({ sessionId: "dsh-quota-session", cwd: TEST_WORKSPACE });
+  const service = createMemoryService({
+    memoraxCodeHome: sessionHome,
+    env: {
+      MEMORAX_CODE_HOME: sessionHome,
+      MEMORAX_CODE_DSH_TRACE_ENABLED: "false",
+      MEMORAX_CODE_CLAUDE_TRACE_ENABLED: "false",
+      MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED: "true",
+      MEMORAX_CODE_MEMORY_WRITEBACK_ENABLED: "true",
+      MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_ENABLED: "false",
+      MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
+      MEMORAX_CODE_MEMORAX_API_KEY: "secret",
+      MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
+    },
+    claimQuotaNotice: async (_config, quota) => {
+      claimed.push(quota.featureCode);
+      return `${quota.featureCode}: ${quota.remaining}`;
+    },
+    fetchImpl: async (url) => {
+      const searching = String(url).endsWith("/v1/memories/search");
+      return new Response(JSON.stringify({
+        success: true,
+        data: {
+          task_id: searching ? "dsh-search" : "dsh-add",
+          status: searching ? "completed" : "queued",
+          ...(searching ? {
+            data: [{ id: "memory-1", memory: "Use the shared memory runtime.", score: 0.95 }],
+          } : {}),
+          balances: [{
+            product_code: "memory_api",
+            feature_code: searching ? "memory_search" : "memory_write",
+            spec_key: "calls",
+            quota_unit: "times",
+            remaining: searching ? 10 : 9,
+            quota_limit: 100,
+          }],
+        },
+      }), { headers: { "content-type": "application/json" } });
+    },
+  });
+  const command = {
+    version: 1,
+    client: "dsh",
+    sessionId: interval.sessionId,
+    turn: interval.turn,
+    startSeq: interval.startSeq,
+    cwd: TEST_WORKSPACE,
+    prompt: "Implement the DSH adapter.",
+  };
+  try {
+    const first = await service.recordTurnStart(command);
+    assert.match(first.additionalContext, /shared memory runtime/);
+    assert.equal(first.userNotice, undefined);
+    assert.deepEqual(claimed, []);
+    assert.deepEqual(await service.writebackTurn({ version: 1, client: "dsh", ...interval }), { ok: true, scheduled: true });
+    await service.drain();
+
+    const next = await service.recordTurnStart({ ...command, turn: 2, startSeq: interval.endSeq + 1 });
+    assert.match(next.additionalContext, /shared memory runtime/);
+    assert.equal(next.userNotice, undefined);
+    assert.deepEqual(claimed, []);
+
+    const otherClient = await service.recordTurnStart({
+      version: 1,
+      client: "claude-code",
+      sessionId: "claude-quota-session",
+      promptId: "claude-quota-prompt",
+      transcriptPath: join(sessionHome, "claude-transcript.jsonl"),
+      cwd: TEST_WORKSPACE,
+      prompt: "Check the shared memory runtime.",
+    });
+    assert.equal(otherClient.userNotice, "memory_write: 9\nmemory_search: 10");
+    assert.deepEqual(claimed, ["memory_write", "memory_search"]);
+  } finally {
+    await service.drain();
+    service.close();
+    await rm(sessionHome, { recursive: true, force: true });
+  }
+});
 
 test("Backend runs DSH Search, normalized Trace, and Add from one native Turn interval", async () => {
   const sessionHome = await mkdtemp(join(tmpdir(), "memorax-code-dsh-hook-"));
@@ -167,6 +326,8 @@ test("Backend runs DSH Search, normalized Trace, and Add from one native Turn in
     assert.equal(traceEvents.every((event) => event.trace.client === "dsh"), true);
     assert.equal(traceEvents.every((event) => event.trace.turn_id === String(interval.turn)), true);
     assert.equal(traceEvents[0].trace.context_origin, "dsh-cordis-turn-start");
+    assert.equal(traceEvents[0].source, "dsh-cordis");
+    assert.deepEqual(traceEvents[0].request, { start_seq: interval.startSeq });
     assert.equal(traceEvents[1].source, "dsh_native_retrieval");
     assert.equal(traceEvents[1].trace.context_origin, "dsh-cordis-turn-start");
     assert.equal(traceEvents[3].trace.context_origin, "dsh-session-event-log");
@@ -370,6 +531,8 @@ test("Backend closes an interrupted DSH Trace without requiring Turn content or 
     const traceText = await readFile(traceEventsPath, "utf8");
     const traceEvents = traceText.trim().split("\n").map((line) => JSON.parse(line));
     assert.deepEqual(traceEvents.map((event) => event.type), ["turn_start", "turn_end"]);
+    assert.equal(traceEvents[0].source, "dsh-cordis");
+    assert.deepEqual(traceEvents[0].request, { start_seq: interval.startSeq });
     assert.equal(traceEvents[1].outcome, "interrupted");
     assert.equal(traceEvents[1].request.native_outcome, "interrupted");
     assert.equal(traceEvents[1].trace.context_origin, "dsh-session-event-log");
