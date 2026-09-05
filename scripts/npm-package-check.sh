@@ -177,6 +177,7 @@ for relative in [
     "lib/memorax-code-codex-adapter/src/workspace-kind.mjs",
     "lib/memorax-code-codex-adapter/skills/memorax-code/SKILL.md",
     "lib/memorax-code-codex-adapter/skills/memorax-code/scripts/repo-memory.mjs",
+    "lib/memorax-code-codex-adapter/skills/memorax-code/scripts/user-profile-memory.mjs",
     "lib/memorax-code-claude-adapter/hooks/hooks.json",
     "lib/memorax-code-claude-adapter/hooks/runtime-hook.mjs",
     "lib/memorax-code-claude-adapter/hooks/runtime-shell.json",
@@ -184,6 +185,7 @@ for relative in [
     "lib/memorax-code-claude-adapter/runtime-hooks/memory-turn.mjs",
     "lib/memorax-code-claude-adapter/skills/memorax-code/SKILL.md",
     "lib/memorax-code-claude-adapter/skills/memorax-code/scripts/repo-memory.mjs",
+    "lib/memorax-code-claude-adapter/skills/memorax-code/scripts/user-profile-memory.mjs",
     "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/hooks/hooks.json",
     "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/hooks/runtime-hook.mjs",
     "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/hooks/runtime-shell.json",
@@ -200,6 +202,7 @@ for relative in [
     "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/repo-memory/repo-user-profile-context.mjs",
     "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/skills/memorax-code/SKILL.md",
     "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/skills/memorax-code/scripts/repo-memory.mjs",
+    "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/skills/memorax-code/scripts/user-profile-memory.mjs",
     "lib/memorax-code-dsh-adapter/package.json",
     "lib/memorax-code-dsh-adapter/cordis.patch.yml",
     "lib/memorax-code-dsh-adapter/src/index.mjs",
@@ -216,6 +219,7 @@ for relative in [
     "lib/memorax-code-dsh-adapter/hooks/repo-memory-job.mjs",
     "lib/memorax-code-dsh-adapter/skills/memorax-code/SKILL.md",
     "lib/memorax-code-dsh-adapter/skills/memorax-code/scripts/repo-memory.mjs",
+    "lib/memorax-code-dsh-adapter/skills/memorax-code/scripts/user-profile-memory.mjs",
     "lib/memorax-code-opencode-adapter/src/plugin.mjs",
     "lib/memorax-code-opencode-adapter/src/plugin-install.mjs",
     "lib/memorax-code-opencode-adapter/src/cli.mjs",
@@ -223,6 +227,7 @@ for relative in [
     "lib/memorax-code-opencode-adapter/hooks/repo-memory-job.mjs",
     "lib/memorax-code-opencode-adapter/skills/memorax-code/SKILL.md",
     "lib/memorax-code-opencode-adapter/skills/memorax-code/scripts/repo-memory.mjs",
+    "lib/memorax-code-opencode-adapter/skills/memorax-code/scripts/user-profile-memory.mjs",
     "lib/memorax-code-codebuddy-adapter/package.json",
     "lib/memorax-code-codebuddy-adapter/.codebuddy-plugin/plugin.json",
     "lib/memorax-code-codebuddy-adapter/hooks/hooks.json",
@@ -231,6 +236,7 @@ for relative in [
     "lib/memorax-code-codebuddy-adapter/hooks/repo-memory-job.mjs",
     "lib/memorax-code-codebuddy-adapter/skills/memorax-code/SKILL.md",
     "lib/memorax-code-codebuddy-adapter/skills/memorax-code/scripts/repo-memory.mjs",
+    "lib/memorax-code-codebuddy-adapter/skills/memorax-code/scripts/user-profile-memory.mjs",
     "lib/memorax-code-codebuddy-adapter/skills/memorax-code/references/memorax-search.md",
     "lib/memorax-code-codebuddy-adapter/skills/memorax-code/references/memorax-add.md",
     "lib/memorax-code-codebuddy-adapter/src/config.mjs",
@@ -241,6 +247,7 @@ for relative in [
     "lib/memorax-code-trae-adapter/hooks/runtime-hook.mjs",
     "lib/memorax-code-trae-adapter/skills/memorax-code/SKILL.md",
     "lib/memorax-code-trae-adapter/skills/memorax-code/scripts/repo-memory.mjs",
+    "lib/memorax-code-trae-adapter/skills/memorax-code/scripts/user-profile-memory.mjs",
     "lib/memorax-code-trae-adapter/src/adapter-paths.mjs",
     "lib/memorax-code-trae-adapter/src/cli.mjs",
     "lib/memorax-code-trae-adapter/src/config.mjs",
@@ -248,7 +255,9 @@ for relative in [
     "lib/memorax-code-backend/dist/service-entrypoint.js",
     "lib/memorax-code-backend/dist/memorax-cli.js",
     "lib/memorax-code-backend/dist/repo-memory.js",
+    "lib/memorax-code-backend/dist/user-profile.js",
     "lib/memorax-code-backend/dist/repo-memory/cli.js",
+    "lib/memorax-code-backend/dist/personal-memory/cli.js",
     "lib/memorax-code-backend/dist/jsonl-append.js",
 ]:
     assert (package_root / relative).exists(), relative
@@ -267,12 +276,12 @@ assert "runtime-hook.mjs" in claude_hooks
 assert "memory-turn" in claude_hooks
 assert "memory-cli-session" in claude_hooks
 assert "ensure-backend" in claude_hooks
-generated_python_artifacts = sorted(
+python_artifacts = sorted(
     str(path.relative_to(package_root))
     for path in package_root.rglob("*")
-    if path.name == "__pycache__" or (path.is_file() and path.suffix in {".pyc", ".pyo"})
+    if path.name == "__pycache__" or (path.is_file() and path.suffix in {".py", ".pyc", ".pyo"})
 )
-assert not generated_python_artifacts, generated_python_artifacts
+assert not python_artifacts, python_artifacts
 symlinks = sorted(
     str(path.relative_to(package_root))
     for path in package_root.rglob("*")
@@ -460,17 +469,21 @@ for relative in \
   lib/memorax-code-backend/dist/codex-adapter-lifecycle.js \
   lib/memorax-code-backend/dist/windows-cli-invocation.js \
   lib/memorax-code-backend/dist/repo-memory.js \
+  lib/memorax-code-backend/dist/user-profile.js \
   lib/memorax-code-backend/dist/repo-memory/cli.js \
+  lib/memorax-code-backend/dist/personal-memory/cli.js \
   lib/memorax-code-backend/dist/memory/service.js \
   lib/memorax-code-codex-adapter/hooks/runtime-hook.mjs \
   lib/memorax-code-codex-adapter/hooks/runtime-shell.json \
   lib/memorax-code-codex-adapter/runtime-hooks/memory-writeback.mjs \
   lib/memorax-code-codex-adapter/skills/memorax-code/scripts/repo-memory.mjs \
+  lib/memorax-code-codex-adapter/skills/memorax-code/scripts/user-profile-memory.mjs \
   lib/memorax-code-claude-adapter/hooks/runtime-hook.mjs \
   lib/memorax-code-claude-adapter/hooks/runtime-shell.json \
   lib/memorax-code-claude-adapter/hooks/repo-memory-job.mjs \
   lib/memorax-code-claude-adapter/runtime-hooks/memory-turn.mjs \
   lib/memorax-code-claude-adapter/skills/memorax-code/scripts/repo-memory.mjs \
+  lib/memorax-code-claude-adapter/skills/memorax-code/scripts/user-profile-memory.mjs \
   lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/hooks/runtime-hook.mjs \
   lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/hooks/runtime-shell.json \
   lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/hooks/repo-memory-job.mjs \
@@ -486,6 +499,7 @@ for relative in \
   lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/repo-memory/repo-user-profile-context.mjs \
   lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/skills/memorax-code/SKILL.md \
   lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/skills/memorax-code/scripts/repo-memory.mjs \
+  lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/skills/memorax-code/scripts/user-profile-memory.mjs \
   lib/memorax-code-dsh-adapter/package.json \
   lib/memorax-code-dsh-adapter/cordis.patch.yml \
   lib/memorax-code-dsh-adapter/src/index.mjs \
@@ -502,6 +516,7 @@ for relative in \
   lib/memorax-code-dsh-adapter/hooks/repo-memory-job.mjs \
   lib/memorax-code-dsh-adapter/skills/memorax-code/SKILL.md \
   lib/memorax-code-dsh-adapter/skills/memorax-code/scripts/repo-memory.mjs \
+  lib/memorax-code-dsh-adapter/skills/memorax-code/scripts/user-profile-memory.mjs \
   lib/memorax-code-opencode-adapter/src/plugin.mjs \
   lib/memorax-code-opencode-adapter/src/plugin-install.mjs \
   lib/memorax-code-opencode-adapter/src/cli.mjs \
@@ -509,6 +524,7 @@ for relative in \
   lib/memorax-code-opencode-adapter/hooks/repo-memory-job.mjs \
   lib/memorax-code-opencode-adapter/skills/memorax-code/SKILL.md \
   lib/memorax-code-opencode-adapter/skills/memorax-code/scripts/repo-memory.mjs \
+  lib/memorax-code-opencode-adapter/skills/memorax-code/scripts/user-profile-memory.mjs \
   lib/memorax-code-codebuddy-adapter/package.json \
   lib/memorax-code-codebuddy-adapter/.codebuddy-plugin/plugin.json \
   lib/memorax-code-codebuddy-adapter/hooks/hooks.json \
@@ -517,6 +533,7 @@ for relative in \
   lib/memorax-code-codebuddy-adapter/hooks/repo-memory-job.mjs \
   lib/memorax-code-codebuddy-adapter/skills/memorax-code/SKILL.md \
   lib/memorax-code-codebuddy-adapter/skills/memorax-code/scripts/repo-memory.mjs \
+  lib/memorax-code-codebuddy-adapter/skills/memorax-code/scripts/user-profile-memory.mjs \
   lib/memorax-code-codebuddy-adapter/skills/memorax-code/references/memorax-search.md \
   lib/memorax-code-codebuddy-adapter/skills/memorax-code/references/memorax-add.md \
   lib/memorax-code-codebuddy-adapter/src/config.mjs \
@@ -527,6 +544,7 @@ for relative in \
   lib/memorax-code-trae-adapter/hooks/runtime-hook.mjs \
   lib/memorax-code-trae-adapter/skills/memorax-code/SKILL.md \
   lib/memorax-code-trae-adapter/skills/memorax-code/scripts/repo-memory.mjs \
+  lib/memorax-code-trae-adapter/skills/memorax-code/scripts/user-profile-memory.mjs \
   lib/memorax-code-trae-adapter/src/adapter-paths.mjs \
   lib/memorax-code-trae-adapter/src/cli.mjs \
   lib/memorax-code-trae-adapter/src/config.mjs \

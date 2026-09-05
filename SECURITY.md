@@ -99,6 +99,9 @@ Please allow time for triage and remediation before public disclosure.
   only from the worktree authorized by the current Backend turn-start result.
   Without that authority they keep only the generic Skill reminder and do not
   fall back to the client `cwd` for repository-local content.
+- User Profile storage rejects symbolic links in `.repo_memory`, its
+  `user-profile` directory, and `preferences.md`. Invalid preference files are
+  rejected without rewriting their contents; listing does not create storage.
 - MemoraX-backed Search, Add, and automatic writeback may downgrade malformed
   or incomplete internal metadata in a direct `.git` directory to the
   canonical workspace folder identity. The CLI exposes the fallback reason,

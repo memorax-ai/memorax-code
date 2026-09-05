@@ -10,7 +10,7 @@ const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const builderSkillRoot = join(packageRoot, "skills", "memorax-code");
 const repoMemoryScript = join(builderSkillRoot, "scripts", "repo-memory.mjs");
 const defaultsPath = join(builderSkillRoot, "defaults.json");
-const userProfileScript = join(packageRoot, "skills", "memorax-code", "scripts", "user_profile_memory.py");
+const userProfileScript = join(packageRoot, "skills", "memorax-code", "scripts", "user-profile-memory.mjs");
 
 function runGit(cwd, args) {
   const result = spawnSync(
@@ -764,7 +764,7 @@ test("repo-memory prepare allows a user-profile-only .repo_memory sidecar", () =
   try {
     const { repo, bin } = createRepoFixture(root);
 
-    const profile = spawnSync("python3", [
+    const profile = spawnSync(process.execPath, [
       userProfileScript,
       "add",
       "--repo",

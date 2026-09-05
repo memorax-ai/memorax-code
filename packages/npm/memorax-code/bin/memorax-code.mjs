@@ -494,7 +494,7 @@ if (shouldStageClientHookRuntime(process.argv.slice(2))
   }
 }
 
-await runBackendEntrypoint("memorax-code.js");
+await runBackendEntrypoint(process.argv[2] === "user-profile" ? "user-profile.js" : "memorax-code.js");
 
 function shouldStageClientHookRuntime(args) {
   if (args.includes("--help") || args.includes("-h")) return false;

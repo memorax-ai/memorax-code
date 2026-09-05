@@ -110,7 +110,7 @@ relationships; the arrow labels distinguish them. It is not an import graph.
 
 | Component | Stable responsibility | Must not own | Primary evidence |
 | --- | --- | --- | --- |
-| `packages/ts/memorax-code-backend` | Local service, managed automatic-update scheduling, Hook HTTP, native client-content interpretation, memory workflows, Repo Memory collection and validation, repository scope, MemoraX adapter, trace, and lifecycle | Model execution, client model-provider credentials, or native transcript creation | `packages/ts/memorax-code-backend/src/app/backend-server.ts`, `packages/ts/memorax-code-backend/src/lifecycle/automatic-update-scheduler.ts`, `packages/ts/memorax-code-backend/src/memory/service.ts`, `packages/ts/memorax-code-backend/src/repo-memory`, and the capability directories under `src` |
+| `packages/ts/memorax-code-backend` | Local service, managed automatic-update scheduling, Hook HTTP, native client-content interpretation, memory workflows, Repo Memory collection and validation, local User Profile management, repository scope, MemoraX adapter, trace, and lifecycle | Model execution, client model-provider credentials, or native transcript creation | `packages/ts/memorax-code-backend/src/app/backend-server.ts`, `packages/ts/memorax-code-backend/src/lifecycle/automatic-update-scheduler.ts`, `packages/ts/memorax-code-backend/src/memory/service.ts`, `packages/ts/memorax-code-backend/src/repo-memory`, `packages/ts/memorax-code-backend/src/personal-memory`, and the capability directories under `src` |
 | `packages/ts/memorax-code-adapter-common` | Shared source for Backend connection authority, private runtime, setup-completion, automatic-update and secure credential records, cross-process locking and configuration, Hook generations, Hook launch helpers, and Repo/Personal Memory helpers | Backend composition, native transcript interpretation, MemoraX request execution, or client plugin policy | `packages/ts/memorax-code-adapter-common/src/backend-connection.mjs`, `src/runtime-record.mjs`, `src/setup-completion.mjs`, `src/automatic-update-state.mjs`, `src/credentials`, `src/hooks`, and `src/repo-memory` |
 | `packages/ts/memorax-code-codex-adapter` | Codex plugin artifact, Hook shells and runtimes, session/workspace observation, diagnostics, and the canonical shared skill | Codex rollout semantics or Backend-side writeback authority | `.codex-plugin`, `hooks`, `runtime-hooks`, `src`, and `skills/memorax-code` |
 | `packages/ts/memorax-code-claude-adapter` | Claude Code plugin artifact, Hook shells and runtimes, configuration, installer, marketplace source, and diagnostics | Claude transcript semantics or Backend memory orchestration | `.claude-plugin`, `hooks`, `runtime-hooks`, `scripts`, and `src/plugin-install.mjs` |
@@ -520,6 +520,18 @@ npm package or the installed `memorax-code` command after the Skill is copied
 into a client-specific directory. Repo Memory therefore shares the required
 Node.js runtime with the rest of the package.
 
+User Profile management lives separately under Backend `src/personal-memory`.
+The canonical Skill's `scripts/user-profile-memory.mjs` launcher runs the
+compiled local helper directly or locates it through the installed
+`memorax-code user-profile` command. Listing, adding, updating, and deleting
+preferences do not require a running Backend service or a network request.
+The helper preserves the existing `.repo_memory/user-profile/preferences.md`
+format and performs mutations under a cross-process lock with atomic file
+replacement. Its lock is separate from the legacy profile writer's lock;
+concurrent writes by legacy and current writers are not coordinated. Existing
+preferences continue to be read and injected by adapter-common. Procedure
+Memory remains managed as topic Markdown files through the shared Skill.
+
 Codex, OpenCode, and Trae keep the generic shared Skill reminder available when
 the Backend or repository scope is unavailable. Codex, DSH, OpenCode, and Trae
 enable their User Profile and Procedure Memory builders only when the current
@@ -573,6 +585,7 @@ src/
   lifecycle/
     backend/              managed Backend process and durable lifecycle records
   memory/                 client-neutral memory workflows and coordination
+  personal-memory/        local User Profile storage and CLI
   provider/
     memorax/              MemoraX configuration, payloads, transport, results
   repo-memory/            deterministic Repo Memory collection and validation
@@ -602,6 +615,7 @@ entrypoints and compatibility facades. It is not another implementation area.
 | `src/clients/codebuddy` | CodeBuddy/WorkBuddy native transcript interpretation, Hook memory runtime, and lifecycle participant | No Hook-payload or latest-Turn fallback; plugin mutation stays in the adapter, and request runtime remains HTTP-composition independent |
 | `src/clients/trae` | Trae Turn-ID validation, Hook-pair memory runtime, interruption handling, trace normalization, and lifecycle participant | Hook content is authoritative only for the exact validated Trae Turn; no raw-Session guess, pending queue, or cross-client fallback |
 | `src/memory` | Memory commands, retrieval, writeback, turn coordination, repository session pinning, manual CLI, and buffering/chunking | Client-neutral modules do not parse native transcript formats |
+| `src/personal-memory` | Local User Profile listing, normalization, duplicate detection, updates, deletion, and atomic storage | No Backend service, provider calls, transcript processing, or Procedure Memory mutation |
 | `src/repo-memory` | Repo Memory preparation, local and provider facet collection, delta detection, and bundle validation | Writes only deterministic raw evidence and validation output; agents author durable Markdown memory |
 | `src/repository` | Read-only repository identity | Scope derivation does not execute Git or use synchronous filesystem reads |
 | `src/provider/memorax` | MemoraX config interpretation, Search/Add payloads, HTTP transport, and normalized results | Independent from server routing and plugin lifecycle |
@@ -616,6 +630,7 @@ entrypoints and compatibility facades. It is not another implementation area.
 | `memorax-code.ts` | Management CLI process entrypoint |
 | `memorax-cli.ts` | Manual memory CLI process entrypoint |
 | `repo-memory.ts` | Local Repo Memory helper process entrypoint |
+| `user-profile.ts` | Local User Profile helper process entrypoint |
 | `service-entrypoint.ts` | Guarded managed-child-process entrypoint |
 | `server.ts` | `memorax-code-backend` executable and stable `createBackendServer` export facade |
 | `codex-adapter-lifecycle.ts` | Compatibility re-export of the Codex lifecycle participant |
@@ -846,6 +861,7 @@ file and are not divided first into unit and integration layers.
 | `src/entrypoints` and root executable behavior | `test/entrypoints`; management-CLI lifecycle behavior in `test/lifecycle`; root allowlist in `test/architecture` |
 | `src/lifecycle` and `src/lifecycle/backend` | `test/lifecycle` and `test/lifecycle/backend` |
 | `src/memory` | `test/memory` |
+| `src/personal-memory` | `test/personal-memory`; canonical Skill launcher integration in Codex adapter tests |
 | `src/provider/memorax` | `test/provider/memorax` |
 | `src/repository` | `test/repository` |
 | `src/shared` | `test/shared` |

@@ -32,7 +32,7 @@ if (
   throw new Error(`npm pack JSON did not contain a safe tarball filename: ${tarballFilename || "<empty>"}`);
 }
 
-const forbidden = /(^|\/)(?:target|test|tests|__pycache__|\.git|\.env(?:\.|$)|coverage)(?:\/|$)|\.(?:py[co]|pem|key)$/i;
+const forbidden = /(^|\/)(?:target|test|tests|__pycache__|\.git|\.env(?:\.|$)|coverage)(?:\/|$)|\.(?:py[co]?|pem|key)$/i;
 const undeclaredWorkspacePaths = loadUndeclaredNpmPackPaths(repoRoot);
 
 for (const entry of report.files) {
@@ -112,11 +112,14 @@ for (const requiredPath of [
   "lib/memorax-code-backend/dist/server.js",
   "lib/memorax-code-backend/dist/memorax-cli.js",
   "lib/memorax-code-backend/dist/repo-memory.js",
+  "lib/memorax-code-backend/dist/user-profile.js",
   "lib/memorax-code-backend/dist/repo-memory/cli.js",
+  "lib/memorax-code-backend/dist/personal-memory/cli.js",
   "lib/memorax-code-backend/dist/service-entrypoint.js",
   "lib/memorax-code-backend/dist/windows-cli-invocation.js",
   "lib/memorax-code-codex-adapter/skills/memorax-code/SKILL.md",
   "lib/memorax-code-codex-adapter/skills/memorax-code/scripts/repo-memory.mjs",
+  "lib/memorax-code-codex-adapter/skills/memorax-code/scripts/user-profile-memory.mjs",
   "lib/memorax-code-codex-adapter/assets/composer-icon.png",
   "lib/memorax-code-codex-adapter/assets/logo.png",
   "lib/memorax-code-codex-adapter/hooks/runtime-hook.mjs",
@@ -124,11 +127,13 @@ for (const requiredPath of [
   "lib/memorax-code-codex-adapter/runtime-hooks/memory-writeback.mjs",
   "lib/memorax-code-claude-adapter/skills/memorax-code/SKILL.md",
   "lib/memorax-code-claude-adapter/skills/memorax-code/scripts/repo-memory.mjs",
+  "lib/memorax-code-claude-adapter/skills/memorax-code/scripts/user-profile-memory.mjs",
   "lib/memorax-code-claude-adapter/hooks/runtime-hook.mjs",
   "lib/memorax-code-claude-adapter/hooks/runtime-shell.json",
   "lib/memorax-code-claude-adapter/runtime-hooks/memory-turn.mjs",
   "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/skills/memorax-code/SKILL.md",
   "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/skills/memorax-code/scripts/repo-memory.mjs",
+  "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/skills/memorax-code/scripts/user-profile-memory.mjs",
   "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/hooks/runtime-hook.mjs",
   "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/hooks/runtime-shell.json",
   "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/runtime-hooks/memory-turn.mjs",
@@ -160,10 +165,13 @@ for (const requiredPath of [
   "lib/memorax-code-dsh-adapter/hooks/repo-memory-job.mjs",
   "lib/memorax-code-dsh-adapter/skills/memorax-code/SKILL.md",
   "lib/memorax-code-dsh-adapter/skills/memorax-code/scripts/repo-memory.mjs",
+  "lib/memorax-code-dsh-adapter/skills/memorax-code/scripts/user-profile-memory.mjs",
   "lib/memorax-code-opencode-adapter/src/cli.mjs",
   "lib/memorax-code-opencode-adapter/skills/memorax-code/scripts/repo-memory.mjs",
+  "lib/memorax-code-opencode-adapter/skills/memorax-code/scripts/user-profile-memory.mjs",
   "lib/memorax-code-codebuddy-adapter/package.json",
   "lib/memorax-code-codebuddy-adapter/skills/memorax-code/scripts/repo-memory.mjs",
+  "lib/memorax-code-codebuddy-adapter/skills/memorax-code/scripts/user-profile-memory.mjs",
   "lib/memorax-code-codebuddy-adapter/.codebuddy-plugin/plugin.json",
   "lib/memorax-code-codebuddy-adapter/hooks/hooks.json",
   "lib/memorax-code-codebuddy-adapter/hooks/runtime-hook.mjs",
@@ -177,6 +185,7 @@ for (const requiredPath of [
   "lib/memorax-code-trae-adapter/hooks/runtime-hook.mjs",
   "lib/memorax-code-trae-adapter/skills/memorax-code/SKILL.md",
   "lib/memorax-code-trae-adapter/skills/memorax-code/scripts/repo-memory.mjs",
+  "lib/memorax-code-trae-adapter/skills/memorax-code/scripts/user-profile-memory.mjs",
   "lib/memorax-code-trae-adapter/src/adapter-paths.mjs",
   "lib/memorax-code-trae-adapter/src/cli.mjs",
   "lib/memorax-code-trae-adapter/src/config.mjs",
