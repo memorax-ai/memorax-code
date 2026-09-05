@@ -19,6 +19,7 @@ const DEFAULT_BACKEND_PROMPT_WAIT_TIMEOUT_MS = 5_000;
 const TURN_START_TIMEOUT_MS = 12_000;
 const REMINDER_TRACE_TIMEOUT_MS = 1_000;
 const WRITEBACK_TIMEOUT_MS = 5_000;
+const INCOMPLETE_WRITEBACK_RETRY_DELAY_MS = 50;
 const MAX_PENDING_TURNS = 256;
 const MEMORY_SKILL_INVOCATION = "the `memorax-code` skill";
 
@@ -83,7 +84,7 @@ export function createMemoraxOpenCodePlugin(options = {}) {
       void observed.finally(() => inFlight.delete(observed));
     }
 
-    async function flushSession(sessionId, target) {
+    async function flushSession(sessionId, target, retryBudget = 1) {
       if (!pluginEnabled(options)) return;
       await ensureBackendReady();
       if (!pluginEnabled(options)) return;
@@ -98,6 +99,7 @@ export function createMemoraxOpenCodePlugin(options = {}) {
       });
       if (!pluginEnabled(options)) return;
       const messages = Array.isArray(response?.data) ? response.data : [];
+      let incomplete = false;
       for (const turn of turns) {
         const user = messages.find((message) => (
           message?.info?.role === "user"
@@ -110,7 +112,10 @@ export function createMemoraxOpenCodePlugin(options = {}) {
           turn.userMessageId,
           target?.assistantMessageId,
         );
-        if (!user || !terminal) continue;
+        if (!user || !terminal) {
+          incomplete = true;
+          continue;
+        }
         const { assistant, evidence } = terminal;
         let result;
         try {
@@ -134,13 +139,17 @@ export function createMemoraxOpenCodePlugin(options = {}) {
           pendingTurns.delete(turnKey(turn));
         }
       }
+      if (incomplete && retryBudget > 0 && pluginEnabled(options)) {
+        await delay(INCOMPLETE_WRITEBACK_RETRY_DELAY_MS);
+        await flushSession(sessionId, target, retryBudget - 1);
+      }
     }
 
-    function queueSessionFlush(sessionId, target) {
+    function queueSessionFlush(sessionId, target, retryBudget) {
       const previous = sessionFlushes.get(sessionId) ?? Promise.resolve();
       const queued = previous
         .catch(() => undefined)
-        .then(() => flushSession(sessionId, target));
+        .then(() => flushSession(sessionId, target, retryBudget));
       sessionFlushes.set(sessionId, queued);
       const clear = () => {
         if (sessionFlushes.get(sessionId) === queued) sessionFlushes.delete(sessionId);

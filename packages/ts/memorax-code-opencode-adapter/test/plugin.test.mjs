@@ -613,6 +613,56 @@ test("idle reads authoritative SDK messages and dispose drains the pending write
   });
 });
 
+test("idle retries a pending writeback when its first SDK snapshot is incomplete", async () => {
+  const requests = [];
+  let messageReads = 0;
+  const plugin = createPluginWithoutReminders({
+    backendConnection: { url: "http://127.0.0.1:8787" },
+    fetchImpl: responseSequence(requests, [{ ok: true }, { ok: true }]),
+  });
+  const hooks = await plugin(pluginInput({
+    client: {
+      session: {
+        async messages() {
+          messageReads += 1;
+          const user = {
+            info: { id: "user-incomplete", role: "user", sessionID: "session-incomplete" },
+            parts: [{ type: "text", text: "Remember this completed turn." }],
+          };
+          if (messageReads === 1) return { data: [user] };
+          return {
+            data: [
+              user,
+              {
+                info: {
+                  id: "assistant-incomplete",
+                  role: "assistant",
+                  sessionID: "session-incomplete",
+                  parentID: "user-incomplete",
+                  time: { completed: 123 },
+                },
+                parts: [{ type: "text", text: "The turn is complete." }],
+              },
+            ],
+          };
+        },
+      },
+    },
+  }));
+
+  await hooks["chat.message"](
+    { sessionID: "session-incomplete" },
+    promptOutput("user-incomplete", "Remember this completed turn."),
+  );
+  hooks.event(sessionIdleEvent("session-incomplete"));
+  await hooks.dispose();
+
+  assert.deepEqual(
+    requests.map((request) => new URL(request.url).pathname),
+    ["/memory/turn-start", "/memory/writeback"],
+  );
+});
+
 test("idle follows an OpenCode compaction continuation back to the original pending turn", async () => {
   const requests = [];
   const messages = compactedMessages();
