@@ -5,11 +5,12 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { buildRepoUserProfilePreferencesContext } from "../../memorax-code-adapter-common/src/repo-memory/repo-user-profile-context.mjs";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = resolve(packageRoot, "../../..");
 const skillRoot = join(packageRoot, "skills", "memorax-code");
-const scriptPath = join(skillRoot, "scripts", "user_profile_memory.py");
+const scriptPath = join(skillRoot, "scripts", "user-profile-memory.mjs");
 
 function readSkillFile(path) {
   return readFileSync(join(skillRoot, path), "utf8");
@@ -36,7 +37,7 @@ function createRepo(root) {
 }
 
 function runProfile(command, repo, args = []) {
-  const result = spawnSync("python3", [scriptPath, command, "--repo", repo, ...args], {
+  const result = spawnSync(process.execPath, [scriptPath, command, "--repo", repo, ...args], {
     cwd: packageRoot,
     encoding: "utf8",
   });
@@ -45,7 +46,7 @@ function runProfile(command, repo, args = []) {
 }
 
 function runProfileRaw(command, repo, args = []) {
-  return spawnSync("python3", [scriptPath, command, "--repo", repo, ...args], {
+  return spawnSync(process.execPath, [scriptPath, command, "--repo", repo, ...args], {
     cwd: packageRoot,
     encoding: "utf8",
   });
@@ -53,7 +54,7 @@ function runProfileRaw(command, repo, args = []) {
 
 function runProfileAsync(command, repo, args = []) {
   return new Promise((resolve) => {
-    const child = spawn("python3", [scriptPath, command, "--repo", repo, ...args], {
+    const child = spawn(process.execPath, [scriptPath, command, "--repo", repo, ...args], {
       cwd: packageRoot,
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -91,13 +92,13 @@ test("repo memory skills route user-profile reads and writes", () => {
   assert.match(reference, /Do not scan or clean up unrelated preferences/);
   assert.match(reference, /multiple preferences may match, or it is unclear whether the change is durable, ask the user/);
   assert.match(reference, /never use `workflow` or `environment` to store an executable repository procedure/);
-  assert.match(reference, /python3 <skill-dir>\/scripts\/user_profile_memory\.py/);
+  assert.match(reference, /node <skill-dir>\/scripts\/user-profile-memory\.mjs/);
   assert.match(reference, /Do not preserve deleted text elsewhere/);
   assert.match(openaiYaml, /display_name: "MemoraX Code"/);
   assert.match(openaiYaml, /default_prompt: "Use \$memorax-code/);
   assert.match(openaiYaml, /allow_implicit_invocation: true/);
 
-  assert.match(readReference, /user_profile_memory\.py list --repo <repo>/);
+  assert.match(readReference, /user-profile-memory\.mjs list --repo <repo>/);
   assert.match(readReference, /list operation does not create it/);
   assert.match(readReference, /Do not write, normalize, migrate, repair, or delete memory/);
 });
@@ -482,4 +483,30 @@ test("repo memory user-profile skill files exist", () => {
   assert.equal(existsSync(scriptPath), true);
   assert.equal(existsSync(join(skillRoot, "references", "personal-read.md")), true);
   assert.equal(existsSync(join(skillRoot, "references", "personal-write.md")), true);
+});
+
+test("the Node profile writer preserves read-only listing and feeds the existing context reader", () => {
+  const root = mkdtempSync(join(tmpdir(), "memorax-code-profile 中文 "));
+  try {
+    const repo = createRepo(root);
+    const options = { adapterDir: "codex", sessionKeyPrefix: "codex", debugEnv: "MEMORAX_CODE_CODEX_HOOK_DEBUG" };
+    assert.deepEqual(runProfile("list", repo).preferences, []);
+    assert.equal(existsSync(join(repo, ".repo_memory")), false);
+    assert.equal(existsSync(join(repo, ".gitignore")), false);
+
+    const added = runProfile("add", repo, [
+      "--type", "communication",
+      "--description", "用户希望用中文回答。",
+      "--applies-when", "解释当前仓库。",
+    ]);
+    assert.match(buildRepoUserProfilePreferencesContext({ cwd: repo }, options), /用户希望用中文回答。/);
+    runProfile("update", repo, ["--id", added.id, "--description", "用户希望先给出结论。"]);
+    const updatedContext = buildRepoUserProfilePreferencesContext({ cwd: repo }, options);
+    assert.match(updatedContext, /用户希望先给出结论。/);
+    assert.doesNotMatch(updatedContext, /用户希望用中文回答。/);
+    runProfile("delete", repo, ["--id", added.id]);
+    assert.equal(buildRepoUserProfilePreferencesContext({ cwd: repo }, options), undefined);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

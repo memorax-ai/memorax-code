@@ -93,5 +93,6 @@ export function isReviewedCredentialRuntimePath(rawPath) {
 export function isAllowedNpmPackFilePath(rawPath) {
   const path = String(rawPath).replaceAll("\\", "/");
   return isAllowedNpmPackPath(path)
+    && !/\.(?:py|pyc|pyo)$/i.test(path)
     && (!sensitivePath.test(path) || isReviewedCredentialRuntimePath(path));
 }

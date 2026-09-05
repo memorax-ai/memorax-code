@@ -65,7 +65,7 @@ Resolve `<skill-dir>` as the parent directory of the `references/` directory con
 List existing preferences before adding and perform semantic matching:
 
 ```bash
-python3 <skill-dir>/scripts/user_profile_memory.py list --repo <repo>
+node <skill-dir>/scripts/user-profile-memory.mjs list --repo <repo>
 ```
 
 Handle the semantic match before writing:
@@ -82,7 +82,7 @@ Do not modify or delete existing preferences because of a one-time instruction f
 Use the matching id for updates. Add only a genuinely new preference:
 
 ```bash
-python3 <skill-dir>/scripts/user_profile_memory.py add \
+node <skill-dir>/scripts/user-profile-memory.mjs add \
   --repo <repo> \
   --type communication \
   --description "User prefers concise Chinese answers for this repository." \
@@ -95,7 +95,7 @@ Allowed script types are `communication`, `workflow`, `environment`, and `profil
 Update a clearly identified preference in place:
 
 ```bash
-python3 <skill-dir>/scripts/user_profile_memory.py update \
+node <skill-dir>/scripts/user-profile-memory.mjs update \
   --repo <repo> \
   --id <preference-id> \
   --description <current-description> \
@@ -106,7 +106,7 @@ python3 <skill-dir>/scripts/user_profile_memory.py update \
 If multiple preferences may match, or it is unclear whether the change is durable, ask the user. Delete only an explicitly identified preference:
 
 ```bash
-python3 <skill-dir>/scripts/user_profile_memory.py delete \
+node <skill-dir>/scripts/user-profile-memory.mjs delete \
   --repo <repo> \
   --id <preference-id>
 ```

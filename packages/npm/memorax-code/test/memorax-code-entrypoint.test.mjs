@@ -218,10 +218,34 @@ test("root help documents setup and update", async () => {
     assert.match(result.stdout, /^  setup\s+Run or repair the interactive setup$/m);
     assert.match(result.stdout, /^  account\s+Manage local MemoraX account information$/m);
     assert.match(result.stdout, /^  update\s+Update the globally installed npm package$/m);
-    assert.doesNotMatch(result.stdout, /repo-memory/);
+    assert.doesNotMatch(result.stdout, /repo-memory|user-profile/);
     assert.match(result.stdout, /Run `memorax-code setup` to complete first-time setup/);
     assert.equal(await pathExists(fixture.setupLogPath), false);
     assert.equal(await pathExists(fixture.backendLogPath), false);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("user-profile preserves piped helper output and exit status without requiring setup", async () => {
+  const fixture = await createPackageFixture();
+  try {
+    const helperEntrypoint = join(fixture.root, "lib", "memorax-code-backend", "dist", "user-profile.js");
+    await writeFile(helperEntrypoint, [
+      "process.stdout.write(JSON.stringify({ args: process.argv.slice(3), description: 'x'.repeat(128 * 1024) }) + '\\n');",
+      "process.exitCode = 7;",
+      "",
+    ].join("\n"));
+    const args = ["list", "--repo", join(fixture.root, "repo with spaces")];
+
+    const result = runCli(fixture, ["user-profile", ...args]);
+
+    assert.equal(result.error, undefined);
+    assert.equal(result.status, 7, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), { args, description: "x".repeat(128 * 1024) });
+    assert.equal(await pathExists(fixture.setupLogPath), false);
+    assert.equal(await pathExists(fixture.backendLogPath), false);
+    assert.equal(await pathExists(join(fixture.memoraxCodeHome, setupCompletionRelativePath)), false);
   } finally {
     await fixture.cleanup();
   }

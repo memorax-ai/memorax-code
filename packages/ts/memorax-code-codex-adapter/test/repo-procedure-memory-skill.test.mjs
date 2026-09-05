@@ -40,5 +40,5 @@ test("memorax-code routes personal procedure reads and writes", () => {
   assert.match(writeReference, /Do not retain deleted text in tombstones/);
   assert.match(writeReference, /Apply the same rule to superseded text/);
 
-  assert.equal(existsSync(join(skillRoot, "scripts", "user_profile_memory.py")), true);
+  assert.equal(existsSync(join(skillRoot, "scripts", "user-profile-memory.mjs")), true);
 });

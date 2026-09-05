@@ -14,10 +14,16 @@ const backendRootFacades = [
   "repo-memory.ts",
   "server.ts",
   "service-entrypoint.ts",
+  "user-profile.ts",
   "windows-cli-invocation.ts",
 ];
 
 const rules = [
+  {
+    name: "local User Profile management stays independent from Backend services and remote memory",
+    importers: ["personal-memory/user-profile.ts", "personal-memory/cli.ts"],
+    forbidden: ["node:http", "node:https", "app/", "transport/", "provider/", "memory/", "lifecycle/"],
+  },
   {
     name: "provider kernel stays independent from server and adapter lifecycle",
     importers: ["provider/memorax/adapter.ts", "provider/memorax/http.ts"],
