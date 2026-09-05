@@ -718,6 +718,7 @@ multiple directories does not automatically belong in `shared`.
 | Backend source boundaries | `packages/ts/memorax-code-backend/test/architecture/source-boundaries.test.mjs` | Root facade allowlist, discovered client-runtime coverage, selected direct forbidden imports including shared harness and lifecycle-report neutrality, lifecycle delegation, and an acyclic relative-import graph | Adding a client or root surface, crossing capability boundaries, or changing a composition root |
 | Local-only trace boundary | `scripts/check-local-trace-only.mjs` and its tests | Reviewed network-capable production modules, trace-core isolation, unreviewed trace-aware outbound bridges, and staged artifact/symlink containment | Moving or adding network code, trace-aware outbound code, or staged paths |
 | Package shape | npm package tests and package-build/check scripts | Executable wrappers, staged runtime layout, canonical source mapping, compatibility paths, and artifact allowlists | Changing entrypoints, packaging sources, materialization, or layout |
+| Harness integration coverage | `packages/npm/memorax-code/test/harness-coverage.test.mjs` | Discovered adapter packages match Backend client directories; runtime trees and the canonical Skill have npm source mappings; `make test` reaches every adapter suite | Adding a harness, changing adapter directory layout, source mapping, or test recipes |
 | Documentation contract | `scripts/check-docs.mjs` and its tests | Relative links, personal absolute paths, and shipped-document consistency | Adding a root document or changing document/package layout |
 | Platform-specific consumers | Repository scripts and platform harnesses | Explicit test paths, test-name patterns, and platform lifecycle scenarios | Moving, splitting, or renaming tests or platform entrypoints |
 
@@ -733,6 +734,18 @@ filename or a duplicated client list. Native-reader rules remain explicit;
 add newly introduced readers to the applicable rules and their client-owned
 behavior tests. Lifecycle report projections are separately checked against
 native-client, filesystem, process, HTTP, and lifecycle-implementation imports.
+
+Harness integration checks discover `packages/ts/memorax-code-<client>-adapter`
+directories and require lowercase kebab-case client IDs rather than
+maintaining another client catalog. They check the
+existing Makefile recipe structure and source mappings, not installed-client
+behavior. Adapter `src`, `hooks`, `runtime-hooks`, and `scripts` directories
+must be declared for staging. The local-only trace gate recognizes those
+runtime directories and shared Skill scripts for every adapter, including
+staged copies. Shared Skill copies map to the canonical Codex source for
+reviewed-network checks; discovering a new adapter does not approve its
+network-capable modules. New directory conventions still require explicit
+updates to these checks and their native or installed-package tests.
 
 Do not weaken an executable boundary merely to make a new import or path pass.
 If the intended architecture has not changed, move composition outward or

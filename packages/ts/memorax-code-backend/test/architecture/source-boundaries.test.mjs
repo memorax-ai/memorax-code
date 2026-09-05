@@ -23,6 +23,14 @@ const importPatterns = [
   /\bimport\s*\(\s*["']([^"']+)["']\s*\)/g,
 ];
 const clientModules = await sourceModules(join(backendSrc, "clients"));
+const nativeReaders = [
+  "clients/codex/rollout-turn.ts",
+  "clients/codex/session-turn-index.ts",
+  "clients/claude/transcript-turn.ts",
+  "clients/dsh/session-turn.ts",
+  "clients/opencode/message-turn.ts",
+  "clients/codebuddy/jsonl-history.ts",
+];
 const clientMemoryRuntimes = [];
 for (const module of clientModules) {
   if ((await directRelativeImports(module)).includes("memory/harness-runtime")) {
@@ -53,10 +61,7 @@ const rules = [
       "memory/automatic-writeback.ts",
       "memory/harness-runtime.ts",
       ...clientMemoryRuntimes,
-      "clients/claude/transcript-turn.ts",
-      "clients/dsh/session-turn.ts",
-      "clients/opencode/message-turn.ts",
-      "clients/codebuddy/jsonl-history.ts",
+      ...nativeReaders,
       "memory/turn-coordinator.ts",
       "memory/service.ts",
       "memory/writeback-buffer.ts",
@@ -120,10 +125,7 @@ const rules = [
     name: "client memory runtimes and native readers stay independent from HTTP and Backend composition",
     importers: [
       ...clientMemoryRuntimes,
-      "clients/claude/transcript-turn.ts",
-      "clients/opencode/message-turn.ts",
-      "clients/codebuddy/jsonl-history.ts",
-      "clients/dsh/session-turn.ts",
+      ...nativeReaders,
     ],
     forbidden: ["node:http", "server-", "entrypoints/", "transport/http/", "app/state"],
   },
@@ -225,7 +227,7 @@ test("memorax-code lifecycle delegates client implementation details to adapter 
   const source = await readFile(join(backendSrc, "lifecycle", "orchestrator.ts"), "utf8");
 
   assert.doesNotMatch(source, /clients\/codex\/plugin-install/);
-  assert.doesNotMatch(source, /memorax-code-(?:codex|claude)-adapter\/src/);
+  assert.doesNotMatch(source, /memorax-code-[a-z0-9-]+-adapter\/src/);
 });
 
 test("managed Backend owns automatic-update wakeups instead of client Hooks", async () => {

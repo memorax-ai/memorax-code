@@ -12,21 +12,9 @@ const productionRoots = [
   "packages/npm/memorax-code/lib/",
   "packages/ts/memorax-code-adapter-common/src/",
   "packages/ts/memorax-code-backend/src/",
-  "packages/ts/memorax-code-codex-adapter/hooks/",
-  "packages/ts/memorax-code-codex-adapter/runtime-hooks/",
-  "packages/ts/memorax-code-codex-adapter/skills/memorax-code/scripts/",
-  "packages/ts/memorax-code-codex-adapter/src/",
-  "packages/ts/memorax-code-claude-adapter/hooks/",
-  "packages/ts/memorax-code-claude-adapter/runtime-hooks/",
-  "packages/ts/memorax-code-claude-adapter/scripts/",
-  "packages/ts/memorax-code-claude-adapter/src/",
-  "packages/ts/memorax-code-dsh-adapter/src/",
-  "packages/ts/memorax-code-opencode-adapter/src/",
-  "packages/ts/memorax-code-codebuddy-adapter/hooks/",
-  "packages/ts/memorax-code-codebuddy-adapter/src/",
-  "packages/ts/memorax-code-trae-adapter/hooks/",
-  "packages/ts/memorax-code-trae-adapter/src/",
 ];
+const adapterProductionSource =
+  /^packages\/ts\/memorax-code-[a-z0-9]+(?:-[a-z0-9]+)*-adapter\/(?:src|hooks|runtime-hooks|scripts|skills\/memorax-code\/scripts)\//;
 
 const reviewedNetworkSources = new Set([
   "packages/npm/memorax-code/lib/trial-provision-client.mjs",
@@ -190,9 +178,14 @@ async function inspectFile(path, displayPath, options) {
     if (error?.code === "ENOENT" || error?.code === "EISDIR") return;
     throw error;
   }
-  if (options.sourcePath && productionRoots.some((prefix) => options.sourcePath.startsWith(prefix))) {
+  if (options.sourcePath && isProductionSource(options.sourcePath)) {
     inspectProductionSource(content, options.sourcePath, options.failures);
   }
+}
+
+function isProductionSource(path) {
+  return productionRoots.some((prefix) => path.startsWith(prefix))
+    || adapterProductionSource.test(path);
 }
 
 function inspectProductionSource(content, sourcePath, failures) {
@@ -291,7 +284,7 @@ async function safeArtifactSymlinkTarget(root, path, artifactPath, failures) {
 
 function sourcePathForArtifact(rawPath) {
   let path = normalizePath(rawPath).replace(/^package\//, "");
-  if (productionRoots.some((prefix) => path.startsWith(prefix))) return path;
+  if (isProductionSource(path)) return path;
 
   if (path.startsWith("bin/")) {
     return `packages/npm/memorax-code/${path}`;
@@ -301,15 +294,6 @@ function sourcePathForArtifact(rawPath) {
   }
   if (path.startsWith("lib/memorax-code-backend/dist/") && path.endsWith(".js")) {
     return `packages/ts/memorax-code-backend/src/${path.slice("lib/memorax-code-backend/dist/".length, -3)}.ts`;
-  }
-  if (path.startsWith("lib/memorax-code-codex-adapter/")) {
-    return `packages/ts/memorax-code-codex-adapter/${path.slice("lib/memorax-code-codex-adapter/".length)}`;
-  }
-  if (path.startsWith("lib/memorax-code-claude-adapter/skills/memorax-code/")) {
-    return `packages/ts/memorax-code-codex-adapter/skills/memorax-code/${path.slice("lib/memorax-code-claude-adapter/skills/memorax-code/".length)}`;
-  }
-  if (path.startsWith("lib/memorax-code-claude-adapter/")) {
-    return `packages/ts/memorax-code-claude-adapter/${path.slice("lib/memorax-code-claude-adapter/".length)}`;
   }
   if (path.startsWith("lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/")) {
     const pluginPath = path.slice("lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/".length);
@@ -324,20 +308,12 @@ function sourcePathForArtifact(rawPath) {
   if (path.startsWith("lib/memorax-code-dsh-adapter/memorax-code-adapter-common/src/")) {
     return `packages/ts/memorax-code-adapter-common/src/${path.slice("lib/memorax-code-dsh-adapter/memorax-code-adapter-common/src/".length)}`;
   }
-  if (path.startsWith("lib/memorax-code-dsh-adapter/")) {
-    return `packages/ts/memorax-code-dsh-adapter/${path.slice("lib/memorax-code-dsh-adapter/".length)}`;
-  }
-  if (path.startsWith("lib/memorax-code-opencode-adapter/skills/memorax-code/")) {
-    return `packages/ts/memorax-code-codex-adapter/skills/memorax-code/${path.slice("lib/memorax-code-opencode-adapter/skills/memorax-code/".length)}`;
-  }
-  if (path.startsWith("lib/memorax-code-opencode-adapter/")) {
-    return `packages/ts/memorax-code-opencode-adapter/${path.slice("lib/memorax-code-opencode-adapter/".length)}`;
-  }
-  if (path.startsWith("lib/memorax-code-codebuddy-adapter/")) {
-    return `packages/ts/memorax-code-codebuddy-adapter/${path.slice("lib/memorax-code-codebuddy-adapter/".length)}`;
-  }
-  if (path.startsWith("lib/memorax-code-trae-adapter/")) {
-    return `packages/ts/memorax-code-trae-adapter/${path.slice("lib/memorax-code-trae-adapter/".length)}`;
+  const adapter = /^lib\/(memorax-code-[a-z0-9]+(?:-[a-z0-9]+)*-adapter)\/(.+)$/.exec(path);
+  if (adapter) {
+    const sourcePackage = adapter[2].startsWith("skills/memorax-code/")
+      ? "memorax-code-codex-adapter"
+      : adapter[1];
+    return `packages/ts/${sourcePackage}/${adapter[2]}`;
   }
   if (path.startsWith("lib/") && !path.slice("lib/".length).includes("/")) {
     return `packages/npm/memorax-code/${path}`;

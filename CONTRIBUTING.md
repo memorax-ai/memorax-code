@@ -97,15 +97,41 @@ and recovery cases in that client's tests.
    [packed-file validation](scripts/validate-npm-pack-json.mjs), and
    [installed-package checks](scripts/npm-package-check.sh). Run the adapter's
    tests against its deployed layout as appropriate; do not maintain a new
-   independent Skill copy.
+   independent Skill copy. The
+   [harness coverage check](packages/npm/memorax-code/test/harness-coverage.test.mjs)
+   discovers adapter packages and checks Backend client-directory alignment,
+   runtime source mappings, canonical Skill materialization, and adapter test
+   reachability from `make test`.
 5. **Complete the existing gates.** Update
    [source boundaries](packages/ts/memorax-code-backend/test/architecture/source-boundaries.test.mjs)
    for new native readers and intentional dependencies. Runtime discovery
    requires each native client directory to use the shared harness runtime.
    Register new network-capable modules with the
-   [local-only trace gate](scripts/check-local-trace-only.mjs). Add the adapter
+   [local-only trace gate](scripts/check-local-trace-only.mjs). Its source and
+   staged scans recognize every adapter's `src`, `hooks`, `runtime-hooks`,
+   `scripts`, and shared Skill scripts; a new runtime directory convention
+   requires updating the scan and source-mapping checks. Add the adapter
    suite to the repository and platform checks, update architecture and public
    client documentation, and run the relevant validation profiles below.
+
+### Harness Coverage Map
+
+The table locates existing native contracts; it is not a record of real-client
+E2E results. Each row also participates in the shared runtime, lifecycle
+catalog, npm source-mapping, test-entry, and local-only trace checks above.
+
+| Harness | Automatic writeback authority | Native Backend tests | Adapter tests |
+| --- | --- | --- | --- |
+| Codex | Exact Turn in rollout JSONL | [Codex](packages/ts/memorax-code-backend/test/clients/codex) | [Codex adapter](packages/ts/memorax-code-codex-adapter/test) |
+| Claude Code | Correlated prompt in transcript JSONL | [Claude](packages/ts/memorax-code-backend/test/clients/claude) | [Claude adapter](packages/ts/memorax-code-claude-adapter/test) |
+| DSH | Exact persisted Session Event Log interval | [DSH](packages/ts/memorax-code-backend/test/clients/dsh) | [DSH adapter](packages/ts/memorax-code-dsh-adapter/test) |
+| OpenCode | Matching SDK session-message records | [OpenCode](packages/ts/memorax-code-backend/test/clients/opencode) | [OpenCode adapter](packages/ts/memorax-code-opencode-adapter/test) |
+| CodeBuddy/WorkBuddy | Correlated native transcript JSONL | [CodeBuddy](packages/ts/memorax-code-backend/test/clients/codebuddy) | [CodeBuddy adapter](packages/ts/memorax-code-codebuddy-adapter/test) |
+| Trae | Validated Turn-ID and Hook pair | [Trae](packages/ts/memorax-code-backend/test/clients/trae) | [Trae adapter](packages/ts/memorax-code-trae-adapter/test) |
+
+These checks catch omitted integration wiring. They do not infer native
+content authority or replace parser, interruption, lifecycle, installed-package,
+or platform verification. Keep new behavior cases in the owning suites.
 
 ## Validation
 
