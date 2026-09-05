@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import fs from "node:fs";
 import {
   access,
   chmod,
@@ -12,6 +13,7 @@ import {
   utimes,
   writeFile,
 } from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -62,6 +64,63 @@ test("JSON state lock wait is bounded and releases the owning lock", async () =>
     });
     await assert.rejects(access(`${path}.lock`), /ENOENT/);
   } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("JSON state locks publish complete owner records before becoming visible", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-json-lock-publication-"));
+  const path = join(root, "state.json");
+  const lockPath = `${path}.lock`;
+  const originalWrite = fs.writeFileSync;
+  let ownerWrites = 0;
+  fs.writeFileSync = (target, content, ...options) => {
+    if (typeof content === "string" && content.includes('"ownerId"')) {
+      ownerWrites += 1;
+      assert.equal(fs.existsSync(lockPath), false, "an incomplete owner record must not be visible to stale-lock reapers");
+    }
+    return originalWrite(target, content, ...options);
+  };
+  syncBuiltinESMExports();
+  try {
+    for (const acquire of [withJsonFileLock, withJsonFileLockAsync]) {
+      await acquire(path, () => {
+        const owner = JSON.parse(fs.readFileSync(lockPath, "utf8"));
+        assert.equal(owner.pid, process.pid);
+        assert.equal(owner.version, 1);
+        assert.match(owner.ownerId, new RegExp(`^${process.pid}:`));
+      });
+      await assert.rejects(access(lockPath), /ENOENT/);
+    }
+    assert.equal(ownerWrites, 2);
+  } finally {
+    fs.writeFileSync = originalWrite;
+    syncBuiltinESMExports();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("JSON state lock owner-write failure cleans its private claim without removing a concurrent owner", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-json-lock-write-failure-"));
+  const path = join(root, "state.json");
+  const lockPath = `${path}.lock`;
+  const originalWrite = fs.writeFileSync;
+  const writeFailure = Object.assign(new Error("owner record write failed"), { code: "EIO" });
+  const concurrentOwner = JSON.stringify({ version: 1, ownerId: "concurrent-owner", pid: process.pid });
+  let operationCalled = false;
+  fs.writeFileSync = () => {
+    originalWrite(lockPath, concurrentOwner, { mode: 0o600 });
+    throw writeFailure;
+  };
+  syncBuiltinESMExports();
+  try {
+    assert.throws(() => withJsonFileLock(path, () => { operationCalled = true; }), error => error === writeFailure);
+    assert.equal(operationCalled, false);
+    assert.equal(fs.readFileSync(lockPath, "utf8"), concurrentOwner);
+    assert.deepEqual(fs.readdirSync(root), ["state.json.lock"]);
+  } finally {
+    fs.writeFileSync = originalWrite;
+    syncBuiltinESMExports();
     await rm(root, { recursive: true, force: true });
   }
 });

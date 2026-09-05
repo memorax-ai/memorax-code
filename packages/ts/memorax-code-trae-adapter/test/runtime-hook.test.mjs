@@ -209,6 +209,7 @@ function runHook(fixture, input) {
       cwd: fixture.root,
       env: {
         ...process.env,
+        MEMORAX_CODE_HOME: fixture.root,
         MEMORAX_CODE_BACKEND_URL: `http://127.0.0.1:${address.port}`,
         MEMORAX_CODE_MEMORY_SKILL_REMINDER_INTERVAL_TURNS: "1",
         TRAE_CN_HOME: fixture.traeHome,

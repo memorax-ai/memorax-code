@@ -754,6 +754,13 @@ Repo Memory. State shared across processes requires a bounded lock, atomic
 replacement, or version validation appropriate to its record. An in-memory
 mutex is not cross-process authority.
 
+Shared JSON file locks publish a complete owner record through an exclusive
+same-directory hard link. An unfinished owner record is never visible at the
+public lock path. Private publication and stale-reaper claims share the
+versioned, process-qualified claim namespace so abandoned claims remain
+recoverable. Lock storage must support hard links; unsupported storage fails
+closed rather than falling back to an incomplete or unlocked publication.
+
 Backend-owned remote memory state is limited to MemoraX memories and Add tasks.
 The provider adapter is the network boundary for documented memory payloads;
 the Backend does not poll an Add task after its initial response.

@@ -51,6 +51,12 @@ On POSIX systems MemoraX Code creates `$MEMORAX_CODE_HOME` with mode `0700`
 and a new `config.toml` with mode `0600`. Windows relies on the current user's
 filesystem ACLs.
 
+State and managed client configuration directories must support same-directory
+hard links, as APFS, NTFS, and ext4 do. Shared JSON state locks use them to
+publish complete owner records atomically. Filesystems without this capability,
+including FAT and exFAT, cannot host these locked records; lock acquisition
+fails rather than performing an unlocked update.
+
 ## Client selection
 
 If `[clients]` is absent, lifecycle commands select Codex, Claude Code, DSH,

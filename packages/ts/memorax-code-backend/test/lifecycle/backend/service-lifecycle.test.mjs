@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { readFileSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
@@ -769,15 +770,30 @@ test("failed startup retains PID state when cleanup fails or the PID remains ali
         response.end('{"ok":true,"service":"not-memorax-code"}');
       });
       const port = await listen(occupied);
+      let child;
+      let childClosed;
       try {
         const result = await startBackendService(
           { home, port, timeoutMs: 100 },
-          { terminateProcessTree, isProcessAlive: () => true },
+          {
+            terminateProcessTree,
+            isProcessAlive: () => true,
+            spawnProcess: (...args) => {
+              child = spawn(...args);
+              childClosed = new Promise((resolve) => child.once("close", resolve));
+              return child;
+            },
+          },
         );
         assert.equal(result.ok, false);
         assert.match(result.error, /cleanup failed and PID state was retained/);
         assert.equal(readBackendServiceState({ home })?.pid, result.state?.pid);
       } finally {
+        // The injected termination functions do not stop the real fixture process.
+        if (child && child.exitCode === null && child.signalCode === null) {
+          child.kill("SIGKILL");
+        }
+        await childClosed;
         await new Promise((resolve) => occupied.close(resolve));
         await rm(home, { recursive: true, force: true });
       }

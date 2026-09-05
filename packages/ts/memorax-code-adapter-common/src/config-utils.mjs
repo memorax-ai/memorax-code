@@ -174,9 +174,13 @@ export async function withJsonFileLockAsync(path, operation, options = {}) {
 }
 
 function tryAcquireJsonFileLock(lockPath, ownerId) {
+  if (existsSync(lockPath)) return false;
+  const claimPath = jsonFileLockClaimPath(lockPath);
   let descriptor;
+  let claimCreated = false;
   try {
-    descriptor = openSync(lockPath, "wx", 0o600);
+    descriptor = openSync(claimPath, "wx", 0o600);
+    claimCreated = true;
     writeFileSync(descriptor, `${JSON.stringify({
       version: 1,
       ownerId,
@@ -185,19 +189,35 @@ function tryAcquireJsonFileLock(lockPath, ownerId) {
       createdAt: new Date().toISOString(),
     })}\n`);
     closeSync(descriptor);
+    descriptor = undefined;
+    // Reapers must never observe a public lock before its owner record is complete.
+    linkSync(claimPath, lockPath);
     return true;
   } catch (error) {
+    if (error?.code === "EEXIST") return false;
+    throw error;
+  } finally {
     if (descriptor !== undefined) {
       try {
         closeSync(descriptor);
       } catch {
         // Best-effort cleanup after an incomplete lock acquisition.
       }
-      rmSync(lockPath, { force: true });
     }
-    if (error?.code === "EEXIST") return false;
-    throw error;
+    if (claimCreated) {
+      try {
+        rmSync(claimPath, { force: true });
+      } catch {
+        // An orphaned private claim remains recoverable after this process exits.
+      }
+    }
   }
+}
+
+function jsonFileLockClaimPath(lockPath) {
+  // Publication candidates and reaper links share process-qualified recovery.
+  const claimId = randomUUID().replaceAll("-", "").slice(0, 24);
+  return `${lockPath}.reap-v1-${process.pid}-${Math.trunc(performance.timeOrigin)}-${claimId}`;
 }
 
 function removeStaleJsonFileLock(lockPath, staleMs, observedProcessStarts) {
@@ -232,8 +252,7 @@ function removeStaleJsonFileLock(lockPath, staleMs, observedProcessStarts) {
   removeAbandonedReapClaims(lockPath, observedProcessStarts);
   // The hard-link count is the reaper election: only a claimant that observes
   // exactly the lock path and its own claim may remove the stale lock.
-  const claimId = randomUUID().replaceAll("-", "").slice(0, 24);
-  const claimPath = `${lockPath}.reap-v1-${process.pid}-${Math.trunc(performance.timeOrigin)}-${claimId}`;
+  const claimPath = jsonFileLockClaimPath(lockPath);
   try {
     linkSync(lockPath, claimPath);
   } catch {
