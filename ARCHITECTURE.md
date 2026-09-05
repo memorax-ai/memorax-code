@@ -111,7 +111,7 @@ relationships; the arrow labels distinguish them. It is not an import graph.
 | Component | Stable responsibility | Must not own | Primary evidence |
 | --- | --- | --- | --- |
 | `packages/ts/memorax-code-backend` | Local service, managed automatic-update scheduling, Hook HTTP, native client-content interpretation, memory workflows, Repo Memory collection and validation, repository scope, MemoraX adapter, trace, and lifecycle | Model execution, client model-provider credentials, or native transcript creation | `packages/ts/memorax-code-backend/src/app/backend-server.ts`, `packages/ts/memorax-code-backend/src/lifecycle/automatic-update-scheduler.ts`, `packages/ts/memorax-code-backend/src/memory/service.ts`, `packages/ts/memorax-code-backend/src/repo-memory`, and the capability directories under `src` |
-| `packages/ts/memorax-code-adapter-common` | Shared source for Backend connection authority, private runtime, setup-completion, automatic-update and secure credential records, cross-process locking and configuration, Hook generations, Hook launch helpers, and Repo/Personal Memory helpers | Backend composition, native transcript interpretation, MemoraX request execution, or client plugin policy | `packages/ts/memorax-code-adapter-common/src/backend-connection.mjs`, `src/runtime-record.mjs`, `src/setup-completion.mjs`, `src/automatic-update-state.mjs`, `src/credentials`, `src/hooks`, and `src/repo-memory` |
+| `packages/ts/memorax-code-adapter-common` | Shared source for Backend connection authority and command transport, private runtime, setup-completion, automatic-update and secure credential records, cross-process locking and configuration, Hook generations, Hook launch helpers, and Repo/Personal Memory helpers | Backend composition, native transcript interpretation, MemoraX request execution, or client plugin policy | `packages/ts/memorax-code-adapter-common/src/backend-connection.mjs`, `src/backend-command.mjs`, `src/runtime-record.mjs`, `src/setup-completion.mjs`, `src/automatic-update-state.mjs`, `src/credentials`, `src/hooks`, and `src/repo-memory` |
 | `packages/ts/memorax-code-codex-adapter` | Codex plugin artifact, Hook shells and runtimes, session/workspace observation, diagnostics, and the canonical shared skill | Codex rollout semantics or Backend-side writeback authority | `.codex-plugin`, `hooks`, `runtime-hooks`, `src`, and `skills/memorax-code` |
 | `packages/ts/memorax-code-claude-adapter` | Claude Code plugin artifact, Hook shells and runtimes, configuration, installer, marketplace source, and diagnostics | Claude transcript semantics or Backend memory orchestration | `.claude-plugin`, `hooks`, `runtime-hooks`, `scripts`, and `src/plugin-install.mjs` |
 | `packages/ts/memorax-code-dsh-adapter` | DSH Cordis Turn listener, personal-context composition, shared-skill and supervised Repo Memory integration, exact persisted-event interval validation, local Backend wire protocol, Profile lifecycle, per-user runtime-bundle materialization, and durable runtime authority | Backend-side event interpretation, MemoraX request execution, or DSH provider and session ownership | `src/plugin.mjs`, `src/profile-lifecycle.mjs`, `hooks/repo-memory-job.mjs`, and the adapter tests |
@@ -133,7 +133,13 @@ the owner of their behavior.
   may import adapter-common. Adapter-common must not import those higher-level
   components back.
 - Adapter Hook and plugin runtimes do not import Backend implementation. They
-  communicate through versioned, client-qualified local HTTP commands.
+  communicate through versioned, client-qualified local HTTP commands. Shared
+  `adapter-common/src/backend-command.mjs` sends those commands with JSON and
+  token headers, a request deadline, and optional caller cancellation. Each
+  adapter resolves current connection authority per request and retains native
+  payload construction, response decoding, status handling, and failure policy.
+  The transport returns the original HTTP response; it does not retry commands
+  or start the Backend.
 - Backend lifecycle may load adapter configuration or installers through
   lifecycle participants. Request-time memory processing must not depend on
   plugin installation or install-watchdog behavior.
@@ -760,6 +766,10 @@ public lock path. Private publication and stale-reaper claims share the
 versioned, process-qualified claim namespace so abandoned claims remain
 recoverable. Lock storage must support hard links; unsupported storage fails
 closed rather than falling back to an incomplete or unlocked publication.
+CodeBuddy Hook pending state uses this shared lock and private atomic record
+publication. Its legacy directory lock retains the same path and blocks new
+acquisition until released; an unprovable abandoned directory is not removed
+based on age. Pending schema, correlation, and pruning remain client-owned.
 
 Backend-owned remote memory state is limited to MemoraX memories and Add tasks.
 The provider adapter is the network boundary for documented memory payloads;

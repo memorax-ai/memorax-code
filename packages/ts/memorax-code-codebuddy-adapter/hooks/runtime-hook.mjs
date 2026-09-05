@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { appendFile, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { appendFile, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { pathToFileURL } from "node:url";
 import { resolveCommonSourceRoot } from "./common-runtime.mjs";
+import { readPending, updatePending } from "./pending-state.mjs";
 import { writeCodeBuddyRuntimeObservation } from "../src/runtime-observation.mjs";
 
 const pluginRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -17,6 +18,7 @@ const { isRepoMemoryJobWorker } = await import(pathToFileURL(join(commonRoot, "r
 const { buildRepoProcedureMemoryContext } = await import(pathToFileURL(join(commonRoot, "repo-memory", "repo-procedure-memory-context.mjs")).href);
 const { buildRepoUserProfilePreferencesContext } = await import(pathToFileURL(join(commonRoot, "repo-memory", "repo-user-profile-context.mjs")).href);
 const { resolveBackendConnection } = await import(pathToFileURL(join(commonRoot, "backend-connection.mjs")).href);
+const { postBackendCommand } = await import(pathToFileURL(join(commonRoot, "backend-command.mjs")).href);
 const { ensureBackendAvailable, stringValue: commonStringValue } = await import(pathToFileURL(join(commonRoot, "hooks", "ensure-backend-runner.mjs")).href);
 const {
   evaluateMemorySkillReminder,
@@ -174,56 +176,16 @@ async function post(path, body, timeoutMs = 12_000) {
     if (process.env.MEMORAX_CODE_CODEBUDDY_HOOK_DEBUG === "1") console.error(error instanceof Error ? error.message : String(error));
     return undefined;
   }
-  const headers = { "content-type": "application/json", connection: "close" };
-  if (connection.token) headers["x-memorax-code-backend-token"] = connection.token;
-  try { const response = await fetch(new URL(path, connection.url), { method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(timeoutMs) }); return response.ok ? await response.json().catch(() => undefined) : undefined; } catch { return undefined; }
+  try {
+    const response = await postBackendCommand({ connection, path, body, timeoutMs });
+    return response.ok ? await response.json().catch(() => undefined) : undefined;
+  } catch {
+    return undefined;
+  }
 }
 async function fileBoundary(path) { try { return (await stat(path)).size; } catch { return 0; } }
 async function readJsonStdin() { try { let text = ""; for await (const chunk of process.stdin) text += chunk; return JSON.parse(text); } catch { return {}; } }
 async function readRecord(path) { try { const value = JSON.parse(await readFile(path, "utf8")); return value && typeof value === "object" && !Array.isArray(value) ? value : {}; } catch { return {}; } }
-async function writeRecord(path, value) { await mkdir(dirname(path), { recursive: true }); await writeFile(path, `${JSON.stringify(value)}\n`, { mode: 0o600 }); }
-async function readPending(path) {
-  return await withJsonFileLockAsync(path, async () => {
-    const state = await readRecord(path);
-    prunePendingState(state);
-    await writeRecord(path, state);
-    return state;
-  });
-}
-async function updatePending(path, mutate) {
-  await withJsonFileLockAsync(path, async () => {
-    const state = await readRecord(path);
-    prunePendingState(state);
-    mutate(state);
-    prunePendingState(state);
-    await writeRecord(path, state);
-  });
-}
-async function withJsonFileLockAsync(path, operation) {
-  const lockPath = `${path}.lock`;
-  const deadline = Date.now() + 1500;
-  let acquired = false;
-  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  while (!acquired) {
-    try {
-      await mkdir(lockPath, { recursive: false, mode: 0o700 });
-      acquired = true;
-    } catch (error) {
-      if (error?.code !== "EEXIST") throw error;
-      try {
-        const lock = await stat(lockPath);
-        if (Date.now() - lock.mtimeMs > 30_000) await rm(lockPath, { recursive: true, force: true });
-      } catch {}
-      if (Date.now() >= deadline) {
-        const timeout = new Error(`timed out waiting for CodeBuddy Hook state lock: ${lockPath}`);
-        timeout.code = "JSON_FILE_LOCK_TIMEOUT";
-        throw timeout;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-  }
-  try { return await operation(); } finally { await rm(lockPath, { recursive: true, force: true }); }
-}
 async function bindMemoryCliTraceSession(sessionId) {
   const envFile = stringValue(process.env.CODEBUDDY_ENV_FILE);
   if (!envFile) return;
@@ -253,39 +215,4 @@ function defaultCodeBuddyHome() {
 
 function provisionalTurnId(sessionId, boundary, prompt) {
   return `${sessionId}:${boundary}:${createHash("sha256").update(prompt.trim()).digest("hex")}`;
-}
-
-function validProvisionalTurnId(sessionId, turnId) {
-  const prefix = `${sessionId}:`;
-  if (typeof turnId !== "string" || !turnId.startsWith(prefix)) return false;
-  const match = /^(0|[1-9]\d*):[0-9a-f]{64}$/.exec(turnId.slice(prefix.length));
-  return Boolean(match && Number.isSafeInteger(Number(match[1])));
-}
-
-function prunePendingState(state) {
-  const now = Date.now();
-  const ttl = positiveInteger(process.env.MEMORAX_CODE_CODEBUDDY_PENDING_TTL_MS, 24 * 60 * 60 * 1000);
-  const maxEntries = positiveInteger(process.env.MEMORAX_CODE_CODEBUDDY_PENDING_MAX_ENTRIES, 200);
-  for (const [sessionId, record] of Object.entries(state)) {
-    if (!record || typeof record !== "object" || Array.isArray(record)) {
-      delete state[sessionId];
-      continue;
-    }
-    if (record.version !== 1 || !validProvisionalTurnId(sessionId, record.turnId) || !stringValue(record.transcriptPath)) {
-      delete state[sessionId];
-      continue;
-    }
-    if (!Number.isFinite(record.createdAt) || !Number.isFinite(record.updatedAt) || now - record.updatedAt > ttl) {
-      delete state[sessionId];
-    }
-  }
-  const entries = Object.entries(state).sort(([, left], [, right]) => Number(left.updatedAt ?? left.createdAt ?? 0) - Number(right.updatedAt ?? right.createdAt ?? 0));
-  while (entries.length > maxEntries) {
-    const [sessionId] = entries.shift();
-    delete state[sessionId];
-  }
-}
-function positiveInteger(value, fallback) {
-  const parsed = Number(value);
-  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
 }

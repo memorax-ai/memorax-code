@@ -293,6 +293,15 @@ If WorkBuddy still reports a Hook command containing `/c/Users/...`, it is
 loading a stale plugin manifest. Rerun the start command above and fully
 restart WorkBuddy. Do not manually edit the installed Hook command.
 
+If a Hook reports `legacy CodeBuddy Hook directory lock remains`, an older
+Hook uses a directory at
+`$MEMORAX_CODE_HOME/adapters/codebuddy/pending.json.lock`. New Hooks wait for
+that directory to be released and do not delete it based on its age. Restart
+CodeBuddy or WorkBuddy after upgrading to retire older Hook implementations.
+If the directory remains after all older Hook processes have exited, remove
+only that leftover directory and retry. Keep `pending.json` and any regular
+file lock; a regular file is the current lock format.
+
 ## Trae Global Hooks or Skill is inactive
 
 ```sh

@@ -4,6 +4,7 @@ import {
   personalMemoryReminderContext,
   runMemorySkillReminderHook,
 } from "../../memorax-code-adapter-common/src/hooks/memory-skill-reminder-hook.mjs";
+import { postBackendCommand } from "../../memorax-code-adapter-common/src/backend-command.mjs";
 import { resolveBackendConnection } from "../../memorax-code-adapter-common/src/backend-connection.mjs";
 import { isRepoMemoryJobWorker } from "../../memorax-code-adapter-common/src/repo-memory/repo-memory-job-context.mjs";
 import { buildRepoProcedureMemoryContext } from "../../memorax-code-adapter-common/src/repo-memory/repo-procedure-memory-context.mjs";
@@ -45,12 +46,10 @@ async function recordReminder(reminder) {
     ),
     MAX_REMINDER_TRACE_TIMEOUT_MS,
   );
-  const headers = { "content-type": "application/json", connection: "close" };
-  if (connection.token) headers["x-memorax-code-backend-token"] = connection.token;
-  const response = await fetch(new URL("/memory/skill-reminder", connection.url), {
-    method: "POST",
-    headers,
-    body: JSON.stringify({
+  const response = await postBackendCommand({
+    connection,
+    path: "/memory/skill-reminder",
+    body: {
       version: 1,
       client: "claude-code",
       sessionId: reminder.sessionId,
@@ -60,8 +59,8 @@ async function recordReminder(reminder) {
       workspaceKind: reminder.workspaceKind,
       content: reminder.content,
       triggers: reminder.triggers,
-    }),
-    signal: AbortSignal.timeout(timeoutMs),
+    },
+    timeoutMs,
   });
   if (!response.ok) {
     await response.arrayBuffer().catch(() => undefined);

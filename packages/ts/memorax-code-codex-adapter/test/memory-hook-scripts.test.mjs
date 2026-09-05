@@ -68,6 +68,43 @@ test("combined UserPromptSubmit hook posts user prompt and first reminder to Bac
   }
 });
 
+test("combined UserPromptSubmit hook refreshes Backend connection authority before its reminder", async () => {
+  const memoraxCodeHome = await mkdtemp(join(tmpdir(), "memorax-code-codex-memory-connection-refresh-"));
+  const reminderRecorder = await listenRecorder();
+  const turnRecorder = await listenRecorder({
+    beforeResponse: () => writeBackendConnection(memoraxCodeHome, reminderRecorder.url, "replacement-token"),
+  });
+  try {
+    await writeBackendConnection(memoraxCodeHome, turnRecorder.url, "initial-token");
+    const result = await runHook(userPromptHook, {
+      MEMORAX_CODE_BACKEND_URL: "",
+      MEMORAX_CODE_BACKEND_HOST: "",
+      MEMORAX_CODE_BACKEND_PORT: "",
+      MEMORAX_CODE_BACKEND_TOKEN: "",
+      MEMORAX_CODE_CODEX_MEMORY_HOOK_TIMEOUT_MS: "1000",
+      MEMORAX_CODE_HOME: memoraxCodeHome,
+    }, {
+      hook_event_name: "UserPromptSubmit",
+      session_id: "session-connection-refresh",
+      turn_id: "turn-connection-refresh",
+      prompt: "Keep the reminder bound to the current Backend.",
+      transcript_path: "/tmp/connection-refresh.jsonl",
+    });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stderr, "");
+    assert.match(JSON.parse(result.stdout).hookSpecificOutput.additionalContext, /\$memorax-code/);
+    assert.deepEqual(turnRecorder.requests.map((request) => request.path), ["/memory/turn-start"]);
+    assert.deepEqual(reminderRecorder.requests.map((request) => request.path), ["/memory/skill-reminder"]);
+    assert.equal(turnRecorder.requestHeaders[0]["x-memorax-code-backend-token"], "initial-token");
+    assert.equal(reminderRecorder.requestHeaders[0]["x-memorax-code-backend-token"], "replacement-token");
+  } finally {
+    turnRecorder.server.close();
+    reminderRecorder.server.close();
+    await rm(memoraxCodeHome, { recursive: true, force: true });
+  }
+});
+
 test("combined UserPromptSubmit hook skips pathless Codex background turns but writeback reaches Backend", async () => {
   const { server, url, requests } = await listenRecorder();
   const memoraxCodeHome = await mkdtemp(join(tmpdir(), "memorax-code-codex-background-hook-"));
@@ -313,7 +350,7 @@ async function writeBackendConnection(memoraxCodeHome, url, token) {
   })}\n`);
 }
 
-async function listenRecorder() {
+async function listenRecorder({ beforeResponse } = {}) {
   const requests = [];
   const requestHeaders = [];
   const server = createServer(async (request, response) => {
@@ -324,6 +361,7 @@ async function listenRecorder() {
       path: new URL(request.url ?? "/", "http://127.0.0.1").pathname,
       body: text ? JSON.parse(text) : {},
     });
+    await beforeResponse?.();
     response.writeHead(200, { "content-type": "application/json" });
     response.end(JSON.stringify({ ok: true }));
   });

@@ -11,6 +11,7 @@ const commonRoot = join(runtimeRoot, "memorax-code-adapter-common", "src");
 const { buildRepoProcedureMemoryContext } = await import(pathToFileURL(join(commonRoot, "repo-memory", "repo-procedure-memory-context.mjs")).href);
 const { buildRepoUserProfilePreferencesContext } = await import(pathToFileURL(join(commonRoot, "repo-memory", "repo-user-profile-context.mjs")).href);
 const { resolveBackendConnection } = await import(pathToFileURL(join(commonRoot, "backend-connection.mjs")).href);
+const { postBackendCommand } = await import(pathToFileURL(join(commonRoot, "backend-command.mjs")).href);
 const {
   atomicWriteJson,
   readJsonFile,
@@ -281,15 +282,8 @@ async function post(path, body, timeoutMs = 12_000) {
     debug(error);
     return undefined;
   }
-  const headers = { "content-type": "application/json", connection: "close" };
-  if (connection.token) headers["x-memorax-code-backend-token"] = connection.token;
   try {
-    const response = await fetch(new URL(path, connection.url), {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(timeoutMs),
-    });
+    const response = await postBackendCommand({ connection, path, body, timeoutMs });
     return response.ok ? await response.json().catch(() => undefined) : undefined;
   } catch {
     return undefined;

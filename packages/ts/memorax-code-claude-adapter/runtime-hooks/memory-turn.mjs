@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { postBackendCommand } from "../../memorax-code-adapter-common/src/backend-command.mjs";
 import { resolveBackendConnection } from "../../memorax-code-adapter-common/src/backend-connection.mjs";
 import { readStdinJson } from "../../memorax-code-adapter-common/src/config-utils.mjs";
 import { scheduleMissingRepoMemoryBuild } from "../../memorax-code-adapter-common/src/repo-memory/repo-memory-auto-build.mjs";
@@ -73,13 +74,11 @@ async function postMemoryService(path, body) {
     process.env.MEMORAX_CODE_CLAUDE_MEMORY_HOOK_TIMEOUT_MS,
     path === "/memory/turn-start" ? RETRIEVAL_BACKEND_TIMEOUT_MS : DEFAULT_BACKEND_TIMEOUT_MS,
   );
-  const headers = { "content-type": "application/json", connection: "close" };
-  if (connection.token) headers["x-memorax-code-backend-token"] = connection.token;
-  const response = await fetch(new URL(path, connection.url), {
-    method: "POST",
-    headers,
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(timeoutMs),
+  const response = await postBackendCommand({
+    connection,
+    path,
+    body,
+    timeoutMs,
   });
   if (!response.ok) {
     await response.arrayBuffer().catch(() => undefined);

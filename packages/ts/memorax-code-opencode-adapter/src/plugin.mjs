@@ -1,5 +1,6 @@
 import { delimiter } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { postBackendCommand } from "../../memorax-code-adapter-common/src/backend-command.mjs";
 import { resolveBackendConnection } from "../../memorax-code-adapter-common/src/backend-connection.mjs";
 import { readAdapterState } from "../../memorax-code-adapter-common/src/config-utils.mjs";
 import { ensureBackendAvailable } from "../../memorax-code-adapter-common/src/hooks/ensure-backend-runner.mjs";
@@ -526,13 +527,12 @@ function recordReminder(options, reminder) {
 
 async function postBackend(options, path, body, timeoutMs) {
   const connection = options.backendConnection ?? resolveBackendConnection(options);
-  const headers = { "content-type": "application/json", connection: "close" };
-  if (connection.token) headers["x-memorax-code-backend-token"] = connection.token;
-  const response = await (options.fetchImpl ?? fetch)(new URL(path, connection.url), {
-    method: "POST",
-    headers,
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(timeoutMs),
+  const response = await postBackendCommand({
+    connection,
+    path,
+    body,
+    timeoutMs,
+    fetchImpl: options.fetchImpl,
   });
   if (!response.ok) {
     await response.arrayBuffer().catch(() => undefined);

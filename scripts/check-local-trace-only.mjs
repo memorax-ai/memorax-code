@@ -24,10 +24,14 @@ const productionRoots = [
   "packages/ts/memorax-code-opencode-adapter/src/",
   "packages/ts/memorax-code-codebuddy-adapter/hooks/",
   "packages/ts/memorax-code-codebuddy-adapter/src/",
+  "packages/ts/memorax-code-trae-adapter/hooks/",
+  "packages/ts/memorax-code-trae-adapter/src/",
 ];
 
 const reviewedNetworkSources = new Set([
   "packages/npm/memorax-code/lib/trial-provision-client.mjs",
+  "packages/ts/memorax-code-adapter-common/src/backend-command.mjs",
+  "packages/ts/memorax-code-adapter-common/src/backend-command.d.mts",
   "packages/ts/memorax-code-adapter-common/src/hooks/ensure-backend-runner.mjs",
   "packages/ts/memorax-code-backend/src/app/backend-server.ts",
   "packages/ts/memorax-code-backend/src/clients/claude/memory-hook-runtime.ts",
@@ -61,6 +65,7 @@ const reviewedNetworkSources = new Set([
   "packages/ts/memorax-code-backend/src/clients/codebuddy/memory-hook-runtime.ts",
   "packages/ts/memorax-code-backend/src/clients/trae/memory-hook-runtime.ts",
   "packages/ts/memorax-code-codebuddy-adapter/hooks/runtime-hook.mjs",
+  "packages/ts/memorax-code-trae-adapter/hooks/runtime-hook.mjs",
 ]);
 
 const localTraceCoreSources = new Set([
@@ -90,6 +95,9 @@ const nestedProviderTransportImport =
   /from\s+["'](?:\.\.?\/)+provider\/memorax\/(?:adapter|http)\.js["']/;
 const siblingProviderTransportImport =
   /from\s+["']\.\/(?:adapter|http)\.js["']/;
+
+const backendCommandDependency =
+  /(?:\bpostBackendCommand\b|(?:from\s*|import\s*\()\s*["'][^"']*\/backend-command\.mjs["'])/;
 
 const networkCapabilityPatterns = [
   [/\bfetch(?:Impl)?\b/, "fetch"],
@@ -201,6 +209,10 @@ function inspectProductionSource(content, sourcePath, failures) {
     capabilities.push("provider transport import");
     outboundCapabilities.push("provider transport import");
   }
+  if (backendCommandDependency.test(content)) {
+    capabilities.push("Backend command transport");
+    outboundCapabilities.push("Backend command transport");
+  }
   if (capabilities.length > 0) {
     if (localTraceCoreSources.has(sourcePath)) {
       failures.push(`${sourcePath}: local trace core depends on network capability (${capabilities.join(", ")})`);
@@ -309,6 +321,9 @@ function sourcePathForArtifact(rawPath) {
     }
     return `packages/ts/memorax-code-claude-adapter/${pluginPath}`;
   }
+  if (path.startsWith("lib/memorax-code-dsh-adapter/memorax-code-adapter-common/src/")) {
+    return `packages/ts/memorax-code-adapter-common/src/${path.slice("lib/memorax-code-dsh-adapter/memorax-code-adapter-common/src/".length)}`;
+  }
   if (path.startsWith("lib/memorax-code-dsh-adapter/")) {
     return `packages/ts/memorax-code-dsh-adapter/${path.slice("lib/memorax-code-dsh-adapter/".length)}`;
   }
@@ -320,6 +335,9 @@ function sourcePathForArtifact(rawPath) {
   }
   if (path.startsWith("lib/memorax-code-codebuddy-adapter/")) {
     return `packages/ts/memorax-code-codebuddy-adapter/${path.slice("lib/memorax-code-codebuddy-adapter/".length)}`;
+  }
+  if (path.startsWith("lib/memorax-code-trae-adapter/")) {
+    return `packages/ts/memorax-code-trae-adapter/${path.slice("lib/memorax-code-trae-adapter/".length)}`;
   }
   if (path.startsWith("lib/") && !path.slice("lib/".length).includes("/")) {
     return `packages/npm/memorax-code/${path}`;

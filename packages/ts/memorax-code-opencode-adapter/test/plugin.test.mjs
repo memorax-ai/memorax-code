@@ -40,6 +40,24 @@ test("chat.message retrieves memory and injects it into the system prompt", asyn
   });
 });
 
+test("chat.message does not accept a successful non-JSON Backend response", async () => {
+  const requests = [];
+  let messageReads = 0;
+  const hooks = await createPluginWithoutReminders({
+    backendConnection: { url: "http://127.0.0.1:8787" },
+    fetchImpl: responseSequence(requests, [new Response("invalid JSON", { status: 200 })]),
+  })(pluginInput({
+    client: { session: { async messages() { messageReads += 1; return { data: [] }; } } },
+  }));
+  const output = promptOutput("user-malformed", "Prompt", "Existing context");
+  await hooks["chat.message"]({ sessionID: "session-malformed" }, output);
+  hooks.event(sessionIdleEvent("session-malformed"));
+  await hooks.dispose();
+  assert.equal(output.message.system, "Existing context");
+  assert.equal(requests.length, 1);
+  assert.equal(messageReads, 0, "a failed turn start must not create pending writeback state");
+});
+
 test("chat.message shows userNotice without blocking or injecting it into model context", async () => {
   const toastCalls = [];
   const plugin = createPluginWithoutReminders({

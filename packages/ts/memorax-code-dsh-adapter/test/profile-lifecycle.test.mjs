@@ -742,6 +742,12 @@ test("uses the DSH runtime already linked by Profiles and refreshes it on reconc
     "src",
     "windows-cli-invocation.mjs",
   )), true);
+  assert.equal(existsSync(join(
+    firstState.runtimeBundleRoot,
+    "memorax-code-adapter-common",
+    "src",
+    "backend-command.mjs",
+  )), true);
   assert.deepEqual(packedFiles, ["package.json", ...adapterManifest.files].sort());
   const installedRoot = join(
     profilesRoot,

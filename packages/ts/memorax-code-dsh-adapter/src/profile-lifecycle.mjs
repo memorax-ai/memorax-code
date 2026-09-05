@@ -92,6 +92,7 @@ const PROFILE_BUNDLE_FILES = Object.freeze([
   "src/plugin.mjs",
   "src/protocol.mjs",
   "src/runtime-state.mjs",
+  "memorax-code-adapter-common/src/backend-command.mjs",
   "memorax-code-adapter-common/src/backend-connection.mjs",
   "memorax-code-adapter-common/src/config-utils.mjs",
   "memorax-code-adapter-common/src/setup-completion.mjs",

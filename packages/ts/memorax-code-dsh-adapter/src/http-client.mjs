@@ -1,3 +1,5 @@
+import { postBackendCommand } from "../memorax-code-adapter-common/src/backend-command.mjs";
+
 const RETRIEVAL_BACKEND_TIMEOUT_MS = 12_000;
 const DEFAULT_BACKEND_TIMEOUT_MS = 5_000;
 
@@ -29,17 +31,13 @@ export function createHttpBackendClient(options) {
       env.MEMORAX_CODE_DSH_MEMORY_HOOK_TIMEOUT_MS,
       path === "/memory/turn-start" ? RETRIEVAL_BACKEND_TIMEOUT_MS : DEFAULT_BACKEND_TIMEOUT_MS,
     );
-    const headers = { "content-type": "application/json", connection: "close" };
-    if (connection.token) headers["x-memorax-code-backend-token"] = connection.token;
-    const timeoutSignal = AbortSignal.timeout(timeoutMs);
-    const signal = callerSignal
-      ? AbortSignal.any([callerSignal, timeoutSignal])
-      : timeoutSignal;
-    const response = await fetchImpl(new URL(path, connection.url), {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body),
-      signal,
+    const response = await postBackendCommand({
+      connection,
+      path,
+      body,
+      timeoutMs,
+      signal: callerSignal,
+      fetchImpl,
     });
     if (!response.ok) {
       await response.arrayBuffer().catch(() => undefined);

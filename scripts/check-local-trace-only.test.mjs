@@ -170,6 +170,11 @@ test("local-only trace gate rejects an undeclared network-capable production mod
 test("local-only trace gate checks every shipped runtime tree in staged artifacts", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-local-trace-network-artifact-"));
   const stagedFiles = [
+    ["package/lib/memorax-code-adapter-common/src/undeclared-common-client.mjs", "undeclared-common-client.mjs"],
+    ["package/lib/memorax-code-dsh-adapter/memorax-code-adapter-common/src/undeclared-dsh-common-client.mjs", "undeclared-dsh-common-client.mjs"],
+    ["package/lib/memorax-code-trae-adapter/hooks/undeclared-trae-hook.mjs", "undeclared-trae-hook.mjs"],
+    ["package/lib/memorax-code-trae-adapter/src/undeclared-trae-client.mjs", "undeclared-trae-client.mjs"],
+    ["package/lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/undeclared-marketplace-common-client.mjs", "undeclared-marketplace-common-client.mjs"],
     ["package/lib/undeclared-npm-runtime.mjs", "undeclared-npm-runtime.mjs"],
     ["package/lib/memorax-code-backend/dist/memory/undeclared-backend-runtime.js", "undeclared-backend-runtime.ts"],
     ["package/lib/memorax-code-codex-adapter/hooks/undeclared-codex-hook.mjs", "undeclared-codex-hook.mjs"],
@@ -200,6 +205,35 @@ test("local-only trace gate checks every shipped runtime tree in staged artifact
         new RegExp(`${sourceName.replace(".", "\\.")}: undeclared network-capable production module`),
       );
     }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("local-only trace gate recognizes shared Backend transport authority and aliases", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-local-trace-backend-command-"));
+  const files = [
+    "lib/memorax-code-adapter-common/src/backend-command.mjs",
+    "lib/memorax-code-backend/dist/trace/store.js",
+    "lib/memorax-code-backend/dist/memory/unreviewed-command.js",
+  ];
+  try {
+    for (const path of files) {
+      const file = join(root, path);
+      await mkdir(join(file, ".."), { recursive: true });
+      await writeFile(file, [
+        'import * as commands from "../../memorax-code-adapter-common/src/backend-command.mjs";',
+        'import { readCurrentTraceTurn } from "../trace/store.js";',
+        'export const send = commands;',
+        "",
+      ].join("\n"));
+    }
+    const result = await runChecker(root);
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /backend-command\.mjs: unreviewed trace-aware outbound bridge/);
+    assert.match(result.stderr, /trace\/store\.ts: local trace core depends on network capability \(Backend command transport\)/);
+    assert.match(result.stderr, /unreviewed-command\.ts: undeclared network-capable production module \(Backend command transport\)/);
+    assert.match(result.stderr, /unreviewed-command\.ts: unreviewed trace-aware outbound bridge/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
