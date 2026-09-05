@@ -162,6 +162,14 @@ implementations are loaded by their Backend lifecycle participants. Preserve
 the participant contract and each client's actual authority instead of forcing
 matching directory shapes.
 
+Lifecycle report interpretation is shared in `lifecycle/client-reports.ts`.
+Its static client catalog maps lifecycle IDs and display names to existing
+report keys. The report projection supplies readiness and presentation data
+to the orchestrator and CLI while preserving the raw client-specific JSON.
+It does not discover clients, select defaults, read installation state, or
+perform lifecycle mutations. Native participants continue to own those
+operations, including DSH Profile ordering and locks.
+
 ## 3. Runtime Flows
 
 The system has two related but distinct planes. The control plane installs and
@@ -626,6 +634,7 @@ entrypoints and compatibility facades. It is not another implementation area.
 | `src/app` | Backend state/security, runtime resource assembly, observability fan-out, active requests, and graceful shutdown | Does not install plugins or own the lifecycle control plane |
 | `src/transport/http` | Shared Backend HTTP authorization, request/JSON helpers, error mapping, health, and Hook wire adaptation | Outbound provider HTTP remains with the provider capability |
 | `src/lifecycle` | Contracts, participants, client selection, locks, service orchestration, install watchdog, and client integration removal | Request-time memory flow does not depend on it |
+| `src/lifecycle/client-reports.ts` | Static lifecycle client identity and pure projections of adapter readiness and diagnostic summaries | No native discovery, filesystem or process access, lifecycle mutations, or replacement of raw client reports |
 | `src/lifecycle/backend` | Managed process, PID/token/connection records, status probing, cleanup, and shutdown requests | Helper contracts do not depend back on the full service implementation |
 | `src/clients/codex` | Codex rollout, prompt, turn-index, workspace interpretation and recovery; Hook memory integration through the shared harness runtime; plugin integration glue; and lifecycle participant | No Claude format fallback; request runtime remains HTTP-composition independent |
 | `src/clients/claude` | Claude transcript/turn interpretation, native correlation and interruption recovery, Hook memory integration through the shared harness runtime, and lifecycle participant | No Codex format fallback; request runtime remains HTTP-composition independent |
@@ -696,6 +705,7 @@ acyclic.
 | `MemoryTurnCoordinator` | `memory/turn-coordinator.ts` | Correlates and validates client-neutral Turns and controls metadata consumption |
 | `RepositoryMemorySessionRuntime` | `memory/repository-session.ts` | Pins and validates repository scope, including the bounded degraded-direct-`.git` to verified-Git upgrade |
 | `AdapterLifecycleParticipant` | `lifecycle/participant.ts` | Lets lifecycle orchestration use client adapters without embedding their implementation details |
+| Lifecycle client reports | `lifecycle/client-reports.ts` | Maps existing client report keys to common readiness and presentation data without changing native report authority |
 | Backend lifecycle contracts | `lifecycle/contracts.ts` | Separate `BackendServiceOptions`, injectable runtime, resolved endpoint, and `BackendServiceResult` from managed-service implementation |
 
 Ports stay with the capability that owns their semantics. A contract used by
@@ -705,7 +715,7 @@ multiple directories does not automatically belong in `shared`.
 
 | Contract | Location | Enforces | Inspect or update when |
 | --- | --- | --- | --- |
-| Backend source boundaries | `packages/ts/memorax-code-backend/test/architecture/source-boundaries.test.mjs` | Root facade allowlist, selected direct forbidden imports including shared harness neutrality, lifecycle delegation, and an acyclic relative-import graph | Adding a root surface, crossing capability boundaries, or changing a composition root |
+| Backend source boundaries | `packages/ts/memorax-code-backend/test/architecture/source-boundaries.test.mjs` | Root facade allowlist, discovered client-runtime coverage, selected direct forbidden imports including shared harness and lifecycle-report neutrality, lifecycle delegation, and an acyclic relative-import graph | Adding a client or root surface, crossing capability boundaries, or changing a composition root |
 | Local-only trace boundary | `scripts/check-local-trace-only.mjs` and its tests | Reviewed network-capable production modules, trace-core isolation, unreviewed trace-aware outbound bridges, and staged artifact/symlink containment | Moving or adding network code, trace-aware outbound code, or staged paths |
 | Package shape | npm package tests and package-build/check scripts | Executable wrappers, staged runtime layout, canonical source mapping, compatibility paths, and artifact allowlists | Changing entrypoints, packaging sources, materialization, or layout |
 | Documentation contract | `scripts/check-docs.mjs` and its tests | Relative links, personal absolute paths, and shipped-document consistency | Adding a root document or changing document/package layout |
@@ -715,6 +725,14 @@ The forbidden-import rules are targeted direct-import checks for named
 modules; they are not a universal directory-level or transitive dependency
 checker. The acyclic check separately covers all Backend TypeScript relative
 imports.
+
+Client runtime rules discover modules that import `memory/harness-runtime`
+and require every native client source directory to have a covered runtime.
+New runtimes therefore join the shared checks without depending on a fixed
+filename or a duplicated client list. Native-reader rules remain explicit;
+add newly introduced readers to the applicable rules and their client-owned
+behavior tests. Lifecycle report projections are separately checked against
+native-client, filesystem, process, HTTP, and lifecycle-implementation imports.
 
 Do not weaken an executable boundary merely to make a new import or path pass.
 If the intended architecture has not changed, move composition outward or
@@ -919,6 +937,9 @@ Placement rules:
 Contributor-facing verification profiles are centralized in
 [AGENTS.md Section 5](AGENTS.md#5-verification). Architecture change routing
 uses those named profiles rather than copying commands here.
+The [harness onboarding checklist](CONTRIBUTING.md#adding-a-harness)
+connects native authority, lifecycle reporting, packaging, and existing test
+contracts without introducing a separate adapter test framework.
 
 | Change surface | Primary evidence | Contracts to inspect | Verification profile |
 | --- | --- | --- | --- |

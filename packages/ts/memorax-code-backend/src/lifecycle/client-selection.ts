@@ -1,15 +1,16 @@
 import { loadLifecycleMemoraxCodeConfig, type MemoraxCodeConfig } from "../config/memorax-code.js";
+import { LIFECYCLE_CLIENTS, type LifecycleClientId } from "./client-reports.js";
 
-export type ManagedClients = Readonly<{
-  codex: boolean;
-  claude: boolean;
-  dsh: boolean;
-  opencode: boolean;
-  codebuddy?: boolean;
-  trae?: boolean;
-}>;
+// Preserve explicit false fields in legacy selection records. Later clients
+// remain absent unless selected; this is distinct from discovery defaults.
+const LEGACY_SELECTION_CLIENTS = ["codex", "claude", "dsh", "opencode"] as const;
+type LegacySelectionClient = typeof LEGACY_SELECTION_CLIENTS[number];
+export type ManagedClients = Readonly<Record<LegacySelectionClient, boolean>
+  & Partial<Record<Exclude<LifecycleClientId, LegacySelectionClient>, boolean>>>;
 
-const allClients: ManagedClients = Object.freeze({ codex: true, claude: true, dsh: true, opencode: true, codebuddy: true, trae: true });
+const allClients: ManagedClients = Object.freeze(Object.fromEntries(
+  LIFECYCLE_CLIENTS.map(({ id }) => [id, true]),
+) as ManagedClients);
 
 export function resolveManagedClients(argv: readonly string[], config: MemoraxCodeConfig = {}): ManagedClients {
   const explicit = argValue(argv, "--clients");
@@ -37,19 +38,12 @@ export function parseManagedClients(value: string): ManagedClients {
   if (normalized === "none") return { codex: false, claude: false, dsh: false, opencode: false };
 
   const names = normalized.split(",").map((name) => name.trim()).filter(Boolean);
-  if (names.length === 0 || names.some((name) => (
-    name !== "codex" && name !== "claude" && name !== "dsh" && name !== "opencode" && name !== "codebuddy" && name !== "trae"
-  ))) {
-    throw new Error(`invalid --clients value: ${value}; expected a comma-separated subset of codex, claude, dsh, opencode, codebuddy, trae, or all or none`);
+  if (names.length === 0 || names.some((name) => !LIFECYCLE_CLIENTS.some(({ id }) => id === name))) {
+    throw new Error(`invalid --clients value: ${value}; expected a comma-separated subset of ${LIFECYCLE_CLIENTS.map(({ id }) => id).join(", ")}, or all or none`);
   }
-  return {
-    codex: names.includes("codex"),
-    claude: names.includes("claude"),
-    dsh: names.includes("dsh"),
-    opencode: names.includes("opencode"),
-    ...(names.includes("codebuddy") ? { codebuddy: true } : {}),
-    ...(names.includes("trae") ? { trae: true } : {}),
-  };
+  return Object.fromEntries(LIFECYCLE_CLIENTS
+    .filter(({ id }) => LEGACY_SELECTION_CLIENTS.some((legacy) => legacy === id) || names.includes(id))
+    .map(({ id }) => [id, names.includes(id)])) as ManagedClients;
 }
 
 export function loadManagedClientsConfig(memoraxCodeHome: string): MemoraxCodeConfig {

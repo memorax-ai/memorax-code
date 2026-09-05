@@ -57,15 +57,34 @@ test("--clients overrides persisted config", () => {
 });
 
 test("--clients accepts exact client sets", () => {
-  assert.deepEqual(parseManagedClients("codex"), { codex: true, claude: false, dsh: false, opencode: false });
-  assert.deepEqual(parseManagedClients("claude"), { codex: false, claude: true, dsh: false, opencode: false });
-  assert.deepEqual(parseManagedClients("dsh"), { codex: false, claude: false, dsh: true, opencode: false });
-  assert.deepEqual(parseManagedClients("opencode"), { codex: false, claude: false, dsh: false, opencode: true });
-  assert.deepEqual(parseManagedClients("trae"), { codex: false, claude: false, dsh: false, opencode: false, trae: true });
+  for (const client of ["codex", "claude", "dsh", "opencode", "codebuddy", "trae"]) {
+    const expected = { codex: false, claude: false, dsh: false, opencode: false, [client]: true };
+    assert.deepEqual(parseManagedClients(client), expected);
+    assert.deepEqual(parseManagedClients(` ${client.toUpperCase()}, ${client} `), expected);
+    assert.deepEqual(resolveManagedClients(["--clients", client], { clients: { codex: true, claude: true, dsh: true, opencode: true, codebuddy: true, trae: true } }), expected);
+  }
   assert.deepEqual(parseManagedClients("codex,dsh,opencode"), { codex: true, claude: false, dsh: true, opencode: true });
   assert.deepEqual(parseManagedClients("codex,claude,dsh,opencode,trae"), { codex: true, claude: true, dsh: true, opencode: true, trae: true });
   assert.deepEqual(parseManagedClients("all"), { codex: true, claude: true, dsh: true, opencode: true, codebuddy: true, trae: true });
   assert.deepEqual(parseManagedClients("none"), { codex: false, claude: false, dsh: false, opencode: false });
+});
+
+test("optional managed clients are omitted unless explicitly enabled", () => {
+  assert.deepEqual(resolveManagedClients([], { clients: { codebuddy: false, trae: false } }), {
+    codex: false,
+    claude: false,
+    dsh: true,
+    opencode: false,
+  });
+  for (const client of ["codebuddy", "trae"]) {
+    assert.deepEqual(resolveManagedClients([], { clients: { [client]: true, dsh: false } }), {
+      codex: false,
+      claude: false,
+      dsh: false,
+      opencode: false,
+      [client]: true,
+    });
+  }
 });
 
 test("--clients rejects missing and unknown values", () => {

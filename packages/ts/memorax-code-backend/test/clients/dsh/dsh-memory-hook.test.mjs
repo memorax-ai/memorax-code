@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { createBackendState } from "../../../dist/app/state.js";
 import { createDshMemoryHookRuntime } from "../../../dist/clients/dsh/memory-hook-runtime.js";
 import { createRepositoryMemorySessionRuntime } from "../../../dist/memory/repository-session.js";
@@ -11,7 +11,6 @@ import { createMemoryService } from "../../../dist/memory/service.js";
 import { createMemoryTurnCoordinator } from "../../../dist/memory/turn-coordinator.js";
 import { createBackendServer } from "../../../dist/server.js";
 import { listen } from "../../support/helpers.mjs";
-import { createHttpBackendClient } from "../../../../memorax-code-dsh-adapter/src/http-client.mjs";
 import {
   memoraxAddFetch,
   waitFor,
@@ -178,7 +177,20 @@ test("DSH leaves pending write and retrieval quota notices unclaimed for other c
   }
 });
 
-test("Backend runs DSH Search, normalized Trace, and Add from one native Turn interval", async () => {
+test("Backend runs DSH Search, normalized Trace, and Add from one native Turn interval", async (t) => {
+  const runtimeRoot = await mkdtemp(join(tmpdir(), "memorax-code-dsh-http-runtime-"));
+  t.after(() => rm(runtimeRoot, { recursive: true, force: true }));
+  await mkdir(join(runtimeRoot, "src"));
+  await mkdir(join(runtimeRoot, "memorax-code-adapter-common", "src"), { recursive: true });
+  await copyFile(
+    new URL("../../../../memorax-code-dsh-adapter/src/http-client.mjs", import.meta.url),
+    join(runtimeRoot, "src", "http-client.mjs"),
+  );
+  await copyFile(
+    new URL("../../../../memorax-code-adapter-common/src/backend-command.mjs", import.meta.url),
+    join(runtimeRoot, "memorax-code-adapter-common", "src", "backend-command.mjs"),
+  );
+  const { createHttpBackendClient } = await import(pathToFileURL(join(runtimeRoot, "src", "http-client.mjs")));
   const sessionHome = await mkdtemp(join(tmpdir(), "memorax-code-dsh-hook-"));
   const interval = dshTurnInterval({
     sessionId: "session-dsh-http",

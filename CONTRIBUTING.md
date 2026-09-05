@@ -22,8 +22,9 @@ npm ci --prefix packages/ts/memorax-code-backend
 
 Do not commit credentials, `.env.local`, local client transcripts, MemoraX
 content, generated trace data, package staging, or machine-specific paths.
-Use isolated `MEMORAX_CODE_HOME`, `CODEX_HOME`, and `CLAUDE_CONFIG_DIR`
-locations for lifecycle, install, or destructive tests.
+Use isolated `MEMORAX_CODE_HOME` and client homes (`CODEX_HOME`,
+`CLAUDE_CONFIG_DIR`, `DSH_HOME`, `OPENCODE_CONFIG_DIR`, `CODEBUDDY_HOME`, and
+`TRAE_CN_HOME`) for lifecycle, install, or destructive tests.
 
 ## Repository Ownership
 
@@ -33,12 +34,17 @@ locations for lifecycle, install, or destructive tests.
 | `memorax-code-adapter-common` | Durable runtime records, cross-process configuration primitives, shared Hook and Repo Memory helpers | Client transcript formats or plugin policy |
 | `memorax-code-codex-adapter` | Codex plugin, Hooks, native session/workspace observation, diagnostics, bundled skill | Codex provider configuration or login |
 | `memorax-code-claude-adapter` | Claude Code plugin, Hooks, native observation, diagnostics | Anthropic provider configuration or login |
+| `memorax-code-dsh-adapter` | Cordis Turn bridge, Profile lifecycle, runtime bundles, and shared-skill integration | DSH provider or Session ownership |
+| `memorax-code-opencode-adapter` | Plugin, managed loader, shared-skill installation, and diagnostics | OpenCode provider configuration or native message interpretation |
+| `memorax-code-codebuddy-adapter` | CodeBuddy/WorkBuddy plugin, Hooks, transcript bridge, and shared-skill installation | CodeBuddy provider configuration or native transcript interpretation |
+| `memorax-code-trae-adapter` | Global Hook merging, runtime generations, shared-skill installation, and diagnostics | Trae provider settings or application-level Hook activation |
 | `packages/npm/memorax-code` | Public CLI, installation, update, uninstall, postinstall, and package layout | Product runtime authority |
 | `scripts` and `.github` | Repeatable repository checks, packaging, and CI | Runtime behavior |
 
 The Backend is a local memory and lifecycle service, not a model-provider
-proxy. Codex and Claude Code continue to own models, provider credentials,
-tool execution, and native transcripts.
+proxy. All six clients continue to own models, provider credentials, tool
+execution, and native conversation data. See [Architecture](ARCHITECTURE.md)
+for the authoritative package boundaries and runtime flows.
 
 ## Making a Change
 
@@ -53,6 +59,54 @@ tool execution, and native transcripts.
 6. Run focused checks first, then broaden validation when the change crosses
    package or lifecycle boundaries.
 
+## Adding a Harness
+
+Use the existing contracts below as the integration checklist. Extend the
+closest suite with synthetic native fixtures; keep client-specific authority
+and recovery cases in that client's tests.
+
+1. **Establish native authority.** Identify start/completion events, exact
+   Session and Turn correlation, workspace evidence, content storage or SDK
+   records, interruption, and restart recovery. Implement native interpretation
+   under `src/clients/<client>` and use
+   [HarnessMemoryRuntime](packages/ts/memorax-code-backend/src/memory/harness-runtime.ts)
+   for common memory orchestration. Preserve client-qualified identity and
+   fail closed when the required authority is unavailable.
+2. **Connect the command boundary.** Extend the versioned client command
+   schema and [HTTP contract cases](packages/ts/memorax-code-backend/test/transport/http/memory-hook.test.mjs).
+   Verify exact content, missing or conflicting identity, repeated completion,
+   interruption, and scope pinning in `test/clients/<client>`. Shared
+   [Turn coordinator](packages/ts/memorax-code-backend/test/memory/memory-turn-coordinator.test.mjs)
+   and [harness runtime](packages/ts/memorax-code-backend/test/memory/harness-runtime.test.mjs)
+   tests already cover their common invariants; retain native fixtures for
+   each client's parser and bridge.
+3. **Implement lifecycle and reports.** Add an
+   [AdapterLifecycleParticipant](packages/ts/memorax-code-backend/src/lifecycle/participant.ts),
+   register report identity in
+   [client-reports](packages/ts/memorax-code-backend/src/lifecycle/client-reports.ts),
+   and verify readiness and summaries in the
+   [report contract tests](packages/ts/memorax-code-backend/test/lifecycle/client-reports.test.mjs)
+   alongside the existing lifecycle tests.
+   Explicitly handle client discovery, persisted selection, activation,
+   disablement, and removal in their owning layers; catalog registration alone
+   does not enable a client. Preserve user-owned configuration, native locks,
+   and public report compatibility.
+4. **Ship the actual runtime.** Declare adapter sources and canonical Skill
+   materialization in [npm source mapping](scripts/npm-source-files.mjs).
+   Check artifact requirements in [package building](scripts/build-npm-packages.mjs),
+   [packed-file validation](scripts/validate-npm-pack-json.mjs), and
+   [installed-package checks](scripts/npm-package-check.sh). Run the adapter's
+   tests against its deployed layout as appropriate; do not maintain a new
+   independent Skill copy.
+5. **Complete the existing gates.** Update
+   [source boundaries](packages/ts/memorax-code-backend/test/architecture/source-boundaries.test.mjs)
+   for new native readers and intentional dependencies. Runtime discovery
+   requires each native client directory to use the shared harness runtime.
+   Register new network-capable modules with the
+   [local-only trace gate](scripts/check-local-trace-only.mjs). Add the adapter
+   suite to the repository and platform checks, update architecture and public
+   client documentation, and run the relevant validation profiles below.
+
 ## Validation
 
 Choose checks by impact:
@@ -62,7 +116,12 @@ Choose checks by impact:
 | Backend TypeScript | `npm run typecheck --prefix packages/ts/memorax-code-backend` and `npm test --prefix packages/ts/memorax-code-backend` |
 | Codex integration or bundled skill | `npm test --prefix packages/ts/memorax-code-codex-adapter` |
 | Claude Code integration or shared skill | `npm test --prefix packages/ts/memorax-code-claude-adapter` |
-| Shared adapter or Hook runtime | Both adapter suites and the affected Backend tests |
+| DeepSeek Harness integration | `npm test --prefix packages/ts/memorax-code-dsh-adapter` |
+| OpenCode integration | `npm test --prefix packages/ts/memorax-code-opencode-adapter` |
+| CodeBuddy/WorkBuddy integration | `npm test --prefix packages/ts/memorax-code-codebuddy-adapter` |
+| Trae integration | `npm test --prefix packages/ts/memorax-code-trae-adapter` |
+| Shared adapter or Hook runtime | All six adapter suites and the affected Backend tests; add `make npm-package-check` for staged runtime or package layout changes |
+| Lifecycle report interpretation | Backend tests and `make npm-package-check` for CLI or lifecycle changes |
 | Public documentation | `make docs-check` |
 | Install, update, uninstall, CLI, or artifact layout | `make npm-package-check` |
 | Broad cross-layer change | `make test` |

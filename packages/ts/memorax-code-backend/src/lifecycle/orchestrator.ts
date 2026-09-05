@@ -23,6 +23,8 @@ import { seedMissingMemoraxCodeConfig } from "../provider/memorax/config.js";
 import { runProcessWithWindowsNpm } from "../shared/windows-cli-invocation.js";
 import { loadManagedClientsConfig, resolveManagedClients, type ManagedClients } from "./client-selection.js";
 import { clearActiveManagedClients, readActiveManagedClients, writeActiveManagedClients } from "./active-clients.js";
+import { LIFECYCLE_CLIENTS, lifecycleAdapterReports, isAdapterReady, type ClientAdapterReports } from "./client-reports.js";
+export { isAdapterReady } from "./client-reports.js";
 import { codexAdapterLifecycle } from "../clients/codex/lifecycle.js";
 import { claudeAdapterLifecycle } from "../clients/claude/lifecycle.js";
 import {
@@ -41,32 +43,20 @@ export type {
   AdapterReport,
 } from "./participant.js";
 
-export type MemoraxCodeStatusReport = {
+export type MemoraxCodeStatusReport = ClientAdapterReports & {
   ok: boolean;
   action: "status";
   degraded?: true;
   backend: Awaited<ReturnType<typeof runBackendStatus>>;
-  codexAdapter?: AdapterReport;
-  claudeAdapter?: AdapterReport;
-  dshAdapter?: AdapterReport;
-  opencodeAdapter?: AdapterReport;
-  codebuddyAdapter?: AdapterReport;
-  traeAdapter?: AdapterReport;
 };
 
-export type MemoraxCodeLifecycleReport = {
+export type MemoraxCodeLifecycleReport = ClientAdapterReports & {
   ok: boolean;
   action: "start" | "stop" | "restart" | "uninstall";
   degraded?: true;
   reason?: string;
   message?: string;
   backend?: Awaited<ReturnType<typeof startBackendService | typeof stopBackendService>>;
-  codexAdapter?: AdapterReport;
-  claudeAdapter?: AdapterReport;
-  dshAdapter?: AdapterReport;
-  opencodeAdapter?: AdapterReport;
-  codebuddyAdapter?: AdapterReport;
-  traeAdapter?: AdapterReport;
   codexPlugin?: Awaited<ReturnType<typeof codexAdapterLifecycle.remove>>;
   codebuddyPlugin?: Awaited<ReturnType<typeof codeBuddyAdapterLifecycle.remove>>;
   traePlugin?: Awaited<ReturnType<typeof traeAdapterLifecycle.remove>>;
@@ -159,21 +149,13 @@ export async function collectMemoraxCodeStatus(
   const traeAdapter = clients.trae
     ? await traeAdapterLifecycle.status({ argv, serviceOptions, backendUrl })
     : undefined;
-  const codexReady = codexAdapter ? isAdapterReady(codexAdapter) : true;
-  const claudeReady = claudeAdapter ? isAdapterReady(claudeAdapter) : true;
-  const dshReady = dshAdapter ? isAdapterReady(dshAdapter) : true;
-  const opencodeReady = opencodeAdapter ? isAdapterReady(opencodeAdapter) : true;
-  const codebuddyReady = codebuddyAdapter ? isAdapterReady(codebuddyAdapter) : true;
-  const traeReady = traeAdapter ? isAdapterReady(traeAdapter) : true;
+  const adapters = lifecycleAdapterReports({ codexAdapter, claudeAdapter, dshAdapter, opencodeAdapter, codebuddyAdapter, traeAdapter });
   const optionalDshUnavailable = isOptionalUnavailableDshAdapter(dshAdapter);
   return {
     ok: backend.ok
-      && codexReady
-      && opencodeReady
-      && codebuddyReady
-      && traeReady
-      && (isOptionalUnconfiguredClaudeAdapter(claudeAdapter, codexAdapter) || claudeReady)
-      && (optionalDshUnavailable || dshReady),
+      && adapters.every(({ client, report }) => isAdapterReady(report)
+        || (client.id === "claude" && isOptionalUnconfiguredClaudeAdapter(report, codexAdapter))
+        || (client.id === "dsh" && optionalDshUnavailable)),
     action: "status",
     ...(optionalDshUnavailable ? { degraded: true } : {}),
     backend,
@@ -581,13 +563,8 @@ async function executeMemoraxCodeStop(
       trae: activeClients.trae && !clients.trae,
     }
     : undefined;
-  const hasRemainingClients = remaining?.codex === true
-    || remaining?.claude === true
-    || remaining?.dsh === true
-    || remaining?.opencode === true
-    || remaining?.codebuddy === true
-    || remaining?.trae === true;
-  const backendOnlyStop = !clients.codex && !clients.claude && !clients.dsh && !clients.opencode && !clients.codebuddy && !clients.trae;
+  const hasRemainingClients = LIFECYCLE_CLIENTS.some(({ id }) => remaining?.[id] === true);
+  const backendOnlyStop = LIFECYCLE_CLIENTS.every(({ id }) => !clients[id]);
   const packageReplacement = isPackageReplacement();
   const needsBackendStop = packageReplacement || backendOnlyStop || !hasRemainingClients;
   const quiescedDsh = clients.dsh && dshLifecycle
@@ -646,23 +623,13 @@ async function executeMemoraxCodeStop(
   const traeAdapter = clients.trae
     ? await traeAdapterLifecycle.disable({ argv, serviceOptions })
     : undefined;
-  const adaptersOk = codexAdapter?.ok !== false
-    && claudeAdapter?.ok !== false
-    && dshAdapter?.ok !== false
-    && opencodeAdapter?.ok !== false
-    && codebuddyAdapter?.ok !== false
-    && traeAdapter?.ok !== false;
+  const adaptersOk = lifecycleAdapterReports({ codexAdapter, claudeAdapter, dshAdapter, opencodeAdapter, codebuddyAdapter, traeAdapter })
+    .every(({ report }) => report.ok !== false);
   const backend = stoppedBackend
     ?? (adaptersOk
       ? preservedBackendResult(serviceOptions, "active_clients_remaining")
       : preservedBackendResult(serviceOptions, "adapter_disable_failed"));
-  const ok = backend.ok
-    && codexAdapter?.ok !== false
-    && claudeAdapter?.ok !== false
-    && dshAdapter?.ok !== false
-    && opencodeAdapter?.ok !== false
-    && codebuddyAdapter?.ok !== false
-    && traeAdapter?.ok !== false;
+  const ok = backend.ok && adaptersOk;
   return {
     report: {
       ok,
@@ -1153,22 +1120,6 @@ async function withMemoraxCodeLifecycleLock(
       },
     };
   }
-}
-
-export function isAdapterReady(report: AdapterReport): boolean {
-  const integration = report.integration ?? report.state?.integration;
-  return (integration === "hooks" || integration === "plugin")
-    && report.ok !== false
-    && report.installed === true
-    && report.enabled === true
-    && report.backendUrlMatches !== false
-    && report.codexSkills?.ok !== false
-    && report.claudeSkills?.ok !== false
-    && report.opencodeSkills?.ok !== false
-    && report.codebuddyHooks?.ok !== false
-    && report.codebuddySkills?.ok !== false
-    && report.traeHooks?.ok !== false
-    && report.traeSkills?.ok !== false;
 }
 
 export function isOptionalUnavailableDshAdapter(report: AdapterReport | undefined): boolean {

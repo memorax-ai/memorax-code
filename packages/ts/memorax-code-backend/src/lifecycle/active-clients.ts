@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { ManagedClients } from "./client-selection.js";
+import { LIFECYCLE_CLIENTS } from "./client-reports.js";
 
 export function readActiveManagedClients(memoraxCodeHome: string): ManagedClients | undefined {
   const path = activeManagedClientsPath(memoraxCodeHome);
@@ -8,10 +9,7 @@ export function readActiveManagedClients(memoraxCodeHome: string): ManagedClient
   try {
     const value = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
     if (typeof value.codex !== "boolean" || typeof value.claude !== "boolean") return undefined;
-    if (value.opencode !== undefined && typeof value.opencode !== "boolean") return undefined;
-    if (value.codebuddy !== undefined && typeof value.codebuddy !== "boolean") return undefined;
-    if (value.trae !== undefined && typeof value.trae !== "boolean") return undefined;
-    if (value.dsh !== undefined && typeof value.dsh !== "boolean") return undefined;
+    if (LIFECYCLE_CLIENTS.some(({ id }) => value[id] !== undefined && typeof value[id] !== "boolean")) return undefined;
     return {
       codex: value.codex,
       claude: value.claude,

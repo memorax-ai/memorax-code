@@ -27,6 +27,12 @@ Codex, Claude Code, and OpenCode provide client-specific `doctor` commands;
 CodeBuddy/WorkBuddy and Trae provide adapter status commands, and DSH uses the
 shared lifecycle status.
 
+Lifecycle summaries include every selected client. A configured integration
+does not prove that its Hook has run: `hook-runtime=unverified` and
+`hook-runtime=observed` distinguish those states. Trae may report a configured
+integration while still requiring its one-time Global Hooks activation; follow
+the activation guidance printed by `start`, `restart`, or `status`.
+
 ## Package installed, but setup did not start
 
 This is expected after:

@@ -16,6 +16,19 @@ const backendRootFacades = [
   "service-entrypoint.ts",
   "windows-cli-invocation.ts",
 ];
+const importPatterns = [
+  /\bimport\s+(?:type\s+)?[\s\S]*?\s+from\s+["']([^"']+)["']/g,
+  /\bimport\s+["']([^"']+)["']/g,
+  /\bexport\s+(?:type\s+)?[\s\S]*?\s+from\s+["']([^"']+)["']/g,
+  /\bimport\s*\(\s*["']([^"']+)["']\s*\)/g,
+];
+const clientModules = await sourceModules(join(backendSrc, "clients"));
+const clientMemoryRuntimes = [];
+for (const module of clientModules) {
+  if ((await directRelativeImports(module)).includes("memory/harness-runtime")) {
+    clientMemoryRuntimes.push(module);
+  }
+}
 
 const rules = [
   {
@@ -39,14 +52,10 @@ const rules = [
       "memory/automatic-retrieval.ts",
       "memory/automatic-writeback.ts",
       "memory/harness-runtime.ts",
-      "clients/claude/memory-hook-runtime.ts",
+      ...clientMemoryRuntimes,
       "clients/claude/transcript-turn.ts",
-      "clients/codex/memory-hook-runtime.ts",
-      "clients/dsh/memory-hook-runtime.ts",
       "clients/dsh/session-turn.ts",
-      "clients/opencode/memory-hook-runtime.ts",
       "clients/opencode/message-turn.ts",
-      "clients/codebuddy/memory-hook-runtime.ts",
       "clients/codebuddy/jsonl-history.ts",
       "memory/turn-coordinator.ts",
       "memory/service.ts",
@@ -82,11 +91,7 @@ const rules = [
       "memory/automatic-retrieval.ts",
       "memory/automatic-writeback.ts",
       "memory/harness-runtime.ts",
-      "clients/claude/memory-hook-runtime.ts",
-      "clients/codex/memory-hook-runtime.ts",
-      "clients/dsh/memory-hook-runtime.ts",
-      "clients/opencode/memory-hook-runtime.ts",
-      "clients/codebuddy/memory-hook-runtime.ts",
+      ...clientMemoryRuntimes,
       "provider/memorax/adapter.ts",
       "memory/turn-coordinator.ts",
       "memory/service.ts",
@@ -106,43 +111,26 @@ const rules = [
   {
     name: "Hook memory runtimes use normalized automatic writeback",
     importers: [
-      "clients/claude/memory-hook-runtime.ts",
-      "clients/codex/memory-hook-runtime.ts",
-      "clients/dsh/memory-hook-runtime.ts",
-      "clients/opencode/memory-hook-runtime.ts",
+      ...clientMemoryRuntimes,
       "memory/turn-coordinator.ts",
     ],
     forbidden: ["memory/writeback"],
   },
   {
-    name: "Codex memory hook runtime stays independent from HTTP and Backend composition",
-    importers: ["clients/codex/memory-hook-runtime.ts"],
-    forbidden: ["node:http", "server-", "entrypoints/", "transport/http/", "app/state"],
-  },
-  {
-    name: "Claude memory hook runtime stays independent from HTTP and Backend composition",
-    importers: ["clients/claude/memory-hook-runtime.ts", "clients/claude/transcript-turn.ts"],
-    forbidden: ["node:http", "server-", "entrypoints/", "transport/http/", "app/state"],
-  },
-  {
-    name: "OpenCode memory hook runtime stays independent from HTTP and Backend composition",
-    importers: ["clients/opencode/memory-hook-runtime.ts", "clients/opencode/message-turn.ts"],
-    forbidden: ["node:http", "server-", "entrypoints/", "transport/http/", "app/state"],
-  },
-  {
-    name: "CodeBuddy memory hook runtime stays independent from HTTP and Backend composition",
-    importers: ["clients/codebuddy/memory-hook-runtime.ts", "clients/codebuddy/jsonl-history.ts"],
-    forbidden: ["node:http", "server-", "entrypoints/", "transport/http/", "app/state"],
-  },
-  {
-    name: "DSH memory hook runtime stays independent from HTTP and Backend composition",
-    importers: ["clients/dsh/memory-hook-runtime.ts", "clients/dsh/session-turn.ts"],
+    name: "client memory runtimes and native readers stay independent from HTTP and Backend composition",
+    importers: [
+      ...clientMemoryRuntimes,
+      "clients/claude/transcript-turn.ts",
+      "clients/opencode/message-turn.ts",
+      "clients/codebuddy/jsonl-history.ts",
+      "clients/dsh/session-turn.ts",
+    ],
     forbidden: ["node:http", "server-", "entrypoints/", "transport/http/", "app/state"],
   },
   {
     name: "memory turn coordinator stays independent from HTTP, Backend composition, and client transcripts",
     importers: ["memory/turn-coordinator.ts"],
-    forbidden: ["node:http", "server-", "entrypoints/", "transport/http/", "app/state", "clients/codex/rollout", "clients/claude/", "clients/dsh/", "clients/opencode/"],
+    forbidden: ["node:http", "server-", "entrypoints/", "transport/http/", "app/state", "clients/"],
   },
   {
     name: "HTTP server stays independent from install watchdog and client plugin lifecycle",
@@ -167,6 +155,23 @@ const rules = [
     ],
   },
   {
+    name: "lifecycle report projections stay independent from client discovery and mutation",
+    importers: ["lifecycle/client-reports.ts"],
+    forbidden: [
+      "clients/",
+      "node:fs",
+      "node:fs/promises",
+      "node:child_process",
+      "node:http",
+      "node:https",
+      "app/",
+      "entrypoints/",
+      "transport/",
+      "lifecycle/orchestrator",
+      "lifecycle/backend/service",
+    ],
+  },
+  {
     name: "lifecycle helpers consume contracts instead of the service implementation",
     importers: [
       "lifecycle/participant.ts",
@@ -183,6 +188,12 @@ const rules = [
     forbidden: ["memory/", "server-", "entrypoints/", "transport/http/"],
   },
 ];
+
+test("every native client has a memory runtime covered by shared source boundaries", () => {
+  const clients = (modules) => [...new Set(modules.map((module) => module.split("/")[1]))].sort();
+  assert.notEqual(clientModules.length, 0);
+  assert.deepEqual(clients(clientMemoryRuntimes), clients(clientModules));
+});
 
 test("backend source boundaries keep production, observability, and lifecycle imports separated", async () => {
   const violations = [];
@@ -280,13 +291,6 @@ function importSpecifiers(text) {
   }
   return specs;
 }
-
-const importPatterns = [
-  /\bimport\s+(?:type\s+)?[\s\S]*?\s+from\s+["']([^"']+)["']/g,
-  /\bimport\s+["']([^"']+)["']/g,
-  /\bexport\s+(?:type\s+)?[\s\S]*?\s+from\s+["']([^"']+)["']/g,
-  /\bimport\s*\(\s*["']([^"']+)["']\s*\)/g,
-];
 
 function matchesForbiddenTarget(target, forbidden) {
   if (forbidden.endsWith("-") || forbidden.endsWith("/")) return target.startsWith(forbidden);
