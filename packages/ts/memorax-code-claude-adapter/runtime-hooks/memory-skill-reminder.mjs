@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 import {
+  MEMORY_IMPACT_REMINDER_CONTEXT,
   personalMemoryReminderContext,
   runMemorySkillReminderHook,
 } from "../../memorax-code-adapter-common/src/hooks/memory-skill-reminder-hook.mjs";
+import { postBackendCommand } from "../../memorax-code-adapter-common/src/backend-command.mjs";
 import { resolveBackendConnection } from "../../memorax-code-adapter-common/src/backend-connection.mjs";
 import { isRepoMemoryJobWorker } from "../../memorax-code-adapter-common/src/repo-memory/repo-memory-job-context.mjs";
 import { buildRepoProcedureMemoryContext } from "../../memorax-code-adapter-common/src/repo-memory/repo-procedure-memory-context.mjs";
@@ -25,6 +27,7 @@ await runMemorySkillReminderHook({
   buildCadenceReminderContext: (hookInput) => buildRepoProcedureMemoryContext(hookInput, personalMemoryContextOptions),
   buildPersonalMemoryContext: (hookInput) => buildRepoUserProfilePreferencesContext(hookInput, personalMemoryContextOptions),
   debugEnv: "MEMORAX_CODE_CLAUDE_HOOK_DEBUG",
+  memoryImpactContext: MEMORY_IMPACT_REMINDER_CONTEXT,
   memorySkillInvocation: MEMORY_SKILL_INVOCATION,
   onReminder: recordReminder,
   remindOnFirstTurn: true,
@@ -36,6 +39,8 @@ async function recordReminder(reminder) {
   const promptId = reminder.turnId;
   if (!promptId || !reminder.transcriptPath) return;
   const connection = resolveBackendConnection();
+  // Optional trace recording must not hold up the reminder for the full memory
+  // request timeout; the shared runner still emits context when recording fails.
   const timeoutMs = Math.min(
     parsePositiveInt(
       process.env.MEMORAX_CODE_CLAUDE_MEMORY_HOOK_TIMEOUT_MS,
@@ -43,12 +48,10 @@ async function recordReminder(reminder) {
     ),
     MAX_REMINDER_TRACE_TIMEOUT_MS,
   );
-  const headers = { "content-type": "application/json", connection: "close" };
-  if (connection.token) headers["x-memorax-code-backend-token"] = connection.token;
-  const response = await fetch(new URL("/memory/skill-reminder", connection.url), {
-    method: "POST",
-    headers,
-    body: JSON.stringify({
+  const response = await postBackendCommand({
+    connection,
+    path: "/memory/skill-reminder",
+    body: {
       version: 1,
       client: "claude-code",
       sessionId: reminder.sessionId,
@@ -58,8 +61,8 @@ async function recordReminder(reminder) {
       workspaceKind: reminder.workspaceKind,
       content: reminder.content,
       triggers: reminder.triggers,
-    }),
-    signal: AbortSignal.timeout(timeoutMs),
+    },
+    timeoutMs,
   });
   if (!response.ok) {
     await response.arrayBuffer().catch(() => undefined);

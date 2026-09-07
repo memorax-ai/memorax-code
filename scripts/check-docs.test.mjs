@@ -33,11 +33,11 @@ test("documentation contract rejects a broken relative link", async (t) => {
   );
 });
 
-test("documentation contract checks the root installation guide", async (t) => {
+test("documentation contract checks the root contributor guide", async (t) => {
   const root = await fixture(t);
   await writeFile(
-    join(root, "INSTALL.md"),
-    "# Installation\n\n[Missing](missing.md)\n",
+    join(root, "CONTRIBUTING.md"),
+    "# Contributing\n\n[Missing](missing.md)\n",
   );
   assert.ok(
     checkDocumentation(root).some((error) => error.includes("links to missing path")),

@@ -10,6 +10,7 @@ const packagePrefixes = [
   "lib/memorax-code-dsh-adapter/",
   "lib/memorax-code-opencode-adapter/",
   "lib/memorax-code-codebuddy-adapter/",
+  "lib/memorax-code-trae-adapter/",
 ];
 const packageFiles = new Set([
   "bin",
@@ -20,6 +21,7 @@ const packageFiles = new Set([
   "bin/memorax-code-codex.mjs",
   "bin/memorax-code-opencode.mjs",
   "bin/memorax-code-codebuddy.mjs",
+  "bin/memorax-code-trae.mjs",
   "bin/memorax-code-npm-preinstall.mjs",
   "bin/memorax-code.mjs",
   "bin/memorax-cli.mjs",
@@ -55,6 +57,7 @@ const rootLibFiles = new Set([
   "lib/trial-setup.mjs",
   "lib/vscode-extension-command.mjs",
   "lib/windows-cli-invocation.mjs",
+  "lib/windows-user-path.mjs",
 ]);
 const reviewedCredentialFiles = new Set([
   "linux-secret-service.mjs",
@@ -90,5 +93,6 @@ export function isReviewedCredentialRuntimePath(rawPath) {
 export function isAllowedNpmPackFilePath(rawPath) {
   const path = String(rawPath).replaceAll("\\", "/");
   return isAllowedNpmPackPath(path)
+    && !/\.(?:py|pyc|pyo)$/i.test(path)
     && (!sensitivePath.test(path) || isReviewedCredentialRuntimePath(path));
 }

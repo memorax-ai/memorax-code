@@ -6,12 +6,6 @@ behavior.
 
 ## Unreleased
 
-### Changed
-
-- Moved automatic-update scheduling from client SessionStart events to the
-  managed Backend, so a continuously running installation keeps checking on
-  its persisted cadence without requiring a new coding-agent session.
-
 ### Fixed
 
 - Stopped `memorax-cli` from exiting with a nonzero status on Windows after
@@ -20,6 +14,83 @@ behavior.
 - Stopped the `memorax-code` management CLI, setup, and package transition
   from exiting with a nonzero status on Windows after completing work by
   letting the Node process drain naturally instead of calling `process.exit()`.
+
+## [0.1.13] - 2026-09-04
+
+### Added
+
+- Supported coding agents now briefly identify when recalled Memory materially
+  shaped the final answer, while omitting the notice for unused or merely
+  confirmatory context.
+
+### Fixed
+
+- Recovered abandoned CodeBuddy/WorkBuddy plugin registry locks after
+  interrupted lifecycle operations while preserving unrelated plugin entries.
+- Fixed Repo Memory workers launched from installed packages so supported
+  clients consistently resolve their packaged runtime, including preserving
+  the triggering WorkBuddy plugin root.
+- Preserved existing Repo Memory long-option compatibility, including
+  `--option=value`, during build and update operations.
+
+## [0.1.12] - 2026-09-02
+
+### Added
+
+- Added managed Trae integration with the shared MemoraX Code Skill, native
+  lifecycle Hooks, exact Turn correlation, completed-Turn writeback,
+  interrupted-Turn handling, Skill reminders, optional automatic retrieval,
+  local traces, and supported setup on macOS, Linux, and Windows. Trae users
+  enable Global Hooks once in Trae before the integration can run.
+
+### Changed
+
+- Updates now enable a newly supported coding-agent integration when its
+  runtime is detected and its client setting was previously absent. Explicit
+  enabled and disabled choices remain unchanged; automatic updates reconcile
+  silently, while manual updates prompt for unconfigured detected clients.
+- Clarified Trae activation guidance with the exact Global Hooks UI path and
+  the runtime status check used to confirm that Hooks have been observed.
+
+### Fixed
+
+- Updated Windows PowerShell Skill commands to invoke `memorax-cli.cmd`,
+  avoiding `.ps1` execution-policy failures without requiring users to change
+  PowerShell policy.
+
+## [0.1.11] - 2026-09-01
+
+### Fixed
+
+- Updated Windows WorkBuddy setup to prefer `%USERPROFILE%\\.workbuddy` for
+  new installations while safely reconciling only MemoraX-managed plugin state
+  from legacy `%USERPROFILE%\\.codebuddy` homes, preserving unrelated plugins,
+  Skills, and user data.
+
+## [0.1.10] - 2026-09-01
+
+### Added
+
+- Added managed CodeBuddy/WorkBuddy integration with native Turn tracking,
+  completed-Turn writeback, interrupted-Turn handling, Skill reminders, quota
+  notices, Repo Memory maintenance, local traces, and supported setup on
+  macOS, Linux, and Windows.
+- Added automatic updates owned by the managed Backend. Stable and preview
+  installations check their release channel every eight hours, retry failures
+  after 15 minutes, install the exact resolved version, reconcile enabled
+  clients non-interactively, silently trust verified Codex Hook changes, and
+  replace the Backend process without requiring a new client session.
+
+### Fixed
+
+- Completed manual update reconciliation when the managed Backend was already
+  stopped, including client integration assets, Codex Hook trust, setup state,
+  and Backend recovery.
+- Repaired the Windows user `PATH` during interactive setup when npm's global
+  command directory is missing, while preserving existing command priority.
+- Repaired missing or disabled Codex plugin registrations even when a valid
+  versioned plugin cache already exists, preventing the CLI and active Codex
+  plugin from remaining on different versions.
 
 ## [0.1.9] - 2026-08-28
 
@@ -146,6 +217,7 @@ Later upgrades do not require this workaround.
 - Required a non-empty MemoraX user ID and API key during interactive setup,
   with clearer registration guidance.
 
+[0.1.10]: https://www.npmjs.com/package/@memorax/memorax-code/v/0.1.10
 [0.1.9]: https://www.npmjs.com/package/@memorax/memorax-code/v/0.1.9
 [0.1.8]: https://www.npmjs.com/package/@memorax/memorax-code/v/0.1.8
 [0.1.7]: https://www.npmjs.com/package/@memorax/memorax-code/v/0.1.7

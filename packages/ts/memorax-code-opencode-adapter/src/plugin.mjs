@@ -1,11 +1,13 @@
 import { delimiter } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { postBackendCommand } from "../../memorax-code-adapter-common/src/backend-command.mjs";
 import { resolveBackendConnection } from "../../memorax-code-adapter-common/src/backend-connection.mjs";
 import { readAdapterState } from "../../memorax-code-adapter-common/src/config-utils.mjs";
 import { ensureBackendAvailable } from "../../memorax-code-adapter-common/src/hooks/ensure-backend-runner.mjs";
 import { recordWorkspaceEvidence } from "../../memorax-code-adapter-common/src/hooks/capture-cwd-hook.mjs";
 import {
   evaluateMemorySkillReminder,
+  MEMORY_IMPACT_REMINDER_CONTEXT,
   markSupplementalReminderForSession,
   personalMemoryReminderContext,
 } from "../../memorax-code-adapter-common/src/hooks/memory-skill-reminder-hook.mjs";
@@ -60,6 +62,8 @@ export function createMemoraxOpenCodePlugin(options = {}) {
           .then(() => {
             backendEnsureSettled = true;
           });
+        // All prompts share this instance's wait budget; expiry must not cancel
+        // recovery that accepted-turn writeback can still await.
         backendPromptGatePromise = Promise.race([
           backendEnsurePromise.then(() => true),
           delay(backendPromptWaitTimeoutMs, false, { ref: false }),
@@ -136,6 +140,8 @@ export function createMemoraxOpenCodePlugin(options = {}) {
     }
 
     function queueSessionFlush(sessionId, target) {
+      // Idle and error notifications can overlap without awaiting plugin work.
+      // Queue SDK reads so later tasks see which Turns still need submission.
       const previous = sessionFlushes.get(sessionId) ?? Promise.resolve();
       const queued = previous
         .catch(() => undefined)
@@ -525,13 +531,12 @@ function recordReminder(options, reminder) {
 
 async function postBackend(options, path, body, timeoutMs) {
   const connection = options.backendConnection ?? resolveBackendConnection(options);
-  const headers = { "content-type": "application/json", connection: "close" };
-  if (connection.token) headers["x-memorax-code-backend-token"] = connection.token;
-  const response = await (options.fetchImpl ?? fetch)(new URL(path, connection.url), {
-    method: "POST",
-    headers,
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(timeoutMs),
+  const response = await postBackendCommand({
+    connection,
+    path,
+    body,
+    timeoutMs,
+    fetchImpl: options.fetchImpl,
   });
   if (!response.ok) {
     await response.arrayBuffer().catch(() => undefined);
@@ -605,6 +610,7 @@ function memorySkillReminderOptions(options, repositoryWorktree) {
     additionalReminderContext: personalMemoryReminderContext(MEMORY_SKILL_INVOCATION),
     adapterDir: "opencode",
     ...(repositoryWorktree ? {
+      memoryImpactContext: MEMORY_IMPACT_REMINDER_CONTEXT,
       buildCadenceReminderContext: (input) => buildRepoProcedureMemoryContext({
         ...input,
         cwd: repositoryWorktree,

@@ -12,7 +12,9 @@ import {
 test("release version check detects drift and write aligns only declared targets", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-release-version-"));
   try {
-    const files = new Map();
+    const files = new Map([
+      ["unrelated.json", { version: "9.9.9", fixtureMarker: "preserved" }],
+    ]);
     addFixtureField(files, RELEASE_VERSION_AUTHORITY, "1.2.3");
     for (const target of RELEASE_VERSION_TARGETS) addFixtureField(files, target, "0.0.0");
     for (const [file, document] of files) {
@@ -25,18 +27,31 @@ test("release version check detects drift and write aligns only declared targets
     assert.equal(checked.ok, false);
     assert.equal(checked.version, "1.2.3");
     assert.equal(checked.mismatches.length, RELEASE_VERSION_TARGETS.length);
+    for (const [file, document] of files) {
+      assert.equal(
+        await readFile(join(root, file), "utf8"),
+        `${JSON.stringify(document, null, 2)}\n`,
+        `${file}: check must leave the original bytes unchanged`,
+      );
+    }
 
     const written = await syncReleaseVersion({ root, write: true });
     assert.equal(written.ok, true);
     assert.deepEqual(written.changedFiles.sort(), [
       ...new Set(RELEASE_VERSION_TARGETS.map((target) => target.file)),
     ].sort());
+    for (const target of RELEASE_VERSION_TARGETS) addFixtureField(files, target, "1.2.3");
+    for (const [file, document] of files) {
+      assert.deepEqual(
+        JSON.parse(await readFile(join(root, file), "utf8")),
+        document,
+        `${file}: write must update only declared version fields`,
+      );
+    }
 
     const rechecked = await syncReleaseVersion({ root });
     assert.equal(rechecked.ok, true);
     assert.equal(rechecked.mismatches.length, 0);
-    const authority = JSON.parse(await readFile(join(root, RELEASE_VERSION_AUTHORITY.file), "utf8"));
-    assert.equal(authority.fixtureMarker, "preserved");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

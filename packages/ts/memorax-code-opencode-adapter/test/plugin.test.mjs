@@ -40,6 +40,24 @@ test("chat.message retrieves memory and injects it into the system prompt", asyn
   });
 });
 
+test("chat.message does not accept a successful non-JSON Backend response", async () => {
+  const requests = [];
+  let messageReads = 0;
+  const hooks = await createPluginWithoutReminders({
+    backendConnection: { url: "http://127.0.0.1:8787" },
+    fetchImpl: responseSequence(requests, [new Response("invalid JSON", { status: 200 })]),
+  })(pluginInput({
+    client: { session: { async messages() { messageReads += 1; return { data: [] }; } } },
+  }));
+  const output = promptOutput("user-malformed", "Prompt", "Existing context");
+  await hooks["chat.message"]({ sessionID: "session-malformed" }, output);
+  hooks.event(sessionIdleEvent("session-malformed"));
+  await hooks.dispose();
+  assert.equal(output.message.system, "Existing context");
+  assert.equal(requests.length, 1);
+  assert.equal(messageReads, 0, "a failed turn start must not create pending writeback state");
+});
+
 test("chat.message shows userNotice without blocking or injecting it into model context", async () => {
   const toastCalls = [];
   const plugin = createPluginWithoutReminders({
@@ -91,8 +109,11 @@ test("repo-scoped reminder builders require a Backend-authorized worktree", asyn
       const profileBuilder = typeof options.buildPersonalMemoryContext === "function";
       const procedureBuilder = typeof options.buildCadenceReminderContext === "function";
       const repositoryContext = profileBuilder && procedureBuilder;
-      evaluations.push({ profileBuilder, procedureBuilder, cwd: input.cwd });
-      return { additionalContext: repositoryContext ? "Authorized repo context." : "Generic reminder context." };
+      const impactContext = typeof options.memoryImpactContext === "string"
+        ? options.memoryImpactContext
+        : undefined;
+      evaluations.push({ profileBuilder, procedureBuilder, impactContext: Boolean(impactContext), cwd: input.cwd });
+      return { additionalContext: repositoryContext ? impactContext : "Generic reminder context." };
     },
   });
   const hooks = await plugin(pluginInput());
@@ -103,10 +124,11 @@ test("repo-scoped reminder builders require a Backend-authorized worktree", asyn
   await hooks["chat.message"]({ sessionID: "session-scope" }, authorized);
 
   assert.equal(generic.message.system, "Generic reminder context.");
-  assert.equal(authorized.message.system, "Authorized repo context.");
+  assert.match(authorized.message.system, /Natural final-answer mention for supported coding agents:/);
+  assert.match(authorized.message.system, /generic label `Memory`/);
   assert.deepEqual(evaluations, [
-    { profileBuilder: false, procedureBuilder: false, cwd: "/repo/worktree" },
-    { profileBuilder: true, procedureBuilder: true, cwd: "/repo/worktree" },
+    { profileBuilder: false, procedureBuilder: false, impactContext: false, cwd: "/repo/worktree" },
+    { profileBuilder: true, procedureBuilder: true, impactContext: true, cwd: "/repo/worktree" },
   ]);
 });
 

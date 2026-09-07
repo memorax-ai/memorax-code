@@ -2,6 +2,7 @@ export type JsonFileLockOptions = Readonly<{
   timeoutMs?: number;
   staleMs?: number;
   retryMs?: number;
+  ensurePrivateDirectory?: boolean;
 }>;
 
 export type AsyncJsonFileLockOptions = JsonFileLockOptions & Readonly<{

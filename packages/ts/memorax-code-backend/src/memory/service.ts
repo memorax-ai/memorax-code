@@ -18,6 +18,7 @@ import {
   type OpenCodeMemoryHookWritebackResult,
 } from "../clients/opencode/memory-hook-runtime.js";
 import { createCodeBuddyMemoryHookRuntime, type CodeBuddyMemoryHookWritebackResult } from "../clients/codebuddy/memory-hook-runtime.js";
+import { createTraeMemoryHookRuntime, type TraeMemoryHookWritebackResult } from "../clients/trae/memory-hook-runtime.js";
 import { createMemoryTurnCoordinator } from "./turn-coordinator.js";
 import {
   createRepositoryMemorySessionRuntime,
@@ -39,7 +40,8 @@ type MemoryHookWritebackResult =
   | ClaudeMemoryHookWritebackResult
   | OpenCodeMemoryHookWritebackResult
   | DshMemoryHookWritebackResult
-  | CodeBuddyMemoryHookWritebackResult;
+  | CodeBuddyMemoryHookWritebackResult
+  | TraeMemoryHookWritebackResult;
 
 export type MemoryService = {
   recordTurnStart(command: TurnStartCommand): Promise<MemoryHookTurnStartResult>;
@@ -97,6 +99,12 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
     repositoryMemorySession,
     turnCoordinator,
   });
+  const traeHook = createTraeMemoryHookRuntime({
+    ...options,
+    pendingQuotaNotice,
+    repositoryMemorySession,
+    turnCoordinator,
+  });
   let closed = false;
   return {
     async recordTurnStart(command) {
@@ -111,6 +119,8 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
           return await dshHook.recordTurnStart(command);
         case "codebuddy":
           return await codeBuddyHook.recordTurnStart(command);
+        case "trae":
+          return await traeHook.recordTurnStart(command);
       }
       return unsupportedMemoryHookCommand(command);
     },
@@ -126,6 +136,8 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
           return await dshHook.writeback(command);
         case "codebuddy":
           return await codeBuddyHook.writeback(command);
+        case "trae":
+          return await traeHook.writeback(command);
       }
       return unsupportedMemoryHookCommand(command);
     },
@@ -140,6 +152,7 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
       openCodeHook.close();
       dshHook.close();
       codeBuddyHook.close();
+      traeHook.close();
       turnCoordinator.close();
       repositoryMemorySession.close();
       automaticWriteback.close();

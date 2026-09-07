@@ -18,6 +18,10 @@ export const npmMainSourceTrees = Object.freeze([
     source: `packages/ts/memorax-code-codebuddy-adapter/${name}`,
     destination: `lib/memorax-code-codebuddy-adapter/${name}`,
   })),
+  ...["src", "hooks"].map((name) => ({
+    source: `packages/ts/memorax-code-trae-adapter/${name}`,
+    destination: `lib/memorax-code-trae-adapter/${name}`,
+  })),
   {
     source: "packages/ts/memorax-code-dsh-adapter/src",
     destination: "lib/memorax-code-dsh-adapter/src",
@@ -49,6 +53,10 @@ export const npmMainSourceTrees = Object.freeze([
   {
     source: "packages/ts/memorax-code-codex-adapter/skills/memorax-code",
     destination: "lib/memorax-code-codebuddy-adapter/skills/memorax-code",
+  },
+  {
+    source: "packages/ts/memorax-code-codex-adapter/skills/memorax-code",
+    destination: "lib/memorax-code-trae-adapter/skills/memorax-code",
   },
 ]);
 

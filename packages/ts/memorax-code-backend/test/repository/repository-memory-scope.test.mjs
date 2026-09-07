@@ -313,6 +313,34 @@ test("repository naming uses origin, then a sole remote, then the canonical comm
   assert.equal(fallback.scope.identitySource, "git-common-dir");
 });
 
+test("repository naming distinguishes SCP remotes from explicit URLs and local paths", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-workspace-remote-formats-"));
+  t.after(() => fsPromises.rm(root, { recursive: true, force: true }));
+  const workspace = join(root, "Local-Folder");
+  const cases = [
+    ["fixture-host:owner/Project.git", "Project"],
+    ["git@fixture-host:owner/Project.git", "Project"],
+    ["ssh://git@fixture-host/owner/Project.git", "Project"],
+    ["ftp://fixture-host/owner/Project.git", "Local-Folder"],
+    ["https://[broken]/owner/Project.git", "Local-Folder"],
+    ["file:///owner/Project.git", "Local-Folder"],
+    ["file:/owner/Project.git", "Local-Folder"],
+    ["hg::https://fixture-host/owner/Project.git", "Local-Folder"],
+    ["./owner:Project.git", "Local-Folder"],
+    ["C:\\owner\\Project.git", "Local-Folder"],
+    ["C:Project.git", "Local-Folder"],
+  ];
+  for (const [url, repositorySlug] of cases) {
+    await createGitRepository(workspace, [["origin", url]]);
+    const result = await resolveRepositoryMemoryScope({ workspaceRoot: workspace, baseUserId: "alice" });
+
+    assert.equal(result.ok, true, url);
+    assert.equal(result.scope.scopeKind, "git-repository", url);
+    assert.equal(result.scope.effectiveUserId, `alice@${repositorySlug}`, url);
+    assert.equal(result.scope.identitySource, repositorySlug === "Project" ? "origin-remote" : "git-common-dir", url);
+  }
+});
+
 test("Git containment rechecks the readable repository name after a remote rename", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-workspace-remote-rename-"));
   const workspace = join(root, "workspace");

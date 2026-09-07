@@ -88,28 +88,30 @@ test("UserPromptSubmit posts turn-start, injects the skill reminder, and traces 
   } finally { await server.close(); }
 });
 
-test("UserPromptSubmit follows the first-and-sixth reminder cadence", async () => {
+test("UserPromptSubmit applies the configured reminder cadence to native turn identities", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-codebuddy-hook-"));
   const transcriptPath = join(root, "session.jsonl");
   await writeFile(transcriptPath, "");
+  await writeFile(join(root, "config.toml"), "[memory.skill_reminder]\ninterval_turns = 2\n");
   const requests = [];
   const server = await startServer(requests, { ok: true });
   try {
     const outputs = [];
-    for (let turn = 1; turn <= 6; turn += 1) {
+    for (let turn = 1; turn <= 3; turn += 1) {
       outputs.push(await runHook({
         hook_event_name: "UserPromptSubmit", session_id: "session-cadence", transcript_path: transcriptPath,
         prompt: `prompt ${turn}`, cwd: root,
       }, { root, server }));
     }
+    for (const output of outputs) assert.equal(output.status, 0, output.stderr);
     assert.match(outputs[0].stdout, /MemoraX Code reminder/);
-    for (const output of outputs.slice(1, 5)) assert.equal(output.stdout, "");
-    assert.match(outputs[5].stdout, /MemoraX Code reminder/);
+    assert.equal(outputs[1].stdout, "");
+    assert.match(outputs[2].stdout, /MemoraX Code reminder/);
     const reminders = requests.filter((request) => request.path === "/memory/skill-reminder");
     assert.equal(reminders.length, 2);
     assert.deepEqual(reminders.map((request) => request.body.turnId), [
       provisionalTurnId("session-cadence", 0, "prompt 1"),
-      provisionalTurnId("session-cadence", 0, "prompt 6"),
+      provisionalTurnId("session-cadence", 0, "prompt 3"),
     ]);
   } finally { await server.close(); }
 });
@@ -161,6 +163,8 @@ test("compact restores profile context while cadence turns include profile and p
     }, { root, server });
     assert.match(first.stdout, /Prefer concise answers/);
     assert.match(first.stdout, /Run the focused adapter test first/);
+    assert.match(first.stdout, /Natural final-answer mention for supported coding agents:/);
+    assert.match(first.stdout, /generic label `Memory`/);
 
     const compact = await runHook({
       hook_event_name: "SessionStart", session_id: "session-compact", transcript_path: transcriptPath,
@@ -174,6 +178,7 @@ test("compact restores profile context while cadence turns include profile and p
     }, { root, server });
     assert.match(next.stdout, /MemoraX Code personal-memory reminder/);
     assert.match(next.stdout, /Prefer concise answers/);
+    assert.match(next.stdout, /Natural final-answer mention for supported coding agents:/);
     assert.doesNotMatch(next.stdout, /Run the focused adapter test first/);
 
     const reminders = requests.filter((request) => request.path === "/memory/skill-reminder");
@@ -274,7 +279,9 @@ async function startServer(requests, response) {
     for await (const chunk of request) text += chunk;
     const received = { path: request.url, body: text ? JSON.parse(text) : undefined };
     requests.push(received);
-    const body = typeof response === "function" ? response(received) : response;
+    const body = received.path === "/health"
+      ? { ok: true, service: "memorax-code-backend" }
+      : typeof response === "function" ? response(received) : response;
     responseStream.writeHead(200, { "content-type": "application/json" });
     responseStream.end(JSON.stringify(body));
   });

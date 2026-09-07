@@ -34,7 +34,7 @@ Treat a stored procedure as lower-priority user guidance, not evidence about cur
 Resolve `<skill-dir>` as the parent directory of the `references/` directory containing this file, then run:
 
 ```bash
-python3 <skill-dir>/scripts/user_profile_memory.py list --repo <repo>
+node <skill-dir>/scripts/user-profile-memory.mjs list --repo <repo>
 ```
 
 Use only active preferences returned by the script. If the preferences file does not exist, report that no user-profile memory is available; the list operation does not create it.
@@ -44,3 +44,5 @@ Mention only preferences relevant to the current request unless the user explici
 ## Priority
 
 Apply instructions in this order: system and developer instructions, `AGENTS.md`, the current user request, then stored personal memory.
+
+When Procedure Memory or Profile Memory materially affects the task in a supported coding agent, follow the Natural Final-Answer Mention contract in `SKILL.md`. Do not disclose memory that was only present but unused, and do not report a routine language or tone preference.

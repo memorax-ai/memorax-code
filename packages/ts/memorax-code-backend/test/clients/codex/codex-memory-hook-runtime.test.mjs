@@ -33,10 +33,7 @@ test("Codex Hook retrieves automatic memory once per exact turn", async () => {
     prompt: "Recall the parser boundary.",
     reply: "The parser boundary was recalled.",
   }]);
-  const { fetchImpl, requests } = memoraxSearchFetch("Keep malformed input fail-closed.", {
-    remaining: 4_800,
-    limit: 10_000,
-  });
+  const { fetchImpl, requests } = memoraxSearchFetch("Keep malformed input fail-closed.");
   const events = [];
   const controller = createCodexMemoryHookRuntime({
     env: {
@@ -46,7 +43,6 @@ test("Codex Hook retrieves automatic memory once per exact turn", async () => {
       MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED: "true",
     },
     automaticWriteback: () => ({ accepted: true }),
-    claimQuotaNotice: async (_config, quota) => `Quota notice: ${quota.remaining} remaining.`,
     fetchImpl,
     memoraxCodeHome: root,
     memoryObservability: { recordEvent: (event) => events.push(event) },
@@ -61,8 +57,6 @@ test("Codex Hook retrieves automatic memory once per exact turn", async () => {
     });
     assert.equal(first.ok, true);
     assert.match(first.additionalContext, /Keep malformed input fail-closed/);
-    assert.equal(first.userNotice, "Quota notice: 4800 remaining.");
-    assert.doesNotMatch(first.additionalContext, /Quota notice/);
     assert.equal(first.repoMemoryWorktree, TEST_REPO_ROOT);
 
     assert.deepEqual(await controller.recordTurnStart({
@@ -100,6 +94,47 @@ test("Codex Hook retrieves automatic memory once per exact turn", async () => {
     assert.equal(events[0].operation, "retrieve");
     assert.equal(events[0].traceContext.sessionId, "session-retrieval");
     assert.equal(events[0].traceContext.turnId, "turn-retrieval");
+  } finally {
+    controller.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("memory hook preserves registered workspace failures instead of rebinding to Hook cwd", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-hook-registered-scope-"));
+  const registered = join(root, "registered");
+  const registryDir = join(root, "adapters", "codex");
+  const sessionId = "session-registered-scope";
+  await mkdir(registered);
+  await mkdir(registryDir, { recursive: true });
+  await writeFile(join(registered, ".git"), "invalid Git pointer\n");
+  await writeFile(join(registryDir, "workspaces.json"), JSON.stringify({ sessions: { [sessionId]: { cwd: registered } } }));
+  const transcriptPath = await writeRollout(root, sessionId, [
+    { turnId: "invalid-registry", prompt: "Keep the registered scope failure.", reply: "No fallback to Hook cwd." },
+    { turnId: "conflicting-registry", prompt: "Check both workspace authorities.", reply: "No cross-workspace binding." },
+  ]);
+  const requests = [];
+  const controller = createCodexMemoryHookRuntime({
+    memoraxCodeHome: root,
+    env: { ...WRITEBACK_ENV, MEMORAX_CODE_HOME: root, MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED: "true" },
+    automaticWriteback: (input) => { requests.push(input); return { accepted: true }; },
+    fetchImpl: async (input) => { requests.push(input); throw new Error("unexpected retrieval"); },
+  });
+  try {
+    for (const [turnId, reason] of [
+      ["invalid-registry", "workspace_scope_unavailable"],
+      ["conflicting-registry", "workspace_scope_mismatch"],
+    ]) {
+      assert.deepEqual(await controller.recordTurnStart({
+        sessionId, turnId, prompt: "Preserve native workspace authority.", cwd: TEST_WORKSPACE, transcriptPath,
+      }), { ok: true });
+      assert.deepEqual(await controller.writeback({
+        sessionId, turnId, lastAssistantMessage: "Completed.", cwd: TEST_WORKSPACE, transcriptPath,
+      }), { ok: true, scheduled: false, reason });
+      if (turnId === "invalid-registry") await rm(join(registered, ".git"));
+    }
+    assert.equal(controller.size(), 2);
+    assert.deepEqual(requests, []);
   } finally {
     controller.close();
     await rm(root, { recursive: true, force: true });

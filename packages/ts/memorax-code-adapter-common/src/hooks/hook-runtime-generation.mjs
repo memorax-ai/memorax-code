@@ -66,6 +66,8 @@ export function clientHookRuntimePaths(memoraxCodeHome) {
   };
 }
 
+// Staging leaves current authority unchanged so failed lifecycle readiness
+// checks cannot replace the active generation. Activation is a separate step.
 export function stageClientHookRuntimeGeneration({
   packageRoot,
   memoraxCodeHome,
@@ -186,6 +188,8 @@ export function prepareClientHookRuntimeGeneration(options = {}) {
   return { generation, current };
 }
 
+// Full-tree digests are checked at stage/activation, not on each Hook lookup.
+// Reads validate metadata and rely on published generations staying unchanged.
 export function readCurrentClientHookRuntime(memoraxCodeHome) {
   const paths = clientHookRuntimePaths(memoraxCodeHome);
   const state = readJsonRuntimeRecord(paths.currentPath);

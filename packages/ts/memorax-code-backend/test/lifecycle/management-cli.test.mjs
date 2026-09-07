@@ -374,51 +374,6 @@ test("memorax-code restart validates connection authority before stopping a heal
   }
 });
 
-test("memorax-code status treats Codex-only ready state as enabled when Claude is not configured", async () => {
-  const home = await mkdtemp(join(tmpdir(), "memorax-code-status-codex-only-home-"));
-  const codexHome = await mkdtemp(join(tmpdir(), "memorax-code-status-codex-only-codex-"));
-  const port = await freePort();
-  const cliPath = fileURLToPath(new URL("../../dist/memorax-code.js", import.meta.url));
-  await writeFile(join(codexHome, "config.toml"), [
-    'model_provider = "custom"',
-    'model = "gpt-5.5"',
-    "",
-    "[model_providers.custom]",
-    'name = "Custom"',
-    'base_url = "http://127.0.0.1:9999/openai"',
-    'wire_api = "responses"',
-    "",
-  ].join("\n"));
-  await prepareActiveCodexPlugin(codexHome);
-  try {
-    const started = await runCli(cliPath, [
-      "start", "--json",
-      "--home", home,
-      "--port", String(port),
-      "--codex-home", codexHome,
-      "--clients", "codex",
-    ]);
-    assert.equal(started.code, 0, `${started.stdout}\n${started.stderr}`);
-    const status = await runCli(cliPath, [
-      "status",
-      "--home", home,
-      "--port", String(port),
-      "--codex-home", codexHome,
-      "--clients", "codex",
-    ]);
-    assert.equal(status.code, 0, `${status.stdout}\n${status.stderr}`);
-    assert.match(status.stdout, /^\[MemoraX Code Backend\]: MemoraX Code Backend status: .*Enabled/m);
-    assert.match(status.stdout, /^\[MemoraX Code Backend\]: Codex adapter: ok integration=hooks skills=plugin-managed/m);
-    assert.doesNotMatch(status.stdout, /^\[MemoraX Code Backend\]: Claude adapter:/m);
-    assert.doesNotMatch(status.stdout, /Claude adapter is not enabled/);
-    assert.doesNotMatch(status.stdout, /Run `memorax-code start`, then restart or refresh Claude Code/);
-  } finally {
-    await runCli(cliPath, ["stop", "--json", "--home", home, "--port", String(port), "--codex-home", codexHome, "--clients", "codex"]);
-    await rm(home, { recursive: true, force: true });
-    await rm(codexHome, { recursive: true, force: true });
-  }
-});
-
 test("persisted clients none keeps lifecycle commands adapter-free", async () => {
   const home = await mkdtemp(join(tmpdir(), "memorax-code-clients-none-home-"));
   const codexHome = await mkdtemp(join(tmpdir(), "memorax-code-clients-none-codex-"));

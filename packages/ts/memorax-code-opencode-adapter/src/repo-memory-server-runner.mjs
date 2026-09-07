@@ -47,6 +47,8 @@ export async function runOpenCodeRepoMemory(input, options = {}) {
         prompt,
       });
     } catch (error) {
+      // Only a session-creation transport failure can select another server;
+      // replaying a failed prompt could repeat file edits already performed.
       if (!isSessionCreationTransportError(error)) throw error;
       inheritedError = error;
     }
@@ -130,7 +132,13 @@ async function runOpenCodeRepoMemorySession(input) {
       },
       "blocking prompt",
     );
-    const finalText = messageText(message);
+    const payload = message?.data ?? message;
+    const assistantError = payload?.info?.error;
+    // HTTP success can still carry a failed assistant with partial output.
+    if (assistantError !== undefined && assistantError !== null) {
+      throw new Error("OpenCode blocking prompt returned an assistant error");
+    }
+    const finalText = messageText(payload);
     if (!finalText) throw new Error("OpenCode repo memory runner received no final text");
     return finalText;
   } finally {
@@ -396,8 +404,7 @@ async function bestEffortDelete(fetchImpl, url, authorization) {
   }
 }
 
-function messageText(message) {
-  const payload = message?.data ?? message;
+function messageText(payload) {
   if (!Array.isArray(payload?.parts)) return undefined;
   return payload.parts
     .flatMap((part) => part?.type === "text" && stringValue(part.text) ? [part.text.trim()] : [])

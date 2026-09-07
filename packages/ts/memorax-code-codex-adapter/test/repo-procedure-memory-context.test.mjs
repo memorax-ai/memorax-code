@@ -32,17 +32,18 @@ after(async () => {
   await new Promise((resolveClose) => authorizedBackend.close(resolveClose));
 });
 
-test("multiple procedure files join the existing first and sixth turn cadence", async () => {
+test("multiple procedure files join the first prompt and configured reminder cadence", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-procedure-context-cadence-"));
   try {
     const repo = await createRepo(root);
     const memoraxCodeHome = join(root, "memorax-code");
     await writeRegistry(memoraxCodeHome, "native-thread");
+    await writeFile(join(memoraxCodeHome, "config.toml"), "[memory.skill_reminder]\ninterval_turns = 2\n");
     await writeProcedure(repo, "reading-code.md", "# Reading Code\n\n1. Trace the public entry point.");
     await writeProcedure(repo, "writing-code.md", "# Writing Code\n\n1. Add the focused test first.");
 
     const outputs = [];
-    for (let turn = 1; turn <= 6; turn += 1) {
+    for (let turn = 1; turn <= 3; turn += 1) {
       outputs.push(await runHook(hookPath, {
         hook_event_name: "UserPromptSubmit",
         session_id: "native-thread",
@@ -54,14 +55,17 @@ test("multiple procedure files join the existing first and sixth turn cadence", 
     }
 
     for (const output of outputs) assert.equal(output.code, 0, output.stderr);
-    for (const index of [1, 2, 3, 4]) assert.equal(outputs[index].stdout, "");
-    for (const index of [0, 5]) {
+    assert.equal(outputs[1].stdout, "");
+    for (const index of [0, 2]) {
       const context = reminderContext(outputs[index].stdout);
       assert.match(context, /^MemoraX Code reminder:/);
       assert.match(context, /### reading-code\.md/);
       assert.match(context, /Trace the public entry point/);
       assert.match(context, /### writing-code\.md/);
       assert.match(context, /Add the focused test first/);
+      assert.match(context, /Natural final-answer mention for supported coding agents:/);
+      assert.match(context, /begin the final answer with one brief opening paragraph/);
+      assert.doesNotMatch(context, /memorax-impact/);
     }
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -101,6 +105,9 @@ test("profile and procedure reminders stay in one ordered payload", async () => 
     }, { MEMORAX_CODE_HOME: memoraxCodeHome });
 
     const context = reminderContext(result.stdout);
+    assert.ok(context.includes("MemoraX Code reminder:"));
+    assert.ok(context.includes("MemoraX Code personal-memory reminder:"));
+    assert.ok(context.includes("### reading-papers.md"));
     assert.ok(context.indexOf("MemoraX Code reminder:") < context.indexOf("MemoraX Code personal-memory reminder:"));
     assert.ok(context.indexOf("MemoraX Code personal-memory reminder:") < context.indexOf("### reading-papers.md"));
     assert.equal(result.stdout.trim().split(/\r?\n/).length, 1);
@@ -150,6 +157,7 @@ test("tracked unignored symlinked and oversized procedure files are skipped", as
       const context = reminderContext(result.stdout);
       assert.match(context, /^MemoraX Code reminder:/);
       assert.doesNotMatch(context, new RegExp(`${name} content must not appear`));
+      assert.doesNotMatch(context, /Natural final-answer mention/);
     }
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -200,6 +208,7 @@ test("procedure context remains bounded", async () => {
       prompt: "first prompt",
     }, { MEMORAX_CODE_HOME: memoraxCodeHome });
     const context = reminderContext(result.stdout);
+    assert.ok(context.includes("Active repo-scoped procedure memories"));
     const procedureContext = context.slice(context.indexOf("Active repo-scoped procedure memories"));
     assert.match(procedureContext, /Additional procedure memory was omitted/);
     assert.ok(procedureContext.length <= 4000);

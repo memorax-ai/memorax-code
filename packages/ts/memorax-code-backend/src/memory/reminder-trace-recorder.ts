@@ -9,6 +9,7 @@ import {
   traceContextFromHookBody,
   traceContextFromOpenCodeHookBody,
   traceContextFromCodeBuddyHookBody,
+  traceContextFromTraeHookBody,
   type TraceContext,
 } from "../trace/context.js";
 import { recordTraceEvent } from "../trace/store.js";
@@ -70,6 +71,7 @@ function traceContextForReminder(command: SkillReminderCommand): TraceContext | 
   if (command.client === "claude-code") return traceContextFromClaudeHookBody(command);
   if (command.client === "dsh") return traceContextFromDshSkillReminder(command);
   if (command.client === "codebuddy") return traceContextFromCodeBuddyHookBody(command);
+  if (command.client === "trae") return traceContextFromTraeHookBody(command);
   return traceContextFromOpenCodeHookBody(command);
 }
 
@@ -78,6 +80,7 @@ function reminderSource(command: SkillReminderCommand): string {
   if (command.client === "claude-code") return "claude-hook";
   if (command.client === "dsh") return "dsh-cordis";
   if (command.client === "codebuddy") return "codebuddy-hook";
+  if (command.client === "trae") return "trae-hook";
   return "opencode-plugin";
 }
 

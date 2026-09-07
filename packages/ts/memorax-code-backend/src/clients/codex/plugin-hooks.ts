@@ -180,6 +180,8 @@ async function trustHookSelectionWithContext(
   selectedHooks: CodexHook[],
 ): Promise<void> {
   await withCodexAppServer(context.codexCommand, context.workspace, context.env, async (client) => {
+    // Recheck the reviewed hashes, condition the write on the config version,
+    // then verify trust took effect. Conflicts must not broaden the selection.
     const currentHooks = await listMemoraxCodeHooksFromClient(client, context.workspace);
     const reviewedHooks = exactCurrentHookSelection(currentHooks, selectedHooks);
     const userLayer = await readCodexUserConfigLayer(client, context.workspace);

@@ -6,14 +6,14 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { runBackendStatus } from "../../../dist/lifecycle/backend/status.js";
-import { backendServiceLogs, isProcessAlive, readBackendToken, startBackendService, stopBackendService, terminateProcessTree, writeBackendToken } from "../../../dist/lifecycle/backend/service.js";
+import { backendServiceLogs, isProcessAlive, readBackendToken, startBackendService, stopBackendService, writeBackendToken } from "../../../dist/lifecycle/backend/service.js";
 import { freePort, listen } from "../../support/helpers.mjs";
 
 import {
   pathExists,
   restoreEnv,
   runCli,
-  waitForProcessExit,
+  terminateFixtureBackends,
 } from "../support/backend-service-fixtures.mjs";
 
 test("Backend service manager can start, report logs, and stop a local Backend", async () => {
@@ -45,7 +45,7 @@ test("memorax-code lifecycle serializes concurrent starts without losing PID aut
   const runtimeDir = join(home, "runtime", "backend");
   const pidPath = join(runtimeDir, "backend.pid.json");
   const cliPath = fileURLToPath(new URL("../../../dist/memorax-code.js", import.meta.url));
-  const observedPids = new Set();
+  const observedBackends = new Map();
   try {
     const args = [
       "start",
@@ -62,11 +62,11 @@ test("memorax-code lifecycle serializes concurrent starts without losing PID aut
       assert.equal(started.code, 0, `${started.stdout}\n${started.stderr}`);
       const report = JSON.parse(started.stdout);
       if (Number.isSafeInteger(report.backend?.state?.pid)) {
-        observedPids.add(report.backend.state.pid);
+        observedBackends.set(report.backend.state.pid, report.backend.state);
       }
     }
     const state = JSON.parse(await readFile(pidPath, "utf8"));
-    observedPids.add(state.pid);
+    observedBackends.set(state.pid, state);
     assert.equal(state.version, 1);
     assert.equal(typeof state.instanceId, "string");
     const health = await fetch(`http://127.0.0.1:${port}/health`).then((response) => response.json());
@@ -84,12 +84,11 @@ test("memorax-code lifecycle serializes concurrent starts without losing PID aut
     assert.equal(isProcessAlive(state.pid), false);
   } finally {
     await runCli(cliPath, ["stop", "--json", "--home", home, "--clients", "none"]);
-    for (const pid of observedPids) {
-      if (!isProcessAlive(pid)) continue;
-      terminateProcessTree(pid);
-      await waitForProcessExit(pid);
+    try {
+      await terminateFixtureBackends(observedBackends.values());
+    } finally {
+      await rm(home, { recursive: true, force: true });
     }
-    await rm(home, { recursive: true, force: true });
   }
 });
 

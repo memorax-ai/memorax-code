@@ -64,6 +64,7 @@ async function createFixture(t) {
     "lib/run-entrypoint.mjs",
     "lib/vscode-extension-command.mjs",
     "lib/windows-cli-invocation.mjs",
+    "lib/windows-user-path.mjs",
   ].map(async (relativePath) => {
     const target = join(root, relativePath);
     await mkdir(dirname(target), { recursive: true });

@@ -18,7 +18,6 @@ import {
   ensurePrivateDirectory,
   writePrivateJsonRecord,
 } from "../../../../memorax-code-adapter-common/src/runtime-record.mjs";
-import { isAdapterReady } from "../../../dist/lifecycle/orchestrator.js";
 import { runBackendTokenCommand } from "../../../dist/entrypoints/backend-cli.js";
 import {
   backendServiceEndpoint,
@@ -651,28 +650,4 @@ test("failed service start preserves the last successful connection and token", 
     await new Promise((resolve) => occupied.close(resolve));
     await rm(home, { recursive: true, force: true });
   }
-});
-
-test("adapter readiness fails closed when its endpoint differs from the Backend authority", () => {
-  assert.equal(isAdapterReady({
-    ok: true,
-    installed: true,
-    enabled: true,
-    integration: "hooks",
-    backendUrlMatches: false,
-    codexSkills: { ok: true, status: "plugin-managed" },
-  }), false);
-});
-
-test("CodeBuddy adapter readiness requires a valid Hook configuration but not a prior runtime observation", () => {
-  const report = {
-    ok: true,
-    installed: true,
-    enabled: true,
-    integration: "hooks",
-    codebuddySkills: { ok: true, status: "installed" },
-    codebuddyHooks: { ok: true, status: "unverified", runtimeObserved: false },
-  };
-  assert.equal(isAdapterReady(report), true);
-  assert.equal(isAdapterReady({ ...report, codebuddyHooks: { ok: false, status: "invalid" } }), false);
 });

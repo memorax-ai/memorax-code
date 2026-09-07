@@ -23,7 +23,7 @@ try {
     runner: "dsh",
     finalMessageSource: "stdout",
     memorySkillInvocation: "/memorax-code",
-    validatorPath: resolve(pluginRoot, "skills/memorax-code/scripts/validate_memory.py"),
+    validatorPath: resolve(pluginRoot, "skills/memorax-code/scripts/repo-memory.mjs"),
     evaluateRepository,
     createCommand({ prompt }) {
       return buildDshCommand(runtime.dshCommand, ["--profile", profile, prompt]);

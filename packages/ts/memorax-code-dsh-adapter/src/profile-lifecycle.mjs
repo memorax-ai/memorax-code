@@ -80,14 +80,8 @@ const PROFILE_BUNDLE_FILES = Object.freeze([
   "skills/memorax-code/references/repo-read.md",
   "skills/memorax-code/references/repo-templates.md",
   "skills/memorax-code/references/repo-update.md",
-  "skills/memorax-code/scripts/collect_all.py",
-  "skills/memorax-code/scripts/detect_updates.py",
-  "skills/memorax-code/scripts/git_commit_facets.py",
-  "skills/memorax-code/scripts/github_resource_facets.py",
-  "skills/memorax-code/scripts/gitlab_resource_facets.py",
-  "skills/memorax-code/scripts/prepare_repo_memory.py",
-  "skills/memorax-code/scripts/user_profile_memory.py",
-  "skills/memorax-code/scripts/validate_memory.py",
+  "skills/memorax-code/scripts/repo-memory.mjs",
+  "skills/memorax-code/scripts/user-profile-memory.mjs",
   "src/index.mjs",
   "src/backend-client.mjs",
   "src/dsh-message.mjs",
@@ -98,6 +92,7 @@ const PROFILE_BUNDLE_FILES = Object.freeze([
   "src/plugin.mjs",
   "src/protocol.mjs",
   "src/runtime-state.mjs",
+  "memorax-code-adapter-common/src/backend-command.mjs",
   "memorax-code-adapter-common/src/backend-connection.mjs",
   "memorax-code-adapter-common/src/config-utils.mjs",
   "memorax-code-adapter-common/src/setup-completion.mjs",
@@ -572,6 +567,8 @@ function ensureDshPluginInstalledUnlocked(paths, options) {
     updatedAt: new Date().toISOString(),
   };
   atomicWriteJson(paths.statePath, nextState);
+  // A failed reconciliation may reinstall the prior bundle during rollback,
+  // so retire old generations only after every target Profile succeeds.
   if (failedProfiles.length === 0 && managedProfiles.length > 0) {
     cleanupRuntimeGenerations(paths.runtimeRoot, runtimeBundleRoot);
   }
@@ -661,6 +658,8 @@ function rollbackDshPluginReconciliation(paths, options, state, mutatedProfiles,
         updatedAt: new Date().toISOString(),
       }
     : state;
+  // Keep runtime authority disabled until installed Profiles have been
+  // verified against the prior bundle, even if native rollback commands succeeded.
   const verificationState = rollbackState.enabled
     ? { ...rollbackState, enabled: false }
     : rollbackState;

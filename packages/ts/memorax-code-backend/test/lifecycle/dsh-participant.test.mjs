@@ -129,6 +129,8 @@ test("DSH recovery revision is serialized with a concurrent user stop and stale 
     assert.equal(profileHasAdapter(fixture.profilePath), false);
     assert.equal(existsSync(fixture.pidPath), false);
     const calls = readFileSync(fixture.dshLog, "utf8").trim().split("\n");
+    assert.ok(calls.includes("add-end enabled=false"));
+    assert.ok(calls.includes("remove enabled=false"));
     assert.ok(calls.indexOf("add-end enabled=false") < calls.indexOf("remove enabled=false"));
 
     const stateBeforeStaleRecovery = readFileSync(fixture.statePath, "utf8");

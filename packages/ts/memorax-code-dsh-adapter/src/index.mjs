@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   isMemorySkillReminderDue,
+  MEMORY_IMPACT_REMINDER_CONTEXT,
   memorySkillReminderContext,
   personalMemoryReminderContext,
   resolveMemorySkillReminderIntervalTurns,
@@ -44,6 +45,7 @@ export function apply(ctx) {
     createUserMessage: createDshUserMessage,
     intervalTurns,
     isReminderDue: isMemorySkillReminderDue,
+    memoryImpactContext: MEMORY_IMPACT_REMINDER_CONTEXT,
     memoryReminderContext: memorySkillReminderContext("/memorax-code"),
     loadPersonalContext: (input, options) => loadDshPersonalContext(input, {
       ...options,

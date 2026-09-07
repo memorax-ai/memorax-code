@@ -1,14 +1,13 @@
 # @memorax/memorax-code
 
-MemoraX Code adds persistent coding memory to Codex, Claude Code, DeepSeek
-Harness, and OpenCode.
+MemoraX Code adds persistent coding memory to Codex, Claude Code,
+CodeBuddy/WorkBuddy, DeepSeek Harness, OpenCode, and Trae.
 
 ## Requirements
 
 - Node.js 20 or newer (Node.js 24 LTS recommended) and npm.
-- At least one of Codex, Claude Code, DeepSeek Harness, OpenCode Desktop, or
-  the OpenCode CLI.
-- Python 3 only for Repo Memory operations.
+- At least one of Codex, Claude Code, CodeBuddy/WorkBuddy, DeepSeek Harness,
+  OpenCode Desktop or CLI, or Trae.
 
 ## Install
 
@@ -54,9 +53,22 @@ Both setup paths automatically detect supported coding agents. Later setup
 runs reuse a complete saved configuration; use
 `memorax-code setup --reconfigure` to replace it.
 
+On Windows, interactive setup also verifies npm's global command directory and
+adds it to the current setup process and the Windows user `PATH` when needed.
+If the current shell cannot find `memorax-code`, bootstrap setup with:
+
+```powershell
+$NpmGlobalBin = (npm prefix -g).Trim()
+$env:Path = "$NpmGlobalBin;$env:Path"
+& (Join-Path $NpmGlobalBin "memorax-code.cmd") setup
+```
+
 After the first installation, restart or refresh the detected coding agents
 before opening a new session. In Codex, enable **MemoraX Code Codex Adapter**
 from Plugins or `/plugins` if it is not already enabled.
+For Trae, open Settings and enable **Global Hooks** once before starting a new
+Trae session; setup installs the managed Hooks and Skill but cannot switch that
+Trae setting reliably.
 
 ## Verify
 
@@ -65,6 +77,8 @@ memorax-code --version
 memorax-code status
 memorax-cli status
 ```
+
+In Windows PowerShell, use `memorax-cli.cmd status`.
 
 For configuration or troubleshooting, see the documentation shipped with the
 package:

@@ -229,6 +229,8 @@ function turnMetadataDisposition(
   const key = turnKey(completion.key);
   const current = turns.get(key);
   if (!current) return "absent";
+  // Scope resolution can yield while the same Turn key is re-registered.
+  // Consume only the completion's original snapshot, preserving replacement state.
   if (!consume || !completion.metadata || current !== completion.metadata) return "retained";
   turns.delete(key);
   return "consumed";

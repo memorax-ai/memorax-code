@@ -142,10 +142,11 @@ test("setup propagates the setup process exit code", async () => {
 test("update reconciles clients and verified Hooks or migrates a configured legacy install", {
   skip: process.platform === "win32",
 }, async (t) => {
-  for (const [name, completed, configured = false] of [
+  for (const [name, completed, configured = false, writeBackendPid = true] of [
     ["setup incomplete", false],
     ["configured legacy install", false, true],
-    ["setup complete", true],
+    ["setup complete with restored Backend PID", true],
+    ["setup complete with stopped Backend", true, false, false],
   ]) {
     await t.test(name, async () => {
       const fixture = await createPackageFixture();
@@ -157,9 +158,11 @@ test("update reconciles clients and verified Hooks or migrates a configured lega
           "#!/usr/bin/env node",
           "import { mkdirSync, writeFileSync } from 'node:fs';",
           "import { dirname, join } from 'node:path';",
-          "const path = join(process.env.MEMORAX_CODE_HOME, 'runtime', 'backend', 'backend.pid.json');",
-          "mkdirSync(dirname(path), { recursive: true });",
-          "writeFileSync(path, JSON.stringify({ pid: process.pid }) + '\\n');",
+          "if (process.env.MEMORAX_CODE_TEST_WRITE_BACKEND_PID === '1') {",
+          "  const path = join(process.env.MEMORAX_CODE_HOME, 'runtime', 'backend', 'backend.pid.json');",
+          "  mkdirSync(dirname(path), { recursive: true });",
+          "  writeFileSync(path, JSON.stringify({ pid: process.pid }) + '\\n');",
+          "}",
           "",
         ].join("\n"));
         await chmod(npmModule, 0o755);
@@ -172,6 +175,7 @@ test("update reconciles clients and verified Hooks or migrates a configured lega
           assumeInteractive: true,
           extraEnv: {
             PATH: `${fakeBin}${delimiter}${process.env.PATH ?? ""}`,
+            MEMORAX_CODE_TEST_WRITE_BACKEND_PID: writeBackendPid ? "1" : "0",
             ...(configured ? { MEMORAX_CODE_TEST_CONFIGURED: "1" } : {}),
           },
         });
@@ -214,9 +218,34 @@ test("root help documents setup and update", async () => {
     assert.match(result.stdout, /^  setup\s+Run or repair the interactive setup$/m);
     assert.match(result.stdout, /^  account\s+Manage local MemoraX account information$/m);
     assert.match(result.stdout, /^  update\s+Update the globally installed npm package$/m);
+    assert.doesNotMatch(result.stdout, /repo-memory|user-profile/);
     assert.match(result.stdout, /Run `memorax-code setup` to complete first-time setup/);
     assert.equal(await pathExists(fixture.setupLogPath), false);
     assert.equal(await pathExists(fixture.backendLogPath), false);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("user-profile preserves piped helper output and exit status without requiring setup", async () => {
+  const fixture = await createPackageFixture();
+  try {
+    const helperEntrypoint = join(fixture.root, "lib", "memorax-code-backend", "dist", "user-profile.js");
+    await writeFile(helperEntrypoint, [
+      "process.stdout.write(JSON.stringify({ args: process.argv.slice(3), description: 'x'.repeat(128 * 1024) }) + '\\n');",
+      "process.exitCode = 7;",
+      "",
+    ].join("\n"));
+    const args = ["list", "--repo", join(fixture.root, "repo with spaces")];
+
+    const result = runCli(fixture, ["user-profile", ...args]);
+
+    assert.equal(result.error, undefined);
+    assert.equal(result.status, 7, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), { args, description: "x".repeat(128 * 1024) });
+    assert.equal(await pathExists(fixture.setupLogPath), false);
+    assert.equal(await pathExists(fixture.backendLogPath), false);
+    assert.equal(await pathExists(join(fixture.memoraxCodeHome, setupCompletionRelativePath)), false);
   } finally {
     await fixture.cleanup();
   }
@@ -333,6 +362,7 @@ async function createPackageFixture() {
     "lib/run-entrypoint.mjs",
     "lib/vscode-extension-command.mjs",
     "lib/windows-cli-invocation.mjs",
+    "lib/windows-user-path.mjs",
   ];
   for (const relativePath of copiedFiles) {
     const target = join(root, relativePath);

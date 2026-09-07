@@ -6,7 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { enableCodeBuddyAdapter, codeBuddyInstallPath } from "../src/config.mjs";
 
-test("CodeBuddy repo memory launcher uses non-persistent print mode", async () => {
+test("CodeBuddy repo memory launcher pins its plugin and uses non-persistent print mode", async () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "memorax-codebuddy-repo-memory-dry-run-")));
   const repo = join(root, "repo");
   initRepo(repo);
@@ -22,8 +22,10 @@ test("CodeBuddy repo memory launcher uses non-persistent print mode", async () =
   const payload = JSON.parse(result.stdout);
   assert.equal(payload.runner, "codebuddy");
   assert.equal(payload.finalMessageSource, "stdout");
-  assert.deepEqual(payload.command.slice(0, 6), [
+  assert.deepEqual(payload.command.slice(0, 8), [
     command,
+    "--plugin-dir",
+    codeBuddyInstallPath(home),
     "--print",
     "--output-format",
     "text",
@@ -43,7 +45,15 @@ test("CodeBuddy repo memory worker materializes and validates a repository bundl
   const home = join(root, "workbuddy");
   const memoraxCodeHome = join(root, "memorax-code");
   const command = writeFakeCodeBuddy(join(root, "codebuddy"));
-  await enableCodeBuddyAdapter({ codeBuddyHome: home, codeBuddyCommand: command });
+  const memoraxCodeCommand = realpathSync(new URL(
+    "../../memorax-code-backend/dist/repo-memory.js",
+    import.meta.url,
+  ));
+  await enableCodeBuddyAdapter({
+    codeBuddyHome: home,
+    codeBuddyCommand: command,
+    memoraxCodeCommand,
+  });
   const result = runInstalledJob(home, ["start", "--mode", "build", "--repo", repo], {
     MEMORAX_CODE_HOME: memoraxCodeHome,
     MEMORAX_CODE_CODEBUDDY_COMMAND: command,

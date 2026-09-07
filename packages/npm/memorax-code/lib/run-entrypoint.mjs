@@ -104,6 +104,12 @@ export async function runCodeBuddyAdapterCli() {
   await import(pathToFileURL(entrypoint).href);
 }
 
+export async function runTraeAdapterCli() {
+  if (!ensureSupportedNodeRuntime()) return;
+  const entrypoint = join(packageRoot, "lib", "memorax-code-trae-adapter", "src", "cli.mjs");
+  await import(pathToFileURL(entrypoint).href);
+}
+
 function ensureSupportedNodeRuntime() {
   const message = unsupportedNodeVersionMessage();
   if (!message) return true;

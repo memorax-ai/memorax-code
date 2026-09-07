@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import fsPromises, { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { test } from "node:test";
@@ -59,13 +59,12 @@ test("memory CLI status reports configured MemoraX and enabled add gate by defau
   assert.equal(result.addEnabled, true);
 });
 
-test("memory CLI config-only status does not resolve or persist workspace scope", async () => {
+test("memory CLI config-only status does not resolve or persist workspace scope", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-cli-config-only-"));
   const memoraxCodeHome = join(root, "memorax-code-home");
   const workspace = join(root, "workspace");
   await mkdir(workspace, { recursive: true });
-
-  const result = await runMemoryCli(["status", "--config-only"], {
+  const options = {
     cwd: workspace,
     env: {
       MEMORAX_CODE_HOME: memoraxCodeHome,
@@ -73,15 +72,29 @@ test("memory CLI config-only status does not resolve or persist workspace scope"
       MEMORAX_CODE_MEMORAX_API_KEY: "secret",
       MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
     },
-  });
+  };
+  const realpath = t.mock.method(fsPromises, "realpath");
+  const workspaceProbes = () => realpath.mock.calls.filter(({ arguments: args }) => args[0] === workspace);
 
-  assert.equal(result.ok, true);
-  assert.equal(result.action, "memory.status");
-  assert.equal(result.provider, "memory.memorax");
-  assert.equal(result.config.configured, true);
-  assert.equal("repository" in result, false);
-  assert.equal(result.workspace, undefined);
-  assert.equal(result.effectiveUserId, undefined);
+  try {
+    const result = await runMemoryCli(["status", "--config-only"], options);
+    assert.equal(result.ok, true);
+    assert.equal(result.action, "memory.status");
+    assert.equal(result.provider, "memory.memorax");
+    assert.equal(result.config.configured, true);
+    assert.equal("repository" in result, false);
+    assert.equal(result.workspace, undefined);
+    assert.equal(result.effectiveUserId, undefined);
+    assert.equal(workspaceProbes().length, 0, "config-only status must not probe the workspace");
+    assert.deepEqual(await readdir(root), ["workspace"]);
+    assert.deepEqual(await readdir(workspace), []);
+
+    const scoped = await runMemoryCli(["status"], options);
+    assert.equal(scoped.workspaceScope, "bound");
+    assert.ok(workspaceProbes().length > 0, "ordinary status must exercise the workspace probe");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("memory CLI searches within a readable non-Git workspace scope", async () => {

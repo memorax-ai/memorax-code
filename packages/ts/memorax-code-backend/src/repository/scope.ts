@@ -18,6 +18,8 @@ export type RepositoryMemoryScopeFallbackReason = "git_metadata_invalid";
 export type RepositoryMemoryScope = Readonly<{
   schemaVersion: "workspace-memory-scope.v1";
   baseUserId: string;
+  // Same-named repositories may share the remote namespace in effectiveUserId.
+  // repositoryKey separately identifies the local scope used for session binding.
   effectiveUserId: string;
   repositoryKey: string;
   repositorySlug: string;
@@ -248,6 +250,9 @@ async function resolveGitRepository(workspace: string): Promise<GitRepositoryRes
       workspaceRoot: marker.workspaceRoot,
     };
   } catch (error) {
+    // Only a direct .git directory can anchor folder fallback for malformed or
+    // incomplete metadata. An invalid .git file pointer or a permission error
+    // leaves scope authority unverified, so resolution must fail closed.
     if (directDirectoryMarker && canFallbackFromDirectGitDirectory(error)) {
       return {
         kind: "degraded",
@@ -532,20 +537,25 @@ function repositoryNameFromRemoteUrl(value: string): string | undefined {
     || raw.startsWith("./")
     || raw.startsWith("../")
     || raw.startsWith("\\\\")
-    || /^[a-zA-Z]:[\\/]/.test(raw)
+    || /^[a-zA-Z]:/.test(raw)
+    || /^file:/i.test(raw)
   ) return undefined;
 
-  try {
-    const parsed = new URL(raw);
-    if (!["http:", "https:", "ssh:", "git:", "git+ssh:", "git+https:"].includes(parsed.protocol)) {
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(raw)) {
+    try {
+      const parsed = new URL(raw);
+      if (!["http:", "https:", "ssh:", "git:", "git+ssh:", "git+https:"].includes(parsed.protocol)) {
+        return undefined;
+      }
+      if (!parsed.hostname.trim()) return undefined;
+      return repositoryNameFromRemotePath(parsed.pathname);
+    } catch {
       return undefined;
     }
-    if (!parsed.hostname.trim()) return undefined;
-    return repositoryNameFromRemotePath(parsed.pathname);
-  } catch {
-    const scp = /^(?:[^@/:\s]+@)?[^/:\s]+:(.+)$/.exec(raw);
-    return scp?.[1] ? repositoryNameFromRemotePath(scp[1]) : undefined;
   }
+  // A double colon denotes Git's remote-helper syntax, not an SCP address.
+  const scp = /^(?:[^@/:\s]+@)?[^/:\s]+:(?!:)(.+)$/.exec(raw);
+  return scp?.[1] ? repositoryNameFromRemotePath(scp[1]) : undefined;
 }
 
 function repositoryNameFromRemotePath(value: string): string | undefined {

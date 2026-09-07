@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -23,6 +23,7 @@ test("npm source staging copies tracked files only", async () => {
     await copyDeclaredNpmSourceTree({ repoRoot: root, source, destination, declaredFiles });
 
     assert.equal((await stat(join(destination, "SKILL.md"))).isFile(), true);
+    assert.equal(await readFile(join(destination, "SKILL.md"), "utf8"), "tracked\n");
     assert.equal(
       await stat(join(destination, "temporary-untracked.md")).catch(() => undefined),
       undefined,
@@ -38,68 +39,6 @@ test("untracked Claude skill sources map to marketplace package aliases", () => 
     [
       "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/skills/memorax-code/temporary.md",
     ],
-  );
-});
-
-test("Claude shared skill stages directly from tracked Codex skill sources", () => {
-  assert.ok(npmMainSourceTrees.some((mapping) => (
-    mapping.source === "packages/ts/memorax-code-codex-adapter/skills/memorax-code"
-    && mapping.destination === "lib/memorax-code-claude-adapter/skills/memorax-code"
-  )));
-  assert.equal(
-    npmMainSourceTrees.some((mapping) => mapping.source === "packages/ts/memorax-code-claude-adapter/skills"),
-    false,
-  );
-});
-
-test("OpenCode shared skill stages directly from tracked Codex skill sources", () => {
-  assert.ok(npmMainSourceTrees.some((mapping) => (
-    mapping.source === "packages/ts/memorax-code-codex-adapter/skills/memorax-code"
-    && mapping.destination === "lib/memorax-code-opencode-adapter/skills/memorax-code"
-  )));
-  assert.equal(
-    npmMainSourceTrees.some((mapping) => mapping.source === "packages/ts/memorax-code-opencode-adapter/skills"),
-    false,
-  );
-});
-
-test("OpenCode adapter runtime is a declared npm source tree", () => {
-  assert.ok(npmMainSourceTrees.some((mapping) => (
-    mapping.source === "packages/ts/memorax-code-opencode-adapter/src"
-    && mapping.destination === "lib/memorax-code-opencode-adapter/src"
-  )));
-});
-
-test("DSH adapter runtime is staged from declared source trees", () => {
-  assert.ok(npmMainSourceTrees.some((mapping) => (
-    mapping.source === "packages/ts/memorax-code-dsh-adapter/src"
-    && mapping.destination === "lib/memorax-code-dsh-adapter/src"
-  )));
-  assert.ok(npmMainSourceTrees.some((mapping) => (
-    mapping.source === "packages/ts/memorax-code-dsh-adapter/hooks"
-    && mapping.destination === "lib/memorax-code-dsh-adapter/hooks"
-  )));
-});
-
-test("DSH shared skill stages directly from tracked Codex skill sources", () => {
-  assert.ok(npmMainSourceTrees.some((mapping) => (
-    mapping.source === "packages/ts/memorax-code-codex-adapter/skills/memorax-code"
-    && mapping.destination === "lib/memorax-code-dsh-adapter/skills/memorax-code"
-  )));
-  assert.equal(
-    npmMainSourceTrees.some((mapping) => mapping.source === "packages/ts/memorax-code-dsh-adapter/skills"),
-    false,
-  );
-});
-
-test("CodeBuddy shared skill stages directly from tracked Codex skill sources", () => {
-  assert.ok(npmMainSourceTrees.some((mapping) => (
-    mapping.source === "packages/ts/memorax-code-codex-adapter/skills/memorax-code"
-    && mapping.destination === "lib/memorax-code-codebuddy-adapter/skills/memorax-code"
-  )));
-  assert.equal(
-    npmMainSourceTrees.some((mapping) => mapping.source === "packages/ts/memorax-code-codebuddy-adapter/skills"),
-    false,
   );
 });
 

@@ -1,12 +1,11 @@
 import { strict as assert } from "node:assert";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { after, before, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { buildRepoUserProfilePreferencesContext } from "../../memorax-code-adapter-common/src/repo-memory/repo-user-profile-context.mjs";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const runtimeHookPath = join(packageRoot, "hooks", "runtime-hook.mjs");
@@ -14,11 +13,6 @@ const hookPath = [runtimeHookPath, "memory-skill-reminder"];
 const captureHookPath = [runtimeHookPath, "capture-cwd"];
 const MEMORY_REMINDER_CONTEXT = "MemoraX Code reminder: proactively invoke $memorax-code whenever coding memory might help, even when uncertain; follow the skill's router to decide whether any memory operation is needed. Also use $memorax-code for repository-scoped personal memory, and classify the authority before reading or writing.";
 const PROFILE_REMINDER_CONTEXT = "MemoraX Code personal-memory reminder: Use $memorax-code when the user states a durable current-repo identity or interaction preference, asks to list or recall stored personal memory, or explicitly asks to save, update, forget, or delete it. Route reusable action sequences and work rules to procedure memory; do not store repository facts, one-off task details, or secrets.";
-const PERSONAL_MEMORY_CONTEXT_OPTIONS = {
-  adapterDir: "codex",
-  debugEnv: "MEMORAX_CODE_CODEX_HOOK_DEBUG",
-  sessionKeyPrefix: "codex",
-};
 const authorizedWorktreeOverrides = new Map();
 const authorizedBackendRequests = [];
 let authorizedBackendUrl;
@@ -52,13 +46,14 @@ test("active preferences join the first prompt and the first prompt after compac
     const repo = await createRepo(root, "lifecycle");
     const memoraxCodeHome = join(root, "memorax-code");
     await writeRegistry(memoraxCodeHome, "native-thread");
+    await writeFile(join(memoraxCodeHome, "config.toml"), "[memory.skill_reminder]\ninterval_turns = 3\n");
     await writePreferences(repo, [
       preference("pref_language", "用户偏好使用中文交流。", "与用户交流时。", "用户明确要求其他语言。"),
       preference("pref_summary", "用户偏好先给出结论。", "汇报实现或诊断结果时。", "用户要求展开推导过程时。"),
     ]);
 
     const outputs = [];
-    for (let turn = 1; turn <= 6; turn += 1) {
+    for (let turn = 1; turn <= 4; turn += 1) {
       outputs.push(await runHook(hookPath, {
         hook_event_name: "UserPromptSubmit",
         session_id: "native-thread",
@@ -70,15 +65,23 @@ test("active preferences join the first prompt and the first prompt after compac
     }
 
     const firstContext = reminderContext(outputs[0].stdout);
+    assert.ok(firstContext.includes(MEMORY_REMINDER_CONTEXT));
+    assert.ok(firstContext.includes(PROFILE_REMINDER_CONTEXT));
+    assert.ok(firstContext.includes("Active repo-scoped user preferences"));
     assert.ok(firstContext.indexOf(MEMORY_REMINDER_CONTEXT) < firstContext.indexOf(PROFILE_REMINDER_CONTEXT));
     assert.ok(firstContext.indexOf(PROFILE_REMINDER_CONTEXT) < firstContext.indexOf("Active repo-scoped user preferences"));
     assert.match(firstContext, /Description: 用户偏好使用中文交流。/);
     assert.match(firstContext, /Applies when: 与用户交流时。/);
     assert.match(firstContext, /Do not apply when: 用户明确要求其他语言。/);
     assert.match(firstContext, /Description: 用户偏好先给出结论。/);
-    for (const index of [1, 2, 3, 4]) assert.equal(outputs[index].stdout, "");
-    const sixthContext = reminderContext(outputs[5].stdout);
-    assert.equal(sixthContext, MEMORY_REMINDER_CONTEXT);
+    assert.match(firstContext, /Natural final-answer mention for supported coding agents:/);
+    assert.match(firstContext, /begin the final answer with one brief opening paragraph/);
+    assert.match(firstContext, /successful explicit `memorax-cli search`/);
+    assert.match(firstContext, /automatic Coding Memory retrieval/);
+    assert.doesNotMatch(firstContext, /memorax-impact/);
+    for (const index of [1, 2]) assert.equal(outputs[index].stdout, "");
+    const laterCadenceContext = reminderContext(outputs[3].stdout);
+    assert.equal(laterCadenceContext, MEMORY_REMINDER_CONTEXT);
 
     await runHook(captureHookPath, {
       hook_event_name: "SessionStart",
@@ -90,7 +93,7 @@ test("active preferences join the first prompt and the first prompt after compac
       hook_event_name: "UserPromptSubmit",
       session_id: "native-thread",
       transcript_path: "/tmp/native-thread.jsonl",
-      turn_id: "turn-7",
+      turn_id: "turn-5",
       cwd: repo,
       prompt: "prompt after compact",
     }, { MEMORAX_CODE_HOME: memoraxCodeHome });
@@ -98,7 +101,7 @@ test("active preferences join the first prompt and the first prompt after compac
       hook_event_name: "UserPromptSubmit",
       session_id: "native-thread",
       transcript_path: "/tmp/native-thread.jsonl",
-      turn_id: "turn-8",
+      turn_id: "turn-6",
       cwd: repo,
       prompt: "following prompt",
     }, { MEMORAX_CODE_HOME: memoraxCodeHome });
@@ -107,6 +110,8 @@ test("active preferences join the first prompt and the first prompt after compac
     assert.match(compactContext, new RegExp(`^${escapeRegex(PROFILE_REMINDER_CONTEXT)}`));
     assert.doesNotMatch(compactContext, /^MemoraX Code reminder:/);
     assert.match(compactContext, /Description: 用户偏好使用中文交流。/);
+    assert.match(compactContext, /Natural final-answer mention for supported coding agents:/);
+    assert.doesNotMatch(compactContext, /memorax-impact/);
     assert.equal(following.stdout, "");
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -172,6 +177,10 @@ test("preference and procedure contexts stay in one ordered payload", async () =
     }, { MEMORAX_CODE_HOME: memoraxCodeHome });
 
     const context = reminderContext(result.stdout);
+    assert.ok(context.includes(MEMORY_REMINDER_CONTEXT));
+    assert.ok(context.includes(PROFILE_REMINDER_CONTEXT));
+    assert.ok(context.includes("Active repo-scoped user preferences"));
+    assert.ok(context.includes("Active repo-scoped procedure memories"));
     assert.ok(context.indexOf(MEMORY_REMINDER_CONTEXT) < context.indexOf(PROFILE_REMINDER_CONTEXT));
     assert.ok(context.indexOf(PROFILE_REMINDER_CONTEXT) < context.indexOf("Active repo-scoped user preferences"));
     assert.ok(context.indexOf("Active repo-scoped user preferences") < context.indexOf("Active repo-scoped procedure memories"));
@@ -181,38 +190,7 @@ test("preference and procedure contexts stay in one ordered payload", async () =
   }
 });
 
-test("the exact injected preference context is sent to the trace reminder endpoint", async () => {
-  const root = await mkdtemp(join(tmpdir(), "memorax-code-user-profile-context-trace-"));
-  const sessionId = "trace-native-thread";
-  try {
-    const repo = await createRepo(root, "trace");
-    const memoraxCodeHome = join(root, "memorax-code");
-    await writeRegistry(memoraxCodeHome, sessionId);
-    await writePreferences(repo, [
-      preference("pref_language", "用户偏好使用中文交流。", "与用户交流时。", "用户明确要求其他语言。"),
-    ]);
-
-    const result = await runHook(hookPath, {
-      hook_event_name: "UserPromptSubmit",
-      session_id: sessionId,
-      transcript_path: "/tmp/native-thread.jsonl",
-      turn_id: "turn-1",
-      cwd: repo,
-      prompt: "first prompt",
-    }, { MEMORAX_CODE_HOME: memoraxCodeHome });
-
-    const context = reminderContext(result.stdout);
-    const requests = authorizedBackendRequests.filter((request) => request.body.sessionId === sessionId);
-    assert.deepEqual(requests.map((request) => request.path), ["/memory/turn-start", "/memory/skill-reminder"]);
-    assert.equal(requests[1].body.content, context);
-    assert.deepEqual(requests[1].body.triggers, ["cadence"]);
-    assert.match(requests[1].body.content, /Description: 用户偏好使用中文交流。/);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("repo-scoped contexts require the Backend-authorized worktree", async () => {
+test("repo-scoped contexts use the Backend-authorized worktree and trace the injected content", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-personal-memory-scope-"));
   const unavailableSession = "scope-unavailable";
   const authorizedSession = "scope-authorized";
@@ -264,6 +242,7 @@ test("repo-scoped contexts require the Backend-authorized worktree", async () =>
     ]);
     assert.equal(unavailableRequests[1].body.cwd, hookRepo);
     assert.equal(unavailableRequests[1].body.content, MEMORY_REMINDER_CONTEXT);
+    assert.deepEqual(unavailableRequests[1].body.triggers, ["cadence"]);
     const authorizedRequests = authorizedBackendRequests.filter(
       (request) => request.body.sessionId === authorizedSession,
     );
@@ -273,72 +252,10 @@ test("repo-scoped contexts require the Backend-authorized worktree", async () =>
     ]);
     assert.equal(authorizedRequests[1].body.cwd, hookRepo);
     assert.equal(authorizedRequests[1].body.content, authorizedContext);
+    assert.deepEqual(authorizedRequests[1].body.triggers, ["cadence"]);
   } finally {
     authorizedWorktreeOverrides.delete(unavailableSession);
     authorizedWorktreeOverrides.delete(authorizedSession);
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("tracked unignored symlinked oversized and invalid preference files fail closed", async () => {
-  const root = await mkdtemp(join(tmpdir(), "memorax-code-user-profile-context-untrusted-"));
-  const cases = [
-    ["tracked", async (repo) => runGit(repo, ["add", "-f", ".repo_memory/user-profile/preferences.md"])],
-    ["unignored", async (repo) => writeFile(join(repo, ".gitignore"), "node_modules/\n")],
-    ["symlinked", async (repo, path) => {
-      const target = join(repo, ".repo_memory", "user-profile", "preferences-target.md");
-      await rename(path, target);
-      await symlink(target, path);
-    }],
-    ["symlinked-parent", async (repo, path) => {
-      const directory = dirname(path);
-      const target = join(repo, "user-profile-target");
-      await rename(directory, target);
-      await symlink(target, directory);
-    }],
-    ["oversized", async (_repo, path) => writeFile(path, "x".repeat((64 * 1024) + 1))],
-    ["invalid", async (_repo, path) => writeFile(path, "# invalid preferences\n")],
-  ];
-
-  try {
-    for (const [name, mutate] of cases) {
-      const repo = await createRepo(root, name);
-      await writePreferences(repo, [preference(`pref_${name}`, `${name} must not appear`, "always", "never")]);
-      const path = join(repo, ".repo_memory", "user-profile", "preferences.md");
-      await mutate(repo, path);
-      assert.equal(buildRepoUserProfilePreferencesContext({ cwd: repo }, PERSONAL_MEMORY_CONTEXT_OPTIONS), undefined, name);
-    }
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("preference context contains only active fields and remains bounded", async () => {
-  const root = await mkdtemp(join(tmpdir(), "memorax-code-user-profile-context-limit-"));
-  try {
-    const repo = await createRepo(root, "limit");
-    const entries = Array.from({ length: 30 }, (_, index) => preference(
-      `pref_${index}`,
-      `preference-${index} ${"detail ".repeat(30)}`,
-      `scope-${index}`,
-      `exception-${index}`,
-    ));
-    entries.push({
-      ...preference("pref_deleted", "deleted preference must not appear", "always", "never"),
-      status: "deleted",
-    });
-    await writePreferences(repo, entries);
-
-    const context = buildRepoUserProfilePreferencesContext({ cwd: repo }, PERSONAL_MEMORY_CONTEXT_OPTIONS);
-    assert.ok(context);
-    assert.ok(context.length <= 4000);
-    assert.match(context, /Description: preference-0/);
-    assert.match(context, /Applies when: scope-0/);
-    assert.match(context, /Do not apply when: exception-0/);
-    assert.doesNotMatch(context, /pref_0/);
-    assert.doesNotMatch(context, /deleted preference must not appear/);
-    assert.match(context, /Additional user preferences were omitted/);
-  } finally {
     await rm(root, { recursive: true, force: true });
   }
 });

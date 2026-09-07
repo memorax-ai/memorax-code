@@ -6,6 +6,8 @@ const PORTABLE_COMMAND = 'node "${CODEBUDDY_PLUGIN_ROOT}/hooks/runtime-hook.mjs"
 
 export function codeBuddyHookCommand(pluginRoot, platform = process.platform) {
   if (platform !== "win32") return PORTABLE_COMMAND;
+  // WorkBuddy may expose a POSIX-style CODEBUDDY_PLUGIN_ROOT to a native Windows
+  // shell. Use the installed native path instead of relying on that variable.
   return `node "${win32.join(pluginRoot, "hooks", "runtime-hook.mjs").replaceAll("\\", "/")}" turn`;
 }
 

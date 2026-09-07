@@ -116,48 +116,39 @@ test("plugin package exposes the current Hook and memory entrypoints", async () 
   assert.match(memorySkill, /name: memorax-code/);
 });
 
-test("Hook adapter enable and disable never read or rewrite Codex provider config", async () => {
-  const { codexHome, memoraxCodeHome } = await fixture();
-  const configPath = join(codexHome, "config.toml");
-  const original = [
+for (const [provider, original] of [
+  ["official", 'model_provider = "openai"\n'],
+  ["custom", [
     'model_provider = "custom"',
     "[model_providers.custom]",
     'base_url = "https://provider.example/v1"',
     'wire_api = "responses"',
     "",
-  ].join("\n");
-  await writeFile(configPath, original);
-  await writeCachedPlugin(codexHome);
-
-  const enabled = enableCodexAdapter({ codexHome, memoraxCodeHome });
-  assert.equal(enabled.ok, true);
-  assert.equal(enabled.enabled, true);
-  assert.equal(enabled.integration, "hooks");
-  assert.equal(await readFile(configPath, "utf8"), original);
-  const disabled = disableCodexAdapter({ codexHome, memoraxCodeHome });
-  assert.equal(disabled.ok, true);
-  assert.equal(disabled.enabled, false);
-  assert.equal(await readFile(configPath, "utf8"), original);
-  const state = readAdapterState(adapterStatePath(memoraxCodeHome, "codex"));
-  assert.equal(state.integration, "hooks");
-  assert.equal(state.enabled, false);
-});
-
-test("official and custom-provider Codex homes produce the same Hook state shape", async () => {
-  for (const config of [
-    'model_provider = "openai"\n',
-    'model_provider = "custom"\n[model_providers.custom]\nbase_url = "https://provider.example/v1"\n',
-  ]) {
-    const { codexHome, memoraxCodeHome } = await fixture();
-    await writeFile(join(codexHome, "config.toml"), config);
+  ].join("\n")],
+]) {
+  test(`Hook adapter enable and disable preserve ${provider} Codex provider config`, async (t) => {
+    const { root, codexHome, memoraxCodeHome } = await fixture();
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const configPath = join(codexHome, "config.toml");
+    await writeFile(configPath, original);
     await writeCachedPlugin(codexHome);
-    const result = enableCodexAdapter({ codexHome, memoraxCodeHome });
-    assert.equal(result.ok, true);
-    assert.equal(result.state.integration, "hooks");
-    assert.equal(result.state.enabled, true);
-    assert.equal(await readFile(join(codexHome, "config.toml"), "utf8"), config);
-  }
-});
+
+    const enabled = enableCodexAdapter({ codexHome, memoraxCodeHome });
+    assert.equal(enabled.ok, true);
+    assert.equal(enabled.enabled, true);
+    assert.equal(enabled.integration, "hooks");
+    assert.equal(enabled.state.integration, "hooks");
+    assert.equal(enabled.state.enabled, true);
+    assert.equal(await readFile(configPath, "utf8"), original);
+    const disabled = disableCodexAdapter({ codexHome, memoraxCodeHome });
+    assert.equal(disabled.ok, true);
+    assert.equal(disabled.enabled, false);
+    assert.equal(await readFile(configPath, "utf8"), original);
+    const state = readAdapterState(adapterStatePath(memoraxCodeHome, "codex"));
+    assert.equal(state.integration, "hooks");
+    assert.equal(state.enabled, false);
+  });
+}
 
 test("plugin delivery records plugin-managed skills without direct Codex skill links", async () => {
   const { root, codexHome, memoraxCodeHome } = await fixture();

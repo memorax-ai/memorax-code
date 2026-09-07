@@ -23,6 +23,8 @@ import { seedMissingMemoraxCodeConfig } from "../provider/memorax/config.js";
 import { runProcessWithWindowsNpm } from "../shared/windows-cli-invocation.js";
 import { loadManagedClientsConfig, resolveManagedClients, type ManagedClients } from "./client-selection.js";
 import { clearActiveManagedClients, readActiveManagedClients, writeActiveManagedClients } from "./active-clients.js";
+import { LIFECYCLE_CLIENTS, lifecycleAdapterReports, isAdapterReady, type ClientAdapterReports } from "./client-reports.js";
+export { isAdapterReady } from "./client-reports.js";
 import { codexAdapterLifecycle } from "../clients/codex/lifecycle.js";
 import { claudeAdapterLifecycle } from "../clients/claude/lifecycle.js";
 import {
@@ -32,6 +34,7 @@ import {
 } from "../clients/dsh/lifecycle.js";
 import { openCodeAdapterLifecycle } from "../clients/opencode/lifecycle.js";
 import { codeBuddyAdapterLifecycle } from "../clients/codebuddy/lifecycle.js";
+import { traeAdapterLifecycle } from "../clients/trae/lifecycle.js";
 import type {
   AdapterReport,
 } from "./participant.js";
@@ -40,32 +43,23 @@ export type {
   AdapterReport,
 } from "./participant.js";
 
-export type MemoraxCodeStatusReport = {
+export type MemoraxCodeStatusReport = ClientAdapterReports & {
   ok: boolean;
   action: "status";
   degraded?: true;
   backend: Awaited<ReturnType<typeof runBackendStatus>>;
-  codexAdapter?: AdapterReport;
-  claudeAdapter?: AdapterReport;
-  dshAdapter?: AdapterReport;
-  opencodeAdapter?: AdapterReport;
-  codebuddyAdapter?: AdapterReport;
 };
 
-export type MemoraxCodeLifecycleReport = {
+export type MemoraxCodeLifecycleReport = ClientAdapterReports & {
   ok: boolean;
   action: "start" | "stop" | "restart" | "uninstall";
   degraded?: true;
   reason?: string;
   message?: string;
   backend?: Awaited<ReturnType<typeof startBackendService | typeof stopBackendService>>;
-  codexAdapter?: AdapterReport;
-  claudeAdapter?: AdapterReport;
-  dshAdapter?: AdapterReport;
-  opencodeAdapter?: AdapterReport;
-  codebuddyAdapter?: AdapterReport;
   codexPlugin?: Awaited<ReturnType<typeof codexAdapterLifecycle.remove>>;
   codebuddyPlugin?: Awaited<ReturnType<typeof codeBuddyAdapterLifecycle.remove>>;
+  traePlugin?: Awaited<ReturnType<typeof traeAdapterLifecycle.remove>>;
   npmPackageRemoval?: NpmPackageRemovalReport;
   removesPlugin?: boolean;
   removesUserState?: false;
@@ -152,19 +146,16 @@ export async function collectMemoraxCodeStatus(
   const codebuddyAdapter = clients.codebuddy
     ? await codeBuddyAdapterLifecycle.status({ argv, serviceOptions, backendUrl })
     : undefined;
-  const codexReady = codexAdapter ? isAdapterReady(codexAdapter) : true;
-  const claudeReady = claudeAdapter ? isAdapterReady(claudeAdapter) : true;
-  const dshReady = dshAdapter ? isAdapterReady(dshAdapter) : true;
-  const opencodeReady = opencodeAdapter ? isAdapterReady(opencodeAdapter) : true;
-  const codebuddyReady = codebuddyAdapter ? isAdapterReady(codebuddyAdapter) : true;
+  const traeAdapter = clients.trae
+    ? await traeAdapterLifecycle.status({ argv, serviceOptions, backendUrl })
+    : undefined;
+  const adapters = lifecycleAdapterReports({ codexAdapter, claudeAdapter, dshAdapter, opencodeAdapter, codebuddyAdapter, traeAdapter });
   const optionalDshUnavailable = isOptionalUnavailableDshAdapter(dshAdapter);
   return {
     ok: backend.ok
-      && codexReady
-      && opencodeReady
-      && codebuddyReady
-      && (isOptionalUnconfiguredClaudeAdapter(claudeAdapter, codexAdapter) || claudeReady)
-      && (optionalDshUnavailable || dshReady),
+      && adapters.every(({ client, report }) => isAdapterReady(report)
+        || (client.id === "claude" && isOptionalUnconfiguredClaudeAdapter(report, codexAdapter))
+        || (client.id === "dsh" && optionalDshUnavailable)),
     action: "status",
     ...(optionalDshUnavailable ? { degraded: true } : {}),
     backend,
@@ -173,6 +164,7 @@ export async function collectMemoraxCodeStatus(
     ...(dshAdapter ? { dshAdapter } : {}),
     ...(opencodeAdapter ? { opencodeAdapter } : {}),
     ...(codebuddyAdapter ? { codebuddyAdapter } : {}),
+    ...(traeAdapter ? { traeAdapter } : {}),
   };
 }
 
@@ -336,11 +328,15 @@ async function executeMemoraxCodeStart(
   const deselectedCodeBuddy = previousClients?.codebuddy && !clients.codebuddy
     ? await codeBuddyAdapterLifecycle.disable({ argv, serviceOptions })
     : undefined;
+  const deselectedTrae = previousClients?.trae && !clients.trae
+    ? await traeAdapterLifecycle.disable({ argv, serviceOptions })
+    : undefined;
   if (deselectedCodex?.ok === false
     || deselectedClaude?.ok === false
     || deselectedDsh?.ok === false
     || deselectedOpenCode?.ok === false
-    || deselectedCodeBuddy?.ok === false) {
+    || deselectedCodeBuddy?.ok === false
+    || deselectedTrae?.ok === false) {
     const recovery = await recoverPreparationFailure("adapter_disable_failed");
     return {
       ok: false,
@@ -353,6 +349,7 @@ async function executeMemoraxCodeStart(
         : {}),
       ...(deselectedOpenCode ? { opencodeAdapter: deselectedOpenCode } : {}),
       ...(deselectedCodeBuddy ? { codebuddyAdapter: deselectedCodeBuddy } : {}),
+      ...(deselectedTrae ? { traeAdapter: deselectedTrae } : {}),
     };
   }
   // The marker is a conservative cleanup scope, not a readiness signal. Persist
@@ -394,6 +391,9 @@ async function executeMemoraxCodeStart(
   const codebuddyAdapter = clients.codebuddy
     ? await codeBuddyAdapterLifecycle.prepareEnable({ argv, serviceOptions, backendUrl })
     : undefined;
+  const traeAdapter = clients.trae
+    ? await traeAdapterLifecycle.prepareEnable({ argv, serviceOptions, backendUrl })
+    : undefined;
   if (opencodeAdapter?.ok === false) {
     const recovery = await recoverPreparationFailure("opencode_adapter_enable_failed");
     return {
@@ -405,6 +405,35 @@ async function executeMemoraxCodeStart(
       ...(recovery.dshAdapter ? { dshAdapter: recovery.dshAdapter } : {}),
       opencodeAdapter,
       ...(codebuddyAdapter ? { codebuddyAdapter } : {}),
+      ...(traeAdapter ? { traeAdapter } : {}),
+    };
+  }
+  if (codebuddyAdapter?.ok === false) {
+    const recovery = await recoverPreparationFailure("codebuddy_adapter_enable_failed");
+    return {
+      ok: false,
+      action: "start",
+      backend: recovery.backend,
+      ...(codexAdapter ? { codexAdapter } : {}),
+      ...(claudeAdapter ? { claudeAdapter } : {}),
+      ...(recovery.dshAdapter ? { dshAdapter: recovery.dshAdapter } : {}),
+      ...(opencodeAdapter ? { opencodeAdapter } : {}),
+      codebuddyAdapter,
+      ...(traeAdapter ? { traeAdapter } : {}),
+    };
+  }
+  if (traeAdapter?.ok === false) {
+    const recovery = await recoverPreparationFailure("trae_adapter_enable_failed");
+    return {
+      ok: false,
+      action: "start",
+      backend: recovery.backend,
+      ...(codexAdapter ? { codexAdapter } : {}),
+      ...(claudeAdapter ? { claudeAdapter } : {}),
+      ...(recovery.dshAdapter ? { dshAdapter: recovery.dshAdapter } : {}),
+      ...(opencodeAdapter ? { opencodeAdapter } : {}),
+      ...(codebuddyAdapter ? { codebuddyAdapter } : {}),
+      traeAdapter,
     };
   }
   const preparedDshAdapter = markOptionalDshAdapter(
@@ -426,6 +455,7 @@ async function executeMemoraxCodeStart(
       dshAdapter: recovery.dshAdapter ?? preparedDshAdapter,
       ...(opencodeAdapter ? { opencodeAdapter } : {}),
       ...(codebuddyAdapter ? { codebuddyAdapter } : {}),
+      ...(traeAdapter ? { traeAdapter } : {}),
     };
   }
   const backend = await startBackendService(serviceOptions);
@@ -439,6 +469,9 @@ async function executeMemoraxCodeStart(
     const disabledCodeBuddy = codebuddyAdapter
       ? await codeBuddyAdapterLifecycle.disable({ argv, serviceOptions })
       : undefined;
+    const disabledTrae = traeAdapter
+      ? await traeAdapterLifecycle.disable({ argv, serviceOptions })
+      : undefined;
     return {
       ok: false,
       action: "start",
@@ -448,6 +481,7 @@ async function executeMemoraxCodeStart(
       ...(preparedDshAdapter ? { dshAdapter: preparedDshAdapter } : {}),
       ...(disabledOpenCode ? { opencodeAdapter: disabledOpenCode } : {}),
       ...(disabledCodeBuddy ? { codebuddyAdapter: disabledCodeBuddy } : {}),
+      ...(disabledTrae ? { traeAdapter: disabledTrae } : {}),
     };
   }
   const dshAdapter = markOptionalDshAdapter(preparedDshAdapter?.installed === true
@@ -456,6 +490,7 @@ async function executeMemoraxCodeStart(
   const optionalDshUnavailable = isOptionalUnavailableDshAdapter(dshAdapter);
   return {
     ok: claudeAdapter?.ok !== false
+      && (!codebuddyAdapter || isAdapterReady(codebuddyAdapter))
       && (!dshAdapter || isAdapterReady(dshAdapter) || optionalDshUnavailable),
     action: "start",
     ...(optionalDshUnavailable ? { degraded: true } : {}),
@@ -465,6 +500,7 @@ async function executeMemoraxCodeStart(
     ...(dshAdapter ? { dshAdapter } : {}),
     ...(opencodeAdapter ? { opencodeAdapter } : {}),
     ...(codebuddyAdapter ? { codebuddyAdapter } : {}),
+    ...(traeAdapter ? { traeAdapter } : {}),
   };
 }
 
@@ -524,14 +560,11 @@ async function executeMemoraxCodeStop(
       dsh: activeClients.dsh && !clients.dsh,
       opencode: activeClients.opencode && !clients.opencode,
       codebuddy: activeClients.codebuddy && !clients.codebuddy,
+      trae: activeClients.trae && !clients.trae,
     }
     : undefined;
-  const hasRemainingClients = remaining?.codex === true
-    || remaining?.claude === true
-    || remaining?.dsh === true
-    || remaining?.opencode === true
-    || remaining?.codebuddy === true;
-  const backendOnlyStop = !clients.codex && !clients.claude && !clients.dsh && !clients.opencode && !clients.codebuddy;
+  const hasRemainingClients = LIFECYCLE_CLIENTS.some(({ id }) => remaining?.[id] === true);
+  const backendOnlyStop = LIFECYCLE_CLIENTS.every(({ id }) => !clients[id]);
   const packageReplacement = isPackageReplacement();
   const needsBackendStop = packageReplacement || backendOnlyStop || !hasRemainingClients;
   const quiescedDsh = clients.dsh && dshLifecycle
@@ -587,21 +620,16 @@ async function executeMemoraxCodeStop(
   const codebuddyAdapter = clients.codebuddy
     ? await codeBuddyAdapterLifecycle.disable({ argv, serviceOptions })
     : undefined;
-  const adaptersOk = codexAdapter?.ok !== false
-    && claudeAdapter?.ok !== false
-    && dshAdapter?.ok !== false
-    && opencodeAdapter?.ok !== false
-    && codebuddyAdapter?.ok !== false;
+  const traeAdapter = clients.trae
+    ? await traeAdapterLifecycle.disable({ argv, serviceOptions })
+    : undefined;
+  const adaptersOk = lifecycleAdapterReports({ codexAdapter, claudeAdapter, dshAdapter, opencodeAdapter, codebuddyAdapter, traeAdapter })
+    .every(({ report }) => report.ok !== false);
   const backend = stoppedBackend
     ?? (adaptersOk
       ? preservedBackendResult(serviceOptions, "active_clients_remaining")
       : preservedBackendResult(serviceOptions, "adapter_disable_failed"));
-  const ok = backend.ok
-    && codexAdapter?.ok !== false
-    && claudeAdapter?.ok !== false
-    && dshAdapter?.ok !== false
-    && opencodeAdapter?.ok !== false
-    && codebuddyAdapter?.ok !== false;
+  const ok = backend.ok && adaptersOk;
   return {
     report: {
       ok,
@@ -612,6 +640,7 @@ async function executeMemoraxCodeStop(
       ...(dshAdapter ? { dshAdapter } : {}),
       ...(opencodeAdapter ? { opencodeAdapter } : {}),
       ...(codebuddyAdapter ? { codebuddyAdapter } : {}),
+      ...(traeAdapter ? { traeAdapter } : {}),
     },
     remainingClients: packageReplacement
       ? activeClients
@@ -743,11 +772,15 @@ async function executeMemoraxCodeUninstall(
   const codebuddyPlugin = clients.codebuddy
     ? await codeBuddyAdapterLifecycle.remove({ argv, serviceOptions })
     : undefined;
+  const traePlugin = clients.trae
+    ? await traeAdapterLifecycle.remove({ argv, serviceOptions })
+    : undefined;
   const pluginCleanupOk = codexPlugin?.ok !== false
     && claudePlugin?.ok !== false
     && dshPlugin?.ok !== false
     && opencodePlugin?.ok !== false
-    && codebuddyPlugin?.ok !== false;
+    && codebuddyPlugin?.ok !== false
+    && traePlugin?.ok !== false;
   const npmPackageRemoval = !pluginCleanupOk
     ? skippedNpmPackageRemoval("plugin_cleanup_failed")
     : canRemoveSharedPackage
@@ -771,12 +804,14 @@ async function executeMemoraxCodeUninstall(
     ...(dshAdapter ? { dshAdapter } : {}),
     ...(opencodeAdapter ? { opencodeAdapter } : {}),
     ...(codebuddyPlugin ? { codebuddyPlugin } : {}),
+    ...(traePlugin ? { traePlugin } : {}),
     npmPackageRemoval,
     removesPlugin: codexPlugin?.ok === true
       || claudePlugin?.ok === true
       || (dshPlugin?.ok === true && dshPlugin.skipped !== true)
       || opencodePlugin?.ok === true
-      || codebuddyPlugin?.ok === true,
+      || codebuddyPlugin?.ok === true
+      || traePlugin?.ok === true,
     removesUserState: false,
   };
 }
@@ -927,7 +962,8 @@ function includesManagedClients(selection: ManagedClients, required: ManagedClie
     && (!required.claude || selection.claude)
     && (!required.dsh || selection.dsh)
     && (!required.opencode || selection.opencode)
-    && (!required.codebuddy || selection.codebuddy === true);
+    && (!required.codebuddy || selection.codebuddy === true)
+    && (!required.trae || selection.trae === true);
 }
 
 function isPackageReplacement(): boolean {
@@ -1084,20 +1120,6 @@ async function withMemoraxCodeLifecycleLock(
       },
     };
   }
-}
-
-export function isAdapterReady(report: AdapterReport): boolean {
-  const integration = report.integration ?? report.state?.integration;
-  return (integration === "hooks" || integration === "plugin")
-    && report.ok !== false
-    && report.installed === true
-    && report.enabled === true
-    && report.backendUrlMatches !== false
-    && report.codexSkills?.ok !== false
-    && report.claudeSkills?.ok !== false
-    && report.opencodeSkills?.ok !== false
-    && report.codebuddyHooks?.ok !== false
-    && report.codebuddySkills?.ok !== false;
 }
 
 export function isOptionalUnavailableDshAdapter(report: AdapterReport | undefined): boolean {

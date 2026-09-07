@@ -1,10 +1,11 @@
 import { isRecord } from "../shared/record.js";
 import { codeBuddyPromptDigest, parseCodeBuddyTurnId } from "../clients/codebuddy/turn-id.js";
+import { parseTraeTurnId, traePromptDigest } from "../clients/trae/turn-id.js";
 
 export const MEMORY_HOOK_COMMAND_VERSION = 1 as const;
 export const INVALID_MEMORY_HOOK_COMMAND = "invalid memory Hook command";
 
-export type MemoryHookClient = "codex" | "claude-code" | "opencode" | "dsh" | "codebuddy";
+export type MemoryHookClient = "codex" | "claude-code" | "opencode" | "dsh" | "codebuddy" | "trae";
 
 const BASE_COMMAND_KEYS = [
   "version",
@@ -19,6 +20,7 @@ const TURN_START_KEYS: Readonly<Record<MemoryHookClient, ReadonlySet<string>>> =
   opencode: new Set([...BASE_COMMAND_KEYS, "userMessageId", "prompt"]),
   dsh: new Set(["version", "client", "sessionId", "turn", "startSeq", "cwd", "prompt"]),
   codebuddy: new Set([...BASE_COMMAND_KEYS, "turnId", "prompt", "transcriptPath"]),
+  trae: new Set([...BASE_COMMAND_KEYS, "turnId", "prompt"]),
 };
 const WRITEBACK_KEYS: Readonly<Record<MemoryHookClient, ReadonlySet<string>>> = {
   codex: new Set([...BASE_COMMAND_KEYS, "turnId", "lastAssistantMessage", "transcriptPath"]),
@@ -46,6 +48,7 @@ const WRITEBACK_KEYS: Readonly<Record<MemoryHookClient, ReadonlySet<string>>> = 
     "events",
   ]),
   codebuddy: new Set([...BASE_COMMAND_KEYS, "turnId", "transcriptPath"]),
+  trae: new Set([...BASE_COMMAND_KEYS, "turnId", "prompt", "lastAssistantMessage"]),
 };
 const SKILL_REMINDER_KEYS: Readonly<Record<MemoryHookClient, ReadonlySet<string>>> = {
   codex: new Set([...BASE_COMMAND_KEYS, "turnId", "transcriptPath", "content", "triggers"]),
@@ -53,6 +56,7 @@ const SKILL_REMINDER_KEYS: Readonly<Record<MemoryHookClient, ReadonlySet<string>
   dsh: new Set(["version", "client", "sessionId", "turn", "cwd", "content", "triggers"]),
   opencode: new Set([...BASE_COMMAND_KEYS, "userMessageId", "content", "triggers"]),
   codebuddy: new Set([...BASE_COMMAND_KEYS, "turnId", "transcriptPath", "content", "triggers"]),
+  trae: new Set([...BASE_COMMAND_KEYS, "turnId", "content", "triggers"]),
 };
 
 type MemoryHookCommandBase<Client extends MemoryHookClient> = Readonly<{
@@ -93,12 +97,18 @@ export type CodeBuddyTurnStartCommand = MemoryHookCommandBase<"codebuddy"> & Rea
   transcriptPath: string;
 }>;
 
+export type TraeTurnStartCommand = MemoryHookCommandBase<"trae"> & Readonly<{
+  turnId: string;
+  prompt: string;
+}>;
+
 export type TurnStartCommand =
   | CodexTurnStartCommand
   | ClaudeTurnStartCommand
   | OpenCodeTurnStartCommand
   | DshTurnStartCommand
-  | CodeBuddyTurnStartCommand;
+  | CodeBuddyTurnStartCommand
+  | TraeTurnStartCommand;
 
 export type MemoryHookTurnStartResult = Readonly<{
   ok: true;
@@ -139,12 +149,19 @@ export type CodeBuddyWritebackCommand = MemoryHookCommandBase<"codebuddy"> & Rea
   transcriptPath: string;
 }>;
 
+export type TraeWritebackCommand = MemoryHookCommandBase<"trae"> & Readonly<{
+  turnId: string;
+  prompt: string;
+  lastAssistantMessage: string;
+}>;
+
 export type WritebackCommand =
   | CodexWritebackCommand
   | ClaudeWritebackCommand
   | OpenCodeWritebackCommand
   | DshWritebackCommand
-  | CodeBuddyWritebackCommand;
+  | CodeBuddyWritebackCommand
+  | TraeWritebackCommand;
 
 export type SkillReminderTrigger = "cadence" | "post_compaction";
 
@@ -182,12 +199,19 @@ export type CodeBuddySkillReminderCommand = MemoryHookCommandBase<"codebuddy"> &
   triggers: SkillReminderTrigger[];
 }>;
 
+export type TraeSkillReminderCommand = MemoryHookCommandBase<"trae"> & Readonly<{
+  turnId: string;
+  content: string;
+  triggers: SkillReminderTrigger[];
+}>;
+
 export type SkillReminderCommand =
   | CodexSkillReminderCommand
   | ClaudeSkillReminderCommand
   | DshSkillReminderCommand
   | OpenCodeSkillReminderCommand
-  | CodeBuddySkillReminderCommand;
+  | CodeBuddySkillReminderCommand
+  | TraeSkillReminderCommand;
 
 export type MemoryHookCommandParseResult<Command> =
   | { ok: true; command: Command }
@@ -199,7 +223,9 @@ export function parseTurnStartCommand(
   if (!isRecord(value)) return invalidCommand();
   const base = parseCommandBase(value, TURN_START_KEYS);
   if (!base) return invalidCommand();
-  const prompt = requiredStringField(value, "prompt");
+  const prompt = base.client === "trae"
+    ? requiredContentField(value, "prompt")
+    : requiredStringField(value, "prompt");
   if (!prompt) return invalidCommand();
   if (base.client === "dsh") {
     const turn = positiveSafeIntegerField(value, "turn");
@@ -250,6 +276,11 @@ export function parseTurnStartCommand(
     const transcriptPath = requiredStringField(value, "transcriptPath");
     if (!turnId || !transcriptPath || !validCodeBuddyTurnId(turnId, base.sessionId, prompt)) return invalidCommand();
     return { ok: true, command: { ...base, client: "codebuddy", turnId, prompt, transcriptPath } };
+  }
+  if (base.client === "trae") {
+    const turnId = requiredStringField(value, "turnId");
+    if (!turnId || !validTraeTurnId(turnId, base.sessionId, prompt)) return invalidCommand();
+    return { ok: true, command: { ...base, client: "trae", turnId, prompt } };
   }
   const promptId = requiredStringField(value, "promptId");
   const transcriptPath = requiredStringField(value, "transcriptPath");
@@ -321,6 +352,15 @@ export function parseWritebackCommand(
     const transcriptPath = requiredStringField(value, "transcriptPath");
     if (!turnId || !transcriptPath || !validCodeBuddyTurnId(turnId, base.sessionId)) return invalidCommand();
     return { ok: true, command: { ...base, client: "codebuddy", turnId, transcriptPath } };
+  }
+  if (base.client === "trae") {
+    const turnId = requiredStringField(value, "turnId");
+    const prompt = requiredContentField(value, "prompt");
+    const lastAssistantMessage = requiredContentField(value, "lastAssistantMessage");
+    if (!turnId || !prompt || !lastAssistantMessage || !validTraeTurnId(turnId, base.sessionId, prompt)) {
+      return invalidCommand();
+    }
+    return { ok: true, command: { ...base, client: "trae", turnId, prompt, lastAssistantMessage } };
   }
   const lastAssistantMessage = requiredStringField(value, "lastAssistantMessage");
   if (!lastAssistantMessage) return invalidCommand();
@@ -398,6 +438,11 @@ export function parseSkillReminderCommand(
     if (!turnId || !transcriptPath || !validCodeBuddyTurnId(turnId, base.sessionId)) return invalidCommand();
     return { ok: true, command: { ...base, client: "codebuddy", turnId, transcriptPath, content, triggers } };
   }
+  if (base.client === "trae") {
+    const turnId = requiredStringField(value, "turnId");
+    if (!turnId || !parseTraeTurnId({ sessionId: base.sessionId, turnId })) return invalidCommand();
+    return { ok: true, command: { ...base, client: "trae", turnId, content, triggers } };
+  }
   const transcriptPath = requiredStringField(value, "transcriptPath");
   if (!transcriptPath) return invalidCommand();
   if (base.client === "codex") {
@@ -443,6 +488,7 @@ function parseCommandBase(
     && client !== "opencode"
     && client !== "dsh"
     && client !== "codebuddy"
+    && client !== "trae"
   ) return undefined;
   const clientKeys = allowedKeys[client];
   if (!clientKeys || Object.keys(value).some((key) => !clientKeys.has(key))) return undefined;
@@ -518,6 +564,11 @@ function optionalStringField(
 function validCodeBuddyTurnId(turnId: string, sessionId: string, prompt?: string): boolean {
   const identity = parseCodeBuddyTurnId({ sessionId, turnId });
   return Boolean(identity && (prompt === undefined || identity.promptDigest === codeBuddyPromptDigest(prompt)));
+}
+
+function validTraeTurnId(turnId: string, sessionId: string, prompt: string): boolean {
+  const identity = parseTraeTurnId({ sessionId, turnId });
+  return Boolean(identity && identity.promptDigest === traePromptDigest(prompt));
 }
 
 function invalidCommand<Command>(): MemoryHookCommandParseResult<Command> {

@@ -211,6 +211,9 @@ function scanCodexRolloutTurn(transcript: string, targetTurnId: string): CodexRo
     }
 
     const payload = isRecord(record.payload) ? record.payload : {};
+    // Only session_meta on the first nonblank line owns this file's identity.
+    // Imported history may contain the exact Turn, but makes cumulative usage
+    // and session-relative Turn indexes unsafe to infer.
     if (record.type === "session_meta") {
       if (authorityHeaderCandidate) {
         authoritySessionId = nonBlankString(payload.id);
@@ -300,6 +303,8 @@ function scanCodexRolloutTurn(transcript: string, targetTurnId: string): CodexRo
       continue;
     }
     if (eventType === "token_count") {
+      // Cumulative counters make duplicate snapshots contribute nothing; a
+      // counter rollback establishes a new baseline instead of a negative delta.
       const snapshot = tokenUsageSnapshot(payload);
       if (!snapshot) continue;
       if (activeTurnId === targetTurnId) {
@@ -336,6 +341,8 @@ function scanCodexRolloutTurn(transcript: string, targetTurnId: string): CodexRo
     composite,
     targetSeen,
     turnMetadataMismatch,
+    // Current-format response items take precedence over legacy event mirrors;
+    // missing response-item text may use the matching Turn's legacy text.
     userPrompt: responseItemUserPrompt ?? userPrompt,
     assistantReply: responseItemAssistantReply ?? assistantReply,
     visibleAssistantMessages,
@@ -446,7 +453,7 @@ function activityCandidatesFromResponseItem(payload: JsonRecord): CodexTurnActiv
     });
   }
 
-  const memoryCliPattern = /(?:["']?cmd["']?\s*:\s*\\?["'`]|&&|\|\||;)\s*memorax-cli\s+(search|add)\b/giu;
+  const memoryCliPattern = /(?:["']?cmd["']?\s*:\s*\\?["'`]|&&|\|\||;)\s*memorax-cli(?:\.cmd)?\s+(search|add)\b/giu;
   for (const match of input.matchAll(memoryCliPattern)) {
     candidates.push({
       offset: match.index,

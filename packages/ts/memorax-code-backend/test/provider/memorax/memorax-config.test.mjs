@@ -44,23 +44,6 @@ test("MemoraX endpoint helper normalizes trailing slashes", () => {
   );
 });
 
-test("MemoraX config resolver reads credentials from config.toml", async () => {
-  const root = await mkdtemp(join(tmpdir(), "memorax-code-memorax-file-creds-"));
-  await writeFile(join(root, "config.toml"), [
-    "[memorax]",
-    'endpoint = "http://file-memorax.test/"',
-    'api_key = "file-secret"',
-    'user_id = "file-user"',
-  ].join("\n"), "utf8");
-
-  const result = memoraxConfigFromEnv({ MEMORAX_CODE_HOME: root });
-
-  assert.equal(result.ok, true);
-  assert.equal(result.config.baseUrl, "http://file-memorax.test");
-  assert.equal(result.config.apiKey, "file-secret");
-  assert.equal(result.config.userId, "file-user");
-});
-
 test("seeded MemoraX Code config exposes high-signal choices without a tuning catalog", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-memorax-default-config-"));
   if (process.platform !== "win32") await chmod(root, 0o755);
@@ -118,7 +101,7 @@ test("MemoraX config resolver centralizes defaults and clamps env values", () =>
   assert.equal(result.config.maxItemChars, 64);
 });
 
-test("MemoraX Code config loader reads config.toml from the configured MemoraX Code home", async () => {
+test("MemoraX Code loads configured-home TOML and resolves credentials, writeback, and Add defaults", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-config-loader-"));
   await writeFile(join(root, "config.toml"), [
     "[clients]",
@@ -133,6 +116,9 @@ test("MemoraX Code config loader reads config.toml from the configured MemoraX C
     "",
     "[memory.retrieval]",
     "memory_type_order = [\"project_fact\", \"core\"]",
+    "",
+    "[memory.writeback]",
+    "enabled = true",
     "",
     "[memory.add]",
     'content_type = "code"',
@@ -157,6 +143,24 @@ test("MemoraX Code config loader reads config.toml from the configured MemoraX C
   });
   assert.deepEqual(config.memory?.retrieval?.memory_type_order, ["project_fact", "core"]);
   assert.equal(config.memory?.skill_reminder?.interval_turns, 3);
+
+  const env = { MEMORAX_CODE_HOME: root };
+  const result = memoraxConfigFromEnv(env);
+  assert.equal(result.ok, true);
+  assert.equal(result.config.baseUrl, "http://file-memorax.test");
+  assert.equal(result.config.apiKey, "file-secret");
+  assert.equal(result.config.userId, "file-user");
+
+  const status = await memoryConfigStatus(env);
+  const options = await memoraxAddOptionsFromContext({}, env);
+  assert.equal(status.configured, true);
+  assert.equal(status.search.enabled, true);
+  assert.equal(status.search.retrievalEnabled, false);
+  assert.equal(status.writeback.writebackEnabled, true);
+  assert.equal(status.cli.addEnabled, true);
+  assert.equal(options.ok, true);
+  assert.equal(options.options.contentType, "code");
+  assert.equal(options.options.mode, "default");
 });
 
 test("memory config status merges explicit config fields and env overrides", async () => {
@@ -236,36 +240,6 @@ test("memory config status merges explicit config fields and env overrides", asy
   });
   assert.equal(status.cli.addEnabled, true);
   assert.equal(status.cli.maxMemoryChars, 3333);
-});
-
-test("explicit memory config supplies writeback and code add defaults", async () => {
-  const root = await mkdtemp(join(tmpdir(), "memorax-code-config-add-defaults-"));
-  await writeFile(join(root, "config.toml"), [
-    "[memorax]",
-    'user_id = "file-user"',
-    'api_key = "secret"',
-    "",
-    "[memory.writeback]",
-    "enabled = true",
-    "",
-    "[memory.add]",
-    'content_type = "code"',
-    'mode = "default"',
-  ].join("\n"), "utf8");
-
-  const status = await memoryConfigStatus({ MEMORAX_CODE_HOME: root });
-  const options = await memoraxAddOptionsFromContext({}, {
-    MEMORAX_CODE_HOME: root,
-  });
-
-  assert.equal(status.configured, true);
-  assert.equal(status.search.enabled, true);
-  assert.equal(status.search.retrievalEnabled, false);
-  assert.equal(status.writeback.writebackEnabled, true);
-  assert.equal(status.cli.addEnabled, true);
-  assert.equal(options.ok, true);
-  assert.equal(options.options.contentType, "code");
-  assert.equal(options.options.mode, "default");
 });
 
 test("config without automatic memory fields keeps writeback off and defaults language to zh", async () => {

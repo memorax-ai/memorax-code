@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -51,6 +52,92 @@ test("Backend close is idempotent and waits for observability drain", async () =
     assert.equal(settled, true);
   } finally {
     releaseDrain?.();
+    await rm(memoraxCodeHome, { recursive: true, force: true });
+  }
+});
+
+test("Backend shutdown completes when observability drain exceeds its deadline", async () => {
+  const memoraxCodeHome = await mkdtemp(join(tmpdir(), "memorax-code-shutdown-stalled-drain-"));
+  let notifyDrainStarted;
+  let releaseDrain;
+  let drainCalls = 0;
+  const drainStarted = new Promise((resolve) => {
+    notifyDrainStarted = resolve;
+  });
+  const drainBlocked = new Promise((resolve) => {
+    releaseDrain = resolve;
+  });
+  const server = createBackendServer(
+    createBackendState("127.0.0.1", { sessionHome: memoraxCodeHome }),
+    {
+      shutdownTimeoutMs: 100,
+      memoryObservability: {
+        recordEvent() {},
+        drain() {
+          drainCalls += 1;
+          notifyDrainStarted();
+          return drainBlocked;
+        },
+      },
+    },
+  );
+  await listen(server);
+  try {
+    const shuttingDown = server.shutdown();
+    await within(drainStarted, "shutdown did not reach observability drain");
+    await within(shuttingDown, "shutdown waited indefinitely for a stalled drain");
+    assert.equal(drainCalls, 1);
+    assert.equal(server.listening, false);
+    assert.strictEqual(server.shutdown(), shuttingDown);
+  } finally {
+    releaseDrain();
+    await server.shutdown();
+    await rm(memoraxCodeHome, { recursive: true, force: true });
+  }
+});
+
+test("Backend shutdown force-closes an unfinished request without granting later phases a new deadline", async (t) => {
+  const memoraxCodeHome = await mkdtemp(join(tmpdir(), "memorax-code-shutdown-stalled-request-"));
+  let drainCalls = 0;
+  const server = createBackendServer(
+    createBackendState("127.0.0.1", { sessionHome: memoraxCodeHome, authToken: "" }),
+    {
+      shutdownTimeoutMs: 100,
+      memoryObservability: {
+        recordEvent() {},
+        async drain() {
+          drainCalls += 1;
+        },
+      },
+    },
+  );
+  const forceClose = t.mock.method(server, "closeAllConnections");
+  const url = await listen(server);
+  const requestStarted = new Promise((resolve) => server.once("request", resolve));
+  const unfinished = request(`${url}/memory/turn-start`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "content-length": "100" },
+  });
+  const requestFailed = new Promise((resolve) => unfinished.once("error", resolve));
+  unfinished.write("{");
+  try {
+    const incoming = await within(requestStarted, "unfinished request did not reach the Backend");
+    assert.equal(incoming.complete, false);
+    const socket = incoming.socket;
+    const socketClosed = new Promise((resolve) => socket.once("close", resolve));
+
+    await within(server.shutdown(), "shutdown did not finish after the request deadline");
+    await within(socketClosed, "shutdown left the unfinished request socket open");
+    const error = await within(requestFailed, "unfinished request was not interrupted");
+    assert.equal(error.code, "ECONNRESET");
+    assert.equal(forceClose.mock.callCount(), 1);
+    assert.equal(socket.destroyed, true);
+    assert.equal(server.listening, false);
+    assert.equal(drainCalls, 0, "later drains must not run after the shared deadline is exhausted");
+  } finally {
+    unfinished.destroy();
+    server.closeAllConnections();
+    await server.shutdown();
     await rm(memoraxCodeHome, { recursive: true, force: true });
   }
 });
@@ -172,6 +259,20 @@ test("Backend shutdown flushes a pending writeback before exit", { concurrency: 
     await rm(root, { recursive: true, force: true });
   }
 });
+
+async function within(promise, message, timeoutMs = 1000) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 function withEnv(updates) {
   const previous = new Map(Object.keys(updates).map((key) => [key, process.env[key]]));

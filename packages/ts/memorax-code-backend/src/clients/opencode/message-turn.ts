@@ -100,6 +100,8 @@ function terminalUserMessageFor(
     message.info.role === "user" && messageId(message) === input.userMessageId
   ));
   if (startIndex < 0) return undefined;
+  // A matching tail assistant and marked continuation prove that compaction
+  // changed the final assistant's parent without starting a new user turn.
   const lineageAssistantIds = new Set<string>();
   let terminalUserMessageId = input.userMessageId;
   let awaitingContinuation = false;

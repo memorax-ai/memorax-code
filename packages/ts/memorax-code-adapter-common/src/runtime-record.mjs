@@ -47,6 +47,8 @@ export function readJsonRuntimeRecord(path) {
   return { status: "present", value };
 }
 
+// Atomic replacement gives readers a complete snapshot. Read-modify-write
+// callers must hold their own lock across the read and this write.
 export function writePrivateJsonRecord(path, value, options) {
   const directoryPath = dirname(path);
   ensurePrivateDirectory(directoryPath, {
@@ -76,6 +78,8 @@ export function writePrivateJsonRecord(path, value, options) {
     }
     throw error;
   }
+  // rename has already published the new record. A directory-sync failure
+  // means crash durability is uncertain; it does not mean the write was undone.
   try {
     (options?.syncDirectory ?? syncDirectory)(directoryPath);
     return { path, record: value, durability: "confirmed" };

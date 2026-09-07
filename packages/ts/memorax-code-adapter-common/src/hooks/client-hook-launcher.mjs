@@ -198,6 +198,8 @@ function currentSelection({ client, component, fallback, memoraxCodeHome }) {
     : fallback;
 }
 
+// A Turn must finish with the runtime selected at its start. If that pin
+// cannot be resolved, do not substitute current or another bundled version.
 function selectionFromPin({ client, component, fallback, memoraxCodeHome, pin }) {
   if (pin.generationSource === "bundled") {
     return fallback?.generationId === pin.generationId ? fallback : undefined;

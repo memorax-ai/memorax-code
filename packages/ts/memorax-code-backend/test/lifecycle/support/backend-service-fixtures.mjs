@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isProcessAlive } from "../../../dist/lifecycle/backend/service.js";
+import { managedServiceCommandLine, probeProcessCommandLine } from "../../../dist/lifecycle/backend/process.js";
 import { buildClaudeMarketplace } from "../../../../memorax-code-claude-adapter/scripts/build-marketplace.mjs";
 import { listen } from "../../support/helpers.mjs";
 export async function prepareActiveCodexPlugin(codexHome, skillNames = ["memorax-code"]) {
@@ -179,7 +180,37 @@ export function runCli(cliPath, args, options = {}) {
 
 export async function waitForProcessExit(pid, timeoutMs = 3000) {
   const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline && isProcessAlive(pid)) {
-    await new Promise((resolve) => setTimeout(resolve, 25));
+  while (isProcessAlive(pid)) {
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) throw new Error(`fixture process ${pid} did not exit within ${timeoutMs}ms`);
+    await new Promise((resolve) => setTimeout(resolve, Math.min(25, remainingMs)));
   }
+}
+
+export async function terminateFixtureBackends(states, timeoutMs = 1000) {
+  const results = await Promise.allSettled(Array.from(states, async ({ pid, instanceId }) => {
+    if (!isProcessAlive(pid)) return;
+    const signalFixture = (signal) => {
+      const probe = probeProcessCommandLine(pid);
+      if (!isProcessAlive(pid)) return;
+      if (probe.status !== "ok" || !managedServiceCommandLine(probe.commandLine, instanceId)) {
+        throw new Error(`refusing to signal fixture PID ${pid}: Backend instance ${instanceId} no longer matches`);
+      }
+      try {
+        process.kill(pid, signal);
+      } catch (error) {
+        if (error?.code !== "ESRCH") throw error;
+      }
+    };
+    signalFixture("SIGTERM");
+    try {
+      await waitForProcessExit(pid, timeoutMs);
+    } catch (error) {
+      signalFixture("SIGKILL");
+      await waitForProcessExit(pid, timeoutMs);
+      throw error;
+    }
+  }));
+  const failures = results.filter((result) => result.status === "rejected").map((result) => result.reason);
+  if (failures.length > 0) throw new AggregateError(failures, "failed to stop fixture Backend processes");
 }

@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { performance } from "node:perf_hooks";
 import {
   codeBuddyInterruptedTranscriptTurnFromJsonLines,
   codeBuddyTranscriptTurnFromJsonLines,
@@ -26,6 +27,77 @@ test("extracts hidden user query and completed assistant branch", () => {
   assert.equal(result.turn.assistantReply, "done");
 });
 
+test("preserves completed and interrupted replies through a long tool chain", () => {
+  const records = [
+    { id: "u1", type: "message", role: "user", sessionId, content: [{ type: "input_text", text: "long task" }] },
+  ];
+  // Stay within the normal test budget even when a turn has thousands of records.
+  const callCount = 1000;
+  for (let index = 0; index < callCount; index += 1) {
+    records.push(
+      { id: `c${index}`, type: "function_call", role: "assistant", parentId: records.at(-1).id, name: "Bash", arguments: "{}" },
+      { id: `r${index}`, type: "function_call_result", parentId: `c${index}`, output: `result ${index}` },
+    );
+  }
+  const assistant = {
+    id: "a1", type: "message", role: "assistant", parentId: records.at(-1).id,
+    status: "completed", content: [{ type: "output_text", text: "done" }],
+  };
+  records.push(assistant);
+  const input = { sessionId, turnId: provisionalTurnId("long task") };
+  const transcript = records.map(JSON.stringify).join("\n");
+  const startedAt = performance.now();
+  const completed = codeBuddyTranscriptTurnFromJsonLines(transcript, input);
+  // Synchronous parsing can block the runner's timeout, so check elapsed time too.
+  assert.ok(performance.now() - startedAt < 5000, "Long-chain extraction must avoid repeated transcript scans");
+  assert.equal(completed.ok, true);
+  assert.equal(completed.turn.userPrompt, "long task");
+  assert.equal(completed.turn.assistantReply, "done");
+  assert.equal(completed.turn.activities.length, callCount * 2);
+
+  assistant.status = "incomplete";
+  assistant.content[0].text = "partial answer";
+  const interrupted = codeBuddyInterruptedTranscriptTurnFromJsonLines(records.map(JSON.stringify).join("\n"), input);
+  assert.equal(interrupted.ok, true);
+  assert.equal(interrupted.turn.assistantReply, "partial answer");
+  assert.equal(interrupted.turn.activities.length, callCount * 2);
+});
+
+test("preserves descendant activities and parsed order after duplicate replacement", () => {
+  const records = [
+    { id: "u1", type: "message", role: "user", sessionId, content: [{ type: "input_text", text: "branch task" }] },
+    { id: "c1", type: "function_call", parentId: "u1", name: "Bash", arguments: "main" },
+    { id: "r1", type: "function_call_result", parentId: "c1", output: "main result" },
+    { id: "sibling", type: "function_call", parentId: "u1", name: "Read", arguments: "sibling" },
+    { type: "function_call_result", parentId: "sibling", output: "sibling result" },
+    { id: "replaced", type: "function_call", parentId: "u1", name: "stale" },
+    { id: "a1", type: "message", role: "assistant", parentId: "r1", status: "completed", content: [{ type: "output_text", text: "done" }] },
+    { id: "replaced", type: "function_call", parentId: "missing", name: "unrelated" },
+  ];
+  const result = codeBuddyTranscriptTurnFromJsonLines(records.map(JSON.stringify).join("\n"), {
+    sessionId, turnId: provisionalTurnId("branch task"),
+  });
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.turn.activities, [
+    { kind: "tool", name: "tool", output: "sibling result" },
+    { kind: "tool", name: "Bash", input: "main" },
+    { kind: "tool", name: "tool", output: "main result" },
+    { kind: "tool", name: "Read", input: "sibling" },
+  ]);
+});
+
+test("rejects a completed reply whose parent chain cycles without reaching the user", () => {
+  const lines = [
+    { id: "u1", type: "message", role: "user", sessionId, content: [{ type: "input_text", text: "cyclic chain" }] },
+    { id: "c1", type: "function_call", role: "assistant", parentId: "r1", name: "Bash", arguments: "{}" },
+    { id: "r1", type: "function_call_result", parentId: "c1", output: "unrelated result" },
+    { id: "a1", type: "message", role: "assistant", parentId: "r1", status: "completed", content: [{ type: "output_text", text: "must not persist" }] },
+  ].map(JSON.stringify).join("\n");
+  assert.deepEqual(codeBuddyTranscriptTurnFromJsonLines(lines, {
+    sessionId, turnId: provisionalTurnId("cyclic chain"),
+  }), { ok: false, reason: "assistant_message_missing" });
+});
+
 test("fails closed on cancelled incomplete assistant", () => {
   const lines = [
     { id: "u1", type: "message", role: "user", sessionId, content: [{ type: "input_text", text: "<user_query>cancel me</user_query>" }] },
@@ -37,6 +109,7 @@ test("fails closed on cancelled incomplete assistant", () => {
 test("recovers an interrupted turn without assistant material", () => {
   const lines = [
     { id: "u1", type: "message", role: "user", sessionId, content: [{ type: "input_text", text: "<user_query>cancel before reply</user_query>" }] },
+    { id: "c1", type: "function_call", parentId: "u1", name: "Bash", arguments: "{}" },
   ].map(JSON.stringify).join("\n");
   assert.deepEqual(
     codeBuddyInterruptedTranscriptTurnFromJsonLines(lines, {

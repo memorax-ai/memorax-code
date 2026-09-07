@@ -1,8 +1,8 @@
 # Security Policy
 
-MemoraX Code is a local-first integration for Codex, Claude Code, CodeBuddy/WorkBuddy,
-DeepSeek Harness (DSH), and OpenCode with an optional external bind mode and required
-communication with MemoraX for cloud-backed memory. Security reports should
+MemoraX Code is a local-first integration for Codex, Claude Code,
+CodeBuddy/WorkBuddy, DeepSeek Harness (DSH), OpenCode, and Trae with an optional
+external bind mode and required communication with MemoraX for cloud-backed memory. Security reports should
 distinguish the local Backend, client-owned provider traffic, and MemoraX
 memory traffic.
 
@@ -29,7 +29,7 @@ Please allow time for triage and remediation before public disclosure.
 
 ### Client and local Backend
 
-- Codex, Claude Code, CodeBuddy/WorkBuddy, DeepSeek Harness, and OpenCode own provider credentials,
+- Codex, Claude Code, CodeBuddy/WorkBuddy, DeepSeek Harness, OpenCode, and Trae own provider credentials,
   models, native tools, and provider traffic. MemoraX Code does not proxy
   model-provider traffic and does not need client provider credentials.
 - The managed Backend binds to loopback by default. External binding requires
@@ -48,7 +48,8 @@ Please allow time for triage and remediation before public disclosure.
   installed npm package name and its `latest` or `preview` tag. Set
   `MEMORAX_CODE_AUTO_UPDATE=false` when deployment policy requires manual
   package review. A changed target is installed by exact version and
-  reconciliation preserves the configured client selection.
+  reconciliation preserves explicit client choices. Selection of newly
+  detected clients is described in [Configuration](docs/configuration.md#client-selection).
 - Codex update reconciliation may trust new or changed Hooks without a prompt
   only after the current marketplace identity and exact Hook selection are
   validated. The selection is checked again before and after the config write;
@@ -77,9 +78,18 @@ Please allow time for triage and remediation before public disclosure.
   authority and must not be copied between users or edited by hand.
 - The managed CodeBuddy/WorkBuddy plugin reads native JSONL transcripts from the
   client-owned project history and sends only normalized turn data required for
-  retrieval, trace, or writeback. Repo Memory jobs run a bounded headless
-  CodeBuddy process with `--dangerously-skip-permissions`; use this only for a
-  Backend-authorized Git worktree and never for untrusted source.
+  retrieval, trace, or writeback.
+- The managed Trae adapter merges only marker-owned `SessionStart`,
+  `UserPromptSubmit`, and `Stop` entries into Trae's `hooks.json`, refuses to
+  replace an unmanaged `memorax-code` Skill, and removes only managed assets.
+  Trae owns the application-level Global Hooks switch; MemoraX Code cannot
+  enable it reliably and requires the user to do so once in Trae Settings.
+- Trae exposes no stable raw Session authority. For Trae only, the validated
+  prompt supplied by `UserPromptSubmit` and final assistant message supplied by
+  the matching `Stop` Hook are the automatic-writeback content authority. They
+  are bound to one active Turn with a prompt-derived Turn ID; a new
+  prompt interrupts the old Turn, and late or mismatched completion events do
+  not write back. Hook fields are not a fallback for any other client.
 - Initial Repo Memory builds use only the Git worktree returned by an
   authenticated Backend turn-start request. Backend or workspace-scope
   failures skip the build; client integrations do not fall back to
@@ -88,6 +98,9 @@ Please allow time for triage and remediation before public disclosure.
   only from the worktree authorized by the current Backend turn-start result.
   Without that authority they keep only the generic Skill reminder and do not
   fall back to the client `cwd` for repository-local content.
+- User Profile storage rejects symbolic links in `.repo_memory`, its
+  `user-profile` directory, and `preferences.md`. Invalid preference files are
+  rejected without rewriting their contents; listing does not create storage.
 - MemoraX-backed Search, Add, and automatic writeback may downgrade malformed
   or incomplete internal metadata in a direct `.git` directory to the
   canonical workspace folder identity. The CLI exposes the fallback reason,
@@ -97,6 +110,25 @@ Please allow time for triage and remediation before public disclosure.
   discarded during the upgrade rather than migrated or flushed. Git pointer
   files, symlinked markers, unreadable metadata, and other conflicting session
   scope remain fail closed.
+
+### Background Repo Memory execution
+
+Backend workspace authorization establishes which repository a job belongs to;
+it does not sandbox the coding agent that executes the job. These background
+Repo Memory runners use the following native execution permissions:
+
+| Runner | Execution permissions |
+| --- | --- |
+| Codex | `codex exec --sandbox danger-full-access` |
+| Claude Code | `--dangerously-skip-permissions` |
+| CodeBuddy/WorkBuddy | `--dangerously-skip-permissions` |
+| OpenCode | A dedicated session allows `edit`, `bash`, `webfetch`, `doom_loop`, and `external_directory` for `*` |
+| DSH | Uses the selected managed headless Profile via `--profile`; the adapter supplies no additional permission flag |
+| Trae | No automatic background runner |
+
+Run these jobs only against trusted source in an appropriately trusted local
+environment. Worker timeouts and repository validation bound lifecycle and
+identity; they do not restrict filesystem or tool access to that repository.
 
 ### MemoraX memory traffic
 
@@ -129,15 +161,15 @@ the generated configuration's automatic writeback; automatic retrieval
 remains disabled until explicitly enabled.
 
 Memory searches send the query and repository-scoped identity to MemoraX.
-When DSH or OpenCode automatic retrieval is enabled, each eligible direct user
+When DSH, OpenCode, or Trae automatic retrieval is enabled, each eligible direct user
 prompt is used as the search query.
 Active adds and automatic writeback send the selected content needed to create
 memory. Automatic writeback may include selected user instructions and the
-matching final assistant response from an exact Codex rollout, Claude Code
-transcript, DSH persisted Session Event Log interval, or OpenCode SDK
-session-message turn. It does not send the retained trace file, raw transcript
-path, raw DSH interval, SDK message records, or trace-only provenance as part
-of that payload.
+matching final assistant response from an exact Codex rollout, Claude Code or
+CodeBuddy/WorkBuddy transcript, DSH persisted Session Event Log interval,
+OpenCode SDK session-message Turn, or Trae's validated Hook pair. It does not
+send the retained trace file, raw transcript path, raw DSH interval, SDK
+message records, or trace-only provenance as part of that payload.
 
 Automatic writeback bounds each selected message to its configured Add limit,
 then applies a local best-effort detector before hashing, buffering, chunking,
@@ -163,19 +195,15 @@ is a separate trust decision; configure only a compatible MemoraX service you
 trust.
 
 Treat the MemoraX API key, trial Mark ID, Base User ID, repository identity,
-queries, selected writeback content, and saved memories as sensitive. Disable
-writes immediately with:
-
-```bash
-MEMORAX_CODE_MEMORAX_WRITEBACK_ENABLED=false
-```
-
-For a persistent disable, set:
-
-```toml
-[memory.writeback]
-enabled = false
-```
+queries, selected writeback content, and saved memories as sensitive.
+Automatic writeback and explicit Add are independent: persistent disabling of
+both requires `[memory.writeback].enabled = false` and
+`[memory.cli].add_enabled = false`, without enabling environment overrides.
+The global environment switch disables both only when its value is exactly
+`false`. Follow [Disabling memory writes](docs/configuration.md#disabling-memory-writes)
+for commands and process-inheritance requirements. These controls do not
+cancel in-flight requests or guarantee removal of previously buffered turns;
+graceful Backend shutdown can flush pending writeback.
 
 ## Local Data and Diagnostics
 
@@ -185,7 +213,13 @@ the product creates or tightens the home to mode `0700` and newly seeded
 configuration to mode `0600`; Windows relies on the current user's filesystem
 ACLs.
 
-Codex, Claude Code, CodeBuddy/WorkBuddy, DSH, and OpenCode local trace capture is enabled by default.
+Shared state locks publish complete, process-qualified owner records atomically
+before entering a critical section. This prevents stale-lock recovery from
+mistaking an owner still being written for an abandoned lock. State and managed
+configuration storage must support same-directory hard links; a failed atomic
+publication does not grant ownership or permit an unlocked update.
+
+Codex, Claude Code, CodeBuddy/WorkBuddy, DSH, OpenCode, and Trae local trace capture is enabled by default.
 Depending on the enabled client capabilities, traces may include prompts,
 responses, recalled memory, writeback content, reminder text, and local paths.
 Trace files stay under `MEMORAX_CODE_HOME`. The shipped package has no trace
@@ -215,9 +249,13 @@ remain owned by DSH. A complete product uninstall clears the setup-completion
 record so a later installation requires foreground setup again. It
 intentionally retains:
 
-- `MEMORAX_CODE_HOME`, including configuration, secure account-free
-  credentials, and local traces;
+- `MEMORAX_CODE_HOME`, including private configuration and its API-key copy,
+  local traces, and retained runtime records;
+- account-free provisioning credentials and account/project metadata in the
+  current user's operating-system credential store, separately from
+  `MEMORAX_CODE_HOME`;
 - Claude plugin data;
+- DSH Profiles and native session data;
 - client provider configuration; and
 - memories already stored in MemoraX.
 
@@ -232,7 +270,7 @@ cleanup runs.
   retained trace files, private memories, `.env.local`, or machine-specific
   diagnostic state.
 - Preserve workspace traversal and symlink protections, client/session
-  isolation, exact-transcript writeback authority, bounded parsing, and
+  isolation, each client's documented writeback authority, bounded parsing, and
   fail-closed behavior for uncertain identity or runtime records.
 - Use isolated client and MemoraX Code homes for lifecycle or destructive
   tests.

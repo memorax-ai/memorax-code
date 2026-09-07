@@ -51,7 +51,7 @@ export function codeBuddyTranscriptTurnFromJsonLines(
 ): CodeBuddyTurnResult {
   const selected = selectCodeBuddyTurnBranch(text, input);
   if (!selected.ok) return selected;
-  const branch = selected.records.filter((record) => record.role === "assistant" && record.status === "completed" && belongsTo(record, selected.userId, selected.records));
+  const branch = selected.records.filter((record) => record.role === "assistant" && record.status === "completed");
   if (branch.length !== 1) return { ok: false, reason: branch.length > 1 ? "turn_ambiguous" : "assistant_message_missing" };
   const assistant = branch[0];
   const reply = assistantText(assistant);
@@ -63,7 +63,7 @@ export function codeBuddyTranscriptTurnFromJsonLines(
       turnId: input.turnId,
       userPrompt: selected.userPrompt,
       assistantReply: reply,
-      activities: activitiesBetween(selected.records, selected.userId, assistant),
+      activities: turnActivities(selected.records),
       sessionTurnIndex: selected.sessionTurnIndex,
     },
   };
@@ -78,7 +78,6 @@ export function codeBuddyInterruptedTranscriptTurnFromJsonLines(
   const assistants = selected.records.filter((record) => (
     record.role === "assistant"
     && (record.type === "message" || stringField(record, "status") !== undefined)
-    && belongsTo(record, selected.userId, selected.records)
   ));
   if (assistants.length > 1) return { ok: false, reason: "turn_ambiguous" };
   const assistant = assistants[0];
@@ -92,7 +91,7 @@ export function codeBuddyInterruptedTranscriptTurnFromJsonLines(
       turnId: input.turnId,
       userPrompt: selected.userPrompt,
       assistantReply: assistant ? assistantText(assistant) ?? "" : "",
-      activities: assistant ? activitiesBetween(selected.records, selected.userId, assistant) : [],
+      activities: assistant ? turnActivities(selected.records) : [],
       sessionTurnIndex: selected.sessionTurnIndex,
     },
   };
@@ -100,7 +99,6 @@ export function codeBuddyInterruptedTranscriptTurnFromJsonLines(
 
 type SelectedCodeBuddyTurnBranch = Readonly<{
   records: ParsedHistoryRecord[];
-  userId: string;
   userPrompt: string;
   sessionTurnIndex: number;
 }>;
@@ -118,6 +116,8 @@ function selectCodeBuddyTurnBranch(
   if (!records) return { ok: false, reason: "malformed_transcript" };
   const session = records.filter((record) => stringField(record, "sessionId") === input.sessionId);
   const users = session.filter((record) => record.role === "user" && visibleUserPrompt(record));
+  // The pre-submit byte boundary excludes earlier identical prompts; the digest
+  // locates the native user record. Writeback content still comes from the transcript.
   const candidates = users.filter((record) => {
     const prompt = visibleUserPrompt(record);
     return Boolean(
@@ -134,8 +134,7 @@ function selectCodeBuddyTurnBranch(
   if (!userId || !userPrompt) return { ok: false, reason: "turn_not_found" };
   return {
     ok: true,
-    records,
-    userId,
+    records: recordsInBranch(records, userId),
     userPrompt,
     sessionTurnIndex: users.indexOf(user) + 1,
   };
@@ -207,27 +206,38 @@ function contentText(value: unknown): string | undefined {
   return parts.join("\n") || undefined;
 }
 
-function belongsTo(record: CodeBuddyHistoryRecord, userId: string, records: readonly CodeBuddyHistoryRecord[]): boolean {
-  let current: CodeBuddyHistoryRecord | undefined = record;
-  const seen = new Set<string>();
-  for (let depth = 0; current && depth < 100; depth += 1) {
-    const id = stringField(current, "id");
-    if (id && seen.has(id)) return false;
-    if (id) seen.add(id);
-    const parent = stringField(current, "parentId");
-    if (!parent) return false;
-    if (parent === userId) return true;
-    current = records.find((candidate) => stringField(candidate, "id") === parent);
+function recordsInBranch(records: ParsedHistoryRecord[], userId: string): ParsedHistoryRecord[] {
+  // Resolve descendants once; repeated ancestor scans become cubic on long tool chains.
+  const childrenByParent = new Map<string, CodeBuddyHistoryRecord[]>();
+  for (const record of records) {
+    const parentId = stringField(record, "parentId");
+    if (!parentId) continue;
+    const children = childrenByParent.get(parentId);
+    if (children) children.push(record);
+    else childrenByParent.set(parentId, [record]);
   }
-  return false;
+  const branch = new Set<CodeBuddyHistoryRecord>();
+  const pending = [userId];
+  const seen = new Set<string>();
+  for (let index = 0; index < pending.length; index += 1) {
+    const parentId = pending[index];
+    if (seen.has(parentId)) continue;
+    seen.add(parentId);
+    for (const child of childrenByParent.get(parentId) ?? []) {
+      branch.add(child);
+      const id = stringField(child, "id");
+      if (id) pending.push(id);
+    }
+  }
+  // Keep parsed order, including ID-less records and tools on sibling branches.
+  return records.filter((record) => branch.has(record));
 }
 
-function activitiesBetween(records: readonly CodeBuddyHistoryRecord[], userId: string, assistant: CodeBuddyHistoryRecord): CodeBuddyActivity[] {
+function turnActivities(records: readonly CodeBuddyHistoryRecord[]): CodeBuddyActivity[] {
   const result: CodeBuddyActivity[] = [];
   for (const record of records) {
     const type = stringField(record, "type");
     if (type !== "function_call" && type !== "function_call_result") continue;
-    if (!belongsTo(record, userId, records) || !belongsTo(assistant, userId, records)) continue;
     const name = stringField(record, "name") ?? stringField(record, "function") ?? "tool";
     result.push({ kind: "tool", name, ...(contentText(record.arguments) ? { input: contentText(record.arguments) } : {}), ...(contentText(record.output) ? { output: contentText(record.output) } : {}) });
   }

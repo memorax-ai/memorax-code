@@ -210,8 +210,7 @@ function inspectRepoMemoryBundle(repo, validatorPath) {
     };
   }
 
-  const python = process.env.MEMORAX_CODE_REPO_MEMORY_PYTHON_COMMAND || "python3";
-  const result = spawnSync(python, [validatorPath, repo], {
+  const result = spawnSync(process.execPath, [validatorPath, "validate", repo], {
     cwd: repo,
     encoding: "utf8",
     env: process.env,
@@ -513,7 +512,7 @@ function usage() {
 }
 
 function buildPrompt(repo, snapshotHead, memorySkillInvocation) {
-  return `This invocation is the authorized background repo-memory worker. Complete the requested operation yourself; do not inspect, launch, or defer to another repo-memory job.\n\nUse ${memorySkillInvocation} and select the Repo Memory repo-build operation to build lightweight repo memory for this repository.\n\nRepository: ${repo}\nSnapshot HEAD: ${snapshotHead}\n\nDefault behavior:\n- Collect local git commit evidence from the exact snapshot SHA above, not a later symbolic HEAD.\n- Also try GitHub/GitLab PR, MR, and issue evidence when provider CLIs and authentication are available.\n- If provider evidence is unavailable, continue local-only and clearly record why.\n- Do not fabricate PR, MR, or issue facts.\n- If a previous attempt left an existing partial or unusable .repo_memory directory, perform a full refresh with collect_all.py --reuse instead of stopping because the directory exists.\n- Preserve .repo_memory/procedure-memory and .repo_memory/user-profile sidecars during full-refresh recovery.\n- Keep file writes scoped to ${repo}/.repo_memory and necessary repo-memory ignore/config entries.\n- Do not modify source code, dependency files, global config, or files outside the target repo unless explicitly required by repo-memory tooling.\n- Ensure PROFILE.md local_head resolves to the snapshot SHA above.\n- Run the packaged repo-memory validator before finishing.\n- Write a concise final summary with generated files, provider evidence status, and any follow-up needed.\n`;
+  return `This invocation is the authorized background repo-memory worker. Complete the requested operation yourself; do not inspect, launch, or defer to another repo-memory job.\n\nUse ${memorySkillInvocation} and select the Repo Memory repo-build operation to build lightweight repo memory for this repository.\n\nRepository: ${repo}\nSnapshot HEAD: ${snapshotHead}\n\nDefault behavior:\n- Collect local git commit evidence from the exact snapshot SHA above, not a later symbolic HEAD.\n- Also try GitHub/GitLab PR, MR, and issue evidence when provider CLIs and authentication are available.\n- If provider evidence is unavailable, continue local-only and clearly record why.\n- Do not fabricate PR, MR, or issue facts.\n- If a previous attempt left an existing partial or unusable .repo_memory directory, perform a full refresh with repo-memory.mjs collect --reuse instead of stopping because the directory exists.\n- Preserve .repo_memory/procedure-memory and .repo_memory/user-profile sidecars during full-refresh recovery.\n- Keep file writes scoped to ${repo}/.repo_memory and necessary repo-memory ignore/config entries.\n- Do not modify source code, dependency files, global config, or files outside the target repo unless explicitly required by repo-memory tooling.\n- Ensure PROFILE.md local_head resolves to the snapshot SHA above.\n- Run the packaged repo-memory validator before finishing.\n- Write a concise final summary with generated files, provider evidence status, and any follow-up needed.\n`;
 }
 
 function updatePrompt(repo, snapshotHead, memorySkillInvocation) {

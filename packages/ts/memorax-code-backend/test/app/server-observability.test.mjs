@@ -86,11 +86,17 @@ test("memory observability drain waits for every sink and isolates drain failure
   assert.equal(settled, true);
 });
 
-test("Codex trace observability failures do not create unhandled rejections", async () => {
+test("Codex trace observability failures do not create unhandled rejections", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-observability-trace-unhandled-"));
   const blocker = join(root, "debug");
   await writeFile(blocker, "file", "utf8");
-  const observability = createBackendMemoryObservability(root);
+  const observability = createBackendMemoryObservability(root, undefined, {
+    MEMORAX_CODE_CODEX_TRACE_ENABLED: "true",
+  });
+  const diagnostics = [];
+  const debugOutput = t.mock.method(console, "error", (message) => diagnostics.push(message));
+  const previousDebug = process.env.MEMORAX_CODE_BACKEND_DEBUG_REQUESTS;
+  process.env.MEMORAX_CODE_BACKEND_DEBUG_REQUESTS = "true";
   const unhandled = captureUnhandledRejections();
   try {
     observability.recordEvent({
@@ -106,10 +112,17 @@ test("Codex trace observability failures do not create unhandled rejections", as
         capturedAt: "2026-07-09T00:00:00.000Z",
       },
     });
-    await delay(50);
+    await observability.drain();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(diagnostics.length, 1);
+    assert.match(diagnostics[0], /codex_trace\.write_failed label="memory_observability"/);
+    assert.match(diagnostics[0], /ENOTDIR|EEXIST/);
     assert.deepEqual(unhandled.errors, []);
   } finally {
     unhandled.restore();
+    debugOutput.mock.restore();
+    if (previousDebug === undefined) delete process.env.MEMORAX_CODE_BACKEND_DEBUG_REQUESTS;
+    else process.env.MEMORAX_CODE_BACKEND_DEBUG_REQUESTS = previousDebug;
     await rm(root, { recursive: true, force: true });
   }
 });

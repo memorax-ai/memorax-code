@@ -1,0 +1,486 @@
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { test } from "node:test";
+import { createTraeMemoryHookRuntime } from "../../../dist/clients/trae/memory-hook-runtime.js";
+import { createRepositoryMemorySessionRuntime } from "../../../dist/memory/repository-session.js";
+import { traeTracePaths } from "../../../dist/trace/config.js";
+
+test("Trae runtime writes exact Hook content once for a repeated completed Turn", async () => {
+  const fixture = await createFixture("exact-writeback");
+  const requests = [];
+  const runtime = createTraeMemoryHookRuntime({
+    env: configuredEnv(fixture.home, { MEMORAX_CODE_TRAE_TRACE_ENABLED: "false" }),
+    fetchImpl: memoraxFetch(requests),
+  });
+  const prompt = "  Preserve this Trae prompt exactly.  ";
+  const assistant = "  Preserve this Trae response exactly.  ";
+  const command = turnStart("trae-exact-session", prompt, fixture.workspace);
+  try {
+    assert.deepEqual(await runtime.recordTurnStart(command), { ok: true });
+    const writeback = {
+      ...command,
+      lastAssistantMessage: assistant,
+    };
+    assert.deepEqual(await runtime.writeback(writeback), { ok: true, scheduled: true });
+    assert.deepEqual(await runtime.writeback(writeback), { ok: true, scheduled: true });
+    await waitFor(() => requests.length === 1, "Trae writeback did not settle");
+    assert.deepEqual(requests[0].body.messages.map(({ role, content }) => ({ role, content })), [
+      { role: "user", content: prompt.trim() },
+      { role: "assistant", content: assistant.trim() },
+    ]);
+    assert.match(requests[0].body.metadata.idempotency_key, /^automatic:trae:/);
+  } finally {
+    runtime.close();
+    await fixture.cleanup();
+  }
+});
+
+test("Trae runtime interrupts a replaced active Turn without writing it back", async () => {
+  const fixture = await createFixture("interrupted");
+  const writes = [];
+  const runtime = createTraeMemoryHookRuntime({
+    env: configuredEnv(fixture.home, { MEMORAX_CODE_TRAE_TRACE_ENABLED: "false" }),
+    automaticWriteback: (request) => {
+      writes.push(request);
+      return { accepted: true };
+    },
+  });
+  const first = turnStart("trae-interrupted-session", "Cancel the first Trae turn.", fixture.workspace, 1_700_000_000_001);
+  const second = turnStart("trae-interrupted-session", "Continue with the next Trae turn.", fixture.workspace, 1_700_000_000_002);
+  try {
+    await runtime.recordTurnStart(first);
+    await runtime.recordTurnStart(second);
+    assert.equal(runtime.size(), 1);
+    assert.deepEqual(await runtime.writeback({
+      ...first,
+      lastAssistantMessage: "This stale completion must not be retained.",
+    }), { ok: true, scheduled: false, reason: "interrupted" });
+    assert.deepEqual(await runtime.writeback({
+      ...second,
+      lastAssistantMessage: "The replacement turn completed.",
+    }), { ok: true, scheduled: true });
+    assert.deepEqual(writes.map(({ userText, assistantText }) => ({ userText, assistantText })), [{
+      userText: second.prompt,
+      assistantText: "The replacement turn completed.",
+    }]);
+  } finally {
+    runtime.close();
+    await fixture.cleanup();
+  }
+});
+
+test("Trae runtime serializes overlapping Turn starts for one Session", async () => {
+  const fixture = await createFixture("overlapping-starts");
+  const writes = [];
+  const baseRepositoryMemorySession = createRepositoryMemorySessionRuntime();
+  let resolveCalls = 0;
+  let markFirstResolveStarted;
+  let releaseFirstResolve;
+  const firstResolveStarted = new Promise((resolve) => {
+    markFirstResolveStarted = resolve;
+  });
+  const firstResolveGate = new Promise((resolve) => {
+    releaseFirstResolve = resolve;
+  });
+  const repositoryMemorySession = {
+    async resolve(input) {
+      resolveCalls += 1;
+      if (resolveCalls === 1) {
+        markFirstResolveStarted();
+        await firstResolveGate;
+      }
+      return await baseRepositoryMemorySession.resolve(input);
+    },
+    close() {
+      baseRepositoryMemorySession.close();
+    },
+  };
+  const runtime = createTraeMemoryHookRuntime({
+    env: configuredEnv(fixture.home, { MEMORAX_CODE_TRAE_TRACE_ENABLED: "false" }),
+    automaticWriteback: (request) => {
+      writes.push(request);
+      return { accepted: true };
+    },
+    repositoryMemorySession,
+  });
+  const first = turnStart("trae-overlapping-session", "Start the first Trae turn.", fixture.workspace, 1_700_000_000_001);
+  const second = turnStart("trae-overlapping-session", "Replace it with the second Trae turn.", fixture.workspace, 1_700_000_000_002);
+  const starts = [];
+  try {
+    starts.push(runtime.recordTurnStart(first));
+    await firstResolveStarted;
+    starts.push(runtime.recordTurnStart(second));
+    assert.equal(resolveCalls, 1, "the second start must wait for the first Session operation");
+    releaseFirstResolve();
+    await Promise.all(starts);
+
+    assert.deepEqual(await runtime.writeback({
+      ...first,
+      lastAssistantMessage: "The first completion arrived late.",
+    }), { ok: true, scheduled: false, reason: "interrupted" });
+    assert.deepEqual(await runtime.writeback({
+      ...second,
+      lastAssistantMessage: "The second turn completed.",
+    }), { ok: true, scheduled: true });
+    assert.deepEqual(writes.map(({ userText }) => userText), [second.prompt]);
+  } finally {
+    releaseFirstResolve();
+    await Promise.allSettled(starts);
+    runtime.close();
+    repositoryMemorySession.close();
+    await fixture.cleanup();
+  }
+});
+
+test("Trae runtime preserves interruption authority after coordinator metadata expires", async () => {
+  const fixture = await createFixture("expired-interruption");
+  const writes = [];
+  let now = 1_700_000_000_000;
+  const runtime = createTraeMemoryHookRuntime({
+    env: configuredEnv(fixture.home, { MEMORAX_CODE_TRAE_TRACE_ENABLED: "false" }),
+    automaticWriteback: (request) => {
+      writes.push(request);
+      return { accepted: true };
+    },
+    now: () => now,
+    ttlMs: 5,
+    cleanupIntervalMs: 60_000,
+  });
+  const first = turnStart("trae-expired-session", "Run a long Trae task.", fixture.workspace, now);
+  const second = turnStart("trae-expired-session", "Replace the long Trae task.", fixture.workspace, now + 10);
+  try {
+    await runtime.recordTurnStart(first);
+    now += 10;
+    await runtime.recordTurnStart(second);
+    assert.deepEqual(await runtime.writeback({
+      ...first,
+      lastAssistantMessage: "This late completion must remain interrupted.",
+    }), { ok: true, scheduled: false, reason: "interrupted" });
+    assert.deepEqual(await runtime.writeback({
+      ...second,
+      lastAssistantMessage: "The replacement completed.",
+    }), { ok: true, scheduled: true });
+    assert.deepEqual(writes.map(({ userText }) => userText), [second.prompt]);
+  } finally {
+    runtime.close();
+    await fixture.cleanup();
+  }
+});
+
+test("Trae runtime preserves a replacement Turn when an older Stop finishes", async () => {
+  const fixture = await createFixture("overlapping-stop");
+  const writes = [];
+  const baseRepositoryMemorySession = createRepositoryMemorySessionRuntime();
+  let now = 1_700_000_000_000;
+  const ttlMs = 5 * 60 * 1000;
+  let resolveCalls = 0;
+  let markStopStarted;
+  let releaseStop;
+  const stopStarted = new Promise((resolve) => { markStopStarted = resolve; });
+  const stopGate = new Promise((resolve) => { releaseStop = resolve; });
+  const repositoryMemorySession = {
+    async resolve(input) {
+      resolveCalls += 1;
+      if (resolveCalls === 2) {
+        markStopStarted();
+        await stopGate;
+      }
+      return await baseRepositoryMemorySession.resolve(input);
+    },
+    close() {
+      baseRepositoryMemorySession.close();
+    },
+  };
+  const runtime = createTraeMemoryHookRuntime({
+    env: configuredEnv(fixture.home, { MEMORAX_CODE_TRAE_TRACE_ENABLED: "true" }),
+    automaticWriteback: (request) => { writes.push(request); return { accepted: true }; },
+    repositoryMemorySession,
+    now: () => now,
+    ttlMs,
+  });
+  const first = turnStart("trae-overlapping-stop", "Finish the first Turn.", fixture.workspace, now);
+  const second = turnStart(first.sessionId, "Start a long replacement Turn.", fixture.workspace, now + 1);
+  let pendingStop;
+  try {
+    await runtime.recordTurnStart(first);
+    pendingStop = runtime.writeback({ ...first, lastAssistantMessage: "The first Turn completed." });
+    await stopStarted;
+    now += 1;
+    await runtime.recordTurnStart(second);
+    releaseStop();
+    await pendingStop;
+
+    // Expire coordinator metadata so only the retained active snapshot can
+    // preserve the second Turn's interruption authority when it is replaced.
+    now += ttlMs + 1;
+    assert.equal(runtime.size(), 0);
+    const third = turnStart(first.sessionId, "Replace the long Turn.", fixture.workspace, now);
+    await runtime.recordTurnStart(third);
+    assert.deepEqual(await runtime.writeback({
+      ...third,
+      lastAssistantMessage: "The newest Turn completed.",
+    }), { ok: true, scheduled: true });
+    const events = (await readFile(traeTracePaths(fixture.home).eventsJsonl(first.sessionId), "utf8"))
+      .trim().split(/\r?\n/).map((line) => JSON.parse(line));
+    assert.deepEqual(
+      events.filter((event) => event.type === "turn_end" && event.trace.turn_id === second.turnId)
+        .map((event) => event.outcome),
+      ["interrupted"],
+    );
+    assert.deepEqual(writes.map(({ userText }) => userText), [first.prompt, third.prompt]);
+  } finally {
+    releaseStop();
+    if (pendingStop) await Promise.allSettled([pendingStop]);
+    runtime.close();
+    repositoryMemorySession.close();
+    await fixture.cleanup();
+  }
+});
+
+test("Trae accepts the replacement Turn Stop while its start retrieval is pending", async () => {
+  const fixture = await createFixture("pending-retrieval-stop");
+  const writes = [];
+  let now = 1_700_000_000_000;
+  let searchCalls = 0;
+  let markSecondSearchStarted;
+  let releaseSecondSearch;
+  const secondSearchStarted = new Promise((resolve) => { markSecondSearchStarted = resolve; });
+  const secondSearchGate = new Promise((resolve) => { releaseSecondSearch = resolve; });
+  const runtime = createTraeMemoryHookRuntime({
+    env: configuredEnv(fixture.home, {
+      MEMORAX_CODE_TRAE_TRACE_ENABLED: "false",
+      MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED: "true",
+    }),
+    now: () => now,
+    ttlMs: 5,
+    cleanupIntervalMs: 60_000,
+    automaticWriteback: (request) => { writes.push(request); return { accepted: true }; },
+    fetchImpl: async (url) => {
+      assert.match(String(url), /\/v1\/memories\/search$/);
+      searchCalls += 1;
+      if (searchCalls === 2) {
+        markSecondSearchStarted();
+        await secondSearchGate;
+      }
+      return new Response(JSON.stringify({
+        success: true,
+        data: { task_id: `search-${searchCalls}`, status: "completed", data: [] },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    },
+  });
+  const first = turnStart("trae-pending-session", "Start the first Turn.", fixture.workspace, now);
+  const second = turnStart("trae-pending-session", "Replace it with the second Turn.", fixture.workspace, now + 1);
+  let pendingStart;
+  try {
+    await runtime.recordTurnStart(first);
+    now += 1;
+    pendingStart = runtime.recordTurnStart(second);
+    await secondSearchStarted;
+    // Stop prunes coordinator metadata at this time. The active snapshot must
+    // already refer to the replacement even though its start has not returned.
+    now += 10;
+    assert.deepEqual(await runtime.writeback({
+      ...second,
+      lastAssistantMessage: "The replacement completed before Search returned.",
+    }), { ok: true, scheduled: true });
+    assert.deepEqual(await runtime.writeback({
+      ...first,
+      lastAssistantMessage: "The original completion arrived late.",
+    }), { ok: true, scheduled: false, reason: "interrupted" });
+    assert.deepEqual(writes.map(({ userText }) => userText), [second.prompt]);
+    assert.equal(runtime.size(), 0);
+    assert.equal(searchCalls, 2);
+    releaseSecondSearch();
+    assert.deepEqual(await pendingStart, { ok: true });
+  } finally {
+    releaseSecondSearch();
+    if (pendingStart) await Promise.allSettled([pendingStart]);
+    runtime.close();
+    await fixture.cleanup();
+  }
+});
+
+test("Trae complete Hook payload restores writeback after Backend runtime restart", async () => {
+  const fixture = await createFixture("restart");
+  const env = configuredEnv(fixture.home, { MEMORAX_CODE_TRAE_TRACE_ENABLED: "false" });
+  const command = turnStart("trae-restart-session", "Persist across a Backend restart.", fixture.workspace);
+  const beforeRestart = createTraeMemoryHookRuntime({
+    env,
+    automaticWriteback: () => ({ accepted: true }),
+  });
+  await beforeRestart.recordTurnStart(command);
+  beforeRestart.close();
+
+  const writes = [];
+  const afterRestart = createTraeMemoryHookRuntime({
+    env,
+    automaticWriteback: (request) => {
+      writes.push(request);
+      return { accepted: true };
+    },
+  });
+  try {
+    assert.deepEqual(await afterRestart.writeback({
+      ...command,
+      lastAssistantMessage: "The complete Stop payload restored the turn.",
+    }), { ok: true, scheduled: true });
+    assert.equal(afterRestart.size(), 0);
+    assert.deepEqual(writes.map(({ userText, assistantText }) => ({ userText, assistantText })), [{
+      userText: command.prompt,
+      assistantText: "The complete Stop payload restored the turn.",
+    }]);
+  } finally {
+    afterRestart.close();
+    await fixture.cleanup();
+  }
+});
+
+test("Trae runtime fails closed when a session changes physical workspace", async () => {
+  const fixture = await createFixture("scope-mismatch");
+  const otherWorkspace = join(fixture.root, "other-workspace");
+  await mkdir(otherWorkspace);
+  const writes = [];
+  const runtime = createTraeMemoryHookRuntime({
+    env: configuredEnv(fixture.home, { MEMORAX_CODE_TRAE_TRACE_ENABLED: "false" }),
+    automaticWriteback: (request) => {
+      writes.push(request);
+      return { accepted: true };
+    },
+  });
+  const command = turnStart("trae-scope-session", "Keep the original workspace authority.", fixture.workspace);
+  try {
+    await runtime.recordTurnStart(command);
+    assert.deepEqual(await runtime.writeback({
+      ...command,
+      cwd: otherWorkspace,
+      lastAssistantMessage: "Do not cross the workspace boundary.",
+    }), { ok: true, scheduled: false, reason: "workspace_scope_mismatch" });
+    assert.equal(writes.length, 0);
+  } finally {
+    runtime.close();
+    await fixture.cleanup();
+  }
+});
+
+test("Trae trace records interrupted and completed Turn lifecycles", async () => {
+  const fixture = await createFixture("trace");
+  const sessionId = "trae-trace-session";
+  const writes = [];
+  const runtime = createTraeMemoryHookRuntime({
+    memoraxCodeHome: fixture.home,
+    env: configuredEnv(fixture.home),
+    automaticWriteback: (request) => {
+      writes.push(request);
+      return { accepted: true };
+    },
+  });
+  const first = turnStart(sessionId, "Interrupt this Trae turn.", fixture.workspace, 1_700_000_000_011);
+  const second = turnStart(sessionId, "Complete this Trae turn.", fixture.workspace, 1_700_000_000_012);
+  try {
+    await runtime.recordTurnStart(first);
+    await runtime.recordTurnStart(second);
+    await runtime.writeback({ ...second, lastAssistantMessage: "Trae completed the second turn." });
+
+    const events = (await readFile(traeTracePaths(fixture.home).eventsJsonl(sessionId), "utf8"))
+      .trim()
+      .split(/\r?\n/)
+      .map((line) => JSON.parse(line));
+    assert.deepEqual(events.map(({ type, outcome }) => ({ type, outcome })), [
+      { type: "turn_start", outcome: undefined },
+      { type: "turn_end", outcome: "interrupted" },
+      { type: "turn_start", outcome: undefined },
+      { type: "turn_end", outcome: "completed" },
+      { type: "turn_materialized", outcome: undefined },
+    ]);
+    assert.deepEqual(events.map((event) => event.trace.turn_id), [
+      first.turnId,
+      first.turnId,
+      second.turnId,
+      second.turnId,
+      second.turnId,
+    ]);
+    assert.equal(events.every((event) => event.trace.client === "trae"), true);
+    assert.equal(events.every((event) => event.source === "trae-hook"), true);
+    assert.equal(events.every((event) => event.trace.context_origin === "trae-hook-body"), true);
+    assert.equal(writes.length, 1);
+    const current = JSON.parse(await readFile(
+      traeTracePaths(fixture.home).sessionCurrentTurnPath(sessionId),
+      "utf8",
+    ));
+    assert.equal(current.turn_state, "completed");
+    assert.equal(current.trace.turn_id, second.turnId);
+  } finally {
+    runtime.close();
+    await fixture.cleanup();
+  }
+});
+
+function turnStart(sessionId, prompt, cwd, createdAt = 1_700_000_000_000) {
+  return {
+    version: 1,
+    client: "trae",
+    sessionId,
+    turnId: traeTurnId(sessionId, prompt, createdAt),
+    prompt,
+    cwd,
+    workspaceKind: "project",
+  };
+}
+
+function traeTurnId(sessionId, prompt, createdAt = 1_700_000_000_000) {
+  const digest = createHash("sha256").update(prompt.trim()).digest("hex");
+  return `${sessionId}:${createdAt}:${digest}`;
+}
+
+async function createFixture(name) {
+  const root = await mkdtemp(join(tmpdir(), `memorax-code-trae-${name}-`));
+  const home = join(root, "home");
+  const workspace = join(root, "workspace");
+  await Promise.all([
+    mkdir(home, { recursive: true }),
+    mkdir(workspace, { recursive: true }),
+  ]);
+  return {
+    root,
+    home,
+    workspace,
+    cleanup: () => rm(root, { recursive: true, force: true }),
+  };
+}
+
+function configuredEnv(home, overrides = {}) {
+  return {
+    MEMORAX_CODE_HOME: home,
+    MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED: "false",
+    MEMORAX_CODE_MEMORY_WRITEBACK_ENABLED: "true",
+    MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_ENABLED: "false",
+    MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
+    MEMORAX_CODE_MEMORAX_API_KEY: "secret",
+    MEMORAX_CODE_MEMORAX_USER_ID: "trae-user",
+    ...overrides,
+  };
+}
+
+function memoraxFetch(requests) {
+  return async (url, init) => {
+    requests.push({ url: String(url), body: JSON.parse(init.body) });
+    return new Response(JSON.stringify({
+      success: true,
+      data: { task_id: `trae-write-${requests.length}`, status: "completed" },
+    }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+}
+
+async function waitFor(predicate, message, timeoutMs = 1_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error(message);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}

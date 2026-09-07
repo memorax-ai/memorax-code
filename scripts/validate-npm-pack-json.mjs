@@ -32,7 +32,7 @@ if (
   throw new Error(`npm pack JSON did not contain a safe tarball filename: ${tarballFilename || "<empty>"}`);
 }
 
-const forbidden = /(^|\/)(?:target|test|tests|__pycache__|\.git|\.env(?:\.|$)|coverage)(?:\/|$)|\.(?:py[co]|pem|key)$/i;
+const forbidden = /(^|\/)(?:target|test|tests|__pycache__|\.git|\.env(?:\.|$)|coverage)(?:\/|$)|\.(?:py[co]?|pem|key)$/i;
 const undeclaredWorkspacePaths = loadUndeclaredNpmPackPaths(repoRoot);
 
 for (const entry of report.files) {
@@ -63,6 +63,7 @@ for (const requiredPath of [
   "bin/memorax-code-setup.mjs",
   "bin/memorax-code-opencode.mjs",
   "bin/memorax-code-codebuddy.mjs",
+  "bin/memorax-code-trae.mjs",
   "lib/client-hook-runtime.mjs",
   "lib/automatic-update.mjs",
   "lib/dsh-plugin-install.mjs",
@@ -80,6 +81,8 @@ for (const requiredPath of [
   "lib/trial-setup.mjs",
   "lib/vscode-extension-command.mjs",
   "lib/windows-cli-invocation.mjs",
+  "lib/windows-user-path.mjs",
+  "lib/memorax-code-adapter-common/src/backend-command.mjs",
   "lib/memorax-code-adapter-common/src/backend-connection.mjs",
   "lib/memorax-code-adapter-common/src/hooks/client-hook-launcher.mjs",
   "lib/memorax-code-adapter-common/src/clients/codex-plugin-artifact.mjs",
@@ -109,22 +112,33 @@ for (const requiredPath of [
   "lib/memorax-code-adapter-common/src/windows-cli-invocation.mjs",
   "lib/memorax-code-backend/dist/server.js",
   "lib/memorax-code-backend/dist/memorax-cli.js",
+  "lib/memorax-code-backend/dist/repo-memory.js",
+  "lib/memorax-code-backend/dist/user-profile.js",
+  "lib/memorax-code-backend/dist/repo-memory/cli.js",
+  "lib/memorax-code-backend/dist/personal-memory/cli.js",
   "lib/memorax-code-backend/dist/service-entrypoint.js",
   "lib/memorax-code-backend/dist/windows-cli-invocation.js",
   "lib/memorax-code-codex-adapter/skills/memorax-code/SKILL.md",
+  "lib/memorax-code-codex-adapter/skills/memorax-code/scripts/repo-memory.mjs",
+  "lib/memorax-code-codex-adapter/skills/memorax-code/scripts/user-profile-memory.mjs",
   "lib/memorax-code-codex-adapter/assets/composer-icon.png",
   "lib/memorax-code-codex-adapter/assets/logo.png",
   "lib/memorax-code-codex-adapter/hooks/runtime-hook.mjs",
   "lib/memorax-code-codex-adapter/hooks/runtime-shell.json",
   "lib/memorax-code-codex-adapter/runtime-hooks/memory-writeback.mjs",
   "lib/memorax-code-claude-adapter/skills/memorax-code/SKILL.md",
+  "lib/memorax-code-claude-adapter/skills/memorax-code/scripts/repo-memory.mjs",
+  "lib/memorax-code-claude-adapter/skills/memorax-code/scripts/user-profile-memory.mjs",
   "lib/memorax-code-claude-adapter/hooks/runtime-hook.mjs",
   "lib/memorax-code-claude-adapter/hooks/runtime-shell.json",
   "lib/memorax-code-claude-adapter/runtime-hooks/memory-turn.mjs",
   "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/skills/memorax-code/SKILL.md",
+  "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/skills/memorax-code/scripts/repo-memory.mjs",
+  "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/skills/memorax-code/scripts/user-profile-memory.mjs",
   "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/hooks/runtime-hook.mjs",
   "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/hooks/runtime-shell.json",
   "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/runtime-hooks/memory-turn.mjs",
+  "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/backend-command.mjs",
   "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/backend-connection.mjs",
   "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/runtime-record.mjs",
   "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/credentials/linux-secret-service.mjs",
@@ -152,10 +166,17 @@ for (const requiredPath of [
   "lib/memorax-code-dsh-adapter/src/runtime-state.mjs",
   "lib/memorax-code-dsh-adapter/hooks/repo-memory-job.mjs",
   "lib/memorax-code-dsh-adapter/skills/memorax-code/SKILL.md",
+  "lib/memorax-code-dsh-adapter/skills/memorax-code/scripts/repo-memory.mjs",
+  "lib/memorax-code-dsh-adapter/skills/memorax-code/scripts/user-profile-memory.mjs",
   "lib/memorax-code-opencode-adapter/src/cli.mjs",
+  "lib/memorax-code-opencode-adapter/skills/memorax-code/scripts/repo-memory.mjs",
+  "lib/memorax-code-opencode-adapter/skills/memorax-code/scripts/user-profile-memory.mjs",
   "lib/memorax-code-codebuddy-adapter/package.json",
+  "lib/memorax-code-codebuddy-adapter/skills/memorax-code/scripts/repo-memory.mjs",
+  "lib/memorax-code-codebuddy-adapter/skills/memorax-code/scripts/user-profile-memory.mjs",
   "lib/memorax-code-codebuddy-adapter/.codebuddy-plugin/plugin.json",
   "lib/memorax-code-codebuddy-adapter/hooks/hooks.json",
+  "lib/memorax-code-codebuddy-adapter/hooks/pending-state.mjs",
   "lib/memorax-code-codebuddy-adapter/hooks/runtime-hook.mjs",
   "lib/memorax-code-codebuddy-adapter/hooks/common-runtime.mjs",
   "lib/memorax-code-codebuddy-adapter/hooks/repo-memory-job.mjs",
@@ -163,6 +184,15 @@ for (const requiredPath of [
   "lib/memorax-code-codebuddy-adapter/src/hook-manifest.mjs",
   "lib/memorax-code-codebuddy-adapter/src/runtime-observation.mjs",
   "lib/memorax-code-codebuddy-adapter/src/cli.mjs",
+  "lib/memorax-code-trae-adapter/package.json",
+  "lib/memorax-code-trae-adapter/hooks/runtime-hook.mjs",
+  "lib/memorax-code-trae-adapter/skills/memorax-code/SKILL.md",
+  "lib/memorax-code-trae-adapter/skills/memorax-code/scripts/repo-memory.mjs",
+  "lib/memorax-code-trae-adapter/skills/memorax-code/scripts/user-profile-memory.mjs",
+  "lib/memorax-code-trae-adapter/src/adapter-paths.mjs",
+  "lib/memorax-code-trae-adapter/src/cli.mjs",
+  "lib/memorax-code-trae-adapter/src/config.mjs",
+  "lib/memorax-code-trae-adapter/src/runtime-observation.mjs",
 ]) {
   if (!paths.has(requiredPath)) {
     throw new Error(`npm pack is missing required runtime entrypoint: ${requiredPath}`);
@@ -212,6 +242,13 @@ try {
   );
   if (packedDshSkill !== canonicalSkill) {
     throw new Error("npm pack DSH skill must remain byte-identical to the canonical skill");
+  }
+  const packedTraeSkill = await readFile(
+    join(extracted, "package", "lib/memorax-code-trae-adapter/skills/memorax-code/SKILL.md"),
+    "utf8",
+  );
+  if (packedTraeSkill !== canonicalSkill) {
+    throw new Error("npm pack Trae skill must remain byte-identical to the canonical skill");
   }
   await assertLocalTraceOnly({
     repoRoot,

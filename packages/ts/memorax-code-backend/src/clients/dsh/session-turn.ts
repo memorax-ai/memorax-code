@@ -172,6 +172,8 @@ export function dshSessionEventTurn(input: DshSessionTurnInput): DshSessionTurnR
         if (!message || !validSurfaceOp(value.surfaceOp)) {
           return { ok: false, reason: "event_invalid" };
         }
+        // Native user/message events also carry plugin recall and compaction content;
+        // only directly appended user input belongs in the writeback prompt.
         if (message.source.kind === "user") {
           if (value.surfaceOp !== "append") {
             return { ok: false, reason: "event_invalid" };
@@ -202,6 +204,8 @@ export function dshSessionEventTurn(input: DshSessionTurnInput): DshSessionTurnR
   }
 
   if (!outcome) return { ok: false, reason: "turn_boundary_mismatch" };
+  // A validated non-completed interval can close the trace without text.
+  // Nonempty prompt and reply are required only for completed-Turn writeback.
   if (outcome !== "completed") {
     return { ok: false, reason: "turn_not_completed", outcome };
   }
@@ -233,6 +237,8 @@ function validateSessionHeader(
   ) return "session_header_invalid";
   if (stringField(header, "id") !== input.sessionId) return "session_identity_mismatch";
   if (stringField(header, "cwd") !== input.cwd) return "workspace_identity_mismatch";
+  // Ordinary user forks also have a parentSession; use origin/delegationDepth
+  // to identify delegated sessions rather than excluding every fork.
   if (Object.prototype.hasOwnProperty.call(header, "parentSession")) {
     if (!stringField(header, "parentSession")) return "session_header_invalid";
   }

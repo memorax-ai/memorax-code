@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, join, win32 } from "node:path";
 import {
@@ -80,10 +81,20 @@ export function ensureCodeBuddyCommandEnv(options = {}) {
   return resolved;
 }
 
-export function defaultCodeBuddyHome(env = process.env, homeDir = homedir(), platform = process.platform) {
-  return nonEmpty(env.CODEBUDDY_HOME)
-    ?? nonEmpty(env.WORKBUDDY_HOME)
-    ?? (platform === "win32" ? win32.join(homeDir, ".codebuddy") : join(homeDir, ".workbuddy"));
+export function defaultCodeBuddyHome(
+  env = process.env,
+  homeDir = homedir(),
+  platform = process.platform,
+  pathExists = existsSync,
+) {
+  const configured = nonEmpty(env.CODEBUDDY_HOME) ?? nonEmpty(env.WORKBUDDY_HOME);
+  if (configured) return configured;
+  if (platform !== "win32") return join(homeDir, ".workbuddy");
+  const workBuddyHome = win32.join(homeDir, ".workbuddy");
+  const legacyCodeBuddyHome = win32.join(homeDir, ".codebuddy");
+  return pathExists(workBuddyHome) || !pathExists(legacyCodeBuddyHome)
+    ? workBuddyHome
+    : legacyCodeBuddyHome;
 }
 
 function defaultWindowsRoots(env, homeDir) {

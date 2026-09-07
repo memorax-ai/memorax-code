@@ -33,11 +33,14 @@ import {
   startBackendAutomaticUpdateScheduler,
   type AutomaticUpdateScheduler,
 } from "../lifecycle/automatic-update-scheduler.js";
-import { activateCodexPlugin, installCodexPlugin } from "../clients/codex/plugin-install.js";
+import {
+  activateCodexPlugin,
+  inspectCodexPluginRegistration,
+  installCodexPlugin,
+} from "../clients/codex/plugin-install.js";
 import { inspectCodexPluginHooks, trustCodexPluginHooks, type CodexHook } from "../clients/codex/plugin-hooks.js";
 import {
   collectMemoraxCodeStatus,
-  isAdapterReady,
   isOptionalUnavailableDshAdapter,
   isOptionalUnconfiguredClaudeAdapter,
   restartMemoraxCodeService,
@@ -49,6 +52,12 @@ import {
   type MemoraxCodeStatusReport,
   type NpmPackageRemovalReport,
 } from "../lifecycle/orchestrator.js";
+import {
+  LIFECYCLE_CLIENTS,
+  isAdapterReady,
+  lifecycleAdapterReports,
+  summarizeAdapterReport,
+} from "../lifecycle/client-reports.js";
 import { backendEnv } from "../config/backend-env.js";
 import {
   backendServiceHome,
@@ -75,9 +84,9 @@ export function runBackendCli(argv = process.argv): void {
       `Usage: ${usageName} [${commands}] [--backend-url URL] [--backend-token TOKEN] [--home DIR]`,
       "[--host HOST] [--port PORT] [--rotate] [--show]",
       "[--codex-command CMD]",
-      "[--codex-home DIR] [--claude-home DIR] [--dsh-home DIR] [--opencode-config-dir DIR] [--codebuddy-home DIR]",
+      "[--codex-home DIR] [--claude-home DIR] [--dsh-home DIR] [--opencode-config-dir DIR] [--codebuddy-home DIR] [--trae-home DIR]",
       "[--dsh-command CMD] [--dsh-adapter-root DIR] [--memorax-code-command CMD]",
-      "[--clients codex|claude|dsh|opencode|codebuddy|CLIENT,...|all|none]",
+      `[--clients ${LIFECYCLE_CLIENTS.map(({ id }) => id).join("|")}|CLIENT,...|all|none]`,
       "[--json]",
       "[--marketplace-path FILE] [--plugin-source-path DIR] [--claude-command CMD] [--help]",
       "[--yes]",
@@ -236,6 +245,7 @@ async function startRawBackendServer(
         dshAdapterRoot: argValue(argv, "--dsh-adapter-root"),
         openCodeConfigDir: argValue(argv, "--opencode-config-dir"),
         codeBuddyHome: argValue(argv, "--codebuddy-home"),
+        traeHome: argValue(argv, "--trae-home"),
         codexCommand: argValue(argv, "--codex-command"),
         claudeCommand: argValue(argv, "--claude-command"),
         dshCommand: argValue(argv, "--dsh-command"),
@@ -433,7 +443,7 @@ function isClientHookRuntimeGeneration(
 }
 
 type CodexPluginCommandReport = Awaited<ReturnType<
-  typeof installCodexPlugin | typeof activateCodexPlugin | typeof inspectCodexPluginHooks | typeof trustCodexPluginHooks
+  typeof installCodexPlugin | typeof activateCodexPlugin | typeof inspectCodexPluginRegistration | typeof inspectCodexPluginHooks | typeof trustCodexPluginHooks
 >>;
 
 async function runCodexPluginCommand(argv: string[]): Promise<CodexPluginCommandReport> {
@@ -446,6 +456,13 @@ async function runCodexPluginCommand(argv: string[]): Promise<CodexPluginCommand
       codexCommand: argValue(argv, "--codex-command"),
       workspace: argValue(argv, "--workspace"),
       yes: argv.includes("--yes"),
+    });
+  }
+  if (subcommand === "registration") {
+    return await inspectCodexPluginRegistration({
+      codexHome: argValue(argv, "--codex-home"),
+      codexCommand: argValue(argv, "--codex-command"),
+      workspace: argValue(argv, "--workspace"),
     });
   }
   if (subcommand === "hooks") {
@@ -492,6 +509,14 @@ function printCodexPluginInstallResult(report: CodexPluginCommandReport): void {
     console.log("backend: not started");
     return;
   }
+  if (report.action === "codex-plugin-registration") {
+    console.log(`codex home: ${report.codexHome}`);
+    console.log(`registered: ${report.registered ? "yes" : "no"}`);
+    console.log(`enabled: ${report.enabled ? "yes" : "no"}`);
+    if (report.version) console.log(`version: ${report.version}`);
+    console.log("backend: not started");
+    return;
+  }
   const install = report.action === "codex-plugin-activate" ? report.install : report;
   console.log(`codex home: ${install.codexHome}`);
   console.log(`plugin source: ${install.pluginSourcePath}`);
@@ -534,7 +559,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function printMemoraxCodeStatus(report: MemoraxCodeStatusReport): void {
+export function printMemoraxCodeStatus(report: MemoraxCodeStatusReport): void {
   const backend = report.backend;
   const degraded = report.degraded === true;
   backendLog(`MemoraX Code Backend status: ${report.ok ? blueBold(degraded ? "Enabled (degraded)" : "Enabled") : redBold("Unavailable")}`);
@@ -544,13 +569,7 @@ function printMemoraxCodeStatus(report: MemoraxCodeStatusReport): void {
   backendLog(`Backend status: ${backend.ok ? blueBold("Enabled") : redBold("Unavailable")} ${backend.url}${backend.status ? ` status=${backend.status}` : ""}${backendIdentityDetail(backend.identity)}${backend.error ? ` error=${backend.error}` : ""}`);
   if (backend.service) backendLog(`Backend service: ${backend.service}`);
   if (typeof backend.authRequired === "boolean") backendLog(`Client auth: ${backend.authRequired ? "required" : "not required"}`);
-  if (report.codexAdapter) {
-    backendLog(`Codex adapter: ${adapterStatusLine(report.codexAdapter)}`);
-  }
-  if (report.claudeAdapter) backendLog(`Claude adapter: ${claudeAdapterStatusLine(report.claudeAdapter, report.codexAdapter)}`);
-  if (report.dshAdapter) backendLog(`DSH adapter: ${dshAdapterStatusLine(report.dshAdapter)}`);
-  if (report.opencodeAdapter) backendLog(`OpenCode adapter: ${adapterStatusLine(report.opencodeAdapter)}`);
-  if (report.codebuddyAdapter) backendLog(`CodeBuddy adapter: ${adapterStatusLine(report.codebuddyAdapter)}`);
+  printAdapterReports(report, true);
   if (!suppressBackendGuidance()) {
     for (const line of statusGuidance(report)) backendLog(line);
   }
@@ -640,7 +659,7 @@ export async function runBackendTokenCommand(
   }
 }
 
-function printLifecycleResult(report: MemoraxCodeLifecycleReport): void {
+export function printLifecycleResult(report: MemoraxCodeLifecycleReport): void {
   const degraded = report.degraded === true || report.backend?.degraded === true;
   backendLog(`${lifecycleActionLabel(report.action)}: ${report.ok ? green(degraded ? "ok (degraded)" : "ok") : red("needs attention")}`);
   if (report.message) backendLog(report.message);
@@ -655,11 +674,7 @@ function printLifecycleResult(report: MemoraxCodeLifecycleReport): void {
       backendLog(`Warning: ${warning.message}${warning.errorCode ? ` code=${warning.errorCode}` : ""}`);
     }
   }
-  if (report.codexAdapter) backendLog(`Codex adapter: ${adapterStatusLine(report.codexAdapter)}`);
-  if (report.claudeAdapter) backendLog(`Claude adapter: ${adapterStatusLine(report.claudeAdapter)}`);
-  if (report.dshAdapter) backendLog(`DSH adapter: ${dshAdapterStatusLine(report.dshAdapter)}`);
-  if (report.opencodeAdapter) backendLog(`OpenCode adapter: ${adapterStatusLine(report.opencodeAdapter)}`);
-  if (report.codebuddyAdapter) backendLog(`CodeBuddy adapter: ${adapterStatusLine(report.codebuddyAdapter)}`);
+  printAdapterReports(report);
   if (report.codexPlugin) {
     const removed = report.codexPlugin.removedPaths.length;
     const marketplace = report.codexPlugin.marketplaceChanged ? " marketplace=updated" : " marketplace=unchanged";
@@ -669,6 +684,26 @@ function printLifecycleResult(report: MemoraxCodeLifecycleReport): void {
   if (!suppressBackendGuidance()) {
     for (const line of lifecycleGuidance(report)) backendLog(line);
   }
+}
+
+function printAdapterReports(
+  report: MemoraxCodeLifecycleReport | MemoraxCodeStatusReport,
+  status = false,
+): void {
+  for (const { client, report: adapter } of lifecycleAdapterReports(report)) {
+    const detail = client.id === "dsh"
+      ? dshAdapterStatusLine(adapter)
+      : client.id === "claude" && status
+        ? claudeAdapterStatusLine(adapter, report.codexAdapter)
+        : adapterStatusLine(adapter);
+    backendLog(`${adapterDisplayName(client)} adapter: ${detail}`);
+  }
+}
+
+function adapterDisplayName(client: typeof LIFECYCLE_CLIENTS[number]): string {
+  if (client.id === "claude") return "Claude";
+  if (client.id === "codebuddy") return "CodeBuddy";
+  return client.name;
 }
 
 const BACKEND_PREFIX = "[MemoraX Code Backend]:";
@@ -711,6 +746,7 @@ function lifecycleActionLabel(action: MemoraxCodeLifecycleReport["action"]): str
 }
 
 function lifecycleGuidance(report: MemoraxCodeLifecycleReport): string[] {
+  const adapters = lifecycleAdapterReports(report);
   if (report.action === "start") {
     if (report.backend?.ok === false) {
       return [
@@ -718,24 +754,18 @@ function lifecycleGuidance(report: MemoraxCodeLifecycleReport): string[] {
         "Run `memorax-code logs` for details, then retry `memorax-code start`.",
       ];
     }
-    if (!report.codexAdapter && !report.claudeAdapter && !report.dshAdapter && !report.opencodeAdapter) {
+    if (adapters.length === 0) {
       return [
         green("Backend is running."),
         "Adapters were not changed for this command.",
       ];
     }
     const optionalDshUnavailable = isOptionalUnavailableDshAdapter(report.dshAdapter);
-    if ((!report.codexAdapter || isAdapterReady(report.codexAdapter))
-      && (!report.claudeAdapter || isAdapterReady(report.claudeAdapter))
-      && (!report.dshAdapter
-        || isAdapterReady(report.dshAdapter)
-        || optionalDshUnavailable)
-      && (!report.opencodeAdapter || isAdapterReady(report.opencodeAdapter))) {
+    if (adapters.every(({ client, report: adapter }) => (
+      isAdapterReady(adapter) || (client.id === "dsh" && optionalDshUnavailable)
+    ))) {
       return [
-        green(optionalDshUnavailable
-          && !report.codexAdapter
-          && !report.claudeAdapter
-          && !report.opencodeAdapter
+        green(optionalDshUnavailable && adapters.length === 1
           ? "Backend is running; the optional DSH integration is unavailable."
           : "Backend is running and available client integrations are enabled."),
         ...(optionalDshUnavailable
@@ -746,9 +776,12 @@ function lifecycleGuidance(report: MemoraxCodeLifecycleReport): string[] {
               green("Existing sessions with the stable plugin shell select the active runtime on their next user prompt."),
               "Restart or refresh a client only if its plugin shell changed or MemoraX Code is not active on the next prompt.",
             ]
-          : optionalDshUnavailable
-            ? []
-            : [green("New DSH sessions can use MemoraX Code through the active Profile integration.")]),
+          : adapters.some(({ client }) => client.id !== "dsh")
+            ? ["Restart or refresh a client if MemoraX Code is not active on the next prompt."]
+            : optionalDshUnavailable
+              ? []
+              : [green("New DSH sessions can use MemoraX Code through the active Profile integration.")]),
+        ...activationGuidance(report),
       ];
     }
     return [
@@ -764,10 +797,9 @@ function lifecycleGuidance(report: MemoraxCodeLifecycleReport): string[] {
         green(backendKeptRunning
           ? "Backend remains running for the other active client integrations."
           : "Backend is stopped."),
-        ...(report.codexAdapter ? [green("Codex Hook integration is stopped; provider config was not changed.")] : []),
-        ...(report.claudeAdapter ? [green("Claude Code Hook integration is stopped; provider config was not changed.")] : []),
-        ...(report.dshAdapter ? [green("DSH Profile integration is stopped.")] : []),
-        ...(report.opencodeAdapter ? [green("OpenCode plugin integration is stopped; provider config was not changed.")] : []),
+        ...adapters.map(({ client }) => green(client.id === "dsh"
+          ? "DSH Profile integration is stopped."
+          : `${client.name} ${client.id === "opencode" ? "plugin" : "Hook"} integration is stopped; provider config was not changed.`)),
       ]
       : [
         red("Backend did not stop cleanly."),
@@ -779,6 +811,7 @@ function lifecycleGuidance(report: MemoraxCodeLifecycleReport): string[] {
       ? [
         green("Backend restarted."),
         green("Available client integrations were reconciled with the restarted Backend."),
+        ...activationGuidance(report),
         "Restart or refresh a client only if MemoraX Code is not active on the next prompt.",
       ]
       : [
@@ -814,12 +847,10 @@ function lifecycleGuidance(report: MemoraxCodeLifecycleReport): string[] {
 }
 
 function statusGuidance(report: MemoraxCodeStatusReport): string[] {
+  const adapters = lifecycleAdapterReports(report);
   if (report.ok) {
     const optionalDshUnavailable = isOptionalUnavailableDshAdapter(report.dshAdapter);
-    if (report.dshAdapter
-      && !report.codexAdapter
-      && !report.claudeAdapter
-      && !report.opencodeAdapter) {
+    if (report.dshAdapter && adapters.length === 1) {
       if (optionalDshUnavailable) {
         return [
           green("Backend is running; the optional DSH integration is unavailable."),
@@ -832,7 +863,10 @@ function statusGuidance(report: MemoraxCodeStatusReport): string[] {
       ];
     }
     return [
-      green("MemoraX Code is ready; sessions with the stable plugin shell use the active Hook runtime on their next user prompt."),
+      green(adapters.length === 0 || report.codexAdapter || report.claudeAdapter || report.opencodeAdapter
+        ? "MemoraX Code is ready; sessions with the stable plugin shell use the active Hook runtime on their next user prompt."
+        : "MemoraX Code is ready for new client sessions."),
+      ...activationGuidance(report),
       ...(optionalDshUnavailable
         ? [`DSH integration is unavailable: ${report.dshAdapter?.reason ?? "not available"}.`]
         : []),
@@ -855,36 +889,35 @@ function statusGuidance(report: MemoraxCodeStatusReport): string[] {
       "Run `memorax-code start`, then `memorax-code status`.",
     ];
   }
-  if (report.codexAdapter && !isAdapterReady(report.codexAdapter)) {
+  const unavailable = adapters.find(({ client, report: adapter }) => (
+    !isAdapterReady(adapter)
+      && !(client.id === "claude" && isOptionalUnconfiguredClaudeAdapter(adapter, report.codexAdapter))
+      && !(client.id === "dsh" && isOptionalUnavailableDshAdapter(adapter))
+  ));
+  if (unavailable) {
+    const { client } = unavailable;
+    const guidance = client.id === "codex"
+      ? "Run `memorax-code start`, restart or refresh Codex, then enable the MemoraX Code Codex Adapter plugin."
+      : client.id === "dsh"
+        ? "Run `memorax-code start`, then retry `memorax-code status`."
+        : client.id === "trae"
+          ? "Run `memorax-code start --clients trae`, then enable Global Hooks in Trae Settings if this is the first setup."
+          : `Run \`memorax-code start\`, then restart or refresh ${client.name}.`;
     return [
-      red("Codex adapter is not enabled."),
-      "Run `memorax-code start`, restart or refresh Codex, then enable the MemoraX Code Codex Adapter plugin.",
-    ];
-  }
-  if (report.claudeAdapter && !isAdapterReady(report.claudeAdapter) && !isOptionalUnconfiguredClaudeAdapter(report.claudeAdapter, report.codexAdapter)) {
-    return [
-      red("Claude adapter is not enabled."),
-      "Run `memorax-code start`, then restart or refresh Claude Code.",
-    ];
-  }
-  if (report.dshAdapter
-    && !isAdapterReady(report.dshAdapter)
-    && !isOptionalUnavailableDshAdapter(report.dshAdapter)) {
-    return [
-      red("DSH adapter is not enabled."),
-      "Run `memorax-code start`, then retry `memorax-code status`.",
-    ];
-  }
-  if (report.opencodeAdapter && !isAdapterReady(report.opencodeAdapter)) {
-    return [
-      red("OpenCode adapter is not enabled."),
-      "Run `memorax-code start`, then restart or refresh OpenCode.",
+      red(`${adapterDisplayName(client)} adapter is not enabled.`),
+      guidance,
     ];
   }
   return [
     red("MemoraX Code needs attention."),
     "Run `memorax-code status` and `memorax-code logs` for details.",
   ];
+}
+
+function activationGuidance(report: MemoraxCodeLifecycleReport | MemoraxCodeStatusReport): string[] {
+  return report.traeAdapter && summarizeAdapterReport(report.traeAdapter).activationRequired
+    ? ["Trae requires one manual step: open Trae Settings and enable Global Hooks, then start a new Trae session."]
+    : [];
 }
 
 function backendIdentityDetail(identity: MemoraxCodeStatusReport["backend"]["identity"]): string {
@@ -916,25 +949,15 @@ function adapterStatusLine(report: AdapterReport): string {
   if (report.backendUrlMatches === false) {
     return `not ok endpoint_mismatch configured=${report.configuredBackendUrl ?? "missing"} expected=${report.expectedBackendUrl ?? "unknown"}`;
   }
-  const enabled = isAdapterReady(report);
-  const skillStatus = report.codexSkills?.status
-    ?? report.claudeSkills?.status
-    ?? report.opencodeSkills?.status
-    ?? report.codebuddySkills?.status;
+  const { ready, integration, skillStatus, hookStatus } = summarizeAdapterReport(report);
   const skills = skillStatus ? ` skills=${skillStatus}` : "";
-  const hooks = report.codebuddyHooks?.status ? ` hook-runtime=${report.codebuddyHooks.status}` : "";
+  const hooks = hookStatus ? ` hook-runtime=${hookStatus}` : "";
   const changed = report.changed === true ? " changed" : "";
-  const integration = report.integration ?? report.state?.integration ?? "hooks";
-  return `${enabled ? "ok" : "not enabled"} integration=${integration}${skills}${hooks}${changed}`;
+  return `${ready ? "ok" : "not enabled"} integration=${integration ?? "hooks"}${skills}${hooks}${changed}`;
 }
 
 function selectedLifecycleClientNames(report: MemoraxCodeLifecycleReport): string[] {
-  return [
-    report.codexAdapter ? "Codex" : undefined,
-    report.claudeAdapter ? "Claude Code" : undefined,
-    report.dshAdapter ? "DSH" : undefined,
-    report.opencodeAdapter ? "OpenCode" : undefined,
-  ].filter((name): name is string => name !== undefined);
+  return lifecycleAdapterReports(report).map(({ client }) => client.name);
 }
 
 function lifecycleClientName(report: MemoraxCodeLifecycleReport): string | undefined {

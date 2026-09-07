@@ -12,22 +12,14 @@ const productionRoots = [
   "packages/npm/memorax-code/lib/",
   "packages/ts/memorax-code-adapter-common/src/",
   "packages/ts/memorax-code-backend/src/",
-  "packages/ts/memorax-code-codex-adapter/hooks/",
-  "packages/ts/memorax-code-codex-adapter/runtime-hooks/",
-  "packages/ts/memorax-code-codex-adapter/skills/memorax-code/scripts/",
-  "packages/ts/memorax-code-codex-adapter/src/",
-  "packages/ts/memorax-code-claude-adapter/hooks/",
-  "packages/ts/memorax-code-claude-adapter/runtime-hooks/",
-  "packages/ts/memorax-code-claude-adapter/scripts/",
-  "packages/ts/memorax-code-claude-adapter/src/",
-  "packages/ts/memorax-code-dsh-adapter/src/",
-  "packages/ts/memorax-code-opencode-adapter/src/",
-  "packages/ts/memorax-code-codebuddy-adapter/hooks/",
-  "packages/ts/memorax-code-codebuddy-adapter/src/",
 ];
+const adapterProductionSource =
+  /^packages\/ts\/memorax-code-[a-z0-9]+(?:-[a-z0-9]+)*-adapter\/(?:src|hooks|runtime-hooks|scripts|skills\/memorax-code\/scripts)\//;
 
 const reviewedNetworkSources = new Set([
   "packages/npm/memorax-code/lib/trial-provision-client.mjs",
+  "packages/ts/memorax-code-adapter-common/src/backend-command.mjs",
+  "packages/ts/memorax-code-adapter-common/src/backend-command.d.mts",
   "packages/ts/memorax-code-adapter-common/src/hooks/ensure-backend-runner.mjs",
   "packages/ts/memorax-code-backend/src/app/backend-server.ts",
   "packages/ts/memorax-code-backend/src/clients/claude/memory-hook-runtime.ts",
@@ -39,7 +31,9 @@ const reviewedNetworkSources = new Set([
   "packages/ts/memorax-code-backend/src/memory/automatic-retrieval.ts",
   "packages/ts/memorax-code-backend/src/memory/automatic-writeback.ts",
   "packages/ts/memorax-code-backend/src/memory/cli.ts",
+  "packages/ts/memorax-code-backend/src/memory/harness-runtime.ts",
   "packages/ts/memorax-code-backend/src/memory/writeback-buffer.ts",
+  "packages/ts/memorax-code-backend/src/repo-memory/detect-updates.ts",
   "packages/ts/memorax-code-backend/src/provider/memorax/adapter.ts",
   "packages/ts/memorax-code-backend/src/provider/memorax/http.ts",
   "packages/ts/memorax-code-backend/src/transport/http/health.ts",
@@ -52,13 +46,14 @@ const reviewedNetworkSources = new Set([
   "packages/ts/memorax-code-codex-adapter/runtime-hooks/memory-skill-reminder.mjs",
   "packages/ts/memorax-code-codex-adapter/runtime-hooks/memory-writeback.mjs",
   "packages/ts/memorax-code-codex-adapter/src/cli.mjs",
-  "packages/ts/memorax-code-codex-adapter/skills/memorax-code/scripts/detect_updates.py",
   "packages/ts/memorax-code-dsh-adapter/src/http-client.mjs",
   "packages/ts/memorax-code-opencode-adapter/src/cli.mjs",
   "packages/ts/memorax-code-opencode-adapter/src/plugin.mjs",
   "packages/ts/memorax-code-opencode-adapter/src/repo-memory-server-runner.mjs",
   "packages/ts/memorax-code-backend/src/clients/codebuddy/memory-hook-runtime.ts",
+  "packages/ts/memorax-code-backend/src/clients/trae/memory-hook-runtime.ts",
   "packages/ts/memorax-code-codebuddy-adapter/hooks/runtime-hook.mjs",
+  "packages/ts/memorax-code-trae-adapter/hooks/runtime-hook.mjs",
 ]);
 
 const localTraceCoreSources = new Set([
@@ -88,6 +83,9 @@ const nestedProviderTransportImport =
   /from\s+["'](?:\.\.?\/)+provider\/memorax\/(?:adapter|http)\.js["']/;
 const siblingProviderTransportImport =
   /from\s+["']\.\/(?:adapter|http)\.js["']/;
+
+const backendCommandDependency =
+  /(?:\bpostBackendCommand\b|(?:from\s*|import\s*\()\s*["'][^"']*\/backend-command\.mjs["'])/;
 
 const networkCapabilityPatterns = [
   [/\bfetch(?:Impl)?\b/, "fetch"],
@@ -180,9 +178,14 @@ async function inspectFile(path, displayPath, options) {
     if (error?.code === "ENOENT" || error?.code === "EISDIR") return;
     throw error;
   }
-  if (options.sourcePath && productionRoots.some((prefix) => options.sourcePath.startsWith(prefix))) {
+  if (options.sourcePath && isProductionSource(options.sourcePath)) {
     inspectProductionSource(content, options.sourcePath, options.failures);
   }
+}
+
+function isProductionSource(path) {
+  return productionRoots.some((prefix) => path.startsWith(prefix))
+    || adapterProductionSource.test(path);
 }
 
 function inspectProductionSource(content, sourcePath, failures) {
@@ -198,6 +201,10 @@ function inspectProductionSource(content, sourcePath, failures) {
   if (importsProviderTransport(content, sourcePath)) {
     capabilities.push("provider transport import");
     outboundCapabilities.push("provider transport import");
+  }
+  if (backendCommandDependency.test(content)) {
+    capabilities.push("Backend command transport");
+    outboundCapabilities.push("Backend command transport");
   }
   if (capabilities.length > 0) {
     if (localTraceCoreSources.has(sourcePath)) {
@@ -277,7 +284,7 @@ async function safeArtifactSymlinkTarget(root, path, artifactPath, failures) {
 
 function sourcePathForArtifact(rawPath) {
   let path = normalizePath(rawPath).replace(/^package\//, "");
-  if (productionRoots.some((prefix) => path.startsWith(prefix))) return path;
+  if (isProductionSource(path)) return path;
 
   if (path.startsWith("bin/")) {
     return `packages/npm/memorax-code/${path}`;
@@ -287,15 +294,6 @@ function sourcePathForArtifact(rawPath) {
   }
   if (path.startsWith("lib/memorax-code-backend/dist/") && path.endsWith(".js")) {
     return `packages/ts/memorax-code-backend/src/${path.slice("lib/memorax-code-backend/dist/".length, -3)}.ts`;
-  }
-  if (path.startsWith("lib/memorax-code-codex-adapter/")) {
-    return `packages/ts/memorax-code-codex-adapter/${path.slice("lib/memorax-code-codex-adapter/".length)}`;
-  }
-  if (path.startsWith("lib/memorax-code-claude-adapter/skills/memorax-code/")) {
-    return `packages/ts/memorax-code-codex-adapter/skills/memorax-code/${path.slice("lib/memorax-code-claude-adapter/skills/memorax-code/".length)}`;
-  }
-  if (path.startsWith("lib/memorax-code-claude-adapter/")) {
-    return `packages/ts/memorax-code-claude-adapter/${path.slice("lib/memorax-code-claude-adapter/".length)}`;
   }
   if (path.startsWith("lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/")) {
     const pluginPath = path.slice("lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/".length);
@@ -307,17 +305,15 @@ function sourcePathForArtifact(rawPath) {
     }
     return `packages/ts/memorax-code-claude-adapter/${pluginPath}`;
   }
-  if (path.startsWith("lib/memorax-code-dsh-adapter/")) {
-    return `packages/ts/memorax-code-dsh-adapter/${path.slice("lib/memorax-code-dsh-adapter/".length)}`;
+  if (path.startsWith("lib/memorax-code-dsh-adapter/memorax-code-adapter-common/src/")) {
+    return `packages/ts/memorax-code-adapter-common/src/${path.slice("lib/memorax-code-dsh-adapter/memorax-code-adapter-common/src/".length)}`;
   }
-  if (path.startsWith("lib/memorax-code-opencode-adapter/skills/memorax-code/")) {
-    return `packages/ts/memorax-code-codex-adapter/skills/memorax-code/${path.slice("lib/memorax-code-opencode-adapter/skills/memorax-code/".length)}`;
-  }
-  if (path.startsWith("lib/memorax-code-opencode-adapter/")) {
-    return `packages/ts/memorax-code-opencode-adapter/${path.slice("lib/memorax-code-opencode-adapter/".length)}`;
-  }
-  if (path.startsWith("lib/memorax-code-codebuddy-adapter/")) {
-    return `packages/ts/memorax-code-codebuddy-adapter/${path.slice("lib/memorax-code-codebuddy-adapter/".length)}`;
+  const adapter = /^lib\/(memorax-code-[a-z0-9]+(?:-[a-z0-9]+)*-adapter)\/(.+)$/.exec(path);
+  if (adapter) {
+    const sourcePackage = adapter[2].startsWith("skills/memorax-code/")
+      ? "memorax-code-codex-adapter"
+      : adapter[1];
+    return `packages/ts/${sourcePackage}/${adapter[2]}`;
   }
   if (path.startsWith("lib/") && !path.slice("lib/".length).includes("/")) {
     return `packages/npm/memorax-code/${path}`;

@@ -15,7 +15,10 @@ import {
 } from "./memory-skill-reminder-policy.mjs";
 
 export const PERSONAL_MEMORY_REMINDER_CONTEXT = personalMemoryReminderContext();
-export { personalMemoryReminderContext } from "./memory-skill-reminder-policy.mjs";
+export {
+  MEMORY_IMPACT_REMINDER_CONTEXT,
+  personalMemoryReminderContext,
+} from "./memory-skill-reminder-policy.mjs";
 
 export async function runMemorySkillReminderHook(options, hookInput) {
   try {
@@ -190,6 +193,10 @@ function combinedReminderContext(options, due, cadenceReminderContext, personalM
   if (due.supplementalReminderDue || personalMemoryContext) {
     const additionalReminderContext = stringOption(options.additionalReminderContext);
     if (additionalReminderContext) contexts.push(additionalReminderContext);
+  }
+  if (personalMemoryContext || (due.memoryReminderDue && cadenceReminderContext)) {
+    const memoryImpactContext = stringOption(options.memoryImpactContext);
+    if (memoryImpactContext) contexts.push(memoryImpactContext);
   }
   if (personalMemoryContext) contexts.push(personalMemoryContext);
   if (due.memoryReminderDue && cadenceReminderContext) contexts.push(cadenceReminderContext);

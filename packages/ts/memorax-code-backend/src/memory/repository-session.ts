@@ -133,6 +133,9 @@ export async function resolveConfiguredRepositoryMemoryForSession(
       sessionScopes.set(input.owner, scopes);
     }
     const cached = scopes.get(bindingKey);
+    // A mismatch stays rejected for this base user even if later hooks return
+    // to the original workspace, preventing reuse of a conflicted binding.
+    // Changing the base user requires a new binding.
     if (cached?.scope.baseUserId === configResult.config.userId && cached.mismatch) {
       return repositoryScopeMismatch();
     }
@@ -146,6 +149,8 @@ export async function resolveConfiguredRepositoryMemoryForSession(
     }
     const workspaceKind = input.workspaceKind?.trim().toLowerCase();
     let workspaceRoot = input.workspaceRoot?.trim() ? input.workspaceRoot : undefined;
+    // Preserve the folder namespace when hooks run from nested directories.
+    // Reuse the bound root only after ruling out another workspace or repository.
     if (
       cachedScope
       && repositoryMemoryScopeKind(cachedScope) === "local-directory"
@@ -176,6 +181,8 @@ export async function resolveConfiguredRepositoryMemoryForSession(
     if (cached?.scope.baseUserId === configResult.config.userId) {
       if (!repositoryMemoryScopesMatch(cached.scope, scopeResult.scope)) {
         if (repositoryMemoryScopeCanUpgradeFromDegradedGit(cached.scope, scopeResult.scope)) {
+          // The writeback owner uses this synchronous callback to discard pending
+          // folder-scoped turns before the Git binding becomes visible.
           input.onScopeUpgrade?.({
             client: input.client,
             sessionId,

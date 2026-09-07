@@ -7,48 +7,9 @@ import { fileURLToPath } from "node:url";
 import { createOpenCodeMemoryHookRuntime } from "../../../dist/clients/opencode/memory-hook-runtime.js";
 import { openCodeMessageTurn } from "../../../dist/clients/opencode/message-turn.js";
 import { openCodeTracePaths } from "../../../dist/trace/config.js";
-import {
-  parseTurnStartCommand,
-  parseWritebackCommand,
-} from "../../../dist/memory/hook-command.js";
+import { createMemoryTurnCoordinator } from "../../../dist/memory/turn-coordinator.js";
 
 const TEST_WORKSPACE = fileURLToPath(new URL("../../..", import.meta.url));
-
-test("OpenCode Hook commands keep a closed client-specific schema", () => {
-  assert.equal(parseTurnStartCommand({
-    version: 1,
-    client: "opencode",
-    sessionId: "session-1",
-    userMessageId: "user-1",
-    prompt: "Use the OpenCode SDK turn.",
-    cwd: TEST_WORKSPACE,
-  }).ok, true);
-  assert.equal(parseWritebackCommand({
-    version: 1,
-    client: "opencode",
-    sessionId: "session-1",
-    userMessageId: "user-1",
-    assistantMessageId: "assistant-1",
-    messages: [],
-  }).ok, true);
-  assert.equal(parseTurnStartCommand({
-    version: 1,
-    client: "opencode",
-    sessionId: "session-1",
-    userMessageId: "user-1",
-    prompt: "Do not accept another client's transcript field.",
-    transcriptPath: "/tmp/transcript.jsonl",
-  }).ok, false);
-  assert.equal(parseWritebackCommand({
-    version: 1,
-    client: "opencode",
-    sessionId: "session-1",
-    userMessageId: "user-1",
-    assistantMessageId: "assistant-1",
-    messages: [],
-    lastAssistantMessage: "Hook text is not OpenCode writeback authority.",
-  }).ok, false);
-});
 
 test("OpenCode SDK messages materialize only an exact completed normal turn", () => {
   const valid = openCodeMessageTurn(openCodeMessages(), {
@@ -244,6 +205,8 @@ test("OpenCode finalizes an explicit MessageAbortedError without writeback", asy
       { type: "turn_start", outcome: undefined },
       { type: "turn_end", outcome: "interrupted" },
     ]);
+    assert.deepEqual(events.map(({ source }) => source), ["opencode-plugin", "opencode-plugin"]);
+    assert.deepEqual(events.map(({ trace }) => trace.client), ["opencode", "opencode"]);
     assert.equal(JSON.parse(await readFile(paths.currentTurnPath, "utf8")).turn_state, "interrupted");
   } finally {
     runtime.close();
@@ -251,7 +214,7 @@ test("OpenCode finalizes an explicit MessageAbortedError without writeback", asy
   }
 });
 
-test("OpenCode runtime reuses retrieval, scope, writeback, and quota notices", async () => {
+test("OpenCode runtime routes SDK content and carries write quota to the next prompt", async () => {
   const memoraxCodeHome = await mkdtemp(join(tmpdir(), "memorax-code-opencode-runtime-"));
   const requests = [];
   let searchCalls = 0;
@@ -284,7 +247,6 @@ test("OpenCode runtime reuses retrieval, scope, writeback, and quota notices", a
             score: 0.9,
             metadata: { memory_type: "core" },
           }],
-          ...(searchCalls === 1 ? { balances: [quotaBalance("memory_search", 10)] } : {}),
         },
       } : {
         success: true,
@@ -310,8 +272,6 @@ test("OpenCode runtime reuses retrieval, scope, writeback, and quota notices", a
       workspaceKind: "project",
     });
     assert.match(start.additionalContext, /shared retrieval runtime/);
-    assert.equal(start.userNotice, "memory_search: 10");
-    assert.doesNotMatch(start.additionalContext, /memory_search/);
 
     assert.deepEqual(await runtime.writeback({
       version: 1,
@@ -333,6 +293,17 @@ test("OpenCode runtime reuses retrieval, scope, writeback, and quota notices", a
       { role: "assistant", content: "OpenCode assistant reply." },
     ]);
 
+    assert.deepEqual(await runtime.recordTurnStart({
+      version: 1,
+      client: "opencode",
+      sessionId: "session-1",
+      userMessageId: "user-1",
+      prompt: "OpenCode user prompt.",
+      cwd: TEST_WORKSPACE,
+      workspaceKind: "project",
+    }), { ok: true, repoMemoryWorktree: start.repoMemoryWorktree });
+    assert.equal(searchCalls, 1);
+
     const next = await runtime.recordTurnStart({
       version: 1,
       client: "opencode",
@@ -346,6 +317,71 @@ test("OpenCode runtime reuses retrieval, scope, writeback, and quota notices", a
     assert.doesNotMatch(next.additionalContext, /memory_write/);
   } finally {
     runtime.close();
+    await rm(memoraxCodeHome, { recursive: true, force: true });
+  }
+});
+
+test("OpenCode SDK completion requires a prior scope binding but not unexpired turn metadata", async () => {
+  const memoraxCodeHome = await mkdtemp(join(tmpdir(), "memorax-code-opencode-bound-scope-"));
+  const writebacks = [];
+  let now = Date.now();
+  const turnCoordinator = createMemoryTurnCoordinator({
+    now: () => now,
+    ttlMs: 1,
+    automaticWriteback: (input) => { writebacks.push(input); return { accepted: true }; },
+  });
+  const runtime = createOpenCodeMemoryHookRuntime({
+    memoraxCodeHome,
+    now: () => now,
+    turnCoordinator,
+    env: {
+      MEMORAX_CODE_HOME: memoraxCodeHome,
+      MEMORAX_CODE_OPENCODE_TRACE_ENABLED: "false",
+      MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED: "false",
+      MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
+      MEMORAX_CODE_MEMORAX_API_KEY: "secret",
+      MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
+    },
+  });
+  const command = {
+    version: 1,
+    client: "opencode",
+    sessionId: "session-1",
+    userMessageId: "user-1",
+    assistantMessageId: "assistant-final",
+    messages: compactedOpenCodeMessages(),
+    cwd: TEST_WORKSPACE,
+    workspaceKind: "project",
+  };
+  try {
+    assert.deepEqual(await runtime.writeback(command), {
+      ok: true, scheduled: false, reason: "workspace_scope_unavailable",
+    });
+    assert.deepEqual(writebacks, []);
+    await runtime.recordTurnStart({
+      version: 1,
+      client: "opencode",
+      sessionId: command.sessionId,
+      userMessageId: command.userMessageId,
+      prompt: "The Hook prompt is not writeback content authority.",
+      cwd: TEST_WORKSPACE,
+      workspaceKind: "project",
+    });
+    assert.equal(runtime.size(), 1);
+    now += 10;
+    turnCoordinator.pruneExpired();
+    assert.equal(runtime.size(), 0);
+    assert.deepEqual(await runtime.writeback(command), { ok: true, scheduled: true });
+    assert.equal(runtime.size(), 0);
+    assert.equal(writebacks.length, 1);
+    assert.equal(writebacks[0].client, "opencode");
+    assert.equal(writebacks[0].userText, "OpenCode user prompt.");
+    assert.equal(writebacks[0].assistantText, "OpenCode final reply.");
+    assert.equal(writebacks[0].traceContext.turnId, "user-1");
+    assert.equal(writebacks[0].memoryObservabilitySource, "opencode_plugin_writeback");
+  } finally {
+    runtime.close();
+    turnCoordinator.close();
     await rm(memoraxCodeHome, { recursive: true, force: true });
   }
 });

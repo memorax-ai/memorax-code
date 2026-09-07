@@ -7,6 +7,7 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
+import { terminateFixtureBackends } from "./support/backend-service-fixtures.mjs";
 
 const serviceEntrypoint = fileURLToPath(new URL("../../dist/service-entrypoint.js", import.meta.url));
 
@@ -77,14 +78,13 @@ test("running managed Backend dispatches an overdue update without a client Sess
     ]);
     assert.equal(dispatched.automaticUpdateProcess, "1");
   } finally {
-    if (backend && backend.exitCode === null) {
-      backend.kill("SIGTERM");
-      await Promise.race([
-        new Promise((resolve) => backend.once("close", resolve)),
-        delay(2_000, undefined, { ref: false }),
-      ]);
+    try {
+      if (backend?.pid && backend.exitCode === null && backend.signalCode === null) {
+        await terminateFixtureBackends([{ pid: backend.pid, instanceId }]);
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
     }
-    await rm(root, { recursive: true, force: true });
   }
 });
 

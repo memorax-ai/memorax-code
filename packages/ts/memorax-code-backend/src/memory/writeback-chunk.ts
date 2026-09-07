@@ -79,6 +79,9 @@ function chunkWritebackMessages(
     current.push(...payload);
   };
 
+  // Keep each turn together when possible; split long messages without
+  // repeating user context on every assistant fragment. maxChars bounds each
+  // message fragment, while paired payloads may exceed it in total.
   for (const turn of turns) {
     const userChunks = turn.user ? chunkWritebackMessage(turn.user, config) : [];
     const assistantChunks = turn.assistants.flatMap((message) => chunkWritebackMessage(message, config));

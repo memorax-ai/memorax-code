@@ -16,7 +16,7 @@ try {
     runner: "codebuddy",
     finalMessageSource: "stdout",
     memorySkillInvocation: "the `memorax-code` skill",
-    validatorPath: resolve(pluginRoot, "skills/memorax-code/scripts/validate_memory.py"),
+    validatorPath: resolve(pluginRoot, "skills/memorax-code/scripts/repo-memory.mjs"),
     evaluateRepository,
     createCommand({ prompt }) {
       const codeBuddy = resolveHookCodeBuddyCommand({
@@ -24,6 +24,10 @@ try {
       });
       return [
         codeBuddy,
+        // Load this installation's Skill explicitly; the headless worker cannot
+        // rely on the GUI's plugin environment or its path format.
+        "--plugin-dir",
+        pluginRoot,
         "--print",
         "--output-format",
         "text",
