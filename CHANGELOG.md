@@ -6,6 +6,15 @@ behavior.
 
 ## Unreleased
 
+### Fixed
+
+- Stopped `memorax-cli` from exiting with a nonzero status on Windows after
+  printing complete results by letting the Node process drain naturally
+  instead of calling `process.exit()`.
+- Stopped the `memorax-code` management CLI, setup, and package transition
+  from exiting with a nonzero status on Windows after completing work by
+  letting the Node process drain naturally instead of calling `process.exit()`.
+
 ## [0.1.13] - 2026-09-04
 
 ### Added

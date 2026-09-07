@@ -15,14 +15,14 @@ Memory commands:
   add --memory TEXT --type TYPE --reason REASON [--session-id ID] [--content-type code]
 
 Run the command from the active task workspace so MemoraX Code can enforce its repository scope.`);
-  process.exit(0);
+  process.exitCode = 0;
 }
 
 if (args.length === 1 && (args[0] === "--version" || args[0] === "-v")) {
   const scriptDir = dirname(fileURLToPath(import.meta.url));
   const pkg = JSON.parse(readFileSync(join(scriptDir, "..", "package.json"), "utf8"));
   console.log(`memorax-cli ${pkg.version}`);
-  process.exit(0);
+  process.exitCode = 0;
 }
 
 await runBackendEntrypoint("memorax-cli.js");
