@@ -11,8 +11,8 @@ runMemoryCli(process.argv.slice(2)).then((result) => {
   } else {
     console.log(JSON.stringify(result, null, 2));
   }
-  process.exit(result.ok ? 0 : 1);
+  process.exitCode = result.ok ? 0 : 1;
 }).catch((error) => {
   console.error(error instanceof Error ? error.message : String(error));
-  process.exit(1);
+  process.exitCode = 1;
 });
