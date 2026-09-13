@@ -688,6 +688,20 @@ Add text, response bodies, credentials, and raw local paths. See
 [Search/Add recovery](troubleshooting.md#memorax-search-add-or-scope-fails) for
 interpreting the output or a diagnostic-storage failure.
 
+## Backend lifecycle diagnostics
+
+Failed Backend reports from `memorax-code start`, `stop`, and `restart` use
+the same [diagnostic storage and retention](#default-searchadd-diagnostics),
+independently of Debug and trace settings. Each CLI command result writes at
+most one record; the Backend service itself does not write these diagnostics.
+`MEMORAX_CODE_BACKEND_SUPPRESS_GUIDANCE=1` does not suppress the default diagnostic.
+
+This coverage is limited to failed Backend reports from those commands;
+adapter-only failures and complete setup, update, Hook, and automatic-writeback
+flows are outside it. `status`, `logs`, `token`, and `uninstall` do not create
+these records. See [Backend recovery](troubleshooting.md#backend-does-not-start)
+for the failure fields and process-state guidance.
+
 ## Local traces
 
 `[trace.codex]`, `[trace.claude]`, `[trace.dsh]`, `[trace.opencode]`,

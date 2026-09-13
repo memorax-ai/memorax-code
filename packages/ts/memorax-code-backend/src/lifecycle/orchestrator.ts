@@ -7,6 +7,7 @@ import { BackendConnectionAuthorityError } from "../../../memorax-code-adapter-c
 import { RuntimeRecordError } from "../../../memorax-code-adapter-common/src/runtime-record.mjs";
 import { withSetupCompletionLock } from "../../../memorax-code-adapter-common/src/setup-completion.mjs";
 import { runBackendStatus } from "./backend/status.js";
+import { backendServiceFailureFields, backendServicePreflightFailureFields } from "./backend/result.js";
 import {
   readBackendServiceState,
   preflightBackendServiceStart,
@@ -201,7 +202,7 @@ async function startMemoraxCodeServiceLocked(
         ok: false,
         action: "start",
         error: error instanceof Error ? error.message : String(error),
-        ...runtimeRecordErrorFields(error),
+        ...backendServicePreflightFailureFields(error),
       },
     };
   }
@@ -719,7 +720,7 @@ async function restartMemoraxCodeServiceLocked(
         ok: false,
         action: "restart",
         error: error instanceof Error ? error.message : String(error),
-        ...runtimeRecordErrorFields(error),
+        ...backendServicePreflightFailureFields(error),
       },
     };
   }
@@ -1168,7 +1169,7 @@ function backendServiceStatePreflight(
       ok: false,
       action,
       error: error instanceof Error ? error.message : String(error),
-      ...runtimeRecordErrorFields(error),
+      ...backendServiceFailureFields(error, "BACKEND_SERVICE_STATE_READ_FAILED", "read_state"),
     };
   }
 }
@@ -1201,6 +1202,7 @@ async function withMemoraxCodeLifecycleLock(
         ok: false,
         action,
         error: error.message,
+        ...backendServiceFailureFields(error, error.code, "lock"),
         errorCode: error.code,
       },
     };

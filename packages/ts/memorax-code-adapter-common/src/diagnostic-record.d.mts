@@ -13,8 +13,13 @@ export type DiagnosticRecordFields = {
   sessionHash?: string;
   turnHash?: string;
   systemCode?: string;
+  failureReason?: string;
+  recordReason?: string;
   httpStatus?: number;
   retryAfterMs?: number;
+  processState?: "not-started" | "stopped" | "running" | "unknown";
+  cleanupErrorCode?: string;
+  cleanupSystemCode?: string;
 };
 
 export type DiagnosticWriteResult = {

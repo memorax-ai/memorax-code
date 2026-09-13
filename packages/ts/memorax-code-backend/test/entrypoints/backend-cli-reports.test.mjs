@@ -1,13 +1,64 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import {
   printLifecycleResult,
   printMemoraxCodeStatus,
 } from "../../dist/entrypoints/backend-cli.js";
+import { diagnoseLifecycleReport } from "../../dist/lifecycle/cli-diagnostics.js";
 
 const readyAdapter = { ok: true, installed: true, enabled: true, integration: "hooks" };
 const backend = { ok: true, action: "start", url: "http://127.0.0.1:8787" };
+
+test("Backend failure projection retains safe primary and cleanup evidence without recording raw reports", (t) => {
+  const home = mkdtempSync(join(tmpdir(), "memorax-backend-diagnostic-"));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const rawError = `private-canary-token at ${home}`;
+  const diagnosed = diagnoseLifecycleReport({
+    ok: false,
+    action: "restart",
+    backend: {
+      ok: false, action: "start", error: rawError,
+      errorCode: "BACKEND_HEALTH_NOT_READY", stage: "health",
+      failureReason: "http_error", httpStatus: 503,
+      processState: "unknown", cleanupErrorCode: "BACKEND_TERMINATE_FAILED", cleanupSystemCode: "EPERM",
+    },
+  }, { home });
+  assert.equal(diagnosed.backend.error, rawError);
+  const text = readFileSync(diagnosed.diagnostic.path, "utf8");
+  const record = JSON.parse(text);
+  assert.equal(record.operation, "backend.restart");
+  assert.equal(record.errorCode, "BACKEND_HEALTH_NOT_READY");
+  assert.equal(record.failureReason, "http_error");
+  assert.equal(record.httpStatus, 503);
+  assert.equal(record.processState, "unknown");
+  assert.equal(record.cleanupErrorCode, "BACKEND_TERMINATE_FAILED");
+  assert.equal(record.cleanupSystemCode, "EPERM");
+  assert.equal(text.includes(home), false);
+  assert.equal(text.includes("private-canary-token"), false);
+  const stderr = [];
+  t.mock.method(console, "log", () => {});
+  t.mock.method(console, "error", (line) => stderr.push(line));
+  const suppression = process.env.MEMORAX_CODE_BACKEND_SUPPRESS_GUIDANCE;
+  t.after(() => {
+    if (suppression === undefined) delete process.env.MEMORAX_CODE_BACKEND_SUPPRESS_GUIDANCE;
+    else process.env.MEMORAX_CODE_BACKEND_SUPPRESS_GUIDANCE = suppression;
+  });
+  process.env.MEMORAX_CODE_BACKEND_SUPPRESS_GUIDANCE = "1";
+  printLifecycleResult(diagnosed);
+  assert.match(stderr.join("\n"), /BACKEND_HEALTH_NOT_READY.*backend.restart/);
+  assert.match(stderr.join("\n"), /Last observation:.*HTTP 503/);
+  assert.match(stderr.join("\n"), /Cleanup also failed: BACKEND_TERMINATE_FAILED \(EPERM\)/);
+  for (const report of [
+    { ok: true, action: "start", backend },
+    { ok: false, action: "start", backend, traeAdapter: { ok: false } },
+    { ok: false, action: "uninstall", backend: { ok: false } },
+  ]) assert.equal(diagnoseLifecycleReport(report, { home }), report);
+  assert.equal(readdirSync(join(home, "runtime", "diagnostics")).length, 1);
+});
 
 function captureReport(t, print, report) {
   const lines = [];

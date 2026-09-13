@@ -3,6 +3,7 @@ import {
   type BackendServiceState,
 } from "./record.js";
 import type { BackendServiceResult } from "../contracts.js";
+import { backendServiceFailureFields } from "./result.js";
 
 export function clearBackendServiceState(
   path: string,
@@ -22,7 +23,12 @@ export function clearBackendServiceState(
     ok: false,
     action,
     state,
-    errorCode: "BACKEND_SERVICE_STATE_CLEANUP_FAILED",
+    ...backendServiceFailureFields(
+      result.disposition === "io_failed" ? { code: result.errorCode } : undefined,
+      "BACKEND_SERVICE_STATE_CLEANUP_FAILED",
+      "cleanup_pid",
+      "stopped",
+    ),
     error: `${prefix}; ${detail}`,
   };
 }

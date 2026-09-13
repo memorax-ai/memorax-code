@@ -34,8 +34,10 @@ import {
   writeBackendShutdownRequest,
 } from "./shutdown-request.js";
 import {
+  backendServiceFailureFields,
+  backendServicePreflightFailureFields,
+  backendServiceSystemCode,
   runtimeRecordDurabilityWarning,
-  runtimeRecordErrorFields,
   runtimeRecordServiceFailure,
   withRuntimeRecordWarnings,
 } from "./result.js";
@@ -49,11 +51,13 @@ import { isLoopbackHost } from "../../app/state.js";
 import type {
   BackendRuntimeRecordWarning,
   BackendServiceEndpoint,
+  BackendServiceFailureReason,
   BackendServiceOptions,
   BackendServiceResult,
   BackendServiceRuntime,
 } from "../contracts.js";
 import { withLoopbackProxyBypass } from "../../config/proxy-env.js";
+import { isRecord } from "../../shared/record.js";
 
 export {
   BACKEND_SERVICE_RECORD_VERSION,
@@ -151,7 +155,7 @@ export async function startBackendService(
       ok: false,
       action: "start",
       error: error instanceof Error ? error.message : String(error),
-      ...runtimeRecordErrorFields(error),
+      ...backendServicePreflightFailureFields(error),
     };
   }
   const processAlive = runtime.isProcessAlive ?? isProcessAlive;
@@ -159,13 +163,19 @@ export async function startBackendService(
   try {
     existing = readBackendServiceState(options);
   } catch (error) {
-    return runtimeRecordServiceFailure("start", error);
+    return {
+      ...runtimeRecordServiceFailure("start", error),
+      ...backendServiceFailureFields(error, "BACKEND_SERVICE_STATE_READ_FAILED", "read_state"),
+    };
   }
   let token: string | undefined;
   try {
     token = resolveBackendServiceToken(options, endpoint);
   } catch (error) {
-    return runtimeRecordServiceFailure("start", error);
+    return {
+      ...runtimeRecordServiceFailure("start", error),
+      ...backendServiceFailureFields(error, "BACKEND_TOKEN_CONFIG_FAILED", "resolve_token"),
+    };
   }
   const { host, port, url } = endpoint;
   if (existing && processAlive(existing.pid)) {
@@ -183,6 +193,8 @@ export async function startBackendService(
         ok: false,
         action: "start",
         state: existing,
+        ...backendServiceFailureFields(ownershipProbeError(ownership), "BACKEND_OWNERSHIP_UNVERIFIED", "verify_ownership"),
+        failureReason: ownershipFailureReason(ownership),
         error: `refusing to replace unverified process ${existing.pid}; ${describeOwnershipFailure(ownership)}; remove stale Backend state after confirming process ownership`,
       };
     }
@@ -193,10 +205,23 @@ export async function startBackendService(
   }
   clearBackendShutdownRequest(backendServiceHome(options));
 
-  ensurePrivateDirectory(serviceDir(options), { durableBoundary: backendServiceHome(options) });
   const logs = logPath(options);
-  const outFd = openSync(logs, "a");
-  const errFd = openSync(logs, "a");
+  let outFd: number | undefined;
+  let errFd: number;
+  try {
+    ensurePrivateDirectory(serviceDir(options), { durableBoundary: backendServiceHome(options) });
+    outFd = openSync(logs, "a");
+    errFd = openSync(logs, "a");
+  } catch (error) {
+    if (outFd !== undefined) closeSync(outFd);
+    return {
+      ok: false,
+      action: "start",
+      logPath: logs,
+      error: "failed to prepare Backend runtime directory or log file",
+      ...backendServiceFailureFields(error, "BACKEND_SERVICE_PREPARE_FAILED", "prepare_runtime", "not-started"),
+    };
+  }
   const serverPath = fileURLToPath(new URL("../../service-entrypoint.js", import.meta.url));
   const instanceId = randomBytes(24).toString("base64url");
   let child: ChildProcess;
@@ -226,6 +251,7 @@ export async function startBackendService(
       action: "start",
       logPath: logs,
       error: `failed to spawn Backend process: ${error instanceof Error ? error.message : String(error)}`,
+      ...backendServiceFailureFields(error, "BACKEND_SPAWN_FAILED", "spawn", "not-started"),
     };
   }
   closeSync(outFd);
@@ -237,6 +263,10 @@ export async function startBackendService(
       ok: false,
       action: "start",
       logPath: logs,
+      ...backendServiceFailureFields(
+        spawnError, spawnError ? "BACKEND_SPAWN_FAILED" : "BACKEND_SPAWN_PID_MISSING",
+        "spawn", spawnError ? "not-started" : "unknown",
+      ),
       error: spawnError
         ? `failed to spawn Backend process: ${spawnError.message}`
         : "failed to spawn Backend process: child PID is unavailable",
@@ -264,15 +294,14 @@ export async function startBackendService(
     const warning = runtimeRecordDurabilityWarning("pid", written);
     if (warning) durabilityWarnings.push(warning);
   } catch (error) {
-    const terminated = (runtime.terminateProcessTree ?? terminateProcessTree)(state.pid);
-    if (terminated) {
-      await waitUntilStopped(state.pid, options.timeoutMs ?? 5000, processAlive);
-    }
+    const cleanup = await stopFailedBackendStart(state.pid, options.timeoutMs ?? 5000, runtime);
     return {
       ok: false,
       action: "start",
       state,
       error: `failed to persist Backend service state: ${error instanceof Error ? error.message : String(error)}`,
+      ...backendServiceFailureFields(error, "BACKEND_SERVICE_STATE_WRITE_FAILED", "persist_pid"),
+      ...cleanup,
     };
   }
 
@@ -283,31 +312,31 @@ export async function startBackendService(
     backendServiceHome(options),
     runtime,
   );
-  if (!healthy) {
-    const terminated = (runtime.terminateProcessTree ?? terminateProcessTree)(state.pid);
-    if (terminated) {
-      await waitUntilStopped(state.pid, options.timeoutMs ?? 5000, processAlive);
-    }
-    if (terminated && !processAlive(state.pid)) {
+  if (!healthy.ok) {
+    const processCleanup = await stopFailedBackendStart(state.pid, options.timeoutMs ?? 5000, runtime);
+    const failure: BackendServiceResult = {
+      ok: false,
+      action: "start",
+      state,
+      error: `backend did not become healthy at ${url}`,
+      ...backendServiceFailureFields({ code: healthy.systemCode }, "BACKEND_HEALTH_NOT_READY", "health"),
+      failureReason: healthy.failureReason,
+      ...(healthy.httpStatus === undefined ? {} : { httpStatus: healthy.httpStatus }),
+      ...processCleanup,
+    };
+    if (processCleanup.processState === "stopped") {
       const cleanup = clearBackendServiceState(
         pidPath(options), state, "start",
         `backend did not become healthy at ${url}; process stopped`,
       );
-      if (cleanup) return cleanup;
-      return {
-        ok: false,
-        action: "start",
-        state,
-        error: `backend did not become healthy at ${url}`,
-      };
+      return cleanup ? withStartupCleanupFailure(failure, cleanup) : failure;
     }
     return {
-      ok: false,
-      action: "start",
-      state,
+      ...failure,
       error: `backend did not become healthy at ${url}; cleanup failed and PID state was retained`,
     };
   }
+  let persistenceStage: "persist_token" | "persist_connection" = "persist_token";
   try {
     const activeTokenRecord = token
       ? persistBackendToken(options, token, runtime.recordWriteRuntime)
@@ -317,6 +346,7 @@ export async function startBackendService(
       activeTokenRecord?.persistence,
     );
     if (tokenWarning) durabilityWarnings.push(tokenWarning);
+    persistenceStage = "persist_connection";
     const connectionWrite = writeBackendConnectionAuthority({
       memoraxCodeHome: backendServiceHome(options),
       url,
@@ -328,29 +358,65 @@ export async function startBackendService(
     );
     if (connectionWarning) durabilityWarnings.push(connectionWarning);
   } catch (error) {
-    const terminated = (runtime.terminateProcessTree ?? terminateProcessTree)(state.pid);
-    if (terminated) {
-      await waitUntilStopped(state.pid, options.timeoutMs ?? 5000, processAlive);
-    }
-    if (terminated && !processAlive(state.pid)) {
-      const cleanup = clearBackendServiceState(
-        pidPath(options), state, "start",
-        `failed to persist Backend connection authority: ${error instanceof Error ? error.message : String(error)}; process stopped`,
-      );
-      if (cleanup) return cleanup;
-    }
-    return {
+    const processCleanup = await stopFailedBackendStart(state.pid, options.timeoutMs ?? 5000, runtime);
+    const persistenceError = `failed to persist Backend ${persistenceStage === "persist_token" ? "token record" : "connection authority"}: ${error instanceof Error ? error.message : String(error)}`;
+    const failure: BackendServiceResult = {
       ok: false,
       action: "start",
       state,
-      error: `failed to persist Backend connection authority: ${error instanceof Error ? error.message : String(error)}`,
-      ...runtimeRecordErrorFields(error),
+      error: persistenceError,
+      ...backendServiceFailureFields(error, persistenceStage === "persist_token" ? "BACKEND_TOKEN_WRITE_FAILED" : "BACKEND_CONNECTION_WRITE_FAILED", persistenceStage),
+      ...processCleanup,
     };
+    if (processCleanup.processState === "stopped") {
+      const cleanup = clearBackendServiceState(
+        pidPath(options), state, "start",
+        `${persistenceError}; process stopped`,
+      );
+      if (cleanup) return withStartupCleanupFailure(failure, cleanup);
+    }
+    return failure;
   }
   return withRuntimeRecordWarnings(
     { ok: true, action: "start", state },
     durabilityWarnings,
   );
+}
+
+async function stopFailedBackendStart(
+  pid: number,
+  timeoutMs: number,
+  runtime: BackendServiceRuntime,
+): Promise<Pick<BackendServiceResult, "processState" | "cleanupErrorCode" | "cleanupSystemCode">> {
+  let terminated: boolean;
+  try {
+    terminated = (runtime.terminateProcessTree ?? terminateProcessTree)(pid);
+  } catch (error) {
+    const systemCode = backendServiceSystemCode(error);
+    return {
+      processState: "unknown",
+      cleanupErrorCode: "BACKEND_TERMINATE_FAILED",
+      ...(systemCode ? { cleanupSystemCode: systemCode } : {}),
+    };
+  }
+  if (!terminated) return { processState: "unknown", cleanupErrorCode: "BACKEND_TERMINATE_FAILED" };
+  const processAlive = runtime.isProcessAlive ?? isProcessAlive;
+  await waitUntilStopped(pid, timeoutMs, processAlive);
+  return processAlive(pid)
+    ? { processState: "running", cleanupErrorCode: "BACKEND_STOP_TIMEOUT" }
+    : { processState: "stopped" };
+}
+
+function withStartupCleanupFailure(
+  failure: BackendServiceResult,
+  cleanup: BackendServiceResult,
+): BackendServiceResult {
+  return {
+    ...failure,
+    error: cleanup.error,
+    cleanupErrorCode: cleanup.errorCode,
+    ...(cleanup.systemCode ? { cleanupSystemCode: cleanup.systemCode } : {}),
+  };
 }
 
 function resolveBackendServiceToken(options: BackendServiceOptions, endpoint: BackendServiceEndpoint): string | undefined {
@@ -394,7 +460,10 @@ export async function stopBackendService(
   try {
     state = readBackendServiceState(options);
   } catch (error) {
-    return runtimeRecordServiceFailure("stop", error);
+    return {
+      ...runtimeRecordServiceFailure("stop", error),
+      ...backendServiceFailureFields(error, "BACKEND_SERVICE_STATE_READ_FAILED", "read_state"),
+    };
   }
   if (!state) return { ok: true, action: "stop", alreadyRunning: false };
   if (processAlive(state.pid)) {
@@ -432,20 +501,41 @@ export async function stopBackendService(
             ok: false,
             action: "stop",
             state,
+            ...backendServiceFailureFields(ownershipProbeError(ownership), "BACKEND_OWNERSHIP_UNVERIFIED", "verify_ownership"),
+            failureReason: ownershipFailureReason(ownership),
             error: `${refusal}; ${describeOwnershipFailure(ownership)}`,
           };
         }
-        if (!(runtime.terminateProcessTree ?? terminateProcessTree)(state.pid)) {
+        let terminated: boolean;
+        try {
+          terminated = (runtime.terminateProcessTree ?? terminateProcessTree)(state.pid);
+        } catch (error) {
           return {
             ok: false,
             action: "stop",
             state,
             error: `failed to terminate verified Backend process ${state.pid}`,
+            ...backendServiceFailureFields(error, "BACKEND_TERMINATE_FAILED", "terminate"),
+          };
+        }
+        if (!terminated) {
+          return {
+            ok: false,
+            action: "stop",
+            state,
+            error: `failed to terminate verified Backend process ${state.pid}`,
+            ...backendServiceFailureFields(undefined, "BACKEND_TERMINATE_FAILED", "terminate"),
           };
         }
         await waitUntilStopped(state.pid, timeoutMs, processAlive);
         if (processAlive(state.pid)) {
-          return { ok: false, action: "stop", state, error: `backend process ${state.pid} did not stop` };
+          return {
+            ok: false,
+            action: "stop",
+            state,
+            error: `backend process ${state.pid} did not stop`,
+            ...backendServiceFailureFields(undefined, "BACKEND_STOP_TIMEOUT", "wait_stopped", "running"),
+          };
         }
       }
     }
@@ -473,13 +563,21 @@ export function backendServiceLogs(options: BackendServiceOptions = {}, bytes = 
   return { ok: true, action: "logs", logPath: path, text: text.slice(Math.max(0, text.length - bytes)) };
 }
 
+type BackendHealthFailure = {
+  ok: false;
+  failureReason: BackendServiceFailureReason;
+  httpStatus?: number;
+  systemCode?: string;
+};
+
 async function waitForHealth(
   url: string,
   timeoutMs: number,
   instanceId: string,
   expectedSessionHome: string,
   runtime: BackendServiceRuntime,
-): Promise<boolean> {
+): Promise<{ ok: true } | BackendHealthFailure> {
+  let failure: BackendHealthFailure = { ok: false, failureReason: "deadline" };
   const budgetMs = Number.isFinite(timeoutMs) ? Math.max(0, Math.trunc(timeoutMs)) : 0;
   const deadline = Date.now() + budgetMs;
   while (Date.now() < deadline) {
@@ -490,19 +588,44 @@ async function waitForHealth(
         remainingMs,
         runtime.fetch,
       );
-      if (health.ok
-        && health.body.ok === true
-        && health.body.service === "memorax-code-backend"
-        && health.body.instanceId === instanceId
-        && typeof health.body.state?.sessionHome === "string"
-        && resolve(health.body.state.sessionHome) === resolve(expectedSessionHome)) return true;
-    } catch {
+      const failureReason = health.ok
+        ? healthResponseFailureReason(health.body, instanceId, expectedSessionHome)
+        : "http_error";
+      if (!failureReason) return { ok: true };
+      failure = {
+        ok: false,
+        failureReason,
+        ...(health.httpStatus === undefined ? {} : { httpStatus: health.httpStatus }),
+      };
+    } catch (error) {
+      const known = error instanceof BackendHealthProbeError ? error : undefined;
+      failure = {
+        ok: false,
+        failureReason: known?.failureReason ?? "unknown",
+        ...(known?.httpStatus === undefined ? {} : { httpStatus: known.httpStatus }),
+        ...(known?.systemCode ? { systemCode: known.systemCode } : {}),
+      };
       // Retry until timeout; the child process may still be starting.
     }
     const retryBudgetMs = deadline - Date.now();
     if (retryBudgetMs > 0) await sleep(Math.min(100, retryBudgetMs));
   }
-  return false;
+  return failure;
+}
+
+function healthResponseFailureReason(
+  body: unknown,
+  instanceId: string,
+  expectedSessionHome: string,
+): BackendServiceFailureReason | undefined {
+  if (!isRecord(body) || typeof body.ok !== "boolean") return "invalid_response";
+  if (!body.ok) return "not_ready";
+  if (typeof body.service !== "string") return "invalid_response";
+  if (body.service !== "memorax-code-backend") return "identity_mismatch";
+  if (typeof body.instanceId !== "string") return "invalid_response";
+  if (body.instanceId !== instanceId) return "identity_mismatch";
+  if (!isRecord(body.state) || typeof body.state.sessionHome !== "string") return "invalid_response";
+  return resolve(body.state.sessionHome) === resolve(expectedSessionHome) ? undefined : "identity_mismatch";
 }
 
 type BackendHealthEvidence = "matched" | "conflicting" | "inconclusive";
@@ -582,6 +705,21 @@ async function readBackendOwnership(
     health,
     process: processEvidence,
   };
+}
+
+function ownershipProbeError(ownership: BackendOwnershipEvidence): unknown {
+  return ownership.status === "evaluated" && ownership.process.status === "inconclusive"
+    ? { code: ownership.process.probe.code }
+    : undefined;
+}
+
+function ownershipFailureReason(ownership: BackendOwnershipEvidence): BackendServiceFailureReason {
+  if (ownership.status === "invalid_state") return "invalid_state";
+  if (ownership.health === "conflicting") return "health_conflict";
+  if (ownership.process.status === "mismatched") return "process_mismatch";
+  if (ownership.process.status === "not_found") return "process_not_found";
+  if (ownership.process.status === "inconclusive") return "process_probe_inconclusive";
+  return "unknown";
 }
 
 function canReportRunning(ownership: BackendOwnershipEvidence): boolean {
@@ -665,12 +803,27 @@ function waitForSpawn(child: ChildProcess): Promise<Error | undefined> {
   });
 }
 
+class BackendHealthProbeError extends Error {
+  readonly failureReason: "invalid_response" | "transport" | "timeout";
+  readonly systemCode?: string;
+
+  constructor(error: unknown, timedOut: boolean, readonly httpStatus?: number) {
+    super("Backend health probe failed");
+    this.systemCode = backendServiceSystemCode(error);
+    const timeout = timedOut
+      || (error instanceof Error && ["AbortError", "TimeoutError"].includes(error.name))
+      || (this.systemCode !== undefined && /TIME(?:DOUT|OUT)$/.test(this.systemCode));
+    this.failureReason = timeout ? "timeout" : error instanceof SyntaxError ? "invalid_response" : "transport";
+  }
+}
+
 async function readHealthWithTimeout(
   url: URL,
   timeoutMs: number,
   fetchImpl: typeof fetch = fetch,
 ): Promise<{
   ok: boolean;
+  httpStatus?: number;
   body: {
     ok?: boolean;
     service?: string;
@@ -681,14 +834,19 @@ async function readHealthWithTimeout(
   const controller = new AbortController();
   const boundedTimeoutMs = Math.max(1, Math.min(timeoutMs, 1000));
   const timeout = setTimeout(() => controller.abort(), boundedTimeoutMs);
+  let httpStatus: number | undefined;
   try {
     const response = await fetchImpl(url, {
       headers: { connection: "close" },
       signal: controller.signal,
     });
-    if (!response.ok) return { ok: false, body: {} };
+    httpStatus = Number.isInteger(response.status) && response.status >= 100 && response.status <= 599
+      ? response.status
+      : undefined;
+    if (!response.ok) return { ok: false, httpStatus, body: {} };
     return {
       ok: true,
+      httpStatus,
       body: await response.json() as {
         ok?: boolean;
         service?: string;
@@ -696,6 +854,8 @@ async function readHealthWithTimeout(
         state?: { sessionHome?: string };
       },
     };
+  } catch (error) {
+    throw new BackendHealthProbeError(error, controller.signal.aborted, httpStatus);
   } finally {
     clearTimeout(timeout);
   }

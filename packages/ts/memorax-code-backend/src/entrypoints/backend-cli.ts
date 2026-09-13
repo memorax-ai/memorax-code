@@ -69,6 +69,7 @@ import {
   type BackendShutdownRequestWatcher,
 } from "../lifecycle/backend/shutdown-request.js";
 import { runtimeRecordDurabilityWarning } from "../lifecycle/backend/result.js";
+import { diagnoseLifecycleReport, lifecycleDiagnosticLines, type LifecycleCliReport } from "../lifecycle/cli-diagnostics.js";
 
 // Keep process-facing CLI orchestration outside the HTTP server module.
 // This preserves server.ts as the importable route factory used by tests and tools.
@@ -157,8 +158,9 @@ export function runBackendCli(argv = process.argv): void {
     startMemoraxCodeService(serviceOptions, argv, () => {
       activatePendingClientHookRuntime(pendingClientHookRuntime);
     }).then((result) => {
-      if (argv.includes("--json")) console.log(JSON.stringify(result, null, 2));
-      else printLifecycleResult(result);
+      const report = diagnoseLifecycleReport(result, serviceOptions);
+      if (argv.includes("--json")) console.log(JSON.stringify(report, null, 2));
+      else printLifecycleResult(report);
       process.exit(result.ok ? 0 : 1);
     }).catch((error) => {
       console.error(error instanceof Error ? error.message : String(error));
@@ -166,8 +168,9 @@ export function runBackendCli(argv = process.argv): void {
     });
   } else if (command === "stop") {
     stopMemoraxCodeService(serviceOptions, argv).then((result) => {
-      if (argv.includes("--json")) console.log(JSON.stringify(result, null, 2));
-      else printLifecycleResult(result);
+      const report = diagnoseLifecycleReport(result, serviceOptions);
+      if (argv.includes("--json")) console.log(JSON.stringify(report, null, 2));
+      else printLifecycleResult(report);
       process.exit(result.ok ? 0 : 1);
     }).catch((error) => {
       console.error(error instanceof Error ? error.message : String(error));
@@ -177,8 +180,9 @@ export function runBackendCli(argv = process.argv): void {
     restartMemoraxCodeService(serviceOptions, argv, () => {
       activatePendingClientHookRuntime(pendingClientHookRuntime);
     }).then((result) => {
-      if (argv.includes("--json")) console.log(JSON.stringify(result, null, 2));
-      else printLifecycleResult(result);
+      const report = diagnoseLifecycleReport(result, serviceOptions);
+      if (argv.includes("--json")) console.log(JSON.stringify(report, null, 2));
+      else printLifecycleResult(report);
       process.exit(result.ok ? 0 : 1);
     }).catch((error) => {
       console.error(error instanceof Error ? error.message : String(error));
@@ -658,7 +662,7 @@ export async function runBackendTokenCommand(
   }
 }
 
-export function printLifecycleResult(report: MemoraxCodeLifecycleReport): void {
+export function printLifecycleResult(report: LifecycleCliReport): void {
   const degraded = report.degraded === true || report.backend?.degraded === true;
   backendLog(`${lifecycleActionLabel(report.action)}: ${report.ok ? green(degraded ? "ok (degraded)" : "ok") : red("needs attention")}`);
   if (report.message) backendLog(report.message);
@@ -680,7 +684,9 @@ export function printLifecycleResult(report: MemoraxCodeLifecycleReport): void {
     backendLog(`Codex plugin: ${codexPluginRemoveStatusLine(report.codexPlugin.pluginRemove)} paths=${removed}${marketplace}`);
   }
   if (report.npmPackageRemoval) backendLog(`npm package: ${npmPackageRemovalStatusLine(report.npmPackageRemoval)}`);
-  if (!suppressBackendGuidance()) {
+  if (report.diagnostic) {
+    for (const line of lifecycleDiagnosticLines(report)) console.error(`${BACKEND_PREFIX} ${line}`);
+  } else if (!suppressBackendGuidance()) {
     for (const line of lifecycleGuidance(report)) backendLog(line);
   }
 }

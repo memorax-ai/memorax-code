@@ -324,6 +324,11 @@ test("memorax-code start rejects an unpersistable explicit token before stopping
         assert.equal(attempted.code, 1, attempted.stderr);
         const report = JSON.parse(attempted.stdout);
         assert.equal(report.backend.errorCode, "BACKEND_TOKEN_RECORD_INVALID");
+        assert.equal(report.backend.stage, "resolve_token");
+        assert.equal(report.backend.recordReason, "malformed_json");
+        assert.equal(report.failure.stage, "resolve_token");
+        assert.equal(report.failure.error, "Backend authentication configuration could not be used.");
+        assert.match(report.failure.userAction, /token/);
         assert.deepEqual(JSON.parse(await readFile(pidPath, "utf8")), stateBefore);
         assert.equal(isProcessAlive(stateBefore.pid), true);
       });
@@ -366,6 +371,8 @@ test("memorax-code restart validates connection authority before stopping a heal
     assert.equal(report.ok, false);
     assert.equal(report.action, "restart");
     assert.equal(report.backend.errorCode, "BACKEND_CONNECTION_AUTHORITY_INVALID");
+    assert.equal(report.backend.stage, "resolve_connection");
+    assert.equal(report.backend.recordReason, "malformed_json");
     assert.deepEqual(JSON.parse(await readFile(pidPath, "utf8")), stateBefore);
     assert.equal(isProcessAlive(stateBefore.pid), true);
   } finally {

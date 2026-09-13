@@ -6,6 +6,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { renderDefaultMemoraxCodeConfig } from "../../dist/config/memorax-code.js";
 import { isProcessAlive } from "../../dist/lifecycle/backend/service.js";
+import { withBackendLifecycleLock } from "../../dist/lifecycle/lock.js";
 import { freePort } from "../support/helpers.mjs";
 import {
   readSetupCompletionRecord,
@@ -20,6 +21,16 @@ import {
   terminateFixtureBackends,
   writeManagedClientsConfig,
 } from "./support/backend-service-fixtures.mjs";
+
+test("Backend lifecycle authority preserves nested operation lock failures", async () => {
+  const home = await mkdtemp(join(tmpdir(), "memorax-lifecycle-lock-owner-"));
+  const error = Object.assign(new Error("nested config lock timed out"), { code: "JSON_FILE_LOCK_TIMEOUT" });
+  try {
+    await assert.rejects(withBackendLifecycleLock({ home }, () => { throw error; }), (actual) => actual === error);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
 
 test("memorax-code lifecycle installs and disables only managed Trae Hooks", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-lifecycle-trae-"));

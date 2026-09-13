@@ -354,6 +354,33 @@ include that computer's device-local Mark ID.
 
 ## Backend does not start
 
+When `memorax-code start`, `stop`, or `restart` returns a failed Backend report,
+the command exits with status `1` and adds a default diagnostic on stderr while
+preserving its existing stdout summary. This diagnostic remains visible with
+`MEMORAX_CODE_BACKEND_SUPPRESS_GUIDANCE=1`. With `--json`, stdout preserves
+`action` and `backend` and adds `failure` and `diagnostic`.
+
+`failure` contains `errorCode`, `stage`, a safe `error` summary, `processState`,
+`impact`, and `userAction`, plus known `systemCode`, `cleanupErrorCode`, and
+`cleanupSystemCode` values when available. Optional `failureReason` and
+`httpStatus` preserve the last observed failure category and HTTP status;
+unknown state or deadline expiry alone does not establish a more specific cause.
+Optional `recordReason` preserves a known runtime-record validation reason,
+such as `malformed_json` or `unreadable`, without including the record's contents.
+Open the reported diagnostic path for the content-free record. If
+`diagnostic.recorded` is `false`, retain the
+output and inspect `diagnostic.recordingError`; storage failure does not replace
+the original Backend failure. These records share the
+[Search/Add diagnostic storage](configuration.md#default-searchadd-diagnostics).
+
+`processState` reports `not-started`, `stopped`, `running`, or `unknown`; it
+does not prove current process ownership. For unknown state or a separate
+cleanup failure, check status before retrying and preserve the process record
+while the process may still be running. `BACKEND_LIFECYCLE_LOCK_TIMEOUT` calls
+for waiting for the other lifecycle command to finish. A lock-acquisition
+filesystem failure instead calls for checking the state directory and its
+permissions, using the reported system code when available.
+
 ```sh
 memorax-code status
 memorax-code logs
@@ -686,10 +713,10 @@ memorax-cli status --json
 
 For a client-specific failure, also collect the affected client's diagnostic
 from the start of this guide with `--json`.
-For an explicit Search/Add failure, include its diagnostic ID and the reviewed
-diagnostic file, if saved. Structured command output may contain query or
-workspace fields that are excluded from the diagnostic record; review it
-separately before sharing.
+For an explicit Search/Add or Backend start/stop/restart failure, include its
+diagnostic ID and the reviewed diagnostic file, if saved. Structured command
+output may contain query, workspace, process, or raw Backend error fields that
+are excluded from the diagnostic record; review it separately before sharing.
 Include the MemoraX Code version, operating system, affected client,
 reproduction steps, failing command, and the smallest relevant log excerpt.
 

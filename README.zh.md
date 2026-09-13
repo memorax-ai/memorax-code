@@ -234,8 +234,8 @@ MemoraX Code 会先比较含义：语义相同的请求不重复写入；长期�
 [本地 trace 配置](docs/configuration.md#local-traces)改为仅记录元数据，或关闭对应客户端的 trace。
 关闭 trace 后仍会保留必要的本地会话状态，以保证记忆操作使用正确的工作区范围。
 
-主动 Search/Add 失败时会提供错误码、恢复建议和不含内容的本地诊断记录，详见
-[故障恢复](docs/troubleshooting.md#memorax-search-add-or-scope-fails)。
+主动 Search/Add 或 Backend 启动、停止、重启失败时会提供错误码、恢复建议和不含内容的本地诊断记录，
+详见[故障恢复](docs/troubleshooting.md)。
 
 Coding Memory 按仓库或工作区确定范围。Codex、WorkBuddy 和 OpenCode 中符合识别规则的
 默认聊天目录，会在相同的 MemoraX 用户 ID 配置下共享 `General`。已有记忆不会自动迁移，目录规则详见

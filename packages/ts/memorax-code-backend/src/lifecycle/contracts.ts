@@ -38,6 +38,21 @@ export type BackendRuntimeRecordWarning = Readonly<{
   message: string;
 }>;
 
+export type BackendServiceFailureReason =
+  | "http_error"
+  | "invalid_response"
+  | "not_ready"
+  | "identity_mismatch"
+  | "transport"
+  | "timeout"
+  | "deadline"
+  | "health_conflict"
+  | "process_mismatch"
+  | "process_not_found"
+  | "process_probe_inconclusive"
+  | "invalid_state"
+  | "unknown";
+
 export type BackendServiceResult = {
   ok: boolean;
   action: string;
@@ -49,6 +64,14 @@ export type BackendServiceResult = {
   text?: string;
   error?: string;
   errorCode?: string;
+  stage?: string;
+  failureReason?: BackendServiceFailureReason;
+  recordReason?: string;
+  httpStatus?: number;
+  systemCode?: string;
+  processState?: "not-started" | "stopped" | "running" | "unknown";
+  cleanupErrorCode?: string;
+  cleanupSystemCode?: string;
   degraded?: true;
   warnings?: BackendRuntimeRecordWarning[];
 };

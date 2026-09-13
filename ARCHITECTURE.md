@@ -202,6 +202,15 @@ perform lifecycle mutations. Lifecycle configuration and orchestration own
 selection and defaults; native participants own client-specific discovery and
 mutations, including DSH Profile ordering and locks.
 
+`lifecycle/cli-diagnostics.ts` interprets failed Backend start, stop, and restart
+reports at the CLI result boundary. Backend service result helpers supply safe
+failure classification, process state, and cleanup codes; the CLI adds recovery
+guidance and writes one content-free diagnostic per failed command result while
+preserving the existing action and Backend report. The service itself does not
+write these records. This presentation path does not change lifecycle authority,
+validation, retry, or scheduling decisions, and does not cover adapter-only
+failures or the complete setup, update, Hook, and automatic-writeback flows.
+
 ## 3. Runtime Flows
 
 The system has two related but distinct planes. The control plane installs and
@@ -539,8 +548,8 @@ failure classification, impact, recovery guidance, and safe diagnostic fields.
 The provider normalizes transport and response failures without exposing raw
 exceptions or response bodies. CLI composition uses adapter-common's diagnostic
 storage primitive independently of trace availability and Debug logging; this
-default persistence does not cover lifecycle, Hook, or automatic-writeback
-failures.
+memory path does not cover Hook or automatic-writeback failures. Backend
+lifecycle diagnostics remain owned by the lifecycle capability.
 
 In an integrated client, the CLI validates the exact current-Turn context to
 reuse its workspace kind, including `projectless`, so explicit Add/Search and
@@ -986,11 +995,12 @@ These paths are not all mediated by `app/memory-observability`. Memory-service
 kernels receive Backend diagnostics through a port; CLI composition can use
 the Backend debug logger directly.
 
-Default manual Search/Add diagnostics use separate immutable local records.
-Adapter-common owns their private storage and bounded retention, while the
-memory capability supplies only safe, content-free fields. These records have
-no session, scope, lifecycle, or memory authority. The storage primitive has
-no outbound-network authority, and its records never enter MemoraX payloads.
+Default Search/Add and Backend lifecycle diagnostics use separate immutable
+local records. Adapter-common owns their private storage and bounded retention,
+while memory and lifecycle capabilities supply only safe, content-free fields.
+These records have no session, scope, lifecycle, or memory authority. The storage
+primitive has no outbound-network authority, and its records never enter
+MemoraX payloads.
 Storage failure preserves the operation failure and reports that the diagnostic
 could not be saved. [Configuration](docs/configuration.md#default-searchadd-diagnostics)
 owns storage paths and retention values.
