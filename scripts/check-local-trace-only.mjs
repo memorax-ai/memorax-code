@@ -62,6 +62,7 @@ const localTraceCoreSources = new Set([
   "packages/ts/memorax-code-adapter-common/src/deployment-failure.mjs",
   "packages/ts/memorax-code-adapter-common/src/diagnostic-record.mjs",
   "packages/ts/memorax-code-adapter-common/src/hooks/hook-diagnostics.mjs",
+  "packages/ts/memorax-code-backend/src/memory/background-diagnostics.ts",
   "packages/ts/memorax-code-backend/src/memory/cli-diagnostics.ts",
   "packages/ts/memorax-code-backend/src/lifecycle/cli-diagnostics.ts",
   "packages/ts/memorax-code-backend/src/memory/reminder-trace-recorder.ts",
@@ -86,6 +87,7 @@ const reviewedBackgroundDiagnosticSources = new Set([
   // or trace artifacts, and never add diagnostic fields to outbound payloads.
   "packages/ts/memorax-code-adapter-common/src/backend-command.mjs",
   "packages/ts/memorax-code-adapter-common/src/hooks/ensure-backend-runner.mjs",
+  "packages/ts/memorax-code-backend/src/memory/automatic-writeback.ts",
 ]);
 
 const providerTransportSourcePrefix =
@@ -119,7 +121,7 @@ const outboundCapabilityPatterns = [
 const localTraceStorageDependency =
   /(?:from\s+["'](?:\.\.?\/)+trace\/(?:config|store)\.js["']|\bclientTracePaths\b|\bmemoraxCodeHomeForTrace\b|(?:diagnostic-record\.mjs|cli-diagnostics\.js))/;
 
-const backgroundDiagnosticDependency = /hook-diagnostics\.mjs/;
+const backgroundDiagnosticDependency = /(?:hook-diagnostics\.mjs|background-diagnostics\.js)/;
 
 export async function collectLocalTraceOnlyFailures({
   repoRoot = defaultRepoRoot,

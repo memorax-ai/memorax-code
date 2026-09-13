@@ -1,4 +1,5 @@
 import { createAutomaticMemoryWritebackRuntime } from "./automatic-writeback.js";
+import { recordWritebackRejection } from "./background-diagnostics.js";
 import {
   createCodexMemoryHookRuntime,
   type CodexMemoryHookRuntimeOptions,
@@ -57,6 +58,7 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
     env: options.env,
   });
   const automaticWriteback = createAutomaticMemoryWritebackRuntime({
+    memoraxCodeHome: options.memoraxCodeHome,
     diagnosticLogger: options.diagnosticLogger,
     queueQuotaNotice: pendingQuotaNotice.queue,
   });
@@ -112,6 +114,22 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
     repositoryMemorySession,
     turnCoordinator,
   });
+  async function observeWriteback(command: WritebackCommand, pending: Promise<MemoryHookWritebackResult>): Promise<MemoryHookWritebackResult> {
+    const result = await pending;
+    if (!result.scheduled) {
+      recordWritebackRejection(result.reason, {
+        memoraxCodeHome: options.memoraxCodeHome,
+        env: options.env,
+        client: command.client,
+        sessionId: command.sessionId,
+        turnId: "turnId" in command ? command.turnId
+          : "promptId" in command ? command.promptId
+          : "userMessageId" in command ? command.userMessageId
+          : "turn" in command ? String(command.turn) : undefined,
+      });
+    }
+    return result;
+  }
   let closed = false;
   return {
     async recordTurnStart(command) {
@@ -136,19 +154,19 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
     async writebackTurn(command) {
       switch (command.client) {
         case "codex":
-          return await codexHook.writeback(command);
+          return await observeWriteback(command, codexHook.writeback(command));
         case "claude-code":
-          return await claudeHook.writeback(command);
+          return await observeWriteback(command, claudeHook.writeback(command));
         case "opencode":
-          return await openCodeHook.writeback(command);
+          return await observeWriteback(command, openCodeHook.writeback(command));
         case "dsh":
-          return await dshHook.writeback(command);
+          return await observeWriteback(command, dshHook.writeback(command));
         case "codebuddy":
-          return await codeBuddyHook.writeback(command);
+          return await observeWriteback(command, codeBuddyHook.writeback(command));
         case "workbuddy":
-          return await workBuddyHook.writeback(command);
+          return await observeWriteback(command, workBuddyHook.writeback(command));
         case "trae":
-          return await traeHook.writeback(command);
+          return await observeWriteback(command, traeHook.writeback(command));
       }
       return unsupportedMemoryHookCommand(command);
     },

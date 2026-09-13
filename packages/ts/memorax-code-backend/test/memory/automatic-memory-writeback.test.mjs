@@ -1,8 +1,15 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { after, test } from "node:test";
+import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createAutomaticMemoryWritebackRuntime } from "../../dist/memory/automatic-writeback.js";
 
+const writebackHome = await mkdtemp(join(tmpdir(), "memorax-writeback-suite-"));
+after(() => rm(writebackHome, { recursive: true, force: true }));
+
 const WRITEBACK_ENV = {
+  MEMORAX_CODE_HOME: writebackHome,
   MEMORAX_CODE_MEMORY_WRITEBACK_ENABLED: "true",
   MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_ENABLED: "false",
   MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
@@ -309,10 +316,12 @@ test("automatic memory writeback retries a retryable provider failure", async (t
       pull(controller) { controller.error(new DOMException("response body aborted", "AbortError")); },
     }))],
   ]) {
-    await t.test(name, async () => {
+    await t.test(name, async (t) => {
+      const home = await mkdtemp(join(tmpdir(), "memorax-writeback-retry-diagnostics-"));
+      t.after(() => rm(home, { recursive: true, force: true }));
       const requests = [];
       const events = [];
-      const runtime = createAutomaticMemoryWritebackRuntime();
+      const runtime = createAutomaticMemoryWritebackRuntime({ memoraxCodeHome: home });
       const fetchImpl = async (url, init) => {
         requests.push({ url: String(url), body: JSON.parse(init.body) });
         return requests.length === 1
@@ -335,6 +344,8 @@ test("automatic memory writeback retries a retryable provider failure", async (t
         await waitFor(() => events.length >= 1, "first provider response did not settle");
         assert.equal(events[0].ok, false);
         await waitFor(() => requests.length === 2 && events.length === 2, "automatic writeback retry did not settle");
+        await runtime.drain();
+        assert.deepEqual(await readDiagnostics(home), [], "a successful retry is not a default failure");
         assert.deepEqual(events.map((event) => event.ok), [false, true]);
         assert.deepEqual(events.map((event) => event.request.attempt), [1, 2]);
         assert.equal(events.every((event) => event.source === "claude_hook_writeback"), true);
@@ -742,4 +753,111 @@ async function waitFor(predicate, message) {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   throw new Error(message);
+}
+
+
+test("automatic writeback records only terminal failures without Debug or a diagnostic logger", async (t) => {
+  for (const scenario of [
+    { name: "authentication", status: 401, attempts: 1, code: "MEMORAX_HTTP_ERROR" },
+    { name: "buffered retry exhaustion", status: 503, attempts: 2, code: "MEMORAX_HTTP_ERROR", buffered: true },
+    { name: "DNS failure", attempts: 2, code: "MEMORAX_TRANSPORT_ERROR", systemCode: "ENOTFOUND" },
+  ]) {
+    await t.test(scenario.name, async (t) => {
+      const home = await mkdtemp(join(tmpdir(), "memorax-writeback-failure-"));
+      t.after(() => rm(home, { recursive: true, force: true }));
+      const runtime = createAutomaticMemoryWritebackRuntime({ memoraxCodeHome: home });
+      t.after(() => runtime.close());
+      let attempts = 0;
+      assert.deepEqual(runtime.enqueue({
+        client: "workbuddy", sessionKey: "private-session-identity",
+        userText: "Private question marker", assistantText: "Private answer marker",
+        repositoryScope: REPOSITORY_SCOPE,
+        env: { ...WRITEBACK_ENV, MEMORAX_CODE_DEBUG: "false",
+          MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_ENABLED: String(Boolean(scenario.buffered)),
+          MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_MAX_TURNS: "1" },
+        fetchImpl: async () => {
+          attempts += 1;
+          if (scenario.systemCode) throw new TypeError("private transport text", {
+            cause: Object.assign(new Error("private hostname"), { code: scenario.systemCode }),
+          });
+          return new Response("private response text", { status: scenario.status, headers: { "retry-after": "0" } });
+        },
+      }), { accepted: true });
+      await runtime.drain();
+      assert.equal(attempts, scenario.attempts);
+      const records = await readDiagnostics(home);
+      assert.equal(records.length, 1);
+      const [record] = records;
+      assert.equal(record.source, "automatic-writeback");
+      assert.equal(record.operation, "memory.writeback");
+      assert.equal(record.client, "workbuddy");
+      assert.equal(record.stage, "request");
+      assert.equal(record.errorCode, scenario.code);
+      assert.equal(record.httpStatus, scenario.status);
+      assert.equal(record.systemCode, scenario.systemCode);
+      assert.match(record.sessionHash, /^[a-f0-9]{24}$/);
+      assert.match(record.impact, /acceptance.*could not be confirmed/);
+      assert.ok(record.userAction);
+      assert.equal(/private|Private|secret|user-1|memorax.test/.test(JSON.stringify(records)), false);
+    });
+  }
+});
+
+test("automatic writeback keeps disabled, empty, buffered and duplicate completions quiet", async (t) => {
+  const home = await mkdtemp(join(tmpdir(), "memorax-writeback-quiet-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const runtime = createAutomaticMemoryWritebackRuntime({ memoraxCodeHome: home });
+  t.after(() => runtime.close());
+  const requests = [];
+  const options = { client: "codex", sessionKey: "quiet-session", userText: "Remember the result.",
+    assistantText: "The result is ready.", repositoryScope: REPOSITORY_SCOPE,
+    env: { ...WRITEBACK_ENV, MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_ENABLED: "true" },
+    fetchImpl: memoraxFetch(requests) };
+  assert.deepEqual(runtime.enqueue({ ...options, env: { ...options.env, MEMORAX_CODE_MEMORY_WRITEBACK_ENABLED: "false" } }),
+    { accepted: false, reason: "disabled" });
+  assert.deepEqual(runtime.enqueue({ ...options, assistantText: "" }), { accepted: false, reason: "assistant_text_empty" });
+  assert.deepEqual(runtime.enqueue(options), { accepted: true });
+  assert.deepEqual(runtime.enqueue(options), { accepted: true });
+  assert.equal(requests.length, 0);
+  assert.deepEqual(await readDiagnostics(home), []);
+  await runtime.drain();
+  assert.equal(requests.length, 1);
+  assert.deepEqual(await readDiagnostics(home), []);
+});
+
+test("unavailable diagnostic storage preserves terminal retry and duplicate-release behavior", async (t) => {
+  const home = await mkdtemp(join(tmpdir(), "memorax-writeback-no-diagnostics-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  await mkdir(join(home, "runtime"));
+  await writeFile(join(home, "runtime", "diagnostics"), "occupied");
+  let requests = 0;
+  let fail = true;
+  let finishFailure;
+  const failureSettled = new Promise((resolve) => { finishFailure = resolve; });
+  const runtime = createAutomaticMemoryWritebackRuntime({ memoraxCodeHome: home,
+    diagnosticLogger(message, fields) {
+      if (message === "memory.automatic_writeback" && fields.accepted === false && !fields.retrying) finishFailure();
+    } });
+  t.after(() => runtime.close());
+  const options = { client: "codex", sessionKey: "failed-session", userText: "Remember it.", assistantText: "Done.",
+    repositoryScope: REPOSITORY_SCOPE, env: WRITEBACK_ENV,
+    fetchImpl: async () => { requests += 1; return fail
+      ? new Response("", { status: 401 }) : memoraxSuccessResponse("accepted"); } };
+  assert.deepEqual(runtime.enqueue(options), { accepted: true });
+  await failureSettled;
+  fail = false;
+  assert.deepEqual(runtime.enqueue(options), { accepted: true });
+  await runtime.drain();
+  assert.equal(requests, 2);
+  assert.equal(await readFile(join(home, "runtime", "diagnostics"), "utf8"), "occupied");
+});
+
+async function readDiagnostics(home) {
+  const directory = join(home, "runtime", "diagnostics");
+  const names = await readdir(directory).catch((error) => {
+    if (error.code === "ENOENT") return [];
+    throw error;
+  });
+  return await Promise.all(names.filter((name) => name.endsWith(".json"))
+    .map(async (name) => JSON.parse(await readFile(join(directory, name), "utf8"))));
 }

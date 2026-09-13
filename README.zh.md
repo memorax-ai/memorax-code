@@ -235,7 +235,7 @@ MemoraX Code 会先比较含义：语义相同的请求不重复写入；长期�
 关闭 trace 后仍会保留必要的本地会话状态，以保证记忆操作使用正确的工作区范围。
 
 Setup、主动 Search/Add、Backend 启动/停止/重启、客户端部署或包更新失败时，会提供错误码、恢复建议和不含内容的本地诊断记录，
-详见[故障恢复](docs/troubleshooting.md)。Hook 执行的已知故障也会在关闭 Debug 时尝试保留本地诊断，
+详见[故障恢复](docs/troubleshooting.md)。Hook 执行和自动写回的已知故障也会在关闭 Debug 时尝试保留本地诊断，
 不会向对话插入报错消息，也不会因此阻断编码任务。
 
 Coding Memory 按仓库或工作区确定范围。Codex、WorkBuddy 和 OpenCode 中符合识别规则的

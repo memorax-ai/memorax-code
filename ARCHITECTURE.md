@@ -215,8 +215,7 @@ Backend reports remain intact; client failures appear in `clientFailures` and do
 not turn a successful Backend recovery into a Backend failure. Services and
 adapters do not write duplicate records. This presentation path does not change
 lifecycle authority, validation, retry, or scheduling decisions. Hook execution
-has a separate failure-reporting boundary below; automatic writeback retains
-its existing reporting paths.
+and automatic writeback have separate failure-reporting boundaries below.
 
 ## 3. Runtime Flows
 
@@ -466,9 +465,10 @@ sequenceDiagram
 Hook failure reporting reuses adapter-common diagnostic storage. Shared runtime
 launch and Backend recovery report confirmed execution failures; command senders
 report transport and non-success HTTP outcomes without consuming response bodies.
-These boundaries preserve existing Hook output, exit behavior, and HTTP results;
-reporting failure cannot replace the original outcome. Ordinary Hook skips
-remain outside failure reporting.
+Backend memory-service composition records known native-content and scope
+failures from accepted commands. These boundaries preserve existing Hook output,
+exit behavior, and HTTP results; reporting failure cannot replace the original
+outcome. Ordinary skips and interrupted Turns remain outside failure reporting.
 
 Important distinctions:
 
@@ -590,8 +590,9 @@ failure classification, impact, recovery guidance, and safe diagnostic fields.
 The provider normalizes transport and response failures without exposing raw
 exceptions or response bodies. CLI composition uses adapter-common's diagnostic
 storage primitive independently of trace availability and Debug logging; this
-memory path does not cover Hook or automatic-writeback failures. Backend
-lifecycle diagnostics remain owned by the lifecycle capability.
+memory path is separate from background failure projection in
+`memory/background-diagnostics.ts`. Backend lifecycle diagnostics remain owned
+by the lifecycle capability.
 
 In an integrated client, the CLI validates the exact current-Turn context to
 reuse its workspace kind, including `projectless`, so explicit Add/Search and
@@ -639,10 +640,17 @@ flowchart TD
   Provider["local MemoraX provider:<br/>Add request and normalized result"] --> Remote
   Remote["MemoraX Add API"] -->|"initial response"| Provider
   Provider -->|"operational event through injected hook"| Trace["local observability / trace"]
+  Result -->|"known content or scope failure"| Diagnostic["local content-free diagnostic"]
+  Provider -->|"final Add failure after retries"| Diagnostic
 ```
 
 The graph shows routing rather than a fixed response/dispatch order. Rejected
 content stops locally; accepted duplicates need not issue another Add request.
+The automatic-writeback runtime reports a terminal dispatch failure after its
+existing retry policy finishes. `memory/background-diagnostics.ts` projects
+known failure fields without retaining content or changing buffering, retry,
+metadata consumption, or delivery decisions. Normal skips and transient failures
+that recover do not produce terminal failure records.
 
 - For completed content, local enqueue acceptance is the metadata-consumption
   point. Interrupted Turns can instead discard metadata with an explicit reason.
@@ -1037,10 +1045,10 @@ These paths are not all mediated by `app/memory-observability`. Memory-service
 kernels receive Backend diagnostics through a port; CLI composition can use
 the Backend debug logger directly.
 
-Default Search/Add, Backend lifecycle, client deployment, setup, update, and Hook
-diagnostics use immutable local records. Adapter-common owns their private
-storage and bounded retention, while memory, lifecycle, Hook, and npm composition
-supply only safe, content-free fields.
+Default Search/Add, Backend lifecycle, client deployment, setup, update, Hook,
+and automatic-writeback diagnostics use immutable local records. Adapter-common
+owns their private storage and bounded retention, while memory, lifecycle, Hook,
+and npm composition supply only safe, content-free fields.
 These records have no session, scope, lifecycle, or memory authority. The storage
 primitive has no outbound-network authority, and its records never enter
 MemoraX payloads.

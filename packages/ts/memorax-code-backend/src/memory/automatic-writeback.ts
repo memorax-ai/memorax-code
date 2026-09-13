@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { recordAutomaticAddFailure } from "./background-diagnostics.js";
 import {
   createMemoryWritebackBufferRuntime,
   type MemoryWritebackBufferedDecision,
@@ -101,11 +102,13 @@ export type AutomaticMemoryWritebackRuntime = {
 };
 
 export type AutomaticMemoryWritebackRuntimeOptions = {
+  memoraxCodeHome?: string;
   diagnosticLogger?: MemoryDiagnosticLogger;
   queueQuotaNotice?: (config: MemoraxAdapterConfig, quota: MemoraxQuotaSnapshot) => void;
 };
 
 type AutomaticMemoryWritebackState = {
+  memoraxCodeHome?: string;
   diagnosticLogger: MemoryDiagnosticLogger;
   queueQuotaNotice?: (config: MemoraxAdapterConfig, quota: MemoraxQuotaSnapshot) => void;
   // Tracks in-flight and recently successful writes in a bounded TTL cache.
@@ -129,6 +132,7 @@ export function createAutomaticMemoryWritebackRuntime(
   options: AutomaticMemoryWritebackRuntimeOptions = {},
 ): AutomaticMemoryWritebackRuntime {
   const state: AutomaticMemoryWritebackState = {
+    memoraxCodeHome: options.memoraxCodeHome,
     diagnosticLogger: options.diagnosticLogger ?? (() => {}),
     queueQuotaNotice: options.queueQuotaNotice,
     pendingWritebacks: new Map(),
@@ -458,6 +462,14 @@ async function enqueueAutomaticMemoryWritebackAsync(
           break;
         }
         if (!retrying) {
+          // Persist only the terminal outcome, after the existing retry decision.
+          recordAutomaticAddFailure(response, {
+            memoraxCodeHome: state.memoraxCodeHome,
+            env: options.env,
+            client: decision.client,
+            sessionId: decision.sessionKey,
+            turnId: (decision.turnCount ?? 1) === 1 ? options.traceContext?.turnId : undefined,
+          });
           releasePendingWritebacks(state, [decision.idempotencyKey, ...(decision.dedupeKeys ?? [])]);
           return;
         }
@@ -466,6 +478,13 @@ async function enqueueAutomaticMemoryWritebackAsync(
     }
   } catch (error) {
     releasePendingWritebacks(state, [decision.idempotencyKey, ...(decision.dedupeKeys ?? [])]);
+    recordAutomaticAddFailure(undefined, {
+      memoraxCodeHome: state.memoraxCodeHome,
+      env: options.env,
+      client: decision.client,
+      sessionId: decision.sessionKey,
+      turnId: (decision.turnCount ?? 1) === 1 ? options.traceContext?.turnId : undefined,
+    }, error);
     state.diagnosticLogger("memory.automatic_writeback", {
       scheduled: true,
       accepted: false,

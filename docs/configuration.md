@@ -688,20 +688,24 @@ Add text, response bodies, credentials, and raw local paths. See
 [Search/Add recovery](troubleshooting.md#memorax-search-add-or-scope-fails) for
 interpreting the output or a diagnostic-storage failure.
 
-## Hook diagnostics
+## Hook and automatic-writeback diagnostics
 
-Known Hook execution and Backend delivery failures attempt to save content-free
-records in the same [diagnostic directory](#default-searchadd-diagnostics), with
-the same permissions and retention. Debug and trace do not need to be enabled.
-Hook reporting remains silent and preserves existing return values, exit
-behavior, and conversation context. Diagnostic-storage failure cannot turn a
-successful Hook into a failure.
+Known Hook execution, Backend delivery, completed-turn validation, and final
+automatic Add failures attempt to save content-free records in the same
+[diagnostic directory](#default-searchadd-diagnostics), with the same permissions
+and retention. Debug and trace do not need to be enabled. Hook reporting remains
+silent and preserves existing return values, exit behavior, and conversation
+context. Diagnostic-storage failure cannot turn a successful Hook or writeback
+into a failure.
 
-The Hook sender records transport and non-success HTTP responses. Normal Hook
-skips and successful Backend health checks do not create failure records. There
-is no persistent cross-process failure deduplication state. Records describe
-observed failures; their absence does not prove that a Hook ran or that MemoraX
-accepted a turn. See
+The Hook sender records transport and non-success HTTP responses; the Backend
+records known failures after a valid command reaches its native-content or
+writeback handling. Automatic Add records a terminal failure after the existing
+retry policy finishes, rather than recording every retry. Disabled writeback,
+normal buffering, duplicate handling, interruption, and empty eligible content
+do not create failure records. There is no persistent cross-process failure
+deduplication state. Records describe observed failures; their absence does not
+prove that a Hook ran or that MemoraX accepted a turn. See
 [background failure recovery](troubleshooting.md#hook-ran-but-automatic-writeback-is-missing).
 
 ## Backend lifecycle diagnostics

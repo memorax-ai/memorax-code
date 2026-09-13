@@ -234,9 +234,9 @@ acquisition can leave such a record. Stale-lock recovery still requires
 same-directory hard links and actual unlink semantics for claim cleanup.
 
 Failed explicit Search/Add commands, Backend and client deployment failures from
-start, stop, and restart, setup- or update-owned failures, and known Hook
-failures create local diagnostic records independently of Debug and trace
-settings. These contain a diagnostic ID,
+start, stop, and restart, setup- or update-owned failures, and known Hook or
+automatic-writeback failures create local diagnostic records independently of
+Debug and trace settings. These contain a diagnostic ID,
 timestamp, schema and package
 versions, platform and runtime version, operation, failure stage, stable error
 code, fixed error summary, impact, and recovery guidance. Depending on the

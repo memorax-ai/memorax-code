@@ -373,6 +373,7 @@ test("local-only trace gate rejects direct network capability in trace core", as
     assert.equal(initialized.status, 0, initialized.stderr);
     for (const file of [
       join(sourceDir, "trace", "store.ts"),
+      join(sourceDir, "memory", "background-diagnostics.ts"),
       join(root, "packages", "ts", "memorax-code-adapter-common", "src", "hooks", "hook-diagnostics.mjs"),
     ]) {
       await mkdir(join(file, ".."), { recursive: true });
@@ -382,6 +383,7 @@ test("local-only trace gate rejects direct network capability in trace core", as
     const result = await runChecker(undefined, copiedChecker);
     assert.equal(result.code, 1);
     assert.match(result.stderr, /trace\/store\.ts: local trace core depends on network capability/);
+    assert.match(result.stderr, /memory\/background-diagnostics\.ts: local trace core depends on network capability/);
     assert.match(result.stderr, /hooks\/hook-diagnostics\.mjs: local trace core depends on network capability/);
   } finally {
     await rm(root, { recursive: true, force: true });
