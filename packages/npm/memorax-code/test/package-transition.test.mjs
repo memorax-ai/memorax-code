@@ -6,6 +6,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  readdir,
   realpath,
   rm,
   stat,
@@ -138,7 +139,7 @@ test("explicit update recovery resumes a failed DSH transition and consumes it o
     const retired = await readFile(fixture.transitionPath, "utf8");
     const reinstall = await runEntry(fixture, "preinstall");
     assert.equal(reinstall.code, 1);
-    assert.match(reinstall.stderr, /already retired/);
+    assert.match(reinstall.stderr, /\[PACKAGE_TRANSITION_PENDING\] transition_read:/);
     assert.equal((await runEntry(fixture, "recover")).code, 1);
     assert.equal(await readFile(fixture.transitionPath, "utf8"), retired);
 
@@ -178,6 +179,14 @@ test("stop failure, residual PID authority, and timeout retain retiring state", 
         const startedAt = Date.now();
         const result = await runEntry(fixture, "preinstall");
         assert.equal(result.code, 1);
+        const [diagnostic] = await readDiagnostics(fixture);
+        assert.equal(diagnostic.stage, "retire");
+        assert.equal(diagnostic.errorCode, scenario.stopMode === "keep-pid"
+          ? "PACKAGE_TRANSITION_PID_REMAINS" : "PACKAGE_TRANSITION_COMMAND_FAILED");
+        if (scenario.stopMode === "fail") assert.equal(diagnostic.commandExitCode, 7);
+        if (scenario.timeoutMs) assert.equal(diagnostic.systemCode, "ETIMEDOUT");
+        assert.ok(result.stderr.includes(diagnostic.id));
+        assert.equal(JSON.stringify(diagnostic).includes(fixture.home), false);
         if (scenario.timeoutMs) assert.ok(Date.now() - startedAt < 2_000);
         assert.equal(JSON.parse(await readFile(fixture.transitionPath, "utf8")).state, "retiring");
       } finally {
@@ -200,6 +209,11 @@ test("postinstall rejects invalid and unsupported transition records without con
       try {
         const result = await runEntry(fixture, "postinstall");
         assert.equal(result.code, 1);
+        const [diagnostic] = await readDiagnostics(fixture);
+        assert.equal(diagnostic.stage, "transition_read");
+        assert.equal(diagnostic.errorCode, name === "unsupported version"
+          ? "PACKAGE_TRANSITION_RECORD_UNSUPPORTED" : "PACKAGE_TRANSITION_RECORD_INVALID");
+        if (name === "malformed") assert.equal(diagnostic.recordReason, "malformed_json");
         assert.equal((await runEntry(fixture, "recover")).code, 1);
         assert.equal(await readFile(fixture.transitionPath, "utf8"), text);
         assert.equal(await pathExists(fixture.logPath), false);
@@ -250,6 +264,29 @@ test("start failures retain retired state and do not run status", async (t) => {
         assert.equal((await runEntry(fixture, "postinstall")).code, 1);
         assert.equal(JSON.parse(await readFile(fixture.transitionPath, "utf8")).state, "retired");
         assert.deepEqual((await readCalls(fixture)).map((call) => call.command), ["start"]);
+      } finally {
+        await fixture.cleanup();
+      }
+    });
+  }
+});
+
+test("restoration reuses Backend and client diagnostic IDs without leaking child output", async (t) => {
+  for (const mode of ["backend-diagnostic", "client-diagnostic"]) {
+    await t.test(mode, async () => {
+      const fixture = await createFixture({ transitionText: recordText(), startMode: mode });
+      try {
+        const result = await runEntry(fixture, "postinstall");
+        assert.equal(result.code, 1);
+        const records = await readDiagnostics(fixture);
+        assert.equal(records.length, 1, "the transition must reuse the lifecycle diagnostic");
+        assert.equal(records[0].source, "memorax-code");
+        assert.ok(result.stderr.includes(`Diagnostic: ${records[0].id}`));
+        assert.ok(result.stderr.includes(records[0].errorCode));
+        assert.ok(result.stderr.includes(records[0].stage));
+        assert.ok(result.stderr.includes(records[0].systemCode));
+        assert.doesNotMatch(result.stderr, /private-child-error-canary|private-child-action-canary|PACKAGE_TRANSITION_COMMAND_FAILED/);
+        assert.equal(JSON.parse(await readFile(fixture.transitionPath, "utf8")).state, "retired");
       } finally {
         await fixture.cleanup();
       }
@@ -344,6 +381,8 @@ async function createFixture({
     "bin/memorax-code-plugin-postinstall.mjs",
     "lib/node-version.mjs",
     "lib/package-transition.mjs",
+    "lib/update-diagnostics.mjs",
+    "lib/setup-diagnostics.mjs",
   ]) {
     const target = join(root, relativePath);
     await mkdir(dirname(target), { recursive: true });
@@ -356,7 +395,7 @@ async function createFixture({
     }
     await writeFile(target, source);
   }
-  for (const relativePath of ["config-utils.mjs", "runtime-record.mjs"]) {
+  for (const relativePath of ["config-utils.mjs", "diagnostic-record.mjs", "deployment-failure.mjs", "runtime-record.mjs"]) {
     const target = join(root, "lib", "memorax-code-adapter-common", "src", relativePath);
     await mkdir(dirname(target), { recursive: true });
     await cp(join(adapterCommonRoot, relativePath), target);
@@ -427,6 +466,7 @@ function fakeCliSource({ logPath }) {
   return `#!/usr/bin/env node
 import { appendFileSync, existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { writeDiagnosticRecord } from "../lib/memorax-code-adapter-common/src/diagnostic-record.mjs";
 const args = process.argv.slice(2);
 const command = args[0];
 const homeIndex = args.indexOf("--home");
@@ -443,6 +483,18 @@ appendFileSync(${JSON.stringify(logPath)}, JSON.stringify({
   packageReplacement: process.env.MEMORAX_CODE_PACKAGE_REPLACEMENT === "1",
 }) + "\\n");
 const mode = process.env["MEMORAX_CODE_TEST_" + command.toUpperCase() + "_MODE"] ?? "ok";
+if (mode === "backend-diagnostic" || mode === "client-diagnostic") {
+  const client = mode === "client-diagnostic";
+  const failure = client
+    ? { errorCode: "CLIENT_SKILL_PUBLISH_FAILED", stage: "skill-publish", systemCode: "EPERM", processState: "running" }
+    : { errorCode: "BACKEND_HEALTH_NOT_READY", stage: "health", systemCode: "ECONNREFUSED", processState: "stopped" };
+  const diagnostic = writeDiagnosticRecord(home, { source: "memorax-code", operation: client ? "client.start" : "backend.start", ...failure });
+  const displayFailure = { ...failure, error: "private-child-error-canary", userAction: "private-child-action-canary" };
+  console.log(JSON.stringify(client
+    ? { ok: false, backend: { ok: true }, clientFailures: [{ client: "codex", failure: displayFailure, diagnostic }] }
+    : { ok: false, backend: { ok: false }, failure: displayFailure, diagnostic }));
+  process.exit(7);
+}
 if (mode === "hang") setInterval(() => {}, 1000);
 if (mode === "fail") { console.log(JSON.stringify({ ok: false })); process.exit(7); }
 if (mode === "invalid-json") { console.log("not-json"); process.exit(0); }
@@ -484,6 +536,11 @@ async function runEntry(fixture, entry, {
       elapsedMs: Date.now() - startedAt,
     }));
   });
+}
+
+async function readDiagnostics(fixture) {
+  const directory = join(fixture.home, "runtime", "diagnostics");
+  return await Promise.all((await readdir(directory)).map(async (name) => JSON.parse(await readFile(join(directory, name), "utf8"))));
 }
 
 async function readCalls(fixture) {

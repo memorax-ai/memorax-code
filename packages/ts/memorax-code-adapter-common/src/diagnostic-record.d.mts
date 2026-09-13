@@ -24,6 +24,9 @@ export type DiagnosticRecordFields = {
   processState?: "not-started" | "stopped" | "running" | "unknown";
   cleanupErrorCode?: string;
   cleanupSystemCode?: string;
+  recoveryErrorCode?: string;
+  recoveryStage?: string;
+  recoverySystemCode?: string;
 };
 
 export type DiagnosticWriteResult = {

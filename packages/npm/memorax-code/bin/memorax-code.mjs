@@ -8,6 +8,7 @@ import { runAutomaticUpdate } from "../lib/automatic-update.mjs";
 import { stagePackagedClientHookRuntime } from "../lib/client-hook-runtime.mjs";
 import { unsupportedNodeVersionMessage } from "../lib/node-version.mjs";
 import { runNpmCommand } from "../lib/npm-invocation.mjs";
+import { reportUpdateFailure, runUpdateInstallWithDiagnostics } from "../lib/update-diagnostics.mjs";
 import { ensureNpmPackageRuntimeEnv, runBackendEntrypoint } from "../lib/run-entrypoint.mjs";
 import { readSetupApiKey } from "../lib/setup-api-key-input.mjs";
 import { ensureWindowsNpmGlobalPath } from "../lib/windows-user-path.mjs";
@@ -210,22 +211,25 @@ async function runUpdateCommand(args) {
   const memoraxCodeHome = requestedHome ?? requestedMemoraxCodeHome([]);
   console.error(`memorax-code update: running ${["npm", ...npmArgs].join(" ")}`);
   let npmResult;
+  let npmFailure;
   try {
-    npmResult = await runNpmCommand(npmArgs, {
+    ({ result: npmResult, failure: npmFailure } = await runUpdateInstallWithDiagnostics((installEnv) => runNpmCommand(npmArgs, {
       env: {
-        ...process.env,
+        ...installEnv,
         MEMORAX_CODE_HOME: memoraxCodeHome,
       },
       stdio: "inherit",
-    });
+    })));
   } catch (error) {
-    console.error(`memorax-code update: failed to start npm: ${error instanceof Error ? error.message : String(error)}`);
+    reportUpdateFailure(error, { home: memoraxCodeHome, version: pkg.version, code: "UPDATE_INSTALL_FAILED", stage: "install" });
     return 1;
   }
-  if (npmResult.signal) {
-    console.error(`memorax-code update: npm exited from signal ${npmResult.signal}`);
+  if (npmResult.exitCode !== 0) {
+    reportUpdateFailure(npmFailure, {
+      home: memoraxCodeHome, version: pkg.version,
+    });
+    return npmResult.exitCode;
   }
-  if (npmResult.exitCode !== 0) return npmResult.exitCode;
 
   if (!setupCanPrompt()) {
     console.error("memorax-code update: package updated; run `memorax-code setup` from a terminal to reconcile clients and verify Hook changes");
@@ -251,10 +255,7 @@ async function runUpdateRecoveryCommand(memoraxCodeHome) {
     }
     return 0;
   } catch (error) {
-    for (const output of [error?.command?.stdout, error?.command?.stderr]) {
-      if (output?.trim()) console.error(output.trimEnd());
-    }
-    console.error(`memorax-code update: recovery failed: ${error instanceof Error ? error.message : String(error)}`);
+    reportUpdateFailure(error, { home: memoraxCodeHome, operation: "update.recover", code: "PACKAGE_TRANSITION_FAILED", stage: "restore" });
     return 1;
   }
 }
@@ -268,8 +269,12 @@ async function runAutomaticUpdateCommand({ pkg, memoraxCodeHome }) {
       packageName: pkg.name,
       packageVersion: pkg.version,
     });
+    if (!result.ok) reportUpdateFailure(result.error, {
+      home: memoraxCodeHome, version: pkg.version, operation: "update.automatic",
+    });
     return result.ok ? 0 : 1;
-  } catch {
+  } catch (error) {
+    reportUpdateFailure(error, { home: memoraxCodeHome, version: pkg.version, operation: "update.automatic" });
     return 1;
   }
 }

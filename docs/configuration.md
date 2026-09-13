@@ -719,6 +719,22 @@ Configuration details include the failed write stage and `configState`; neither
 configuration content nor credential or device identity values are retained.
 See [setup recovery](troubleshooting.md#setup-does-not-complete).
 
+## Update diagnostics
+
+Foreground and background updates, including npm package retirement and
+restoration, report failures without requiring Debug. Update-owned records use
+`source: "memorax-code-update"` and the same storage, permissions, and retention
+above. There is no additional enablement setting. Failed registry version checks,
+npm installation, transition state operations, Backend retirement, restoration,
+verification, and completed-state consumption retain their own stage.
+
+When a child command has already recorded a Backend, client, or setup failure,
+the update process reuses that diagnostic ID. A separate recovery failure retains
+`recoveryErrorCode`, `recoveryStage`, and an available `recoverySystemCode` without
+replacing the original failure. Records contain neither native command output
+nor configuration or response content. See
+[update recovery](troubleshooting.md#npm-package-transition-fails).
+
 ## Local traces
 
 `[trace.codex]`, `[trace.claude]`, `[trace.dsh]`, `[trace.opencode]`,

@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { unsupportedNodeVersionMessage } from "../lib/node-version.mjs";
 import { runNpmPostinstallPackageTransition } from "../lib/package-transition.mjs";
+import { reportUpdateFailure } from "../lib/update-diagnostics.mjs";
 
 const PREFIX = "[MemoraX Code Install]:";
 const nodeVersionError = unsupportedNodeVersionMessage();
@@ -24,15 +25,6 @@ try {
     console.warn(`${PREFIX} Updated managed Backend started and verified.`);
   }
 } catch (error) {
-  printCommandOutput(error?.command);
-  console.error(`${PREFIX} Package transition could not be completed: ${error instanceof Error ? error.message : String(error)}`);
+  reportUpdateFailure(error, { home: memoraxCodeHome, operation: "install.restore", code: "PACKAGE_TRANSITION_FAILED", stage: "transition_read" });
   process.exit(1);
-}
-
-function printCommandOutput(command) {
-  for (const output of [command?.stdout, command?.stderr]) {
-    for (const line of String(output ?? "").split(/\r?\n/)) {
-      if (line) console.warn(`${PREFIX} ${line}`);
-    }
-  }
 }

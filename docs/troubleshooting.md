@@ -241,6 +241,27 @@ cannot retire the old Backend, installation stops before package replacement.
 If postinstall cannot start or verify the new Backend, the retired transition
 is retained for recovery.
 
+Update failures report their stage, error code, impact, next step, and diagnostic
+ID without requiring Debug. Update-owned records use
+`source: "memorax-code-update"`; child Backend, client, and setup diagnostics keep
+their original IDs. These records share the
+[default storage and retention](configuration.md#default-searchadd-diagnostics).
+
+| Update stage | Meaning |
+| --- | --- |
+| `version_check` | The registry version check failed; this check did not install a replacement. Check registry access and any reported authentication or HTTP error. |
+| `install` | npm installation failed; package or Backend changes may already have occurred. |
+| `retire` | The old Backend could not be confirmed as retired before replacement. |
+| `restore` | The installed Backend could not be started for restoration. |
+| `verify` | The restored Backend did not pass the required status check. |
+| `consume` | Verification completed, but the transition record could not be consumed. Check status before retrying. |
+
+Lock acquisition/release and update or transition state reads/writes have their
+own stages. A separate failed recovery retains `recoveryErrorCode`,
+`recoveryStage`, and an available `recoverySystemCode`; the original error remains
+the primary diagnosis. Do not infer successful recovery solely from package
+installation or a preceding command's success.
+
 After the original npm command has exited and the reported startup or status
 problem is corrected, resume restoration of the installed package:
 
@@ -781,7 +802,7 @@ memorax-cli status --json
 
 For a client-specific failure, also collect the affected client's diagnostic
 from the start of this guide with `--json`.
-For a Search/Add, Backend lifecycle, client deployment, or setup failure,
+For a Search/Add, Backend lifecycle, client deployment, setup, or update failure,
 include its diagnostic ID and the reviewed diagnostic file, if saved. Structured command
 output may contain query, workspace, process, or raw Backend error fields that
 are excluded from the diagnostic record; review it separately before sharing.

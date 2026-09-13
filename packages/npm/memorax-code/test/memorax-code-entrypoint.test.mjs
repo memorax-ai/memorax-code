@@ -499,6 +499,7 @@ async function createPackageFixture() {
   const copiedFiles = [
     "bin/memorax-code.mjs",
     "lib/automatic-update.mjs",
+    "lib/update-diagnostics.mjs",
     "lib/client-hook-runtime.mjs",
     "lib/node-version.mjs",
     "lib/npm-invocation.mjs",

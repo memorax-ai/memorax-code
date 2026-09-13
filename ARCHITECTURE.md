@@ -328,6 +328,19 @@ recovery attempt, but a failed recovery stop prevents the second start.
 Native integrations retain ownership of deployment operations and their failure
 evidence; the lifecycle CLI owns their diagnostic presentation and storage.
 
+The npm package's `lib/update-diagnostics.mjs` owns safe update failure
+projection, presentation, and records. Registry checks, npm installation, and
+package-transition retirement, restoration, verification, and state consumption
+provide their own step evidence. A failed recovery remains separate from the
+original failure. Existing Backend, client, or setup diagnostics cross the local
+parent/child process channel as validated metadata so the parent can reuse their
+IDs. Raw process output is not diagnostic authority. Reporting does not change
+update scheduling, package-transition authority, or recovery decisions.
+For npm lifecycle hooks, a private temporary relay uses a fresh per-installation
+nonce and bounded, projected metadata; the parent consumes it only after
+installation fails and removes it afterward. Relay creation, reading, writing, and cleanup are best
+effort and cannot replace the installation outcome.
+
 After completed setup, the managed Backend schedules a detached updater from
 the durable deadline; client startup Hooks only recover an unavailable Backend.
 The updater serializes checks through its private record and lock, installs an
@@ -1016,8 +1029,8 @@ These paths are not all mediated by `app/memory-observability`. Memory-service
 kernels receive Backend diagnostics through a port; CLI composition can use
 the Backend debug logger directly.
 
-Default Search/Add, Backend lifecycle, client deployment, and setup diagnostics
-use immutable local records. Adapter-common owns their private
+Default Search/Add, Backend lifecycle, client deployment, setup, and update
+diagnostics use immutable local records. Adapter-common owns their private
 storage and bounded retention, while memory, lifecycle, and npm composition
 supply only safe, content-free fields.
 These records have no session, scope, lifecycle, or memory authority. The storage

@@ -234,7 +234,7 @@ acquisition can leave such a record. Stale-lock recovery still requires
 same-directory hard links and actual unlink semantics for claim cleanup.
 
 Failed explicit Search/Add commands, Backend and client deployment failures from
-start, stop, and restart, and setup-owned failures create local
+start, stop, and restart, and setup- or update-owned failures create local
 diagnostic records independently of Debug and trace settings. These contain a diagnostic ID,
 timestamp, schema and package
 versions, platform and runtime version, operation, failure stage, stable error
@@ -242,8 +242,8 @@ code, fixed error summary, impact, and recovery guidance. Depending on the
 operation, known system codes, HTTP status, retry delay, client identity,
 hashed Session/Turn identifiers, process state, a fixed category for the last
 observed failure, an allowlisted runtime-record validation reason, configuration
-recovery state, native command exit status or signal, and cleanup
-error/system codes may be included. Setup reuses validated child
+recovery state, native command exit status or signal, and cleanup or recovery
+error/system codes may be included. Setup and update reuse validated child
 diagnostics and IDs when they already exist. Validation reasons contain no record
 contents. Setup records also exclude device, guest, and account identity values.
 Records exclude queries, Add text, response bodies, raw

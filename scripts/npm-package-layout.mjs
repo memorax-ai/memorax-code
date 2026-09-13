@@ -55,6 +55,7 @@ const rootLibFiles = new Set([
   "lib/setup-api-key-input.mjs",
   "lib/setup-reconcile.mjs",
   "lib/setup-diagnostics.mjs",
+  "lib/update-diagnostics.mjs",
   "lib/trial-plugin-mark.mjs",
   "lib/trial-provision-client.mjs",
   "lib/trial-provision-flow.mjs",

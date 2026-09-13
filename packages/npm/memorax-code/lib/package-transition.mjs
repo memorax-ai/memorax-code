@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { updateFailure } from "./update-diagnostics.mjs";
 import { withJsonFileLock, withJsonFileLockAsync } from "./memorax-code-adapter-common/src/config-utils.mjs";
 import {
   readJsonRuntimeRecord,
@@ -88,6 +89,15 @@ export function readPackageTransitionRecord(memoraxCodeHome = defaultMemoraxCode
 }
 
 export function runNpmPreinstallPackageTransition(options = {}) {
+  const context = { stage: "transition_read" };
+  try {
+    return preinstallPackageTransition(options, context);
+  } catch (error) {
+    throw updateFailure(error, "PACKAGE_TRANSITION_FAILED", context.stage, { lockStage: "transition_lock" });
+  }
+}
+
+function preinstallPackageTransition(options, context) {
   const memoraxCodeHome = resolve(nonEmptyString(options.memoraxCodeHome) ?? defaultMemoraxCodeHome());
   const memoraxCodeBin = requiredString(options.memoraxCodeBin, "memoraxCodeBin");
   const packageVersion = requiredString(options.packageVersion, "packageVersion");
@@ -98,7 +108,9 @@ export function runNpmPreinstallPackageTransition(options = {}) {
   const transitionPath = packageTransitionPath(memoraxCodeHome);
   let transition;
   let shouldStop = false;
+  context.stage = "transition_lock";
   withJsonFileLock(transitionPath, () => {
+    context.stage = "transition_read";
     const existing = readPackageTransitionRecord(memoraxCodeHome);
     if (existing.status !== "absent") throw packageTransitionStateError(existing, transitionPath);
     const pidState = readBackendPidState(pidPath);
@@ -113,15 +125,18 @@ export function runNpmPreinstallPackageTransition(options = {}) {
       startedAt: nowIso(options),
       sourceVersion: packageVersion,
     };
+    context.stage = "transition_write";
     const write = writePrivateJsonRecord(transitionPath, transition, {
       durableBoundary: memoraxCodeHome,
     });
     if (write.durability !== "confirmed") {
-      throw transitionError("PACKAGE_TRANSITION_DURABILITY_UNCERTAIN", "durable persistence of the retiring package transition could not be confirmed");
+      throw transitionError("PACKAGE_TRANSITION_DURABILITY_UNCERTAIN", "durable persistence of the retiring package transition could not be confirmed", { error: { code: write.durabilityErrorCode } });
     }
+    context.stage = "transition_lock";
   });
 
   if (!shouldStop) return { disposition: "noop" };
+  context.stage = "retire";
   const stopped = runLifecycleCommand({
     ...options,
     memoraxCodeHome,
@@ -139,25 +154,38 @@ export function runNpmPreinstallPackageTransition(options = {}) {
   }
   if (!transition) return { disposition: "cleaned" };
 
+  context.stage = "transition_lock";
   const retired = withJsonFileLock(transitionPath, () => {
+    context.stage = "transition_read";
     const current = requireValidTransition(memoraxCodeHome);
     if (current.record.state !== "retiring"
       || current.record.transitionId !== transition.transitionId) {
       throw transitionError("PACKAGE_TRANSITION_REPLACED", "package transition changed while the Backend was being retired");
     }
     const record = { ...current.record, state: "retired", retiredAt: nowIso(options) };
+    context.stage = "transition_write";
     const write = writePrivateJsonRecord(transitionPath, record, {
       durableBoundary: memoraxCodeHome,
     });
     if (write.durability !== "confirmed") {
-      throw transitionError("PACKAGE_TRANSITION_DURABILITY_UNCERTAIN", "durable persistence of the retired package transition could not be confirmed");
+      throw transitionError("PACKAGE_TRANSITION_DURABILITY_UNCERTAIN", "durable persistence of the retired package transition could not be confirmed", { error: { code: write.durabilityErrorCode } });
     }
+    context.stage = "transition_lock";
     return record;
   });
   return { disposition: "retired", transition: retired };
 }
 
 export async function runNpmPostinstallPackageTransition(options = {}) {
+  const context = { stage: "transition_read" };
+  try {
+    return await postinstallPackageTransition(options, context);
+  } catch (error) {
+    throw updateFailure(error, "PACKAGE_TRANSITION_FAILED", context.stage, { lockStage: "transition_lock" });
+  }
+}
+
+async function postinstallPackageTransition(options, context) {
   const memoraxCodeHome = resolve(nonEmptyString(options.memoraxCodeHome) ?? defaultMemoraxCodeHome());
   const memoraxCodeBin = requiredString(options.memoraxCodeBin, "memoraxCodeBin");
   const transitionPath = packageTransitionPath(memoraxCodeHome);
@@ -165,7 +193,9 @@ export async function runNpmPostinstallPackageTransition(options = {}) {
     return { disposition: "noop" };
   }
 
+  context.stage = "transition_lock";
   return await withJsonFileLockAsync(transitionPath, async () => {
+    context.stage = "transition_read";
     const reloaded = readPackageTransitionRecord(memoraxCodeHome);
     if (reloaded.status === "absent") return { disposition: "noop" };
     if (reloaded.status !== "valid") {
@@ -182,6 +212,7 @@ export async function runNpmPostinstallPackageTransition(options = {}) {
       throw transitionError("PACKAGE_TRANSITION_STALE", "retired package transition is stale");
     }
 
+    context.stage = "restore";
     runLifecycleCommand({
       ...options,
       memoraxCodeHome,
@@ -190,6 +221,7 @@ export async function runNpmPostinstallPackageTransition(options = {}) {
       env: { ...options.env, MEMORAX_CODE_PACKAGE_REPLACEMENT: "1" },
       label: "memorax-code start",
     });
+    context.stage = "verify";
     runLifecycleCommand({
       ...options,
       memoraxCodeHome,
@@ -198,12 +230,14 @@ export async function runNpmPostinstallPackageTransition(options = {}) {
       label: "memorax-code status",
     });
 
+    context.stage = "consume";
     const finalState = requireValidTransition(memoraxCodeHome);
     if (finalState.record.state !== "retired"
       || finalState.record.transitionId !== current.record.transitionId) {
       throw transitionError("PACKAGE_TRANSITION_REPLACED", "package transition changed before it could be consumed");
     }
     unlinkSync(transitionPath);
+    context.stage = "transition_lock";
     return { disposition: "restored", transitionId: current.record.transitionId };
   });
 }

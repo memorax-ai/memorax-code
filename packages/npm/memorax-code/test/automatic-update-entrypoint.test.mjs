@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmod, cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, delimiter, dirname, join } from "node:path";
 import test from "node:test";
@@ -33,6 +33,27 @@ test("automatic update installs an exact latest version and runs non-interactive
   assert.deepEqual(Object.keys(state).sort(), ["installedVersion", "nextCheckAt", "version"]);
 });
 
+test("automatic update reports npm registry authentication failure without response text", {
+  skip: process.platform === "win32",
+}, async (t) => {
+  const fixture = await createFixture(t);
+  await writeSetupCompletion(fixture.memoraxCodeHome, "0.1.9");
+  const result = runAutomaticUpdate(fixture, { MEMORAX_CODE_TEST_VIEW_ERROR: "E401" });
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /UPDATE_VERSION_CHECK_FAILED.*version_check.*E401.*HTTP 401/);
+  assert.doesNotMatch(result.stderr, /private-registry-response-canary/);
+  const directory = join(fixture.memoraxCodeHome, "runtime", "diagnostics");
+  const files = await readdir(directory);
+  assert.equal(files.length, 1);
+  const text = await readFile(join(directory, files[0]), "utf8");
+  const record = JSON.parse(text);
+  assert.equal(record.httpStatus, 401);
+  assert.equal(record.systemCode, "E401");
+  assert.equal(record.commandExitCode, 7);
+  assert.doesNotMatch(text, /private-registry-response-canary/);
+  assert.deepEqual(await readJsonLines(fixture.setupLogPath), []);
+});
+
 test("automatic update respects the explicit opt-out", {
   skip: process.platform === "win32",
 }, async (t) => {
@@ -55,6 +76,8 @@ async function createFixture(t) {
   await Promise.all([
     "bin/memorax-code.mjs",
     "lib/automatic-update.mjs",
+    "lib/update-diagnostics.mjs",
+    "lib/setup-diagnostics.mjs",
     "lib/client-hook-runtime.mjs",
     "lib/node-version.mjs",
     "lib/npm-invocation.mjs",
@@ -74,7 +97,7 @@ async function createFixture(t) {
   const commonRoot = join(packageRoot, "..", "..", "ts", "memorax-code-adapter-common", "src");
   await Promise.all([
     "clients/codebuddy-command.mjs",
-    "config-utils.mjs",
+    "config-utils.mjs", "diagnostic-record.mjs", "deployment-failure.mjs",
     "automatic-update-state.mjs",
     "runtime-record.mjs",
     "setup-completion.mjs",
@@ -110,6 +133,10 @@ async function createFixture(t) {
     "import { join } from 'node:path';",
     "const args = process.argv.slice(2);",
     "appendFileSync(process.env.MEMORAX_CODE_TEST_NPM_LOG, JSON.stringify(args) + '\\n');",
+    "if (args[0] === 'view' && process.env.MEMORAX_CODE_TEST_VIEW_ERROR) {",
+    "  console.log(JSON.stringify({ error: { code: process.env.MEMORAX_CODE_TEST_VIEW_ERROR, detail: 'private-registry-response-canary' } }));",
+    "  process.exit(7);",
+    "}",
     "if (args[0] === 'view') console.log(JSON.stringify('0.1.10'));",
     "if (args[0] === 'install') {",
     "  const path = join(process.env.MEMORAX_CODE_HOME, 'runtime', 'setup', 'setup-completion.json');",
