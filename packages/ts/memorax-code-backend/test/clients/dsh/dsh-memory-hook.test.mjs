@@ -181,15 +181,17 @@ test("Backend runs DSH Search, normalized Trace, and Add from one native Turn in
   const runtimeRoot = await mkdtemp(join(tmpdir(), "memorax-code-dsh-http-runtime-"));
   t.after(() => rm(runtimeRoot, { recursive: true, force: true }));
   await mkdir(join(runtimeRoot, "src"));
-  await mkdir(join(runtimeRoot, "memorax-code-adapter-common", "src"), { recursive: true });
+  await mkdir(join(runtimeRoot, "memorax-code-adapter-common", "src", "hooks"), { recursive: true });
   await copyFile(
     new URL("../../../../memorax-code-dsh-adapter/src/http-client.mjs", import.meta.url),
     join(runtimeRoot, "src", "http-client.mjs"),
   );
-  await copyFile(
-    new URL("../../../../memorax-code-adapter-common/src/backend-command.mjs", import.meta.url),
-    join(runtimeRoot, "memorax-code-adapter-common", "src", "backend-command.mjs"),
-  );
+  for (const file of ["backend-command.mjs", "diagnostic-record.mjs", "hooks/hook-diagnostics.mjs"]) {
+    await copyFile(
+      new URL(`../../../../memorax-code-adapter-common/src/${file}`, import.meta.url),
+      join(runtimeRoot, "memorax-code-adapter-common", "src", file),
+    );
+  }
   const { createHttpBackendClient } = await import(pathToFileURL(join(runtimeRoot, "src", "http-client.mjs")));
   const sessionHome = await mkdtemp(join(tmpdir(), "memorax-code-dsh-hook-"));
   const interval = dshTurnInterval({

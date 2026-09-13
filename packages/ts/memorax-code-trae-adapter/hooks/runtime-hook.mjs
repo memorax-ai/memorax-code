@@ -70,6 +70,7 @@ const personalMemoryContextOptions = {
 const activeTurnsPath = join(home, "adapters", "trae", "active-turns.json");
 
 await ensureBackendAvailable({
+  client: "trae",
   ensureBackendValue: process.env.MEMORAX_CODE_TRAE_ENSURE_BACKEND
     ?? process.env.MEMORAX_CODE_TRAE_HOOK_ENSURE_BACKEND,
   healthTimeoutValue: process.env.MEMORAX_CODE_TRAE_ENSURE_TIMEOUT_MS,
@@ -291,7 +292,7 @@ async function post(path, body, timeoutMs = 12_000) {
     return undefined;
   }
   try {
-    const response = await postBackendCommand({ connection, path, body, timeoutMs });
+    const response = await postBackendCommand({ connection, path, body, timeoutMs, memoraxCodeHome: home });
     return response.ok ? await response.json().catch(() => undefined) : undefined;
   } catch {
     return undefined;

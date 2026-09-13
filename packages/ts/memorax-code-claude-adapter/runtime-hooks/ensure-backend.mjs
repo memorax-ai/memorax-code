@@ -12,6 +12,7 @@ const DEBUG = process.env.MEMORAX_CODE_CLAUDE_HOOK_DEBUG === "1";
 
 try {
   await runEnsureBackendHook({
+    client: "claude-code",
     ensureBackendValue: process.env.MEMORAX_CODE_CLAUDE_ENSURE_BACKEND
       ?? process.env.MEMORAX_CODE_CLAUDE_HOOK_ENSURE_BACKEND,
     healthTimeoutValue: process.env.MEMORAX_CODE_CLAUDE_ENSURE_TIMEOUT_MS,

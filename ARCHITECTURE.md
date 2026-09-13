@@ -215,7 +215,8 @@ Backend reports remain intact; client failures appear in `clientFailures` and do
 not turn a successful Backend recovery into a Backend failure. Services and
 adapters do not write duplicate records. This presentation path does not change
 lifecycle authority, validation, retry, or scheduling decisions. Hook execution
-and automatic writeback retain their existing reporting paths.
+has a separate failure-reporting boundary below; automatic writeback retains
+its existing reporting paths.
 
 ## 3. Runtime Flows
 
@@ -461,6 +462,13 @@ sequenceDiagram
   end
   Hook-->>Client: client-specific context or fallback behavior
 ```
+
+Hook failure reporting reuses adapter-common diagnostic storage. Shared runtime
+launch and Backend recovery report confirmed execution failures; command senders
+report transport and non-success HTTP outcomes without consuming response bodies.
+These boundaries preserve existing Hook output, exit behavior, and HTTP results;
+reporting failure cannot replace the original outcome. Ordinary Hook skips
+remain outside failure reporting.
 
 Important distinctions:
 
@@ -1029,15 +1037,15 @@ These paths are not all mediated by `app/memory-observability`. Memory-service
 kernels receive Backend diagnostics through a port; CLI composition can use
 the Backend debug logger directly.
 
-Default Search/Add, Backend lifecycle, client deployment, setup, and update
+Default Search/Add, Backend lifecycle, client deployment, setup, update, and Hook
 diagnostics use immutable local records. Adapter-common owns their private
-storage and bounded retention, while memory, lifecycle, and npm composition
+storage and bounded retention, while memory, lifecycle, Hook, and npm composition
 supply only safe, content-free fields.
 These records have no session, scope, lifecycle, or memory authority. The storage
 primitive has no outbound-network authority, and its records never enter
 MemoraX payloads.
-Storage failure preserves the operation failure and reports that the diagnostic
-could not be saved. [Configuration](docs/configuration.md#default-searchadd-diagnostics)
+Storage failure preserves the original operation result. Explicit commands
+report that a diagnostic could not be saved; background Hooks remain silent. [Configuration](docs/configuration.md#default-searchadd-diagnostics)
 owns storage paths and retention values.
 
 Current-turn records share the trace Store and existing paths but serve an

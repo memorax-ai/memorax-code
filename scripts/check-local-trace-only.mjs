@@ -61,6 +61,7 @@ const localTraceCoreSources = new Set([
   "packages/npm/memorax-code/lib/update-diagnostics.mjs",
   "packages/ts/memorax-code-adapter-common/src/deployment-failure.mjs",
   "packages/ts/memorax-code-adapter-common/src/diagnostic-record.mjs",
+  "packages/ts/memorax-code-adapter-common/src/hooks/hook-diagnostics.mjs",
   "packages/ts/memorax-code-backend/src/memory/cli-diagnostics.ts",
   "packages/ts/memorax-code-backend/src/lifecycle/cli-diagnostics.ts",
   "packages/ts/memorax-code-backend/src/memory/reminder-trace-recorder.ts",
@@ -78,6 +79,13 @@ const reviewedTraceAwareOutboundSources = new Set([
   // Reads the current turn only to resolve workspace scope; memory payload
   // construction remains centralized in provider/memorax/adapter.ts.
   "packages/ts/memorax-code-backend/src/memory/cli.ts",
+]);
+
+const reviewedBackgroundDiagnosticSources = new Set([
+  // Failure-only projections write fixed local diagnostics, never read diagnostic
+  // or trace artifacts, and never add diagnostic fields to outbound payloads.
+  "packages/ts/memorax-code-adapter-common/src/backend-command.mjs",
+  "packages/ts/memorax-code-adapter-common/src/hooks/ensure-backend-runner.mjs",
 ]);
 
 const providerTransportSourcePrefix =
@@ -110,6 +118,8 @@ const outboundCapabilityPatterns = [
 
 const localTraceStorageDependency =
   /(?:from\s+["'](?:\.\.?\/)+trace\/(?:config|store)\.js["']|\bclientTracePaths\b|\bmemoraxCodeHomeForTrace\b|(?:diagnostic-record\.mjs|cli-diagnostics\.js))/;
+
+const backgroundDiagnosticDependency = /hook-diagnostics\.mjs/;
 
 export async function collectLocalTraceOnlyFailures({
   repoRoot = defaultRepoRoot,
@@ -220,7 +230,8 @@ function inspectProductionSource(content, sourcePath, failures) {
     }
   }
   if (
-    localTraceStorageDependency.test(content)
+    (localTraceStorageDependency.test(content)
+      || (backgroundDiagnosticDependency.test(content) && !reviewedBackgroundDiagnosticSources.has(sourcePath)))
     && (outboundCapabilities.length > 0 || providerTransportSources.has(sourcePath))
     && !reviewedTraceAwareOutboundSources.has(sourcePath)
   ) {

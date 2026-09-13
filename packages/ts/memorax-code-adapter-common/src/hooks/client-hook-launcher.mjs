@@ -21,6 +21,7 @@ import {
   writePrivateJsonRecord,
 } from "../runtime-record.mjs";
 import { isRepoMemoryJobWorker } from "../repo-memory/repo-memory-job-context.mjs";
+import { recordHookFailure } from "./hook-diagnostics.mjs";
 
 const PIN_RECORD_VERSION = 1;
 const SHELL_RECORD_VERSION = 1;
@@ -33,10 +34,14 @@ export async function runClientHookLauncher({
   pluginRoot,
   shellVersion,
 } = {}) {
+  let input;
+  let memoraxCodeHome;
+  let stage = "input";
   try {
     if (isRepoMemoryJobWorker()) return;
-    const input = await readStdinJson();
-    const memoraxCodeHome = resolveMemoraxCodeHome();
+    input = await readStdinJson();
+    memoraxCodeHome = resolveMemoraxCodeHome();
+    stage = "runtime-selection";
     const selection = selectHookRuntime({
       client,
       component,
@@ -50,8 +55,10 @@ export async function runClientHookLauncher({
     injectClientHookInput(input);
     const originalPluginRoot = stringOption(pluginRoot);
     if (originalPluginRoot) injectClientHookPluginRoot(originalPluginRoot);
+    stage = "runtime-import";
     await import(pathToFileURL(selection.modulePath).href);
   } catch (error) {
+    recordHookFailure({ memoraxCodeHome, client, input, operation: "hook.runtime", errorCode: "HOOK_RUNTIME_FAILED", error, stage, version: shellVersion });
     if (process.env[debugEnv] === "1") {
       console.error(error instanceof Error ? error.message : String(error));
     }

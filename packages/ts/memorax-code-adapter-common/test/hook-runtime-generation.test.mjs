@@ -13,7 +13,7 @@ import {
   readCurrentClientHookRuntime,
   stageClientHookRuntimeGeneration,
 } from "../src/hooks/hook-runtime-generation.mjs";
-import { selectHookRuntime } from "../src/hooks/client-hook-launcher.mjs";
+import { runClientHookLauncher, selectHookRuntime } from "../src/hooks/client-hook-launcher.mjs";
 
 const TEST_SHELL_VERSION = "1.2.3";
 
@@ -624,3 +624,69 @@ async function writeRuntimePackage(packageRoot, version, marker) {
     }
   }
 }
+
+test("client Hook launcher records an import failure with Debug off and keeps skipped events quiet", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-hook-launch-failure-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const inputSymbol = Symbol.for("memorax-code.client-hook.input.v1");
+  const pluginSymbol = Symbol.for("memorax-code.client-hook.plugin-root.v1");
+  const previousInput = globalThis[inputSymbol];
+  const previousPlugin = globalThis[pluginSymbol];
+  const previousHome = process.env.MEMORAX_CODE_HOME;
+  const previousDebug = process.env.MEMORAX_CODE_CODEX_HOOK_DEBUG;
+  process.env.MEMORAX_CODE_HOME = join(root, "home");
+  process.env.MEMORAX_CODE_CODEX_HOOK_DEBUG = "0";
+  t.after(() => {
+    if (previousInput === undefined) delete globalThis[inputSymbol]; else globalThis[inputSymbol] = previousInput;
+    if (previousPlugin === undefined) delete globalThis[pluginSymbol]; else globalThis[pluginSymbol] = previousPlugin;
+    if (previousHome === undefined) delete process.env.MEMORAX_CODE_HOME; else process.env.MEMORAX_CODE_HOME = previousHome;
+    if (previousDebug === undefined) delete process.env.MEMORAX_CODE_CODEX_HOOK_DEBUG; else process.env.MEMORAX_CODE_CODEX_HOOK_DEBUG = previousDebug;
+  });
+  const stderr = t.mock.method(console, "error", () => {});
+  const modulePath = join(root, "failed-hook.mjs");
+  await writeFile(modulePath, "throw new Error('private runtime path and secret input');\n");
+  const options = {
+    client: "codex",
+    component: "capture-cwd",
+    debugEnv: "MEMORAX_CODE_CODEX_HOOK_DEBUG",
+    fallbackModuleUrl: pathToFileURL(modulePath),
+    pluginRoot: root,
+    shellVersion: TEST_SHELL_VERSION,
+  };
+  globalThis[inputSymbol] = { hook_event_name: "irrelevant" };
+  await runClientHookLauncher(options);
+  const directory = join(process.env.MEMORAX_CODE_HOME, "runtime", "diagnostics");
+  assert.equal(fs.existsSync(directory), false);
+  globalThis[inputSymbol] = { hook_event_name: "SessionStart", session_id: "private-session" };
+  await runClientHookLauncher(options);
+  const names = fs.readdirSync(directory);
+  assert.equal(names.length, 1);
+  const record = JSON.parse(await readFile(join(directory, names[0]), "utf8"));
+  assert.equal(record.errorCode, "HOOK_RUNTIME_FAILED");
+  assert.equal(record.stage, "runtime-import");
+  assert.equal(record.version, TEST_SHELL_VERSION);
+  assert.equal(record.client, "codex");
+  assert.equal(JSON.stringify(record).includes("private"), false);
+  assert.equal(stderr.mock.callCount(), 0);
+  const pins = join(clientHookRuntimePaths(process.env.MEMORAX_CODE_HOME).root, "pins");
+  await mkdir(clientHookRuntimePaths(process.env.MEMORAX_CODE_HOME).root, { recursive: true });
+  await writeFile(pins, "blocked");
+  globalThis[inputSymbol] = { hook_event_name: "UserPromptSubmit", session_id: "private-session", turn_id: "private-turn" };
+  await runClientHookLauncher(options);
+  const selectionRecords = fs.readdirSync(directory).map((name) => JSON.parse(fs.readFileSync(join(directory, name), "utf8")));
+  assert.equal(selectionRecords.length, 2);
+  assert.equal(selectionRecords.some((entry) => entry.stage === "runtime-selection"), true);
+  const missingModule = join(root, "missing-dependency.mjs");
+  await writeFile(missingModule, "import './private-missing-module.mjs';\n");
+  globalThis[inputSymbol] = { hook_event_name: "SessionStart" };
+  await runClientHookLauncher({ ...options, fallbackModuleUrl: pathToFileURL(missingModule) });
+  const importRecords = fs.readdirSync(directory).map((name) => JSON.parse(fs.readFileSync(join(directory, name), "utf8")));
+  assert.equal(importRecords.length, 3);
+  const missing = importRecords.find((entry) => entry.systemCode === "ERR_MODULE_NOT_FOUND");
+  assert.equal(missing.stage, "runtime-import");
+  assert.equal(JSON.stringify(missing).includes("private"), false);
+  await rm(directory, { recursive: true });
+  await writeFile(directory, "unwritable diagnostic destination");
+  await assert.doesNotReject(runClientHookLauncher(options));
+  assert.equal(stderr.mock.callCount(), 0);
+});

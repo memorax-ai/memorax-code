@@ -172,6 +172,7 @@ test("unhealthy Backend starts memorax-code for Codex", async () => {
     "--host", "127.0.0.1",
     "--port", "9",
     "--preserve-clients",
+    "--json",
   ]);
 });
 
@@ -225,6 +226,7 @@ test("unhealthy Backend recovery preserves the persisted host and port", async (
     "--host", "127.0.0.1",
     "--port", "9",
     "--preserve-clients",
+    "--json",
   ]);
 });
 
@@ -341,6 +343,7 @@ test("durable ensure-backend runtime keeps the plugin metadata command for Backe
       "--host", "127.0.0.1",
       "--port", "9",
       "--preserve-clients",
+      "--json",
     ]]);
     assert.equal(await readFile(npmRecordPath, "utf8"), npmExecPath);
   } finally {

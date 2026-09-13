@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -313,7 +313,7 @@ async function writeBackendConnection(memoraxCodeHome, url, token) {
   })}\n`);
 }
 
-async function listenRecorder({ beforeResponse } = {}) {
+async function listenRecorder({ beforeResponse, status = 200 } = {}) {
   const requests = [];
   const requestHeaders = [];
   const server = createServer(async (request, response) => {
@@ -325,7 +325,7 @@ async function listenRecorder({ beforeResponse } = {}) {
       body: text ? JSON.parse(text) : {},
     });
     await beforeResponse?.();
-    response.writeHead(200, { "content-type": "application/json" });
+    response.writeHead(status, { "content-type": "application/json" });
     response.end(JSON.stringify({ ok: true }));
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -338,3 +338,33 @@ async function listenRecorder({ beforeResponse } = {}) {
     requestHeaders,
   };
 }
+
+test("writeback HTTP failure is recorded once with Debug off without changing Hook output or exit", async () => {
+  const { server, url, requests } = await listenRecorder({ status: 503 });
+  const memoraxCodeHome = await mkdtemp(join(tmpdir(), "memorax-code-codex-hook-diagnostic-"));
+  try {
+    const env = {
+      MEMORAX_CODE_HOME: memoraxCodeHome,
+      MEMORAX_CODE_BACKEND_URL: url,
+      MEMORAX_CODE_CODEX_HOOK_DEBUG: "0",
+    };
+    const input = { session_id: "private-session", turn_id: "private-turn", last_assistant_message: "private answer", transcript_path: "/private/transcript.jsonl" };
+    const command = [fileURLToPath(new URL("../runtime-hooks/memory-writeback.mjs", import.meta.url))];
+    assert.deepEqual(await runHook(command, env, input), { code: 0, stdout: "", stderr: "" });
+    const directory = join(memoraxCodeHome, "runtime", "diagnostics");
+    const names = await readdir(directory);
+    assert.equal(names.length, 1);
+    const record = JSON.parse(await readFile(join(directory, names[0]), "utf8"));
+    assert.equal(record.errorCode, "HOOK_BACKEND_HTTP_REJECTED");
+    assert.equal(record.httpStatus, 503);
+    assert.equal(JSON.stringify(record).includes("private"), false);
+    assert.equal(requests.length, 1);
+    await rm(directory, { recursive: true });
+    await writeFile(directory, "blocked");
+    assert.deepEqual(await runHook(command, env, input), { code: 0, stdout: "", stderr: "" });
+    assert.equal(requests.length, 2);
+  } finally {
+    server.close();
+    await rm(memoraxCodeHome, { recursive: true, force: true });
+  }
+});

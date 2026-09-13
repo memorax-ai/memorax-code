@@ -261,6 +261,7 @@ test("local-only trace gate recognizes shared Backend transport authority and al
     "lib/memorax-code-adapter-common/src/backend-command.mjs",
     "lib/memorax-code-backend/dist/trace/store.js",
     "lib/memorax-code-backend/dist/memory/unreviewed-command.js",
+    "lib/memorax-code-backend/dist/memory/unreviewed-background-command.js",
   ];
   try {
     for (const path of files) {
@@ -268,7 +269,9 @@ test("local-only trace gate recognizes shared Backend transport authority and al
       await mkdir(join(file, ".."), { recursive: true });
       await writeFile(file, [
         'import * as commands from "../../memorax-code-adapter-common/src/backend-command.mjs";',
-        'import { readCurrentTraceTurn } from "../trace/store.js";',
+        path.includes("unreviewed-background-command")
+          ? 'import { recordHookFailure } from "../../memorax-code-adapter-common/src/hooks/hook-diagnostics.mjs";'
+          : 'import { readCurrentTraceTurn } from "../trace/store.js";',
         'export const send = commands;',
         "",
       ].join("\n"));
@@ -279,6 +282,7 @@ test("local-only trace gate recognizes shared Backend transport authority and al
     assert.match(result.stderr, /trace\/store\.ts: local trace core depends on network capability \(Backend command transport\)/);
     assert.match(result.stderr, /unreviewed-command\.ts: undeclared network-capable production module \(Backend command transport\)/);
     assert.match(result.stderr, /unreviewed-command\.ts: unreviewed trace-aware outbound bridge/);
+    assert.match(result.stderr, /unreviewed-background-command\.ts: unreviewed trace-aware outbound bridge/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -367,14 +371,18 @@ test("local-only trace gate rejects direct network capability in trace core", as
       encoding: "utf8",
     });
     assert.equal(initialized.status, 0, initialized.stderr);
-    await writeFile(
+    for (const file of [
       join(sourceDir, "trace", "store.ts"),
-      "export async function append() { return await fetch('https://collector.example/v1/events'); }\n",
-    );
+      join(root, "packages", "ts", "memorax-code-adapter-common", "src", "hooks", "hook-diagnostics.mjs"),
+    ]) {
+      await mkdir(join(file, ".."), { recursive: true });
+      await writeFile(file, "export async function append() { return await fetch('https://collector.example/v1/events'); }\n");
+    }
 
     const result = await runChecker(undefined, copiedChecker);
     assert.equal(result.code, 1);
     assert.match(result.stderr, /trace\/store\.ts: local trace core depends on network capability/);
+    assert.match(result.stderr, /hooks\/hook-diagnostics\.mjs: local trace core depends on network capability/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

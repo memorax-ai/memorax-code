@@ -271,6 +271,7 @@ test("managed plugin starts the Backend once and bounds prompt waiting", async (
       "--host", "127.0.0.1",
       "--port", "9",
       "--preserve-clients",
+      "--json",
     ]]);
     const prompt = async (id) => {
       const output = promptOutput(id, id);

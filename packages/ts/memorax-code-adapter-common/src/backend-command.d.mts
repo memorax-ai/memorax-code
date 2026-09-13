@@ -1,5 +1,6 @@
 export type BackendCommandRequest = {
-  connection: { url: string; token?: string };
+  connection: { url: string; token?: string; memoraxCodeHome?: string };
+  memoraxCodeHome?: string;
   path: string;
   body: unknown;
   timeoutMs: number;

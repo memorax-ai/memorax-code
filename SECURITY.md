@@ -234,8 +234,9 @@ acquisition can leave such a record. Stale-lock recovery still requires
 same-directory hard links and actual unlink semantics for claim cleanup.
 
 Failed explicit Search/Add commands, Backend and client deployment failures from
-start, stop, and restart, and setup- or update-owned failures create local
-diagnostic records independently of Debug and trace settings. These contain a diagnostic ID,
+start, stop, and restart, setup- or update-owned failures, and known Hook
+failures create local diagnostic records independently of Debug and trace
+settings. These contain a diagnostic ID,
 timestamp, schema and package
 versions, platform and runtime version, operation, failure stage, stable error
 code, fixed error summary, impact, and recovery guidance. Depending on the
@@ -250,7 +251,9 @@ Records exclude queries, Add text, response bodies, raw
 exception messages or causes, credentials, Authorization headers, raw Session/Turn
 identifiers, PIDs, tokens, command arguments or output, and local paths. The CLI
 prints the saved file's path separately; the path is not stored in the record. These files remain local
-and are not runtime or memory authority. See [diagnostic storage and retention](docs/configuration.md#default-searchadd-diagnostics).
+and are not runtime or memory authority. Background diagnostics do not enter
+conversation context or change Hook exit behavior; recording failure is best
+effort and cannot replace the original operation outcome. See [diagnostic storage and retention](docs/configuration.md#default-searchadd-diagnostics).
 
 Codex, Claude Code, CodeBuddy/WorkBuddy, DSH, OpenCode, and Trae local trace capture is enabled by default.
 Depending on the enabled client capabilities, traces may include prompts,

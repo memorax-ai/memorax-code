@@ -8,12 +8,14 @@ import { pathToFileURL } from "node:url";
 const runtimeRoot = mkdtempSync(join(tmpdir(), "memorax-code-dsh-http-client-"));
 after(() => rmSync(runtimeRoot, { recursive: true, force: true }));
 mkdirSync(join(runtimeRoot, "src"));
-mkdirSync(join(runtimeRoot, "memorax-code-adapter-common", "src"), { recursive: true });
+mkdirSync(join(runtimeRoot, "memorax-code-adapter-common", "src", "hooks"), { recursive: true });
 copyFileSync(new URL("../src/http-client.mjs", import.meta.url), join(runtimeRoot, "src", "http-client.mjs"));
-copyFileSync(
-  new URL("../../memorax-code-adapter-common/src/backend-command.mjs", import.meta.url),
-  join(runtimeRoot, "memorax-code-adapter-common", "src", "backend-command.mjs"),
-);
+for (const file of ["backend-command.mjs", "diagnostic-record.mjs", "hooks/hook-diagnostics.mjs"]) {
+  copyFileSync(
+    new URL(`../../memorax-code-adapter-common/src/${file}`, import.meta.url),
+    join(runtimeRoot, "memorax-code-adapter-common", "src", file),
+  );
+}
 const { createHttpBackendClient } = await import(pathToFileURL(join(runtimeRoot, "src", "http-client.mjs")));
 
 test("DSH Backend requests resolve current connection authority for each command", async () => {

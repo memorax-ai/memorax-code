@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { postBackendCommand } from "../src/backend-command.mjs";
 
 const command = {
@@ -8,6 +11,12 @@ const command = {
   body: { version: 1, client: "codex", sessionId: "session-1", lastAssistantMessage: " Keep whitespace. " },
   timeoutMs: 1000,
 };
+
+test.beforeEach(async (t) => {
+  const home = await mkdtemp(join(tmpdir(), "memorax-code-hook-command-"));
+  command.memoraxCodeHome = home;
+  t.after(() => rm(home, { recursive: true, force: true }));
+});
 
 test("Backend command sends authenticated JSON and leaves status and body policy to the caller", async () => {
   const response = new Response("not JSON", { status: 413 });
@@ -78,6 +87,7 @@ test("Backend command applies its deadline even when a caller signal is supplied
     }),
   }), (error) => error.name === "TimeoutError");
   assert.equal(controller.signal.aborted, false);
+  assert.equal((await commandDiagnostics())[0].errorCode, "HOOK_BACKEND_REQUEST_TIMEOUT");
 });
 
 test("Backend command propagates transport errors without retrying writeback", async () => {
@@ -89,3 +99,63 @@ test("Backend command propagates transport errors without retrying writeback", a
   }), (error) => error === failure);
   assert.equal(calls, 1);
 });
+
+test("Hook dispatch failures record one safe diagnostic with Debug off and preserve the response", async () => {
+  const response = new Response("private response body", { status: 403 });
+  const result = await postBackendCommand({ ...command, fetchImpl: async () => response });
+  assert.equal(result, response);
+  assert.equal(result.bodyUsed, false);
+  const [record] = await commandDiagnostics();
+  assert.equal(record.errorCode, "HOOK_BACKEND_HTTP_REJECTED");
+  assert.equal(record.httpStatus, 403);
+  assert.equal(record.client, "codex");
+  assert.match(record.sessionHash, /^[a-f0-9]{24}$/);
+  assert.equal(record.operation, "memory.writeback");
+  const text = JSON.stringify(record);
+  for (const secret of ["test-backend-token", "private response body", "session-1", "Keep whitespace", command.memoraxCodeHome]) {
+    assert.equal(text.includes(secret), false);
+  }
+  assert.equal((await commandDiagnostics()).length, 1);
+});
+
+test("Hook transport records only safe system information and preserves the original exception", async () => {
+  const failure = Object.assign(new Error("secret request payload and /private/file"), { cause: { code: "ECONNREFUSED" } });
+  await assert.rejects(postBackendCommand({ ...command, fetchImpl: async () => { throw failure; } }), (error) => error === failure);
+  const [record] = await commandDiagnostics();
+  assert.equal(record.errorCode, "HOOK_BACKEND_REQUEST_FAILED");
+  assert.equal(record.systemCode, "ECONNREFUSED");
+  assert.equal(JSON.stringify(record).includes("secret"), false);
+  assert.equal((await commandDiagnostics()).length, 1);
+});
+
+test("Hook success, caller cancellation, and unrelated endpoints do not create diagnostics", async () => {
+  await postBackendCommand({ ...command, fetchImpl: async () => new Response(null, { status: 204 }) });
+  const controller = new AbortController();
+  const reason = new Error("turn canceled");
+  await assert.rejects(postBackendCommand({
+    ...command,
+    signal: controller.signal,
+    fetchImpl: async () => { controller.abort(reason); throw reason; },
+  }), (error) => error === reason);
+  await postBackendCommand({ ...command, path: "/health", fetchImpl: async () => new Response(null, { status: 503 }) });
+  await postBackendCommand({ ...command, path: "/memory/skill-reminder", fetchImpl: async () => new Response(null, { status: 503 }) });
+  assert.deepEqual(await commandDiagnostics(), []);
+});
+
+test("unwritable Hook diagnostics preserve rejection and HTTP response without retry", async () => {
+  await mkdir(join(command.memoraxCodeHome, "runtime"));
+  await writeFile(join(command.memoraxCodeHome, "runtime", "diagnostics"), "blocked");
+  const failure = new Error("transport failed");
+  let calls = 0;
+  await assert.rejects(postBackendCommand({ ...command, fetchImpl: async () => { calls += 1; throw failure; } }), (error) => error === failure);
+  assert.equal(calls, 1);
+  const response = new Response(null, { status: 500 });
+  assert.equal(await postBackendCommand({ ...command, fetchImpl: async () => response }), response);
+  assert.equal(response.bodyUsed, false);
+});
+
+async function commandDiagnostics() {
+  const directory = join(command.memoraxCodeHome, "runtime", "diagnostics");
+  const files = await readdir(directory).catch((error) => { if (error.code === "ENOENT") return []; throw error; });
+  return await Promise.all(files.map(async (name) => JSON.parse(await readFile(join(directory, name), "utf8"))));
+}

@@ -534,6 +534,7 @@ function recordReminder(options, reminder) {
 async function postBackend(options, path, body, timeoutMs) {
   const connection = options.backendConnection ?? resolveBackendConnection(options);
   const response = await postBackendCommand({
+    memoraxCodeHome: options.memoraxCodeHome,
     connection,
     path,
     body,
@@ -638,6 +639,7 @@ function backendEnsureOptions(options) {
   if (!memoraxCodeHome || !openCodeConfigDir || !memoraxCodeCommand) return undefined;
   return {
     backendConnection: options.backendConnection,
+    client: "opencode",
     healthTimeoutValue: options.healthTimeoutValue,
     startTimeoutValue: options.startTimeoutValue,
     memoraxCodeCommand,

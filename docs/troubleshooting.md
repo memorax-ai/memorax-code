@@ -366,7 +366,26 @@ must not be disabled by
 ## Hook ran, but automatic writeback is missing
 
 `hook-runtime=observed` confirms that a managed Hook loaded. It does not prove
-that a completed turn reached MemoraX. Check each stage in order:
+that a completed turn reached MemoraX. First inspect recent JSON records under
+`$MEMORAX_CODE_HOME/runtime/diagnostics/`. Known Hook failures are saved there
+even when Debug and trace are off. Match the timestamp, client, operation, and
+failure stage; the record supplies a fixed error code,
+known reason or system/HTTP code, impact, and recovery guidance.
+
+Hook runtime or Backend delivery failures mean the memory Hook could not
+complete its work; a delivery timeout can leave Backend acceptance unknown.
+
+A Hook that starts the Backend reuses diagnostics already saved by the start
+command. If that command cannot start, times out, is terminated, or cannot return
+a usable saved diagnostic, the Hook records the known recovery failure itself.
+
+These failures do not insert messages into the conversation or change Hook exit
+behavior. Normal Hook skips and successful Backend health checks are not errors.
+No record is created by a Hook that never runs, and records can be absent if
+local storage is unavailable or retention has removed them. Share the relevant
+reviewed diagnostic; do not attach native history.
+
+If no diagnostic explains the symptom, check each stage in order:
 
 1. Run `memorax-cli status` from the same project and check automatic writeback,
    credentials, and workspace scope. Compare the Backend and client's actual
@@ -399,8 +418,9 @@ that a completed turn reached MemoraX. Check each stage in order:
    available to Search. Use the [connection and scope checks](#memorax-search-add-or-scope-fails)
    for credential, network, and repository failures.
 
-If normal status is insufficient, temporarily enable Backend diagnostic logs
-and reproduce one completed turn. In Bash or Zsh:
+If status and the saved failure records are insufficient, detailed per-event
+Debug logs can help distinguish normal buffering and skips. Temporarily enable
+Backend diagnostic logs and reproduce one completed turn. In Bash or Zsh:
 
 ```sh
 MEMORAX_CODE_BACKEND_DEBUG_REQUESTS=true memorax-code restart
@@ -802,9 +822,10 @@ memorax-cli status --json
 
 For a client-specific failure, also collect the affected client's diagnostic
 from the start of this guide with `--json`.
-For a Search/Add, Backend lifecycle, client deployment, setup, or update failure,
-include its diagnostic ID and the reviewed diagnostic file, if saved. Structured command
-output may contain query, workspace, process, or raw Backend error fields that
+For a Search/Add, Backend lifecycle, client deployment, setup, update, or Hook
+failure, include its diagnostic ID and the reviewed diagnostic file, if saved.
+Structured command output may contain query, workspace, process, or raw Backend
+error fields that
 are excluded from the diagnostic record; review it separately before sharing.
 Include the MemoraX Code version, operating system, affected client,
 reproduction steps, failing command, and the smallest relevant log excerpt.

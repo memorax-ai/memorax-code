@@ -40,6 +40,7 @@ export function createDshBackendClient(options = {}) {
     const connection = resolveConnection(runtime);
     ensureRevision = runtime.revision;
     const pending = Promise.resolve(ensureBackend({
+      client: "dsh",
       backendConnection: connection,
       ensureBackendValue: env.MEMORAX_CODE_DSH_ENSURE_BACKEND,
       healthTimeoutValue: env.MEMORAX_CODE_DSH_ENSURE_TIMEOUT_MS,

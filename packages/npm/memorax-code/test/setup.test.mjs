@@ -207,6 +207,7 @@ async function runSetup({ existingCache = false, explicitCache = false, codexReg
     "diagnostic-record.mjs",
     "deployment-failure.mjs",
     "hooks/ensure-backend-runner.mjs",
+    "hooks/hook-diagnostics.mjs",
     "memorax-code-config-file.mjs",
     "hooks/hook-runtime-generation.mjs",
     "memorax-defaults.mjs",
