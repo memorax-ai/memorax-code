@@ -13,23 +13,32 @@ export async function reconcileSetup({
     const deterministicFailure = classifyStartFailure(started);
     await onEvent({ type: "start-failed", attempt: 1, reason: deterministicFailure?.reason });
     if (deterministicFailure) {
-      return await complete(onEvent, deterministicFailure);
+      return await complete(onEvent, { ...deterministicFailure, commandResult: started });
     }
 
     await onEvent({ type: "stop", reason: "start-failed" });
-    await stop();
+    const stopped = await stop();
+    if (!commandSucceeded(stopped)) {
+      return await complete(onEvent, compactResult({
+        status: "not-verified",
+        reason: "recovery-stop-failed",
+        code: commandFailureCode(stopped),
+        commandResult: stopped,
+      }));
+    }
     await onEvent({ type: "start", attempt: 2 });
     started = await start();
     if (!commandSucceeded(started)) {
       const deterministicFailure = classifyStartFailure(started);
       await onEvent({ type: "start-failed", attempt: 2, reason: deterministicFailure?.reason });
-      if (deterministicFailure) return await complete(onEvent, deterministicFailure);
+      if (deterministicFailure) return await complete(onEvent, { ...deterministicFailure, commandResult: started });
       await onEvent({ type: "diagnostic-status" });
       await status();
       return await complete(onEvent, compactResult({
         status: "not-verified",
         reason: "start-failed-after-recovery",
         code: commandFailureCode(started),
+        commandResult: started,
       }));
     }
     recovered = true;
@@ -44,6 +53,7 @@ export async function reconcileSetup({
       status: "not-verified",
       reason: "status-failed",
       code: commandFailureCode(checked),
+      commandResult: checked,
     }));
   }
   await onEvent({ type: "status-succeeded" });
@@ -54,6 +64,7 @@ export async function reconcileSetup({
       status: "unavailable",
       reason: "not-ready",
       recovered,
+      commandResult: checked,
     });
   }
 
@@ -65,13 +76,11 @@ export async function reconcileSetup({
 }
 
 export function runtimeAuthorityFailureCode(result) {
-  const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
-  return output.match(/\b(BACKEND_(?:(?:CONNECTION_AUTHORITY|TOKEN_RECORD|SERVICE_STATE)_(?:ABSENT|INVALID|UNSUPPORTED)|SERVICE_STATE_CLEANUP_FAILED))\b/)?.[1];
+  return matchingBackendFailureCode(result, /\b(BACKEND_(?:(?:CONNECTION_AUTHORITY|TOKEN_RECORD|SERVICE_STATE)_(?:ABSENT|INVALID|UNSUPPORTED)|SERVICE_STATE_CLEANUP_FAILED))\b/);
 }
 
 export function lifecycleLockFailureCode(result) {
-  const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
-  return output.match(/\bBACKEND_LIFECYCLE_LOCK_TIMEOUT\b/)?.[0];
+  return matchingBackendFailureCode(result, /\bBACKEND_LIFECYCLE_LOCK_(?:TIMEOUT|FAILED)\b/);
 }
 
 export function clientHookRuntimeActivationFailed(result) {
@@ -80,9 +89,14 @@ export function clientHookRuntimeActivationFailed(result) {
 }
 
 export function startLifecycleReport(result) {
+  const report = lifecycleReport(result);
+  return report?.action === "start" ? report : undefined;
+}
+
+function lifecycleReport(result) {
   try {
     const report = JSON.parse(result.stdout ?? "");
-    if (report?.action !== "start" || typeof report.ok !== "boolean") return undefined;
+    if (!["start", "stop", "restart", "status"].includes(report?.action) || typeof report.ok !== "boolean") return undefined;
     if (report.backend !== undefined && typeof report.backend?.ok !== "boolean") return undefined;
     return report;
   } catch {}
@@ -97,7 +111,8 @@ export function failedLifecycleAdapters(report) {
 }
 
 function classifyStartFailure(result) {
-  if (clientHookRuntimeActivationFailed(result)) {
+  const report = startLifecycleReport(result);
+  if (!report?.backend?.errorCode && clientHookRuntimeActivationFailed(result)) {
     return {
       status: "not-verified",
       reason: "hook-runtime-activation-failed",
@@ -108,7 +123,7 @@ function classifyStartFailure(result) {
   if (lifecycleCode) {
     return {
       status: "not-verified",
-      reason: "lifecycle-lock-timeout",
+      reason: lifecycleCode === "BACKEND_LIFECYCLE_LOCK_TIMEOUT" ? "lifecycle-lock-timeout" : "lifecycle-lock-failed",
       code: lifecycleCode,
     };
   }
@@ -122,7 +137,10 @@ function classifyStartFailure(result) {
     };
   }
 
-  const report = startLifecycleReport(result);
+  const backendCode = matchingBackendFailureCode(result, /\bBACKEND_(?:CONNECTION_RESOLUTION_FAILED|TOKEN_CONFIG_FAILED|SERVICE_PREPARE_FAILED|SPAWN_FAILED|SPAWN_PID_MISSING|SERVICE_STATE_(?:READ|WRITE)_FAILED|TOKEN_WRITE_FAILED|CONNECTION_WRITE_FAILED)\b/);
+  if (backendCode) {
+    return { status: "not-verified", reason: "backend-start-failed", code: backendCode };
+  }
   // A failed integration can follow a successful Backend recovery. Do not
   // restart all selected clients again, or treat incomplete setup as ready.
   if (report?.ok === false && report.backend?.ok === true && report.backend.skipped !== true) {
@@ -139,7 +157,13 @@ function commandSucceeded(result) {
 }
 
 function commandFailureCode(result) {
-  return result?.code ?? result?.error?.code ?? result?.status;
+  return lifecycleReport(result)?.backend?.errorCode ?? result?.code ?? result?.error?.code ?? result?.status;
+}
+
+function matchingBackendFailureCode(result, pattern) {
+  const code = lifecycleReport(result)?.backend?.errorCode;
+  if (typeof code === "string") return code.match(pattern)?.[0];
+  return `${result.stdout ?? ""}\n${result.stderr ?? ""}`.match(pattern)?.[0];
 }
 
 function compactResult(result) {

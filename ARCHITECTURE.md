@@ -209,7 +209,8 @@ guidance and writes one content-free diagnostic per failed command result while
 preserving the existing action and Backend report. The service itself does not
 write these records. This presentation path does not change lifecycle authority,
 validation, retry, or scheduling decisions, and does not cover adapter-only
-failures or the complete setup, update, Hook, and automatic-writeback flows.
+failures. Setup presents these Backend diagnostics through its own CLI;
+complete update, Hook, and automatic-writeback flows remain outside this path.
 
 ## 3. Runtime Flows
 
@@ -306,6 +307,20 @@ saved key locally without returning it. Both commit the versioned completion
 record only after final verification. Invalid or unsupported
 completion and transition records fail closed. No-argument routing and legacy
 migration follow the [setup state rules](docs/configuration.md#setup-automatic-update-and-package-transition-state).
+
+The npm package's `lib/setup-diagnostics.mjs` owns default setup failure
+presentation and content-free records. It reuses an existing Backend diagnostic
+and ID instead of recording the same failure again. Shared configuration writes
+and trial provisioning supply safe stage, system-code, validation, and recovery
+evidence; raw exceptions, configuration, credentials, and device identity do not
+enter the diagnostic projection. Final connection checks validate local effective
+configuration, not remote Search/Add authentication. A completion-record failure
+leaves setup incomplete even when the Backend and clients are already enabled.
+
+Setup reconciliation does not retry known configuration, authority, or process
+startup failures with a stop/start cycle. Other startup failures retain one
+recovery attempt, but a failed recovery stop prevents the second start.
+Adapter-internal deployment diagnostics remain owned by the native integrations.
 
 After completed setup, the managed Backend schedules a detached updater from
 the durable deadline; client startup Hooks only recover an unavailable Backend.
@@ -995,7 +1010,7 @@ These paths are not all mediated by `app/memory-observability`. Memory-service
 kernels receive Backend diagnostics through a port; CLI composition can use
 the Backend debug logger directly.
 
-Default Search/Add and Backend lifecycle diagnostics use separate immutable
+Default Search/Add, Backend lifecycle, and setup diagnostics use separate immutable
 local records. Adapter-common owns their private storage and bounded retention,
 while memory and lifecycle capabilities supply only safe, content-free fields.
 These records have no session, scope, lifecycle, or memory authority. The storage

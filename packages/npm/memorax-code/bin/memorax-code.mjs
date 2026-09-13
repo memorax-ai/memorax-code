@@ -293,12 +293,15 @@ async function runSetupCommand(args, { updateMode = false } = {}) {
   }
   if (apiKey === undefined && !setupCanPrompt()) {
     console.error("memorax-code setup: an interactive terminal is required");
+    await reportSetupCommandFailure("terminal", memoraxCodeHome);
     return 1;
   }
   if (!updateMode) repairWindowsSetupPath();
+  let setupEntered = false;
   try {
     const { withSetupCompletionLock } = await loadSetupCompletionApi();
     return await withSetupCompletionLock(memoraxCodeHome, async (completion) => {
+      setupEntered = true;
       if (updateMode && completion.status === "absent") {
         if (hasReadyMemoraxConfiguration(memoraxCodeHome)) {
           console.error("memorax-code update: existing configuration detected; completing the one-time setup migration");
@@ -317,9 +320,32 @@ async function runSetupCommand(args, { updateMode = false } = {}) {
       });
     });
   } catch (error) {
-    console.error(`memorax-code setup: ${error instanceof Error ? error.message : String(error)}`);
+    // The shared lock pairs the original operation error with a release error.
+    // Keep that ordering without traversing arbitrary aggregate exceptions.
+    const cleanupError = error instanceof AggregateError
+      && error.code === "JSON_FILE_LOCK_RELEASE_FAILED"
+      && error.errors.length === 2
+      && error.errors[1]?.code === "JSON_FILE_LOCK_RELEASE_FAILED"
+      ? error.errors[1] : undefined;
+    const primaryError = cleanupError ? error.errors[0] : error;
+    const authority = ["SETUP_COMPLETION_RECORD_INVALID", "SETUP_COMPLETION_RECORD_UNSUPPORTED"].includes(primaryError?.code);
+    const lockFailure = ["JSON_FILE_LOCK_TIMEOUT", "JSON_FILE_LOCK_RELEASE_FAILED"].includes(primaryError?.code);
+    await reportSetupCommandFailure(authority ? "authority" : setupEntered && !lockFailure ? "spawn" : "lock", memoraxCodeHome, primaryError, undefined, cleanupError);
     return 1;
   }
+}
+
+async function reportSetupCommandFailure(kind, home, error, commandResult, cleanupError) {
+  const { reportSetupFailure, setupSystemCode } = await import("../lib/setup-diagnostics.mjs");
+  const details = {};
+  if (["SETUP_COMPLETION_RECORD_INVALID", "SETUP_COMPLETION_RECORD_UNSUPPORTED", "JSON_FILE_LOCK_TIMEOUT", "JSON_FILE_LOCK_RELEASE_FAILED"].includes(error?.code)) details.errorCode = error.code;
+  if (["unreadable", "malformed_json", "invalid_record", "unknown_fields", "invalid_version", "invalid_state", "invalid_completed_at", "invalid_completed_by_version"].includes(error?.reason)) details.recordReason = error.reason;
+  if (cleanupError) {
+    details.cleanupErrorCode = "JSON_FILE_LOCK_RELEASE_FAILED";
+    const systemCode = setupSystemCode(cleanupError);
+    if (systemCode) details.cleanupSystemCode = systemCode;
+  }
+  reportSetupFailure(kind, { home, version: readPackageJson().version, error, details, commandResult });
 }
 
 function repairWindowsSetupPath() {
@@ -363,12 +389,17 @@ async function routeDefaultCommand() {
         : `is invalid (${state.reason})`;
       console.error(`memorax-code: setup completion record ${detail}: ${setupCompletionPath(memoraxCodeHome)}`);
       console.error("Inspect or repair this private record before running setup again.");
+      await reportSetupCommandFailure("authority", memoraxCodeHome, {
+        code: state.status === "unsupported" ? "SETUP_COMPLETION_RECORD_UNSUPPORTED" : "SETUP_COMPLETION_RECORD_INVALID",
+        reason: state.reason,
+      });
       return 1;
     }
     process.argv.splice(2, 0, "status");
     return undefined;
   } catch (error) {
     console.error(`memorax-code: unable to inspect setup state: ${error instanceof Error ? error.message : String(error)}`);
+    await reportSetupCommandFailure("authority", memoraxCodeHome, error);
     return 1;
   }
 }
@@ -477,14 +508,16 @@ async function spawnSetupProcess(memoraxCodeHome, { updateMode = false, setupMod
     child.stdin.on("error", () => {}); // Early child failure is reported by its exit status.
     child.stdin.end(apiKey);
   }
-  return await new Promise((resolve) => {
+  return await new Promise((resolve, reject) => {
+    let spawnError;
     child.on("error", (error) => {
-      console.error(`memorax-code setup: failed to start setup: ${error.message}`);
-      resolve(1);
+      spawnError = error;
     });
-    child.on("close", (code, signal) => {
-      if (signal) {
-        console.error(`memorax-code setup: setup exited from signal ${signal}`);
+    child.on("close", async (code, signal) => {
+      if (spawnError || signal) {
+        try {
+          await reportSetupCommandFailure("spawn", memoraxCodeHome, spawnError, { status: code, signal });
+        } catch (error) { reject(error); return; }
         resolve(1);
       } else {
         resolve(code ?? 1);

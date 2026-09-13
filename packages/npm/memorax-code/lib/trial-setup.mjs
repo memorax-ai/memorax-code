@@ -1,10 +1,24 @@
 import { createTrialProvisionClient } from "./trial-provision-client.mjs";
-import { ensureTrialCredentialReady } from "./trial-provision-flow.mjs";
+import {
+  ensureTrialCredentialReady,
+  TrialProvisionFlowError,
+  trialProvisionFailureDetails,
+} from "./trial-provision-flow.mjs";
+
+export function trialSetupFailureDetails(error) {
+  return trialProvisionFailureDetails(error);
+}
 
 export async function ensureTrialSetupCredential(options = {}) {
   const env = options.env ?? process.env;
-  const credentialApis = options.credentialApis ?? await loadCredentialApis();
-  const credentialPort = trialCredentialPort(options, credentialApis, env);
+  let credentialApis;
+  let credentialPort;
+  try {
+    credentialApis = options.credentialApis ?? await loadCredentialApis();
+    credentialPort = trialCredentialPort(options, credentialApis, env);
+  } catch (error) {
+    throw new TrialProvisionFlowError("credential_failure", { stage: "credential_load", error });
+  }
   const recordPort = options.recordPort ?? {
     createInitial: credentialApis.createInitialTrialCredentialRecord,
   };
@@ -22,8 +36,13 @@ export async function ensureTrialSetupCredential(options = {}) {
 
 export async function loadReadyTrialSetupCredential(options = {}) {
   const env = options.env ?? process.env;
-  const credentialApis = options.credentialApis ?? await loadCredentialApis();
-  const record = await trialCredentialPort(options, credentialApis, env).load();
+  let record;
+  try {
+    const credentialApis = options.credentialApis ?? await loadCredentialApis();
+    record = await trialCredentialPort(options, credentialApis, env).load();
+  } catch (error) {
+    throw new TrialProvisionFlowError("credential_failure", { stage: "credential_load", error });
+  }
   if (record?.state !== "ready") return undefined;
   return Object.freeze({
     status: "ready",

@@ -81,15 +81,15 @@ test("atomic config seeding tightens an existing config directory even when cont
 
 test("atomic config seeding leaves existing bytes unchanged for parse and filesystem failures", async (t) => {
   const cases = [
-    ["lstat", () => ({ lstatSync: () => { throw new Error("secret lstat failure"); } })],
-    ["initial read", () => ({ readFileSync: () => { throw Object.assign(new Error("secret read failure"), { code: "EACCES" }); } })],
-    ["directory chmod", () => ({ chmodSync: () => { throw new Error("secret chmod directory failure"); } })],
-    ["writability check", () => ({ accessSync: () => { throw new Error("secret access failure"); } })],
-    ["open", () => ({ openSync: () => { throw new Error("secret open failure"); } })],
-    ["write", () => ({ writeFileSync: () => { throw new Error("secret write failure"); } })],
-    ["chown", () => ({ fchownSync: () => { throw new Error("secret chown failure"); } })],
-    ["chmod", () => ({ fchmodSync: () => { throw new Error("secret chmod failure"); } })],
-    ["close", () => {
+    ["lstat", "read", () => ({ lstatSync: () => { throw Object.assign(new Error("secret lstat failure"), { code: "secret-code" }); } })],
+    ["initial read", "read", () => ({ readFileSync: () => { throw Object.assign(new Error("secret read failure"), { code: "EACCES" }); } })],
+    ["directory chmod", "prepare_directory", () => ({ chmodSync: () => { throw new Error("secret chmod directory failure"); } })],
+    ["writability check", "check_permissions", () => ({ accessSync: () => { throw new Error("secret access failure"); } })],
+    ["open", "write_temp", () => ({ openSync: () => { throw new Error("secret open failure"); } })],
+    ["write", "write_temp", () => ({ writeFileSync: () => { throw new Error("secret write failure"); } })],
+    ["chown", "write_temp", () => ({ fchownSync: () => { throw new Error("secret chown failure"); } })],
+    ["chmod", "write_temp", () => ({ fchmodSync: () => { throw new Error("secret chmod failure"); } })],
+    ["close", "write_temp", () => {
       let failed = false;
       return {
         closeSync: (fd) => {
@@ -101,27 +101,37 @@ test("atomic config seeding leaves existing bytes unchanged for parse and filesy
         },
       };
     }],
-    ["backup link", () => ({ linkSync: () => { throw new Error("secret link failure"); } })],
-    ["rename", () => ({ renameSync: () => { throw new Error("secret rename failure"); } })],
+    ["backup link", "backup", () => ({ linkSync: () => { throw new Error("secret link failure"); } })],
+    ["rename", "publish", () => ({ renameSync: () => { throw new Error("secret rename failure"); } })],
   ];
 
-  for (const [name, operationsFactory] of cases) {
+  for (const [name, stage, operationsFactory] of cases) {
     await t.test(name, async () => {
       const root = await mkdtemp(join(tmpdir(), "memorax-code-config-seed-failure-"));
       const path = join(root, "config.toml");
       const original = '[memorax]\napi_key = "preserved-secret"\n';
       const warnings = [];
+      const failures = [];
       try {
         await writeFile(path, original, "utf8");
         const result = updateConfigFileAtomically(updateOptions(path, {
           operations: operationsFactory(),
           warn: (message) => warnings.push(message),
+          onFailure: (failure) => failures.push(failure),
         }));
         assert.equal(result, "failed");
         assert.equal(await readFile(path, "utf8"), original);
         assert.deepEqual(await readdir(root), ["config.toml"]);
         assert.deepEqual(warnings, [CONFIG_UPDATE_WARNING]);
         assert.doesNotMatch(warnings[0], /preserved-secret|secret .* failure|config\.toml/);
+        assert.deepEqual(failures, [{
+          stage,
+          errorCode: `CONFIG_${stage.toUpperCase()}_FAILED`,
+          configState: "preserved",
+          ...(name === "initial read" ? { systemCode: "EACCES" } : {}),
+        }]);
+        assert.doesNotMatch(JSON.stringify(failures), /secret|config\.toml/);
+        assert.equal(JSON.stringify(failures).includes(root), false);
       } finally {
         await rm(root, { recursive: true, force: true });
       }
@@ -135,14 +145,17 @@ test("atomic config seeding rejects malformed input and a candidate that cannot 
     const path = join(root, "config.toml");
     const original = '[memorax]\napi_key = "secret"\nbroken = [\n';
     const warnings = [];
+    const failures = [];
     try {
       await writeFile(path, original, "utf8");
       assert.equal(updateConfigFileAtomically(updateOptions(path, {
         warn: (message) => warnings.push(message),
+        onFailure: (failure) => failures.push(failure),
       })), "failed");
       assert.equal(await readFile(path, "utf8"), original);
       assert.deepEqual(await readdir(root), ["config.toml"]);
       assert.deepEqual(warnings, [CONFIG_UPDATE_WARNING]);
+      assert.deepEqual(failures, [{ stage: "parse_existing", errorCode: "CONFIG_PARSE_EXISTING_FAILED", configState: "preserved", recordReason: "invalid_toml" }]);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -153,6 +166,7 @@ test("atomic config seeding rejects malformed input and a candidate that cannot 
     const path = join(root, "config.toml");
     const original = '[memorax]\napi_key = "secret"\n';
     let parseCalls = 0;
+    const failures = [];
     try {
       await writeFile(path, original, "utf8");
       assert.equal(updateConfigFileAtomically(updateOptions(path, {
@@ -161,9 +175,11 @@ test("atomic config seeding rejects malformed input and a candidate that cannot 
           if (parseCalls === 2) throw new Error("candidate rejected");
           return parse(text);
         },
+        onFailure: (failure) => failures.push(failure),
       })), "failed");
       assert.equal(await readFile(path, "utf8"), original);
       assert.deepEqual(await readdir(root), ["config.toml"]);
+      assert.deepEqual(failures, [{ stage: "parse_candidate", errorCode: "CONFIG_PARSE_CANDIDATE_FAILED", configState: "preserved", recordReason: "invalid_toml" }]);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -176,22 +192,25 @@ test("atomic config seeding reports failed when post-rename verification fails",
   const original = '[memorax]\nuser_id = "user-one"\n';
   let readCalls = 0;
   const warnings = [];
+  const failures = [];
   try {
     await writeFile(path, original, "utf8");
     const result = updateConfigFileAtomically(updateOptions(path, {
       operations: {
         readFileSync: (...args) => {
           readCalls += 1;
-          if (readCalls === 2) throw new Error("post-rename verification failed");
+          if (readCalls === 2) return 'api_key = "unexpected-private-content"';
           return nodeFs.readFileSync(...args);
         },
       },
       warn: (message) => warnings.push(message),
+      onFailure: (failure) => failures.push(failure),
     }));
     assert.equal(result, "failed");
     assert.equal(await readFile(path, "utf8"), original);
     assert.deepEqual(await readdir(root), ["config.toml"]);
     assert.deepEqual(warnings, [CONFIG_UPDATE_WARNING]);
+    assert.deepEqual(failures, [{ stage: "verify", errorCode: "CONFIG_VERIFY_FAILED", configState: "restored", recordReason: "content_mismatch" }]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -202,10 +221,12 @@ test("Windows config replacement preserves the original when the destination is 
   const path = join(root, "config.toml");
   const original = '[memorax]\nuser_id = "windows-user"\n';
   let renameCalls = 0;
+  const failures = [];
   try {
     await writeFile(path, original, "utf8");
     const result = updateConfigFileAtomically(updateOptions(path, {
       platform: "win32",
+      onFailure: (failure) => failures.push(failure),
       operations: {
         renameSync: (...args) => {
           renameCalls += 1;
@@ -217,6 +238,7 @@ test("Windows config replacement preserves the original when the destination is 
     assert.equal(result, "failed");
     assert.equal(await readFile(path, "utf8"), original);
     assert.deepEqual(await readdir(root), ["config.toml"]);
+    assert.deepEqual(failures, [{ stage: "publish", errorCode: "CONFIG_PUBLISH_FAILED", configState: "preserved", systemCode: "EPERM" }]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -254,10 +276,12 @@ test("Windows config verification failure restores through a temporary replaceme
   const original = '[memorax]\nuser_id = "windows-user"\n';
   let readCalls = 0;
   let renameCalls = 0;
+  const failures = [];
   try {
     await writeFile(path, original, "utf8");
     const result = updateConfigFileAtomically(updateOptions(path, {
       platform: "win32",
+      onFailure: (failure) => failures.push(failure),
       operations: {
         readFileSync: (...args) => {
           readCalls += 1;
@@ -275,6 +299,7 @@ test("Windows config verification failure restores through a temporary replaceme
     assert.equal(renameCalls, 2);
     assert.equal(await readFile(path, "utf8"), original);
     assert.deepEqual(await readdir(root), ["config.toml"]);
+    assert.deepEqual(failures, [{ stage: "verify", errorCode: "CONFIG_VERIFY_FAILED", configState: "restored" }]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -286,10 +311,12 @@ test("Windows config restore failure preserves the candidate and recovery backup
   const original = '[memorax]\nuser_id = "windows-user"\n';
   let readCalls = 0;
   let renameCalls = 0;
+  const failures = [];
   try {
     await writeFile(path, original, "utf8");
     const result = updateConfigFileAtomically(updateOptions(path, {
       platform: "win32",
+      onFailure: (failure) => failures.push(failure),
       operations: {
         readFileSync: (...args) => {
           readCalls += 1;
@@ -298,7 +325,7 @@ test("Windows config restore failure preserves the candidate and recovery backup
         },
         renameSync: (...args) => {
           renameCalls += 1;
-          if (renameCalls === 2) throw new Error("restore replacement failed");
+          if (renameCalls === 2) throw Object.assign(new Error("secret restore replacement failed"), { code: "EPERM" });
           return nodeFs.renameSync(...args);
         },
       },
@@ -310,6 +337,7 @@ test("Windows config restore failure preserves the candidate and recovery backup
     assert.equal(recovery.length, 1);
     assert.equal(await readFile(join(root, recovery[0]), "utf8"), original);
     assert.equal((await readdir(root)).some((name) => name.endsWith(".restore.tmp")), false);
+    assert.deepEqual(failures, [{ stage: "verify", errorCode: "CONFIG_VERIFY_FAILED", configState: "unknown", cleanupErrorCode: "CONFIG_ROLLBACK_FAILED", cleanupSystemCode: "EPERM" }]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -319,8 +347,10 @@ test("atomic config seeding removes a newly created config when post-rename veri
   const root = await mkdtemp(join(tmpdir(), "memorax-code-config-seed-new-post-rename-"));
   const path = join(root, "home", "config.toml");
   let readCalls = 0;
+  const failures = [];
   try {
     const result = updateConfigFileAtomically(updateOptions(path, {
+      onFailure: (failure) => failures.push(failure),
       operations: {
         readFileSync: (...args) => {
           readCalls += 1;
@@ -332,6 +362,7 @@ test("atomic config seeding removes a newly created config when post-rename veri
     assert.equal(result, "failed");
     await assert.rejects(readFile(path), { code: "ENOENT" });
     assert.deepEqual(await readdir(join(root, "home")), []);
+    assert.deepEqual(failures, [{ stage: "verify", errorCode: "CONFIG_VERIFY_FAILED", configState: "removed" }]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -385,6 +416,7 @@ test("atomic config seeding refuses a non-regular config path before reading it"
   const root = await mkdtemp(join(tmpdir(), "memorax-code-config-seed-directory-"));
   const path = join(root, "config.toml");
   const warnings = [];
+  const failures = [];
   let readCalls = 0;
   try {
     await mkdir(path);
@@ -396,11 +428,13 @@ test("atomic config seeding refuses a non-regular config path before reading it"
         },
       },
       warn: (message) => warnings.push(message),
+      onFailure: (failure) => failures.push(failure),
     })), "failed");
     assert.equal(readCalls, 0);
     assert.equal((await lstat(path)).isDirectory(), true);
     assert.deepEqual(await readdir(root), ["config.toml"]);
     assert.deepEqual(warnings, [CONFIG_UPDATE_WARNING]);
+    assert.deepEqual(failures, [{ stage: "read", errorCode: "CONFIG_READ_FAILED", configState: "preserved", recordReason: "not_regular_file" }]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

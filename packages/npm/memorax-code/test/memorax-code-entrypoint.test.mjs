@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, cp, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, delimiter, dirname, join } from "node:path";
 import test from "node:test";
@@ -45,13 +45,16 @@ test("memorax-code fails closed for invalid or unsupported setup records", async
   for (const scenario of [
     {
       name: "invalid",
-      text: "{not-json\n",
+      text: '{"secret":"setup-record-canary",not-json\n',
+      errorCode: "SETUP_COMPLETION_RECORD_INVALID",
+      recordReason: "malformed_json",
       pattern: /setup completion record is invalid \(malformed_json\)/,
     },
     {
       name: "unsupported",
       text: `${JSON.stringify({ ...validSetupRecord(), version: 2 }, null, 2)}\n`,
       pattern: /setup completion record uses unsupported version 2/,
+      errorCode: "SETUP_COMPLETION_RECORD_UNSUPPORTED",
     },
   ]) {
     await t.test(scenario.name, async () => {
@@ -65,6 +68,14 @@ test("memorax-code fails closed for invalid or unsupported setup records", async
         assert.equal(result.error, undefined);
         assert.match(result.stderr, scenario.pattern);
         assert.match(result.stderr, /Inspect or repair this private record before running setup again/);
+        const diagnostics = await readSetupDiagnostics(fixture);
+        assert.equal(diagnostics.length, 1);
+        assert.equal(diagnostics[0].errorCode, scenario.errorCode);
+        assert.equal(diagnostics[0].stage, "setup_state");
+        assert.equal(diagnostics[0].recordReason, scenario.recordReason);
+        assert.ok(result.stderr.includes(`[${scenario.errorCode}] setup_state:`));
+        assert.ok(result.stderr.includes(`Diagnostic: ${diagnostics[0].id}`));
+        assert.doesNotMatch(`${result.stderr} ${JSON.stringify(diagnostics)}`, /setup-record-canary/);
         assert.equal(await pathExists(fixture.setupLogPath), false);
         assert.equal(await pathExists(fixture.backendLogPath), false);
       } finally {
@@ -119,7 +130,7 @@ test("setup propagates an explicit home to the setup process", async () => {
   }
 });
 
-test("setup reports a blocked lock release even after the setup process succeeds", async () => {
+test("setup reports a blocked lock release and retains any preceding setup authority failure", async () => {
   const fixture = await createPackageFixture();
   const entrypoint = join(fixture.root, "entrypoint-tty.mjs");
   const lockPath = `${join(fixture.memoraxCodeHome, setupCompletionRelativePath)}.lock`;
@@ -130,7 +141,7 @@ test("setup reports a blocked lock release even after the setup process succeeds
       `const lockPath = ${JSON.stringify(lockPath)};`,
       "const originalUnlink = fs.unlinkSync;",
       "fs.unlinkSync = (path) => {",
-      "  if (path === lockPath) throw new Error('[safe-delete][SAFE_DELETE_BULK_CONFIRM_REQUIRED] confirmation required');",
+      "  if (path === lockPath) throw Object.assign(new Error('[safe-delete][SAFE_DELETE_BULK_CONFIRM_REQUIRED] confirmation required'), { code: 'EPERM' });",
       "  return originalUnlink(path);",
       "};",
       "syncBuiltinESMExports();",
@@ -144,9 +155,39 @@ test("setup reports a blocked lock release even after the setup process succeeds
 
     assert.equal(result.error, undefined);
     assert.equal(result.status, 1);
-    assert.match(result.stderr, /memorax-code setup: failed to release JSON state lock:/);
-    assert.ok(result.stderr.includes(lockPath));
-    assert.match(result.stderr, /SAFE_DELETE_BULK_CONFIRM_REQUIRED/);
+    assert.match(result.stderr, /\[JSON_FILE_LOCK_RELEASE_FAILED\] lock:/);
+    const diagnostics = await readSetupDiagnostics(fixture);
+    assert.equal(diagnostics.length, 1);
+    assert.equal(diagnostics[0].errorCode, "JSON_FILE_LOCK_RELEASE_FAILED");
+    assert.equal(diagnostics[0].stage, "lock");
+    assert.equal(diagnostics[0].systemCode, "EPERM");
+    assert.ok(result.stderr.includes(`Diagnostic: ${diagnostics[0].id}`));
+    assert.equal(result.stderr.includes(lockPath), false);
+    assert.equal(JSON.stringify(diagnostics).includes(lockPath), false);
+    assert.doesNotMatch(`${result.stderr} ${JSON.stringify(diagnostics)}`, /SAFE_DELETE_BULK_CONFIRM_REQUIRED|confirmation required/);
+    assert.equal((await readJsonLines(fixture.setupLogPath)).length, 1);
+    assert.equal(await pathExists(lockPath), true);
+
+    await rm(lockPath);
+    await writeSetupRecordText(fixture.memoraxCodeHome, '{"secret":"setup-record-canary",not-json\n');
+    const failed = runCli(fixture, ["setup", "--existing-account"], {
+      assumeInteractive: true,
+      stdinIsTTY: true,
+    });
+    assert.equal(failed.error, undefined);
+    assert.equal(failed.status, 1);
+    const additional = (await readSetupDiagnostics(fixture)).filter((record) => record.id !== diagnostics[0].id);
+    assert.equal(additional.length, 1);
+    assert.equal(additional[0].errorCode, "SETUP_COMPLETION_RECORD_INVALID");
+    assert.equal(additional[0].stage, "setup_state");
+    assert.equal(additional[0].recordReason, "malformed_json");
+    assert.equal(additional[0].systemCode, undefined);
+    assert.equal(additional[0].cleanupErrorCode, "JSON_FILE_LOCK_RELEASE_FAILED");
+    assert.equal(additional[0].cleanupSystemCode, "EPERM");
+    assert.match(failed.stderr, /\[SETUP_COMPLETION_RECORD_INVALID\] setup_state:/);
+    assert.match(failed.stderr, /Cleanup also failed: JSON_FILE_LOCK_RELEASE_FAILED \(EPERM\)/);
+    assert.doesNotMatch(`${failed.stderr} ${JSON.stringify(additional)}`, /setup-record-canary|SAFE_DELETE_BULK_CONFIRM_REQUIRED|confirmation required/);
+    assert.equal(JSON.stringify(additional).includes(lockPath), false);
     assert.equal((await readJsonLines(fixture.setupLogPath)).length, 1);
     assert.equal(await pathExists(lockPath), true);
   } finally {
@@ -443,6 +484,12 @@ test("unknown commands are still delegated to the Backend entrypoint", async () 
   }
 });
 
+async function readSetupDiagnostics(fixture) {
+  const directory = join(fixture.memoraxCodeHome, "runtime", "diagnostics");
+  const files = (await readdir(directory)).filter((name) => /^mc-.*\.json$/.test(name));
+  return await Promise.all(files.map(async (name) => JSON.parse(await readFile(join(directory, name), "utf8"))));
+}
+
 async function createPackageFixture() {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-entrypoint-test-"));
   const memoraxCodeHome = join(root, "memorax-code-home");
@@ -460,6 +507,10 @@ async function createPackageFixture() {
     "lib/resolve-codebuddy-command.mjs",
     "lib/run-entrypoint.mjs",
     "lib/setup-api-key-input.mjs",
+    "lib/setup-diagnostics.mjs",
+    "lib/trial-provision-client.mjs",
+    "lib/trial-provision-flow.mjs",
+    "lib/trial-plugin-mark.mjs",
     "lib/vscode-extension-command.mjs",
     "lib/windows-cli-invocation.mjs",
     "lib/windows-user-path.mjs",
@@ -481,6 +532,7 @@ async function createPackageFixture() {
   for (const relativePath of [
     "clients/codebuddy-command.mjs",
     "config-utils.mjs",
+    "diagnostic-record.mjs",
     "automatic-update-state.mjs",
     "runtime-record.mjs",
     "setup-completion.mjs",
@@ -507,6 +559,7 @@ async function createPackageFixture() {
     "",
   ].join("\n"));
   await writeFile(join(root, "lib", "trial-setup.mjs"), [
+    "export { trialProvisionFailureDetails as trialSetupFailureDetails } from './trial-provision-flow.mjs';",
     "export async function loadReadyTrialSetupCredential(options = {}) {",
     "  if (options.memoraxCodeHome !== process.env.MEMORAX_CODE_TEST_EXPECTED_ACCOUNT_HOME) {",
     "    throw new Error('unexpected MemoraX Code home');",

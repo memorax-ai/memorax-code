@@ -95,7 +95,9 @@ test("reconcile leaves recovered Backend running when client setup failed", asyn
     onEvent: (event) => events.push(event),
   });
 
-  assert.deepEqual(result, { status: "not-verified", reason: "adapter-setup-failed" });
+  const { commandResult, ...summary } = result;
+  assert.deepEqual(summary, { status: "not-verified", reason: "adapter-setup-failed" });
+  assert.equal(JSON.parse(commandResult.stdout).backend.ok, true);
   assert.deepEqual(calls, ["start"]);
   assert.equal(events.find((event) => event.type === "start-failed").reason, "adapter-setup-failed");
 });
@@ -106,6 +108,10 @@ test("reconcile retains recovery when a failure report cannot establish healthy 
     { ok: false, action: "start", backend: { ok: false }, traeAdapter: { ok: false } },
     { ok: false, action: "start", backend: { ok: true, skipped: true }, traeAdapter: { ok: false } },
     { ok: false, action: "start", backend: { ok: true }, unknownAdapter: { ok: false } },
+    { ok: false, action: "start", backend: {
+      ok: false, errorCode: "BACKEND_HEALTH_NOT_READY",
+      error: "BACKEND_SERVICE_STATE_INVALID; client Hook runtime activation failed: legacy text must not override the structured code",
+    } },
   ]) {
     const calls = [];
     const starts = [{ status: 1, stdout: typeof report === "string" ? report : JSON.stringify(report) }, succeeded];
@@ -146,6 +152,7 @@ test("reconcile reports a failed recovery without a second stop", async () => {
     status: "not-verified",
     reason: "start-failed-after-recovery",
     code: 7,
+    commandResult: { status: 7 },
   });
   assert.deepEqual(calls, ["start", "stop", "start", "status"]);
 });
@@ -172,7 +179,7 @@ test("reconcile reports a failed status without running readiness", async () => 
     },
   });
 
-  assert.deepEqual(result, { status: "not-verified", reason: "status-failed", code: 9 });
+  assert.deepEqual(result, { status: "not-verified", reason: "status-failed", code: 9, commandResult: { status: 9 } });
   assert.deepEqual(calls, ["start", "status"]);
 });
 
@@ -184,7 +191,7 @@ test("reconcile reports unavailable when status is successful but not ready", as
     isReady: async () => false,
   });
 
-  assert.deepEqual(result, { status: "unavailable", reason: "not-ready", recovered: false });
+  assert.deepEqual(result, { status: "unavailable", reason: "not-ready", recovered: false, commandResult: succeeded });
 });
 
 test("reconcile does not recover a Hook runtime activation failure", async () => {
@@ -208,6 +215,7 @@ test("reconcile does not recover a Hook runtime activation failure", async () =>
   assert.deepEqual(result, {
     status: "not-verified",
     reason: "hook-runtime-activation-failed",
+    commandResult: failed,
   });
   assert.equal(stopCalls, 0);
 });
@@ -234,6 +242,7 @@ test("reconcile does not recover a runtime authority failure", async () => {
     status: "not-verified",
     reason: "runtime-authority-failed",
     code: "BACKEND_TOKEN_RECORD_INVALID",
+    commandResult: failed,
   });
   assert.equal(stopCalls, 0);
 });
@@ -260,8 +269,51 @@ test("reconcile does not recover lifecycle lock contention", async () => {
     status: "not-verified",
     reason: "lifecycle-lock-timeout",
     code: "BACKEND_LIFECYCLE_LOCK_TIMEOUT",
+    commandResult: failed,
   });
   assert.equal(stopCalls, 0);
+});
+
+test("reconcile preserves deterministic Backend diagnostics without stop-start recovery", async () => {
+  for (const code of [
+    "BACKEND_LIFECYCLE_LOCK_FAILED", "BACKEND_SERVICE_PREPARE_FAILED", "BACKEND_SPAWN_FAILED",
+    "BACKEND_TOKEN_CONFIG_FAILED", "BACKEND_SERVICE_STATE_WRITE_FAILED",
+  ]) {
+    const calls = [];
+    const failed = { status: 1, stdout: JSON.stringify({
+      ok: false, action: "start", backend: { ok: false, errorCode: code },
+      diagnostic: { id: "existing-backend-diagnostic", recorded: true },
+    }) };
+    const result = await reconcileSetup({
+      start: async () => { calls.push("start"); return failed; },
+      stop: async () => { calls.push("stop"); return succeeded; },
+      status: async () => { calls.push("status"); return succeeded; },
+      isReady: async () => true,
+    });
+    assert.deepEqual(calls, ["start"], code);
+    assert.equal(result.reason, code === "BACKEND_LIFECYCLE_LOCK_FAILED" ? "lifecycle-lock-failed" : "backend-start-failed");
+    assert.equal(result.code, code);
+    assert.equal(result.commandResult, failed, "The original diagnostic must remain available for setup output");
+  }
+});
+
+test("reconcile stops recovery when stop fails and preserves that failure", async () => {
+  const calls = [];
+  const stopped = { status: 1, stdout: JSON.stringify({
+    ok: false, action: "stop", backend: { ok: false, errorCode: "BACKEND_OWNERSHIP_UNVERIFIED" },
+    diagnostic: { id: "stop-diagnostic", recorded: true },
+  }) };
+  const result = await reconcileSetup({
+    start: async () => { calls.push("start"); return { status: 1 }; },
+    stop: async () => { calls.push("stop"); return stopped; },
+    status: async () => { calls.push("status"); return succeeded; },
+    isReady: async () => { calls.push("ready"); return true; },
+  });
+  assert.deepEqual(calls, ["start", "stop"]);
+  assert.deepEqual(result, {
+    status: "not-verified", reason: "recovery-stop-failed", code: "BACKEND_OWNERSHIP_UNVERIFIED", commandResult: stopped,
+  });
+  assert.equal(result.commandResult, stopped);
 });
 
 test("reconcile has no retained state across consecutive calls", async () => {

@@ -233,18 +233,20 @@ are eligible for recovery only after the stale threshold; an interrupted
 acquisition can leave such a record. Stale-lock recovery still requires
 same-directory hard links and actual unlink semantics for claim cleanup.
 
-Failed explicit Search/Add commands and failed Backend reports from start,
-stop, and restart create local diagnostic records independently of Debug and
-trace settings. These contain a diagnostic ID, timestamp, schema and package
+Failed explicit Search/Add commands, failed Backend reports from start,
+stop, and restart, and setup-owned failures create local diagnostic records
+independently of Debug and trace settings. These contain a diagnostic ID,
+timestamp, schema and package
 versions, platform and runtime version, operation, failure stage, stable error
 code, fixed error summary, impact, and recovery guidance. Depending on the
 operation, known system codes, HTTP status, retry delay, client identity,
 hashed Session/Turn identifiers, process state, a fixed category for the last
-observed failure, an allowlisted runtime-record validation reason, and cleanup
-error/system codes may be included. The validation reason contains no record
-contents. Records
-exclude queries, Add text, response bodies, raw
-exception messages, credentials, Authorization headers, raw Session/Turn
+observed failure, an allowlisted runtime-record validation reason, configuration
+recovery state, and cleanup error/system codes may be included. Setup reuses a
+Backend diagnostic when one already exists. Validation reasons contain no record
+contents. Setup records also exclude device, guest, and account identity values.
+Records exclude queries, Add text, response bodies, raw
+exception messages or causes, credentials, Authorization headers, raw Session/Turn
 identifiers, PIDs, tokens, and local paths. The CLI prints the saved file's
 path separately; the path is not stored in the record. These files remain local
 and are not runtime or memory authority. See [diagnostic storage and retention](docs/configuration.md#default-searchadd-diagnostics).

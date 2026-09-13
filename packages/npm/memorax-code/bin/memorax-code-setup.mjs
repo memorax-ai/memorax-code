@@ -39,7 +39,8 @@ import {
 } from "../lib/setup-reconcile.mjs";
 import { detectSetupMemoryPreferences } from "../lib/setup-memory-preferences.mjs";
 import { readSetupApiKey } from "../lib/setup-api-key-input.mjs";
-import { ensureTrialSetupCredential } from "../lib/trial-setup.mjs";
+import { ensureTrialSetupCredential, trialSetupFailureDetails } from "../lib/trial-setup.mjs";
+import { printSetupBackendDiagnostic, reportSetupFailure } from "../lib/setup-diagnostics.mjs";
 import { commandOnPath } from "../lib/vscode-extension-command.mjs";
 import { resolveWindowsCliInvocation } from "../lib/windows-cli-invocation.mjs";
 
@@ -407,20 +408,26 @@ printPostinstallSummary(
   backendAndAdapters.dshAdapterUnavailable,
 );
 if (backendAndAdaptersStatus !== "enabled") process.exit(1);
-if (!updateMode && readMemoraxInstallStatus()?.configured !== true) {
-  logRed("Setup could not verify a ready MemoraX connection after Backend reconciliation.");
+if (!updateMode && readMemoraxInstallStatus({ diagnose: true })?.configured !== true) {
   process.exit(1);
 }
 if (nonInteractive) {
   // Verify the persisted value before publishing completion, without exposing it.
   let matches = false;
+  let verificationStage = "read";
   try {
-    matches = parse(readFileSync(memoraxCodeConfigPath(), "utf8"))?.memorax?.api_key === stdinApiKey;
-  } catch {
-    // Missing or malformed configuration must not become a successful setup.
+    const config = readFileSync(memoraxCodeConfigPath(), "utf8");
+    verificationStage = "parse";
+    matches = parse(config)?.memorax?.api_key === stdinApiKey;
+  } catch (error) {
+    setupFailure("verify_config", { error, details: { stage: verificationStage } });
+    process.exit(1);
   }
   log(`API Key match: ${matches}`);
-  if (!matches) process.exit(1);
+  if (!matches) {
+    setupFailure("saved_key");
+    process.exit(1);
+  }
 }
 try {
   const completion = writeSetupCompletionRecord({
@@ -432,7 +439,7 @@ try {
     logRed("Setup completed, but durable persistence of the completion record could not be confirmed.");
   }
 } catch (error) {
-  logRed(`Setup completion could not be recorded: ${error instanceof Error ? error.message : String(error)}`);
+  setupFailure("completion", { error });
   process.exit(1);
 }
 logGreen("Setup completed successfully.");
@@ -614,8 +621,7 @@ async function writeMemoraxConfigFromInput({
       env: process.env,
     });
   } catch (error) {
-    const reason = typeof error?.reason === "string" ? error.reason : "credential_unavailable";
-    logRed(`Secure MemoraX credential setup failed (${reason}).`);
+    setupFailure("credential", { details: trialSetupFailureDetails(error) });
     return "failed";
   }
   if (writeMemoraxConfig({
@@ -871,6 +877,13 @@ function memoraxCodeConfigPath() {
   return join(memoraxCodeHome(), "config.toml");
 }
 
+function setupFailure(kind, fields = {}) {
+  return reportSetupFailure(kind, {
+    home: memoraxCodeHome(), version: packageVersion(), ...fields,
+    write: (line) => console.error(`${RED}${line}${RESET}`),
+  });
+}
+
 async function readPersistedClientSelection() {
   const path = memoraxCodeConfigPath();
   if (!existsSync(path)) return undefined;
@@ -906,7 +919,8 @@ function writeClientSelectionConfig(clients, configuredClients = SETUP_CLIENTS) 
     defaultText: setManagedClientSelection(defaultMemoraxCodeConfig(), clients, configuredClients),
     transform: (text) => setManagedClientSelection(text, clients, configuredClients),
     parseToml: parse,
-    warn: (message) => log(message),
+    warn: () => {},
+    onFailure: (details) => setupFailure("config", { details }),
   });
 }
 
@@ -953,7 +967,8 @@ function writeMemoraxConfig({ userId, endpoint, outputLanguage, apiKey }) {
     defaultText: applyFields(defaultMemoraxCodeConfig()),
     transform: applyFields,
     parseToml: parse,
-    warn: (message) => log(message),
+    warn: () => {},
+    onFailure: (details) => setupFailure("config", { details }),
   });
 }
 
@@ -1039,7 +1054,8 @@ function seedMissingMemoraxCodeConfig() {
     defaultText: defaultMemoraxCodeConfig(),
     transform: (text) => text,
     parseToml: parse,
-    warn: (message) => log(message),
+    warn: () => {},
+    onFailure: (details) => setupFailure("config", { details }),
   });
 }
 
@@ -1300,7 +1316,11 @@ async function startBackendAndCheck({
       printSetupStartResult(started);
       return started;
     },
-    stop: () => runMemoraxCodeCommand(["stop", ...adapterFlags]),
+    stop: () => {
+      const stopped = runMemoraxCodeCommand(["stop", ...adapterFlags, "--json"], {}, { print: false });
+      printSetupStartResult(stopped);
+      return stopped;
+    },
     status: () => {
       statusResult = runMemoraxCodeCommand(statusArgs, optionalDshEnv);
       return statusResult;
@@ -1353,6 +1373,19 @@ async function startBackendAndCheck({
       }
     },
   });
+  if (result.status !== "enabled") {
+    const commandResult = result.commandResult;
+    let report;
+    try { report = JSON.parse(commandResult?.stdout ?? ""); } catch { /* Legacy commands may return text. */ }
+    // start/stop already displayed their Backend diagnostic. Keep its ID and
+    // record instead of writing a second setup copy of the same failure.
+    if (!report?.diagnostic && result.reason !== "adapter-setup-failed") {
+      const kind = result.reason === "recovery-stop-failed" ? "stop"
+        : result.reason === "status-failed" ? "status"
+          : result.reason === "not-ready" ? "readiness" : "start";
+      setupFailure(kind, { commandResult });
+    }
+  }
   return {
     status: result.status,
     dshAdapterEnabled: result.status === "enabled" && statusResult
@@ -1392,6 +1425,10 @@ function printReconcileFailure(result, {
   } else if (result.reason === "runtime-authority-failed") {
     logRed("Automatic stop/start recovery is skipped because persisted Backend runtime authority requires explicit repair.");
     printRuntimeAuthorityFailureSuggestions(result.code);
+  } else if (["lifecycle-lock-failed", "backend-start-failed"].includes(result.reason)) {
+    logRed("Automatic stop/start recovery was skipped; fix the reported Backend failure before retrying setup.");
+  } else if (result.reason === "recovery-stop-failed") {
+    logRed("Automatic recovery stopped because the stop command failed; no replacement Backend was started.");
   } else if (result.reason === "start-failed-after-recovery") {
     printFailureSuggestions();
   } else if (result.reason === "not-ready") {
@@ -1524,12 +1561,19 @@ function stringOption(value) {
 }
 
 function printSetupStartResult(result) {
-  const report = startLifecycleReport(result);
+  let report = startLifecycleReport(result);
+  if (!report) {
+    try {
+      const candidate = JSON.parse(result.stdout ?? "");
+      if (candidate?.action === "stop" && typeof candidate.ok === "boolean") report = candidate;
+    } catch { /* Preserve the legacy text output below. */ }
+  }
   if (!report) {
     printCommandOutput(result.stdout, BACKEND_PREFIX);
   } else {
     if (typeof report.message === "string") logRed(report.message);
-    if (report.backend?.ok === false) {
+    const diagnosed = printSetupBackendDiagnostic(report, (line) => console.error(`${RED}${line}${RESET}`));
+    if (report.backend?.ok === false && !diagnosed) {
       const code = report.backend.errorCode ? ` code=${report.backend.errorCode}` : "";
       logRed(`Backend: not ok${code} ${report.backend.error ?? report.backend.reason ?? "start failed"}`);
     }
@@ -1552,7 +1596,7 @@ function printSetupStartResult(result) {
     }
   }
   printCommandOutput(result.stderr, BACKEND_PREFIX);
-  if (result.error) logRed(`Failed to run \`memorax-code start\`: ${result.error.message}`);
+  if (result.error) logRed("Failed to run the Backend lifecycle command; see the setup diagnostic for its operation and system code.");
 }
 
 function runMemoraxCodeCommand(args, extraEnv = {}, { print = true } = {}) {
@@ -1804,13 +1848,17 @@ function printPostinstallSummary(backendAndAdaptersStatus, degraded = false) {
   }
 }
 
-function readMemoraxInstallStatus() {
+function readMemoraxInstallStatus({ diagnose = false } = {}) {
   const result = runNodeMemoraxCliCommand(
     ["status", "--json", "--config-only"],
     { print: false, timeout: 10_000 },
   );
-  if (result.error || result.signal || (result.status !== 0 && result.status !== 1)) {
+  const unavailable = (stage) => {
+    if (diagnose) setupFailure("connection", { commandResult: result, details: { stage } });
     return undefined;
+  };
+  if (result.error || result.signal || (result.status !== 0 && result.status !== 1)) {
+    return unavailable("command");
   }
   try {
     const report = JSON.parse(String(result.stdout ?? ""));
@@ -1820,7 +1868,7 @@ function readMemoraxInstallStatus() {
       || typeof report.ok !== "boolean"
       || !isRecord(report.config)
       || typeof report.config.configured !== "boolean") {
-      return undefined;
+      return unavailable("invalid_response");
     }
     const configuredResult = result.status === 0
       && report.ok === true
@@ -1829,15 +1877,16 @@ function readMemoraxInstallStatus() {
       && report.ok === false
       && report.config.configured === false;
     if (!configuredResult && !unconfiguredResult) {
-      return undefined;
+      return unavailable("invalid_response");
     }
     if (unconfiguredResult) {
+      if (diagnose) setupFailure("connection", { details: { stage: "unconfigured" } });
       return { configured: false };
     }
     if (!isRecord(report.config.writeback)
       || typeof report.config.writeback.globalEnabled !== "boolean"
       || typeof report.config.writeback.writebackEnabled !== "boolean") {
-      return undefined;
+      return unavailable("invalid_response");
     }
     return {
       configured: true,
@@ -1845,7 +1894,7 @@ function readMemoraxInstallStatus() {
       writebackEnabled: report.config.writeback.writebackEnabled,
     };
   } catch {
-    return undefined;
+    return unavailable("invalid_json");
   }
 }
 

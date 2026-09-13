@@ -7,6 +7,17 @@ const MARK_ID_PATTERN = /^mk_[0-9a-f]{64}$/;
 const API_KEY_PATTERN = /^sk_[A-Za-z0-9_-]{43}$/;
 const MACHINE_ID_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
+const SYSTEM_CODES = new Set([
+  "ENOTFOUND", "EAI_AGAIN", "ECONNREFUSED", "ECONNRESET", "EPIPE",
+  "ENETUNREACH", "EHOSTUNREACH", "ETIMEDOUT", "ESOCKETTIMEDOUT",
+  "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT",
+  "UND_ERR_SOCKET", "DEPTH_ZERO_SELF_SIGNED_CERT", "SELF_SIGNED_CERT_IN_CHAIN",
+  "CERT_HAS_EXPIRED", "CERT_NOT_YET_VALID", "ERR_TLS_CERT_ALTNAME_INVALID",
+  "UNABLE_TO_VERIFY_LEAF_SIGNATURE", "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
+  "ERR_SSL_WRONG_VERSION_NUMBER", "ERR_SSL_SSLV3_ALERT_HANDSHAKE_FAILURE",
+  "EACCES", "EPERM", "ENOENT", "ENOTDIR", "EISDIR", "EROFS", "ENOSPC",
+  "EDQUOT", "EIO", "EBUSY", "EMFILE", "ENFILE",
+]);
 const ERROR_REASONS = new Set([
   "invalid_options",
   "invalid_service_url",
@@ -30,7 +41,10 @@ export class TrialProvisionClientError extends Error {
     this.name = "TrialProvisionClientError";
     this.code = "TRIAL_PROVISION_CLIENT_FAILED";
     this.reason = safeReason;
-    if (Number.isInteger(fields.httpStatus)) this.httpStatus = fields.httpStatus;
+    if (Number.isInteger(fields.httpStatus) && fields.httpStatus >= 100 && fields.httpStatus <= 599) {
+      this.httpStatus = fields.httpStatus;
+    }
+    if (SYSTEM_CODES.has(fields.systemCode)) this.systemCode = fields.systemCode;
     if (Number.isSafeInteger(fields.retryAfterMs)
       && fields.retryAfterMs >= 0
       && fields.retryAfterMs <= MAX_RETRY_AFTER_MS) {
@@ -89,6 +103,7 @@ async function postJson(url, body, options) {
   if (externalSignal?.aborted) throw clientError("aborted");
   const controller = new AbortController();
   let timedOut = false;
+  let httpStatus;
   const onAbort = () => controller.abort();
   externalSignal?.addEventListener?.("abort", onAbort, { once: true });
   const timer = setTimeout(() => {
@@ -110,12 +125,14 @@ async function postJson(url, body, options) {
       redirect: "error",
       signal: controller.signal,
     });
+    httpStatus = response?.status;
     return await readResponse(response, options.maxResponseBytes);
   } catch (error) {
     if (error instanceof TrialProvisionClientError) throw error;
-    if (timedOut) throw clientError("timeout");
-    if (externalSignal?.aborted) throw clientError("aborted");
-    throw clientError("transport");
+    const fields = { httpStatus, systemCode: trialSystemCode(error) };
+    if (timedOut) throw clientError("timeout", fields);
+    if (externalSignal?.aborted) throw clientError("aborted", fields);
+    throw clientError("transport", fields);
   } finally {
     clearTimeout(timer);
     externalSignal?.removeEventListener?.("abort", onAbort);
@@ -296,6 +313,22 @@ function positiveInteger(value, maximum) {
     throw clientError("invalid_options");
   }
   return value;
+}
+
+export function trialSystemCode(error) {
+  const pending = [error];
+  const visited = new Set();
+  // Fetch may nest socket errors in causes or AggregateError entries. Inspect
+  // only a bounded set of machine codes; never retain the original exception.
+  for (let index = 0; index < pending.length && index < 8; index += 1) {
+    const candidate = pending[index];
+    if (!isRecord(candidate) || visited.has(candidate)) continue;
+    visited.add(candidate);
+    if (SYSTEM_CODES.has(candidate.code)) return candidate.code;
+    if (candidate.cause) pending.push(candidate.cause);
+    if (Array.isArray(candidate.errors)) pending.push(...candidate.errors.slice(0, 8));
+  }
+  return undefined;
 }
 
 function clientError(reason, fields) {

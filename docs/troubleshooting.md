@@ -133,6 +133,31 @@ older installations with a complete configuration, the
 no-argument command can perform a one-time migration; see
 [setup-completion behavior](configuration.md#setup-automatic-update-and-package-transition-state).
 
+Setup reports failed stages without requiring Debug, with an error code, impact,
+recovery guidance, and diagnostic ID on stderr. If a Backend command already
+created a diagnostic, setup prints that same ID and file path. Setup-owned
+failures use the same [local diagnostic storage](configuration.md#default-searchadd-diagnostics).
+Keep the error block when reporting a problem; if saving the diagnostic fails,
+the original failure remains visible.
+
+Configuration errors distinguish reading or parsing existing content, transforming
+or validating the candidate, directory and permission checks, temporary writes,
+backup, publication, verification, and cleanup. For example, `config.publish`
+with `EPERM` identifies the failed replacement step without guessing which
+process blocked it. The diagnostic's `configState` describes the observed result:
+
+| `configState` | Meaning |
+| --- | --- |
+| `preserved` | This operation did not replace the existing configuration. |
+| `restored` | The previous configuration was restored. |
+| `removed` | An unverified newly created configuration was removed. |
+| `unknown` | Recovery could not be confirmed; preserve any recovery backup before retrying. |
+
+`SETUP_COMPLETION_WRITE_FAILED` means the final completion record was not saved;
+the Backend and clients may already be enabled. Check `memorax-code status`,
+address the reported storage failure, and rerun setup. Neither local connection
+readiness nor `API Key match: true` tests a remote Search/Add request.
+
 Codex plugin registration and activation failures include the underlying command
 error even without verbose output. Address that error before retrying setup.
 
@@ -153,9 +178,18 @@ remains incomplete. Check access to the reported directory, close applications
 that may be using it, then rerun `memorax-code setup`. A running Backend alone
 does not confirm that every selected client integration is ready.
 
-If secure credential setup fails, confirm that the operating-system credential
-backend is available to the same logged-in user and that the MemoraX service is
-reachable. On Linux, confirm that `/usr/bin/secret-tool` is installed and the
+Known configuration, authority, or process startup errors stop reconciliation
+without a blind stop/start retry. For other startup failures, setup allows one
+recovery attempt; if its stop fails, setup reports that failure and does not
+start another Backend. Resolve the reported cause before retrying.
+
+Secure credential diagnostics distinguish lock/load, device identity, initial
+storage, provisioning request, and credential completion failures. Known system
+codes, credential-validation reasons, HTTP status, and retry delay help identify
+the failed stage without exposing keys or identity values. Confirm that the
+operating-system credential backend is available to the same logged-in user for
+storage failures; check the network or proxy for request failures. On Linux,
+confirm that `/usr/bin/secret-tool` is installed and the
 session can reach an unlocked Secret Service. Minimal containers and detached
 SSH sessions often do not provide one.
 

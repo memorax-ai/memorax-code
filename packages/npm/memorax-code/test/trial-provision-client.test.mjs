@@ -186,13 +186,40 @@ test("provision bounds response size", async () => {
 test("provision preserves timeout and caller aborts while reading the response", async () => {
   const fetchImpl = async (_url, options) => stalledResponse(options.signal);
   const timed = createTrialProvisionClient({ env: {}, fetchImpl, timeoutMs: 10 });
-  await assert.rejects(timed.provision(REQUEST), clientError("timeout"));
+  await assert.rejects(timed.provision(REQUEST), clientError("timeout", { httpStatus: 200 }));
 
   const controller = new AbortController();
   const aborted = createTrialProvisionClient({ env: {}, fetchImpl });
   const pending = aborted.provision(REQUEST, { signal: controller.signal });
   controller.abort();
-  await assert.rejects(pending, clientError("aborted"));
+  await assert.rejects(pending, clientError("aborted", { httpStatus: 200 }));
+});
+
+test("provision retains only bounded allowlisted transport codes", async () => {
+  const nested = new Error(API_KEY, {
+    cause: new AggregateError([Object.assign(new Error(API_KEY), { code: "ENOTFOUND" })], API_KEY),
+  });
+  const unknown = Object.assign(new Error(API_KEY), { code: API_KEY });
+  unknown.cause = unknown;
+  let deep = Object.assign(new Error(API_KEY), { code: "ECONNREFUSED" });
+  for (let index = 0; index < 8; index += 1) deep = new Error(API_KEY, { cause: deep });
+  for (const [failure, systemCode] of [[nested, "ENOTFOUND"], [unknown, undefined], [deep, undefined]]) {
+    const client = createTrialProvisionClient({
+      env: {},
+      fetchImpl: async () => { throw failure; },
+    });
+    await assert.rejects(client.provision(REQUEST), (error) => {
+      assert.equal(error.reason, "transport");
+      assert.equal(error.systemCode, systemCode);
+      assert.equal(error.cause, undefined);
+      assert.equal(JSON.stringify(error).includes(API_KEY), false);
+      assert.equal(
+        `${error.message} ${error.stack}`.includes(API_KEY),
+        false,
+      );
+      return true;
+    });
+  }
 });
 
 function jsonResponse(body, options = {}) {
@@ -213,10 +240,11 @@ function stalledResponse(signal) {
   }));
 }
 
-function clientError(reason) {
+function clientError(reason, fields = {}) {
   return (error) => {
     assert.ok(error instanceof TrialProvisionClientError);
     assert.equal(error.reason, reason);
+    for (const [key, value] of Object.entries(fields)) assert.equal(error[key], value);
     return true;
   };
 }

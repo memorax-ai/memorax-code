@@ -697,10 +697,19 @@ most one record; the Backend service itself does not write these diagnostics.
 `MEMORAX_CODE_BACKEND_SUPPRESS_GUIDANCE=1` does not suppress the default diagnostic.
 
 This coverage is limited to failed Backend reports from those commands;
-adapter-only failures and complete setup, update, Hook, and automatic-writeback
+adapter-only failures and complete update, Hook, and automatic-writeback
 flows are outside it. `status`, `logs`, `token`, and `uninstall` do not create
 these records. See [Backend recovery](troubleshooting.md#backend-does-not-start)
 for the failure fields and process-state guidance.
+
+Setup also reports configuration, secure credential, local readiness, and
+completion-record failures by default. Setup-owned records have
+`source: "memorax-code-setup"` and `operation: "setup"`, and share the storage,
+permissions, and 100-record/seven-day retention above. A failed Backend command's
+existing diagnostic ID is reused instead of producing a duplicate setup record.
+Configuration details include the failed write stage and `configState`; neither
+configuration content nor credential or device identity values are retained.
+See [setup recovery](troubleshooting.md#setup-does-not-complete).
 
 ## Local traces
 
@@ -777,8 +786,10 @@ token. Persistent connection, token, and PID records live under
   read or parsed; memory readers may also warn. Unsupported field types are
   ignored.
 - Targeted configuration updates preserve unrelated and unknown TOML content.
-- Setup writes completion only after Backend, client, and effective MemoraX
-  readiness checks succeed.
+- Setup writes completion only after Backend, client, and effective local
+  MemoraX configuration checks succeed. These checks do not authenticate a
+  remote Search/Add request; a completion-write failure can leave the Backend
+  running while setup remains incomplete.
 - Invalid or unsupported Backend runtime records fail closed instead of
   silently falling back to `127.0.0.1:8787`.
 

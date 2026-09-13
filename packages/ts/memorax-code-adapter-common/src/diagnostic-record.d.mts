@@ -15,6 +15,10 @@ export type DiagnosticRecordFields = {
   systemCode?: string;
   failureReason?: string;
   recordReason?: string;
+  credentialReason?: string;
+  configState?: "preserved" | "restored" | "removed" | "unknown";
+  commandExitCode?: number;
+  commandSignal?: string;
   httpStatus?: number;
   retryAfterMs?: number;
   processState?: "not-started" | "stopped" | "running" | "unknown";

@@ -99,6 +99,12 @@ function setupCompletionPath(memoraxCodeHome) {
   return join(memoraxCodeHome, "runtime", "setup", "setup-completion.json");
 }
 
+async function readSetupDiagnostics(run) {
+  const directory = join(run.memoraxCodeHome, "runtime", "diagnostics");
+  const files = (await readdir(directory)).filter((name) => /^mc-.*\.json$/.test(name));
+  return await Promise.all(files.map(async (name) => JSON.parse(await readFile(join(directory, name), "utf8"))));
+}
+
 async function assertSetupComplete(run) {
   const completion = JSON.parse(await readFile(setupCompletionPath(run.memoraxCodeHome), "utf8"));
   assert.equal(completion.version, 1);
@@ -198,6 +204,7 @@ async function runSetup({ existingCache = false, explicitCache = false, codexReg
     "clients/codex-plugin-artifact.mjs",
     "automatic-update-state.mjs",
     "config-utils.mjs",
+    "diagnostic-record.mjs",
     "hooks/ensure-backend-runner.mjs",
     "memorax-code-config-file.mjs",
     "hooks/hook-runtime-generation.mjs",
@@ -223,6 +230,9 @@ async function runSetup({ existingCache = false, explicitCache = false, codexReg
   await copyFile(clientHookRuntimePath, join(libDir, "client-hook-runtime.mjs"));
   await copyFile(setupReconcilePath, join(libDir, "setup-reconcile.mjs"));
   await copyFile(setupApiKeyInputPath, join(libDir, "setup-api-key-input.mjs"));
+  for (const file of ["setup-diagnostics.mjs", "trial-provision-client.mjs", "trial-provision-flow.mjs", "trial-plugin-mark.mjs"]) {
+    await copyFile(new URL(`../lib/${file}`, import.meta.url), join(libDir, file));
+  }
   await writeFile(join(libDir, "setup-memory-preferences.mjs"), [
     "export function detectSetupMemoryPreferences() {",
     `  return Object.freeze(${JSON.stringify({
@@ -236,12 +246,15 @@ async function runSetup({ existingCache = false, explicitCache = false, codexReg
   await writeFile(join(libDir, "trial-setup.mjs"), [
     "import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';",
     "import { dirname } from 'node:path';",
+    "import { TrialProvisionFlowError } from './trial-provision-flow.mjs';",
+    "export { trialProvisionFailureDetails as trialSetupFailureDetails } from './trial-provision-flow.mjs';",
     "export async function ensureTrialSetupCredential() {",
     `  appendFileSync(${JSON.stringify(logPath)}, 'trial-provision\\n');`,
     `  if (${JSON.stringify(trialProvisionFailure)}) {`,
-    "    const error = new Error('redacted trial failure');",
-    "    error.reason = 'credential_failure';",
-    "    throw error;",
+    "    throw new TrialProvisionFlowError('credential_failure', {",
+    "      stage: 'credential_load',",
+    "      error: Object.assign(new Error('redacted trial failure'), { code: 'TRIAL_CREDENTIAL_BACKEND_ERROR', reason: 'backend_unavailable' }),",
+    "    });",
     "  }",
     `  mkdirSync(dirname(${JSON.stringify(trialReadyMarker)}), { recursive: true });`,
     `  writeFileSync(${JSON.stringify(trialReadyMarker)}, 'ready\\n');`,
@@ -326,6 +339,7 @@ async function runSetup({ existingCache = false, explicitCache = false, codexReg
     "#!/usr/bin/env node",
     "import { appendFileSync, existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';",
     "import { join } from 'node:path';",
+    "import { writeDiagnosticRecord } from '../lib/memorax-code-adapter-common/src/diagnostic-record.mjs';",
     `appendFileSync(${JSON.stringify(logPath)}, 'memorax-code ' + process.argv.slice(2).join(' ') + '\\n');`,
     `if (${JSON.stringify(tamperApiKeyAfterStart)} && process.argv[2] === 'start') {`,
     "  const path = join(process.env.MEMORAX_CODE_HOME, 'config.toml');",
@@ -366,7 +380,9 @@ async function runSetup({ existingCache = false, explicitCache = false, codexReg
     `const failMarker = ${JSON.stringify(join(root, "failed-start-once"))};`,
     "if (process.argv[2] === 'start' && process.env.MEMORAX_CODE_TEST_RUNTIME_AUTHORITY_FAILURE) {",
     "  const code = process.env.MEMORAX_CODE_TEST_RUNTIME_AUTHORITY_FAILURE;",
-    "  console.error('[MemoraX Code Backend]: Backend: not ok code=' + code + ' error=Backend runtime authority requires repair');",
+    "  const failure = { source: 'memorax-code', operation: 'start', version: '0.0.7-test', errorCode: code, stage: 'resolve_connection', systemCode: 'EACCES', processState: 'not-started', error: 'Backend runtime authority requires repair', impact: 'Backend was not started.', userAction: 'Inspect the private connection record before retrying.' };",
+    "  const diagnostic = writeDiagnosticRecord(process.env.MEMORAX_CODE_HOME, failure);",
+    "  console.log(JSON.stringify({ ok: false, action: 'start', backend: { ok: false, errorCode: code }, failure, diagnostic }));",
     "  process.exit(7);",
     "}",
     "if (process.argv[2] === 'start' && process.env.MEMORAX_CODE_TEST_FAIL_START_ONCE === '1' && !existsSync(failMarker)) {",
@@ -1309,10 +1325,19 @@ test("API key stdin setup cannot complete with a missing username or a replaced 
 });
 
 test("setup stops before client installation and Backend start when secure trial setup fails", async () => {
-  const run = await runSetup({ trialProvisionFailure: true });
+  const run = await runSetup({ trialProvisionFailure: true, memoraxEnv: { MEMORAX_CODE_SETUP_VERBOSE: "0" } });
   try {
     assert.equal(run.result.code, 1, run.result.stderr);
-    assert.match(run.result.stderr, /Secure MemoraX credential setup failed \(credential_failure\)/);
+    assert.match(run.result.stderr, /\[TRIAL_CREDENTIAL_BACKEND_ERROR\] credential\.credential_load: Secure MemoraX credential setup failed/);
+    assert.match(run.result.stderr, /credential_failure, backend_unavailable/);
+    const diagnostics = await readSetupDiagnostics(run);
+    assert.equal(diagnostics.length, 1);
+    assert.equal(diagnostics[0].errorCode, "TRIAL_CREDENTIAL_BACKEND_ERROR");
+    assert.equal(diagnostics[0].stage, "credential.credential_load");
+    assert.equal(diagnostics[0].credentialReason, "backend_unavailable");
+    assert.ok(run.result.stderr.includes(`Diagnostic: ${diagnostics[0].id}`));
+    assert.doesNotMatch(JSON.stringify(diagnostics), /redacted trial failure/);
+    assert.equal(JSON.stringify(diagnostics).includes(trialApiKey), false);
     assert.doesNotMatch(run.result.stderr, /redacted trial failure/);
     assert.match(run.log, /^trial-provision$/m);
     assert.doesNotMatch(run.log, /^memorax-code (?:codex-plugin install|start|status)/m);
@@ -1471,7 +1496,15 @@ test("setup leaves malformed config byte-identical and emits a redacted warning"
     const warning = run.result.stderr.split(/\r?\n/).find((line) => line.includes("MemoraX Code config could not be safely updated or verified"));
     assert.ok(warning);
     assert.doesNotMatch(warning, /preserved-sensitive-secret|config\.toml|broken =/);
-    assert.deepEqual(await readdir(run.memoraxCodeHome), ["config.toml"]);
+    assert.match(run.result.stderr, /\[CONFIG_PARSE_EXISTING_FAILED\] config\.parse_existing:/);
+    const diagnostics = await readSetupDiagnostics(run);
+    assert.equal(diagnostics.length, 1);
+    assert.equal(diagnostics[0].errorCode, "CONFIG_PARSE_EXISTING_FAILED");
+    assert.equal(diagnostics[0].stage, "config.parse_existing");
+    assert.equal(diagnostics[0].configState, "preserved");
+    assert.ok(run.result.stderr.includes(`Diagnostic: ${diagnostics[0].id}`));
+    assert.doesNotMatch(JSON.stringify(diagnostics), /preserved-sensitive-secret|broken =/);
+    assert.deepEqual((await readdir(run.memoraxCodeHome)).sort(), ["config.toml", "runtime"]);
     assert.doesNotMatch(run.log, /^memorax-code start/m);
     await assertSetupIncomplete(run);
   } finally {
@@ -1485,7 +1518,7 @@ test("setup recovers from a failed backend start and prints red diagnostics", as
   try {
     assert.equal(run.result.code, 0, run.result.stderr);
     assert.match(run.log, /^memorax-code start --clients codex,claude,dsh --json$/m);
-    assert.match(run.log, /^memorax-code stop --clients codex,claude,dsh$/m);
+    assert.match(run.log, /^memorax-code stop --clients codex,claude,dsh --json$/m);
     assert.match(run.log, /^memorax-code start --clients codex,claude,dsh --json$/m);
     assert.match(run.log, /^memorax-code status --clients codex,claude,dsh$/m);
     assert.match(run.result.stderr, /MemoraX Code start failed during setup/);
@@ -1522,10 +1555,19 @@ test("setup does not stop adapters after a deterministic connection authority fa
   const run = await runSetup({ connectionAuthorityFailure: true });
   try {
     assert.equal(run.result.code, 1, run.result.stderr);
-    assert.equal((run.log.match(/^memorax-code start --clients codex,claude,dsh --json$/gm) ?? []).length, 1);
+    assert.equal((run.log.match(/^memorax-code start --clients codex,claude,dsh --json$/gm) ?? []).length, 1, run.result.stderr);
     assert.doesNotMatch(run.log, /^memorax-code stop(?: |$)/m);
     assert.doesNotMatch(run.log, /^memorax-code status(?: |$)/m);
-    assert.match(run.result.stderr, /BACKEND_CONNECTION_AUTHORITY_INVALID/);
+    assert.match(run.result.stderr, /\[BACKEND_CONNECTION_AUTHORITY_INVALID\] resolve_connection: Backend runtime authority requires repair \(EACCES\)/);
+    const diagnostics = await readSetupDiagnostics(run);
+    assert.equal(diagnostics.length, 1, "setup must reuse the Backend diagnostic record");
+    assert.equal(diagnostics[0].source, "memorax-code");
+    assert.equal(diagnostics[0].errorCode, "BACKEND_CONNECTION_AUTHORITY_INVALID");
+    assert.equal(diagnostics[0].stage, "resolve_connection");
+    assert.equal(diagnostics[0].systemCode, "EACCES");
+    assert.equal(diagnostics[0].processState, "not-started");
+    assert.ok(run.result.stderr.includes(`Diagnostic: ${diagnostics[0].id}`));
+    assert.ok(run.result.stderr.includes(join(run.memoraxCodeHome, "runtime", "diagnostics", `${diagnostics[0].id}.json`)));
     assert.doesNotMatch(run.result.stderr, /Attempting automatic recovery/);
     assert.match(
       run.result.stderr,

@@ -43,6 +43,7 @@ export function updateConfigFileAtomically({
   transform,
   parseToml,
   warn = console.warn,
+  onFailure,
   operations = {},
   platform = process.platform,
 }) {
@@ -50,46 +51,49 @@ export function updateConfigFileAtomically({
   let existingStat;
   try {
     existingStat = fs.lstatSync(path);
-    if (!existingStat.isFile()) return failed(warn);
+    if (!existingStat.isFile()) return failed(warn, onFailure, "read", undefined, { recordReason: "not_regular_file" });
   } catch (error) {
-    if (!isNodeError(error) || error.code !== "ENOENT") return failed(warn);
+    if (!isNodeError(error) || error.code !== "ENOENT") return failed(warn, onFailure, "read", error);
   }
 
   let existingText;
   if (existingStat) {
     try {
       existingText = fs.readFileSync(path, "utf8");
-    } catch {
-      return failed(warn);
+    } catch (error) {
+      return failed(warn, onFailure, "read", error);
     }
   }
 
   let candidate;
   let unchanged = false;
+  let stage = "parse_existing";
   try {
     if (existingText === undefined) {
       candidate = defaultText;
     } else {
       const parsed = parseToml(existingText);
+      stage = "transform";
       candidate = transform(existingText, parsed);
       unchanged = candidate === existingText;
     }
+    stage = "parse_candidate";
     if (!unchanged) parseToml(candidate);
-  } catch {
-    return failed(warn);
+  } catch (error) {
+    return failed(warn, onFailure, stage, error, stage.startsWith("parse_") ? { recordReason: "invalid_toml" } : {});
   }
 
   try {
     ensurePrivateConfigDirectoryWithOperations(fs, path, platform);
-  } catch {
-    return failed(warn);
+  } catch (error) {
+    return failed(warn, onFailure, "prepare_directory", error);
   }
   if (unchanged) return "unchanged";
   if (existingText !== undefined) {
     try {
       fs.accessSync(path, constants.W_OK);
-    } catch {
-      return failed(warn);
+    } catch (error) {
+      return failed(warn, onFailure, "check_permissions", error);
     }
   }
 
@@ -101,6 +105,7 @@ export function updateConfigFileAtomically({
   let fd;
   let backupCreated = false;
   let renamed = false;
+  stage = "write_temp";
   try {
     fd = fs.openSync(tempPath, "wx", 0o600);
     fs.writeFileSync(fd, candidate, "utf8");
@@ -113,6 +118,7 @@ export function updateConfigFileAtomically({
     fs.closeSync(fd);
     fd = undefined;
     if (backupPath) {
+      stage = "backup";
       if (platform === "win32") {
         fs.copyFileSync(path, backupPath, constants.COPYFILE_EXCL);
       } else {
@@ -120,51 +126,74 @@ export function updateConfigFileAtomically({
       }
       backupCreated = true;
     }
+    stage = "publish";
     fs.renameSync(tempPath, path);
     renamed = true;
-  } catch {
+  } catch (error) {
+    let cleanupError;
     if (fd !== undefined) {
       try {
         fs.closeSync(fd);
-      } catch {
+      } catch (failure) {
+        cleanupError ??= failure;
         // Best effort: unlinking an open temporary file is safe on supported Unix hosts.
       }
     }
     if (!renamed) {
       try {
         fs.unlinkSync(tempPath);
-      } catch {
+      } catch (failure) {
+        if (failure?.code !== "ENOENT") cleanupError ??= failure;
         // The temporary file may not have been created or may already have been renamed.
       }
     }
     if (backupCreated && backupPath) {
       try {
         fs.unlinkSync(backupPath);
-      } catch {
+      } catch (failure) {
+        if (failure?.code !== "ENOENT") cleanupError ??= failure;
         // The original target is still authoritative when rename has not completed.
       }
     }
-    return failed(warn);
+    return failed(warn, onFailure, stage, error, cleanupFields(cleanupError));
   }
 
+  stage = "verify";
+  let recordReason;
   try {
     const verifiedText = fs.readFileSync(path, "utf8");
-    if (verifiedText !== candidate) throw new Error("config verification failed");
+    if (verifiedText !== candidate) {
+      recordReason = "content_mismatch";
+      throw new Error("config verification failed");
+    }
+    recordReason = "invalid_toml";
     parseToml(verifiedText);
+    recordReason = undefined;
     const verifiedStat = fs.lstatSync(path);
-    if (!verifiedStat.isFile()) throw new Error("config type verification failed");
+    if (!verifiedStat.isFile()) {
+      recordReason = "type_mismatch";
+      throw new Error("config type verification failed");
+    }
     if (platform !== "win32") {
       const expectedMode = existingStat ? existingStat.mode & 0o7777 : 0o600;
-      if ((verifiedStat.mode & 0o7777) !== expectedMode) throw new Error("config mode verification failed");
+      if ((verifiedStat.mode & 0o7777) !== expectedMode) {
+        recordReason = "mode_mismatch";
+        throw new Error("config mode verification failed");
+      }
       if (existingStat && (verifiedStat.uid !== existingStat.uid || verifiedStat.gid !== existingStat.gid)) {
+        recordReason = "owner_mismatch";
         throw new Error("config owner verification failed");
       }
     }
     if (backupCreated && backupPath) {
+      stage = "cleanup";
       fs.unlinkSync(backupPath);
       backupCreated = false;
     }
-  } catch {
+  } catch (error) {
+    let configState = "unknown";
+    let cleanupError;
+    let cleanupErrorCode = "CONFIG_ROLLBACK_FAILED";
     if (existingStat && backupCreated && backupPath) {
       if (platform === "win32") {
         const restorePath = join(dirname(path), `.${basename(path)}.${uniqueSuffix}.restore.tmp`);
@@ -174,9 +203,12 @@ export function updateConfigFileAtomically({
           restoreCopied = true;
           fs.renameSync(restorePath, path);
           restoreCopied = false;
+          configState = "restored";
+          cleanupErrorCode = "CONFIG_CLEANUP_FAILED";
           fs.unlinkSync(backupPath);
           backupCreated = false;
-        } catch {
+        } catch (failure) {
+          cleanupError = failure;
           if (restoreCopied) {
             try {
               fs.unlinkSync(restorePath);
@@ -189,18 +221,27 @@ export function updateConfigFileAtomically({
         try {
           fs.renameSync(backupPath, path);
           backupCreated = false;
-        } catch {
+          configState = "restored";
+        } catch (failure) {
+          cleanupError = failure;
           // Keep the hard-link backup for operator recovery if atomic restore itself fails.
         }
       }
     } else if (!existingStat) {
       try {
         fs.unlinkSync(path);
-      } catch {
+        configState = "removed";
+      } catch (failure) {
+        if (failure?.code === "ENOENT") configState = "removed";
+        else cleanupError = failure;
         // Best effort: the new target may already be absent.
       }
     }
-    return failed(warn);
+    return failed(warn, onFailure, stage, error, {
+      configState,
+      ...(recordReason ? { recordReason } : {}),
+      ...cleanupFields(cleanupError, cleanupErrorCode),
+    });
   }
   return existingText === undefined ? "created" : "updated";
 }
@@ -256,9 +297,30 @@ function ensurePrivateConfigDirectoryWithOperations(fs, path, platform) {
   if (platform !== "win32") fs.chmodSync(directoryPath, 0o700);
 }
 
-function failed(warn) {
+function failed(warn, onFailure, stage, error, details = {}) {
+  const systemCode = safeSystemCode(error);
+  const fields = {
+    stage,
+    errorCode: `CONFIG_${stage.toUpperCase()}_FAILED`,
+    configState: "preserved",
+    ...(systemCode ? { systemCode } : {}),
+    ...details,
+  };
+  // Reporting is observational and must never change the update result.
+  try { onFailure?.(fields); } catch { /* Preserve the configuration failure. */ }
   warn(CONFIG_UPDATE_WARNING);
   return "failed";
+}
+
+function cleanupFields(error, cleanupErrorCode = "CONFIG_CLEANUP_FAILED") {
+  if (error === undefined) return {};
+  const cleanupSystemCode = safeSystemCode(error);
+  return { cleanupErrorCode, ...(cleanupSystemCode ? { cleanupSystemCode } : {}) };
+}
+
+function safeSystemCode(error) {
+  const allowed = ["EACCES", "EPERM", "ENOENT", "ENOTDIR", "EISDIR", "ENOSPC", "EDQUOT", "EROFS", "EMFILE", "ENFILE", "EBUSY", "EEXIST", "EIO", "EINVAL", "ENAMETOOLONG", "ELOOP"];
+  return allowed.includes(error?.code) ? error.code : undefined;
 }
 
 function tomlInlineComment(value) {
