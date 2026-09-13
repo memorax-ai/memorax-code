@@ -277,6 +277,9 @@ metadata-only capture or disable a client's trace.
 Minimal local session state remains when trace is disabled so memory operations
 keep the correct workspace scope.
 
+Failed explicit Search/Add commands provide an error code, recovery guidance,
+and a local content-free diagnostic; see [failure recovery](docs/troubleshooting.md#memorax-search-add-or-scope-fails).
+
 Coding Memory follows the repository or workspace. Recognized default chat
 directories in Codex, WorkBuddy, and OpenCode share `General` under the same
 configured MemoraX user ID. Existing memories are not migrated; see

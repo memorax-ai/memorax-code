@@ -126,7 +126,7 @@ configuration remain client-owned.
 | Component | Stable responsibility | Must not own |
 | --- | --- | --- |
 | [Backend](packages/ts/memorax-code-backend) | Local memory service, native content interpretation, repository scope, local memory helpers, trace, lifecycle, and update scheduling; see [capability ownership](#43-capability-ownership) | Model execution, client model-provider credentials, or native transcript creation |
-| [adapter-common](packages/ts/memorax-code-adapter-common) | Shared connection and private-record primitives, credential storage, locks, Hook transport/generations, and local memory helpers | Backend composition, native content interpretation, MemoraX requests, or client plugin policy |
+| [adapter-common](packages/ts/memorax-code-adapter-common) | Shared connection, private-record and content-free diagnostic storage primitives, credential storage, locks, Hook transport/generations, and local memory helpers | Backend composition, native content interpretation, MemoraX requests, or client plugin policy |
 | [Codex adapter](packages/ts/memorax-code-codex-adapter) | Codex plugin, Hooks, workspace observation, and the canonical shared Skill | Rollout interpretation or Backend writeback orchestration |
 | [Claude Code adapter](packages/ts/memorax-code-claude-adapter) | Claude plugin, Hooks, installer, and marketplace source | Transcript interpretation or Backend memory orchestration |
 | [DSH adapter](packages/ts/memorax-code-dsh-adapter) | Cordis Turn bridge, persisted-interval delivery, Profile and runtime-generation lifecycle, and supervised Repo Memory | Backend event interpretation or DSH provider/session ownership |
@@ -522,6 +522,7 @@ flowchart LR
   Remote --> Provider
   Provider -->|"normalized result"| CLI
   CLI --> Result["scoped result or error to client"]
+  CLI -->|"failed explicit operation"| Diagnostic["local content-free diagnostic"]
   CLI -. "when trace binding is available" .-> Trace["local trace"]
 ```
 
@@ -532,6 +533,14 @@ local-trace components. Manual Add additionally validates user-supplied
 `--reason` metadata. The direct entrypoint is not permission to fall back to
 unscoped provider calls or to reconstruct identity from unrelated process
 state.
+
+For failed explicit Search/Add operations, `memory/cli-diagnostics.ts` owns
+failure classification, impact, recovery guidance, and safe diagnostic fields.
+The provider normalizes transport and response failures without exposing raw
+exceptions or response bodies. CLI composition uses adapter-common's diagnostic
+storage primitive independently of trace availability and Debug logging; this
+default persistence does not cover lifecycle, Hook, or automatic-writeback
+failures.
 
 In an integrated client, the CLI validates the exact current-Turn context to
 reuse its workspace kind, including `projectless`, so explicit Add/Search and
@@ -828,7 +837,7 @@ multiple directories does not automatically belong in `shared`.
 | Contract | Location | Enforces | Inspect or update when |
 | --- | --- | --- | --- |
 | Backend source boundaries | `packages/ts/memorax-code-backend/test/architecture/source-boundaries.test.mjs` | Root facade allowlist, discovered client-runtime coverage, selected direct forbidden imports including shared harness and lifecycle-report neutrality, lifecycle delegation, and an acyclic relative-import graph | Adding a client or root surface, crossing capability boundaries, or changing a composition root |
-| Local-only trace boundary | `scripts/check-local-trace-only.mjs` and its tests | Reviewed network-capable production modules, trace-core isolation, unreviewed trace-aware outbound bridges, and staged artifact/symlink containment | Moving or adding network code, trace-aware outbound code, or staged paths |
+| Local-only trace boundary | `scripts/check-local-trace-only.mjs` and its tests | Reviewed network-capable production modules, trace-core and diagnostic-storage isolation, unreviewed trace-aware outbound bridges, and staged artifact/symlink containment | Moving or adding network code, trace-aware outbound code, or staged paths |
 | Package shape | npm package tests and package-build/check scripts | Executable wrappers, staged runtime layout, canonical source mapping, compatibility paths, and artifact allowlists | Changing entrypoints, packaging sources, materialization, or layout |
 | Harness integration coverage | `packages/npm/memorax-code/test/harness-coverage.test.mjs` | Discovered adapter packages match Backend client directories; runtime trees and the canonical Skill have npm source mappings; `make test` reaches every adapter suite and the independent common and shared Skill suites | Adding a harness, changing adapter directory layout, source mapping, or test recipes |
 | Documentation contract | `scripts/check-docs.mjs` and its tests | Relative file targets in registered documentation, personal absolute paths, and shipped-document consistency | Adding a root document or changing document/package layout |
@@ -976,6 +985,15 @@ their local records; CLI composition supplies its own observability hook.
 These paths are not all mediated by `app/memory-observability`. Memory-service
 kernels receive Backend diagnostics through a port; CLI composition can use
 the Backend debug logger directly.
+
+Default manual Search/Add diagnostics use separate immutable local records.
+Adapter-common owns their private storage and bounded retention, while the
+memory capability supplies only safe, content-free fields. These records have
+no session, scope, lifecycle, or memory authority. The storage primitive has
+no outbound-network authority, and its records never enter MemoraX payloads.
+Storage failure preserves the operation failure and reports that the diagnostic
+could not be saved. [Configuration](docs/configuration.md#default-searchadd-diagnostics)
+owns storage paths and retention values.
 
 Current-turn records share the trace Store and existing paths but serve an
 operational role. Their read, write, and outcome updates are independent of

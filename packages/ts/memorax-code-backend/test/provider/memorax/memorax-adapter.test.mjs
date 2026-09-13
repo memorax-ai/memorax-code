@@ -627,7 +627,9 @@ test("MemoraX adapter treats success false as an error", async () => {
     );
 
     assert.equal(result.ok, false);
-    assert.match(result.error, /search failed/);
+    assert.equal(result.error, "MemoraX response reported failure");
+    assert.equal(result.errorCode, "MEMORAX_RESPONSE_REJECTED");
+    assert.doesNotMatch(JSON.stringify(result), /search failed/);
     assert.equal(result.errorKind, "response");
   } finally {
     await new Promise((resolve) => server.close(resolve));
@@ -674,6 +676,7 @@ test("MemoraX adapter redacts HTTP error response bodies", async () => {
 
     assert.equal(result.ok, false);
     assert.match(result.error, /MemoraX HTTP 502/);
+    assert.equal(result.errorCode, "MEMORAX_HTTP_ERROR");
     assert.equal(result.errorKind, "http");
     assert.equal(result.httpStatus, 502);
     assert.equal(result.retryAfterMs, 2000);
@@ -715,6 +718,7 @@ test("MemoraX adapter rejects malformed successful responses without exposing th
       assert.equal(result.ok, false, operation);
       assert.equal(result.errorKind, "response");
       assert.equal(result.error, "MemoraX response body must be valid JSON");
+      assert.equal(result.errorCode, "MEMORAX_INVALID_JSON");
       assert.equal(events.length, 1);
       assert.equal(events[0].ok, false);
       assert.doesNotMatch(JSON.stringify({ result, events }), /private-response-content|incomplete/);
@@ -767,6 +771,8 @@ for (const [phase, operation] of [["headers", "query"], ["body", "writeback"]]) 
 
     assert.equal(result.ok, false);
     assert.equal(result.errorKind, "timeout");
+    assert.equal(result.errorCode, "MEMORAX_TIMEOUT");
+    assert.equal(result.error, "MemoraX request timed out");
     assert.equal(result.httpStatus, undefined);
   });
 }
@@ -857,5 +863,132 @@ test("MemoraX adapter preserves prebuilt code evidence packs", async () => {
     assert.equal(requests[0].body.messages[0].content, evidencePack);
   } finally {
     await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+for (const [systemCode, message] of [
+  ["ENOTFOUND", "MemoraX hostname could not be resolved"],
+  ["ECONNREFUSED", "MemoraX connection was refused"],
+  ["ECONNRESET", "MemoraX connection was reset"],
+  ["CERT_HAS_EXPIRED", "MemoraX TLS certificate validation failed"],
+  ["ETIMEDOUT", "MemoraX request timed out"],
+  ["UND_ERR_CONNECT_TIMEOUT", "MemoraX request timed out"],
+  [undefined, "MemoraX transport failed"],
+]) {
+  test(`MemoraX adapter preserves safe nested transport codes: ${systemCode ?? "unknown"}`, async () => {
+    const privateText = "private-query Token private-api-key https://private-endpoint.test/path";
+    const cause = Object.assign(new Error(privateText), { code: systemCode ?? privateText });
+    // Cover cyclic causes and the AggregateError shape used by Node connections.
+    cause.cause = cause;
+    const transportError = new TypeError(privateText, {
+      cause: new AggregateError([new Error(privateText), cause], privateText),
+    });
+    const events = [];
+    for (const operation of ["query", "writeback"]) {
+      const result = await invokeMemoraxMemoryProvider(
+        { sessionId: "safe-transport", prompt: "test prompt" },
+        {
+          operation,
+          query: privateText,
+          content: privateText,
+          context: { idempotencyKey: "safe-transport:turn-1" },
+        },
+        {
+          env: {
+            MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
+            MEMORAX_CODE_MEMORAX_API_KEY: "private-api-key",
+            MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
+          },
+          repositoryScope: testRepositoryScope(),
+          fetchImpl: async () => { throw transportError; },
+          observability: { recordEvent: (event) => events.push(event) },
+        },
+      );
+      const timeout = systemCode === "ETIMEDOUT" || systemCode === "UND_ERR_CONNECT_TIMEOUT";
+      assert.deepEqual(result, {
+        ok: false,
+        error: message,
+        errorCode: timeout ? "MEMORAX_TIMEOUT" : "MEMORAX_TRANSPORT_ERROR",
+        errorKind: timeout ? "timeout" : "transport",
+        ...(systemCode ? { systemCode } : {}),
+      });
+      assert.doesNotMatch(JSON.stringify(result), /private-query|private-api-key|private-endpoint/);
+    }
+    assert.equal(events.length, 2);
+    assert.deepEqual(events.map((event) => event.error), [message, message]);
+  });
+}
+
+test("MemoraX adapter rejects invalid success shapes and redacts failed task envelopes", async () => {
+  for (const operation of ["query", "writeback"]) {
+    for (const body of [
+      null,
+      {},
+      { data: null },
+      { success: "true" },
+      ...(operation === "query" ? [{ success: true }, { success: true, data: { data: null } }] : []),
+      { success: false, error: "private-envelope-content", data: { message: "private-envelope-content" } },
+      { success: true, data: { status: "failed", error: "private-envelope-content" } },
+    ]) {
+      const result = await invokeMemoraxMemoryProvider(
+        { sessionId: "invalid-shape", prompt: "test prompt" },
+        {
+          operation,
+          query: "project memory",
+          content: "Remember this test.",
+          context: { idempotencyKey: "invalid-shape:turn-1" },
+        },
+        {
+          env: {
+            MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
+            MEMORAX_CODE_MEMORAX_API_KEY: "test-key",
+            MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
+          },
+          repositoryScope: testRepositoryScope(),
+          fetchImpl: async () => new Response(JSON.stringify(body)),
+        },
+      );
+      assert.equal(result.ok, false, JSON.stringify({ operation, body }));
+      assert.equal(result.errorKind, "response");
+      const rejected = body?.success === false || body?.data?.status === "failed";
+      assert.equal(result.errorCode, rejected ? "MEMORAX_RESPONSE_REJECTED" : "MEMORAX_INVALID_RESPONSE");
+      assert.doesNotMatch(JSON.stringify(result), /private-envelope-content/);
+    }
+  }
+});
+
+test("MemoraX adapter preserves supported empty Search and asynchronous Add acknowledgements", async () => {
+  for (const [operation, bodies] of [
+    ["query", [[], { data: [] }, { success: true, data: { data: [] } }]],
+    ["writeback", [
+      { success: true },
+      { success: true, data: null },
+      ...["accepted", "queued", "completed"].map((status) => ({ success: true, data: { task_id: "accepted-task", status } })),
+      { data: { task_id: "accepted-task", status: "accepted" } },
+    ]],
+  ]) {
+    for (const body of bodies) {
+      const result = await invokeMemoraxMemoryProvider(
+        { sessionId: "valid-shape", prompt: "test prompt" },
+        {
+          operation,
+          query: "project memory",
+          content: "Remember this test.",
+          context: { idempotencyKey: "valid-shape:turn-1" },
+        },
+        {
+          env: {
+            MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
+            MEMORAX_CODE_MEMORAX_API_KEY: "test-key",
+            MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
+          },
+          repositoryScope: testRepositoryScope(),
+          fetchImpl: async () => new Response(JSON.stringify(body)),
+        },
+      );
+      assert.equal(result.ok, true, JSON.stringify({ operation, body }));
+      if (operation === "query") assert.deepEqual(result.result.tool_result_payload.items, []);
+      else assert.equal(result.result.dispatch_receipt.accepted, true);
+    }
   }
 });

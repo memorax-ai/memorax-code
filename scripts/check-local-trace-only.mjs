@@ -57,6 +57,8 @@ const reviewedNetworkSources = new Set([
 ]);
 
 const localTraceCoreSources = new Set([
+  "packages/ts/memorax-code-adapter-common/src/diagnostic-record.mjs",
+  "packages/ts/memorax-code-backend/src/memory/cli-diagnostics.ts",
   "packages/ts/memorax-code-backend/src/memory/reminder-trace-recorder.ts",
   "packages/ts/memorax-code-backend/src/trace/config.ts",
   "packages/ts/memorax-code-backend/src/trace/context.ts",
@@ -103,7 +105,7 @@ const outboundCapabilityPatterns = [
 ];
 
 const localTraceStorageDependency =
-  /(?:from\s+["'](?:\.\.?\/)+trace\/(?:config|store)\.js["']|\bclientTracePaths\b|\bmemoraxCodeHomeForTrace\b)/;
+  /(?:from\s+["'](?:\.\.?\/)+trace\/(?:config|store)\.js["']|\bclientTracePaths\b|\bmemoraxCodeHomeForTrace\b|(?:diagnostic-record\.mjs|cli-diagnostics\.js))/;
 
 export async function collectLocalTraceOnlyFailures({
   repoRoot = defaultRepoRoot,

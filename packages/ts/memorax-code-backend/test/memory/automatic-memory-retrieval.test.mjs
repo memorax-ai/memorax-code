@@ -193,7 +193,7 @@ test("automatic memory retrieval fails open when MemoraX retrieve times out", as
 
   assert.equal(result.retrieved, false);
   assert.equal(result.skipReason, "retrieve_failed");
-  assert.match(result.error, /aborted/i);
+  assert.equal(result.error, "MemoraX request timed out");
   assert.equal(aborted, true);
 });
 

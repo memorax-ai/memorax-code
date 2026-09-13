@@ -10,9 +10,11 @@ export type MemoraxInvocationErrorKind = "http" | "timeout" | "transport" | "res
 export type MemoraxInvocationFailure = {
   ok: false;
   error: string;
+  errorCode?: string;
   errorKind?: MemoraxInvocationErrorKind;
   httpStatus?: number;
   retryAfterMs?: number;
+  systemCode?: string;
 };
 
 export type MemoraxJsonResponse = {
@@ -20,10 +22,40 @@ export type MemoraxJsonResponse = {
   quota?: MemoraxQuotaSnapshot;
 };
 
-type MemoraxRequestError = Error & {
-  memoraxErrorKind?: MemoraxInvocationErrorKind;
-  status?: number;
-  retryAfterMs?: number;
+class MemoraxRequestError extends Error {
+  constructor(
+    message: string,
+    readonly errorKind: MemoraxInvocationErrorKind,
+    readonly errorCode: string,
+    readonly fields: { httpStatus?: number; retryAfterMs?: number; systemCode?: string } = {},
+  ) {
+    super(message);
+  }
+}
+
+const SYSTEM_CODE_MESSAGES: Record<string, string> = {
+  ENOTFOUND: "MemoraX hostname could not be resolved",
+  EAI_AGAIN: "MemoraX hostname resolution temporarily failed",
+  ECONNREFUSED: "MemoraX connection was refused",
+  ECONNRESET: "MemoraX connection was reset",
+  EPIPE: "MemoraX connection closed unexpectedly",
+  ENETUNREACH: "MemoraX network is unreachable",
+  EHOSTUNREACH: "MemoraX host is unreachable",
+  ETIMEDOUT: "MemoraX request timed out",
+  ESOCKETTIMEDOUT: "MemoraX request timed out",
+  UND_ERR_CONNECT_TIMEOUT: "MemoraX connection timed out",
+  UND_ERR_HEADERS_TIMEOUT: "MemoraX response headers timed out",
+  UND_ERR_BODY_TIMEOUT: "MemoraX response body timed out",
+  UND_ERR_SOCKET: "MemoraX connection closed unexpectedly",
+  DEPTH_ZERO_SELF_SIGNED_CERT: "MemoraX TLS certificate validation failed",
+  SELF_SIGNED_CERT_IN_CHAIN: "MemoraX TLS certificate validation failed",
+  CERT_HAS_EXPIRED: "MemoraX TLS certificate validation failed",
+  CERT_NOT_YET_VALID: "MemoraX TLS certificate validation failed",
+  ERR_TLS_CERT_ALTNAME_INVALID: "MemoraX TLS certificate validation failed",
+  UNABLE_TO_VERIFY_LEAF_SIGNATURE: "MemoraX TLS certificate validation failed",
+  UNABLE_TO_GET_ISSUER_CERT_LOCALLY: "MemoraX TLS certificate validation failed",
+  ERR_SSL_WRONG_VERSION_NUMBER: "MemoraX TLS handshake failed",
+  ERR_SSL_SSLV3_ALERT_HANDSHAKE_FAILURE: "MemoraX TLS handshake failed",
 };
 
 export async function postMemoraxJson(
@@ -50,20 +82,20 @@ export async function postMemoraxJson(
       // Error bodies may echo private input. Let the caller retry from status
       // and Retry-After without including that content in diagnostics.
       await response.arrayBuffer().catch(() => undefined);
-      throw createMemoraxRequestError(`MemoraX HTTP ${response.status}`, "http", {
-        status: response.status,
-        retryAfterMs,
+      throw new MemoraxRequestError(`MemoraX HTTP ${response.status}`, "http", "MEMORAX_HTTP_ERROR", {
+        httpStatus: response.status,
+        ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
       });
     }
     const body = await response.json().catch((error: unknown) => {
       // SyntaxError messages can include response fragments. Preserve body
       // timeout/transport failures so the caller's retry policy still applies.
       if (error instanceof SyntaxError) {
-        throw createMemoraxRequestError("MemoraX response body must be valid JSON", "response");
+        throw new MemoraxRequestError("MemoraX response body must be valid JSON", "response", "MEMORAX_INVALID_JSON");
       }
       throw error;
     });
-    validateMemoraxEnvelope(body);
+    validateMemoraxEnvelope(body, path);
     const featureCode = path === "/v1/memories/add"
       ? "memory_write"
       : path === "/v1/memories/search"
@@ -79,82 +111,74 @@ export async function postMemoraxJson(
 }
 
 export function memoraxInvocationFailure(error: unknown): MemoraxInvocationFailure {
-  const requestError = error instanceof Error ? error as MemoraxRequestError : undefined;
+  const requestError = normalizeMemoraxRequestError(error, false);
   return {
     ok: false,
-    error: formatMemoraxError(error),
-    ...(requestError?.memoraxErrorKind ? { errorKind: requestError.memoraxErrorKind } : {}),
-    ...(Number.isInteger(requestError?.status) ? { httpStatus: requestError?.status } : {}),
-    ...(Number.isFinite(requestError?.retryAfterMs) ? { retryAfterMs: requestError?.retryAfterMs } : {}),
+    error: requestError.message,
+    errorCode: requestError.errorCode,
+    errorKind: requestError.errorKind,
+    ...requestError.fields,
   };
 }
 
-function createMemoraxRequestError(
-  message: string,
-  kind: MemoraxInvocationErrorKind,
-  fields: { status?: number; retryAfterMs?: number } = {},
-): MemoraxRequestError {
-  const error = new Error(message) as MemoraxRequestError;
-  error.memoraxErrorKind = kind;
-  if (fields.status !== undefined) error.status = fields.status;
-  if (fields.retryAfterMs !== undefined) error.retryAfterMs = fields.retryAfterMs;
-  return error;
-}
-
 function normalizeMemoraxRequestError(error: unknown, timedOut: boolean): MemoraxRequestError {
-  if (isMemoraxRequestError(error)) return error;
-  const kind = timedOut || (error instanceof Error && error.name === "AbortError")
-    ? "timeout"
-    : "transport";
-  return createMemoraxRequestError(formatMemoraxError(error), kind);
+  if (error instanceof MemoraxRequestError) return error;
+  const systemCode = memoraxSystemCode(error);
+  const timeout = timedOut
+    || (error instanceof Error && ["AbortError", "TimeoutError"].includes(error.name))
+    || (systemCode !== undefined && /TIME(?:DOUT|OUT)$/.test(systemCode));
+  return new MemoraxRequestError(
+    timeout ? "MemoraX request timed out" : systemCode ? SYSTEM_CODE_MESSAGES[systemCode]! : "MemoraX transport failed",
+    timeout ? "timeout" : "transport",
+    timeout ? "MEMORAX_TIMEOUT" : "MEMORAX_TRANSPORT_ERROR",
+    systemCode ? { systemCode } : {},
+  );
 }
 
-function isMemoraxRequestError(error: unknown): error is MemoraxRequestError {
-  if (!(error instanceof Error)) return false;
-  const kind = (error as MemoraxRequestError).memoraxErrorKind;
-  return kind === "http"
-    || kind === "timeout"
-    || kind === "transport"
-    || kind === "response";
-}
-
-function formatMemoraxError(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  return String(error);
+function memoraxSystemCode(error: unknown): string | undefined {
+  const pending: unknown[] = [error];
+  const visited = new Set<object>();
+  // Node fetch can nest socket errors in causes and AggregateError entries.
+  // Only known machine codes cross this boundary; messages and other fields do not.
+  for (let index = 0; index < pending.length && index < 16; index += 1) {
+    const candidate = pending[index];
+    if (!isRecord(candidate) || visited.has(candidate)) continue;
+    visited.add(candidate);
+    if (typeof candidate.code === "string" && Object.hasOwn(SYSTEM_CODE_MESSAGES, candidate.code)) return candidate.code;
+    if (candidate.cause) pending.push(candidate.cause);
+    if (Array.isArray(candidate.errors)) pending.push(...candidate.errors.slice(0, 16));
+  }
+  return undefined;
 }
 
 function parseRetryAfterMs(value: string | null, now = Date.now()): number | undefined {
   const text = value?.trim();
   if (!text) return undefined;
-  if (/^\d+$/.test(text)) return Number.parseInt(text, 10) * 1000;
+  if (/^\d+$/.test(text)) {
+    const milliseconds = Number.parseInt(text, 10) * 1000;
+    return Number.isFinite(milliseconds) ? milliseconds : undefined;
+  }
   const at = Date.parse(text);
   if (!Number.isFinite(at)) return undefined;
   return Math.max(0, at - now);
 }
 
-function validateMemoraxEnvelope(raw: unknown): void {
-  if (!isRecord(raw)) return;
-  if (raw.success === false) {
-    throw createMemoraxRequestError(memoraxEnvelopeErrorMessage(raw), "response");
-  }
-  const data = isRecord(raw.data) ? raw.data : undefined;
+function validateMemoraxEnvelope(raw: unknown, path: string): void {
+  const data = isRecord(raw) && isRecord(raw.data) ? raw.data : undefined;
   const status = typeof data?.status === "string" ? data.status.trim().toLowerCase() : "";
-  if (["failed", "error", "cancelled", "canceled"].includes(status)) {
-    throw createMemoraxRequestError(memoraxEnvelopeErrorMessage(raw, `MemoraX task ${status}`), "response");
+  if ((isRecord(raw) && raw.success === false) || ["failed", "error", "cancelled", "canceled"].includes(status)) {
+    throw new MemoraxRequestError("MemoraX response reported failure", "response", "MEMORAX_RESPONSE_REJECTED");
   }
-}
-
-function memoraxEnvelopeErrorMessage(raw: Record<string, unknown>, fallback = "MemoraX request failed"): string {
-  const error = raw.error;
-  if (typeof error === "string" && error.trim()) return error.trim();
-  if (isRecord(error)) {
-    for (const key of ["message", "detail", "error"]) {
-      const value = error[key];
-      if (typeof value === "string" && value.trim()) return value.trim();
-    }
+  const valid = path === "/v1/memories/search"
+    ? Array.isArray(raw) || (isRecord(raw) && Array.isArray(raw.data)) || Array.isArray(data?.data)
+    : path === "/v1/memories/add"
+      ? isRecord(raw) && (raw.success === true || (
+        typeof data?.task_id === "string"
+        && Boolean(data.task_id.trim())
+        && ["accepted", "queued", "completed"].includes(status)
+      ))
+      : true;
+  if (!valid) {
+    throw new MemoraxRequestError("MemoraX response has an invalid shape", "response", "MEMORAX_INVALID_RESPONSE");
   }
-  const data = isRecord(raw.data) ? raw.data : undefined;
-  const message = data?.message ?? data?.error;
-  if (typeof message === "string" && message.trim()) return message.trim();
-  return fallback;
 }

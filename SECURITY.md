@@ -233,6 +233,17 @@ are eligible for recovery only after the stale threshold; an interrupted
 acquisition can leave such a record. Stale-lock recovery still requires
 same-directory hard links and actual unlink semantics for claim cleanup.
 
+Failed explicit Search/Add commands create local diagnostic records independently
+of Debug and trace settings. These contain a diagnostic ID, timestamp, schema
+and package versions, platform and runtime version, operation, failure stage,
+stable error code, fixed error summary, impact, and recovery guidance. Known
+system codes, HTTP status, retry delay, client identity, and hashed Session/Turn
+identifiers may be included when available. Records exclude queries, Add text,
+response bodies, raw exception messages, credentials, Authorization headers,
+raw Session/Turn identifiers, and local paths. The CLI prints the saved file's
+path separately; the path is not stored in the record. These files remain local
+and are not runtime or memory authority. See [diagnostic storage and retention](docs/configuration.md#default-searchadd-diagnostics).
+
 Codex, Claude Code, CodeBuddy/WorkBuddy, DSH, OpenCode, and Trae local trace capture is enabled by default.
 Depending on the enabled client capabilities, traces may include prompts,
 responses, recalled memory, writeback content, reminder text, and local paths.

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { backendDebug } from "../shared/debug-log.js";
+import { diagnoseMemoryCliFailure, fileErrorFields, memoryCliUnexpectedFailure, type MemoryCliFailureDetails } from "./cli-diagnostics.js";
 import { invokeMemoraxMemoryProvider } from "../provider/memorax/adapter.js";
 import type { MemoryObservabilityEvent, MemoryObservabilityHook } from "./observability.js";
 import {
@@ -32,9 +33,10 @@ type MemoryCliOptions = {
   env?: Record<string, string | undefined>;
   fetchImpl?: typeof fetch;
   claimQuotaNotice?: QuotaNoticeClaimer;
+  diagnosticTrace?: TraceContext;
 };
 
-type MemoryCliResult = {
+type MemoryCliResult = MemoryCliFailureDetails & {
   ok: boolean;
   action: "memory.status" | "memory.search" | "memory.add";
   error?: string;
@@ -73,10 +75,23 @@ type MemoryCliTraceBinding = Readonly<{
 export async function runMemoryCli(args: string[], options: MemoryCliOptions = {}): Promise<MemoryCliResult> {
   const command = args[0] || "status";
   const env = options.env ?? process.env;
-  const nextOptions = { ...options, env };
+  const nextOptions: MemoryCliOptions = { ...options, env };
   if (command === "status") return await memoryStatus(nextOptions, args.includes("--config-only"));
-  if (command === "search") return memorySearch(args.slice(1), nextOptions);
-  if (command === "add") return memoryAdd(args.slice(1), nextOptions);
+  if (command === "search" || command === "add") {
+    const action = command === "search" ? "memory.search" : "memory.add";
+    let result: MemoryCliResult;
+    try {
+      result = await (command === "search" ? memorySearch : memoryAdd)(args.slice(1), nextOptions);
+    } catch (error) {
+      result = { ok: false, action, ...memoryCliUnexpectedFailure(error) };
+    }
+    if (result.ok) return result;
+    const binding = memoryCliTraceBinding(env);
+    return diagnoseMemoryCliFailure(
+      { ...result, action }, defaultMemoraxCodeHome(env), nextOptions.diagnosticTrace,
+      binding?.client === "codebuddy-native" ? undefined : binding?.client,
+    );
+  }
   return { ok: false, action: "memory.status", error: `unknown memory command: ${command}` };
 }
 
@@ -129,12 +144,13 @@ async function memoryStatus(options: MemoryCliOptions, configOnly = false): Prom
 
 async function memorySearch(args: string[], options: MemoryCliOptions): Promise<MemoryCliResult> {
   const queryResult = await readTextArg(args, "--query", "--query-file", "query");
-  if (!queryResult.ok) return { ok: false, action: "memory.search", error: queryResult.error };
+  if (!queryResult.ok) return { ...queryResult, action: "memory.search" };
   const query = queryResult.text;
   const repositoryMemory = await resolveMemoryCliRepositoryMemory(options);
   if (!repositoryMemory.ok) {
     return memoryCliRepositoryFailure("memory.search", repositoryMemory, { query });
   }
+  options.diagnosticTrace = repositoryMemory.traceContext;
   const observability = await memoryCliObservability(options.env, repositoryMemory.traceContext);
   const response = await invokeMemoraxMemoryProvider(
     { sessionId: memoryCliSessionId(args, options.env), prompt: query },
@@ -160,7 +176,7 @@ async function memorySearch(args: string[], options: MemoryCliOptions): Promise<
     },
   );
   await observability.flush();
-  if (!response.ok) return { ok: false, action: "memory.search", query, error: response.error };
+  if (!response.ok) return { ...response, action: "memory.search" };
   const quotaNotice = response.result.quota
     ? await (options.claimQuotaNotice ?? claimQuotaNotice)(
       repositoryMemory.memory.config,
@@ -185,13 +201,13 @@ async function memorySearch(args: string[], options: MemoryCliOptions): Promise<
 async function memoryAdd(args: string[], options: MemoryCliOptions): Promise<MemoryCliResult> {
   const env = options.env ?? process.env;
   if (env.MEMORAX_CODE_MEMORAX_WRITEBACK_ENABLED === "false") {
-    return { ok: false, action: "memory.add", error: "MEMORAX_CODE_MEMORAX_WRITEBACK_ENABLED=false disables MemoraX add" };
+    return { ok: false, action: "memory.add", errorCode: "MEMORY_ADD_DISABLED", stage: "configuration", error: "MEMORAX_CODE_MEMORAX_WRITEBACK_ENABLED=false disables MemoraX add" };
   }
   if (!memoryCliAddEnabled(env)) {
-    return { ok: false, action: "memory.add", error: "memory add is disabled by MEMORAX_CODE_MEMORY_CLI_ADD_ENABLED=false or [memory.cli].add_enabled=false" };
+    return { ok: false, action: "memory.add", errorCode: "MEMORY_ADD_DISABLED", stage: "configuration", error: "memory add is disabled by MEMORAX_CODE_MEMORY_CLI_ADD_ENABLED=false or [memory.cli].add_enabled=false" };
   }
   const memoryResult = await readTextArg(args, "--memory", "--memory-file", "memory");
-  if (!memoryResult.ok) return { ok: false, action: "memory.add", error: memoryResult.error };
+  if (!memoryResult.ok) return { ...memoryResult, action: "memory.add" };
   const memory = memoryResult.text;
   const maxChars = memoryCliMaxMemoryChars(env);
   if (memory.length > maxChars) {
@@ -205,6 +221,7 @@ async function memoryAdd(args: string[], options: MemoryCliOptions): Promise<Mem
   if (!contentOptions.ok) return { ok: false, action: "memory.add", error: contentOptions.error };
   const repositoryMemory = await resolveMemoryCliRepositoryMemory(options);
   if (!repositoryMemory.ok) return memoryCliRepositoryFailure("memory.add", repositoryMemory);
+  options.diagnosticTrace = repositoryMemory.traceContext;
 
   const sessionId = memoryCliSessionId(args, env);
   const observability = await memoryCliObservability(env, repositoryMemory.traceContext);
@@ -239,7 +256,7 @@ async function memoryAdd(args: string[], options: MemoryCliOptions): Promise<Mem
     },
   );
   await observability.flush();
-  if (!response.ok) return { ok: false, action: "memory.add", error: response.error };
+  if (!response.ok) return { ...response, action: "memory.add" };
   const quotaNotice = response.result.quota
     ? await (options.claimQuotaNotice ?? claimQuotaNotice)(
       repositoryMemory.memory.config,
@@ -361,6 +378,9 @@ function memoryCliRepositoryFailure(
   return {
     ok: false,
     action,
+    errorCode: failure.reason === "config_missing" ? "MEMORY_CONFIG_MISSING"
+      : failure.reason === "workspace_scope_mismatch" ? "MEMORY_SCOPE_MISMATCH" : "MEMORY_SCOPE_UNAVAILABLE",
+    stage: failure.reason === "config_missing" ? "configuration" : "scope",
     ...fields,
     ...(userAction ? {
       workspaceScope: "unavailable" as const,
@@ -490,7 +510,7 @@ async function readTextArg(
   inlineFlag: string,
   fileFlag: string,
   label: string,
-): Promise<{ ok: true; text: string } | { ok: false; error: string }> {
+): Promise<{ ok: true; text: string } | ({ ok: false; error: string } & MemoryCliFailureDetails)> {
   const inline = argValue(args, inlineFlag);
   const file = argValue(args, fileFlag);
   if (inline && file) return { ok: false, error: `use either ${inlineFlag} or ${fileFlag}, not both` };
@@ -499,7 +519,7 @@ async function readTextArg(
     try {
       text = await readFile(file, "utf8");
     } catch (error) {
-      return { ok: false, error: `failed to read ${fileFlag}: ${error instanceof Error ? error.message : String(error)}` };
+      return { ok: false, error: `failed to read ${fileFlag}`, errorCode: "MEMORY_INPUT_UNREADABLE", stage: "input", ...fileErrorFields(error) };
     }
   }
   text = text.trim();

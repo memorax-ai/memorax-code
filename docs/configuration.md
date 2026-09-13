@@ -663,6 +663,31 @@ server. Desktop-only installations do not require a standalone `opencode`
 executable in `PATH`. Trae users can invoke the Skill explicitly, but Trae is
 not an automatic maintenance runner.
 
+## Default Search/Add diagnostics
+
+Failed explicit `memorax-cli search` and `memorax-cli add` commands attempt to
+save a content-free diagnostic by default, independently of Debug logging and
+client trace settings. Successful commands and `memorax-cli status` do not
+create these records. There is no diagnostic enablement setting.
+
+Records are created only on failure under:
+
+```text
+$MEMORAX_CODE_HOME/runtime/diagnostics/<diagnostic-id>.json
+```
+
+The command returns the diagnostic ID and, when saved, its file path. On POSIX
+systems, new diagnostic files use mode `0600` and diagnostic directories are
+created or tightened to `0700`; Windows uses the current user's filesystem
+ACLs. Each successful write attempts to retain the newest 100 records from
+the last seven days. Cleanup is best-effort and runs when a record is written,
+not on a background schedule.
+
+Records retain operational metadata and safe error details, excluding queries,
+Add text, response bodies, credentials, and raw local paths. See
+[Search/Add recovery](troubleshooting.md#memorax-search-add-or-scope-fails) for
+interpreting the output or a diagnostic-storage failure.
+
 ## Local traces
 
 `[trace.codex]`, `[trace.claude]`, `[trace.dsh]`, `[trace.opencode]`,

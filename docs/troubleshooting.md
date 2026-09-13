@@ -580,6 +580,36 @@ environments. Redact proxy details before sharing diagnostics.
 
 ## MemoraX search, add, or scope fails
 
+Failed explicit `memorax-cli search` and `memorax-cli add` commands exit with
+status `1`. Normal output goes to stderr and includes an error code, failure
+stage, impact, next step, diagnostic ID, and saved file path. With `--json`,
+stdout preserves the structured result, including `errorCode`, `stage`,
+`impact`, `userAction`, and `diagnostic`; known `systemCode`, `httpStatus`, and
+`retryAfterMs` fields are included when available.
+
+Open the path reported by the command to inspect its content-free diagnostic;
+no Debug or trace setting needs to be enabled first. If storage fails,
+`diagnostic.recorded` is `false` and `diagnostic.recordingError` gives the
+storage reason. The original operation failure and diagnostic ID are still
+returned; retain the error output and check directory permissions or available
+disk space. [Storage and retention](configuration.md#default-searchadd-diagnostics)
+describe where these records live.
+
+| Error code | Recovery |
+| --- | --- |
+| `MEMORY_INPUT_INVALID`, `MEMORY_INPUT_UNREADABLE` | Check required flags and values, or the input file's existence and readability. |
+| `MEMORY_CONFIG_MISSING`, `MEMORY_ADD_DISABLED` | Check `memorax-cli status`, connection setup, and the explicit Add settings. |
+| `MEMORY_SCOPE_UNAVAILABLE`, `MEMORY_SCOPE_MISMATCH` | Verify repository metadata and start a new session in the intended workspace; see the scope rules below. |
+| `MEMORAX_HTTP_ERROR` | Check `httpStatus`: `401`/`403` point to credentials or permissions; `429` calls for checking limits and any retry delay. Other statuses require checking service availability. |
+| `MEMORAX_TIMEOUT`, `MEMORAX_TRANSPORT_ERROR` | Use the known system code, if present, to check DNS, endpoint reachability, proxy, or TLS configuration. |
+| `MEMORAX_INVALID_JSON`, `MEMORAX_INVALID_RESPONSE`, `MEMORAX_RESPONSE_REJECTED` | Check endpoint and service compatibility; share a reviewed diagnostic if the failure persists. |
+| `MEMORY_CLI_INTERNAL` | Share the reviewed diagnostic and the operation that failed. |
+
+An Add timeout, transport failure, or unusable response can leave service
+acceptance unknown. Verify whether the content was accepted before repeating
+the Add. An input, configuration, or scope failure reports that the request
+was not sent.
+
 ```sh
 memorax-cli status
 memorax-cli search --query 'test'
@@ -656,6 +686,10 @@ memorax-cli status --json
 
 For a client-specific failure, also collect the affected client's diagnostic
 from the start of this guide with `--json`.
+For an explicit Search/Add failure, include its diagnostic ID and the reviewed
+diagnostic file, if saved. Structured command output may contain query or
+workspace fields that are excluded from the diagnostic record; review it
+separately before sharing.
 Include the MemoraX Code version, operating system, affected client,
 reproduction steps, failing command, and the smallest relevant log excerpt.
 

@@ -526,6 +526,7 @@ node -e '
   const report = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
   if (report.ok !== true || report.action !== "memory.status" || report.provider !== "memory.memorax") process.exit(1);
 ' "$home_dir/memorax-cli-status.json"
+node scripts/memory-cli-npm-package-e2e.mjs "$package_install_root"
 "$prefix/bin/memorax-code-codex" --help >/dev/null
 "$prefix/bin/memorax-code-claude" --help >/dev/null
 "$prefix/bin/memorax-code-opencode" --help >/dev/null
