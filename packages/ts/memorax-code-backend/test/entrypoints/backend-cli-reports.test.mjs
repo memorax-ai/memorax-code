@@ -54,10 +54,18 @@ test("Backend failure projection retains safe primary and cleanup evidence witho
   assert.match(stderr.join("\n"), /Cleanup also failed: BACKEND_TERMINATE_FAILED \(EPERM\)/);
   for (const report of [
     { ok: true, action: "start", backend },
-    { ok: false, action: "start", backend, traeAdapter: { ok: false } },
     { ok: false, action: "uninstall", backend: { ok: false } },
   ]) assert.equal(diagnoseLifecycleReport(report, { home }), report);
   assert.equal(readdirSync(join(home, "runtime", "diagnostics")).length, 1);
+  const clientReport = diagnoseLifecycleReport({ ok: false, action: "start", backend, traeAdapter: { ok: false } }, { home });
+  assert.equal(clientReport.backend, backend);
+  assert.equal(clientReport.diagnostic, undefined);
+  assert.equal(clientReport.failure, undefined);
+  assert.equal(clientReport.clientFailures[0].client, "trae");
+  assert.equal(clientReport.clientFailures[0].failure.errorCode, "CLIENT_DEPLOY_FAILED");
+  printLifecycleResult(clientReport);
+  assert.ok(stderr.join("\n").includes(clientReport.clientFailures[0].diagnostic.id));
+  assert.equal(readdirSync(join(home, "runtime", "diagnostics")).length, 2);
 });
 
 function captureReport(t, print, report) {

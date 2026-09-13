@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { codeBuddyMetadataClient, defaultCodeBuddyHome, defaultWorkBuddyHome, readCodeBuddyPackageMetadata, resolveHookCodeBuddyCommand } from "../../memorax-code-adapter-common/src/clients/codebuddy-command.mjs";
 import { readJsonRuntimeRecord, writePrivateJsonRecord } from "../../memorax-code-adapter-common/src/runtime-record.mjs";
 import { withJsonFileLockAsync } from "../../memorax-code-adapter-common/src/config-utils.mjs";
+import { attachDeploymentFailure } from "../../memorax-code-adapter-common/src/deployment-failure.mjs";
 import { fileTreeMatches } from "../../memorax-code-adapter-common/src/file-tree-match.mjs";
 import {
   codeBuddyHookManifestConfigured,
@@ -44,12 +45,12 @@ export async function readManagedCodeBuddyTarget(options = {}) {
   const client = selectedClient(options);
   const path = managedTargetPath(options);
   const state = readJsonRuntimeRecord(path);
-  if (state.status === "invalid") throw new Error(`invalid ${client} installation record: ${path}`);
+  if (state.status === "invalid") throw attachDeploymentFailure(new Error(`invalid ${client} installation record: ${path}`), "state-read", { failureReason: "invalid_record" });
   if (state.status === "present") {
     const value = state.value;
     if (value.version !== 1 || value.client !== client || !stringValue(value.codeBuddyHome)
       || !stringValue(value.codeBuddyCommand)
-      || (value.legacyClientAlias !== undefined && value.legacyClientAlias !== true)) throw new Error(`invalid ${client} installation record: ${path}`);
+      || (value.legacyClientAlias !== undefined && value.legacyClientAlias !== true)) throw attachDeploymentFailure(new Error(`invalid ${client} installation record: ${path}`), "state-read", { failureReason: "invalid_record" });
     if (!options.codeBuddyHome || comparablePath(resolve(options.codeBuddyHome), options.platform ?? process.platform)
       === comparablePath(value.codeBuddyHome, options.platform ?? process.platform)) return value;
   }
@@ -112,17 +113,17 @@ async function resolveTarget(options) {
     const metadataPath = join(root, ".memorax-code-package.json");
     const metadata = readCodeBuddyPackageMetadata(root);
     if (existsSync(metadataPath) && (!metadata || (metadata.client !== undefined && !codeBuddyMetadataClient(metadata, options)))) {
-      throw new Error(`invalid adapter installation metadata: ${metadataPath}`);
+      throw attachDeploymentFailure(new Error(`invalid adapter installation metadata: ${metadataPath}`), "state-read", { failureReason: "invalid_record" });
     }
     if (metadata?.codeBuddyHome && comparablePath(metadata.codeBuddyHome, options.platform ?? process.platform)
-      !== comparablePath(home, options.platform ?? process.platform)) throw new Error(`conflicting adapter installation home: ${metadataPath}`);
+      !== comparablePath(home, options.platform ?? process.platform)) throw attachDeploymentFailure(new Error(`conflicting adapter installation home: ${metadataPath}`), "discover", { failureReason: "conflict" });
   }
   const otherClient = client === "codebuddy" ? "workbuddy" : "codebuddy";
   const other = await readManagedCodeBuddyTarget({ ...options, client: otherClient, codeBuddyHome: home });
   const ownRecord = readJsonRuntimeRecord(managedTargetPath(options)).value;
   if (other && ownRecord && comparablePath(ownRecord.codeBuddyHome, options.platform ?? process.platform)
     === comparablePath(home, options.platform ?? process.platform)) {
-    throw new Error(`conflicting ${client} installation record: ${home} is also managed for ${otherClient}`);
+    throw attachDeploymentFailure(new Error(`conflicting ${client} installation record: ${home} is also managed for ${otherClient}`), "discover", { failureReason: "conflict" });
   }
   return {
     ...(other ? { ownedByOtherClient: otherClient } : {}),
@@ -135,7 +136,7 @@ async function resolveTarget(options) {
 
 function selectedClient(options) {
   const client = options.client ?? "codebuddy";
-  if (client !== "codebuddy" && client !== "workbuddy") throw new Error("invalid CodeBuddy adapter client");
+  if (client !== "codebuddy" && client !== "workbuddy") throw attachDeploymentFailure(new Error("invalid CodeBuddy adapter client"), "discover", { failureReason: "invalid_configuration" });
   return client;
 }
 
@@ -150,50 +151,67 @@ function managedTargetPath(options) {
 async function withManagedTargetLock(options, operation) {
   selectedClient(options);
   const path = join(options.memoraxCodeHome ?? defaultMemoraxCodeHome(), "adapters", "codebuddy-installations.json");
-  return withJsonFileLockAsync(path, operation);
+  try { return await withJsonFileLockAsync(path, operation); }
+  catch (error) { throw attachDeploymentFailure(error, "lock"); }
 }
 
 async function writeManagedTarget(options, value) {
   const path = managedTargetPath(options);
-  writePrivateJsonRecord(path, value, { durableBoundary: dirname(path) });
+  try { writePrivateJsonRecord(path, value, { durableBoundary: dirname(path) }); }
+  catch (error) { throw attachDeploymentFailure(error, "state-write"); }
 }
 
 function stringValue(value) { return typeof value === "string" && value.trim() ? value.trim() : undefined; }
 
 async function enableAdapter(options) {
-  const target = await resolveTarget(options);
-  const { client, codeBuddyHome: home } = target;
-  if (target.ownedByOtherClient) throw new Error(`${home} is managed for ${target.ownedByOtherClient}, not ${client}`);
-  const codeBuddyCommand = target.codeBuddyCommand ?? resolveHookCodeBuddyCommand({ client });
-  const platform = options.platform ?? process.platform;
-  const memoraxCodeHome = options.memoraxCodeHome ?? defaultMemoraxCodeHome();
-  const installPath = options.installPath ?? codeBuddyInstallPath(home);
-  const localPluginPath = marketplacePluginPath(home);
-  await writeManagedTarget(options, { version: 1, ...target, codeBuddyCommand });
-  // Installation alone cannot prove native Hook execution; require a fresh
-  // runtime observation instead of carrying one over from the previous install.
-  await rm(codeBuddyRuntimeObservationPath(memoraxCodeHome, client), { force: true });
-  await rm(legacyCodeBuddyInstallPath(home), { recursive: true, force: true });
-  for (const destination of [installPath, localPluginPath]) {
-    if (!await installedPluginMatches(destination, platform)) {
-      await mkdir(dirname(destination), { recursive: true });
-      await rm(destination, { recursive: true, force: true });
-      await cp(ROOT, destination, { recursive: true, force: true, filter: packageCopyFilter(ROOT) });
-      await materializeCommonRuntime(destination);
-      await materializeCodeBuddyHookManifest(destination, platform);
-      await materializeCanonicalSkill(destination);
+  let stage = "discover";
+  try {
+    const target = await resolveTarget(options);
+    const { client, codeBuddyHome: home } = target;
+    if (target.ownedByOtherClient) throw attachDeploymentFailure(new Error(`${home} is managed for ${target.ownedByOtherClient}, not ${client}`), "discover", { failureReason: "conflict" });
+    const codeBuddyCommand = target.codeBuddyCommand ?? resolveHookCodeBuddyCommand({ client });
+    const platform = options.platform ?? process.platform;
+    const memoraxCodeHome = options.memoraxCodeHome ?? defaultMemoraxCodeHome();
+    const installPath = options.installPath ?? codeBuddyInstallPath(home);
+    const localPluginPath = marketplacePluginPath(home);
+    await writeManagedTarget(options, { version: 1, ...target, codeBuddyCommand });
+    // Installation alone cannot prove native Hook execution; require a fresh
+    // runtime observation instead of carrying one over from the previous install.
+    stage = "state-write";
+    await rm(codeBuddyRuntimeObservationPath(memoraxCodeHome, client), { force: true });
+    stage = "plugin-stage";
+    await rm(legacyCodeBuddyInstallPath(home), { recursive: true, force: true });
+    for (const destination of [installPath, localPluginPath]) {
+      stage = "plugin-stage";
+      if (!await installedPluginMatches(destination, platform)) {
+        await mkdir(dirname(destination), { recursive: true });
+        await rm(destination, { recursive: true, force: true });
+        await cp(ROOT, destination, { recursive: true, force: true, filter: packageCopyFilter(ROOT) });
+        stage = "runtime-stage";
+        await materializeCommonRuntime(destination);
+        stage = "hooks-write";
+        await materializeCodeBuddyHookManifest(destination, platform);
+        stage = "skill-stage";
+        await materializeCanonicalSkill(destination);
+      }
+      stage = "plugin-write";
+      await writePackageMetadata(destination, codeBuddyCommand, home, options.memoraxCodeCommand, client);
     }
-    await writePackageMetadata(destination, codeBuddyCommand, home, options.memoraxCodeCommand, client);
+    stage = "plugin-register";
+    await writeMarketplaceManifest(home);
+    await updateKnownMarketplace(home, true);
+    stage = "config-write";
+    await updateSettings(home, (settings) => {
+      settings.enabledPlugins = recordValue(settings.enabledPlugins);
+      settings.enabledPlugins[PLUGIN_ID] = true;
+      updateCodeBuddyUserPromptHook(settings, codeBuddyUserPromptHookCommand(localPluginPath, platform));
+    });
+    stage = "plugin-register";
+    await updateLegacyRegistry(home, { installPath, enabled: true });
+    return { ok: true, action: "enable", runtime: client, integration: "hooks", installed: true, enabled: true, codeBuddyHome: home, installPath, marketplace: MARKETPLACE_NAME, pluginId: PLUGIN_ID, marketplacePath: localPluginPath, codebuddyHooks: { ok: true, configured: true, runtimeObserved: false, status: "unverified" }, codebuddySkills: { ok: true, status: "installed", managed: true, memoraxCode: true, path: join(localPluginPath, "skills", "memorax-code", "SKILL.md") } };
+  } catch (error) {
+    throw attachDeploymentFailure(error, stage);
   }
-  await writeMarketplaceManifest(home);
-  await updateKnownMarketplace(home, true);
-  await updateSettings(home, (settings) => {
-    settings.enabledPlugins = recordValue(settings.enabledPlugins);
-    settings.enabledPlugins[PLUGIN_ID] = true;
-    updateCodeBuddyUserPromptHook(settings, codeBuddyUserPromptHookCommand(localPluginPath, platform));
-  });
-  await updateLegacyRegistry(home, { installPath, enabled: true });
-  return { ok: true, action: "enable", runtime: client, integration: "hooks", installed: true, enabled: true, codeBuddyHome: home, installPath, marketplace: MARKETPLACE_NAME, pluginId: PLUGIN_ID, marketplacePath: localPluginPath, codebuddyHooks: { ok: true, configured: true, runtimeObserved: false, status: "unverified" }, codebuddySkills: { ok: true, status: "installed", managed: true, memoraxCode: true, path: join(localPluginPath, "skills", "memorax-code", "SKILL.md") } };
 }
 
 async function disableAdapter(options) {
@@ -349,16 +367,21 @@ async function updateRegistry(home, mutate) {
 }
 
 async function updateJsonRecord(path, mutate) {
-  await mkdir(dirname(path), { recursive: true });
-  await withJsonFileLockAsync(path, async () => {
-    const value = await readJsonRecord(path);
-    mutate(value);
-    await writeJsonFile(path, value);
-  }, {
-    timeoutMs: 5000,
-    // WorkBuddy owns this directory; preserve its permission policy.
-    ensurePrivateDirectory: false,
-  });
+  try {
+    await mkdir(dirname(path), { recursive: true });
+    await withJsonFileLockAsync(path, async () => {
+      const value = await readJsonRecord(path);
+      try { mutate(value); }
+      catch (error) { throw attachDeploymentFailure(error, "config-parse", { failureReason: "invalid_configuration" }); }
+      await writeJsonFile(path, value);
+    }, {
+      timeoutMs: 5000,
+      // WorkBuddy owns this directory; preserve its permission policy.
+      ensurePrivateDirectory: false,
+    });
+  } catch (error) {
+    throw attachDeploymentFailure(error, "lock");
+  }
 }
 
 async function updateJsonRecordIfPresent(path, mutate) {
@@ -367,22 +390,31 @@ async function updateJsonRecordIfPresent(path, mutate) {
 
 async function readJsonRecord(path) {
   try {
-    const value = JSON.parse(await readFile(path, "utf8"));
+    let content;
+    try { content = await readFile(path, "utf8"); }
+    catch (error) { throw attachDeploymentFailure(error, "config-read"); }
+    let value;
+    try { value = JSON.parse(content); }
+    catch (error) { throw attachDeploymentFailure(error, "config-parse", { failureReason: "invalid_configuration" }); }
     if (value && typeof value === "object" && !Array.isArray(value)) return value;
-    throw new Error(`invalid JSON object: ${path}`);
+    throw attachDeploymentFailure(new Error(`invalid JSON object: ${path}`), "config-parse", { failureReason: "invalid_configuration" });
   } catch (error) {
     if (error?.code === "ENOENT") return {};
     throw error;
   }
 }
 async function writeJsonFile(path, value) {
-  await mkdir(dirname(path), { recursive: true });
-  let mode = 0o600;
-  try { mode = (await stat(path)).mode & 0o777; } catch {}
-  const temp = `${path}.tmp-${process.pid}-${Date.now()}`;
-  await writeFile(temp, `${JSON.stringify(value, null, 2)}\n`, { mode });
-  await chmod(temp, mode);
-  await rename(temp, path);
+  try {
+    await mkdir(dirname(path), { recursive: true });
+    let mode = 0o600;
+    try { mode = (await stat(path)).mode & 0o777; } catch {}
+    const temp = `${path}.tmp-${process.pid}-${Date.now()}`;
+    await writeFile(temp, `${JSON.stringify(value, null, 2)}\n`, { mode });
+    await chmod(temp, mode);
+    await rename(temp, path);
+  } catch (error) {
+    throw attachDeploymentFailure(error, "config-write");
+  }
 }
 async function pathExists(path) { try { await stat(path); return true; } catch { return false; } }
 function recordValue(value) { return value && typeof value === "object" && !Array.isArray(value) ? value : {}; }

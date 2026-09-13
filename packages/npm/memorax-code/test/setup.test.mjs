@@ -205,6 +205,7 @@ async function runSetup({ existingCache = false, explicitCache = false, codexReg
     "automatic-update-state.mjs",
     "config-utils.mjs",
     "diagnostic-record.mjs",
+    "deployment-failure.mjs",
     "hooks/ensure-backend-runner.mjs",
     "memorax-code-config-file.mjs",
     "hooks/hook-runtime-generation.mjs",
@@ -360,7 +361,12 @@ async function runSetup({ existingCache = false, explicitCache = false, codexReg
     `const hookSnapshot = ${JSON.stringify(hookSnapshot)};`,
     `const hookUpdatePlan = ${JSON.stringify(hookUpdatePlan)};`,
     "if (process.argv[2] === 'codex-plugin' && process.argv[3] === 'hooks') {",
-    `  if (${JSON.stringify(hookSnapshotFails)}) process.exit(7);`,
+    `  if (${JSON.stringify(hookSnapshotFails)}) {`,
+    "    const failure = { errorCode: 'CLIENT_HOOKS_READ_FAILED', stage: 'hooks-read', failureReason: 'invalid_response', error: 'Hook discovery returned an invalid result.', impact: 'Hook trust could not be checked.', userAction: 'Check the native plugin state.' };",
+    "    const diagnostic = writeDiagnosticRecord(process.env.MEMORAX_CODE_HOME, { source: 'memorax-code', operation: 'client.deploy', client: 'codex', ...failure });",
+    "    console.log(JSON.stringify({ ok: false, clientFailures: [{ client: 'codex', failure, diagnostic }] }));",
+    "    process.exit(7);",
+    "  }",
     "  console.log(JSON.stringify({ ok: true, action: 'codex-plugin-hooks', hooks: hookSnapshot }));",
     "  process.exit(0);",
     "}",
@@ -892,6 +898,26 @@ test("setup update mode skips MemoraX credentials and silently trusts verified H
   }
 });
 
+test("setup update retains the original diagnostic when the pre-update Hook inspection fails", async () => {
+  const run = await runSetup({
+    existingCache: true, updateMode: true, hookSnapshotFails: true,
+    memoraxCodeConfig: "[clients]\ncodex = true\nclaude = false\n",
+    memoraxEnv: { MEMORAX_CODE_SETUP_VERBOSE: "0" },
+  });
+  try {
+    assert.equal(run.result.code, 0, run.result.stderr);
+    assert.match(run.result.stderr, /CLIENT_HOOKS_READ_FAILED/);
+    assert.match(run.result.stderr, /Existing Codex hooks could not be inspected/);
+    assert.doesNotMatch(run.log, /^memorax-code codex-plugin trust-hooks/m);
+    const directory = join(run.memoraxCodeHome, "runtime", "diagnostics");
+    const files = await readdir(directory);
+    assert.equal(files.length, 1);
+    const record = JSON.parse(await readFile(join(directory, files[0]), "utf8"));
+    assert.equal(record.operation, "client.deploy");
+    assert.ok(run.result.stderr.includes(record.id));
+  } finally { await rm(run.root, { recursive: true, force: true }); }
+});
+
 test("setup repairs missing Codex registration even when the plugin cache exists", async () => {
   const run = await runSetup({
     claudeAvailable: false,
@@ -913,7 +939,7 @@ test("setup repairs missing Codex registration even when the plugin cache exists
     assert.equal(run.result.code, 0, run.result.stderr);
     assert.match(run.log, /^memorax-code codex-plugin registration --json$/m);
     assert.match(run.log, /^memorax-code codex-plugin install --json$/m);
-    assert.match(run.log, /^memorax-code codex-plugin activate --yes$/m);
+    assert.match(run.log, /^memorax-code codex-plugin activate --yes --json$/m);
     assert.doesNotMatch(run.log, /^memorax-code codex-plugin hooks /m);
     assert.doesNotMatch(run.log, /^memorax-code codex-plugin trust-hooks /m);
     await assertSetupComplete(run);
@@ -931,7 +957,7 @@ test("setup fresh install auto-detects Codex and skips an unavailable Claude run
     assert.equal(run.result.code, 0, run.result.stderr);
     assert.doesNotMatch(run.result.stderr, /Configure MemoraX Code for which clients/);
     assert.match(run.log, /^codex --version$/m);
-    assert.match(run.result.stderr, /Claude Code runtime was not detected; skipping its adapter setup/);
+    assert.match(run.result.stderr, /Claude Code runtime could not run; skipping its adapter setup/);
     assert.match(run.result.stderr, /DeepSeek Harness adapter: unavailable/);
     assert.doesNotMatch(run.result.stderr, /DeepSeek Harness adapter: not ok/);
     assert.match(run.log, /^memorax-code codex-plugin install --json$/m);
@@ -1397,7 +1423,7 @@ test("interactive setup after reinstall automatically reuses a complete MemoraX 
     assert.doesNotMatch(run.result.stderr, /No MemoraX connection response was received/);
     assert.doesNotMatch(run.result.stderr, /Username|Preferred language|MemoraX API key/);
     assert.doesNotMatch(run.result.stderr, /existing-secret|existing-user/);
-    assert.match(run.log, /^memorax-code codex-plugin activate --yes$/m);
+    assert.match(run.log, /^memorax-code codex-plugin activate --yes --json$/m);
     assert.match(run.result.stderr, /MemoraX memory: .*Configured/);
     assert.match(run.result.stderr, /Automatic writeback: Disabled by effective configuration/);
     assert.equal(
@@ -1798,7 +1824,7 @@ test("automatic update setup preserves configured and legacy DSH client intent",
   try {
     assert.equal(run.result.code, 0, run.result.stderr);
     assert.match(run.result.stderr, /DeepSeek Harness profiles: found \(default\)/);
-    assert.match(run.result.stderr, /Claude Code runtime was not detected; skipping its adapter setup/);
+    assert.match(run.result.stderr, /Claude Code runtime could not run; skipping its adapter setup/);
     assert.match(run.result.stderr, /OpenCode runtime or configuration was not detected; skipping its adapter setup/);
     assert.match(run.result.stderr, /CodeBuddy CLI runtime was not detected; skipping its adapter setup/);
     assert.match(run.log, /^memorax-code start --clients codex,claude,dsh,opencode,codebuddy --json$/m);

@@ -18,11 +18,16 @@ const root = await mkdtemp(join(tmpdir(), "memorax-code-lifecycle-diagnostics-e2
 const userHome = join(root, "user");
 const workspace = join(root, "private-workspace-canary");
 const healthyHome = join(root, "healthy-state");
+const clientHome = join(root, "failed-client-state");
 const malformedPid = "{private-pid-record-canary\n";
 const backendToken = "synthetic-backend-token-canary-for-installed-lifecycle";
 const healthResponseCanary = "private-health-response-body-canary";
+const clientContentCanary = "private-client-file-content-canary";
 let healthyPort;
 let healthyCleanupNeeded = false;
+let clientPort;
+let clientCleanupNeeded = false;
+let clientPid;
 
 try {
   await Promise.all([userHome, workspace, join(root, "tmp")]
@@ -116,6 +121,43 @@ try {
   assert.equal(await readFile(blockedPidPath, "utf8"), malformedPid);
   assert.equal(await readFile(join(blockedHome, "runtime", "diagnostics"), "utf8"), "not a directory\n");
 
+  const traeHome = join(root, "private-trae-home-canary");
+  await mkdir(traeHome, { recursive: true });
+  await writeFile(join(traeHome, "skills"), clientContentCanary);
+  clientPort = await freePort();
+  clientCleanupNeeded = true;
+  const clientOutput = await runCli("start", clientHome, {
+    port: clientPort, clients: "trae", extraArgs: ["--trae-home", traeHome],
+  });
+  assert.equal(clientOutput.code, 1);
+  assert.equal(clientOutput.stderr, "");
+  const clientReport = JSON.parse(clientOutput.stdout);
+  clientPid = clientReport.backend?.state?.pid;
+  assert.equal(clientReport.ok, false);
+  assert.equal(clientReport.backend.ok, true, "Client deployment failure must not become a Backend failure");
+  assert.ok(Number.isSafeInteger(clientPid) && clientPid > 0);
+  assert.equal(clientReport.failure, undefined);
+  assert.equal(clientReport.diagnostic, undefined);
+  assert.equal(clientReport.clientFailures.length, 1);
+  const clientFailure = clientReport.clientFailures[0];
+  assert.equal(clientFailure.client, "trae");
+  assert.equal(clientFailure.failure.errorCode, "CLIENT_SKILL_STAGE_FAILED");
+  assert.equal(clientFailure.failure.stage, "skill-stage");
+  assert.ok(["EEXIST", "ENOTDIR"].includes(clientFailure.failure.systemCode));
+  assert.equal(clientFailure.failure.processState, "running");
+  await assertDiagnostic({ ...clientFailure, action: "start" }, clientHome, "client.start");
+  const clientRecord = JSON.parse(await readFile(clientFailure.diagnostic.path, "utf8"));
+  assert.equal(clientRecord.client, "trae");
+  assert.equal((await diagnosticFiles(clientHome)).length, 1);
+  assert.equal(await readFile(join(traeHome, "skills"), "utf8"), clientContentCanary);
+  const clientStopped = await runCli("stop", clientHome, { port: clientPort });
+  assert.equal(clientStopped.code, 0, clientStopped.stdout);
+  await assertProcessExited(clientPid);
+  await assert.rejects(readFile(join(clientHome, "runtime", "backend", "backend.pid.json")), { code: "ENOENT" });
+  await assertPortAvailable(clientPort);
+  assert.equal((await diagnosticFiles(clientHome)).length, 1);
+  clientCleanupNeeded = false;
+
   healthyPort = await freePort();
   healthyCleanupNeeded = true;
   const backendPids = [];
@@ -142,12 +184,22 @@ try {
   await assert.rejects(readFile(join(healthyHome, "runtime", "backend", "backend.pid.json")), { code: "ENOENT" });
   await assertPortAvailable(healthyPort);
   healthyCleanupNeeded = false;
-  console.log("Installed lifecycle CLI diagnostics E2E passed (debug off, clients none, local only).");
+  console.log("Installed lifecycle CLI diagnostics E2E passed (debug off, isolated clients, local only).");
 } finally {
   let cleanupConfirmed = true;
+  if (clientCleanupNeeded) {
+    const cleanup = await runCli("stop", clientHome, { port: clientPort });
+    cleanupConfirmed = cleanup.code === 0;
+    if (cleanupConfirmed) {
+      if (clientPid) await assertProcessExited(clientPid);
+      await assert.rejects(readFile(join(clientHome, "runtime", "backend", "backend.pid.json")), { code: "ENOENT" });
+      await assertPortAvailable(clientPort);
+    }
+    else console.error("Client deployment E2E cleanup could not confirm Backend shutdown; fixture state was retained.");
+  }
   if (healthyCleanupNeeded) {
     const cleanup = await runCli("stop", healthyHome, { port: healthyPort });
-    cleanupConfirmed = cleanup.code === 0;
+    cleanupConfirmed = cleanup.code === 0 && cleanupConfirmed;
     if (!cleanupConfirmed) console.error("Lifecycle E2E cleanup could not confirm Backend shutdown; fixture state was retained.");
   }
   if (cleanupConfirmed) await rm(root, { recursive: true, force: true });
@@ -168,20 +220,20 @@ async function jsonFailure(action, stateHome, errorCode, stage, options = {}) {
   return report;
 }
 
-async function assertDiagnostic(report, stateHome) {
+async function assertDiagnostic(report, stateHome, operation = `backend.${report.action}`) {
   const diagnostic = report.diagnostic;
   assert.equal(diagnostic.recorded, true);
   assert.ok(diagnostic.id);
   assert.equal(diagnostic.path, join(stateHome, "runtime", "diagnostics", `${diagnostic.id}.json`));
   const text = await readFile(diagnostic.path, "utf8");
-  for (const canary of [root, stateHome, workspace, malformedPid.trim(), backendToken, healthResponseCanary]) {
+  for (const canary of [root, stateHome, workspace, malformedPid.trim(), backendToken, healthResponseCanary, clientContentCanary]) {
     assert.equal(text.includes(canary), false, "Diagnostic records must omit paths, raw PID records, and tokens");
   }
   const record = JSON.parse(text);
   assert.equal(record.schemaVersion, 1);
   assert.equal(record.id, diagnostic.id);
   assert.equal(record.source, "memorax-code");
-  assert.equal(record.operation, `backend.${report.action}`);
+  assert.equal(record.operation, operation);
   assert.equal(record.version, packageVersion);
   assert.equal(record.platform, process.platform);
   assert.ok(record.runtimeVersion);
@@ -197,8 +249,8 @@ async function assertDiagnostic(report, stateHome) {
   if (process.platform !== "win32") assert.equal((await stat(diagnostic.path)).mode & 0o777, 0o600);
 }
 
-async function runCli(action, stateHome, { json = true, suppressGuidance = false, port = 18787 } = {}) {
-  const args = [entrypoint, action, "--home", stateHome, "--host", "127.0.0.1", "--port", String(port), "--clients", "none"];
+async function runCli(action, stateHome, { json = true, suppressGuidance = false, port = 18787, clients = "none", extraArgs = [] } = {}) {
+  const args = [entrypoint, action, "--home", stateHome, "--host", "127.0.0.1", "--port", String(port), "--clients", clients, ...extraArgs];
   if (json) args.push("--json");
   const env = isolatedEnv(stateHome);
   if (suppressGuidance) env.MEMORAX_CODE_BACKEND_SUPPRESS_GUIDANCE = "1";

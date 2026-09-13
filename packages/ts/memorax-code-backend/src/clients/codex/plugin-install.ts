@@ -11,6 +11,7 @@ import {
   isCompleteCodexPluginArtifact,
 } from "../../../../memorax-code-adapter-common/src/clients/codex-plugin-artifact.mjs";
 import { atomicWriteJson } from "../../../../memorax-code-adapter-common/src/config-utils.mjs";
+import { attachDeploymentFailure, deploymentFailure, type DeploymentFailure } from "../../../../memorax-code-adapter-common/src/deployment-failure.mjs";
 import { fileTreeMatches } from "../../../../memorax-code-adapter-common/src/file-tree-match.mjs";
 import {
   confirmHookTrust,
@@ -105,6 +106,7 @@ type CodexPluginCommandResult = {
   stderr: string;
   skipped?: boolean;
   reason?: string;
+  failure?: DeploymentFailure;
 };
 
 export type CodexPluginRemoveReport = {
@@ -113,7 +115,8 @@ export type CodexPluginRemoveReport = {
   codexHome: string;
   marketplacePath: string;
   pluginSourcePath: string;
-  pluginRemove: { ok: boolean; skipped?: boolean; reason?: string; stdout: string; stderr: string };
+  pluginRemove: CodexPluginCommandResult;
+  failure?: DeploymentFailure;
   removedPaths: string[];
   marketplaceChanged: boolean;
   startsBackend: false;
@@ -180,7 +183,7 @@ async function updateVersionedCodexPlugin(
 ): Promise<CodexPluginInstallReport> {
   const manifest = await readJsonRecord(join(sourceRoot, ".codex-plugin", "plugin.json"));
   const version = stringField(manifest, "version");
-  if (!version) throw new Error("bundled Codex plugin manifest is missing version");
+  if (!version) throw attachDeploymentFailure(new Error("bundled Codex plugin manifest is missing version"), "plugin-stage", { failureReason: "invalid_record" });
 
   const marketplaceRoot = codexCliMarketplaceRoot(codexHome);
   const marketplacePath = join(marketplaceRoot, ".agents", "plugins", "marketplace.json");
@@ -195,7 +198,9 @@ async function updateVersionedCodexPlugin(
   const cacheRoot = join(codexHome, "plugins", "cache", CLI_MARKETPLACE_NAME, PLUGIN_NAME);
   const cachePath = join(cacheRoot, version);
   await publishImmutableDirectory(cachePath, dirname(cacheRoot), version, async (temporaryRoot) => {
-    await cp(pluginSourcePath, temporaryRoot, { recursive: true });
+    await cp(pluginSourcePath, temporaryRoot, { recursive: true }).catch((error) => {
+      throw attachDeploymentFailure(error, "plugin-stage");
+    });
   });
 
   const marketplace = await readMarketplace(marketplacePath);
@@ -212,7 +217,10 @@ async function updateVersionedCodexPlugin(
   const previousMarketplace = await readFile(marketplacePath, "utf8");
   const nextMarketplace = `${JSON.stringify(marketplace, null, 2)}\n`;
   const changed = previousMarketplace !== nextMarketplace;
-  if (changed) atomicWriteJson(marketplacePath, marketplace);
+  if (changed) {
+    try { atomicWriteJson(marketplacePath, marketplace); }
+    catch (error) { throw attachDeploymentFailure(error, "plugin-register"); }
+  }
 
   return {
     ok: true,
@@ -278,14 +286,14 @@ export async function activateCodexPlugin(options: CodexPluginActivateOptions = 
     if (registrationBefore.available) {
       marketplaceAdd = skippedPluginCommand("marketplace_registration_preserved");
     } else {
-      marketplaceAdd = await runCommand(codexCommand, ["plugin", "marketplace", "add", cliMarketplaceRoot, "--json"], { cwd: workspace, env });
+      marketplaceAdd = await runCommand(codexCommand, ["plugin", "marketplace", "add", cliMarketplaceRoot, "--json"], { cwd: workspace, env, failureStage: "plugin-register" });
       if (!marketplaceAdd.ok) {
-        throw new Error(`codex plugin marketplace add failed: ${marketplaceAdd.stderr || marketplaceAdd.stdout || "unknown error"}`);
+        throw Object.assign(new Error(`codex plugin marketplace add failed: ${marketplaceAdd.stderr || marketplaceAdd.stdout || "unknown error"}`), { failure: deploymentFailure(marketplaceAdd, "plugin-register") });
       }
     }
-    pluginAdd = await runCommand(codexCommand, ["plugin", "add", PLUGIN_ID, "--json"], { cwd: workspace, env });
+    pluginAdd = await runCommand(codexCommand, ["plugin", "add", PLUGIN_ID, "--json"], { cwd: workspace, env, failureStage: "plugin-install" });
     if (!pluginAdd.ok) {
-      throw new Error(`codex plugin add failed: ${pluginAdd.stderr || pluginAdd.stdout || "unknown error"}`);
+      throw Object.assign(new Error(`codex plugin add failed: ${pluginAdd.stderr || pluginAdd.stdout || "unknown error"}`), { failure: deploymentFailure(pluginAdd, "plugin-install") });
     }
   } else {
     marketplaceAdd = skippedPluginCommand("versioned_installation_preserved");
@@ -302,15 +310,17 @@ export async function activateCodexPlugin(options: CodexPluginActivateOptions = 
     "version",
   );
   if (!registration.registered || !registration.enabled) {
-    throw new Error("Codex plugin registration was not enabled after activation");
+    throw attachDeploymentFailure(new Error("Codex plugin registration was not enabled after activation"), "verify-native", { failureReason: "verification_failed" });
   }
   if (!expectedVersion || registration.version !== expectedVersion) {
-    throw new Error(`Codex plugin registration version does not match ${expectedVersion ?? "the installed plugin"}`);
+    throw attachDeploymentFailure(new Error(`Codex plugin registration version does not match ${expectedVersion ?? "the installed plugin"}`), "verify-native", { failureReason: "verification_failed" });
   }
   await removePersonalMarketplaceEntry(bootstrapMarketplacePath);
-  const hooks = await listMemoraxCodeHooks(codexCommand, workspace, env);
+  const hooks = await listMemoraxCodeHooks(codexCommand, workspace, env).catch((error) => {
+    throw attachDeploymentFailure(error, "hooks-read");
+  });
   if (hooks.length === 0) {
-    throw new Error("no MemoraX Code plugin hooks found after installing the Codex plugin");
+    throw attachDeploymentFailure(new Error("no MemoraX Code plugin hooks found after installing the Codex plugin"), "verify-native", { failureReason: "verification_failed" });
   }
   if (!options.yes) await confirmHookTrust(hooks);
   const configPath = join(install.codexHome, "config.toml");
@@ -320,7 +330,7 @@ export async function activateCodexPlugin(options: CodexPluginActivateOptions = 
     codexCommand,
     workspace,
     hooks,
-  });
+  }).catch((error) => { throw attachDeploymentFailure(error, "hooks-write"); });
   return {
     ok: true,
     action: "codex-plugin-activate",
@@ -349,11 +359,14 @@ export async function inspectCodexPluginRegistration(
     cwd: workspace,
     env: { ...process.env, HOME: home, CODEX_HOME: codexHome },
     timeoutMs: PLUGIN_LIST_TIMEOUT_MS,
+    failureStage: "plugin-list",
   });
   if (!result.ok) {
-    throw new Error(`codex plugin list failed: ${result.stderr || result.stdout || "unknown error"}`);
+    throw Object.assign(new Error(`codex plugin list failed: ${result.stderr || result.stdout || "unknown error"}`), { failure: deploymentFailure(result, "plugin-list") });
   }
-  const state = parseCodexPluginList(result.stdout);
+  let state;
+  try { state = parseCodexPluginList(result.stdout); }
+  catch (error) { throw attachDeploymentFailure(error, "plugin-list", { failureReason: "invalid_response" }); }
   return {
     ok: true,
     action: "codex-plugin-registration",
@@ -388,6 +401,7 @@ export async function removeCodexPlugin(options: CodexPluginRemoveOptions = {}):
     marketplacePath,
     pluginSourcePath,
     pluginRemove,
+    ...(!pluginRemove.ok ? { failure: deploymentFailure(pluginRemove, "plugin-remove") } : {}),
     removedPaths,
     marketplaceChanged,
     startsBackend: false,
@@ -398,14 +412,14 @@ async function removeActivatedCodexPlugin(
   options: CodexPluginRemoveOptions,
   home: string,
   codexHome: string,
-): Promise<{ ok: boolean; skipped?: boolean; reason?: string; stdout: string; stderr: string }> {
+): Promise<CodexPluginCommandResult> {
   const codexCommand = options.codexCommand ?? process.env.CODEX_CLI_PATH ?? "codex";
   const workspace = resolve(options.workspace ?? process.cwd());
   const env = { ...process.env, HOME: home, CODEX_HOME: codexHome };
-  const explicit = await runCommand(codexCommand, ["plugin", "remove", `${PLUGIN_NAME}@${CLI_MARKETPLACE_NAME}`], { cwd: workspace, env });
-  if (commandUnavailable(explicit)) return { ...explicit, ok: true, skipped: true, reason: "codex_cli_unavailable" };
-  const marketplace = await runCommand(codexCommand, ["plugin", "marketplace", "remove", CLI_MARKETPLACE_NAME], { cwd: workspace, env });
-  if (commandUnavailable(marketplace)) return { ...marketplace, ok: true, skipped: true, reason: "codex_cli_unavailable" };
+  const explicit = await runCommand(codexCommand, ["plugin", "remove", `${PLUGIN_NAME}@${CLI_MARKETPLACE_NAME}`], { cwd: workspace, env, failureStage: "plugin-remove" });
+  if (commandUnavailable(explicit)) return { ok: true, stdout: explicit.stdout, stderr: explicit.stderr, skipped: true, reason: "codex_cli_unavailable" };
+  const marketplace = await runCommand(codexCommand, ["plugin", "marketplace", "remove", CLI_MARKETPLACE_NAME], { cwd: workspace, env, failureStage: "plugin-remove" });
+  if (commandUnavailable(marketplace)) return { ok: true, stdout: marketplace.stdout, stderr: marketplace.stderr, skipped: true, reason: "codex_cli_unavailable" };
   const results = [explicit, marketplace];
   const failed = results.find((result) => !result.ok && !/not found|not installed|not configured or installed|unknown marketplace/i.test(result.stderr || result.stdout));
   if (failed) return failed;
@@ -417,22 +431,26 @@ async function removeActivatedCodexPlugin(
 }
 
 async function stageCodexCliMarketplace(install: CodexPluginInstallReport): Promise<string> {
-  const root = codexCliMarketplaceRoot(install.codexHome);
-  const pluginPath = join(root, "plugins", PLUGIN_NAME);
-  const manifestPath = join(root, ".agents", "plugins", "marketplace.json");
-  const manifest = {
-    name: CLI_MARKETPLACE_NAME,
-    interface: { displayName: "MemoraX Code" },
-    plugins: [pluginEntry(`./plugins/${PLUGIN_NAME}`)],
-  };
-  if (await fileTreeMatches(install.pluginSourcePath, pluginPath)
-    && isDeepStrictEqual(await readJsonRecord(manifestPath), manifest)) return root;
-  await rm(root, { recursive: true, force: true });
-  await mkdir(dirname(manifestPath), { recursive: true });
-  await mkdir(dirname(pluginPath), { recursive: true });
-  await cp(install.pluginSourcePath, pluginPath, { recursive: true });
-  await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
-  return root;
+  try {
+    const root = codexCliMarketplaceRoot(install.codexHome);
+    const pluginPath = join(root, "plugins", PLUGIN_NAME);
+    const manifestPath = join(root, ".agents", "plugins", "marketplace.json");
+    const manifest = {
+      name: CLI_MARKETPLACE_NAME,
+      interface: { displayName: "MemoraX Code" },
+      plugins: [pluginEntry(`./plugins/${PLUGIN_NAME}`)],
+    };
+    if (await fileTreeMatches(install.pluginSourcePath, pluginPath)
+      && isDeepStrictEqual(await readJsonRecord(manifestPath), manifest)) return root;
+    await rm(root, { recursive: true, force: true });
+    await mkdir(dirname(manifestPath), { recursive: true });
+    await mkdir(dirname(pluginPath), { recursive: true });
+    await cp(install.pluginSourcePath, pluginPath, { recursive: true });
+    await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+    return root;
+  } catch (error) {
+    throw attachDeploymentFailure(error, "plugin-stage");
+  }
 }
 
 function codexCliMarketplaceRoot(codexHome: string): string {
@@ -482,7 +500,7 @@ function adapterSourceRoot(): string {
     resolve(current, "..", "..", "..", "memorax-code-codex-adapter"),
   ];
   const found = candidates.find((candidate) => existsSync(join(candidate, ".codex-plugin", "plugin.json")));
-  if (!found) throw new Error("bundled Codex plugin source is missing .codex-plugin/plugin.json");
+  if (!found) throw attachDeploymentFailure(new Error("bundled Codex plugin source is missing .codex-plugin/plugin.json"), "discover", { failureReason: "missing_source" });
   return found;
 }
 
@@ -500,65 +518,87 @@ async function publishImmutableDirectory(
     await verifyVersionedPlugin(targetRoot, version);
     return;
   }
-  await mkdir(temporaryParent, { recursive: true });
+  await mkdir(temporaryParent, { recursive: true }).catch((error) => {
+    throw attachDeploymentFailure(error, "plugin-stage");
+  });
   const temporaryRoot = join(
     temporaryParent,
     `.${PLUGIN_NAME}-${process.pid}-${randomUUID()}.tmp`,
   );
+  let stageError: unknown;
   try {
     await stage(temporaryRoot);
     await verifyVersionedPlugin(temporaryRoot, version);
     await mkdir(dirname(targetRoot), { recursive: true });
     await rename(temporaryRoot, targetRoot);
+  } catch (error) {
+    stageError = attachDeploymentFailure(error, "plugin-publish");
+    throw stageError;
   } finally {
-    await rm(temporaryRoot, { recursive: true, force: true });
-  }
-}
-
-async function verifyVersionedPlugin(root: string, version: string): Promise<void> {
-  const manifest = await readJsonRecord(join(root, ".codex-plugin", "plugin.json"));
-  const pluginInterface = isRecord(manifest?.interface) ? manifest.interface : undefined;
-  const shell = await readJsonRecord(join(root, "hooks", "runtime-shell.json"));
-  const metadata = await readJsonRecord(join(root, ".memorax-code-package.json"));
-  if (stringField(manifest, "name") !== PLUGIN_NAME
-    || stringField(manifest, "version") !== version
-    || stringField(pluginInterface, "composerIcon") !== "./assets/composer-icon.png"
-    || stringField(pluginInterface, "logo") !== "./assets/logo.png"
-    || shell?.version !== 1
-    || shell.runtimeAbi !== 1
-    || stringField(shell, "shellVersion") !== version
-    || !stringField(metadata, "memoraxCodeCommand")) {
-    throw new Error(`Codex plugin artifact version does not match ${version}`);
-  }
-  if (!isCompleteCodexPluginArtifact(root)) {
-    throw new Error("Codex plugin artifact is missing the manifest or memory skill");
-  }
-  if (!await readJsonRecord(join(root, "hooks", "hooks.json"))) {
-    throw new Error("Codex plugin artifact has invalid hooks/hooks.json");
-  }
-  for (const path of [
-    "assets/composer-icon.png",
-    "assets/logo.png",
-    "hooks/hook-launcher.mjs",
-    "hooks/runtime-hook.mjs",
-  ]) {
-    if (!existsSync(join(root, ...path.split("/")))) {
-      throw new Error(`Codex plugin artifact is missing ${path}`);
+    try { await rm(temporaryRoot, { recursive: true, force: true }); }
+    catch (error) {
+      if (error && typeof error === "object") {
+        Object.assign(error, { failure: stageError
+          ? deploymentFailure(stageError, "plugin-publish", { cleanupError: error })
+          : deploymentFailure(error, "cleanup") });
+      }
+      throw error;
     }
   }
 }
 
-async function stagePluginSource(sourceRoot: string, targetRoot: string): Promise<void> {
-  // activate also ensures installation; reuse the complete, transformed tree.
-  if (await stagedPluginMatches(sourceRoot, targetRoot)) return;
-  await mkdir(dirname(targetRoot), { recursive: true });
-  await rm(targetRoot, { recursive: true, force: true });
-  await rm(join(dirname(targetRoot), ADAPTER_COMMON_NAME), { recursive: true, force: true });
-  await mkdir(targetRoot, { recursive: true });
-  for (const entry of PLUGIN_SOURCE_ENTRIES) {
-    await cp(join(sourceRoot, entry), join(targetRoot, entry), { recursive: true });
+async function verifyVersionedPlugin(root: string, version: string): Promise<void> {
+  try {
+    const manifest = await readJsonRecord(join(root, ".codex-plugin", "plugin.json"));
+    const pluginInterface = isRecord(manifest?.interface) ? manifest.interface : undefined;
+    const shell = await readJsonRecord(join(root, "hooks", "runtime-shell.json"));
+    const metadata = await readJsonRecord(join(root, ".memorax-code-package.json"));
+    if (stringField(manifest, "name") !== PLUGIN_NAME
+      || stringField(manifest, "version") !== version
+      || stringField(pluginInterface, "composerIcon") !== "./assets/composer-icon.png"
+      || stringField(pluginInterface, "logo") !== "./assets/logo.png"
+      || shell?.version !== 1
+      || shell.runtimeAbi !== 1
+      || stringField(shell, "shellVersion") !== version
+      || !stringField(metadata, "memoraxCodeCommand")) {
+      throw new Error(`Codex plugin artifact version does not match ${version}`);
+    }
+    if (!isCompleteCodexPluginArtifact(root)) {
+      throw new Error("Codex plugin artifact is missing the manifest or memory skill");
+    }
+    if (!await readJsonRecord(join(root, "hooks", "hooks.json"))) {
+      throw new Error("Codex plugin artifact has invalid hooks/hooks.json");
+    }
+    for (const path of [
+      "assets/composer-icon.png",
+      "assets/logo.png",
+      "hooks/hook-launcher.mjs",
+      "hooks/runtime-hook.mjs",
+    ]) {
+      if (!existsSync(join(root, ...path.split("/")))) {
+        throw new Error(`Codex plugin artifact is missing ${path}`);
+      }
+    }
+  } catch (error) {
+    throw attachDeploymentFailure(error, "verify", { failureReason: "verification_failed" });
   }
-  await stageAdapterCommonSource(sourceRoot, targetRoot);
+}
+
+async function stagePluginSource(sourceRoot: string, targetRoot: string): Promise<void> {
+  try {
+    // activate also ensures installation; reuse the complete, transformed tree.
+    if (await stagedPluginMatches(sourceRoot, targetRoot)) return;
+    await mkdir(dirname(targetRoot), { recursive: true });
+    await rm(targetRoot, { recursive: true, force: true });
+    await rm(join(dirname(targetRoot), ADAPTER_COMMON_NAME), { recursive: true, force: true });
+    await mkdir(targetRoot, { recursive: true });
+    for (const entry of PLUGIN_SOURCE_ENTRIES) {
+      await cp(join(sourceRoot, entry), join(targetRoot, entry), { recursive: true });
+    }
+    await stageAdapterCommonSource(sourceRoot, targetRoot);
+  } catch (error) {
+    throw attachDeploymentFailure(error, "plugin-stage");
+  }
 }
 
 async function stagedPluginMatches(sourceRoot: string, targetRoot: string): Promise<boolean> {
@@ -580,14 +620,18 @@ async function stagedPluginMatches(sourceRoot: string, targetRoot: string): Prom
 }
 
 async function stageAdapterCommonSource(sourceRoot: string, targetRoot: string): Promise<void> {
-  const commonSourceRoot = resolve(sourceRoot, "..", ADAPTER_COMMON_NAME);
-  if (!existsSync(join(commonSourceRoot, "src"))) {
-    throw new Error(`bundled adapter common source is missing: ${commonSourceRoot}`);
+  try {
+    const commonSourceRoot = resolve(sourceRoot, "..", ADAPTER_COMMON_NAME);
+    if (!existsSync(join(commonSourceRoot, "src"))) {
+      throw attachDeploymentFailure(new Error(`bundled adapter common source is missing: ${commonSourceRoot}`), "runtime-stage", { failureReason: "missing_source" });
+    }
+    const commonTargetRoot = join(targetRoot, ADAPTER_COMMON_NAME);
+    await rm(commonTargetRoot, { recursive: true, force: true });
+    await cp(commonSourceRoot, commonTargetRoot, { recursive: true });
+    await rewriteAdapterCommonImports(targetRoot);
+  } catch (error) {
+    throw attachDeploymentFailure(error, "runtime-stage");
   }
-  const commonTargetRoot = join(targetRoot, ADAPTER_COMMON_NAME);
-  await rm(commonTargetRoot, { recursive: true, force: true });
-  await cp(commonSourceRoot, commonTargetRoot, { recursive: true });
-  await rewriteAdapterCommonImports(targetRoot);
 }
 
 async function rewriteAdapterCommonImports(targetRoot: string): Promise<void> {
@@ -616,38 +660,46 @@ function mjsFiles(root: string): string[] {
 }
 
 async function writePluginMetadata(pluginSourcePath: string, codexCommand?: string): Promise<void> {
-  const normalizedCodexCommand = nonEmpty(codexCommand);
-  const npmExecPath = nonEmpty(process.env.MEMORAX_CODE_NPM_EXEC_PATH);
-  const metadata = {
-    version: 1,
-    memoraxCodeCommand: process.argv[1],
-    ...(normalizedCodexCommand ? { codexCommand: normalizedCodexCommand } : {}),
-    ...(npmExecPath ? { npmExecPath } : {}),
-  };
-  const path = join(pluginSourcePath, ".memorax-code-package.json");
-  const { writtenAt: _writtenAt, ...previous } = await readJsonRecord(path) ?? {};
-  if (isDeepStrictEqual(previous, metadata)) return;
-  await writeFile(path, `${JSON.stringify({ ...metadata, writtenAt: new Date().toISOString() }, null, 2)}\n`, "utf8");
+  try {
+    const normalizedCodexCommand = nonEmpty(codexCommand);
+    const npmExecPath = nonEmpty(process.env.MEMORAX_CODE_NPM_EXEC_PATH);
+    const metadata = {
+      version: 1,
+      memoraxCodeCommand: process.argv[1],
+      ...(normalizedCodexCommand ? { codexCommand: normalizedCodexCommand } : {}),
+      ...(npmExecPath ? { npmExecPath } : {}),
+    };
+    const path = join(pluginSourcePath, ".memorax-code-package.json");
+    const { writtenAt: _writtenAt, ...previous } = await readJsonRecord(path) ?? {};
+    if (isDeepStrictEqual(previous, metadata)) return;
+    await writeFile(path, `${JSON.stringify({ ...metadata, writtenAt: new Date().toISOString() }, null, 2)}\n`, "utf8");
+  } catch (error) {
+    throw attachDeploymentFailure(error, "plugin-write");
+  }
 }
 
 async function upsertPersonalMarketplace(marketplacePath: string, entry: MarketplaceEntry): Promise<boolean> {
-  const before = existsSync(marketplacePath) ? await readFile(marketplacePath, "utf8") : undefined;
-  const marketplace = await readMarketplace(marketplacePath);
-  marketplace.interface ??= { displayName: "Personal" };
-  const plugins = Array.isArray(marketplace.plugins) ? marketplace.plugins : [];
-  const nextPlugins = [...plugins];
-  const index = nextPlugins.findIndex((item) => isRecord(item) && item.name === entry.name);
-  if (index >= 0) {
-    const existing = isRecord(nextPlugins[index]) ? nextPlugins[index] : {};
-    nextPlugins[index] = { ...existing, ...entry };
-  } else {
-    nextPlugins.push(entry);
+  try {
+    const before = existsSync(marketplacePath) ? await readFile(marketplacePath, "utf8") : undefined;
+    const marketplace = await readMarketplace(marketplacePath);
+    marketplace.interface ??= { displayName: "Personal" };
+    const plugins = Array.isArray(marketplace.plugins) ? marketplace.plugins : [];
+    const nextPlugins = [...plugins];
+    const index = nextPlugins.findIndex((item) => isRecord(item) && item.name === entry.name);
+    if (index >= 0) {
+      const existing = isRecord(nextPlugins[index]) ? nextPlugins[index] : {};
+      nextPlugins[index] = { ...existing, ...entry };
+    } else {
+      nextPlugins.push(entry);
+    }
+    marketplace.plugins = nextPlugins;
+    await mkdir(dirname(marketplacePath), { recursive: true });
+    const next = `${JSON.stringify(marketplace, null, 2)}\n`;
+    await writeFile(marketplacePath, next, "utf8");
+    return before !== next;
+  } catch (error) {
+    throw attachDeploymentFailure(error, "plugin-register");
   }
-  marketplace.plugins = nextPlugins;
-  await mkdir(dirname(marketplacePath), { recursive: true });
-  const next = `${JSON.stringify(marketplace, null, 2)}\n`;
-  await writeFile(marketplacePath, next, "utf8");
-  return before !== next;
 }
 
 async function removePersonalMarketplaceEntry(marketplacePath: string): Promise<boolean> {
@@ -689,8 +741,14 @@ async function removeCachedPluginRoots(codexHome: string, removedPaths: string[]
 
 async function readMarketplace(marketplacePath: string): Promise<MarketplaceFile> {
   if (!existsSync(marketplacePath)) return { name: "personal", interface: { displayName: "Personal" }, plugins: [] };
-  const parsed = JSON.parse(await readFile(marketplacePath, "utf8"));
-  if (!isRecord(parsed)) throw new Error(`${marketplacePath} must contain a JSON object`);
+  let content;
+  try { content = await readFile(marketplacePath, "utf8"); }
+  catch (error) { throw attachDeploymentFailure(error, "config-read"); }
+  let parsed;
+  try {
+    parsed = JSON.parse(content);
+    if (!isRecord(parsed)) throw new Error(`${marketplacePath} must contain a JSON object`);
+  } catch (error) { throw attachDeploymentFailure(error, "config-parse", { failureReason: "invalid_configuration" }); }
   if (!nonEmpty(typeof parsed.name === "string" ? parsed.name : undefined)) parsed.name = "personal";
   return parsed;
 }
@@ -788,8 +846,8 @@ function marketplaceName(marketplace: MarketplaceFile): string {
 function runCommand(
   command: string,
   args: string[],
-  options: { cwd: string; env: NodeJS.ProcessEnv; timeoutMs?: number },
-): Promise<{ ok: boolean; stdout: string; stderr: string }> {
+  options: { cwd: string; env: NodeJS.ProcessEnv; timeoutMs?: number; failureStage?: string },
+): Promise<CodexPluginCommandResult> {
   return new Promise((resolveResult) => {
     let invocation;
     try {
@@ -799,19 +857,25 @@ function runCommand(
         ok: false,
         stdout: "",
         stderr: error instanceof Error ? error.message : String(error),
+        failure: deploymentFailure(error, options.failureStage ?? "native-command", { commandResult: { error } }),
       });
       return;
     }
-    const child = spawn(invocation.command, invocation.args, {
-      cwd: options.cwd,
-      env: options.env,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    let child;
+    try {
+      child = spawn(invocation.command, invocation.args, {
+        cwd: options.cwd,
+        env: options.env,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (error) {
+      throw attachDeploymentFailure(error, options.failureStage ?? "native-command", { commandResult: { error } });
+    }
     let stdout = "";
     let stderr = "";
     let settled = false;
     let timeout: NodeJS.Timeout | undefined;
-    const finish = (result: { ok: boolean; stdout: string; stderr: string }) => {
+    const finish = (result: CodexPluginCommandResult) => {
       if (settled) return;
       settled = true;
       if (timeout) clearTimeout(timeout);
@@ -824,16 +888,21 @@ function runCommand(
           ok: false,
           stdout,
           stderr: stderr || `command timed out after ${options.timeoutMs}ms`,
+          failure: deploymentFailure(undefined, options.failureStage ?? "native-command", { failureReason: "timeout" }),
         });
       }, options.timeoutMs);
     }
     child.stdout.on("data", (chunk) => { stdout += String(chunk); });
     child.stderr.on("data", (chunk) => { stderr += String(chunk); });
     child.on("error", (error) => {
-      finish({ ok: false, stdout, stderr: stderr || error.message });
+      finish({ ok: false, stdout, stderr: stderr || error.message,
+        failure: deploymentFailure(error, options.failureStage ?? "native-command", { commandResult: { error } }),
+      });
     });
-    child.on("close", (code) => {
-      finish({ ok: code === 0, stdout, stderr });
+    child.on("close", (code, signal) => {
+      finish({ ok: code === 0, stdout, stderr,
+        ...(code !== 0 ? { failure: deploymentFailure(undefined, options.failureStage ?? "native-command", { commandResult: { status: code, signal } }) } : {}),
+      });
     });
   });
 }

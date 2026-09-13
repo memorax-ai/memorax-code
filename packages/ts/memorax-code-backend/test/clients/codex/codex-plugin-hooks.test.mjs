@@ -13,7 +13,7 @@ async function runMemoraxCode(args, env, { timeoutMs = 4000 } = {}) {
   return await new Promise((resolve) => {
     const startedAt = Date.now();
     const child = spawn(process.execPath, [cliPath, ...args], {
-      env: { ...process.env, ...env },
+      env: { ...process.env, ...env, MEMORAX_CODE_HOME: join(env.HOME, "memorax-code") },
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";
@@ -26,6 +26,20 @@ async function runMemoraxCode(args, env, { timeoutMs = 4000 } = {}) {
       resolve({ code, stdout, stderr, durationMs: Date.now() - startedAt, timedOut: Date.now() - startedAt >= timeoutMs });
     });
   });
+}
+
+function assertHookFailure(result, stage, expectedReason) {
+  assert.equal(result.code, 1, result.stderr);
+  const report = JSON.parse(result.stdout);
+  assert.equal(report.ok, false);
+  assert.equal(report.clientFailures.length, 1);
+  const detail = report.clientFailures[0];
+  assert.equal(detail.client, "codex");
+  assert.equal(detail.failure.stage, stage);
+  assert.equal(detail.failure.errorCode, `CLIENT_${stage.toUpperCase().replaceAll("-", "_")}_FAILED`);
+  assert([expectedReason].flat().includes(detail.failure.failureReason), JSON.stringify(detail.failure));
+  assert.doesNotMatch(JSON.stringify(detail.failure), /hooks\/hooks\.json|sha256:|must-not-leak|private-rpc-canary/);
+  return detail;
 }
 
 async function createFakeCodex(root) {
@@ -98,7 +112,7 @@ rl.on("line", (line) => {
     if (process.env.TEST_CODEX_CONFIG_CONFLICT === "1") {
       console.log(JSON.stringify({ id: message.id, error: {
         code: -32600,
-        message: "Configuration was modified since last read. Fetch latest version and retry.",
+        message: "Configuration was modified since last read. Fetch latest version and retry. private-rpc-canary provider_api_key=must-not-leak",
         data: { config_write_error_code: "configVersionConflict" }
       } }));
       return;
@@ -279,7 +293,7 @@ test("codex-plugin trust-hooks rejects a Hook that changed after review", async 
     });
 
     assert.equal(result.code, 1);
-    assert.match(result.stderr, /hook changed after review/i);
+    assertHookFailure(result, "hooks-write", "hook_changed_after_review");
     assert.equal(await readFile(configPath, "utf8"), 'model = "unchanged"\n');
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -301,7 +315,7 @@ test("codex-plugin hooks rejects malformed hooks/list payloads", async () => {
       TEST_CODEX_MALFORMED_HOOKS: "missing-data",
     });
     assert.equal(missingData.code, 1);
-    assert.match(missingData.stderr, /invalid result\.data/i);
+    assertHookFailure(missingData, "hooks-read", "invalid_response");
 
     const incompleteHook = hook("incomplete", "sha256:incomplete");
     delete incompleteHook.currentHash;
@@ -313,7 +327,7 @@ test("codex-plugin hooks rejects malformed hooks/list payloads", async () => {
       TEST_CODEX_HOOKS: JSON.stringify([incompleteHook]),
     });
     assert.equal(incomplete.code, 1);
-    assert.match(incomplete.stderr, /incomplete MemoraX Code hook metadata/i);
+    assertHookFailure(incomplete, "hooks-read", "hook_metadata_incomplete");
 
     for (const field of ["handlerType", "eventName", "command"]) {
       const missingReviewField = hook(`missing-${field}`, `sha256:missing-${field}`);
@@ -326,7 +340,7 @@ test("codex-plugin hooks rejects malformed hooks/list payloads", async () => {
         TEST_CODEX_HOOKS: JSON.stringify([missingReviewField]),
       });
       assert.equal(missing.code, 1, field);
-      assert.match(missing.stderr, /incomplete MemoraX Code hook metadata/i, field);
+      assertHookFailure(missing, "hooks-read", "hook_metadata_incomplete");
     }
 
     const unknownTrustStatus = hook("unknown-trust", "sha256:unknown-trust", "future-status");
@@ -338,18 +352,18 @@ test("codex-plugin hooks rejects malformed hooks/list payloads", async () => {
       TEST_CODEX_HOOKS: JSON.stringify([unknownTrustStatus]),
     });
     assert.equal(unknownTrust.code, 1);
-    assert.match(unknownTrust.stderr, /incomplete MemoraX Code hook metadata/i);
+    assertHookFailure(unknownTrust, "hooks-read", "hook_metadata_incomplete");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
 
 for (const { mode, expected } of [
-  { mode: "missing-profile", expected: /invalid user config layer/i },
-  { mode: "profile-only", expected: /0 base user config layers/i },
-  { mode: "no-user", expected: /0 base user config layers/i },
-  { mode: "multiple-base", expected: /2 base user config layers/i },
-  { mode: "invalid-config", expected: /invalid base user config layer/i },
+  { mode: "missing-profile", expected: "user_config_layer_invalid" },
+  { mode: "profile-only", expected: "base_config_layer_missing" },
+  { mode: "no-user", expected: "base_config_layer_missing" },
+  { mode: "multiple-base", expected: "base_config_layer_ambiguous" },
+  { mode: "invalid-config", expected: "base_config_layer_invalid" },
 ]) {
   test(`codex-plugin trust-hooks rejects ambiguous or malformed base user config layers: ${mode}`, async () => {
     const root = await mkdtemp(join(tmpdir(), `memorax-code-codex-hooks-layer-${mode}-`));
@@ -371,7 +385,7 @@ for (const { mode, expected } of [
         MEMORAX_CODE_CODEX_HOOK_TRUST_SELECTION_JSON: JSON.stringify([selected]),
       });
       assert.equal(result.code, 1, result.stderr);
-      assert.match(result.stderr, expected);
+      assertHookFailure(result, "config-read", expected);
       const requests = (await readFile(rpcLog, "utf8")).trim().split(/\r?\n/).map((line) => JSON.parse(line));
       assert.equal(requests.some((request) => request.method === "config/batchWrite"), false);
     } finally {
@@ -400,7 +414,12 @@ test("codex-plugin trust-hooks fails closed on config version conflicts without 
       MEMORAX_CODE_CODEX_HOOK_TRUST_SELECTION_JSON: JSON.stringify([selected]),
     });
     assert.equal(result.code, 1);
-    assert.match(result.stderr, /modified since last read/i);
+    const detail = assertHookFailure(result, "hooks-write", "config_version_conflict");
+    assert.doesNotMatch(`${result.stdout}\n${result.stderr}`, /private-rpc-canary|must-not-leak/);
+    assert.equal(detail.diagnostic.recorded, true);
+    const diagnostic = await readFile(detail.diagnostic.path, "utf8");
+    assert.match(diagnostic, /config_version_conflict/);
+    assert.doesNotMatch(diagnostic, /private-rpc-canary|must-not-leak|provider_api_key|hooks\/hooks\.json|sha256:/);
     const requests = (await readFile(rpcLog, "utf8")).trim().split(/\r?\n/).map((line) => JSON.parse(line));
     assert.equal(requests.filter((request) => request.method === "config/batchWrite").length, 1);
   } finally {
@@ -428,7 +447,7 @@ test("codex-plugin trust-hooks does not fall back when config/batchWrite is unav
       MEMORAX_CODE_CODEX_HOOK_TRUST_SELECTION_JSON: JSON.stringify([selected]),
     });
     assert.equal(result.code, 1);
-    assert.match(result.stderr, /Method not found/);
+    assertHookFailure(result, "hooks-write", "method_unavailable");
     assert.equal(await readFile(configPath, "utf8"), 'model = "preserved"\n');
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -453,7 +472,7 @@ test("codex-plugin trust-hooks verifies the selected Hooks after batch writing",
       MEMORAX_CODE_CODEX_HOOK_TRUST_SELECTION_JSON: JSON.stringify([selected]),
     });
     assert.equal(result.code, 1);
-    assert.match(result.stderr, /trust could not be verified/i);
+    assertHookFailure(result, "hooks-write", "hook_trust_unverified");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -479,7 +498,7 @@ test("codex-plugin trust-hooks handles app-server stdin errors without crashing"
     assert.equal(result.code, 1);
     assert.equal(result.timedOut, false);
     assert.doesNotMatch(result.stderr, /Unhandled 'error' event/);
-    assert.match(result.stderr, /EPIPE|broken pipe|exited before completing|request was closed/i);
+    assertHookFailure(result, "native-command", ["stdin_transport", "app_server_exit"]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

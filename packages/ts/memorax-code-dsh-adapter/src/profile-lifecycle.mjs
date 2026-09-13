@@ -48,6 +48,9 @@ const {
 const { resolveWindowsCliInvocation } = await import(
   pathToFileURL(join(commonRoot, "windows-cli-invocation.mjs")).href
 );
+const { attachDeploymentFailure, deploymentFailure } = await import(
+  pathToFileURL(join(commonRoot, "deployment-failure.mjs")).href
+);
 
 const STATE_VERSION = 1;
 const RUNTIME = "dsh";
@@ -118,7 +121,7 @@ export function discoverDshProfiles(options = {}) {
     entries = readdirSync(paths.profilesRoot, { withFileTypes: true });
   } catch (error) {
     if (error?.code === "ENOENT") return [];
-    throw error;
+    throw attachDeploymentFailure(error, "discover");
   }
   return entries
     .filter((entry) => entry.isDirectory() && validProfileName(entry.name))
@@ -153,7 +156,7 @@ export function collectDshAdapterStatus(options = {}) {
       profiles,
     };
     if (stateProblem) {
-      return { ok: false, ...base, reason: stateProblem.reason };
+      return { ok: false, ...base, reason: stateProblem.reason, failure: stateProblem.failure };
     }
     if (!state && profiles.length === 0) {
       return { ok: true, ...base, skipped: true, reason: "no_existing_profiles" };
@@ -176,6 +179,7 @@ export function collectDshAdapterStatus(options = {}) {
         ...base,
         compatible: false,
         reason: compatibility.reason,
+        failure: compatibility.failure,
       };
     }
     if (compatibility.compatible !== true) {
@@ -227,7 +231,7 @@ export function collectDshAdapterStatus(options = {}) {
           ? { reason: "profile_drift" }
           : {}),
     };
-  } catch {
+  } catch (error) {
     return {
       ok: false,
       integration: "plugin",
@@ -236,6 +240,7 @@ export function collectDshAdapterStatus(options = {}) {
       enabled: false,
       profiles: [],
       reason: "dsh_status_unavailable",
+      failure: deploymentFailure(error, "discover"),
     };
   }
 }
@@ -249,18 +254,25 @@ export function withDshPluginLifecycleLock(options = {}, operation) {
     throw new TypeError("DSH lifecycle lock requires an operation");
   }
   const paths = resolvePaths(options);
-  return withJsonFileLockAsync(paths.statePath, () => operation(Object.freeze({
-    status: () => readDshPluginStatusUnlocked(paths, options),
-    ensureInstalled: (overrides = {}) => ensureDshPluginInstalledUnlocked(
-      paths,
-      { ...options, ...overrides },
-    ),
-    activate: () => activateDshPluginInstallationUnlocked(paths, options),
-    quiesce: () => quiesceDshPluginInstallationUnlocked(paths),
-    disable: () => disableDshPluginInstallationUnlocked(paths, options, false),
-    remove: () => disableDshPluginInstallationUnlocked(paths, options, true),
-  })), {
+  let entered = false;
+  return withJsonFileLockAsync(paths.statePath, () => {
+    entered = true;
+    return operation(Object.freeze({
+      status: () => readDshPluginStatusUnlocked(paths, options),
+      ensureInstalled: (overrides = {}) => ensureDshPluginInstalledUnlocked(
+        paths,
+        { ...options, ...overrides },
+      ),
+      activate: () => activateDshPluginInstallationUnlocked(paths, options),
+      quiesce: () => quiesceDshPluginInstallationUnlocked(paths),
+      disable: () => disableDshPluginInstallationUnlocked(paths, options, false),
+      remove: () => disableDshPluginInstallationUnlocked(paths, options, true),
+    }));
+  }, {
     timeoutMs: DEFAULT_LIFECYCLE_LOCK_TIMEOUT_MS,
+  }).catch((error) => {
+    const stage = !entered || error?.code === "JSON_FILE_LOCK_RELEASE_FAILED" ? "lock" : "deploy";
+    throw attachDeploymentFailure(error, stage);
   });
 }
 
@@ -316,7 +328,7 @@ function ensureDshPluginInstalledUnlocked(paths, options) {
 
   const profiles = discoverDshProfiles({ ...options, dshHome: paths.dshHome });
   if (profiles.length === 0) {
-    if (state) atomicWriteJson(paths.statePath, disabledState(state, []));
+    if (state) writeDshState(paths, disabledState(state, []));
     return {
       ok: !state,
       action: "dsh-plugin-install",
@@ -327,6 +339,7 @@ function ensureDshPluginInstalledUnlocked(paths, options) {
       ...(!state ? { skipped: true } : {}),
       reason: "no_existing_profiles",
       detectedProfiles: [],
+      ...(state ? { failure: deploymentFailure(undefined, "discover", { failureReason: "not_ready" }) } : {}),
     };
   }
 
@@ -335,7 +348,7 @@ function ensureDshPluginInstalledUnlocked(paths, options) {
     const nextState = state?.enabled === true
       ? disabledState(state, state.profiles)
       : state;
-    if (nextState && nextState !== state) atomicWriteJson(paths.statePath, nextState);
+    if (nextState && nextState !== state) writeDshState(paths, nextState);
     return {
       ok: false,
       action: "dsh-plugin-install",
@@ -360,6 +373,7 @@ function ensureDshPluginInstalledUnlocked(paths, options) {
       action: "dsh-plugin-install",
       runtime: RUNTIME,
       reason: "profile_plugin_conflict",
+      failure: deploymentFailure(undefined, "plugin-install", { failureReason: "conflict" }),
       profiles: conflicts,
     };
   }
@@ -376,6 +390,7 @@ function ensureDshPluginInstalledUnlocked(paths, options) {
         action: "dsh-plugin-install",
         runtime: RUNTIME,
         reason: "profile_manifest_unreadable",
+        failure: headless.failure ?? deploymentFailure(undefined, "config-read", { failureReason: "invalid_record" }),
         profiles: [HEADLESS_PROFILE_NAME],
       };
     }
@@ -385,6 +400,7 @@ function ensureDshPluginInstalledUnlocked(paths, options) {
         action: "dsh-plugin-install",
         runtime: RUNTIME,
         reason: "headless_profile_not_capable",
+        failure: deploymentFailure(undefined, "verify-native", { failureReason: "not_ready" }),
         profiles: [HEADLESS_PROFILE_NAME],
       };
     }
@@ -429,7 +445,7 @@ function ensureDshPluginInstalledUnlocked(paths, options) {
     ])].sort(),
     updatedAt: now,
   };
-  atomicWriteJson(paths.statePath, pendingState);
+  writeDshState(paths, pendingState);
 
   const installedProfiles = [];
   const failedProfiles = [];
@@ -442,7 +458,7 @@ function ensureDshPluginInstalledUnlocked(paths, options) {
         && current.status === "directory_missing")) {
       failedProfiles.push(current.status === "directory_missing"
         ? { name: profile.name, reason: "profile_disappeared" }
-        : profileManifestFailure(profile.name));
+        : profileManifestFailure(profile.name, current));
       continue;
     }
     if (!profileHasInstalledAdapter(current.profile, runtimeBundleRoot, pendingState)) {
@@ -515,7 +531,7 @@ function ensureDshPluginInstalledUnlocked(paths, options) {
   for (const profile of finalProfiles) {
     if (failedProfiles.some((failure) => failure.name === profile.name)) continue;
     if (profile.status === "manifest_unreadable") {
-      failedProfiles.push(profileManifestFailure(profile.name));
+      failedProfiles.push(profileManifestFailure(profile.name, profile));
     } else if (profile.status === "valid"
       && !profileHasInstalledAdapter(profile.profile, runtimeBundleRoot, pendingState)) {
       failedProfiles.push({ name: profile.name, reason: "dsh_bundle_not_activated" });
@@ -551,6 +567,12 @@ function ensureDshPluginInstalledUnlocked(paths, options) {
       testedDshVersions: [...DSH_TESTED_VERSIONS],
       installedProfiles,
       failedProfiles,
+      failure: deploymentFailure({ failure: failedProfiles[0].failure }, "verify-native", {
+        failureReason: "verification_failed",
+        ...(rollback.failedProfiles.length > 0 ? {
+          cleanupError: { code: rollback.failedProfiles[0].failure?.systemCode },
+        } : {}),
+      }),
       ...(failureReason ? { reason: failureReason } : {}),
       ...(rollback.failedProfiles.length > 0
         ? { rollbackFailedProfiles: rollback.failedProfiles }
@@ -566,7 +588,7 @@ function ensureDshPluginInstalledUnlocked(paths, options) {
     profiles: managedProfiles,
     updatedAt: new Date().toISOString(),
   };
-  atomicWriteJson(paths.statePath, nextState);
+  writeDshState(paths, nextState);
   // A failed reconciliation may reinstall the prior bundle during rollback,
   // so retire old generations only after every target Profile succeeds.
   if (failedProfiles.length === 0 && managedProfiles.length > 0) {
@@ -587,6 +609,9 @@ function ensureDshPluginInstalledUnlocked(paths, options) {
     testedDshVersions: [...DSH_TESTED_VERSIONS],
     installedProfiles,
     failedProfiles,
+    ...(failedProfiles.length > 0 ? {
+      failure: failedProfiles[0].failure ?? deploymentFailure(undefined, "verify-native", { failureReason: "verification_failed" }),
+    } : {}),
     ...(failureReason ? { reason: failureReason } : {}),
   };
 }
@@ -663,7 +688,7 @@ function rollbackDshPluginReconciliation(paths, options, state, mutatedProfiles,
   const verificationState = rollbackState.enabled
     ? { ...rollbackState, enabled: false }
     : rollbackState;
-  atomicWriteJson(paths.statePath, verificationState);
+  writeDshState(paths, verificationState);
   let authorityRestored = true;
   for (const name of state.profiles) {
     const profile = inspectProfile(name, join(paths.profilesRoot, name));
@@ -686,7 +711,7 @@ function rollbackDshPluginReconciliation(paths, options, state, mutatedProfiles,
       "dsh_bundle_not_restored",
     ));
   }
-  if (authorityRestored) atomicWriteJson(paths.statePath, rollbackState);
+  if (authorityRestored) writeDshState(paths, rollbackState);
   return { authorityRestored, failedProfiles: rollbackFailedProfiles };
 }
 
@@ -707,10 +732,11 @@ function activateDshPluginInstallationUnlocked(paths, options) {
       action: "dsh-plugin-activate",
       runtime: RUNTIME,
       reason: "managed_profiles_not_installed",
+      failure: deploymentFailure(undefined, "verify-native", { failureReason: "not_ready" }),
     };
   }
   const nextState = { ...state, enabled: true, updatedAt: new Date().toISOString() };
-  atomicWriteJson(paths.statePath, nextState);
+  writeDshState(paths, nextState);
   return {
     ok: true,
     action: "dsh-plugin-activate",
@@ -728,7 +754,7 @@ function quiesceDshPluginInstallationUnlocked(paths) {
   if (stateProblem) return { ...stateProblem, action: "dsh-plugin-quiesce" };
   if (!state) return notManaged(paths, "dsh-plugin-quiesce");
   const nextState = disabledState(state, state.profiles);
-  atomicWriteJson(paths.statePath, nextState);
+  writeDshState(paths, nextState);
   return {
     ok: true,
     action: "dsh-plugin-quiesce",
@@ -751,7 +777,7 @@ function disableDshPluginInstallationUnlocked(paths, options, removeState) {
   if (!state) return notManaged(paths, action);
 
   const disabled = disabledState(state, state.profiles);
-  atomicWriteJson(paths.statePath, disabled);
+  writeDshState(paths, disabled);
   const dshCommand = resolveDshCommand(options, paths, state);
   const removedProfiles = [];
   const failedProfiles = [];
@@ -762,7 +788,7 @@ function disableDshPluginInstallationUnlocked(paths, options, removeState) {
       continue;
     }
     if (before.status === "manifest_unreadable") {
-      failedProfiles.push(profileManifestFailure(name));
+      failedProfiles.push(profileManifestFailure(name, before));
       continue;
     }
     if (!profileMentionsAdapter(before.profile)) {
@@ -781,7 +807,7 @@ function disableDshPluginInstallationUnlocked(paths, options, removeState) {
   }
 
   if (failedProfiles.length > 0) {
-    atomicWriteJson(paths.statePath, disabledState(disabled, failedProfiles.map((profile) => profile.name).sort()));
+    writeDshState(paths, disabledState(disabled, failedProfiles.map((profile) => profile.name).sort()));
     const failureReason = pluginManagerFailureReason(failedProfiles);
     return {
       ok: false,
@@ -790,15 +816,18 @@ function disableDshPluginInstallationUnlocked(paths, options, removeState) {
       enabled: false,
       removedProfiles,
       failedProfiles,
+      failure: failedProfiles[0].failure ?? deploymentFailure(undefined, "verify-native", { failureReason: "verification_failed" }),
       ...(failureReason ? { reason: failureReason } : {}),
     };
   }
 
   if (removeState) {
-    rmSync(paths.statePath, { force: true });
-    rmSync(paths.runtimeRoot, { recursive: true, force: true });
+    try { rmSync(paths.statePath, { force: true }); }
+    catch (error) { throw attachDeploymentFailure(error, "state-write"); }
+    try { rmSync(paths.runtimeRoot, { recursive: true, force: true }); }
+    catch (error) { throw attachDeploymentFailure(error, "plugin-remove"); }
   }
-  else atomicWriteJson(paths.statePath, disabledState(disabled, []));
+  else writeDshState(paths, disabledState(disabled, []));
   return {
     ok: true,
     action,
@@ -824,7 +853,7 @@ function removeProfileAdapterPackages(
   for (const packageName of packageNames) {
     if (profile.status === "directory_missing") break;
     if (profile.status !== "valid") {
-      failure ??= profileManifestFailure(name);
+      failure ??= profileManifestFailure(name, profile);
       break;
     }
     if (!profileMentionsPackage(profile.profile, packageName)) continue;
@@ -860,13 +889,18 @@ function removeProfileAdapterPackages(
 }
 
 function materializeRuntimeBundle(paths, metadata) {
+  try { return materializeRuntimeBundleUnchecked(paths, metadata); }
+  catch (error) { throw attachDeploymentFailure(error, "runtime-stage"); }
+}
+
+function materializeRuntimeBundleUnchecked(paths, metadata) {
   const manifest = readJsonObject(join(paths.adapterRoot, "package.json"));
   if (manifest?.name !== ADAPTER_PACKAGE_NAME
     || !nonEmpty(manifest.version)
     || manifest.main !== "src/index.mjs"
     || !isDeepStrictEqual(manifest.exports, { ".": "./src/index.mjs" })
     || !isDeepStrictEqual(manifest.files, PROFILE_BUNDLE_FILES)) {
-    throw new Error("MemoraX Code DSH adapter source manifest is invalid");
+    throw attachDeploymentFailure(new Error("MemoraX Code DSH adapter source manifest is invalid"), "runtime-stage", { failureReason: "invalid_configuration" });
   }
 
   const sourceFiles = ["package.json", ...PROFILE_BUNDLE_FILES]
@@ -888,6 +922,7 @@ function materializeRuntimeBundle(paths, metadata) {
   mkdirSync(paths.runtimeRoot, { recursive: true, mode: 0o700 });
   rmSync(runtimeBundleRoot, { recursive: true, force: true });
   const temporaryRoot = join(paths.runtimeRoot, `.${generation}.${randomUUID()}.tmp`);
+  let stage = "runtime-stage";
   try {
     mkdirSync(temporaryRoot, { mode: 0o700 });
     for (const { relativePath, path: sourcePath } of sourceFiles) {
@@ -896,11 +931,14 @@ function materializeRuntimeBundle(paths, metadata) {
       copyFileSync(sourcePath, destinationPath);
     }
     atomicWriteJson(join(temporaryRoot, PACKAGE_METADATA_FILE), runtimeMetadata);
+    stage = "runtime-publish";
     renameSync(temporaryRoot, runtimeBundleRoot);
     return runtimeBundleRoot;
   } catch (error) {
-    rmSync(temporaryRoot, { recursive: true, force: true });
-    throw error;
+    let cleanupError;
+    try { rmSync(temporaryRoot, { recursive: true, force: true }); }
+    catch (failure) { cleanupError = failure; }
+    throw attachDeploymentFailure(error, stage, { cleanupError });
   }
 }
 
@@ -997,7 +1035,7 @@ function persistedDshHome(paths, homeDir) {
 
 function validateState(state, paths) {
   if (!state) return undefined;
-  if (state.unreadable) return { ok: false, runtime: RUNTIME, reason: "state_unreadable", statePath: paths.statePath };
+  if (state.unreadable) return { ok: false, runtime: RUNTIME, reason: "state_unreadable", statePath: paths.statePath, failure: deploymentFailure(undefined, "state-read", { failureReason: "invalid_record" }) };
   if (state.version !== STATE_VERSION
     || state.runtime !== RUNTIME
     || state.integration !== "plugin"
@@ -1012,7 +1050,7 @@ function validateState(state, paths) {
     || !timestampString(state.updatedAt)
     || !Array.isArray(state.profiles)
     || !state.profiles.every(validProfileName)) {
-    return { ok: false, runtime: RUNTIME, reason: "state_invalid", statePath: paths.statePath };
+    return { ok: false, runtime: RUNTIME, reason: "state_invalid", statePath: paths.statePath, failure: deploymentFailure(undefined, "state-read", { failureReason: "invalid_record" }) };
   }
   return undefined;
 }
@@ -1024,6 +1062,11 @@ function disabledState(state, profiles) {
     profiles,
     updatedAt: new Date().toISOString(),
   };
+}
+
+function writeDshState(paths, state) {
+  try { atomicWriteJson(paths.statePath, state); }
+  catch (error) { throw attachDeploymentFailure(error, "state-write"); }
 }
 
 function notManaged(paths, action) {
@@ -1197,6 +1240,7 @@ function unavailableDshCompatibility(reason) {
     compatible: false,
     reason,
     testedDshVersions: [...DSH_TESTED_VERSIONS],
+    failure: deploymentFailure(undefined, "verify-native", { failureReason: "not_ready" }),
   };
 }
 
@@ -1249,6 +1293,7 @@ function inspectDshCompatibility(options, paths, command) {
       compatible: false,
       reason: "dsh_version_unavailable",
       testedDshVersions: [...DSH_TESTED_VERSIONS],
+      failure: deploymentFailure(result.error, "native-command", { commandResult: result }),
     };
   }
   const output = parseDshVersion(result.stdout);
@@ -1257,6 +1302,7 @@ function inspectDshCompatibility(options, paths, command) {
       compatible: false,
       reason: "dsh_version_unavailable",
       testedDshVersions: [...DSH_TESTED_VERSIONS],
+      failure: deploymentFailure(undefined, "verify-native", { failureReason: "invalid_response" }),
     };
   }
   return {
@@ -1268,6 +1314,7 @@ function inspectDshCompatibility(options, paths, command) {
 }
 
 function commandFailure(name, result, contractReason) {
+  const verificationFailed = contractReason && result.status === 0 && !result.error && !result.signal;
   return {
     name,
     reason: contractReason
@@ -1278,6 +1325,10 @@ function commandFailure(name, result, contractReason) {
           ? "dsh_not_found"
           : "dsh_command_failed",
     status: Number.isInteger(result.status) ? result.status : undefined,
+    failure: deploymentFailure(result.error, verificationFailed ? "verify-native" : "native-command", {
+      commandResult: result,
+      ...(verificationFailed ? { failureReason: "verification_failed" } : {}),
+    }),
   };
 }
 
@@ -1298,17 +1349,22 @@ function managedProfileManifestProblem(claimedProfiles) {
         runtime: RUNTIME,
         reason: "profile_manifest_unreadable",
         profiles,
+        failure: claimedProfiles.find((profile) => profile.status === "manifest_unreadable")?.failure
+          ?? deploymentFailure(undefined, "config-read", { failureReason: "invalid_record" }),
       }
     : undefined;
 }
 
-function profileManifestFailure(name) {
-  return { name, reason: "profile_manifest_unreadable" };
+function profileManifestFailure(name, profile) {
+  return {
+    name, reason: "profile_manifest_unreadable",
+    failure: profile?.failure ?? deploymentFailure(undefined, "config-read", { failureReason: "invalid_record" }),
+  };
 }
 
 function profileMutationFailure(name, result, profile, contractReason) {
   return result.status === 0 && !result.error && profile.status === "manifest_unreadable"
-    ? profileManifestFailure(name)
+    ? profileManifestFailure(name, profile)
     : commandFailure(name, result, result.status === 0 ? contractReason : undefined);
 }
 
@@ -1321,13 +1377,19 @@ function inspectProfile(name, path) {
   try {
     if (!lstatSync(path).isDirectory()) return { status: "manifest_unreadable", name };
   } catch (error) {
-    return { status: error?.code === "ENOENT" ? "directory_missing" : "manifest_unreadable", name };
+    return {
+      status: error?.code === "ENOENT" ? "directory_missing" : "manifest_unreadable", name,
+      ...(error?.code !== "ENOENT" ? { failure: deploymentFailure(error, "config-read") } : {}),
+    };
   }
+  let stage = "config-read";
   try {
-    const manifest = JSON.parse(readFileSync(join(path, "package.json"), "utf8"));
+    const text = readFileSync(join(path, "package.json"), "utf8");
+    stage = "config-parse";
+    const manifest = JSON.parse(text);
     const bundles = manifest?.dsh?.profile?.bundles;
     if (!Array.isArray(bundles) || !bundles.every((value) => typeof value === "string")) {
-      return { status: "manifest_unreadable", name };
+      return { status: "manifest_unreadable", name, failure: deploymentFailure(undefined, stage, { failureReason: "invalid_record" }) };
     }
     return {
       status: "valid",
@@ -1341,8 +1403,10 @@ function inspectProfile(name, path) {
         bundles,
       },
     };
-  } catch {
-    return { status: "manifest_unreadable", name };
+  } catch (error) {
+    return { status: "manifest_unreadable", name, failure: deploymentFailure(error, stage, {
+      ...(stage === "config-parse" ? { failureReason: "invalid_record" } : {}),
+    }) };
   }
 }
 

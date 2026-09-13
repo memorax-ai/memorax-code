@@ -693,20 +693,28 @@ interpreting the output or a diagnostic-storage failure.
 Failed Backend reports from `memorax-code start`, `stop`, and `restart` use
 the same [diagnostic storage and retention](#default-searchadd-diagnostics),
 independently of Debug and trace settings. Each CLI command result writes at
-most one record; the Backend service itself does not write these diagnostics.
+most one Backend record; the Backend service itself does not write these
+diagnostics.
 `MEMORAX_CODE_BACKEND_SUPPRESS_GUIDANCE=1` does not suppress the default diagnostic.
 
-This coverage is limited to failed Backend reports from those commands;
-adapter-only failures and complete update, Hook, and automatic-writeback
-flows are outside it. `status`, `logs`, `token`, and `uninstall` do not create
-these records. See [Backend recovery](troubleshooting.md#backend-does-not-start)
-for the failure fields and process-state guidance.
+Client deployment failures have separate records. Lifecycle JSON includes
+`clientFailures`, with the affected client, safe failure details, and diagnostic
+ID for each failed client. A successful Backend result remains successful even
+when client integration fails. Adapters supply the evidence; the CLI writes the
+records. See [client deployment recovery](troubleshooting.md#client-deployment-fails)
+and [Backend recovery](troubleshooting.md#backend-does-not-start).
+
+Hook execution and automatic writeback use their existing reporting paths.
+`status`, `logs`, `token`, and `uninstall` do not create these default lifecycle
+records; `status` and `logs` remain separate inspection commands.
 
 Setup also reports configuration, secure credential, local readiness, and
 completion-record failures by default. Setup-owned records have
-`source: "memorax-code-setup"` and `operation: "setup"`, and share the storage,
-permissions, and 100-record/seven-day retention above. A failed Backend command's
-existing diagnostic ID is reused instead of producing a duplicate setup record.
+`source: "memorax-code-setup"`, with `operation: "setup"` for setup failures or
+`operation: "client.setup"` for client deployment failures detected by setup.
+They share the storage, permissions, and 100-record/seven-day retention above.
+Setup reuses an existing Backend or client deployment diagnostic ID instead of
+producing a duplicate record.
 Configuration details include the failed write stage and `configState`; neither
 configuration content nor credential or device identity values are retained.
 See [setup recovery](troubleshooting.md#setup-does-not-complete).

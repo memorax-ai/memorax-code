@@ -131,6 +131,10 @@ test("derives the install cache version from the CodeBuddy plugin manifest", asy
   await cp(new URL("../src/runtime-observation.mjs", import.meta.url), runtimeObservationPath);
   await cp(new URL("../../memorax-code-adapter-common/src/clients/codebuddy-command.mjs", import.meta.url), commandPath);
   await cp(
+    new URL("../../memorax-code-adapter-common/src/deployment-failure.mjs", import.meta.url),
+    join(root, "memorax-code-adapter-common", "src", "deployment-failure.mjs"),
+  );
+  await cp(
     new URL("../../memorax-code-adapter-common/src/config-utils.mjs", import.meta.url),
     join(root, "memorax-code-adapter-common", "src", "config-utils.mjs"),
   );
@@ -557,11 +561,20 @@ test("malformed CodeBuddy registry fails closed", async () => {
   const home = await mkdtemp(join(tmpdir(), "memorax-codebuddy-malformed-"));
   await mkdir(join(home, "plugins"), { recursive: true });
   await writeFile(join(home, "plugins", "installed_plugins.json"), "not-json\n");
-  await assert.rejects(() => enableCodeBuddyAdapter({ codeBuddyHome: home }), /JSON|Unexpected token/);
+  await assert.rejects(() => enableCodeBuddyAdapter({ codeBuddyHome: home }), (error) => {
+    assert.match(error.message, /JSON|Unexpected token/);
+    assert.deepEqual(error.failure, { stage: "config-parse", errorCode: "CLIENT_CONFIG_PARSE_FAILED", failureReason: "invalid_configuration" });
+    assert.equal(JSON.stringify(error.failure).includes(home), false);
+    return true;
+  });
   const otherHome = await mkdtemp(join(tmpdir(), "memorax-codebuddy-malformed-hooks-"));
   const settings = { hooks: { UserPromptSubmit: "malformed" } };
   await writeFile(codeBuddySettingsPath(otherHome), JSON.stringify(settings));
-  await assert.rejects(() => enableCodeBuddyAdapter({ codeBuddyHome: otherHome }), /invalid CodeBuddy UserPromptSubmit Hook settings/);
+  await assert.rejects(() => enableCodeBuddyAdapter({ codeBuddyHome: otherHome }), (error) => {
+    assert.match(error.message, /invalid CodeBuddy UserPromptSubmit Hook settings/);
+    assert.deepEqual(error.failure, { stage: "config-parse", errorCode: "CLIENT_CONFIG_PARSE_FAILED", failureReason: "invalid_configuration" });
+    return true;
+  });
   assert.deepEqual(JSON.parse(await readFile(codeBuddySettingsPath(otherHome), "utf8")), settings);
 });
 
@@ -570,7 +583,11 @@ test("failed installation retains its target while cleanup preserves a native ho
   const home = join(root, "native-home");
   const memoraxCodeHome = join(root, "memorax");
   await writeFile(home, "user-owned file");
-  await assert.rejects(() => enableCodeBuddyAdapter({ codeBuddyHome: home, memoraxCodeHome }), /ENOTDIR/);
+  await assert.rejects(() => enableCodeBuddyAdapter({ codeBuddyHome: home, memoraxCodeHome }), (error) => {
+    assert.match(error.message, /ENOTDIR/);
+    assert.deepEqual(error.failure, { stage: "plugin-stage", errorCode: "CLIENT_PLUGIN_STAGE_FAILED", systemCode: "ENOTDIR" });
+    return true;
+  });
   assert.equal((await readManagedCodeBuddyTarget({ memoraxCodeHome })).codeBuddyHome, home);
   assert.equal((await disableCodeBuddyAdapter({ memoraxCodeHome })).installed, false);
   assert.equal((await readCodeBuddyAdapterStatus({ memoraxCodeHome })).installed, false);

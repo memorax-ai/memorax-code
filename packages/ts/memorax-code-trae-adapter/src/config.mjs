@@ -22,6 +22,7 @@ import {
   withJsonFileLockAsync,
 } from "../../memorax-code-adapter-common/src/config-utils.mjs";
 import { withWindowsDirectoryRetry } from "../../memorax-code-adapter-common/src/windows-directory-retry.mjs";
+import { attachDeploymentFailure, deploymentFailure } from "../../memorax-code-adapter-common/src/deployment-failure.mjs";
 import {
   defaultMemoraxCodeHome,
   defaultTraeHome,
@@ -61,7 +62,7 @@ async function enableTraeAdapterUnlocked(paths, options) {
   try {
     hookManifest = readHookManifest(paths.hooksPath);
   } catch (error) {
-    return failure("hooks_invalid", paths, error);
+    return failure("hooks_invalid", paths, error, "status", "hooks-read");
   }
 
   const memoraxCodeCommand = stringOption(options.memoraxCodeCommand) ?? defaultMemoraxCodeCommand();
@@ -81,7 +82,9 @@ async function enableTraeAdapterUnlocked(paths, options) {
     memoraxCodeHome: paths.memoraxCodeHome,
     traeHome: paths.traeHome,
   };
-  const runtimeDigest = runtimeSourceDigest(paths, runtimeMetadata);
+  let runtimeDigest;
+  try { runtimeDigest = runtimeSourceDigest(paths, runtimeMetadata); }
+  catch (error) { throw attachDeploymentFailure(error, "runtime-stage"); }
   const generationPath = join(paths.runtimeRoot, runtimeDigest);
   const runtimePath = join(generationPath, "hooks", "runtime-hook.mjs");
   const hookCommand = traeHookCommand(
@@ -90,7 +93,9 @@ async function enableTraeAdapterUnlocked(paths, options) {
     absoluteRegularFile(options.nodePath) ?? process.execPath,
     options.powershellPath ?? defaultWindowsPowerShellPath(),
   );
-  const skillDigest = skillDirectoryDigest(paths.skillSourcePath);
+  let skillDigest;
+  try { skillDigest = skillDirectoryDigest(paths.skillSourcePath); }
+  catch (error) { throw attachDeploymentFailure(error, "skill-stage"); }
   const skillCurrent = directoryDigestIfPresent(paths.skillPath, SKILL_PACKAGE_METADATA) === skillDigest
     && skillPackageMetadataCurrent(paths.skillPath, memoraxCodeCommand);
   const current = previousState?.runtimeDigest === runtimeDigest
@@ -117,18 +122,23 @@ async function enableTraeAdapterUnlocked(paths, options) {
     updatedAt: now,
   };
 
+  let stage = "state-write";
   try {
     // Claim partial artifacts before publishing them so an interrupted install
     // can resume without treating its own Skill as user-owned content.
     atomicWriteJson(paths.statePath, { ...state, enabled: false, installPending: true });
+    stage = "runtime-stage";
     materializeRuntimeGeneration(paths, generationPath, runtimeDigest, runtimeMetadata);
     if (!skillCurrent) {
+      stage = "skill-stage";
       materializeDirectory(paths.skillSourcePath, paths.skillPath, memoraxCodeCommand);
     }
+    stage = "hooks-write";
     updateManagedHooks(paths.hooksPath, hookCommand, true);
+    stage = "state-write";
     atomicWriteJson(paths.statePath, state);
   } catch (error) {
-    return failure("install_failed", paths, error, "enable");
+    return failure("install_failed", paths, error, "enable", stage);
   }
 
   return await readTraeAdapterStatusUnlocked(paths, { ...options, changed: !current });
@@ -158,6 +168,7 @@ function disableTraeAdapterUnlocked(paths) {
       statePath: paths.statePath,
     };
   }
+  let stage = "hooks-write";
   try {
     updateManagedHooks(paths.hooksPath, undefined, false);
     const disabledState = {
@@ -166,9 +177,10 @@ function disableTraeAdapterUnlocked(paths) {
       disabledAt: new Date().toISOString(),
     };
     delete disabledState.installPending;
+    stage = "state-write";
     atomicWriteJson(paths.statePath, disabledState);
   } catch (error) {
-    return failure("disable_failed", paths, error);
+    return failure("disable_failed", paths, error, "status", stage);
   }
   return {
     ok: true,
@@ -282,11 +294,13 @@ async function removeTraeAdapterInstallationUnlocked(paths) {
   }
   const disabled = disableTraeAdapterUnlocked(paths);
   if (disabled.ok === false) return { ...disabled, action: "trae-adapter-remove" };
+  let stage = "skill-remove";
   try {
     rmSync(state.skillPath, { recursive: true, force: true });
+    stage = "plugin-remove";
     rmSync(traeAdapterRoot(paths.memoraxCodeHome), { recursive: true, force: true });
   } catch (error) {
-    return failure("remove_failed", paths, error, "trae-adapter-remove");
+    return failure("remove_failed", paths, error, "trae-adapter-remove", stage);
   }
   return {
     ok: true,
@@ -389,15 +403,24 @@ function resolvePaths(options) {
   };
 }
 
-function withTraeLifecycleLock(paths, operation) {
-  return withJsonFileLockAsync(paths.lifecycleLockTarget, operation);
+async function withTraeLifecycleLock(paths, operation) {
+  let entered = false;
+  try {
+    return await withJsonFileLockAsync(paths.lifecycleLockTarget, () => {
+      entered = true;
+      return operation();
+    });
+  } catch (error) {
+    const stage = !entered || error?.code === "JSON_FILE_LOCK_RELEASE_FAILED" ? "lock" : "deploy";
+    throw attachDeploymentFailure(error, stage);
+  }
 }
 
 function validateState(state, paths) {
   if (!state) return undefined;
-  if (state.unreadable === true) return { ok: false, reason: "state_invalid", statePath: paths.statePath };
+  if (state.unreadable === true) return { ok: false, reason: "state_invalid", statePath: paths.statePath, failure: deploymentFailure(undefined, "state-read", { failureReason: "invalid_record" }) };
   if (state.version !== STATE_VERSION || state.runtime !== "trae" || state.integration !== "hooks") {
-    return { ok: false, reason: "state_invalid", statePath: paths.statePath };
+    return { ok: false, reason: "state_invalid", statePath: paths.statePath, failure: deploymentFailure(undefined, "state-read", { failureReason: "invalid_record" }) };
   }
   const expected = {
     traeHome: paths.traeHome,
@@ -412,7 +435,7 @@ function validateState(state, paths) {
     || !/^[a-f0-9]{64}$/.test(String(state.skillDigest ?? ""))
     || typeof state.hookCommand !== "string"
     || !managedHookCommand(state.hookCommand)) {
-    return { ok: false, reason: "state_paths_invalid", statePath: paths.statePath };
+    return { ok: false, reason: "state_paths_invalid", statePath: paths.statePath, failure: deploymentFailure(undefined, "state-read", { failureReason: "invalid_record" }) };
   }
   return undefined;
 }
@@ -422,13 +445,13 @@ function validateSources(paths) {
     ["runtime_hook", paths.runtimeHookSourcePath],
     ["runtime_observation", paths.runtimeObservationSourcePath],
   ]) {
-    if (!regularFile(path)) return { ok: false, reason: `${name}_missing`, sourcePath: path };
+    if (!regularFile(path)) return { ok: false, reason: `${name}_missing`, sourcePath: path, failure: deploymentFailure(undefined, "runtime-stage", { failureReason: "missing_source" }) };
   }
   for (const [name, path] of [["common_runtime", paths.commonSourcePath], ["skill", paths.skillSourcePath]]) {
-    if (!regularDirectory(path)) return { ok: false, reason: `${name}_missing`, sourcePath: path };
+    if (!regularDirectory(path)) return { ok: false, reason: `${name}_missing`, sourcePath: path, failure: deploymentFailure(undefined, name === "skill" ? "skill-stage" : "runtime-stage", { failureReason: "missing_source" }) };
   }
   if (!regularFile(join(paths.skillSourcePath, "SKILL.md"))) {
-    return { ok: false, reason: "skill_missing", sourcePath: paths.skillSourcePath };
+    return { ok: false, reason: "skill_missing", sourcePath: paths.skillSourcePath, failure: deploymentFailure(undefined, "skill-stage", { failureReason: "missing_source" }) };
   }
   return undefined;
 }
@@ -438,14 +461,14 @@ function materializeRuntimeGeneration(paths, generationPath, runtimeDigest, runt
     const record = readJsonFile(join(generationPath, "generation.json"));
     if (record?.unreadable || record?.value?.runtimeDigest !== runtimeDigest
       || !regularFile(join(generationPath, "hooks", "runtime-hook.mjs"))) {
-      throw new Error("Trae runtime generation is invalid");
+      throw attachDeploymentFailure(new Error("Trae runtime generation is invalid"), "runtime-stage", { failureReason: "invalid_record" });
     }
     return;
   }
-  mkdirSync(paths.runtimeRoot, { recursive: true, mode: 0o700 });
   const temporaryPath = join(paths.runtimeRoot, `.staging-${process.pid}-${randomUUID()}`);
   let stage = "runtime-stage";
   try {
+    mkdirSync(paths.runtimeRoot, { recursive: true, mode: 0o700 });
     mkdirSync(join(temporaryPath, "hooks"), { recursive: true, mode: 0o700 });
     mkdirSync(join(temporaryPath, "src"), { recursive: true, mode: 0o700 });
     cpSync(paths.runtimeHookSourcePath, join(temporaryPath, "hooks", "runtime-hook.mjs"));
@@ -459,14 +482,16 @@ function materializeRuntimeGeneration(paths, generationPath, runtimeDigest, runt
     stage = "runtime-publish";
     withWindowsDirectoryRetry(() => renameSync(temporaryPath, generationPath));
   } catch (error) {
+    let cleanupError;
     try {
       withWindowsDirectoryRetry(() => rmSync(temporaryPath, { recursive: true, force: true }));
-    } catch {
+    } catch (failure) {
+      cleanupError = failure;
       // Preserve the publication failure if Windows also blocks stage cleanup.
     }
     if (!existsSync(generationPath)) {
       error.stage = stage;
-      throw error;
+      throw attachDeploymentFailure(error, stage, { cleanupError });
     }
   }
 }
@@ -495,14 +520,19 @@ function filterManagedGroup(group) {
 
 function readHookManifest(path) {
   if (!existsSync(path)) return { hooks: {} };
-  const parsed = JSON.parse(readFileSync(path, "utf8"));
+  let text;
+  try { text = readFileSync(path, "utf8"); }
+  catch (error) { throw attachDeploymentFailure(error, "hooks-read"); }
+  let parsed;
+  try { parsed = JSON.parse(text); }
+  catch (error) { throw attachDeploymentFailure(error, "config-parse", { failureReason: "invalid_configuration" }); }
   if (!isRecord(parsed) || (parsed.hooks !== undefined && !isRecord(parsed.hooks))) {
-    throw new Error(`invalid Trae Hook manifest: ${path}`);
+    throw attachDeploymentFailure(new Error(`invalid Trae Hook manifest: ${path}`), "config-parse", { failureReason: "invalid_configuration" });
   }
   const manifest = { ...parsed, hooks: { ...(parsed.hooks ?? {}) } };
   for (const event of REQUIRED_EVENTS) {
     if (manifest.hooks[event] !== undefined && !Array.isArray(manifest.hooks[event])) {
-      throw new Error(`invalid Trae Hook event: ${event}`);
+      throw attachDeploymentFailure(new Error(`invalid Trae Hook event: ${event}`), "config-parse", { failureReason: "invalid_configuration" });
     }
   }
   return manifest;
@@ -547,10 +577,10 @@ function windowsExecutableToken(path) {
 }
 
 function materializeDirectory(source, destination, memoraxCodeCommand) {
-  mkdirSync(dirname(destination), { recursive: true });
   const temporaryPath = `${destination}.tmp-${process.pid}-${randomUUID()}`;
   let stage = "skill-stage";
   try {
+    mkdirSync(dirname(destination), { recursive: true });
     withWindowsDirectoryRetry(() => rmSync(temporaryPath, { recursive: true, force: true }));
     cpSync(source, temporaryPath, { recursive: true });
     atomicWriteJson(
@@ -562,13 +592,15 @@ function materializeDirectory(source, destination, memoraxCodeCommand) {
     stage = "skill-publish";
     withWindowsDirectoryRetry(() => renameSync(temporaryPath, destination));
   } catch (error) {
+    let cleanupError;
     try {
       withWindowsDirectoryRetry(() => rmSync(temporaryPath, { recursive: true, force: true }));
-    } catch {
+    } catch (failure) {
+      cleanupError = failure;
       // Preserve the installation failure; a later attempt can repair the Skill.
     }
     error.stage = stage;
-    throw error;
+    throw attachDeploymentFailure(error, stage, { cleanupError });
   }
 }
 
@@ -649,7 +681,7 @@ function skillSummary(path, ok) {
   return { ok, status: ok ? "installed" : "missing", managed: ok, memoraxCode: ok, path: join(path, "SKILL.md") };
 }
 
-function failure(reason, paths, error, action = "status") {
+function failure(reason, paths, error, action = "status", stage = "deploy") {
   return {
     ok: false,
     action,
@@ -662,13 +694,18 @@ function failure(reason, paths, error, action = "status") {
     error: error instanceof Error ? error.message : String(error),
     ...(typeof error?.code === "string" ? { errorCode: error.code } : {}),
     ...(typeof error?.stage === "string" ? { stage: error.stage } : {}),
+    failure: deploymentFailure(error, stage),
     traeHome: paths.traeHome,
     statePath: paths.statePath,
   };
 }
 
 function conflict(reason, paths, conflictPath) {
-  return { ...failure(reason, paths, new Error(`unmanaged Trae artifact exists: ${conflictPath}`), "enable"), conflictPath };
+  return {
+    ...failure(reason, paths, new Error(`unmanaged Trae artifact exists: ${conflictPath}`), "enable"),
+    conflictPath,
+    failure: deploymentFailure(undefined, "skill-stage", { failureReason: "conflict" }),
+  };
 }
 
 function regularFile(path) {

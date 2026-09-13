@@ -1,3 +1,4 @@
+import { attachDeploymentFailure, deploymentFailure } from "../../../../memorax-code-adapter-common/src/deployment-failure.mjs";
 import type {
   AdapterLifecycleBackendContext,
   AdapterLifecycleContext,
@@ -105,12 +106,13 @@ function dshFailure(action: string, error: unknown): AdapterReport {
     action,
     integration: "plugin",
     runtime: "dsh",
-    error: error instanceof Error ? error.message : String(error),
+    failure: deploymentFailure(error, "deploy"), error: error instanceof Error ? error.message : String(error),
   };
 }
 
 async function loadDshProfileLifecycle(): Promise<DshProfileLifecycleModule> {
-  return await import(new URL("../../../../memorax-code-dsh-adapter/src/profile-lifecycle.mjs", import.meta.url).href);
+  return await import(new URL("../../../../memorax-code-dsh-adapter/src/profile-lifecycle.mjs", import.meta.url).href)
+    .catch((error) => { throw attachDeploymentFailure(error, "adapter-load"); });
 }
 
 function argValue(argv: string[], name: string): string | undefined {

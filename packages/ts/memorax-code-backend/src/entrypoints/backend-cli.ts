@@ -69,7 +69,8 @@ import {
   type BackendShutdownRequestWatcher,
 } from "../lifecycle/backend/shutdown-request.js";
 import { runtimeRecordDurabilityWarning } from "../lifecycle/backend/result.js";
-import { diagnoseLifecycleReport, lifecycleDiagnosticLines, type LifecycleCliReport } from "../lifecycle/cli-diagnostics.js";
+import { diagnoseLifecycleReport, lifecycleDiagnosticLines, diagnoseClientDeployment, clientDeploymentDiagnosticLines, type LifecycleCliReport } from "../lifecycle/cli-diagnostics.js";
+import { deploymentFailure } from "../../../memorax-code-adapter-common/src/deployment-failure.mjs";
 
 // Keep process-facing CLI orchestration outside the HTTP server module.
 // This preserves server.ts as the importable route factory used by tests and tools.
@@ -151,7 +152,12 @@ export function runBackendCli(argv = process.argv): void {
       else printCodexPluginInstallResult(result);
       process.exit(result.ok ? 0 : 1);
     }).catch((error) => {
-      console.error(error instanceof Error ? error.message : String(error));
+      const stage = argv[3] === "activate" ? "plugin-enable"
+        : argv[3] === "trust-hooks" ? "hooks-write"
+          : ["hooks", "registration"].includes(argv[3] ?? "") ? "verify-native" : "plugin-install";
+      const detail = diagnoseClientDeployment("codex", deploymentFailure(error, stage), "deploy", serviceOptions);
+      if (argv.includes("--json")) console.log(JSON.stringify({ ok: false, action: "codex-plugin", clientFailures: [detail] }, null, 2));
+      else for (const line of clientDeploymentDiagnosticLines(detail)) console.error(`${BACKEND_PREFIX} ${line}`);
       process.exit(1);
     });
   } else if (command === "start") {
@@ -688,6 +694,9 @@ export function printLifecycleResult(report: LifecycleCliReport): void {
     for (const line of lifecycleDiagnosticLines(report)) console.error(`${BACKEND_PREFIX} ${line}`);
   } else if (!suppressBackendGuidance()) {
     for (const line of lifecycleGuidance(report)) backendLog(line);
+  }
+  for (const detail of report.clientFailures ?? []) {
+    for (const line of clientDeploymentDiagnosticLines(detail)) console.error(`${BACKEND_PREFIX} ${line}`);
   }
 }
 

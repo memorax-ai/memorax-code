@@ -233,6 +233,11 @@ test("OpenCode directory publication retries Windows contention and preserves ex
     assert.throws(() => ensureOpenCodePluginInstalled(fixture.options), (error) => (
       error === publishError && error.stage === "skill-publish" && error.code === "EPERM"
     ));
+    assert.deepEqual(publishError.failure, {
+      errorCode: "CLIENT_SKILL_PUBLISH_FAILED", stage: "skill-publish", systemCode: "EPERM",
+      cleanupErrorCode: "CLIENT_CLEANUP_FAILED", cleanupSystemCode: "EIO",
+    });
+    assert.equal(JSON.stringify(publishError.failure).includes(fixture.root), false);
     assert.equal(skillRenames, 7, "persistent contention must stop after the bounded retries");
     assert.equal(await readFile(installed.statePath, "utf8"), previousState);
     assert.equal(readOpenCodePluginStatus(fixture.options).enabled, false);
@@ -259,7 +264,13 @@ test("OpenCode plugin install removes newly created artifacts when state persist
     await mkdir(join(fixture.options.memoraxCodeHome, "adapters"), { recursive: true });
     await writeFile(blockedStateDir, "not a directory\n");
 
-    assert.throws(() => ensureOpenCodePluginInstalled(fixture.options));
+    assert.throws(() => ensureOpenCodePluginInstalled(fixture.options), (error) => {
+      assert.equal(error.failure.errorCode, "CLIENT_STATE_WRITE_FAILED");
+      assert.equal(error.failure.stage, "state-write");
+      assert.ok(["EEXIST", "ENOTDIR"].includes(error.failure.systemCode));
+      assert.equal(JSON.stringify(error.failure).includes(fixture.root), false);
+      return true;
+    });
     await assert.rejects(readFile(pluginPath), /ENOENT/);
     await assert.rejects(readFile(join(skillPath, "SKILL.md")), /ENOENT/);
     await assert.rejects(readFile(helperPath), /ENOENT/);

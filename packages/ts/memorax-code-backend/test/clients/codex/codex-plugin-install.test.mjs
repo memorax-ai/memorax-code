@@ -275,7 +275,12 @@ test("bootstrap install and activation reuse complete artifacts and repair drift
   syncBuiltinESMExports();
   await installCodexPlugin(options);
   // A missing fake CLI stops activation after local staging, without touching a native client.
-  await assert.rejects(activateCodexPlugin(options), /codex plugin list failed:.*ENOENT/);
+  await assert.rejects(activateCodexPlugin(options), (error) => {
+    assert.match(error.message, /codex plugin list failed:.*ENOENT/);
+    assert.deepEqual(error.failure, { stage: "plugin-list", errorCode: "CLIENT_PLUGIN_LIST_FAILED", systemCode: "ENOENT", failureReason: "not_found" });
+    assert.equal(JSON.stringify(error.failure).includes(root), false);
+    return true;
+  });
   await installCodexPlugin(options);
   const expectedHook = await readFile(join(source, "hooks", "runtime-hook.mjs"));
   protect = false;
@@ -344,7 +349,14 @@ test("codex-plugin install leaves A and its pointer unchanged when B is invalid"
 
     const result = await runMemoraxCode(["codex-plugin", "install", "--json"], fixture.env);
     assert.equal(result.code, 1, `${result.stdout}\n${result.stderr}`);
-    assert.match(result.stderr, /Codex plugin artifact/);
+    const failure = JSON.parse(result.stdout).clientFailures[0];
+    assert.equal(failure.client, "codex");
+    assert.equal(failure.failure.stage, "verify");
+    assert.equal(failure.failure.errorCode, "CLIENT_VERIFY_FAILED");
+    await assert.rejects(installCodexPlugin({ homeDir: fixture.home, codexHome: fixture.codexHome }), (error) => {
+      assert.deepEqual(error.failure, { stage: "verify", errorCode: "CLIENT_VERIFY_FAILED", failureReason: "verification_failed" });
+      return true;
+    });
     assert.equal(await readFile(fixture.marketplacePath, "utf8"), before);
     assert.equal(await readFile(join(fixture.cacheA, "sentinel.txt"), "utf8"), "cache A\n");
   } finally {

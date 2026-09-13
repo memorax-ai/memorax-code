@@ -1,3 +1,4 @@
+import { deploymentFailure } from "../../../memorax-code-adapter-common/src/deployment-failure.mjs";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -1251,6 +1252,7 @@ function dshLifecycleFailure(
       action,
       integration: "plugin",
       runtime: "dsh",
+      failure: deploymentFailure(error, "lock"),
       error: error instanceof Error ? error.message : String(error),
     },
   };

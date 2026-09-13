@@ -12,6 +12,7 @@ import {
   describeClaudePluginArtifactProblems,
   inspectClaudePluginArtifact,
 } from "./plugin-artifact-contract.mjs";
+import { attachDeploymentFailure, deploymentFailure } from "../../memorax-code-adapter-common/src/deployment-failure.mjs";
 import { resolveWindowsCliInvocation } from "../../memorax-code-adapter-common/src/windows-cli-invocation.mjs";
 
 const MARKETPLACE_NAME = "memorax-code-local";
@@ -56,13 +57,15 @@ export function ensureClaudePluginInstalled(options = {}) {
       ok: false,
       action: "claude-plugin-install",
       reason: "marketplace_missing",
+      failure: deploymentFailure(undefined, "discover", { failureReason: "missing_source" }),
       message: `MemoraX Code Claude marketplace is missing: ${marketplacePath}`,
       claudeHome,
       marketplacePath,
     };
   }
 
-  mkdirSync(claudeHome, { recursive: true });
+  try { mkdirSync(claudeHome, { recursive: true }); }
+  catch (error) { throw attachDeploymentFailure(error, "plugin-stage"); }
   const current = listClaudePlugins(claudeCommand, claudeHome, options);
   if (!current.ok) return installFailure("plugin_status_failed", current, claudeHome, marketplacePath);
   const marketplaceStatus = listClaudeMarketplaces(claudeCommand, claudeHome, options);
@@ -97,6 +100,7 @@ export function ensureClaudePluginInstalled(options = {}) {
           ok: false,
           action: "claude-plugin-install",
           reason: "plugin_shell_verify_failed",
+          failure: deploymentFailure(undefined, "verify-native", { failureReason: "verification_failed" }),
           message: "Claude did not preserve the current MemoraX Code plugin shell after enablement.",
           claudeHome,
           marketplacePath,
@@ -192,6 +196,7 @@ export function ensureClaudePluginInstalled(options = {}) {
       ok: false,
       action: "claude-plugin-install",
       reason: verification.reason,
+      failure: deploymentFailure(verification, "verify-native", { failureReason: "verification_failed" }),
       message: verification.message,
       claudeHome,
       marketplacePath,
@@ -227,14 +232,18 @@ export function ensureClaudePluginInstalled(options = {}) {
 }
 
 function writeInstalledPluginMetadata(installPath, claudeCommand) {
-  const npmExecPath = stringOption(process.env.MEMORAX_CODE_NPM_EXEC_PATH);
-  atomicWriteJson(join(installPath, ".memorax-code-package.json"), {
-    version: 1,
-    memoraxCodeCommand: process.argv[1],
-    claudeCommand,
-    ...(npmExecPath ? { npmExecPath } : {}),
-    writtenAt: new Date().toISOString(),
-  });
+  try {
+    const npmExecPath = stringOption(process.env.MEMORAX_CODE_NPM_EXEC_PATH);
+    atomicWriteJson(join(installPath, ".memorax-code-package.json"), {
+      version: 1,
+      memoraxCodeCommand: process.argv[1],
+      claudeCommand,
+      ...(npmExecPath ? { npmExecPath } : {}),
+      writtenAt: new Date().toISOString(),
+    });
+  } catch (error) {
+    throw attachDeploymentFailure(error, "plugin-write");
+  }
 }
 
 function writePluginState({
@@ -244,16 +253,20 @@ function writePluginState({
   marketplacePath,
   pluginVersion,
 }) {
-  atomicWriteJson(pluginStatePath(memoraxCodeHome, claudeHome), {
-    version: 1,
-    plugin: PLUGIN_ID,
-    pluginVersion,
-    installPath,
-    marketplace: MARKETPLACE_NAME,
-    claudeHome: resolve(claudeHome),
-    marketplacePath,
-    updatedAt: new Date().toISOString(),
-  });
+  try {
+    atomicWriteJson(pluginStatePath(memoraxCodeHome, claudeHome), {
+      version: 1,
+      plugin: PLUGIN_ID,
+      pluginVersion,
+      installPath,
+      marketplace: MARKETPLACE_NAME,
+      claudeHome: resolve(claudeHome),
+      marketplacePath,
+      updatedAt: new Date().toISOString(),
+    });
+  } catch (error) {
+    throw attachDeploymentFailure(error, "state-write");
+  }
 }
 
 function configuredMarketplacePath(claudeHome) {
@@ -408,14 +421,16 @@ function listClaudePlugins(command, claudeHome, options = {}) {
     { ...options, captureOutput: true },
   );
   if (!result.ok) {
-    return { ok: false, reason: result.reason ?? "plugin_status_failed", error: result.error };
+    return { ok: false, reason: result.reason ?? "plugin_status_failed", error: result.error, failure: result.failure };
   }
   try {
     const plugins = JSON.parse(result.output || "[]");
     if (!Array.isArray(plugins)) throw new Error("plugin list is not an array");
     return { ok: true, plugins };
   } catch {
-    return { ok: false, reason: "plugin_status_invalid", error: "Claude CLI returned invalid plugin status JSON." };
+    return { ok: false, reason: "plugin_status_invalid", error: "Claude CLI returned invalid plugin status JSON.",
+      failure: deploymentFailure(undefined, "plugin-list", { failureReason: "invalid_response" }),
+    };
   }
 }
 
@@ -427,7 +442,7 @@ function listClaudeMarketplaces(command, claudeHome, options = {}) {
     { ...options, captureOutput: true },
   );
   if (!result.ok) {
-    return { ok: false, reason: result.reason ?? "marketplace_status_failed", error: result.error };
+    return { ok: false, reason: result.reason ?? "marketplace_status_failed", error: result.error, failure: result.failure };
   }
   try {
     const marketplaces = JSON.parse(result.output || "[]");
@@ -437,6 +452,7 @@ function listClaudeMarketplaces(command, claudeHome, options = {}) {
     return {
       ok: false,
       reason: "marketplace_status_invalid",
+      failure: deploymentFailure(undefined, "plugin-list", { failureReason: "invalid_response" }),
       error: "Claude CLI returned invalid marketplace status JSON.",
     };
   }
@@ -493,6 +509,7 @@ function verifyInstalledPluginArtifacts(installPath) {
     return {
       ok: false,
       reason: "plugin_artifact_contract_invalid",
+      failure: deploymentFailure(error, "verify", { failureReason: "verification_failed" }),
       message: `MemoraX Code's Claude plugin source contract is invalid: ${error instanceof Error ? error.message : String(error)}`,
     };
   }
@@ -517,6 +534,10 @@ function verifyInstalledPluginArtifacts(installPath) {
 }
 
 function runClaudePluginCommand(command, claudeHome, args, options = {}) {
+  const stage = args[1] === "marketplace"
+    ? (args[2] === "list" ? "plugin-list" : "plugin-register")
+    : ({ list: "plugin-list", install: "plugin-install", update: "plugin-install",
+      enable: "plugin-enable", disable: "plugin-disable", uninstall: "plugin-remove" }[args[1]] ?? "native-command");
   const env = { ...process.env, CLAUDE_CONFIG_DIR: claudeHome };
   let invocation;
   try {
@@ -525,7 +546,9 @@ function runClaudePluginCommand(command, claudeHome, args, options = {}) {
       env,
     });
   } catch (error) {
-    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    return { ok: false, error: error instanceof Error ? error.message : String(error),
+      failure: deploymentFailure(error, stage, { commandResult: { error } }),
+    };
   }
   const result = spawnSync(invocation.command, invocation.args, {
     encoding: "utf8",
@@ -542,10 +565,13 @@ function runClaudePluginCommand(command, claudeHome, args, options = {}) {
       ok: false,
       ...(result.error.code === "ENOENT" ? { reason: "claude_cli_unavailable" } : {}),
       error: result.error.message,
+      failure: deploymentFailure(result.error, stage, { commandResult: result }),
     };
   }
   if (result.status !== 0) {
-    return { ok: false, status: result.status, error: output || `Claude CLI exited with status ${result.status}` };
+    return { ok: false, status: result.status, error: output || `Claude CLI exited with status ${result.status}`,
+      failure: deploymentFailure(undefined, stage, { commandResult: result }),
+    };
   }
   return { ok: true, status: result.status, ...(options.captureOutput ? { output: result.stdout } : {}) };
 }
@@ -555,6 +581,7 @@ function installFailure(reason, command, claudeHome, marketplacePath) {
     ok: false,
     action: "claude-plugin-install",
     reason: command.reason ?? reason,
+    failure: deploymentFailure(command, "plugin-install"),
     message: command.error,
     claudeHome,
     marketplacePath,
@@ -566,6 +593,7 @@ function removeFailure(reason, command, claudeHome) {
     ok: false,
     action: "claude-plugin-remove",
     reason,
+    failure: deploymentFailure(command, "plugin-remove"),
     message: command.error,
     claudeHome,
   };

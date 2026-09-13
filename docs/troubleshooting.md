@@ -134,9 +134,9 @@ no-argument command can perform a one-time migration; see
 [setup-completion behavior](configuration.md#setup-automatic-update-and-package-transition-state).
 
 Setup reports failed stages without requiring Debug, with an error code, impact,
-recovery guidance, and diagnostic ID on stderr. If a Backend command already
-created a diagnostic, setup prints that same ID and file path. Setup-owned
-failures use the same [local diagnostic storage](configuration.md#default-searchadd-diagnostics).
+recovery guidance, and diagnostic ID on stderr. If a Backend or client deployment
+command already created a diagnostic, setup prints that same ID and file path.
+Setup-owned failures use the same [local diagnostic storage](configuration.md#default-searchadd-diagnostics).
 Keep the error block when reporting a problem; if saving the diagnostic fails,
 the original failure remains visible.
 
@@ -158,8 +158,9 @@ the Backend and clients may already be enabled. Check `memorax-code status`,
 address the reported storage failure, and rerun setup. Neither local connection
 readiness nor `API Key match: true` tests a remote Search/Add request.
 
-Codex plugin registration and activation failures include the underlying command
-error even without verbose output. Address that error before retrying setup.
+Client plugin registration and activation failures identify the client and failed
+step even without verbose output. Follow the
+[client deployment guidance](#client-deployment-fails) before retrying setup.
 
 If lock release is blocked by filesystem permissions or a client's deletion
 protection, the command reports `failed to release JSON state lock` with the
@@ -174,8 +175,9 @@ publication still fails, setup stops before changing the active runtime or
 client integrations. If an adapter operation still fails, setup identifies the client,
 installation step, and error. When the Backend has already recovered, setup
 leaves it running instead of adding another stop/start cycle; client setup
-remains incomplete. Check access to the reported directory, close applications
-that may be using it, then rerun `memorax-code setup`. A running Backend alone
+remains incomplete. Check access to the reported directory and the failed step;
+if another application reports that it holds the files, release them before
+retrying `memorax-code setup`. A running Backend alone
 does not confirm that every selected client integration is ready.
 
 Known configuration, authority, or process startup errors stop reconciliation
@@ -198,6 +200,38 @@ restore the file, then rerun setup. Invalid setup-completion records also fail
 closed; preserve a diagnostic copy and confirm no setup command is active
 before moving an invalid record aside. An unsupported record version requires
 a compatible MemoraX Code release.
+
+## Client deployment fails
+
+A failed lifecycle result can contain a successful `backend` result alongside
+`clientFailures`. Each client entry has `client`, `failure`, and `diagnostic`,
+including its own diagnostic ID. This means the shared Backend may be running
+while that client's integration remains incomplete. Setup presents the same
+client diagnosis and reuses its record; check the affected client before retrying.
+
+The failed step distinguishes preparing a temporary Skill or runtime copy
+(`skill-stage`, `runtime-stage`), removing a previous Skill (`skill-remove`),
+publishing the prepared directory (`skill-publish`, `runtime-publish`), and
+writing Hook, plugin, helper, or installation state. Configuration read and parse
+failures are separate from writes. Use `systemCode` to check permissions, free
+space, and filesystem availability. `EPERM` alone does not identify an application
+holding the directory or prove that a file lock caused the failure.
+
+Native client commands retain only safe command outcomes in their diagnostic:
+
+| Evidence | Next step |
+| --- | --- |
+| `not_found`, usually `ENOENT` | Check that the client runtime is installed and can be located. |
+| `not_runnable`, such as `ENOEXEC`, `EACCES`, or `EPERM` | Check the executable format, permissions, and runtime availability. |
+| `timeout` or `commandSignal` | Check whether the command stalled or was interrupted before retrying. |
+| `commandExitCode` | Inspect the client's reported failure; a nonzero exit alone does not identify its cause. |
+| `verification_failed` or `not_ready` | The command's result did not establish a usable integration; check the native plugin or Profile state. |
+
+`cleanupErrorCode` and an available `cleanupSystemCode` describe a separate
+cleanup failure without replacing the original error. Preserve existing client
+files and recovery artifacts until their ownership and state are understood.
+Raw client output can contain local paths or configuration; review it separately
+before sharing the content-free diagnostic.
 
 ## npm package transition fails
 
@@ -747,8 +781,8 @@ memorax-cli status --json
 
 For a client-specific failure, also collect the affected client's diagnostic
 from the start of this guide with `--json`.
-For an explicit Search/Add or Backend start/stop/restart failure, include its
-diagnostic ID and the reviewed diagnostic file, if saved. Structured command
+For a Search/Add, Backend lifecycle, client deployment, or setup failure,
+include its diagnostic ID and the reviewed diagnostic file, if saved. Structured command
 output may contain query, workspace, process, or raw Backend error fields that
 are excluded from the diagnostic record; review it separately before sharing.
 Include the MemoraX Code version, operating system, affected client,

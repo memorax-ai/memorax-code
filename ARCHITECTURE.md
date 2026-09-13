@@ -126,7 +126,7 @@ configuration remain client-owned.
 | Component | Stable responsibility | Must not own |
 | --- | --- | --- |
 | [Backend](packages/ts/memorax-code-backend) | Local memory service, native content interpretation, repository scope, local memory helpers, trace, lifecycle, and update scheduling; see [capability ownership](#43-capability-ownership) | Model execution, client model-provider credentials, or native transcript creation |
-| [adapter-common](packages/ts/memorax-code-adapter-common) | Shared connection, private-record and content-free diagnostic storage primitives, credential storage, locks, Hook transport/generations, and local memory helpers | Backend composition, native content interpretation, MemoraX requests, or client plugin policy |
+| [adapter-common](packages/ts/memorax-code-adapter-common) | Shared connection, private records, safe deployment-failure projection and diagnostic storage primitives, credential storage, locks, Hook transport/generations, and local memory helpers | Backend composition, native content interpretation, MemoraX requests, or client plugin policy |
 | [Codex adapter](packages/ts/memorax-code-codex-adapter) | Codex plugin, Hooks, workspace observation, and the canonical shared Skill | Rollout interpretation or Backend writeback orchestration |
 | [Claude Code adapter](packages/ts/memorax-code-claude-adapter) | Claude plugin, Hooks, installer, and marketplace source | Transcript interpretation or Backend memory orchestration |
 | [DSH adapter](packages/ts/memorax-code-dsh-adapter) | Cordis Turn bridge, persisted-interval delivery, Profile and runtime-generation lifecycle, and supervised Repo Memory | Backend event interpretation or DSH provider/session ownership |
@@ -202,15 +202,20 @@ perform lifecycle mutations. Lifecycle configuration and orchestration own
 selection and defaults; native participants own client-specific discovery and
 mutations, including DSH Profile ordering and locks.
 
-`lifecycle/cli-diagnostics.ts` interprets failed Backend start, stop, and restart
-reports at the CLI result boundary. Backend service result helpers supply safe
-failure classification, process state, and cleanup codes; the CLI adds recovery
-guidance and writes one content-free diagnostic per failed command result while
-preserving the existing action and Backend report. The service itself does not
-write these records. This presentation path does not change lifecycle authority,
-validation, retry, or scheduling decisions, and does not cover adapter-only
-failures. Setup presents these Backend diagnostics through its own CLI;
-complete update, Hook, and automatic-writeback flows remain outside this path.
+`lifecycle/cli-diagnostics.ts` interprets failed Backend and client deployment
+reports at the start, stop, and restart CLI boundary. Backend service helpers
+supply safe failure classification, process state, and cleanup codes. Native
+deployment layers supply step and command evidence through adapter-common's
+`deployment-failure.mjs`, which projects only fixed stages, reasons, system codes,
+and command outcomes. It does not print or persist diagnostics.
+
+The lifecycle CLI adds recovery guidance and writes one content-free record for
+each failed Backend result and each failed client report. Existing action and
+Backend reports remain intact; client failures appear in `clientFailures` and do
+not turn a successful Backend recovery into a Backend failure. Services and
+adapters do not write duplicate records. This presentation path does not change
+lifecycle authority, validation, retry, or scheduling decisions. Hook execution
+and automatic writeback retain their existing reporting paths.
 
 ## 3. Runtime Flows
 
@@ -309,9 +314,9 @@ completion and transition records fail closed. No-argument routing and legacy
 migration follow the [setup state rules](docs/configuration.md#setup-automatic-update-and-package-transition-state).
 
 The npm package's `lib/setup-diagnostics.mjs` owns default setup failure
-presentation and content-free records. It reuses an existing Backend diagnostic
-and ID instead of recording the same failure again. Shared configuration writes
-and trial provisioning supply safe stage, system-code, validation, and recovery
+presentation and content-free records. It reuses existing Backend and client
+diagnostics and IDs instead of recording the same failures again. Shared
+configuration writes and trial provisioning supply safe stage, system-code, validation, and recovery
 evidence; raw exceptions, configuration, credentials, and device identity do not
 enter the diagnostic projection. Final connection checks validate local effective
 configuration, not remote Search/Add authentication. A completion-record failure
@@ -320,7 +325,8 @@ leaves setup incomplete even when the Backend and clients are already enabled.
 Setup reconciliation does not retry known configuration, authority, or process
 startup failures with a stop/start cycle. Other startup failures retain one
 recovery attempt, but a failed recovery stop prevents the second start.
-Adapter-internal deployment diagnostics remain owned by the native integrations.
+Native integrations retain ownership of deployment operations and their failure
+evidence; the lifecycle CLI owns their diagnostic presentation and storage.
 
 After completed setup, the managed Backend schedules a detached updater from
 the durable deadline; client startup Hooks only recover an unavailable Backend.
@@ -1010,9 +1016,10 @@ These paths are not all mediated by `app/memory-observability`. Memory-service
 kernels receive Backend diagnostics through a port; CLI composition can use
 the Backend debug logger directly.
 
-Default Search/Add, Backend lifecycle, and setup diagnostics use separate immutable
-local records. Adapter-common owns their private storage and bounded retention,
-while memory and lifecycle capabilities supply only safe, content-free fields.
+Default Search/Add, Backend lifecycle, client deployment, and setup diagnostics
+use immutable local records. Adapter-common owns their private
+storage and bounded retention, while memory, lifecycle, and npm composition
+supply only safe, content-free fields.
 These records have no session, scope, lifecycle, or memory authority. The storage
 primitive has no outbound-network authority, and its records never enter
 MemoraX payloads.

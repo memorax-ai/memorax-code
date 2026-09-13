@@ -1,3 +1,4 @@
+import { attachDeploymentFailure, deploymentFailure } from "../../../../memorax-code-adapter-common/src/deployment-failure.mjs";
 import type {
   AdapterLifecycleParticipant,
   AdapterPluginLifecycleReport,
@@ -11,7 +12,7 @@ export const openCodeAdapterLifecycle = {
         openCodeAdapterOptions(argv, serviceOptions.home, backendUrl),
       );
     } catch (error) {
-      return { ok: false, action: "status", error: error instanceof Error ? error.message : String(error) };
+      return { ok: false, action: "status", failure: deploymentFailure(error, "deploy"), error: error instanceof Error ? error.message : String(error) };
     }
   },
   async prepareEnable({ argv, serviceOptions, backendUrl }) {
@@ -23,7 +24,7 @@ export const openCodeAdapterLifecycle = {
       return {
         ok: false,
         action: "enable",
-        error: error instanceof Error ? error.message : String(error),
+        failure: deploymentFailure(error, "deploy"), error: error instanceof Error ? error.message : String(error),
         ...(error instanceof Error && "stage" in error && typeof error.stage === "string"
           ? { stage: error.stage } : {}),
         ...(error instanceof Error && "code" in error && typeof error.code === "string"
@@ -37,7 +38,7 @@ export const openCodeAdapterLifecycle = {
         openCodeAdapterOptions(argv, serviceOptions.home),
       );
     } catch (error) {
-      return { ok: false, action: "disable", error: error instanceof Error ? error.message : String(error) };
+      return { ok: false, action: "disable", failure: deploymentFailure(error, "deploy"), error: error instanceof Error ? error.message : String(error) };
     }
   },
   async remove({ argv, serviceOptions }) {
@@ -50,7 +51,7 @@ export const openCodeAdapterLifecycle = {
         ok: false,
         action: "opencode-plugin-remove",
         reason: "plugin_remove_failed",
-        message: error instanceof Error ? error.message : String(error),
+        failure: deploymentFailure(error, "plugin-remove"), message: error instanceof Error ? error.message : String(error),
       };
     }
   },
@@ -75,7 +76,8 @@ async function loadOpenCodePluginInstaller(): Promise<{
   removeOpenCodePluginInstallation: (options: Record<string, unknown>) => AdapterPluginLifecycleReport;
   readOpenCodePluginStatus: (options: Record<string, unknown>) => AdapterReport;
 }> {
-  return await import(new URL("../../../../memorax-code-opencode-adapter/src/plugin-install.mjs", import.meta.url).href);
+  return await import(new URL("../../../../memorax-code-opencode-adapter/src/plugin-install.mjs", import.meta.url).href)
+    .catch((error) => { throw attachDeploymentFailure(error, "adapter-load"); });
 }
 
 function argValue(argv: string[], name: string): string | undefined {

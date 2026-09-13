@@ -58,6 +58,7 @@ const reviewedNetworkSources = new Set([
 
 const localTraceCoreSources = new Set([
   "packages/npm/memorax-code/lib/setup-diagnostics.mjs",
+  "packages/ts/memorax-code-adapter-common/src/deployment-failure.mjs",
   "packages/ts/memorax-code-adapter-common/src/diagnostic-record.mjs",
   "packages/ts/memorax-code-backend/src/memory/cli-diagnostics.ts",
   "packages/ts/memorax-code-backend/src/lifecycle/cli-diagnostics.ts",

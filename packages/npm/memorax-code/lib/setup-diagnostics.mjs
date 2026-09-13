@@ -1,4 +1,5 @@
 import { writeDiagnosticRecord } from "./memorax-code-adapter-common/src/diagnostic-record.mjs";
+import { deploymentFailure } from "./memorax-code-adapter-common/src/deployment-failure.mjs";
 
 const SYSTEM_CODES = new Set([
   "EACCES", "EPERM", "ENOENT", "ENOTDIR", "EISDIR", "ENOSPC", "EDQUOT", "EROFS",
@@ -7,6 +8,7 @@ const SYSTEM_CODES = new Set([
 ]);
 
 const FAILURES = {
+  runtime: ["runtime-stage", "SETUP_HOOK_RUNTIME_STAGE_FAILED", "The packaged client Hook runtime could not be staged.", "Check the installed package and runtime directory permissions, then retry setup; the previous active runtime remains authoritative."],
   terminal: ["input", "SETUP_TERMINAL_REQUIRED", "Setup requires an interactive terminal.", "Run memorax-code setup in a terminal, or use the documented existing-account stdin mode."],
   lock: ["lock", "SETUP_LOCK_FAILED", "Setup authority could not be acquired or released.", "Check the setup state directory and whether another setup command is running before retrying."],
   authority: ["setup_state", "SETUP_STATE_INVALID", "The existing setup completion record could not be validated.", "Inspect the private setup completion record before repairing it; preserve existing state while a setup command may be running."],
@@ -76,6 +78,38 @@ export function printSetupBackendDiagnostic(report, write = console.error) {
     || typeof failure.error !== "string" || typeof diagnostic.id !== "string") return false;
   printFailure(failure, diagnostic, write);
   return true;
+}
+
+export function printSetupClientDiagnostics(report, write = console.error) {
+  let printed = false;
+  for (const detail of Array.isArray(report?.clientFailures) ? report.clientFailures : []) {
+    if (!CLIENTS.has(detail?.client) || typeof detail.failure?.errorCode !== "string"
+      || typeof detail.failure?.stage !== "string" || typeof detail.diagnostic?.id !== "string") continue;
+    printFailure({ ...detail.failure, client: detail.client }, detail.diagnostic, write);
+    printed = true;
+  }
+  return printed;
+}
+
+const CLIENTS = new Set(["codex", "claude", "dsh", "opencode", "codebuddy", "workbuddy", "trae"]);
+
+export function reportSetupDeploymentFailure(client, stage, { home, version, error, commandResult, failureReason, write = console.error }) {
+  if (!CLIENTS.has(client)) throw new TypeError("Unknown setup client");
+  const details = deploymentFailure(error, stage, { commandResult, failureReason });
+  const fields = {
+    source: "memorax-code-setup", operation: "client.setup", client, ...details,
+    version, runtimeVersion: process.version, platform: process.platform,
+    error: `${client} integration could not complete the reported deployment step.`,
+    impact: "This client integration could not be verified; its existing configuration may require attention.",
+    userAction: details.failureReason === "not_found"
+      ? "Check that the selected client runtime is installed and discoverable, then retry setup."
+      : details.failureReason === "timeout"
+        ? "Check whether the client command is waiting or stalled, then retry setup after it finishes."
+        : "Check the reported client operation and system error, then rerun memorax-code setup.",
+  };
+  const diagnostic = writeDiagnosticRecord(home, fields);
+  printFailure(fields, diagnostic, write);
+  return { failure: fields, diagnostic };
 }
 
 function printFailure(failure, diagnostic, write) {

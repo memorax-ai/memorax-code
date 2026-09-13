@@ -143,6 +143,7 @@ test("Claude plugin install reports missing marketplace before invoking the CLI"
     });
     assert.equal(result.ok, false);
     assert.equal(result.reason, "marketplace_missing");
+    assert.deepEqual(result.failure, { stage: "discover", errorCode: "CLIENT_DISCOVER_FAILED", failureReason: "missing_source" });
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -178,6 +179,8 @@ test("Claude plugin install identifies an unavailable CLI", async () => {
     });
     assert.equal(result.ok, false);
     assert.equal(result.reason, "claude_cli_unavailable");
+    assert.deepEqual(result.failure, { stage: "plugin-list", errorCode: "CLIENT_PLUGIN_LIST_FAILED", systemCode: "ENOENT", failureReason: "not_found" });
+    assert.equal(JSON.stringify(result.failure).includes(root), false);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -267,7 +270,7 @@ test("Claude plugin install surfaces CLI failures", async () => {
       "#!/usr/bin/env node",
       "if (process.argv.slice(2).join(' ') === 'plugin list --json') { console.log('[]'); process.exit(0); }",
       "if (process.argv.slice(2).join(' ') === 'plugin marketplace list --json') { console.log('[]'); process.exit(0); }",
-      "console.error('intentional plugin install failure');",
+      "console.error('intentional plugin install failure bearer secret-diagnostic-token /private/plugin-path');",
       "process.exit(7);",
       "",
     ].join("\n"));
@@ -277,6 +280,8 @@ test("Claude plugin install surfaces CLI failures", async () => {
     assert.equal(result.ok, false);
     assert.equal(result.reason, "marketplace_add_failed");
     assert.match(result.message, /intentional plugin install failure/);
+    assert.deepEqual(result.failure, { stage: "plugin-register", errorCode: "CLIENT_PLUGIN_REGISTER_FAILED", commandExitCode: 7, failureReason: "exit_status" });
+    assert.doesNotMatch(JSON.stringify(result.failure), /secret-diagnostic-token|private|intentional/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

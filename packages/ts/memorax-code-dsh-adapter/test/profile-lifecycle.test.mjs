@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import {
   cpSync,
   existsSync,
@@ -57,7 +59,7 @@ test("failed reconciliation restores the prior authority and removes newly insta
   }, (lifecycle) => lifecycle.ensureInstalled());
 
   assert.equal(failed.ok, false);
-  assert.deepEqual(failed.failedProfiles, [
+  assert.deepEqual(failed.failedProfiles.map(({ failure, ...profile }) => profile), [
     { name: "zulu", reason: "dsh_command_failed", status: 1 },
   ]);
   assert.deepEqual(JSON.parse(readFileSync(statePath, "utf8")), priorState);
@@ -136,12 +138,13 @@ test("failed rollback removal retains ownership of the residual Profile", async 
   }, (lifecycle) => lifecycle.ensureInstalled());
 
   assert.equal(failed.ok, false);
-  assert.deepEqual(failed.failedProfiles, [
+  assert.deepEqual(failed.failedProfiles.map(({ failure, ...profile }) => profile), [
     { name: "zulu", reason: "dsh_command_failed", status: 1 },
   ]);
-  assert.deepEqual(failed.rollbackFailedProfiles, [
+  assert.deepEqual(failed.rollbackFailedProfiles.map(({ failure, ...profile }) => profile), [
     { name: "alpha", reason: "dsh_command_failed", status: 1 },
   ]);
+  assert.equal(failed.failure.cleanupErrorCode, "CLIENT_CLEANUP_FAILED");
   const state = JSON.parse(readFileSync(statePath, "utf8"));
   assert.equal(state.enabled, true);
   assert.equal(state.runtimeBundleRoot, priorState.runtimeBundleRoot);
@@ -450,7 +453,7 @@ test("migrates the managed legacy package identity and restores it if reconcilia
     lifecycle.ensureInstalled()
   ));
   assert.equal(failed.ok, false);
-  assert.deepEqual(failed.failedProfiles, [
+  assert.deepEqual(failed.failedProfiles.map(({ failure, ...profile }) => profile), [
     { name: "web", reason: "dsh_command_failed", status: 1 },
   ]);
   assert.equal(failed.rollbackFailedProfiles, undefined);
@@ -557,6 +560,10 @@ test("managed DSH discovery failures are not optional skips", async (t) => {
   assert.equal(unavailable.managed, true);
   assert.equal(unavailable.skipped, undefined);
   assert.equal(unavailable.reason, "dsh_version_unavailable");
+  assert.deepEqual(unavailable.failure, {
+    errorCode: "CLIENT_NATIVE_COMMAND_FAILED", stage: "native-command", systemCode: "ENOENT",
+    commandExitCode: 1, failureReason: "not_found",
+  });
   assert.equal(JSON.parse(readFileSync(statePath, "utf8")).enabled, false);
 });
 
@@ -607,9 +614,48 @@ test("reports pnpm missing from DSH's native Profile plugin manager", async (t) 
 
   assert.equal(report.ok, false);
   assert.equal(report.reason, "pnpm_not_found");
-  assert.deepEqual(report.failedProfiles, [
+  assert.deepEqual(report.failedProfiles.map(({ failure, ...profile }) => profile), [
     { name: "web", reason: "pnpm_not_found", status: 127 },
   ]);
+  assert.deepEqual(report.failure, {
+    errorCode: "CLIENT_NATIVE_COMMAND_FAILED", stage: "native-command", commandExitCode: 127,
+    failureReason: "exit_status",
+  });
+  assert.equal(JSON.stringify(report.failure).includes("pnpm not found"), false);
+
+  const originalRename = fs.renameSync;
+  const originalRemove = fs.rmSync;
+  const runtimeRoot = join(memoraxCodeHome, "adapters", "dsh", "runtime", "generations");
+  const publishError = Object.assign(new Error(`private publication failure ${root}`), { code: "EPERM" });
+  fs.renameSync = (source, destination) => {
+    if (dirname(destination) === runtimeRoot && source.endsWith(".tmp")) throw publishError;
+    return originalRename(source, destination);
+  };
+  fs.rmSync = (target, ...args) => {
+    if (dirname(target) === runtimeRoot && target.endsWith(".tmp")) {
+      throw Object.assign(new Error("private cleanup failure"), { code: "EIO" });
+    }
+    return originalRemove(target, ...args);
+  };
+  syncBuiltinESMExports();
+  try {
+    await assert.rejects(withDshPluginLifecycleLock({
+      adapterRoot, dshHome, memoraxCodeHome, memoraxCodeCommand: join(root, "next-cli.mjs"),
+      runDsh: () => ({ status: 0, stdout: "0.1.0-rc.6\n" }),
+    }, (lifecycle) => lifecycle.ensureInstalled({ enabled: false })), (error) => {
+      assert.equal(error, publishError);
+      assert.deepEqual(error.failure, {
+        errorCode: "CLIENT_RUNTIME_PUBLISH_FAILED", stage: "runtime-publish", systemCode: "EPERM",
+        cleanupErrorCode: "CLIENT_CLEANUP_FAILED", cleanupSystemCode: "EIO",
+      });
+      assert.equal(JSON.stringify(error.failure).includes(root), false);
+      return true;
+    });
+  } finally {
+    fs.renameSync = originalRename;
+    fs.rmSync = originalRemove;
+    syncBuiltinESMExports();
+  }
 });
 
 test("uses the DSH runtime already linked by Profiles and refreshes it on reconciliation", async (t) => {

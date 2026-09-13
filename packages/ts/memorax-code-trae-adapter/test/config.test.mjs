@@ -298,6 +298,11 @@ test("Trae directory publication retries Windows contention and reports exhauste
     assert.equal(failed.stage, "skill-publish");
     assert.equal(failed.errorCode, "EPERM");
     assert.equal(failed.error, publishError.message);
+    assert.deepEqual(failed.failure, {
+      errorCode: "CLIENT_SKILL_PUBLISH_FAILED", stage: "skill-publish", systemCode: "EPERM",
+      cleanupErrorCode: "CLIENT_CLEANUP_FAILED", cleanupSystemCode: "EIO",
+    });
+    assert.equal(JSON.stringify(failed.failure).includes(fixture.root), false);
     assert.equal(skillRenames, 7, "persistent contention must stop after the bounded retries");
     assert.equal((await readTraeAdapterStatus(options)).reason, "install_incomplete");
     const state = JSON.parse(await readFile(installed.statePath, "utf8"));
@@ -359,6 +364,9 @@ test("Trae install leaves shared artifacts unchanged when ownership intent canno
 
     assert.equal(result.ok, false);
     assert.equal(result.reason, "install_failed");
+    assert.equal(result.failure.errorCode, "CLIENT_STATE_WRITE_FAILED");
+    assert.equal(result.failure.stage, "state-write");
+    assert.ok(["EEXIST", "ENOTDIR"].includes(result.failure.systemCode));
     assert.equal(await readFile(hooksPath, "utf8"), beforeHooks);
     await assert.rejects(
       readFile(join(fixture.traeHome, "skills", "memorax-code", "SKILL.md")),
@@ -464,6 +472,10 @@ test("Trae install fails closed for an invalid user Hook manifest", async () => 
 
     assert.equal(result.ok, false);
     assert.equal(result.reason, "hooks_invalid");
+    assert.deepEqual(result.failure, {
+      errorCode: "CLIENT_CONFIG_PARSE_FAILED", stage: "config-parse", failureReason: "invalid_configuration",
+    });
+    assert.equal(JSON.stringify(result.failure).includes("invalid json"), false);
     assert.equal(await readFile(hooksPath, "utf8"), "{ invalid json\n");
   } finally {
     await rm(fixture.root, { recursive: true, force: true });

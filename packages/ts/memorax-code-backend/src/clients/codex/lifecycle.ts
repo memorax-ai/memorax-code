@@ -1,3 +1,4 @@
+import { attachDeploymentFailure, deploymentFailure } from "../../../../memorax-code-adapter-common/src/deployment-failure.mjs";
 import { createInterface } from "node:readline/promises";
 import {
   installCodexPlugin,
@@ -41,7 +42,7 @@ export async function enableCodexAdapterForStart(
     }
     return (await loadCodexAdapterConfig()).enableCodexAdapter(options);
   } catch (error) {
-    return { ok: false, action: "enable", error: error instanceof Error ? error.message : String(error) };
+    return { ok: false, action: "enable", failure: deploymentFailure(error, "deploy"), error: error instanceof Error ? error.message : String(error) };
   }
 }
 
@@ -53,7 +54,7 @@ export async function readCodexAdapterStatusForLifecycle(
   try {
     return (await loadCodexAdapterConfig()).readCodexAdapterStatus(codexAdapterOptions(argv, serviceOptions, backendUrl));
   } catch (error) {
-    return { ok: false, action: "status", error: error instanceof Error ? error.message : String(error) };
+    return { ok: false, action: "status", failure: deploymentFailure(error, "deploy"), error: error instanceof Error ? error.message : String(error) };
   }
 }
 
@@ -64,7 +65,7 @@ export async function disableCodexAdapterForLifecycle(
   try {
     return (await loadCodexAdapterConfig()).disableCodexAdapter(codexAdapterOptions(argv, serviceOptions));
   } catch (error) {
-    return { ok: false, action: "disable", error: error instanceof Error ? error.message : String(error) };
+    return { ok: false, action: "disable", failure: deploymentFailure(error, "deploy"), error: error instanceof Error ? error.message : String(error) };
   }
 }
 
@@ -171,5 +172,6 @@ async function loadCodexAdapterConfig(): Promise<{
   disableCodexAdapter: (options: Record<string, unknown>) => AdapterReport;
   readCodexAdapterStatus: (options: Record<string, unknown>) => AdapterReport;
 }> {
-  return await import(new URL("../../../../memorax-code-codex-adapter/src/config.mjs", import.meta.url).href);
+  return await import(new URL("../../../../memorax-code-codex-adapter/src/config.mjs", import.meta.url).href)
+    .catch((error) => { throw attachDeploymentFailure(error, "adapter-load"); });
 }

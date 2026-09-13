@@ -1,5 +1,8 @@
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { diagnoseLifecycleReport, clientDeploymentDiagnosticLines } from "../../dist/lifecycle/cli-diagnostics.js";
 import assert from "node:assert/strict";
-import { readdir } from "node:fs/promises";
+import { readdir, readFile, mkdtemp, rm } from "node:fs/promises";
 import { test } from "node:test";
 import {
   LIFECYCLE_CLIENTS,
@@ -143,4 +146,46 @@ test("Trae Global Hooks activation requirement is retained without becoming a re
   assert.equal(summary.runtimeObserved, false);
   assert.equal(raw.globalHooksActivationRequired, true);
   assert.equal(Object.hasOwn(raw, "activationRequired"), false);
+});
+
+test("failed client deployments retain client identity without becoming Backend failures", async () => {
+  const home = await mkdtemp(join(tmpdir(), "client-diagnostics-"));
+  try {
+    const adapters = Object.fromEntries(clients.map(({ reportKey }) => [reportKey, {
+      ok: false, action: "enable", error: "private-config-canary",
+      failure: { errorCode: "CLIENT_SKILL_PUBLISH_FAILED", stage: "skill-publish", systemCode: "EPERM", secret: "private-config-canary" },
+    }]));
+    const report = diagnoseLifecycleReport({ ok: false, action: "start", backend: { ok: true, action: "start" }, ...adapters }, { home });
+    assert.equal(report.backend.ok, true);
+    assert.equal(report.failure, undefined);
+    assert.equal(report.diagnostic, undefined);
+    assert.deepEqual(report.clientFailures.map(({ client }) => client), clients.map(({ id }) => id));
+    assert.equal((await readdir(join(home, "runtime", "diagnostics"))).length, clients.length);
+    for (const detail of report.clientFailures) {
+      const text = await readFile(detail.diagnostic.path, "utf8");
+      const record = JSON.parse(text);
+      assert.equal(record.client, detail.client);
+      assert.equal(record.operation, "client.start");
+      assert.equal(record.systemCode, "EPERM");
+      assert.equal(record.processState, "running");
+      assert.doesNotMatch(text, /private-config-canary/);
+      assert.equal(text.includes(home), false);
+      assert.ok(clientDeploymentDiagnosticLines(detail).join("\n").includes(detail.diagnostic.id));
+    }
+    const skipped = diagnoseLifecycleReport({
+      ok: false, action: "start",
+      backend: { ok: true, skipped: true, alreadyRunning: false, action: "start" },
+      dshAdapter: adapters.dshAdapter,
+    }, { home });
+    assert.equal(skipped.clientFailures[0].failure.processState, "unknown");
+    assert.doesNotMatch(skipped.clientFailures[0].failure.impact, /Backend is running/);
+    const conflict = diagnoseLifecycleReport({
+      ok: false, action: "start", backend: { ok: true, action: "start" },
+      codexAdapter: { ok: false, failure: {
+        errorCode: "CLIENT_HOOKS_WRITE_FAILED", stage: "hooks-write", failureReason: "config_version_conflict",
+      } },
+    }, { home });
+    assert.match(conflict.clientFailures[0].failure.userAction, /current configuration/);
+    assert.doesNotMatch(conflict.clientFailures[0].failure.userAction, /disk space|permissions/);
+  } finally { await rm(home, { recursive: true, force: true }); }
 });

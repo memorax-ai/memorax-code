@@ -2,6 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface, type Interface } from "node:readline/promises";
 import { homedir } from "node:os";
 import { join, resolve, sep } from "node:path";
+import { attachDeploymentFailure } from "../../../../memorax-code-adapter-common/src/deployment-failure.mjs";
 import { resolveWindowsCliInvocation } from "../../shared/windows-cli-invocation.js";
 
 const PLUGIN_NAME = "memorax-code-codex-adapter";
@@ -102,7 +103,7 @@ export async function inspectCodexPluginHooks(options: CodexPluginHooksOptions =
 
 export async function trustCodexPluginHooks(options: CodexPluginHookTrustOptions = {}): Promise<CodexPluginHookTrustReport> {
   if (options.previousHooks !== undefined && options.selectedHooks !== undefined) {
-    throw new Error("Codex hook trust accepts either a previous hook snapshot or an explicit selection, not both");
+    throw hookFailure("Codex hook trust accepts either a previous hook snapshot or an explicit selection, not both", "hooks-write", "invalid_configuration");
   }
   const context = resolveCodexPluginContext(options);
   const currentHooks = await listMemoraxCodeHooks(context.codexCommand, context.workspace, context.env);
@@ -143,7 +144,7 @@ export async function listMemoraxCodeHooks(command: string, workspace: string, e
 
 export async function confirmHookTrust(hooks: CodexHook[]): Promise<void> {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
-    throw new Error("refusing to trust Codex plugin hooks without an interactive terminal; rerun with --yes after reviewing the hooks");
+    throw hookFailure("refusing to trust Codex plugin hooks without an interactive terminal; rerun with --yes after reviewing the hooks", "hooks-write", "activation_required");
   }
   console.log("MemoraX Code will trust the following Codex plugin hooks:");
   for (const hook of hooks) {
@@ -154,7 +155,7 @@ export async function confirmHookTrust(hooks: CodexHook[]): Promise<void> {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   try {
     const answer = (await rl.question("Trust these hooks? [y/N] ")).trim().toLowerCase();
-    if (answer !== "y" && answer !== "yes") throw new Error("hook trust declined");
+    if (answer !== "y" && answer !== "yes") throw hookFailure("hook trust declined", "hooks-write", "activation_required");
   } finally {
     rl.close();
   }
@@ -202,7 +203,7 @@ async function trustHookSelectionWithContext(
       if ((result.status !== "ok" && result.status !== "okOverridden")
         || typeof result.version !== "string"
         || typeof result.filePath !== "string") {
-        throw new Error("Codex config/batchWrite returned an invalid response");
+        throw hookFailure("Codex config/batchWrite returned an invalid response", "hooks-write", "invalid_response");
       }
     }
     const verifiedHooks = await listMemoraxCodeHooksFromClient(client, context.workspace);
@@ -214,11 +215,11 @@ function exactCurrentHookSelection(currentHooks: CodexHook[], selectedHooks: Cod
   const currentByKey = new Map(currentHooks.map((hook) => [hook.key, hook]));
   const selectedKeys = new Set<string>();
   return selectedHooks.map((expected) => {
-    if (selectedKeys.has(expected.key)) throw new Error(`duplicate Codex hook trust selection: ${expected.key}`);
+    if (selectedKeys.has(expected.key)) throw hookFailure(`duplicate Codex hook trust selection: ${expected.key}`, "hooks-write", "conflict");
     selectedKeys.add(expected.key);
     const current = currentByKey.get(expected.key);
     if (!current || current.currentHash !== expected.currentHash) {
-      throw new Error(`Codex hook changed after review: ${expected.key}`);
+      throw hookFailure(`Codex hook changed after review: ${expected.key}`, "hooks-write", "hook_changed_after_review");
     }
     return current;
   });
@@ -229,58 +230,61 @@ function verifyTrustedHookSelection(currentHooks: CodexHook[], selectedHooks: Co
   for (const expected of selectedHooks) {
     const current = currentByKey.get(expected.key);
     if (!current || current.currentHash !== expected.currentHash || hookNeedsReview(current)) {
-      throw new Error(`Codex hook trust could not be verified: ${expected.key}`);
+      throw hookFailure(`Codex hook trust could not be verified: ${expected.key}`, "hooks-write", "hook_trust_unverified");
     }
   }
 }
 
 async function readCodexUserConfigLayer(client: CodexAppServerClient, workspace: string): Promise<CodexUserConfigLayer> {
   const result = await requestResult(client, "config/read", { includeLayers: true, cwd: workspace });
-  if (!Array.isArray(result.layers)) throw new Error("Codex config/read did not return config layers");
+  if (!Array.isArray(result.layers)) throw hookFailure("Codex config/read did not return config layers", "config-read", "invalid_response");
   const userLayers = result.layers.flatMap((layer): CodexUserConfigLayer[] => {
     if (!isRecord(layer) || !isRecord(layer.name) || layer.name.type !== "user") return [];
     if (!("profile" in layer.name)
       || (layer.name.profile !== null && typeof layer.name.profile !== "string")) {
-      throw new Error("Codex config/read returned an invalid user config layer");
+      throw hookFailure("Codex config/read returned an invalid user config layer", "config-read", "user_config_layer_invalid");
     }
     if (layer.name.profile !== null) return [];
     if (typeof layer.name.file !== "string"
       || typeof layer.version !== "string"
       || !isRecord(layer.config)) {
-      throw new Error("Codex config/read returned an invalid base user config layer");
+      throw hookFailure("Codex config/read returned an invalid base user config layer", "config-read", "base_config_layer_invalid");
     }
     return [{ filePath: layer.name.file, version: layer.version, config: layer.config }];
   });
   if (userLayers.length !== 1) {
-    throw new Error(`Codex config/read returned ${userLayers.length} base user config layers; expected exactly one`);
+    throw hookFailure(
+      `Codex config/read returned ${userLayers.length} base user config layers; expected exactly one`,
+      "config-read", userLayers.length === 0 ? "base_config_layer_missing" : "base_config_layer_ambiguous",
+    );
   }
   return userLayers[0]!;
 }
 
 async function listMemoraxCodeHooksFromClient(client: CodexAppServerClient, workspace: string): Promise<CodexHook[]> {
   const result = await requestResult(client, "hooks/list", { cwds: [workspace] });
-  if (!Array.isArray(result.data)) throw new Error("Codex hooks/list returned an invalid result.data payload");
+  if (!Array.isArray(result.data)) throw hookFailure("Codex hooks/list returned an invalid result.data payload", "hooks-read", "invalid_response");
   const hooks: CodexHook[] = [];
   const seenKeys = new Set<string>();
   for (const entry of result.data) {
     if (!isRecord(entry) || !Array.isArray(entry.hooks)) {
-      throw new Error("Codex hooks/list returned an invalid workspace entry");
+      throw hookFailure("Codex hooks/list returned an invalid workspace entry", "hooks-read", "invalid_response");
     }
     if (entry.errors !== undefined && !Array.isArray(entry.errors)) {
-      throw new Error("Codex hooks/list returned invalid discovery errors");
+      throw hookFailure("Codex hooks/list returned invalid discovery errors", "hooks-read", "invalid_response");
     }
     if (Array.isArray(entry.errors) && entry.errors.length > 0) {
-      throw new Error("Codex hooks/list reported hook discovery errors");
+      throw hookFailure("Codex hooks/list reported hook discovery errors", "hooks-read", "hook_discovery_failed");
     }
     for (const value of entry.hooks) {
       if (!isRecord(value) || (typeof value.pluginId !== "string" && value.pluginId !== null)) {
-        throw new Error("Codex hooks/list returned invalid hook metadata");
+        throw hookFailure("Codex hooks/list returned invalid hook metadata", "hooks-read", "invalid_response");
       }
       const memoraxCodePlugin = value.pluginId === `${PLUGIN_NAME}@${CLI_MARKETPLACE_NAME}`;
       const memoraxCodeKey = typeof value.key === "string"
         && value.key.startsWith(`${PLUGIN_NAME}@${CLI_MARKETPLACE_NAME}:`);
       if (!memoraxCodePlugin) {
-        if (memoraxCodeKey) throw new Error("Codex hooks/list returned a mismatched MemoraX Code hook identity");
+        if (memoraxCodeKey) throw hookFailure("Codex hooks/list returned a mismatched MemoraX Code hook identity", "hooks-read", "hook_identity_mismatch");
         continue;
       }
       if (typeof value.pluginId !== "string"
@@ -292,9 +296,9 @@ async function listMemoraxCodeHooksFromClient(client: CodexAppServerClient, work
         || typeof value.command !== "string"
         || value.command.length === 0
         || !isHookTrustStatus(value.trustStatus)) {
-        throw new Error("Codex hooks/list returned incomplete MemoraX Code hook metadata");
+        throw hookFailure("Codex hooks/list returned incomplete MemoraX Code hook metadata", "hooks-read", "hook_metadata_incomplete");
       }
-      if (seenKeys.has(value.key)) throw new Error(`Codex hooks/list returned duplicate Hook key: ${value.key}`);
+      if (seenKeys.has(value.key)) throw hookFailure(`Codex hooks/list returned duplicate Hook key: ${value.key}`, "hooks-read", "conflict");
       seenKeys.add(value.key);
       hooks.push({
         key: value.key,
@@ -317,12 +321,17 @@ async function withCodexAppServer<T>(
   env: NodeJS.ProcessEnv,
   operation: (client: CodexAppServerClient) => Promise<T>,
 ): Promise<T> {
-  const invocation = resolveWindowsCliInvocation(command, ["app-server", "--stdio"], { env });
-  const child = spawn(invocation.command, invocation.args, {
-    cwd: workspace,
-    env,
-    stdio: ["pipe", "pipe", "pipe"],
-  });
+  let child: ChildProcessWithoutNullStreams;
+  try {
+    const invocation = resolveWindowsCliInvocation(command, ["app-server", "--stdio"], { env });
+    child = spawn(invocation.command, invocation.args, {
+      cwd: workspace,
+      env,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+  } catch (error) {
+    throw attachDeploymentFailure(error, "native-command", { commandResult: { error } });
+  }
   let stderr = "";
   let nextRequestId = 0;
   let closing = false;
@@ -341,16 +350,19 @@ async function withCodexAppServer<T>(
     pending.clear();
   };
   child.stdin.on("error", (error) => {
-    if (!closing) rejectPending(error);
+    if (!closing) rejectPending(attachDeploymentFailure(error, "native-command", { failureReason: "stdin_transport" }));
   });
   const childExited = new Promise<void>((resolveExited) => {
     child.once("error", (error) => {
-      if (!closing) rejectPending(error);
+      if (!closing) rejectPending(attachDeploymentFailure(error, "native-command", { commandResult: { error } }));
       resolveExited();
     });
     child.once("exit", () => resolveExited());
-    child.once("close", () => {
-      if (!closing) rejectPending(new Error(stderr || "Codex app-server exited before completing the request"));
+    child.once("close", (status, signal) => {
+      if (!closing) rejectPending(attachDeploymentFailure(
+        new Error(stderr || "Codex app-server exited before completing the request"),
+        "native-command", { failureReason: "app_server_exit", commandResult: { status, signal } },
+      ));
     });
   });
   const reader = (async () => {
@@ -369,7 +381,9 @@ async function withCodexAppServer<T>(
       request.resolve(parsed);
     }
   })().catch((error: unknown) => {
-    if (!closing) rejectPending(error instanceof Error ? error : new Error(String(error)));
+    if (!closing) rejectPending(attachDeploymentFailure(
+      error instanceof Error ? error : new Error(String(error)), "native-command", { failureReason: "app_server_transport" },
+    ));
   });
   const client: CodexAppServerClient = {
     request(method, params) {
@@ -380,13 +394,13 @@ async function withCodexAppServer<T>(
         child.stdin.write(`${JSON.stringify({ id, method, params })}\n`, (error) => {
           if (!error) return;
           pending.delete(id);
-          reject(error);
+          reject(attachDeploymentFailure(error, "native-command", { failureReason: "stdin_transport" }));
         });
       });
     },
   };
   const timeout = setTimeout(() => {
-    rejectPending(new Error("timed out while communicating with Codex app-server"));
+    rejectPending(hookFailure("timed out while communicating with Codex app-server", "native-command", "timeout"));
     child.kill("SIGTERM");
   }, APP_SERVER_OPERATION_TIMEOUT_MS);
   try {
@@ -407,12 +421,25 @@ async function requestResult(
   method: string,
   params: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
+  const stage = method === "hooks/list" ? "hooks-read"
+    : method === "config/read" ? "config-read"
+      : method === "config/batchWrite" ? "hooks-write" : "native-command";
   const response = await client.request(method, params);
   if (isRecord(response.error)) {
-    throw new Error(String(response.error.message ?? `${method} failed`));
+    // Classify only structured protocol evidence; server messages may contain
+    // paths or credentials and cannot establish a safe, stable failure reason.
+    const reason = response.error.code === -32601 ? "method_unavailable"
+      : method === "config/batchWrite" && isRecord(response.error.data)
+        && response.error.data.config_write_error_code === "configVersionConflict" ? "config_version_conflict"
+        : "native_rejected";
+    throw hookFailure(String(response.error.message ?? `${method} failed`), stage, reason);
   }
-  if (!isRecord(response.result)) throw new Error(`Codex ${method} returned an invalid response`);
+  if (!isRecord(response.result)) throw hookFailure(`Codex ${method} returned an invalid response`, stage, "invalid_response");
   return response.result;
+}
+
+function hookFailure(message: string, stage: string, failureReason: string): Error {
+  return attachDeploymentFailure(new Error(message), stage, { failureReason });
 }
 
 async function closeCodexAppServer(

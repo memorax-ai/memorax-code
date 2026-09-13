@@ -1,5 +1,6 @@
 import { existsSync, lstatSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import { basename, dirname, join, relative } from "node:path";
+import { attachDeploymentFailure, deploymentFailure } from "../../memorax-code-adapter-common/src/deployment-failure.mjs";
 import {
   DEFAULT_BACKEND_URL,
   DEFAULT_TOKEN_ENV,
@@ -45,13 +46,16 @@ export function enableClaudeAdapter(options = {}) {
   const statePath = options.statePath ?? adapterStatePath(memoraxCodeHome, RUNTIME);
   const previousState = readAdapterState(statePath);
   if (previousState?.unreadable) {
-    return { ok: false, action: "enable", reason: "state_unreadable", statePath };
+    return { ok: false, action: "enable", reason: "state_unreadable", statePath,
+      failure: deploymentFailure(undefined, "state-read", { failureReason: "unknown" }),
+    };
   }
   if (previousState && previousState.version !== CLAUDE_ADAPTER_STATE_VERSION) {
     return {
       ok: false,
       action: "enable",
       reason: "state_version_unsupported",
+      failure: deploymentFailure(undefined, "state-read", { failureReason: "unsupported_version" }),
       statePath,
       expectedVersion: CLAUDE_ADAPTER_STATE_VERSION,
       actualVersion: previousState.version,
@@ -61,11 +65,15 @@ export function enableClaudeAdapter(options = {}) {
     ?? previousState?.backendUrl
     ?? DEFAULT_BACKEND_URL;
   const nativeBaseline = seedExistingClaudeSessionsAsNative({ ...options, claudeHome, memoraxCodeHome, dryRun: true });
-  if (!nativeBaseline.ok) return { ok: false, action: "enable", statePath, ...nativeBaseline };
+  if (!nativeBaseline.ok) return { ok: false, action: "enable", statePath, ...nativeBaseline,
+    failure: deploymentFailure(nativeBaseline, "state-read", { failureReason: "unknown" }),
+  };
   const claudePluginSkillsRoot = stringOption(options.claudePluginSkillsRoot);
   const claudeSkills = claudePluginSkillsSummary(claudePluginSkillsRoot);
   if (claudeSkills.ok === false) {
-    return { ok: false, action: "enable", reason: "skill_delivery_failed", statePath, claudeSkills };
+    return { ok: false, action: "enable", reason: "skill_delivery_failed", statePath, claudeSkills,
+      failure: deploymentFailure(undefined, "verify", { failureReason: "verification_failed" }),
+    };
   }
   const state = {
     version: CLAUDE_ADAPTER_STATE_VERSION,
@@ -80,8 +88,10 @@ export function enableClaudeAdapter(options = {}) {
     claudeSkillDelivery: "plugin",
     ...(claudePluginSkillsRoot ? { claudePluginSkillsRoot } : {}),
   };
-  mkdirSync(dirname(statePath), { recursive: true });
-  atomicWriteJson(statePath, state);
+  try {
+    mkdirSync(dirname(statePath), { recursive: true });
+    atomicWriteJson(statePath, state);
+  } catch (error) { throw attachDeploymentFailure(error, "state-write"); }
   const seededNativeSessions = seedExistingClaudeSessionsAsNative({ ...options, claudeHome, memoraxCodeHome });
   return {
     ok: true,

@@ -532,7 +532,7 @@ async function createPackageFixture() {
   for (const relativePath of [
     "clients/codebuddy-command.mjs",
     "config-utils.mjs",
-    "diagnostic-record.mjs",
+    "diagnostic-record.mjs", "deployment-failure.mjs",
     "automatic-update-state.mjs",
     "runtime-record.mjs",
     "setup-completion.mjs",

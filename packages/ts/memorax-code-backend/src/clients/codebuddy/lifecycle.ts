@@ -1,3 +1,4 @@
+import { attachDeploymentFailure, deploymentFailure } from "../../../../memorax-code-adapter-common/src/deployment-failure.mjs";
 import { resolveManagedClients, type ManagedClients } from "../../lifecycle/client-selection.js";
 import type { AdapterLifecycleParticipant, AdapterPluginLifecycleReport, AdapterReport } from "../../lifecycle/participant.js";
 
@@ -41,13 +42,16 @@ function createCodeBuddyAdapterLifecycle(client: "codebuddy" | "workbuddy"): Ada
           ok: false,
           action: `${client}-plugin-remove`,
           reason: "plugin_remove_failed",
-          message: error instanceof Error ? error.message : String(error),
+          failure: deploymentFailure(error, "plugin-remove"), message: error instanceof Error ? error.message : String(error),
         };
       }
     },
   };
 }
-async function load(): Promise<CodeBuddyConfig> { return await import(new URL("../../../../memorax-code-codebuddy-adapter/src/config.mjs", import.meta.url).href) as CodeBuddyConfig; }
+async function load(): Promise<CodeBuddyConfig> {
+  return await import(new URL("../../../../memorax-code-codebuddy-adapter/src/config.mjs", import.meta.url).href)
+    .catch((error) => { throw attachDeploymentFailure(error, "adapter-load"); }) as CodeBuddyConfig;
+}
 async function options(argv: string[], serviceOptions: { home?: string }, client: "codebuddy" | "workbuddy"): Promise<Record<string, unknown>> {
   const workBuddyHome = homeArgument(argv, "--workbuddy-home");
   let home = client === "workbuddy" ? workBuddyHome : homeArgument(argv, "--codebuddy-home");
@@ -69,5 +73,5 @@ function homeArgument(argv: string[], name: string): string | undefined {
   return index >= 0 ? argv[index + 1] : undefined;
 }
 function failure(action: string, error: unknown): AdapterReport {
-  return { ok: false, action, error: error instanceof Error ? error.message : String(error) };
+  return { ok: false, action, failure: deploymentFailure(error, "deploy"), error: error instanceof Error ? error.message : String(error) };
 }

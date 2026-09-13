@@ -1,6 +1,8 @@
 import type { BackendServiceOptions } from "./contracts.js";
+import type { DeploymentFailure } from "../../../memorax-code-adapter-common/src/deployment-failure.mjs";
 
 export type AdapterReport = {
+  failure?: DeploymentFailure;
   ok?: boolean;
   action?: string;
   installed?: boolean;
@@ -72,6 +74,7 @@ export type AdapterReport = {
 };
 
 export type AdapterPluginLifecycleReport = {
+  failure?: DeploymentFailure;
   ok: boolean;
   action?: string;
   reason?: string;

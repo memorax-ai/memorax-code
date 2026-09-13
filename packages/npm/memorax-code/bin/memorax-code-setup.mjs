@@ -40,7 +40,7 @@ import {
 import { detectSetupMemoryPreferences } from "../lib/setup-memory-preferences.mjs";
 import { readSetupApiKey } from "../lib/setup-api-key-input.mjs";
 import { ensureTrialSetupCredential, trialSetupFailureDetails } from "../lib/trial-setup.mjs";
-import { printSetupBackendDiagnostic, reportSetupFailure } from "../lib/setup-diagnostics.mjs";
+import { printSetupBackendDiagnostic, printSetupClientDiagnostics, reportSetupDeploymentFailure, reportSetupFailure } from "../lib/setup-diagnostics.mjs";
 import { commandOnPath } from "../lib/vscode-extension-command.mjs";
 import { resolveWindowsCliInvocation } from "../lib/windows-cli-invocation.mjs";
 
@@ -113,6 +113,7 @@ try {
   dshProfiles = discoverDshProfiles();
 } catch (error) {
   dshProfilesVerified = false;
+  reportSetupDeploymentFailure("dsh", "discover", { home: memoraxCodeHome(), version: packageVersion(), error });
   const code = typeof error?.code === "string" ? ` (${error.code})` : "";
   logRed(`DeepSeek Harness Profile discovery could not be verified${code}; DSH setup was skipped, but other client setup will continue.`);
 }
@@ -143,7 +144,7 @@ try {
   });
   process.env.MEMORAX_CODE_DEFER_CLIENT_HOOK_RUNTIME_ACTIVATION = "1";
 } catch (error) {
-  logRed(`Client Hook runtime staging failed: ${error instanceof Error ? error.message : String(error)}`);
+  setupFailure("runtime", { error });
   logRed("Backend and plugin mutation were skipped; the previously active runtime remains authoritative.");
   printPostinstallSummary("not-verified");
   process.exit(1);
@@ -228,10 +229,10 @@ if (dshSelected) {
   log("DeepSeek Harness profiles were detected, but the DSH integration is disabled by [clients].dsh.");
 }
 if (requestedClients.includes("codex") && !skipCodexPluginInstall && !codexPreflight.ok) {
-  log("Codex runtime was not detected; skipping its adapter setup.");
+  log(codexPreflight.failed ? "Codex runtime could not run; skipping its adapter setup." : "Codex runtime was not detected; skipping its adapter setup.");
 }
 if (requestedClients.includes("claude") && !skipClaudeAdapterInstall && !claudePreflight.ok) {
-  log("Claude Code runtime was not detected; skipping its adapter setup.");
+  log(claudePreflight.failed ? "Claude Code runtime could not run; skipping its adapter setup." : "Claude Code runtime was not detected; skipping its adapter setup.");
 }
 if (requestedClients.includes("opencode") && !skipOpenCodeAdapterInstall && !opencodePreflight.ok) {
   log("OpenCode runtime or configuration was not detected; skipping its adapter setup.");
@@ -301,6 +302,7 @@ const result = codexClientEnabled
   : { status: 0 };
 
 if (codexClientEnabled && result.status !== 0) {
+  setupDeploymentFailure("codex", "plugin-register", result);
   logRed("MemoraX Code Codex plugin registration failed. Run `memorax-code setup` again after correcting the reported problem.");
   printPostinstallSummary("not-verified");
   process.exit(1);
@@ -726,6 +728,7 @@ function isRecord(value) {
 function inspectCodexPluginHooksForUpdate() {
   const result = runNodeMemoraxCodeCommand(codexPluginHookArgs("hooks"), { print: false });
   const report = parseCodexPluginHookReport(result, "codex-plugin-hooks");
+  if (!report) setupDeploymentFailure("codex", "hooks-read", result, "invalid_response");
   return report?.hooks;
 }
 
@@ -741,10 +744,12 @@ function maybeTrustUpdatedCodexPluginHooks(previousHooks) {
   });
   const report = parseCodexPluginHookReport(checked, "codex-plugin-trust-hooks");
   if (!report) {
+    setupDeploymentFailure("codex", "verify-native", checked, "invalid_response");
     warnUpdatedHookTrustSkipped("Updated Codex hooks could not be inspected after the plugin cache refresh.");
     return "skipped";
   }
   if (report.requiresFullReview) {
+    setupDeploymentFailure("codex", "verify-native", undefined, "conflict");
     warnUpdatedHookTrustSkipped("The MemoraX Code Codex plugin marketplace identity changed during the update, so incremental Hook authorization was not applied.");
     return "skipped";
   }
@@ -760,6 +765,7 @@ function maybeTrustUpdatedCodexPluginHooks(previousHooks) {
     logGreen(`Trusted ${report.hooks.length} new or changed MemoraX Code Codex Hook${report.hooks.length === 1 ? "" : "s"}.`);
     return "trusted";
   }
+  setupDeploymentFailure("codex", "hooks-write", trusted);
   warnUpdatedHookTrustSkipped("The verified Hooks changed again or could not be written to Codex config.");
   return "failed";
 }
@@ -844,11 +850,12 @@ function warnUpdatedHookTrustSkipped(message) {
 }
 
 function activateCodexPluginHooks() {
-  const activated = runNodeMemoraxCodeCommand(["codex-plugin", "activate", "--yes"], { print: verbose, printOnFailure: true });
+  const activated = runNodeMemoraxCodeCommand(["codex-plugin", "activate", "--yes", "--json"], { print: verbose, printOnFailure: true });
   if (activated.status === 0) {
     logGreen("MemoraX Code Codex Adapter hooks activated and trusted.");
     return "activated";
   }
+  setupDeploymentFailure("codex", "plugin-enable", activated);
   logRed("Codex hook activation failed; run `memorax-code codex-plugin activate --yes` after installation.");
   return "failed";
 }
@@ -881,6 +888,16 @@ function setupFailure(kind, fields = {}) {
   return reportSetupFailure(kind, {
     home: memoraxCodeHome(), version: packageVersion(), ...fields,
     write: (line) => console.error(`${RED}${line}${RESET}`),
+  });
+}
+
+function setupDeploymentFailure(client, stage, commandResult, failureReason) {
+  let report;
+  try { report = JSON.parse(commandResult?.stdout ?? ""); } catch { /* A failed native command may not return JSON. */ }
+  const write = (line) => console.error(`${RED}${line}${RESET}`);
+  if (printSetupClientDiagnostics(report, write)) return;
+  reportSetupDeploymentFailure(client, stage, {
+    home: memoraxCodeHome(), version: packageVersion(), commandResult, failureReason, write,
   });
 }
 
@@ -1135,7 +1152,8 @@ function runCodexPreflight({ integrationSelected = true } = {}) {
       : "Codex CLI";
   log(`${runtimeLabel}: ${commandSummary(version) ?? "not runnable"}`);
   if (version.status !== 0) {
-    return { ok: false, pluginCache: { marketplaceName: CLI_MARKETPLACE_NAME, versions: [] } };
+    if (codexRuntime.source !== "unavailable" || version.error?.code !== "ENOENT") setupDeploymentFailure("codex", "discover", version);
+    return { ok: false, failed: codexRuntime.source !== "unavailable", pluginCache: { marketplaceName: CLI_MARKETPLACE_NAME, versions: [] } };
   }
   const pluginCache = installedPluginCache();
   log(`Existing Codex plugin cache: ${pluginCache.versions.length > 0 ? `found (${pluginCache.versions.join(", ")})` : "not installed"}`);
@@ -1164,7 +1182,10 @@ function runClaudePreflight({ integrationSelected = true } = {}) {
       ? "Claude VS Code runtime"
       : "Claude CLI";
   log(`${runtimeLabel}: ${commandSummary(version) ?? "not runnable"}`);
-  if (version.status !== 0) return { ok: false };
+  if (version.status !== 0) {
+    if (claudeRuntime.source !== "unavailable" || version.error?.code !== "ENOENT") setupDeploymentFailure("claude", "discover", version);
+    return { ok: false, failed: claudeRuntime.source !== "unavailable" };
+  }
   log(integrationSelected
     ? "Keeping Claude Code provider config unchanged and enabling the shared memory Hook integration."
     : "Keeping Claude Code provider config unchanged while checking whether to enable its integration.");
@@ -1203,6 +1224,7 @@ function runCodeBuddyPreflight({ client, integrationSelected = true }) {
   log(`${label} data directory: ${existsSync(home) ? "found" : "not detected"}`);
   if (version.status !== 0) {
     if (runtime.source === "unavailable") return { ok: false };
+    setupDeploymentFailure(client, "discover", version);
     const detail = firstOutputLine({ stderr: version.stderr })
       ?? version.error?.message
       ?? `version check exited with ${version.status ?? version.signal ?? "unknown status"}`;
@@ -1379,7 +1401,7 @@ async function startBackendAndCheck({
     try { report = JSON.parse(commandResult?.stdout ?? ""); } catch { /* Legacy commands may return text. */ }
     // start/stop already displayed their Backend diagnostic. Keep its ID and
     // record instead of writing a second setup copy of the same failure.
-    if (!report?.diagnostic && result.reason !== "adapter-setup-failed") {
+    if (!report?.diagnostic && !report?.clientFailures?.length && result.reason !== "adapter-setup-failed") {
       const kind = result.reason === "recovery-stop-failed" ? "stop"
         : result.reason === "status-failed" ? "status"
           : result.reason === "not-ready" ? "readiness" : "start";
@@ -1573,6 +1595,7 @@ function printSetupStartResult(result) {
   } else {
     if (typeof report.message === "string") logRed(report.message);
     const diagnosed = printSetupBackendDiagnostic(report, (line) => console.error(`${RED}${line}${RESET}`));
+    printSetupClientDiagnostics(report, (line) => console.error(`${RED}${line}${RESET}`));
     if (report.backend?.ok === false && !diagnosed) {
       const code = report.backend.errorCode ? ` code=${report.backend.errorCode}` : "";
       logRed(`Backend: not ok${code} ${report.backend.error ?? report.backend.reason ?? "start failed"}`);

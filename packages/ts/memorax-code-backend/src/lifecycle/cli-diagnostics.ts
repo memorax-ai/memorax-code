@@ -3,6 +3,8 @@ import { writeDiagnosticRecord, type DiagnosticWriteResult } from "../../../memo
 import type { BackendServiceOptions, BackendServiceResult } from "./contracts.js";
 import type { MemoraxCodeLifecycleReport } from "./orchestrator.js";
 import { backendServiceHome } from "./lock.js";
+import { deploymentFailure, projectDeploymentFailure, type DeploymentFailure } from "../../../memorax-code-adapter-common/src/deployment-failure.mjs";
+import { lifecycleAdapterReports, LIFECYCLE_CLIENTS, type LifecycleClientId } from "./client-reports.js";
 
 type LifecycleFailureSummary = {
   errorCode: string;
@@ -22,6 +24,13 @@ type LifecycleFailureSummary = {
 export type LifecycleCliReport = MemoraxCodeLifecycleReport & {
   failure?: LifecycleFailureSummary;
   diagnostic?: DiagnosticWriteResult;
+  clientFailures?: ClientDeploymentDiagnostic[];
+};
+
+export type ClientDeploymentDiagnostic = {
+  client: LifecycleClientId;
+  failure: DeploymentFailure & { error: string; impact: string; userAction: string; processState: "running" | "stopped" | "unknown" };
+  diagnostic: DiagnosticWriteResult;
 };
 
 const STAGE_MESSAGES: Record<string, string> = {
@@ -58,6 +67,26 @@ const REASON_MESSAGES: Record<NonNullable<BackendServiceResult["failureReason"]>
 };
 
 export function diagnoseLifecycleReport(
+  report: MemoraxCodeLifecycleReport,
+  options: BackendServiceOptions,
+): LifecycleCliReport {
+  const diagnosed = diagnoseBackendReport(report, options);
+  if (report.ok || report.action === "uninstall") return diagnosed;
+  const clientFailures = lifecycleAdapterReports(report).flatMap(({ client, report: adapter }) => {
+    if (adapter.ok !== false) return [];
+    const failure = projectDeploymentFailure(adapter.failure)
+      ?? projectDeploymentFailure(adapter.pluginInstall?.failure)
+      ?? projectDeploymentFailure(adapter.pluginStatus?.failure)
+      ?? deploymentFailure(undefined, "deploy", { failureReason: "unknown" });
+    const state = report.backend?.processState === "stopped" ? "stopped"
+      : report.backend?.ok && report.backend.alreadyRunning !== false
+        && (report.action !== "stop" || report.backend.skipped) ? "running" : "unknown";
+    return [diagnoseClientDeployment(client.id, failure, report.action, options, state)];
+  });
+  return clientFailures.length ? { ...diagnosed, clientFailures } : diagnosed;
+}
+
+function diagnoseBackendReport(
   report: MemoraxCodeLifecycleReport,
   options: BackendServiceOptions,
 ): LifecycleCliReport {
@@ -102,6 +131,105 @@ export function diagnoseLifecycleReport(
   });
   return { ...report, failure, diagnostic };
 }
+
+export function diagnoseClientDeployment(
+  client: LifecycleClientId,
+  evidence: DeploymentFailure,
+  action: string,
+  options: BackendServiceOptions,
+  processState: "running" | "stopped" | "unknown" = "unknown",
+): ClientDeploymentDiagnostic {
+  const details = projectDeploymentFailure(evidence) ?? deploymentFailure(undefined, "deploy");
+  const name = LIFECYCLE_CLIENTS.find((entry) => entry.id === client)!.name;
+  const failure = {
+    ...details,
+    error: `${name}: ${DEPLOYMENT_MESSAGES[details.stage] ?? "client deployment failed."}`,
+    processState,
+    impact: processState === "running"
+      ? `The Backend is running, but ${name} integration did not complete. Some client changes may already be applied.`
+      : `${name} integration did not complete. Check Backend and client status before retrying.`,
+    userAction: DEPLOYMENT_ACTIONS[details.failureReason ?? ""] ?? (details.failureReason === "not_found"
+      ? `Check that ${name} is installed and its runtime can be located, then rerun memorax-code setup.`
+      : details.failureReason === "not_runnable"
+        ? `Check ${name} executable permissions and runtime availability, then rerun memorax-code setup.`
+        : details.failureReason === "timeout"
+          ? `Check whether the ${name} command is waiting or stalled, then retry setup after it finishes.`
+          : details.cleanupErrorCode
+            ? "Preserve existing client files and recovery artifacts; resolve the deployment and cleanup failures before retrying setup."
+            : /stage|publish|write|remove/.test(details.stage)
+              ? "Check access permissions, available disk space, and the reported filesystem error, then rerun memorax-code setup."
+              : `Check the ${name} plugin state and the reported failure, then rerun memorax-code setup.`),
+  };
+  const diagnostic = writeDiagnosticRecord(backendServiceHome(options), {
+    source: "memorax-code", operation: `client.${action}`, client, ...failure,
+    version: packageVersion(), runtimeVersion: process.version, platform: process.platform,
+  });
+  return { client, failure, diagnostic };
+}
+
+export function clientDeploymentDiagnosticLines({ client, failure, diagnostic }: ClientDeploymentDiagnostic): string[] {
+  return [
+    `[${failure.errorCode}] ${client}.${failure.stage}: ${failure.error}`,
+    ...([failure.systemCode, failure.failureReason].filter(Boolean).length
+      ? [`Cause: ${[failure.systemCode, failure.failureReason].filter(Boolean).join(", ")}`] : []),
+    ...(failure.commandExitCode === undefined ? [] : [`Command exit status: ${failure.commandExitCode}`]),
+    ...(failure.commandSignal ? [`Command signal: ${failure.commandSignal}`] : []),
+    ...(failure.cleanupErrorCode ? [`Cleanup also failed: ${failure.cleanupErrorCode}${failure.cleanupSystemCode ? ` (${failure.cleanupSystemCode})` : ""}`] : []),
+    `Impact: ${failure.impact}`, `Next step: ${failure.userAction}`, `Diagnostic: ${diagnostic.id}`,
+    diagnostic.recorded ? `Diagnostic file: ${diagnostic.path}`
+      : `Diagnostic could not be saved (${diagnostic.recordingError}); keep this error output.`,
+  ];
+}
+
+const DEPLOYMENT_ACTIONS: Record<string, string> = {
+  hook_changed_after_review: "Inspect the current Codex Hooks and review the changed commands before retrying authorization.",
+  hook_trust_unverified: "Inspect Codex Hook trust state; authorization was not confirmed after writing configuration.",
+  config_version_conflict: "Wait for concurrent Codex configuration edits to finish, then inspect the current configuration and retry Hook authorization.",
+  method_unavailable: "Check that the installed Codex version supports the requested plugin configuration operation.",
+  user_config_layer_invalid: "Inspect the native Codex user configuration; its base layer could not be validated.",
+  base_config_layer_invalid: "Inspect the native Codex base user configuration before retrying Hook authorization.",
+  base_config_layer_missing: "Check that Codex exposes its base user configuration before retrying Hook authorization.",
+  base_config_layer_ambiguous: "Resolve the multiple base user configuration layers reported by Codex before retrying Hook authorization.",
+  hook_metadata_incomplete: "Inspect the Codex plugin and Hook definitions; discovery did not provide the required metadata.",
+  hook_identity_mismatch: "Inspect the Codex plugin registration and Hook identity before retrying authorization.",
+  hook_discovery_failed: "Inspect the native Codex Hook discovery errors before retrying setup.",
+  native_rejected: "Inspect the native Codex command failure before retrying; no specific cause could be established from its safe response fields.",
+  stdin_transport: "Check that the Codex app-server runtime can start and accept requests, then retry setup.",
+  app_server_exit: "Check why the Codex app-server process exited before retrying setup.",
+  app_server_transport: "Check that the Codex app-server runtime is available and communicating, then retry setup.",
+};
+
+const DEPLOYMENT_MESSAGES: Record<string, string> = {
+  "adapter-load": "the packaged adapter could not be loaded.",
+  discover: "client runtime discovery failed.",
+  "config-read": "client configuration could not be read.",
+  "config-parse": "client configuration could not be parsed.",
+  "config-write": "client configuration could not be saved.",
+  "state-read": "installation state could not be read.",
+  "state-write": "installation state could not be saved.",
+  "hooks-read": "Hook configuration could not be read.",
+  "hooks-write": "Hook configuration could not be saved.",
+  "skill-stage": "the temporary Skill copy could not be prepared.",
+  "skill-remove": "the previous Skill directory could not be removed.",
+  "skill-publish": "the prepared Skill directory could not be published.",
+  "runtime-stage": "the runtime copy could not be prepared.",
+  "runtime-publish": "the prepared runtime could not be published.",
+  "plugin-stage": "the plugin files could not be prepared.",
+  "plugin-publish": "the prepared plugin could not be published.",
+  "plugin-register": "the plugin marketplace could not be registered.",
+  "plugin-list": "the native plugin list could not be verified.",
+  "plugin-install": "the native plugin installation failed.",
+  "plugin-enable": "the native plugin could not be enabled.",
+  "plugin-disable": "the native plugin could not be disabled.",
+  "plugin-remove": "the native plugin could not be removed.",
+  "plugin-write": "the plugin loader or registration could not be saved.",
+  "helper-write": "the repository helper could not be saved.",
+  "native-command": "the native client command failed.",
+  "verify-native": "the native client result could not be verified.",
+  verify: "the installed integration could not be verified.",
+  lock: "client deployment authority could not be acquired or released.",
+  cleanup: "deployment cleanup failed.",
+};
 
 export function lifecycleDiagnosticLines(report: LifecycleCliReport): string[] {
   const { failure, diagnostic } = report;
