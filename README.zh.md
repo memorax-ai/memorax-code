@@ -237,6 +237,8 @@ MemoraX Code 会先比较含义：语义相同的请求不重复写入；长期�
 Setup、主动 Search/Add、Backend 启动/停止/重启、客户端部署或包更新失败时，会提供错误码、恢复建议和不含内容的本地诊断记录，
 详见[故障恢复](docs/troubleshooting.md)。Hook 执行和自动写回的已知故障也会在关闭 Debug 时尝试保留本地诊断，
 不会向对话插入报错消息，也不会因此阻断编码任务。
+`memorax-code status` 会汇总近期故障；使用 `memorax-code logs --diagnostics` 或
+`memorax-code logs --id <diagnostic-id>` 查看详情，检查后即可用于问题反馈。
 
 Coding Memory 按仓库或工作区确定范围。Codex、WorkBuddy 和 OpenCode 中符合识别规则的
 默认聊天目录，会在相同的 MemoraX 用户 ID 配置下共享 `General`。已有记忆不会自动迁移，目录规则详见

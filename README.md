@@ -282,6 +282,8 @@ deployment, and package updates provide an error code, recovery guidance, and a
 local content-free diagnostic; see [failure recovery](docs/troubleshooting.md).
 Hook execution and automatic writeback also retain known failures locally with
 Debug off, without adding messages to the conversation or blocking the coding task.
+`memorax-code status` summarizes recent failures; use `memorax-code logs --diagnostics`
+or `memorax-code logs --id <diagnostic-id>` for details you can review and share.
 
 Coding Memory follows the repository or workspace. Recognized default chat
 directories in Codex, WorkBuddy, and OpenCode share `General` under the same

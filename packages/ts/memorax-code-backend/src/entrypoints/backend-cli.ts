@@ -71,6 +71,7 @@ import {
 import { runtimeRecordDurabilityWarning } from "../lifecycle/backend/result.js";
 import { diagnoseLifecycleReport, lifecycleDiagnosticLines, diagnoseClientDeployment, clientDeploymentDiagnosticLines, type LifecycleCliReport } from "../lifecycle/cli-diagnostics.js";
 import { deploymentFailure } from "../../../memorax-code-adapter-common/src/deployment-failure.mjs";
+import { readDiagnosticHistory, type DiagnosticHistory } from "../lifecycle/diagnostic-history.js";
 
 // Keep process-facing CLI orchestration outside the HTTP server module.
 // This preserves server.ts as the importable route factory used by tests and tools.
@@ -90,6 +91,9 @@ export function runBackendCli(argv = process.argv): void {
       "[--dsh-command CMD] [--dsh-adapter-root DIR] [--memorax-code-command CMD]",
       `[--clients ${LIFECYCLE_CLIENTS.map(({ id }) => id).join("|")}|CLIENT,...|all|none]`,
       "[--json]",
+      "Diagnostics: logs --diagnostics [--limit 1..100] [--id ID] [--json] [--home DIR]",
+      "logs --id ID or --limit N also selects diagnostics; plain logs preserves Backend log output.",
+      "status includes recent failure history independently of current service health.",
       "[--marketplace-path FILE] [--plugin-source-path DIR] [--claude-command CMD] [--help]",
       "[--yes]",
       "",
@@ -110,6 +114,10 @@ export function runBackendCli(argv = process.argv): void {
     && command !== "logs") {
     console.error(`${usageName}: unknown command '${command}'. Run '${usageName} --help' for usage.`);
     process.exit(1);
+  }
+  if (command === "logs" && argv.some((arg) => ["--diagnostics", "--id", "--limit"].some((name) => arg === name || arg.startsWith(`${name}=`)))) {
+    runDiagnosticLogs(argv);
+    return;
   }
   let serviceOptions: BackendServiceOptions;
   let pendingClientHookRuntime: PendingClientHookRuntime | undefined;
@@ -134,13 +142,11 @@ export function runBackendCli(argv = process.argv): void {
       }).token;
     } catch (error) {
       const status = backendConnectionStatusFailure(error, serviceOptions);
-      if (argv.includes("--json")) console.log(JSON.stringify(status, null, 2));
-      else printMemoraxCodeStatus(status);
+      printStatusWithDiagnostics(status, serviceOptions, argv);
       process.exit(1);
     }
     collectMemoraxCodeStatus(backendUrl, backendToken, serviceOptions, argv).then((status) => {
-      if (argv.includes("--json")) console.log(JSON.stringify(status, null, 2));
-      else printMemoraxCodeStatus(status);
+      printStatusWithDiagnostics(status, serviceOptions, argv);
       process.exit(status.ok ? 0 : 1);
     }).catch((error) => {
       console.error(error instanceof Error ? error.message : String(error));
@@ -581,6 +587,106 @@ export function printMemoraxCodeStatus(report: MemoraxCodeStatusReport): void {
   printAdapterReports(report, true);
   if (!suppressBackendGuidance()) {
     for (const line of statusGuidance(report)) backendLog(line);
+  }
+}
+
+
+// Historical failures are a local CLI projection, never a readiness condition.
+// Keep the collector and its exit status independent of diagnostic availability.
+function printStatusWithDiagnostics(report: MemoraxCodeStatusReport, options: BackendServiceOptions, argv: string[]): void {
+  const diagnostics = readDiagnosticHistory(backendServiceHome(options), { limit: 3 });
+  if (argv.includes("--json")) console.log(JSON.stringify({ ...report, diagnostics }, null, 2));
+  else {
+    printMemoraxCodeStatus(report);
+    backendLog("Recent failures (retained history; not current service health):");
+    for (const record of diagnostics.records) {
+      backendLog(`  ${record.timestamp} | ${record.client ?? record.source} | ${record.operation}/${record.stage} | ${record.errorCode} | ${record.id}`);
+    }
+    if (diagnostics.ok && diagnostics.records.length === 0 && !diagnostics.skipped) backendLog("  None retained.");
+    if (diagnostics.errorCode) backendLog(`  ${diagnostics.errorCode}${diagnostics.systemCode ? ` (${diagnostics.systemCode})` : ""}: ${diagnosticReadGuidance(diagnostics.errorCode)}`);
+    if (diagnostics.skipped) backendLog(`  Skipped ${diagnostics.skipped} unreadable or invalid diagnostic record(s).`);
+    if (diagnostics.records.length) backendLog("Details: memorax-code logs --id ID (use the same --home or MEMORAX_CODE_HOME).");
+  }
+}
+
+function runDiagnosticLogs(argv: string[]): void {
+  let query: { limit?: number; id?: string };
+  let home: string;
+  try {
+    query = parseDiagnosticQuery(argv);
+    home = backendServiceHome(parseServiceOptions(argv));
+  }
+  catch {
+    const failure = { ok: false, action: "diagnostics", errorCode: "DIAGNOSTIC_ARGUMENT_INVALID", error: "Use logs --diagnostics [--limit 1..100] [--id ID] [--json] [--home DIR]." };
+    if (argv.includes("--json")) console.log(JSON.stringify(failure, null, 2));
+    else console.error(`${failure.errorCode}: ${failure.error}`);
+    process.exit(2);
+  }
+  const result = readDiagnosticHistory(home, query);
+  if (argv.includes("--json")) console.log(JSON.stringify({ action: "diagnostics", ...result }, null, 2));
+  else printDiagnosticHistory(result);
+  process.exit(result.ok ? 0 : 1);
+}
+
+function parseDiagnosticQuery(argv: string[]): { limit?: number; id?: string } {
+  const query: { limit?: number; id?: string } = {};
+  const seen = new Set<string>();
+  for (let index = 3; index < argv.length; index += 1) {
+    const arg = argv[index]!;
+    if (arg === "--diagnostics" || arg === "--json") continue;
+    const equal = arg.indexOf("=");
+    const name = equal < 0 ? arg : arg.slice(0, equal);
+    if (!["--id", "--limit", "--home", "--host", "--port", "--clients", "--backend-url", "--backend-token"].includes(name) || seen.has(name)) throw new Error("Invalid diagnostic option");
+    seen.add(name);
+    const value = equal < 0 ? argv[++index] : arg.slice(equal + 1);
+    if (!value?.trim() || value.startsWith("--")) throw new Error("Missing diagnostic option value");
+    if (name === "--id") {
+      if (!/^mc-\d{13}-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(value)) throw new Error("Invalid diagnostic ID");
+      query.id = value;
+    }
+    if (name === "--limit") {
+      if (!/^(?:[1-9]\d?|100)$/.test(value)) throw new Error("Invalid diagnostic limit");
+      query.limit = Number(value);
+    }
+  }
+  if (query.id && query.limit !== undefined) throw new Error("Diagnostic ID and limit cannot be combined");
+  return query;
+}
+
+function printDiagnosticHistory(history: DiagnosticHistory): void {
+  console.log("MemoraX Code diagnostic history (recorded failures; recovery is not tracked).");
+  if (history.errorCode) console.log(`${history.errorCode}${history.systemCode ? ` (${history.systemCode})` : ""}: ${diagnosticReadGuidance(history.errorCode)}`);
+  if (history.skipped) console.log(`Skipped ${history.skipped} unreadable or invalid diagnostic record(s).`);
+  if (history.ok && !history.records.length && !history.skipped) console.log("No retained failure records found. This does not confirm Hook execution or writeback success.");
+  for (const record of history.records) {
+    console.log(`\nDiagnostic ID: ${record.id}`);
+    console.log(`Time: ${record.timestamp}\nVersion: ${record.version}\nPlatform: ${record.platform}\nRuntime: ${record.runtimeVersion}`);
+    console.log(`Source: ${record.source}`);
+    if (record.client) console.log(`Client: ${record.client}`);
+    console.log(`Operation: ${record.operation}\nStage: ${record.stage}\nError code: ${record.errorCode}\nError: ${record.error}`);
+    for (const key of ["systemCode", "httpStatus", "failureReason", "recordReason", "credentialReason", "configState", "commandExitCode", "commandSignal", "retryAfterMs", "processState", "cleanupErrorCode", "cleanupSystemCode", "recoveryErrorCode", "recoveryStage", "recoverySystemCode", "sessionHash", "turnHash"] as const) {
+      if (record[key] !== undefined) console.log(`${key}: ${record[key]}`);
+    }
+    console.log(`Impact: ${record.impact}\nNext step: ${record.userAction}`);
+  }
+}
+
+function diagnosticReadGuidance(code: string): string {
+  switch (code) {
+    case "DIAGNOSTIC_NOT_FOUND": return "No retained record has this ID. Check the ID and state home; retention may have removed it.";
+    case "DIAGNOSTIC_DIRECTORY_INVALID": return "The diagnostic directory is not a normal directory. Inspect runtime/diagnostics and its parent; symbolic links are not followed.";
+    case "DIAGNOSTIC_DIRECTORY_UNREADABLE": return "The diagnostic directory could not be read. Check the reported system code and directory access permissions.";
+    case "DIAGNOSTIC_RECORD_UNREADABLE": return "A diagnostic file could not be read. Check the reported system code and file access permissions.";
+    case "DIAGNOSTIC_DIRECTORY_CHANGED": return "The diagnostic directory changed during inspection. Retry the read after other local file operations finish.";
+    case "DIAGNOSTIC_RECORD_DISAPPEARED": return "A record disappeared during inspection, possibly during retention cleanup. Retry the query.";
+    case "DIAGNOSTIC_RECORD_CHANGED": return "A diagnostic file changed during inspection. Retry the query after other local file operations finish.";
+    case "DIAGNOSTIC_RECORD_INVALID_FILE": return "A diagnostic entry is not a regular file. Symbolic links and special files are not read.";
+    case "DIAGNOSTIC_RECORD_TOO_LARGE": return "A diagnostic exceeds the supported file-size limit. The record was not displayed.";
+    case "DIAGNOSTIC_SCHEMA_UNSUPPORTED": return "A diagnostic uses an unsupported schema. Use a compatible MemoraX Code version to inspect it.";
+    case "DIAGNOSTIC_RECORD_IDENTITY_MISMATCH": return "A diagnostic ID or timestamp does not match its filename. The record was not displayed.";
+    case "DIAGNOSTIC_RECORD_INVALID_JSON": return "A diagnostic contains malformed JSON. Preserve the original file for local inspection.";
+    case "DIAGNOSTIC_RECORD_INVALID": return "A diagnostic contains invalid fields. Preserve the original file for local inspection.";
+    default: return "Diagnostic history could not be read. Check the query arguments and state directory. Current service health is reported separately.";
   }
 }
 

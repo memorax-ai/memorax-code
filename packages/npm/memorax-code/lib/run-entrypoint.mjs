@@ -58,10 +58,15 @@ export function ensureNpmPackageRuntimeEnv(root = packageRoot, options = {}) {
 
 export async function runBackendEntrypoint(relativeEntrypoint) {
   if (!ensureSupportedNodeRuntime()) return;
-  ensureCodexCommandEnv();
-  ensureClaudeCommandEnv();
-  ensureCodeBuddyCommandEnv();
-  ensureWorkBuddyCommandEnv();
+  // Diagnostic history is local data; broken native commands must not delay it.
+  const diagnosticQuery = process.argv[2] === "logs"
+    && process.argv.slice(3).some((arg) => ["--diagnostics", "--id", "--limit"].some((name) => arg === name || arg.startsWith(`${name}=`)));
+  if (!diagnosticQuery) {
+    ensureCodexCommandEnv();
+    ensureClaudeCommandEnv();
+    ensureCodeBuddyCommandEnv();
+    ensureWorkBuddyCommandEnv();
+  }
   ensureBundledSkillEnv();
   ensureClaudeMarketplaceEnv();
   ensureInstallWatchdogEnv();

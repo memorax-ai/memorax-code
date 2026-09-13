@@ -50,12 +50,12 @@ Commands:
   setup       Run or repair setup
   account     Manage local MemoraX account information
   start       Reconcile selected integrations and start the Backend
-  status      Show Backend and integration status
+  status      Show Backend/integration status and recent failures
   stop        Stop the Backend and selected integrations
   restart     Restart the Backend and selected integrations
   update      Update the globally installed npm package
   uninstall   Remove managed integrations and the npm package
-  logs        Show Backend logs
+  logs        Show Backend logs; use --diagnostics or --id ID for failure reports
   token       Manage the local Backend token
 
 Run \`memorax-code setup\` to complete first-time setup or repair an installation.

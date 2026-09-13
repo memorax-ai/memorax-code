@@ -65,6 +65,7 @@ const localTraceCoreSources = new Set([
   "packages/ts/memorax-code-backend/src/memory/background-diagnostics.ts",
   "packages/ts/memorax-code-backend/src/memory/cli-diagnostics.ts",
   "packages/ts/memorax-code-backend/src/lifecycle/cli-diagnostics.ts",
+  "packages/ts/memorax-code-backend/src/lifecycle/diagnostic-history.ts",
   "packages/ts/memorax-code-backend/src/memory/reminder-trace-recorder.ts",
   "packages/ts/memorax-code-backend/src/trace/config.ts",
   "packages/ts/memorax-code-backend/src/trace/context.ts",
@@ -119,7 +120,7 @@ const outboundCapabilityPatterns = [
 ];
 
 const localTraceStorageDependency =
-  /(?:from\s+["'](?:\.\.?\/)+trace\/(?:config|store)\.js["']|\bclientTracePaths\b|\bmemoraxCodeHomeForTrace\b|(?:diagnostic-record\.mjs|cli-diagnostics\.js))/;
+  /(?:from\s+["'](?:\.\.?\/)+trace\/(?:config|store)\.js["']|\bclientTracePaths\b|\bmemoraxCodeHomeForTrace\b|(?:diagnostic-record\.mjs|cli-diagnostics\.js|diagnostic-history\.js))/;
 
 const backgroundDiagnosticDependency = /(?:hook-diagnostics\.mjs|background-diagnostics\.js)/;
 

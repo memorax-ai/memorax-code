@@ -1056,6 +1056,13 @@ Storage failure preserves the original operation result. Explicit commands
 report that a diagnostic could not be saved; background Hooks remain silent. [Configuration](docs/configuration.md#default-searchadd-diagnostics)
 owns storage paths and retention values.
 
+The lifecycle CLI reads these records through `lifecycle/diagnostic-history.ts`,
+a read-only, network-free projection with bounded file reads and known-field
+validation. `status` presents recent history separately from current readiness;
+`logs --diagnostics` and ID lookup work without a running Backend. Inspection
+never creates or prunes records, and historical failures or read errors do not
+change the status collector's result. Plain `logs` retains its Backend-log behavior.
+
 Current-turn records share the trace Store and existing paths but serve an
 operational role. Their read, write, and outcome updates are independent of
 `trace.enabled`, so disabling event capture does not change CLI workspace scope

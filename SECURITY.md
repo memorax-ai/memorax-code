@@ -255,6 +255,14 @@ and are not runtime or memory authority. Background diagnostics do not enter
 conversation context or change Hook exit behavior; recording failure is best
 effort and cannot replace the original operation outcome. See [diagnostic storage and retention](docs/configuration.md#default-searchadd-diagnostics).
 
+`memorax-code logs --diagnostics` and `logs --id` expose only validated, known
+diagnostic fields and normalize control characters for display. The reader uses
+bounded reads, rejects unsupported or malformed records and symbolic-link files
+or diagnostic directories, and never reads native history, uploads data, or
+modifies diagnostic storage. These files are not signed: review their text before
+sharing, especially if edited by another local process. Current status and raw
+Backend logs can include additional local information and require separate review.
+
 Codex, Claude Code, CodeBuddy/WorkBuddy, DSH, OpenCode, and Trae local trace capture is enabled by default.
 Depending on the enabled client capabilities, traces may include prompts,
 responses, recalled memory, writeback content, reminder text, and local paths.
