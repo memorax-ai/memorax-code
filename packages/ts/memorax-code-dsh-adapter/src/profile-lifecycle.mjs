@@ -1246,6 +1246,93 @@ function unavailableDshCompatibility(reason) {
   };
 }
 
+// This preload is embedded so an npm replacement can still remove Profiles after
+// deleting the package files. It runs only in the Windows DSH plugin subprocess.
+async function installWindowsDshPnpmCompatibility() {
+  if (process.platform !== "win32") return;
+  const { default: childProcess } = await import("node:child_process");
+  const { existsSync, readFileSync, statSync } = await import("node:fs");
+  const { dirname, join, resolve } = await import("node:path");
+  const { syncBuiltinESMExports } = await import("node:module");
+  const spawn = childProcess.spawnSync;
+  // Our entrypoint is: node dsh.js plugin --profile <name> <pnpm arguments>.
+  const expectedArgs = process.argv.slice(5);
+  childProcess.spawnSync = (command, args, options) => {
+    // Leave newer DSH launchers that disable the shell or escape their arguments alone.
+    if (command !== "pnpm" || options?.shell !== true
+      || !Array.isArray(args) || args.length !== expectedArgs.length
+      || args.some((value, index) => value !== expectedArgs[index])) {
+      return spawn(command, args, options);
+    }
+    // Use Unicode environment paths directly; where.exe output follows the
+    // console code page and cannot reliably be decoded as UTF-8.
+    const env = options.env ?? process.env;
+    const envValue = (name) => env[Object.keys(env).sort()
+      .find((key) => key.toLowerCase() === name.toLowerCase())];
+    const cwd = options.cwd ?? process.cwd();
+    const directories = envValue("NoDefaultCurrentDirectoryInExePath") === undefined ? [cwd] : [];
+    directories.push(...String(envValue("PATH") ?? "").split(";")
+      .map((value) => resolve(cwd, value.replace(/^"(.*)"$/, "$1"))));
+    const extensions = String(envValue("PATHEXT") ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean);
+    let executable;
+    try {
+      for (const directory of directories) {
+        for (const extension of extensions) {
+          const candidate = join(directory, "pnpm" + extension.toLowerCase());
+          try {
+            if (statSync(candidate).isFile()) {
+              executable = candidate;
+              break;
+            }
+          } catch (error) {
+            if (error?.code !== "ENOENT" && error?.code !== "ENOTDIR") throw error;
+          }
+        }
+        if (executable) break;
+      }
+    } catch (error) {
+      return { status: null, signal: null, error };
+    }
+    if (!executable) {
+      return {
+        status: null,
+        signal: null,
+        error: Object.assign(new Error("pnpm not found on PATH"), { code: "ENOENT" }),
+      };
+    }
+    if (executable && /\.(?:exe|com)$/i.test(executable)) {
+      return spawn(executable, args, { ...options, shell: false });
+    }
+    let entrypoint;
+    if (executable) {
+      try {
+        // Read the selected shim's target: pnpm and Corepack can coexist in one prefix.
+        const shim = readFileSync(executable, "utf8").replaceAll("\\", "/");
+        const target = /%(?:dp0%|~dp0)[/]((?:node_modules\/|\.\.\/)(?:pnpm\/bin\/pnpm\.cjs|corepack\/dist\/pnpm\.js))"/i.exec(shim)?.[1];
+        const candidate = target && join(dirname(executable), target);
+        if (candidate && existsSync(candidate)) entrypoint = candidate;
+      } catch (error) {
+        return { status: null, signal: null, error };
+      }
+    }
+    if (!entrypoint) {
+      return {
+        status: null,
+        signal: null,
+        error: Object.assign(new Error("Cannot resolve pnpm's Windows Node entrypoint"), { code: "ENOEXEC" }),
+      };
+    }
+    // Forward the original arguments, including literal percent signs, without
+    // cmd.exe expansion. DSH still owns Profile mutation and reconciliation.
+    return spawn(process.execPath, [entrypoint, ...args], { ...options, shell: false });
+  };
+  syncBuiltinESMExports();
+}
+
+const WINDOWS_DSH_PNPM_PRELOAD = "data:text/javascript;base64," + Buffer.from(
+  "await (" + installWindowsDshPnpmCompatibility.toString() + ")();",
+).toString("base64");
+
 function runDsh(options, paths, args, command) {
   const env = { ...paths.env, DSH_HOME: paths.dshHome };
   let executable;
@@ -1259,6 +1346,11 @@ function runDsh(options, paths, args, command) {
     });
   } catch (error) {
     return { status: 1, error };
+  }
+  if ((options.windowsCliResolution?.platform ?? process.platform) === "win32"
+    && args[0] === "plugin"
+    && /\.(?:cjs|mjs|js)$/i.test(executable.args[0] ?? "")) {
+    executable.args = ["--import", WINDOWS_DSH_PNPM_PRELOAD, ...executable.args];
   }
   const invocation = {
     command: executable.command,

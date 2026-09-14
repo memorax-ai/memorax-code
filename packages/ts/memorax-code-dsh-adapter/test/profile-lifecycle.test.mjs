@@ -102,6 +102,213 @@ test("failed reconciliation restores the prior authority and removes newly insta
   assert.deepEqual(status.profiles.map(({ name }) => name), ["web"]);
 });
 
+
+test("Windows DSH plugin installation and rollback preserve pnpm arguments without a shell", async (t) => {
+  const fixture = await createReconciliationFixture(t);
+  const {
+    root, profilesRoot, statePath, initialOptions, installAdapter, removeAdapter,
+  } = fixture;
+  const dshEntrypoint = join(root, "dsh bin.mjs");
+  const nodePath = "C:\\test node\\node.exe";
+  const preloads = [];
+  const mutations = [];
+  let failUpdate = false;
+  const options = {
+    ...initialOptions,
+    dshCommand: dshEntrypoint,
+    windowsCliResolution: { platform: "win32", nodePath },
+    runDsh(invocation) {
+      assert.equal(invocation.command, nodePath);
+      if (invocation.args.at(-1) === "--version") {
+        assert.deepEqual(invocation.args, [dshEntrypoint, "--version"]);
+        return { status: 0, stdout: "0.1.5-rc.1\n" };
+      }
+      assert.equal(invocation.args[0], "--import");
+      assert.match(invocation.args[1], /^data:text\/javascript;base64,/);
+      assert.equal(invocation.args[2], dshEntrypoint);
+      preloads.push(invocation.args[1]);
+      const args = invocation.args.slice(3);
+      const profileName = args[2];
+      const operation = args[3];
+      mutations.push({ operation, profileName, spec: args[4] });
+      if (failUpdate && operation === "add" && profileName === "zulu") return { status: 1 };
+      if (operation === "add") installAdapter(profileName, args[4].slice("file:".length));
+      else removeAdapter(profileName);
+      return { status: 0 };
+    },
+  };
+  const installed = await withDshPluginLifecycleLock(options, (lifecycle) => (
+    lifecycle.ensureInstalled()
+  ));
+  assert.equal(installed.ok, true, JSON.stringify(installed));
+  assert.equal(preloads.length, 1);
+  const priorState = JSON.parse(readFileSync(statePath, "utf8"));
+
+  writeProfile(profilesRoot, "alpha");
+  writeProfile(profilesRoot, "zulu");
+  mutations.length = 0;
+  failUpdate = true;
+  const failed = await withDshPluginLifecycleLock({
+    ...options,
+    memoraxCodeCommand: join(root, "memorax-code-v2.mjs"),
+  }, (lifecycle) => lifecycle.ensureInstalled());
+  assert.equal(failed.ok, false);
+  assert.deepEqual(failed.failedProfiles.map(({ name }) => name), ["zulu"]);
+  assert.deepEqual(mutations.map(({ operation, profileName }) => operation + ":" + profileName), [
+    "add:alpha", "add:web", "add:zulu", "remove:alpha", "add:web",
+  ]);
+  assert.equal(mutations.at(-1).spec, "file:" + priorState.runtimeBundleRoot);
+  assert.deepEqual(JSON.parse(readFileSync(statePath, "utf8")), priorState);
+  assert.equal(preloads.length, 6);
+  assert.equal(new Set(preloads).size, 1);
+
+  const scriptPath = join(root, "verify-windows-pnpm-preload.mjs");
+  writeFileSync(scriptPath, "await (" + verifyWindowsDshPnpmPreload.toString() + ")(process.argv[2]);\n");
+  const checked = spawnSync(process.execPath, [scriptPath, preloads[0]], {
+    cwd: root,
+    env: { HOME: root, MEMORAX_CODE_HOME: initialOptions.memoraxCodeHome },
+    encoding: "utf8",
+    timeout: 10_000,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  assert.equal(checked.status, 0, checked.stderr || checked.error?.message);
+});
+
+// Execute the emitted preload in a child so builtin and platform mocks cannot
+// affect the test runner or other lifecycle tests.
+async function verifyWindowsDshPnpmPreload(preload) {
+  const { default: assert } = await import("node:assert/strict");
+  const { default: childProcess } = await import("node:child_process");
+  const { default: fs } = await import("node:fs");
+  const { default: path } = await import("node:path");
+  const { syncBuiltinESMExports } = await import("node:module");
+  Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+  path.dirname = path.win32.dirname;
+  path.join = path.win32.join;
+  path.resolve = path.win32.resolve;
+  const calls = [];
+  const available = new Set();
+  const shims = new Map();
+  const result = { status: 17, signal: null, stdout: "native output", stderr: "native error" };
+  const spawn = (command, args, options) => {
+    calls.push({ command, args, options });
+    return result;
+  };
+  childProcess.spawnSync = spawn;
+  fs.existsSync = (candidate) => available.has(candidate);
+  fs.statSync = (candidate) => {
+    if (available.has(candidate)) return { isFile: () => true };
+    throw Object.assign(new Error("missing fixture file"), { code: "ENOENT" });
+  };
+  const readFile = fs.readFileSync;
+  fs.readFileSync = (candidate, ...args) => shims.has(candidate)
+    ? shims.get(candidate)
+    : readFile(candidate, ...args);
+  syncBuiltinESMExports();
+  const args = [
+    "add",
+    "file:C:\\MemoraX home & %MEMORAX_DSH_PATH_PROBE%\\generation",
+    "--reporter=append-only",
+  ];
+  process.argv = [process.execPath, "fake-dsh.js", "plugin", "--profile", "headless", ...args];
+  await import(preload);
+  const { spawnSync } = await import("node:child_process");
+  const originalArgs = [...args];
+  const prefix = "C:\\MemoraX Windows 验证 & %MEMORAX_DSH_PATH_PROBE%";
+  const nativeCommand = path.join(prefix, "pnpm.exe");
+  const shimCommand = path.join(prefix, "pnpm.cmd");
+  const pnpmEntrypoint = path.join(prefix, "node_modules", "pnpm", "bin", "pnpm.cjs");
+  const options = {
+    shell: true,
+    cwd: "C:\\DSH 验证 home & %MEMORAX_DSH_PATH_PROBE%",
+    env: {
+      MEMORAX_DSH_PATH_PROBE: "DECOY",
+      Path: '"' + prefix + '";C:\\后备工具',
+      Pathext: ".CMD;.EXE",
+    },
+    stdio: "inherit",
+    encoding: "utf8",
+    timeout: 1234,
+    windowsHide: true,
+  };
+  for (const fixture of [
+    {
+      command: shimCommand,
+      entrypoint: pnpmEntrypoint,
+      shim: '"%_prog%" "%dp0%\\node_modules\\pnpm\\bin\\pnpm.cjs" %*',
+    },
+    {
+      command: shimCommand,
+      entrypoint: path.join(prefix, "node_modules", "corepack", "dist", "pnpm.js"),
+      shim: '"%_prog%" "%~dp0\\node_modules\\corepack\\dist\\pnpm.js" %*',
+      otherEntrypoint: pnpmEntrypoint,
+    },
+    { command: nativeCommand },
+  ]) {
+    calls.length = 0;
+    available.clear();
+    shims.clear();
+    available.add(fixture.command);
+    available.add(nativeCommand);
+    available.add("C:\\后备工具\\pnpm.exe");
+    if (fixture.entrypoint) available.add(fixture.entrypoint);
+    if (fixture.otherEntrypoint) available.add(fixture.otherEntrypoint);
+    if (fixture.shim) shims.set(fixture.command, fixture.shim);
+    assert.equal(spawnSync("pnpm", args, options), result);
+    assert.deepEqual(calls, [{
+      command: fixture.entrypoint ? process.execPath : fixture.command,
+      args: fixture.entrypoint ? [fixture.entrypoint, ...args] : args,
+      options: { ...options, shell: false },
+    }]);
+    assert.equal(calls[0].options.env, options.env);
+    assert.deepEqual(args, originalArgs);
+    assert.equal(options.shell, true);
+  }
+
+  const cwdCommand = path.join(options.cwd, "pnpm.exe");
+  available.add(cwdCommand);
+  calls.length = 0;
+  assert.equal(spawnSync("pnpm", args, options), result);
+  assert.equal(calls[0].command, cwdCommand);
+  options.env.NoDefaultCurrentDirectoryInExePath = "1";
+  calls.length = 0;
+  assert.equal(spawnSync("pnpm", args, options), result);
+  assert.equal(calls[0].command, nativeCommand);
+  delete options.env.NoDefaultCurrentDirectoryInExePath;
+
+  for (const [command, invocationArgs, invocationOptions] of [
+    ["pnpm", args, { ...options, shell: false }],
+    ["other-command", args, options],
+    ["pnpm", args.map((value) => '"' + value + '"'), options],
+  ]) {
+    calls.length = 0;
+    assert.equal(spawnSync(command, invocationArgs, invocationOptions), result);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].command, command);
+    assert.equal(calls[0].args, invocationArgs);
+    assert.equal(calls[0].options, invocationOptions);
+  }
+
+  calls.length = 0;
+  available.clear();
+  const missing = spawnSync("pnpm", args, options);
+  assert.equal(missing.error.code, "ENOENT");
+  assert.equal(missing.status, null);
+  assert.equal(calls.length, 0);
+
+  available.add(shimCommand);
+  shims.set(shimCommand, '"node" "unknown-launcher.js" %*');
+  const unresolved = spawnSync("pnpm", args, options);
+  assert.equal(unresolved.error.code, "ENOEXEC");
+  assert.equal(calls.length, 0);
+
+  Object.defineProperty(process, "platform", { value: "linux", configurable: true });
+  childProcess.spawnSync = spawn;
+  syncBuiltinESMExports();
+  await import(preload + "#non-windows");
+  assert.equal(childProcess.spawnSync, spawn);
+}
+
 test("failed rollback removal retains ownership of the residual Profile", async (t) => {
   const fixture = await createReconciliationFixture(t);
   const {
