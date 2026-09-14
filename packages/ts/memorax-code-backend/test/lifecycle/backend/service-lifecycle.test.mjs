@@ -19,6 +19,7 @@ import {
 } from "../../../dist/lifecycle/backend/service.js";
 import { removeBackendServiceStateIfOwnedAtPath } from "../../../dist/lifecycle/backend/record.js";
 import { backendServiceFailureFields } from "../../../dist/lifecycle/backend/result.js";
+import { diagnoseLifecycleReport, lifecycleDiagnosticLines } from "../../../dist/lifecycle/cli-diagnostics.js";
 import { backendShutdownRequestPath } from "../../../dist/lifecycle/backend/shutdown-request.js";
 
 function successfulProcessProbe(commandLine) {
@@ -244,7 +245,10 @@ test("failed health startup terminates the spawned process and removes PID state
   });
   const port = await listen(occupied);
   try {
-    const result = await startBackendService({ home, port, timeoutMs: 200 });
+    const result = await startBackendService({ home, port, timeoutMs: 200 }, {
+      // Keep the child alive so this exercises deadline cleanup, not early exit.
+      spawnProcess: (_command, _args, options) => spawn(process.execPath, ["-e", "setInterval(() => {}, 1_000)"], options),
+    });
     assert.equal(result.ok, false);
     assert.match(result.error, /did not become healthy/);
     assert.equal(result.errorCode, "BACKEND_HEALTH_NOT_READY");
@@ -255,6 +259,96 @@ test("failed health startup terminates the spawned process and removes PID state
     assert.equal(readBackendServiceState({ home }), undefined);
   } finally {
     await new Promise((resolve) => occupied.close(resolve));
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("startup allows slow readiness beyond five seconds and returns as soon as healthy", async (t) => {
+  const home = await mkdtemp(join(tmpdir(), "memorax-code-slow-startup-"));
+  const now = Date.now;
+  let elapsedMs = 0;
+  const clock = t.mock.method(Date, "now", () => now() + elapsedMs);
+  let instanceId;
+  let alive = true;
+  let probes = 0;
+  let terminated = false;
+  try {
+    const result = await startBackendService({ home }, {
+      spawnProcess: (_command, args) => {
+        instanceId = args[2];
+        const child = new EventEmitter();
+        child.pid = 4242;
+        child.unref = () => undefined;
+        process.nextTick(() => child.emit("spawn"));
+        return child;
+      },
+      isProcessAlive: () => alive,
+      terminateProcessTree: () => { terminated = true; alive = false; return true; },
+      fetch: async () => {
+        probes += 1;
+        if (probes === 1) {
+          // Advance only the deadline clock; no real slow process is needed.
+          elapsedMs = 6_000;
+          throw Object.assign(new Error("still starting"), { code: "ECONNREFUSED" });
+        }
+        return new Response(JSON.stringify({
+          ok: true, service: "memorax-code-backend", instanceId,
+          state: { sessionHome: home },
+        }));
+      },
+    });
+    assert.equal(result.ok, true, result.error);
+    assert.equal(probes, 2);
+    assert.equal(terminated, false);
+    assert.equal(readBackendServiceState({ home })?.pid, 4242);
+  } finally {
+    clock.mock.restore();
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("startup reports an exited child promptly without terminating its former PID", async () => {
+  const home = await mkdtemp(join(tmpdir(), "memorax-code-exited-startup-"));
+  const child = new EventEmitter();
+  child.pid = 4242;
+  child.exitCode = null;
+  child.signalCode = null;
+  child.unref = () => undefined;
+  let probes = 0;
+  let terminated = false;
+  try {
+    const result = await startBackendService({ home, timeoutMs: 50 }, {
+      spawnProcess: () => {
+        process.nextTick(() => child.emit("spawn"));
+        return child;
+      },
+      isProcessAlive: () => false,
+      terminateProcessTree: () => { terminated = true; return true; },
+      fetch: async () => {
+        probes += 1;
+        // Exit during the final retry delay, when the health budget also expires.
+        setImmediate(() => { child.exitCode = 1; });
+        return new Response("private-startup-failure", { status: 503 });
+      },
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.errorCode, "BACKEND_EXITED_BEFORE_READY");
+    assert.equal(result.stage, "health");
+    assert.equal(result.failureReason, "http_error");
+    assert.equal(result.httpStatus, 503);
+    assert.equal(result.systemCode, undefined);
+    assert.equal(result.processState, "stopped");
+    assert.equal(probes, 1);
+    assert.equal(terminated, false);
+    assert.equal(readBackendServiceState({ home }), undefined);
+    assert.doesNotMatch(JSON.stringify(result), /private-startup-failure/);
+    const diagnosed = diagnoseLifecycleReport({ ok: false, action: "start", backend: result }, { home });
+    assert.equal(diagnosed.failure.error, "Backend process exited before becoming ready.");
+    assert.match(lifecycleDiagnosticLines(diagnosed).join("\n"), /BACKEND_EXITED_BEFORE_READY/);
+    const record = JSON.parse(await readFile(diagnosed.diagnostic.path, "utf8"));
+    assert.equal(record.errorCode, "BACKEND_EXITED_BEFORE_READY");
+    assert.equal(record.processState, "stopped");
+  } finally {
     await rm(home, { recursive: true, force: true });
   }
 });
@@ -810,8 +904,8 @@ test("failed startup retains PID state when cleanup fails or the PID remains ali
           {
             terminateProcessTree,
             isProcessAlive: () => true,
-            spawnProcess: (...args) => {
-              child = spawn(...args);
+            spawnProcess: (_command, _args, options) => {
+              child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1_000)"], options);
               childClosed = new Promise((resolve) => child.once("close", resolve));
               return child;
             },

@@ -1,4 +1,6 @@
 import { strict as assert } from "node:assert";
+import childProcess from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
 import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,7 +11,7 @@ import { buildClaudeMarketplace } from "../scripts/build-marketplace.mjs";
 
 const pluginSourceRoot = fileURLToPath(new URL("..", import.meta.url));
 
-test("Claude plugin lifecycle uses the official CLI with the selected config home", async () => {
+test("Claude plugin lifecycle uses the official CLI with the selected config home", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-claude-plugin-install-"));
   const claudeHome = join(root, "Claude Home With Spaces");
   const memoraxCodeHome = join(root, "memorax-code");
@@ -18,6 +20,13 @@ test("Claude plugin lifecycle uses the official CLI with the selected config hom
   const callsPath = join(root, "calls.jsonl");
   const npmExecPath = join(root, "npm-cli.js");
   const previousNpmExecPath = process.env.MEMORAX_CODE_NPM_EXEC_PATH;
+  const originalSpawnSync = childProcess.spawnSync;
+  const commandTimeouts = [];
+  t.mock.method(childProcess, "spawnSync", (command, args, options) => {
+    commandTimeouts.push(options.timeout);
+    return originalSpawnSync(command, args, options);
+  });
+  syncBuiltinESMExports();
   try {
     await mkdir(join(marketplacePath, ".claude-plugin"), { recursive: true });
     await writeFile(join(marketplacePath, ".claude-plugin", "marketplace.json"), "{}\n");
@@ -52,7 +61,10 @@ test("Claude plugin lifecycle uses the official CLI with the selected config hom
       { args: ["plugin", "uninstall", "memorax-code-claude-adapter@memorax-code-local", "--scope", "user", "--yes", "--keep-data"], claudeConfigDir: claudeHome },
       { args: ["plugin", "marketplace", "remove", "memorax-code-local"], claudeConfigDir: claudeHome },
     ]);
+    assert.deepEqual(commandTimeouts, [30_000, 30_000, 30_000, 60_000, 30_000, 30_000, 30_000]);
   } finally {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
     if (previousNpmExecPath === undefined) delete process.env.MEMORAX_CODE_NPM_EXEC_PATH;
     else process.env.MEMORAX_CODE_NPM_EXEC_PATH = previousNpmExecPath;
     await rm(root, { recursive: true, force: true });
@@ -259,7 +271,7 @@ test("Claude plugin install replaces a stale official CLI marketplace registrati
   }
 });
 
-test("Claude plugin install surfaces CLI failures", async () => {
+test("Claude plugin install surfaces CLI failures", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-claude-plugin-install-failure-"));
   const marketplacePath = join(root, "marketplace");
   const claudeCommand = join(root, "fake-claude.mjs");
@@ -282,7 +294,29 @@ test("Claude plugin install surfaces CLI failures", async () => {
     assert.match(result.message, /intentional plugin install failure/);
     assert.deepEqual(result.failure, { stage: "plugin-register", errorCode: "CLIENT_PLUGIN_REGISTER_FAILED", commandExitCode: 7, failureReason: "exit_status" });
     assert.doesNotMatch(JSON.stringify(result.failure), /secret-diagnostic-token|private|intentional/);
+
+    t.mock.method(childProcess, "spawnSync", (_command, args, options) => {
+      if (args[1] !== "install") return { status: 0, stdout: "[]", stderr: "" };
+      assert.equal(options.timeout, 60_000);
+      return {
+        status: 143,
+        error: Object.assign(new Error("Native plugin installation timed out"), { code: "ETIMEDOUT" }),
+        stdout: "bearer secret-diagnostic-token",
+        stderr: "/private/plugin-path",
+      };
+    });
+    syncBuiltinESMExports();
+    const timedOut = ensureClaudePluginInstalled({ claudeHome: join(root, "timeout-claude"), marketplacePath, claudeCommand });
+    assert.equal(timedOut.ok, false);
+    assert.equal(timedOut.reason, "plugin_install_failed");
+    assert.deepEqual(timedOut.failure, {
+      stage: "plugin-install", errorCode: "CLIENT_PLUGIN_INSTALL_FAILED",
+      systemCode: "ETIMEDOUT", commandExitCode: 143, failureReason: "timeout",
+    });
+    assert.doesNotMatch(JSON.stringify(timedOut), /secret-diagnostic-token|private\/plugin-path/);
   } finally {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
     await rm(root, { recursive: true, force: true });
   }
 });

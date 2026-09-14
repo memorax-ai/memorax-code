@@ -93,9 +93,10 @@ try {
     healthServer.listen(0, "127.0.0.1", done);
   });
   try {
-    const health = await jsonFailure("start", healthHome, "BACKEND_HEALTH_NOT_READY", "health", {
+    const health = await jsonFailure("start", healthHome, "BACKEND_EXITED_BEFORE_READY", "health", {
       port: healthServer.address().port,
     });
+    assert.equal(health.failure.error, "Backend process exited before becoming ready.");
     assert.equal(health.failure.failureReason, "http_error");
     assert.equal(health.failure.httpStatus, 503);
     assert.equal(health.failure.processState, "stopped");

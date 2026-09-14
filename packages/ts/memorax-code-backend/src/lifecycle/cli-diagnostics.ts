@@ -104,7 +104,9 @@ function diagnoseBackendReport(
     // Persist only fixed summaries and the service's safe machine fields.
     error: errorCode === "BACKEND_LIFECYCLE_LOCK_TIMEOUT"
       ? "Timed out waiting for Backend lifecycle authority."
-      : STAGE_MESSAGES[stage] ?? "Backend lifecycle operation failed.",
+      : errorCode === "BACKEND_EXITED_BEFORE_READY"
+        ? "Backend process exited before becoming ready."
+        : STAGE_MESSAGES[stage] ?? "Backend lifecycle operation failed.",
     ...(backend.systemCode ? { systemCode: backend.systemCode } : {}),
     ...(backend.failureReason ? { failureReason: backend.failureReason } : {}),
     ...(backend.recordReason ? { recordReason: backend.recordReason } : {}),

@@ -307,19 +307,24 @@ export async function startBackendService(
 
   const healthy = await waitForHealth(
     url,
-    options.timeoutMs ?? 5000,
+    // Cold module loading can outlast the shutdown/cleanup budget.
+    options.timeoutMs ?? 30_000,
     instanceId,
     backendServiceHome(options),
     runtime,
+    child,
   );
   if (!healthy.ok) {
-    const processCleanup = await stopFailedBackendStart(state.pid, options.timeoutMs ?? 5000, runtime);
+    // A known exited child must not authorize a signal to its potentially reused PID.
+    const processCleanup = healthy.processExited
+      ? { processState: "stopped" as const }
+      : await stopFailedBackendStart(state.pid, options.timeoutMs ?? 5000, runtime);
     const failure: BackendServiceResult = {
       ok: false,
       action: "start",
       state,
       error: `backend did not become healthy at ${url}`,
-      ...backendServiceFailureFields({ code: healthy.systemCode }, "BACKEND_HEALTH_NOT_READY", "health"),
+      ...backendServiceFailureFields({ code: healthy.systemCode }, healthy.processExited ? "BACKEND_EXITED_BEFORE_READY" : "BACKEND_HEALTH_NOT_READY", "health"),
       failureReason: healthy.failureReason,
       ...(healthy.httpStatus === undefined ? {} : { httpStatus: healthy.httpStatus }),
       ...processCleanup,
@@ -565,7 +570,8 @@ export function backendServiceLogs(options: BackendServiceOptions = {}, bytes = 
 
 type BackendHealthFailure = {
   ok: false;
-  failureReason: BackendServiceFailureReason;
+  processExited?: true;
+  failureReason?: BackendServiceFailureReason;
   httpStatus?: number;
   systemCode?: string;
 };
@@ -576,11 +582,13 @@ async function waitForHealth(
   instanceId: string,
   expectedSessionHome: string,
   runtime: BackendServiceRuntime,
+  child: ChildProcess,
 ): Promise<{ ok: true } | BackendHealthFailure> {
-  let failure: BackendHealthFailure = { ok: false, failureReason: "deadline" };
+  let failure: BackendHealthFailure | undefined;
   const budgetMs = Number.isFinite(timeoutMs) ? Math.max(0, Math.trunc(timeoutMs)) : 0;
   const deadline = Date.now() + budgetMs;
   while (Date.now() < deadline) {
+    if (child.exitCode != null || child.signalCode != null) return { ...failure, ok: false, processExited: true };
     const remainingMs = deadline - Date.now();
     try {
       const health = await readHealthWithTimeout(
@@ -591,7 +599,11 @@ async function waitForHealth(
       const failureReason = health.ok
         ? healthResponseFailureReason(health.body, instanceId, expectedSessionHome)
         : "http_error";
-      if (!failureReason) return { ok: true };
+      if (!failureReason) {
+        return child.exitCode != null || child.signalCode != null
+          ? { ...failure, ok: false, processExited: true }
+          : { ok: true };
+      }
       failure = {
         ok: false,
         failureReason,
@@ -607,10 +619,13 @@ async function waitForHealth(
       };
       // Retry until timeout; the child process may still be starting.
     }
+    if (child.exitCode != null || child.signalCode != null) return { ...failure, ok: false, processExited: true };
     const retryBudgetMs = deadline - Date.now();
     if (retryBudgetMs > 0) await sleep(Math.min(100, retryBudgetMs));
   }
-  return failure;
+  return child.exitCode != null || child.signalCode != null
+    ? { ...failure, ok: false, processExited: true }
+    : failure ?? { ok: false, failureReason: "deadline" };
 }
 
 function healthResponseFailureReason(

@@ -556,7 +556,8 @@ function runClaudePluginCommand(command, claudeHome, args, options = {}) {
     encoding: "utf8",
     env,
     stdio: ["ignore", "pipe", "pipe"],
-    timeout: 30_000,
+    // Native installation can exceed 30 seconds even for a local marketplace.
+    timeout: args[1] === "install" ? 60_000 : 30_000,
   });
   const output = [result.stdout, result.stderr].filter(Boolean).join("\n").trim();
   if (options.allowNotFound && result.status === 1 && /not found/i.test(output)) {
