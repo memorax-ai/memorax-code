@@ -276,7 +276,16 @@ async function assertDiagnosticDiscovery(stateHome, realRecord, blockedHome) {
     rawException: { message: secret },
   }));
   for (const record of copies) await writeFile(join(directory, `${record.id}.json`), JSON.stringify(record), { mode: 0o600 });
+  // Older retained records must remain discoverable beyond the former seven-day/100-record window.
+  for (let index = 0; index < 101; index += 1) {
+    const timestamp = now - 29 * 24 * 60 * 60 * 1000 - index;
+    const record = { ...realRecord, id: `mc-${timestamp}-${randomUUID()}`, timestamp: new Date(timestamp).toISOString() };
+    await writeFile(join(directory, `${record.id}.json`), JSON.stringify(record), { mode: 0o600 });
+  }
   const validIds = (await diagnosticFiles(stateHome)).map((name) => name.slice(0, -5)).sort().reverse();
+  const expiredTimestamp = now - 31 * 24 * 60 * 60 * 1000;
+  const expiredRecord = { ...realRecord, id: `mc-${expiredTimestamp}-${randomUUID()}`, timestamp: new Date(expiredTimestamp).toISOString() };
+  await writeFile(join(directory, `${expiredRecord.id}.json`), JSON.stringify(expiredRecord), { mode: 0o600 });
   const corruptId = `mc-${now}-${randomUUID()}`;
   await writeFile(join(directory, `${corruptId}.json`), "{corrupt diagnostic", { mode: 0o600 });
   const unsafeId = `mc-${now}-${randomUUID()}`;
@@ -311,6 +320,9 @@ async function assertDiagnosticDiscovery(stateHome, realRecord, blockedHome) {
   const limitedOutput = await queryDiagnostics(stateHome, ["--limit", "2"]);
   assert.equal(limitedOutput.code, 0);
   assert.deepEqual(JSON.parse(limitedOutput.stdout).records.map((record) => record.id), validIds.slice(0, 2));
+  const allOutput = await queryDiagnostics(stateHome, ["--limit", "1000"]);
+  assert.equal(allOutput.code, 0, allOutput.stdout);
+  assert.deepEqual(JSON.parse(allOutput.stdout).records.map((record) => record.id), validIds);
   const lookup = await queryDiagnostics(stateHome, ["--id", realRecord.id]);
   assert.equal(lookup.code, 0);
   assert.equal(JSON.parse(lookup.stdout).records.length, 1);
@@ -334,7 +346,7 @@ async function assertDiagnosticDiscovery(stateHome, realRecord, blockedHome) {
   const missing = await queryDiagnostics(stateHome, ["--id", `mc-${Date.now()}-${randomUUID()}`]);
   assert.equal(missing.code, 1);
   assert.equal(JSON.parse(missing.stdout).ok, false);
-  for (const args of [["--limit", "0"], ["--id", "../invalid-id"]]) {
+  for (const args of [["--limit", "0"], ["--limit", "1001"], ["--id", "../invalid-id"]]) {
     const invalid = await queryDiagnostics(stateHome, args);
     assert.equal(invalid.code, 2);
     assert.equal(JSON.parse(invalid.stdout).ok, false);

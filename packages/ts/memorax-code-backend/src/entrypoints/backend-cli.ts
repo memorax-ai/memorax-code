@@ -91,7 +91,7 @@ export function runBackendCli(argv = process.argv): void {
       "[--dsh-command CMD] [--dsh-adapter-root DIR] [--memorax-code-command CMD]",
       `[--clients ${LIFECYCLE_CLIENTS.map(({ id }) => id).join("|")}|CLIENT,...|all|none]`,
       "[--json]",
-      "Diagnostics: logs --diagnostics [--limit 1..100] [--id ID] [--json] [--home DIR]",
+      "Diagnostics: logs --diagnostics [--limit 1..1000] [--id ID] [--json] [--home DIR]",
       "logs --id ID or --limit N also selects diagnostics; plain logs preserves Backend log output.",
       "status includes recent failure history independently of current service health.",
       "[--marketplace-path FILE] [--plugin-source-path DIR] [--claude-command CMD] [--help]",
@@ -617,7 +617,7 @@ function runDiagnosticLogs(argv: string[]): void {
     home = backendServiceHome(parseServiceOptions(argv));
   }
   catch {
-    const failure = { ok: false, action: "diagnostics", errorCode: "DIAGNOSTIC_ARGUMENT_INVALID", error: "Use logs --diagnostics [--limit 1..100] [--id ID] [--json] [--home DIR]." };
+    const failure = { ok: false, action: "diagnostics", errorCode: "DIAGNOSTIC_ARGUMENT_INVALID", error: "Use logs --diagnostics [--limit 1..1000] [--id ID] [--json] [--home DIR]." };
     if (argv.includes("--json")) console.log(JSON.stringify(failure, null, 2));
     else console.error(`${failure.errorCode}: ${failure.error}`);
     process.exit(2);
@@ -645,7 +645,7 @@ function parseDiagnosticQuery(argv: string[]): { limit?: number; id?: string } {
       query.id = value;
     }
     if (name === "--limit") {
-      if (!/^(?:[1-9]\d?|100)$/.test(value)) throw new Error("Invalid diagnostic limit");
+      if (!/^(?:[1-9]\d{0,2}|1000)$/.test(value)) throw new Error("Invalid diagnostic limit");
       query.limit = Number(value);
     }
   }

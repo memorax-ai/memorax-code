@@ -20,8 +20,8 @@ export type DiagnosticHistory = {
 };
 
 const RECORD_ID = /^mc-(\d{13})-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
-const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
-const MAX_RECORDS = 100;
+const RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+const MAX_RECORDS = 1000;
 const MAX_RECORD_BYTES = 64 * 1024;
 const SYSTEM_CODES = new Set([
   "EACCES", "EPERM", "ENOENT", "ENOTDIR", "EISDIR", "ELOOP", "EMFILE", "ENFILE",

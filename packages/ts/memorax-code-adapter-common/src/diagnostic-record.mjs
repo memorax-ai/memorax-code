@@ -2,8 +2,8 @@ import { randomUUID } from "node:crypto";
 import { chmodSync, lstatSync, mkdirSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
-const MAX_RECORDS = 100;
-const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+const MAX_RECORDS = 1000;
+const RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const RECORD_NAME = /^mc-(\d{13})-[a-f0-9-]{36}\.json$/;
 
 // Callers supply safe, content-free fields, never raw exceptions or payloads.

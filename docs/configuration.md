@@ -679,8 +679,8 @@ $MEMORAX_CODE_HOME/runtime/diagnostics/<diagnostic-id>.json
 The command returns the diagnostic ID and, when saved, its file path. On POSIX
 systems, new diagnostic files use mode `0600` and diagnostic directories are
 created or tightened to `0700`; Windows uses the current user's filesystem
-ACLs. Each successful write attempts to retain the newest 100 records from
-the last seven days. Cleanup is best-effort and runs when a record is written,
+ACLs. Each successful write attempts to retain the newest 1000 records from
+the last 30 days. Cleanup is best-effort and runs when a record is written,
 not on a background schedule.
 
 Records retain operational metadata and safe error details, excluding queries,
@@ -696,7 +696,7 @@ whether a problem is still active and never change the current status result or
 exit code. Failure to read history is reported separately.
 
 `memorax-code logs --diagnostics` lists the latest five valid records;
-`--limit N` accepts 1 through 100. `memorax-code logs --id <diagnostic-id>`
+`--limit N` accepts 1 through 1000. `memorax-code logs --id <diagnostic-id>`
 reads one retained record by its exact ID. `--id` and `--limit` each select
 diagnostic mode without requiring `--diagnostics`, but cannot be combined.
 Add `--json` for the structured projection. Plain `memorax-code logs` continues
@@ -704,7 +704,7 @@ to show Backend logs.
 
 Queries use `--home DIR`, then `MEMORAX_CODE_HOME`, then the default home.
 They do not require a running Backend or enabled Debug/trace. Lists inspect at
-most the newest 100 candidate records within seven days; ID lookup can find an
+most the newest 1000 candidate records within 30 days; ID lookup can find an
 older record if write-time retention has not removed it. Inspection creates no
 files and never performs retention cleanup. Unreadable or invalid records are
 reported separately from valid results. An empty directory is a successful empty
@@ -757,7 +757,7 @@ Setup also reports configuration, secure credential, local readiness, and
 completion-record failures by default. Setup-owned records have
 `source: "memorax-code-setup"`, with `operation: "setup"` for setup failures or
 `operation: "client.setup"` for client deployment failures detected by setup.
-They share the storage, permissions, and 100-record/seven-day retention above.
+They share the storage, permissions, and 1000-record/30-day retention above.
 Setup reuses an existing Backend or client deployment diagnostic ID instead of
 producing a duplicate record.
 Configuration details include the failed write stage and `configState`; neither

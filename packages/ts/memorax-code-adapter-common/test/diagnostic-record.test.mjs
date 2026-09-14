@@ -26,18 +26,22 @@ test("diagnostics stay immutable during rapid writes and prune only owned expire
   const now = Date.now();
   t.mock.method(Date, "now", () => now);
   const name = (timestamp, index) => `mc-${timestamp}-00000000-0000-4000-8000-${index.toString(16).padStart(12, "0")}.json`;
-  const fresh = Array.from({ length: 120 }, (_, index) => name(now - 1000 - index, index));
-  const expired = name(now - 8 * 24 * 60 * 60 * 1000, 120);
+  const fresh = Array.from({ length: 1020 }, (_, index) => name(now - 1000 - index, index));
+  const boundary = name(now - 30 * 24 * 60 * 60 * 1000, 1020);
+  const expired = name(now - 30 * 24 * 60 * 60 * 1000 - 1, 1021);
   const unrelated = ["notes.txt", "unrelated.json", "mc-unrelated.json"];
   await Promise.all([
-    ...fresh.map((filename) => writeFile(join(directory, filename), "{}\n")),
+    writeFile(join(directory, boundary), "{}\n"),
     writeFile(join(directory, expired), "{}\n"),
     ...unrelated.map((filename) => writeFile(join(directory, filename), "keep unchanged\n")),
   ]);
 
   const first = writeDiagnosticRecord(home, fields);
   assert.equal(first.recorded, true);
+  assert.equal((await readdir(directory)).includes(boundary), true);
+  assert.equal((await readdir(directory)).includes(expired), false);
   const firstText = await readFile(first.path, "utf8");
+  for (const filename of fresh) await writeFile(join(directory, filename), "{}\n");
   const results = [first, ...Array.from({ length: 19 }, () => writeDiagnosticRecord(home, fields))];
   assert.equal(results.every((result) => result.recorded), true);
   assert.equal(new Set(results.map((result) => result.id)).size, results.length);
@@ -48,7 +52,7 @@ test("diagnostics stay immutable during rapid writes and prune only owned expire
   }
   assert.equal(await readFile(first.path, "utf8"), firstText);
   const retained = await readdir(directory);
-  assert.equal(retained.length - unrelated.length, 100);
+  assert.equal(retained.length - unrelated.length, 1000);
   assert.equal(retained.includes(expired), false);
   assert.equal(retained.includes(fresh[0]), true);
   assert.equal(retained.includes(fresh.at(-1)), false);
