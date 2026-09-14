@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
-import { closeSync, existsSync, openSync, readFileSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, openSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -89,6 +89,20 @@ function logPath(options: BackendServiceOptions): string {
   const configured = backendEnv("LOG");
   if (configured) return configured;
   return join(serviceDir(options), "backend.log");
+}
+
+function openBackendLog(path: string): number {
+  const fd = openSync(path, "a");
+  try {
+    // Windows may open a directory for append; validate the descriptor before handing it to the child.
+    if (fstatSync(fd).isDirectory()) {
+      throw Object.assign(new Error("Backend log path is a directory"), { code: "EISDIR" });
+    }
+    return fd;
+  } catch (error) {
+    closeSync(fd);
+    throw error;
+  }
 }
 
 export function readBackendServiceRecordState(
@@ -210,8 +224,8 @@ export async function startBackendService(
   let errFd: number;
   try {
     ensurePrivateDirectory(serviceDir(options), { durableBoundary: backendServiceHome(options) });
-    outFd = openSync(logs, "a");
-    errFd = openSync(logs, "a");
+    outFd = openBackendLog(logs);
+    errFd = openBackendLog(logs);
   } catch (error) {
     if (outFd !== undefined) closeSync(outFd);
     return {

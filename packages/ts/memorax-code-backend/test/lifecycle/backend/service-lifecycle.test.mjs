@@ -959,13 +959,14 @@ test("Backend service failure fields keep only allowlisted machine evidence", ()
 });
 
 test("startup identifies runtime preparation and PID, token, or connection persistence failures", async (t) => {
-  for (const [stage, filename, errorCode] of [
-    ["prepare_runtime", "backend.log", "BACKEND_SERVICE_PREPARE_FAILED"],
+  for (const [stage, filename, errorCode, directoryOpen] of [
+    ["prepare_runtime", "backend.log", "BACKEND_SERVICE_PREPARE_FAILED", 1],
+    ["prepare_runtime", "backend.log", "BACKEND_SERVICE_PREPARE_FAILED", 2],
     ["persist_pid", "backend.pid.json", "BACKEND_SERVICE_STATE_WRITE_FAILED"],
     ["persist_token", "backend-token.json", "BACKEND_TOKEN_WRITE_FAILED"],
     ["persist_connection", "backend-connection.json", "BACKEND_CONNECTION_WRITE_FAILED"],
   ]) {
-    await t.test(stage, async (t) => {
+    await t.test(directoryOpen ? `${stage}: log descriptor ${directoryOpen}` : stage, async (t) => {
       const home = await mkdtemp(join(tmpdir(), "memorax-code-startup-persistence-diagnostic-"));
       const directory = join(home, "runtime", "backend");
       const blockedPath = join(directory, filename);
@@ -973,8 +974,25 @@ test("startup identifies runtime preparation and PID, token, or connection persi
       let spawned = false;
       let instanceId;
       let renameMock;
+      let openMock;
+      const logDescriptors = [];
       try {
-        if (stage === "prepare_runtime") await mkdir(blockedPath, { recursive: true });
+        if (stage === "prepare_runtime") {
+          await mkdir(blockedPath, { recursive: true });
+          await writeFile(join(blockedPath, "keep.txt"), "existing directory content");
+          const open = fs.openSync;
+          let logOpen = 0;
+          openMock = t.mock.method(fs, "openSync", (path, flags, ...args) => {
+            if (path !== blockedPath) return open(path, flags, ...args);
+            // Windows can open a directory for append; exercise that path on every platform.
+            const fd = ++logOpen === directoryOpen
+              ? open(path, "r", ...args)
+              : open(join(directory, "regular.log"), flags, ...args);
+            logDescriptors.push(fd);
+            return fd;
+          });
+          syncBuiltinESMExports();
+        }
         if (stage === "persist_token") {
           const rename = fs.renameSync;
           renameMock = t.mock.method(fs, "renameSync", (source, target) => {
@@ -1015,10 +1033,21 @@ test("startup identifies runtime preparation and PID, token, or connection persi
         assert.equal(spawned, stage !== "prepare_runtime");
         assert.equal(alive, false);
         assert.equal(result.cleanupErrorCode, undefined);
+        if (stage === "prepare_runtime") {
+          assert.equal(result.systemCode, "EISDIR");
+          assert.equal(readBackendServiceState({ home }), undefined);
+          assert.equal(await readFile(join(blockedPath, "keep.txt"), "utf8"), "existing directory content");
+          assert.ok(logDescriptors.length > 0);
+          for (const fd of logDescriptors) assert.throws(() => fs.fstatSync(fd), { code: "EBADF" });
+        }
         if (stage === "persist_token" || stage === "persist_connection") assert.equal(readBackendServiceState({ home }), undefined);
       } finally {
         renameMock?.mock.restore();
+        openMock?.mock.restore();
         syncBuiltinESMExports();
+        for (const fd of logDescriptors) {
+          try { fs.closeSync(fd); } catch (error) { if (error.code !== "EBADF") throw error; }
+        }
         await rm(home, { recursive: true, force: true });
       }
     });
