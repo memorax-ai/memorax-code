@@ -48,10 +48,9 @@ type DshSessionTurnInput = Readonly<{
   events: readonly unknown[];
 }>;
 
-const DSH_SESSION_FORMAT_VERSION = 0;
-// Mirrors the supported DSH persistence catalog. Events outside this
-// vocabulary are safe to skip only when their envelope explicitly says so.
-const KNOWN_SESSION_EVENT_TYPES = new Set([
+// Keep the event vocabularies tied to the native format they describe. Events
+// outside a supported catalog are safe to skip only when explicitly ignorable.
+const FORMAT_0_SESSION_EVENT_TYPES = new Set([
   "agent-preset/selected",
   "agent/inbox/spliced",
   "approval/asked",
@@ -97,6 +96,30 @@ const KNOWN_SESSION_EVENT_TYPES = new Set([
   "tool-workflow/run-start",
   "web/deepseek-search-llm-request",
 ]);
+// Format 3 embeds assistant streams and uses PTC dispatch names. The added
+// context, attempt, and coordination events do not contribute direct user QA.
+const FORMAT_3_SESSION_EVENT_TYPES = new Set([
+  ...[...FORMAT_0_SESSION_EVENT_TYPES].filter((type) => (
+    type !== "assistant/chunk"
+    && type !== "tool/code-dispatch"
+    && type !== "tool/code-dispatch-start"
+  )),
+  "assistant/attempt",
+  "deliverables/presented",
+  "feedback/message-delete",
+  "feedback/message-put",
+  "model/selection",
+  "session-log-deepseek/delivery-accepted",
+  "subagent/catalog",
+  "subagent/model-selection-policy",
+  "system/message",
+  "team/member",
+  "team/message/delivered",
+  "team/message/queued",
+  "team/task",
+  "tool/ptc-dispatch",
+  "tool/ptc-dispatch-start",
+]);
 const TURN_IDENTITY_REQUIRED_EVENT_TYPES = new Set([
   "turn/start",
   "turn/end",
@@ -106,6 +129,9 @@ const TURN_IDENTITY_REQUIRED_EVENT_TYPES = new Set([
 export function dshSessionEventTurn(input: DshSessionTurnInput): DshSessionTurnResult {
   const header = validateSessionHeader(input);
   if (header) return { ok: false, reason: header };
+  const knownEventTypes = input.sessionHeader.version === 3
+    ? FORMAT_3_SESSION_EVENT_TYPES
+    : FORMAT_0_SESSION_EVENT_TYPES;
   if (
     input.events.length === 0
     || input.endSeq - input.startSeq !== input.events.length - 1
@@ -141,7 +167,7 @@ export function dshSessionEventTurn(input: DshSessionTurnInput): DshSessionTurnR
     if (Object.prototype.hasOwnProperty.call(value, "ignorable") && value.ignorable !== true) {
       return { ok: false, reason: "event_invalid" };
     }
-    if (!KNOWN_SESSION_EVENT_TYPES.has(type)) {
+    if (!knownEventTypes.has(type)) {
       if (value.ignorable === true) continue;
       return { ok: false, reason: "unknown_required_event" };
     }
@@ -176,7 +202,7 @@ export function dshSessionEventTurn(input: DshSessionTurnInput): DshSessionTurnR
       case "user/message": {
         if (!data) return { ok: false, reason: "event_invalid" };
         const message = messageEnvelope(data, "user");
-        if (!message || !validSurfaceOp(value.surfaceOp)) {
+        if (!message || !validSurfaceOp(value.surfaceOp, input.sessionHeader.version)) {
           return { ok: false, reason: "event_invalid" };
         }
         // Native user/message events also carry plugin recall and compaction content;
@@ -250,9 +276,15 @@ function validateSessionHeader(
 ): DshSessionTurnValidationFailureReason | undefined {
   const header = input.sessionHeader;
   if (
-    header.version !== DSH_SESSION_FORMAT_VERSION
+    (header.version !== 0 && header.version !== 3)
     || safeIntegerField(header, "createdAt", 0) === undefined
   ) return "session_header_invalid";
+  // Format 3 moved the inherited prefix length into Session state. Its header
+  // carries an explicit seed classification and must not use the retired field.
+  if (header.version === 3 && (
+    typeof header.isSeeded !== "boolean"
+    || Object.prototype.hasOwnProperty.call(header, "seedLength")
+  )) return "session_header_invalid";
   if (stringField(header, "id") !== input.sessionId) return "session_identity_mismatch";
   if (stringField(header, "cwd") !== input.cwd) return "workspace_identity_mismatch";
   // Ordinary user forks also have a parentSession; use origin/delegationDepth
@@ -296,13 +328,13 @@ function textContent(content: readonly unknown[]): string | undefined {
   return parts.join("\n").trim();
 }
 
-function validSurfaceOp(value: unknown): boolean {
+function validSurfaceOp(value: unknown, formatVersion: unknown): boolean {
   if (value === "append") return true;
   return isRecord(value)
     && Object.keys(value).length === 3
     && value.op === "replace"
-    && safeIntegerField(value, "start", 0) !== undefined
-    && safeIntegerField(value, "end", 0) !== undefined;
+    && safeIntegerField(value, formatVersion === 3 ? "startSeq" : "start", 0) !== undefined
+    && safeIntegerField(value, formatVersion === 3 ? "endSeq" : "end", 0) !== undefined;
 }
 
 function stringField(record: Record<string, unknown>, key: string): string | undefined {

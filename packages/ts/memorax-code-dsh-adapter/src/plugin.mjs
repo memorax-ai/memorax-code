@@ -53,9 +53,12 @@ export function registerMemoraxCodePlugin(ctx, dependencies) {
   if (!memoryImpactContext || !memoryReminderContext || !personalMemoryReminderContext) {
     throw new TypeError("memorax-code DSH plugin requires reminder context");
   }
-  if (typeof ctx?.sessions?.flush !== "function"
-    || typeof ctx?.sessionPersistence?.readFrom !== "function") {
-    throw new TypeError("memorax-code DSH plugin requires sessions and sessionPersistence");
+  if (typeof ctx?.sessions?.flush !== "function") {
+    throw new TypeError("memorax-code DSH plugin requires sessions.flush");
+  }
+  if (typeof ctx?.sessionPersistence?.readFrom !== "function"
+    && typeof ctx?.sessionPersistence?.open !== "function") {
+    throw new TypeError("memorax-code DSH plugin requires sessionPersistence.readFrom or sessionPersistence.open");
   }
 
   const turns = new WeakMap();
@@ -473,7 +476,7 @@ async function captureWriteback(ctx, backendClient, session, turn, state, signal
   const participated = await ctx.sessions.flush(session);
   if (!participated) throw new Error("DSH session flush had no persistence listener");
   signal.throwIfAborted();
-  const persisted = await ctx.sessionPersistence.readFrom(session.id, state.startSeq, signal);
+  const persisted = await readPersistedEvents(ctx.sessionPersistence, session.id, state.startSeq, signal);
   signal.throwIfAborted();
   const cwd = sessionCwd(session);
   if (!cwd) throw new Error("DSH session has no authoritative cwd");
@@ -489,11 +492,29 @@ async function captureWriteback(ctx, backendClient, session, turn, state, signal
   await backendClient.writebackTurn(command, { signal });
 }
 
+async function readPersistedEvents(persistence, sessionId, startSeq, signal) {
+  if (typeof persistence.readFrom === "function") {
+    return persistence.readFrom(sessionId, startSeq, signal);
+  }
+  // Newer DSH persistence exposes read-only handles. Keep the session flush
+  // barrier above; acquiring a writer or flushing this reader would compete
+  // with DSH's own persistence coordinator.
+  const handle = await persistence.open(sessionId, "read", { signal });
+  try {
+    signal.throwIfAborted();
+    const persisted = await handle.read(startSeq, Number.MAX_SAFE_INTEGER, { signal });
+    return { meta: handle.header, events: persisted?.events };
+  } finally {
+    // The handle belongs to this read, including failures and cancellation.
+    await handle.close();
+  }
+}
+
 function recoveredInterruptedTurn(session) {
   const owned = ownedSessionEvents(session);
   const firstLiveSeq = session?.firstLiveSeq;
   if (!owned || !nonNegativeSafeInteger(firstLiveSeq)) return undefined;
-  const ownedSeedLength = firstLiveSeq - (session.header.seedLength ?? 0);
+  const ownedSeedLength = firstLiveSeq - sessionInheritedEventCount(session);
   if (!nonNegativeSafeInteger(ownedSeedLength) || ownedSeedLength > owned.length) return undefined;
   const events = owned.slice(0, ownedSeedLength);
   const endIndex = events.findLastIndex((event) => (
@@ -636,11 +657,25 @@ function reminderProjection(
   return { cadenceTurnCount, compactionGeneration, postCompactionDue };
 }
 
+function sessionInheritedEventCount(session) {
+  // Format 3 moved the durable fork boundary out of header metadata. Never
+  // infer it from firstLiveSeq, which also includes this session's resume log.
+  return session?.header?.version === 3
+    ? session.inheritedEventCount
+    : session?.header?.seedLength ?? 0;
+}
+
 function ownedSessionEvents(session) {
-  if (!Array.isArray(session?.events)) return undefined;
-  const seedLength = session.header?.seedLength ?? 0;
-  if (!nonNegativeSafeInteger(seedLength) || seedLength > session.events.length) return undefined;
-  return session.events.slice(seedLength);
+  const currentFormat = session?.header?.version === 3;
+  const events = currentFormat
+    ? (typeof session.snapshotEvents === "function" ? session.snapshotEvents() : undefined)
+    : session?.events;
+  if (!Array.isArray(events)) return undefined;
+  const inherited = sessionInheritedEventCount(session);
+  if (!nonNegativeSafeInteger(inherited) || inherited > events.length) return undefined;
+  if (currentFormat && (typeof session.header.isSeeded !== "boolean"
+    || (!session.header.isSeeded && inherited !== 0))) return undefined;
+  return events.slice(inherited);
 }
 
 function isSuccessfulCompaction(event) {

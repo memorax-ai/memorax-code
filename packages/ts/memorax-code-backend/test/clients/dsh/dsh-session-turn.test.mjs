@@ -108,3 +108,66 @@ test("DSH interrupted intervals do not require completed-Turn content", () => {
     outcome: "interrupted",
   });
 });
+
+test("DSH format 3 keeps native QA while excluding new context and failed-attempt events", () => {
+  const value = dshTurnInterval({ cwd: CWD });
+  value.sessionHeader.version = 3;
+  value.sessionHeader.isSeeded = false;
+  value.sessionHeader.delegationDepth = 0;
+  for (const event of value.events) {
+    if (event.type === "assistant/message") event.data.stream = [];
+  }
+  value.events[2].surfaceOp = { op: "replace", startSeq: 1, endSeq: 1 };
+  value.events[2].sourceEventSeqs = [1];
+  value.events.splice(-1, 0, {
+    type: "system/message",
+    data: {
+      turn: 1,
+      step: 1,
+      message: {
+        id: "system-message",
+        role: "system",
+        source: { kind: "plugin", plugin: "system-prompt" },
+        content: [{ type: "text", text: "Private system instructions." }],
+      },
+    },
+    surfaceOp: "append",
+  }, {
+    type: "assistant/attempt",
+    data: {
+      turn: 1,
+      step: 1,
+      stream: [{
+        type: "text-chunks", time0: 1_700_000_000_009,
+        index: 0, dt: [], texts: ["Uncommitted failed attempt."],
+      }],
+    },
+  });
+  value.events.forEach((event, index) => {
+    event.seq = index;
+    event.time = 1_700_000_000_000 + index;
+  });
+  value.endSeq = value.events.length - 1;
+
+  const expected = dshSessionEventTurn(dshTurnInterval({ cwd: CWD }));
+  expected.turn.endSeq = value.endSeq;
+  expected.turn.assistantTimestamp = value.events.at(-1).time;
+  assert.deepEqual(dshSessionEventTurn(value), expected);
+
+  const cases = [
+    ["unsupported earlier format", (input) => { input.sessionHeader.version = 2; }, "session_header_invalid"],
+    ["unknown future format", (input) => { input.sessionHeader.version = 4; }, "session_header_invalid"],
+    ["missing seed classification", (input) => { delete input.sessionHeader.isSeeded; }, "session_header_invalid"],
+    ["retired seed length", (input) => { input.sessionHeader.seedLength = 0; }, "session_header_invalid"],
+    ["old replacement fields", (input) => { input.events[2].surfaceOp = { op: "replace", start: 1, end: 1 }; }, "event_invalid"],
+    ["direct user replacement", (input) => { input.events[2].data.source = { kind: "user" }; }, "event_invalid"],
+    ["unknown required event", (input) => { delete input.events[9].ignorable; }, "unknown_required_event"],
+    ["retired required event", (input) => { input.events[10].type = "assistant/chunk"; }, "unknown_required_event"],
+    ["new event in old format", (input) => { input.sessionHeader.version = 0; input.events[2].surfaceOp = "append"; }, "unknown_required_event"],
+  ];
+  for (const [name, mutate, reason] of cases) {
+    const input = structuredClone(value);
+    mutate(input);
+    assert.deepEqual(dshSessionEventTurn(input), { ok: false, reason }, name);
+  }
+});

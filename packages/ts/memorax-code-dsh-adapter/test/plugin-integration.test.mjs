@@ -234,6 +234,205 @@ test("retrieves once and writes the exact durable top-level DSH Turn", async () 
     MEMORY_IMPACT_REMINDER_CONTEXT, "Active procedure memory");
 });
 
+test("reads native persistence handles and closes them before writeback or cancellation", async (t) => {
+  for (const outcome of ["success", "read failure", "abort"]) {
+    await t.test(outcome, async () => {
+      const deferred = [];
+      const calls = [];
+      const writebacks = [];
+      const readStarted = Promise.withResolvers();
+      const session = topLevelSession();
+      const header = { ...session.header, createdAt: 1_700_000_000_000 };
+      const events = [
+        event("turn/start", 4, { turn: 1 }),
+        {
+          ...event("user/message", 5, {
+            id: "native-user",
+            role: "user",
+            content: [{ type: "text", text: "Persist this native prompt." }],
+            source: { kind: "user" },
+          }),
+          surfaceOp: "append",
+          time: 1_700_000_000_005,
+        },
+        {
+          ...event("assistant/message", 6, {
+            turn: 1,
+            step: 1,
+            message: {
+              id: "native-assistant",
+              role: "assistant",
+              content: [{ type: "text", text: "This is the native reply." }],
+              source: { kind: "model", provider: "test", model: "test" },
+            },
+          }),
+          surfaceOp: "append",
+          time: 1_700_000_000_006,
+        },
+        { ...event("turn/end", 7, { turn: 1, reason: { kind: "completed" } }), time: 1_700_000_000_007 },
+        event("turn/start", 8, { turn: 2 }),
+      ];
+      let readSignal;
+      const handle = {
+        header,
+        async read(offset, length, { signal }) {
+          assert.equal(offset, 4);
+          assert.equal(length, Number.MAX_SAFE_INTEGER);
+          assert.equal(signal, readSignal);
+          calls.push("read");
+          readStarted.resolve();
+          if (outcome === "read failure") throw new Error("native read failed");
+          if (outcome === "abort") {
+            await new Promise((_resolve, reject) => {
+              signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+            });
+          }
+          return { eventState: "detached", events };
+        },
+        async close(...args) {
+          assert.deepEqual(args, [], "closing a handle must not inherit cancellation");
+          await Promise.resolve();
+          calls.push("close");
+        },
+      };
+      const ctx = mockContext({
+        async flush(value) {
+          assert.equal(value, session);
+          calls.push("flush");
+          return true;
+        },
+      });
+      ctx.sessionPersistence = {
+        async open(id, access, { signal }) {
+          assert.equal(id, session.id);
+          assert.equal(access, "read");
+          assert.ok(signal instanceof AbortSignal);
+          assert.equal(signal.aborted, false);
+          readSignal = signal;
+          calls.push("open");
+          return handle;
+        },
+      };
+      registerMemoraxCodePlugin(ctx, pluginDependencies({
+        backendClient: {
+          async recordTurnStart() { return { ok: true }; },
+          async writebackTurn(command, { signal }) {
+            assert.equal(signal, readSignal);
+            calls.push("backend");
+            writebacks.push(command);
+          },
+        },
+        defer: (callback) => deferred.push(callback),
+        drainTimeoutMs: 5,
+      }));
+      ctx.emit("session/event", session, events[0]);
+      ctx.emit("session/event", session, events[3]);
+      assert.deepEqual(calls, [], "native event publication precedes the flush barrier");
+      const pending = deferred.shift()();
+      if (outcome === "abort") {
+        await readStarted.promise;
+        await Promise.all([pending, ctx.dispose()]);
+        assert.equal(readSignal.aborted, true);
+      } else {
+        await pending;
+        await ctx.dispose();
+      }
+      assert.deepEqual(calls, [
+        "flush", "open", "read", "close", ...(outcome === "success" ? ["backend"] : []),
+      ]);
+      assert.deepEqual(writebacks, outcome === "success" ? [{
+        version: 1,
+        client: "dsh",
+        sessionId: session.id,
+        turn: 1,
+        startSeq: 4,
+        endSeq: 7,
+        cwd: session.header.cwd,
+        sessionHeader: header,
+        events: events.slice(0, 4),
+      }] : []);
+    });
+  }
+});
+
+test("recovers only the owned interrupted Turn from a resumed v3 fork snapshot", async () => {
+  for (const fixture of [
+    { name: "owned interruption", ownTurn: true, inherited: 2, recover: true },
+    { name: "inherited interruption only", ownTurn: false, inherited: 2 },
+    { name: "missing inherited boundary", ownTurn: true },
+    { name: "inherited boundary outside snapshot", ownTurn: true, inherited: 7 },
+  ]) {
+    const calls = [];
+    const writebacks = [];
+    const snapshot = Object.freeze([
+      event("turn/start", 0, { turn: 1 }),
+      event("turn/end", 1, { turn: 1, reason: { kind: "interrupted" } }),
+      event("session/end-seed", 2, { inherited: true }),
+      ...(fixture.ownTurn ? [
+        event("turn/start", 3, { turn: 2 }),
+        event("turn/end", 4, { turn: 2, reason: { kind: "interrupted" } }),
+        event("session/end-seed", 5, {}),
+      ] : []),
+    ]);
+    const session = {
+      id: "resumed-fork",
+      header: {
+        version: 3,
+        id: "resumed-fork",
+        createdAt: 1,
+        cwd: "/workspace/project",
+        parentSession: "ordinary-parent",
+        isSeeded: true,
+        delegationDepth: 0,
+      },
+      ...(fixture.inherited === undefined ? {} : { inheritedEventCount: fixture.inherited }),
+      firstLiveSeq: fixture.ownTurn ? 5 : 3,
+      snapshotEvents() { return snapshot; },
+    };
+    assert.equal(Object.hasOwn(session, "events"), false);
+    assert.equal(isMemoryEligibleSession(session), true, "ordinary forks remain eligible");
+    const ctx = mockContext({
+      async flush(value) {
+        assert.equal(value, session);
+        calls.push("flush");
+        return true;
+      },
+      async readFrom(id, startSeq, signal) {
+        assert.equal(id, session.id);
+        assert.equal(startSeq, 3);
+        assert.ok(signal instanceof AbortSignal);
+        calls.push("read:3");
+        return { meta: session.header, events: snapshot.filter(({ seq }) => seq >= startSeq) };
+      },
+    });
+    registerMemoraxCodePlugin(ctx, pluginDependencies({
+      backendClient: {
+        async recordTurnStart() { return { ok: true }; },
+        async writebackTurn(command) {
+          calls.push("backend");
+          writebacks.push(command);
+        },
+      },
+    }));
+    const resumed = { agent: { session }, source: "resume" };
+    ctx.emit("agent/session-start", resumed);
+    ctx.emit("agent/session-start", resumed);
+    await ctx.dispose();
+    assert.deepEqual(calls, fixture.recover ? ["flush", "read:3", "backend"] : [], fixture.name);
+    assert.deepEqual(writebacks, fixture.recover ? [{
+      version: 1,
+      client: "dsh",
+      sessionId: session.id,
+      turn: 2,
+      startSeq: 3,
+      endSeq: 4,
+      cwd: session.header.cwd,
+      sessionHeader: session.header,
+      events: snapshot.slice(3, 5),
+    }] : [], fixture.name);
+  }
+});
+
 test("anchors Procedure Memory cadence to the first observed Turn without repeating User Profile", async () => {
   const personalContextCalls = [];
   const session = topLevelSession();

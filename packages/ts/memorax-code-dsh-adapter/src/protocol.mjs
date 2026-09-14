@@ -56,7 +56,7 @@ export function createSkillReminderCommand(input) {
 }
 
 /**
- * Select and verify the exact persisted interval after readFrom(). Later Turns
+ * Select and verify the exact interval returned by persistence. Later Turns
  * may already be durable, so only the inclusive requested suffix is returned.
  */
 export function exactTurnWindow(events, expected) {
