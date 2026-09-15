@@ -61,7 +61,7 @@ test("Claude plugin lifecycle uses the official CLI with the selected config hom
       { args: ["plugin", "uninstall", "memorax-code-claude-adapter@memorax-code-local", "--scope", "user", "--yes", "--keep-data"], claudeConfigDir: claudeHome },
       { args: ["plugin", "marketplace", "remove", "memorax-code-local"], claudeConfigDir: claudeHome },
     ]);
-    assert.deepEqual(commandTimeouts, [30_000, 30_000, 30_000, 60_000, 30_000, 30_000, 30_000]);
+    assert.deepEqual(commandTimeouts, [30_000, 30_000, 30_000, 30_000, 30_000, 30_000, 30_000]);
   } finally {
     t.mock.restoreAll();
     syncBuiltinESMExports();
@@ -297,7 +297,7 @@ test("Claude plugin install surfaces CLI failures", async (t) => {
 
     t.mock.method(childProcess, "spawnSync", (_command, args, options) => {
       if (args[1] !== "install") return { status: 0, stdout: "[]", stderr: "" };
-      assert.equal(options.timeout, 60_000);
+      assert.equal(options.timeout, 30_000);
       return {
         status: 143,
         error: Object.assign(new Error("Native plugin installation timed out"), { code: "ETIMEDOUT" }),

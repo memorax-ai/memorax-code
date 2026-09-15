@@ -260,9 +260,9 @@ Native client commands retain only safe command outcomes in their diagnostic:
 `cleanupErrorCode` and an available `cleanupSystemCode` describe a separate
 cleanup failure without replacing the original error. Preserve existing client
 files and recovery artifacts until their ownership and state are understood.
-Claude Code plugin installation allows up to 60 seconds; its other native plugin
-commands retain their 30-second limit. A native command timeout identifies the
-process deadline, not whether networking or local initialization caused the delay.
+Claude Code native plugin commands allow up to 30 seconds. A native command
+timeout identifies the process deadline, not whether networking or local
+initialization caused the delay.
 
 Raw client output can contain local paths or configuration; review it separately
 before sharing the content-free diagnostic.
@@ -521,7 +521,7 @@ output and inspect `diagnostic.recordingError`; storage failure does not replace
 the original Backend failure. These records share the
 [Search/Add diagnostic storage](configuration.md#default-searchadd-diagnostics).
 
-Backend startup allows up to 30 seconds for local health readiness and returns
+Backend startup allows up to 5 seconds by default for local health readiness and returns
 as soon as it is ready. `BACKEND_HEALTH_NOT_READY` means that wait expired;
 `BACKEND_EXITED_BEFORE_READY` means the child process exited first. The latter
 returns promptly instead of waiting for the full deadline. Both preserve the

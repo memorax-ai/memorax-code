@@ -14,7 +14,6 @@ import {
 export const PACKAGE_TRANSITION_RECORD_VERSION = 1;
 export const PACKAGE_TRANSITION_FRESHNESS_MS = 15 * 60 * 1_000;
 export const PACKAGE_TRANSITION_COMMAND_TIMEOUT_MS = 45_000;
-export const PACKAGE_TRANSITION_START_TIMEOUT_MS = 120_000;
 
 const RETIRING_KEYS = new Set([
   "version",
@@ -275,10 +274,7 @@ function readBackendPidState(path) {
 
 function runLifecycleCommand(options) {
   const spawn = options.spawnSyncImpl ?? spawnSync;
-  // Restoration includes client deployment, Backend readiness, and failure cleanup.
-  const timeoutMs = positiveInteger(options.commandTimeoutMs, options.args[0] === "start"
-    ? PACKAGE_TRANSITION_START_TIMEOUT_MS
-    : PACKAGE_TRANSITION_COMMAND_TIMEOUT_MS);
+  const timeoutMs = positiveInteger(options.commandTimeoutMs, PACKAGE_TRANSITION_COMMAND_TIMEOUT_MS);
   const result = spawn(process.execPath, [options.memoraxCodeBin, ...options.args], {
     cwd: join(options.memoraxCodeHome, "runtime", "install"),
     encoding: "utf8",

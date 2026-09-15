@@ -321,8 +321,7 @@ export async function startBackendService(
 
   const healthy = await waitForHealth(
     url,
-    // Cold module loading can outlast the shutdown/cleanup budget.
-    options.timeoutMs ?? 30_000,
+    options.timeoutMs ?? 5000,
     instanceId,
     backendServiceHome(options),
     runtime,

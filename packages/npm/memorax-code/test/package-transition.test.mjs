@@ -112,7 +112,7 @@ test("a live Backend is retired before replacement and restored once afterward",
       await transition.runNpmPostinstallPackageTransition(options);
       assert.deepEqual(budgets, [
         ["stop", commandTimeoutMs ?? 45_000],
-        ["start", commandTimeoutMs ?? 120_000],
+        ["start", commandTimeoutMs ?? 45_000],
         ["status", commandTimeoutMs ?? 45_000],
       ]);
       assert.equal(await pathExists(fixture.transitionPath), false);

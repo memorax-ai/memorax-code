@@ -263,19 +263,17 @@ test("failed health startup terminates the spawned process and removes PID state
   }
 });
 
-test("startup allows slow readiness beyond five seconds and returns as soon as healthy", async (t) => {
-  const home = await mkdtemp(join(tmpdir(), "memorax-code-slow-startup-"));
+test("startup expires the default five-second health deadline and cleans up its process", async (t) => {
+  const home = await mkdtemp(join(tmpdir(), "memorax-code-startup-deadline-"));
   const now = Date.now;
   let elapsedMs = 0;
   const clock = t.mock.method(Date, "now", () => now() + elapsedMs);
-  let instanceId;
   let alive = true;
   let probes = 0;
   let terminated = false;
   try {
     const result = await startBackendService({ home }, {
-      spawnProcess: (_command, args) => {
-        instanceId = args[2];
+      spawnProcess: () => {
         const child = new EventEmitter();
         child.pid = 4242;
         child.unref = () => undefined;
@@ -286,21 +284,18 @@ test("startup allows slow readiness beyond five seconds and returns as soon as h
       terminateProcessTree: () => { terminated = true; alive = false; return true; },
       fetch: async () => {
         probes += 1;
-        if (probes === 1) {
-          // Advance only the deadline clock; no real slow process is needed.
-          elapsedMs = 6_000;
-          throw Object.assign(new Error("still starting"), { code: "ECONNREFUSED" });
-        }
-        return new Response(JSON.stringify({
-          ok: true, service: "memorax-code-backend", instanceId,
-          state: { sessionHome: home },
-        }));
+        // Advance only the deadline clock; no real slow process is needed.
+        elapsedMs += 6_000;
+        throw Object.assign(new Error("still starting"), { code: "ECONNREFUSED" });
       },
     });
-    assert.equal(result.ok, true, result.error);
-    assert.equal(probes, 2);
-    assert.equal(terminated, false);
-    assert.equal(readBackendServiceState({ home })?.pid, 4242);
+    assert.equal(result.ok, false);
+    assert.equal(result.errorCode, "BACKEND_HEALTH_NOT_READY");
+    assert.equal(result.systemCode, "ECONNREFUSED");
+    assert.equal(probes, 1);
+    assert.equal(terminated, true);
+    assert.equal(result.processState, "stopped");
+    assert.equal(readBackendServiceState({ home }), undefined);
   } finally {
     clock.mock.restore();
     await rm(home, { recursive: true, force: true });
