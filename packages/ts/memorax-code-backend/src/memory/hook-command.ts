@@ -36,6 +36,7 @@ const WRITEBACK_KEYS: Readonly<Record<MemoryHookClient, ReadonlySet<string>>> = 
     ...BASE_COMMAND_KEYS,
     "userMessageId",
     "assistantMessageId",
+    "turnIndex",
     "messages",
   ]),
   dsh: new Set([
@@ -139,6 +140,7 @@ export type ClaudeWritebackCommand = MemoryHookCommandBase<"claude-code"> & Read
 export type OpenCodeWritebackCommand = MemoryHookCommandBase<"opencode"> & Readonly<{
   userMessageId: string;
   assistantMessageId: string;
+  turnIndex?: number;
   messages: readonly unknown[];
 }>;
 
@@ -347,7 +349,9 @@ export function parseWritebackCommand(
   if (base.client === "opencode") {
     const userMessageId = requiredStringField(value, "userMessageId");
     const assistantMessageId = requiredStringField(value, "assistantMessageId");
-    if (!userMessageId || !assistantMessageId || !Array.isArray(value.messages)) {
+    const hasTurnIndex = Object.prototype.hasOwnProperty.call(value, "turnIndex");
+    const turnIndex = positiveSafeIntegerField(value, "turnIndex");
+    if (!userMessageId || !assistantMessageId || (hasTurnIndex && turnIndex === undefined) || !Array.isArray(value.messages)) {
       return invalidCommand();
     }
     return {
@@ -357,6 +361,7 @@ export function parseWritebackCommand(
         client: "opencode",
         userMessageId,
         assistantMessageId,
+        ...(turnIndex === undefined ? {} : { turnIndex }),
         messages: value.messages,
       },
     };

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createAutomaticMemoryWritebackRuntime } from "../../dist/memory/automatic-writeback.js";
+import { CODING_TURN_BATCH_MAX_BYTES, CODING_TURN_MAX_BYTES } from "../../dist/coding-sessions/coding-turn.js";
 
 const WRITEBACK_ENV = {
   MEMORAX_CODE_MEMORY_WRITEBACK_ENABLED: "true",
@@ -511,6 +512,132 @@ test("automatic memory writeback never merges clients with the same repository a
   }
 });
 
+test("coding writeback deduplicates native Turns, not identical QA or buffered batches", async () => {
+  const requests = [];
+  const runtime = createAutomaticMemoryWritebackRuntime();
+  const options = {
+    client: "codex",
+    sessionKey: "native-dedupe",
+    userText: "Continue.",
+    assistantText: "Done.",
+    repositoryScope: REPOSITORY_SCOPE,
+    env: { ...WRITEBACK_ENV, MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_ENABLED: "true",
+      MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_MAX_TURNS: "2" },
+    fetchImpl: memoraxFetch(requests),
+  };
+  try {
+    for (let index = 1; index <= 4; index += 1) {
+      const turn = codingSourceTurn(index, options.sessionKey);
+      runtime.enqueue({ ...options, codingTurn: turn });
+      runtime.enqueue({ ...options, codingTurn: turn });
+    }
+    await runtime.drain();
+    assert.equal(requests.length, 2);
+    assert.deepEqual(requests.flatMap(({ body }) => body.coding_turns.map((turn) => turn.turn_id)),
+      ["turn-1", "turn-2", "turn-3", "turn-4"]);
+    assert.notEqual(requests[0].body.metadata.idempotency_key, requests[1].body.metadata.idempotency_key);
+  } finally {
+    runtime.close();
+  }
+});
+
+test("coding writeback bounds batches by tool bytes and server Turn count and records receipts", async () => {
+  for (const [turnCount, toolOutput] of [[8, "字\u0001".repeat(64_000)], [21, "passed"]]) {
+    const requests = [];
+    const diagnostics = [];
+    const runtime = createAutomaticMemoryWritebackRuntime({
+      diagnosticLogger: (name, fields) => diagnostics.push({ name, fields }),
+    });
+    try {
+      for (let index = 1; index <= turnCount; index += 1) {
+        runtime.enqueue({
+          client: "codex", sessionKey: "bounded-coding", userText: "Continue.", assistantText: "Done.",
+          codingTurn: codingSourceTurn(index, "bounded-coding", toolOutput),
+          repositoryScope: REPOSITORY_SCOPE,
+          env: { ...WRITEBACK_ENV, MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_ENABLED: "true",
+            MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_MAX_TURNS: "100" },
+          fetchImpl: async (url, init) => {
+            const body = JSON.parse(init.body);
+            requests.push(body);
+            return new Response(JSON.stringify({ success: true, data: { task_id: "bounded-add",
+              status: "accepted", coding_ingestion: { inserted: body.coding_turns.length, duplicates: 0, conflicts: 0 } } }));
+          },
+        });
+      }
+      await runtime.drain();
+      assert.ok(requests.length > 1 && requests.length < turnCount);
+      assert.equal(requests.flatMap((body) => body.coding_turns).length, turnCount);
+      assert.equal(requests.flatMap((body) => body.messages).length, turnCount * 2);
+      for (const body of requests) {
+        assert.ok(body.coding_turns.length <= 20);
+        assert.ok(Buffer.byteLength(JSON.stringify(body.coding_turns)) <= CODING_TURN_BATCH_MAX_BYTES);
+        assert.ok(body.coding_turns.every((turn) => Buffer.byteLength(JSON.stringify(turn)) <= CODING_TURN_MAX_BYTES));
+      }
+      const receipts = diagnostics.filter(({ name }) => name === "coding_turn.ingestion");
+      assert.equal(receipts.length, requests.length);
+      assert.equal(receipts.reduce((count, { fields }) => count + fields.inserted, 0), turnCount);
+      assert.ok(receipts.every(({ fields }) => Object.keys(fields).sort().join() === "conflicts,duplicates,inserted"));
+    } finally {
+      runtime.close();
+    }
+  }
+});
+
+test("coding archive receipts do not retry successful QA or imply durable storage", async () => {
+  const receipts = [
+    { status: "accepted" },
+    { status: "failed", error_code: "CODING_SESSION_STORAGE_BUSY" },
+    { inserted: 0, duplicates: 0, conflicts: 1 },
+    { inserted: 2, duplicates: 0, conflicts: 0 },
+    undefined,
+  ];
+  const diagnostics = [];
+  let requests = 0;
+  const runtime = createAutomaticMemoryWritebackRuntime({
+    diagnosticLogger: (name, fields) => {
+      if (name.startsWith("coding_turn.ingestion")) diagnostics.push({ name, fields });
+    },
+  });
+  try {
+    for (let index = 0; index < receipts.length; index += 1) {
+      runtime.enqueue({
+        client: "codex", sessionKey: "archive-receipts", userText: "Continue.", assistantText: "Done.",
+        codingTurn: codingSourceTurn(index + 1, "archive-receipts"),
+        repositoryScope: REPOSITORY_SCOPE, env: WRITEBACK_ENV,
+        fetchImpl: async () => {
+          requests += 1;
+          return new Response(JSON.stringify({ success: true, data: { task_id: "accepted-qa",
+            coding_ingestion: receipts[index] } }));
+        },
+      });
+    }
+    await runtime.drain();
+    assert.equal(requests, receipts.length);
+    assert.deepEqual(diagnostics, [
+      { name: "coding_turn.ingestion", fields: { status: "accepted", turnCount: 1 } },
+      { name: "coding_turn.ingestion", fields: { status: "failed", turnCount: 1, errorCode: "CODING_SESSION_STORAGE_BUSY" } },
+      { name: "coding_turn.ingestion", fields: { inserted: 0, duplicates: 0, conflicts: 1 } },
+      { name: "coding_turn.ingestion_unknown", fields: { turnCount: 1 } },
+      { name: "coding_turn.ingestion_unknown", fields: { turnCount: 1 } },
+    ]);
+  } finally {
+    runtime.close();
+  }
+});
+
+function codingSourceTurn(index, sessionId, output = "passed") {
+  return {
+    client: "codex", sessionId, turnId: `turn-${index}`, turnIndex: index,
+    events: [
+      { type: "user_message", content: "Continue." },
+      { type: "tool_call", callId: `call-${index}`, tool: "exec_command", arguments: `test file-${index}` },
+      { type: "tool_result", callId: `call-${index}`, status: "success", output },
+      { type: "assistant_message", phase: "final", content: "Done." },
+    ],
+    outcome: "completed", closedAt: "2026-09-07T08:00:00Z",
+  };
+}
+
 test("automatic memory writeback validates a normalized long decimal before chunking", async () => {
   const requests = [];
   const runtime = createAutomaticMemoryWritebackRuntime();
@@ -520,6 +647,7 @@ test("automatic memory writeback validates a normalized long decimal before chun
       sessionKey: "session-automatic-chunk",
       userText: "Summarize",
       assistantText: "123456789.6059746146202087",
+      codingTurn: codingSourceTurn(1, "session-automatic-chunk"),
       userTimestamp: 1788000300000,
       assistantTimestamp: 1788000300000,
       repositoryScope: REPOSITORY_SCOPE,
@@ -536,6 +664,7 @@ test("automatic memory writeback validates a normalized long decimal before chun
     await waitFor(() => requests.length === 3, "automatic writeback chunks were not sent");
     assert.deepEqual(requests.map((request) => request.body.chunk.index), [0, 1, 2]);
     assert.deepEqual(requests.map((request) => request.body.chunk.count), [3, 3, 3]);
+    assert.deepEqual(requests.map(({ body }) => body.coding_turns?.length ?? 0), [1, 0, 0]);
     assert.deepEqual(requests.map((request) => request.body.messages.map((message) => message.content)), [
       ["Summarize", "123456789."],
       ["9.60597461"],

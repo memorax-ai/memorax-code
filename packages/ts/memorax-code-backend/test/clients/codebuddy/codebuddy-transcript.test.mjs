@@ -37,8 +37,8 @@ test("preserves completed and interrupted replies through a long tool chain", ()
   const callCount = 1000;
   for (let index = 0; index < callCount; index += 1) {
     records.push(
-      { id: `c${index}`, type: "function_call", role: "assistant", parentId: records.at(-1).id, name: "Bash", arguments: "{}" },
-      { id: `r${index}`, type: "function_call_result", parentId: `c${index}`, output: `result ${index}` },
+      { id: `c${index}`, type: "function_call", role: "assistant", parentId: records.at(-1).id, callId: `call-${index}`, name: "Bash", arguments: "{}" },
+      { id: `r${index}`, type: "function_call_result", parentId: `c${index}`, callId: `call-${index}`, output: `result ${index}` },
     );
   }
   const assistant = {
@@ -49,7 +49,7 @@ test("preserves completed and interrupted replies through a long tool chain", ()
   const input = { sessionId, turnId: provisionalTurnId("long task") };
   const transcript = records.map(JSON.stringify).join("\n");
   const startedAt = performance.now();
-  const completed = codeBuddyTranscriptTurnFromJsonLines(transcript, input);
+  const completed = codeBuddyTranscriptTurnFromJsonLines(transcript, { ...input, captureCodingEvents: true });
   // Synchronous parsing can block the runner's timeout, so check elapsed time too.
   assert.ok(performance.now() - startedAt < 5000, "Long-chain extraction must avoid repeated transcript scans");
   assert.equal(completed.ok, true);
@@ -58,6 +58,8 @@ test("preserves completed and interrupted replies through a long tool chain", ()
   assert.equal(completed.turn.userTimestamp, undefined);
   assert.equal(completed.turn.assistantTimestamp, undefined);
   assert.equal(completed.turn.activities.length, callCount * 2);
+  assert.equal(completed.turn.events.length, callCount * 2 + 2);
+  assert.equal(completed.turn.events.at(-2).callId, `call-${callCount - 1}`);
 
   assistant.status = "incomplete";
   assistant.content[0].text = "partial answer";

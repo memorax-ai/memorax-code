@@ -587,6 +587,17 @@ content stops locally; accepted duplicates need not issue another Add request.
   flush; turn or size limits can trigger that flush during enqueue.
 - Buffering and chunking belong to the memory capability; rollout, transcript,
   DSH event-interval, and SDK message parsing remains client-specific.
+- When coding-session collection is enabled, Codex, Claude Code, OpenCode,
+  CodeBuddy, and WorkBuddy materialize an additional ordered event sequence
+  from the same exact native Turn. `coding-sessions` normalizes and redacts it;
+  the shared writeback path preserves client-qualified identity and scope,
+  bounds buffered payloads, and attaches `coding_turns` only to the first QA
+  chunk. The extension is separate from ordinary QA extraction and does not
+  upload raw transcript or trace files. DSH and Trae remain QA-only.
+- Coding-session collection has its own configuration gate and still requires
+  an eligible automatic QA writeback. Native Turn identity, rather than equal
+  QA text, drives deduplication when a valid Coding Turn is attached. Pending
+  data remains in memory; process failure can lose unflushed content.
 - Native materializers pass the selected QA timestamps through the shared
   completion contract. The coordinator supplies explicitly labelled observations
   when native times are absent; automatic enqueue freezes any remaining fallback
@@ -630,7 +641,9 @@ content stops locally; accepted duplicates need not issue another Add request.
   client and session before buffering under the Git scope. It does not migrate
   or flush those turns across namespaces.
 - The Backend records the initial Add response but does not poll asynchronous
-  Add task status after that response.
+  Add task status after that response. Coding archival receipts are independent
+  from QA acceptance: accepted means queued, not durably stored; a reported
+  archival failure does not retry an otherwise successful QA Add.
 
 ### 3.5 Repo Memory coordination
 
@@ -716,6 +729,7 @@ one directory under `clients/`.
 src/
   app/
   clients/<client>/
+  coding-sessions/
   config/
   entrypoints/
   lifecycle/
@@ -748,6 +762,7 @@ entrypoints and compatibility facades. It is not another implementation area.
 | `src/clients/<client>` | Native interpretation, correlation, interruption/recovery, trace adaptation, and lifecycle participation; delegates common memory workflows to the shared harness runtime | Request runtime stays HTTP-composition independent and uses only the matching [native authority](#native-writeback-authority); native deployment follows [package ownership](#22-physical-dependency-directions) |
 | `src/memory` | Memory commands, retrieval, writeback, turn coordination, repository session pinning, manual CLI, and buffering/chunking | Client-neutral modules do not parse native transcript formats |
 | `src/memory/harness-runtime.ts` | Common Turn-start and materialized-completion workflows for all supported clients; publishes registered Turn state synchronously and owns locally created memory resources while reusing injected shared resources | No client implementation, HTTP, app/lifecycle, or direct provider-transport imports; diagnostics enter through a port and native interpretation stays with each client |
+| `src/coding-sessions` | Client-neutral Coding Turn schema, event normalization, redaction, and payload bounds | No native transcript parsing, remote transport, or downstream Skill processing |
 | `src/personal-memory` | Local User Profile listing, normalization, duplicate detection, updates, deletion, and atomic storage | No Backend service, provider calls, transcript processing, or Procedure Memory mutation |
 | `src/repo-memory` | Repo Memory preparation, local and provider facet collection, delta detection, and bundle validation | Prepares bundle directories and the repository ignore entry, collects raw evidence, and validates output; agents author durable Markdown memory |
 | `src/repository` | Read-only repository identity | Scope derivation does not execute Git or use synchronous filesystem reads |
@@ -934,7 +949,8 @@ publication. Its legacy directory lock retains the same path and blocks new
 acquisition until released; an unprovable abandoned directory is not removed
 based on age. Pending schema, correlation, and pruning remain client-owned.
 
-Backend-owned remote memory state is limited to MemoraX memories and Add tasks.
+Remote state includes MemoraX memories, Add tasks, and optionally archived
+normalized Coding Turns; the service owns archival storage and consumption.
 The provider adapter is the network boundary for documented memory payloads;
 the Backend does not poll an Add task after its initial response.
 
@@ -978,8 +994,8 @@ rather than freezing the enabled clients at Backend startup.
 Raw native transcript files, transcript paths, and retained trace files stay
 local. Only normalized Search and Add requests cross the MemoraX
 provider boundary. An Add request may carry messages materialized from the
-exact native Turn, but it does not upload the raw file or unrelated transcript
-content. A production module that gains network capability must be explicitly
+exact native Turn and its separately normalized Coding events, but it does not
+upload the raw file or unrelated transcript content. A production module that gains network capability must be explicitly
 reviewed by the local-only gate; trace-core modules must remain network-free,
 and a module must not combine trace storage with outbound authority without a
 reviewed contract.
@@ -1065,6 +1081,7 @@ paths are used below unless a different package or the repository root is named.
 | --- | --- |
 | `src/app` | `test/app` |
 | `src/clients/<client>` | `test/clients/<client>` |
+| `src/coding-sessions` | `test/coding-sessions`; buffered upload coverage in `test/memory` |
 | `src/config` | `test/config`, with composition coverage in `test/app` and MemoraX configuration coverage in `test/provider/memorax` |
 | `src/entrypoints` and root executable behavior | `test/entrypoints`; management-CLI lifecycle behavior in `test/lifecycle`; root allowlist in `test/architecture` |
 | `src/lifecycle` and `src/lifecycle/backend` | `test/lifecycle` and `test/lifecycle/backend` |

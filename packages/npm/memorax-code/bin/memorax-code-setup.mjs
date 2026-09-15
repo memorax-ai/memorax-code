@@ -532,6 +532,8 @@ function printMemoraxDisclosure() {
   log("MemoraX Code requires MemoraX for its core remote-memory functionality.");
   log("After connection, trusted repository sessions automatically send selected user prompts and final assistant answers to MemoraX after replies.");
   log("Newly generated configuration enables automatic writeback. Existing configuration is never enabled implicitly; disable it with `[memory.writeback] enabled = false` or `MEMORAX_CODE_MEMORAX_WRITEBACK_ENABLED=false`.");
+  log("Newly generated configuration also enables coding data collection for Codex, Claude Code, OpenCode, CodeBuddy, and WorkBuddy. The same Memory Add sends locally redacted completed coding Turns, including user prompts, visible assistant messages, and tool calls and results; disable it with `[coding_sessions] enabled = false` or `MEMORAX_CODE_CODING_SESSIONS_ENABLED=false`.");
+  log("Coding data collection excludes hidden reasoning, system or Hook text, raw transcript files and paths, local trace files, and binary tool payloads. Redaction is best-effort; sensitive content may remain.");
 }
 
 async function writeMemoraxConfigFromInput({
@@ -920,6 +922,9 @@ function defaultMemoraxCodeConfig() {
     "# This file is read from $MEMORAX_CODE_HOME/config.toml.",
     "# Environment variables still override values written here.",
     "# See docs/configuration.md for advanced tuning fields and effective defaults.",
+    "",
+    "[coding_sessions]",
+    "enabled = true # Attach locally redacted completed coding Turns to automatic Memory Add.",
     "",
     "[clients]",
     "codex = true # Manage the Codex adapter.",

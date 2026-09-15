@@ -1,4 +1,5 @@
 import { retrieveAutomaticMemoryContext } from "./automatic-retrieval.js";
+import type { CodingSessionSourceTurn } from "../coding-sessions/coding-turn.js";
 import {
   createAutomaticMemoryWritebackRuntime,
   type AutomaticMemoryWritebackEnqueue,
@@ -88,6 +89,7 @@ export type HarnessTurnCompletion = Readonly<AutomaticMemoryWritebackTiming & {
   metadata?: MemoryTurnState;
   userText: string;
   assistantText: string;
+  codingTurn?: CodingSessionSourceTurn;
   traceContext?: TraceContext;
   resolveRepositoryMemory: () => Promise<ConfiguredRepositoryMemoryResult>;
 }>;
@@ -245,6 +247,7 @@ export function createHarnessMemoryRuntime(
         writeback: {
           client: definition.client,
           sessionKey: input.sessionId,
+          ...(input.codingTurn?.turnId === input.clientTurnId ? { codingTurn: input.codingTurn } : {}),
           env: options.env ?? process.env,
           fetchImpl: options.fetchImpl,
           memoryObservability: options.memoryObservability,

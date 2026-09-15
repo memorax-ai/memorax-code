@@ -1,4 +1,5 @@
 import { createAutomaticMemoryWritebackRuntime } from "./automatic-writeback.js";
+import { codingSessionsEnabled, loadMemoraxCodeConfig } from "../config/memorax-code.js";
 import {
   createCodexMemoryHookRuntime,
   type CodexMemoryHookRuntimeOptions,
@@ -32,7 +33,7 @@ import type {
 
 export type MemoryServiceOptions = Omit<
   CodexMemoryHookRuntimeOptions,
-  "automaticWriteback" | "pendingQuotaNotice" | "repositoryMemorySession" | "turnCoordinator"
+  "automaticWriteback" | "captureCodingTurns" | "pendingQuotaNotice" | "repositoryMemorySession" | "turnCoordinator"
 > & Pick<ClaudeMemoryHookRuntimeOptions, "transcriptReadAttempts" | "transcriptRetryDelayMs">;
 
 type MemoryHookWritebackResult =
@@ -60,6 +61,9 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
     diagnosticLogger: options.diagnosticLogger,
     queueQuotaNotice: pendingQuotaNotice.queue,
   });
+  const env = options.env ?? process.env;
+  const fileConfig = loadMemoraxCodeConfig(options.memoraxCodeHome ?? env.MEMORAX_CODE_HOME?.trim());
+  const captureCodingTurns = codingSessionsEnabled(env, fileConfig);
   const repositoryMemorySession = createRepositoryMemorySessionRuntime({
     onScopeUpgrade: automaticWriteback.discardForScopeUpgrade,
   });
@@ -72,18 +76,21 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
   });
   const codexHook = createCodexMemoryHookRuntime({
     ...options,
+    captureCodingTurns,
     pendingQuotaNotice,
     repositoryMemorySession,
     turnCoordinator,
   });
   const claudeHook = createClaudeMemoryHookRuntime({
     ...options,
+    captureCodingTurns,
     pendingQuotaNotice,
     repositoryMemorySession,
     turnCoordinator,
   });
   const openCodeHook = createOpenCodeMemoryHookRuntime({
     ...options,
+    captureCodingTurns,
     pendingQuotaNotice,
     repositoryMemorySession,
     turnCoordinator,
@@ -95,12 +102,14 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
   });
   const codeBuddyHook = createCodeBuddyMemoryHookRuntime({
     ...options,
+    captureCodingTurns,
     pendingQuotaNotice,
     repositoryMemorySession,
     turnCoordinator,
   });
   const workBuddyHook = createCodeBuddyMemoryHookRuntime({
     ...options,
+    captureCodingTurns,
     client: "workbuddy",
     pendingQuotaNotice,
     repositoryMemorySession,

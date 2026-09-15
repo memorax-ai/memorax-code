@@ -275,6 +275,13 @@ path.
 QA writeback preserves available native timestamps and labels observation-time
 fallbacks; see [message timestamps](docs/configuration.md#automatic-writeback-timestamps).
 
+New configurations also enable coding-session collection for Codex, Claude
+Code, OpenCode, CodeBuddy, and WorkBuddy. Automatic Add includes locally
+redacted user prompts, visible assistant messages, and tool calls/results as
+separate archival data. Raw session files and hidden reasoning are not uploaded;
+redaction is best-effort. Existing configurations without this setting remain
+off. See [collection controls](docs/configuration.md#coding-session-collection).
+
 Sign in to [MemoraX Console](https://platform.memorax.net/) at any time to view,
 edit, or delete saved memories. MemoraX Cloud does not receive model-provider
 credentials or local Backend tokens.

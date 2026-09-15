@@ -19,6 +19,7 @@ import {
 import {
   normalizeMemoraxBaseUrl,
 } from "../../../../memorax-code-adapter-common/src/memorax-defaults.mjs";
+import { codingSessionsEnabled } from "../../../dist/config/memorax-code.js";
 
 test("memory CLI uses its executable name as the default session identity", () => {
   assert.equal(MEMORY_CLI_DEFAULT_SESSION_ID, "memorax-cli");
@@ -56,6 +57,8 @@ test("seeded MemoraX Code config exposes high-signal choices without a tuning ca
     assert.equal((await stat(join(root, "config.toml"))).mode & 0o777, 0o600);
   }
   const config = await readFile(join(root, "config.toml"), "utf8");
+  assert.match(config, /\[coding_sessions\]\nenabled = true/);
+  assert.equal(codingSessionsEnabled({}, loadMemoraxCodeConfig(root)), true);
   assert.match(config, /\[clients\]\ncodex = true\nclaude = true/);
   assert.match(config, /\[memorax\]/);
   assert.match(config, /# endpoint = "https:\/\/platform\.memorax\.net" # MemoraX service URL\./);
@@ -104,6 +107,9 @@ test("MemoraX config resolver centralizes defaults and clamps env values", () =>
 test("MemoraX Code loads configured-home TOML and resolves credentials, writeback, and Add defaults", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-config-loader-"));
   await writeFile(join(root, "config.toml"), [
+    "[coding_sessions]",
+    "enabled = true",
+    "",
     "[clients]",
     "codex = false",
     "claude = true",
@@ -131,6 +137,8 @@ test("MemoraX Code loads configured-home TOML and resolves credentials, writebac
 
   const config = loadMemoraxCodeConfig(root);
 
+  assert.deepEqual(config.coding_sessions, { enabled: true });
+  assert.equal(codingSessionsEnabled({ MEMORAX_CODE_CODING_SESSIONS_ENABLED: "false" }, config), false);
   assert.deepEqual(config.clients, { codex: false, claude: true });
   assert.equal(config.memorax?.endpoint, "http://file-memorax.test/");
   assert.equal(config.memorax?.user_id, "file-user");
@@ -251,6 +259,7 @@ test("config without automatic memory fields keeps writeback off and defaults la
   ].join("\n"), "utf8");
 
   const status = await memoryConfigStatus({ MEMORAX_CODE_HOME: root });
+  assert.equal(codingSessionsEnabled({}, loadMemoraxCodeConfig(root)), false);
   const options = await memoraxAddOptionsFromContext({}, {
     MEMORAX_CODE_HOME: root,
   });

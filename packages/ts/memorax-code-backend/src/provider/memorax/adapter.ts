@@ -14,6 +14,7 @@ import {
   type MemoraxJsonResponse,
 } from "./http.js";
 import type { MemoraxQuotaSnapshot } from "./quota.js";
+import type { NormalizedCodingTurn } from "../../coding-sessions/coding-turn.js";
 import type {
   MemoryDiagnosticLogger,
   MemoryObservabilityEvent,
@@ -103,6 +104,7 @@ type MemoraxAddPayload = {
     count: number;
   };
   session_id?: string;
+  coding_turns?: readonly NormalizedCodingTurn[];
   metadata: Record<string, unknown>;
   async_mode: true;
   timestamp: number;
@@ -326,6 +328,9 @@ async function invokeMemoraxWriteback(
   const payload = buildMemoraxAddPayload(config, run, messages, context, idempotencyKey, repositoryScope, addOptions.options);
   try {
     const { body: raw, quota } = await callMemoAdd(config, payload, options.fetchImpl);
+    if (payload.coding_turns?.length) {
+      recordCodingIngestion(raw, payload.coding_turns.length, options.diagnosticLogger);
+    }
     recordMemoryObservabilityEvent(options, {
       operation: "writeback",
       ok: true,
@@ -397,6 +402,9 @@ function buildMemoraxAddPayload(
     timestamp: parseNativeMessageTimestamp(message.timestamp) ?? now + index,
   }));
   const scopeKind = repositoryMemoryScopeKind(repositoryScope);
+  const codingTurns = Array.isArray(context.codingTurns)
+    ? context.codingTurns.filter(isRecord) as NormalizedCodingTurn[]
+    : [];
   return {
     messages: stamped,
     user_id: repositoryScope.effectiveUserId,
@@ -404,6 +412,7 @@ function buildMemoraxAddPayload(
     ...(options.mode ? { mode: options.mode } : {}),
     ...(options.contentType ? { content_type: options.contentType } : {}),
     ...(chunk ? { chunk } : {}),
+    ...(codingTurns.length > 0 ? { coding_turns: codingTurns } : {}),
     session_id: memoraxSessionIdForRun(run),
     // Acceptance acknowledges task submission, not completed memory extraction.
     async_mode: true,
@@ -423,6 +432,35 @@ function buildMemoraxAddPayload(
       ...(run.branchId ? { memorax_code_branch_id: run.branchId } : {}),
     },
   };
+}
+
+function recordCodingIngestion(raw: unknown, turnCount: number, diagnosticLogger?: MemoryDiagnosticLogger): void {
+  if (!diagnosticLogger) return;
+  const receipt = isRecord(raw) && isRecord(raw.data) ? raw.data.coding_ingestion : undefined;
+  if (isRecord(receipt)) {
+    if (receipt.status === "accepted") {
+      // Submission is not confirmation that the asynchronous archive is durable.
+      diagnosticLogger("coding_turn.ingestion", { status: "accepted", turnCount });
+      return;
+    }
+    if (receipt.status === "failed") {
+      const errorCode = [
+        "CODING_SESSION_STORAGE_NOT_CONFIGURED",
+        "CODING_SESSION_STORAGE_UNAVAILABLE",
+        "CODING_SESSION_STORAGE_BUSY",
+      ].find((code) => code === receipt.error_code);
+      diagnosticLogger("coding_turn.ingestion", { status: "failed", turnCount, ...(errorCode ? { errorCode } : {}) });
+      return;
+    }
+    const { inserted, duplicates, conflicts } = receipt;
+    const counts = [inserted, duplicates, conflicts];
+    if (counts.every((value) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0)
+      && (inserted as number) + (duplicates as number) + (conflicts as number) === turnCount) {
+      diagnosticLogger("coding_turn.ingestion", { inserted, duplicates, conflicts });
+      return;
+    }
+  }
+  diagnosticLogger("coding_turn.ingestion_unknown", { turnCount });
 }
 
 function memoraxScopeVersion(scopeKind: ReturnType<typeof repositoryMemoryScopeKind>): string {

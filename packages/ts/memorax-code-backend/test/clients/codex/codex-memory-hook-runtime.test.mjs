@@ -150,6 +150,7 @@ test("memory hook writeback accepts repeated authority metadata in the exact Cod
     turnId: "turn-1",
     prompt: "Remember this persisted Codex turn.\n",
     reply: "Stored persisted Codex answer.\n",
+    commentaries: ["Inspecting the persisted turn."],
   }], {
     prefixRecords: [{
       timestamp: "2026-07-16T00:00:00.500Z",
@@ -162,6 +163,7 @@ test("memory hook writeback accepts repeated authority metadata in the exact Cod
   const controller = createCodexMemoryHookRuntime({
     env: WRITEBACK_ENV,
     fetchImpl,
+    captureCodingTurns: true,
     memoryObservability: { recordEvent: (event) => events.push(event) },
   });
   try {
@@ -187,6 +189,14 @@ test("memory hook writeback accepts repeated authority metadata in the exact Cod
 
     assert.equal(requests[0].body.messages[0].content, "Remember this persisted Codex turn.");
     assert.equal(requests[0].body.messages[1].content, "Stored persisted Codex answer.");
+    assert.equal(requests[0].body.coding_turns.length, 1);
+    assert.equal(requests[0].body.coding_turns[0].session_id, "session-hook");
+    assert.equal(requests[0].body.coding_turns[0].turn_id, "turn-1");
+    assert.deepEqual(requests[0].body.coding_turns[0].events, [
+      { index: 1, type: "user_message", content: "Remember this persisted Codex turn." },
+      { index: 2, type: "assistant_message", phase: "progress", content: "Inspecting the persisted turn." },
+      { index: 3, type: "assistant_message", phase: "final", content: "Stored persisted Codex answer." },
+    ]);
     assert.deepEqual(requests[0].body.messages.map((message) => message.timestamp), [
       Date.parse("2026-07-16T00:00:02.000Z"),
       Date.parse("2026-07-16T00:00:03.000Z"),

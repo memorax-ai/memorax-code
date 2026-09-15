@@ -1030,8 +1030,11 @@ test("setup seeds the default MemoraX Code config around trial memory preference
   try {
     assert.equal(run.result.code, 0, run.result.stderr);
     assert.match(run.result.stderr, /MemoraX Code requires MemoraX for its core remote-memory functionality/);
+    assert.match(run.result.stderr, /same Memory Add sends locally redacted completed coding Turns/);
+    assert.match(run.result.stderr, /Redaction is best-effort/);
     assert.match(run.result.stderr, /MemoraX memory: .*Configured/);
     const config = await readFile(join(run.memoraxCodeHome, "config.toml"), "utf8");
+    assert.match(tomlSectionText(config, "coding_sessions"), /^enabled = true(?:\s+#.*)?$/m);
     assert.match(tomlSectionText(config, "clients"), /^dsh = true(?:\s+#.*)?$/m);
     assert.doesNotMatch(config, /profile\s*=/);
     assert.doesNotMatch(config, /\[memory\]\s|provider\s*=/);
@@ -1062,6 +1065,7 @@ test("setup seeds the default MemoraX Code config around trial memory preference
     assert.match(config, /capture_content = true # Store content in local Trae trace events\./);
     assert.deepEqual(activeTomlSections(config), [
       "clients",
+      "coding_sessions",
       "memorax",
       "memory.add",
       "memory.repo_update",

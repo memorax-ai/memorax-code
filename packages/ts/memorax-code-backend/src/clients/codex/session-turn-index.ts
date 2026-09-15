@@ -42,10 +42,10 @@ export function codexSessionTurnIndexFromJsonLines(
 
   const observeTurn = (turnId: string | undefined, source: "turn_context" | "task_started"): void => {
     activeTurnId = turnId;
+    if (turnId && source === "turn_context") turnContextIds.add(turnId);
     if (!turnId || seenTurnIds.has(turnId)) return;
     seenTurnIds.add(turnId);
     orderedTurnIds.push(turnId);
-    if (source === "turn_context") turnContextIds.add(turnId);
   };
 
   for (const line of transcript.split(/\r?\n/)) {
@@ -70,6 +70,20 @@ export function codexSessionTurnIndexFromJsonLines(
       observeTurn(turnId, "turn_context");
       continue;
     }
+    if (record.type === "response_item" && activeTurnId
+      && payload.type === "message" && payload.role === "user") {
+      const metadata = isRecord(payload.internal_chat_message_metadata_passthrough)
+        ? payload.internal_chat_message_metadata_passthrough
+        : {};
+      const responseTurnId = stringValue(metadata.turn_id) ?? stringValue(metadata.turnId);
+      const hasUserText = Array.isArray(payload.content) && payload.content.some((item: unknown) => (
+        isRecord(item) && item.type === "input_text" && stringValue(item.text) !== undefined
+      ));
+      if (hasUserText && (!responseTurnId || responseTurnId === activeTurnId)) {
+        userMessageTurnIds.add(activeTurnId);
+      }
+      continue;
+    }
     if (record.type !== "event_msg") continue;
     const eventType = stringValue(payload.type);
     if (eventType === "task_started") {
@@ -80,9 +94,9 @@ export function codexSessionTurnIndexFromJsonLines(
       userMessageTurnIds.add(activeTurnId);
       continue;
     }
-    if (eventType === "task_complete") {
-      const completedTurnId = stringValue(payload.turn_id) ?? stringValue(payload.turnId);
-      if (completedTurnId && completedTurnId === activeTurnId) activeTurnId = undefined;
+    if (eventType === "task_complete" || eventType === "turn_aborted") {
+      const endedTurnId = stringValue(payload.turn_id) ?? stringValue(payload.turnId);
+      if (endedTurnId && endedTurnId === activeTurnId) activeTurnId = undefined;
     }
   }
 

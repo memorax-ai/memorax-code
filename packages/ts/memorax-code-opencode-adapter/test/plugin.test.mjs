@@ -645,6 +645,7 @@ test("idle reads authoritative SDK messages and dispose drains the pending write
     sessionId: "session-3",
     userMessageId: "user-3",
     assistantMessageId: "assistant-3",
+    turnIndex: 1,
     messages: [
       {
         info: { id: "user-3", role: "user", sessionID: "session-3" },
@@ -691,15 +692,8 @@ test("idle follows an OpenCode compaction continuation back to the original pend
     requests[1].body.messages.map((message) => message.info.id),
     ["user-original", "assistant-tail", "user-compaction", "user-continuation", "assistant-final"],
   );
-  assert.deepEqual(requests[1].body.messages[1], {
-    info: {
-      id: "assistant-tail",
-      sessionID: "session-compacted-turn",
-      role: "assistant",
-      parentID: "user-original",
-    },
-    parts: [],
-  });
+  assert.equal(requests[1].body.turnIndex, 1);
+  assert.deepEqual(requests[1].body.messages[1], messages[1], "completed native tool parts survive the compaction evidence bridge");
   assert.equal(messages[1].parts[0].type, "tool", "native SDK messages remain unchanged");
 });
 

@@ -229,6 +229,11 @@ Coding Memory 按仓库或工作区确定范围。Codex、WorkBuddy 和 OpenCode
 
 QA 写回会保留可用的原生时间戳，并标明使用观测时间的回退情况，详见[消息时间戳](docs/configuration.md#automatic-writeback-timestamps)。
 
+新配置还会为 Codex、Claude Code、OpenCode、CodeBuddy 和 WorkBuddy 开启 coding-session 采集。
+自动 Add 会附带经过本地脱敏的用户指令、助手可见消息、工具调用及结果，作为独立的归档数据。
+不会上传原始 Session 文件或隐藏推理；脱敏为尽力而为。已有配置缺少此设置时保持关闭，
+详见[采集控制](docs/configuration.md#coding-session-collection)。
+
 登录 [MemoraX Console](https://platform.memorax.net/) 后，可以随时查看、修改或删除已经保存的记忆。
 MemoraX 云端不会接收模型服务商凭据或本地 Backend Token。
 

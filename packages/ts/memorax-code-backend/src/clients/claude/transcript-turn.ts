@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { parseNativeMessageTimestamp } from "../../shared/message-time.js";
+import { codingEventText, type CodingTurnEvent } from "../../coding-sessions/coding-turn.js";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -45,6 +46,15 @@ export type ClaudeTranscriptTurnFailureReason =
 
 export type ClaudeTranscriptTurnResult =
   | { ok: true; turn: ClaudeTranscriptTurn }
+  | { ok: false; reason: ClaudeTranscriptTurnFailureReason; error?: string };
+
+export type ClaudeCodingSessionTurn = ClaudeTranscriptTurn & {
+  events: CodingTurnEvent[];
+  closedAt?: string;
+};
+
+export type ClaudeCodingSessionTurnResult =
+  | { ok: true; turn: ClaudeCodingSessionTurn }
   | { ok: false; reason: ClaudeTranscriptTurnFailureReason; error?: string };
 
 export type ClaudeInterruptedTranscriptTurn = ClaudeTranscriptTurn & {
@@ -103,6 +113,49 @@ export function claudeTranscriptTurnFromJsonLines(
   transcript: string,
   input: { sessionId: string; promptId: string },
 ): ClaudeTranscriptTurnResult {
+  return resolveClaudeCompletedTranscriptTurn(transcript, input, false);
+}
+
+export async function readClaudeCodingSessionTurn(input: {
+  transcriptPath: string;
+  sessionId: string;
+  promptId: string;
+}): Promise<ClaudeCodingSessionTurnResult> {
+  let transcript: string;
+  try {
+    transcript = await readFile(input.transcriptPath, "utf8");
+  } catch (error) {
+    return {
+      ok: false,
+      reason: "transcript_unavailable",
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+  return claudeCodingSessionTurnFromJsonLines(transcript, input);
+}
+
+export function claudeCodingSessionTurnFromJsonLines(
+  transcript: string,
+  input: { sessionId: string; promptId: string },
+): ClaudeCodingSessionTurnResult {
+  return resolveClaudeCompletedTranscriptTurn(transcript, input, true);
+}
+
+function resolveClaudeCompletedTranscriptTurn(
+  transcript: string,
+  input: { sessionId: string; promptId: string },
+  captureCodingEvents: true,
+): ClaudeCodingSessionTurnResult;
+function resolveClaudeCompletedTranscriptTurn(
+  transcript: string,
+  input: { sessionId: string; promptId: string },
+  captureCodingEvents: false,
+): ClaudeTranscriptTurnResult;
+function resolveClaudeCompletedTranscriptTurn(
+  transcript: string,
+  input: { sessionId: string; promptId: string },
+  captureCodingEvents: boolean,
+): ClaudeTranscriptTurnResult | ClaudeCodingSessionTurnResult {
   const requested = requestedTranscriptRecords(transcript, input.sessionId);
   if (!requested.ok) return requested;
   const records = requested.records;
@@ -152,6 +205,7 @@ export function claudeTranscriptTurnFromJsonLines(
   }
   const candidate = terminalCandidates[0];
   if (candidate?.assistantReply && sessionTurnIndex !== undefined) {
+    const closedAt = transcriptRecordTimestamp(candidate.branch.records[0]!);
     return {
       ok: true,
       turn: {
@@ -162,6 +216,10 @@ export function claudeTranscriptTurnFromJsonLines(
         assistantReply: candidate.assistantReply,
         ...(candidate.branch.userTimestamp === undefined ? {} : { userTimestamp: candidate.branch.userTimestamp }),
         ...(candidate.assistantTimestamp === undefined ? {} : { assistantTimestamp: candidate.assistantTimestamp }),
+        ...(captureCodingEvents ? {
+          events: completedClaudeCodingEvents(candidate.branch, candidate.assistantReply),
+          ...(closedAt ? { closedAt } : {}),
+        } : {}),
         activities: candidate.activities,
         ...(candidate.usage ? { usage: candidate.usage } : {}),
       },
@@ -465,6 +523,60 @@ function interruptedAssistantReply(assistantMessages: JsonRecord[]): string {
     textSegments.push(text);
   }
   return textSegments.join("\n\n");
+}
+
+function completedClaudeCodingEvents(
+  branch: ClaudePromptBranch,
+  finalReply: string,
+): CodingTurnEvent[] {
+  const events: CodingTurnEvent[] = [];
+  const terminalRecord = branch.records[0];
+  for (const record of branch.records.slice().reverse()) {
+    if (visibleUserPrompt(record)) continue;
+    if (record.isSidechain === true || record.isMeta === true
+      || record.isCompactSummary === true || record.isVisibleInTranscriptOnly === true) continue;
+    const message = isRecord(record.message) ? record.message : undefined;
+    if (!message || !Array.isArray(message.content)) {
+      if (record !== terminalRecord && message?.role === "assistant") {
+        const content = visibleMessageText(message.content);
+        if (content) events.push({ type: "assistant_message", phase: "progress", content });
+      }
+      continue;
+    }
+    if (message.role === "assistant") {
+      for (const block of message.content) {
+        if (!isRecord(block)) continue;
+        if (block.type === "text" && record !== terminalRecord) {
+          const content = nonBlankString(block.text);
+          if (content) events.push({ type: "assistant_message", phase: "progress", content });
+          continue;
+        }
+        if (block.type !== "tool_use") continue;
+        const callId = stringValue(block.id);
+        const tool = stringValue(block.name);
+        if (!callId || !tool) continue;
+        events.push({ type: "tool_call", callId, tool, arguments: codingEventText(block.input) });
+      }
+      continue;
+    }
+    if (message.role !== "user") continue;
+    for (const block of message.content) {
+      if (!isRecord(block) || block.type !== "tool_result") continue;
+      const callId = stringValue(block.tool_use_id);
+      if (!callId) continue;
+      events.push({
+        type: "tool_result",
+        callId,
+        status: block.is_error === true ? "error" : "success",
+        output: codingEventText(block.content),
+      });
+    }
+  }
+  return [
+    { type: "user_message", content: branch.userPrompt ?? "" },
+    ...events,
+    { type: "assistant_message", phase: "final", content: finalReply },
+  ];
 }
 
 function transcriptRecordTimestamp(record: JsonRecord): string | undefined {

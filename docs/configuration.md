@@ -47,7 +47,7 @@ are not a compatibility contract.
 
 The generated template selects the existing client integrations, including the
 optional CodeBuddy/WorkBuddy and Trae adapters, disables automatic retrieval,
-enables automatic writeback, sets the preferred language to Chinese (`zh`),
+enables automatic writeback and coding-session collection, sets the preferred language to Chinese (`zh`),
 uses a five-turn skill reminder and the adaptive repository-update policy, and
 enables content-bearing local traces for every supported client. Foreground
 setup may narrow `[clients]` to clients detected on the host. The tables below
@@ -572,6 +572,49 @@ always active for automatic writeback, but it is not a complete
 data-loss-prevention system and may miss unknown or weak-context sensitive
 formats. Explicit `memorax-cli add` content and Search queries are sent as
 entered and do not pass through this detector.
+
+### Coding-session collection
+
+`[coding_sessions].enabled` controls the normalized coding data attached to
+automatic Add. New configurations set it to `true`; an existing configuration
+without it remains disabled. `MEMORAX_CODE_CODING_SESSIONS_ENABLED` overrides
+the file value. This setting is read when the Backend starts; run
+`memorax-code restart` after changing it.
+
+```toml
+[coding_sessions]
+enabled = false
+```
+
+This disables only the extension, not ordinary QA writeback. Collection still
+requires an eligible automatic QA writeback and follows its buffering, idle
+flush, and shutdown behavior; explicit `memorax-cli add` does not collect a
+native Session. Changing the switch does not cancel previously buffered or
+in-flight data; graceful shutdown can flush it.
+
+Codex, Claude Code, OpenCode, CodeBuddy, and WorkBuddy supply exact completed
+Turns. DSH and Trae remain QA-only. Each `coding_turns` item preserves
+client/Session/Turn identity, a Turn index, completion time, and ordered user,
+visible assistant progress/final, tool-call, and tool-result events. Ordinary
+QA stays in `messages`; all Coding Turns accompany only the first QA chunk.
+Hidden reasoning, system/Hook text, raw Session/trace files and their paths,
+and recognized binary payloads are excluded. Event text uses best-effort
+redaction; local home paths are replaced. See
+[Security](https://github.com/memorax-ai/memorax-code/blob/main/SECURITY.md).
+
+The current bounds are 128,000 characters per event text field, 512 events
+and 2 MiB of compact UTF-8 JSON per Turn, and 20 Turns / 4 MiB per Coding batch.
+The Coding budget excludes ordinary QA and other Add metadata. A large Turn
+retains the user and final messages plus recent process events; `truncation`
+reports the original collected event count and number of shortened text fields.
+The buffer flushes early when Coding limits are reached. This is a bounded
+normalized record, not a lossless Session backup.
+
+The initial Add response can report Coding archival as accepted, failed, or
+completed with insertion/duplicate/conflict counts. Accepted does not prove
+durable storage; the client does not poll archival status or retry successful
+QA solely because archival failed. Pending uploads are not durably queued, so
+process failure or exhausted delivery attempts can lose unarchived Turns.
 
 ## Skill reminder and repository maintenance
 

@@ -176,6 +176,25 @@ or explicitly labelled local observation times. An aligned source-label array
 in Add metadata distinguishes them; it contains no transcript paths or trace
 identifiers. See [timestamp semantics](docs/configuration.md#automatic-writeback-timestamps).
 
+When coding-session collection is enabled, automatic Add also sends a separate
+`coding_turns` extension for Codex, Claude Code, OpenCode, CodeBuddy, and
+WorkBuddy. It contains normalized user messages, visible assistant progress and
+final messages, tool arguments/results, client-qualified Session/Turn identity,
+completion time, and optional repository identity. These records are archival
+data, not part of the ordinary QA extraction text. DSH and Trae do not attach
+this extension. Hidden reasoning, system/Hook messages, original transcript
+files and paths, local traces, and recognized binary payloads are excluded.
+
+Coding event text passes through the same best-effort detector below, with
+local home paths replaced before event and payload bounds are applied.
+Truncation markers describe retained-data loss, not complete native-session
+coverage. Tool content can contain private source code and unrecognized
+secrets; normalization does not make it non-sensitive. New configurations
+enable this collection; existing configurations without the setting remain
+off. Use [collection controls](docs/configuration.md#coding-session-collection)
+to disable the extension without disabling ordinary QA writeback. Server-side
+archival retention is separate from local trace retention and saved memories.
+
 Automatic writeback bounds each selected message to its configured Add limit,
 then applies a local best-effort detector before hashing, buffering, chunking,
 observability, or network dispatch. Recognized private keys, authorization
