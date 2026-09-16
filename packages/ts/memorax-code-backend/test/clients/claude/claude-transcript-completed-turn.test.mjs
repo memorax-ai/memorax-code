@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  claudeCodingSessionTurnFromJsonLines,
   claudeTranscriptTurnFromJsonLines,
 } from "../../../dist/clients/claude/transcript-turn.js";
 
@@ -16,7 +17,13 @@ import {
 test("Claude transcript resolves one exact completed prompt branch", () => {
   const transcript = jsonLines([
     userRecord({ uuid: "user-visible", content: "Materialized Claude prompt.", timestamp: "2026-09-01T08:00:00.000Z" }),
-    assistantRecord({ uuid: "assistant-tool", parentUuid: "user-visible", stopReason: "tool_use", content: [{ type: "tool_use", id: "tool-1", name: "Read", input: {} }] }),
+    assistantRecord({
+      uuid: "assistant-tool", parentUuid: "user-visible", stopReason: "tool_use",
+      content: [
+        { type: "text", text: "Working on it." },
+        { type: "tool_use", id: "tool-1", name: "Read", input: {} },
+      ],
+    }),
     userRecord({
       uuid: "user-tool-result",
       parentUuid: "assistant-tool",
@@ -60,6 +67,19 @@ test("Claude transcript resolves one exact completed prompt branch", () => {
       activities: [],
     },
   });
+  const identity = { sessionId: SESSION_ID, promptId: PROMPT_ID };
+  const source = claudeCodingSessionTurnFromJsonLines(transcript, identity);
+  assert.equal(source.ok, true);
+  const { events, closedAt, ...qa } = source.turn;
+  assert.deepEqual(qa, claudeTranscriptTurnFromJsonLines(transcript, identity).turn);
+  assert.equal(closedAt, "2026-09-01T08:03:00.000Z");
+  assert.deepEqual(events, [
+    { type: "user_message", content: "Materialized Claude prompt." },
+    { type: "assistant_message", phase: "progress", content: "Working on it." },
+    { type: "tool_call", callId: "tool-1", tool: "Read", arguments: "{}" },
+    { type: "tool_result", callId: "tool-1", status: "success", output: "tool output must not become the prompt" },
+    { type: "assistant_message", phase: "final", content: "Materialized Claude answer." },
+  ]);
 });
 
 test("Claude transcript aggregates exact-branch usage once per assistant message id", () => {

@@ -24,6 +24,7 @@ type NativeWritebackCommand = CodeBuddyWritebackCommand | WorkBuddyWritebackComm
 
 type Options = HarnessMemoryRuntimeOptions & {
   client?: "codebuddy" | "workbuddy";
+  captureCodingTurns?: boolean;
   transcriptReadAttempts?: number;
   transcriptRetryDelayMs?: number;
 };
@@ -90,6 +91,17 @@ export function createCodeBuddyMemoryHookRuntime(options: Options = {}): CodeBud
         userTimestamp: transcript.turn.userTimestamp,
         assistantTimestamp: transcript.turn.assistantTimestamp,
         traceContext: traceContextFromCodeBuddyHookBody(command),
+        ...(transcript.turn.events && transcript.turn.sessionTurnIndex ? {
+          codingTurn: {
+            client,
+            sessionId: command.sessionId,
+            turnId: command.turnId,
+            turnIndex: transcript.turn.sessionTurnIndex,
+            events: transcript.turn.events,
+            outcome: "completed",
+            closedAt: new Date(transcript.turn.assistantTimestamp ?? now()).toISOString(),
+          },
+        } : {}),
       });
       await recordCodeBuddyTurnMaterialization(options, traceContext, transcript.turn);
       return completed.scheduled ? { ok: true, scheduled: true } : { ok: true, scheduled: false, reason: completed.reason };
@@ -101,10 +113,11 @@ export function createCodeBuddyMemoryHookRuntime(options: Options = {}): CodeBud
 
 async function readWithRetry(input: { transcriptPath: string; sessionId: string; turnId: string }, options: Options) {
   const attempts = options.transcriptReadAttempts ?? 6;
-  let result = await readCodeBuddyTranscriptTurn(input);
+  const request = { ...input, captureCodingEvents: options.captureCodingTurns };
+  let result = await readCodeBuddyTranscriptTurn(request);
   for (let i = 1; i < attempts && !result.ok && ["transcript_unavailable", "turn_not_found", "user_prompt_missing", "assistant_message_missing"].includes(result.reason); i += 1) {
     await new Promise((resolve) => setTimeout(resolve, options.transcriptRetryDelayMs ?? 100));
-    result = await readCodeBuddyTranscriptTurn(input);
+    result = await readCodeBuddyTranscriptTurn(request);
   }
   return result;
 }

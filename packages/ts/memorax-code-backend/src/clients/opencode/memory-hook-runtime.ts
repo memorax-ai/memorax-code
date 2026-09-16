@@ -17,6 +17,7 @@ import {
   traceTurnEventId,
 } from "../../trace/store.js";
 import {
+  openCodeCodingSessionTurn,
   openCodeMessageTurn,
   type OpenCodeMessageTurnFailureReason,
 } from "./message-turn.js";
@@ -33,7 +34,7 @@ export type OpenCodeMemoryHookWritebackResult =
   | { ok: true; scheduled: true }
   | { ok: true; scheduled: false; reason: OpenCodeMemoryHookWritebackSkipReason };
 
-export type OpenCodeMemoryHookRuntimeOptions = HarnessMemoryRuntimeOptions;
+export type OpenCodeMemoryHookRuntimeOptions = HarnessMemoryRuntimeOptions & { captureCodingTurns?: boolean };
 
 export type OpenCodeMemoryHookRuntime = {
   recordTurnStart(command: OpenCodeTurnStartCommand): Promise<MemoryHookTurnStartResult>;
@@ -161,6 +162,7 @@ export function createOpenCodeMemoryHookRuntime(
           env: options.env,
         },
       ), options.diagnosticLogger);
+      const codingSessionTurn = options.captureCodingTurns ? openCodeCodingSessionTurn(command.messages, command) : undefined;
       const writeback = await memory.completeTurn({
         sessionId: command.sessionId,
         clientTurnId: command.userMessageId,
@@ -178,6 +180,17 @@ export function createOpenCodeMemoryHookRuntime(
         userTimestamp: materialized.turn.userTimestamp,
         assistantTimestamp: materialized.turn.assistantTimestamp,
         traceContext,
+        ...(codingSessionTurn?.ok ? {
+          codingTurn: {
+            client: OPENCODE_MEMORY_TURN_CLIENT,
+            sessionId: command.sessionId,
+            turnId: command.userMessageId,
+            turnIndex: codingSessionTurn.turn.turnIndex,
+            events: codingSessionTurn.turn.events,
+            outcome: "completed",
+            closedAt: codingSessionTurn.turn.closedAt,
+          },
+        } : {}),
       });
       if (!writeback.scheduled) {
         options.diagnosticLogger?.("opencode_memory.writeback", {

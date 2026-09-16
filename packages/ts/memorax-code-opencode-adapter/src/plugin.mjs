@@ -125,6 +125,7 @@ export function createMemoraxOpenCodePlugin(options = {}) {
             sessionId,
             userMessageId: turn.userMessageId,
             assistantMessageId: assistant.info.id,
+            turnIndex: sessionTurnIndex(messages, sessionId, turn.userMessageId),
             messages: evidence,
             cwd: workspaceRoot,
             workspaceKind,
@@ -325,12 +326,10 @@ export default MemoraxOpenCodePlugin;
 function terminalTurnFor(messages, sessionId, userMessageId, assistantMessageId) {
   const lineage = turnLineage(messages, sessionId, userMessageId);
   if (!lineage || lineage.awaitingContinuation) return undefined;
-  const assistant = lineage.messages
+  const assistants = lineage.assistants
     .filter((message) => (
       message?.info?.role === "assistant"
       && message.info.sessionID === sessionId
-      && message.info.parentID === lineage.terminalUserMessageId
-      && (!assistantMessageId || message.info.id === assistantMessageId)
       && Number.isFinite(message.info.time?.completed)
       && message.info.summary !== true
       && !message.parts?.some((part) => part?.type === "compaction")
@@ -338,12 +337,18 @@ function terminalTurnFor(messages, sessionId, userMessageId, assistantMessageId)
     .sort((left, right) => (
       Number(left.info.time.completed) - Number(right.info.time.completed)
       || String(left.info.id).localeCompare(String(right.info.id))
-    ))
-    .at(-1);
+    ));
+  const assistant = assistants.filter((message) => (
+    message.info.parentID === lineage.terminalUserMessageId
+    && (!assistantMessageId || message.info.id === assistantMessageId)
+  )).at(-1);
   if (!assistant) return undefined;
   return {
     assistant,
-    evidence: uniqueMessages([...lineage.evidence, assistant]),
+    evidence: uniqueMessages([
+      ...lineage.evidence,
+      ...assistants.slice(0, assistants.indexOf(assistant) + 1),
+    ]),
   };
 }
 
@@ -359,6 +364,7 @@ function turnLineage(messages, sessionId, userMessageId) {
   if (startIndex < 0) return undefined;
   const original = sessionMessages[startIndex];
   const lineageAssistants = new Map();
+  const assistants = [];
   const evidence = [original];
   let terminalUserMessageId = userMessageId;
   let awaitingContinuation = false;
@@ -367,6 +373,7 @@ function turnLineage(messages, sessionId, userMessageId) {
     if (message.info.role === "assistant") {
       if (message.info.parentID === terminalUserMessageId) {
         lineageAssistants.set(message.info.id, message);
+        assistants.push(message);
       }
       continue;
     }
@@ -390,7 +397,7 @@ function turnLineage(messages, sessionId, userMessageId) {
     break;
   }
   return {
-    messages: sessionMessages.slice(startIndex + 1),
+    assistants,
     terminalUserMessageId,
     awaitingContinuation,
     evidence,
@@ -399,6 +406,18 @@ function turnLineage(messages, sessionId, userMessageId) {
 
 function hasCompactionPart(parts) {
   return parts.some((part) => part?.type === "compaction");
+}
+
+function sessionTurnIndex(messages, sessionId, userMessageId) {
+  let index = 0;
+  for (const message of messages) {
+    if (message?.info?.role !== "user" || message.info.sessionID !== sessionId
+      || !stringValue(message.info.id) || !Array.isArray(message.parts)
+      || hasCompactionPart(message.parts) || !textParts(message.parts)) continue;
+    index += 1;
+    if (message.info.id === userMessageId) return index;
+  }
+  return undefined;
 }
 
 function compactionTailStartId(message, sessionId) {

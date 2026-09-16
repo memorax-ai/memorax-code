@@ -387,6 +387,67 @@ test("memory service discards fallback writeback when turn start upgrades the se
   }
 });
 
+test("coding collection attaches exact native Turns only when its configuration enables it", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-service-coding-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const workspace = join(root, "workspace");
+  await mkdir(workspace);
+  const sessionId = "session-coding";
+  const turn = { turnId: "turn-coding", prompt: "Review the upload boundary.", reply: "The boundary is verified." };
+  const transcriptPath = await writeRollout(root, sessionId, [turn]);
+  for (const enabled of [true, false, undefined]) {
+    await writeFile(join(root, "config.toml"), enabled === undefined
+      ? ""
+      : `[coding_sessions]\nenabled = ${enabled}\n`);
+    const { fetchImpl, requests } = memoraxAddFetch();
+    const service = createMemoryService({
+      memoraxCodeHome: root,
+      env: {
+        MEMORAX_CODE_HOME: root,
+        MEMORAX_CODE_CODEX_TRACE_ENABLED: "false",
+        MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED: "false",
+        MEMORAX_CODE_MEMORY_WRITEBACK_ENABLED: "true",
+        MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_ENABLED: "true",
+        MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_MAX_TURNS: "8",
+        MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
+        MEMORAX_CODE_MEMORAX_API_KEY: "secret",
+        MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
+      },
+      fetchImpl,
+    });
+    try {
+      const command = { version: 1, client: "codex", sessionId, turnId: turn.turnId, cwd: workspace, transcriptPath };
+      await service.recordTurnStart({ ...command, prompt: turn.prompt });
+      assert.deepEqual(await service.writebackTurn({ ...command, lastAssistantMessage: turn.reply }), {
+        ok: true, scheduled: true,
+      });
+      assert.equal(requests.length, 0);
+      await service.drain();
+      assert.equal(requests.length, 1);
+      const { body } = requests[0];
+      assert.equal(body.user_id, "user-1@workspace");
+      assert.deepEqual(body.messages.map(({ content, timestamp }) => ({ content, timestamp })), [
+        { content: turn.prompt, timestamp: Date.parse("2026-07-16T00:00:02.000Z") },
+        { content: turn.reply, timestamp: Date.parse("2026-07-16T00:00:03.000Z") },
+      ]);
+      assert.equal("coding_turns" in body, enabled === true);
+      if (enabled) {
+        assert.equal(body.coding_turns.length, 1);
+        assert.equal(body.coding_turns[0].client, "codex");
+        assert.equal(body.coding_turns[0].session_id, sessionId);
+        assert.equal(body.coding_turns[0].turn_id, turn.turnId);
+        assert.equal(body.coding_turns[0].turn_index, 1);
+        assert.deepEqual(body.coding_turns[0].events, [
+          { index: 1, type: "user_message", content: turn.prompt },
+          { index: 2, type: "assistant_message", phase: "final", content: turn.reply },
+        ]);
+      }
+    } finally {
+      service.close();
+    }
+  }
+});
+
 async function repairGitMetadata(workspace, repositoryName) {
   const gitDir = join(workspace, ".git");
   await mkdir(join(gitDir, "objects"), { recursive: true });

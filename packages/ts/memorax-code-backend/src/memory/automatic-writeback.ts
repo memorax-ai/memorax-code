@@ -1,6 +1,11 @@
 import { createHash } from "node:crypto";
 import { recordAutomaticAddFailure } from "./background-diagnostics.js";
 import {
+  normalizeCodingSessionTurn,
+  type CodingSessionSourceTurn,
+  type NormalizedCodingTurn,
+} from "../coding-sessions/coding-turn.js";
+import {
   createMemoryWritebackBufferRuntime,
   type MemoryWritebackBufferedDecision,
   type MemoryWritebackBufferedOptions,
@@ -55,6 +60,7 @@ export type AutomaticMemoryWritebackOptions = AutomaticMemoryWritebackTiming & {
   sessionKey?: string;
   userText?: string;
   assistantText?: string;
+  codingTurn?: CodingSessionSourceTurn;
   env?: Record<string, string | undefined>;
   fetchImpl?: typeof fetch;
   memoryObservability?: MemoryObservabilityHook;
@@ -71,6 +77,7 @@ type AutomaticMemoryWritebackDecision = {
   sessionKey: string;
   idempotencyKey: string;
   messages: WritebackMessage[];
+  codingTurns?: readonly NormalizedCodingTurn[];
 };
 
 export type AutomaticMemoryWritebackRejectionReason =
@@ -305,7 +312,21 @@ function automaticMemoryWritebackDecision(
   if (!hasMeaningfulMemoryPayloadText(userText)) return { write: false, skipReason: "user_prompt_empty" };
   if (!hasMeaningfulMemoryPayloadText(assistantText)) return { write: false, skipReason: "assistant_text_empty" };
 
-  const idempotencyKey = `automatic:${options.client}:${hashText(options.repositoryScope.effectiveUserId)}:${sessionKey}:${hashText(userText)}:${hashText(assistantText)}`;
+  const codingTurn = options.codingTurn
+    && options.codingTurn.client === options.client
+    && options.codingTurn.sessionId === sessionKey
+    ? normalizeCodingSessionTurn({
+      ...options.codingTurn,
+      repositorySlug: options.repositoryScope.repositorySlug,
+    }, state.diagnosticLogger)
+    : undefined;
+  if (options.codingTurn && !codingTurn) {
+    state.diagnosticLogger("coding_turn.skipped", { reason: "invalid_turn" });
+  }
+  const identity = codingTurn
+    ? `turn:${hashText(JSON.stringify([codingTurn.client, codingTurn.session_id, codingTurn.turn_id]))}`
+    : `${hashText(userText)}:${hashText(assistantText)}`;
+  const idempotencyKey = `automatic:${options.client}:${hashText(options.repositoryScope.effectiveUserId)}:${sessionKey}:${identity}`;
   if (hasPendingWriteback(state, idempotencyKey)) return { write: false, skipReason: "duplicate_pending" };
   // Freeze missing-time observations before buffering or retries. Upload time
   // must never replace a native message time or pretend to be one.
@@ -317,6 +338,7 @@ function automaticMemoryWritebackDecision(
     client: options.client,
     sessionKey,
     idempotencyKey,
+    ...(codingTurn ? { codingTurns: [codingTurn] } : {}),
     messages: [
       {
         role: "user", content: userText,
@@ -415,6 +437,7 @@ async function enqueueAutomaticMemoryWritebackAsync(
             messages: part.messages,
             contentType: "code",
             mode: "default",
+            ...(part.codingTurns ? { codingTurns: part.codingTurns } : {}),
             ...(part.chunk ? { chunk: part.chunk } : {}),
           },
         }, {
