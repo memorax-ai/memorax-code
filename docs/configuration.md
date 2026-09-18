@@ -47,7 +47,7 @@ are not a compatibility contract.
 
 The generated template selects the existing client integrations, including the
 optional CodeBuddy/WorkBuddy and Trae adapters, disables automatic retrieval,
-enables automatic writeback, sets the preferred language to Chinese (`zh`),
+enables automatic writeback and coding-session collection, sets the preferred language to Chinese (`zh`),
 uses a five-turn skill reminder and the adaptive repository-update policy, and
 enables content-bearing local traces for every supported client. Foreground
 setup may narrow `[clients]` to clients detected on the host. The tables below
@@ -527,8 +527,9 @@ belong in the `[memory.writeback]` TOML table.
 
 Automatic writeback and explicit Add have separate configuration gates.
 `[memory.writeback].enabled` does not disable explicit `memorax-cli add`;
-`[memory.cli].add_enabled` does not disable automatic writeback. The global
-environment switch can disable both, as described below.
+`[memory.cli].add_enabled` does not disable automatic writeback. Coding-session
+collection has a third, independent gate. The global environment switch can
+disable all three, as described below.
 
 | Field | Environment override | Fallback |
 | --- | --- | --- |
@@ -563,6 +564,10 @@ Remove conflicting environment overrides that enable either feature, then run
 Setting only the first table disables automatic writeback while keeping
 explicit Add available. Search is independent of both switches.
 
+To also disable coding-session archive uploads, set `[coding_sessions] enabled =
+false` and remove any enabling `MEMORAX_CODE_CODING_SESSIONS_ENABLED` override.
+Disabling only QA writeback or explicit Add does not disable archive uploads.
+
 For a temporary override, export the global switch before restarting the
 Backend and launching any clients that run memory commands. In Bash or Zsh:
 
@@ -586,6 +591,67 @@ new CLI processes must inherit the override too. The controls apply to new
 write decisions. They do not cancel requests already sent or guarantee that
 previously buffered turns are discarded: graceful Backend shutdown can flush
 those turns. They also do not delete memories already stored in MemoraX.
+
+### Coding-session collection
+
+New configurations include `[coding_sessions] enabled = true`. Existing
+configurations without this field remain disabled. The environment override is
+`MEMORAX_CODE_CODING_SESSIONS_ENABLED`; restart the Backend after changing this
+startup setting. `MEMORAX_CODE_MEMORAX_WRITEBACK_ENABLED=false` disables archive
+enqueue as well as automatic QA writeback and explicit Add.
+
+Codex, Claude Code, OpenCode, CodeBuddy, and WorkBuddy collect only the matching,
+completed native Turn already read by their completion path. There is no
+historical-session scan. Interrupted Turns are excluded. DSH and Trae continue
+to send QA only. A normalized Turn carries client/session/Turn identity, native
+Turn index, completion time, repository identity, and ordered user, visible
+assistant, tool-call, and tool-result events. Reasoning, binary attachments,
+native transcript paths, and local trace provenance are not uploaded.
+
+Event text uses local best-effort redaction. Each text field is limited to
+128,000 characters, each Turn to 512 events and 2 MiB of compact UTF-8 JSON.
+Optional `truncation` reports the collected event count before normalization and
+how many text fields were shortened; it does not claim that the native log was
+fully collected. These controls are independent of ordinary QA chunking.
+
+Archive batches contain whole Turns from one client, session, connection, and
+repository scope. Their full serialized request body, including the envelope,
+is capped at **20 MiB (20 × 1024 × 1024 bytes)**. A Turn that would exceed that
+budget starts a new batch after dispatching the previous one. There is no
+Turn-count trigger: the ordinary QA eight-Turn threshold does not flush an
+archive batch. Ten minutes without another accepted Turn, or graceful Backend
+drain, also flushes a smaller batch.
+
+The separate request uses the same `/v1/memories/add` endpoint:
+
+```json
+{
+  "event": "coding_session",
+  "batch_id": "stable-batch-id",
+  "user_id": "resolved-scoped-user-id",
+  "client": "codex",
+  "session_id": "native-session-id",
+  "coding_turns": []
+}
+```
+
+`coding_turns` must contain at least one normalized Turn; the empty array above
+only illustrates the envelope. It has no QA `messages` or memory-extraction
+options. The server must implement this event and return
+`{"success":true,"data":{"event":"coding_session","batch_id":"stable-batch-id","status":"stored"}}`
+after storing that batch. A generic memory-task acceptance does not acknowledge
+the archive. Server request-size limits must allow these bodies; this client
+change alone does not enable the server contract. The server owns OSS credentials
+and object paths; the plugin does not connect directly to OSS.
+
+The plugin buffers in memory and makes at most two attempts for eligible transient
+failures, using the same batch ID and content. QA and archive retries are independent.
+There is no persistent upload queue: process crashes or exhausted retries can
+lose an archive batch. Graceful drain is best effort, not durable delivery.
+The byte limit is per batch, not a process-wide memory cap: concurrent sessions
+and in-flight requests can retain multiple batches. QA does not wait for archive
+network completion, but normalization and serialization share the Backend CPU.
+Shutdown drain remains subject to the Backend's overall shutdown deadline.
 
 ### Automatic writeback timestamps
 

@@ -379,6 +379,43 @@ test("memory turn coordinator never consumes replacement metadata after async re
   }
 });
 
+test("turn coordination isolates archive/QA enqueue failures and retains partial-acceptance metadata", async (t) => {
+  for (const scenario of [
+    { qa: "disabled", archive: "accept", disposition: "consumed" },
+    { qa: "accept", archive: "disabled", disposition: "consumed" },
+    { qa: "accept", archive: "throw", disposition: "retained" },
+    { qa: "throw", archive: "accept", disposition: "retained" },
+  ]) {
+    await t.test(`${scenario.qa} QA / ${scenario.archive} archive`, async () => {
+      const calls = [];
+      const enqueue = (consumer, result) => (input) => {
+        calls.push(consumer);
+        if (consumer === "qa") assert.equal("codingTurn" in input, false);
+        if (result === "throw") throw new Error("private failure must not escape");
+        return result === "accept" ? { accepted: true } : { accepted: false, reason: result };
+      };
+      const coordinator = createMemoryTurnCoordinator({
+        automaticWriteback: enqueue("qa", scenario.qa),
+        codingSessionUpload: enqueue("archive", scenario.archive),
+      });
+      try {
+        const scope = repositoryScope("repo-a");
+        const metadata = coordinator.recordTurnStart(turnStart("codex", scope));
+        const result = await coordinator.completeMaterializedTurn({
+          key: turnKey("codex"), metadata,
+          resolveRepositoryMemory: async () => configuredMemory(scope),
+          userText: "Review the upload boundary.", assistantText: "The upload boundary is reviewed.",
+          codingTurn: { client: "codex", sessionId: "shared-session", turnId: "shared-turn" },
+          writeback: { client: "codex", sessionKey: "shared-session" },
+        });
+        assert.deepEqual(result, { scheduled: true, metadataDisposition: scenario.disposition });
+        assert.deepEqual(calls, ["archive", "qa"]);
+        assert.equal(coordinator.getTurn(turnKey("codex")), scenario.disposition === "retained" ? metadata : undefined);
+      } finally { coordinator.close(); }
+    });
+  }
+});
+
 function turnStart(client, scope = repositoryScope("repo-a")) {
   return {
     ...turnKey(client),

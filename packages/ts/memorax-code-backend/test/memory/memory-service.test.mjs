@@ -387,6 +387,81 @@ test("memory service discards fallback writeback when turn start upgrades the se
   }
 });
 
+test("native completion separates eight-Turn QA from byte-batched archive and independent retries", { timeout: 60_000 }, async (t) => {
+  for (const scenario of [
+    { name: "both enabled", qa: true, archive: true },
+    { name: "QA disabled", qa: false, archive: true },
+    { name: "existing config without collection opt-in", qa: true, archive: false },
+  ]) {
+    await t.test(scenario.name, async (t) => {
+      const root = await mkdtemp(join(tmpdir(), "memorax-service-coding-event-"));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const home = join(root, "state");
+      const workspace = join(root, "workspace");
+      await mkdir(workspace);
+      const sessionId = "independent-upload-session";
+      const turns = Array.from({ length: 8 }, (_, index) => ({
+        turnId: `turn-${index + 1}`, prompt: `Review module ${index + 1}.`,
+        reply: `Module ${index + 1} was reviewed.`, coding: true,
+      }));
+      const transcriptPath = await writeRollout(root, sessionId, turns);
+      const requests = [];
+      const diagnostics = [];
+      const service = createMemoryService({
+        memoraxCodeHome: home,
+        env: {
+          MEMORAX_CODE_HOME: home,
+          MEMORAX_CODE_CODEX_TRACE_ENABLED: "false",
+          MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED: "false",
+          MEMORAX_CODE_MEMORY_WRITEBACK_ENABLED: String(scenario.qa),
+          ...(scenario.archive ? { MEMORAX_CODE_CODING_SESSIONS_ENABLED: "true" } : {}),
+          MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
+          MEMORAX_CODE_MEMORAX_API_KEY: "synthetic-key",
+          MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
+        },
+        diagnosticLogger: (message, fields) => diagnostics.push({ message, fields }),
+        fetchImpl: async (url, init) => {
+          const body = JSON.parse(init.body);
+          assert.equal(String(url), "http://memorax.test/v1/memories/add");
+          requests.push(body);
+          if (!body.event) {
+            assert.equal(body.coding_turns, undefined);
+            assert.doesNotMatch(JSON.stringify(body), /Tool-only output|function_call/);
+            return Response.json({ success: true, data: { task_id: "qa-accepted", status: "accepted" } }, { status: 202 });
+          }
+          assert.equal(body.messages, undefined);
+          assert.equal(body.event, "coding_session");
+          const archives = requests.filter((request) => request.event);
+          if (archives.length === 1) return new Response("", { status: 503 });
+          return Response.json({ success: true, data: { event: body.event, batch_id: body.batch_id, status: "stored" } });
+        },
+      });
+      t.after(() => service.close());
+      for (const turn of turns) {
+        const command = { version: 1, client: "codex", sessionId, turnId: turn.turnId, cwd: workspace, transcriptPath };
+        await service.recordTurnStart({ ...command, prompt: turn.prompt });
+        assert.deepEqual(await service.writebackTurn({ ...command, lastAssistantMessage: turn.reply }), { ok: true, scheduled: true });
+      }
+      if (scenario.qa) await waitForAcceptedWritebacks(diagnostics, 1);
+      assert.equal(requests.length, scenario.qa ? 1 : 0, "eight QA Turns must not flush the archive");
+      await service.drain();
+      const qa = requests.filter((request) => !request.event);
+      const archives = requests.filter((request) => request.event);
+      assert.equal(qa.length, scenario.qa ? 1 : 0, "archive retry must not repeat QA");
+      assert.equal(archives.length, scenario.archive ? 2 : 0);
+      if (scenario.archive) {
+        assert.deepEqual(archives[1], archives[0], "retry preserves the complete batch");
+        assert.equal(archives[0].user_id, "user-1@workspace");
+        assert.deepEqual(archives[0].coding_turns.map((turn) => turn.turn_id), turns.map((turn) => turn.turnId));
+        assert.deepEqual(archives[0].coding_turns[0].events.map((event) => event.type), ["user_message", "tool_call", "tool_result", "assistant_message"]);
+        assert.match(JSON.stringify(archives[0]), /Tool-only output/);
+        assert.doesNotMatch(JSON.stringify(archives[0]), /Bearer fake-sensitive-value/);
+        assert.equal(JSON.stringify(archives[0]).includes(root), false);
+      }
+    });
+  }
+});
+
 async function repairGitMetadata(workspace, repositoryName) {
   const gitDir = join(workspace, ".git");
   await mkdir(join(gitDir, "objects"), { recursive: true });
@@ -427,6 +502,14 @@ async function writeRollout(root, sessionId, turns) {
         type: "event_msg",
         payload: { type: "user_message", message: turn.prompt },
       },
+      ...(turn.coding ? [
+        { timestamp: "2026-07-16T00:00:02.100Z", type: "response_item", payload: {
+          type: "function_call", call_id: `call-${index}`, name: "read_file", arguments: "{\"path\":\"src/main.ts\"}",
+        } },
+        { timestamp: "2026-07-16T00:00:02.200Z", type: "response_item", payload: {
+          type: "function_call_output", call_id: `call-${index}`, output: "Tool-only output. Authorization: Bearer fake-sensitive-value",
+        } },
+      ] : []),
       {
         timestamp: `2026-07-16T00:00:${String(index * 3 + 3).padStart(2, "0")}.000Z`,
         type: "event_msg",

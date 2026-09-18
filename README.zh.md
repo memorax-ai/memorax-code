@@ -229,6 +229,11 @@ MemoraX Code 会先比较含义：语义相同的请求不重复写入；长期�
 云端记忆依赖 MemoraX。完成安装引导后，会启用 MemoraX 搜索/添加，以及生成配置中的自动写回；
 不会再出现第二次写回确认。自动召回默认保持关闭，需要显式启用。
 
+新生成的配置还会启用 Codex、Claude Code、OpenCode、CodeBuddy 和 WorkBuddy 的编码会话采集。
+它通过独立的归档请求上传本地脱敏后的已完成 Turn，包含用户指令、可见助手消息和工具调用／结果，
+不会上传整份原生 session 文件或思维链。此功能需要服务端支持编码会话事件。
+已有配置缺少该设置时保持关闭，详见[采集控制](docs/configuration.md#coding-session-collection)。
+
 受支持客户端的本地 trace 默认开启。根据客户端能力，`MEMORAX_CODE_HOME` 下保留的 trace
 可能包含用户指令、Agent 回复、召回的 Memory、提醒文本和本地路径。可通过
 [本地 trace 配置](docs/configuration.md#local-traces)改为仅记录元数据，或关闭对应客户端的 trace。

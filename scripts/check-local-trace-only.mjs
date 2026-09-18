@@ -26,15 +26,18 @@ const reviewedNetworkSources = new Set([
   "packages/ts/memorax-code-backend/src/clients/codex/memory-hook-runtime.ts",
   "packages/ts/memorax-code-backend/src/clients/dsh/memory-hook-runtime.ts",
   "packages/ts/memorax-code-backend/src/clients/opencode/memory-hook-runtime.ts",
+  "packages/ts/memorax-code-backend/src/coding-sessions/upload.ts",
   "packages/ts/memorax-code-backend/src/lifecycle/backend/service.ts",
   "packages/ts/memorax-code-backend/src/lifecycle/backend/status.ts",
   "packages/ts/memorax-code-backend/src/memory/automatic-retrieval.ts",
   "packages/ts/memorax-code-backend/src/memory/automatic-writeback.ts",
   "packages/ts/memorax-code-backend/src/memory/cli.ts",
   "packages/ts/memorax-code-backend/src/memory/harness-runtime.ts",
+  "packages/ts/memorax-code-backend/src/memory/turn-coordinator.ts",
   "packages/ts/memorax-code-backend/src/memory/writeback-buffer.ts",
   "packages/ts/memorax-code-backend/src/repo-memory/detect-updates.ts",
   "packages/ts/memorax-code-backend/src/provider/memorax/adapter.ts",
+  "packages/ts/memorax-code-backend/src/provider/memorax/coding-session.ts",
   "packages/ts/memorax-code-backend/src/provider/memorax/http.ts",
   "packages/ts/memorax-code-backend/src/transport/http/health.ts",
   "packages/ts/memorax-code-backend/src/transport/http/json.ts",
@@ -74,6 +77,7 @@ const localTraceCoreSources = new Set([
 
 const providerTransportSources = new Set([
   "packages/ts/memorax-code-backend/src/provider/memorax/adapter.ts",
+  "packages/ts/memorax-code-backend/src/provider/memorax/coding-session.ts",
   "packages/ts/memorax-code-backend/src/provider/memorax/http.ts",
 ]);
 
@@ -97,9 +101,9 @@ const lifecycleContractsSource =
   "packages/ts/memorax-code-backend/src/lifecycle/contracts.ts";
 const lifecycleFetchTypeProperty = /^\s*fetch\?:\s*typeof\s+fetch;\s*$/m;
 const nestedProviderTransportImport =
-  /from\s+["'](?:\.\.?\/)+provider\/memorax\/(?:adapter|http)\.js["']/;
+  /from\s+["'](?:\.\.?\/)+provider\/memorax\/(?:adapter|coding-session|http)\.js["']/;
 const siblingProviderTransportImport =
-  /from\s+["']\.\/(?:adapter|http)\.js["']/;
+  /from\s+["']\.\/(?:adapter|coding-session|http)\.js["']/;
 
 const backendCommandDependency =
   /(?:\bpostBackendCommand\b|(?:from\s*|import\s*\()\s*["'][^"']*\/backend-command\.mjs["'])/;
@@ -113,7 +117,7 @@ const networkCapabilityPatterns = [
 
 const outboundCapabilityPatterns = [
   [/\b(?:fetch|fetchImpl)\s*\(/, "HTTP request"],
-  [/\b(?:invokeMemoraxMemoryProvider|callMemo(?:Search|Add))\s*\(/, "MemoraX request"],
+  [/\b(?:invokeMemoraxMemoryProvider|uploadCodingSessionBatch|callMemo(?:Search|Add))\s*\(/, "MemoraX request"],
   [/\bnew\s+(?:WebSocket|XMLHttpRequest)\b/, "browser network request"],
   [/node:(?:https|http2|net|tls|dgram)\b/, "outbound-capable Node network module"],
   [/(?:^|[^A-Za-z0-9_])(?:curl|wget)(?:[^A-Za-z0-9_]|$)/m, "external network command"],

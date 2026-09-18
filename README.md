@@ -269,6 +269,14 @@ MemoraX search/add and the generated configuration's automatic writeback;
 there is no second writeback confirmation. Automatic retrieval remains off
 until explicitly enabled.
 
+New configurations also enable coding-session collection for Codex, Claude
+Code, OpenCode, CodeBuddy, and WorkBuddy. Separate archive requests send locally
+redacted completed Turns, including prompts, visible assistant messages, and
+tool calls/results; they do not upload whole native session files or reasoning.
+This requires a MemoraX endpoint supporting coding-session events. Existing
+configurations without this setting remain disabled; see
+[collection controls](docs/configuration.md#coding-session-collection).
+
 Local trace capture is enabled by default for supported clients. Depending on
 client capabilities, retained traces under `MEMORAX_CODE_HOME` may contain
 prompts, responses, recalled memory, reminder text, and local paths. Use the

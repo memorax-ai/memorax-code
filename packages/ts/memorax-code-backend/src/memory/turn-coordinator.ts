@@ -6,6 +6,8 @@ import type {
   AutomaticMemoryWritebackTiming,
 } from "./automatic-writeback.js";
 import type { ConfiguredRepositoryMemoryResult } from "./repository-session.js";
+import type { CodingSessionSourceTurn } from "../coding-sessions/coding-turn.js";
+import type { CodingSessionUploadEnqueue } from "../coding-sessions/upload.js";
 import {
   repositoryMemoryScopeCanBindGeneralWorkspace,
   repositoryMemoryScopeCanUpgradeFromDegradedGit,
@@ -63,6 +65,7 @@ export type MemoryTurnCompletion = Readonly<AutomaticMemoryWritebackTiming & {
   resolveRepositoryMemory: () => Promise<ConfiguredRepositoryMemoryResult>;
   userText: string;
   assistantText: string;
+  codingTurn?: CodingSessionSourceTurn;
   writeback: Omit<AutomaticMemoryWritebackOptions, "userText" | "assistantText" | "repositoryScope">;
 }>;
 
@@ -70,6 +73,7 @@ export type MemoryTurnDiscardReason = "interrupted" | "rolled_back";
 
 export type MemoryTurnCoordinatorOptions = {
   automaticWriteback: AutomaticMemoryWritebackEnqueue;
+  codingSessionUpload?: CodingSessionUploadEnqueue;
   now?: () => number;
   ttlMs?: number;
   maxEntries?: number;
@@ -188,27 +192,57 @@ export function createMemoryTurnCoordinator(options: MemoryTurnCoordinatorOption
       }
       const userTimestamp = parseNativeMessageTimestamp(input.userTimestamp);
       const assistantTimestamp = parseNativeMessageTimestamp(input.assistantTimestamp);
-      const acceptance = options.automaticWriteback({
-        ...input.writeback,
-        userText: input.userText,
-        assistantText: input.assistantText,
-        // Metadata.createdAt is a start observation, not native message time.
-        // Keep that distinction even when a legacy record has no timestamp.
-        userTimestamp: userTimestamp
-          ?? parseNativeMessageTimestamp(input.metadata?.createdAt) ?? observedAt,
-        assistantTimestamp: assistantTimestamp ?? observedAt,
-        userTimestampSource: userTimestamp === undefined
-          ? "observed" : input.userTimestampSource ?? "native",
-        assistantTimestampSource: assistantTimestamp === undefined
-          ? "observed" : input.assistantTimestampSource ?? "native",
-        repositoryScope,
-      });
-      if (!acceptance.accepted) {
+      // Both consumers use the same validated native identity and scope. QA
+      // filtering or deduplication must not suppress the independent archive.
+      let codingAcceptance: ReturnType<CodingSessionUploadEnqueue> | undefined;
+      try {
+        if (input.codingTurn?.client === input.key.client
+          && input.codingTurn.sessionId === input.key.sessionId
+          && input.codingTurn.turnId === input.key.clientTurnId) {
+          codingAcceptance = options.codingSessionUpload?.({
+            turn: input.codingTurn,
+            repositoryScope,
+            env: input.writeback.env,
+            fetchImpl: input.writeback.fetchImpl,
+          });
+        }
+      } catch {
+        codingAcceptance = { accepted: false, reason: "decision_error" };
+      }
+      let acceptance: ReturnType<AutomaticMemoryWritebackEnqueue>;
+      try {
+        acceptance = options.automaticWriteback({
+          ...input.writeback,
+          userText: input.userText,
+          assistantText: input.assistantText,
+          // Metadata.createdAt is a start observation, not native message time.
+          // Keep that distinction even when a legacy record has no timestamp.
+          userTimestamp: userTimestamp
+            ?? parseNativeMessageTimestamp(input.metadata?.createdAt) ?? observedAt,
+          assistantTimestamp: assistantTimestamp ?? observedAt,
+          userTimestampSource: userTimestamp === undefined
+            ? "observed" : input.userTimestampSource ?? "native",
+          assistantTimestampSource: assistantTimestamp === undefined
+            ? "observed" : input.assistantTimestampSource ?? "native",
+          repositoryScope,
+        });
+      } catch {
+        acceptance = { accepted: false, reason: "decision_error" };
+      }
+      if (!acceptance.accepted && !codingAcceptance?.accepted) {
         return reject(acceptance.reason);
       }
+      // A disabled or filtered consumer has nothing to enqueue. An actual
+      // enqueue failure retains the original metadata for a native retry;
+      // each consumer deduplicates its own already-accepted work.
+      const qaHandled = acceptance.accepted
+        || ["disabled", "user_prompt_empty", "assistant_text_empty"].includes(acceptance.reason);
+      const codingHandled = !codingAcceptance || codingAcceptance.accepted || codingAcceptance.reason === "disabled";
       return {
         scheduled: true,
-        metadataDisposition: turnMetadataDisposition(turns, input, true),
+        metadataDisposition: qaHandled && codingHandled
+          ? turnMetadataDisposition(turns, input, true)
+          : turnMetadataDisposition(turns, input, false),
       };
     },
     pruneExpired() {

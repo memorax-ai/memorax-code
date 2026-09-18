@@ -6,7 +6,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { runMemoryCli } from "../../../dist/memory/cli.js";
 import { createOpenCodeMemoryHookRuntime } from "../../../dist/clients/opencode/memory-hook-runtime.js";
-import { openCodeMessageTurn } from "../../../dist/clients/opencode/message-turn.js";
+import { openCodeCodingSessionTurn, openCodeMessageTurn } from "../../../dist/clients/opencode/message-turn.js";
 import { openCodeTracePaths } from "../../../dist/trace/config.js";
 import { createMemoryTurnCoordinator } from "../../../dist/memory/turn-coordinator.js";
 
@@ -105,6 +105,12 @@ test("OpenCode SDK messages materialize only an exact completed normal turn", ()
 
 test("OpenCode SDK messages materialize a completed compaction continuation as the original turn", () => {
   const messages = compactedOpenCodeMessages();
+  messages[1].parts = [
+    textPart("assistant-tail", "Inspecting the implementation."),
+    { ...part("tool", "assistant-tail"), tool: "read", callID: "read-1", state: { status: "completed", input: { filePath: "README.md" }, output: "read result" } },
+    { ...part("reasoning", "assistant-tail"), text: "hidden reasoning" },
+    { ...textPart("assistant-tail", "unrelated"), sessionID: "other-session" },
+  ];
   assert.deepEqual(openCodeMessageTurn(messages, {
     sessionId: "session-1",
     userMessageId: "user-1",
@@ -128,6 +134,19 @@ test("OpenCode SDK messages materialize a completed compaction continuation as t
     userMessageId: "user-1",
     assistantMessageId: "assistant-tail",
   }), { ok: false, reason: "message_identity_mismatch" });
+
+  const collected = openCodeCodingSessionTurn(messages, {
+    sessionId: "session-1", userMessageId: "user-1", assistantMessageId: "assistant-final", turnIndex: 3,
+  });
+  assert.equal(collected.ok, true);
+  assert.equal(collected.turn.turnIndex, 3);
+  assert.deepEqual(collected.turn.events, [
+    { type: "user_message", content: "OpenCode user prompt." },
+    { type: "assistant_message", phase: "progress", content: "Inspecting the implementation." },
+    { type: "tool_call", tool: "read", callId: "read-1", arguments: '{"filePath":"README.md"}' },
+    { type: "tool_result", callId: "read-1", status: "success", output: "read result" },
+    { type: "assistant_message", phase: "final", content: "OpenCode final reply." },
+  ]);
 
   for (const [name, mutate] of [
     ["unknown compaction tail", (input) => { input[2].parts[0].tail_start_id = "assistant-other"; }],
@@ -228,15 +247,19 @@ test("OpenCode finalizes an explicit MessageAbortedError without writeback", asy
 test("OpenCode runtime routes SDK content and carries write quota to the next prompt", async () => {
   const memoraxCodeHome = await mkdtemp(join(tmpdir(), "memorax-code-opencode-runtime-"));
   const requests = [];
+  const codingUploads = [];
   let searchCalls = 0;
   const runtime = createOpenCodeMemoryHookRuntime({
     memoraxCodeHome,
+    captureCodingTurns: true,
+    codingSessionUpload: (input) => { codingUploads.push(input); return { accepted: true }; },
     env: {
       MEMORAX_CODE_HOME: memoraxCodeHome,
       MEMORAX_CODE_OPENCODE_TRACE_ENABLED: "false",
       MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED: "true",
       MEMORAX_CODE_MEMORY_WRITEBACK_ENABLED: "true",
       MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_ENABLED: "false",
+      MEMORAX_CODE_CODING_SESSIONS_ENABLED: "true",
       MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
       MEMORAX_CODE_MEMORAX_API_KEY: "secret",
       MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
@@ -290,6 +313,7 @@ test("OpenCode runtime routes SDK content and carries write quota to the next pr
       sessionId: "session-1",
       userMessageId: "user-1",
       assistantMessageId: "assistant-1",
+      turnIndex: 1,
       messages: openCodeMessages(),
       cwd: TEST_WORKSPACE,
       workspaceKind: "project",
@@ -307,6 +331,12 @@ test("OpenCode runtime routes SDK content and carries write quota to the next pr
       1_700_000_000_000,
       1_700_000_060_000,
     ]);
+    assert.equal(requests[1].body.coding_turns, undefined);
+    assert.equal(codingUploads.length, 1);
+    assert.equal(codingUploads[0].turn.client, "opencode");
+    assert.equal(codingUploads[0].turn.turnId, "user-1");
+    assert.equal(codingUploads[0].turn.turnIndex, 1);
+    assert.deepEqual(codingUploads[0].turn.events.map(({ type }) => type), ["user_message", "assistant_message"]);
 
     assert.deepEqual(await runtime.recordTurnStart({
       version: 1,

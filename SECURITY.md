@@ -168,7 +168,8 @@ a local terminal. Neither path prints the API key. Treat conversations,
 screenshots, and logs containing a displayed Mark ID as sensitive.
 
 MemoraX-backed search, retrieval, and writeback require a Base User ID, API
-key, and network access. Foreground setup discloses automatic writeback before
+key, and network access. Foreground setup discloses automatic writeback and
+coding-session collection before
 creating or accepting credentials. Completing setup activates search/add and
 the generated configuration's automatic writeback; automatic retrieval
 remains disabled until explicitly enabled.
@@ -189,6 +190,15 @@ or explicitly labelled local observation times. An aligned source-label array
 in Add metadata distinguishes them; it contains no transcript paths or trace
 identifiers. See [timestamp semantics](docs/configuration.md#automatic-writeback-timestamps).
 
+Coding-session collection independently sends locally redacted, normalized
+completed Turns in separate archive requests to the configured MemoraX Add
+endpoint. It includes prompts, visible assistant messages, and tool calls and
+results from Codex, Claude Code, OpenCode, CodeBuddy, or WorkBuddy. It excludes
+reasoning, binary attachments, raw session files, native transcript paths, and
+trace provenance. New configurations enable this feature; existing configurations
+without `[coding_sessions].enabled` leave it disabled. Collection never scans
+historical sessions. See [collection controls and limits](docs/configuration.md#coding-session-collection).
+
 Automatic writeback bounds each selected message to its configured Add limit,
 then applies a local best-effort detector before hashing, buffering, chunking,
 observability, or network dispatch. Recognized private keys, authorization
@@ -200,7 +210,8 @@ identifiers are replaced with typed placeholders such as
 `[REDACTED:CREDENTIAL]`, `[REDACTED:EMAIL]`,
 `[REDACTED:LONG_NUMBER]`, and `[REDACTED:OPAQUE_ID]`. If either side of the
 turn contains no meaningful content after replacement, that automatic
-writeback is skipped locally and no Add request is sent.
+QA writeback is skipped locally and no QA Add request is sent. An independently
+enabled archive may still upload a normalized Turn containing tool activity.
 
 This detector is not a complete data-loss-prevention system. Unknown formats
 and weak-context personal information may remain. Explicit `memorax-cli add`
@@ -217,11 +228,15 @@ queries, selected writeback content, and saved memories as sensitive.
 Automatic writeback and explicit Add are independent: persistent disabling of
 both requires `[memory.writeback].enabled = false` and
 `[memory.cli].add_enabled = false`, without enabling environment overrides.
-The global environment switch disables both only when its value is exactly
+Neither setting disables coding-session collection; use
+`[coding_sessions].enabled = false` for that separate upload path. The global
+environment switch disables all three only when its value is exactly
 `false`. Follow [Disabling memory writes](docs/configuration.md#disabling-memory-writes)
 for commands and process-inheritance requirements. These controls do not
 cancel in-flight requests or guarantee removal of previously buffered turns;
 graceful Backend shutdown can flush pending writeback.
+Archive batches are held in memory with bounded retries, not a durable local
+queue. A process crash or exhausted retry can lose pending archive data.
 
 ## Local Data and Diagnostics
 

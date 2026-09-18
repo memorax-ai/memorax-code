@@ -1,4 +1,9 @@
 import { retrieveAutomaticMemoryContext } from "./automatic-retrieval.js";
+import type { CodingSessionSourceTurn } from "../coding-sessions/coding-turn.js";
+import {
+  createCodingSessionUploadRuntime,
+  type CodingSessionUploadEnqueue,
+} from "../coding-sessions/upload.js";
 import {
   createAutomaticMemoryWritebackRuntime,
   type AutomaticMemoryWritebackEnqueue,
@@ -37,6 +42,8 @@ import { recordTraceEvent, traceTurnEventId, writeCurrentTraceTurn } from "../tr
 
 export type HarnessMemoryRuntimeOptions = {
   automaticWriteback?: AutomaticMemoryWritebackEnqueue;
+  captureCodingTurns?: boolean;
+  codingSessionUpload?: CodingSessionUploadEnqueue;
   diagnosticLogger?: MemoryDiagnosticLogger;
   env?: Record<string, string | undefined>;
   fetchImpl?: typeof fetch;
@@ -88,6 +95,7 @@ export type HarnessTurnCompletion = Readonly<AutomaticMemoryWritebackTiming & {
   metadata?: MemoryTurnState;
   userText: string;
   assistantText: string;
+  codingTurn?: CodingSessionSourceTurn;
   traceContext?: TraceContext;
   resolveRepositoryMemory: () => Promise<ConfiguredRepositoryMemoryResult>;
 }>;
@@ -116,15 +124,27 @@ export function createHarnessMemoryRuntime(
         diagnosticLogger: options.diagnosticLogger,
         queueQuotaNotice: pendingQuotaNotice?.queue,
       });
+  const codingUpload = options.turnCoordinator
+    ? undefined
+    : options.codingSessionUpload
+      ? { enqueue: options.codingSessionUpload }
+      : createCodingSessionUploadRuntime({
+        enabled: options.captureCodingTurns === true,
+        diagnosticLogger: options.diagnosticLogger,
+      });
   const turnCoordinator = options.turnCoordinator ?? createMemoryTurnCoordinator({
     automaticWriteback: automaticWriteback!.enqueue,
+    codingSessionUpload: codingUpload?.enqueue,
     now,
     ttlMs: options.ttlMs,
     maxEntries: options.maxEntries,
     cleanupIntervalMs: options.cleanupIntervalMs,
   });
   const repositoryMemorySession = options.repositoryMemorySession ?? createRepositoryMemorySessionRuntime({
-    onScopeUpgrade: automaticWriteback?.discardForScopeUpgrade,
+    onScopeUpgrade(upgrade) {
+      automaticWriteback?.discardForScopeUpgrade?.(upgrade);
+      if (codingUpload && "discardForScopeUpgrade" in codingUpload) codingUpload.discardForScopeUpgrade(upgrade);
+    },
   });
   const retrievalTurns = new Set<string>();
   const retrievalTurnLimit = positiveInteger(options.maxEntries, 256);
@@ -238,6 +258,10 @@ export function createHarnessMemoryRuntime(
         resolveRepositoryMemory: input.resolveRepositoryMemory,
         userText: input.userText,
         assistantText: input.assistantText,
+        ...(input.codingTurn?.client === definition.client
+          && input.codingTurn.sessionId === input.sessionId
+          && input.codingTurn.turnId === input.clientTurnId
+          ? { codingTurn: input.codingTurn } : {}),
         userTimestamp: input.userTimestamp,
         assistantTimestamp: input.assistantTimestamp,
         userTimestampSource: input.userTimestampSource,
@@ -261,6 +285,7 @@ export function createHarnessMemoryRuntime(
       if (!options.turnCoordinator) turnCoordinator.close();
       if (!options.repositoryMemorySession) repositoryMemorySession.close();
       automaticWriteback?.close?.();
+      if (codingUpload && "close" in codingUpload) codingUpload.close();
       if (!options.pendingQuotaNotice) pendingQuotaNotice?.close();
     },
   };

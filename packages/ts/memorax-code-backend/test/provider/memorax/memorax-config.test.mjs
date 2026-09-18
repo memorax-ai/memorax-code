@@ -4,6 +4,7 @@ import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { codingSessionsEnabled } from "../../../dist/config/memorax-code.js";
 import {
   MEMORY_CLI_DEFAULT_SESSION_ID,
   MEMORAX_DEFAULT_BASE_URL,
@@ -59,6 +60,7 @@ test("seeded MemoraX Code config exposes high-signal choices without a tuning ca
   const config = await readFile(join(root, "config.toml"), "utf8");
   assert.match(config, /\[clients\]\ncodex = true\nclaude = true/);
   assert.match(config, /\[memorax\]/);
+  assert.match(config, /\[coding_sessions\]\nenabled = true/);
   assert.match(config, /# endpoint = "https:\/\/platform\.memorax\.net" # MemoraX service URL\./);
   assert.match(config, /# api_key = "" # MemoraX API key used by the local Backend\./);
   assert.match(config, /# user_id = "" # MemoraX base user ID; requests derive a workspace-scoped namespace\./);
@@ -102,6 +104,13 @@ test("MemoraX config resolver centralizes defaults and clamps env values", () =>
   assert.equal(result.config.maxItemChars, 64);
 });
 
+test("Coding collection requires an explicit setting and preserves environment precedence", () => {
+  assert.equal(codingSessionsEnabled({}, {}), false);
+  assert.equal(codingSessionsEnabled({}, { coding_sessions: { enabled: true } }), true);
+  assert.equal(codingSessionsEnabled({ MEMORAX_CODE_CODING_SESSIONS_ENABLED: "false" }, { coding_sessions: { enabled: true } }), false);
+  assert.equal(codingSessionsEnabled({ MEMORAX_CODE_CODING_SESSIONS_ENABLED: "true" }, { coding_sessions: { enabled: false } }), true);
+});
+
 test("MemoraX Code loads configured-home TOML and resolves credentials, writeback, and Add defaults", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-config-loader-"));
   await writeFile(join(root, "config.toml"), [
@@ -118,6 +127,9 @@ test("MemoraX Code loads configured-home TOML and resolves credentials, writebac
     "[memory.retrieval]",
     "memory_type_order = [\"project_fact\", \"core\"]",
     "",
+    "[coding_sessions]",
+    "enabled = true",
+    "",
     "[memory.writeback]",
     "enabled = true",
     "",
@@ -133,6 +145,7 @@ test("MemoraX Code loads configured-home TOML and resolves credentials, writebac
   const config = loadMemoraxCodeConfig(root);
 
   assert.deepEqual(config.clients, { codex: false, claude: true });
+  assert.deepEqual(config.coding_sessions, { enabled: true });
   assert.equal(config.memorax?.endpoint, "http://file-memorax.test/");
   assert.equal(config.memorax?.user_id, "file-user");
   assert.equal(config.memorax?.api_key, "file-secret");

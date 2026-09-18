@@ -54,7 +54,10 @@ test("Claude Hook writeback uses exact transcript content and native times", asy
   });
   const writebacks = [];
   const diagnostics = [];
+  const codingUploads = [];
   const runtime = createClaudeMemoryHookRuntime({
+    captureCodingTurns: true,
+    codingSessionUpload: (input) => { codingUploads.push(input); return { accepted: true }; },
     automaticWriteback: collectAcceptedWriteback(writebacks),
     diagnosticLogger: (event, fields) => diagnostics.push({ event, fields }),
     env: TRACE_DISABLED_ENV,
@@ -79,6 +82,17 @@ test("Claude Hook writeback uses exact transcript content and native times", asy
     assert.equal(writebacks[0].assistantText, "Materialized answer.");
     assert.equal(writebacks[0].userTimestamp, Date.parse("2026-09-01T08:00:00.000Z"));
     assert.equal(writebacks[0].assistantTimestamp, Date.parse("2026-09-01T08:03:00.000Z"));
+    assert.equal(codingUploads.length, 1);
+    assert.equal(codingUploads[0].repositoryScope, SCOPE);
+    assert.equal(writebacks[0].codingTurn, undefined);
+    assert.deepEqual(codingUploads[0].turn, {
+      client: "claude-code", sessionId: SESSION_ID, turnId: PROMPT_ID, turnIndex: 1,
+      outcome: "completed", closedAt: "2026-09-01T08:03:00.000Z",
+      events: [
+        { type: "user_message", content: "Materialized prompt." },
+        { type: "assistant_message", phase: "final", content: "Materialized answer." },
+      ],
+    });
     assert.equal(writebacks[0].client, "claude-code");
     assert.equal(writebacks[0].memoryObservabilitySource, "claude_hook_writeback");
     assert.equal(writebacks[0].repositoryScope, SCOPE);

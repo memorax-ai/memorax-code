@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import { parseNativeMessageTimestamp } from "../../shared/message-time.js";
+import { codingEventText, type CodingTurnEvent } from "../../coding-sessions/coding-turn.js";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -81,6 +82,20 @@ export type CodexRolloutTurnResult =
   | { ok: true; turn: CodexRolloutTurn }
   | { ok: false; reason: CodexRolloutTurnFailureReason; error?: string };
 
+export type CodexCodingSessionTurn = CodexRolloutTurn & {
+  sessionTurnIndex: number;
+  events: CodingTurnEvent[];
+  closedAt?: string;
+};
+
+export type CodexCodingSessionTurnResult =
+  | { ok: true; turn: CodexCodingSessionTurn }
+  | {
+    ok: false;
+    reason: CodexRolloutTurnFailureReason | "turn_index_missing" | "turn_not_completed";
+    error?: string;
+  };
+
 export type CodexInterruptedRolloutTurn = CodexRolloutTurn & {
   interruptedAt?: string;
   sessionTurnIndex?: number;
@@ -131,6 +146,24 @@ export async function readCodexInterruptedRolloutTurn(input: {
   return codexInterruptedRolloutTurnFromJsonLines(transcript, input);
 }
 
+export async function readCodexCodingSessionTurn(input: {
+  transcriptPath: string;
+  sessionId: string;
+  turnId: string;
+}): Promise<CodexCodingSessionTurnResult> {
+  let transcript: string;
+  try {
+    transcript = await readFile(input.transcriptPath, "utf8");
+  } catch (error) {
+    return {
+      ok: false,
+      reason: "transcript_unavailable",
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+  return codexCodingSessionTurnFromJsonLines(transcript, input);
+}
+
 export function codexRolloutTurnFromJsonLines(
   transcript: string,
   input: { sessionId: string; turnId: string },
@@ -177,6 +210,34 @@ export function codexInterruptedRolloutTurnFromJsonLines(
   };
 }
 
+export function codexCodingSessionTurnFromJsonLines(
+  transcript: string,
+  input: { sessionId: string; turnId: string },
+): CodexCodingSessionTurnResult {
+  const scan = scanCodexRolloutTurn(transcript, input.turnId, true);
+  if (!codexRolloutSessionMatches(scan, input.sessionId)) {
+    return { ok: false, reason: "transcript_session_mismatch" };
+  }
+  if (scan.turnMetadataMismatch) return { ok: false, reason: "turn_metadata_mismatch" };
+  if (!scan.targetSeen) return { ok: false, reason: "turn_not_found" };
+  if (!scan.userPrompt) return { ok: false, reason: "user_prompt_missing" };
+  if (!scan.assistantReply) return { ok: false, reason: "assistant_message_missing" };
+  if (scan.interrupted || scan.rolledBack) return { ok: false, reason: "turn_not_completed" };
+  const sessionTurnIndex = sessionTurnIndexFromScan(scan, input.turnId);
+  if (sessionTurnIndex === undefined) return { ok: false, reason: "turn_index_missing" };
+  return {
+    ok: true,
+    turn: {
+      ...rolloutTurnFromScan(scan, input, scan.userPrompt, scan.assistantReply),
+      ...(scan.userTimestamp === undefined ? {} : { userTimestamp: scan.userTimestamp }),
+      ...(scan.assistantTimestamp === undefined ? {} : { assistantTimestamp: scan.assistantTimestamp }),
+      sessionTurnIndex,
+      events: completedCodingEvents(scan, scan.userPrompt, scan.assistantReply),
+      ...(scan.completedAt ? { closedAt: scan.completedAt } : {}),
+    },
+  };
+}
+
 type CodexRolloutTurnScan = {
   authoritySessionId?: string;
   authoritySource?: string;
@@ -189,6 +250,8 @@ type CodexRolloutTurnScan = {
   userTimestamp?: number;
   assistantTimestamp?: number;
   visibleAssistantMessages: string[];
+  codingEventCandidates: CodexCodingEventCandidate[];
+  completedAt?: string;
   interrupted: boolean;
   interruptedAt?: string;
   rolledBack: boolean;
@@ -200,7 +263,11 @@ type CodexRolloutTurnScan = {
   userMessageTurnIds: Set<string>;
 };
 
-function scanCodexRolloutTurn(transcript: string, targetTurnId: string): CodexRolloutTurnScan {
+function scanCodexRolloutTurn(
+  transcript: string,
+  targetTurnId: string,
+  captureCodingEvents = false,
+): CodexRolloutTurnScan {
   let authoritySessionId: string | undefined;
   let ambiguousSessionMetadata = false;
   let composite = false;
@@ -215,6 +282,8 @@ function scanCodexRolloutTurn(transcript: string, targetTurnId: string): CodexRo
   let assistantTimestamp: number | undefined;
   let completedTimestamp: number | undefined;
   const visibleAssistantMessages: string[] = [];
+  const codingEventCandidates: CodexCodingEventCandidate[] = [];
+  let completedAt: string | undefined;
   let responseItemUserPrompt: string | undefined;
   let responseItemAssistantReply: string | undefined;
   let responseItemUserTimestamp: number | undefined;
@@ -235,13 +304,13 @@ function scanCodexRolloutTurn(transcript: string, targetTurnId: string): CodexRo
 
   const observeTurn = (turnId: string | undefined, source: "turn_context" | "task_started"): void => {
     activeTurnId = turnId;
+    if (turnId && source === "turn_context") turnContextIds.add(turnId);
     if (!turnId || seenTurnIds.has(turnId)) return;
     seenTurnIds.add(turnId);
     orderedTurnIds.push(turnId);
-    if (source === "turn_context") turnContextIds.add(turnId);
   };
 
-  for (const line of transcript.split(/\r?\n/)) {
+  for (const [recordIndex, line] of transcript.split(/\r?\n/).entries()) {
     if (!line.trim()) continue;
     const authorityHeaderCandidate = !firstNonBlankLineSeen;
     firstNonBlankLineSeen = true;
@@ -282,12 +351,39 @@ function scanCodexRolloutTurn(transcript: string, targetTurnId: string): CodexRo
       continue;
     }
     if (record.type === "response_item") {
+      if (activeTurnId && payload.type === "message" && payload.role === "user"
+        && responseItemMessageText(payload.content, "user")) {
+        const responseTurnId = responseItemTurnId(payload);
+        if (!responseTurnId || responseTurnId === activeTurnId) userMessageTurnIds.add(activeTurnId);
+      }
       if (activeTurnId === targetTurnId) {
+        if (captureCodingEvents) {
+          const responseTurnId = responseItemTurnId(payload);
+          if (responseTurnId && responseTurnId !== activeTurnId) {
+            turnMetadataMismatch = true;
+            continue;
+          }
+          for (const event of codingToolEventsFromResponseItem(payload)) {
+            codingEventCandidates.push({ recordIndex, source: "response_item", event });
+          }
+        }
         const activities = activityCandidatesFromResponseItem(payload);
         if (activities.length > 0) targetActivityGroups.push(activities);
         if (stringValue(payload.type) === "message") {
           const role = stringValue(payload.role);
           const message = responseItemMessageText(payload.content, role);
+          if (captureCodingEvents && role === "assistant" && message
+            && (payload.phase === "commentary" || payload.phase === "final_answer")) {
+            codingEventCandidates.push({
+              recordIndex,
+              source: "response_item",
+              event: {
+                type: "assistant_message",
+                phase: payload.phase === "final_answer" ? "final" : "progress",
+                content: message,
+              },
+            });
+          }
           const authoritativeMessage = role === "user"
             || (role === "assistant" && payload.phase === "final_answer");
           if (authoritativeMessage && message) {
@@ -297,7 +393,6 @@ function scanCodexRolloutTurn(transcript: string, targetTurnId: string): CodexRo
               continue;
             }
             if (role === "user") {
-              userMessageTurnIds.add(activeTurnId);
               responseItemUserPrompt = message;
               responseItemUserTimestamp = parseNativeMessageTimestamp(record.timestamp);
             } else {
@@ -330,6 +425,7 @@ function scanCodexRolloutTurn(transcript: string, targetTurnId: string): CodexRo
         targetSeen = true;
         assistantReply ??= nonBlankString(payload.last_agent_message) ?? nonBlankString(payload.lastAgentMessage);
         completedTimestamp = parseNativeMessageTimestamp(record.timestamp);
+        completedAt = rolloutRecordTimestamp(record, payload);
       }
       if (completedTurnId && completedTurnId === activeTurnId) activeTurnId = undefined;
       continue;
@@ -380,6 +476,17 @@ function scanCodexRolloutTurn(transcript: string, targetTurnId: string): CodexRo
       if (!message) continue;
       if (payload.phase === "commentary" || payload.phase === "final_answer") {
         visibleAssistantMessages.push(message);
+        if (captureCodingEvents) {
+          codingEventCandidates.push({
+            recordIndex,
+            source: "event_msg",
+            event: {
+              type: "assistant_message",
+              phase: payload.phase === "final_answer" ? "final" : "progress",
+              content: message,
+            },
+          });
+        }
       }
       if (payload.phase === "final_answer") {
         assistantReply = message;
@@ -406,6 +513,8 @@ function scanCodexRolloutTurn(transcript: string, targetTurnId: string): CodexRo
       ? assistantTimestamp
       : responseItemAssistantTimestamp),
     visibleAssistantMessages,
+    codingEventCandidates,
+    completedAt,
     interrupted,
     interruptedAt,
     rolledBack,
@@ -416,6 +525,60 @@ function scanCodexRolloutTurn(transcript: string, targetTurnId: string): CodexRo
     turnContextIds,
     userMessageTurnIds,
   };
+}
+
+type CodexCodingEventCandidate = Readonly<{
+  recordIndex: number;
+  source: "response_item" | "event_msg";
+  event: CodingTurnEvent;
+}>;
+
+function completedCodingEvents(
+  scan: CodexRolloutTurnScan,
+  userPrompt: string,
+  assistantReply: string,
+): CodingTurnEvent[] {
+  const hasResponseItemAssistant = scan.codingEventCandidates.some((candidate) => (
+    candidate.source === "response_item" && candidate.event.type === "assistant_message"
+  ));
+  const intermediate = scan.codingEventCandidates
+    .filter((candidate) => {
+      if (candidate.event.type === "assistant_message" && candidate.event.phase === "final") return false;
+      return !(hasResponseItemAssistant
+        && candidate.source === "event_msg"
+        && candidate.event.type === "assistant_message");
+    })
+    .sort((left, right) => left.recordIndex - right.recordIndex)
+    .map((candidate) => candidate.event);
+  return [
+    { type: "user_message", content: userPrompt },
+    ...intermediate,
+    { type: "assistant_message", phase: "final", content: assistantReply },
+  ];
+}
+
+function codingToolEventsFromResponseItem(payload: JsonRecord): CodingTurnEvent[] {
+  const type = stringValue(payload.type);
+  const callId = stringValue(payload.call_id) ?? stringValue(payload.callId) ?? stringValue(payload.id);
+  if (!callId) return [];
+  if (type === "function_call" || type === "custom_tool_call") {
+    const tool = stringValue(payload.name);
+    if (!tool) return [];
+    return [{
+      type: "tool_call",
+      callId,
+      tool,
+      arguments: codingEventText(payload.arguments ?? payload.input),
+    }];
+  }
+  if (type !== "function_call_output" && type !== "custom_tool_call_output") return [];
+  const status = stringValue(payload.status)?.toLowerCase();
+  return [{
+    type: "tool_result",
+    callId,
+    status: payload.success === false || status === "error" || status === "failed" ? "error" : "success",
+    output: codingEventText(payload.output),
+  }];
 }
 
 function responseItemTurnId(payload: JsonRecord): string | undefined {

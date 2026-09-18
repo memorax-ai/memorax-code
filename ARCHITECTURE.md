@@ -655,6 +655,10 @@ flowchart TD
 
   Shared["HarnessMemoryRuntime and turn coordinator:<br/>validate metadata and current scope"] -->|"valid"| Runtime
   Shared -->|"rejected"| Result
+  Shared -->|"supported completed coding Turn"| Archive
+  Archive["coding-sessions: independent opt-in,<br/>normalization, redaction, dedupe and byte buffer"] -->|"local acceptance"| Result
+  Archive -->|"size, idle or drain"| ArchiveProvider["provider/memorax/coding-session:<br/>event-only Add, stored receipt"]
+  ArchiveProvider --> Remote
   Runtime["automatic writeback:<br/>settings, bounds, redaction and deduplication"] -->|"rejected"| Result
   Runtime -->|"accepted"| Result
   Result["HTTP result: scheduled or skipped"]
@@ -679,10 +683,29 @@ that recover do not produce terminal failure records.
 
 - For completed content, local enqueue acceptance is the metadata-consumption
   point. Interrupted Turns can instead discard metadata with an explicit reason.
+  QA and optional archive enqueue are independent; a real rejection from either
+  enabled path retains metadata for replay, while a disabled path does not veto
+  the other's acceptance. Accepted duplicates do not resend their content.
   Unbuffered dispatch starts during enqueue. Buffering defers dispatch until a
   flush; turn or size limits can trigger that flush during enqueue.
 - Buffering and chunking belong to the memory capability; rollout, transcript,
   DSH event-interval, and SDK message parsing remains client-specific.
+- Coding-session archive buffering belongs to `coding-sessions`, not the QA
+  buffer. Codex, Claude Code, OpenCode, CodeBuddy, and WorkBuddy materialize
+  ordered visible messages and tool events from the same exact native Turn.
+  Normalization owns redaction and per-Turn bounds. DSH and Trae remain QA-only.
+  The coordinator checks client/session/Turn identity and scope before either
+  enqueue. No archive data is attached to ordinary QA or explicit Add payloads.
+- Archive batches group one connection, client, session, and scope. The complete
+  event body is byte-bounded, contains whole Turns, and flushes by size, idle,
+  or service drain, independently of QA turn-count and chunking rules. Batch
+  identity and content remain fixed across bounded retries. Pending/in-flight
+  Turn reservations and a bounded success cache prevent local duplicate sends.
+  An archive is acknowledged only by a matching `stored` receipt, not ordinary
+  asynchronous memory-task acceptance. This is in-memory best effort, without
+  a persistent queue, native-history scan, or fallback to mixed QA requests.
+  The server owns OSS storage and object paths. See
+  [the event contract](docs/configuration.md#coding-session-collection).
 - Native materializers pass the selected QA timestamps through the shared
   completion contract. The coordinator supplies explicitly labelled observations
   when native times are absent; automatic enqueue freezes any remaining fallback
@@ -812,6 +835,7 @@ one directory under `clients/`.
 src/
   app/
   clients/<client>/
+  coding-sessions/
   config/
   entrypoints/
   lifecycle/
@@ -843,6 +867,7 @@ entrypoints and compatibility facades. It is not another implementation area.
 | `src/lifecycle/backend` | Managed process, PID/token/connection records, status probing, cleanup, and shutdown requests | Helper contracts do not depend back on the full service implementation |
 | `src/clients/<client>` | Native interpretation, correlation, interruption/recovery, trace adaptation, and lifecycle participation; delegates common memory workflows to the shared harness runtime | Request runtime stays HTTP-composition independent and uses only the matching [native authority](#native-writeback-authority); native deployment follows [package ownership](#22-physical-dependency-directions) |
 | `src/memory` | Memory commands, retrieval, writeback, turn coordination, repository session pinning, manual CLI, and buffering/chunking | Client-neutral modules do not parse native transcript formats |
+| `src/coding-sessions` | Normalized completed-Turn contract, redaction, bounded event batching, deduplication, and best-effort upload lifecycle | Native parsing stays in clients; remote HTTP stays in the provider; no QA extraction or local durable queue |
 | `src/memory/harness-runtime.ts` | Common Turn-start and materialized-completion workflows for all supported clients; publishes registered Turn state synchronously and owns locally created memory resources while reusing injected shared resources | No client implementation, HTTP, app/lifecycle, or direct provider-transport imports; diagnostics enter through a port and native interpretation stays with each client |
 | `src/personal-memory` | Local User Profile listing, normalization, duplicate detection, updates, deletion, and atomic storage | No Backend service, provider calls, transcript processing, or Procedure Memory mutation |
 | `src/repo-memory` | Repo Memory preparation, local and provider facet collection, delta detection, and bundle validation | Prepares bundle directories and the repository ignore entry, collects raw evidence, and validates output; agents author durable Markdown memory |
@@ -1037,9 +1062,10 @@ publication. Its legacy directory lock retains the same path and blocks new
 acquisition until released; an unprovable abandoned directory is not removed
 based on age. Pending schema, correlation, and pruning remain client-owned.
 
-Backend-owned remote memory state is limited to MemoraX memories and Add tasks.
-The provider adapter is the network boundary for documented memory payloads;
-the Backend does not poll an Add task after its initial response.
+Backend remote operations cover MemoraX memories, Add tasks, and optional
+coding-session archive batches. The provider is the network boundary for
+documented payloads; the Backend does not poll an Add task after its initial
+response or manage remote OSS objects directly.
 
 The runtime composition root owns bounded graceful shutdown. It closes HTTP
 intake, waits for active requests, and then drains the memory service and
@@ -1197,6 +1223,7 @@ paths are used below unless a different package or the repository root is named.
 | `src/repo-memory` | Repository-root `test/shared-skill/repo-memory-builder*.test.mjs` and `repo-memory-updater.test.mjs` through the canonical Skill launcher |
 | `src/personal-memory` | `test/personal-memory`; canonical Skill launcher integration in repository-root `test/shared-skill` |
 | `src/provider/memorax` | `test/provider/memorax` |
+| `src/coding-sessions` | `test/coding-sessions`, with native-to-provider coverage in `test/memory/memory-service.test.mjs` |
 | `src/repository` | `test/repository` |
 | `src/shared` | `test/shared` |
 | `src/trace` | `test/trace` |

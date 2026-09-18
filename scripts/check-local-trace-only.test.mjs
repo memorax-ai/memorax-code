@@ -329,6 +329,7 @@ test("local-only trace gate rejects an unreviewed trace-aware MemoraX caller", a
     await mkdir(scriptsDir, { recursive: true });
     await mkdir(sourceDir, { recursive: true });
     await mkdir(join(sourceDir, "memory"), { recursive: true });
+    await mkdir(join(sourceDir, "coding-sessions"), { recursive: true });
     await copyFile(checker, copiedChecker);
     const initialized = spawnSync("git", ["init", "--quiet"], {
       cwd: root,
@@ -347,10 +348,20 @@ test("local-only trace gate rejects an unreviewed trace-aware MemoraX caller", a
         "",
       ].join("\n"),
     );
+    await writeFile(join(sourceDir, "coding-sessions", "upload.ts"), [
+      'import { uploadCodingSessionBatch } from "../provider/memorax/coding-session.js";',
+      'import { readCurrentTraceTurn } from "../trace/store.js";',
+      "export async function publish(batch, options) {",
+      "  await readCurrentTraceTurn(options);",
+      "  return uploadCodingSessionBatch(batch, options);",
+      "}",
+      "",
+    ].join("\n"));
 
     const result = await runChecker(undefined, copiedChecker);
     assert.equal(result.code, 1);
     assert.match(result.stderr, /memory\/automatic-retrieval\.ts: unreviewed trace-aware outbound bridge/);
+    assert.match(result.stderr, /coding-sessions\/upload\.ts: unreviewed trace-aware outbound bridge/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

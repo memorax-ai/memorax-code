@@ -178,10 +178,16 @@ test("WorkBuddy provisional turn writeback and nested Skill commands share Gener
       { type: "input_text", text: "<command-name>/memorax-code</command-name>\n# MemoraX Code\nExpanded instructions",
         providerData: { content: prompt } },
     ] },
-    { id: "a-native", type: "message", role: "assistant", parentId: "u-native", status: "completed", timestamp: 1_700_000_060_000, content: [{ type: "output_text", text: "persisted reply" }] },
+    { id: "shared-node", type: "message", role: "assistant", parentId: "u-native", content: [{ type: "output_text", text: "Inspecting the project." }] },
+    { id: "shared-node", type: "function_call", parentId: "u-native", callId: "read-1", name: "Read", arguments: { path: "README.md" } },
+    { id: "shared-node", type: "function_call", parentId: "u-native", callId: "read-2", name: "Read", arguments: { path: "package.json" } },
+    { id: "result-1", type: "function_call_result", parentId: "shared-node", callId: "read-1", output: { type: "text", text: "project introduction" } },
+    { id: "result-2", type: "function_call_result", parentId: "shared-node", callId: "read-2", output: "package metadata" },
+    { id: "a-native", type: "message", role: "assistant", parentId: "result-2", status: "completed", timestamp: 1_700_000_060_000, content: [{ type: "output_text", text: "persisted reply" }] },
+    { id: "late-tool", type: "function_call", parentId: "u-native", callId: "late-1", name: "Read", arguments: "not part of completed turn" },
   ]));
   const requests = [];
-  const env = configuredEnv(home, { MEMORAX_CODE_WORKBUDDY_TRACE_ENABLED: "false" });
+  const env = configuredEnv(home, { MEMORAX_CODE_WORKBUDDY_TRACE_ENABLED: "false", MEMORAX_CODE_CODING_SESSIONS_ENABLED: "true" });
   const fetchImpl = async (url, init) => {
     requests.push({ url: String(url), body: JSON.parse(init.body) });
     const data = String(url).endsWith("/add") ? { task_id: "general-add", status: "queued" } : { data: [] };
@@ -190,7 +196,11 @@ test("WorkBuddy provisional turn writeback and nested Skill commands share Gener
       headers: { "content-type": "application/json" },
     });
   };
-  const runtime = createCodeBuddyMemoryHookRuntime({ env, fetchImpl, client: "workbuddy" });
+  const codingUploads = [];
+  const runtime = createCodeBuddyMemoryHookRuntime({
+    env, fetchImpl, client: "workbuddy", captureCodingTurns: true,
+    codingSessionUpload: (input) => { codingUploads.push(input); return { accepted: true }; },
+  });
   try {
     await runtime.recordTurnStart({
       ...command(sessionId, turnId, transcriptPath, prompt),
@@ -211,6 +221,24 @@ test("WorkBuddy provisional turn writeback and nested Skill commands share Gener
     assert.deepEqual(requests[0].body.messages.map(({ role, content, timestamp }) => ({ role, content, timestamp })), [
       { role: "user", content: prompt, timestamp: 1_700_000_000_000 },
       { role: "assistant", content: "persisted reply", timestamp: 1_700_000_060_000 },
+    ]);
+    assert.equal(requests[0].body.coding_turns, undefined);
+    assert.equal(codingUploads.length, 1);
+    assert.equal(codingUploads[0].repositoryScope.effectiveUserId, "user-1@General");
+    const codingTurn = codingUploads[0].turn;
+    assert.equal(codingTurn.client, "workbuddy");
+    assert.equal(codingTurn.sessionId, sessionId);
+    assert.equal(codingTurn.turnId, turnId);
+    assert.equal(codingTurn.turnIndex, 1);
+    assert.equal(codingTurn.closedAt, new Date(1_700_000_060_000).toISOString());
+    assert.deepEqual(codingTurn.events, [
+      { type: "user_message", content: prompt },
+      { type: "assistant_message", phase: "progress", content: "Inspecting the project." },
+      { type: "tool_call", callId: "read-1", tool: "Read", arguments: '{"path":"README.md"}' },
+      { type: "tool_call", callId: "read-2", tool: "Read", arguments: '{"path":"package.json"}' },
+      { type: "tool_result", callId: "read-1", status: "success", output: "project introduction" },
+      { type: "tool_result", callId: "read-2", status: "success", output: "package metadata" },
+      { type: "assistant_message", phase: "final", content: "persisted reply" },
     ]);
     const options = {
       cwd: nested,
