@@ -194,8 +194,11 @@ Coding-session collection independently sends a locally redacted text/tool
 subset from completed Turns in separate `dreaming` archive requests to the
 configured MemoraX Add endpoint. It includes prompts, visible assistant messages,
 and tool calls and results from Codex, Claude Code, OpenCode, CodeBuddy, or
-WorkBuddy. Codex projects allowlisted native item fields; other supported clients
-convert their native records to that shared subset. It excludes reasoning,
+WorkBuddy. Codex projects allowlisted native item fields, including web-search
+actions, tool-discovery arguments, and loaded tool definitions; nested strings
+in those JSON structures use the same best-effort redaction. Other supported clients
+convert their native records to that shared subset, including structured tool
+results and native tool error/status indicators inside the result string. It excludes reasoning,
 internal metadata, binary attachments, raw session files, native transcript paths,
 and trace provenance. This bounded, potentially lossy subset is not a complete
 Responses API transcript for direct replay. New configurations enable this
@@ -256,7 +259,7 @@ ACLs.
 
 File-backed archive cursors under `runtime/coding-sessions/` retain native
 transcript and workspace paths, session/Turn identifiers, completion and activity
-times, byte boundaries and counts, content digests, repository scope, a one-way
+times, byte boundaries and counts, projection versions, content digests, repository scope, a one-way
 connection fingerprint, batch identity, and confirmed upload progress. They
 contain no archive body or API key, but their identity and path metadata is
 still sensitive. Private atomic publication and cross-process locks protect

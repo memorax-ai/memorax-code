@@ -689,11 +689,42 @@ and optional loss metadata; repository identity belongs to the batch envelope.
 The subset supports user `message` items with `input_text` content, assistant
 `message` items with `output_text` content and `commentary` or `final_answer`
 phase, `function_call`/`function_call_output`, and
-`custom_tool_call`/`custom_tool_call_output`. Calls and outputs share `call_id`;
+`custom_tool_call`/`custom_tool_call_output`. These calls and outputs share `call_id`;
 function calls carry `name`, string `arguments`, and optional `namespace`, while
 custom calls carry `name` and string `input`. Outputs carry string `output`.
-An optional native `id` is retained. Items do not acquire custom `index`,
-`tool_result`, or `status` fields.
+An optional native `id` is retained. Items do not acquire custom `index` or
+`tool_result` fields.
+
+Codex also retains `web_search_call` with its structured `action`,
+`tool_search_call` with native `arguments`, and `tool_search_output` with its
+`tools` array. Native `status`, `execution`, and optional or nullable `call_id`
+are retained where applicable, not synthesized. Web search does not require a
+`call_id`; client-executed tool search does, while hosted tool search may use
+`null` or omit it. Search actions, arguments, and loaded tool definitions keep
+their JSON structure and order, with nested text subject to the same redaction
+and text limits. A structured search item that cannot fit the remaining Turn
+byte budget is omitted whole and reflected in `original_item_count`, rather
+than emitting a partial JSON object. This list is a collected subset, not an
+exhaustive list of every tool supported by Codex or the Responses API.
+
+Archive mapping preserves selected text blocks and their whitespace instead of
+reusing QA's joined/trimmed text. Tool strings retain their formatting; objects
+and arrays are JSON-encoded in full, subject to the same binary omission,
+redaction, and bounds above. Native tool error indicators are encoded inside
+the string `output`, not as new item fields: Claude uses `{content, is_error}`
+when a boolean `is_error` is present; CodeBuddy/WorkBuddy use `{output, status}`
+when a native string status is present; OpenCode errors use `{status, error}`
+plus `output` if present. Successful results without those indicators retain
+their original output shape. These are source-specific tool-result contents,
+not extra Responses API status values.
+Text nested in these result objects also passes the existing redaction rules
+before JSON escaping, so status wrapping does not hide native credential text.
+
+OpenCode emits each selected text block once. In its terminal assistant message,
+the last contiguous text group becomes `final_answer`; earlier groups remain
+`commentary` around their tools. The archive contract still requires the final
+answer at the end of each Turn, so tools following that final text group are
+placed before it. Ordinary QA text extraction is unchanged.
 
 The request has no QA `messages` or memory-extraction options. The server must
 implement this schema and return
@@ -706,7 +737,7 @@ credentials and object paths; the plugin does not connect directly to OSS.
 
 File-backed collection stores private cursor records under
 `MEMORAX_CODE_HOME/runtime/coding-sessions/*.json`. They contain native paths,
-frozen file-prefix byte boundaries, Turn IDs/indexes and completion times,
+frozen file-prefix byte boundaries, Turn IDs/indexes and completion times, local projection versions,
 prepared-content digests and byte counts, repository scope and a connection fingerprint,
 pending batch identity, and confirmed progress. They contain neither archive
 bodies nor API keys. Only references accepted by the completion path are
@@ -715,6 +746,11 @@ upload earlier history.
 
 When a batch is due, the owning client reader rereads its frozen native
 prefixes. Projection and redaction must reproduce the registered digests.
+References created before projection versioning keep the original mapping;
+new references use the text-preserving mapping, including Codex search items.
+Old Codex references continue to omit those items. A pending batch is never
+re-encoded under a new mapping with its old ID. Recent duplicate completions
+are checked against the original projection when their recorded version differs.
 The batch ID and membership remain fixed until a matching `stored` receipt;
 only then does confirmed progress advance. Failed or unconfirmed batches keep
 their references and retry after five minutes, independently of QA. A bounded

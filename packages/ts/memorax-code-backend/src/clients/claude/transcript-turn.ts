@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { parseNativeMessageTimestamp } from "../../shared/message-time.js";
-import { codingEventText, type CodingSessionNativeSource, type CodingSessionSourceTurn, type ResponseItem } from "../../coding-sessions/coding-turn.js";
+import { codingEventText, codingToolOutputText, type CodingSessionNativeSource, type CodingSessionProjectionVersion, type CodingSessionSourceTurn, type ResponseItem } from "../../coding-sessions/coding-turn.js";
+import type { NativeCodingSessionTurnRef } from "../../coding-sessions/contracts.js";
 import { readNativeTranscriptSnapshot } from "../../shared/native-transcript-snapshot.js";
 
 type JsonRecord = Record<string, unknown>;
@@ -123,6 +124,7 @@ export async function readClaudeCodingSessionTurn(input: {
   sessionId: string;
   promptId: string;
   endBytes?: number;
+  projectionVersion?: CodingSessionProjectionVersion;
 }): Promise<ClaudeCodingSessionTurnResult> {
   try {
     const snapshot = await readNativeTranscriptSnapshot(input);
@@ -141,25 +143,26 @@ export async function readClaudeCodingSessionTurn(input: {
 }
 
 export async function readClaudeArchiveSource(
-  ref: Omit<CodingSessionSourceTurn, "items" | "repositorySlug"> & { source: CodingSessionNativeSource },
+  ref: NativeCodingSessionTurnRef,
 ): Promise<CodingSessionSourceTurn | undefined> {
   if (ref.client !== "claude-code") return undefined;
-  const result = await readClaudeCodingSessionTurn({ ...ref.source, sessionId: ref.sessionId, promptId: ref.turnId });
+  const result = await readClaudeCodingSessionTurn({ ...ref.source, sessionId: ref.sessionId, promptId: ref.turnId, projectionVersion: ref.projectionVersion });
   if (!result.ok || result.turn.sessionTurnIndex !== ref.turnIndex) return undefined;
   return { ...ref, items: result.turn.items };
 }
 
 export function claudeCodingSessionTurnFromJsonLines(
   transcript: string,
-  input: { sessionId: string; promptId: string },
+  input: { sessionId: string; promptId: string; projectionVersion?: CodingSessionProjectionVersion },
 ): ClaudeCodingSessionTurnResult {
-  return resolveClaudeCompletedTranscriptTurn(transcript, input, true);
+  return resolveClaudeCompletedTranscriptTurn(transcript, input, true, input.projectionVersion);
 }
 
 function resolveClaudeCompletedTranscriptTurn(
   transcript: string,
   input: { sessionId: string; promptId: string },
   captureCodingItems: true,
+  projectionVersion?: CodingSessionProjectionVersion,
 ): ClaudeCodingSessionTurnResult;
 function resolveClaudeCompletedTranscriptTurn(
   transcript: string,
@@ -170,6 +173,7 @@ function resolveClaudeCompletedTranscriptTurn(
   transcript: string,
   input: { sessionId: string; promptId: string },
   captureCodingItems: boolean,
+  projectionVersion: CodingSessionProjectionVersion = 2,
 ): ClaudeTranscriptTurnResult | ClaudeCodingSessionTurnResult {
   const requested = requestedTranscriptRecords(transcript, input.sessionId);
   if (!requested.ok) return requested;
@@ -232,7 +236,7 @@ function resolveClaudeCompletedTranscriptTurn(
         ...(candidate.branch.userTimestamp === undefined ? {} : { userTimestamp: candidate.branch.userTimestamp }),
         ...(candidate.assistantTimestamp === undefined ? {} : { assistantTimestamp: candidate.assistantTimestamp }),
         ...(captureCodingItems ? {
-          items: completedClaudeResponseItems(candidate.branch, candidate.assistantReply),
+          items: completedClaudeResponseItems(candidate.branch, candidate.assistantReply, projectionVersion),
           ...(closedAt ? { closedAt } : {}),
         } : {}),
         activities: candidate.activities,
@@ -543,6 +547,7 @@ function interruptedAssistantReply(assistantMessages: JsonRecord[]): string {
 function completedClaudeResponseItems(
   branch: ClaudePromptBranch,
   finalReply: string,
+  projectionVersion: CodingSessionProjectionVersion,
 ): ResponseItem[] {
   const items: ResponseItem[] = [];
   const terminalRecord = branch.records[0];
@@ -552,25 +557,25 @@ function completedClaudeResponseItems(
       || record.isCompactSummary === true || record.isVisibleInTranscriptOnly === true) continue;
     const message = isRecord(record.message) ? record.message : undefined;
     if (!message || !Array.isArray(message.content)) {
-      if (record !== terminalRecord && message?.role === "assistant") {
+      if (record !== terminalRecord && message?.role === "assistant" && typeof message.content === "string") {
         const content = visibleMessageText(message.content);
-        if (content) items.push({ type: "message", role: "assistant", phase: "commentary", content: [{ type: "output_text", text: content }] });
+        if (content) items.push({ type: "message", role: "assistant", phase: "commentary", content: [{ type: "output_text", text: projectionVersion === 1 ? content : message.content }] });
       }
       continue;
     }
     if (message.role === "assistant") {
       for (const block of message.content) {
         if (!isRecord(block)) continue;
-        if (block.type === "text" && record !== terminalRecord) {
+        if (block.type === "text" && record !== terminalRecord && typeof block.text === "string") {
           const content = nonBlankString(block.text);
-          if (content) items.push({ type: "message", role: "assistant", phase: "commentary", content: [{ type: "output_text", text: content }] });
+          if (content) items.push({ type: "message", role: "assistant", phase: "commentary", content: [{ type: "output_text", text: projectionVersion === 1 ? content : block.text }] });
           continue;
         }
         if (block.type !== "tool_use") continue;
         const callId = stringValue(block.id);
         const tool = stringValue(block.name);
         if (!callId || !tool) continue;
-        items.push({ type: "function_call", call_id: callId, name: tool, arguments: codingEventText(block.input) });
+        items.push({ type: "function_call", call_id: callId, name: tool, arguments: codingEventText(block.input, projectionVersion) });
       }
       continue;
     }
@@ -582,15 +587,31 @@ function completedClaudeResponseItems(
       items.push({
         type: "function_call_output",
         call_id: callId,
-        output: codingEventText(block.content),
+        output: projectionVersion === 1 ? codingEventText(block.content, 1)
+          : codingToolOutputText(typeof block.is_error === "boolean"
+            ? { content: block.content, is_error: block.is_error } : block.content),
       });
     }
   }
+  // The QA strings remain normalized; archive projection keeps native text blocks.
+  const userTexts = projectionVersion === 1
+    ? [branch.userPrompt ?? ""] : archiveMessageTextBlocks(branch.records[branch.records.length - 1]!);
+  const finalTexts = projectionVersion === 1
+    ? [finalReply] : archiveMessageTextBlocks(terminalRecord!);
   return [
-    { type: "message", role: "user", content: [{ type: "input_text", text: branch.userPrompt ?? "" }] },
+    { type: "message", role: "user", content: userTexts.map((text) => ({ type: "input_text", text })) },
     ...items,
-    { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: finalReply }] },
+    { type: "message", role: "assistant", phase: "final_answer", content: finalTexts.map((text) => ({ type: "output_text", text })) },
   ];
+}
+
+function archiveMessageTextBlocks(record: JsonRecord): string[] {
+  const message = isRecord(record.message) ? record.message : undefined;
+  const content = message?.content;
+  if (typeof content === "string") return [content];
+  return Array.isArray(content) ? content.flatMap((block) => (
+    isRecord(block) && block.type === "text" && typeof block.text === "string" ? [block.text] : []
+  )) : [];
 }
 
 function transcriptRecordTimestamp(record: JsonRecord): string | undefined {

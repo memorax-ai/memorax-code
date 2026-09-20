@@ -78,6 +78,8 @@ test("cursor corruption and unsupported authority fail closed without replacing 
     { ...valid, turns: [nativeTurn(home, 1), nativeTurn(home, 2)],
       batch: { id: "batch", turnIds: ["turn-2"] } },
     { ...valid, turns: [{ ...valid.turns[0], source: { transcriptPath: "relative", endBytes: 10 } }] },
+    { ...valid, turns: [{ ...valid.turns[0], projectionVersion: 3 }] },
+    { ...valid, turns: [{ ...valid.turns[0], projectionVersion: "2" }] },
     { ...valid, repositoryScope: { ...valid.repositoryScope, effectiveUserId: "another-user" } },
     { ...valid, repositoryScope: { ...valid.repositoryScope, raw: "not metadata" } },
     { ...valid, repositoryScope: { ...valid.repositoryScope, scopeKind: "general" } },
@@ -125,6 +127,7 @@ test("cursor keeps only a bounded proven acknowledgement ending at its checkpoin
     [], [confirmed(2)], [confirmed(5)], [confirmed(4), confirmed(2)],
     [confirmed(4), confirmed(4)], [{ ...confirmed(4), digest: "invalid" }],
     [{ ...confirmed(4), text: "not metadata" }],
+    [{ ...confirmed(4), projectionVersion: 3 }],
     Array.from({ length: 51 }, (_, index) => confirmed(index + 1)),
   ]) {
     await assert.rejects(store.update(KEY, () => ({ state: { ...state, confirmedTurns }, value: undefined })),

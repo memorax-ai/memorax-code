@@ -82,7 +82,7 @@ test("Claude transcript resolves one exact completed prompt branch", () => {
   ]);
 });
 
-test("Claude archive preserves native tool output without inferred response status", () => {
+test("Claude archive preserves native tool error flags without inferred response status", () => {
   const output = [{ type: "text", text: "File was not found." }];
   const transcript = jsonLines([
     userRecord({ uuid: "user-visible", content: "Read the configuration." }),
@@ -105,7 +105,7 @@ test("Claude archive preserves native tool output without inferred response stat
     item.type === "function_call_output" ? { ...item, output: JSON.parse(item.output) } : item
   )), [
     { type: "function_call", call_id: "read-config", name: "Read", arguments: '{"path":"missing.json"}' },
-    { type: "function_call_output", call_id: "read-config", output },
+    { type: "function_call_output", call_id: "read-config", output: { content: output, is_error: true } },
   ]);
 });
 

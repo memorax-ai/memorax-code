@@ -1,5 +1,5 @@
 import type { RepositoryMemoryScope } from "../repository/scope.js";
-import type { CodingSessionClient, CodingSessionNativeSource, CodingSessionSourceTurn, PreparedSessionTurn, ResponseItem } from "./coding-turn.js";
+import type { CodingSessionClient, CodingSessionNativeSource, CodingSessionProjectionVersion, CodingSessionSourceTurn, PreparedSessionTurn, ResponseItem } from "./coding-turn.js";
 
 export type CodingSessionUploadInput = {
   turn: CodingSessionSourceTurn;
@@ -9,7 +9,10 @@ export type CodingSessionUploadInput = {
 };
 export type CodingSessionUploadResult = { accepted: true } | { accepted: false; reason: string };
 export type CodingSessionUploadEnqueue = (input: CodingSessionUploadInput) => CodingSessionUploadResult | Promise<CodingSessionUploadResult>;
-export type NativeCodingSessionTurnRef = Omit<CodingSessionSourceTurn, "items" | "repositorySlug"> & { source: CodingSessionNativeSource };
+export type NativeCodingSessionTurnRef = Omit<CodingSessionSourceTurn, "items" | "repositorySlug"> & {
+  source: CodingSessionNativeSource;
+  projectionVersion?: CodingSessionProjectionVersion;
+};
 export type CodingSessionInteraction = {
   client: CodingSessionClient;
   sessionId: string;

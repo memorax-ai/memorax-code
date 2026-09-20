@@ -9,6 +9,11 @@ export type CodingSessionClient = "codex" | "claude-code" | "opencode" | "codebu
 
 // Local recovery authority only; never included in an archive payload.
 export type CodingSessionNativeSource = Readonly<{ transcriptPath: string; endBytes: number }>;
+export type CodingSessionProjectionVersion = 1 | 2;
+
+export type ResponseJsonValue = null | boolean | number | string | readonly ResponseJsonValue[] | ResponseJsonObject;
+export type ResponseJsonObject = { readonly [key: string]: ResponseJsonValue };
+type ToolSearchIdentity = Readonly<{ execution?: "server" | "client"; call_id?: string | null; status?: string }>;
 
 // This is the collected text/tool subset, not a complete Responses API request.
 export type ResponseItem = Readonly<{ id?: string }> & (
@@ -17,6 +22,9 @@ export type ResponseItem = Readonly<{ id?: string }> & (
   | Readonly<{ type: "function_call"; call_id: string; name: string; arguments: string; namespace?: string }>
   | Readonly<{ type: "custom_tool_call"; call_id: string; name: string; input: string }>
   | Readonly<{ type: "function_call_output" | "custom_tool_call_output"; call_id: string; output: string }>
+  | Readonly<{ type: "web_search_call"; status?: string; action: ResponseJsonObject }>
+  | (ToolSearchIdentity & Readonly<{ type: "tool_search_call"; arguments: ResponseJsonValue }>)
+  | (ToolSearchIdentity & Readonly<{ type: "tool_search_output"; tools: readonly ResponseJsonObject[] }>)
 );
 
 export type CodingSessionSourceTurn = Readonly<{
@@ -94,7 +102,9 @@ export function prepareCodingSessionTurn(
     items: [],
     truncation: {
       original_item_count: turn.items.length,
-      truncated_text_fields: turn.items.reduce((count, item) => count + (item.type === "message" ? item.content.length : 1), 0),
+      // Structured search items can contain many independently bounded strings.
+      truncated_text_fields: turn.items.some(isSearchToolItem) ? Number.MAX_SAFE_INTEGER
+        : turn.items.reduce((count, item) => count + (item.type === "message" ? item.content.length : 1), 0),
     },
   });
   const first = candidates[0];
@@ -134,8 +144,10 @@ export function prepareCodingSessionTurn(
   };
 }
 
-export function codingEventText(value: unknown): string {
+export function codingEventText(value: unknown, projectionVersion: CodingSessionProjectionVersion = 2): string {
   if (typeof value === "string") {
+    if (projectionVersion === 2) return omitBinaryText(value);
+    // Old pending batches must reproduce their original bytes and digest.
     const normalized = value.trim();
     if (!normalized) return "";
     if (isBinaryDataUri(normalized)) return BINARY_CONTENT_OMITTED;
@@ -147,6 +159,12 @@ export function codingEventText(value: unknown): string {
   }
   if (value === undefined) return "";
   return stableJson(value);
+}
+
+export function codingToolOutputText(value: unknown): string {
+  if (value === undefined || typeof value === "string") return codingEventText(value);
+  // Wrapping native text with status must not hide credentials behind JSON escapes.
+  return stableJson(value, true);
 }
 
 function prepareItem(
@@ -165,6 +183,25 @@ function prepareItem(
     if (item.role !== "assistant" || (item.phase !== "commentary" && item.phase !== "final_answer")) return undefined;
     return { type: "message", ...identity, role: "assistant", phase: item.phase, content: texts.map((text) => ({ type: "output_text", text })) };
   }
+  if (isSearchToolItem(item)) {
+    const status = item.status && boundedEventIdentifier(item.status, 32);
+    const metadata = { ...identity, ...(status ? { status } : {}) };
+    if (item.type === "web_search_call") {
+      return { type: item.type, ...metadata, action: redactToolJson(item.action, onTruncated) as ResponseJsonObject };
+    }
+    const execution = item.execution;
+    if (execution !== undefined && execution !== "server" && execution !== "client") return undefined;
+    const callId = typeof item.call_id === "string" ? boundedEventIdentifier(item.call_id, 512) : undefined;
+    if ((execution === "client" || typeof item.call_id === "string") && !callId) return undefined;
+    const searchIdentity = {
+      ...metadata,
+      ...(execution ? { execution } : {}),
+      ...(callId ? { call_id: callId } : item.call_id === null ? { call_id: null } : {}),
+    };
+    return item.type === "tool_search_call"
+      ? { type: item.type, ...searchIdentity, arguments: redactToolJson(item.arguments, onTruncated) }
+      : { type: item.type, ...searchIdentity, tools: redactToolJson(item.tools, onTruncated) as readonly ResponseJsonObject[] };
+  }
   if (!["function_call", "custom_tool_call", "function_call_output", "custom_tool_call_output"].includes(item.type)) return undefined;
   const callId = boundedEventIdentifier(item.call_id, 512);
   if (!callId) return undefined;
@@ -176,6 +213,42 @@ function prepareItem(
     return { type: item.type, ...identity, call_id: callId, name, arguments: redactSourceText(item.arguments, () => onTruncated(0)), ...(namespace ? { namespace } : {}) };
   }
   return { type: item.type, ...identity, call_id: callId, output: redactSourceText(item.output, () => onTruncated(0)) };
+}
+
+function isSearchToolItem(item: ResponseItem): item is Extract<ResponseItem, { type: "web_search_call" | "tool_search_call" | "tool_search_output" }> {
+  return item.type === "web_search_call" || item.type === "tool_search_call" || item.type === "tool_search_output";
+}
+
+function redactToolJson(value: ResponseJsonValue, onTruncated: (fieldIndex: number) => void): ResponseJsonValue {
+  let fieldIndex = 0;
+  const text = (value: string): string => {
+    const index = fieldIndex++;
+    return redactSourceText(value, () => onTruncated(index));
+  };
+  const visit = (item: ResponseJsonValue, key?: string): ResponseJsonValue => {
+    if (key && typeof item === "string" && /^(?:(?:proxy-)?authorization|(?:set-)?cookie)$/iu.test(key)) {
+      const prefix = `${key}: `;
+      return text(redactMemoryPayloadText(prefix + item).text.slice(prefix.length));
+    }
+    if (key && (typeof item === "string" || typeof item === "number")) {
+      // Apply the existing key-sensitive rule without replacing JSON punctuation.
+      const prefix = `${JSON.stringify(key)}:`;
+      if (redactMemoryPayloadText(prefix + JSON.stringify(item)).text === `${prefix}[REDACTED:CREDENTIAL]`) {
+        return "[REDACTED:CREDENTIAL]";
+      }
+    }
+    if (typeof item === "string") return text(item);
+    if (Array.isArray(item)) return item.map((part) => visit(part, key));
+    if (item === null || typeof item !== "object") return item;
+    if (isSerializedBuffer(item)) return BINARY_CONTENT_OMITTED;
+    const object = item as ResponseJsonObject;
+    const mediaPayload = typeof object.type === "string" && ["audio", "image", "video"].includes(object.type.toLowerCase());
+    return Object.fromEntries(Object.entries(object).map(([key, part]) => [
+      text(key), mediaPayload && ["base64", "blob", "data"].includes(key.toLowerCase())
+        ? BINARY_CONTENT_OMITTED : visit(part, key),
+    ]));
+  };
+  return visit(value);
 }
 
 function redactSourceText(value: string, onTruncated: () => void): string {
@@ -212,6 +285,8 @@ function fitItem(
   onTruncated: (fieldIndex: number) => void,
 ): ResponseItem | undefined {
   if (itemBytes(item) <= budget) return item;
+  // Keep structured tool records valid; omit an oversized record atomically.
+  if (isSearchToolItem(item)) return undefined;
   if (item.type === "message") {
     let remaining = budget - itemBytes({ ...item, content: [] });
     const content = item.content.flatMap((part, fieldIndex) => {
@@ -270,9 +345,11 @@ function redactHomePath(value: string): string {
   return redacted;
 }
 
-function stableJson(value: unknown): string {
+function stableJson(value: unknown, redactTextValues = false): string {
   try {
-    return JSON.stringify(sortJsonValue(value));
+    return JSON.stringify(sortJsonValue(value), redactTextValues ? (_key, item: unknown) => (
+      typeof item === "string" ? redactMemoryPayloadText(redactHomePath(item)).text : item
+    ) : undefined);
   } catch {
     return String(value ?? "");
   }

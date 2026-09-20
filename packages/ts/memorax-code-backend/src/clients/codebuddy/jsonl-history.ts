@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { parseNativeMessageTimestamp } from "../../shared/message-time.js";
-import { codingEventText, type CodingSessionNativeSource, type CodingSessionSourceTurn, type ResponseItem } from "../../coding-sessions/coding-turn.js";
+import { codingEventText, codingToolOutputText, type CodingSessionNativeSource, type CodingSessionProjectionVersion, type CodingSessionSourceTurn, type ResponseItem } from "../../coding-sessions/coding-turn.js";
+import type { NativeCodingSessionTurnRef } from "../../coding-sessions/contracts.js";
 import { readNativeTranscriptSnapshot } from "../../shared/native-transcript-snapshot.js";
 import { codeBuddyPromptDigest, parseCodeBuddyTurnId } from "./turn-id.js";
 
@@ -37,6 +38,7 @@ type ParsedHistoryRecord = CodeBuddyHistoryRecord & { [RECORD_OFFSET]?: number }
 export async function readCodeBuddyTranscriptTurn(input: {
   transcriptPath: string; sessionId: string; turnId: string;
   captureCodingItems?: boolean;
+  projectionVersion?: CodingSessionProjectionVersion;
   endBytes?: number;
 }): Promise<CodeBuddyTurnResult> {
   try {
@@ -54,11 +56,12 @@ export async function readCodeBuddyTranscriptTurn(input: {
 }
 
 export async function readCodeBuddyArchiveSource(
-  ref: Omit<CodingSessionSourceTurn, "items" | "repositorySlug"> & { source: CodingSessionNativeSource },
+  ref: NativeCodingSessionTurnRef,
 ): Promise<CodingSessionSourceTurn | undefined> {
   if (ref.client !== "codebuddy" && ref.client !== "workbuddy") return undefined;
   const result = await readCodeBuddyTranscriptTurn({
     ...ref.source, sessionId: ref.sessionId, turnId: ref.turnId, captureCodingItems: true,
+    projectionVersion: ref.projectionVersion,
   });
   if (!result.ok || !result.turn.items || result.turn.sessionTurnIndex !== ref.turnIndex) return undefined;
   return { ...ref, items: result.turn.items };
@@ -75,7 +78,7 @@ export async function readCodeBuddyInterruptedTranscriptTurn(input: {
 
 export function codeBuddyTranscriptTurnFromJsonLines(
   text: string,
-  input: { sessionId: string; turnId: string; captureCodingItems?: boolean },
+  input: { sessionId: string; turnId: string; captureCodingItems?: boolean; projectionVersion?: CodingSessionProjectionVersion },
 ): CodeBuddyTurnResult {
   const selected = selectCodeBuddyTurnBranch(text, input);
   if (!selected.ok) return selected;
@@ -99,7 +102,7 @@ export function codeBuddyTranscriptTurnFromJsonLines(
       activities: turnActivities(selected.records),
       sessionTurnIndex: selected.sessionTurnIndex,
       ...(selected.eventRecords ? {
-        items: completedResponseItems(selected.eventRecords, assistant, selected.userPrompt, reply),
+        items: completedResponseItems(selected.eventRecords, selected.user, assistant, selected.userPrompt, reply, input.projectionVersion ?? 2),
       } : {}),
     },
   };
@@ -136,6 +139,7 @@ export function codeBuddyInterruptedTranscriptTurnFromJsonLines(
 type SelectedCodeBuddyTurnBranch = Readonly<{
   records: ParsedHistoryRecord[];
   eventRecords?: ParsedHistoryRecord[];
+  user: ParsedHistoryRecord;
   userPrompt: string;
   userTimestamp?: number;
   sessionTurnIndex: number;
@@ -176,6 +180,7 @@ function selectCodeBuddyTurnBranch(
   return {
     ok: true,
     records: branch,
+    user,
     ...(parsed.eventRecords ? {
       eventRecords: parsed.eventRecords.filter((record) => parentIds.has(stringField(record, "parentId") ?? "")),
     } : {}),
@@ -279,31 +284,74 @@ function contentText(value: unknown): string | undefined {
 
 function completedResponseItems(
   records: readonly ParsedHistoryRecord[],
+  user: ParsedHistoryRecord,
   assistant: ParsedHistoryRecord,
   userPrompt: string,
   assistantReply: string,
+  projectionVersion: CodingSessionProjectionVersion,
 ): ResponseItem[] {
-  const items: ResponseItem[] = [{ type: "message", role: "user", content: [{ type: "input_text", text: userPrompt }] }];
+  let userContent = [{ type: "input_text" as const, text: userPrompt }];
+  if (projectionVersion !== 1) {
+    const inputBlocks = (Array.isArray(user.content) ? user.content : []).filter((block) => (
+      block && typeof block === "object" && block.type === "input_text"
+    ));
+    const originals = inputBlocks.flatMap((block) => (
+      block.providerData && typeof block.providerData === "object" && !Array.isArray(block.providerData)
+        && typeof block.providerData.content === "string"
+        ? [{ type: "input_text" as const, text: block.providerData.content as string }] : []
+    ));
+    userContent = originals.length ? originals : inputBlocks.flatMap((block) => (
+      typeof block.text === "string" ? [{ type: "input_text" as const, text: block.text as string }] : []
+    ));
+    const match = originals.length ? undefined : userContent.map(({ text }) => text).join("\n").match(/<user_query>([\s\S]*?)<\/user_query>/);
+    if (match) {
+      const start = match.index! + "<user_query>".length;
+      const end = start + match[1].length;
+      let offset = 0;
+      userContent = userContent.flatMap(({ text }) => {
+        const from = Math.max(start, offset);
+        const to = Math.min(end, offset + text.length);
+        const blockStart = offset;
+        offset += text.length + 1;
+        return to > from || (text.length === 0 && blockStart >= start && blockStart <= end)
+          ? [{ type: "input_text" as const, text: text.slice(from - blockStart, to - blockStart) }] : [];
+      });
+    }
+  }
+  const items: ResponseItem[] = [{ type: "message", role: "user", content: userContent }];
   for (const record of records) {
     if (record === assistant || (record[RECORD_OFFSET] ?? 0) > (assistant[RECORD_OFFSET] ?? Infinity)) continue;
     if (record.type === "message" && record.role === "assistant") {
-      const content = assistantText(record);
-      if (content) items.push({ type: "message", role: "assistant", phase: "commentary", content: [{ type: "output_text", text: content }] });
+      const text = assistantText(record);
+      const content = projectionVersion === 1
+        ? [{ type: "output_text" as const, text: text ?? "" }]
+        : (Array.isArray(record.content) ? record.content : []).flatMap((block) => (
+          block && typeof block === "object" && block.type === "output_text" && typeof block.text === "string"
+            ? [{ type: "output_text" as const, text: block.text as string }] : []
+        ));
+      if (text) items.push({ type: "message", role: "assistant", phase: "commentary", content });
       continue;
     }
     const callId = stringField(record, "callId");
     if (!callId) continue;
     if (record.type === "function_call") {
       const tool = stringField(record, "name") ?? stringField(record, "function");
-      if (tool) items.push({ type: "function_call", call_id: callId, name: tool, arguments: codingEventText(record.arguments) });
+      if (tool) items.push({ type: "function_call", call_id: callId, name: tool, arguments: codingEventText(record.arguments, projectionVersion) });
     } else if (record.type === "function_call_result") {
       items.push({
         type: "function_call_output", call_id: callId,
-        output: codingEventText(contentText(record.output) ?? record.output),
+        output: projectionVersion === 1 ? codingEventText(contentText(record.output) ?? record.output, 1)
+          : codingToolOutputText(typeof record.status === "string" ? { output: record.output, status: record.status } : record.output),
       });
     }
   }
-  items.push({ type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: assistantReply }] });
+  const finalContent = projectionVersion === 1
+    ? [{ type: "output_text" as const, text: assistantReply }]
+    : (Array.isArray(assistant.content) ? assistant.content : []).flatMap((block) => (
+      block && typeof block === "object" && block.type === "output_text" && typeof block.text === "string"
+        ? [{ type: "output_text" as const, text: block.text as string }] : []
+    ));
+  items.push({ type: "message", role: "assistant", phase: "final_answer", content: finalContent });
   return items;
 }
 

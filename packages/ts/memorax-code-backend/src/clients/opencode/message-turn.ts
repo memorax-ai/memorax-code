@@ -1,6 +1,6 @@
 import { isRecord } from "../../shared/record.js";
 import { parseNativeMessageTimestamp } from "../../shared/message-time.js";
-import { codingEventText, type ResponseItem } from "../../coding-sessions/coding-turn.js";
+import { codingEventText, codingToolOutputText, type ResponseItem } from "../../coding-sessions/coding-turn.js";
 
 export type OpenCodeMessageTurn = Readonly<{
   sessionId: string;
@@ -121,7 +121,17 @@ export function openCodeCodingSessionTurn(
   ));
   const terminalIndex = assistants.findIndex((message) => messageId(message) === input.assistantMessageId);
   if (terminalIndex < 0) return { ok: false, reason: "message_identity_mismatch" };
-  const items: ResponseItem[] = [{ type: "message", role: "user", content: [{ type: "input_text", text: materialized.turn.userPrompt }] }];
+  const user = messages.find((message) => messageId(message) === input.userMessageId) as OpenCodeMessageRecord;
+  const items: ResponseItem[] = [{
+    type: "message", role: "user",
+    content: user.parts.flatMap((part) => (
+      isRecord(part) && visibleTextPart(part)
+      && stringField(part, "sessionID") === input.sessionId
+      && stringField(part, "messageID") === input.userMessageId
+        ? [{ type: "input_text" as const, text: String(part.text) }] : []
+    )),
+  }];
+  let finalTextIndex = -1;
   for (const assistant of assistants.slice(0, terminalIndex + 1)) {
     const id = messageId(assistant);
     const parts = assistant.parts.filter((part): part is Record<string, unknown> => (
@@ -129,26 +139,40 @@ export function openCodeCodingSessionTurn(
       && stringField(part, "sessionID") === input.sessionId
       && stringField(part, "messageID") === id
     ));
-    const finalText = id === input.assistantMessageId ? parts.filter(visibleTextPart).at(-1) : undefined;
+    let content: { type: "output_text"; text: string }[] = [];
+    const flushText = () => {
+      if (content.length === 0) return;
+      finalTextIndex = items.length;
+      items.push({ type: "message", role: "assistant", phase: "commentary", content });
+      content = [];
+    };
     for (const part of parts) {
-      if (visibleTextPart(part) && part !== finalText) {
-        items.push({ type: "message", role: "assistant", phase: "commentary", content: [{ type: "output_text", text: String(part.text) }] });
+      if (visibleTextPart(part)) {
+        content.push({ type: "output_text", text: String(part.text) });
       }
       if (part.type !== "tool") continue;
       const callId = stringField(part, "callID");
       const tool = stringField(part, "tool");
       const state = isRecord(part.state) ? part.state : undefined;
       if (!callId || !tool || !state) continue;
+      flushText();
       items.push({ type: "function_call", call_id: callId, name: tool, arguments: codingEventText(state.input) });
       if (state.status === "completed" || state.status === "error") {
         items.push({
           type: "function_call_output", call_id: callId,
-          output: codingEventText(state.status === "error" ? state.error : state.output),
+          output: codingToolOutputText(state.status === "error" ? {
+            status: "error", error: state.error,
+            ...(state.output === undefined ? {} : { output: state.output }),
+          } : state.output),
         });
       }
     }
+    flushText();
   }
-  items.push({ type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: materialized.turn.assistantReply }] });
+  const [finalText] = items.splice(finalTextIndex, 1);
+  if (finalText.type === "message" && finalText.role === "assistant") {
+    items.push({ ...finalText, phase: "final_answer" });
+  }
   return { ok: true, turn: { ...materialized.turn, turnIndex: Number(input.turnIndex), items, closedAt: new Date(completed).toISOString() } };
 }
 

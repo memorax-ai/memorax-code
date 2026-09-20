@@ -7,7 +7,7 @@ import {
   writePrivateJsonRecord,
 } from "../../../memorax-code-adapter-common/src/runtime-record.mjs";
 import type { RepositoryMemoryScope } from "../repository/scope.js";
-import { CODING_TURN_MAX_BYTES } from "./coding-turn.js";
+import { CODING_TURN_MAX_BYTES, type CodingSessionProjectionVersion } from "./coding-turn.js";
 
 const MAX_CURSOR_BYTES = 2 * 1024 * 1024;
 const HASH = /^[0-9a-f]{64}$/;
@@ -19,6 +19,8 @@ export type NativeArchiveTurn = Readonly<{
   source: Readonly<{ transcriptPath: string; endBytes: number }>;
   bytes: number;
   digest: string;
+  // Missing on older cursors means the original projection, never the latest.
+  projectionVersion?: CodingSessionProjectionVersion;
 }>;
 
 export type CodingSessionCursor = Readonly<{
@@ -30,7 +32,7 @@ export type CodingSessionCursor = Readonly<{
   repositoryScope: RepositoryMemoryScope;
   lastInteractionAt: number;
   uploadedThrough: number;
-  confirmedTurns?: Array<Pick<NativeArchiveTurn, "turnId" | "turnIndex" | "digest">>;
+  confirmedTurns?: Array<Pick<NativeArchiveTurn, "turnId" | "turnIndex" | "digest" | "projectionVersion">>;
   turns: NativeArchiveTurn[];
   batch?: Readonly<{ id: string; turnIds: string[] }>;
   retryAt?: number;
@@ -146,7 +148,8 @@ function validateCursor(value: unknown, key: string): CodingSessionCursor {
     let previousConfirmed = 0;
     const confirmedIds = new Set<string>();
     for (const turn of value.confirmedTurns) {
-      if (!fields(turn, ["turnId", "turnIndex", "digest"])
+      if (!fields(turn, ["turnId", "turnIndex", "digest"], ["projectionVersion"])
+        || !validProjectionVersion(turn.projectionVersion)
         || !text(turn.turnId) || confirmedIds.has(turn.turnId)
         || !integer(turn.turnIndex) || turn.turnIndex <= previousConfirmed
         || turn.turnIndex > value.uploadedThrough
@@ -162,7 +165,8 @@ function validateCursor(value: unknown, key: string): CodingSessionCursor {
   const identities = new Set<string>();
   const turns = value.turns;
   for (const turn of turns) {
-    if (!fields(turn, ["turnId", "turnIndex", "closedAt", "source", "bytes", "digest"])
+    if (!fields(turn, ["turnId", "turnIndex", "closedAt", "source", "bytes", "digest"], ["projectionVersion"])
+      || !validProjectionVersion(turn.projectionVersion)
       || !text(turn.turnId) || identities.has(turn.turnId)
       || !integer(turn.turnIndex) || turn.turnIndex <= previous
       || !text(turn.closedAt, 128) || !Number.isFinite(Date.parse(turn.closedAt))
@@ -228,6 +232,10 @@ function text(value: unknown, maxLength = 8_192): value is string {
 
 function integer(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function validProjectionVersion(value: unknown): boolean {
+  return value === undefined || value === 1 || value === 2;
 }
 
 function isMissing(error: unknown): boolean {

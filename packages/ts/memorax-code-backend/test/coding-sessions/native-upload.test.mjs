@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { readCodexCodingSessionTurn } from "../../dist/clients/codex/rollout-turn.js";
+import { readClaudeCodingSessionTurn } from "../../dist/clients/claude/transcript-turn.js";
+import { createCodingSessionCursorStore } from "../../dist/coding-sessions/cursor-store.js";
 import { readCodingSessionSourceTurn } from "../../dist/memory/coding-session-source.js";
 import { resolveRepositoryMemoryScope } from "../../dist/repository/scope.js";
 import { createNativeCodingSessionUploadRuntime } from "../../dist/coding-sessions/native-upload.js";
@@ -176,6 +178,149 @@ test("failed receipt preserves batch identity/progress through restart and later
   await restarted.drain();
   assert.equal(attempted.length, 3);
   assert.deepEqual(JSON.parse(attempted[2]).turns.map((turn) => turn.turn_index), [6, 7, 8, 9, 10]);
+});
+
+test("projection upgrade replays an old pending batch byte-for-byte and deduplicates its old acknowledgement", async (t) => {
+  const f = await fixture(t);
+  const path = join(f.home, "claude.jsonl");
+  const transcript = (index) => [
+    { type: "user", userType: "external", uuid: `user-${index}`, promptId: `prompt-${index}`, sessionId: "session-1",
+      message: { role: "user", content: [{ type: "text", text: "  inspect\n" }, { type: "text", text: "the project  " }] } },
+    { type: "assistant", uuid: `assistant-${index}`, parentUuid: `user-${index}`, sessionId: "session-1",
+      message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "  checked\n" }, { type: "text", text: "done  " }] } },
+  ];
+  await writeFile(path, lines(transcript(1)));
+  const source = async (index, projectionVersion) => {
+    const result = await readClaudeCodingSessionTurn({ transcriptPath: path, sessionId: "session-1", promptId: `prompt-${index}`, projectionVersion });
+    assert.equal(result.ok, true);
+    return {
+      client: "claude-code", sessionId: "session-1", turnId: `prompt-${index}`, turnIndex: result.turn.sessionTurnIndex,
+      source: result.turn.source, items: result.turn.items, outcome: "completed", closedAt: "2026-09-20T00:00:00.000Z",
+    };
+  };
+  const attempted = [];
+  const oldRuntime = f.make({
+    readTurn: (ref) => readCodingSessionSourceTurn({ ...ref, projectionVersion: 1 }),
+    fetchImpl: async (_url, init) => { attempted.push(init.body); return new Response("lost receipt", { status: 503 }); },
+  });
+  assert.deepEqual(await f.enqueue(oldRuntime, await source(1, 1)), { accepted: true });
+  await f.advance(DAY);
+  oldRuntime.close();
+  assert.equal(attempted.length, 1);
+  // Model the pre-upgrade cursor: no projection field, frozen v1 digest and ID.
+  const store = createCodingSessionCursorStore(f.home);
+  const [key] = await store.list();
+  await store.update(key, (state) => ({ state: { ...state, turns: state.turns.map(({ projectionVersion, ...ref }) => ref) }, value: undefined }));
+  const pending = store.read(key);
+  const runtime = f.make({ fetchImpl: async (_url, init) => { attempted.push(init.body); return stored(JSON.parse(init.body)); } });
+  const latest = await source(1, 2);
+  assert.notDeepEqual(latest.items, JSON.parse(attempted[0]).items);
+  assert.deepEqual(await f.enqueue(runtime, latest), { accepted: true });
+  assert.deepEqual(store.read(key), pending, "duplicate completion must not upgrade frozen bytes or identity");
+  const altered = { ...latest, items: [latest.items[0], { ...latest.items[1], content: [{ type: "output_text", text: "not native" }] }] };
+  assert.deepEqual(await f.enqueue(runtime, altered), { accepted: false, reason: "source_mismatch" });
+  await appendFile(path, lines(transcript(2)));
+  assert.deepEqual(await f.enqueue(runtime, await source(2, 2)), { accepted: true });
+  assert.equal(store.read(key).turns[1].projectionVersion, 2);
+  await f.advance(5 * MINUTE);
+  assert.equal(attempted.length, 2);
+  assert.equal(attempted[1], attempted[0]);
+  assert.equal(store.read(key).uploadedThrough, 1);
+  runtime.close();
+  const restarted = f.make();
+  assert.deepEqual(await f.enqueue(restarted, latest), { accepted: true });
+  assert.deepEqual(await f.enqueue(restarted, altered), { accepted: false, reason: "turn_before_checkpoint" });
+  await f.advance(DAY);
+  assert.equal(f.requests.length, 1);
+  assert.deepEqual(f.requests[0].items, (await source(2, 2)).items);
+  assert.doesNotMatch(JSON.stringify(f.requests), /projectionVersion|transcriptPath|endBytes/);
+  assert.equal(store.read(key).confirmedTurns[0].projectionVersion, 2);
+});
+
+test("Codex search-item upgrade preserves frozen v1 batches and confirmed deduplication", async (t) => {
+  for (const projectionVersion of [undefined, 1]) {
+    await t.test(projectionVersion === undefined ? "legacy cursor without projection version" : "explicit v1 cursor", async (t) => {
+      const f = await fixture(t);
+      const searchTypes = ["web_search_call", "tool_search_call", "tool_search_output"];
+      const appendTurn = async (index) => {
+        const turn = records(index);
+        const search = [
+          { type: "web_search_call", status: "completed", action: { type: "search", query: "Synthetic reference" } },
+          { type: "tool_search_call", call_id: `search-${index}`, execution: "server", status: "completed",
+            arguments: { query: "Synthetic tool" } },
+          { type: "tool_search_output", call_id: `search-${index}`, execution: "server", status: "completed",
+            tools: [{ type: "function", name: "lookup", description: "Synthetic lookup",
+              parameters: { type: "object", properties: {} } }] },
+        ].map((payload) => ({ type: "response_item", payload }));
+        await appendFile(f.path, lines([...turn.slice(0, 3), ...search, ...turn.slice(3)]));
+      };
+      const source = async (index, version) => {
+        const result = await readCodexCodingSessionTurn({
+          transcriptPath: f.path, sessionId: "session-1", turnId: `turn-${index}`, projectionVersion: version,
+        });
+        assert.equal(result.ok, true);
+        return {
+          client: "codex", sessionId: "session-1", turnId: `turn-${index}`, turnIndex: result.turn.sessionTurnIndex,
+          items: result.turn.items, source: result.turn.source, outcome: "completed", closedAt: "2026-09-20T00:00:00.000Z",
+        };
+      };
+      await appendTurn(1);
+      const attempted = [];
+      const oldRuntime = f.make({
+        readTurn: (ref) => readCodingSessionSourceTurn({ ...ref, projectionVersion: 1 }),
+        fetchImpl: async (_url, init) => { attempted.push(init.body); return new Response("lost receipt", { status: 503 }); },
+      });
+      assert.deepEqual(await f.enqueue(oldRuntime, await source(1, 1)), { accepted: true });
+      await f.advance(DAY);
+      oldRuntime.close();
+      assert.equal(attempted.length, 1);
+      assert.deepEqual(JSON.parse(attempted[0]).items.map((item) => item.type), ["message", "message"]);
+
+      const store = createCodingSessionCursorStore(f.home);
+      const [key] = await store.list();
+      // Both historical cursor spellings must keep the pre-upgrade bytes and batch ID.
+      await store.update(key, (state) => ({ state: { ...state,
+        turns: state.turns.map(({ projectionVersion: _version, ...ref }) => ({
+          ...ref, ...(projectionVersion === undefined ? {} : { projectionVersion }),
+        })),
+      }, value: undefined }));
+      const pending = store.read(key);
+      const latest = await source(1, 2);
+      assert.deepEqual(latest.items.slice(1, -1).map((item) => item.type), searchTypes);
+      const runtime = f.make({ fetchImpl: async (_url, init) => { attempted.push(init.body); return stored(JSON.parse(init.body)); } });
+      assert.deepEqual(await f.enqueue(runtime, latest), { accepted: true });
+      assert.deepEqual(store.read(key), pending, "a repeated v2 completion must not upgrade a frozen v1 reference");
+      const altered = { ...latest, items: latest.items.map((item) => item.type === "web_search_call"
+        ? { ...item, action: { type: "search", query: "Not the native query" } } : item) };
+      assert.deepEqual(await f.enqueue(runtime, altered), { accepted: false, reason: "source_mismatch" });
+
+      await appendTurn(2);
+      const next = await source(2, 2);
+      assert.deepEqual(await f.enqueue(runtime, next), { accepted: true });
+      assert.equal(store.read(key).turns[1].projectionVersion, 2);
+      assert.deepEqual(store.read(key).batch, pending.batch, "a new v2 Turn must not enter the frozen v1 batch");
+      await f.advance(5 * MINUTE);
+      assert.equal(attempted.length, 2);
+      assert.equal(attempted[1], attempted[0], "retry must preserve the entire old HTTP body byte-for-byte");
+      assert.equal(store.read(key).uploadedThrough, 1);
+      assert.equal(store.read(key).confirmedTurns[0].projectionVersion, projectionVersion);
+      assert.deepEqual(store.read(key).turns.map((turn) => turn.turnId), ["turn-2"]);
+      runtime.close();
+
+      const restarted = f.make();
+      const confirmed = store.read(key);
+      assert.deepEqual(await f.enqueue(restarted, latest), { accepted: true });
+      assert.deepEqual(store.read(key), confirmed, "an old acknowledgement must deduplicate the same native v2 completion");
+      assert.deepEqual(await f.enqueue(restarted, altered), { accepted: false, reason: "turn_before_checkpoint" });
+      await f.advance(DAY);
+      assert.equal(f.requests.length, 1);
+      assert.deepEqual(f.requests[0].turns.map((turn) => turn.turn_id), ["turn-2"]);
+      assert.deepEqual(f.requests[0].items, next.items);
+      assert.deepEqual(f.requests[0].items.slice(1, -1).map((item) => item.type), searchTypes);
+      assert.doesNotMatch(JSON.stringify(f.requests), /projectionVersion|transcriptPath|endBytes/);
+      assert.equal(store.read(key).confirmedTurns[0].projectionVersion, 2);
+    });
+  }
 });
 
 test("registration stays independent of an in-flight upload; two runtimes do not upload the same batch concurrently", async (t) => {

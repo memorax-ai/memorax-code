@@ -236,8 +236,8 @@ test("WorkBuddy provisional turn writeback and nested Skill commands share Gener
       { type: "message", role: "assistant", phase: "commentary", content: [{ type: "output_text", text: "Inspecting the project." }] },
       { type: "function_call", call_id: "read-1", name: "Read", arguments: '{"path":"README.md"}' },
       { type: "function_call", call_id: "read-2", name: "Read", arguments: '{"path":"package.json"}' },
-      { type: "function_call_output", call_id: "read-1", output: "project introduction" },
-      { type: "function_call_output", call_id: "read-2", output: "package metadata unavailable" },
+      { type: "function_call_output", call_id: "read-1", output: '{"text":"project introduction","type":"text"}' },
+      { type: "function_call_output", call_id: "read-2", output: '{"output":"package metadata unavailable","status":"error"}' },
       { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: "persisted reply" }] },
     ]);
     const options = {

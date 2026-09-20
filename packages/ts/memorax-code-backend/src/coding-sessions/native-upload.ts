@@ -113,6 +113,7 @@ export function createNativeCodingSessionUploadRuntime(options: {
           const source = await options.readTurn({
             client: state.client, sessionId: state.sessionId, turnId: reference.turnId,
             turnIndex: reference.turnIndex, closedAt: reference.closedAt, outcome: "completed", source: reference.source,
+            projectionVersion: reference.projectionVersion ?? 1,
           });
           const turn = source && prepareCodingSessionTurn({ ...source, repositorySlug: state.repositoryScope.repositorySlug });
           if (!turn || turn.client !== state.client || turn.session_id !== state.sessionId
@@ -135,7 +136,7 @@ export function createNativeCodingSessionUploadRuntime(options: {
           const { batch: _batch, retryAt: _retryAt, ...remaining } = latest;
           return { state: {
             ...remaining, uploadedThrough: selected.at(-1)!.turnIndex,
-            confirmedTurns: selected.map(({ turnId, turnIndex, digest }) => ({ turnId, turnIndex, digest })),
+            confirmedTurns: selected.map(({ turnId, turnIndex, digest, projectionVersion }) => ({ turnId, turnIndex, digest, projectionVersion })),
             turns: latest.turns.slice(selected.length),
           }, value: undefined };
         });
@@ -199,10 +200,29 @@ export function createNativeCodingSessionUploadRuntime(options: {
         const reference: NativeArchiveTurn = {
           turnId: turn.turn_id, turnIndex: turn.turn_index, closedAt: turn.closed_at,
           source: { ...source }, digest: digest(turn),
+          projectionVersion: 2,
           bytes: Buffer.byteLength(JSON.stringify(turnMetadata(turn))) + Buffer.byteLength(JSON.stringify(turn.items)) - 2,
         };
         const client = input.turn.client;
         try {
+          const observed = store.read(key);
+          const known = [...(observed?.turns ?? []), ...(observed?.confirmedTurns ?? [])]
+            .find((item) => item.turnId === reference.turnId && item.turnIndex === reference.turnIndex);
+          let legacyDigest: string | undefined;
+          if (known && (known.projectionVersion ?? 1) === 1 && known.digest !== reference.digest) {
+            // Reread outside the state lock. A repeated completion may now use v2,
+            // but an old acknowledgement/pending batch still identifies v1 bytes.
+            const ref = { ...input.turn, source };
+            const current = await options.readTurn({ ...ref, projectionVersion: 2 });
+            const currentTurn = current && prepareCodingSessionTurn({ ...current, repositorySlug: scope.repositorySlug });
+            if (currentTurn && digest(currentTurn) === reference.digest) {
+              const legacy = await options.readTurn({ ...ref, projectionVersion: 1 });
+              const legacyTurn = legacy && prepareCodingSessionTurn({ ...legacy, repositorySlug: scope.repositorySlug });
+              if (legacyTurn) legacyDigest = digest(legacyTurn);
+            }
+          }
+          const matchesDigest = (item: Pick<NativeArchiveTurn, "digest" | "projectionVersion">): boolean =>
+            item.digest === reference.digest || ((item.projectionVersion ?? 1) === 1 && item.digest === legacyDigest);
           const result = await store.update<CodingSessionUploadResult>(key, (previous) => {
             const state: CodingSessionCursor = previous ?? {
               version: 1, key, connection, client, sessionId: turn.session_id, repositoryScope: { ...scope },
@@ -211,11 +231,11 @@ export function createNativeCodingSessionUploadRuntime(options: {
             if (state.discarded) return { value: { accepted: false, reason: "scope_mismatch" } as CodingSessionUploadResult };
             if (reference.turnIndex <= state.uploadedThrough) {
               const confirmed = state.confirmedTurns?.some((item) => item.turnId === reference.turnId
-                && item.turnIndex === reference.turnIndex && item.digest === reference.digest);
+                && item.turnIndex === reference.turnIndex && matchesDigest(item));
               return { value: confirmed ? { accepted: true } : { accepted: false, reason: "turn_before_checkpoint" } };
             }
             const existing = state.turns.find((item) => item.turnId === reference.turnId || item.turnIndex === reference.turnIndex);
-            if (existing) return { value: existing.turnId === reference.turnId && existing.digest === reference.digest
+            if (existing) return { value: existing.turnId === reference.turnId && matchesDigest(existing)
               ? { accepted: true } : { accepted: false, reason: "source_mismatch" } };
             // Never insert into a batch already frozen for transmission.
             if (state.batch && reference.turnIndex <= state.turns[state.batch.turnIds.length - 1].turnIndex) {

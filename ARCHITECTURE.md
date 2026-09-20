@@ -694,10 +694,14 @@ that recover do not produce terminal failure records.
   buffer. Codex, Claude Code, OpenCode, CodeBuddy, and WorkBuddy materialize
   an ordered text/tool `ResponseItem` subset from the same exact native Turn.
   Codex allowlists native item fields and uses legacy event text only when its
-  native message is absent; the other clients convert their own native records.
+  native message is absent; this includes structured web-search actions and
+  tool-discovery calls/results without imposing function-call identity rules
+  on hosted tools. The other clients convert their own native records.
   This excludes reasoning and internal metadata and is not a complete Responses
   API transcript for direct replay. Normalization owns redaction and per-Turn
-  bounds. DSH and Trae remain QA-only.
+  bounds. Archive mapping preserves selected text blocks and tool strings;
+  structured tool results and native error indicators stay inside string outputs,
+  without changing ordinary QA text materialization. DSH and Trae remain QA-only.
   The coordinator checks client/session/Turn identity and scope before either
   enqueue. No archive data is attached to ordinary QA or explicit Add payloads.
 - Archive batches group one connection, client, session, and scope. The complete
@@ -709,8 +713,10 @@ that recover do not produce terminal failure records.
 - File-backed Codex, Claude Code, CodeBuddy, and WorkBuddy archive registration
   persists private, content-free native references rather than buffered bodies.
   Each reference freezes the exact transcript prefix used for validation,
-  native identity and order, completion time, and prepared-content digest and
-  size. The cursor also binds the connection and repository scope and retains
+  native identity and order, completion time, projection version, and prepared-content
+  digest and size. References without a projection version replay the original
+  mapping; upgrades do not rewrite frozen batches or their digests. The version
+  is local recovery metadata, not a wire field. The cursor also binds the connection and repository scope and retains
   unconfirmed batch identity and confirmed progress. A periodic scan of this
   registry schedules eligible uploads; it does not discover historical native
   sessions. Registered Turn starts reset inactivity for an already tracked session.
