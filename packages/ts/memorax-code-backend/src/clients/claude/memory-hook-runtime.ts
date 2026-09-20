@@ -1,6 +1,7 @@
 import {
   readClaudeInterruptedTranscriptTurn,
   readClaudeCodingSessionTurn,
+  readClaudeArchiveSource,
   readClaudeTranscriptTurn,
   type ClaudeCodingSessionTurnResult,
   type ClaudeInterruptedTranscriptTurn,
@@ -85,7 +86,7 @@ export function createClaudeMemoryHookRuntime(
     traceFailureEvent: "claude_trace.write_failed",
     turnStartTraceSource: "claude-hook",
     deduplicateRetrieval: true,
-  }, options);
+  }, { readCodingSessionTurn: readClaudeArchiveSource, ...options });
   const { turnCoordinator } = memory;
 
   return {
@@ -179,15 +180,16 @@ export function createClaudeMemoryHookRuntime(
         assistantText: transcript.turn.assistantReply,
         userTimestamp: transcript.turn.userTimestamp,
         assistantTimestamp: transcript.turn.assistantTimestamp,
-        ...("events" in transcript.turn && transcript.turn.closedAt ? {
+        ...("items" in transcript.turn && transcript.turn.closedAt ? {
           codingTurn: {
             client: CLAUDE_MEMORY_TURN_CLIENT,
             sessionId: transcript.turn.sessionId,
             turnId: transcript.turn.promptId,
             turnIndex: transcript.turn.sessionTurnIndex,
-            events: transcript.turn.events,
+            items: transcript.turn.items,
             outcome: "completed",
             closedAt: transcript.turn.closedAt,
+            source: transcript.turn.source,
           },
         } : {}),
         traceContext,

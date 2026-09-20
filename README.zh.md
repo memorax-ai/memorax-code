@@ -231,8 +231,12 @@ MemoraX Code 会先比较含义：语义相同的请求不重复写入；长期�
 
 新生成的配置还会启用 Codex、Claude Code、OpenCode、CodeBuddy 和 WorkBuddy 的编码会话采集。
 它通过独立的归档请求上传本地脱敏后的已完成 Turn，包含用户指令、可见助手消息和工具调用／结果，
-不会上传整份原生 session 文件或思维链。此功能需要服务端支持编码会话事件。
+不会上传整份原生 session 文件或思维链。这是选定的文本／工具内容子集，
+需要 MemoraX 服务端支持 `dreaming` 归档协议；旧服务端协议需要同步更新。
 已有配置缺少该设置时保持关闭，详见[采集控制](docs/configuration.md#coding-session-collection)。
+Codex、Claude Code、CodeBuddy 和 WorkBuddy 在两次上传之间只保存本地上传进度和原生文件引用，
+达到大小、交互轮数或闲置时间条件后再读取选定内容；恢复上传依赖原生文件仍然可用。
+OpenCode 目前仍保留 SDK 消息的内存分批方式，普通 QA 记忆写回不变。
 
 受支持客户端的本地 trace 默认开启。根据客户端能力，`MEMORAX_CODE_HOME` 下保留的 trace
 可能包含用户指令、Agent 回复、召回的 Memory、提醒文本和本地路径。可通过

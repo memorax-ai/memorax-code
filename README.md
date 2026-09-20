@@ -273,9 +273,15 @@ New configurations also enable coding-session collection for Codex, Claude
 Code, OpenCode, CodeBuddy, and WorkBuddy. Separate archive requests send locally
 redacted completed Turns, including prompts, visible assistant messages, and
 tool calls/results; they do not upload whole native session files or reasoning.
-This requires a MemoraX endpoint supporting coding-session events. Existing
-configurations without this setting remain disabled; see
+This selected text/tool subset requires a MemoraX endpoint supporting the
+`dreaming` archive schema; the previous server contract needs a matching update.
+Existing configurations without this setting remain disabled; see
 [collection controls](docs/configuration.md#coding-session-collection).
+Codex, Claude Code, CodeBuddy, and WorkBuddy retain only local upload progress
+and native-file references between uploads, rereading selected content when a
+size, Turn-count, or inactivity trigger is reached. Recovery requires those
+native files to remain available. OpenCode currently retains its in-memory
+SDK-message batching; ordinary QA memory writeback is unchanged.
 
 Local trace capture is enabled by default for supported clients. Depending on
 client capabilities, retained traces under `MEMORAX_CODE_HOME` may contain

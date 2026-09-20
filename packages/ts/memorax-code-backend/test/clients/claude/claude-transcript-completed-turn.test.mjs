@@ -70,15 +70,42 @@ test("Claude transcript resolves one exact completed prompt branch", () => {
   const identity = { sessionId: SESSION_ID, promptId: PROMPT_ID };
   const source = claudeCodingSessionTurnFromJsonLines(transcript, identity);
   assert.equal(source.ok, true);
-  const { events, closedAt, ...qa } = source.turn;
+  const { items, closedAt, ...qa } = source.turn;
   assert.deepEqual(qa, claudeTranscriptTurnFromJsonLines(transcript, identity).turn);
   assert.equal(closedAt, "2026-09-01T08:03:00.000Z");
-  assert.deepEqual(events, [
-    { type: "user_message", content: "Materialized Claude prompt." },
-    { type: "assistant_message", phase: "progress", content: "Working on it." },
-    { type: "tool_call", callId: "tool-1", tool: "Read", arguments: "{}" },
-    { type: "tool_result", callId: "tool-1", status: "success", output: "tool output must not become the prompt" },
-    { type: "assistant_message", phase: "final", content: "Materialized Claude answer." },
+  assert.deepEqual(items, [
+    { type: "message", role: "user", content: [{ type: "input_text", text: "Materialized Claude prompt." }] },
+    { type: "message", role: "assistant", phase: "commentary", content: [{ type: "output_text", text: "Working on it." }] },
+    { type: "function_call", call_id: "tool-1", name: "Read", arguments: "{}" },
+    { type: "function_call_output", call_id: "tool-1", output: "tool output must not become the prompt" },
+    { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: "Materialized Claude answer." }] },
+  ]);
+});
+
+test("Claude archive preserves native tool output without inferred response status", () => {
+  const output = [{ type: "text", text: "File was not found." }];
+  const transcript = jsonLines([
+    userRecord({ uuid: "user-visible", content: "Read the configuration." }),
+    assistantRecord({
+      uuid: "assistant-tool", parentUuid: "user-visible", stopReason: "tool_use",
+      content: [{ type: "tool_use", id: "read-config", name: "Read", input: { path: "missing.json" } }],
+    }),
+    userRecord({
+      uuid: "user-tool-result", parentUuid: "assistant-tool",
+      content: [{ type: "tool_result", tool_use_id: "read-config", is_error: true, content: output }],
+    }),
+    assistantRecord({
+      uuid: "assistant-final", parentUuid: "user-tool-result", stopReason: "end_turn",
+      content: [{ type: "text", text: "The configuration is absent." }],
+    }),
+  ]);
+  const result = claudeCodingSessionTurnFromJsonLines(transcript, { sessionId: SESSION_ID, promptId: PROMPT_ID });
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.turn.items.slice(1, -1).map((item) => (
+    item.type === "function_call_output" ? { ...item, output: JSON.parse(item.output) } : item
+  )), [
+    { type: "function_call", call_id: "read-config", name: "Read", arguments: '{"path":"missing.json"}' },
+    { type: "function_call_output", call_id: "read-config", output },
   ]);
 });
 

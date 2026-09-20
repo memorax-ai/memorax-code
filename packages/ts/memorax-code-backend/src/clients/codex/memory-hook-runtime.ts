@@ -1,6 +1,7 @@
 import {
   readCodexInterruptedRolloutTurn,
   readCodexCodingSessionTurn,
+  readCodexArchiveSource,
   readCodexRolloutTurn,
   readCodexRolloutSessionWorkspace,
   type CodexRolloutTurn,
@@ -103,7 +104,7 @@ export function createCodexMemoryHookRuntime(options: CodexMemoryHookRuntimeOpti
     traceFailureEvent: "codex_trace.write_failed",
     turnStartTraceSource: "codex-hook",
     deduplicateRetrieval: true,
-  }, options);
+  }, { readCodingSessionTurn: readCodexArchiveSource, ...options });
   const { turnCoordinator } = memory;
 
   return {
@@ -242,9 +243,10 @@ export function createCodexMemoryHookRuntime(options: CodexMemoryHookRuntimeOpti
             sessionId: codingSessionTurn.sessionId,
             turnId: codingSessionTurn.turnId,
             turnIndex: codingSessionTurn.sessionTurnIndex,
-            events: codingSessionTurn.events,
+            items: codingSessionTurn.items,
             outcome: "completed",
             closedAt: codingSessionTurn.closedAt ?? new Date(now()).toISOString(),
+            source: codingSessionTurn.source,
           },
         } : {}),
         traceContext,

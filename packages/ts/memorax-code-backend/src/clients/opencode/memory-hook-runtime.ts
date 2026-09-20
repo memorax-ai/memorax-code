@@ -186,7 +186,7 @@ export function createOpenCodeMemoryHookRuntime(
             sessionId: command.sessionId,
             turnId: command.userMessageId,
             turnIndex: codingSessionTurn.turn.turnIndex,
-            events: codingSessionTurn.turn.events,
+            items: codingSessionTurn.turn.items,
             outcome: "completed",
             closedAt: codingSessionTurn.turn.closedAt,
           },

@@ -108,6 +108,7 @@ test("OpenCode SDK messages materialize a completed compaction continuation as t
   messages[1].parts = [
     textPart("assistant-tail", "Inspecting the implementation."),
     { ...part("tool", "assistant-tail"), tool: "read", callID: "read-1", state: { status: "completed", input: { filePath: "README.md" }, output: "read result" } },
+    { ...part("tool", "assistant-tail"), tool: "read", callID: "read-2", state: { status: "error", input: { filePath: "missing.json" }, error: "File was not found." } },
     { ...part("reasoning", "assistant-tail"), text: "hidden reasoning" },
     { ...textPart("assistant-tail", "unrelated"), sessionID: "other-session" },
   ];
@@ -140,12 +141,14 @@ test("OpenCode SDK messages materialize a completed compaction continuation as t
   });
   assert.equal(collected.ok, true);
   assert.equal(collected.turn.turnIndex, 3);
-  assert.deepEqual(collected.turn.events, [
-    { type: "user_message", content: "OpenCode user prompt." },
-    { type: "assistant_message", phase: "progress", content: "Inspecting the implementation." },
-    { type: "tool_call", tool: "read", callId: "read-1", arguments: '{"filePath":"README.md"}' },
-    { type: "tool_result", callId: "read-1", status: "success", output: "read result" },
-    { type: "assistant_message", phase: "final", content: "OpenCode final reply." },
+  assert.deepEqual(collected.turn.items, [
+    { type: "message", role: "user", content: [{ type: "input_text", text: "OpenCode user prompt." }] },
+    { type: "message", role: "assistant", phase: "commentary", content: [{ type: "output_text", text: "Inspecting the implementation." }] },
+    { type: "function_call", name: "read", call_id: "read-1", arguments: '{"filePath":"README.md"}' },
+    { type: "function_call_output", call_id: "read-1", output: "read result" },
+    { type: "function_call", name: "read", call_id: "read-2", arguments: '{"filePath":"missing.json"}' },
+    { type: "function_call_output", call_id: "read-2", output: "File was not found." },
+    { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: "OpenCode final reply." }] },
   ]);
 
   for (const [name, mutate] of [
@@ -336,7 +339,10 @@ test("OpenCode runtime routes SDK content and carries write quota to the next pr
     assert.equal(codingUploads[0].turn.client, "opencode");
     assert.equal(codingUploads[0].turn.turnId, "user-1");
     assert.equal(codingUploads[0].turn.turnIndex, 1);
-    assert.deepEqual(codingUploads[0].turn.events.map(({ type }) => type), ["user_message", "assistant_message"]);
+    assert.deepEqual(codingUploads[0].turn.items, [
+      { type: "message", role: "user", content: [{ type: "input_text", text: "OpenCode user prompt." }] },
+      { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: "OpenCode assistant reply." }] },
+    ]);
 
     assert.deepEqual(await runtime.recordTurnStart({
       version: 1,

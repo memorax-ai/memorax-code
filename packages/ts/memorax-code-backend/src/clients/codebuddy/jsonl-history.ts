@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { parseNativeMessageTimestamp } from "../../shared/message-time.js";
-import { codingEventText, type CodingTurnEvent } from "../../coding-sessions/coding-turn.js";
+import { codingEventText, type CodingSessionNativeSource, type CodingSessionSourceTurn, type ResponseItem } from "../../coding-sessions/coding-turn.js";
+import { readNativeTranscriptSnapshot } from "../../shared/native-transcript-snapshot.js";
 import { codeBuddyPromptDigest, parseCodeBuddyTurnId } from "./turn-id.js";
 
 export type CodeBuddyHistoryRecord = Readonly<Record<string, unknown>>;
@@ -13,7 +14,8 @@ export type CodeBuddyTurn = Readonly<{
   userTimestamp?: number;
   assistantTimestamp?: number;
   activities: readonly CodeBuddyActivity[];
-  events?: readonly CodingTurnEvent[];
+  items?: readonly ResponseItem[];
+  source?: CodingSessionNativeSource;
 }>;
 export type CodeBuddyActivity = Readonly<{ kind: "tool"; name: string; input?: string; output?: string }>;
 export type CodeBuddyTurnFailureReason =
@@ -34,12 +36,32 @@ type ParsedHistoryRecord = CodeBuddyHistoryRecord & { [RECORD_OFFSET]?: number }
 
 export async function readCodeBuddyTranscriptTurn(input: {
   transcriptPath: string; sessionId: string; turnId: string;
-  captureCodingEvents?: boolean;
+  captureCodingItems?: boolean;
+  endBytes?: number;
 }): Promise<CodeBuddyTurnResult> {
-  let text: string;
-  try { text = await readFile(input.transcriptPath, "utf8"); }
+  try {
+    if (!input.captureCodingItems && input.endBytes === undefined) {
+      return codeBuddyTranscriptTurnFromJsonLines(await readFile(input.transcriptPath, "utf8"), input);
+    }
+    const snapshot = await readNativeTranscriptSnapshot(input);
+    const result = codeBuddyTranscriptTurnFromJsonLines(snapshot.text, input);
+    return result.ok ? {
+      ok: true,
+      turn: { ...result.turn, source: { transcriptPath: input.transcriptPath, endBytes: snapshot.endBytes } },
+    } : result;
+  }
   catch (error) { return { ok: false, reason: "transcript_unavailable", error: error instanceof Error ? error.message : String(error) }; }
-  return codeBuddyTranscriptTurnFromJsonLines(text, input);
+}
+
+export async function readCodeBuddyArchiveSource(
+  ref: Omit<CodingSessionSourceTurn, "items" | "repositorySlug"> & { source: CodingSessionNativeSource },
+): Promise<CodingSessionSourceTurn | undefined> {
+  if (ref.client !== "codebuddy" && ref.client !== "workbuddy") return undefined;
+  const result = await readCodeBuddyTranscriptTurn({
+    ...ref.source, sessionId: ref.sessionId, turnId: ref.turnId, captureCodingItems: true,
+  });
+  if (!result.ok || !result.turn.items || result.turn.sessionTurnIndex !== ref.turnIndex) return undefined;
+  return { ...ref, items: result.turn.items };
 }
 
 export async function readCodeBuddyInterruptedTranscriptTurn(input: {
@@ -53,7 +75,7 @@ export async function readCodeBuddyInterruptedTranscriptTurn(input: {
 
 export function codeBuddyTranscriptTurnFromJsonLines(
   text: string,
-  input: { sessionId: string; turnId: string; captureCodingEvents?: boolean },
+  input: { sessionId: string; turnId: string; captureCodingItems?: boolean },
 ): CodeBuddyTurnResult {
   const selected = selectCodeBuddyTurnBranch(text, input);
   if (!selected.ok) return selected;
@@ -77,7 +99,7 @@ export function codeBuddyTranscriptTurnFromJsonLines(
       activities: turnActivities(selected.records),
       sessionTurnIndex: selected.sessionTurnIndex,
       ...(selected.eventRecords ? {
-        events: completedCodingEvents(selected.eventRecords, assistant, selected.userPrompt, reply),
+        items: completedResponseItems(selected.eventRecords, assistant, selected.userPrompt, reply),
       } : {}),
     },
   };
@@ -121,14 +143,14 @@ type SelectedCodeBuddyTurnBranch = Readonly<{
 
 function selectCodeBuddyTurnBranch(
   text: string,
-  input: { sessionId: string; turnId: string; captureCodingEvents?: boolean },
+  input: { sessionId: string; turnId: string; captureCodingItems?: boolean },
 ): { ok: true } & SelectedCodeBuddyTurnBranch | {
   ok: false;
   reason: "malformed_transcript" | "turn_not_found" | "user_prompt_missing" | "turn_ambiguous";
 } {
   const identity = parseCodeBuddyTurnId(input);
   if (!identity) return { ok: false, reason: "turn_not_found" };
-  const parsed = parseJsonLines(text, input.captureCodingEvents);
+  const parsed = parseJsonLines(text, input.captureCodingItems);
   if (!parsed) return { ok: false, reason: "malformed_transcript" };
   const { records } = parsed;
   const session = records.filter((record) => stringField(record, "sessionId") === input.sessionId);
@@ -163,7 +185,7 @@ function selectCodeBuddyTurnBranch(
   };
 }
 
-function parseJsonLines(text: string, captureCodingEvents = false): {
+function parseJsonLines(text: string, captureCodingItems = false): {
   records: ParsedHistoryRecord[];
   eventRecords?: ParsedHistoryRecord[];
 } | undefined {
@@ -193,7 +215,7 @@ function parseJsonLines(text: string, captureCodingEvents = false): {
   }
   const byId = new Map<string, CodeBuddyHistoryRecord>();
   const withoutId: CodeBuddyHistoryRecord[] = [];
-  const byEvent = captureCodingEvents ? new Map<string | ParsedHistoryRecord, ParsedHistoryRecord>() : undefined;
+  const byEvent = captureCodingItems ? new Map<string | ParsedHistoryRecord, ParsedHistoryRecord>() : undefined;
   for (const record of records) {
     const id = stringField(record, "id");
     if (id) byId.set(id, record);
@@ -255,35 +277,34 @@ function contentText(value: unknown): string | undefined {
   return parts.join("\n") || undefined;
 }
 
-function completedCodingEvents(
+function completedResponseItems(
   records: readonly ParsedHistoryRecord[],
   assistant: ParsedHistoryRecord,
   userPrompt: string,
   assistantReply: string,
-): CodingTurnEvent[] {
-  const events: CodingTurnEvent[] = [{ type: "user_message", content: userPrompt }];
+): ResponseItem[] {
+  const items: ResponseItem[] = [{ type: "message", role: "user", content: [{ type: "input_text", text: userPrompt }] }];
   for (const record of records) {
     if (record === assistant || (record[RECORD_OFFSET] ?? 0) > (assistant[RECORD_OFFSET] ?? Infinity)) continue;
     if (record.type === "message" && record.role === "assistant") {
       const content = assistantText(record);
-      if (content) events.push({ type: "assistant_message", phase: "progress", content });
+      if (content) items.push({ type: "message", role: "assistant", phase: "commentary", content: [{ type: "output_text", text: content }] });
       continue;
     }
     const callId = stringField(record, "callId");
     if (!callId) continue;
     if (record.type === "function_call") {
       const tool = stringField(record, "name") ?? stringField(record, "function");
-      if (tool) events.push({ type: "tool_call", callId, tool, arguments: codingEventText(record.arguments) });
+      if (tool) items.push({ type: "function_call", call_id: callId, name: tool, arguments: codingEventText(record.arguments) });
     } else if (record.type === "function_call_result") {
-      events.push({
-        type: "tool_result", callId,
-        status: record.status === "error" || record.status === "failed" ? "error" : "success",
+      items.push({
+        type: "function_call_output", call_id: callId,
         output: codingEventText(contentText(record.output) ?? record.output),
       });
     }
   }
-  events.push({ type: "assistant_message", phase: "final", content: assistantReply });
-  return events;
+  items.push({ type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: assistantReply }] });
+  return items;
 }
 
 function recordsInBranch(records: ParsedHistoryRecord[], userId: string): ParsedHistoryRecord[] {

@@ -600,58 +600,142 @@ configurations without this field remain disabled. The environment override is
 startup setting. `MEMORAX_CODE_MEMORAX_WRITEBACK_ENABLED=false` disables archive
 enqueue as well as automatic QA writeback and explicit Add.
 
-Codex, Claude Code, OpenCode, CodeBuddy, and WorkBuddy collect only the matching,
-completed native Turn already read by their completion path. There is no
-historical-session scan. Interrupted Turns are excluded. DSH and Trae continue
-to send QA only. A normalized Turn carries client/session/Turn identity, native
-Turn index, completion time, repository identity, and ordered user, visible
-assistant, tool-call, and tool-result events. Reasoning, binary attachments,
-native transcript paths, and local trace provenance are not uploaded.
+Codex, Claude Code, OpenCode, CodeBuddy, and WorkBuddy collect only matching,
+completed native Turns observed by their completion path. There is no discovery
+or bulk collection of historical sessions. Interrupted Turns are excluded. DSH and Trae continue
+to send QA only. Collection projects selected user text, visible assistant text,
+and tool calls/results into a shared `ResponseItem` subset. Codex allowlists
+native `response_item` fields; legacy `event_msg` text is used only when the
+corresponding native message is absent. The other supported clients convert
+their native records to the same subset. Reasoning, internal metadata, binary
+attachments, raw session files, native transcript paths, and local trace
+provenance are not uploaded. This is a selected text/tool archive, not a complete
+Responses API transcript that can be replayed directly.
 
-Event text uses local best-effort redaction. Each text field is limited to
-128,000 characters, each Turn to 512 events and 2 MiB of compact UTF-8 JSON.
-Optional `truncation` reports the collected event count before normalization and
-how many text fields were shortened; it does not claim that the native log was
-fully collected. These controls are independent of ordinary QA chunking.
+Item text uses local best-effort redaction. Each text field is limited to
+128,000 characters, each Turn to 512 items and 2 MiB of compact UTF-8 JSON.
+Optional Turn metadata `truncation` contains `original_item_count` and
+`truncated_text_fields` to report loss while preparing the collected subset; it
+does not claim that the native log was fully collected. Redaction and truncation
+can also change tool arguments or output. These controls are independent of
+ordinary QA chunking.
 
 Archive batches contain whole Turns from one client, session, connection, and
 repository scope. Their full serialized request body, including the envelope,
-is capped at **20 MiB (20 × 1024 × 1024 bytes)**. A Turn that would exceed that
-budget starts a new batch after dispatching the previous one. There is no
-Turn-count trigger: the ordinary QA eight-Turn threshold does not flush an
-archive batch. Ten minutes without another accepted Turn, or graceful Backend
-drain, also flushes a smaller batch.
+is capped at **20 MiB (20 × 1024 × 1024 bytes)**. Turns are not split across
+batches; a Turn that would exceed the remaining request budget stays for the
+next batch. This hard cap and the per-Turn limit above are distinct from the
+upload triggers below. Ordinary QA batching is unchanged.
+
+For Codex, Claude Code, CodeBuddy, and WorkBuddy, pending means **new completed
+Turns not yet acknowledged as stored**, not the session's total history:
+
+| Trigger | Eligible pending data |
+| --- | --- |
+| Size | At least 1 MiB of filtered, redacted, serialized event data, including its envelope |
+| Turn count | At least 50 completed Turns |
+| Short inactivity | At least 5 completed Turns and 30 minutes without an observed interaction |
+| Tail inactivity | Any remaining completed Turns after 24 hours without an observed interaction |
+
+The Backend checks its private cursor registry at startup, after accepted
+completions, and periodically at approximately one-minute intervals. Accepted
+Turn starts reset inactivity for an already tracked session. Graceful drain
+also makes pending groups of at least five Turns eligible, subject to retry
+backoff and the shutdown deadline; smaller tails remain for later processing.
+No timer runs while the Backend is stopped. On restart, overdue registered
+data becomes eligible again.
+
+OpenCode temporarily retains its separate SDK-message in-memory behavior:
+flush at the 20 MiB batch boundary, after ten minutes without another accepted
+completed Turn, or on graceful drain. It does not use the file-backed cursor,
+50-Turn, or two inactivity rules above.
 
 The separate request uses the same `/v1/memories/add` endpoint:
 
 ```json
 {
-  "event": "coding_session",
+  "event": "dreaming",
+  "schema_version": 2,
+  "redaction_version": 1,
   "batch_id": "stable-batch-id",
   "user_id": "resolved-scoped-user-id",
   "client": "codex",
   "session_id": "native-session-id",
-  "coding_turns": []
+  "repository_slug": "owner/repository",
+  "turns": [
+    {
+      "turn_id": "native-turn-id",
+      "turn_index": 1,
+      "closed_at": "2026-07-16T00:00:03.000Z",
+      "item_count": 4
+    }
+  ],
+  "items": [
+    { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "Review the module." }] },
+    { "type": "function_call", "call_id": "call-1", "name": "read_file", "arguments": "{\"path\":\"src/main.ts\"}" },
+    { "type": "function_call_output", "call_id": "call-1", "output": "Module contents." },
+    { "type": "message", "role": "assistant", "phase": "final_answer", "content": [{ "type": "output_text", "text": "The module was reviewed." }] }
+  ]
 }
 ```
 
-`coding_turns` must contain at least one normalized Turn; the empty array above
-only illustrates the envelope. It has no QA `messages` or memory-extraction
-options. The server must implement this event and return
-`{"success":true,"data":{"event":"coding_session","batch_id":"stable-batch-id","status":"stored"}}`
-after storing that batch. A generic memory-task acceptance does not acknowledge
-the archive. Server request-size limits must allow these bodies; this client
-change alone does not enable the server contract. The server owns OSS credentials
-and object paths; the plugin does not connect directly to OSS.
+`turns` is nonempty and sorted by native `turn_index`; its `item_count` values
+partition the flat `items` array into contiguous Turn slices in that order.
+The first `turn_index` identifies the batch's source position. There is no
+process-local chunk counter to restart at zero; `batch_id` is the unique batch
+identity and stays fixed across retries. Each Turn includes its completion time
+and optional loss metadata; repository identity belongs to the batch envelope.
 
-The plugin buffers in memory and makes at most two attempts for eligible transient
-failures, using the same batch ID and content. QA and archive retries are independent.
-There is no persistent upload queue: process crashes or exhausted retries can
-lose an archive batch. Graceful drain is best effort, not durable delivery.
-The byte limit is per batch, not a process-wide memory cap: concurrent sessions
-and in-flight requests can retain multiple batches. QA does not wait for archive
-network completion, but normalization and serialization share the Backend CPU.
-Shutdown drain remains subject to the Backend's overall shutdown deadline.
+The subset supports user `message` items with `input_text` content, assistant
+`message` items with `output_text` content and `commentary` or `final_answer`
+phase, `function_call`/`function_call_output`, and
+`custom_tool_call`/`custom_tool_call_output`. Calls and outputs share `call_id`;
+function calls carry `name`, string `arguments`, and optional `namespace`, while
+custom calls carry `name` and string `input`. Outputs carry string `output`.
+An optional native `id` is retained. Items do not acquire custom `index`,
+`tool_result`, or `status` fields.
+
+The request has no QA `messages` or memory-extraction options. The server must
+implement this schema and return
+`{"success":true,"data":{"event":"dreaming","batch_id":"stable-batch-id","status":"stored"}}`
+after storing that batch. A generic memory-task acceptance does not acknowledge
+the archive. The previous coding-session contract is incompatible: deployment
+requires a coordinated server update, which this plugin change does not provide.
+Server request-size limits must allow these bodies. The server owns OSS
+credentials and object paths; the plugin does not connect directly to OSS.
+
+File-backed collection stores private cursor records under
+`MEMORAX_CODE_HOME/runtime/coding-sessions/*.json`. They contain native paths,
+frozen file-prefix byte boundaries, Turn IDs/indexes and completion times,
+prepared-content digests and byte counts, repository scope and a connection fingerprint,
+pending batch identity, and confirmed progress. They contain neither archive
+bodies nor API keys. Only references accepted by the completion path are
+recorded: the periodic scan does not enumerate native session directories or
+upload earlier history.
+
+When a batch is due, the owning client reader rereads its frozen native
+prefixes. Projection and redaction must reproduce the registered digests.
+The batch ID and membership remain fixed until a matching `stored` receipt;
+only then does confirmed progress advance. Failed or unconfirmed batches keep
+their references and retry after five minutes, independently of QA. A bounded
+record of the latest confirmed batch, up to 50 Turn IDs and digests, recognizes
+recent duplicate completion signals. Unknown or changed Turns at or before
+confirmed progress are rejected, not silently acknowledged.
+
+Native files remain necessary. Deleted, truncated, or rewritten source data
+can prevent upload, and cursor persistence is not a second transcript backup.
+An account/connection or repository-scope mismatch does not redirect pending
+data to a different destination. Each native upload runtime processes one
+batch at a time; a per-cursor cross-process upload lock prevents overlapping
+uploads of that cursor, separately from the short state-update lock.
+
+OpenCode still makes at most two attempts for eligible transient failures,
+using the same in-memory batch ID and content; a crash or exhausted retries
+can lose that pending data. It never falls back to guessing a local database.
+All paths still use transient memory for parsing, projection, serialization,
+and requests. The byte limits are not a process-wide memory cap. QA does not
+wait for archive network completion, but local preparation shares the Backend
+CPU. Shutdown drain remains subject to the Backend's overall shutdown deadline.
 
 ### Automatic writeback timestamps
 

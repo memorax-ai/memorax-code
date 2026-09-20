@@ -1,7 +1,8 @@
 import { readFile } from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import { parseNativeMessageTimestamp } from "../../shared/message-time.js";
-import { codingEventText, type CodingTurnEvent } from "../../coding-sessions/coding-turn.js";
+import { codingEventText, type CodingSessionNativeSource, type CodingSessionSourceTurn, type ResponseItem } from "../../coding-sessions/coding-turn.js";
+import { readNativeTranscriptSnapshot } from "../../shared/native-transcript-snapshot.js";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -84,8 +85,9 @@ export type CodexRolloutTurnResult =
 
 export type CodexCodingSessionTurn = CodexRolloutTurn & {
   sessionTurnIndex: number;
-  events: CodingTurnEvent[];
+  items: ResponseItem[];
   closedAt?: string;
+  source?: CodingSessionNativeSource;
 };
 
 export type CodexCodingSessionTurnResult =
@@ -150,10 +152,15 @@ export async function readCodexCodingSessionTurn(input: {
   transcriptPath: string;
   sessionId: string;
   turnId: string;
+  endBytes?: number;
 }): Promise<CodexCodingSessionTurnResult> {
-  let transcript: string;
   try {
-    transcript = await readFile(input.transcriptPath, "utf8");
+    const snapshot = await readNativeTranscriptSnapshot(input);
+    const result = codexCodingSessionTurnFromJsonLines(snapshot.text, input);
+    return result.ok ? {
+      ok: true,
+      turn: { ...result.turn, source: { transcriptPath: input.transcriptPath, endBytes: snapshot.endBytes } },
+    } : result;
   } catch (error) {
     return {
       ok: false,
@@ -161,7 +168,15 @@ export async function readCodexCodingSessionTurn(input: {
       error: error instanceof Error ? error.message : String(error),
     };
   }
-  return codexCodingSessionTurnFromJsonLines(transcript, input);
+}
+
+export async function readCodexArchiveSource(
+  ref: Omit<CodingSessionSourceTurn, "items" | "repositorySlug"> & { source: CodingSessionNativeSource },
+): Promise<CodingSessionSourceTurn | undefined> {
+  if (ref.client !== "codex") return undefined;
+  const result = await readCodexCodingSessionTurn({ ...ref.source, sessionId: ref.sessionId, turnId: ref.turnId });
+  if (!result.ok || result.turn.sessionTurnIndex !== ref.turnIndex) return undefined;
+  return { ...ref, items: result.turn.items };
 }
 
 export function codexRolloutTurnFromJsonLines(
@@ -232,7 +247,7 @@ export function codexCodingSessionTurnFromJsonLines(
       ...(scan.userTimestamp === undefined ? {} : { userTimestamp: scan.userTimestamp }),
       ...(scan.assistantTimestamp === undefined ? {} : { assistantTimestamp: scan.assistantTimestamp }),
       sessionTurnIndex,
-      events: completedCodingEvents(scan, scan.userPrompt, scan.assistantReply),
+      items: completedCodingItems(scan, scan.userPrompt, scan.assistantReply),
       ...(scan.completedAt ? { closedAt: scan.completedAt } : {}),
     },
   };
@@ -250,7 +265,9 @@ type CodexRolloutTurnScan = {
   userTimestamp?: number;
   assistantTimestamp?: number;
   visibleAssistantMessages: string[];
-  codingEventCandidates: CodexCodingEventCandidate[];
+  codingItemCandidates: CodexCodingItemCandidate[];
+  responseItemUser?: ResponseItem;
+  responseItemAssistant?: ResponseItem;
   completedAt?: string;
   interrupted: boolean;
   interruptedAt?: string;
@@ -266,7 +283,7 @@ type CodexRolloutTurnScan = {
 function scanCodexRolloutTurn(
   transcript: string,
   targetTurnId: string,
-  captureCodingEvents = false,
+  captureCodingItems = false,
 ): CodexRolloutTurnScan {
   let authoritySessionId: string | undefined;
   let ambiguousSessionMetadata = false;
@@ -282,7 +299,9 @@ function scanCodexRolloutTurn(
   let assistantTimestamp: number | undefined;
   let completedTimestamp: number | undefined;
   const visibleAssistantMessages: string[] = [];
-  const codingEventCandidates: CodexCodingEventCandidate[] = [];
+  const codingItemCandidates: CodexCodingItemCandidate[] = [];
+  let responseItemUser: ResponseItem | undefined;
+  let responseItemAssistant: ResponseItem | undefined;
   let completedAt: string | undefined;
   let responseItemUserPrompt: string | undefined;
   let responseItemAssistantReply: string | undefined;
@@ -357,14 +376,16 @@ function scanCodexRolloutTurn(
         if (!responseTurnId || responseTurnId === activeTurnId) userMessageTurnIds.add(activeTurnId);
       }
       if (activeTurnId === targetTurnId) {
-        if (captureCodingEvents) {
+        let codingItem: ResponseItem | undefined;
+        if (captureCodingItems) {
           const responseTurnId = responseItemTurnId(payload);
           if (responseTurnId && responseTurnId !== activeTurnId) {
             turnMetadataMismatch = true;
             continue;
           }
-          for (const event of codingToolEventsFromResponseItem(payload)) {
-            codingEventCandidates.push({ recordIndex, source: "response_item", event });
+          codingItem = codingItemFromResponseItem(payload);
+          if (codingItem && !(codingItem.type === "message" && codingItem.role === "user")) {
+            codingItemCandidates.push({ recordIndex, source: "response_item", item: codingItem });
           }
         }
         const activities = activityCandidatesFromResponseItem(payload);
@@ -372,18 +393,6 @@ function scanCodexRolloutTurn(
         if (stringValue(payload.type) === "message") {
           const role = stringValue(payload.role);
           const message = responseItemMessageText(payload.content, role);
-          if (captureCodingEvents && role === "assistant" && message
-            && (payload.phase === "commentary" || payload.phase === "final_answer")) {
-            codingEventCandidates.push({
-              recordIndex,
-              source: "response_item",
-              event: {
-                type: "assistant_message",
-                phase: payload.phase === "final_answer" ? "final" : "progress",
-                content: message,
-              },
-            });
-          }
           const authoritativeMessage = role === "user"
             || (role === "assistant" && payload.phase === "final_answer");
           if (authoritativeMessage && message) {
@@ -395,9 +404,11 @@ function scanCodexRolloutTurn(
             if (role === "user") {
               responseItemUserPrompt = message;
               responseItemUserTimestamp = parseNativeMessageTimestamp(record.timestamp);
+              responseItemUser = codingItem;
             } else {
               responseItemAssistantReply = message;
               responseItemAssistantTimestamp = parseNativeMessageTimestamp(record.timestamp);
+              responseItemAssistant = codingItem;
             }
           }
         }
@@ -476,14 +487,15 @@ function scanCodexRolloutTurn(
       if (!message) continue;
       if (payload.phase === "commentary" || payload.phase === "final_answer") {
         visibleAssistantMessages.push(message);
-        if (captureCodingEvents) {
-          codingEventCandidates.push({
+        if (captureCodingItems) {
+          codingItemCandidates.push({
             recordIndex,
             source: "event_msg",
-            event: {
-              type: "assistant_message",
-              phase: payload.phase === "final_answer" ? "final" : "progress",
-              content: message,
+            item: {
+              type: "message",
+              role: "assistant",
+              phase: payload.phase,
+              content: [{ type: "output_text", text: message }],
             },
           });
         }
@@ -513,7 +525,9 @@ function scanCodexRolloutTurn(
       ? assistantTimestamp
       : responseItemAssistantTimestamp),
     visibleAssistantMessages,
-    codingEventCandidates,
+    codingItemCandidates,
+    responseItemUser,
+    responseItemAssistant,
     completedAt,
     interrupted,
     interruptedAt,
@@ -527,58 +541,83 @@ function scanCodexRolloutTurn(
   };
 }
 
-type CodexCodingEventCandidate = Readonly<{
+type CodexCodingItemCandidate = Readonly<{
   recordIndex: number;
   source: "response_item" | "event_msg";
-  event: CodingTurnEvent;
+  item: ResponseItem;
 }>;
 
-function completedCodingEvents(
+function completedCodingItems(
   scan: CodexRolloutTurnScan,
   userPrompt: string,
   assistantReply: string,
-): CodingTurnEvent[] {
-  const hasResponseItemAssistant = scan.codingEventCandidates.some((candidate) => (
-    candidate.source === "response_item" && candidate.event.type === "assistant_message"
+): ResponseItem[] {
+  const hasResponseItemAssistant = scan.codingItemCandidates.some((candidate) => (
+    candidate.source === "response_item" && candidate.item.type === "message"
+      && candidate.item.role === "assistant"
   ));
-  const intermediate = scan.codingEventCandidates
+  const intermediate = scan.codingItemCandidates
     .filter((candidate) => {
-      if (candidate.event.type === "assistant_message" && candidate.event.phase === "final") return false;
+      if (candidate.item.type === "message" && candidate.item.role === "assistant"
+        && candidate.item.phase === "final_answer") return false;
       return !(hasResponseItemAssistant
         && candidate.source === "event_msg"
-        && candidate.event.type === "assistant_message");
+        && candidate.item.type === "message" && candidate.item.role === "assistant");
     })
     .sort((left, right) => left.recordIndex - right.recordIndex)
-    .map((candidate) => candidate.event);
+    .map((candidate) => candidate.item);
   return [
-    { type: "user_message", content: userPrompt },
+    scan.responseItemUser ?? { type: "message", role: "user", content: [{ type: "input_text", text: userPrompt }] },
     ...intermediate,
-    { type: "assistant_message", phase: "final", content: assistantReply },
+    scan.responseItemAssistant ?? {
+      type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: assistantReply }],
+    },
   ];
 }
 
-function codingToolEventsFromResponseItem(payload: JsonRecord): CodingTurnEvent[] {
+function codingItemFromResponseItem(payload: JsonRecord): ResponseItem | undefined {
   const type = stringValue(payload.type);
-  const callId = stringValue(payload.call_id) ?? stringValue(payload.callId) ?? stringValue(payload.id);
-  if (!callId) return [];
-  if (type === "function_call" || type === "custom_tool_call") {
-    const tool = stringValue(payload.name);
-    if (!tool) return [];
-    return [{
-      type: "tool_call",
-      callId,
-      tool,
-      arguments: codingEventText(payload.arguments ?? payload.input),
-    }];
+  const id = typeof payload.id === "string" ? { id: payload.id } : {};
+  if (type === "message") {
+    if (!Array.isArray(payload.content)) return undefined;
+    const role = stringValue(payload.role);
+    if (role === "user") {
+      const content = payload.content.flatMap((block) => (
+        isRecord(block) && stringValue(block.type) === "input_text" && typeof block.text === "string"
+          ? [{ type: "input_text" as const, text: block.text }] : []
+      ));
+      return content.some((part) => part.text.trim()) ? { type, role, content, ...id } : undefined;
+    }
+    if (role !== "assistant" || (payload.phase !== "commentary" && payload.phase !== "final_answer")) return undefined;
+    const content = payload.content.flatMap((block) => (
+      isRecord(block) && stringValue(block.type) === "output_text" && typeof block.text === "string"
+        ? [{ type: "output_text" as const, text: block.text }] : []
+    ));
+    return content.some((part) => part.text.trim()) ? { type, role, phase: payload.phase, content, ...id } : undefined;
   }
-  if (type !== "function_call_output" && type !== "custom_tool_call_output") return [];
-  const status = stringValue(payload.status)?.toLowerCase();
-  return [{
-    type: "tool_result",
-    callId,
-    status: payload.success === false || status === "error" || status === "failed" ? "error" : "success",
-    output: codingEventText(payload.output),
-  }];
+  const callId = nonBlankString(payload.call_id);
+  if (!callId) return undefined;
+  if (type === "function_call" || type === "custom_tool_call") {
+    const name = nonBlankString(payload.name);
+    if (!name) return undefined;
+    if (type === "custom_tool_call") {
+      return { type, call_id: callId, name, input: codingItemText(payload.input), ...id };
+    }
+    return {
+      type,
+      call_id: callId,
+      name,
+      arguments: codingItemText(payload.arguments),
+      ...(typeof payload.namespace === "string" ? { namespace: payload.namespace } : {}),
+      ...id,
+    };
+  }
+  if (type !== "function_call_output" && type !== "custom_tool_call_output") return undefined;
+  return { type, call_id: callId, output: codingItemText(payload.output), ...id };
+}
+
+function codingItemText(value: unknown): string {
+  return typeof value === "string" ? value : codingEventText(value);
 }
 
 function responseItemTurnId(payload: JsonRecord): string | undefined {

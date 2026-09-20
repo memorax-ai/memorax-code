@@ -28,25 +28,23 @@ const config = configured.config;
 function batch(turnCount = 1) {
   return {
     event: CODING_SESSION_EVENT,
+    schema_version: 2,
+    redaction_version: 1,
     batch_id: "batch-1",
     user_id: repositoryScope.effectiveUserId,
     client: "codex",
     session_id: "session-1",
-    coding_turns: Array.from({ length: turnCount }, (_, index) => ({
-      schema_version: 1,
-      client: "codex",
-      session_id: "session-1",
+    repository_slug: repositoryScope.repositorySlug,
+    turns: Array.from({ length: turnCount }, (_, index) => ({
       turn_id: `turn-${index + 1}`,
       turn_index: index + 1,
-      events: [
-        { index: 1, type: "user_message", content: "Review the upload boundary." },
-        { index: 2, type: "assistant_message", phase: "final", content: "The upload boundary is verified." },
-      ],
-      outcome: "completed",
       closed_at: "2026-01-01T00:00:00.000Z",
-      redaction_version: 1,
-      repository_slug: repositoryScope.repositorySlug,
+      item_count: 2,
     })),
+    items: Array.from({ length: turnCount }, () => [
+      { type: "message", role: "user", content: [{ type: "input_text", text: "Review the upload boundary." }] },
+      { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: "The upload boundary is verified." }] },
+    ]).flat(),
   };
 }
 
@@ -104,10 +102,15 @@ test("Coding Session upload rejects mismatched scope and batch identities before
     [value, { ...config, userId: "another-user" }, repositoryScope],
     [value, config, undefined],
     [{ ...value, batch_id: " " }, config, repositoryScope],
-    [{ ...value, coding_turns: [] }, config, repositoryScope],
-    [{ ...value, session_id: "another-session" }, config, repositoryScope],
-    [{ ...value, client: "claude-code" }, config, repositoryScope],
-    [{ ...value, coding_turns: [{ ...value.coding_turns[0], repository_slug: "another-repository" }] }, config, repositoryScope],
+    [{ ...value, turns: [] }, config, repositoryScope],
+    [{ ...value, session_id: " " }, config, repositoryScope],
+    [{ ...value, client: "unsupported-client" }, config, repositoryScope],
+    [{ ...value, repository_slug: "another-repository" }, config, repositoryScope],
+    [{ ...value, turns: [{ ...value.turns[0], item_count: 3 }] }, config, repositoryScope],
+    [{ ...value, turns: [{ ...value.turns[0], turn_index: 0 }] }, config, repositoryScope],
+    [{ ...value, schema_version: 1 }, config, repositoryScope],
+    [{ ...value, event: "coding_session" }, config, repositoryScope],
+    [{ ...batch(2), turns: batch(2).turns.reverse() }, config, repositoryScope],
   ];
   for (const [candidate, candidateConfig, candidateScope] of cases) {
     const result = await uploadCodingSessionBatch(candidate, {
@@ -126,14 +129,9 @@ test("Coding Session upload rejects mismatched scope and batch identities before
 
 test("Coding Session upload bounds the entire JSON UTF-8 body to twenty MiB", async () => {
   const value = batch(11);
-  for (const turn of value.coding_turns) turn.events[0].content = "中".repeat(600_000);
-  let remaining = CODING_SESSION_BATCH_MAX_BYTES - Buffer.byteLength(JSON.stringify(value), "utf8");
-  for (const turn of value.coding_turns) {
-    const padding = Math.min(remaining, 2 * 1024 * 1024 - Buffer.byteLength(JSON.stringify(turn)) - 100);
-    turn.events[0].content += "x".repeat(padding);
-    remaining -= padding;
-  }
-  assert.equal(remaining, 0);
+  for (const item of value.items) item.content[0].text = "中".repeat(300_000);
+  const remaining = CODING_SESSION_BATCH_MAX_BYTES - Buffer.byteLength(JSON.stringify(value), "utf8");
+  value.items[0].content[0].text += "x".repeat(remaining);
   assert.equal(Buffer.byteLength(JSON.stringify(value), "utf8"), CODING_SESSION_BATCH_MAX_BYTES);
   let calls = 0;
   const options = {
@@ -146,7 +144,7 @@ test("Coding Session upload bounds the entire JSON UTF-8 body to twenty MiB", as
     },
   };
   assert.deepEqual(await uploadCodingSessionBatch(value, options), { ok: true });
-  value.coding_turns[0].events[0].content += "x";
+  value.items[0].content[0].text += "x";
   const oversized = await uploadCodingSessionBatch(value, options);
   assert.equal(oversized.ok, false);
   assert.equal(oversized.errorCode, "MEMORAX_CODING_SESSION_BATCH_TOO_LARGE");

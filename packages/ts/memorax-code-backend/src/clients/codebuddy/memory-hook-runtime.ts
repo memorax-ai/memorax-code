@@ -1,6 +1,7 @@
 import {
   readCodeBuddyInterruptedTranscriptTurn,
   readCodeBuddyTranscriptTurn,
+  readCodeBuddyArchiveSource,
   type CodeBuddyInterruptedTurn,
   type CodeBuddyTurn,
   type CodeBuddyTurnFailureReason,
@@ -43,7 +44,7 @@ export function createCodeBuddyMemoryHookRuntime(options: Options = {}): CodeBud
     traceFailureEvent: `${client}_trace.write_failed`,
     turnStartTraceSource: `${client}-hook`,
     deduplicateRetrieval: false,
-  }, options);
+  }, { readCodingSessionTurn: readCodeBuddyArchiveSource, ...options });
   const coordinator = memory.turnCoordinator;
   return {
     async recordTurnStart(command) {
@@ -91,15 +92,16 @@ export function createCodeBuddyMemoryHookRuntime(options: Options = {}): CodeBud
         userTimestamp: transcript.turn.userTimestamp,
         assistantTimestamp: transcript.turn.assistantTimestamp,
         traceContext: traceContextFromCodeBuddyHookBody(command),
-        ...(transcript.turn.events && transcript.turn.sessionTurnIndex ? {
+        ...(transcript.turn.items && transcript.turn.sessionTurnIndex ? {
           codingTurn: {
             client,
             sessionId: command.sessionId,
             turnId: command.turnId,
             turnIndex: transcript.turn.sessionTurnIndex,
-            events: transcript.turn.events,
+            items: transcript.turn.items,
             outcome: "completed",
             closedAt: new Date(transcript.turn.assistantTimestamp ?? now()).toISOString(),
+            source: transcript.turn.source,
           },
         } : {}),
       });
@@ -113,7 +115,7 @@ export function createCodeBuddyMemoryHookRuntime(options: Options = {}): CodeBud
 
 async function readWithRetry(input: { transcriptPath: string; sessionId: string; turnId: string }, options: Options) {
   const attempts = options.transcriptReadAttempts ?? 6;
-  const request = { ...input, captureCodingEvents: options.captureCodingTurns };
+  const request = { ...input, captureCodingItems: options.captureCodingTurns };
   let result = await readCodeBuddyTranscriptTurn(request);
   for (let i = 1; i < attempts && !result.ok && ["transcript_unavailable", "turn_not_found", "user_prompt_missing", "assistant_message_missing"].includes(result.reason); i += 1) {
     await new Promise((resolve) => setTimeout(resolve, options.transcriptRetryDelayMs ?? 100));

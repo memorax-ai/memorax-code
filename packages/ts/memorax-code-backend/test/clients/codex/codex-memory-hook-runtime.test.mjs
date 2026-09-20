@@ -195,10 +195,10 @@ test("memory hook writeback accepts repeated authority metadata in the exact Cod
     assert.equal(codingUploads.length, 1);
     assert.equal(codingUploads[0].turn.sessionId, "session-hook");
     assert.equal(codingUploads[0].turn.turnId, "turn-1");
-    assert.deepEqual(codingUploads[0].turn.events, [
-      { type: "user_message", content: "Remember this persisted Codex turn.\n" },
-      { type: "assistant_message", phase: "progress", content: "Inspecting the persisted turn." },
-      { type: "assistant_message", phase: "final", content: "Stored persisted Codex answer.\n" },
+    assert.deepEqual(codingUploads[0].turn.items, [
+      { type: "message", role: "user", content: [{ type: "input_text", text: "Remember this persisted Codex turn.\n" }] },
+      { type: "message", role: "assistant", phase: "commentary", content: [{ type: "output_text", text: "Inspecting the persisted turn." }] },
+      { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: "Stored persisted Codex answer.\n" }] },
     ]);
     assert.deepEqual(requests[0].body.messages.map((message) => message.timestamp), [
       Date.parse("2026-07-16T00:00:02.000Z"),

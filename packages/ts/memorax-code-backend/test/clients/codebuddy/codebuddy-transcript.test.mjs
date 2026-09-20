@@ -92,7 +92,7 @@ test("preserves completed and interrupted replies through a long tool chain", ()
   const input = { sessionId, turnId: provisionalTurnId("long task") };
   const transcript = records.map(JSON.stringify).join("\n");
   const startedAt = performance.now();
-  const completed = codeBuddyTranscriptTurnFromJsonLines(transcript, { ...input, captureCodingEvents: true });
+  const completed = codeBuddyTranscriptTurnFromJsonLines(transcript, { ...input, captureCodingItems: true });
   // Synchronous parsing can block the runner's timeout, so check elapsed time too.
   assert.ok(performance.now() - startedAt < 5000, "Long-chain extraction must avoid repeated transcript scans");
   assert.equal(completed.ok, true);
@@ -101,8 +101,8 @@ test("preserves completed and interrupted replies through a long tool chain", ()
   assert.equal(completed.turn.userTimestamp, undefined);
   assert.equal(completed.turn.assistantTimestamp, undefined);
   assert.equal(completed.turn.activities.length, callCount * 2);
-  assert.equal(completed.turn.events.length, callCount * 2 + 2);
-  assert.equal(completed.turn.events.at(-2).callId, `call-${callCount - 1}`);
+  assert.equal(completed.turn.items.length, callCount * 2 + 2);
+  assert.equal(completed.turn.items.at(-2).call_id, `call-${callCount - 1}`);
 
   assistant.status = "incomplete";
   assistant.content[0].text = "partial answer";

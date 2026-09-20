@@ -26,7 +26,8 @@ export async function uploadCodingSessionBatch(
     || config.userId !== repositoryScope.baseUserId
     || !repositoryScope.effectiveUserId.trim()
     || !repositoryScope.repositorySlug.trim()
-    || batch.user_id !== repositoryScope.effectiveUserId) {
+    || batch.user_id !== repositoryScope.effectiveUserId
+    || batch.repository_slug !== repositoryScope.repositorySlug) {
     return {
       ok: false,
       error: "Coding Session batch does not match its configured memory scope",
@@ -34,14 +35,18 @@ export async function uploadCodingSessionBatch(
     };
   }
   if (batch.event !== CODING_SESSION_EVENT
+    || batch.schema_version !== 2
+    || batch.redaction_version !== 1
     || !batch.batch_id.trim()
     || !batch.session_id.trim()
-    || batch.coding_turns.length === 0
-    || batch.coding_turns.some((turn) =>
-      turn.client !== batch.client
-      || turn.session_id !== batch.session_id
-      || !turn.turn_id.trim()
-      || (turn.repository_slug !== undefined && turn.repository_slug !== repositoryScope.repositorySlug))) {
+    || !["codex", "claude-code", "opencode", "codebuddy", "workbuddy"].includes(batch.client)
+    || batch.turns.length === 0
+    || new Set(batch.turns.map((turn) => turn.turn_id)).size !== batch.turns.length
+    || batch.turns.some((turn, index) => !turn.turn_id.trim()
+      || !Number.isSafeInteger(turn.turn_index) || turn.turn_index < 1
+      || (index > 0 && turn.turn_index <= batch.turns[index - 1].turn_index)
+      || !Number.isSafeInteger(turn.item_count) || turn.item_count < 2)
+    || batch.turns.reduce((count, turn) => count + turn.item_count, 0) !== batch.items.length) {
     return {
       ok: false,
       error: "Coding Session batch identity is invalid",
@@ -52,11 +57,15 @@ export async function uploadCodingSessionBatch(
   // Project the event contract rather than forwarding runtime or QA metadata.
   const payload: CodingSessionBatch = {
     event: CODING_SESSION_EVENT,
+    schema_version: batch.schema_version,
+    redaction_version: batch.redaction_version,
     batch_id: batch.batch_id,
     user_id: batch.user_id,
     client: batch.client,
     session_id: batch.session_id,
-    coding_turns: batch.coding_turns,
+    repository_slug: batch.repository_slug,
+    turns: batch.turns,
+    items: batch.items,
   };
   if (Buffer.byteLength(JSON.stringify(payload), "utf8") > CODING_SESSION_BATCH_MAX_BYTES) {
     return {

@@ -27,12 +27,17 @@ const reviewedNetworkSources = new Set([
   "packages/ts/memorax-code-backend/src/clients/dsh/memory-hook-runtime.ts",
   "packages/ts/memorax-code-backend/src/clients/opencode/memory-hook-runtime.ts",
   "packages/ts/memorax-code-backend/src/coding-sessions/upload.ts",
+  // Archive contracts carry the injected transport; native scheduling uploads
+  // only projected exact-Turn items, never cursor records or transcript paths.
+  "packages/ts/memorax-code-backend/src/coding-sessions/contracts.ts",
+  "packages/ts/memorax-code-backend/src/coding-sessions/native-upload.ts",
   "packages/ts/memorax-code-backend/src/lifecycle/backend/service.ts",
   "packages/ts/memorax-code-backend/src/lifecycle/backend/status.ts",
   "packages/ts/memorax-code-backend/src/memory/automatic-retrieval.ts",
   "packages/ts/memorax-code-backend/src/memory/automatic-writeback.ts",
   "packages/ts/memorax-code-backend/src/memory/cli.ts",
   "packages/ts/memorax-code-backend/src/memory/harness-runtime.ts",
+  "packages/ts/memorax-code-backend/src/memory/service.ts",
   "packages/ts/memorax-code-backend/src/memory/turn-coordinator.ts",
   "packages/ts/memorax-code-backend/src/memory/writeback-buffer.ts",
   "packages/ts/memorax-code-backend/src/repo-memory/detect-updates.ts",

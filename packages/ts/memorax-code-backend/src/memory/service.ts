@@ -1,5 +1,6 @@
 import { createAutomaticMemoryWritebackRuntime } from "./automatic-writeback.js";
 import { createCodingSessionUploadRuntime } from "../coding-sessions/upload.js";
+import { readCodingSessionSourceTurn } from "./coding-session-source.js";
 import { codingSessionsEnabled, loadMemoraxCodeConfig } from "../config/memorax-code.js";
 import { recordWritebackRejection } from "./background-diagnostics.js";
 import {
@@ -69,6 +70,11 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
   const captureCodingTurns = codingSessionsEnabled(env, fileConfig);
   const codingUpload = createCodingSessionUploadRuntime({
     enabled: captureCodingTurns,
+    memoraxCodeHome: options.memoraxCodeHome,
+    env: options.env,
+    fetchImpl: options.fetchImpl,
+    readTurn: readCodingSessionSourceTurn,
+    clock: { now: options.now ?? Date.now, setTimeout, clearTimeout },
     diagnosticLogger: options.diagnosticLogger,
   });
   const repositoryMemorySession = createRepositoryMemorySessionRuntime({
@@ -88,6 +94,7 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
   const codexHook = createCodexMemoryHookRuntime({
     ...options,
     captureCodingTurns,
+    codingSessionInteraction: codingUpload.observeInteraction,
     pendingQuotaNotice,
     repositoryMemorySession,
     turnCoordinator,
@@ -95,6 +102,7 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
   const claudeHook = createClaudeMemoryHookRuntime({
     ...options,
     captureCodingTurns,
+    codingSessionInteraction: codingUpload.observeInteraction,
     pendingQuotaNotice,
     repositoryMemorySession,
     turnCoordinator,
@@ -114,6 +122,7 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
   const codeBuddyHook = createCodeBuddyMemoryHookRuntime({
     ...options,
     captureCodingTurns,
+    codingSessionInteraction: codingUpload.observeInteraction,
     pendingQuotaNotice,
     repositoryMemorySession,
     turnCoordinator,
@@ -121,6 +130,7 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
   const workBuddyHook = createCodeBuddyMemoryHookRuntime({
     ...options,
     captureCodingTurns,
+    codingSessionInteraction: codingUpload.observeInteraction,
     client: "workbuddy",
     pendingQuotaNotice,
     repositoryMemorySession,

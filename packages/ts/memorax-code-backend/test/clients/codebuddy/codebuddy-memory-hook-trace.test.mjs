@@ -182,7 +182,7 @@ test("WorkBuddy provisional turn writeback and nested Skill commands share Gener
     { id: "shared-node", type: "function_call", parentId: "u-native", callId: "read-1", name: "Read", arguments: { path: "README.md" } },
     { id: "shared-node", type: "function_call", parentId: "u-native", callId: "read-2", name: "Read", arguments: { path: "package.json" } },
     { id: "result-1", type: "function_call_result", parentId: "shared-node", callId: "read-1", output: { type: "text", text: "project introduction" } },
-    { id: "result-2", type: "function_call_result", parentId: "shared-node", callId: "read-2", output: "package metadata" },
+    { id: "result-2", type: "function_call_result", parentId: "shared-node", callId: "read-2", status: "error", output: "package metadata unavailable" },
     { id: "a-native", type: "message", role: "assistant", parentId: "result-2", status: "completed", timestamp: 1_700_000_060_000, content: [{ type: "output_text", text: "persisted reply" }] },
     { id: "late-tool", type: "function_call", parentId: "u-native", callId: "late-1", name: "Read", arguments: "not part of completed turn" },
   ]));
@@ -231,14 +231,14 @@ test("WorkBuddy provisional turn writeback and nested Skill commands share Gener
     assert.equal(codingTurn.turnId, turnId);
     assert.equal(codingTurn.turnIndex, 1);
     assert.equal(codingTurn.closedAt, new Date(1_700_000_060_000).toISOString());
-    assert.deepEqual(codingTurn.events, [
-      { type: "user_message", content: prompt },
-      { type: "assistant_message", phase: "progress", content: "Inspecting the project." },
-      { type: "tool_call", callId: "read-1", tool: "Read", arguments: '{"path":"README.md"}' },
-      { type: "tool_call", callId: "read-2", tool: "Read", arguments: '{"path":"package.json"}' },
-      { type: "tool_result", callId: "read-1", status: "success", output: "project introduction" },
-      { type: "tool_result", callId: "read-2", status: "success", output: "package metadata" },
-      { type: "assistant_message", phase: "final", content: "persisted reply" },
+    assert.deepEqual(codingTurn.items, [
+      { type: "message", role: "user", content: [{ type: "input_text", text: prompt }] },
+      { type: "message", role: "assistant", phase: "commentary", content: [{ type: "output_text", text: "Inspecting the project." }] },
+      { type: "function_call", call_id: "read-1", name: "Read", arguments: '{"path":"README.md"}' },
+      { type: "function_call", call_id: "read-2", name: "Read", arguments: '{"path":"package.json"}' },
+      { type: "function_call_output", call_id: "read-1", output: "project introduction" },
+      { type: "function_call_output", call_id: "read-2", output: "package metadata unavailable" },
+      { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: "persisted reply" }] },
     ]);
     const options = {
       cwd: nested,

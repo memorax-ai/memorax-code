@@ -407,8 +407,10 @@ test("native completion separates eight-Turn QA from byte-batched archive and in
       const transcriptPath = await writeRollout(root, sessionId, turns);
       const requests = [];
       const diagnostics = [];
+      let archiveNow = Date.now();
       const service = createMemoryService({
         memoraxCodeHome: home,
+        now: () => archiveNow,
         env: {
           MEMORAX_CODE_HOME: home,
           MEMORAX_CODE_CODEX_TRACE_ENABLED: "false",
@@ -426,11 +428,16 @@ test("native completion separates eight-Turn QA from byte-batched archive and in
           requests.push(body);
           if (!body.event) {
             assert.equal(body.coding_turns, undefined);
+            assert.equal(body.turns, undefined);
+            assert.equal(body.items, undefined);
             assert.doesNotMatch(JSON.stringify(body), /Tool-only output|function_call/);
             return Response.json({ success: true, data: { task_id: "qa-accepted", status: "accepted" } }, { status: 202 });
           }
           assert.equal(body.messages, undefined);
-          assert.equal(body.event, "coding_session");
+          assert.equal(body.event, "dreaming");
+          assert.equal(body.schema_version, 2);
+          assert.equal(body.redaction_version, 1);
+          assert.equal(body.coding_turns, undefined);
           const archives = requests.filter((request) => request.event);
           if (archives.length === 1) return new Response("", { status: 503 });
           return Response.json({ success: true, data: { event: body.event, batch_id: body.batch_id, status: "stored" } });
@@ -445,6 +452,9 @@ test("native completion separates eight-Turn QA from byte-batched archive and in
       if (scenario.qa) await waitForAcceptedWritebacks(diagnostics, 1);
       assert.equal(requests.length, scenario.qa ? 1 : 0, "eight QA Turns must not flush the archive");
       await service.drain();
+      assert.equal(requests.filter((request) => request.event).length, scenario.archive ? 1 : 0);
+      archiveNow += 5 * 60 * 1000;
+      await service.drain();
       const qa = requests.filter((request) => !request.event);
       const archives = requests.filter((request) => request.event);
       assert.equal(qa.length, scenario.qa ? 1 : 0, "archive retry must not repeat QA");
@@ -452,10 +462,35 @@ test("native completion separates eight-Turn QA from byte-batched archive and in
       if (scenario.archive) {
         assert.deepEqual(archives[1], archives[0], "retry preserves the complete batch");
         assert.equal(archives[0].user_id, "user-1@workspace");
-        assert.deepEqual(archives[0].coding_turns.map((turn) => turn.turn_id), turns.map((turn) => turn.turnId));
-        assert.deepEqual(archives[0].coding_turns[0].events.map((event) => event.type), ["user_message", "tool_call", "tool_result", "assistant_message"]);
+        assert.equal(archives[0].repository_slug, "workspace");
+        assert.deepEqual(archives[0].turns.map((turn) => turn.turn_id), turns.map((turn) => turn.turnId));
+        assert.deepEqual(archives[0].turns.map((turn) => turn.turn_index), [1, 2, 3, 4, 5, 6, 7, 8]);
+        assert.equal(archives[0].items.length, 8 * 7);
+        let offset = 0;
+        for (const [index, metadata] of archives[0].turns.entries()) {
+          assert.deepEqual(Object.keys(metadata).sort(), ["closed_at", "item_count", "turn_id", "turn_index"]);
+          assert.equal(metadata.item_count, 7);
+          const items = archives[0].items.slice(offset, offset + metadata.item_count);
+          offset += metadata.item_count;
+          assert.deepEqual(items.map((item) => item.type), [
+            "message", "message", "function_call", "function_call_output",
+            "custom_tool_call", "custom_tool_call_output", "message",
+          ]);
+          assert.deepEqual(items[0], { type: "message", id: `user-item-${index}`, role: "user",
+            content: [{ type: "input_text", text: turns[index].prompt }] });
+          assert.equal(items[1].phase, "commentary");
+          assert.deepEqual(items[2], { type: "function_call", id: `function-item-${index}`, call_id: `call-${index}`,
+            name: "read_file", namespace: "functions", arguments: '{"path":"src/main.ts"}' });
+          assert.equal(items[3].call_id, items[2].call_id);
+          assert.equal(items[4].input, "*** Begin Patch\n*** End Patch");
+          assert.equal(items[5].call_id, items[4].call_id);
+          assert.deepEqual(items[6], { type: "message", id: `assistant-item-${index}`, role: "assistant",
+            phase: "final_answer", content: [{ type: "output_text", text: turns[index].reply }] });
+          assert.ok(items.every((item) => !("index" in item) && !("status" in item) && !("tool_result" in item)));
+        }
+        assert.equal(offset, archives[0].items.length, "Turn counts partition every collected item");
         assert.match(JSON.stringify(archives[0]), /Tool-only output/);
-        assert.doesNotMatch(JSON.stringify(archives[0]), /Bearer fake-sensitive-value/);
+        assert.doesNotMatch(JSON.stringify(archives[0]), /Bearer fake-sensitive-value|internal_metadata|Private reasoning marker/);
         assert.equal(JSON.stringify(archives[0]).includes(root), false);
       }
     });
@@ -503,11 +538,33 @@ async function writeRollout(root, sessionId, turns) {
         payload: { type: "user_message", message: turn.prompt },
       },
       ...(turn.coding ? [
+        { timestamp: "2026-07-16T00:00:02.050Z", type: "response_item", payload: {
+          type: "message", id: `user-item-${index}`, role: "user",
+          content: [{ type: "input_text", text: turn.prompt }], internal_metadata: { cwd: root },
+        } },
+        { timestamp: "2026-07-16T00:00:02.060Z", type: "response_item", payload: {
+          type: "message", role: "assistant", phase: "commentary",
+          content: [{ type: "output_text", text: "I will inspect the module." }], status: "completed",
+        } },
+        { timestamp: "2026-07-16T00:00:02.070Z", type: "response_item", payload: {
+          type: "reasoning", summary: [{ type: "summary_text", text: "Private reasoning marker" }],
+        } },
         { timestamp: "2026-07-16T00:00:02.100Z", type: "response_item", payload: {
-          type: "function_call", call_id: `call-${index}`, name: "read_file", arguments: "{\"path\":\"src/main.ts\"}",
+          type: "function_call", id: `function-item-${index}`, call_id: `call-${index}`, name: "read_file",
+          namespace: "functions", arguments: "{\"path\":\"src/main.ts\"}", internal_metadata: { cwd: root },
         } },
         { timestamp: "2026-07-16T00:00:02.200Z", type: "response_item", payload: {
           type: "function_call_output", call_id: `call-${index}`, output: "Tool-only output. Authorization: Bearer fake-sensitive-value",
+        } },
+        { timestamp: "2026-07-16T00:00:02.300Z", type: "response_item", payload: {
+          type: "custom_tool_call", call_id: `custom-${index}`, name: "apply_patch", input: "*** Begin Patch\n*** End Patch",
+        } },
+        { timestamp: "2026-07-16T00:00:02.400Z", type: "response_item", payload: {
+          type: "custom_tool_call_output", call_id: `custom-${index}`, output: "No changes needed.",
+        } },
+        { timestamp: "2026-07-16T00:00:02.500Z", type: "response_item", payload: {
+          type: "message", id: `assistant-item-${index}`, role: "assistant", phase: "final_answer",
+          content: [{ type: "output_text", text: turn.reply }], status: "completed",
         } },
       ] : []),
       {

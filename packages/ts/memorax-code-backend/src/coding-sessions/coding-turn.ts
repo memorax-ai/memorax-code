@@ -7,175 +7,129 @@ import {
 
 export type CodingSessionClient = "codex" | "claude-code" | "opencode" | "codebuddy" | "workbuddy";
 
-export type CodingTurnEvent =
-  | Readonly<{
-    type: "user_message";
-    content: string;
-  }>
-  | Readonly<{
-    type: "assistant_message";
-    phase: "progress" | "final";
-    content: string;
-  }>
-  | Readonly<{
-    type: "tool_call";
-    callId: string;
-    tool: string;
-    arguments: string;
-  }>
-  | Readonly<{
-    type: "tool_result";
-    callId: string;
-    status: "success" | "error";
-    output: string;
-  }>;
+// Local recovery authority only; never included in an archive payload.
+export type CodingSessionNativeSource = Readonly<{ transcriptPath: string; endBytes: number }>;
+
+// This is the collected text/tool subset, not a complete Responses API request.
+export type ResponseItem = Readonly<{ id?: string }> & (
+  | Readonly<{ type: "message"; role: "user"; content: readonly Readonly<{ type: "input_text"; text: string }>[] }>
+  | Readonly<{ type: "message"; role: "assistant"; phase: "commentary" | "final_answer"; content: readonly Readonly<{ type: "output_text"; text: string }>[] }>
+  | Readonly<{ type: "function_call"; call_id: string; name: string; arguments: string; namespace?: string }>
+  | Readonly<{ type: "custom_tool_call"; call_id: string; name: string; input: string }>
+  | Readonly<{ type: "function_call_output" | "custom_tool_call_output"; call_id: string; output: string }>
+);
 
 export type CodingSessionSourceTurn = Readonly<{
   client: CodingSessionClient;
   sessionId: string;
   turnId: string;
   turnIndex: number;
-  events: readonly CodingTurnEvent[];
+  items: readonly ResponseItem[];
   outcome: "completed";
   closedAt: string;
   repositorySlug?: string;
+  source?: CodingSessionNativeSource;
 }>;
 
-export type NormalizedCodingTurnEvent =
-  | Readonly<{
-    index: number;
-    type: "user_message";
-    content: string;
-  }>
-  | Readonly<{
-    index: number;
-    type: "assistant_message";
-    phase: "progress" | "final";
-    content: string;
-  }>
-  | Readonly<{
-    index: number;
-    type: "tool_call";
-    call_id: string;
-    tool: string;
-    arguments: string;
-  }>
-  | Readonly<{
-    index: number;
-    type: "tool_result";
-    call_id: string;
-    status: "success" | "error";
-    output: string;
-  }>;
-
-type UnindexedNormalizedCodingTurnEvent = NormalizedCodingTurnEvent extends infer Event
-  ? Event extends Readonly<{ index: number }>
-    ? Omit<Event, "index">
-    : never
-  : never;
-
-export type NormalizedCodingTurn = Readonly<{
-  schema_version: 1;
+export type PreparedSessionTurn = Readonly<{
   client: CodingSessionClient;
   session_id: string;
   turn_id: string;
   turn_index: number;
-  events: readonly NormalizedCodingTurnEvent[];
-  outcome: "completed";
+  items: readonly ResponseItem[];
   closed_at: string;
-  redaction_version: 1;
   repository_slug?: string;
   truncation?: Readonly<{
-    original_event_count: number;
+    original_item_count: number;
     truncated_text_fields: number;
   }>;
 }>;
 
 export const CODING_TURN_MAX_BYTES = 2 * 1024 * 1024;
 const CODING_TURN_TEXT_MAX_CHARS = 128_000;
-const CODING_TURN_MAX_EVENTS = 512;
+const CODING_TURN_MAX_ITEMS = 512;
 const BINARY_CONTENT_OMITTED = "[BINARY_CONTENT_OMITTED]";
 
-export function normalizeCodingSessionTurn(
+export function prepareCodingSessionTurn(
   turn: CodingSessionSourceTurn,
   diagnosticLogger?: MemoryDiagnosticLogger,
-): NormalizedCodingTurn | undefined {
+): PreparedSessionTurn | undefined {
   if (!Number.isSafeInteger(turn.turnIndex) || turn.turnIndex < 1) return undefined;
   const sessionId = boundedIdentifier(turn.sessionId);
   const turnId = boundedIdentifier(turn.turnId);
   const closedAt = normalizedTimestamp(turn.closedAt);
   if (!sessionId || !turnId || !closedAt || turn.outcome !== "completed") return undefined;
 
-  const truncatedFields = new Set<number>();
-  const normalizedEvents = turn.events
-    .flatMap((event, sourceIndex) => {
-      const normalized = normalizeEvent(event, () => truncatedFields.add(sourceIndex));
-      return normalized ? [{ event: normalized, sourceIndex }] : [];
+  const truncatedFields = new Set<string>();
+  const markTruncated = (sourceIndex: number) => (fieldIndex: number) => {
+    truncatedFields.add(`${sourceIndex}:${fieldIndex}`);
+  };
+  const normalizedItems = turn.items
+    .flatMap((item, sourceIndex) => {
+      const normalized = prepareItem(item, markTruncated(sourceIndex));
+      return normalized ? [{ item: normalized, sourceIndex }] : [];
     });
-  if (normalizedEvents[0]?.event.type !== "user_message") return undefined;
-  if (normalizedEvents.filter(({ event }) => event.type === "user_message").length !== 1) return undefined;
-  const finalIndexes = normalizedEvents.flatMap(({ event }, index) => (
-    event.type === "assistant_message" && event.phase === "final" ? [index] : []
+  if (normalizedItems[0]?.item.type !== "message" || normalizedItems[0].item.role !== "user") return undefined;
+  if (normalizedItems.filter(({ item }) => item.type === "message" && item.role === "user").length !== 1) return undefined;
+  const finalIndexes = normalizedItems.flatMap(({ item }, index) => (
+    item.type === "message" && item.role === "assistant" && item.phase === "final_answer" ? [index] : []
   ));
-  if (finalIndexes.length !== 1 || finalIndexes[0] !== normalizedEvents.length - 1) return undefined;
+  if (finalIndexes.length !== 1 || finalIndexes[0] !== normalizedItems.length - 1) return undefined;
 
-  const candidates = normalizedEvents.length > CODING_TURN_MAX_EVENTS
-    ? [normalizedEvents[0], ...normalizedEvents.slice(-(CODING_TURN_MAX_EVENTS - 1))]
-    : normalizedEvents;
+  const candidates = normalizedItems.length > CODING_TURN_MAX_ITEMS
+    ? [normalizedItems[0], ...normalizedItems.slice(-(CODING_TURN_MAX_ITEMS - 1))]
+    : normalizedItems;
   const repositorySlug = boundedIdentifier(turn.repositorySlug);
   const envelope = {
-    schema_version: 1 as const,
     client: turn.client,
     session_id: sessionId,
     turn_id: turnId,
     turn_index: turn.turnIndex,
-    outcome: "completed" as const,
     closed_at: closedAt,
-    redaction_version: 1 as const,
     ...(repositorySlug ? { repository_slug: repositorySlug } : {}),
   };
-  // Reserve the largest possible truncation marker and event-index width.
+  // Reserve the loss marker before fitting content; retain QA at both ends.
   let remaining = CODING_TURN_MAX_BYTES - jsonBytes({
     ...envelope,
-    events: [],
+    items: [],
     truncation: {
-      original_event_count: turn.events.length,
-      truncated_text_fields: turn.events.length,
+      original_item_count: turn.items.length,
+      truncated_text_fields: turn.items.reduce((count, item) => count + (item.type === "message" ? item.content.length : 1), 0),
     },
   });
   const first = candidates[0];
   const last = candidates[candidates.length - 1];
   const firstBudget = Math.min(
-    eventBytes(first.event),
-    Math.max(remaining - eventBytes(last.event), Math.floor(remaining / 2)),
+    itemBytes(first.item),
+    Math.max(remaining - itemBytes(last.item), Math.floor(remaining / 2)),
   );
-  const user = fitEvent(first.event, firstBudget, () => truncatedFields.add(first.sourceIndex));
-  const final = fitEvent(last.event, remaining - firstBudget, () => truncatedFields.add(last.sourceIndex));
+  const user = fitItem(first.item, firstBudget, markTruncated(first.sourceIndex));
+  const final = fitItem(last.item, remaining - firstBudget, markTruncated(last.sourceIndex));
   if (!user || !final) return undefined;
-  remaining -= eventBytes(user) + eventBytes(final);
-  const middle: UnindexedNormalizedCodingTurnEvent[] = [];
+  remaining -= itemBytes(user) + itemBytes(final);
+  const middle: ResponseItem[] = [];
   for (let index = candidates.length - 2; index > 0; index -= 1) {
     const candidate = candidates[index];
-    const event = fitEvent(candidate.event, remaining, () => truncatedFields.add(candidate.sourceIndex));
-    if (event) {
-      middle.push(event);
-      remaining -= eventBytes(event);
+    const item = fitItem(candidate.item, remaining, markTruncated(candidate.sourceIndex));
+    if (item) {
+      middle.push(item);
+      remaining -= itemBytes(item);
     }
   }
-  const events = [user, ...middle.reverse(), final];
-  const truncation = events.length < turn.events.length || truncatedFields.size > 0
-    ? { original_event_count: turn.events.length, truncated_text_fields: truncatedFields.size }
+  const items = [user, ...middle.reverse(), final];
+  const truncation = items.length < turn.items.length || truncatedFields.size > 0
+    ? { original_item_count: turn.items.length, truncated_text_fields: truncatedFields.size }
     : undefined;
   if (truncation) {
     diagnosticLogger?.("coding_turn.truncated", {
-      originalEvents: truncation.original_event_count,
-      keptEvents: events.length,
+      originalItems: truncation.original_item_count,
+      keptItems: items.length,
       truncatedTextFields: truncation.truncated_text_fields,
     });
   }
   return {
     ...envelope,
-    events: events.map((event, index) => ({ ...event, index: index + 1 }) as NormalizedCodingTurnEvent),
+    items,
     ...(truncation ? { truncation } : {}),
   };
 }
@@ -195,66 +149,96 @@ export function codingEventText(value: unknown): string {
   return stableJson(value);
 }
 
-function normalizeEvent(
-  event: CodingTurnEvent,
-  onTruncated: () => void,
-): UnindexedNormalizedCodingTurnEvent | undefined {
-  if (event.type === "user_message" || event.type === "assistant_message") {
-    const content = redactSourceText(event.content, true, onTruncated);
-    if (!content) return undefined;
-    return event.type === "user_message"
-      ? { type: "user_message", content }
-      : { type: "assistant_message", phase: event.phase, content };
+function prepareItem(
+  item: ResponseItem,
+  onTruncated: (fieldIndex: number) => void,
+): ResponseItem | undefined {
+  const id = item.id && boundedEventIdentifier(item.id, 512);
+  const identity = id ? { id } : {};
+  if (item.type === "message") {
+    const texts = item.content.flatMap((part, fieldIndex) => {
+      if (part.type !== (item.role === "user" ? "input_text" : "output_text")) return [];
+      return [redactSourceText(part.text, () => onTruncated(fieldIndex))];
+    });
+    if (!hasMeaningfulMemoryPayloadText(texts.join("\n"))) return undefined;
+    if (item.role === "user") return { type: "message", ...identity, role: "user", content: texts.map((text) => ({ type: "input_text", text })) };
+    if (item.role !== "assistant" || (item.phase !== "commentary" && item.phase !== "final_answer")) return undefined;
+    return { type: "message", ...identity, role: "assistant", phase: item.phase, content: texts.map((text) => ({ type: "output_text", text })) };
   }
-  const callId = boundedEventIdentifier(event.callId, 512);
+  if (!["function_call", "custom_tool_call", "function_call_output", "custom_tool_call_output"].includes(item.type)) return undefined;
+  const callId = boundedEventIdentifier(item.call_id, 512);
   if (!callId) return undefined;
-  if (event.type === "tool_call") {
-    const tool = boundedEventIdentifier(event.tool, 255);
-    if (!tool) return undefined;
-    return {
-      type: "tool_call",
-      call_id: callId,
-      tool,
-      arguments: redactSourceText(event.arguments, false, onTruncated) ?? "",
-    };
+  if (item.type === "function_call" || item.type === "custom_tool_call") {
+    const name = boundedEventIdentifier(item.name, 255);
+    if (!name) return undefined;
+    if (item.type === "custom_tool_call") return { type: item.type, ...identity, call_id: callId, name, input: redactSourceText(item.input, () => onTruncated(0)) };
+    const namespace = item.namespace && boundedEventIdentifier(item.namespace, 255);
+    return { type: item.type, ...identity, call_id: callId, name, arguments: redactSourceText(item.arguments, () => onTruncated(0)), ...(namespace ? { namespace } : {}) };
   }
-  return {
-    type: "tool_result",
-    call_id: callId,
-    status: event.status,
-    output: redactSourceText(event.output, false, onTruncated) ?? "",
-  };
+  return { type: item.type, ...identity, call_id: callId, output: redactSourceText(item.output, () => onTruncated(0)) };
 }
 
-function redactSourceText(value: string, requireMeaningful: boolean, onTruncated: () => void): string | undefined {
-  const withoutHome = redactHomePath(String(value ?? ""));
+function redactSourceText(value: string, onTruncated: () => void): string {
+  const withoutHome = redactHomePath(omitBinaryText(value));
   const text = redactMemoryPayloadText(withoutHome).text;
   const bounded = truncateText(text);
   if (bounded.length < text.length) onTruncated();
-  const redacted = bounded.trim();
-  if (!redacted) return undefined;
-  return !requireMeaningful || hasMeaningfulMemoryPayloadText(redacted) ? redacted : undefined;
+  return bounded;
+}
+
+function omitBinaryText(value: string): string {
+  if (isBinaryDataUri(value.trim())) return BINARY_CONTENT_OMITTED;
+  try {
+    let omitted = false;
+    const sanitized = sortJsonValue(JSON.parse(value), () => { omitted = true; });
+    // Native tool strings retain whitespace and key order unless binary data is removed.
+    return omitted ? JSON.stringify(sanitized) : value;
+  } catch {
+    return value;
+  }
 }
 
 function jsonBytes(value: unknown): number {
   return Buffer.byteLength(JSON.stringify(value), "utf8");
 }
 
-function eventBytes(event: UnindexedNormalizedCodingTurnEvent): number {
-  return jsonBytes({ ...event, index: CODING_TURN_MAX_EVENTS }) + 1;
+function itemBytes(item: ResponseItem): number {
+  return jsonBytes(item) + 1;
 }
 
-function fitEvent(
-  event: UnindexedNormalizedCodingTurnEvent,
+function fitItem(
+  item: ResponseItem,
   budget: number,
-  onTruncated: () => void,
-): UnindexedNormalizedCodingTurnEvent | undefined {
-  const bytes = eventBytes(event);
-  if (bytes <= budget) return event;
-  const field = "content" in event ? "content" : "arguments" in event ? "arguments" : "output";
-  const text = "content" in event ? event.content : "arguments" in event ? event.arguments : event.output;
-  const textBudget = budget - (bytes - jsonBytes(text)) - 2;
+  onTruncated: (fieldIndex: number) => void,
+): ResponseItem | undefined {
+  if (itemBytes(item) <= budget) return item;
+  if (item.type === "message") {
+    let remaining = budget - itemBytes({ ...item, content: [] });
+    const content = item.content.flatMap((part, fieldIndex) => {
+      const textBudget = remaining - jsonBytes({ type: part.type, text: "" }) - 1;
+      if (textBudget < 0) {
+        onTruncated(fieldIndex);
+        return [];
+      }
+      const text = fitText(part.text, textBudget);
+      if (text.length < part.text.length) onTruncated(fieldIndex);
+      const kept = { type: part.type, text };
+      remaining -= jsonBytes(kept) + 1;
+      return [kept];
+    });
+    if (!hasMeaningfulMemoryPayloadText(content.map((part) => part.text).join("\n"))) return undefined;
+    return { ...item, content } as ResponseItem;
+  }
+  const text = "arguments" in item ? item.arguments : "input" in item ? item.input : item.output;
+  const textBudget = budget - itemBytes(item) + jsonBytes(text) - 2;
   if (textBudget < 0) return undefined;
+  const bounded = fitText(text, textBudget);
+  onTruncated(0);
+  return "arguments" in item ? { ...item, arguments: bounded }
+    : "input" in item ? { ...item, input: bounded } : { ...item, output: bounded };
+}
+
+function fitText(text: string, textBudget: number): string {
   // Count JSON string bytes once, including escaping and surrogate pairs.
   let used = 0;
   let end = 0;
@@ -269,10 +253,7 @@ function fitEvent(
     used += cost;
     end += character.length;
   }
-  const bounded = text.slice(0, end).trim();
-  onTruncated();
-  if (field === "content" && !hasMeaningfulMemoryPayloadText(bounded)) return undefined;
-  return { ...event, [field]: bounded };
+  return text.slice(0, end);
 }
 
 function redactHomePath(value: string): string {
@@ -297,25 +278,30 @@ function stableJson(value: unknown): string {
   }
 }
 
-function sortJsonValue(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(sortJsonValue);
-  if (typeof value === "string") {
-    return isBinaryDataUri(value) ? BINARY_CONTENT_OMITTED : value;
+function sortJsonValue(value: unknown, onBinaryOmitted?: () => void): unknown {
+  if (Array.isArray(value)) return value.map((item) => sortJsonValue(item, onBinaryOmitted));
+  if (typeof value === "string" && isBinaryDataUri(value)) {
+    onBinaryOmitted?.();
+    return BINARY_CONTENT_OMITTED;
   }
   if (value === null || typeof value !== "object") return value;
-  if (isSerializedBuffer(value)) return BINARY_CONTENT_OMITTED;
+  if (isSerializedBuffer(value)) {
+    onBinaryOmitted?.();
+    return BINARY_CONTENT_OMITTED;
+  }
   const record = value as Record<string, unknown>;
   const mediaPayload = typeof record.type === "string"
     && ["audio", "image", "video"].includes(record.type.toLowerCase());
   return Object.fromEntries(
     Object.entries(record)
       .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
-      .map(([key, item]) => [
-        key,
-        mediaPayload && ["base64", "blob", "data"].includes(key.toLowerCase())
-          ? BINARY_CONTENT_OMITTED
-          : sortJsonValue(item),
-      ]),
+      .map(([key, item]) => {
+        if (mediaPayload && ["base64", "blob", "data"].includes(key.toLowerCase())) {
+          onBinaryOmitted?.();
+          return [key, BINARY_CONTENT_OMITTED];
+        }
+        return [key, sortJsonValue(item, onBinaryOmitted)];
+      }),
   );
 }
 

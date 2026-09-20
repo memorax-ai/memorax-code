@@ -656,8 +656,8 @@ flowchart TD
   Shared["HarnessMemoryRuntime and turn coordinator:<br/>validate metadata and current scope"] -->|"valid"| Runtime
   Shared -->|"rejected"| Result
   Shared -->|"supported completed coding Turn"| Archive
-  Archive["coding-sessions: independent opt-in,<br/>normalization, redaction, dedupe and byte buffer"] -->|"local acceptance"| Result
-  Archive -->|"size, idle or drain"| ArchiveProvider["provider/memorax/coding-session:<br/>event-only Add, stored receipt"]
+  Archive["coding-sessions: independent opt-in,<br/>projection, redaction and upload scheduling"] -->|"local acceptance"| Result
+  Archive -->|"size, Turn count, idle or drain"| ArchiveProvider["provider/memorax/coding-session:<br/>event-only Add, stored receipt"]
   ArchiveProvider --> Remote
   Runtime["automatic writeback:<br/>settings, bounds, redaction and deduplication"] -->|"rejected"| Result
   Runtime -->|"accepted"| Result
@@ -690,20 +690,47 @@ that recover do not produce terminal failure records.
   flush; turn or size limits can trigger that flush during enqueue.
 - Buffering and chunking belong to the memory capability; rollout, transcript,
   DSH event-interval, and SDK message parsing remains client-specific.
-- Coding-session archive buffering belongs to `coding-sessions`, not the QA
+- Coding-session archive scheduling belongs to `coding-sessions`, not the QA
   buffer. Codex, Claude Code, OpenCode, CodeBuddy, and WorkBuddy materialize
-  ordered visible messages and tool events from the same exact native Turn.
-  Normalization owns redaction and per-Turn bounds. DSH and Trae remain QA-only.
+  an ordered text/tool `ResponseItem` subset from the same exact native Turn.
+  Codex allowlists native item fields and uses legacy event text only when its
+  native message is absent; the other clients convert their own native records.
+  This excludes reasoning and internal metadata and is not a complete Responses
+  API transcript for direct replay. Normalization owns redaction and per-Turn
+  bounds. DSH and Trae remain QA-only.
   The coordinator checks client/session/Turn identity and scope before either
   enqueue. No archive data is attached to ordinary QA or explicit Add payloads.
 - Archive batches group one connection, client, session, and scope. The complete
-  event body is byte-bounded, contains whole Turns, and flushes by size, idle,
-  or service drain, independently of QA turn-count and chunking rules. Batch
-  identity and content remain fixed across bounded retries. Pending/in-flight
-  Turn reservations and a bounded success cache prevent local duplicate sends.
+  event body is byte-bounded and contains whole Turns, independently of QA
+  batching and chunking rules. Metadata
+  sorted by native Turn index partitions a flat item array by per-Turn counts.
+  The first Turn index supplies source order without a process-local chunk
+  counter; batch IDs supply unique upload identity.
+- File-backed Codex, Claude Code, CodeBuddy, and WorkBuddy archive registration
+  persists private, content-free native references rather than buffered bodies.
+  Each reference freezes the exact transcript prefix used for validation,
+  native identity and order, completion time, and prepared-content digest and
+  size. The cursor also binds the connection and repository scope and retains
+  unconfirmed batch identity and confirmed progress. A periodic scan of this
+  registry schedules eligible uploads; it does not discover historical native
+  sessions. Registered Turn starts reset inactivity for an already tracked session.
+  Client-owned readers reconstruct only those registered Turns; the uploader
+  revalidates scope and content before sending. Native files remain the content
+  authority, so deletion, truncation, or changed content cannot be recovered
+  from the cursor. Unconfirmed batches retain their references and stable identity
+  across retries and Backend restarts. A late unknown Turn before confirmed
+  progress is rejected rather than treated as already delivered.
+  Short state locks protect cursor publication separately from cross-process
+  upload ownership. Each native runtime processes one batch at a time, while
+  new completion references can still be registered. Client runtimes inject
+  their own reader into the shared harness; memory-service composition supplies
+  the multi-client dispatch without moving native parsing into shared kernels.
+- OpenCode retains the SDK-message in-memory archive buffer and bounded retries.
+  It has no file-backed recovery authority and does not guess native database
+  paths. Its pending/in-flight reservations and bounded success cache remain
+  process-local; a crash or exhausted retry can lose pending archive data.
   An archive is acknowledged only by a matching `stored` receipt, not ordinary
-  asynchronous memory-task acceptance. This is in-memory best effort, without
-  a persistent queue, native-history scan, or fallback to mixed QA requests.
+  asynchronous memory-task acceptance. Neither path falls back to mixed QA requests.
   The server owns OSS storage and object paths. See
   [the event contract](docs/configuration.md#coding-session-collection).
 - Native materializers pass the selected QA timestamps through the shared
@@ -867,7 +894,7 @@ entrypoints and compatibility facades. It is not another implementation area.
 | `src/lifecycle/backend` | Managed process, PID/token/connection records, status probing, cleanup, and shutdown requests | Helper contracts do not depend back on the full service implementation |
 | `src/clients/<client>` | Native interpretation, correlation, interruption/recovery, trace adaptation, and lifecycle participation; delegates common memory workflows to the shared harness runtime | Request runtime stays HTTP-composition independent and uses only the matching [native authority](#native-writeback-authority); native deployment follows [package ownership](#22-physical-dependency-directions) |
 | `src/memory` | Memory commands, retrieval, writeback, turn coordination, repository session pinning, manual CLI, and buffering/chunking | Client-neutral modules do not parse native transcript formats |
-| `src/coding-sessions` | Normalized completed-Turn contract, redaction, bounded event batching, deduplication, and best-effort upload lifecycle | Native parsing stays in clients; remote HTTP stays in the provider; no QA extraction or local durable queue |
+| `src/coding-sessions` | Selected text/tool item contract, redaction, bounded event batching, private native-reference cursors and upload scheduling; OpenCode SDK-message buffering | Native parsing stays in clients; remote HTTP stays in the provider; no QA extraction or durable copy of archive bodies |
 | `src/memory/harness-runtime.ts` | Common Turn-start and materialized-completion workflows for all supported clients; publishes registered Turn state synchronously and owns locally created memory resources while reusing injected shared resources | No client implementation, HTTP, app/lifecycle, or direct provider-transport imports; diagnostics enter through a port and native interpretation stays with each client |
 | `src/personal-memory` | Local User Profile listing, normalization, duplicate detection, updates, deletion, and atomic storage | No Backend service, provider calls, transcript processing, or Procedure Memory mutation |
 | `src/repo-memory` | Repo Memory preparation, local and provider facet collection, delta detection, and bundle validation | Prepares bundle directories and the repository ignore entry, collects raw evidence, and validates output; agents author durable Markdown memory |
@@ -1039,7 +1066,8 @@ writes.
 Durable local state includes configuration, private runtime, setup-completion,
 package-transition, automatic-update, and trial credential records, active
 client selection,
-client-qualified trace JSONL, reminder cadence and quota-reminder state, and
+client-qualified trace JSONL, content-free native archive cursors,
+reminder cadence and quota-reminder state, and
 Repo Memory. State shared across processes requires a bounded lock, atomic
 replacement, or version validation appropriate to its record. An in-memory
 mutex is not cross-process authority.

@@ -194,12 +194,12 @@ export function createMemoryTurnCoordinator(options: MemoryTurnCoordinatorOption
       const assistantTimestamp = parseNativeMessageTimestamp(input.assistantTimestamp);
       // Both consumers use the same validated native identity and scope. QA
       // filtering or deduplication must not suppress the independent archive.
-      let codingAcceptance: ReturnType<CodingSessionUploadEnqueue> | undefined;
+      let codingDecision: ReturnType<CodingSessionUploadEnqueue> | undefined;
       try {
         if (input.codingTurn?.client === input.key.client
           && input.codingTurn.sessionId === input.key.sessionId
           && input.codingTurn.turnId === input.key.clientTurnId) {
-          codingAcceptance = options.codingSessionUpload?.({
+          codingDecision = options.codingSessionUpload?.({
             turn: input.codingTurn,
             repositoryScope,
             env: input.writeback.env,
@@ -207,7 +207,7 @@ export function createMemoryTurnCoordinator(options: MemoryTurnCoordinatorOption
           });
         }
       } catch {
-        codingAcceptance = { accepted: false, reason: "decision_error" };
+        codingDecision = { accepted: false, reason: "decision_error" };
       }
       let acceptance: ReturnType<AutomaticMemoryWritebackEnqueue>;
       try {
@@ -229,6 +229,11 @@ export function createMemoryTurnCoordinator(options: MemoryTurnCoordinatorOption
       } catch {
         acceptance = { accepted: false, reason: "decision_error" };
       }
+      // QA enqueue never waits for an archive network request. Only the small
+      // local reference must be recorded before consuming shared Turn metadata.
+      let codingAcceptance: Awaited<ReturnType<CodingSessionUploadEnqueue>> | undefined;
+      try { codingAcceptance = await codingDecision; }
+      catch { codingAcceptance = { accepted: false, reason: "decision_error" }; }
       if (!acceptance.accepted && !codingAcceptance?.accepted) {
         return reject(acceptance.reason);
       }

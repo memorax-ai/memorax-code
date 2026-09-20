@@ -190,14 +190,19 @@ or explicitly labelled local observation times. An aligned source-label array
 in Add metadata distinguishes them; it contains no transcript paths or trace
 identifiers. See [timestamp semantics](docs/configuration.md#automatic-writeback-timestamps).
 
-Coding-session collection independently sends locally redacted, normalized
-completed Turns in separate archive requests to the configured MemoraX Add
-endpoint. It includes prompts, visible assistant messages, and tool calls and
-results from Codex, Claude Code, OpenCode, CodeBuddy, or WorkBuddy. It excludes
-reasoning, binary attachments, raw session files, native transcript paths, and
-trace provenance. New configurations enable this feature; existing configurations
-without `[coding_sessions].enabled` leave it disabled. Collection never scans
-historical sessions. See [collection controls and limits](docs/configuration.md#coding-session-collection).
+Coding-session collection independently sends a locally redacted text/tool
+subset from completed Turns in separate `dreaming` archive requests to the
+configured MemoraX Add endpoint. It includes prompts, visible assistant messages,
+and tool calls and results from Codex, Claude Code, OpenCode, CodeBuddy, or
+WorkBuddy. Codex projects allowlisted native item fields; other supported clients
+convert their native records to that shared subset. It excludes reasoning,
+internal metadata, binary attachments, raw session files, native transcript paths,
+and trace provenance. This bounded, potentially lossy subset is not a complete
+Responses API transcript for direct replay. New configurations enable this
+feature; existing configurations without `[coding_sessions].enabled` leave it
+disabled. Collection does not discover or bulk-upload historical sessions;
+file-backed recovery rereads only previously registered completed Turns.
+See [collection controls and limits](docs/configuration.md#coding-session-collection).
 
 Automatic writeback bounds each selected message to its configured Add limit,
 then applies a local best-effort detector before hashing, buffering, chunking,
@@ -235,8 +240,11 @@ environment switch disables all three only when its value is exactly
 for commands and process-inheritance requirements. These controls do not
 cancel in-flight requests or guarantee removal of previously buffered turns;
 graceful Backend shutdown can flush pending writeback.
-Archive batches are held in memory with bounded retries, not a durable local
-queue. A process crash or exhausted retry can lose pending archive data.
+File-backed archive uploads retain private, content-free cursor records and
+reread the corresponding native files when due. This is not a transcript backup:
+deleted or changed source data can prevent recovery. OpenCode still holds its
+SDK-message archive batches in memory with bounded retries; a process crash or
+exhausted retry can lose those pending batches.
 
 ## Local Data and Diagnostics
 
@@ -245,6 +253,16 @@ runtime authority, adapter state, and retained diagnostics. On POSIX systems
 the product creates or tightens the home to mode `0700` and newly seeded
 configuration to mode `0600`; Windows relies on the current user's filesystem
 ACLs.
+
+File-backed archive cursors under `runtime/coding-sessions/` retain native
+transcript and workspace paths, session/Turn identifiers, completion and activity
+times, byte boundaries and counts, content digests, repository scope, a one-way
+connection fingerprint, batch identity, and confirmed upload progress. They
+contain no archive body or API key, but their identity and path metadata is
+still sensitive. Private atomic publication and cross-process locks protect
+updates; the cursor is local operational authority, not trace or diagnostic
+data. It survives Backend restart, does not enumerate native history, and does
+not authorize sending pending data under a different account or repository scope.
 
 Shared state locks exclusively create a private lock file and write its
 process-qualified owner record before entering a critical section. A failed

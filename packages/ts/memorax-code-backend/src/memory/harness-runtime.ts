@@ -1,5 +1,6 @@
 import { retrieveAutomaticMemoryContext } from "./automatic-retrieval.js";
 import type { CodingSessionSourceTurn } from "../coding-sessions/coding-turn.js";
+import type { CodingSessionInteraction, NativeCodingSessionTurnRef } from "../coding-sessions/contracts.js";
 import {
   createCodingSessionUploadRuntime,
   type CodingSessionUploadEnqueue,
@@ -44,6 +45,8 @@ export type HarnessMemoryRuntimeOptions = {
   automaticWriteback?: AutomaticMemoryWritebackEnqueue;
   captureCodingTurns?: boolean;
   codingSessionUpload?: CodingSessionUploadEnqueue;
+  codingSessionInteraction?: (input: CodingSessionInteraction) => Promise<void>;
+  readCodingSessionTurn?: (ref: NativeCodingSessionTurnRef) => Promise<CodingSessionSourceTurn | undefined>;
   diagnosticLogger?: MemoryDiagnosticLogger;
   env?: Record<string, string | undefined>;
   fetchImpl?: typeof fetch;
@@ -130,6 +133,11 @@ export function createHarnessMemoryRuntime(
       ? { enqueue: options.codingSessionUpload }
       : createCodingSessionUploadRuntime({
         enabled: options.captureCodingTurns === true,
+        memoraxCodeHome: options.memoraxCodeHome,
+        env: options.env,
+        fetchImpl: options.fetchImpl,
+        readTurn: options.readCodingSessionTurn,
+        clock: { now, setTimeout, clearTimeout },
         diagnosticLogger: options.diagnosticLogger,
       });
   const turnCoordinator = options.turnCoordinator ?? createMemoryTurnCoordinator({
@@ -187,6 +195,12 @@ export function createHarnessMemoryRuntime(
       if (turn.clientTurnId) {
         const state = turnCoordinator.recordTurnStart({ ...turn, client: definition.client, clientTurnId: turn.clientTurnId, repositoryMemory });
         onTurnRegistered?.(state);
+      }
+      const archiveScope = repositoryMemory.ok ? repositoryMemory.memory.scope : undefined;
+      const observeInteraction = options.codingSessionInteraction
+        ?? (codingUpload && "observeInteraction" in codingUpload ? codingUpload.observeInteraction : undefined);
+      if (turn.clientTurnId && archiveScope && definition.client !== "dsh" && definition.client !== "trae") {
+        await observeInteraction?.({ client: definition.client, sessionId: turn.sessionId, repositoryScope: archiveScope });
       }
       if (diagnosticFields) {
         options.diagnosticLogger?.(`${definition.diagnosticPrefix}.turn_start`, {
