@@ -1,3 +1,4 @@
+import { resolveCodingSearchContext } from "./coding-context.js";
 import { invokeMemoraxMemoryProvider } from "../provider/memorax/adapter.js";
 import type {
   MemoryDiagnosticLogger,
@@ -98,6 +99,7 @@ export async function retrieveAutomaticMemoryContext(
     observabilitySource: options.memoryObservabilitySource ?? "automatic_retrieval",
     repositoryScope: options.repositoryMemory.memory.scope,
     traceContext: options.traceContext,
+    codingContext: await resolveCodingSearchContext(options.traceContext),
   });
   if (!response.ok) return finish(skipped("retrieve_failed", response.error));
 

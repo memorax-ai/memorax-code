@@ -86,6 +86,137 @@ test("MemoraX adapter uses the injected HTTP transport for retrieval", async () 
   assert.equal("quota" in result.result.tool_result_payload, false);
 });
 
+test("MemoraX adapter forwards scored formula and rough-filter parameters", async () => {
+  const requests = [];
+  const result = await invokeMemoraxMemoryProvider(
+    { sessionId: "formula-session", prompt: "fallback prompt" },
+    {
+      provider_id: "memory.memorax",
+      slot: "state_context",
+      operation: "query",
+      query: "formula query",
+      context: {
+        mode: "scored",
+        output_mode: "summary",
+        score_formula: { id: "semantic_decay_plus_helpful", version: 2 },
+        rough_filter: { stale_days: 90, max_usage: 1 },
+      },
+    },
+    {
+      env: {
+        MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
+        MEMORAX_CODE_MEMORAX_API_KEY: "secret",
+        MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
+      },
+      fetchImpl: async (_url, init) => {
+        requests.push(JSON.parse(String(init?.body)));
+        return new Response(JSON.stringify({ success: true, data: { data: [] } }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      },
+      repositoryScope: testRepositoryScope(),
+    },
+  );
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(requests[0].mode, "scored");
+  assert.deepEqual(requests[0].output_mode, "summary");
+  assert.deepEqual(requests[0].score_formula, {
+    id: "semantic_decay_plus_helpful",
+    version: 2,
+  });
+  assert.deepEqual(requests[0].rough_filter, { stale_days: 90, max_usage: 1 });
+});
+
+test("MemoraX adapter drops invalid formula and rough-filter parameters", async () => {
+  const requests = [];
+  const result = await invokeMemoraxMemoryProvider(
+    { sessionId: "invalid-parameters", prompt: "fallback prompt" },
+    {
+      provider_id: "memory.memorax",
+      slot: "state_context",
+      operation: "query",
+      query: "invalid parameters",
+      context: {
+        mode: "scored",
+        output_mode: "summary",
+        score_formula: { id: "", version: 0 },
+        rough_filter: { stale_days: 0, max_usage: -1 },
+      },
+    },
+    {
+      env: {
+        MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
+        MEMORAX_CODE_MEMORAX_API_KEY: "secret",
+        MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
+      },
+      fetchImpl: async (_url, init) => {
+        requests.push(JSON.parse(String(init?.body)));
+        return new Response(JSON.stringify({ success: true, data: { data: [] } }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      },
+      repositoryScope: testRepositoryScope(),
+    },
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal("mode" in requests[0], false);
+  assert.equal("score_formula" in requests[0], false);
+  assert.equal("rough_filter" in requests[0], false);
+});
+
+test("MemoraX adapter keeps formula fields schema-coherent", async () => {
+  const requests = [];
+  for (const context of [
+    {
+      mode: "fast",
+      output_mode: "summary",
+      score_formula: { id: "semantic_decay_plus_helpful", version: 1 },
+    },
+    {
+      mode: "scored",
+      output_mode: "facts",
+      score_formula: { id: "semantic_decay_plus_helpful", version: 1 },
+    },
+  ]) {
+    const result = await invokeMemoraxMemoryProvider(
+      { sessionId: "incoherent-formula", prompt: "fallback prompt" },
+      {
+        provider_id: "memory.memorax",
+        slot: "state_context",
+        operation: "query",
+        query: "incoherent formula",
+        context,
+      },
+      {
+        env: {
+          MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
+          MEMORAX_CODE_MEMORAX_API_KEY: "secret",
+          MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
+        },
+        fetchImpl: async (_url, init) => {
+          requests.push(JSON.parse(String(init?.body)));
+          return new Response(JSON.stringify({ success: true, data: { data: [] } }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        },
+        repositoryScope: testRepositoryScope(),
+      },
+    );
+    assert.equal(result.ok, true);
+  }
+
+  assert.equal(requests[0].mode, "fast");
+  assert.equal("score_formula" in requests[0], false);
+  assert.equal("mode" in requests[1], false);
+  assert.equal(requests[1].output_mode, "facts");
+  assert.equal("score_formula" in requests[1], false);
+});
+
 test("MemoraX adapter omits incomplete balance entries", async () => {
   const result = await invokeMemoraxMemoryProvider(
     { sessionId: "quota-incomplete", prompt: "fallback prompt" },

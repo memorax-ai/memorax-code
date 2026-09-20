@@ -1,3 +1,4 @@
+import { resolveCodingSearchContext } from "../../memory/coding-context.js";
 import {
   readClaudeInterruptedTranscriptTurn,
   readClaudeCodingSessionTurn,
@@ -166,6 +167,7 @@ export function createClaudeMemoryHookRuntime(
         request,
         options.diagnosticLogger,
       );
+      const codingContext = await resolveCodingSearchContext(traceContext);
       const writeback = await memory.completeTurn({
         sessionId: request.sessionId,
         clientTurnId: request.promptId,
@@ -181,6 +183,7 @@ export function createClaudeMemoryHookRuntime(
         assistantTimestamp: transcript.turn.assistantTimestamp,
         ...("events" in transcript.turn && transcript.turn.closedAt ? {
           codingTurn: {
+            ...(codingContext ? { agentRole: codingContext.agent_role, promptOrigin: codingContext.prompt_origin } : {}),
             client: CLAUDE_MEMORY_TURN_CLIENT,
             sessionId: transcript.turn.sessionId,
             turnId: transcript.turn.promptId,

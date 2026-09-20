@@ -133,6 +133,89 @@ test("memory CLI searches within a readable non-Git workspace scope", async () =
   assert.equal(requests[0].user_id, "user-1@notes");
 });
 
+test("memory CLI forwards formula and rough-filter flags to Search", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-cli-search-experiment-"));
+  const workspace = join(root, "notes");
+  await mkdir(workspace, { recursive: true });
+  const requests = [];
+  const result = await runMemoryCli([
+    "search", "--query", "formula query", "--formula", "semantic_decay_plus_helpful",
+    "--stale-days", "90", "--max-usage", "1",
+  ], {
+    cwd: workspace,
+    env: {
+      MEMORAX_CODE_HOME: join(root, "home"),
+      MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
+      MEMORAX_CODE_MEMORAX_API_KEY: "secret",
+      MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
+    },
+    fetchImpl: async (_url, init) => {
+      requests.push(JSON.parse(init.body));
+      return new Response(JSON.stringify({ success: true, data: { data: [] } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(requests[0].mode, "scored");
+  assert.deepEqual(requests[0].output_mode, "summary");
+  assert.deepEqual(requests[0].score_formula, {
+    id: "semantic_decay_plus_helpful",
+    version: 2,
+  });
+  assert.deepEqual(requests[0].rough_filter, { stale_days: 90, max_usage: 1 });
+});
+
+test("memory CLI keeps non-A score formulas on version 1", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-cli-search-formula-v1-"));
+  const requests = [];
+  const result = await runMemoryCli([
+    "search", "--query", "formula query", "--formula", "joint_decay_semantic_helpful",
+  ], {
+    cwd: root,
+    env: {
+      MEMORAX_CODE_HOME: join(root, "home"),
+      MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
+      MEMORAX_CODE_MEMORAX_API_KEY: "secret",
+      MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
+    },
+    fetchImpl: async (_url, init) => {
+      requests.push(JSON.parse(init.body));
+      return new Response(JSON.stringify({ success: true, data: { data: [] } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(requests[0].score_formula, {
+    id: "joint_decay_semantic_helpful",
+    version: 1,
+  });
+});
+
+test("memory CLI rejects an incomplete rough-filter flag pair", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-cli-search-experiment-invalid-"));
+  const result = await runMemoryCli(["search", "--query", "formula query", "--stale-days", "90"], {
+    cwd: root,
+    env: {
+      MEMORAX_CODE_HOME: join(root, "home"),
+      MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
+      MEMORAX_CODE_MEMORAX_API_KEY: "secret",
+      MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
+    },
+    fetchImpl: async () => {
+      throw new Error("invalid flags must fail before HTTP");
+    },
+  });
+
+  assert.equal(result.ok, false);
+  assert.match(result.error, /must be provided together/);
+});
+
 test("memory CLI preserves non-Git turn scope across trace settings", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-cli-local-turn-"));
   t.after(() => rm(root, { recursive: true, force: true }));

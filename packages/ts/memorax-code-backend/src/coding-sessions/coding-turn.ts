@@ -39,6 +39,8 @@ export type CodingSessionSourceTurn = Readonly<{
   outcome: "completed";
   closedAt: string;
   repositorySlug?: string;
+  agentRole?: "main" | "subagent";
+  promptOrigin?: "end_user" | "system";
 }>;
 
 export type NormalizedCodingTurnEvent =
@@ -85,6 +87,8 @@ export type NormalizedCodingTurn = Readonly<{
   closed_at: string;
   redaction_version: 1;
   repository_slug?: string;
+  agent_role?: "main" | "subagent";
+  prompt_origin?: "end_user" | "system";
   truncation?: Readonly<{
     original_event_count: number;
     truncated_text_fields: number;
@@ -134,6 +138,8 @@ export function normalizeCodingSessionTurn(
     outcome: "completed" as const,
     closed_at: closedAt,
     redaction_version: 1 as const,
+    ...(turn.agentRole ? { agent_role: turn.agentRole } : {}),
+    ...(turn.promptOrigin ? { prompt_origin: turn.promptOrigin } : {}),
     ...(repositorySlug ? { repository_slug: repositorySlug } : {}),
   };
   // Reserve the largest possible truncation marker and event-index width.

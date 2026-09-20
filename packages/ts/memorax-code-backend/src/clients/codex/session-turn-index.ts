@@ -118,3 +118,52 @@ function stringValue(value: unknown): string | undefined {
 function isRecord(value: unknown): value is JsonRecord {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
+
+/** Only an explicitly foreground native session and exact user Turn are eligible. */
+export function codexHelpfulPromptFromJsonLines(
+  transcript: string, input: { sessionId: string; turnId: string },
+): boolean {
+  if (!codexSessionTurnIndexFromJsonLines(transcript, input).ok) return false;
+  let foreground = false;
+  let active: string | undefined;
+  let user = false;
+  const lines = transcript.split(/\r?\n/);
+  for (const [index, line] of lines.entries()) {
+    if (!line.trim()) continue;
+    let record: JsonRecord;
+    try {
+      const parsed: unknown = JSON.parse(line);
+      if (!isRecord(parsed)) return false;
+      record = parsed;
+    } catch {
+      if (index === lines.length - 1 && !transcript.endsWith("\n")) break;
+      return false;
+    }
+    const payload = isRecord(record.payload) ? record.payload : {};
+    if (record.type === "session_meta") {
+      if (!["cli", "vscode"].includes(String(payload.source))) return false;
+      foreground = true;
+    }
+    if (record.type === "turn_context" || (record.type === "event_msg" && payload.type === "task_started")) {
+      active = stringValue(payload.turn_id) ?? stringValue(payload.turnId);
+    }
+    if (record.type === "response_item" && active === input.turnId
+      && payload.type === "message" && payload.role === "user") {
+      const metadata = isRecord(payload.internal_chat_message_metadata_passthrough)
+        ? payload.internal_chat_message_metadata_passthrough
+        : {};
+      const responseTurnId = stringValue(metadata.turn_id) ?? stringValue(metadata.turnId);
+      const hasUserText = Array.isArray(payload.content) && payload.content.some((item: unknown) => (
+        isRecord(item) && item.type === "input_text" && stringValue(item.text) !== undefined
+      ));
+      if (hasUserText && (!responseTurnId || responseTurnId === active)) user = true;
+    }
+    if (record.type === "event_msg" && payload.type === "user_message" && active === input.turnId) {
+      if (payload.prompt_origin && payload.prompt_origin !== "end_user") return false;
+      if (payload.source && payload.source !== "user" && payload.source !== "end_user") return false;
+      if (stringValue(payload.message)) user = true;
+    }
+    if (record.type === "event_msg" && ["task_complete", "turn_aborted"].includes(String(payload.type))) active = undefined;
+  }
+  return foreground && user;
+}

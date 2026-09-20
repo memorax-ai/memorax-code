@@ -1052,6 +1052,14 @@ publication. Its legacy directory lock retains the same path and blocks new
 acquisition until released; an unprovable abandoned directory is not removed
 based on age. Pending schema, correlation, and pruning remain client-owned.
 
+Search correlation is owned by `memory/coding-context.ts`: the operational
+binding selects an exact native Turn, client-native parsers validate its
+foreground/end-user eligibility, and the provider serializes only the bounded
+`coding_context` identity. The same validator supplies optional role metadata
+on archived Coding Turns. It does not infer identity from trace events, recency
+or query text. The server owns Search IDs, evidence-window scheduling and
+Helpful decisions; missing native evidence leaves ordinary Search available.
+
 Remote state includes MemoraX memories, Add tasks, and optionally archived
 normalized Coding Turns; the service owns archival storage and consumption.
 The provider adapter is the network boundary for documented memory payloads;

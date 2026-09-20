@@ -689,6 +689,32 @@ durable storage; the client does not poll archival status or retry successful
 QA solely because archival failed. Pending uploads are not durably queued, so
 process failure or exhausted delivery attempts can lose unarchived Turns.
 
+### Automatic Helpful correlation
+
+Codex and Claude Code automatic/CLI Search may send `coding_context` with
+`client`, `session_id`, `turn_id`, `agent_role=main`, and
+`prompt_origin=end_user`. The native Turn must validate against the current
+operational binding. Unknown identity or role omits correlation without
+blocking ordinary Search; user-supplied request context cannot override it.
+The server generates `data.task_id` (`search_id`). No local transcript path,
+trace file, or OSS credentials are sent. Claude's wire client is `claude-code`.
+
+The matching completed `coding_turns` carries the same identity and optional
+`agent_role`/`prompt_origin`. Codex requires an explicitly foreground native
+Session source (`cli` or `vscode`) and the exact native user message; Claude
+uses its existing interactive external-user transcript rules. Unknown roles,
+subagents and system prompts do not get fabricated main/end_user labels.
+If the native prompt has not yet been persisted at Search time, correlation
+is omitted; a later CLI Search may qualify once the exact record exists.
+
+The service waits for the source Turn and the full N/N+1/N+2 window in OSS;
+missing indexes are not replaced with later Turns. Only N and N+1 QA and the
+N+2 user message are evaluated by default, after N+2 completes and uploads.
+Disabling Coding Turn collection prevents this evidence from arriving; the
+service expires such tasks without negative feedback. Truncated or
+role-ineligible evidence is skipped. The service preserves existing feedback
+and never treats archive acceptance or Search retrieval as proof of usefulness.
+
 ## Skill reminder and repository maintenance
 
 `[memory.skill_reminder].interval_turns` defaults to `5`; its environment

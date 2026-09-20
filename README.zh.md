@@ -314,3 +314,5 @@ memorax-code uninstall
 ## 开源许可证
 
 MemoraX Code 基于 [MIT License](LICENSE) 开源。
+
+Search 可携带经校验的 `coding_context`，供服务端关联归档的 `coding_turns` 并等待完整后续窗口后评判 Helpful；已有反馈不会被自动覆盖，缺失或裁剪的证据不计负反馈。详见[配置说明](docs/configuration.md#automatic-helpful-correlation)。

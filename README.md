@@ -178,6 +178,37 @@ remote connectivity and credentials; follow the cross-session example below.
 For client-specific diagnostic commands, see
 [Troubleshooting](docs/troubleshooting.md).
 
+#### Search scoring experiments
+
+For an explicit scoring experiment, `memorax-cli search` can send a supported
+formula and rough filter together with the normal search request:
+
+```bash
+memorax-cli search --query "如何验证这个修改？" \
+  --formula semantic_decay_plus_helpful \
+  --stale-days 90 \
+  --max-usage 1
+```
+
+The command sends `mode: "scored"`, `output_mode: "summary"`,
+`score_formula: {id, version}` (formula A uses
+`semantic_decay_plus_helpful@2`; the other A—E formulas remain at version 1), and
+`rough_filter: {stale_days, max_usage}`. The rough-filter pair must be supplied
+together. Supported formula IDs are
+`semantic_decay_plus_helpful`, `joint_decay_semantic_helpful`,
+`geometric_semantic_decay_helpful`, `linear_semantic_decay_helpful`, and
+`semantic_gate_decay_plus_helpful`. Invalid IDs, versions, or filter ranges are
+rejected locally before an HTTP request is sent. Automatic Hook retrieval keeps
+its existing default payload unless these experiment flags are explicitly used.
+
+`rough_filter` is always transmitted for experiment traceability, but the
+server deployment remains authoritative for whether it takes effect. The
+current MemoraX server requires `SEARCH.ROUGH_FILTER_ENABLED=true` and applies
+its configured stale-day and usage thresholds instead of request overrides;
+configure those server values to match the CLI experiment values before
+comparing results. Formula fields are forwarded only as a schema-coherent
+`mode="scored"`/`output_mode="summary"` group.
+
 ### Installation Troubleshooting
 
 Package installation does not launch setup automatically; run one of the setup
@@ -375,3 +406,5 @@ memory, or local trace artifacts in a public report.
 ## License
 
 MemoraX Code is available under the [MIT License](LICENSE).
+
+Search can include verified `coding_context` for server-side automatic Helpful. The server correlates it with archived `coding_turns`, waits for a complete follow-up window, and preserves existing feedback. Missing or truncated evidence is not negative feedback. See [configuration](docs/configuration.md#automatic-helpful-correlation).

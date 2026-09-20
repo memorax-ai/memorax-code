@@ -952,3 +952,13 @@ function isString(value: string | undefined): value is string {
 function isRecord(value: unknown): value is JsonRecord {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
+
+/** Reuse the same native prompt authority for Search correlation and archival roles. */
+export function claudeHelpfulPromptFromJsonLines(
+  transcript: string, input: { sessionId: string; turnId: string },
+): boolean {
+  const requested = requestedTranscriptRecords(transcript, input.sessionId);
+  if (!requested.ok) return false;
+  const matches = requested.records.filter((record) => promptIdFromRecord(record) === input.turnId && record.type === "user");
+  return matches.length > 0 && matches.every((record) => Boolean(visibleUserPrompt(record)));
+}

@@ -26,6 +26,8 @@ import {
   repositoryMemoryScopeKind,
   type RepositoryMemoryScope,
 } from "../../repository/scope.js";
+import type { CodingSearchContext } from "../../memory/coding-context.js";
+import { SEARCH_EXPERIMENT_FORMULA_IDS } from "../../memory/search-experiment-config.js";
 import type { TraceContext } from "../../trace/context.js";
 import { isRecord } from "../../shared/record.js";
 import { parseNativeMessageTimestamp } from "../../shared/message-time.js";
@@ -65,6 +67,7 @@ export type MemoraxAdapterOptions = {
   relatedTurns?: MemoryObservabilityRelatedTurn[];
   repositoryScope?: RepositoryMemoryScope;
   traceContext?: TraceContext;
+  codingContext?: CodingSearchContext;
   writebackAttempt?: {
     attempt: number;
     maxAttempts: number;
@@ -83,11 +86,22 @@ type MemoraxContextBlock = {
 };
 
 type MemoraxSearchPayload = {
+  coding_context?: CodingSearchContext;
   query: string;
   user_id: string;
   top_k: number;
   k_dense: number;
   k_sparse: number;
+  mode?: "fast" | "slow" | "scored";
+  output_mode?: "facts" | "summary";
+  score_formula?: {
+    id: string;
+    version: number;
+  };
+  rough_filter?: {
+    stale_days: number;
+    max_usage: number;
+  };
   filters?: unknown;
   min_semantic_similarity?: number;
 };
@@ -153,7 +167,10 @@ export async function invokeMemoraxMemoryProvider(
   const context = isRecord(request.context) ? request.context : {};
   const repositoryScope = repositoryScopeForConfig(config, options.repositoryScope);
   if (!repositoryScope.ok) return repositoryScope;
-  const payload = buildMemoraxSearchPayload(config, query, context, repositoryScope.scope);
+  const payload = {
+    ...buildMemoraxSearchPayload(config, query, context, repositoryScope.scope),
+    ...(options.codingContext ? { coding_context: options.codingContext } : {}),
+  };
   try {
     const { body: raw, quota } = await callMemoSearch(config, payload, options.fetchImpl);
     const items = extractMemoraxSearchItems(raw);
@@ -235,12 +252,54 @@ export function buildMemoraxSearchPayload(
   const topK = clampInteger(limit ?? config.topK, 1, 100);
   const kDense = typeof context.k_dense === "number" ? clampInteger(context.k_dense, 0, 100) : config.kDense ?? topK;
   const kSparse = typeof context.k_sparse === "number" ? clampInteger(context.k_sparse, 0, 100) : config.kSparse ?? topK;
+  const mode = context.mode === "fast" || context.mode === "slow" || context.mode === "scored"
+    ? context.mode
+    : undefined;
+  const outputMode = context.output_mode === "facts" || context.output_mode === "summary"
+    ? context.output_mode
+    : undefined;
+  const parsedScoreFormula = isRecord(context.score_formula)
+    && typeof context.score_formula.id === "string"
+    && context.score_formula.id.trim().length > 0
+    && typeof context.score_formula.version === "number"
+    && Number.isSafeInteger(context.score_formula.version)
+    && context.score_formula.version > 0
+    ? { id: context.score_formula.id.trim(), version: context.score_formula.version }
+    : undefined;
+  const summaryOutputRequired = parsedScoreFormula !== undefined
+    && SEARCH_EXPERIMENT_FORMULA_IDS.includes(
+      parsedScoreFormula.id as (typeof SEARCH_EXPERIMENT_FORMULA_IDS)[number],
+    );
+  const scoreFormula = mode === "scored" && (!summaryOutputRequired || outputMode === "summary")
+    ? parsedScoreFormula
+    : undefined;
+  const effectiveMode = mode === "scored" && scoreFormula === undefined
+    ? undefined
+    : mode;
+  const roughFilter = isRecord(context.rough_filter)
+    && typeof context.rough_filter.stale_days === "number"
+    && Number.isSafeInteger(context.rough_filter.stale_days)
+    && context.rough_filter.stale_days > 0
+    && context.rough_filter.stale_days <= 36_500
+    && typeof context.rough_filter.max_usage === "number"
+    && Number.isSafeInteger(context.rough_filter.max_usage)
+    && context.rough_filter.max_usage >= 0
+    && context.rough_filter.max_usage <= 2_147_483_647
+    ? {
+      stale_days: context.rough_filter.stale_days,
+      max_usage: context.rough_filter.max_usage,
+    }
+    : undefined;
   return {
     query,
     user_id: repositoryScope.effectiveUserId,
     top_k: topK,
     k_dense: kDense,
     k_sparse: kSparse,
+    ...(effectiveMode === undefined ? {} : { mode: effectiveMode }),
+    ...(outputMode === undefined ? {} : { output_mode: outputMode }),
+    ...(scoreFormula === undefined ? {} : { score_formula: scoreFormula }),
+    ...(roughFilter === undefined ? {} : { rough_filter: roughFilter }),
     ...(isRecord(context.filters) ? { filters: context.filters } : {}),
     ...(minSemanticSimilarity === undefined
       ? {}

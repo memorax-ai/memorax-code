@@ -1,3 +1,4 @@
+import { resolveCodingSearchContext } from "../../memory/coding-context.js";
 import {
   readCodexInterruptedRolloutTurn,
   readCodexCodingSessionTurn,
@@ -220,6 +221,7 @@ export function createCodexMemoryHookRuntime(options: CodexMemoryHookRuntimeOpti
         });
         return { ok: true, scheduled: false, reason: rollout.reason };
       }
+      const codingContext = await resolveCodingSearchContext(traceContext);
       const writeback = await memory.completeTurn({
         sessionId: request.sessionId,
         clientTurnId: request.turnId,
@@ -237,6 +239,7 @@ export function createCodexMemoryHookRuntime(options: CodexMemoryHookRuntimeOpti
         assistantTimestamp: rollout.turn.assistantTimestamp,
         ...(codingSessionTurn ? {
           codingTurn: {
+            ...(codingContext ? { agentRole: codingContext.agent_role, promptOrigin: codingContext.prompt_origin } : {}),
             client: CODEX_MEMORY_TURN_CLIENT,
             sessionId: codingSessionTurn.sessionId,
             turnId: codingSessionTurn.turnId,
