@@ -190,9 +190,9 @@ or explicitly labelled local observation times. An aligned source-label array
 in Add metadata distinguishes them; it contains no transcript paths or trace
 identifiers. See [timestamp semantics](docs/configuration.md#automatic-writeback-timestamps).
 
-Coding-session collection independently sends a locally redacted text/tool
-subset from completed Turns in separate `dreaming` archive requests to the
-configured MemoraX Add endpoint. It includes prompts, visible assistant messages,
+Coding-session collection attaches a locally redacted text/tool subset from
+completed Turns as an optional `dreaming` object on automatic QA Add requests
+to the configured MemoraX endpoint. It includes prompts, visible assistant messages,
 and tool calls and results from Codex, Claude Code, OpenCode, CodeBuddy, or
 WorkBuddy. Codex projects allowlisted native item fields, including web-search
 actions, tool-discovery arguments, and loaded tool definitions; nested strings
@@ -203,8 +203,9 @@ internal metadata, binary attachments, raw session files, native transcript path
 and trace provenance. This bounded, potentially lossy subset is not a complete
 Responses API transcript for direct replay. New configurations enable this
 feature; existing configurations without `[coding_sessions].enabled` leave it
-disabled. Collection does not discover or bulk-upload historical sessions;
-file-backed recovery rereads only previously registered completed Turns.
+disabled. Collection requires automatic QA writeback and does not discover or
+bulk-upload historical sessions. File-backed materialization rereads only the
+exact completed Turns in the current QA buffer.
 See [collection controls and limits](docs/configuration.md#coding-session-collection).
 
 Automatic writeback bounds each selected message to its configured Add limit,
@@ -218,8 +219,8 @@ identifiers are replaced with typed placeholders such as
 `[REDACTED:CREDENTIAL]`, `[REDACTED:EMAIL]`,
 `[REDACTED:LONG_NUMBER]`, and `[REDACTED:OPAQUE_ID]`. If either side of the
 turn contains no meaningful content after replacement, that automatic
-QA writeback is skipped locally and no QA Add request is sent. An independently
-enabled archive may still upload a normalized Turn containing tool activity.
+QA writeback is skipped locally and no Add request or archive attachment is sent
+for that Turn.
 
 This detector is not a complete data-loss-prevention system. Unknown formats
 and weak-context personal information may remain. Explicit `memorax-cli add`
@@ -236,18 +237,23 @@ queries, selected writeback content, and saved memories as sensitive.
 Automatic writeback and explicit Add are independent: persistent disabling of
 both requires `[memory.writeback].enabled = false` and
 `[memory.cli].add_enabled = false`, without enabling environment overrides.
-Neither setting disables coding-session collection; use
-`[coding_sessions].enabled = false` for that separate upload path. The global
-environment switch disables all three only when its value is exactly
+Disabling automatic writeback also stops its coding-session attachments. Use
+`[coding_sessions].enabled = false` to disable attachments while retaining QA.
+The global environment switch disables all writes only when its value is exactly
 `false`. Follow [Disabling memory writes](docs/configuration.md#disabling-memory-writes)
 for commands and process-inheritance requirements. These controls do not
 cancel in-flight requests or guarantee removal of previously buffered turns;
 graceful Backend shutdown can flush pending writeback.
-File-backed archive uploads retain private, content-free cursor records and
-reread the corresponding native files when due. This is not a transcript backup:
-deleted or changed source data can prevent recovery. OpenCode still holds its
-SDK-message archive batches in memory with bounded retries; a process crash or
-exhausted retry can lose those pending batches.
+File-backed attachments retain frozen references and content digests in the
+in-memory QA buffer and reread the corresponding native files at flush. Deleted
+or changed source data omits the attachment while preserving QA. OpenCode holds
+prepared SDK items in the same buffer. A process crash or exhausted Add retries
+can lose pending work; there is no independent archive queue or recovery loop.
+The Add receipt acknowledges QA acceptance, not completed OSS storage. An
+individual Turn's archive that cannot fit within the 2 MiB compact UTF-8 JSON
+budget for the `dreaming` object, including archive metadata, is omitted with a
+content-free local diagnostic instead of blocking QA. QA messages and other Add
+fields do not count toward this archive budget; their existing limits remain.
 
 ## Local Data and Diagnostics
 
@@ -257,15 +263,12 @@ the product creates or tightens the home to mode `0700` and newly seeded
 configuration to mode `0600`; Windows relies on the current user's filesystem
 ACLs.
 
-File-backed archive cursors under `runtime/coding-sessions/` retain native
-transcript and workspace paths, session/Turn identifiers, completion and activity
-times, byte boundaries and counts, projection versions, content digests, repository scope, a one-way
-connection fingerprint, batch identity, and confirmed upload progress. They
-contain no archive body or API key, but their identity and path metadata is
-still sensitive. Private atomic publication and cross-process locks protect
-updates; the cursor is local operational authority, not trace or diagnostic
-data. It survives Backend restart, does not enumerate native history, and does
-not authorize sending pending data under a different account or repository scope.
+The current attachment path does not persist archive cursors. Legacy files under
+`runtime/coding-sessions/` can still contain native transcript and workspace
+paths, session/Turn identifiers, projection metadata, digests, and upload
+progress. They remain sensitive local data; the current path neither reads,
+replays, nor deletes them. Frozen native references in the live QA buffer never
+enter the remote Add payload or local Add trace.
 
 Shared state locks exclusively create a private lock file and write its
 process-qualified owner record before entering a critical section. A failed

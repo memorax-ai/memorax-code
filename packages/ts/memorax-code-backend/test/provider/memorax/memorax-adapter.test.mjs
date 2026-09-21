@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { invokeMemoraxMemoryProvider } from "../../../dist/provider/memorax/adapter.js";
+import { memoraxConfigFromEnv } from "../../../dist/provider/memorax/config.js";
+import { CODING_SESSION_BATCH_MAX_BYTES } from "../../../dist/coding-sessions/contracts.js";
 import { listen } from "../../support/helpers.mjs";
 
 function testRepositoryScope(baseUserId = "user-1", repositorySlug = "memorax-code") {
@@ -991,4 +993,169 @@ test("MemoraX adapter preserves supported empty Search and asynchronous Add ackn
       else assert.equal(result.result.dispatch_receipt.accepted, true);
     }
   }
+});
+
+function dreamingWritebackFixture(turnCount = 1) {
+  const repositoryScope = testRepositoryScope();
+  const env = {
+    MEMORAX_CODE_MEMORAX_ENDPOINT: "https://memorax.test",
+    MEMORAX_CODE_MEMORAX_API_KEY: "test-key",
+    MEMORAX_CODE_MEMORAX_USER_ID: repositoryScope.baseUserId,
+    MEMORAX_CODE_CODING_SESSIONS_ENABLED: "true",
+  };
+  const configured = memoraxConfigFromEnv(env, {});
+  assert.equal(configured.ok, true);
+  const messages = [
+    { role: "user", content: "Review the upload boundary.", timestamp: 1777392000000 },
+    { role: "assistant", content: "The upload boundary is verified.", timestamp: 1777392000001 },
+  ];
+  return {
+    run: { sessionId: "dreaming-session", prompt: messages[0].content },
+    request: {
+      operation: "writeback",
+      context: { idempotencyKey: "dreaming-writeback", contentType: "code", mode: "default", messages },
+    },
+    options: {
+      config: configured.config,
+      env,
+      repositoryScope,
+      observabilitySource: "codex_hook_writeback",
+      dreaming: {
+        schema_version: 2,
+        redaction_version: 1,
+        batch_id: "dreaming-batch",
+        client: "codex",
+        session_id: "dreaming-session",
+        repository_slug: repositoryScope.repositorySlug,
+        turns: Array.from({ length: turnCount }, (_, index) => ({
+          turn_id: `turn-${index + 1}`,
+          turn_index: index + 1,
+          closed_at: "2026-01-01T00:00:00.000Z",
+          item_count: 3,
+        })),
+        items: Array.from({ length: turnCount }, (_, index) => [
+          { type: "message", role: "user", content: [{ type: "input_text", text: messages[0].content }] },
+          { type: "function_call_output", call_id: `call-${index + 1}`, output: "archive-only-tool-sentinel" },
+          { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: messages[1].content }] },
+        ]).flat(),
+      },
+    },
+  };
+}
+
+test("MemoraX adapter attaches Responses items to QA Add without claiming OSS storage or recording archive bodies", async () => {
+  for (const status of [200, 202, 503]) {
+    const { run, request, options } = dreamingWritebackFixture();
+    const requests = [];
+    const events = [];
+    const result = await invokeMemoraxMemoryProvider(run, request, {
+      ...options,
+      dreaming: { ...options.dreaming, event: "dreaming", user_id: "must-not-be-forwarded", transcriptPath: "/private/local/transcript" },
+      observability: { recordEvent: (event) => events.push(event) },
+      fetchImpl: async (url, init) => {
+        requests.push({ url: String(url), body: JSON.parse(init.body) });
+        return Response.json({ success: true, data: { task_id: "qa-task", status: "accepted" } }, { status });
+      },
+    });
+    assert.equal(result.ok, status !== 503);
+    if (result.ok) {
+      assert.equal(result.result.dispatch_receipt.accepted, true);
+      assert.equal(result.result.tool_result_payload.raw.data.status, "accepted");
+      assert.equal(result.result.tool_result_payload.stored, undefined);
+    }
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].url, "https://memorax.test/v1/memories/add");
+    assert.equal(requests[0].body.event, undefined);
+    assert.equal(requests[0].body.user_id, options.repositoryScope.effectiveUserId);
+    assert.equal(requests[0].body.content_type, "code");
+    assert.equal(requests[0].body.async_mode, true);
+    assert.deepEqual(requests[0].body.messages, request.context.messages);
+    assert.deepEqual(requests[0].body.dreaming, options.dreaming);
+    assert.equal(events.length, 1);
+    assert.deepEqual(events[0].request.payload.messages, request.context.messages);
+    assert.equal(events[0].request.payload.dreaming, undefined);
+    assert.doesNotMatch(JSON.stringify(events), /archive-only-tool-sentinel|dreaming-batch|function_call_output/);
+  }
+});
+
+test("MemoraX adapter rejects invalid or unapproved typed attachments and ignores context injection", async () => {
+  const { run, request, options } = dreamingWritebackFixture();
+  let calls = 0;
+  const fetchImpl = async () => {
+    calls += 1;
+    return Response.json({ success: true, data: { task_id: "qa-task", status: "accepted" } }, { status: 202 });
+  };
+  const invalidCases = [
+    { ...options, env: { ...options.env, MEMORAX_CODE_CODING_SESSIONS_ENABLED: "false" } },
+    { ...options, observabilitySource: "memory_cli" },
+    { ...options, observabilitySource: "claude_hook_writeback" },
+    { ...options, dreaming: { ...options.dreaming, session_id: "another-session" } },
+    { ...options, dreaming: { ...options.dreaming, repository_slug: "another-repository" } },
+    { ...options, dreaming: { ...options.dreaming, batch_id: " " } },
+    { ...options, dreaming: { ...options.dreaming, turns: [] } },
+    { ...options, dreaming: { ...options.dreaming, schema_version: 1 } },
+    { ...options, dreaming: { ...options.dreaming, turns: [{ ...options.dreaming.turns[0], item_count: 2 }] } },
+  ];
+  for (const candidate of invalidCases) {
+    const result = await invokeMemoraxMemoryProvider(run, request, { ...candidate, fetchImpl });
+    assert.equal(result.ok, false);
+    assert.match(result.errorCode, /^MEMORAX_CODING_SESSION_(?:ATTACHMENT_NOT_ALLOWED|SCOPE_MISMATCH|INVALID_BATCH)$/);
+  }
+  const notCode = await invokeMemoraxMemoryProvider(run, {
+    ...request, context: { ...request.context, contentType: "dialogue" },
+  }, { ...options, fetchImpl });
+  assert.equal(notCode.ok, false);
+  assert.equal(notCode.errorCode, "MEMORAX_CODING_SESSION_ATTACHMENT_NOT_ALLOWED");
+  assert.equal(calls, 0);
+  const plain = await invokeMemoraxMemoryProvider(run, {
+    ...request, context: { ...request.context, dreaming: options.dreaming, event: "dreaming" },
+  }, {
+    ...options,
+    dreaming: undefined,
+    observabilitySource: "memory_cli",
+    fetchImpl: async (_url, init) => {
+      const body = JSON.parse(init.body);
+      assert.equal(body.dreaming, undefined);
+      assert.equal(body.event, undefined);
+      return Response.json({ success: true });
+    },
+  });
+  assert.equal(plain.ok, true);
+});
+
+test("MemoraX adapter bounds only the archive object and leaves QA outside its byte budget", async () => {
+  const { run, request, options } = dreamingWritebackFixture(11);
+  const measure = () => Buffer.byteLength(JSON.stringify(options.dreaming), "utf8");
+  for (const item of options.dreaming.items) {
+    if (item.type === "message") item.content[0].text = "中".repeat(15_000);
+  }
+  options.dreaming.items[0].content[0].text += "x".repeat(CODING_SESSION_BATCH_MAX_BYTES - measure());
+  assert.equal(measure(), 2 * 1024 * 1024);
+  let calls = 0;
+  const fetchImpl = async (_url, init) => {
+    calls += 1;
+    assert.equal(Buffer.byteLength(JSON.stringify(JSON.parse(init.body).dreaming), "utf8"), CODING_SESSION_BATCH_MAX_BYTES);
+    assert.ok(Buffer.byteLength(init.body, "utf8") > CODING_SESSION_BATCH_MAX_BYTES);
+    return Response.json({ success: true }, { status: 202 });
+  };
+  assert.equal((await invokeMemoraxMemoryProvider(run, request, { ...options, fetchImpl })).ok, true);
+  request.context.messages[0].content += "More QA context. ".repeat(1000);
+  assert.equal((await invokeMemoraxMemoryProvider(run, request, { ...options, fetchImpl })).ok, true);
+  options.dreaming.items[0].content[0].text += "x";
+  const oversized = await invokeMemoraxMemoryProvider(run, request, { ...options, fetchImpl });
+  assert.equal(oversized.ok, false);
+  assert.equal(oversized.errorCode, "MEMORAX_CODING_SESSION_BATCH_TOO_LARGE");
+  assert.equal(calls, 2);
+  const plain = await invokeMemoraxMemoryProvider(run, {
+    ...request,
+    context: { ...request.context, messages: [{ role: "user", content: "x".repeat(CODING_SESSION_BATCH_MAX_BYTES) }] },
+  }, {
+    ...options,
+    dreaming: undefined,
+    fetchImpl: async (_url, init) => {
+      assert.ok(Buffer.byteLength(init.body, "utf8") > CODING_SESSION_BATCH_MAX_BYTES);
+      return Response.json({ success: true });
+    },
+  });
+  assert.equal(plain.ok, true);
 });

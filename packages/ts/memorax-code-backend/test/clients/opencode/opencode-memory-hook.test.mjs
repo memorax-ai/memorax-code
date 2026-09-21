@@ -369,12 +369,10 @@ test("OpenCode finalizes an explicit MessageAbortedError without writeback", asy
 test("OpenCode runtime routes SDK content and carries write quota to the next prompt", async () => {
   const memoraxCodeHome = await mkdtemp(join(tmpdir(), "memorax-code-opencode-runtime-"));
   const requests = [];
-  const codingUploads = [];
   let searchCalls = 0;
   const runtime = createOpenCodeMemoryHookRuntime({
     memoraxCodeHome,
     captureCodingTurns: true,
-    codingSessionUpload: (input) => { codingUploads.push(input); return { accepted: true }; },
     env: {
       MEMORAX_CODE_HOME: memoraxCodeHome,
       MEMORAX_CODE_OPENCODE_TRACE_ENABLED: "false",
@@ -453,12 +451,11 @@ test("OpenCode runtime routes SDK content and carries write quota to the next pr
       1_700_000_000_000,
       1_700_000_060_000,
     ]);
-    assert.equal(requests[1].body.coding_turns, undefined);
-    assert.equal(codingUploads.length, 1);
-    assert.equal(codingUploads[0].turn.client, "opencode");
-    assert.equal(codingUploads[0].turn.turnId, "user-1");
-    assert.equal(codingUploads[0].turn.turnIndex, 1);
-    assert.deepEqual(codingUploads[0].turn.items, [
+    assert.equal(requests[1].body.event, undefined);
+    assert.equal(requests[1].body.dreaming.client, "opencode");
+    assert.equal(requests[1].body.dreaming.turns[0].turn_id, "user-1");
+    assert.equal(requests[1].body.dreaming.turns[0].turn_index, 1);
+    assert.deepEqual(requests[1].body.dreaming.items, [
       { type: "message", role: "user", content: [{ type: "input_text", text: "OpenCode user prompt." }] },
       { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: "OpenCode assistant reply." }] },
     ]);

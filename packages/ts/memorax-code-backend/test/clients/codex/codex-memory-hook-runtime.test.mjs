@@ -160,12 +160,10 @@ test("memory hook writeback accepts repeated authority metadata in the exact Cod
   });
   const { fetchImpl, requests } = memoraxAddFetch();
   const events = [];
-  const codingUploads = [];
   const controller = createCodexMemoryHookRuntime({
-    env: WRITEBACK_ENV,
+    env: { ...WRITEBACK_ENV, MEMORAX_CODE_HOME: root, MEMORAX_CODE_CODING_SESSIONS_ENABLED: "true" },
     fetchImpl,
     captureCodingTurns: true,
-    codingSessionUpload: (input) => { codingUploads.push(input); return { accepted: true }; },
     memoryObservability: { recordEvent: (event) => events.push(event) },
   });
   try {
@@ -191,11 +189,10 @@ test("memory hook writeback accepts repeated authority metadata in the exact Cod
 
     assert.equal(requests[0].body.messages[0].content, "Remember this persisted Codex turn.");
     assert.equal(requests[0].body.messages[1].content, "Stored persisted Codex answer.");
-    assert.equal(requests[0].body.coding_turns, undefined);
-    assert.equal(codingUploads.length, 1);
-    assert.equal(codingUploads[0].turn.sessionId, "session-hook");
-    assert.equal(codingUploads[0].turn.turnId, "turn-1");
-    assert.deepEqual(codingUploads[0].turn.items, [
+    assert.equal(requests[0].body.event, undefined);
+    assert.equal(requests[0].body.dreaming.session_id, "session-hook");
+    assert.equal(requests[0].body.dreaming.turns[0].turn_id, "turn-1");
+    assert.deepEqual(requests[0].body.dreaming.items, [
       { type: "message", role: "user", content: [{ type: "input_text", text: "Remember this persisted Codex turn.\n" }] },
       { type: "message", role: "assistant", phase: "commentary", content: [{ type: "output_text", text: "Inspecting the persisted turn." }] },
       { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: "Stored persisted Codex answer.\n" }] },
@@ -229,13 +226,11 @@ test("Codex source-only identity failure preserves independently valid QA writeb
     internal_chat_message_metadata_passthrough: { turn_id: "other-turn" },
   };
   await writeFile(transcriptPath, `${records.map(JSON.stringify).join("\n")}\n`);
-  const codingUploads = [];
   const { fetchImpl, requests } = memoraxAddFetch();
   const controller = createCodexMemoryHookRuntime({
-    env: { ...WRITEBACK_ENV, MEMORAX_CODE_HOME: root, MEMORAX_CODE_CODEX_TRACE_ENABLED: "false" },
+    env: { ...WRITEBACK_ENV, MEMORAX_CODE_HOME: root, MEMORAX_CODE_CODEX_TRACE_ENABLED: "false", MEMORAX_CODE_CODING_SESSIONS_ENABLED: "true" },
     fetchImpl,
     captureCodingTurns: true,
-    codingSessionUpload: (input) => { codingUploads.push(input); return { accepted: true }; },
   });
   try {
     await controller.recordTurnStart({
@@ -248,8 +243,7 @@ test("Codex source-only identity failure preserves independently valid QA writeb
     }), { ok: true, scheduled: true });
     await waitFor(() => requests.length === 1, "QA writeback must not depend on source collection");
     assert.deepEqual(requests[0].body.messages.map(({ content }) => content), ["Inspect the parser.", "The parser is correct."]);
-    assert.equal(requests[0].body.coding_turns, undefined);
-    assert.deepEqual(codingUploads, [], "Source identity failures must not construct a fallback archive");
+    assert.equal(requests[0].body.dreaming, undefined, "Source identity failures must not construct a fallback archive");
   } finally {
     controller.close();
     await rm(root, { recursive: true, force: true });

@@ -1,10 +1,6 @@
 import { retrieveAutomaticMemoryContext } from "./automatic-retrieval.js";
 import type { CodingSessionSourceTurn } from "../coding-sessions/coding-turn.js";
-import type { CodingSessionInteraction, NativeCodingSessionTurnRef } from "../coding-sessions/contracts.js";
-import {
-  createCodingSessionUploadRuntime,
-  type CodingSessionUploadEnqueue,
-} from "../coding-sessions/upload.js";
+import type { NativeCodingSessionTurnRef } from "../coding-sessions/contracts.js";
 import {
   createAutomaticMemoryWritebackRuntime,
   type AutomaticMemoryWritebackEnqueue,
@@ -44,8 +40,6 @@ import { recordTraceEvent, traceTurnEventId, writeCurrentTraceTurn } from "../tr
 export type HarnessMemoryRuntimeOptions = {
   automaticWriteback?: AutomaticMemoryWritebackEnqueue;
   captureCodingTurns?: boolean;
-  codingSessionUpload?: CodingSessionUploadEnqueue;
-  codingSessionInteraction?: (input: CodingSessionInteraction) => Promise<void>;
   readCodingSessionTurn?: (ref: NativeCodingSessionTurnRef) => Promise<CodingSessionSourceTurn | undefined>;
   diagnosticLogger?: MemoryDiagnosticLogger;
   env?: Record<string, string | undefined>;
@@ -124,25 +118,13 @@ export function createHarnessMemoryRuntime(
     : options.automaticWriteback
       ? { enqueue: options.automaticWriteback }
       : createAutomaticMemoryWritebackRuntime({
+        memoraxCodeHome: options.memoraxCodeHome ?? (options.env ?? process.env).MEMORAX_CODE_HOME?.trim(),
         diagnosticLogger: options.diagnosticLogger,
         queueQuotaNotice: pendingQuotaNotice?.queue,
-      });
-  const codingUpload = options.turnCoordinator
-    ? undefined
-    : options.codingSessionUpload
-      ? { enqueue: options.codingSessionUpload }
-      : createCodingSessionUploadRuntime({
-        enabled: options.captureCodingTurns === true,
-        memoraxCodeHome: options.memoraxCodeHome,
-        env: options.env,
-        fetchImpl: options.fetchImpl,
-        readTurn: options.readCodingSessionTurn,
-        clock: { now, setTimeout, clearTimeout },
-        diagnosticLogger: options.diagnosticLogger,
+        readCodingSessionTurn: options.readCodingSessionTurn,
       });
   const turnCoordinator = options.turnCoordinator ?? createMemoryTurnCoordinator({
     automaticWriteback: automaticWriteback!.enqueue,
-    codingSessionUpload: codingUpload?.enqueue,
     now,
     ttlMs: options.ttlMs,
     maxEntries: options.maxEntries,
@@ -151,7 +133,6 @@ export function createHarnessMemoryRuntime(
   const repositoryMemorySession = options.repositoryMemorySession ?? createRepositoryMemorySessionRuntime({
     onScopeUpgrade(upgrade) {
       automaticWriteback?.discardForScopeUpgrade?.(upgrade);
-      if (codingUpload && "discardForScopeUpgrade" in codingUpload) codingUpload.discardForScopeUpgrade(upgrade);
     },
   });
   const retrievalTurns = new Set<string>();
@@ -195,12 +176,6 @@ export function createHarnessMemoryRuntime(
       if (turn.clientTurnId) {
         const state = turnCoordinator.recordTurnStart({ ...turn, client: definition.client, clientTurnId: turn.clientTurnId, repositoryMemory });
         onTurnRegistered?.(state);
-      }
-      const archiveScope = repositoryMemory.ok ? repositoryMemory.memory.scope : undefined;
-      const observeInteraction = options.codingSessionInteraction
-        ?? (codingUpload && "observeInteraction" in codingUpload ? codingUpload.observeInteraction : undefined);
-      if (turn.clientTurnId && archiveScope && definition.client !== "dsh" && definition.client !== "trae") {
-        await observeInteraction?.({ client: definition.client, sessionId: turn.sessionId, repositoryScope: archiveScope });
       }
       if (diagnosticFields) {
         options.diagnosticLogger?.(`${definition.diagnosticPrefix}.turn_start`, {
@@ -272,7 +247,8 @@ export function createHarnessMemoryRuntime(
         resolveRepositoryMemory: input.resolveRepositoryMemory,
         userText: input.userText,
         assistantText: input.assistantText,
-        ...(input.codingTurn?.client === definition.client
+        ...(options.captureCodingTurns === true
+          && input.codingTurn?.client === definition.client
           && input.codingTurn.sessionId === input.sessionId
           && input.codingTurn.turnId === input.clientTurnId
           ? { codingTurn: input.codingTurn } : {}),
@@ -299,7 +275,6 @@ export function createHarnessMemoryRuntime(
       if (!options.turnCoordinator) turnCoordinator.close();
       if (!options.repositoryMemorySession) repositoryMemorySession.close();
       automaticWriteback?.close?.();
-      if (codingUpload && "close" in codingUpload) codingUpload.close();
       if (!options.pendingQuotaNotice) pendingQuotaNotice?.close();
     },
   };

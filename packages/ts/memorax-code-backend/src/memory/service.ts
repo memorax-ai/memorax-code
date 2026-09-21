@@ -1,5 +1,4 @@
 import { createAutomaticMemoryWritebackRuntime } from "./automatic-writeback.js";
-import { createCodingSessionUploadRuntime } from "../coding-sessions/upload.js";
 import { readCodingSessionSourceTurn } from "./coding-session-source.js";
 import { codingSessionsEnabled, loadMemoraxCodeConfig } from "../config/memorax-code.js";
 import { recordWritebackRejection } from "./background-diagnostics.js";
@@ -36,7 +35,7 @@ import type {
 
 export type MemoryServiceOptions = Omit<
   CodexMemoryHookRuntimeOptions,
-  "automaticWriteback" | "captureCodingTurns" | "codingSessionUpload" | "pendingQuotaNotice" | "repositoryMemorySession" | "turnCoordinator"
+  "automaticWriteback" | "captureCodingTurns" | "pendingQuotaNotice" | "repositoryMemorySession" | "turnCoordinator"
 > & Pick<ClaudeMemoryHookRuntimeOptions, "transcriptReadAttempts" | "transcriptRetryDelayMs">;
 
 type MemoryHookWritebackResult =
@@ -55,37 +54,28 @@ export type MemoryService = {
 };
 
 export function createMemoryService(options: MemoryServiceOptions = {}): MemoryService {
+  const env = options.env ?? process.env;
+  const memoraxCodeHome = options.memoraxCodeHome ?? env.MEMORAX_CODE_HOME?.trim();
   const pendingQuotaNotice = createPendingQuotaNoticeRuntime({
     claimQuotaNotice: options.claimQuotaNotice,
     diagnosticLogger: options.diagnosticLogger,
     env: options.env,
   });
   const automaticWriteback = createAutomaticMemoryWritebackRuntime({
-    memoraxCodeHome: options.memoraxCodeHome,
+    memoraxCodeHome,
     diagnosticLogger: options.diagnosticLogger,
     queueQuotaNotice: pendingQuotaNotice.queue,
+    readCodingSessionTurn: readCodingSessionSourceTurn,
   });
-  const env = options.env ?? process.env;
-  const fileConfig = loadMemoraxCodeConfig(options.memoraxCodeHome ?? env.MEMORAX_CODE_HOME?.trim());
+  const fileConfig = loadMemoraxCodeConfig(memoraxCodeHome);
   const captureCodingTurns = codingSessionsEnabled(env, fileConfig);
-  const codingUpload = createCodingSessionUploadRuntime({
-    enabled: captureCodingTurns,
-    memoraxCodeHome: options.memoraxCodeHome,
-    env: options.env,
-    fetchImpl: options.fetchImpl,
-    readTurn: readCodingSessionSourceTurn,
-    clock: { now: options.now ?? Date.now, setTimeout, clearTimeout },
-    diagnosticLogger: options.diagnosticLogger,
-  });
   const repositoryMemorySession = createRepositoryMemorySessionRuntime({
     onScopeUpgrade(upgrade) {
       automaticWriteback.discardForScopeUpgrade(upgrade);
-      codingUpload.discardForScopeUpgrade(upgrade);
     },
   });
   const turnCoordinator = createMemoryTurnCoordinator({
     automaticWriteback: automaticWriteback.enqueue,
-    codingSessionUpload: codingUpload.enqueue,
     now: options.now,
     ttlMs: options.ttlMs,
     maxEntries: options.maxEntries,
@@ -94,7 +84,6 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
   const codexHook = createCodexMemoryHookRuntime({
     ...options,
     captureCodingTurns,
-    codingSessionInteraction: codingUpload.observeInteraction,
     pendingQuotaNotice,
     repositoryMemorySession,
     turnCoordinator,
@@ -102,7 +91,6 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
   const claudeHook = createClaudeMemoryHookRuntime({
     ...options,
     captureCodingTurns,
-    codingSessionInteraction: codingUpload.observeInteraction,
     pendingQuotaNotice,
     repositoryMemorySession,
     turnCoordinator,
@@ -122,7 +110,6 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
   const codeBuddyHook = createCodeBuddyMemoryHookRuntime({
     ...options,
     captureCodingTurns,
-    codingSessionInteraction: codingUpload.observeInteraction,
     pendingQuotaNotice,
     repositoryMemorySession,
     turnCoordinator,
@@ -130,7 +117,6 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
   const workBuddyHook = createCodeBuddyMemoryHookRuntime({
     ...options,
     captureCodingTurns,
-    codingSessionInteraction: codingUpload.observeInteraction,
     client: "workbuddy",
     pendingQuotaNotice,
     repositoryMemorySession,
@@ -199,7 +185,7 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
       return unsupportedMemoryHookCommand(command);
     },
     async drain() {
-      await Promise.all([automaticWriteback.drain(), codingUpload.drain()]);
+      await automaticWriteback.drain();
     },
     close() {
       if (closed) return;
@@ -214,7 +200,6 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
       turnCoordinator.close();
       repositoryMemorySession.close();
       automaticWriteback.close();
-      codingUpload.close();
       pendingQuotaNotice.close();
     },
   };

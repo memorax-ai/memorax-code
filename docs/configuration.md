@@ -528,8 +528,8 @@ belong in the `[memory.writeback]` TOML table.
 Automatic writeback and explicit Add have separate configuration gates.
 `[memory.writeback].enabled` does not disable explicit `memorax-cli add`;
 `[memory.cli].add_enabled` does not disable automatic writeback. Coding-session
-collection has a third, independent gate. The global environment switch can
-disable all three, as described below.
+collection has an additional gate on automatic writeback. The global
+environment switch can disable all memory writes, as described below.
 
 | Field | Environment override | Fallback |
 | --- | --- | --- |
@@ -564,9 +564,10 @@ Remove conflicting environment overrides that enable either feature, then run
 Setting only the first table disables automatic writeback while keeping
 explicit Add available. Search is independent of both switches.
 
-To also disable coding-session archive uploads, set `[coding_sessions] enabled =
-false` and remove any enabling `MEMORAX_CODE_CODING_SESSIONS_ENABLED` override.
-Disabling only QA writeback or explicit Add does not disable archive uploads.
+To disable coding-session attachments while retaining automatic QA writeback,
+set `[coding_sessions] enabled = false` and remove any enabling
+`MEMORAX_CODE_CODING_SESSIONS_ENABLED` override. Disabling automatic writeback
+also stops its attachments; explicit Add never carries them.
 
 For a temporary override, export the global switch before restarting the
 Backend and launching any clients that run memory commands. In Bash or Zsh:
@@ -597,8 +598,10 @@ those turns. They also do not delete memories already stored in MemoraX.
 New configurations include `[coding_sessions] enabled = true`. Existing
 configurations without this field remain disabled. The environment override is
 `MEMORAX_CODE_CODING_SESSIONS_ENABLED`; restart the Backend after changing this
-startup setting. `MEMORAX_CODE_MEMORAX_WRITEBACK_ENABLED=false` disables archive
-enqueue as well as automatic QA writeback and explicit Add.
+startup setting. Collection adds an optional attachment to automatic QA Add;
+it does not schedule separate requests. Automatic writeback must also be
+enabled. `MEMORAX_CODE_MEMORAX_WRITEBACK_ENABLED=false` disables automatic QA
+writeback, its attachments, and explicit Add.
 
 Codex, Claude Code, OpenCode, CodeBuddy, and WorkBuddy collect only matching,
 completed native Turns observed by their completion path. There is no discovery
@@ -620,62 +623,68 @@ does not claim that the native log was fully collected. Redaction and truncation
 can also change tool arguments or output. These controls are independent of
 ordinary QA chunking.
 
-Archive batches contain whole Turns from one client, session, connection, and
-repository scope. Their full serialized request body, including the envelope,
-is capped at **1 MiB (1,048,576 bytes)**. Turns are not split across
-batches; a Turn that would exceed the remaining request budget stays for the
-next batch. This hard cap and the per-Turn limit above are distinct from the
-upload triggers below. Ordinary QA batching is unchanged.
+Attachments contain whole Turns from one client, session, connection, and
+repository scope. Only the **`dreaming` archive object** is capped at
+**2 MiB (2,097,152 bytes)** of compact UTF-8 JSON, including its items and
+archive metadata. QA messages and other Add fields do not count toward this
+budget and retain their existing limits. The complete Add request can therefore
+exceed 2 MiB. This is an archive limit, not a separate size-triggered uploader
+or a process-wide memory cap.
 
-For Codex, Claude Code, CodeBuddy, and WorkBuddy, pending means **new completed
-Turns not yet acknowledged as stored**, not the session's total history:
+Attachments follow the existing automatic QA buffer: by default, it flushes
+after eight completed Turns, at its QA character limit, after ten minutes
+without another accepted QA Turn, or on graceful drain. Configuration overrides
+and unbuffered writeback still apply. There is no independent 50-Turn trigger,
+30-minute or 24-hour archive timer, cursor scan, or archive-only request.
 
-| Trigger | Eligible pending data |
-| --- | --- |
-| Size | At least 1 MiB of filtered, redacted, serialized event data, including its envelope |
-| Turn count | At least 50 completed Turns |
-| Short inactivity | At least 5 completed Turns and 30 minutes without an observed interaction |
-| Tail inactivity | Any remaining completed Turns after 24 hours without an observed interaction |
+When an archive would exceed 2 MiB, the planner divides it at whole-Turn
+boundaries and then applies the existing QA text chunking. A Turn's complete
+archive items travel only with the first QA part containing that Turn; later
+QA fragments do not repeat them. If one Turn's archive object, including its
+archive metadata, cannot fit on its own, that Turn is sent as QA only and a
+content-free local diagnostic reports the omitted attachment. The plugin does
+not silently truncate it further or block all later QA behind the oversized
+Turn.
 
-The Backend checks its private cursor registry at startup, after accepted
-completions, and periodically at approximately one-minute intervals. Accepted
-Turn starts reset inactivity for an already tracked session. Graceful drain
-also makes pending groups of at least five Turns eligible, subject to retry
-backoff and the shutdown deadline; smaller tails remain for later processing.
-No timer runs while the Backend is stopped. On restart, overdue registered
-data becomes eligible again.
-
-OpenCode temporarily retains its separate SDK-message in-memory behavior:
-flush at the 1 MiB batch boundary, after ten minutes without another accepted
-completed Turn, or on graceful drain. It does not use the file-backed cursor,
-50-Turn, or two inactivity rules above.
-
-The separate request uses the same `/v1/memories/add` endpoint:
+An automatic request to `/v1/memories/add` carries the optional `dreaming`
+object alongside the usual QA fields, with no top-level `event`:
 
 ```json
 {
-  "event": "dreaming",
-  "schema_version": 2,
-  "redaction_version": 1,
-  "batch_id": "stable-batch-id",
-  "user_id": "resolved-scoped-user-id",
-  "client": "codex",
-  "session_id": "native-session-id",
-  "repository_slug": "owner/repository",
-  "turns": [
-    {
-      "turn_id": "native-turn-id",
-      "turn_index": 1,
-      "closed_at": "2026-07-16T00:00:03.000Z",
-      "item_count": 4
-    }
+  "messages": [
+    { "role": "user", "content": "Review the module.", "timestamp": 1784160000000 },
+    { "role": "assistant", "content": "The module was reviewed.", "timestamp": 1784160003000 }
   ],
-  "items": [
-    { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "Review the module." }] },
-    { "type": "function_call", "call_id": "call-1", "name": "read_file", "arguments": "{\"path\":\"src/main.ts\"}" },
-    { "type": "function_call_output", "call_id": "call-1", "output": "Module contents." },
-    { "type": "message", "role": "assistant", "phase": "final_answer", "content": [{ "type": "output_text", "text": "The module was reviewed." }] }
-  ]
+  "user_id": "resolved-scoped-user-id",
+  "memory_output_language": "zh",
+  "content_type": "code",
+  "mode": "default",
+  "session_id": "native-session-id",
+  "async_mode": true,
+  "timestamp": 1784160000000,
+  "metadata": { "source": "memorax-code", "idempotency_key": "stable-qa-part-id" },
+  "dreaming": {
+    "schema_version": 2,
+    "redaction_version": 1,
+    "batch_id": "stable-batch-id",
+    "client": "codex",
+    "session_id": "native-session-id",
+    "repository_slug": "owner/repository",
+    "turns": [
+      {
+        "turn_id": "native-turn-id",
+        "turn_index": 1,
+        "closed_at": "2026-07-16T00:00:03.000Z",
+        "item_count": 4
+      }
+    ],
+    "items": [
+      { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "Review the module." }] },
+      { "type": "function_call", "call_id": "call-1", "name": "read_file", "arguments": "{\"path\":\"src/main.ts\"}" },
+      { "type": "function_call_output", "call_id": "call-1", "output": "Module contents." },
+      { "type": "message", "role": "assistant", "phase": "final_answer", "content": [{ "type": "output_text", "text": "The module was reviewed." }] }
+    ]
+  }
 }
 ```
 
@@ -726,52 +735,37 @@ the last contiguous text group becomes `final_answer`; earlier groups remain
 answer at the end of each Turn, so tools following that final text group are
 placed before it. Ordinary QA text extraction is unchanged.
 
-The request has no QA `messages` or memory-extraction options. The server must
-implement this schema and return
-`{"success":true,"data":{"event":"dreaming","batch_id":"stable-batch-id","status":"stored"}}`
-after storing that batch. A generic memory-task acceptance does not acknowledge
-the archive. The previous coding-session contract is incompatible: deployment
-requires a coordinated server update, which this plugin change does not provide.
-Server request-size limits must allow these bodies. The server owns OSS
+The server must accept this combined contract and split QA extraction from
+archive handling internally. The ordinary Add response, including HTTP `202`,
+acknowledges **QA acceptance only**, not completed OSS storage. The plugin does
+not wait for or poll a `stored` receipt. An event-only server requires a matching
+update before this plugin behavior can be deployed. The server owns OSS
 credentials and object paths; the plugin does not connect directly to OSS.
 
-File-backed collection stores private cursor records under
-`MEMORAX_CODE_HOME/runtime/coding-sessions/*.json`. They contain native paths,
-frozen file-prefix byte boundaries, Turn IDs/indexes and completion times, local projection versions,
-prepared-content digests and byte counts, repository scope and a connection fingerprint,
-pending batch identity, and confirmed progress. They contain neither archive
-bodies nor API keys. Only references accepted by the completion path are
-recorded: the periodic scan does not enumerate native session directories or
-upload earlier history.
+For Codex, Claude Code, CodeBuddy, and WorkBuddy, the in-memory QA buffer keeps
+only frozen native references and prepared-content digests for attachments.
+Those references include exact file-prefix byte boundaries, native identity
+and order, completion time, and projection version. When QA flushes, the owning
+client reader reconstructs and redacts that exact Turn; its digest must match
+the completion-time digest. Missing, truncated, rewritten, or scope-mismatched
+source data omits the attachment with a local diagnostic while preserving QA.
+Native paths and references never enter the remote payload or local Add trace.
 
-When a batch is due, the owning client reader rereads its frozen native
-prefixes. Projection and redaction must reproduce the registered digests.
-References created before projection versioning keep the original mapping;
-new references use the text-preserving mapping, including Codex search items.
-Old Codex references continue to omit those items. A pending batch is never
-re-encoded under a new mapping with its old ID. Recent duplicate completions
-are checked against the original projection when their recorded version differs.
-The batch ID and membership remain fixed until a matching `stored` receipt;
-only then does confirmed progress advance. Failed or unconfirmed batches keep
-their references and retry after five minutes, independently of QA. A bounded
-record of the latest confirmed batch, up to 50 Turn IDs and digests, recognizes
-recent duplicate completion signals. Unknown or changed Turns at or before
-confirmed progress are rejected, not silently acknowledged.
+OpenCode keeps its prepared SDK items with the buffered QA instead of guessing
+a native database location. After preparation, attachment identity, contents,
+and QA part identity stay fixed through the existing bounded Add retries.
+For a valid coding attachment, deduplication also includes the native Turn ID:
+two distinct Turns with equal QA text keep their respective archive data.
+Repeated handling of the same accepted Turn is suppressed; QA-only writeback
+retains its existing text-based deduplication.
+There is no independent archive retry or persistent upload progress. A Backend
+crash or exhausted retries can lose pending work; successful QA acceptance also
+does not prove later archive completion. Legacy files under
+`runtime/coding-sessions/` are not read, replayed, or deleted by this path.
 
-Native files remain necessary. Deleted, truncated, or rewritten source data
-can prevent upload, and cursor persistence is not a second transcript backup.
-An account/connection or repository-scope mismatch does not redirect pending
-data to a different destination. Each native upload runtime processes one
-batch at a time; a per-cursor cross-process upload lock prevents overlapping
-uploads of that cursor, separately from the short state-update lock.
-
-OpenCode still makes at most two attempts for eligible transient failures,
-using the same in-memory batch ID and content; a crash or exhausted retries
-can lose that pending data. It never falls back to guessing a local database.
-All paths still use transient memory for parsing, projection, serialization,
-and requests. The byte limits are not a process-wide memory cap. QA does not
-wait for archive network completion, but local preparation shares the Backend
-CPU. Shutdown drain remains subject to the Backend's overall shutdown deadline.
+Parsing, projection, serialization, and requests still use transient memory;
+the request byte limit is not a process-wide memory cap. Graceful drain follows
+the existing QA buffer and the Backend's overall shutdown deadline.
 
 ### Automatic writeback timestamps
 

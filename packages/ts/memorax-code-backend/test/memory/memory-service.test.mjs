@@ -387,7 +387,7 @@ test("memory service discards fallback writeback when turn start upgrades the se
   }
 });
 
-test("native completion separates eight-Turn QA from byte-batched archive and independent retries", { timeout: 60_000 }, async (t) => {
+test("eight native Turns share one QA Add with optional Responses items and stable request retries", { timeout: 60_000 }, async (t) => {
   for (const scenario of [
     { name: "both enabled", qa: true, archive: true },
     { name: "QA disabled", qa: false, archive: true },
@@ -407,10 +407,8 @@ test("native completion separates eight-Turn QA from byte-batched archive and in
       const transcriptPath = await writeRollout(root, sessionId, turns);
       const requests = [];
       const diagnostics = [];
-      let archiveNow = Date.now();
       const service = createMemoryService({
         memoraxCodeHome: home,
-        now: () => archiveNow,
         env: {
           MEMORAX_CODE_HOME: home,
           MEMORAX_CODE_CODEX_TRACE_ENABLED: "false",
@@ -426,42 +424,34 @@ test("native completion separates eight-Turn QA from byte-batched archive and in
           const body = JSON.parse(init.body);
           assert.equal(String(url), "http://memorax.test/v1/memories/add");
           requests.push(body);
-          if (!body.event) {
-            assert.equal(body.coding_turns, undefined);
-            assert.equal(body.turns, undefined);
-            assert.equal(body.items, undefined);
-            assert.doesNotMatch(JSON.stringify(body), /Tool-only output|function_call/);
-            return Response.json({ success: true, data: { task_id: "qa-accepted", status: "accepted" } }, { status: 202 });
-          }
-          assert.equal(body.messages, undefined);
-          assert.equal(body.event, "dreaming");
-          assert.equal(body.schema_version, 2);
-          assert.equal(body.redaction_version, 1);
+          assert.equal(body.event, undefined);
           assert.equal(body.coding_turns, undefined);
-          const archives = requests.filter((request) => request.event);
-          if (archives.length === 1) return new Response("", { status: 503 });
-          return Response.json({ success: true, data: { event: body.event, batch_id: body.batch_id, status: "stored" } });
+          assert.equal(body.turns, undefined);
+          assert.equal(body.items, undefined);
+          assert.doesNotMatch(JSON.stringify(body.messages), /Tool-only output|function_call/);
+          if (scenario.archive && requests.length === 1) return new Response("", { status: 503 });
+          return Response.json({ success: true, data: { task_id: "qa-accepted", status: "accepted" } }, { status: 202 });
         },
       });
       t.after(() => service.close());
       for (const turn of turns) {
         const command = { version: 1, client: "codex", sessionId, turnId: turn.turnId, cwd: workspace, transcriptPath };
         await service.recordTurnStart({ ...command, prompt: turn.prompt });
-        assert.deepEqual(await service.writebackTurn({ ...command, lastAssistantMessage: turn.reply }), { ok: true, scheduled: true });
+        const result = await service.writebackTurn({ ...command, lastAssistantMessage: turn.reply });
+        assert.equal(result.scheduled, scenario.qa);
+        if (!scenario.qa) assert.equal(result.reason, "disabled");
       }
       if (scenario.qa) await waitForAcceptedWritebacks(diagnostics, 1);
-      assert.equal(requests.length, scenario.qa ? 1 : 0, "eight QA Turns must not flush the archive");
       await service.drain();
-      assert.equal(requests.filter((request) => request.event).length, scenario.archive ? 1 : 0);
-      archiveNow += 5 * 60 * 1000;
-      await service.drain();
-      const qa = requests.filter((request) => !request.event);
-      const archives = requests.filter((request) => request.event);
-      assert.equal(qa.length, scenario.qa ? 1 : 0, "archive retry must not repeat QA");
-      assert.equal(archives.length, scenario.archive ? 2 : 0);
-      if (scenario.archive) {
-        assert.deepEqual(archives[1], archives[0], "retry preserves the complete batch");
-        assert.equal(archives[0].user_id, "user-1@workspace");
+      assert.equal(requests.length, scenario.qa ? (scenario.archive ? 2 : 1) : 0);
+      const archives = requests.flatMap((request) => request.dreaming ? [request.dreaming] : []);
+      assert.equal(archives.length, scenario.qa && scenario.archive ? 2 : 0);
+      if (scenario.qa && scenario.archive) {
+        assert.deepEqual(requests[1], requests[0], "retry preserves both QA and the exact archive batch");
+        assert.equal(requests[0].messages.length, 16);
+        assert.equal(requests[0].user_id, "user-1@workspace");
+        assert.equal(archives[0].schema_version, 2);
+        assert.equal(archives[0].redaction_version, 1);
         assert.equal(archives[0].repository_slug, "workspace");
         assert.deepEqual(archives[0].turns.map((turn) => turn.turn_id), turns.map((turn) => turn.turnId));
         assert.deepEqual(archives[0].turns.map((turn) => turn.turn_index), [1, 2, 3, 4, 5, 6, 7, 8]);

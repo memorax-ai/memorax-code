@@ -196,10 +196,8 @@ test("WorkBuddy provisional turn writeback and nested Skill commands share Gener
       headers: { "content-type": "application/json" },
     });
   };
-  const codingUploads = [];
   const runtime = createCodeBuddyMemoryHookRuntime({
     env, fetchImpl, client: "workbuddy", captureCodingTurns: true,
-    codingSessionUpload: (input) => { codingUploads.push(input); return { accepted: true }; },
   });
   try {
     await runtime.recordTurnStart({
@@ -222,16 +220,15 @@ test("WorkBuddy provisional turn writeback and nested Skill commands share Gener
       { role: "user", content: prompt, timestamp: 1_700_000_000_000 },
       { role: "assistant", content: "persisted reply", timestamp: 1_700_000_060_000 },
     ]);
-    assert.equal(requests[0].body.coding_turns, undefined);
-    assert.equal(codingUploads.length, 1);
-    assert.equal(codingUploads[0].repositoryScope.effectiveUserId, "user-1@General");
-    const codingTurn = codingUploads[0].turn;
-    assert.equal(codingTurn.client, "workbuddy");
-    assert.equal(codingTurn.sessionId, sessionId);
-    assert.equal(codingTurn.turnId, turnId);
-    assert.equal(codingTurn.turnIndex, 1);
-    assert.equal(codingTurn.closedAt, new Date(1_700_000_060_000).toISOString());
-    assert.deepEqual(codingTurn.items, [
+    assert.equal(requests[0].body.event, undefined);
+    assert.equal(requests[0].body.user_id, "user-1@General");
+    const archive = requests[0].body.dreaming;
+    assert.equal(archive.client, "workbuddy");
+    assert.equal(archive.session_id, sessionId);
+    assert.equal(archive.turns[0].turn_id, turnId);
+    assert.equal(archive.turns[0].turn_index, 1);
+    assert.equal(archive.turns[0].closed_at, new Date(1_700_000_060_000).toISOString());
+    assert.deepEqual(archive.items, [
       { type: "message", role: "user", content: [{ type: "input_text", text: prompt }] },
       { type: "message", role: "assistant", phase: "commentary", content: [{ type: "output_text", text: "Inspecting the project." }] },
       { type: "function_call", call_id: "read-1", name: "Read", arguments: '{"path":"README.md"}' },

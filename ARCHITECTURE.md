@@ -655,16 +655,14 @@ flowchart TD
 
   Shared["HarnessMemoryRuntime and turn coordinator:<br/>validate metadata and current scope"] -->|"valid"| Runtime
   Shared -->|"rejected"| Result
-  Shared -->|"supported completed coding Turn"| Archive
-  Archive["coding-sessions: independent opt-in,<br/>projection, redaction and upload scheduling"] -->|"local acceptance"| Result
-  Archive -->|"size, Turn count, idle or drain"| ArchiveProvider["provider/memorax/coding-session:<br/>event-only Add, stored receipt"]
-  ArchiveProvider --> Remote
+  Shared -->|"opted-in completed coding Turn"| Archive
+  Archive["coding-sessions: projection, redaction,<br/>frozen native reference or SDK items"] -->|"optional attachment"| Runtime
   Runtime["automatic writeback:<br/>settings, bounds, redaction and deduplication"] -->|"rejected"| Result
   Runtime -->|"accepted"| Result
   Result["HTTP result: scheduled or skipped"]
 
   Runtime -->|"new accepted content"| Pending
-  Pending["immediate dispatch or buffered flush,<br/>then chunking"] -->|"eligible for dispatch"| Provider
+  Pending["immediate dispatch or QA buffer flush,<br/>native reread and bounded chunking"] -->|"QA plus optional dreaming"| Provider
   Pending -->|"pending fallback scope upgraded"| Discard["discard pending fallback content"]
   Provider["local MemoraX provider:<br/>Add request and normalized result"] --> Remote
   Remote["MemoraX Add API"] -->|"initial response"| Provider
@@ -681,17 +679,20 @@ known failure fields without retaining content or changing buffering, retry,
 metadata consumption, or delivery decisions. Normal skips and transient failures
 that recover do not produce terminal failure records.
 
-- For completed content, local enqueue acceptance is the metadata-consumption
+- For completed content, local QA enqueue acceptance is the metadata-consumption
   point. Interrupted Turns can instead discard metadata with an explicit reason.
-  QA and optional archive enqueue are independent; a real rejection from either
-  enabled path retains metadata for replay, while a disabled path does not veto
-  the other's acceptance. Accepted duplicates do not resend their content.
+  Optional archive preparation does not create a second enqueue or veto QA
+  acceptance. Rejected or already-accepted work does not schedule an independent
+  archive request. With a valid coding attachment, the native Turn ID also
+  participates in deduplication: equal QA text in two different Turns must not
+  discard either Turn's archive. QA-only writeback retains its text-based rule.
   Unbuffered dispatch starts during enqueue. Buffering defers dispatch until a
   flush; turn or size limits can trigger that flush during enqueue.
 - Buffering and chunking belong to the memory capability; rollout, transcript,
   DSH event-interval, and SDK message parsing remains client-specific.
-- Coding-session archive scheduling belongs to `coding-sessions`, not the QA
-  buffer. Codex, Claude Code, OpenCode, CodeBuddy, and WorkBuddy materialize
+- Coding-session selection and redaction belong to `coding-sessions`; the memory
+  capability owns joint QA/attachment scheduling. Codex, Claude Code, OpenCode,
+  CodeBuddy, and WorkBuddy materialize
   an ordered text/tool `ResponseItem` subset from the same exact native Turn.
   Codex allowlists native item fields and uses legacy event text only when its
   native message is absent; this includes structured web-search actions and
@@ -702,43 +703,36 @@ that recover do not produce terminal failure records.
   bounds. Archive mapping preserves selected text blocks and tool strings;
   structured tool results and native error indicators stay inside string outputs,
   without changing ordinary QA text materialization. DSH and Trae remain QA-only.
-  The coordinator checks client/session/Turn identity and scope before either
-  enqueue. No archive data is attached to ordinary QA or explicit Add payloads.
-- Archive batches group one connection, client, session, and scope. The complete
-  event body is byte-bounded and contains whole Turns, independently of QA
-  batching and chunking rules. Metadata
-  sorted by native Turn index partitions a flat item array by per-Turn counts.
-  The first Turn index supplies source order without a process-local chunk
-  counter; batch IDs supply unique upload identity.
-- File-backed Codex, Claude Code, CodeBuddy, and WorkBuddy archive registration
-  persists private, content-free native references rather than buffered bodies.
-  Each reference freezes the exact transcript prefix used for validation,
-  native identity and order, completion time, projection version, and prepared-content
-  digest and size. References without a projection version replay the original
-  mapping; upgrades do not rewrite frozen batches or their digests. The version
-  is local recovery metadata, not a wire field. The cursor also binds the connection and repository scope and retains
-  unconfirmed batch identity and confirmed progress. A periodic scan of this
-  registry schedules eligible uploads; it does not discover historical native
-  sessions. Registered Turn starts reset inactivity for an already tracked session.
-  Client-owned readers reconstruct only those registered Turns; the uploader
-  revalidates scope and content before sending. Native files remain the content
-  authority, so deletion, truncation, or changed content cannot be recovered
-  from the cursor. Unconfirmed batches retain their references and stable identity
-  across retries and Backend restarts. A late unknown Turn before confirmed
-  progress is rejected rather than treated as already delivered.
-  Short state locks protect cursor publication separately from cross-process
-  upload ownership. Each native runtime processes one batch at a time, while
-  new completion references can still be registered. Client runtimes inject
-  their own reader into the shared harness; memory-service composition supplies
-  the multi-client dispatch without moving native parsing into shared kernels.
-- OpenCode retains the SDK-message in-memory archive buffer and bounded retries.
-  It has no file-backed recovery authority and does not guess native database
-  paths. Its pending/in-flight reservations and bounded success cache remain
-  process-local; a crash or exhausted retry can lose pending archive data.
-  An archive is acknowledged only by a matching `stored` receipt, not ordinary
-  asynchronous memory-task acceptance. Neither path falls back to mixed QA requests.
-  The server owns OSS storage and object paths. See
-  [the event contract](docs/configuration.md#coding-session-collection).
+  The coordinator checks client/session/Turn identity and scope before QA
+  enqueue. When collection is enabled, automatic QA Add can carry an optional
+  `dreaming` attachment; explicit Add and clients without a supported projection
+  remain QA-only. There is no event-only archive request.
+- QA's existing Turn-count, character, inactivity, and shutdown triggers also
+  dispatch its optional archive data. A combined request groups one connection,
+  client, session, and scope. The archive size budget applies only to the
+  serialized UTF-8 JSON `dreaming` object, including its items and metadata;
+  QA and other Add fields retain their existing limits. Oversized archives split
+  at whole-Turn boundaries before QA chunking. A Turn's
+  archive items appear only on the first QA part containing that Turn, never on
+  every overlapping text fragment. A single Turn whose attachment cannot fit
+  retains QA delivery, omits that attachment, and records a content-free local
+  diagnostic. Sorted native Turn metadata partitions the flat item array;
+  stable batch IDs identify attachments across the existing Add retries.
+- File-backed Codex, Claude Code, CodeBuddy, and WorkBuddy QA buffers hold only
+  frozen native references and prepared-content digests for their attachments,
+  not a second archive body. A reference includes the exact transcript prefix,
+  native identity and order, completion time, and projection version. At flush,
+  the owning client reader reconstructs that exact Turn and its redacted digest
+  must still match. Missing, changed, or mismatched source data omits the
+  attachment without changing QA delivery. Native parsing stays client-owned.
+- OpenCode retains its prepared SDK items in the same in-memory QA buffer; it
+  does not guess a native database path. All buffered work and retries are
+  best effort: a crash or exhausted Add retries can lose pending work. There is
+  no independent archive timer, upload queue, durable cursor, or retry loop.
+  Legacy archive cursor files are neither read nor deleted, and old pending
+  event-only uploads are not replayed. The ordinary Add response acknowledges
+  QA acceptance, not OSS storage. The server owns archive storage and object
+  paths. See [the attachment contract](docs/configuration.md#coding-session-collection).
 - Native materializers pass the selected QA timestamps through the shared
   completion contract. The coordinator supplies explicitly labelled observations
   when native times are absent; automatic enqueue freezes any remaining fallback
@@ -900,7 +894,7 @@ entrypoints and compatibility facades. It is not another implementation area.
 | `src/lifecycle/backend` | Managed process, PID/token/connection records, status probing, cleanup, and shutdown requests | Helper contracts do not depend back on the full service implementation |
 | `src/clients/<client>` | Native interpretation, correlation, interruption/recovery, trace adaptation, and lifecycle participation; delegates common memory workflows to the shared harness runtime | Request runtime stays HTTP-composition independent and uses only the matching [native authority](#native-writeback-authority); native deployment follows [package ownership](#22-physical-dependency-directions) |
 | `src/memory` | Memory commands, retrieval, writeback, turn coordination, repository session pinning, manual CLI, and buffering/chunking | Client-neutral modules do not parse native transcript formats |
-| `src/coding-sessions` | Selected text/tool item contract, redaction, bounded event batching, private native-reference cursors and upload scheduling; OpenCode SDK-message buffering | Native parsing stays in clients; remote HTTP stays in the provider; no QA extraction or durable copy of archive bodies |
+| `src/coding-sessions` | Selected text/tool item contract, redaction, and frozen native-reference or prepared SDK attachments | Native parsing stays in clients; memory owns joint QA scheduling; remote HTTP stays in the provider; no durable archive queue |
 | `src/memory/harness-runtime.ts` | Common Turn-start and materialized-completion workflows for all supported clients; publishes registered Turn state synchronously and owns locally created memory resources while reusing injected shared resources | No client implementation, HTTP, app/lifecycle, or direct provider-transport imports; diagnostics enter through a port and native interpretation stays with each client |
 | `src/personal-memory` | Local User Profile listing, normalization, duplicate detection, updates, deletion, and atomic storage | No Backend service, provider calls, transcript processing, or Procedure Memory mutation |
 | `src/repo-memory` | Repo Memory preparation, local and provider facet collection, delta detection, and bundle validation | Prepares bundle directories and the repository ignore entry, collects raw evidence, and validates output; agents author durable Markdown memory |
@@ -1072,7 +1066,7 @@ writes.
 Durable local state includes configuration, private runtime, setup-completion,
 package-transition, automatic-update, and trial credential records, active
 client selection,
-client-qualified trace JSONL, content-free native archive cursors,
+client-qualified trace JSONL,
 reminder cadence and quota-reminder state, and
 Repo Memory. State shared across processes requires a bounded lock, atomic
 replacement, or version validation appropriate to its record. An in-memory
@@ -1097,7 +1091,7 @@ acquisition until released; an unprovable abandoned directory is not removed
 based on age. Pending schema, correlation, and pruning remain client-owned.
 
 Backend remote operations cover MemoraX memories, Add tasks, and optional
-coding-session archive batches. The provider is the network boundary for
+coding-session attachments on automatic Add. The provider is the network boundary for
 documented payloads; the Backend does not poll an Add task after its initial
 response or manage remote OSS objects directly.
 

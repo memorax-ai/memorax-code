@@ -7,7 +7,6 @@ import type {
 } from "./automatic-writeback.js";
 import type { ConfiguredRepositoryMemoryResult } from "./repository-session.js";
 import type { CodingSessionSourceTurn } from "../coding-sessions/coding-turn.js";
-import type { CodingSessionUploadEnqueue } from "../coding-sessions/upload.js";
 import {
   repositoryMemoryScopeCanBindGeneralWorkspace,
   repositoryMemoryScopeCanUpgradeFromDegradedGit,
@@ -66,14 +65,13 @@ export type MemoryTurnCompletion = Readonly<AutomaticMemoryWritebackTiming & {
   userText: string;
   assistantText: string;
   codingTurn?: CodingSessionSourceTurn;
-  writeback: Omit<AutomaticMemoryWritebackOptions, "userText" | "assistantText" | "repositoryScope">;
+  writeback: Omit<AutomaticMemoryWritebackOptions, "userText" | "assistantText" | "repositoryScope" | "codingTurn">;
 }>;
 
 export type MemoryTurnDiscardReason = "interrupted" | "rolled_back";
 
 export type MemoryTurnCoordinatorOptions = {
   automaticWriteback: AutomaticMemoryWritebackEnqueue;
-  codingSessionUpload?: CodingSessionUploadEnqueue;
   now?: () => number;
   ttlMs?: number;
   maxEntries?: number;
@@ -192,29 +190,16 @@ export function createMemoryTurnCoordinator(options: MemoryTurnCoordinatorOption
       }
       const userTimestamp = parseNativeMessageTimestamp(input.userTimestamp);
       const assistantTimestamp = parseNativeMessageTimestamp(input.assistantTimestamp);
-      // Both consumers use the same validated native identity and scope. QA
-      // filtering or deduplication must not suppress the independent archive.
-      let codingDecision: ReturnType<CodingSessionUploadEnqueue> | undefined;
-      try {
-        if (input.codingTurn?.client === input.key.client
-          && input.codingTurn.sessionId === input.key.sessionId
-          && input.codingTurn.turnId === input.key.clientTurnId) {
-          codingDecision = options.codingSessionUpload?.({
-            turn: input.codingTurn,
-            repositoryScope,
-            env: input.writeback.env,
-            fetchImpl: input.writeback.fetchImpl,
-          });
-        }
-      } catch {
-        codingDecision = { accepted: false, reason: "decision_error" };
-      }
       let acceptance: ReturnType<AutomaticMemoryWritebackEnqueue>;
       try {
         acceptance = options.automaticWriteback({
           ...input.writeback,
           userText: input.userText,
           assistantText: input.assistantText,
+          ...(input.codingTurn?.client === input.key.client
+            && input.codingTurn.sessionId === input.key.sessionId
+            && input.codingTurn.turnId === input.key.clientTurnId
+            ? { codingTurn: input.codingTurn } : {}),
           // Metadata.createdAt is a start observation, not native message time.
           // Keep that distinction even when a legacy record has no timestamp.
           userTimestamp: userTimestamp
@@ -229,25 +214,12 @@ export function createMemoryTurnCoordinator(options: MemoryTurnCoordinatorOption
       } catch {
         acceptance = { accepted: false, reason: "decision_error" };
       }
-      // QA enqueue never waits for an archive network request. Only the small
-      // local reference must be recorded before consuming shared Turn metadata.
-      let codingAcceptance: Awaited<ReturnType<CodingSessionUploadEnqueue>> | undefined;
-      try { codingAcceptance = await codingDecision; }
-      catch { codingAcceptance = { accepted: false, reason: "decision_error" }; }
-      if (!acceptance.accepted && !codingAcceptance?.accepted) {
+      if (!acceptance.accepted) {
         return reject(acceptance.reason);
       }
-      // A disabled or filtered consumer has nothing to enqueue. An actual
-      // enqueue failure retains the original metadata for a native retry;
-      // each consumer deduplicates its own already-accepted work.
-      const qaHandled = acceptance.accepted
-        || ["disabled", "user_prompt_empty", "assistant_text_empty"].includes(acceptance.reason);
-      const codingHandled = !codingAcceptance || codingAcceptance.accepted || codingAcceptance.reason === "disabled";
       return {
         scheduled: true,
-        metadataDisposition: qaHandled && codingHandled
-          ? turnMetadataDisposition(turns, input, true)
-          : turnMetadataDisposition(turns, input, false),
+        metadataDisposition: turnMetadataDisposition(turns, input, true),
       };
     },
     pruneExpired() {
