@@ -73,7 +73,7 @@ export type MemoraxAdapterOptions = {
   relatedTurns?: MemoryObservabilityRelatedTurn[];
   repositoryScope?: RepositoryMemoryScope;
   traceContext?: TraceContext;
-  dreaming?: CodingSessionAttachment;
+  codingContext?: CodingSessionAttachment;
   writebackAttempt?: {
     attempt: number;
     maxAttempts: number;
@@ -116,7 +116,7 @@ type MemoraxAddPayload = {
   metadata: Record<string, unknown>;
   async_mode: true;
   timestamp: number;
-  dreaming?: CodingSessionAttachment;
+  coding_context?: CodingSessionAttachment;
 };
 
 type MemoraxWritebackMessage = {
@@ -334,12 +334,12 @@ async function invokeMemoraxWriteback(
   if (messages.length === 0) return { ok: false, error: "writeback messages are required" };
   const idempotencyKey = writebackIdempotencyKeyFromContext(context);
   if (!idempotencyKey) return { ok: false, error: "writeback idempotency key is required" };
-  if (options.dreaming) {
-    const failure = validateDreamingAttachment(options.dreaming, run, repositoryScope, addOptions.options, options);
+  if (options.codingContext) {
+    const failure = validateCodingContextAttachment(options.codingContext, run, repositoryScope, addOptions.options, options);
     if (failure) return failure;
   }
-  const payload = buildMemoraxAddPayload(config, run, messages, context, idempotencyKey, repositoryScope, addOptions.options, options.dreaming);
-  if (payload.dreaming && Buffer.byteLength(JSON.stringify(payload.dreaming), "utf8") > CODING_SESSION_BATCH_MAX_BYTES) {
+  const payload = buildMemoraxAddPayload(config, run, messages, context, idempotencyKey, repositoryScope, addOptions.options, options.codingContext);
+  if (payload.coding_context && Buffer.byteLength(JSON.stringify(payload.coding_context), "utf8") > CODING_SESSION_BATCH_MAX_BYTES) {
     return {
       ok: false,
       error: "Coding Session attachment exceeds its upload byte limit",
@@ -347,7 +347,7 @@ async function invokeMemoraxWriteback(
     };
   }
   // Local Add observability retains its existing QA contract, not archive bodies.
-  const { dreaming: _dreaming, ...observedPayload } = payload;
+  const { coding_context: _codingContext, ...observedPayload } = payload;
   try {
     const { body: raw, quota } = await callMemoAdd(config, payload, options.fetchImpl);
     recordMemoryObservabilityEvent(options, {
@@ -407,7 +407,7 @@ function buildMemoraxAddPayload(
   idempotencyKey: string,
   repositoryScope: RepositoryMemoryScope,
   options: MemoraxAddOptions = {},
-  dreaming?: CodingSessionAttachment,
+  codingContext?: CodingSessionAttachment,
 ): MemoraxAddPayload {
   const now = Date.now();
   const extraMetadata = writebackMetadataFromContext(context);
@@ -433,15 +433,15 @@ function buildMemoraxAddPayload(
     // Acceptance acknowledges task submission, not completed memory extraction.
     async_mode: true,
     timestamp: stamped[0]?.timestamp ?? now,
-    ...(dreaming ? { dreaming: {
-      schema_version: dreaming.schema_version,
-      redaction_version: dreaming.redaction_version,
-      batch_id: dreaming.batch_id,
-      client: dreaming.client,
-      session_id: dreaming.session_id,
-      repository_slug: dreaming.repository_slug,
-      turns: dreaming.turns,
-      items: dreaming.items,
+    ...(codingContext ? { coding_context: {
+      schema_version: codingContext.schema_version,
+      redaction_version: codingContext.redaction_version,
+      batch_id: codingContext.batch_id,
+      client: codingContext.client,
+      session_id: codingContext.session_id,
+      repository_slug: codingContext.repository_slug,
+      turns: codingContext.turns,
+      items: codingContext.items,
     } } : {}),
     metadata: {
       source: "memorax-code",
@@ -460,7 +460,7 @@ function buildMemoraxAddPayload(
   };
 }
 
-function validateDreamingAttachment(
+function validateCodingContextAttachment(
   attachment: CodingSessionAttachment,
   run: MemoraxRunContext,
   scope: RepositoryMemoryScope,

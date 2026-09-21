@@ -230,7 +230,7 @@ MemoraX Code 会先比较含义：语义相同的请求不重复写入；长期�
 不会再出现第二次写回确认。自动召回默认保持关闭，需要显式启用。
 
 新生成的配置还会启用 Codex、Claude Code、OpenCode、CodeBuddy 和 WorkBuddy 的编码会话采集。
-自动 QA Add 会携带可选的 `dreaming` 附件，包含本地脱敏后的已完成 Turn：用户指令、可见助手消息和工具调用／结果，
+自动 QA Add 会携带可选的 `coding_context` 附件，包含本地脱敏后的已完成 Turn：用户指令、可见助手消息和工具调用／结果，
 不会上传整份原生 session 文件或思维链。这是选定的 OpenAI Responses items 子集，
 需要 MemoraX 服务端支持 QA 与附件合并的协议；仅支持独立 event 请求的服务端需要同步更新。
 Add 回执只确认 QA 已接收，不代表 OSS 已落盘。

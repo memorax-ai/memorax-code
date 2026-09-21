@@ -271,7 +271,7 @@ until explicitly enabled.
 
 New configurations also enable coding-session collection for Codex, Claude
 Code, OpenCode, CodeBuddy, and WorkBuddy. Automatic QA Add includes an optional
-`dreaming` attachment with locally redacted completed Turns: prompts, visible
+`coding_context` attachment with locally redacted completed Turns: prompts, visible
 assistant messages, and tool calls/results. It does not upload whole native
 session files or reasoning. This selected OpenAI Responses items subset requires
 a MemoraX endpoint supporting the combined QA/attachment contract; an event-only

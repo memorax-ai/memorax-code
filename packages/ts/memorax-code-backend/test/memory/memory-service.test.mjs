@@ -444,7 +444,7 @@ test("eight native Turns share one QA Add with optional Responses items and stab
       if (scenario.qa) await waitForAcceptedWritebacks(diagnostics, 1);
       await service.drain();
       assert.equal(requests.length, scenario.qa ? (scenario.archive ? 2 : 1) : 0);
-      const archives = requests.flatMap((request) => request.dreaming ? [request.dreaming] : []);
+      const archives = requests.flatMap((request) => request.coding_context ? [request.coding_context] : []);
       assert.equal(archives.length, scenario.qa && scenario.archive ? 2 : 0);
       if (scenario.qa && scenario.archive) {
         assert.deepEqual(requests[1], requests[0], "retry preserves both QA and the exact archive batch");

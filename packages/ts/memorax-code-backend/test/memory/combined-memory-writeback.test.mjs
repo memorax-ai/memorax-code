@@ -92,7 +92,7 @@ test("a combined batch between one and two MiB remains in one Add request", asyn
   assert.equal(run.requests.length, 1);
   assert.ok(run.requests[0].bytes > 1024 * 1024);
   assert.ok(run.requests[0].bytes <= 2 * 1024 * 1024);
-  assert.deepEqual(run.requests[0].body.dreaming.turns.map(({ turn_id }) => turn_id), ["turn-1", "turn-2"]);
+  assert.deepEqual(run.requests[0].body.coding_context.turns.map(({ turn_id }) => turn_id), ["turn-1", "turn-2"]);
 });
 
 test("a combined batch splits at complete Turn boundaries within the archive limit", async (t) => {
@@ -106,18 +106,18 @@ test("a combined batch splits at complete Turn boundaries within the archive lim
   assert.equal(run.reads(), 2);
   assert.equal(run.requests.length, 2);
   for (const [index, { body }] of run.requests.entries()) {
-    const archiveBytes = Buffer.byteLength(JSON.stringify(body.dreaming), "utf8");
+    const archiveBytes = Buffer.byteLength(JSON.stringify(body.coding_context), "utf8");
     assert.ok(archiveBytes > 1024 * 1024);
     assert.ok(archiveBytes <= 2 * 1024 * 1024);
     assert.equal(body.event, undefined);
     assert.deepEqual(body.messages.map(({ content }) => content), [`Question ${index + 1}.`, `Answer ${index + 1}.`]);
-    assert.deepEqual(body.dreaming.turns.map(({ turn_id }) => turn_id), [`turn-${index + 1}`]);
-    assert.equal(body.dreaming.items.length, 26);
+    assert.deepEqual(body.coding_context.turns.map(({ turn_id }) => turn_id), [`turn-${index + 1}`]);
+    assert.equal(body.coding_context.items.length, 26);
     assert.equal(JSON.stringify(body).includes(home), false);
     assert.equal(JSON.stringify(body).includes("sourceTurnId"), false);
   }
   assert.notEqual(run.requests[0].body.metadata.idempotency_key, run.requests[1].body.metadata.idempotency_key);
-  assert.notEqual(run.requests[0].body.dreaming.batch_id, run.requests[1].body.dreaming.batch_id);
+  assert.notEqual(run.requests[0].body.coding_context.batch_id, run.requests[1].body.coding_context.batch_id);
 });
 
 test("QA does not make an in-budget archive split or disappear when the complete Add exceeds two MiB", async (t) => {
@@ -126,8 +126,8 @@ test("QA does not make an in-budget archive split or disappear when the complete
   await run.runtime.drain();
   assert.equal(run.requests.length, 1);
   const [{ body, bytes }] = run.requests;
-  assert.deepEqual(body.dreaming.turns.map(({ turn_id }) => turn_id), ["turn-1"]);
-  assert.ok(Buffer.byteLength(JSON.stringify(body.dreaming), "utf8") <= 2 * 1024 * 1024);
+  assert.deepEqual(body.coding_context.turns.map(({ turn_id }) => turn_id), ["turn-1"]);
+  assert.ok(Buffer.byteLength(JSON.stringify(body.coding_context), "utf8") <= 2 * 1024 * 1024);
   assert.ok(bytes > 2 * 1024 * 1024);
   assert.equal(run.diagnostics.some(({ message }) => message === "coding_sessions.attachment_skipped"), false);
 });
@@ -138,9 +138,9 @@ test("QA fragments and overlap attach each original Turn only once", async (t) =
   run.enqueue(sourceTurn(2));
   await run.runtime.drain();
   assert.ok(run.requests.length > 2);
-  assert.deepEqual(run.requests.flatMap(({ body }) => body.dreaming?.turns.map(({ turn_id }) => turn_id) ?? []), ["turn-1", "turn-2"]);
-  assert.equal(run.requests.every(({ body }) => !body.dreaming
-    || Buffer.byteLength(JSON.stringify(body.dreaming), "utf8") <= 2 * 1024 * 1024), true);
+  assert.deepEqual(run.requests.flatMap(({ body }) => body.coding_context?.turns.map(({ turn_id }) => turn_id) ?? []), ["turn-1", "turn-2"]);
+  assert.equal(run.requests.every(({ body }) => !body.coding_context
+    || Buffer.byteLength(JSON.stringify(body.coding_context), "utf8") <= 2 * 1024 * 1024), true);
   assert.equal(run.requests.every(({ body }) => body.messages.every(({ content }) => content.length <= 80)), true);
 });
 
@@ -153,7 +153,7 @@ for (const buffered of [false, true]) {
     assert.deepEqual(run.enqueue(first, qa), { accepted: true });
     assert.deepEqual(run.enqueue(sourceTurn(2), qa), { accepted: true });
     await run.runtime.drain();
-    assert.deepEqual(run.requests.flatMap(({ body }) => body.dreaming?.turns.map(({ turn_id }) => turn_id) ?? []), ["turn-1", "turn-2"]);
+    assert.deepEqual(run.requests.flatMap(({ body }) => body.coding_context?.turns.map(({ turn_id }) => turn_id) ?? []), ["turn-1", "turn-2"]);
     assert.equal(run.requests.flatMap(({ body }) => body.messages).length, 4);
   });
 }
@@ -165,7 +165,7 @@ test("successive batches with identical QA preserve different archive Turn ident
   }
   await run.runtime.drain();
   assert.equal(run.requests.length, 2);
-  assert.deepEqual(run.requests.flatMap(({ body }) => body.dreaming.turns.map(({ turn_id }) => turn_id)), [
+  assert.deepEqual(run.requests.flatMap(({ body }) => body.coding_context.turns.map(({ turn_id }) => turn_id)), [
     "turn-1", "turn-2", "turn-3", "turn-4",
   ]);
   assert.notEqual(run.requests[0].body.metadata.idempotency_key, run.requests[1].body.metadata.idempotency_key);
@@ -179,11 +179,11 @@ test("an oversized single Turn skips its archive without losing QA or a followin
   assert.deepEqual(run.requests.flatMap(({ body }) => body.messages.map(({ content }) => content)), [
     "Question 1.", "Answer 1.", "Question 2.", "Answer 2.",
   ]);
-  assert.deepEqual(run.requests.flatMap(({ body }) => body.dreaming?.turns.map(({ turn_id }) => turn_id) ?? []), ["turn-2"]);
+  assert.deepEqual(run.requests.flatMap(({ body }) => body.coding_context?.turns.map(({ turn_id }) => turn_id) ?? []), ["turn-2"]);
   assert.ok(run.diagnostics.some(({ message, fields }) => message === "coding_sessions.attachment_skipped"
     && fields.reason === "turn_exceeds_archive_limit"));
-  assert.equal(run.requests.every(({ body }) => !body.dreaming
-    || Buffer.byteLength(JSON.stringify(body.dreaming), "utf8") <= 2 * 1024 * 1024), true);
+  assert.equal(run.requests.every(({ body }) => !body.coding_context
+    || Buffer.byteLength(JSON.stringify(body.coding_context), "utf8") <= 2 * 1024 * 1024), true);
 });
 
 for (const changed of [false, true]) {
@@ -198,7 +198,7 @@ for (const changed of [false, true]) {
     }
     await run.runtime.drain();
     assert.equal(run.requests.length, 1);
-    assert.equal(run.requests[0].body.dreaming, undefined);
+    assert.equal(run.requests[0].body.coding_context, undefined);
     assert.deepEqual(run.requests[0].body.messages.map(({ content }) => content), ["Question 1.", "Answer 1."]);
     assert.ok(run.diagnostics.some(({ message, fields }) => message === "coding_sessions.attachment_skipped"
       && fields.reason === "source_unavailable_or_changed"));
@@ -211,7 +211,7 @@ test("the existing idle fallback uploads QA and archive together below eight Tur
   const deadline = Date.now() + 2000;
   while (!run.requests.length && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(run.requests.length, 1);
-  assert.deepEqual(run.requests[0].body.dreaming.turns.map(({ turn_id }) => turn_id), ["turn-1"]);
+  assert.deepEqual(run.requests[0].body.coding_context.turns.map(({ turn_id }) => turn_id), ["turn-1"]);
   await run.runtime.drain();
   assert.equal(run.requests.length, 1, "shutdown must not upload an already flushed Turn again");
 });

@@ -190,9 +190,9 @@ test("memory hook writeback accepts repeated authority metadata in the exact Cod
     assert.equal(requests[0].body.messages[0].content, "Remember this persisted Codex turn.");
     assert.equal(requests[0].body.messages[1].content, "Stored persisted Codex answer.");
     assert.equal(requests[0].body.event, undefined);
-    assert.equal(requests[0].body.dreaming.session_id, "session-hook");
-    assert.equal(requests[0].body.dreaming.turns[0].turn_id, "turn-1");
-    assert.deepEqual(requests[0].body.dreaming.items, [
+    assert.equal(requests[0].body.coding_context.session_id, "session-hook");
+    assert.equal(requests[0].body.coding_context.turns[0].turn_id, "turn-1");
+    assert.deepEqual(requests[0].body.coding_context.items, [
       { type: "message", role: "user", content: [{ type: "input_text", text: "Remember this persisted Codex turn.\n" }] },
       { type: "message", role: "assistant", phase: "commentary", content: [{ type: "output_text", text: "Inspecting the persisted turn." }] },
       { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: "Stored persisted Codex answer.\n" }] },
@@ -243,7 +243,7 @@ test("Codex source-only identity failure preserves independently valid QA writeb
     }), { ok: true, scheduled: true });
     await waitFor(() => requests.length === 1, "QA writeback must not depend on source collection");
     assert.deepEqual(requests[0].body.messages.map(({ content }) => content), ["Inspect the parser.", "The parser is correct."]);
-    assert.equal(requests[0].body.dreaming, undefined, "Source identity failures must not construct a fallback archive");
+    assert.equal(requests[0].body.coding_context, undefined, "Source identity failures must not construct a fallback archive");
   } finally {
     controller.close();
     await rm(root, { recursive: true, force: true });

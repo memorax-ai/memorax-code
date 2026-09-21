@@ -7,7 +7,7 @@ import type { MemoryDiagnosticLogger } from "./observability.js";
 import type { MemoryWritebackSourceTurn } from "./writeback-buffer.js";
 import { memoryWritebackAddParts, type MemoryWritebackAddPart, type WritebackMessage } from "./writeback-chunk.js";
 
-export type CombinedWritebackPart = MemoryWritebackAddPart & { dreaming?: CodingSessionAttachment };
+export type CombinedWritebackPart = MemoryWritebackAddPart & { codingContext?: CodingSessionAttachment };
 type MaterializedTurn = { index: number; messages: WritebackMessage[]; archive?: PreparedSessionTurn };
 
 export async function combinedMemoryWritebackParts(
@@ -57,13 +57,13 @@ export async function combinedMemoryWritebackParts(
         archives.push(archive);
         attached.add(id);
       }
-      return { ...part, ...(archives.length ? { dreaming: codingSessionAttachment(archives, scope) } : {}) };
+      return { ...part, ...(archives.length ? { codingContext: codingSessionAttachment(archives, scope) } : {}) };
     });
   }
 
   function fits(parts: CombinedWritebackPart[]): boolean {
-    return parts.every((part) => !part.dreaming
-      || Buffer.byteLength(JSON.stringify(part.dreaming), "utf8") <= CODING_SESSION_BATCH_MAX_BYTES);
+    return parts.every((part) => !part.codingContext
+      || Buffer.byteLength(JSON.stringify(part.codingContext), "utf8") <= CODING_SESSION_BATCH_MAX_BYTES);
   }
 
   const result: CombinedWritebackPart[] = [];

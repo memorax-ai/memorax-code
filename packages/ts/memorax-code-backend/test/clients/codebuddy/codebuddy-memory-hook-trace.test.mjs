@@ -222,7 +222,7 @@ test("WorkBuddy provisional turn writeback and nested Skill commands share Gener
     ]);
     assert.equal(requests[0].body.event, undefined);
     assert.equal(requests[0].body.user_id, "user-1@General");
-    const archive = requests[0].body.dreaming;
+    const archive = requests[0].body.coding_context;
     assert.equal(archive.client, "workbuddy");
     assert.equal(archive.session_id, sessionId);
     assert.equal(archive.turns[0].turn_id, turnId);

@@ -662,7 +662,7 @@ flowchart TD
   Result["HTTP result: scheduled or skipped"]
 
   Runtime -->|"new accepted content"| Pending
-  Pending["immediate dispatch or QA buffer flush,<br/>native reread and bounded chunking"] -->|"QA plus optional dreaming"| Provider
+  Pending["immediate dispatch or QA buffer flush,<br/>native reread and bounded chunking"] -->|"QA plus optional coding_context"| Provider
   Pending -->|"pending fallback scope upgraded"| Discard["discard pending fallback content"]
   Provider["local MemoraX provider:<br/>Add request and normalized result"] --> Remote
   Remote["MemoraX Add API"] -->|"initial response"| Provider
@@ -705,12 +705,12 @@ that recover do not produce terminal failure records.
   without changing ordinary QA text materialization. DSH and Trae remain QA-only.
   The coordinator checks client/session/Turn identity and scope before QA
   enqueue. When collection is enabled, automatic QA Add can carry an optional
-  `dreaming` attachment; explicit Add and clients without a supported projection
+  `coding_context` attachment; explicit Add and clients without a supported projection
   remain QA-only. There is no event-only archive request.
 - QA's existing Turn-count, character, inactivity, and shutdown triggers also
   dispatch its optional archive data. A combined request groups one connection,
   client, session, and scope. The archive size budget applies only to the
-  serialized UTF-8 JSON `dreaming` object, including its items and metadata;
+  serialized UTF-8 JSON `coding_context` object, including its items and metadata;
   QA and other Add fields retain their existing limits. Oversized archives split
   at whole-Turn boundaries before QA chunking. A Turn's
   archive items appear only on the first QA part containing that Turn, never on

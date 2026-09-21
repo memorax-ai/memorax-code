@@ -624,7 +624,7 @@ can also change tool arguments or output. These controls are independent of
 ordinary QA chunking.
 
 Attachments contain whole Turns from one client, session, connection, and
-repository scope. Only the **`dreaming` archive object** is capped at
+repository scope. Only the **`coding_context` archive object** is capped at
 **2 MiB (2,097,152 bytes)** of compact UTF-8 JSON, including its items and
 archive metadata. QA messages and other Add fields do not count toward this
 budget and retain their existing limits. The complete Add request can therefore
@@ -646,7 +646,7 @@ content-free local diagnostic reports the omitted attachment. The plugin does
 not silently truncate it further or block all later QA behind the oversized
 Turn.
 
-An automatic request to `/v1/memories/add` carries the optional `dreaming`
+An automatic request to `/v1/memories/add` carries the optional `coding_context`
 object alongside the usual QA fields, with no top-level `event`:
 
 ```json
@@ -663,7 +663,7 @@ object alongside the usual QA fields, with no top-level `event`:
   "async_mode": true,
   "timestamp": 1784160000000,
   "metadata": { "source": "memorax-code", "idempotency_key": "stable-qa-part-id" },
-  "dreaming": {
+  "coding_context": {
     "schema_version": 2,
     "redaction_version": 1,
     "batch_id": "stable-batch-id",

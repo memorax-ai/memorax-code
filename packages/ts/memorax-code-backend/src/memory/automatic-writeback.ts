@@ -465,7 +465,7 @@ async function enqueueAutomaticMemoryWritebackAsync(
             attempt,
             maxAttempts: AUTOMATIC_MEMORY_WRITEBACK_MAX_ATTEMPTS,
           },
-          ...(part.dreaming ? { dreaming: part.dreaming } : {}),
+          ...(part.codingContext ? { codingContext: part.codingContext } : {}),
         });
         const retryDelayMs = !response.ok && attempt < AUTOMATIC_MEMORY_WRITEBACK_MAX_ATTEMPTS
           ? automaticMemoryWritebackRetryDelayMs(response, attempt)

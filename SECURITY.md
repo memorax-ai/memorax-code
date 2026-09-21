@@ -191,7 +191,7 @@ in Add metadata distinguishes them; it contains no transcript paths or trace
 identifiers. See [timestamp semantics](docs/configuration.md#automatic-writeback-timestamps).
 
 Coding-session collection attaches a locally redacted text/tool subset from
-completed Turns as an optional `dreaming` object on automatic QA Add requests
+completed Turns as an optional `coding_context` object on automatic QA Add requests
 to the configured MemoraX endpoint. It includes prompts, visible assistant messages,
 and tool calls and results from Codex, Claude Code, OpenCode, CodeBuddy, or
 WorkBuddy. Codex projects allowlisted native item fields, including web-search
@@ -251,7 +251,7 @@ prepared SDK items in the same buffer. A process crash or exhausted Add retries
 can lose pending work; there is no independent archive queue or recovery loop.
 The Add receipt acknowledges QA acceptance, not completed OSS storage. An
 individual Turn's archive that cannot fit within the 2 MiB compact UTF-8 JSON
-budget for the `dreaming` object, including archive metadata, is omitted with a
+budget for the `coding_context` object, including archive metadata, is omitted with a
 content-free local diagnostic instead of blocking QA. QA messages and other Add
 fields do not count toward this archive budget; their existing limits remain.
 

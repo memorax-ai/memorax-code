@@ -452,10 +452,10 @@ test("OpenCode runtime routes SDK content and carries write quota to the next pr
       1_700_000_060_000,
     ]);
     assert.equal(requests[1].body.event, undefined);
-    assert.equal(requests[1].body.dreaming.client, "opencode");
-    assert.equal(requests[1].body.dreaming.turns[0].turn_id, "user-1");
-    assert.equal(requests[1].body.dreaming.turns[0].turn_index, 1);
-    assert.deepEqual(requests[1].body.dreaming.items, [
+    assert.equal(requests[1].body.coding_context.client, "opencode");
+    assert.equal(requests[1].body.coding_context.turns[0].turn_id, "user-1");
+    assert.equal(requests[1].body.coding_context.turns[0].turn_index, 1);
+    assert.deepEqual(requests[1].body.coding_context.items, [
       { type: "message", role: "user", content: [{ type: "input_text", text: "OpenCode user prompt." }] },
       { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: "OpenCode assistant reply." }] },
     ]);
