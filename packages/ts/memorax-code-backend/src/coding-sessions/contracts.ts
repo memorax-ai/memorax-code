@@ -20,7 +20,7 @@ export type CodingSessionInteraction = {
 };
 
 export const CODING_SESSION_EVENT = "dreaming";
-export const CODING_SESSION_BATCH_MAX_BYTES = 20 * 1024 * 1024;
+export const CODING_SESSION_BATCH_MAX_BYTES = 1024 * 1024;
 
 // Counts partition the flat Items array in source-Turn order. Native Turn indexes
 // remain meaningful across Backend restarts; batch IDs remain unique on replay.

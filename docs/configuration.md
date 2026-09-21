@@ -622,7 +622,7 @@ ordinary QA chunking.
 
 Archive batches contain whole Turns from one client, session, connection, and
 repository scope. Their full serialized request body, including the envelope,
-is capped at **20 MiB (20 × 1024 × 1024 bytes)**. Turns are not split across
+is capped at **1 MiB (1,048,576 bytes)**. Turns are not split across
 batches; a Turn that would exceed the remaining request budget stays for the
 next batch. This hard cap and the per-Turn limit above are distinct from the
 upload triggers below. Ordinary QA batching is unchanged.
@@ -646,7 +646,7 @@ No timer runs while the Backend is stopped. On restart, overdue registered
 data becomes eligible again.
 
 OpenCode temporarily retains its separate SDK-message in-memory behavior:
-flush at the 20 MiB batch boundary, after ten minutes without another accepted
+flush at the 1 MiB batch boundary, after ten minutes without another accepted
 completed Turn, or on graceful drain. It does not use the file-backed cursor,
 50-Turn, or two inactivity rules above.
 

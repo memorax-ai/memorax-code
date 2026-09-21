@@ -117,16 +117,25 @@ test("native archive records references only, starts with observed completions a
   assert.equal(f.requests.length, 1);
 });
 
-test("one-MiB trigger keeps a large complete Turn intact and does not require 50 Turns", async (t) => {
+test("one-MiB limit splits eligible whole Turns without sending an oversized batch", async (t) => {
   const f = await fixture(t);
   const runtime = f.make();
-  const turn = await f.source(1, 11);
-  assert.deepEqual(await f.enqueue(runtime, turn), { accepted: true });
+  const first = await f.source(1, 6);
+  const second = await f.source(2, 6);
+  assert.deepEqual(await f.enqueue(runtime, first), { accepted: true });
+  assert.deepEqual(await f.enqueue(runtime, second), { accepted: true });
   await runtime.settle();
   assert.equal(f.requests.length, 1);
-  assert.ok(Buffer.byteLength(JSON.stringify(f.requests[0])) >= 1024 * 1024);
-  assert.equal(f.requests[0].turns.length, 1);
-  assert.equal(f.requests[0].turns[0].item_count, 13);
+  assert.deepEqual(f.requests[0].turns.map((turn) => turn.turn_index), [1]);
+  assert.deepEqual(f.requests[0].items, first.items);
+  assert.equal((await f.cursors())[0].uploadedThrough, 1);
+  await f.advance(DAY);
+  assert.equal(f.requests.length, 2);
+  assert.deepEqual(f.requests[1].turns.map((turn) => turn.turn_index), [2]);
+  assert.deepEqual(f.requests[1].items, second.items);
+  for (const request of f.requests) {
+    assert.ok(Buffer.byteLength(JSON.stringify(request), "utf8") <= 1024 * 1024);
+  }
 });
 
 test("short idle needs five Turns and new interaction resets it; restart uploads sub-five tail after one day", async (t) => {

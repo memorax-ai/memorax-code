@@ -20,7 +20,7 @@ export type NativeUploadClock = {
   clearTimeout(timer: ReturnType<typeof setTimeout>): void;
 };
 
-export const CODING_SESSION_UPLOAD_TRIGGER_BYTES = 1024 * 1024;
+export const CODING_SESSION_UPLOAD_TRIGGER_BYTES = CODING_SESSION_BATCH_MAX_BYTES;
 export const CODING_SESSION_UPLOAD_MAX_TURNS = 50;
 export const CODING_SESSION_UPLOAD_IDLE_MIN_TURNS = 5;
 export const CODING_SESSION_UPLOAD_SHORT_IDLE_MS = 30 * 60 * 1000;

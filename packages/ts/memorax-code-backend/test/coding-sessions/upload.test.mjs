@@ -109,14 +109,14 @@ test("Coding upload has no Turn-count trigger, resets idle and drains complete s
   assert.equal(requests.length, 2);
 });
 
-test("Coding upload flushes at the real twenty-MiB UTF-8 budget without splitting or dropping Turns", async (t) => {
+test("Coding upload flushes at the real one-MiB UTF-8 budget without splitting or dropping fitting Turns", async (t) => {
   const env = await fixture(t);
   const requests = [];
   const runtime = createCodingSessionUploadRuntime({ enabled: true });
   t.after(() => runtime.close());
-  const sources = Array.from({ length: 12 }, (_, index) => {
+  const sources = Array.from({ length: 4 }, (_, index) => {
     const source = turn(index + 1);
-    source.items.splice(1, 0, ...Array.from({ length: 12 }, (_, call) => ({
+    source.items.splice(1, 0, ...Array.from({ length: 3 }, (_, call) => ({
       type: "function_call_output", call_id: `call-${call}`, output: "中文工具输出。".repeat(16_000),
     })));
     return source;
@@ -129,10 +129,10 @@ test("Coding upload flushes at the real twenty-MiB UTF-8 budget without splittin
       return stored(requests.at(-1).body);
     } }), { accepted: true });
   }
-  assert.equal(requests.length, 1);
-  assert.ok(requests[0].bytes > 18 * 1024 * 1024);
+  assert.equal(requests.length, 3);
+  assert.ok(requests[0].bytes > 0.9 * 1024 * 1024);
   await runtime.drain();
-  assert.equal(requests.length, 2);
+  assert.equal(requests.length, 4);
   const prepared = sources.map((source) => prepareCodingSessionTurn({ ...source, repositorySlug: scope().repositorySlug }));
   assert.deepEqual(requests.flatMap(({ body }) => body.items), prepared.flatMap((source) => source.items));
   assert.deepEqual(requests.flatMap(({ body }) => body.turns), prepared.map((source) => ({

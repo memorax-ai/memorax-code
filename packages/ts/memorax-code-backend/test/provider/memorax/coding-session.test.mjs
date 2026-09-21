@@ -127,9 +127,10 @@ test("Coding Session upload rejects mismatched scope and batch identities before
   assert.equal(calls, 0);
 });
 
-test("Coding Session upload bounds the entire JSON UTF-8 body to twenty MiB", async () => {
+test("Coding Session upload bounds the entire JSON UTF-8 body to one MiB", async () => {
+  assert.equal(CODING_SESSION_BATCH_MAX_BYTES, 1024 * 1024);
   const value = batch(11);
-  for (const item of value.items) item.content[0].text = "中".repeat(300_000);
+  for (const item of value.items) item.content[0].text = "中".repeat(15_000);
   const remaining = CODING_SESSION_BATCH_MAX_BYTES - Buffer.byteLength(JSON.stringify(value), "utf8");
   value.items[0].content[0].text += "x".repeat(remaining);
   assert.equal(Buffer.byteLength(JSON.stringify(value), "utf8"), CODING_SESSION_BATCH_MAX_BYTES);
