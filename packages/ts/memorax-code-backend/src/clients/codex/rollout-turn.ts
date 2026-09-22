@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import { parseNativeMessageTimestamp } from "../../shared/message-time.js";
-import { codingEventText, type CodingSessionNativeSource, type CodingSessionProjectionVersion, type CodingSessionSourceTurn, type ResponseItem, type ResponseJsonObject, type ResponseJsonValue } from "../../coding-sessions/coding-turn.js";
+import { codingEventText, type CodingSessionNativeSource, type CodingSessionSourceTurn, type ResponseItem, type ResponseJsonObject, type ResponseJsonValue } from "../../coding-sessions/coding-turn.js";
 import type { NativeCodingSessionTurnRef } from "../../coding-sessions/contracts.js";
 import { readNativeTranscriptSnapshot } from "../../shared/native-transcript-snapshot.js";
 
@@ -154,7 +154,6 @@ export async function readCodexCodingSessionTurn(input: {
   sessionId: string;
   turnId: string;
   endBytes?: number;
-  projectionVersion?: CodingSessionProjectionVersion;
 }): Promise<CodexCodingSessionTurnResult> {
   try {
     const snapshot = await readNativeTranscriptSnapshot(input);
@@ -177,7 +176,7 @@ export async function readCodexArchiveSource(
 ): Promise<CodingSessionSourceTurn | undefined> {
   if (ref.client !== "codex") return undefined;
   const result = await readCodexCodingSessionTurn({
-    ...ref.source, sessionId: ref.sessionId, turnId: ref.turnId, projectionVersion: ref.projectionVersion ?? 1,
+    ...ref.source, sessionId: ref.sessionId, turnId: ref.turnId,
   });
   if (!result.ok || result.turn.sessionTurnIndex !== ref.turnIndex) return undefined;
   return { ...ref, items: result.turn.items };
@@ -231,9 +230,9 @@ export function codexInterruptedRolloutTurnFromJsonLines(
 
 export function codexCodingSessionTurnFromJsonLines(
   transcript: string,
-  input: { sessionId: string; turnId: string; projectionVersion?: CodingSessionProjectionVersion },
+  input: { sessionId: string; turnId: string },
 ): CodexCodingSessionTurnResult {
-  const scan = scanCodexRolloutTurn(transcript, input.turnId, true, input.projectionVersion);
+  const scan = scanCodexRolloutTurn(transcript, input.turnId, true);
   if (!codexRolloutSessionMatches(scan, input.sessionId)) {
     return { ok: false, reason: "transcript_session_mismatch" };
   }
@@ -288,7 +287,6 @@ function scanCodexRolloutTurn(
   transcript: string,
   targetTurnId: string,
   captureCodingItems = false,
-  projectionVersion: CodingSessionProjectionVersion = 2,
 ): CodexRolloutTurnScan {
   let authoritySessionId: string | undefined;
   let ambiguousSessionMetadata = false;
@@ -388,7 +386,7 @@ function scanCodexRolloutTurn(
             turnMetadataMismatch = true;
             continue;
           }
-          codingItem = codingItemFromResponseItem(payload, projectionVersion);
+          codingItem = codingItemFromResponseItem(payload);
           if (codingItem && !(codingItem.type === "message" && codingItem.role === "user")) {
             codingItemCandidates.push({ recordIndex, source: "response_item", item: codingItem });
           }
@@ -580,10 +578,7 @@ function completedCodingItems(
   ];
 }
 
-function codingItemFromResponseItem(
-  payload: JsonRecord,
-  projectionVersion: CodingSessionProjectionVersion,
-): ResponseItem | undefined {
+function codingItemFromResponseItem(payload: JsonRecord): ResponseItem | undefined {
   const type = stringValue(payload.type);
   const id = typeof payload.id === "string" ? { id: payload.id } : {};
   if (type === "message") {
@@ -603,30 +598,28 @@ function codingItemFromResponseItem(
     ));
     return content.some((part) => part.text.trim()) ? { type, role, phase: payload.phase, content, ...id } : undefined;
   }
-  if (projectionVersion === 2) {
-    const status = typeof payload.status === "string" ? { status: payload.status } : {};
-    if (type === "web_search_call") {
-      return isRecord(payload.action)
-        ? { type, ...id, ...status, action: payload.action as ResponseJsonObject }
-        : undefined;
+  const status = typeof payload.status === "string" ? { status: payload.status } : {};
+  if (type === "web_search_call") {
+    return isRecord(payload.action)
+      ? { type, ...id, ...status, action: payload.action as ResponseJsonObject }
+      : undefined;
+  }
+  if (type === "tool_search_call" || type === "tool_search_output") {
+    if (payload.execution !== undefined && payload.execution !== "server" && payload.execution !== "client") return undefined;
+    if (payload.call_id !== undefined && payload.call_id !== null && !nonBlankString(payload.call_id)) return undefined;
+    if (payload.execution === "client" && !nonBlankString(payload.call_id)) return undefined;
+    const identity = {
+      ...id,
+      ...status,
+      ...(payload.execution === "server" || payload.execution === "client" ? { execution: payload.execution } as const : {}),
+      ...(payload.call_id === null || typeof payload.call_id === "string" ? { call_id: payload.call_id } : {}),
+    };
+    if (type === "tool_search_call") {
+      return payload.arguments === undefined ? undefined : { type, ...identity, arguments: payload.arguments as ResponseJsonValue };
     }
-    if (type === "tool_search_call" || type === "tool_search_output") {
-      if (payload.execution !== undefined && payload.execution !== "server" && payload.execution !== "client") return undefined;
-      if (payload.call_id !== undefined && payload.call_id !== null && !nonBlankString(payload.call_id)) return undefined;
-      if (payload.execution === "client" && !nonBlankString(payload.call_id)) return undefined;
-      const identity = {
-        ...id,
-        ...status,
-        ...(payload.execution === "server" || payload.execution === "client" ? { execution: payload.execution } as const : {}),
-        ...(payload.call_id === null || typeof payload.call_id === "string" ? { call_id: payload.call_id } : {}),
-      };
-      if (type === "tool_search_call") {
-        return payload.arguments === undefined ? undefined : { type, ...identity, arguments: payload.arguments as ResponseJsonValue };
-      }
-      return Array.isArray(payload.tools) && payload.tools.every(isRecord)
-        ? { type, ...identity, tools: payload.tools as ResponseJsonObject[] }
-        : undefined;
-    }
+    return Array.isArray(payload.tools) && payload.tools.every(isRecord)
+      ? { type, ...identity, tools: payload.tools as ResponseJsonObject[] }
+      : undefined;
   }
   const callId = nonBlankString(payload.call_id);
   if (!callId) return undefined;

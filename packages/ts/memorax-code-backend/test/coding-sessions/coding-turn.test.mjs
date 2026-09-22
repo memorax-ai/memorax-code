@@ -8,13 +8,10 @@ import {
   prepareCodingSessionTurn,
 } from "../../dist/coding-sessions/coding-turn.js";
 
-test("tool projection preserves string formatting while legacy replay retains its original encoding", () => {
+test("tool projection preserves string formatting and structured output", () => {
   for (const value of [' { "z": 1, "a": 2 }\n', '  build failed\n', '\n']) {
     assert.equal(codingEventText(value), value);
   }
-  assert.equal(codingEventText(' { "z": 1, "a": 2 }\n', 1), '{"a":2,"z":1}');
-  assert.equal(codingEventText('  build failed\n', 1), 'build failed');
-  assert.equal(codingEventText('\n', 1), '');
   const structured = [{ type: "text", text: "  tool output\n", exit_code: 1 }, { error: "failed", details: [1, 2] }];
   assert.deepEqual(JSON.parse(codingEventText(structured)), structured);
   assert.equal(codingEventText(undefined), "");

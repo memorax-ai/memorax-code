@@ -450,7 +450,7 @@ test("eight native Turns share one QA Add with optional Responses items and stab
         assert.deepEqual(requests[1], requests[0], "retry preserves both QA and the exact archive batch");
         assert.equal(requests[0].messages.length, 16);
         assert.equal(requests[0].user_id, "user-1@workspace");
-        assert.equal(archives[0].schema_version, 2);
+        assert.equal(archives[0].schema_version, 1);
         assert.equal(archives[0].redaction_version, 1);
         assert.equal(archives[0].repository_slug, "workspace");
         assert.deepEqual(archives[0].turns.map((turn) => turn.turn_id), turns.map((turn) => turn.turnId));

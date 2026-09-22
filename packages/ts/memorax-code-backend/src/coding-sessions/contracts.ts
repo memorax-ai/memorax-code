@@ -1,8 +1,7 @@
-import type { CodingSessionClient, CodingSessionNativeSource, CodingSessionProjectionVersion, CodingSessionSourceTurn, PreparedSessionTurn, ResponseItem } from "./coding-turn.js";
+import type { CodingSessionClient, CodingSessionNativeSource, CodingSessionSourceTurn, PreparedSessionTurn, ResponseItem } from "./coding-turn.js";
 
 export type NativeCodingSessionTurnRef = Omit<CodingSessionSourceTurn, "items" | "repositorySlug"> & {
   source: CodingSessionNativeSource;
-  projectionVersion?: CodingSessionProjectionVersion;
 };
 // Compact UTF-8 JSON for the archive object only, excluding QA and Add fields.
 export const CODING_SESSION_BATCH_MAX_BYTES = 2 * 1024 * 1024;
@@ -18,7 +17,7 @@ export type SessionTurnMetadata = Readonly<{
 }>;
 
 export type CodingSessionAttachment = Readonly<{
-  schema_version: 2;
+  schema_version: 1;
   redaction_version: 1;
   batch_id: string;
   client: CodingSessionClient;

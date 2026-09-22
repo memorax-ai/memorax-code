@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -10,6 +9,7 @@ import {
   readClaudeArchiveSource,
   readClaudeCodingSessionTurn,
 } from "../../../dist/clients/claude/transcript-turn.js";
+import { materializePendingCodingSessionTurn, preparePendingCodingSessionTurn } from "../../../dist/coding-sessions/attachment.js";
 import { prepareCodingSessionTurn } from "../../../dist/coding-sessions/coding-turn.js";
 import { PROMPT_ID, SESSION_ID, assistantRecord, jsonLines, userRecord } from "./support/claude-transcript-fixtures.mjs";
 
@@ -43,7 +43,7 @@ function projectionTranscript() {
   ]);
 }
 
-test("Claude archive v2 preserves selected text block boundaries and whitespace without changing QA", () => {
+test("Claude archive preserves selected text block boundaries and whitespace without changing QA", () => {
   const transcript = projectionTranscript();
   const result = claudeCodingSessionTurnFromJsonLines(transcript, identity);
   assert.equal(result.ok, true);
@@ -71,7 +71,7 @@ test("Claude archive v2 preserves selected text block boundaries and whitespace 
   assert.deepEqual(JSON.parse(items[4].output), { content: nativeToolText, is_error: true });
 });
 
-test("Claude archive v2 retains scalar message text and only wraps explicit boolean tool errors", () => {
+test("Claude archive retains scalar message text and only wraps explicit boolean tool errors", () => {
   for (const errorFlag of [true, false, undefined, "true"]) {
     const transcript = jsonLines([
       userRecord({ uuid: "user", content: "  Request \n" }),
@@ -98,46 +98,32 @@ test("Claude archive v2 retains scalar message text and only wraps explicit bool
   }
 });
 
-test("Claude archive v1 reproduces legacy items and the prepared cursor digest", () => {
-  const result = claudeCodingSessionTurnFromJsonLines(projectionTranscript(), { ...identity, projectionVersion: 1 });
-  assert.equal(result.ok, true);
-  assert.deepEqual(result.turn.items, [
-    { type: "message", role: "user", content: [{ type: "input_text", text: "First request\n\nsecond request" }] },
-    { type: "message", role: "assistant", phase: "commentary", content: [{ type: "output_text", text: "progress string" }] },
-    { type: "message", role: "assistant", phase: "commentary", content: [{ type: "output_text", text: "commentary block" }] },
-    { type: "function_call", call_id: "read-file", name: "Read", arguments: '{"a":1,"z":2}' },
-    { type: "function_call_output", call_id: "read-file", output: '{"a":1,"z":2}' },
-    { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: "final first\n\nfinal second" }] },
-  ]);
-  const prepared = prepareCodingSessionTurn({
-    client: "claude-code", sessionId: SESSION_ID, turnId: PROMPT_ID, turnIndex: result.turn.sessionTurnIndex,
-    outcome: "completed", closedAt, items: result.turn.items,
-  });
-  assert.equal(createHash("sha256").update(JSON.stringify(prepared)).digest("hex"),
-    "2ace2707b0d150a81ebed8cc8fbc1a5e6246d5d2e12ab0692be4e34b0b5b79f9");
-  const { items, closedAt: _closedAt, ...qa } = result.turn;
-  assert.deepEqual(qa, claudeTranscriptTurnFromJsonLines(projectionTranscript(), identity).turn);
-});
-
-test("Claude native archive reread uses the persisted projection version", async (t) => {
+test("Claude archive materialization preserves text blocks, tool errors, and its frozen native digest", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "memorax-claude-projection-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const transcriptPath = join(root, "transcript.jsonl");
   const transcript = `${projectionTranscript()}\n`;
   await writeFile(transcriptPath, transcript);
-  for (const projectionVersion of [1, 2]) {
-    const result = await readClaudeCodingSessionTurn({
-      ...identity, transcriptPath, endBytes: Buffer.byteLength(transcript), projectionVersion,
-    });
-    assert.equal(result.ok, true);
-    const reread = await readClaudeArchiveSource({
-      client: "claude-code", sessionId: SESSION_ID, turnId: PROMPT_ID,
-      turnIndex: result.turn.sessionTurnIndex, outcome: "completed", closedAt,
-      source: result.turn.source, projectionVersion,
-    });
-    assert.deepEqual(reread?.items, result.turn.items);
-    assert.deepEqual(result.turn.items,
-      claudeCodingSessionTurnFromJsonLines(transcript, { ...identity, projectionVersion }).turn.items);
-    assert.equal(reread?.closedAt, closedAt);
-  }
+  const result = await readClaudeCodingSessionTurn({ ...identity, transcriptPath });
+  assert.equal(result.ok, true);
+  const source = {
+    client: "claude-code", sessionId: SESSION_ID, turnId: PROMPT_ID,
+    turnIndex: result.turn.sessionTurnIndex, outcome: "completed", closedAt,
+    source: result.turn.source, items: result.turn.items,
+  };
+  const scope = { repositorySlug: "projection-tests" };
+  const pending = preparePendingCodingSessionTurn(source, scope);
+  assert.ok(pending);
+  assert.equal("projectionVersion" in pending.reference, false);
+  assert.equal(pending.reference.source.endBytes, Buffer.byteLength(transcript));
+  await appendFile(transcriptPath, `${jsonLines([
+    assistantRecord({ uuid: "later-final", parentUuid: "result", stopReason: "end_turn", content: "Later answer." }),
+  ])}\n`);
+  const reread = await readClaudeArchiveSource(pending.reference);
+  assert.deepEqual(reread?.items, result.turn.items);
+  assert.deepEqual(result.turn.items, claudeCodingSessionTurnFromJsonLines(transcript, identity).turn.items);
+  assert.equal(reread?.closedAt, closedAt);
+  const materialized = await materializePendingCodingSessionTurn(pending, scope, readClaudeArchiveSource);
+  assert.ok(materialized);
+  assert.deepEqual(materialized, prepareCodingSessionTurn({ ...source, repositorySlug: scope.repositorySlug }));
 });

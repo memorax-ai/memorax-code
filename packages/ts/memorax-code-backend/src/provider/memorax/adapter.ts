@@ -497,7 +497,7 @@ function validateCodingContextAttachment(
       errorCode: "MEMORAX_CODING_SESSION_SCOPE_MISMATCH",
     };
   }
-  if (attachment.schema_version !== 2 || attachment.redaction_version !== 1
+  if (attachment.schema_version !== 1 || attachment.redaction_version !== 1
     || !attachment.batch_id.trim() || !attachment.session_id.trim()
     || !["codex", "claude-code", "opencode", "codebuddy", "workbuddy"].includes(attachment.client)
     || attachment.turns.length === 0

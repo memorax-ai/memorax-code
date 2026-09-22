@@ -1021,7 +1021,7 @@ function codingContextWritebackFixture(turnCount = 1) {
       repositoryScope,
       observabilitySource: "codex_hook_writeback",
       codingContext: {
-        schema_version: 2,
+        schema_version: 1,
         redaction_version: 1,
         batch_id: "coding-context-batch",
         client: "codex",
@@ -1094,7 +1094,7 @@ test("MemoraX adapter rejects invalid or unapproved typed attachments and ignore
     { ...options, codingContext: { ...options.codingContext, repository_slug: "another-repository" } },
     { ...options, codingContext: { ...options.codingContext, batch_id: " " } },
     { ...options, codingContext: { ...options.codingContext, turns: [] } },
-    { ...options, codingContext: { ...options.codingContext, schema_version: 1 } },
+    { ...options, codingContext: { ...options.codingContext, schema_version: 2 } },
     { ...options, codingContext: { ...options.codingContext, turns: [{ ...options.codingContext.turns[0], item_count: 2 }] } },
   ];
   for (const candidate of invalidCases) {

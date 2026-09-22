@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
@@ -10,6 +10,8 @@ import {
   codeBuddyTranscriptTurnFromJsonLines,
   readCodeBuddyArchiveSource,
 } from "../../../dist/clients/codebuddy/jsonl-history.js";
+import { materializePendingCodingSessionTurn, preparePendingCodingSessionTurn } from "../../../dist/coding-sessions/attachment.js";
+import { prepareCodingSessionTurn } from "../../../dist/coding-sessions/coding-turn.js";
 
 const sessionId = "session-1";
 
@@ -51,33 +53,29 @@ test("archive projection preserves native text blocks and complete tool results 
   assert.deepEqual(JSON.parse(outputs[1].output), arrayOutput);
   assert.deepEqual(outputs[2], { type: "function_call_output", call_id: "call-3", output: " \nraw result\t " });
   assert.equal(items.length, 9);
-  assert.deepEqual(projected, codeBuddyTranscriptTurnFromJsonLines(transcript, { ...identity, captureCodingItems: true, projectionVersion: 2 }));
-
-  const legacy = codeBuddyTranscriptTurnFromJsonLines(transcript, { ...identity, captureCodingItems: true, projectionVersion: 1 });
-  assert.equal(legacy.ok, true);
-  assert.deepEqual(legacy.turn.items, [
-    { type: "message", role: "user", content: [{ type: "input_text", text: "Read \n\nthese files." }] },
-    { type: "message", role: "assistant", phase: "commentary", content: [{ type: "output_text", text: "Checking. \n\n\nNext." }] },
-    { type: "function_call", call_id: "call-1", name: "Read", arguments: '{"a":1,"b":2}' },
-    { type: "function_call_output", call_id: "call-1", output: "visible" },
-    { type: "function_call", call_id: "call-2", name: "Read", arguments: '{"file":"second"}' },
-    { type: "function_call_output", call_id: "call-2", output: "text fragment" },
-    { type: "function_call", call_id: "call-3", name: "Read", arguments: "raw arguments" },
-    { type: "function_call_output", call_id: "call-3", output: "raw result" },
-    { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: "Done. \n See details." }] },
-  ]);
   const directory = await mkdtemp(join(tmpdir(), "memorax-codebuddy-projection-"));
   try {
     const transcriptPath = join(directory, "session.jsonl");
     await writeFile(transcriptPath, transcript);
-    for (const client of ["codebuddy", "workbuddy"]) {
-      for (const projectionVersion of [1, 2]) {
-        const restored = await readCodeBuddyArchiveSource({
-          ...identity, client, turnIndex: 1, closedAt: "2026-09-20T08:00:00.000Z", outcome: "completed",
-          source: { transcriptPath, endBytes: Buffer.byteLength(transcript) }, projectionVersion,
-        });
-        assert.deepEqual(restored.items, projectionVersion === 1 ? legacy.turn.items : items);
-      }
+    const scope = { repositorySlug: "projection-tests" };
+    const sources = ["codebuddy", "workbuddy"].map((client) => ({
+      ...identity, client, turnIndex: 1, closedAt: "2026-09-20T08:00:00.000Z", outcome: "completed",
+      source: { transcriptPath, endBytes: Buffer.byteLength(transcript) }, items,
+    }));
+    const pendingTurns = sources.map((source) => preparePendingCodingSessionTurn(source, scope));
+    await appendFile(transcriptPath, "\n" + [
+      { id: "u2", type: "message", role: "user", sessionId, content: userContent },
+      { id: "a2", type: "message", role: "assistant", parentId: "u2", status: "completed", content: "Later answer." },
+    ].map(JSON.stringify).join("\n") + "\n");
+    for (const [index, pending] of pendingTurns.entries()) {
+      assert.ok(pending);
+      assert.equal("projectionVersion" in pending.reference, false);
+      assert.equal(pending.reference.source.endBytes, Buffer.byteLength(transcript));
+      const restored = await readCodeBuddyArchiveSource(pending.reference);
+      assert.deepEqual(restored.items, items);
+      const materialized = await materializePendingCodingSessionTurn(pending, scope, readCodeBuddyArchiveSource);
+      assert.ok(materialized);
+      assert.deepEqual(materialized, prepareCodingSessionTurn({ ...sources[index], repositorySlug: scope.repositorySlug }));
     }
   } finally {
     await rm(directory, { recursive: true, force: true });

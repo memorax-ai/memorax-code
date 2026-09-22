@@ -20,7 +20,7 @@ export function preparePendingCodingSessionTurn(
     reference: {
       client: source.client, sessionId: source.sessionId, turnId: source.turnId,
       turnIndex: source.turnIndex, closedAt: source.closedAt, outcome: "completed",
-      source: { ...source.source }, projectionVersion: 2,
+      source: { ...source.source },
     },
     digest: digest(prepared),
   };
@@ -51,7 +51,7 @@ export function codingSessionAttachment(
     throw new Error("Archive Turns must belong to one session and scope");
   }
   const content = {
-    schema_version: 2 as const, redaction_version: 1 as const,
+    schema_version: 1 as const, redaction_version: 1 as const,
     client: first.client, session_id: first.session_id, repository_slug: scope.repositorySlug,
     turns: sorted.map((turn) => ({
       turn_id: turn.turn_id, turn_index: turn.turn_index, closed_at: turn.closed_at,

@@ -9,7 +9,6 @@ export type CodingSessionClient = "codex" | "claude-code" | "opencode" | "codebu
 
 // Local recovery authority only; never included in an archive payload.
 export type CodingSessionNativeSource = Readonly<{ transcriptPath: string; endBytes: number }>;
-export type CodingSessionProjectionVersion = 1 | 2;
 
 export type ResponseJsonValue = null | boolean | number | string | readonly ResponseJsonValue[] | ResponseJsonObject;
 export type ResponseJsonObject = { readonly [key: string]: ResponseJsonValue };
@@ -144,19 +143,8 @@ export function prepareCodingSessionTurn(
   };
 }
 
-export function codingEventText(value: unknown, projectionVersion: CodingSessionProjectionVersion = 2): string {
-  if (typeof value === "string") {
-    if (projectionVersion === 2) return omitBinaryText(value);
-    // Old pending batches must reproduce their original bytes and digest.
-    const normalized = value.trim();
-    if (!normalized) return "";
-    if (isBinaryDataUri(normalized)) return BINARY_CONTENT_OMITTED;
-    try {
-      return stableJson(JSON.parse(normalized));
-    } catch {
-      return normalized;
-    }
-  }
+export function codingEventText(value: unknown): string {
+  if (typeof value === "string") return omitBinaryText(value);
   if (value === undefined) return "";
   return stableJson(value);
 }

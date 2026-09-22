@@ -721,8 +721,9 @@ that recover do not produce terminal failure records.
 - File-backed Codex, Claude Code, CodeBuddy, and WorkBuddy QA buffers hold only
   frozen native references and prepared-content digests for their attachments,
   not a second archive body. A reference includes the exact transcript prefix,
-  native identity and order, completion time, and projection version. At flush,
-  the owning client reader reconstructs that exact Turn and its redacted digest
+  native identity and order, and completion time. At flush, the owning client
+  reader reconstructs that exact Turn with the same current conversion rules;
+  its redacted digest
   must still match. Missing, changed, or mismatched source data omits the
   attachment without changing QA delivery. Native parsing stays client-owned.
 - OpenCode retains its prepared SDK items in the same in-memory QA buffer; it

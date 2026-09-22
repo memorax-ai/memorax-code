@@ -664,7 +664,7 @@ object alongside the usual QA fields, with no top-level `event`:
   "timestamp": 1784160000000,
   "metadata": { "source": "memorax-code", "idempotency_key": "stable-qa-part-id" },
   "coding_context": {
-    "schema_version": 2,
+    "schema_version": 1,
     "redaction_version": 1,
     "batch_id": "stable-batch-id",
     "client": "codex",
@@ -745,7 +745,7 @@ credentials and object paths; the plugin does not connect directly to OSS.
 For Codex, Claude Code, CodeBuddy, and WorkBuddy, the in-memory QA buffer keeps
 only frozen native references and prepared-content digests for attachments.
 Those references include exact file-prefix byte boundaries, native identity
-and order, completion time, and projection version. When QA flushes, the owning
+and order, and completion time. When QA flushes, the owning
 client reader reconstructs and redacts that exact Turn; its digest must match
 the completion-time digest. Missing, truncated, rewritten, or scope-mismatched
 source data omits the attachment with a local diagnostic while preserving QA.
