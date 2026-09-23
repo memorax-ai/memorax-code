@@ -3,14 +3,15 @@ name: memorax-code
 description: >-
   Use this skill as the single router for persistent coding and repository-local
   memory. Invoke it whenever a request may involve prior-work knowledge,
+  indexed office documents, business policies, or prior office discussions,
   repository memory, reusable procedures or rules, durable profile or
   interaction preferences, or information worth retaining beyond the current
   task. This applies without memory wording, including habits, preferences,
   checklists, action sequences, prerequisites, gates, exceptions, validation
   rules, communication style, preferred language, or result presentation.
   Classify the request as coding memory, repository memory, personal procedure
-  memory, personal profile memory, or no persistent memory, then route it to the
-  matching operation. Invoking this router does not require coding-memory
+  memory, personal profile memory, work memory, or no persistent memory, then
+  route it to the matching operation. Invoking this router does not require coding-memory
   search. Reuse a relevant coding-memory result already retrieved in this
   conversation; otherwise let the matching operation decide on search. Prefer
   this router over underlying memory workflows. Ask one focused question only when
@@ -35,6 +36,18 @@ Use MemoraX Code coding memory for reusable engineering knowledge learned across
 - Read [references/memorax-search.md](references/memorax-search.md) to recall or search coding memory.
 - Read [references/memorax-add.md](references/memorax-add.md) to save a grounded reusable coding lesson.
 
+### Work Memory
+
+Use work memory to recall already indexed office documents, business policies,
+or prior office discussions. Read [references/memorax-search.md](references/memorax-search.md)
+and select document or dialogue sources as described there. A user's question
+about a policy is not evidence of the policy itself. These searches use the same
+workspace scope and CLI rules as coding memory; searches do not import documents.
+To save work dialogue, read
+[references/memorax-add.md](references/memorax-add.md) and select the matching
+content type. Work dialogue uses Chat extraction; documents indexed through
+the MemoraX backend use Document extraction. Do not encode business evidence as a coding lesson.
+
 ### Repo Memory
 
 Use repo memory for repository identity, architecture maps, module routing, local commit history, and GitHub or GitLab PR, MR, and issue evidence stored under `.repo_memory/PROFILE.md`, `.repo_memory/resources/`, and `.repo_memory/raw/`.
@@ -53,6 +66,7 @@ Use personal memory for user-owned repository procedures and durable profile or 
 
 ## Tie Breakers
 
+- Route questions about indexed organizational policies and business documents to work document search; these are not user-owned personal procedures. Route prior office discussions to work dialogue search.
 - Route ordered actions, checklists, prerequisites, gates, exceptions, and validation rules to personal procedure memory, even when phrased as "I prefer", "I like", "我的习惯", or "我喜欢".
 - Route preferred name, answer language, tone, verbosity, explanation style, and result presentation to personal profile memory.
 - Route task-learned repairs, coding pitfalls, project engineering conventions, and reusable design lessons to MemoraX Code coding memory.

@@ -738,6 +738,14 @@ that recover do not produce terminal failure records.
   point. Interrupted Turns can instead discard metadata with an explicit reason.
   Unbuffered dispatch starts during enqueue. Buffering defers dispatch until a
   flush; turn or size limits can trigger that flush during enqueue.
+- Add routing uses the declared content type, never keywords in native content.
+  WorkBuddy defaults to dialogue; other clients default to code. An explicit
+  Add type or configured Add content type overrides the client default.
+  Automatic native conversation writeback freezes its code/dialogue route at
+  enqueue, isolates buffered routes, and applies code chunking only to code.
+  Document ingestion remains in MemoraX; native conversations are not document snapshots.
+  MemoraX owns extraction prompts: dialogue uses Chat rules, document uses
+  Document rules, and code retains Code processing.
 - Buffering and chunking belong to the memory capability; rollout, transcript,
   DSH event-interval, and SDK message parsing remains client-specific.
 - Native materializers pass the selected QA timestamps through the shared
