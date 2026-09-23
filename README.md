@@ -249,14 +249,17 @@ the current repository.
 > relevant memory in the background and guides agents to search when useful.
 > Local activity and status are retained as content-controlled trace and reconciliation records under `MEMORAX_CODE_HOME`.
 
-## Four Clear Memory Boundaries
+## Five Clear Memory Boundaries
 
 | Memory | The question it answers | Examples |
 | --- | --- | --- |
 | **Coding&nbsp;Memory** | What engineering lessons should carry into the next task? | Verified fixes, failed approaches, design rationale, pitfalls, and regression checks |
+| **Work&nbsp;Memory** | What workplace facts and requirements should guide this task? | Office documents, policies, and dialogue recalled with `--sources document`, `dialogue`, or `dialogue,document` |
 | **Repo&nbsp;Memory** | What should an agent know about this repository? | Architecture maps, module ownership, entry points, and commit/PR/MR/issue evidence |
 | **Personal&nbsp;Memory** | How should the agent communicate and collaborate with you? | User Profile preferences such as language, tone, explanation depth, and result format |
 | **Procedure&nbsp;Memory** | How should this kind of task be carried out? | Reusable steps, checklists, prerequisites, exceptions, and validation gates |
+
+For Work Memory search and document filters, see the [Search guide](packages/ts/memorax-code-codex-adapter/skills/memorax-code/references/memorax-search.md). Documents use the existing MemoraX document ingestion pipeline and document extraction rules.
 
 Personal Memory and Procedure Memory are global to the user under
 `$MEMORAX_CODE_HOME/personal-memory/` (default `~/.memorax-code/personal-memory/`): User Profile
@@ -279,10 +282,10 @@ unclear.
 
 | Capability | What it does |
 | --- | --- |
-| **Background memory writeback** | Extracts reusable knowledge from completed turns and writes it to Coding Memory in the background. |
+| **Background memory writeback** | Extracts reusable knowledge from completed turns and writes it in the background. WorkBuddy defaults to Work Memory dialogue with chat extraction; other clients default to Coding Memory. |
 | **Preference continuity** | Records User Profile preferences and injects them into future tasks on a configured cadence. |
 | **Procedure reuse** | Records reusable task procedures and reminds future agents to apply them. |
-| **Visible memory impact** | In Codex, Claude Code, CodeBuddy CLI, WorkBuddy, DeepSeek Harness, OpenCode, Trae, and Cursor, opens the final answer with a brief natural-language note when an explicit Coding Memory Search or a Repo, Procedure, or Profile Memory available to the current turn materially guided the task. |
+| **Visible memory impact** | In Codex, Claude Code, CodeBuddy CLI, WorkBuddy, DeepSeek Harness, OpenCode, Trae, and Cursor, opens the final answer with a brief natural-language note when an explicit Coding Memory or Work Memory Search or a Repo, Procedure, or Profile Memory available to the current turn materially guided the task. |
 | **Background Repo Memory maintenance** | Automatically organizes repository structure, entry points, and history evidence in supported clients, then updates them according to policy to reduce repeated searching and summarization. Trae remains Skill-only; Cursor uses its native background subagent for initial builds and maintenance. |
 | **Active memory control** | Lets you search and add memory through the bundled MemoraX Code skill or the CLI. |
 | **Client integration** | Integrates with Codex, Claude Code, CodeBuddy CLI, WorkBuddy, DeepSeek Harness, OpenCode, Trae, and Cursor for Skill-driven Search, local reminders, and automatic writeback. Automatic quota reminders are currently available in Codex, Claude Code, CodeBuddy CLI, WorkBuddy, OpenCode, and Trae. |

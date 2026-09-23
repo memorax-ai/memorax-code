@@ -1110,6 +1110,59 @@ test("memory CLI search binds to the current WorkBuddy trace and workspace", asy
   assert.equal(requests[3].content_type, "dialogue", "native WorkBuddy binding must use the resolved client, not the shared environment variable name");
 });
 
+test("memory CLI Add preserves validated explicit WorkBuddy identity during cwd fallback", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-cli-workbuddy-fallback-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const workspace = join(root, "workspace");
+  await mkdir(workspace);
+  const env = {
+    MEMORAX_CODE_HOME: root,
+    MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
+    MEMORAX_CODE_MEMORAX_API_KEY: "secret",
+    MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
+    MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT: "workbuddy",
+    MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID: "fallback-session",
+  };
+  const requests = [];
+  const options = {
+    cwd: workspace, env,
+    fetchImpl: async (_url, init) => {
+      requests.push(JSON.parse(init.body));
+      return new Response(JSON.stringify({ success: true, data: { task_id: "add-task", status: "queued" } }));
+    },
+  };
+  const args = ["add", "--memory", "Approval is required.", "--type", "episodic", "--reason", "Save requirement"];
+  for (const scenario of ["missing", "stale"]) {
+    if (scenario === "stale") {
+      await writeCurrentTraceTurn(traceContextFromCodeBuddyHookBody({
+        client: "workbuddy", session_id: "fallback-session", turn_id: "expired-turn",
+        cwd: join(root, "old-workspace"),
+      }), { client: "workbuddy", memoraxCodeHome: root, now: () => new Date(0) });
+    }
+    const result = await runMemoryCli(args, options);
+    assert.equal(result.ok, true, scenario);
+    assert.equal(result.effectiveUserId, "user-1@workspace", scenario);
+    assert.equal(requests.at(-1).content_type, "dialogue", scenario);
+    assert.equal(requests.at(-1).mode, "default", scenario);
+    await assert.rejects(readFile(clientTracePaths("workbuddy", root).eventsJsonl("fallback-session"), "utf8"));
+  }
+  for (const overrides of [
+    { MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID: undefined },
+    { MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT: "unknown" },
+    { MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT: undefined, MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID: undefined, CODEBUDDY_SESSION_ID: "missing-native" },
+  ]) {
+    assert.equal((await runMemoryCli(args, { ...options, env: { ...env, ...overrides } })).ok, true);
+    assert.equal(requests.at(-1).content_type, "code");
+  }
+  for (const override of [
+    { args: [...args, "--content-type", "code"], env },
+    { args, env: { ...env, MEMORAX_CODE_MEMORAX_ADD_CONTENT_TYPE: "code" } },
+  ]) {
+    assert.equal((await runMemoryCli(override.args, { ...options, env: override.env })).ok, true);
+    assert.equal(requests.at(-1).content_type, "code");
+  }
+});
+
 test("memory CLI keeps same-ID client bindings separate from an inherited Codex thread", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-cli-general-client-trace-"));
   t.after(() => rm(root, { recursive: true, force: true }));

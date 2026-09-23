@@ -223,7 +223,7 @@ async function memoryAdd(args: string[], options: MemoryCliOptions): Promise<Mem
   if (!reason.ok) return { ok: false, action: "memory.add", error: reason.error };
   const repositoryMemory = await resolveMemoryCliRepositoryMemory(options);
   if (!repositoryMemory.ok) return memoryCliRepositoryFailure("memory.add", repositoryMemory);
-  const contentOptions = memoryAddContentOptions(args, env, repositoryMemory.traceContext?.client);
+  const contentOptions = memoryAddContentOptions(args, env, repositoryMemory.client);
   if (!contentOptions.ok) return { ok: false, action: "memory.add", error: contentOptions.error };
   options.diagnosticTrace = repositoryMemory.traceContext;
 
@@ -280,7 +280,7 @@ async function memoryAdd(args: string[], options: MemoryCliOptions): Promise<Mem
 
 async function resolveMemoryCliRepositoryMemory(
   options: MemoryCliOptions,
-): Promise<ConfiguredRepositoryMemoryResult & { traceContext?: TraceContext }> {
+): Promise<ConfiguredRepositoryMemoryResult & { traceContext?: TraceContext; client?: TraceClient }> {
   const env = options.env ?? process.env;
   const memoraxCodeHome = defaultMemoraxCodeHome(env);
   const binding = memoryCliTraceBinding(env);
@@ -291,7 +291,7 @@ async function resolveMemoryCliRepositoryMemory(
       const current = await readCurrentTraceTurn({ client, memoraxCodeHome, env, expectedSessionId: binding.expectedSessionId });
       if (!current.ok || !current.traceContext.turnId || !current.traceContext.cwd) return undefined;
       const result = await resolveMemoryCliRepositoryMemoryFromTurn(options, current.traceContext);
-      return result.ok ? { ...result, traceContext: current.traceContext } : result;
+      return result.ok ? { ...result, traceContext: current.traceContext, client } : result;
     }));
     const matches = candidates.filter((candidate) => candidate?.ok === true);
     if (matches.length === 1) return matches[0]!;
@@ -311,7 +311,7 @@ async function resolveMemoryCliRepositoryMemory(
     : undefined;
   const traceContext = current?.ok ? current.traceContext : undefined;
   const result = await resolveMemoryCliRepositoryMemoryFromTurn(options, traceContext);
-  return result.ok ? { ...result, traceContext } : result;
+  return result.ok ? { ...result, traceContext, client: binding?.client } : result;
 }
 
 async function resolveMemoryCliRepositoryMemoryFromTurn(

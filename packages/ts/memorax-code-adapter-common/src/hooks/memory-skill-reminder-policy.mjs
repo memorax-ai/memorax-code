@@ -3,7 +3,7 @@ const DEFAULT_MEMORY_SKILL_INVOCATION = "$memorax-code";
 
 export const MEMORY_IMPACT_REMINDER_CONTEXT = [
   "Natural final-answer mention for supported coding agents:",
-  "Only when an accepted Coding Memory result from a successful explicit `memorax-cli search`, a relevant Repo Memory read, applied Procedure Memory, or applied Profile Memory materially changes localization, a decision, implementation, validation, or the delivered answer, begin the final answer with one brief opening paragraph before the normal result.",
+  "Only when an accepted Coding Memory or Work Memory result from a successful explicit `memorax-cli search`, a relevant Repo Memory read, applied Procedure Memory, or applied Profile Memory materially changes localization, a decision, implementation, validation, or the delivered answer, begin the final answer with one brief opening paragraph before the normal result.",
   "A Search or read alone is insufficient; omit it for empty, unrelated, stale, rejected, merely confirmatory, or unused memory.",
   "Treat accepted memory as materially helpful when the answer uses it to recover or substantiate historical intent, rationale, a prior decision, a constraint, or a reusable lesson, even when live code independently confirms the conclusion.",
   "Merely confirmatory means the answer does not rely on the memory for a claim and the memory changes neither its framing, scope, nor confidence.",
