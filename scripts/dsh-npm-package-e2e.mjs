@@ -123,7 +123,7 @@ async function main() {
     "add", "README.md", ".gitignore"], paths.workspace, env);
   await run("git", ["-c", "user.name=DSH E2E", "-c", "user.email=e2e@example.invalid",
     "commit", "--quiet", "-m", "fixture"], paths.workspace, env);
-  await writePersonalContextFixtures(paths.workspace);
+  await writePersonalContextFixtures(paths.memoraxHome);
 
   progress("installing the pinned DSH release and its test-only dependencies");
   await run("npm", ["install", "-g", "--prefix", paths.prefix, DSH_SPEC,
@@ -528,25 +528,25 @@ function assertAdd(request, prompt) {
   assert.doesNotMatch(serialized, /skill_content/);
 }
 
-async function writePersonalContextFixtures(workspace) {
-  const profileRoot = join(workspace, ".repo_memory", "user-profile");
-  const procedureRoot = join(workspace, ".repo_memory", "procedure-memory");
+async function writePersonalContextFixtures(memoraxHome) {
+  const profileRoot = join(memoraxHome, "personal-memory", "user-profile");
+  const procedureRoot = join(memoraxHome, "personal-memory", "procedure-memory");
   await Promise.all([
     mkdir(profileRoot, { recursive: true }),
     mkdir(procedureRoot, { recursive: true }),
   ]);
   await writeFile(join(profileRoot, "preferences.md"), [
     "---",
-    'schema: "repo_user_profile_memory.v0.1"',
-    'scope: "repo"',
-    'owner: "repo-user-profile-memory"',
+    'schema: "user_profile_memory.v0.1"',
+    'scope: "user"',
+    'owner: "user-profile-memory"',
     'trust_state: "user_stated"',
     'updated_at: "2026-08-16T00:00:00.000Z"',
     "active_count: 1",
     "total_count: 1",
     "---",
     "",
-    "# Repo-Scoped User Profile And Preferences",
+    "# User Profile And Preferences",
     "",
     "## Active Preferences",
     "",

@@ -7,6 +7,11 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const skillDir = dirname(scriptDir);
 const pluginRoot = resolve(scriptDir, "../../..");
+const metadata = packageMetadata();
+if (!process.env.MEMORAX_CODE_HOME?.trim()) {
+  const home = packageValue("memoraxCodeHome");
+  if (home) process.env.MEMORAX_CODE_HOME = home;
+}
 const directEntrypoint = [
   "../../../../memorax-code-backend/dist/personal-memory/cli.js",
   "../../../../../../memorax-code-backend/dist/personal-memory/cli.js",
@@ -18,7 +23,7 @@ if (directEntrypoint) {
   const { runUserProfileCli } = await import(pathToFileURL(directEntrypoint).href);
   process.exitCode = await runUserProfileCli(process.argv.slice(2));
 } else {
-  const command = memoraxCodeCommand();
+  const command = packageValue("memoraxCodeCommand");
   if (!command) {
     process.stderr.write("User Profile runtime is unavailable; reinstall or rebuild MemoraX Code.\n");
     process.exit(1);
@@ -48,18 +53,21 @@ function resolveNodeEntrypoint(command) {
   }
 }
 
-function memoraxCodeCommand() {
+function packageMetadata() {
+  const records = [];
   for (const root of [skillDir, pluginRoot]) {
     const metadataPath = join(root, ".memorax-code-package.json");
     if (!existsSync(metadataPath)) continue;
     try {
-      const metadata = JSON.parse(readFileSync(metadataPath, "utf8"));
-      if (typeof metadata?.memoraxCodeCommand === "string" && metadata.memoraxCodeCommand.trim()) {
-        return metadata.memoraxCodeCommand.trim();
-      }
+      records.push(JSON.parse(readFileSync(metadataPath, "utf8")));
     } catch {
       // Try the package-level metadata next.
     }
   }
-  return undefined;
+  return records;
+}
+
+function packageValue(name) {
+  return metadata.map((record) => record?.[name])
+    .find((value) => typeof value === "string" && value.trim())?.trim();
 }

@@ -28,7 +28,10 @@ The user selects a repository, not a memory directory. Do not ask for a `.repo_m
 
 Script-generated artifacts: `raw/prepare-report.json`, `raw/git-commits.json`, and optional `raw/github-facets.json` or `raw/gitlab-facets.json`. Agent-authored durable artifacts: `PROFILE.md`, repository-native supporting conceptual pages when the repository has enough surface area, `resources/commits.md`, `resources/prs.md`, and `resources/issues.md`. Temporary planning artifact `.repo_memory/_plan.md` is allowed during drafting but must be removed before final validation.
 
-User-managed sidecars may coexist under `.repo_memory/procedure-memory/` and `.repo_memory/user-profile/`. Builder scripts preserve them and exclude them from bundle validation; this skill must not create, edit, or summarize their contents as repo-memory evidence.
+Global Personal Memory lives under `$MEMORAX_CODE_HOME/personal-memory/` and is
+outside the Repo Memory bundle. The builder does not create, edit, migrate, or
+summarize personal memory. Legacy personal-memory files under `.repo_memory/`
+are ignored and remain untouched.
 
 ## Wiki-Style Output Contract
 

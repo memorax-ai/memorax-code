@@ -139,7 +139,7 @@ test("Trae install merges managed Hooks and Skill without changing user Hooks", 
     assert.equal(await readFile(join(installed.skillPath, "SKILL.md"), "utf8"), "# MemoraX Code\n");
     assert.deepEqual(
       JSON.parse(await readFile(join(installed.skillPath, ".memorax-code-package.json"), "utf8")),
-      { version: 1, memoraxCodeCommand: fixture.options.memoraxCodeCommand },
+      { version: 1, memoraxCodeHome: fixture.options.memoraxCodeHome, memoraxCodeCommand: fixture.options.memoraxCodeCommand },
     );
 
     const hooks = JSON.parse(await readFile(join(fixture.traeHome, "hooks.json"), "utf8"));
@@ -155,6 +155,12 @@ test("Trae install merges managed Hooks and Skill without changing user Hooks", 
     const unchanged = await enableTraeAdapter(fixture.options);
     assert.equal(unchanged.ok, true);
     assert.equal(unchanged.changed, false);
+    const skillMetadataPath = join(installed.skillPath, ".memorax-code-package.json");
+    await writeFile(skillMetadataPath, JSON.stringify({ version: 1, memoraxCodeCommand: fixture.options.memoraxCodeCommand }));
+    assert.equal((await readTraeAdapterStatus(fixture.options)).traeSkills.ok, false);
+    assert.equal((await enableTraeAdapter(fixture.options)).changed, true);
+    assert.equal(JSON.parse(await readFile(skillMetadataPath, "utf8")).memoraxCodeHome, fixture.options.memoraxCodeHome);
+    assert.equal((await enableTraeAdapter(fixture.options)).changed, false);
 
     const state = JSON.parse(await readFile(unchanged.statePath, "utf8"));
     await writeTraeRuntimeObservation({

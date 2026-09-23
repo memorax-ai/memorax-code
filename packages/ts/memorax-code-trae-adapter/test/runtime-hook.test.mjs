@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -221,16 +221,16 @@ test("Trae delayed Stop acceptance preserves a newer active Turn", async () => {
   }
 });
 
-test("Trae restores authorized Profile after compact and keeps Procedure Memory on cadence", async () => {
-  const fixture = await createFixture("personal-memory", { withProcedureMemory: true, intervalTurns: 2 });
+test("Trae restores global Profile after compact and keeps procedures on turns 1, 6, and 11", async () => {
+  const fixture = await createFixture("personal-memory", { withProcedureMemory: true, intervalTurns: 5 });
   try {
-    const profileDir = join(fixture.repoMemoryWorktree, ".repo_memory", "user-profile");
+    const profileDir = join(fixture.root, "personal-memory", "user-profile");
     await mkdir(profileDir, { recursive: true });
     await writeFile(join(profileDir, "preferences.md"), [
       "---",
-      'schema: "repo_user_profile_memory.v0.1"',
-      'scope: "repo"',
-      'owner: "repo-user-profile-memory"',
+      'schema: "user_profile_memory.v0.1"',
+      'scope: "user"',
+      'owner: "user-profile-memory"',
       'trust_state: "user_stated"',
       "active_count: 1",
       "total_count: 1",
@@ -249,12 +249,11 @@ test("Trae restores authorized Profile after compact and keeps Procedure Memory 
     ].join("\n"));
     const expectedReminders = [];
     const sessionId = "trae-personal-memory";
-    const scenarios = [
-      { profile: true, procedure: true, triggers: ["cadence"] },
-      { profile: true, procedure: false, triggers: ["post_compaction"] },
-      { profile: false, procedure: true, triggers: ["cadence"] },
-      { profile: false, procedure: false, triggers: [] },
-    ];
+    const scenarios = Array.from({ length: 11 }, (_, index) => ({
+      profile: index < 2,
+      procedure: index % 5 === 0,
+      triggers: index % 5 === 0 ? ["cadence"] : index === 1 ? ["post_compaction"] : [],
+    }));
     for (const [index, scenario] of scenarios.entries()) {
       if (index === 1) {
         const requestCount = fixture.requests.length;
@@ -291,15 +290,17 @@ test("Trae restores authorized Profile after compact and keeps Procedure Memory 
       );
     }
 
-    fixture.control.repoMemoryWorktree = undefined;
-    const unauthorized = await runHook(fixture, {
-      hook_event_name: "UserPromptSubmit", session_id: "trae-no-worktree-authority",
-      prompt: "do not infer repository authority from cwd", cwd: fixture.repoMemoryWorktree,
+    const otherWorkspace = join(fixture.root, "other-workspace");
+    await mkdir(otherWorkspace);
+    const shared = await runHook(fixture, {
+      hook_event_name: "UserPromptSubmit", session_id: "trae-other-workspace",
+      prompt: "use shared personal memory", cwd: otherWorkspace,
     });
-    assert.equal(unauthorized.status, 0, unauthorized.stderr);
-    const context = JSON.parse(unauthorized.stdout).hookSpecificOutput.additionalContext;
+    assert.equal(shared.status, 0, shared.stderr);
+    const context = JSON.parse(shared.stdout).hookSpecificOutput.additionalContext;
     assert.match(context, /MemoraX Code reminder:/);
-    assert.doesNotMatch(context, /Prefer concise Trae answers|Run the focused Trae adapter test first/);
+    assert.match(context, /Prefer concise Trae answers/);
+    assert.match(context, /Run the focused Trae adapter test first/);
   } finally {
     await fixture.close();
   }
@@ -308,12 +309,10 @@ test("Trae restores authorized Profile after compact and keeps Procedure Memory 
 async function createFixture(name, options = {}) {
   const root = await mkdtemp(join(tmpdir(), `memorax-code-trae-hook-${name}-`));
   const traeHome = join(root, "trae-home");
-  const repoMemoryWorktree = options.withProcedureMemory ? join(root, "repo") : undefined;
-  if (repoMemoryWorktree) await createProcedureMemoryRepo(repoMemoryWorktree);
+  if (options.withProcedureMemory) await createProcedureMemory(root);
   const requests = [];
   const control = {
     rejectNextTurnStart: false,
-    repoMemoryWorktree,
     writebackReply: async () => ({ status: 200, body: { ok: true, scheduled: true } }),
   };
   const server = createServer(async (request, response) => {
@@ -337,7 +336,6 @@ async function createFixture(name, options = {}) {
         ? {
             ok: true,
             additionalContext: "memory context",
-            ...(control.repoMemoryWorktree ? { repoMemoryWorktree: control.repoMemoryWorktree } : {}),
           }
         : { ok: true };
     response.writeHead(rejectedTurnStart ? 503 : 200, { "content-type": "application/json" });
@@ -356,7 +354,6 @@ async function createFixture(name, options = {}) {
     traeHome,
     requests,
     control,
-    repoMemoryWorktree,
     intervalTurns: options.intervalTurns ?? 1,
     runtimePath: state.runtimePath,
     runtimeDigest: state.runtimeDigest,
@@ -368,12 +365,10 @@ async function createFixture(name, options = {}) {
   };
 }
 
-async function createProcedureMemoryRepo(repo) {
-  execFileSync("git", ["init", "--quiet", repo]);
-  await writeFile(join(repo, ".gitignore"), ".repo_memory/\n");
-  await mkdir(join(repo, ".repo_memory", "procedure-memory"), { recursive: true });
+async function createProcedureMemory(home) {
+  await mkdir(join(home, "personal-memory", "procedure-memory"), { recursive: true });
   await writeFile(
-    join(repo, ".repo_memory", "procedure-memory", "testing.md"),
+    join(home, "personal-memory", "procedure-memory", "testing.md"),
     "# Testing workflow\n\nRun the focused Trae adapter test first.\n",
   );
 }

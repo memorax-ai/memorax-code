@@ -47,11 +47,15 @@ export function apply(ctx) {
     createUserMessage: createDshUserMessage,
     intervalTurns,
     isReminderDue: isMemorySkillReminderDue,
+    memoraxCodeHome: runtime.memoraxCodeHome,
     memoryImpactContext: MEMORY_IMPACT_REMINDER_CONTEXT,
     memoryReminderContext: memorySkillReminderContext("/memorax-code"),
     searchGuidanceContext: memorySearchGuidanceContext("/memorax-code"),
     reminderCadence: createDshReminderCadence(runtime.memoraxCodeHome),
-    loadPersonalContext: (input, options) => loadDshPersonalContext(input, {
+    loadPersonalContext: (input, options) => loadDshPersonalContext({
+      ...input,
+      memoraxCodeHome: runtime.memoraxCodeHome,
+    }, {
       ...options,
       env: runtimeEnv,
     }),

@@ -15,8 +15,8 @@ const commonRoot = resolveCommonSourceRoot(pluginRoot);
 const { codeBuddyMetadataClient, defaultCodeBuddyHome, defaultWorkBuddyHome, readCodeBuddyPackageMetadata } = await import(pathToFileURL(join(commonRoot, "clients", "codebuddy-command.mjs")).href);
 const { scheduleMissingRepoMemoryBuild } = await import(pathToFileURL(join(commonRoot, "repo-memory", "repo-memory-auto-build.mjs")).href);
 const { isRepoMemoryJobWorker } = await import(pathToFileURL(join(commonRoot, "repo-memory", "repo-memory-job-context.mjs")).href);
-const { buildRepoProcedureMemoryContext } = await import(pathToFileURL(join(commonRoot, "repo-memory", "repo-procedure-memory-context.mjs")).href);
-const { buildRepoUserProfilePreferencesContext } = await import(pathToFileURL(join(commonRoot, "repo-memory", "repo-user-profile-context.mjs")).href);
+const { buildProcedureMemoryContext } = await import(pathToFileURL(join(commonRoot, "personal-memory", "procedure-memory-context.mjs")).href);
+const { buildUserProfilePreferencesContext } = await import(pathToFileURL(join(commonRoot, "personal-memory", "user-profile-context.mjs")).href);
 const { resolveBackendConnection } = await import(pathToFileURL(join(commonRoot, "backend-connection.mjs")).href);
 const { requestMemorySearchGuidance } = await import(pathToFileURL(join(commonRoot, "hooks", "memory-search-guidance.mjs")).href);
 const { postBackendCommand } = await import(pathToFileURL(join(commonRoot, "backend-command.mjs")).href);
@@ -75,6 +75,7 @@ const reminderOptions = {
 const personalMemoryContextOptions = {
   adapterDir: client,
   debugEnv: "MEMORAX_CODE_CODEBUDDY_HOOK_DEBUG",
+  memoraxCodeHome: home,
   sessionKeyPrefix: client,
 };
 if (event === "SessionStart") await bindMemoryCliTraceSession(sessionId);
@@ -137,16 +138,8 @@ if (event === "SessionStart") {
     remindOnFirstTurn: true,
     requireTranscriptPath: true,
     memoryImpactContext: MEMORY_IMPACT_REMINDER_CONTEXT,
-    ...(repoMemoryWorktree ? {
-      buildCadenceReminderContext: (hookInput) => buildRepoProcedureMemoryContext({
-        ...hookInput,
-        cwd: repoMemoryWorktree,
-      }, personalMemoryContextOptions),
-      buildPersonalMemoryContext: (hookInput) => buildRepoUserProfilePreferencesContext({
-        ...hookInput,
-        cwd: repoMemoryWorktree,
-      }, personalMemoryContextOptions),
-    } : {}),
+    buildCadenceReminderContext: () => buildProcedureMemoryContext(personalMemoryContextOptions),
+    buildPersonalMemoryContext: () => buildUserProfilePreferencesContext(personalMemoryContextOptions),
   }, { ...input, turnId, workspaceKind });
   const context = stringValue(reminderResult?.additionalContext);
   const systemMessage = stringValue(response?.userNotice);

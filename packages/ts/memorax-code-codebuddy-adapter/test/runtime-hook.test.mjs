@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { createServer } from "node:http";
-import { execFileSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -303,20 +303,19 @@ test("UserPromptSubmit exposes a Backend user notice without model context", asy
   } finally { await server.close(); }
 });
 
-test("compact restores profile context while cadence turns include profile and procedure context", async () => {
+test("compact restores global profiles and procedures stay on turns 1, 6, and 11 without repository authority", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-codebuddy-hook-"));
-  const repo = join(root, "repo");
+  const workspace = join(root, "workspace");
+  await mkdir(workspace);
   const transcriptPath = join(root, "session.jsonl");
   await writeFile(transcriptPath, "");
-  await createPersonalMemoryRepo(repo);
+  await createPersonalMemory(root);
   const requests = [];
-  const server = await startServer(requests, ({ path }) => path === "/health"
-    ? { ok: true, service: "memorax-code-backend" }
-    : { ok: true, repoMemoryWorktree: repo });
+  const server = await startServer(requests, { ok: true });
   try {
     const first = await runHook({
       hook_event_name: "UserPromptSubmit", session_id: "session-compact", transcript_path: transcriptPath,
-      prompt: "first", cwd: repo,
+      prompt: "first", cwd: workspace,
     }, { root, server });
     assert.match(first.stdout, /Prefer concise answers/);
     assert.match(first.stdout, /Run the focused adapter test first/);
@@ -325,24 +324,66 @@ test("compact restores profile context while cadence turns include profile and p
 
     const compact = await runHook({
       hook_event_name: "SessionStart", session_id: "session-compact", transcript_path: transcriptPath,
-      source: "compact", cwd: repo,
+      source: "compact", cwd: workspace,
     }, { root, server });
     assert.equal(compact.stdout, "");
 
     const next = await runHook({
       hook_event_name: "UserPromptSubmit", session_id: "session-compact", transcript_path: transcriptPath,
-      prompt: "after compact", cwd: repo,
+      prompt: "after compact", cwd: workspace,
     }, { root, server });
     assert.match(next.stdout, /MemoraX Code personal-memory reminder/);
     assert.match(next.stdout, /Prefer concise answers/);
     assert.match(next.stdout, /Natural final-answer mention for supported coding agents:/);
     assert.doesNotMatch(next.stdout, /Run the focused adapter test first/);
 
+    for (let turn = 3; turn <= 11; turn += 1) {
+      const result = await runHook({
+        hook_event_name: "UserPromptSubmit", session_id: "session-compact", transcript_path: transcriptPath,
+        prompt: `prompt ${turn}`, cwd: workspace,
+      }, { root, server });
+      assert.equal(result.status, 0, result.stderr);
+      assert.doesNotMatch(result.stdout, /Prefer concise answers/);
+      assert.equal(result.stdout.includes("Run the focused adapter test first"), turn === 6 || turn === 11);
+    }
+
     const reminders = requests.filter((request) => request.path === "/memory/skill-reminder");
     assert.deepEqual(reminders.map((request) => request.body.triggers), [
       ["cadence"],
       ["post_compaction"],
+      ["cadence"],
+      ["cadence"],
     ]);
+
+    const otherWorkspace = join(root, "other-workspace");
+    await mkdir(otherWorkspace);
+    const shared = await runHook({
+      hook_event_name: "UserPromptSubmit", session_id: "session-other-workspace", transcript_path: transcriptPath,
+      prompt: "another workspace", cwd: otherWorkspace,
+    }, { root, server });
+    assert.equal(shared.status, 0, shared.stderr);
+    assert.match(shared.stdout, /Prefer concise answers/);
+    assert.match(shared.stdout, /Run the focused adapter test first/);
+  } finally { await server.close(); }
+});
+
+test("UserPromptSubmit injects global personal memory when the Backend rejects the Turn", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-codebuddy-hook-"));
+  const transcriptPath = join(root, "session.jsonl");
+  await writeFile(transcriptPath, "");
+  await createPersonalMemory(root);
+  const requests = [];
+  const server = await startServer(requests, { ok: false });
+  try {
+    const result = await runHook({
+      hook_event_name: "UserPromptSubmit", session_id: "session-rejected", transcript_path: transcriptPath,
+      prompt: "rejected prompt", cwd: root,
+    }, { root, server });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /Prefer concise answers/);
+    assert.match(result.stdout, /Run the focused adapter test first/);
+    // Search guidance still requires an accepted Turn.
+    assert.equal(requests.some((request) => request.path === "/memory/search-guidance"), false);
   } finally { await server.close(); }
 });
 
@@ -495,23 +536,20 @@ function provisionalTurnId(sessionId, boundary, prompt) {
   return `${sessionId}:${boundary}:${createHash("sha256").update(prompt.trim()).digest("hex")}`;
 }
 
-async function createPersonalMemoryRepo(repo) {
-  execFileSync("git", ["init", "--quiet", repo]);
-  await writeFile(join(repo, ".gitignore"), ".repo_memory/\n");
-  await mkdir(join(repo, ".repo_memory", "procedure-memory"), { recursive: true });
-  await mkdir(join(repo, ".repo_memory", "user-profile"), { recursive: true });
-  await writeFile(join(repo, ".repo_memory", "PROFILE.md"), "# Repo Memory\n");
-  await writeFile(join(repo, ".repo_memory", "procedure-memory", "testing.md"), [
+async function createPersonalMemory(home) {
+  await mkdir(join(home, "personal-memory", "procedure-memory"), { recursive: true });
+  await mkdir(join(home, "personal-memory", "user-profile"), { recursive: true });
+  await writeFile(join(home, "personal-memory", "procedure-memory", "testing.md"), [
     "# Testing workflow",
     "",
     "Run the focused adapter test first.",
     "",
   ].join("\n"));
-  await writeFile(join(repo, ".repo_memory", "user-profile", "preferences.md"), [
+  await writeFile(join(home, "personal-memory", "user-profile", "preferences.md"), [
     "---",
-    'schema: "repo_user_profile_memory.v0.1"',
-    'scope: "repo"',
-    'owner: "repo-user-profile-memory"',
+    'schema: "user_profile_memory.v0.1"',
+    'scope: "user"',
+    'owner: "user-profile-memory"',
     'trust_state: "user_stated"',
     "active_count: 1",
     "total_count: 1",

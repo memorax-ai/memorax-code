@@ -470,6 +470,7 @@ async function runCodexPluginCommand(argv: string[]): Promise<CodexPluginCommand
   if (subcommand === "activate") {
     return await activateCodexPlugin({
       codexHome: argValue(argv, "--codex-home"),
+      memoraxCodeHome: argValue(argv, "--home"),
       marketplacePath: argValue(argv, "--marketplace-path"),
       pluginSourcePath: argValue(argv, "--plugin-source-path"),
       codexCommand: argValue(argv, "--codex-command"),
@@ -505,6 +506,7 @@ async function runCodexPluginCommand(argv: string[]): Promise<CodexPluginCommand
   if (subcommand !== "install") throw new Error(`memorax-code codex-plugin: unknown command '${subcommand}'. Run 'memorax-code --help' for usage.`);
   return await installCodexPlugin({
     codexHome: argValue(argv, "--codex-home"),
+    memoraxCodeHome: argValue(argv, "--home"),
     marketplacePath: argValue(argv, "--marketplace-path"),
     pluginSourcePath: argValue(argv, "--plugin-source-path"),
     codexCommand: argValue(argv, "--codex-command"),

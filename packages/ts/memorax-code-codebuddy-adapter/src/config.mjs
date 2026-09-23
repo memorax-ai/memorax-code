@@ -195,7 +195,7 @@ async function enableAdapter(options) {
         await materializeCanonicalSkill(destination);
       }
       stage = "plugin-write";
-      await writePackageMetadata(destination, codeBuddyCommand, home, options.memoraxCodeCommand, client);
+      await writePackageMetadata(destination, codeBuddyCommand, home, options.memoraxCodeCommand, client, memoraxCodeHome);
     }
     stage = "plugin-register";
     await writeMarketplaceManifest(home);
@@ -462,7 +462,7 @@ async function materializeCanonicalSkill(destination) {
   await cp(source, target, { recursive: true, force: true });
 }
 
-async function writePackageMetadata(destination, configuredCommand, codeBuddyHome, configuredMemoraxCodeCommand, client) {
+async function writePackageMetadata(destination, configuredCommand, codeBuddyHome, configuredMemoraxCodeCommand, client, memoraxCodeHome) {
   const codeBuddyCommand = typeof configuredCommand === "string" && configuredCommand.trim()
     ? configuredCommand.trim()
     : resolveHookCodeBuddyCommand({ client });
@@ -474,6 +474,7 @@ async function writePackageMetadata(destination, configuredCommand, codeBuddyHom
     client,
     codeBuddyCommand,
     codeBuddyHome,
+    memoraxCodeHome: resolve(memoraxCodeHome),
     ...(memoraxCodeCommand ? { memoraxCodeCommand } : {}),
   });
 }

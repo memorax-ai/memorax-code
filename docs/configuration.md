@@ -522,16 +522,15 @@ After the Backend confirms turn registration, `beforeSubmitPrompt` returns share
 reminders and local personal-memory context through native `additional_context`.
 User Profile preferences are included on the first eligible turn; Procedure
 Memory follows the first-turn and configured reminder cadence. Personal contents
-are read only from a Backend-authorized Git worktree. Without that authority, an
-accepted turn can still receive generic reminders.
+are read from `$MEMORAX_CODE_HOME/personal-memory/`, independently of the
+current repository and any Backend worktree result.
 
 For compaction, `preCompact` only records a native database baseline; it does not
 inject context or prove that compaction succeeded. The Backend compares later
 native root-message and summary-archive references with that baseline. New
 archives must extend the recorded archive prefix and account for replacement of
 the observed root messages. Only then can the next nonempty, registered prompt
-restore User Profile preferences and the personal-memory reminder through its
-authorized worktree. Each proven archive replacement permits one local restoration
+restore global User Profile preferences and the personal-memory reminder. Each proven archive replacement permits one local restoration
 request; delivery is best-effort, so a lost HTTP response or Hook termination can
 lose the reminder, and model receipt is not acknowledged. Procedure Memory
 keeps its normal cadence; compaction does not make it due earlier. Empty Continue
@@ -927,13 +926,27 @@ data-loss-prevention system and may miss unknown or weak-context sensitive
 formats. Explicit `memorax-cli add` content and Search queries are sent as
 entered and do not pass through this detector.
 
+## Personal memory storage
+
+User Profile and Procedure Memory are global to the user. `MEMORAX_CODE_HOME`
+selects their home, defaulting to `~/.memorax-code`. User Profile lives in
+`personal-memory/user-profile/preferences.md`; Procedure Memory uses direct
+`personal-memory/procedure-memory/*.md` topic files under that home. They work
+across repositories and non-Git workspaces. Applicability conditions may still
+limit a preference or procedure to a particular task or environment.
+
+`memorax-code user-profile <list|add|update|delete>` uses that default home or an
+explicit `--home DIR`; it does not accept a repository argument. Existing
+`.repo_memory` personal-memory files are ignored without migration or fallback.
+Repo Memory remains repository-local.
+
 ## Skill reminder and repository maintenance
 
 `[memory.skill_reminder].interval_turns` defaults to `5`; its environment
 override is `MEMORAX_CODE_MEMORY_SKILL_REMINDER_INTERVAL_TURNS`. A positive
 value controls the native skill reminder cadence for supported client
 sessions, beginning with the first eligible prompt or Turn. The same interval
-controls trusted repo-scoped Procedure Memory. User Profile preferences are
+controls global Procedure Memory (by default on turns 1, 6, and 11). User Profile preferences are
 applied on first observation and, in integrations with a native compaction
 completion signal, restored with a personal-memory reminder after successful
 context compaction. These local contexts remain separate from automatic

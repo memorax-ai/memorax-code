@@ -143,10 +143,10 @@ Cursor 独立安装到 `~/.cursor/hooks.json` 和 `~/.cursor/skills/memorax-code
 Claude Code，setup 会保留 Cursor 的第三方集成开关。Search 和主动 Add 通过 Skill 调用 CLI；
 自动 Add 从原生数据库读取经过验证的轮次，需要带内置 SQLite 的 Node.js 22.13+（推荐 Node.js 24）。
 支持普通提问、编辑重发，以及能绑定到已观测前一轮的 Continue；中断或内容归属不明确时跳过。
-Prompt Hook 会在首个符合条件的轮次注入可信工作区中的 User Profile 偏好，并按配置的提醒周期
-注入 Procedure Memory。记录的压缩经原生数据库验证后，会在下一个非空且成功注册的 Prompt
-恢复 Profile 与个人记忆提醒；Procedure 仍遵循原有周期。缺少证据时跳过恢复，不保证在同一个
-持续执行的任务中立即恢复。Repo Memory 初建和按策略维护使用
+Prompt Hook 会在首个符合条件的轮次注入 User Profile 偏好，并按配置的提醒周期
+注入 Procedure Memory。默认 Procedure 周期为第 1、6、11 轮（之后每 5 轮一次）。记录的压缩经
+原生数据库验证后，会在下一个非空且成功注册的 Prompt 恢复 Profile 与个人记忆提醒；Procedure
+仍遵循原有周期。缺少证据时跳过恢复，不保证在同一个持续执行的任务中立即恢复。Repo Memory 初建和按策略维护使用
 Cursor 原生后台子 Agent，无需单独安装或登录 Cursor CLI；执行工具时仍遵循 Cursor 的正常授权。详见
 [Cursor 配置](docs/configuration.md#cursor-integration-paths)。
 
@@ -217,11 +217,15 @@ cd test-repo
 | **Personal&nbsp;Memory** | Agent 应该如何与你沟通和协作？ | User Profile 中记录的语言、语气、解释深度和结果呈现偏好 |
 | **Procedure&nbsp;Memory** | 这类任务应该如何执行？ | 可复用的步骤、检查清单、前置条件、例外情况和验证要求 |
 
-Personal Memory 和 Procedure Memory 保存在当前仓库的 `.repo_memory/` 下。涉及已有内容时，
-MemoraX Code 会先比较含义：语义相同的请求不重复写入；长期有效的补充或冲突规则会更新匹配项，
-并彻底移除被替代的文字；适用环境失效时先修正范围，只有整条记忆完全过时时才删除。
-用户明确要求忘记时，只删除点名的偏好、流程主题、段落或步骤，其他记忆保持不变。
-一次性任务指令不会改写已保存的记忆；是否长期有效或目标不清楚时，Agent 会先询问。
+Personal Memory 和 Procedure Memory 在用户级目录
+`$MEMORAX_CODE_HOME/personal-memory/`（默认 `~/.memorax-code/personal-memory/`）下：User
+Profile 使用 `user-profile/preferences.md`，每个 Procedure 主题在
+`procedure-memory/` 中单独保存。适用条件可以提到仓库、工具或工作流，但仓库内没有个人记忆层。
+旧 `.repo_memory` 中的个人记忆会被忽略，不会迁移。持久化的 User Profile 偏好可以隐式保存；
+Procedure Memory 只有在用户明确要求时才保存。涉及已有内容时，MemoraX Code 会先比较含义：
+语义相同的请求不重复写入；长期有效的补充或冲突规则会更新匹配项，并彻底移除被替代的文字；
+适用环境失效时先修正范围，只有整条记忆完全过时时才删除。用户明确要求忘记时，只删除点名的偏好、
+流程主题、段落或步骤，其他记忆保持不变。一次性任务指令不会改写已保存的记忆；是否长期有效或目标不清楚时，Agent 会先询问。
 
 ## 产品能力
 

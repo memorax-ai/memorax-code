@@ -166,10 +166,11 @@ with built-in SQLite (Node.js 24 recommended). It supports ordinary prompts,
 edited resends, and continuations bound to an observed preceding turn; interrupted
 or ambiguously correlated content is skipped. Prompt Hooks inject trusted User
 Profile preferences on the first eligible turn and Procedure Memory on the
-configured reminder cadence. After a recorded compaction is verified against the
-native database, the next nonempty, registered prompt restores Profile and personal
-reminders; Procedure keeps its normal cadence. Missing evidence skips recovery,
-and restoration during the same continuing task is not guaranteed.
+configured reminder cadence. The default Procedure cadence is turns 1, 6, and
+11 (then every five turns). After a recorded compaction is verified against the
+native database, the next nonempty, registered prompt restores Profile and
+personal reminders; Procedure keeps its normal cadence. Missing evidence skips
+recovery, and restoration during the same continuing task is not guaranteed.
 Repo Memory initial builds and policy-based maintenance use Cursor's native
 background subagent; no separate Cursor CLI or
 CLI login is required. Cursor may request normal tool approvals. See
@@ -257,15 +258,22 @@ the current repository.
 | **Personal&nbsp;Memory** | How should the agent communicate and collaborate with you? | User Profile preferences such as language, tone, explanation depth, and result format |
 | **Procedure&nbsp;Memory** | How should this kind of task be carried out? | Reusable steps, checklists, prerequisites, exceptions, and validation gates |
 
-Personal Memory and Procedure Memory stay in the current repository under
-`.repo_memory/`. When saved content already exists, MemoraX Code compares its
-meaning before writing: an equivalent request makes no change; a durable
-refinement or conflict updates the matching entry and removes the superseded
-wording; an invalid scope is corrected, or the entry is deleted only when it is
-wholly obsolete. An explicit forget request deletes only the named preference,
-procedure topic, section, or step and leaves unrelated memory unchanged.
-One-time task instructions do not change saved memory, and the Agent asks before
-writing when the durable intent or target is unclear.
+Personal Memory and Procedure Memory are global to the user under
+`$MEMORAX_CODE_HOME/personal-memory/` (default `~/.memorax-code/personal-memory/`): User Profile
+uses `user-profile/preferences.md`, and each Procedure topic uses its own file
+under `procedure-memory/`. Applicability may mention a repository, tool, or
+workflow, but no personal-memory layer exists inside a repository. Existing
+`.repo_memory` personal-memory files are ignored and are not migrated. A
+durable User Profile preference may be saved implicitly; Procedure Memory is
+saved only when the user explicitly asks. When saved content already exists,
+MemoraX Code compares its meaning before writing: an equivalent request makes
+no change; a durable refinement or conflict updates the matching entry and
+removes the superseded wording; an invalid scope is corrected, or the entry is
+deleted only when it is wholly obsolete. An explicit forget request deletes
+only the named preference, procedure topic, section, or step and leaves
+unrelated memory unchanged. One-time task instructions do not change saved
+memory, and the Agent asks before writing when the durable intent or target is
+unclear.
 
 ## Product Capabilities
 

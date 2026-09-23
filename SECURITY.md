@@ -112,13 +112,19 @@ Please allow time for triage and remediation before public disclosure.
   authenticated Backend turn-start request. Backend or workspace-scope
   failures skip the build; client integrations do not fall back to
   adapter-local workspace input.
-- Codex and OpenCode read repository-local User Profile and Procedure Memory
-  only from the worktree authorized by the current Backend turn-start result.
-  Without that authority they keep only the generic Skill reminder and do not
-  fall back to the client `cwd` for repository-local content.
-- User Profile storage rejects symbolic links in `.repo_memory`, its
-  `user-profile` directory, and `preferences.md`. Invalid preference files are
-  rejected without rewriting their contents; listing does not create storage.
+- Personal Memory is global user-owned state under
+  `$MEMORAX_CODE_HOME/personal-memory/` (default `~/.memorax-code/personal-memory/`). User
+  Profile is `user-profile/preferences.md`; Procedure Memory consists of direct
+  `procedure-memory/*.md` topic files. Personal-memory reads and writes do not
+  require Git, a repository root, or a worktree. Applicability may mention a
+  repository, tool, or workflow without making the storage repository-scoped.
+- User Profile storage rejects symbolic links in the global personal-memory
+  directories and `preferences.md`. Invalid preference files are rejected
+  without rewriting their contents; listing does not create storage. The file
+  uses schema `user_profile_memory.v0.1`, scope `user`, and owner
+  `user-profile-memory`.
+- Existing personal-memory files under `.repo_memory/` are ignored and are not
+  migrated. Repository-local `.repo_memory` remains Repo Memory only.
 - MemoraX-backed Search, Add, and automatic writeback may downgrade malformed
   or incomplete internal metadata in a direct `.git` directory to the
   canonical workspace folder identity. The CLI exposes the fallback reason,

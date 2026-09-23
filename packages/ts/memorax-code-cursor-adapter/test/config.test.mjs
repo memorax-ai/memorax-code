@@ -44,7 +44,7 @@ test("Cursor installation owns only its Hook entries, shared Skill, and marked R
     assert.equal(installed.globalHooksActivationRequired, undefined);
     assert.equal(await readFile(join(installed.skillPath, "SKILL.md"), "utf8"), "# Canonical Skill fixture\n");
     assert.deepEqual(JSON.parse(await readFile(join(installed.skillPath, ".memorax-code-package.json"), "utf8")), {
-      version: 1, memoraxCodeCommand: fixture.options.memoraxCodeCommand,
+      version: 1, memoraxCodeHome: fixture.options.memoraxCodeHome, memoraxCodeCommand: fixture.options.memoraxCodeCommand,
     });
     const generationRoot = join(installed.installPath, "..");
     assert.equal(await readFile(join(generationRoot, "hooks", "repo-memory-job.mjs"), "utf8"), "// repo memory job fixture\n");
@@ -68,6 +68,12 @@ test("Cursor installation owns only its Hook entries, shared Skill, and marked R
       assert.equal(managed[0].type, "command");
       assert.equal(managed[0].hooks, undefined);
     }
+    assert.equal((await enableCursorAdapter(fixture.options)).changed, false);
+    const skillMetadataPath = join(installed.skillPath, ".memorax-code-package.json");
+    await writeFile(skillMetadataPath, JSON.stringify({ version: 1, memoraxCodeCommand: fixture.options.memoraxCodeCommand }));
+    assert.equal((await readCursorAdapterStatus(fixture.options)).cursorSkills.ok, false);
+    assert.equal((await enableCursorAdapter(fixture.options)).changed, true);
+    assert.equal(JSON.parse(await readFile(skillMetadataPath, "utf8")).memoraxCodeHome, fixture.options.memoraxCodeHome);
     assert.equal((await enableCursorAdapter(fixture.options)).changed, false);
     await rm(generationRoot, { recursive: true });
     await writeFile(installed.statePath, JSON.stringify({ ...state, enabled: false, installPending: true }));

@@ -3,7 +3,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 import { realpathSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -222,72 +222,71 @@ test("Cursor forwards a recorded database override without requiring GUI environ
   } finally { await fixture.close(); }
 });
 
-test("Cursor injects authorized personal memory on the first prompt and procedures on cadence", async () => {
+test("Cursor injects global profiles on the first prompt and procedures on turns 1, 6, and 11", async () => {
   const fixture = await createFixture();
   try {
-    const repo = join(fixture.root, "authorized-repo");
-    await createPersonalMemoryRepo(repo);
-    fixture.control.body.repoMemoryWorktree = repo;
+    await createPersonalMemory(fixture.home);
     // A retrieval result is not part of Cursor's explicit-memory integration.
     fixture.control.body.additionalContext = "unexpected automatic search result";
-    const env = { MEMORAX_CODE_MEMORY_SKILL_REMINDER_INTERVAL_TURNS: "2" };
     const expectedReminders = [];
-    for (let index = 0; index < 3; index += 1) {
+    for (let index = 0; index < 11; index += 1) {
+      const cadence = index % 5 === 0;
       const generation = generationId(index);
       const input = { hook_event_name: "beforeSubmitPrompt", generation_id: generation,
         prompt: `question ${index}`, transcript_path: null };
-      const result = await runHook(fixture, input, env);
+      const result = await runHook(fixture, input);
       assert.equal(result.status, 0, result.stderr);
       const output = JSON.parse(result.stdout);
       assert.equal(output.continue, true);
       const context = output.additional_context ?? "";
       assert.equal(context.includes("Prefer concise Cursor answers"), index === 0);
-      assert.equal(context.includes("Run the focused Cursor test first"), index !== 1);
-      assert.equal(context.includes("MemoraX Code reminder:"), index !== 1);
+      assert.equal(context.includes("Run the focused Cursor test first"), cadence);
+      assert.equal(context.includes("MemoraX Code reminder:"), cadence);
       assert.equal(context.includes("MemoraX Code personal-memory reminder:"), index === 0);
-      if (index !== 1) assertMaintenanceContext(context, fixture);
+      if (cadence) assertMaintenanceContext(context, fixture);
       assert.doesNotMatch(context, /unexpected automatic search result|\$memorax-code/);
-      assert.deepEqual(Object.keys(output).sort(), index === 1 ? ["continue"] : ["additional_context", "continue"]);
+      assert.deepEqual(Object.keys(output).sort(), cadence ? ["additional_context", "continue"] : ["continue"]);
       if (context) expectedReminders.push({
         version: 1, client: "cursor", sessionId, turnId: generation, cwd: fixture.root,
         content: context, triggers: ["cadence"],
       });
       assert.deepEqual(fixture.requests.filter(({ path }) => path === "/memory/skill-reminder").map(({ body }) => body), expectedReminders);
-      const duplicate = await runHook(fixture, input, env);
+      const duplicate = await runHook(fixture, input);
       assert.deepEqual(JSON.parse(duplicate.stdout), { continue: true });
       const continuation = await runHook(fixture, {
         hook_event_name: "beforeSubmitPrompt", generation_id: generationId(index + 10), prompt: "  ",
-      }, env);
+      });
       assert.deepEqual(JSON.parse(continuation.stdout), { continue: true });
     }
     const state = JSON.parse(await readFile(join(fixture.home, "adapters", "cursor", "memory-skill-reminders.json"), "utf8"));
     assert.equal(state.runtime, "cursor");
-    assert.equal(state.sessions[sessionId].turnCount, 3);
-    assert.equal(fixture.requests.filter(({ path }) => path === "/memory/skill-reminder").length, 2);
+    assert.equal(state.sessions[sessionId].turnCount, 11);
+    assert.equal(fixture.requests.filter(({ path }) => path === "/memory/skill-reminder").length, 3);
   } finally { await fixture.close(); }
 });
 
-test("Cursor does not infer personal-memory authority from the native workspace", async () => {
+test("Cursor shares global personal memory across workspaces without repository authority", async () => {
   const fixture = await createFixture();
   try {
-    await createPersonalMemoryRepo(fixture.root);
+    await createPersonalMemory(fixture.home);
     for (const [index, worktree] of [undefined, "relative-repo"].entries()) {
+      const workspace = join(fixture.root, `workspace-${index}`);
+      await mkdir(workspace);
       fixture.control.body.repoMemoryWorktree = worktree;
       const result = await runHook(fixture, { hook_event_name: "beforeSubmitPrompt",
-        conversation_id: generationId(index + 20), prompt: "test workspace authority" });
+        conversation_id: generationId(index + 20), workspace_roots: [workspace], prompt: "test global memory" });
       const context = JSON.parse(result.stdout).additional_context;
       assert.match(context, /MemoraX Code reminder:/);
-      assert.doesNotMatch(context, /Prefer concise Cursor answers|Run the focused Cursor test first/);
+      assert.match(context, /Prefer concise Cursor answers/);
+      assert.match(context, /Run the focused Cursor test first/);
     }
   } finally { await fixture.close(); }
 });
 
-test("Cursor restores authorized profiles after compaction without advancing procedure cadence", async () => {
+test("Cursor restores global profiles after compaction without advancing procedure cadence", async () => {
   const fixture = await createFixture();
   try {
-    const repo = join(fixture.root, "authorized-repo");
-    await createPersonalMemoryRepo(repo);
-    fixture.control.body.repoMemoryWorktree = repo;
+    await createPersonalMemory(fixture.home);
     const env = { MEMORAX_CODE_MEMORY_SKILL_REMINDER_INTERVAL_TURNS: "3" };
     const prompt = (index) => runHook(fixture, { hook_event_name: "beforeSubmitPrompt",
       generation_id: generationId(index), prompt: `question ${index}` }, env);
@@ -318,23 +317,20 @@ test("Cursor restores authorized profiles after compaction without advancing pro
   } finally { await fixture.close(); }
 });
 
-test("Cursor ignores restoration without accepted real-prompt and worktree authority", async () => {
+test("Cursor ignores restoration without an accepted real prompt or a boolean restore flag", async () => {
   const fixture = await createFixture();
   try {
-    const repo = join(fixture.root, "authorized-repo");
-    await createPersonalMemoryRepo(repo);
+    await createPersonalMemory(fixture.home);
     const env = { MEMORAX_CODE_MEMORY_SKILL_REMINDER_INTERVAL_TURNS: "10" };
     const cases = [
-      { ok: false }, { recorded: false }, { repoMemoryWorktree: undefined },
-      { repoMemoryWorktree: "relative-repo" }, { prompt: "  " }, { restorePersonalMemory: "true" },
+      { ok: false }, { recorded: false }, { prompt: "  " }, { restorePersonalMemory: "true" },
     ];
     for (const [index, { prompt = "next question", ...response }] of cases.entries()) {
       const conversation = generationId(index + 40);
-      fixture.control.body = { ok: true, recorded: true, repoMemoryWorktree: repo };
+      fixture.control.body = { ok: true, recorded: true };
       await runHook(fixture, { hook_event_name: "beforeSubmitPrompt", conversation_id: conversation,
         generation_id: generationId(100), prompt: "first question" }, env);
-      fixture.control.body = { ok: true, recorded: true, restorePersonalMemory: true,
-        repoMemoryWorktree: repo, ...response };
+      fixture.control.body = { ok: true, recorded: true, restorePersonalMemory: true, ...response };
       const result = await runHook(fixture, { hook_event_name: "beforeSubmitPrompt", conversation_id: conversation,
         generation_id: generationId(101), prompt }, env);
       assert.deepEqual(JSON.parse(result.stdout), { continue: true });
@@ -349,21 +345,26 @@ test("Cursor ignores restoration without accepted real-prompt and worktree autho
 test("Cursor skips invalid or untrusted personal files and preserves generic reminders", async () => {
   const fixture = await createFixture();
   try {
-    const repo = join(fixture.root, "authorized-repo");
-    await createPersonalMemoryRepo(repo);
-    fixture.control.body.repoMemoryWorktree = repo;
-    await writeFile(join(repo, ".repo_memory", "user-profile", "preferences.md"), "invalid profile with Prefer concise Cursor answers");
-    await writeFile(join(repo, ".repo_memory", "procedure-memory", "testing.md"), "");
+    await createPersonalMemory(fixture.home);
+    const preferences = join(fixture.home, "personal-memory", "user-profile", "preferences.md");
+    const procedure = join(fixture.home, "personal-memory", "procedure-memory", "testing.md");
+    await writeFile(preferences, "invalid profile with Prefer concise Cursor answers");
+    await writeFile(procedure, "");
     const invalid = await runHook(fixture, { hook_event_name: "beforeSubmitPrompt", prompt: "invalid files" });
     assert.match(JSON.parse(invalid.stdout).additional_context, /MemoraX Code reminder:/);
     assert.doesNotMatch(JSON.parse(invalid.stdout).additional_context, /Prefer concise Cursor answers|Run the focused Cursor test first/);
 
-    await createPersonalMemoryRepo(repo);
-    await writeFile(join(repo, ".gitignore"), "");
-    const unignored = await runHook(fixture, { hook_event_name: "beforeSubmitPrompt",
-      conversation_id: generationId(30), prompt: "unignored files" });
-    assert.match(JSON.parse(unignored.stdout).additional_context, /MemoraX Code reminder:/);
-    assert.doesNotMatch(JSON.parse(unignored.stdout).additional_context, /Prefer concise Cursor answers|Run the focused Cursor test first/);
+    await createPersonalMemory(fixture.home);
+    for (const path of [preferences, procedure]) {
+      const outside = `${path}.outside`;
+      await writeFile(outside, await readFile(path));
+      await rm(path);
+      await symlink(outside, path);
+    }
+    const linked = await runHook(fixture, { hook_event_name: "beforeSubmitPrompt",
+      conversation_id: generationId(30), prompt: "linked files" });
+    assert.match(JSON.parse(linked.stdout).additional_context, /MemoraX Code reminder:/);
+    assert.doesNotMatch(JSON.parse(linked.stdout).additional_context, /Prefer concise Cursor answers|Run the focused Cursor test first/);
   } finally { await fixture.close(); }
 });
 
@@ -516,16 +517,14 @@ test("Cursor recovery overrides stay within the installed native Hook budget", a
   } finally { await fixture.close(); }
 });
 
-async function createPersonalMemoryRepo(repo) {
-  execFileSync("git", ["init", "--quiet", repo]);
-  await writeFile(join(repo, ".gitignore"), ".repo_memory/\n");
-  await mkdir(join(repo, ".repo_memory", "procedure-memory"), { recursive: true });
-  await mkdir(join(repo, ".repo_memory", "user-profile"), { recursive: true });
-  await writeFile(join(repo, ".repo_memory", "procedure-memory", "testing.md"),
+async function createPersonalMemory(home) {
+  await mkdir(join(home, "personal-memory", "procedure-memory"), { recursive: true });
+  await mkdir(join(home, "personal-memory", "user-profile"), { recursive: true });
+  await writeFile(join(home, "personal-memory", "procedure-memory", "testing.md"),
     "# Testing workflow\n\nRun the focused Cursor test first.\n");
-  await writeFile(join(repo, ".repo_memory", "user-profile", "preferences.md"), [
-    "---", 'schema: "repo_user_profile_memory.v0.1"', 'scope: "repo"',
-    'owner: "repo-user-profile-memory"', 'trust_state: "user_stated"',
+  await writeFile(join(home, "personal-memory", "user-profile", "preferences.md"), [
+    "---", 'schema: "user_profile_memory.v0.1"', 'scope: "user"',
+    'owner: "user-profile-memory"', 'trust_state: "user_stated"',
     "active_count: 1", "total_count: 1", "---", "", "## Preference pref_concise",
     "- Status: `active`", "- Type: `communication`", "- Confidence: `explicit`",
     "- Created: `2026-09-18T00:00:00.000Z`", "- Updated: `2026-09-18T00:00:00.000Z`",

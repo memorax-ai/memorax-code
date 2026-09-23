@@ -509,8 +509,8 @@ Search runs when a client decides through the shared Skill to call
 call MemoraX Search. They provide native identity, scope, local context, pending
 writeback quota notices, and automatic-writeback coordination. Cursor uses native
 `additional_context` for local reminders after a successful Backend turn-start
-response confirms current-Turn registration; personal-memory contents additionally
-require a Backend-authorized Git worktree.
+response confirms current-Turn registration; global Personal Memory is loaded
+from the configured `MEMORAX_CODE_HOME` and does not require repository scope.
 
 ```mermaid
 sequenceDiagram
@@ -827,7 +827,7 @@ build using adapter-common supervision, locking, and job-policy helpers. They
 must use the Backend-resolved worktree rather than adapter-local workspace
 input. Trae consumes existing Repo Memory context and exposes the shared Skill,
 but does not schedule background work because no supported headless Trae worker
-exists. Cursor provides session-start Skill guidance, trusted User Profile and
+exists. Cursor provides session-start Skill guidance, trusted global User Profile and
 Procedure Memory context, and returns a supervised native background delegation
 for a missing bundle. The foreground agent launches the managed
 `memorax-repo-memory` subagent through Cursor's Task tool. The Hook cannot launch
@@ -845,38 +845,52 @@ User Profile management lives separately under Backend `src/personal-memory`.
 The canonical Skill's `scripts/user-profile-memory.mjs` launcher runs the
 compiled local helper directly or locates it through the installed
 `memorax-code user-profile` command. Listing, adding, updating, and deleting
-preferences do not require a running Backend service or a network request.
-The helper preserves the existing `.repo_memory/user-profile/preferences.md`
-format and performs mutations under a cross-process lock with atomic file
-replacement. Its lock is separate from the legacy profile writer's lock;
-concurrent writes by legacy and current writers are not coordinated. Existing
-preferences continue to be read and injected by adapter-common. Procedure
-Memory remains managed as topic Markdown files through the shared Skill.
+preferences do not require a running Backend service or a network request. The
+helper stores the global file at
+`$MEMORAX_CODE_HOME/personal-memory/user-profile/preferences.md` (default
+`~/.memorax-code/personal-memory/user-profile/preferences.md`) and accepts
+`--home` instead of a repository argument. Its schema is
+`user_profile_memory.v0.1`, with `scope: user` and
+`owner: user-profile-memory`; mutations use a cross-process lock and atomic
+replacement. Existing personal-memory files under `.repo_memory/` are ignored
+and are not migrated. Procedure Memory remains global topic Markdown under
+`$MEMORAX_CODE_HOME/personal-memory/procedure-memory/`, managed through the
+shared Skill.
+
+Standalone Skill metadata carries the installation's `memoraxCodeHome` so its
+reader and writer use the same store as the client runtime. An explicit Profile
+`--home` takes precedence, followed by `MEMORAX_CODE_HOME`, Skill/package
+metadata, and the platform user's default home. The standalone Profile CLI
+uses `--home`, `MEMORAX_CODE_HOME`, then the default home.
 
 Codex and OpenCode keep the generic shared Skill reminder available when the
 Backend or repository scope is unavailable. Trae evaluates reminders only
 after an accepted turn-start response and active-record commit. Cursor evaluates
 reminders only after the Backend confirms turn registration and emits them through
 `beforeSubmitPrompt.additional_context`. For both integrations, a response
-without repository scope still permits its generic reminder. Cursor injects User
-Profile preferences on the first eligible turn and Procedure Memory on the shared
-first-turn and periodic cadence. Its `preCompact` Hook records a native database
+without repository scope still permits its generic reminder. Cursor injects global
+User Profile preferences on the first eligible turn and global Procedure Memory
+on the shared first-turn and periodic cadence (default turns 1, 6, and 11). Its
+`preCompact` Hook records a native database
 baseline without injecting context or declaring compaction successful. The Backend
 requires an unchanged archive prefix and new archive records that account for
 replacement of observed root messages in the current native context. Every identity
 claimed as summarized, including earlier summary messages, must have left the current
 roots; a partial replacement retains the baseline for a later observation. On the next
-nonempty, registered prompt with an authorized worktree, that evidence permits one
-supplemental Profile and personal-memory reminder. Procedure Memory retains its
+nonempty, registered prompt, that evidence permits one supplemental Profile and
+personal-memory reminder from `MEMORAX_CODE_HOME`. Procedure Memory retains its
 normal cadence. Missing database evidence or a baseline skips restoration; UI
 completion and Hook delivery alone do not authorize it. This path does not promise
 immediate restoration inside a continuing long-running task.
-Codex, DSH, OpenCode, CodeBuddy/WorkBuddy, Trae, and Cursor enable User Profile and
-Procedure Memory builders only with a Backend-resolved worktree. Their original
-client workspace is trace metadata, not local-content authority. Claude Code's independent
-reminder Hook instead resolves the Git root from Hook `cwd`, falling back to
-its local workspace registry when `cwd` is absent, without waiting for a
-Backend worktree result.
+Repository Memory builders still require a Backend-resolved worktree. Global User
+Profile and Procedure Memory builders require neither repository scope nor an
+accepted turn-start: Claude Code, Codex, CodeBuddy/WorkBuddy, and OpenCode read
+them from `MEMORAX_CODE_HOME` on the normal reminder cadence even when turn-start
+fails, while search guidance, reminder traces, and Backend user notices keep
+their Backend conditions. Trae and Cursor evaluate all reminders only after an
+accepted turn-start. DSH loads personal context after an accepted turn-start and
+retries on later turns until a load succeeds. The client workspace remains trace
+metadata for personal-memory delivery.
 
 A relevant repo-read can invoke supervised maintenance in the six supported
 background-capable client integrations. The runner validates the bundle and
@@ -984,7 +998,7 @@ entrypoints and compatibility facades. It is not another implementation area.
 | `src/clients/<client>` | Native interpretation, correlation, interruption/recovery, trace adaptation, and lifecycle participation; delegates common memory workflows to the shared harness runtime | Request runtime stays HTTP-composition independent and uses only the matching [native authority](#native-writeback-authority); native deployment follows [package ownership](#22-physical-dependency-directions) |
 | `src/memory` | Memory commands, retrieval guidance, writeback, turn coordination, repository session pinning, manual CLI, and buffering/chunking | Client-neutral modules do not parse native transcript formats |
 | `src/memory/harness-runtime.ts` | Common Turn-start and materialized-completion workflows for all supported clients; publishes registered Turn state synchronously and owns locally created memory resources while reusing injected shared resources | No client implementation, HTTP, app/lifecycle, or direct provider-transport imports; diagnostics enter through a port and native interpretation stays with each client |
-| `src/personal-memory` | Local User Profile listing, normalization, duplicate detection, updates, deletion, and atomic storage | No Backend service, provider calls, transcript processing, or Procedure Memory mutation |
+| `src/personal-memory` | Global User Profile listing, normalization, duplicate detection, updates, deletion, and atomic storage under `$MEMORAX_CODE_HOME/personal-memory` | No Backend service, provider calls, transcript processing, repository scope, or Procedure Memory mutation |
 | `src/repo-memory` | Repo Memory preparation, local and provider facet collection, delta detection, and bundle validation | Prepares bundle directories and the repository ignore entry, collects raw evidence, and validates output; agents author durable Markdown memory |
 | `src/repository` | Read-only repository identity | Scope derivation does not execute Git or use synchronous filesystem reads |
 | `src/provider/memorax` | MemoraX config interpretation, Search/Add payloads, HTTP transport, and normalized results | Independent from server routing and plugin lifecycle |
@@ -1000,7 +1014,7 @@ entrypoints and compatibility facades. It is not another implementation area.
 | `memorax-code.ts` | Management CLI process entrypoint |
 | `memorax-cli.ts` | Manual memory CLI process entrypoint |
 | `repo-memory.ts` | Local Repo Memory helper process entrypoint |
-| `user-profile.ts` | Local User Profile helper process entrypoint |
+| `user-profile.ts` | Global User Profile helper process entrypoint (`$MEMORAX_CODE_HOME/personal-memory`) |
 | `service-entrypoint.ts` | Guarded managed-child-process entrypoint |
 | `server.ts` | `memorax-code-backend` executable and stable `createBackendServer` export facade |
 | `codex-adapter-lifecycle.ts` | Compatibility re-export of the Codex lifecycle participant |
@@ -1130,6 +1144,7 @@ and
 | Persisted current-turn operational state | Client-qualified current-turn records with Session and Turn checks | CLI workspace association and exact recovery; native content is independently validated |
 | Trace history | Client-qualified local trace events | Diagnostics; not native content or general Turn-identity authority |
 | Repo Memory bundle | Repository-local `.repo_memory` files authored through explicit Skill operations or supervised jobs | Backend readiness and client-injected guidance |
+| Personal Memory | User-owned files under `$MEMORAX_CODE_HOME/personal-memory`: `user-profile/preferences.md` and direct `procedure-memory/*.md` topics | Repository-local `.repo_memory` sidecars, client workspace labels, and reminder delivery do not define personal-memory authority |
 
 #### Native writeback authority
 

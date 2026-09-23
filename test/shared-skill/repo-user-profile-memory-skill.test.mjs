@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { buildRepoUserProfilePreferencesContext } from "../../packages/ts/memorax-code-adapter-common/src/repo-memory/repo-user-profile-context.mjs";
+import { buildUserProfilePreferencesContext } from "../../packages/ts/memorax-code-adapter-common/src/personal-memory/user-profile-context.mjs";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../packages/ts/memorax-code-codex-adapter");
 const skillRoot = join(packageRoot, "skills", "memorax-code");
@@ -15,28 +15,14 @@ function readSkillFile(path) {
   return readFileSync(join(skillRoot, path), "utf8");
 }
 
-function runGit(cwd, args) {
-  const result = spawnSync(
-    "git",
-    ["-c", "user.name=User Profile Test", "-c", "user.email=user-profile-test@example.invalid", ...args],
-    { cwd, encoding: "utf8" },
-  );
-  assert.equal(result.status, 0, result.stderr || result.stdout);
-  return result.stdout.trim();
-}
-
-function createRepo(root) {
-  const repo = join(root, "repo");
-  mkdirSync(repo);
-  runGit(repo, ["init", "-b", "main"]);
-  writeFileSync(join(repo, "README.md"), "# Test repo\n");
-  runGit(repo, ["add", "README.md"]);
-  runGit(repo, ["commit", "-m", "initial docs"]);
-  return repo;
+function createHome(root) {
+  const home = join(root, "memorax-code");
+  mkdirSync(home);
+  return home;
 }
 
 function runProfile(command, repo, args = []) {
-  const result = spawnSync(process.execPath, [scriptPath, command, "--repo", repo, ...args], {
+  const result = spawnSync(process.execPath, [scriptPath, command, "--home", repo, ...args], {
     cwd: packageRoot,
     encoding: "utf8",
   });
@@ -45,7 +31,7 @@ function runProfile(command, repo, args = []) {
 }
 
 function runProfileRaw(command, repo, args = []) {
-  return spawnSync(process.execPath, [scriptPath, command, "--repo", repo, ...args], {
+  return spawnSync(process.execPath, [scriptPath, command, "--home", repo, ...args], {
     cwd: packageRoot,
     encoding: "utf8",
   });
@@ -53,7 +39,7 @@ function runProfileRaw(command, repo, args = []) {
 
 function runProfileAsync(command, repo, args = []) {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [scriptPath, command, "--repo", repo, ...args], {
+    const child = spawn(process.execPath, [scriptPath, command, "--home", repo, ...args], {
       cwd: packageRoot,
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -65,30 +51,30 @@ function runProfileAsync(command, repo, args = []) {
   });
 }
 
-test("repo memory skills route user-profile reads and writes", () => {
-  const reference = readSkillFile("references/personal-write.md");
-  const readReference = readSkillFile("references/personal-read.md");
+test("personal memory skills route user-profile reads and writes", () => {
+  const reference = readSkillFile("references/personal-write.md").replace(/\s+/g, " ");
+  const readReference = readSkillFile("references/personal-read.md").replace(/\s+/g, " ");
 
-  assert.match(reference, /\.repo_memory\/user-profile\/preferences\.md/);
+  assert.match(reference, /personal-memory\/user-profile\/preferences\.md/);
   assert.match(reference, /Require the user to explicitly ask/);
   assert.match(reference, /may be saved implicitly/);
   assert.match(reference, /Do not modify or delete existing preferences because of a one-time instruction/);
   assert.match(reference, /Do not scan or clean up unrelated preferences/);
   assert.match(reference, /multiple preferences may match, or it is unclear whether the change is durable, ask the user/);
-  assert.match(reference, /never use `workflow` or `environment` to store an executable repository procedure/);
+  assert.match(reference, /never use `workflow` or `environment` to store an executable procedure/);
   assert.match(reference, /node <skill-dir>\/scripts\/user-profile-memory\.mjs/);
   assert.match(reference, /Do not preserve deleted text elsewhere/);
 
-  assert.match(readReference, /user-profile-memory\.mjs list --repo <repo>/);
+  assert.match(readReference, /user-profile-memory\.mjs list --home <memorax-code-home>/);
   assert.match(readReference, /Do not write, normalize, migrate, repair, or delete memory/);
 });
 
-test("repo-user-profile-memory script performs add duplicate update delete with counts", () => {
+test("global user-profile-memory script performs add duplicate update delete with counts", () => {
   const root = mkdtempSync(join(tmpdir(), "memorax-code-user-profile-crud."));
   try {
-    const repo = createRepo(root);
-    const preferences = join(repo, ".repo_memory", "user-profile", "preferences.md");
-    const events = join(repo, ".repo_memory", "user-profile", "events.jsonl");
+    const repo = createHome(root);
+    const preferences = join(repo, "personal-memory", "user-profile", "preferences.md");
+    const events = join(repo, "personal-memory", "user-profile", "events.jsonl");
     const originalDescription = "User prefers 中文 answers: use `brief` style. ## injected\n---\nNext line";
 
     const added = runProfile("add", repo, [
@@ -101,7 +87,7 @@ test("repo-user-profile-memory script performs add duplicate update delete with 
     assert.match(added.id, /^pref_\d{8}_/);
     assert.equal(added.active_count, 1);
     assert.equal(added.total_count, 1);
-    assert.equal(readFileSync(join(repo, ".gitignore"), "utf8"), ".repo_memory/\n");
+    assert.equal(existsSync(join(repo, ".gitignore")), false);
     assert.equal(existsSync(preferences), true);
     assert.equal(existsSync(events), false);
 
@@ -178,7 +164,7 @@ test("repo-user-profile-memory script performs add duplicate update delete with 
   }
 });
 
-test("repo-user-profile-memory script works outside a git repository", () => {
+test("global user-profile-memory script works outside a git repository", () => {
   const root = mkdtempSync(join(tmpdir(), "memorax-code-user-profile-non-git."));
   try {
     const workspace = join(root, "workspace");
@@ -190,18 +176,18 @@ test("repo-user-profile-memory script works outside a git repository", () => {
     ]);
     assert.equal(added.status, "added");
     assert.equal(added.active_count, 1);
-    assert.equal(existsSync(join(workspace, ".repo_memory", "user-profile", "preferences.md")), true);
-    assert.equal(readFileSync(join(workspace, ".gitignore"), "utf8"), ".repo_memory/\n");
+    assert.equal(existsSync(join(workspace, "personal-memory", "user-profile", "preferences.md")), true);
+    assert.equal(existsSync(join(workspace, ".gitignore")), false);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-test("repo-user-profile-memory script keeps multiple entries isolated during update and delete", () => {
+test("global user-profile-memory script keeps multiple entries isolated during update and delete", () => {
   const root = mkdtempSync(join(tmpdir(), "memorax-code-user-profile-multiple."));
   try {
-    const repo = createRepo(root);
-    const preferences = join(repo, ".repo_memory", "user-profile", "preferences.md");
+    const repo = createHome(root);
+    const preferences = join(repo, "personal-memory", "user-profile", "preferences.md");
 
     writeFileSync(join(repo, ".gitignore"), "node_modules\n");
     const communication = runProfile("add", repo, [
@@ -216,7 +202,7 @@ test("repo-user-profile-memory script keeps multiple entries isolated during upd
     ]);
     assert.notEqual(communication.id, workflow.id);
     assert.equal(workflow.active_count, 2);
-    assert.equal(readFileSync(join(repo, ".gitignore"), "utf8"), "node_modules\n.repo_memory/\n");
+    assert.equal(readFileSync(join(repo, ".gitignore"), "utf8"), "node_modules\n");
 
     const duplicate = runProfile("add", repo, [
       "--type", "workflow",
@@ -297,15 +283,15 @@ test("repo-user-profile-memory script keeps multiple entries isolated during upd
   }
 });
 
-test("repo-user-profile-memory script preserves concurrent adds with a cross-process lock", async () => {
+test("global user-profile-memory script preserves concurrent adds with a cross-process lock", async () => {
   const root = mkdtempSync(join(tmpdir(), "memorax-code-user-profile-concurrent."));
   try {
-    const repo = createRepo(root);
-    const preferences = join(repo, ".repo_memory", "user-profile", "preferences.md");
+    const repo = createHome(root);
+    const preferences = join(repo, "personal-memory", "user-profile", "preferences.md");
 
     const results = await Promise.all(Array.from({ length: 20 }, (_, index) => runProfileAsync("add", repo, [
       "--type", index % 2 === 0 ? "communication" : "workflow",
-      "--description", `token${String(index).padStart(2, "0")} concurrent repo user preference.`,
+      "--description", `token${String(index).padStart(2, "0")} concurrent user preference.`,
       "--applies-when", `Handling concurrent preference ${index}.`,
     ])));
 
@@ -326,19 +312,18 @@ test("repo-user-profile-memory script preserves concurrent adds with a cross-pro
   }
 });
 
-test("repo-user-profile-memory script fails closed on corrupt preferences", () => {
+test("global user-profile-memory script fails closed on corrupt preferences", () => {
   const root = mkdtempSync(join(tmpdir(), "memorax-code-user-profile-corrupt."));
   try {
-    const repo = createRepo(root);
-    const dir = join(repo, ".repo_memory", "user-profile");
+    const repo = createHome(root);
+    const dir = join(repo, "personal-memory", "user-profile");
     const preferences = join(dir, "preferences.md");
     mkdirSync(dir, { recursive: true });
-    writeFileSync(join(repo, ".gitignore"), ".repo_memory/\n");
     const corrupt = [
       "---",
       'schema: "wrong"',
-      'scope: "repo"',
-      'owner: "repo-user-profile-memory"',
+      'scope: "user"',
+      'owner: "user-profile-memory"',
       'trust_state: "user_stated"',
       "active_count: 1",
       "total_count: 1",
@@ -367,7 +352,7 @@ test("repo-user-profile-memory script fails closed on corrupt preferences", () =
 
     for (const result of [add, update, deleted, listed]) {
       assert.notEqual(result.status, 0);
-      assert.match(result.stderr, /Invalid repo user profile preferences/);
+      assert.match(result.stderr, /Invalid user profile preferences/);
     }
     assert.equal(readFileSync(preferences, "utf8"), corrupt);
   } finally {
@@ -375,11 +360,11 @@ test("repo-user-profile-memory script fails closed on corrupt preferences", () =
   }
 });
 
-test("repo-user-profile-memory script rejects oversized writes without changing preferences", () => {
+test("global user-profile-memory script rejects oversized writes without changing preferences", () => {
   const root = mkdtempSync(join(tmpdir(), "memorax-code-user-profile-oversized."));
   try {
-    const repo = createRepo(root);
-    const preferences = join(repo, ".repo_memory", "user-profile", "preferences.md");
+    const repo = createHome(root);
+    const preferences = join(repo, "personal-memory", "user-profile", "preferences.md");
     const seeded = runProfile("add", repo, [
       "--type", "communication",
       "--description", "User prefers concise answers in this repository.",
@@ -412,10 +397,10 @@ test("repo-user-profile-memory script rejects oversized writes without changing 
 test("the Node profile writer preserves read-only listing and feeds the existing context reader", () => {
   const root = mkdtempSync(join(tmpdir(), "memorax-code-profile 中文 "));
   try {
-    const repo = createRepo(root);
-    const options = { adapterDir: "codex", sessionKeyPrefix: "codex", debugEnv: "MEMORAX_CODE_CODEX_HOOK_DEBUG" };
+    const repo = createHome(root);
+    const options = { memoraxCodeHome: repo, debugEnv: "MEMORAX_CODE_CODEX_HOOK_DEBUG" };
     assert.deepEqual(runProfile("list", repo).preferences, []);
-    assert.equal(existsSync(join(repo, ".repo_memory")), false);
+    assert.equal(existsSync(join(repo, "personal-memory")), false);
     assert.equal(existsSync(join(repo, ".gitignore")), false);
 
     const added = runProfile("add", repo, [
@@ -423,13 +408,13 @@ test("the Node profile writer preserves read-only listing and feeds the existing
       "--description", "用户希望用中文回答。",
       "--applies-when", "解释当前仓库。",
     ]);
-    assert.match(buildRepoUserProfilePreferencesContext({ cwd: repo }, options), /用户希望用中文回答。/);
+    assert.match(buildUserProfilePreferencesContext(options), /用户希望用中文回答。/);
     runProfile("update", repo, ["--id", added.id, "--description", "用户希望先给出结论。"]);
-    const updatedContext = buildRepoUserProfilePreferencesContext({ cwd: repo }, options);
+    const updatedContext = buildUserProfilePreferencesContext(options);
     assert.match(updatedContext, /用户希望先给出结论。/);
     assert.doesNotMatch(updatedContext, /用户希望用中文回答。/);
     runProfile("delete", repo, ["--id", added.id]);
-    assert.equal(buildRepoUserProfilePreferencesContext({ cwd: repo }, options), undefined);
+    assert.equal(buildUserProfilePreferencesContext(options), undefined);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

@@ -44,8 +44,8 @@ const STABLE_SHELL_REQUIRED_FILES = Object.freeze([
   "memorax-code-adapter-common/src/hooks/memory-skill-reminder-policy.mjs",
   "memorax-code-adapter-common/src/repo-memory/repo-memory-auto-build.mjs",
   "memorax-code-adapter-common/src/repo-memory/repo-memory-job-context.mjs",
-  "memorax-code-adapter-common/src/repo-memory/repo-procedure-memory-context.mjs",
-  "memorax-code-adapter-common/src/repo-memory/repo-user-profile-context.mjs",
+  "memorax-code-adapter-common/src/personal-memory/procedure-memory-context.mjs",
+  "memorax-code-adapter-common/src/personal-memory/user-profile-context.mjs",
   "memorax-code-adapter-common/src/runtime-record.mjs",
   "memorax-code-adapter-common/src/windows-directory-retry.mjs",
 ]);
@@ -113,7 +113,7 @@ export function ensureClaudePluginInstalled(options = {}) {
       }
     }
     const installPath = stringOption(installedPlugin.installPath);
-    writeInstalledPluginMetadata(installPath, claudeCommand);
+    writeInstalledPluginMetadata(installPath, claudeCommand, memoraxCodeHome);
     writePluginState({
       claudeHome,
       memoraxCodeHome,
@@ -210,7 +210,7 @@ export function ensureClaudePluginInstalled(options = {}) {
       installPath: stringOption(installedPlugin?.installPath),
     };
   }
-  writeInstalledPluginMetadata(verification.installPath, claudeCommand);
+  writeInstalledPluginMetadata(verification.installPath, claudeCommand, memoraxCodeHome);
   writePluginState({
     claudeHome,
     memoraxCodeHome,
@@ -236,11 +236,12 @@ export function ensureClaudePluginInstalled(options = {}) {
   };
 }
 
-function writeInstalledPluginMetadata(installPath, claudeCommand) {
+function writeInstalledPluginMetadata(installPath, claudeCommand, memoraxCodeHome) {
   try {
     const npmExecPath = stringOption(process.env.MEMORAX_CODE_NPM_EXEC_PATH);
     atomicWriteJson(join(installPath, ".memorax-code-package.json"), {
       version: 1,
+      memoraxCodeHome: resolve(memoraxCodeHome),
       memoraxCodeCommand: process.argv[1],
       claudeCommand,
       ...(npmExecPath ? { npmExecPath } : {}),

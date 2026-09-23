@@ -19,6 +19,7 @@ export function registerMemoraxCodePlugin(ctx, dependencies) {
   const backendClient = dependencies?.backendClient;
   const createUserMessage = dependencies?.createUserMessage;
   const loadPersonalContext = dependencies?.loadPersonalContext ?? loadDshPersonalContext;
+  const memoraxCodeHome = nonEmptyString(dependencies?.memoraxCodeHome);
   const scheduleRepoMemoryBuild = dependencies?.scheduleRepoMemoryBuild;
   const intervalTurns = dependencies?.intervalTurns;
   const isReminderDue = dependencies?.isReminderDue;
@@ -206,13 +207,13 @@ export function registerMemoraxCodePlugin(ctx, dependencies) {
       loadPersonalContext,
       memoryImpactContext,
       memoryReminderContext,
+      memoraxCodeHome,
       personalContexts,
       personalMemoryReminderContext,
       searchGuidanceContext,
       reminderCadence,
       searchGuidance: step === 1 ? turns.get(agent.session)?.get(turn)?.searchGuidance : undefined,
       turnStartCommand: turns.get(agent.session)?.get(turn)?.turnStartCommand,
-      repoMemoryWorktree: turns.get(agent.session)?.get(turn)?.repoMemoryWorktree,
       session: agent.session,
       signal: turnStartSignal,
       step,
@@ -342,7 +343,7 @@ async function recordTurnStart(options) {
         prompt,
       });
       const response = await options.backendClient.recordTurnStart(command, { signal: options.signal });
-      if (options.signal?.aborted) return undefined;
+      if (options.signal?.aborted || response?.ok !== true) return undefined;
       state.turnStartRecorded = true;
       state.turnStartCommand = command;
       state.repoMemoryWorktree = nonEmptyString(response?.repoMemoryWorktree);
@@ -401,10 +402,10 @@ async function collectPersonalContext(options) {
   let loaded = false;
   let profileContext;
   let procedureContext;
-  if (options.repoMemoryWorktree && (includeProfile || includeProcedure)) {
+  if (options.turnStartCommand && (includeProfile || includeProcedure)) {
     try {
       const result = await options.loadPersonalContext({
-        cwd: options.repoMemoryWorktree,
+        memoraxCodeHome: options.memoraxCodeHome,
         includeProfile,
         includeProcedure,
       }, { signal: options.signal });

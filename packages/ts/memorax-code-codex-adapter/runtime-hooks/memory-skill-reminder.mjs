@@ -9,8 +9,8 @@ import { resolveBackendConnection } from "../../memorax-code-adapter-common/src/
 import { readStdinJson, stringOption } from "../../memorax-code-adapter-common/src/config-utils.mjs";
 import { scheduleMissingRepoMemoryBuild } from "../../memorax-code-adapter-common/src/repo-memory/repo-memory-auto-build.mjs";
 import { isRepoMemoryJobWorker } from "../../memorax-code-adapter-common/src/repo-memory/repo-memory-job-context.mjs";
-import { buildRepoProcedureMemoryContext } from "../../memorax-code-adapter-common/src/repo-memory/repo-procedure-memory-context.mjs";
-import { buildRepoUserProfilePreferencesContext } from "../../memorax-code-adapter-common/src/repo-memory/repo-user-profile-context.mjs";
+import { buildProcedureMemoryContext } from "../../memorax-code-adapter-common/src/personal-memory/procedure-memory-context.mjs";
+import { buildUserProfilePreferencesContext } from "../../memorax-code-adapter-common/src/personal-memory/user-profile-context.mjs";
 import { requestMemorySearchGuidance } from "../../memorax-code-adapter-common/src/hooks/memory-search-guidance.mjs";
 import { resolveCodexWorkspaceKind } from "../src/workspace-kind.mjs";
 
@@ -39,16 +39,8 @@ try {
     await runMemorySkillReminderHook({
       additionalReminderContext: PERSONAL_MEMORY_REMINDER_CONTEXT,
       adapterDir: "codex",
-      ...(turnStartResult.repoMemoryWorktree ? {
-        buildCadenceReminderContext: (hookInput) => buildRepoProcedureMemoryContext({
-          ...hookInput,
-          cwd: turnStartResult.repoMemoryWorktree,
-        }, personalMemoryContextOptions),
-        buildPersonalMemoryContext: (hookInput) => buildRepoUserProfilePreferencesContext({
-          ...hookInput,
-          cwd: turnStartResult.repoMemoryWorktree,
-        }, personalMemoryContextOptions),
-      } : {}),
+      buildCadenceReminderContext: () => buildProcedureMemoryContext(personalMemoryContextOptions),
+      buildPersonalMemoryContext: () => buildUserProfilePreferencesContext(personalMemoryContextOptions),
       debugEnv: "MEMORAX_CODE_CODEX_HOOK_DEBUG",
       memoryImpactContext: MEMORY_IMPACT_REMINDER_CONTEXT,
       onReminder: turnStartResult.recorded ? recordReminder : undefined,
@@ -85,6 +77,7 @@ function turnStartBody(input) {
 async function recordTurnStart(body) {
   try {
     const response = await postBackend("/memory/turn-start", body);
+    if (response?.ok !== true) return { recorded: false };
     return {
       recorded: true,
       repoMemoryWorktree: stringValue(response?.repoMemoryWorktree),

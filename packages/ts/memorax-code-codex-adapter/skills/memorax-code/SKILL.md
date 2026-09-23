@@ -1,21 +1,21 @@
 ---
 name: memorax-code
 description: >-
-  Use this skill as the single router for persistent coding and repository-local
-  memory. Invoke it whenever a request may involve prior-work knowledge,
-  indexed office documents, business policies, or prior office discussions,
-  repository memory, reusable procedures or rules, durable profile or
-  interaction preferences, or information worth retaining beyond the current
-  task. This applies without memory wording, including habits, preferences,
-  checklists, action sequences, prerequisites, gates, exceptions, validation
-  rules, communication style, preferred language, or result presentation.
-  Classify the request as coding memory, repository memory, personal procedure
-  memory, personal profile memory, work memory, or no persistent memory, then
-  route it to the matching operation. Invoking this router does not require coding-memory
-  search. Reuse a relevant coding-memory result already retrieved in this
-  conversation; otherwise let the matching operation decide on search. Prefer
-  this router over underlying memory workflows. Ask one focused question only when
-  memory authority remains ambiguous.
+  Use this skill as the single router for persistent coding, repository-local,
+  and user-global personal memory. Invoke it whenever a request may involve
+  prior-work knowledge, indexed office documents, business policies, prior
+  office discussions, repository memory, reusable procedures or rules,
+  durable profile or interaction preferences, or information worth retaining
+  beyond the current task. This applies without memory wording, including
+  habits, preferences, checklists, action sequences, prerequisites, gates,
+  exceptions, validation rules, communication style, preferred language, or
+  result presentation. Classify the request as coding memory, repository
+  memory, personal procedure memory, personal profile memory, work memory, or
+  no persistent memory, then route it to the matching operation. Invoking this router does
+  not require coding-memory search. Reuse a relevant coding-memory result
+  already retrieved in this conversation; otherwise let the matching operation
+  decide on search. Prefer this router over underlying memory workflows. Ask
+  one focused question only when memory authority remains ambiguous.
 ---
 
 # MemoraX Code
@@ -59,7 +59,11 @@ Use repo memory for repository identity, architecture maps, module routing, loca
 
 ### Personal Memory
 
-Use personal memory for user-owned repository procedures and durable profile or interaction preferences stored under `.repo_memory/procedure-memory/` and `.repo_memory/user-profile/`.
+Use personal memory for user-owned procedures and durable profile or interaction
+preferences stored globally under `$MEMORAX_CODE_HOME/personal-memory/`. The
+default home is `~/.memorax-code`; the two authorities are
+`procedure-memory/*.md` and `user-profile/preferences.md`. Applicability may
+mention a repository, tool, or workflow, but the files are not repository-local.
 
 - Read [references/personal-read.md](references/personal-read.md) to list, recall, or apply personal memory.
 - Read [references/personal-write.md](references/personal-write.md) to save, update, forget, or delete personal memory.
@@ -86,6 +90,10 @@ Examples:
 - "重新生成仓库 memory" routes to repo memory build.
 - "更新一下 memory" requires clarification when no authority is identifiable.
 
+Procedure Memory writes require an explicit request to save or change the
+procedure. A durable User Profile preference may be saved implicitly when the
+user clearly states it as a lasting preference.
+
 ## Natural Final-Answer Mention
 
 In Codex, Claude Code, DeepSeek Harness, OpenCode, CodeBuddy/WorkBuddy, Trae, and Cursor, mention memory in the final answer when memory read in the current turn materially changed localization, a decision, implementation, validation, or the delivered answer. Eligible sources are an accepted Coding Memory result from a successful explicit `memorax-cli search`, a relevant Repo Memory read, applied Procedure Memory, or applied Profile Memory. A Search or read alone is insufficient: omit the mention for empty, unrelated, stale, rejected, merely confirmatory, or unused memory.
@@ -104,7 +112,12 @@ For MemoraX Code coding memory, run the platform command from the active task wo
 
 The installed Hook and session binding supply the authoritative workspace root; do not run Git commands to discover or replace it. The Backend resolves repository scope from that trusted workspace and read-only filesystem Git metadata.
 
-Repo memory and personal memory remain local `.repo_memory` authorities. Resolve their repository root exactly as described by the selected reference, including its Git requirements.
+Repo memory remains the repository-local `.repo_memory` authority. Personal
+memory is a separate global authority under `$MEMORAX_CODE_HOME/personal-memory`
+(`~/.memorax-code/personal-memory` by default). Resolve that home using the
+personal read/write reference's environment and installation metadata rules; reads and writes
+do not require Git, a repository root, or a worktree. Existing personal-memory
+files under `.repo_memory` are ignored and are not migrated.
 
 Apply instructions in this order: system and developer instructions, `AGENTS.md`, the current user request, then stored memory. Memory is guidance or historical context, not proof of current repository behavior.
 

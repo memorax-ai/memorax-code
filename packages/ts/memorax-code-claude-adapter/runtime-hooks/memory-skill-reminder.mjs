@@ -10,8 +10,8 @@ import { readStdinJson, stringOption } from "../../memorax-code-adapter-common/s
 import { resolveBackendConnection } from "../../memorax-code-adapter-common/src/backend-connection.mjs";
 import { scheduleMissingRepoMemoryBuild } from "../../memorax-code-adapter-common/src/repo-memory/repo-memory-auto-build.mjs";
 import { isRepoMemoryJobWorker } from "../../memorax-code-adapter-common/src/repo-memory/repo-memory-job-context.mjs";
-import { buildRepoProcedureMemoryContext } from "../../memorax-code-adapter-common/src/repo-memory/repo-procedure-memory-context.mjs";
-import { buildRepoUserProfilePreferencesContext } from "../../memorax-code-adapter-common/src/repo-memory/repo-user-profile-context.mjs";
+import { buildProcedureMemoryContext } from "../../memorax-code-adapter-common/src/personal-memory/procedure-memory-context.mjs";
+import { buildUserProfilePreferencesContext } from "../../memorax-code-adapter-common/src/personal-memory/user-profile-context.mjs";
 
 const MAX_REMINDER_TRACE_TIMEOUT_MS = 1000;
 const MEMORY_SKILL_INVOCATION = "/memorax-code-claude-adapter:memorax-code";
@@ -31,8 +31,8 @@ const registered = turnStart ? await registerTurnStart(turnStart) : undefined;
 await runMemorySkillReminderHook({
   additionalReminderContext: personalMemoryReminderContext(MEMORY_SKILL_INVOCATION),
   adapterDir: "claude-code",
-  buildCadenceReminderContext: (hookInput) => buildRepoProcedureMemoryContext(hookInput, personalMemoryContextOptions),
-  buildPersonalMemoryContext: (hookInput) => buildRepoUserProfilePreferencesContext(hookInput, personalMemoryContextOptions),
+  buildCadenceReminderContext: () => buildProcedureMemoryContext(personalMemoryContextOptions),
+  buildPersonalMemoryContext: () => buildUserProfilePreferencesContext(personalMemoryContextOptions),
   debugEnv: "MEMORAX_CODE_CLAUDE_HOOK_DEBUG",
   memoryImpactContext: MEMORY_IMPACT_REMINDER_CONTEXT,
   memorySkillInvocation: MEMORY_SKILL_INVOCATION,

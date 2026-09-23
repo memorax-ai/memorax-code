@@ -1,5 +1,5 @@
 import { strict as assert } from "node:assert";
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { cp, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -12,8 +12,8 @@ const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const hookPath = join(packageRoot, "runtime-hooks", "memory-skill-reminder.mjs");
 const captureHookPath = join(packageRoot, "runtime-hooks", "capture-cwd.mjs");
 const MEMORY_SKILL_INVOCATION = "/memorax-code-claude-adapter:memorax-code";
-const MEMORY_REMINDER_CONTEXT = `MemoraX Code reminder: proactively invoke ${MEMORY_SKILL_INVOCATION} whenever coding memory might help, even when uncertain; follow the skill's router to decide whether any memory operation is needed. Also use ${MEMORY_SKILL_INVOCATION} for repository-scoped personal memory, and classify the authority before reading or writing.`;
-const PERSONAL_MEMORY_REMINDER_CONTEXT = `MemoraX Code personal-memory reminder: Use ${MEMORY_SKILL_INVOCATION} when the user states a durable current-repo identity or interaction preference, asks to list or recall stored personal memory, or explicitly asks to save, update, forget, or delete it. Route reusable action sequences and work rules to procedure memory; do not store repository facts, one-off task details, or secrets.`;
+const MEMORY_REMINDER_CONTEXT = `MemoraX Code reminder: proactively invoke ${MEMORY_SKILL_INVOCATION} whenever coding memory might help, even when uncertain; follow the skill's router to decide whether any memory operation is needed. Also use ${MEMORY_SKILL_INVOCATION} for global personal memory, and classify the authority before reading or writing.`;
+const PERSONAL_MEMORY_REMINDER_CONTEXT = `MemoraX Code personal-memory reminder: Use ${MEMORY_SKILL_INVOCATION} when the user states a durable identity or interaction preference, asks to list or recall stored personal memory, or explicitly asks to save, update, forget, or delete it. Route reusable action sequences and work rules to procedure memory; do not store repository facts, one-off task details, or secrets.`;
 
 test("Claude memory skill metadata uses the plugin-namespaced invocation", async () => {
   const metadata = await readFile(join(packageRoot, "skills", "memorax-code", "agents", "claude.yaml"), "utf8");
@@ -298,14 +298,15 @@ test("Claude capture hook registers and counts a new native session", async () =
   }
 });
 
-test("Claude injects profile and procedure memory on the shared cadence and after compact", async () => {
+test("Claude injects global personal memory in a non-Git workspace on cadence and after compact", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-claude-personal-memory-"));
   const memoraxCodeHome = join(root, "memorax-code");
+  const recorder = await listenRecorder();
   try {
-    const repo = await createRepo(root);
-    await writeProcedure(repo, "testing.md", "# Testing\n\n1. Run focused tests before the full suite.");
-    await writePreferences(repo);
-    const env = { MEMORAX_CODE_HOME: memoraxCodeHome };
+    const repo = await createWorkspace(root);
+    await writeProcedure(memoraxCodeHome, "testing.md", "# Testing\n\n1. Run focused tests before the full suite.");
+    await writePreferences(memoraxCodeHome);
+    const env = { MEMORAX_CODE_HOME: memoraxCodeHome, MEMORAX_CODE_BACKEND_URL: recorder.url };
     const sessionId = "claude-personal-memory-thread";
 
     const startup = await runScript(captureHookPath, {
@@ -322,6 +323,7 @@ test("Claude injects profile and procedure memory on the shared cadence and afte
         hook_event_name: "UserPromptSubmit",
         session_id: sessionId,
         prompt_id: `prompt-${turn}`,
+        transcript_path: join(root, "session.jsonl"),
         prompt: `prompt ${turn}`,
       }, env));
     }
@@ -331,11 +333,11 @@ test("Claude injects profile and procedure memory on the shared cadence and afte
     const firstContext = reminderContext(outputs[0].stdout);
     assert.ok(firstContext.includes(MEMORY_REMINDER_CONTEXT));
     assert.ok(firstContext.includes(PERSONAL_MEMORY_REMINDER_CONTEXT));
-    assert.ok(firstContext.includes("Active repo-scoped user preferences"));
-    assert.ok(firstContext.includes("Active repo-scoped procedure memories"));
+    assert.ok(firstContext.includes("Active user-scoped preferences"));
+    assert.ok(firstContext.includes("Active user-scoped procedure memories"));
     assert.ok(firstContext.indexOf(MEMORY_REMINDER_CONTEXT) < firstContext.indexOf(PERSONAL_MEMORY_REMINDER_CONTEXT));
-    assert.ok(firstContext.indexOf(PERSONAL_MEMORY_REMINDER_CONTEXT) < firstContext.indexOf("Active repo-scoped user preferences"));
-    assert.ok(firstContext.indexOf("Active repo-scoped user preferences") < firstContext.indexOf("Active repo-scoped procedure memories"));
+    assert.ok(firstContext.indexOf(PERSONAL_MEMORY_REMINDER_CONTEXT) < firstContext.indexOf("Active user-scoped preferences"));
+    assert.ok(firstContext.indexOf("Active user-scoped preferences") < firstContext.indexOf("Active user-scoped procedure memories"));
     assert.match(firstContext, /Description: 用户偏好使用中文交流。/);
     assert.match(firstContext, /Run focused tests before the full suite/);
     assert.match(firstContext, /Natural final-answer mention for supported coding agents:/);
@@ -361,12 +363,14 @@ test("Claude injects profile and procedure memory on the shared cadence and afte
       hook_event_name: "UserPromptSubmit",
       session_id: sessionId,
       prompt_id: "prompt-7",
+      transcript_path: join(root, "session.jsonl"),
       prompt: "prompt after compact",
     }, env);
     const duplicate = await runHook({
       hook_event_name: "UserPromptSubmit",
       session_id: sessionId,
       prompt_id: "prompt-7",
+      transcript_path: join(root, "session.jsonl"),
       prompt: "prompt after compact",
     }, env);
 
@@ -380,6 +384,50 @@ test("Claude injects profile and procedure memory on the shared cadence and afte
     assert.doesNotMatch(compactContext, /^MemoraX Code reminder:/);
     assert.doesNotMatch(compactContext, /Run focused tests before the full suite/);
     assert.equal(duplicate.stdout, "");
+  } finally {
+    await recorder.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Claude injects global personal memory when Turn registration fails", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-claude-personal-registration-"));
+  try {
+    for (const fixture of [
+      { name: "http-rejected", turnStartStatusCode: 503, turnStartBody: '{"ok":false}' },
+      { name: "body-rejected", turnStartBody: '{"ok":false}' },
+      { name: "invalid-body", turnStartBody: "invalid JSON" },
+      { name: "unavailable", url: "http://127.0.0.1:1" },
+    ]) {
+      const memoraxCodeHome = join(root, fixture.name);
+      const recorder = await listenRecorder(fixture);
+      try {
+        await writePreferences(memoraxCodeHome);
+        await writeProcedure(memoraxCodeHome, "global.md", "# Global procedure");
+        const result = await runHook({
+          hook_event_name: "UserPromptSubmit",
+          session_id: fixture.name,
+          transcript_path: join(root, "session.jsonl"),
+          prompt_id: "prompt-1",
+          cwd: root,
+          prompt: "First prompt",
+        }, {
+          MEMORAX_CODE_HOME: memoraxCodeHome,
+          MEMORAX_CODE_BACKEND_URL: fixture.url ?? recorder.url,
+        });
+        assert.equal(result.code, 0, result.stderr);
+        const context = reminderContext(result.stdout);
+        assert.ok(context.startsWith(MEMORY_REMINDER_CONTEXT), fixture.name);
+        assert.ok(context.includes(PERSONAL_MEMORY_REMINDER_CONTEXT), fixture.name);
+        assert.match(context, /Description: 用户偏好使用中文交流。/, fixture.name);
+        assert.match(context, /# Global procedure/, fixture.name);
+        // Search guidance and the reminder trace still require an accepted Turn.
+        assert.deepEqual(recorder.requests, []);
+        assert.deepEqual(recorder.guidanceRequests, []);
+      } finally {
+        await recorder.close();
+      }
+    }
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -441,47 +489,34 @@ function reminderContext(stdout) {
   return JSON.parse(stdout).hookSpecificOutput.additionalContext;
 }
 
-async function createRepo(root) {
+async function createWorkspace(root) {
   const repo = join(root, "repo");
   await mkdir(repo);
-  runGit(repo, ["init", "-b", "main"]);
   await writeFile(join(repo, "README.md"), "# Claude personal memory fixture\n");
-  runGit(repo, ["add", "README.md"]);
-  runGit(repo, ["commit", "-m", "initial fixture"]);
   return repo;
 }
 
-function runGit(cwd, args) {
-  const result = spawnSync(
-    "git",
-    ["-c", "user.name=Claude Personal Memory Test", "-c", "user.email=claude-personal-memory@example.invalid", ...args],
-    { cwd, encoding: "utf8" },
-  );
-  assert.equal(result.status, 0, result.stderr || result.stdout);
-}
-
-async function writeProcedure(repo, name, content) {
-  const directory = join(repo, ".repo_memory", "procedure-memory");
+async function writeProcedure(memoraxCodeHome, name, content) {
+  const directory = join(memoraxCodeHome, "personal-memory", "procedure-memory");
   await mkdir(directory, { recursive: true });
-  await writeFile(join(repo, ".gitignore"), ".repo_memory/\n");
   await writeFile(join(directory, name), `${content.trim()}\n`);
 }
 
-async function writePreferences(repo) {
-  const directory = join(repo, ".repo_memory", "user-profile");
+async function writePreferences(memoraxCodeHome) {
+  const directory = join(memoraxCodeHome, "personal-memory", "user-profile");
   await mkdir(directory, { recursive: true });
   await writeFile(join(directory, "preferences.md"), [
     "---",
-    'schema: "repo_user_profile_memory.v0.1"',
-    'scope: "repo"',
-    'owner: "repo-user-profile-memory"',
+    'schema: "user_profile_memory.v0.1"',
+    'scope: "user"',
+    'owner: "user-profile-memory"',
     'trust_state: "user_stated"',
     'updated_at: "2026-07-26T00:00:00.000Z"',
     "active_count: 1",
     "total_count: 1",
     "---",
     "",
-    "# Repo-Scoped User Profile And Preferences",
+    "# User Profile And Preferences",
     "",
     "## Active Preferences",
     "",
@@ -528,7 +563,7 @@ function runScript(scriptPath, input, env = {}, component) {
   });
 }
 
-async function listenRecorder({ hang = false, statusCode = 200 } = {}) {
+async function listenRecorder({ hang = false, statusCode = 200, turnStartStatusCode = 200, turnStartBody = '{"ok":true}' } = {}) {
   const requests = [];
   const guidanceRequests = [];
   const turnStarts = [];
@@ -538,8 +573,8 @@ async function listenRecorder({ hang = false, statusCode = 200 } = {}) {
     for await (const chunk of req) body += String(chunk);
     if (req.url === "/memory/turn-start") {
       turnStarts.push(JSON.parse(body));
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ ok: true }));
+      res.writeHead(turnStartStatusCode, { "content-type": "application/json" });
+      res.end(turnStartBody);
       return;
     }
     if (req.url === "/memory/search-guidance") {

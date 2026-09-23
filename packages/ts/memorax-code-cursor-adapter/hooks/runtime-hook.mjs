@@ -21,8 +21,8 @@ const {
 } = await import(pathToFileURL(join(commonRoot, "hooks", "memory-skill-reminder-policy.mjs")).href);
 const { requestMemorySearchGuidance, readMemorySearchGuidanceEnabled } = await import(pathToFileURL(join(commonRoot, "hooks", "memory-search-guidance.mjs")).href);
 const { evaluateMemorySkillReminder, markSupplementalReminderForSession } = await import(pathToFileURL(join(commonRoot, "hooks", "memory-skill-reminder-hook.mjs")).href);
-const { buildRepoUserProfilePreferencesContext } = await import(pathToFileURL(join(commonRoot, "repo-memory", "repo-user-profile-context.mjs")).href);
-const { buildRepoProcedureMemoryContext } = await import(pathToFileURL(join(commonRoot, "repo-memory", "repo-procedure-memory-context.mjs")).href);
+const { buildUserProfilePreferencesContext } = await import(pathToFileURL(join(commonRoot, "personal-memory", "user-profile-context.mjs")).href);
+const { buildProcedureMemoryContext } = await import(pathToFileURL(join(commonRoot, "personal-memory", "procedure-memory-context.mjs")).href);
 const { isRepoMemoryJobWorker } = await import(pathToFileURL(join(commonRoot, "repo-memory", "repo-memory-job-context.mjs")).href);
 
 if (isRepoMemoryJobWorker()) process.exit(0);
@@ -161,8 +161,7 @@ if (event === "sessionStart") {
 }
 
 async function evaluateReminder(turnStart) {
-  const worktree = absolutePath(turnStart.repoMemoryWorktree);
-  if (worktree && turnStart.restorePersonalMemory === true) {
+  if (turnStart.restorePersonalMemory === true) {
     markSupplementalReminderForSession({
       adapterDir: "cursor", runtime: "cursor", memoraxCodeHome: home,
       debugEnv: "MEMORAX_CODE_CURSOR_HOOK_DEBUG",
@@ -170,6 +169,7 @@ async function evaluateReminder(turnStart) {
   }
   const contextOptions = {
     adapterDir: "cursor", sessionKeyPrefix: "cursor", debugEnv: "MEMORAX_CODE_CURSOR_HOOK_DEBUG",
+    memoraxCodeHome: home,
   };
   const reminder = await evaluateMemorySkillReminder({
     adapterDir: "cursor", runtime: "cursor", memoraxCodeHome: home,
@@ -183,14 +183,8 @@ async function evaluateReminder(turnStart) {
     remindOnFirstTurn: true,
     supplementalReminderAfterCompact: true,
     requireTranscriptPath: false,
-    ...(worktree ? {
-      buildPersonalMemoryContext: (hookInput) => buildRepoUserProfilePreferencesContext({
-        ...hookInput, cwd: worktree,
-      }, contextOptions),
-      buildCadenceReminderContext: (hookInput) => buildRepoProcedureMemoryContext({
-        ...hookInput, cwd: worktree,
-      }, contextOptions),
-    } : {}),
+    buildPersonalMemoryContext: () => buildUserProfilePreferencesContext(contextOptions),
+    buildCadenceReminderContext: () => buildProcedureMemoryContext(contextOptions),
   }, { hookEventName: "UserPromptSubmit", sessionId, turnId, cwd, workspaceKind });
   if (reminder?.additionalContext) {
     reminder.additionalContext += `\n\n${repoMemoryMaintenanceContext}`;

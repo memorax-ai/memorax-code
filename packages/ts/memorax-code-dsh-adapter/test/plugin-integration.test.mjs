@@ -126,7 +126,7 @@ test("records once and writes the exact durable top-level DSH Turn", async () =>
     triggers: ["cadence"],
   }]);
   assert.deepEqual(personalContextCalls, [{
-    cwd: "/workspace/authorized-project",
+    memoraxCodeHome: "/memorax-home",
     includeProfile: true,
     includeProcedure: true,
   }]);
@@ -468,12 +468,12 @@ test("anchors Procedure Memory cadence to the first observed Turn without repeat
 
   assert.deepEqual(personalContextCalls, [
     {
-      cwd: "/workspace/project",
+      memoraxCodeHome: "/memorax-home",
       includeProfile: true,
       includeProcedure: true,
     },
     {
-      cwd: "/workspace/project",
+      memoraxCodeHome: "/memorax-home",
       includeProfile: false,
       includeProcedure: true,
     },
@@ -520,7 +520,7 @@ test("restores User Profile after compaction and combines it with a cadence remi
     includeProfile,
     includeProcedure,
   ]), [[true, true], [true, false], [true, true]]);
-  assert.equal(personalContextCalls.every(({ cwd }) => cwd === "/workspace/authorized-project"), true);
+  assert.equal(personalContextCalls.every(({ memoraxCodeHome }) => memoraxCodeHome === "/memorax-home"), true);
   assert.deepEqual(reminders.map((reminder) => reminder.triggers), [
     ["cadence"],
     ["post_compaction"],
@@ -601,36 +601,47 @@ test("commits and traces a reminder only after DSH accepts its user message", as
   assert.deepEqual(reminders.map((reminder) => reminder.triggers), [["cadence"]]);
 });
 
-test("does not read local personal context when Backend Turn registration fails", async () => {
-  const scheduledRepos = [];
-  let personalContextLoads = 0;
-  const session = topLevelSession();
-  const ctx = mockContext({
-    flush: async () => true,
-    readFrom: async () => undefined,
-  });
-  registerMemoraxCodePlugin(ctx, pluginDependencies({
-    backendClient: {
-      async recordTurnStart() { throw new Error("Backend unavailable"); },
-      async writebackTurn() {},
-    },
-    loadPersonalContext: async () => {
-      personalContextLoads += 1;
-      return {
-        profileContext: "User Profile",
-        procedureContext: "Procedure Memory",
-      };
-    },
-    scheduleRepoMemoryBuild: (repo) => scheduledRepos.push(repo),
-  }));
+test("does not read global personal context when Backend Turn registration fails", async (t) => {
+  for (const [name, recordTurnStart] of [
+    ["request failure", async () => { throw new Error("Backend unavailable"); }],
+    ["rejected response", async () => ({ ok: false })],
+    ["malformed response", async () => undefined],
+  ]) {
+    await t.test(name, async () => {
+      const scheduledRepos = [];
+      const reminders = [];
+      let personalContextLoads = 0;
+      const session = topLevelSession();
+      const ctx = mockContext({
+        flush: async () => true,
+        readFrom: async () => undefined,
+      });
+      registerMemoraxCodePlugin(ctx, pluginDependencies({
+        backendClient: {
+          recordTurnStart,
+          async recordSkillReminder(command) { reminders.push(command); },
+          async writebackTurn() {},
+        },
+        loadPersonalContext: async () => {
+          personalContextLoads += 1;
+          return {
+            profileContext: "User Profile",
+            procedureContext: "Procedure Memory",
+          };
+        },
+        scheduleRepoMemoryBuild: (repo) => scheduledRepos.push(repo),
+      }));
 
-  const decision = await runTurnStartStep(ctx, session, 1, 0);
-  assertContext(decision, MEMORY_REMINDER_CONTEXT);
-  assert.equal(personalContextLoads, 0);
-  assert.deepEqual(scheduledRepos, []);
+      const decision = await runTurnStartStep(ctx, session, 1, 0);
+      assertContext(decision, MEMORY_REMINDER_CONTEXT);
+      assert.equal(personalContextLoads, 0);
+      assert.deepEqual(scheduledRepos, []);
+      assert.deepEqual(reminders, []);
+    });
+  }
 });
 
-test("loads personal context only after Backend authorizes a repository worktree", async () => {
+test("accepted unscoped Turns load global personal context without scheduling Repo Memory", async () => {
   const personalContextCalls = [];
   const scheduledRepos = [];
   let turnStarts = 0;
@@ -656,18 +667,19 @@ test("loads personal context only after Backend authorizes a repository worktree
     scheduleRepoMemoryBuild: (repo) => scheduledRepos.push(repo),
   }));
 
-  const unauthorized = await runTurnStartStep(ctx, session, 1, 0);
-  assertContext(unauthorized, MEMORY_REMINDER_CONTEXT);
-  assert.deepEqual(personalContextCalls, []);
-  assert.deepEqual(scheduledRepos, []);
-
-  const authorized = await runTurnStartStep(ctx, session, 2, 10);
-  assertContext(authorized, MEMORY_IMPACT_REMINDER_CONTEXT, "User Profile", "Procedure Memory");
+  const unscoped = await runTurnStartStep(ctx, session, 1, 0);
+  assertContext(unscoped, MEMORY_REMINDER_CONTEXT, PERSONAL_MEMORY_REMINDER_CONTEXT,
+    MEMORY_IMPACT_REMINDER_CONTEXT, "User Profile", "Procedure Memory");
   assert.deepEqual(personalContextCalls, [{
-    cwd: "/workspace/authorized-project",
+    memoraxCodeHome: "/memorax-home",
     includeProfile: true,
     includeProcedure: true,
   }]);
+  assert.deepEqual(scheduledRepos, []);
+
+  const authorized = await runTurnStartStep(ctx, session, 2, 10);
+  assert.equal(authorized.messages.length, 1);
+  assert.equal(personalContextCalls.length, 1);
   assert.deepEqual(scheduledRepos, ["/workspace/authorized-project"]);
 });
 
@@ -820,7 +832,7 @@ test("loads personal context through a bounded worker process", async () => {
   };
 
   const result = await loadDshPersonalContext({
-    cwd: "/workspace/project",
+    memoraxCodeHome: "/memorax-home",
     includeProfile: true,
     includeProcedure: true,
   }, {
@@ -841,7 +853,7 @@ test("loads personal context through a bounded worker process", async () => {
       windowsHide: true,
     },
     input: `${JSON.stringify({
-      cwd: "/workspace/project",
+      memoraxCodeHome: "/memorax-home",
       includeProfile: true,
       includeProcedure: true,
     })}\n`,
@@ -1039,6 +1051,7 @@ function pluginDependencies(overrides = {}) {
     intervalTurns: 5,
     isReminderDue: isMemorySkillReminderDue,
     loadPersonalContext: async () => ({}),
+    memoraxCodeHome: "/memorax-home",
     memoryImpactContext: MEMORY_IMPACT_REMINDER_CONTEXT,
     memoryReminderContext: MEMORY_REMINDER_CONTEXT,
     personalMemoryReminderContext: PERSONAL_MEMORY_REMINDER_CONTEXT,

@@ -237,8 +237,8 @@ async function runSetup({ existingCache = false, explicitCache = false, codexReg
     "hooks/memory-skill-reminder-policy.mjs",
     "repo-memory/repo-memory-auto-build.mjs",
     "repo-memory/repo-memory-job-context.mjs",
-    "repo-memory/repo-procedure-memory-context.mjs",
-    "repo-memory/repo-user-profile-context.mjs",
+    "personal-memory/procedure-memory-context.mjs",
+    "personal-memory/user-profile-context.mjs",
     "runtime-record.mjs",
     "setup-completion.mjs",
   ]) {

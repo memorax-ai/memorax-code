@@ -1,53 +1,37 @@
-import { execFileSync } from "node:child_process";
 import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { readJsonFile, stringOption } from "../config-utils.mjs";
+import { stringOption } from "../config-utils.mjs";
 
 const MAX_CONTEXT_CHARS = 4000;
 const MAX_PREFERENCES_BYTES = 64 * 1024;
-const GIT_COMMAND_TIMEOUT_MS = 2000;
-const PREFERENCES_GIT_PATH = ".repo_memory/user-profile/preferences.md";
-const PREFERENCES_RELATIVE_PATH = join(".repo_memory", "user-profile", "preferences.md");
-const PREFERENCES_SCHEMA = "repo_user_profile_memory.v0.1";
-const PREFERENCES_OWNER = "repo-user-profile-memory";
+const PREFERENCES_RELATIVE_PATH = join("personal-memory", "user-profile", "preferences.md");
+const PREFERENCES_SCHEMA = "user_profile_memory.v0.1";
+const PREFERENCES_OWNER = "user-profile-memory";
 const ALLOWED_TYPES = new Set(["communication", "workflow", "environment", "profile"]);
 const ALLOWED_STATUSES = new Set(["active", "superseded", "deleted"]);
 
-export function buildRepoUserProfilePreferencesContext(input, options) {
-  const cwd = resolveCwd(input, options);
-  if (!cwd) return undefined;
-  const repoRoot = gitRepoRoot(cwd);
-  if (!repoRoot) return undefined;
-  const preferences = readTrustedPreferences(repoRoot, options);
+export function buildUserProfilePreferencesContext(options = {}) {
+  const home = resolvePersonalMemoryHome(options);
+  const preferences = readTrustedPreferences(home, options);
   if (!preferences || preferences.length === 0) return undefined;
   return renderContext(preferences);
 }
 
-function readTrustedPreferences(repoRoot, options) {
-  const path = join(repoRoot, PREFERENCES_RELATIVE_PATH);
+function readTrustedPreferences(home, options) {
+  const path = join(home, PREFERENCES_RELATIVE_PATH);
   if (!existsSync(path)) return undefined;
   try {
     for (const directory of [dirname(path), dirname(dirname(path))]) {
       const directoryStat = lstatSync(directory);
       if (directoryStat.isSymbolicLink() || !directoryStat.isDirectory()) {
-        debug(options, `Skipping untrusted repo user preferences directory: ${PREFERENCES_GIT_PATH}`);
+        debug(options, "Skipping untrusted personal user-profile directory");
         return undefined;
       }
     }
     const stat = lstatSync(path);
     if (stat.isSymbolicLink() || !stat.isFile() || stat.size > MAX_PREFERENCES_BYTES) {
-      debug(options, `Skipping untrusted repo user preferences: ${PREFERENCES_GIT_PATH}`);
-      return undefined;
-    }
-    // Both checks keep tracked or accidentally publishable files out of personal context.
-    const trackedStatus = gitExitCode(repoRoot, ["ls-files", "--error-unmatch", "--", PREFERENCES_GIT_PATH]);
-    if (trackedStatus === 0) {
-      debug(options, `Skipping tracked repo user preferences: ${PREFERENCES_GIT_PATH}`);
-      return undefined;
-    }
-    if (trackedStatus !== 1 || gitExitCode(repoRoot, ["check-ignore", "-q", "--", PREFERENCES_GIT_PATH]) !== 0) {
-      debug(options, `Skipping unignored repo user preferences: ${PREFERENCES_GIT_PATH}`);
+      debug(options, "Skipping untrusted personal user-profile file");
       return undefined;
     }
     return parseActivePreferences(readFileSync(path, "utf8"));
@@ -63,7 +47,7 @@ function parseActivePreferences(text) {
   if (
     !metadata
     || metadata.schema !== PREFERENCES_SCHEMA
-    || metadata.scope !== "repo"
+    || metadata.scope !== "user"
     || metadata.owner !== PREFERENCES_OWNER
     || metadata.trust_state !== "user_stated"
   ) {
@@ -151,7 +135,7 @@ function normalizeField(value) {
 
 function renderContext(preferences) {
   let context = [
-    "Active repo-scoped user preferences explicitly saved by the user:",
+    "Active user-scoped preferences explicitly saved by the user:",
     "Stored preferences are fallback guidance, not facts about current code behavior.",
     "Instruction priority: system/developer/AGENTS.md > current user > stored preference.",
     "Apply each preference only when relevant and not overridden by higher-priority instructions.",
@@ -176,76 +160,10 @@ function renderContext(preferences) {
   return context;
 }
 
-function resolveCwd(input, options) {
-  const cwd = stringOption(input.cwd);
-  if (cwd) return cwd;
-  const sessionId = stringOption(input.session_id) ?? stringOption(input.sessionId);
-  const transcriptPath = stringOption(input.transcript_path) ?? stringOption(input.transcriptPath);
-  const pluginWorkspace = process.env.PLUGIN_DATA
-    ? workspaceCwdFromState(join(process.env.PLUGIN_DATA, "workspaces.json"), options.sessionKeyPrefix, sessionId, transcriptPath)
-    : undefined;
-  if (pluginWorkspace) return pluginWorkspace;
-  const memoraxCodeHome = process.env.MEMORAX_CODE_HOME || join(homedir(), ".memorax-code");
-  return workspaceCwdFromState(
-    join(memoraxCodeHome, "adapters", options.adapterDir, "workspaces.json"),
-    options.sessionKeyPrefix,
-    sessionId,
-    transcriptPath,
-  );
-}
-
-function workspaceCwdFromState(path, sessionKeyPrefix, sessionId, transcriptPath) {
-  const state = readJsonFile(path);
-  if (state?.unreadable) return undefined;
-  const sessions = state?.value?.sessions && typeof state.value.sessions === "object" && !Array.isArray(state.value.sessions)
-    ? state.value.sessions
-    : {};
-  for (const key of registryKeys(sessionKeyPrefix, sessionId, transcriptPath)) {
-    const record = sessions[key];
-    const cwd = stringOption(record?.cwd) ?? stringOption(record?.workspace);
-    if (cwd) return cwd;
-  }
-  return undefined;
-}
-
-function registryKeys(sessionKeyPrefix, ...values) {
-  const keys = new Set();
-  for (const value of values) {
-    const string = stringOption(value);
-    if (!string) continue;
-    keys.add(string);
-    const base = string.split(/[\\/]/).pop()?.replace(/\.[^.]+$/, "") ?? string;
-    keys.add(base);
-    if (string.startsWith(`${sessionKeyPrefix}_`)) keys.add(string.slice(sessionKeyPrefix.length + 1));
-    else keys.add(`${sessionKeyPrefix}_${string}`);
-    if (base.startsWith(`${sessionKeyPrefix}_`)) keys.add(base.slice(sessionKeyPrefix.length + 1));
-    else keys.add(`${sessionKeyPrefix}_${base}`);
-  }
-  return keys;
-}
-
-function gitRepoRoot(cwd) {
-  try {
-    return execFileSync("git", ["-C", cwd, "rev-parse", "--show-toplevel"], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-      timeout: GIT_COMMAND_TIMEOUT_MS,
-    }).trim() || undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function gitExitCode(repoRoot, args) {
-  try {
-    execFileSync("git", ["-C", repoRoot, ...args], {
-      stdio: ["ignore", "ignore", "ignore"],
-      timeout: GIT_COMMAND_TIMEOUT_MS,
-    });
-    return 0;
-  } catch (error) {
-    return Number.isInteger(error?.status) ? error.status : undefined;
-  }
+function resolvePersonalMemoryHome(options) {
+  return stringOption(options?.memoraxCodeHome)
+    ?? stringOption(process.env.MEMORAX_CODE_HOME)
+    ?? join(homedir(), ".memorax-code");
 }
 
 function debug(options, message) {

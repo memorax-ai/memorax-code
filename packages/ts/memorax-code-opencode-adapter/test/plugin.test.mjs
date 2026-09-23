@@ -132,7 +132,7 @@ test("chat.message shows userNotice without blocking or injecting it into model 
   }]);
 });
 
-test("repo-scoped reminder builders require a Backend-authorized worktree", async () => {
+test("global personal-memory builders do not require a Backend-authorized worktree", async () => {
   const evaluations = [];
   const plugin = createMemoraxOpenCodePlugin({
     backendConnection: { url: "http://127.0.0.1:8787" },
@@ -143,29 +143,66 @@ test("repo-scoped reminder builders require a Backend-authorized worktree", asyn
     memorySkillReminderEvaluator: async (options, input) => {
       const profileBuilder = typeof options.buildPersonalMemoryContext === "function";
       const procedureBuilder = typeof options.buildCadenceReminderContext === "function";
-      const repositoryContext = profileBuilder && procedureBuilder;
+      const personalContext = profileBuilder && procedureBuilder;
       const impactContext = typeof options.memoryImpactContext === "string"
         ? options.memoryImpactContext
         : undefined;
       evaluations.push({ profileBuilder, procedureBuilder, impactContext: Boolean(impactContext), cwd: input.cwd });
-      return { additionalContext: repositoryContext ? impactContext : "Generic reminder context." };
+      return { additionalContext: personalContext ? impactContext : "Generic reminder context." };
     },
   });
   const hooks = await plugin(pluginInput());
-  const generic = promptOutput("user-scope-1", "First prompt");
+  const unscoped = promptOutput("user-scope-1", "First prompt");
   const authorized = promptOutput("user-scope-2", "Second prompt");
 
-  await hooks["chat.message"]({ sessionID: "session-scope" }, generic);
+  await hooks["chat.message"]({ sessionID: "session-scope" }, unscoped);
   await hooks["chat.message"]({ sessionID: "session-scope" }, authorized);
 
-  assert.equal(generic.message.system, "Generic reminder context.");
+  assert.match(unscoped.message.system, /Natural final-answer mention for supported coding agents:/);
   assert.match(authorized.message.system, /Natural final-answer mention for supported coding agents:/);
   assert.match(authorized.message.system, /generic label `Memory`/);
   assert.deepEqual(evaluations, [
-    { profileBuilder: false, procedureBuilder: false, impactContext: true, cwd: "/repo/worktree" },
+    { profileBuilder: true, procedureBuilder: true, impactContext: true, cwd: "/repo/worktree" },
     { profileBuilder: true, procedureBuilder: true, impactContext: true, cwd: "/repo/worktree" },
   ]);
 });
+
+for (const [name, responseBody] of [
+  ["ok:false", { ok: false, repoMemoryWorktree: "/repo/rejected" }],
+  ["null", null],
+]) {
+  test(`chat.message injects personal memory but keeps writeback inactive after a ${name} turn-start response`, async () => {
+    const requests = [];
+    const evaluations = [];
+    let messageReads = 0;
+    const hooks = await createMemoraxOpenCodePlugin({
+      backendConnection: { url: "http://127.0.0.1:8787" },
+      fetchImpl: responseSequence(requests, [new Response(JSON.stringify(responseBody), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })]),
+      memorySkillReminderEvaluator: async (options, input) => {
+        evaluations.push({
+          profileBuilder: typeof options.buildPersonalMemoryContext === "function",
+          procedureBuilder: typeof options.buildCadenceReminderContext === "function",
+          searchGuidance: typeof options.evaluateSearchGuidance === "function",
+        });
+        return { additionalContext: "Generic reminder context.", reminder: { turnId: input.turnId } };
+      },
+    })(pluginInput({
+      client: { session: { async messages() { messageReads += 1; return { data: [] }; } } },
+    }));
+    const output = promptOutput("user-rejected", "Prompt");
+    await hooks["chat.message"]({ sessionID: "session-rejected" }, output);
+    hooks.event(sessionIdleEvent("session-rejected"));
+    await hooks.dispose();
+
+    assert.equal(output.message.system, "Generic reminder context.");
+    assert.deepEqual(evaluations, [{ profileBuilder: true, procedureBuilder: true, searchGuidance: false }]);
+    assert.deepEqual(requests.map(({ url }) => new URL(url).pathname), ["/memory/turn-start"]);
+    assert.equal(messageReads, 0, "a rejected turn start must not create pending writeback state");
+  });
+}
 
 test("chat.message starts missing Repo Memory for the Backend-authorized worktree", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-opencode-auto-build-"));

@@ -140,7 +140,7 @@ async function enableCursorAdapterUnlocked(paths, options) {
   try { skillDigest = skillDirectoryDigest(paths.skillSourcePath); }
   catch (error) { throw attachDeploymentFailure(error, "skill-stage"); }
   const skillCurrent = directoryDigestIfPresent(paths.skillPath, SKILL_PACKAGE_METADATA) === skillDigest
-    && skillPackageMetadataCurrent(paths.skillPath, memoraxCodeCommand);
+    && skillPackageMetadataCurrent(paths.skillPath, memoraxCodeCommand, paths.memoraxCodeHome);
   const repoMemoryAgentDigest = fileDigestIfPresent(paths.repoMemoryAgentSourcePath);
   const agentCurrent = managedRepoMemoryAgent(paths.repoMemoryAgentPath)
     && fileDigestIfPresent(paths.repoMemoryAgentPath) === repoMemoryAgentDigest;
@@ -181,7 +181,7 @@ async function enableCursorAdapterUnlocked(paths, options) {
     materializeRuntimeGeneration(paths, generationPath, runtimeDigest, runtimeMetadata);
     if (!skillCurrent) {
       stage = "skill-stage";
-      materializeDirectory(paths.skillSourcePath, paths.skillPath, memoraxCodeCommand);
+      materializeDirectory(paths.skillSourcePath, paths.skillPath, memoraxCodeCommand, paths.memoraxCodeHome);
     }
     if (!agentCurrent) {
       stage = "runtime-stage";
@@ -290,7 +290,7 @@ async function readCursorAdapterStatusUnlocked(paths, options) {
   const memoraxCodeCommand = stringOption(options.memoraxCodeCommand) ?? defaultMemoraxCodeCommand();
   const skillCurrent = existsSync(join(state.skillPath, "SKILL.md"))
     && directoryDigestIfPresent(state.skillPath, SKILL_PACKAGE_METADATA) === state.skillDigest
-    && skillPackageMetadataCurrent(state.skillPath, memoraxCodeCommand);
+    && skillPackageMetadataCurrent(state.skillPath, memoraxCodeCommand, paths.memoraxCodeHome);
   const agentCurrent = managedRepoMemoryAgent(state.repoMemoryAgentPath)
     && fileDigestIfPresent(state.repoMemoryAgentPath) === state.repoMemoryAgentDigest
     && fileDigestIfPresent(join(dirname(dirname(state.runtimePath)), "agents", "memorax-repo-memory.md"))
@@ -669,7 +669,7 @@ function windowsExecutableToken(path) {
   return /^[A-Za-z]:\/[^\s"]+$/.test(normalized) ? normalized : "powershell.exe";
 }
 
-function materializeDirectory(source, destination, memoraxCodeCommand) {
+function materializeDirectory(source, destination, memoraxCodeCommand, memoraxCodeHome) {
   const temporaryPath = `${destination}.tmp-${process.pid}-${randomUUID()}`;
   let stage = "skill-stage";
   try {
@@ -678,7 +678,7 @@ function materializeDirectory(source, destination, memoraxCodeCommand) {
     cpSync(source, temporaryPath, { recursive: true });
     atomicWriteJson(
       join(temporaryPath, SKILL_PACKAGE_METADATA),
-      skillPackageMetadata(memoraxCodeCommand),
+      skillPackageMetadata(memoraxCodeCommand, memoraxCodeHome),
     );
     stage = "skill-remove";
     withWindowsDirectoryRetry(() => rmSync(destination, { recursive: true, force: true }));
@@ -773,18 +773,19 @@ function hashDirectory(hash, root, prefix, ignoredPath) {
   }
 }
 
-function skillPackageMetadataCurrent(skillPath, memoraxCodeCommand) {
+function skillPackageMetadataCurrent(skillPath, memoraxCodeCommand, memoraxCodeHome) {
   try {
     return readFileSync(join(skillPath, SKILL_PACKAGE_METADATA), "utf8")
-      === `${JSON.stringify(skillPackageMetadata(memoraxCodeCommand), null, 2)}\n`;
+      === `${JSON.stringify(skillPackageMetadata(memoraxCodeCommand, memoraxCodeHome), null, 2)}\n`;
   } catch {
     return false;
   }
 }
 
-function skillPackageMetadata(memoraxCodeCommand) {
+function skillPackageMetadata(memoraxCodeCommand, memoraxCodeHome) {
   return {
     version: 1,
+    memoraxCodeHome,
     ...(memoraxCodeCommand ? { memoraxCodeCommand } : {}),
   };
 }

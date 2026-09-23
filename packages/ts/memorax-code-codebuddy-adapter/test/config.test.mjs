@@ -111,6 +111,7 @@ test("installs and reuses separate client targets from WorkBuddy's inherited env
       const metadata = JSON.parse(await readFile(join(codeBuddyInstallPath(home), ".memorax-code-package.json"), "utf8"));
       assert.equal(metadata.client, client);
       assert.equal(metadata.codeBuddyHome, home);
+      assert.equal(metadata.memoraxCodeHome, memoraxCodeHome);
     }
   }
 });
@@ -223,6 +224,7 @@ test("installs and removes an isolated CodeBuddy plugin registry entry", async (
   assert.equal(typeof installedMetadata.codeBuddyCommand, "string");
   assert.match(installedMetadata.memoraxCodeCommand, /memorax-code\.mjs$/);
   assert.equal(installedMetadata.codeBuddyHome, home);
+  assert.equal(installedMetadata.memoraxCodeHome, memoraxCodeHome);
   assert.equal(await exists(join(codeBuddyInstallPath(home), "memorax-code-adapter-common", "src", "repo-memory", "repo-memory-job-supervisor.mjs")), true);
   const pluginManifest = JSON.parse(await readFile(join(marketplaceRoot(home), "plugins", "memorax-code-codebuddy-adapter", ".codebuddy-plugin", "plugin.json"), "utf8"));
   assert.deepEqual(pluginManifest.skills, ["./skills/memorax-code"]);
@@ -495,13 +497,26 @@ test("reuses complete packaged plugins and repairs changed or incomplete copies"
       platform: "win32",
     };
     await isolated.enableCodeBuddyAdapter(options);
-    for (const pluginRoot of pluginRoots) protectedSkills.add(pluginRoot);
+    for (const pluginRoot of pluginRoots) {
+      protectedSkills.add(pluginRoot);
+      const metadataPath = join(pluginRoot, ".memorax-code-package.json");
+      const metadata = JSON.parse(await readFile(metadataPath, "utf8"));
+      assert.equal(metadata.memoraxCodeHome, options.memoraxCodeHome);
+      delete metadata.memoraxCodeHome;
+      await writeFile(metadataPath, JSON.stringify(metadata));
+    }
     await isolated.enableCodeBuddyAdapter(options);
+    for (const pluginRoot of pluginRoots) {
+      const metadata = JSON.parse(await readFile(join(pluginRoot, ".memorax-code-package.json"), "utf8"));
+      assert.equal(metadata.memoraxCodeHome, options.memoraxCodeHome);
+    }
     await isolated.disableCodeBuddyAdapter(options);
-    await isolated.enableCodeBuddyAdapter({ ...options, memoraxCodeCommand: "/new/memorax-code.mjs" });
+    const nextMemoraxCodeHome = join(root, "next memorax home");
+    await isolated.enableCodeBuddyAdapter({ ...options, memoraxCodeHome: nextMemoraxCodeHome, memoraxCodeCommand: "/new/memorax-code.mjs" });
     for (const pluginRoot of pluginRoots) {
       const metadata = JSON.parse(await readFile(join(pluginRoot, ".memorax-code-package.json"), "utf8"));
       assert.equal(metadata.memoraxCodeCommand, "/new/memorax-code.mjs");
+      assert.equal(metadata.memoraxCodeHome, nextMemoraxCodeHome);
       protectedSkills.delete(pluginRoot);
     }
     await rm(join(pluginRoots[0], "hooks", "runtime-hook.mjs"));
