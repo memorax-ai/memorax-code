@@ -1,6 +1,30 @@
-# MemoraX Code Coding Memory Add
+# MemoraX Code Coding and Work Memory Add
 
-Use these instructions only to add reusable coding knowledge through `memorax-cli`. Invoke the skill as `$memorax-code` in Codex or `/memorax-code` in Claude Code. In OpenCode, ask the agent to use the `memorax-code` skill by name. Do not route memory operations through the lifecycle-only `memorax-code` CLI. Do not use this authority for personal procedures, interaction preferences, generated repository facts, or one-off task details.
+Use these instructions to add reusable coding knowledge or user-requested work dialogue through `memorax-cli`. Invoke the skill as `$memorax-code` in Codex or `/memorax-code` in Claude Code. In OpenCode, ask the agent to use the `memorax-code` skill by name. Do not route memory operations through the lifecycle-only `memorax-code` CLI. Do not use this authority for personal procedures, interaction preferences, generated repository facts, or one-off task details.
+
+## Work Memory Add
+
+Select the content type from the source being saved, not from the client name
+or search results. In any client, use `--content-type dialogue --mode default`
+for grounded office requirements, discussions, and decisions. Use
+`--content-type code --mode pre_summarized` for reusable coding lessons. The
+service applies Chat rules to dialogue; do not wrap work facts in a
+`CODE_AGENT_MEMORY` card or promote an unresolved request into a completed fact.
+The coding eligibility and card guidance below applies only to coding memory.
+
+```bash
+memorax-cli add --content-type dialogue --mode default \
+  --memory 'The user requested the travel reimbursement approval threshold; the policy still needs verification.' \
+  --type episodic --reason 'Preserve the office requirement requested by the user.'
+```
+
+Document ingestion remains in the MemoraX backend's existing snapshot path,
+where document content uses Document extraction rules. Do not send document
+contents as dialogue to simulate document indexing. Use document search only
+for already indexed documents. An Add acknowledgement confirms submission,
+not completed extraction. The scope, quoting, failure, and quota rules below
+apply to both coding and work dialogue Add. On Windows PowerShell use
+`memorax-cli.cmd`.
 
 ## Eligible Knowledge
 
@@ -29,13 +53,13 @@ Run from the active task workspace. Pass the memory and reason directly. Put eve
 Windows PowerShell:
 
 ```powershell
-memorax-cli.cmd add --memory 'Concise reusable memory.' --type procedural --reason 'Capture reusable coding memory.'
+memorax-cli.cmd add --memory 'Concise reusable memory.' --content-type code --mode pre_summarized --type procedural --reason 'Capture reusable coding memory.'
 ```
 
 macOS and Linux:
 
 ```bash
-memorax-cli add \
+memorax-cli add --content-type code --mode pre_summarized \
   --memory 'Concise reusable memory.' \
   --type procedural \
   --reason 'Capture reusable coding memory.'
@@ -65,7 +89,7 @@ Keep the card under 1,100 characters when practical. It must guide future invest
 Pass a completed multi-line card as one single-quoted `--memory` argument. On Windows PowerShell, the command must start with `memorax-cli.cmd add`; on macOS and Linux, use the form shown below.
 
 ```bash
-memorax-cli add \
+memorax-cli add --content-type code --mode pre_summarized \
   --memory 'CODE_AGENT_MEMORY
 repo: owner/name
 scope: module/path::symbol

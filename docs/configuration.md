@@ -726,6 +726,16 @@ separate runtime, CLI, or SDK installation is required.
 
 ## Retrieval
 
+For already indexed work memory, use `memorax-cli search --query 'expense approval policy' --sources document`.
+`--sources` accepts `document`, `dialogue`, or `dialogue,document`. With
+`--sources document`, optionally repeat `--document-id 'expense-policy'` to
+restrict retrieval to known document IDs (at most 100). The CLI sends top-level
+`sources` and `document_ids` fields and selects `output_mode: facts` for scoped
+searches. Without these flags, the existing Search request is unchanged.
+This requires a server supporting source-scoped retrieval and documents indexed
+under the same effective user ID and API-key project. An unsupported server
+returns an error; the CLI does not retry with a broader search. Document ingestion remains in the MemoraX backend.
+
 Search is available through the shared Skill or direct `memorax-cli search`.
 Hooks do not issue Search requests. The fields below belong in the
 `[memory.retrieval]` TOML table and control explicit Search.
@@ -787,7 +797,32 @@ not a model-controlled request option; every automatic and explicit add sends
 the resolved value to MemoraX. Invalid values fail closed instead of silently
 selecting another language. The setting affects newly generated content;
 `raw` input and client-supplied `pre_summarized` text are not translated.
-Command arguments override the other add defaults.
+Command arguments override the other add defaults. Automatic writeback uses
+`mode: default` and resolves `content_type` from the environment override, then
+`memory.add.content_type`, then the client default: `dialogue` for WorkBuddy,
+`code` for other clients. The selected type is frozen before buffering; code
+and dialogue buffers are isolated. Dialogue sends complete selected messages
+without code chunk metadata. Existing message-size and redaction limits apply.
+Do not set automatic conversation writeback to `document`; it rejects that
+configuration because a conversation is not a document snapshot.
+
+Explicit Add resolves `--content-type` before configuration and the same client
+default. Unless `--mode` is supplied, code uses `pre_summarized` and
+dialogue uses `default`, preserving the CLI mode defaults independently of
+`memory.add.mode`. For a work task in any supported client, the shared
+Skill selects `--content-type dialogue --mode default`; coding lessons select
+`--content-type code`. Routing uses these explicit choices and client defaults,
+not a keyword classifier. To use work dialogue for automatic writes in other
+clients, set `[memory.add].content_type = "dialogue"` or
+`MEMORAX_CODE_MEMORAX_ADD_CONTENT_TYPE=dialogue`.
+
+The service selects Chat extraction rules for `dialogue`, Document extraction
+rules for `document`, and Code processing for `code`. No `work` content type or
+client-generated extraction prompt is required.
+
+Document snapshots continue to enter through the MemoraX backend's existing
+revision-aware ingestion path. This CLI does not import or replace documents;
+`--sources document` searches already indexed document facts.
 
 ### Disabling memory writes
 
