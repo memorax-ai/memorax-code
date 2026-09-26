@@ -1,0 +1,40 @@
+name: macOS Codex installation
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-codex-install-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  install:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Validate documentation and package installation
+        shell: bash
+        run: |
+          test_root="$(mktemp -d)"
+          trap 'rm -rf "$test_root"' EXIT
+          mkdir -p "$test_root/user" "$test_root/tmp"
+          env -i PATH="$PATH" HOME="$test_root/user" \
+            MEMORAX_CODE_HOME="$test_root/state" \
+            npm_config_cache="$test_root/npm-cache" TMPDIR="$test_root/tmp" \
+            make docs-check npm-package-check
+      - name: Verify installation with the real Codex CLI
+        shell: bash
+        run: |
+          scripts/macos-codex-install-check.sh dist/npm/tarballs 0.147.0

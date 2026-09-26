@@ -148,7 +148,7 @@ owns only normalized semantic evaluation requests.
 | [Cursor adapter](packages/ts/memorax-code-cursor-adapter) | Marker-owned native Hooks, versioned runtime, and independent shared Skill deployment | Native transcript interpretation or third-party import settings |
 | [npm package](packages/npm/memorax-code) | Installed wrappers, setup and update reconciliation, trial provisioning, and package replacement | Backend lifecycle semantics, uninstall orchestration, or artifact staging |
 | [scripts](scripts) | Build, staging/materialization, and repository/artifact checks | Product runtime authority |
-| [.github](.github) | Issue and pull-request contribution templates | Product runtime behavior |
+| [.github](.github) | Contribution templates and CI workflow orchestration | Product runtime behavior |
 
 `memorax-code-adapter-common` is a source layer consumed by the Backend and all
 seven adapters; it is not an independently deployed service. The npm artifact
