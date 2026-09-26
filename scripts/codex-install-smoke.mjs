@@ -17,6 +17,18 @@ const pluginId = `${pluginName}@memorax-code`;
 const otherClients = ["claude", "dsh", "opencode", "codebuddy", "workbuddy", "trae", "cursor"];
 const fixtureKey = `sk_${"E".repeat(43)}`;
 const report = { status: "FAIL", platform: process.platform, arch: process.arch, checks: [] };
+const cleanupCodes = {
+  entrypoint_check: "CLEANUP_ENTRYPOINT_CHECK_FAILED",
+  pid_record_read: "CLEANUP_PID_RECORD_READ_FAILED",
+  stop_command: "CLEANUP_STOP_COMMAND_FAILED",
+  stop_response: "CLEANUP_STOP_RESPONSE_FAILED",
+  pid_record_removal: "CLEANUP_PID_RECORD_REMAINS",
+  tracked_process: "CLEANUP_TRACKED_PROCESS_CHECK_FAILED",
+  port_release: "CLEANUP_PORT_RELEASE_FAILED",
+  directory_removal: "CLEANUP_DIRECTORY_REMOVAL_FAILED",
+};
+let cleanupStage = "entrypoint_check";
+let cleanupTrackedPidIndex;
 let stage = "prerequisites";
 let root, env, workspace, entrypoint, stateHome, codexHome, backendPort, endpoint, registry;
 let resolveInvocation, resolveNpmInvocation;
@@ -332,15 +344,34 @@ try {
 } finally {
   try {
     if (setupStarted) {
+      cleanupStage = "entrypoint_check";
       if (await exists(entrypoint)) await stopAndVerify();
       else await assertStopped();
       report.checks.push("Backend stopped, process exited and port released");
     }
-    if (root) await rm(root, { recursive: true, force: true });
+    if (root) {
+      cleanupStage = "directory_removal";
+      await rm(root, { recursive: true, force: true });
+    }
     report.cleanup = "PASS";
-  } catch {
+  } catch (error) {
     report.status = "FAIL";
     report.cleanup = "FAIL: isolated state retained because shutdown was not confirmed";
+    report.cleanupFailure = { stage: cleanupStage, code: cleanupCodes[cleanupStage] };
+    if (cleanupStage === "tracked_process" && Number.isInteger(cleanupTrackedPidIndex)) {
+      report.cleanupFailure.trackedPidIndex = cleanupTrackedPidIndex;
+      report.cleanupFailure.trackedPidCount = backendPids.size;
+    }
+    if (["ENOENT", "EACCES", "EPERM", "EBUSY", "ENOTEMPTY", "ESRCH", "EINVAL", "ETIMEDOUT",
+      "EADDRINUSE", "EADDRNOTAVAIL", "EPIPE", "ECONNREFUSED", "ECONNRESET", "ENOTFOUND", "EIO", "EROFS"].includes(error.code)) {
+      report.cleanupFailure.systemCode = error.code;
+    }
+    if (Number.isInteger(error.code) && error.code >= 0 && error.code <= 255) {
+      report.cleanupFailure.commandExitCode = error.code;
+    }
+    if (["SIGTERM", "SIGKILL", "SIGINT", "SIGABRT"].includes(error.signal)) {
+      report.cleanupFailure.commandSignal = error.signal;
+    }
   }
   for (const server of [endpoint, registry]) {
     if (!server?.listening) continue;
@@ -430,17 +461,26 @@ async function verifyBackendReplacement(before, label) {
   report.checks.push(`${label}: old Backend exited; new PID, instance and live health identity agree`);
 }
 async function stopAndVerify() {
+  cleanupStage = "pid_record_read";
   await rememberPid();
-  check((await productJson(["stop", "--clients", "codex", "--json"])).ok === true, "Backend stop did not succeed");
+  cleanupStage = "stop_command";
+  const stopped = await product(["stop", "--clients", "codex", "--json"]);
+  cleanupStage = "stop_response";
+  check(JSON.parse(stopped.stdout).ok === true, "Backend stop did not succeed");
   await assertStopped();
 }
 async function assertStopped() {
+  cleanupStage = "pid_record_removal";
   check(!(await exists(pidPath())), "Backend PID record remains after stop");
+  cleanupStage = "tracked_process";
+  let trackedIndex = 0;
   for (const pid of backendPids) {
+    cleanupTrackedPidIndex = trackedIndex++;
     let alive = true;
     try { process.kill(pid, 0); } catch (error) { if (error.code === "ESRCH") alive = false; else throw error; }
     check(!alive, "An installation Backend process remains after stop");
   }
+  cleanupStage = "port_release";
   const probe = createTcpServer();
   await new Promise((done, reject) => { probe.once("error", reject); probe.listen(backendPort, "127.0.0.1", done); });
   await new Promise((done) => probe.close(done));
