@@ -53,6 +53,7 @@ try {
       }
       // ConPTY and readline use terminal control sequences during repainting.
       // Answer cursor-position queries as a terminal and match visible prompts.
+      // ConPTY may represent a trailing blank as cursor motion, not text.
       const queries = output.split("\x1b[6n").length - 1;
       while (cursorReports < queries && cursorReports < 8) {
         cursorReports += 1;
@@ -60,15 +61,15 @@ try {
       }
       const visible = stripVTControlCharacters(output);
       // These are exact product prompt contracts, not a semantic success judge.
-      if (!report.usernamePromptSeen && /Username from your existing MemoraX Code setup[^\r\n]*: /.test(visible)) {
+      if (!report.usernamePromptSeen && /Username from your existing MemoraX Code setup[^\r\n]*:/.test(visible)) {
         report.usernamePromptSeen = true;
         terminal.write(`${input.username}\r`);
       }
-      if (!report.languagePromptSeen && visible.includes("Preferred language [ZH/en] (used for Memory extraction): ")) {
+      if (!report.languagePromptSeen && visible.includes("Preferred language [ZH/en] (used for Memory extraction):")) {
         report.languagePromptSeen = true;
         terminal.write("en\r");
       }
-      if (!report.keyPromptSeen && visible.includes("MemoraX API key: ")) {
+      if (!report.keyPromptSeen && visible.includes("MemoraX API key:")) {
         report.keyPromptSeen = true;
         // Allow the child to finish enabling raw masked input after the prompt.
         setTimeout(() => terminal.write(mode === "cancel" ? "\x03" : `${input.apiKey}\r`), 30);

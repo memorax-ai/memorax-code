@@ -321,9 +321,10 @@ Native Windows package smoke coverage lives in
 script's prerequisites and isolation before using it; a macOS/Linux suite or
 WSL run does not replace native Windows validation.
 
-Real-client, MemoraX-backed, or live Jev checks are explicit opt-in tests. Report them
-separately from synthetic tests, record platform and scenarios, redact output,
-and explain any relevant checks not run. Public fixtures must never contain
+Live-provider, MemoraX-backed, and live Jev checks are explicit opt-in tests.
+The credential-free native Codex workflow below runs by default on PRs. Report
+native-client and synthetic evidence separately, record platform and scenarios,
+redact output, and explain any relevant checks not run. Public fixtures must never contain
 real API keys, private transcripts, personal memory, or infrastructure
 credentials.
 
