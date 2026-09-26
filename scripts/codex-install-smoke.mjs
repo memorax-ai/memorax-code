@@ -180,7 +180,6 @@ try {
   await verifyPreserved(savedMemoraxConfig);
 
   stage = "native uninstall";
-  env.MEMORAX_CODE_NPM_COMMAND = npmCommand;
   env.npm_config_prefix = npmPrefix;
   const uninstalled = await productJson(["uninstall", "--clients", "codex", "--json"]);
   check(uninstalled.ok === true && uninstalled.codexPlugin?.ok === true
@@ -254,7 +253,6 @@ try {
   await writeFile(npmConfig, `@memorax:registry=${registryUrl}\n`, { mode: 0o600 });
   env.npm_config_userconfig = npmConfig;
   env.npm_config_cache = join(root, "update npm cache");
-  env.MEMORAX_CODE_NPM_COMMAND = npmCommand;
   env.npm_config_fetch_retries = "0";
   env.npm_config_fetch_timeout = "15000";
   const previousPid = (await readJson(pidPath())).pid;
@@ -292,6 +290,7 @@ try {
   report.stage = stage;
   report.error = error.smokeMessage ?? "The stage failed; private command output was suppressed";
   if (typeof error.code === "number") report.exitCode = error.code;
+  if (["ENOENT", "ENOEXEC", "EACCES", "EPERM", "EINVAL", "ETIMEDOUT"].includes(error.code)) report.nativeErrorCode = error.code;
   if (error.diagnosticCode) report.diagnosticCode = error.diagnosticCode;
   if (error.terminalError) report.terminalError = error.terminalError;
   if (error.terminalDiagnostics) report.terminalDiagnostics = error.terminalDiagnostics;
@@ -497,7 +496,7 @@ function isolatedEnv(userHome, codexCommand, dummyUrl) {
     : ["/usr/bin", "/bin"];
   const isolated = {
     HOME: userHome, USERPROFILE: userHome, USER: "install-smoke", LOGNAME: "install-smoke", LANG: "en_US.UTF-8",
-    PATH: [dirname(process.execPath), ...systemPaths].join(delimiter),
+    PATH: [...new Set([dirname(process.execPath), dirname(npmCommand), ...systemPaths])].join(delimiter),
     APPDATA: join(userHome, "AppData", "Roaming"), LOCALAPPDATA: join(userHome, "AppData", "Local"),
     TMPDIR: join(root, "tmp"), TMP: join(root, "tmp"), TEMP: join(root, "tmp"),
     XDG_CONFIG_HOME: join(userHome, ".config"), XDG_DATA_HOME: join(userHome, ".local", "share"),
