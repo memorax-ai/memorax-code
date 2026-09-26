@@ -7,6 +7,7 @@ import { createServer as createTcpServer } from "node:net";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
+import { pathToFileURL } from "node:url";
 
 const execFileAsync = promisify(execFile);
 const pluginName = "memorax-code-codex-adapter";
@@ -16,16 +17,19 @@ const fixtureKey = `sk_${"E".repeat(43)}`;
 const report = { status: "FAIL", platform: process.platform, arch: process.arch, checks: [] };
 let stage = "prerequisites";
 let root, env, workspace, entrypoint, stateHome, codexHome, backendPort, endpoint;
+let resolveInvocation;
 let setupStarted = false;
 let requests = 0;
 const backendPids = new Set();
 
 try {
-  check(process.platform === "darwin", "This smoke test requires macOS");
+  check(["darwin", "linux", "win32"].includes(process.platform), "This smoke test requires macOS, Linux or Windows");
   check(process.argv.length === 4, "Usage: codex-install-smoke.mjs INSTALLED_PACKAGE_ROOT CODEX_CLI_PATH");
   const packageRoot = resolve(process.argv[2]);
   const codexCommand = resolve(process.argv[3]);
   entrypoint = join(packageRoot, "bin", "memorax-code.mjs");
+  ({ resolveWindowsCliInvocation: resolveInvocation } = await import(
+    pathToFileURL(join(packageRoot, "lib", "windows-cli-invocation.mjs")).href));
   const manifest = await readJson(join(packageRoot, "package.json"));
   check(manifest.name === "@memorax/memorax-code", "The installed package has an unexpected identity");
   const sourceRoot = join(packageRoot, "lib", pluginName);
@@ -171,7 +175,10 @@ function check(condition, message) {
 async function readJson(path) { return JSON.parse(await readFile(path, "utf8")); }
 
 async function run(command, args, input = "") {
-  const pending = execFileAsync(command, args, { cwd: workspace, env, timeout: 120_000, maxBuffer: 4 * 1024 * 1024, encoding: "utf8" });
+  const invocation = resolveInvocation(command, args, { env });
+  const pending = execFileAsync(invocation.command, invocation.args, {
+    cwd: workspace, env, timeout: 120_000, maxBuffer: 4 * 1024 * 1024, encoding: "utf8", windowsHide: true,
+  });
   pending.child.stdin.on("error", () => {});
   pending.child.stdin.end(input);
   let result;
@@ -197,9 +204,14 @@ async function freePort() {
 }
 
 function isolatedEnv(userHome, codexCommand, dummyUrl) {
+  const windowsRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT ?? "C:\\Windows";
+  const systemPaths = process.platform === "win32"
+    ? [join(windowsRoot, "System32"), windowsRoot, join(windowsRoot, "System32", "Wbem"),
+      join(windowsRoot, "System32", "WindowsPowerShell", "v1.0")]
+    : ["/usr/bin", "/bin"];
   const isolated = {
     HOME: userHome, USERPROFILE: userHome, USER: "install-smoke", LOGNAME: "install-smoke", LANG: "en_US.UTF-8",
-    PATH: [dirname(process.execPath), "/usr/bin", "/bin"].join(delimiter),
+    PATH: [dirname(process.execPath), ...systemPaths].join(delimiter),
     APPDATA: join(userHome, "AppData", "Roaming"), LOCALAPPDATA: join(userHome, "AppData", "Local"),
     TMPDIR: join(root, "tmp"), TMP: join(root, "tmp"), TEMP: join(root, "tmp"),
     XDG_CONFIG_HOME: join(userHome, ".config"), XDG_DATA_HOME: join(userHome, ".local", "share"),
@@ -215,6 +227,11 @@ function isolatedEnv(userHome, codexCommand, dummyUrl) {
     TRAE_CN_HOME: join(userHome, ".trae-cn"), TRAE_HOME: join(userHome, ".trae-cn"), CURSOR_HOME: join(userHome, ".cursor"),
     MEMORAX_CODE_CODEX_TRACE_ENABLED: "false",
   };
+  if (process.platform === "win32") Object.assign(isolated, {
+    SystemRoot: windowsRoot, WINDIR: windowsRoot,
+    ComSpec: join(windowsRoot, "System32", "cmd.exe"),
+    PATHEXT: ".COM;.EXE;.BAT;.CMD", USERNAME: "install-smoke",
+  });
   for (const client of otherClients) {
     isolated[`MEMORAX_CODE_${client.toUpperCase()}_COMMAND`] = join(root, "unused-client");
     isolated[`MEMORAX_CODE_${client.toUpperCase()}_TRACE_ENABLED`] = "false";

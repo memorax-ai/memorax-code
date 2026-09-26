@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ "$(uname -s)" != Darwin || $# -ne 2 ]]; then
-  echo "Usage (macOS): scripts/macos-codex-install-check.sh TARBALL_DIR CODEX_VERSION" >&2
+if [[ $# -ne 2 || ! "$(uname -s)" =~ ^(Darwin|Linux)$ ]]; then
+  echo "Usage (macOS/Linux): scripts/codex-install-check.sh TARBALL_DIR CODEX_VERSION" >&2
   exit 1
 fi
 

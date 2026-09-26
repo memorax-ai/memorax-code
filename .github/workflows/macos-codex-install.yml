@@ -1,4 +1,4 @@
-name: macOS Codex installation
+name: Codex installation
 
 on:
   workflow_dispatch:
@@ -10,12 +10,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: macos-codex-install-${{ github.ref }}
+  group: codex-install-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  install:
-    runs-on: macos-15
+  package:
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -34,7 +34,40 @@ jobs:
             MEMORAX_CODE_HOME="$test_root/state" \
             npm_config_cache="$test_root/npm-cache" TMPDIR="$test_root/tmp" \
             make docs-check npm-package-check
-      - name: Verify installation with the real Codex CLI
+      - name: Record artifact checksum
         shell: bash
-        run: |
-          scripts/macos-codex-install-check.sh dist/npm/tarballs 0.147.0
+        run: sha256sum dist/npm/tarballs/*.tgz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: memorax-code-package
+          path: dist/npm/tarballs/*.tgz
+          if-no-files-found: error
+          retention-days: 7
+
+  install:
+    needs: package
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/download-artifact@v4
+        with:
+          name: memorax-code-package
+          path: dist/npm/tarballs
+      - name: Verify installation with the real Codex CLI (macOS/Linux)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: scripts/codex-install-check.sh dist/npm/tarballs 0.147.0
+      - name: Verify installation with the real Codex CLI (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/codex-install-check.ps1 -TarballDirectory dist/npm/tarballs -CodexVersion 0.147.0

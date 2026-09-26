@@ -304,20 +304,33 @@ and explain any relevant checks not run. Public fixtures must never contain
 real API keys, private transcripts, personal memory, or infrastructure
 credentials.
 
-### macOS Codex Installation CI
+### Codex Installation CI
 
-The [macOS Codex installation workflow](.github/workflows/macos-codex-install.yml)
-runs on pull requests, pushes to `main`, and manual dispatch. It builds and
-installs the current checkout's npm artifact, runs the existing package checks,
-then verifies setup with a pinned, real Codex CLI in temporary user and client
-homes. No model login, GitHub Environment secrets, or LLM calls are required.
+The [Codex installation workflow](.github/workflows/macos-codex-install.yml)
+runs on pull requests, pushes to `main`, and manual dispatch. Its Ubuntu job
+builds and validates the current checkout's platform-neutral npm artifact,
+then macOS, Linux, and native Windows jobs install that same artifact and
+verify setup with a pinned, real Codex CLI in temporary user and client homes.
+No model login, GitHub Environment secrets, or LLM calls are required.
 
-To reproduce on macOS after entering your development environment:
+To reproduce on macOS or Linux after entering your development environment:
 
 ```bash
 memorax_dev make docs-check npm-package-check
-scripts/macos-codex-install-check.sh dist/npm/tarballs 0.147.0
+scripts/codex-install-check.sh dist/npm/tarballs 0.147.0
 ```
+
+On Windows, download the workflow's package artifact into `dist/npm/tarballs`,
+then run the native wrapper in a disposable PowerShell 7 session with Node.js
+and npm on PATH:
+
+```powershell
+./scripts/codex-install-check.ps1 -TarballDirectory dist/npm/tarballs -CodexVersion 0.147.0
+```
+
+The Windows wrapper invokes npm's `.cmd` entrypoints without changing the
+PowerShell execution policy. The smoke resolves Codex's Node entrypoint using
+the installed package's Windows invocation helper, without a command shell.
 
 The smoke checks existing-account setup using a synthetic key and a loopback
 MemoraX endpoint, native plugin registration, Hook trust, Backend readiness,
@@ -326,10 +339,12 @@ state after successful verification. Failures exit nonzero; if shutdown cannot
 be confirmed, temporary runtime files are retained. The workflow log is the
 test report; private client state and Backend tokens are not uploaded.
 
-This covers macOS CLI installation. Guest credential provisioning, real API
-authentication, desktop UI, Windows/Linux, and Agent task approval modes need
-separate tests. Hook trust during installation is not an Agent approval-mode
-test. Update the pinned Codex version deliberately when checking a new release.
+This covers CLI installation on the recorded runner OS and architecture.
+Windows hosted runners run as administrators with UAC disabled; ordinary-user
+installation still needs its own case. Guest credential provisioning, real API
+authentication, desktop UI, and Agent task approval modes need separate tests.
+Hook trust during installation is not an Agent approval-mode test. Update the
+pinned Codex version deliberately when checking a new release.
 
 The default `npm-package-check` uses a synthetic Claude plugin CLI for its
 installation smoke test; it does not require a local Claude installation.
