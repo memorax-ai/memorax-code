@@ -52,7 +52,7 @@ if ($LASTEXITCODE -ne 0) { throw 'The installed Codex command shim failed.' }
 & node (Join-Path $repoRoot 'scripts/codex-install-smoke.mjs') `
   (Join-Path $prefix 'node_modules/@memorax/memorax-code') (Join-Path $prefix 'codex.cmd') `
   $tarball $npmCommand $PreviousVersion `
-  (Join-Path $testRoot 'terminal/node_modules/node-pty') (Join-Path $repoRoot 'scripts/codex-setup-pty.mjs')
+  (Join-Path $testRoot 'terminal/node_modules/node-pty') (Join-Path $repoRoot 'scripts/codex-setup-pty.mjs') $CodexVersion
 if ($LASTEXITCODE -ne 0) { throw 'The Codex installation smoke failed; isolated state retained.' }
 
 & node (Join-Path $repoRoot 'scripts/codex-native-check.mjs') `

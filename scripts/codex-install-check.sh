@@ -45,7 +45,7 @@ isolated "$test_root/npm/bin/codex" --version
 isolated node "$repo_root/scripts/codex-install-smoke.mjs" \
   "$test_root/npm/lib/node_modules/@memorax/memorax-code" \
   "$test_root/npm/bin/codex" "$tarball" "$npm_command" "$previous_version" \
-  "$test_root/terminal/node_modules/node-pty" "$repo_root/scripts/codex-setup-pty.mjs"
+  "$test_root/terminal/node_modules/node-pty" "$repo_root/scripts/codex-setup-pty.mjs" "$codex_version"
 isolated node "$repo_root/scripts/codex-native-check.mjs" \
   "$test_root/npm/lib/node_modules/@memorax/memorax-code" "$test_root/npm/bin/codex"
 isolated node "$repo_root/scripts/codex-permissions-check.mjs" \

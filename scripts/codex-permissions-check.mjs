@@ -5,8 +5,9 @@ import { basename, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { setTimeout as delay } from "node:timers/promises";
 import { createNativeHarness, fixtureKey, fixtureUser, sendResponses, waitFor } from "./codex-native-support.mjs";
+import { assertCompleteText, assertWritebackMessages, selectNativeTurnContent } from "./codex-native-content-check.mjs";
 
-// Native app-server protocol, pinned to Codex 0.147.0. The model fixtures only
+// Native app-server protocol, checked with baseline and latest Codex. The fixtures only
 // test approval routing and enforcement; they do not evaluate reviewer judgment.
 const cases = [
   { id: "full-access", policy: "never", reviewer: "user", sandbox: "danger-full-access", writes: true },
@@ -19,7 +20,8 @@ const cases = [
 ];
 const report = {
   status: "FAIL", suite: "native_codex_permissions", platform: process.platform,
-  codexVersion: "0.147.0", model: "controlled Responses fixture", paidModelRequests: 0,
+  model: "controlled Responses fixture", paidModelRequests: 0,
+  contentCheck: "Complete required source paragraphs; additional context allowed",
   scope: "Native approval mechanism and observed file effects with installed MemoraX plugin",
   executionProbe: "Native shell tool with explicit sandbox escalation in restricted modes",
   excludes: ["LLM reviewer semantic quality", "desktop approval UI", "OS ordinary-user and UAC coverage", "background Repo Memory permissions"],
@@ -35,6 +37,7 @@ try {
   harness = await createNativeHarness({ packageRoot: resolve(process.argv[2]), codexCommand: resolve(process.argv[3]), label: "permissions" });
   stage = "installed plugin setup";
   await harness.setup();
+  report.codexVersion = harness.codexVersion;
   harness.setModelHandler((body, response) => {
     check(current, "UNEXPECTED_MODEL_REQUEST_OUTSIDE_CASE");
     check(++current.modelRequests <= 8, "MODEL_REQUEST_LIMIT_EXCEEDED");
@@ -246,7 +249,7 @@ async function verifyWriteback({ threadId, turnId, completed }) {
   }
   check(matches.length === 1, "PERMISSION_NATIVE_ROLLOUT_MISSING_OR_AMBIGUOUS");
   const { metadata, records } = matches[0];
-  check(metadata.model_provider === "local_native" && metadata.cli_version === "0.147.0", "PERMISSION_ROLLOUT_PROVIDER_MISMATCH");
+  check(metadata.model_provider === "local_native" && metadata.cli_version === harness.codexVersion, "PERMISSION_ROLLOUT_PROVIDER_MISMATCH");
   const starts = records.filter((record) => record.type === "event_msg" && record.payload.type === "task_started");
   check(starts.length === 1 && starts[0].payload.turn_id === turnId, "PERMISSION_NATIVE_TURN_MISMATCH");
   const contexts = records.filter((record) => record.type === "turn_context");
@@ -270,37 +273,27 @@ async function verifyWriteback({ threadId, turnId, completed }) {
     && body.metadata.memorax_code_base_user_id === fixtureUser
     && body.metadata.memorax_code_workspace === basename(harness.workspace)
     && body.metadata.memorax_code_memory_scope === "workspace-name.v1", "PERMISSION_WRITEBACK_SCOPE_MISMATCH");
-  check(JSON.stringify(body.messages?.map(({ role, content }) => ({ role, content }))) === JSON.stringify([
-    { role: "user", content: current.prompt }, { role: "assistant", content: current.finalText },
-  ]), "PERMISSION_WRITEBACK_QA_MISMATCH");
+  assertWritebackMessages(body.messages);
+  assertCompleteText(body.messages[0].content, current.prompt, "PERMISSION_WRITEBACK_USER_CONTENT_INCOMPLETE");
+  assertCompleteText(body.messages[1].content, current.finalText, "PERMISSION_WRITEBACK_ASSISTANT_CONTENT_INCOMPLETE");
   const hash = (text) => createHash("sha256").update(text).digest("hex").slice(0, 16);
-  check(body.metadata.idempotency_key === `automatic:codex:${hash(body.user_id)}:${threadId}:${hash(current.prompt)}:${hash(current.finalText)}`,
+  check(body.metadata.idempotency_key === `automatic:codex:${hash(body.user_id)}:${threadId}:${hash(body.messages[0].content)}:${hash(body.messages[1].content)}`,
     "PERMISSION_WRITEBACK_IDEMPOTENCY_MISMATCH");
-  const interval = records.slice(records.indexOf(starts[0]));
-  const user = interval.find((record) => record.type === "event_msg" && record.payload.type === "user_message"
-    && record.payload.message === current.prompt);
-  const assistant = interval.filter((record) => record.type === "response_item" && record.payload.type === "message"
-    && record.payload.role === "assistant" && record.payload.phase === "final_answer"
-    && (!record.payload.internal_chat_message_metadata_passthrough?.turn_id
-      || record.payload.internal_chat_message_metadata_passthrough.turn_id === turnId)
-    && record.payload.content?.filter((part) => part.type === "output_text").map((part) => part.text).join("\n") === current.finalText).at(-1);
-  const completion = interval.find((record) => record.type === "event_msg" && record.payload.type === "task_complete"
-    && record.payload.turn_id === turnId && record.payload.last_agent_message === current.finalText);
-  // Stop can send Add before task_complete is persisted. Both eligible times
-  // must belong to this exact Turn and its independently expected final text.
-  check(user && assistant, "PERMISSION_NATIVE_QA_RECORDS_MISSING");
-  check(body.messages[0].timestamp === Date.parse(user.timestamp), "PERMISSION_NATIVE_USER_TIMESTAMP_MISMATCH");
-  const assistantTimeSources = [["final_response_item", assistant], ["task_complete", completion]]
-    .filter(([, record]) => record && body.messages[1].timestamp === Date.parse(record.timestamp))
-    .map(([source]) => source);
-  check(assistantTimeSources.length > 0, "PERMISSION_NATIVE_ASSISTANT_TIMESTAMP_MISMATCH");
-  check(JSON.stringify(body.metadata.memorax_code_timestamp_sources) === '["native","native"]', "PERMISSION_TIME_AUTHORITY_MISMATCH");
+  const native = selectNativeTurnContent(records, { sessionId: threadId, turnId });
+  assertCompleteText(body.messages[0].content, native.user.content, "PERMISSION_NATIVE_USER_CONTENT_INCOMPLETE");
+  assertCompleteText(body.messages[1].content, native.assistant.content, "PERMISSION_NATIVE_ASSISTANT_CONTENT_INCOMPLETE");
+  check(body.messages[0].timestamp === native.user.timestamp, "PERMISSION_NATIVE_USER_TIMESTAMP_MISMATCH");
+  check(native.assistant.timestamps.includes(body.messages[1].timestamp), "PERMISSION_NATIVE_ASSISTANT_TIMESTAMP_MISMATCH");
+  const timeSources = body.metadata.memorax_code_timestamp_sources;
+  check(Array.isArray(timeSources) && timeSources.length === body.messages.length
+    && timeSources[0] === "native" && timeSources[1] === "native"
+    && timeSources.every((source) => ["native", "observed", "unspecified"].includes(source)), "PERMISSION_TIME_AUTHORITY_MISMATCH");
   const serialized = JSON.stringify(body);
   for (const excluded of [harness.root, fixtureKey, current.command, "Controlled test verdict;"]) {
     check(!serialized.includes(excluded), "PERMISSION_NON_QA_CONTENT_ENTERED_PAYLOAD");
   }
-  return { requestCount: 1, exactQaMatched: true, nativeSessionAndTurnMatched: true,
-    scopeMatched: true, timestampsMatched: true, assistantTimeSources };
+  return { requestCount: 1, requiredQaFragmentsMatched: true, additionalContextAllowed: true, nativeSessionAndTurnMatched: true,
+    scopeMatched: true, timestampsMatched: true, nativeContentSources: [native.user.source, native.assistant.source] };
 }
 
 class AppServer {

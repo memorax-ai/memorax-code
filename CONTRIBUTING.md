@@ -340,7 +340,13 @@ The package check still includes its existing npm regression prerequisite;
 
 Native jobs use temporary user and client homes on Ubuntu, macOS, and Windows
 with Node.js 24, plus Ubuntu with the minimum Node.js 20 runtime. They install
-the same artifact and pin Codex to 0.147.0. The lifecycle check exercises
+the same artifact. Codex 0.147.0 remains the reproducible baseline. Each workflow
+resolves the npm `latest` tag once and also checks that exact release on all
+three systems with Node.js 24. When latest equals the baseline, those jobs cover
+both tracks without duplicate execution; Ubuntu/Node.js 20 remains a baseline
+check. Requested and actual CLI versions are recorded and must match. A failed
+latest-version check fails the workflow instead of falling back to the baseline.
+The lifecycle check exercises
 rejected setup input, real-terminal cancellation and masked credential input,
 failed setup and recovery, repeated setup, native plugin registration, Hook
 trust, stop/start, and uninstall/reinstall. A scoped local npm registry serves
@@ -353,10 +359,20 @@ personal memory are checked explicitly.
 The native conversation check runs real Codex against a local, deterministic
 Responses server and a separate MemoraX receiver. Native Codex creates its own
 session, Turn, rollout, and Hook events; the test must not synthesize these as
-proof of a native workflow. Assertions compare the actual outgoing request to
-independent expected content and identity. Model or tool text alone cannot
-prove that a request was sent. Explicit Skill Search/Add must preserve the user
-request even when the native client injects Skill instructions. A separate
+proof of a native workflow. Assertions compare actual outgoing requests with independently selected native
+source records under the current extraction contract. Automatic Add must have
+valid message fields, nonempty content, and the complete selected text; additional
+content is allowed. The checks retain exact session/Turn identity, request counts,
+and synthetic credential redaction. They do not call the production parser to
+construct their expected content. Negative controls reject missing or truncated
+source text, empty or malformed messages, and mismatched native identity, while
+allowing appended context. Model or tool text alone cannot prove delivery.
+The current Codex parser can select an injected Skill response item as user text.
+Reports separately record whether the original user prompt is included; its
+absence does not fail this compatibility check. This is coverage of the existing
+extraction contract, not proof of full raw-trajectory transmission or preservation
+of every user message. Explicit CLI/Skill Search/Add command arguments still have
+independent request assertions. A separate
 Repo Memory worker case checks foreground/background model and provider
 inheritance; its controlled no-op response intentionally fails bundle validation,
 so it does not prove successful Repo Memory generation or permission inheritance.
@@ -399,7 +415,8 @@ then use a disposable PowerShell 7 session with Node.js and npm on PATH:
 ./scripts/codex-install-check.ps1 -TarballDirectory dist/npm/tarballs -CodexVersion 0.147.0 -PreviousVersion 0.1.17
 ```
 
-The wrappers install the test-only `node-pty@1.1.0` terminal dependency, then run
+The wrappers accept a resolved stable Codex version, verify the installed version,
+install the test-only `node-pty@1.1.0` terminal dependency, then run
 the lifecycle, native-conversation, and permission checks.
 Windows uses npm's `.cmd` entrypoints without changing PowerShell execution
 policy. Each check isolates its Backend/client state and confirms managed

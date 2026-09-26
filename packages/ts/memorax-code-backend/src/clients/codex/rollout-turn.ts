@@ -75,7 +75,6 @@ export type CodexRolloutTurnFailureReason =
   | "turn_metadata_mismatch"
   | "turn_not_found"
   | "user_prompt_missing"
-  | "user_prompt_ambiguous"
   | "assistant_message_missing";
 
 export type CodexRolloutTurnResult =
@@ -142,7 +141,6 @@ export function codexRolloutTurnFromJsonLines(
   }
   if (scan.turnMetadataMismatch) return { ok: false, reason: "turn_metadata_mismatch" };
   if (!scan.targetSeen) return { ok: false, reason: "turn_not_found" };
-  if (scan.userPromptAmbiguous) return { ok: false, reason: "user_prompt_ambiguous" };
   if (!scan.userPrompt) return { ok: false, reason: "user_prompt_missing" };
   if (!scan.assistantReply) return { ok: false, reason: "assistant_message_missing" };
   return {
@@ -165,7 +163,6 @@ export function codexInterruptedRolloutTurnFromJsonLines(
   }
   if (scan.turnMetadataMismatch) return { ok: false, reason: "turn_metadata_mismatch" };
   if (!scan.targetSeen) return { ok: false, reason: "turn_not_found" };
-  if (scan.userPromptAmbiguous) return { ok: false, reason: "user_prompt_ambiguous" };
   if (!scan.userPrompt) return { ok: false, reason: "user_prompt_missing" };
   if (!scan.interrupted) return { ok: false, reason: "turn_not_interrupted" };
   if (scan.rolledBack) return { ok: false, reason: "turn_rolled_back" };
@@ -188,7 +185,6 @@ type CodexRolloutTurnScan = {
   targetSeen: boolean;
   turnMetadataMismatch: boolean;
   userPrompt?: string;
-  userPromptAmbiguous: boolean;
   assistantReply?: string;
   userTimestamp?: number;
   assistantTimestamp?: number;
@@ -214,14 +210,12 @@ function scanCodexRolloutTurn(transcript: string, targetTurnId: string): CodexRo
   let targetSeen = false;
   let turnMetadataMismatch = false;
   let userPrompt: string | undefined;
-  let userPromptAmbiguous = false;
   let assistantReply: string | undefined;
   let userTimestamp: number | undefined;
   let assistantTimestamp: number | undefined;
   let completedTimestamp: number | undefined;
   const visibleAssistantMessages: string[] = [];
   let responseItemUserPrompt: string | undefined;
-  let responseItemUserPromptAmbiguous = false;
   let responseItemAssistantReply: string | undefined;
   let responseItemUserTimestamp: number | undefined;
   let responseItemAssistantTimestamp: number | undefined;
@@ -304,9 +298,6 @@ function scanCodexRolloutTurn(transcript: string, targetTurnId: string): CodexRo
             }
             if (role === "user") {
               userMessageTurnIds.add(activeTurnId);
-              if (responseItemUserPrompt !== undefined && responseItemUserPrompt !== message) {
-                responseItemUserPromptAmbiguous = true;
-              }
               responseItemUserPrompt = message;
               responseItemUserTimestamp = parseNativeMessageTimestamp(record.timestamp);
             } else {
@@ -378,7 +369,6 @@ function scanCodexRolloutTurn(transcript: string, targetTurnId: string): CodexRo
       if (activeTurnId !== targetTurnId) continue;
       const message = nonBlankString(payload.message);
       if (message) {
-        if (userPrompt !== undefined && userPrompt !== message) userPromptAmbiguous = true;
         userPrompt = message;
         userTimestamp = parseNativeMessageTimestamp(record.timestamp);
       }
@@ -405,15 +395,13 @@ function scanCodexRolloutTurn(transcript: string, targetTurnId: string): CodexRo
     composite,
     targetSeen,
     turnMetadataMismatch,
-    // Native user events identify actual input; user-role response items may
-    // also contain Skill or other injected context. Without a user event, only
-    // an unambiguous response-item prompt is eligible.
-    userPrompt: userPrompt ?? responseItemUserPrompt,
-    userPromptAmbiguous: userPromptAmbiguous || (userPrompt === undefined && responseItemUserPromptAmbiguous),
+    // Current-format response items take precedence over legacy event mirrors;
+    // missing response-item text may use the matching Turn's legacy text.
+    userPrompt: responseItemUserPrompt ?? userPrompt,
     assistantReply: responseItemAssistantReply ?? assistantReply,
     // Text and time share the same record authority, even when that record has
     // no usable time. An exact task_complete can date completion separately.
-    userTimestamp: userPrompt === undefined ? responseItemUserTimestamp : userTimestamp,
+    userTimestamp: responseItemUserPrompt === undefined ? userTimestamp : responseItemUserTimestamp,
     assistantTimestamp: completedTimestamp ?? (responseItemAssistantReply === undefined
       ? assistantTimestamp
       : responseItemAssistantTimestamp),

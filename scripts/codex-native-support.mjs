@@ -30,7 +30,7 @@ export async function createNativeHarness({ packageRoot, codexCommand, label = "
   const memoryEntrypoint = join(packageRoot, "bin", "memorax-cli.mjs");
   const modelRequests = [], memoryRequests = [], serverErrors = [];
   const children = new Set(), backendPids = new Set();
-  let modelHandler, setupStarted = false, closed = false;
+  let modelHandler, codexVersion, setupStarted = false, closed = false;
   let memoryServer, modelServer, backendPort, env;
   try {
     await Promise.all([workspace, stateHome, codexHome, join(root, "tmp")].map((path) => mkdir(path, { recursive: true })));
@@ -97,7 +97,9 @@ export async function createNativeHarness({ packageRoot, codexCommand, label = "
   }
   const runProduct = (args, options) => run(process.execPath, [productEntrypoint, ...args], options);
   async function setup() {
-    check((await run(codexCommand, ["--version"])).stdout.trim() === "codex-cli 0.147.0", "NATIVE_CODEX_VERSION_MISMATCH");
+    const version = (await run(codexCommand, ["--version"])).stdout.trim().match(/^codex-cli (\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?)$/);
+    check(version, "NATIVE_CODEX_VERSION_INVALID");
+    codexVersion = version[1];
     setupStarted = true;
     await runProduct(["setup", "--existing-account", "--non-interactive"], { input: `${fixtureKey}\n` });
     const status = JSON.parse((await runProduct(["status", "--clients", "codex", "--json"])).stdout);
@@ -152,6 +154,7 @@ export async function createNativeHarness({ packageRoot, codexCommand, label = "
     if (cleanupError) throw cleanupError;
   }
   return { root, home, workspace, stateHome, codexHome, env, packageRoot, codexCommand,
+    get codexVersion() { return codexVersion; },
     memoryEntrypoint, modelUrl: modelServer.url, memoryUrl: memoryServer.url,
     modelRequests, memoryRequests, serverErrors, setup, close, spawnCodex, runProduct,
     runCodex: (args, options) => run(codexCommand, args, options),

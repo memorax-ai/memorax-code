@@ -29,7 +29,7 @@ const preservedMemory = new Map();
 
 try {
   check(["darwin", "linux", "win32"].includes(process.platform), "This smoke test requires macOS, Linux or Windows");
-  check(process.argv.length === 9, "Usage: codex-install-smoke.mjs INSTALLED_PACKAGE_ROOT CODEX_CLI_PATH CANDIDATE_TARBALL NPM_CLI_PATH PREVIOUS_VERSION PTY_PACKAGE_ROOT PTY_SCRIPT_PATH");
+  check(process.argv.length === 10, "Usage: codex-install-smoke.mjs INSTALLED_PACKAGE_ROOT CODEX_CLI_PATH CANDIDATE_TARBALL NPM_CLI_PATH PREVIOUS_VERSION PTY_PACKAGE_ROOT PTY_SCRIPT_PATH CODEX_VERSION");
   const packageRoot = resolve(process.argv[2]);
   const codexCommand = resolve(process.argv[3]);
   entrypoint = join(packageRoot, "bin", "memorax-code.mjs");
@@ -38,6 +38,8 @@ try {
   const previousVersion = process.argv[6];
   ptyPackage = resolve(process.argv[7]);
   ptyScript = resolve(process.argv[8]);
+  const expectedCodexVersion = process.argv[9];
+  check(/^\d+\.\d+\.\d+$/.test(expectedCodexVersion), "Expected Codex version must be exact");
   check(/^\d+\.\d+\.\d+$/.test(previousVersion), "Previous package version must be exact");
   npmPrefix = resolve(packageRoot, process.platform === "win32" ? "../../.." : "../../../..");
   check(await readFile(join(npmPrefix, ".memorax-code-ci-owned"), "utf8") === "codex-install-check\n",
@@ -85,8 +87,10 @@ try {
     `base_url = "${dummyUrl}"`, 'wire_api = "responses"', "",
   ].join("\n"), { mode: 0o600 });
   const version = await run(codexCommand, ["--version"]);
-  check(/^codex-cli \S+$/.test(version.stdout.trim()), "The Codex command did not return its version");
-  report.codexVersion = version.stdout.trim();
+  const actualCodexVersion = /^codex-cli (\d+\.\d+\.\d+)$/.exec(version.stdout.trim())?.[1];
+  report.expectedCodexVersion = expectedCodexVersion;
+  report.codexVersion = actualCodexVersion ?? "unrecognized";
+  check(actualCodexVersion === expectedCodexVersion, "The installed Codex CLI version differs from the selected version");
   report.checks.push("installed package and real Codex CLI available");
 
   const initialConfig = await readFile(join(stateHome, "config.toml"), "utf8");

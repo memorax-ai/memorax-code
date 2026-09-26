@@ -5,9 +5,12 @@ import { mkdir, readFile, readdir, realpath, stat } from "node:fs/promises";
 import { basename, delimiter, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { check, createNativeHarness, fixtureKey, fixtureUser, searchResult, sendResponses, stopNativeProcessTree, waitFor } from "./codex-native-support.mjs";
+import { assertCompleteText, assertWritebackMessages, selectNativeTurnContent } from "./codex-native-content-check.mjs";
 
 const report = { status: "FAIL", scope: "native_codex_installed_plugin_mock_memorax", platform: process.platform,
-  paidModelRequests: 0, modelQualityEvaluated: false, checks: [] };
+  paidModelRequests: 0, modelQualityEvaluated: false, checks: [],
+  contentContract: "current response-item-first text extraction", allowsAdditionalContent: true,
+  rawTrajectoryValidated: false, contentChecks: [] };
 const reasoningCanary = "REASONING_MUST_STAY_LOCAL";
 const commentaryCanary = "COMMENTARY_MUST_STAY_LOCAL";
 const toolCanary = "TOOL_OUTPUT_MUST_STAY_LOCAL";
@@ -20,16 +23,19 @@ try {
   stage = "installed plugin setup";
   const status = await harness.setup();
   check(harness.modelRequests.length === 0 && harness.memoryRequests.length === 0, "SETUP_MADE_MEMORY_OR_MODEL_REQUESTS");
-  report.checks.push("real Codex 0.147.0, installed plugin, trusted Hooks and Backend ready");
+  report.codexVersion = harness.codexVersion;
+  report.checks.push("real Codex, installed plugin, trusted Hooks and Backend ready");
 
   stage = "native first turn and filtering";
-  const first = await turn({ prompt: "Explain why parser input must be validated before use.", answer: "Validate parser input before interpreting it.",
+  const firstPrompt = "第一段 🧪：Explain why parser input must be validated before use.\n\n第二段：Keep this middle requirement intact, including café and 日本語.\n\n第三段：Finish with the boundary between parsing and interpretation.";
+  const firstAnswer = "第一段：Validate parser input before interpreting it.\n\n第二段 🧪：Preserve every required field and Unicode value such as café and 日本語.\n\n第三段：Reject incomplete input at the parser boundary.";
+  const first = await turn({ prompt: firstPrompt, answer: firstAnswer,
     steps: [(_body, response) => sendResponses(response, { output: [
       { type: "reasoning", id: "reasoning-fixture", summary: [{ type: "summary_text", text: reasoningCanary }] },
-      message(commentaryCanary, "commentary"), message("Validate parser input before interpreting it."),
+      message(commentaryCanary, "commentary"), message(firstAnswer),
     ] })] });
   check(inputText(harness.modelRequests[0].body).includes("MemoraX Code reminder:"), "NATIVE_HOOK_REMINDER_NOT_IN_MODEL_CONTEXT");
-  report.checks.push("native SessionStart/UserPromptSubmit/Stop chain produces exact QA; reasoning and commentary excluded");
+  report.checks.push("native SessionStart/UserPromptSubmit/Stop chain preserves complete selected multi-paragraph Unicode text");
 
   stage = "native resume and tool-output filtering";
   await turn({ sessionId: first, prompt: "Continue the parser lesson after checking a local marker.",
@@ -41,7 +47,7 @@ try {
         sendResponses(response, { output: [message("The resumed parser conversation retains its original scope.")] });
       },
     ] });
-  report.checks.push("exec resume keeps the native session; tool output is excluded from automatic Add");
+  report.checks.push("exec resume keeps the native session and preserves selected content");
 
   stage = "native sensitive-content filtering";
   await turn({ sessionId: first, prompt: `Keep the parser lesson. Test credential: ${redactionCanary}`,
@@ -98,7 +104,7 @@ try {
     const before = harness.memoryRequests.length;
     const prompt = `$${skillName} Use coding memory ${operation} for the parser validation lesson.`;
     const answer = `Native Skill ${operation} completed through the installed memory CLI.`;
-    await turn({ sessionId: first, prompt, answer, extraMemoryRequests: 1, steps: [
+    await turn({ sessionId: first, prompt, answer, kind: `skill-${operation}`, extraMemoryRequests: 1, steps: [
       (body, response) => {
         check(inputText(body).includes("# MemoraX Code") && inputText(body).includes("## Authority Router"), "NATIVE_SKILL_NOT_LOADED");
         sendResponses(response, { output: [shellCall(body, nodeCommand(["-e",
@@ -128,7 +134,7 @@ try {
     report.checks.push(`native Skill ${operation}: loaded router, read installed reference, executed native shell tool and consumed CLI result`);
   }
 
-  stage = "native identities, exact requests and outbound boundary";
+  stage = "native identities, selected content coverage and outbound fixture checks";
   await verifyNativeRollouts();
   check(harness.serverErrors.length === 0, "LOCAL_RECEIVER_REPORTED_FAILURE");
   check(harness.modelRequests.length === 11, "UNEXPECTED_NATIVE_MODEL_REQUEST_COUNT");
@@ -137,10 +143,14 @@ try {
   for (const request of harness.memoryRequests) {
     check(request.authorization === `Token ${fixtureKey}`, "MEMORY_AUTHORIZATION_MISMATCH");
     const payload = JSON.stringify(request.body);
-    for (const excluded of [harness.root, fixtureKey, reasoningCanary, commentaryCanary, toolCanary, redactionCanary]) {
-      check(!payload.includes(excluded), "PRIVATE_OR_NON_QA_CONTENT_ENTERED_MEMORY_PAYLOAD");
+    for (const excluded of [fixtureKey, redactionCanary]) {
+      check(!payload.includes(excluded), "SENSITIVE_FIXTURE_ENTERED_MEMORY_PAYLOAD");
     }
   }
+  const outbound = JSON.stringify(harness.memoryRequests.map((request) => request.body));
+  report.additionalContent = { syntheticSourcePathIncluded: outbound.includes(harness.root),
+    reasoningFixtureIncluded: outbound.includes(reasoningCanary), commentaryFixtureIncluded: outbound.includes(commentaryCanary),
+    toolFixtureIncluded: outbound.includes(toolCanary) };
   report.status = "PASS";
   report.nativeSessions = 2;
   report.nativeTurns = expectedTurns.length;
@@ -167,7 +177,7 @@ try {
 console.log(JSON.stringify(report, null, 2));
 if (report.status !== "PASS") process.exitCode = 1;
 
-async function turn({ prompt, answer, sessionId, cwd = harness.workspace, expectedPrompt = prompt, extraMemoryRequests = 0,
+async function turn({ prompt, answer, sessionId, cwd = harness.workspace, expectedPrompt = prompt, kind = "ordinary", extraMemoryRequests = 0,
   steps = [(_body, response) => sendResponses(response, { output: [message(answer)] })] }) {
   let step = 0;
   const beforeMemory = harness.memoryRequests.length;
@@ -185,7 +195,8 @@ async function turn({ prompt, answer, sessionId, cwd = harness.workspace, expect
   const threads = events.filter((event) => event.type === "thread.started");
   const completed = events.filter((event) => event.type === "turn.completed");
   const messages = events.filter((event) => event.type === "item.completed" && event.item?.type === "agent_message");
-  check(threads.length === 1 && completed.length === 1 && messages.at(-1)?.item.text === answer, "NATIVE_TURN_RESULT_MISMATCH");
+  check(threads.length === 1 && completed.length === 1, "NATIVE_TURN_RESULT_MISMATCH");
+  assertCompleteText(messages.at(-1)?.item.text, answer, "NATIVE_FINAL_CONTENT_INCOMPLETE");
   check(step === steps.length, "NATIVE_MODEL_STEPS_NOT_EXERCISED");
   const nativeSession = threads[0].thread_id;
   check(typeof nativeSession === "string" && (!sessionId || sessionId === nativeSession), "NATIVE_RESUME_SESSION_MISMATCH");
@@ -194,22 +205,14 @@ async function turn({ prompt, answer, sessionId, cwd = harness.workspace, expect
   const automatic = harness.memoryRequests.slice(beforeMemory).filter((request) => request.body.metadata?.idempotency_key?.startsWith("automatic:codex:"));
   check(automatic.length === 1, "EXPECTED_ONE_AUTOMATIC_ADD_PER_NATIVE_TURN");
   const body = automatic[0].body;
+  assertWritebackMessages(body.messages);
   check(body.session_id === nativeSession && body.metadata.memorax_code_session_id === nativeSession, "NATIVE_WRITEBACK_SESSION_MISMATCH");
   check(body.user_id === `${fixtureUser}@${basename(cwd)}` && body.metadata.memorax_code_workspace === basename(cwd)
     && body.metadata.memorax_code_memory_scope === "workspace-name.v1", "NATIVE_WRITEBACK_SCOPE_MISMATCH");
-  const qaMatches = JSON.stringify(body.messages.map(({ role, content }) => ({ role, content })))
-    === JSON.stringify([{ role: "user", content: expectedPrompt }, { role: "assistant", content: answer }]);
-  if (!qaMatches) report.qaMismatch = {
-    expectedUserChars: expectedPrompt.length, observedUserChars: body.messages[0]?.content?.length ?? 0,
-    userMatches: body.messages[0]?.content === expectedPrompt, assistantMatches: body.messages[1]?.content === answer,
-    userContainsSkillRouter: body.messages[0]?.content?.includes("## Authority Router") === true,
-    userContainsHookReminder: body.messages[0]?.content?.includes("MemoraX Code reminder:") === true,
-  };
-  check(qaMatches, "NATIVE_WRITEBACK_QA_MISMATCH");
   const hash = (text) => createHash("sha256").update(text).digest("hex").slice(0, 16);
-  check(body.metadata.idempotency_key === `automatic:codex:${hash(body.user_id)}:${nativeSession}:${hash(expectedPrompt)}:${hash(answer)}`,
+  check(body.metadata.idempotency_key === `automatic:codex:${hash(body.user_id)}:${nativeSession}:${hash(body.messages[0].content)}:${hash(body.messages[1].content)}`,
     "NATIVE_WRITEBACK_IDEMPOTENCY_MISMATCH");
-  expectedTurns.push({ sessionId: nativeSession, prompt, answer, cwd, body });
+  expectedTurns.push({ sessionId: nativeSession, prompt, expectedPrompt, answer, cwd, body, kind });
   return nativeSession;
 }
 
@@ -243,7 +246,7 @@ async function verifyNativeRollouts() {
   for (const path of paths) {
     const records = (await readFile(join(harness.codexHome, "sessions", path), "utf8")).trim().split(/\r?\n/).map(JSON.parse);
     const meta = records.find((record) => record.type === "session_meta")?.payload;
-    check(meta?.model_provider === "local_native" && meta.cli_version === "0.147.0", "NATIVE_ROLLOUT_PROVIDER_MISMATCH");
+    check(meta?.model_provider === "local_native" && meta.cli_version === harness.codexVersion, "NATIVE_ROLLOUT_PROVIDER_MISMATCH");
     const expected = expectedTurns.filter((turn) => turn.sessionId === meta.id);
     const starts = records.filter((record) => record.type === "event_msg" && record.payload.type === "task_started");
     check(starts.length === expected.length, "NATIVE_ROLLOUT_TURN_COUNT_MISMATCH");
@@ -253,18 +256,27 @@ async function verifyNativeRollouts() {
       check(context.payload.model === "gpt-5.4" && workspaces.includes(await realpath(context.payload.cwd)), "NATIVE_ROLLOUT_CONTEXT_MISMATCH");
     }
     for (const [index, turn] of expected.entries()) {
-      const interval = records.slice(records.indexOf(starts[index]), index + 1 < starts.length ? records.indexOf(starts[index + 1]) : undefined);
-      const user = interval.find((record) => record.type === "event_msg" && record.payload.type === "user_message"
-        && record.payload.message === turn.prompt);
-      const assistant = interval.find((record) => record.type === "response_item" && record.payload.role === "assistant"
-        && record.payload.phase === "final_answer" && record.payload.content?.map((part) => part.text ?? "").join("\n") === turn.answer);
-      const completed = interval.find((record) => record.type === "event_msg" && record.payload.type === "task_complete"
-        && record.payload.turn_id === starts[index].payload.turn_id);
-      check(user && assistant, "NATIVE_ROLLOUT_QA_NOT_FOUND");
-      check(turn.body.messages[0].timestamp === Date.parse(user.timestamp)
-        && [assistant, completed].filter(Boolean).some((record) => turn.body.messages[1].timestamp === Date.parse(record.timestamp)),
-      "NATIVE_MESSAGE_TIMESTAMP_MISMATCH");
-      check(JSON.stringify(turn.body.metadata.memorax_code_timestamp_sources) === '["native","native"]', "NATIVE_MESSAGE_TIME_AUTHORITY_MISMATCH");
+      const selected = selectNativeTurnContent(records, { sessionId: turn.sessionId, turnId: starts[index].payload.turn_id });
+      if (turn.kind === "ordinary") assertCompleteText(selected.user.content, turn.prompt, "NATIVE_SUBMITTED_PROMPT_INCOMPLETE");
+      assertCompleteText(selected.assistant.content, turn.answer, "NATIVE_FIXTURE_ANSWER_INCOMPLETE");
+      const expectedUser = selected.user.content.replaceAll(redactionCanary, "[REDACTED:API_KEY]");
+      const userCoverage = assertCompleteText(turn.body.messages[0].content, expectedUser, "NATIVE_SELECTED_USER_CONTENT_INCOMPLETE");
+      const assistantCoverage = assertCompleteText(turn.body.messages[1].content, selected.assistant.content, "NATIVE_SELECTED_ASSISTANT_CONTENT_INCOMPLETE");
+      check(turn.body.messages[0].timestamp === selected.user.timestamp
+        && selected.assistant.timestamps.includes(turn.body.messages[1].timestamp), "NATIVE_MESSAGE_TIMESTAMP_MISMATCH");
+      const timeSources = turn.body.metadata.memorax_code_timestamp_sources;
+      check(Array.isArray(timeSources) && timeSources.length === turn.body.messages.length
+        && timeSources[0] === "native" && timeSources[1] === "native"
+        && timeSources.every((source) => ["native", "observed", "unspecified"].includes(source)), "NATIVE_MESSAGE_TIME_AUTHORITY_MISMATCH");
+      const originalUserPromptIncluded = turn.body.messages.some((message) => {
+        if (message.role !== "user") return false;
+        try { assertCompleteText(message.content, turn.expectedPrompt); return true; } catch { return false; }
+      });
+      report.contentChecks.push({ case: turn.kind, userSource: selected.user.source, assistantSource: selected.assistant.source,
+        selectedUserChars: expectedUser.length, sentUserChars: turn.body.messages[0].content.length,
+        userRequiredFragments: userCoverage.requiredFragments, assistantRequiredFragments: assistantCoverage.requiredFragments,
+        selectedContentComplete: true, originalUserPromptIncluded,
+        additionalContentObserved: userCoverage.additionalContentObserved || assistantCoverage.additionalContentObserved || turn.body.messages.length > 2 });
     }
   }
   check(turnIds.size === expectedTurns.length, "NATIVE_TURN_IDS_NOT_DISTINCT");
@@ -335,7 +347,7 @@ async function verifyBackgroundInheritance() {
     for (const file of files) {
       const records = (await readFile(join(background.codexHome, "sessions", file), "utf8")).trim().split(/\r?\n/).map(JSON.parse);
       const metadata = records.find((record) => record.type === "session_meta")?.payload;
-      check(metadata?.model_provider === "local_native" && metadata.cli_version === "0.147.0", "BACKGROUND_NATIVE_PROVIDER_MISMATCH");
+      check(metadata?.model_provider === "local_native" && metadata.cli_version === background.codexVersion, "BACKGROUND_NATIVE_PROVIDER_MISMATCH");
       ids.add(metadata.id);
       const contexts = records.filter((record) => record.type === "turn_context");
       check(contexts.length >= 1 && contexts.every((record) => record.payload.model === "gpt-5.4"), "BACKGROUND_NATIVE_MODEL_MISMATCH");
@@ -355,7 +367,7 @@ async function verifyBackgroundInheritance() {
     }
     check(ids.size === 2 && ids.has(foregroundId) && workerObserved, "BACKGROUND_NATIVE_WORKER_IDENTITY_MISSING");
     await waitFor(() => [...ownedPids].every((pid) => !processAlive(pid)), "BACKGROUND_PROCESS_REMAINS");
-    return { status: "PASS", model: "gpt-5.4", provider: "local_native", foregroundRequests: 1, backgroundRequests: 1,
+    return { status: "PASS", codexVersion: background.codexVersion, model: "gpt-5.4", provider: "local_native", foregroundRequests: 1, backgroundRequests: 1,
       distinctNativeSessions: 2, jobStatus: "failed", expectedFailure: "artifact_validation_failed",
       repoMemoryBuildValidated: false, permissionInheritanceValidated: false, observedPermissions };
   } finally {
