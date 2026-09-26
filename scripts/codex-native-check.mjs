@@ -5,7 +5,7 @@ import { mkdir, readFile, readdir, realpath, stat } from "node:fs/promises";
 import { basename, delimiter, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { check, createNativeHarness, fixtureKey, fixtureUser, searchResult, sendResponses, stopNativeProcessTree, waitFor } from "./codex-native-support.mjs";
-import { assertCompleteText, assertWritebackMessages, selectNativeTurnContent } from "./codex-native-content-check.mjs";
+import { assertCompleteText, assertWritebackMessages, redactExpectedFixtureText, selectNativeTurnContent } from "./codex-native-content-check.mjs";
 
 const report = { status: "FAIL", scope: "native_codex_installed_plugin_mock_memorax", platform: process.platform,
   paidModelRequests: 0, modelQualityEvaluated: false, checks: [],
@@ -259,7 +259,8 @@ async function verifyNativeRollouts() {
       const selected = selectNativeTurnContent(records, { sessionId: turn.sessionId, turnId: starts[index].payload.turn_id });
       if (turn.kind === "ordinary") assertCompleteText(selected.user.content, turn.prompt, "NATIVE_SUBMITTED_PROMPT_INCOMPLETE");
       assertCompleteText(selected.assistant.content, turn.answer, "NATIVE_FIXTURE_ANSWER_INCOMPLETE");
-      const expectedUser = selected.user.content.replaceAll(redactionCanary, "[REDACTED:API_KEY]");
+      const expectedUser = redactExpectedFixtureText(selected.user.content,
+        { apiKey: redactionCanary, paths: [harness.root, harness.packageRoot] });
       const userCoverage = assertCompleteText(turn.body.messages[0].content, expectedUser, "NATIVE_SELECTED_USER_CONTENT_INCOMPLETE");
       const assistantCoverage = assertCompleteText(turn.body.messages[1].content, selected.assistant.content, "NATIVE_SELECTED_ASSISTANT_CONTENT_INCOMPLETE");
       check(turn.body.messages[0].timestamp === selected.user.timestamp
@@ -344,13 +345,16 @@ async function verifyBackgroundInheritance() {
     const ids = new Set();
     const observedPermissions = {};
     let workerObserved = false;
+    let workerContent;
     for (const file of files) {
       const records = (await readFile(join(background.codexHome, "sessions", file), "utf8")).trim().split(/\r?\n/).map(JSON.parse);
       const metadata = records.find((record) => record.type === "session_meta")?.payload;
       check(metadata?.model_provider === "local_native" && metadata.cli_version === background.codexVersion, "BACKGROUND_NATIVE_PROVIDER_MISMATCH");
       ids.add(metadata.id);
       const contexts = records.filter((record) => record.type === "turn_context");
-      check(contexts.length >= 1 && contexts.every((record) => record.payload.model === "gpt-5.4"), "BACKGROUND_NATIVE_MODEL_MISMATCH");
+      check(contexts.length >= 1, "BACKGROUND_NATIVE_CONTEXT_MISSING");
+      for (const context of contexts) check(context.payload.model === "gpt-5.4"
+        && await realpath(context.payload.cwd) === repository, "BACKGROUND_NATIVE_CONTEXT_MISMATCH");
       observedPermissions[metadata.id === foregroundId ? "foreground" : "background"] = contexts.map(({ payload }) => {
         check(["untrusted", "on-failure", "on-request", "never"].includes(payload.approval_policy), "BACKGROUND_NATIVE_APPROVAL_POLICY_UNSUPPORTED");
         const sandbox = payload.sandbox_policy;
@@ -362,14 +366,21 @@ async function verifyBackgroundInheritance() {
         return { approval_policy: payload.approval_policy,
           sandbox_policy: { type: sandbox.type, ...(network === undefined ? {} : { network_access: network }) } };
       });
-      const userMessages = records.filter((record) => record.type === "event_msg" && record.payload.type === "user_message");
-      if (metadata.id !== foregroundId) workerObserved = userMessages.some((record) => record.payload.message === job.prompt);
+      if (metadata.id !== foregroundId) {
+        const starts = records.filter((record) => record.type === "event_msg" && record.payload.type === "task_started");
+        check(starts.length === 1 && typeof starts[0].payload.turn_id === "string", "BACKGROUND_NATIVE_WORKER_TURN_MISSING");
+        const selected = selectNativeTurnContent(records, { sessionId: metadata.id, turnId: starts[0].payload.turn_id });
+        const coverage = assertCompleteText(selected.user.content, job.prompt, "BACKGROUND_NATIVE_WORKER_PROMPT_INCOMPLETE");
+        workerObserved = true;
+        workerContent = { source: selected.user.source, completeJobPromptIncluded: true,
+          additionalContentObserved: coverage.additionalContentObserved };
+      }
     }
     check(ids.size === 2 && ids.has(foregroundId) && workerObserved, "BACKGROUND_NATIVE_WORKER_IDENTITY_MISSING");
     await waitFor(() => [...ownedPids].every((pid) => !processAlive(pid)), "BACKGROUND_PROCESS_REMAINS");
     return { status: "PASS", codexVersion: background.codexVersion, model: "gpt-5.4", provider: "local_native", foregroundRequests: 1, backgroundRequests: 1,
       distinctNativeSessions: 2, jobStatus: "failed", expectedFailure: "artifact_validation_failed",
-      repoMemoryBuildValidated: false, permissionInheritanceValidated: false, observedPermissions };
+      repoMemoryBuildValidated: false, permissionInheritanceValidated: false, observedPermissions, workerContent };
   } finally {
     await jobs().catch(() => {});
     for (const pid of ownedPids) if (processAlive(pid)) {

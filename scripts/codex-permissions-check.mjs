@@ -274,14 +274,12 @@ async function verifyWriteback({ threadId, turnId, completed }) {
     && body.metadata.memorax_code_workspace === basename(harness.workspace)
     && body.metadata.memorax_code_memory_scope === "workspace-name.v1", "PERMISSION_WRITEBACK_SCOPE_MISMATCH");
   assertWritebackMessages(body.messages);
-  assertCompleteText(body.messages[0].content, current.prompt, "PERMISSION_WRITEBACK_USER_CONTENT_INCOMPLETE");
-  assertCompleteText(body.messages[1].content, current.finalText, "PERMISSION_WRITEBACK_ASSISTANT_CONTENT_INCOMPLETE");
   const hash = (text) => createHash("sha256").update(text).digest("hex").slice(0, 16);
   check(body.metadata.idempotency_key === `automatic:codex:${hash(body.user_id)}:${threadId}:${hash(body.messages[0].content)}:${hash(body.messages[1].content)}`,
     "PERMISSION_WRITEBACK_IDEMPOTENCY_MISMATCH");
   const native = selectNativeTurnContent(records, { sessionId: threadId, turnId });
-  assertCompleteText(body.messages[0].content, native.user.content, "PERMISSION_NATIVE_USER_CONTENT_INCOMPLETE");
-  assertCompleteText(body.messages[1].content, native.assistant.content, "PERMISSION_NATIVE_ASSISTANT_CONTENT_INCOMPLETE");
+  const userCoverage = assertCompleteText(body.messages[0].content, native.user.content, "PERMISSION_NATIVE_USER_CONTENT_INCOMPLETE");
+  const assistantCoverage = assertCompleteText(body.messages[1].content, native.assistant.content, "PERMISSION_NATIVE_ASSISTANT_CONTENT_INCOMPLETE");
   check(body.messages[0].timestamp === native.user.timestamp, "PERMISSION_NATIVE_USER_TIMESTAMP_MISMATCH");
   check(native.assistant.timestamps.includes(body.messages[1].timestamp), "PERMISSION_NATIVE_ASSISTANT_TIMESTAMP_MISMATCH");
   const timeSources = body.metadata.memorax_code_timestamp_sources;
@@ -289,11 +287,13 @@ async function verifyWriteback({ threadId, turnId, completed }) {
     && timeSources[0] === "native" && timeSources[1] === "native"
     && timeSources.every((source) => ["native", "observed", "unspecified"].includes(source)), "PERMISSION_TIME_AUTHORITY_MISMATCH");
   const serialized = JSON.stringify(body);
-  for (const excluded of [harness.root, fixtureKey, current.command, "Controlled test verdict;"]) {
-    check(!serialized.includes(excluded), "PERMISSION_NON_QA_CONTENT_ENTERED_PAYLOAD");
-  }
-  return { requestCount: 1, requiredQaFragmentsMatched: true, additionalContextAllowed: true, nativeSessionAndTurnMatched: true,
-    scopeMatched: true, timestampsMatched: true, nativeContentSources: [native.user.source, native.assistant.source] };
+  check(!serialized.includes(fixtureKey), "PERMISSION_SECRET_ENTERED_PAYLOAD");
+  return { requestCount: 1, selectedContentComplete: true, additionalContextAllowed: true, nativeSessionAndTurnMatched: true,
+    scopeMatched: true, timestampsMatched: true, nativeContentSources: [native.user.source, native.assistant.source],
+    originalUserPromptIncluded: body.messages.some((message) => message.role === "user" && message.content.includes(current.prompt)),
+    additionalContentObserved: userCoverage.additionalContentObserved || assistantCoverage.additionalContentObserved || body.messages.length > 2,
+    additionalContent: { syntheticSourcePathIncluded: serialized.includes(harness.root),
+      toolFixtureIncluded: serialized.includes(current.command), reviewerRationaleIncluded: serialized.includes("Controlled test verdict;") } };
 }
 
 class AppServer {

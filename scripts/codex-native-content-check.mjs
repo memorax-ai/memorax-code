@@ -4,6 +4,14 @@ function check(condition, code) {
   if (!condition) throw Object.assign(new Error(code), { nativeCode: code });
 }
 
+export function redactExpectedFixtureText(text, { apiKey, paths }) {
+  // Only normalize known synthetic inputs, never arbitrary missing content.
+  const uuid = /(?<![A-Za-z0-9])[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}(?![A-Za-z0-9])/gi;
+  const pathIds = new Set(paths.flatMap((path) => path.match(uuid) ?? []).map((id) => id.toLowerCase()));
+  return text.replaceAll(apiKey, "[REDACTED:API_KEY]")
+    .replace(uuid, (id) => pathIds.has(id.toLowerCase()) ? "[REDACTED:OPAQUE_ID]" : id);
+}
+
 export function assertCompleteText(actual, required, code = "NATIVE_CONTENT_INCOMPLETE") {
   check(typeof actual === "string" && actual.trim().length > 0, "NATIVE_CONTENT_EMPTY_OR_INVALID");
   check(typeof required === "string" && required.trim().length > 0, "NATIVE_EXPECTED_CONTENT_EMPTY_OR_INVALID");

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { assertCompleteText, assertWritebackMessages, selectNativeTurnContent } from "./codex-native-content-check.mjs";
+import { assertCompleteText, assertWritebackMessages, redactExpectedFixtureText, selectNativeTurnContent } from "./codex-native-content-check.mjs";
 
 const paragraphs = ["第一段：完整保留 Unicode 🧪 与开头。", "第二段：中间内容不能被遗漏，café。", "第三段：末尾仍必须存在。"];
 const content = paragraphs.join("\n\n");
@@ -14,6 +14,21 @@ test("coverage rejects empty and incorrectly typed payload text", () => {
 test("coverage rejects a missing middle paragraph, truncation, and reordered content", () => {
   for (const actual of [[paragraphs[0], paragraphs[2]].join("\n\n"), content.slice(0, -4), [...paragraphs].reverse().join("\n\n")]) {
     assert.throws(() => assertCompleteText(actual, content), /NATIVE_CONTENT_INCOMPLETE/);
+  }
+});
+test("expected redaction only normalizes the known API canary and fixture path UUIDs", () => {
+  const known = "12345678-abcd-1234-abcd-1234567890ab";
+  const unknown = "87654321-dcba-4321-dcba-ba0987654321";
+  const apiKey = "sk_fixtureCanaryOnlyAbcdefghijklmnop";
+  const path = `C:\\Temp\\memorax-${known}\\npm`;
+  const native = `${path}\\skills\\SKILL.md\n\nKeep this middle paragraph and ${unknown}.\n\nTest credential: ${apiKey}`;
+  const expected = redactExpectedFixtureText(native, { apiKey, paths: [path] });
+  assert.equal(expected, `C:\\Temp\\memorax-[REDACTED:OPAQUE_ID]\\npm\\skills\\SKILL.md\n\nKeep this middle paragraph and ${unknown}.\n\nTest credential: [REDACTED:API_KEY]`);
+  assert.equal(redactExpectedFixtureText(`prefix${known} ${known}suffix`, { apiKey, paths: [path] }), `prefix${known} ${known}suffix`);
+  assertCompleteText(expected, expected);
+  for (const actual of [native, expected.replace(unknown, "[REDACTED:OPAQUE_ID]"),
+    expected.replace("Keep this middle paragraph and ", ""), expected.replace("\\skills\\SKILL.md", ""), expected.slice(0, -3)]) {
+    assert.throws(() => assertCompleteText(actual, expected), /NATIVE_CONTENT_INCOMPLETE/);
   }
 });
 test("writeback structure rejects missing messages, wrong roles and non-text content", () => {
