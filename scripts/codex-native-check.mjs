@@ -5,7 +5,8 @@ import { mkdir, readFile, readdir, realpath, stat } from "node:fs/promises";
 import { basename, delimiter, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { check, createNativeHarness, fixtureKey, fixtureUser, searchResult, sendResponses, stopNativeProcessTree, waitFor } from "./codex-native-support.mjs";
-import { assertCompleteText, assertWritebackMessages, redactExpectedFixtureText, selectNativeTurnContent } from "./codex-native-content-check.mjs";
+import { assertCompleteText, assertNoForeignContent, assertSearchResult, assertSkillReferenceContract,
+  assertWritebackMessages, expectedSearchAnswer, redactExpectedFixtureText, selectNativeTurnContent } from "./codex-native-content-check.mjs";
 
 const report = { status: "FAIL", scope: "native_codex_installed_plugin_mock_memorax", platform: process.platform,
   paidModelRequests: 0, modelQualityEvaluated: false, checks: [],
@@ -16,6 +17,7 @@ const commentaryCanary = "COMMENTARY_MUST_STAY_LOCAL";
 const toolCanary = "TOOL_OUTPUT_MUST_STAY_LOCAL";
 const redactionCanary = "sk_nativeFixtureOnlyAbcdefghijklmnop";
 const expectedTurns = [];
+const workspaceControls = new Map();
 let harness, stage = "prerequisites";
 try {
   check(process.argv.length === 4, "EXPECTED_INSTALLED_PACKAGE_AND_CODEX_PATHS");
@@ -29,6 +31,7 @@ try {
   stage = "native first turn and filtering";
   const firstPrompt = "第一段 🧪：Explain why parser input must be validated before use.\n\n第二段：Keep this middle requirement intact, including café and 日本語.\n\n第三段：Finish with the boundary between parsing and interpretation.";
   const firstAnswer = "第一段：Validate parser input before interpreting it.\n\n第二段 🧪：Preserve every required field and Unicode value such as café and 日本語.\n\n第三段：Reject incomplete input at the parser boundary.";
+  workspaceControls.set(basename(harness.workspace), [firstPrompt, firstAnswer]);
   const first = await turn({ prompt: firstPrompt, answer: firstAnswer,
     steps: [(_body, response) => sendResponses(response, { output: [
       { type: "reasoning", id: "reasoning-fixture", summary: [{ type: "summary_text", text: reasoningCanary }] },
@@ -58,8 +61,10 @@ try {
   stage = "second native session and workspace isolation";
   const secondWorkspace = join(harness.root, "project-beta");
   await mkdir(secondWorkspace);
-  const second = await turn({ cwd: secondWorkspace, prompt: "Describe the separate workspace invariant.",
-    answer: "This answer belongs only to the separate workspace." });
+  const secondPrompt = "Describe the separate workspace invariant.";
+  const secondAnswer = "This answer belongs only to the separate workspace.";
+  workspaceControls.set(basename(secondWorkspace), [secondPrompt, secondAnswer]);
+  const second = await turn({ cwd: secondWorkspace, prompt: secondPrompt, answer: secondAnswer });
   check(second !== first, "NATIVE_SESSIONS_NOT_DISTINCT");
   report.checks.push("new native session uses a distinct workspace scope");
 
@@ -69,7 +74,9 @@ try {
   const directReason = "Preserve the parser validation invariant.";
   const beforeDirect = harness.memoryRequests.length;
   const searched = JSON.parse((await harness.runMemory(["search", "--query", directQuery, "--session-id", first, "--json"])).stdout);
-  check(searched.ok === true && JSON.stringify(searched).includes(searchResult), "DIRECT_SEARCH_RESULT_MISMATCH");
+  assertSearchResult(searched, { query: directQuery, memory: searchResult });
+  const searchedText = await harness.runMemory(["search", "--query", directQuery, "--session-id", first]);
+  check(searchedText.stdout.trim() === expectedSearchAnswer(searchResult), "NATIVE_SEARCH_DEFAULT_OUTPUT_MISMATCH");
   const added = JSON.parse((await harness.runMemory(["add", "--memory", directMemory, "--type", "procedural",
     "--reason", directReason, "--session-id", first, "--json"])).stdout);
   check(added.ok === true && added.receipt?.accepted === true, "DIRECT_ADD_NOT_ACCEPTED");
@@ -77,14 +84,15 @@ try {
     && result.effectiveUserId === `${fixtureUser}@${basename(harness.workspace)}`
     && result.workspace === basename(harness.workspace) && result.scopeKind === "local-directory"
     && result.workspaceScope === "bound", "DIRECT_MEMORY_SCOPE_RESULT_MISMATCH");
-  check(harness.memoryRequests.length === beforeDirect + 2, "DIRECT_MEMORY_REQUEST_COUNT_MISMATCH");
+  check(harness.memoryRequests.length === beforeDirect + 3, "DIRECT_MEMORY_REQUEST_COUNT_MISMATCH");
   verifyExplicitRequest(harness.memoryRequests[beforeDirect], { operation: "search", value: directQuery });
-  verifyExplicitRequest(harness.memoryRequests[beforeDirect + 1], { operation: "add", value: directMemory, reason: directReason, sessionId: first });
-  report.checks.push("direct installed Search and Add each issue one scoped request");
+  verifyExplicitRequest(harness.memoryRequests[beforeDirect + 1], { operation: "search", value: directQuery });
+  verifyExplicitRequest(harness.memoryRequests[beforeDirect + 2], { operation: "add", value: directMemory, reason: directReason, sessionId: first });
+  report.checks.push("direct installed Search validates answer, items, receipt and default text; each CLI invocation issues one scoped request");
 
-  stage = "installed background launcher model inheritance";
-  report.backgroundModelInheritance = await verifyBackgroundInheritance();
-  report.checks.push("installed Repo Memory launcher makes a distinct native background request using the foreground model and provider");
+  stage = "installed background launcher shared global configuration";
+  report.backgroundGlobalConfiguration = await verifyBackgroundGlobalConfiguration();
+  report.checks.push("installed Repo Memory launcher and foreground both use the configured global model and provider");
 
   const skillRoot = join(status.codexAdapter.codexSkills.rootPath, "memorax-code");
   const installedManifest = JSON.parse(await readFile(join(skillRoot, "..", "..", ".codex-plugin", "plugin.json"), "utf8"));
@@ -95,12 +103,13 @@ try {
     stage = `native Skill ${operation}`;
     const reference = join(skillRoot, "references", `memorax-${operation}.md`);
     const referenceText = await readFile(reference, "utf8");
+    const executable = assertSkillReferenceContract(referenceText, operation, process.platform);
     const query = "Native Skill parser validation: which invariant applies?";
     const memory = "The native Skill preserves parser validation before interpretation.";
     const reason = "Keep the verified parser validation lesson.";
     const args = operation === "search" ? ["search", "--query", query, "--json"]
       : ["add", "--memory", memory, "--type", "procedural", "--reason", reason, "--json"];
-    const command = nodeCommand([harness.memoryEntrypoint, ...args]);
+    const command = shellCommand([executable, ...args]);
     const before = harness.memoryRequests.length;
     const prompt = `$${skillName} Use coding memory ${operation} for the parser validation lesson.`;
     const answer = `Native Skill ${operation} completed through the installed memory CLI.`;
@@ -122,8 +131,9 @@ try {
         sendResponses(response, { output: [shellCall(body, command, `memory-${operation}`)] });
       },
       (body, response) => {
-        const text = inputText(body);
-        check(operation === "search" ? text.includes(searchResult) : text.includes('"accepted": true') || text.includes('"accepted":true'),
+        const result = toolJsonResult(body, `memory-${operation}`);
+        if (operation === "search") assertSearchResult(result, { query, memory: searchResult });
+        else check(result.ok === true && result.action === "memory.add" && result.receipt?.accepted === true,
           "NATIVE_SKILL_MEMORY_RESULT_MISSING");
         sendResponses(response, { output: [message(answer)] });
       },
@@ -131,22 +141,29 @@ try {
     const request = harness.memoryRequests[before];
     // CODEX_THREAD_ID binds native scope. Without a CLI session override, Add uses the documented CLI session.
     verifyExplicitRequest(request, { operation, value: operation === "search" ? query : memory, reason, sessionId: "memorax-cli" });
-    report.checks.push(`native Skill ${operation}: loaded router, read installed reference, executed native shell tool and consumed CLI result`);
+    report.checks.push(`scripted Skill ${operation}: loaded router, validated installed reference executable, ran that executable on PATH and validated CLI result`);
   }
 
   stage = "native identities, selected content coverage and outbound fixture checks";
   await verifyNativeRollouts();
   check(harness.serverErrors.length === 0, "LOCAL_RECEIVER_REPORTED_FAILURE");
   check(harness.modelRequests.length === 11, "UNEXPECTED_NATIVE_MODEL_REQUEST_COUNT");
-  check(harness.memoryRequests.length === 10, "UNEXPECTED_TOTAL_MEMORY_REQUEST_COUNT");
-  check(harness.memoryRequests.filter((request) => request.path === "/v1/memories/search").length === 2, "UNEXPECTED_AUTOMATIC_SEARCH");
+  check(harness.memoryRequests.length === 11, "UNEXPECTED_TOTAL_MEMORY_REQUEST_COUNT");
+  check(harness.memoryRequests.filter((request) => request.path === "/v1/memories/search").length === 3, "UNEXPECTED_AUTOMATIC_SEARCH");
   for (const request of harness.memoryRequests) {
     check(request.authorization === `Token ${fixtureKey}`, "MEMORY_AUTHORIZATION_MISMATCH");
     const payload = JSON.stringify(request.body);
     for (const excluded of [fixtureKey, redactionCanary]) {
       check(!payload.includes(excluded), "SENSITIVE_FIXTURE_ENTERED_MEMORY_PAYLOAD");
     }
+    if (Array.isArray(request.body.messages)) {
+      const workspace = request.body.metadata?.memorax_code_workspace;
+      check(workspaceControls.has(workspace), "NATIVE_OUTBOUND_WORKSPACE_UNKNOWN");
+      const foreign = [...workspaceControls].filter(([name]) => name !== workspace).flatMap(([, fragments]) => fragments);
+      assertNoForeignContent(request.body.messages, foreign);
+    }
   }
+  report.checks.push("all outgoing messages, including additional context, exclude the other workspace's unique fixture text");
   const outbound = JSON.stringify(harness.memoryRequests.map((request) => request.body));
   report.additionalContent = { syntheticSourcePathIncluded: outbound.includes(harness.root),
     reasoningFixtureIncluded: outbound.includes(reasoningCanary), commentaryFixtureIncluded: outbound.includes(commentaryCanary),
@@ -156,8 +173,9 @@ try {
   report.nativeTurns = expectedTurns.length;
   report.mainChainModelRequests = harness.modelRequests.length;
   report.modelRequests = harness.modelRequests.length + 2;
-  report.memoryRequests = { automaticAdd: 6, explicitAdd: 2, explicitSearch: 2 };
-  report.explicitMemoryScope = { requestsValidated: 4, scope: "workspace-name.v1", searchSessionField: "absent",
+  report.memoryRequests = { automaticAdd: 6, explicitAdd: 2, explicitSearch: 3 };
+  report.skillExecutionMode = "scripted model commands; natural-language instruction following is not evaluated";
+  report.explicitMemoryScope = { requestsValidated: 5, scope: "workspace-name.v1", searchSessionField: "absent",
     directAddSessionSource: "--session-id", nativeSkillScopeSource: "CODEX_THREAD_ID", nativeSkillAddSessionSource: "memorax-cli default" };
   report.model = "gpt-5.4";
   report.provider = "local_native";
@@ -283,7 +301,7 @@ async function verifyNativeRollouts() {
   check(turnIds.size === expectedTurns.length, "NATIVE_TURN_IDS_NOT_DISTINCT");
 }
 
-async function verifyBackgroundInheritance() {
+async function verifyBackgroundGlobalConfiguration() {
   const background = await createNativeHarness({ packageRoot: harness.packageRoot, codexCommand: harness.codexCommand,
     label: "inheritance", writeback: false });
   const ownedPids = new Set();
@@ -380,7 +398,8 @@ async function verifyBackgroundInheritance() {
     await waitFor(() => [...ownedPids].every((pid) => !processAlive(pid)), "BACKGROUND_PROCESS_REMAINS");
     return { status: "PASS", codexVersion: background.codexVersion, model: "gpt-5.4", provider: "local_native", foregroundRequests: 1, backgroundRequests: 1,
       distinctNativeSessions: 2, jobStatus: "failed", expectedFailure: "artifact_validation_failed",
-      repoMemoryBuildValidated: false, permissionInheritanceValidated: false, observedPermissions, workerContent };
+      repoMemoryBuildValidated: false, modelOverrideInheritanceValidated: false,
+      permissionInheritanceValidated: false, observedPermissions, workerContent };
   } finally {
     await jobs().catch(() => {});
     for (const pid of ownedPids) if (processAlive(pid)) {
@@ -400,7 +419,20 @@ function shellQuote(value) {
   return process.platform === "win32" ? `'${value.replaceAll("'", "''")}'` : `'${value.replaceAll("'", "'\\''")}'`;
 }
 function nodeCommand(args) {
-  return `${process.platform === "win32" ? "& " : ""}${[process.execPath, ...args].map(shellQuote).join(" ")}`;
+  return shellCommand([process.execPath, ...args]);
+}
+function shellCommand(args) {
+  return `${process.platform === "win32" ? "& " : ""}${args.map(shellQuote).join(" ")}`;
+}
+function toolJsonResult(body, callId) {
+  const results = body.input.filter((item) => item.type === "function_call_output" && item.call_id === callId);
+  check(results.length === 1 && typeof results[0].output === "string", "NATIVE_SKILL_CLI_TOOL_RESULT_MISSING");
+  const output = results[0].output;
+  const start = output.indexOf("{");
+  const end = output.lastIndexOf("}");
+  check(start >= 0 && end > start, "NATIVE_SKILL_CLI_RESULT_JSON_MISSING");
+  try { return JSON.parse(output.slice(start, end + 1)); }
+  catch { check(false, "NATIVE_SKILL_CLI_RESULT_JSON_INVALID"); }
 }
 function shellCall(body, command, callId) {
   const tools = body.tools.flatMap((tool) => tool.type === "namespace"

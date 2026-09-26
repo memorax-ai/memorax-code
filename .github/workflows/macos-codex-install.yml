@@ -55,8 +55,8 @@ jobs:
             `Codex baseline: **${baseline}**; npm latest resolved for this run: **${latest}**.\n\n` +
             `${include.length} required installation, native-flow and permission jobs; no version fallback.\n`);
           NODE
-      - name: Verify the native content acceptance rules
-        run: node --test scripts/codex-native-content-check.test.mjs
+      - name: Verify test assertions reject malformed content and unexpected failures
+        run: node --test scripts/codex-native-content-check.test.mjs scripts/codex-lifecycle-assertions.test.mjs
       - name: Build and validate the installable package
         shell: bash
         run: |
@@ -97,18 +97,44 @@ jobs:
         with:
           name: memorax-code-package
           path: dist/npm/tarballs
-      - name: Verify lifecycle, native writeback and permissions (macOS/Linux)
+      - name: Verify lifecycle, native writeback, permissions and inheritance (macOS/Linux)
         if: runner.os != 'Windows'
         shell: bash
         env:
           CODEX_VERSION: ${{ matrix.codex }}
         run: scripts/codex-install-check.sh dist/npm/tarballs "$CODEX_VERSION"
-      - name: Verify lifecycle, native writeback and permissions (Windows)
+      - name: Verify lifecycle, native writeback, permissions and inheritance (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         env:
           CODEX_VERSION: ${{ matrix.codex }}
         run: ./scripts/codex-install-check.ps1 -TarballDirectory dist/npm/tarballs -CodexVersion $env:CODEX_VERSION
+
+  functional-result:
+    name: ${{ github.event_name == 'workflow_dispatch' && inputs.check_deepseek && 'Codex provider-only result' || 'Codex functional result' }}
+    if: always()
+    needs: [package, install, provider]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Require every job for the requested scope to succeed
+        shell: bash
+        env:
+          PACKAGE_RESULT: ${{ needs.package.result }}
+          INSTALL_RESULT: ${{ needs.install.result }}
+          PROVIDER_RESULT: ${{ needs.provider.result }}
+          PROVIDER_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.check_deepseek }}
+        run: |
+          if [[ "$PROVIDER_ONLY" == true ]]; then
+            printf 'Provider-only check: **%s**. This run does not validate the functional matrix.\n' "$PROVIDER_RESULT" >> "$GITHUB_STEP_SUMMARY"
+            [[ "$PROVIDER_RESULT" == success ]]
+            exit
+          fi
+          printf 'Package: **%s**\n\nCodex matrix: **%s**\n' "$PACKAGE_RESULT" "$INSTALL_RESULT" >> "$GITHUB_STEP_SUMMARY"
+          if [[ "$PACKAGE_RESULT" != success || "$INSTALL_RESULT" != success ]]; then
+            echo '::error::All package and Codex matrix jobs must succeed. Failed, cancelled or skipped dependencies do not pass this check.'
+            exit 1
+          fi
 
   provider:
     if: github.event_name == 'workflow_dispatch' && inputs.check_deepseek

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { assertCompleteText, assertWritebackMessages, redactExpectedFixtureText, selectNativeTurnContent } from "./codex-native-content-check.mjs";
+import { assertCompleteText, assertNoForeignContent, assertSearchResult, assertSkillReferenceContract,
+  assertWritebackMessages, expectedSearchAnswer, redactExpectedFixtureText, selectNativeTurnContent } from "./codex-native-content-check.mjs";
 
 const paragraphs = ["第一段：完整保留 Unicode 🧪 与开头。", "第二段：中间内容不能被遗漏，café。", "第三段：末尾仍必须存在。"];
 const content = paragraphs.join("\n\n");
@@ -45,6 +46,53 @@ test("writeback structure permits additional valid context messages after the re
   assertWritebackMessages(messages);
   assertCompleteText(messages[0].content, content);
   assert.throws(() => assertWritebackMessages([...messages, { role: "tool", content: "Wrong role", timestamp: 4 }]), /NATIVE_MESSAGE_STRUCTURE_INVALID/);
+});
+
+test("foreign source controls inspect every message while allowing same-source additional context", () => {
+  const messages = [{ role: "user", content }, { role: "assistant", content: "Answer" },
+    { role: "user", content: "Additional local context" }];
+  assertNoForeignContent(messages, ["Other workspace question", "Other workspace answer"]);
+  for (const mutated of [
+    [...messages, { role: "user", content: "Other workspace question" }, { role: "assistant", content: "Other workspace answer" }],
+    [{ ...messages[0], content: `${content}\nOther workspace answer\nExtra context` }, ...messages.slice(1)],
+  ]) assert.throws(() => assertNoForeignContent(mutated, ["Other workspace question", "Other workspace answer"]), /NATIVE_FOREIGN_CONTENT/);
+});
+
+const reference = (operation) => `# MemoraX Code Coding Memory ${operation === "search" ? "Search" : "Add"}\n
+In Windows PowerShell, use \`memorax-cli.cmd\`; on macOS and Linux, use \`memorax-cli\`. Never invoke \`memorax-cli.ps1\`.
+\`memorax-cli ${operation}\` and \`memorax-cli.cmd ${operation}\` are the documented entrypoints.`;
+test("installed Skill references select the documented platform executable and reject broken commands", () => {
+  for (const operation of ["search", "add"]) {
+    const text = reference(operation);
+    assert.equal(assertSkillReferenceContract(text, operation, "linux"), "memorax-cli");
+    assert.equal(assertSkillReferenceContract(text, operation, "win32"), "memorax-cli.cmd");
+    assert.equal(assertSkillReferenceContract(text.replaceAll("\n", "\r\n"), operation, "win32"), "memorax-cli.cmd");
+    assert.throws(() => assertSkillReferenceContract(text.replaceAll("memorax-cli", "memorax-cli-NOT-A-REAL-COMMAND"), operation, "linux"),
+      /NATIVE_SKILL_REFERENCE_COMMAND_INVALID/);
+    assert.throws(() => assertSkillReferenceContract(text.replace(`memorax-cli ${operation}`, `memorax-cli.ps1 ${operation}`), operation, "win32"),
+      /NATIVE_SKILL_REFERENCE_OPERATION_INVALID/);
+  }
+});
+
+function searchFixture() {
+  return { ok: true, action: "memory.search", provider: "memory.memorax", query: "Question",
+    answer: expectedSearchAnswer("Fixture memory"),
+    items: [{ id: "fixture-memory", memory: "Fixture memory", score: 0.95, metadata: { memory_type: "procedural" } }],
+    receipt: { accepted: true, receipt_id: "memorax:native-search" } };
+}
+test("Search validates answer and item fields separately rather than a marker elsewhere in JSON", () => {
+  const expected = { query: "Question", memory: "Fixture memory" };
+  assertSearchResult(searchFixture(), expected);
+  for (const result of [
+    { ...searchFixture(), answer: "" },
+    { ...searchFixture(), answer: "Fixture memory" },
+    { ...searchFixture(), items: [] },
+    { ...searchFixture(), items: [{ ...searchFixture().items[0], memory: "" }] },
+    { ...searchFixture(), items: [{ ...searchFixture().items[0], id: undefined }] },
+    { ...searchFixture(), items: [{ ...searchFixture().items[0], score: "0.95" }] },
+    { ...searchFixture(), items: [{ ...searchFixture().items[0], metadata: {} }] },
+    { ...searchFixture(), receipt: { accepted: true, receipt_id: "wrong-receipt" } },
+  ]) assert.throws(() => assertSearchResult(result, expected), /NATIVE_SEARCH_/);
 });
 
 const stamp = (second) => `2026-09-26T00:00:0${second}.000Z`;

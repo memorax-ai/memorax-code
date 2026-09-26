@@ -346,13 +346,21 @@ three systems with Node.js 24. When latest equals the baseline, those jobs cover
 both tracks without duplicate execution; Ubuntu/Node.js 20 remains a baseline
 check. Requested and actual CLI versions are recorded and must match. A failed
 latest-version check fails the workflow instead of falling back to the baseline.
+The `Codex functional result` summary requires the package and entire matrix to
+succeed; failed, cancelled, or skipped dependencies fail it. Provider-only manual
+runs use a different result name and cannot supply this functional result. This
+workflow does not configure repository branch protection.
 The lifecycle check exercises
-rejected setup input, real-terminal cancellation and masked credential input,
+specific rejected-input diagnostics, real-terminal cancellation and masked credential input,
 failed setup and recovery, repeated setup, native plugin registration, Hook
 trust, stop/start, and uninstall/reinstall. A scoped local npm registry serves
 the candidate to the real public `update --latest` command: an initial artifact
 download failure must preserve the installed 0.1.17 package and running Backend,
-then a terminal-driven retry must activate the candidate. Unicode and spaces in
+then a terminal-driven retry must activate the candidate. The installed candidate
+also runs its own forced update through the scoped registry. Successful updates
+must retire the old Backend process and establish a new instance with a matching
+health response. Terminal credential checks cover both raw output and visible
+text after ANSI controls are removed. Unicode and spaces in
 isolated paths, existing provider settings, configuration values, and synthetic
 personal memory are checked explicitly.
 
@@ -366,16 +374,27 @@ content is allowed. The checks retain exact session/Turn identity, request count
 and synthetic credential redaction. They do not call the production parser to
 construct their expected content. Negative controls reject missing or truncated
 source text, empty or malformed messages, and mismatched native identity, while
-allowing appended context. Model or tool text alone cannot prove delivery.
+allowing appended context. All outgoing messages are also checked against distinct
+foreign-workspace fixture text; permission cases reject other threads' fixture
+text. These controls test known source-isolation failures, not arbitrary provenance
+in real transcripts. Model or tool text alone cannot prove delivery.
 The current Codex parser can select an injected Skill response item as user text.
 Reports separately record whether the original user prompt is included; its
 absence does not fail this compatibility check. This is coverage of the existing
 extraction contract, not proof of full raw-trajectory transmission or preservation
-of every user message. Explicit CLI/Skill Search/Add command arguments still have
-independent request assertions. A separate
-Repo Memory worker case checks foreground/background model and provider
-inheritance; its controlled no-op response intentionally fails bundle validation,
-so it does not prove successful Repo Memory generation or permission inheritance.
+of every user message. Explicit CLI/Skill Search/Add command arguments have
+independent request assertions. Search validates the complete fixture fields and
+both JSON and default text output. Skill command checks validate and invoke the
+platform CLI entrypoint from the installed reference; a simulated model still
+directs the calls, so this is not autonomous natural-language Skill validation.
+A Repo Memory worker case checks shared global configuration. A separate native
+regression sets a different foreground model or provider, then requires the worker
+to use that override in its actual HTTP request and native record. Both cases run
+even when one fails, report expected and actual values, and return nonzero on any
+failure. Known product defects remain failing tests; this suite does not skip them
+or convert their failure to a passing expectation. Controlled no-op responses
+intentionally fail bundle validation, so these checks do not prove successful
+Repo Memory generation or permission inheritance.
 The native conversation and permission checks disable writeback buffering and
 chunking to validate immediate, exact requests. Default buffer flushing and
 chunked payload combinations require separate native coverage.

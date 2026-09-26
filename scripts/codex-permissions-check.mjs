@@ -5,7 +5,7 @@ import { basename, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { setTimeout as delay } from "node:timers/promises";
 import { createNativeHarness, fixtureKey, fixtureUser, sendResponses, waitFor } from "./codex-native-support.mjs";
-import { assertCompleteText, assertWritebackMessages, selectNativeTurnContent } from "./codex-native-content-check.mjs";
+import { assertCompleteText, assertNoForeignContent, assertWritebackMessages, selectNativeTurnContent } from "./codex-native-content-check.mjs";
 
 // Native app-server protocol, checked with baseline and latest Codex. The fixtures only
 // test approval routing and enforcement; they do not evaluate reviewer judgment.
@@ -274,6 +274,10 @@ async function verifyWriteback({ threadId, turnId, completed }) {
     && body.metadata.memorax_code_workspace === basename(harness.workspace)
     && body.metadata.memorax_code_memory_scope === "workspace-name.v1", "PERMISSION_WRITEBACK_SCOPE_MISMATCH");
   assertWritebackMessages(body.messages);
+  assertNoForeignContent(body.messages, cases.filter((test) => test.id !== current.test.id).flatMap((test) => [
+    `Run the isolated permission fixture ${test.id}, then report its result.`,
+    `Permission case ${test.id} finished.`,
+  ]));
   const hash = (text) => createHash("sha256").update(text).digest("hex").slice(0, 16);
   check(body.metadata.idempotency_key === `automatic:codex:${hash(body.user_id)}:${threadId}:${hash(body.messages[0].content)}:${hash(body.messages[1].content)}`,
     "PERMISSION_WRITEBACK_IDEMPOTENCY_MISMATCH");
@@ -289,6 +293,7 @@ async function verifyWriteback({ threadId, turnId, completed }) {
   const serialized = JSON.stringify(body);
   check(!serialized.includes(fixtureKey), "PERMISSION_SECRET_ENTERED_PAYLOAD");
   return { requestCount: 1, selectedContentComplete: true, additionalContextAllowed: true, nativeSessionAndTurnMatched: true,
+    foreignThreadFixtureContentExcluded: true,
     scopeMatched: true, timestampsMatched: true, nativeContentSources: [native.user.source, native.assistant.source],
     originalUserPromptIncluded: body.messages.some((message) => message.role === "user" && message.content.includes(current.prompt)),
     additionalContentObserved: userCoverage.additionalContentObserved || assistantCoverage.additionalContentObserved || body.messages.length > 2,

@@ -16,6 +16,7 @@ $prefix = Join-Path $testRoot 'npm'
 $userRoot = Join-Path $testRoot 'user'
 $tempRoot = Join-Path $testRoot 'tmp'
 New-Item -ItemType Directory -Force $userRoot, $tempRoot, $prefix | Out-Null
+New-Item -ItemType Directory -Force (Join-Path $testRoot 'codex') | Out-Null
 [IO.File]::WriteAllText((Join-Path $prefix ".memorax-code-ci-owned"), "codex-install-check`n")
 
 # This step owns its temporary account state; do not change machine settings.
@@ -61,6 +62,9 @@ if ($LASTEXITCODE -ne 0) { throw 'The Codex native flow check failed; isolated s
 & node (Join-Path $repoRoot 'scripts/codex-permissions-check.mjs') `
   (Join-Path $prefix 'node_modules/@memorax/memorax-code') (Join-Path $prefix 'codex.cmd')
 if ($LASTEXITCODE -ne 0) { throw 'The Codex permissions check failed; isolated state retained.' }
+& node (Join-Path $repoRoot 'scripts/codex-model-inheritance-check.mjs') `
+  (Join-Path $prefix 'node_modules/@memorax/memorax-code') (Join-Path $prefix 'codex.cmd')
+if ($LASTEXITCODE -ne 0) { throw 'The Codex model/provider inheritance regression failed; see the expected and actual values above.' }
 
 # Remove the runtime only after the smoke has confirmed process shutdown.
 Remove-Item -LiteralPath $testRoot -Recurse -Force

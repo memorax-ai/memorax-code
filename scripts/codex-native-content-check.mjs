@@ -34,6 +34,46 @@ export function assertWritebackMessages(messages) {
   }
 }
 
+export function assertNoForeignContent(messages, forbiddenFragments) {
+  check(Array.isArray(messages), "NATIVE_MESSAGES_INVALID");
+  for (const message of messages) {
+    check(typeof message?.content === "string", "NATIVE_MESSAGE_STRUCTURE_INVALID");
+    for (const fragment of forbiddenFragments) {
+      check(typeof fragment === "string" && fragment.trim().length > 0, "NATIVE_SOURCE_FIXTURE_INVALID");
+      check(!message.content.includes(fragment), "NATIVE_FOREIGN_CONTENT");
+    }
+  }
+}
+
+export function assertSkillReferenceContract(text, operation, platform) {
+  check(["search", "add"].includes(operation) && typeof text === "string", "NATIVE_SKILL_REFERENCE_INVALID");
+  check(text.split(/\r?\n/, 1)[0] === `# MemoraX Code Coding Memory ${operation === "search" ? "Search" : "Add"}`,
+    "NATIVE_SKILL_REFERENCE_IDENTITY_MISMATCH");
+  const commands = text.match(/\bmemorax-cli[.\w-]*/g) ?? [];
+  check(commands.length > 0 && commands.every((command) => ["memorax-cli", "memorax-cli.cmd", "memorax-cli.ps1"].includes(command)),
+    "NATIVE_SKILL_REFERENCE_COMMAND_INVALID");
+  const guidance = text.match(/Windows PowerShell, use `([^`]+)`; on macOS and Linux, use `([^`]+)`/);
+  check(guidance?.[1] === "memorax-cli.cmd" && guidance[2] === "memorax-cli", "NATIVE_SKILL_REFERENCE_PLATFORM_COMMAND_INVALID");
+  check(new RegExp(`\\bmemorax-cli(?:\\.cmd)? ${operation}\\b`).test(text)
+    && !new RegExp(`\\bmemorax-cli\\.ps1 ${operation}\\b`).test(text), "NATIVE_SKILL_REFERENCE_OPERATION_INVALID");
+  return platform === "win32" ? guidance[1] : guidance[2];
+}
+
+export function assertSearchResult(result, { query, memory }) {
+  check(result?.ok === true && result.action === "memory.search" && result.provider === "memory.memorax"
+    && result.query === query, "NATIVE_SEARCH_RESULT_IDENTITY_MISMATCH");
+  check(result.answer === expectedSearchAnswer(memory), "NATIVE_SEARCH_ANSWER_MISMATCH");
+  check(Array.isArray(result.items) && result.items.length === 1, "NATIVE_SEARCH_ITEMS_MISMATCH");
+  const [item] = result.items;
+  check(item?.id === "fixture-memory" && item.memory === memory && item.score === 0.95
+    && item.metadata?.memory_type === "procedural", "NATIVE_SEARCH_ITEM_FIELDS_MISMATCH");
+  check(result.receipt?.accepted === true && result.receipt.receipt_id === "memorax:native-search", "NATIVE_SEARCH_RECEIPT_MISMATCH");
+}
+
+export function expectedSearchAnswer(memory) {
+  return `<memories>\n  <facts memory_type="procedural">\n   - ${memory}\n  </facts>\n</memories>`;
+}
+
 export function selectNativeTurnContent(records, { sessionId, turnId }) {
   check(Array.isArray(records) && records[0]?.type === "session_meta"
     && records[0].payload?.id === sessionId, "NATIVE_CONTENT_SESSION_MISMATCH");

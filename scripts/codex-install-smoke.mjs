@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { isDeepStrictEqual, promisify } from "node:util";
 import { pathToFileURL } from "node:url";
+import { assertBackendReplacement, assertCredentialNotEchoed, assertSetupInputRejection } from "./codex-lifecycle-assertions.mjs";
 
 const execFileAsync = promisify(execFile);
 const pluginName = "memorax-code-codex-adapter";
@@ -106,13 +107,14 @@ try {
   };
   for (const [label, input] of [["empty stdin", ""], ["multiple stdin values", "invalid\nsecond\n"]]) {
     stage = `rejected setup: ${label}`;
-    await rejectedProduct(["setup", "--existing-account", "--non-interactive"], input);
+    const rejected = await rejectedProduct(["setup", "--existing-account", "--non-interactive"], input);
+    assertSetupInputRejection(rejected);
     check(await readFile(join(stateHome, "config.toml"), "utf8") === initialConfig
       && await readFile(join(codexHome, "config.toml"), "utf8") === initialCodexConfig,
     "Rejected setup changed existing configuration");
     check(!(await exists(completionPath())) && !(await exists(pidPath())), "Rejected setup created completion or Backend state");
   }
-  report.checks.push("empty and multiline stdin rejected before configuration, completion or Backend mutation");
+  report.checks.push("empty and multiline stdin returned the expected input diagnostic and exit 2 before any state mutation");
 
   stage = "interactive setup cancellation";
   const cancelled = await terminalSetup("cancel");
@@ -261,7 +263,7 @@ try {
   env.npm_config_cache = join(root, "update npm cache");
   env.npm_config_fetch_retries = "0";
   env.npm_config_fetch_timeout = "15000";
-  const previousPid = (await readJson(pidPath())).pid;
+  const previousBackend = await readJson(pidPath());
   const previousCompletion = await readFile(completionPath(), "utf8");
   stage = "failed update artifact download";
   await rejectedProduct(["update", "--latest"]);
@@ -269,7 +271,7 @@ try {
   check((await readJson(join(packageRoot, "package.json"))).version === previousVersion,
     "A failed artifact download changed the installed package version");
   check((await productJson(["status", "--clients", "codex", "--json"])).backend?.ok === true
-    && (await readJson(pidPath())).pid === previousPid,
+    && (await readJson(pidPath())).pid === previousBackend.pid,
   "A failed artifact download stopped or replaced the previous Backend");
   check(await readFile(completionPath(), "utf8") === previousCompletion,
     "A failed artifact download changed setup completion");
@@ -283,18 +285,44 @@ try {
   check((await readJson(join(packageRoot, "package.json"))).version === expectedPackageVersion,
     "Candidate package did not replace the previous version");
   await verifyReady("upgrade");
+  await verifyBackendReplacement(previousBackend, "previous-release update");
   await verifyPreserved(upgradeConfig);
   check(!(await exists(join(stateHome, "runtime", "install", "package-transition.json"))),
     "Successful replacement retained pending transition authority");
   report.upgrade = { from: previousVersion, to: expectedPackageVersion, mechanism: "public update --latest with candidate scoped registry" };
   report.checks.push("real terminal update --latest upgraded the running previous release to the candidate with configuration and synthetic memory retained");
+
+  stage = "candidate updater force reinstall";
+  const candidateBackend = await readJson(pidPath());
+  const beforeCandidateRequests = { ...registryRequests };
+  // A fresh cache requires this candidate's updater to fetch the artifact again.
+  env.npm_config_cache = join(root, "candidate updater npm cache");
+  const candidateUpdate = await terminalSetup("force-update");
+  check(candidateUpdate.status === "PASS" && candidateUpdate.exitCode === 0,
+    "The candidate's public update command failed");
+  check(registryRequests.manifest > beforeCandidateRequests.manifest
+    && registryRequests.artifact > beforeCandidateRequests.artifact,
+    "The candidate updater did not download and install the registry artifact");
+  check((await readJson(join(packageRoot, "package.json"))).version === expectedPackageVersion,
+    "Candidate force update installed an unexpected version");
+  await verifyReady("candidate force update");
+  await verifyBackendReplacement(candidateBackend, "candidate force update");
+  await verifyPreserved(upgradeConfig);
+  check(!(await exists(join(stateHome, "runtime", "install", "package-transition.json"))),
+    "Candidate force update retained pending transition authority");
+  report.candidateUpdate = { from: expectedPackageVersion, to: expectedPackageVersion,
+    mechanism: "candidate public update --latest --force with a fresh npm cache" };
+  report.checks.push("candidate updater reinstalled the artifact and replaced the running Backend with configuration and memory retained");
   stage = "outbound isolation";
   check(requests === 0, "Installation unexpectedly contacted the model or MemoraX endpoint");
   report.checks.push("no model or MemoraX requests");
   report.status = "PASS";
 } catch (error) {
   report.stage = stage;
-  report.error = error.smokeMessage ?? "The stage failed; private command output was suppressed";
+  const assertionCode = typeof error.message === "string"
+    ? error.message.match(/^(?:SETUP_INPUT_REJECTION|BACKEND_REPLACEMENT|TERMINAL_DISCLOSED|EMPTY_CREDENTIAL_CANARY)[A-Z_]*/)?.[0]
+    : undefined;
+  report.error = error.smokeMessage ?? assertionCode ?? "The stage failed; private command output was suppressed";
   if (typeof error.code === "number") report.exitCode = error.code;
   if (["ENOENT", "ENOEXEC", "EACCES", "EPERM", "EINVAL", "ETIMEDOUT"].includes(error.code)) report.nativeErrorCode = error.code;
   if (error.diagnosticCode) report.diagnosticCode = error.diagnosticCode;
@@ -387,6 +415,20 @@ async function rememberPid() {
     backendPids.add(backend.pid);
   }
 }
+async function verifyBackendReplacement(before, label) {
+  stage = `${label} Backend replacement`;
+  const after = await readJson(pidPath());
+  let oldProcessAlive = true;
+  try { process.kill(before.pid, 0); }
+  catch (error) { if (error.code === "ESRCH") oldProcessAlive = false; else throw error; }
+  try { process.kill(after.pid, 0); }
+  catch { check(false, "Updated Backend PID does not identify a live process"); }
+  check(after.url === `http://127.0.0.1:${backendPort}`, "Updated Backend has an unexpected endpoint");
+  const response = await fetch(new URL("/health", after.url), { signal: AbortSignal.timeout(5_000) });
+  check(response.ok, "Updated Backend did not answer its health endpoint successfully");
+  assertBackendReplacement(before, after, await response.json(), oldProcessAlive);
+  report.checks.push(`${label}: old Backend exited; new PID, instance and live health identity agree`);
+}
 async function stopAndVerify() {
   await rememberPid();
   check((await productJson(["stop", "--clients", "codex", "--json"])).ok === true, "Backend stop did not succeed");
@@ -476,11 +518,11 @@ async function run(command, args, input = "") {
   try { result = await pending; }
   catch (error) {
     // Report only the stable product error code, never raw process output.
-    check(!`${error.stdout ?? ""}\n${error.stderr ?? ""}`.includes(fixtureKey), "A failing command disclosed the setup credential");
+    assertCredentialNotEchoed(`${error.stdout ?? ""}\n${error.stderr ?? ""}`, fixtureKey);
     error.diagnosticCode = `${error.stdout ?? ""}\n${error.stderr ?? ""}`.match(/\b(?:CLIENT|CODEX|BACKEND|SETUP|CONFIG|UPDATE|PACKAGE|INSTALL)_[A-Z_]{3,}\b/)?.[0];
     throw error;
   }
-  check(!`${result.stdout}\n${result.stderr}`.includes(fixtureKey), "A command disclosed the setup credential");
+  assertCredentialNotEchoed(`${result.stdout}\n${result.stderr}`, fixtureKey);
   return result;
 }
 

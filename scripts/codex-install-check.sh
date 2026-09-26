@@ -26,7 +26,7 @@ if [[ $# -ne 1 || ! -f "$1" ]]; then
 fi
 tarball="$1"
 test_root="$(mktemp -d)"
-mkdir -p "$test_root/user" "$test_root/tmp" "$test_root/npm"
+mkdir -p "$test_root/user" "$test_root/tmp" "$test_root/npm" "$test_root/codex"
 printf 'codex-install-check\n' > "$test_root/npm/.memorax-code-ci-owned"
 
 isolated() {
@@ -49,6 +49,8 @@ isolated node "$repo_root/scripts/codex-install-smoke.mjs" \
 isolated node "$repo_root/scripts/codex-native-check.mjs" \
   "$test_root/npm/lib/node_modules/@memorax/memorax-code" "$test_root/npm/bin/codex"
 isolated node "$repo_root/scripts/codex-permissions-check.mjs" \
+  "$test_root/npm/lib/node_modules/@memorax/memorax-code" "$test_root/npm/bin/codex"
+isolated node "$repo_root/scripts/codex-model-inheritance-check.mjs" \
   "$test_root/npm/lib/node_modules/@memorax/memorax-code" "$test_root/npm/bin/codex"
 
 # The smoke runner confirms Backend shutdown before removing its own state.

@@ -3,6 +3,7 @@ import { createRequire } from "node:module";
 import { chmod, stat } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { stripVTControlCharacters } from "node:util";
+import { assertCredentialNotEchoed } from "./codex-lifecycle-assertions.mjs";
 
 // A real PTY is required here: piped answers and ASSUME_INTERACTIVE fixtures do
 // not exercise masked input, Ctrl-C, or native terminal detection.
@@ -16,7 +17,7 @@ let cursorReports = 0;
 try {
   check(process.argv.length === 5, "EXPECTED_PTY_ROOT_ENTRYPOINT_AND_MODE");
   const [, , dependencyRoot, entrypoint, mode] = process.argv;
-  check(["complete", "cancel", "update"].includes(mode), "INVALID_TERMINAL_CASE");
+  check(["complete", "cancel", "update", "force-update"].includes(mode), "INVALID_TERMINAL_CASE");
   let raw = "";
   for await (const chunk of process.stdin) {
     raw += chunk;
@@ -38,7 +39,9 @@ try {
   const { spawn } = require("node-pty");
   const env = { ...process.env, TERM: "xterm-256color" };
   delete env.MEMORAX_CODE_SETUP_ASSUME_INTERACTIVE;
-  const args = mode === "update" ? ["update", "--latest"] : ["setup", "--existing-account"];
+  const isUpdate = mode === "update" || mode === "force-update";
+  const args = isUpdate ? ["update", "--latest", ...(mode === "force-update" ? ["--force"] : [])]
+    : ["setup", "--existing-account"];
   terminal = spawn(process.execPath, [resolve(entrypoint), ...args], {
     name: "xterm-256color", cols: 120, rows: 40, cwd: process.cwd(), env,
   });
@@ -84,8 +87,9 @@ try {
   report.signal = result.signal ?? 0;
   check(Number.isInteger(report.exitCode) && Number.isInteger(report.signal), "INVALID_TERMINAL_EXIT_STATUS");
   check(!errorCode, errorCode);
-  if (mode !== "update") check(report.usernamePromptSeen && report.keyPromptSeen, "EXPECTED_INTERACTIVE_PROMPTS_NOT_OBSERVED");
-  check(!output.includes(input.apiKey), "TERMINAL_DISCLOSED_FIXTURE_CREDENTIAL");
+  if (!isUpdate) check(report.usernamePromptSeen && report.keyPromptSeen, "EXPECTED_INTERACTIVE_PROMPTS_NOT_OBSERVED");
+  try { assertCredentialNotEchoed(output, input.apiKey); }
+  catch { check(false, "TERMINAL_DISCLOSED_FIXTURE_CREDENTIAL"); }
   const plainOutput = stripVTControlCharacters(output);
   if (mode === "complete") check(plainOutput.includes("*".repeat(input.apiKey.length)), "MASKED_KEY_INPUT_NOT_OBSERVED");
   check(mode === "cancel" ? report.exitCode !== 0 || report.signal > 0
