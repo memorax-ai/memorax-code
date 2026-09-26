@@ -360,6 +360,9 @@ request even when the native client injects Skill instructions. A separate
 Repo Memory worker case checks foreground/background model and provider
 inheritance; its controlled no-op response intentionally fails bundle validation,
 so it does not prove successful Repo Memory generation or permission inheritance.
+The native conversation and permission checks disable writeback buffering and
+chunking to validate immediate, exact requests. Default buffer flushing and
+chunked payload combinations require separate native coverage.
 
 The permission check drives Codex's native app-server protocol. Full access,
 user approval, rejection, cancellation, and waiting are checked using native
@@ -371,6 +374,9 @@ quality of a real model's risk judgment. Windows cases explicitly select Codex's
 sandbox, the client can downgrade requested workspace-write to read-only.
 Requested and effective policies remain strict assertions. Elevated sandbox
 setup, dedicated sandbox accounts, and UAC are separate coverage.
+Restricted-mode probes explicitly request escalation; they verify approval
+routing and file effects, not unprivileged command execution or the sandbox's
+filesystem and network isolation.
 
 These default jobs require no model login or GitHub Environment secrets and
 make no paid model calls. They report native CLI evidence, not Desktop or
