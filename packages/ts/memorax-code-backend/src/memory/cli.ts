@@ -9,6 +9,7 @@ import {
   memoryCliAddEnabled,
   memoryCliMaxMemoryChars,
   memoryCliSessionId,
+  memoraxAddOptionsFromContext,
   memoryConfigStatus,
 } from "../provider/memorax/config.js";
 import {
@@ -143,6 +144,8 @@ async function memoryStatus(options: MemoryCliOptions, configOnly = false): Prom
 }
 
 async function memorySearch(args: string[], options: MemoryCliOptions): Promise<MemoryCliResult> {
+  const scopeOptions = memorySearchScopeOptions(args);
+  if (!scopeOptions.ok) return { ...scopeOptions, action: "memory.search", errorCode: "MEMORY_INPUT_INVALID", stage: "input" };
   const queryResult = await readTextArg(args, "--query", "--query-file", "query");
   if (!queryResult.ok) return { ...queryResult, action: "memory.search" };
   const query = queryResult.text;
@@ -162,6 +165,7 @@ async function memorySearch(args: string[], options: MemoryCliOptions): Promise<
       operation: "query",
       query,
       context: {
+        ...scopeOptions.context,
         ...(limitFromArgs(args) === undefined ? {} : { limit: limitFromArgs(args) }),
       },
     },
@@ -217,10 +221,10 @@ async function memoryAdd(args: string[], options: MemoryCliOptions): Promise<Mem
   if (!memoryType.ok) return { ok: false, action: "memory.add", error: memoryType.error };
   const reason = requiredArg(args, "--reason");
   if (!reason.ok) return { ok: false, action: "memory.add", error: reason.error };
-  const contentOptions = memoryAddContentOptions(args);
-  if (!contentOptions.ok) return { ok: false, action: "memory.add", error: contentOptions.error };
   const repositoryMemory = await resolveMemoryCliRepositoryMemory(options);
   if (!repositoryMemory.ok) return memoryCliRepositoryFailure("memory.add", repositoryMemory);
+  const contentOptions = memoryAddContentOptions(args, env, repositoryMemory.client);
+  if (!contentOptions.ok) return { ok: false, action: "memory.add", error: contentOptions.error };
   options.diagnosticTrace = repositoryMemory.traceContext;
 
   const sessionId = memoryCliSessionId(args, env);
@@ -235,7 +239,7 @@ async function memoryAdd(args: string[], options: MemoryCliOptions): Promise<Mem
       operation: "writeback",
       dispatch: "async_best_effort",
       context: {
-        idempotencyKey: `memory-cli:${sessionId}:${hashText(`${memoryType.value}\n${reason.value}\n${memory}`)}`,
+        idempotencyKey: `memory-cli:${sessionId}:${hashText(`${memoryType.value}\n${reason.value}\n${memory}`)}${contentOptions.context.contentType === "dialogue" ? ":dialogue" : ""}`,
         messages: [{ role: "user", content: memory }],
         ...contentOptions.context,
         metadata: {
@@ -276,7 +280,7 @@ async function memoryAdd(args: string[], options: MemoryCliOptions): Promise<Mem
 
 async function resolveMemoryCliRepositoryMemory(
   options: MemoryCliOptions,
-): Promise<ConfiguredRepositoryMemoryResult & { traceContext?: TraceContext }> {
+): Promise<ConfiguredRepositoryMemoryResult & { traceContext?: TraceContext; client?: TraceClient }> {
   const env = options.env ?? process.env;
   const memoraxCodeHome = defaultMemoraxCodeHome(env);
   const binding = memoryCliTraceBinding(env);
@@ -287,7 +291,7 @@ async function resolveMemoryCliRepositoryMemory(
       const current = await readCurrentTraceTurn({ client, memoraxCodeHome, env, expectedSessionId: binding.expectedSessionId });
       if (!current.ok || !current.traceContext.turnId || !current.traceContext.cwd) return undefined;
       const result = await resolveMemoryCliRepositoryMemoryFromTurn(options, current.traceContext);
-      return result.ok ? { ...result, traceContext: current.traceContext } : result;
+      return result.ok ? { ...result, traceContext: current.traceContext, client } : result;
     }));
     const matches = candidates.filter((candidate) => candidate?.ok === true);
     if (matches.length === 1) return matches[0]!;
@@ -307,7 +311,7 @@ async function resolveMemoryCliRepositoryMemory(
     : undefined;
   const traceContext = current?.ok ? current.traceContext : undefined;
   const result = await resolveMemoryCliRepositoryMemoryFromTurn(options, traceContext);
-  return result.ok ? { ...result, traceContext } : result;
+  return result.ok ? { ...result, traceContext, client: binding?.client } : result;
 }
 
 async function resolveMemoryCliRepositoryMemoryFromTurn(
@@ -491,19 +495,54 @@ function traceClientLabel(client: TraceClient | undefined): string {
   return client === "codex" ? "Codex" : "coding agent";
 }
 
+function memorySearchScopeOptions(args: string[]):
+  | { ok: true; context: Record<string, string[]> }
+  | { ok: false; error: string } {
+  const context: Record<string, string[]> = {};
+  for (let index = 0; index < args.length; index += 1) {
+    const flag = args[index];
+    if (["--query", "--query-file", "--limit", "--session-id"].includes(flag ?? "")) {
+      index += 1;
+      continue;
+    }
+    if (flag?.startsWith("--sources=") || flag?.startsWith("--document-id=")) {
+      return { ok: false, error: "use a space between the search scope flag and its value" };
+    }
+    if (flag !== "--sources" && flag !== "--document-id") continue;
+    const value = args[index + 1]?.trim();
+    if (!value || value.startsWith("--")) return { ok: false, error: `${flag} requires a value` };
+    if (flag === "--sources") {
+      if (context.sources) return { ok: false, error: "use --sources only once" };
+      context.sources = value.split(",").map((source) => source.trim());
+    } else {
+      (context.document_ids ??= []).push(value);
+    }
+    index += 1;
+  }
+  return { ok: true, context };
+}
+
 function memoryAddContentOptions(
   args: string[],
+  env: Record<string, string | undefined>,
+  client?: TraceClient,
 ):
   | { ok: true; context: Record<string, string> }
   | { ok: false; error: string } {
   const contentType = argValue(args, "--content-type")?.trim();
   const mode = argValue(args, "--mode")?.trim();
-  const context: Record<string, string> = {};
-  const effectiveContentType = contentType || "code";
+  // Resolve only the content route; keep the CLI's existing mode defaults.
+  const route = memoraxAddOptionsFromContext({
+    ...(contentType ? { contentType } : {}), mode: "default",
+  }, env);
+  if (!route.ok) return route;
+  const effectiveContentType = route.options.contentType
+    ?? (client === "workbuddy" ? "dialogue" : "code");
   const effectiveMode = mode || (effectiveContentType === "code" ? "pre_summarized" : "default");
-  context.contentType = effectiveContentType;
-  context.mode = effectiveMode;
-  return { ok: true, context };
+  if (effectiveContentType === "dialogue" && effectiveMode === "pre_summarized") {
+    return { ok: false, error: "pre_summarized requires code content" };
+  }
+  return { ok: true, context: { contentType: effectiveContentType, mode: effectiveMode } };
 }
 
 async function readTextArg(

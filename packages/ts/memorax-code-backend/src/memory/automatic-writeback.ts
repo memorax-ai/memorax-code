@@ -22,6 +22,7 @@ import type {
 } from "./observability.js";
 import {
   memoraxConfigFromEnv,
+  memoraxAddOptionsFromContext,
   memoryWritebackBufferEnabled,
   memoryWritebackEnabled,
   memoryWritebackMaxMessageChars,
@@ -67,6 +68,7 @@ export type AutomaticMemoryWritebackOptions = AutomaticMemoryWritebackTiming & {
 };
 
 type AutomaticMemoryWritebackDecision = {
+  contentType?: "code" | "dialogue";
   client: AutomaticMemoryWritebackClient;
   sessionKey: string;
   idempotencyKey: string;
@@ -264,6 +266,9 @@ function automaticMemoryWritebackDecision(
     };
   }
 
+  const route = memoraxAddOptionsFromContext({ mode: "default" }, env);
+  if (!route.ok) throw new Error(route.error);
+  const contentType = route.options.contentType ?? (options.client === "workbuddy" ? "dialogue" : "code");
   const sessionKey = options.sessionKey.trim();
   const maxMessageChars = memoryWritebackMaxMessageChars(env);
   const rawUserText = options.userText?.trim() ?? "";
@@ -305,7 +310,7 @@ function automaticMemoryWritebackDecision(
   if (!hasMeaningfulMemoryPayloadText(userText)) return { write: false, skipReason: "user_prompt_empty" };
   if (!hasMeaningfulMemoryPayloadText(assistantText)) return { write: false, skipReason: "assistant_text_empty" };
 
-  const idempotencyKey = `automatic:${options.client}:${hashText(options.repositoryScope.effectiveUserId)}:${sessionKey}:${hashText(userText)}:${hashText(assistantText)}`;
+  const idempotencyKey = `automatic:${options.client}:${hashText(options.repositoryScope.effectiveUserId)}:${sessionKey}:${hashText(userText)}:${hashText(assistantText)}${contentType === "dialogue" ? ":dialogue" : ""}`;
   if (hasPendingWriteback(state, idempotencyKey)) return { write: false, skipReason: "duplicate_pending" };
   // Freeze missing-time observations before buffering or retries. Upload time
   // must never replace a native message time or pretend to be one.
@@ -314,6 +319,7 @@ function automaticMemoryWritebackDecision(
   const assistantTimestamp = parseNativeMessageTimestamp(options.assistantTimestamp);
   return {
     write: true,
+    contentType,
     client: options.client,
     sessionKey,
     idempotencyKey,
@@ -396,7 +402,10 @@ async function enqueueAutomaticMemoryWritebackAsync(
       });
       throw new Error("automatic writeback content must be redacted before provider dispatch");
     }
-    const parts = memoryWritebackAddParts(decision, options.env ?? process.env);
+    const contentType = decision.contentType ?? "code";
+    const parts = contentType === "code"
+      ? memoryWritebackAddParts(decision, options.env ?? process.env)
+      : [{ idempotencyKey: decision.idempotencyKey, messages: decision.messages, chunk: undefined }];
     for (const [index, part] of parts.entries()) {
       for (let attempt = 1; attempt <= AUTOMATIC_MEMORY_WRITEBACK_MAX_ATTEMPTS; attempt += 1) {
         const configResult = memoraxConfigFromEnv(options.env);
@@ -413,7 +422,7 @@ async function enqueueAutomaticMemoryWritebackAsync(
           context: {
             idempotencyKey: part.idempotencyKey,
             messages: part.messages,
-            contentType: "code",
+            contentType,
             mode: "default",
             ...(part.chunk ? { chunk: part.chunk } : {}),
           },

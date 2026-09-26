@@ -12,6 +12,7 @@ import {
 import type { TraceContext } from "../trace/context.js";
 
 export type MemoryWritebackBufferDecision = {
+  contentType?: "code" | "dialogue";
   client: "codex" | "claude-code" | "opencode" | "dsh" | "codebuddy" | "workbuddy" | "trae" | "cursor";
   sessionKey: string;
   idempotencyKey: string;
@@ -84,6 +85,7 @@ type MemoryWritebackBufferedTurn = {
 };
 
 type MemoryWritebackBuffer = {
+  contentType?: "code" | "dialogue";
   bufferKey: string;
   client: MemoryWritebackBufferDecision["client"];
   sessionKey: string;
@@ -159,11 +161,7 @@ function enqueueMemoryWritebackBufferForRuntime(
       currentScope: options.repositoryScope,
     },
   );
-  const bufferKey = memoryWritebackBufferKey(
-    decision.client,
-    decision.sessionKey,
-    options.repositoryScope,
-  );
+  const bufferKey = `${memoryWritebackBufferKey(decision.client, decision.sessionKey, options.repositoryScope)}:${decision.contentType ?? "code"}`;
   let buffer = writebackBuffers.get(bufferKey);
   if (buffer?.turnKeys.has(decision.idempotencyKey)) {
     deps.debug("memory.automatic_writeback", {
@@ -190,6 +188,7 @@ function enqueueMemoryWritebackBufferForRuntime(
       deps.clock ?? SYSTEM_CLOCK,
       deps,
     );
+    buffer.contentType = decision.contentType;
     writebackBuffers.set(bufferKey, buffer);
   }
 
@@ -317,7 +316,7 @@ function flushMemoryWritebackBuffer(
   const sessionKey = buffer.sessionKey;
   const messages = bufferedMessages(buffer);
   const scopeHash = deps.hashText(buffer.repositoryScope.effectiveUserId);
-  const idempotencyKey = `automatic-buffer:v1:${buffer.client}:${scopeHash}:${sessionKey}:${deps.hashText(messages.map((message) => `${message.role}:${message.content}`).join("\n"))}`;
+  const idempotencyKey = `automatic-buffer:v1:${buffer.client}:${scopeHash}:${sessionKey}:${deps.hashText(messages.map((message) => `${message.role}:${message.content}`).join("\n"))}${buffer.contentType === "dialogue" ? ":dialogue" : ""}`;
   const dedupeKeys = [idempotencyKey, ...buffer.turns.map((turn) => turn.idempotencyKey)];
   if (dedupeKeys.some((key) => deps.hasPendingWriteback(key))) return false;
   deps.reservePendingWritebacks(dedupeKeys);
@@ -332,6 +331,7 @@ function flushMemoryWritebackBuffer(
     contentChars: buffer.contentChars,
   });
   deps.flush({
+    ...(buffer.contentType ? { contentType: buffer.contentType } : {}),
     client: buffer.client,
     sessionKey,
     idempotencyKey,

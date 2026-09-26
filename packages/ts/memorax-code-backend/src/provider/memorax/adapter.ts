@@ -87,6 +87,9 @@ type MemoraxSearchPayload = {
   top_k: number;
   k_dense: number;
   k_sparse: number;
+  sources?: Array<"dialogue" | "document">;
+  document_ids?: string[];
+  output_mode?: "facts";
   filters?: unknown;
   min_semantic_similarity?: number;
 };
@@ -149,7 +152,12 @@ export async function invokeMemoraxMemoryProvider(
   const context = isRecord(request.context) ? request.context : {};
   const repositoryScope = repositoryScopeForConfig(config, options.repositoryScope);
   if (!repositoryScope.ok) return repositoryScope;
-  const payload = buildMemoraxSearchPayload(config, query, context, repositoryScope.scope);
+  let payload: MemoraxSearchPayload;
+  try {
+    payload = buildMemoraxSearchPayload(config, query, context, repositoryScope.scope);
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
   try {
     const { body: raw, quota } = await callMemoSearch(config, payload, options.fetchImpl);
     const items = extractMemoraxSearchItems(raw);
@@ -222,6 +230,20 @@ export function buildMemoraxSearchPayload(
   context: Record<string, unknown>,
   repositoryScope: RepositoryMemoryScope,
 ): MemoraxSearchPayload {
+  const sources = context.sources;
+  const documentIds = context.document_ids;
+  if (sources !== undefined && (
+    !Array.isArray(sources) || sources.length < 1 || sources.length > 2
+    || sources.some((source) => source !== "dialogue" && source !== "document")
+    || new Set(sources).size !== sources.length
+  )) throw new Error("sources must contain unique dialogue and/or document values");
+  if (documentIds !== undefined && (
+    !Array.isArray(documentIds) || documentIds.length < 1 || documentIds.length > 100
+    || documentIds.some((id) => typeof id !== "string" || !id.trim())
+  )) throw new Error("document_ids must contain between 1 and 100 non-empty document IDs");
+  if (documentIds !== undefined && (!Array.isArray(sources) || sources.length !== 1 || sources[0] !== "document")) {
+    throw new Error("document_ids requires sources=['document']");
+  }
   const limit = typeof context.limit === "number" ? context.limit : undefined;
   const minSemanticSimilarity = typeof context.min_semantic_similarity === "number"
     ? parseScore(context.min_semantic_similarity)
@@ -237,6 +259,8 @@ export function buildMemoraxSearchPayload(
     top_k: topK,
     k_dense: kDense,
     k_sparse: kSparse,
+    ...(sources === undefined ? {} : { sources: sources as Array<"dialogue" | "document">, output_mode: "facts" as const }),
+    ...(documentIds === undefined ? {} : { document_ids: documentIds as string[] }),
     ...(isRecord(context.filters) ? { filters: context.filters } : {}),
     ...(minSemanticSimilarity === undefined
       ? {}

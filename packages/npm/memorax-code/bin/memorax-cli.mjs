@@ -11,8 +11,8 @@ if (args.length === 1 && (args[0] === "--help" || args[0] === "-h")) {
 
 Memory commands:
   status [--json] [--config-only]
-  search --query TEXT [--session-id ID] [--limit N] [--json]
-  add --memory TEXT --type TYPE --reason REASON [--session-id ID] [--content-type code]
+  search --query TEXT [--sources dialogue|document|dialogue,document] [--document-id ID]... [--session-id ID] [--limit N] [--json]
+  add --memory TEXT --type TYPE --reason REASON [--session-id ID] [--content-type code|dialogue] [--mode default|raw|pre_summarized]
 
 Run the command from the active task workspace so MemoraX Code can enforce its repository scope.`);
   process.exit(0);
