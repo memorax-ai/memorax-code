@@ -1,10 +1,12 @@
 param(
   [Parameter(Mandatory = $true)][string]$TarballDirectory,
-  [Parameter(Mandatory = $true)][ValidatePattern('^\d+\.\d+\.\d+$')][string]$CodexVersion
+  [Parameter(Mandatory = $true)][ValidatePattern('^\d+\.\d+\.\d+$')][string]$CodexVersion,
+  [ValidatePattern('^\d+\.\d+\.\d+$')][string]$PreviousVersion = '0.1.17'
 )
 
 $ErrorActionPreference = 'Stop'
 if (-not $IsWindows) { throw 'This wrapper requires Windows.' }
+$npmCommand = (Get-Command npm.cmd).Source
 $repoRoot = Split-Path $PSScriptRoot -Parent
 $tarballs = @(Get-ChildItem -LiteralPath $TarballDirectory -Filter 'memorax-memorax-code-*.tgz')
 if ($tarballs.Count -ne 1) { throw 'Expected exactly one MemoraX Code tarball.' }
@@ -13,7 +15,8 @@ $testRoot = Join-Path ([IO.Path]::GetTempPath()) ('memorax-codex-install-' + [gu
 $prefix = Join-Path $testRoot 'npm'
 $userRoot = Join-Path $testRoot 'user'
 $tempRoot = Join-Path $testRoot 'tmp'
-New-Item -ItemType Directory -Force $userRoot, $tempRoot | Out-Null
+New-Item -ItemType Directory -Force $userRoot, $tempRoot, $prefix | Out-Null
+[IO.File]::WriteAllText((Join-Path $prefix ".memorax-code-ci-owned"), "codex-install-check`n")
 
 # This step owns its temporary account state; do not change machine settings.
 $allowedEnvironment = @('PATH', 'SystemRoot', 'WINDIR', 'ComSpec', 'PATHEXT',
@@ -40,13 +43,24 @@ $env:TEMP = $tempRoot
 
 & npm.cmd install --global --prefix $prefix --no-audit --no-fund "@openai/codex@$CodexVersion" $tarball
 if ($LASTEXITCODE -ne 0) { throw 'npm installation failed.' }
+& npm.cmd install --prefix (Join-Path $testRoot 'terminal') --no-audit --no-fund node-pty@1.1.0
+if ($LASTEXITCODE -ne 0) { throw 'The test-only terminal dependency installation failed.' }
 & (Join-Path $prefix 'memorax-code.cmd') --help | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'The installed MemoraX Code command shim failed.' }
 & (Join-Path $prefix 'codex.cmd') --version
 if ($LASTEXITCODE -ne 0) { throw 'The installed Codex command shim failed.' }
 & node (Join-Path $repoRoot 'scripts/codex-install-smoke.mjs') `
-  (Join-Path $prefix 'node_modules/@memorax/memorax-code') (Join-Path $prefix 'codex.cmd')
+  (Join-Path $prefix 'node_modules/@memorax/memorax-code') (Join-Path $prefix 'codex.cmd') `
+  $tarball $npmCommand $PreviousVersion `
+  (Join-Path $testRoot 'terminal/node_modules/node-pty') (Join-Path $repoRoot 'scripts/codex-setup-pty.mjs')
 if ($LASTEXITCODE -ne 0) { throw 'The Codex installation smoke failed; isolated state retained.' }
+
+& node (Join-Path $repoRoot 'scripts/codex-native-check.mjs') `
+  (Join-Path $prefix 'node_modules/@memorax/memorax-code') (Join-Path $prefix 'codex.cmd')
+if ($LASTEXITCODE -ne 0) { throw 'The Codex native flow check failed; isolated state retained.' }
+& node (Join-Path $repoRoot 'scripts/codex-permissions-check.mjs') `
+  (Join-Path $prefix 'node_modules/@memorax/memorax-code') (Join-Path $prefix 'codex.cmd')
+if ($LASTEXITCODE -ne 0) { throw 'The Codex permissions check failed; isolated state retained.' }
 
 # Remove the runtime only after the smoke has confirmed process shutdown.
 Remove-Item -LiteralPath $testRoot -Recurse -Force

@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: Tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Run the existing regression suite
+        shell: bash
+        run: |
+          test_root="$(mktemp -d)"
+          trap 'rm -rf "$test_root"' EXIT
+          mkdir -p "$test_root/user" "$test_root/tmp"
+          env -i PATH="$PATH" HOME="$test_root/user" \
+            MEMORAX_CODE_HOME="$test_root/state" \
+            npm_config_cache="$test_root/npm-cache" TMPDIR="$test_root/tmp" \
+            make test
+
+  documentation:
+    name: Documentation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Check documentation and README synchronization
+        env:
+          README_SYNC_BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before || 'HEAD^' }}
+          README_SYNC_HEAD_REF: ${{ github.sha }}
+        run: make docs-check

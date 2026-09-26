@@ -245,6 +245,29 @@ or platform verification. Keep new behavior cases in the owning suites.
 
 ## Validation
 
+The [CI workflow](.github/workflows/ci.yml) runs on pull requests targeting
+`main` and every push to `main`, and can also be started manually. It has two
+checks on Linux with Node.js 24:
+
+- **Tests** runs `make test`: locked dependency installation, version
+  consistency, Backend type checking and compilation, all Backend, shared
+  runtime, shared Skill and adapter tests, npm package tests, and the local-only
+  trace gate. Test state uses an isolated home.
+- **Documentation** runs `make docs-check`: documentation contracts, local
+  links, shipped-document consistency, and mandatory paired README changes.
+  If either `README.md` or `README.zh.md` changes, both must change in the PR,
+  including language-specific edits. Reviewers verify that the content stays
+  synchronized. The checkout includes Git history and an explicit comparison
+  range so README checking does not silently skip for lack of a base ref.
+  Manual runs compare the selected commit with its first parent.
+
+Both checks run without path filters and keep stable names. Protect `main` by
+requiring **Tests** and **Documentation** in GitHub branch protection, including
+administrator merges. This setting is managed separately from the workflow.
+Full package installation and real-client checks remain separate from these
+basic checks. Use the Install/artifacts profile below for packaging or lifecycle
+changes. These checks require no model, MemoraX, or Jev credentials.
+
 Choose checks by impact from the profiles below. For architecture changes,
 the [change-routing table](ARCHITECTURE.md#8-test-architecture-and-change-routing)
 maps boundaries to owning tests and named profiles. Focused tests shorten the
@@ -287,9 +310,9 @@ Shared Skill and native launcher tests cover the real canonical Skill validator.
 Do not rerun an identical prerequisite build if the Backend profile has already
 built the same source. Rebuild whenever TypeScript changes. The Documentation
 profile checks local link targets, public paths, and shipped-document consistency;
-its README synchronization script compares committed Git refs, so also review
-uncommitted README changes in both languages. These checks do not prove prose
-accuracy or command behavior.
+its mandatory README synchronization script compares committed Git refs, so also
+review uncommitted README changes in both languages. These checks do not prove
+prose accuracy or command behavior.
 
 Native Windows package smoke coverage lives in
 [windows-npm-package-e2e.mjs](scripts/windows-npm-package-e2e.mjs). The separate
@@ -304,67 +327,79 @@ and explain any relevant checks not run. Public fixtures must never contain
 real API keys, private transcripts, personal memory, or infrastructure
 credentials.
 
-### Codex Installation CI
+### Codex Functional CI
 
-The [Codex installation workflow](.github/workflows/macos-codex-install.yml)
-runs on pull requests, pushes to `main`, and manual dispatch. Its Ubuntu job
-builds and validates the current checkout's platform-neutral npm artifact,
-then macOS, Linux, and native Windows jobs install that same artifact and
-verify setup with a pinned, real Codex CLI in temporary user and client homes.
-No model login, GitHub Environment secrets, or LLM calls are required.
+The [Codex functional workflow](.github/workflows/macos-codex-install.yml)
+runs on pull requests, pushes to `main`, and manual dispatch. Reuse the basic
+`Tests` and `Documentation` jobs above; this workflow adds installed-package
+and native-client evidence. It does not copy the source regression suites.
+Its Ubuntu job runs `npm-package-check` to build and validate one npm artifact.
+The package check still includes its existing npm regression prerequisite;
+`make test` alone does not build and install the final tarball.
 
-To reproduce on macOS or Linux after entering your development environment:
+Native jobs use temporary user and client homes on Ubuntu, macOS, and Windows
+with Node.js 24, plus Ubuntu with the minimum Node.js 20 runtime. They install
+the same artifact and pin Codex to 0.147.0. The lifecycle check exercises
+rejected setup input, failed setup and recovery, repeated setup, native plugin
+registration, Hook trust, stop/start, uninstall/reinstall, and replacement of
+the published 0.1.17 package with the candidate. Package replacement and the
+public update-command contract are reported separately. Unicode and spaces in
+isolated paths, existing provider settings, and synthetic personal memory are
+checked explicitly.
+
+The native conversation check runs real Codex against a local, deterministic
+Responses server and a separate MemoraX receiver. Native Codex creates its own
+session, Turn, rollout, and Hook events; the test must not synthesize these as
+proof of a native workflow. Assertions compare the actual outgoing request to
+independent expected content and identity. Model or tool text alone cannot
+prove that a request was sent.
+
+The permission check drives Codex's native app-server protocol. Full access,
+user approval, rejection, cancellation, and waiting are checked using native
+requests and filesystem effects. Auto-review cases must observe Codex's own
+review events; the driver never answers a user approval and calls it automatic
+review. Deterministic reviewer responses test the review mechanism, not the
+quality of a real model's risk judgment.
+
+These default jobs require no model login or GitHub Environment secrets and
+make no paid model calls. They report native CLI evidence, not Desktop or
+editor UI coverage. Hosted Windows administrators do not represent ordinary
+users or UAC. Real system credential stores, guest-account service contracts,
+all installation-source combinations, and unsupported native features require
+separate evidence; a skipped or blocked case is never a PASS.
+
+To reproduce on macOS or Linux inside an isolated development environment:
 
 ```bash
-memorax_dev make docs-check npm-package-check
-scripts/codex-install-check.sh dist/npm/tarballs 0.147.0
+memorax_dev make npm-package-check
+scripts/codex-install-check.sh dist/npm/tarballs 0.147.0 0.1.17
 ```
 
 On Windows, download the workflow's package artifact into `dist/npm/tarballs`,
-then run the native wrapper in a disposable PowerShell 7 session with Node.js
-and npm on PATH:
+then use a disposable PowerShell 7 session with Node.js and npm on PATH:
 
 ```powershell
-./scripts/codex-install-check.ps1 -TarballDirectory dist/npm/tarballs -CodexVersion 0.147.0
+./scripts/codex-install-check.ps1 -TarballDirectory dist/npm/tarballs -CodexVersion 0.147.0 -PreviousVersion 0.1.17
 ```
 
-The Windows wrapper invokes npm's `.cmd` entrypoints without changing the
-PowerShell execution policy. The smoke resolves Codex's Node entrypoint using
-the installed package's Windows invocation helper, without a command shell.
+The wrappers run the lifecycle, native-conversation, and permission checks.
+Windows uses npm's `.cmd` entrypoints without changing PowerShell execution
+policy. Each check isolates its Backend/client state and confirms managed
+process cleanup. Reports contain safe case results, versions, effective
+policies, request counts, and evidence kinds; private homes, credentials, raw
+rollouts, model output, and Backend tokens are not uploaded.
 
-The smoke checks existing-account setup using a synthetic key and a loopback
-MemoraX endpoint, native plugin registration, Hook trust, Backend readiness,
-setup completion, and repeat setup. It stops the Backend and removes temporary
-state after successful verification. Failures exit nonzero; if shutdown cannot
-be confirmed, temporary runtime files are retained. The workflow log is the
-test report; private client state and Backend tokens are not uploaded.
+Manual dispatch can enable `check_deepseek` to run only the existing provider
+connectivity check, skipping package and functional jobs. It uses the `test`
+environment's `LLM_BASE_URL`, `LLM_MODEL`, and `LLM_API_KEY`. PR and push events
+never run this paid job. It verifies a native text response and model/session
+evidence, not the plugin chain or approval behavior against a live model.
 
-This covers CLI installation on the recorded runner OS and architecture.
-Windows hosted runners run as administrators with UAC disabled; ordinary-user
-installation still needs its own case. Guest credential provisioning, real API
-authentication, desktop UI, and Agent task approval modes need separate tests.
-Hook trust during installation is not an Agent approval-mode test. Update the
-pinned Codex version deliberately when checking a new release.
-
-Manual dispatch can enable `check_deepseek` to run only the provider check,
-skipping the package and installation jobs. This separate job uses the
-`test` GitHub Environment's `LLM_BASE_URL` and `LLM_MODEL` variables and
-`LLM_API_KEY` secret to run one native Codex task. Pull-request and push events
-never run this job. The key is passed only through the provider's environment
-variable, not written to TOML or exposed in reports.
-
-The provider smoke uses DeepSeek's official model catalog, extracted as JSON
-from its public setup script and checked against a pinned digest. It never
-executes that script. It requires the configured model to exist in the catalog,
-uses low reasoning effort, disables provider retries, and limits the Codex
-process to two minutes. These are execution limits, not a hard token or cost
-cap. The report includes observed token usage; native Turn counts are not
-reported as HTTP request counts.
-
-A provider PASS verifies a native text response and its model/session evidence.
-It does not verify MemoraX writeback, Skill routing, tool use, or any Agent
-approval mode. Client state, raw rollout files, and provider output remain
-temporary and are not uploaded.
+The provider smoke parses DeepSeek's official model catalog as JSON from its
+public setup script and checks a pinned digest; it never executes that script.
+It uses low reasoning effort, zero provider retries, and a two-minute process
+timeout. These are execution limits, not a hard token or cost cap. Usage is
+reported when observed; native Turn counts are not reported as HTTP counts.
 
 The default `npm-package-check` uses a synthetic Claude plugin CLI for its
 installation smoke test; it does not require a local Claude installation.

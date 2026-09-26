@@ -108,24 +108,53 @@ test("documentation contract requires shipped document links to stay inside the 
   );
 });
 
-test("README sync rejects a one-sided change in an explicit range", async (t) => {
-  const root = await gitFixture(t);
-  const base = git(root, ["rev-parse", "HEAD"]);
-  await appendFile(join(root, "README.md"), "\nEnglish only.\n");
-  git(root, ["add", "README.md"]);
-  git(root, ["commit", "-m", "english only"]);
+for (const [label, files, status] of [
+  ["rejects English-only changes", ["README.md"], 1],
+  ["rejects Chinese-only changes", ["README.zh.md"], 1],
+  ["accepts paired changes across commits", ["README.md", "README.zh.md"], 0],
+  ["accepts changes without README edits", ["notes.txt"], 0],
+]) {
+  test(`README sync ${label} in an explicit range`, async (t) => {
+    const root = await gitFixture(t);
+    const base = git(root, ["rev-parse", "HEAD"]);
+    for (const file of files) {
+      await appendFile(join(root, file), "\nUpdated content.\n");
+      git(root, ["add", file]);
+      git(root, ["commit", "-m", `update ${file}`]);
+    }
 
+    const result = spawnSync("bash", [README_SYNC_SCRIPT], {
+      cwd: root,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        README_SYNC_BASE_REF: base,
+        README_SYNC_HEAD_REF: "HEAD",
+      },
+    });
+    assert.equal(result.status, status, result.stderr);
+    if (status === 0) {
+      assert.match(result.stdout, /README language sync check passed/);
+    } else {
+      assert.match(result.stderr, /README language sync check failed/);
+      assert.doesNotMatch(result.stdout, /check passed/);
+    }
+  });
+}
+
+test("README sync rejects an invalid explicit base ref", async (t) => {
+  const root = await gitFixture(t);
   const result = spawnSync("bash", [README_SYNC_SCRIPT], {
     cwd: root,
     encoding: "utf8",
     env: {
       ...process.env,
-      README_SYNC_BASE_REF: base,
+      README_SYNC_BASE_REF: "refs/heads/missing-base",
       README_SYNC_HEAD_REF: "HEAD",
     },
   });
-  assert.equal(result.status, 1);
-  assert.match(result.stderr, /README language sync check failed/);
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /invalid base\/head ref/);
 });
 
 test("README sync falls back when automatic origin/main is unrelated", async (t) => {

@@ -1,4 +1,4 @@
-name: Codex installation
+name: Codex functional checks
 
 on:
   workflow_dispatch:
@@ -24,13 +24,14 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
-      - name: Validate documentation and package installation
+          package-manager-cache: false
+      - name: Build and validate the installable package
         shell: bash
         run: |
           test_root="$(mktemp -d)"
@@ -39,7 +40,7 @@ jobs:
           env -i PATH="$PATH" HOME="$test_root/user" \
             MEMORAX_CODE_HOME="$test_root/state" \
             npm_config_cache="$test_root/npm-cache" TMPDIR="$test_root/tmp" \
-            make docs-check npm-package-check
+            make npm-package-check
       - name: Record artifact checksum
         shell: bash
         run: sha256sum dist/npm/tarballs/*.tgz
@@ -51,29 +52,39 @@ jobs:
           retention-days: 7
 
   install:
+    name: Codex (${{ matrix.os }}, Node ${{ matrix.node }})
     needs: package
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-15, windows-2025]
+        include:
+          - os: ubuntu-24.04
+            node: '24'
+          - os: ubuntu-24.04
+            node: '20'
+          - os: macos-15
+            node: '24'
+          - os: windows-2025
+            node: '24'
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
-          node-version: '24'
+          node-version: ${{ matrix.node }}
+          package-manager-cache: false
       - uses: actions/download-artifact@v4
         with:
           name: memorax-code-package
           path: dist/npm/tarballs
-      - name: Verify installation with the real Codex CLI (macOS/Linux)
+      - name: Verify lifecycle, native writeback and permissions (macOS/Linux)
         if: runner.os != 'Windows'
         shell: bash
         run: scripts/codex-install-check.sh dist/npm/tarballs 0.147.0
-      - name: Verify installation with the real Codex CLI (Windows)
+      - name: Verify lifecycle, native writeback and permissions (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: ./scripts/codex-install-check.ps1 -TarballDirectory dist/npm/tarballs -CodexVersion 0.147.0
@@ -84,12 +95,13 @@ jobs:
     environment: test
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
+          package-manager-cache: false
       - name: Install the pinned Codex CLI
         shell: bash
         run: |
