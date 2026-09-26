@@ -18,7 +18,7 @@ const fixtureKey = `sk_${"E".repeat(43)}`;
 const report = { status: "FAIL", platform: process.platform, arch: process.arch, checks: [] };
 let stage = "prerequisites";
 let root, env, workspace, entrypoint, stateHome, codexHome, backendPort, endpoint, registry;
-let resolveInvocation;
+let resolveInvocation, resolveNpmInvocation;
 let setupStarted = false;
 let requests = 0;
 const backendPids = new Set();
@@ -44,6 +44,8 @@ try {
     "Refusing npm lifecycle mutations outside the wrapper-owned prefix");
   ({ resolveWindowsCliInvocation: resolveInvocation } = await import(
     pathToFileURL(join(packageRoot, "lib", "windows-cli-invocation.mjs")).href));
+  ({ resolveNpmInvocation } = await import(
+    pathToFileURL(join(packageRoot, "lib", "npm-invocation.mjs")).href));
   const manifest = await readJson(join(packageRoot, "package.json"));
   check(manifest.name === "@memorax/memorax-code", "The installed package has an unexpected identity");
   sourceRoot = join(packageRoot, "lib", pluginName);
@@ -459,7 +461,8 @@ function check(condition, message) {
 async function readJson(path) { return JSON.parse(await readFile(path, "utf8")); }
 
 async function run(command, args, input = "") {
-  const invocation = resolveInvocation(command, args, { env });
+  const invocation = process.platform === "win32" && command === npmCommand
+    ? resolveNpmInvocation(args, { env }) : resolveInvocation(command, args, { env });
   const pending = execFileAsync(invocation.command, invocation.args, {
     cwd: workspace, env, timeout: 120_000, maxBuffer: 4 * 1024 * 1024, encoding: "utf8", windowsHide: true,
   });
