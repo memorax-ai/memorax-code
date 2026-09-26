@@ -366,7 +366,11 @@ user approval, rejection, cancellation, and waiting are checked using native
 requests and filesystem effects. Auto-review cases must observe Codex's own
 review events; the driver never answers a user approval and calls it automatic
 review. Deterministic reviewer responses test the review mechanism, not the
-quality of a real model's risk judgment.
+quality of a real model's risk judgment. Windows cases explicitly select Codex's
+`windows.sandbox = "unelevated"` Restricted Token mode; without a Windows
+sandbox, the client can downgrade requested workspace-write to read-only.
+Requested and effective policies remain strict assertions. Elevated sandbox
+setup, dedicated sandbox accounts, and UAC are separate coverage.
 
 These default jobs require no model login or GitHub Environment secrets and
 make no paid model calls. They report native CLI evidence, not Desktop or

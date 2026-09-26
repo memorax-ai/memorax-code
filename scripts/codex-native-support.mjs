@@ -113,26 +113,41 @@ export async function createNativeHarness({ packageRoot, codexCommand, label = "
     if (closed) return;
     closed = true;
     let cleanupError;
+    let cleanupStage = "CHILD_PROCESSES";
+    const describeCleanup = (error) => {
+      const code = ["EACCES", "EPERM", "EBUSY", "ENOTEMPTY", "EADDRINUSE", "ENOENT", "ESRCH"].includes(error.code)
+        ? error.code : Number.isInteger(error.code) ? `EXIT_${error.code}` : "FAILED";
+      error.nativeCode ??= `NATIVE_CLEANUP_${cleanupStage}_${code}`;
+      return error;
+    };
     try {
       await Promise.all([...children].map((child) => stopTree(child, env)));
       if (setupStarted) {
         const pidPath = join(stateHome, "runtime", "backend", "backend.pid.json");
         const current = await readFile(pidPath, "utf8").then(JSON.parse).catch(() => undefined);
         if (Number.isInteger(current?.pid) && current.pid > 0) backendPids.add(current.pid);
+        cleanupStage = "BACKEND_STOP";
         const stopped = JSON.parse((await runProduct(["stop", "--clients", "codex", "--json"])).stdout);
         check(stopped.ok === true, "NATIVE_BACKEND_STOP_FAILED");
         for (const pid of backendPids) check(!isAlive(pid), "NATIVE_BACKEND_PROCESS_REMAINS");
         check(await stat(pidPath).then(() => false, (error) => error.code === "ENOENT"), "NATIVE_BACKEND_RECORD_REMAINS");
+        cleanupStage = "PORT_RELEASE";
         const probe = createTcpServer();
         await new Promise((done, reject) => { probe.once("error", reject); probe.listen(backendPort, "127.0.0.1", done); });
         await new Promise((done) => probe.close(done));
       }
     } catch (error) {
-      cleanupError = error;
+      cleanupError = describeCleanup(error);
       for (const pid of backendPids) if (isAlive(pid)) await stopTree({ pid, kill: () => process.kill(pid, "SIGKILL") }, env);
     } finally {
-      await Promise.all([memoryServer.close(), modelServer.close()]);
-      await rm(root, { recursive: true, force: true });
+      try {
+        cleanupStage = "RECEIVERS";
+        await Promise.all([memoryServer.close(), modelServer.close()]);
+        cleanupStage = "TEMPORARY_STATE";
+        // Filesystem handles can finish closing after the observed processes exit.
+        // A bounded retry must still remove the entire owned directory to pass.
+        await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+      } catch (error) { cleanupError ??= describeCleanup(error); }
     }
     if (cleanupError) throw cleanupError;
   }

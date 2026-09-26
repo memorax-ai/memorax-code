@@ -78,11 +78,21 @@ try {
     return sendResponses(response, { output: [message(current.finalText, `final-${current.test.id}`)] });
   });
   stage = "native app-server initialization";
+  // Codex 0.147.0 coerces workspace-write to read-only on native Windows
+  // until a Windows sandbox implementation is explicitly selected. Exercise
+  // the supported restricted-token implementation without elevated OS setup.
+  const windowsSandboxArgs = process.platform === "win32" ? ["-c", 'windows.sandbox="unelevated"'] : [];
   rpc = new AppServer(harness.spawnCodex(["app-server", "--stdio", "--strict-config",
     "-c", "features.shell_tool=true", "-c", "features.unified_exec=true",
-    "-c", "features.shell_snapshot=false"]));
+    "-c", "features.shell_snapshot=false", ...windowsSandboxArgs]));
   await rpc.request("initialize", { clientInfo: { name: "memorax_permissions_ci", version: "1.0.0" }, capabilities: { experimentalApi: true } });
   rpc.notify("initialized", {});
+  if (process.platform === "win32") {
+    const configuration = await rpc.request("config/read", { includeLayers: false });
+    report.windowsSandbox = { requested: "unelevated", configured: configuration.config?.windows?.sandbox ?? "missing",
+      elevatedSetupExercised: false };
+    check(report.windowsSandbox.configured === "unelevated", "WINDOWS_NATIVE_SANDBOX_NOT_CONFIGURED");
+  }
   for (const test of cases) {
     stage = test.id;
     current = {
@@ -101,6 +111,9 @@ try {
       cwd: harness.workspace, approvalPolicy: test.policy, approvalsReviewer: test.reviewer,
       sandbox: test.sandbox, ephemeral: false,
     });
+    Object.assign(result, { requestedApprovalPolicy: test.policy, requestedReviewer: test.reviewer, requestedSandbox: test.sandbox,
+      effectiveApprovalPolicy: started.approvalPolicy ?? "missing", effectiveReviewer: started.approvalsReviewer ?? "missing",
+      effectiveSandbox: started.sandbox?.type ?? "missing" });
     check(started.approvalPolicy === test.policy && started.approvalsReviewer === test.reviewer, "EFFECTIVE_APPROVAL_CONFIGURATION_MISMATCH");
     const expectedSandbox = test.sandbox === "danger-full-access" ? "dangerFullAccess" : "workspaceWrite";
     check(started.sandbox?.type === expectedSandbox, "EFFECTIVE_SANDBOX_MISMATCH");
@@ -200,7 +213,7 @@ try {
     if (rpc) await rpc.close();
     if (harness) await harness.close();
     report.cleanup = "PASS";
-  } catch { report.status = "FAIL"; report.cleanup = "FAILED"; }
+  } catch (error) { report.status = "FAIL"; report.cleanup = error.nativeCode ?? "FAILED_PRIVATE_OUTPUT_SUPPRESSED"; }
 }
 console.log(JSON.stringify(report, null, 2));
 if (report.status !== "PASS") process.exitCode = 1;
