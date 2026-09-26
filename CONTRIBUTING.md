@@ -346,7 +346,8 @@ authentication, desktop UI, and Agent task approval modes need separate tests.
 Hook trust during installation is not an Agent approval-mode test. Update the
 pinned Codex version deliberately when checking a new release.
 
-Manual dispatch can also enable `check_deepseek`. This separate job uses the
+Manual dispatch can enable `check_deepseek` to run only the provider check,
+skipping the package and installation jobs. This separate job uses the
 `test` GitHub Environment's `LLM_BASE_URL` and `LLM_MODEL` variables and
 `LLM_API_KEY` secret to run one native Codex task. Pull-request and push events
 never run this job. The key is passed only through the provider's environment

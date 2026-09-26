@@ -58,8 +58,8 @@ try {
   await writeFile(catalogPath, JSON.stringify({ models: matches }), { mode: 0o600 });
   report.catalogSha256 = catalogSha256;
   const disabledFeatures = ["shell_tool", "unified_exec", "apply_patch_freeform", "view_image",
-    "multi_agent", "collab", "apps", "plugins", "plugin_hooks", "hooks", "codex_hooks",
-    "memories", "memory_tool", "remote_models", "responses_websockets", "responses_websockets_v2",
+    "multi_agent", "apps", "plugins", "plugin_hooks", "hooks",
+    "memories", "remote_models", "responses_websockets", "responses_websockets_v2",
     "shell_snapshot", "respect_system_proxy"];
   await writeFile(join(codexHome, "config.toml"), [
     `model = ${JSON.stringify(model)}`, `model_provider = "${provider}"`,
@@ -83,24 +83,36 @@ try {
   check(!result.stdout.includes(apiKey) && !result.stderr.includes(apiKey), "CREDENTIAL_IN_CLI_OUTPUT");
   stage = "native event verification";
   const events = jsonLines(result.stdout);
+  report.codexExitCode = 0;
+  const threads = events.filter((event) => event.type === "thread.started");
+  const completed = events.filter((event) => event.type === "turn.completed");
+  const items = events.filter((event) => ["item.started", "item.updated", "item.completed"].includes(event.type));
+  report.nativeItemEventCounts = Object.create(null);
+  for (const event of items) {
+    const type = event.item?.type;
+    const safeType = typeof type === "string" && /^[a-z][a-z0-9_]{0,63}$/.test(type) ? type : "invalid_or_missing_type";
+    const key = `${event.type}:${safeType}`;
+    report.nativeItemEventCounts[key] = (report.nativeItemEventCounts[key] ?? 0) + 1;
+  }
+  report.nativeTurnCounts = { started: events.filter((event) => event.type === "turn.started").length,
+    completed: completed.length };
+  const usage = completed.length === 1 ? completed[0].usage : undefined;
+  const validUsage = usage && ["input_tokens", "output_tokens", "cached_input_tokens"].every((key) =>
+    Number.isSafeInteger(usage[key]) && usage[key] >= 0) && usage.input_tokens > 0 && usage.output_tokens > 0;
+  report.usage = validUsage ? Object.fromEntries(["input_tokens", "cached_input_tokens", "cache_write_input_tokens",
+    "output_tokens", "reasoning_output_tokens"].filter((key) => Number.isSafeInteger(usage[key]) && usage[key] >= 0)
+    .map((key) => [key, usage[key]])) : "unavailable_or_invalid";
   const allowedEvents = new Set(["thread.started", "turn.started", "turn.completed",
     "item.started", "item.updated", "item.completed"]);
   check(events.every((event) => allowedEvents.has(event.type)), "UNEXPECTED_OR_FAILED_NATIVE_EVENT");
-  const threads = events.filter((event) => event.type === "thread.started");
-  const completed = events.filter((event) => event.type === "turn.completed");
   check(threads.length === 1 && typeof threads[0].thread_id === "string"
-    && events.filter((event) => event.type === "turn.started").length === 1
+    && report.nativeTurnCounts.started === 1
     && completed.length === 1, "EXPECTED_ONE_NATIVE_TURN");
-  const items = events.filter((event) => event.type.startsWith("item."));
   check(items.every((event) => ["agent_message", "reasoning"].includes(event.item?.type)), "TOOL_OR_UNKNOWN_ITEM_OBSERVED");
   const messages = items.filter((event) => event.type === "item.completed" && event.item.type === "agent_message");
   check(messages.length === 1 && messages[0].item.text.trim() === marker
     && (await readFile(lastMessage, "utf8")).trim() === marker, "FIXED_MARKER_MISMATCH");
-  const usage = completed[0].usage;
-  check(usage && ["input_tokens", "output_tokens", "cached_input_tokens"].every((key) =>
-    Number.isSafeInteger(usage[key]) && usage[key] >= 0)
-    && usage.input_tokens > 0 && usage.output_tokens > 0, "MISSING_OR_INVALID_NATIVE_USAGE");
-  report.usage = Object.fromEntries(["input_tokens", "cached_input_tokens", "output_tokens"].map((key) => [key, usage[key]]));
+  check(validUsage, "MISSING_OR_INVALID_NATIVE_USAGE");
 
   stage = "selected provider and model verification";
   const rollouts = (await readdir(join(codexHome, "sessions"), { recursive: true }))

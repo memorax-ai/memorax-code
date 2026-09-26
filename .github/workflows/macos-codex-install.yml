@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       check_deepseek:
-        description: Run one native Codex task with the test environment LLM configuration
+        description: Run only the native Codex provider check using the test environment
         type: boolean
         default: false
   pull_request:
@@ -20,6 +20,7 @@ concurrency:
 
 jobs:
   package:
+    if: github.event_name != 'workflow_dispatch' || !inputs.check_deepseek
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
