@@ -2,6 +2,11 @@ name: Codex installation
 
 on:
   workflow_dispatch:
+    inputs:
+      check_deepseek:
+        description: Run one native Codex task with the test environment LLM configuration
+        type: boolean
+        default: false
   pull_request:
   push:
     branches: [main]
@@ -71,3 +76,30 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: ./scripts/codex-install-check.ps1 -TarballDirectory dist/npm/tarballs -CodexVersion 0.147.0
+
+  provider:
+    if: github.event_name == 'workflow_dispatch' && inputs.check_deepseek
+    runs-on: ubuntu-24.04
+    environment: test
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install the pinned Codex CLI
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/provider-user"
+          env -i PATH="$PATH" HOME="$RUNNER_TEMP/provider-user" \
+            npm install --global --prefix "$RUNNER_TEMP/provider-cli" \
+            --no-audit --no-fund @openai/codex@0.147.0
+      - name: Check native Codex with the configured provider
+        shell: bash
+        env:
+          LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
+          LLM_MODEL: ${{ vars.LLM_MODEL }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+        run: node scripts/codex-provider-smoke.mjs "$RUNNER_TEMP/provider-cli/bin/codex"

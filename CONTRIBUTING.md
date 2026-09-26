@@ -346,6 +346,25 @@ authentication, desktop UI, and Agent task approval modes need separate tests.
 Hook trust during installation is not an Agent approval-mode test. Update the
 pinned Codex version deliberately when checking a new release.
 
+Manual dispatch can also enable `check_deepseek`. This separate job uses the
+`test` GitHub Environment's `LLM_BASE_URL` and `LLM_MODEL` variables and
+`LLM_API_KEY` secret to run one native Codex task. Pull-request and push events
+never run this job. The key is passed only through the provider's environment
+variable, not written to TOML or exposed in reports.
+
+The provider smoke uses DeepSeek's official model catalog, extracted as JSON
+from its public setup script and checked against a pinned digest. It never
+executes that script. It requires the configured model to exist in the catalog,
+uses low reasoning effort, disables provider retries, and limits the Codex
+process to two minutes. These are execution limits, not a hard token or cost
+cap. The report includes observed token usage; native Turn counts are not
+reported as HTTP request counts.
+
+A provider PASS verifies a native text response and its model/session evidence.
+It does not verify MemoraX writeback, Skill routing, tool use, or any Agent
+approval mode. Client state, raw rollout files, and provider output remain
+temporary and are not uploaded.
+
 The default `npm-package-check` uses a synthetic Claude plugin CLI for its
 installation smoke test; it does not require a local Claude installation.
 This verifies the packaged integration and lifecycle, not real-client behavior.
