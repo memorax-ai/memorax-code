@@ -740,6 +740,12 @@ that recover do not produce terminal failure records.
   flush; turn or size limits can trigger that flush during enqueue.
 - Buffering and chunking belong to the memory capability; rollout, transcript,
   DSH event-interval, and SDK message parsing remains client-specific.
+- Codex selects user text from the matching Turn's native `user_message`
+  event, because user-role response items can also carry injected Skill or
+  context instructions. A Turn without that event may use an unambiguous
+  response-item prompt. Conflicting native user events or distinct response-only
+  candidates fail closed. User text and its timestamp come from the same record;
+  session and Turn identity checks still apply to all candidate messages.
 - Native materializers pass the selected QA timestamps through the shared
   completion contract. The coordinator supplies explicitly labelled observations
   when native times are absent; automatic enqueue freezes any remaining fallback
