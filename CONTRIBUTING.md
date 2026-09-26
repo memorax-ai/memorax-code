@@ -321,11 +321,139 @@ Native Windows package smoke coverage lives in
 script's prerequisites and isolation before using it; a macOS/Linux suite or
 WSL run does not replace native Windows validation.
 
-Real-client, MemoraX-backed, or live Jev checks are explicit opt-in tests. Report them
-separately from synthetic tests, record platform and scenarios, redact output,
-and explain any relevant checks not run. Public fixtures must never contain
+Live-provider, MemoraX-backed, and live Jev checks are explicit opt-in tests.
+The credential-free native Codex workflow below runs by default on PRs. Report
+native-client and synthetic evidence separately, record platform and scenarios,
+redact output, and explain any relevant checks not run. Public fixtures must never contain
 real API keys, private transcripts, personal memory, or infrastructure
 credentials.
+
+### Codex Functional CI
+
+The [Codex functional workflow](.github/workflows/macos-codex-install.yml)
+runs on pull requests, pushes to `main`, and manual dispatch. Reuse the basic
+`Tests` and `Documentation` jobs above; this workflow adds installed-package
+and native-client evidence. It does not copy the source regression suites.
+Its Ubuntu job runs `npm-package-check` to build and validate one npm artifact.
+The package check still includes its existing npm regression prerequisite;
+`make test` alone does not build and install the final tarball.
+
+Native jobs use temporary user and client homes on Ubuntu, macOS, and Windows
+with Node.js 24, plus Ubuntu with the minimum Node.js 20 runtime. They install
+the same artifact. Codex 0.147.0 remains the reproducible baseline. Each workflow
+resolves the npm `latest` tag once and also checks that exact release on all
+three systems with Node.js 24. When latest equals the baseline, those jobs cover
+both tracks without duplicate execution; Ubuntu/Node.js 20 remains a baseline
+check. Requested and actual CLI versions are recorded and must match. A failed
+latest-version check fails the workflow instead of falling back to the baseline.
+The `Codex functional result` summary requires the package and entire matrix to
+succeed; failed, cancelled, or skipped dependencies fail it. Provider-only manual
+runs use a different result name and cannot supply this functional result. This
+workflow does not configure repository branch protection.
+The lifecycle check exercises
+specific rejected-input diagnostics, real-terminal cancellation and masked credential input,
+failed setup and recovery, repeated setup, native plugin registration, Hook
+trust, stop/start, and uninstall/reinstall. A scoped local npm registry serves
+the candidate to the real public `update --latest` command: an initial artifact
+download failure must preserve the installed 0.1.17 package and running Backend,
+then a terminal-driven retry must activate the candidate. The installed candidate
+also runs its own forced update through the scoped registry. Successful updates
+must retire the old Backend process and establish a new instance with a matching
+health response. Terminal credential checks cover both raw output and visible
+text after ANSI controls are removed. Unicode and spaces in
+isolated paths, existing provider settings, configuration values, and synthetic
+personal memory are checked explicitly.
+
+The native conversation check runs real Codex against a local, deterministic
+Responses server and a separate MemoraX receiver. Native Codex creates its own
+session, Turn, rollout, and Hook events; the test must not synthesize these as
+proof of a native workflow. Assertions compare actual outgoing requests with independently selected native
+source records under the current extraction contract. Automatic Add must have
+valid message fields, nonempty content, and the complete selected text; additional
+content is allowed. The checks retain exact session/Turn identity, request counts,
+and synthetic credential redaction. They do not call the production parser to
+construct their expected content. Negative controls reject missing or truncated
+source text, empty or malformed messages, and mismatched native identity, while
+allowing appended context. All outgoing messages are also checked against distinct
+foreign-workspace fixture text; permission cases reject other threads' fixture
+text. These controls test known source-isolation failures, not arbitrary provenance
+in real transcripts. Model or tool text alone cannot prove delivery.
+The current Codex parser can select an injected Skill response item as user text.
+Reports separately record whether the original user prompt is included; its
+absence does not fail this compatibility check. This is coverage of the existing
+extraction contract, not proof of full raw-trajectory transmission or preservation
+of every user message. Explicit CLI/Skill Search/Add command arguments have
+independent request assertions. Search validates the complete fixture fields and
+both JSON and default text output. Skill command checks validate and invoke the
+platform CLI entrypoint from the installed reference; a simulated model still
+directs the calls, so this is not autonomous natural-language Skill validation.
+A Repo Memory worker case checks shared global configuration. A separate native
+regression sets a different foreground model or provider, then requires the worker
+to use that override in its actual HTTP request and native record. Both cases run
+even when one fails, report expected and actual values, and return nonzero on any
+failure. Known product defects remain failing tests; this suite does not skip them
+or convert their failure to a passing expectation. Controlled no-op responses
+intentionally fail bundle validation, so these checks do not prove successful
+Repo Memory generation or permission inheritance.
+The native conversation and permission checks disable writeback buffering and
+chunking to validate immediate, exact requests. Default buffer flushing and
+chunked payload combinations require separate native coverage.
+
+The permission check drives Codex's native app-server protocol. Full access,
+user approval, rejection, cancellation, and waiting are checked using native
+requests and filesystem effects. Auto-review cases must observe Codex's own
+review events; the driver never answers a user approval and calls it automatic
+review. Deterministic reviewer responses test the review mechanism, not the
+quality of a real model's risk judgment. Windows cases explicitly select Codex's
+`windows.sandbox = "unelevated"` Restricted Token mode; without a Windows
+sandbox, the client can downgrade requested workspace-write to read-only.
+Requested and effective policies remain strict assertions. Elevated sandbox
+setup, dedicated sandbox accounts, and UAC are separate coverage.
+Restricted-mode probes explicitly request escalation; they verify approval
+routing and file effects, not unprivileged command execution or the sandbox's
+filesystem and network isolation.
+
+These default jobs require no model login or GitHub Environment secrets and
+make no paid model calls. They report native CLI evidence, not Desktop or
+editor UI coverage. Hosted Windows administrators do not represent ordinary
+users or UAC. Real system credential stores, guest-account service contracts,
+all installation-source combinations, and unsupported native features require
+separate evidence; a skipped or blocked case is never a PASS.
+
+To reproduce on macOS or Linux inside an isolated development environment:
+
+```bash
+memorax_dev make npm-package-check
+scripts/codex-install-check.sh dist/npm/tarballs 0.147.0 0.1.17
+```
+
+On Windows, download the workflow's package artifact into `dist/npm/tarballs`,
+then use a disposable PowerShell 7 session with Node.js and npm on PATH:
+
+```powershell
+./scripts/codex-install-check.ps1 -TarballDirectory dist/npm/tarballs -CodexVersion 0.147.0 -PreviousVersion 0.1.17
+```
+
+The wrappers accept a resolved stable Codex version, verify the installed version,
+install the test-only `node-pty@1.1.0` terminal dependency, then run
+the lifecycle, native-conversation, and permission checks.
+Windows uses npm's `.cmd` entrypoints without changing PowerShell execution
+policy. Each check isolates its Backend/client state and confirms managed
+process cleanup. Reports contain safe case results, versions, effective
+policies, request counts, and evidence kinds; private homes, credentials, raw
+rollouts, model output, and Backend tokens are not uploaded.
+
+Manual dispatch can enable `check_deepseek` to run only the existing provider
+connectivity check, skipping package and functional jobs. It uses the `test`
+environment's `LLM_BASE_URL`, `LLM_MODEL`, and `LLM_API_KEY`. PR and push events
+never run this paid job. It verifies a native text response and model/session
+evidence, not the plugin chain or approval behavior against a live model.
+
+The provider smoke parses DeepSeek's official model catalog as JSON from its
+public setup script and checks a pinned digest; it never executes that script.
+It uses low reasoning effort, zero provider retries, and a two-minute process
+timeout. These are execution limits, not a hard token or cost cap. Usage is
+reported when observed; native Turn counts are not reported as HTTP counts.
 
 The default `npm-package-check` uses a synthetic Claude plugin CLI for its
 installation smoke test; it does not require a local Claude installation.

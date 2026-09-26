@@ -312,7 +312,9 @@ const before = readFileSync(beforePath, "utf8");
 const after = readFileSync(join(home, "config.toml"), "utf8");
 assert.ok(after.startsWith(before));
 assert.doesNotMatch(after, /(?<!\r)\n/);
-assert.deepEqual(parse(after), { ...parse(before), jev: { enabled: false, api_key: "" } });
+const expected = parse(before);
+expected.jev = parse('enabled = false\napi_key = ""\n');
+assert.deepEqual(parse(after), expected);
 assert.deepEqual(readdirSync(home), ["config.toml"]);
 assert.equal(statSync(join(home, "config.toml")).mode & 0o777, 0o600);
 NODE_LEGACY_VERIFY

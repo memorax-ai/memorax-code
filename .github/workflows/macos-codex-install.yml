@@ -1,0 +1,165 @@
+name: Codex functional checks
+
+on:
+  workflow_dispatch:
+    inputs:
+      check_deepseek:
+        description: Run only the native Codex provider check using the test environment
+        type: boolean
+        default: false
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codex-install-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package:
+    if: github.event_name != 'workflow_dispatch' || !inputs.check_deepseek
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      codex-matrix: ${{ steps.codex-versions.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Resolve the latest Codex version once for this run
+        id: codex-versions
+        shell: bash
+        run: |
+          npm view @openai/codex dist-tags.latest --json > "$RUNNER_TEMP/codex-latest.json"
+          node --input-type=module <<'NODE'
+          import { appendFileSync, readFileSync } from 'node:fs';
+          const baseline = '0.147.0';
+          const latest = JSON.parse(readFileSync(`${process.env.RUNNER_TEMP}/codex-latest.json`, 'utf8'));
+          if (typeof latest !== 'string' || !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(latest)) {
+            throw new Error('The npm latest tag must resolve to an exact stable Codex version');
+          }
+          const platforms = ['ubuntu-24.04', 'macos-15', 'windows-2025'];
+          const include = platforms.map((os) => ({ os, node: '24', codex: baseline,
+            channel: latest === baseline ? 'baseline+latest' : 'baseline' }));
+          include.push({ os: 'ubuntu-24.04', node: '20', codex: baseline, channel: 'baseline' });
+          if (latest !== baseline) include.push(...platforms.map((os) => ({ os, node: '24', codex: latest, channel: 'latest' })));
+          appendFileSync(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify({ include })}\n`);
+          appendFileSync(process.env.GITHUB_STEP_SUMMARY,
+            `Codex baseline: **${baseline}**; npm latest resolved for this run: **${latest}**.\n\n` +
+            `${include.length} required installation, native-flow and permission jobs; no version fallback.\n`);
+          NODE
+      - name: Verify test assertions reject malformed content and unexpected failures
+        run: node --test scripts/codex-native-content-check.test.mjs scripts/codex-lifecycle-assertions.test.mjs
+      - name: Build and validate the installable package
+        shell: bash
+        run: |
+          test_root="$(mktemp -d)"
+          trap 'rm -rf "$test_root"' EXIT
+          mkdir -p "$test_root/user" "$test_root/tmp"
+          env -i PATH="$PATH" HOME="$test_root/user" \
+            MEMORAX_CODE_HOME="$test_root/state" \
+            npm_config_cache="$test_root/npm-cache" TMPDIR="$test_root/tmp" \
+            make npm-package-check
+      - name: Record artifact checksum
+        shell: bash
+        run: sha256sum dist/npm/tarballs/*.tgz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: memorax-code-package
+          path: dist/npm/tarballs/*.tgz
+          if-no-files-found: error
+          retention-days: 7
+
+  install:
+    name: Codex ${{ matrix.channel }} ${{ matrix.codex }} (${{ matrix.os }}, Node ${{ matrix.node }})
+    needs: package
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.package.outputs.codex-matrix) }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+          package-manager-cache: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: memorax-code-package
+          path: dist/npm/tarballs
+      - name: Verify lifecycle, native writeback, permissions and inheritance (macOS/Linux)
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          CODEX_VERSION: ${{ matrix.codex }}
+        run: scripts/codex-install-check.sh dist/npm/tarballs "$CODEX_VERSION"
+      - name: Verify lifecycle, native writeback, permissions and inheritance (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          CODEX_VERSION: ${{ matrix.codex }}
+        run: ./scripts/codex-install-check.ps1 -TarballDirectory dist/npm/tarballs -CodexVersion $env:CODEX_VERSION
+
+  functional-result:
+    name: ${{ github.event_name == 'workflow_dispatch' && inputs.check_deepseek && 'Codex provider-only result' || 'Codex functional result' }}
+    if: always()
+    needs: [package, install, provider]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Require every job for the requested scope to succeed
+        shell: bash
+        env:
+          PACKAGE_RESULT: ${{ needs.package.result }}
+          INSTALL_RESULT: ${{ needs.install.result }}
+          PROVIDER_RESULT: ${{ needs.provider.result }}
+          PROVIDER_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.check_deepseek }}
+        run: |
+          if [[ "$PROVIDER_ONLY" == true ]]; then
+            printf 'Provider-only check: **%s**. This run does not validate the functional matrix.\n' "$PROVIDER_RESULT" >> "$GITHUB_STEP_SUMMARY"
+            [[ "$PROVIDER_RESULT" == success ]]
+            exit
+          fi
+          printf 'Package: **%s**\n\nCodex matrix: **%s**\n' "$PACKAGE_RESULT" "$INSTALL_RESULT" >> "$GITHUB_STEP_SUMMARY"
+          if [[ "$PACKAGE_RESULT" != success || "$INSTALL_RESULT" != success ]]; then
+            echo '::error::All package and Codex matrix jobs must succeed. Failed, cancelled or skipped dependencies do not pass this check.'
+            exit 1
+          fi
+
+  provider:
+    if: github.event_name == 'workflow_dispatch' && inputs.check_deepseek
+    runs-on: ubuntu-24.04
+    environment: test
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Install the pinned Codex CLI
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/provider-user"
+          env -i PATH="$PATH" HOME="$RUNNER_TEMP/provider-user" \
+            npm install --global --prefix "$RUNNER_TEMP/provider-cli" \
+            --no-audit --no-fund @openai/codex@0.147.0
+      - name: Check native Codex with the configured provider
+        shell: bash
+        env:
+          LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
+          LLM_MODEL: ${{ vars.LLM_MODEL }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+        run: node scripts/codex-provider-smoke.mjs "$RUNNER_TEMP/provider-cli/bin/codex"

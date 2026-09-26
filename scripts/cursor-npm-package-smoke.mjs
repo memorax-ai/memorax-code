@@ -277,6 +277,11 @@ function run(command, args, options = {}) {
     const timeout = setTimeout(() => child.kill(), 20_000);
     child.stdout.on("data", (chunk) => { stdout += String(chunk); });
     child.stderr.on("data", (chunk) => { stderr += String(chunk); });
+    child.stdin.on("error", (error) => {
+      // A child may exit before consuming stdin. Its exit status and captured
+      // response still determine the result instead of an unhandled EPIPE.
+      if (error.code !== "EPIPE") { clearTimeout(timeout); reject(error); }
+    });
     child.on("error", (error) => { clearTimeout(timeout); reject(error); });
     child.on("close", (code) => {
       clearTimeout(timeout);
