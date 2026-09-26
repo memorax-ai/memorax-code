@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
-import { access, readFile, readdir } from "node:fs/promises";
+import { access, readFile, readdir, realpath } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { setTimeout as delay } from "node:timers/promises";
@@ -237,8 +237,12 @@ async function verifyWriteback({ threadId, turnId, completed }) {
   const starts = records.filter((record) => record.type === "event_msg" && record.payload.type === "task_started");
   check(starts.length === 1 && starts[0].payload.turn_id === turnId, "PERMISSION_NATIVE_TURN_MISMATCH");
   const contexts = records.filter((record) => record.type === "turn_context");
-  check(contexts.length > 0 && contexts.every((record) => record.payload.turn_id === turnId
-    && record.payload.model === "gpt-5.4" && resolve(record.payload.cwd) === harness.workspace), "PERMISSION_NATIVE_CONTEXT_MISMATCH");
+  check(contexts.length > 0, "PERMISSION_NATIVE_CONTEXT_MISSING");
+  const workspace = await realpath(harness.workspace);
+  for (const context of contexts) {
+    check(context.payload.turn_id === turnId && context.payload.model === "gpt-5.4"
+      && await realpath(context.payload.cwd) === workspace, "PERMISSION_NATIVE_CONTEXT_MISMATCH");
+  }
   if (!completed) {
     check(!records.some((record) => record.type === "event_msg" && record.payload.type === "agent_message"
       && record.payload.message === current.finalText), "INTERRUPTED_TURN_HAS_FIXTURE_FINAL_RESPONSE");
@@ -259,15 +263,31 @@ async function verifyWriteback({ threadId, turnId, completed }) {
   const hash = (text) => createHash("sha256").update(text).digest("hex").slice(0, 16);
   check(body.metadata.idempotency_key === `automatic:codex:${hash(body.user_id)}:${threadId}:${hash(current.prompt)}:${hash(current.finalText)}`,
     "PERMISSION_WRITEBACK_IDEMPOTENCY_MISMATCH");
-  const user = records.find((record) => record.type === "event_msg" && record.payload.type === "user_message" && record.payload.message === current.prompt);
-  const assistant = records.find((record) => record.type === "event_msg" && record.payload.type === "agent_message" && record.payload.message === current.finalText);
-  check(user && assistant && body.messages[0].timestamp === Date.parse(user.timestamp)
-    && body.messages[1].timestamp === Date.parse(assistant.timestamp), "PERMISSION_NATIVE_QA_OR_TIMESTAMP_MISMATCH");
+  const interval = records.slice(records.indexOf(starts[0]));
+  const user = interval.find((record) => record.type === "event_msg" && record.payload.type === "user_message"
+    && record.payload.message === current.prompt);
+  const assistant = interval.filter((record) => record.type === "response_item" && record.payload.type === "message"
+    && record.payload.role === "assistant" && record.payload.phase === "final_answer"
+    && (!record.payload.internal_chat_message_metadata_passthrough?.turn_id
+      || record.payload.internal_chat_message_metadata_passthrough.turn_id === turnId)
+    && record.payload.content?.filter((part) => part.type === "output_text").map((part) => part.text).join("\n") === current.finalText).at(-1);
+  const completion = interval.find((record) => record.type === "event_msg" && record.payload.type === "task_complete"
+    && record.payload.turn_id === turnId && record.payload.last_agent_message === current.finalText);
+  // Stop can send Add before task_complete is persisted. Both eligible times
+  // must belong to this exact Turn and its independently expected final text.
+  check(user && assistant, "PERMISSION_NATIVE_QA_RECORDS_MISSING");
+  check(body.messages[0].timestamp === Date.parse(user.timestamp), "PERMISSION_NATIVE_USER_TIMESTAMP_MISMATCH");
+  const assistantTimeSources = [["final_response_item", assistant], ["task_complete", completion]]
+    .filter(([, record]) => record && body.messages[1].timestamp === Date.parse(record.timestamp))
+    .map(([source]) => source);
+  check(assistantTimeSources.length > 0, "PERMISSION_NATIVE_ASSISTANT_TIMESTAMP_MISMATCH");
+  check(JSON.stringify(body.metadata.memorax_code_timestamp_sources) === '["native","native"]', "PERMISSION_TIME_AUTHORITY_MISMATCH");
   const serialized = JSON.stringify(body);
   for (const excluded of [harness.root, fixtureKey, current.command, "Controlled test verdict;"]) {
     check(!serialized.includes(excluded), "PERMISSION_NON_QA_CONTENT_ENTERED_PAYLOAD");
   }
-  return { requestCount: 1, exactQaMatched: true, nativeSessionAndTurnMatched: true, scopeMatched: true, timestampsMatched: true };
+  return { requestCount: 1, exactQaMatched: true, nativeSessionAndTurnMatched: true,
+    scopeMatched: true, timestampsMatched: true, assistantTimeSources };
 }
 
 class AppServer {

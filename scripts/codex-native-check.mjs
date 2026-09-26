@@ -60,15 +60,20 @@ try {
   stage = "direct installed memory commands";
   const directQuery = "Parser validation: which boundary was established?";
   const directMemory = "Validate parser input before interpreting structured data.";
+  const directReason = "Preserve the parser validation invariant.";
   const beforeDirect = harness.memoryRequests.length;
   const searched = JSON.parse((await harness.runMemory(["search", "--query", directQuery, "--session-id", first, "--json"])).stdout);
   check(searched.ok === true && JSON.stringify(searched).includes(searchResult), "DIRECT_SEARCH_RESULT_MISMATCH");
   const added = JSON.parse((await harness.runMemory(["add", "--memory", directMemory, "--type", "procedural",
-    "--reason", "Preserve the parser validation invariant.", "--session-id", first, "--json"])).stdout);
+    "--reason", directReason, "--session-id", first, "--json"])).stdout);
   check(added.ok === true && added.receipt?.accepted === true, "DIRECT_ADD_NOT_ACCEPTED");
+  for (const result of [searched, added]) check(result.baseUserId === fixtureUser
+    && result.effectiveUserId === `${fixtureUser}@${basename(harness.workspace)}`
+    && result.workspace === basename(harness.workspace) && result.scopeKind === "local-directory"
+    && result.workspaceScope === "bound", "DIRECT_MEMORY_SCOPE_RESULT_MISMATCH");
   check(harness.memoryRequests.length === beforeDirect + 2, "DIRECT_MEMORY_REQUEST_COUNT_MISMATCH");
-  check(harness.memoryRequests[beforeDirect].body.query === directQuery
-    && JSON.stringify(harness.memoryRequests[beforeDirect + 1].body.messages).includes(directMemory), "DIRECT_MEMORY_PAYLOAD_MISMATCH");
+  verifyExplicitRequest(harness.memoryRequests[beforeDirect], { operation: "search", value: directQuery });
+  verifyExplicitRequest(harness.memoryRequests[beforeDirect + 1], { operation: "add", value: directMemory, reason: directReason, sessionId: first });
   report.checks.push("direct installed Search and Add each issue one scoped request");
 
   stage = "installed background launcher model inheritance";
@@ -86,8 +91,9 @@ try {
     const referenceText = await readFile(reference, "utf8");
     const query = "Native Skill parser validation: which invariant applies?";
     const memory = "The native Skill preserves parser validation before interpretation.";
+    const reason = "Keep the verified parser validation lesson.";
     const args = operation === "search" ? ["search", "--query", query, "--json"]
-      : ["add", "--memory", memory, "--type", "procedural", "--reason", "Keep the verified parser validation lesson.", "--json"];
+      : ["add", "--memory", memory, "--type", "procedural", "--reason", reason, "--json"];
     const command = nodeCommand([harness.memoryEntrypoint, ...args]);
     const before = harness.memoryRequests.length;
     const prompt = `$${skillName} Use coding memory ${operation} for the parser validation lesson.`;
@@ -96,11 +102,17 @@ try {
       (body, response) => {
         check(inputText(body).includes("# MemoraX Code") && inputText(body).includes("## Authority Router"), "NATIVE_SKILL_NOT_LOADED");
         sendResponses(response, { output: [shellCall(body, nodeCommand(["-e",
-          'process.stdout.write(require("node:fs").readFileSync(process.argv[1], "utf8"))', reference]), `read-${operation}`)] });
+          'process.stdout.write(require("node:fs").readFileSync(process.argv[1], "utf8")); console.log("\\nNATIVE_SKILL_SESSION=" + JSON.stringify({ thread: process.env.CODEX_THREAD_ID ?? null, memoryCli: process.env.MEMORAX_CODE_MEMORY_CLI_SESSION_ID ?? null, memorax: process.env.MEMORAX_CODE_MEMORAX_SESSION_ID ?? null }));', reference]), `read-${operation}`)] });
       },
       (body, response) => {
         check(inputText(body).includes(referenceText.split("\n")[0])
           && inputText(body).includes(referenceText.trim().split("\n").at(-1)), "NATIVE_SKILL_REFERENCE_NOT_READ");
+        const result = body.input.filter((item) => item.type === "function_call_output" && item.call_id === `read-${operation}`);
+        check(result.length === 1 && typeof result[0].output === "string", "NATIVE_SKILL_REFERENCE_TOOL_RESULT_MISSING");
+        const sessions = result[0].output.split(/\r?\n/).filter((line) => line.startsWith("NATIVE_SKILL_SESSION="));
+        check(sessions.length === 1, "NATIVE_SKILL_SESSION_ENV_MISSING");
+        const session = JSON.parse(sessions[0].slice("NATIVE_SKILL_SESSION=".length));
+        check(session.thread === first && session.memoryCli === null && session.memorax === null, "NATIVE_SKILL_SESSION_ENV_MISMATCH");
         sendResponses(response, { output: [shellCall(body, command, `memory-${operation}`)] });
       },
       (body, response) => {
@@ -111,8 +123,8 @@ try {
       },
     ] });
     const request = harness.memoryRequests[before];
-    check(request.path === `/v1/memories/${operation}`, "NATIVE_SKILL_OPERATION_MISMATCH");
-    check(operation === "search" ? request.body.query === query : JSON.stringify(request.body.messages).includes(memory), "NATIVE_SKILL_PAYLOAD_MISMATCH");
+    // CODEX_THREAD_ID binds native scope. Without a CLI session override, Add uses the documented CLI session.
+    verifyExplicitRequest(request, { operation, value: operation === "search" ? query : memory, reason, sessionId: "memorax-cli" });
     report.checks.push(`native Skill ${operation}: loaded router, read installed reference, executed native shell tool and consumed CLI result`);
   }
 
@@ -135,6 +147,8 @@ try {
   report.mainChainModelRequests = harness.modelRequests.length;
   report.modelRequests = harness.modelRequests.length + 2;
   report.memoryRequests = { automaticAdd: 6, explicitAdd: 2, explicitSearch: 2 };
+  report.explicitMemoryScope = { requestsValidated: 4, scope: "workspace-name.v1", searchSessionField: "absent",
+    directAddSessionSource: "--session-id", nativeSkillScopeSource: "CODEX_THREAD_ID", nativeSkillAddSessionSource: "memorax-cli default" };
   report.model = "gpt-5.4";
   report.provider = "local_native";
 } catch (error) {
@@ -197,6 +211,29 @@ async function turn({ prompt, answer, sessionId, cwd = harness.workspace, expect
     "NATIVE_WRITEBACK_IDEMPOTENCY_MISMATCH");
   expectedTurns.push({ sessionId: nativeSession, prompt, answer, cwd, body });
   return nativeSession;
+}
+
+function verifyExplicitRequest(request, { operation, value, reason, sessionId }) {
+  check(request.method === "POST" && request.path === `/v1/memories/${operation}`
+    && request.authorization === `Token ${fixtureKey}`, "EXPLICIT_MEMORY_TRANSPORT_MISMATCH");
+  const body = request.body;
+  check(body.user_id === `${fixtureUser}@${basename(harness.workspace)}`, "EXPLICIT_MEMORY_SCOPE_MISMATCH");
+  if (operation === "search") {
+    check(body.query === value && !Object.hasOwn(body, "session_id") && !Object.hasOwn(body, "metadata"), "EXPLICIT_SEARCH_PAYLOAD_MISMATCH");
+    return;
+  }
+  check(body.session_id === sessionId && body.metadata?.memorax_code_session_id === sessionId,
+    "EXPLICIT_ADD_SESSION_MISMATCH");
+  check(body.metadata.memorax_code_base_user_id === fixtureUser
+    && body.metadata.memorax_code_workspace === basename(harness.workspace)
+    && body.metadata.memorax_code_memory_scope === "workspace-name.v1"
+    && !Object.hasOwn(body.metadata, "memorax_code_branch_id"), "EXPLICIT_ADD_SCOPE_METADATA_MISMATCH");
+  check(JSON.stringify(body.messages?.map(({ role, content }) => ({ role, content })))
+    === JSON.stringify([{ role: "user", content: value }]), "EXPLICIT_ADD_CONTENT_MISMATCH");
+  const hash = createHash("sha256").update(`procedural\n${reason}\n${value}`).digest("hex").slice(0, 16);
+  check(body.metadata.idempotency_key === `memory-cli:${sessionId}:${hash}`
+    && body.metadata.source_detail === "memorax_code_memory_cli" && body.metadata.memory_type === "procedural"
+    && body.metadata.memorax_code_memory_reason === reason, "EXPLICIT_ADD_METADATA_MISMATCH");
 }
 
 async function verifyNativeRollouts() {
@@ -293,6 +330,7 @@ async function verifyBackgroundInheritance() {
     const files = (await readdir(join(background.codexHome, "sessions"), { recursive: true })).filter((path) => path.endsWith(".jsonl"));
     check(files.length === 2, "BACKGROUND_NATIVE_SESSION_COUNT_MISMATCH");
     const ids = new Set();
+    const observedPermissions = {};
     let workerObserved = false;
     for (const file of files) {
       const records = (await readFile(join(background.codexHome, "sessions", file), "utf8")).trim().split(/\r?\n/).map(JSON.parse);
@@ -301,6 +339,17 @@ async function verifyBackgroundInheritance() {
       ids.add(metadata.id);
       const contexts = records.filter((record) => record.type === "turn_context");
       check(contexts.length >= 1 && contexts.every((record) => record.payload.model === "gpt-5.4"), "BACKGROUND_NATIVE_MODEL_MISMATCH");
+      observedPermissions[metadata.id === foregroundId ? "foreground" : "background"] = contexts.map(({ payload }) => {
+        check(["untrusted", "on-failure", "on-request", "never"].includes(payload.approval_policy), "BACKGROUND_NATIVE_APPROVAL_POLICY_UNSUPPORTED");
+        const sandbox = payload.sandbox_policy;
+        check(["danger-full-access", "read-only", "workspace-write", "external-sandbox"].includes(sandbox?.type),
+          "BACKGROUND_NATIVE_SANDBOX_POLICY_UNSUPPORTED");
+        const network = sandbox.network_access;
+        check(network === undefined || typeof network === "boolean" || ["enabled", "restricted"].includes(network),
+          "BACKGROUND_NATIVE_NETWORK_POLICY_UNSUPPORTED");
+        return { approval_policy: payload.approval_policy,
+          sandbox_policy: { type: sandbox.type, ...(network === undefined ? {} : { network_access: network }) } };
+      });
       const userMessages = records.filter((record) => record.type === "event_msg" && record.payload.type === "user_message");
       if (metadata.id !== foregroundId) workerObserved = userMessages.some((record) => record.payload.message === job.prompt);
     }
@@ -308,7 +357,7 @@ async function verifyBackgroundInheritance() {
     await waitFor(() => [...ownedPids].every((pid) => !processAlive(pid)), "BACKGROUND_PROCESS_REMAINS");
     return { status: "PASS", model: "gpt-5.4", provider: "local_native", foregroundRequests: 1, backgroundRequests: 1,
       distinctNativeSessions: 2, jobStatus: "failed", expectedFailure: "artifact_validation_failed",
-      repoMemoryBuildValidated: false, permissionInheritanceValidated: false };
+      repoMemoryBuildValidated: false, permissionInheritanceValidated: false, observedPermissions };
   } finally {
     await jobs().catch(() => {});
     for (const pid of ownedPids) if (processAlive(pid)) {

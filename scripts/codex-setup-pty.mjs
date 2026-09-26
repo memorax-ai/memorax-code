@@ -2,6 +2,7 @@
 import { createRequire } from "node:module";
 import { chmod, stat } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
+import { stripVTControlCharacters } from "node:util";
 
 // A real PTY is required here: piped answers and ASSUME_INTERACTIVE fixtures do
 // not exercise masked input, Ctrl-C, or native terminal detection.
@@ -11,6 +12,7 @@ let timeout;
 let output = "";
 let input;
 let errorCode;
+let cursorReports = 0;
 try {
   check(process.argv.length === 5, "EXPECTED_PTY_ROOT_ENTRYPOINT_AND_MODE");
   const [, , dependencyRoot, entrypoint, mode] = process.argv;
@@ -49,16 +51,24 @@ try {
         terminal.kill();
         return;
       }
+      // ConPTY and readline use terminal control sequences during repainting.
+      // Answer cursor-position queries as a terminal and match visible prompts.
+      const queries = output.split("\x1b[6n").length - 1;
+      while (cursorReports < queries && cursorReports < 8) {
+        cursorReports += 1;
+        terminal.write("\x1b[1;1R");
+      }
+      const visible = stripVTControlCharacters(output);
       // These are exact product prompt contracts, not a semantic success judge.
-      if (!report.usernamePromptSeen && /Username from your existing MemoraX Code setup[^\r\n]*: /.test(output)) {
+      if (!report.usernamePromptSeen && /Username from your existing MemoraX Code setup[^\r\n]*: /.test(visible)) {
         report.usernamePromptSeen = true;
         terminal.write(`${input.username}\r`);
       }
-      if (!report.languagePromptSeen && output.includes("Preferred language [ZH/en] (used for Memory extraction): ")) {
+      if (!report.languagePromptSeen && visible.includes("Preferred language [ZH/en] (used for Memory extraction): ")) {
         report.languagePromptSeen = true;
         terminal.write("en\r");
       }
-      if (!report.keyPromptSeen && output.includes("MemoraX API key: ")) {
+      if (!report.keyPromptSeen && visible.includes("MemoraX API key: ")) {
         report.keyPromptSeen = true;
         // Allow the child to finish enabling raw masked input after the prompt.
         setTimeout(() => terminal.write(mode === "cancel" ? "\x03" : `${input.apiKey}\r`), 30);
@@ -75,7 +85,7 @@ try {
   check(!errorCode, errorCode);
   if (mode !== "update") check(report.usernamePromptSeen && report.keyPromptSeen, "EXPECTED_INTERACTIVE_PROMPTS_NOT_OBSERVED");
   check(!output.includes(input.apiKey), "TERMINAL_DISCLOSED_FIXTURE_CREDENTIAL");
-  const plainOutput = output.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
+  const plainOutput = stripVTControlCharacters(output);
   if (mode === "complete") check(plainOutput.includes("*".repeat(input.apiKey.length)), "MASKED_KEY_INPUT_NOT_OBSERVED");
   check(mode === "cancel" ? report.exitCode !== 0 || report.signal > 0
     : report.exitCode === 0 && report.signal === 0, "UNEXPECTED_TERMINAL_EXIT_CODE");
@@ -87,6 +97,8 @@ try {
   if (error.message === "posix_spawnp failed.") report.nativeErrorCode = "PTY_SPAWN_FAILED";
 } finally {
   clearTimeout(timeout);
+  report.outputBytes = Buffer.byteLength(output);
+  report.cursorPositionReplies = cursorReports;
   if (terminal) { try { terminal.kill(); } catch {} }
 }
 console.log(JSON.stringify(report));

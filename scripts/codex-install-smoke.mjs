@@ -294,6 +294,7 @@ try {
   if (typeof error.code === "number") report.exitCode = error.code;
   if (error.diagnosticCode) report.diagnosticCode = error.diagnosticCode;
   if (error.terminalError) report.terminalError = error.terminalError;
+  if (error.terminalDiagnostics) report.terminalDiagnostics = error.terminalDiagnostics;
   if (error.terminalNativeError) report.terminalNativeError = error.terminalNativeError;
 } finally {
   try {
@@ -440,6 +441,9 @@ async function terminalSetup(mode) {
     try {
       const safe = JSON.parse(error.stdout);
       if (/^[A-Z][A-Z0-9_]{1,79}$/.test(safe.error)) error.terminalError = safe.error;
+      error.terminalDiagnostics = Object.fromEntries([
+        "usernamePromptSeen", "keyPromptSeen", "languagePromptSeen", "outputBytes", "cursorPositionReplies", "exitCode", "signal",
+      ].filter((key) => typeof safe[key] === "boolean" || Number.isFinite(safe[key])).map((key) => [key, safe[key]]));
       if (/^[A-Z][A-Z0-9_]{1,79}$/.test(safe.nativeErrorCode)) error.terminalNativeError = safe.nativeErrorCode;
     } catch {}
     throw error;

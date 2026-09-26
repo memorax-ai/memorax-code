@@ -886,17 +886,20 @@ test("failed startup retains PID state when cleanup fails or the PID remains ali
   ]) {
     await t.test(name, async () => {
       const home = await mkdtemp(join(tmpdir(), "memorax-code-backend-cleanup-failure-"));
-      const occupied = createServer((_request, response) => {
-        response.writeHead(200, { "content-type": "application/json" });
-        response.end('{"ok":true,"service":"not-memorax-code"}');
-      });
-      const port = await listen(occupied);
+      let healthProbes = 0;
       let child;
       let childClosed;
       try {
         const result = await startBackendService(
-          { home, port, timeoutMs: 100 },
+          { home, port: 18789, timeoutMs: 100 },
           {
+            // This case tests cleanup after an identity failure, not HTTP timing.
+            fetch: async () => {
+              healthProbes += 1;
+              return new Response('{"ok":true,"service":"not-memorax-code"}', {
+                status: 200, headers: { "content-type": "application/json" },
+              });
+            },
             terminateProcessTree,
             isProcessAlive: () => true,
             spawnProcess: (_command, _args, options) => {
@@ -906,6 +909,7 @@ test("failed startup retains PID state when cleanup fails or the PID remains ali
             },
           },
         );
+        assert.ok(healthProbes > 0);
         assert.equal(result.ok, false);
         assert.match(result.error, /cleanup failed and PID state was retained/);
         assert.equal(result.errorCode, "BACKEND_HEALTH_NOT_READY");
@@ -921,7 +925,6 @@ test("failed startup retains PID state when cleanup fails or the PID remains ali
           child.kill("SIGKILL");
         }
         await childClosed;
-        await new Promise((resolve) => occupied.close(resolve));
         await rm(home, { recursive: true, force: true });
       }
     });
