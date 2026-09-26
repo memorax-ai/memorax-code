@@ -202,6 +202,7 @@ async function stopTree(child, env) {
     }
   }
 }
+export { stopTree as stopNativeProcessTree };
 function isolatedEnv({ root, home, stateHome, codexHome, codexCommand, packageRoot, backendPort, memoryUrl, writeback }) {
   const windowsRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT ?? "C:\\Windows";
   const systemPaths = process.platform === "win32" ? [join(windowsRoot, "System32"), windowsRoot,

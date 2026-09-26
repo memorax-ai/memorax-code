@@ -92,13 +92,13 @@ test("Codex rollout reader supports response_item-only user and final assistant 
   });
 });
 
-test("Codex rollout reader prefers response_item messages over legacy event messages", () => {
+test("Codex rollout reader prefers native user events and response_item final assistant messages", () => {
   const transcript = jsonLines([
     sessionMeta("session-1"),
     taskStarted("turn-1"),
     turnContext("turn-1"),
     { ...responseItemUserMessage("Current-format prompt."), timestamp: "invalid" },
-    { ...userMessage("Legacy prompt."), timestamp: "2026-09-01T08:00:00.000Z" },
+    { ...userMessage("Native user prompt."), timestamp: "2026-09-01T08:00:00.000Z" },
     { ...responseMessage("assistant", "Current-format final reply.", "final_answer"), timestamp: "2026-09-01T08:02:58.000Z" },
     { ...agentMessage("Legacy final reply.", "final_answer"), timestamp: "2026-09-01T08:02:59.000Z" },
     { ...taskComplete("turn-1", "Legacy final reply."), timestamp: "invalid" },
@@ -112,12 +112,72 @@ test("Codex rollout reader prefers response_item messages over legacy event mess
     turn: {
       sessionId: "session-1",
       turnId: "turn-1",
-      userPrompt: "Current-format prompt.",
+      userPrompt: "Native user prompt.",
       assistantReply: "Current-format final reply.",
+      userTimestamp: Date.parse("2026-09-01T08:00:00.000Z"),
       assistantTimestamp: Date.parse("2026-09-01T08:02:58.000Z"),
       activities: [],
     },
   });
+});
+
+test("Codex rollout reader keeps original user text when native Skill or other context is injected", () => {
+  const prompt = "  $example:skill Please search for the parser rule.\n";
+  for (const injected of ["<skill>\n# Example Skill\nInjected instructions.\n</skill>", "Context without any recognizable wrapper."]) {
+    const result = codexRolloutTurnFromJsonLines(jsonLines([
+      sessionMeta("session-1"), taskStarted("turn-1"), turnContext("turn-1"),
+      responseItemUserMessage(prompt, "turn-1"),
+      { ...userMessage(prompt), timestamp: "2026-09-01T08:00:00.000Z" },
+      { ...responseItemUserMessage(injected), timestamp: "2026-09-01T08:01:00.000Z" },
+      responseMessage("assistant", "The original request was handled.", "final_answer", "turn-1"),
+      taskComplete("turn-1"),
+    ]), { sessionId: "session-1", turnId: "turn-1" });
+    assert.equal(result.ok, true);
+    assert.equal(result.turn.userPrompt, prompt);
+    assert.equal(result.turn.userTimestamp, Date.parse("2026-09-01T08:00:00.000Z"));
+    assert.equal(result.turn.assistantReply, "The original request was handled.");
+  }
+});
+
+test("Codex rollout reader does not borrow a response-item time for an undated native user event", () => {
+  const result = codexRolloutTurnFromJsonLines(jsonLines([
+    sessionMeta("session-1"), taskStarted("turn-1"), turnContext("turn-1"),
+    responseItemUserMessage("Actual user input.", "turn-1"),
+    { ...userMessage("Actual user input."), timestamp: "invalid" },
+    taskComplete("turn-1", "Final reply."),
+  ]), { sessionId: "session-1", turnId: "turn-1" });
+  assert.equal(result.ok, true);
+  assert.equal(result.turn.userPrompt, "Actual user input.");
+  assert.equal("userTimestamp" in result.turn, false);
+});
+
+test("Codex rollout readers reject conflicting native user events or ambiguous response-only prompts", () => {
+  for (const messages of [
+    [userMessage("First user event."), userMessage("Conflicting user event.")],
+    [responseItemUserMessage("First response item."), responseItemUserMessage("Another response item.")],
+  ]) {
+    const prefix = [sessionMeta("session-1"), taskStarted("turn-1"), turnContext("turn-1"), ...messages];
+    const input = { sessionId: "session-1", turnId: "turn-1" };
+    assert.deepEqual(codexRolloutTurnFromJsonLines(jsonLines([
+      ...prefix, taskComplete("turn-1", "Final reply."),
+    ]), input), { ok: false, reason: "user_prompt_ambiguous" });
+    assert.deepEqual(codexInterruptedRolloutTurnFromJsonLines(jsonLines([
+      ...prefix, agentMessage("Partial reply.", "commentary"), turnAborted("turn-1"),
+    ]), input), { ok: false, reason: "user_prompt_ambiguous" });
+  }
+});
+
+test("Codex interrupted rollout reader preserves a native user event despite injected context", () => {
+  const prompt = "Explain this literal text: <skill>user-supplied content</skill>";
+  const result = codexInterruptedRolloutTurnFromJsonLines(jsonLines([
+    sessionMeta("session-1"), taskStarted("turn-1"), turnContext("turn-1"),
+    responseItemUserMessage(prompt, "turn-1"), userMessage(prompt),
+    responseItemUserMessage("Injected context that is not a user request."),
+    agentMessage("Partial reply.", "commentary"), turnAborted("turn-1"),
+  ]), { sessionId: "session-1", turnId: "turn-1" });
+  assert.equal(result.ok, true);
+  assert.equal(result.turn.userPrompt, prompt);
+  assert.equal(result.turn.assistantReply, "Partial reply.");
 });
 
 test("Codex rollout reader fails closed for conflicting response_item turn metadata", () => {

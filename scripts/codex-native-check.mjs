@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
-import { mkdir, readFile, readdir } from "node:fs/promises";
-import { basename, join, resolve } from "node:path";
-import { check, createNativeHarness, fixtureKey, fixtureUser, searchResult, sendResponses, waitFor } from "./codex-native-support.mjs";
+import { execFile } from "node:child_process";
+import { mkdir, readFile, readdir, realpath, stat } from "node:fs/promises";
+import { basename, delimiter, dirname, join } from "node:path";
+import { promisify } from "node:util";
+import { check, createNativeHarness, fixtureKey, fixtureUser, searchResult, sendResponses, stopNativeProcessTree, waitFor } from "./codex-native-support.mjs";
 
 const report = { status: "FAIL", scope: "native_codex_installed_plugin_mock_memorax", platform: process.platform,
   paidModelRequests: 0, modelQualityEvaluated: false, checks: [] };
@@ -69,6 +71,10 @@ try {
     && JSON.stringify(harness.memoryRequests[beforeDirect + 1].body.messages).includes(directMemory), "DIRECT_MEMORY_PAYLOAD_MISMATCH");
   report.checks.push("direct installed Search and Add each issue one scoped request");
 
+  stage = "installed background launcher model inheritance";
+  report.backgroundModelInheritance = await verifyBackgroundInheritance();
+  report.checks.push("installed Repo Memory launcher makes a distinct native background request using the foreground model and provider");
+
   const skillRoot = join(status.codexAdapter.codexSkills.rootPath, "memorax-code");
   const installedManifest = JSON.parse(await readFile(join(skillRoot, "..", "..", ".codex-plugin", "plugin.json"), "utf8"));
   check(installedManifest.name === "memorax-code-codex-adapter", "NATIVE_SKILL_PLUGIN_IDENTITY_MISMATCH");
@@ -126,7 +132,8 @@ try {
   report.status = "PASS";
   report.nativeSessions = 2;
   report.nativeTurns = expectedTurns.length;
-  report.modelRequests = harness.modelRequests.length;
+  report.mainChainModelRequests = harness.modelRequests.length;
+  report.modelRequests = harness.modelRequests.length + 2;
   report.memoryRequests = { automaticAdd: 6, explicitAdd: 2, explicitSearch: 2 };
   report.model = "gpt-5.4";
   report.provider = "local_native";
@@ -204,13 +211,14 @@ async function verifyNativeRollouts() {
     const starts = records.filter((record) => record.type === "event_msg" && record.payload.type === "task_started");
     check(starts.length === expected.length, "NATIVE_ROLLOUT_TURN_COUNT_MISMATCH");
     for (const start of starts) { check(typeof start.payload.turn_id === "string", "NATIVE_TURN_ID_MISSING"); turnIds.add(start.payload.turn_id); }
+    const workspaces = await Promise.all(expected.map((turn) => realpath(turn.cwd)));
     for (const context of records.filter((record) => record.type === "turn_context")) {
-      check(context.payload.model === "gpt-5.4" && expected.some((turn) => resolve(context.payload.cwd) === turn.cwd), "NATIVE_ROLLOUT_CONTEXT_MISMATCH");
+      check(context.payload.model === "gpt-5.4" && workspaces.includes(await realpath(context.payload.cwd)), "NATIVE_ROLLOUT_CONTEXT_MISMATCH");
     }
     for (const [index, turn] of expected.entries()) {
       const interval = records.slice(records.indexOf(starts[index]), index + 1 < starts.length ? records.indexOf(starts[index + 1]) : undefined);
-      const user = interval.find((record) => record.type === "response_item" && record.payload.role === "user"
-        && record.payload.content?.map((part) => part.text ?? "").join("\n") === turn.prompt);
+      const user = interval.find((record) => record.type === "event_msg" && record.payload.type === "user_message"
+        && record.payload.message === turn.prompt);
       const assistant = interval.find((record) => record.type === "response_item" && record.payload.role === "assistant"
         && record.payload.phase === "final_answer" && record.payload.content?.map((part) => part.text ?? "").join("\n") === turn.answer);
       const completed = interval.find((record) => record.type === "event_msg" && record.payload.type === "task_complete"
@@ -223,6 +231,94 @@ async function verifyNativeRollouts() {
     }
   }
   check(turnIds.size === expectedTurns.length, "NATIVE_TURN_IDS_NOT_DISTINCT");
+}
+
+async function verifyBackgroundInheritance() {
+  const background = await createNativeHarness({ packageRoot: harness.packageRoot, codexCommand: harness.codexCommand,
+    label: "inheritance", writeback: false });
+  const ownedPids = new Set();
+  const jobsRoot = join(background.stateHome, "repo-memory-jobs");
+  const repository = await realpath(background.workspace);
+  const received = { foreground: 0, background: 0 };
+  async function jobs() {
+    const files = await readdir(jobsRoot, { recursive: true }).catch((error) => {
+      if (error.code === "ENOENT") return []; throw error;
+    });
+    const result = [];
+    for (const file of files.filter((path) => basename(path) === "job.json")) {
+      const job = JSON.parse(await readFile(join(jobsRoot, file), "utf8"));
+      check(job.repo === repository && job.runner === "codex", "BACKGROUND_JOB_AUTHORITY_MISMATCH");
+      for (const pid of [job.workerPid, job.childPid]) if (Number.isInteger(pid) && pid > 0) ownedPids.add(pid);
+      result.push(job);
+    }
+    return result;
+  }
+  try {
+    const gitName = process.platform === "win32" ? "git.exe" : "git";
+    const gitCandidates = (process.env.PATH ?? "").split(delimiter).filter(Boolean).map((path) => join(path, gitName));
+    let gitCommand;
+    for (const path of gitCandidates) if (await stat(path).then((info) => info.isFile(), () => false)) { gitCommand = path; break; }
+    check(gitCommand, "BACKGROUND_FIXTURE_REQUIRES_GIT");
+    background.env.PATH += `${delimiter}${dirname(gitCommand)}`;
+    Object.assign(background.env, { GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: join(background.home, "missing-git-config"),
+      MEMORAX_CODE_REPO_MEMORY_JOB_TIMEOUT_MS: "20000", MEMORAX_CODE_REPO_MEMORY_JOB_KILL_GRACE_MS: "1000" });
+    const git = (args) => promisify(execFile)(gitCommand, args, { cwd: repository, env: background.env, timeout: 10_000, windowsHide: true });
+    await git(["init", "--quiet"]);
+    await git(["-c", "user.name=Native Fixture", "-c", "user.email=native@example.invalid", "commit", "--allow-empty",
+      "--no-gpg-sign", "--quiet", "-m", "test: native model inheritance fixture"]);
+    await background.setup();
+    background.setModelHandler((body, response) => {
+      check(body.model === "gpt-5.4", "BACKGROUND_MODEL_SUBSTITUTION");
+      const kind = inputText(body).includes("This invocation is the authorized background repo-memory worker.") ? "background" : "foreground";
+      received[kind] += 1;
+      check(received[kind] === 1, "UNEXPECTED_BACKGROUND_MODEL_CONTINUATION");
+      sendResponses(response, { output: [message(kind === "background" ? "BACKGROUND_MODEL_INHERITANCE_ONLY" : "FOREGROUND_MODEL_INHERITANCE_ONLY")] });
+    });
+    const foreground = await background.runCodex(["exec", "--strict-config", "--ignore-rules", "--json",
+      "Check the current repository model inheritance fixture."]);
+    const events = foreground.stdout.trim().split(/\r?\n/).map(JSON.parse);
+    const foregroundId = events.find((event) => event.type === "thread.started")?.thread_id;
+    check(foregroundId && events.some((event) => event.type === "turn.completed"), "BACKGROUND_FOREGROUND_TURN_FAILED");
+    await waitFor(async () => {
+      const observed = await jobs();
+      return observed.length === 1 && ["failed", "succeeded"].includes(observed[0].status);
+    }, "BACKGROUND_JOB_DID_NOT_FINISH", 40_000);
+    const [job] = await jobs();
+    check(job.status === "failed" && job.failureReason === "artifact_validation_failed" && job.exitCode === 0,
+      "BACKGROUND_NOOP_JOB_RESULT_MISMATCH");
+    check(typeof job.prompt === "string" && job.prompt === job.command?.at(-1), "BACKGROUND_JOB_PROMPT_MISSING");
+    check(received.foreground === 1 && received.background === 1 && background.modelRequests.length === 2,
+      "BACKGROUND_REQUEST_EVIDENCE_MISSING");
+    check(background.memoryRequests.length === 0 && background.serverErrors.length === 0, "BACKGROUND_UNEXPECTED_MEMORY_OR_RECEIVER_ACTIVITY");
+    const files = (await readdir(join(background.codexHome, "sessions"), { recursive: true })).filter((path) => path.endsWith(".jsonl"));
+    check(files.length === 2, "BACKGROUND_NATIVE_SESSION_COUNT_MISMATCH");
+    const ids = new Set();
+    let workerObserved = false;
+    for (const file of files) {
+      const records = (await readFile(join(background.codexHome, "sessions", file), "utf8")).trim().split(/\r?\n/).map(JSON.parse);
+      const metadata = records.find((record) => record.type === "session_meta")?.payload;
+      check(metadata?.model_provider === "local_native" && metadata.cli_version === "0.147.0", "BACKGROUND_NATIVE_PROVIDER_MISMATCH");
+      ids.add(metadata.id);
+      const contexts = records.filter((record) => record.type === "turn_context");
+      check(contexts.length >= 1 && contexts.every((record) => record.payload.model === "gpt-5.4"), "BACKGROUND_NATIVE_MODEL_MISMATCH");
+      const userMessages = records.filter((record) => record.type === "event_msg" && record.payload.type === "user_message");
+      if (metadata.id !== foregroundId) workerObserved = userMessages.some((record) => record.payload.message === job.prompt);
+    }
+    check(ids.size === 2 && ids.has(foregroundId) && workerObserved, "BACKGROUND_NATIVE_WORKER_IDENTITY_MISSING");
+    await waitFor(() => [...ownedPids].every((pid) => !processAlive(pid)), "BACKGROUND_PROCESS_REMAINS");
+    return { status: "PASS", model: "gpt-5.4", provider: "local_native", foregroundRequests: 1, backgroundRequests: 1,
+      distinctNativeSessions: 2, jobStatus: "failed", expectedFailure: "artifact_validation_failed",
+      repoMemoryBuildValidated: false, permissionInheritanceValidated: false };
+  } finally {
+    await jobs().catch(() => {});
+    for (const pid of ownedPids) if (processAlive(pid)) {
+      await stopNativeProcessTree({ pid, kill: () => process.kill(pid, "SIGKILL") }, background.env);
+    }
+    await background.close();
+  }
+}
+function processAlive(pid) {
+  try { process.kill(pid, 0); return true; } catch (error) { if (error.code === "ESRCH") return false; throw error; }
 }
 
 function message(text, phase = "final_answer") {

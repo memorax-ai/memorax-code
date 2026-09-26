@@ -7,7 +7,7 @@ import { createRequire } from "node:module";
 import { createServer as createTcpServer } from "node:net";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { promisify } from "node:util";
+import { isDeepStrictEqual, promisify } from "node:util";
 import { pathToFileURL } from "node:url";
 
 const execFileAsync = promisify(execFile);
@@ -89,6 +89,15 @@ try {
 
   const initialConfig = await readFile(join(stateHome, "config.toml"), "utf8");
   const initialCodexConfig = await readFile(join(codexHome, "config.toml"), "utf8");
+  const prepareScenarioHome = async (name) => {
+    const scenarioHome = join(root, name);
+    stateHome = join(scenarioHome, ".memorax-code");
+    codexHome = join(scenarioHome, ".codex");
+    env = isolatedEnv(scenarioHome, codexCommand, dummyUrl);
+    await Promise.all([stateHome, codexHome].map((path) => mkdir(path, { recursive: true })));
+    await writeFile(join(stateHome, "config.toml"), initialConfig, { mode: 0o600 });
+    await writeFile(join(codexHome, "config.toml"), initialCodexConfig, { mode: 0o600 });
+  };
   for (const [label, input] of [["empty stdin", ""], ["multiple stdin values", "invalid\nsecond\n"]]) {
     stage = `rejected setup: ${label}`;
     await rejectedProduct(["setup", "--existing-account", "--non-interactive"], input);
@@ -114,6 +123,8 @@ try {
     "Cancelled setup registered the native plugin");
   report.checks.push("real terminal setup cancelled at the masked-key prompt without completing or installing the plugin");
 
+  // Failure recovery has its own home so it cannot prepare the fresh-install case.
+  await prepareScenarioHome("failed setup user 测试");
   stage = "failed setup with occupied Backend port";
   const occupied = createServer((_request, response) => response.writeHead(503).end());
   await new Promise((done, reject) => { occupied.once("error", reject); occupied.listen(backendPort, "127.0.0.1", done); });
@@ -130,9 +141,19 @@ try {
   }
   report.checks.push("occupied Backend port fails setup without recording completion");
 
-  for (const attempt of ["recovery", "repeat"]) {
+  stage = "failed setup recovery";
+  await product(["setup", "--existing-account", "--non-interactive"], `${fixtureKey}\n`);
+  await verifyReady("occupied-port recovery");
+  await stopAndVerify();
+
+  await prepareScenarioHome("fresh install user 测试");
+  check(!(await exists(completionPath())) && !(await exists(pidPath())), "Fresh installation inherited lifecycle state");
+  const freshNative = JSON.parse((await run(codexCommand, ["plugin", "list", "--available", "--json"])).stdout);
+  check(!freshNative.installed.some((item) => item.pluginId === pluginId || item.name === pluginName),
+    "Fresh installation inherited a native plugin registration");
+  for (const attempt of ["fresh", "repeat"]) {
     stage = `${attempt} setup`;
-    if (attempt === "recovery") {
+    if (attempt === "fresh") {
       const interactive = await terminalSetup("complete");
       check(interactive.status === "PASS" && interactive.usernamePromptSeen && interactive.keyPromptSeen && interactive.credentialNotEchoed,
         "Interactive setup did not complete its native masked-key prompts");
@@ -155,7 +176,7 @@ try {
   await stopAndVerify();
   check(await readFile(completionPath(), "utf8") === savedCompletion, "Stop changed setup completion");
   check((await productJson(["start", "--clients", "codex", "--json"])).ok === true, "Start failed after stop");
-  await verifyReady("restart");
+  await verifyReady("stop/start");
   await verifyPreserved(savedMemoraxConfig);
 
   stage = "native uninstall";
@@ -184,12 +205,7 @@ try {
   // Serve only the candidate package from an isolated scoped npm registry so
   // the real public updater selects this PR artifact instead of a public release.
   stage = "previous published version install";
-  stateHome = join(root, "upgrade state");
-  codexHome = join(root, "upgrade user 测试", ".codex");
-  env = isolatedEnv(join(root, "upgrade user 测试"), codexCommand, dummyUrl);
-  await Promise.all([stateHome, codexHome].map((path) => mkdir(path, { recursive: true })));
-  await writeFile(join(stateHome, "config.toml"), initialConfig, { mode: 0o600 });
-  await writeFile(join(codexHome, "config.toml"), initialCodexConfig, { mode: 0o600 });
+  await prepareScenarioHome("upgrade user 测试");
   preservedMemory.clear();
   await npmInstall(`@memorax/memorax-code@${previousVersion}`);
   check((await readJson(join(packageRoot, "package.json"))).version === previousVersion, "Previous version was not installed");
@@ -208,7 +224,8 @@ try {
 
   stage = "live public update";
   const artifact = await readFile(candidateTarball);
-  const registryRequests = { manifest: 0, artifact: 0 };
+  const registryRequests = { manifest: 0, artifact: 0, rejectedArtifact: 0 };
+  let rejectDownload = true;
   let registryUrl;
   registry = createServer((request, response) => {
     const path = decodeURIComponent(new URL(request.url, "http://localhost").pathname);
@@ -220,6 +237,11 @@ try {
         name: manifest.name, "dist-tags": { latest: manifest.version }, versions: { [manifest.version]: version },
       }));
     } else if (path === "/candidate.tgz") {
+      if (rejectDownload) {
+        registryRequests.rejectedArtifact += 1;
+        response.writeHead(503).end();
+        return;
+      }
       registryRequests.artifact += 1;
       response.writeHead(200, { "content-type": "application/octet-stream" }).end(artifact);
     } else {
@@ -231,7 +253,26 @@ try {
   const npmConfig = join(root, "upgrade.npmrc");
   await writeFile(npmConfig, `@memorax:registry=${registryUrl}\n`, { mode: 0o600 });
   env.npm_config_userconfig = npmConfig;
+  env.npm_config_cache = join(root, "update npm cache");
   env.MEMORAX_CODE_NPM_COMMAND = npmCommand;
+  env.npm_config_fetch_retries = "0";
+  env.npm_config_fetch_timeout = "15000";
+  const previousPid = (await readJson(pidPath())).pid;
+  const previousCompletion = await readFile(completionPath(), "utf8");
+  stage = "failed update artifact download";
+  await rejectedProduct(["update", "--latest"]);
+  check(registryRequests.rejectedArtifact > 0, "The failed updater did not reach the rejected artifact download");
+  check((await readJson(join(packageRoot, "package.json"))).version === previousVersion,
+    "A failed artifact download changed the installed package version");
+  check((await productJson(["status", "--clients", "codex", "--json"])).backend?.ok === true
+    && (await readJson(pidPath())).pid === previousPid,
+  "A failed artifact download stopped or replaced the previous Backend");
+  check(await readFile(completionPath(), "utf8") === previousCompletion,
+    "A failed artifact download changed setup completion");
+  await verifyPreserved(upgradeConfig);
+  report.checks.push("failed update artifact download retains the previous package, live Backend, completion, configuration and memory");
+  rejectDownload = false;
+  stage = "retry public update in a native terminal";
   const updated = await terminalSetup("update");
   check(updated.status === "PASS" && updated.exitCode === 0, "The public update command failed");
   check(registryRequests.manifest > 0 && registryRequests.artifact > 0, "The updater did not fetch the candidate from the scoped registry");
@@ -302,6 +343,9 @@ async function verifyReady(attempt) {
   const completion = await readJson(join(stateHome, "runtime", "setup", "setup-completion.json"));
   check(completion.version === 1 && completion.state === "complete"
     && completion.completedByVersion === expectedPackageVersion, "Setup did not record completion for this package");
+  const memorax = parse(await readFile(join(stateHome, "config.toml"), "utf8")).memorax;
+  check(memorax?.api_key === fixtureKey && memorax.endpoint === env.MEMORAX_CODE_MEMORAX_ENDPOINT,
+    "Setup did not preserve the exact supplied credential and endpoint");
   const status = await productJson(["status", "--clients", "codex", "--json"]);
   check(status.ok === true && status.backend?.ok === true, "The installed Backend is not healthy");
   check(status.codexAdapter?.ok === true && status.codexAdapter.enabled === true
@@ -355,12 +399,26 @@ async function assertStopped() {
   backendPids.clear();
 }
 async function verifyPreserved(config) {
-  check(await readFile(join(stateHome, "config.toml"), "utf8") === config, "Lifecycle changed the existing MemoraX configuration");
+  // Upgrades may add defaults or rewrite TOML formatting, but every existing
+  // configured value must retain its meaning.
+  const mismatch = changedConfigField(parse(await readFile(join(stateHome, "config.toml"), "utf8")), parse(config));
+  check(mismatch === undefined, `Lifecycle changed the existing MemoraX configuration field: ${mismatch}`);
   const codex = parse(await readFile(join(codexHome, "config.toml"), "utf8"));
   check(codex.model === originalProvider.model && codex.model_provider === originalProvider.model_provider
     && JSON.stringify(codex.model_providers) === JSON.stringify(originalProvider.model_providers),
   "Lifecycle changed the existing Codex provider configuration");
   for (const [path, contents] of preservedMemory) check(await readFile(path, "utf8") === contents, "Lifecycle changed retained personal memory");
+}
+function changedConfigField(actual, expected, prefix = "config") {
+  if (expected && typeof expected === "object" && !Array.isArray(expected) && !(expected instanceof Date)) {
+    if (!actual || typeof actual !== "object") return prefix;
+    for (const [key, value] of Object.entries(expected)) {
+      const mismatch = changedConfigField(actual[key], value, `${prefix}.${key}`);
+      if (mismatch !== undefined) return mismatch;
+    }
+    return undefined;
+  }
+  return isDeepStrictEqual(actual, expected) ? undefined : prefix;
 }
 async function rejectedProduct(args, input) {
   let failure;
@@ -369,7 +427,7 @@ async function rejectedProduct(args, input) {
     check(typeof error.code === "number" && error.code !== 0, "Expected product rejection, not process launch failure");
     failure = error;
   }
-  check(failure, "Invalid setup unexpectedly succeeded");
+  check(failure, "A command expected to fail unexpectedly succeeded");
   return failure;
 }
 async function terminalSetup(mode) {
@@ -409,7 +467,7 @@ async function run(command, args, input = "") {
   catch (error) {
     // Report only the stable product error code, never raw process output.
     check(!`${error.stdout ?? ""}\n${error.stderr ?? ""}`.includes(fixtureKey), "A failing command disclosed the setup credential");
-    error.diagnosticCode = `${error.stdout ?? ""}\n${error.stderr ?? ""}`.match(/\b(?:CLIENT|CODEX|BACKEND|SETUP|CONFIG)_[A-Z_]{3,}\b/)?.[0];
+    error.diagnosticCode = `${error.stdout ?? ""}\n${error.stderr ?? ""}`.match(/\b(?:CLIENT|CODEX|BACKEND|SETUP|CONFIG|UPDATE|PACKAGE|INSTALL)_[A-Z_]{3,}\b/)?.[0];
     throw error;
   }
   check(!`${result.stdout}\n${result.stderr}`.includes(fixtureKey), "A command disclosed the setup credential");

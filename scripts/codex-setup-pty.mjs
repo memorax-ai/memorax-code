@@ -54,7 +54,7 @@ try {
         report.usernamePromptSeen = true;
         terminal.write(`${input.username}\r`);
       }
-      if (!report.languagePromptSeen && /Preferred language[^\r\n]*: /.test(output)) {
+      if (!report.languagePromptSeen && output.includes("Preferred language [ZH/en] (used for Memory extraction): ")) {
         report.languagePromptSeen = true;
         terminal.write("en\r");
       }
@@ -69,13 +69,17 @@ try {
   timeout = setTimeout(() => { errorCode = "TERMINAL_CASE_TIMEOUT"; terminal.kill(); }, 110_000);
   const result = await exited;
   clearTimeout(timeout);
+  report.exitCode = result.exitCode;
+  report.signal = result.signal ?? 0;
+  check(Number.isInteger(report.exitCode) && Number.isInteger(report.signal), "INVALID_TERMINAL_EXIT_STATUS");
   check(!errorCode, errorCode);
   if (mode !== "update") check(report.usernamePromptSeen && report.keyPromptSeen, "EXPECTED_INTERACTIVE_PROMPTS_NOT_OBSERVED");
   check(!output.includes(input.apiKey), "TERMINAL_DISCLOSED_FIXTURE_CREDENTIAL");
   const plainOutput = output.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
   if (mode === "complete") check(plainOutput.includes("*".repeat(input.apiKey.length)), "MASKED_KEY_INPUT_NOT_OBSERVED");
-  check(mode === "cancel" ? result.exitCode !== 0 : result.exitCode === 0, "UNEXPECTED_TERMINAL_EXIT_CODE");
-  Object.assign(report, { status: "PASS", exitCode: result.exitCode,
+  check(mode === "cancel" ? report.exitCode !== 0 || report.signal > 0
+    : report.exitCode === 0 && report.signal === 0, "UNEXPECTED_TERMINAL_EXIT_CODE");
+  Object.assign(report, { status: "PASS",
     credentialNotEchoed: true, maskedInputObserved: mode === "complete", cancellationSent: mode === "cancel" });
 } catch (error) {
   report.error = error.testCode ?? "TERMINAL_CHECK_FAILED_PRIVATE_OUTPUT_SUPPRESSED";

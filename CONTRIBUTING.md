@@ -340,19 +340,25 @@ The package check still includes its existing npm regression prerequisite;
 Native jobs use temporary user and client homes on Ubuntu, macOS, and Windows
 with Node.js 24, plus Ubuntu with the minimum Node.js 20 runtime. They install
 the same artifact and pin Codex to 0.147.0. The lifecycle check exercises
-rejected setup input, failed setup and recovery, repeated setup, native plugin
-registration, Hook trust, stop/start, uninstall/reinstall, and replacement of
-the published 0.1.17 package with the candidate. Package replacement and the
-public update-command contract are reported separately. Unicode and spaces in
-isolated paths, existing provider settings, and synthetic personal memory are
-checked explicitly.
+rejected setup input, real-terminal cancellation and masked credential input,
+failed setup and recovery, repeated setup, native plugin registration, Hook
+trust, stop/start, and uninstall/reinstall. A scoped local npm registry serves
+the candidate to the real public `update --latest` command: an initial artifact
+download failure must preserve the installed 0.1.17 package and running Backend,
+then a terminal-driven retry must activate the candidate. Unicode and spaces in
+isolated paths, existing provider settings, configuration values, and synthetic
+personal memory are checked explicitly.
 
 The native conversation check runs real Codex against a local, deterministic
 Responses server and a separate MemoraX receiver. Native Codex creates its own
 session, Turn, rollout, and Hook events; the test must not synthesize these as
 proof of a native workflow. Assertions compare the actual outgoing request to
 independent expected content and identity. Model or tool text alone cannot
-prove that a request was sent.
+prove that a request was sent. Explicit Skill Search/Add must preserve the user
+request even when the native client injects Skill instructions. A separate
+Repo Memory worker case checks foreground/background model and provider
+inheritance; its controlled no-op response intentionally fails bundle validation,
+so it does not prove successful Repo Memory generation or permission inheritance.
 
 The permission check drives Codex's native app-server protocol. Full access,
 user approval, rejection, cancellation, and waiting are checked using native
@@ -382,7 +388,8 @@ then use a disposable PowerShell 7 session with Node.js and npm on PATH:
 ./scripts/codex-install-check.ps1 -TarballDirectory dist/npm/tarballs -CodexVersion 0.147.0 -PreviousVersion 0.1.17
 ```
 
-The wrappers run the lifecycle, native-conversation, and permission checks.
+The wrappers install the test-only `node-pty@1.1.0` terminal dependency, then run
+the lifecycle, native-conversation, and permission checks.
 Windows uses npm's `.cmd` entrypoints without changing PowerShell execution
 policy. Each check isolates its Backend/client state and confirms managed
 process cleanup. Reports contain safe case results, versions, effective
