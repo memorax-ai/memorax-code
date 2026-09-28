@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { publishSharedRepoMemory, readSharedRepoMemory } from "../src/repo-memory/repo-memory-shared-bundle.mjs";
+import { runRepoMemoryJob } from "../src/repo-memory/repo-memory-job-supervisor.mjs";
 import {
   markerPathForRepo,
   repoMemoryJobsDir,
@@ -600,6 +602,190 @@ test("repo memory update fails before launch without an existing profile", (t) =
   });
   assert.equal(result.status, 1);
   assert.match(result.stderr, /update requires an existing \.repo_memory\/PROFILE\.md/);
+});
+
+test("linked worktrees build once under concurrent maintenance and reuse the completed snapshot", async (t) => {
+  const root = tempRoot(t, "repo-memory-shared-concurrent-");
+  const repo = join(root, "repo"), linked = join(root, "linked"), home = join(root, "memorax-code");
+  const head = initRepo(repo);
+  runGit(repo, ["worktree", "add", "--detach", linked, head]);
+  const env = { MEMORAX_CODE_HOME: home };
+  const results = await Promise.all([repo, linked].map(path => runJobAsync(["maintain", "--repo", path], env)));
+  for (const result of results) assert.equal(result.status, 0, result.stderr);
+  const decisions = results.map(result => JSON.parse(result.stdout));
+  const launched = decisions.find(result => result.action === "build");
+  assert.ok(launched);
+  assert.equal(decisions.filter(result => result.action === "build").length, 1);
+  const completed = waitForTerminal(launched.job.jobPath);
+  assert.equal(completed.status, "succeeded");
+  assert.equal(completed.sharedBaselinePublished, true);
+  waitForMarkerAbsent(home, launched.job.repo);
+  const other = launched.job.repo === repo ? linked : repo;
+  const result = runJob(["maintain", "--repo", other], env);
+  assert.equal(result.status, 0, result.stderr);
+  const decision = JSON.parse(result.stdout);
+  assert.equal(decision.action, "none");
+  assert.ok(["shared_bundle_reused", "up_to_date"].includes(decision.reason));
+  assert.equal(countJobDirs(home), 1);
+  assert.equal(readFileSync(join(other, ".repo_memory/PROFILE.md"), "utf8"), readFileSync(join(launched.job.repo, ".repo_memory/PROFILE.md"), "utf8"));
+  assert.equal(readSharedRepoMemory(home, other).head, head);
+  assert.match(readFileSync(join(other, ".gitignore"), "utf8"), /^\.repo_memory\/$/m);
+});
+
+test("shared snapshots survive source bundle removal and exclude personal sidecars", (t) => {
+  const root = tempRoot(t, "repo-memory-shared-copy-");
+  const repo = join(root, "repo"), linked = join(root, "linked"), home = join(root, "memorax-code");
+  const head = initRepo(repo);
+  runGit(repo, ["worktree", "add", "-b", "feature", linked, head]);
+  writeValidatedProfile(repo, head);
+  mkdirSync(join(repo, ".repo_memory/procedure-memory"));
+  writeFileSync(join(repo, ".repo_memory/procedure-memory/private.md"), "private fixture");
+  writeFileSync(join(repo, ".repo_memory/architecture.md"), "# Architecture fixture\n");
+  const env = { MEMORAX_CODE_HOME: home };
+  assert.equal(runJob(["maintain", "--repo", repo], env).status, 0);
+  assert.ok(readSharedRepoMemory(home, linked));
+  rmSync(join(repo, ".repo_memory"), { recursive: true });
+  const result = runJob(["maintain", "--repo", linked], env);
+  assert.equal(JSON.parse(result.stdout).reason, "shared_bundle_reused");
+  assert.equal(readFileSync(join(linked, ".repo_memory/architecture.md"), "utf8"), "# Architecture fixture\n");
+  assert.equal(existsSync(join(linked, ".repo_memory/procedure-memory")), false);
+  assert.equal(countJobDirs(home), 0);
+});
+
+test("shared reuse leaves dry-runs, dirty worktrees, and existing local files untouched", (t) => {
+  const root = tempRoot(t, "repo-memory-shared-boundaries-");
+  const repo = join(root, "repo"), linked = join(root, "linked"), home = join(root, "memorax-code");
+  const head = initRepo(repo);
+  runGit(repo, ["worktree", "add", "--detach", linked, head]);
+  writeValidatedProfile(repo, head);
+  const env = { MEMORAX_CODE_HOME: home };
+  runJob(["maintain", "--repo", repo], env);
+  const maintain = (extra = []) => JSON.parse(runJob(["maintain", "--repo", linked, ...extra], env).stdout);
+  assert.equal(maintain(["--dry-run"]).reason, "shared_bundle_reused");
+  assert.equal(existsSync(join(linked, ".repo_memory")), false);
+  writeFileSync(join(linked, "untracked.txt"), "local work");
+  assert.equal(maintain().reason, "worktree_dirty");
+  assert.equal(existsSync(join(linked, ".repo_memory")), false);
+  rmSync(join(linked, "untracked.txt"));
+  mkdirSync(join(linked, ".repo_memory"));
+  writeFileSync(join(linked, ".repo_memory/notes.md"), "local notes");
+  assert.equal(maintain().reason, "local_bundle_exists");
+  assert.equal(readFileSync(join(linked, ".repo_memory/notes.md"), "utf8"), "local notes");
+  assert.equal(countJobDirs(home), 0);
+});
+
+test("different commits defer automatically and independent repositories never share", (t) => {
+  const root = tempRoot(t, "repo-memory-shared-identity-");
+  const repo = join(root, "repo"), linked = join(root, "linked"), independent = join(root, "independent"), home = join(root, "memorax-code");
+  const head = initRepo(repo);
+  runGit(repo, ["worktree", "add", "--detach", linked, head]);
+  writeValidatedProfile(repo, head);
+  const env = { MEMORAX_CODE_HOME: home };
+  runJob(["maintain", "--repo", repo], env);
+  writeFileSync(join(linked, "new.txt"), "new commit");
+  runGit(linked, ["add", "new.txt"]); runGit(linked, ["commit", "-m", "feature change"]);
+  const changed = JSON.parse(runJob(["maintain", "--repo", linked], env).stdout);
+  assert.equal(changed.reason, "shared_snapshot_mismatch");
+  assert.equal(changed.job, undefined);
+  runGit(repo, ["clone", "--no-hardlinks", repo, independent]);
+  assert.equal(runGit(independent, ["rev-parse", "HEAD"]).trim(), head);
+  const separate = JSON.parse(runJob(["maintain", "--repo", independent, "--dry-run"], env).stdout);
+  assert.equal(separate.action, "build");
+  assert.equal(countJobDirs(home), 0);
+});
+
+test("failed builds and dirty source snapshots do not publish a shared baseline", (t) => {
+  const root = tempRoot(t, "repo-memory-shared-publish-");
+  const repo = join(root, "repo"), home = join(root, "memorax-code");
+  initRepo(repo);
+  const failed = JSON.parse(runJob(["start", "--mode", "build", "--repo", repo], {
+    MEMORAX_CODE_HOME: home, REPO_MEMORY_TEST_BEHAVIOR: "final-only",
+  }).stdout);
+  assert.equal(waitForTerminal(failed.jobPath).status, "failed");
+  waitForMarkerAbsent(home, repo);
+  assert.equal(readSharedRepoMemory(home, repo), undefined);
+  writeFileSync(join(repo, "README.md"), "uncommitted changes");
+  const deferred = JSON.parse(runJob(["maintain", "--repo", repo], { MEMORAX_CODE_HOME: home }).stdout);
+  assert.equal(deferred.reason, "worktree_dirty");
+  const explicit = JSON.parse(runJob(["start", "--mode", "build", "--repo", repo], { MEMORAX_CODE_HOME: home }).stdout);
+  assert.equal(waitForTerminal(explicit.jobPath).status, "succeeded");
+  assert.equal(readSharedRepoMemory(home, repo), undefined);
+});
+
+test("an invalid shared bundle never starts another background build", (t) => {
+  const root = tempRoot(t, "repo-memory-shared-invalid-");
+  const repo = join(root, "repo"), linked = join(root, "linked"), home = join(root, "memorax-code");
+  const head = initRepo(repo);
+  runGit(repo, ["worktree", "add", "--detach", linked, head]);
+  writeValidatedProfile(repo, head);
+  const env = { MEMORAX_CODE_HOME: home };
+  runJob(["maintain", "--repo", repo], env);
+  const baseline = readSharedRepoMemory(home, linked);
+  const unavailable = runRepoMemoryJob(["maintain", "--repo", linked], {
+    runner: "fixture", memoraxCodeHome: home, validatorPath: join(root, "missing-validator.mjs"),
+    evaluateRepository: () => assert.fail("must not evaluate local policy"),
+    createCommand: () => assert.fail("must not launch a replacement build"),
+  });
+  assert.equal(unavailable.reason, "shared_bundle_unavailable");
+  assert.equal(unavailable.ok, false);
+  writeFileSync(join(baseline.path, ".repo_memory/PROFILE.md"), "invalid fixture");
+  const result = JSON.parse(runJob(["maintain", "--repo", linked], env).stdout);
+  assert.equal(result.reason, "shared_bundle_invalid");
+  assert.equal(result.ok, false);
+  assert.equal(countJobDirs(home), 0);
+  assert.equal(existsSync(join(linked, ".repo_memory")), false);
+});
+
+test("shared restoration rejects bundle links without copying their targets", { skip: process.platform === "win32" }, (t) => {
+  const root = tempRoot(t, "repo-memory-shared-symlink-");
+  const repo = join(root, "repo"), linked = join(root, "linked"), home = join(root, "memorax-code");
+  const head = initRepo(repo);
+  runGit(repo, ["worktree", "add", "--detach", linked, head]);
+  writeValidatedProfile(repo, head);
+  const env = { MEMORAX_CODE_HOME: home };
+  runJob(["maintain", "--repo", repo], env);
+  const baseline = readSharedRepoMemory(home, linked);
+  const external = join(root, "outside.txt");
+  writeFileSync(external, "private fixture");
+  symlinkSync(external, join(baseline.path, ".repo_memory/external.txt"));
+  const result = JSON.parse(runJob(["maintain", "--repo", linked], env).stdout);
+  assert.equal(result.reason, "shared_bundle_unavailable");
+  assert.equal(result.ok, false);
+  assert.equal(existsSync(join(linked, ".repo_memory")), false);
+  assert.equal(readdirSync(linked).some(name => name.startsWith(".repo-memory-reuse-")), false);
+  assert.equal(countJobDirs(home), 0);
+  rmSync(join(baseline.path, ".repo_memory/external.txt"));
+  symlinkSync(join(root, "missing"), join(linked, ".repo_memory"));
+  const preserved = JSON.parse(runJob(["maintain", "--repo", linked], env).stdout);
+  assert.equal(preserved.reason, "local_bundle_exists");
+  assert.equal(readdirSync(linked).includes(".repo_memory"), true);
+});
+
+test("publication checks the copied PROFILE snapshot after canonical validation", (t) => {
+  const root = tempRoot(t, "repo-memory-shared-stage-head-");
+  const repo = join(root, "repo"), home = join(root, "memorax-code");
+  const head = initRepo(repo);
+  writeValidatedProfile(repo, head);
+  const published = publishSharedRepoMemory({ home, repo, head, shareable: true, validate: (stage) => {
+    writeValidatedProfile(stage, "0".repeat(40));
+    return true;
+  } });
+  assert.equal(published, false);
+  assert.equal(readSharedRepoMemory(home, repo), undefined);
+});
+
+test("conflicting linked-worktree metadata cannot select another repository's shared storage", (t) => {
+  const root = tempRoot(t, "repo-memory-shared-metadata-");
+  const repo = join(root, "repo"), linked = join(root, "linked"), other = join(root, "other"), home = join(root, "memorax-code");
+  const head = initRepo(repo);
+  initRepo(other);
+  runGit(repo, ["worktree", "add", "--detach", linked, head]);
+  const gitDir = readFileSync(join(linked, ".git"), "utf8").trim().slice(8);
+  writeFileSync(join(gitDir, "commondir"), join(other, ".git") + "\n");
+  const result = runJob(["maintain", "--repo", linked], { MEMORAX_CODE_HOME: home });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /invalid Repo Memory linked worktree metadata/);
+  assert.equal(countJobDirs(home), 0);
 });
 
 function initRepo(repo) {

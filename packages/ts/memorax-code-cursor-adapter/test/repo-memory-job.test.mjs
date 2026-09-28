@@ -14,6 +14,24 @@ const adapterRoot = realpathSync(fileURLToPath(new URL("..", import.meta.url)));
 const jobHook = join(adapterRoot, "hooks/repo-memory-job.mjs");
 const cleanEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(MEMORAX_CODE_|CURSOR_|REPO_MEMORY_TEST_)/i.test(key)));
 
+test("Cursor shares a single native build and its validated snapshot across linked worktrees", (t) => {
+  const f = fixture(t), linked = join(f.root, "linked worktree");
+  runGit(f.repo, ["worktree", "add", "--detach", linked, f.head]);
+  const job = prepare(f);
+  const waiting = runCursorRepoMemoryJob(["maintain", "--repo", linked], f.options);
+  assert.equal(waiting.action, "deduplicated");
+  assert.equal(waiting.job.jobId, job.jobId);
+  assert.equal(waiting.job.delegation, undefined);
+  const claim = claimJob(f, job);
+  profile(f, f.head);
+  assert.equal(transition(f, "finish", job, ["--claim-token", claim.claimToken]).status, "succeeded");
+  const reused = runCursorRepoMemoryJob(["maintain", "--repo", linked], f.options);
+  assert.equal(reused.action, "none");
+  assert.equal(reused.reason, "shared_bundle_reused");
+  assert.equal(reused.job, undefined);
+  assert.equal(readFileSync(join(linked, ".repo_memory/PROFILE.md"), "utf8"), readFileSync(join(f.repo, ".repo_memory/PROFILE.md"), "utf8"));
+});
+
 test("Cursor native dry-run needs no Agent CLI and creates no job or lease", (t) => {
   const f = fixture(t);
   const result = spawnSync(process.execPath, [jobHook, "maintain", "--repo", f.repo, "--dry-run"], { encoding: "utf8", env: { ...cleanEnv, MEMORAX_CODE_HOME: f.home, MEMORAX_CODE_CURSOR_AGENT_COMMAND: join(f.root, "must-not-execute") } });

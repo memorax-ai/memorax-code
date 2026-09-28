@@ -12,6 +12,7 @@ import {
   repoMemoryJobWorkerEnv,
 } from "./repo-memory-job-context.mjs";
 import { gitHead, profileLocalHead, resolveCommit } from "./repo-memory-job-artifacts.mjs";
+import { publishSharedRepoMemory } from "./repo-memory-shared-bundle.mjs";
 import { resolveWindowsCliInvocation } from "../windows-cli-invocation.mjs";
 
 let activeChild;
@@ -366,11 +367,19 @@ function validateBundle(repo, validator) {
 
 function finishSucceeded(request, state, workerContext, details) {
   try {
+    const ownership = readActiveRepoMemoryJobMarker({ memoraxCodeHome: request.memoraxCodeHome, repoRealpath: state.repo });
+    if (!ownership.active || ownership.marker.jobId !== state.jobId || ownership.marker.runId !== state.runId) {
+      return finishFailed(request, state, workerContext, "job_ownership_lost");
+    }
+    const sharedBaselinePublished = publishSharedRepoMemory({ home: request.memoraxCodeHome, repo: state.repo,
+      head: state.snapshotHead, shareable: state.shareableSnapshot === true,
+      validate: (path) => validateBundle(path, request.validatorPath).ok });
     writeJobState(request.jobPath, {
       ...state,
       status: "succeeded",
       finishedAt: new Date().toISOString(),
       exitCode: details.exitCode,
+      sharedBaselinePublished,
       validation: {
         ok: true,
         exitCode: details.validationExitCode,

@@ -43,6 +43,15 @@ existing failure rules below. The helper validates the generated bundle, evaluat
 - `up_to_date`: no-op;
 - `active_job`: deduplicate against the running job.
 
+For missing local bundles, the helper first tries the repository-shared
+baseline. `shared_bundle_reused` restores a validated copy at the exact same
+commit without an Agent. `shared_snapshot_mismatch`, `worktree_dirty`, and
+`local_bundle_exists` defer initialization without overwriting local files.
+`shared_bundle_invalid` or `shared_bundle_unavailable` means the shared copy
+cannot be used. Continue from live code in these deferred or failed cases;
+do not launch a build to compensate. Existing local bundles keep their update
+policy, and their branch-specific updates do not replace the shared baseline.
+
 The default policy remains `adaptive(5 commits OR 24 hours)`. A missing or non-ancestor baseline always selects repair-capable update. The helper owns the detailed policy, validation, lock, snapshot, and launcher rules; do not reproduce them in the foreground.
 
 ## Retrieval
@@ -106,7 +115,13 @@ or a model summary alone does not prove completion. If native background Task is
 unavailable, skip this handoff; do not substitute a CLI or foreground authoring.
 Never invent a delegation when the helper returned `active_job` or `up_to_date`.
 
-Do not read repo memory again after `maintain` returns. Do not wait, poll, retry, or expose the command, decision payload, job id, paths, prompt, final message, or logs. Never replace the packaged helper with a generic subagent.
+If no repo-memory read was possible and the helper returns
+`shared_bundle_reused`, read the restored bundle once using the Retrieval Budget
+above; do not invoke maintenance a second time. The helper only copied existing
+validated content, so no background job needs to be awaited.
+
+Do not read repo memory again after `maintain` returns when a read already
+occurred. Do not wait, poll, retry, or expose the command, decision payload, job id, paths, prompt, final message, or logs. Never replace the packaged helper with a generic subagent.
 
 ## Answer And Trust Rules
 

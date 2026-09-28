@@ -936,13 +936,41 @@ Supported policies are `every-commit`, `commit-count`, `daily`,
 fall back to `adaptive`.
 
 In Codex, Claude Code, CodeBuddy/WorkBuddy, DSH, OpenCode, and Cursor, the first
-eligible prompt starts a background build only when the Backend has authorized
+eligible prompt checks initialization only when the Backend has authorized
 a Git worktree and that worktree has no `.repo_memory/PROFILE.md`. If the
 Backend or workspace authority is unavailable, the client integration skips
 that attempt instead of falling back to its local workspace path. DSH schedules
 this work through its native pre-step integration rather than a Hook. Trae
 receives the shared Skill, User Profile, and Procedure reminders, but does not
 start this background build because Trae has no supported headless worker.
+
+Initialization first looks for a shared committed snapshot under
+`$MEMORAX_CODE_HOME/repo-memory-bases/<repository-key>/`. The key comes from the
+canonical Git common directory: linked worktrees share it, while independent
+clones do not, even when their remotes and commits match. Sharing also requires
+the same MemoraX home. Concurrent jobs use repository-wide ownership.
+
+When no shared baseline exists, a clean worktree can build once. A successful,
+validated build publishes an immutable copy; a valid existing local bundle can
+also seed it when its `local_head` matches the current clean commit. The first
+published snapshot wins, regardless of branch name. This does not automatically
+choose or check out the default branch. Generated `.repo_memory` files and the
+collector's `.repo_memory/` ignore entry do not count as source changes.
+
+A new clean worktree at that exact commit restores its `.repo_memory` from the
+shared copy without starting an Agent or collecting provider evidence. The
+copy retains the original branch/path provenance; current files remain the
+authority. Personal-memory sidecars are excluded. Existing local directories
+are preserved, including incomplete bundles and local notes. Dirty worktrees,
+different commits, and invalid shared artifacts defer missing-bundle
+initialization rather than launching another build. A later eligible prompt or
+relevant repo-read can retry after the blocking condition changes.
+
+Existing local bundles retain the update policy below, and explicit build/update
+operations remain available. Neither local updates nor explicit builds replace
+an existing shared baseline. Automatic default-branch maintenance and reuse
+across different commits are not implemented. Older installed runtimes retain
+worktree-local behavior; update all clients to use cross-worktree sharing.
 
 CodeBuddy/WorkBuddy repository jobs run the headless client under a bounded
 worker. `MEMORAX_CODE_REPO_MEMORY_JOB_TIMEOUT_MS` sets the client execution

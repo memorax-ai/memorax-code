@@ -112,6 +112,14 @@ Please allow time for triage and remediation before public disclosure.
   authenticated Backend turn-start request. Backend or workspace-scope
   failures skip the build; client integrations do not fall back to
   adapter-local workspace input.
+- Repo Memory sharing is local to a canonical Git common directory and one
+  MemoraX home. Remote URLs do not authorize sharing between clones. Shared
+  bundles retain repository Wiki and history evidence in private local storage;
+  they are not sent to MemoraX. Publication and restoration require matching
+  committed snapshots and clean source checks. Personal-memory sidecars are
+  excluded, bundle copies reject symbolic links, and existing worktree bundles
+  are never overwritten by restoration. These checks do not sandbox authoring
+  or prove the semantic accuracy of generated content.
 - Personal Memory is global user-owned state under
   `$MEMORAX_CODE_HOME/personal-memory/` (default `~/.memorax-code/personal-memory/`). User
   Profile is `user-profile/preferences.md`; Procedure Memory consists of direct

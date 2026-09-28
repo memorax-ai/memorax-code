@@ -9,10 +9,11 @@ const adapterRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const packagedCommon = join(adapterRoot, "memorax-code-adapter-common", "src");
 const commonRoot = existsSync(packagedCommon) ? packagedCommon : resolve(adapterRoot, "../memorax-code-adapter-common/src");
 const loadCommon = (name) => import(pathToFileURL(join(commonRoot, name)).href);
-const { runRepoMemoryJob, buildPrompt, updatePrompt, gitSnapshot, inspectRepoMemoryBundle } = await loadCommon("repo-memory/repo-memory-job-supervisor.mjs");
+const { runRepoMemoryJob, buildPrompt, updatePrompt, gitSnapshot, inspectRepoMemoryBundle, reuseSharedRepoMemory } = await loadCommon("repo-memory/repo-memory-job-supervisor.mjs");
+const { publishSharedRepoMemory, shareableRepoMemoryWorktree } = await loadCommon("repo-memory/repo-memory-shared-bundle.mjs");
 const { evaluateRepository } = await loadCommon("repo-memory/repo-memory-update-policy-evaluator.mjs");
 const { gitHead, profileLocalHead, resolveCommit } = await loadCommon("repo-memory/repo-memory-job-artifacts.mjs");
-const { markerPathForRepo, readActiveRepoMemoryJobMarker, realpathRepo, repoMemoryJobsDir, tryAcquireRepoMemoryStartupLock, releaseRepoMemoryStartupLock, removeRepoMemoryJobMarkerIfOwned } = await loadCommon("repo-memory/repo-memory-job-marker.mjs");
+const { markerPathForRepo, readActiveRepoMemoryJobMarker, realpathRepo, repoMemoryJobsDir, tryAcquireRepoMemoryStartupLock, releaseRepoMemoryStartupLock, removeRepoMemoryJobMarkerIfOwned, writeRepoMemoryJobMarker } = await loadCommon("repo-memory/repo-memory-job-marker.mjs");
 const { writePrivateJsonRecord } = await loadCommon("runtime-record.mjs");
 
 const SCHEMA = "cursor_native_repo_memory_job.v1";
@@ -52,6 +53,10 @@ function prepare(request, runtime) {
   const perform = () => {
     const active = readActiveRepoMemoryJobMarker({ memoraxCodeHome: runtime.home, repoRealpath: repo });
     if (active.active) return existing(active.marker);
+    if (request.automatic) {
+      const sharedDecision = reuseSharedRepoMemory(request, { memoraxCodeHome: runtime.home, validatorPath: runtime.validatorPath });
+      if (sharedDecision) return { ok: sharedDecision.ok, sharedDecision };
+    }
     const snapshot = gitSnapshot(repo, GIT_READ_OPTIONS);
     if (request.dryRun) return { ok: true, dryRun: true, alreadyRunning: false, execution: "native-subagent", runner: "cursor", repo, mode: request.mode, snapshotHead: snapshot.head };
     const now = runtime.now();
@@ -62,6 +67,7 @@ function prepare(request, runtime) {
       repo, mode: request.mode, runner: "cursor", execution: "native-subagent", status: "requested",
       startedAt: new Date(now).toISOString(), expiresAt: new Date(now + Math.min(REQUEST_MS, runtime.leaseMs)).toISOString(),
       snapshotHead: snapshot.head, snapshotBranch: snapshot.branch, snapshotWorkingTreeState: snapshot.workingTreeState,
+      shareableSnapshot: shareableRepoMemoryWorktree(repo),
       validatorPath: runtime.validatorPath, parentSessionId: runtime.sessionId, ticketHash: hash(ticket),
     };
     writeState(runtime, state);
@@ -125,6 +131,9 @@ function transition(request, runtime) {
       try { if (gitHead(repo, GIT_READ_OPTIONS) !== state.snapshotHead) failureReason = "snapshot_changed"; } catch { failureReason = "snapshot_changed"; }
       state.validation = validation;
       state.profileHead = profileHead;
+      if (!failureReason) state.sharedBaselinePublished = publishSharedRepoMemory({ home: runtime.home, repo,
+        head: state.snapshotHead, shareable: state.shareableSnapshot === true,
+        validate: (path) => inspectRepoMemoryBundle(path, runtime.validatorPath).status === "usable" });
       return finishState(runtime, state, failureReason);
     });
   }
@@ -189,14 +198,14 @@ function finishState(runtime, state, failureReason) {
 
 function writeMarker(runtime, state) {
   const markerInfo = markerPathForRepo(runtime.home, state.repo);
-  writePrivateJsonRecord(markerInfo.markerPath, {
+  writeRepoMemoryJobMarker({ memoraxCodeHome: runtime.home, marker: {
     // Retain the v1 envelope for immutable older runtimes sharing this path.
     version: 1, ownerKind: "lease", pid: state.leasePid, repo: state.repo, repoKey: markerInfo.repoKey,
     mode: state.mode, runner: "cursor", jobId: state.jobId, runId: state.runId,
     outputLogPath: join(dirname(jobPath(runtime, state.jobId)), "output.log"),
     finalMessagePath: join(dirname(jobPath(runtime, state.jobId)), "final-message.md"),
     jobPath: jobPath(runtime, state.jobId), startedAt: state.claimedAt || state.startedAt, leaseExpiresAt: state.expiresAt,
-  }, { durableBoundary: runtime.home });
+  } });
 }
 
 function startLeaseGuard(runtime, state) {

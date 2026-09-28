@@ -979,6 +979,31 @@ the available client-specific diagnostics are healthy, inspect the provider
 URL, credentials, model selection, and network settings owned by that client.
 Do not copy model-provider credentials into `$MEMORAX_CODE_HOME`.
 
+## A new worktree does not build Repo Memory
+
+For clients with background Repo Memory support, linked worktrees use the same
+repository-wide job ownership and shared baseline within one MemoraX home.
+At the same committed snapshot, a clean worktree restores `.repo_memory`
+without another Agent invocation. Another worktree's active job can also defer
+initialization until a later eligible prompt or relevant repo-read.
+
+If the current commit differs from the shared baseline, or the worktree has
+source changes, automatic missing-bundle initialization is deferred. Continue
+from live files, or explicitly request a local Repo Memory build. Existing
+local files are preserved; a partial `.repo_memory` directory is not overwritten
+by sharing. Explicit local builds and updates do not replace a shared baseline.
+
+Shared snapshots live under
+`$MEMORAX_CODE_HOME/repo-memory-bases/<repository-key>/`; `baseline.json`
+identifies the repository and commit. If a snapshot is invalid or must be
+replaced, stop that repository's Repo Memory jobs, verify the matching record,
+and remove only that repository's shared snapshot directory before explicitly
+rebuilding from the desired clean commit. Keep other repository snapshots and
+personal memory. Do not publish these private local files in an issue.
+
+See [repository maintenance configuration](configuration.md#skill-reminder-and-repository-maintenance)
+for storage, reuse, and existing local update behavior.
+
 ## Safe issue reports
 
 Collect structured, redacted output:

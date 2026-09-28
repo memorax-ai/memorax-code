@@ -6,6 +6,8 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { atomicWriteJson, stringOption } from "../config-utils.mjs";
 import { repoMemoryJobWorkerEnv } from "./repo-memory-job-context.mjs";
+import { gitHead } from "./repo-memory-job-artifacts.mjs";
+import { publishSharedRepoMemory, readSharedRepoMemory, restoreSharedRepoMemory, shareableRepoMemoryWorktree } from "./repo-memory-shared-bundle.mjs";
 import {
   markerPathForRepo,
   readActiveRepoMemoryJobMarker,
@@ -74,6 +76,9 @@ function maintainRepoMemory(request, runtime) {
     });
   }
 
+  const shared = reuseSharedRepoMemory(request, runtime);
+  if (shared) return maintenanceDecision({ ...shared, repo, action: "none" });
+
   const bundle = inspectRepoMemoryBundle(repo, runtime.validatorPath);
   if (bundle.status === "unknown") {
     return maintenanceDecision({
@@ -86,6 +91,9 @@ function maintainRepoMemory(request, runtime) {
     });
   }
   if (bundle.status === "missing" || bundle.status === "invalid") {
+    if (!shareableRepoMemoryWorktree(repo)) {
+      return maintenanceDecision({ action: "none", reason: "worktree_dirty", bundleStatus: bundle.status, repo });
+    }
     return launchMaintenanceJob({
       request,
       runtime,
@@ -95,6 +103,18 @@ function maintainRepoMemory(request, runtime) {
       bundleStatus: bundle.status,
       validation: bundle.validation,
     });
+  }
+
+  if (!request.dryRun) {
+    const lock = tryAcquireRepoMemoryStartupLock({ memoraxCodeHome, repoRealpath: repo });
+    if (lock.acquired) {
+      try {
+        if (!readActiveRepoMemoryJobMarker({ memoraxCodeHome, repoRealpath: repo }).active) {
+          publishSharedRepoMemory({ home: memoraxCodeHome, repo, head: gitHead(repo), shareable: true,
+            validate: (path) => inspectRepoMemoryBundle(path, runtime.validatorPath).status === "usable" });
+        }
+      } finally { releaseRepoMemoryStartupLock(lock.lock); }
+    }
   }
 
   let policyDecision;
@@ -144,7 +164,9 @@ function launchMaintenanceJob(input) {
     repo: input.repo,
     mode: input.action,
     dryRun: input.request.dryRun,
+    automatic: true,
   }, input.runtime);
+  if (job.sharedDecision) return maintenanceDecision({ ...job.sharedDecision, repo: input.repo, action: "none" });
   if (job.alreadyRunning) {
     return maintenanceDecision({
       action: "deduplicated",
@@ -165,6 +187,27 @@ function launchMaintenanceJob(input) {
     policyDecision: input.policyDecision,
     job,
   });
+}
+
+// Also checked under the startup lock, after a concurrent build may have finished.
+export function reuseSharedRepoMemory(request, runtime) {
+  const repo = realpathRepo(resolve(request.repo));
+  // Existing worktree bundles retain their current local maintenance policy.
+  if (existsSync(join(repo, ".repo_memory", "PROFILE.md"))) return undefined;
+  const home = resolve(runtime.memoraxCodeHome || process.env.MEMORAX_CODE_HOME || join(homedir(), ".memorax-code"));
+  try {
+    const baseline = readSharedRepoMemory(home, repo);
+    if (!baseline) return undefined;
+    if (gitHead(repo, { timeoutMs: 2000 }) !== baseline.head) {
+      return { ok: true, reason: "shared_snapshot_mismatch", bundleStatus: "unchecked" };
+    }
+    const reason = restoreSharedRepoMemory({ baseline, repo, dryRun: request.dryRun,
+      validate: (path) => inspectRepoMemoryBundle(path, runtime.validatorPath) });
+    return { ok: !["shared_bundle_invalid", "shared_bundle_unavailable"].includes(reason), reason,
+      bundleStatus: reason === "shared_bundle_reused" ? "usable" : reason === "shared_bundle_unavailable" ? "unknown" : "missing" };
+  } catch {
+    return { ok: false, reason: "shared_bundle_unavailable", bundleStatus: "unknown" };
+  }
 }
 
 function maintenanceDecision(input) {
@@ -325,6 +368,10 @@ function startRepoMemoryJob(request, runtime) {
   try {
     const markerInsideLock = readActiveRepoMemoryJobMarker({ memoraxCodeHome, repoRealpath: repo });
     if (markerInsideLock.active) return alreadyRunningPayload(markerInsideLock.marker);
+    if (request.automatic) {
+      const sharedDecision = reuseSharedRepoMemory(request, runtime);
+      if (sharedDecision) return { ok: sharedDecision.ok, sharedDecision };
+    }
 
     mkdirSync(jobDir);
     const state = {
@@ -345,6 +392,7 @@ function startRepoMemoryJob(request, runtime) {
       snapshotHead: snapshot.head,
       snapshotBranch: snapshot.branch,
       snapshotWorkingTreeState: snapshot.workingTreeState,
+      shareableSnapshot: shareableRepoMemoryWorktree(repo),
     };
     atomicWriteJson(jobPath, state);
 

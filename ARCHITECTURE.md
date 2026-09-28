@@ -825,6 +825,24 @@ for a missing bundle. The foreground agent launches the managed
 `memorax-repo-memory` subagent through Cursor's Task tool. The Hook cannot launch
 a native Task by itself. No separate Cursor CLI, SDK, or CLI login is used.
 
+Adapter-common coordinates jobs by the canonical Git common directory, resolved
+from local metadata without running Git for identity. Linked worktrees share
+the startup lock and active marker within one MemoraX home; independent clones
+remain separate. Worktree marker and lock compatibility is retained for older
+runtimes, which do not implement cross-worktree sharing.
+
+The first canonically validated bundle matching a clean committed snapshot can
+be published atomically under `MEMORAX_CODE_HOME/repo-memory-bases`. This private,
+immutable copy includes the Wiki and evidence, excluding personal-memory
+sidecars. A missing worktree bundle at the exact same commit is materialized
+from that copy without a model or provider request. Publication and reuse check
+the source snapshot and local changes; existing local files are not replaced.
+Different commits defer missing-bundle initialization while a shared baseline
+exists. Existing worktree bundles retain local update policy; their updates do
+not replace the shared baseline. This does not select a default branch or merge
+branch differences. The common worker and Cursor native finalizer publish only
+after their existing completion checks; failed jobs never publish.
+
 The Backend owns the TypeScript Repo Memory collector, delta detector, provider
 facets, and validator under `src/repo-memory`, exposed through
 `memorax-code repo-memory`. The canonical Skill ships a thin
@@ -1135,7 +1153,7 @@ and
 | MemoraX memory results and Add acceptance | Normalized response from `provider/memorax` | Observability and trace |
 | Persisted current-turn operational state | Client-qualified current-turn records with Session and Turn checks | CLI workspace association and exact recovery; native content is independently validated |
 | Trace history | Client-qualified local trace events | Diagnostics; not native content or general Turn-identity authority |
-| Repo Memory bundle | Repository-local `.repo_memory` files authored through explicit Skill operations or supervised jobs | Backend readiness and client-injected guidance |
+| Repo Memory bundle | Worktree-local `.repo_memory` files authored through explicit Skill operations or supervised jobs; a validated committed snapshot may seed the private repository-shared baseline | Restored worktree copies retain their original snapshot provenance; Backend readiness and client-injected guidance do not establish artifact validity |
 | Personal Memory | User-owned files under `$MEMORAX_CODE_HOME/personal-memory`: `user-profile/preferences.md` and direct `procedure-memory/*.md` topics | Repository-local `.repo_memory` sidecars, client workspace labels, and reminder delivery do not define personal-memory authority |
 
 #### Native writeback authority
