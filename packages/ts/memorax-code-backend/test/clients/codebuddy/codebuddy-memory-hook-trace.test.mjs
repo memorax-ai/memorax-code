@@ -182,7 +182,7 @@ test("WorkBuddy provisional turn writeback and nested Skill commands share Gener
     { id: "shared-node", type: "function_call", parentId: "u-native", callId: "read-1", name: "Read", arguments: { path: "README.md" } },
     { id: "shared-node", type: "function_call", parentId: "u-native", callId: "read-2", name: "Read", arguments: { path: "package.json" } },
     { id: "result-1", type: "function_call_result", parentId: "shared-node", callId: "read-1", output: { type: "text", text: "project introduction" } },
-    { id: "result-2", type: "function_call_result", parentId: "shared-node", callId: "read-2", output: "package metadata" },
+    { id: "result-2", type: "function_call_result", parentId: "shared-node", callId: "read-2", status: "error", output: "package metadata unavailable" },
     { id: "a-native", type: "message", role: "assistant", parentId: "result-2", status: "completed", timestamp: 1_700_000_060_000, content: [{ type: "output_text", text: "persisted reply" }] },
     { id: "late-tool", type: "function_call", parentId: "u-native", callId: "late-1", name: "Read", arguments: "not part of completed turn" },
   ]));
@@ -196,7 +196,9 @@ test("WorkBuddy provisional turn writeback and nested Skill commands share Gener
       headers: { "content-type": "application/json" },
     });
   };
-  const runtime = createCodeBuddyMemoryHookRuntime({ env, fetchImpl, client: "workbuddy", captureCodingTurns: true });
+  const runtime = createCodeBuddyMemoryHookRuntime({
+    env, fetchImpl, client: "workbuddy", captureCodingTurns: true,
+  });
   try {
     await runtime.recordTurnStart({
       ...command(sessionId, turnId, transcriptPath, prompt),
@@ -218,20 +220,22 @@ test("WorkBuddy provisional turn writeback and nested Skill commands share Gener
       { role: "user", content: prompt, timestamp: 1_700_000_000_000 },
       { role: "assistant", content: "persisted reply", timestamp: 1_700_000_060_000 },
     ]);
-    const codingTurn = requests[0].body.coding_turns[0];
-    assert.equal(codingTurn.client, "workbuddy");
-    assert.equal(codingTurn.session_id, sessionId);
-    assert.equal(codingTurn.turn_id, turnId);
-    assert.equal(codingTurn.turn_index, 1);
-    assert.equal(codingTurn.closed_at, new Date(1_700_000_060_000).toISOString());
-    assert.deepEqual(codingTurn.events.map(({ index, ...event }) => event), [
-      { type: "user_message", content: prompt },
-      { type: "assistant_message", phase: "progress", content: "Inspecting the project." },
-      { type: "tool_call", call_id: "read-1", tool: "Read", arguments: '{"path":"README.md"}' },
-      { type: "tool_call", call_id: "read-2", tool: "Read", arguments: '{"path":"package.json"}' },
-      { type: "tool_result", call_id: "read-1", status: "success", output: "project introduction" },
-      { type: "tool_result", call_id: "read-2", status: "success", output: "package metadata" },
-      { type: "assistant_message", phase: "final", content: "persisted reply" },
+    assert.equal(requests[0].body.event, undefined);
+    assert.equal(requests[0].body.user_id, "user-1@General");
+    const archive = requests[0].body.coding_context;
+    assert.equal(archive.client, "workbuddy");
+    assert.equal(archive.session_id, sessionId);
+    assert.equal(archive.turns[0].turn_id, "u-native");
+    assert.equal(archive.turns[0].turn_index, 1);
+    assert.equal(archive.turns[0].closed_at, new Date(1_700_000_060_000).toISOString());
+    assert.deepEqual(archive.items, [
+      { type: "message", role: "user", content: [{ type: "input_text", text: prompt }] },
+      { type: "message", role: "assistant", phase: "commentary", content: [{ type: "output_text", text: "Inspecting the project." }] },
+      { type: "function_call", call_id: "read-1", name: "Read", arguments: '{"path":"README.md"}' },
+      { type: "function_call", call_id: "read-2", name: "Read", arguments: '{"path":"package.json"}' },
+      { type: "function_call_output", call_id: "read-1", output: '{"text":"project introduction","type":"text"}' },
+      { type: "function_call_output", call_id: "read-2", output: '{"output":"package metadata unavailable","status":"error"}' },
+      { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: "persisted reply" }] },
     ]);
     const options = {
       cwd: nested,

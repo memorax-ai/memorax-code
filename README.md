@@ -300,6 +300,39 @@ MemoraX search/add and the generated configuration's automatic writeback;
 there is no second writeback confirmation. Automatic retrieval remains off
 until explicitly enabled.
 
+New configurations also enable coding-session collection for Codex, Claude
+Code, OpenCode, CodeBuddy, and WorkBuddy. Automatic QA Add includes an optional
+`coding_context` attachment with locally redacted completed Turns: prompts, visible
+assistant messages, and tool calls/results. It does not upload whole native
+session files or reasoning. This selected OpenAI Responses items subset requires
+a MemoraX endpoint supporting the combined QA/attachment contract; an event-only
+server needs a matching update. An Add receipt confirms QA acceptance, not OSS storage.
+Existing configurations without this setting remain disabled; see
+[collection controls](docs/configuration.md#coding-session-collection).
+Attachments use the existing QA triggers: eight Turns by default, the QA
+character limit, inactivity, or graceful drain. Codex, Claude Code, CodeBuddy,
+and WorkBuddy keep frozen native-file references in the QA buffer and reread
+selected content at flush; OpenCode keeps prepared SDK items in memory. This
+best-effort path has no separate archive queue, timer, or restart recovery.
+
+Automatic Helpful uses the same native session and Turn identity as the archive.
+Search correlation and archive attachments are separate contracts. Optional
+`agent_role` and `prompt_origin` come from native metadata; unknown provenance is
+omitted and does not exclude Helpful. Independently verified sessions are eligible
+regardless of launch mode, agent role or prompt origin; ambiguous identity is not.
+The server indexes every archived Turn and evaluates only the Search's forward
+window, N through N+K (K defaults to 2). Missing source/window indexes wait until
+the task TTL without consuming model attempts or producing negative feedback.
+Archive collection still requires separate opt-in. Upgrade the server schema and
+server before the client; start new sessions for validation after upgrading.
+Codex Helpful Search uses outer native Turn events to associate the prompt;
+internal passthrough `turn_id` values do not determine its identity. See the
+[native authority rules](ARCHITECTURE.md#native-writeback-authority).
+Automatic writeback and archive validation remain separate and unchanged.
+Conflicting Codex turn metadata, oversized/unreadable transcripts, truncated evidence
+and archive loss may still prevent evaluation. Client display truncation versus full
+server candidate content remains an attribution risk; no small miss rate is guaranteed.
+
 Local trace capture is enabled by default for supported clients. Depending on
 client capabilities, retained traces under `MEMORAX_CODE_HOME` may contain
 prompts, responses, recalled memory, reminder text, and local paths. Use the
@@ -407,4 +440,4 @@ memory, or local trace artifacts in a public report.
 
 MemoraX Code is available under the [MIT License](LICENSE).
 
-Search can include verified `coding_context` for server-side automatic Helpful. The server correlates it with archived `coding_turns`, waits for a complete follow-up window, and preserves existing feedback. Missing or truncated evidence is not negative feedback. See [configuration](docs/configuration.md#automatic-helpful-correlation).
+Search can include verified `coding_context` for server-side automatic Helpful. The server correlates it with archived batches, reads the N through N+K window, and preserves existing feedback. Missing indexes wait until the task TTL; truncated evidence is skipped, not negative feedback. See [configuration](docs/configuration.md#automatic-helpful-correlation).

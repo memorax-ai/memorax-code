@@ -655,12 +655,14 @@ flowchart TD
 
   Shared["HarnessMemoryRuntime and turn coordinator:<br/>validate metadata and current scope"] -->|"valid"| Runtime
   Shared -->|"rejected"| Result
+  Shared -->|"opted-in completed coding Turn"| Archive
+  Archive["coding-sessions: projection, redaction,<br/>frozen native reference or SDK items"] -->|"optional attachment"| Runtime
   Runtime["automatic writeback:<br/>settings, bounds, redaction and deduplication"] -->|"rejected"| Result
   Runtime -->|"accepted"| Result
   Result["HTTP result: scheduled or skipped"]
 
   Runtime -->|"new accepted content"| Pending
-  Pending["immediate dispatch or buffered flush,<br/>then chunking"] -->|"eligible for dispatch"| Provider
+  Pending["immediate dispatch or QA buffer flush,<br/>native reread and bounded chunking"] -->|"QA plus optional coding_context"| Provider
   Pending -->|"pending fallback scope upgraded"| Discard["discard pending fallback content"]
   Provider["local MemoraX provider:<br/>Add request and normalized result"] --> Remote
   Remote["MemoraX Add API"] -->|"initial response"| Provider
@@ -677,23 +679,73 @@ known failure fields without retaining content or changing buffering, retry,
 metadata consumption, or delivery decisions. Normal skips and transient failures
 that recover do not produce terminal failure records.
 
-- For completed content, local enqueue acceptance is the metadata-consumption
+- For completed content, local QA enqueue acceptance is the metadata-consumption
   point. Interrupted Turns can instead discard metadata with an explicit reason.
+  Optional archive preparation does not create a second enqueue or veto QA
+  acceptance. Rejected or already-accepted work does not schedule an independent
+  archive request. With a valid coding attachment, the native Turn ID also
+  participates in deduplication: equal QA text in two different Turns must not
+  discard either Turn's archive. QA-only writeback retains its text-based rule.
   Unbuffered dispatch starts during enqueue. Buffering defers dispatch until a
   flush; turn or size limits can trigger that flush during enqueue.
 - Buffering and chunking belong to the memory capability; rollout, transcript,
   DSH event-interval, and SDK message parsing remains client-specific.
-- When coding-session collection is enabled, Codex, Claude Code, OpenCode,
-  CodeBuddy, and WorkBuddy materialize an additional ordered event sequence
-  from the same exact native Turn. `coding-sessions` normalizes and redacts it;
-  the shared writeback path preserves client-qualified identity and scope,
-  bounds buffered payloads, and attaches `coding_turns` only to the first QA
-  chunk. The extension is separate from ordinary QA extraction and does not
-  upload raw transcript or trace files. DSH and Trae remain QA-only.
-- Coding-session collection has its own configuration gate and still requires
-  an eligible automatic QA writeback. Native Turn identity, rather than equal
-  QA text, drives deduplication when a valid Coding Turn is attached. Pending
-  data remains in memory; process failure can lose unflushed content.
+- Coding-session selection and redaction belong to `coding-sessions`; the memory
+  capability owns joint QA/attachment scheduling. Codex, Claude Code, OpenCode,
+  CodeBuddy, and WorkBuddy materialize
+  an ordered text/tool `ResponseItem` subset from the same exact native Turn.
+  Codex allowlists native item fields and uses legacy event text only when its
+  native message is absent; this includes structured web-search actions and
+  tool-discovery calls/results without imposing function-call identity rules
+  on hosted tools. The other clients convert their own native records.
+  This excludes reasoning and internal metadata and is not a complete Responses
+  API transcript for direct replay. Normalization owns redaction and per-Turn
+  bounds. Archive mapping preserves selected text blocks and tool strings;
+  structured tool results and native error indicators stay inside string outputs,
+  without changing ordinary QA text materialization. DSH and Trae remain QA-only.
+  The coordinator checks client/session/Turn identity and scope before QA
+  enqueue. When collection is enabled, automatic QA Add can carry an optional
+  `coding_context` attachment; explicit Add and clients without a supported projection
+  remain QA-only. There is no event-only archive request.
+- Search correlation has its own type, independent of Add's archive attachment.
+  Both use native session/Turn identity. CodeBuddy and WorkBuddy resolve their
+  local Hook boundary/digest reference to the native user message ID before
+  upload; the local reference remains only in frozen reread authority.
+  Optional Turn provenance participates in content digests. Only native
+  metadata or lifecycle authority may establish it, never user-role text alone.
+  Provenance is descriptive, not an eligibility gate. Independent sessions need
+  exact native identity and a valid prompt; unknown provenance is omitted.
+  OpenCode carries local SDK identity verification separately from provenance,
+  while file-backed clients verify their native transcripts. The verification
+  flag and native paths are not Search wire fields. Missing server archive
+  indexes defer evaluation until the existing task deadline.
+- QA's existing Turn-count, character, inactivity, and shutdown triggers also
+  dispatch its optional archive data. A combined request groups one connection,
+  client, session, and scope. The archive size budget applies only to the
+  serialized UTF-8 JSON `coding_context` object, including its items and metadata;
+  QA and other Add fields retain their existing limits. Oversized archives split
+  at whole-Turn boundaries before QA chunking. A Turn's
+  archive items appear only on the first QA part containing that Turn, never on
+  every overlapping text fragment. A single Turn whose attachment cannot fit
+  retains QA delivery, omits that attachment, and records a content-free local
+  diagnostic. Sorted native Turn metadata partitions the flat item array;
+  stable batch IDs identify attachments across the existing Add retries.
+- File-backed Codex, Claude Code, CodeBuddy, and WorkBuddy QA buffers hold only
+  frozen native references and prepared-content digests for their attachments,
+  not a second archive body. A reference includes the exact transcript prefix,
+  native identity and order, and completion time. At flush, the owning client
+  reader reconstructs that exact Turn with the same current conversion rules;
+  its redacted digest
+  must still match. Missing, changed, or mismatched source data omits the
+  attachment without changing QA delivery. Native parsing stays client-owned.
+- OpenCode retains its prepared SDK items in the same in-memory QA buffer; it
+  does not guess a native database path. All buffered work and retries are
+  best effort: a crash or exhausted Add retries can lose pending work. There is
+  no independent archive timer, upload queue, durable cursor, or retry loop.
+  Legacy archive cursor files are neither read nor deleted, and old pending
+  event-only uploads are not replayed. The ordinary Add response acknowledges
+  QA acceptance, not OSS storage. The server owns archive storage and object
+  paths. See [the attachment contract](docs/configuration.md#coding-session-collection).
 - Native materializers pass the selected QA timestamps through the shared
   completion contract. The coordinator supplies explicitly labelled observations
   when native times are absent; automatic enqueue freezes any remaining fallback
@@ -857,6 +909,7 @@ entrypoints and compatibility facades. It is not another implementation area.
 | `src/lifecycle/backend` | Managed process, PID/token/connection records, status probing, cleanup, and shutdown requests | Helper contracts do not depend back on the full service implementation |
 | `src/clients/<client>` | Native interpretation, correlation, interruption/recovery, trace adaptation, and lifecycle participation; delegates common memory workflows to the shared harness runtime | Request runtime stays HTTP-composition independent and uses only the matching [native authority](#native-writeback-authority); native deployment follows [package ownership](#22-physical-dependency-directions) |
 | `src/memory` | Memory commands, retrieval, writeback, turn coordination, repository session pinning, manual CLI, and buffering/chunking | Client-neutral modules do not parse native transcript formats |
+| `src/coding-sessions` | Selected text/tool item contract, redaction, and frozen native-reference or prepared SDK attachments | Native parsing stays in clients; memory owns joint QA scheduling; remote HTTP stays in the provider; no durable archive queue |
 | `src/memory/harness-runtime.ts` | Common Turn-start and materialized-completion workflows for all supported clients; publishes registered Turn state synchronously and owns locally created memory resources while reusing injected shared resources | No client implementation, HTTP, app/lifecycle, or direct provider-transport imports; diagnostics enter through a port and native interpretation stays with each client |
 | `src/coding-sessions` | Client-neutral Coding Turn schema, event normalization, redaction, and payload bounds | No native transcript parsing, remote transport, or downstream Skill processing |
 | `src/personal-memory` | Local User Profile listing, normalization, duplicate detection, updates, deletion, and atomic storage | No Backend service, provider calls, transcript processing, or Procedure Memory mutation |
@@ -1020,6 +1073,15 @@ contract coverage, not real-client E2E results.
 | CodeBuddy/WorkBuddy | Correlated native transcript JSONL | [CodeBuddy](packages/ts/memorax-code-backend/test/clients/codebuddy) | [CodeBuddy adapter](packages/ts/memorax-code-codebuddy-adapter/test) |
 | Trae | Validated Turn-ID and correlated `UserPromptSubmit`/`Stop` Hook pair | [Trae](packages/ts/memorax-code-backend/test/clients/trae) | [Trae adapter](packages/ts/memorax-code-trae-adapter/test) |
 
+For Codex Helpful Search correlation, user response items inherit the active
+outer Turn established by `task_started` or `turn_context`. This path verifies
+the session and explicit native user-event identities independently of the
+writeback Turn-index reader. Internal passthrough `turn_id` / `turnId` values
+neither supply nor veto Helpful Search identity; optional `prompt_origin` remains
+descriptive provenance. Messages outside an active interval cannot supply the
+prompt. Automatic QA writeback, archive parsing, and their Turn-index validation
+retain their separate existing identity checks.
+
 ### 6.2 State classes and shutdown ownership
 
 Ephemeral process state includes active HTTP requests, turn coordination,
@@ -1029,7 +1091,8 @@ writes.
 Durable local state includes configuration, private runtime, setup-completion,
 package-transition, automatic-update, and trial credential records, active
 client selection,
-client-qualified trace JSONL, reminder cadence and quota-reminder state, and
+client-qualified trace JSONL,
+reminder cadence and quota-reminder state, and
 Repo Memory. State shared across processes requires a bounded lock, atomic
 replacement, or version validation appropriate to its record. An in-memory
 mutex is not cross-process authority.
@@ -1052,18 +1115,10 @@ publication. Its legacy directory lock retains the same path and blocks new
 acquisition until released; an unprovable abandoned directory is not removed
 based on age. Pending schema, correlation, and pruning remain client-owned.
 
-Search correlation is owned by `memory/coding-context.ts`: the operational
-binding selects an exact native Turn, client-native parsers validate its
-foreground/end-user eligibility, and the provider serializes only the bounded
-`coding_context` identity. The same validator supplies optional role metadata
-on archived Coding Turns. It does not infer identity from trace events, recency
-or query text. The server owns Search IDs, evidence-window scheduling and
-Helpful decisions; missing native evidence leaves ordinary Search available.
-
-Remote state includes MemoraX memories, Add tasks, and optionally archived
-normalized Coding Turns; the service owns archival storage and consumption.
-The provider adapter is the network boundary for documented memory payloads;
-the Backend does not poll an Add task after its initial response.
+Backend remote operations cover MemoraX memories, Add tasks, and optional
+coding-session attachments on automatic Add. The provider is the network boundary for
+documented payloads; the Backend does not poll an Add task after its initial
+response or manage remote OSS objects directly.
 
 The runtime composition root owns bounded graceful shutdown. It closes HTTP
 intake, waits for active requests, and then drains the memory service and
@@ -1222,6 +1277,7 @@ paths are used below unless a different package or the repository root is named.
 | `src/repo-memory` | Repository-root `test/shared-skill/repo-memory-builder*.test.mjs` and `repo-memory-updater.test.mjs` through the canonical Skill launcher |
 | `src/personal-memory` | `test/personal-memory`; canonical Skill launcher integration in repository-root `test/shared-skill` |
 | `src/provider/memorax` | `test/provider/memorax` |
+| `src/coding-sessions` | `test/coding-sessions`, with native-to-provider coverage in `test/memory/memory-service.test.mjs` |
 | `src/repository` | `test/repository` |
 | `src/shared` | `test/shared` |
 | `src/trace` | `test/trace` |

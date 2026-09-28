@@ -1,7 +1,7 @@
-import { resolveCodingSearchContext } from "../../memory/coding-context.js";
 import {
   readClaudeInterruptedTranscriptTurn,
   readClaudeCodingSessionTurn,
+  readClaudeArchiveSource,
   readClaudeTranscriptTurn,
   type ClaudeCodingSessionTurnResult,
   type ClaudeInterruptedTranscriptTurn,
@@ -86,7 +86,7 @@ export function createClaudeMemoryHookRuntime(
     traceFailureEvent: "claude_trace.write_failed",
     turnStartTraceSource: "claude-hook",
     deduplicateRetrieval: true,
-  }, options);
+  }, { readCodingSessionTurn: readClaudeArchiveSource, ...options });
   const { turnCoordinator } = memory;
 
   return {
@@ -167,7 +167,6 @@ export function createClaudeMemoryHookRuntime(
         request,
         options.diagnosticLogger,
       );
-      const codingContext = await resolveCodingSearchContext(traceContext);
       const writeback = await memory.completeTurn({
         sessionId: request.sessionId,
         clientTurnId: request.promptId,
@@ -181,16 +180,18 @@ export function createClaudeMemoryHookRuntime(
         assistantText: transcript.turn.assistantReply,
         userTimestamp: transcript.turn.userTimestamp,
         assistantTimestamp: transcript.turn.assistantTimestamp,
-        ...("events" in transcript.turn && transcript.turn.closedAt ? {
+        ...("items" in transcript.turn && transcript.turn.closedAt ? {
           codingTurn: {
-            ...(codingContext ? { agentRole: codingContext.agent_role, promptOrigin: codingContext.prompt_origin } : {}),
             client: CLAUDE_MEMORY_TURN_CLIENT,
             sessionId: transcript.turn.sessionId,
             turnId: transcript.turn.promptId,
             turnIndex: transcript.turn.sessionTurnIndex,
-            events: transcript.turn.events,
+            items: transcript.turn.items,
             outcome: "completed",
             closedAt: transcript.turn.closedAt,
+            source: transcript.turn.source,
+            ...(transcript.turn.agent_role ? { agent_role: transcript.turn.agent_role } : {}),
+            ...(transcript.turn.prompt_origin ? { prompt_origin: transcript.turn.prompt_origin } : {}),
           },
         } : {}),
         traceContext,

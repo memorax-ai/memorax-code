@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { codingSessionsEnabled } from "../../../dist/config/memorax-code.js";
 import {
   MEMORY_CLI_DEFAULT_SESSION_ID,
   MEMORAX_DEFAULT_BASE_URL,
@@ -19,7 +21,6 @@ import {
 import {
   normalizeMemoraxBaseUrl,
 } from "../../../../memorax-code-adapter-common/src/memorax-defaults.mjs";
-import { codingSessionsEnabled } from "../../../dist/config/memorax-code.js";
 
 test("memory CLI uses its executable name as the default session identity", () => {
   assert.equal(MEMORY_CLI_DEFAULT_SESSION_ID, "memorax-cli");
@@ -61,6 +62,7 @@ test("seeded MemoraX Code config exposes high-signal choices without a tuning ca
   assert.equal(codingSessionsEnabled({}, loadMemoraxCodeConfig(root)), true);
   assert.match(config, /\[clients\]\ncodex = true\nclaude = true/);
   assert.match(config, /\[memorax\]/);
+  assert.match(config, /\[coding_sessions\]\nenabled = true/);
   assert.match(config, /# endpoint = "https:\/\/platform\.memorax\.net" # MemoraX service URL\./);
   assert.match(config, /# api_key = "" # MemoraX API key used by the local Backend\./);
   assert.match(config, /# user_id = "" # MemoraX base user ID; requests derive a workspace-scoped namespace\./);
@@ -102,6 +104,13 @@ test("MemoraX config resolver centralizes defaults and clamps env values", () =>
   assert.equal(result.config.timeoutMs, 1000);
   assert.equal(result.config.maxContextChars, 256);
   assert.equal(result.config.maxItemChars, 64);
+});
+
+test("Coding collection requires an explicit setting and preserves environment precedence", () => {
+  assert.equal(codingSessionsEnabled({}, {}), false);
+  assert.equal(codingSessionsEnabled({}, { coding_sessions: { enabled: true } }), true);
+  assert.equal(codingSessionsEnabled({ MEMORAX_CODE_CODING_SESSIONS_ENABLED: "false" }, { coding_sessions: { enabled: true } }), false);
+  assert.equal(codingSessionsEnabled({ MEMORAX_CODE_CODING_SESSIONS_ENABLED: "true" }, { coding_sessions: { enabled: false } }), true);
 });
 
 test("MemoraX Code loads configured-home TOML and resolves credentials, writeback, and Add defaults", async () => {
@@ -169,6 +178,33 @@ test("MemoraX Code loads configured-home TOML and resolves credentials, writebac
   assert.equal(options.ok, true);
   assert.equal(options.options.contentType, "code");
   assert.equal(options.options.mode, "default");
+});
+
+test("config loaders reject an unfinished value ending in a comment without hanging", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-config-eof-comment-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const configModule = new URL("../../../dist/config/memorax-code.js", import.meta.url).href;
+
+  // Bound the child process: a synchronous parser loop also blocks test-runner timers.
+  const result = spawnSync(process.execPath, ["--input-type=module", "--eval", `
+    import assert from "node:assert/strict";
+    import { writeFileSync } from "node:fs";
+    import { join } from "node:path";
+    import { loadMemoraxCodeConfig, loadLifecycleMemoraxCodeConfig } from ${JSON.stringify(configModule)};
+
+    const home = process.argv[1];
+    for (const source of ["[clients]\\ncodex = [true #", "clients = { codex = true #"]) {
+      writeFileSync(join(home, "config.toml"), source);
+      const warnings = [];
+      assert.deepEqual(loadMemoraxCodeConfig(home, { warn: (message) => warnings.push(message) }), {});
+      assert.equal(warnings.length, 1);
+      assert.match(warnings[0], /failed to parse MemoraX Code config/);
+      assert.throws(() => loadLifecycleMemoraxCodeConfig(home), /failed to parse MemoraX Code lifecycle config/);
+    }
+  `, root], { encoding: "utf8", timeout: 2000, killSignal: "SIGKILL" });
+
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
 });
 
 test("memory config status merges explicit config fields and env overrides", async () => {

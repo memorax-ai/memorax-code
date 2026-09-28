@@ -1,14 +1,15 @@
 import { readFile, stat } from "node:fs/promises";
 import { codexHelpfulPromptFromJsonLines } from "../clients/codex/session-turn-index.js";
 import { claudeHelpfulPromptFromJsonLines } from "../clients/claude/transcript-turn.js";
+import { codeBuddyHelpfulPromptFromJsonLines } from "../clients/codebuddy/jsonl-history.js";
 import type { TraceContext } from "../trace/context.js";
 
 export type CodingSearchContext = Readonly<{
-  client: "codex" | "claude-code";
+  client: "codex" | "claude-code" | "opencode" | "codebuddy" | "workbuddy";
   session_id: string;
   turn_id: string;
-  agent_role: "main";
-  prompt_origin: "end_user";
+  agent_role?: "main" | "subagent";
+  prompt_origin?: "end_user" | "system";
 }>;
 
 type CodingSearchContextLimits = Readonly<{
@@ -26,8 +27,16 @@ export async function resolveCodingSearchContext(
   trace?: TraceContext,
   limits: CodingSearchContextLimits = DEFAULT_CODING_CONTEXT_LIMITS,
 ): Promise<CodingSearchContext | undefined> {
+  if (trace?.client === "opencode") {
+    return trace.sessionId.trim() && trace.turnId?.trim()
+      && trace.sessionId.length <= 255 && trace.turnId.length <= 255
+      && trace.nativePromptVerified === true
+      ? { client: "opencode", session_id: trace.sessionId, turn_id: trace.turnId,
+        ...(trace.agentRole ? { agent_role: trace.agentRole } : {}),
+        ...(trace.promptOrigin ? { prompt_origin: trace.promptOrigin } : {}) } : undefined;
+  }
   if (!trace?.turnId || !trace.transcriptPath || !trace.sessionId
-    || !["codex", "claude"].includes(trace.client)
+    || !["codex", "claude", "codebuddy", "workbuddy"].includes(trace.client)
     || trace.turnId.length > 255 || trace.sessionId.length > 255
     || limits.maxTranscriptBytes < 1 || limits.timeoutMs < 1) return undefined;
   const { client, sessionId, transcriptPath, turnId } = trace;
@@ -45,14 +54,17 @@ export async function resolveCodingSearchContext(
           signal: controller.signal,
         });
         const input = { sessionId, turnId };
-        const eligible = client === "codex"
+        const buddy = client === "codebuddy" || client === "workbuddy"
+          ? codeBuddyHelpfulPromptFromJsonLines(transcript, input) : undefined;
+        const provenance = client === "codex"
           ? codexHelpfulPromptFromJsonLines(transcript, input)
-          : claudeHelpfulPromptFromJsonLines(transcript, input);
-        if (!eligible || Date.now() - startedAt >= limits.timeoutMs) return undefined;
+          : client === "claude" ? claudeHelpfulPromptFromJsonLines(transcript, input) : buddy;
+        if (!provenance || Date.now() - startedAt >= limits.timeoutMs) return undefined;
         return {
-          client: client === "claude" ? "claude-code" as const : "codex" as const,
-          session_id: sessionId, turn_id: turnId,
-          agent_role: "main" as const, prompt_origin: "end_user" as const,
+          client: client === "claude" ? "claude-code" as const : client as "codex" | "codebuddy" | "workbuddy",
+          session_id: sessionId, turn_id: buddy?.turnId ?? turnId,
+          ...(provenance.agent_role ? { agent_role: provenance.agent_role } : {}),
+          ...(provenance.prompt_origin ? { prompt_origin: provenance.prompt_origin } : {}),
         };
       })(),
       new Promise<undefined>((resolve) => {

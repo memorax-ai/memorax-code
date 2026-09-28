@@ -8,9 +8,7 @@ import { fileURLToPath } from "node:url";
 
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 
-test("automatic update installs an exact latest version and runs non-interactive reconciliation", {
-  skip: process.platform === "win32",
-}, async (t) => {
+test("automatic update installs an exact latest version and runs non-interactive reconciliation", async (t) => {
   const fixture = await createFixture(t);
   await writeSetupCompletion(fixture.memoraxCodeHome, "0.1.9");
   const result = runAutomaticUpdate(fixture);
@@ -33,9 +31,7 @@ test("automatic update installs an exact latest version and runs non-interactive
   assert.deepEqual(Object.keys(state).sort(), ["installedVersion", "nextCheckAt", "version"]);
 });
 
-test("automatic update reports npm registry authentication failure without response text", {
-  skip: process.platform === "win32",
-}, async (t) => {
+test("automatic update reports npm registry authentication failure without response text", async (t) => {
   const fixture = await createFixture(t);
   await writeSetupCompletion(fixture.memoraxCodeHome, "0.1.9");
   const result = runAutomaticUpdate(fixture, { MEMORAX_CODE_TEST_VIEW_ERROR: "E401" });
@@ -54,9 +50,7 @@ test("automatic update reports npm registry authentication failure without respo
   assert.deepEqual(await readJsonLines(fixture.setupLogPath), []);
 });
 
-test("failed automatic installation records the actual replaced version and retry deadline", {
-  skip: process.platform === "win32",
-}, async (t) => {
+test("failed automatic installation records the actual replaced version and retry deadline", async (t) => {
   const fixture = await createFixture(t);
   await writeSetupCompletion(fixture.memoraxCodeHome, "0.1.9");
   const startedAt = Date.now();
@@ -73,9 +67,7 @@ test("failed automatic installation records the actual replaced version and retr
   assert.equal((await readJsonLines(fixture.npmLogPath)).length, 2, "the failed replacement version must be throttled until its retry deadline");
 });
 
-test("successful npm exit cannot hide installation at an unexpected version", {
-  skip: process.platform === "win32",
-}, async (t) => {
+test("successful npm exit cannot hide installation at an unexpected version", async (t) => {
   const fixture = await createFixture(t);
   await writeSetupCompletion(fixture.memoraxCodeHome, "0.1.9");
   const result = runAutomaticUpdate(fixture, { MEMORAX_CODE_TEST_NPM_VERSION: "0.1.11" });
@@ -89,9 +81,7 @@ test("successful npm exit cannot hide installation at an unexpected version", {
   assert.equal(state.installedVersion, "0.1.11");
 });
 
-test("automatic update respects the explicit opt-out", {
-  skip: process.platform === "win32",
-}, async (t) => {
+test("automatic update respects the explicit opt-out", async (t) => {
   const fixture = await createFixture(t);
   await writeSetupCompletion(fixture.memoraxCodeHome, "0.1.9");
   const result = runAutomaticUpdate(fixture, { MEMORAX_CODE_AUTO_UPDATE: "false" });
@@ -188,14 +178,17 @@ async function createFixture(t) {
     "}",
     "",
   ].join("\n"));
-  await chmod(npmModule, 0o755);
-  await symlink(basename(npmModule), join(fakeBin, "npm"));
+  if (process.platform !== "win32") {
+    await chmod(npmModule, 0o755);
+    await symlink(basename(npmModule), join(fakeBin, "npm"));
+  }
   t.after(() => rm(root, { recursive: true, force: true }));
   return {
     root,
     memoraxCodeHome,
     home,
     fakeBin,
+    npmModule,
     npmLogPath,
     setupLogPath,
   };
@@ -213,6 +206,7 @@ function runAutomaticUpdate(fixture, extraEnv = {}) {
     env: {
       ...process.env,
       HOME: fixture.home,
+      MEMORAX_CODE_NPM_EXEC_PATH: fixture.npmModule,
       MEMORAX_CODE_TEST_NPM_LOG: fixture.npmLogPath,
       MEMORAX_CODE_TEST_SETUP_LOG: fixture.setupLogPath,
       PATH: `${fixture.fakeBin}${delimiter}${process.env.PATH ?? ""}`,

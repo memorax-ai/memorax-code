@@ -158,7 +158,7 @@ export function renderDefaultMemoraxCodeConfig(): string {
     "# See docs/configuration.md for advanced tuning fields and effective defaults.",
     "",
     "[coding_sessions]",
-    "enabled = true # Attach locally redacted completed coding Turns to automatic Memory Add.",
+    "enabled = true # Attach locally redacted completed coding Turns to automatic QA Add requests.",
     "",
     "# Client integrations managed by `memorax-code start|status|stop|uninstall`.",
     "[clients]",

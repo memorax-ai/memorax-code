@@ -168,7 +168,8 @@ a local terminal. Neither path prints the API key. Treat conversations,
 screenshots, and logs containing a displayed Mark ID as sensitive.
 
 MemoraX-backed search, retrieval, and writeback require a Base User ID, API
-key, and network access. Foreground setup discloses automatic writeback before
+key, and network access. Foreground setup discloses automatic writeback and
+coding-session collection before
 creating or accepting credentials. Completing setup activates search/add and
 the generated configuration's automatic writeback; automatic retrieval
 remains disabled until explicitly enabled.
@@ -189,24 +190,23 @@ or explicitly labelled local observation times. An aligned source-label array
 in Add metadata distinguishes them; it contains no transcript paths or trace
 identifiers. See [timestamp semantics](docs/configuration.md#automatic-writeback-timestamps).
 
-When coding-session collection is enabled, automatic Add also sends a separate
-`coding_turns` extension for Codex, Claude Code, OpenCode, CodeBuddy, and
-WorkBuddy. It contains normalized user messages, visible assistant progress and
-final messages, tool arguments/results, client-qualified Session/Turn identity,
-completion time, and optional repository identity. These records are archival
-data, not part of the ordinary QA extraction text. DSH and Trae do not attach
-this extension. Hidden reasoning, system/Hook messages, original transcript
-files and paths, local traces, and recognized binary payloads are excluded.
-
-Coding event text passes through the same best-effort detector below, with
-local home paths replaced before event and payload bounds are applied.
-Truncation markers describe retained-data loss, not complete native-session
-coverage. Tool content can contain private source code and unrecognized
-secrets; normalization does not make it non-sensitive. New configurations
-enable this collection; existing configurations without the setting remain
-off. Use [collection controls](docs/configuration.md#coding-session-collection)
-to disable the extension without disabling ordinary QA writeback. Server-side
-archival retention is separate from local trace retention and saved memories.
+Coding-session collection attaches a locally redacted text/tool subset from
+completed Turns as an optional `coding_context` object on automatic QA Add requests
+to the configured MemoraX endpoint. It includes prompts, visible assistant messages,
+and tool calls and results from Codex, Claude Code, OpenCode, CodeBuddy, or
+WorkBuddy. Codex projects allowlisted native item fields, including web-search
+actions, tool-discovery arguments, and loaded tool definitions; nested strings
+in those JSON structures use the same best-effort redaction. Other supported clients
+convert their native records to that shared subset, including structured tool
+results and native tool error/status indicators inside the result string. It excludes reasoning,
+internal metadata, binary attachments, raw session files, native transcript paths,
+and trace provenance. This bounded, potentially lossy subset is not a complete
+Responses API transcript for direct replay. New configurations enable this
+feature; existing configurations without `[coding_sessions].enabled` leave it
+disabled. Collection requires automatic QA writeback and does not discover or
+bulk-upload historical sessions. File-backed materialization rereads only the
+exact completed Turns in the current QA buffer.
+See [collection controls and limits](docs/configuration.md#coding-session-collection).
 
 Automatic writeback bounds each selected message to its configured Add limit,
 then applies a local best-effort detector before hashing, buffering, chunking,
@@ -219,7 +219,8 @@ identifiers are replaced with typed placeholders such as
 `[REDACTED:CREDENTIAL]`, `[REDACTED:EMAIL]`,
 `[REDACTED:LONG_NUMBER]`, and `[REDACTED:OPAQUE_ID]`. If either side of the
 turn contains no meaningful content after replacement, that automatic
-writeback is skipped locally and no Add request is sent.
+QA writeback is skipped locally and no Add request or archive attachment is sent
+for that Turn.
 
 This detector is not a complete data-loss-prevention system. Unknown formats
 and weak-context personal information may remain. Explicit `memorax-cli add`
@@ -236,11 +237,23 @@ queries, selected writeback content, and saved memories as sensitive.
 Automatic writeback and explicit Add are independent: persistent disabling of
 both requires `[memory.writeback].enabled = false` and
 `[memory.cli].add_enabled = false`, without enabling environment overrides.
-The global environment switch disables both only when its value is exactly
+Disabling automatic writeback also stops its coding-session attachments. Use
+`[coding_sessions].enabled = false` to disable attachments while retaining QA.
+The global environment switch disables all writes only when its value is exactly
 `false`. Follow [Disabling memory writes](docs/configuration.md#disabling-memory-writes)
 for commands and process-inheritance requirements. These controls do not
 cancel in-flight requests or guarantee removal of previously buffered turns;
 graceful Backend shutdown can flush pending writeback.
+File-backed attachments retain frozen references and content digests in the
+in-memory QA buffer and reread the corresponding native files at flush. Deleted
+or changed source data omits the attachment while preserving QA. OpenCode holds
+prepared SDK items in the same buffer. A process crash or exhausted Add retries
+can lose pending work; there is no independent archive queue or recovery loop.
+The Add receipt acknowledges QA acceptance, not completed OSS storage. An
+individual Turn's archive that cannot fit within the 2 MiB compact UTF-8 JSON
+budget for the `coding_context` object, including archive metadata, is omitted with a
+content-free local diagnostic instead of blocking QA. QA messages and other Add
+fields do not count toward this archive budget; their existing limits remain.
 
 ## Local Data and Diagnostics
 
@@ -249,6 +262,13 @@ runtime authority, adapter state, and retained diagnostics. On POSIX systems
 the product creates or tightens the home to mode `0700` and newly seeded
 configuration to mode `0600`; Windows relies on the current user's filesystem
 ACLs.
+
+The current attachment path does not persist archive cursors. Legacy files under
+`runtime/coding-sessions/` can still contain native transcript and workspace
+paths, session/Turn identifiers, projection metadata, digests, and upload
+progress. They remain sensitive local data; the current path neither reads,
+replays, nor deletes them. Frozen native references in the live QA buffer never
+enter the remote Add payload or local Add trace.
 
 Shared state locks exclusively create a private lock file and write its
 process-qualified owner record before entering a critical section. A failed

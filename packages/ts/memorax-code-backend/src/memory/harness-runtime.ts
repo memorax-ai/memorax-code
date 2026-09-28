@@ -1,5 +1,6 @@
 import { retrieveAutomaticMemoryContext } from "./automatic-retrieval.js";
 import type { CodingSessionSourceTurn } from "../coding-sessions/coding-turn.js";
+import type { NativeCodingSessionTurnRef } from "../coding-sessions/contracts.js";
 import {
   createAutomaticMemoryWritebackRuntime,
   type AutomaticMemoryWritebackEnqueue,
@@ -38,6 +39,8 @@ import { recordTraceEvent, traceTurnEventId, writeCurrentTraceTurn } from "../tr
 
 export type HarnessMemoryRuntimeOptions = {
   automaticWriteback?: AutomaticMemoryWritebackEnqueue;
+  captureCodingTurns?: boolean;
+  readCodingSessionTurn?: (ref: NativeCodingSessionTurnRef) => Promise<CodingSessionSourceTurn | undefined>;
   diagnosticLogger?: MemoryDiagnosticLogger;
   env?: Record<string, string | undefined>;
   fetchImpl?: typeof fetch;
@@ -115,8 +118,10 @@ export function createHarnessMemoryRuntime(
     : options.automaticWriteback
       ? { enqueue: options.automaticWriteback }
       : createAutomaticMemoryWritebackRuntime({
+        memoraxCodeHome: options.memoraxCodeHome ?? (options.env ?? process.env).MEMORAX_CODE_HOME?.trim(),
         diagnosticLogger: options.diagnosticLogger,
         queueQuotaNotice: pendingQuotaNotice?.queue,
+        readCodingSessionTurn: options.readCodingSessionTurn,
       });
   const turnCoordinator = options.turnCoordinator ?? createMemoryTurnCoordinator({
     automaticWriteback: automaticWriteback!.enqueue,
@@ -126,7 +131,9 @@ export function createHarnessMemoryRuntime(
     cleanupIntervalMs: options.cleanupIntervalMs,
   });
   const repositoryMemorySession = options.repositoryMemorySession ?? createRepositoryMemorySessionRuntime({
-    onScopeUpgrade: automaticWriteback?.discardForScopeUpgrade,
+    onScopeUpgrade(upgrade) {
+      automaticWriteback?.discardForScopeUpgrade?.(upgrade);
+    },
   });
   const retrievalTurns = new Set<string>();
   const retrievalTurnLimit = positiveInteger(options.maxEntries, 256);
@@ -240,6 +247,13 @@ export function createHarnessMemoryRuntime(
         resolveRepositoryMemory: input.resolveRepositoryMemory,
         userText: input.userText,
         assistantText: input.assistantText,
+        ...(options.captureCodingTurns === true
+          && input.codingTurn?.client === definition.client
+          && input.codingTurn.sessionId === input.sessionId
+          && (input.codingTurn.turnId === input.clientTurnId
+            || ((definition.client === "codebuddy" || definition.client === "workbuddy")
+              && input.codingTurn.source?.correlationTurnId === input.clientTurnId))
+          ? { codingTurn: input.codingTurn } : {}),
         userTimestamp: input.userTimestamp,
         assistantTimestamp: input.assistantTimestamp,
         userTimestampSource: input.userTimestampSource,
@@ -247,7 +261,6 @@ export function createHarnessMemoryRuntime(
         writeback: {
           client: definition.client,
           sessionKey: input.sessionId,
-          ...(input.codingTurn?.turnId === input.clientTurnId ? { codingTurn: input.codingTurn } : {}),
           env: options.env ?? process.env,
           fetchImpl: options.fetchImpl,
           memoryObservability: options.memoryObservability,

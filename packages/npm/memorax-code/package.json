@@ -1,6 +1,6 @@
 {
   "name": "@memorax/memorax-code",
-  "version": "0.1.17",
+  "version": "0.1.18",
   "description": "Persistent coding memory for Codex, Claude Code, CodeBuddy/WorkBuddy, DeepSeek Harness, OpenCode, and Trae.",
   "license": "MIT",
   "type": "module",
@@ -47,7 +47,7 @@
     "node": ">=20"
   },
   "dependencies": {
-    "smol-toml": "^1.7.0"
+    "smol-toml": "^1.8.0"
   },
   "scripts": {
     "preinstall": "node ./bin/memorax-code-npm-preinstall.mjs",

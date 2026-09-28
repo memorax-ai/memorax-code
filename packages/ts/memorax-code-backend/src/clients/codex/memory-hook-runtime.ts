@@ -1,7 +1,7 @@
-import { resolveCodingSearchContext } from "../../memory/coding-context.js";
 import {
   readCodexInterruptedRolloutTurn,
   readCodexCodingSessionTurn,
+  readCodexArchiveSource,
   readCodexRolloutTurn,
   readCodexRolloutSessionWorkspace,
   type CodexRolloutTurn,
@@ -104,7 +104,7 @@ export function createCodexMemoryHookRuntime(options: CodexMemoryHookRuntimeOpti
     traceFailureEvent: "codex_trace.write_failed",
     turnStartTraceSource: "codex-hook",
     deduplicateRetrieval: true,
-  }, options);
+  }, { readCodingSessionTurn: readCodexArchiveSource, ...options });
   const { turnCoordinator } = memory;
 
   return {
@@ -194,10 +194,11 @@ export function createCodexMemoryHookRuntime(options: CodexMemoryHookRuntimeOpti
         if (source.ok) {
           codingSessionTurn = source.turn;
           rollout = source;
-        } else if (source.reason === "turn_index_missing" || source.reason === "turn_not_completed") {
-          rollout = await readCodexRolloutTurn(rolloutInput);
         } else {
-          rollout = { ok: false, reason: source.reason, ...(source.error ? { error: source.error } : {}) };
+          // Source collection validates tool identities beyond the QA contract.
+          // Keep rejected source data out while letting the existing QA reader
+          // independently validate its own exact native prompt and final reply.
+          rollout = await readCodexRolloutTurn(rolloutInput);
         }
       } else {
         rollout = await readCodexRolloutTurn(rolloutInput);
@@ -221,7 +222,6 @@ export function createCodexMemoryHookRuntime(options: CodexMemoryHookRuntimeOpti
         });
         return { ok: true, scheduled: false, reason: rollout.reason };
       }
-      const codingContext = await resolveCodingSearchContext(traceContext);
       const writeback = await memory.completeTurn({
         sessionId: request.sessionId,
         clientTurnId: request.turnId,
@@ -239,14 +239,16 @@ export function createCodexMemoryHookRuntime(options: CodexMemoryHookRuntimeOpti
         assistantTimestamp: rollout.turn.assistantTimestamp,
         ...(codingSessionTurn ? {
           codingTurn: {
-            ...(codingContext ? { agentRole: codingContext.agent_role, promptOrigin: codingContext.prompt_origin } : {}),
             client: CODEX_MEMORY_TURN_CLIENT,
             sessionId: codingSessionTurn.sessionId,
             turnId: codingSessionTurn.turnId,
             turnIndex: codingSessionTurn.sessionTurnIndex,
-            events: codingSessionTurn.events,
+            items: codingSessionTurn.items,
             outcome: "completed",
             closedAt: codingSessionTurn.closedAt ?? new Date(now()).toISOString(),
+            source: codingSessionTurn.source,
+            ...(codingSessionTurn.agent_role ? { agent_role: codingSessionTurn.agent_role } : {}),
+            ...(codingSessionTurn.prompt_origin ? { prompt_origin: codingSessionTurn.prompt_origin } : {}),
           },
         } : {}),
         traceContext,

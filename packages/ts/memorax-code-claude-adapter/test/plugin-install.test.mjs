@@ -671,7 +671,7 @@ test("Claude plugin state is isolated by Claude home", async () => {
   }
 });
 
-test("Claude plugin state uses the real Claude home behind symlinks", { skip: process.platform === "win32" }, async () => {
+test("Claude plugin state uses the real Claude home behind directory links", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-claude-plugin-symlink-home-"));
   const memoraxCodeHome = join(root, "memorax-code");
   const marketplacePath = join(root, "marketplace");
@@ -681,7 +681,8 @@ test("Claude plugin state uses the real Claude home behind symlinks", { skip: pr
   try {
     await mkdir(join(marketplacePath, ".claude-plugin"), { recursive: true });
     await mkdir(realClaudeHome, { recursive: true });
-    await symlink(realClaudeHome, linkedClaudeHome, "dir");
+    // Junctions exercise the same canonical-home contract without symlink privileges on Windows.
+    await symlink(realClaudeHome, linkedClaudeHome, process.platform === "win32" ? "junction" : "dir");
     await writeFile(join(marketplacePath, ".claude-plugin", "marketplace.json"), "{}\n");
     await writeFakeClaude(claudeCommand);
     assert.equal(ensureClaudePluginInstalled({ claudeHome: linkedClaudeHome, memoraxCodeHome, marketplacePath, claudeCommand }).ok, true);

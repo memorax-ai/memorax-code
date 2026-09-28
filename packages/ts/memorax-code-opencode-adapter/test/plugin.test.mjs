@@ -7,6 +7,55 @@ import { test } from "node:test";
 import { createMemoraxOpenCodePlugin } from "../src/plugin.mjs";
 import { OPENCODE_REPO_MEMORY_AGENT } from "../src/repo-memory-server-runner.mjs";
 
+test("native session lineage and explicit non-synthetic metadata travel with Search and Add", async () => {
+  for (const parentID of [undefined, "parent-session"]) {
+    const requests = [];
+    const messages = [
+      {info:{id:"user-native",role:"user",sessionID:"session-native"},parts:[{type:"text",text:"Prompt",synthetic:false,sessionID:"session-native",messageID:"user-native"}]},
+      {info:{id:"answer-native",role:"assistant",sessionID:"session-native",parentID:"user-native",time:{completed:123},finish:"stop"},parts:[{type:"text",text:"Done",sessionID:"session-native",messageID:"answer-native"}]},
+    ];
+    const hooks = await createPluginWithoutReminders({
+      backendConnection:{url:"http://127.0.0.1:8787"},
+      fetchImpl:responseSequence(requests,[{ok:true},{ok:true}]),
+    })(pluginInput({client:{session:{
+      async get(){return {data:{id:"session-native",...(parentID?{parentID}:{})}};},
+      async messages(){return {data:messages};},
+    }}}));
+    await hooks["chat.message"]({sessionID:"session-native"},{message:messages[0].info,parts:messages[0].parts});
+    hooks.event(sessionIdleEvent("session-native"));
+    await hooks.dispose();
+    assert.equal(requests.length,2);
+    for(const {body} of requests) {
+      assert.equal(body.agentRole,parentID?"subagent":"main");
+      assert.equal(body.promptOrigin,"end_user");
+      assert.equal(body.userMessageId,"user-native");
+      assert.equal(body.nativePromptVerified,true);
+    }
+  }
+});
+
+test("Helpful native prompt verification requires matching SDK identities but not origin flags", async () => {
+  for (const variant of ["missing-origin", "wrong-session", "wrong-message", "missing-role", "missing-session-api"]) {
+    const requests = [];
+    const part = {type:"text",text:"Prompt",sessionID:"session-native",messageID:"user-native"};
+    const message = {id:"user-native",role:"user",sessionID:"session-native"};
+    if (variant === "wrong-session") message.sessionID = "other-session";
+    if (variant === "wrong-message") part.messageID = "other-message";
+    if (variant === "missing-role") delete message.role;
+    const hooks = await createPluginWithoutReminders({
+      backendConnection:{url:"http://127.0.0.1:8787"},
+      fetchImpl:responseSequence(requests,[{ok:true}]),
+    })(pluginInput({client:{session:variant === "missing-session-api" ? {} : {
+      async get(){return {data:{id:"session-native",parentID:"parent-session"}};},
+    }}}));
+    await hooks["chat.message"]({sessionID:"session-native"},{message,parts:[part]});
+    await hooks.dispose();
+    assert.equal(requests.length,1);
+    assert.equal(requests[0].body.nativePromptVerified,variant === "missing-origin" ? true : undefined);
+    assert.equal(requests[0].body.promptOrigin,undefined);
+  }
+});
+
 test("chat.message retrieves memory and injects it into the system prompt", async () => {
   const requests = [];
   const plugin = createPluginWithoutReminders({

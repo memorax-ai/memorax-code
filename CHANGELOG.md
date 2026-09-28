@@ -6,6 +6,40 @@ behavior.
 
 ## Unreleased
 
+## [0.1.18] - 2026-09-16
+
+### Added
+
+- Added default failure diagnostics for setup, client installation, Backend
+  lifecycle, updates, explicit Search/Add, Hooks, and automatic writeback.
+  Records identify the failed stage, error code, impact, and recovery guidance
+  without requiring Debug or trace logging, and exclude conversation content
+  and credentials.
+- Added recent failure history to `memorax-code status` and diagnostic lookup
+  through `memorax-code logs --diagnostics` and `memorax-code logs --id`.
+  Records stay local with a 30-day, 1000-record retention policy. Historical
+  failures remain separate from current readiness and can be inspected while
+  the Backend is stopped.
+
+### Fixed
+
+- Improved interrupted update recovery with shared manual/automatic update
+  locking, bounded restoration retries, and Backend recovery after a failed
+  npm installation. Recovery respects later stop, restart, or uninstall
+  operations; restoring the Backend does not report a failed update as
+  successful. Diagnostics preserve the original failure and recovery outcome.
+- Supported newer DSH session persistence APIs and native log formats, resolved
+  built-in components from the selected DSH installation during fresh setup,
+  and preserved Windows plugin paths containing spaces or special characters.
+- Preserved WorkBuddy's original prompt after Slash/Skill expansion so matching
+  completed turns remain eligible for automatic QA writeback.
+- Fixed Windows partial JSONL repair, retried transient state-file replacement
+  failures, allowed lifecycle command output to drain before exit, and avoided
+  reporting cleanup failure when the Backend had already exited.
+- Updated `smol-toml` to require version 1.8.0 or later, preventing certain
+  malformed TOML configurations from hanging configuration reads and lifecycle
+  commands.
+
 ## [0.1.17] - 2026-09-12
 
 ### Added
@@ -330,6 +364,7 @@ Later upgrades do not require this workaround.
 - Required a non-empty MemoraX user ID and API key during interactive setup,
   with clearer registration guidance.
 
+[0.1.18]: https://www.npmjs.com/package/@memorax/memorax-code/v/0.1.18
 [0.1.17]: https://www.npmjs.com/package/@memorax/memorax-code/v/0.1.17
 [0.1.15]: https://www.npmjs.com/package/@memorax/memorax-code/v/0.1.15
 [0.1.14]: https://www.npmjs.com/package/@memorax/memorax-code/v/0.1.14

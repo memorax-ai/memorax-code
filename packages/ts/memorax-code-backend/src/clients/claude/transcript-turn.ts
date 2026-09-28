@@ -1,6 +1,8 @@
 import { readFile } from "node:fs/promises";
 import { parseNativeMessageTimestamp } from "../../shared/message-time.js";
-import { codingEventText, type CodingTurnEvent } from "../../coding-sessions/coding-turn.js";
+import { codingEventText, codingToolOutputText, type CodingSessionNativeSource, type CodingSessionSourceTurn, type ResponseItem } from "../../coding-sessions/coding-turn.js";
+import type { NativeCodingSessionTurnRef } from "../../coding-sessions/contracts.js";
+import { readNativeTranscriptSnapshot } from "../../shared/native-transcript-snapshot.js";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -49,8 +51,11 @@ export type ClaudeTranscriptTurnResult =
   | { ok: false; reason: ClaudeTranscriptTurnFailureReason; error?: string };
 
 export type ClaudeCodingSessionTurn = ClaudeTranscriptTurn & {
-  events: CodingTurnEvent[];
+  items: ResponseItem[];
   closedAt?: string;
+  source?: CodingSessionNativeSource;
+  agent_role?: "main" | "subagent";
+  prompt_origin?: "end_user" | "system";
 };
 
 export type ClaudeCodingSessionTurnResult =
@@ -120,10 +125,16 @@ export async function readClaudeCodingSessionTurn(input: {
   transcriptPath: string;
   sessionId: string;
   promptId: string;
+  endBytes?: number;
 }): Promise<ClaudeCodingSessionTurnResult> {
-  let transcript: string;
   try {
-    transcript = await readFile(input.transcriptPath, "utf8");
+    const snapshot = await readNativeTranscriptSnapshot(input);
+    const result = claudeCodingSessionTurnFromJsonLines(snapshot.text, input);
+    return result.ok ? {
+      ok: true,
+      turn: { ...result.turn, source: { transcriptPath: input.transcriptPath, endBytes: snapshot.endBytes },
+        ...claudeHelpfulPromptFromJsonLines(snapshot.text, { sessionId: input.sessionId, turnId: input.promptId }) },
+    } : result;
   } catch (error) {
     return {
       ok: false,
@@ -131,7 +142,18 @@ export async function readClaudeCodingSessionTurn(input: {
       error: error instanceof Error ? error.message : String(error),
     };
   }
-  return claudeCodingSessionTurnFromJsonLines(transcript, input);
+}
+
+export async function readClaudeArchiveSource(
+  ref: NativeCodingSessionTurnRef,
+): Promise<CodingSessionSourceTurn | undefined> {
+  if (ref.client !== "claude-code") return undefined;
+  const result = await readClaudeCodingSessionTurn({ ...ref.source, sessionId: ref.sessionId, promptId: ref.turnId });
+  if (!result.ok || result.turn.sessionTurnIndex !== ref.turnIndex) return undefined;
+  const { agent_role: _role, prompt_origin: _origin, ...identity } = ref;
+  return { ...identity, items: result.turn.items,
+    ...(result.turn.agent_role ? { agent_role: result.turn.agent_role } : {}),
+    ...(result.turn.prompt_origin ? { prompt_origin: result.turn.prompt_origin } : {}) };
 }
 
 export function claudeCodingSessionTurnFromJsonLines(
@@ -144,17 +166,17 @@ export function claudeCodingSessionTurnFromJsonLines(
 function resolveClaudeCompletedTranscriptTurn(
   transcript: string,
   input: { sessionId: string; promptId: string },
-  captureCodingEvents: true,
+  captureCodingItems: true,
 ): ClaudeCodingSessionTurnResult;
 function resolveClaudeCompletedTranscriptTurn(
   transcript: string,
   input: { sessionId: string; promptId: string },
-  captureCodingEvents: false,
+  captureCodingItems: false,
 ): ClaudeTranscriptTurnResult;
 function resolveClaudeCompletedTranscriptTurn(
   transcript: string,
   input: { sessionId: string; promptId: string },
-  captureCodingEvents: boolean,
+  captureCodingItems: boolean,
 ): ClaudeTranscriptTurnResult | ClaudeCodingSessionTurnResult {
   const requested = requestedTranscriptRecords(transcript, input.sessionId);
   if (!requested.ok) return requested;
@@ -216,8 +238,8 @@ function resolveClaudeCompletedTranscriptTurn(
         assistantReply: candidate.assistantReply,
         ...(candidate.branch.userTimestamp === undefined ? {} : { userTimestamp: candidate.branch.userTimestamp }),
         ...(candidate.assistantTimestamp === undefined ? {} : { assistantTimestamp: candidate.assistantTimestamp }),
-        ...(captureCodingEvents ? {
-          events: completedClaudeCodingEvents(candidate.branch, candidate.assistantReply),
+        ...(captureCodingItems ? {
+          items: completedClaudeResponseItems(candidate.branch),
           ...(closedAt ? { closedAt } : {}),
         } : {}),
         activities: candidate.activities,
@@ -343,9 +365,15 @@ function requestedSessionRecords(
     }
     if (sessionId !== requestedSessionId) return undefined;
   }
-  return requestedSessionStart === undefined
-    ? undefined
-    : records.slice(requestedSessionStart);
+  if (requestedSessionStart === undefined) return undefined;
+  const selected = records.slice(requestedSessionStart);
+  const messages = selected.filter((record) => record.type === "user" || record.type === "assistant");
+  // A standalone sidechain must prove its own session on every message.
+  // Mixed parent transcripts keep excluding sidechain records.
+  const independentSidechain = messages.length > 0 && messages.every((record) => (
+    record.isSidechain === true && sessionIdFromRecord(record) === requestedSessionId
+  ));
+  return independentSidechain ? selected : selected.filter((record) => record.isSidechain !== true);
 }
 
 function transcriptRecords(transcript: string):
@@ -468,8 +496,6 @@ function visibleUserPrompt(record: JsonRecord): string | undefined {
 
 function isInteractiveUserRecord(record: JsonRecord): boolean {
   if (record.type !== "user"
-    || record.userType !== "external"
-    || record.isSidechain === true
     || record.isMeta === true
     || record.isCompactSummary === true
     || record.isVisibleInTranscriptOnly === true) {
@@ -477,12 +503,14 @@ function isInteractiveUserRecord(record: JsonRecord): boolean {
   }
   const origin = isRecord(record.origin) ? record.origin : undefined;
   if (stringValue(origin?.kind)?.toLowerCase() === "task-notification"
-    || stringValue(record.promptSource ?? record.prompt_source)?.toLowerCase() === "system"
     || stringValue(record.interruptedMessageId ?? record.interrupted_message_id)) {
     return false;
   }
   const message = isRecord(record.message) ? record.message : undefined;
-  return Boolean(message && message.role === "user");
+  return Boolean(message && message.role === "user"
+    && !(Array.isArray(message.content) && message.content.some((part: unknown) => (
+      isRecord(part) && part.type === "tool_result"
+    ))));
 }
 
 function interactivePromptIndex(
@@ -506,7 +534,6 @@ function interruptionMarker(record: JsonRecord): boolean {
   // interruptedMessageId signals interruption but need not be a transcript record UUID.
   // Associate content through the marker's parentUuid chain instead.
   return record.type === "user"
-    && record.isSidechain !== true
     && Boolean(stringValue(record.interruptedMessageId ?? record.interrupted_message_id));
 }
 
@@ -525,37 +552,34 @@ function interruptedAssistantReply(assistantMessages: JsonRecord[]): string {
   return textSegments.join("\n\n");
 }
 
-function completedClaudeCodingEvents(
-  branch: ClaudePromptBranch,
-  finalReply: string,
-): CodingTurnEvent[] {
-  const events: CodingTurnEvent[] = [];
+function completedClaudeResponseItems(branch: ClaudePromptBranch): ResponseItem[] {
+  const items: ResponseItem[] = [];
   const terminalRecord = branch.records[0];
   for (const record of branch.records.slice().reverse()) {
     if (visibleUserPrompt(record)) continue;
-    if (record.isSidechain === true || record.isMeta === true
+    if (record.isMeta === true
       || record.isCompactSummary === true || record.isVisibleInTranscriptOnly === true) continue;
     const message = isRecord(record.message) ? record.message : undefined;
     if (!message || !Array.isArray(message.content)) {
-      if (record !== terminalRecord && message?.role === "assistant") {
+      if (record !== terminalRecord && message?.role === "assistant" && typeof message.content === "string") {
         const content = visibleMessageText(message.content);
-        if (content) events.push({ type: "assistant_message", phase: "progress", content });
+        if (content) items.push({ type: "message", role: "assistant", phase: "commentary", content: [{ type: "output_text", text: message.content }] });
       }
       continue;
     }
     if (message.role === "assistant") {
       for (const block of message.content) {
         if (!isRecord(block)) continue;
-        if (block.type === "text" && record !== terminalRecord) {
+        if (block.type === "text" && record !== terminalRecord && typeof block.text === "string") {
           const content = nonBlankString(block.text);
-          if (content) events.push({ type: "assistant_message", phase: "progress", content });
+          if (content) items.push({ type: "message", role: "assistant", phase: "commentary", content: [{ type: "output_text", text: block.text }] });
           continue;
         }
         if (block.type !== "tool_use") continue;
         const callId = stringValue(block.id);
         const tool = stringValue(block.name);
         if (!callId || !tool) continue;
-        events.push({ type: "tool_call", callId, tool, arguments: codingEventText(block.input) });
+        items.push({ type: "function_call", call_id: callId, name: tool, arguments: codingEventText(block.input) });
       }
       continue;
     }
@@ -564,19 +588,31 @@ function completedClaudeCodingEvents(
       if (!isRecord(block) || block.type !== "tool_result") continue;
       const callId = stringValue(block.tool_use_id);
       if (!callId) continue;
-      events.push({
-        type: "tool_result",
-        callId,
-        status: block.is_error === true ? "error" : "success",
-        output: codingEventText(block.content),
+      items.push({
+        type: "function_call_output",
+        call_id: callId,
+        output: codingToolOutputText(typeof block.is_error === "boolean"
+          ? { content: block.content, is_error: block.is_error } : block.content),
       });
     }
   }
+  // The QA strings remain normalized; archive projection keeps native text blocks.
+  const userTexts = archiveMessageTextBlocks(branch.records[branch.records.length - 1]!);
+  const finalTexts = archiveMessageTextBlocks(terminalRecord!);
   return [
-    { type: "user_message", content: branch.userPrompt ?? "" },
-    ...events,
-    { type: "assistant_message", phase: "final", content: finalReply },
+    { type: "message", role: "user", content: userTexts.map((text) => ({ type: "input_text", text })) },
+    ...items,
+    { type: "message", role: "assistant", phase: "final_answer", content: finalTexts.map((text) => ({ type: "output_text", text })) },
   ];
+}
+
+function archiveMessageTextBlocks(record: JsonRecord): string[] {
+  const message = isRecord(record.message) ? record.message : undefined;
+  const content = message?.content;
+  if (typeof content === "string") return [content];
+  return Array.isArray(content) ? content.flatMap((block) => (
+    isRecord(block) && block.type === "text" && typeof block.text === "string" ? [block.text] : []
+  )) : [];
 }
 
 function transcriptRecordTimestamp(record: JsonRecord): string | undefined {
@@ -900,7 +936,6 @@ function isCompletedAssistantRecord(record: JsonRecord): boolean {
 
 function assistantMessageFromRecord(record: JsonRecord): JsonRecord | undefined {
   if (record.type !== "assistant"
-    || record.isSidechain === true
     || record.isMeta === true
     || record.isCompactSummary === true
     || record.isVisibleInTranscriptOnly === true) {
@@ -956,9 +991,18 @@ function isRecord(value: unknown): value is JsonRecord {
 /** Reuse the same native prompt authority for Search correlation and archival roles. */
 export function claudeHelpfulPromptFromJsonLines(
   transcript: string, input: { sessionId: string; turnId: string },
-): boolean {
+): { agent_role?: "main" | "subagent"; prompt_origin?: "end_user" | "system" } | undefined {
   const requested = requestedTranscriptRecords(transcript, input.sessionId);
-  if (!requested.ok) return false;
+  if (!requested.ok) return undefined;
   const matches = requested.records.filter((record) => promptIdFromRecord(record) === input.turnId && record.type === "user");
-  return matches.length > 0 && matches.every((record) => Boolean(visibleUserPrompt(record)));
+  if (matches.length === 0 || !matches.every((record) => Boolean(visibleUserPrompt(record)))) return undefined;
+  const roles = new Set(matches.map((record) => record.isSidechain === true ? "subagent" as const
+    : record.isSidechain === false ? "main" as const : undefined));
+  const origins = new Set(matches.map((record) => (
+    stringValue(record.promptSource ?? record.prompt_source)?.toLowerCase() === "system" ? "system" as const
+      : record.userType === "external" ? "end_user" as const : undefined
+  )));
+  const agent_role = roles.size === 1 ? [...roles][0] : undefined;
+  const prompt_origin = origins.size === 1 ? [...origins][0] : undefined;
+  return { ...(agent_role ? { agent_role } : {}), ...(prompt_origin ? { prompt_origin } : {}) };
 }

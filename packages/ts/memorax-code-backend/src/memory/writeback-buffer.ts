@@ -1,9 +1,4 @@
 import { writebackMessagesContentChars, type WritebackMessage } from "./writeback-chunk.js";
-import {
-  CODING_TURN_BATCH_MAX_BYTES,
-  CODING_TURN_BATCH_MAX_ITEMS,
-  type NormalizedCodingTurn,
-} from "../coding-sessions/coding-turn.js";
 import type {
   MemoryObservabilityHook,
   MemoryObservabilityRelatedTurn,
@@ -15,14 +10,17 @@ import {
   type RepositoryMemoryScope,
 } from "../repository/scope.js";
 import type { TraceContext } from "../trace/context.js";
+import type { PendingCodingSessionTurn } from "../coding-sessions/contracts.js";
 
 export type MemoryWritebackBufferDecision = {
   client: "codex" | "claude-code" | "opencode" | "dsh" | "codebuddy" | "workbuddy" | "trae";
   sessionKey: string;
   idempotencyKey: string;
   messages: WritebackMessage[];
-  codingTurns?: readonly NormalizedCodingTurn[];
+  codingTurn?: PendingCodingSessionTurn;
 };
+
+export type MemoryWritebackSourceTurn = Pick<MemoryWritebackBufferDecision, "messages" | "codingTurn">;
 
 export type MemoryWritebackBufferScopeUpgrade = Readonly<{
   client: MemoryWritebackBufferDecision["client"];
@@ -34,6 +32,7 @@ export type MemoryWritebackBufferedDecision = MemoryWritebackBufferDecision & {
   dedupeKeys: string[];
   flushReason: string;
   turnCount: number;
+  sourceTurns: MemoryWritebackSourceTurn[];
 };
 
 export type MemoryWritebackBufferOptions = {
@@ -86,7 +85,7 @@ export type MemoryWritebackBufferRuntime = {
 type MemoryWritebackBufferedTurn = {
   idempotencyKey: string;
   messages: WritebackMessage[];
-  codingTurns?: readonly NormalizedCodingTurn[];
+  codingTurn?: PendingCodingSessionTurn;
   traceContext?: TraceContext;
 };
 
@@ -97,8 +96,6 @@ type MemoryWritebackBuffer = {
   turns: MemoryWritebackBufferedTurn[];
   turnKeys: Set<string>;
   contentChars: number;
-  codingBytes: number;
-  codingTurnCount: number;
   createdAt: number;
   updatedAt: number;
   idleDeadlineAt?: number;
@@ -184,16 +181,8 @@ function enqueueMemoryWritebackBufferForRuntime(
   }
 
   const turnContentChars = writebackMessagesContentChars(decision.messages);
-  const codingTurnCount = decision.codingTurns?.length ?? 0;
-  const codingBytes = codingTurnCount > 0
-    ? Buffer.byteLength(JSON.stringify({ coding_turns: decision.codingTurns }), "utf8")
-    : 0;
   if (buffer && buffer.contentChars + turnContentChars > config.maxChars) {
     flushMemoryWritebackBuffer(writebackBuffers, bufferKey, "char_limit", deps);
-    buffer = undefined;
-  }
-  if (buffer && buffer.codingBytes + codingBytes > CODING_TURN_BATCH_MAX_BYTES) {
-    flushMemoryWritebackBuffer(writebackBuffers, bufferKey, "coding_size_limit", deps);
     buffer = undefined;
   }
   if (!buffer) {
@@ -213,13 +202,11 @@ function enqueueMemoryWritebackBufferForRuntime(
   buffer.turns.push({
     idempotencyKey: decision.idempotencyKey,
     messages: decision.messages,
-    ...(codingTurnCount > 0 ? { codingTurns: decision.codingTurns } : {}),
+    ...(decision.codingTurn ? { codingTurn: decision.codingTurn } : {}),
     ...(options.traceContext ? { traceContext: options.traceContext } : {}),
   });
   buffer.turnKeys.add(decision.idempotencyKey);
   buffer.contentChars += turnContentChars;
-  buffer.codingBytes += codingBytes;
-  buffer.codingTurnCount += codingTurnCount;
   const clock = deps.clock ?? SYSTEM_CLOCK;
   buffer.updatedAt = clock.now();
   buffer.env = env;
@@ -238,8 +225,6 @@ function enqueueMemoryWritebackBufferForRuntime(
 
   if (buffer.turns.length >= config.maxTurns) {
     flushMemoryWritebackBuffer(writebackBuffers, bufferKey, "turn_limit", deps);
-  } else if (buffer.codingTurnCount >= CODING_TURN_BATCH_MAX_ITEMS) {
-    flushMemoryWritebackBuffer(writebackBuffers, bufferKey, "coding_turn_limit", deps);
   } else if (buffer.contentChars > config.maxChars) {
     flushMemoryWritebackBuffer(writebackBuffers, bufferKey, "char_limit", deps);
   } else {
@@ -289,8 +274,6 @@ function createMemoryWritebackBuffer(
     turns: [],
     turnKeys: new Set(),
     contentChars: 0,
-    codingBytes: 0,
-    codingTurnCount: 0,
     createdAt: now,
     updatedAt: now,
     timerGeneration: 0,
@@ -341,11 +324,9 @@ function flushMemoryWritebackBuffer(
   const sessionKey = buffer.sessionKey;
   const messages = bufferedMessages(buffer);
   const scopeHash = deps.hashText(buffer.repositoryScope.effectiveUserId);
-  const codingTurns = buffer.turns.flatMap((turn) => turn.codingTurns ?? []);
-  const identity = codingTurns.length > 0
-    ? JSON.stringify(buffer.turns.map((turn) => turn.idempotencyKey))
-    : messages.map((message) => `${message.role}:${message.content}`).join("\n");
-  const idempotencyKey = `automatic-buffer:v1:${buffer.client}:${scopeHash}:${sessionKey}:${deps.hashText(identity)}`;
+  const archiveIdentity = buffer.turns.some((turn) => turn.codingTurn)
+    ? `:turns:${deps.hashText(JSON.stringify(buffer.turns.map((turn) => turn.idempotencyKey)))}` : "";
+  const idempotencyKey = `automatic-buffer:v1:${buffer.client}:${scopeHash}:${sessionKey}:${deps.hashText(messages.map((message) => `${message.role}:${message.content}`).join("\n"))}${archiveIdentity}`;
   const dedupeKeys = [idempotencyKey, ...buffer.turns.map((turn) => turn.idempotencyKey)];
   if (dedupeKeys.some((key) => deps.hasPendingWriteback(key))) return false;
   deps.reservePendingWritebacks(dedupeKeys);
@@ -364,10 +345,10 @@ function flushMemoryWritebackBuffer(
     sessionKey,
     idempotencyKey,
     messages,
-    ...(codingTurns.length > 0 ? { codingTurns } : {}),
     dedupeKeys,
     flushReason,
     turnCount: buffer.turns.length,
+    sourceTurns: buffer.turns.map(({ messages, codingTurn }) => ({ messages, ...(codingTurn ? { codingTurn } : {}) })),
   }, {
     sessionKey,
     env: buffer.env,

@@ -162,6 +162,42 @@ test("harness runtimes isolate identical turns and preserve injected resources w
   }
 });
 
+test("harness completion only attaches matching coding data when capture is enabled", async () => {
+  const codingTurn = { client: "codex", sessionId: "session", turnId: "turn" };
+  const scope = {
+    schemaVersion: "workspace-memory-scope.v1",
+    baseUserId: "user-1",
+    effectiveUserId: "user-1@repo",
+    repositoryKey: "key:repo",
+    repositorySlug: "repo",
+    repositoryName: "repo",
+    identitySource: "workspace-directory",
+    scopeKind: "local-directory",
+    boundWorkspaceRoot: "/workspace/repo",
+  };
+  for (const captureCodingTurns of [false, true]) {
+    const writebacks = [];
+    const runtime = createHarnessMemoryRuntime(definition("codex"), {
+      captureCodingTurns,
+      env: {},
+      automaticWriteback(input) {
+        writebacks.push(input);
+        return { accepted: true };
+      },
+    });
+    try {
+      assert.deepEqual(await runtime.completeTurn({
+        sessionId: "session", clientTurnId: "turn",
+        userText: "Keep the matching QA.", assistantText: "Capture remains optional.",
+        codingTurn,
+        resolveRepositoryMemory: async () => ({ ok: true, memory: { config: {}, scope } }),
+      }), { scheduled: true, metadataDisposition: "absent" });
+      assert.equal(writebacks.length, 1);
+      assert.strictEqual(writebacks[0].codingTurn, captureCodingTurns ? codingTurn : undefined);
+    } finally { runtime.close(); }
+  }
+});
+
 function definition(client) {
   const prefix = client === "claude-code" ? "claude" : client;
   return {

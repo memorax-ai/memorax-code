@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import type { NormalizedCodingTurn } from "../coding-sessions/coding-turn.js";
 import {
   memoryWritebackChunkConfig,
   memoryWritebackChunkEnabled,
@@ -12,12 +11,13 @@ export type WritebackMessage = {
   content: string;
   timestamp?: number;
   timestampSource?: "native" | "observed";
+  // Local planning identity only; provider payloads project it out.
+  sourceTurnId?: string;
 };
 
 export type MemoryWritebackAddPart = {
   idempotencyKey: string;
   messages: WritebackMessage[];
-  codingTurns?: readonly NormalizedCodingTurn[];
   chunk?: {
     group_id: string;
     index: number;
@@ -28,27 +28,24 @@ export type MemoryWritebackAddPart = {
 export type MemoryWritebackChunkDecision = {
   idempotencyKey: string;
   messages: WritebackMessage[];
-  codingTurns?: readonly NormalizedCodingTurn[];
 };
 
 export function memoryWritebackAddParts(
   decision: MemoryWritebackChunkDecision,
   env: Record<string, string | undefined>,
 ): MemoryWritebackAddPart[] {
-  const coding = decision.codingTurns?.length ? { codingTurns: decision.codingTurns } : {};
   if (!memoryWritebackChunkEnabled(env)) {
-    return [{ idempotencyKey: decision.idempotencyKey, messages: decision.messages, ...coding }];
+    return [{ idempotencyKey: decision.idempotencyKey, messages: decision.messages }];
   }
   const config = memoryWritebackChunkConfig(env);
   const payloads = chunkWritebackMessages(decision.messages, config);
   if (payloads.length <= 1) {
-    return [{ idempotencyKey: decision.idempotencyKey, messages: payloads[0] ?? decision.messages, ...coding }];
+    return [{ idempotencyKey: decision.idempotencyKey, messages: payloads[0] ?? decision.messages }];
   }
   const groupId = codeChunkGroupId(decision.idempotencyKey);
   return payloads.map((messages, index) => ({
     idempotencyKey: `${decision.idempotencyKey}:part:${index}`,
     messages,
-    ...(index === 0 ? coding : {}),
     chunk: {
       group_id: groupId,
       index,

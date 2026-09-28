@@ -94,6 +94,12 @@ export function codexSessionTurnIndexFromJsonLines(
       userMessageTurnIds.add(activeTurnId);
       continue;
     }
+    if (eventType === "item_completed" && activeTurnId
+      && payload.thread_id === input.sessionId && payload.turn_id === activeTurnId
+      && isRecord(payload.item) && payload.item.type === "UserMessage") {
+      userMessageTurnIds.add(activeTurnId);
+      continue;
+    }
     if (eventType === "task_complete" || eventType === "turn_aborted") {
       const endedTurnId = stringValue(payload.turn_id) ?? stringValue(payload.turnId);
       if (endedTurnId && endedTurnId === activeTurnId) activeTurnId = undefined;
@@ -119,30 +125,38 @@ function isRecord(value: unknown): value is JsonRecord {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
-/** Only an explicitly foreground native session and exact user Turn are eligible. */
+/** Verify native identity independently of optional prompt/session provenance. */
 export function codexHelpfulPromptFromJsonLines(
   transcript: string, input: { sessionId: string; turnId: string },
-): boolean {
-  if (!codexSessionTurnIndexFromJsonLines(transcript, input).ok) return false;
-  let foreground = false;
+): { agent_role?: "main" | "subagent"; prompt_origin?: "end_user" | "system" } | undefined {
+  // Helpful verifies its own outer identity; the writeback index reader also
+  // checks internal passthrough IDs and is not this path's identity authority.
+  const sessionIds = new Set<string>();
+  const roles = new Set<"main" | "subagent">();
+  const origins = new Set<"end_user" | "system">();
   let active: string | undefined;
   let user = false;
+  const observeOrigin = (value: unknown): void => {
+    if (value === "end_user" || value === "system") origins.add(value);
+  };
   const lines = transcript.split(/\r?\n/);
   for (const [index, line] of lines.entries()) {
     if (!line.trim()) continue;
     let record: JsonRecord;
     try {
       const parsed: unknown = JSON.parse(line);
-      if (!isRecord(parsed)) return false;
+      if (!isRecord(parsed)) return undefined;
       record = parsed;
     } catch {
       if (index === lines.length - 1 && !transcript.endsWith("\n")) break;
-      return false;
+      return undefined;
     }
     const payload = isRecord(record.payload) ? record.payload : {};
     if (record.type === "session_meta") {
-      if (!["cli", "vscode"].includes(String(payload.source))) return false;
-      foreground = true;
+      const sessionId = stringValue(payload.id) ?? stringValue(payload.session_id);
+      if (sessionId) sessionIds.add(sessionId);
+      if (["cli", "vscode", "exec"].includes(String(payload.source))) roles.add("main");
+      else if (isRecord(payload.source) && isRecord(payload.source.subagent)) roles.add("subagent");
     }
     if (record.type === "turn_context" || (record.type === "event_msg" && payload.type === "task_started")) {
       active = stringValue(payload.turn_id) ?? stringValue(payload.turnId);
@@ -152,18 +166,43 @@ export function codexHelpfulPromptFromJsonLines(
       const metadata = isRecord(payload.internal_chat_message_metadata_passthrough)
         ? payload.internal_chat_message_metadata_passthrough
         : {};
-      const responseTurnId = stringValue(metadata.turn_id) ?? stringValue(metadata.turnId);
       const hasUserText = Array.isArray(payload.content) && payload.content.some((item: unknown) => (
         isRecord(item) && item.type === "input_text" && stringValue(item.text) !== undefined
       ));
-      if (hasUserText && (!responseTurnId || responseTurnId === active)) user = true;
+      if (hasUserText) {
+        observeOrigin(metadata.prompt_origin);
+        user = true;
+      }
     }
     if (record.type === "event_msg" && payload.type === "user_message" && active === input.turnId) {
-      if (payload.prompt_origin && payload.prompt_origin !== "end_user") return false;
-      if (payload.source && payload.source !== "user" && payload.source !== "end_user") return false;
-      if (stringValue(payload.message)) user = true;
+      const eventTurn = stringValue(payload.turn_id) ?? stringValue(payload.turnId);
+      if (eventTurn && eventTurn !== active) return undefined;
+      if (stringValue(payload.message)) {
+        const origin = payload.prompt_origin ?? (payload.source === "system" ? "system"
+          : payload.source === undefined || ["user", "end_user"].includes(String(payload.source)) ? "end_user" : undefined);
+        observeOrigin(origin);
+        user = true;
+      }
+    }
+    if (record.type === "event_msg" && payload.type === "item_completed"
+      && isRecord(payload.item) && payload.item.type === "UserMessage"
+      && (active === input.turnId || payload.turn_id === input.turnId)) {
+      if (payload.thread_id !== input.sessionId || payload.turn_id !== input.turnId
+        || active !== input.turnId) return undefined;
+      if (Array.isArray(payload.item.content) && payload.item.content.some((part: unknown) => (
+        isRecord(part) && part.type === "text" && stringValue(part.text)
+      ))) {
+        observeOrigin(payload.item.prompt_origin);
+        user = true;
+      }
     }
     if (record.type === "event_msg" && ["task_complete", "turn_aborted"].includes(String(payload.type))) active = undefined;
   }
-  return foreground && user;
+  const agent_role = roles.size === 1 ? [...roles][0] : undefined;
+  const prompt_origin = origins.size === 1 ? [...origins][0] : undefined;
+  if (sessionIds.size !== 1 || !sessionIds.has(input.sessionId)) return undefined;
+  return user ? {
+    ...(agent_role ? { agent_role } : {}),
+    ...(prompt_origin ? { prompt_origin } : {}),
+  } : undefined;
 }

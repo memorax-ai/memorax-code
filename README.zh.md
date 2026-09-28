@@ -229,6 +229,28 @@ MemoraX Code 会先比较含义：语义相同的请求不重复写入；长期�
 云端记忆依赖 MemoraX。完成安装引导后，会启用 MemoraX 搜索/添加，以及生成配置中的自动写回；
 不会再出现第二次写回确认。自动召回默认保持关闭，需要显式启用。
 
+新生成的配置还会启用 Codex、Claude Code、OpenCode、CodeBuddy 和 WorkBuddy 的编码会话采集。
+自动 QA Add 会携带可选的 `coding_context` 附件，包含本地脱敏后的已完成 Turn：用户指令、可见助手消息和工具调用／结果，
+不会上传整份原生 session 文件或思维链。这是选定的 OpenAI Responses items 子集，
+需要 MemoraX 服务端支持 QA 与附件合并的协议；仅支持独立 event 请求的服务端需要同步更新。
+Add 回执只确认 QA 已接收，不代表 OSS 已落盘。
+已有配置缺少该设置时保持关闭，详见[采集控制](docs/configuration.md#coding-session-collection)。
+附件沿用 QA 的现有触发规则：默认每 8 轮、达到 QA 字数上限、空闲或正常退出时上报。
+Codex、Claude Code、CodeBuddy 和 WorkBuddy 在 QA 缓冲中保留冻结的原生文件引用，发送前重新读取选定内容；
+OpenCode 将准备好的 SDK items 保留在内存中。这条链路为尽力交付，没有独立归档队列、计时器或重启恢复。
+
+自动 Helpful 的 Search 和 Add 使用相同的原生会话及轮次身份，两者的关联对象与附件类型分开。
+可选的 `agent_role`、`prompt_origin` 来自原生元数据；来源未知时省略，不影响 Helpful 资格。
+独立且身份可核验的 session 不因启动方式、主／子 agent 或提问来源被排除，身份不明仍不能登记。
+服务端为全部归档轮建立索引，只读取源 Search 的 N～N+K 向后窗口（K 默认 2）；
+来源轮或窗口索引未齐时等待到任务 TTL，不消费模型尝试，也不产生负反馈。
+轨迹采集仍需单独开启。升级时先迁移服务端数据库及更新服务端，再更新客户端，并新开会话验证。
+Codex Helpful Search 使用外层原生轮次事件关联提问，内部透传 metadata 的 `turn_id` 不作为其身份依据。
+详见[原生身份规则](ARCHITECTURE.md#native-writeback-authority)。
+自动写回和归档保留各自现有的校验，不受此规则调整影响。
+Codex 轮次元数据冲突、大日志／读取失败、截断证据和归档丢失仍可能漏评。
+客户端展示截断与服务端使用完整候选正文之间的归因风险仍保留，不能保证漏评比例很小。
+
 受支持客户端的本地 trace 默认开启。根据客户端能力，`MEMORAX_CODE_HOME` 下保留的 trace
 可能包含用户指令、Agent 回复、召回的 Memory、提醒文本和本地路径。可通过
 [本地 trace 配置](docs/configuration.md#local-traces)改为仅记录元数据，或关闭对应客户端的 trace。
@@ -315,4 +337,4 @@ memorax-code uninstall
 
 MemoraX Code 基于 [MIT License](LICENSE) 开源。
 
-Search 可携带经校验的 `coding_context`，供服务端关联归档的 `coding_turns` 并等待完整后续窗口后评判 Helpful；已有反馈不会被自动覆盖，缺失或裁剪的证据不计负反馈。详见[配置说明](docs/configuration.md#automatic-helpful-correlation)。
+Search 可携带经校验的 `coding_context`，供服务端关联 Add batch 并读取 N～N+K 窗口；已有反馈不会被自动覆盖，缺失或裁剪的证据不计负反馈。详见[配置说明](docs/configuration.md#automatic-helpful-correlation)。

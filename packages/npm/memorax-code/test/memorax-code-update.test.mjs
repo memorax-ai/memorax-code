@@ -114,9 +114,7 @@ test("memorax-code update rejects conflicting channels and recovery options", as
   }
 });
 
-test("memorax-code update resolves argument and environment homes before npm changes cwd", {
-  skip: process.platform === "win32",
-}, async () => {
+test("memorax-code update resolves argument and environment homes before npm changes cwd", async () => {
   const root = await realpath(await createPackageFixture("0.0.1"));
   const fakeBin = join(root, "fake-bin");
   const capturePath = join(root, "npm-invocation.json");
@@ -138,8 +136,10 @@ test("memorax-code update resolves argument and environment homes before npm cha
       "}));",
       "",
     ].join("\n"));
-    await chmod(npmStubModule, 0o755);
-    await symlink(basename(npmStubModule), npmStub);
+    if (process.platform !== "win32") {
+      await chmod(npmStubModule, 0o755);
+      await symlink(basename(npmStubModule), npmStub);
+    }
 
     for (const [args, envHome] of [
       [["--home", relativeHome], join(root, "wrong-home")],
@@ -156,6 +156,7 @@ test("memorax-code update resolves argument and environment homes before npm cha
             HOME: userHome,
             PATH: `${fakeBin}${delimiter}${process.env.PATH ?? ""}`,
             MEMORAX_CODE_UPDATE_CAPTURE: capturePath,
+            MEMORAX_CODE_NPM_EXEC_PATH: npmStubModule,
             MEMORAX_CODE_HOME: envHome,
           },
         },

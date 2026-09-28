@@ -1,6 +1,7 @@
 import { createAutomaticMemoryWritebackRuntime } from "./automatic-writeback.js";
-import { recordWritebackRejection } from "./background-diagnostics.js";
+import { readCodingSessionSourceTurn } from "./coding-session-source.js";
 import { codingSessionsEnabled, loadMemoraxCodeConfig } from "../config/memorax-code.js";
+import { recordWritebackRejection } from "./background-diagnostics.js";
 import {
   createCodexMemoryHookRuntime,
   type CodexMemoryHookRuntimeOptions,
@@ -53,21 +54,25 @@ export type MemoryService = {
 };
 
 export function createMemoryService(options: MemoryServiceOptions = {}): MemoryService {
+  const env = options.env ?? process.env;
+  const memoraxCodeHome = options.memoraxCodeHome ?? env.MEMORAX_CODE_HOME?.trim();
   const pendingQuotaNotice = createPendingQuotaNoticeRuntime({
     claimQuotaNotice: options.claimQuotaNotice,
     diagnosticLogger: options.diagnosticLogger,
     env: options.env,
   });
   const automaticWriteback = createAutomaticMemoryWritebackRuntime({
-    memoraxCodeHome: options.memoraxCodeHome,
+    memoraxCodeHome,
     diagnosticLogger: options.diagnosticLogger,
     queueQuotaNotice: pendingQuotaNotice.queue,
+    readCodingSessionTurn: readCodingSessionSourceTurn,
   });
-  const env = options.env ?? process.env;
-  const fileConfig = loadMemoraxCodeConfig(options.memoraxCodeHome ?? env.MEMORAX_CODE_HOME?.trim());
+  const fileConfig = loadMemoraxCodeConfig(memoraxCodeHome);
   const captureCodingTurns = codingSessionsEnabled(env, fileConfig);
   const repositoryMemorySession = createRepositoryMemorySessionRuntime({
-    onScopeUpgrade: automaticWriteback.discardForScopeUpgrade,
+    onScopeUpgrade(upgrade) {
+      automaticWriteback.discardForScopeUpgrade(upgrade);
+    },
   });
   const turnCoordinator = createMemoryTurnCoordinator({
     automaticWriteback: automaticWriteback.enqueue,

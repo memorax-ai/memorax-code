@@ -216,9 +216,7 @@ test("setup propagates the setup process exit code", async () => {
   }
 });
 
-test("update reconciles clients and verified Hooks or migrates a configured legacy install", {
-  skip: process.platform === "win32",
-}, async (t) => {
+test("update reconciles clients and verified Hooks or migrates a configured legacy install", async (t) => {
   for (const [name, completed, configured = false, writeBackendPid = true] of [
     ["setup incomplete", false],
     ["configured legacy install", false, true],
@@ -242,8 +240,10 @@ test("update reconciles clients and verified Hooks or migrates a configured lega
           "}",
           "",
         ].join("\n"));
-        await chmod(npmModule, 0o755);
-        await symlink(basename(npmModule), join(fakeBin, "npm"));
+        if (process.platform !== "win32") {
+          await chmod(npmModule, 0o755);
+          await symlink(basename(npmModule), join(fakeBin, "npm"));
+        }
         if (completed) {
           await writeSetupRecord(fixture.memoraxCodeHome, validSetupRecord());
         }
@@ -252,6 +252,7 @@ test("update reconciles clients and verified Hooks or migrates a configured lega
           assumeInteractive: true,
           extraEnv: {
             PATH: `${fakeBin}${delimiter}${process.env.PATH ?? ""}`,
+            MEMORAX_CODE_NPM_EXEC_PATH: npmModule,
             MEMORAX_CODE_TEST_WRITE_BACKEND_PID: writeBackendPid ? "1" : "0",
             ...(configured ? { MEMORAX_CODE_TEST_CONFIGURED: "1" } : {}),
           },

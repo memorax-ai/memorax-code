@@ -81,12 +81,13 @@ test("Claude Hook writeback uses exact transcript content and native times", asy
     assert.equal(writebacks[0].userTimestamp, Date.parse("2026-09-01T08:00:00.000Z"));
     assert.equal(writebacks[0].assistantTimestamp, Date.parse("2026-09-01T08:03:00.000Z"));
     assert.deepEqual(writebacks[0].codingTurn, {
-      agentRole: "main", promptOrigin: "end_user",
       client: "claude-code", sessionId: SESSION_ID, turnId: PROMPT_ID, turnIndex: 1,
+      agent_role: "main", prompt_origin: "end_user",
       outcome: "completed", closedAt: "2026-09-01T08:03:00.000Z",
-      events: [
-        { type: "user_message", content: "Materialized prompt." },
-        { type: "assistant_message", phase: "final", content: "Materialized answer." },
+      source: { transcriptPath: fixture.path, endBytes: (await readFile(fixture.path)).length },
+      items: [
+        { type: "message", role: "user", content: [{ type: "input_text", text: "Materialized prompt." }] },
+        { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: "Materialized answer." }] },
       ],
     });
     assert.equal(writebacks[0].client, "claude-code");

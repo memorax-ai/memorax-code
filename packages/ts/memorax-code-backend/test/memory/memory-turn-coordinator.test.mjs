@@ -379,6 +379,65 @@ test("memory turn coordinator never consumes replacement metadata after async re
   }
 });
 
+test("turn coordination attaches archive data to QA enqueue and follows its acceptance", async (t) => {
+  for (const outcome of ["accept", "disabled", "throw"]) {
+    await t.test(outcome, async () => {
+      const writebacks = [];
+      const coordinator = createMemoryTurnCoordinator({
+        automaticWriteback(input) {
+          writebacks.push(input);
+          if (outcome === "throw") throw new Error("private failure must not escape");
+          return outcome === "accept" ? { accepted: true } : { accepted: false, reason: outcome };
+        },
+      });
+      try {
+        const scope = repositoryScope("repo-a");
+        const metadata = coordinator.recordTurnStart(turnStart("codex", scope));
+        const codingTurn = { client: "codex", sessionId: "shared-session", turnId: "shared-turn" };
+        const result = await coordinator.completeMaterializedTurn({
+          key: turnKey("codex"), metadata,
+          resolveRepositoryMemory: async () => configuredMemory(scope),
+          userText: "Review the upload boundary.", assistantText: "The upload boundary is reviewed.",
+          codingTurn,
+          writeback: { client: "codex", sessionKey: "shared-session" },
+        });
+        assert.deepEqual(result, outcome === "accept"
+          ? { scheduled: true, metadataDisposition: "consumed" }
+          : { scheduled: false, reason: outcome === "throw" ? "decision_error" : outcome, metadataDisposition: "retained" });
+        assert.equal(writebacks.length, 1);
+        assert.strictEqual(writebacks[0].codingTurn, codingTurn);
+        assert.strictEqual(writebacks[0].repositoryScope, scope);
+        assert.equal(coordinator.getTurn(turnKey("codex")), outcome === "accept" ? undefined : metadata);
+      } finally { coordinator.close(); }
+    });
+  }
+});
+
+test("turn coordination never attaches coding data from a different client, session or Turn", async () => {
+  const writebacks = [];
+  const coordinator = createMemoryTurnCoordinator({
+    automaticWriteback(input) {
+      writebacks.push(input);
+      return { accepted: true };
+    },
+  });
+  const scope = repositoryScope("repo-a");
+  try {
+    for (const mismatch of [{ client: "claude-code" }, { sessionId: "foreign-session" }, { turnId: "foreign-turn" }]) {
+      const metadata = coordinator.recordTurnStart(turnStart("codex", scope));
+      assert.deepEqual(await coordinator.completeMaterializedTurn({
+        key: turnKey("codex"), metadata,
+        resolveRepositoryMemory: async () => configuredMemory(scope),
+        userText: "Keep the matching QA.", assistantText: "Foreign archive data is omitted.",
+        codingTurn: { client: "codex", sessionId: "shared-session", turnId: "shared-turn", ...mismatch },
+        writeback: { client: "codex", sessionKey: "shared-session" },
+      }), { scheduled: true, metadataDisposition: "consumed" });
+    }
+    assert.equal(writebacks.length, 3);
+    assert.ok(writebacks.every((input) => !("codingTurn" in input)));
+  } finally { coordinator.close(); }
+});
+
 function turnStart(client, scope = repositoryScope("repo-a")) {
   return {
     ...turnKey(client),

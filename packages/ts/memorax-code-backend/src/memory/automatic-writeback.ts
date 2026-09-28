@@ -1,15 +1,16 @@
 import { createHash } from "node:crypto";
+import { codingSessionsEnabled, loadMemoraxCodeConfig } from "../config/memorax-code.js";
+import { preparePendingCodingSessionTurn } from "../coding-sessions/attachment.js";
+import type { CodingSessionSourceTurn } from "../coding-sessions/coding-turn.js";
+import type { CodingSessionTurnReader, PendingCodingSessionTurn } from "../coding-sessions/contracts.js";
+import { combinedMemoryWritebackParts, type CombinedWritebackPart } from "./writeback-archive.js";
 import { recordAutomaticAddFailure } from "./background-diagnostics.js";
-import {
-  normalizeCodingSessionTurn,
-  type CodingSessionSourceTurn,
-  type NormalizedCodingTurn,
-} from "../coding-sessions/coding-turn.js";
 import {
   createMemoryWritebackBufferRuntime,
   type MemoryWritebackBufferedDecision,
   type MemoryWritebackBufferedOptions,
   type MemoryWritebackBufferRuntime,
+  type MemoryWritebackSourceTurn,
 } from "./writeback-buffer.js";
 import {
   memoryWritebackAddParts,
@@ -77,7 +78,8 @@ type AutomaticMemoryWritebackDecision = {
   sessionKey: string;
   idempotencyKey: string;
   messages: WritebackMessage[];
-  codingTurns?: readonly NormalizedCodingTurn[];
+  codingTurn?: PendingCodingSessionTurn;
+  sourceTurns?: MemoryWritebackSourceTurn[];
 };
 
 export type AutomaticMemoryWritebackRejectionReason =
@@ -112,12 +114,14 @@ export type AutomaticMemoryWritebackRuntimeOptions = {
   memoraxCodeHome?: string;
   diagnosticLogger?: MemoryDiagnosticLogger;
   queueQuotaNotice?: (config: MemoraxAdapterConfig, quota: MemoraxQuotaSnapshot) => void;
+  readCodingSessionTurn?: CodingSessionTurnReader;
 };
 
 type AutomaticMemoryWritebackState = {
   memoraxCodeHome?: string;
   diagnosticLogger: MemoryDiagnosticLogger;
   queueQuotaNotice?: (config: MemoraxAdapterConfig, quota: MemoraxQuotaSnapshot) => void;
+  readCodingSessionTurn?: CodingSessionTurnReader;
   // Tracks in-flight and recently successful writes in a bounded TTL cache.
   // Success keeps keys to suppress replay; terminal failure releases them.
   pendingWritebacks: Map<string, number>;
@@ -142,6 +146,7 @@ export function createAutomaticMemoryWritebackRuntime(
     memoraxCodeHome: options.memoraxCodeHome,
     diagnosticLogger: options.diagnosticLogger ?? (() => {}),
     queueQuotaNotice: options.queueQuotaNotice,
+    readCodingSessionTurn: options.readCodingSessionTurn,
     pendingWritebacks: new Map(),
     writebackBuffer: createMemoryWritebackBufferRuntime(),
     accepting: true,
@@ -186,6 +191,9 @@ function enqueueAutomaticMemoryWritebackForRuntime(
     return { accepted: false, reason: "runtime_closed" };
   }
   try {
+    if (state.memoraxCodeHome) {
+      options = { ...options, env: { ...(options.env ?? process.env), MEMORAX_CODE_HOME: state.memoraxCodeHome } };
+    }
     const decision = automaticMemoryWritebackDecision(state, options);
     if (!decision.write) {
       state.diagnosticLogger("memory.automatic_writeback", {
@@ -312,33 +320,31 @@ function automaticMemoryWritebackDecision(
   if (!hasMeaningfulMemoryPayloadText(userText)) return { write: false, skipReason: "user_prompt_empty" };
   if (!hasMeaningfulMemoryPayloadText(assistantText)) return { write: false, skipReason: "assistant_text_empty" };
 
-  const codingTurn = options.codingTurn
-    && options.codingTurn.client === options.client
-    && options.codingTurn.sessionId === sessionKey
-    ? normalizeCodingSessionTurn({
-      ...options.codingTurn,
-      repositorySlug: options.repositoryScope.repositorySlug,
-    }, state.diagnosticLogger)
-    : undefined;
-  if (options.codingTurn && !codingTurn) {
-    state.diagnosticLogger("coding_turn.skipped", { reason: "invalid_turn" });
-  }
-  const identity = codingTurn
-    ? `turn:${hashText(JSON.stringify([codingTurn.client, codingTurn.session_id, codingTurn.turn_id]))}`
-    : `${hashText(userText)}:${hashText(assistantText)}`;
-  const idempotencyKey = `automatic:${options.client}:${hashText(options.repositoryScope.effectiveUserId)}:${sessionKey}:${identity}`;
-  if (hasPendingWriteback(state, idempotencyKey)) return { write: false, skipReason: "duplicate_pending" };
   // Freeze missing-time observations before buffering or retries. Upload time
   // must never replace a native message time or pretend to be one.
   const observedAt = Date.now();
   const userTimestamp = parseNativeMessageTimestamp(options.userTimestamp);
   const assistantTimestamp = parseNativeMessageTimestamp(options.assistantTimestamp);
+  const source = options.codingTurn;
+  let codingTurn: PendingCodingSessionTurn | undefined;
+  if (source && source.client === options.client && source.sessionId === sessionKey
+    && codingSessionsEnabled(env, loadMemoraxCodeConfig(state.memoraxCodeHome ?? env.MEMORAX_CODE_HOME))) {
+    try {
+      codingTurn = preparePendingCodingSessionTurn(source, options.repositoryScope);
+    } catch { /* Invalid optional archive content must not block valid QA. */ }
+    if (!codingTurn) state.diagnosticLogger("coding_sessions.attachment_skipped", { reason: "source_invalid" });
+  }
+  // Different native Turns can repeat identical QA while running different tools.
+  // Keep ordinary QA dedupe unchanged, but do not collapse distinct archives.
+  const archiveIdentity = codingTurn && source ? `:turn:${hashText(source.turnId)}` : "";
+  const idempotencyKey = `automatic:${options.client}:${hashText(options.repositoryScope.effectiveUserId)}:${sessionKey}:${hashText(userText)}:${hashText(assistantText)}${archiveIdentity}`;
+  if (hasPendingWriteback(state, idempotencyKey)) return { write: false, skipReason: "duplicate_pending" };
   return {
     write: true,
     client: options.client,
     sessionKey,
     idempotencyKey,
-    ...(codingTurn ? { codingTurns: [codingTurn] } : {}),
+    ...(codingTurn ? { codingTurn } : {}),
     messages: [
       {
         role: "user", content: userText,
@@ -418,10 +424,16 @@ async function enqueueAutomaticMemoryWritebackAsync(
       });
       throw new Error("automatic writeback content must be redacted before provider dispatch");
     }
-    const parts = memoryWritebackAddParts(decision, options.env ?? process.env);
+    const env = options.env ?? process.env;
+    const configResult = memoraxConfigFromEnv(env);
+    const parts: CombinedWritebackPart[] = configResult.ok && options.repositoryScope
+      ? await combinedMemoryWritebackParts(decision, {
+        repositoryScope: options.repositoryScope, env,
+        readCodingSessionTurn: state.readCodingSessionTurn, diagnosticLogger: state.diagnosticLogger,
+      })
+      : memoryWritebackAddParts(decision, env);
     for (const [index, part] of parts.entries()) {
       for (let attempt = 1; attempt <= AUTOMATIC_MEMORY_WRITEBACK_MAX_ATTEMPTS; attempt += 1) {
-        const configResult = memoraxConfigFromEnv(options.env);
         const response = await invokeMemoraxMemoryProvider({
           sessionId: decision.sessionKey,
           prompt: part.messages.find((message) => message.role === "user")?.content ?? "",
@@ -437,7 +449,6 @@ async function enqueueAutomaticMemoryWritebackAsync(
             messages: part.messages,
             contentType: "code",
             mode: "default",
-            ...(part.codingTurns ? { codingTurns: part.codingTurns } : {}),
             ...(part.chunk ? { chunk: part.chunk } : {}),
           },
         }, {
@@ -454,6 +465,7 @@ async function enqueueAutomaticMemoryWritebackAsync(
             attempt,
             maxAttempts: AUTOMATIC_MEMORY_WRITEBACK_MAX_ATTEMPTS,
           },
+          ...(part.codingContext ? { codingSessionAttachment: part.codingContext } : {}),
         });
         const retryDelayMs = !response.ok && attempt < AUTOMATIC_MEMORY_WRITEBACK_MAX_ATTEMPTS
           ? automaticMemoryWritebackRetryDelayMs(response, attempt)

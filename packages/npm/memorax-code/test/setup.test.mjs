@@ -1112,7 +1112,7 @@ test("setup seeds the default MemoraX Code config around trial memory preference
   try {
     assert.equal(run.result.code, 0, run.result.stderr);
     assert.match(run.result.stderr, /MemoraX Code requires MemoraX for its core remote-memory functionality/);
-    assert.match(run.result.stderr, /same Memory Add sends locally redacted completed coding Turns/);
+    assert.match(run.result.stderr, /Separate archive requests send locally redacted completed coding Turns/);
     assert.match(run.result.stderr, /Redaction is best-effort/);
     assert.match(run.result.stderr, /MemoraX memory: .*Configured/);
     const config = await readFile(join(run.memoraxCodeHome, "config.toml"), "utf8");
