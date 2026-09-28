@@ -983,15 +983,25 @@ Do not copy model-provider credentials into `$MEMORAX_CODE_HOME`.
 
 For clients with background Repo Memory support, linked worktrees use the same
 repository-wide job ownership and shared baseline within one MemoraX home.
-At the same committed snapshot, a clean worktree restores `.repo_memory`
-without another Agent invocation. Another worktree's active job can also defer
+At the same committed snapshot or a compatible descendant, a clean worktree
+restores `.repo_memory` without another Agent invocation. Another worktree's active job can also defer
 initialization until a later eligible prompt or relevant repo-read.
 
-If the current commit differs from the shared baseline, or the worktree has
-source changes, automatic missing-bundle initialization is deferred. Continue
+If the shared baseline is not an ancestor of the current commit, the local
+delta exceeds borrowing limits or changes recognized structural files, or the
+worktree has uncommitted source changes, automatic initialization is deferred. Continue
 from live files, or explicitly request a local Repo Memory build. Existing
 local files are preserved; a partial `.repo_memory` directory is not overwritten
 by sharing. Explicit local builds and updates do not replace a shared baseline.
+
+Borrowed copies retain their original `PROFILE.md.local_head` and generation
+time. Their `.repo_memory/shared-baseline.json` record suppresses automatic
+per-worktree updates; repeated reads return a current local delta when the map
+remains usable. An old date alone is not a reason to rebuild. If a borrowed copy
+becomes unusable, use live files or explicitly request a local build/update.
+Only successful explicit authoring clears the borrowed record and restores
+normal local update policy. Do not edit the origin record to make stale memory
+look current or discard it to force an automatic job.
 
 Shared snapshots live under
 `$MEMORAX_CODE_HOME/repo-memory-bases/<repository-key>/`; `baseline.json`

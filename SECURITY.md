@@ -115,8 +115,12 @@ Please allow time for triage and remediation before public disclosure.
 - Repo Memory sharing is local to a canonical Git common directory and one
   MemoraX home. Remote URLs do not authorize sharing between clones. Shared
   bundles retain repository Wiki and history evidence in private local storage;
-  they are not sent to MemoraX. Publication and restoration require matching
-  committed snapshots and clean source checks. Personal-memory sidecars are
+  they are not sent to MemoraX. Publication requires a matching committed
+  snapshot; restoration also permits verified descendants with a bounded text
+  delta and no detected structural changes. Both require clean source checks.
+  Borrowed maps preserve their original provenance, require task-relevant live
+  verification, and do not trigger automatic per-worktree authoring. Delta
+  paths remain local and are data, never shell instructions. Personal-memory sidecars are
   excluded, bundle copies reject symbolic links, and existing worktree bundles
   are never overwritten by restoration. These checks do not sandbox authoring
   or prove the semantic accuracy of generated content.

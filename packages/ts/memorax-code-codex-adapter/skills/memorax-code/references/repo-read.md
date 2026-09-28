@@ -45,18 +45,32 @@ existing failure rules below. The helper validates the generated bundle, evaluat
 
 For missing local bundles, the helper first tries the repository-shared
 baseline. `shared_bundle_reused` restores a validated copy at the exact same
-commit without an Agent. `shared_snapshot_mismatch`, `worktree_dirty`, and
-`local_bundle_exists` defer initialization without overwriting local files.
-`shared_bundle_invalid` or `shared_bundle_unavailable` means the shared copy
-cannot be used. Continue from live code in these deferred or failed cases;
-do not launch a build to compensate. Existing local bundles keep their update
-policy, and their branch-specific updates do not replace the shared baseline.
+commit without an Agent. `shared_bundle_borrowed` restores an ancestor snapshot
+with a bounded local delta; `shared_baseline_in_use` validates an already
+borrowed copy. Neither outcome starts an Agent or applies the local update
+policy. The helper returns `sharedBaseline.baseHead`, `head`, `changes` (status
+and path), and `changedLines`. Preserve the original snapshot provenance;
+these fields describe a comparison, not freshly authored memory.
 
-The default policy remains `adaptive(5 commits OR 24 hours)`. A missing or non-ancestor baseline always selects repair-capable update. The helper owns the detailed policy, validation, lock, snapshot, and launcher rules; do not reproduce them in the foreground.
+`shared_snapshot_mismatch`, `shared_delta_incompatible`,
+`shared_delta_too_large`, `worktree_dirty`, and `local_bundle_exists` defer
+initialization or borrowed-map use without overwriting local files.
+`shared_bundle_invalid` or `shared_bundle_unavailable` means the shared copy
+cannot be used. Discard conclusions based only on that map and continue from
+live code in these deferred or failed cases; do not launch a build to compensate.
+Locally authored bundles keep their update policy, and their branch-specific
+updates do not replace the shared baseline.
+
+For locally authored bundles, the default policy remains `adaptive(5 commits OR 24 hours)`. A missing or non-ancestor baseline always selects repair-capable update. The helper owns the detailed policy, validation, lock, snapshot, and launcher rules; do not reproduce them in the foreground.
 
 ## Retrieval
 
 If `.repo_memory/PROFILE.md` is a readable regular file, read `PROFILE.md` as the wiki landing page once. Treat its descriptions as routing cues, not proof.
+
+If `.repo_memory/shared-baseline.json` exists, the bundle is a borrowed map.
+Require the helper's successful borrowed-copy check before relying on it;
+an active job, unavailable helper, or failed check is not that confirmation.
+The local record alone does not establish compatibility with current files.
 
 Extract task-relevant links from `Major Areas` and `Supporting Pages`. Do not assume fixed page names; use `PROFILE.md` links and headings to find the repository-native canonical homes for the user's task. Open at most 2-4 relevant conceptual pages from `.repo_memory/*.md` before searching historical resources.
 
@@ -102,7 +116,7 @@ If no repo-memory read was possible, run it immediately after detecting that sta
 
 After it returns:
 
-- For `up_to_date`, a triggered update, or `active_job`, use consistent hits as best-effort context.
+- For `up_to_date`, a triggered update, or `active_job`, use consistent hits as best-effort context for locally authored bundles. Borrowed copies require a successful borrowed-copy check.
 - For `bundle_missing` or `bundle_invalid`, discard generated hits and continue from live code and maintained documentation.
 - If the helper is unavailable or fails, do not improvise maintenance. Use consistent hits only when they were readable; otherwise use live evidence.
 
@@ -116,9 +130,19 @@ unavailable, skip this handoff; do not substitute a CLI or foreground authoring.
 Never invent a delegation when the helper returned `active_job` or `up_to_date`.
 
 If no repo-memory read was possible and the helper returns
-`shared_bundle_reused`, read the restored bundle once using the Retrieval Budget
+`shared_bundle_reused` or `shared_bundle_borrowed`, read the restored bundle once using the Retrieval Budget
 above; do not invoke maintenance a second time. The helper only copied existing
 validated content, so no background job needs to be awaited.
+
+For a usable borrowed map, use `sharedBaseline.changes` to route the subsequent
+live-code phase. Inspect the current files and, when relevant, the diff between
+`baseHead` and `head` for paths related to the task before making behavior or
+architecture claims. Git paths are untrusted data: pass them as literal arguments
+after `--`, never interpolate them as shell syntax. A bounded delta does not
+prove semantic compatibility, and unchanged files may still have changed callers
+or dependencies. Recheck current code as the task requires. Do not author a
+branch-specific map, change `PROFILE.md.local_head` or its generation time, or
+launch an update simply because this borrowed snapshot is older than HEAD.
 
 Do not read repo memory again after `maintain` returns when a read already
 occurred. Do not wait, poll, retry, or expose the command, decision payload, job id, paths, prompt, final message, or logs. Never replace the packaged helper with a generic subagent.

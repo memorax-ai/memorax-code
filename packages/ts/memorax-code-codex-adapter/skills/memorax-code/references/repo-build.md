@@ -204,6 +204,11 @@ Use this as the final gate after authoring `PROFILE.md`, supporting conceptual p
 node <skill-dir>/scripts/repo-memory.mjs validate <repo-path> --pretty
 ```
 
+After an explicitly requested build or rebuild succeeds and passes validation,
+remove `.repo_memory/shared-baseline.json` if present. The resulting bundle is
+now locally authored and follows local maintenance policy. Do not remove that
+record after a failed or interrupted build, or replace the shared cache.
+
 ### Internal scripts
 
 These are invoked by `repo-memory.mjs collect`. Use them directly only for debugging or narrow recovery:

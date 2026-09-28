@@ -32,6 +32,28 @@ test("Cursor shares a single native build and its validated snapshot across link
   assert.equal(readFileSync(join(linked, ".repo_memory/PROFILE.md"), "utf8"), readFileSync(join(f.repo, ".repo_memory/PROFILE.md"), "utf8"));
 });
 
+test("Cursor borrows an ancestor map without a native Task until an explicit local update", (t) => {
+  const f = fixture(t), linked = join(f.root, "linked worktree");
+  profile(f, f.head);
+  assert.equal(runCursorRepoMemoryJob(["maintain", "--repo", f.repo], f.options).reason, "up_to_date");
+  runGit(f.repo, ["worktree", "add", "--detach", linked, f.head]);
+  const branch = { ...f, repo: linked };
+  commit(branch, "feature.txt");
+  const reused = runCursorRepoMemoryJob(["maintain", "--repo", linked], f.options);
+  assert.equal(reused.reason, "shared_bundle_borrowed");
+  assert.equal(reused.job, undefined);
+  assert.deepEqual(reused.sharedBaseline.changes, [{ status: "A", path: "feature.txt" }]);
+  const later = runCursorRepoMemoryJob(["maintain", "--repo", linked, "--now", "2099-01-01T00:00:00Z"], f.options);
+  assert.equal(later.reason, "shared_baseline_in_use");
+  assert.equal(later.job, undefined);
+  assert.equal(active(f).active, false);
+  const job = runCursorRepoMemoryJob(["start", "--mode", "update", "--repo", linked], f.options);
+  const claim = claimJob(branch, job);
+  profile(branch, runGit(linked, ["rev-parse", "HEAD"]).trim());
+  assert.equal(transition(branch, "finish", job, ["--claim-token", claim.claimToken]).status, "succeeded");
+  assert.equal(existsSync(join(linked, ".repo_memory/shared-baseline.json")), false);
+});
+
 test("Cursor native dry-run needs no Agent CLI and creates no job or lease", (t) => {
   const f = fixture(t);
   const result = spawnSync(process.execPath, [jobHook, "maintain", "--repo", f.repo, "--dry-run"], { encoding: "utf8", env: { ...cleanEnv, MEMORAX_CODE_HOME: f.home, MEMORAX_CODE_CURSOR_AGENT_COMMAND: join(f.root, "must-not-execute") } });

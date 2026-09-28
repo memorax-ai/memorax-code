@@ -834,14 +834,23 @@ runtimes, which do not implement cross-worktree sharing.
 The first canonically validated bundle matching a clean committed snapshot can
 be published atomically under `MEMORAX_CODE_HOME/repo-memory-bases`. This private,
 immutable copy includes the Wiki and evidence, excluding personal-memory
-sidecars. A missing worktree bundle at the exact same commit is materialized
-from that copy without a model or provider request. Publication and reuse check
-the source snapshot and local changes; existing local files are not replaced.
-Different commits defer missing-bundle initialization while a shared baseline
-exists. Existing worktree bundles retain local update policy; their updates do
-not replace the shared baseline. This does not select a default branch or merge
-branch differences. The common worker and Cursor native finalizer publish only
-after their existing completion checks; failed jobs never publish.
+sidecars. A missing worktree bundle at the same commit or a compatible descendant
+is materialized from that copy without a model or provider request. Publication
+and reuse check the source snapshot and local changes; existing local files are
+not replaced. Descendant reuse requires a bounded text delta, excludes known
+structural changes, and returns changed paths for task-relevant live verification.
+These checks bound retrieval and do not establish semantic compatibility.
+
+Restored copies carry a versioned `shared-baseline.json` record inside their
+local bundle. They retain the original snapshot provenance and bypass automatic
+update policy, including after later commits. Each relevant read revalidates the
+local artifact, ancestry, delta, and clean source state. Unusable borrowed maps
+defer without starting a replacement job. Explicit successful authoring clears
+the borrowed record; locally authored bundles retain local update policy. Their
+updates do not replace the shared baseline. This does not select or maintain a
+default branch or author branch-specific maps. The common worker and Cursor
+native finalizer publish only after their existing completion checks; failed
+jobs never publish.
 
 The Backend owns the TypeScript Repo Memory collector, delta detector, provider
 facets, and validator under `src/repo-memory`, exposed through

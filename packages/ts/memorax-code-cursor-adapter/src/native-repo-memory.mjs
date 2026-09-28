@@ -10,7 +10,7 @@ const packagedCommon = join(adapterRoot, "memorax-code-adapter-common", "src");
 const commonRoot = existsSync(packagedCommon) ? packagedCommon : resolve(adapterRoot, "../memorax-code-adapter-common/src");
 const loadCommon = (name) => import(pathToFileURL(join(commonRoot, name)).href);
 const { runRepoMemoryJob, buildPrompt, updatePrompt, gitSnapshot, inspectRepoMemoryBundle, reuseSharedRepoMemory } = await loadCommon("repo-memory/repo-memory-job-supervisor.mjs");
-const { publishSharedRepoMemory, shareableRepoMemoryWorktree } = await loadCommon("repo-memory/repo-memory-shared-bundle.mjs");
+const { clearBorrowedRepoMemory, publishSharedRepoMemory, shareableRepoMemoryWorktree } = await loadCommon("repo-memory/repo-memory-shared-bundle.mjs");
 const { evaluateRepository } = await loadCommon("repo-memory/repo-memory-update-policy-evaluator.mjs");
 const { gitHead, profileLocalHead, resolveCommit } = await loadCommon("repo-memory/repo-memory-job-artifacts.mjs");
 const { markerPathForRepo, readActiveRepoMemoryJobMarker, realpathRepo, repoMemoryJobsDir, tryAcquireRepoMemoryStartupLock, releaseRepoMemoryStartupLock, removeRepoMemoryJobMarkerIfOwned, writeRepoMemoryJobMarker } = await loadCommon("repo-memory/repo-memory-job-marker.mjs");
@@ -134,6 +134,7 @@ function transition(request, runtime) {
       if (!failureReason) state.sharedBaselinePublished = publishSharedRepoMemory({ home: runtime.home, repo,
         head: state.snapshotHead, shareable: state.shareableSnapshot === true,
         validate: (path) => inspectRepoMemoryBundle(path, runtime.validatorPath).status === "usable" });
+      if (!failureReason) clearBorrowedRepoMemory(repo);
       return finishState(runtime, state, failureReason);
     });
   }

@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { publishSharedRepoMemory, readSharedRepoMemory } from "../src/repo-memory/repo-memory-shared-bundle.mjs";
+import { publishSharedRepoMemory, readSharedRepoMemory, restoreSharedRepoMemory } from "../src/repo-memory/repo-memory-shared-bundle.mjs";
 import { runRepoMemoryJob } from "../src/repo-memory/repo-memory-job-supervisor.mjs";
 import {
   markerPathForRepo,
@@ -625,7 +625,7 @@ test("linked worktrees build once under concurrent maintenance and reuse the com
   assert.equal(result.status, 0, result.stderr);
   const decision = JSON.parse(result.stdout);
   assert.equal(decision.action, "none");
-  assert.ok(["shared_bundle_reused", "up_to_date"].includes(decision.reason));
+  assert.ok(["shared_bundle_reused", "shared_baseline_in_use"].includes(decision.reason));
   assert.equal(countJobDirs(home), 1);
   assert.equal(readFileSync(join(other, ".repo_memory/PROFILE.md"), "utf8"), readFileSync(join(launched.job.repo, ".repo_memory/PROFILE.md"), "utf8"));
   assert.equal(readSharedRepoMemory(home, other).head, head);
@@ -674,7 +674,7 @@ test("shared reuse leaves dry-runs, dirty worktrees, and existing local files un
   assert.equal(countJobDirs(home), 0);
 });
 
-test("different commits defer automatically and independent repositories never share", (t) => {
+test("descendant commits borrow the baseline and independent repositories never share", (t) => {
   const root = tempRoot(t, "repo-memory-shared-identity-");
   const repo = join(root, "repo"), linked = join(root, "linked"), independent = join(root, "independent"), home = join(root, "memorax-code");
   const head = initRepo(repo);
@@ -685,7 +685,8 @@ test("different commits defer automatically and independent repositories never s
   writeFileSync(join(linked, "new.txt"), "new commit");
   runGit(linked, ["add", "new.txt"]); runGit(linked, ["commit", "-m", "feature change"]);
   const changed = JSON.parse(runJob(["maintain", "--repo", linked], env).stdout);
-  assert.equal(changed.reason, "shared_snapshot_mismatch");
+  assert.equal(changed.reason, "shared_bundle_borrowed");
+  assert.deepEqual(changed.sharedBaseline.changes, [{ status: "A", path: "new.txt" }]);
   assert.equal(changed.job, undefined);
   runGit(repo, ["clone", "--no-hardlinks", repo, independent]);
   assert.equal(runGit(independent, ["rev-parse", "HEAD"]).trim(), head);
@@ -693,6 +694,185 @@ test("different commits defer automatically and independent repositories never s
   assert.equal(separate.action, "build");
   assert.equal(countJobDirs(home), 0);
 });
+
+test("borrowed ancestor maps preserve provenance and never trigger policy updates as commits and time advance", (t) => {
+  const f = sharedFixture(t);
+  const original = readFileSync(join(f.repo, ".repo_memory/PROFILE.md"), "utf8");
+  for (let index = 0; index < 6; index++) f.commit("feature.txt", `# Feature ${index}\n`);
+  const dry = f.maintain(["--dry-run"]);
+  assert.equal(dry.reason, "shared_bundle_borrowed");
+  assert.equal(existsSync(join(f.linked, ".repo_memory")), false);
+  const restored = f.maintain();
+  assert.equal(restored.reason, "shared_bundle_borrowed");
+  assert.deepEqual(restored.sharedBaseline.changes, [{ status: "M", path: "feature.txt" }]);
+  assert.equal(restored.sharedBaseline.changedLines, 2);
+  assert.equal(restored.sharedBaseline.baseHead, f.head);
+  assert.equal(restored.sharedBaseline.head, runGit(f.linked, ["rev-parse", "HEAD"]).trim());
+  assert.equal(readFileSync(join(f.linked, ".repo_memory/PROFILE.md"), "utf8"), original);
+  for (let index = 0; index < 2; index++) {
+    f.commit("local change.txt", `change ${index}\n`);
+    const next = f.maintain(["--now", "2099-01-01T00:00:00Z"]);
+    assert.equal(next.reason, "shared_baseline_in_use");
+    assert.equal(next.action, "none");
+    assert.equal(next.job, undefined);
+    assert.equal(next.policyDecision, undefined);
+  }
+  rmSync(readSharedRepoMemory(f.home, f.repo).path, { recursive: true });
+  assert.equal(f.maintain().reason, "shared_baseline_in_use", "borrowed copies survive cache removal");
+  assert.equal(countJobDirs(f.home), 0);
+});
+
+test("same-commit copies stay borrowed when their worktree later advances", (t) => {
+  const f = sharedFixture(t);
+  assert.equal(f.maintain().reason, "shared_bundle_reused");
+  f.commit("feature.txt", "# Feature\n");
+  assert.equal(f.maintain(["--now", "2099-01-01T00:00:00Z"]).reason, "shared_baseline_in_use");
+  assert.equal(countJobDirs(f.home), 0);
+});
+
+for (const borrowed of [false, true]) {
+  for (const scenario of ["diverged", "dirty", "deleted", "renamed", "manifest", "binary", "files", "lines"]) {
+    test(`shared ancestor reuse defers ${scenario} changes ${borrowed ? "after" : "before"} materialization`, (t) => {
+      const f = sharedFixture(t);
+      if (borrowed) assert.equal(f.maintain().reason, "shared_bundle_reused");
+      let reason = "shared_delta_incompatible";
+      if (scenario === "diverged") {
+        runGit(f.linked, ["checkout", "--orphan", "unrelated"]);
+        runGit(f.linked, ["commit", "-m", "unrelated history"]);
+        reason = "shared_snapshot_mismatch";
+      } else if (scenario === "dirty") {
+        writeFileSync(join(f.linked, "README.md"), "uncommitted change");
+        reason = "worktree_dirty";
+      } else if (scenario === "deleted" || scenario === "renamed") {
+        runGit(f.linked, scenario === "deleted" ? ["rm", "README.md"] : ["mv", "README.md", "GUIDE.md"]);
+        runGit(f.linked, ["commit", "-m", scenario]);
+      } else if (scenario === "manifest") f.commit("package.json", '{"type":"module"}\n');
+      else if (scenario === "binary") f.commit("binary.dat", Buffer.from([0, 1, 2]));
+      else if (scenario === "files") {
+        for (let index = 0; index < 21; index++) writeFileSync(join(f.linked, `file-${index}.txt`), "added\n");
+        runGit(f.linked, ["add", "*.txt"]); runGit(f.linked, ["commit", "-m", "many files"]);
+        reason = "shared_delta_too_large";
+      } else {
+        f.commit("large.txt", "line\n".repeat(1001));
+        reason = "shared_delta_too_large";
+      }
+      const result = f.maintain();
+      assert.equal(result.reason, reason);
+      assert.equal(result.action, "none");
+      assert.equal(result.job, undefined);
+      assert.equal(existsSync(join(f.linked, ".repo_memory/PROFILE.md")), borrowed);
+      assert.equal(countJobDirs(f.home), 0);
+    });
+  }
+}
+
+test("invalid borrowed metadata and artifacts never fall through to an automatic build or update", (t) => {
+  const f = sharedFixture(t);
+  f.maintain();
+  const recordPath = join(f.linked, ".repo_memory/shared-baseline.json");
+  const original = readFileSync(recordPath, "utf8");
+  writeFileSync(recordPath, "invalid JSON");
+  assert.equal(f.maintain().reason, "shared_bundle_unavailable");
+  writeFileSync(recordPath, JSON.stringify({ ...JSON.parse(original), repository: f.linked }));
+  assert.equal(f.maintain().reason, "shared_bundle_unavailable");
+  writeFileSync(recordPath, original);
+  f.commit("feature.txt", "updated source\n");
+  writeValidatedProfile(f.linked, runGit(f.linked, ["rev-parse", "HEAD"]).trim());
+  assert.equal(f.maintain().reason, "shared_bundle_invalid", "partial authoring must not silently promote ownership");
+  rmSync(join(f.linked, ".repo_memory/PROFILE.md"));
+  assert.equal(f.maintain().reason, "shared_bundle_invalid");
+  assert.equal(countJobDirs(f.home), 0);
+});
+
+test("borrowed deltas preserve unusual Git paths and accept the text budget boundary", (t) => {
+  const f = sharedFixture(t), name = process.platform === "win32" ? "odd name.txt" : "odd\tline\nname.txt";
+  f.commit(name, "line\n".repeat(1000));
+  const result = f.maintain();
+  assert.equal(result.reason, "shared_bundle_borrowed");
+  assert.deepEqual(result.sharedBaseline.changes, [{ status: "A", path: name }]);
+  assert.equal(result.sharedBaseline.changedLines, 1000);
+});
+
+test("borrowed maps reject executable-mode changes", { skip: process.platform === "win32" }, (t) => {
+  const f = sharedFixture(t);
+  chmodSync(join(f.linked, "feature.txt"), 0o755);
+  runGit(f.linked, ["add", "feature.txt"]); runGit(f.linked, ["commit", "-m", "executable change"]);
+  assert.equal(f.maintain().reason, "shared_delta_incompatible");
+  assert.equal(countJobDirs(f.home), 0);
+});
+
+test("borrowed maps detect Git links even when user diff configuration hides submodules", (t) => {
+  const f = sharedFixture(t);
+  runGit(f.linked, ["config", "diff.ignoreSubmodules", "all"]);
+  runGit(f.linked, ["update-index", "--add", "--cacheinfo", `160000,${f.head},linked-module`]);
+  runGit(f.linked, ["commit", "-m", "add module boundary"]);
+  assert.equal(f.maintain().reason, "shared_delta_incompatible");
+  assert.equal(countJobDirs(f.home), 0);
+});
+
+test("failed explicit authoring retains the borrowed record and automatic suppression", (t) => {
+  const f = sharedFixture(t);
+  f.maintain();
+  f.commit("feature.txt", "feature\n");
+  const job = JSON.parse(runJob(["start", "--mode", "update", "--repo", f.linked], {
+    MEMORAX_CODE_HOME: f.home, REPO_MEMORY_TEST_BEHAVIOR: "final-only",
+  }).stdout);
+  assert.equal(waitForTerminal(job.jobPath).status, "failed");
+  waitForMarkerAbsent(f.home, f.linked);
+  assert.equal(existsSync(join(f.linked, ".repo_memory/shared-baseline.json")), true);
+  assert.equal(f.maintain(["--now", "2099-01-01T00:00:00Z"]).reason, "shared_baseline_in_use");
+  assert.equal(countJobDirs(f.home), 1);
+});
+
+test("explicit update promotes a borrowed copy to local maintenance without replacing the shared baseline", (t) => {
+  const f = sharedFixture(t);
+  f.maintain();
+  f.commit("feature.txt", "# Feature\n");
+  const baselinePath = readSharedRepoMemory(f.home, f.repo).path;
+  const original = readFileSync(join(baselinePath, ".repo_memory/PROFILE.md"), "utf8");
+  const job = JSON.parse(runJob(["start", "--mode", "update", "--repo", f.linked], { MEMORAX_CODE_HOME: f.home }).stdout);
+  assert.equal(waitForTerminal(job.jobPath).status, "succeeded");
+  waitForMarkerAbsent(f.home, f.linked);
+  assert.equal(existsSync(join(f.linked, ".repo_memory/shared-baseline.json")), false);
+  assert.equal(readFileSync(join(baselinePath, ".repo_memory/PROFILE.md"), "utf8"), original);
+  assert.equal(f.maintain().reason, "up_to_date");
+});
+
+test("ancestor restoration rechecks the target snapshot after staged validation", (t) => {
+  const f = sharedFixture(t);
+  f.commit("feature.txt", "# Feature\n");
+  const baseline = readSharedRepoMemory(f.home, f.linked);
+  const result = restoreSharedRepoMemory({ baseline, repo: f.linked, validate: (path) => {
+    if (path !== baseline.path) runGit(f.linked, ["commit", "--allow-empty", "-m", "raced snapshot"]);
+    return { status: "usable" };
+  } });
+  assert.equal(result.reason, "shared_snapshot_mismatch");
+  assert.equal(existsSync(join(f.linked, ".repo_memory")), false);
+  assert.equal(readdirSync(f.linked).some(name => name.startsWith(".repo-memory-reuse-")), false);
+});
+
+function sharedFixture(t) {
+  const root = tempRoot(t, "repo-memory-borrowed-");
+  const repo = join(root, "repo"), linked = join(root, "linked"), home = join(root, "memorax-code");
+  initRepo(repo);
+  writeFileSync(join(repo, "feature.txt"), "initial feature\n");
+  runGit(repo, ["add", "feature.txt"]); runGit(repo, ["commit", "-m", "fixture source"]);
+  const head = runGit(repo, ["rev-parse", "HEAD"]).trim();
+  runGit(repo, ["worktree", "add", "--detach", linked, head]);
+  writeValidatedProfile(repo, head);
+  assert.equal(runJob(["maintain", "--repo", repo], { MEMORAX_CODE_HOME: home }).status, 0);
+  return { repo, linked, home, head,
+    maintain: (args = []) => {
+      const result = runJob(["maintain", "--repo", linked, ...args], { MEMORAX_CODE_HOME: home });
+      assert.ok(result.stdout, result.stderr);
+      return JSON.parse(result.stdout);
+    },
+    commit: (name, text) => {
+      writeFileSync(join(linked, name), text);
+      runGit(linked, ["add", name]); runGit(linked, ["commit", "-m", "feature change"]);
+    },
+  };
+}
 
 test("failed builds and dirty source snapshots do not publish a shared baseline", (t) => {
   const root = tempRoot(t, "repo-memory-shared-publish-");

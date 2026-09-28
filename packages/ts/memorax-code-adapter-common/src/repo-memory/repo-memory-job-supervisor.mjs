@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { atomicWriteJson, stringOption } from "../config-utils.mjs";
 import { repoMemoryJobWorkerEnv } from "./repo-memory-job-context.mjs";
 import { gitHead } from "./repo-memory-job-artifacts.mjs";
-import { publishSharedRepoMemory, readSharedRepoMemory, restoreSharedRepoMemory, shareableRepoMemoryWorktree } from "./repo-memory-shared-bundle.mjs";
+import { inspectBorrowedRepoMemory, publishSharedRepoMemory, readSharedRepoMemory, restoreSharedRepoMemory, shareableRepoMemoryWorktree } from "./repo-memory-shared-bundle.mjs";
 import {
   markerPathForRepo,
   readActiveRepoMemoryJobMarker,
@@ -192,19 +192,20 @@ function launchMaintenanceJob(input) {
 // Also checked under the startup lock, after a concurrent build may have finished.
 export function reuseSharedRepoMemory(request, runtime) {
   const repo = realpathRepo(resolve(request.repo));
-  // Existing worktree bundles retain their current local maintenance policy.
-  if (existsSync(join(repo, ".repo_memory", "PROFILE.md"))) return undefined;
   const home = resolve(runtime.memoraxCodeHome || process.env.MEMORAX_CODE_HOME || join(homedir(), ".memorax-code"));
   try {
-    const baseline = readSharedRepoMemory(home, repo);
-    if (!baseline) return undefined;
-    if (gitHead(repo, { timeoutMs: 2000 }) !== baseline.head) {
-      return { ok: true, reason: "shared_snapshot_mismatch", bundleStatus: "unchecked" };
+    const validate = (path) => inspectRepoMemoryBundle(path, runtime.validatorPath);
+    let result = inspectBorrowedRepoMemory({ repo, validate });
+    if (!result) {
+      // Locally authored bundles retain their current local maintenance policy.
+      if (existsSync(join(repo, ".repo_memory", "PROFILE.md"))) return undefined;
+      const baseline = readSharedRepoMemory(home, repo);
+      if (!baseline) return undefined;
+      result = restoreSharedRepoMemory({ baseline, repo, dryRun: request.dryRun, validate });
     }
-    const reason = restoreSharedRepoMemory({ baseline, repo, dryRun: request.dryRun,
-      validate: (path) => inspectRepoMemoryBundle(path, runtime.validatorPath) });
-    return { ok: !["shared_bundle_invalid", "shared_bundle_unavailable"].includes(reason), reason,
-      bundleStatus: reason === "shared_bundle_reused" ? "usable" : reason === "shared_bundle_unavailable" ? "unknown" : "missing" };
+    const usable = ["shared_bundle_reused", "shared_bundle_borrowed", "shared_baseline_in_use"].includes(result.reason);
+    return { ...result, ok: !["shared_bundle_invalid", "shared_bundle_unavailable"].includes(result.reason),
+      bundleStatus: usable ? "usable" : result.reason === "shared_bundle_invalid" ? "invalid" : "unchecked" };
   } catch {
     return { ok: false, reason: "shared_bundle_unavailable", bundleStatus: "unknown" };
   }
@@ -220,6 +221,7 @@ function maintenanceDecision(input) {
     repo: input.repo,
     validation: input.validation,
     policyDecision: input.policyDecision,
+    sharedBaseline: input.sharedBaseline,
     job: input.job,
   }).filter(([, value]) => value !== undefined));
 }

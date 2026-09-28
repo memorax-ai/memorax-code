@@ -12,7 +12,7 @@ import {
   repoMemoryJobWorkerEnv,
 } from "./repo-memory-job-context.mjs";
 import { gitHead, profileLocalHead, resolveCommit } from "./repo-memory-job-artifacts.mjs";
-import { publishSharedRepoMemory } from "./repo-memory-shared-bundle.mjs";
+import { clearBorrowedRepoMemory, publishSharedRepoMemory } from "./repo-memory-shared-bundle.mjs";
 import { resolveWindowsCliInvocation } from "../windows-cli-invocation.mjs";
 
 let activeChild;
@@ -374,6 +374,7 @@ function finishSucceeded(request, state, workerContext, details) {
     const sharedBaselinePublished = publishSharedRepoMemory({ home: request.memoraxCodeHome, repo: state.repo,
       head: state.snapshotHead, shareable: state.shareableSnapshot === true,
       validate: (path) => validateBundle(path, request.validatorPath).ok });
+    clearBorrowedRepoMemory(state.repo);
     writeJobState(request.jobPath, {
       ...state,
       status: "succeeded",

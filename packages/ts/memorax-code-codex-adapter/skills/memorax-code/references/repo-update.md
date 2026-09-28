@@ -112,6 +112,12 @@ node <skill-dir>/scripts/repo-memory.mjs validate <repo-path> --pretty
 
 Whenever an update changes generated repo-memory artifacts, set `PROFILE.md.generated_at` to the successful update time and `PROFILE.md.local_head` to the processed snapshot. The read-time cooldown policy uses this timestamp; do not preserve an older build time after a successful incremental update.
 
+After an explicitly requested update succeeds and passes validation, remove
+`.repo_memory/shared-baseline.json` if present. The bundle then follows local
+maintenance policy. Retain the record on failure or interruption; do not replace
+the repository-shared cache. Task-time reads of borrowed maps do not authorize
+this update or record removal.
+
 ## Authoring Rules
 
 Match existing fixed-field sections first; use builder templates only when the file shape is incomplete. Upsert by stable keys: commit SHA, PR/MR number, and issue number. Replace matching sections, append only new keys, and do not delete useful notes unless explicit instruction or verified evidence invalidates them.

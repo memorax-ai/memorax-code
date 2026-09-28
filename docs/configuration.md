@@ -958,19 +958,33 @@ choose or check out the default branch. Generated `.repo_memory` files and the
 collector's `.repo_memory/` ignore entry do not count as source changes.
 
 A new clean worktree at that exact commit restores its `.repo_memory` from the
-shared copy without starting an Agent or collecting provider evidence. The
-copy retains the original branch/path provenance; current files remain the
-authority. Personal-memory sidecars are excluded. Existing local directories
-are preserved, including incomplete bundles and local notes. Dirty worktrees,
-different commits, and invalid shared artifacts defer missing-bundle
-initialization rather than launching another build. A later eligible prompt or
-relevant repo-read can retry after the blocking condition changes.
+shared copy without starting an Agent or collecting provider evidence. A clean
+descendant can also borrow the map when its committed delta contains at most
+20 files and 1,000 added/deleted text lines. Deletions, renames, file-type or mode
+changes, binary changes, and recognized build/dependency manifests or architecture
+instructions defer borrowing. These are conservative retrieval limits, not a
+semantic compatibility guarantee. The helper returns the original and current
+SHA plus changed paths; the agent verifies task-relevant current files and diffs.
 
-Existing local bundles retain the update policy below, and explicit build/update
-operations remain available. Neither local updates nor explicit builds replace
-an existing shared baseline. Automatic default-branch maintenance and reuse
-across different commits are not implemented. Older installed runtimes retain
-worktree-local behavior; update all clients to use cross-worktree sharing.
+Every newly restored copy, including same-commit reuse, records its origin in
+`.repo_memory/shared-baseline.json`. Its `PROFILE.md` SHA, generation time, and
+branch/path provenance remain unchanged. Borrowed copies bypass automatic
+update policy even after later commits or elapsed time. Relevant repo-reads
+recheck artifact validity, ancestry, delta limits, and clean source state;
+rejected checks continue from live code without automatic build/update. The
+local copy survives deletion of the shared cache. Personal-memory sidecars and
+borrowed-origin records are excluded when publishing a shared snapshot.
+
+Existing local directories are preserved, including incomplete bundles and
+local notes. Dirty worktrees, non-descendant commits, incompatible or excessive
+deltas, and invalid artifacts defer use rather than launching another build.
+A later eligible prompt or relevant repo-read can retry after the condition
+changes. Explicit successful local build/update clears the borrowed record and
+returns the bundle to the local update policy below. Locally authored bundles
+and older copies without this record retain that policy. Neither local updates
+nor explicit builds replace an existing shared baseline. Automatic default-branch
+maintenance is not implemented. Update all clients to use the new sharing and
+borrowed-copy behavior; older installed runtimes do not enforce these rules.
 
 CodeBuddy/WorkBuddy repository jobs run the headless client under a bounded
 worker. `MEMORAX_CODE_REPO_MEMORY_JOB_TIMEOUT_MS` sets the client execution

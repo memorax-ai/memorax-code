@@ -10,38 +10,50 @@ import { runRepoMemoryJob } from "../../packages/ts/memorax-code-adapter-common/
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../packages/ts/memorax-code-codex-adapter");
 const readerSkillRoot = join(packageRoot, "skills", "memorax-code");
 
-test("same-commit worktrees reuse a full bundle through the canonical Skill validator without a runner", (t) => {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "repo-memory-shared-reader-")));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
-  const repo = join(root, "repo"), linked = join(root, "linked");
-  mkdirSync(repo);
-  const git = (args) => execFileSync("git", args, { cwd: repo, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
-  git(["init"]); git(["config", "user.name", "Repo Memory Test"]); git(["config", "user.email", "repo-memory@example.invalid"]);
-  writeFileSync(join(repo, "README.md"), "# Fixture\n");
-  git(["add", "README.md"]); git(["commit", "-m", "initial"]);
-  const head = git(["rev-parse", "HEAD"]);
-  git(["worktree", "add", "--detach", linked, head]);
-  const memory = join(repo, ".repo_memory");
-  mkdirSync(join(memory, "resources"), { recursive: true });
-  mkdirSync(join(memory, "raw"));
-  writeFileSync(join(memory, "PROFILE.md"), `---\nschema: repo_memory_profile.v0.2\nlocal_head: "${head}"\n---\n# Fixture\n`);
-  for (const name of ["commits", "prs", "issues"]) {
-    writeFileSync(join(memory, "resources", `${name}.md`), `---\nschema: repo_memory_resource.v0.1\nsource: history_disabled\nresource_count: 0\ntrust_state: unavailable\nraw_source: ""\n---\n# ${name}\n`);
-  }
-  writeFileSync(join(memory, "raw/git-commits.json"), "{}\n");
-  const runtime = {
-    runner: "fixture", memoraxCodeHome: join(root, "home"),
-    validatorPath: join(readerSkillRoot, "scripts/repo-memory.mjs"),
-    evaluateRepository: () => ({ trigger: false }),
-    createCommand: () => { assert.fail("shared reuse must not create an Agent command"); },
-  };
-  assert.equal(runRepoMemoryJob(["maintain", "--repo", repo], runtime).reason, "up_to_date");
-  const result = runRepoMemoryJob(["maintain", "--repo", linked], runtime);
-  assert.equal(result.reason, "shared_bundle_reused");
-  assert.equal(result.job, undefined);
-  assert.equal(readFileSync(join(linked, ".repo_memory/PROFILE.md"), "utf8"), readFileSync(join(memory, "PROFILE.md"), "utf8"));
-  assert.equal(readFileSync(join(linked, ".repo_memory/resources/commits.md"), "utf8"), readFileSync(join(memory, "resources/commits.md"), "utf8"));
-});
+for (const ancestor of [false, true]) {
+  test(`${ancestor ? "ancestor" : "same-commit"} worktrees reuse a full bundle through the canonical Skill validator without a runner`, (t) => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "repo-memory-shared-reader-")));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const repo = join(root, "repo"), linked = join(root, "linked");
+    mkdirSync(repo);
+    const git = (args) => execFileSync("git", args, { cwd: repo, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+    git(["init"]); git(["config", "user.name", "Repo Memory Test"]); git(["config", "user.email", "repo-memory@example.invalid"]);
+    writeFileSync(join(repo, "README.md"), "# Fixture\n");
+    git(["add", "README.md"]); git(["commit", "-m", "initial"]);
+    writeFileSync(join(repo, "feature.txt"), "initial feature\n");
+    git(["add", "feature.txt"]); git(["commit", "-m", "fixture source"]);
+    const head = git(["rev-parse", "HEAD"]);
+    git(["worktree", "add", "--detach", linked, head]);
+    const memory = join(repo, ".repo_memory");
+    mkdirSync(join(memory, "resources"), { recursive: true });
+    mkdirSync(join(memory, "raw"));
+    writeFileSync(join(memory, "PROFILE.md"), `---\nschema: repo_memory_profile.v0.2\nlocal_head: "${head}"\n---\n# Fixture\n`);
+    for (const name of ["commits", "prs", "issues"]) {
+      writeFileSync(join(memory, "resources", `${name}.md`), `---\nschema: repo_memory_resource.v0.1\nsource: history_disabled\nresource_count: 0\ntrust_state: unavailable\nraw_source: ""\n---\n# ${name}\n`);
+    }
+    writeFileSync(join(memory, "raw/git-commits.json"), "{}\n");
+    const runtime = {
+      runner: "fixture", memoraxCodeHome: join(root, "home"),
+      validatorPath: join(readerSkillRoot, "scripts/repo-memory.mjs"),
+      evaluateRepository: () => ({ trigger: false }),
+      createCommand: () => { assert.fail("shared reuse must not create an Agent command"); },
+    };
+    assert.equal(runRepoMemoryJob(["maintain", "--repo", repo], runtime).reason, "up_to_date");
+    if (ancestor) {
+      writeFileSync(join(linked, "feature.txt"), "changed feature\n");
+      git(["-C", linked, "add", "feature.txt"]); git(["-C", linked, "commit", "-m", "feature"]);
+    }
+    const result = runRepoMemoryJob(["maintain", "--repo", linked], runtime);
+    assert.equal(result.reason, ancestor ? "shared_bundle_borrowed" : "shared_bundle_reused");
+    assert.equal(result.job, undefined);
+    assert.equal(readFileSync(join(linked, ".repo_memory/PROFILE.md"), "utf8"), readFileSync(join(memory, "PROFILE.md"), "utf8"));
+    assert.equal(readFileSync(join(linked, ".repo_memory/resources/commits.md"), "utf8"), readFileSync(join(memory, "resources/commits.md"), "utf8"));
+    const later = runRepoMemoryJob(["maintain", "--repo", linked, "--now", "2099-01-01T00:00:00Z"], {
+      ...runtime, evaluateRepository: () => assert.fail("borrowed maps must not evaluate update policy"),
+    });
+    assert.equal(later.reason, "shared_baseline_in_use");
+  });
+}
 
 test("memorax-code repo-read reference enforces retrieval budget and stop rules", () => {
   const skill = readFileSync(join(readerSkillRoot, "references", "repo-read.md"), "utf8");
@@ -130,4 +142,19 @@ test("memorax-code repo-read treats disabled history resources as collection sta
   assert.match(skill, /collection state, not repository state/);
   assert.match(skill, /do not conclude that there are no commits, PRs, MRs, or issues/);
   assert.match(skill, /Ask whether to rebuild with provider history/);
+});
+
+test("borrowed-map guidance requires delta verification and keeps automatic authoring disabled", () => {
+  const read = readFileSync(join(readerSkillRoot, "references/repo-read.md"), "utf8");
+  assert.match(read, /shared_baseline_in_use/);
+  assert.match(read, /sharedBaseline\.changes/);
+  assert.match(read, /active job, unavailable helper, or failed check is not that confirmation/);
+  assert.match(read, /bounded delta does not\s+prove semantic compatibility/);
+  assert.match(read, /Do not author a\s+branch-specific map/);
+  for (const operation of ["build", "update"]) {
+    const reference = readFileSync(join(readerSkillRoot, `references/repo-${operation}.md`), "utf8");
+    assert.match(reference, /explicitly requested/);
+    assert.match(reference, /shared-baseline\.json/);
+    assert.match(reference, /passes validation/);
+  }
 });
