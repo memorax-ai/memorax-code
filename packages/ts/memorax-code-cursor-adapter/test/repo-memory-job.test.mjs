@@ -8,6 +8,7 @@ import test from "node:test";
 import { runCursorRepoMemoryJob } from "../src/native-repo-memory.mjs";
 import { markerPathForRepo, readActiveRepoMemoryJobMarker, writeRepoMemoryJobMarker } from "../../memorax-code-adapter-common/src/repo-memory/repo-memory-job-marker.mjs";
 import { runRepoMemoryJob } from "../../memorax-code-adapter-common/src/repo-memory/repo-memory-job-supervisor.mjs";
+import { readSharedRepoMemory } from "../../memorax-code-adapter-common/src/repo-memory/repo-memory-shared-bundle.mjs";
 import { readActiveRepoMemoryJobMarker as readLegacyMarker } from "./fixtures/legacy-repo-memory-job-marker.mjs";
 
 const adapterRoot = realpathSync(fileURLToPath(new URL("..", import.meta.url)));
@@ -53,6 +54,33 @@ test("Cursor borrows an ancestor map without a native Task until an explicit loc
   assert.equal(transition(branch, "finish", job, ["--claim-token", claim.claimToken]).status, "succeeded");
   assert.equal(existsSync(join(linked, ".repo_memory/shared-baseline.json")), false);
 });
+
+for (const changed of [false, true]) {
+  test(`Cursor shared candidate ${changed ? "rejects a moved default ref" : "publishes only after native finish"}`, (t) => {
+    const f = fixture(t);
+    profile(f, f.head);
+    runCursorRepoMemoryJob(["maintain", "--repo", f.repo], f.options);
+    const original = readFileSync(join(f.repo, ".repo_memory/PROFILE.md"), "utf8");
+    runGit(f.repo, ["branch", "-M", "trunk"]);
+    runGit(f.repo, ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/trunk"]);
+    for (let i = 0; i < 5; i++) commit(f, `file-${i}.txt`);
+    const head = runGit(f.repo, ["rev-parse", "HEAD"]).trim();
+    runGit(f.repo, ["update-ref", "refs/remotes/origin/trunk", head]);
+    const decision = runCursorRepoMemoryJob(["maintain", "--repo", f.repo], f.options);
+    assert.equal(decision.reason, "shared_update_due");
+    const job = decision.job, claim = claimJob(f, job);
+    assert.match(claim.instructions, /--memory-path/);
+    assert.match(claim.instructions, /affected Wiki pages/);
+    const candidateRoot = join(job.jobPath, "..");
+    profile({ ...f, repo: candidateRoot }, head);
+    assert.equal(readSharedRepoMemory(f.home, f.repo).head, f.head);
+    if (changed) runGit(f.repo, ["update-ref", "refs/remotes/origin/trunk", f.head]);
+    const result = transition(f, "finish", job, ["--claim-token", claim.claimToken]);
+    assert.equal(result.status, changed ? "failed" : "succeeded");
+    assert.equal(readSharedRepoMemory(f.home, f.repo).head, changed ? f.head : head);
+    assert.equal(readFileSync(join(f.repo, ".repo_memory/PROFILE.md"), "utf8"), original);
+  });
+}
 
 test("Cursor native dry-run needs no Agent CLI and creates no job or lease", (t) => {
   const f = fixture(t);

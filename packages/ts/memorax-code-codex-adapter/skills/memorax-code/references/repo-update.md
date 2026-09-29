@@ -10,6 +10,27 @@ This is the incremental updater, not the daily reader. Use `repo-read.md` for ta
 
 ## Prerequisite
 
+### Supervised Shared-Default-Branch Candidate
+
+An authorized background worker may provide a source repository, baseline SHA,
+snapshot SHA, and a separate candidate memory directory. In that mode, use the
+candidate in place of `<repo>/.repo_memory` throughout this reference. Run
+`detect-updates --repo-path <source-repo> --memory-path <candidate-memory>
+--snapshot-ref <snapshot-sha> --pretty`; validate the candidate's parent directory.
+Do not change the source worktree's bundle, shared cache, Git refs, or configuration,
+and do not fetch Git refs. The supervisor owns version publication.
+
+Review the source diff from baseline SHA to snapshot SHA and affected live code;
+update the affected Wiki pages and PROFILE navigation as well as enabled history
+resources. This code-map review is required even when history is disabled or the
+detector reports no history delta. Preserve disabled history channels and existing
+provider resources when fetching is unavailable. Advance the candidate PROFILE
+SHA, timestamp, source path, and branch only after reviewing all affected pages. If incremental review
+cannot produce a usable map, stop and report the need for an explicit rebuild.
+Do not clear the source worktree's borrowed record. These candidate rules override
+the local-directory convention and history-only report gates below only for this
+supervised operation.
+
 The user selects a repository, not a memory directory. Derive the memory path as `<repo>/.repo_memory`.
 
 Require:

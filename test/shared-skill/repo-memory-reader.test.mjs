@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { runRepoMemoryJob } from "../../packages/ts/memorax-code-adapter-common/src/repo-memory/repo-memory-job-supervisor.mjs";
+import { inspectRepoMemoryBundle, runRepoMemoryJob } from "../../packages/ts/memorax-code-adapter-common/src/repo-memory/repo-memory-job-supervisor.mjs";
+import { defaultBranchSnapshot, prepareSharedRepoMemoryUpdate, publishSharedRepoMemoryUpdate, readSharedRepoMemory } from "../../packages/ts/memorax-code-adapter-common/src/repo-memory/repo-memory-shared-bundle.mjs";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../packages/ts/memorax-code-codex-adapter");
 const readerSkillRoot = join(packageRoot, "skills", "memorax-code");
@@ -52,6 +53,27 @@ for (const ancestor of [false, true]) {
       ...runtime, evaluateRepository: () => assert.fail("borrowed maps must not evaluate update policy"),
     });
     assert.equal(later.reason, "shared_baseline_in_use");
+
+    // Exercise the actual detector and validator with memory outside the Git tree.
+    git(["-C", linked, "switch", "-c", "shared-trunk"]);
+    writeFileSync(join(linked, "candidate.txt"), "candidate change\n");
+    git(["-C", linked, "add", "candidate.txt"]); git(["-C", linked, "commit", "-m", "default change"]);
+    const target = git(["-C", linked, "rev-parse", "HEAD"]);
+    git(["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/shared-trunk"]);
+    git(["update-ref", "refs/remotes/origin/shared-trunk", target]);
+    const update = { ...defaultBranchSnapshot(linked), baseHead: head }, candidate = join(root, "candidate");
+    const validate = path => inspectRepoMemoryBundle(path, runtime.validatorPath).status === "usable";
+    prepareSharedRepoMemoryUpdate({ home: runtime.memoraxCodeHome, repo: linked, update, root: candidate, validate });
+    const report = JSON.parse(execFileSync(process.execPath, [runtime.validatorPath, "detect-updates", "--repo-path", linked,
+      "--memory-path", join(candidate, ".repo_memory"), "--snapshot-ref", target, "--history-mode", "local-only"], { encoding: "utf8" }));
+    assert.equal(report.baseline.local_commit_sha, head);
+    assert.equal(report.current.local_head, target);
+    assert.equal(report.memory_path, realpathSync(join(candidate, ".repo_memory")));
+    const profile = join(candidate, ".repo_memory/PROFILE.md");
+    writeFileSync(profile, readFileSync(profile, "utf8").replace(head, target));
+    assert.equal(publishSharedRepoMemoryUpdate({ home: runtime.memoraxCodeHome, repo: linked, update, root: candidate, validate }), true);
+    assert.equal(readSharedRepoMemory(runtime.memoraxCodeHome, linked).head, target);
+    assert.equal(readFileSync(join(linked, ".repo_memory/PROFILE.md"), "utf8"), readFileSync(join(memory, "PROFILE.md"), "utf8"));
   });
 }
 
@@ -157,4 +179,17 @@ test("borrowed-map guidance requires delta verification and keeps automatic auth
     assert.match(reference, /shared-baseline\.json/);
     assert.match(reference, /passes validation/);
   }
+});
+
+test("shared default-branch guidance isolates candidate authoring and discards pre-refresh hits", () => {
+  const read = readFileSync(join(readerSkillRoot, "references/repo-read.md"), "utf8");
+  const update = readFileSync(join(readerSkillRoot, "references/repo-update.md"), "utf8");
+  assert.match(read, /local target of `origin\/HEAD`/);
+  assert.match(read, /`refreshed: true` after a read, discard those earlier hits/);
+  assert.match(read, /Locally authored bundles keep their update policy/);
+  assert.match(update, /--memory-path <candidate-memory>/);
+  assert.match(update, /--snapshot-ref <snapshot-sha>/);
+  assert.match(update, /required even when history is disabled/);
+  assert.match(update, /supervisor owns version publication/);
+  assert.match(update, /Do not clear the source worktree's borrowed record/);
 });

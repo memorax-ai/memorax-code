@@ -48,7 +48,7 @@ baseline. `shared_bundle_reused` restores a validated copy at the exact same
 commit without an Agent. `shared_bundle_borrowed` restores an ancestor snapshot
 with a bounded local delta; `shared_baseline_in_use` validates an already
 borrowed copy. Neither outcome starts an Agent or applies the local update
-policy. The helper returns `sharedBaseline.baseHead`, `head`, `changes` (status
+policy on feature worktrees. The helper returns `sharedBaseline.baseHead`, `head`, `changes` (status
 and path), and `changedLines`. Preserve the original snapshot provenance;
 these fields describe a comparison, not freshly authored memory.
 
@@ -60,6 +60,23 @@ cannot be used. Discard conclusions based only on that map and continue from
 live code in these deferred or failed cases; do not launch a build to compensate.
 Locally authored bundles keep their update policy, and their branch-specific
 updates do not replace the shared baseline.
+
+Shared maintenance is eligible only in a clean default-branch worktree whose HEAD
+matches the local target of `origin/HEAD`. Identification never fetches refs or
+guesses a branch name; missing or unresolvable refs skip shared maintenance.
+`shared_update_due` starts one repository-wide update in a private candidate;
+`shared_update_cooldown` defers a repeated attempt. Updates follow the configured
+policy using the shared publication time and conservatively bounded commit delta.
+The worker reviews affected Wiki pages before publishing an immutable new version.
+Old versions remain available to compatible older branches. No other worktree
+starts a job merely because the shared version changed.
+
+An unchanged helper-created borrowed copy can refresh from a newer compatible
+version. Local edits and locally authored bundles are preserved. If the helper
+returns `refreshed: true` after a read, discard those earlier hits and continue
+from live evidence: they came from a different snapshot. Do not reread the bundle
+or use the new delta to justify the old hits. Copies without a content fingerprint
+remain unchanged until explicitly authored.
 
 For locally authored bundles, the default policy remains `adaptive(5 commits OR 24 hours)`. A missing or non-ancestor baseline always selects repair-capable update. The helper owns the detailed policy, validation, lock, snapshot, and launcher rules; do not reproduce them in the foreground.
 

@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { atomicWriteJson, readJsonFile, stringOption } from "../config-utils.mjs";
 import {
   readActiveRepoMemoryJobMarker,
@@ -12,7 +12,7 @@ import {
   repoMemoryJobWorkerEnv,
 } from "./repo-memory-job-context.mjs";
 import { gitHead, profileLocalHead, resolveCommit } from "./repo-memory-job-artifacts.mjs";
-import { clearBorrowedRepoMemory, publishSharedRepoMemory } from "./repo-memory-shared-bundle.mjs";
+import { clearBorrowedRepoMemory, publishSharedRepoMemory, publishSharedRepoMemoryUpdate } from "./repo-memory-shared-bundle.mjs";
 import { resolveWindowsCliInvocation } from "../windows-cli-invocation.mjs";
 
 let activeChild;
@@ -130,7 +130,8 @@ async function main(args) {
     });
   }
 
-  const validation = validateBundle(repo, request.validatorPath);
+  const memoryRoot = state.sharedUpdate ? dirname(request.jobPath) : repo;
+  const validation = validateBundle(memoryRoot, request.validatorPath);
   if (!validation.ok) {
     return finishFailed(request, state, workerContext, "artifact_validation_failed", {
       exitCode: childResult.code,
@@ -139,7 +140,7 @@ async function main(args) {
     });
   }
 
-  const profileHead = profileLocalHead(join(repo, ".repo_memory", "PROFILE.md"));
+  const profileHead = profileLocalHead(join(memoryRoot, ".repo_memory", "PROFILE.md"));
   const resolvedProfileHead = profileHead ? resolveCommit(repo, profileHead) : undefined;
   if (!resolvedProfileHead || resolvedProfileHead !== state.snapshotHead) {
     return finishFailed(request, state, workerContext, "profile_head_mismatch", {
@@ -371,10 +372,14 @@ function finishSucceeded(request, state, workerContext, details) {
     if (!ownership.active || ownership.marker.jobId !== state.jobId || ownership.marker.runId !== state.runId) {
       return finishFailed(request, state, workerContext, "job_ownership_lost");
     }
-    const sharedBaselinePublished = publishSharedRepoMemory({ home: request.memoraxCodeHome, repo: state.repo,
+    const sharedBaselinePublished = state.sharedUpdate
+      ? publishSharedRepoMemoryUpdate({ home: request.memoraxCodeHome, repo: state.repo, update: state.sharedUpdate,
+        root: dirname(request.jobPath), validate: (path) => validateBundle(path, request.validatorPath).ok })
+      : publishSharedRepoMemory({ home: request.memoraxCodeHome, repo: state.repo,
       head: state.snapshotHead, shareable: state.shareableSnapshot === true,
       validate: (path) => validateBundle(path, request.validatorPath).ok });
-    clearBorrowedRepoMemory(state.repo);
+    if (state.sharedUpdate && !sharedBaselinePublished) return finishFailed(request, state, workerContext, "shared_publication_rejected");
+    if (!state.sharedUpdate) clearBorrowedRepoMemory(state.repo);
     writeJobState(request.jobPath, {
       ...state,
       status: "succeeded",

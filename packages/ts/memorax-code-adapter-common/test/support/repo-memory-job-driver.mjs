@@ -13,8 +13,8 @@ try {
     memorySkillInvocation: "/fixture-memory",
     validatorPath,
     evaluateRepository,
-    createCommand({ repo, finalMessagePath }) {
-      return [process.execPath, runnerPath, repo, finalMessagePath];
+    createCommand({ repo, memoryRoot, finalMessagePath }) {
+      return [process.execPath, runnerPath, repo, finalMessagePath, ...(memoryRoot === repo ? [] : [memoryRoot])];
     },
   });
   process.stdout.write(`${JSON.stringify(payload)}\n`);

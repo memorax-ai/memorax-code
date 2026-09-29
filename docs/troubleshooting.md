@@ -1011,6 +1011,20 @@ and remove only that repository's shared snapshot directory before explicitly
 rebuilding from the desired clean commit. Keep other repository snapshots and
 personal memory. Do not publish these private local files in an issue.
 
+Default-branch shared maintenance uses only local `origin/HEAD`. If it is absent
+or unresolved, or the current clean worktree is not on that branch at the same
+commit as its remote-tracking ref, shared updates are skipped. Normal user fetch
+and checkout workflows supply this state; the helper does not fetch or guess it.
+The configured policy still needs new commits. Incompatible/large deltas defer
+to an explicit rebuild; failed attempts wait for the configured cooldown.
+
+Successful shared updates add `versions/<commit>/` under that repository's cache.
+Old branches continue selecting an ancestor version. An unchanged borrowed copy
+with a recorded content fingerprint can refresh on a later read; locally modified,
+authored, or older copies without a fingerprint stay intact. Candidate artifacts
+are in the private job directory, and a failed update leaves the published and
+worktree bundles unchanged. There is no automatic version pruning.
+
 See [repository maintenance configuration](configuration.md#skill-reminder-and-repository-maintenance)
 for storage, reuse, and existing local update behavior.
 

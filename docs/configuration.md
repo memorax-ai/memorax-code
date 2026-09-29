@@ -969,7 +969,7 @@ SHA plus changed paths; the agent verifies task-relevant current files and diffs
 Every newly restored copy, including same-commit reuse, records its origin in
 `.repo_memory/shared-baseline.json`. Its `PROFILE.md` SHA, generation time, and
 branch/path provenance remain unchanged. Borrowed copies bypass automatic
-update policy even after later commits or elapsed time. Relevant repo-reads
+per-worktree update policy even after later commits or elapsed time. Relevant repo-reads
 recheck artifact validity, ancestry, delta limits, and clean source state;
 rejected checks continue from live code without automatic build/update. The
 local copy survives deletion of the shared cache. Personal-memory sidecars and
@@ -982,9 +982,41 @@ A later eligible prompt or relevant repo-read can retry after the condition
 changes. Explicit successful local build/update clears the borrowed record and
 returns the bundle to the local update policy below. Locally authored bundles
 and older copies without this record retain that policy. Neither local updates
-nor explicit builds replace an existing shared baseline. Automatic default-branch
-maintenance is not implemented. Update all clients to use the new sharing and
-borrowed-copy behavior; older installed runtimes do not enforce these rules.
+nor explicit builds replace an existing shared baseline.
+
+Shared default-branch maintenance runs on the existing `maintain` entry, including
+a relevant repo-read. It reads only local `refs/remotes/origin/HEAD` and its target:
+there is no fetch, remote discovery, branch-name guess, or new configuration entry.
+Missing, unreadable, or unresolvable refs skip shared maintenance. Execution
+requires a clean worktree on the identified branch with HEAD equal to that local
+remote-tracking commit. Local commits ahead of it, an outdated checkout, detached
+HEAD, and feature worktrees cannot maintain the shared version. If all sessions
+stay on feature branches, the shared baseline will not advance automatically.
+
+The existing update policy applies to the selected shared snapshot, using its
+publication time (legacy snapshots fall back to PROFILE time) and pending commits.
+The default remains new commits plus either five commits or 24 hours. The same
+conservative delta limits described above apply; incompatible ancestry or a large
+structural change does not start an automatic rebuild. Dispatch records an attempt
+under repository ownership. Repeated attempts against that baseline wait for the
+configured cooldown, including after failure or an unclaimed Cursor ticket.
+
+Updates edit a candidate `.repo_memory` under `repo-memory-jobs/<job-id>/`, leaving
+the worktree bundle intact. The Agent checks affected Wiki pages and navigation
+as well as history resources allowed by the existing collection policy. After
+validation and repeated branch/ref/source checks, the supervisor atomically
+publishes `repo-memory-bases/<repository-key>/versions/<commit>/`. Each version
+contains its own `baseline.json` and `.repo_memory`; old versions remain available
+and are not automatically pruned. A failed candidate does not replace any version.
+
+Readers select the nearest ancestor version. Newly restored borrowed copies
+include a content fingerprint; a later read may refresh an unchanged copy from a
+newer compatible version without an Agent. Local edits and locally authored
+bundles are preserved, as are personal sidecars. Legacy borrowed records without
+a fingerprint stay unchanged. The helper reports `refreshed: true` when replacement
+occurs so the reader discards hits collected before the refresh and uses live code.
+Update all clients to use these rules; older installed runtimes do not enforce
+versioned maintenance or borrowed-copy behavior.
 
 CodeBuddy/WorkBuddy repository jobs run the headless client under a bounded
 worker. `MEMORAX_CODE_REPO_MEMORY_JOB_TIMEOUT_MS` sets the client execution

@@ -121,8 +121,13 @@ Please allow time for triage and remediation before public disclosure.
   Borrowed maps preserve their original provenance, require task-relevant live
   verification, and do not trigger automatic per-worktree authoring. Delta
   paths remain local and are data, never shell instructions. Personal-memory sidecars are
-  excluded, bundle copies reject symbolic links, and existing worktree bundles
-  are never overwritten by restoration. These checks do not sandbox authoring
+  excluded and bundle copies reject symbolic links. Existing authored bundles
+  and local edits are preserved; only helper-created borrowed copies with a matching
+  content fingerprint can refresh under repository locking. Shared maintenance
+  requires a clean default-branch checkout matching the locally resolved
+  `origin/HEAD` target, without network discovery. Workers edit private candidates;
+  validation and repeated source/ref checks precede immutable version publication.
+  Old versions and failed candidates remain local. These checks do not sandbox authoring
   or prove the semantic accuracy of generated content.
 - Personal Memory is global user-owned state under
   `$MEMORAX_CODE_HOME/personal-memory/` (default `~/.memorax-code/personal-memory/`). User

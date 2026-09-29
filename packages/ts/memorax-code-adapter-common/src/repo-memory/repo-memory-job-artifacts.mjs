@@ -18,6 +18,7 @@ export function resolveCommit(repo, ref, options = {}) {
   const result = spawnSync("git", ["rev-parse", "--verify", `${ref}^{commit}`], {
     cwd: repo,
     encoding: "utf8",
+    env: { ...process.env, GIT_NO_LAZY_FETCH: "1" },
     ...(options.timeoutMs === undefined ? {} : { timeout: options.timeoutMs, killSignal: "SIGKILL" }),
   });
   return result.status === 0 ? result.stdout.trim() : undefined;
@@ -28,4 +29,3 @@ export function gitHead(repo, options = {}) {
   if (!head) throw new Error(`git could not resolve HEAD in ${repo}`);
   return head;
 }
-

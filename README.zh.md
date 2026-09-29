@@ -236,7 +236,7 @@ Profile 使用 `user-profile/preferences.md`，每个 Procedure 主题在
 | **用户偏好延续** | 在 User Profile 中记录用户偏好，并按设定周期将其带入后续任务。 |
 | **Procedure 自动复用** | 记录可复用的任务流程，并在后续任务中自动提醒 Agent 按流程执行。 |
 | **记忆作用反馈** | 在 Codex、Claude Code、CodeBuddy CLI、WorkBuddy、DeepSeek Harness、OpenCode、Trae 和 Cursor 中，当本轮主动 Search 的 Coding Memory，或本轮读取、注入的 Repo、Procedure、Profile Memory 确实指导了任务时，Agent 会在最终回复开头用自然语言简要说明。 |
-| **Repo Memory 后台整理** | 在支持后台任务的客户端中整理仓库结构、代码入口和历史证据。同一提交或具有少量兼容后续改动的 linked worktree 借用已校验的共享地图，无需再次启动 Agent 构建或逐 worktree 自动更新；本地编写的产物保留按策略更新。Trae 仍仅支持 Skill；Cursor 使用原生后台子 Agent 完成初建和维护。 |
+| **Repo Memory 后台整理** | 在支持后台任务的客户端中整理仓库结构、代码入口和历史证据。同一提交或具有少量兼容后续改动的 linked worktree 借用已校验的共享地图，无需再次启动 Agent 构建或逐 worktree 自动更新。与本地 `origin/HEAD` 对应提交一致的干净默认分支 worktree 可按策略维护共享版本；本地编写的产物保留自身更新。Trae 仍仅支持 Skill；Cursor 使用原生后台子 Agent 完成初建和维护。 |
 | **主动记忆控制** | 使用内置的 MemoraX Code Skill 或 CLI，主动查找和添加记忆。 |
 | **客户端集成** | 与 Codex、Claude Code、CodeBuddy CLI、WorkBuddy、DeepSeek Harness、OpenCode、Trae 和 Cursor 集成，支持 Skill 主动 Search、本地提醒和自动写回。目前 Codex、Claude Code、CodeBuddy CLI、WorkBuddy、OpenCode 和 Trae 支持自动额度提醒。 |
 | **本地可观测性** | 通过受内容控制的本地 trace 和 reconciliation 记录查看活动统计、召回与写入状态。 |

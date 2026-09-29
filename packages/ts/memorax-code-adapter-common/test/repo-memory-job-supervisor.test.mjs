@@ -5,8 +5,9 @@ import { join } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { publishSharedRepoMemory, readSharedRepoMemory, restoreSharedRepoMemory } from "../src/repo-memory/repo-memory-shared-bundle.mjs";
+import { defaultBranchSnapshot, prepareSharedRepoMemoryUpdate, publishSharedRepoMemory, publishSharedRepoMemoryUpdate, readSharedRepoMemory, restoreSharedRepoMemory } from "../src/repo-memory/repo-memory-shared-bundle.mjs";
 import { runRepoMemoryJob } from "../src/repo-memory/repo-memory-job-supervisor.mjs";
+import { evaluateRepository } from "../src/repo-memory/repo-memory-update-policy-evaluator.mjs";
 import {
   markerPathForRepo,
   repoMemoryJobsDir,
@@ -873,6 +874,207 @@ function sharedFixture(t) {
     },
   };
 }
+
+function defaultBranchFixture(t) {
+  const f = sharedFixture(t);
+  runGit(f.linked, ["switch", "-c", "trunk"]);
+  runGit(f.linked, ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/trunk"]);
+  const advance = (count = 5) => {
+    for (let i = 0; i < count; i++) f.commit("feature.txt", `default change ${i} ${Date.now()}\n`);
+    const head = runGit(f.linked, ["rev-parse", "HEAD"]).trim();
+    runGit(f.linked, ["update-ref", "refs/remotes/origin/trunk", head]);
+    return head;
+  };
+  runGit(f.linked, ["update-ref", "refs/remotes/origin/trunk", f.head]);
+  return { ...f, advance };
+}
+
+test("default branch maintenance publishes a candidate version and retains compatible old snapshots", (t) => {
+  const f = defaultBranchFixture(t);
+  assert.equal(f.maintain().reason, "shared_bundle_reused");
+  const original = readFileSync(join(f.linked, ".repo_memory/PROFILE.md"), "utf8");
+  const head = f.advance();
+  const dry = f.maintain(["--dry-run"]);
+  assert.equal(dry.reason, "shared_update_due");
+  assert.equal(dry.policyDecision.commitsBehind, 5);
+  assert.equal(dry.policyDecision.lastUpdateSource, "shared.publishedAt");
+  assert.match(dry.job.prompt, /--memory-path/);
+  assert.match(dry.job.prompt, /affected Wiki pages/);
+  assert.equal(countJobDirs(f.home), 0);
+  const result = f.maintain();
+  assert.equal(result.action, "update");
+  const state = waitForTerminal(result.job.jobPath);
+  assert.equal(state.status, "succeeded", JSON.stringify(state));
+  assert.equal(state.sharedBaselinePublished, true);
+  waitForMarkerAbsent(f.home, f.linked);
+  assert.equal(readFileSync(join(f.linked, ".repo_memory/PROFILE.md"), "utf8"), original, "candidate authoring must leave local memory alone");
+  assert.equal(readSharedRepoMemory(f.home, f.linked).head, head);
+  assert.equal(readSharedRepoMemory(f.home, f.repo).head, f.head, "old branches must not select a non-ancestor version");
+  const refreshed = f.maintain();
+  assert.equal(refreshed.reason, "shared_bundle_reused");
+  assert.equal(refreshed.refreshed, true);
+  assert.equal(refreshed.sharedBaseline.baseHead, head);
+  assert.equal(countJobDirs(f.home), 1);
+  const secondHead = f.advance(), second = f.maintain();
+  assert.equal(waitForTerminal(second.job.jobPath).status, "succeeded");
+  waitForMarkerAbsent(f.home, f.linked);
+  assert.equal(readSharedRepoMemory(f.home, f.linked).head, secondHead);
+  runGit(f.repo, ["checkout", "--detach", head]);
+  assert.equal(readSharedRepoMemory(f.home, f.repo).head, head);
+});
+
+test("shared startup rechecks the default snapshot before dispatching an Agent", (t) => {
+  const f = defaultBranchFixture(t); f.advance();
+  const result = runRepoMemoryJob(["maintain", "--repo", f.linked], {
+    runner: "fixture", memoraxCodeHome: f.home, evaluateRepository,
+    validatorPath: fileURLToPath(new URL("./support/repo-memory-job-validator.mjs", import.meta.url)),
+    createCommand: () => {
+      runGit(f.linked, ["update-ref", "refs/remotes/origin/trunk", f.head]);
+      return [process.execPath, "-e", 'throw new Error("must not run")'];
+    },
+  });
+  assert.equal(result.reason, "shared_update_changed");
+  assert.equal(result.action, "none");
+  assert.equal(countJobDirs(f.home), 0);
+});
+
+test("shared publication rechecks candidate provenance and refs after its staged validator", (t) => {
+  const f = defaultBranchFixture(t); f.advance();
+  const update = { ...defaultBranchSnapshot(f.linked), baseHead: f.head };
+  const root = join(f.home, "candidate");
+  prepareSharedRepoMemoryUpdate({ home: f.home, repo: f.linked, update, root, validate: () => true });
+  writeValidatedProfile(root, update.head);
+  const published = publishSharedRepoMemoryUpdate({ home: f.home, repo: f.linked, update, root, validate: () => {
+    runGit(f.linked, ["update-ref", "refs/remotes/origin/trunk", f.head]);
+    return true;
+  } });
+  assert.equal(published, false);
+  assert.equal(readSharedRepoMemory(f.home, f.linked).head, f.head);
+  runGit(f.linked, ["update-ref", "refs/remotes/origin/trunk", update.head]);
+  assert.equal(publishSharedRepoMemoryUpdate({ home: f.home, repo: f.linked, update, root, validate: (stage) => {
+    writeValidatedProfile(stage, f.head); return true;
+  } }), false);
+  assert.equal(readSharedRepoMemory(f.home, f.linked).head, f.head);
+});
+
+test("default branch maintenance can update with no local bundle and materializes it on the next read", (t) => {
+  const f = defaultBranchFixture(t), head = f.advance();
+  const result = f.maintain();
+  assert.equal(result.reason, "shared_update_due");
+  assert.equal(waitForTerminal(result.job.jobPath).status, "succeeded");
+  waitForMarkerAbsent(f.home, f.linked);
+  assert.equal(existsSync(join(f.linked, ".repo_memory")), false);
+  assert.equal(f.maintain().sharedBaseline.baseHead, head);
+});
+
+for (const scenario of ["missing", "dangling", "wrong-remote", "detached", "feature-branch", "ahead", "behind", "dirty", "structural", "large", "diverged"]) {
+  test(`shared default maintenance defers ${scenario} without a new Agent`, (t) => {
+    const f = defaultBranchFixture(t);
+    f.maintain(); f.advance();
+    if (scenario === "missing") runGit(f.linked, ["symbolic-ref", "--delete", "refs/remotes/origin/HEAD"]);
+    if (scenario === "dangling") runGit(f.linked, ["update-ref", "-d", "refs/remotes/origin/trunk"]);
+    if (scenario === "wrong-remote") runGit(f.linked, ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/other/trunk"]);
+    if (scenario === "detached") runGit(f.linked, ["switch", "--detach"]);
+    if (scenario === "feature-branch") runGit(f.linked, ["switch", "-c", "feature"]);
+    if (scenario === "ahead") runGit(f.linked, ["update-ref", "refs/remotes/origin/trunk", f.head]);
+    if (scenario === "behind") runGit(f.linked, ["reset", "--hard", f.head]);
+    if (scenario === "dirty") writeFileSync(join(f.linked, "feature.txt"), "local edit\n");
+    if (["structural", "large"].includes(scenario)) {
+      f.commit(scenario === "structural" ? "package.json" : "large.txt", scenario === "large" ? "line\n".repeat(1001) : "{}\n");
+      runGit(f.linked, ["update-ref", "refs/remotes/origin/trunk", "HEAD"]);
+    }
+    if (scenario === "diverged") {
+      runGit(f.linked, ["checkout", "--orphan", "replacement"]);
+      runGit(f.linked, ["commit", "--allow-empty", "-m", "unrelated"]);
+      runGit(f.linked, ["branch", "-M", "trunk"]);
+      runGit(f.linked, ["update-ref", "refs/remotes/origin/trunk", "HEAD"]);
+    }
+    assert.equal(f.maintain().action, "none");
+    assert.equal(countJobDirs(f.home), 0);
+  });
+}
+
+test("shared maintenance uses shared age, observes configured policy, and does not update on age alone", (t) => {
+  const f = defaultBranchFixture(t);
+  assert.equal(f.maintain(["--now", "2099-01-01T00:00:00Z"]).action, "none");
+  f.advance(1);
+  const fresh = f.maintain(["--dry-run"]);
+  assert.equal(fresh.action, "none");
+  assert.equal(fresh.policyDecision.commitsBehind, 1);
+  assert.equal(f.maintain(["--dry-run", "--now", "2099-01-01T00:00:00Z"]).reason, "shared_update_due");
+  const config = join(f.home, "policy.toml");
+  writeFileSync(config, '[memory.repo_update]\npolicy = "every-commit"\n');
+  assert.equal(f.maintain(["--dry-run", "--config", config]).reason, "shared_update_due");
+});
+
+test("failed shared update leaves both old bundles intact and suppresses immediate retry", (t) => {
+  const f = defaultBranchFixture(t);
+  f.maintain(); f.advance();
+  const original = readFileSync(join(f.linked, ".repo_memory/PROFILE.md"), "utf8");
+  const result = JSON.parse(runJob(["maintain", "--repo", f.linked], {
+    MEMORAX_CODE_HOME: f.home, REPO_MEMORY_TEST_BEHAVIOR: "final-only",
+  }).stdout);
+  assert.equal(waitForTerminal(result.job.jobPath).failureReason, "profile_head_mismatch");
+  waitForMarkerAbsent(f.home, f.linked);
+  assert.equal(readSharedRepoMemory(f.home, f.linked).head, f.head);
+  assert.equal(readFileSync(join(f.linked, ".repo_memory/PROFILE.md"), "utf8"), original);
+  assert.equal(f.maintain().reason, "shared_update_cooldown");
+  assert.equal(countJobDirs(f.home), 1);
+  assert.equal(f.maintain(["--dry-run", "--now", "2099-01-01T00:00:00Z"]).reason, "shared_update_due");
+});
+
+test("shared default update is repository-deduplicated under concurrent dispatch", async (t) => {
+  const f = defaultBranchFixture(t); f.advance();
+  const results = await Promise.all([0, 1].map(() => runJobAsync(["maintain", "--repo", f.linked], { MEMORAX_CODE_HOME: f.home })));
+  const payloads = results.map(result => { assert.equal(result.status, 0, result.stderr); return JSON.parse(result.stdout); });
+  const started = payloads.find(result => result.action === "update");
+  assert.ok(started, JSON.stringify(payloads));
+  assert.equal(waitForTerminal(started.job.jobPath).status, "succeeded");
+  assert.equal(countJobDirs(f.home), 1);
+});
+
+for (const behavior of ["complete-dirty", "complete-move-origin", "complete-change-branch"]) {
+  test(`shared publication rejects ${behavior} after candidate validation`, (t) => {
+    const f = defaultBranchFixture(t); f.advance();
+    const result = JSON.parse(runJob(["maintain", "--repo", f.linked], {
+      MEMORAX_CODE_HOME: f.home, REPO_MEMORY_TEST_BEHAVIOR: behavior,
+    }).stdout);
+    const state = waitForTerminal(result.job.jobPath);
+    assert.equal(state.failureReason, "shared_publication_rejected", JSON.stringify(state));
+    assert.equal(readSharedRepoMemory(f.home, f.linked).head, f.head);
+    assert.equal(existsSync(join(f.linked, ".repo_memory")), false);
+  });
+}
+
+test("refresh preserves borrowed local edits, locally authored bundles, and personal sidecars", (t) => {
+  const f = defaultBranchFixture(t), edited = join(f.repo, "../edited"), untouched = join(f.repo, "../untouched"), legacy = join(f.repo, "../legacy");
+  for (const repo of [edited, untouched, legacy]) {
+    runGit(f.repo, ["worktree", "add", "--detach", repo, f.head]);
+    runJob(["maintain", "--repo", repo], { MEMORAX_CODE_HOME: f.home });
+  }
+  const legacyPath = join(legacy, ".repo_memory/shared-baseline.json"), legacyRecord = JSON.parse(readFileSync(legacyPath));
+  delete legacyRecord.fingerprint;
+  writeFileSync(legacyPath, JSON.stringify(legacyRecord));
+  writeFileSync(join(edited, ".repo_memory/notes.md"), "local notes\n");
+  mkdirSync(join(untouched, ".repo_memory/user-profile"));
+  writeFileSync(join(untouched, ".repo_memory/user-profile/preferences.md"), "private sidecar\n");
+  const localOriginal = readFileSync(join(f.repo, ".repo_memory/PROFILE.md"), "utf8");
+  const head = f.advance(), result = f.maintain();
+  assert.equal(waitForTerminal(result.job.jobPath).status, "succeeded");
+  waitForMarkerAbsent(f.home, f.linked);
+  for (const repo of [edited, untouched, legacy, f.repo]) {
+    runGit(repo, ["checkout", "--detach", head]);
+    const decision = JSON.parse(runJob(["maintain", "--repo", repo, "--dry-run"], { MEMORAX_CODE_HOME: f.home }).stdout);
+    assert.equal(decision.action, repo === f.repo ? "update" : "none");
+    if (repo !== f.repo) runJob(["maintain", "--repo", repo], { MEMORAX_CODE_HOME: f.home });
+  }
+  assert.equal(JSON.parse(readFileSync(join(edited, ".repo_memory/shared-baseline.json"))).head, f.head);
+  assert.equal(JSON.parse(readFileSync(legacyPath)).head, f.head);
+  assert.equal(readFileSync(join(edited, ".repo_memory/notes.md"), "utf8"), "local notes\n");
+  assert.equal(JSON.parse(readFileSync(join(untouched, ".repo_memory/shared-baseline.json"))).head, head);
+  assert.equal(readFileSync(join(untouched, ".repo_memory/user-profile/preferences.md"), "utf8"), "private sidecar\n");
+  assert.equal(readFileSync(join(f.repo, ".repo_memory/PROFILE.md"), "utf8"), localOriginal);
+});
 
 test("failed builds and dirty source snapshots do not publish a shared baseline", (t) => {
   const root = tempRoot(t, "repo-memory-shared-publish-");

@@ -13,7 +13,7 @@ export function runRepoMemoryUpdatePolicy(args) {
 
 export function evaluateRepository(input) {
   const repo = repositoryRoot(input.repo);
-  const profilePath = join(repo, ".repo_memory", "PROFILE.md");
+  const profilePath = input.profilePath || join(repo, ".repo_memory", "PROFILE.md");
   if (!existsSync(profilePath)) {
     throw new Error(`repo memory update policy requires .repo_memory/PROFILE.md: ${repo}`);
   }
@@ -24,7 +24,9 @@ export function evaluateRepository(input) {
   const head = git(repo, ["rev-parse", "HEAD"]);
   const baseline = stringValue(profile.local_head);
   const baselineState = inspectBaseline(repo, baseline, head);
-  const lastUpdate = profileUpdateTime(profile, profileStat.mtimeMs);
+  const lastUpdate = Number.isFinite(input.lastUpdatedAtMs)
+    ? { atMs: input.lastUpdatedAtMs, source: "shared.publishedAt" }
+    : profileUpdateTime(profile, profileStat.mtimeMs);
   const config = resolvedConfig(input);
   const pullRequestDetected = baselineState.status === "ancestor" && baselineState.commitsBehind > 0
     ? pendingRangeContainsPullRequest(repo, baseline, head)
@@ -128,6 +130,7 @@ function git(repo, args) {
     cwd: repo,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
+    env: { ...process.env, GIT_NO_LAZY_FETCH: "1" },
   }).trim();
 }
 
@@ -145,6 +148,7 @@ function gitSuccess(repo, args) {
       cwd: repo,
       encoding: "utf8",
       stdio: ["ignore", "ignore", "ignore"],
+      env: { ...process.env, GIT_NO_LAZY_FETCH: "1" },
     });
     return true;
   } catch {
