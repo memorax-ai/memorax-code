@@ -29,7 +29,7 @@ export async function createNativeHarness({ packageRoot, codebuddyCommand, label
   const codebuddyHome = join(home, ".codebuddy");
   const productEntrypoint = join(packageRoot, "bin", "memorax-code.mjs");
   const memoryEntrypoint = join(packageRoot, "bin", "memorax-cli.mjs");
-  const modelRequests = [], memoryRequests = [], serverErrors = [];
+  const modelRequests = [], memoryRequests = [], serverErrors = [], modelRequestRejections = [];
   const children = new Set(), backendPids = new Set();
   let modelHandler, nativeVersion, beforeClose, setupStarted = false, closePromise;
   let memoryServer, modelServer, backendPort, env;
@@ -47,6 +47,9 @@ export async function createNativeHarness({ packageRoot, codebuddyCommand, label
         : { task_id: `native-add-${memoryRequests.length}`, status: "queued" } }));
     }, serverErrors);
     modelServer = await listen(async (request, response) => {
+      if ((request.method !== "POST" || request.url !== "/v1/chat/completions") && modelRequestRejections.length < 8) {
+        modelRequestRejections.push(summarizeModelRoute(request));
+      }
       check(request.method === "POST" && request.url === "/v1/chat/completions", "UNEXPECTED_MODEL_REQUEST");
       check(request.headers.authorization === "Bearer native-model-fixture", "NATIVE_MODEL_CREDENTIAL_MISMATCH");
       const body = await requestJson(request);
@@ -221,7 +224,7 @@ export async function createNativeHarness({ packageRoot, codebuddyCommand, label
   for (const [signal, handler] of signalHandlers) process.on(signal, handler);
   return { root, home, workspace, stateHome, codebuddyHome, env, packageRoot, codebuddyCommand,
     get codebuddyVersion() { return nativeVersion; }, memoryEntrypoint, productEntrypoint,
-    modelUrl: modelServer.url, memoryUrl: memoryServer.url, modelRequests, memoryRequests, serverErrors,
+    modelUrl: modelServer.url, memoryUrl: memoryServer.url, modelRequests, memoryRequests, serverErrors, modelRequestRejections,
     setup, close, runProduct, runCodeBuddy, startCodeBuddy,
     runMemory: (args, options) => run(process.execPath, [memoryEntrypoint, ...args], options),
     setBeforeClose(handler) {
@@ -230,6 +233,18 @@ export async function createNativeHarness({ packageRoot, codebuddyCommand, label
       beforeClose = handler;
     },
     setModelHandler(handler) { modelHandler = handler; } };
+}
+
+export function summarizeModelRoute(request) {
+  const methods = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"];
+  const segments = new Set(["v1", "v2", "v3", "api", "codebuddy", "chat", "completions", "responses", "messages",
+    "models", "tokenize", "tokens", "count_tokens", "conversation", "session", "auth", "user", "info", "config", "health"]);
+  let url;
+  try { url = new URL(request.url, "http://127.0.0.1"); } catch {}
+  const parts = url?.pathname.split("/").filter(Boolean);
+  return { method: methods.includes(request.method) ? request.method : "other",
+    route: parts && parts.length <= 8 && parts.every((part) => segments.has(part)) ? url.pathname : "other",
+    queryPresent: Boolean(url?.search) };
 }
 
 let responseSequence = 0;
@@ -346,7 +361,9 @@ function isolatedEnv({ root, home, stateHome, codebuddyHome, codebuddyCommand, p
     MEMORAX_CODE_JEV_ENABLED: "false", MEMORAX_CODE_CODEBUDDY_TRACE_ENABLED: "true", MEMORAX_CODE_SKIP_CODEX_PLUGIN_INSTALL: "1",
     CODEX_HOME: join(home, ".codex"), CLAUDE_HOME: join(home, ".claude"), CLAUDE_CONFIG_DIR: join(home, ".claude"),
     DSH_HOME: join(home, ".dsh"), OPENCODE_CONFIG_DIR: join(home, ".config", "opencode"),
-    WORKBUDDY_HOME: join(home, ".workbuddy"), WORKBUDDY_CONFIG_DIR: join(home, ".workbuddy"),
+    // CodeBuddy's model loader prefers WORKBUDDY_CONFIG_DIR even in CodeBuddy.
+    // Leave that alias unset; WorkBuddy's default home is still isolated.
+    WORKBUDDY_HOME: join(home, ".workbuddy"),
     TRAE_HOME: join(home, ".trae-cn"), TRAE_CN_HOME: join(home, ".trae-cn"), CURSOR_HOME: join(home, ".cursor"),
   };
   if (process.platform === "win32") Object.assign(env, { SystemRoot: windowsRoot, WINDIR: windowsRoot,

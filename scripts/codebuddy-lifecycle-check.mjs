@@ -806,7 +806,7 @@ function isolatedEnv(userHome, codebuddyCommand) {
     CODEBUDDY_DISABLE_AUTO_MEMORY: "1", CODEBUDDY_DISABLE_SHELL_SNAPSHOT: "1",
     DSH_HOME: join(userHome, ".dsh"), OPENCODE_CONFIG_DIR: join(userHome, ".config", "opencode"),
     CLAUDE_HOME: join(userHome, ".claude"), CLAUDE_CONFIG_DIR: join(userHome, ".claude"),
-    WORKBUDDY_HOME: join(userHome, ".workbuddy"), WORKBUDDY_CONFIG_DIR: join(userHome, ".workbuddy"),
+    WORKBUDDY_HOME: join(userHome, ".workbuddy"),
     TRAE_CN_HOME: join(userHome, ".trae-cn"), TRAE_HOME: join(userHome, ".trae-cn"), CURSOR_HOME: join(userHome, ".cursor"),
     MEMORAX_CODE_CODEBUDDY_TRACE_ENABLED: "false",
   };

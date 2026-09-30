@@ -238,7 +238,8 @@ test("native completion diagnostics distinguish exact success, whitespace and mi
   assert.deepEqual(summarizeNativeCompletion(events, diagnosticOptions), {
     resultCount: 1, subtype: "success", terminalReason: "missing", isError: false, sessionPresent: true,
     answerMatches: true, answerTrimMatches: true, resultBytes: Buffer.byteLength(diagnosticOptions.answer),
-    initCount: 1, initModelMatches: true, modelRequests: 1, memoryRequests: 0, receiverErrors: [], errorSignatures: [],
+    initCount: 1, initModelMatches: true, initModelMatchCount: 1, initSessionMatchCount: 0,
+    modelRequests: 1, memoryRequests: 0, receiverErrors: [], errorSignatures: [],
   });
   assert.deepEqual(events, before);
   const whitespace = summarizeNativeCompletion([initEvent(), { ...resultEvent(), result: `\n${diagnosticOptions.answer}\n` }], diagnosticOptions);
@@ -248,6 +249,7 @@ test("native completion diagnostics distinguish exact success, whitespace and mi
   assert.deepEqual(summarizeNativeCompletion([], diagnosticOptions), {
     resultCount: 0, subtype: "missing", terminalReason: "missing", isError: null, sessionPresent: false,
     answerMatches: false, answerTrimMatches: false, resultBytes: null, initCount: 0, initModelMatches: false,
+    initModelMatchCount: 0, initSessionMatchCount: 0,
     modelRequests: 1, memoryRequests: 0, receiverErrors: [], errorSignatures: [],
   });
 });
@@ -259,6 +261,9 @@ test("native completion diagnostics expose duplicate results, changed model and 
   assert.equal(diagnostic.terminalReason, "aborted_tools");
   assert.equal(diagnostic.answerMatches, false);
   assert.equal(diagnostic.initModelMatches, false);
+  assert.equal(diagnostic.initModelMatchCount, 0);
+  assert.equal(summarizeNativeCompletion([{ ...initEvent(), session_id: resultEvent().session_id }, resultEvent()],
+    diagnosticOptions).initSessionMatchCount, 1);
   assert.equal(summarizeNativeCompletion([initEvent(), initEvent(), resultEvent()], diagnosticOptions).initModelMatches, false);
 });
 

@@ -168,6 +168,8 @@ export function summarizeNativeCompletion(events, { answer, model, modelRequests
     resultBytes: typeof result?.result === "string" ? Buffer.byteLength(result.result) : null,
     initCount: initializations.length,
     initModelMatches: initializations.length === 1 && initializations[0].model === model,
+    initModelMatchCount: initializations.filter((event) => event.model === model).length,
+    initSessionMatchCount: initializations.filter((event) => identifier(event.session_id) && event.session_id === result?.session_id).length,
     modelRequests: Number.isSafeInteger(modelRequests) && modelRequests >= 0 ? modelRequests : null,
     memoryRequests: Number.isSafeInteger(memoryRequests) && memoryRequests >= 0 ? memoryRequests : null,
     receiverErrors: [...new Set(receiverErrors.map((code) => receiverCodes.includes(code) ? code : "other"))],

@@ -254,6 +254,7 @@ async function runCase(phase) {
     const session = completedTurn?.session_id;
     result.nativeSessionDiagnostic = summarizeNativeCompletion(events, { answer, model: fixtureModel,
       modelRequests: harness.modelRequests.length, memoryRequests: harness.memoryRequests.length, receiverErrors: harness.serverErrors });
+    result.modelRequestRejections = harness.modelRequestRejections;
     check(results.length === 1 && typeof session === "string" && session.length > 0 && completedTurn.result === answer
       && completedTurn.is_error === false && completedTurn.subtype === "success"
       && completedTurn.terminal_reason === undefined, "RECOVERY_NATIVE_SESSION_FAILED");

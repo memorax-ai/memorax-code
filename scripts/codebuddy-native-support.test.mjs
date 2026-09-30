@@ -7,7 +7,7 @@ import { delimiter, dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
-  check, createNativeHarness, fixtureKey, fixtureModel, fixtureUser, searchResult, sendChatCompletion, waitFor,
+  check, createNativeHarness, fixtureKey, fixtureModel, fixtureUser, searchResult, sendChatCompletion, summarizeModelRoute, waitFor,
 } from "./codebuddy-native-support.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -68,6 +68,24 @@ test("OpenAI text SSE preserves the model, full text, finish reason and usage", 
   assert.equal(events[1].choices[0].finish_reason, null);
   assert.deepEqual(events[2].choices[0], { index: 0, delta: {}, finish_reason: "stop" });
   assert.deepEqual(events[2].usage, { prompt_tokens: 100, completion_tokens: 10, total_tokens: 110 });
+});
+
+test("rejected model routes reveal only allowlisted static segments and query presence", async (t) => {
+  const harness = await createHarness(t);
+  const response = await fetch(`${harness.modelUrl}/chat/completions?private=PRIVATE_ROUTE_CANARY`, { method: "POST" });
+  assert.equal(response.status, 500);
+  assert.deepEqual(harness.modelRequestRejections, [{ method: "POST", route: "/chat/completions", queryPresent: true }]);
+  for (const request of [
+    { method: "PRIVATE_ROUTE_CANARY", url: "/private/PRIVATE_ROUTE_CANARY?token=PRIVATE_ROUTE_CANARY" },
+    { method: "POST", url: "/v1/chat/completions/PRIVATE_ROUTE_CANARY" },
+    { method: "GET", url: "/v1/../PRIVATE_ROUTE_CANARY" },
+  ]) {
+    const summary = summarizeModelRoute(request);
+    assert.equal(summary.route, "other");
+    assert.equal(JSON.stringify(summary).includes("PRIVATE_ROUTE_CANARY"), false);
+  }
+  assert.deepEqual(summarizeModelRoute({ method: "POST", url: "/v1/chat/completions/chat/completions" }),
+    { method: "POST", route: "/v1/chat/completions/chat/completions", queryPresent: false });
 });
 
 test("nonstreaming OpenAI responses use the same complete text and reject missing responses", () => {
@@ -167,11 +185,11 @@ test("CodeBuddy harness replaces inherited credentials, all client homes and net
   for (const name of ["CODEBUDDY_AUTH_TOKEN", "CODEBUDDY_PLUGIN_DIRS", "CODEBUDDY_ENV_FILE", "CODEBUDDY_CUSTOM_HEADERS",
     "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_API_KEY", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
     "MEMORAX_CODE_BACKEND_URL", "MEMORAX_CODE_BACKEND_TOKEN", "NODE_OPTIONS", "NODE_EXTRA_CA_CERTS", "HTTP_PROXY",
-    "HTTPS_PROXY", "ALL_PROXY", "OTEL_EXPORTER_OTLP_ENDPOINT", "GIT_CONFIG_COUNT", "npm_config_userconfig"]) {
+    "HTTPS_PROXY", "ALL_PROXY", "OTEL_EXPORTER_OTLP_ENDPOINT", "GIT_CONFIG_COUNT", "npm_config_userconfig", "WORKBUDDY_CONFIG_DIR"]) {
     assert.equal(harness.env[name], undefined, name);
   }
   for (const name of ["HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "CODEBUDDY_HOME", "CODEBUDDY_CONFIG_DIR",
-    "WORKBUDDY_HOME", "WORKBUDDY_CONFIG_DIR", "CLAUDE_CONFIG_DIR", "CLAUDE_HOME", "CODEX_HOME", "DSH_HOME", "OPENCODE_CONFIG_DIR",
+    "WORKBUDDY_HOME", "CLAUDE_CONFIG_DIR", "CLAUDE_HOME", "CODEX_HOME", "DSH_HOME", "OPENCODE_CONFIG_DIR",
     "TRAE_HOME", "TRAE_CN_HOME", "CURSOR_HOME", "MEMORAX_CODE_HOME", "TMP", "TEMP", "TMPDIR"]) {
     assert.equal(harness.env[name].startsWith(`${harness.root}/`) || harness.env[name].startsWith(`${harness.root}\\`), true, name);
   }
