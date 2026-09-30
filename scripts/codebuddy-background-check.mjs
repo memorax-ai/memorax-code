@@ -5,6 +5,7 @@ import { basename, delimiter, dirname, isAbsolute, join, relative } from "node:p
 import { promisify } from "node:util";
 import { check, createNativeHarness, fixtureModel, waitFor } from "./codebuddy-native-support.mjs";
 import { selectNativeTurnContent } from "./codebuddy-native-content-check.mjs";
+import { CodeBuddyControlSession } from "./codebuddy-permissions-support.mjs";
 import { assertBackgroundJob, assertBackgroundModelRequests, assertBackgroundNoopResult, assertForegroundResult,
   assertGlobalConfiguration, backgroundInputText, backgroundProcessesExited, modelEnvironmentOverrides,
   summarizeBackgroundJobs, workerPromptMarker, foregroundPrompt, foregroundAnswer, backgroundAnswer,
@@ -15,7 +16,7 @@ const report = { status: "FAIL", scope: "native_codebuddy_repo_memory_global_con
   repoMemoryBuildValidated: false, modelOverrideInheritanceValidated: false, permissionInheritanceValidated: false,
   backgroundNativeSessionIdentityValidated: false, fixtureArtifactsInjected: false, paidModelRequests: 0 };
 let harness, repository, pluginRoot, snapshotHead, jobPrompt, stage = "prerequisites", checksCompleted = false;
-let foregroundStarted = false, foregroundFinished = false;
+let control, foregroundFinishPromise, foregroundStarted = false;
 const requests = { foreground: 0, background: 0 };
 
 try {
@@ -24,14 +25,15 @@ try {
     expectedVersion: process.argv[4], label: "background", writeback: false });
   repository = await realpath(harness.workspace);
   harness.setBeforeClose(async () => {
-    if (!foregroundStarted) return;
     // The product bounds its detached worker. Do not signal historical PIDs;
     // uncertain shutdown must retain the isolated state for inspection.
-    await waitFor(async () => {
-      const observed = await jobs();
-      return observed.length === 1 && backgroundProcessesExited(observed, processPresent);
-    }, "BACKGROUND_PROCESS_CLEANUP_UNVERIFIED", 35_000);
-    check(foregroundFinished, "BACKGROUND_FOREGROUND_CLEANUP_UNVERIFIED");
+    if (foregroundStarted) {
+      await waitFor(async () => {
+        const observed = await jobs();
+        return observed.length === 1 && backgroundProcessesExited(observed, processPresent);
+      }, "BACKGROUND_PROCESS_CLEANUP_UNVERIFIED", 35_000);
+    }
+    await finishForeground();
   });
   for (const name of modelEnvironmentOverrides) delete harness.env[name];
   Object.assign(harness.env, { MEMORAX_CODE_REPO_MEMORY_JOB_TIMEOUT_MS: "30000", MEMORAX_CODE_REPO_MEMORY_JOB_KILL_GRACE_MS: "1000",
@@ -69,11 +71,14 @@ try {
     return { text: kind === "background" ? backgroundAnswer : foregroundAnswer };
   });
   stage = "native foreground without model overrides";
+  control = new CodeBuddyControlSession(harness.startCodeBuddy(["-p", "--input-format", "stream-json",
+    "--output-format", "stream-json", "--verbose", "--permission-mode", "dontAsk", "--setting-sources", "user",
+    "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}']));
+  await control.request({ subtype: "initialize" });
   foregroundStarted = true;
-  const output = await harness.runCodeBuddy(["-p", foregroundPrompt, "--output-format", "stream-json", "--verbose",
-    "--permission-mode", "dontAsk", "--setting-sources", "user", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}']);
-  foregroundFinished = true;
-  const init = assertForegroundResult(output.stdout.trim().split(/\r?\n/).filter(Boolean).map(JSON.parse));
+  control.prompt(foregroundPrompt);
+  await control.wait((event) => event.type === "result");
+  const init = assertForegroundResult(control.events);
   check(typeof init.cwd === "string" && await realpath(init.cwd) === repository, "BACKGROUND_NATIVE_WORKSPACE_MISMATCH");
   stage = "native foreground transcript";
   await waitFor(async () => {
@@ -104,6 +109,9 @@ try {
     (error) => { if (error.code === "ENOENT") return true; throw error; }), "BACKGROUND_UNEXPECTED_PROFILE_ARTIFACT");
   stage = "detached process exit";
   await waitFor(() => backgroundProcessesExited([job], processPresent), "BACKGROUND_PROCESS_REMAINS");
+  stage = "native foreground process exit";
+  await finishForeground();
+  assertForegroundResult(control.events);
   Object.assign(report, { codebuddyVersion: harness.codebuddyVersion, model: fixtureModel, provider: "local_openai_chat_completions",
     globalSettingsOnly: true, foregroundNativeTranscriptValidated: true, backgroundOutputSource: "native CodeBuddy stdout",
     jobStatus: "failed", expectedFailure: "artifact_validation_failed" });
@@ -134,6 +142,10 @@ Object.assign(report, { foregroundRequests: requests.foreground, backgroundReque
 console.log(JSON.stringify(report, null, 2));
 if (report.status !== "PASS") process.exitCode = 1;
 
+function finishForeground() {
+  if (control) foregroundFinishPromise ??= control.finish();
+  return foregroundFinishPromise;
+}
 async function jobs() {
   const jobsRoot = join(harness.stateHome, "repo-memory-jobs");
   const files = await readdir(jobsRoot, { recursive: true }).catch((error) => {

@@ -826,10 +826,13 @@ transcript, complete worker prompt, native job ownership, and actual model
 requests. The deterministic worker returns text without authoring a bundle, so
 the required outcome is native exit `0` followed by `artifact_validation_failed`,
 with no Memory requests and no injected artifacts. Cleanup must confirm the
-recorded worker and child have exited. This is bounded global-configuration and
-dispatch coverage, not valid Repo Memory generation, per-turn model override
-inheritance, worker permission inheritance, or independent background native
-session identity; the product worker disables session persistence.
+recorded worker and child have exited. The foreground stream-JSON client stays
+open until that worker finishes, then its input closes and its exit is checked;
+this does not test worker survival after the foreground client exits.
+This is bounded global-configuration and dispatch coverage, not valid Repo
+Memory generation, per-turn model override inheritance, worker permission
+inheritance, or independent background native session identity; the product
+worker disables session persistence.
 
 The shared categories align with the other client suites, but their native
 protocols and bounded assertions are not identical. WorkBuddy, Desktop/editor
