@@ -83,11 +83,16 @@ export function backgroundProcessesExited(jobs, processPresent, posix = process.
 
 export function summarizeBackgroundJobs(validatedJobs, processPresent) {
   check(Array.isArray(validatedJobs), "BACKGROUND_JOB_DIAGNOSTIC_INVALID");
+  const reasons = ["worker_start_failed", "worker_interrupted", "codebuddy_timeout", "codebuddy_spawn_failed",
+    "codebuddy_exit_nonzero", "final_message_missing", "snapshot_changed", "artifact_validation_failed", "profile_head_mismatch"];
   const jobs = validatedJobs.map((job) => {
     check(["started", "running", "failed", "succeeded"].includes(job?.status)
       && [job.workerPid, job.childPid].every((pid) => pid === undefined || Number.isSafeInteger(pid) && pid > 1),
     "BACKGROUND_JOB_DIAGNOSTIC_INVALID");
-    return { status: job.status, workerPidPresent: job.workerPid !== undefined,
+    return { status: job.status,
+      failureReason: job.failureReason === undefined ? "missing" : reasons.includes(job.failureReason) ? job.failureReason : "other",
+      exitCode: Number.isSafeInteger(job.exitCode) && Math.abs(job.exitCode) <= 0xffffffff ? job.exitCode : null,
+      workerPidPresent: job.workerPid !== undefined,
       workerAlive: job.workerPid !== undefined && Boolean(processPresent(job.workerPid)),
       childPidPresent: job.childPid !== undefined,
       childAlive: job.childPid !== undefined && Boolean(processPresent(job.childPid)) };

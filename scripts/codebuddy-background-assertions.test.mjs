@@ -144,10 +144,13 @@ test("CodeBuddy background diagnostics distinguish no job, unpublished processes
   const probes = [];
   const present = (pid) => { probes.push(pid); return pid === 12345; };
   assert.deepEqual(summarizeBackgroundJobs([], present), { jobCount: 0, jobs: [] });
-  assert.deepEqual(summarizeBackgroundJobs([{ ...job(), status: "started", workerPid: undefined, childPid: undefined },
-    { ...job(), status: "running" }], present), { jobCount: 2, jobs: [
-    { status: "started", workerPidPresent: false, workerAlive: false, childPidPresent: false, childAlive: false },
-    { status: "running", workerPidPresent: true, workerAlive: true, childPidPresent: true, childAlive: false },
+  assert.deepEqual(summarizeBackgroundJobs([
+    { ...job(), status: "started", workerPid: undefined, childPid: undefined, failureReason: undefined, exitCode: undefined },
+    { ...job(), status: "running", failureReason: undefined, exitCode: undefined }], present), { jobCount: 2, jobs: [
+    { status: "started", failureReason: "missing", exitCode: null,
+      workerPidPresent: false, workerAlive: false, childPidPresent: false, childAlive: false },
+    { status: "running", failureReason: "missing", exitCode: null,
+      workerPidPresent: true, workerAlive: true, childPidPresent: true, childAlive: false },
   ] });
   assert.deepEqual(probes, [12345, 12346]);
 });
@@ -158,10 +161,25 @@ test("CodeBuddy background diagnostics expose only fixed state and process-prese
     finalMessagePath: privateText, error: privateText, failureReason: privateText };
   assert.deepEqual(summarizeBackgroundJobs([source, { ...source, status: "succeeded" }], () => false),
     { jobCount: 2, jobs: [
-      { status: "failed", workerPidPresent: true, workerAlive: false, childPidPresent: true, childAlive: false },
-      { status: "succeeded", workerPidPresent: true, workerAlive: false, childPidPresent: true, childAlive: false },
+      { status: "failed", failureReason: "other", exitCode: 0,
+        workerPidPresent: true, workerAlive: false, childPidPresent: true, childAlive: false },
+      { status: "succeeded", failureReason: "other", exitCode: 0,
+        workerPidPresent: true, workerAlive: false, childPidPresent: true, childAlive: false },
     ] });
   assert.equal(JSON.stringify(summarizeBackgroundJobs([source], () => true)).includes(privateText), false);
+});
+
+test("CodeBuddy background diagnostics bound exit codes and allow only known failure reasons", () => {
+  for (const exitCode of [0, 1, -1, 0xc0000005]) {
+    const [summary] = summarizeBackgroundJobs([{ ...job(), failureReason: "codebuddy_exit_nonzero", exitCode }], () => false).jobs;
+    assert.equal(summary.failureReason, "codebuddy_exit_nonzero");
+    assert.equal(summary.exitCode, exitCode);
+  }
+  for (const exitCode of [undefined, "PRIVATE_EXIT_CODE", NaN, Infinity, 1.5, 0x100000000]) {
+    const [summary] = summarizeBackgroundJobs([{ ...job(), failureReason: undefined, exitCode }], () => false).jobs;
+    assert.equal(summary.failureReason, "missing");
+    assert.equal(summary.exitCode, null);
+  }
 });
 
 test("CodeBuddy background diagnostics reject unrecognized states and malformed PIDs before probing", () => {
