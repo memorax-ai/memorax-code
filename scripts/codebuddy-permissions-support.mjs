@@ -1,5 +1,19 @@
 import { isDeepStrictEqual } from "node:util";
 import { check, fixtureModel, waitFor } from "./codebuddy-native-support.mjs";
+import { matchesNativeModel } from "./codebuddy-native-content-check.mjs";
+
+export function assertInitializedModel(initialized) {
+  check(matchesNativeModel(initialized?.currentModelId, fixtureModel) && Array.isArray(initialized?.models)
+    && initialized.models.some((model) => matchesNativeModel(model?.id, fixtureModel)), "PERMISSION_INITIALIZED_MODEL_MISMATCH");
+}
+
+export function assertPermissionInitializations(events, sessionId) {
+  const initializations = Array.isArray(events)
+    ? events.filter((event) => event?.type === "system" && event.subtype === "init") : [];
+  check(typeof sessionId === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(sessionId) && initializations.length > 0
+    && initializations.every((event) => event.session_id === sessionId && matchesNativeModel(event.model, fixtureModel)
+      && event.permissionMode === "default"), "PERMISSION_NATIVE_INIT_MISMATCH");
+}
 
 export function permissionArguments({ allowedTool } = {}) {
   return ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",

@@ -4,7 +4,8 @@ import { PassThrough, Writable } from "node:stream";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
 import { fixtureModel } from "./codebuddy-native-support.mjs";
-import { assertNativeInterruption, assertToolLineage, CodeBuddyControlSession, inflightCommand, inflightWorkerScript,
+import { assertInitializedModel, assertNativeInterruption, assertPermissionInitializations, assertToolLineage,
+  CodeBuddyControlSession, inflightCommand, inflightWorkerScript,
   modelToolResult, nativePrompt, permissionArguments, selectCanceledToolTurn, summarizeToolFailure } from "./codebuddy-permissions-support.mjs";
 
 const tool = { id: "fixture-call", name: "Write", input: { file_path: "fixture.txt", content: "fixture marker" } };
@@ -30,6 +31,36 @@ function fixture(options) {
     close(code = 0) { child.stdout.end(); child.stderr.end(); child.emit("close", code, null); } };
 }
 const rejects = (fn, code) => assert.throws(fn, (error) => error.nativeCode === code && error.message === code);
+
+test("permission initialize matches the local model catalog and its exact alias", () => {
+  for (const currentModelId of [fixtureModel, `custom-local:${fixtureModel}`]) {
+    for (const id of [fixtureModel, `custom-local:${fixtureModel}`]) {
+      assertInitializedModel({ currentModelId, models: [{ id: "unrelated" }, { id }] });
+    }
+  }
+  for (const initialized of [undefined, {}, { currentModelId: fixtureModel, models: [] },
+    { currentModelId: fixtureModel, models: [null, { id: "other" }] },
+    { currentModelId: fixtureModel, models: "invalid" },
+    { currentModelId: "custom-local:other", models: [{ id: fixtureModel }] },
+    { currentModelId: fixtureModel, models: [{ id: `custom-local:custom-local:${fixtureModel}` }] }]) {
+    rejects(() => assertInitializedModel(initialized), "PERMISSION_INITIALIZED_MODEL_MISMATCH");
+  }
+});
+
+test("permission init may repeat but every event must match the same model, session and permission mode", () => {
+  const init = { type: "system", subtype: "init", session_id: identity.sessionId, model: fixtureModel, permissionMode: "default" };
+  assertPermissionInitializations([init], identity.sessionId);
+  assertPermissionInitializations([init, { ...init, model: `custom-local:${fixtureModel}` }, init,
+    { type: "result", session_id: identity.sessionId }], identity.sessionId);
+  for (const patch of [{ session_id: "foreign" }, { session_id: undefined }, { model: "unknown" },
+    { model: "custom-local:other" }, { permissionMode: "bypassPermissions" }, { permissionMode: undefined }]) {
+    rejects(() => assertPermissionInitializations([init, { ...init, ...patch }], identity.sessionId), "PERMISSION_NATIVE_INIT_MISMATCH");
+  }
+  for (const events of [undefined, [], [{ type: "result" }]]) {
+    rejects(() => assertPermissionInitializations(events, identity.sessionId), "PERMISSION_NATIVE_INIT_MISMATCH");
+  }
+  rejects(() => assertPermissionInitializations([init], ""), "PERMISSION_NATIVE_INIT_MISMATCH");
+});
 
 test("permission arguments preserve installed discovery and choose the native stream JSON channel", () => {
   const args = permissionArguments();

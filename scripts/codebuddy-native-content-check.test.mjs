@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { assertNativeReadText, assertNativeToolCalls, selectNativeTurnContent, summarizeNativeCompletion, toolResult } from "./codebuddy-native-content-check.mjs";
+import { assertNativeReadText, assertNativeToolCalls, matchesNativeModel, selectNativeTurnContent, summarizeNativeCompletion, summarizeWritebackTrace, toolResult } from "./codebuddy-native-content-check.mjs";
 
 const identity = { sessionId: "session-fixture", prompt: "Native prompt.", finalText: "Native answer." };
 const user = () => ({ id: "user-prompt", type: "message", role: "user", sessionId: identity.sessionId,
@@ -9,6 +9,19 @@ const assistant = () => ({ id: "assistant-final", type: "message", role: "assist
   status: "completed", timestamp: "2026-09-30T01:00:01.000Z", content: [{ type: "output_text", text: identity.finalText }] });
 const fails = (records, code, options = identity) => assert.throws(() => selectNativeTurnContent(records, options),
   (error) => error.nativeCode === code && error.message === code);
+
+test("CodeBuddy native model identity accepts only the exact raw or custom-local model ID", () => {
+  const expected = "fixture-model";
+  assert.equal(matchesNativeModel(expected, expected), true);
+  assert.equal(matchesNativeModel(`custom-local:${expected}`, expected), true);
+  for (const actual of [undefined, null, 7, "", "unknown", "other", "custom-local:other",
+    ` ${expected}`, `${expected} `, `prefix:${expected}`, `custom-local:custom-local:${expected}`, `${expected}-other`]) {
+    assert.equal(matchesNativeModel(actual, expected), false);
+  }
+  for (const invalid of [undefined, null, 7, "", " ", " fixture-model "]) {
+    assert.equal(matchesNativeModel(invalid, invalid), false);
+  }
+});
 
 test("CodeBuddy native oracle selects the exact CLI-observed prompt and final, not the latest turn", () => {
   const laterUser = { ...user(), id: "later-user", parentId: "assistant-final", content: [{ type: "input_text", text: "Later prompt." }] };
@@ -229,6 +242,23 @@ test("native tool evidence requires exact arguments and one ordered completed re
 
 const diagnosticOptions = { answer: "Native fixture answer.", model: "native-fixture-model", modelRequests: 1, memoryRequests: 0,
   receiverErrors: [] };
+
+test("writeback diagnostics correlate only the current CodeBuddy prompt and never expose trace content", () => {
+  const identity = { sessionId: "session-fixture", promptHash: "prompt-hash" };
+  const trace = { client: "codebuddy", session_id: identity.sessionId, turn_id: "session-fixture:42:prompt-hash" };
+  const start = { type: "turn_start", trace };
+  const end = { type: "turn_end", trace, ok: false, error: "turn_not_found", request: { prompt: "PRIVATE_TRACE_CANARY" } };
+  const summary = summarizeWritebackTrace([start, end,
+    { ...end, trace: { ...trace, client: "claude-code" } },
+    { ...end, trace: { ...trace, session_id: "another-session" } },
+    { ...end, trace: { ...trace, turn_id: "session-fixture:42:another-prompt" } }],
+  { [identity.sessionId]: { turnId: trace.turn_id, transcriptPath: "/private/PRIVATE_TRACE_CANARY" } }, identity);
+  assert.deepEqual(summary, { turnStarts: 1, turnEnds: 1,
+    endings: [{ ok: false, outcome: "other", reason: "turn_not_found" }], pendingForSession: true, pendingMatchesPrompt: true });
+  const unknown = summarizeWritebackTrace([{ ...end, error: "PRIVATE_TRACE_CANARY", outcome: "PRIVATE_TRACE_CANARY" }], {}, identity);
+  assert.deepEqual(unknown.endings, [{ ok: false, outcome: "other", reason: "other" }]);
+  assert.equal(JSON.stringify([summary, unknown]).includes("PRIVATE_TRACE_CANARY"), false);
+});
 const resultEvent = () => ({ type: "result", subtype: "success", is_error: false, session_id: "native-fixture-session",
   result: diagnosticOptions.answer });
 const initEvent = () => ({ type: "system", subtype: "init", model: diagnosticOptions.model });
@@ -264,7 +294,14 @@ test("native completion diagnostics expose duplicate results, changed model and 
   assert.equal(diagnostic.initModelMatchCount, 0);
   assert.equal(summarizeNativeCompletion([{ ...initEvent(), session_id: resultEvent().session_id }, resultEvent()],
     diagnosticOptions).initSessionMatchCount, 1);
-  assert.equal(summarizeNativeCompletion([initEvent(), initEvent(), resultEvent()], diagnosticOptions).initModelMatches, false);
+  const repeated = summarizeNativeCompletion([initEvent(), { ...initEvent(), model: `custom-local:${diagnosticOptions.model}` },
+    resultEvent()], diagnosticOptions);
+  assert.equal(repeated.initModelMatches, true);
+  assert.equal(repeated.initModelMatchCount, 2);
+  const mismatched = summarizeNativeCompletion([initEvent(), { ...initEvent(), model: "custom-local:other" },
+    resultEvent()], diagnosticOptions);
+  assert.equal(mismatched.initModelMatches, false);
+  assert.equal(mismatched.initModelMatchCount, 1);
 });
 
 test("native completion error signatures are fixed hints and never inferred from normal answer text", () => {

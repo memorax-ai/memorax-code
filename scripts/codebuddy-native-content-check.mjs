@@ -6,6 +6,10 @@ function identifier(value) {
   return typeof value === "string" && value.length > 0 && value.trim() === value;
 }
 
+export function matchesNativeModel(actual, expected) {
+  return identifier(expected) && (actual === expected || actual === `custom-local:${expected}`);
+}
+
 // This fixture oracle follows native parent IDs and CLI-observed content. It
 // intentionally does not import the product parser or use Hook/trace content.
 export function selectNativeTurnContent(records, { sessionId, prompt, finalText } = {}) {
@@ -167,8 +171,8 @@ export function summarizeNativeCompletion(events, { answer, model, modelRequests
     answerTrimMatches: typeof result?.result === "string" && result.result.trim() === answer.trim(),
     resultBytes: typeof result?.result === "string" ? Buffer.byteLength(result.result) : null,
     initCount: initializations.length,
-    initModelMatches: initializations.length === 1 && initializations[0].model === model,
-    initModelMatchCount: initializations.filter((event) => event.model === model).length,
+    initModelMatches: initializations.length > 0 && initializations.every((event) => matchesNativeModel(event.model, model)),
+    initModelMatchCount: initializations.filter((event) => matchesNativeModel(event.model, model)).length,
     initSessionMatchCount: initializations.filter((event) => identifier(event.session_id) && event.session_id === result?.session_id).length,
     modelRequests: Number.isSafeInteger(modelRequests) && modelRequests >= 0 ? modelRequests : null,
     memoryRequests: Number.isSafeInteger(memoryRequests) && memoryRequests >= 0 ? memoryRequests : null,
@@ -186,4 +190,21 @@ export function summarizeNativeCompletion(events, { answer, model, modelRequests
     ].filter(([, pattern]) => pattern.test(errors)).map(([name]) => name),
   };
 }
+export function summarizeWritebackTrace(events, pending, { sessionId, promptHash }) {
+  const matches = (turnId) => typeof turnId === "string" && turnId.startsWith(`${sessionId}:`)
+    && turnId.endsWith(`:${promptHash}`);
+  const starts = events.filter((event) => event?.type === "turn_start" && event.trace?.client === "codebuddy"
+    && event.trace.session_id === sessionId && matches(event.trace.turn_id));
+  const ends = events.filter((event) => event?.type === "turn_end" && event.trace?.client === "codebuddy"
+    && event.trace.session_id === sessionId && matches(event.trace.turn_id));
+  const reasons = ["transcript_unavailable", "malformed_transcript", "turn_not_found", "user_prompt_missing",
+    "assistant_message_missing", "turn_ambiguous", "transcript_path_mismatch"];
+  return { turnStarts: starts.length, turnEnds: ends.length,
+    endings: ends.slice(-8).map((event) => ({ ok: typeof event.ok === "boolean" ? event.ok : null,
+      outcome: ["completed", "interrupted"].includes(event.outcome) ? event.outcome : "other",
+      reason: event.error === undefined ? "none" : reasons.includes(event.error) ? event.error : "other" })),
+    pendingForSession: Boolean(pending?.[sessionId]),
+    pendingMatchesPrompt: matches(pending?.[sessionId]?.turnId) };
+}
+
 import { isDeepStrictEqual } from "node:util";

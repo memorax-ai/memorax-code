@@ -18,7 +18,7 @@ const job = () => ({ version: 1, jobId: "job-fixture", runId: "a".repeat(32), ru
   outputLogPath: join(dirname(context.jobPath), "output.log"), pid: 12345, workerPid: 12345, childPid: 12346 });
 const request = (text) => ({ method: "POST", path: "/v1/chat/completions", body: { model: fixtureModel,
   messages: [{ role: "user", content: text }] } });
-const events = () => [{ type: "system", subtype: "init", session_id: "native-session", model: fixtureModel },
+const events = () => [{ type: "system", subtype: "init", session_id: "native-session", model: fixtureModel, permissionMode: "dontAsk" },
   { type: "result", subtype: "success", is_error: false, session_id: "native-session", result: foregroundAnswer }];
 
 test("CodeBuddy background configuration comes from global files without process model overrides", () => {
@@ -50,9 +50,20 @@ test("CodeBuddy native foreground requires one successful matching session with 
     assert.throws(() => assertForegroundResult([events()[0], { ...events()[1], ...patch }]),
       { nativeCode: "BACKGROUND_FOREGROUND_CONFIGURATION_MISMATCH" });
   }
-  for (const values of [[], [events()[0]], [...events(), events()[0]], [...events(), events()[1]],
-    [{ ...events()[0], model: "wrong" }, events()[1]]]) {
+  for (const values of [[], [events()[0]], [...events(), events()[1]],
+    [{ ...events()[0], model: "wrong" }, events()[1]], [{ ...events()[0], permissionMode: "default" }, events()[1]]]) {
     assert.throws(() => assertForegroundResult(values), { nativeCode: "BACKGROUND_FOREGROUND_CONFIGURATION_MISMATCH" });
+  }
+});
+
+test("CodeBuddy foreground repeated init events retain exact local model and session authority", () => {
+  const [init, completed] = events();
+  assert.equal(assertForegroundResult([{ ...init, model: `custom-local:${fixtureModel}` }, completed]).session_id, init.session_id);
+  assert.equal(assertForegroundResult([init, { ...init, model: `custom-local:${fixtureModel}` }, init, completed]), init);
+  for (const patch of [{ session_id: "foreign" }, { session_id: undefined }, { model: "unknown" },
+    { model: `custom-local:custom-local:${fixtureModel}` }, { permissionMode: "default" }, { permissionMode: undefined }]) {
+    assert.throws(() => assertForegroundResult([init, { ...init, ...patch }, completed]),
+      { nativeCode: "BACKGROUND_FOREGROUND_CONFIGURATION_MISMATCH" });
   }
 });
 
@@ -98,7 +109,8 @@ test("CodeBuddy global model evidence requires both HTTP requests and every work
   assertBackgroundModelRequests([foreground, worker], prompt);
   assertBackgroundModelRequests([worker, foreground], prompt);
   for (const values of [[worker], [foreground, worker, worker], [foreground, foreground],
-    [foreground, { ...worker, path: "/foreign" }], [foreground, { ...worker, body: { ...worker.body, model: "foreign" } }]]) {
+    [foreground, { ...worker, path: "/foreign" }], [foreground, { ...worker, body: { ...worker.body, model: "foreign" } }],
+    [foreground, { ...worker, body: { ...worker.body, model: `custom-local:${fixtureModel}` } }]]) {
     assert.throws(() => assertBackgroundModelRequests(values, prompt));
   }
   assert.throws(() => assertBackgroundModelRequests([foreground, request(workerPromptMarker)], prompt),

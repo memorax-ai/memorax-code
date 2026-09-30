@@ -7,7 +7,8 @@ import { isDeepStrictEqual } from "node:util";
 import { check, createNativeHarness, fixtureKey, fixtureModel, fixtureUser, waitFor } from "./codebuddy-native-support.mjs";
 import { assertCompleteText, assertNoForeignContent, assertWritebackMessages } from "./codex-native-content-check.mjs";
 import { selectNativeTurnContent } from "./codebuddy-native-content-check.mjs";
-import { assertNativeInterruption, assertToolLineage, CodeBuddyControlSession, inflightCommand, inflightWorkerScript, modelToolResult,
+import { assertInitializedModel, assertNativeInterruption, assertPermissionInitializations, assertToolLineage,
+  CodeBuddyControlSession, inflightCommand, inflightWorkerScript, modelToolResult,
   nativePrompt, permissionArguments, selectCanceledToolTurn, summarizeToolFailure } from "./codebuddy-permissions-support.mjs";
 
 const cases = [
@@ -80,13 +81,11 @@ try {
     report.cases.push(result);
     control = new CodeBuddyControlSession(harness.startCodeBuddy(permissionArguments({ allowedTool: test.preallowed ? "Write" : undefined })));
     const initialized = await control.request({ subtype: "initialize" });
-    check(initialized?.currentModelId === fixtureModel && initialized.models?.some((model) => model.id === fixtureModel),
-      "PERMISSION_INITIALIZED_MODEL_MISMATCH");
+    assertInitializedModel(initialized);
     control.prompt(current.prompt);
     const init = await control.wait((event) => event.type === "system" && event.subtype === "init");
     current.sessionId = init.session_id;
-    check(typeof current.sessionId === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(current.sessionId)
-      && init.model === fixtureModel && init.permissionMode === "default", "PERMISSION_NATIVE_INIT_MISMATCH");
+    assertPermissionInitializations([init], current.sessionId);
     let approval;
     if (!test.preallowed) {
       approval = await control.wait((event) => event.type === "control_request" && event.request?.subtype === "can_use_tool");
@@ -146,6 +145,7 @@ try {
     if (test.writes) check(await readFile(current.markerPath, "utf8") === current.marker, "PERMISSION_FILE_CONTENT_MISMATCH");
     check(current.modelRequests === 2, "PERMISSION_MODEL_REQUEST_COUNT_MISMATCH");
     await control.finish();
+    assertPermissionInitializations(control.events, current.sessionId);
     control = undefined;
     completedCases.push({ ...current });
     Object.assign(result, { status: "PASS", nativeTurnOutcome: test.interrupted ? "interrupted_then_recovered" : "completed",

@@ -1,6 +1,7 @@
 import { basename, dirname, join } from "node:path";
 import { check, fixtureModel } from "./codebuddy-native-support.mjs";
 import { assertCompleteText } from "./codex-native-content-check.mjs";
+import { matchesNativeModel } from "./codebuddy-native-content-check.mjs";
 
 export const workerPromptMarker = "This invocation is the authorized background repo-memory worker.";
 export const foregroundPrompt = "Check this repository's global CodeBuddy model configuration.";
@@ -30,8 +31,9 @@ export function assertForegroundResult(events) {
   check(Array.isArray(events), "BACKGROUND_FOREGROUND_EVENTS_INVALID");
   const init = events.filter((event) => event?.type === "system" && event.subtype === "init");
   const completed = events.filter((event) => event?.type === "result");
-  check(init.length === 1 && init[0].model === fixtureModel && typeof init[0].session_id === "string"
-    && init[0].session_id.length > 0 && completed.length === 1 && completed[0].session_id === init[0].session_id
+  check(init.length > 0 && typeof init[0].session_id === "string" && init[0].session_id.length > 0
+    && init.every((event) => event.session_id === init[0].session_id && matchesNativeModel(event.model, fixtureModel)
+      && event.permissionMode === "dontAsk") && completed.length === 1 && completed[0].session_id === init[0].session_id
     && completed[0].subtype === "success" && completed[0].is_error === false && completed[0].terminal_reason === undefined
     && completed[0].result === foregroundAnswer, "BACKGROUND_FOREGROUND_CONFIGURATION_MISMATCH");
   return init[0];

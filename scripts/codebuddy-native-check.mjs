@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
-import { mkdir, readFile, readdir, realpath } from "node:fs/promises";
+import { mkdir, readFile, readdir, realpath, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { check, createNativeHarness, fixtureKey, fixtureModel, fixtureUser, searchResult, waitFor } from "./codebuddy-native-support.mjs";
 import { assertCompleteText, assertNoForeignContent, assertSearchResult, assertSkillReferenceContract,
   assertWritebackMessages, expectedSearchAnswer } from "./codex-native-content-check.mjs";
-import { assertNativeReadText, assertNativeToolCalls, selectNativeTurnContent, toolResult } from "./codebuddy-native-content-check.mjs";
+import { assertNativeReadText, assertNativeToolCalls, selectNativeTurnContent, summarizeWritebackTrace, toolResult } from "./codebuddy-native-content-check.mjs";
 
 const report = { status: "FAIL", scope: "native_codebuddy_installed_plugin_mock_memorax", platform: process.platform,
   paidModelRequests: 0, modelQualityEvaluated: false, checks: [], contentChecks: [],
@@ -219,7 +219,12 @@ async function turn({ prompt, answer, sessionId, cwd = harness.workspace, expect
   check(typeof output.sessionId === "string" && output.sessionId.length > 0
     && (!sessionId || output.sessionId === sessionId), "NATIVE_RESUME_SESSION_MISMATCH");
   check(output.text === answer && requests === steps.length, "NATIVE_FINAL_OUTPUT_MISMATCH");
-  await waitFor(() => harness.memoryRequests.length >= before + 1 + explicitRequests, "NATIVE_STOP_DID_NOT_WRITE_BACK");
+  try {
+    await waitFor(() => harness.memoryRequests.length >= before + 1 + explicitRequests, "NATIVE_STOP_DID_NOT_WRITE_BACK");
+  } catch (error) {
+    report.writebackDiagnostic = await writebackDiagnostic(output, prompt);
+    throw error;
+  }
   check(harness.memoryRequests.length === before + 1 + explicitRequests, "NATIVE_TURN_MEMORY_REQUEST_COUNT_MISMATCH");
   const automatic = harness.memoryRequests.slice(before).filter((request) => request.body.metadata?.idempotency_key?.startsWith("automatic:codebuddy:"));
   check(automatic.length === 1, "NATIVE_AUTOMATIC_ADD_COUNT_MISMATCH");
@@ -279,6 +284,27 @@ async function verifyNativeTranscript(expected) {
     additionalContentObserved: userCoverage.additionalContentObserved || assistantCoverage.additionalContentObserved,
     nativeUserTimestampPresent: selected.user.timestamp !== undefined,
     nativeAssistantTimestampPresent: selected.assistant.timestamp !== undefined });
+}
+
+async function writebackDiagnostic(output, prompt) {
+  const summary = { traceAvailable: false, pendingAvailable: false,
+    promptReminderObserved: harness.modelRequests.some(({ body }) => JSON.stringify(body.messages).includes("MemoraX Code reminder:")) };
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(output.sessionId)) return summary;
+  const readBounded = async (path) => {
+    check((await stat(path)).size <= 1024 * 1024, "DIAGNOSTIC_FILE_TOO_LARGE");
+    return readFile(path, "utf8");
+  };
+  let events = [], pending;
+  try {
+    const text = await readBounded(join(harness.stateHome, "debug", "traces", "codebuddy", "sessions", output.sessionId, "events.jsonl"));
+    events = text.slice(0, text.lastIndexOf("\n") + 1).split(/\r?\n/).filter(Boolean).map(JSON.parse);
+    summary.traceAvailable = true;
+  } catch { /* Diagnostic failures do not replace the writeback failure. */ }
+  try {
+    pending = JSON.parse(await readBounded(join(harness.stateHome, "adapters", "codebuddy", "pending.json")));
+    summary.pendingAvailable = true;
+  } catch { /* Do not expose private paths or native exception text. */ }
+  return { ...summary, ...summarizeWritebackTrace(events, pending, { sessionId: output.sessionId, promptHash: hash(prompt.trim()) }) };
 }
 function hash(value) { return createHash("sha256").update(value).digest("hex"); }
 function shortHash(value) { return hash(value).slice(0, 16); }
