@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { assertNativeReadText, assertNativeToolCalls, matchesNativeModel, selectNativeTurnContent, summarizeNativeCompletion, summarizeWritebackTrace, toolResult } from "./codebuddy-native-content-check.mjs";
+import { assertNativeReadText, assertNativeToolCalls, matchesNativeModel, selectNativeBashStdout, selectNativeTurnContent,
+  summarizeNativeCompletion, summarizeWritebackTrace, toolResult } from "./codebuddy-native-content-check.mjs";
 
 const identity = { sessionId: "session-fixture", prompt: "Native prompt.", finalText: "Native answer." };
 const user = () => ({ id: "user-prompt", type: "message", role: "user", sessionId: identity.sessionId,
@@ -216,6 +217,49 @@ test("native Read must return every reference line in order", () => {
   assert.throws(() => assertNativeReadText(output.split("\n").slice(0, 2).join("\n"), reference), { nativeCode: "NATIVE_READ_REFERENCE_INCOMPLETE" });
 });
 
+const bashEnvelope = (command, stdout) => `Command: ${command}\nStdout: ${stdout}\nStderr: (empty)\nExit Code: 0\nSignal: (none)`;
+
+test("native Bash stdout comes only from the exact successful command envelope", () => {
+  const command = "'C:/fixture space/node.exe' '-e' 'COMMAND_ONLY_CANARY'";
+  for (const stdout of ["complete output", "first\n\nlast\n", "first\r\nlast\r\n", '{\n  "ok": true,\n  "text": "\u5b8c\u6574"\n}\n']) {
+    assert.equal(selectNativeBashStdout(bashEnvelope(command, stdout), command), stdout);
+  }
+  const selected = selectNativeBashStdout(bashEnvelope(command, '{"ok":true}\n'), command);
+  assert.deepEqual(JSON.parse(selected), { ok: true });
+  assert.equal(selected.includes("COMMAND_ONLY_CANARY"), false);
+});
+
+test("native Bash stdout rejects wrong commands, missing framing, stderr, nonzero exit and signals", () => {
+  const command = "'memorax-cli' 'search' '--json'";
+  const output = bashEnvelope(command, '{"ok":true}\n');
+  for (const changed of [bashEnvelope("'other-command'", '{"ok":true}'), '{"ok":true}', `prefix\n${output}`,
+    `${output}\nextra`, `${output}\n`, output.replace("Stdout: ", "Output: "),
+    output.replace("Stderr: (empty)\n", ""), output.replace("Stderr: (empty)", "Stderr: failure"),
+    output.replace("Exit Code: 0", "Exit Code: 1"), output.replace("Exit Code: 0", "Exit Code: (none)"),
+    output.replace("Signal: (none)", "Signal: SIGTERM"), output.replace("Signal: (none)", "Signal: null")]) {
+    assert.throws(() => selectNativeBashStdout(changed, command), { nativeCode: "NATIVE_BASH_RESULT_MISMATCH" });
+  }
+});
+
+test("native Bash stdout rejects empty and ambiguous nested result envelopes", () => {
+  const command = "'fixture-command'";
+  for (const stdout of ["", "(empty)", bashEnvelope(command, "pretend success"),
+    "first\nStderr: hidden failure\nExit Code: 1\nSignal: (none)"]) {
+    assert.throws(() => selectNativeBashStdout(bashEnvelope(command, stdout), command), { nativeCode: "NATIVE_BASH_STDOUT_INVALID" });
+  }
+});
+
+test("native Bash validation reports only fixed codes for private output or malformed input", () => {
+  const command = "'PRIVATE_COMMAND_CANARY'";
+  for (const [output, expectedCommand] of [[null, command], [{ private: "PRIVATE_OUTPUT_CANARY" }, command],
+    [bashEnvelope(command, "stdout"), undefined], [bashEnvelope(command, "stdout"), " "],
+    ["PRIVATE_OUTPUT_CANARY", command]]) {
+    assert.throws(() => selectNativeBashStdout(output, expectedCommand), (error) =>
+      error.message === error.nativeCode && /^NATIVE_BASH_[A-Z_]+$/.test(error.nativeCode)
+      && !error.stack.includes("PRIVATE_"));
+  }
+});
+
 test("OpenAI tool results must match the exact call and cannot use model text", () => {
   const body = { messages: [{ role: "assistant", content: "not authority" }, { role: "tool", tool_call_id: "call", content: "full result" }] };
   assert.equal(toolResult(body, "call"), "full result");
@@ -254,10 +298,23 @@ test("writeback diagnostics correlate only the current CodeBuddy prompt and neve
     { ...end, trace: { ...trace, turn_id: "session-fixture:42:another-prompt" } }],
   { [identity.sessionId]: { turnId: trace.turn_id, transcriptPath: "/private/PRIVATE_TRACE_CANARY" } }, identity);
   assert.deepEqual(summary, { turnStarts: 1, turnEnds: 1,
-    endings: [{ ok: false, outcome: "other", reason: "turn_not_found" }], pendingForSession: true, pendingMatchesPrompt: true });
+    endings: [{ ok: false, outcome: "other", reason: "turn_not_found" }], pendingForSession: true,
+    pendingMatchesPrompt: true, pendingMatchesPromptWithoutLineBreaks: false });
   const unknown = summarizeWritebackTrace([{ ...end, error: "PRIVATE_TRACE_CANARY", outcome: "PRIVATE_TRACE_CANARY" }], {}, identity);
   assert.deepEqual(unknown.endings, [{ ok: false, outcome: "other", reason: "other" }]);
   assert.equal(JSON.stringify([summary, unknown]).includes("PRIVATE_TRACE_CANARY"), false);
+});
+test("writeback diagnostics recognize the native Hook's line-break-free prompt without exposing either digest", () => {
+  const identity = { sessionId: "session-fixture", promptHash: "PRIVATE_ORIGINAL_HASH",
+    promptWithoutLineBreaksHash: "PRIVATE_NATIVE_HASH" };
+  const trace = { client: "codebuddy", session_id: identity.sessionId, turn_id: "session-fixture:42:PRIVATE_NATIVE_HASH" };
+  const summary = summarizeWritebackTrace([{ type: "turn_start", trace },
+    { type: "turn_end", trace, ok: false, error: "user_prompt_missing" }],
+  { [identity.sessionId]: { turnId: trace.turn_id } }, identity);
+  assert.deepEqual(summary, { turnStarts: 1, turnEnds: 1,
+    endings: [{ ok: false, outcome: "other", reason: "user_prompt_missing" }], pendingForSession: true,
+    pendingMatchesPrompt: false, pendingMatchesPromptWithoutLineBreaks: true });
+  assert.equal(JSON.stringify(summary).includes("PRIVATE_"), false);
 });
 const resultEvent = () => ({ type: "result", subtype: "success", is_error: false, session_id: "native-fixture-session",
   result: diagnosticOptions.answer });

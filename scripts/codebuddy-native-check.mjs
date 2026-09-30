@@ -5,7 +5,8 @@ import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { check, createNativeHarness, fixtureKey, fixtureModel, fixtureUser, searchResult, waitFor } from "./codebuddy-native-support.mjs";
 import { assertCompleteText, assertNoForeignContent, assertSearchResult, assertSkillReferenceContract,
   assertWritebackMessages, expectedSearchAnswer } from "./codex-native-content-check.mjs";
-import { assertNativeReadText, assertNativeToolCalls, selectNativeTurnContent, summarizeWritebackTrace, toolResult } from "./codebuddy-native-content-check.mjs";
+import { assertNativeReadText, assertNativeToolCalls, selectNativeBashStdout, selectNativeTurnContent,
+  summarizeWritebackTrace, toolResult } from "./codebuddy-native-content-check.mjs";
 
 const report = { status: "FAIL", scope: "native_codebuddy_installed_plugin_mock_memorax", platform: process.platform,
   paidModelRequests: 0, modelQualityEvaluated: false, checks: [], contentChecks: [],
@@ -54,15 +55,14 @@ try {
 
   stage = "native same-session resume and real tool";
   const resumedAnswer = "The resumed discussion keeps its original session and workspace.";
+  const sessionScript = `console.log(${JSON.stringify(toolCanary)});console.log("NATIVE_SESSION="+JSON.stringify({native:process.env.CODEBUDDY_SESSION_ID,client:process.env.MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT,trace:process.env.MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID,memory:process.env.MEMORAX_CODE_MEMORY_CLI_SESSION_ID}));`;
+  const sessionCommand = shellCommand([process.execPath.replaceAll("\\", "/"), "-e", sessionScript]);
   await turn({ sessionId: first, prompt: "Continue the parser discussion after checking the isolated native session.",
     answer: resumedAnswer, kind: "resume-tool", args: ["--allowedTools", "Bash"], steps: [
+      (body) => ({ toolCalls: [toolCall(body, "Bash", { command: sessionCommand,
+        description: "Inspect the isolated native session", timeout: 15000 }, "native-session-marker")] }),
       (body) => {
-        const script = `console.log(${JSON.stringify(toolCanary)});console.log("NATIVE_SESSION="+JSON.stringify({native:process.env.CODEBUDDY_SESSION_ID,client:process.env.MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT,trace:process.env.MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID,memory:process.env.MEMORAX_CODE_MEMORY_CLI_SESSION_ID}));`;
-        return { toolCalls: [toolCall(body, "Bash", { command: shellCommand([process.execPath.replaceAll("\\", "/"), "-e", script]),
-          description: "Inspect the isolated native session", timeout: 15000 }, "native-session-marker")] };
-      },
-      (body) => {
-        const output = toolResult(body, "native-session-marker");
+        const output = selectNativeBashStdout(toolResult(body, "native-session-marker"), sessionCommand);
         check(output.includes(toolCanary), "NATIVE_TOOL_MARKER_MISSING");
         const match = output.match(/NATIVE_SESSION=(\{[^\r\n]+\})/);
         check(match, "NATIVE_SESSION_ENV_MISSING");
@@ -116,6 +116,7 @@ try {
     const reason = "Keep the verified parser validation lesson.";
     const args = operation === "search" ? ["search", "--query", query, "--json"]
       : ["add", "--memory", memory, "--type", "procedural", "--reason", reason, "--json"];
+    const command = shellCommand([executable, ...args]);
     const before = harness.memoryRequests.length;
     const answer = operation === "search" ? `Recalled Coding Memory: ${searchResult}` : "Native Skill Add accepted.";
     await turn({ sessionId: first, prompt: `Use the memorax-code skill to ${operation} the parser validation lesson.`,
@@ -127,11 +128,11 @@ try {
         },
         (body) => {
           assertNativeReadText(toolResult(body, `read-${operation}`), referenceText);
-          return { toolCalls: [toolCall(body, "Bash", { command: shellCommand([executable, ...args]),
+          return { toolCalls: [toolCall(body, "Bash", { command,
             description: `Run the installed Coding Memory ${operation} command`, timeout: 15000 }, `memory-${operation}`)] };
         },
         (body) => {
-          const result = JSON.parse(toolResult(body, `memory-${operation}`).trim());
+          const result = JSON.parse(selectNativeBashStdout(toolResult(body, `memory-${operation}`), command).trim());
           if (operation === "search") assertSearchResult(result, { query, memory: searchResult });
           else check(result.ok === true && result.action === "memory.add" && result.receipt?.accepted === true,
             "NATIVE_SKILL_ADD_RESULT_MISMATCH");
@@ -304,7 +305,8 @@ async function writebackDiagnostic(output, prompt) {
     pending = JSON.parse(await readBounded(join(harness.stateHome, "adapters", "codebuddy", "pending.json")));
     summary.pendingAvailable = true;
   } catch { /* Do not expose private paths or native exception text. */ }
-  return { ...summary, ...summarizeWritebackTrace(events, pending, { sessionId: output.sessionId, promptHash: hash(prompt.trim()) }) };
+  return { ...summary, ...summarizeWritebackTrace(events, pending, { sessionId: output.sessionId,
+    promptHash: hash(prompt.trim()), promptWithoutLineBreaksHash: hash(prompt.replace(/\r\n|\r|\n/g, "").trim()) }) };
 }
 function hash(value) { return createHash("sha256").update(value).digest("hex"); }
 function shortHash(value) { return hash(value).slice(0, 16); }

@@ -141,6 +141,17 @@ export function assertNativeReadText(output, expected) {
     "NATIVE_READ_REFERENCE_INCOMPLETE");
 }
 
+export function selectNativeBashStdout(output, command) {
+  check(typeof output === "string" && identifier(command), "NATIVE_BASH_RESULT_INVALID");
+  const prefix = `Command: ${command}\nStdout: `;
+  const suffix = "\nStderr: (empty)\nExit Code: 0\nSignal: (none)";
+  check(output.startsWith(prefix) && output.endsWith(suffix), "NATIVE_BASH_RESULT_MISMATCH");
+  const stdout = output.slice(prefix.length, -suffix.length);
+  check(stdout.length > 0 && stdout !== "(empty)" && !/(?:^|\n)(?:Command|Stdout|Stderr|Exit Code|Signal): /.test(stdout),
+    "NATIVE_BASH_STDOUT_INVALID");
+  return stdout;
+}
+
 export function toolResult(body, id) {
   const results = body.messages?.filter((message) => message.role === "tool" && message.tool_call_id === id);
   check(results?.length === 1 && typeof results[0].content === "string", "NATIVE_TOOL_RESULT_MISSING");
@@ -190,13 +201,16 @@ export function summarizeNativeCompletion(events, { answer, model, modelRequests
     ].filter(([, pattern]) => pattern.test(errors)).map(([name]) => name),
   };
 }
-export function summarizeWritebackTrace(events, pending, { sessionId, promptHash }) {
+export function summarizeWritebackTrace(events, pending, { sessionId, promptHash, promptWithoutLineBreaksHash }) {
   const matches = (turnId) => typeof turnId === "string" && turnId.startsWith(`${sessionId}:`)
     && turnId.endsWith(`:${promptHash}`);
+  const matchesWithoutLineBreaks = (turnId) => typeof promptWithoutLineBreaksHash === "string"
+    && typeof turnId === "string" && turnId.startsWith(`${sessionId}:`) && turnId.endsWith(`:${promptWithoutLineBreaksHash}`);
+  const matchesNativePrompt = (turnId) => matches(turnId) || matchesWithoutLineBreaks(turnId);
   const starts = events.filter((event) => event?.type === "turn_start" && event.trace?.client === "codebuddy"
-    && event.trace.session_id === sessionId && matches(event.trace.turn_id));
+    && event.trace.session_id === sessionId && matchesNativePrompt(event.trace.turn_id));
   const ends = events.filter((event) => event?.type === "turn_end" && event.trace?.client === "codebuddy"
-    && event.trace.session_id === sessionId && matches(event.trace.turn_id));
+    && event.trace.session_id === sessionId && matchesNativePrompt(event.trace.turn_id));
   const reasons = ["transcript_unavailable", "malformed_transcript", "turn_not_found", "user_prompt_missing",
     "assistant_message_missing", "turn_ambiguous", "transcript_path_mismatch"];
   return { turnStarts: starts.length, turnEnds: ends.length,
@@ -204,7 +218,8 @@ export function summarizeWritebackTrace(events, pending, { sessionId, promptHash
       outcome: ["completed", "interrupted"].includes(event.outcome) ? event.outcome : "other",
       reason: event.error === undefined ? "none" : reasons.includes(event.error) ? event.error : "other" })),
     pendingForSession: Boolean(pending?.[sessionId]),
-    pendingMatchesPrompt: matches(pending?.[sessionId]?.turnId) };
+    pendingMatchesPrompt: matches(pending?.[sessionId]?.turnId),
+    pendingMatchesPromptWithoutLineBreaks: matchesWithoutLineBreaks(pending?.[sessionId]?.turnId) };
 }
 
 import { isDeepStrictEqual } from "node:util";
