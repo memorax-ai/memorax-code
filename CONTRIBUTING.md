@@ -813,12 +813,27 @@ before packaging and remain separate from native-client evidence.
 
 The permission suite uses CodeBuddy's bidirectional `stream-json` control
 protocol and its `allowed`/`reason` permission response. Denial may still finish
-normally and write back the completed answer. The three cancelled cases require
-native interruption evidence and a subsequent completed turn in the same
-process and session. Only the recovery turn may produce automatic Add; no
-cancelled prompt or partial answer may enter outgoing Memory messages. This
-does not claim late-approval handling, operating-system sandbox enforcement,
-automatic approval judgment, or interrupted trace and metadata reconciliation.
+normally and write back the completed answer. Cancellation through a permission
+response requires the matching native interruption result, no automatic Add
+for the cancelled turn, and successful recovery in the same process and session.
+
+The two explicit `interrupt` cases validate MemoraX writeback against the
+client's actual persisted outcome, rather than requiring a particular CLI
+`result` event or assuming that an acknowledgement proves cancellation. The
+in-flight case still requires the owned tool process to exit before recovery,
+without its delayed file effect. Recovery must complete and write back in the
+same process and session. After the CLI exits normally, the independent native
+transcript oracle classifies the original turn: an incomplete turn must have no
+Add, while a turn that the client completed despite interruption must have its
+own exact Add. Every completed turn is checked separately for content, scope,
+native identity, and idempotency; a final audit after Backend shutdown rejects
+late, duplicate, missing, and foreign writes. Extra original model requests and
+missing result events remain visible as separate compatibility observations,
+not proof of MemoraX Add failure or successful native interruption. A recovery
+prompt may itself affect the old turn; this does not isolate the effect of
+`interrupt` alone. The suite does not claim late-approval handling,
+operating-system sandbox enforcement, automatic approval judgment, or
+interrupted trace and metadata reconciliation.
 
 The Repo Memory case removes process model/provider overrides and uses isolated
 global `settings.json` and `models.json`. It correlates the real foreground

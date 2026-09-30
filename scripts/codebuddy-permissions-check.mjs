@@ -7,21 +7,23 @@ import { isDeepStrictEqual } from "node:util";
 import { check, createNativeHarness, fixtureKey, fixtureModel, fixtureUser, waitFor } from "./codebuddy-native-support.mjs";
 import { assertCompleteText, assertNoForeignContent, assertWritebackMessages } from "./codex-native-content-check.mjs";
 import { nativeHookPrompt, selectNativeTurnContent, summarizeNativeCompletion } from "./codebuddy-native-content-check.mjs";
-import { assertInitializedModel, assertNativeInterruption, assertPermissionInitializations, assertToolLineage,
+import { assertInitializedModel, assertNativeInterruption, assertPermissionInitializations, assertPermissionWritebacks, assertToolLineage,
   CodeBuddyControlSession, inflightCommand, inflightWorkerScript, modelToolResult,
-  nativePrompt, permissionArguments, selectCanceledToolTurn, summarizeToolFailure } from "./codebuddy-permissions-support.mjs";
+  nativePrompt, permissionArguments, permissionModelTurn, selectCanceledToolTurn, selectInterruptOutcome,
+  summarizeToolFailure } from "./codebuddy-permissions-support.mjs";
 
 const cases = [
   { id: "policy-allow", preallowed: true, writes: true },
   { id: "user-allow", decision: "allow", writes: true },
   { id: "user-deny", decision: "deny", writes: false },
   { id: "user-cancel", decision: "cancel", interrupted: true, writes: false },
-  { id: "user-inflight-interrupt", decision: "allow", inflight: true, interrupted: true, writes: false },
-  { id: "user-wait-interrupt", interrupted: true, writes: false },
+  { id: "user-inflight-interrupt", decision: "allow", inflight: true, interrupted: true, nativeInterrupt: true, writes: false },
+  { id: "user-wait-interrupt", interrupted: true, nativeInterrupt: true, writes: false },
 ];
 const report = { status: "FAIL", suite: "native_codebuddy_permissions", platform: process.platform,
   paidModelRequests: 0, modelQualityEvaluated: false,
-  scope: "Native CLI permission protocol, actual tool effects, native transcript and automatic writeback",
+  scope: "MemoraX automatic writeback against native permission outcomes, with separate interrupt compatibility observations",
+  nativeInterruptSemanticsValidated: false,
   interruptedTraceReconciliationValidated: false,
   excludes: ["desktop approval UI", "OS sandbox or privilege enforcement", "LLM automatic approval quality",
     "background Repo Memory permissions", "late approval after cancellation", "interrupted trace reconciliation"], cases: [] };
@@ -41,29 +43,33 @@ try {
   await writeFile(scriptPath, inflightWorkerScript, { mode: 0o600 });
   harness.setModelHandler(async (body) => {
     check(current && body.model === fixtureModel, "PERMISSION_MODEL_SUBSTITUTION");
-    check(++current.modelRequests <= 2, "UNEXPECTED_PERMISSION_MODEL_RETRY");
-    if (current.recovering) {
-      check(JSON.stringify(body.messages).includes(current.recoveryPrompt), "PERMISSION_RECOVERY_PROMPT_MISSING");
+    current.modelRequests += 1;
+    if (permissionModelTurn(body, current) === "recovery") {
+      check(++current.recoveryModelRequests === 1, "UNEXPECTED_PERMISSION_RECOVERY_MODEL_RETRY");
       return { text: current.recoveryAnswer };
     }
-    check(JSON.stringify(body.messages).includes(current.prompt), "PERMISSION_MODEL_PROMPT_MISMATCH");
-    if (current.modelRequests === 1) {
+    check(++current.originalModelRequests <= 2, "UNEXPECTED_PERMISSION_MODEL_RETRY");
+    if (current.originalModelRequests === 1) {
       check(body.tools?.some((tool) => tool.type === "function" && tool.function?.name === current.tool.name),
         "PERMISSION_NATIVE_TOOL_NOT_ADVERTISED");
       return { toolCalls: [current.tool] };
     }
     const text = modelToolResult(body, current.tool.id);
     if (current.test.inflight) current.earlyToolResult ??= summarizeToolFailure(text);
-    check(!current.test.interrupted, "INTERRUPTED_PERMISSION_CONTINUED_MODEL_EXECUTION");
+    check(!current.test.interrupted || current.test.nativeInterrupt, "INTERRUPTED_PERMISSION_CONTINUED_MODEL_EXECUTION");
     if (current.test.writes) check(await readFile(current.markerPath, "utf8") === current.marker, "PERMISSION_TOOL_RESULT_WITHOUT_FILE_EFFECT");
-    else check(!await exists(current.markerPath) && text.includes(current.denialReason), "PERMISSION_NATIVE_DENIAL_RESULT_MISSING");
+    else {
+      check(!await exists(current.markerPath), "PERMISSION_UNEXPECTED_FILE_EFFECT");
+      if (!current.test.nativeInterrupt) check(text.includes(current.denialReason), "PERMISSION_NATIVE_DENIAL_RESULT_MISSING");
+    }
     current.toolResultObserved = true;
     return { text: current.answer };
   });
 
   for (const test of cases) {
     stage = test.id;
-    current = { test, modelRequests: 0, toolResultObserved: false, recovering: false,
+    current = { test, modelRequests: 0, originalModelRequests: 0, recoveryModelRequests: 0,
+      toolResultObserved: false, recoverySent: false, verifiedTurns: [],
       prompt: `Run the isolated CodeBuddy permission fixture ${test.id}.`,
       answer: `CodeBuddy permission fixture ${test.id} is complete.`,
       recoveryPrompt: `Complete the independent follow-up ${test.id}.`,
@@ -110,22 +116,49 @@ try {
         result.nativeInterruptAcknowledged = true;
       }
     }
-    const terminal = await control.wait((event) => event.type === "result");
-    check(terminal.session_id === current.sessionId, "PERMISSION_RESULT_SESSION_MISMATCH");
-    if (test.interrupted) {
+    const terminal = test.nativeInterrupt ? undefined : await control.wait((event) => event.type === "result");
+    if (terminal) check(terminal.session_id === current.sessionId, "PERMISSION_RESULT_SESSION_MISMATCH");
+    if (test.nativeInterrupt) {
+      if (test.inflight) {
+        await waitFor(() => !alive(current.toolPid), "PERMISSION_INTERRUPTED_TOOL_PROCESS_REMAINS");
+        toolPids.delete(current.toolPid);
+      }
+      check(!await exists(current.markerPath), "PERMISSION_INTERRUPTED_TOOL_COMPLETED_EFFECT");
+      current.recoverySent = true;
+      control.prompt(current.recoveryPrompt, current.sessionId);
+      result.writeback = await verifyCompleted({ prompt: current.recoveryPrompt, answer: current.recoveryAnswer });
+      await control.finish();
+      // Classify the old turn only after recovery and process exit make the
+      // transcript stable. A transient missing final is not a cancelled turn.
+      const outcome = selectInterruptOutcome(await transcript({ prompt: current.recoveryPrompt, answer: current.recoveryAnswer }), current);
+      await findPromptTrace(current.prompt);
+      if (outcome.outcome === "completed") {
+        check(current.originalModelRequests === 2 && current.toolResultObserved, "PERMISSION_UNEXPECTED_INTERRUPT_COMPLETION");
+        result.originalWriteback = await verifyCompleted({ prompt: current.prompt, answer: current.answer, tool: current.tool, denied: true });
+      } else {
+        canceledContent.push(current.prompt, current.answer);
+        check(sessionAdds().length === 1, "PERMISSION_INCOMPLETE_TURN_WROTE_MEMORY");
+      }
+      const terminals = control.events.filter((event) => event.type === "result");
+      check(terminals.every((event) => event.session_id === current.sessionId), "PERMISSION_RESULT_SESSION_MISMATCH");
+      const otherResultCount = terminals.filter((event) => event.result !== current.recoveryAnswer).length;
+      current.nativeTurnOutcome = `${outcome.outcome}_after_interrupt_then_recovered`;
+      Object.assign(result, { sameSessionRecovered: true, nativeOriginalToolResultRecorded: outcome.toolResultRecorded,
+        incompleteTurnNotWritten: outcome.outcome === "incomplete",
+        nativeInterruptCompatibility: { originalTurnOutcome: outcome.outcome,
+          continuedModelExecution: current.originalModelRequests > 1, otherResultCount,
+          recoveryResultObserved: terminals.some((event) => event.result === current.recoveryAnswer) },
+        ...(test.inflight ? { toolStartedBeforeInterrupt: true, interruptedToolProcessExited: true } : {}) });
+    } else if (test.interrupted) {
       const interruptionKind = assertNativeInterruption(terminal, current.sessionId,
         { permissionCancellationTool: test.decision === "cancel" ? current.tool : undefined });
       check(current.modelRequests === 1 && sessionAdds().length === 0, "INTERRUPTED_PERMISSION_WROTE_OR_CONTINUED");
       const records = await transcript({ prompt: current.prompt, toolId: current.tool.id });
       const interrupted = selectCanceledToolTurn(records, { sessionId: current.sessionId, prompt: current.prompt, tool: current.tool });
       await findPromptTrace(current.prompt);
-      if (test.inflight) {
-        await waitFor(() => !alive(current.toolPid), "PERMISSION_INTERRUPTED_TOOL_PROCESS_REMAINS");
-        toolPids.delete(current.toolPid);
-      }
       check(!await exists(current.markerPath), "PERMISSION_INTERRUPTED_TOOL_COMPLETED_EFFECT");
       canceledContent.push(current.prompt, current.answer);
-      current.recovering = true;
+      current.recoverySent = true;
       const recoveryIndex = control.events.length;
       control.prompt(current.recoveryPrompt, current.sessionId);
       const recovered = await control.wait((event) => event.type === "result", recoveryIndex);
@@ -134,8 +167,7 @@ try {
       Object.assign(result, { nativeInterruptionResultMatched: true, nativeInterruptionResultKind: interruptionKind,
         nativeCanceledToolRequestMatched: true,
         nativeCanceledToolResultRecorded: interrupted.toolResultRecorded,
-        sameSessionRecovered: true, interruptedTurnNotWritten: true,
-        ...(test.inflight ? { toolStartedBeforeInterrupt: true, interruptedToolProcessExited: true } : {}) });
+        sameSessionRecovered: true, interruptedTurnNotWritten: true });
     } else {
       assertSuccess(terminal, current.answer);
       check(current.toolResultObserved, "PERMISSION_NATIVE_TOOL_RESULT_NOT_RETURNED_TO_MODEL");
@@ -145,12 +177,14 @@ try {
       "PERMISSION_UNEXPECTED_APPROVAL_COUNT");
     check((await exists(current.markerPath)) === test.writes, "PERMISSION_UNEXPECTED_FILE_EFFECT");
     if (test.writes) check(await readFile(current.markerPath, "utf8") === current.marker, "PERMISSION_FILE_CONTENT_MISMATCH");
-    check(current.modelRequests === 2, "PERMISSION_MODEL_REQUEST_COUNT_MISMATCH");
+    check(test.nativeInterrupt
+      ? [1, 2].includes(current.originalModelRequests) && current.recoveryModelRequests === 1
+      : current.modelRequests === 2, "PERMISSION_MODEL_REQUEST_COUNT_MISMATCH");
     await control.finish();
     assertPermissionInitializations(control.events, current.sessionId);
     control = undefined;
     completedCases.push({ ...current });
-    Object.assign(result, { status: "PASS", nativeTurnOutcome: test.interrupted ? "interrupted_then_recovered" : "completed",
+    Object.assign(result, { status: "PASS", nativeTurnOutcome: current.nativeTurnOutcome ?? (test.interrupted ? "interrupted_then_recovered" : "completed"),
       targetWritten: test.writes, observedPendingWithoutSideEffect: Boolean(approval), modelRequests: current.modelRequests });
   }
   stage = "cross-case isolation";
@@ -250,9 +284,10 @@ async function findPromptTrace(prompt, completed = false) {
 async function verifyCompleted({ prompt, answer, tool, denied }) {
   const selected = selectNativeTurnContent(await transcript({ prompt, answer }), { sessionId: current.sessionId, prompt, finalText: answer });
   if (tool) assertToolLineage(selected.lineage, tool, { denied });
-  await waitFor(() => sessionAdds().length > 0, "PERMISSION_COMPLETED_TURN_DID_NOT_WRITE_BACK");
-  const requests = sessionAdds();
-  check(requests.length === 1, "PERMISSION_SESSION_WRITEBACK_COUNT_MISMATCH");
+  const matchingAdds = () => sessionAdds().filter((request) => request.body.messages?.[0]?.content === selected.user.content);
+  await waitFor(() => matchingAdds().length > 0, "PERMISSION_COMPLETED_TURN_DID_NOT_WRITE_BACK");
+  const requests = matchingAdds();
+  check(requests.length === 1, "PERMISSION_TURN_WRITEBACK_COUNT_MISMATCH");
   const request = requests[0], body = request.body;
   check(request.method === "POST" && request.authorization === `Token ${fixtureKey}`, "PERMISSION_MEMORY_TRANSPORT_MISMATCH");
   assertWritebackMessages(body.messages);
@@ -269,6 +304,7 @@ async function verifyCompleted({ prompt, answer, tool, denied }) {
   }
   await findPromptTrace(prompt, true);
   assertNoForeignContent(body.messages, canceledContent);
+  current.verifiedTurns.push({ prompt, answer });
   return { requestCount: 1, nativeContentAndToolLineageMatched: true, scopeAndAvailableTimestampsMatched: true,
     completedHookCorrelationMatched: true, interruptedContentExcluded: true };
 }
@@ -281,8 +317,8 @@ function auditMemory() {
     "PERMISSION_CASE_SESSION_ISOLATION_FAILED");
   for (const completed of completedCases) {
     const requests = harness.memoryRequests.filter((request) => request.body.session_id === completed.sessionId);
-    check(requests.length === 1 && requests[0].path === "/v1/memories/add", "PERMISSION_LATE_OR_MISSING_WRITEBACK");
-    assertNoForeignContent(requests[0].body.messages, completedCases.filter((entry) => entry !== completed)
+    assertPermissionWritebacks(requests, { sessionId: completed.sessionId, turns: completed.verifiedTurns });
+    for (const request of requests) assertNoForeignContent(request.body.messages, completedCases.filter((entry) => entry !== completed)
       .flatMap((entry) => [entry.prompt, entry.answer, entry.recoveryPrompt, entry.recoveryAnswer]));
   }
   for (const request of harness.memoryRequests) {
@@ -293,7 +329,8 @@ function auditMemory() {
       check(!serialized.includes(JSON.stringify(forbidden).slice(1, -1)), "PERMISSION_PRIVATE_METADATA_ENTERED_MEMORY");
     }
   }
-  check(harness.memoryRequests.length === cases.length && harness.modelRequests.length === cases.length * 2,
+  check(harness.memoryRequests.length === completedCases.reduce((sum, item) => sum + item.verifiedTurns.length, 0)
+    && harness.modelRequests.length === completedCases.reduce((sum, item) => sum + item.modelRequests, 0),
     "PERMISSION_UNEXPECTED_RECEIVER_REQUEST_COUNT");
   check(harness.serverErrors.length === 0, "PERMISSION_LOCAL_RECEIVER_FAILED");
 }

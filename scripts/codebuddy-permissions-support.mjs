@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import { check, fixtureModel, waitFor } from "./codebuddy-native-support.mjs";
-import { matchesNativeModel } from "./codebuddy-native-content-check.mjs";
+import { matchesNativeModel, selectNativeTurnContent } from "./codebuddy-native-content-check.mjs";
 
 export function assertInitializedModel(initialized) {
   check(matchesNativeModel(initialized?.currentModelId, fixtureModel) && Array.isArray(initialized?.models)
@@ -182,6 +182,51 @@ export function assertNativeInterruption(event, sessionId, { permissionCancellat
 // This oracle independently verifies the persisted call belongs to that prompt;
 // it does not invent a result or interruption marker missing from the JSONL.
 export function selectCanceledToolTurn(records, { sessionId, prompt, tool }) {
+  const { user, lineage } = selectToolTurnBranch(records, { sessionId, prompt });
+  check(lineage.filter((record) => record.type === "message" && record.role === "assistant")
+    .every((record) => record.status === "incomplete"), "PERMISSION_CANCELED_TRANSCRIPT_HAS_COMPLETED_ANSWER");
+  const toolEvidence = assertToolLineage(lineage, tool, { interrupted: true });
+  return { user, lineage, ...toolEvidence };
+}
+
+// Call after same-session recovery and native process exit, not on a transient
+// transcript snapshot. A missing assistant alone is not interruption evidence.
+export function selectInterruptOutcome(records, { sessionId, prompt, answer, tool, recoveryPrompt, recoveryAnswer }) {
+  const recovery = selectNativeTurnContent(records, { sessionId, prompt: recoveryPrompt, finalText: recoveryAnswer });
+  const original = selectToolTurnBranch(records, { sessionId, prompt });
+  check(records.findIndex((record) => record.id === recovery.user.id) > records.indexOf(original.user),
+    "PERMISSION_INTERRUPT_RECOVERY_ORDER_INVALID");
+  if (original.lineage.some((record) => record.type === "message" && record.role === "assistant" && record.status === "completed")) {
+    const completed = selectNativeTurnContent(records, { sessionId, prompt, finalText: answer });
+    const toolEvidence = assertToolLineage(completed.lineage, tool, { denied: true });
+    return { outcome: "completed", ...toolEvidence };
+  }
+  const incomplete = selectCanceledToolTurn(records, { sessionId, prompt, tool });
+  return { outcome: "incomplete", toolResultRecorded: incomplete.toolResultRecorded };
+}
+
+export function permissionModelTurn(body, { prompt, recoveryPrompt, recoverySent }) {
+  const lastUser = Array.isArray(body?.messages) ? body.messages.filter((message) => message?.role === "user").at(-1) : undefined;
+  const content = lastUser?.content;
+  const text = typeof content === "string" ? content : Array.isArray(content)
+    && content.every((part) => part?.type === "text" && typeof part.text === "string") ? content.map((part) => part.text).join("\n") : undefined;
+  const actual = typeof text === "string" ? nativePrompt([{ type: "input_text", text }]) : undefined;
+  if (actual === recoveryPrompt) {
+    check(recoverySent, "PERMISSION_RECOVERY_MODEL_REQUEST_BEFORE_PROMPT");
+    return "recovery";
+  }
+  check(actual === prompt, "PERMISSION_MODEL_PROMPT_MISMATCH");
+  return "original";
+}
+
+export function assertPermissionWritebacks(requests, { sessionId, turns }) {
+  check(requests.length === turns.length && requests.every((request) => request.path === "/v1/memories/add"
+    && request.body.session_id === sessionId), "PERMISSION_LATE_OR_MISSING_WRITEBACK");
+  for (const turn of turns) check(requests.filter((request) => request.body.messages?.[0]?.content === turn.prompt
+    && request.body.messages?.[1]?.content === turn.answer).length === 1, "PERMISSION_TURN_WRITEBACK_COUNT_MISMATCH");
+}
+
+function selectToolTurnBranch(records, { sessionId, prompt }) {
   check(identifier(sessionId) && typeof prompt === "string" && prompt.length > 0 && Array.isArray(records),
     "PERMISSION_TRANSCRIPT_IDENTITY_INVALID");
   const byId = new Map(), children = new Map();
@@ -214,10 +259,7 @@ export function selectCanceledToolTurn(records, { sessionId, prompt, tool }) {
       branch.push(child);
     }
   }
-  check(branch.filter((record) => record.type === "message" && record.role === "assistant")
-    .every((record) => record.status === "incomplete"), "PERMISSION_CANCELED_TRANSCRIPT_HAS_COMPLETED_ANSWER");
-  const toolEvidence = assertToolLineage(branch, tool, { interrupted: true });
-  return { user, lineage: branch, ...toolEvidence };
+  return { user, lineage: branch };
 }
 
 export function nativePrompt(content) {

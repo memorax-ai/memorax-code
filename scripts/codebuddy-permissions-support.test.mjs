@@ -4,9 +4,10 @@ import { PassThrough, Writable } from "node:stream";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
 import { fixtureModel } from "./codebuddy-native-support.mjs";
-import { assertInitializedModel, assertNativeInterruption, assertPermissionInitializations, assertToolLineage,
+import { assertInitializedModel, assertNativeInterruption, assertPermissionInitializations, assertPermissionWritebacks, assertToolLineage,
   CodeBuddyControlSession, inflightCommand, inflightWorkerScript,
-  modelToolResult, nativePrompt, permissionArguments, selectCanceledToolTurn, summarizeToolFailure } from "./codebuddy-permissions-support.mjs";
+  modelToolResult, nativePrompt, permissionArguments, permissionModelTurn, selectCanceledToolTurn, selectInterruptOutcome,
+  summarizeToolFailure } from "./codebuddy-permissions-support.mjs";
 
 const tool = { id: "fixture-call", name: "Write", input: { file_path: "fixture.txt", content: "fixture marker" } };
 const identity = { sessionId: "session-fixture", prompt: "Synthetic permission prompt", tool };
@@ -248,6 +249,109 @@ test("canceled transcript rejects completed answers/results, foreign sessions an
   rejects(() => selectCanceledToolTurn([user(), { ...call(), parentId: "missing" }], identity), "PERMISSION_TRANSCRIPT_TOOL_MISMATCH");
   rejects(() => selectCanceledToolTurn([user(), { ...user(), id: "ambiguous" }, call()], identity), "PERMISSION_TRANSCRIPT_PROMPT_MISMATCH");
   rejects(() => selectCanceledToolTurn([user(), { ...call(), parentId: "tool-call" }], identity), "PERMISSION_TRANSCRIPT_TOOL_MISMATCH");
+});
+
+const interruptIdentity = { ...identity, answer: "Original permission answer", recoveryPrompt: "Independent recovery prompt",
+  recoveryAnswer: "Independent recovery answer" };
+const originalAnswer = () => ({ id: "original-answer", type: "message", role: "assistant", parentId: "tool-result",
+  status: "completed", content: [{ type: "output_text", text: interruptIdentity.answer }] });
+function withRecovery(original) {
+  return [...original, { ...user(), id: "recovery-user", parentId: original.at(-1).id,
+    content: [{ type: "input_text", text: interruptIdentity.recoveryPrompt }] },
+  { id: "recovery-answer", type: "message", role: "assistant", parentId: "recovery-user", status: "completed",
+    content: [{ type: "output_text", text: interruptIdentity.recoveryAnswer }] }];
+}
+
+test("interrupt outcome requires successful independent recovery before classifying absent or incomplete old answers", () => {
+  for (const original of [[user(), call()], [user(), call(), result("incomplete")],
+    [user(), call(), result("incomplete"), interruption()]]) {
+    assert.deepEqual(selectInterruptOutcome(withRecovery(original), interruptIdentity), {
+      outcome: "incomplete", toolResultRecorded: original.length > 2,
+    });
+  }
+  assert.deepEqual(selectInterruptOutcome(withRecovery([user(), call(), result("incomplete"), originalAnswer()]), interruptIdentity), {
+    outcome: "completed", toolResultRecorded: true,
+  });
+});
+
+test("interrupt outcome rejects missing, incomplete or out-of-order recovery instead of using a transient old turn", () => {
+  const original = [user(), call(), result("incomplete"), originalAnswer()];
+  rejects(() => selectInterruptOutcome(original, interruptIdentity), "NATIVE_TRANSCRIPT_PROMPT_MISMATCH");
+  rejects(() => selectInterruptOutcome(withRecovery(original).slice(0, -1), interruptIdentity), "NATIVE_TRANSCRIPT_FINAL_MISSING");
+  const incomplete = withRecovery(original);
+  incomplete.at(-1).status = "incomplete";
+  rejects(() => selectInterruptOutcome(incomplete, interruptIdentity), "NATIVE_TRANSCRIPT_FINAL_INCOMPLETE");
+  const recovered = withRecovery(original);
+  rejects(() => selectInterruptOutcome([...recovered.slice(-2), ...original], interruptIdentity), "PERMISSION_INTERRUPT_RECOVERY_ORDER_INVALID");
+  rejects(() => selectInterruptOutcome(original, { ...interruptIdentity, recoveryPrompt: identity.prompt,
+    recoveryAnswer: interruptIdentity.answer }), "PERMISSION_INTERRUPT_RECOVERY_ORDER_INVALID");
+});
+
+test("interrupt outcome rejects foreign identity, mismatched answers, ambiguous completion and wrong native tool", () => {
+  for (const [mutate, code] of [
+    [(records) => { records[0].sessionId = "foreign"; }, "NATIVE_TRANSCRIPT_SESSION_MISMATCH"],
+    [(records) => { records.at(-2).sessionId = "foreign"; }, "NATIVE_TRANSCRIPT_SESSION_MISMATCH"],
+    [(records) => { records[3].content[0].text = "Wrong original answer"; }, "NATIVE_TRANSCRIPT_ANSWER_MISMATCH"],
+    [(records) => { records.at(-1).content[0].text = "Wrong recovery answer"; }, "NATIVE_TRANSCRIPT_ANSWER_MISMATCH"],
+    [(records) => { records.push({ ...originalAnswer(), id: "second-answer" }); }, "NATIVE_TRANSCRIPT_FINAL_AMBIGUOUS"],
+    [(records) => { records[1].callId = "foreign-call"; }, "PERMISSION_TRANSCRIPT_TOOL_MISMATCH"],
+    [(records) => { records[1].name = "Bash"; }, "PERMISSION_TRANSCRIPT_TOOL_MISMATCH"],
+    [(records) => { records[1].arguments = JSON.stringify({ ...tool.input, content: "other" }); }, "PERMISSION_TRANSCRIPT_TOOL_MISMATCH"],
+  ]) {
+    const records = withRecovery([user(), call(), result("incomplete"), originalAnswer()]);
+    mutate(records);
+    rejects(() => selectInterruptOutcome(records, interruptIdentity), code);
+  }
+});
+
+test("permission model routing uses the last user prompt and requires recovery to have been sent", () => {
+  const original = { role: "user", content: identity.prompt };
+  const recovery = { role: "user", content: [{ type: "text", text: interruptIdentity.recoveryPrompt }] };
+  const options = { prompt: identity.prompt, recoveryPrompt: interruptIdentity.recoveryPrompt, recoverySent: false };
+  for (const [prompt, expected] of [[identity.prompt, "original"], [interruptIdentity.recoveryPrompt, "recovery"]]) {
+    const wrapped = `<system-reminder>Fixture context</system-reminder><user_query>\n${prompt}\n</user_query>`;
+    for (const content of [prompt, [{ type: "text", text: prompt }], wrapped, [{ type: "text", text: wrapped }]]) {
+      assert.equal(permissionModelTurn({ messages: [{ role: "user", content }] }, { ...options, recoverySent: true }), expected);
+    }
+  }
+  assert.equal(permissionModelTurn({ messages: [original, { role: "assistant", content: interruptIdentity.recoveryPrompt },
+    { role: "tool", tool_call_id: tool.id, content: "Fixture result" }] }, options), "original");
+  rejects(() => permissionModelTurn({ messages: [original, recovery] }, options), "PERMISSION_RECOVERY_MODEL_REQUEST_BEFORE_PROMPT");
+  assert.equal(permissionModelTurn({ messages: [original, recovery] }, { ...options, recoverySent: true }), "recovery");
+  assert.equal(permissionModelTurn({ messages: [original] }, { ...options, recoverySent: true }), "original");
+  assert.equal(permissionModelTurn({ messages: [recovery, original] }, { ...options, recoverySent: true }), "original");
+  for (const messages of [undefined, [], [{ role: "assistant", content: identity.prompt }],
+    [original, { role: "user", content: "Unrelated latest prompt" }]]) {
+    rejects(() => permissionModelTurn({ messages }, options), "PERMISSION_MODEL_PROMPT_MISMATCH");
+  }
+  for (const content of [`Prefix ${identity.prompt}`, `${identity.prompt} suffix`, `Prefix ${interruptIdentity.recoveryPrompt}`,
+    undefined, null, { text: identity.prompt }, [{ type: "input_text", text: identity.prompt }],
+    [{ type: "text", text: identity.prompt }, { type: "image_url", image_url: { url: "fixture" } }],
+    `<user_query>${identity.prompt}`, `<user_query>${identity.prompt}</user_query><user_query>Other</user_query>`]) {
+    rejects(() => permissionModelTurn({ messages: [original, { role: "user", content }] }, { ...options, recoverySent: true }),
+      "PERMISSION_MODEL_PROMPT_MISMATCH");
+  }
+});
+
+test("permission writeback audit requires exactly one matching Add for each completed turn", () => {
+  const original = { prompt: identity.prompt, answer: interruptIdentity.answer };
+  const recovery = { prompt: interruptIdentity.recoveryPrompt, answer: interruptIdentity.recoveryAnswer };
+  const add = (turn) => ({ path: "/v1/memories/add", body: { session_id: identity.sessionId,
+    messages: [{ role: "user", content: turn.prompt }, { role: "assistant", content: turn.answer }] } });
+  assertPermissionWritebacks([add(recovery)], { sessionId: identity.sessionId, turns: [recovery] });
+  assertPermissionWritebacks([add(original), add(recovery)], { sessionId: identity.sessionId, turns: [original, recovery] });
+  for (const [requests, turns, code] of [
+    [[add(original), add(recovery)], [recovery], "PERMISSION_LATE_OR_MISSING_WRITEBACK"],
+    [[], [recovery], "PERMISSION_LATE_OR_MISSING_WRITEBACK"],
+    [[add(original)], [original, recovery], "PERMISSION_LATE_OR_MISSING_WRITEBACK"],
+    [[add(original), add(original)], [original, recovery], "PERMISSION_TURN_WRITEBACK_COUNT_MISMATCH"],
+    [[add({ ...recovery, prompt: "Wrong prompt" })], [recovery], "PERMISSION_TURN_WRITEBACK_COUNT_MISMATCH"],
+    [[add({ ...recovery, answer: "Wrong answer" })], [recovery], "PERMISSION_TURN_WRITEBACK_COUNT_MISMATCH"],
+    [[{ ...add(recovery), body: { ...add(recovery).body, session_id: "foreign" } }], [recovery], "PERMISSION_LATE_OR_MISSING_WRITEBACK"],
+    [[{ ...add(recovery), path: "/v1/memories/search" }], [recovery], "PERMISSION_LATE_OR_MISSING_WRITEBACK"],
+  ]) {
+    rejects(() => assertPermissionWritebacks(requests, { sessionId: identity.sessionId, turns }), code);
+  }
 });
 
 test("native prompt extraction uses original input or one exact user_query envelope", () => {
