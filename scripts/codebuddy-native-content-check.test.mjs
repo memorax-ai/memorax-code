@@ -1,0 +1,228 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { assertNativeReadText, assertNativeToolCalls, selectNativeTurnContent, toolResult } from "./codebuddy-native-content-check.mjs";
+
+const identity = { sessionId: "session-fixture", prompt: "Native prompt.", finalText: "Native answer." };
+const user = () => ({ id: "user-prompt", type: "message", role: "user", sessionId: identity.sessionId,
+  timestamp: "2026-09-30T01:00:00.000Z", content: [{ type: "input_text", text: identity.prompt }] });
+const assistant = () => ({ id: "assistant-final", type: "message", role: "assistant", parentId: "user-prompt",
+  status: "completed", timestamp: "2026-09-30T01:00:01.000Z", content: [{ type: "output_text", text: identity.finalText }] });
+const fails = (records, code, options = identity) => assert.throws(() => selectNativeTurnContent(records, options),
+  (error) => error.nativeCode === code && error.message === code);
+
+test("CodeBuddy native oracle selects the exact CLI-observed prompt and final, not the latest turn", () => {
+  const laterUser = { ...user(), id: "later-user", parentId: "assistant-final", content: [{ type: "input_text", text: "Later prompt." }] };
+  const laterAssistant = { ...assistant(), id: "later-final", parentId: laterUser.id, content: [{ type: "output_text", text: "Later answer." }] };
+  const selected = selectNativeTurnContent([user(), assistant(), laterUser, laterAssistant], identity);
+  assert.equal(selected.sessionId, identity.sessionId);
+  assert.deepEqual(selected.user, { id: "user-prompt", content: identity.prompt, timestamp: Date.parse("2026-09-30T01:00:00.000Z") });
+  assert.deepEqual(selected.assistant, { id: "assistant-final", content: identity.finalText, timestamp: Date.parse("2026-09-30T01:00:01.000Z") });
+  assert.deepEqual(selected.lineage.map((record) => record.id), ["user-prompt", "assistant-final"]);
+});
+
+test("CodeBuddy native oracle preserves full Unicode paragraphs and excludes tool and reasoning content", () => {
+  const prompt = "\u7b2c\u4e00\u6bb5 \ud83e\uddea\n\nMiddle: caf\u00e9 and \u65e5\u672c\u8a9e.\n\nLast paragraph.";
+  const finalText = "\u786e\u8ba4\u3002\n\nKeep every paragraph.\n\nDone.";
+  const first = { ...user(), content: [{ type: "input_text", text: prompt }] };
+  const call = { id: "call", type: "function_call", role: "assistant", parentId: first.id, name: "Bash", arguments: "TOOL_INPUT_CANARY" };
+  const result = { id: "result", type: "function_call_result", parentId: call.id, output: "TOOL_OUTPUT_CANARY" };
+  const reasoning = { id: "reasoning", type: "reasoning", parentId: result.id, content: [{ type: "output_text", text: "REASONING_RECORD_CANARY" }] };
+  const last = { ...assistant(), parentId: reasoning.id, content: [
+    { type: "reasoning_text", text: "REASONING_BLOCK_CANARY" }, { type: "input_text", text: "WRONG_ROLE_CANARY" },
+    { type: "output_text", text: finalText }, { type: "function_call_result", text: "TOOL_BLOCK_CANARY" },
+  ] };
+  const selected = selectNativeTurnContent([first, call, result, reasoning, last], { ...identity, prompt, finalText });
+  assert.equal(selected.user.content, prompt);
+  assert.equal(selected.assistant.content, finalText);
+  assert.deepEqual(selected.lineage.map((record) => record.id), [first.id, call.id, result.id, reasoning.id, last.id]);
+});
+
+test("CodeBuddy native oracle follows native original input instead of expanded Skill instructions", () => {
+  const prompt = "/memorax-code explain <user_query>literal tags</user_query>";
+  const first = { ...user(), content: [{ type: "input_text", text: "Expanded Skill instructions.", providerData: { content: prompt } }] };
+  assert.equal(selectNativeTurnContent([first, assistant()], { ...identity, prompt }).user.content, prompt);
+  for (const original of ["wrong prompt", "", " ", null, 7, [prompt]]) {
+    first.content[0].providerData.content = original;
+    fails([first, assistant()], typeof original === "string" && original.trim() ? "NATIVE_TRANSCRIPT_PROMPT_MISMATCH"
+      : "NATIVE_TRANSCRIPT_ORIGINAL_INPUT_INVALID", { ...identity, prompt });
+  }
+});
+
+test("CodeBuddy native oracle unwraps the native user_query envelope without Hook context", () => {
+  const first = { ...user(), content: [{ type: "input_text",
+    text: `<system-reminder>HOOK_CONTEXT_CANARY</system-reminder>\n<user_query>\n${identity.prompt}\n</user_query>` }] };
+  assert.equal(selectNativeTurnContent([first, assistant()], identity).user.content, identity.prompt);
+  for (const text of [`<user_query>${identity.prompt}`, `</user_query>${identity.prompt}<user_query>`,
+    `<user_query>${identity.prompt}</user_query><user_query>extra</user_query>`]) {
+    fails([{ ...first, content: [{ type: "input_text", text }] }, assistant()], "NATIVE_TRANSCRIPT_PROMPT_WRAPPER_INVALID");
+  }
+});
+
+test("CodeBuddy native oracle preserves literal user_query tags in an exact unwrapped prompt", () => {
+  const prompt = "Explain <user_query>literal tags</user_query>.";
+  const first = { ...user(), content: [{ type: "input_text", text: prompt }] };
+  assert.equal(selectNativeTurnContent([first, assistant()], { ...identity, prompt }).user.content, prompt);
+});
+
+test("CodeBuddy native oracle joins complete visible blocks in their recorded order", () => {
+  const prompt = "First.\n\nMiddle.\n\nLast.";
+  const first = { ...user(), content: [
+    { type: "input_text", text: "First.\n" }, { type: "output_text", text: "WRONG_TYPE_CANARY" }, { type: "input_text", text: "Middle.\n\nLast." },
+  ] };
+  const last = { ...assistant(), content: [{ type: "output_text", text: "First.\n" }, { type: "output_text", text: "Middle.\n\nLast." }] };
+  const selected = selectNativeTurnContent([first, last], { ...identity, prompt, finalText: prompt });
+  assert.equal(selected.user.content, prompt);
+  assert.equal(selected.assistant.content, prompt);
+});
+
+test("CodeBuddy native oracle rejects missing identity and malformed inputs with stable error codes", () => {
+  for (const sessionId of [undefined, null, "", " "]) fails([user(), assistant()], "NATIVE_TRANSCRIPT_IDENTITY_MISSING", { ...identity, sessionId });
+  for (const value of [undefined, null, "", " ", 7]) {
+    fails([user(), assistant()], "NATIVE_EXPECTED_CONTENT_INVALID", { ...identity, prompt: value });
+    fails([user(), assistant()], "NATIVE_EXPECTED_CONTENT_INVALID", { ...identity, finalText: value });
+  }
+  for (const records of [undefined, {}, [], [null], [[]], [7]]) fails(records, "NATIVE_TRANSCRIPT_RECORDS_INVALID");
+});
+
+test("CodeBuddy native oracle rejects foreign sessions and a sessionless selected user", () => {
+  for (const patch of [{ sessionId: "foreign" }, { sessionId: null }, { sessionId: "" }]) {
+    fails([{ ...user(), ...patch }, assistant()], "NATIVE_TRANSCRIPT_SESSION_MISMATCH");
+    fails([user(), { ...assistant(), ...patch }], "NATIVE_TRANSCRIPT_SESSION_MISMATCH");
+  }
+  fails([{ ...user(), sessionId: undefined }, assistant()], "NATIVE_TRANSCRIPT_SESSION_MISMATCH");
+  fails([user(), assistant(), { type: "metadata", sessionId: "foreign" }], "NATIVE_TRANSCRIPT_SESSION_MISMATCH");
+});
+
+test("CodeBuddy native oracle permits inherited session identity only through the exact parent chain", () => {
+  const call = { id: "call", type: "function_call", parentId: "user-prompt" };
+  const last = { ...assistant(), parentId: call.id };
+  assert.equal(selectNativeTurnContent([user(), call, last], identity).assistant.id, last.id);
+  fails([user(), { ...call, sessionId: "foreign" }, last], "NATIVE_TRANSCRIPT_SESSION_MISMATCH");
+});
+
+test("CodeBuddy native oracle rejects duplicate or invalid record IDs instead of replacing records", () => {
+  fails([user(), assistant(), assistant()], "NATIVE_TRANSCRIPT_ID_INVALID");
+  fails([user(), assistant(), { id: "user-prompt", type: "metadata" }], "NATIVE_TRANSCRIPT_ID_INVALID");
+  for (const id of [undefined, null, "", " ", 7]) {
+    fails([{ ...user(), id }, assistant()], "NATIVE_TRANSCRIPT_ID_INVALID");
+    fails([user(), { ...assistant(), id }], "NATIVE_TRANSCRIPT_ID_INVALID");
+  }
+  fails([user(), { type: "function_call_result", parentId: "user-prompt" }, assistant()], "NATIVE_TRANSCRIPT_ID_INVALID");
+});
+
+test("CodeBuddy native oracle rejects ambiguous matching users and completed branches", () => {
+  fails([user(), assistant(), { ...user(), id: "duplicate-prompt" }], "NATIVE_TRANSCRIPT_PROMPT_AMBIGUOUS");
+  for (const content of [identity.finalText, "A different final."]) {
+    fails([user(), assistant(), { ...assistant(), id: "other-final", content: [{ type: "output_text", text: content }] }],
+      "NATIVE_TRANSCRIPT_FINAL_AMBIGUOUS");
+  }
+  fails([user(), assistant(), { ...assistant(), id: "partial-branch", status: "incomplete" }], "NATIVE_TRANSCRIPT_FINAL_AMBIGUOUS");
+});
+
+test("CodeBuddy native oracle rejects unfinished replies and tool-only completion", () => {
+  for (const status of [undefined, null, "incomplete", "cancelled", "completed "]) {
+    fails([user(), { ...assistant(), status }], "NATIVE_TRANSCRIPT_FINAL_INCOMPLETE");
+  }
+  fails([user()], "NATIVE_TRANSCRIPT_FINAL_MISSING");
+  fails([user(), { ...assistant(), type: "function_call" }], "NATIVE_TRANSCRIPT_FINAL_MISSING");
+  fails([user(), assistant(), { id: "late-tool", type: "function_call", parentId: "assistant-final" }], "NATIVE_TRANSCRIPT_FINAL_INCOMPLETE");
+});
+
+test("CodeBuddy native oracle rejects broken, cyclic, and non-native parent lineage", () => {
+  for (const patch of [{ parentId: "missing" }, { parentId: undefined }, { parentId: null },
+    { parentId: undefined, logicalParentId: "user-prompt" }, { parentId: "assistant-final" }]) {
+    fails([user(), { ...assistant(), ...patch }], "NATIVE_TRANSCRIPT_FINAL_MISSING");
+  }
+  fails([user(), { ...assistant(), parentId: 7 }], "NATIVE_TRANSCRIPT_PARENT_INVALID");
+  fails([{ ...user(), parentId: "assistant-final" }, assistant()], "NATIVE_TRANSCRIPT_LINEAGE_INVALID");
+  const call = { id: "call", type: "function_call", parentId: "result" };
+  const result = { id: "result", type: "function_call_result", parentId: "call" };
+  fails([user(), call, result, { ...assistant(), parentId: "result" }], "NATIVE_TRANSCRIPT_FINAL_MISSING");
+});
+
+test("CodeBuddy native oracle does not cross a newer user to reuse an older matching prompt", () => {
+  const current = { ...user(), id: "current-user", parentId: "user-prompt", content: [{ type: "input_text", text: "Different current prompt." }] };
+  fails([user(), current, { ...assistant(), parentId: current.id }], "NATIVE_TRANSCRIPT_FINAL_MISSING");
+});
+
+test("CodeBuddy native oracle rejects omitted or reordered paragraphs and extra final content", () => {
+  const complete = "First.\n\nMiddle.\n\nLast.";
+  for (const actual of ["First.\n\nLast.", "Last.\n\nMiddle.\n\nFirst.", `${complete}\nInjected.`, ` ${complete}`]) {
+    fails([{ ...user(), content: [{ type: "input_text", text: actual }] }, assistant()],
+      "NATIVE_TRANSCRIPT_PROMPT_MISMATCH", { ...identity, prompt: complete });
+    fails([user(), { ...assistant(), content: [{ type: "output_text", text: actual }] }],
+      "NATIVE_TRANSCRIPT_ANSWER_MISMATCH", { ...identity, finalText: complete });
+  }
+});
+
+test("CodeBuddy native oracle rejects empty or malformed content and wrong visible block types", () => {
+  for (const content of [undefined, null, "text", [], [{ type: "input_text", text: 7 }], [{ type: "input_text", text: " " }],
+    [{ type: "output_text", text: identity.prompt }]]) {
+    fails([{ ...user(), content }, assistant()], "NATIVE_TRANSCRIPT_CONTENT_INVALID");
+  }
+  for (const content of [undefined, null, "text", [], [{ type: "output_text", text: 7 }], [{ type: "output_text", text: " " }],
+    [{ type: "input_text", text: identity.finalText }], [{ type: "reasoning", text: identity.finalText }]]) {
+    fails([user(), { ...assistant(), content }], "NATIVE_TRANSCRIPT_CONTENT_INVALID");
+  }
+});
+
+test("CodeBuddy native oracle never fabricates timestamps and validates native values when present", () => {
+  const selected = selectNativeTurnContent([{ ...user(), timestamp: undefined }, { ...assistant(), timestamp: undefined }], identity);
+  assert.equal(selected.user.timestamp, undefined);
+  assert.equal(selected.assistant.timestamp, undefined);
+  const timestamp = Date.parse("2026-09-30T01:00:00.000Z");
+  assert.equal(selectNativeTurnContent([{ ...user(), timestamp }, assistant()], identity).user.timestamp, timestamp);
+  assert.equal(selectNativeTurnContent([user(), { ...assistant(), timestamp: "2026-09-30T09:00:00+08:00" }], identity).assistant.timestamp, timestamp);
+  for (const timestamp of [null, "2026-09-30T01:00:00", "invalid", -1, NaN, Infinity]) {
+    fails([{ ...user(), timestamp }, assistant()], "NATIVE_TRANSCRIPT_TIMESTAMP_INVALID");
+    fails([user(), { ...assistant(), timestamp }], "NATIVE_TRANSCRIPT_TIMESTAMP_INVALID");
+  }
+});
+
+test("CodeBuddy native oracle errors never include native content or provider data", () => {
+  const secret = "PRIVATE_NATIVE_CONTENT_CANARY";
+  for (const records of [[user(), { ...assistant(), content: [{ type: "output_text", text: secret }] }],
+    [{ ...user(), content: [{ type: "input_text", text: secret, providerData: { content: { private: secret } } }] }, assistant()]]) {
+    assert.throws(() => selectNativeTurnContent(records, identity), (error) => {
+      assert.equal(error.message, error.nativeCode);
+      assert.match(error.nativeCode, /^NATIVE_[A-Z_]+$/);
+      assert.ok(!error.message.includes(secret));
+      return true;
+    });
+  }
+});
+
+test("native Read must return every reference line in order", () => {
+  const reference = "# Reference\n\nComplete \u4e2d\u6587 text.\n";
+  const output = reference.split("\n").map((line, index) => `${String(index + 1).padStart(4)}\u2192${line}`).join("\n");
+  assertNativeReadText(output, reference);
+  assertNativeReadText(output.replaceAll("\n", "\r\n"), reference);
+  assert.throws(() => assertNativeReadText(output.replace("Complete", "Omitted"), reference), { nativeCode: "NATIVE_READ_REFERENCE_INCOMPLETE" });
+  assert.throws(() => assertNativeReadText(output.replace("   2", "   3"), reference), { nativeCode: "NATIVE_READ_LINES_INVALID" });
+  assert.throws(() => assertNativeReadText(reference, reference), { nativeCode: "NATIVE_READ_LINES_INVALID" });
+  assert.throws(() => assertNativeReadText(output.split("\n").slice(0, 2).join("\n"), reference), { nativeCode: "NATIVE_READ_REFERENCE_INCOMPLETE" });
+});
+
+test("OpenAI tool results must match the exact call and cannot use model text", () => {
+  const body = { messages: [{ role: "assistant", content: "not authority" }, { role: "tool", tool_call_id: "call", content: "full result" }] };
+  assert.equal(toolResult(body, "call"), "full result");
+  assert.throws(() => toolResult(body, "unknown"), { nativeCode: "NATIVE_TOOL_RESULT_MISSING" });
+  assert.throws(() => toolResult({ messages: [...body.messages, body.messages[1]] }, "call"), { nativeCode: "NATIVE_TOOL_RESULT_MISSING" });
+  assert.throws(() => toolResult({ messages: [{ ...body.messages[1], content: {} }] }, "call"), { nativeCode: "NATIVE_TOOL_RESULT_MISSING" });
+});
+
+test("native tool evidence requires exact arguments and one ordered completed result per call", () => {
+  const expected = [{ id: "call", name: "Bash", input: { command: "synthetic command" } }];
+  const call = { id: "call-record", callId: "call", type: "function_call", name: "Bash", arguments: JSON.stringify(expected[0].input) };
+  const result = { id: "result-record", callId: "call", type: "function_call_result", status: "completed" };
+  assertNativeToolCalls([call, result], expected);
+  assertNativeToolCalls([], []);
+  for (const records of [[call], [call, { ...result, status: "incomplete" }], [call, result, result], [result, call],
+    [call, { ...result, providerData: { error: "synthetic failure" } }]]) {
+    assert.throws(() => assertNativeToolCalls(records, expected), { nativeCode: "NATIVE_TRANSCRIPT_TOOL_NOT_COMPLETED" });
+  }
+  assert.throws(() => assertNativeToolCalls([{ ...call, arguments: "{" }, result], expected), { nativeCode: "NATIVE_TRANSCRIPT_TOOL_ARGUMENTS_INVALID" });
+  assert.throws(() => assertNativeToolCalls([{ ...call, arguments: "{}" }, result], expected), { nativeCode: "NATIVE_TRANSCRIPT_TOOL_ARGUMENTS_MISMATCH" });
+  assert.throws(() => assertNativeToolCalls([{ ...call, name: "Read" }, result], expected), { nativeCode: "NATIVE_TRANSCRIPT_TOOL_CALL_MISMATCH" });
+  assert.throws(() => assertNativeToolCalls([call, result], []), { nativeCode: "NATIVE_TRANSCRIPT_UNEXPECTED_TOOL" });
+});

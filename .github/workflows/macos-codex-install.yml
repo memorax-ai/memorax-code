@@ -33,6 +33,7 @@ jobs:
       codex-matrix: ${{ steps.codex-versions.outputs.matrix }}
       opencode-matrix: ${{ steps.opencode-versions.outputs.matrix }}
       claude-matrix: ${{ steps.claude-versions.outputs.matrix }}
+      codebuddy-matrix: ${{ steps.codebuddy-versions.outputs.matrix }}
       artifact-ready: ${{ steps.package-check.outputs.artifact-ready }}
     steps:
       - uses: actions/checkout@v7
@@ -113,8 +114,31 @@ jobs:
             `Claude Code baseline: **${baseline}**; npm latest resolved for this run: **${latest}**.\n\n` +
             `${include.length} required lifecycle, interruption, native memory, Skill, permission and Repo Memory configuration jobs; no version fallback. Client-specific coverage remains bounded.\n`);
           NODE
+      - name: Resolve the latest CodeBuddy Code version once for this run
+        if: ${{ !inputs.diagnose_opencode_initialization }}
+        id: codebuddy-versions
+        shell: bash
+        run: |
+          npm view @tencent-ai/codebuddy-code dist-tags.latest --json --registry=https://registry.npmjs.org/ > "$RUNNER_TEMP/codebuddy-latest.json"
+          node --input-type=module <<'NODE'
+          import { appendFileSync, readFileSync } from 'node:fs';
+          const baseline = '2.159.0';
+          const latest = JSON.parse(readFileSync(`${process.env.RUNNER_TEMP}/codebuddy-latest.json`, 'utf8'));
+          if (typeof latest !== 'string' || !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(latest)) {
+            throw new Error('The npm latest tag must resolve to an exact stable CodeBuddy Code version');
+          }
+          const platforms = ['ubuntu-24.04', 'macos-15', 'windows-2025'];
+          const include = platforms.map((os) => ({ os, node: '24', codebuddy: baseline,
+            channel: latest === baseline ? 'baseline+latest' : 'baseline' }));
+          include.push({ os: 'ubuntu-24.04', node: '20', codebuddy: baseline, channel: 'baseline' });
+          if (latest !== baseline) include.push(...platforms.map((os) => ({ os, node: '24', codebuddy: latest, channel: 'latest' })));
+          appendFileSync(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify({ include })}\n`);
+          appendFileSync(process.env.GITHUB_STEP_SUMMARY,
+            `CodeBuddy Code baseline: **${baseline}**; npm latest resolved for this run: **${latest}**.\n\n` +
+            `${include.length} required lifecycle, interruption, native memory, Skill, permission and Repo Memory configuration jobs; no version fallback. WorkBuddy is outside this scope; client-specific coverage remains bounded.\n`);
+          NODE
       - name: Verify test assertions reject malformed content and unexpected failures
-        run: node --test scripts/codex-native-content-check.test.mjs scripts/codex-lifecycle-assertions.test.mjs scripts/codex-writeback-diagnostics.test.mjs scripts/opencode-native-support.test.mjs scripts/opencode-initialization-diagnostic.test.mjs scripts/opencode-initialization-layouts.test.mjs scripts/claude-native-content-check.test.mjs scripts/claude-native-support.test.mjs scripts/claude-permissions-support.test.mjs scripts/claude-lifecycle-assertions.test.mjs scripts/claude-lifecycle-process.test.mjs scripts/claude-background-assertions.test.mjs scripts/claude-install-interruption-driver.test.mjs
+        run: node --test scripts/codex-native-content-check.test.mjs scripts/codex-lifecycle-assertions.test.mjs scripts/codex-writeback-diagnostics.test.mjs scripts/opencode-native-support.test.mjs scripts/opencode-initialization-diagnostic.test.mjs scripts/opencode-initialization-layouts.test.mjs scripts/claude-native-content-check.test.mjs scripts/claude-native-support.test.mjs scripts/claude-permissions-support.test.mjs scripts/claude-lifecycle-assertions.test.mjs scripts/claude-lifecycle-process.test.mjs scripts/claude-background-assertions.test.mjs scripts/claude-install-interruption-driver.test.mjs scripts/codebuddy-native-content-check.test.mjs scripts/codebuddy-native-support.test.mjs scripts/codebuddy-install-cleanup.test.mjs scripts/codebuddy-lifecycle-assertions.test.mjs scripts/codebuddy-install-interruption-driver.test.mjs scripts/codebuddy-permissions-support.test.mjs scripts/codebuddy-background-assertions.test.mjs
       - name: Build and validate the installable package
         id: package-check
         shell: bash
@@ -266,6 +290,46 @@ jobs:
           TMP: ${{ runner.temp }}
         run: ./scripts/claude-install-check.ps1 -TarballDirectory dist/npm/tarballs -ClaudeVersion $env:CLAUDE_VERSION
 
+  codebuddy:
+    name: CodeBuddy functional ${{ matrix.channel }} ${{ matrix.codebuddy }} (${{ matrix.os }}, Node ${{ matrix.node }})
+    needs: package
+    if: always() && !cancelled() && needs.package.outputs.artifact-ready == 'true' && !inputs.diagnose_opencode_initialization
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.package.outputs.codebuddy-matrix) }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+          package-manager-cache: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: memorax-code-package
+          path: dist/npm/tarballs
+      - name: Verify CodeBuddy lifecycle, interruption, native flows and Repo Memory configuration (macOS/Linux)
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          CODEBUDDY_VERSION: ${{ matrix.codebuddy }}
+        run: bash scripts/codebuddy-install-check.sh dist/npm/tarballs "$CODEBUDDY_VERSION"
+      - name: Verify shared Windows user PATH cleanup
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/codex-install-user-path.test.ps1
+      - name: Verify CodeBuddy lifecycle, interruption, native flows and Repo Memory configuration (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          CODEBUDDY_VERSION: ${{ matrix.codebuddy }}
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+        run: ./scripts/codebuddy-install-check.ps1 -TarballDirectory dist/npm/tarballs -CodeBuddyVersion $env:CODEBUDDY_VERSION
+
   opencode-initialization-diagnostic:
     name: OpenCode Windows initialization diagnostic (not functional acceptance)
     needs: package
@@ -360,6 +424,25 @@ jobs:
           printf 'Package: **%s**\n\nClaude native smoke matrix: **%s**\n\nShared lifecycle, setup interruption, native memory, Skill, permission and Repo Memory global-configuration checks; client-specific coverage remains bounded.\n' "$PACKAGE_RESULT" "$CLAUDE_RESULT" >> "$GITHUB_STEP_SUMMARY"
           if [[ "$PACKAGE_RESULT" != success || "$CLAUDE_RESULT" != success ]]; then
             echo '::error::All package and Claude native smoke matrix jobs must succeed. Failed, cancelled or skipped dependencies do not pass this check.'
+            exit 1
+          fi
+
+  codebuddy-result:
+    name: CodeBuddy functional result
+    if: always() && !(github.event_name == 'workflow_dispatch' && (inputs.check_deepseek || inputs.diagnose_opencode_initialization))
+    needs: [package, codebuddy]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Require the package and entire CodeBuddy functional matrix to succeed
+        shell: bash
+        env:
+          PACKAGE_RESULT: ${{ needs.package.result }}
+          CODEBUDDY_RESULT: ${{ needs.codebuddy.result }}
+        run: |
+          printf 'Package: **%s**\n\nCodeBuddy functional matrix: **%s**\n\nShared lifecycle, setup interruption, native memory, Skill, permission and Repo Memory global-configuration checks; WorkBuddy is excluded and client-specific coverage remains bounded.\n' "$PACKAGE_RESULT" "$CODEBUDDY_RESULT" >> "$GITHUB_STEP_SUMMARY"
+          if [[ "$PACKAGE_RESULT" != success || "$CODEBUDDY_RESULT" != success ]]; then
+            echo '::error::All package and CodeBuddy functional matrix jobs must succeed. Failed, cancelled or skipped dependencies do not pass this check.'
             exit 1
           fi
 
