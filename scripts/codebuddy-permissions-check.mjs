@@ -6,7 +6,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import { check, createNativeHarness, fixtureKey, fixtureModel, fixtureUser, waitFor } from "./codebuddy-native-support.mjs";
 import { assertCompleteText, assertNoForeignContent, assertWritebackMessages } from "./codex-native-content-check.mjs";
-import { nativeHookPrompt, selectNativeTurnContent } from "./codebuddy-native-content-check.mjs";
+import { nativeHookPrompt, selectNativeTurnContent, summarizeNativeCompletion } from "./codebuddy-native-content-check.mjs";
 import { assertInitializedModel, assertNativeInterruption, assertPermissionInitializations, assertToolLineage,
   CodeBuddyControlSession, inflightCommand, inflightWorkerScript, modelToolResult,
   nativePrompt, permissionArguments, selectCanceledToolTurn, summarizeToolFailure } from "./codebuddy-permissions-support.mjs";
@@ -113,7 +113,8 @@ try {
     const terminal = await control.wait((event) => event.type === "result");
     check(terminal.session_id === current.sessionId, "PERMISSION_RESULT_SESSION_MISMATCH");
     if (test.interrupted) {
-      assertNativeInterruption(terminal, current.sessionId);
+      const interruptionKind = assertNativeInterruption(terminal, current.sessionId,
+        { permissionCancellationTool: test.decision === "cancel" ? current.tool : undefined });
       check(current.modelRequests === 1 && sessionAdds().length === 0, "INTERRUPTED_PERMISSION_WROTE_OR_CONTINUED");
       const records = await transcript({ prompt: current.prompt, toolId: current.tool.id });
       const interrupted = selectCanceledToolTurn(records, { sessionId: current.sessionId, prompt: current.prompt, tool: current.tool });
@@ -130,7 +131,8 @@ try {
       const recovered = await control.wait((event) => event.type === "result", recoveryIndex);
       assertSuccess(recovered, current.recoveryAnswer);
       result.writeback = await verifyCompleted({ prompt: current.recoveryPrompt, answer: current.recoveryAnswer });
-      Object.assign(result, { nativeAbortedToolsResult: true, nativeCanceledToolRequestMatched: true,
+      Object.assign(result, { nativeInterruptionResultMatched: true, nativeInterruptionResultKind: interruptionKind,
+        nativeCanceledToolRequestMatched: true,
         nativeCanceledToolResultRecorded: interrupted.toolResultRecorded,
         sameSessionRecovered: true, interruptedTurnNotWritten: true,
         ...(test.inflight ? { toolStartedBeforeInterrupt: true, interruptedToolProcessExited: true } : {}) });
@@ -159,6 +161,14 @@ try {
   report.error = error.nativeCode ?? "PERMISSION_CHECK_FAILED_PRIVATE_OUTPUT_SUPPRESSED";
   report.receiverErrors = harness?.serverErrors ?? [];
   if (current) report.activeCaseModelRequests = current.modelRequests;
+  if (current && control) {
+    try {
+      report.nativeCompletion = summarizeNativeCompletion(control.events, {
+        answer: current.answer, model: fixtureModel, modelRequests: current.modelRequests,
+        memoryRequests: sessionAdds().length, receiverErrors: harness.serverErrors,
+      });
+    } catch { report.nativeCompletion = { available: false }; }
+  }
   if (current?.earlyToolResult) report.unexpectedInflightToolResult = current.earlyToolResult;
 } finally {
   try { await harness?.close(); report.cleanup = "PASS"; }

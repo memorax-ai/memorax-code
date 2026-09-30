@@ -183,11 +183,36 @@ test("control output limit, truncated JSON and nonzero exit cannot report comple
 
 test("native interrupted result is not a normal success, a denial, or Claude's terminal format", () => {
   const event = { type: "result", subtype: "success", is_error: false, terminal_reason: "aborted_tools", session_id: identity.sessionId };
-  assertNativeInterruption(event, identity.sessionId);
+  assert.equal(assertNativeInterruption(event, identity.sessionId), "aborted_tools");
   for (const patch of [{ terminal_reason: undefined }, { terminal_reason: "aborted_streaming" }, { terminal_reason: "end_turn" },
     { is_error: true, subtype: "error_during_execution" }, { session_id: "foreign" }, { type: "assistant" }]) {
     rejects(() => assertNativeInterruption({ ...event, ...patch }, identity.sessionId), "PERMISSION_NATIVE_INTERRUPTION_RESULT_MISSING");
   }
+});
+
+test("permission cancellation requires its exact native denial terminal and matching tool identity", () => {
+  const event = { type: "result", subtype: "error_during_execution", is_error: true, session_id: identity.sessionId,
+    errors: ["Permission denied for tool(s): Write"],
+    permission_denials: [{ tool_name: tool.name, tool_use_id: tool.id, tool_input: tool.input }] };
+  const options = { permissionCancellationTool: tool };
+  assert.equal(assertNativeInterruption(event, identity.sessionId, options), "permission_denied_interrupt");
+  rejects(() => assertNativeInterruption(event, identity.sessionId), "PERMISSION_NATIVE_INTERRUPTION_RESULT_MISSING");
+  for (const patch of [{ type: "assistant" }, { session_id: "foreign" }, { is_error: false }, { subtype: "success" },
+    { terminal_reason: "aborted_tools" }, { result: "" }, { errors: undefined }, { errors: [] },
+    { errors: ["Permission denied for tool(s): Bash"] }, { errors: ["Permission denied for tool(s): Write, Bash"] },
+    { errors: ["Permission denied for tool(s): Write", "private failure canary"] },
+    { errors: ["private failure canary"] }, { permission_denials: undefined }, { permission_denials: [] },
+    { permission_denials: [...event.permission_denials, ...event.permission_denials] },
+    ...[{ tool_name: "Bash" }, { tool_use_id: "foreign" }, { tool_input: { ...tool.input, content: "other" } }]
+      .map((denial) => ({ permission_denials: [{ ...event.permission_denials[0], ...denial }] }))]) {
+    rejects(() => assertNativeInterruption({ ...event, ...patch }, identity.sessionId, options),
+      "PERMISSION_NATIVE_INTERRUPTION_RESULT_MISSING");
+  }
+  for (const invalid of [null, {}, { ...tool, id: "" }, { ...tool, name: "" }, { ...tool, input: undefined }]) {
+    rejects(() => assertNativeInterruption(event, identity.sessionId, { permissionCancellationTool: invalid }),
+      "PERMISSION_NATIVE_INTERRUPTION_RESULT_MISSING");
+  }
+  rejects(() => assertNativeInterruption(undefined, identity.sessionId, options), "PERMISSION_NATIVE_INTERRUPTION_RESULT_MISSING");
 });
 
 test("completed and denied tool proof matches exact call, input and native result status", () => {

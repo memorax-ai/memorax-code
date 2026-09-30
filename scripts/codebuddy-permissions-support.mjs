@@ -161,9 +161,21 @@ export function assertToolLineage(lineage, tool, { denied = false, interrupted =
   return { toolResultRecorded: results.length === 1 };
 }
 
-export function assertNativeInterruption(event, sessionId) {
+export function assertNativeInterruption(event, sessionId, { permissionCancellationTool } = {}) {
+  if (permissionCancellationTool !== undefined) {
+    const tool = permissionCancellationTool;
+    check(identifier(sessionId) && identifier(tool?.name) && identifier(tool?.id)
+      && tool.input && typeof tool.input === "object" && !Array.isArray(tool.input)
+      && event?.type === "result" && event.session_id === sessionId && event.is_error === true
+      && event.subtype === "error_during_execution" && event.terminal_reason === undefined && event.result === undefined
+      && isDeepStrictEqual(event.errors, [`Permission denied for tool(s): ${tool.name}`])
+      && isDeepStrictEqual(event.permission_denials, [{ tool_name: tool.name, tool_use_id: tool.id, tool_input: tool.input }]),
+    "PERMISSION_NATIVE_INTERRUPTION_RESULT_MISSING");
+    return "permission_denied_interrupt";
+  }
   check(event?.type === "result" && event.session_id === sessionId && event.is_error === false
     && event.subtype === "success" && event.terminal_reason === "aborted_tools", "PERMISSION_NATIVE_INTERRUPTION_RESULT_MISSING");
+  return "aborted_tools";
 }
 
 // Cancellation authority is the correlated native control/result protocol.
