@@ -818,9 +818,13 @@ response requires the matching native interruption result, no automatic Add
 for the cancelled turn, and successful recovery in the same process and session.
 
 The two explicit `interrupt` cases validate MemoraX writeback against the
-client's actual persisted outcome, rather than requiring a particular CLI
-`result` event or assuming that an acknowledgement proves cancellation. The
-in-flight case still requires the owned tool process to exit before recovery,
+client's actual persisted outcome, without assuming that an acknowledgement
+proves cancellation. The waiting-permission case waits for the original turn's
+matching terminal before sending recovery; the interrupt acknowledgement alone
+does not mean permission rejection has finished. It accepts either the exact
+completed fixture answer or the validated native interruption result, without
+sending a late approval reply.
+The in-flight case still requires the owned tool process to exit before recovery,
 without its delayed file effect. Recovery must complete and write back in the
 same process and session. Only these two cases may report a natural-exit timeout
 as a separate compatibility observation after recovery writeback is verified.
@@ -841,6 +845,14 @@ prompt may itself affect the old turn; this does not isolate the effect of
 `interrupt` alone. The suite does not claim late-approval handling,
 operating-system sandbox enforcement, automatic approval judgment, or
 interrupted trace and metadata reconciliation.
+
+Only the explicit-interrupt recovery oracle recognizes late incomplete tool
+results appended after the completed recovery answer. The original prompt,
+tool call, arguments, and distinct original/recovery request identities must
+prove that those results belong to the original turn. Their count is reported
+as compatibility evidence, not recovery activity. Missing or conflicting
+identity, recovery-owned tool results, and additional recovery answers still
+fail; the generic completed-turn oracle remains unchanged.
 
 The Repo Memory case removes process model/provider overrides and uses isolated
 global `settings.json` and `models.json`. It correlates the real foreground

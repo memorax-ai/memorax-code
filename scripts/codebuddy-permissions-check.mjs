@@ -9,7 +9,7 @@ import { assertCompleteText, assertNoForeignContent, assertWritebackMessages } f
 import { nativeHookPrompt, selectNativeTurnContent, summarizeNativeCompletion } from "./codebuddy-native-content-check.mjs";
 import { assertInitializedModel, assertNativeInterruption, assertPermissionInitializations, assertPermissionWritebacks, assertToolLineage,
   CodeBuddyControlSession, inflightCommand, inflightWorkerScript, modelToolResult,
-  nativePrompt, permissionArguments, permissionModelTurn, selectCanceledToolTurn, selectInterruptOutcome,
+  nativePrompt, permissionArguments, permissionModelTurn, selectCanceledToolTurn, selectInterruptOutcome, selectInterruptRecovery,
   summarizeToolFailure } from "./codebuddy-permissions-support.mjs";
 
 const cases = [
@@ -117,9 +117,17 @@ try {
         result.nativeInterruptAcknowledged = true;
       }
     }
-    const terminal = test.nativeInterrupt ? undefined : await control.wait((event) => event.type === "result");
+    const terminal = test.nativeInterrupt && test.inflight ? undefined : await control.wait((event) => event.type === "result");
     if (terminal) check(terminal.session_id === current.sessionId, "PERMISSION_RESULT_SESSION_MISMATCH");
     if (test.nativeInterrupt) {
+      if (!test.inflight) {
+        // The interrupt ACK precedes asynchronous permission rejection. Wait
+        // for its terminal before recovery can install a new run controller.
+        if (terminal.is_error === false && terminal.terminal_reason === undefined) assertSuccess(terminal, current.answer);
+        else assertNativeInterruption(terminal, current.sessionId,
+          terminal.is_error === true ? { permissionCancellationTool: current.tool } : undefined);
+        result.originalTerminalObservedBeforeRecovery = true;
+      }
       if (test.inflight) {
         await waitFor(() => !alive(current.toolPid), "PERMISSION_INTERRUPTED_TOOL_PROCESS_REMAINS");
         toolPids.delete(current.toolPid);
@@ -147,6 +155,7 @@ try {
       Object.assign(result, { sameSessionRecovered: true, nativeOriginalToolResultRecorded: outcome.toolResultRecorded,
         incompleteTurnNotWritten: outcome.outcome === "incomplete",
         nativeInterruptCompatibility: { ...result.nativeInterruptCompatibility, originalTurnOutcome: outcome.outcome,
+          lateOriginalToolResultCount: outcome.lateOriginalToolResultCount,
           continuedModelExecution: current.originalModelRequests > 1, otherResultCount,
           recoveryResultObserved: terminals.some((event) => event.result === current.recoveryAnswer) },
         ...(test.inflight ? { toolStartedBeforeInterrupt: true, interruptedToolProcessExited: true } : {}) });
@@ -283,7 +292,10 @@ async function findPromptTrace(prompt, completed = false) {
   }, "PERMISSION_HOOK_CORRELATION_MISSING");
 }
 async function verifyCompleted({ prompt, answer, tool, denied }) {
-  const selected = selectNativeTurnContent(await transcript({ prompt, answer }), { sessionId: current.sessionId, prompt, finalText: answer });
+  const records = await transcript({ prompt, answer });
+  const selected = current.test.nativeInterrupt && prompt === current.recoveryPrompt
+    ? selectInterruptRecovery(records, current)
+    : selectNativeTurnContent(records, { sessionId: current.sessionId, prompt, finalText: answer });
   if (tool) assertToolLineage(selected.lineage, tool, { denied });
   const matchingAdds = () => sessionAdds().filter((request) => request.body.messages?.[0]?.content === selected.user.content);
   await waitFor(() => matchingAdds().length > 0, "PERMISSION_COMPLETED_TURN_DID_NOT_WRITE_BACK");

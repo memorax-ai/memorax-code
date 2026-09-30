@@ -4,9 +4,10 @@ import { PassThrough, Writable } from "node:stream";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
 import { fixtureModel } from "./codebuddy-native-support.mjs";
+import { selectNativeTurnContent } from "./codebuddy-native-content-check.mjs";
 import { assertInitializedModel, assertNativeInterruption, assertPermissionInitializations, assertPermissionWritebacks, assertToolLineage,
   CodeBuddyControlSession, inflightCommand, inflightWorkerScript,
-  modelToolResult, nativePrompt, permissionArguments, permissionModelTurn, selectCanceledToolTurn, selectInterruptOutcome,
+  modelToolResult, nativePrompt, permissionArguments, permissionModelTurn, selectCanceledToolTurn, selectInterruptOutcome, selectInterruptRecovery,
   summarizeToolFailure } from "./codebuddy-permissions-support.mjs";
 
 const tool = { id: "fixture-call", name: "Write", input: { file_path: "fixture.txt", content: "fixture marker" } };
@@ -369,16 +370,25 @@ function withRecovery(original) {
   { id: "recovery-answer", type: "message", role: "assistant", parentId: "recovery-user", status: "completed",
     content: [{ type: "output_text", text: interruptIdentity.recoveryAnswer }] }];
 }
+function withLateOriginalResults(count = 2) {
+  const records = withRecovery([user(), call()]).map((record, index) => ({ ...record, sessionId: identity.sessionId,
+    providerData: { conversationRequestId: index < 2 ? "original-request" : "recovery-request" } }));
+  for (let index = 0; index < count; index += 1) {
+    records.push({ ...result("incomplete"), id: `late-result-${index}`, parentId: records.at(-1).id,
+      sessionId: identity.sessionId, providerData: { conversationRequestId: "original-request", skipRun: true } });
+  }
+  return records;
+}
 
 test("interrupt outcome requires successful independent recovery before classifying absent or incomplete old answers", () => {
   for (const original of [[user(), call()], [user(), call(), result("incomplete")],
     [user(), call(), result("incomplete"), interruption()]]) {
     assert.deepEqual(selectInterruptOutcome(withRecovery(original), interruptIdentity), {
-      outcome: "incomplete", toolResultRecorded: original.length > 2,
+      outcome: "incomplete", toolResultRecorded: original.length > 2, lateOriginalToolResultCount: 0,
     });
   }
   assert.deepEqual(selectInterruptOutcome(withRecovery([user(), call(), result("incomplete"), originalAnswer()]), interruptIdentity), {
-    outcome: "completed", toolResultRecorded: true,
+    outcome: "completed", toolResultRecorded: true, lateOriginalToolResultCount: 0,
   });
 });
 
@@ -395,14 +405,137 @@ test("interrupt outcome rejects missing, incomplete or out-of-order recovery ins
     recoveryAnswer: interruptIdentity.answer }), "PERMISSION_INTERRUPT_RECOVERY_ORDER_INVALID");
 });
 
-test("interrupt outcome rejects late original tool results attached beneath the recovery answer", () => {
+test("interrupt recovery retains strict selection without requiring new metadata when no late results exist", () => {
+  const records = withRecovery([user(), call()]);
+  const selected = selectNativeTurnContent(records, { ...identity, prompt: interruptIdentity.recoveryPrompt,
+    finalText: interruptIdentity.recoveryAnswer });
+  assert.deepEqual(selectInterruptRecovery(records, interruptIdentity), { ...selected, lateOriginalToolResultCount: 0 });
+});
+
+test("interrupt recovery projects only proven original-owned late cancellation results without mutating native records", () => {
   for (const count of [1, 2]) {
-    const records = withRecovery([user(), call()]);
-    for (let index = 0; index < count; index += 1) {
-      records.push({ ...result("incomplete"), id: `late-result-${index}`, parentId: records.at(-1).id });
-    }
-    rejects(() => selectInterruptOutcome(records, interruptIdentity), "NATIVE_TRANSCRIPT_FINAL_INCOMPLETE");
+    const records = withLateOriginalResults(count), original = structuredClone(records);
+    const expected = selectInterruptRecovery(records.slice(0, 4), interruptIdentity);
+    assert.deepEqual(selectInterruptRecovery(records, interruptIdentity), { ...expected, lateOriginalToolResultCount: count });
+    assert.deepEqual(selectInterruptOutcome(records, interruptIdentity), {
+      outcome: "incomplete", toolResultRecorded: true, lateOriginalToolResultCount: count,
+    });
+    assert.deepEqual(records, original);
+    rejects(() => selectNativeTurnContent(records, { ...identity, prompt: interruptIdentity.recoveryPrompt,
+      finalText: interruptIdentity.recoveryAnswer }), "NATIVE_TRANSCRIPT_FINAL_INCOMPLETE");
   }
+});
+
+test("interrupt recovery requires distinct matching request owners on both prompts, original call and recovery answer", () => {
+  for (const index of [0, 1, 2, 3]) for (const owner of [undefined, null, "", "foreign-request"]) {
+    const records = withLateOriginalResults();
+    records[index].providerData = owner === undefined ? undefined : { conversationRequestId: owner };
+    rejects(() => selectInterruptRecovery(records, interruptIdentity), "PERMISSION_INTERRUPT_REQUEST_OWNER_MISMATCH");
+  }
+  const records = withLateOriginalResults();
+  for (const record of records) record.providerData.conversationRequestId = "same-request";
+  rejects(() => selectInterruptRecovery(records, interruptIdentity), "PERMISSION_INTERRUPT_REQUEST_OWNER_MISMATCH");
+});
+
+test("interrupt recovery also validates any original assistant owner before projecting its late results", () => {
+  const records = withLateOriginalResults(1);
+  const interrupted = { ...interruption(), parentId: "tool-call", sessionId: identity.sessionId,
+    providerData: { conversationRequestId: "original-request" } };
+  records.splice(2, 0, interrupted);
+  records[3].parentId = interrupted.id;
+  assert.equal(selectInterruptRecovery(records, interruptIdentity).lateOriginalToolResultCount, 1);
+  interrupted.providerData.conversationRequestId = "recovery-request";
+  rejects(() => selectInterruptRecovery(records, interruptIdentity), "PERMISSION_INTERRUPT_REQUEST_OWNER_MISMATCH");
+});
+
+test("interrupt recovery rejects missing or foreign late-result authority, wrong tools and successful results", () => {
+  for (const patch of [{ callId: "foreign-call" }, { name: "Bash" }, { status: "completed" }, { status: undefined },
+    { role: "assistant" }, { sessionId: undefined }, { providerData: undefined },
+    { providerData: { skipRun: true } }, { providerData: { conversationRequestId: "recovery-request", skipRun: true } },
+    { providerData: { conversationRequestId: "foreign-request", skipRun: true } },
+    { providerData: { conversationRequestId: "original-request" } },
+    { providerData: { conversationRequestId: "original-request", skipRun: false } }]) {
+    const records = withLateOriginalResults(1);
+    Object.assign(records.at(-1), patch);
+    rejects(() => selectInterruptRecovery(records, interruptIdentity), "PERMISSION_INTERRUPT_RECOVERY_TAIL_INVALID");
+  }
+  const foreignSession = withLateOriginalResults(1);
+  foreignSession.at(-1).sessionId = "foreign-session";
+  rejects(() => selectInterruptRecovery(foreignSession, interruptIdentity), "NATIVE_TRANSCRIPT_SESSION_MISMATCH");
+});
+
+test("interrupt recovery still requires the exact original tool call and complete recovery text", () => {
+  for (const patch of [{ name: "Bash" }, { callId: "foreign-call" }, { arguments: "{}" }]) {
+    const records = withLateOriginalResults();
+    Object.assign(records[1], patch);
+    rejects(() => selectInterruptRecovery(records, interruptIdentity), "PERMISSION_TRANSCRIPT_TOOL_MISMATCH");
+  }
+  const records = withLateOriginalResults();
+  records[3].content[0].text = "Different recovery answer";
+  rejects(() => selectInterruptRecovery(records, interruptIdentity), "NATIVE_TRANSCRIPT_ANSWER_MISMATCH");
+  records[3].status = "incomplete";
+  rejects(() => selectInterruptRecovery(records, interruptIdentity), "NATIVE_TRANSCRIPT_FINAL_INCOMPLETE");
+});
+
+test("interrupt recovery rejects ambiguous, cyclic, reordered, orphaned or excessive late-result chains", () => {
+  for (const [mutate, code] of [
+    [(records) => { records.at(-1).id = records.at(-2).id; }, "NATIVE_TRANSCRIPT_ID_INVALID"],
+    [(records) => { delete records.at(-1).id; }, "NATIVE_TRANSCRIPT_ID_INVALID"],
+    [(records) => { records[4].parentId = records[5].id; }, "PERMISSION_INTERRUPT_RECOVERY_TAIL_INVALID"],
+    [(records) => { records[4].parentId = "missing-parent"; }, "PERMISSION_INTERRUPT_RECOVERY_TAIL_INVALID"],
+    [(records) => { records[4].parentId = "tool-call"; }, "PERMISSION_TRANSCRIPT_RESULT_COUNT_MISMATCH"],
+    [(records) => { records[5].parentId = records[3].id; }, "PERMISSION_INTERRUPT_RECOVERY_TAIL_INVALID"],
+    [(records) => { records.splice(3, 0, records.pop()); }, "PERMISSION_INTERRUPT_RECOVERY_TAIL_INVALID"],
+    [(records) => { records.push({ ...records.at(-1), id: "third-late-result", parentId: records.at(-1).id }); },
+      "PERMISSION_INTERRUPT_RECOVERY_TAIL_INVALID"],
+  ]) {
+    const records = withLateOriginalResults();
+    mutate(records);
+    rejects(() => selectInterruptRecovery(records, interruptIdentity), code);
+  }
+});
+
+test("interrupt recovery cannot hide actual recovery activity or a late result across a future-user boundary", () => {
+  for (const [extra, code] of [
+    [{ ...call(), id: "recovery-call", callId: "recovery-tool", parentId: "recovery-answer" }, "PERMISSION_INTERRUPT_RECOVERY_TAIL_INVALID"],
+    [{ ...originalAnswer(), id: "extra-answer", parentId: "recovery-answer" }, "NATIVE_TRANSCRIPT_FINAL_AMBIGUOUS"],
+    [{ ...user(), id: "future-user", parentId: "recovery-answer", content: [{ type: "input_text", text: "Future prompt" }] },
+      "PERMISSION_INTERRUPT_RECOVERY_TAIL_INVALID"],
+  ]) {
+    const records = withLateOriginalResults(1);
+    records.push(extra);
+    rejects(() => selectInterruptRecovery(records, interruptIdentity), code);
+  }
+  const records = withLateOriginalResults(1);
+  const future = { ...user(), id: "future-user", parentId: "recovery-answer", content: [{ type: "input_text", text: "Future prompt" }] };
+  records.splice(4, 0, future);
+  records[5].parentId = future.id;
+  rejects(() => selectInterruptRecovery(records, interruptIdentity), "PERMISSION_INTERRUPT_RECOVERY_TAIL_INVALID");
+});
+
+test("interrupt recovery rejects orphaned and self-cyclic content outside either validated branch regardless of owner", () => {
+  for (const providerData of [undefined, { conversationRequestId: "foreign-request" },
+    { conversationRequestId: "recovery-request" }, { conversationRequestId: "original-request" }]) {
+    for (const extra of [
+      { ...call(), id: "extra-call", callId: "extra-tool", status: "incomplete" },
+      { ...result("incomplete"), id: "extra-result", callId: "extra-tool" },
+      { ...originalAnswer(), id: "extra-answer" },
+    ]) for (const parentId of ["missing-parent", extra.id]) {
+      const records = withLateOriginalResults();
+      records.push({ ...extra, parentId, sessionId: identity.sessionId, providerData });
+      rejects(() => selectInterruptRecovery(records, interruptIdentity), "PERMISSION_INTERRUPT_RECOVERY_TAIL_INVALID");
+      rejects(() => selectInterruptOutcome(records, interruptIdentity), "PERMISSION_INTERRUPT_RECOVERY_TAIL_INVALID");
+    }
+  }
+});
+
+test("interrupt recovery leaves ID-less non-content context records intact", () => {
+  const records = withLateOriginalResults();
+  records.splice(2, 0, { type: "context", sessionId: identity.sessionId });
+  records.push({ type: "context", sessionId: identity.sessionId });
+  const original = structuredClone(records);
+  assert.equal(selectInterruptRecovery(records, interruptIdentity).lateOriginalToolResultCount, 2);
+  assert.deepEqual(records, original);
 });
 
 test("interrupt outcome rejects foreign identity, mismatched answers, ambiguous completion and wrong native tool", () => {
