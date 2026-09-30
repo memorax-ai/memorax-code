@@ -810,7 +810,7 @@ that recover do not produce terminal failure records.
 
 ### 3.5 Repo Memory coordination
 
-Repo Memory is repository-local guidance under `.repo_memory`, not a MemoraX
+Repo Memory is local repository guidance in a shared baseline or an explicitly authored `.repo_memory`, not a MemoraX
 provider response. In all supported clients, an accepted turn-start result exposes a
 worktree to the adapter integration only for a verified Git scope. Codex,
 Claude Code, and CodeBuddy/WorkBuddy Hooks, DSH's native pre-step integration,
@@ -831,44 +831,40 @@ the startup lock and active marker within one MemoraX home; independent clones
 remain separate. Worktree marker and lock compatibility is retained for older
 runtimes, which do not implement cross-worktree sharing.
 
-The first canonically validated bundle matching a clean committed snapshot can
-be published atomically under `MEMORAX_CODE_HOME/repo-memory-bases`. This private,
-immutable copy includes the Wiki and evidence, excluding personal-memory
-sidecars. A missing worktree bundle at the same commit or a compatible descendant
-is materialized from that copy without a model or provider request. Publication
-and reuse check the source snapshot and local changes. Descendant reuse requires a bounded text delta, excludes known
-structural changes, and returns changed paths for task-relevant live verification.
-These checks bound retrieval and do not establish semantic compatibility.
+One mainline baseline is published under `MEMORAX_CODE_HOME/repo-memory-bases`.
+Any authorized worktree may trigger maintenance. The target commit comes only
+from the local symbolic `refs/remotes/origin/HEAD` and its remote-tracking ref;
+missing authority defers without network discovery or a guessed branch name.
+The caller's branch, HEAD, and uncommitted changes do not select build content.
+The shared baseline commit and publication time feed the existing update policy.
+Mainline history replacement defers automatic updates but does not invalidate
+historical guidance for reading. An attempt record limits repeated failed jobs.
 
-Restored copies carry a versioned `shared-baseline.json` record inside their
-local bundle. They retain the original snapshot provenance and bypass per-worktree
-update policy, including after later commits. Each relevant read revalidates the
-local artifact, ancestry, delta, and clean source state. Unusable borrowed maps
-defer without starting a replacement job. Explicit successful authoring clears
-the borrowed record; locally authored bundles retain local update policy. Their
-updates do not replace shared versions.
+For authoring, the common supervisor and Cursor native launcher prepare a private
+local clone at the fixed target commit in the job directory. The clone borrows
+local Git objects, preserves the provider remote identity, disables checkout
+hooks, and never registers a linked worktree or changes source Git state.
+The existing collector, detector, authoring templates, and validator operate on
+that snapshot. Updates copy the shared bundle into its candidate memory directory;
+the Agent reviews affected Wiki pages and enabled historical resources.
+Validation checks candidate provenance and unchanged snapshot source. Publication
+also checks repository ownership, the previous baseline, and that the target
+still belongs to the locally identified mainline before atomically advancing
+the shared record to an immutable version. Failure keeps the old baseline.
+Completed workers remove the temporary source checkout. Old published versions
+remain readable for in-flight readers and are not automatically pruned.
 
-Demand-triggered shared maintenance resolves only the local symbolic
-`refs/remotes/origin/HEAD`. It requires a clean worktree on that branch at exactly
-the locally known remote commit; missing authority defers without fetching,
-guessing a default branch, or creating another checkout. The shared snapshot's
-publication time and pending commits feed the existing update policy. An
-incompatible or excessive delta defers to explicit authoring. Repository
-ownership serializes dispatch; an attempt record applies the policy cooldown
-to repeated attempts against an unchanged baseline, including failures.
-
-The common worker and Cursor native finalizer author a private candidate under
-the job directory. Source Git evidence stays in the original worktree; the
-existing detector accepts the candidate memory path and fixed snapshot. The
-worker reviews affected Wiki pages and enabled history resources. Validation
-and fresh source/ref checks precede atomic publication of an immutable version.
-Failures retain the old shared and worktree bundles. Readers select the nearest
-ancestor version, retaining old versions for branches that have not integrated
-newer commits. Versions are not automatically pruned. Locally authored bundles
-are independent; helper-created borrowed copies may refresh only when their
-recorded content fingerprint still matches. Refresh preserves personal sidecars,
-uses repository locking, and returns a signal to discard pre-refresh retrieval.
-Legacy borrowed records without a fingerprint are not overwritten.
+The canonical read-only resolver returns one validated bundle path for every
+branch and linked worktree. It is also available through the Backend Repo Memory
+CLI for Skill-only clients. Readers hold that version for a bounded retrieval,
+then run demand-triggered maintenance. They verify task-relevant current source
+and uncommitted changes; divergent history, file counts, deletions, and manifest
+edits do not reject the whole map. Source links resolve against the reader's
+worktree. No per-worktree copies, origin records, fingerprints, or automatic
+branch-specific updates are created. Existing local bundles remain untouched,
+are available as a fallback when no shared baseline exists, and may be explicitly
+authored without replacing shared storage. Personal-memory sidecars are excluded
+from publication, and bundle copies reject symbolic links.
 
 The Backend owns the TypeScript Repo Memory collector, delta detector, provider
 facets, and validator under `src/repo-memory`, exposed through
@@ -1180,7 +1176,7 @@ and
 | MemoraX memory results and Add acceptance | Normalized response from `provider/memorax` | Observability and trace |
 | Persisted current-turn operational state | Client-qualified current-turn records with Session and Turn checks | CLI workspace association and exact recovery; native content is independently validated |
 | Trace history | Client-qualified local trace events | Diagnostics; not native content or general Turn-identity authority |
-| Repo Memory bundle | Worktree-local `.repo_memory` files authored through explicit Skill operations or supervised jobs; a validated committed snapshot may seed the private repository-shared baseline | Restored worktree copies retain their original snapshot provenance; Backend readiness and client-injected guidance do not establish artifact validity |
+| Repo Memory bundle | One repository-shared mainline baseline published from a validated private snapshot; explicit local bundles remain separate | All worktrees read the same immutable version and verify current source; Backend readiness does not establish artifact validity |
 | Personal Memory | User-owned files under `$MEMORAX_CODE_HOME/personal-memory`: `user-profile/preferences.md` and direct `procedure-memory/*.md` topics | Repository-local `.repo_memory` sidecars, client workspace labels, and reminder delivery do not define personal-memory authority |
 
 #### Native writeback authority

@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { atomicWriteJson, readJsonFile, stringOption } from "../config-utils.mjs";
 import {
   readActiveRepoMemoryJobMarker,
@@ -12,7 +12,7 @@ import {
   repoMemoryJobWorkerEnv,
 } from "./repo-memory-job-context.mjs";
 import { gitHead, profileLocalHead, resolveCommit } from "./repo-memory-job-artifacts.mjs";
-import { clearBorrowedRepoMemory, publishSharedRepoMemory, publishSharedRepoMemoryUpdate } from "./repo-memory-shared-bundle.mjs";
+import { publishSharedRepoMemorySnapshot, sharedSnapshotRoot } from "./repo-memory-shared-bundle.mjs";
 import { resolveWindowsCliInvocation } from "../windows-cli-invocation.mjs";
 
 let activeChild;
@@ -74,11 +74,12 @@ async function main(args) {
     return finishFailed(request, state, workerContext, "worker_interrupted", { signal: requestedSignal });
   }
 
+  const sourceRepo = state.sharedSnapshot ? sharedSnapshotRoot(request.jobPath) : repo;
   const runner = runnerName(state.runner);
   const command = normalizedCommand(state.command);
   const childResult = await runClient(command, {
     captureStdout: finalMessageSource(state.finalMessageSource) === "stdout",
-    cwd: repo,
+    cwd: sourceRepo,
     env: {
       ...repoMemoryJobWorkerEnv(workerContext),
       MEMORAX_CODE_REPO_MEMORY_SNAPSHOT_HEAD: state.snapshotHead,
@@ -121,7 +122,7 @@ async function main(args) {
     });
   }
 
-  const currentHead = gitHead(repo);
+  const currentHead = gitHead(sourceRepo);
   if (currentHead !== state.snapshotHead) {
     return finishFailed(request, state, workerContext, "snapshot_changed", {
       exitCode: childResult.code,
@@ -130,7 +131,7 @@ async function main(args) {
     });
   }
 
-  const memoryRoot = state.sharedUpdate ? dirname(request.jobPath) : repo;
+  const memoryRoot = sourceRepo;
   const validation = validateBundle(memoryRoot, request.validatorPath);
   if (!validation.ok) {
     return finishFailed(request, state, workerContext, "artifact_validation_failed", {
@@ -372,14 +373,11 @@ function finishSucceeded(request, state, workerContext, details) {
     if (!ownership.active || ownership.marker.jobId !== state.jobId || ownership.marker.runId !== state.runId) {
       return finishFailed(request, state, workerContext, "job_ownership_lost");
     }
-    const sharedBaselinePublished = state.sharedUpdate
-      ? publishSharedRepoMemoryUpdate({ home: request.memoraxCodeHome, repo: state.repo, update: state.sharedUpdate,
-        root: dirname(request.jobPath), validate: (path) => validateBundle(path, request.validatorPath).ok })
-      : publishSharedRepoMemory({ home: request.memoraxCodeHome, repo: state.repo,
-      head: state.snapshotHead, shareable: state.shareableSnapshot === true,
-      validate: (path) => validateBundle(path, request.validatorPath).ok });
-    if (state.sharedUpdate && !sharedBaselinePublished) return finishFailed(request, state, workerContext, "shared_publication_rejected");
-    if (!state.sharedUpdate) clearBorrowedRepoMemory(state.repo);
+    const sharedBaselinePublished = state.sharedSnapshot ? publishSharedRepoMemorySnapshot({
+      home: request.memoraxCodeHome, repo: state.repo, snapshot: state.sharedSnapshot,
+      root: sharedSnapshotRoot(request.jobPath), validate: (path) => validateBundle(path, request.validatorPath).ok,
+    }) : false;
+    if (state.sharedSnapshot && !sharedBaselinePublished) return finishFailed(request, state, workerContext, "shared_publication_rejected");
     writeJobState(request.jobPath, {
       ...state,
       status: "succeeded",
@@ -416,6 +414,7 @@ function finishFailed(request, state, workerContext, failureReason, details = {}
 }
 
 function removeOwnedMarker(request, state, workerContext) {
+  if (state.sharedSnapshot) rmSync(sharedSnapshotRoot(request.jobPath), { recursive: true, force: true });
   removeRepoMemoryJobMarkerIfOwned({
     memoraxCodeHome: request.memoraxCodeHome,
     repoRealpath: state.repo,

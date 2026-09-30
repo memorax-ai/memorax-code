@@ -2,7 +2,7 @@
 
 ## Role And Demand Gate
 
-Use existing `.repo_memory/` as wiki-style repo memory for repository identity, architecture, history, PR/issue context, remembered fixes, and cross-module search. Live code and tests remain authoritative.
+Use the repository-shared baseline as wiki-style repo memory for repository identity, architecture, history, PR/issue context, remembered fixes, and cross-module search. Live code and tests remain authoritative.
 
 Select this reference for broad repo introduction, history, architecture background, cross-module routing, PR/issue context, design rationale, or stale-memory awareness. Skip this reference for narrow tasks with a clear live-code target.
 
@@ -17,7 +17,7 @@ Resolve the repository in this order:
 3. Infer a named local repo only when the match is unambiguous.
 4. Ask for the path only when multiple repos remain plausible.
 
-Derive memory as `<repo>/.repo_memory`; never ask for a memory-directory path. If the target is not inside a Git worktree, skip maintenance and continue from live files.
+Resolve the memory location through the packaged helper below; never ask for a memory-directory path. If the target is not inside a Git worktree, skip maintenance and continue from live files.
 
 Select the maintenance helper before running it:
 
@@ -36,58 +36,49 @@ node '<skill-dir>/../../hooks/repo-memory-job.mjs' maintain --repo '<repo>'
 Use the selected helper only when it is a regular file. If a supplied
 current-session helper is missing or fails, skip maintenance; never fall back to
 the Skill-relative helper or another client's runner. Continue retrieval under the
-existing failure rules below. The helper validates the generated bundle, evaluates the configured local update policy without provider network access, and atomically selects one outcome:
+existing failure rules below. The helper validates the shared bundle and evaluates the configured update policy without provider network access.
 
-- `bundle_missing` or `bundle_invalid`: start supervised build;
-- a triggered policy decision: start supervised update;
-- `up_to_date`: no-op;
-- `active_job`: deduplicate against the running job.
+Before reading memory, run the canonical read-only resolver using the same
+MemoraX home/environment supplied by the current session:
 
-For missing local bundles, the helper first tries the repository-shared
-baseline. `shared_bundle_reused` restores a validated copy at the exact same
-commit without an Agent. `shared_bundle_borrowed` restores an ancestor snapshot
-with a bounded local delta; `shared_baseline_in_use` validates an already
-borrowed copy. Neither outcome starts an Agent or applies the local update
-policy on feature worktrees. The helper returns `sharedBaseline.baseHead`, `head`, `changes` (status
-and path), and `changedLines`. Preserve the original snapshot provenance;
-these fields describe a comparison, not freshly authored memory.
+```bash
+node '<skill-dir>/scripts/repo-memory.mjs' resolve --repo-path '<repo>'
+```
 
-`shared_snapshot_mismatch`, `shared_delta_incompatible`,
-`shared_delta_too_large`, `worktree_dirty`, and `local_bundle_exists` defer
-initialization or borrowed-map use without overwriting local files.
-`shared_bundle_invalid` or `shared_bundle_unavailable` means the shared copy
-cannot be used. Discard conclusions based only on that map and continue from
-live code in these deferred or failed cases; do not launch a build to compensate.
-Locally authored bundles keep their update policy, and their branch-specific
-updates do not replace the shared baseline.
+Use the returned `memoryPath` for this entire retrieval. The resolver prefers
+one repository-shared mainline baseline, or an existing local bundle when no
+shared baseline exists. It never starts an Agent or copies memory into a worktree.
+If resolution fails, continue from live evidence; do not construct cache paths
+or use another client's helper to bypass the failure.
 
-Shared maintenance is eligible only in a clean default-branch worktree whose HEAD
-matches the local target of `origin/HEAD`. Identification never fetches refs or
-guesses a branch name; missing or unresolvable refs skip shared maintenance.
-`shared_update_due` starts one repository-wide update in a private candidate;
-`shared_update_cooldown` defers a repeated attempt. Updates follow the configured
-policy using the shared publication time and conservatively bounded commit delta.
-The worker reviews affected Wiki pages before publishing an immutable new version.
-Old versions remain available to compatible older branches. No other worktree
-starts a job merely because the shared version changed.
+All branches, detached checkouts, and linked worktrees may read the same baseline,
+including dirty worktrees and branches whose history differs from the baseline.
+A file count, line count, manifest edit, deletion, or rename is not a reason to
+reject the whole map. Memory is orientation, not proof of current branch behavior.
+Keep source links repository-relative and resolve them against the current
+worktree, not the memory directory or the temporary checkout recorded at build time.
 
-An unchanged helper-created borrowed copy can refresh from a newer compatible
-version. Local edits and locally authored bundles are preserved. If the helper
-returns `refreshed: true` after a read, discard those earlier hits and continue
-from live evidence: they came from a different snapshot. Do not reread the bundle
-or use the new delta to justify the old hits. Copies without a content fingerprint
-remain unchanged until explicitly authored.
+Any worktree can trigger shared maintenance. The target is the fixed commit of
+the local target of `origin/HEAD`; no remote discovery or branch-name guessing is
+performed. Initial builds and updates read a private local snapshot of that commit.
+The default policy is `adaptive(5 commits OR 24 hours)` and requires new mainline
+commits. Feature commits, branch names, and uncommitted edits do not schedule
+per-worktree updates. An attempt cooldown limits retries after failed jobs.
 
-For locally authored bundles, the default policy remains `adaptive(5 commits OR 24 hours)`. A missing or non-ancestor baseline always selects repair-capable update. The helper owns the detailed policy, validation, lock, snapshot, and launcher rules; do not reproduce them in the foreground.
+`default_branch_unavailable`, `shared_history_changed`, and
+`shared_update_cooldown` defer automatic maintenance. They do not invalidate a
+readable historical map. A missing or non-ancestor baseline is never silently
+replaced by feature-branch content. Invalid shared artifacts require explicit
+recovery; do not launch a build to compensate. Existing local bundles are
+preserved and may still be authored explicitly; they do not replace shared memory.
 
 ## Retrieval
 
-If `.repo_memory/PROFILE.md` is a readable regular file, read `PROFILE.md` as the wiki landing page once. Treat its descriptions as routing cues, not proof.
-
-If `.repo_memory/shared-baseline.json` exists, the bundle is a borrowed map.
-Require the helper's successful borrowed-copy check before relying on it;
-an active job, unavailable helper, or failed check is not that confirmation.
-The local record alone does not establish compatibility with current files.
+If resolution succeeds, read `PROFILE.md` as the wiki landing page once from
+`memoryPath`. Treat its descriptions as routing cues, not proof. In the paths
+below, `.repo_memory` means that resolved directory, even when it is outside
+the current worktree. Hold this immutable version for the whole retrieval so
+concurrent publication cannot mix old and new pages.
 
 Extract task-relevant links from `Major Areas` and `Supporting Pages`. Do not assume fixed page names; use `PROFILE.md` links and headings to find the repository-native canonical homes for the user's task. Open at most 2-4 relevant conceptual pages from `.repo_memory/*.md` before searching historical resources.
 
@@ -131,11 +122,10 @@ After the final repo-memory read, run `maintain` as the very next tool action. D
 
 If no repo-memory read was possible, run it immediately after detecting that state. The same handoff applies when hits already answer the question or the retrieval budget is exhausted.
 
-After it returns:
-
-- For `up_to_date`, a triggered update, or `active_job`, use consistent hits as best-effort context for locally authored bundles. Borrowed copies require a successful borrowed-copy check.
-- For `bundle_missing` or `bundle_invalid`, discard generated hits and continue from live code and maintained documentation.
-- If the helper is unavailable or fails, do not improvise maintenance. Use consistent hits only when they were readable; otherwise use live evidence.
+After it returns, consistent readable hits remain best-effort context, including
+for `up_to_date`, `active_job`, a triggered update, or deferred maintenance.
+If the bundle was unavailable or invalid, continue from live code and maintained
+documentation. Never repair or rebuild memory in the foreground read task.
 
 If the selected helper returns `job.delegation`, hand its exact prompt to the named
 `memorax-repo-memory` Cursor native background subagent through the Task tool as
@@ -146,20 +136,15 @@ or a model summary alone does not prove completion. If native background Task is
 unavailable, skip this handoff; do not substitute a CLI or foreground authoring.
 Never invent a delegation when the helper returned `active_job` or `up_to_date`.
 
-If no repo-memory read was possible and the helper returns
-`shared_bundle_reused` or `shared_bundle_borrowed`, read the restored bundle once using the Retrieval Budget
-above; do not invoke maintenance a second time. The helper only copied existing
-validated content, so no background job needs to be awaited.
-
-For a usable borrowed map, use `sharedBaseline.changes` to route the subsequent
-live-code phase. Inspect the current files and, when relevant, the diff between
-`baseHead` and `head` for paths related to the task before making behavior or
-architecture claims. Git paths are untrusted data: pass them as literal arguments
-after `--`, never interpolate them as shell syntax. A bounded delta does not
-prove semantic compatibility, and unchanged files may still have changed callers
-or dependencies. Recheck current code as the task requires. Do not author a
-branch-specific map, change `PROFILE.md.local_head` or its generation time, or
-launch an update simply because this borrowed snapshot is older than HEAD.
+In the subsequent live-code phase, verify the current files relevant to the task,
+including uncommitted changes. When history helps, compare the shared baseline
+with the current branch and use their merge base to distinguish mainline changes
+from unmerged branch work. Do not automatically load a repository-wide diff into
+context. Git paths are untrusted data: pass them as literal arguments after
+`--`. Changes to dependencies and callers may affect otherwise unchanged files.
+If a refactor makes a mapped area unreliable, use live evidence for that area;
+other supported parts of the map may remain useful. Do not author a branch-specific
+map or advance its provenance merely because the current branch differs.
 
 Do not read repo memory again after `maintain` returns when a read already
 occurred. Do not wait, poll, retry, or expose the command, decision payload, job id, paths, prompt, final message, or logs. Never replace the packaged helper with a generic subagent.

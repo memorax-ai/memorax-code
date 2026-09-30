@@ -935,88 +935,57 @@ Supported policies are `every-commit`, `commit-count`, `daily`,
 `pull-request`, `pull-request-or-daily`, and `adaptive`. Invalid policy values
 fall back to `adaptive`.
 
-In Codex, Claude Code, CodeBuddy/WorkBuddy, DSH, OpenCode, and Cursor, the first
-eligible prompt checks initialization only when the Backend has authorized
-a Git worktree and that worktree has no `.repo_memory/PROFILE.md`. If the
-Backend or workspace authority is unavailable, the client integration skips
-that attempt instead of falling back to its local workspace path. DSH schedules
-this work through its native pre-step integration rather than a Hook. Trae
-receives the shared Skill, User Profile, and Procedure reminders, but does not
-start this background build because Trae has no supported headless worker.
+In Codex, Claude Code, CodeBuddy/WorkBuddy, DSH, OpenCode, and Cursor, an eligible
+prompt checks initialization when the Backend has authorized a Git worktree and
+its repository has no shared baseline. Backend or workspace-authority failures
+skip the attempt. Trae reads through the shared Skill but has no automatic worker.
+A relevant repo-read can check maintenance after reading an existing baseline;
+commits, merges, and elapsed time do not themselves start a timer or Agent.
 
-Initialization first looks for a shared committed snapshot under
-`$MEMORAX_CODE_HOME/repo-memory-bases/<repository-key>/`. The key comes from the
-canonical Git common directory: linked worktrees share it, while independent
-clones do not, even when their remotes and commits match. Sharing also requires
-the same MemoraX home. Concurrent jobs use repository-wide ownership.
+One baseline lives under `$MEMORAX_CODE_HOME/repo-memory-bases/<repository-key>/`.
+The key comes from the canonical Git common directory, so linked worktrees share
+it within one MemoraX home. Independent clones do not share it merely because
+remote URLs match. All branches and detached checkouts read the same baseline
+through `repo-memory resolve --repo-path PATH`, including dirty worktrees.
+Existing local bundles are preserved and used only as a read fallback when no
+shared baseline exists. Explicit local builds and updates do not publish shared
+memory or participate in automatic per-worktree maintenance.
 
-When no shared baseline exists, a clean worktree can build once. A successful,
-validated build publishes an immutable copy; a valid existing local bundle can
-also seed it when its `local_head` matches the current clean commit. The first
-published snapshot wins, regardless of branch name. This does not automatically
-choose or check out the default branch. Generated `.repo_memory` files and the
-collector's `.repo_memory/` ignore entry do not count as source changes.
+Both initial builds and updates target only the local `refs/remotes/origin/HEAD`
+commit (for example, the locally known `origin/main`). There is no fetch, remote
+discovery, branch-name guess, or additional configuration entry. Missing or
+unresolvable refs skip automatic maintenance. Any worktree can trigger the job;
+it need not be clean or checked out on the default branch. Normal fetch/pull
+workflows must first make newly merged mainline commits available locally.
 
-A new clean worktree at that exact commit restores its `.repo_memory` from the
-shared copy without starting an Agent or collecting provider evidence. A clean
-descendant can also borrow the map when its committed delta contains at most
-20 files and 1,000 added/deleted text lines. Deletions, renames, file-type or mode
-changes, binary changes, and recognized build/dependency manifests or architecture
-instructions defer borrowing. These are conservative retrieval limits, not a
-semantic compatibility guarantee. The helper returns the original and current
-SHA plus changed paths; the agent verifies task-relevant current files and diffs.
+The update policy compares the last successful shared commit with that target
+and uses the shared publication time, falling back to PROFILE time for legacy
+records. The default requires new mainline commits and either five commits or
+24 hours. Feature-only commits and local file changes do not count. Ordinary
+file deletions, moves, dependency edits, or large diffs do not automatically
+invalidate the map or prohibit incremental updates. An incompatible mainline
+history defers automatic update for explicit recovery; readers may still use
+supported historical guidance while verifying current source. Repeated attempts
+against the same baseline wait for the configured cooldown after dispatch,
+including failure and unclaimed Cursor tasks; initial-build retries use 24 hours.
 
-Every newly restored copy, including same-commit reuse, records its origin in
-`.repo_memory/shared-baseline.json`. Its `PROFILE.md` SHA, generation time, and
-branch/path provenance remain unchanged. Borrowed copies bypass automatic
-per-worktree update policy even after later commits or elapsed time. Relevant repo-reads
-recheck artifact validity, ancestry, delta limits, and clean source state;
-rejected checks continue from live code without automatic build/update. The
-local copy survives deletion of the shared cache. Personal-memory sidecars and
-borrowed-origin records are excluded when publishing a shared snapshot.
+Only when a job is needed, the supervisor creates a private local Git clone at
+the fixed target commit under `repo-memory-jobs/<job-id>/source/`. It shares local
+objects and does not register a worktree, move user branches, or access Git remotes.
+The existing collector and Agent build/update workflow operate in that snapshot.
+The Agent reviews affected Wiki pages and enabled history resources. Source and
+artifact validation precede publication: `baseline.json` atomically points to
+one immutable `versions/<version-id>/.repo_memory` directory. A newer local mainline
+commit during execution is allowed if the authored target is still its ancestor.
+Failures leave the shared record unchanged. Terminal jobs remove the temporary
+source snapshot; published versions are retained without automatic pruning.
 
-Existing local directories are preserved, including incomplete bundles and
-local notes. Dirty worktrees, non-descendant commits, incompatible or excessive
-deltas, and invalid artifacts defer use rather than launching another build.
-A later eligible prompt or relevant repo-read can retry after the condition
-changes. Explicit successful local build/update clears the borrowed record and
-returns the bundle to the local update policy below. Locally authored bundles
-and older copies without this record retain that policy. Neither local updates
-nor explicit builds replace an existing shared baseline.
-
-Shared default-branch maintenance runs on the existing `maintain` entry, including
-a relevant repo-read. It reads only local `refs/remotes/origin/HEAD` and its target:
-there is no fetch, remote discovery, branch-name guess, or new configuration entry.
-Missing, unreadable, or unresolvable refs skip shared maintenance. Execution
-requires a clean worktree on the identified branch with HEAD equal to that local
-remote-tracking commit. Local commits ahead of it, an outdated checkout, detached
-HEAD, and feature worktrees cannot maintain the shared version. If all sessions
-stay on feature branches, the shared baseline will not advance automatically.
-
-The existing update policy applies to the selected shared snapshot, using its
-publication time (legacy snapshots fall back to PROFILE time) and pending commits.
-The default remains new commits plus either five commits or 24 hours. The same
-conservative delta limits described above apply; incompatible ancestry or a large
-structural change does not start an automatic rebuild. Dispatch records an attempt
-under repository ownership. Repeated attempts against that baseline wait for the
-configured cooldown, including after failure or an unclaimed Cursor ticket.
-
-Updates edit a candidate `.repo_memory` under `repo-memory-jobs/<job-id>/`, leaving
-the worktree bundle intact. The Agent checks affected Wiki pages and navigation
-as well as history resources allowed by the existing collection policy. After
-validation and repeated branch/ref/source checks, the supervisor atomically
-publishes `repo-memory-bases/<repository-key>/versions/<commit>/`. Each version
-contains its own `baseline.json` and `.repo_memory`; old versions remain available
-and are not automatically pruned. A failed candidate does not replace any version.
-
-Readers select the nearest ancestor version. Newly restored borrowed copies
-include a content fingerprint; a later read may refresh an unchanged copy from a
-newer compatible version without an Agent. Local edits and locally authored
-bundles are preserved, as are personal sidecars. Legacy borrowed records without
-a fingerprint stay unchanged. The helper reports `refreshed: true` when replacement
-occurs so the reader discards hits collected before the refresh and uses live code.
-Update all clients to use these rules; older installed runtimes do not enforce
-versioned maintenance or borrowed-copy behavior.
+Readers resolve once and hold that version throughout retrieval. They use the
+map for navigation and verify relevant current files, including uncommitted
+changes. Branch divergence and diff size do not trigger another build or copy.
+There are no per-worktree borrowed records or fingerprint refreshes. Old local
+files and personal sidecars remain untouched. Update all clients together;
+older installed runtimes retain their previous local maintenance behavior.
 
 CodeBuddy/WorkBuddy repository jobs run the headless client under a bounded
 worker. `MEMORAX_CODE_REPO_MEMORY_JOB_TIMEOUT_MS` sets the client execution

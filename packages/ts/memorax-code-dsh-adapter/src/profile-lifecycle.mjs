@@ -112,6 +112,8 @@ const PROFILE_BUNDLE_FILES = Object.freeze([
   "memorax-code-adapter-common/src/repo-memory/repo-memory-job-marker.mjs",
   "memorax-code-adapter-common/src/repo-memory/repo-memory-job-supervisor.mjs",
   "memorax-code-adapter-common/src/repo-memory/repo-memory-job-worker.mjs",
+  "memorax-code-adapter-common/src/repo-memory/repo-memory-repository.mjs",
+  "memorax-code-adapter-common/src/repo-memory/repo-memory-shared-bundle.mjs",
   "memorax-code-adapter-common/src/personal-memory/procedure-memory-context.mjs",
   "memorax-code-adapter-common/src/repo-memory/repo-memory-update-policy-evaluator.mjs",
   "memorax-code-adapter-common/src/repo-memory/repo-memory-update-policy.mjs",

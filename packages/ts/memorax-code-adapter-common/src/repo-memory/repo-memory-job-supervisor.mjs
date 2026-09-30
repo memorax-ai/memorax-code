@@ -6,8 +6,9 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { atomicWriteJson, stringOption } from "../config-utils.mjs";
 import { repoMemoryJobWorkerEnv } from "./repo-memory-job-context.mjs";
-import { gitHead, resolveCommit } from "./repo-memory-job-artifacts.mjs";
-import { borrowedFingerprint, defaultBranchSnapshot, inspectBorrowedRepoMemory, inspectSharedDelta, prepareSharedRepoMemoryUpdate, publishSharedRepoMemory, readSharedRepoMemory, recordSharedRepoMemoryAttempt, restoreSharedRepoMemory, shareableRepoMemoryWorktree, sharedRepoMemoryAttemptCoolingDown } from "./repo-memory-shared-bundle.mjs";
+import { gitHead } from "./repo-memory-job-artifacts.mjs";
+import { bundleHeadMatches, defaultBranchSnapshot, prepareSharedRepoMemorySnapshot, readSharedRepoMemory, recordSharedRepoMemoryAttempt, sharedRepoMemoryAttemptCoolingDown, sharedSnapshotRoot } from "./repo-memory-shared-bundle.mjs";
+import { DEFAULT_REPO_MEMORY_COOLDOWN_HOURS } from "./repo-memory-update-policy.mjs";
 import {
   markerPathForRepo,
   readActiveRepoMemoryJobMarker,
@@ -27,6 +28,7 @@ const DEFAULT_MEMORY_SKILL_INVOCATION = "$memorax-code";
 export function runRepoMemoryJob(args, options) {
   const runtime = normalizeRuntime(options);
   const request = parseArgs(args);
+  if (request.command === "resolve") return resolveRepoMemory(request, runtime);
   if (request.command === "maintain") return maintainRepoMemory(request, runtime);
   if (request.command === "start") return (runtime.startJob ?? startRepoMemoryJob)(request, runtime);
   throw new Error(usage());
@@ -77,90 +79,13 @@ function maintainRepoMemory(request, runtime) {
   }
 
   const maintenance = inspectSharedRepoMemoryMaintenance(request, runtime);
-  if (maintenance?.sharedUpdate) return launchMaintenanceJob({ request: { ...request, sharedUpdate: maintenance.sharedUpdate },
-    runtime, repo, action: "update", reason: "shared_update_due", bundleStatus: "usable", policyDecision: maintenance.policyDecision });
-  if (maintenance) return maintenanceDecision({ ...maintenance, repo, action: "none" });
-
-  const shared = reuseSharedRepoMemory(request, runtime);
-  if (shared) return maintenanceDecision({ ...shared, repo, action: "none" });
-
-  const bundle = inspectRepoMemoryBundle(repo, runtime.validatorPath);
-  if (bundle.status === "unknown") {
-    return maintenanceDecision({
-      ok: false,
-      action: "none",
-      reason: "bundle_validation_failed",
-      bundleStatus: "unknown",
-      repo,
-      validation: bundle.validation,
-    });
-  }
-  if (bundle.status === "missing" || bundle.status === "invalid") {
-    if (!shareableRepoMemoryWorktree(repo)) {
-      return maintenanceDecision({ action: "none", reason: "worktree_dirty", bundleStatus: bundle.status, repo });
-    }
-    return launchMaintenanceJob({
-      request,
-      runtime,
-      repo,
-      action: "build",
-      reason: bundle.status === "missing" ? "bundle_missing" : "bundle_invalid",
-      bundleStatus: bundle.status,
-      validation: bundle.validation,
-    });
-  }
-
-  if (!request.dryRun) {
-    const lock = tryAcquireRepoMemoryStartupLock({ memoraxCodeHome, repoRealpath: repo });
-    if (lock.acquired) {
-      try {
-        if (!readActiveRepoMemoryJobMarker({ memoraxCodeHome, repoRealpath: repo }).active) {
-          publishSharedRepoMemory({ home: memoraxCodeHome, repo, head: gitHead(repo), shareable: true,
-            validate: (path) => inspectRepoMemoryBundle(path, runtime.validatorPath).status === "usable" });
-        }
-      } finally { releaseRepoMemoryStartupLock(lock.lock); }
-    }
-  }
-
-  let policyDecision;
-  try {
-    policyDecision = runtime.evaluateRepository({
-      repo,
-      nowMs: request.nowMs,
-      configPath: request.configPath,
-    });
-  } catch {
-    return maintenanceDecision({
-      ok: false,
-      action: "none",
-      reason: "policy_evaluation_failed",
-      bundleStatus: "usable",
-      repo,
-      validation: bundle.validation,
-    });
-  }
-
-  if (!policyDecision.trigger) {
-    return maintenanceDecision({
-      action: "none",
-      reason: "up_to_date",
-      bundleStatus: "usable",
-      repo,
-      validation: bundle.validation,
-      policyDecision,
-    });
-  }
-
-  return launchMaintenanceJob({
-    request,
-    runtime,
-    repo,
-    action: "update",
-    reason: policyDecision.reason || "policy_triggered",
-    bundleStatus: "usable",
-    validation: bundle.validation,
-    policyDecision,
+  if (maintenance.sharedSnapshot) return launchMaintenanceJob({
+    request: { ...request, sharedSnapshot: maintenance.sharedSnapshot }, runtime, repo,
+    action: maintenance.sharedSnapshot.baseHead ? "update" : "build",
+    reason: maintenance.sharedSnapshot.baseHead ? "shared_update_due" : "shared_build_due",
+    bundleStatus: maintenance.bundleStatus, policyDecision: maintenance.policyDecision,
   });
+  return maintenanceDecision({ ...maintenance, repo, action: "none" });
 }
 
 function launchMaintenanceJob(input) {
@@ -170,7 +95,7 @@ function launchMaintenanceJob(input) {
     mode: input.action,
     dryRun: input.request.dryRun,
     automatic: true,
-    sharedUpdate: input.request.sharedUpdate,
+    sharedSnapshot: input.request.sharedSnapshot,
     nowMs: input.request.nowMs,
     configPath: input.request.configPath,
   }, input.runtime);
@@ -197,80 +122,56 @@ function launchMaintenanceJob(input) {
   });
 }
 
-// Also checked under the startup lock, after a concurrent build may have finished.
-export function reuseSharedRepoMemory(request, runtime) {
+// Resolving a read never schedules work or creates a worktree-local copy.
+export function resolveRepoMemory(request, runtime) {
   const repo = realpathRepo(resolve(request.repo));
-  const home = resolve(runtime.memoraxCodeHome || process.env.MEMORAX_CODE_HOME || join(homedir(), ".memorax-code"));
-  try {
-    const validate = (path) => inspectRepoMemoryBundle(path, runtime.validatorPath);
-    let result = inspectBorrowedRepoMemory({ repo, validate });
-    if (result && borrowedFingerprint(repo)) {
-      const lock = request.startupLocked || request.dryRun ? { acquired: true } : tryAcquireRepoMemoryStartupLock({ memoraxCodeHome: home, repoRealpath: repo });
-      if (lock.acquired) try {
-        if (!readActiveRepoMemoryJobMarker({ memoraxCodeHome: home, repoRealpath: repo }).active) {
-          const baseline = readSharedRepoMemory(home, repo);
-          if (baseline && baseline.head !== result.sharedBaseline?.baseHead) {
-            const refreshed = restoreSharedRepoMemory({ baseline, repo, dryRun: request.dryRun, validate, refresh: true });
-            if (["shared_bundle_reused", "shared_bundle_borrowed"].includes(refreshed.reason)) result = refreshed;
-          }
-        }
-      } finally { if (lock.lock) releaseRepoMemoryStartupLock(lock.lock); }
-    }
-    if (!result) {
-      // Locally authored bundles retain their current local maintenance policy.
-      if (existsSync(join(repo, ".repo_memory", "PROFILE.md"))) return undefined;
-      const baseline = readSharedRepoMemory(home, repo);
-      if (!baseline) return undefined;
-      result = restoreSharedRepoMemory({ baseline, repo, dryRun: request.dryRun, validate });
-    }
-    const usable = ["shared_bundle_reused", "shared_bundle_borrowed", "shared_baseline_in_use"].includes(result.reason);
-    return { ...result, ok: !["shared_bundle_invalid", "shared_bundle_unavailable"].includes(result.reason),
-      bundleStatus: usable ? "usable" : result.reason === "shared_bundle_invalid" ? "invalid" : "unchecked" };
-  } catch {
-    return { ok: false, reason: "shared_bundle_unavailable", bundleStatus: "unknown" };
-  }
-}
-
-// This policy reads the shared snapshot, independently of the current local map.
-function inspectSharedRepoMemoryMaintenance(request, runtime) {
-  const repo = realpathRepo(resolve(request.repo));
-  const snapshot = defaultBranchSnapshot(repo);
-  if (!snapshot) return undefined;
   const home = resolve(runtime.memoraxCodeHome || process.env.MEMORAX_CODE_HOME || join(homedir(), ".memorax-code"));
   try {
     const baseline = readSharedRepoMemory(home, repo);
-    if (!baseline) return undefined;
-    if (!shareableRepoMemoryWorktree(repo)) return { reason: "worktree_dirty", bundleStatus: "unchecked" };
-    const bundle = inspectRepoMemoryBundle(baseline.path, runtime.validatorPath);
-    if (bundle.status !== "usable") return { ok: false, reason: "shared_bundle_invalid", bundleStatus: bundle.status };
-    const delta = inspectSharedDelta(repo, baseline.head);
-    if (delta.reason) return { reason: delta.reason, bundleStatus: "unchecked" };
-    const policyDecision = runtime.evaluateRepository({ repo, profilePath: join(baseline.path, ".repo_memory", "PROFILE.md"),
-      lastUpdatedAtMs: Date.parse(baseline.publishedAt || ""), nowMs: request.nowMs, configPath: request.configPath });
-    // Never convert an inconsistent shared PROFILE into a repair job.
-    if (resolveCommit(repo, policyDecision.baseline || "", { timeoutMs: 2000 }) !== baseline.head
-      || policyDecision.head !== snapshot.head || policyDecision.baselineStatus !== "ancestor") {
-      return { ok: false, reason: "shared_bundle_invalid", bundleStatus: "invalid" };
+    const root = baseline?.path || repo;
+    const bundle = inspectRepoMemoryBundle(root, runtime.validatorPath);
+    if (bundle.status !== "usable" || (baseline && !bundleHeadMatches(repo, root, baseline.head))) {
+      return { ok: false, reason: baseline ? "shared_bundle_invalid" : "bundle_unavailable", bundleStatus: bundle.status, repo };
     }
-    if (!policyDecision.trigger) {
-      const reused = reuseSharedRepoMemory(request, runtime);
-      if (reused) return { ...reused, policyDecision };
-      // An independently authored local map keeps its own policy.
-      return undefined;
+    return { ok: true, reason: baseline ? "shared_baseline_in_use" : "local_bundle_in_use", bundleStatus: "usable",
+      repo, memoryPath: join(root, ".repo_memory"), sharedBaseline: baseline ? { head: baseline.head, publishedAt: baseline.publishedAt } : undefined };
+  } catch { return { ok: false, reason: "shared_bundle_unavailable", bundleStatus: "unknown", repo }; }
+}
+
+function inspectSharedRepoMemoryMaintenance(request, runtime) {
+  const repo = realpathRepo(resolve(request.repo));
+  const snapshot = defaultBranchSnapshot(repo);
+  if (!snapshot) return { reason: "default_branch_unavailable", bundleStatus: "unchecked" };
+  const home = resolve(runtime.memoraxCodeHome || process.env.MEMORAX_CODE_HOME || join(homedir(), ".memorax-code"));
+  try {
+    const baseline = readSharedRepoMemory(home, repo);
+    let policyDecision;
+    if (baseline) {
+      const bundle = inspectRepoMemoryBundle(baseline.path, runtime.validatorPath);
+      if (bundle.status !== "usable" || !bundleHeadMatches(repo, baseline.path, baseline.head)) {
+        return { ok: false, reason: "shared_bundle_invalid", bundleStatus: bundle.status };
+      }
+      policyDecision = runtime.evaluateRepository({ repo, snapshotRef: snapshot.head,
+        profilePath: join(baseline.path, ".repo_memory", "PROFILE.md"),
+        lastUpdatedAtMs: Date.parse(baseline.publishedAt || ""), nowMs: request.nowMs, configPath: request.configPath });
+      if (policyDecision.head !== snapshot.head || policyDecision.baselineStatus !== "ancestor") {
+        return { reason: "shared_history_changed", bundleStatus: "usable", policyDecision };
+      }
+      if (!policyDecision.trigger) return { reason: "up_to_date", bundleStatus: "usable", policyDecision };
     }
-    if (sharedRepoMemoryAttemptCoolingDown({ home, repo, baseHead: baseline.head, cooldownHours: policyDecision.cooldownHours, nowMs: request.nowMs })) {
-      return { reason: "shared_update_cooldown", bundleStatus: "usable", policyDecision };
+    const baseHead = baseline?.head ?? null;
+    if (sharedRepoMemoryAttemptCoolingDown({ home, repo, baseHead,
+      cooldownHours: policyDecision?.cooldownHours ?? DEFAULT_REPO_MEMORY_COOLDOWN_HOURS, nowMs: request.nowMs })) {
+      return { reason: "shared_update_cooldown", bundleStatus: baseline ? "usable" : "missing", policyDecision };
     }
-    return { sharedUpdate: { ...snapshot, baseHead: baseline.head }, policyDecision };
+    return { sharedSnapshot: { ...snapshot, baseHead }, bundleStatus: baseline ? "usable" : "missing", policyDecision };
   } catch { return { ok: false, reason: "shared_maintenance_unavailable", bundleStatus: "unknown" }; }
 }
 
-// Recheck under the same repository startup lock used by both launchers.
 export function recheckSharedRepoMemoryMaintenance(request, runtime) {
-  const current = inspectSharedRepoMemoryMaintenance({ ...request, startupLocked: true }, runtime);
-  if (current?.sharedUpdate && JSON.stringify(current.sharedUpdate) === JSON.stringify(request.sharedUpdate)) return undefined;
-  return current?.sharedUpdate ? { reason: "shared_update_changed", bundleStatus: "unchecked" }
-    : current || { reason: "shared_update_changed", bundleStatus: "unchecked" };
+  const current = inspectSharedRepoMemoryMaintenance(request, runtime);
+  if (current.sharedSnapshot && JSON.stringify(current.sharedSnapshot) === JSON.stringify(request.sharedSnapshot)) return undefined;
+  return current.sharedSnapshot ? { reason: "shared_update_changed", bundleStatus: "unchecked" } : current;
 }
 
 function maintenanceDecision(input) {
@@ -284,7 +185,7 @@ function maintenanceDecision(input) {
     validation: input.validation,
     policyDecision: input.policyDecision,
     sharedBaseline: input.sharedBaseline,
-    refreshed: input.refreshed,
+    memoryPath: input.memoryPath,
     job: input.job,
   }).filter(([, value]) => value !== undefined));
 }
@@ -362,7 +263,7 @@ function startRepoMemoryJob(request, runtime) {
   const repo = realpathRepo(resolve(request.repo));
   const mode = request.mode;
   if (mode !== "build" && mode !== "update") throw new Error("--mode must be build or update");
-  if (mode === "update" && !request.sharedUpdate && !existsSync(join(repo, ".repo_memory", "PROFILE.md"))) {
+  if (mode === "update" && !request.sharedSnapshot && !existsSync(join(repo, ".repo_memory", "PROFILE.md"))) {
     throw new Error(`repo memory update requires an existing .repo_memory/PROFILE.md: ${repo}`);
   }
 
@@ -378,15 +279,16 @@ function startRepoMemoryJob(request, runtime) {
   const finalMessagePath = join(jobDir, "final-message.txt");
   const outputLogPath = join(jobDir, "output.log");
   const jobPath = join(jobDir, "job.json");
-  const snapshot = gitSnapshot(repo);
+  const sourceRepo = request.sharedSnapshot ? sharedSnapshotRoot(jobPath) : repo;
+  const snapshot = request.sharedSnapshot ? { ...request.sharedSnapshot, workingTreeState: "clean" } : gitSnapshot(repo);
   const prompt = mode === "build"
-    ? buildPrompt(repo, snapshot.head, runtime.memorySkillInvocation)
-    : updatePrompt(repo, snapshot.head, runtime.memorySkillInvocation, request.sharedUpdate ? { ...request.sharedUpdate, root: jobDir } : undefined);
+    ? buildPrompt(sourceRepo, snapshot.head, runtime.memorySkillInvocation, request.sharedSnapshot)
+    : updatePrompt(sourceRepo, snapshot.head, runtime.memorySkillInvocation, request.sharedSnapshot ? { ...request.sharedSnapshot, root: sourceRepo } : undefined);
   const command = runtime.createCommand({
     finalMessagePath,
     prompt,
-    repo,
-    memoryRoot: request.sharedUpdate ? jobDir : repo,
+    repo: sourceRepo,
+    memoryRoot: sourceRepo,
   });
   assertCommand(command);
   const runId = randomUUID().replace(/-/g, "");
@@ -435,13 +337,12 @@ function startRepoMemoryJob(request, runtime) {
     const markerInsideLock = readActiveRepoMemoryJobMarker({ memoraxCodeHome, repoRealpath: repo });
     if (markerInsideLock.active) return alreadyRunningPayload(markerInsideLock.marker);
     if (request.automatic) {
-      const sharedDecision = request.sharedUpdate ? recheckSharedRepoMemoryMaintenance(request, runtime) : reuseSharedRepoMemory({ ...request, startupLocked: true }, runtime);
+      const sharedDecision = recheckSharedRepoMemoryMaintenance(request, runtime);
       if (sharedDecision) return { ok: sharedDecision.ok, sharedDecision };
     }
-    if (request.sharedUpdate && snapshot.head !== request.sharedUpdate.head) return { sharedDecision: { reason: "shared_update_changed", bundleStatus: "unchecked" } };
 
     mkdirSync(jobDir);
-    if (request.sharedUpdate) prepareSharedRepoMemoryUpdate({ home: memoraxCodeHome, repo, update: request.sharedUpdate, root: jobDir,
+    if (request.sharedSnapshot) prepareSharedRepoMemorySnapshot({ home: memoraxCodeHome, repo, snapshot: request.sharedSnapshot, root: sourceRepo,
       validate: (path) => inspectRepoMemoryBundle(path, runtime.validatorPath).status === "usable" });
     const state = {
       version: 1,
@@ -461,11 +362,10 @@ function startRepoMemoryJob(request, runtime) {
       snapshotHead: snapshot.head,
       snapshotBranch: snapshot.branch,
       snapshotWorkingTreeState: snapshot.workingTreeState,
-      shareableSnapshot: shareableRepoMemoryWorktree(repo),
-      sharedUpdate: request.sharedUpdate,
+      sharedSnapshot: request.sharedSnapshot,
     };
     atomicWriteJson(jobPath, state);
-    if (request.sharedUpdate) recordSharedRepoMemoryAttempt({ home: memoraxCodeHome, repo, update: request.sharedUpdate, nowMs: request.nowMs });
+    if (request.sharedSnapshot) recordSharedRepoMemoryAttempt({ home: memoraxCodeHome, repo, snapshot: request.sharedSnapshot, nowMs: request.nowMs });
 
     let logFd;
     let child;
@@ -634,28 +534,29 @@ function parseArgs(values) {
 function usage() {
   return [
     "usage:",
+    "  repo-memory-job.mjs resolve --repo PATH",
     "  repo-memory-job.mjs maintain --repo PATH [--dry-run] [--now ISO8601] [--config PATH]",
     "  repo-memory-job.mjs start --mode build|update --repo PATH [--dry-run]",
   ].join("\n");
 }
 
-export function buildPrompt(repo, snapshotHead, memorySkillInvocation) {
-  return `This invocation is the authorized background repo-memory worker. Complete the requested operation yourself; do not inspect, launch, or defer to another repo-memory job.\n\nUse ${memorySkillInvocation} and select the Repo Memory repo-build operation to build lightweight repo memory for this repository.\n\nRepository: ${repo}\nSnapshot HEAD: ${snapshotHead}\n\nDefault behavior:\n- Collect local git commit evidence from the exact snapshot SHA above, not a later symbolic HEAD.\n- Also try GitHub/GitLab PR, MR, and issue evidence when provider CLIs and authentication are available.\n- If provider evidence is unavailable, continue local-only and clearly record why.\n- Do not fabricate PR, MR, or issue facts.\n- If a previous attempt left an existing partial or unusable .repo_memory directory, perform a full refresh with repo-memory.mjs collect --reuse instead of stopping because the directory exists.\n- Preserve .repo_memory/procedure-memory and .repo_memory/user-profile sidecars during full-refresh recovery.\n- Keep file writes scoped to ${repo}/.repo_memory and necessary repo-memory ignore/config entries.\n- Do not modify source code, dependency files, global config, or files outside the target repo unless explicitly required by repo-memory tooling.\n- Ensure PROFILE.md local_head resolves to the snapshot SHA above.\n- Run the packaged repo-memory validator before finishing.\n- Write a concise final summary with generated files, provider evidence status, and any follow-up needed.\n`;
+export function buildPrompt(repo, snapshotHead, memorySkillInvocation, sharedSnapshot) {
+  return `This invocation is the authorized background repo-memory worker. Complete the requested operation yourself; do not inspect, launch, or defer to another repo-memory job.\n\nUse ${memorySkillInvocation} and select the Repo Memory repo-build operation to build lightweight repo memory for this repository.\n\nRepository: ${repo}\nSnapshot HEAD: ${snapshotHead}\n\nDefault behavior:\n- Collect local git commit evidence from the exact snapshot SHA above, not a later symbolic HEAD.\n- Also try GitHub/GitLab PR, MR, and issue evidence when provider CLIs and authentication are available.\n- If provider evidence is unavailable, continue local-only and clearly record why.\n- Do not fabricate PR, MR, or issue facts.\n- If a previous attempt left an existing partial or unusable .repo_memory directory, perform a full refresh with repo-memory.mjs collect --reuse instead of stopping because the directory exists.\n- Preserve .repo_memory/procedure-memory and .repo_memory/user-profile sidecars during full-refresh recovery.\n- Keep file writes scoped to ${repo}/.repo_memory and necessary repo-memory ignore/config entries.\n- Do not modify source code, dependency files, global config, or files outside the target repo unless explicitly required by repo-memory tooling.\n- Ensure PROFILE.md local_head resolves to the snapshot SHA above.\n- Run the packaged repo-memory validator before finishing.\n- Write a concise final summary with generated files, provider evidence status, and any follow-up needed.\n` + (sharedSnapshot ? "\nThis is a shared mainline build in a private source snapshot. Follow the shared-mainline rules in repo-build: use only this source checkout, keep source links repository-relative, and do not contact Git remotes. The supervisor publishes the validated bundle; the source checkout is temporary.\n" : "");
 }
 
-export function updatePrompt(repo, snapshotHead, memorySkillInvocation, sharedUpdate) {
-  if (sharedUpdate) return `This invocation is the authorized background repo-memory worker. Complete this shared-default-branch update yourself; do not delegate or launch another job.
+export function updatePrompt(repo, snapshotHead, memorySkillInvocation, sharedSnapshot) {
+  if (sharedSnapshot) return `This invocation is the authorized background repo-memory worker. Complete this shared-default-branch update yourself; do not delegate or launch another job.
 
 Use ${memorySkillInvocation} and the Repo Memory repo-update operation, following its shared-default-branch candidate rules.
 Source repository: ${repo}
-Baseline HEAD: ${sharedUpdate.baseHead}
+Baseline HEAD: ${sharedSnapshot.baseHead}
 Snapshot HEAD: ${snapshotHead}
-Candidate memory directory: ${join(sharedUpdate.root, ".repo_memory")}
+Candidate memory directory: ${join(sharedSnapshot.root, ".repo_memory")}
 
 Run the packaged detect-updates helper with --repo-path for the source repository, --memory-path for this candidate, and --snapshot-ref for the exact snapshot SHA. Follow its effective history policy; do not re-enable disabled commit or provider channels.
 Inspect the source diff from the baseline SHA to the snapshot SHA and the affected live code. Update affected Wiki pages and PROFILE navigation as well as enabled history resources. No history delta does not mean no Wiki change.
-Write only inside the candidate memory directory. Do not change the worktree's .repo_memory, source, Git state, shared cache, or configuration. Do not contact Git remotes. If the baseline needs a full rebuild, stop and report it instead.
-After reviewing all affected pages, set candidate PROFILE.md local_head to the snapshot SHA and generated_at to the successful update time; refresh source_repo_path and local_branch for this source snapshot. Validate the candidate with the packaged validator using ${sharedUpdate.root} as the validation root. Report the changed pages and evidence limitations. The supervisor alone publishes the validated version.
+Write only inside the candidate memory directory. Do not change snapshot source, Git state, shared cache, configuration, or the caller's worktree. Do not contact Git remotes. If the baseline needs a full rebuild, stop and report it instead.
+After reviewing all affected pages, set candidate PROFILE.md local_head to the snapshot SHA and generated_at to the successful update time; refresh source_repo_path and local_branch for this source snapshot. Validate the candidate with the packaged validator using ${sharedSnapshot.root} as the validation root. Report the changed pages and evidence limitations. Use repository-relative source links; the source checkout is temporary. The supervisor alone publishes the validated version.
 `;
   return `This invocation is the authorized background repo-memory worker. Complete the requested operation yourself; do not inspect, launch, or defer to another repo-memory job.\n\nUse ${memorySkillInvocation} and select the Repo Memory repo-update operation to incrementally update this repository's existing .repo_memory.\n\nRepository: ${repo}\nSnapshot HEAD: ${snapshotHead}\n\nDefault behavior:\n- Treat existing .repo_memory as the baseline.\n- Run and follow the packaged repo-update detector's effective history policy.\n- Do not re-enable commit or provider evidence channels disabled by repoHistory.mode.\n- If provider evidence is unavailable when provider history is enabled, preserve existing provider resources.\n- Do not rebuild unless updater reports the baseline is unusable; if a full rebuild is required, stop and report that.\n- Keep file writes scoped to ${repo}/.repo_memory and necessary repo-memory ignore/config entries.\n- Do not modify source code, dependency files, global config, or files outside the target repo unless explicitly required by repo-memory tooling.\n- Ensure PROFILE.md local_head resolves to the snapshot SHA above.\n- Run the packaged repo-memory validator before finishing.\n- Write a concise final summary with changed files, provider evidence status, and any follow-up needed.\n`;
 }

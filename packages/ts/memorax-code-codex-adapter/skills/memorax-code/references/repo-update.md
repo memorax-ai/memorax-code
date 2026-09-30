@@ -12,24 +12,24 @@ This is the incremental updater, not the daily reader. Use `repo-read.md` for ta
 
 ### Supervised Shared-Default-Branch Candidate
 
-An authorized background worker may provide a source repository, baseline SHA,
-snapshot SHA, and a separate candidate memory directory. In that mode, use the
-candidate in place of `<repo>/.repo_memory` throughout this reference. Run
+An authorized background worker supplies an isolated source repository at a fixed
+mainline commit, the baseline SHA, and its candidate `.repo_memory` directory.
+Use that snapshot for both code inspection and collection. Run
 `detect-updates --repo-path <source-repo> --memory-path <candidate-memory>
 --snapshot-ref <snapshot-sha> --pretty`; validate the candidate's parent directory.
-Do not change the source worktree's bundle, shared cache, Git refs, or configuration,
-and do not fetch Git refs. The supervisor owns version publication.
+Do not change the caller's worktree, shared cache, Git refs, or configuration,
+and do not contact Git remotes. The supervisor owns version publication.
 
-Review the source diff from baseline SHA to snapshot SHA and affected live code;
-update the affected Wiki pages and PROFILE navigation as well as enabled history
+Review the diff from baseline SHA to snapshot SHA and affected source files;
+update affected Wiki pages and PROFILE navigation as well as enabled history
 resources. This code-map review is required even when history is disabled or the
 detector reports no history delta. Preserve disabled history channels and existing
-provider resources when fetching is unavailable. Advance the candidate PROFILE
-SHA, timestamp, source path, and branch only after reviewing all affected pages. If incremental review
-cannot produce a usable map, stop and report the need for an explicit rebuild.
-Do not clear the source worktree's borrowed record. These candidate rules override
-the local-directory convention and history-only report gates below only for this
-supervised operation.
+provider resources when collection is unavailable. Advance the candidate PROFILE
+SHA and timestamp only after reviewing all affected pages. Use repository-relative
+evidence links; the source snapshot is temporary. If incremental review cannot
+produce a usable map, stop and report the need for an explicit rebuild.
+These candidate rules override history-only report gates below for this supervised
+operation. Explicit local updates do not replace the shared baseline.
 
 The user selects a repository, not a memory directory. Derive the memory path as `<repo>/.repo_memory`.
 
@@ -133,11 +133,6 @@ node <skill-dir>/scripts/repo-memory.mjs validate <repo-path> --pretty
 
 Whenever an update changes generated repo-memory artifacts, set `PROFILE.md.generated_at` to the successful update time and `PROFILE.md.local_head` to the processed snapshot. The read-time cooldown policy uses this timestamp; do not preserve an older build time after a successful incremental update.
 
-After an explicitly requested update succeeds and passes validation, remove
-`.repo_memory/shared-baseline.json` if present. The bundle then follows local
-maintenance policy. Retain the record on failure or interruption; do not replace
-the repository-shared cache. Task-time reads of borrowed maps do not authorize
-this update or record removal.
 
 ## Authoring Rules
 

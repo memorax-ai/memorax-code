@@ -981,52 +981,35 @@ Do not copy model-provider credentials into `$MEMORAX_CODE_HOME`.
 
 ## A new worktree does not build Repo Memory
 
-For clients with background Repo Memory support, linked worktrees use the same
-repository-wide job ownership and shared baseline within one MemoraX home.
-At the same committed snapshot or a compatible descendant, a clean worktree
-restores `.repo_memory` without another Agent invocation. Another worktree's active job can also defer
-initialization until a later eligible prompt or relevant repo-read.
+Linked worktrees intentionally share one mainline Repo Memory baseline within
+one MemoraX home. They do not each build or receive a local copy. The read-only
+`repo-memory resolve --repo-path PATH` helper returns the shared bundle path.
+An existing local bundle is a fallback only when shared memory is absent.
 
-If the shared baseline is not an ancestor of the current commit, the local
-delta exceeds borrowing limits or changes recognized structural files, or the
-worktree has uncommitted source changes, automatic initialization is deferred. Continue
-from live files, or explicitly request a local Repo Memory build. Existing
-local files are preserved; a partial `.repo_memory` directory is not overwritten
-by sharing. Explicit local builds and updates do not replace a shared baseline.
+Automatic build and update require a locally resolvable `origin/HEAD` target.
+The helper does not discover or retrieve it from a server. Normal fetch/pull
+workflows supply updated mainline commits. The caller may remain on a feature
+branch with uncommitted changes; authoring uses a separate fixed snapshot.
+Feature-only commits do not advance the shared baseline. The configured policy
+requires new mainline commits, and failed attempts wait for the cooldown.
 
-Borrowed copies retain their original `PROFILE.md.local_head` and generation
-time. Their `.repo_memory/shared-baseline.json` record suppresses automatic
-per-worktree updates; repeated reads return a current local delta when the map
-remains usable. An old date alone is not a reason to rebuild. If a borrowed copy
-becomes unusable, use live files or explicitly request a local build/update.
-Only successful explicit authoring clears the borrowed record and restores
-normal local update policy. Do not edit the origin record to make stale memory
-look current or discard it to force an automatic job.
+Source links in memory refer to the reader's worktree. Verify relevant current
+files when branches differ; file counts, deletions, and manifest edits do not
+invalidate the whole map. A large refactor can make individual mapped areas
+unreliable. Mainline history replacement defers automatic maintenance for explicit
+recovery while supported parts of the old map remain useful historical guidance.
 
-Shared snapshots live under
-`$MEMORAX_CODE_HOME/repo-memory-bases/<repository-key>/`; `baseline.json`
-identifies the repository and commit. If a snapshot is invalid or must be
-replaced, stop that repository's Repo Memory jobs, verify the matching record,
-and remove only that repository's shared snapshot directory before explicitly
-rebuilding from the desired clean commit. Keep other repository snapshots and
-personal memory. Do not publish these private local files in an issue.
-
-Default-branch shared maintenance uses only local `origin/HEAD`. If it is absent
-or unresolved, or the current clean worktree is not on that branch at the same
-commit as its remote-tracking ref, shared updates are skipped. Normal user fetch
-and checkout workflows supply this state; the helper does not fetch or guess it.
-The configured policy still needs new commits. Incompatible/large deltas defer
-to an explicit rebuild; failed attempts wait for the configured cooldown.
-
-Successful shared updates add `versions/<commit>/` under that repository's cache.
-Old branches continue selecting an ancestor version. An unchanged borrowed copy
-with a recorded content fingerprint can refresh on a later read; locally modified,
-authored, or older copies without a fingerprint stay intact. Candidate artifacts
-are in the private job directory, and a failed update leaves the published and
-worktree bundles unchanged. There is no automatic version pruning.
+Shared state is under `$MEMORAX_CODE_HOME/repo-memory-bases/<repository-key>/`.
+`baseline.json` identifies the current published commit and immutable version.
+Failed candidates do not advance that record. Existing local bundles and personal
+memory are not removed. If the shared artifact is corrupt, stop that repository's
+jobs, back up and remove only its matching shared directory, then let an eligible
+maintenance call build again from the locally identified mainline. Do not remove
+other repository state or publish private files in an issue. There is no automatic
+version pruning; readers may still hold an older immutable version.
 
 See [repository maintenance configuration](configuration.md#skill-reminder-and-repository-maintenance)
-for storage, reuse, and existing local update behavior.
+for trigger timing, storage, and policy settings.
 
 ## Safe issue reports
 

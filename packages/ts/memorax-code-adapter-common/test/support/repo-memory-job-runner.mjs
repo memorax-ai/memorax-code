@@ -30,6 +30,9 @@ switch (behavior) {
   case "break-git":
     rmSync(join(repo, ".git", "HEAD"));
     break;
+  case "invalid-profile":
+    writeFileSync(join(memoryRoot, ".repo_memory/PROFILE.md"), "invalid profile\n");
+    break;
   case "final-only":
     break;
   default:

@@ -392,6 +392,8 @@ test("Cursor missing-bundle initialization delegates once using only the accepte
     for (const args of [["init", "--quiet"], ["config", "user.name", "Fixture"],
       ["config", "user.email", "fixture@example.invalid"], ["config", "commit.gpgsign", "false"],
       ["commit", "--quiet", "--allow-empty", "-m", "fixture"]]) execFileSync("git", args, { cwd: repo });
+    execFileSync("git", ["update-ref", "refs/remotes/origin/main", "HEAD"], { cwd: repo });
+    execFileSync("git", ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"], { cwd: repo });
     fixture.control.body.repoMemoryWorktree = repo;
     const result = await runHook(fixture, { hook_event_name: "beforeSubmitPrompt", prompt: "inspect this repo" }, { MEMORAX_CODE_CURSOR_HOOK_DEBUG: "1" });
     assert.equal(result.status, 0, result.stderr);

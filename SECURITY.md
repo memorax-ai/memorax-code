@@ -108,27 +108,24 @@ Please allow time for triage and remediation before public disclosure.
   are bound to one active Turn with a prompt-derived Turn ID; a new
   prompt interrupts the old Turn, and late or mismatched completion events do
   not write back. Hook fields are not a fallback for any other client.
-- Initial Repo Memory builds use only the Git worktree returned by an
+- Initial Repo Memory build triggers accept only the Git worktree returned by an
   authenticated Backend turn-start request. Backend or workspace-scope
   failures skip the build; client integrations do not fall back to
   adapter-local workspace input.
 - Repo Memory sharing is local to a canonical Git common directory and one
-  MemoraX home. Remote URLs do not authorize sharing between clones. Shared
-  bundles retain repository Wiki and history evidence in private local storage;
-  they are not sent to MemoraX. Publication requires a matching committed
-  snapshot; restoration also permits verified descendants with a bounded text
-  delta and no detected structural changes. Both require clean source checks.
-  Borrowed maps preserve their original provenance, require task-relevant live
-  verification, and do not trigger automatic per-worktree authoring. Delta
-  paths remain local and are data, never shell instructions. Personal-memory sidecars are
-  excluded and bundle copies reject symbolic links. Existing authored bundles
-  and local edits are preserved; only helper-created borrowed copies with a matching
-  content fingerprint can refresh under repository locking. Shared maintenance
-  requires a clean default-branch checkout matching the locally resolved
-  `origin/HEAD` target, without network discovery. Workers edit private candidates;
-  validation and repeated source/ref checks precede immutable version publication.
-  Old versions and failed candidates remain local. These checks do not sandbox authoring
-  or prove the semantic accuracy of generated content.
+  MemoraX home. Remote URLs do not authorize sharing between clones. One validated
+  mainline baseline is held in private local storage and is not sent to MemoraX.
+  Any authorized worktree may trigger maintenance, including a dirty feature
+  worktree; only the fixed local `origin/HEAD` target selects authoring content.
+  Workers use a private local clone with checkout hooks disabled, without changing
+  source refs or registering a worktree. Normal collection retains its configured
+  provider-evidence policy. Validation checks unchanged snapshot source, artifact
+  provenance, job ownership, and the previous baseline before atomic publication.
+  All branches read one immutable version as guidance and verify current source.
+  Personal-memory sidecars are excluded and bundle copies reject symbolic links.
+  Existing local bundles and user edits remain untouched. Completed jobs remove
+  their temporary checkout; published versions and operational records remain
+  local. These checks do not sandbox authoring or prove semantic accuracy.
 - Personal Memory is global user-owned state under
   `$MEMORAX_CODE_HOME/personal-memory/` (default `~/.memorax-code/personal-memory/`). User
   Profile is `user-profile/preferences.md`; Procedure Memory consists of direct

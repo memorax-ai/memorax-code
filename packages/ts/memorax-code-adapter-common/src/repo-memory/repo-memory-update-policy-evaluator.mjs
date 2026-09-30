@@ -21,7 +21,7 @@ export function evaluateRepository(input) {
   const profileStat = statSync(profilePath);
   if (!profileStat.isFile()) throw new Error(`repo memory profile is not a regular file: ${profilePath}`);
   const profile = parseFrontmatter(readFileSync(profilePath, "utf8"));
-  const head = git(repo, ["rev-parse", "HEAD"]);
+  const head = git(repo, ["rev-parse", "--verify", `${input.snapshotRef || "HEAD"}^{commit}`]);
   const baseline = stringValue(profile.local_head);
   const baselineState = inspectBaseline(repo, baseline, head);
   const lastUpdate = Number.isFinite(input.lastUpdatedAtMs)
