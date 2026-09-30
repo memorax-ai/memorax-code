@@ -5,7 +5,7 @@ import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { check, createNativeHarness, fixtureKey, fixtureModel, fixtureUser, searchResult, waitFor } from "./codebuddy-native-support.mjs";
 import { assertCompleteText, assertNoForeignContent, assertSearchResult, assertSkillReferenceContract,
   assertWritebackMessages, expectedSearchAnswer } from "./codex-native-content-check.mjs";
-import { assertNativeReadText, assertNativeToolCalls, selectNativeBashStdout, selectNativeTurnContent,
+import { assertNativeReadText, assertNativeToolCalls, nativeHookPrompt, selectNativeBashStdout, selectNativeTurnContent,
   summarizeWritebackTrace, toolResult } from "./codebuddy-native-content-check.mjs";
 
 const report = { status: "FAIL", scope: "native_codebuddy_installed_plugin_mock_memorax", platform: process.platform,
@@ -268,7 +268,7 @@ async function verifyNativeTranscript(expected) {
   const trace = (await readFile(join(harness.stateHome, "debug", "traces", "codebuddy", "sessions", expected.sessionId, "events.jsonl"), "utf8"))
     .trim().split(/\r?\n/).map(JSON.parse);
   const start = trace.filter((event) => event.type === "turn_start" && event.trace?.client === "codebuddy"
-    && event.trace.session_id === expected.sessionId && event.trace.turn_id?.endsWith(`:${hash(expected.prompt.trim())}`));
+    && event.trace.session_id === expected.sessionId && event.trace.turn_id?.endsWith(`:${hash(nativeHookPrompt(expected.prompt))}`));
   check(start.length === 1 && start[0].trace.turn_id.startsWith(`${expected.sessionId}:`), "NATIVE_HOOK_PROMPT_CORRELATION_MISSING");
   check(trace.some((event) => event.type === "turn_end" && event.trace?.client === "codebuddy"
     && event.trace.session_id === expected.sessionId && event.trace.turn_id === start[0].trace.turn_id
@@ -306,7 +306,7 @@ async function writebackDiagnostic(output, prompt) {
     summary.pendingAvailable = true;
   } catch { /* Do not expose private paths or native exception text. */ }
   return { ...summary, ...summarizeWritebackTrace(events, pending, { sessionId: output.sessionId,
-    promptHash: hash(prompt.trim()), promptWithoutLineBreaksHash: hash(prompt.replace(/\r\n|\r|\n/g, "").trim()) }) };
+    promptHash: hash(prompt.trim()), promptWithoutLineBreaksHash: hash(nativeHookPrompt(prompt)) }) };
 }
 function hash(value) { return createHash("sha256").update(value).digest("hex"); }
 function shortHash(value) { return hash(value).slice(0, 16); }

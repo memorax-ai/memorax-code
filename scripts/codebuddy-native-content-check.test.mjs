@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { assertNativeReadText, assertNativeToolCalls, matchesNativeModel, selectNativeBashStdout, selectNativeTurnContent,
+import { assertNativeReadText, assertNativeToolCalls, matchesNativeModel, nativeHookPrompt, selectNativeBashStdout, selectNativeTurnContent,
   summarizeNativeCompletion, summarizeWritebackTrace, toolResult } from "./codebuddy-native-content-check.mjs";
 
 const identity = { sessionId: "session-fixture", prompt: "Native prompt.", finalText: "Native answer." };
@@ -10,6 +10,18 @@ const assistant = () => ({ id: "assistant-final", type: "message", role: "assist
   status: "completed", timestamp: "2026-09-30T01:00:01.000Z", content: [{ type: "output_text", text: identity.finalText }] });
 const fails = (records, code, options = identity) => assert.throws(() => selectNativeTurnContent(records, options),
   (error) => error.nativeCode === code && error.message === code);
+
+test("CodeBuddy Hook correlation mirrors native line-break removal without changing the input", () => {
+  for (const separator of ["\n", "\r\n", "\r"]) {
+    const prompt = `  First.  ${separator}${separator}Second.\t End.  `;
+    assert.equal(nativeHookPrompt(prompt), "First.  Second.\t End.");
+    assert.ok(prompt.includes(separator));
+  }
+  assert.equal(nativeHookPrompt("Simple prompt."), "Simple prompt.");
+  for (const value of [undefined, null, 7, {}]) {
+    assert.throws(() => nativeHookPrompt(value), { nativeCode: "NATIVE_EXPECTED_PROMPT_INVALID" });
+  }
+});
 
 test("CodeBuddy native model identity accepts only the exact raw or custom-local model ID", () => {
   const expected = "fixture-model";

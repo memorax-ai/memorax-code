@@ -10,6 +10,12 @@ export function matchesNativeModel(actual, expected) {
   return identifier(expected) && (actual === expected || actual === `custom-local:${expected}`);
 }
 
+// Native UserPromptSubmit strips line breaks without changing the stored input.
+export function nativeHookPrompt(prompt) {
+  check(typeof prompt === "string", "NATIVE_EXPECTED_PROMPT_INVALID");
+  return prompt.replace(/\r\n|\r|\n/g, "").trim();
+}
+
 // This fixture oracle follows native parent IDs and CLI-observed content. It
 // intentionally does not import the product parser or use Hook/trace content.
 export function selectNativeTurnContent(records, { sessionId, prompt, finalText } = {}) {

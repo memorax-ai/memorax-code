@@ -6,7 +6,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import { check, createNativeHarness, fixtureKey, fixtureModel, fixtureUser, waitFor } from "./codebuddy-native-support.mjs";
 import { assertCompleteText, assertNoForeignContent, assertWritebackMessages } from "./codex-native-content-check.mjs";
-import { selectNativeTurnContent } from "./codebuddy-native-content-check.mjs";
+import { nativeHookPrompt, selectNativeTurnContent } from "./codebuddy-native-content-check.mjs";
 import { assertInitializedModel, assertNativeInterruption, assertPermissionInitializations, assertToolLineage,
   CodeBuddyControlSession, inflightCommand, inflightWorkerScript, modelToolResult,
   nativePrompt, permissionArguments, selectCanceledToolTurn, summarizeToolFailure } from "./codebuddy-permissions-support.mjs";
@@ -222,7 +222,7 @@ async function findPromptTrace(prompt, completed = false) {
     check(events.every((event) => event.trace?.client === "codebuddy" && event.trace.session_id === current.sessionId),
       "PERMISSION_TRACE_SESSION_MISMATCH");
     const starts = events.filter((event) => event.type === "turn_start" && event.trace.turn_id?.startsWith(`${current.sessionId}:`)
-      && event.trace.turn_id.endsWith(`:${hash(prompt.trim())}`));
+      && event.trace.turn_id.endsWith(`:${hash(nativeHookPrompt(prompt))}`));
     check(starts.length <= 1, "PERMISSION_HOOK_PROMPT_AMBIGUOUS");
     if (!starts.length || completed && !events.some((event) => event.type === "turn_end"
       && event.trace.turn_id === starts[0].trace.turn_id && event.outcome === "completed")) return undefined;

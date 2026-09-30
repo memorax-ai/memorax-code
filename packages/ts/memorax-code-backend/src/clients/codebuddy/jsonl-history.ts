@@ -32,6 +32,7 @@ type ParsedHistoryRecord = CodeBuddyHistoryRecord & { [RECORD_OFFSET]?: number }
 
 export async function readCodeBuddyTranscriptTurn(input: {
   transcriptPath: string; sessionId: string; turnId: string;
+  client?: "codebuddy" | "workbuddy";
 }): Promise<CodeBuddyTurnResult> {
   let text: string;
   try { text = await readFile(input.transcriptPath, "utf8"); }
@@ -41,6 +42,7 @@ export async function readCodeBuddyTranscriptTurn(input: {
 
 export async function readCodeBuddyInterruptedTranscriptTurn(input: {
   transcriptPath: string; sessionId: string; turnId: string;
+  client?: "codebuddy" | "workbuddy";
 }): Promise<CodeBuddyInterruptedTurnResult> {
   let text: string;
   try { text = await readFile(input.transcriptPath, "utf8"); }
@@ -50,7 +52,7 @@ export async function readCodeBuddyInterruptedTranscriptTurn(input: {
 
 export function codeBuddyTranscriptTurnFromJsonLines(
   text: string,
-  input: { sessionId: string; turnId: string },
+  input: { sessionId: string; turnId: string; client?: "codebuddy" | "workbuddy" },
 ): CodeBuddyTurnResult {
   const selected = selectCodeBuddyTurnBranch(text, input);
   if (!selected.ok) return selected;
@@ -79,7 +81,7 @@ export function codeBuddyTranscriptTurnFromJsonLines(
 
 export function codeBuddyInterruptedTranscriptTurnFromJsonLines(
   text: string,
-  input: { sessionId: string; turnId: string },
+  input: { sessionId: string; turnId: string; client?: "codebuddy" | "workbuddy" },
 ): CodeBuddyInterruptedTurnResult {
   const selected = selectCodeBuddyTurnBranch(text, input);
   if (!selected.ok) return selected;
@@ -114,7 +116,7 @@ type SelectedCodeBuddyTurnBranch = Readonly<{
 
 function selectCodeBuddyTurnBranch(
   text: string,
-  input: { sessionId: string; turnId: string },
+  input: { sessionId: string; turnId: string; client?: "codebuddy" | "workbuddy" },
 ): { ok: true } & SelectedCodeBuddyTurnBranch | {
   ok: false;
   reason: "malformed_transcript" | "turn_not_found" | "user_prompt_missing" | "turn_ambiguous";
@@ -125,14 +127,20 @@ function selectCodeBuddyTurnBranch(
   if (!records) return { ok: false, reason: "malformed_transcript" };
   const session = records.filter((record) => stringField(record, "sessionId") === input.sessionId);
   const users = session.filter((record) => record.role === "user" && visibleUserPrompt(record));
-  // The pre-submit byte boundary excludes earlier identical prompts; the digest
-  // locates the native user record. Writeback content still comes from the transcript.
+  // CodeBuddy Hooks can remove line breaks from a single input_text block.
+  // Match both forms after the byte boundary, require uniqueness, and keep native text.
   const candidates = users.filter((record) => {
     const prompt = visibleUserPrompt(record);
+    const singleInputText = Array.isArray(record.content) && record.content.filter((item) => (
+      item && typeof item === "object" && item.type === "input_text"
+    )).length === 1;
     return Boolean(
       prompt
       && (record[RECORD_OFFSET] ?? Number.MAX_SAFE_INTEGER) >= identity.boundary
-      && codeBuddyPromptDigest(prompt) === identity.promptDigest,
+      && (codeBuddyPromptDigest(prompt) === identity.promptDigest
+        || ((input.client ?? "codebuddy") === "codebuddy"
+          && singleInputText
+          && codeBuddyPromptDigest(prompt.replace(/\r\n|\r|\n/g, "")) === identity.promptDigest)),
     );
   });
   if (candidates.length === 0) return { ok: false, reason: "user_prompt_missing" };
