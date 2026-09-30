@@ -170,6 +170,14 @@ try {
     } catch { report.nativeCompletion = { available: false }; }
   }
   if (current?.earlyToolResult) report.unexpectedInflightToolResult = current.earlyToolResult;
+  if (current?.test.inflight && current.toolPid) {
+    try {
+      report.inflightInterruption = {
+        toolProcessAlive: alive(current.toolPid),
+        finalMarkerPresent: await exists(current.markerPath),
+      };
+    } catch { report.inflightInterruption = { available: false }; }
+  }
 } finally {
   try { await harness?.close(); report.cleanup = "PASS"; }
   catch (error) { report.cleanup = error.nativeCode ?? "PERMISSION_CLEANUP_FAILED_PRIVATE_OUTPUT_SUPPRESSED"; }
