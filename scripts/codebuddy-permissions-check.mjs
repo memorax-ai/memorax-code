@@ -128,9 +128,9 @@ try {
       current.recoverySent = true;
       control.prompt(current.recoveryPrompt, current.sessionId);
       result.writeback = await verifyCompleted({ prompt: current.recoveryPrompt, answer: current.recoveryAnswer });
-      await control.finish();
-      // Classify the old turn only after recovery and process exit make the
-      // transcript stable. A transient missing final is not a cancelled turn.
+      result.nativeInterruptCompatibility = await control.finishAfterInterrupt((child) => harness.stopCodeBuddy(child));
+      // Shutdown stabilizes the transcript, even if the CLI needed cleanup.
+      // An incomplete turn here does not prove native cancellation succeeded.
       const outcome = selectInterruptOutcome(await transcript({ prompt: current.recoveryPrompt, answer: current.recoveryAnswer }), current);
       await findPromptTrace(current.prompt);
       if (outcome.outcome === "completed") {
@@ -146,7 +146,7 @@ try {
       current.nativeTurnOutcome = `${outcome.outcome}_after_interrupt_then_recovered`;
       Object.assign(result, { sameSessionRecovered: true, nativeOriginalToolResultRecorded: outcome.toolResultRecorded,
         incompleteTurnNotWritten: outcome.outcome === "incomplete",
-        nativeInterruptCompatibility: { originalTurnOutcome: outcome.outcome,
+        nativeInterruptCompatibility: { ...result.nativeInterruptCompatibility, originalTurnOutcome: outcome.outcome,
           continuedModelExecution: current.originalModelRequests > 1, otherResultCount,
           recoveryResultObserved: terminals.some((event) => event.result === current.recoveryAnswer) },
         ...(test.inflight ? { toolStartedBeforeInterrupt: true, interruptedToolProcessExited: true } : {}) });
@@ -181,7 +181,7 @@ try {
     check(test.nativeInterrupt
       ? [1, 2].includes(current.originalModelRequests) && current.recoveryModelRequests === 1
       : current.modelRequests === 2, "PERMISSION_MODEL_REQUEST_COUNT_MISMATCH");
-    await control.finish();
+    if (!test.nativeInterrupt) await control.finish();
     assertPermissionInitializations(control.events, current.sessionId);
     control = undefined;
     completedCases.push({ ...current });

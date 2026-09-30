@@ -28,13 +28,14 @@ export function permissionArguments({ sessionId, allowedTool } = {}) {
 // CodeBuddy 2.159.0 uses allowed/reason on the CLI wire, not the SDK's
 // public behavior/message object. Stream JSON selects this channel directly.
 export class CodeBuddyControlSession {
-  constructor(child, { outputLimit = 16 * 1024 * 1024, requestTimeout = 30_000 } = {}) {
+  constructor(child, { outputLimit = 16 * 1024 * 1024, requestTimeout = 30_000, exitTimeout = 15_000 } = {}) {
     this.child = child;
     this.events = [];
     this.pending = new Map();
     this.permissions = new Map();
     this.nextId = 0;
     this.requestTimeout = requestTimeout;
+    this.exitTimeout = exitTimeout;
     this.ended = false;
     this.inputEnded = false;
     let buffer = "";
@@ -134,9 +135,29 @@ export class CodeBuddyControlSession {
   endInput() { if (!this.inputEnded) { this.inputEnded = true; this.child.stdin.end(); } }
   async finish() {
     this.endInput();
-    await waitFor(() => this.ended, "CODEBUDDY_CONTROL_EXIT_TIMEOUT", 15_000);
+    await waitFor(() => {
+      check(!this.failure, this.failure);
+      return this.ended;
+    }, "CODEBUDDY_CONTROL_EXIT_TIMEOUT", this.exitTimeout);
     check(!this.failure, this.failure);
     check(this.exitCode === 0 && !this.signal, "CODEBUDDY_CONTROL_PROCESS_FAILED");
+  }
+  async finishAfterInterrupt(stopOwnedChild) {
+    try { await this.finish(); }
+    catch (error) {
+      check(!this.failure, this.failure);
+      if (error.nativeCode !== "CODEBUDDY_CONTROL_EXIT_TIMEOUT") throw error;
+      if (this.ended) await this.finish();
+      else {
+        // An interrupt can leave CodeBuddy's original delivery pending after
+        // recovery. Cleanup is not evidence that native cancellation finished.
+        await stopOwnedChild(this.child);
+        await waitFor(() => this.ended, "CODEBUDDY_CONTROL_CLEANUP_EXIT_TIMEOUT", this.exitTimeout);
+        check(!this.failure, this.failure);
+        return { naturalExit: false, forcedCleanup: true, reason: "CODEBUDDY_CONTROL_EXIT_TIMEOUT" };
+      }
+    }
+    return { naturalExit: true, forcedCleanup: false };
   }
 }
 
@@ -192,8 +213,8 @@ export function selectCanceledToolTurn(records, { sessionId, prompt, tool }) {
   return { user, lineage, ...toolEvidence };
 }
 
-// Call after same-session recovery and native process exit, not on a transient
-// transcript snapshot. A missing assistant alone is not interruption evidence.
+// Call after same-session recovery and confirmed client shutdown, including
+// reported forced cleanup. A missing assistant alone is not interruption proof.
 export function selectInterruptOutcome(records, { sessionId, prompt, answer, tool, recoveryPrompt, recoveryAnswer }) {
   const recovery = selectNativeTurnContent(records, { sessionId, prompt: recoveryPrompt, finalText: recoveryAnswer });
   const original = selectToolTurnBranch(records, { sessionId, prompt });

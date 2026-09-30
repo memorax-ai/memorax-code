@@ -168,6 +168,11 @@ export async function createNativeHarness({ packageRoot, codebuddyCommand, label
     children.add(child);
     return child;
   }
+  async function stopCodeBuddy(child) {
+    check(children.has(child), "NATIVE_CHILD_NOT_OWNED");
+    await stopTree(child, env);
+    children.delete(child);
+  }
   function close() { return closePromise ??= closeResources(); }
   async function closeResources() {
     let cleanupError;
@@ -225,7 +230,7 @@ export async function createNativeHarness({ packageRoot, codebuddyCommand, label
   return { root, home, workspace, stateHome, codebuddyHome, env, packageRoot, codebuddyCommand,
     get codebuddyVersion() { return nativeVersion; }, memoryEntrypoint, productEntrypoint,
     modelUrl: modelServer.url, memoryUrl: memoryServer.url, modelRequests, memoryRequests, serverErrors, modelRequestRejections,
-    setup, close, runProduct, runCodeBuddy, startCodeBuddy,
+    setup, close, runProduct, runCodeBuddy, startCodeBuddy, stopCodeBuddy,
     runMemory: (args, options) => run(process.execPath, [memoryEntrypoint, ...args], options),
     setBeforeClose(handler) {
       check(!closePromise, "NATIVE_HARNESS_IS_CLOSING");

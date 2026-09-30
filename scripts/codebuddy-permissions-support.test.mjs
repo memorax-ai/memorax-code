@@ -29,7 +29,7 @@ function fixture(options) {
   const control = new CodeBuddyControlSession(child, options);
   return { child, sent, control,
     emit(event) { child.stdout.write(`${JSON.stringify(event)}\n`); },
-    close(code = 0) { child.stdout.end(); child.stderr.end(); child.emit("close", code, null); } };
+    close(code = 0, signal = null) { child.stdout.end(); child.stderr.end(); child.emit("close", code, signal); } };
 }
 const rejects = (fn, code) => assert.throws(fn, (error) => error.nativeCode === code && error.message === code);
 
@@ -193,6 +193,103 @@ test("control output limit, truncated JSON and nonzero exit cannot report comple
   await assert.rejects(nonzero.control.finish(), { nativeCode: "CODEBUDDY_CONTROL_PROCESS_FAILED" });
 });
 
+test("ordinary control finish still requires a bounded natural exit", async () => {
+  const f = fixture({ exitTimeout: 1 });
+  try {
+    await assert.rejects(f.control.finish(), { nativeCode: "CODEBUDDY_CONTROL_EXIT_TIMEOUT" });
+    assert.equal(f.control.inputEnded, true);
+    assert.equal(f.control.ended, false);
+  } finally { f.close(); }
+});
+
+test("interrupt finish reports natural exit without invoking owned cleanup", async () => {
+  const f = fixture();
+  f.close();
+  assert.deepEqual(await f.control.finishAfterInterrupt(() => assert.fail("Unexpected cleanup")),
+    { naturalExit: true, forcedCleanup: false });
+});
+
+test("interrupt exit timeout stops the owned child without losing native events", async () => {
+  const f = fixture({ exitTimeout: 1 });
+  const recovered = { type: "result", session_id: identity.sessionId, result: "Recovery fixture" };
+  f.emit(recovered);
+  let inputCloses = 0, cleanupCalls = 0;
+  f.child.stdin.on("finish", () => { inputCloses += 1; });
+  assert.deepEqual(await f.control.finishAfterInterrupt(async (child) => {
+    cleanupCalls += 1;
+    assert.equal(child, f.child);
+    assert.equal(f.control.inputEnded, true);
+    assert.equal(f.control.ended, false);
+    f.close(null, "SIGKILL");
+  }), { naturalExit: false, forcedCleanup: true, reason: "CODEBUDDY_CONTROL_EXIT_TIMEOUT" });
+  assert.equal(f.control.ended, true);
+  assert.equal(inputCloses, 1);
+  assert.equal(cleanupCalls, 1);
+  assert.deepEqual(f.control.events, [recovered]);
+});
+
+test("interrupt finish never tolerates a nonzero or signaled natural exit", async () => {
+  for (const [code, signal] of [[7, null], [null, "SIGTERM"], [0, "SIGKILL"]]) {
+    const f = fixture();
+    f.close(code, signal);
+    await assert.rejects(f.control.finishAfterInterrupt(() => assert.fail("Unexpected cleanup")),
+      { nativeCode: "CODEBUDDY_CONTROL_PROCESS_FAILED" });
+  }
+});
+
+test("a natural close racing the interrupt timeout still requires zero exit", async () => {
+  for (const code of [0, 7]) {
+    const f = fixture();
+    const finish = f.control.finish.bind(f.control);
+    f.control.finish = async () => {
+      f.control.finish = finish;
+      f.close(code);
+      throw Object.assign(new Error("CODEBUDDY_CONTROL_EXIT_TIMEOUT"), { nativeCode: "CODEBUDDY_CONTROL_EXIT_TIMEOUT" });
+    };
+    const finished = f.control.finishAfterInterrupt(() => assert.fail("Unexpected cleanup"));
+    if (code === 0) assert.deepEqual(await finished, { naturalExit: true, forcedCleanup: false });
+    else await assert.rejects(finished, { nativeCode: "CODEBUDDY_CONTROL_PROCESS_FAILED" });
+  }
+});
+
+test("interrupt finish cannot turn protocol failure on a hanging child into compatibility", async () => {
+  const f = fixture({ exitTimeout: 1 });
+  f.child.stdout.write("private-invalid-json-canary\n");
+  try {
+    await assert.rejects(f.control.finishAfterInterrupt(() => assert.fail("Unexpected cleanup")),
+      { nativeCode: "CODEBUDDY_CONTROL_INVALID_JSON" });
+  } finally { f.close(); }
+});
+
+test("interrupt finish checks protocol failures that arrive during cleanup", async () => {
+  const f = fixture({ exitTimeout: 1 });
+  await assert.rejects(f.control.finishAfterInterrupt(async () => {
+    f.child.stdout.write("private-invalid-json-canary\n");
+    f.close(null, "SIGKILL");
+  }), { nativeCode: "CODEBUDDY_CONTROL_INVALID_JSON" });
+});
+
+test("interrupt finish propagates cleanup failure and requires an observed process close", async () => {
+  for (const fails of [true, false]) {
+    const f = fixture({ exitTimeout: 1 });
+    try {
+      await assert.rejects(f.control.finishAfterInterrupt(async () => {
+        if (fails) throw Object.assign(new Error("FIXTURE_CLEANUP_FAILED"), { nativeCode: "FIXTURE_CLEANUP_FAILED" });
+      }), { nativeCode: fails ? "FIXTURE_CLEANUP_FAILED" : "CODEBUDDY_CONTROL_CLEANUP_EXIT_TIMEOUT" });
+      assert.equal(f.control.ended, false);
+    } finally { f.close(); }
+  }
+});
+
+test("interrupt finish only recognizes the exact exit-timeout diagnostic code", async () => {
+  const f = fixture();
+  f.control.finish = async () => { throw Object.assign(new Error("CODEBUDDY_CONTROL_EXIT_TIMEOUT"),
+    { nativeCode: "CODEBUDDY_CONTROL_REQUEST_TIMEOUT" }); };
+  await assert.rejects(f.control.finishAfterInterrupt(() => assert.fail("Unexpected cleanup")),
+    { nativeCode: "CODEBUDDY_CONTROL_REQUEST_TIMEOUT" });
+  f.close();
+});
+
 test("native interrupted result is not a normal success, a denial, or Claude's terminal format", () => {
   const event = { type: "result", subtype: "success", is_error: false, terminal_reason: "aborted_tools", session_id: identity.sessionId };
   assert.equal(assertNativeInterruption(event, identity.sessionId), "aborted_tools");
@@ -296,6 +393,16 @@ test("interrupt outcome rejects missing, incomplete or out-of-order recovery ins
   rejects(() => selectInterruptOutcome([...recovered.slice(-2), ...original], interruptIdentity), "PERMISSION_INTERRUPT_RECOVERY_ORDER_INVALID");
   rejects(() => selectInterruptOutcome(original, { ...interruptIdentity, recoveryPrompt: identity.prompt,
     recoveryAnswer: interruptIdentity.answer }), "PERMISSION_INTERRUPT_RECOVERY_ORDER_INVALID");
+});
+
+test("interrupt outcome rejects late original tool results attached beneath the recovery answer", () => {
+  for (const count of [1, 2]) {
+    const records = withRecovery([user(), call()]);
+    for (let index = 0; index < count; index += 1) {
+      records.push({ ...result("incomplete"), id: `late-result-${index}`, parentId: records.at(-1).id });
+    }
+    rejects(() => selectInterruptOutcome(records, interruptIdentity), "NATIVE_TRANSCRIPT_FINAL_INCOMPLETE");
+  }
 });
 
 test("interrupt outcome rejects foreign identity, mismatched answers, ambiguous completion and wrong native tool", () => {

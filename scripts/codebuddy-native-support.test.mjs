@@ -136,6 +136,78 @@ test("interactive CodeBuddy commands remain owned and before-close cleanup runs 
   assert.throws(() => harness.startCodeBuddy(["--version"]), { nativeCode: "NATIVE_HARNESS_IS_CLOSING" });
 });
 
+test("stopping one CodeBuddy command stops its tree but preserves other commands and listeners", async (t) => {
+  const harness = await createHarness(t);
+  const selected = harness.startCodeBuddy(["-e", `
+    const child = require("node:child_process").spawn(process.execPath,
+      ["-e", 'process.stdout.write("ready");setInterval(()=>{},1000);'], { stdio: ["ignore", "pipe", "ignore"] });
+    child.stdout.once("data", () => console.log(JSON.stringify({ childPid: child.pid })));
+    setInterval(() => {}, 1000);
+  `]);
+  const other = harness.startCodeBuddy(["-e", 'process.stdout.write("ready");process.stdin.on("data",chunk=>process.stdout.write(chunk));']);
+  let selectedOutput = "", otherOutput = "", childPid;
+  t.after(() => killFixture(childPid));
+  selected.stdout.on("data", (text) => { selectedOutput += text; });
+  other.stdout.on("data", (text) => { otherOutput += text; });
+  await waitFor(() => selectedOutput.includes("\n") && otherOutput === "ready");
+  childPid = JSON.parse(selectedOutput).childPid;
+  assert.equal(processAlive(childPid), true);
+
+  await harness.stopCodeBuddy(selected);
+  assert.equal(processAlive(selected.pid), false);
+  await waitFor(() => !processAlive(childPid), "FIXTURE_DESCENDANT_SURVIVED_STOP", 5_000);
+  await assert.rejects(harness.stopCodeBuddy(selected), { nativeCode: "NATIVE_CHILD_NOT_OWNED" });
+  other.stdin.write("probe");
+  await waitFor(() => otherOutput === "readyprobe");
+  harness.setModelHandler(() => ({ text: "still available" }));
+  assert.equal((await (await postModel(harness)).json()).choices[0].message.content, "still available");
+  const memory = await fetch(`${harness.memoryUrl}/v1/memories/add`, { method: "POST",
+    headers: { authorization: `Token ${fixtureKey}`, "content-type": "application/json" },
+    body: JSON.stringify({ user_id: fixtureUser, messages: [] }) });
+  assert.equal((await memory.json()).success, true);
+  assert.equal(harness.memoryRequests.length, 1);
+  assert.deepEqual(harness.serverErrors, []);
+  await harness.close();
+  assert.equal(processAlive(other.pid), false);
+});
+
+test("stopping an unknown CodeBuddy child rejects it without signaling that process", async (t) => {
+  const harness = await createHarness(t), owner = await createHarness(t);
+  const child = owner.startCodeBuddy(["-e", 'process.stdout.write("ready");setInterval(()=>{},1000);']);
+  let ready = false;
+  child.stdout.on("data", () => { ready = true; });
+  await waitFor(() => ready);
+  await assert.rejects(harness.stopCodeBuddy(child), { nativeCode: "NATIVE_CHILD_NOT_OWNED" });
+  await assert.rejects(owner.stopCodeBuddy({ pid: child.pid }), { nativeCode: "NATIVE_CHILD_NOT_OWNED" });
+  assert.equal(processAlive(child.pid), true);
+  await owner.stopCodeBuddy(child);
+  assert.equal(processAlive(child.pid), false);
+});
+
+for (const cleanup of ["retry", "close"]) {
+  test(`failed CodeBuddy stop retains ownership for ${cleanup}`, { skip: process.platform === "win32" }, async (t) => {
+    const harness = await createHarness(t);
+    const child = harness.startCodeBuddy(["-e", 'process.stdout.write("ready");setInterval(()=>{},1000);']);
+    let ready = false;
+    child.stdout.on("data", () => { ready = true; });
+    await waitFor(() => ready);
+    const originalKill = process.kill;
+    try {
+      process.kill = (pid, signal) => {
+        if (pid === -child.pid && signal === "SIGKILL") throw Object.assign(new Error("fixture signal failure"), { code: "EPERM" });
+        return originalKill(pid, signal);
+      };
+      await assert.rejects(harness.stopCodeBuddy(child), { code: "EPERM" });
+      assert.equal(processAlive(child.pid), true);
+    } finally { process.kill = originalKill; }
+    if (cleanup === "retry") {
+      await harness.stopCodeBuddy(child);
+      await assert.rejects(harness.stopCodeBuddy(child), { nativeCode: "NATIVE_CHILD_NOT_OWNED" });
+    } else await harness.close();
+    assert.equal(processAlive(child.pid), false);
+  });
+}
+
 test("before-close failure still terminates owned commands and listeners but retains isolated state", async () => {
   const harness = await createNativeHarness({ packageRoot, codebuddyCommand: process.execPath, label: "before-close-test" });
   let child;

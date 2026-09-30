@@ -822,14 +822,21 @@ client's actual persisted outcome, rather than requiring a particular CLI
 `result` event or assuming that an acknowledgement proves cancellation. The
 in-flight case still requires the owned tool process to exit before recovery,
 without its delayed file effect. Recovery must complete and write back in the
-same process and session. After the CLI exits normally, the independent native
-transcript oracle classifies the original turn: an incomplete turn must have no
+same process and session. Only these two cases may report a natural-exit timeout
+as a separate compatibility observation after recovery writeback is verified.
+The harness then stops only its owned CLI process tree and requires confirmed
+shutdown; protocol errors, nonzero natural exits, and cleanup failures still
+fail. Other permission cases continue to require a normal zero exit. After
+client shutdown, the independent native transcript oracle classifies the
+original turn: an incomplete turn must have no
 Add, while a turn that the client completed despite interruption must have its
 own exact Add. Every completed turn is checked separately for content, scope,
 native identity, and idempotency; a final audit after Backend shutdown rejects
 late, duplicate, missing, and foreign writes. Extra original model requests and
 missing result events remain visible as separate compatibility observations,
-not proof of MemoraX Add failure or successful native interruption. A recovery
+not proof of MemoraX Add failure or successful native interruption. Natural exit
+and forced cleanup are reported separately. An incomplete turn observed after
+forced cleanup does not prove that the native interrupt ended that turn. A recovery
 prompt may itself affect the old turn; this does not isolate the effect of
 `interrupt` alone. The suite does not claim late-approval handling,
 operating-system sandbox enforcement, automatic approval judgment, or
