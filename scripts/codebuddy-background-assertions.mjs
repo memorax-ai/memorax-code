@@ -80,3 +80,17 @@ export function backgroundProcessesExited(jobs, processPresent, posix = process.
     && Number.isSafeInteger(job.childPid) && job.childPid > 1
     && [job.workerPid, job.childPid].every((pid) => !processPresent(pid) && (!posix || !processPresent(-pid))));
 }
+
+export function summarizeBackgroundJobs(validatedJobs, processPresent) {
+  check(Array.isArray(validatedJobs), "BACKGROUND_JOB_DIAGNOSTIC_INVALID");
+  const jobs = validatedJobs.map((job) => {
+    check(["started", "running", "failed", "succeeded"].includes(job?.status)
+      && [job.workerPid, job.childPid].every((pid) => pid === undefined || Number.isSafeInteger(pid) && pid > 1),
+    "BACKGROUND_JOB_DIAGNOSTIC_INVALID");
+    return { status: job.status, workerPidPresent: job.workerPid !== undefined,
+      workerAlive: job.workerPid !== undefined && Boolean(processPresent(job.workerPid)),
+      childPidPresent: job.childPid !== undefined,
+      childAlive: job.childPid !== undefined && Boolean(processPresent(job.childPid)) };
+  });
+  return { jobCount: jobs.length, jobs };
+}

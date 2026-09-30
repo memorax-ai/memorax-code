@@ -4,7 +4,7 @@ import test from "node:test";
 import { fixtureModel } from "./codebuddy-native-support.mjs";
 import { assertBackgroundJob, assertBackgroundModelRequests, assertBackgroundNoopResult, assertForegroundResult,
   assertGlobalConfiguration, backgroundInputText, backgroundProcessesExited, modelEnvironmentOverrides,
-  workerPromptMarker, foregroundPrompt, foregroundAnswer, backgroundAnswer,
+  summarizeBackgroundJobs, workerPromptMarker, foregroundPrompt, foregroundAnswer, backgroundAnswer,
 } from "./codebuddy-background-assertions.mjs";
 
 const context = { jobPath: resolve("fixture/jobs/job-fixture/job.json"), repository: resolve("fixture/repo"),
@@ -138,6 +138,38 @@ test("CodeBuddy background cleanup checks worker and child groups, not only exit
   }
   assert.equal(backgroundProcessesExited([], () => false, true), false);
   assert.equal(backgroundProcessesExited([job()], (pid) => pid < 0, false), true);
+});
+
+test("CodeBuddy background diagnostics distinguish no job, unpublished processes and live workers", () => {
+  const probes = [];
+  const present = (pid) => { probes.push(pid); return pid === 12345; };
+  assert.deepEqual(summarizeBackgroundJobs([], present), { jobCount: 0, jobs: [] });
+  assert.deepEqual(summarizeBackgroundJobs([{ ...job(), status: "started", workerPid: undefined, childPid: undefined },
+    { ...job(), status: "running" }], present), { jobCount: 2, jobs: [
+    { status: "started", workerPidPresent: false, workerAlive: false, childPidPresent: false, childAlive: false },
+    { status: "running", workerPidPresent: true, workerAlive: true, childPidPresent: true, childAlive: false },
+  ] });
+  assert.deepEqual(probes, [12345, 12346]);
+});
+
+test("CodeBuddy background diagnostics expose only fixed state and process-presence fields", () => {
+  const privateText = "PRIVATE_JOB_PATH_PROMPT_COMMAND_ID_CANARY";
+  const source = { ...job(), prompt: privateText, command: [privateText], repo: privateText, jobId: privateText,
+    finalMessagePath: privateText, error: privateText, failureReason: privateText };
+  assert.deepEqual(summarizeBackgroundJobs([source, { ...source, status: "succeeded" }], () => false),
+    { jobCount: 2, jobs: [
+      { status: "failed", workerPidPresent: true, workerAlive: false, childPidPresent: true, childAlive: false },
+      { status: "succeeded", workerPidPresent: true, workerAlive: false, childPidPresent: true, childAlive: false },
+    ] });
+  assert.equal(JSON.stringify(summarizeBackgroundJobs([source], () => true)).includes(privateText), false);
+});
+
+test("CodeBuddy background diagnostics reject unrecognized states and malformed PIDs before probing", () => {
+  for (const value of [undefined, [null], [{ ...job(), status: "PRIVATE_UNKNOWN_STATE" }],
+    [{ ...job(), workerPid: 1 }], [{ ...job(), childPid: "PRIVATE_PID" }]]) {
+    assert.throws(() => summarizeBackgroundJobs(value, () => assert.fail("invalid process was probed")),
+      (error) => error.nativeCode === "BACKGROUND_JOB_DIAGNOSTIC_INVALID" && error.message === error.nativeCode);
+  }
 });
 
 test("CodeBuddy background assertion errors never disclose private native content or paths", () => {

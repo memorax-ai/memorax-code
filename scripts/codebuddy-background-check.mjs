@@ -7,7 +7,7 @@ import { check, createNativeHarness, fixtureModel, waitFor } from "./codebuddy-n
 import { selectNativeTurnContent } from "./codebuddy-native-content-check.mjs";
 import { assertBackgroundJob, assertBackgroundModelRequests, assertBackgroundNoopResult, assertForegroundResult,
   assertGlobalConfiguration, backgroundInputText, backgroundProcessesExited, modelEnvironmentOverrides,
-  workerPromptMarker, foregroundPrompt, foregroundAnswer, backgroundAnswer,
+  summarizeBackgroundJobs, workerPromptMarker, foregroundPrompt, foregroundAnswer, backgroundAnswer,
 } from "./codebuddy-background-assertions.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -110,6 +110,11 @@ try {
   checksCompleted = true;
 } catch (error) {
   Object.assign(report, { stage, error: error.nativeCode ?? "BACKGROUND_CHECK_FAILED_PRIVATE_OUTPUT_SUPPRESSED" });
+  try {
+    // jobs() validates installation, repository, command and output authority
+    // before the diagnostic can probe or summarize any recorded process.
+    report.backgroundJobs = { available: true, ...summarizeBackgroundJobs(await jobs(), processPresent) };
+  } catch { report.backgroundJobs = { available: false }; }
 } finally {
   try { await harness?.close(); report.cleanup = "PASS"; }
   catch (error) { report.cleanup = error.nativeCode ?? "BACKGROUND_CLEANUP_FAILED"; }
