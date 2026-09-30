@@ -61,18 +61,29 @@ test("permission init may repeat but every event must match the same model, sess
     rejects(() => assertPermissionInitializations(events, identity.sessionId), "PERMISSION_NATIVE_INIT_MISMATCH");
   }
   rejects(() => assertPermissionInitializations([init], ""), "PERMISSION_NATIVE_INIT_MISMATCH");
+  rejects(() => assertPermissionInitializations([{ ...init, session_id: "foreign" }], identity.sessionId), "PERMISSION_NATIVE_INIT_MISMATCH");
 });
 
 test("permission arguments preserve installed discovery and choose the native stream JSON channel", () => {
-  const args = permissionArguments();
+  const sessionId = "07d512a8-93e0-48c1-b747-e27672c95630";
+  const args = permissionArguments({ sessionId });
   for (const [flag, value] of [["--input-format", "stream-json"], ["--output-format", "stream-json"],
-    ["--permission-mode", "default"], ["--model", fixtureModel], ["--setting-sources", "user"]]) assert.equal(args[args.indexOf(flag) + 1], value);
+    ["--permission-mode", "default"], ["--model", fixtureModel], ["--setting-sources", "user"],
+    ["--session-id", sessionId]]) assert.equal(args[args.indexOf(flag) + 1], value);
+  assert.equal(args.filter((arg) => arg === "--session-id").length, 1);
   assert.equal(args.includes("--strict-mcp-config"), true);
-  for (const flag of ["--permission-prompt-tool", "--dangerously-skip-permissions", "-y", "--no-session-persistence", "--plugin-dir"]) {
+  for (const flag of ["--permission-prompt-tool", "--dangerously-skip-permissions", "-y", "--no-session-persistence", "--plugin-dir", "--resume", "--continue"]) {
     assert.equal(args.includes(flag), false);
   }
-  const allowed = permissionArguments({ allowedTool: "Write" });
-  assert.deepEqual(allowed.slice(-2), ["--allowedTools", "Write"]);
+  const allowed = permissionArguments({ sessionId, allowedTool: "Write" });
+  assert.deepEqual(allowed, [...args, "--allowedTools", "Write"]);
+});
+
+test("permission arguments require an explicit session UUID before native launch", () => {
+  rejects(() => permissionArguments(), "PERMISSION_SESSION_ID_INVALID");
+  for (const sessionId of [undefined, null, "", "session-fixture", "--continue", " 07d512a8-93e0-48c1-b747-e27672c95630"]) {
+    rejects(() => permissionArguments({ sessionId }), "PERMISSION_SESSION_ID_INVALID");
+  }
 });
 
 test("control initialize and user input use correlated native wire objects", async () => {

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { access, readFile, readdir, realpath, writeFile } from "node:fs/promises";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -68,7 +68,8 @@ try {
 
   for (const test of cases) {
     stage = test.id;
-    current = { test, modelRequests: 0, originalModelRequests: 0, recoveryModelRequests: 0,
+    // Pin routing before a first-turn interrupt can leave the CLI's session cache unset.
+    current = { test, sessionId: randomUUID(), modelRequests: 0, originalModelRequests: 0, recoveryModelRequests: 0,
       toolResultObserved: false, recoverySent: false, verifiedTurns: [],
       prompt: `Run the isolated CodeBuddy permission fixture ${test.id}.`,
       answer: `CodeBuddy permission fixture ${test.id} is complete.`,
@@ -85,12 +86,12 @@ try {
     check(!await exists(current.markerPath) && !await exists(current.startedPath), "PERMISSION_MARKER_EXISTS_BEFORE_TOOL");
     const result = { id: test.id, status: "FAIL" };
     report.cases.push(result);
-    control = new CodeBuddyControlSession(harness.startCodeBuddy(permissionArguments({ allowedTool: test.preallowed ? "Write" : undefined })));
+    control = new CodeBuddyControlSession(harness.startCodeBuddy(permissionArguments({ sessionId: current.sessionId,
+      allowedTool: test.preallowed ? "Write" : undefined })));
     const initialized = await control.request({ subtype: "initialize" });
     assertInitializedModel(initialized);
-    control.prompt(current.prompt);
+    control.prompt(current.prompt, current.sessionId);
     const init = await control.wait((event) => event.type === "system" && event.subtype === "init");
-    current.sessionId = init.session_id;
     assertPermissionInitializations([init], current.sessionId);
     let approval;
     if (!test.preallowed) {

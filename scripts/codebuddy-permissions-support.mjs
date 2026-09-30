@@ -15,8 +15,11 @@ export function assertPermissionInitializations(events, sessionId) {
       && event.permissionMode === "default"), "PERMISSION_NATIVE_INIT_MISMATCH");
 }
 
-export function permissionArguments({ allowedTool } = {}) {
+export function permissionArguments({ sessionId, allowedTool } = {}) {
+  check(typeof sessionId === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(sessionId),
+    "PERMISSION_SESSION_ID_INVALID");
   return ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
+    "--session-id", sessionId,
     "--model", fixtureModel, "--permission-mode", "default", "--setting-sources", "user",
     "--strict-mcp-config", "--mcp-config", JSON.stringify({ mcpServers: {} }),
     ...(allowedTool ? ["--allowedTools", allowedTool] : [])];
