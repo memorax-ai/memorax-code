@@ -142,4 +142,46 @@ export function toolResult(body, id) {
   check(results?.length === 1 && typeof results[0].content === "string", "NATIVE_TOOL_RESULT_MISSING");
   return results[0].content;
 }
+
+// Only fixed enums, booleans and counts leave the isolated native output.
+export function summarizeNativeCompletion(events, { answer, model, modelRequests, memoryRequests, receiverErrors }) {
+  const results = events.filter((event) => event?.type === "result"), result = results[0];
+  const initializations = events.filter((event) => event?.type === "system" && event.subtype === "init");
+  const enumeration = (value, allowed) => value === undefined ? "missing" : allowed.includes(value) ? value : "other";
+  const errors = results.filter((event) => event.is_error === true).flatMap((event) => [
+    ...(Array.isArray(event.errors) ? event.errors.filter((value) => typeof value === "string") : []),
+    ...(typeof event.result === "string" ? [event.result] : []),
+  ]).join("\n");
+  const receiverCodes = ["UNEXPECTED_MEMORY_REQUEST", "UNEXPECTED_MODEL_REQUEST", "NATIVE_MODEL_CREDENTIAL_MISMATCH",
+    "NATIVE_MODEL_ID_MISMATCH", "NATIVE_MODEL_REQUEST_INVALID", "MODEL_HANDLER_NOT_SET", "MODEL_HANDLER_DID_NOT_COMPLETE",
+    "MODEL_RESPONSE_TEXT_MISSING", "MODEL_RESPONSE_TOOL_INVALID", "NATIVE_REQUEST_TOO_LARGE", "NATIVE_REQUEST_JSON_INVALID",
+    "NATIVE_RECEIVER_FAILED", "RECOVERY_MODEL_SUBSTITUTION"];
+  return {
+    resultCount: results.length,
+    subtype: enumeration(result?.subtype, ["success", "error_during_execution", "error_max_turns", "error_max_budget_usd",
+      "error_max_structured_output_retries"]),
+    terminalReason: enumeration(result?.terminal_reason, ["aborted_tools", "aborted_streaming"]),
+    isError: typeof result?.is_error === "boolean" ? result.is_error : null,
+    sessionPresent: typeof result?.session_id === "string" && result.session_id.length > 0,
+    answerMatches: result?.result === answer,
+    answerTrimMatches: typeof result?.result === "string" && result.result.trim() === answer.trim(),
+    resultBytes: typeof result?.result === "string" ? Buffer.byteLength(result.result) : null,
+    initCount: initializations.length,
+    initModelMatches: initializations.length === 1 && initializations[0].model === model,
+    modelRequests: Number.isSafeInteger(modelRequests) && modelRequests >= 0 ? modelRequests : null,
+    memoryRequests: Number.isSafeInteger(memoryRequests) && memoryRequests >= 0 ? memoryRequests : null,
+    receiverErrors: [...new Set(receiverErrors.map((code) => receiverCodes.includes(code) ? code : "other"))],
+    errorSignatures: [
+      ["auth", /\b(?:unauthori[sz]ed|forbidden|authentication|invalid[_ -](?:api[_ -])?key|HTTP\s*40[13])\b/i],
+      ["model_not_found", /\bmodel_not_found\b|\b(?:unknown|unsupported|invalid) model\b|\bmodel\b[^\r\n]{0,80}\b(?:not found|does not exist|not available)\b/i],
+      ["connection", /\b(?:ECONNRESET|ENOTFOUND|EAI_AGAIN|fetch failed|network error|connection (?:failed|closed|reset))\b/i],
+      ["connection_refused", /\bECONNREFUSED\b|\bconnection refused\b/i],
+      ["timeout", /\b(?:ETIMEDOUT|ESOCKETTIMEDOUT|timeout|timed out)\b/i],
+      ["invalid_request", /\binvalid[_ -]request\b|\bbad request\b|\bHTTP\s*400\b/i],
+      ["rate_limit", /\brate[_ -]limit\b|\btoo many requests\b|\bHTTP\s*429\b/i],
+      ["response_parse", /\b(?:SyntaxError|invalid JSON|JSON parse|unexpected token|invalid response)\b/i],
+      ["response_validation", /\b(?:ZodError|TypeValidationError|AI_TypeValidationError)\b/],
+    ].filter(([, pattern]) => pattern.test(errors)).map(([name]) => name),
+  };
+}
 import { isDeepStrictEqual } from "node:util";

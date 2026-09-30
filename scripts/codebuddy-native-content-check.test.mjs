@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { assertNativeReadText, assertNativeToolCalls, selectNativeTurnContent, toolResult } from "./codebuddy-native-content-check.mjs";
+import { assertNativeReadText, assertNativeToolCalls, selectNativeTurnContent, summarizeNativeCompletion, toolResult } from "./codebuddy-native-content-check.mjs";
 
 const identity = { sessionId: "session-fixture", prompt: "Native prompt.", finalText: "Native answer." };
 const user = () => ({ id: "user-prompt", type: "message", role: "user", sessionId: identity.sessionId,
@@ -225,4 +225,71 @@ test("native tool evidence requires exact arguments and one ordered completed re
   assert.throws(() => assertNativeToolCalls([{ ...call, arguments: "{}" }, result], expected), { nativeCode: "NATIVE_TRANSCRIPT_TOOL_ARGUMENTS_MISMATCH" });
   assert.throws(() => assertNativeToolCalls([{ ...call, name: "Read" }, result], expected), { nativeCode: "NATIVE_TRANSCRIPT_TOOL_CALL_MISMATCH" });
   assert.throws(() => assertNativeToolCalls([call, result], []), { nativeCode: "NATIVE_TRANSCRIPT_UNEXPECTED_TOOL" });
+});
+
+const diagnosticOptions = { answer: "Native fixture answer.", model: "native-fixture-model", modelRequests: 1, memoryRequests: 0,
+  receiverErrors: [] };
+const resultEvent = () => ({ type: "result", subtype: "success", is_error: false, session_id: "native-fixture-session",
+  result: diagnosticOptions.answer });
+const initEvent = () => ({ type: "system", subtype: "init", model: diagnosticOptions.model });
+
+test("native completion diagnostics distinguish exact success, whitespace and missing results without changing events", () => {
+  const events = [initEvent(), resultEvent()], before = structuredClone(events);
+  assert.deepEqual(summarizeNativeCompletion(events, diagnosticOptions), {
+    resultCount: 1, subtype: "success", terminalReason: "missing", isError: false, sessionPresent: true,
+    answerMatches: true, answerTrimMatches: true, resultBytes: Buffer.byteLength(diagnosticOptions.answer),
+    initCount: 1, initModelMatches: true, modelRequests: 1, memoryRequests: 0, receiverErrors: [], errorSignatures: [],
+  });
+  assert.deepEqual(events, before);
+  const whitespace = summarizeNativeCompletion([initEvent(), { ...resultEvent(), result: `\n${diagnosticOptions.answer}\n` }], diagnosticOptions);
+  assert.equal(whitespace.answerMatches, false);
+  assert.equal(whitespace.answerTrimMatches, true);
+  assert.equal(whitespace.resultBytes, Buffer.byteLength(diagnosticOptions.answer) + 2);
+  assert.deepEqual(summarizeNativeCompletion([], diagnosticOptions), {
+    resultCount: 0, subtype: "missing", terminalReason: "missing", isError: null, sessionPresent: false,
+    answerMatches: false, answerTrimMatches: false, resultBytes: null, initCount: 0, initModelMatches: false,
+    modelRequests: 1, memoryRequests: 0, receiverErrors: [], errorSignatures: [],
+  });
+});
+
+test("native completion diagnostics expose duplicate results, changed model and known cancellation enums", () => {
+  const diagnostic = summarizeNativeCompletion([{ ...initEvent(), model: "other-model" },
+    { ...resultEvent(), terminal_reason: "aborted_tools", result: "" }, resultEvent()], diagnosticOptions);
+  assert.equal(diagnostic.resultCount, 2);
+  assert.equal(diagnostic.terminalReason, "aborted_tools");
+  assert.equal(diagnostic.answerMatches, false);
+  assert.equal(diagnostic.initModelMatches, false);
+  assert.equal(summarizeNativeCompletion([initEvent(), initEvent(), resultEvent()], diagnosticOptions).initModelMatches, false);
+});
+
+test("native completion error signatures are fixed hints and never inferred from normal answer text", () => {
+  const errors = ["HTTP 401 authentication failed", "model_not_found", "fetch failed: ECONNRESET", "connect ECONNREFUSED",
+    "ETIMEDOUT", "invalid_request: bad request", "HTTP 429: rate limit", "SyntaxError: invalid JSON", "AI_TypeValidationError"];
+  const diagnostic = summarizeNativeCompletion([{ ...resultEvent(), subtype: "error_during_execution", is_error: true,
+    result: undefined, errors }], diagnosticOptions);
+  assert.deepEqual(diagnostic.errorSignatures, ["auth", "model_not_found", "connection", "connection_refused", "timeout",
+    "invalid_request", "rate_limit", "response_parse", "response_validation"]);
+  assert.equal(diagnostic.isError, true);
+  assert.equal(diagnostic.subtype, "error_during_execution");
+  assert.equal(diagnostic.resultBytes, null);
+  assert.deepEqual(summarizeNativeCompletion([{ ...resultEvent(), result: errors.join("\n"), errors }], diagnosticOptions).errorSignatures, []);
+  assert.deepEqual(summarizeNativeCompletion([{ ...resultEvent(), is_error: true, errors: ["synthetic unrelated failure", { private: "value" }] }],
+    diagnosticOptions).errorSignatures, []);
+});
+
+test("native completion diagnostics cannot disclose raw errors, credentials, paths, URLs or unknown enums", () => {
+  const secret = "PRIVATE_DIAGNOSTIC_CANARY", path = "/private/native-fixture/home", url = "https://private-fixture.invalid/model";
+  const events = [{ ...initEvent(), model: secret }, { ...resultEvent(), subtype: secret, terminal_reason: path,
+    session_id: secret, is_error: true, result: `${secret} ${path} ${url}`, errors: [`ECONNREFUSED ${secret} ${url}`],
+    errors_info: [{ message: secret, code: secret }], authorization: `Bearer ${secret}` }];
+  const diagnostic = summarizeNativeCompletion(events, { ...diagnosticOptions, modelRequests: secret, memoryRequests: -1,
+    receiverErrors: [secret, url, "NATIVE_MODEL_CREDENTIAL_MISMATCH", secret] });
+  assert.equal(diagnostic.subtype, "other");
+  assert.equal(diagnostic.terminalReason, "other");
+  assert.equal(diagnostic.modelRequests, null);
+  assert.equal(diagnostic.memoryRequests, null);
+  assert.deepEqual(diagnostic.receiverErrors, ["other", "NATIVE_MODEL_CREDENTIAL_MISMATCH"]);
+  assert.deepEqual(diagnostic.errorSignatures, ["connection_refused"]);
+  for (const value of [secret, path, url, "Bearer", "ECONNREFUSED"]) assert.ok(!JSON.stringify(diagnostic).includes(value));
+  assert.equal(events[1].subtype, secret);
 });

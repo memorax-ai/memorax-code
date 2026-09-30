@@ -8,6 +8,7 @@ import { stripVTControlCharacters } from "node:util";
 import { createNativeHarness, fixtureModel, waitFor } from "./codebuddy-native-support.mjs";
 import { assertCredentialNotEchoed, assertProtectedConfiguration, snapshotProtectedConfiguration } from "./codex-lifecycle-assertions.mjs";
 import { assertCodeBuddySettings, snapshotCodeBuddySettings, verifyLifecycleIntegration } from "./codebuddy-lifecycle-assertions.mjs";
+import { summarizeNativeCompletion } from "./codebuddy-native-content-check.mjs";
 import { trackLifecycleTerminal } from "./claude-lifecycle-process.mjs";
 
 const report = { status: "FAIL", suite: "codebuddy_setup_interruption", platform: process.platform,
@@ -251,6 +252,8 @@ async function runCase(phase) {
     const results = events.filter((event) => event.type === "result");
     const [completedTurn] = results;
     const session = completedTurn?.session_id;
+    result.nativeSessionDiagnostic = summarizeNativeCompletion(events, { answer, model: fixtureModel,
+      modelRequests: harness.modelRequests.length, memoryRequests: harness.memoryRequests.length, receiverErrors: harness.serverErrors });
     check(results.length === 1 && typeof session === "string" && session.length > 0 && completedTurn.result === answer
       && completedTurn.is_error === false && completedTurn.subtype === "success"
       && completedTurn.terminal_reason === undefined, "RECOVERY_NATIVE_SESSION_FAILED");

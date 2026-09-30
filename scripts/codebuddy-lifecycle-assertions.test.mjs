@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
+import { cp, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import test from "node:test";
 import { assertCodeBuddySettings, assertLifecycleHooks, assertLifecycleIntegrationAbsent,
-  marketplaceName, pluginId, selectLifecycleRegistration, snapshotCodeBuddySettings } from "./codebuddy-lifecycle-assertions.mjs";
+  marketplaceName, pluginId, pluginName, selectLifecycleRegistration, snapshotCodeBuddySettings,
+  verifyLifecycleIntegration } from "./codebuddy-lifecycle-assertions.mjs";
 
 const owned = { type: "command", timeout: 20,
   command: "node '/isolated/plugins/memorax-code-codebuddy-adapter/hooks/runtime-hook.mjs' managed-user-prompt" };
@@ -112,3 +116,105 @@ test("uninstall absence rejects owned registration, disabled key, marketplace or
   ]) assert.throws(() => assertLifecycleIntegrationAbsent(registry, known, settings),
     code("CODEBUDDY_INTEGRATION_REMAINS"));
 });
+
+test("installed integration retains lexical Hook commands through a symlinked client home", async () => {
+  const fixture = await integrationFixture();
+  try {
+    const result = await verifyLifecycleIntegration(fixture.options);
+    assert.notEqual(result.source, fixture.source);
+    assert.equal(result.source, await realpath(fixture.source));
+    assert.equal(result.cache, await realpath(fixture.cache));
+  } finally { await fixture.close(); }
+});
+
+test("a global Hook command pointing at a different real target still fails", async () => {
+  const fixture = await integrationFixture();
+  try {
+    const other = join(fixture.root, "other", pluginName, "hooks", "runtime-hook.mjs");
+    await mkdir(dirname(other), { recursive: true });
+    await writeFile(other, "// A different fixture target.\n");
+    const settings = JSON.parse(await readFile(fixture.settingsPath, "utf8"));
+    settings.hooks.UserPromptSubmit[0].hooks[0].command = promptCommand(dirname(dirname(other)));
+    await fixture.json(fixture.settingsPath, settings);
+    await assert.rejects(verifyLifecycleIntegration(fixture.options), code("CODEBUDDY_GLOBAL_PROMPT_HOOK_MISMATCH"));
+  } finally { await fixture.close(); }
+});
+
+for (const target of ["source", "cache"]) {
+  test("a symlinked plugin " + target + " outside its allowed root still fails", async () => {
+    const fixture = await integrationFixture();
+    try {
+      const outside = join(fixture.root, "outside-plugin");
+      await cp(fixture[target], outside, { recursive: true });
+      await rm(fixture[target], { recursive: true });
+      await symlink(outside, fixture[target], process.platform === "win32" ? "junction" : "dir");
+      await assert.rejects(verifyLifecycleIntegration(fixture.options),
+        code(target === "source" ? "CODEBUDDY_PLUGIN_SOURCE_ESCAPED" : "CODEBUDDY_PLUGIN_PATH_MISMATCH"));
+    } finally { await fixture.close(); }
+  });
+}
+
+async function integrationFixture() {
+  const root = await mkdtemp(join(tmpdir(), "codebuddy-lifecycle-alias-"));
+  const close = () => rm(root, { recursive: true, force: true });
+  try {
+    const home = join(root, "home-alias"), targetHome = join(root, "home-real");
+    const packageRoot = join(root, "package"), stateHome = join(root, "state"), command = join(root, "client-fixture");
+    await mkdir(targetHome);
+    await mkdir(stateHome);
+    await writeFile(command, "// Never executed.\n");
+    await symlink(targetHome, home, process.platform === "win32" ? "junction" : "dir");
+    const marketplace = join(home, "plugins", "marketplaces", marketplaceName);
+    const source = join(marketplace, "plugins", pluginName);
+    const cache = join(home, "plugins", "cache", marketplaceName, pluginName, "0.1.19");
+    const sourceRoot = join(packageRoot, "lib", pluginName);
+    const canonicalSkill = join(packageRoot, "lib", "memorax-code-codex-adapter", "skills", "memorax-code");
+    const json = async (path, value) => {
+      await mkdir(dirname(path), { recursive: true });
+      await writeFile(path, JSON.stringify(value));
+    };
+    for (const path of [source, cache, sourceRoot]) {
+      await json(join(path, ".codebuddy-plugin", "plugin.json"), { name: pluginName, version: "0.1.19" });
+      const hooks = structuredClone(hookManifest);
+      if (process.platform === "win32" && path !== sourceRoot) {
+        for (const event of ["SessionStart", "Stop"]) {
+          hooks.hooks[event][0].hooks[0].command = 'node "' + join(path, "hooks", "runtime-hook.mjs").replaceAll("\\", "/") + '" turn';
+        }
+      }
+      await json(join(path, "hooks", "hooks.json"), hooks);
+      for (const asset of ["hooks/runtime-hook.mjs", "hooks/common-runtime.mjs", "hooks/pending-state.mjs"]) {
+        await writeFile(join(path, asset), "// Synthetic asset: " + asset + "\n");
+      }
+      if (path !== sourceRoot) await json(join(path, ".memorax-code-package.json"),
+        { version: 1, client: "codebuddy", codeBuddyHome: home, memoraxCodeHome: stateHome, codeBuddyCommand: command });
+    }
+    for (const path of [join(source, "skills", "memorax-code"), join(cache, "skills", "memorax-code"), canonicalSkill]) {
+      for (const asset of ["SKILL.md", "references/memorax-search.md", "references/memorax-add.md"]) {
+        await mkdir(dirname(join(path, asset)), { recursive: true });
+        await writeFile(join(path, asset), "Synthetic Skill fixture: " + asset + "\n");
+      }
+    }
+    const settingsPath = join(home, "settings.json");
+    await json(settingsPath, { enabledPlugins: { [pluginId]: true },
+      hooks: { UserPromptSubmit: [{ hooks: [{ type: "command", command: promptCommand(source), timeout: 20 }] }] } });
+    await json(join(home, "plugins", "installed_plugins.json"),
+      { version: 2, plugins: { [pluginId]: [{ scope: "user", version: "0.1.19", enabled: true, installPath: cache }] } });
+    await json(join(home, "plugins", "known_marketplaces.json"),
+      { [marketplaceName]: { type: "directory", source: { source: "directory", path: marketplace },
+        installLocation: marketplace, autoUpdate: false } });
+    await json(join(marketplace, ".codebuddy-plugin", "marketplace.json"),
+      { name: marketplaceName, plugins: [{ name: pluginName, source: "./plugins/" + pluginName, version: "0.1.19" }] });
+    return { root, source, cache, settingsPath, json, close, options: {
+      packageRoot, home, stateHome, command, settingsSnapshot: {},
+      adapter: { ok: true, runtime: "codebuddy", installed: true, enabled: true, managed: true, integration: "hooks",
+        installPath: cache, codebuddyHooks: { configured: true, ok: true },
+        codebuddySkills: { ok: true, path: join(source, "skills", "memorax-code", "SKILL.md") } },
+    } };
+  } catch (error) { await close(); throw error; }
+}
+
+function promptCommand(root) {
+  const path = join(root, "hooks", "runtime-hook.mjs");
+  return process.platform === "win32" ? 'node "' + path.replaceAll("\\", "/") + '" managed-user-prompt'
+    : "node '" + path.replaceAll("'", "'\\''") + "' managed-user-prompt";
+}

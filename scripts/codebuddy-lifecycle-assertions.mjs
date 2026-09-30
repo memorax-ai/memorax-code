@@ -1,5 +1,5 @@
 import { readFile, realpath, stat } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative, sep, win32 } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep, win32 } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 
 export const pluginName = "memorax-code-codebuddy-adapter";
@@ -99,18 +99,21 @@ export async function verifyLifecycleIntegration({ packageRoot, home, stateHome,
   check(declared.name === marketplaceName && matches?.length === 1
     && matches[0].version === manifest.version && matches[0].source === "./plugins/" + pluginName,
   "CODEBUDDY_MARKETPLACE_MANIFEST_MISMATCH");
-  const source = await realpath(join(marketplace, matches[0].source));
+  const sourcePath = resolve(registered.marketplace, matches[0].source);
+  const source = await realpath(sourcePath);
   check(within(marketplace, source), "CODEBUDDY_PLUGIN_SOURCE_ESCAPED");
   const promptHooks = (settings.hooks?.UserPromptSubmit ?? []).flatMap((group) => group.hooks ?? []).filter(ownedPromptHook);
-  const path = process.platform === "win32" ? join(source, "hooks", "runtime-hook.mjs").replaceAll("\\", "/")
-    : join(source, "hooks", "runtime-hook.mjs");
+  // Product commands retain lexical paths; canonical paths only prove identity
+  // and containment, including macOS temporary-directory aliases.
+  const path = process.platform === "win32" ? join(sourcePath, "hooks", "runtime-hook.mjs").replaceAll("\\", "/")
+    : join(sourcePath, "hooks", "runtime-hook.mjs");
   const quoted = process.platform === "win32" ? '"' + path + '"' : "'" + path.replaceAll("'", "'\\''") + "'";
   check(promptHooks.length === 1 && promptHooks[0].command === "node " + quoted + " managed-user-prompt"
     && promptHooks[0].timeout === 20, "CODEBUDDY_GLOBAL_PROMPT_HOOK_MISMATCH");
-  for (const root of [cache, source]) {
+  for (const [root, commandRoot] of [[cache, resolve(registered.cache)], [source, sourcePath]]) {
     check(isDeepStrictEqual(await json(join(root, ".codebuddy-plugin", "plugin.json")), manifest),
       "CODEBUDDY_INSTALLED_MANIFEST_MISMATCH");
-    assertLifecycleHooks(await json(join(root, "hooks", "hooks.json")), await json(join(sourceRoot, "hooks", "hooks.json")), root);
+    assertLifecycleHooks(await json(join(root, "hooks", "hooks.json")), await json(join(sourceRoot, "hooks", "hooks.json")), commandRoot);
     const metadata = await json(join(root, ".memorax-code-package.json"));
     check(metadata.version === 1 && metadata.client === "codebuddy"
       && await realpath(metadata.codeBuddyHome) === await realpath(home)
