@@ -16,8 +16,8 @@ const cases = [
   { id: "user-allow", decision: "allow", writes: true },
   { id: "user-deny", decision: "deny", writes: false },
   { id: "user-cancel", decision: "cancel", interrupted: true, writes: false },
-  { id: "user-wait-interrupt", interrupted: true, writes: false },
   { id: "user-inflight-interrupt", decision: "allow", inflight: true, interrupted: true, writes: false },
+  { id: "user-wait-interrupt", interrupted: true, writes: false },
 ];
 const report = { status: "FAIL", suite: "native_codebuddy_permissions", platform: process.platform,
   paidModelRequests: 0, modelQualityEvaluated: false,

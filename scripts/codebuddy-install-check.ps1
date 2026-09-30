@@ -81,12 +81,12 @@ Invoke-WithCodexTestUserPath -Prefix $prefix -Action {
     & node (Join-Path $repoRoot 'scripts/codebuddy-native-check.mjs') `
       (Join-Path $prefix 'node_modules/@memorax/memorax-code') (Join-Path $prefix 'codebuddy.cmd') $CodeBuddyVersion
     if ($LASTEXITCODE -ne 0) { throw 'The CodeBuddy native suite failed; isolated state retained.' }
-    & node (Join-Path $repoRoot 'scripts/codebuddy-permissions-check.mjs') `
-      (Join-Path $prefix 'node_modules/@memorax/memorax-code') (Join-Path $prefix 'codebuddy.cmd') $CodeBuddyVersion
-    if ($LASTEXITCODE -ne 0) { throw 'The CodeBuddy permission suite failed; isolated state retained.' }
     & node (Join-Path $repoRoot 'scripts/codebuddy-background-check.mjs') `
       (Join-Path $prefix 'node_modules/@memorax/memorax-code') (Join-Path $prefix 'codebuddy.cmd') $CodeBuddyVersion
     if ($LASTEXITCODE -ne 0) { throw 'The CodeBuddy background suite failed; isolated state retained.' }
+    & node (Join-Path $repoRoot 'scripts/codebuddy-permissions-check.mjs') `
+      (Join-Path $prefix 'node_modules/@memorax/memorax-code') (Join-Path $prefix 'codebuddy.cmd') $CodeBuddyVersion
+    if ($LASTEXITCODE -ne 0) { throw 'The CodeBuddy permission suite failed; isolated state retained.' }
   } catch {
     $originalFailure = $_
     try {

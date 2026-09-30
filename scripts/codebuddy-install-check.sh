@@ -112,10 +112,10 @@ isolated node "$repo_root/scripts/codebuddy-install-interruption-check.mjs" \
 isolated node "$repo_root/scripts/codebuddy-native-check.mjs" \
   "$test_root/npm/lib/node_modules/@memorax/memorax-code" \
   "$test_root/npm/bin/codebuddy" "$codebuddy_version"
-isolated node "$repo_root/scripts/codebuddy-permissions-check.mjs" \
+isolated node "$repo_root/scripts/codebuddy-background-check.mjs" \
   "$test_root/npm/lib/node_modules/@memorax/memorax-code" \
   "$test_root/npm/bin/codebuddy" "$codebuddy_version"
-isolated node "$repo_root/scripts/codebuddy-background-check.mjs" \
+isolated node "$repo_root/scripts/codebuddy-permissions-check.mjs" \
   "$test_root/npm/lib/node_modules/@memorax/memorax-code" \
   "$test_root/npm/bin/codebuddy" "$codebuddy_version"
 
