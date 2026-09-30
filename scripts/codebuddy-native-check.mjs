@@ -121,7 +121,7 @@ try {
     const answer = operation === "search" ? `Recalled Coding Memory: ${searchResult}` : "Native Skill Add accepted.";
     await turn({ sessionId: first, prompt: `Use the memorax-code skill to ${operation} the parser validation lesson.`,
       answer, kind: `skill-${operation}`, explicitRequests: 1, args: ["--allowedTools", "Skill", "Read", "Bash"], steps: [
-        (body) => ({ toolCalls: [toolCall(body, "Skill", { skill: "memorax-code-codebuddy-adapter:memorax-code" }, `load-${operation}`)] }),
+        (body) => ({ toolCalls: [toolCall(body, "Skill", { skill: "memorax-code" }, `load-${operation}`)] }),
         (body) => {
           assertCompleteText(toolResult(body, `load-${operation}`), skillBody, "NATIVE_SKILL_ROUTER_INCOMPLETE");
           return { toolCalls: [toolCall(body, "Read", { file_path: reference }, `read-${operation}`)] };
