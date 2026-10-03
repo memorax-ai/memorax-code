@@ -19,6 +19,21 @@ export function check(condition, code) {
   if (!condition) throw Object.assign(new Error(code), { nativeCode: code });
 }
 
+export function summarizeCleanupDiagnostic(error) {
+  try {
+    const { stage, systemCode, exitCode, childExited } = error?.cleanupDiagnostic ?? {};
+    if (!["before-close", "child-stop", "backend-record-read", "backend-stop", "backend-process-wait",
+      "backend-record-check", "backend-port-probe", "memory-server-close", "model-server-close", "root-remove"].includes(stage)) return undefined;
+    const summary = { stage };
+    if (["EACCES", "EADDRINUSE", "EADDRNOTAVAIL", "EBUSY", "ECONNREFUSED", "ECONNRESET", "EINTR", "EINVAL",
+      "EIO", "EISDIR", "EMFILE", "ENFILE", "ENOENT", "ENOMEM", "ENOSPC", "ENOTDIR", "ENOTEMPTY", "EPERM",
+      "EPIPE", "EROFS", "ESRCH", "ETIMEDOUT", "ETXTBSY"].includes(systemCode)) summary.systemCode = systemCode;
+    if (Number.isInteger(exitCode) && exitCode >= -2147483648 && exitCode <= 4294967295) summary.exitCode = exitCode;
+    if (stage === "child-stop" && typeof childExited === "boolean") summary.childExited = childExited;
+    return summary;
+  } catch { return undefined; }
+}
+
 export async function createNativeHarness({ packageRoot, codebuddyCommand, label = "native", writeback = true, expectedVersion }) {
   packageRoot = resolve(packageRoot);
   codebuddyCommand = resolve(codebuddyCommand);
@@ -177,15 +192,24 @@ export async function createNativeHarness({ packageRoot, codebuddyCommand, label
   function close() { return closePromise ??= closeResources(); }
   async function closeResources() {
     let cleanupError;
-    const attempt = async (operation) => {
-      try { return await operation(); } catch (error) { cleanupError ??= error; }
+    const attempt = async (stage, operation, child) => {
+      const childExited = child && (child.exitCode !== null || child.signalCode !== null);
+      try { return await operation(); } catch (error) {
+        const firstError = cleanupError == null;
+        cleanupError ??= error;
+        if (!firstError) return;
+        try {
+          error.cleanupDiagnostic = summarizeCleanupDiagnostic({ cleanupDiagnostic:
+            { stage, systemCode: error.code, exitCode: error.code, childExited } });
+        } catch {}
+      }
     };
     try {
-      await attempt(async () => beforeClose?.());
-      for (const child of children) await attempt(() => stopTree(child, env));
+      await attempt("before-close", async () => beforeClose?.());
+      for (const child of children) await attempt("child-stop", () => stopTree(child, env), child);
       const pidPath = join(stateHome, "runtime", "backend", "backend.pid.json");
       let backendRecordPresent = false;
-      await attempt(async () => {
+      await attempt("backend-record-read", async () => {
         const raw = await readFile(pidPath, "utf8").catch((error) => {
           if (error.code === "ENOENT") return undefined; throw error;
         });
@@ -196,14 +220,14 @@ export async function createNativeHarness({ packageRoot, codebuddyCommand, label
         backendPids.add(current.pid);
       });
       if (setupStarted || backendRecordPresent || backendPids.size) {
-        await attempt(async () => {
+        await attempt("backend-stop", async () => {
           const stopped = JSON.parse((await runProduct(["stop", "--clients", "codebuddy", "--json"], { timeout: 15_000, cleanup: true })).stdout);
           check(stopped.ok === true, "NATIVE_BACKEND_STOP_FAILED");
         });
-        for (const pid of backendPids) await attempt(() => waitFor(() => !processAlive(pid), "NATIVE_BACKEND_PROCESS_REMAINS"));
-        await attempt(async () => check(await stat(pidPath).then(() => false, (error) => error.code === "ENOENT"),
+        for (const pid of backendPids) await attempt("backend-process-wait", () => waitFor(() => !processAlive(pid), "NATIVE_BACKEND_PROCESS_REMAINS"));
+        await attempt("backend-record-check", async () => check(await stat(pidPath).then(() => false, (error) => error.code === "ENOENT"),
           "NATIVE_BACKEND_RECORD_REMAINS"));
-        await attempt(async () => {
+        await attempt("backend-port-probe", async () => {
           const probe = createTcpServer();
           try {
             await new Promise((done, reject) => { probe.once("error", reject); probe.listen(backendPort, "127.0.0.1", done); });
@@ -211,9 +235,9 @@ export async function createNativeHarness({ packageRoot, codebuddyCommand, label
         });
       }
     } finally {
-      await attempt(() => memoryServer.close());
-      await attempt(() => modelServer.close());
-      if (!cleanupError) await attempt(() => rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }));
+      await attempt("memory-server-close", () => memoryServer.close());
+      await attempt("model-server-close", () => modelServer.close());
+      if (!cleanupError) await attempt("root-remove", () => rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }));
       for (const [signal, handler] of signalHandlers) process.off(signal, handler);
     }
     if (cleanupError) { cleanupError.nativeCode ??= "NATIVE_CLEANUP_FAILED"; throw cleanupError; }

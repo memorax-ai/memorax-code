@@ -8,7 +8,8 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { runInNewContext } from "node:vm";
 import {
-  check, createNativeHarness, fixtureKey, fixtureModel, fixtureUser, processAlive, searchResult, sendChatCompletion, summarizeModelRoute, waitFor,
+  check, createNativeHarness, fixtureKey, fixtureModel, fixtureUser, processAlive, searchResult, sendChatCompletion,
+  summarizeCleanupDiagnostic, summarizeModelRoute, waitFor,
 } from "./codebuddy-native-support.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -310,7 +311,8 @@ test("before-close failure still terminates owned commands and listeners but ret
     child.stdout.on("data", () => { ready = true; });
     await waitFor(() => ready);
     harness.setBeforeClose(() => check(false, "FIXTURE_BEFORE_CLOSE_FAILED"));
-    await assert.rejects(harness.close(), { nativeCode: "FIXTURE_BEFORE_CLOSE_FAILED" });
+    await assert.rejects(harness.close(), { nativeCode: "FIXTURE_BEFORE_CLOSE_FAILED",
+      cleanupDiagnostic: { stage: "before-close" } });
     assert.equal(processAlive(child.pid), false);
     assert.equal((await stat(harness.root)).isDirectory(), true);
     await assert.rejects(fetch(harness.modelUrl));
@@ -318,6 +320,114 @@ test("before-close failure still terminates owned commands and listeners but ret
   } finally {
     await harness.close().catch(() => {});
     if (child?.pid) await killFixture(child.pid);
+    await rm(harness.root, { recursive: true, force: true });
+  }
+});
+
+test("cleanup diagnostics preserve the first error and exclude unapproved fields and codes", async () => {
+  const canary = "PRIVATE_CLEANUP_CANARY";
+  for (const [code, detail] of [
+    ["EACCES", { systemCode: "EACCES" }], [7, { exitCode: 7 }],
+    [-2147483648, { exitCode: -2147483648 }], [4294967295, { exitCode: 4294967295 }],
+    [canary, {}], [{ private: canary }, {}], [-2147483649, {}], [4294967296, {}], [1.5, {}], [NaN, {}],
+  ]) {
+    const harness = await createNativeHarness({ packageRoot, codebuddyCommand: process.execPath, label: "cleanup-diagnostic" });
+    const failure = Object.assign(new Error(canary), { code, nativeCode: "FIXTURE_FIRST_CLEANUP_ERROR",
+      pid: 123456789, path: canary, command: canary, env: { private: canary }, stdout: canary, stderr: canary,
+      cleanupDiagnostic: { stage: canary, systemCode: canary, private: canary } });
+    try {
+      await mkdir(join(harness.stateHome, "runtime", "backend", "backend.pid.json"), { recursive: true });
+      harness.setBeforeClose(() => { throw failure; });
+      await assert.rejects(harness.close(), (error) => {
+        assert.equal(error, failure);
+        assert.equal(error.nativeCode, "FIXTURE_FIRST_CLEANUP_ERROR");
+        assert.deepEqual(error.cleanupDiagnostic, { stage: "before-close", ...detail });
+        assert.equal(JSON.stringify(error.cleanupDiagnostic).includes(canary), false);
+        return true;
+      });
+      await assert.rejects(harness.close(), (error) => error === failure);
+    } finally {
+      await harness.close().catch(() => {});
+      await rm(harness.root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("cleanup diagnostic projection rejects untrusted values even on frozen errors", () => {
+  const canary = "PRIVATE_CLEANUP_CANARY";
+  for (const [diagnostic, expected] of [
+    [{ stage: "child-stop", systemCode: "EPERM", exitCode: 1, childExited: true, private: canary },
+      { stage: "child-stop", systemCode: "EPERM", exitCode: 1, childExited: true }],
+    [{ stage: "child-stop", systemCode: canary, exitCode: canary, childExited: canary }, { stage: "child-stop" }],
+    [{ stage: "root-remove", systemCode: "EBUSY", exitCode: 4294967296, childExited: true },
+      { stage: "root-remove", systemCode: "EBUSY" }],
+    [{ stage: "backend-stop", systemCode: "ENOENT", exitCode: -2147483649 }, { stage: "backend-stop", systemCode: "ENOENT" }],
+    [{ stage: canary, systemCode: "EACCES", exitCode: 1 }, undefined],
+  ]) {
+    const error = Object.freeze(Object.assign(new Error(canary), { cleanupDiagnostic: Object.freeze(diagnostic) }));
+    const summary = summarizeCleanupDiagnostic(error);
+    assert.deepEqual(summary, expected);
+    assert.equal(JSON.stringify(summary ?? {}).includes(canary), false);
+  }
+  assert.equal(summarizeCleanupDiagnostic({ get cleanupDiagnostic() { throw new Error(canary); } }), undefined);
+  assert.equal(summarizeCleanupDiagnostic(), undefined);
+});
+
+test("cleanup diagnostic attachment failure preserves the original cleanup error", async () => {
+  const harness = await createNativeHarness({ packageRoot, codebuddyCommand: process.execPath, label: "frozen-cleanup-diagnostic" });
+  const failure = Object.freeze(Object.assign(new Error("PRIVATE_CLEANUP_CANARY"), {
+    nativeCode: "FIXTURE_FROZEN_CLEANUP_ERROR", cleanupDiagnostic: { stage: "PRIVATE_CLEANUP_CANARY" },
+  }));
+  try {
+    harness.setBeforeClose(() => { throw failure; });
+    await assert.rejects(harness.close(), (error) => {
+      assert.equal(error, failure);
+      assert.equal(error.nativeCode, "FIXTURE_FROZEN_CLEANUP_ERROR");
+      assert.equal(summarizeCleanupDiagnostic(error), undefined);
+      return true;
+    });
+    for (const url of [harness.modelUrl, harness.memoryUrl]) await assert.rejects(fetch(url));
+  } finally {
+    await harness.close().catch(() => {});
+    await rm(harness.root, { recursive: true, force: true });
+  }
+});
+
+test("cleanup record-read failures identify the stage without leaking the record path", async () => {
+  const harness = await createNativeHarness({ packageRoot, codebuddyCommand: process.execPath, label: "cleanup-record-diagnostic" });
+  try {
+    await mkdir(join(harness.stateHome, "runtime", "backend", "backend.pid.json"), { recursive: true });
+    await assert.rejects(harness.close(), { nativeCode: "NATIVE_CLEANUP_FAILED", code: "EISDIR",
+      cleanupDiagnostic: { stage: "backend-record-read", systemCode: "EISDIR" } });
+    assert.equal((await stat(harness.root)).isDirectory(), true);
+    for (const url of [harness.modelUrl, harness.memoryUrl]) await assert.rejects(fetch(url));
+  } finally {
+    await harness.close().catch(() => {});
+    await rm(harness.root, { recursive: true, force: true });
+  }
+});
+
+test("child cleanup diagnostics record whether the owned child had exited before stopping", { skip: process.platform === "win32" }, async () => {
+  const harness = await createNativeHarness({ packageRoot, codebuddyCommand: process.execPath, label: "cleanup-child-diagnostic" });
+  const originalKill = process.kill;
+  let child;
+  try {
+    child = harness.startCodeBuddy(["-e", 'process.stdout.write("ready");setInterval(()=>{},1000);']);
+    let ready = false;
+    child.stdout.on("data", () => { ready = true; });
+    await waitFor(() => ready);
+    process.kill = (pid, signal) => {
+      if (pid === -child.pid && signal === "SIGKILL") throw syscallError("EPERM");
+      return originalKill(pid, signal);
+    };
+    await assert.rejects(harness.close(), { nativeCode: "NATIVE_CLEANUP_FAILED", code: "EPERM",
+      cleanupDiagnostic: { stage: "child-stop", systemCode: "EPERM", childExited: false } });
+    assert.equal(processAlive(child.pid), true);
+    for (const url of [harness.modelUrl, harness.memoryUrl]) await assert.rejects(fetch(url));
+  } finally {
+    process.kill = originalKill;
+    await harness.close().catch(() => {});
+    await killFixture(child?.pid);
     await rm(harness.root, { recursive: true, force: true });
   }
 });
@@ -551,7 +661,8 @@ test("cleanup failure retains isolated state while closing model and memory list
     harness = await createNativeHarness({ packageRoot: fixture, codebuddyCommand: process.execPath, label: "failed-close" });
     await mkdir(join(harness.stateHome, "runtime", "backend"), { recursive: true });
     await writeFile(join(harness.stateHome, "runtime", "backend", "backend.pid.json"), JSON.stringify({ pid: 2147483647 }));
-    await assert.rejects(harness.close(), { nativeCode: "NATIVE_BACKEND_STOP_FAILED" });
+    await assert.rejects(harness.close(), { nativeCode: "NATIVE_BACKEND_STOP_FAILED",
+      cleanupDiagnostic: { stage: "backend-stop" } });
     assert.equal((await stat(harness.root)).isDirectory(), true);
     for (const url of [harness.modelUrl, harness.memoryUrl]) {
       await assert.rejects(fetch(url));
@@ -590,7 +701,8 @@ test("child cleanup failure still reads the current Backend record and calls pub
       if (pid === -childPid && signal === "SIGKILL") throw Object.assign(new Error("fixture signal failure"), { code: "EPERM" });
       return originalKill(pid, signal);
     };
-    await assert.rejects(harness.close(), { code: "EPERM", nativeCode: "NATIVE_CLEANUP_FAILED" });
+    await assert.rejects(harness.close(), { code: "EPERM", nativeCode: "NATIVE_CLEANUP_FAILED",
+      cleanupDiagnostic: { stage: "child-stop", systemCode: "EPERM", childExited: true } });
     assert.equal(await readFile(join(harness.stateHome, "public-stop-called"), "utf8"), "2147483647");
     await assert.rejects(stat(join(harness.stateHome, "runtime", "backend", "backend.pid.json")), { code: "ENOENT" });
     assert.equal((await stat(harness.root)).isDirectory(), true);

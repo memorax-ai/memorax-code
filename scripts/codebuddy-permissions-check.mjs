@@ -4,7 +4,7 @@ import { access, readFile, readdir, realpath, writeFile } from "node:fs/promises
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
-import { check, createNativeHarness, fixtureKey, fixtureModel, fixtureUser, waitFor } from "./codebuddy-native-support.mjs";
+import { check, createNativeHarness, fixtureKey, fixtureModel, fixtureUser, summarizeCleanupDiagnostic, waitFor } from "./codebuddy-native-support.mjs";
 import { assertCompleteText, assertNoForeignContent, assertWritebackMessages } from "./codex-native-content-check.mjs";
 import { nativeHookPrompt, selectNativeTurnContent, summarizeNativeCompletion } from "./codebuddy-native-content-check.mjs";
 import { assertInitializedModel, assertNativeInterruption, assertPermissionInitializations, assertPermissionWritebacks, assertToolLineage,
@@ -139,6 +139,7 @@ try {
       result.nativeInterruptCompatibility = await control.finishAfterInterrupt((child) => harness.stopCodeBuddy(child));
       // Shutdown stabilizes the transcript, even if the CLI needed cleanup.
       // An incomplete turn here does not prove native cancellation succeeded.
+      current.recoveryValidationPhase = "after-client-shutdown";
       const outcome = selectInterruptOutcome(await transcript({ prompt: current.recoveryPrompt, answer: current.recoveryAnswer }), current);
       await findPromptTrace(current.prompt);
       if (outcome.outcome === "completed") {
@@ -203,6 +204,9 @@ try {
 } catch (error) {
   report.stage = stage;
   report.error = error.nativeCode ?? "PERMISSION_CHECK_FAILED_PRIVATE_OUTPUT_SUPPRESSED";
+  if (error.interruptRecoveryDiagnostic) report.interruptRecoveryDiagnostic = {
+    phase: current?.recoveryValidationPhase, ...error.interruptRecoveryDiagnostic,
+  };
   report.receiverErrors = harness?.serverErrors ?? [];
   if (current) report.activeCaseModelRequests = current.modelRequests;
   if (current && control) {
@@ -224,7 +228,11 @@ try {
   }
 } finally {
   try { await harness?.close(); report.cleanup = "PASS"; }
-  catch (error) { report.cleanup = error.nativeCode ?? "PERMISSION_CLEANUP_FAILED_PRIVATE_OUTPUT_SUPPRESSED"; }
+  catch (error) {
+    report.cleanup = error.nativeCode ?? "PERMISSION_CLEANUP_FAILED_PRIVATE_OUTPUT_SUPPRESSED";
+    const diagnostic = summarizeCleanupDiagnostic(error);
+    if (diagnostic) report.cleanupDiagnostic = diagnostic;
+  }
 }
 if (suiteCompleted && report.cleanup === "PASS") {
   try {
@@ -293,6 +301,7 @@ async function findPromptTrace(prompt, completed = false) {
 }
 async function verifyCompleted({ prompt, answer, tool, denied }) {
   const records = await transcript({ prompt, answer });
+  if (current.test.nativeInterrupt && prompt === current.recoveryPrompt) current.recoveryValidationPhase = "before-client-shutdown";
   const selected = current.test.nativeInterrupt && prompt === current.recoveryPrompt
     ? selectInterruptRecovery(records, current)
     : selectNativeTurnContent(records, { sessionId: current.sessionId, prompt, finalText: answer });

@@ -538,6 +538,89 @@ test("interrupt recovery leaves ID-less non-content context records intact", () 
   assert.deepEqual(records, original);
 });
 
+function recoveryDiagnostic(records, expected = interruptIdentity) {
+  let diagnostic;
+  assert.throws(() => selectInterruptRecovery(records, expected), (error) => {
+    assert.equal(error.nativeCode, "PERMISSION_INTERRUPT_RECOVERY_TAIL_INVALID");
+    assert.equal(error.message, error.nativeCode);
+    diagnostic = error.interruptRecoveryDiagnostic;
+    return true;
+  });
+  return diagnostic;
+}
+
+test("interrupt recovery diagnostics distinguish every unchanged tail assertion", () => {
+  const cases = [
+    ["branch_coverage", (records) => records.push({ ...result("incomplete"), id: "orphan-result", parentId: "missing-parent" })],
+    ["tail_shape", (records) => { records.push({ ...records.at(-1), id: "third-result", parentId: records.at(-1).id }); }],
+    ["tail_member", (records) => { records.at(-1).status = "completed"; }],
+    ["single_child", (records) => { records.at(-1).parentId = "recovery-answer"; }],
+    ["terminal_leaf", (records) => records.unshift({ ...user(), id: "other-user", parentId: records.at(-1).id,
+      content: [{ type: "input_text", text: "Other prompt" }] })],
+  ];
+  for (const [clause, mutate] of cases) {
+    const records = withLateOriginalResults();
+    mutate(records);
+    const original = structuredClone(records), diagnostic = recoveryDiagnostic(records);
+    assert.equal(diagnostic.clause, clause);
+    assert.equal(diagnostic.recordCount, records.length);
+    assert.equal(diagnostic.originalBranchCount, 2);
+    assert.equal(diagnostic.assistantParentIsRecoveryUser, true);
+    assert.deepEqual(records, original);
+    if (clause === "branch_coverage") assert.equal(diagnostic.unselectedContentCount, 1);
+    if (clause === "tail_shape") assert.equal(diagnostic.tailCount, 3);
+    if (clause === "tail_member") assert.equal(diagnostic.member.statusIncomplete, false);
+    if (clause === "single_child") assert.equal(diagnostic.member.childCount, 2);
+    if (clause === "terminal_leaf") assert.equal(diagnostic.parentChildCount, 1);
+  }
+});
+
+test("interrupt recovery diagnostics retain failure for original results straddling the recovery answer", () => {
+  const records = withLateOriginalResults(), [assistant, before, after] = records.slice(3);
+  before.parentId = "recovery-user";
+  assistant.parentId = before.id;
+  after.parentId = assistant.id;
+  records.splice(3, 3, before, assistant, after);
+  const original = structuredClone(records), diagnostic = recoveryDiagnostic(records);
+  assert.deepEqual(diagnostic, {
+    clause: "tail_shape", recordCount: 6, originalBranchCount: 2, recoveryBranchCount: 4, tailCount: 2,
+    originalResultBeforeAnswerCount: 1, originalResultAfterAnswerCount: 1, unselectedContentCount: 0,
+    laterUserCount: 0, assistantChildCount: 1, assistantParentIsRecoveryUser: false,
+  });
+  assert.deepEqual(records, original);
+});
+
+test("interrupt recovery member diagnostics identify field mismatches without leaking native values", () => {
+  for (const [field, patch] of [
+    ["roleAbsent", { role: "private-role-canary" }], ["toolNameMatches", { name: "private-tool-canary" }],
+    ["statusIncomplete", { status: "private-status-canary" }], ["sessionMatches", { sessionId: undefined }],
+    ["skipRun", { providerData: { conversationRequestId: "original-request", skipRun: "private-skip-canary" } }],
+    ["ownerMatches", { providerData: { conversationRequestId: "private-owner-canary", skipRun: true } }],
+  ]) {
+    const records = withLateOriginalResults(1);
+    Object.assign(records.at(-1), patch, { id: "private-record-id-canary", output: { type: "text", text: "private-result-canary" },
+      path: "/private/path-canary", extra: "private-extra-canary" });
+    const original = structuredClone(records), diagnostic = recoveryDiagnostic(records);
+    assert.equal(diagnostic.clause, "tail_member");
+    assert.equal(diagnostic.member[field], false);
+    assert.equal(JSON.stringify(diagnostic).includes("canary"), false);
+    assert.equal(Object.values(diagnostic.member).every((value) => typeof value === "boolean" || Number.isSafeInteger(value)), true);
+    assert.deepEqual(records, original);
+  }
+});
+
+test("interrupt recovery adds no diagnostics to successful results or unrelated native failures", () => {
+  for (const records of [withRecovery([user(), call()]), withLateOriginalResults(1), withLateOriginalResults(2)]) {
+    assert.equal(Object.hasOwn(selectInterruptRecovery(records, interruptIdentity), "interruptRecoveryDiagnostic"), false);
+    records.find((record) => record.id === "recovery-answer").status = "incomplete";
+    assert.throws(() => selectInterruptRecovery(records, interruptIdentity), (error) => {
+      assert.equal(error.nativeCode, "NATIVE_TRANSCRIPT_FINAL_INCOMPLETE");
+      assert.equal(Object.hasOwn(error, "interruptRecoveryDiagnostic"), false);
+      return true;
+    });
+  }
+});
+
 test("interrupt outcome rejects foreign identity, mismatched answers, ambiguous completion and wrong native tool", () => {
   for (const [mutate, code] of [
     [(records) => { records[0].sessionId = "foreign"; }, "NATIVE_TRANSCRIPT_SESSION_MISMATCH"],

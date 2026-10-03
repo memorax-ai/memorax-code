@@ -233,9 +233,38 @@ export function selectInterruptRecovery(records, { sessionId, prompt, tool, reco
   // Only its original request owner and exact tool identity permit projection.
   const original = selectToolTurnBranch(records, { sessionId, prompt });
   const selectedRecords = new Set([...original.lineage, ...recovery.lineage]);
-  check(records.slice(records.indexOf(original.user)).every((record) =>
+  function checkTail(condition, clause, record, parent) {
+    if (condition) return;
+    const isContent = (item) => ["message", "function_call", "function_call_result"].includes(item.type);
+    const isOriginalResult = (item) => item.type === "function_call_result" && item.callId === tool?.id;
+    const diagnostic = {
+      clause, recordCount: records.length, originalBranchCount: original.lineage.length,
+      recoveryBranchCount: recovery.lineage.length,
+      tailCount: recovery.lineage.filter((item) => item !== recovery.user && item !== assistant).length,
+      originalResultBeforeAnswerCount: records.slice(0, assistantIndex).filter(isOriginalResult).length,
+      originalResultAfterAnswerCount: lateOriginal.length,
+      unselectedContentCount: records.slice(records.indexOf(original.user)).filter((item) => isContent(item) && !selectedRecords.has(item)).length,
+      laterUserCount: records.slice(records.indexOf(recovery.user) + 1).filter((item) => item.type === "message" && item.role === "user").length,
+      assistantChildCount: records.filter((item) => item.parentId === assistant.id).length,
+      assistantParentIsRecoveryUser: assistant.parentId === recovery.user.id,
+    };
+    if (parent) diagnostic.parentChildCount = records.filter((item) => item.parentId === parent.id).length;
+    if (record) diagnostic.member = {
+      typeIsResult: record.type === "function_call_result", roleAbsent: record.role === undefined,
+      callIdMatches: record.callId === tool.id, toolNameMatches: record.name === tool.name,
+      statusIncomplete: record.status === "incomplete", skipRun: record.providerData?.skipRun === true,
+      sessionMatches: record.sessionId === sessionId,
+      ownerMatches: record.providerData?.conversationRequestId === original.user.providerData?.conversationRequestId,
+      parentMatches: record.parentId === parent?.id, afterParent: records.indexOf(record) > records.indexOf(parent),
+      childCount: diagnostic.parentChildCount,
+    };
+    throw Object.assign(new Error("PERMISSION_INTERRUPT_RECOVERY_TAIL_INVALID"), {
+      nativeCode: "PERMISSION_INTERRUPT_RECOVERY_TAIL_INVALID", interruptRecoveryDiagnostic: diagnostic,
+    });
+  }
+  checkTail(records.slice(records.indexOf(original.user)).every((record) =>
     !["message", "function_call", "function_call_result"].includes(record.type) || selectedRecords.has(record)),
-  "PERMISSION_INTERRUPT_RECOVERY_TAIL_INVALID");
+  "branch_coverage");
   assertToolLineage(original.lineage, tool, { interrupted: true });
   const calls = original.lineage.filter((record) => record.type === "function_call");
   check(calls.length === 1, "PERMISSION_TRANSCRIPT_TOOL_MISMATCH");
@@ -244,10 +273,10 @@ export function selectInterruptRecovery(records, { sessionId, prompt, tool, reco
     && records.indexOf(calls[0]) < recoveryIndex && recoveryIndex < assistantIndex,
   "PERMISSION_INTERRUPT_RECOVERY_ORDER_INVALID");
   const tail = recovery.lineage.filter((record) => record !== recovery.user && record !== assistant);
-  check(tail.length >= 1 && tail.length <= 2 && tail.length === lateOriginal.length
+  checkTail(tail.length >= 1 && tail.length <= 2 && tail.length === lateOriginal.length
     && tail.every((record) => lateOriginal.includes(record)) && assistant.parentId === recovery.user.id
     && !records.slice(recoveryIndex + 1).some((record) => record.type === "message" && record.role === "user"),
-  "PERMISSION_INTERRUPT_RECOVERY_TAIL_INVALID");
+  "tail_shape");
   const originalOwner = original.user.providerData?.conversationRequestId;
   const recoveryOwner = recovery.user.providerData?.conversationRequestId;
   check(identifier(originalOwner) && identifier(recoveryOwner) && originalOwner !== recoveryOwner
@@ -256,15 +285,15 @@ export function selectInterruptRecovery(records, { sessionId, prompt, tool, reco
       && record.providerData?.conversationRequestId === recoveryOwner), "PERMISSION_INTERRUPT_REQUEST_OWNER_MISMATCH");
   let parent = assistant;
   for (const record of tail) {
-    check(record.type === "function_call_result" && record.role === undefined && record.callId === tool.id
+    checkTail(record.type === "function_call_result" && record.role === undefined && record.callId === tool.id
       && record.name === tool.name && record.status === "incomplete" && record.providerData?.skipRun === true
       && record.sessionId === sessionId && record.providerData.conversationRequestId === originalOwner
       && record.parentId === parent.id && records.indexOf(record) > records.indexOf(parent),
-    "PERMISSION_INTERRUPT_RECOVERY_TAIL_INVALID");
-    check(records.filter((child) => child.parentId === parent.id).length === 1, "PERMISSION_INTERRUPT_RECOVERY_TAIL_INVALID");
+    "tail_member", record, parent);
+    checkTail(records.filter((child) => child.parentId === parent.id).length === 1, "single_child", record, parent);
     parent = record;
   }
-  check(!records.some((record) => record.parentId === parent.id), "PERMISSION_INTERRUPT_RECOVERY_TAIL_INVALID");
+  checkTail(!records.some((record) => record.parentId === parent.id), "terminal_leaf", undefined, parent);
   return { ...selectNativeTurnContent(records.filter((record) => !tail.includes(record)), expected),
     lateOriginalToolResultCount: tail.length };
 }
