@@ -8,7 +8,7 @@ import { selectNativeTurnContent } from "./codebuddy-native-content-check.mjs";
 import { assertInitializedModel, assertNativeInterruption, assertPermissionDenialResult, assertPermissionDenialTerminal,
   assertPermissionInitializations, assertPermissionWritebacks, assertToolLineage,
   CodeBuddyControlSession, createPermissionReport, inflightCommand, inflightWorkerScript,
-  modelToolResult, nativePrompt, permissionArguments, permissionInvocation, permissionModelTurn, selectCanceledToolTurn, selectInterruptOutcome, selectInterruptRecovery,
+  modelToolResult, nativePrompt, permissionArguments, permissionCases, permissionInvocation, permissionModelTurn, selectCanceledToolTurn, selectInterruptOutcome, selectInterruptRecovery,
   summarizePermissionDenial, summarizeToolFailure } from "./codebuddy-permissions-support.mjs";
 
 const tool = { id: "fixture-call", name: "Write", input: { file_path: "fixture.txt", content: "fixture marker" } };
@@ -57,12 +57,61 @@ test("permission invocation rejects unknown clients, incomplete arguments and un
   }
 });
 
+test("WorkBuddy interrupt diagnostics require an explicit single-case flag after its positional client", () => {
+  const args = ["package", "command", "2.147.0", "workbuddy"];
+  for (const interruptCase of ["user-inflight-interrupt", "user-wait-interrupt"]) {
+    assert.deepEqual(permissionInvocation([...args, "--interrupt-case", interruptCase]), {
+      client: "workbuddy", packageRoot: "package", command: "command", expectedVersion: "2.147.0", interruptCase,
+    });
+    rejects(() => permissionInvocation([...args.slice(0, 3), "codebuddy", "--interrupt-case", interruptCase]),
+      "EXPECTED_INSTALLED_PACKAGE_CODEBUDDY_PATH_AND_VERSION");
+  }
+  for (const extra of [["--interrupt-case"], ["--interrupt-case", "user-wait-interrupt", "extra"],
+    ["--interrupt-case", "user-wait-interrupt", "--interrupt-case", "user-inflight-interrupt"],
+    ["--interrupt-case", "user-wait-interrupt", "--interrupt-case", "user-wait-interrupt"]]) {
+    rejects(() => permissionInvocation([...args, ...extra]), "EXPECTED_INSTALLED_PACKAGE_WORKBUDDY_PATH_AND_VERSION");
+  }
+  for (const extra of [["--other", "user-wait-interrupt"], ["--interrupt-case", "unknown"],
+    ["--interrupt-case", "policy-allow"], ["--interrupt-case", "user-cancel"], ["--interrupt-case", ""],
+    ["--interrupt-case", undefined], ["--interrupt-case", " user-wait-interrupt "]]) {
+    rejects(() => permissionInvocation([...args, ...extra]), "EXPECTED_WORKBUDDY_INTERRUPT_CASE");
+  }
+  rejects(() => permissionInvocation([...args.slice(0, 3), "--interrupt-case", "user-wait-interrupt"]), "NATIVE_CLIENT_INVALID");
+});
+
+test("permission case selection preserves CodeBuddy six, WorkBuddy four and each strict diagnostic alone", () => {
+  const codebuddy = permissionCases();
+  assert.deepEqual(codebuddy, [
+    { id: "policy-allow", preallowed: true, writes: true },
+    { id: "user-allow", decision: "allow", writes: true },
+    { id: "user-deny", decision: "deny", writes: false },
+    { id: "user-cancel", decision: "cancel", interrupted: true, writes: false },
+    { id: "user-inflight-interrupt", decision: "allow", inflight: true, interrupted: true, nativeInterrupt: true, writes: false },
+    { id: "user-wait-interrupt", interrupted: true, nativeInterrupt: true, writes: false },
+  ]);
+  assert.deepEqual(permissionCases("codebuddy"), codebuddy);
+  assert.deepEqual(permissionCases("workbuddy"), codebuddy.slice(0, 4));
+  for (const testCase of codebuddy.slice(4)) {
+    assert.deepEqual(permissionCases("workbuddy", testCase.id), [testCase]);
+    rejects(() => permissionCases("codebuddy", testCase.id), "EXPECTED_WORKBUDDY_INTERRUPT_CASE");
+  }
+  for (const invalid of [null, "", "user-cancel", "unknown", ["user-wait-interrupt"]]) {
+    rejects(() => permissionCases("workbuddy", invalid), "EXPECTED_WORKBUDDY_INTERRUPT_CASE");
+  }
+  rejects(() => permissionCases("unknown"), "NATIVE_CLIENT_INVALID");
+  codebuddy[0].id = "mutated";
+  assert.equal(permissionCases()[0].id, "policy-allow");
+});
+
 test("permission reports preserve CodeBuddy defaults and bound WorkBuddy evidence to the bundled runtime", () => {
   const codebuddy = createPermissionReport(undefined, "test-platform");
   const workbuddy = createPermissionReport("workbuddy", "test-platform");
   assert.equal(codebuddy.suite, "native_codebuddy_permissions");
   assert.equal(workbuddy.suite, "native_workbuddy_permissions");
   assert.equal(codebuddy.desktopUIValidated, undefined);
+  assert.equal(codebuddy.excludedCases, undefined);
+  assert.equal(codebuddy.diagnosticOnly, undefined);
+  assert.equal(codebuddy.interruptCase, undefined);
   assert.equal(workbuddy.desktopUIValidated, false);
   assert.equal(workbuddy.loginFlowValidated, false);
   for (const report of [codebuddy, workbuddy]) {
@@ -79,9 +128,33 @@ test("permission reports preserve CodeBuddy defaults and bound WorkBuddy evidenc
     }
   }
   assert.deepEqual(workbuddy.excludes, [...codebuddy.excludes, "desktop startup environment", "standalone CodeBuddy CLI"]);
+  assert.deepEqual(workbuddy.excludedCases.map((entry) => entry.id), ["user-inflight-interrupt", "user-wait-interrupt"]);
+  assert.ok(workbuddy.excludedCases.every((entry) => entry.status === "NOT_RUN" && entry.reason.includes("strict manual diagnostic only")));
+  assert.equal(workbuddy.diagnosticOnly, undefined);
+  assert.equal(workbuddy.interruptCase, undefined);
+  assert.match(workbuddy.scope, /explicit runtime interrupts are separate diagnostics/);
   codebuddy.cases.push({ id: "fixture", status: "PASS" });
   assert.deepEqual(createPermissionReport().cases, []);
   rejects(() => createPermissionReport("unknown"), "NATIVE_CLIENT_INVALID");
+});
+
+test("single-case WorkBuddy reports remain strict diagnostics without claiming default acceptance", () => {
+  for (const interruptCase of ["user-inflight-interrupt", "user-wait-interrupt"]) {
+    const report = createPermissionReport("workbuddy", "test-platform", interruptCase);
+    assert.equal(report.status, "FAIL");
+    assert.equal(report.suite, "native_workbuddy_interrupt_diagnostic");
+    assert.equal(report.diagnosticOnly, true);
+    assert.equal(report.interruptCase, interruptCase);
+    assert.equal(report.excludedCases, undefined);
+    assert.equal(report.nativeInterruptSemanticsValidated, false);
+    assert.equal(report.interruptedTraceReconciliationValidated, false);
+    assert.equal(report.desktopUIValidated, false);
+    assert.equal(report.loginFlowValidated, false);
+    assert.deepEqual(report.cases, []);
+    assert.match(report.scope, /excluded from default permission acceptance/);
+    rejects(() => createPermissionReport("codebuddy", "test-platform", interruptCase), "EXPECTED_WORKBUDDY_INTERRUPT_CASE");
+  }
+  rejects(() => createPermissionReport("workbuddy", "test-platform", "unknown"), "EXPECTED_WORKBUDDY_INTERRUPT_CASE");
 });
 
 test("WorkBuddy generic denial matches its complete native projection without weakening CodeBuddy", () => {

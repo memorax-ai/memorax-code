@@ -923,14 +923,16 @@ downloads the fixed official desktop `5.6.2.39298511` DMG for the runner's
 architecture. The acquisition check verifies its pinned SHA-256; the runner
 also requires Apple's notarization assessment and Tencent's Developer ID
 signature before using the read-only mounted application. Desktop `5.6.2` and
-bundled CLI `2.147.0` are checked separately. It runs all five suites below,
-without replacing the public command shims or skipping known interrupt failures.
-A failing suite still fails the diagnostic job; this is not a three-platform
-acceptance matrix. No desktop application or credential store is installed or
-changed on the runner, and native transcripts are not uploaded as artifacts.
+bundled CLI `2.147.0` are checked separately. It runs all five default suites
+below without replacing the public command shims. The permission suite runs four
+cases; the two explicit runtime `interrupt` cases are separate strict manual
+diagnostics, not part of this job. A failing default suite still fails the job;
+this is not a three-platform acceptance matrix or proof of general runtime
+interruption. No desktop application or credential store is installed or changed
+on the runner, and native transcripts are not uploaded as artifacts.
 
 After `make npm-package-check` validates the candidate artifact, run the isolated
-installation, setup-interruption, Memory/Skill, permission/interruption, and Repo
+installation, setup-interruption, Memory/Skill, permission, and Repo
 Memory worker suites with its tarball directory, the actual bundled
 `cli/bin/codebuddy` entrypoint, and its exact runtime version:
 
@@ -977,11 +979,19 @@ and counts, and cleanup remain required. The foreground receives no
 WorkBuddy state must not become standalone CodeBuddy configuration; the bundled
 runtime's empty `.codebuddy/diagnostics` directory alone is allowed.
 
-The shared permission suite runs native preallow, approval, denial, permission
-cancellation, interruption while awaiting approval, and interruption of a running
-tool. It checks actual file effects, same-session recovery, and automatic Add
-against independently selected native completed content. The explicit-interrupt
-cases retain the [CodeBuddy permission coverage boundaries](#codebuddy-functional-ci):
+The default WorkBuddy permission suite runs native preallow, approval, denial,
+and cancellation through a permission response. It checks actual file effects,
+pending requests without side effects or Add, exact native cancellation evidence,
+no Add for the cancelled turn, same-session recovery, and automatic Add against
+independently selected native completed content. The final Memory audit runs
+after cleanup and rejects late or cross-case Add requests. Its report lists the two excluded
+runtime `interrupt` cases; they are not counted as passed. CodeBuddy continues to
+run all six cases by default.
+
+Interruption while awaiting approval and interruption of a running tool are
+WorkBuddy-only optional diagnostics, each selected independently with
+`--interrupt-case` below. They retain the
+[CodeBuddy permission coverage boundaries](#codebuddy-functional-ci):
 acknowledgement alone is not proof of cancellation, and a client-completed
 original turn must have its own exact Add. Forced cleanup, late incomplete tool
 results, and original-turn outcomes remain separate compatibility observations.
@@ -1002,14 +1012,19 @@ OS sandboxing, or interrupted trace reconciliation.
 Bundled runtimes `2.137.1` and `2.147.0` acknowledge an interrupt while awaiting
 SDK tool approval without producing a terminal result within the check's
 45-second window. The `2.147.0` behavior also reproduces without installing
-MemoraX Hooks or starting its Backend. Keep this case failing: an acknowledgement,
-an artificial permission reply, or closing stdin is not evidence that the native
-interrupt ended the pending turn. This observation alone does not establish an
-automatic Add failure for completed native content.
+MemoraX Hooks or starting its Backend. The independent diagnostic still fails
+on this behavior: an acknowledgement, an artificial permission reply, or closing
+stdin is not evidence that the native interrupt ended the pending turn. This
+observation alone does not establish an automatic Add failure for completed
+native content.
 In `2.147.0`, running-tool interruption can also append an incomplete cancellation
 result with the original tool call ID but the recovery turn's
 `conversationRequestId`. That conflicting ownership fails the recovery oracle;
 the missing-owner compatibility above must not be applied to it.
+Both diagnostics retain their original native ownership, exact Add/no-Add and
+cleanup assertions and exit nonzero on failure. Excluding them from the default
+suite leaves the two explicit runtime interrupt paths unverified end to end;
+passing permission-response cancellation does not establish those paths.
 
 The Repo Memory case starts the worker through a real foreground Hook in an
 isolated Git repository. Both foreground and worker must use WorkBuddy's global
@@ -1030,6 +1045,20 @@ memorax_dev node scripts/codebuddy-permissions-check.mjs \
 memorax_dev node scripts/codebuddy-background-check.mjs \
   "$memorax_dev_root/npm/lib/node_modules/@memorax/memorax-code" \
   "$WORKBUDDY_BUNDLED_COMMAND" "$WORKBUDDY_RUNTIME_VERSION" workbuddy
+```
+
+Run either strict interrupt diagnostic separately, so a failure in one does not
+prevent investigating the other:
+
+```bash
+memorax_dev node scripts/codebuddy-permissions-check.mjs \
+  "$memorax_dev_root/npm/lib/node_modules/@memorax/memorax-code" \
+  "$WORKBUDDY_BUNDLED_COMMAND" "$WORKBUDDY_RUNTIME_VERSION" workbuddy \
+  --interrupt-case user-inflight-interrupt
+memorax_dev node scripts/codebuddy-permissions-check.mjs \
+  "$memorax_dev_root/npm/lib/node_modules/@memorax/memorax-code" \
+  "$WORKBUDDY_BUNDLED_COMMAND" "$WORKBUDDY_RUNTIME_VERSION" workbuddy \
+  --interrupt-case user-wait-interrupt
 ```
 
 All suites use fresh client and Backend state, synthetic credentials, and

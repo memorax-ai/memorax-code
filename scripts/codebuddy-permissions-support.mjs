@@ -5,21 +5,50 @@ import { matchesNativeModel, selectNativeTurnContent } from "./codebuddy-native-
 export function permissionInvocation(args) {
   const client = args[3] ?? "codebuddy";
   check(client === "codebuddy" || client === "workbuddy", "NATIVE_CLIENT_INVALID");
-  check(args.length === 3 || args.length === 4, `EXPECTED_INSTALLED_PACKAGE_${client.toUpperCase()}_PATH_AND_VERSION`);
+  check(args.length === 3 || args.length === 4 || client === "workbuddy" && args.length === 6,
+    `EXPECTED_INSTALLED_PACKAGE_${client.toUpperCase()}_PATH_AND_VERSION`);
   const [packageRoot, command, expectedVersion] = args;
   check([packageRoot, command, expectedVersion].every(identifier), `EXPECTED_INSTALLED_PACKAGE_${client.toUpperCase()}_PATH_AND_VERSION`);
   if (client === "workbuddy") check(/^\d+\.\d+\.\d+$/.test(expectedVersion), "EXPECTED_EXACT_WORKBUDDY_RUNTIME_VERSION");
-  return { client, packageRoot, command, expectedVersion };
+  const interruptCase = args[5];
+  if (args.length === 6) check(args[4] === "--interrupt-case" && identifier(interruptCase), "EXPECTED_WORKBUDDY_INTERRUPT_CASE");
+  permissionCases(client, interruptCase);
+  return { client, packageRoot, command, expectedVersion, ...(interruptCase === undefined ? {} : { interruptCase }) };
 }
 
-export function createPermissionReport(client = "codebuddy", platform = process.platform) {
+export function permissionCases(client = "codebuddy", interruptCase) {
   check(client === "codebuddy" || client === "workbuddy", "NATIVE_CLIENT_INVALID");
-  return { status: "FAIL", suite: `native_${client}_permissions`, platform,
+  const cases = [
+    { id: "policy-allow", preallowed: true, writes: true },
+    { id: "user-allow", decision: "allow", writes: true },
+    { id: "user-deny", decision: "deny", writes: false },
+    { id: "user-cancel", decision: "cancel", interrupted: true, writes: false },
+    { id: "user-inflight-interrupt", decision: "allow", inflight: true, interrupted: true, nativeInterrupt: true, writes: false },
+    { id: "user-wait-interrupt", interrupted: true, nativeInterrupt: true, writes: false },
+  ];
+  if (interruptCase !== undefined) {
+    check(client === "workbuddy" && cases.some((test) => test.id === interruptCase && test.nativeInterrupt),
+      "EXPECTED_WORKBUDDY_INTERRUPT_CASE");
+    return cases.filter((test) => test.id === interruptCase);
+  }
+  return client === "workbuddy" ? cases.filter((test) => !test.nativeInterrupt) : cases;
+}
+
+export function createPermissionReport(client = "codebuddy", platform = process.platform, interruptCase) {
+  permissionCases(client, interruptCase);
+  return { status: "FAIL", suite: interruptCase === undefined ? `native_${client}_permissions` : "native_workbuddy_interrupt_diagnostic", platform,
     paidModelRequests: 0, modelQualityEvaluated: false,
-    scope: "MemoraX automatic writeback against native permission outcomes, with separate interrupt compatibility observations",
+    scope: client === "codebuddy" ? "MemoraX automatic writeback against native permission outcomes, with separate interrupt compatibility observations"
+      : interruptCase === undefined ? "MemoraX automatic writeback for native approval, denial and permission cancellation; explicit runtime interrupts are separate diagnostics"
+        : "Strict native WorkBuddy explicit-interrupt diagnostic, excluded from default permission acceptance",
     nativeInterruptSemanticsValidated: false,
     interruptedTraceReconciliationValidated: false,
     ...(client === "workbuddy" ? { desktopUIValidated: false, loginFlowValidated: false } : {}),
+    ...(interruptCase !== undefined ? { diagnosticOnly: true, interruptCase }
+      : client === "workbuddy" ? { excludedCases: [
+        { id: "user-inflight-interrupt", status: "NOT_RUN", reason: "Native cancellation results can conflict with the recovery request owner; strict manual diagnostic only" },
+        { id: "user-wait-interrupt", status: "NOT_RUN", reason: "Native SDK interrupt can leave permission pending without a terminal result; strict manual diagnostic only" },
+      ] } : {}),
     excludes: ["desktop approval UI", "OS sandbox or privilege enforcement", "LLM automatic approval quality",
       "background Repo Memory permissions", "late approval after cancellation", "interrupted trace reconciliation",
       ...(client === "workbuddy" ? ["desktop startup environment", "standalone CodeBuddy CLI"] : [])], cases: [] };

@@ -11,25 +11,18 @@ import { nativeHookPrompt, selectNativeTurnContent, summarizeNativeCompletion } 
 import { assertInitializedModel, assertNativeInterruption, assertPermissionDenialResult, assertPermissionDenialTerminal,
   assertPermissionInitializations, assertPermissionWritebacks, assertToolLineage,
   CodeBuddyControlSession, createPermissionReport, inflightCommand, inflightWorkerScript, modelToolResult,
-  nativePrompt, permissionArguments, permissionInvocation, permissionModelTurn, selectCanceledToolTurn, selectInterruptOutcome, selectInterruptRecovery,
+  nativePrompt, permissionArguments, permissionCases, permissionInvocation, permissionModelTurn, selectCanceledToolTurn, selectInterruptOutcome, selectInterruptRecovery,
   summarizePermissionDenial, summarizeToolFailure } from "./codebuddy-permissions-support.mjs";
 
-const cases = [
-  { id: "policy-allow", preallowed: true, writes: true },
-  { id: "user-allow", decision: "allow", writes: true },
-  { id: "user-deny", decision: "deny", writes: false },
-  { id: "user-cancel", decision: "cancel", interrupted: true, writes: false },
-  { id: "user-inflight-interrupt", decision: "allow", inflight: true, interrupted: true, nativeInterrupt: true, writes: false },
-  { id: "user-wait-interrupt", interrupted: true, nativeInterrupt: true, writes: false },
-];
 const report = createPermissionReport();
 const completedCases = [], canceledContent = [], toolPids = new Set();
-let harness, control, current, cleanupPromise, client = "codebuddy", suiteCompleted = false, stage = "prerequisites";
+let harness, control, current, cases, cleanupPromise, client = "codebuddy", suiteCompleted = false, stage = "prerequisites";
 
 try {
   const invocation = permissionInvocation(process.argv.slice(2));
   client = invocation.client;
-  Object.assign(report, createPermissionReport(client));
+  cases = permissionCases(client, invocation.interruptCase);
+  Object.assign(report, createPermissionReport(client, process.platform, invocation.interruptCase));
   const packageRoot = resolve(invocation.packageRoot);
   let command = resolve(invocation.command);
   if (client === "workbuddy") {

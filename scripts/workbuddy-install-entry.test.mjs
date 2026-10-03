@@ -20,8 +20,8 @@ test("WorkBuddy entry help states the implemented and excluded suites", async ()
     for (const option of ["--help", "-h"]) {
       const result = await run(process.execPath, [entry, option]);
       assert.equal(result.code, 0);
-      assert.match(result.stdout, /installation lifecycle, setup interruption, native Memory\/Skill, permission\/interruption and Repo Memory worker checks/);
-      assert.match(result.stdout, /not valid Repo Memory generation or desktop UI/);
+      assert.match(result.stdout, /installation lifecycle, setup interruption, native Memory\/Skill, four permission cases and Repo Memory worker checks/);
+      assert.match(result.stdout, /excludes the two explicit runtime interrupt diagnostics, valid Repo Memory generation and desktop UI/);
     }
   });
 });
