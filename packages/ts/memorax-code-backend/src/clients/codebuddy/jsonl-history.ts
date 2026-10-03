@@ -127,7 +127,7 @@ function selectCodeBuddyTurnBranch(
   if (!records) return { ok: false, reason: "malformed_transcript" };
   const session = records.filter((record) => stringField(record, "sessionId") === input.sessionId);
   const users = session.filter((record) => record.role === "user" && visibleUserPrompt(record));
-  // CodeBuddy Hooks can remove line breaks from a single input_text block.
+  // CodeBuddy and WorkBuddy Hooks can remove line breaks from one input_text block.
   // Match both forms after the byte boundary, require uniqueness, and keep native text.
   const candidates = users.filter((record) => {
     const prompt = visibleUserPrompt(record);
@@ -138,7 +138,7 @@ function selectCodeBuddyTurnBranch(
       prompt
       && (record[RECORD_OFFSET] ?? Number.MAX_SAFE_INTEGER) >= identity.boundary
       && (codeBuddyPromptDigest(prompt) === identity.promptDigest
-        || ((input.client ?? "codebuddy") === "codebuddy"
+        || (((input.client ?? "codebuddy") === "codebuddy" || input.client === "workbuddy")
           && singleInputText
           && codeBuddyPromptDigest(prompt.replace(/\r\n|\r|\n/g, "")) === identity.promptDigest)),
     );
@@ -202,7 +202,7 @@ function visibleUserPrompt(record: CodeBuddyHistoryRecord): string | undefined {
     const providerData: unknown = item.providerData;
     if (!providerData || typeof providerData !== "object" || Array.isArray(providerData) || !("content" in providerData)) continue;
     // Invalid originals must not authorize the expanded text. Correlation below
-    // still requires the exact prompt digest, byte boundary, and native lineage.
+    // still requires a unique prompt match, byte boundary, and native lineage.
     if (typeof providerData.content !== "string" || !providerData.content.trim()) return undefined;
     originals.push(providerData.content);
   }

@@ -9,7 +9,7 @@ import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
-const otherClients = ["codex", "claude", "dsh", "opencode", "workbuddy", "trae", "cursor"];
+const clients = ["codex", "claude", "dsh", "opencode", "codebuddy", "workbuddy", "trae", "cursor"];
 export const fixtureKey = `sk_${"E".repeat(43)}`;
 export const fixtureUser = "native-fixture-user";
 export const fixtureModel = "memorax-codebuddy-fixture";
@@ -34,15 +34,17 @@ export function summarizeCleanupDiagnostic(error) {
   } catch { return undefined; }
 }
 
-export async function createNativeHarness({ packageRoot, codebuddyCommand, label = "native", writeback = true, expectedVersion }) {
+export async function createNativeHarness({ packageRoot, codebuddyCommand, client = "codebuddy", label = "native", writeback = true, expectedVersion }) {
+  check(client === "codebuddy" || client === "workbuddy", "NATIVE_CLIENT_INVALID");
+  const otherClients = clients.filter((candidate) => candidate !== client);
   packageRoot = resolve(packageRoot);
   codebuddyCommand = resolve(codebuddyCommand);
   const { resolveWindowsCliInvocation } = await import(pathToFileURL(join(packageRoot, "lib", "windows-cli-invocation.mjs")));
-  const root = await mkdtemp(join(tmpdir(), `memorax-codebuddy-${label}-`));
+  const root = await mkdtemp(join(tmpdir(), `memorax-${client}-${label}-`));
   const home = join(root, "user home");
   const workspace = join(root, "project-alpha");
   const stateHome = join(home, ".memorax-code");
-  const codebuddyHome = join(home, ".codebuddy");
+  const codebuddyHome = join(home, `.${client}`);
   const productEntrypoint = join(packageRoot, "bin", "memorax-code.mjs");
   const memoryEntrypoint = join(packageRoot, "bin", "memorax-cli.mjs");
   const modelRequests = [], memoryRequests = [], serverErrors = [], modelRequestRejections = [];
@@ -80,7 +82,7 @@ export async function createNativeHarness({ packageRoot, codebuddyCommand, label
       check(response.writableEnded, "MODEL_HANDLER_DID_NOT_COMPLETE");
     }, serverErrors);
     backendPort = await freePort();
-    env = isolatedEnv({ root, home, stateHome, codebuddyHome, codebuddyCommand, packageRoot, backendPort,
+    env = isolatedEnv({ root, home, stateHome, codebuddyHome, codebuddyCommand, client, otherClients, packageRoot, backendPort,
       modelUrl: modelServer.url, memoryUrl: memoryServer.url, writeback });
     if (process.platform === "win32") {
       const gitBash = join(process.env.ProgramFiles ?? "C:\\Program Files", "Git", "bin", "bash.exe");
@@ -88,7 +90,7 @@ export async function createNativeHarness({ packageRoot, codebuddyCommand, label
       env.CODEBUDDY_CODE_GIT_BASH_PATH = gitBash;
       env.PATH += `${delimiter}${dirname(gitBash)}${delimiter}${resolve(dirname(gitBash), "../cmd")}`;
     }
-    await writeFile(join(stateHome, "config.toml"), ["[clients]", "codebuddy = true",
+    await writeFile(join(stateHome, "config.toml"), ["[clients]", `${client} = true`,
       ...otherClients.map((client) => `${client} = false`), "[jev]", "enabled = false", ""].join("\n"), { mode: 0o600 });
     await writeFile(join(codebuddyHome, "settings.json"), JSON.stringify({ model: fixtureModel,
       env: { CODEBUDDY_BASE_URL: modelServer.url, CODEBUDDY_API_KEY: "native-model-fixture" },
@@ -167,8 +169,8 @@ export async function createNativeHarness({ packageRoot, codebuddyCommand, label
     if (expectedVersion) check(nativeVersion === expectedVersion, "NATIVE_CODEBUDDY_VERSION_MISMATCH");
     setupStarted = true;
     await runProduct(["setup", "--existing-account", "--non-interactive"], { input: `${fixtureKey}\n` });
-    const status = JSON.parse((await runProduct(["status", "--clients", "codebuddy", "--json"])).stdout);
-    check(status.ok === true && status.backend?.ok === true && status.codebuddyAdapter?.ok === true, "NATIVE_SETUP_NOT_READY");
+    const status = JSON.parse((await runProduct(["status", "--clients", client, "--json"])).stdout);
+    check(status.ok === true && status.backend?.ok === true && status[`${client}Adapter`]?.ok === true, "NATIVE_SETUP_NOT_READY");
     const record = JSON.parse(await readFile(join(stateHome, "runtime", "backend", "backend.pid.json"), "utf8"));
     check(Number.isInteger(record.pid) && record.pid > 1
       && record.url === `http://127.0.0.1:${backendPort}`, "NATIVE_BACKEND_PID_INVALID");
@@ -221,7 +223,7 @@ export async function createNativeHarness({ packageRoot, codebuddyCommand, label
       });
       if (setupStarted || backendRecordPresent || backendPids.size) {
         await attempt("backend-stop", async () => {
-          const stopped = JSON.parse((await runProduct(["stop", "--clients", "codebuddy", "--json"], { timeout: 15_000, cleanup: true })).stdout);
+          const stopped = JSON.parse((await runProduct(["stop", "--clients", client, "--json"], { timeout: 15_000, cleanup: true })).stdout);
           check(stopped.ok === true, "NATIVE_BACKEND_STOP_FAILED");
         });
         for (const pid of backendPids) await attempt("backend-process-wait", () => waitFor(() => !processAlive(pid), "NATIVE_BACKEND_PROCESS_REMAINS"));
@@ -252,7 +254,7 @@ export async function createNativeHarness({ packageRoot, codebuddyCommand, label
   }
   const signalHandlers = new Map(["SIGINT", "SIGTERM"].map((signal) => [signal, () => onSignal(signal)]));
   for (const [signal, handler] of signalHandlers) process.on(signal, handler);
-  return { root, home, workspace, stateHome, codebuddyHome, env, packageRoot, codebuddyCommand,
+  return { root, home, workspace, stateHome, codebuddyHome, nativeHome: codebuddyHome, client, env, packageRoot, codebuddyCommand,
     get codebuddyVersion() { return nativeVersion; }, memoryEntrypoint, productEntrypoint,
     modelUrl: modelServer.url, memoryUrl: memoryServer.url, modelRequests, memoryRequests, serverErrors, modelRequestRejections,
     setup, close, runProduct, runCodeBuddy, startCodeBuddy, stopCodeBuddy,
@@ -404,7 +406,7 @@ async function freePort() {
   await new Promise((done) => server.close(done));
   return port;
 }
-function isolatedEnv({ root, home, stateHome, codebuddyHome, codebuddyCommand, packageRoot, backendPort, modelUrl, memoryUrl, writeback }) {
+function isolatedEnv({ root, home, stateHome, codebuddyHome, codebuddyCommand, client, otherClients, packageRoot, backendPort, modelUrl, memoryUrl, writeback }) {
   const windowsRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT ?? "C:\\Windows";
   const systemPaths = process.platform === "win32" ? [join(windowsRoot, "System32"), windowsRoot,
     join(windowsRoot, "System32", "Wbem"), join(windowsRoot, "System32", "WindowsPowerShell", "v1.0")]
@@ -418,7 +420,8 @@ function isolatedEnv({ root, home, stateHome, codebuddyHome, codebuddyCommand, p
     npm_config_cache: join(root, "npm-cache"), XDG_CONFIG_HOME: join(home, ".config"),
     XDG_DATA_HOME: join(home, ".local", "share"), XDG_STATE_HOME: join(home, ".local", "state"), XDG_CACHE_HOME: join(home, ".cache"),
     GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: join(home, "missing-git-config"), GIT_TERMINAL_PROMPT: "0",
-    CODEBUDDY_HOME: codebuddyHome, CODEBUDDY_CONFIG_DIR: codebuddyHome, MEMORAX_CODE_CODEBUDDY_COMMAND: codebuddyCommand,
+    CODEBUDDY_HOME: join(home, ".codebuddy"), CODEBUDDY_CONFIG_DIR: codebuddyHome,
+    [`MEMORAX_CODE_${client.toUpperCase()}_COMMAND`]: codebuddyCommand,
     CODEBUDDY_BASE_URL: modelUrl, CODEBUDDY_API_KEY: "native-model-fixture", CODEBUDDY_MODEL: fixtureModel,
     CODEBUDDY_SMALL_FAST_MODEL: fixtureModel, CODEBUDDY_BIG_SLOW_MODEL: fixtureModel, CODEBUDDY_CODE_SUBAGENT_MODEL: fixtureModel,
     DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1", DISABLE_AUTOUPDATER: "1", DISABLE_FEEDBACK_COMMAND: "1",
@@ -430,14 +433,15 @@ function isolatedEnv({ root, home, stateHome, codebuddyHome, codebuddyCommand, p
     MEMORAX_CODE_MEMORAX_ENDPOINT: memoryUrl, MEMORAX_CODE_MEMORAX_API_KEY: fixtureKey,
     MEMORAX_CODE_MEMORAX_USER_ID: fixtureUser, MEMORAX_CODE_MEMORY_WRITEBACK_ENABLED: String(writeback),
     MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_ENABLED: "false", MEMORAX_CODE_MEMORY_WRITEBACK_CHUNK_ENABLED: "false",
-    MEMORAX_CODE_JEV_ENABLED: "false", MEMORAX_CODE_CODEBUDDY_TRACE_ENABLED: "true", MEMORAX_CODE_SKIP_CODEX_PLUGIN_INSTALL: "1",
+    MEMORAX_CODE_JEV_ENABLED: "false", [`MEMORAX_CODE_${client.toUpperCase()}_TRACE_ENABLED`]: "true", MEMORAX_CODE_SKIP_CODEX_PLUGIN_INSTALL: "1",
     CODEX_HOME: join(home, ".codex"), CLAUDE_HOME: join(home, ".claude"), CLAUDE_CONFIG_DIR: join(home, ".claude"),
     DSH_HOME: join(home, ".dsh"), OPENCODE_CONFIG_DIR: join(home, ".config", "opencode"),
     // CodeBuddy's model loader prefers WORKBUDDY_CONFIG_DIR even in CodeBuddy.
-    // Leave that alias unset; WorkBuddy's default home is still isolated.
+    // Set that alias only for WorkBuddy; its default home is always isolated.
     WORKBUDDY_HOME: join(home, ".workbuddy"),
     TRAE_HOME: join(home, ".trae-cn"), TRAE_CN_HOME: join(home, ".trae-cn"), CURSOR_HOME: join(home, ".cursor"),
   };
+  if (client === "workbuddy") env.WORKBUDDY_CONFIG_DIR = codebuddyHome;
   if (process.platform === "win32") Object.assign(env, { SystemRoot: windowsRoot, WINDIR: windowsRoot,
     ComSpec: join(windowsRoot, "System32", "cmd.exe"), PATHEXT: ".COM;.EXE;.BAT;.CMD", USERNAME: "native-fixture" });
   for (const client of otherClients) {

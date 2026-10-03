@@ -910,6 +910,38 @@ delegates to the platform wrappers. It does not itself build or validate the
 package; use the Make target when the artifact has not passed
 `npm-package-check`.
 
+### WorkBuddy Bundled-Runtime Probe
+
+`scripts/workbuddy-native-check.mjs` is a separate, minimal native probe for
+the CLI shipped inside a WorkBuddy desktop installation. It is not part of the
+three-platform CI matrix and does not validate the desktop UI or login flow.
+Do not substitute the independently installed CodeBuddy CLI for that runtime.
+
+After validating and installing the candidate npm artifact into an isolated
+prefix, run the probe with the installed package directory, the actual bundled
+`cli/bin/codebuddy` entrypoint, and its exact runtime version:
+
+```bash
+memorax_dev node scripts/workbuddy-native-check.mjs \
+  "$memorax_dev_root/npm/lib/node_modules/@memorax/memorax-code" \
+  "$WORKBUDDY_BUNDLED_COMMAND" "$WORKBUDDY_RUNTIME_VERSION"
+```
+
+The runtime version is distinct from the WorkBuddy desktop version. On Windows,
+use the npm prefix's `node_modules/@memorax/memorax-code` package directory.
+The probe creates fresh client and Backend state, uses synthetic credentials
+and loopback model/Memory services, and checks installation identity, a cold
+first turn, same-session resume with a real local tool, independent native JSONL
+content, WorkBuddy Hook correlation for exact and multiline prompts, and automatic
+Add. The foreground does not receive `--plugin-dir`; it must discover the installed global Hook and
+plugin normally. Reports contain fixed diagnostics and counts, not raw output.
+Cleanup must succeed before the probe can pass.
+
+This does not yet cover installation upgrade/recovery, Skill Search/Add,
+permission/interruption scenarios, Repo Memory workers, desktop-managed task
+directories, or a supported Linux distribution. A local runtime probe is not
+evidence that all WorkBuddy platforms or desktop startup environments pass.
+
 ## Pull Requests
 
 A pull request should:
