@@ -1,4 +1,5 @@
 import { execFile, spawn } from "node:child_process";
+import { readFileSync, readdirSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { createServer as createTcpServer } from "node:net";
@@ -287,9 +288,49 @@ export async function waitFor(predicate, code = "NATIVE_WAIT_TIMEOUT", timeout =
     await new Promise((done) => setTimeout(done, 50)); } while (Date.now() < deadline);
   check(false, code);
 }
-function processAlive(pid) {
-  try { process.kill(pid, 0); return true; }
+export function processAlive(pid) {
+  try { process.kill(pid, 0); }
   catch (error) { if (error.code === "ESRCH") return false; if (error.code === "EPERM") return true; throw error; }
+  if (process.platform !== "linux") return true;
+
+  function readProcess(id) {
+    let raw;
+    try { raw = readFileSync(`/proc/${id}/stat`, "utf8"); }
+    catch (error) {
+      if (error.code === "ENOENT") {
+        try { process.kill(id, 0); }
+        catch (probeError) { if (probeError.code === "ESRCH") return undefined; }
+      }
+      throw error;
+    }
+    // comm can contain spaces, newlines and parentheses; fields begin after its final ')'.
+    const end = raw.lastIndexOf(") ");
+    const fields = raw.slice(end + 2).trim().split(/\s+/);
+    if (!raw.startsWith(`${id} (`) || end < `${id} (`.length || fields.length < 18
+      || !/^\d+$/.test(fields[2]) || !/^\d+$/.test(fields[17])
+      || !Number.isSafeInteger(Number(fields[2])) || !Number.isSafeInteger(Number(fields[17]))) {
+      throw new Error("NATIVE_PROCESS_STATE_INVALID");
+    }
+    // A zombie leader with other threads is not proof that the process has stopped.
+    return { group: Number(fields[2]), stopped: fields[0] === "Z" && Number(fields[17]) === 1 };
+  }
+
+  try {
+    if (pid > 0) {
+      const member = readProcess(pid);
+      return member !== undefined && !member.stopped;
+    }
+    let found = false;
+    for (const entry of readdirSync("/proc")) {
+      if (!/^[1-9]\d*$/.test(entry)) continue;
+      const member = readProcess(Number(entry));
+      if (!member || member.group !== -pid) continue;
+      if (!member.stopped) return true;
+      found = true;
+    }
+    // A missing/partial proc view cannot disprove a successful group existence probe.
+    return !found;
+  } catch { return true; }
 }
 async function stopTree(child, env) {
   if (!child.pid) return;

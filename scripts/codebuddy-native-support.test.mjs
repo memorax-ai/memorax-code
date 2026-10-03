@@ -6,8 +6,9 @@ import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { runInNewContext } from "node:vm";
 import {
-  check, createNativeHarness, fixtureKey, fixtureModel, fixtureUser, searchResult, sendChatCompletion, summarizeModelRoute, waitFor,
+  check, createNativeHarness, fixtureKey, fixtureModel, fixtureUser, processAlive, searchResult, sendChatCompletion, summarizeModelRoute, waitFor,
 } from "./codebuddy-native-support.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -36,15 +37,107 @@ async function postModel(harness, body = {}, options = {}) {
     body: JSON.stringify({ model: fixtureModel, messages: [{ role: "user", content: "synthetic prompt" }], ...body }),
   });
 }
-function processAlive(pid) {
-  try { process.kill(pid, 0); return true; }
-  catch (error) { if (error.code === "ESRCH") return false; if (error.code === "EPERM") return true; throw error; }
-}
 async function killFixture(pid) {
   if (!Number.isSafeInteger(pid) || pid <= 1 || !processAlive(pid)) return;
   try { process.kill(pid, "SIGKILL"); } catch (error) { if (error.code !== "ESRCH") throw error; }
   await waitFor(() => !processAlive(pid), "FIXTURE_PROCESS_CLEANUP_FAILED", 5_000);
 }
+
+function procStat(pid, state = "Z", group = pid, threads = 1) {
+  const fields = Array(18).fill("0");
+  Object.assign(fields, { 0: state, 1: "1", 2: String(group), 17: String(threads) });
+  return `${pid} (fixture (worker)\nwith spaces)) ${fields.join(" ")}\n`;
+}
+function syscallError(code) { return Object.assign(new Error("synthetic syscall error"), { code }); }
+function processSnapshot({ platform = "linux", stats = {}, entries = Object.keys(stats), killErrors = {}, directoryError } = {}) {
+  const calls = { signals: [], reads: 0, directories: 0 };
+  const alive = runInNewContext(`(${processAlive.toString()})`, {
+    process: { platform, kill(pid, signal) {
+      assert.equal(signal, 0);
+      calls.signals.push(pid);
+      if (killErrors[pid]) throw syscallError(killErrors[pid]);
+    } },
+    readFileSync(path) {
+      calls.reads += 1;
+      const match = /^\/proc\/(\d+)\/stat$/.exec(path);
+      assert.ok(match, "Only synthetic proc stat paths may be read");
+      const value = stats[match[1]];
+      if (typeof value !== "string") throw value ?? syscallError("ENOENT");
+      return value;
+    },
+    readdirSync(path) {
+      assert.equal(path, "/proc");
+      calls.directories += 1;
+      if (directoryError) throw directoryError;
+      return entries;
+    },
+  });
+  return { alive, calls };
+}
+
+test("processAlive preserves signal-zero errors before inspecting Linux zombie state", () => {
+  for (const pid of [101, -101]) {
+    for (const [code, expected] of [["ESRCH", false], ["EPERM", true]]) {
+      const f = processSnapshot({ stats: { 101: procStat(101) }, killErrors: { [pid]: code } });
+      assert.equal(f.alive(pid), expected, code);
+      assert.equal(f.calls.reads + f.calls.directories, 0);
+    }
+    assert.throws(() => processSnapshot({ killErrors: { [pid]: "EINVAL" } }).alive(pid), { code: "EINVAL" });
+  }
+});
+
+test("processAlive keeps non-Linux behavior without reading proc", () => {
+  for (const platform of ["darwin", "win32"]) {
+    const f = processSnapshot({ platform, stats: { 101: procStat(101) } });
+    assert.equal(f.alive(101), true);
+    assert.equal(f.alive(-101), true);
+    assert.equal(f.calls.reads + f.calls.directories, 0);
+  }
+});
+
+test("processAlive only treats an exact single-thread Linux zombie as stopped", () => {
+  for (const [label, value, expected] of [
+    ["zombie with complex comm", procStat(101), false],
+    ...["R", "S", "T", "D"].map((state) => [state, procStat(101, state), true]),
+    ["zombie with remaining threads", procStat(101, "Z", 101, 2), true],
+    ["unknown state", procStat(101, "?"), true],
+    ["identity mismatch", procStat(102), true],
+    ["malformed", "not a stat record", true],
+    ["missing thread count", "101 (fixture) Z 1 101", true],
+    ["unreadable", syscallError("EACCES"), true],
+    ["missing after successful signal", syscallError("ENOENT"), true],
+  ]) assert.equal(processSnapshot({ stats: { 101: value } }).alive(101), expected, label);
+});
+
+test("processAlive inspects target group members even after the leader disappears", () => {
+  const zombie = procStat(201, "Z", 101);
+  for (const [label, stats, expected] of [
+    ["all zombies without leader", { 201: zombie, 202: procStat(202, "Z", 101) }, false],
+    ["unrelated live process", { 201: zombie, 203: procStat(203, "S", 303) }, false],
+    ["live group member", { 201: zombie, 202: procStat(202, "S", 101) }, true],
+    ["multithreaded zombie member", { 201: zombie, 202: procStat(202, "Z", 101, 2) }, true],
+    ["no observed members", {}, true],
+    ["only unrelated members", { 203: procStat(203, "S", 303) }, true],
+  ]) assert.equal(processSnapshot({ stats }).alive(-101), expected, label);
+});
+
+test("processAlive retains Linux groups when proc membership cannot be verified", () => {
+  const stats = { 201: procStat(201, "Z", 101) };
+  assert.equal(processSnapshot({ stats, directoryError: syscallError("EACCES") }).alive(-101), true);
+  for (const [label, value] of [
+    ["read error", syscallError("EACCES")], ["identity mismatch", procStat(999, "Z", 101)],
+    ["malformed member", "not a stat record"], ["missing thread count", "202 (fixture) Z 1 101"],
+  ]) assert.equal(processSnapshot({ stats: { ...stats, 202: value } }).alive(-101), true, label);
+});
+
+test("processAlive ignores disappearing proc entries only after ESRCH confirmation", () => {
+  for (const [code, expected] of [["ESRCH", false], ["EPERM", true], [undefined, true]]) {
+    const f = processSnapshot({ stats: { 201: procStat(201, "Z", 101) }, entries: ["201", "202"],
+      killErrors: code ? { 202: code } : {} });
+    assert.equal(f.alive(-101), expected, code ?? "signal still succeeds");
+    assert.equal(f.calls.signals.includes(202), true);
+  }
+});
 
 test("OpenAI text SSE preserves the model, full text, finish reason and usage", () => {
   const response = captureResponse();
