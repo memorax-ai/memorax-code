@@ -830,6 +830,9 @@ from local metadata without running Git for identity. Linked worktrees share
 the startup lock and active marker within one MemoraX home; independent clones
 remain separate. Worktree marker and lock compatibility is retained for older
 runtimes, which do not implement cross-worktree sharing.
+The startup lock remains owned while its process is alive, including slow snapshot
+preparation; elapsed initialization time alone does not permit takeover. Launchers
+recheck ownership before starting a worker or publishing a native delegation.
 
 One mainline baseline is published under `MEMORAX_CODE_HOME/repo-memory-bases`.
 Any authorized worktree may trigger maintenance. The target commit comes only
@@ -847,6 +850,9 @@ hooks, and never registers a linked worktree or changes source Git state.
 The existing collector, detector, authoring templates, and validator operate on
 that snapshot. Updates copy the shared bundle into its candidate memory directory;
 the Agent reviews affected Wiki pages and enabled historical resources.
+Launchers persist a preparing job and an attempt record before creating the snapshot.
+Preparation failures retain a failed job record, remove the temporary source checkout,
+and remain subject to the attempt cooldown without advancing the shared baseline.
 Validation checks candidate provenance and unchanged snapshot source. Publication
 also checks repository ownership, the previous baseline, and that the target
 still belongs to the locally identified mainline before atomically advancing

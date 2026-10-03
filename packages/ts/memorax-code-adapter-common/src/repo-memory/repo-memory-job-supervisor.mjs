@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, statSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,6 +10,7 @@ import { gitHead } from "./repo-memory-job-artifacts.mjs";
 import { bundleHeadMatches, defaultBranchSnapshot, prepareSharedRepoMemorySnapshot, readSharedRepoMemory, recordSharedRepoMemoryAttempt, sharedRepoMemoryAttemptCoolingDown, sharedSnapshotRoot } from "./repo-memory-shared-bundle.mjs";
 import { DEFAULT_REPO_MEMORY_COOLDOWN_HOURS } from "./repo-memory-update-policy.mjs";
 import {
+  assertRepoMemoryStartupLockOwned,
   markerPathForRepo,
   readActiveRepoMemoryJobMarker,
   realpathRepo,
@@ -342,14 +343,12 @@ function startRepoMemoryJob(request, runtime) {
     }
 
     mkdirSync(jobDir);
-    if (request.sharedSnapshot) prepareSharedRepoMemorySnapshot({ home: memoraxCodeHome, repo, snapshot: request.sharedSnapshot, root: sourceRepo,
-      validate: (path) => inspectRepoMemoryBundle(path, runtime.validatorPath).status === "usable" });
     const state = {
       version: 1,
       jobId,
       mode,
       repo,
-      status: "started",
+      status: "preparing",
       startedAt: new Date().toISOString(),
       command,
       workerCommand,
@@ -365,7 +364,22 @@ function startRepoMemoryJob(request, runtime) {
       sharedSnapshot: request.sharedSnapshot,
     };
     atomicWriteJson(jobPath, state);
-    if (request.sharedSnapshot) recordSharedRepoMemoryAttempt({ home: memoraxCodeHome, repo, snapshot: request.sharedSnapshot, nowMs: request.nowMs });
+    let failureReason = "snapshot_prepare_failed";
+    try {
+      if (request.sharedSnapshot) {
+        recordSharedRepoMemoryAttempt({ home: memoraxCodeHome, repo, snapshot: request.sharedSnapshot, nowMs: request.nowMs });
+        prepareSharedRepoMemorySnapshot({ home: memoraxCodeHome, repo, snapshot: request.sharedSnapshot, root: sourceRepo,
+          validate: (path) => inspectRepoMemoryBundle(path, runtime.validatorPath).status === "usable" });
+      }
+      failureReason = "startup_ownership_lost";
+      assertRepoMemoryStartupLockOwned(startupLock);
+    } catch (error) {
+      atomicWriteJson(jobPath, { ...state, status: "failed", finishedAt: new Date().toISOString(), failureReason });
+      if (request.sharedSnapshot) rmSync(sourceRepo, { recursive: true, force: true });
+      throw error;
+    }
+    state.status = "started";
+    atomicWriteJson(jobPath, state);
 
     let logFd;
     let child;

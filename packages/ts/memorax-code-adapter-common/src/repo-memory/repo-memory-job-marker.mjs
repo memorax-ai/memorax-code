@@ -214,6 +214,15 @@ export function tryAcquireRepoMemoryStartupLock(input) {
   return { acquired: true, lock };
 }
 
+export function assertRepoMemoryStartupLockOwned(lock) {
+  let current;
+  try { current = JSON.parse(readFileSync(lock.lockPath, "utf8")); } catch { /* Missing ownership fails closed. */ }
+  if (!lock?.token || current?.token !== lock.token || current?.pid !== process.pid) {
+    throw new Error("repo memory startup lock ownership lost");
+  }
+  if (lock.legacyLock) assertRepoMemoryStartupLockOwned(lock.legacyLock);
+}
+
 export function releaseRepoMemoryStartupLock(lock) {
   if (!lock?.lockDir || !lock?.lockPath || !lock?.token) return;
   if (lock.legacyLock) releaseRepoMemoryStartupLock(lock.legacyLock);
@@ -253,11 +262,13 @@ function classifyStartupLock(input) {
   }
 
   const startedAtMs = Date.parse(lock.startedAt || "");
-  if (!Number.isFinite(startedAtMs) || nowMs - startedAtMs > ttlMs) {
+  if (!Number.isFinite(startedAtMs)) {
     return { stale: true, reason: "ttl_expired", token: lock.token };
   }
   if (!Number.isInteger(lock.pid) || lock.pid <= 0) return { stale: true, reason: "invalid_pid", token: lock.token };
 
+  // Snapshot preparation can outlast the initialization TTL. A live owner
+  // retains its lock until release; age alone must not permit another launch.
   try {
     process.kill(lock.pid, 0);
     return { stale: false, reason: "locked", token: lock.token };

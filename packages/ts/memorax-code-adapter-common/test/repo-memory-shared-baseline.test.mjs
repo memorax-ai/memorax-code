@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import childProcess, { spawn, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,6 +9,7 @@ import test from "node:test";
 import { defaultBranchSnapshot, prepareSharedRepoMemorySnapshot, publishSharedRepoMemorySnapshot, readSharedRepoMemory, sharedSnapshotRoot } from "../src/repo-memory/repo-memory-shared-bundle.mjs";
 import { runRepoMemoryJob } from "../src/repo-memory/repo-memory-job-supervisor.mjs";
 import { evaluateRepository } from "../src/repo-memory/repo-memory-update-policy-evaluator.mjs";
+import { startupLockPathForRepo } from "../src/repo-memory/repo-memory-job-marker.mjs";
 
 const driver = fileURLToPath(new URL("./support/repo-memory-job-driver.mjs", import.meta.url));
 const validator = fileURLToPath(new URL("./support/repo-memory-job-validator.mjs", import.meta.url));
@@ -121,6 +123,49 @@ test("failed initial builds and updates retain the last successful baseline and 
   assert.equal(maintain(f, [], { MEMORAX_CODE_REPO_MEMORY_UPDATE_POLICY: "every-commit" }).reason, "shared_update_cooldown");
   assert.equal(resolve(f).memoryPath, join(baseline.path, ".repo_memory"));
 });
+
+for (const [mode, failureReason] of [["build", "snapshot_prepare_failed"], ["update", "snapshot_prepare_failed"], ["build", "startup_ownership_lost"]]) {
+  test(`shared ${mode} ${failureReason} records failure, cleans snapshots, and throttles retries`, t => {
+    const f = fixture(t);
+    if (mode === "update") { build(f); advance(f); }
+    const baseline = readSharedRepoMemory(f.home, f.repo);
+    const config = join(f.home, "config.toml");
+    writeFileSync(config, '[memory.repo_update]\npolicy = "every-commit"\n');
+    let preparing;
+    const lockPath = startupLockPathForRepo(f.home, f.repo).lockPath;
+    const original = childProcess.spawnSync;
+    const mocked = t.mock.method(childProcess, "spawnSync", (command, args, options) => {
+      if (command === "git" && args.includes("checkout")) {
+        const job = join(dirname(options.cwd), "job.json");
+        preparing = existsSync(job) ? JSON.parse(readFileSync(job, "utf8")) : undefined;
+        if (failureReason === "snapshot_prepare_failed") return { status: 1, stdout: "", stderr: "fixture checkout failure" };
+        const lock = JSON.parse(readFileSync(lockPath, "utf8"));
+        writeFileSync(lockPath, JSON.stringify({ ...lock, token: "replacement-owner" }));
+      }
+      return original(command, args, options);
+    });
+    syncBuiltinESMExports();
+    t.after(() => { mocked.mock.restore(); syncBuiltinESMExports(); });
+    const runtime = { runner: "fixture", memoraxCodeHome: f.home, validatorPath: validator, evaluateRepository,
+      createCommand: () => [process.execPath, "--version"] };
+    const request = ["maintain", "--repo", f.repo, "--config", config];
+    assert.throws(() => runRepoMemoryJob(request, runtime), failureReason === "snapshot_prepare_failed"
+      ? /could not prepare local Repo Memory snapshot/ : /startup lock ownership lost/);
+    assert.equal(preparing?.status, "preparing");
+    const jobs = readdirSync(join(f.home, "repo-memory-jobs")).filter(name => name !== "in-progress");
+    const states = jobs.map(name => JSON.parse(readFileSync(join(f.home, "repo-memory-jobs", name, "job.json"), "utf8")));
+    const failed = states.find(state => state.status === "failed");
+    assert.equal(failed?.failureReason, failureReason);
+    assert.equal(failed.mode, mode);
+    assert.equal(failed.workerPid, undefined);
+    assert.equal(existsSync(join(f.home, "repo-memory-jobs", failed.jobId, "source")), false);
+    assert.deepEqual(readSharedRepoMemory(f.home, f.repo), baseline);
+    assert.equal(runRepoMemoryJob(request, runtime).reason, "shared_update_cooldown");
+    if (failureReason === "startup_ownership_lost") assert.equal(JSON.parse(readFileSync(lockPath, "utf8")).token, "replacement-owner");
+    else assert.equal(readdirSync(join(f.home, "repo-memory-jobs", "in-progress")).length, 0);
+    assert.equal(readdirSync(join(f.home, "repo-memory-jobs")).filter(name => name !== "in-progress").length, jobs.length);
+  });
+}
 
 test("only mainline commits and shared publication age feed update policy", t => {
   const f = fixture(t); build(f);

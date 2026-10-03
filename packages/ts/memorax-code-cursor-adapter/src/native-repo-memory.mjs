@@ -13,7 +13,7 @@ const { runRepoMemoryJob, buildPrompt, updatePrompt, gitSnapshot, inspectRepoMem
 const { prepareSharedRepoMemorySnapshot, publishSharedRepoMemorySnapshot, recordSharedRepoMemoryAttempt, sharedSnapshotRoot } = await loadCommon("repo-memory/repo-memory-shared-bundle.mjs");
 const { evaluateRepository } = await loadCommon("repo-memory/repo-memory-update-policy-evaluator.mjs");
 const { gitHead, profileLocalHead, resolveCommit } = await loadCommon("repo-memory/repo-memory-job-artifacts.mjs");
-const { markerPathForRepo, readActiveRepoMemoryJobMarker, realpathRepo, repoMemoryJobsDir, tryAcquireRepoMemoryStartupLock, releaseRepoMemoryStartupLock, removeRepoMemoryJobMarkerIfOwned, writeRepoMemoryJobMarker } = await loadCommon("repo-memory/repo-memory-job-marker.mjs");
+const { assertRepoMemoryStartupLockOwned, markerPathForRepo, readActiveRepoMemoryJobMarker, realpathRepo, repoMemoryJobsDir, tryAcquireRepoMemoryStartupLock, releaseRepoMemoryStartupLock, removeRepoMemoryJobMarkerIfOwned, writeRepoMemoryJobMarker } = await loadCommon("repo-memory/repo-memory-job-marker.mjs");
 const { writePrivateJsonRecord } = await loadCommon("runtime-record.mjs");
 
 const SCHEMA = "cursor_native_repo_memory_job.v1";
@@ -51,7 +51,7 @@ function prepare(request, runtime) {
   const repo = realpathRepo(resolve(request.repo));
   if (!["build", "update"].includes(request.mode)) throw new Error("--mode must be build or update");
   if (request.mode === "update" && !request.sharedSnapshot && !existsSync(join(repo, ".repo_memory/PROFILE.md"))) throw new Error("repo memory update requires an existing PROFILE.md");
-  const perform = () => {
+  const perform = (startupLock) => {
     const active = readActiveRepoMemoryJobMarker({ memoraxCodeHome: runtime.home, repoRealpath: repo });
     if (active.active) return existing(active.marker);
     if (request.automatic) {
@@ -66,22 +66,32 @@ function prepare(request, runtime) {
     const ticket = randomBytes(32).toString("hex");
     const state = {
       schema: SCHEMA, version: 1, jobId, runId: randomUUID().replaceAll("-", ""),
-      repo, mode: request.mode, runner: "cursor", execution: "native-subagent", status: "requested",
+      repo, mode: request.mode, runner: "cursor", execution: "native-subagent", status: "preparing",
       startedAt: new Date(now).toISOString(), expiresAt: new Date(now + Math.min(REQUEST_MS, runtime.leaseMs)).toISOString(),
       snapshotHead: snapshot.head, snapshotBranch: snapshot.branch, snapshotWorkingTreeState: snapshot.workingTreeState,
       sharedSnapshot: request.sharedSnapshot,
       validatorPath: runtime.validatorPath, parentSessionId: runtime.sessionId, ticketHash: hash(ticket),
     };
-    if (request.sharedSnapshot) prepareSharedRepoMemorySnapshot({ home: runtime.home, repo, snapshot: request.sharedSnapshot,
-      root: sharedSnapshotRoot(jobPath(runtime, jobId)), validate: (path) => inspectRepoMemoryBundle(path, runtime.validatorPath).status === "usable" });
     writeState(runtime, state);
-    if (request.sharedSnapshot) recordSharedRepoMemoryAttempt({ home: runtime.home, repo, snapshot: request.sharedSnapshot, nowMs: request.nowMs });
+    let failureReason = "snapshot_prepare_failed";
     try {
+      if (request.sharedSnapshot) {
+        recordSharedRepoMemoryAttempt({ home: runtime.home, repo, snapshot: request.sharedSnapshot, nowMs: request.nowMs });
+        prepareSharedRepoMemorySnapshot({ home: runtime.home, repo, snapshot: request.sharedSnapshot,
+          root: sharedSnapshotRoot(jobPath(runtime, jobId)), validate: (path) => inspectRepoMemoryBundle(path, runtime.validatorPath).status === "usable" });
+      }
+      failureReason = "startup_ownership_lost";
+      assertRepoMemoryStartupLockOwned(startupLock);
+      state.status = "requested";
+      writeState(runtime, state);
+      failureReason = "lease_guard_start_failed";
       state.leasePid = startLeaseGuard(runtime, state);
       writeState(runtime, state);
+      failureReason = "startup_ownership_lost";
+      assertRepoMemoryStartupLockOwned(startupLock);
       writeMarker(runtime, state);
     } catch (error) {
-      finishState(runtime, state, "lease_guard_start_failed");
+      finishState(runtime, state, failureReason);
       throw error;
     }
     return {
@@ -288,7 +298,7 @@ function withRepoLock(runtime, repo, operation) {
   for (;;) {
     const result = tryAcquireRepoMemoryStartupLock({ memoraxCodeHome: runtime.home, repoRealpath: repo });
     if (result.acquired) {
-      try { return operation(); } finally { releaseRepoMemoryStartupLock(result.lock); }
+      try { return operation(result.lock); } finally { releaseRepoMemoryStartupLock(result.lock); }
     }
     if (Date.now() >= deadline) throw new Error("native repo memory job is busy");
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);

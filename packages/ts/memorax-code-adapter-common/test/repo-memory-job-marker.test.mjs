@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -44,6 +45,29 @@ test("repo memory startup lock release preserves a replaced lock", (t) => {
   assert.equal(existsSync(second.lock.lockDir), true);
   releaseRepoMemoryStartupLock(second.lock);
   assert.equal(existsSync(second.lock.lockDir), false);
+});
+
+test("repo memory startup locks stay owned while a slow preparer is alive", (t) => {
+  const fixture = createFixture(t);
+  const first = tryAcquireRepoMemoryStartupLock({ ...fixture, nowMs: Date.now() - 31_000 });
+  assert.equal(first.acquired, true);
+  t.after(() => releaseRepoMemoryStartupLock(first.lock));
+  const competing = tryAcquireRepoMemoryStartupLock(fixture);
+  if (competing.acquired) releaseRepoMemoryStartupLock(competing.lock);
+  assert.equal(competing.acquired, false);
+  assert.equal(competing.reason, "locked");
+});
+
+test("repo memory startup locks are recoverable after their owner exits", (t) => {
+  const fixture = createFixture(t);
+  const first = tryAcquireRepoMemoryStartupLock(fixture);
+  const exited = spawnSync(process.execPath, ["-e", ""]);
+  assert.equal(exited.status, 0);
+  writeFileSync(first.lock.lockPath, JSON.stringify({ ...first.lock, pid: exited.pid }));
+  const next = tryAcquireRepoMemoryStartupLock(fixture);
+  t.after(() => releaseRepoMemoryStartupLock(next.lock));
+  assert.equal(next.acquired, true);
+  assert.notEqual(next.lock.token, first.lock.token);
 });
 
 test("repo memory lease markers remain active without a process PID", (t) => {
