@@ -108,11 +108,14 @@ test("mainline changes update from another worktree without file-count or struct
 
 test("failed initial builds and updates retain the last successful baseline and throttle retries", t => {
   const f = fixture(t);
-  const initial = maintain(f, [], { REPO_MEMORY_TEST_BEHAVIOR: "final-only" });
+  const initialAt = Date.now();
+  const initial = maintain(f, ["--now", new Date(initialAt).toISOString()], { REPO_MEMORY_TEST_BEHAVIOR: "final-only" });
   assert.equal(terminal(initial.job.jobPath).status, "failed");
   assert.equal(readSharedRepoMemory(f.home, f.repo), undefined);
   assert.equal(maintain(f).reason, "shared_update_cooldown");
-  const later = ["--now", "2099-01-01T00:00:00Z"];
+  const retryAt = initialAt + 24 * 60 * 60 * 1000;
+  assert.equal(maintain(f, ["--dry-run", "--now", new Date(retryAt - 1).toISOString()]).reason, "shared_update_cooldown");
+  const later = ["--now", new Date(retryAt).toISOString()];
   const retry = maintain(f, later);
   assert.equal(terminal(retry.job.jobPath).status, "succeeded");
   const baseline = readSharedRepoMemory(f.home, f.repo);
@@ -169,12 +172,18 @@ for (const [mode, failureReason] of [["build", "snapshot_prepare_failed"], ["upd
 
 test("only mainline commits and shared publication age feed update policy", t => {
   const f = fixture(t); build(f);
-  advance(f);
+  const baseline = readSharedRepoMemory(f.home, f.repo);
+  for (let i = 0; i < 6; i++) commit(f.repo, `main-${i}.txt`, `${i}\n`);
+  git(f.repo, ["update-ref", "refs/remotes/origin/trunk", "HEAD"]);
+  const dueAt = Date.parse(baseline.publishedAt) + 72 * 60 * 60 * 1000;
   assert.equal(maintain(f, ["--dry-run"]).reason, "up_to_date");
-  const old = maintain(f, ["--dry-run", "--now", "2099-01-01T00:00:00Z"]);
+  assert.equal(maintain(f, ["--dry-run", "--now", new Date(dueAt - 1).toISOString()]).reason, "up_to_date");
+  const old = maintain(f, ["--dry-run", "--now", new Date(dueAt).toISOString()]);
   assert.equal(old.action, "update");
+  assert.equal(old.policyDecision.policy, "daily");
+  assert.equal(old.policyDecision.cooldownHours, 72);
   assert.equal(old.policyDecision.lastUpdateSource, "shared.publishedAt");
-  assert.equal(old.policyDecision.commitsBehind, 1);
+  assert.equal(old.policyDecision.commitsBehind, 6);
 });
 
 test("mainline history replacement defers automatic update while the old map remains readable", t => {

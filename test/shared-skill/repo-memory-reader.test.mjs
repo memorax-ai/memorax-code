@@ -104,7 +104,8 @@ test("memorax-code repo-read delegates deterministic maintenance decisions only 
   assert.match(skill, /Commit arrival, PR merge, and elapsed time alone do not invoke it/);
   assert.match(skill, /validates the shared bundle and evaluates the configured update policy/);
   assert.match(skill, /provider network access/);
-  assert.match(skill, /`adaptive\(5 commits OR 24 hours\)`/);
+  assert.match(skill, /`daily` with a 72-hour interval/);
+  assert.match(skill, /commit count does not trigger an earlier update/);
   assert.match(skill, /missing or non-ancestor baseline/);
 });
 

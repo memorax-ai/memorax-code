@@ -48,7 +48,7 @@ are not a compatibility contract.
 The generated template selects the existing client integrations, including the
 optional CodeBuddy/WorkBuddy, Trae, and Cursor adapters, enables automatic
 writeback, sets the preferred language to Chinese (`zh`), uses a five-turn skill
-reminder and the adaptive repository-update policy, and
+reminder and a 72-hour repository-update interval, and
 enables content-bearing local traces for every supported client. Foreground
 setup may narrow `[clients]` to clients detected on the host. The tables below
 list all fallbacks, including tuning fields omitted from the generated file.
@@ -927,13 +927,15 @@ The repository-update fields below belong in `[memory.repo_update]`.
 
 | Field | Environment override | Fallback |
 | --- | --- | --- |
-| `policy` | `MEMORAX_CODE_REPO_MEMORY_UPDATE_POLICY` | `adaptive` |
+| `policy` | `MEMORAX_CODE_REPO_MEMORY_UPDATE_POLICY` | `daily` |
 | `commit_threshold` | `MEMORAX_CODE_REPO_MEMORY_STALE_COMMIT_THRESHOLD` | `5` |
-| `cooldown_hours` | `MEMORAX_CODE_REPO_MEMORY_UPDATE_COOLDOWN_HOURS` | `24` |
+| `cooldown_hours` | `MEMORAX_CODE_REPO_MEMORY_UPDATE_COOLDOWN_HOURS` | `72` |
 
 Supported policies are `every-commit`, `commit-count`, `daily`,
 `pull-request`, `pull-request-or-daily`, and `adaptive`. Invalid policy values
-fall back to `adaptive`.
+fall back to `daily`. The `daily` policy uses `cooldown_hours` as its interval;
+despite its name, it is not fixed to 24 hours. `commit_threshold` applies only
+to `commit-count` and `adaptive`, so it does not bypass the default interval.
 
 In Codex, Claude Code, CodeBuddy/WorkBuddy, DSH, OpenCode, and Cursor, an eligible
 prompt checks initialization when the Backend has authorized a Git worktree and
@@ -960,9 +962,12 @@ workflows must first make newly merged mainline commits available locally.
 
 The update policy compares the last successful shared commit with that target
 and uses the shared publication time, falling back to PROFILE time for legacy
-records. The default requires new mainline commits and either five commits or
-24 hours. Feature-only commits and local file changes do not count. Ordinary
-file deletions, moves, dependency edits, or large diffs do not automatically
+records. The default requires new mainline commits and at least 72 hours since
+the last successful publication. More commits do not trigger an earlier update;
+without new commits, elapsed time alone does not trigger one. Explicit policy
+and interval settings continue to override these defaults. Feature-only commits
+and local file changes do not count. Ordinary file deletions, moves, dependency
+edits, or large diffs do not automatically
 invalidate the map or prohibit incremental updates. An incompatible mainline
 history defers automatic update for explicit recovery; readers may still use
 supported historical guidance while verifying current source. Repeated attempts

@@ -61,8 +61,10 @@ worktree, not the memory directory or the temporary checkout recorded at build t
 Any worktree can trigger shared maintenance. The target is the fixed commit of
 the local target of `origin/HEAD`; no remote discovery or branch-name guessing is
 performed. Initial builds and updates read a private local snapshot of that commit.
-The default policy is `adaptive(5 commits OR 24 hours)` and requires new mainline
-commits. Feature commits, branch names, and uncommitted edits do not schedule
+The default policy is `daily` with a 72-hour interval. It requires new mainline
+commits and at least 72 hours since the last successful shared publication;
+commit count does not trigger an earlier update. Explicit configuration overrides
+these defaults. Feature commits, branch names, and uncommitted edits do not schedule
 per-worktree updates. An attempt cooldown limits retries after failed jobs.
 
 `default_branch_unavailable`, `shared_history_changed`, and

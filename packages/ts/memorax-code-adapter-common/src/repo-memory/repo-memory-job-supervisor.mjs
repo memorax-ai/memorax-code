@@ -8,7 +8,6 @@ import { atomicWriteJson, stringOption } from "../config-utils.mjs";
 import { repoMemoryJobWorkerEnv } from "./repo-memory-job-context.mjs";
 import { gitHead } from "./repo-memory-job-artifacts.mjs";
 import { bundleHeadMatches, defaultBranchSnapshot, prepareSharedRepoMemorySnapshot, readSharedRepoMemory, recordSharedRepoMemoryAttempt, sharedRepoMemoryAttemptCoolingDown, sharedSnapshotRoot } from "./repo-memory-shared-bundle.mjs";
-import { DEFAULT_REPO_MEMORY_COOLDOWN_HOURS } from "./repo-memory-update-policy.mjs";
 import {
   assertRepoMemoryStartupLockOwned,
   markerPathForRepo,
@@ -25,6 +24,7 @@ import {
 const workerPath = fileURLToPath(new URL("./repo-memory-job-worker.mjs", import.meta.url));
 const maintenanceDecisionSchema = "repo_memory_maintenance_decision.v1";
 const DEFAULT_MEMORY_SKILL_INVOCATION = "$memorax-code";
+const INITIAL_BUILD_RETRY_COOLDOWN_HOURS = 24;
 
 export function runRepoMemoryJob(args, options) {
   const runtime = normalizeRuntime(options);
@@ -162,7 +162,7 @@ function inspectSharedRepoMemoryMaintenance(request, runtime) {
     }
     const baseHead = baseline?.head ?? null;
     if (sharedRepoMemoryAttemptCoolingDown({ home, repo, baseHead,
-      cooldownHours: policyDecision?.cooldownHours ?? DEFAULT_REPO_MEMORY_COOLDOWN_HOURS, nowMs: request.nowMs })) {
+      cooldownHours: policyDecision?.cooldownHours ?? INITIAL_BUILD_RETRY_COOLDOWN_HOURS, nowMs: request.nowMs })) {
       return { reason: "shared_update_cooldown", bundleStatus: baseline ? "usable" : "missing", policyDecision };
     }
     return { sharedSnapshot: { ...snapshot, baseHead }, bundleStatus: baseline ? "usable" : "missing", policyDecision };
