@@ -139,6 +139,8 @@ jobs:
           NODE
       - name: Verify test assertions reject malformed content and unexpected failures
         run: node --test scripts/native-process-cleanup.test.mjs scripts/codex-native-content-check.test.mjs scripts/codex-lifecycle-assertions.test.mjs scripts/codex-writeback-diagnostics.test.mjs scripts/opencode-native-support.test.mjs scripts/opencode-initialization-diagnostic.test.mjs scripts/opencode-initialization-layouts.test.mjs scripts/claude-native-content-check.test.mjs scripts/claude-native-support.test.mjs scripts/claude-permissions-support.test.mjs scripts/claude-lifecycle-assertions.test.mjs scripts/claude-lifecycle-process.test.mjs scripts/claude-background-assertions.test.mjs scripts/claude-install-interruption-driver.test.mjs scripts/codebuddy-native-content-check.test.mjs scripts/codebuddy-native-support.test.mjs scripts/codebuddy-install-cleanup.test.mjs scripts/codebuddy-lifecycle-assertions.test.mjs scripts/codebuddy-install-interruption-driver.test.mjs scripts/codebuddy-permissions-support.test.mjs scripts/codebuddy-background-assertions.test.mjs
+      - name: Verify shared CodeBuddy and WorkBuddy native and install contracts
+        run: node --test scripts/codebuddy-native-memory-support.test.mjs scripts/codebuddy-install-interruption-check.test.mjs scripts/workbuddy-install-entry.test.mjs
       - name: Build and validate the installable package
         id: package-check
         shell: bash

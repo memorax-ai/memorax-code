@@ -912,14 +912,40 @@ package; use the Make target when the artifact has not passed
 
 ### WorkBuddy Bundled-Runtime Probe
 
-`scripts/workbuddy-native-check.mjs` is a separate, minimal native probe for
-the CLI shipped inside a WorkBuddy desktop installation. It is not part of the
-three-platform CI matrix and does not validate the desktop UI or login flow.
+The WorkBuddy checks use the CLI shipped inside a WorkBuddy desktop installation.
+They are not part of the GitHub CI matrix and do not validate the desktop UI or
+login flow. The desktop application and bundled runtime have distinct versions.
 Do not substitute the independently installed CodeBuddy CLI for that runtime.
 
-After validating and installing the candidate npm artifact into an isolated
-prefix, run the probe with the installed package directory, the actual bundled
-`cli/bin/codebuddy` entrypoint, and its exact runtime version:
+After `make npm-package-check` validates the candidate artifact, run the isolated
+installation, setup-interruption, and Memory/Skill suites with its tarball
+directory, the actual bundled `cli/bin/codebuddy` entrypoint, and its exact
+runtime version:
+
+```bash
+memorax_dev node scripts/workbuddy-e2e.mjs dist/npm/tarballs \
+  "$WORKBUDDY_BUNDLED_COMMAND" "$WORKBUDDY_RUNTIME_VERSION" 0.1.18
+```
+
+The runner reuses the CodeBuddy installation wrappers with an explicit
+`workbuddy` client. macOS uses Bash; native Windows requires PowerShell 7 and Git
+for Windows. The supplied bundle is read-only; only MemoraX Code and test-only
+`node-pty@1.1.0` are installed into disposable prefixes. No standalone CodeBuddy
+package is installed for WorkBuddy. The wrapper validates the bundled path
+before installation, and the suites verify the exact runtime version and
+WorkBuddy plugin metadata. CodeBuddy's existing invocation and full suite remain
+unchanged. A wrapper's WorkBuddy success does not include permissions or Repo
+Memory workers; both exclusions are printed explicitly.
+
+The shared lifecycle cases cover rejected stdin, real-terminal cancellation and
+hidden credentials, fresh/repeated setup, port-conflict recovery, stop/start,
+uninstall/reinstall, configuration retention, previous-version upgrade, rejected
+artifact download, forced reinstall, postinstall failure, and recovery/retry.
+Four setup-interruption cases cover configuration publication, before/after
+Backend start, and saved-account key cancellation. Recovery verifies the saved
+account, WorkBuddy installation, a native turn and explicit Search.
+
+To run only native Memory/Skill checks against an already installed candidate:
 
 ```bash
 memorax_dev node scripts/workbuddy-native-check.mjs \
@@ -927,20 +953,28 @@ memorax_dev node scripts/workbuddy-native-check.mjs \
   "$WORKBUDDY_BUNDLED_COMMAND" "$WORKBUDDY_RUNTIME_VERSION"
 ```
 
-The runtime version is distinct from the WorkBuddy desktop version. On Windows,
-use the npm prefix's `node_modules/@memorax/memorax-code` package directory.
-The probe creates fresh client and Backend state, uses synthetic credentials
-and loopback model/Memory services, and checks installation identity, a cold
-first turn, same-session resume with a real local tool, independent native JSONL
-content, WorkBuddy Hook correlation for exact and multiline prompts, and automatic
-Add. The foreground does not receive `--plugin-dir`; it must discover the installed global Hook and
-plugin normally. Reports contain fixed diagnostics and counts, not raw output.
-Cleanup must succeed before the probe can pass.
+On Windows, use the npm prefix's `node_modules/@memorax/memorax-code` package
+directory. The native scenarios share CodeBuddy's six-turn contract: complete
+Unicode/multiline automatic Add, same-session resume and real tools, sensitive
+input redaction, separate workspace/session content, direct CLI Search in JSON
+and text forms and Add, and native Skill/Read/Bash Search/Add. Scripted local
+responses direct the tools; autonomous Skill choice is not evaluated. Independent
+native JSONL, Hook correlation, client/session identity, exact Memory requests
+and counts, and cleanup remain required. The foreground receives no
+`--plugin-dir`; it must discover the installed global Hook and plugin normally.
+WorkBuddy state must not become standalone CodeBuddy configuration; the bundled
+runtime's empty `.codebuddy/diagnostics` directory alone is allowed.
 
-This does not yet cover installation upgrade/recovery, Skill Search/Add,
-permission/interruption scenarios, Repo Memory workers, desktop-managed task
-directories, or a supported Linux distribution. A local runtime probe is not
-evidence that all WorkBuddy platforms or desktop startup environments pass.
+All suites use fresh client and Backend state, synthetic credentials, and
+loopback model/Memory services. Reports contain bounded diagnostics, not raw
+transcripts, credentials or private paths. Cleanup must succeed before a suite
+can pass, and unverified cleanup retains its isolated state.
+
+Runtime permission/interruption scenarios, Repo Memory workers, desktop-managed
+task directories, automatic bundle acquisition, and the platform/version CI
+matrix remain pending. A supported Linux distribution is not established by
+these checks. Implemented platform wrappers or a local runtime pass are not
+evidence that other platforms or desktop startup environments pass.
 
 ## Pull Requests
 

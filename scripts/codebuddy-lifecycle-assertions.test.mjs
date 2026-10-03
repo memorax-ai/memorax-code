@@ -127,6 +127,63 @@ test("installed integration retains lexical Hook commands through a symlinked cl
   } finally { await fixture.close(); }
 });
 
+test("WorkBuddy verifies the shared plugin with its own runtime and metadata identity", async () => {
+  const fixture = await integrationFixture("workbuddy");
+  try {
+    const result = await verifyLifecycleIntegration(fixture.options);
+    assert.equal(result.source, await realpath(fixture.source));
+    assert.equal(result.cache, await realpath(fixture.cache));
+    assert.equal(result.version, "0.1.19");
+  } finally { await fixture.close(); }
+});
+
+test("unsupported lifecycle clients fail before examining an integration", async () => {
+  for (const client of [null, "", "claude", "WORKBUDDY"]) {
+    await assert.rejects(verifyLifecycleIntegration({ client }), code("NATIVE_CLIENT_INVALID"));
+  }
+});
+
+for (const client of ["codebuddy", "workbuddy"]) {
+  test(client + " rejects another client's adapter runtime", async () => {
+    const fixture = await integrationFixture(client);
+    try {
+      fixture.options.adapter.runtime = client === "codebuddy" ? "workbuddy" : "codebuddy";
+      await assert.rejects(verifyLifecycleIntegration(fixture.options), code("CODEBUDDY_ADAPTER_NOT_READY"));
+    } finally { await fixture.close(); }
+  });
+
+  for (const target of ["source", "cache"]) {
+    test(client + " rejects another client's " + target + " metadata", async () => {
+      const fixture = await integrationFixture(client);
+      try {
+        const path = join(fixture[target], ".memorax-code-package.json");
+        const metadata = JSON.parse(await readFile(path, "utf8"));
+        metadata.client = client === "codebuddy" ? "workbuddy" : "codebuddy";
+        await fixture.json(path, metadata);
+        await assert.rejects(verifyLifecycleIntegration(fixture.options), code("CODEBUDDY_HOOK_TARGET_MISMATCH"));
+      } finally { await fixture.close(); }
+    });
+
+    test(client + " rejects a different home or command in " + target + " metadata", async () => {
+      const fixture = await integrationFixture(client);
+      try {
+        const path = join(fixture[target], ".memorax-code-package.json");
+        const metadata = JSON.parse(await readFile(path, "utf8"));
+        const otherCommand = join(fixture.root, "other-command");
+        await writeFile(otherCommand, "// Never executed.\n");
+        for (const [field, value] of [
+          ["codeBuddyHome", fixture.options.stateHome],
+          ["memoraxCodeHome", fixture.options.home],
+          ["codeBuddyCommand", otherCommand],
+        ]) {
+          await fixture.json(path, { ...metadata, [field]: value });
+          await assert.rejects(verifyLifecycleIntegration(fixture.options), code("CODEBUDDY_HOOK_TARGET_MISMATCH"), field);
+        }
+      } finally { await fixture.close(); }
+    });
+  }
+}
+
 test("a global Hook command pointing at a different real target still fails", async () => {
   const fixture = await integrationFixture();
   try {
@@ -154,7 +211,7 @@ for (const target of ["source", "cache"]) {
   });
 }
 
-async function integrationFixture() {
+async function integrationFixture(client) {
   const root = await mkdtemp(join(tmpdir(), "codebuddy-lifecycle-alias-"));
   const close = () => rm(root, { recursive: true, force: true });
   try {
@@ -186,7 +243,7 @@ async function integrationFixture() {
         await writeFile(join(path, asset), "// Synthetic asset: " + asset + "\n");
       }
       if (path !== sourceRoot) await json(join(path, ".memorax-code-package.json"),
-        { version: 1, client: "codebuddy", codeBuddyHome: home, memoraxCodeHome: stateHome, codeBuddyCommand: command });
+        { version: 1, client: client ?? "codebuddy", codeBuddyHome: home, memoraxCodeHome: stateHome, codeBuddyCommand: command });
     }
     for (const path of [join(source, "skills", "memorax-code"), join(cache, "skills", "memorax-code"), canonicalSkill]) {
       for (const asset of ["SKILL.md", "references/memorax-search.md", "references/memorax-add.md"]) {
@@ -206,7 +263,8 @@ async function integrationFixture() {
       { name: marketplaceName, plugins: [{ name: pluginName, source: "./plugins/" + pluginName, version: "0.1.19" }] });
     return { root, source, cache, settingsPath, json, close, options: {
       packageRoot, home, stateHome, command, settingsSnapshot: {},
-      adapter: { ok: true, runtime: "codebuddy", installed: true, enabled: true, managed: true, integration: "hooks",
+      ...(client === undefined ? {} : { client }),
+      adapter: { ok: true, runtime: client ?? "codebuddy", installed: true, enabled: true, managed: true, integration: "hooks",
         installPath: cache, codebuddyHooks: { configured: true, ok: true },
         codebuddySkills: { ok: true, path: join(source, "skills", "memorax-code", "SKILL.md") } },
     } };
