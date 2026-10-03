@@ -229,6 +229,7 @@ function isAlive(pid) { try { process.kill(pid, 0); return true; } catch (error)
 async function stopTree(child, env) {
   if (!child.pid) return;
   if (process.platform === "win32") {
+    if (child.exitCode != null || child.signalCode != null) return;
     await execFileAsync(join(env.SystemRoot, "System32", "taskkill.exe"), ["/PID", String(child.pid), "/T", "/F"],
       { env, windowsHide: true, timeout: 10_000 }).catch(() => { child.kill(); });
   } else {
