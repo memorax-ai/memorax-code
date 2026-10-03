@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { runInNewContext } from "node:vm";
 import { assertBackendReplacement, assertCredentialNotEchoed, assertSetupInputRejection,
   snapshotProtectedConfiguration, assertProtectedConfiguration } from "./codex-lifecycle-assertions.mjs";
 
@@ -105,3 +107,98 @@ test("package replacement requires a new live identity and retirement of the pre
     [after, { ...health, service: "unrelated-service" }, false],
   ]) assert.throws(() => assertBackendReplacement(before, current, response, alive));
 });
+
+function trackingFixture(source) {
+  const extract = (start, end) => {
+    const begin = source.indexOf(start);
+    const finish = source.indexOf(end, begin);
+    assert.ok(begin >= 0 && finish > begin);
+    return source.slice(begin, finish);
+  };
+  const before = { pid: 103, instanceId: "retired-instance" };
+  const after = { pid: 104, instanceId: "current-instance", url: "http://127.0.0.1:32123" };
+  const health = { ok: true, service: "memorax-code-backend", instanceId: after.instanceId };
+  const livePids = new Set([after.pid]);
+  const probeErrors = new Map();
+  const probedPids = [];
+  const context = {
+    stage: "", cleanupStage: "", cleanupTrackedPidIndex: undefined,
+    backendPids: new Set([101, 102, before.pid, after.pid, 105]), backendPort: 32123,
+    report: { checks: [] }, portProbes: 0,
+    pidPath: () => "synthetic-record", exists: async () => context.pidRecordPresent === true,
+    readJson: async () => { if (context.recordError) throw context.recordError; return after; },
+    process: { kill(pid, signal) {
+      assert.equal(signal, 0);
+      probedPids.push(pid);
+      if (probeErrors.has(pid)) throw probeErrors.get(pid);
+      if (!livePids.has(pid)) throw Object.assign(new Error("not found"), { code: "ESRCH" });
+    } },
+    URL, AbortSignal: { timeout: () => undefined },
+    fetch: async () => ({ ok: true, json: async () => health }),
+    assertBackendReplacement,
+    check: (condition, message) => { if (!condition) throw new Error(message); },
+    createTcpServer: () => ({ once() {}, listen(_port, _host, done) {
+      context.portProbes += 1;
+      if (context.portError) throw context.portError;
+      done();
+    }, close(done) { done(); } }),
+  };
+  // Execute the runners' real tracking logic with no process, network or state access.
+  const methods = runInNewContext(
+    extract("async function verifyBackendReplacement(", "async function stopAndVerify(")
+      + extract("async function assertStopped(", "async function verifyPreserved(")
+      + "\n({ verifyBackendReplacement, assertStopped });", context);
+  return { ...methods, context, before, after, health, livePids, probeErrors, probedPids };
+}
+
+for (const script of ["codex-install-smoke.mjs", "opencode-install-smoke.mjs",
+  "claude-install-smoke.mjs", "codebuddy-lifecycle-check.mjs"]) {
+  const source = await readFile(new URL(script, import.meta.url), "utf8");
+
+  test(`${script}: confirmed retired PID reuse cannot fail final cleanup`, async () => {
+    const f = trackingFixture(source);
+    await f.verifyBackendReplacement(f.before, "replacement");
+    assert.equal(f.context.backendPids.has(f.after.pid), true);
+    f.livePids.clear();
+    f.livePids.add(f.before.pid);
+    f.probedPids.length = 0;
+    await f.assertStopped();
+    assert.equal(f.probedPids.includes(f.before.pid), false);
+    assert.equal(f.context.portProbes, 1);
+    assert.equal(f.context.backendPids.size, 0);
+  });
+
+  test(`${script}: failed replacement verification retains every tracked PID`, async () => {
+    for (const [mutate, expected] of [
+      [(f) => f.livePids.add(f.before.pid), /BACKEND_REPLACEMENT_OLD_PROCESS_ALIVE/],
+      [(f) => f.probeErrors.set(f.before.pid, { code: "EPERM" }), { code: "EPERM" }],
+      [(f) => { f.context.recordError = { code: "ENOENT" }; }, { code: "ENOENT" }],
+      [(f) => f.livePids.delete(f.after.pid), /Updated Backend PID does not identify a live process/],
+      [(f) => { f.health.instanceId = "another-instance"; }, /BACKEND_REPLACEMENT_HEALTH_IDENTITY_MISMATCH/],
+    ]) {
+      const f = trackingFixture(source);
+      const tracked = [...f.context.backendPids];
+      mutate(f);
+      await assert.rejects(f.verifyBackendReplacement(f.before, "replacement"), expected);
+      assert.deepEqual([...f.context.backendPids], tracked);
+    }
+  });
+
+  test(`${script}: remaining process, record and port failures still fail cleanup`, async () => {
+    for (const [mutate, expected, portProbes] of [
+      [(f) => f.livePids.add(f.after.pid), /An installation Backend process remains after stop/, 0],
+      [(f) => { f.context.pidRecordPresent = true; }, /Backend PID record remains after stop/, 0],
+      [(f) => f.probeErrors.set(f.after.pid, { code: "EPERM" }), { code: "EPERM" }, 0],
+      [(f) => { f.context.portError = { code: "EADDRINUSE" }; }, { code: "EADDRINUSE" }, 1],
+    ]) {
+      const f = trackingFixture(source);
+      await f.verifyBackendReplacement(f.before, "replacement");
+      f.livePids.clear();
+      const tracked = [...f.context.backendPids];
+      mutate(f);
+      await assert.rejects(f.assertStopped(), expected);
+      assert.deepEqual([...f.context.backendPids], tracked);
+      assert.equal(f.context.portProbes, portProbes);
+    }
+  });
+}

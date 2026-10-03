@@ -59,8 +59,13 @@ async function fakeMemoraxCode(root) {
 
 async function hangingMemoraxCode(root) {
   const command = join(root, "hanging-memorax-code.mjs");
-  await writeFile(command, "setInterval(() => {}, 1000);\n");
-  return command;
+  const startedPath = join(root, "recovery-started");
+  await writeFile(command, [
+    'import { writeFileSync } from "node:fs";',
+    `writeFileSync(${JSON.stringify(startedPath)}, "started");`,
+    "setTimeout(() => process.exit(99), 10_000);",
+  ].join("\n"));
+  return { command, startedPath };
 }
 
 function runHook({
@@ -256,9 +261,10 @@ test("invalid connection authority fails open without local lifecycle recovery",
   assert.deepEqual(await readArgs(argsPath), []);
 });
 
-test("Backend start recovery remains bounded and fails open on timeout", async () => {
+test("Backend start recovery remains bounded and fails open after its child starts", { timeout: 15_000 }, async (t) => {
   const f = await fixture();
-  const command = await hangingMemoraxCode(f.root);
+  t.after(() => rm(f.root, { recursive: true, force: true }));
+  const { command, startedPath } = await hangingMemoraxCode(f.root);
   const startedAt = Date.now();
   const result = await runHook({
     env: {
@@ -266,15 +272,16 @@ test("Backend start recovery remains bounded and fails open on timeout", async (
       MEMORAX_CODE_HOME: f.memoraxCodeHome,
       MEMORAX_CODE_BACKEND_URL: "http://127.0.0.1:9",
       MEMORAX_CODE_CODEX_ENSURE_TIMEOUT_MS: "50",
-      MEMORAX_CODE_CODEX_START_TIMEOUT_MS: "50",
+      MEMORAX_CODE_CODEX_START_TIMEOUT_MS: "2000",
       MEMORAX_CODE_CODEX_LIFECYCLE_COMMAND: command,
       MEMORAX_CODE_CODEX_HOOK_DEBUG: "1",
     },
   });
 
   assert.equal(result.code, 0, result.stderr);
+  assert.equal(await readFile(startedPath, "utf8"), "started");
   assert.match(result.stderr, /MemoraX Code backend start failed with code 124: timed out/);
-  assert.ok(Date.now() - startedAt < 2_000);
+  assert.ok(Date.now() - startedAt < 10_000);
 });
 
 test("ensure-backend resolves memorax-code command from plugin metadata", async () => {

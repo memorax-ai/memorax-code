@@ -1,25 +1,25 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
-import { execFile } from "node:child_process";
 import { cp, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import { createServer as createTcpServer } from "node:net";
 import { tmpdir, userInfo } from "node:os";
-import { delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { promisify } from "node:util";
+import { delimiter, dirname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { assertBackendReplacement, assertCredentialNotEchoed, assertSetupInputRejection,
   snapshotProtectedConfiguration, assertProtectedConfiguration } from "./codex-lifecycle-assertions.mjs";
+import { startLifecycleCommand } from "./claude-lifecycle-process.mjs";
+import { snapshotCodeBuddySettings, assertCodeBuddySettings, assertLifecycleIntegrationAbsent,
+  verifyLifecycleIntegration } from "./codebuddy-lifecycle-assertions.mjs";
+import { classifyLifecycleRequest } from "./claude-lifecycle-assertions.mjs";
 
-const execFileAsync = promisify(execFile);
-const pluginName = "memorax-code-codex-adapter";
-const pluginId = `${pluginName}@memorax-code`;
-const otherClients = ["claude", "dsh", "opencode", "codebuddy", "workbuddy", "trae", "cursor"];
+const pluginName = "memorax-code-codebuddy-adapter";
+const otherClients = ["codex", "claude", "opencode", "dsh", "workbuddy", "trae", "cursor"];
 const fixtureKey = `sk_${"E".repeat(43)}`;
 const fixtureUser = "lifecycle-saved-account";
 const searchFixture = "LIFECYCLE_SAVED_ACCOUNT_SEARCH_RESULT";
-const report = { status: "FAIL", platform: process.platform, arch: process.arch, checks: [] };
+const report = { status: "FAIL", suite: "codebuddy_lifecycle", platform: process.platform, arch: process.arch, checks: [] };
 const cleanupCodes = {
   entrypoint_check: "CLEANUP_ENTRYPOINT_CHECK_FAILED",
   pid_record_read: "CLEANUP_PID_RECORD_READ_FAILED",
@@ -28,40 +28,47 @@ const cleanupCodes = {
   pid_record_removal: "CLEANUP_PID_RECORD_REMAINS",
   tracked_process: "CLEANUP_TRACKED_PROCESS_CHECK_FAILED",
   port_release: "CLEANUP_PORT_RELEASE_FAILED",
+  command_process: "CLEANUP_COMMAND_PROCESS_REMAINS",
   directory_removal: "CLEANUP_DIRECTORY_REMOVAL_FAILED",
 };
 let cleanupStage = "entrypoint_check";
 let cleanupTrackedPidIndex;
 let stage = "prerequisites";
-let root, env, workspace, entrypoint, stateHome, codexHome, backendPort, endpoint, registry, savedEndpoint;
+let root, env, workspace, entrypoint, stateHome, codebuddyHome, codebuddyCommand, backendPort, endpoint, registry, savedEndpoint;
 let resolveInvocation, resolveNpmInvocation;
 let setupStarted = false;
 let requests = 0;
+let connectivityRequests = 0;
 let allowSearch = false;
 const memoryRequests = [];
 const endpointErrors = [];
 const backendPids = new Set();
+const activeCommands = new Set();
+let commandCleanupVerified = true;
+let cleanupPromise, receivedSignal;
 let npmCommand, npmPrefix, candidateTarball, ptyPackage, ptyScript;
-let expectedPackageVersion, expectedPluginVersion, expectedEvents, sourceRoot, parse;
-let originalProvider;
+let expectedPackageVersion, parse;
+let originalProvider, originalModels;
 const preservedMemory = new Map();
+const signalHandlers = new Map(["SIGINT", "SIGTERM"].map((signal) => [signal, () => handleSignal(signal)]));
+for (const [signal, handler] of signalHandlers) process.on(signal, handler);
 
 try {
   check(["darwin", "linux", "win32"].includes(process.platform), "This smoke test requires macOS, Linux or Windows");
-  check(process.argv.length === 10, "Usage: codex-install-smoke.mjs INSTALLED_PACKAGE_ROOT CODEX_CLI_PATH CANDIDATE_TARBALL NPM_CLI_PATH PREVIOUS_VERSION PTY_PACKAGE_ROOT PTY_SCRIPT_PATH CODEX_VERSION");
+  check(process.argv.length === 10, "Usage: codebuddy-lifecycle-check.mjs INSTALLED_PACKAGE_ROOT CODEBUDDY_CLI_PATH CANDIDATE_TARBALL NPM_CLI_PATH PREVIOUS_VERSION PTY_PACKAGE_ROOT PTY_SCRIPT_PATH CODEBUDDY_VERSION");
   const packageRoot = resolve(process.argv[2]);
-  const codexCommand = resolve(process.argv[3]);
+  codebuddyCommand = resolve(process.argv[3]);
   entrypoint = join(packageRoot, "bin", "memorax-code.mjs");
   candidateTarball = resolve(process.argv[4]);
   npmCommand = resolve(process.argv[5]);
   const previousVersion = process.argv[6];
   ptyPackage = resolve(process.argv[7]);
   ptyScript = resolve(process.argv[8]);
-  const expectedCodexVersion = process.argv[9];
-  check(/^\d+\.\d+\.\d+$/.test(expectedCodexVersion), "Expected Codex version must be exact");
+  const expectedCodeBuddyVersion = process.argv[9];
+  check(/^\d+\.\d+\.\d+$/.test(expectedCodeBuddyVersion), "Expected CodeBuddy version must be exact");
   check(/^\d+\.\d+\.\d+$/.test(previousVersion), "Previous package version must be exact");
   npmPrefix = resolve(packageRoot, process.platform === "win32" ? "../../.." : "../../../..");
-  check(await readFile(join(npmPrefix, ".memorax-code-ci-owned"), "utf8") === "codex-install-check\n",
+  check(await readFile(join(npmPrefix, ".memorax-code-ci-owned"), "utf8") === "codebuddy-install-check\n",
     "Refusing npm lifecycle mutations outside the wrapper-owned prefix");
   ({ resolveWindowsCliInvocation: resolveInvocation } = await import(
     pathToFileURL(join(packageRoot, "lib", "windows-cli-invocation.mjs")).href));
@@ -69,28 +76,27 @@ try {
     pathToFileURL(join(packageRoot, "lib", "npm-invocation.mjs")).href));
   const manifest = await readJson(join(packageRoot, "package.json"));
   check(manifest.name === "@memorax/memorax-code", "The installed package has an unexpected identity");
-  sourceRoot = join(packageRoot, "lib", pluginName);
-  const pluginManifest = await readJson(join(sourceRoot, ".codex-plugin", "plugin.json"));
-  const hookManifest = await readJson(join(sourceRoot, "hooks", "hooks.json"));
-  expectedEvents = Object.entries(hookManifest.hooks).flatMap(([event, groups]) =>
-    groups.flatMap((group) => group.hooks.map(() => event[0].toLowerCase() + event.slice(1)))).sort();
   ({ parse } = createRequire(join(packageRoot, "package.json"))("smol-toml"));
   expectedPackageVersion = manifest.version;
-  expectedPluginVersion = pluginManifest.version;
   check(previousVersion !== manifest.version, "Upgrade requires a different previous package version");
   report.packageVersion = manifest.version;
-  report.pluginVersion = pluginManifest.version;
 
-  root = await mkdtemp(join(tmpdir(), "memorax-code-codex-install-"));
+  root = await mkdtemp(join(tmpdir(), "memorax-code-codebuddy-install-"));
   check(fixtureUser !== userInfo().username, "The saved account fixture must differ from the actual system username");
-  const userHome = join(root, "user home 测试");
-  workspace = join(root, "workspace 测试");
+  const userHome = join(root, "user home \u6d4b\u8bd5");
+  workspace = join(root, "workspace \u6d4b\u8bd5");
   stateHome = join(userHome, ".memorax-code");
-  codexHome = join(userHome, ".codex");
-  await Promise.all([workspace, stateHome, codexHome, join(root, "tmp")].map((path) => mkdir(path, { recursive: true })));
+  codebuddyHome = join(userHome, ".codebuddy");
+  await Promise.all([workspace, stateHome, codebuddyHome, join(root, "tmp")].map((path) => mkdir(path, { recursive: true })));
   backendPort = await freePort();
   endpoint = createServer(async (request, response) => {
-    if (!allowSearch) {
+    const requestKind = classifyLifecycleRequest(request.method, request.url, allowSearch);
+    if (requestKind === "connectivity") {
+      connectivityRequests += 1;
+      response.writeHead(200).end();
+      return;
+    }
+    if (requestKind === "unexpected") {
       requests += 1;
       response.writeHead(503).end();
       return;
@@ -114,42 +120,52 @@ try {
   await new Promise((done, reject) => { endpoint.once("error", reject); endpoint.listen(0, "127.0.0.1", done); });
   const dummyUrl = `http://127.0.0.1:${endpoint.address().port}`;
   savedEndpoint = `${dummyUrl}/saved-account`;
-  env = isolatedEnv(userHome, codexCommand);
-  await writeFile(join(stateHome, "config.toml"), ["[clients]", "codex = true",
+  env = isolatedEnv(userHome, codebuddyCommand);
+  if (process.platform === "win32") check((await stat(env.CODEBUDDY_CODE_GIT_BASH_PATH)).isFile(),
+    "The isolated Windows CodeBuddy environment requires Git Bash");
+  await writeFile(join(stateHome, "config.toml"), ["[clients]", "codebuddy = true",
     ...otherClients.map((client) => `${client} = false`), "[memory.writeback]", "enabled = false",
     "[jev]", "enabled = false", ""].join("\n"), { mode: 0o600 });
-  originalProvider = { model: "install-smoke", model_provider: "install-smoke", model_providers: {
-    "install-smoke": { name: "Install smoke", base_url: dummyUrl, wire_api: "responses" },
-  } };
-  await writeFile(join(codexHome, "config.toml"), [
-    'model = "install-smoke"', 'model_provider = "install-smoke"',
-    '[model_providers.install-smoke]', 'name = "Install smoke"',
-    `base_url = "${dummyUrl}"`, 'wire_api = "responses"', "",
-  ].join("\n"), { mode: 0o600 });
-  const version = await run(codexCommand, ["--version"]);
-  const actualCodexVersion = /^codex-cli (\d+\.\d+\.\d+)$/.exec(version.stdout.trim())?.[1];
-  report.expectedCodexVersion = expectedCodexVersion;
-  report.codexVersion = actualCodexVersion ?? "unrecognized";
-  check(actualCodexVersion === expectedCodexVersion, "The installed Codex CLI version differs from the selected version");
-  report.checks.push("installed package and real Codex CLI available");
+  const initialSettings = {
+    model: "memorax-lifecycle-fixture", theme: "dark",
+    env: { CODEBUDDY_BASE_URL: dummyUrl, CODEBUDDY_API_KEY: "lifecycle-model-fixture" },
+    permissions: { deny: ["WebSearch", "WebFetch"] },
+    enabledPlugins: { "unrelated-disabled-plugin@fixture": false },
+    hooks: { UserPromptSubmit: [{ hooks: [{ type: "command", command: 'node -e "process.exit(0)"' }] }] },
+  };
+  originalModels = JSON.stringify({ models: [{ id: "memorax-lifecycle-fixture", vendor: "OpenAI",
+    name: "Lifecycle fixture", apiKey: "lifecycle-model-fixture", url: dummyUrl + "/v1/chat/completions",
+    maxInputTokens: 128000, maxOutputTokens: 4096, supportsToolCall: true, supportsImages: false }],
+    availableModels: ["memorax-lifecycle-fixture"] });
+  await writeFile(join(codebuddyHome, "models.json"), originalModels, { mode: 0o600 });
+  originalProvider = snapshotCodeBuddySettings(initialSettings);
+  await writeFile(join(codebuddyHome, "settings.json"), JSON.stringify(initialSettings, null, 2), { mode: 0o600 });
+  const version = await run(codebuddyCommand, ["--version"]);
+  const actualCodeBuddyVersion = /^(\d+\.\d+\.\d+)$/.exec(version.stdout.trim())?.[1];
+  report.expectedCodeBuddyVersion = expectedCodeBuddyVersion;
+  report.codebuddyVersion = actualCodeBuddyVersion ?? "unrecognized";
+  check(actualCodeBuddyVersion === expectedCodeBuddyVersion, "The installed CodeBuddy CLI version differs from the selected version");
+  report.checks.push("installed package and real CodeBuddy CLI available");
 
   const initialConfig = await readFile(join(stateHome, "config.toml"), "utf8");
-  const initialCodexConfig = await readFile(join(codexHome, "config.toml"), "utf8");
+  const initialCodeBuddyConfig = await readFile(join(codebuddyHome, "settings.json"), "utf8");
   const prepareScenarioHome = async (name) => {
     const scenarioHome = join(root, name);
     stateHome = join(scenarioHome, ".memorax-code");
-    codexHome = join(scenarioHome, ".codex");
-    env = isolatedEnv(scenarioHome, codexCommand);
-    await Promise.all([stateHome, codexHome].map((path) => mkdir(path, { recursive: true })));
+    codebuddyHome = join(scenarioHome, ".codebuddy");
+    env = isolatedEnv(scenarioHome, codebuddyCommand);
+    await Promise.all([stateHome, codebuddyHome].map((path) => mkdir(path, { recursive: true })));
     await writeFile(join(stateHome, "config.toml"), initialConfig, { mode: 0o600 });
-    await writeFile(join(codexHome, "config.toml"), initialCodexConfig, { mode: 0o600 });
+    await writeFile(join(codebuddyHome, "settings.json"), initialCodeBuddyConfig, { mode: 0o600 });
+    await writeFile(join(codebuddyHome, "models.json"), originalModels, { mode: 0o600 });
   };
+  setupStarted = true;
   for (const [label, input] of [["empty stdin", ""], ["multiple stdin values", "invalid\nsecond\n"]]) {
     stage = `rejected setup: ${label}`;
     const rejected = await rejectedProduct(["setup", "--existing-account", "--non-interactive"], input);
     assertSetupInputRejection(rejected);
     check(await readFile(join(stateHome, "config.toml"), "utf8") === initialConfig
-      && await readFile(join(codexHome, "config.toml"), "utf8") === initialCodexConfig,
+      && await readFile(join(codebuddyHome, "settings.json"), "utf8") === initialCodeBuddyConfig,
     "Rejected setup changed existing configuration");
     check(!(await exists(completionPath())) && !(await exists(pidPath())), "Rejected setup created completion or Backend state");
   }
@@ -163,25 +179,22 @@ try {
   const cancelledConfig = await readFile(join(stateHome, "config.toml"), "utf8");
   check(!cancelledConfig.includes(fixtureKey) && JSON.stringify(parse(cancelledConfig).clients) === JSON.stringify(parse(initialConfig).clients),
     "Cancelled setup stored the key or changed the client choices");
-  check(await readFile(join(codexHome, "config.toml"), "utf8") === initialCodexConfig,
-    "Cancelled setup changed Codex provider configuration");
-  const cancelledNative = JSON.parse((await run(codexCommand, ["plugin", "list", "--available", "--json"])).stdout);
-  check(!cancelledNative.installed.some((item) => item.pluginId === pluginId || item.name === pluginName),
-    "Cancelled setup registered the native plugin");
+  check(await readFile(join(codebuddyHome, "settings.json"), "utf8") === initialCodeBuddyConfig,
+    "Cancelled setup changed CodeBuddy provider configuration");
+  await verifyIntegrationAbsent("Cancelled setup installed CodeBuddy integration files");
   report.checks.push("real terminal setup cancelled at the masked-key prompt without completing or installing the plugin");
 
   // Failure recovery has its own home so it cannot prepare the fresh-install case.
-  await prepareScenarioHome("failed setup user 测试");
+  await prepareScenarioHome("failed setup user \u6d4b\u8bd5");
   stage = "failed setup with occupied Backend port";
   const occupied = createServer((_request, response) => response.writeHead(503).end());
   await new Promise((done, reject) => { occupied.once("error", reject); occupied.listen(backendPort, "127.0.0.1", done); });
-  setupStarted = true;
   try {
     env.MEMORAX_CODE_MEMORAX_ENDPOINT = savedEndpoint;
     const failure = await rejectedProduct(["setup", "--existing-account", "--non-interactive"], `${fixtureKey}\n`);
+    report.setupFailureCode = failure.diagnosticCode ?? "NO_DIAGNOSTIC_CODE";
     check(["BACKEND_EXITED_BEFORE_READY", "BACKEND_HEALTH_NOT_READY"].includes(failure.diagnosticCode),
       "Occupied-port setup failed for an unexpected reason");
-    report.setupFailureCode = failure.diagnosticCode;
     check(!(await exists(completionPath())), "Failed Backend startup was recorded as completed setup");
   } finally {
     delete env.MEMORAX_CODE_MEMORAX_ENDPOINT;
@@ -195,11 +208,9 @@ try {
   await verifyReady("occupied-port recovery", userInfo().username);
   await stopAndVerify();
 
-  await prepareScenarioHome("fresh install user 测试");
+  await prepareScenarioHome("fresh install user \u6d4b\u8bd5");
   check(!(await exists(completionPath())) && !(await exists(pidPath())), "Fresh installation inherited lifecycle state");
-  const freshNative = JSON.parse((await run(codexCommand, ["plugin", "list", "--available", "--json"])).stdout);
-  check(!freshNative.installed.some((item) => item.pluginId === pluginId || item.name === pluginName),
-    "Fresh installation inherited a native plugin registration");
+  await verifyIntegrationAbsent("Fresh installation inherited CodeBuddy integration files");
   for (const attempt of ["fresh", "repeat"]) {
     stage = `${attempt} setup`;
     if (attempt === "fresh") {
@@ -214,6 +225,8 @@ try {
   for (const [path, contents] of [
     [join(stateHome, "personal-memory", "user-profile", "preferences.md"), "Synthetic installation preservation fixture.\n"],
     [join(stateHome, "personal-memory", "procedure-memory", "install-smoke.md"), "Synthetic procedure preservation fixture.\n"],
+    [join(codebuddyHome, "plugins", "data", `${pluginName}-memorax-code-local`, "lifecycle-fixture.txt"),
+      "Synthetic CodeBuddy plugin data preservation fixture.\n"],
   ]) {
     await mkdir(dirname(path), { recursive: true });
     await writeFile(path, contents, { mode: 0o600 });
@@ -224,21 +237,19 @@ try {
   stage = "stop and start";
   await stopAndVerify();
   check(await readFile(completionPath(), "utf8") === savedCompletion, "Stop changed setup completion");
-  check((await productJson(["start", "--clients", "codex", "--json"])).ok === true, "Start failed after stop");
+  check((await productJson(["start", "--clients", "codebuddy", "--json"])).ok === true, "Start failed after stop");
   await verifyReady("stop/start");
   await verifyPreserved(savedMemoraxConfig);
 
   stage = "native uninstall";
   env.npm_config_prefix = npmPrefix;
-  const uninstalled = await productJson(["uninstall", "--clients", "codex", "--json"]);
-  check(uninstalled.ok === true && uninstalled.codexPlugin?.ok === true
+  const uninstalled = await productJson(["uninstall", "--clients", "codebuddy", "--json"]);
+  check(uninstalled.ok === true && uninstalled.codebuddyPlugin?.ok === true
     && uninstalled.npmPackageRemoval?.ok === true && uninstalled.npmPackageRemoval.skipped !== true,
   "Uninstall did not remove the native plugin and isolated npm package");
   check(!(await exists(entrypoint)) && !(await exists(completionPath())), "Uninstall retained package entrypoint or completion");
   await assertStopped();
-  const nativeAfterRemoval = JSON.parse((await run(codexCommand, ["plugin", "list", "--available", "--json"])).stdout);
-  check(!nativeAfterRemoval.installed.some((item) => item.pluginId === pluginId || item.name === pluginName),
-    "Native plugin remains registered after uninstall");
+  await verifyIntegrationAbsent("CodeBuddy integration files remain after uninstall");
   await verifyPreserved(savedMemoraxConfig);
   report.checks.push("native plugin and global npm package removed; provider, configuration and synthetic personal memory retained");
 
@@ -257,13 +268,13 @@ try {
   // Serve only the candidate package from an isolated scoped npm registry so
   // the real public updater selects this PR artifact instead of a public release.
   stage = "previous published version install";
-  await prepareScenarioHome("upgrade user 测试");
+  await prepareScenarioHome("upgrade user \u6d4b\u8bd5");
   preservedMemory.clear();
   await npmInstall(`@memorax/memorax-code@${previousVersion}`);
   check((await readJson(join(packageRoot, "package.json"))).version === previousVersion, "Previous version was not installed");
   await terminalSetup("complete");
-  const previousStatus = await productJson(["status", "--clients", "codex", "--json"]);
-  check(previousStatus.ok === true && previousStatus.backend?.ok === true && previousStatus.codexAdapter?.ok === true,
+  const previousStatus = await productJson(["status", "--clients", "codebuddy", "--json"]);
+  check(previousStatus.ok === true && previousStatus.backend?.ok === true && previousStatus.codebuddyAdapter?.ok === true,
     "Previous published version did not start successfully");
   await rememberPid();
   check((await readJson(completionPath())).completedByVersion === previousVersion,
@@ -317,7 +328,7 @@ try {
   check(registryRequests.rejectedArtifact > 0, "The failed updater did not reach the rejected artifact download");
   check((await readJson(join(packageRoot, "package.json"))).version === previousVersion,
     "A failed artifact download changed the installed package version");
-  check((await productJson(["status", "--clients", "codex", "--json"])).backend?.ok === true
+  check((await productJson(["status", "--clients", "codebuddy", "--json"])).backend?.ok === true
     && (await readJson(pidPath())).pid === previousBackend.pid,
   "A failed artifact download stopped or replaced the previous Backend");
   check(await readFile(completionPath(), "utf8") === previousCompletion,
@@ -427,14 +438,16 @@ try {
   report.outbound = { installationRequests: requests, explicitSearchRequests: memoryRequests.length,
     observation: "configured loopback endpoint", setupEndpointOverride: "initial account enrollment only",
     credentialInputOnReinstall: false };
-  report.checks.push("configured model/MemoraX endpoint received no lifecycle requests; only deliberate saved-account Search requests reached the loopback fixture");
+  report.checks.push("configured loopback endpoint received only CodeBuddy connectivity probes and deliberate saved-account Search requests; no model or automatic memory calls");
   report.status = "PASS";
 } catch (error) {
   report.stage = stage;
   const assertionCode = typeof error.message === "string"
     ? error.message.match(/^(?:SETUP_INPUT_REJECTION|BACKEND_REPLACEMENT|TERMINAL_DISCLOSED|EMPTY_CREDENTIAL_CANARY|PROTECTED_)[A-Z_]*/)?.[0]
     : undefined;
-  report.error = error.smokeMessage ?? assertionCode ?? "The stage failed; private command output was suppressed";
+  const testCode = typeof error.testCode === "string" && /^[A-Z][A-Z0-9_]{1,99}$/.test(error.testCode)
+    ? error.testCode : undefined;
+  report.error = error.smokeMessage ?? testCode ?? assertionCode ?? "The stage failed; private command output was suppressed";
   if (typeof error.code === "number") report.exitCode = error.code;
   if (["ENOENT", "ENOEXEC", "EACCES", "EPERM", "EINVAL", "ETIMEDOUT"].includes(error.code)) report.nativeErrorCode = error.code;
   if (error.diagnosticCode) report.diagnosticCode = error.diagnosticCode;
@@ -442,6 +455,30 @@ try {
   if (error.terminalDiagnostics) report.terminalDiagnostics = error.terminalDiagnostics;
   if (error.terminalNativeError) report.terminalNativeError = error.terminalNativeError;
 } finally {
+  await cleanup();
+  report.requestCounts = { connectivity: connectivityRequests, unexpected: requests,
+    explicitSearch: memoryRequests.length, malformedSearch: endpointErrors.length };
+  if (report.status === "PASS" && (requests !== 0 || endpointErrors.length !== 0 || memoryRequests.length !== 3)) {
+    report.status = "FAIL";
+    report.stage = "final receiver audit after cleanup";
+    report.error = "LIFECYCLE_REQUEST_COUNT_OR_RECEIVER_MISMATCH";
+  }
+  if (!receivedSignal) for (const [signal, handler] of signalHandlers) process.off(signal, handler);
+}
+console.log(JSON.stringify(report, null, 2));
+if (report.status !== "PASS") process.exitCode = 1;
+
+function cleanup() {
+  return cleanupPromise ??= cleanupResources();
+}
+
+async function cleanupResources() {
+  for (const child of [...activeCommands]) {
+    try { await child.stop(); }
+    catch { commandCleanupVerified = false; }
+    try { await child.result; }
+    catch (error) { if (error.cleanupFailed) commandCleanupVerified = false; }
+  }
   try {
     if (setupStarted) {
       cleanupStage = "entrypoint_check";
@@ -450,8 +487,10 @@ try {
       report.checks.push("Backend stopped, process exited and port released");
     }
     if (root) {
+      cleanupStage = "command_process";
+      check(commandCleanupVerified, "An owned command process tree could not be verified");
       cleanupStage = "directory_removal";
-      await rm(root, { recursive: true, force: true });
+      await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
     }
     report.cleanup = "PASS";
   } catch (error) {
@@ -479,31 +518,28 @@ try {
     await new Promise((done) => server.close(done));
   }
 }
-console.log(JSON.stringify(report, null, 2));
-if (report.status !== "PASS") process.exitCode = 1;
+
+function handleSignal(signal) {
+  if (receivedSignal) return;
+  receivedSignal = signal;
+  report.status = "FAIL";
+  report.signal = signal;
+  report.stage = stage;
+  const exitCode = signal === "SIGINT" ? 130 : 143;
+  const timeout = setTimeout(() => {
+    report.cleanup = "FAIL: owned resource cleanup exceeded its time limit";
+    console.log(JSON.stringify(report, null, 2));
+    process.exit(exitCode);
+  }, 60_000);
+  void cleanup().finally(() => {
+    clearTimeout(timeout);
+    report.status = "FAIL";
+    console.log(JSON.stringify(report, null, 2));
+    process.exit(exitCode);
+  });
+}
 
 async function verifyReady(attempt, expectedUser = fixtureUser) {
-  stage = `${attempt} native registration`;
-  const native = JSON.parse((await run(env.CODEX_CLI_PATH, ["plugin", "list", "--available", "--json"])).stdout);
-  check(Array.isArray(native.installed), "Codex did not return an installed plugin list");
-  const matches = native.installed.filter((item) => item.name === pluginName || item.pluginId === pluginId);
-  check(matches.length === 1, "Codex must register exactly one MemoraX Code plugin");
-  const registration = matches[0];
-  check(registration.pluginId === pluginId && registration.installed === true && registration.enabled === true,
-    "The native plugin registration is missing, disabled, or has an unexpected identity");
-  check(registration.version === expectedPluginVersion, "The native plugin version differs from the installed package");
-
-  stage = `${attempt} native hooks`;
-  const hooks = await productJson(["codex-plugin", "hooks", "--json"]);
-  check(hooks.ok === true && Array.isArray(hooks.hooks), "Codex did not return plugin Hooks");
-  check(JSON.stringify(hooks.hooks.map((hook) => hook.eventName).sort()) === JSON.stringify(expectedEvents),
-    "Native Hook events differ from the installed Hook manifest");
-  check(hooks.hooks.every((hook) => hook.pluginId === pluginId
-    && ["trusted", "managed"].includes(hook.trustStatus)), "Some native plugin Hooks are not trusted");
-  const trust = await productJson(["codex-plugin", "trust-hooks", "--check", "--json"]);
-  check(trust.ok === true && trust.checkedOnly === true && trust.hooks.length === 0
-    && trust.requiresFullReview === false, "Hook trust still requires review after setup");
-
   stage = `${attempt} readiness`;
   const completion = await readJson(join(stateHome, "runtime", "setup", "setup-completion.json"));
   check(completion.version === 1 && completion.state === "complete"
@@ -517,7 +553,7 @@ async function verifyReady(attempt, expectedUser = fixtureUser) {
     && saved.memorax.user_id === expectedUser,
   "Setup did not preserve the exact supplied user identity, credential and endpoint");
   check(saved.memory?.writeback?.enabled === false && saved.jev?.enabled === false
-    && saved.clients?.codex === true && otherClients.every((client) => saved.clients?.[client] === false),
+    && saved.clients?.codebuddy === true && otherClients.every((client) => saved.clients?.[client] === false),
   "Lifecycle changed a persisted user feature or client selection");
   const effectiveMemory = JSON.parse((await run(process.execPath,
     [join(dirname(entrypoint), "memorax-cli.mjs"), "status", "--config-only", "--json"])).stdout);
@@ -526,27 +562,28 @@ async function verifyReady(attempt, expectedUser = fixtureUser) {
     && effectiveMemory.config.writeback?.writebackEnabled === false
     && effectiveMemory.config.writeback?.globalEnabled === true,
   "Effective memory configuration does not honor the saved account and persisted writeback disablement");
-  const status = await productJson(["status", "--clients", "codex", "--json"]);
+  const status = await productJson(["status", "--clients", "codebuddy", "--json"]);
   check(status.ok === true && status.backend?.ok === true, "The installed Backend is not healthy");
-  check(status.codexAdapter?.ok === true && status.codexAdapter.enabled === true
-    && status.codexAdapter.backendUrlMatches === true, "The Codex adapter is not connected to this Backend");
-  const skill = status.codexAdapter.codexSkills;
-  check(skill?.ok === true && skill.delivery === "plugin" && typeof skill.rootPath === "string",
-    "The Codex adapter does not expose its packaged Skill");
-  const skillRelative = relative(codexHome, skill.rootPath);
-  check(skillRelative !== ".." && !skillRelative.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`)
-    && !isAbsolute(skillRelative), "The installed Skill escaped the isolated Codex home");
-  const installedSkill = await readFile(join(skill.rootPath, "memorax-code", "SKILL.md"), "utf8");
-  check(installedSkill === await readFile(join(sourceRoot, "skills", "memorax-code", "SKILL.md"), "utf8"),
-    "The installed Skill differs from the packaged Skill");
-  const config = parse(await readFile(join(codexHome, "config.toml"), "utf8"));
-  check(config.model === originalProvider.model && config.model_provider === originalProvider.model_provider
-    && JSON.stringify(config.model_providers) === JSON.stringify(originalProvider.model_providers),
-  "Setup changed the existing Codex model configuration");
+  await verifyLifecycleIntegration({ packageRoot: resolve(dirname(entrypoint), ".."), home: codebuddyHome,
+    stateHome, command: codebuddyCommand, adapter: status.codebuddyAdapter, settingsSnapshot: originalProvider });
+  check(await readFile(join(codebuddyHome, "models.json"), "utf8") === originalModels,
+    "Lifecycle changed CodeBuddy custom model configuration");
   const backend = await readJson(join(stateHome, "runtime", "backend", "backend.pid.json"));
   check(Number.isInteger(backend.pid) && backend.pid > 0, "Backend PID record is invalid");
   backendPids.add(backend.pid);
-  report.checks.push(`${attempt}: native plugin, trusted Hooks, packaged Skill, Backend and completion verified`);
+  report.checks.push(`${attempt}: installed CodeBuddy registry, local marketplace, Hooks, packaged Skill, saved settings, Backend and completion verified`);
+}
+
+async function verifyIntegrationAbsent(message) {
+  const optionalJson = async (path) => await exists(path) ? readJson(path) : {};
+  try {
+    assertLifecycleIntegrationAbsent(await optionalJson(join(codebuddyHome, "plugins", "installed_plugins.json")),
+      await optionalJson(join(codebuddyHome, "plugins", "known_marketplaces.json")),
+      await readJson(join(codebuddyHome, "settings.json")));
+    check(!(await exists(join(codebuddyHome, "plugins", "marketplaces", "memorax-code-local")))
+      && !(await exists(join(codebuddyHome, "plugins", "cache", "memorax-code-local", pluginName)))
+      && !(await exists(join(codebuddyHome, "plugins", "cache", pluginName))), message);
+  } catch { check(false, message); }
 }
 
 function completionPath() { return join(stateHome, "runtime", "setup", "setup-completion.json"); }
@@ -580,7 +617,7 @@ async function stopAndVerify() {
   cleanupStage = "pid_record_read";
   await rememberPid();
   cleanupStage = "stop_command";
-  const stopped = await product(["stop", "--clients", "codex", "--json"]);
+  const stopped = await product(["stop", "--clients", "codebuddy", "--json"], undefined, { cleanup: true });
   cleanupStage = "stop_response";
   check(JSON.parse(stopped.stdout).ok === true, "Backend stop did not succeed");
   await assertStopped();
@@ -605,10 +642,9 @@ async function assertStopped() {
 async function verifyPreserved(config) {
   assertProtectedConfiguration(parse(await readFile(join(stateHome, "config.toml"), "utf8")),
     snapshotProtectedConfiguration(parse(config)));
-  const codex = parse(await readFile(join(codexHome, "config.toml"), "utf8"));
-  check(codex.model === originalProvider.model && codex.model_provider === originalProvider.model_provider
-    && JSON.stringify(codex.model_providers) === JSON.stringify(originalProvider.model_providers),
-  "Lifecycle changed the existing Codex provider configuration");
+  assertCodeBuddySettings(await readJson(join(codebuddyHome, "settings.json")), originalProvider);
+  check(await readFile(join(codebuddyHome, "models.json"), "utf8") === originalModels,
+    "Lifecycle changed CodeBuddy custom model configuration");
   for (const [path, contents] of preservedMemory) check(await readFile(path, "utf8") === contents, "Lifecycle changed retained personal memory");
 }
 async function rejectedProduct(args, input) {
@@ -660,7 +696,7 @@ async function verifySavedAccountSearch(label) {
   check(endpointErrors.length === 0 && memoryRequests.length === before + 1,
     "Explicit Search did not make exactly one request to the saved endpoint");
   const request = memoryRequests[before];
-  const scopedUser = `${fixtureUser}@workspace-测试`;
+  const scopedUser = `${fixtureUser}@workspace-\u6d4b\u8bd5`;
   check(request.method === "POST" && request.path === "/saved-account/v1/memories/search"
     && request.authorization === `Token ${fixtureKey}` && request.body.user_id === scopedUser
     && request.body.query === query && !Object.hasOwn(request.body, "session_id"),
@@ -710,27 +746,32 @@ function check(condition, message) {
 
 async function readJson(path) { return JSON.parse(await readFile(path, "utf8")); }
 
-async function run(command, args, input = "") {
+async function run(command, args, input = "", options = {}) {
+  check(!receivedSignal || options.cleanup === true, "Installation smoke is stopping");
   const invocation = process.platform === "win32" && command === npmCommand
     ? resolveNpmInvocation(args, { env }) : resolveInvocation(command, args, { env });
-  const pending = execFileAsync(invocation.command, invocation.args, {
-    cwd: workspace, env, timeout: 120_000, maxBuffer: 4 * 1024 * 1024, encoding: "utf8", windowsHide: true,
-  });
-  pending.child.stdin.on("error", () => {});
-  pending.child.stdin.end(input);
+  const pending = startLifecycleCommand(invocation.command, invocation.args, { cwd: workspace, env, input,
+    timeoutMs: options.cleanup === true ? 15_000 : 120_000,
+    terminal: command === process.execPath && args[0] === ptyScript });
+  activeCommands.add(pending);
   let result;
-  try { result = await pending; }
+  try {
+    result = await pending.result;
+  }
   catch (error) {
+    if (error.cleanupFailed) commandCleanupVerified = false;
     // Report only the stable product error code, never raw process output.
     assertCredentialNotEchoed(`${error.stdout ?? ""}\n${error.stderr ?? ""}`, fixtureKey);
-    error.diagnosticCode = `${error.stdout ?? ""}\n${error.stderr ?? ""}`.match(/\b(?:CLIENT|CODEX|BACKEND|SETUP|CONFIG|UPDATE|PACKAGE|INSTALL|MEMORY)_[A-Z_]{3,}\b/)?.[0];
+    error.diagnosticCode = `${error.stdout ?? ""}\n${error.stderr ?? ""}`.match(/\b(?:CLIENT|CODEBUDDY|BACKEND|SETUP|CONFIG|UPDATE|PACKAGE|INSTALL|MEMORY)_[A-Z_]{3,}\b/)?.[0];
     throw error;
+  } finally {
+    activeCommands.delete(pending);
   }
   assertCredentialNotEchoed(`${result.stdout}\n${result.stderr}`, fixtureKey);
   return result;
 }
 
-function product(args, input) { return run(process.execPath, [entrypoint, ...args], input); }
+function product(args, input, options) { return run(process.execPath, [entrypoint, ...args], input, options); }
 async function productJson(args) { return JSON.parse((await product(args)).stdout); }
 
 async function freePort() {
@@ -741,35 +782,42 @@ async function freePort() {
   return port;
 }
 
-function isolatedEnv(userHome, codexCommand) {
+function isolatedEnv(userHome, codebuddyCommand) {
   const windowsRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT ?? "C:\\Windows";
   const systemPaths = process.platform === "win32"
     ? [join(windowsRoot, "System32"), windowsRoot, join(windowsRoot, "System32", "Wbem"),
       join(windowsRoot, "System32", "WindowsPowerShell", "v1.0")]
-    : ["/usr/bin", "/bin"];
+    : ["/usr/bin", "/bin", "/usr/sbin", "/sbin"];
   const isolated = {
     HOME: userHome, USERPROFILE: userHome, USER: "install-smoke", LOGNAME: "install-smoke", LANG: "en_US.UTF-8",
-    PATH: [...new Set([dirname(process.execPath), dirname(npmCommand), ...systemPaths])].join(delimiter),
+    PATH: [...new Set([dirname(process.execPath), dirname(npmCommand), dirname(codebuddyCommand), ...systemPaths])].join(delimiter),
     APPDATA: join(userHome, "AppData", "Roaming"), LOCALAPPDATA: join(userHome, "AppData", "Local"),
     TMPDIR: join(root, "tmp"), TMP: join(root, "tmp"), TEMP: join(root, "tmp"),
     XDG_CONFIG_HOME: join(userHome, ".config"), XDG_DATA_HOME: join(userHome, ".local", "share"),
     XDG_STATE_HOME: join(userHome, ".local", "state"), XDG_CACHE_HOME: join(userHome, ".cache"),
     npm_config_cache: join(root, "npm-cache"), npm_config_prefix: npmPrefix,
+    GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: join(userHome, "missing-git-config"), GIT_TERMINAL_PROMPT: "0",
     MEMORAX_CODE_HOME: stateHome, MEMORAX_CODE_AUTO_UPDATE: "false", MEMORAX_CODE_INSTALL_WATCHDOG: "0",
     MEMORAX_CODE_BACKEND_HOST: "127.0.0.1", MEMORAX_CODE_BACKEND_PORT: String(backendPort),
-    CODEX_HOME: codexHome, CODEX_CLI_PATH: codexCommand, MEMORAX_CODE_CODEX_COMMAND: codexCommand,
-    DSH_HOME: join(userHome, ".dsh"), CLAUDE_CONFIG_DIR: join(userHome, ".claude"), CLAUDE_HOME: join(userHome, ".claude"),
-    OPENCODE_CONFIG_DIR: join(userHome, ".config", "opencode"),
-    CODEBUDDY_HOME: join(userHome, ".codebuddy"), CODEBUDDY_CONFIG_DIR: join(userHome, ".codebuddy"),
-    WORKBUDDY_HOME: join(userHome, ".workbuddy"), WORKBUDDY_CONFIG_DIR: join(userHome, ".workbuddy"),
+    CODEX_HOME: join(userHome, ".codex"), CODEX_CLI_PATH: join(root, "unused-client"),
+    MEMORAX_CODE_SKIP_CODEX_PLUGIN_INSTALL: "1",
+    MEMORAX_CODE_CODEBUDDY_COMMAND: codebuddyCommand, CODEBUDDY_CONFIG_DIR: codebuddyHome, CODEBUDDY_HOME: codebuddyHome,
+    DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1", DISABLE_AUTOUPDATER: "1", DISABLE_FEEDBACK_COMMAND: "1",
+    CODEBUDDY_SKIP_BUILTIN_MARKETPLACE: "1", CODEBUDDY_AUTO_UPDATE_THIRD_PARTY_MARKETPLACES: "false",
+    CODEBUDDY_DISABLE_AUTO_MEMORY: "1", CODEBUDDY_DISABLE_SHELL_SNAPSHOT: "1",
+    DSH_HOME: join(userHome, ".dsh"), OPENCODE_CONFIG_DIR: join(userHome, ".config", "opencode"),
+    CLAUDE_HOME: join(userHome, ".claude"), CLAUDE_CONFIG_DIR: join(userHome, ".claude"),
+    WORKBUDDY_HOME: join(userHome, ".workbuddy"),
     TRAE_CN_HOME: join(userHome, ".trae-cn"), TRAE_HOME: join(userHome, ".trae-cn"), CURSOR_HOME: join(userHome, ".cursor"),
-    MEMORAX_CODE_CODEX_TRACE_ENABLED: "false",
+    MEMORAX_CODE_CODEBUDDY_TRACE_ENABLED: "false",
   };
-  if (process.platform === "win32") Object.assign(isolated, {
-    SystemRoot: windowsRoot, WINDIR: windowsRoot,
-    ComSpec: join(windowsRoot, "System32", "cmd.exe"),
-    PATHEXT: ".COM;.EXE;.BAT;.CMD", USERNAME: "install-smoke",
-  });
+  if (process.platform === "win32") {
+    const gitBash = join(process.env.ProgramFiles ?? "C:\\Program Files", "Git", "bin", "bash.exe");
+    Object.assign(isolated, { SystemRoot: windowsRoot, WINDIR: windowsRoot,
+      ComSpec: join(windowsRoot, "System32", "cmd.exe"),
+      PATHEXT: ".COM;.EXE;.BAT;.CMD", USERNAME: "install-smoke", CODEBUDDY_CODE_GIT_BASH_PATH: gitBash });
+    isolated.PATH += `${delimiter}${dirname(gitBash)}${delimiter}${resolve(dirname(gitBash), "../cmd")}`;
+  }
   for (const client of otherClients) {
     isolated[`MEMORAX_CODE_${client.toUpperCase()}_COMMAND`] = join(root, "unused-client");
     isolated[`MEMORAX_CODE_${client.toUpperCase()}_TRACE_ENABLED`] = "false";

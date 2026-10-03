@@ -1161,6 +1161,14 @@ does not select or replace the local Turn, and a difference alone does not
 reject its final response. Conflicting user-message metadata and mismatched
 client, Session, or Turn identities in the local coordinator still fail closed.
 
+CodeBuddy correlates the Hook prompt digest against native user text unchanged,
+or with CR/LF characters removed for a single input-text block, matching the
+client's Hook text projection. Both forms participate in one candidate set after
+the original transcript byte boundary; more than one candidate fails closed.
+This projection is only for correlation: completed and interrupted content still comes from the
+matching native transcript with its original line breaks. Multi-block inputs
+and WorkBuddy retain exact prompt-digest matching.
+
 ### 6.2 State classes and shutdown ownership
 
 Ephemeral process state includes active HTTP requests, turn coordination,

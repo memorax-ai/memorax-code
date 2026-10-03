@@ -652,6 +652,7 @@ async function verifyBackendReplacement(before, label) {
   const response = await fetch(new URL("/health", after.url), { signal: AbortSignal.timeout(5_000) });
   check(response.ok, "Updated Backend did not answer its health endpoint successfully");
   assertBackendReplacement(before, after, await response.json(), oldProcessAlive);
+  backendPids.delete(before.pid);
   report.checks.push(`${label}: old Backend exited; new PID, instance and live health identity agree`);
 }
 async function stopAndVerify() {

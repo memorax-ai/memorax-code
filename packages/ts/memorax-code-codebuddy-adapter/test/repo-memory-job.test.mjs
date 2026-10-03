@@ -72,6 +72,51 @@ test("CodeBuddy repo memory worker materializes and validates a repository bundl
   assert.equal(readFileSync(join(repo, ".repo_memory", "PROFILE.md"), "utf8").includes("repo_memory_profile.v0.1"), true);
 });
 
+for (const client of ["codebuddy", "workbuddy"]) {
+  test(`${client} repo memory worker applies client-specific server environment isolation`, async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), `memorax-${client}-repo-memory-env-`)));
+    const repo = join(root, "repo");
+    initRepo(repo);
+    const home = join(root, `${client}-home`);
+    const memoraxCodeHome = join(root, "memorax-code");
+    const command = join(root, process.platform === "win32" ? "codebuddy.mjs" : "codebuddy");
+    const inheritedEnv = {
+      SERVER__PORT: "18765",
+      SERVER__HOST: "127.0.0.2",
+      CODEBUDDY_BASE_URL: "http://127.0.0.1:1",
+      CODEBUDDY_API_KEY: "fixture-api-key",
+      CODEBUDDY_AUTH_TOKEN: "fixture-auth-token",
+      CODEBUDDY_MODEL: "fixture-model",
+      CODEBUDDY_SMALL_FAST_MODEL: "fixture-small-model",
+      CODEBUDDY_BIG_SLOW_MODEL: "fixture-large-model",
+      CODEBUDDY_CODE_SUBAGENT_MODEL: "fixture-subagent-model",
+    };
+    writeFileSync(command, `#!/usr/bin/env node
+const names = ${JSON.stringify(Object.keys(inheritedEnv))};
+process.stdout.write(JSON.stringify(Object.fromEntries(names.map((name) => [name, process.env[name]]))));
+`, { mode: 0o755 });
+    const memoraxCodeCommand = realpathSync(new URL("../../memorax-code-backend/dist/repo-memory.js", import.meta.url));
+    await enableCodeBuddyAdapter({ client, codeBuddyHome: home, codeBuddyCommand: command, memoraxCodeCommand, memoraxCodeHome });
+    const result = runInstalledJob(home, ["start", "--mode", "build", "--repo", repo], {
+      ...inheritedEnv,
+      MEMORAX_CODE_HOME: memoraxCodeHome,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const state = waitForTerminal(JSON.parse(result.stdout).jobPath);
+    assert.equal(state.runner, client);
+    // The environment probe exits successfully without authoring a bundle.
+    assert.equal(state.status, "failed");
+    assert.equal(state.failureReason, "artifact_validation_failed");
+    assert.equal(state.exitCode, 0);
+    const expectedEnv = { ...inheritedEnv };
+    if (client === "codebuddy") {
+      delete expectedEnv.SERVER__PORT;
+      delete expectedEnv.SERVER__HOST;
+    }
+    assert.deepEqual(JSON.parse(readFileSync(state.finalMessagePath, "utf8")), expectedEnv);
+  });
+}
+
 test("CodeBuddy repo memory worker bounds a non-returning headless client", async () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "memorax-codebuddy-repo-memory-timeout-")));
   const repo = join(root, "repo");

@@ -324,7 +324,7 @@ and isolation before using it; a macOS/Linux suite or
 WSL run does not replace native Windows validation.
 
 Live-provider, MemoraX-backed, and live Jev checks are explicit opt-in tests.
-The credential-free Codex and OpenCode functional checks and Claude native smoke
+The credential-free Codex, OpenCode, Claude, and CodeBuddy functional checks
 below run by default on PRs. Report
 native-client and synthetic evidence separately, record platform and scenarios,
 redact output, and explain any relevant checks not run. Public fixtures must never contain
@@ -764,6 +764,150 @@ PowerShell 7 session with Node.js 22 or later, npm, and Git for Windows:
 Local `node scripts/claude-e2e.mjs [TARBALL_DIR] [CLAUDE_VERSION] [PREVIOUS_VERSION]`
 delegates to the platform wrappers. It does not build or validate the package
 itself; use the Make target when the artifact has not already passed
+`npm-package-check`.
+
+### CodeBuddy Functional CI
+
+The CodeBuddy Code matrix uses the same workflow and validated MemoraX Code
+tarball, with a separate `CodeBuddy functional result` check.
+It installs the official `@tencent-ai/codebuddy-code` npm package. Version
+2.159.0 is the baseline; npm's latest stable version is resolved once per run
+and installed as an exact version without fallback. Both tracks run on Ubuntu,
+macOS, and Windows with Node.js 24. Ubuntu also runs the baseline with Node.js
+20, covering MemoraX Code's minimum and satisfying CodeBuddy's runtime
+requirement. When latest equals baseline, the Node.js 24 jobs cover both
+tracks without duplicates. Requested and installed CLI versions must match.
+
+The result requires both the package job and every CodeBuddy functional job to
+succeed; failed, cancelled, or skipped dependencies cannot pass it. Existing
+Codex, OpenCode, and Claude checks keep their independent results. Provider-only
+and OpenCode initialization diagnostic dispatches skip this matrix and result.
+
+Fresh npm installation and public command shims are prerequisites. The suites
+exercise real installed setup and lifecycle commands, CodeBuddy's managed global
+prompt Hook and Skill, a loopback model server, and a separate loopback Memory
+receiver:
+
+| Functional scenario | Evidence |
+| --- | --- |
+| Installation and lifecycle | Empty or multiline stdin rejection, real-PTY cancellation and hidden credentials, fresh and repeated setup, port-conflict recovery, stop/start, uninstall/reinstall, and retained account, model settings, and synthetic memory |
+| Upgrade and failure recovery | Published `0.1.18` to candidate upgrade, failed artifact download retaining the old Backend, forced reinstall, injected postinstall exit `23`, and recovery/retry through public commands |
+| Setup interruption | Interruption after configuration publication, before and after Backend start, and at the saved-account API-key prompt; retry without re-entering the account, followed by a native turn and saved-account Search |
+| Cold first turn | Native session, Hook reminder in model context, and complete three-part Unicode prompt and answer in automatic Add |
+| Same-session resume and tool | The real client resumes the exact session, executes Bash, and correlates native tool IDs, arguments, results, session environment, and completed content |
+| Redaction | Synthetic API-key content is excluded from outgoing Memory messages |
+| Workspace separation | A new native session in a different workspace retains its own content and workspace scope |
+| Explicit CLI and Skill | Public Search in JSON and plain forms and Add, then scripted native Skill, Read, and Bash calls to the packaged Skill's documented commands |
+| Permission control | Native preallow, approval, denial, cancellation, interruption while waiting, and interruption of an in-flight tool, with actual file effects and same-session recovery |
+| Repo Memory global configuration | A real foreground Hook starts the installed native worker in an isolated Git repository; foreground and worker requests use the globally configured synthetic model and local endpoint |
+
+The native Memory suite requires six completed turns, thirteen model requests,
+and eleven Memory requests: six automatic Add, two explicit Add, and three
+explicit Search. Independent native JSONL selection, trace correlation,
+workspace identity, idempotency, and native timestamps when present are checked.
+CodeBuddy creates the transcripts and Hook identities; test-authored transcripts
+and direct Hook calls are not substitutes for native evidence. Scripted Skill
+execution checks the packaged instructions and real tool path, not a model's
+ability to decide when to use Memory. Local oracle and harness unit tests run
+before packaging and remain separate from native-client evidence.
+
+The permission suite uses CodeBuddy's bidirectional `stream-json` control
+protocol and its `allowed`/`reason` permission response. Denial may still finish
+normally and write back the completed answer. Cancellation through a permission
+response requires the matching native interruption result, no automatic Add
+for the cancelled turn, and successful recovery in the same process and session.
+
+The two explicit `interrupt` cases validate MemoraX writeback against the
+client's actual persisted outcome, without assuming that an acknowledgement
+proves cancellation. The waiting-permission case waits for the original turn's
+matching terminal before sending recovery; the interrupt acknowledgement alone
+does not mean permission rejection has finished. It accepts either the exact
+completed fixture answer or the validated native interruption result, without
+sending a late approval reply.
+The in-flight case still requires the owned tool process to exit before recovery,
+without its delayed file effect. Recovery must complete and write back in the
+same process and session. Only these two cases may report a natural-exit timeout
+as a separate compatibility observation after recovery writeback is verified.
+The harness then stops only its owned CLI process tree and requires confirmed
+shutdown; protocol errors, nonzero natural exits, and cleanup failures still
+fail. Other permission cases continue to require a normal zero exit. After
+client shutdown, the independent native transcript oracle classifies the
+original turn: an incomplete turn must have no
+Add, while a turn that the client completed despite interruption must have its
+own exact Add. Every completed turn is checked separately for content, scope,
+native identity, and idempotency; a final audit after Backend shutdown rejects
+late, duplicate, missing, and foreign writes. Extra original model requests and
+missing result events remain visible as separate compatibility observations,
+not proof of MemoraX Add failure or successful native interruption. Natural exit
+and forced cleanup are reported separately. An incomplete turn observed after
+forced cleanup does not prove that the native interrupt ended that turn. A recovery
+prompt may itself affect the old turn; this does not isolate the effect of
+`interrupt` alone. The suite does not claim late-approval handling,
+operating-system sandbox enforcement, automatic approval judgment, or
+interrupted trace and metadata reconciliation.
+
+Only the explicit-interrupt recovery oracle recognizes late incomplete tool
+results appended after the recovery prompt, before or after its completed answer.
+The original prompt, tool call, arguments, and distinct original/recovery request
+identities must prove that those results belong to the original turn. Only one
+or two incomplete, skipped results in a single ordered parent chain with the
+recovery answer may be excluded from its content selection; native records are
+not mutated. Their total count is reported as compatibility evidence, not recovery
+activity. Missing or conflicting identity, recovery-owned tool results, extra
+branches, and additional recovery answers still fail; the generic completed-turn
+oracle remains unchanged.
+
+The Repo Memory case removes process model/provider overrides and uses isolated
+global `settings.json` and `models.json`. It correlates the real foreground
+transcript, complete worker prompt, native job ownership, and actual model
+requests. The deterministic worker returns text without authoring a bundle, so
+the required outcome is native exit `0` followed by `artifact_validation_failed`,
+with no Memory requests and no injected artifacts. Cleanup must confirm the
+recorded worker and child have exited. The foreground stream-JSON client stays
+open until that worker finishes, then its input closes and its exit is checked;
+this does not test worker survival after the foreground client exits.
+This is bounded global-configuration and dispatch coverage, not valid Repo
+Memory generation, per-turn model override inheritance, worker permission
+inheritance, or independent background native session identity; the product
+worker disables session persistence.
+
+The shared categories align with the other client suites, but their native
+protocols and bounded assertions are not identical. WorkBuddy, Desktop/editor
+UI, ordinary-user/UAC behavior, real credential stores, live model quality, and
+default buffered/chunked writeback are outside this result.
+
+Wrappers isolate user and CodeBuddy homes, Backend state, npm configuration,
+cache and installation prefix, with test-only `node-pty@1.1.0` for terminal
+interaction. The native harness uses synthetic credentials
+and loopback services, without model login or paid model calls, and confirms
+owned-process cleanup before temporary state is removed. Windows uses the same
+exact-prefix user PATH cleanup guard as the other suites, with its documented
+interruption and concurrent-update limits; CI selects `runner.temp` through
+`TEMP` and `TMP`. Native Windows requires PowerShell 7 and Git for Windows;
+WSL is not Windows coverage. Reports exclude raw transcripts, model output,
+credentials, Backend tokens, and private paths.
+POSIX cleanup confirms owned process-group exit. Windows cleanup covers live
+CLI process trees and the recorded Backend, not arbitrary tool processes
+orphaned after their parent exits. Unverified cleanup fails the suite and retains
+its isolated state.
+
+On macOS or Linux, `memorax_dev make test-codebuddy-e2e` validates the package
+and runs the baseline. To reuse a validated artifact:
+
+```bash
+bash scripts/codebuddy-install-check.sh dist/npm/tarballs 2.159.0 0.1.18
+```
+
+On native Windows, use a disposable PowerShell 7 session with Node.js 20 or
+later, npm, and Git for Windows:
+
+```powershell
+./scripts/codebuddy-install-check.ps1 -TarballDirectory dist/npm/tarballs -CodeBuddyVersion 2.159.0 -PreviousVersion 0.1.18
+```
+
+`node scripts/codebuddy-e2e.mjs [TARBALL_DIR] [CODEBUDDY_VERSION] [PREVIOUS_VERSION]`
+delegates to the platform wrappers. It does not itself build or validate the
+package; use the Make target when the artifact has not passed
 `npm-package-check`.
 
 ## Pull Requests
