@@ -31,7 +31,7 @@ function tempRoot(prefix) {
   return realpathSync(mkdtempSync(join(tmpdir(), prefix)));
 }
 
-test("Claude repo memory launcher uses a non-persistent print runner", () => {
+test("Claude repo memory launcher uses medium effort for non-persistent builds and updates", () => {
   const root = tempRoot("claude-repo-memory-job-");
   const repo = join(root, "repo");
   const memoraxCodeHome = join(root, "memorax-code");
@@ -48,13 +48,15 @@ test("Claude repo memory launcher uses a non-persistent print runner", () => {
   assert.equal(payload.finalMessageSource, "stdout");
   assert.equal(payload.snapshotHead, head);
   assert.equal(dirname(dirname(payload.jobPath)), repoMemoryJobsDir(memoraxCodeHome));
-  assert.deepEqual(payload.command.slice(0, 6), [
+  assert.deepEqual(payload.command.slice(0, -1), [
     claudeCommand,
     "--print",
     "--output-format",
     "text",
     "--dangerously-skip-permissions",
     "--no-session-persistence",
+    "--effort",
+    "medium",
   ]);
   assert.match(payload.command.at(-1), /\/memorax-code-claude-adapter:memorax-code/);
   assert.doesNotMatch(payload.command.at(-1), /\$memorax-code/);
@@ -66,6 +68,7 @@ test("Claude repo memory launcher uses a non-persistent print runner", () => {
   });
   assert.equal(updateResult.status, 0, updateResult.stderr);
   const updatePayload = JSON.parse(updateResult.stdout);
+  assert.deepEqual(updatePayload.command.slice(0, -1), payload.command.slice(0, -1));
   assert.match(updatePayload.command.at(-1), /\/memorax-code-claude-adapter:memorax-code/);
   assert.doesNotMatch(updatePayload.command.at(-1), /\$memorax-code/);
   assert.match(
@@ -127,12 +130,14 @@ test("Claude repo memory worker captures stdout and validates the generated bund
   assert.equal(workerEnv.snapshotHead, head);
 
   const args = JSON.parse(readFileSync(argsLog, "utf8"));
-  assert.deepEqual(args.slice(0, 5), [
+  assert.deepEqual(args.slice(0, -1), [
     "--print",
     "--output-format",
     "text",
     "--dangerously-skip-permissions",
     "--no-session-persistence",
+    "--effort",
+    "medium",
   ]);
   assert.match(args.at(-1), /repo-build operation/);
 });

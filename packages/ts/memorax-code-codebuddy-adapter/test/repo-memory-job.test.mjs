@@ -6,39 +6,56 @@ import { join } from "node:path";
 import test from "node:test";
 import { enableCodeBuddyAdapter, codeBuddyInstallPath, readManagedCodeBuddyTarget } from "../src/config.mjs";
 
-test("CodeBuddy repo memory launcher pins its plugin and uses non-persistent print mode", async () => {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "memorax-codebuddy-repo-memory-dry-run-")));
-  const repo = join(root, "repo");
-  initRepo(repo);
-  const home = join(root, "workbuddy");
-  const memoraxCodeHome = join(root, "memorax-code");
-  const command = join(root, "codebuddy");
-  writeFileSync(command, "#!/bin/sh\n", { mode: 0o755 });
-  await enableCodeBuddyAdapter({ codeBuddyHome: home, codeBuddyCommand: command, memoraxCodeHome });
-  assert.equal((await readManagedCodeBuddyTarget({ memoraxCodeHome })).codeBuddyHome, home);
-  const result = runInstalledJob(home, ["start", "--mode", "build", "--repo", repo, "--dry-run"], {
-    MEMORAX_CODE_HOME: memoraxCodeHome,
-    CODEBUDDY_PLUGIN_ROOT: "/c/Users/incorrect/plugin/root",
-  });
-  assert.equal(result.status, 0, result.stderr);
-  const payload = JSON.parse(result.stdout);
-  assert.equal(payload.runner, "codebuddy");
-  assert.equal(payload.finalMessageSource, "stdout");
-  assert.deepEqual(payload.command.slice(0, 8), [
-    command,
-    "--plugin-dir",
-    codeBuddyInstallPath(home),
-    "--print",
-    "--output-format",
-    "text",
-    "--dangerously-skip-permissions",
-    "--no-session-persistence",
-  ]);
-  assert.match(payload.prompt, /repo-build operation/);
-  assert.match(payload.prompt, /the `memorax-code` skill/);
-  assert.doesNotMatch(payload.prompt, /memorax-code-codebuddy-adapter:memorax-code/);
-  assert.doesNotMatch(payload.prompt, /\$memorax-code/);
-});
+for (const client of ["codebuddy", "workbuddy"]) {
+  for (const mode of ["build", "update"]) {
+    test(`${client} repo memory ${mode} uses medium effort with its native model and plugin`, async () => {
+      const root = realpathSync(mkdtempSync(join(tmpdir(), "memorax-codebuddy-repo-memory-dry-run-")));
+      const repo = join(root, "repo");
+      initRepo(repo);
+      const home = join(root, `${client}-home`);
+      const memoraxCodeHome = join(root, "memorax-code");
+      const command = join(root, "codebuddy");
+      writeFileSync(command, "#!/bin/sh\n", { mode: 0o755 });
+      await enableCodeBuddyAdapter({ client, codeBuddyHome: home, codeBuddyCommand: command, memoraxCodeHome });
+      assert.equal((await readManagedCodeBuddyTarget({ client, memoraxCodeHome })).codeBuddyHome, home);
+      if (mode === "update") {
+        mkdirSync(join(repo, ".repo_memory"), { recursive: true });
+        writeFileSync(join(repo, ".repo_memory", "PROFILE.md"), "# Repo memory fixture\n");
+      }
+      const settingsPath = join(home, "settings.json");
+      const settings = JSON.parse(readFileSync(settingsPath, "utf8"));
+      settings.model = "fixture-model";
+      settings.effortLevel = "high";
+      const settingsText = `${JSON.stringify(settings)}\n`;
+      writeFileSync(settingsPath, settingsText);
+      const result = runInstalledJob(home, ["start", "--mode", mode, "--repo", repo, "--dry-run"], {
+        MEMORAX_CODE_HOME: memoraxCodeHome,
+        CODEBUDDY_PLUGIN_ROOT: "/c/Users/incorrect/plugin/root",
+      });
+      assert.equal(result.status, 0, result.stderr);
+      const payload = JSON.parse(result.stdout);
+      assert.equal(payload.runner, client);
+      assert.equal(payload.finalMessageSource, "stdout");
+      assert.deepEqual(payload.command.slice(0, -1), [
+        command,
+        "--plugin-dir",
+        codeBuddyInstallPath(home),
+        "--print",
+        "--output-format",
+        "text",
+        "--dangerously-skip-permissions",
+        "--no-session-persistence",
+        "--effort",
+        "medium",
+      ]);
+      assert.equal(readFileSync(settingsPath, "utf8"), settingsText);
+      assert.match(payload.prompt, new RegExp(`repo-${mode} operation`));
+      assert.match(payload.prompt, /the `memorax-code` skill/);
+      assert.doesNotMatch(payload.prompt, /memorax-code-codebuddy-adapter:memorax-code/);
+      assert.doesNotMatch(payload.prompt, /\$memorax-code/);
+    });
+  }
+}
 
 test("CodeBuddy repo memory worker materializes and validates a repository bundle", async () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "memorax-codebuddy-repo-memory-worker-")));

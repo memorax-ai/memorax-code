@@ -43,6 +43,8 @@ try {
         "text",
         "--dangerously-skip-permissions",
         "--no-session-persistence",
+        "--effort",
+        "medium",
         prompt,
       ];
     },

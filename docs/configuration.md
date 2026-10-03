@@ -992,6 +992,26 @@ There are no per-worktree borrowed records or fingerprint refreshes. Old local
 files and personal sidecars remain untouched. Update all clients together;
 older installed runtimes retain their previous local maintenance behavior.
 
+Supervised Repo Memory builds and updates request `medium` reasoning effort
+where the native runner exposes a task-scoped control:
+
+- Codex passes `--config 'model_reasoning_effort="medium"'` to `codex exec`.
+- Claude Code and CodeBuddy/WorkBuddy pass `--effort medium` to their print
+  runners. The installed CLI must support this flag.
+- OpenCode sends `variant: "medium"` on the background session's prompt,
+  including when using a temporary fallback server. OpenCode maps the variant
+  to provider-specific options. If the selected model has no `medium` variant,
+  its native model and agent options still apply; this is not a universal cap.
+- DSH's managed headless Profile and Cursor's inherited-model subagent retain
+  their native reasoning settings. Their current integration paths do not
+  expose an independent per-task effort override. Trae has no automatic runner.
+
+These overrides leave model selection to the native client and do not modify
+user configuration or foreground conversation settings. Model support and
+native client handling determine the effective effort; `medium` is not a fixed
+token budget. Explicit foreground Skill execution keeps the foreground agent's
+settings.
+
 CodeBuddy/WorkBuddy repository jobs run the headless client under a bounded
 worker. `MEMORAX_CODE_REPO_MEMORY_JOB_TIMEOUT_MS` sets the client execution
 limit (default `600000` ms); `MEMORAX_CODE_REPO_MEMORY_JOB_KILL_GRACE_MS` sets
