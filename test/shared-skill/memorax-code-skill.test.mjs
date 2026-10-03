@@ -67,6 +67,11 @@ test("memorax-code references keep authority and operation boundaries explicit",
   const repoUpdate = readSkillFile("references/repo-update.md");
 
   assert.match(memoraxSearch, /memorax-cli search --query '/);
+  assert.match(readSkillFile("SKILL.md"), /### Work Memory/);
+  assert.match(memoraxSearch, /--sources document/);
+  assert.match(memoraxSearch, /--sources dialogue/);
+  assert.match(memoraxSearch, /--document-id 'expense-policy'/);
+  assert.match(memoraxSearch, /do not\s+retry without the restriction/);
   assert.match(memoraxSearch, /`workspace_scope_mismatch` or `workspace_scope_unavailable`/);
   assert.match(memoraxSearch, /Do not change the CLI working directory and retry/);
   assert.match(memoraxSearch, /`workspaceScopeFallbackReason: git_metadata_invalid`/);

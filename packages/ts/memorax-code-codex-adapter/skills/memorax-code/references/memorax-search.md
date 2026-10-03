@@ -1,6 +1,6 @@
-# MemoraX Code Coding Memory Search
+# MemoraX Code Coding and Work Memory Search
 
-Use these instructions only to search reusable coding memory through `memorax-cli`. Invoke the skill as `$memorax-code` in Codex or `/memorax-code` in Claude Code. In OpenCode, ask the agent to use the `memorax-code` skill by name. Do not route memory operations through the lifecycle-only `memorax-code` CLI. Do not call MemoraX HTTP endpoints directly, print credentials, or edit memory storage by hand.
+Use these instructions to search reusable coding memory, indexed work documents, or prior work dialogue through `memorax-cli`. Invoke the skill as `$memorax-code` in Codex or `/memorax-code` in Claude Code. In OpenCode, ask the agent to use the `memorax-code` skill by name. Do not route memory operations through the lifecycle-only `memorax-code` CLI. Do not call MemoraX HTTP endpoints directly, print credentials, or edit memory storage by hand.
 
 ## Scope
 
@@ -16,7 +16,44 @@ Require a readable active workspace binding. A CLI command from a linked worktre
 
 If the selected platform command is not on `PATH`, or memory is disabled, unconfigured, or unavailable, report that briefly and continue with live code or documentation. Authenticate through MemoraX Code configuration; never recover credentials from shell history or place tokens in prompts. Treat injected memory as a hypothesis and verify it against the current checkout.
 
-## Search Decision
+## Work Memory Search
+
+Choose the source from the evidence needed to answer the request, not from where the request appeared. A chat asking for a reimbursement policy needs document facts; it does not need dialogue search merely because the requirement was stated in chat.
+
+- Use `--sources document` for indexed policies, business documents, and other document facts.
+- Use `--sources dialogue` for prior office discussions, user requirements, and conversation decisions. A recalled request for a policy is not evidence of the policy itself.
+- Use `--sources dialogue,document` only when the answer needs both kinds of evidence. Keep document facts and dialogue claims distinct when explaining the result.
+- For coding memory, omit `--sources` to preserve the existing search behavior. Omission does not explicitly select work documents or dialogue.
+
+When the user or available document metadata supplies an exact indexed document ID, add `--document-id` with that ID. Do not invent IDs from titles, filenames, or local paths. Repeat `--document-id` to select multiple known documents, up to 100 non-empty IDs. Document IDs are valid only with `--sources document`; they cannot be combined with dialogue-only or mixed-source search. If both a particular document and prior dialogue are needed, use separate document and dialogue queries within the search budget below.
+
+Use `--sources` once, with unique comma-separated values, and a space between each flag and its value. Source and document restrictions are required boundaries: if a restricted search fails or returns no relevant facts, do not retry without the restriction. Report the missing evidence or failure; do not substitute chat recollections for document facts.
+
+Construct a short question from the user's work requirement, preserving the policy, business entity, condition, and requested detail. Work queries do not need a coding identifier or engineering invariant. Apply the query budget, shell quoting, and transport rules below, but use work evidence in place of coding-scene criteria.
+
+On macOS and Linux:
+
+```bash
+# Recall policy facts from indexed documents.
+memorax-cli search --query '差旅报销：审批额度要求是多少？' --sources document
+
+# Restrict to a known indexed document.
+memorax-cli search --query '差旅报销：审批额度要求及例外是什么？' --sources document --document-id 'expense-policy'
+
+# Recall the earlier office requirement, not the policy answer.
+memorax-cli search --query '差旅报销：之前提出了什么审批额度查询需求？' --sources dialogue
+
+# Use both sources only when both are needed.
+memorax-cli search --query '差旅报销：之前的审批额度需求与文档规定分别是什么？' --sources dialogue,document
+```
+
+On Windows PowerShell, preserve the arguments and use `memorax-cli.cmd`.
+
+The CLI sends these restrictions as API `sources` and `document_ids` and selects `output_mode: facts` for source-scoped searches. The service maps `sources` to internal retrieval `content_sources`. Do not pass internal controller state such as `content_sources`, `project_id`, or `force_retrieval` as CLI flags. Authentication and the bound workspace still determine the accessible scope; source selection does not switch accounts or bypass workspace binding. Search recalls already indexed content and does not index a document or persist the current chat.
+
+Accept work results only when they match the requested source, business subject, and relevant conditions and supply the needed fact. Preserve thresholds, units, exceptions, and any stated effective dates. Use available provenance to distinguish a document rule from a dialogue requirement; do not invent citations, document IDs, or missing policy details. An empty result means the search supplied no matching evidence, not that no policy exists.
+
+## Coding Memory Search Decision
 
 Search when prior coding memory may change localization, implementation, review, validation, or explanation. Typical triggers include:
 
@@ -103,6 +140,6 @@ Do not apply this retry to `memorax-cli add`, authentication or configuration fa
 
 If a successful Search returns `quotaNotice`, or prints it as a quota-reminder line in the default CLI output, present the complete reminder once and prominently before the normal result summary. Do not reduce it to only a percentage or omit its account URL or anonymous-account claim details. A guest reminder may already contain the local Mark ID; present it once as part of the reminder, but do not repeat or separately quote it. Never run `memorax-code account --show-mark-id` for the user or ask for its output. Treat the reminder as user-facing operational output, not recalled memory, and continue the current task.
 
-Mention only an invariant, pitfall, convention, or validation idea that materially affects the answer. Ground claims about current implementation behavior in live code and checks.
+For coding memory, mention only an invariant, pitfall, convention, or validation idea that materially affects the answer. Ground claims about current implementation behavior in live code and checks. For work memory, answer with the relevant document facts or prior dialogue evidence, preserving their source distinction and noting any missing evidence.
 
 When an accepted result materially affects the task in a supported coding agent, follow the Natural Final-Answer Mention contract in `SKILL.md`. A successful Search alone is insufficient; do not disclose empty, rejected, merely confirmatory, or unused results.
