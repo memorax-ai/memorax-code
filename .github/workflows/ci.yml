@@ -6,6 +6,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      diagnose_workbuddy:
+        description: Run isolated WorkBuddy macOS native diagnostics with the official bundled runtime
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -56,3 +61,107 @@ jobs:
           README_SYNC_BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before || 'HEAD^' }}
           README_SYNC_HEAD_REF: ${{ github.sha }}
         run: make docs-check
+
+  workbuddy-package:
+    name: WorkBuddy diagnostic package
+    if: github.event_name == 'workflow_dispatch' && inputs.diagnose_workbuddy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Verify WorkBuddy and shared native test contracts
+        run: node --test scripts/codebuddy-*.test.mjs scripts/workbuddy-*.test.mjs
+      - name: Build and validate the candidate package
+        shell: bash
+        run: |
+          test_root="$(mktemp -d)"
+          trap 'rm -rf "$test_root"' EXIT
+          mkdir -p "$test_root/user" "$test_root/tmp"
+          env -i PATH="$PATH" HOME="$test_root/user" \
+            MEMORAX_CODE_HOME="$test_root/state" \
+            npm_config_cache="$test_root/npm-cache" TMPDIR="$test_root/tmp" \
+            make npm-package-check
+      - uses: actions/upload-artifact@v4
+        with:
+          name: workbuddy-diagnostic-package
+          path: dist/npm/tarballs/*.tgz
+          if-no-files-found: error
+          retention-days: 7
+
+  workbuddy-macos:
+    name: WorkBuddy macOS diagnostic (desktop 5.6.2, CLI 2.147.0)
+    needs: workbuddy-package
+    if: github.event_name == 'workflow_dispatch' && inputs.diagnose_workbuddy
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: workbuddy-diagnostic-package
+          path: dist/npm/tarballs
+      - name: Acquire the fixed official WorkBuddy image
+        shell: bash
+        run: |
+          mkdir "$RUNNER_TEMP/workbuddy-bundle"
+          bash scripts/workbuddy-macos-bundle-check.sh "$RUNNER_TEMP/workbuddy-bundle"
+      - name: Verify and mount the official application read-only
+        shell: bash
+        run: |
+          image="$RUNNER_TEMP/workbuddy-bundle/WorkBuddy.dmg"
+          mountpoint="$RUNNER_TEMP/workbuddy-bundle/mounted"
+          spctl --assess --type open --context context:primary-signature "$image" \
+            > "$RUNNER_TEMP/workbuddy-bundle/image-assessment.log" 2>&1
+          hdiutil attach -readonly -nobrowse -noautoopen -mountpoint "$mountpoint" "$image" \
+            > "$RUNNER_TEMP/workbuddy-bundle/mount.log" 2>&1
+          echo 'WORKBUDDY_IMAGE_ATTACHED=true' >> "$GITHUB_ENV"
+          app="$mountpoint/WorkBuddy.app"
+          codesign --verify --deep --strict --all-architectures \
+            --test-requirement '=identifier "com.tencent.workbuddy.mac" and anchor apple generic and certificate leaf[subject.OU] = "FN2V63AD2J"' \
+            "$app" > "$RUNNER_TEMP/workbuddy-bundle/signature.log" 2>&1
+          spctl --assess --type execute "$app" \
+            > "$RUNNER_TEMP/workbuddy-bundle/application-assessment.log" 2>&1
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" = '5.6.2'
+          node --input-type=module - "$app" <<'NODE'
+          import assert from 'node:assert/strict';
+          import { readFileSync } from 'node:fs';
+          import { join } from 'node:path';
+          const metadata = JSON.parse(readFileSync(join(process.argv[2],
+            'Contents/Resources/app.asar.unpacked/cli/package.json'), 'utf8'));
+          assert.equal(metadata.publishConfig?.customPackage?.version, '2.147.0');
+          NODE
+      - name: Run strict native WorkBuddy suites with isolated local services
+        id: native
+        shell: bash
+        run: |
+          test_root="$RUNNER_TEMP/workbuddy-diagnostic"
+          mkdir -p "$test_root/user" "$test_root/tmp"
+          command="$RUNNER_TEMP/workbuddy-bundle/mounted/WorkBuddy.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy"
+          env -i PATH="$PATH" HOME="$test_root/user" \
+            MEMORAX_CODE_HOME="$test_root/state" \
+            npm_config_cache="$test_root/npm-cache" TMPDIR="$test_root/tmp" \
+            node scripts/workbuddy-e2e.mjs dist/npm/tarballs "$command" 2.147.0 0.1.18
+      - name: Unmount the owned WorkBuddy image
+        if: always() && env.WORKBUDDY_IMAGE_ATTACHED == 'true'
+        shell: bash
+        run: hdiutil detach "$RUNNER_TEMP/workbuddy-bundle/mounted"
+      - name: Record the diagnostic boundary
+        if: always()
+        env:
+          NATIVE_OUTCOME: ${{ steps.native.outcome }}
+        shell: bash
+        run: |
+          printf 'WorkBuddy macOS diagnostic: **%s**.\n\n' "$NATIVE_OUTCOME" >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' 'Official desktop 5.6.2 / bundled CLI 2.147.0; strict installation, interruption, Memory/Skill, permission and Repo Memory worker checks. No skipped interrupt assertions, desktop UI coverage, Windows/Linux acceptance or three-platform result is implied.' >> "$GITHUB_STEP_SUMMARY"

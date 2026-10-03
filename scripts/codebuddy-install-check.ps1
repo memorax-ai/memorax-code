@@ -105,16 +105,12 @@ Invoke-WithCodexTestUserPath -Prefix $prefix -Action {
     & node (Join-Path $repoRoot "scripts/$Client-native-check.mjs") `
       (Join-Path $prefix 'node_modules/@memorax/memorax-code') $nativeCommand $CodeBuddyVersion
     if ($LASTEXITCODE -ne 0) { throw 'The selected client native suite failed; isolated state retained.' }
-    if ($Client -eq 'codebuddy') {
-      & node (Join-Path $repoRoot 'scripts/codebuddy-background-check.mjs') `
-        (Join-Path $prefix 'node_modules/@memorax/memorax-code') $nativeCommand $CodeBuddyVersion
-      if ($LASTEXITCODE -ne 0) { throw 'The CodeBuddy background suite failed; isolated state retained.' }
-      & node (Join-Path $repoRoot 'scripts/codebuddy-permissions-check.mjs') `
-        (Join-Path $prefix 'node_modules/@memorax/memorax-code') $nativeCommand $CodeBuddyVersion
-      if ($LASTEXITCODE -ne 0) { throw 'The CodeBuddy permission suite failed; isolated state retained.' }
-    } else {
-      Write-Output 'WorkBuddy permissions and Repo Memory worker coverage are not implemented in this runner.'
-    }
+    & node (Join-Path $repoRoot 'scripts/codebuddy-background-check.mjs') `
+      (Join-Path $prefix 'node_modules/@memorax/memorax-code') $nativeCommand $CodeBuddyVersion $Client
+    if ($LASTEXITCODE -ne 0) { throw 'The selected client background suite failed; isolated state retained.' }
+    & node (Join-Path $repoRoot 'scripts/codebuddy-permissions-check.mjs') `
+      (Join-Path $prefix 'node_modules/@memorax/memorax-code') $nativeCommand $CodeBuddyVersion $Client
+    if ($LASTEXITCODE -ne 0) { throw 'The selected client permission suite failed; isolated state retained.' }
   } catch {
     $originalFailure = $_
     try {

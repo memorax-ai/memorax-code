@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const usage = "Usage: node scripts/workbuddy-e2e.mjs TARBALL_DIR BUNDLED_COMMAND RUNTIME_VERSION [PREVIOUS_VERSION]";
 if (process.argv.length === 3 && ["--help", "-h"].includes(process.argv[2])) {
-  console.log(`${usage}\nRuns installation lifecycle, setup interruption and native Memory/Skill checks; not permissions, Repo Memory or desktop UI.`);
+  console.log(`${usage}\nRuns installation lifecycle, setup interruption, native Memory/Skill, permission/interruption and Repo Memory worker checks; not valid Repo Memory generation or desktop UI.`);
   process.exit(0);
 }
 const [tarballDirectory, bundledCommand, version, previousVersion = "0.1.18"] = process.argv.slice(2);

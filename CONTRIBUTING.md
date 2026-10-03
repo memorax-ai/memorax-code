@@ -913,14 +913,26 @@ package; use the Make target when the artifact has not passed
 ### WorkBuddy Bundled-Runtime Probe
 
 The WorkBuddy checks use the CLI shipped inside a WorkBuddy desktop installation.
-They are not part of the GitHub CI matrix and do not validate the desktop UI or
-login flow. The desktop application and bundled runtime have distinct versions.
-Do not substitute the independently installed CodeBuddy CLI for that runtime.
+They do not validate the desktop UI or login flow. The desktop application and
+bundled runtime have distinct versions. Do not substitute the independently
+installed CodeBuddy CLI for that runtime.
+
+The `CI` workflow has an opt-in `diagnose_workbuddy` input for a macOS native
+diagnostic. It first requires the candidate's complete `npm-package-check`, then
+downloads the fixed official desktop `5.6.2.39298511` DMG for the runner's
+architecture. The acquisition check verifies its pinned SHA-256; the runner
+also requires Apple's notarization assessment and Tencent's Developer ID
+signature before using the read-only mounted application. Desktop `5.6.2` and
+bundled CLI `2.147.0` are checked separately. It runs all five suites below,
+without replacing the public command shims or skipping known interrupt failures.
+A failing suite still fails the diagnostic job; this is not a three-platform
+acceptance matrix. No desktop application or credential store is installed or
+changed on the runner, and native transcripts are not uploaded as artifacts.
 
 After `make npm-package-check` validates the candidate artifact, run the isolated
-installation, setup-interruption, and Memory/Skill suites with its tarball
-directory, the actual bundled `cli/bin/codebuddy` entrypoint, and its exact
-runtime version:
+installation, setup-interruption, Memory/Skill, permission/interruption, and Repo
+Memory worker suites with its tarball directory, the actual bundled
+`cli/bin/codebuddy` entrypoint, and its exact runtime version:
 
 ```bash
 memorax_dev node scripts/workbuddy-e2e.mjs dist/npm/tarballs \
@@ -934,8 +946,8 @@ for Windows. The supplied bundle is read-only; only MemoraX Code and test-only
 package is installed for WorkBuddy. The wrapper validates the bundled path
 before installation, and the suites verify the exact runtime version and
 WorkBuddy plugin metadata. CodeBuddy's existing invocation and full suite remain
-unchanged. A wrapper's WorkBuddy success does not include permissions or Repo
-Memory workers; both exclusions are printed explicitly.
+unchanged. WorkBuddy must independently pass each suite using its own client
+identity and bundled runtime; CodeBuddy results are not substitutes.
 
 The shared lifecycle cases cover rejected stdin, real-terminal cancellation and
 hidden credentials, fresh/repeated setup, port-conflict recovery, stop/start,
@@ -965,16 +977,72 @@ and counts, and cleanup remain required. The foreground receives no
 WorkBuddy state must not become standalone CodeBuddy configuration; the bundled
 runtime's empty `.codebuddy/diagnostics` directory alone is allowed.
 
+The shared permission suite runs native preallow, approval, denial, permission
+cancellation, interruption while awaiting approval, and interruption of a running
+tool. It checks actual file effects, same-session recovery, and automatic Add
+against independently selected native completed content. The explicit-interrupt
+cases retain the [CodeBuddy permission coverage boundaries](#codebuddy-functional-ci):
+acknowledgement alone is not proof of cancellation, and a client-completed
+original turn must have its own exact Add. Forced cleanup, late incomplete tool
+results, and original-turn outcomes remain separate compatibility observations.
+WorkBuddy may replace the supplied denial reason with its fixed native rejection
+message; that form also requires an exact tool name, ID, and input match in the
+terminal `permission_denials` record, not merely missing file effects.
+For older bundled histories without request-owner fields on user prompts and
+late cancellation results, only the WorkBuddy recovery oracle accepts that
+specific absence: the sole original tool call and recovery answer must have
+distinct valid request owners, and every late result must match the unique
+original call in a complete, ordered, single-child parent chain. Malformed or
+conflicting owners, reused call IDs, and extra branches still fail. Native records
+are not rewritten, and this projection does not establish successful native
+cancellation; writeback is checked against the final persisted outcome.
+This does not validate desktop approval UI, late approval after cancellation,
+OS sandboxing, or interrupted trace reconciliation.
+
+Bundled runtimes `2.137.1` and `2.147.0` acknowledge an interrupt while awaiting
+SDK tool approval without producing a terminal result within the check's
+45-second window. The `2.147.0` behavior also reproduces without installing
+MemoraX Hooks or starting its Backend. Keep this case failing: an acknowledgement,
+an artificial permission reply, or closing stdin is not evidence that the native
+interrupt ended the pending turn. This observation alone does not establish an
+automatic Add failure for completed native content.
+In `2.147.0`, running-tool interruption can also append an incomplete cancellation
+result with the original tool call ID but the recovery turn's
+`conversationRequestId`. That conflicting ownership fails the recovery oracle;
+the missing-owner compatibility above must not be applied to it.
+
+The Repo Memory case starts the worker through a real foreground Hook in an
+isolated Git repository. Both foreground and worker must use WorkBuddy's global
+synthetic model and local provider configuration; job ownership, bundled command,
+plugin path, native foreground transcript, and cleanup are verified. The worker
+returns no bundle, so native exit `0` followed by `artifact_validation_failed` is
+required, with no Memory requests or injected artifacts. As with CodeBuddy, this
+does not prove valid Repo Memory generation, per-turn model or permission
+inheritance, background native session persistence, or worker survival after
+foreground exit.
+
+These two suites can also run independently against the installed candidate:
+
+```bash
+memorax_dev node scripts/codebuddy-permissions-check.mjs \
+  "$memorax_dev_root/npm/lib/node_modules/@memorax/memorax-code" \
+  "$WORKBUDDY_BUNDLED_COMMAND" "$WORKBUDDY_RUNTIME_VERSION" workbuddy
+memorax_dev node scripts/codebuddy-background-check.mjs \
+  "$memorax_dev_root/npm/lib/node_modules/@memorax/memorax-code" \
+  "$WORKBUDDY_BUNDLED_COMMAND" "$WORKBUDDY_RUNTIME_VERSION" workbuddy
+```
+
 All suites use fresh client and Backend state, synthetic credentials, and
 loopback model/Memory services. Reports contain bounded diagnostics, not raw
 transcripts, credentials or private paths. Cleanup must succeed before a suite
 can pass, and unverified cleanup retains its isolated state.
 
-Runtime permission/interruption scenarios, Repo Memory workers, desktop-managed
-task directories, automatic bundle acquisition, and the platform/version CI
-matrix remain pending. A supported Linux distribution is not established by
-these checks. Implemented platform wrappers or a local runtime pass are not
-evidence that other platforms or desktop startup environments pass.
+Desktop-managed task directories, Windows/Linux bundle acquisition, and the
+platform/version acceptance matrix remain pending. The macOS diagnostic covers
+one fixed desktop/runtime pair, not baseline/latest version coverage. A supported
+Linux distribution is not established by these checks. Implemented platform
+wrappers or a local runtime pass are not evidence that other platforms or desktop
+startup environments pass.
 
 ## Pull Requests
 

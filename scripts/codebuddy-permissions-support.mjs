@@ -2,6 +2,58 @@ import { isDeepStrictEqual } from "node:util";
 import { check, fixtureModel, waitFor } from "./codebuddy-native-support.mjs";
 import { matchesNativeModel, selectNativeTurnContent } from "./codebuddy-native-content-check.mjs";
 
+export function permissionInvocation(args) {
+  const client = args[3] ?? "codebuddy";
+  check(client === "codebuddy" || client === "workbuddy", "NATIVE_CLIENT_INVALID");
+  check(args.length === 3 || args.length === 4, `EXPECTED_INSTALLED_PACKAGE_${client.toUpperCase()}_PATH_AND_VERSION`);
+  const [packageRoot, command, expectedVersion] = args;
+  check([packageRoot, command, expectedVersion].every(identifier), `EXPECTED_INSTALLED_PACKAGE_${client.toUpperCase()}_PATH_AND_VERSION`);
+  if (client === "workbuddy") check(/^\d+\.\d+\.\d+$/.test(expectedVersion), "EXPECTED_EXACT_WORKBUDDY_RUNTIME_VERSION");
+  return { client, packageRoot, command, expectedVersion };
+}
+
+export function createPermissionReport(client = "codebuddy", platform = process.platform) {
+  check(client === "codebuddy" || client === "workbuddy", "NATIVE_CLIENT_INVALID");
+  return { status: "FAIL", suite: `native_${client}_permissions`, platform,
+    paidModelRequests: 0, modelQualityEvaluated: false,
+    scope: "MemoraX automatic writeback against native permission outcomes, with separate interrupt compatibility observations",
+    nativeInterruptSemanticsValidated: false,
+    interruptedTraceReconciliationValidated: false,
+    ...(client === "workbuddy" ? { desktopUIValidated: false, loginFlowValidated: false } : {}),
+    excludes: ["desktop approval UI", "OS sandbox or privilege enforcement", "LLM automatic approval quality",
+      "background Repo Memory permissions", "late approval after cancellation", "interrupted trace reconciliation",
+      ...(client === "workbuddy" ? ["desktop startup environment", "standalone CodeBuddy CLI"] : [])], cases: [] };
+}
+
+// WorkBuddy's bundled runtime projects SDK denial into this fixed tool result;
+// its native result event separately retains the denied tool's exact identity.
+const workbuddyDenialResult = "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed.";
+
+export function summarizePermissionDenial(text, reason) {
+  return { textBytes: typeof text === "string" ? Buffer.byteLength(text) : null,
+    suppliedReasonObserved: typeof text === "string" && identifier(reason) && text.includes(reason),
+    nativeGenericDenialExact: typeof text === "string" && text.trim() === workbuddyDenialResult,
+    nativeGenericDenialIncluded: typeof text === "string" && text.includes(workbuddyDenialResult) };
+}
+
+export function assertPermissionDenialResult(text, { client = "codebuddy", reason }) {
+  check(client === "codebuddy" || client === "workbuddy", "NATIVE_CLIENT_INVALID");
+  check(identifier(reason), "PERMISSION_DENIAL_REASON_INVALID");
+  const diagnostic = summarizePermissionDenial(text, reason);
+  if (diagnostic.suppliedReasonObserved) return "supplied_denial_reason";
+  if (client === "workbuddy" && diagnostic.nativeGenericDenialExact) return "native_generic_denial";
+  check(false, "PERMISSION_NATIVE_DENIAL_RESULT_MISSING");
+}
+
+export function assertPermissionDenialTerminal(event, sessionId, tool) {
+  check(identifier(sessionId) && identifier(tool?.name) && identifier(tool?.id)
+    && tool.input && typeof tool.input === "object" && !Array.isArray(tool.input)
+    && event?.type === "result" && event.session_id === sessionId && event.is_error === false
+    && event.subtype === "success" && event.terminal_reason === undefined
+    && isDeepStrictEqual(event.permission_denials, [{ tool_name: tool.name, tool_use_id: tool.id, tool_input: tool.input }]),
+  "PERMISSION_NATIVE_DENIAL_IDENTITY_MISMATCH");
+}
+
 export function assertInitializedModel(initialized) {
   check(matchesNativeModel(initialized?.currentModelId, fixtureModel) && Array.isArray(initialized?.models)
     && initialized.models.some((model) => matchesNativeModel(model?.id, fixtureModel)), "PERMISSION_INITIALIZED_MODEL_MISMATCH");
@@ -25,7 +77,7 @@ export function permissionArguments({ sessionId, allowedTool } = {}) {
     ...(allowedTool ? ["--allowedTools", allowedTool] : [])];
 }
 
-// CodeBuddy 2.159.0 uses allowed/reason on the CLI wire, not the SDK's
+// CodeBuddy and WorkBuddy use allowed/reason on the CLI wire, not the SDK's
 // public behavior/message object. Stream JSON selects this channel directly.
 export class CodeBuddyControlSession {
   constructor(child, { outputLimit = 16 * 1024 * 1024, requestTimeout = 30_000, exitTimeout = 15_000 } = {}) {
@@ -213,7 +265,8 @@ export function selectCanceledToolTurn(records, { sessionId, prompt, tool }) {
   return { user, lineage, ...toolEvidence };
 }
 
-export function selectInterruptRecovery(records, { sessionId, prompt, tool, recoveryPrompt, recoveryAnswer }) {
+export function selectInterruptRecovery(records, { client = "codebuddy", sessionId, prompt, tool, recoveryPrompt, recoveryAnswer }) {
+  check(client === "codebuddy" || client === "workbuddy", "NATIVE_CLIENT_INVALID");
   const expected = { sessionId, prompt: recoveryPrompt, finalText: recoveryAnswer };
   let selected;
   try { selected = selectNativeTurnContent(records, expected); }
@@ -230,8 +283,8 @@ export function selectInterruptRecovery(records, { sessionId, prompt, tool, reco
   const lateOriginal = records.filter((record, index) => index > recoveryIndex
     && record.type === "function_call_result" && record.callId === tool?.id);
 
-  // CodeBuddy can append cancellation bookkeeping to the current history head.
-  // Only its original request owner and exact tool identity permit projection.
+  // Both runtimes can append cancellation bookkeeping to the current history
+  // head. Projection requires native request or exact original-call authority.
   const original = selectToolTurnBranch(records, { sessionId, prompt });
   const selectedRecords = new Set([...original.lineage, ...recovery.lineage]);
   function checkTail(condition, clause, record, parent) {
@@ -259,6 +312,19 @@ export function selectInterruptRecovery(records, { sessionId, prompt, tool, reco
       parentMatches: record.parentId === parent?.id, afterParent: records.indexOf(record) > records.indexOf(parent),
       childCount: diagnostic.parentChildCount,
     };
+    if (record) {
+      const originalTool = original.lineage.find((item) => item.type === "function_call" && item.callId === tool.id);
+      const ownerField = (key) => {
+        const value = record.providerData?.[key];
+        const matches = (item) => identifier(item?.providerData?.conversationRequestId)
+          && value === item.providerData.conversationRequestId;
+        return { present: Object.hasOwn(record.providerData ?? {}, key),
+          type: value === null ? "null" : Array.isArray(value) ? "array" : typeof value,
+          matchesOriginalPrompt: matches(original.user), matchesOriginalTool: matches(originalTool),
+          matchesRecoveryPrompt: matches(recovery.user), matchesRecoveryAnswer: matches(assistant) };
+      };
+      diagnostic.member.ownerFields = { conversationRequestId: ownerField("conversationRequestId"), requestId: ownerField("requestId") };
+    }
     throw Object.assign(new Error("PERMISSION_INTERRUPT_RECOVERY_TAIL_INVALID"), {
       nativeCode: "PERMISSION_INTERRUPT_RECOVERY_TAIL_INVALID", interruptRecoveryDiagnostic: diagnostic,
     });
@@ -279,15 +345,59 @@ export function selectInterruptRecovery(records, { sessionId, prompt, tool, reco
   "tail_shape");
   const originalOwner = original.user.providerData?.conversationRequestId;
   const recoveryOwner = recovery.user.providerData?.conversationRequestId;
-  check(identifier(originalOwner) && identifier(recoveryOwner) && originalOwner !== recoveryOwner
+  const toolOwner = calls[0].providerData?.conversationRequestId;
+  const answerOwner = assistant.providerData?.conversationRequestId;
+  const ownersValid = identifier(originalOwner) && identifier(recoveryOwner) && originalOwner !== recoveryOwner
     && original.lineage.every((record) => record.sessionId === sessionId && record.providerData?.conversationRequestId === originalOwner)
     && [recovery.user, assistant].every((record) => record.sessionId === sessionId
-      && record.providerData?.conversationRequestId === recoveryOwner), "PERMISSION_INTERRUPT_REQUEST_OWNER_MISMATCH");
+      && record.providerData?.conversationRequestId === recoveryOwner);
+  // WorkBuddy 2.137.1's input processor and cancellation-result constructor omit
+  // both owner fields. Only its observed two-turn, sole-call schema qualifies;
+  // present-but-invalid ownership must never fall back to call identity.
+  const ownersAbsent = (record) => !Object.hasOwn(record.providerData ?? {}, "conversationRequestId")
+    && !Object.hasOwn(record.providerData ?? {}, "requestId");
+  const workbuddyCallAuthority = client === "workbuddy" && original.lineage.length === 2
+    && calls[0].parentId === original.user.id
+    && records.filter((record) => record.type === "function_call" && record.callId === tool.id).length === 1
+    && records.every((record) => !["message", "function_call", "function_call_result"].includes(record.type)
+      || selectedRecords.has(record))
+    && [original.user, calls[0], recovery.user, assistant].every((record) => record.sessionId === sessionId)
+    && identifier(toolOwner) && identifier(answerOwner) && toolOwner !== answerOwner
+    && [calls[0], assistant].every((record) => !Object.hasOwn(record.providerData ?? {}, "requestId"))
+    && [original.user, recovery.user, ...lateOriginal].every(ownersAbsent);
+  if (!ownersValid && !workbuddyCallAuthority) {
+    const matchesOwner = (record, owner) => identifier(owner) && record.providerData?.conversationRequestId === owner;
+    const member = (record) => ({ sessionMatches: record.sessionId === sessionId,
+      ownerFieldPresent: Object.hasOwn(record.providerData ?? {}, "conversationRequestId"),
+      ownerPresent: identifier(record.providerData?.conversationRequestId),
+      requestIdAliasFieldPresent: Object.hasOwn(record.providerData ?? {}, "requestId"),
+      requestIdAliasPresent: identifier(record.providerData?.requestId),
+      matchesOriginalToolOwner: matchesOwner(record, toolOwner), matchesRecoveryAnswerOwner: matchesOwner(record, answerOwner) });
+    const originalNonPrompt = original.lineage.filter((record) => record !== original.user);
+    const code = "PERMISSION_INTERRUPT_REQUEST_OWNER_MISMATCH";
+    throw Object.assign(new Error(code), { nativeCode: code, interruptRecoveryDiagnostic: {
+      clause: "request_owner", originalPrompt: member(original.user), originalTool: member(calls[0]),
+      recoveryPrompt: member(recovery.user), recoveryAnswer: member(assistant),
+      promptOwnersDistinct: identifier(originalOwner) && identifier(recoveryOwner) && originalOwner !== recoveryOwner,
+      toolAndAnswerOwnersDistinct: identifier(toolOwner) && identifier(answerOwner) && toolOwner !== answerOwner,
+      originalNonPromptCount: originalNonPrompt.length,
+      originalNonPromptSessionMatches: originalNonPrompt.filter((record) => record.sessionId === sessionId).length,
+      originalNonPromptOwnerMatches: originalNonPrompt.filter((record) => matchesOwner(record, toolOwner)).length,
+      lateOriginalResultCount: lateOriginal.length,
+      lateOriginalResultSessionMatches: lateOriginal.filter((record) => record.sessionId === sessionId).length,
+      lateOriginalResultOwnerMatches: lateOriginal.filter((record) => matchesOwner(record, toolOwner)).length,
+      lateOriginalResults: lateOriginal.map((record) => ({ ...member(record),
+        functionCallResult: record.type === "function_call_result", roleAbsent: record.role === undefined,
+        callIdMatches: record.callId === tool.id, toolNameMatches: record.name === tool.name,
+        incomplete: record.status === "incomplete", skipRun: record.providerData?.skipRun === true })),
+    } });
+  }
   let parent = recovery.user;
   for (const record of recovery.lineage.slice(1)) {
     if (record !== assistant) checkTail(record.type === "function_call_result" && record.role === undefined && record.callId === tool.id
       && record.name === tool.name && record.status === "incomplete" && record.providerData?.skipRun === true
-      && record.sessionId === sessionId && record.providerData.conversationRequestId === originalOwner,
+      && record.sessionId === sessionId
+      && (workbuddyCallAuthority ? ownersAbsent(record) : record.providerData.conversationRequestId === originalOwner),
     "tail_member", record, parent);
     checkTail(record.parentId === parent.id && records.indexOf(record) > records.indexOf(parent),
     "tail_member", record, parent);
@@ -304,8 +414,8 @@ export function selectInterruptRecovery(records, { sessionId, prompt, tool, reco
 
 // Call after same-session recovery and confirmed client shutdown, including
 // reported forced cleanup. A missing assistant alone is not interruption proof.
-export function selectInterruptOutcome(records, { sessionId, prompt, answer, tool, recoveryPrompt, recoveryAnswer }) {
-  const recovery = selectInterruptRecovery(records, { sessionId, prompt, tool, recoveryPrompt, recoveryAnswer });
+export function selectInterruptOutcome(records, { client = "codebuddy", sessionId, prompt, answer, tool, recoveryPrompt, recoveryAnswer }) {
+  const recovery = selectInterruptRecovery(records, { client, sessionId, prompt, tool, recoveryPrompt, recoveryAnswer });
   const { lateOriginalToolResultCount } = recovery;
   const original = selectToolTurnBranch(records, { sessionId, prompt });
   check(records.findIndex((record) => record.id === recovery.user.id) > records.indexOf(original.user),

@@ -4,13 +4,13 @@ import test from "node:test";
 import { fixtureModel } from "./codebuddy-native-support.mjs";
 import { assertBackgroundJob, assertBackgroundModelRequests, assertBackgroundNoopResult, assertForegroundResult,
   assertGlobalConfiguration, backgroundInputText, backgroundProcessesExited, modelEnvironmentOverrides,
-  summarizeBackgroundJobs, workerPromptMarker, foregroundPrompt, foregroundAnswer, backgroundAnswer,
+  summarizeBackgroundJobs, workerPromptMarker, foregroundPrompt, foregroundPromptForClient, foregroundAnswer, backgroundAnswer,
 } from "./codebuddy-background-assertions.mjs";
 
 const context = { jobPath: resolve("fixture/jobs/job-fixture/job.json"), repository: resolve("fixture/repo"),
   codebuddyCommand: resolve("fixture/bin/codebuddy"), pluginRoot: resolve("fixture/plugin"), snapshotHead: "b".repeat(40) };
 const prompt = `${workerPromptMarker}\n\nPreserve the full synthetic worker prompt.\n\nLast paragraph.`;
-const job = () => ({ version: 1, jobId: "job-fixture", runId: "a".repeat(32), runner: "codebuddy", mode: "build",
+const job = (client = "codebuddy") => ({ version: 1, jobId: "job-fixture", runId: "a".repeat(32), runner: client, mode: "build",
   repo: context.repository, snapshotHead: context.snapshotHead, status: "failed", failureReason: "artifact_validation_failed",
   exitCode: 0, validationExitCode: 1, command: [context.codebuddyCommand, "--plugin-dir", context.pluginRoot,
     "--print", "--output-format", "text", "--dangerously-skip-permissions", "--no-session-persistence", prompt],
@@ -76,6 +76,42 @@ test("CodeBuddy background job pins the native launcher, plugin, repository and 
   }
 });
 
+for (const client of ["codebuddy", "workbuddy"]) {
+  test(`${client} background job requires its own client identity and exact native command`, () => {
+    const selected = { ...context, client }, actual = job(client);
+    assertBackgroundJob(actual, selected);
+    assert.throws(() => assertBackgroundJob({ ...actual, runner: client === "workbuddy" ? "codebuddy" : "workbuddy" }, selected),
+      { nativeCode: "BACKGROUND_JOB_AUTHORITY_MISMATCH" });
+    assert.throws(() => assertBackgroundJob({ ...actual, command: ["foreign-runtime", ...actual.command.slice(1)] }, selected),
+      { nativeCode: "BACKGROUND_JOB_COMMAND_MISMATCH" });
+    assert.throws(() => assertBackgroundJob({ ...actual, command: [actual.command[0], "--plugin-dir", "foreign-plugin", ...actual.command.slice(3)] }, selected),
+      { nativeCode: "BACKGROUND_JOB_COMMAND_MISMATCH" });
+  });
+
+  test(`${client} model evidence binds the full worker prompt and matching foreground prompt`, () => {
+    const expected = foregroundPromptForClient(client);
+    const other = foregroundPromptForClient(client === "workbuddy" ? "codebuddy" : "workbuddy");
+    assertBackgroundModelRequests([request(expected), request(prompt)], prompt, { client });
+    assertBackgroundModelRequests([request(prompt), request(expected)], prompt, { client });
+    assert.throws(() => assertBackgroundModelRequests([request(other), request(prompt)], prompt, { client }),
+      { nativeCode: "BACKGROUND_FOREGROUND_PROMPT_MISSING" });
+    assert.throws(() => assertBackgroundModelRequests([request(expected), request(workerPromptMarker)], prompt, { client }),
+      { nativeCode: "BACKGROUND_FULL_JOB_PROMPT_MISSING" });
+  });
+}
+
+test("background client selection keeps CodeBuddy defaults and rejects unsupported clients", () => {
+  assert.equal(foregroundPromptForClient(), foregroundPrompt);
+  assert.equal(foregroundPromptForClient("workbuddy"), "Check this repository's global WorkBuddy model configuration.");
+  for (const client of [null, "", "claude", "WorkBuddy"]) {
+    for (const run of [() => foregroundPromptForClient(client),
+      () => assertBackgroundJob(undefined, { client }),
+      () => assertBackgroundModelRequests(undefined, undefined, { client })]) {
+      assert.throws(run, { nativeCode: "NATIVE_CLIENT_INVALID" });
+    }
+  }
+});
+
 test("CodeBuddy background job rejects overrides, altered persistence, plugin and output paths", () => {
   for (const command of [[...job().command, "--model", "other"], job().command.filter((part) => part !== "--no-session-persistence"),
     ["other-client", ...job().command.slice(1)], [context.codebuddyCommand, "--plugin-dir", "other-plugin", ...job().command.slice(3)]]) {
@@ -102,6 +138,17 @@ test("CodeBuddy noop completes natively before the canonical artifact validator 
   assert.throws(() => assertBackgroundNoopResult({ ...job(), childPid: undefined }, backgroundAnswer),
     { nativeCode: "BACKGROUND_JOB_PID_MISSING" });
   assert.throws(() => assertBackgroundNoopResult(job(), "different native output"), { nativeCode: "BACKGROUND_NATIVE_STDOUT_MISMATCH" });
+});
+
+test("WorkBuddy noop requires native completion and still fails canonical artifact validation", () => {
+  const actual = job("workbuddy");
+  assertBackgroundJob(actual, { ...context, client: "workbuddy" });
+  assertBackgroundNoopResult(actual, `${backgroundAnswer}\n`);
+  for (const change of [{ status: "succeeded" }, { failureReason: "workbuddy_timeout" },
+    { failureReason: "workbuddy_exit_nonzero" }, { exitCode: 1 }, { validationExitCode: 0 }]) {
+    assert.throws(() => assertBackgroundNoopResult({ ...actual, ...change }, backgroundAnswer),
+      { nativeCode: "BACKGROUND_NOOP_JOB_RESULT_MISMATCH" });
+  }
 });
 
 test("CodeBuddy global model evidence requires both HTTP requests and every worker prompt paragraph", () => {
@@ -180,6 +227,15 @@ test("CodeBuddy background diagnostics bound exit codes and allow only known fai
     assert.equal(summary.failureReason, "missing");
     assert.equal(summary.exitCode, null);
   }
+});
+
+test("WorkBuddy background diagnostics retain its native failure codes without exposing raw failures", () => {
+  for (const failureReason of ["workbuddy_timeout", "workbuddy_spawn_failed", "workbuddy_exit_nonzero"]) {
+    const [summary] = summarizeBackgroundJobs([{ ...job("workbuddy"), failureReason }], () => false).jobs;
+    assert.equal(summary.failureReason, failureReason);
+  }
+  assert.equal(summarizeBackgroundJobs([{ ...job("workbuddy"), failureReason: "workbuddy_private_native_error" }], () => false)
+    .jobs[0].failureReason, "other");
 });
 
 test("CodeBuddy background diagnostics reject unrecognized states and malformed PIDs before probing", () => {

@@ -20,8 +20,8 @@ test("WorkBuddy entry help states the implemented and excluded suites", async ()
     for (const option of ["--help", "-h"]) {
       const result = await run(process.execPath, [entry, option]);
       assert.equal(result.code, 0);
-      assert.match(result.stdout, /installation lifecycle, setup interruption and native Memory\/Skill/);
-      assert.match(result.stdout, /not permissions, Repo Memory or desktop UI/);
+      assert.match(result.stdout, /installation lifecycle, setup interruption, native Memory\/Skill, permission\/interruption and Repo Memory worker checks/);
+      assert.match(result.stdout, /not valid Repo Memory generation or desktop UI/);
     }
   });
 });
@@ -110,9 +110,10 @@ for (const client of ["codebuddy", "workbuddy"]) {
       const suites = observed.filter((call) => call.command.endsWith("-check.mjs"));
       assert.deepEqual(suites.map((call) => call.command), ["codebuddy-lifecycle-check.mjs",
         "codebuddy-install-interruption-check.mjs", client + "-native-check.mjs",
-        ...(client === "codebuddy" ? ["codebuddy-background-check.mjs", "codebuddy-permissions-check.mjs"] : [])]);
-      assert.equal(suites[0].args.at(-1), client);
-      assert.equal(suites[1].args.at(-1), client);
+        "codebuddy-background-check.mjs", "codebuddy-permissions-check.mjs"]);
+      for (const index of [0, 1, 3, 4]) assert.equal(suites[index].args.at(-1), client);
+      for (const index of [3, 4]) assert.equal(suites[index].args.length, 4);
+      assert.doesNotMatch(result.stdout, /coverage (?:is|are) not implemented/);
       for (const call of suites) {
         assert.equal(call.args[1], client === "workbuddy" ? command : join(dirname(call.home), "npm", "bin", "codebuddy"));
         assert.equal(call.configDir, join(dirname(call.home), client));
@@ -127,7 +128,27 @@ for (const client of ["codebuddy", "workbuddy"]) {
   });
 }
 
-async function fixture(callback) {
+for (const failedSuite of ["codebuddy-background-check.mjs", "codebuddy-permissions-check.mjs"]) {
+  test("WorkBuddy wrapper propagates " + failedSuite + " failure and cleans up its selected client", posixOnly, async () => {
+    await fixture(async ({ root, run, spy, calls, bundle }) => {
+      await spy("npm");
+      await spy("node");
+      const command = await bundle(true);
+      await writeFile(join(root, "memorax-memorax-code-0.1.19.tgz"), "Synthetic artifact; never installed.\n");
+      const result = await run("/bin/bash", [wrapper, root, runtimeVersion, "0.1.18", "workbuddy", command]);
+      assert.equal(result.code, 23);
+      const checks = (await calls()).filter((call) => call.command.endsWith(".mjs"));
+      assert.equal(checks.at(-2).command, failedSuite);
+      assert.equal(checks.at(-1).command, "codebuddy-install-cleanup.mjs");
+      assert.equal(checks.at(-1).args.at(-1), "workbuddy");
+      if (failedSuite === "codebuddy-background-check.mjs") {
+        assert.equal(checks.some((call) => call.command === "codebuddy-permissions-check.mjs"), false);
+      }
+    }, { failedSuite });
+  });
+}
+
+async function fixture(callback, { failedSuite } = {}) {
   const root = await realpath(await mkdtemp(join(tmpdir(), "workbuddy-install-entry-")));
   const bin = join(root, "bin"), log = join(root, "calls.jsonl");
   try {
@@ -160,6 +181,7 @@ if (command === "node") {
   record({ command: path.basename(args[0]), args: args.slice(1), home: process.env.HOME,
     configDir: process.env.CODEBUDDY_CONFIG_DIR, codebuddyHome: process.env.CODEBUDDY_HOME,
     workbuddyHome: process.env.WORKBUDDY_HOME, workbuddyConfigDir: process.env.WORKBUDDY_CONFIG_DIR });
+  if (path.basename(args[0]) === ${JSON.stringify(failedSuite)}) process.exit(23);
 } else if (command === "npm") {
   const prefix = args[args.indexOf("--prefix") + 1];
   const marker = args.includes("--global") ? fs.readFileSync(path.join(prefix, ".memorax-code-ci-owned"), "utf8") : undefined;

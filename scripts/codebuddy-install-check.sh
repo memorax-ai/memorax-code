@@ -132,16 +132,12 @@ isolated node "$repo_root/scripts/codebuddy-install-interruption-check.mjs" \
 isolated node "$repo_root/scripts/$client-native-check.mjs" \
   "$test_root/npm/lib/node_modules/@memorax/memorax-code" \
   "$native_command" "$codebuddy_version"
-if [[ "$client" == codebuddy ]]; then
-  isolated node "$repo_root/scripts/codebuddy-background-check.mjs" \
-    "$test_root/npm/lib/node_modules/@memorax/memorax-code" \
-    "$test_root/npm/bin/codebuddy" "$codebuddy_version"
-  isolated node "$repo_root/scripts/codebuddy-permissions-check.mjs" \
-    "$test_root/npm/lib/node_modules/@memorax/memorax-code" \
-    "$test_root/npm/bin/codebuddy" "$codebuddy_version"
-else
-  printf 'WorkBuddy permissions and Repo Memory worker coverage are not implemented in this runner.\n'
-fi
+isolated node "$repo_root/scripts/codebuddy-background-check.mjs" \
+  "$test_root/npm/lib/node_modules/@memorax/memorax-code" \
+  "$native_command" "$codebuddy_version" "$client"
+isolated node "$repo_root/scripts/codebuddy-permissions-check.mjs" \
+  "$test_root/npm/lib/node_modules/@memorax/memorax-code" \
+  "$native_command" "$codebuddy_version" "$client"
 
 # Each suite confirms owned-process cleanup before removing this runtime.
 rm -rf "$test_root"
