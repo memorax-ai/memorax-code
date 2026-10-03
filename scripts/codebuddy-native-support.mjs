@@ -359,6 +359,7 @@ export function processAlive(pid) {
 async function stopTree(child, env) {
   if (!child.pid) return;
   if (process.platform === "win32") {
+    if (child.exitCode != null || child.signalCode != null) return;
     if (!processAlive(child.pid)) return;
     await execFileAsync(join(env.SystemRoot, "System32", "taskkill.exe"), ["/PID", String(child.pid), "/T", "/F"],
       { env, windowsHide: true, timeout: 10_000 }).catch((error) => { if (processAlive(child.pid)) throw error; });
@@ -371,6 +372,7 @@ async function stopTree(child, env) {
   await waitFor(() => !processAlive(child.pid)
     && (process.platform === "win32" || !processAlive(-child.pid)), "NATIVE_CHILD_PROCESS_REMAINS", 10_000);
 }
+export { stopTree as stopNativeProcessTree };
 async function requestJson(request) {
   const chunks = [];
   let bytes = 0;
