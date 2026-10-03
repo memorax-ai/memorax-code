@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,6 +14,12 @@ const guard = join(scripts, "workbuddy-bundled-command-check.mjs");
 const wrapper = join(scripts, "codebuddy-install-check.sh");
 const runtimeVersion = "2.137.1";
 const posixOnly = { skip: process.platform === "win32" };
+const bundlePaths = {
+  macOS: ["WorkBuddy.app", "Contents", "Resources", "app.asar.unpacked", "cli", "bin", "codebuddy"],
+  Linux: ["workbuddy", "resources", "app.asar.unpacked", "cli", "bin", "codebuddy"],
+  Windows: ["WorkBuddy", "resources", "app.asar.unpacked", "cli", "bin", "codebuddy"],
+  "Windows executable": ["WorkBuddy", "resources", "app.asar.unpacked", "cli", "bin", "codebuddy.exe"],
+};
 
 test("WorkBuddy entry help states the implemented and excluded suites", async () => {
   await fixture(async ({ run }) => {
@@ -37,19 +43,22 @@ test("WorkBuddy entry rejects missing, extra and nonexact version arguments", as
   });
 });
 
-test("the bundle guard accepts only existing files at a canonical desktop bundle path", async () => {
-  await fixture(async ({ root, run, bundle }) => {
-    const command = await bundle();
-    assert.equal((await run(process.execPath, [guard, command])).code, 0);
-    const standalone = join(root, "codebuddy");
-    await writeFile(standalone, "// Never executed.\n");
-    assert.equal((await run(process.execPath, [guard, standalone])).code, 1);
-    assert.equal((await run(process.execPath, [guard, command, "extra"])).code, 1);
-    await rm(command);
-    await mkdir(command);
-    assert.equal((await run(process.execPath, [guard, command])).code, 1);
+for (const [platform, segments] of Object.entries(bundlePaths)) {
+  test(`the bundle guard accepts only existing files at a canonical ${platform} bundle path`, async () => {
+    await fixture(async ({ root, run, bundle }) => {
+      const command = await bundle(false, segments);
+      assert.equal((await run(process.execPath, [guard, command])).code, 0);
+      const standalone = join(root, "codebuddy");
+      await writeFile(standalone, "// Never executed.\n");
+      assert.equal((await run(process.execPath, [guard, standalone])).code, 1);
+      assert.equal((await run(process.execPath, [guard, command, "extra"])).code, 1);
+      await rm(command);
+      assert.equal((await run(process.execPath, [guard, command])).code, 1);
+      await mkdir(command);
+      assert.equal((await run(process.execPath, [guard, command])).code, 1);
+    });
   });
-});
+}
 
 test("the bundle guard rejects a named bundle path escaping through a symlink", async () => {
   await fixture(async ({ root, run, bundle }) => {
@@ -70,6 +79,39 @@ test("WorkBuddy entry delegates resolved paths and selected client to the POSIX 
     assert.equal(result.code, 0);
     assert.deepEqual(await calls(), [{ command: "bash", args: [wrapper, join(root, "tarballs"), runtimeVersion,
       "0.1.18", "workbuddy", join(root, "bundle/codebuddy")] }]);
+  });
+});
+
+test("WorkBuddy entry delegates to the Windows PowerShell wrapper and preserves its exit code", { skip: process.platform !== "win32" }, async () => {
+  await fixture(async ({ root, run }) => {
+    const fixtureRepo = join(root, "entry fixture");
+    const fixtureScripts = join(fixtureRepo, "scripts");
+    const fixtureEntry = join(fixtureScripts, "workbuddy-e2e.mjs");
+    const fixtureWrapper = join(fixtureScripts, "codebuddy-install-check.ps1");
+    await mkdir(fixtureScripts, { recursive: true });
+    await copyFile(entry, fixtureEntry);
+    await writeFile(fixtureWrapper, `param(
+  [string]$TarballDirectory, [string]$CodeBuddyVersion, [string]$PreviousVersion,
+  [string]$Client, [string]$WorkBuddyCommand
+)
+[ordered]@{ wrapper = $PSCommandPath; cwd = (Get-Location).Path; edition = $PSVersionTable.PSEdition;
+  tarballs = $TarballDirectory; runtime = $CodeBuddyVersion; previous = $PreviousVersion;
+  client = $Client; command = $WorkBuddyCommand; extra = @($args) } | ConvertTo-Json -Compress
+exit ([int]$env:MEMORAX_TEST_WRAPPER_EXIT)
+`);
+    const relativeCommand = join("bundle with spaces", ...bundlePaths.Windows);
+    for (const [previous, exitCode] of [[undefined, 0], ["0.1.17", 23]]) {
+      const args = [fixtureEntry, "tarballs with spaces", relativeCommand, runtimeVersion];
+      if (previous) args.push(previous);
+      const result = await run(process.execPath, args,
+        { PATH: process.env.PATH, MEMORAX_TEST_WRAPPER_EXIT: String(exitCode) });
+      assert.equal(result.code, exitCode, result.stderr);
+      assert.deepEqual(JSON.parse(result.stdout), {
+        wrapper: fixtureWrapper, cwd: fixtureRepo, edition: "Core", tarballs: join(root, "tarballs with spaces"),
+        runtime: runtimeVersion, previous: previous ?? "0.1.18", client: "workbuddy",
+        command: join(root, relativeCommand), extra: [],
+      });
+    }
   });
 });
 
@@ -159,8 +201,8 @@ async function fixture(callback, { failedSuite } = {}) {
     for (const name of ["SystemRoot", "WINDIR", "ComSpec", "PATHEXT"]) {
       if (process.env[name]) env[name] = process.env[name];
     }
-    const run = async (command, args) => {
-      try { return { code: 0, ...await execute(command, args, { cwd: root, env, timeout: 20_000, maxBuffer: 256 * 1024 }) }; }
+    const run = async (command, args, extraEnv = {}) => {
+      try { return { code: 0, ...await execute(command, args, { cwd: root, env: { ...env, ...extraEnv }, timeout: 20_000, maxBuffer: 256 * 1024 }) }; }
       catch (error) {
         if (typeof error.code !== "number") throw error;
         return { code: error.code, stdout: error.stdout, stderr: error.stderr };
@@ -199,8 +241,8 @@ if (command === "node") {
 } else if (command === "bash") record({ command, args });
 `;
     const spy = async (name) => { const path = join(bin, name); await writeFile(path, source); await chmod(path, 0o700); };
-    const bundle = async (executable = false) => {
-      const command = join(root, "bundle with spaces", "WorkBuddy.app", "Contents", "Resources", "app.asar.unpacked", "cli", "bin", "codebuddy");
+    const bundle = async (executable = false, segments = bundlePaths.macOS) => {
+      const command = join(root, "bundle with spaces", ...segments);
       await mkdir(dirname(command), { recursive: true });
       await writeFile(command, executable ? source : "// Never executed.\n");
       if (executable) await chmod(command, 0o700);

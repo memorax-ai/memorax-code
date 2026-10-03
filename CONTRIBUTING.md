@@ -917,19 +917,49 @@ They do not validate the desktop UI or login flow. The desktop application and
 bundled runtime have distinct versions. Do not substitute the independently
 installed CodeBuddy CLI for that runtime.
 
-The `CI` workflow has an opt-in `diagnose_workbuddy` input for a macOS native
-diagnostic. It first requires the candidate's complete `npm-package-check`, then
-downloads the fixed official desktop `5.6.2.39298511` DMG for the runner's
-architecture. The acquisition check verifies its pinned SHA-256; the runner
-also requires Apple's notarization assessment and Tencent's Developer ID
-signature before using the read-only mounted application. Desktop `5.6.2` and
-bundled CLI `2.147.0` are checked separately. It runs all five default suites
-below without replacing the public command shims. The permission suite runs four
-cases; the two explicit runtime `interrupt` cases are separate strict manual
-diagnostics, not part of this job. A failing default suite still fails the job;
-this is not a three-platform acceptance matrix or proof of general runtime
-interruption. No desktop application or credential store is installed or changed
-on the runner, and native transcripts are not uploaded as artifacts.
+The `CI` workflow has an opt-in `diagnose_workbuddy` input for native diagnostics
+on `ubuntu-24.04`, `macos-15`, and `windows-2025`, using Node.js 24. It first
+requires the candidate's complete `npm-package-check`; every platform consumes
+that same validated artifact. Matrix failures do not cancel the other platforms.
+Each runner downloads a fixed official desktop package and checks its pinned
+SHA-256 before extracting or mounting it. Desktop and bundled CLI versions are
+checked separately, because the official platform releases are not synchronized.
+
+| Runner | Official desktop package | Bundled CLI |
+| --- | --- | --- |
+| Ubuntu x64 | `5.5.6.38337834` DEB | `2.137.1` |
+| macOS runner architecture | `5.6.2.39298511` DMG | `2.147.0` |
+| Windows x64 | `5.6.2.39298511` EXE | `2.147.0` |
+
+The Linux DEB uses a maintainer-recorded SHA-256, not a vendor-published checksum.
+On 2026-10-03, two independent downloads from the fixed official HTTPS URL in
+`scripts/workbuddy-linux-bundle-check.sh` produced a 429,302,312-byte file with
+SHA-256 `2ef1bca217d29d9c2ba988c82079aa6ea0077e9f1ff882c6ab5dd7998bddf721`.
+The [official update feed](https://www.workbuddy.cn/v2/update?platform=workbuddy-linux-x64-deb)
+instead reported `03d756b259d7086c22098fa077589a032d60948d1de7313473360eefe11e240f`
+for that same URL and version. This pin detects changes from the inspected
+download; it is not an independent publisher signature or proof that the initial
+file was authentic. CI does not learn or replace the pin at runtime: any mismatch
+fails before extraction. Changing the version or pin requires another explicit
+source review; do not bypass verification or automatically trust the feed value.
+
+The macOS runner also requires Apple's notarization assessment and Tencent's
+Developer ID signature before using the read-only mounted application. Linux
+uses `dpkg-deb -x`, without installing the desktop package or running its
+maintainer scripts. Windows verifies the installer's Authenticode signature and
+publisher before extracting its payload with 7-Zip, without executing the
+installer. Extracted packages stay inside fresh runner-owned temporary
+directories; Windows `TEMP` and `TMP` use `runner.temp`. No desktop application
+or credential store is installed or changed, and native transcripts are not
+uploaded as artifacts.
+
+Every platform runs all five default suites below without replacing the public
+command shims. The permission suite runs four cases; the two explicit runtime
+`interrupt` cases are separate strict manual diagnostics, not part of the matrix.
+A failing default suite still fails its job. A three-platform result requires
+all three platform jobs to pass; one platform's result is not evidence for the
+others. This is one pinned desktop/runtime pair per platform, not baseline/latest
+or minimum-Node-version coverage.
 
 After `make npm-package-check` validates the candidate artifact, run the isolated
 installation, setup-interruption, Memory/Skill, permission, and Repo
@@ -942,7 +972,7 @@ memorax_dev node scripts/workbuddy-e2e.mjs dist/npm/tarballs \
 ```
 
 The runner reuses the CodeBuddy installation wrappers with an explicit
-`workbuddy` client. macOS uses Bash; native Windows requires PowerShell 7 and Git
+`workbuddy` client. macOS and Linux use Bash; native Windows requires PowerShell 7 and Git
 for Windows. The supplied bundle is read-only; only MemoraX Code and test-only
 `node-pty@1.1.0` are installed into disposable prefixes. No standalone CodeBuddy
 package is installed for WorkBuddy. The wrapper validates the bundled path
@@ -1066,12 +1096,12 @@ loopback model/Memory services. Reports contain bounded diagnostics, not raw
 transcripts, credentials or private paths. Cleanup must succeed before a suite
 can pass, and unverified cleanup retains its isolated state.
 
-Desktop-managed task directories, Windows/Linux bundle acquisition, and the
-platform/version acceptance matrix remain pending. The macOS diagnostic covers
-one fixed desktop/runtime pair, not baseline/latest version coverage. A supported
-Linux distribution is not established by these checks. Implemented platform
-wrappers or a local runtime pass are not evidence that other platforms or desktop
-startup environments pass.
+Desktop-managed task directories, desktop startup environments, and login remain
+outside this matrix. Linux supplies the verified bundled command explicitly:
+these checks exercise the headless CLI on the Ubuntu runner, not automatic Linux
+desktop discovery or official Ubuntu desktop support. Implemented platform
+wrappers, acquisition tests, and a local runtime pass are not substitutes for
+successful native jobs on each target platform.
 
 ## Pull Requests
 
