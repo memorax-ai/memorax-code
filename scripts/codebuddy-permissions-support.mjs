@@ -218,15 +218,16 @@ export function selectInterruptRecovery(records, { sessionId, prompt, tool, reco
   let selected;
   try { selected = selectNativeTurnContent(records, expected); }
   catch (error) { if (error.nativeCode !== "NATIVE_TRANSCRIPT_FINAL_INCOMPLETE") throw error; }
-  if (selected && !records.slice(records.findIndex((record) => record.id === selected.assistant.id) + 1)
-    .some((record) => record.type === "function_call_result" && record.callId === tool?.id)) {
+  if (selected && selected.lineage.length === 2
+    && !records.slice(records.findIndex((record) => record.id === selected.user.id) + 1)
+      .some((record) => record.type === "function_call_result")) {
     return { ...selected, lateOriginalToolResultCount: 0 };
   }
   const recovery = selectToolTurnBranch(records, { sessionId, prompt: recoveryPrompt });
   const assistants = recovery.lineage.filter((record) => record.type === "message" && record.role === "assistant");
   check(assistants.length === 1 && assistants[0].status === "completed", "NATIVE_TRANSCRIPT_FINAL_INCOMPLETE");
-  const assistant = assistants[0], assistantIndex = records.indexOf(assistant);
-  const lateOriginal = records.filter((record, index) => index > assistantIndex
+  const assistant = assistants[0], assistantIndex = records.indexOf(assistant), recoveryIndex = records.indexOf(recovery.user);
+  const lateOriginal = records.filter((record, index) => index > recoveryIndex
     && record.type === "function_call_result" && record.callId === tool?.id);
 
   // CodeBuddy can append cancellation bookkeeping to the current history head.
@@ -242,7 +243,7 @@ export function selectInterruptRecovery(records, { sessionId, prompt, tool, reco
       recoveryBranchCount: recovery.lineage.length,
       tailCount: recovery.lineage.filter((item) => item !== recovery.user && item !== assistant).length,
       originalResultBeforeAnswerCount: records.slice(0, assistantIndex).filter(isOriginalResult).length,
-      originalResultAfterAnswerCount: lateOriginal.length,
+      originalResultAfterAnswerCount: lateOriginal.filter((item) => records.indexOf(item) > assistantIndex).length,
       unselectedContentCount: records.slice(records.indexOf(original.user)).filter((item) => isContent(item) && !selectedRecords.has(item)).length,
       laterUserCount: records.slice(records.indexOf(recovery.user) + 1).filter((item) => item.type === "message" && item.role === "user").length,
       assistantChildCount: records.filter((item) => item.parentId === assistant.id).length,
@@ -268,13 +269,12 @@ export function selectInterruptRecovery(records, { sessionId, prompt, tool, reco
   assertToolLineage(original.lineage, tool, { interrupted: true });
   const calls = original.lineage.filter((record) => record.type === "function_call");
   check(calls.length === 1, "PERMISSION_TRANSCRIPT_TOOL_MISMATCH");
-  const recoveryIndex = records.indexOf(recovery.user);
   check(records.indexOf(original.user) < records.indexOf(calls[0])
     && records.indexOf(calls[0]) < recoveryIndex && recoveryIndex < assistantIndex,
   "PERMISSION_INTERRUPT_RECOVERY_ORDER_INVALID");
   const tail = recovery.lineage.filter((record) => record !== recovery.user && record !== assistant);
   checkTail(tail.length >= 1 && tail.length <= 2 && tail.length === lateOriginal.length
-    && tail.every((record) => lateOriginal.includes(record)) && assistant.parentId === recovery.user.id
+    && tail.every((record) => lateOriginal.includes(record))
     && !records.slice(recoveryIndex + 1).some((record) => record.type === "message" && record.role === "user"),
   "tail_shape");
   const originalOwner = original.user.providerData?.conversationRequestId;
@@ -283,18 +283,22 @@ export function selectInterruptRecovery(records, { sessionId, prompt, tool, reco
     && original.lineage.every((record) => record.sessionId === sessionId && record.providerData?.conversationRequestId === originalOwner)
     && [recovery.user, assistant].every((record) => record.sessionId === sessionId
       && record.providerData?.conversationRequestId === recoveryOwner), "PERMISSION_INTERRUPT_REQUEST_OWNER_MISMATCH");
-  let parent = assistant;
-  for (const record of tail) {
-    checkTail(record.type === "function_call_result" && record.role === undefined && record.callId === tool.id
+  let parent = recovery.user;
+  for (const record of recovery.lineage.slice(1)) {
+    if (record !== assistant) checkTail(record.type === "function_call_result" && record.role === undefined && record.callId === tool.id
       && record.name === tool.name && record.status === "incomplete" && record.providerData?.skipRun === true
-      && record.sessionId === sessionId && record.providerData.conversationRequestId === originalOwner
-      && record.parentId === parent.id && records.indexOf(record) > records.indexOf(parent),
+      && record.sessionId === sessionId && record.providerData.conversationRequestId === originalOwner,
+    "tail_member", record, parent);
+    checkTail(record.parentId === parent.id && records.indexOf(record) > records.indexOf(parent),
     "tail_member", record, parent);
     checkTail(records.filter((child) => child.parentId === parent.id).length === 1, "single_child", record, parent);
     parent = record;
   }
   checkTail(!records.some((record) => record.parentId === parent.id), "terminal_leaf", undefined, parent);
-  return { ...selectNativeTurnContent(records.filter((record) => !tail.includes(record)), expected),
+  // Contract only the proven cancellation nodes, preserving native content and IDs.
+  const projected = records.filter((record) => !tail.includes(record))
+    .map((record) => record === assistant ? { ...record, parentId: recovery.user.id } : record);
+  return { ...selectNativeTurnContent(projected, expected),
     lateOriginalToolResultCount: tail.length };
 }
 

@@ -370,15 +370,19 @@ function withRecovery(original) {
   { id: "recovery-answer", type: "message", role: "assistant", parentId: "recovery-user", status: "completed",
     content: [{ type: "output_text", text: interruptIdentity.recoveryAnswer }] }];
 }
-function withLateOriginalResults(count = 2) {
+function withLateOriginalResults(count = 2, beforeAnswer = 0) {
   const records = withRecovery([user(), call()]).map((record, index) => ({ ...record, sessionId: identity.sessionId,
     providerData: { conversationRequestId: index < 2 ? "original-request" : "recovery-request" } }));
   for (let index = 0; index < count; index += 1) {
     records.push({ ...result("incomplete"), id: `late-result-${index}`, parentId: records.at(-1).id,
       sessionId: identity.sessionId, providerData: { conversationRequestId: "original-request", skipRun: true } });
   }
+  const assistant = records.splice(3, 1)[0];
+  records.splice(3 + beforeAnswer, 0, assistant);
+  for (let index = 3; index < records.length; index += 1) records[index].parentId = records[index - 1].id;
   return records;
 }
+const lateResultPlacements = [[1, 0], [1, 1], [2, 0], [2, 1], [2, 2]];
 
 test("interrupt outcome requires successful independent recovery before classifying absent or incomplete old answers", () => {
   for (const original of [[user(), call()], [user(), call(), result("incomplete")],
@@ -427,14 +431,33 @@ test("interrupt recovery projects only proven original-owned late cancellation r
 });
 
 test("interrupt recovery requires distinct matching request owners on both prompts, original call and recovery answer", () => {
-  for (const index of [0, 1, 2, 3]) for (const owner of [undefined, null, "", "foreign-request"]) {
-    const records = withLateOriginalResults();
-    records[index].providerData = owner === undefined ? undefined : { conversationRequestId: owner };
+  for (const [count, beforeAnswer] of lateResultPlacements) {
+    for (const id of ["user", "tool-call", "recovery-user", "recovery-answer"]) {
+      for (const owner of [undefined, null, "", "foreign-request"]) {
+        const records = withLateOriginalResults(count, beforeAnswer);
+        records.find((record) => record.id === id).providerData = owner === undefined ? undefined : { conversationRequestId: owner };
+        rejects(() => selectInterruptRecovery(records, interruptIdentity), "PERMISSION_INTERRUPT_REQUEST_OWNER_MISMATCH");
+      }
+    }
+    const records = withLateOriginalResults(count, beforeAnswer);
+    for (const record of records) record.providerData.conversationRequestId = "same-request";
     rejects(() => selectInterruptRecovery(records, interruptIdentity), "PERMISSION_INTERRUPT_REQUEST_OWNER_MISMATCH");
   }
-  const records = withLateOriginalResults();
-  for (const record of records) record.providerData.conversationRequestId = "same-request";
-  rejects(() => selectInterruptRecovery(records, interruptIdentity), "PERMISSION_INTERRUPT_REQUEST_OWNER_MISMATCH");
+});
+
+test("interrupt recovery requires explicit matching sessions on original and recovery request records in every placement", () => {
+  for (const [count, beforeAnswer] of lateResultPlacements) {
+    for (const id of ["user", "tool-call", "recovery-user", "recovery-answer"]) {
+      const missingSessionCode = id === "user" ? "PERMISSION_TRANSCRIPT_PROMPT_MISMATCH"
+        : id === "recovery-user" ? "NATIVE_TRANSCRIPT_SESSION_MISMATCH" : "PERMISSION_INTERRUPT_REQUEST_OWNER_MISMATCH";
+      for (const [sessionId, code] of [[undefined, missingSessionCode],
+        ["foreign-session", "NATIVE_TRANSCRIPT_SESSION_MISMATCH"]]) {
+        const records = withLateOriginalResults(count, beforeAnswer);
+        records.find((record) => record.id === id).sessionId = sessionId;
+        rejects(() => selectInterruptRecovery(records, interruptIdentity), code);
+      }
+    }
+  }
 });
 
 test("interrupt recovery also validates any original assistant owner before projecting its late results", () => {
@@ -449,19 +472,21 @@ test("interrupt recovery also validates any original assistant owner before proj
 });
 
 test("interrupt recovery rejects missing or foreign late-result authority, wrong tools and successful results", () => {
-  for (const patch of [{ callId: "foreign-call" }, { name: "Bash" }, { status: "completed" }, { status: undefined },
-    { role: "assistant" }, { sessionId: undefined }, { providerData: undefined },
-    { providerData: { skipRun: true } }, { providerData: { conversationRequestId: "recovery-request", skipRun: true } },
-    { providerData: { conversationRequestId: "foreign-request", skipRun: true } },
-    { providerData: { conversationRequestId: "original-request" } },
-    { providerData: { conversationRequestId: "original-request", skipRun: false } }]) {
-    const records = withLateOriginalResults(1);
-    Object.assign(records.at(-1), patch);
-    rejects(() => selectInterruptRecovery(records, interruptIdentity), "PERMISSION_INTERRUPT_RECOVERY_TAIL_INVALID");
+  for (const [count, beforeAnswer] of lateResultPlacements) for (let index = 0; index < count; index += 1) {
+    for (const patch of [{ callId: "foreign-call" }, { name: "Bash" }, { status: "completed" }, { status: undefined },
+      { role: "assistant" }, { sessionId: undefined }, { providerData: undefined },
+      { providerData: { skipRun: true } }, { providerData: { conversationRequestId: "recovery-request", skipRun: true } },
+      { providerData: { conversationRequestId: "foreign-request", skipRun: true } },
+      { providerData: { conversationRequestId: "original-request" } },
+      { providerData: { conversationRequestId: "original-request", skipRun: false } }]) {
+      const records = withLateOriginalResults(count, beforeAnswer);
+      Object.assign(records.find((record) => record.id === `late-result-${index}`), patch);
+      rejects(() => selectInterruptRecovery(records, interruptIdentity), "PERMISSION_INTERRUPT_RECOVERY_TAIL_INVALID");
+    }
+    const foreignSession = withLateOriginalResults(count, beforeAnswer);
+    foreignSession.find((record) => record.id === `late-result-${index}`).sessionId = "foreign-session";
+    rejects(() => selectInterruptRecovery(foreignSession, interruptIdentity), "NATIVE_TRANSCRIPT_SESSION_MISMATCH");
   }
-  const foreignSession = withLateOriginalResults(1);
-  foreignSession.at(-1).sessionId = "foreign-session";
-  rejects(() => selectInterruptRecovery(foreignSession, interruptIdentity), "NATIVE_TRANSCRIPT_SESSION_MISMATCH");
 });
 
 test("interrupt recovery still requires the exact original tool call and complete recovery text", () => {
@@ -492,6 +517,39 @@ test("interrupt recovery rejects ambiguous, cyclic, reordered, orphaned or exces
     const records = withLateOriginalResults();
     mutate(records);
     rejects(() => selectInterruptRecovery(records, interruptIdentity), code);
+  }
+});
+
+test("interrupt recovery rejects malformed cancellation chains before and across the recovery answer", () => {
+  for (const beforeAnswer of [1, 2]) for (const [mutate, code] of [
+    [(records) => { records.find((record) => record.id === "late-result-0").parentId = "missing-parent"; },
+      "NATIVE_TRANSCRIPT_FINAL_MISSING"],
+    [(records) => { records.find((record) => record.id === "recovery-answer").parentId = "recovery-user"; },
+      "PERMISSION_INTERRUPT_RECOVERY_TAIL_INVALID"],
+    [(records) => { records.find((record) => record.id === "late-result-1").parentId = "recovery-user"; },
+      "PERMISSION_INTERRUPT_RECOVERY_TAIL_INVALID"],
+    [(records) => { records.splice(3, 0, records.pop()); }, "PERMISSION_INTERRUPT_RECOVERY_TAIL_INVALID"],
+    [(records) => { records.push({ ...records.find((record) => record.id === "late-result-1"), id: "third-result",
+      parentId: records.at(-1).id }); }, "PERMISSION_INTERRUPT_RECOVERY_TAIL_INVALID"],
+    [(records) => { records.push({ ...call(), id: "recovery-call", callId: "recovery-tool", parentId: records.at(-1).id }); },
+      "PERMISSION_INTERRUPT_RECOVERY_TAIL_INVALID"],
+    [(records) => { records.push({ ...user(), id: "future-user", parentId: records.at(-1).id,
+      content: [{ type: "input_text", text: "Future prompt" }] }); }, "PERMISSION_INTERRUPT_RECOVERY_TAIL_INVALID"],
+  ]) {
+    const records = withLateOriginalResults(2, beforeAnswer);
+    mutate(records);
+    rejects(() => selectInterruptRecovery(records, interruptIdentity), code);
+  }
+  const split = withLateOriginalResults(2, 1);
+  split.find((record) => record.id === "late-result-1").parentId = "late-result-0";
+  rejects(() => selectInterruptRecovery(split, interruptIdentity), "PERMISSION_INTERRUPT_RECOVERY_TAIL_INVALID");
+});
+
+test("interrupt recovery rejects same-call results appended to the original branch after recovery begins", () => {
+  for (const [count, beforeAnswer] of lateResultPlacements) {
+    const records = withLateOriginalResults(count, beforeAnswer);
+    records.push({ ...records.find((record) => record.id === "late-result-0"), id: "original-late-result", parentId: "tool-call" });
+    rejects(() => selectInterruptRecovery(records, interruptIdentity), "PERMISSION_INTERRUPT_RECOVERY_TAIL_INVALID");
   }
 });
 
@@ -575,19 +633,16 @@ test("interrupt recovery diagnostics distinguish every unchanged tail assertion"
   }
 });
 
-test("interrupt recovery diagnostics retain failure for original results straddling the recovery answer", () => {
-  const records = withLateOriginalResults(), [assistant, before, after] = records.slice(3);
-  before.parentId = "recovery-user";
-  assistant.parentId = before.id;
-  after.parentId = assistant.id;
-  records.splice(3, 3, before, assistant, after);
-  const original = structuredClone(records), diagnostic = recoveryDiagnostic(records);
-  assert.deepEqual(diagnostic, {
-    clause: "tail_shape", recordCount: 6, originalBranchCount: 2, recoveryBranchCount: 4, tailCount: 2,
-    originalResultBeforeAnswerCount: 1, originalResultAfterAnswerCount: 1, unselectedContentCount: 0,
-    laterUserCount: 0, assistantChildCount: 1, assistantParentIsRecoveryUser: false,
-  });
-  assert.deepEqual(records, original);
+test("interrupt recovery projects proven original results before or straddling the recovery answer without mutation", () => {
+  const expected = selectInterruptRecovery(withLateOriginalResults(0), interruptIdentity);
+  for (const [count, beforeAnswer] of [[2, 1], [1, 1], [2, 2]]) {
+    const records = withLateOriginalResults(count, beforeAnswer), original = structuredClone(records);
+    assert.deepEqual(selectInterruptRecovery(records, interruptIdentity), { ...expected, lateOriginalToolResultCount: count });
+    assert.deepEqual(selectInterruptOutcome(records, interruptIdentity), {
+      outcome: "incomplete", toolResultRecorded: true, lateOriginalToolResultCount: count,
+    });
+    assert.deepEqual(records, original);
+  }
 });
 
 test("interrupt recovery member diagnostics identify field mismatches without leaking native values", () => {

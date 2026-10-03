@@ -847,12 +847,15 @@ operating-system sandbox enforcement, automatic approval judgment, or
 interrupted trace and metadata reconciliation.
 
 Only the explicit-interrupt recovery oracle recognizes late incomplete tool
-results appended after the completed recovery answer. The original prompt,
-tool call, arguments, and distinct original/recovery request identities must
-prove that those results belong to the original turn. Their count is reported
-as compatibility evidence, not recovery activity. Missing or conflicting
-identity, recovery-owned tool results, and additional recovery answers still
-fail; the generic completed-turn oracle remains unchanged.
+results appended after the recovery prompt, before or after its completed answer.
+The original prompt, tool call, arguments, and distinct original/recovery request
+identities must prove that those results belong to the original turn. Only one
+or two incomplete, skipped results in a single ordered parent chain with the
+recovery answer may be excluded from its content selection; native records are
+not mutated. Their total count is reported as compatibility evidence, not recovery
+activity. Missing or conflicting identity, recovery-owned tool results, extra
+branches, and additional recovery answers still fail; the generic completed-turn
+oracle remains unchanged.
 
 The Repo Memory case removes process model/provider overrides and uses isolated
 global `settings.json` and `models.json`. It correlates the real foreground
