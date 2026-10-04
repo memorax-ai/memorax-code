@@ -328,6 +328,43 @@ test("writeback diagnostics recognize the native Hook's line-break-free prompt w
     pendingMatchesPrompt: false, pendingMatchesPromptWithoutLineBreaks: true });
   assert.equal(JSON.stringify(summary).includes("PRIVATE_"), false);
 });
+test("WorkBuddy writeback diagnostics isolate identical CodeBuddy session and prompt identities", () => {
+  const identity = { client: "workbuddy", sessionId: "session-fixture", promptHash: "PRIVATE_PROMPT_HASH" };
+  const trace = { client: identity.client, session_id: identity.sessionId, turn_id: "session-fixture:42:PRIVATE_PROMPT_HASH" };
+  const events = [{ type: "turn_start", trace }, { type: "turn_end", trace, ok: false, error: "turn_not_found" },
+    { type: "turn_start", trace: { ...trace, client: "codebuddy" } },
+    { type: "turn_end", trace: { ...trace, client: "codebuddy" }, ok: true, outcome: "completed" },
+    { type: "turn_end", trace: { ...trace, session_id: "other-session" }, ok: true, outcome: "completed" }];
+  const summary = summarizeWritebackTrace(events,
+    { [identity.sessionId]: { turnId: trace.turn_id, transcriptPath: "/private/PRIVATE_TRANSCRIPT" } }, identity);
+  assert.deepEqual(summary, { turnStarts: 1, turnEnds: 1,
+    endings: [{ ok: false, outcome: "other", reason: "turn_not_found" }], pendingForSession: true,
+    pendingMatchesPrompt: true, pendingMatchesPromptWithoutLineBreaks: false });
+  const codebuddy = summarizeWritebackTrace(events, {}, { ...identity, client: "codebuddy" });
+  assert.equal(codebuddy.turnStarts, 1);
+  assert.deepEqual(codebuddy.endings, [{ ok: true, outcome: "completed", reason: "none" }]);
+  assert.equal(JSON.stringify([summary, codebuddy]).includes("PRIVATE_"), false);
+});
+test("WorkBuddy writeback diagnostics use only the raw prompt hash unless an alternate digest is explicit", () => {
+  const identity = { client: "workbuddy", sessionId: "session-fixture", promptHash: "PRIVATE_ORIGINAL_HASH" };
+  const trace = { client: identity.client, session_id: identity.sessionId, turn_id: "session-fixture:42:PRIVATE_STRIPPED_HASH" };
+  const events = [{ type: "turn_start", trace }, { type: "turn_end", trace, ok: false, error: "user_prompt_missing" }];
+  const pending = { [identity.sessionId]: { turnId: trace.turn_id } };
+  const rawOnly = summarizeWritebackTrace(events, pending, identity);
+  assert.deepEqual(rawOnly, { turnStarts: 0, turnEnds: 0, endings: [], pendingForSession: true,
+    pendingMatchesPrompt: false, pendingMatchesPromptWithoutLineBreaks: false });
+  const explicit = summarizeWritebackTrace(events, pending, { ...identity, promptWithoutLineBreaksHash: "PRIVATE_STRIPPED_HASH" });
+  assert.deepEqual(explicit, { turnStarts: 1, turnEnds: 1,
+    endings: [{ ok: false, outcome: "other", reason: "user_prompt_missing" }], pendingForSession: true,
+    pendingMatchesPrompt: false, pendingMatchesPromptWithoutLineBreaks: true });
+  assert.equal(JSON.stringify([rawOnly, explicit]).includes("PRIVATE_"), false);
+});
+test("writeback diagnostics reject unsupported clients", () => {
+  for (const client of ["claude", "WorkBuddy", "", null]) {
+    assert.throws(() => summarizeWritebackTrace([], {}, { client, sessionId: "session", promptHash: "hash" }),
+      { nativeCode: "NATIVE_CLIENT_INVALID" });
+  }
+});
 const resultEvent = () => ({ type: "result", subtype: "success", is_error: false, session_id: "native-fixture-session",
   result: diagnosticOptions.answer });
 const initEvent = () => ({ type: "system", subtype: "init", model: diagnosticOptions.model });

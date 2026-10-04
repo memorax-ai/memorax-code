@@ -501,6 +501,120 @@ test("CodeBuddy harness replaces inherited credentials, all client homes and net
   }
 });
 
+test("shared native harness rejects an unknown client before creating resources", async () => {
+  for (const client of ["claude", "WorkBuddy", "", null]) {
+    await assert.rejects(createNativeHarness({ client }), { nativeCode: "NATIVE_CLIENT_INVALID" });
+  }
+});
+
+test("WorkBuddy harness isolates native aliases and selects only its own runtime and trace", async (t) => {
+  const canary = "inherited-workbuddy-value-must-not-leak";
+  const names = ["CODEBUDDY_HOME", "CODEBUDDY_CONFIG_DIR", "WORKBUDDY_HOME", "WORKBUDDY_CONFIG_DIR",
+    "WORKBUDDY_CODEBUDDY_PATH", "MEMORAX_CODE_WORKBUDDY_COMMAND", "MEMORAX_CODE_CODEBUDDY_COMMAND",
+    "MEMORAX_CODE_WORKBUDDY_TRACE_ENABLED", "CODEBUDDY_API_KEY", "CODEBUDDY_AUTH_TOKEN", "HTTPS_PROXY"];
+  const previous = new Map(names.map((name) => [name, process.env[name]]));
+  let harness;
+  try {
+    for (const name of names) process.env[name] = canary;
+    harness = await createHarness(t, { client: "workbuddy" });
+  } finally {
+    for (const [name, value] of previous) {
+      if (value === undefined) delete process.env[name]; else process.env[name] = value;
+    }
+  }
+  assert.equal(Object.values(harness.env).some((value) => value.includes(canary)), false);
+  assert.equal(harness.client, "workbuddy");
+  assert.equal(harness.nativeHome, join(harness.home, ".workbuddy"));
+  assert.equal(harness.codebuddyHome, harness.nativeHome);
+  for (const name of ["WORKBUDDY_HOME", "WORKBUDDY_CONFIG_DIR", "CODEBUDDY_CONFIG_DIR"]) {
+    assert.equal(harness.env[name], harness.nativeHome, name);
+  }
+  assert.equal(harness.env.CODEBUDDY_HOME, join(harness.home, ".codebuddy"));
+  assert.notEqual(harness.env.CODEBUDDY_HOME, harness.nativeHome);
+  assert.equal(harness.env.WORKBUDDY_CODEBUDDY_PATH, undefined);
+  assert.equal(harness.env.MEMORAX_CODE_WORKBUDDY_COMMAND, harness.codebuddyCommand);
+  assert.equal(harness.env.MEMORAX_CODE_WORKBUDDY_TRACE_ENABLED, "true");
+  assert.equal(harness.env.MEMORAX_CODE_SKIP_WORKBUDDY_ADAPTER_INSTALL, undefined);
+  const config = await readFile(join(harness.stateHome, "config.toml"), "utf8");
+  assert.match(config, /\[clients\]\nworkbuddy = true\n/);
+  for (const client of ["codex", "claude", "dsh", "opencode", "codebuddy", "trae", "cursor"]) {
+    assert.equal(config.includes(`${client} = false\n`), true);
+    assert.equal(harness.env[`MEMORAX_CODE_${client.toUpperCase()}_COMMAND`], join(harness.root, "unused-client"));
+    assert.equal(harness.env[`MEMORAX_CODE_${client.toUpperCase()}_TRACE_ENABLED`], "false");
+    assert.equal(harness.env[`MEMORAX_CODE_SKIP_${client.toUpperCase()}_ADAPTER_INSTALL`], "1");
+  }
+  const settings = JSON.parse(await readFile(join(harness.nativeHome, "settings.json"), "utf8"));
+  assert.equal(settings.env.CODEBUDDY_BASE_URL, harness.modelUrl);
+  assert.equal(settings.env.CODEBUDDY_API_KEY, "native-model-fixture");
+  const models = JSON.parse(await readFile(join(harness.nativeHome, "models.json"), "utf8"));
+  assert.equal(models.models[0].url, `${harness.modelUrl}/v1/chat/completions`);
+  assert.deepEqual(models.availableModels, [fixtureModel]);
+  await assert.rejects(stat(join(harness.env.CODEBUDDY_HOME, "settings.json")), { code: "ENOENT" });
+});
+
+for (const [selectedClient, reportClient] of [[undefined, "codebuddy"], ["workbuddy", "workbuddy"], ["workbuddy", "codebuddy"]]) {
+  const client = selectedClient ?? "codebuddy";
+  const ready = client === reportClient;
+  test(`native ${client} setup and cleanup select their client and ${ready ? "accept matching" : "reject foreign"} adapter status`, async () => {
+    const fixture = await mkdtemp(join(tmpdir(), "codebuddy-native-client-selection-"));
+    const nativeCommand = join(fixture, "native.mjs");
+    const callsPath = join(fixture, "calls.jsonl");
+    let harness;
+    try {
+      await mkdir(join(fixture, "lib"));
+      await mkdir(join(fixture, "bin"));
+      await writeFile(join(fixture, "lib", "windows-cli-invocation.mjs"), `
+        export const resolveWindowsCliInvocation = (command, args) => command === ${JSON.stringify(nativeCommand)}
+          ? { command: process.execPath, args: [command, ...args] } : { command, args };
+      `);
+      await writeFile(nativeCommand, `
+        import assert from "node:assert/strict";
+        assert.deepEqual(process.argv.slice(2), ["--version"]);
+        console.log("2.159.0");
+      `);
+      await writeFile(join(fixture, "bin", "memorax-code.mjs"), `
+        import assert from "node:assert/strict";
+        import { appendFileSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
+        import { join } from "node:path";
+        const args = process.argv.slice(2);
+        appendFileSync(${JSON.stringify(callsPath)}, JSON.stringify(args) + "\\n");
+        const directory = join(process.env.MEMORAX_CODE_HOME, "runtime", "backend");
+        const record = join(directory, "backend.pid.json");
+        if (args[0] === "setup") {
+          assert.deepEqual(args, ["setup", "--existing-account", "--non-interactive"]);
+          const input = [];
+          for await (const chunk of process.stdin) input.push(chunk);
+          assert.equal(Buffer.concat(input).toString("utf8"), ${JSON.stringify(`${fixtureKey}\n`)});
+          mkdirSync(directory, { recursive: true });
+          writeFileSync(record, JSON.stringify({ pid: 2147483647,
+            url: "http://127.0.0.1:" + process.env.MEMORAX_CODE_BACKEND_PORT }));
+        } else {
+          assert.deepEqual(args, [args[0], "--clients", ${JSON.stringify(client)}, "--json"]);
+          if (args[0] === "status") console.log(JSON.stringify({ ok: true, backend: { ok: true },
+            ${JSON.stringify(`${reportClient}Adapter`)}: { ok: true } }));
+          else { assert.equal(args[0], "stop"); unlinkSync(record); console.log(JSON.stringify({ ok: true })); }
+        }
+      `);
+      harness = await createNativeHarness({ packageRoot: fixture, codebuddyCommand: nativeCommand,
+        client: selectedClient, expectedVersion: "2.159.0", label: "client-selection" });
+      assert.equal(harness.client, client);
+      if (ready) assert.equal((await harness.setup())[`${client}Adapter`].ok, true);
+      else await assert.rejects(harness.setup(), { nativeCode: "NATIVE_SETUP_NOT_READY" });
+      assert.equal(harness.codebuddyVersion, "2.159.0");
+      await harness.close();
+      assert.deepEqual((await readFile(callsPath, "utf8")).trim().split("\n").map(JSON.parse), [
+        ["setup", "--existing-account", "--non-interactive"], ["status", "--clients", client, "--json"],
+        ["stop", "--clients", client, "--json"],
+      ]);
+      await assert.rejects(stat(harness.root), { code: "ENOENT" });
+    } finally {
+      await harness?.close().catch(() => {});
+      if (harness) await rm(harness.root, { recursive: true, force: true });
+      await rm(fixture, { recursive: true, force: true });
+    }
+  });
+}
+
 test("model receiver supports streaming and JSON using only the configured synthetic model", async (t) => {
   const harness = await createHarness(t);
   const indexes = [];

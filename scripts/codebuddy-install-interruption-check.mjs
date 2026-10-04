@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { chmod, readFile, stat, writeFile } from "node:fs/promises";
+import { chmod, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import { basename, dirname, join, resolve } from "node:path";
@@ -15,14 +15,25 @@ const report = { status: "FAIL", suite: "codebuddy_setup_interruption", platform
   paidModelRequests: 0, evidence: "real installed setup in a PTY; native lifecycle lock and test-only Node child admission gates", cases: [] };
 const phases = ["after-config-write", "before-backend-start", "after-backend-start", "saved-account-key-cancel"];
 const key = `sk_${"I".repeat(43)}`;
-let packageRoot, codebuddyCommand, pty, expectedVersion;
+let packageRoot, codebuddyCommand, pty, expectedVersion, client = "codebuddy";
 try {
-  check(process.argv.length === 6, "EXPECTED_PACKAGE_CODEBUDDY_PTY_PATHS_AND_VERSION");
+  check(process.argv.length === 6 || process.argv.length === 7, "EXPECTED_PACKAGE_NATIVE_PTY_PATHS_VERSION_AND_OPTIONAL_CLIENT");
+  client = process.argv[6] ?? "codebuddy";
+  check(client === "codebuddy" || client === "workbuddy", "NATIVE_CLIENT_INVALID");
+  report.suite = `${client}_setup_interruption`;
   packageRoot = resolve(process.argv[2]);
   codebuddyCommand = resolve(process.argv[3]);
   expectedVersion = process.argv[5];
-  check(/^\d+\.\d+\.\d+$/.test(expectedVersion), "EXPECTED_CODEBUDDY_VERSION_INVALID");
-  report.codebuddyVersion = expectedVersion;
+  check(/^\d+\.\d+\.\d+$/.test(expectedVersion), `EXPECTED_${client.toUpperCase()}_VERSION_INVALID`);
+  if (client === "workbuddy") {
+    codebuddyCommand = await realpath(codebuddyCommand);
+    const { isWorkBuddyBundledCommand } = await import(pathToFileURL(join(packageRoot,
+      "lib/memorax-code-adapter-common/src/clients/codebuddy-command.mjs")));
+    check(isWorkBuddyBundledCommand(codebuddyCommand), "EXPECTED_WORKBUDDY_BUNDLED_RUNTIME");
+    report.bundledRuntimeVersion = expectedVersion;
+    report.desktopUIValidated = false;
+    report.loginFlowValidated = false;
+  } else report.codebuddyVersion = expectedVersion;
   const require = createRequire(join(resolve(process.argv[4]), "package.json"));
   check(require("node-pty/package.json").version === "1.1.0", "UNEXPECTED_PTY_DEPENDENCY_VERSION");
   if (process.platform === "darwin") {
@@ -101,7 +112,7 @@ async function runCase(phase) {
       delete harness.env.MEMORAX_TEST_GATED_ENTRYPOINT;
       await attempt(rememberBackend);
       await attempt(async () => {
-        const stopped = JSON.parse((await harness.runProduct(["stop", "--clients", "codebuddy", "--json"],
+        const stopped = JSON.parse((await harness.runProduct(["stop", "--clients", client, "--json"],
           { cleanup: true, timeout: 15_000 })).stdout);
         check(stopped.ok === true, "INTERRUPTION_CLEANUP_STOP_FAILED");
       });
@@ -115,11 +126,11 @@ async function runCase(phase) {
   const completed = () => exists(join(harness.stateHome, "runtime", "setup", "setup-completion.json"));
   const observe = async (operation) => { try { await operation(); } catch (error) { result.errors.push(safeCode(error)); } };
   try {
-    harness = await createNativeHarness({ packageRoot, codebuddyCommand, label: `interruption-${phase}`, writeback: false,
+    harness = await createNativeHarness({ packageRoot, codebuddyCommand, client, label: `interruption-${phase}`, writeback: false,
       expectedVersion });
     harness.setBeforeClose(cleanupSetup);
     const version = (await harness.runCodeBuddy(["--version"])).stdout.trim();
-    check(version === expectedVersion, "INSTALLED_CODEBUDDY_VERSION_MISMATCH");
+    check(version === expectedVersion, `INSTALLED_${client.toUpperCase()}_VERSION_MISMATCH`);
     ({ parse } = createRequire(join(packageRoot, "package.json"))("smol-toml"));
     for (const name of ["MEMORAX_CODE_MEMORAX_ENDPOINT", "MEMORAX_CODE_MEMORAX_API_KEY", "MEMORAX_CODE_MEMORAX_USER_ID",
       "MEMORAX_CODE_MEMORY_WRITEBACK_ENABLED", "MEMORAX_CODE_JEV_ENABLED"]) delete harness.env[name];
@@ -131,7 +142,7 @@ async function runCase(phase) {
     // Trailing whitespace makes a real setup-managed configuration publication
     // observable while the protected semantic choices remain unchanged.
     initialConfig = `[memorax]\nendpoint = ${JSON.stringify(harness.memoryUrl)}\nuser_id = ${JSON.stringify(user)}\napi_key = ${JSON.stringify(key)}\n
-[clients]\ncodex = false\ncodebuddy = true \t\ndsh = false\nopencode = false\nclaude = false\nworkbuddy = false\ntrae = false\ncursor = false\n
+[clients]\ncodex = false\ncodebuddy = ${client === "codebuddy"} \t\ndsh = false\nopencode = false\nclaude = false\nworkbuddy = ${client === "workbuddy"}\ntrae = false\ncursor = false\n
 [memory.writeback]\nenabled = false\n[memory.cli]\nadd_enabled = false\n[memory.add]\noutput_language = "en"\n[jev]\nenabled = false\n`;
     await writeFile(join(harness.stateHome, "config.toml"), initialConfig, { mode: 0o600 });
     protectedConfig = snapshotProtectedConfiguration(parse(initialConfig));
@@ -233,10 +244,10 @@ async function runCase(phase) {
     check(completion?.version === 1 && completion.state === "complete"
       && completion.completedByVersion === manifest.version, "SETUP_RETRY_COMPLETION_MISSING");
     stage = "recovered-status";
-    const status = JSON.parse((await harness.runProduct(["status", "--clients", "codebuddy", "--json"])).stdout);
-    check(status.ok === true && status.backend?.ok === true && status.codebuddyAdapter?.ok === true, "SETUP_RETRY_NOT_READY");
+    const status = JSON.parse((await harness.runProduct(["status", "--clients", client, "--json"])).stdout);
+    check(status.ok === true && status.backend?.ok === true && status[`${client}Adapter`]?.ok === true, "SETUP_RETRY_NOT_READY");
     await verifyLifecycleIntegration({ packageRoot, home: harness.codebuddyHome, stateHome: harness.stateHome,
-      command: codebuddyCommand, adapter: status.codebuddyAdapter, settingsSnapshot: protectedSettings });
+      command: codebuddyCommand, adapter: status[`${client}Adapter`], settingsSnapshot: protectedSettings, client });
     check(await readFile(join(harness.codebuddyHome, "models.json"), "utf8") === protectedModels, "RECOVERY_MODELS_CHANGED");
     result.nativePluginAndSettingsVerified = true;
     check(harness.modelRequests.length === 0 && harness.memoryRequests.length === 0, "SETUP_MADE_MEMORY_OR_MODEL_REQUESTS");
@@ -258,15 +269,17 @@ async function runCase(phase) {
     check(results.length === 1 && typeof session === "string" && session.length > 0 && completedTurn.result === answer
       && completedTurn.is_error === false && completedTurn.subtype === "success"
       && completedTurn.terminal_reason === undefined, "RECOVERY_NATIVE_SESSION_FAILED");
-    const observed = JSON.parse((await harness.runProduct(["status", "--clients", "codebuddy", "--json"])).stdout);
-    check(observed.codebuddyAdapter?.codebuddyHooks?.runtimeObserved === true
+    const observed = JSON.parse((await harness.runProduct(["status", "--clients", client, "--json"])).stdout);
+    check(observed[`${client}Adapter`]?.codebuddyHooks?.runtimeObserved === true
       && harness.modelRequests.some(({ body }) => JSON.stringify(body.messages).includes("MemoraX Code reminder:")),
     "RECOVERY_NATIVE_HOOK_NOT_OBSERVED");
     check(harness.modelRequests.length === 1, "RECOVERY_MODEL_REQUEST_COUNT_MISMATCH");
     check(harness.memoryRequests.length === 0, "DISABLED_WRITEBACK_SENT_REQUEST");
     stage = "saved-account-search";
     const query = "Interrupted setup saved account check";
-    const searched = JSON.parse((await harness.runMemory(["search", "--query", query, "--session-id", session, "--json"])).stdout);
+    const searched = JSON.parse((await harness.runMemory(["search", "--query", query, "--session-id", session, "--json"], {
+      env: { MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT: client, MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID: session },
+    })).stdout);
     check(searched.ok === true && searched.baseUserId === user && searched.effectiveUserId === `${user}@${basename(harness.workspace)}`,
       "RECOVERY_SEARCH_IDENTITY_MISMATCH");
     check(harness.memoryRequests.length === 1, "RECOVERY_SEARCH_REQUEST_COUNT_MISMATCH");

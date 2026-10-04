@@ -1,43 +1,54 @@
 #!/usr/bin/env node
 import { createHash, randomUUID } from "node:crypto";
 import { access, readFile, readdir, realpath, writeFile } from "node:fs/promises";
-import { basename, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { pathToFileURL } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { check, createNativeHarness, fixtureKey, fixtureModel, fixtureUser, summarizeCleanupDiagnostic, waitFor } from "./codebuddy-native-support.mjs";
 import { assertCompleteText, assertNoForeignContent, assertWritebackMessages } from "./codex-native-content-check.mjs";
 import { nativeHookPrompt, selectNativeTurnContent, summarizeNativeCompletion } from "./codebuddy-native-content-check.mjs";
-import { assertInitializedModel, assertNativeInterruption, assertPermissionInitializations, assertPermissionWritebacks, assertToolLineage,
-  CodeBuddyControlSession, inflightCommand, inflightWorkerScript, modelToolResult,
-  nativePrompt, permissionArguments, permissionModelTurn, selectCanceledToolTurn, selectInterruptOutcome, selectInterruptRecovery,
-  summarizeToolFailure } from "./codebuddy-permissions-support.mjs";
+import { assertInitializedModel, assertNativeInterruption, assertPermissionDenialResult, assertPermissionDenialTerminal,
+  assertPermissionInitializations, assertPermissionWritebacks, assertToolLineage,
+  CodeBuddyControlSession, createPermissionReport, inflightCommand, inflightWorkerScript, modelToolResult,
+  nativePrompt, permissionArguments, permissionCases, permissionInvocation, permissionModelTurn, selectCanceledToolTurn, selectInterruptOutcome, selectInterruptRecovery,
+  summarizePermissionDenial, summarizeToolFailure } from "./codebuddy-permissions-support.mjs";
 
-const cases = [
-  { id: "policy-allow", preallowed: true, writes: true },
-  { id: "user-allow", decision: "allow", writes: true },
-  { id: "user-deny", decision: "deny", writes: false },
-  { id: "user-cancel", decision: "cancel", interrupted: true, writes: false },
-  { id: "user-inflight-interrupt", decision: "allow", inflight: true, interrupted: true, nativeInterrupt: true, writes: false },
-  { id: "user-wait-interrupt", interrupted: true, nativeInterrupt: true, writes: false },
-];
-const report = { status: "FAIL", suite: "native_codebuddy_permissions", platform: process.platform,
-  paidModelRequests: 0, modelQualityEvaluated: false,
-  scope: "MemoraX automatic writeback against native permission outcomes, with separate interrupt compatibility observations",
-  nativeInterruptSemanticsValidated: false,
-  interruptedTraceReconciliationValidated: false,
-  excludes: ["desktop approval UI", "OS sandbox or privilege enforcement", "LLM automatic approval quality",
-    "background Repo Memory permissions", "late approval after cancellation", "interrupted trace reconciliation"], cases: [] };
+const report = createPermissionReport();
 const completedCases = [], canceledContent = [], toolPids = new Set();
-let harness, control, current, cleanupPromise, suiteCompleted = false, stage = "prerequisites";
+let harness, control, current, cases, cleanupPromise, client = "codebuddy", suiteCompleted = false, stage = "prerequisites";
 
 try {
-  check(process.argv.length === 5, "EXPECTED_INSTALLED_PACKAGE_CODEBUDDY_PATH_AND_VERSION");
-  harness = await createNativeHarness({ packageRoot: resolve(process.argv[2]), codebuddyCommand: resolve(process.argv[3]),
-    expectedVersion: process.argv[4], label: "permissions" });
+  const invocation = permissionInvocation(process.argv.slice(2));
+  client = invocation.client;
+  cases = permissionCases(client, invocation.interruptCase);
+  Object.assign(report, createPermissionReport(client, process.platform, invocation.interruptCase));
+  const packageRoot = resolve(invocation.packageRoot);
+  let command = resolve(invocation.command);
+  if (client === "workbuddy") {
+    command = await realpath(command);
+    const { isWorkBuddyBundledCommand } = await import(pathToFileURL(join(packageRoot,
+      "lib/memorax-code-adapter-common/src/clients/codebuddy-command.mjs")));
+    check(isWorkBuddyBundledCommand(command), "EXPECTED_WORKBUDDY_BUNDLED_RUNTIME");
+  }
+  harness = await createNativeHarness({ packageRoot, codebuddyCommand: command, client,
+    expectedVersion: invocation.expectedVersion, label: "permissions" });
   harness.setBeforeClose(cleanupFixtures);
   stage = "installed plugin setup";
-  await harness.setup();
-  report.codebuddyVersion = harness.codebuddyVersion;
+  const status = await harness.setup();
+  if (client === "workbuddy") {
+    const adapter = status.workbuddyAdapter;
+    check(adapter?.runtime === "workbuddy" && adapter.installed === true && adapter.enabled === true
+      && adapter.managed === true && adapter.codebuddyHooks?.configured === true, "NATIVE_WORKBUDDY_PLUGIN_NOT_READY");
+    const home = await realpath(harness.nativeHome);
+    const pluginRoot = await realpath(join(dirname(adapter.codebuddySkills.path), "../.."));
+    const rel = relative(home, pluginRoot);
+    check(rel !== ".." && !rel.startsWith("../") && !rel.startsWith("..\\") && !isAbsolute(rel), "NATIVE_PLUGIN_PATH_OUTSIDE_HOME");
+    const metadata = JSON.parse(await readFile(join(pluginRoot, ".memorax-code-package.json"), "utf8"));
+    check(metadata.client === client && await realpath(metadata.codeBuddyHome) === home
+      && await realpath(metadata.codeBuddyCommand) === command, "NATIVE_WORKBUDDY_INSTALLATION_IDENTITY_MISMATCH");
+  }
+  report[client === "workbuddy" ? "bundledRuntimeVersion" : "codebuddyVersion"] = harness.codebuddyVersion;
   check(harness.memoryRequests.length === 0 && harness.modelRequests.length === 0, "SETUP_MADE_UNEXPECTED_REQUESTS");
   const scriptPath = join(harness.workspace, "permission-inflight-worker.cjs");
   await writeFile(scriptPath, inflightWorkerScript, { mode: 0o600 });
@@ -60,7 +71,10 @@ try {
     if (current.test.writes) check(await readFile(current.markerPath, "utf8") === current.marker, "PERMISSION_TOOL_RESULT_WITHOUT_FILE_EFFECT");
     else {
       check(!await exists(current.markerPath), "PERMISSION_UNEXPECTED_FILE_EFFECT");
-      if (!current.test.nativeInterrupt) check(text.includes(current.denialReason), "PERMISSION_NATIVE_DENIAL_RESULT_MISSING");
+      if (!current.test.nativeInterrupt) {
+        current.denialResultDiagnostic = summarizePermissionDenial(text, current.denialReason);
+        current.denialResultKind = assertPermissionDenialResult(text, { client, reason: current.denialReason });
+      }
     }
     current.toolResultObserved = true;
     return { text: current.answer };
@@ -69,14 +83,14 @@ try {
   for (const test of cases) {
     stage = test.id;
     // Pin routing before a first-turn interrupt can leave the CLI's session cache unset.
-    current = { test, sessionId: randomUUID(), modelRequests: 0, originalModelRequests: 0, recoveryModelRequests: 0,
+    current = { client, test, sessionId: randomUUID(), modelRequests: 0, originalModelRequests: 0, recoveryModelRequests: 0,
       toolResultObserved: false, recoverySent: false, verifiedTurns: [],
-      prompt: `Run the isolated CodeBuddy permission fixture ${test.id}.`,
-      answer: `CodeBuddy permission fixture ${test.id} is complete.`,
+      prompt: `Run the isolated ${client === "workbuddy" ? "WorkBuddy" : "CodeBuddy"} permission fixture ${test.id}.`,
+      answer: `${client === "workbuddy" ? "WorkBuddy" : "CodeBuddy"} permission fixture ${test.id} is complete.`,
       recoveryPrompt: `Complete the independent follow-up ${test.id}.`,
       recoveryAnswer: `The independent follow-up ${test.id} is complete.`,
-      denialReason: `CODEBUDDY_PERMISSION_DENIED_${test.id}`,
-      marker: `CODEBUDDY_PERMISSION_MARKER_${test.id}`, markerPath: join(harness.workspace, `${test.id}.txt`),
+      denialReason: `${client.toUpperCase()}_PERMISSION_DENIED_${test.id}`,
+      marker: `${client.toUpperCase()}_PERMISSION_MARKER_${test.id}`, markerPath: join(harness.workspace, `${test.id}.txt`),
       startedPath: join(harness.workspace, `${test.id}-started.json`),
     };
     current.tool = test.inflight ? { id: `permission-${test.id}`, name: "Bash", input: {
@@ -181,6 +195,10 @@ try {
         sameSessionRecovered: true, interruptedTurnNotWritten: true });
     } else {
       assertSuccess(terminal, current.answer);
+      if (client === "workbuddy" && test.decision === "deny") {
+        assertPermissionDenialTerminal(terminal, current.sessionId, current.tool);
+        Object.assign(result, { nativeDenialIdentityMatched: true, nativeDenialResultKind: current.denialResultKind });
+      }
       check(current.toolResultObserved, "PERMISSION_NATIVE_TOOL_RESULT_NOT_RETURNED_TO_MODEL");
       result.writeback = await verifyCompleted({ prompt: current.prompt, answer: current.answer, tool: current.tool, denied: !test.writes });
     }
@@ -218,6 +236,7 @@ try {
     } catch { report.nativeCompletion = { available: false }; }
   }
   if (current?.earlyToolResult) report.unexpectedInflightToolResult = current.earlyToolResult;
+  if (current?.denialResultDiagnostic) report.nativeDenialResult = current.denialResultDiagnostic;
   if (current?.test.inflight && current.toolPid) {
     try {
       report.inflightInterruption = {
@@ -264,7 +283,7 @@ function assertSuccess(event, answer) {
 }
 async function transcript({ prompt, answer, toolId }) {
   return waitFor(async () => {
-    const home = await realpath(harness.codebuddyHome);
+    const home = await realpath(harness.nativeHome);
     const files = (await readdir(home, { recursive: true })).filter((path) => basename(path) === `${current.sessionId}.jsonl`);
     check(files.length <= 1, "PERMISSION_NATIVE_TRANSCRIPT_NOT_UNIQUE");
     if (!files.length) return undefined;
@@ -285,11 +304,11 @@ async function transcript({ prompt, answer, toolId }) {
 }
 async function findPromptTrace(prompt, completed = false) {
   return waitFor(async () => {
-    const text = await readFile(join(harness.stateHome, "debug", "traces", "codebuddy", "sessions", current.sessionId, "events.jsonl"), "utf8")
+    const text = await readFile(join(harness.stateHome, "debug", "traces", client, "sessions", current.sessionId, "events.jsonl"), "utf8")
       .catch((error) => { if (error.code === "ENOENT") return ""; throw error; });
     if (!text.endsWith("\n")) return undefined;
     const events = text.trim().split(/\r?\n/).map(JSON.parse);
-    check(events.every((event) => event.trace?.client === "codebuddy" && event.trace.session_id === current.sessionId),
+    check(events.every((event) => event.trace?.client === client && event.trace.session_id === current.sessionId),
       "PERMISSION_TRACE_SESSION_MISMATCH");
     const starts = events.filter((event) => event.type === "turn_start" && event.trace.turn_id?.startsWith(`${current.sessionId}:`)
       && event.trace.turn_id.endsWith(`:${hash(nativeHookPrompt(prompt))}`));
@@ -318,7 +337,7 @@ async function verifyCompleted({ prompt, answer, tool, denied }) {
   check(body.metadata?.memorax_code_session_id === current.sessionId && body.user_id === `${fixtureUser}@${basename(harness.workspace)}`
     && body.metadata.memorax_code_base_user_id === fixtureUser && body.metadata.memorax_code_workspace === basename(harness.workspace)
     && body.metadata.memorax_code_memory_scope === "workspace-name.v1", "PERMISSION_MEMORY_SCOPE_MISMATCH");
-  check(body.metadata.idempotency_key === `automatic:codebuddy:${shortHash(body.user_id)}:${current.sessionId}:${shortHash(body.messages[0].content)}:${shortHash(body.messages[1].content)}`,
+  check(body.metadata.idempotency_key === `automatic:${client}:${shortHash(body.user_id)}:${current.sessionId}:${shortHash(body.messages[0].content)}:${shortHash(body.messages[1].content)}`,
     "PERMISSION_AUTOMATIC_ADD_IDENTITY_MISMATCH");
   for (const [index, source] of [selected.user, selected.assistant].entries()) if (source.timestamp !== undefined) {
     check(body.messages[index].timestamp === source.timestamp && body.metadata.memorax_code_timestamp_sources?.[index] === "native",
@@ -366,7 +385,7 @@ function cleanupFixtures() {
       }
     } catch (caught) { error ??= caught; }
     // Only this generated worker's exact PID is a fallback. Killing it here is
-    // cleanup, never evidence that CodeBuddy implemented interruption correctly.
+    // cleanup, never evidence that the native client implemented interruption correctly.
     for (const pid of toolPids) try {
       if (alive(pid)) {
         try { process.kill(pid, "SIGKILL"); } catch (caught) { if (caught.code !== "ESRCH") throw caught; }

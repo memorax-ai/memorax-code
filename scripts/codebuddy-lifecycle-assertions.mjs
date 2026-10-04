@@ -76,8 +76,9 @@ export function assertLifecycleIntegrationAbsent(registry, known, settings) {
   "CODEBUDDY_INTEGRATION_REMAINS");
 }
 
-export async function verifyLifecycleIntegration({ packageRoot, home, stateHome, command, adapter, settingsSnapshot }) {
-  check(adapter?.ok === true && adapter.runtime === "codebuddy" && adapter.installed === true
+export async function verifyLifecycleIntegration({ packageRoot, home, stateHome, command, adapter, settingsSnapshot, client = "codebuddy" }) {
+  check(client === "codebuddy" || client === "workbuddy", "NATIVE_CLIENT_INVALID");
+  check(adapter?.ok === true && adapter.runtime === client && adapter.installed === true
     && adapter.enabled === true && adapter.managed === true && adapter.integration === "hooks"
     && adapter.codebuddyHooks?.configured === true && adapter.codebuddyHooks.ok === true
     && adapter.codebuddySkills?.ok === true, "CODEBUDDY_ADAPTER_NOT_READY");
@@ -115,7 +116,7 @@ export async function verifyLifecycleIntegration({ packageRoot, home, stateHome,
       "CODEBUDDY_INSTALLED_MANIFEST_MISMATCH");
     assertLifecycleHooks(await json(join(root, "hooks", "hooks.json")), await json(join(sourceRoot, "hooks", "hooks.json")), commandRoot);
     const metadata = await json(join(root, ".memorax-code-package.json"));
-    check(metadata.version === 1 && metadata.client === "codebuddy"
+    check(metadata.version === 1 && metadata.client === client
       && await realpath(metadata.codeBuddyHome) === await realpath(home)
       && await realpath(metadata.memoraxCodeHome) === await realpath(stateHome)
       && await realpath(metadata.codeBuddyCommand) === await realpath(command), "CODEBUDDY_HOOK_TARGET_MISMATCH");

@@ -207,15 +207,16 @@ export function summarizeNativeCompletion(events, { answer, model, modelRequests
     ].filter(([, pattern]) => pattern.test(errors)).map(([name]) => name),
   };
 }
-export function summarizeWritebackTrace(events, pending, { sessionId, promptHash, promptWithoutLineBreaksHash }) {
+export function summarizeWritebackTrace(events, pending, { client = "codebuddy", sessionId, promptHash, promptWithoutLineBreaksHash }) {
+  check(client === "codebuddy" || client === "workbuddy", "NATIVE_CLIENT_INVALID");
   const matches = (turnId) => typeof turnId === "string" && turnId.startsWith(`${sessionId}:`)
     && turnId.endsWith(`:${promptHash}`);
   const matchesWithoutLineBreaks = (turnId) => typeof promptWithoutLineBreaksHash === "string"
     && typeof turnId === "string" && turnId.startsWith(`${sessionId}:`) && turnId.endsWith(`:${promptWithoutLineBreaksHash}`);
   const matchesNativePrompt = (turnId) => matches(turnId) || matchesWithoutLineBreaks(turnId);
-  const starts = events.filter((event) => event?.type === "turn_start" && event.trace?.client === "codebuddy"
+  const starts = events.filter((event) => event?.type === "turn_start" && event.trace?.client === client
     && event.trace.session_id === sessionId && matchesNativePrompt(event.trace.turn_id));
-  const ends = events.filter((event) => event?.type === "turn_end" && event.trace?.client === "codebuddy"
+  const ends = events.filter((event) => event?.type === "turn_end" && event.trace?.client === client
     && event.trace.session_id === sessionId && matchesNativePrompt(event.trace.turn_id));
   const reasons = ["transcript_unavailable", "malformed_transcript", "turn_not_found", "user_prompt_missing",
     "assistant_message_missing", "turn_ambiguous", "transcript_path_mismatch"];

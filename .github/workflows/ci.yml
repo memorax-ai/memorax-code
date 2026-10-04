@@ -6,6 +6,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      diagnose_workbuddy:
+        description: Run isolated WorkBuddy native diagnostics on Linux, macOS and Windows with official bundled runtimes
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -27,6 +32,8 @@ jobs:
         with:
           node-version: '24'
           package-manager-cache: false
+      - name: Verify WorkBuddy workflow contract
+        run: node --test scripts/workbuddy-workflow.test.mjs
       - name: Run the existing regression suite
         shell: bash
         run: |
@@ -56,3 +63,240 @@ jobs:
           README_SYNC_BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before || 'HEAD^' }}
           README_SYNC_HEAD_REF: ${{ github.sha }}
         run: make docs-check
+
+  workbuddy-package:
+    name: WorkBuddy package
+    if: github.event_name != 'workflow_dispatch' || inputs.diagnose_workbuddy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      matrix: ${{ steps.releases.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Prepare the isolated release metadata parser
+        shell: bash
+        run: |
+          deps="$RUNNER_TEMP/workbuddy-release-tools"
+          mkdir -p "$deps/user" "$deps/tmp"
+          env -i PATH="$PATH" HOME="$deps/user" TMPDIR="$deps/tmp" \
+            npm_config_cache="$deps/npm-cache" npm install --prefix "$deps" \
+            --no-save --package-lock=false --ignore-scripts --no-audit --no-fund yaml@2.9.1
+          entry="$(node -p "require.resolve('yaml', { paths: [process.argv[1]] })" "$deps")"
+          printf 'WORKBUDDY_YAML_MODULE=%s\n' "$entry" >> "$GITHUB_ENV"
+      - name: Verify WorkBuddy and shared native test contracts
+        run: node --test scripts/codebuddy-*.test.mjs scripts/workbuddy-*.test.mjs
+      - name: Resolve each platform's latest release once
+        id: releases
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/workbuddy-release-matrix.mjs resolve
+      - name: Build and validate the candidate package
+        shell: bash
+        run: |
+          test_root="$(mktemp -d)"
+          trap 'rm -rf "$test_root"' EXIT
+          mkdir -p "$test_root/user" "$test_root/tmp"
+          env -i PATH="$PATH" HOME="$test_root/user" \
+            MEMORAX_CODE_HOME="$test_root/state" \
+            npm_config_cache="$test_root/npm-cache" TMPDIR="$test_root/tmp" \
+            make npm-package-check
+      - uses: actions/upload-artifact@v4
+        with:
+          name: workbuddy-diagnostic-package
+          path: dist/npm/tarballs/*.tgz
+          if-no-files-found: error
+          retention-days: 7
+
+  workbuddy-native:
+    name: WorkBuddy native (${{ matrix.os }}, Node ${{ matrix.node }}, ${{ matrix.release.channel }}, ${{ matrix.release.desktopVersion }})
+    needs: workbuddy-package
+    if: github.event_name != 'workflow_dispatch' || inputs.diagnose_workbuddy
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.workbuddy-package.outputs.matrix) }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+          package-manager-cache: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: workbuddy-diagnostic-package
+          path: dist/npm/tarballs
+      - name: Verify platform-specific WorkBuddy test contracts
+        shell: bash
+        env:
+          TMPDIR: ${{ runner.temp }}
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+        run: node --test scripts/workbuddy-*.test.mjs
+      - name: Validate the frozen release for this runner
+        shell: bash
+        env:
+          RELEASE_JSON: ${{ toJSON(matrix.release) }}
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { writeFileSync } from 'node:fs';
+          import { join } from 'node:path';
+          import { validateRelease } from './scripts/workbuddy-release-matrix.mjs';
+          const platforms = { linux: 'linux-x64-deb', darwin: 'darwin-arm64', win32: 'win32-x64-user' };
+          assert.equal(process.arch, process.platform === 'darwin' ? 'arm64' : 'x64');
+          const release = validateRelease(JSON.parse(process.env.RELEASE_JSON), platforms[process.platform]);
+          writeFileSync(join(process.env.RUNNER_TEMP, 'workbuddy-release.json'), JSON.stringify(release));
+          NODE
+      - name: Acquire the selected official WorkBuddy image
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          mkdir "$RUNNER_TEMP/workbuddy-bundle"
+          bash scripts/workbuddy-macos-bundle-check.sh "$RUNNER_TEMP/workbuddy-bundle" arm64 \
+            "$RUNNER_TEMP/workbuddy-release.json" > "$RUNNER_TEMP/workbuddy-bundle.json"
+      - name: Verify and mount the official application read-only
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          image="$RUNNER_TEMP/workbuddy-bundle/WorkBuddy.dmg"
+          mountpoint="$RUNNER_TEMP/workbuddy-bundle/mounted"
+          spctl --assess --type open --context context:primary-signature "$image" \
+            > "$RUNNER_TEMP/workbuddy-bundle/image-assessment.log" 2>&1
+          hdiutil attach -readonly -nobrowse -noautoopen -mountpoint "$mountpoint" "$image" \
+            > "$RUNNER_TEMP/workbuddy-bundle/mount.log" 2>&1
+          echo 'WORKBUDDY_IMAGE_ATTACHED=true' >> "$GITHUB_ENV"
+          app="$mountpoint/WorkBuddy.app"
+          codesign --verify --deep --strict --all-architectures \
+            --test-requirement '=identifier "com.tencent.workbuddy.mac" and anchor apple generic and certificate leaf[subject.OU] = "FN2V63AD2J"' \
+            "$app" > "$RUNNER_TEMP/workbuddy-bundle/signature.log" 2>&1
+          spctl --assess --type execute "$app" \
+            > "$RUNNER_TEMP/workbuddy-bundle/application-assessment.log" 2>&1
+          product_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")"
+          node --input-type=module - "$app" "$product_version" <<'NODE'
+          import assert from 'node:assert/strict';
+          import { readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+          import { join } from 'node:path';
+          const release = JSON.parse(readFileSync(join(process.env.RUNNER_TEMP, 'workbuddy-release.json'), 'utf8'));
+          assert.equal(process.argv[3], release.productVersion);
+          const cli = join(process.argv[2], 'Contents/Resources/app.asar.unpacked/cli');
+          for (const name of ['package.json', 'bin/codebuddy']) {
+            const path = join(cli, name);
+            assert.equal(realpathSync(path), path);
+            assert.ok(statSync(path).isFile());
+          }
+          const metadata = JSON.parse(readFileSync(join(cli, 'package.json'), 'utf8'));
+          assert.equal(metadata.publishConfig?.customPackage?.name, '@tencent-ai/codebuddy-code');
+          assert.equal(metadata.bin?.codebuddy, './bin/codebuddy');
+          const runtime = metadata.publishConfig?.customPackage?.version;
+          assert.match(runtime, /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/);
+          assert.ok(!/[\r\n]/.test(runtime));
+          if (release.runtimeVersion !== null) assert.equal(runtime, release.runtimeVersion);
+          const reportPath = join(process.env.RUNNER_TEMP, 'workbuddy-bundle.json');
+          const report = JSON.parse(readFileSync(reportPath, 'utf8'));
+          report.runtimeVersion = runtime;
+          report.command = 'mounted/WorkBuddy.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy';
+          writeFileSync(reportPath, JSON.stringify(report));
+          NODE
+      - name: Acquire and extract the selected official Linux package
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          mkdir "$RUNNER_TEMP/workbuddy-bundle"
+          bash scripts/workbuddy-linux-bundle-check.sh "$RUNNER_TEMP/workbuddy-bundle" x64 \
+            "$RUNNER_TEMP/workbuddy-release.json" > "$RUNNER_TEMP/workbuddy-bundle.json"
+      - name: Acquire and extract the signed official Windows package
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $destination = Join-Path $env:RUNNER_TEMP 'workbuddy-bundle'
+          New-Item -ItemType Directory -Path $destination | Out-Null
+          $report = & ./scripts/workbuddy-windows-bundle-check.ps1 -Destination $destination -ReleaseFile (Join-Path $env:RUNNER_TEMP 'workbuddy-release.json')
+          if ($LASTEXITCODE -ne 0) { throw 'WorkBuddy package acquisition failed.' }
+          $report | Set-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'workbuddy-bundle.json') -Encoding utf8
+      - name: Record the verified bundled runtime
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { appendFileSync, readFileSync, realpathSync } from 'node:fs';
+          import { isAbsolute, join, relative, resolve } from 'node:path';
+          const root = realpathSync(join(process.env.RUNNER_TEMP, 'workbuddy-bundle'));
+          const report = JSON.parse(readFileSync(join(process.env.RUNNER_TEMP, 'workbuddy-bundle.json'), 'utf8'));
+          assert.match(report.runtimeVersion, /^\d+\.\d+\.\d+$/);
+          assert.match(report.desktopVersion, /^\d+\.\d+\.\d+\.\d+$/);
+          assert.equal(typeof report.command, 'string');
+          assert.ok(!isAbsolute(report.command));
+          const command = realpathSync(resolve(root, report.command));
+          const local = relative(root, command);
+          assert.ok(local && !isAbsolute(local) && local !== '..' && !local.startsWith('../') && !local.startsWith('..\\'));
+          assert.ok(!/[\r\n]/.test(command));
+          appendFileSync(process.env.GITHUB_ENV, `WORKBUDDY_BUNDLED_COMMAND=${command}\nWORKBUDDY_RUNTIME_VERSION=${report.runtimeVersion}\n`);
+          appendFileSync(process.env.GITHUB_STEP_SUMMARY,
+            `Official desktop **${report.desktopVersion}** / bundled CLI **${report.runtimeVersion}** (${report.arch}).\n\n`);
+          NODE
+      - name: Run strict native WorkBuddy suites with isolated local services (macOS/Linux)
+        id: native-posix
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          test_root="$RUNNER_TEMP/workbuddy-diagnostic"
+          mkdir -p "$test_root/user" "$test_root/tmp"
+          env -i PATH="$PATH" HOME="$test_root/user" \
+            MEMORAX_CODE_HOME="$test_root/state" \
+            npm_config_cache="$test_root/npm-cache" TMPDIR="$test_root/tmp" \
+            node scripts/workbuddy-e2e.mjs dist/npm/tarballs "$WORKBUDDY_BUNDLED_COMMAND" "$WORKBUDDY_RUNTIME_VERSION" 0.1.18
+      - name: Verify shared Windows user PATH cleanup
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/codex-install-user-path.test.ps1
+      - name: Run strict native WorkBuddy suites with isolated local services (Windows)
+        id: native-windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+        run: |
+          & node scripts/workbuddy-e2e.mjs dist/npm/tarballs $env:WORKBUDDY_BUNDLED_COMMAND $env:WORKBUDDY_RUNTIME_VERSION 0.1.18
+          if ($LASTEXITCODE -ne 0) { throw 'WorkBuddy native suites failed; isolated state retained.' }
+      - name: Unmount the owned WorkBuddy image
+        if: always() && runner.os == 'macOS' && env.WORKBUDDY_IMAGE_ATTACHED == 'true'
+        shell: bash
+        run: hdiutil detach "$RUNNER_TEMP/workbuddy-bundle/mounted"
+      - name: Record the acceptance boundary
+        if: always()
+        env:
+          NATIVE_OUTCOME: ${{ runner.os == 'Windows' && steps.native-windows.outcome || steps.native-posix.outcome }}
+        shell: bash
+        run: |
+          printf 'WorkBuddy %s native checks: **%s**.\n\n' "$RUNNER_OS" "$NATIVE_OUTCOME" >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' 'Installation, setup interruption, Memory/Skill, four permission cases and Repo Memory worker configuration checks. The two explicit runtime interrupt cases are excluded and remain separate strict manual diagnostics. General runtime interruption, desktop UI and valid Repo Memory generation are not established. This result covers only the selected verified package and current runner; the entire platform, release and Node matrix must pass for an overall result.' >> "$GITHUB_STEP_SUMMARY"
+
+  workbuddy-result:
+    name: WorkBuddy functional result
+    if: always() && (github.event_name != 'workflow_dispatch' || inputs.diagnose_workbuddy)
+    needs: [workbuddy-package, workbuddy-native]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Require the package and entire WorkBuddy matrix to succeed
+        shell: bash
+        env:
+          PACKAGE_RESULT: ${{ needs.workbuddy-package.result }}
+          WORKBUDDY_RESULT: ${{ needs.workbuddy-native.result }}
+        run: |
+          printf 'Package: **%s**\n\nWorkBuddy matrix: **%s**\n\nVerified baseline/latest bundled runtimes; the two explicit runtime interrupt cases remain separate strict manual diagnostics.\n' "$PACKAGE_RESULT" "$WORKBUDDY_RESULT" >> "$GITHUB_STEP_SUMMARY"
+          if [[ "$PACKAGE_RESULT" != success || "$WORKBUDDY_RESULT" != success ]]; then
+            echo '::error::All package and WorkBuddy matrix jobs must succeed. Failed, cancelled or skipped dependencies do not pass this check.'
+            exit 1
+          fi

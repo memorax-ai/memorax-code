@@ -3,7 +3,8 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { startLifecycleCommand } from "./claude-lifecycle-process.mjs";
 
-export async function stopWrapperBackend(stateHome, command, windowsShell) {
+export async function stopWrapperBackend(stateHome, command, windowsShell, client = "codebuddy") {
+  if (client !== "codebuddy" && client !== "workbuddy") throw cleanupError("WRAPPER_CLIENT_INVALID");
   const pidPath = join(stateHome, "runtime", "backend", "backend.pid.json");
   let raw, pid, failure;
   try { raw = await readFile(pidPath, "utf8"); }
@@ -20,11 +21,11 @@ export async function stopWrapperBackend(stateHome, command, windowsShell) {
   try {
     const windows = process.platform === "win32";
     if (windows && !windowsShell) throw cleanupError("WRAPPER_WINDOWS_SHELL_MISSING");
-    const args = ["stop", "--clients", "codebuddy", "--json"];
+    const args = ["stop", "--clients", client, "--json"];
     const operation = startLifecycleCommand(windows ? windowsShell : command,
       windows ? ["-NoProfile", "-NonInteractive", "-Command",
-        "& $env:MEMORAX_TEST_STOP_SHIM stop --clients codebuddy --json; exit $LASTEXITCODE"] : args,
-      { env: { ...process.env, MEMORAX_TEST_STOP_SHIM: command }, timeoutMs: 15_000, maxOutputBytes: 1024 * 1024 });
+        "& $env:MEMORAX_TEST_STOP_SHIM stop --clients $env:MEMORAX_TEST_STOP_CLIENT --json; exit $LASTEXITCODE"] : args,
+      { env: { ...process.env, MEMORAX_TEST_STOP_SHIM: command, MEMORAX_TEST_STOP_CLIENT: client }, timeoutMs: 15_000, maxOutputBytes: 1024 * 1024 });
     const stopped = JSON.parse((await operation.result).stdout);
     if (stopped.ok !== true) throw cleanupError("WRAPPER_PUBLIC_STOP_FAILED");
   } catch { failure ??= cleanupError("WRAPPER_PUBLIC_STOP_FAILED"); }
@@ -53,8 +54,8 @@ function cleanupError(code) { return Object.assign(new Error(code), { testCode: 
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
-    if (process.argv.length < 4 || process.argv.length > 5) throw cleanupError("WRAPPER_CLEANUP_ARGUMENTS_INVALID");
-    await stopWrapperBackend(resolve(process.argv[2]), resolve(process.argv[3]), process.argv[4]);
+    if (process.argv.length < 4 || process.argv.length > 6) throw cleanupError("WRAPPER_CLEANUP_ARGUMENTS_INVALID");
+    await stopWrapperBackend(resolve(process.argv[2]), resolve(process.argv[3]), process.argv[4], process.argv[5]);
   } catch {
     console.error("Wrapper Backend cleanup could not be confirmed; original failure and isolated state retained.");
     process.exitCode = 1;

@@ -3,12 +3,14 @@ import { execFile } from "node:child_process";
 import { readFile, readdir, realpath, stat } from "node:fs/promises";
 import { basename, delimiter, dirname, isAbsolute, join, relative } from "node:path";
 import { promisify } from "node:util";
+import { pathToFileURL } from "node:url";
 import { check, createNativeHarness, fixtureModel, waitFor } from "./codebuddy-native-support.mjs";
 import { selectNativeTurnContent } from "./codebuddy-native-content-check.mjs";
+import { assertNativeHookCorrelation } from "./codebuddy-native-memory-support.mjs";
 import { CodeBuddyControlSession } from "./codebuddy-permissions-support.mjs";
 import { assertBackgroundJob, assertBackgroundModelRequests, assertBackgroundNoopResult, assertForegroundResult,
   assertGlobalConfiguration, backgroundInputText, backgroundProcessesExited, modelEnvironmentOverrides,
-  summarizeBackgroundJobs, workerPromptMarker, foregroundPrompt, foregroundAnswer, backgroundAnswer,
+  summarizeBackgroundJobs, workerPromptMarker, foregroundPromptForClient, foregroundAnswer, backgroundAnswer,
 } from "./codebuddy-background-assertions.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -17,11 +19,27 @@ const report = { status: "FAIL", scope: "native_codebuddy_repo_memory_global_con
   backgroundNativeSessionIdentityValidated: false, fixtureArtifactsInjected: false, paidModelRequests: 0 };
 let harness, repository, pluginRoot, snapshotHead, jobPrompt, stage = "prerequisites", checksCompleted = false;
 let control, foregroundFinishPromise, foregroundStarted = false;
+let client = "codebuddy";
 const requests = { foreground: 0, background: 0 };
 
 try {
-  check(process.argv.length === 5, "EXPECTED_INSTALLED_PACKAGE_CODEBUDDY_PATH_AND_VERSION");
-  harness = await createNativeHarness({ packageRoot: process.argv[2], codebuddyCommand: process.argv[3],
+  check(process.argv.length === 5 || process.argv.length === 6, "EXPECTED_INSTALLED_PACKAGE_NATIVE_PATH_VERSION_AND_OPTIONAL_CLIENT");
+  client = process.argv[5] ?? "codebuddy";
+  check(client === "codebuddy" || client === "workbuddy", "NATIVE_CLIENT_INVALID");
+  const workbuddy = client === "workbuddy", clientName = workbuddy ? "WorkBuddy" : "CodeBuddy";
+  const foregroundPrompt = foregroundPromptForClient(client);
+  report.scope = `native_${client}_repo_memory_global_configuration`;
+  let packageRoot = process.argv[2], command = process.argv[3];
+  if (workbuddy) {
+    check(/^\d+\.\d+\.\d+$/.test(process.argv[4]), "EXPECTED_EXACT_WORKBUDDY_RUNTIME_VERSION");
+    packageRoot = await realpath(packageRoot);
+    command = await realpath(command);
+    const { isWorkBuddyBundledCommand } = await import(pathToFileURL(join(packageRoot,
+      "lib/memorax-code-adapter-common/src/clients/codebuddy-command.mjs")));
+    check(isWorkBuddyBundledCommand(command) && (await stat(command)).isFile(), "EXPECTED_WORKBUDDY_BUNDLED_RUNTIME");
+    Object.assign(report, { desktopUIValidated: false, loginFlowValidated: false });
+  }
+  harness = await createNativeHarness({ packageRoot, codebuddyCommand: command, client,
     expectedVersion: process.argv[4], label: "background", writeback: false });
   repository = await realpath(harness.workspace);
   harness.setBeforeClose(async () => {
@@ -56,10 +74,18 @@ try {
 
   stage = "installed plugin and global configuration";
   const status = await harness.setup();
-  check(status.codebuddyAdapter?.codebuddyHooks?.configured === true
-    && status.codebuddyAdapter.codebuddySkills?.ok === true, "BACKGROUND_PLUGIN_NOT_CONFIGURED");
-  pluginRoot = await realpath(join(dirname(status.codebuddyAdapter.codebuddySkills.path), "../.."));
+  const adapter = status[`${client}Adapter`];
+  check(adapter?.codebuddyHooks?.configured === true
+    && adapter.codebuddySkills?.ok === true, "BACKGROUND_PLUGIN_NOT_CONFIGURED");
+  pluginRoot = await realpath(join(dirname(adapter.codebuddySkills.path), "../.."));
   check(within(await realpath(harness.codebuddyHome), pluginRoot), "BACKGROUND_PLUGIN_PATH_OUTSIDE_HOME");
+  if (workbuddy) {
+    const metadata = JSON.parse(await readFile(join(pluginRoot, ".memorax-code-package.json"), "utf8"));
+    check(adapter.runtime === client && metadata.version === 1 && metadata.client === client
+      && await realpath(metadata.codeBuddyHome) === await realpath(harness.nativeHome)
+      && await realpath(metadata.memoraxCodeHome) === await realpath(harness.stateHome)
+      && await realpath(metadata.codeBuddyCommand) === command, "BACKGROUND_WORKBUDDY_INSTALLATION_IDENTITY_MISMATCH");
+  }
   assertGlobalConfiguration(harness.env,
     JSON.parse(await readFile(join(harness.codebuddyHome, "settings.json"), "utf8")),
     JSON.parse(await readFile(join(harness.codebuddyHome, "models.json"), "utf8")), harness.modelUrl);
@@ -103,7 +129,7 @@ try {
   const finalMessagePath = await realpath(job.finalMessagePath);
   check(within(await realpath(harness.stateHome), finalMessagePath), "BACKGROUND_OUTPUT_PATH_OUTSIDE_HOME");
   assertBackgroundNoopResult(job, await readFile(finalMessagePath, "utf8"));
-  assertBackgroundModelRequests(harness.modelRequests, jobPrompt);
+  assertBackgroundModelRequests(harness.modelRequests, jobPrompt, { client });
   check(harness.memoryRequests.length === 0 && harness.serverErrors.length === 0, "BACKGROUND_UNEXPECTED_RECEIVER_ACTIVITY");
   check(await stat(join(repository, ".repo_memory", "PROFILE.md")).then(() => false,
     (error) => { if (error.code === "ENOENT") return true; throw error; }), "BACKGROUND_UNEXPECTED_PROFILE_ARTIFACT");
@@ -112,8 +138,18 @@ try {
   stage = "native foreground process exit";
   await finishForeground();
   assertForegroundResult(control.events);
-  Object.assign(report, { codebuddyVersion: harness.codebuddyVersion, model: fixtureModel, provider: "local_openai_chat_completions",
-    globalSettingsOnly: true, foregroundNativeTranscriptValidated: true, backgroundOutputSource: "native CodeBuddy stdout",
+  if (workbuddy) {
+    stage = "WorkBuddy foreground Hook identity";
+    check(/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(init.session_id), "BACKGROUND_FOREGROUND_SESSION_INVALID");
+    const tracePath = await realpath(join(harness.stateHome, "debug", "traces", client, "sessions", init.session_id, "events.jsonl"));
+    check(within(await realpath(harness.stateHome), tracePath), "BACKGROUND_TRACE_PATH_OUTSIDE_HOME");
+    const events = (await readFile(tracePath, "utf8")).split(/\r?\n/).filter(Boolean).map(JSON.parse);
+    assertNativeHookCorrelation(events, { client, sessionId: init.session_id, prompt: foregroundPrompt });
+    report.foregroundHookIdentityValidated = true;
+  }
+  Object.assign(report, { [workbuddy ? "bundledRuntimeVersion" : "codebuddyVersion"]: harness.codebuddyVersion,
+    model: fixtureModel, provider: "local_openai_chat_completions",
+    globalSettingsOnly: true, foregroundNativeTranscriptValidated: true, backgroundOutputSource: `native ${clientName} stdout`,
     jobStatus: "failed", expectedFailure: "artifact_validation_failed" });
   checksCompleted = true;
 } catch (error) {
@@ -129,7 +165,7 @@ try {
 }
 if (checksCompleted && report.cleanup === "PASS") {
   try {
-    assertBackgroundModelRequests(harness.modelRequests, jobPrompt);
+    assertBackgroundModelRequests(harness.modelRequests, jobPrompt, { client });
     check(harness.memoryRequests.length === 0 && harness.serverErrors.length === 0, "BACKGROUND_UNEXPECTED_RECEIVER_ACTIVITY");
     report.status = "PASS";
   } catch (error) {
@@ -156,7 +192,7 @@ async function jobs() {
     const jobPath = join(jobsRoot, file);
     check(within(await realpath(jobsRoot), await realpath(jobPath)), "BACKGROUND_JOB_PATH_OUTSIDE_HOME");
     const job = JSON.parse(await readFile(jobPath, "utf8"));
-    assertBackgroundJob(job, { jobPath, repository, snapshotHead, codebuddyCommand: harness.codebuddyCommand, pluginRoot });
+    assertBackgroundJob(job, { jobPath, repository, snapshotHead, codebuddyCommand: harness.codebuddyCommand, pluginRoot, client });
     entries.push(job);
   }
   return entries;

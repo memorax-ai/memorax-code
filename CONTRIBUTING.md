@@ -324,7 +324,7 @@ and isolation before using it; a macOS/Linux suite or
 WSL run does not replace native Windows validation.
 
 Live-provider, MemoraX-backed, and live Jev checks are explicit opt-in tests.
-The credential-free Codex, OpenCode, Claude, and CodeBuddy functional checks
+The credential-free Codex, OpenCode, Claude, CodeBuddy, and WorkBuddy functional checks
 below run by default on PRs. Report
 native-client and synthetic evidence separately, record platform and scenarios,
 redact output, and explain any relevant checks not run. Public fixtures must never contain
@@ -909,6 +909,233 @@ later, npm, and Git for Windows:
 delegates to the platform wrappers. It does not itself build or validate the
 package; use the Make target when the artifact has not passed
 `npm-package-check`.
+
+### WorkBuddy Bundled-Runtime Probe
+
+The WorkBuddy checks use the CLI shipped inside a WorkBuddy desktop installation.
+They do not validate the desktop UI or login flow. The desktop application and
+bundled runtime have distinct versions. Do not substitute the independently
+installed CodeBuddy CLI for that runtime.
+
+The `CI` workflow runs WorkBuddy native checks automatically for pull requests
+targeting `main` and pushes to `main`, on `ubuntu-24.04` (x64), `macos-15`
+(arm64), and `windows-2025` (x64), using Node.js 24. Each platform runs its
+fixed baseline and the latest official desktop release resolved once for that
+run. Identical full versions, URLs, and checksums share one `baseline+latest`
+job; a different desktop build still gets a separate job even if its bundled
+CLI version is unchanged. One additional Ubuntu job uses the minimum supported
+Node.js 20 with the fixed Linux baseline. All four to seven jobs run the complete
+default suites. Manual workflow runs
+retain the opt-in `diagnose_workbuddy` input; leaving it false runs only the base checks. It first
+requires the candidate's complete `npm-package-check`; every platform consumes
+that same validated artifact. Matrix failures do not cancel the other platforms.
+The `WorkBuddy functional result` check requires both the package and the entire
+native matrix to succeed. Failed, cancelled, or unexpectedly skipped dependencies
+fail that check; intentionally unselected manual runs skip it as well.
+Each runner consumes the frozen release description and checks its selected
+SHA-256 before extracting or mounting the official desktop package. The
+WorkBuddy-specific resolver in `scripts/workbuddy-release-matrix.mjs` owns the
+baseline records, feed validation, and matrix; the three acquisition helpers
+also accept a validated release JSON file while retaining their standalone
+baseline defaults. Desktop and bundled CLI versions are checked separately,
+because the official platform releases are not synchronized. Baselines require
+the exact known CLI version; latest jobs read a stable CLI version from the
+verified package and compare it with the real command's `--version` before the
+native suites. The current fixed baselines are:
+
+| Runner | Official desktop package | Bundled CLI |
+| --- | --- | --- |
+| Ubuntu x64 | `5.5.6.38337834` DEB | `2.137.1` |
+| macOS arm64 | `5.6.2.39298511` DMG | `2.147.0` |
+| Windows x64 | `5.6.2.39298511` EXE | `2.147.0` |
+
+The Linux DEB uses a maintainer-recorded SHA-256, not a vendor-published checksum.
+On 2026-10-03, two independent downloads from the fixed official HTTPS URL in
+`scripts/workbuddy-linux-bundle-check.sh` produced a 429,302,312-byte file with
+SHA-256 `2ef1bca217d29d9c2ba988c82079aa6ea0077e9f1ff882c6ab5dd7998bddf721`.
+The [official update feed](https://www.workbuddy.cn/v2/update?platform=workbuddy-linux-x64-deb)
+instead reported `03d756b259d7086c22098fa077589a032d60948d1de7313473360eefe11e240f`
+for that same URL and version. This pin detects changes from the inspected
+download; it is not an independent publisher signature or proof that the initial
+file was authentic. The resolver applies this reviewed exception only to that
+exact URL, version, and incorrect feed checksum; it never learns a pin from a
+new download. Other Linux latest releases use their official feed checksum.
+Any mismatch fails before extraction. A new mismatch requires explicit source
+review; do not bypass verification or automatically replace the expected hash.
+
+Latest discovery uses each platform's official update feed. The macOS ZIP URL
+is converted to the DMG URL in the same manner as the official download page.
+When the Windows feed has an empty checksum, the resolver freezes one commit
+of Microsoft's `winget-pkgs` repository and reads the matching WorkBuddy
+installer manifest from that immutable revision. It requires a unique x64/user
+entry with the exact official URL and product version. The YAML parser
+(`yaml@2.9.1`) is installed without lifecycle scripts in an isolated runner
+temporary directory, not added to product dependencies; package-job helper
+tests exercise the real parser. Native jobs and offline release selection need
+only Node built-ins. Missing or malformed metadata, a lagging winget manifest,
+conflicting known pins, invalid signatures, or digest mismatches fail the check
+without falling back to the baseline or reporting latest coverage as passed.
+
+The macOS runner also requires Apple's notarization assessment and Tencent's
+Developer ID signature before using the read-only mounted application. Linux
+uses `dpkg-deb -x`, without installing the desktop package or running its
+maintainer scripts. Windows verifies the installer's Authenticode signature and
+publisher before extracting its payload with 7-Zip, without executing the
+installer. Extracted packages stay inside fresh runner-owned temporary
+directories; Windows `TEMP` and `TMP` use `runner.temp`. No desktop application
+or credential store is installed or changed, and native transcripts are not
+uploaded as artifacts.
+
+Every platform runs all five default suites below without replacing the public
+command shims. The permission suite runs four cases; the two explicit runtime
+`interrupt` cases are separate strict manual diagnostics, not part of the matrix.
+A failing default suite still fails its job. An overall result requires
+every platform and Node combination to pass; one platform's result is not evidence for the
+others. The minimum-Node-version job uses the pinned Linux pair; latest jobs
+use Node.js 24. This remains bundled-runtime acceptance, not desktop UI or
+login-flow coverage.
+
+After `make npm-package-check` validates the candidate artifact, run the isolated
+installation, setup-interruption, Memory/Skill, permission, and Repo
+Memory worker suites with its tarball directory, the actual bundled
+`cli/bin/codebuddy` entrypoint, and its exact runtime version:
+
+```bash
+memorax_dev node scripts/workbuddy-e2e.mjs dist/npm/tarballs \
+  "$WORKBUDDY_BUNDLED_COMMAND" "$WORKBUDDY_RUNTIME_VERSION" 0.1.18
+```
+
+The runner reuses the CodeBuddy installation wrappers with an explicit
+`workbuddy` client. macOS and Linux use Bash; native Windows requires PowerShell 7 and Git
+for Windows. The supplied bundle is read-only; only MemoraX Code and test-only
+`node-pty@1.1.0` are installed into disposable prefixes. No standalone CodeBuddy
+package is installed for WorkBuddy. The wrapper validates the bundled path
+before installation, and the suites verify the exact runtime version and
+WorkBuddy plugin metadata. CodeBuddy's existing invocation and full suite remain
+unchanged. WorkBuddy must independently pass each suite using its own client
+identity and bundled runtime; CodeBuddy results are not substitutes.
+
+The shared lifecycle cases cover rejected stdin, real-terminal cancellation and
+hidden credentials, fresh/repeated setup, port-conflict recovery, stop/start,
+uninstall/reinstall, configuration retention, previous-version upgrade, rejected
+artifact download, forced reinstall, postinstall failure, and recovery/retry.
+Four setup-interruption cases cover configuration publication, before/after
+Backend start, and saved-account key cancellation. Recovery verifies the saved
+account, WorkBuddy installation, a native turn and explicit Search.
+
+To run only native Memory/Skill checks against an already installed candidate:
+
+```bash
+memorax_dev node scripts/workbuddy-native-check.mjs \
+  "$memorax_dev_root/npm/lib/node_modules/@memorax/memorax-code" \
+  "$WORKBUDDY_BUNDLED_COMMAND" "$WORKBUDDY_RUNTIME_VERSION"
+```
+
+On Windows, use the npm prefix's `node_modules/@memorax/memorax-code` package
+directory. The native scenarios share CodeBuddy's six-turn contract: complete
+Unicode/multiline automatic Add, same-session resume and real tools, sensitive
+input redaction, separate workspace/session content, direct CLI Search in JSON
+and text forms and Add, and native Skill/Read/Bash Search/Add. Scripted local
+responses direct the tools; autonomous Skill choice is not evaluated. Independent
+native JSONL, Hook correlation, client/session identity, exact Memory requests
+and counts, and cleanup remain required. The foreground receives no
+`--plugin-dir`; it must discover the installed global Hook and plugin normally.
+WorkBuddy state must not become standalone CodeBuddy configuration; the bundled
+runtime's empty `.codebuddy/diagnostics` directory alone is allowed.
+
+The default WorkBuddy permission suite runs native preallow, approval, denial,
+and cancellation through a permission response. It checks actual file effects,
+pending requests without side effects or Add, exact native cancellation evidence,
+no Add for the cancelled turn, same-session recovery, and automatic Add against
+independently selected native completed content. The final Memory audit runs
+after cleanup and rejects late or cross-case Add requests. Its report lists the two excluded
+runtime `interrupt` cases; they are not counted as passed. CodeBuddy continues to
+run all six cases by default.
+
+Interruption while awaiting approval and interruption of a running tool are
+WorkBuddy-only optional diagnostics, each selected independently with
+`--interrupt-case` below. They retain the
+[CodeBuddy permission coverage boundaries](#codebuddy-functional-ci):
+acknowledgement alone is not proof of cancellation, and a client-completed
+original turn must have its own exact Add. Forced cleanup, late incomplete tool
+results, and original-turn outcomes remain separate compatibility observations.
+WorkBuddy may replace the supplied denial reason with its fixed native rejection
+message; that form also requires an exact tool name, ID, and input match in the
+terminal `permission_denials` record, not merely missing file effects.
+For older bundled histories without request-owner fields on user prompts and
+late cancellation results, only the WorkBuddy recovery oracle accepts that
+specific absence: the sole original tool call and recovery answer must have
+distinct valid request owners, and every late result must match the unique
+original call in a complete, ordered, single-child parent chain. Malformed or
+conflicting owners, reused call IDs, and extra branches still fail. Native records
+are not rewritten, and this projection does not establish successful native
+cancellation; writeback is checked against the final persisted outcome.
+This does not validate desktop approval UI, late approval after cancellation,
+OS sandboxing, or interrupted trace reconciliation.
+
+Bundled runtimes `2.137.1` and `2.147.0` acknowledge an interrupt while awaiting
+SDK tool approval without producing a terminal result within the check's
+45-second window. The `2.147.0` behavior also reproduces without installing
+MemoraX Hooks or starting its Backend. The independent diagnostic still fails
+on this behavior: an acknowledgement, an artificial permission reply, or closing
+stdin is not evidence that the native interrupt ended the pending turn. This
+observation alone does not establish an automatic Add failure for completed
+native content.
+In `2.147.0`, running-tool interruption can also append an incomplete cancellation
+result with the original tool call ID but the recovery turn's
+`conversationRequestId`. That conflicting ownership fails the recovery oracle;
+the missing-owner compatibility above must not be applied to it.
+Both diagnostics retain their original native ownership, exact Add/no-Add and
+cleanup assertions and exit nonzero on failure. Excluding them from the default
+suite leaves the two explicit runtime interrupt paths unverified end to end;
+passing permission-response cancellation does not establish those paths.
+
+The Repo Memory case starts the worker through a real foreground Hook in an
+isolated Git repository. Both foreground and worker must use WorkBuddy's global
+synthetic model and local provider configuration; job ownership, bundled command,
+plugin path, native foreground transcript, and cleanup are verified. The worker
+returns no bundle, so native exit `0` followed by `artifact_validation_failed` is
+required, with no Memory requests or injected artifacts. As with CodeBuddy, this
+does not prove valid Repo Memory generation, per-turn model or permission
+inheritance, background native session persistence, or worker survival after
+foreground exit.
+
+These two suites can also run independently against the installed candidate:
+
+```bash
+memorax_dev node scripts/codebuddy-permissions-check.mjs \
+  "$memorax_dev_root/npm/lib/node_modules/@memorax/memorax-code" \
+  "$WORKBUDDY_BUNDLED_COMMAND" "$WORKBUDDY_RUNTIME_VERSION" workbuddy
+memorax_dev node scripts/codebuddy-background-check.mjs \
+  "$memorax_dev_root/npm/lib/node_modules/@memorax/memorax-code" \
+  "$WORKBUDDY_BUNDLED_COMMAND" "$WORKBUDDY_RUNTIME_VERSION" workbuddy
+```
+
+Run either strict interrupt diagnostic separately, so a failure in one does not
+prevent investigating the other:
+
+```bash
+memorax_dev node scripts/codebuddy-permissions-check.mjs \
+  "$memorax_dev_root/npm/lib/node_modules/@memorax/memorax-code" \
+  "$WORKBUDDY_BUNDLED_COMMAND" "$WORKBUDDY_RUNTIME_VERSION" workbuddy \
+  --interrupt-case user-inflight-interrupt
+memorax_dev node scripts/codebuddy-permissions-check.mjs \
+  "$memorax_dev_root/npm/lib/node_modules/@memorax/memorax-code" \
+  "$WORKBUDDY_BUNDLED_COMMAND" "$WORKBUDDY_RUNTIME_VERSION" workbuddy \
+  --interrupt-case user-wait-interrupt
+```
+
+All suites use fresh client and Backend state, synthetic credentials, and
+loopback model/Memory services. Reports contain bounded diagnostics, not raw
+transcripts, credentials or private paths. Cleanup must succeed before a suite
+can pass, and unverified cleanup retains its isolated state.
+
+Desktop-managed task directories, desktop startup environments, and login remain
+outside this matrix. Linux supplies the verified bundled command explicitly:
+these checks exercise the headless CLI on the Ubuntu runner, not automatic Linux
+desktop discovery or official Ubuntu desktop support. Implemented platform
+wrappers, acquisition tests, and a local runtime pass are not substitutes for
+successful native jobs on each target platform.
 
 ## Pull Requests
 
