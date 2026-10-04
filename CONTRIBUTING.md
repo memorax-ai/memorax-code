@@ -918,23 +918,35 @@ bundled runtime have distinct versions. Do not substitute the independently
 installed CodeBuddy CLI for that runtime.
 
 The `CI` workflow runs WorkBuddy native checks automatically for pull requests
-targeting `main` and pushes to `main`, on `ubuntu-24.04`, `macos-15`, and
-`windows-2025`, using Node.js 24, plus an Ubuntu job using the minimum supported
-Node.js 20. All four jobs run the complete default suites. Manual workflow runs
+targeting `main` and pushes to `main`, on `ubuntu-24.04` (x64), `macos-15`
+(arm64), and `windows-2025` (x64), using Node.js 24. Each platform runs its
+fixed baseline and the latest official desktop release resolved once for that
+run. Identical full versions, URLs, and checksums share one `baseline+latest`
+job; a different desktop build still gets a separate job even if its bundled
+CLI version is unchanged. One additional Ubuntu job uses the minimum supported
+Node.js 20 with the fixed Linux baseline. All four to seven jobs run the complete
+default suites. Manual workflow runs
 retain the opt-in `diagnose_workbuddy` input; leaving it false runs only the base checks. It first
 requires the candidate's complete `npm-package-check`; every platform consumes
 that same validated artifact. Matrix failures do not cancel the other platforms.
 The `WorkBuddy functional result` check requires both the package and the entire
 native matrix to succeed. Failed, cancelled, or unexpectedly skipped dependencies
 fail that check; intentionally unselected manual runs skip it as well.
-Each runner downloads a fixed official desktop package and checks its pinned
-SHA-256 before extracting or mounting it. Desktop and bundled CLI versions are
-checked separately, because the official platform releases are not synchronized.
+Each runner consumes the frozen release description and checks its selected
+SHA-256 before extracting or mounting the official desktop package. The
+WorkBuddy-specific resolver in `scripts/workbuddy-release-matrix.mjs` owns the
+baseline records, feed validation, and matrix; the three acquisition helpers
+also accept a validated release JSON file while retaining their standalone
+baseline defaults. Desktop and bundled CLI versions are checked separately,
+because the official platform releases are not synchronized. Baselines require
+the exact known CLI version; latest jobs read a stable CLI version from the
+verified package and compare it with the real command's `--version` before the
+native suites. The current fixed baselines are:
 
 | Runner | Official desktop package | Bundled CLI |
 | --- | --- | --- |
 | Ubuntu x64 | `5.5.6.38337834` DEB | `2.137.1` |
-| macOS runner architecture | `5.6.2.39298511` DMG | `2.147.0` |
+| macOS arm64 | `5.6.2.39298511` DMG | `2.147.0` |
 | Windows x64 | `5.6.2.39298511` EXE | `2.147.0` |
 
 The Linux DEB uses a maintainer-recorded SHA-256, not a vendor-published checksum.
@@ -945,9 +957,24 @@ The [official update feed](https://www.workbuddy.cn/v2/update?platform=workbuddy
 instead reported `03d756b259d7086c22098fa077589a032d60948d1de7313473360eefe11e240f`
 for that same URL and version. This pin detects changes from the inspected
 download; it is not an independent publisher signature or proof that the initial
-file was authentic. CI does not learn or replace the pin at runtime: any mismatch
-fails before extraction. Changing the version or pin requires another explicit
-source review; do not bypass verification or automatically trust the feed value.
+file was authentic. The resolver applies this reviewed exception only to that
+exact URL, version, and incorrect feed checksum; it never learns a pin from a
+new download. Other Linux latest releases use their official feed checksum.
+Any mismatch fails before extraction. A new mismatch requires explicit source
+review; do not bypass verification or automatically replace the expected hash.
+
+Latest discovery uses each platform's official update feed. The macOS ZIP URL
+is converted to the DMG URL in the same manner as the official download page.
+When the Windows feed has an empty checksum, the resolver freezes one commit
+of Microsoft's `winget-pkgs` repository and reads the matching WorkBuddy
+installer manifest from that immutable revision. It requires a unique x64/user
+entry with the exact official URL and product version. The YAML parser
+(`yaml@2.9.1`) is installed without lifecycle scripts in an isolated runner
+temporary directory, not added to product dependencies; package-job helper
+tests exercise the real parser. Native jobs and offline release selection need
+only Node built-ins. Missing or malformed metadata, a lagging winget manifest,
+conflicting known pins, invalid signatures, or digest mismatches fail the check
+without falling back to the baseline or reporting latest coverage as passed.
 
 The macOS runner also requires Apple's notarization assessment and Tencent's
 Developer ID signature before using the read-only mounted application. Linux
@@ -964,8 +991,9 @@ command shims. The permission suite runs four cases; the two explicit runtime
 `interrupt` cases are separate strict manual diagnostics, not part of the matrix.
 A failing default suite still fails its job. An overall result requires
 every platform and Node combination to pass; one platform's result is not evidence for the
-others. This is one pinned desktop/runtime pair per platform, not baseline/latest
-coverage; the minimum-Node-version job uses the pinned Linux pair.
+others. The minimum-Node-version job uses the pinned Linux pair; latest jobs
+use Node.js 24. This remains bundled-runtime acceptance, not desktop UI or
+login-flow coverage.
 
 After `make npm-package-check` validates the candidate artifact, run the isolated
 installation, setup-interruption, Memory/Skill, permission, and Repo

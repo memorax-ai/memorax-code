@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if [[ $# -eq 1 && ( "$1" == --help || "$1" == -h ) ]]; then
-  echo 'Usage: scripts/workbuddy-linux-bundle-check.sh EMPTY_DESTINATION_DIR [x64]'
+  echo 'Usage: scripts/workbuddy-linux-bundle-check.sh EMPTY_DESTINATION_DIR [x64 [RELEASE_JSON]]'
   exit 0
 fi
 
@@ -11,18 +11,12 @@ fail() {
   exit 1
 }
 
-[[ $# -ge 1 && $# -le 2 ]] || fail WORKBUDDY_BUNDLE_ARGUMENTS_INVALID
+[[ $# -ge 1 && $# -le 3 ]] || fail WORKBUDDY_BUNDLE_ARGUMENTS_INVALID
 [[ "$(uname -s)" == Linux ]] || fail WORKBUDDY_BUNDLE_LINUX_REQUIRED
 case "${2:-$(uname -m)}" in
   x64|x86_64) arch=x64 ;;
   *) fail WORKBUDDY_BUNDLE_ARCH_UNSUPPORTED ;;
 esac
-desktop_version=5.5.6.38337834
-runtime_version=2.137.1
-# Maintainer pin from two independent official HTTPS downloads on 2026-10-03.
-# The vendor feed SHA differs; see CONTRIBUTING.md for provenance and limits.
-sha256=2ef1bca217d29d9c2ba988c82079aa6ea0077e9f1ff882c6ab5dd7998bddf721
-
 destination="$1"
 [[ -d "$destination" && ! -L "$destination" ]] || fail WORKBUDDY_BUNDLE_DESTINATION_INVALID
 shopt -s nullglob dotglob
@@ -33,10 +27,18 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 for tool in curl sha256sum dpkg-deb node; do
   command -v "$tool" >/dev/null || fail WORKBUDDY_BUNDLE_DEPENDENCY_MISSING
 done
+selection=(select linux-x64-deb)
+if [[ $# -eq 3 ]]; then
+  [[ -n "$3" ]] || fail WORKBUDDY_BUNDLE_RELEASE_INVALID
+  selection+=("$3")
+fi
+if ! release="$(node "$script_dir/workbuddy-release-matrix.mjs" "${selection[@]}" 2>/dev/null)"; then
+  fail WORKBUDDY_BUNDLE_RELEASE_INVALID
+fi
+IFS=$'\t' read -r desktop_version product_version runtime_version sha256 url <<< "$release"
 partial="$destination/WorkBuddy.deb.partial"
 trap 'rm -f -- "$partial" 2>/dev/null' EXIT
 
-url="https://download.codebuddy.cn/workbuddy/saas/linux-x64-deb/WorkBuddy-linux-x64-deb-$desktop_version-5f969292.deb"
 if ! curl --disable --fail --silent --show-error --location \
   --proto '=https' --proto-redir '=https' --connect-timeout 30 --max-time 600 \
   --retry 2 --retry-max-time 900 --output "$partial" "$url" >/dev/null 2>&1; then
@@ -50,7 +52,7 @@ fi
 for field in Package Version Architecture; do
   case "$field" in
     Package) expected=workbuddy ;;
-    Version) expected=5.5.6 ;;
+    Version) expected="$product_version" ;;
     Architecture) expected=amd64 ;;
   esac
   if ! value="$(dpkg-deb --field "$partial" "$field" 2>/dev/null)"; then
@@ -66,7 +68,7 @@ if ! dpkg-deb -x "$destination/WorkBuddy.deb" "$destination/extracted" >/dev/nul
   fail WORKBUDDY_BUNDLE_EXTRACT_FAILED
 fi
 command_relative=extracted/opt/WorkBuddy/resources/app.asar.unpacked/cli/bin/codebuddy
-if ! node --input-type=module - "$destination" "$runtime_version" <<'NODE' 2>/dev/null
+if ! actual_runtime="$(node --input-type=module - "$destination" "$runtime_version" <<'NODE' 2>/dev/null
 import assert from 'node:assert/strict';
 import { accessSync, constants, readFileSync, realpathSync, statSync } from 'node:fs';
 import { join } from 'node:path';
@@ -79,14 +81,18 @@ for (const name of ['bin/codebuddy', 'package.json']) {
 accessSync(join(cli, 'bin/codebuddy'), constants.X_OK);
 const metadata = JSON.parse(readFileSync(join(cli, 'package.json'), 'utf8'));
 assert.equal(metadata.publishConfig?.customPackage?.name, '@tencent-ai/codebuddy-code');
-assert.equal(metadata.publishConfig?.customPackage?.version, process.argv[3]);
+const version = metadata.publishConfig?.customPackage?.version;
+assert.match(version, /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/);
+assert.ok(!/[\r\n]/.test(version));
+if (process.argv[3] !== 'discover') assert.equal(version, process.argv[3]);
 assert.equal(metadata.bin?.codebuddy, './bin/codebuddy');
+process.stdout.write(version);
 NODE
-then
+)"; then
   fail WORKBUDDY_BUNDLE_RUNTIME_METADATA_INVALID
 fi
 if ! node "$script_dir/workbuddy-bundled-command-check.mjs" "$destination/$command_relative" >/dev/null 2>&1; then
   fail WORKBUDDY_BUNDLE_COMMAND_INVALID
 fi
 printf '{"desktopVersion":"%s","runtimeVersion":"%s","arch":"%s","sha256":"%s","command":"%s"}\n' \
-  "$desktop_version" "$runtime_version" "$arch" "$sha256" "$command_relative"
+  "$desktop_version" "$actual_runtime" "$arch" "$sha256" "$command_relative"

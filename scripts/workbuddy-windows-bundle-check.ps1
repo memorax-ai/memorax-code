@@ -1,11 +1,10 @@
-param([Parameter(Mandatory = $true)][string]$Destination)
+param(
+  [Parameter(Mandatory = $true)][string]$Destination,
+  [string]$ReleaseFile
+)
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
-$desktopVersion = '5.6.2.39298511'
-$runtimeVersion = '2.147.0'
-$sha256 = '627E5A565436D0876740AF69C2747759648662C52958D2A5DF1BA330A82C3025'
-$url = 'https://download.codebuddy.cn/workbuddy/saas/win32-x64-user/WorkBuddy-win32-x64-user-5.6.2.39298511-37a65c0b.exe'
 $command = 'WorkBuddy/resources/app.asar.unpacked/cli/bin/codebuddy'
 $owned = $false
 $verified = $false
@@ -20,6 +19,16 @@ try {
   $Destination = $directory.FullName
   $stage = 'WORKBUDDY_BUNDLE_DESTINATION_NOT_EMPTY'
   if (@(Get-ChildItem -LiteralPath $Destination -Force).Count -ne 0) { throw $stage }
+
+  $stage = 'WORKBUDDY_BUNDLE_RELEASE_INVALID'
+  $releaseArgs = @((Join-Path $PSScriptRoot 'workbuddy-release-matrix.mjs'), 'select-json', 'win32-x64-user')
+  if ($PSBoundParameters.ContainsKey('ReleaseFile')) { $releaseArgs += $ReleaseFile }
+  $releaseJson = & node @releaseArgs 2>$null
+  if ($LASTEXITCODE -ne 0) { throw $stage }
+  $release = $releaseJson | ConvertFrom-Json
+  $desktopVersion = $release.desktopVersion
+  $sha256 = $release.sha256
+  $url = $release.url
   $installer = Join-Path $Destination 'WorkBuddy.exe'
   $unpacked = Join-Path $Destination 'nsis'
   $bundle = Join-Path $Destination 'WorkBuddy'
@@ -38,8 +47,8 @@ try {
     $signature.SignerCertificate.GetNameInfo([Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false) `
       -cne 'Tencent Technology (Shenzhen) Company Limited') { throw $stage }
   $stage = 'WORKBUDDY_BUNDLE_DESKTOP_VERSION_MISMATCH'
-  # The immutable installer digest pins the full build; its PE product version is shorter.
-  if ((Get-Item -LiteralPath $installer).VersionInfo.ProductVersion -cne '5.6.2') { throw $stage }
+  # The verified installer digest selects the full build; its PE product version is shorter.
+  if ((Get-Item -LiteralPath $installer).VersionInfo.ProductVersion -cne $release.productVersion) { throw $stage }
 
   $stage = 'WORKBUDDY_BUNDLE_EXTRACTION_FAILED'
   $sevenZip = (Get-Command 7z.exe -CommandType Application).Source
@@ -57,8 +66,13 @@ try {
     Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint }).Count -ne 0) { throw $stage }
   if (-not (Test-Path -LiteralPath (Join-Path $Destination $command) -PathType Leaf)) { throw $stage }
   $metadata = Get-Content -LiteralPath (Join-Path $bundle 'resources/app.asar.unpacked/cli/package.json') -Raw | ConvertFrom-Json
+  if ($metadata.publishConfig.customPackage.name -isnot [string] -or
+    $metadata.publishConfig.customPackage.name -cne '@tencent-ai/codebuddy-code' -or
+    $metadata.bin.codebuddy -isnot [string] -or $metadata.bin.codebuddy -cne './bin/codebuddy') { throw $stage }
   $stage = 'WORKBUDDY_BUNDLE_RUNTIME_VERSION_MISMATCH'
-  if ($metadata.publishConfig.customPackage.version -cne $runtimeVersion -or $metadata.bin.codebuddy -cne './bin/codebuddy') { throw $stage }
+  $runtimeVersion = $metadata.publishConfig.customPackage.version
+  if ($runtimeVersion -isnot [string] -or $runtimeVersion -cnotmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\z' -or
+    ($null -ne $release.runtimeVersion -and $runtimeVersion -cne $release.runtimeVersion)) { throw $stage }
   $verified = $true
 } catch {
   $failure = $stage

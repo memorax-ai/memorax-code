@@ -13,6 +13,9 @@ const posixOnly = { skip: process.platform === "win32" };
 const sha256 = "2ef1bca217d29d9c2ba988c82079aa6ea0077e9f1ff882c6ab5dd7998bddf721";
 const cliRelative = "opt/WorkBuddy/resources/app.asar.unpacked/cli";
 const fields = ["Package", "Version", "Architecture"];
+const latestRelease = { platform: "linux-x64-deb", desktopVersion: "5.7.0.40000000", productVersion: "5.7.0",
+  runtimeVersion: null, sha256: "a".repeat(64), channel: "latest",
+  url: "https://download.codebuddy.cn/workbuddy/saas/linux-x64-deb/WorkBuddy-linux-x64-deb-5.7.0.40000000-abcdef12.deb" };
 
 test("WorkBuddy Linux acquisition rejects unsupported OS and architecture before downloading", posixOnly, async () => {
   for (const [os, machine, expected] of [["Darwin", "x86_64", "LINUX_REQUIRED"],
@@ -30,7 +33,7 @@ test("WorkBuddy Linux acquisition rejects unsupported OS and architecture before
 
 test("WorkBuddy Linux acquisition requires an empty real destination and valid arguments", posixOnly, async () => {
   await fixture(async ({ run, calls, root, destination }) => {
-    for (const args of [[], [destination, "x64", "extra"]]) {
+    for (const args of [[], [destination, "x64", "extra", "extra"]]) {
       assert.match((await run(args)).stderr, /WORKBUDDY_BUNDLE_ARGUMENTS_INVALID/);
     }
     assert.match((await run([destination, "arm64"])).stderr, /WORKBUDDY_BUNDLE_ARCH_UNSUPPORTED/);
@@ -66,6 +69,88 @@ for (const args of [[], ["x64"]]) {
       assert.deepEqual(await readdir(destination), ["WorkBuddy.deb", "extracted"]);
       assert.equal(await readFile(join(destination, "WorkBuddy.deb"), "utf8"), "Synthetic deb.\n");
     });
+  });
+}
+
+test("WorkBuddy Linux latest acquisition discovers the actual verified bundled runtime", posixOnly, async () => {
+  await fixture(async ({ run, calls, curlArgs, destination, releasePath, metadata, packageRoot }) => {
+    metadata.publishConfig.customPackage.version = "2.160.1";
+    await writeFile(join(packageRoot, cliRelative, "package.json"), JSON.stringify(metadata));
+    const result = await run([destination, "x64", releasePath]);
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stderr, "");
+    assert.deepEqual(JSON.parse(result.stdout), { desktopVersion: latestRelease.desktopVersion,
+      runtimeVersion: "2.160.1", arch: "x64", sha256: latestRelease.sha256,
+      command: `extracted/${cliRelative}/bin/codebuddy` });
+    assert.equal((await curlArgs()).at(-1), latestRelease.url);
+    assert.deepEqual(await calls(), ["curl", "sha256sum", ...fields.map((field) => `field:${field}`), "extract"]);
+    assert.deepEqual(await readdir(destination), ["WorkBuddy.deb", "extracted"]);
+  }, { hash: latestRelease.sha256, packageVersion: latestRelease.productVersion });
+});
+
+for (const channel of ["baseline", "baseline+latest"]) {
+  test(`WorkBuddy Linux acquisition preserves exact runtime verification for a supplied ${channel} release`, posixOnly, async () => {
+    await fixture(async ({ run, calls, destination, releasePath }) => {
+      const release = { platform: "linux-x64-deb", desktopVersion: "5.5.6.38337834", productVersion: "5.5.6",
+        runtimeVersion: "2.137.1", sha256, channel,
+        url: "https://download.codebuddy.cn/workbuddy/saas/linux-x64-deb/WorkBuddy-linux-x64-deb-5.5.6.38337834-5f969292.deb" };
+      await writeFile(releasePath, JSON.stringify(release));
+      const result = await run([destination, "x64", releasePath]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.deepEqual(JSON.parse(result.stdout), { desktopVersion: release.desktopVersion,
+        runtimeVersion: release.runtimeVersion, arch: "x64", sha256, command: `extracted/${cliRelative}/bin/codebuddy` });
+      assert.deepEqual(await calls(), ["curl", "sha256sum", ...fields.map((field) => `field:${field}`), "extract"]);
+    });
+  });
+}
+
+for (const invalid of ["missing", "empty path", "malformed", "platform", "runtime", "url", "baseline override"]) {
+  test(`WorkBuddy Linux latest acquisition rejects ${invalid} release metadata before downloading`, posixOnly, async () => {
+    await fixture(async ({ run, calls, destination, releasePath }) => {
+      const release = { ...latestRelease };
+      if (invalid === "platform") release.platform = "darwin-arm64";
+      if (invalid === "runtime") release.runtimeVersion = "2.137.1";
+      if (invalid === "url") release.url = "https://example.com/WorkBuddy.deb";
+      if (invalid === "baseline override") release.channel = "baseline";
+      await writeFile(releasePath, invalid === "malformed" ? "{" : JSON.stringify(release));
+      if (invalid === "missing") await rm(releasePath);
+      const result = await run([destination, "x64", invalid === "empty path" ? "" : releasePath]);
+      assert.equal(result.code, 1);
+      assert.equal(result.stdout, "");
+      assert.equal(result.stderr, "WORKBUDDY_BUNDLE_RELEASE_INVALID\n");
+      assert.deepEqual(await calls(), []);
+      assert.deepEqual(await readdir(destination), []);
+    });
+  });
+}
+
+for (const [name, options, expected, expectedCalls] of [
+  ["baseline digest", {}, "HASH_MISMATCH", ["curl", "sha256sum"]],
+  ["baseline package version", { hash: latestRelease.sha256 }, "PACKAGE_METADATA_INVALID", ["curl", "sha256sum", "field:Package", "field:Version"]],
+]) {
+  test(`WorkBuddy Linux latest acquisition rejects the ${name} for a different release`, posixOnly, async () => {
+    await fixture(async ({ run, calls, destination, releasePath }) => {
+      const result = await run([destination, "x64", releasePath]);
+      assert.equal(result.code, 1);
+      assert.equal(result.stdout, "");
+      assert.equal(result.stderr, `WORKBUDDY_BUNDLE_${expected}\n`);
+      assert.deepEqual(await calls(), expectedCalls);
+      assert.deepEqual(await readdir(destination), []);
+    }, options);
+  });
+}
+
+for (const version of ["latest", "2.160.1-beta.1", "02.160.1", "2.160", "2.160.1\n", null]) {
+  test(`WorkBuddy Linux latest acquisition rejects invalid discovered runtime ${JSON.stringify(version)}`, posixOnly, async () => {
+    await fixture(async ({ run, calls, destination, releasePath, metadata, packageRoot }) => {
+      metadata.publishConfig.customPackage.version = version;
+      await writeFile(join(packageRoot, cliRelative, "package.json"), JSON.stringify(metadata));
+      const result = await run([destination, "x64", releasePath]);
+      assert.equal(result.code, 1);
+      assert.equal(result.stdout, "");
+      assert.equal(result.stderr, "WORKBUDDY_BUNDLE_RUNTIME_METADATA_INVALID\n");
+      assert.deepEqual(await calls(), ["curl", "sha256sum", ...fields.map((field) => `field:${field}`), "extract"]);
+    }, { hash: latestRelease.sha256, packageVersion: latestRelease.productVersion });
   });
 }
 
@@ -140,9 +225,11 @@ async function fixture(callback, { os = "Linux", machine = "x86_64", hash = sha2
   const root = await realpath(await mkdtemp(join(tmpdir(), "workbuddy-linux-bundle-check-")));
   const bin = join(root, "bin"), destination = join(root, "download"), packageRoot = join(root, "package");
   const callLog = join(root, "calls"), curlLog = join(root, "curl-args"), dpkgLog = join(root, "dpkg-args");
+  const releasePath = join(root, "release.json");
   try {
     await Promise.all([bin, destination, join(root, "home"), join(root, "tmp"), join(packageRoot, cliRelative, "bin")]
       .map((path) => mkdir(path, { recursive: true })));
+    await writeFile(releasePath, JSON.stringify(latestRelease));
     const metadata = { bin: { codebuddy: "./bin/codebuddy" },
       publishConfig: { customPackage: { name: "@tencent-ai/codebuddy-code", version: "2.137.1" } } };
     await writeFile(join(packageRoot, cliRelative, "package.json"), JSON.stringify(metadata));
@@ -205,7 +292,7 @@ fi`,
         return { code: error.code, stdout: error.stdout, stderr: error.stderr };
       }
     };
-    await callback({ root, destination, packageRoot, metadata, run, calls: () => lines(callLog),
+    await callback({ root, destination, packageRoot, releasePath, metadata, run, calls: () => lines(callLog),
       curlArgs: () => lines(curlLog), dpkgArgs: () => lines(dpkgLog) });
   } finally {
     await rm(root, { recursive: true, force: true });
