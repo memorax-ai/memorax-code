@@ -69,13 +69,15 @@ export function prepareSharedRepoMemorySnapshot({ home, repo, snapshot, root, va
   mkdirSync(hooks, { mode: 0o700 });
   const env = { ...process.env, GIT_NO_LAZY_FETCH: "1", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: emptyConfig };
   const git = (cwd, args) => {
-    const result = spawnSync("git", ["-c", `core.hooksPath=${hooks}`, ...args], {
+    const result = spawnSync("git", ["-c", "core.longpaths=true", "-c", `core.hooksPath=${hooks}`, ...args], {
       cwd, env, encoding: "utf8", timeout: 60000, killSignal: "SIGKILL", maxBuffer: 1024 * 1024,
     });
     if (result.error || result.status !== 0) throw new Error("could not prepare local Repo Memory snapshot");
     return result.stdout.trim();
   };
   git(parent, ["clone", "--local", "--shared", "--no-hardlinks", "--no-checkout", "--template=", "--", repoMemoryRepositoryPath(repo), root]);
+  // Keep later collector and worker Git commands usable in deep Windows job paths.
+  git(root, ["config", "core.longpaths", "true"]);
   git(root, ["checkout", "--detach", snapshot.head]);
   const origin = readGit(repo, ["config", "--get", "remote.origin.url"], true);
   if (origin.status === 0 && origin.stdout.trim()) git(root, ["config", "remote.origin.url", origin.stdout.trim()]);

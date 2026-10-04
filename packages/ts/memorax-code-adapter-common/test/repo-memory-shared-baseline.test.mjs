@@ -213,6 +213,22 @@ test("snapshot publication accepts mainline advancement but rejects candidate so
   assert.equal(readSharedRepoMemory(f.home, f.repo).head, f.head);
 });
 
+test("private snapshots support deep job paths without changing the source Git configuration", t => {
+  const f = fixture(t);
+  git(f.repo, ["config", "core.longpaths", "false"]);
+  const component = "nested-snapshot-directory-".repeat(3);
+  const root = join(f.home, component, component, component, "job", "source");
+  assert.ok(root.length > 260);
+  const snapshot = { ...defaultBranchSnapshot(f.repo), baseHead: null };
+  prepareSharedRepoMemorySnapshot({ home: f.home, repo: f.repo, snapshot, root, validate });
+  assert.equal(git(root, ["rev-parse", "HEAD"]), f.head);
+  assert.equal(readFileSync(join(root, "source.txt"), "utf8"), "mainline source\n");
+  assert.equal(git(root, ["status", "--porcelain"]), "");
+  assert.equal(git(root, ["config", "--local", "--bool", "core.longpaths"]), "true");
+  assert.equal(git(f.repo, ["config", "--local", "--bool", "core.longpaths"]), "false");
+  assert.equal(git(f.repo, ["status", "--porcelain"]), "");
+});
+
 test("publication rechecks provenance and does not overwrite a concurrently published baseline", t => {
   const f = fixture(t);
   const snapshot = { ...defaultBranchSnapshot(f.repo), baseHead: null };
