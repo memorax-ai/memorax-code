@@ -52,7 +52,7 @@ test("Windows acquisition's default release selector retains the fixed baseline"
 test("Windows acquisition verifies the publisher and extracts the actual complete bundled CLI", windowsOnly, async () => {
   await fixture(async ({ run, calls, destination }) => {
     const result = await run();
-    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.code, 0, JSON.stringify({ stderr: result.stderr, selector: (await calls())[0] }));
     assert.equal(result.stderr, "");
     assert.deepEqual(JSON.parse(result.stdout), { desktopVersion: "5.6.2.39298511", runtimeVersion: "2.147.0",
       arch: "x64", sha256: sha256.toLowerCase(), command });
@@ -225,9 +225,19 @@ async function fixture(callback, scenario = "success", release) {
 $ErrorActionPreference = 'Stop'
 function Record-Call($Value) { Add-Content -LiteralPath $env:FIXTURE_CALLS -Value ($Value | ConvertTo-Json -Compress -Depth 5) }
 function node {
-  Record-Call @{ tool = 'release'; args = [string[]]$args }
-  & $env:FIXTURE_NODE @args
-  if ($env:FIXTURE_SCENARIO -eq 'selector-exit') { $global:LASTEXITCODE = 1 }
+  $diagnostic = @{ tool = 'release'; args = [string[]]$args }
+  try {
+    $output = & $env:FIXTURE_NODE @args
+    $diagnostic.exitCode = $LASTEXITCODE
+    $diagnostic.outputCount = @($output).Count
+    $diagnostic.validJson = $false
+    try { $null = $output | ConvertFrom-Json; $diagnostic.validJson = $null -ne $output } catch {}
+    $output
+    if ($env:FIXTURE_SCENARIO -eq 'selector-exit') { $global:LASTEXITCODE = 1 }
+  } catch {
+    $diagnostic.errorType = $_.Exception.GetType().Name
+    throw
+  } finally { Record-Call $diagnostic }
 }
 function curl.exe {
   # A function retains numeric arguments; a native executable receives strings.
