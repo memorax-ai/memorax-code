@@ -360,6 +360,19 @@ async function verifyBackgroundGlobalConfiguration() {
       && job.sharedSnapshot.ref === "refs/remotes/origin/main" && job.sharedSnapshot.baseHead === null,
     "BACKGROUND_SHARED_SNAPSHOT_MISMATCH");
     const sourceRepo = join(await realpath(jobsRoot), job.jobId, "source");
+    const failureReasons = ["snapshot_prepare_failed", "startup_ownership_lost", "worker_start_failed", "worker_interrupted",
+      "codex_timeout", "codex_spawn_failed", "codex_exit_nonzero", "final_message_missing", "snapshot_changed",
+      "artifact_validation_failed", "profile_head_mismatch", "job_ownership_lost", "shared_publication_rejected"];
+    const workerOutput = await readFile(join(jobsRoot, job.jobId, "output.log"), "utf8").catch(() => "");
+    report.backgroundGlobalConfiguration = {
+      status: "FAIL", foregroundRequests: received.foreground, backgroundRequests: received.background,
+      jobStatus: job.status, failureReason: failureReasons.includes(job.failureReason) ? job.failureReason : "other",
+      exitCode: Number.isSafeInteger(job.exitCode) ? job.exitCode : null,
+      validationExitCode: Number.isSafeInteger(job.validationExitCode) ? job.validationExitCode : null,
+      gitTrustRejected: workerOutput.includes("Not inside a trusted directory"),
+      gitOwnershipRejected: workerOutput.includes("dubious ownership"),
+      pathTooLong: /filename or extension is too long|os error 206/i.test(workerOutput),
+    };
     check(job.status === "failed" && job.failureReason === "artifact_validation_failed" && job.exitCode === 0,
       "BACKGROUND_NOOP_JOB_RESULT_MISMATCH");
     check(typeof job.prompt === "string" && job.prompt === job.command?.at(-1), "BACKGROUND_JOB_PROMPT_MISSING");

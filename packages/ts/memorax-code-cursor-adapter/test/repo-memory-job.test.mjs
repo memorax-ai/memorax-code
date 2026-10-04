@@ -275,8 +275,16 @@ test("concurrent Cursor processes publish one delegation and only one claimant",
   for (const r of results) assert.equal(r.status, 0, r.stderr);
   const decisions = results.map(r => JSON.parse(r.stdout));
   assert.equal(decisions.filter(r => r.job?.delegation).length, 1);
-  assert.equal(new Set(decisions.map(r => r.job.jobId)).size, 1);
   const job = decisions.find(r => r.job?.delegation).job;
+  for (const decision of decisions) {
+    if (decision.job) assert.equal(decision.job.jobId, job.jobId);
+    else {
+      // Another process can see the persisted attempt before the active marker is published.
+      assert.equal(decision.ok, true);
+      assert.equal(decision.action, "none");
+      assert.equal(decision.reason, "shared_update_cooldown");
+    }
+  }
   const legacyRequested = readLegacyMarker({ memoraxCodeHome: f.home, repoRealpath: f.repo });
   assert.equal(legacyRequested.active, true, "ownership must survive helper exit: " + legacyRequested.reason);
   assert.ok(results.every(r => r.pid !== legacyRequested.marker.pid), "owner PID must outlive the preparing helpers");
