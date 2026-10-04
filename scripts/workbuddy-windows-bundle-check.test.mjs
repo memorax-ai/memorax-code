@@ -124,7 +124,8 @@ async function fixture(callback, scenario = "success") {
 $ErrorActionPreference = 'Stop'
 function Record-Call($Value) { Add-Content -LiteralPath $env:FIXTURE_CALLS -Value ($Value | ConvertTo-Json -Compress -Depth 5) }
 function curl.exe {
-  Record-Call @{ tool = 'curl'; args = @($args) }
+  # A function retains numeric arguments; a native executable receives strings.
+  Record-Call @{ tool = 'curl'; args = [string[]]$args }
   $output = $args[[Array]::IndexOf($args, '--output') + 1]
   [IO.File]::WriteAllText($output, 'Synthetic installer; never executed.')
   $global:LASTEXITCODE = if ($env:FIXTURE_SCENARIO -eq 'network') { 22 } else { 0 }
