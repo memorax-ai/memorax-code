@@ -60,6 +60,9 @@ test("Windows acquisition verifies the publisher and extracts the actual complet
     const observed = await calls();
     assert.deepEqual(observed.map((call) => call.tool), ["release", "curl", "hash", "signature", "desktop", "7zip", "7zip"]);
     assert.deepEqual(observed[0].args, [releaseScript, "select-json", "win32-x64-user"]);
+    assert.equal(observed[0].exitCode, 0);
+    assert.equal(observed[0].outputCount, 1);
+    assert.equal(observed[0].validJson, true);
     assert.deepEqual(observed[1].args, ["--disable", "--fail", "--silent", "--show-error", "--location", "--proto", "=https",
       "--proto-redir", "=https", "--connect-timeout", "30", "--max-time", "600", "--retry", "2", "--retry-max-time", "900",
       "--output", join(destination, "WorkBuddy.exe"), url]);
@@ -326,6 +329,8 @@ if ($env:FIXTURE_RELEASE_FILE) {
 exit $LASTEXITCODE
 `);
     const env = { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, WINDIR: process.env.WINDIR,
+      // Without PATHEXT, PowerShell sets only .CPL and launches node.exe via file association.
+      PATHEXT: ".COM;.EXE;.BAT;.CMD",
       HOME: join(root, "home"), USERPROFILE: join(root, "home"), TEMP: join(root, "tmp"), TMP: join(root, "tmp"),
       MEMORAX_CODE_HOME: join(root, "state"), FIXTURE_HELPER: script, FIXTURE_DESTINATION: destination,
       FIXTURE_OUTSIDE: outside, FIXTURE_CALLS: callLog, FIXTURE_SCENARIO: scenario, FIXTURE_NODE: process.execPath,
