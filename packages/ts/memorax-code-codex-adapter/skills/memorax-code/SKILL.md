@@ -108,8 +108,9 @@ For MemoraX Code coding memory, run the platform command from the active task wo
 
 The installed Hook and session binding supply the authoritative workspace root; do not run Git commands to discover or replace it. The Backend resolves repository scope from that trusted workspace and read-only filesystem Git metadata.
 
-Repo memory remains the repository-local `.repo_memory` authority. Personal
-memory is a separate global authority under `$MEMORAX_CODE_HOME/personal-memory`
+Repo memory remains a local repository authority. Resolve its shared mainline
+baseline with the repo-read reference; linked worktrees read the same published
+bundle. Explicit local builds remain in `.repo_memory`. Personal memory is a separate global authority under `$MEMORAX_CODE_HOME/personal-memory`
 (`~/.memorax-code/personal-memory` by default). Resolve that home using the
 personal read/write reference's environment and installation metadata rules; reads and writes
 do not require Git, a repository root, or a worktree. Existing personal-memory

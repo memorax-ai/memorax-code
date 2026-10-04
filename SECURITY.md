@@ -108,10 +108,24 @@ Please allow time for triage and remediation before public disclosure.
   are bound to one active Turn with a prompt-derived Turn ID; a new
   prompt interrupts the old Turn, and late or mismatched completion events do
   not write back. Hook fields are not a fallback for any other client.
-- Initial Repo Memory builds use only the Git worktree returned by an
+- Initial Repo Memory build triggers accept only the Git worktree returned by an
   authenticated Backend turn-start request. Backend or workspace-scope
   failures skip the build; client integrations do not fall back to
   adapter-local workspace input.
+- Repo Memory sharing is local to a canonical Git common directory and one
+  MemoraX home. Remote URLs do not authorize sharing between clones. One validated
+  mainline baseline is held in private local storage and is not sent to MemoraX.
+  Any authorized worktree may trigger maintenance, including a dirty feature
+  worktree; only the fixed local `origin/HEAD` target selects authoring content.
+  Workers use a private local clone with checkout hooks disabled, without changing
+  source refs or registering a worktree. Normal collection retains its configured
+  provider-evidence policy. Validation checks unchanged snapshot source, artifact
+  provenance, job ownership, and the previous baseline before atomic publication.
+  All branches read one immutable version as guidance and verify current source.
+  Personal-memory sidecars are excluded and bundle copies reject symbolic links.
+  Existing local bundles and user edits remain untouched. Completed jobs remove
+  their temporary checkout; published versions and operational records remain
+  local. These checks do not sandbox authoring or prove semantic accuracy.
 - Personal Memory is global user-owned state under
   `$MEMORAX_CODE_HOME/personal-memory/` (default `~/.memorax-code/personal-memory/`). User
   Profile is `user-profile/preferences.md`; Procedure Memory consists of direct

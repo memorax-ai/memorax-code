@@ -9,10 +9,11 @@ const adapterRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const packagedCommon = join(adapterRoot, "memorax-code-adapter-common", "src");
 const commonRoot = existsSync(packagedCommon) ? packagedCommon : resolve(adapterRoot, "../memorax-code-adapter-common/src");
 const loadCommon = (name) => import(pathToFileURL(join(commonRoot, name)).href);
-const { runRepoMemoryJob, buildPrompt, updatePrompt, gitSnapshot, inspectRepoMemoryBundle } = await loadCommon("repo-memory/repo-memory-job-supervisor.mjs");
+const { runRepoMemoryJob, buildPrompt, updatePrompt, gitSnapshot, inspectRepoMemoryBundle, recheckSharedRepoMemoryMaintenance } = await loadCommon("repo-memory/repo-memory-job-supervisor.mjs");
+const { prepareSharedRepoMemorySnapshot, publishSharedRepoMemorySnapshot, recordSharedRepoMemoryAttempt, sharedSnapshotRoot } = await loadCommon("repo-memory/repo-memory-shared-bundle.mjs");
 const { evaluateRepository } = await loadCommon("repo-memory/repo-memory-update-policy-evaluator.mjs");
 const { gitHead, profileLocalHead, resolveCommit } = await loadCommon("repo-memory/repo-memory-job-artifacts.mjs");
-const { markerPathForRepo, readActiveRepoMemoryJobMarker, realpathRepo, repoMemoryJobsDir, tryAcquireRepoMemoryStartupLock, releaseRepoMemoryStartupLock, removeRepoMemoryJobMarkerIfOwned } = await loadCommon("repo-memory/repo-memory-job-marker.mjs");
+const { assertRepoMemoryStartupLockOwned, markerPathForRepo, readActiveRepoMemoryJobMarker, realpathRepo, repoMemoryJobsDir, tryAcquireRepoMemoryStartupLock, releaseRepoMemoryStartupLock, removeRepoMemoryJobMarkerIfOwned, writeRepoMemoryJobMarker } = await loadCommon("repo-memory/repo-memory-job-marker.mjs");
 const { writePrivateJsonRecord } = await loadCommon("runtime-record.mjs");
 
 const SCHEMA = "cursor_native_repo_memory_job.v1";
@@ -34,13 +35,14 @@ export function runCursorRepoMemoryJob(args, options = {}) {
     now: options.now || Date.now,
     leaseMs: options.leaseMs ?? LEASE_MS,
   };
+  runtime.evaluateRepository = options.evaluateRepository || ((input) => evaluateRepository({ ...input, configPath: input.configPath || join(runtime.home, "config.toml") }));
   if (!Number.isSafeInteger(runtime.leaseMs) || runtime.leaseMs <= 0 || runtime.leaseMs > LEASE_MS) throw new Error("invalid native job lease");
   if (["claim", "finish", "abort", "status"].includes(args[0])) return transition(parseTransition(args), runtime);
   return runRepoMemoryJob(args, {
     runner: "cursor",
     validatorPath: runtime.validatorPath,
     memoraxCodeHome: runtime.home,
-    evaluateRepository: options.evaluateRepository || ((input) => evaluateRepository({ ...input, configPath: input.configPath || join(runtime.home, "config.toml") })),
+    evaluateRepository: runtime.evaluateRepository,
     startJob: (request) => prepare(request, runtime),
   });
 }
@@ -48,29 +50,48 @@ export function runCursorRepoMemoryJob(args, options = {}) {
 function prepare(request, runtime) {
   const repo = realpathRepo(resolve(request.repo));
   if (!["build", "update"].includes(request.mode)) throw new Error("--mode must be build or update");
-  if (request.mode === "update" && !existsSync(join(repo, ".repo_memory/PROFILE.md"))) throw new Error("repo memory update requires an existing PROFILE.md");
-  const perform = () => {
+  if (request.mode === "update" && !request.sharedSnapshot && !existsSync(join(repo, ".repo_memory/PROFILE.md"))) throw new Error("repo memory update requires an existing PROFILE.md");
+  const perform = (startupLock) => {
     const active = readActiveRepoMemoryJobMarker({ memoraxCodeHome: runtime.home, repoRealpath: repo });
     if (active.active) return existing(active.marker);
-    const snapshot = gitSnapshot(repo, GIT_READ_OPTIONS);
+    if (request.automatic) {
+      const commonRuntime = { memoraxCodeHome: runtime.home, validatorPath: runtime.validatorPath, evaluateRepository: runtime.evaluateRepository };
+      const sharedDecision = recheckSharedRepoMemoryMaintenance(request, commonRuntime);
+      if (sharedDecision) return { ok: sharedDecision.ok, sharedDecision };
+    }
+    const snapshot = request.sharedSnapshot ? { ...request.sharedSnapshot, workingTreeState: "clean" } : gitSnapshot(repo, GIT_READ_OPTIONS);
     if (request.dryRun) return { ok: true, dryRun: true, alreadyRunning: false, execution: "native-subagent", runner: "cursor", repo, mode: request.mode, snapshotHead: snapshot.head };
     const now = runtime.now();
     const jobId = new Date(now).toISOString().replace(/[^0-9]/g, "").slice(0, 17) + "-" + request.mode + "-" + (basename(repo).replace(/[^a-zA-Z0-9_.-]/g, "-").slice(0, 40) || "repo") + "-" + randomBytes(4).toString("hex");
     const ticket = randomBytes(32).toString("hex");
     const state = {
       schema: SCHEMA, version: 1, jobId, runId: randomUUID().replaceAll("-", ""),
-      repo, mode: request.mode, runner: "cursor", execution: "native-subagent", status: "requested",
+      repo, mode: request.mode, runner: "cursor", execution: "native-subagent", status: "preparing",
       startedAt: new Date(now).toISOString(), expiresAt: new Date(now + Math.min(REQUEST_MS, runtime.leaseMs)).toISOString(),
       snapshotHead: snapshot.head, snapshotBranch: snapshot.branch, snapshotWorkingTreeState: snapshot.workingTreeState,
+      sharedSnapshot: request.sharedSnapshot,
       validatorPath: runtime.validatorPath, parentSessionId: runtime.sessionId, ticketHash: hash(ticket),
     };
     writeState(runtime, state);
+    let failureReason = "snapshot_prepare_failed";
     try {
+      if (request.sharedSnapshot) {
+        recordSharedRepoMemoryAttempt({ home: runtime.home, repo, snapshot: request.sharedSnapshot, nowMs: request.nowMs });
+        prepareSharedRepoMemorySnapshot({ home: runtime.home, repo, snapshot: request.sharedSnapshot,
+          root: sharedSnapshotRoot(jobPath(runtime, jobId)), validate: (path) => inspectRepoMemoryBundle(path, runtime.validatorPath).status === "usable" });
+      }
+      failureReason = "startup_ownership_lost";
+      assertRepoMemoryStartupLockOwned(startupLock);
+      state.status = "requested";
+      writeState(runtime, state);
+      failureReason = "lease_guard_start_failed";
       state.leasePid = startLeaseGuard(runtime, state);
       writeState(runtime, state);
+      failureReason = "startup_ownership_lost";
+      assertRepoMemoryStartupLockOwned(startupLock);
       writeMarker(runtime, state);
     } catch (error) {
-      finishState(runtime, state, "lease_guard_start_failed");
+      finishState(runtime, state, failureReason);
       throw error;
     }
     return {
@@ -102,13 +123,14 @@ function transition(request, runtime) {
     let validation;
     let profileHead;
     try {
-      if (gitHead(repo, GIT_READ_OPTIONS) !== acquired.snapshotHead) failureReason = "snapshot_changed";
+      if (gitHead(acquired.sharedSnapshot ? sharedSnapshotRoot(jobPath(runtime, acquired.jobId)) : repo, GIT_READ_OPTIONS) !== acquired.snapshotHead) failureReason = "snapshot_changed";
       else {
-        const bundle = inspectRepoMemoryBundle(repo, acquired.validatorPath);
+        const memoryRoot = acquired.sharedSnapshot ? sharedSnapshotRoot(jobPath(runtime, acquired.jobId)) : repo;
+        const bundle = inspectRepoMemoryBundle(memoryRoot, acquired.validatorPath);
         validation = bundle.validation;
         if (bundle.status !== "usable") failureReason = "artifact_validation_failed";
         else {
-          const value = profileLocalHead(join(repo, ".repo_memory/PROFILE.md"));
+          const value = profileLocalHead(join(memoryRoot, ".repo_memory/PROFILE.md"));
           profileHead = value ? resolveCommit(repo, value, GIT_READ_OPTIONS) : undefined;
           if (profileHead !== acquired.snapshotHead) failureReason = "profile_head_mismatch";
         }
@@ -122,9 +144,14 @@ function transition(request, runtime) {
       if (rejection) return rejection;
       // Recheck after the validator; neither a concurrent commit nor lease
       // expiry may be converted into success by an earlier snapshot.
-      try { if (gitHead(repo, GIT_READ_OPTIONS) !== state.snapshotHead) failureReason = "snapshot_changed"; } catch { failureReason = "snapshot_changed"; }
+      try { if (gitHead(state.sharedSnapshot ? sharedSnapshotRoot(jobPath(runtime, state.jobId)) : repo, GIT_READ_OPTIONS) !== state.snapshotHead) failureReason = "snapshot_changed"; } catch { failureReason = "snapshot_changed"; }
       state.validation = validation;
       state.profileHead = profileHead;
+      if (!failureReason && state.sharedSnapshot) {
+        state.sharedBaselinePublished = publishSharedRepoMemorySnapshot({ home: runtime.home, repo, snapshot: state.sharedSnapshot,
+          root: sharedSnapshotRoot(jobPath(runtime, state.jobId)), validate: (path) => inspectRepoMemoryBundle(path, runtime.validatorPath).status === "usable" });
+        if (!state.sharedBaselinePublished) failureReason = "shared_publication_rejected";
+      }
       return finishState(runtime, state, failureReason);
     });
   }
@@ -137,7 +164,7 @@ function transition(request, runtime) {
     if (request.command === "claim") {
       const rejection = authorize(request, runtime, state, "requested");
       if (rejection) return rejection;
-      if (gitHead(repo, GIT_READ_OPTIONS) !== state.snapshotHead) return finishState(runtime, state, "snapshot_changed");
+      if (gitHead(state.sharedSnapshot ? sharedSnapshotRoot(jobPath(runtime, state.jobId)) : repo, GIT_READ_OPTIONS) !== state.snapshotHead) return finishState(runtime, state, "snapshot_changed");
       const claimToken = randomBytes(32).toString("hex");
       state.status = "claimed";
       const claimedAt = runtime.now();
@@ -147,7 +174,9 @@ function transition(request, runtime) {
       delete state.ticketHash;
       writeState(runtime, state);
       writeMarker(runtime, state);
-      const memoryPrompt = (state.mode === "build" ? buildPrompt : updatePrompt)(repo, state.snapshotHead, "the direct Repo Memory reference at " + join(dirname(dirname(state.validatorPath)), "references", "repo-" + state.mode + ".md"));
+      const sourceRepo = state.sharedSnapshot ? sharedSnapshotRoot(jobPath(runtime, state.jobId)) : repo;
+      const memoryPrompt = (state.mode === "build" ? buildPrompt : updatePrompt)(sourceRepo, state.snapshotHead, "the direct Repo Memory reference at " + join(dirname(dirname(state.validatorPath)), "references", "repo-" + state.mode + ".md"),
+        state.sharedSnapshot ? { ...state.sharedSnapshot, root: sourceRepo } : undefined);
       return {
         ...summary(runtime, state), claimToken,
         instructions: memoryPrompt + "\nThis is a Cursor native subagent. Do not call the Skill router, repo-read, maintain, start, any client CLI, or delegate again. Read the direct reference completely and perform its collect/detect/author/validate steps. The fixed authoring lease expires at " + state.expiresAt + ". Before every write confirm the lease has not expired. When authoring is complete, call finish below; only its validated succeeded result is success. If blocked, use abort instead.\n\n" + invocation(runtime, state, "finish", ["--claim-token", claimToken]) + "\n\n" + invocation(runtime, state, "abort", ["--claim-token", claimToken, "--reason", "child_failed"]),
@@ -179,6 +208,7 @@ function loadOwnedState(request, runtime, repo) {
 }
 
 function finishState(runtime, state, failureReason) {
+  if (state.sharedSnapshot) rmSync(sharedSnapshotRoot(jobPath(runtime, state.jobId)), { recursive: true, force: true });
   state.status = failureReason ? "failed" : "succeeded";
   state.finishedAt = new Date(runtime.now()).toISOString();
   if (failureReason) state.failureReason = failureReason;
@@ -189,14 +219,14 @@ function finishState(runtime, state, failureReason) {
 
 function writeMarker(runtime, state) {
   const markerInfo = markerPathForRepo(runtime.home, state.repo);
-  writePrivateJsonRecord(markerInfo.markerPath, {
+  writeRepoMemoryJobMarker({ memoraxCodeHome: runtime.home, marker: {
     // Retain the v1 envelope for immutable older runtimes sharing this path.
     version: 1, ownerKind: "lease", pid: state.leasePid, repo: state.repo, repoKey: markerInfo.repoKey,
     mode: state.mode, runner: "cursor", jobId: state.jobId, runId: state.runId,
     outputLogPath: join(dirname(jobPath(runtime, state.jobId)), "output.log"),
     finalMessagePath: join(dirname(jobPath(runtime, state.jobId)), "final-message.md"),
     jobPath: jobPath(runtime, state.jobId), startedAt: state.claimedAt || state.startedAt, leaseExpiresAt: state.expiresAt,
-  }, { durableBoundary: runtime.home });
+  } });
 }
 
 function startLeaseGuard(runtime, state) {
@@ -268,7 +298,7 @@ function withRepoLock(runtime, repo, operation) {
   for (;;) {
     const result = tryAcquireRepoMemoryStartupLock({ memoraxCodeHome: runtime.home, repoRealpath: repo });
     if (result.acquired) {
-      try { return operation(); } finally { releaseRepoMemoryStartupLock(result.lock); }
+      try { return operation(result.lock); } finally { releaseRepoMemoryStartupLock(result.lock); }
     }
     if (Date.now() >= deadline) throw new Error("native repo memory job is busy");
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);

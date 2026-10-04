@@ -48,7 +48,7 @@ are not a compatibility contract.
 The generated template selects the existing client integrations, including the
 optional CodeBuddy/WorkBuddy, Trae, and Cursor adapters, enables automatic
 writeback, sets the preferred language to Chinese (`zh`), uses a five-turn skill
-reminder and the adaptive repository-update policy, and
+reminder and a 72-hour repository-update interval, and
 enables content-bearing local traces for every supported client. Foreground
 setup may narrow `[clients]` to clients detected on the host. The tables below
 list all fallbacks, including tuning fields omitted from the generated file.
@@ -928,22 +928,76 @@ The repository-update fields below belong in `[memory.repo_update]`.
 
 | Field | Environment override | Fallback |
 | --- | --- | --- |
-| `policy` | `MEMORAX_CODE_REPO_MEMORY_UPDATE_POLICY` | `adaptive` |
+| `policy` | `MEMORAX_CODE_REPO_MEMORY_UPDATE_POLICY` | `daily` |
 | `commit_threshold` | `MEMORAX_CODE_REPO_MEMORY_STALE_COMMIT_THRESHOLD` | `5` |
-| `cooldown_hours` | `MEMORAX_CODE_REPO_MEMORY_UPDATE_COOLDOWN_HOURS` | `24` |
+| `cooldown_hours` | `MEMORAX_CODE_REPO_MEMORY_UPDATE_COOLDOWN_HOURS` | `72` |
 
 Supported policies are `every-commit`, `commit-count`, `daily`,
 `pull-request`, `pull-request-or-daily`, and `adaptive`. Invalid policy values
-fall back to `adaptive`.
+fall back to `daily`. The `daily` policy uses `cooldown_hours` as its interval;
+despite its name, it is not fixed to 24 hours. `commit_threshold` applies only
+to `commit-count` and `adaptive`, so it does not bypass the default interval.
 
-In Codex, Claude Code, CodeBuddy/WorkBuddy, DSH, OpenCode, and Cursor, the first
-eligible prompt starts a background build only when the Backend has authorized
-a Git worktree and that worktree has no `.repo_memory/PROFILE.md`. If the
-Backend or workspace authority is unavailable, the client integration skips
-that attempt instead of falling back to its local workspace path. DSH schedules
-this work through its native pre-step integration rather than a Hook. Trae
-receives the shared Skill, User Profile, and Procedure reminders, but does not
-start this background build because Trae has no supported headless worker.
+In Codex, Claude Code, CodeBuddy/WorkBuddy, DSH, OpenCode, and Cursor, an eligible
+prompt checks initialization when the Backend has authorized a Git worktree and
+its repository has no shared baseline. Backend or workspace-authority failures
+skip the attempt. Trae reads through the shared Skill but has no automatic worker.
+A relevant repo-read can check maintenance after reading an existing baseline;
+commits, merges, and elapsed time do not themselves start a timer or Agent.
+
+One baseline lives under `$MEMORAX_CODE_HOME/repo-memory-bases/<repository-key>/`.
+The key comes from the canonical Git common directory, so linked worktrees share
+it within one MemoraX home. Independent clones do not share it merely because
+remote URLs match. All branches and detached checkouts read the same baseline
+through `repo-memory resolve --repo-path PATH`, including dirty worktrees.
+Existing local bundles are preserved and used only as a read fallback when no
+shared baseline exists. Explicit local builds and updates do not publish shared
+memory or participate in automatic per-worktree maintenance.
+
+Both initial builds and updates target only the local `refs/remotes/origin/HEAD`
+commit (for example, the locally known `origin/main`). There is no fetch, remote
+discovery, branch-name guess, or additional configuration entry. Missing or
+unresolvable refs skip automatic maintenance. Any worktree can trigger the job;
+it need not be clean or checked out on the default branch. Normal fetch/pull
+workflows must first make newly merged mainline commits available locally.
+
+This local snapshot selection preserves the existing Build and Update collection
+flow. When enabled by the history policy and provider access is available, the
+packaged collector and delta detector still use `gh`/`glab` to retrieve remote
+PR, MR, and issue evidence, including branch and commit metadata. Provider
+collection does not refresh Git refs or change the selected source snapshot.
+
+The update policy compares the last successful shared commit with that target
+and uses the shared publication time, falling back to PROFILE time for legacy
+records. The default requires new mainline commits and at least 72 hours since
+the last successful publication. More commits do not trigger an earlier update;
+without new commits, elapsed time alone does not trigger one. Explicit policy
+and interval settings continue to override these defaults. Feature-only commits
+and local file changes do not count. Ordinary file deletions, moves, dependency
+edits, or large diffs do not automatically
+invalidate the map or prohibit incremental updates. An incompatible mainline
+history defers automatic update for explicit recovery; readers may still use
+supported historical guidance while verifying current source. Repeated attempts
+against the same baseline wait for the configured cooldown after dispatch,
+including failure and unclaimed Cursor tasks; initial-build retries use 24 hours.
+
+Only when a job is needed, the supervisor creates a private local Git clone at
+the fixed target commit under `repo-memory-jobs/<job-id>/source/`. It shares local
+objects and does not register a worktree, move user branches, or access Git remotes.
+The existing collector and Agent build/update workflow operate in that snapshot.
+The Agent reviews affected Wiki pages and enabled history resources. Source and
+artifact validation precede publication: `baseline.json` atomically points to
+one immutable `versions/<version-id>/.repo_memory` directory. A newer local mainline
+commit during execution is allowed if the authored target is still its ancestor.
+Failures leave the shared record unchanged. Terminal jobs remove the temporary
+source snapshot; published versions are retained without automatic pruning.
+
+Readers resolve once and hold that version throughout retrieval. They use the
+map for navigation and verify relevant current files, including uncommitted
+changes. Branch divergence and diff size do not trigger another build or copy.
+There are no per-worktree borrowed records or fingerprint refreshes. Old local
+files and personal sidecars remain untouched. Update all clients together;
+older installed runtimes retain their previous local maintenance behavior.
 
 CodeBuddy/WorkBuddy repository jobs run the headless client under a bounded
 worker. `MEMORAX_CODE_REPO_MEMORY_JOB_TIMEOUT_MS` sets the client execution

@@ -23,6 +23,7 @@ const { requestMemorySearchGuidance, readMemorySearchGuidanceEnabled } = await i
 const { evaluateMemorySkillReminder, markSupplementalReminderForSession } = await import(pathToFileURL(join(commonRoot, "hooks", "memory-skill-reminder-hook.mjs")).href);
 const { buildUserProfilePreferencesContext } = await import(pathToFileURL(join(commonRoot, "personal-memory", "user-profile-context.mjs")).href);
 const { buildProcedureMemoryContext } = await import(pathToFileURL(join(commonRoot, "personal-memory", "procedure-memory-context.mjs")).href);
+const { sharedRepoMemoryPath } = await import(pathToFileURL(join(commonRoot, "repo-memory", "repo-memory-shared-bundle.mjs")).href);
 const { isRepoMemoryJobWorker } = await import(pathToFileURL(join(commonRoot, "repo-memory", "repo-memory-job-context.mjs")).href);
 
 if (isRepoMemoryJobWorker()) process.exit(0);
@@ -119,9 +120,9 @@ if (event === "sessionStart") {
   const repoMemoryWorktree = absolutePath(turnStart?.repoMemoryWorktree);
   let buildContext;
   if (turnStart?.ok === true && turnStart.recorded === true && input.prompt.trim()
-    && repoMemoryWorktree && !existsSync(join(repoMemoryWorktree, ".repo_memory", "PROFILE.md"))) {
+    && repoMemoryWorktree) {
     try {
-      const decision = runCursorRepoMemoryJob(["maintain", "--repo", repoMemoryWorktree], {
+      const decision = existsSync(join(sharedRepoMemoryPath(home, repoMemoryWorktree), "baseline.json")) ? {} : runCursorRepoMemoryJob(["maintain", "--repo", repoMemoryWorktree], {
         memoraxCodeHome: home,
         helperPath: join(runtimeRoot, "hooks", "repo-memory-job.mjs"),
         sessionId,

@@ -10,6 +10,31 @@ This is the incremental updater, not the daily reader. Use `repo-read.md` for ta
 
 ## Prerequisite
 
+### Supervised Shared-Default-Branch Candidate
+
+An authorized background worker supplies an isolated source repository at a fixed
+mainline commit, the baseline SHA, and its candidate `.repo_memory` directory.
+Use that snapshot for both code inspection and collection. Run
+`detect-updates --repo-path <source-repo> --memory-path <candidate-memory>
+--snapshot-ref <snapshot-sha> --pretty`; validate the candidate's parent directory.
+Do not change the caller's worktree, shared cache, Git refs, or configuration.
+Do not run `git fetch`, `git pull`, or `git ls-remote` to refresh or select the snapshot.
+Continue using the packaged detector to retrieve GitHub/GitLab PR, MR, and issue evidence
+through `gh`/`glab`, including branch and commit metadata,
+when enabled by the history policy and provider access is available.
+The supervisor owns version publication.
+
+Review the diff from baseline SHA to snapshot SHA and affected source files;
+update affected Wiki pages and PROFILE navigation as well as enabled history
+resources. This code-map review is required even when history is disabled or the
+detector reports no history delta. Preserve disabled history channels and existing
+provider resources when collection is unavailable. Advance the candidate PROFILE
+SHA and timestamp only after reviewing all affected pages. Use repository-relative
+evidence links; the source snapshot is temporary. If incremental review cannot
+produce a usable map, stop and report the need for an explicit rebuild.
+These candidate rules override history-only report gates below for this supervised
+operation. Explicit local updates do not replace the shared baseline.
+
 The user selects a repository, not a memory directory. Derive the memory path as `<repo>/.repo_memory`.
 
 Require:
@@ -111,6 +136,7 @@ node <skill-dir>/scripts/repo-memory.mjs validate <repo-path> --pretty
 ```
 
 Whenever an update changes generated repo-memory artifacts, set `PROFILE.md.generated_at` to the successful update time and `PROFILE.md.local_head` to the processed snapshot. The read-time cooldown policy uses this timestamp; do not preserve an older build time after a successful incremental update.
+
 
 ## Authoring Rules
 

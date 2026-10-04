@@ -1,13 +1,16 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { homedir } from "node:os";
+import { sharedRepoMemoryPath } from "./repo-memory-shared-bundle.mjs";
 
 export function scheduleMissingRepoMemoryBuild(repo, options = {}) {
   try {
     const repoPath = nonEmptyString(repo);
     const pluginRoot = nonEmptyString(options.pluginRoot);
     if (!repoPath || !pluginRoot) return false;
-    if (existsSync(join(repoPath, ".repo_memory", "PROFILE.md"))) return false;
+    const home = resolve(options.env?.MEMORAX_CODE_HOME || process.env.MEMORAX_CODE_HOME || join(homedir(), ".memorax-code"));
+    if (existsSync(join(sharedRepoMemoryPath(home, repoPath), "baseline.json"))) return false;
 
     const jobHookPath = join(pluginRoot, "hooks", "repo-memory-job.mjs");
     if (!existsSync(jobHookPath)) return false;

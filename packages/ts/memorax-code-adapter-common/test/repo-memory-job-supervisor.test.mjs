@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { buildPrompt, updatePrompt } from "../src/repo-memory/repo-memory-job-supervisor.mjs";
 import {
   markerPathForRepo,
   repoMemoryJobsDir,
@@ -63,6 +64,20 @@ function tempRoot(t, prefix) {
   return root;
 }
 
+test("shared repo memory prompts preserve provider collection while fixing the Git snapshot", () => {
+  const repo = "/fixture/source";
+  const head = "a".repeat(40);
+  const snapshot = { baseHead: "b".repeat(40), root: repo };
+  for (const prompt of [buildPrompt(repo, head, "$memorax-code", snapshot), updatePrompt(repo, head, "$memorax-code", snapshot)]) {
+    assert.match(prompt, new RegExp(`Snapshot HEAD: ${head}`));
+    assert.match(prompt, /Do not run Git network operations or change Git refs/);
+    assert.match(prompt, /packaged (?:collector|detector).*GitHub\/GitLab PR, MR, and issue evidence/);
+    assert.match(prompt, /including branch and commit metadata/);
+    assert.match(prompt, /when enabled by the history policy and provider access is available/);
+    assert.doesNotMatch(prompt, /do not contact Git remotes/i);
+  }
+});
+
 test("repo memory update worker prompt follows updater history policy", (t) => {
   const root = tempRoot(t, "repo-memory-job-update-prompt-");
   const repo = join(root, "repo");
@@ -83,163 +98,6 @@ test("repo memory update worker prompt follows updater history policy", (t) => {
   assert.doesNotMatch(payload.prompt, /Also try GitHub\/GitLab PR, MR, and issue evidence/);
   assert.equal(countJobDirs(memoraxCodeHome), 0);
 });
-
-test("repo memory maintain dry-run selects build for a missing bundle without creating job state", (t) => {
-  const root = tempRoot(t, "repo-memory-maintain-missing-");
-  const repo = join(root, "repo");
-  const memoraxCodeHome = join(root, "memorax-code");
-  initRepo(repo);
-
-  const result = runJob(["maintain", "--repo", repo, "--dry-run"], {
-    MEMORAX_CODE_HOME: memoraxCodeHome,
-  });
-  assert.equal(result.status, 0, result.stderr);
-  const payload = JSON.parse(result.stdout);
-  assert.equal(payload.job.ok, true);
-  assert.equal(payload.job.runner, "fixture");
-  assert.equal(payload.job.finalMessageSource, "file");
-  assert.equal(payload.job.repo, repo);
-  assert.match(payload.job.prompt, /\/fixture-memory/);
-  assert.match(payload.job.prompt, /repo-build operation/);
-  assert.match(payload.job.prompt, new RegExp(runGit(repo, ["rev-parse", "HEAD"]).trim()));
-  assert.match(payload.job.prompt, /authorized background repo-memory worker/);
-  assert.match(payload.job.prompt, /GitHub\/GitLab PR, MR, and issue evidence/);
-  assert.match(payload.job.prompt, /repo-memory\.mjs collect --reuse/);
-  assert.match(payload.job.prompt, /procedure-memory/);
-  assert.match(payload.job.prompt, /user-profile/);
-  assert.equal(payload.schema, "repo_memory_maintenance_decision.v1");
-  assert.equal(payload.ok, true);
-  assert.equal(payload.action, "build");
-  assert.equal(payload.reason, "bundle_missing");
-  assert.equal(payload.bundleStatus, "missing");
-  assert.equal(payload.job.dryRun, true);
-  assert.equal(payload.job.mode, "build");
-  assert.equal(countJobDirs(memoraxCodeHome), 0);
-});
-
-test("repo memory maintain selects build when the validator rejects the bundle", (t) => {
-  const root = tempRoot(t, "repo-memory-maintain-invalid-");
-  const repo = join(root, "repo");
-  const memoraxCodeHome = join(root, "memorax-code");
-  const head = initRepo(repo);
-  writeProfile(repo, head);
-
-  const result = runJob(["maintain", "--repo", repo, "--dry-run"], {
-    MEMORAX_CODE_HOME: memoraxCodeHome,
-  });
-  assert.equal(result.status, 0, result.stderr);
-  const payload = JSON.parse(result.stdout);
-  assert.equal(payload.action, "build");
-  assert.equal(payload.reason, "bundle_invalid");
-  assert.equal(payload.bundleStatus, "invalid");
-  assert.equal(payload.validation.ok, false);
-  assert.equal(payload.job.mode, "build");
-  assert.equal(countJobDirs(memoraxCodeHome), 0);
-});
-
-test("repo memory maintain returns no-op for a usable fresh bundle", (t) => {
-  const root = tempRoot(t, "repo-memory-maintain-fresh-");
-  const repo = join(root, "repo");
-  const memoraxCodeHome = join(root, "memorax-code");
-  const head = initRepo(repo);
-  writeValidatedProfile(repo, head);
-
-  const result = runJob(["maintain", "--repo", repo, "--dry-run"], {
-    MEMORAX_CODE_HOME: memoraxCodeHome,
-  });
-  assert.equal(result.status, 0, result.stderr);
-  const payload = JSON.parse(result.stdout);
-  assert.equal(payload.ok, true);
-  assert.equal(payload.action, "none");
-  assert.equal(payload.reason, "up_to_date");
-  assert.equal(payload.bundleStatus, "usable");
-  assert.equal(payload.validation.ok, true);
-  assert.equal(payload.policyDecision.trigger, false);
-  assert.equal(payload.policyDecision.commitsBehind, 0);
-  assert.equal(payload.job, undefined);
-  assert.equal(countJobDirs(memoraxCodeHome), 0);
-});
-
-test("repo memory maintain selects update when adaptive commit threshold is reached", (t) => {
-  const root = tempRoot(t, "repo-memory-maintain-adaptive-");
-  const repo = join(root, "repo");
-  const memoraxCodeHome = join(root, "memorax-code");
-  const baseline = initRepo(repo);
-  writeValidatedProfile(repo, baseline);
-  for (let index = 1; index <= 5; index += 1) {
-    writeFileSync(join(repo, `change-${index}.txt`), `change ${index}\n`);
-    runGit(repo, ["add", `change-${index}.txt`]);
-    runGit(repo, ["commit", "-m", `change ${index}`]);
-  }
-
-  const result = runJob(["maintain", "--repo", repo, "--dry-run"], {
-    MEMORAX_CODE_HOME: memoraxCodeHome,
-  });
-  assert.equal(result.status, 0, result.stderr);
-  const payload = JSON.parse(result.stdout);
-  assert.equal(payload.action, "update");
-  assert.equal(payload.reason, "commit_threshold_reached");
-  assert.equal(payload.bundleStatus, "usable");
-  assert.equal(payload.policyDecision.policy, "adaptive");
-  assert.equal(payload.policyDecision.commitThreshold, 5);
-  assert.equal(payload.policyDecision.commitsBehind, 5);
-  assert.equal(payload.job.mode, "update");
-  assert.equal(payload.job.dryRun, true);
-  assert.equal(countJobDirs(memoraxCodeHome), 0);
-});
-
-test("repo memory maintain selects update when adaptive cooldown is reached", (t) => {
-  const root = tempRoot(t, "repo-memory-maintain-cooldown-");
-  const repo = join(root, "repo");
-  const memoraxCodeHome = join(root, "memorax-code");
-  const baseline = initRepo(repo);
-  writeValidatedProfile(repo, baseline, { generatedAt: "2026-07-18T00:00:00Z" });
-  writeFileSync(join(repo, "cooldown-change.txt"), "cooldown change\n");
-  runGit(repo, ["add", "cooldown-change.txt"]);
-  runGit(repo, ["commit", "-m", "cooldown change"]);
-
-  const result = runJob([
-    "maintain",
-    "--repo",
-    repo,
-    "--dry-run",
-    "--now",
-    "2026-07-19T00:00:00Z",
-  ], {
-    MEMORAX_CODE_HOME: memoraxCodeHome,
-  });
-  assert.equal(result.status, 0, result.stderr);
-  const payload = JSON.parse(result.stdout);
-  assert.equal(payload.action, "update");
-  assert.equal(payload.reason, "cooldown_elapsed");
-  assert.equal(payload.policyDecision.policy, "adaptive");
-  assert.equal(payload.policyDecision.commitsBehind, 1);
-  assert.equal(payload.policyDecision.ageHours, 24);
-  assert.equal(payload.job.mode, "update");
-  assert.equal(countJobDirs(memoraxCodeHome), 0);
-});
-
-for (const baseline of ["", "0000000000000000000000000000000000000000"]) {
-  test(`repo memory maintain selects repair-capable update for baseline ${baseline ? "not ancestor" : "missing"}`, (t) => {
-    const root = tempRoot(t, "repo-memory-maintain-baseline-");
-    const repo = join(root, "repo");
-    const memoraxCodeHome = join(root, "memorax-code");
-    initRepo(repo);
-    writeValidatedProfile(repo, baseline);
-
-    const result = runJob(["maintain", "--repo", repo, "--dry-run"], {
-      MEMORAX_CODE_HOME: memoraxCodeHome,
-    });
-    assert.equal(result.status, 0, result.stderr);
-    const payload = JSON.parse(result.stdout);
-    assert.equal(payload.action, "update");
-    assert.equal(payload.reason, baseline ? "baseline_not_ancestor" : "missing_baseline");
-    assert.equal(payload.bundleStatus, "usable");
-    assert.equal(payload.policyDecision.trigger, true);
-    assert.equal(payload.job.mode, "update");
-    assert.equal(countJobDirs(memoraxCodeHome), 0);
-  });
-}
 
 test("repo memory start and maintain reuse an active job before inspecting the bundle", (t) => {
   const root = tempRoot(t, "repo-memory-maintain-deduplicate-");
@@ -275,72 +133,6 @@ test("repo memory start and maintain reuse an active job before inspecting the b
   assert.equal(payload.job.jobId, startedPayload.jobId);
   assert.equal(countJobDirs(memoraxCodeHome), 1);
 });
-
-test("repo memory maintain degrades to a non-blocking no-op when policy evaluation fails", (t) => {
-  const root = tempRoot(t, "repo-memory-maintain-policy-failure-");
-  const repo = join(root, "repo");
-  const memoraxCodeHome = join(root, "memorax-code");
-  const head = initRepo(repo);
-  writeValidatedProfile(repo, head);
-  writeFileSync(join(repo, ".git", "HEAD"), "ref: refs/heads/missing\n");
-
-  const result = runJob(["maintain", "--repo", repo, "--dry-run"], {
-    MEMORAX_CODE_HOME: memoraxCodeHome,
-  });
-  assert.equal(result.status, 0, result.stderr);
-  const payload = JSON.parse(result.stdout);
-  assert.equal(payload.ok, false);
-  assert.equal(payload.action, "none");
-  assert.equal(payload.reason, "policy_evaluation_failed");
-  assert.equal(payload.bundleStatus, "usable");
-  assert.equal(payload.job, undefined);
-  assert.equal(countJobDirs(memoraxCodeHome), 0);
-});
-
-for (const expectedMode of ["build", "update"]) {
-  test(`repo memory maintain launches and completes supervised ${expectedMode}`, (t) => {
-    const root = tempRoot(t, `repo-memory-maintain-${expectedMode}-complete-`);
-    const repo = join(root, "repo");
-    const memoraxCodeHome = join(root, "memorax-code");
-    const baseline = initRepo(repo);
-    if (expectedMode === "update") {
-      writeValidatedProfile(repo, baseline);
-      for (let index = 1; index <= 5; index += 1) {
-        writeFileSync(join(repo, `update-${index}.txt`), `update ${index}\n`);
-        runGit(repo, ["add", `update-${index}.txt`]);
-        runGit(repo, ["commit", "-m", `update ${index}`]);
-      }
-    }
-    const head = runGit(repo, ["rev-parse", "HEAD"]).trim();
-    const envLog = join(root, "worker-env.json");
-    const result = runJob(["maintain", "--repo", repo], {
-      MEMORAX_CODE_HOME: memoraxCodeHome,
-      REPO_MEMORY_TEST_ENV_LOG: envLog,
-    });
-    assert.equal(result.status, 0, result.stderr);
-    const payload = JSON.parse(result.stdout);
-    assert.equal(payload.action, expectedMode);
-    assert.equal(payload.job.mode, expectedMode);
-    assert.equal(payload.job.alreadyRunning, false);
-
-    const state = waitForTerminal(payload.job.jobPath);
-    assert.equal(state.status, "succeeded", JSON.stringify(state));
-    assert.equal(state.exitCode, 0);
-    assert.equal(state.mode, expectedMode);
-    assert.equal(state.snapshotHead, head);
-    assert.equal(state.validation.ok, true);
-    assert.equal(state.validation.profileHead, head);
-    assert.equal(countJobDirs(memoraxCodeHome), 1);
-    waitForMarkerAbsent(memoraxCodeHome, repo);
-
-    const workerEnv = JSON.parse(readFileSync(envLog, "utf8"));
-    assert.equal(workerEnv.kind, "repo-memory");
-    assert.equal(workerEnv.jobId, payload.job.jobId);
-    assert.match(workerEnv.runId, /^[0-9a-f]{32}$/);
-    assert.equal(workerEnv.snapshotHead, head);
-    assert.equal(workerEnv.mode, expectedMode);
-  });
-}
 
 test("repo memory job launcher writes job state in MEMORAX_CODE_HOME", (t) => {
   const root = tempRoot(t, "repo-memory-job-state-");
@@ -379,15 +171,15 @@ test("repo memory maintenance preserves a relative home when workers change cwd"
   const envLog = join(root, "worker-env.json");
   initRepo(repo);
 
-  const result = runJob(["maintain", "--repo", repo], {
+  const result = runJob(["start", "--mode", "build", "--repo", repo], {
     MEMORAX_CODE_HOME: "./memorax-code",
     REPO_MEMORY_TEST_ENV_LOG: envLog,
   }, { cwd: root });
   assert.equal(result.status, 0, result.stderr);
   const payload = JSON.parse(result.stdout);
-  assert.equal(payload.action, "build");
-  assert.equal(payload.job.jobPath, join(repoMemoryJobsDir(memoraxCodeHome), payload.job.jobId, "job.json"));
-  assert.equal(waitForTerminal(payload.job.jobPath).status, "succeeded");
+  assert.equal(payload.mode, "build");
+  assert.equal(payload.jobPath, join(repoMemoryJobsDir(memoraxCodeHome), payload.jobId, "job.json"));
+  assert.equal(waitForTerminal(payload.jobPath).status, "succeeded");
   assert.equal(JSON.parse(readFileSync(envLog, "utf8")).memoraxCodeHome, memoraxCodeHome);
   assert.equal(existsSync(join(repo, "memorax-code")), false);
   waitForMarkerAbsent(memoraxCodeHome, repo);
@@ -622,12 +414,6 @@ function runGit(repo, args) {
 function writeProfile(repo, head) {
   mkdirSync(join(repo, ".repo_memory"), { recursive: true });
   writeFileSync(join(repo, ".repo_memory", "PROFILE.md"), `---\nlocal_head: "${head}"\n---\n# Profile\n`);
-}
-
-function writeValidatedProfile(repo, head, options = {}) {
-  mkdirSync(join(repo, ".repo_memory"), { recursive: true });
-  const generatedAt = options.generatedAt ? `generated_at: "${options.generatedAt}"\n` : "";
-  writeFileSync(join(repo, ".repo_memory", "PROFILE.md"), `---\nfixture_valid: true\n${generatedAt}local_head: "${head}"\n---\n# Profile\n`);
 }
 
 function writeMarker(memoraxCodeHome, repo, overrides = {}) {
