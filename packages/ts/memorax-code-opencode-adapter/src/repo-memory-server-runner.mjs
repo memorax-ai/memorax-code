@@ -126,7 +126,6 @@ async function runOpenCodeRepoMemorySession(input) {
         },
         body: JSON.stringify({
           agent: OPENCODE_REPO_MEMORY_AGENT,
-          variant: "medium",
           parts: [{ type: "text", text: input.prompt }],
         }),
         ...(input.signal ? { signal: input.signal } : {}),

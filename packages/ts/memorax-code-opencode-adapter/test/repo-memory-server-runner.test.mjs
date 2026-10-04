@@ -79,7 +79,6 @@ test("OpenCode repo memory runner creates, prompts, and deletes a background ses
     });
     assert.deepEqual(JSON.parse(requests[1].body), {
       agent: OPENCODE_REPO_MEMORY_AGENT,
-      variant: "medium",
       parts: [{ type: "text", text: "Build Repo Memory." }],
     });
   } finally {
@@ -221,7 +220,6 @@ test("OpenCode repo memory runner owns a temporary server when the inherited ser
     assert.equal(JSON.parse(requests[0].body).parentID, "parent-fallback");
     assert.deepEqual(JSON.parse(requests[1].body), {
       agent: OPENCODE_REPO_MEMORY_AGENT,
-      variant: "medium",
       parts: [{ type: "text", text: "Update Repo Memory." }],
     });
     assert.deepEqual(killSignals, ["SIGTERM"]);

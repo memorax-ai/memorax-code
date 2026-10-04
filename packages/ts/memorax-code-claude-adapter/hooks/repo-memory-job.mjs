@@ -28,6 +28,9 @@ try {
         "--no-session-persistence",
         "--effort",
         "medium",
+        // Claude's effort environment variable takes precedence over --effort.
+        "--settings",
+        JSON.stringify({ env: { CLAUDE_CODE_EFFORT_LEVEL: "medium" } }),
         prompt,
       ];
     },

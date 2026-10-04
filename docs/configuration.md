@@ -1004,11 +1004,14 @@ where the native runner exposes a task-scoped control:
 
 - Codex passes `--config 'model_reasoning_effort="medium"'` to `codex exec`.
 - Claude Code and CodeBuddy/WorkBuddy pass `--effort medium` to their print
-  runners. The installed CLI must support this flag.
-- OpenCode sends `variant: "medium"` on the background session's prompt,
-  including when using a temporary fallback server. OpenCode maps the variant
-  to provider-specific options. If the selected model has no `medium` variant,
-  its native model and agent options still apply; this is not a universal cap.
+  runners. The installed CLI must support this flag. Claude Code also passes
+  a per-process `--settings` override setting `env.CLAUDE_CODE_EFFORT_LEVEL`
+  to `medium`, because that environment setting takes precedence over `--effort`.
+- OpenCode's plugin checks the resolved background model's native variants,
+  including when using a temporary fallback server. It selects `medium` only
+  when that variant exists and leaves provider-specific parameter mapping to
+  OpenCode. Otherwise, or if model metadata cannot be read, it preserves the
+  native model and agent defaults, including any selected variant.
 - DSH's managed headless Profile and Cursor's inherited-model subagent retain
   their native reasoning settings. Their current integration paths do not
   expose an independent per-task effort override. Trae has no automatic runner.
