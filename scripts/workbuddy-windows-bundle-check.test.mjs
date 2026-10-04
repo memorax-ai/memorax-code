@@ -197,11 +197,25 @@ for (const scenario of ["runtime-prerelease", "runtime-number", "runtime-missing
   });
 }
 
+for (const failure of [undefined, new Error("Synthetic callback failure")]) {
+  test(`Windows acquisition fixture cleans up after callback ${failure ? "failure" : "success"}`, async () => {
+    let root;
+    const result = fixture(async ({ destination }) => {
+      root = dirname(destination);
+      if (failure) throw failure;
+    });
+    if (failure) await assert.rejects(result, (error) => error === failure);
+    else await result;
+    await assert.rejects(readdir(root), { code: "ENOENT" });
+  });
+}
+
 async function fixture(callback, scenario = "success", release) {
   const root = await mkdtemp(join(tmpdir(), "workbuddy-windows-bundle-"));
   const destination = join(root, "download"), outside = join(root, "outside"), callLog = join(root, "calls.jsonl");
   const releaseFile = release === undefined ? undefined : join(root, "release selection.json");
   const selected = release && typeof release === "object" ? release : baseline;
+  const failures = [];
   try {
     await Promise.all([destination, outside, join(root, "home"), join(root, "tmp")].map((path) => mkdir(path)));
     await writeFile(join(outside, "codebuddy"), "Outside data; preserve.");
@@ -308,8 +322,9 @@ exit $LASTEXITCODE
       FIXTURE_RELEASE_FILE: releaseFile, FIXTURE_SHA256: selected.sha256,
       FIXTURE_PRODUCT_VERSION: selected.productVersion, FIXTURE_RUNTIME_VERSION: selected.runtimeVersion ?? "2.150.1" };
     const run = async (target = destination) => {
+      // Native commands launched by PowerShell must not retain the directory we remove.
       try { return { code: 0, ...await execute("pwsh", ["-NoLogo", "-NoProfile", "-NonInteractive", "-File", runner],
-        { env: { ...env, FIXTURE_DESTINATION: target }, cwd: root, timeout: 20_000, maxBuffer: 64 * 1024 }) }; }
+        { env: { ...env, FIXTURE_DESTINATION: target }, cwd: dirname(root), timeout: 20_000, maxBuffer: 64 * 1024 }) }; }
       catch (error) {
         if (typeof error.code !== "number") throw error;
         return { code: error.code, stdout: error.stdout, stderr: error.stderr };
@@ -320,5 +335,9 @@ exit $LASTEXITCODE
       catch (error) { if (error.code === "ENOENT") return []; throw error; }
     };
     await callback({ destination, outside, run, calls, releaseFile });
-  } finally { await rm(root, { recursive: true, force: true }); }
+  } catch (error) { failures.push(error); }
+  try { await rm(root, { recursive: true, force: true }); }
+  catch (error) { failures.push(error); }
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) throw new AggregateError(failures, "Windows acquisition fixture and cleanup failed");
 }
