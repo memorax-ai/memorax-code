@@ -324,7 +324,7 @@ and isolation before using it; a macOS/Linux suite or
 WSL run does not replace native Windows validation.
 
 Live-provider, MemoraX-backed, and live Jev checks are explicit opt-in tests.
-The credential-free Codex, OpenCode, Claude, and CodeBuddy functional checks
+The credential-free Codex, OpenCode, Claude, CodeBuddy, and WorkBuddy functional checks
 below run by default on PRs. Report
 native-client and synthetic evidence separately, record platform and scenarios,
 redact output, and explain any relevant checks not run. Public fixtures must never contain
@@ -917,10 +917,16 @@ They do not validate the desktop UI or login flow. The desktop application and
 bundled runtime have distinct versions. Do not substitute the independently
 installed CodeBuddy CLI for that runtime.
 
-The `CI` workflow has an opt-in `diagnose_workbuddy` input for native diagnostics
-on `ubuntu-24.04`, `macos-15`, and `windows-2025`, using Node.js 24. It first
+The `CI` workflow runs WorkBuddy native checks automatically for pull requests
+targeting `main` and pushes to `main`, on `ubuntu-24.04`, `macos-15`, and
+`windows-2025`, using Node.js 24, plus an Ubuntu job using the minimum supported
+Node.js 20. All four jobs run the complete default suites. Manual workflow runs
+retain the opt-in `diagnose_workbuddy` input; leaving it false runs only the base checks. It first
 requires the candidate's complete `npm-package-check`; every platform consumes
 that same validated artifact. Matrix failures do not cancel the other platforms.
+The `WorkBuddy functional result` check requires both the package and the entire
+native matrix to succeed. Failed, cancelled, or unexpectedly skipped dependencies
+fail that check; intentionally unselected manual runs skip it as well.
 Each runner downloads a fixed official desktop package and checks its pinned
 SHA-256 before extracting or mounting it. Desktop and bundled CLI versions are
 checked separately, because the official platform releases are not synchronized.
@@ -956,10 +962,10 @@ uploaded as artifacts.
 Every platform runs all five default suites below without replacing the public
 command shims. The permission suite runs four cases; the two explicit runtime
 `interrupt` cases are separate strict manual diagnostics, not part of the matrix.
-A failing default suite still fails its job. A three-platform result requires
-all three platform jobs to pass; one platform's result is not evidence for the
+A failing default suite still fails its job. An overall result requires
+every platform and Node combination to pass; one platform's result is not evidence for the
 others. This is one pinned desktop/runtime pair per platform, not baseline/latest
-or minimum-Node-version coverage.
+coverage; the minimum-Node-version job uses the pinned Linux pair.
 
 After `make npm-package-check` validates the candidate artifact, run the isolated
 installation, setup-interruption, Memory/Skill, permission, and Repo

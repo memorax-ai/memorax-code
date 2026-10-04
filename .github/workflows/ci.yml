@@ -32,6 +32,8 @@ jobs:
         with:
           node-version: '24'
           package-manager-cache: false
+      - name: Verify WorkBuddy workflow contract
+        run: node --test scripts/workbuddy-workflow.test.mjs
       - name: Run the existing regression suite
         shell: bash
         run: |
@@ -63,8 +65,8 @@ jobs:
         run: make docs-check
 
   workbuddy-package:
-    name: WorkBuddy diagnostic package
-    if: github.event_name == 'workflow_dispatch' && inputs.diagnose_workbuddy
+    name: WorkBuddy package
+    if: github.event_name != 'workflow_dispatch' || inputs.diagnose_workbuddy
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -95,13 +97,17 @@ jobs:
           retention-days: 7
 
   workbuddy-native:
-    name: WorkBuddy native (${{ matrix.os }})
+    name: WorkBuddy native (${{ matrix.os }}, Node ${{ matrix.node }})
     needs: workbuddy-package
-    if: github.event_name == 'workflow_dispatch' && inputs.diagnose_workbuddy
+    if: github.event_name != 'workflow_dispatch' || inputs.diagnose_workbuddy
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-24.04, macos-15, windows-2025]
+        node: ['24']
+        include:
+          - os: ubuntu-24.04
+            node: '20'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 35
     steps:
@@ -110,7 +116,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v7
         with:
-          node-version: '24'
+          node-version: ${{ matrix.node }}
           package-manager-cache: false
       - uses: actions/download-artifact@v4
         with:
@@ -225,11 +231,30 @@ jobs:
         if: always() && runner.os == 'macOS' && env.WORKBUDDY_IMAGE_ATTACHED == 'true'
         shell: bash
         run: hdiutil detach "$RUNNER_TEMP/workbuddy-bundle/mounted"
-      - name: Record the diagnostic boundary
+      - name: Record the acceptance boundary
         if: always()
         env:
           NATIVE_OUTCOME: ${{ runner.os == 'Windows' && steps.native-windows.outcome || steps.native-posix.outcome }}
         shell: bash
         run: |
-          printf 'WorkBuddy %s native diagnostic: **%s**.\n\n' "$RUNNER_OS" "$NATIVE_OUTCOME" >> "$GITHUB_STEP_SUMMARY"
-          printf '%s\n' 'Installation, setup interruption, Memory/Skill, four permission cases and Repo Memory worker configuration checks. The two explicit runtime interrupt cases are excluded and remain separate strict manual diagnostics. General runtime interruption, desktop UI, valid Repo Memory generation and baseline/latest coverage are not established. This result covers only the pinned package and current runner; all three platform jobs must pass for a three-platform result.' >> "$GITHUB_STEP_SUMMARY"
+          printf 'WorkBuddy %s native checks: **%s**.\n\n' "$RUNNER_OS" "$NATIVE_OUTCOME" >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' 'Installation, setup interruption, Memory/Skill, four permission cases and Repo Memory worker configuration checks. The two explicit runtime interrupt cases are excluded and remain separate strict manual diagnostics. General runtime interruption, desktop UI, valid Repo Memory generation and baseline/latest coverage are not established. This result covers only the pinned package and current runner; the entire platform and Node matrix must pass for an overall result.' >> "$GITHUB_STEP_SUMMARY"
+
+  workbuddy-result:
+    name: WorkBuddy functional result
+    if: always() && (github.event_name != 'workflow_dispatch' || inputs.diagnose_workbuddy)
+    needs: [workbuddy-package, workbuddy-native]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Require the package and entire WorkBuddy matrix to succeed
+        shell: bash
+        env:
+          PACKAGE_RESULT: ${{ needs.workbuddy-package.result }}
+          WORKBUDDY_RESULT: ${{ needs.workbuddy-native.result }}
+        run: |
+          printf 'Package: **%s**\n\nWorkBuddy matrix: **%s**\n\nPinned bundled runtimes only; the two explicit runtime interrupt cases remain separate strict manual diagnostics.\n' "$PACKAGE_RESULT" "$WORKBUDDY_RESULT" >> "$GITHUB_STEP_SUMMARY"
+          if [[ "$PACKAGE_RESULT" != success || "$WORKBUDDY_RESULT" != success ]]; then
+            echo '::error::All package and WorkBuddy matrix jobs must succeed. Failed, cancelled or skipped dependencies do not pass this check.'
+            exit 1
+          fi
