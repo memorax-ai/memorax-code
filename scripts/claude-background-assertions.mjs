@@ -19,10 +19,13 @@ export function backgroundInputText(body) {
   return text.join("\n");
 }
 
-export function assertBackgroundJob(job, { jobPath, repository, claudeCommand }) {
+export function assertBackgroundJob(job, { jobPath, repository, snapshotHead, claudeCommand }) {
   check(job?.version === 1 && job.runner === "claude" && job.mode === "build" && job.repo === repository
+    && job.snapshotHead === snapshotHead && /^[a-f0-9]{40}$/.test(snapshotHead ?? "")
+    && job.sharedSnapshot?.head === snapshotHead && job.sharedSnapshot.ref === "refs/remotes/origin/main"
+    && job.sharedSnapshot.branch === "main" && job.sharedSnapshot.baseHead === null
     && job.jobId === basename(dirname(jobPath)) && /^[a-f0-9]{32}$/.test(job.runId ?? "")
-    && ["started", "running", "failed", "succeeded"].includes(job.status), "BACKGROUND_JOB_AUTHORITY_MISMATCH");
+    && ["preparing", "started", "running", "failed", "succeeded"].includes(job.status), "BACKGROUND_JOB_AUTHORITY_MISMATCH");
   check(typeof job.prompt === "string" && job.prompt.startsWith(workerPromptMarker)
     && JSON.stringify(job.command) === JSON.stringify([claudeCommand, "--print", "--output-format", "text",
       "--dangerously-skip-permissions", "--no-session-persistence", job.prompt]), "BACKGROUND_JOB_COMMAND_MISMATCH");

@@ -7,11 +7,12 @@ import { assertBackgroundJob, assertBackgroundModelRequests, assertBackgroundNoo
 } from "./claude-background-assertions.mjs";
 
 const context = { jobPath: resolve("fixture/jobs/job-fixture/job.json"), repository: resolve("fixture/repo"),
-  claudeCommand: resolve("fixture/bin/claude") };
+  claudeCommand: resolve("fixture/bin/claude"), snapshotHead: "b".repeat(40) };
 const prompt = `${workerPromptMarker}\n\nComplete the entire synthetic job prompt.\n`;
 const job = () => ({ version: 1, jobId: "job-fixture", runId: "a".repeat(32), runner: "claude", mode: "build",
-  repo: context.repository, status: "failed", failureReason: "artifact_validation_failed", exitCode: 0, validationExitCode: 1,
+  repo: context.repository, snapshotHead: context.snapshotHead, status: "failed", failureReason: "artifact_validation_failed", exitCode: 0, validationExitCode: 1,
   command: [context.claudeCommand, "--print", "--output-format", "text", "--dangerously-skip-permissions", "--no-session-persistence", prompt],
+  sharedSnapshot: { ref: "refs/remotes/origin/main", branch: "main", head: context.snapshotHead, baseHead: null },
   prompt, finalMessageSource: "stdout", finalMessagePath: join(dirname(context.jobPath), "final-message.txt"),
   outputLogPath: join(dirname(context.jobPath), "output.log"), pid: 12345, workerPid: 12345, childPid: 12346 });
 const request = (text) => ({ method: "POST", path: "/v1/messages", body: { model: fixtureModel,
@@ -85,5 +86,17 @@ test("background assertion errors never disclose local output or paths", () => {
     () => assertBackgroundJob({ ...job(), finalMessagePath: privateText }, context),
     () => assertBackgroundNoopResult(job(), privateText)]) {
     assert.throws(run, (error) => error.message === error.nativeCode && !error.stack.includes(privateText));
+  }
+});
+
+test("Claude shared build binds the mainline snapshot and permits preparation before worker publication", () => {
+  const preparing = { ...job(), status: "preparing", pid: undefined, workerPid: undefined, childPid: undefined };
+  assertBackgroundJob(preparing, context);
+  assert.equal(backgroundProcessesExited([preparing], () => false), false);
+  for (const sharedSnapshot of [undefined, null, { ...job().sharedSnapshot, head: "c".repeat(40) },
+    { ...job().sharedSnapshot, ref: "refs/heads/main" }, { ...job().sharedSnapshot, branch: "feature" },
+    { ...job().sharedSnapshot, baseHead: context.snapshotHead }]) {
+    assert.throws(() => assertBackgroundJob({ ...job(), sharedSnapshot }, context),
+      { nativeCode: "BACKGROUND_JOB_AUTHORITY_MISMATCH" });
   }
 });

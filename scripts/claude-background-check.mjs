@@ -11,7 +11,7 @@ import { assertBackgroundJob, assertBackgroundModelRequests, assertBackgroundNoo
 const execFileAsync = promisify(execFile);
 
 export async function verifyBackgroundGlobalConfiguration(parent, result) {
-  let harness, repository, stage = "harness creation", primaryError;
+  let harness, repository, snapshotHead, stage = "harness creation", primaryError;
   let foregroundStarted = false, foregroundFinished = false;
   const requests = { foreground: 0, background: 0 };
   Object.assign(result, { status: "FAIL", repoMemoryBuildValidated: false, modelOverrideInheritanceValidated: false,
@@ -25,7 +25,7 @@ export async function verifyBackgroundGlobalConfiguration(parent, result) {
     for (const file of files.filter((file) => basename(file) === "job.json")) {
       const jobPath = join(jobsRoot, file);
       const job = JSON.parse(await readFile(jobPath, "utf8"));
-      assertBackgroundJob(job, { jobPath, repository, claudeCommand: harness.claudeCommand });
+      assertBackgroundJob(job, { jobPath, repository, snapshotHead, claudeCommand: harness.claudeCommand });
       entries.push(job);
     }
     return entries;
@@ -61,6 +61,9 @@ export async function verifyBackgroundGlobalConfiguration(parent, result) {
     await git(["init", "--quiet"]);
     await git(["-c", "user.name=Native Fixture", "-c", "user.email=native@example.invalid", "commit", "--allow-empty",
       "--no-gpg-sign", "--quiet", "-m", "test: native global configuration fixture"]);
+    await git(["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    await git(["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]);
+    snapshotHead = (await git(["rev-parse", "HEAD"])).stdout.trim();
     stage = "installed plugin setup";
     await harness.setup();
     harness.setModelHandler((body) => {
