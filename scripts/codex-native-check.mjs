@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
-import { mkdir, readFile, readdir, realpath, stat } from "node:fs/promises";
+import { mkdir, readFile, readdir, realpath, stat, writeFile } from "node:fs/promises";
 import { basename, delimiter, dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { check, createNativeHarness, fixtureKey, fixtureModel, fixtureUser, searchResult, sendResponses, stopNativeProcessTree, waitFor } from "./codex-native-support.mjs";
 import { assertCompleteText, assertNoForeignContent, assertSearchResult, assertSkillReferenceContract,
@@ -338,6 +339,33 @@ async function verifyBackgroundGlobalConfiguration() {
     await git(["update-ref", "refs/remotes/origin/main", "HEAD"]);
     await git(["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]);
     const snapshotHead = (await git(["rev-parse", "HEAD"])).stdout.trim();
+    const diagnosticPath = join(background.root, "git-failures.jsonl");
+    const diagnosticImport = join(background.root, "git-diagnostic.mjs");
+    const privateRoots = [...new Set([background.root, await realpath(background.root)])];
+    await writeFile(diagnosticImport, `
+import childProcess from "node:child_process";
+import { appendFileSync } from "node:fs";
+import { basename } from "node:path";
+import { syncBuiltinESMExports } from "node:module";
+const original = childProcess.spawnSync;
+childProcess.spawnSync = function(command, args, options) {
+  const result = original.apply(this, arguments);
+  if (/^git(?:\\.exe)?$/i.test(basename(command)) && (result.error || result.status !== 0)) {
+    const operation = args.find(value => ["clone", "checkout", "config", "remote", "rev-parse", "symbolic-ref"].includes(value));
+    if (["clone", "checkout"].includes(operation)) {
+      let stderr = String(result.stderr || "");
+      for (const root of ${JSON.stringify(privateRoots)}) {
+        stderr = stderr.replaceAll(root, "<fixture>").replaceAll(root.replaceAll("\\\\", "/"), "<fixture>");
+      }
+      try { appendFileSync(${JSON.stringify(diagnosticPath)}, JSON.stringify({operation, status:result.status,
+        code: result.error?.code, stderr:stderr.slice(0, 1000)}) + "\\n"); } catch {}
+    }
+  }
+  return result;
+};
+syncBuiltinESMExports();
+`);
+    background.env.NODE_OPTIONS = `--import=${pathToFileURL(diagnosticImport).href}`;
     await background.setup();
     background.setModelHandler((body, response) => {
       check(body.model === fixtureModel, "BACKGROUND_MODEL_SUBSTITUTION");
@@ -372,6 +400,7 @@ async function verifyBackgroundGlobalConfiguration() {
       gitTrustRejected: workerOutput.includes("Not inside a trusted directory"),
       gitOwnershipRejected: workerOutput.includes("dubious ownership"),
       pathTooLong: /filename or extension is too long|os error 206/i.test(workerOutput),
+      gitFailures: (await readFile(diagnosticPath, "utf8").catch(() => "")).trim().split(/\r?\n/).filter(Boolean).map(JSON.parse),
     };
     check(job.status === "failed" && job.failureReason === "artifact_validation_failed" && job.exitCode === 0,
       "BACKGROUND_NOOP_JOB_RESULT_MISMATCH");
