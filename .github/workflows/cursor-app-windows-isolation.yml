@@ -37,6 +37,33 @@ jobs:
           path: ${{ runner.temp }}/cursor-app-windows-isolation/report.json
           if-no-files-found: error
 
+  windows-install-proof:
+    name: Windows restricted installer (not native acceptance)
+    runs-on: windows-2025
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - name: Test Windows restricted installation contracts
+        run: node --test scripts/cursor-app-windows-owned-session.test.mjs scripts/cursor-app-windows-install-check.test.mjs scripts/cursor-app-windows-artifact.test.mjs scripts/cursor-app-windows-installed.test.mjs scripts/cursor-app-windows-isolation-workflow.test.mjs
+      - name: Install verified Windows releases under restricted fresh users
+        shell: pwsh
+        run: |
+          node scripts/cursor-app-windows-install-check.mjs (Join-Path $env:RUNNER_TEMP 'cursor-app-windows-install')
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Upload public Windows installation proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cursor-app-windows-install-proof
+          path: ${{ runner.temp }}/cursor-app-windows-install/report.json
+          if-no-files-found: error
+
   windows-artifact-proof:
     name: Windows installer signature (not native acceptance)
     runs-on: windows-2025

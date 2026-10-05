@@ -1,4 +1,5 @@
-param([Parameter(Mandatory = $true)][string]$ReportPath)
+param([Parameter(Mandatory = $true)][string]$ReportPath,
+    [string]$InstallerPath, [string]$InstallerSha256, [string]$ReleasePath)
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -20,8 +21,10 @@ $report = [ordered]@{
         userRemoved = $false; ownedFilesRemoved = $false }
 }
 $root = $null; $user = $null; $userName = $null; $securePassword = $null; $node = $null; $probe = $null
-$controllerRoot = $null; $wfp = $null; $wfpArguments = $null; $buildProcessesClosed = $true
+$controllerRoot = $null; $controllerNode = $null; $wfp = $null; $wfpArguments = $null; $buildProcessesClosed = $true
 $wfpProcessesClosed = $true
+$installSession = $null; $installationMode = $PSBoundParameters.ContainsKey('InstallerPath')
+$installedVerifierClosed = $true
 $canWriteReport = $false
 $owned = [System.Collections.Generic.List[System.Diagnostics.Process]]::new()
 $errorCodes = @('CURSOR_APP_WINDOWS_HOST_UNSUPPORTED', 'CURSOR_APP_WINDOWS_REPORT_INVALID',
@@ -31,6 +34,16 @@ $errorCodes = @('CURSOR_APP_WINDOWS_HOST_UNSUPPORTED', 'CURSOR_APP_WINDOWS_REPOR
     'CURSOR_APP_WINDOWS_BASELINE_UNREACHABLE', 'CURSOR_APP_WINDOWS_ALLOWED_LOOPBACK_FAILED',
     'CURSOR_APP_WINDOWS_LOOPBACK_NOT_RESTRICTED', 'CURSOR_APP_WINDOWS_DENIAL_UNPROVEN',
     'CURSOR_APP_WINDOWS_CONTROLLER_UNREACHABLE', 'CURSOR_APP_WINDOWS_CLEANUP_FAILED')
+
+if ($installationMode) {
+    $report.kind = 'restricted-installer-proof'
+    $report.Remove('appStarted')
+    $report.appLaunchRequested = $false
+    $report.installation = [ordered]@{ installerStarted = $false; profileLoaded = $false
+        installerExitCode = $null; jobEmpty = $false; appIdentityVerified = $false
+        appArchitectureVerified = $false; authenticodeVerified = $false; publisherVerified = $false }
+    $report.cleanup.profileRemoved = $false
+}
 
 function Assert-HostedRunner {
     $report.failedGuard = 'platform'
@@ -72,6 +85,16 @@ function Read-PrivateJson([string]$Path) {
         throw 'CURSOR_APP_WINDOWS_PROBE_OUTPUT_INVALID'
     }
     return [System.IO.File]::ReadAllText($Path) | ConvertFrom-Json -AsHashtable
+}
+
+function Get-SessionErrorCode([System.Exception]$Exception) {
+    $inner = $Exception
+    foreach ($depth in 0..3) {
+        if ($inner.Message -cmatch '^CURSOR_APP_WINDOWS_SESSION_[A-Z0-9_]{1,80}$') { return $inner.Message }
+        if (-not $inner.InnerException) { break }
+        $inner = $inner.InnerException
+    }
+    return 'CURSOR_APP_WINDOWS_SESSION_CLEANUP_UNPROVEN'
 }
 
 function Start-OwnedNode([string[]]$Arguments, [bool]$AsProbeUser = $false, [string]$Executable = $node,
@@ -240,6 +263,79 @@ function Invoke-Wfp([string]$Action, [bool]$TrackDiagnostic = $true) {
     }
 }
 
+function Invoke-RestrictedInstaller {
+    $report.stage = 'install-profile'
+    Add-Type -Path (Join-Path $PSScriptRoot 'cursor-app-windows-owned-session.cs')
+    $script:installSession = [CursorWindowsOwnedSession]::new($userName, $user.SID.Value, $securePassword)
+    $installSession.CreateAndLoadProfile()
+    $report.installation.profileLoaded = $true
+    $profile = $installSession.ProfilePath
+    $appDirectory = Join-Path $profile 'AppData\Local\Programs\Cursor'
+    $temp = Join-Path $profile 'AppData\Local\Temp'
+    $null = New-Item -ItemType Directory -Path $temp -Force
+
+    # Only the immutable media directory is readable by the restricted account.
+    $media = Join-Path $controllerRoot 'installer'
+    $null = New-Item -ItemType Directory -Path $media
+    $mediaAcl = Get-Acl -LiteralPath $media
+    $mediaAcl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($user.SID,
+        'ReadAndExecute', 'ContainerInherit, ObjectInherit', 'None', 'Allow'))
+    Set-Acl -LiteralPath $media -AclObject $mediaAcl
+    $traverseAcl = Get-Acl -LiteralPath $controllerRoot
+    $traverseAcl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($user.SID,
+        'Traverse', 'None', 'None', 'Allow'))
+    Set-Acl -LiteralPath $controllerRoot -AclObject $traverseAcl
+    $copiedInstaller = Join-Path $media 'CursorUserSetup.exe'
+    Copy-Item -LiteralPath $InstallerPath -Destination $copiedInstaller
+    if ((Get-FileHash -LiteralPath $copiedInstaller -Algorithm SHA256).Hash -ine $InstallerSha256) {
+        throw 'CURSOR_APP_WINDOWS_INSTALL_MEDIA_CHANGED'
+    }
+    $environment = @{
+        SystemRoot = $env:SystemRoot; WINDIR = $env:SystemRoot
+        COMSPEC = (Join-Path $env:SystemRoot 'System32\cmd.exe')
+        PATH = (Join-Path $env:SystemRoot 'System32'); PATHEXT = '.COM;.EXE;.BAT;.CMD'
+        HOME = $profile; USERPROFILE = $profile; TEMP = $temp; TMP = $temp
+        APPDATA = (Join-Path $profile 'AppData\Roaming'); LOCALAPPDATA = (Join-Path $profile 'AppData\Local')
+    }
+    $report.stage = 'install-run'
+    $null = $installSession.StartBootstrap($copiedInstaller,
+        @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/MERGETASKS=!runcode', "/DIR=$appDirectory"),
+        $temp, $environment)
+    $report.installation.installerStarted = $true
+    if (-not $installSession.WaitForEmpty(300000)) { throw 'CURSOR_APP_WINDOWS_INSTALL_TIMEOUT' }
+    $state = $installSession.GetState()
+    $report.installation.installerExitCode = $state.ExitCode
+    $report.installation.jobEmpty = $state.ActiveProcesses -eq 0
+    if (-not $state.LeaderExited -or $state.ExitCode -ne 0 -or -not $state.ProcessesClosed -or -not $report.installation.jobEmpty) {
+        throw 'CURSOR_APP_WINDOWS_INSTALL_EXIT'
+    }
+    $report.stage = 'installed-app-verification'
+    $script:installedVerifierClosed = $false
+    $verifier = Start-OwnedNode @((Join-Path $controllerRoot 'cursor-app-windows-installed.mjs'),
+        (Join-Path $controllerRoot 'release.json'), $controllerRoot, $profile, $appDirectory) -Executable $controllerNode -WorkingDirectory $controllerRoot
+    $verifier.StandardInput.Close()
+    $stdout = $verifier.StandardOutput.ReadToEndAsync(); $stderr = $verifier.StandardError.ReadToEndAsync()
+    if (-not $verifier.WaitForExit(150000) -or -not $stdout.Wait(1000) -or -not $stderr.Wait(1000) -or
+        $verifier.ExitCode -ne 0 -or $stdout.Result.Length -gt 8192 -or $stderr.Result.Length -ne 0) {
+        if ($stderr.IsCompletedSuccessfully -and $stderr.Result.Length -le 160 -and
+            $stderr.Result.Trim() -cmatch '^CURSOR_APP_WINDOWS_ARTIFACT_[A-Z0-9_]{1,80}$') {
+            $report.installedVerifierErrorCode = $stderr.Result.Trim()
+        }
+        throw 'CURSOR_APP_WINDOWS_INSTALL_APP_VERIFICATION'
+    }
+    $receipt = $stdout.Result | ConvertFrom-Json -AsHashtable
+    $release = Read-PrivateJson (Join-Path $controllerRoot 'release.json')
+    if ($receipt.version -cne $release.version -or $receipt.commitSha -cne $release.commitSha -or
+        $receipt.channel -cne $release.channel -or $receipt.architecture -cne 'x64' -or
+        $receipt.appIdentityVerified -ne $true -or $receipt.appArchitectureVerified -ne $true -or
+        $receipt.authenticodeVerified -ne $true -or $receipt.publisherVerified -ne $true -or
+        $receipt.ownedFilesRemoved -ne $true) { throw 'CURSOR_APP_WINDOWS_INSTALL_APP_VERIFICATION' }
+    $script:installedVerifierClosed = $true
+    foreach ($key in @('appIdentityVerified', 'appArchitectureVerified', 'authenticodeVerified', 'publisherVerified')) {
+        $report.installation[$key] = $true
+    }
+}
+
 try {
     if (-not [System.IO.Path]::IsPathFullyQualified($ReportPath) -or (Test-Path -LiteralPath $ReportPath) -or
         -not (Test-Path -LiteralPath ([System.IO.Path]::GetDirectoryName($ReportPath)) -PathType Container)) {
@@ -247,6 +343,18 @@ try {
     }
     $canWriteReport = $true
     Assert-HostedRunner
+    if ($installationMode) {
+        if (-not [System.IO.Path]::IsPathFullyQualified($InstallerPath) -or
+            -not [System.IO.Path]::IsPathFullyQualified($ReleasePath) -or $InstallerSha256 -cnotmatch '^[a-f0-9]{64}$') {
+            throw 'CURSOR_APP_WINDOWS_INSTALL_INPUT'
+        }
+        foreach ($path in @($InstallerPath, $ReleasePath)) {
+            $item = Get-Item -LiteralPath $path
+            if ($item.PSIsContainer -or ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+                throw 'CURSOR_APP_WINDOWS_INSTALL_INPUT'
+            }
+        }
+    } elseif ($InstallerSha256 -or $ReleasePath) { throw 'CURSOR_APP_WINDOWS_INSTALL_INPUT' }
     $report.stage = 'setup'
     $sourceNode = @(Get-Command node -CommandType Application)[0].Source
     if ([System.IO.Path]::GetFileName($sourceNode) -ine 'node.exe' -or -not $env:RUNNER_TEMP -or
@@ -303,6 +411,18 @@ try {
             'ContainerInherit, ObjectInherit', 'None', 'Allow'))
     }
     Set-Acl -LiteralPath $controllerRoot -AclObject $controllerAcl
+    if ($installationMode) {
+        $controllerNode = Join-Path $controllerRoot 'node.exe'
+        Copy-Item -LiteralPath $sourceNode -Destination $controllerNode
+        foreach ($relative in @('cursor-app-windows-installed.mjs', 'cursor-app-windows-artifact.mjs',
+            'cursor-app-windows-authenticode.ps1', 'cursor-app-release.mjs', 'cursor-app-apt.mjs',
+            'fixtures/cursor-app/provenance.json')) {
+            $destination = Join-Path $controllerRoot $relative
+            $null = New-Item -ItemType Directory -Path ([System.IO.Path]::GetDirectoryName($destination)) -Force
+            Copy-Item -LiteralPath (Join-Path $PSScriptRoot $relative) -Destination $destination
+        }
+        Copy-Item -LiteralPath $ReleasePath -Destination (Join-Path $controllerRoot 'release.json')
+    }
     $wfp = Join-Path $controllerRoot 'cursor-app-windows-wfp.exe'
     $wfpSource = Join-Path $controllerRoot 'cursor-app-windows-wfp.cpp'
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'cursor-app-windows-wfp.cpp') -Destination $wfpSource
@@ -369,21 +489,35 @@ try {
     $control = (Invoke-OwnedNode @($probe, 'control', (Join-Path $root 'config.json'))) | ConvertFrom-Json -AsHashtable
     if ($control.reachable -ne $true) { throw 'CURSOR_APP_WINDOWS_CONTROLLER_UNREACHABLE' }
     $report.evidence.controllerStillReachesDenied = $true
+    if ($installationMode) { Invoke-RestrictedInstaller }
     $report.status = 'PASS'
     $report.stage = 'done'
 } catch {
     $code = $_.Exception.Message
-    $report.errorCode = if ($errorCodes -ccontains $code) { $code } else {
+    if ($report.stage -in @('install-profile', 'install-run')) { $report.sessionErrorCode = Get-SessionErrorCode $_.Exception }
+    $report.errorCode = if ($errorCodes -ccontains $code -or $code -cmatch '^CURSOR_APP_WINDOWS_INSTALL_(INPUT|MEDIA_CHANGED|TIMEOUT|EXIT|APP_VERIFICATION)$') { $code } else {
         switch ($report.stage) {
             'guard' { 'CURSOR_APP_WINDOWS_HOST_UNSUPPORTED' }
             'setup' { 'CURSOR_APP_WINDOWS_SETUP_FAILED' }
             'fixtures' { 'CURSOR_APP_WINDOWS_FIXTURES_FAILED' }
             'firewall' { 'CURSOR_APP_WINDOWS_FIREWALL_FAILED' }
+            'install-profile' { 'CURSOR_APP_WINDOWS_INSTALL_PROFILE' }
+            'install-run' { 'CURSOR_APP_WINDOWS_INSTALL_RUN' }
+            'installed-app-verification' { 'CURSOR_APP_WINDOWS_INSTALL_APP_VERIFICATION' }
             default { 'CURSOR_APP_WINDOWS_PROBE_FAILED' }
         }
     }
 } finally {
     $processesClosed = $buildProcessesClosed -and $wfpProcessesClosed
+    $profileRemoved = -not $installationMode
+    if ($installSession) {
+        try {
+            if (-not $installSession.TerminateAndWait(15000)) { throw 'INSTALL_JOB_REMAINS' }
+        } catch {
+            $processesClosed = $false
+            $report.sessionCleanupErrorCode = Get-SessionErrorCode $_.Exception
+        }
+    } elseif ($installationMode) { $profileRemoved = $true }
     foreach ($process in $owned) {
         try {
             if (-not $process.HasExited) { $process.Kill() }
@@ -411,6 +545,20 @@ try {
             if ($remaining -ne 0 -or $unproven) { $processesClosed = $false }
         } catch { $processesClosed = $false }
     }
+    $processesClosed = $processesClosed -and $installedVerifierClosed
+    if ($installSession -and $processesClosed) {
+        try {
+            $installSession.UnloadProfile()
+            $installSession.DeleteProfile()
+            $installSession.Close()
+            $profileRemoved = $true
+        } catch {
+            $processesClosed = $false
+            $report.sessionCleanupErrorCode = Get-SessionErrorCode $_.Exception
+        }
+    }
+    if ($installationMode) { $report.cleanup.profileRemoved = $profileRemoved }
+    $processesClosed = $processesClosed -and $profileRemoved
     $rulesRemoved = $false
     if ($processesClosed) {
         try {

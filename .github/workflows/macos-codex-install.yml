@@ -16,7 +16,7 @@ on:
         type: boolean
         default: false
       check_cursor_windows_isolation:
-        description: Run Windows loopback and installer signature proofs, downloading but never executing Cursor installers
+        description: Run Windows network, signature and restricted installation proofs, without requesting App launch
         type: boolean
         default: false
   pull_request:

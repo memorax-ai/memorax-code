@@ -7,7 +7,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { baselineRelease, resolveDownload } from "./cursor-app-release.mjs";
-import { selectCursorWindowsRelease, verifyCursorWindowsInstaller } from "./cursor-app-windows-artifact.mjs";
+import { prepareCursorWindowsControllerDirectory, selectCursorWindowsRelease, verifyCursorWindowsInstaller,
+  withVerifiedCursorWindowsInstaller } from "./cursor-app-windows-artifact.mjs";
 
 const baseline = baselineRelease("win32-x64-user");
 const latest = resolveDownload("win32-x64-user", { version: "3.23.12", commitSha: "1".repeat(40),
@@ -89,6 +90,46 @@ test("selects only canonical frozen Windows UserSetup descriptors without invent
     baseline: { "win32-x64-user": { ...latest, channel: "baseline" } } }, "baseline"), error("RELEASE"));
 });
 
+test("controller directory preparation uses the existing empty-directory ACL helper without owning caller cleanup", async (t) => {
+  const state = await fixture(t), directory = join(state.root, "bundle"), runtimeDirectory = join(state.root, "runtime");
+  await mkdir(directory); await mkdir(runtimeDirectory);
+  assert.equal(await prepareCursorWindowsControllerDirectory({ directory, runtimeDirectory,
+    execute: state.options.execute, platform: "win32" }), undefined);
+  assert.deepEqual(state.calls.map((call) => call.operation), ["prepare"]);
+  assert.deepEqual(state.calls[0].args.slice(5), ["-Operation", "prepare", "-Directory", directory]);
+  assert.equal(state.calls[0].options.cwd, runtimeDirectory);
+  assert.equal(state.calls[0].options.env.HOME, runtimeDirectory);
+  assert.deepEqual((await readdir(state.root)).sort(), ["bundle", "runtime", "unrelated"]);
+  assert.deepEqual(await readdir(directory), []);
+});
+
+test("controller directory preparation rejects unsupported or aliased paths before invoking helpers", async (t) => {
+  const state = await fixture(t), directory = join(state.root, "bundle"), runtimeDirectory = join(state.root, "runtime");
+  const options = { directory, runtimeDirectory, execute: state.options.execute, platform: "win32" };
+  for (const override of [{ platform: "linux" }, { directory: "relative" }, { runtimeDirectory: "relative" },
+    { runtimeDirectory: directory }, { runtimeDirectory: directory.toUpperCase() }, { runtimeDirectory: directory + "/" },
+    { directory: directory + "\nprivate" }, { execute: null }, { signal: AbortSignal.abort() }]) {
+    await assert.rejects(prepareCursorWindowsControllerDirectory({ ...options, ...override }));
+  }
+  assert.equal(state.calls.length, 0);
+});
+
+test("controller directory preparation preserves fixed helper failure and unconfirmed process cleanup", async (t) => {
+  const state = await fixture(t), directory = join(state.root, "bundle"), runtimeDirectory = join(state.root, "runtime");
+  await mkdir(directory); await mkdir(runtimeDirectory);
+  await writeFile(join(directory, "existing"), "preserve");
+  const options = { directory, runtimeDirectory, execute: state.options.execute, platform: "win32" };
+  await assert.rejects(prepareCursorWindowsControllerDirectory(options), error("ROOT_PREPARE_NOT_EMPTY"));
+  assert.equal(await readFile(join(directory, "existing"), "utf8"), "preserve");
+  await rm(join(directory, "existing"));
+  await assert.rejects(prepareCursorWindowsControllerDirectory({ ...options, execute(...args) {
+    const pending = state.options.execute(...args);
+    pending.child = new EventEmitter();
+    return pending;
+  } }), { code: prefix + "PROCESS_CLEANUP", cleanupErrorCode: prefix + "PROCESS_CLEANUP" });
+  assert.deepEqual((await readdir(state.root)).sort(), ["bundle", "runtime", "unrelated"]);
+});
+
 test("verifies synthetic downloaded bytes statically and removes only its owned directory before returning", async (t) => {
   const state = await fixture(t, { onVerify: async ({ path }) => assert.deepEqual(await readFile(path), bytes) });
   const result = await state.run();
@@ -146,6 +187,76 @@ test("PowerShell HOME and TMP startup files cannot pollute the empty payload or 
   }
   await assert.rejects(access(state.ownedRoot), { code: "ENOENT" });
   await state.assertClean();
+});
+
+test("verified installer use stays private and waits for explicit process cleanup before deleting bytes", async (t) => {
+  const state = await fixture(t);
+  const value = { synthetic: true };
+  const result = await withVerifiedCursorWindowsInstaller(state.options, async (context) => {
+    assert.deepEqual(state.calls.map((call) => call.operation), ["prepare", "verify"]);
+    assert.equal(context.installerPath, state.path);
+    assert.deepEqual(context.release, baseline);
+    assert.equal(context.artifact.observedSha256, createHash("sha256").update(bytes).digest("hex"));
+    assert.ok(Object.isFrozen(context.release));
+    assert.ok(Object.isFrozen(context.artifact));
+    assert.deepEqual(await readFile(context.installerPath), bytes);
+    context.confirmProcessesClosed();
+    await Promise.resolve();
+    assert.deepEqual(await readFile(context.installerPath), bytes);
+    return value;
+  });
+  assert.equal(result.result, value);
+  assert.equal(result.verification.authenticodeVerified, true);
+  assert.equal(result.verification.ownedFilesRemoved, true);
+  for (const key of ["installerExecuted", "appIdentityVerified", "appArchitectureVerified", "installerPath"]) {
+    assert.equal(Object.hasOwn(result.verification, key), false);
+  }
+  assert.equal(JSON.stringify(result.verification).includes(state.root), false);
+  await state.assertClean();
+});
+
+test("unconfirmed callback cleanup retains installer bytes on either return or failure", async (t) => {
+  for (const throws of [false, true]) {
+    const state = await fixture(t);
+    const primary = new Error("private callback failure");
+    await assert.rejects(withVerifiedCursorWindowsInstaller(state.options, async () => {
+      if (throws) throw primary;
+      return "not cleanup evidence";
+    }), (caught) => {
+      if (throws) assert.equal(caught, primary);
+      else assert.equal(caught.code, prefix + "PROCESS_CLEANUP");
+      assert.equal(caught.cleanupErrorCode, prefix + "PROCESS_CLEANUP");
+      return true;
+    });
+    assert.deepEqual(await readFile(state.path), bytes);
+  }
+});
+
+test("confirmed callback failure preserves its primary error while safely removing owned bytes", async (t) => {
+  const state = await fixture(t), primary = new Error("private callback failure");
+  await assert.rejects(withVerifiedCursorWindowsInstaller(state.options, async ({ confirmProcessesClosed }) => {
+    try { throw primary; } finally { confirmProcessesClosed(); }
+  }), (caught) => caught === primary && caught.cleanupErrorCode === undefined);
+  await state.assertClean();
+});
+
+test("installer callbacks cannot run before verification or hide changed bytes and cancellation", async (t) => {
+  let calls = 0;
+  const invalid = await fixture(t, { fail: "verify" });
+  await assert.rejects(withVerifiedCursorWindowsInstaller(invalid.options, async () => { calls++; }), error("HELPER_VERIFY_EXIT"));
+  assert.equal(calls, 0);
+  await invalid.assertClean();
+  await assert.rejects(withVerifiedCursorWindowsInstaller(invalid.options, null), error("ARGUMENTS"));
+  for (const abort of [false, true]) {
+    const state = await fixture(t), controller = new AbortController();
+    await assert.rejects(withVerifiedCursorWindowsInstaller({ ...state.options, signal: controller.signal },
+      async ({ installerPath, confirmProcessesClosed }) => {
+        if (abort) controller.abort();
+        else await writeFile(installerPath, Buffer.alloc(bytes.length, 1));
+        confirmProcessesClosed();
+      }), error(abort ? "ABORTED" : "CHANGED"));
+    await state.assertClean();
+  }
 });
 
 test("latest is independently selected without falling back to baseline", async (t) => {

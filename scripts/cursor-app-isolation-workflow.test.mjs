@@ -26,7 +26,7 @@ test("native workflow calls each selected proof only under explicit manual dispa
   const caller = (await readFile(new URL("../.github/workflows/macos-codex-install.yml", import.meta.url), "utf8"))
     .replaceAll("\r\n", "\n");
   assert.match(caller, /check_cursor_macos_isolation:\n        description: Run only the macOS network isolation proof without downloading or starting Cursor\n        type: boolean\n        default: false/);
-  assert.match(caller, /check_cursor_windows_isolation:\n        description: Run Windows loopback and installer signature proofs, downloading but never executing Cursor installers\n        type: boolean\n        default: false/);
+  assert.match(caller, /check_cursor_windows_isolation:\n        description: Run Windows network, signature and restricted installation proofs, without requesting App launch\n        type: boolean\n        default: false/);
   for (const [id, workflow, flag] of [["cursor-macos-network-proof", "cursor-app-isolation.yml", "check_cursor_macos_isolation"],
     ["cursor-windows-loopback-proof", "cursor-app-windows-isolation.yml", "check_cursor_windows_isolation"]]) {
     const job = caller.split(`\n  ${id}:\n`)[1]?.split(/\n  [a-z][a-z0-9-]*:\n/)[0];

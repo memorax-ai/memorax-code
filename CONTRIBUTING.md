@@ -1331,7 +1331,8 @@ manifest. This metadata-only command leaves missing checksums explicitly
 unavailable and is not artifact-integrity or native-acceptance evidence. CI uses
 `resolve-linux` instead, which also verifies Linux apt metadata. A macOS entry
 additionally requires signed-App acquisition and the native check; an inventory
-entry alone is not native acceptance. Windows release acquisition remains metadata-only.
+entry alone is not native acceptance. The separate Windows prerequisite jobs
+also verify installer signatures and restricted installation as described below.
 
 #### macOS Network Isolation Proof
 
@@ -1381,9 +1382,9 @@ must independently pass the signed-App and seven-flow native checks.
 
 #### Windows Loopback Feasibility Proof
 
-The explicitly requested `cursor-app-windows-isolation.yml` workflow has two
+The explicitly requested `cursor-app-windows-isolation.yml` workflow has three
 separate prerequisite jobs: a direct-outbound policy probe using loopback
-fixtures, and the static installer verification described below. Each uses a
+fixtures, static installer verification, and restricted installation. Each uses a
 fresh GitHub-hosted Windows 2025 runner with Node 24. Enable
 `check_cursor_windows_isolation` when
 manually dispatching the
@@ -1484,6 +1485,47 @@ The report fixes `installerExecuted`, `appStarted`, `nativeAcceptance`,
 `appIdentityVerified` and `appArchitectureVerified` to `false`. A signed
 installer does not prove the extracted App's version, commit or architecture,
 safe unattended installation, an isolated Windows profile, or native sessions.
+
+#### Windows Restricted Installation Proof
+
+The installation job separately resolves one baseline/latest inventory and
+verifies each installer signature before use. Each channel uses a new standard
+local account and repeats the direct-outbound policy proof above before running
+any installer. The acquisition and signature controllers remain outside the
+new SID's WFP policy; only those trusted controllers may access public download
+and certificate services. The policy does not claim DNS-broker or other-SID
+broker isolation.
+Before creating either account, the outer controller snapshots Node and the
+fixed verifier/coordinator dependency closure into a controller-and-SYSTEM-only
+directory. Both channels use that private copy, not late reads from a checkout
+or executable that the restricted account could modify.
+
+A CI-only native helper creates a fresh Windows user profile, loads its registry
+hive with a held token and profile handle, and verifies the exact account SID.
+An isolated HOME alone is not accepted as profile isolation. The installer is
+created suspended, assigned to a retained non-breakaway Job Object with
+kill-on-close, and resumed only after identity and Job checks. Passwords are
+kept in memory and never passed on a command line or written to a report.
+Installer descendants remain subject to the account's WFP policy and Job.
+
+The verified installer is copied into controller-owned, read/execute-only media
+for the restricted account and its observed digest is checked again. Silent
+installation uses `/NORESTART` and `/MERGETASKS=!runcode`; launching the App is
+not requested. Only exit code zero and an empty Job permit installed-file
+verification. The actual `Cursor.exe` must be AMD64 PE32+ with a valid embedded
+signature from the expected publisher. Its package/product version and
+`product.json` `realCommit` must match the frozen descriptor. The expected
+installation directory and every inspected component must stay within the new
+profile and contain no reparse points.
+
+Cleanup requires an empty Job and closed verifier processes before unloading
+and deleting the owned profile, then removing WFP objects, the account and
+owned files. Uncertain cleanup fails the job and retains resources for VM
+teardown; no rediscovered PID is signalled. Only a fixed-field public
+`report.json` is uploaded, without usernames, SIDs, passwords, paths or raw
+installer output. This new job requires a successful hosted run before claiming
+installation compatibility. It does not request App launch, exercise GUI access,
+install MemoraX, prove native sessions, or complete the Windows matrix.
 
 ## Pull Requests
 

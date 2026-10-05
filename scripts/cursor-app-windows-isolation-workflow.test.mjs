@@ -14,7 +14,7 @@ function step(name) {
   return parts[1].split(/\n      - |\n  [a-z][a-z0-9-]*:\n/)[0];
 }
 
-const loopbackJob = source.split("\n  windows-loopback-proof:\n")[1].split("\n  windows-artifact-proof:\n")[0];
+const loopbackJob = source.split("\n  windows-loopback-proof:\n")[1].split("\n  windows-install-proof:\n")[0];
 
 function proofScript() {
   const body = step("Run Windows loopback feasibility proof (not native acceptance)").match(/^        run: \|\n([\s\S]*)$/m)?.[1];
@@ -28,7 +28,7 @@ test("Windows prerequisite workflow is manual or reusable only and cannot claim 
   assert.equal(source.split("\npermissions:\n")[1].split("\njobs:\n")[0].trimEnd(), "  contents: read");
   assert.equal((source.match(/^\s*permissions:/gm) ?? []).length, 1);
   const jobs = source.split("\njobs:\n")[1];
-  assert.deepEqual([...jobs.matchAll(/^  ([a-z][a-z0-9-]*):$/gm)].map((match) => match[1]), ["windows-loopback-proof", "windows-artifact-proof"]);
+  assert.deepEqual([...jobs.matchAll(/^  ([a-z][a-z0-9-]*):$/gm)].map((match) => match[1]), ["windows-loopback-proof", "windows-install-proof", "windows-artifact-proof"]);
   assert.match(jobs, /^    name: Windows loopback feasibility \(not native acceptance\)$/m);
   assert.match(jobs, /^    runs-on: windows-2025$/m);
   assert.match(jobs, /^    timeout-minutes: 10$/m);
@@ -86,6 +86,25 @@ test("Windows static artifact job is separate and uploads only its public report
     "          if-no-files-found: error",
   ].join("\n"));
   assert.doesNotMatch(loopbackJob, /artifact-check|resolveLatest|Invoke-WebRequest/);
+});
+
+test("Windows installation proof is a separate hosted job with exact contracts and public report", () => {
+  const job = source.split("\n  windows-install-proof:\n")[1].split("\n  windows-artifact-proof:\n")[0];
+  assert.match(job, /^    runs-on: windows-2025$/m);
+  assert.match(job, /^    timeout-minutes: 25$/m);
+  assert.equal(step("Test Windows restricted installation contracts").trimEnd(),
+    "        run: node --test scripts/cursor-app-windows-owned-session.test.mjs scripts/cursor-app-windows-install-check.test.mjs scripts/cursor-app-windows-artifact.test.mjs scripts/cursor-app-windows-installed.test.mjs scripts/cursor-app-windows-isolation-workflow.test.mjs");
+  assert.equal(step("Install verified Windows releases under restricted fresh users").trimEnd(), [
+    "        shell: pwsh", "        run: |",
+    "          node scripts/cursor-app-windows-install-check.mjs (Join-Path $env:RUNNER_TEMP 'cursor-app-windows-install')",
+    "          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }",
+  ].join("\n"));
+  assert.equal(step("Upload public Windows installation proof").trimEnd(), [
+    "        if: always()", "        uses: actions/upload-artifact@v4", "        with:",
+    "          name: cursor-app-windows-install-proof",
+    "          path: ${{ runner.temp }}/cursor-app-windows-install/report.json",
+    "          if-no-files-found: error",
+  ].join("\n"));
 });
 
 test("Windows proof shell preserves script failure and passes an absolute report path with spaces", { skip: process.platform !== "win32" }, async (t) => {

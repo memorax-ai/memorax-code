@@ -1,6 +1,10 @@
 param(
-    [Parameter(Mandatory = $true)][ValidateSet('prepare', 'verify')][string]$Operation,
-    [Parameter(Mandatory = $true)][string]$Directory
+    [Parameter(Mandatory = $true)][ValidateSet('prepare', 'verify', 'installed')][string]$Operation,
+    [Parameter(Mandatory = $true)][string]$Directory,
+    [string]$ProfileRoot,
+    [string]$AppDirectory,
+    [string]$Version,
+    [string]$Commit
 )
 
 $ErrorActionPreference = 'Stop'
@@ -82,11 +86,98 @@ function Assert-PrivateDirectory([string]$Path, [bool]$Prepare) {
     } catch { throw ('CURSOR_APP_WINDOWS_ARTIFACT_ROOT_' + $stage) }
 }
 
+function Assert-InstalledPath([string]$Path, [bool]$File) {
+    try {
+        if (-not [IO.Path]::IsPathFullyQualified($Path) -or [IO.Path]::GetFullPath($Path) -cne $Path -or
+            $Path.Length -gt 4096 -or $Path -match '[\x00-\x1f]' -or $Path.StartsWith('\\')) { throw 'invalid' }
+        $volume = [IO.Path]::GetPathRoot($Path)
+        $parts = @($Path.Substring($volume.Length).Split([char[]]@([IO.Path]::DirectorySeparatorChar,
+            [IO.Path]::AltDirectorySeparatorChar), [StringSplitOptions]::RemoveEmptyEntries))
+        if ($parts.Count -gt 64) { throw 'invalid' }
+        $current = $volume
+        foreach ($part in @('') + $parts) {
+            if ($part.Contains(':')) { throw 'invalid' }
+            if ($part -ne '') { $current = Join-Path $current $part }
+            $item = Microsoft.PowerShell.Management\Get-Item -LiteralPath $current -Force
+            $leaf = [StringComparer]::OrdinalIgnoreCase.Equals($current, $Path)
+            if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+                (($File -and $leaf) -eq [bool]$item.PSIsContainer)) { throw 'invalid' }
+        }
+    } catch { throw 'CURSOR_APP_WINDOWS_ARTIFACT_INSTALLED_PATH' }
+}
+
+function Assert-InstalledCursor([string]$Profile, [string]$App, [string]$ExpectedVersion, [string]$ExpectedCommit) {
+    $stage = 'INSTALLED_PATH'
+    $streams = [Collections.Generic.List[IO.FileStream]]::new()
+    try {
+        Assert-InstalledPath $Profile $false
+        Assert-InstalledPath $App $false
+        $expected = [IO.Path]::GetFullPath((Join-Path $Profile 'AppData/Local/Programs/Cursor'))
+        if (-not [StringComparer]::OrdinalIgnoreCase.Equals($App, $expected)) { throw 'invalid' }
+        $packagePath = [IO.Path]::Combine($App, 'resources', 'app', 'package.json')
+        $productPath = [IO.Path]::Combine($App, 'resources', 'app', 'product.json')
+        $executable = Join-Path $App 'Cursor.exe'
+        foreach ($path in @($packagePath, $productPath, $executable)) { Assert-InstalledPath $path $true }
+        $stage = 'PACKAGE'
+        if ($ExpectedVersion -cnotmatch '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$' -or
+            $ExpectedCommit -cnotmatch '^[a-f0-9]{40}$') { throw 'invalid' }
+        $metadata = @()
+        foreach ($path in @($packagePath, $productPath)) {
+            $stream = [IO.File]::Open($path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+            $streams.Add($stream)
+            if ($stream.Length -le 0 -or $stream.Length -gt 1048576) { throw 'invalid' }
+            $reader = [IO.StreamReader]::new($stream, [Text.UTF8Encoding]::new($false, $true), $true, 1024, $true)
+            try { $metadata += ($reader.ReadToEnd() | ConvertFrom-Json -AsHashtable) } finally { $reader.Dispose() }
+        }
+        if ($metadata.Count -ne 2) { throw 'invalid' }
+        foreach ($item in $metadata) {
+            if ($item -isnot [Collections.IDictionary] -or -not $item.Contains('version') -or
+                $item.version -isnot [string] -or $item.version -cne $ExpectedVersion) { throw 'invalid' }
+        }
+        if (-not $metadata[1].Contains('realCommit') -or $metadata[1].realCommit -isnot [string] -or
+            $metadata[1].realCommit -cne $ExpectedCommit) { throw 'invalid' }
+        $stage = 'ARCHITECTURE'
+        $stream = [IO.File]::Open($executable, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+        $streams.Add($stream)
+        if ($stream.Length -lt 64 -or $stream.Length -gt 600000000) { throw 'invalid' }
+        $binary = [IO.BinaryReader]::new($stream, [Text.Encoding]::UTF8, $true)
+        try {
+            if ($binary.ReadUInt16() -ne 0x5a4d) { throw 'invalid' }
+            $stream.Position = 60
+            $offset = $binary.ReadUInt32()
+            if ($offset -lt 64 -or $offset -gt 1048576 -or $offset + 26 -gt $stream.Length) { throw 'invalid' }
+            $stream.Position = $offset
+            if ($binary.ReadUInt32() -ne 0x4550 -or $binary.ReadUInt16() -ne 0x8664) { throw 'invalid' }
+            $sections = $binary.ReadUInt16()
+            $stream.Position = $offset + 20
+            $optionalLength = $binary.ReadUInt16()
+            $characteristics = $binary.ReadUInt16()
+            if ($sections -lt 1 -or $sections -gt 96 -or $optionalLength -lt 112 -or
+                $offset + 24 + $optionalLength -gt $stream.Length -or
+                -not ($characteristics -band 2) -or ($characteristics -band 0x2000) -or
+                $binary.ReadUInt16() -ne 0x20b) { throw 'invalid' }
+        } finally { $binary.Dispose() }
+        $stage = 'SIGNATURE'
+        $signatures = @(Microsoft.PowerShell.Security\Get-AuthenticodeSignature -LiteralPath $executable -ErrorAction Stop)
+        if ($signatures.Count -ne 1) { throw 'invalid' }
+        Assert-CursorPublisher $signatures[0]
+        foreach ($path in @($packagePath, $productPath, $executable)) { Assert-InstalledPath $path $true }
+    } catch {
+        $code = $_.Exception.Message
+        if (@('CURSOR_APP_WINDOWS_ARTIFACT_INSTALLED_PATH', 'CURSOR_APP_WINDOWS_ARTIFACT_SIGNATURE',
+            'CURSOR_APP_WINDOWS_ARTIFACT_PUBLISHER') -ccontains $code) { throw $code }
+        throw ('CURSOR_APP_WINDOWS_ARTIFACT_' + $stage)
+    } finally { foreach ($stream in $streams) { $stream.Dispose() } }
+}
+
 try {
     if (-not $IsWindows) { throw 'CURSOR_APP_WINDOWS_ARTIFACT_PLATFORM' }
     Assert-PrivateDirectory $Directory ($Operation -ceq 'prepare')
     if ($Operation -ceq 'prepare') {
         [Console]::WriteLine('{"status":"PASS","operation":"prepare","privateDirectory":true}')
+    } elseif ($Operation -ceq 'installed') {
+        Assert-InstalledCursor $ProfileRoot $AppDirectory $Version $Commit
+        [Console]::WriteLine('{"status":"PASS","operation":"installed","appIdentityVerified":true,"appArchitectureVerified":true,"authenticodeVerified":true,"publisherVerified":true}')
     } else {
         $path = Join-Path $Directory 'CursorUserSetup.exe'
         $item = Microsoft.PowerShell.Management\Get-Item -LiteralPath $path -Force
@@ -101,6 +192,7 @@ try {
 } catch {
     $code = $_.Exception.Message
     if (@('CURSOR_APP_WINDOWS_ARTIFACT_PLATFORM', 'CURSOR_APP_WINDOWS_ARTIFACT_SIGNATURE', 'CURSOR_APP_WINDOWS_ARTIFACT_PUBLISHER',
+        'CURSOR_APP_WINDOWS_ARTIFACT_INSTALLED_PATH', 'CURSOR_APP_WINDOWS_ARTIFACT_PACKAGE', 'CURSOR_APP_WINDOWS_ARTIFACT_ARCHITECTURE',
         'CURSOR_APP_WINDOWS_ARTIFACT_ROOT_PATH_SHAPE', 'CURSOR_APP_WINDOWS_ARTIFACT_ROOT_ITEM',
         'CURSOR_APP_WINDOWS_ARTIFACT_ROOT_IDENTITY', 'CURSOR_APP_WINDOWS_ARTIFACT_ROOT_NOT_EMPTY',
         'CURSOR_APP_WINDOWS_ARTIFACT_ROOT_ACL_SET', 'CURSOR_APP_WINDOWS_ARTIFACT_ROOT_ACL_READ',
