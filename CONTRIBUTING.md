@@ -1331,6 +1331,10 @@ loopback ports while denying other ports. Seatbelt cannot prevent wildcard
 binding on an allowed port, so the proof records that behavior as an observation,
 not a system-level inbound-isolation guarantee. Owned Unix
 IPC must work, while Unix socket paths outside the private root must be denied.
+Each process also attempts to re-enter `sandbox-exec` with an allow-default
+profile and connect only to the denied loopback fixture. Re-entry must be
+explicitly refused with `EPERM`, or that connection must remain denied with
+`EPERM` or `EACCES`; successful access, timeout and ambiguous errors fail.
 These local gates run before documentation-only IPv4 and IPv6 connection probes,
 which send no application data. Denial must be `EPERM` or `EACCES`; a timeout,
 address-in-use or routing error is not isolation evidence.

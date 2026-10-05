@@ -17,7 +17,7 @@ function rows(parentPid = 99) {
     allowedLoopback: "CONNECTED", blockedLoopback: "EPERM", listenerIpv4: "LISTENED", listenerIpv6: "LISTENED",
     otherListenerIpv4: "EPERM", otherListenerIpv6: "EACCES", wildcardIpv4: "EPERM", wildcardIpv6: "EACCES",
     unixUserData: "LISTENED", unixTmp: "LISTENED", otherUnixConnect: "EPERM", otherUnixBind: "EACCES",
-    ipv4: "EACCES", ipv6: "EPERM" }));
+    sandboxReentry: ["REENTRY_DENIED", "EPERM", "EACCES"][depth], ipv4: "EACCES", ipv6: "EPERM" }));
 }
 const identity = { pid: 100, parentPid: 99 };
 const unixPaths = { userData: "/owned/app-data/proof.sock", tmp: "/owned/tmp/proof.sock",
@@ -62,12 +62,13 @@ test("Unix IPC rules use only canonical directory filters and escape profile str
 test("restricted network gates require explicit OS denials at every process level", () => {
   assert.deepEqual(assertMacosNetworkEvidence(rows(), identity), { allowedLoopback: true, otherLoopbackDenied: true,
     allowedListenerIpv4: true, allowedListenerIpv6: true, otherListenerPortsDenied: true,
-    ownedUnixIpc: true, otherUnixPathsDenied: true,
+    ownedUnixIpc: true, otherUnixPathsDenied: true, sandboxReentryRestricted: true,
     externalIpv4Denied: true, externalIpv6Denied: true, inheritedChild: true, inheritedGrandchild: true });
   for (const depth of [0, 1, 2]) {
     for (const [field, code] of [["blockedLoopback", "CURSOR_APP_MACOS_LOOPBACK_NOT_RESTRICTED"],
       ["otherListenerIpv4", "CURSOR_APP_MACOS_LISTENER_NOT_RESTRICTED"], ["otherListenerIpv6", "CURSOR_APP_MACOS_LISTENER_NOT_RESTRICTED"],
       ["otherUnixConnect", "CURSOR_APP_MACOS_UNIX_NOT_RESTRICTED"], ["otherUnixBind", "CURSOR_APP_MACOS_UNIX_NOT_RESTRICTED"],
+      ["sandboxReentry", "CURSOR_APP_MACOS_REENTRY_NOT_RESTRICTED"],
       ["ipv4", "CURSOR_APP_MACOS_IPV4_NOT_DENIED"], ["ipv6", "CURSOR_APP_MACOS_IPV6_NOT_DENIED"]]) {
       for (const outcome of ["CONNECTED", "LISTENED", "TIMEOUT", "EADDRINUSE", "ENETUNREACH", "ECONNREFUSED", "OTHER", "NOT_RUN", undefined]) {
         const evidence = rows(); evidence[depth][field] = outcome;
@@ -86,6 +87,13 @@ test("restricted network gates require explicit OS denials at every process leve
         assert.throws(() => assertMacosNetworkEvidence(sockets, identity), { code: "CURSOR_APP_MACOS_UNIX_UNAVAILABLE" });
       }
     }
+  }
+});
+
+test("sandbox reentry requires an explicit denial at every process level", () => {
+  for (const depth of [0, 1, 2]) for (const result of ["REENTRY_DENIED", "EPERM", "EACCES"]) {
+    const evidence = rows(); evidence[depth].sandboxReentry = result;
+    assert.equal(assertMacosNetworkEvidence(evidence, identity).sandboxReentryRestricted, true);
   }
 });
 
@@ -197,11 +205,26 @@ test("worker repeats the full proof in both child generations and stops at the g
       return host === "0.0.0.0" || host === "::" ? ["LISTENED", "EPERM", "EACCES"][depth] : exchange ? "LISTENED" : "EPERM";
     },
     bindUnix: async (path, exchange) => { calls.push([depth, "bind", path, undefined, exchange]); return exchange ? "LISTENED" : "EPERM"; },
+    sandboxReentry: (command, args, options) => {
+      calls.push([depth, "sandbox-reentry", Number(args.at(-1))]);
+      assert.equal(command, "/usr/bin/sandbox-exec");
+      assert.deepEqual(args.slice(0, 5), ["-p", "(version 1)\n(allow default)\n", process.execPath, "--input-type=module", "-e"]);
+      assert.equal(args.length, 7);
+      assert.match(args[5], /127\.0\.0\.1/);
+      assert.doesNotMatch(args[5], /198\.51\.100|2001:db8/);
+      assert.equal(options.timeout, 2500); assert.equal(options.killSignal, "SIGKILL");
+      assert.equal(options.maxBuffer, 4096); assert.equal(options.encoding, "utf8");
+      assert.equal(options.env, process.env);
+      assert.deepEqual(options.stdio, ["ignore", "pipe", "pipe"]);
+      return depth === 0 ? { status: 1, stdout: "", stderr: "sandbox-exec: sandbox_apply: Operation not permitted\n" }
+        : { status: 0, stdout: `${depth === 1 ? "EPERM" : "EACCES"}\n`, stderr: "" };
+    },
     runChild: async (next) => { generations.push(next); return run(next); },
   });
   const evidence = await run(0);
   assert.deepEqual(generations, [1, 2]);
   assert.deepEqual(evidence.map((row) => row.depth), [0, 1, 2]);
+  assert.deepEqual(evidence.map((row) => row.sandboxReentry), ["REENTRY_DENIED", "EPERM", "EACCES"]);
   assert.deepEqual(evidence.map((row) => [row.wildcardIpv4, row.wildcardIpv6]),
     [["LISTENED", "LISTENED"], ["EPERM", "EPERM"], ["EACCES", "EACCES"]]);
   assert.deepEqual(calls, [0, 1, 2].flatMap((depth) => [[depth, "connect", "127.0.0.1", 12345], [depth, "connect", "127.0.0.1", 12346],
@@ -210,7 +233,64 @@ test("worker repeats the full proof in both child generations and stops at the g
     [depth, "bind", "0.0.0.0", 12347, false], [depth, "bind", "::", 12347, false],
     [depth, "bind", unixPaths.userData, undefined, true], [depth, "bind", unixPaths.tmp, undefined, true],
     [depth, "unix-connect", unixPaths.blockedConnect], [depth, "bind", unixPaths.blockedBind, undefined, false],
+    [depth, "sandbox-reentry", 12346],
     [depth, "connect", "198.51.100.1", 9], [depth, "connect", "2001:db8::1", 9]]));
+});
+
+test("serialized worker rejects unsuccessful or ambiguous reentry before external probes and descendants", async () => {
+  const worker = new Function(`return (${probeNetworkLevel.toString()});`)();
+  const outcomes = [
+    [{ status: 0, stdout: "CONNECTED\n", stderr: "" }, "CONNECTED"],
+    [{ status: 0, stdout: "TIMEOUT\n", stderr: "" }, "TIMEOUT"],
+    [{ status: 0, stdout: "REENTRY_DENIED\n", stderr: "" }, "OTHER"],
+    [{ status: 0, stdout: "EPERM\nprivate-canary", stderr: "" }, "OTHER"],
+    [{ status: 0, stdout: "EPERM\n", stderr: "private-canary" }, "OTHER"],
+    [{ status: 1, stdout: "EPERM\n", stderr: "" }, "OTHER"],
+    [{ status: 1, stdout: "", stderr: "sandbox-exec: sandbox_apply: Permission denied\n" }, "OTHER"],
+    [{ status: 1, stdout: "", stderr: "private-canary sandbox_init: Operation not permitted\n" }, "OTHER"],
+    [{ status: 1, stdout: "", stderr: "sandbox-exec: sandbox_apply: Operation not permitted\nprivate-canary" }, "OTHER"],
+    [{ status: 0, stdout: "", stderr: "sandbox-exec: sandbox_apply: Operation not permitted\n" }, "OTHER"],
+    [{ status: null, signal: "SIGKILL", stdout: "", stderr: "sandbox-exec: sandbox_apply: Operation not permitted\n" }, "OTHER"],
+    [{ error: { code: "EPERM", message: "private-canary" } }, "OTHER"],
+    [{ error: { code: "ETIMEDOUT", message: "private-canary" } }, "TIMEOUT"],
+    [{ error: { code: "ENOBUFS", message: "private-canary" } }, "OTHER"],
+    [new Error("private-canary"), "OTHER"],
+    [undefined, "OTHER"],
+  ];
+  for (const depth of [0, 1, 2]) for (const [result, expected] of outcomes) {
+    const evidence = await worker(12345, 12346, 12347, 12348, depth, {
+      unixPaths,
+      connect: async (host, port) => {
+        assert.equal(host, "127.0.0.1", "reentry must pass before external probes");
+        return port === 12345 ? "CONNECTED" : "EPERM";
+      },
+      bind: async (host, port, exchange) => exchange ? "LISTENED" : "EPERM",
+      bindUnix: async (path, exchange) => exchange ? "LISTENED" : "EPERM",
+      connectUnix: async () => "EPERM",
+      sandboxReentry: () => { if (result instanceof Error) throw result; return result; },
+      runChild: async () => assert.fail("failed reentry must not start descendants"),
+    });
+    assert.equal(evidence.length, 1);
+    assert.equal(evidence[0].sandboxReentry, expected);
+    assert.equal(evidence[0].ipv4, "NOT_RUN"); assert.equal(evidence[0].ipv6, "NOT_RUN");
+    assert.equal(JSON.stringify(evidence).includes("private-canary"), false);
+  }
+});
+
+test("reentry refusal accepts only sandbox init or apply EPERM and never reflects stderr", async () => {
+  for (const field of ["init", "apply"]) for (const refusal of ["Operation not permitted", "EPERM"]) {
+    const evidence = await probeNetworkLevel(12345, 12346, 12347, 12348, 2, {
+      unixPaths,
+      connect: async (host, port) => port === 12345 ? "CONNECTED" : "EPERM",
+      bind: async (host, port, exchange) => exchange ? "LISTENED" : "EPERM",
+      bindUnix: async (path, exchange) => exchange ? "LISTENED" : "EPERM",
+      connectUnix: async () => "EPERM",
+      sandboxReentry: () => ({ status: 1, stdout: "", stderr: `sandbox-exec: sandbox_${field}: ${refusal}\n` }),
+    });
+    assert.equal(evidence[0].sandboxReentry, "REENTRY_DENIED");
+    assert.equal(evidence[0].ipv4, "EPERM"); assert.equal(evidence[0].ipv6, "EPERM");
+    assert.equal(JSON.stringify(evidence).includes("sandbox-exec"), false);
+  }
 });
 
 test("each Unix IPC gate precedes external probes and rejects timeout or an unrestricted neighbor", async () => {
@@ -334,6 +414,15 @@ test("execution failures, malformed output and missing real fixture connections 
     [async () => { throw Object.assign(new Error("private timeout"), { code: "CURSOR_APP_MACOS_PROOF_TIMEOUT" }); }, "CURSOR_APP_MACOS_PROOF_TIMEOUT"],
     [async () => ({ pid: 100, stdout: "private malformed JSON" }), "CURSOR_APP_MACOS_PROOF_OUTPUT"],
     [async () => ({ pid: 100, stdout: JSON.stringify(rows(process.pid)) }), "CURSOR_APP_MACOS_PROOF_FIXTURE"],
+    [async ({ args }) => {
+      for (const port of [args.at(-6), args.at(-6), args.at(-6), args.at(-5)]) {
+        await new Promise((done, reject) => {
+          const socket = createConnection({ host: "127.0.0.1", port: Number(port) });
+          socket.once("end", () => { socket.destroy(); done(); }); socket.once("error", reject); socket.resume();
+        });
+      }
+      return { pid: 100, stdout: JSON.stringify(rows(process.pid)) };
+    }, "CURSOR_APP_MACOS_PROOF_FIXTURE"],
   ]) {
     let root;
     const report = await runMacosIsolationProof({ platform: "darwin", execute: async (options) => { root = options.cwd; return execute(options); } });
@@ -349,6 +438,8 @@ test("execution failures, malformed output and missing real fixture connections 
 test("network failure projection accepts only bounded depth and fixed gate/result enums", () => {
   const input = { depth: 2, failedGate: "otherUnixConnect", result: "EPERM", pid: 123, port: 42, path: "/private/canary" };
   assert.deepEqual(projectMacosNetworkDiagnostic(input), { depth: 2, failedGate: "otherUnixConnect", result: "EPERM" });
+  assert.deepEqual(projectMacosNetworkDiagnostic({ ...input, failedGate: "sandboxReentry", result: "REENTRY_DENIED" }),
+    { depth: 2, failedGate: "sandboxReentry", result: "REENTRY_DENIED" });
   for (const value of [undefined, null, {}, { ...input, depth: 3 }, { ...input, depth: "2" },
     { ...input, failedGate: "private-gate-canary" }, { ...input, result: "private-result-canary" }]) {
     assert.equal(projectMacosNetworkDiagnostic(value), undefined);
@@ -358,7 +449,8 @@ test("network failure projection accepts only bounded depth and fixed gate/resul
 test("proof failure exposes the first failing network gate without path, PID, port or raw error", async () => {
   for (const [depth, failedGate, result, expected] of [[0, "listenerIpv4", "TIMEOUT", "TIMEOUT"],
     [1, "otherUnixBind", "LISTENED", "LISTENED"], [2, "otherUnixConnect", "private-value-canary", "OTHER"],
-    [0, "wildcardIpv4", "TIMEOUT", "TIMEOUT"], [1, "wildcardIpv6", "private-value-canary", "OTHER"]]) {
+    [0, "wildcardIpv4", "TIMEOUT", "TIMEOUT"], [1, "wildcardIpv6", "private-value-canary", "OTHER"],
+    [0, "sandboxReentry", "CONNECTED", "CONNECTED"], [2, "sandboxReentry", "private-value-canary", "OTHER"]]) {
     const evidence = rows(process.pid);
     for (const row of evidence) row.wildcardIpv4 = row.wildcardIpv6 = "LISTENED";
     evidence[depth][failedGate] = result;
@@ -366,6 +458,7 @@ test("proof failure exposes the first failing network gate without path, PID, po
     const report = await runMacosIsolationProof({ platform: "darwin", execute: async () => ({ pid: 100, stdout: JSON.stringify(evidence) }) });
     assert.equal(report.status, "FAIL");
     assert.equal(report.evidence, undefined);
+    if (failedGate === "sandboxReentry") assert.equal(report.errorCode, "CURSOR_APP_MACOS_REENTRY_NOT_RESTRICTED");
     assert.deepEqual(report.diagnostic, { depth, failedGate, result: expected });
     assert.ok(!JSON.stringify(report).includes("private"));
     assert.ok(!JSON.stringify(report).includes("100"));

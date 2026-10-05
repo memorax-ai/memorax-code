@@ -11,6 +11,7 @@ const codes = new Set([
   "CURSOR_APP_MACOS_PROOF_OUTPUT", "CURSOR_APP_MACOS_LOOPBACK_UNAVAILABLE", "CURSOR_APP_MACOS_LOOPBACK_NOT_RESTRICTED",
   "CURSOR_APP_MACOS_LISTENER_UNAVAILABLE", "CURSOR_APP_MACOS_LISTENER_NOT_RESTRICTED", "CURSOR_APP_MACOS_WILDCARD_OBSERVATION_INVALID",
   "CURSOR_APP_MACOS_UNIX_UNAVAILABLE", "CURSOR_APP_MACOS_UNIX_NOT_RESTRICTED",
+  "CURSOR_APP_MACOS_REENTRY_NOT_RESTRICTED",
   "CURSOR_APP_MACOS_IPV4_NOT_DENIED", "CURSOR_APP_MACOS_IPV6_NOT_DENIED", "CURSOR_APP_MACOS_PROOF_INHERITANCE",
   "CURSOR_APP_MACOS_PROOF_CLEANUP",
 ]);
@@ -19,8 +20,8 @@ function check(condition, code) { if (!condition) throw failure(code); }
 function denied(value) { return value === "EPERM" || value === "EACCES"; }
 function wildcardObserved(value) { return value === "LISTENED" || denied(value); }
 const networkGates = ["allowedLoopback", "blockedLoopback", "listenerIpv4", "listenerIpv6", "otherListenerIpv4", "otherListenerIpv6",
-  "wildcardIpv4", "wildcardIpv6", "unixUserData", "unixTmp", "otherUnixConnect", "otherUnixBind", "ipv4", "ipv6"];
-const networkResults = new Set(["CONNECTED", "LISTENED", "EPERM", "EACCES", "TIMEOUT", "OTHER", "NOT_RUN", "EADDRINUSE", "EADDRNOTAVAIL"]);
+  "wildcardIpv4", "wildcardIpv6", "unixUserData", "unixTmp", "otherUnixConnect", "otherUnixBind", "sandboxReentry", "ipv4", "ipv6"];
+const networkResults = new Set(["CONNECTED", "LISTENED", "EPERM", "EACCES", "REENTRY_DENIED", "TIMEOUT", "OTHER", "NOT_RUN", "EADDRINUSE", "EADDRNOTAVAIL"]);
 
 export function projectMacosNetworkDiagnostic(input) {
   if (!input || ![0, 1, 2].includes(input.depth) || !networkGates.includes(input.failedGate) || !networkResults.has(input.result)) return undefined;
@@ -34,7 +35,8 @@ function networkDiagnostic(rows) {
       const result = row[failedGate];
       const passed = failedGate === "allowedLoopback" ? result === "CONNECTED"
         : ["listenerIpv4", "listenerIpv6", "unixUserData", "unixTmp"].includes(failedGate) ? result === "LISTENED"
-          : failedGate.startsWith("wildcard") ? wildcardObserved(result) : denied(result);
+          : failedGate.startsWith("wildcard") ? wildcardObserved(result)
+            : failedGate === "sandboxReentry" ? result === "REENTRY_DENIED" || denied(result) : denied(result);
       if (!passed) return projectMacosNetworkDiagnostic({ depth, failedGate,
         result: networkResults.has(result) ? result : result === undefined ? "NOT_RUN" : "OTHER" });
     }
@@ -65,7 +67,7 @@ export function makeMacosNetworkProfile(outboundPorts, listenPorts = [], unixDir
 }
 
 // Only owned loopback fixtures exchange synthetic data. All loopback and bind
-// gates and wildcard observations must complete before external connect-only probes.
+// gates, reentry and wildcard observations must complete before external connect-only probes.
 export async function probeNetworkLevel(allowedPort, blockedPort, listenPort, blockedListenPort, depth, overrides = {}) {
   const { createConnection, createServer } = await import("node:net");
   const { unixPaths } = overrides;
@@ -124,11 +126,38 @@ export async function probeNetworkLevel(allowedPort, blockedPort, listenPort, bl
   });
   const bind = overrides.bind ?? bindSocket;
   const bindUnix = overrides.bindUnix ?? ((path, exchange) => bindSocket(path, undefined, exchange));
+  const sandboxReentry = async () => {
+    const { spawnSync } = await import("node:child_process");
+    const source = `const { createConnection } = await import("node:net");
+      const socket = createConnection({ host: "127.0.0.1", port: Number(process.argv[1]) });
+      let settled = false;
+      const finish = (result) => {
+        if (settled) return;
+        settled = true; clearTimeout(timer); socket.destroy(); console.log(result);
+      };
+      const timer = setTimeout(() => finish("TIMEOUT"), 1000);
+      socket.once("connect", () => finish("CONNECTED"));
+      socket.once("error", (error) => finish(["EPERM", "EACCES"].includes(error.code) ? error.code : "OTHER"));`;
+    let result;
+    try {
+      result = await (overrides.sandboxReentry ?? spawnSync)("/usr/bin/sandbox-exec",
+        ["-p", "(version 1)\n(allow default)\n", process.execPath, "--input-type=module", "-e", source, String(blockedPort)],
+        { env: process.env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 2500, killSignal: "SIGKILL", maxBuffer: 4096 });
+    } catch { return "OTHER"; }
+    if (result?.error) return result.error.code === "ETIMEDOUT" ? "TIMEOUT" : "OTHER";
+    if (result?.signal != null || !Number.isInteger(result?.status)) return "OTHER";
+    if (result.status === 0 && result.stderr === "") {
+      return ["CONNECTED", "EPERM", "EACCES", "TIMEOUT", "OTHER"].find((value) => result.stdout === value + "\n") ?? "OTHER";
+    }
+    if (result.status > 0 && result.status <= 255 && result.stdout === "" && typeof result.stderr === "string"
+      && /^sandbox-exec: sandbox_(?:apply|init): (?:Operation not permitted|EPERM)\n$/.test(result.stderr)) return "REENTRY_DENIED";
+    return "OTHER";
+  };
   const row = { depth, pid: process.pid, parentPid: process.ppid, allowedLoopback: "NOT_RUN",
     listenerIpv4: "NOT_RUN", listenerIpv6: "NOT_RUN", otherListenerIpv4: "NOT_RUN", otherListenerIpv6: "NOT_RUN",
     wildcardIpv4: "NOT_RUN", wildcardIpv6: "NOT_RUN",
     unixUserData: "NOT_RUN", unixTmp: "NOT_RUN", otherUnixConnect: "NOT_RUN", otherUnixBind: "NOT_RUN",
-    blockedLoopback: "NOT_RUN", ipv4: "NOT_RUN", ipv6: "NOT_RUN" };
+    blockedLoopback: "NOT_RUN", sandboxReentry: "NOT_RUN", ipv4: "NOT_RUN", ipv6: "NOT_RUN" };
   row.allowedLoopback = await connect("127.0.0.1", allowedPort);
   if (row.allowedLoopback !== "CONNECTED") return [row];
   row.blockedLoopback = await connect("127.0.0.1", blockedPort);
@@ -152,6 +181,8 @@ export async function probeNetworkLevel(allowedPort, blockedPort, listenPort, bl
   if (!["EPERM", "EACCES"].includes(row.otherUnixConnect)) return [row];
   row.otherUnixBind = await bindUnix(unixPaths.blockedBind, false);
   if (!["EPERM", "EACCES"].includes(row.otherUnixBind)) return [row];
+  row.sandboxReentry = await sandboxReentry();
+  if (!["REENTRY_DENIED", "EPERM", "EACCES"].includes(row.sandboxReentry)) return [row];
   row.ipv4 = await connect("198.51.100.1", 9);
   if (!["EPERM", "EACCES"].includes(row.ipv4)) return [row];
   row.ipv6 = await connect("2001:db8::1", 9);
@@ -182,6 +213,7 @@ export function assertMacosNetworkEvidence(rows, { pid, parentPid }) {
     check(wildcardObserved(row.wildcardIpv4) && wildcardObserved(row.wildcardIpv6), "CURSOR_APP_MACOS_WILDCARD_OBSERVATION_INVALID");
     check(row.unixUserData === "LISTENED" && row.unixTmp === "LISTENED", "CURSOR_APP_MACOS_UNIX_UNAVAILABLE");
     check(denied(row.otherUnixConnect) && denied(row.otherUnixBind), "CURSOR_APP_MACOS_UNIX_NOT_RESTRICTED");
+    check(row.sandboxReentry === "REENTRY_DENIED" || denied(row.sandboxReentry), "CURSOR_APP_MACOS_REENTRY_NOT_RESTRICTED");
     check(denied(row.ipv4), "CURSOR_APP_MACOS_IPV4_NOT_DENIED");
     check(denied(row.ipv6), "CURSOR_APP_MACOS_IPV6_NOT_DENIED");
   }
@@ -189,7 +221,7 @@ export function assertMacosNetworkEvidence(rows, { pid, parentPid }) {
     "CURSOR_APP_MACOS_PROOF_INHERITANCE");
   return { allowedLoopback: true, otherLoopbackDenied: true, externalIpv4Denied: true,
     allowedListenerIpv4: true, allowedListenerIpv6: true, otherListenerPortsDenied: true,
-    ownedUnixIpc: true, otherUnixPathsDenied: true,
+    ownedUnixIpc: true, otherUnixPathsDenied: true, sandboxReentryRestricted: true,
     externalIpv6Denied: true, inheritedChild: true, inheritedGrandchild: true };
 }
 
