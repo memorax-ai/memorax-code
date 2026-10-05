@@ -2,17 +2,18 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { copyFile, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer } from "node:net";
+import { createSocket } from "node:dgram";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import test from "node:test";
 import {
-  classifyConnectionError, connectToFixture, parseProbeConfig, summarizeLevels,
+  classifyConnectionError, connectToFixture, parseProbeConfig, sendToFixture, summarizeLevels,
 } from "./cursor-app-windows-isolation-probe.mjs";
 
 const config = { allowed4: 31001, denied4: 31002, allowed6: 31003, denied6: 31004 };
 function levels(denied = "ACCESS_DENIED") {
   return [0, 1, 2].map((depth) => ({ depth, allowed4: "CONNECTED", allowed6: "CONNECTED",
-    denied4: denied, denied6: denied }));
+    denied4: denied, denied6: denied, mappedTcp: denied, udp4: denied, udp6: denied, mappedUdp: denied }));
 }
 
 test("probe input accepts numeric loopback ports with distinct allow/deny ports per family", () => {
@@ -39,7 +40,7 @@ test("baseline and restricted runs require every gate at all three depths", () =
   const report = summarizeLevels(levels(), "restricted");
   assert.equal(report.passed, true);
   assert.equal(report.levelCount, 3);
-  assert.equal(report.deniedAttempts, 6);
+  assert.equal(report.deniedAttempts, 18);
   assert.deepEqual(report.observations, levels());
   assert.equal(summarizeLevels(levels("CONNECTED"), "restricted").errorCode,
     "CURSOR_APP_WINDOWS_LOOPBACK_NOT_RESTRICTED");
@@ -47,11 +48,48 @@ test("baseline and restricted runs require every gate at all three depths", () =
     assert.equal(summarizeLevels(levels(outcome), "restricted").errorCode,
       "CURSOR_APP_WINDOWS_DENIAL_UNPROVEN");
   }
-  for (const depth of [0, 1, 2]) for (const key of ["allowed4", "allowed6", "denied4", "denied6"]) {
+  for (const depth of [0, 1, 2]) for (const key of ["allowed4", "allowed6", "denied4", "denied6", "mappedTcp", "udp4", "udp6", "mappedUdp"]) {
     const input = levels();
     input[depth][key] = "OTHER";
     assert.equal(summarizeLevels(input, "restricted").passed, false, `${depth}:${key}`);
   }
+  for (const key of ["denied4", "denied6", "mappedTcp", "udp4", "udp6", "mappedUdp"]) {
+    for (const outcome of ["CONNECTED", "TIMEOUT", "REFUSED", "OTHER"]) {
+      const input = levels();
+      input[1][key] = outcome;
+      assert.equal(summarizeLevels(input, "restricted").errorCode, outcome === "CONNECTED"
+        ? "CURSOR_APP_WINDOWS_LOOPBACK_NOT_RESTRICTED" : "CURSOR_APP_WINDOWS_DENIAL_UNPROVEN", `${key}:${outcome}`);
+    }
+  }
+});
+
+test("TCP and UDP fixtures share numeric ports while mapped probes use actual IPv6 sockets", async (t) => {
+  const source = await readFile(new URL("./cursor-app-windows-isolation-probe.mjs", import.meta.url), "utf8");
+  assert.match(source, /createConnection\(\{ host, port, family: host.includes\(":"\) \? 6 : 4 \}\)/);
+  assert.match(source, /createSocket\(host.includes\(":"\) \? "udp6" : "udp4"\)/);
+  const tcpServers = [], udpServers = [];
+  t.after(async () => {
+    await Promise.all(tcpServers.map((server) => new Promise((resolve) => server.close(resolve))));
+    await Promise.all(udpServers.map((server) => new Promise((resolve) => server.close(resolve))));
+  });
+  for (const host of ["127.0.0.1", "::1"]) {
+    const tcp = createServer((socket) => socket.once("data", (data) => socket.end(data.toString() === "cursor-loopback-proof\n" ? "fixture-ok\n" : "wrong")));
+    tcpServers.push(tcp);
+    await new Promise((resolve, reject) => { tcp.once("error", reject); tcp.listen({ host, port: 0, ipv6Only: true }, resolve); });
+    const port = tcp.address().port;
+    const udp = createSocket({ type: host === "::1" ? "udp6" : "udp4", ipv6Only: host === "::1" });
+    udpServers.push(udp);
+    udp.on("message", (data, peer) => udp.send(data.toString() === "cursor-loopback-proof\n" ? "fixture-ok\n" : "wrong", peer.port, peer.address));
+    await new Promise((resolve, reject) => { udp.once("error", reject); udp.bind(port, host, resolve); });
+    assert.equal(await connectToFixture(host, port), "CONNECTED");
+    assert.equal(await sendToFixture(host, port), "CONNECTED");
+    if (host === "127.0.0.1") {
+      assert.equal(await connectToFixture("::ffff:127.0.0.1", port), "CONNECTED");
+      assert.equal(await sendToFixture("::ffff:127.0.0.1", port), "CONNECTED");
+    }
+  }
+  await assert.rejects(sendToFixture("example.com", 1234), /PROBE_CONFIG_INVALID/);
+  await assert.rejects(sendToFixture("192.0.2.1", 1234), /PROBE_CONFIG_INVALID/);
 });
 
 test("summary rejects missing, reordered, extra or unrecognized private output", () => {

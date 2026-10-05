@@ -6,11 +6,13 @@ Set-StrictMode -Version Latest
 
 $report = [ordered]@{
     schemaVersion = 1; kind = 'network-isolation-proof'; platform = 'win32'
-    scope = 'windows-wfp-user-tcp-loopback-only'; status = 'FAIL'; stage = 'guard'
+    scope = 'windows-wfp-user-direct-outbound-only'; status = 'FAIL'; stage = 'guard'
+    dnsBrokerIsolation = 'not-verified'; otherSidBrokerIsolation = 'not-enforced'
     appStarted = $false; nativeAcceptance = $false; externalProbes = $false
     evidence = [ordered]@{ freshStandardUser = $false; baselineFixturesReachable = $false
         parentChildGrandchildSameSid = $false; allowedLoopback = $false; deniedLoopback = $false
-        controllerStillReachesDenied = $false; filtersSurviveEngineClose = $false }
+        controllerStillReachesDenied = $false; filtersSurviveEngineClose = $false
+        udpDenied = $false; mappedIpv6Denied = $false }
     counts = [ordered]@{ processLevels = 0; verifiedTokens = 0; deniedAttempts = 0 }
     observations = @()
     cleanup = [ordered]@{ bounded = $true; processHandlesClosed = $false; wfpObjectsRemoved = $false
@@ -215,7 +217,7 @@ function Invoke-Wfp([string]$Action, [bool]$TrackDiagnostic = $true) {
         }
         $result = $output | ConvertFrom-Json -AsHashtable
         if ($process.ExitCode -eq 0 -and $result.Count -eq 2 -and $result.status -ceq 'PASS' -and
-            ($result.filterCount -is [long] -or $result.filterCount -is [int]) -and $result.filterCount -eq 2) { return }
+            ($result.filterCount -is [long] -or $result.filterCount -is [int]) -and $result.filterCount -eq 4) { return }
         $steps = @('input', 'engine-open', 'transaction-begin', 'precheck', 'sublayer-add', 'filter-plan',
             'filter-add', 'verify-sublayer', 'verify-filter', 'verify-policy', 'transaction-commit',
             'engine-close', 'filter-delete', 'sublayer-delete', 'verify-removed', 'unexpected')
@@ -340,7 +342,8 @@ try {
     $report.evidence.baselineFixturesReachable = $true
     $report.stage = 'firewall'
     $wfpArguments = @($user.SID.Value, [Guid]::NewGuid().ToString(), [Guid]::NewGuid().ToString(),
-        [Guid]::NewGuid().ToString(), [string]$config.denied4, [string]$config.denied6)
+        [Guid]::NewGuid().ToString(), [Guid]::NewGuid().ToString(), [Guid]::NewGuid().ToString(),
+        [string]$config.allowed4, [string]$config.allowed6)
     Invoke-Wfp 'install'
     Invoke-Wfp 'verify'
     $report.evidence.filtersSurviveEngineClose = $true
@@ -352,6 +355,12 @@ try {
     $report.evidence.parentChildGrandchildSameSid = $report.counts.verifiedTokens -eq 6
     $report.evidence.allowedLoopback = @($restricted.observations | Where-Object {
         $_.allowed4 -ne 'CONNECTED' -or $_.allowed6 -ne 'CONNECTED' }).Count -eq 0 -and $restricted.levelCount -eq 3
+    $report.evidence.udpDenied = @($restricted.observations | Where-Object {
+        $_.udp4 -ne 'ACCESS_DENIED' -or $_.udp6 -ne 'ACCESS_DENIED' -or $_.mappedUdp -ne 'ACCESS_DENIED'
+        }).Count -eq 0 -and $restricted.levelCount -eq 3
+    $report.evidence.mappedIpv6Denied = @($restricted.observations | Where-Object {
+        $_.mappedTcp -ne 'ACCESS_DENIED' -or $_.mappedUdp -ne 'ACCESS_DENIED'
+        }).Count -eq 0 -and $restricted.levelCount -eq 3
     if (-not $restricted.passed) { throw $restricted.errorCode }
     $report.evidence.deniedLoopback = $true
     $control = (Invoke-OwnedNode @($probe, 'control', (Join-Path $root 'config.json'))) | ConvertFrom-Json -AsHashtable

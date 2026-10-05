@@ -1,19 +1,32 @@
 import { spawn } from "node:child_process";
+import { createSocket } from "node:dgram";
 import { lstat, readFile, rename, writeFile } from "node:fs/promises";
 import { createConnection, createServer } from "node:net";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-const keys = ["allowed4", "denied4", "allowed6", "denied6"];
+const portKeys = ["allowed4", "denied4", "allowed6", "denied6"];
+const checks = [
+  { key: "allowed4", host: "127.0.0.1", port: "allowed4", allowed: true },
+  { key: "denied4", host: "127.0.0.1", port: "denied4" },
+  { key: "allowed6", host: "::1", port: "allowed6", allowed: true },
+  { key: "denied6", host: "::1", port: "denied6" },
+  { key: "mappedTcp", host: "::ffff:127.0.0.1", port: "allowed4" },
+  { key: "udp4", host: "127.0.0.1", port: "allowed4", udp: true },
+  { key: "udp6", host: "::1", port: "allowed6", udp: true },
+  { key: "mappedUdp", host: "::ffff:127.0.0.1", port: "allowed4", udp: true },
+];
+const keys = checks.map(({ key }) => key);
+const deniedKeys = checks.filter(({ allowed }) => !allowed).map(({ key }) => key);
 const outcomes = new Set(["CONNECTED", "ACCESS_DENIED", "REFUSED", "TIMEOUT", "OTHER", "INVALID_RESPONSE"]);
 const request = "cursor-loopback-proof\n", response = "fixture-ok\n";
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export function parseProbeConfig(input) {
-  if (!input || typeof input !== "object" || Object.keys(input).sort().join() !== [...keys].sort().join()
-    || keys.some((key) => !Number.isInteger(input[key]) || input[key] < 1 || input[key] > 65535)
+  if (!input || typeof input !== "object" || Object.keys(input).sort().join() !== [...portKeys].sort().join()
+    || portKeys.some((key) => !Number.isInteger(input[key]) || input[key] < 1 || input[key] > 65535)
     || input.allowed4 === input.denied4 || input.allowed6 === input.denied6) throw new Error("PROBE_CONFIG_INVALID");
-  return Object.fromEntries(keys.map((key) => [key, input[key]]));
+  return Object.fromEntries(portKeys.map((key) => [key, input[key]]));
 }
 
 export function classifyConnectionError(error) {
@@ -24,10 +37,10 @@ export function classifyConnectionError(error) {
 }
 
 export async function connectToFixture(host, port) {
-  if (!["127.0.0.1", "::1"].includes(host) || !Number.isInteger(port) || port < 1 || port > 65535)
+  if (!["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(host) || !Number.isInteger(port) || port < 1 || port > 65535)
     throw new Error("PROBE_CONFIG_INVALID");
   return new Promise((resolve) => {
-    const socket = createConnection({ host, port });
+    const socket = createConnection({ host, port, family: host.includes(":") ? 6 : 4 });
     let finished = false, received = "";
     const finish = (outcome) => {
       if (finished) return;
@@ -48,6 +61,37 @@ export async function connectToFixture(host, port) {
   });
 }
 
+export async function sendToFixture(host, port) {
+  if (!["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(host) || !Number.isInteger(port) || port < 1 || port > 65535)
+    throw new Error("PROBE_CONFIG_INVALID");
+  return new Promise((resolve) => {
+    const socket = createSocket(host.includes(":") ? "udp6" : "udp4");
+    let finished = false;
+    const finish = (outcome) => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      try { socket.close(); } catch {}
+      resolve(outcome);
+    };
+    const timer = setTimeout(() => finish("TIMEOUT"), 1500);
+    socket.once("error", (error) => finish(classifyConnectionError(error)));
+    socket.once("message", (data) => finish(data.toString("utf8") === response ? "CONNECTED" : "INVALID_RESPONSE"));
+    socket.connect(port, host, () => {
+      socket.send(request, (error) => { if (error) finish(classifyConnectionError(error)); });
+    });
+  });
+}
+
+async function checkFixtures(config) {
+  const result = {};
+  for (const check of checks) {
+    const connect = check.udp ? sendToFixture : connectToFixture;
+    result[check.key] = await connect(check.host, config[check.port]);
+  }
+  return result;
+}
+
 export function summarizeLevels(input, mode) {
   const invalid = { passed: false, errorCode: "CURSOR_APP_WINDOWS_PROBE_OUTPUT_INVALID", levelCount: 0,
     deniedAttempts: 0, observations: [] };
@@ -62,12 +106,12 @@ export function summarizeLevels(input, mode) {
     errorCode = "CURSOR_APP_WINDOWS_BASELINE_UNREACHABLE";
   else if (input.some((entry) => entry.allowed4 !== "CONNECTED" || entry.allowed6 !== "CONNECTED"))
     errorCode = "CURSOR_APP_WINDOWS_ALLOWED_LOOPBACK_FAILED";
-  else if (mode === "restricted" && input.some((entry) => entry.denied4 === "CONNECTED" || entry.denied6 === "CONNECTED"))
+  else if (mode === "restricted" && input.some((entry) => deniedKeys.some((key) => entry[key] === "CONNECTED")))
     errorCode = "CURSOR_APP_WINDOWS_LOOPBACK_NOT_RESTRICTED";
-  else if (mode === "restricted" && input.some((entry) => entry.denied4 !== "ACCESS_DENIED" || entry.denied6 !== "ACCESS_DENIED"))
+  else if (mode === "restricted" && input.some((entry) => deniedKeys.some((key) => entry[key] !== "ACCESS_DENIED")))
     errorCode = "CURSOR_APP_WINDOWS_DENIAL_UNPROVEN";
   return { passed: !errorCode, ...(errorCode ? { errorCode } : {}), levelCount: 3,
-    deniedAttempts: mode === "restricted" ? 6 : 0, observations };
+    deniedAttempts: mode === "restricted" ? deniedKeys.length * 3 : 0, observations };
 }
 
 async function readJson(path) {
@@ -83,7 +127,7 @@ async function publish(path, value) {
 }
 
 async function fixtures(configPath) {
-  const servers = [], sockets = new Set(), config = {};
+  const servers = [], datagrams = [], sockets = new Set(), config = {};
   let stop;
   const stopped = new Promise((resolve) => { stop = resolve; });
   const deadline = setTimeout(stop, 180000);
@@ -91,7 +135,7 @@ async function fixtures(configPath) {
   process.stdin.once("data", stop);
   process.stdin.once("end", stop);
   try {
-    for (const key of keys) {
+    for (const key of portKeys) {
       const server = createServer((socket) => {
         sockets.add(socket);
         socket.on("error", () => {});
@@ -111,12 +155,27 @@ async function fixtures(configPath) {
       });
       config[key] = server.address().port;
     }
+    // UDP shares the allowed TCP port numbers, so the protocol condition is exercised.
+    for (const [key, host] of [["allowed4", "127.0.0.1"], ["allowed6", "::1"]]) {
+      const server = createSocket({ type: key.endsWith("4") ? "udp4" : "udp6", ipv6Only: key.endsWith("6") });
+      datagrams.push(server);
+      server.on("message", (data, peer) => {
+        if (data.toString("utf8") === request) server.send(response, peer.port, peer.address);
+      });
+      await new Promise((resolve, reject) => {
+        server.once("error", reject);
+        server.bind(config[key], host, resolve);
+      });
+    }
     await publish(configPath, parseProbeConfig(config));
     await stopped;
   } finally {
     clearTimeout(deadline);
     for (const socket of sockets) socket.destroy();
     await Promise.all(servers.map((server) => new Promise((resolve) => server.close(resolve))));
+    await Promise.all(datagrams.map((server) => new Promise((resolve) => {
+      try { server.close(resolve); } catch { resolve(); }
+    })));
     process.stdin.pause();
   }
 }
@@ -149,8 +208,7 @@ async function runLevel(root, depth) {
         await delay(50);
       }
     }
-    const result = { depth };
-    for (const key of keys) result[key] = await connectToFixture(key.endsWith("4") ? "127.0.0.1" : "::1", config[key]);
+    const result = { depth, ...await checkFixtures(config) };
     await publish(join(root, `result-${depth}.json`), result);
     if (childDone) await childDone;
   } finally {
@@ -174,9 +232,8 @@ async function main(args) {
   }
   if (args[0] === "control" && args.length === 2) {
     const config = parseProbeConfig(await readJson(args[1]));
-    const results = [];
-    for (const key of keys) results.push(await connectToFixture(key.endsWith("4") ? "127.0.0.1" : "::1", config[key]));
-    process.stdout.write(JSON.stringify({ reachable: results.every((value) => value === "CONNECTED") }));
+    const results = await checkFixtures(config);
+    process.stdout.write(JSON.stringify({ reachable: Object.values(results).every((value) => value === "CONNECTED") }));
     return;
   }
   throw new Error("PROBE_ARGUMENT_INVALID");

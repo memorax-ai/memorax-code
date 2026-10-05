@@ -1377,8 +1377,9 @@ must independently pass the signed-App and seven-flow native checks.
 #### Windows Loopback Feasibility Proof
 
 The explicitly requested `cursor-app-windows-isolation.yml` workflow runs only
-a loopback feasibility probe on a fresh GitHub-hosted Windows 2025 runner with
-Node 24. Enable `check_cursor_windows_isolation` when manually dispatching the
+a direct-outbound policy probe using loopback fixtures on a fresh GitHub-hosted
+Windows 2025 runner with Node 24. Enable `check_cursor_windows_isolation` when
+manually dispatching the
 existing native workflow to select proof-only mode; the switch defaults to
 `false`. Like the macOS proof switch, it skips packaging, all native matrices,
 provider checks and native-result summaries, without cancelling normal
@@ -1395,30 +1396,44 @@ subprocess output are not published.
 The Windows probe uses the hosted runner's administrator context to compile a
 CI-only C++ helper against the installed Windows SDK in a controller-only
 directory. It creates one temporary standard local user and an owned WFP
-sublayer with two `ALE_AUTH_CONNECT_V4/V6` block filters. Each filter requires
-the exact new SID, TCP, loopback address and denied fixture port. Ordinary
+sublayer at `ALE_AUTH_CONNECT_V4/V6`. Two higher-weight soft permits require
+the exact new SID, TCP, `127.0.0.1` or `::1`, and the selected allowed fixture
+port. Two lower-weight SID-only blocks deny all other direct outbound
+connections under that identity. Readback verifies the distinct permit and
+block roles, weights and exact conditions; no repeated not-equal port
+conditions are used. Soft permits do not override other providers' blocks. Ordinary
 non-dynamic, nonpersistent WFP objects survive the helper's engine close;
 separate readback verifies this before the restricted probe. It does not change
 the global firewall profile or default policy, use an AppContainer or add a
 loopback exemption. A parent, child and grandchild ordinary Node process under
-the new identity test only owned IPv4/IPv6 loopback fixtures. The probe makes no
-external network requests and does not download or start Cursor, access a
+the new identity test only owned IPv4/IPv6 loopback fixtures. Baseline and
+controller checks must exchange synthetic data with every fixture. Restricted
+checks allow only the two selected TCP endpoints and require explicit access
+denial for other TCP ports, UDP on the same numeric ports as allowed TCP, and
+mapped IPv6 TCP/UDP to the otherwise allowed IPv4 port. Mapped probes use IPv6
+sockets and remain deliberately outside the allowlist; normalization or any
+ambiguous outcome fails the proof rather than weakening the gate. The probe makes no
+external or DNS requests and does not download or start Cursor, access a
 credential store, or use existing account credentials.
 
 After owned processes stop, cleanup verifies exact object keys and conditions
 before transactional deletion and confirms absence. If process or object
 ownership cannot be proven, the probe fails and retains the restrictions,
 account and private directories for disposable runner VM teardown. The public
-scope is `windows-wfp-user-tcp-loopback-only`; diagnostics expose only fixed
+scope is `windows-wfp-user-direct-outbound-only`; diagnostics expose only fixed
 steps, address-family enums and numeric API errors, never SIDs, object keys,
-paths or raw errors. Evidence includes `filtersSurviveEngineClose`, and cleanup
-reports `wfpObjectsRemoved`.
+paths or raw errors. Evidence includes `filtersSurviveEngineClose`, `udpDenied`
+and `mappedIpv6Denied`, and cleanup reports `wfpObjectsRemoved`.
 
 The job fails on an ineffective restriction or unsuccessful cleanup and uploads
-only its fixed-field `report.json`. A passing probe would establish only whether
-this SID-scoped approach can allow and deny the selected loopback connections.
-It is not Windows App compatibility, full network isolation, credential
-isolation, or native acceptance. Windows remains outside the Cursor App native
+only its fixed-field `report.json`. A passing probe establishes exact policy
+readback and the selected local direct-outbound cases, not external-route or
+inbound-connection behavior. DNS may be delegated to a system service, and
+traffic executed under another SID by a system broker is outside these
+filters. The report therefore fixes `dnsBrokerIsolation` to `not-verified` and
+`otherSidBrokerIsolation` to `not-enforced`. This is not Windows App
+compatibility, full system network isolation, credential isolation, or native
+acceptance. Windows remains outside the Cursor App native
 matrix; macOS native acceptance must also independently pass its own checks.
 
 ## Pull Requests
