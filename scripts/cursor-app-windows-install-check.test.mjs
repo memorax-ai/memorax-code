@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -92,6 +93,7 @@ test("controller runs only the fixed script with clean environment and confirms 
     assert.equal(args[args.indexOf("-InstallerPath") + 1], f.context.installerPath);
     assert.equal(args[args.indexOf("-InstallerSha256") + 1], "a".repeat(64));
     assert.equal(options.env.GITHUB_TOKEN, undefined); assert.equal(options.timeout, 540_000);
+    assert.equal(options.env.PATHEXT, ".COM;.EXE;.BAT;.CMD");
     assert.equal(options.env.HOME, f.root); assert.equal(options.env.USERPROFILE, f.root);
     const child = new EventEmitter();
     const pending = writeFile(args[args.indexOf("-ReportPath") + 1], JSON.stringify({ ...proof(), raw: "private-canary" }))
@@ -106,6 +108,44 @@ test("controller runs only the fixed script with clean environment and confirms 
   assert.equal(f.confirmations, 1); assert.equal(result.status, "PASS");
   assert.doesNotMatch(JSON.stringify(result), /private-/);
   assert.deepEqual(JSON.parse(await readFile(join(f.root, "release.json"), "utf8")), release);
+});
+
+test("Windows clean controller environment resolves node.exe through the real PowerShell command lookup",
+  { skip: process.platform !== "win32" }, async (t) => {
+    const f = await fixture(t);
+    await copyFile(process.execPath, f.controller.node);
+    let captured;
+    const execute = async (file, args, options) => {
+      captured = { file, options };
+      await writeFile(args[args.indexOf("-ReportPath") + 1], JSON.stringify(proof()));
+      return { stdout: "", stderr: "" };
+    };
+    await runRestrictedInstaller(f.context, { root: f.root, environment: f.environment, controller: f.controller, execute });
+    for (const includeExtensions of [false, true]) {
+      const env = { ...captured.options.env };
+      if (!includeExtensions) delete env.PATHEXT;
+      const result = spawnSync(captured.file, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", [
+        "$ErrorActionPreference = 'Stop'",
+        "try { $matches = @(Get-Command node -CommandType Application) } catch { exit 23 }",
+        "if ($matches.Count -ne 1 -or $matches[0].Source -ine (Join-Path $env:HOME 'node.exe')) { exit 24 }",
+        "[Console]::WriteLine('NODE_LOOKUP_PASS')",
+      ].join("\n")], { ...captured.options, env, timeout: 15000 });
+      assert.ifError(result.error);
+      assert.equal(result.stderr, "");
+      assert.equal(result.status, includeExtensions ? 0 : 23);
+      assert.equal(result.stdout.trim(), includeExtensions ? "NODE_LOOKUP_PASS" : "");
+    }
+  });
+
+test("setup diagnostics expose only the fixed initialization stage", () => {
+  for (const setupStep of ["node-lookup", "probe-directory", "node-preflight", "controller-directory", "controller-runtime",
+    "wfp-build", "account-create", "account-acl", "private-path", undefined]) {
+    assert.throws(() => installationEvidence({ ...proof(), status: "FAIL", stage: "setup", setupStep }, release), (error) => {
+      assert.equal(error.diagnostic.setupStep, setupStep === "private-path" ? undefined : setupStep);
+      assert.doesNotMatch(JSON.stringify(error), /private-path/);
+      return true;
+    });
+  }
 });
 
 test("controller failures confirm closure only with a complete cleanup report", async (t) => {

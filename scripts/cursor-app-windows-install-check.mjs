@@ -48,6 +48,8 @@ export function installationEvidence(value, release) {
       errorCode: /^CURSOR_APP_WINDOWS_[A-Z0-9_]{1,80}$/.test(value.errorCode ?? "") ? value.errorCode : prefix + "FAILED",
       cleanup: Object.fromEntries(keys.map((key) => [key, value.cleanup[key]])),
     };
+    if (["node-lookup", "probe-directory", "node-preflight", "controller-directory", "controller-runtime",
+      "wfp-build", "account-create", "account-acl"].includes(value.setupStep)) error.diagnostic.setupStep = value.setupStep;
     for (const [key, pattern] of [["sessionErrorCode", /^CURSOR_APP_WINDOWS_SESSION_[A-Z0-9_]{1,80}$/],
       ["sessionCleanupErrorCode", /^CURSOR_APP_WINDOWS_SESSION_[A-Z0-9_]{1,80}$/],
       ["installedVerifierErrorCode", /^CURSOR_APP_WINDOWS_ARTIFACT_[A-Z0-9_]{1,80}$/]]) {
@@ -76,6 +78,7 @@ export async function runRestrictedInstaller(context, { root, environment, contr
   const env = { SystemRoot: system, WINDIR: system, COMSPEC: win32.join(system, "System32", "cmd.exe"),
     SystemDrive: "C:", ProgramFiles: "C:\\Program Files", "ProgramFiles(x86)": "C:\\Program Files (x86)",
     ProgramW6432: "C:\\Program Files", PATH: `${dirname(controller.node)};${powershell};${system}\\System32`,
+    PATHEXT: ".COM;.EXE;.BAT;.CMD",
     PSModulePath: `${powershell}\\Modules;${system}\\System32\\WindowsPowerShell\\v1.0\\Modules`,
     HOME: root, USERPROFILE: root, APPDATA: join(root, "AppData", "Roaming"),
     LOCALAPPDATA: join(root, "AppData", "Local"), TEMP: root, TMP: root };

@@ -356,9 +356,11 @@ try {
         }
     } elseif ($InstallerSha256 -or $ReleasePath) { throw 'CURSOR_APP_WINDOWS_INSTALL_INPUT' }
     $report.stage = 'setup'
+    $report.setupStep = 'node-lookup'
     $sourceNode = @(Get-Command node -CommandType Application)[0].Source
     if ([System.IO.Path]::GetFileName($sourceNode) -ine 'node.exe' -or -not $env:RUNNER_TEMP -or
         -not (Test-Path -LiteralPath $env:RUNNER_TEMP -PathType Container)) { throw 'CURSOR_APP_WINDOWS_SETUP_FAILED' }
+    $report.setupStep = 'probe-directory'
     $root = Join-Path $env:RUNNER_TEMP ('cursor-windows-proof-' + [Guid]::NewGuid().ToString('N'))
     $null = New-Item -ItemType Directory -Path $root
     foreach ($relative in @('home', 'home\AppData\Roaming', 'home\AppData\Local', 'tmp')) {
@@ -369,6 +371,7 @@ try {
     Copy-Item -LiteralPath $sourceNode -Destination $node
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'cursor-app-windows-isolation-probe.mjs') -Destination $probe
     # Compare the selected binary and owned copy without publishing paths or command output.
+    $report.setupStep = 'node-preflight'
     $report.nodeVersionPreflight = [ordered]@{ versionsMatch = $false }
     $versionOutputs = @{}
     foreach ($kind in @('source', 'copied')) {
@@ -401,6 +404,7 @@ try {
         $report.nodeVersionPreflight.copied.classification -eq 'semver' -and $versionOutputs.source -ceq $versionOutputs.copied
     if ($versionOutputs.copied -notmatch '^v24\.\d+\.\d+$') { throw 'CURSOR_APP_WINDOWS_HOST_UNSUPPORTED' }
     $controllerRoot = Join-Path $env:RUNNER_TEMP ('cursor-windows-wfp-' + [Guid]::NewGuid().ToString('N'))
+    $report.setupStep = 'controller-directory'
     $null = New-Item -ItemType Directory -Path $controllerRoot
     $currentIdentity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
     try { $currentSid = $currentIdentity.User } finally { $currentIdentity.Dispose() }
@@ -411,6 +415,7 @@ try {
             'ContainerInherit, ObjectInherit', 'None', 'Allow'))
     }
     Set-Acl -LiteralPath $controllerRoot -AclObject $controllerAcl
+    $report.setupStep = 'controller-runtime'
     if ($installationMode) {
         $controllerNode = Join-Path $controllerRoot 'node.exe'
         Copy-Item -LiteralPath $sourceNode -Destination $controllerNode
@@ -426,7 +431,9 @@ try {
     $wfp = Join-Path $controllerRoot 'cursor-app-windows-wfp.exe'
     $wfpSource = Join-Path $controllerRoot 'cursor-app-windows-wfp.cpp'
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'cursor-app-windows-wfp.cpp') -Destination $wfpSource
+    $report.setupStep = 'wfp-build'
     Build-WfpHelper $wfpSource $wfp
+    $report.setupStep = 'account-create'
     $userName = 'mxp' + [Guid]::NewGuid().ToString('N').Substring(0, 14)
     $password = [Convert]::ToBase64String([System.Security.Cryptography.RandomNumberGenerator]::GetBytes(24)) + 'Aa1!'
     $securePassword = ConvertTo-SecureString $password -AsPlainText -Force
@@ -439,6 +446,7 @@ try {
     if (@(Get-LocalGroupMember -SID 'S-1-5-32-544' | Where-Object { $_.SID -eq $user.SID }).Count -ne 0) {
         throw 'CURSOR_APP_WINDOWS_IDENTITY_UNPROVEN'
     }
+    $report.setupStep = 'account-acl'
     $acl = Get-Acl -LiteralPath $root
     $acl.SetAccessRuleProtection($true, $false)
     foreach ($sid in @($currentSid,
@@ -449,6 +457,7 @@ try {
     }
     Set-Acl -LiteralPath $root -AclObject $acl
     $report.evidence.freshStandardUser = $true
+    $report.Remove('setupStep')
     $report.stage = 'fixtures'
     $fixture = Start-OwnedNode @($probe, 'fixtures', (Join-Path $root 'config.json'))
     $deadline = [DateTime]::UtcNow.AddSeconds(10)
