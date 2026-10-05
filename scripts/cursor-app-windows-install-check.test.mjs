@@ -193,6 +193,34 @@ ConvertTo-Json -Compress @{ withCode = $withCode; withoutCode = $withoutCode; or
   assert.doesNotMatch(result.stdout, /private-/);
 });
 
+test("PowerShell passes plain string environment entries to the C# installer session", async (t) => {
+  const available = spawnSync("pwsh", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "exit 0"],
+    { encoding: "utf8", timeout: 10000 });
+  if (available.error?.code === "ENOENT") return t.skip("PowerShell is not installed");
+  assert.equal(available.status, 0);
+  const source = (await readFile(new URL("./cursor-app-windows-isolation-check.ps1", import.meta.url), "utf8")).replaceAll("\r\n", "\n");
+  const start = source.indexOf("    $environment = @{", source.indexOf("function Invoke-RestrictedInstaller"));
+  const end = source.indexOf("    $report.stage = 'install-run'", start);
+  assert.ok(start >= 0 && end > start);
+  const result = spawnSync("pwsh", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", `
+$ErrorActionPreference = 'Stop'
+Add-Type 'public static class CursorEnvironmentFixture {
+    public static bool PlainStrings(System.Collections.IDictionary values) {
+        foreach (System.Collections.DictionaryEntry entry in values)
+            if (!(entry.Key is string) || !(entry.Value is string)) return false;
+        return values.Count == 11;
+    }
+}'
+$profile = [System.IO.Path]::GetTempPath()
+$temp = Join-Path $profile 'synthetic-temp'
+$env:SystemRoot = $profile
+${source.slice(start, end)}
+ConvertTo-Json -Compress ([CursorEnvironmentFixture]::PlainStrings($environment))
+`], { encoding: "utf8", timeout: 15000, maxBuffer: 8192 });
+  assert.equal(result.status, 0); assert.equal(result.stderr, "");
+  assert.equal(JSON.parse(result.stdout), true);
+});
+
 test("controller failures confirm closure only with a complete cleanup report", async (t) => {
   for (const clean of [false, true]) {
     const f = await fixture(t), value = proof();

@@ -309,6 +309,10 @@ function Invoke-RestrictedInstaller {
         HOME = $profile; USERPROFILE = $profile; TEMP = $temp; TMP = $temp
         APPDATA = (Join-Path $profile 'AppData\Roaming'); LOCALAPPDATA = (Join-Path $profile 'AppData\Local')
     }
+    # Remove PowerShell wrappers before the C# helper validates these fixed environment values.
+    foreach ($key in @($environment.Keys)) {
+        $environment[$key] = [string]$environment[$key]
+    }
     $report.stage = 'install-run'
     $null = $installSession.StartBootstrap($copiedInstaller,
         @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/MERGETASKS=!runcode', "/DIR=$appDirectory"),
