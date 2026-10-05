@@ -280,6 +280,9 @@ async function verifyBackgroundGlobalConfiguration() {
     await git(["init", "--quiet"]);
     await git(["-c", "user.name=Native Fixture", "-c", "user.email=native@example.invalid", "commit", "--allow-empty",
       "--no-gpg-sign", "--quiet", "-m", "test: native model inheritance fixture"]);
+    await git(["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    await git(["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]);
+    const snapshotHead = (await git(["rev-parse", "HEAD"])).stdout.trim();
     backgroundStage = "installed plugin setup";
     await background.setup();
     background.setModelHandler((body) => {
@@ -318,6 +321,9 @@ async function verifyBackgroundGlobalConfiguration() {
       return result.length === 1 && ["failed", "succeeded"].includes(result[0].status) ? result : undefined;
     }, "BACKGROUND_JOB_DID_NOT_FINISH", 45_000);
     backgroundStage = "background job assertions";
+    check(job.snapshotHead === snapshotHead && job.sharedSnapshot?.head === snapshotHead
+      && job.sharedSnapshot.ref === "refs/remotes/origin/main" && job.sharedSnapshot.baseHead === null,
+    "BACKGROUND_SHARED_SNAPSHOT_MISMATCH");
     check(job.status === "failed" && job.failureReason === "artifact_validation_failed" && job.exitCode === 0,
       "BACKGROUND_NOOP_JOB_RESULT_MISMATCH");
     check(received.foreground === 1 && received.background === 1, "BACKGROUND_MODEL_REQUEST_MISSING");

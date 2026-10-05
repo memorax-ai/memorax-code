@@ -123,6 +123,8 @@ async function main() {
     "add", "README.md", ".gitignore"], paths.workspace, env);
   await run("git", ["-c", "user.name=DSH E2E", "-c", "user.email=e2e@example.invalid",
     "commit", "--quiet", "-m", "fixture"], paths.workspace, env);
+  await run("git", ["update-ref", "refs/remotes/origin/main", "HEAD"], paths.workspace, env);
+  await run("git", ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"], paths.workspace, env);
   await writePersonalContextFixtures(paths.memoraxHome);
 
   progress("installing the pinned DSH release and its test-only dependencies");
@@ -245,7 +247,7 @@ async function main() {
     "maintain", "--repo", paths.workspace, "--dry-run"], paths.workspace,
   { ...runtimeEnv, MEMORAX_CODE_HOME: ambientMemoraxHome })).stdout);
   assert.equal(dryRun.action, "build");
-  assert.equal(dryRun.reason, "bundle_missing");
+  assert.equal(dryRun.reason, "shared_build_due");
   assert.equal(dryRun.repo, await realpath(paths.workspace));
   assert.equal(dryRun.job?.dryRun, true);
   assert.equal(dryRun.job?.runner, "dsh");
@@ -321,6 +323,14 @@ async function main() {
     paths.workspace,
   ], paths.workspace, runtimeEnv)).stdout);
   assert.equal(repoMemoryValidation.ok, true);
+  // Later Turns reuse the shared baseline instead of starting unrelated authoring.
+  const { publishSharedRepoMemorySnapshot } = await import(pathToFileURL(join(profilePackage,
+    "memorax-code-adapter-common", "src", "repo-memory", "repo-memory-shared-bundle.mjs")).href);
+  assert.equal(publishSharedRepoMemorySnapshot({
+    home: paths.memoraxHome, repo: await realpath(paths.workspace), root: paths.workspace,
+    snapshot: { ref: "refs/remotes/origin/main", branch: "main", head: repoMemoryHead, baseHead: null },
+    validate: () => repoMemoryValidation.ok,
+  }), true);
 
   progress("crashing and resuming one real DSH session to reconcile its interrupted Turn");
   const interruptedRunnerPath = join(headless, "memorax-interrupted-e2e-runner.mjs");

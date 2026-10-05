@@ -1,25 +1,130 @@
 import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { spawn, spawnSync } from "node:child_process";
+import childProcess, { spawn, spawnSync } from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { runCursorRepoMemoryJob } from "../src/native-repo-memory.mjs";
-import { markerPathForRepo, readActiveRepoMemoryJobMarker, writeRepoMemoryJobMarker } from "../../memorax-code-adapter-common/src/repo-memory/repo-memory-job-marker.mjs";
+import { markerPathForRepo, readActiveRepoMemoryJobMarker, startupLockPathForRepo, writeRepoMemoryJobMarker } from "../../memorax-code-adapter-common/src/repo-memory/repo-memory-job-marker.mjs";
 import { runRepoMemoryJob } from "../../memorax-code-adapter-common/src/repo-memory/repo-memory-job-supervisor.mjs";
+import { readSharedRepoMemory, sharedSnapshotRoot } from "../../memorax-code-adapter-common/src/repo-memory/repo-memory-shared-bundle.mjs";
 import { readActiveRepoMemoryJobMarker as readLegacyMarker } from "./fixtures/legacy-repo-memory-job-marker.mjs";
 
 const adapterRoot = realpathSync(fileURLToPath(new URL("..", import.meta.url)));
 const jobHook = join(adapterRoot, "hooks/repo-memory-job.mjs");
 const cleanEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(MEMORAX_CODE_|CURSOR_|REPO_MEMORY_TEST_)/i.test(key)));
 
+test("Cursor builds mainline memory from a dirty feature and shares its path across worktrees", t => {
+  const f = fixture(t);
+  runGit(f.repo, ["switch", "-c", "feature"]);
+  commit(f, "feature.txt");
+  writeFileSync(join(f.repo, "dirty.txt"), "uncommitted");
+  const local = runGit(f.repo, ["rev-parse", "HEAD"]).trim();
+  const decision = runCursorRepoMemoryJob(["maintain", "--repo", f.repo], f.options);
+  assert.equal(decision.action, "build");
+  const job = decision.job, claim = claimJob(f, job), source = sharedSnapshotRoot(job.jobPath);
+  assert.equal(job.snapshotHead, f.head);
+  assert.match(claim.instructions, new RegExp(source.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.equal(existsSync(join(source, "feature.txt")), false);
+  profile({ ...f, repo: source }, f.head);
+  assert.equal(transition(f, "finish", job, ["--claim-token", claim.claimToken]).status, "succeeded");
+  const baseline = readSharedRepoMemory(f.home, f.repo);
+  assert.equal(baseline.head, f.head);
+  assert.equal(existsSync(source), false);
+  assert.equal(existsSync(join(f.repo, ".repo_memory")), false);
+  assert.equal(runGit(f.repo, ["rev-parse", "HEAD"]).trim(), local);
+  assert.equal(readFileSync(join(f.repo, "dirty.txt"), "utf8"), "uncommitted");
+  const linked = join(f.root, "linked");
+  runGit(f.repo, ["worktree", "add", "--detach", linked, f.head]);
+  const read = runCursorRepoMemoryJob(["resolve", "--repo", linked], f.options);
+  assert.equal(read.memoryPath, join(baseline.path, ".repo_memory"));
+  assert.equal(runCursorRepoMemoryJob(["maintain", "--repo", linked], f.options).reason, "up_to_date");
+});
+
+for (const failure of [false, true]) {
+  test(`Cursor shared update ${failure ? "retains the old baseline on validation failure" : "publishes after native finish"}`, t => {
+    const f = fixture(t);
+    const build = runCursorRepoMemoryJob(["maintain", "--repo", f.repo], f.options).job;
+    const firstClaim = claimJob(f, build);
+    profile({ ...f, repo: sharedSnapshotRoot(build.jobPath) }, f.head);
+    assert.equal(transition(f, "finish", build, ["--claim-token", firstClaim.claimToken]).status, "succeeded");
+    const first = readSharedRepoMemory(f.home, f.repo);
+    commit(f, "main-change.txt");
+    const target = runGit(f.repo, ["rev-parse", "HEAD"]).trim();
+    runGit(f.repo, ["update-ref", "refs/remotes/origin/trunk", target]);
+    runGit(f.repo, ["switch", "-c", "feature-after-merge"]);
+    commit(f, "feature-change.txt");
+    writeFileSync(join(f.home, "config.toml"), '[memory.repo_update]\npolicy = "every-commit"\n');
+    const decision = runCursorRepoMemoryJob(["maintain", "--repo", f.repo], f.options);
+    assert.equal(decision.reason, "shared_update_due");
+    assert.equal(decision.policyDecision.commitsBehind, 1);
+    const job = decision.job, claim = claimJob(f, job), source = sharedSnapshotRoot(job.jobPath);
+    assert.equal(existsSync(join(source, "feature-change.txt")), false);
+    profile({ ...f, repo: source }, target);
+    if (failure) writeFileSync(join(source, ".repo_memory/invalid"), "invalid");
+    const result = transition(f, "finish", job, ["--claim-token", claim.claimToken]);
+    assert.equal(result.status, failure ? "failed" : "succeeded");
+    assert.equal(readSharedRepoMemory(f.home, f.repo).head, failure ? f.head : target);
+    assert.equal(readFileSync(join(first.path, ".repo_memory/PROFILE.md"), "utf8").includes(f.head), true);
+    if (failure) assert.equal(runCursorRepoMemoryJob(["maintain", "--repo", f.repo], f.options).reason, "shared_update_cooldown");
+  });
+}
+
+for (const [mode, failureReason] of [["build", "snapshot_prepare_failed"], ["update", "snapshot_prepare_failed"], ["build", "startup_ownership_lost"]]) {
+  test(`Cursor shared ${mode} ${failureReason} records failure, cleans snapshots, and throttles retries`, t => {
+    const f = fixture(t);
+    if (mode === "update") {
+      const job = runCursorRepoMemoryJob(["maintain", "--repo", f.repo], f.options).job;
+      const claim = claimJob(f, job);
+      profile({ ...f, repo: sharedSnapshotRoot(job.jobPath) }, f.head);
+      assert.equal(transition(f, "finish", job, ["--claim-token", claim.claimToken]).status, "succeeded");
+      commit(f, "new-main.txt");
+      runGit(f.repo, ["update-ref", "refs/remotes/origin/trunk", "HEAD"]);
+    }
+    const baseline = readSharedRepoMemory(f.home, f.repo);
+    mkdirSync(f.home, { recursive: true });
+    writeFileSync(join(f.home, "config.toml"), '[memory.repo_update]\npolicy = "every-commit"\n');
+    let preparing;
+    const lockPath = startupLockPathForRepo(f.home, f.repo).lockPath;
+    const original = childProcess.spawnSync;
+    const mocked = t.mock.method(childProcess, "spawnSync", (command, args, options) => {
+      if (command === "git" && args.includes("checkout")) {
+        const job = join(dirname(options.cwd), "job.json");
+        preparing = existsSync(job) ? JSON.parse(readFileSync(job, "utf8")) : undefined;
+        if (failureReason === "snapshot_prepare_failed") return { status: 1, stdout: "", stderr: "fixture checkout failure" };
+        const lock = JSON.parse(readFileSync(lockPath, "utf8"));
+        writeFileSync(lockPath, JSON.stringify({ ...lock, token: "replacement-owner" }));
+      }
+      return original(command, args, options);
+    });
+    syncBuiltinESMExports();
+    t.after(() => { mocked.mock.restore(); syncBuiltinESMExports(); });
+    assert.throws(() => runCursorRepoMemoryJob(["maintain", "--repo", f.repo], f.options), failureReason === "snapshot_prepare_failed"
+      ? /could not prepare local Repo Memory snapshot/ : /startup lock ownership lost/);
+    assert.equal(preparing?.status, "preparing");
+    const states = readdirSync(join(f.home, "repo-memory-jobs")).filter(name => name !== "in-progress")
+      .map(name => JSON.parse(readFileSync(join(f.home, "repo-memory-jobs", name, "job.json"), "utf8")));
+    const failed = states.find(state => state.status === "failed");
+    assert.equal(failed?.failureReason, failureReason);
+    assert.equal(failed.mode, mode);
+    assert.equal(failed.leasePid, undefined);
+    assert.equal(existsSync(sharedSnapshotRoot(join(f.home, "repo-memory-jobs", failed.jobId, "job.json"))), false);
+    assert.deepEqual(readSharedRepoMemory(f.home, f.repo), baseline);
+    assert.equal(runCursorRepoMemoryJob(["maintain", "--repo", f.repo], f.options).reason, "shared_update_cooldown");
+    if (failureReason === "startup_ownership_lost") assert.equal(JSON.parse(readFileSync(lockPath, "utf8")).token, "replacement-owner");
+    else assert.equal(readdirSync(join(f.home, "repo-memory-jobs", "in-progress")).length, 0);
+    assert.equal(active(f).active, false);
+  });
+}
+
 test("Cursor native dry-run needs no Agent CLI and creates no job or lease", (t) => {
   const f = fixture(t);
   const result = spawnSync(process.execPath, [jobHook, "maintain", "--repo", f.repo, "--dry-run"], { encoding: "utf8", env: { ...cleanEnv, MEMORAX_CODE_HOME: f.home, MEMORAX_CODE_CURSOR_AGENT_COMMAND: join(f.root, "must-not-execute") } });
   assert.equal(result.status, 0, result.stderr);
   const resultValue = JSON.parse(result.stdout);
-  assert.equal(resultValue.reason, "bundle_missing");
+  assert.equal(resultValue.reason, "shared_build_due");
   assert.equal(resultValue.job.execution, "native-subagent");
   assert.equal(resultValue.job.command, undefined);
   assert.equal(resultValue.job.delegation, undefined);
@@ -170,8 +275,16 @@ test("concurrent Cursor processes publish one delegation and only one claimant",
   for (const r of results) assert.equal(r.status, 0, r.stderr);
   const decisions = results.map(r => JSON.parse(r.stdout));
   assert.equal(decisions.filter(r => r.job?.delegation).length, 1);
-  assert.equal(new Set(decisions.map(r => r.job.jobId)).size, 1);
   const job = decisions.find(r => r.job?.delegation).job;
+  for (const decision of decisions) {
+    if (decision.job) assert.equal(decision.job.jobId, job.jobId);
+    else {
+      // Another process can see the persisted attempt before the active marker is published.
+      assert.equal(decision.ok, true);
+      assert.equal(decision.action, "none");
+      assert.equal(decision.reason, "shared_update_cooldown");
+    }
+  }
   const legacyRequested = readLegacyMarker({ memoraxCodeHome: f.home, repoRealpath: f.repo });
   assert.equal(legacyRequested.active, true, "ownership must survive helper exit: " + legacyRequested.reason);
   assert.ok(results.every(r => r.pid !== legacyRequested.marker.pid), "owner PID must outlive the preparing helpers");
@@ -217,22 +330,6 @@ test("Cursor never delegates when the lease guard cannot start", (t) => {
   assert.equal(records.length, 1);
   assert.equal(records[0].status, "failed");
   assert.equal(records[0].failureReason, "lease_guard_start_failed");
-});
-
-test("Cursor reuses adaptive policy for current, commit-threshold and disabled bundles", (t) => {
-  const f = fixture(t);
-  profile(f, f.head);
-  mkdirSync(f.home, { recursive: true });
-  writeFileSync(join(f.home, "config.toml"), '[memory.repo_update]\npolicy = "adaptive"\ncommit_threshold = 2\ncooldown_hours = 24\n');
-  assert.equal(runCursorRepoMemoryJob(["maintain", "--repo", f.repo], f.options).reason, "up_to_date");
-  commit(f, "one"); commit(f, "two");
-  const update = runCursorRepoMemoryJob(["maintain", "--repo", f.repo, "--dry-run"], f.options);
-  assert.equal(update.action, "update");
-  assert.equal(update.reason, "commit_threshold_reached");
-  assert.equal(update.policyDecision.commitsBehind, 2);
-  writeFileSync(join(f.home, "config.toml"), '[memory.repo_update]\npolicy = "manual"\n');
-  const skipped = runCursorRepoMemoryJob(["maintain", "--repo", f.repo, "--dry-run"], f.options);
-  assert.equal(skipped.action, "none");
 });
 
 for (const scenario of ["snapshot_changed", "artifact_validation_failed", "profile_head_mismatch"]) {
@@ -350,7 +447,7 @@ test("Cursor synchronous native startup bounds a stalled Git status and releases
   writeFileSync(git, "#!" + process.execPath + "\n" + 'if(process.argv[2]==="rev-parse")console.log(' + JSON.stringify(f.head) + ');else if(process.argv[2]==="branch")console.log("main");else {process.on("SIGTERM",()=>{});setTimeout(()=>{},10000); }\n');
   chmodSync(git, 0o700);
   const started = Date.now();
-  const result = spawnSync(process.execPath, [jobHook, "maintain", "--repo", f.repo], {
+  const result = spawnSync(process.execPath, [jobHook, "start", "--mode", "build", "--repo", f.repo], {
     encoding: "utf8", timeout: 6000,
     env: { ...cleanEnv, MEMORAX_CODE_HOME: f.home, PATH: bin + ":" + cleanEnv.PATH },
   });
@@ -379,11 +476,13 @@ function fixture(t) {
   mkdirSync(repo); runGit(repo, ["init", "--quiet"]); runGit(repo, ["config", "user.name", "Cursor Test"]); runGit(repo, ["config", "user.email", "cursor@example.invalid"]);
   writeFileSync(join(repo, "README.md"), "# Isolated test\n"); runGit(repo, ["add", "README.md"]); runGit(repo, ["commit", "--quiet", "-m", "initial"]);
   const head = runGit(repo, ["rev-parse", "HEAD"]).trim();
+  runGit(repo, ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/trunk"]);
+  runGit(repo, ["update-ref", "refs/remotes/origin/trunk", head]);
   const validator = join(root, "validator.mjs");
   writeFileSync(validator, 'import {existsSync} from "node:fs"; import {join} from "node:path"; const repo=process.argv[3]; const ok=existsSync(join(repo,".repo_memory/PROFILE.md"))&&!existsSync(join(repo,".repo_memory/invalid"));console.log(JSON.stringify({ok, errors:ok?[]:["fixture_invalid"]}));process.exitCode=ok?0:1;\n');
   return { root, repo, home, head, validator, options: { memoraxCodeHome: home, validatorPath: validator, helperPath: jobHook, sessionId: "fixture-parent" } };
 }
-function prepare(f) { return runCursorRepoMemoryJob(["maintain", "--repo", f.repo], f.options).job; }
+function prepare(f) { return runCursorRepoMemoryJob(["start", "--mode", "build", "--repo", f.repo], f.options); }
 function ticket(job) { const line = job.delegation.prompt.split("\n").find(x => x.startsWith('{"executable"')); const args = JSON.parse(line).args; return args[args.indexOf("--ticket") + 1]; }
 function claimJob(f, job) { return transition(f, "claim", job, ["--ticket", ticket(job)]); }
 function transition(f, command, job, extra = [], options = {}) { return runCursorRepoMemoryJob([command, "--repo", f.repo, "--job", job.jobId, "--run", job.runId, ...extra], { ...f.options, ...options }); }

@@ -315,7 +315,8 @@ async function verifyBackgroundGlobalConfiguration() {
     const result = [];
     for (const file of files.filter((path) => basename(path) === "job.json")) {
       const job = JSON.parse(await readFile(join(jobsRoot, file), "utf8"));
-      check(job.repo === repository && job.runner === "codex", "BACKGROUND_JOB_AUTHORITY_MISMATCH");
+      check(job.repo === repository && job.runner === "codex" && job.jobId === basename(dirname(file)),
+        "BACKGROUND_JOB_AUTHORITY_MISMATCH");
       for (const pid of [job.workerPid, job.childPid]) if (Number.isInteger(pid) && pid > 0) ownedPids.add(pid);
       result.push(job);
     }
@@ -334,6 +335,9 @@ async function verifyBackgroundGlobalConfiguration() {
     await git(["init", "--quiet"]);
     await git(["-c", "user.name=Native Fixture", "-c", "user.email=native@example.invalid", "commit", "--allow-empty",
       "--no-gpg-sign", "--quiet", "-m", "test: native model inheritance fixture"]);
+    await git(["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    await git(["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]);
+    const snapshotHead = (await git(["rev-parse", "HEAD"])).stdout.trim();
     await background.setup();
     background.setModelHandler((body, response) => {
       check(body.model === fixtureModel, "BACKGROUND_MODEL_SUBSTITUTION");
@@ -352,6 +356,19 @@ async function verifyBackgroundGlobalConfiguration() {
       return observed.length === 1 && ["failed", "succeeded"].includes(observed[0].status);
     }, "BACKGROUND_JOB_DID_NOT_FINISH", 40_000);
     const [job] = await jobs();
+    check(job.snapshotHead === snapshotHead && job.sharedSnapshot?.head === snapshotHead
+      && job.sharedSnapshot.ref === "refs/remotes/origin/main" && job.sharedSnapshot.baseHead === null,
+    "BACKGROUND_SHARED_SNAPSHOT_MISMATCH");
+    const sourceRepo = join(await realpath(jobsRoot), job.jobId, "source");
+    const failureReasons = ["snapshot_prepare_failed", "startup_ownership_lost", "worker_start_failed", "worker_interrupted",
+      "codex_timeout", "codex_spawn_failed", "codex_exit_nonzero", "final_message_missing", "snapshot_changed",
+      "artifact_validation_failed", "profile_head_mismatch", "job_ownership_lost", "shared_publication_rejected"];
+    report.backgroundGlobalConfiguration = {
+      status: "FAIL", foregroundRequests: received.foreground, backgroundRequests: received.background,
+      jobStatus: job.status, failureReason: failureReasons.includes(job.failureReason) ? job.failureReason : "other",
+      exitCode: Number.isSafeInteger(job.exitCode) ? job.exitCode : null,
+      validationExitCode: Number.isSafeInteger(job.validationExitCode) ? job.validationExitCode : null,
+    };
     check(job.status === "failed" && job.failureReason === "artifact_validation_failed" && job.exitCode === 0,
       "BACKGROUND_NOOP_JOB_RESULT_MISMATCH");
     check(typeof job.prompt === "string" && job.prompt === job.command?.at(-1), "BACKGROUND_JOB_PROMPT_MISSING");
@@ -371,8 +388,14 @@ async function verifyBackgroundGlobalConfiguration() {
       ids.add(metadata.id);
       const contexts = records.filter((record) => record.type === "turn_context");
       check(contexts.length >= 1, "BACKGROUND_NATIVE_CONTEXT_MISSING");
-      for (const context of contexts) check(context.payload.model === fixtureModel
-        && await realpath(context.payload.cwd) === repository, "BACKGROUND_NATIVE_CONTEXT_MISMATCH");
+      // The worker removes its checkout; canonicalize its surviving parent to retain path-alias checks.
+      const expectedCwd = metadata.id === foregroundId ? repository : sourceRepo;
+      for (const context of contexts) {
+        check(context.payload.model === fixtureModel && typeof context.payload.cwd === "string", "BACKGROUND_NATIVE_CONTEXT_MISMATCH");
+        const actualCwd = metadata.id === foregroundId ? await realpath(context.payload.cwd)
+          : join(await realpath(dirname(context.payload.cwd)), basename(context.payload.cwd));
+        check(actualCwd === expectedCwd, "BACKGROUND_NATIVE_CONTEXT_MISMATCH");
+      }
       observedPermissions[metadata.id === foregroundId ? "foreground" : "background"] = contexts.map(({ payload }) => {
         check(["untrusted", "on-failure", "on-request", "never"].includes(payload.approval_policy), "BACKGROUND_NATIVE_APPROVAL_POLICY_UNSUPPORTED");
         const sandbox = payload.sandbox_policy;

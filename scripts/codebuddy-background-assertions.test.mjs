@@ -14,6 +14,7 @@ const job = (client = "codebuddy") => ({ version: 1, jobId: "job-fixture", runId
   repo: context.repository, snapshotHead: context.snapshotHead, status: "failed", failureReason: "artifact_validation_failed",
   exitCode: 0, validationExitCode: 1, command: [context.codebuddyCommand, "--plugin-dir", context.pluginRoot,
     "--print", "--output-format", "text", "--dangerously-skip-permissions", "--no-session-persistence", prompt],
+  sharedSnapshot: { ref: "refs/remotes/origin/main", branch: "main", head: context.snapshotHead, baseHead: null },
   prompt, finalMessageSource: "stdout", finalMessagePath: join(dirname(context.jobPath), "final-message.txt"),
   outputLogPath: join(dirname(context.jobPath), "output.log"), pid: 12345, workerPid: 12345, childPid: 12346 });
 const request = (text) => ({ method: "POST", path: "/v1/chat/completions", body: { model: fixtureModel,
@@ -252,5 +253,29 @@ test("CodeBuddy background assertion errors never disclose private native conten
     () => assertBackgroundJob({ ...job(), finalMessagePath: privateText }, context),
     () => assertBackgroundNoopResult(job(), privateText), () => assertForegroundResult([events()[0], { ...events()[1], result: privateText }])]) {
     assert.throws(run, (error) => error.message === error.nativeCode && !error.stack.includes(privateText));
+  }
+});
+
+test("CodeBuddy shared build binds the mainline snapshot and permits preparation before worker publication", () => {
+  const preparing = { ...job(), status: "preparing", pid: undefined, workerPid: undefined, childPid: undefined };
+  assertBackgroundJob(preparing, context);
+  assert.equal(backgroundProcessesExited([preparing], () => false), false);
+  for (const sharedSnapshot of [undefined, null, { ...job().sharedSnapshot, head: "c".repeat(40) },
+    { ...job().sharedSnapshot, ref: "refs/heads/main" }, { ...job().sharedSnapshot, branch: "feature" },
+    { ...job().sharedSnapshot, baseHead: context.snapshotHead }]) {
+    assert.throws(() => assertBackgroundJob({ ...job(), sharedSnapshot }, context),
+      { nativeCode: "BACKGROUND_JOB_AUTHORITY_MISMATCH" });
+  }
+});
+
+test("background diagnostics retain preparation failures without treating preparation as completion", () => {
+  const preparing = { ...job(), status: "preparing", workerPid: undefined, childPid: undefined,
+    failureReason: undefined, exitCode: undefined };
+  assert.deepEqual(summarizeBackgroundJobs([preparing], () => assert.fail("unpublished PID was probed")).jobs,
+    [{ status: "preparing", failureReason: "missing", exitCode: null,
+      workerPidPresent: false, workerAlive: false, childPidPresent: false, childAlive: false }]);
+  for (const failureReason of ["snapshot_prepare_failed", "startup_ownership_lost"]) {
+    assert.equal(summarizeBackgroundJobs([{ ...preparing, status: "failed", failureReason }], () => false)
+      .jobs[0].failureReason, failureReason);
   }
 });

@@ -1,11 +1,64 @@
 import { strict as assert } from "node:assert";
-import { readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { inspectRepoMemoryBundle } from "../../packages/ts/memorax-code-adapter-common/src/repo-memory/repo-memory-job-supervisor.mjs";
+import { defaultBranchSnapshot, prepareSharedRepoMemorySnapshot, publishSharedRepoMemorySnapshot, readSharedRepoMemory } from "../../packages/ts/memorax-code-adapter-common/src/repo-memory/repo-memory-shared-bundle.mjs";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../packages/ts/memorax-code-codex-adapter");
 const readerSkillRoot = join(packageRoot, "skills", "memorax-code");
+
+for (const changedBranch of [false, true]) {
+  test(`canonical collector, reader and updater share a mainline bundle from ${changedBranch ? "a divergent" : "the initial"} checkout`, t => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "repo-memory-mainline-reader-")));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const repo = join(root, "repo"), home = join(root, "home"); mkdirSync(repo); mkdirSync(home);
+    const git = args => execFileSync("git", args, { cwd: repo, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+    git(["init"]); git(["config", "user.name", "Fixture"]); git(["config", "user.email", "fixture@example.invalid"]);
+    writeFileSync(join(repo, "source.txt"), "original source\n"); git(["add", "source.txt"]); git(["commit", "-m", "initial"]);
+    const head = git(["rev-parse", "HEAD"]);
+    git(["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/trunk"]);
+    git(["update-ref", "refs/remotes/origin/trunk", head]);
+    const validator = join(readerSkillRoot, "scripts/repo-memory.mjs");
+    const cli = args => JSON.parse(execFileSync(process.execPath, [validator, ...args], { encoding: "utf8", env: { ...process.env, MEMORAX_CODE_HOME: home } }));
+    const validate = path => inspectRepoMemoryBundle(path, validator).status === "usable";
+    const first = { ...defaultBranchSnapshot(repo), baseHead: null }, candidate = join(root, "build", "source");
+    prepareSharedRepoMemorySnapshot({ home, repo, snapshot: first, root: candidate, validate });
+    cli(["collect", "--repo-path", candidate, "--snapshot-ref", head, "--history-mode", "none"]);
+    const memory = join(candidate, ".repo_memory");
+    writeFileSync(join(memory, "PROFILE.md"), `---\nschema: repo_memory_profile.v0.2\nlocal_head: "${head}"\n---\n# Fixture\n`);
+    for (const name of ["commits", "prs", "issues"]) writeFileSync(join(memory, "resources", `${name}.md`), `---\nschema: repo_memory_resource.v0.1\nsource: history_disabled\nresource_count: 0\ntrust_state: unavailable\nraw_source: ""\n---\n# ${name}\n`);
+    assert.equal(validate(candidate), true);
+    assert.equal(publishSharedRepoMemorySnapshot({ home, repo, snapshot: first, root: candidate, validate }), true);
+    const baseline = readSharedRepoMemory(home, repo);
+    const linked = join(root, "linked"); git(["worktree", "add", "--detach", linked, head]);
+    if (changedBranch) {
+      writeFileSync(join(linked, "feature.txt"), "branch work\n");
+      git(["-C", linked, "add", "feature.txt"]); git(["-C", linked, "commit", "-m", "feature"]);
+      writeFileSync(join(linked, "dirty.txt"), "uncommitted\n");
+    }
+    const read = cli(["resolve", "--repo-path", linked]);
+    assert.equal(read.ok, true);
+    assert.equal(read.memoryPath, join(baseline.path, ".repo_memory"));
+    assert.equal(existsSync(join(linked, ".repo_memory")), false);
+    writeFileSync(join(repo, "source.txt"), "mainline update\n"); git(["add", "source.txt"]); git(["commit", "-m", "mainline update"]);
+    const target = git(["rev-parse", "HEAD"]); git(["update-ref", "refs/remotes/origin/trunk", target]);
+    const update = { ...defaultBranchSnapshot(linked), baseHead: head }, next = join(root, "update", "source");
+    prepareSharedRepoMemorySnapshot({ home, repo: linked, snapshot: update, root: next, validate });
+    assert.equal(readFileSync(join(next, "source.txt"), "utf8"), "mainline update\n");
+    assert.equal(existsSync(join(next, "feature.txt")), false);
+    const report = cli(["detect-updates", "--repo-path", next, "--snapshot-ref", target, "--history-mode", "none"]);
+    assert.equal(report.current.local_head, target);
+    const profile = join(next, ".repo_memory/PROFILE.md");
+    writeFileSync(profile, readFileSync(profile, "utf8").replace(head, target));
+    assert.equal(publishSharedRepoMemorySnapshot({ home, repo: linked, snapshot: update, root: next, validate }), true);
+    assert.equal(cli(["resolve", "--repo-path", linked]).sharedBaseline.head, target);
+    assert.equal(readFileSync(join(baseline.path, ".repo_memory/PROFILE.md"), "utf8").includes(head), true);
+  });
+}
 
 test("memorax-code repo-read reference enforces retrieval budget and stop rules", () => {
   const skill = readFileSync(join(readerSkillRoot, "references", "repo-read.md"), "utf8");
@@ -33,10 +86,9 @@ test("memorax-code repo-read reference silently schedules supervised maintenance
   assert.match(skill, /even when this Skill was imported from another client/);
   assert.match(skill, /Only when no current-session helper was supplied, use the packaged helper/);
   assert.match(skill, /current-session helper is missing or fails, skip maintenance; never fall back to\s+the Skill-relative helper or another client's runner/);
-  assert.match(skill, /`bundle_missing`/);
-  assert.match(skill, /`bundle_invalid`/);
   assert.match(skill, /`up_to_date`/);
   assert.match(skill, /`active_job`/);
+  assert.match(skill, /do not launch a build to compensate/);
   assert.match(skill, /Do not wait, poll, retry, or expose/);
   assert.match(skill, /Never replace the packaged helper with a generic subagent/);
   assert.match(skill, /helper returns `job\.delegation`/);
@@ -50,9 +102,10 @@ test("memorax-code repo-read delegates deterministic maintenance decisions only 
 
   assert.match(skill, /Only a relevant `repo-read` invokes `maintain`/);
   assert.match(skill, /Commit arrival, PR merge, and elapsed time alone do not invoke it/);
-  assert.match(skill, /validates the generated bundle, evaluates the configured local update policy/);
+  assert.match(skill, /validates the shared bundle and evaluates the configured update policy/);
   assert.match(skill, /provider network access/);
-  assert.match(skill, /`adaptive\(5 commits OR 24 hours\)`/);
+  assert.match(skill, /`daily` with a 72-hour interval/);
+  assert.match(skill, /commit count does not trigger an earlier update/);
   assert.match(skill, /missing or non-ancestor baseline/);
 });
 
@@ -91,4 +144,32 @@ test("memorax-code repo-read treats disabled history resources as collection sta
   assert.match(skill, /collection state, not repository state/);
   assert.match(skill, /do not conclude that there are no commits, PRs, MRs, or issues/);
   assert.match(skill, /Ask whether to rebuild with provider history/);
+});
+
+test("shared reader resolves an immutable path and verifies branch changes without blanket rejection", () => {
+  const read = readFileSync(join(readerSkillRoot, "references/repo-read.md"), "utf8");
+  assert.match(read, /resolve --repo-path/);
+  assert.match(read, /memoryPath/);
+  assert.match(read, /All branches, detached checkouts, and linked worktrees/);
+  assert.match(read, /Hold this immutable version/);
+  assert.match(read, /uncommitted changes/);
+  assert.doesNotMatch(read, /shared-baseline\.json|sharedBaseline\.changes|refreshed: true/);
+});
+
+test("shared authoring references require the fixed mainline snapshot and canonical validation", () => {
+  const build = readFileSync(join(readerSkillRoot, "references/repo-build.md"), "utf8");
+  const update = readFileSync(join(readerSkillRoot, "references/repo-update.md"), "utf8");
+  assert.match(build, /private Git snapshot/);
+  assert.match(build, /ordinary collector and Wiki output contract stay/);
+  assert.match(update, /isolated source repository at a fixed/);
+  assert.match(update, /required even when history is disabled/);
+  assert.match(update, /supervisor owns version publication/);
+  assert.doesNotMatch(update, /borrowed record|shared-baseline\.json/);
+  for (const reference of [build, update]) {
+    assert.match(reference, /Do not run `git fetch`, `git pull`, or `git ls-remote`/);
+    assert.match(reference, /GitHub\/GitLab PR, MR, and issue evidence/);
+    assert.match(reference, /including branch and commit metadata/);
+    assert.match(reference, /when enabled by the history policy and provider access is available/);
+    assert.doesNotMatch(reference, /contact Git remotes/);
+  }
 });

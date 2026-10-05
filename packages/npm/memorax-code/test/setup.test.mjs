@@ -262,6 +262,10 @@ async function runSetup({ existingCache = false, explicitCache = false, codexReg
     "hooks/memory-skill-reminder-hook.mjs",
     "hooks/memory-skill-reminder-policy.mjs",
     "repo-memory/repo-memory-auto-build.mjs",
+    "repo-memory/repo-memory-job-artifacts.mjs",
+    "repo-memory/repo-memory-job-marker.mjs",
+    "repo-memory/repo-memory-repository.mjs",
+    "repo-memory/repo-memory-shared-bundle.mjs",
     "repo-memory/repo-memory-job-context.mjs",
     "personal-memory/procedure-memory-context.mjs",
     "personal-memory/user-profile-context.mjs",
@@ -1257,9 +1261,9 @@ test("setup seeds the default MemoraX Code config around trial memory preference
     assert.match(config, /\[memory\.skill_reminder\]/);
     assert.match(config, /interval_turns = 5 # Show the MemoraX Code skill reminder every N native client turns, starting on the first turn\./);
     assert.match(config, /\[memory\.repo_update\]/);
-    assert.match(config, /policy = "adaptive" # every-commit \/ commit-count \/ daily \/ pull-request \/ pull-request-or-daily \/ adaptive\./);
+    assert.match(config, /policy = "daily" # every-commit \/ commit-count \/ daily \/ pull-request \/ pull-request-or-daily \/ adaptive\./);
     assert.match(config, /commit_threshold = 5 # Pending local commits needed by commit-count and adaptive\./);
-    assert.match(config, /cooldown_hours = 24 # Pending-commit age used by daily, pull-request-or-daily, and adaptive\./);
+    assert.match(config, /cooldown_hours = 72 # Hours since the last successful update; used by daily, pull-request-or-daily, and adaptive\./);
     assert.match(config, /\[trace\.codex\]/);
     assert.match(config, /capture_content = true # Store content in local Codex trace events\./);
     assert.match(config, /\[trace\.claude\]/);

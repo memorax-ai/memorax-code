@@ -70,6 +70,8 @@ try {
   await git(["init", "--quiet"]);
   await git(["-c", "user.name=Native Fixture", "-c", "user.email=native@example.invalid", "commit", "--allow-empty",
     "--no-gpg-sign", "--quiet", "-m", "test: native global configuration fixture"]);
+  await git(["update-ref", "refs/remotes/origin/main", "HEAD"]);
+  await git(["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]);
   snapshotHead = (await git(["rev-parse", "HEAD"])).stdout.trim();
 
   stage = "installed plugin and global configuration";

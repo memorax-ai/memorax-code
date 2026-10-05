@@ -7,14 +7,36 @@ import {
   resolveRepoMemoryUpdatePolicy,
 } from "../src/repo-memory/repo-memory-update-policy.mjs";
 
-test("repo memory update policy defaults to five commits or 24 hours", () => {
+test("repo memory update policy defaults to a 72-hour interval", () => {
   assert.deepEqual(resolveRepoMemoryUpdatePolicy(), {
-    policy: "adaptive",
+    policy: "daily",
     policySource: "default",
     commitThreshold: 5,
-    cooldownHours: 24,
+    cooldownHours: 72,
   });
-  assert.equal(DEFAULT_REPO_MEMORY_UPDATE_POLICY, "adaptive");
+  assert.equal(DEFAULT_REPO_MEMORY_UPDATE_POLICY, "daily");
+});
+
+test("default policy requires new commits and 72 hours regardless of commit count", () => {
+  const common = {
+    baselineStatus: "ancestor",
+    lastUpdatedAtMs: Date.parse("2026-07-18T00:00:00Z"),
+  };
+  assert.equal(evaluateRepoMemoryUpdatePolicy({
+    ...common,
+    commitsBehind: 100,
+    nowMs: Date.parse("2026-07-20T23:59:59Z"),
+  }).trigger, false);
+  assert.equal(evaluateRepoMemoryUpdatePolicy({
+    ...common,
+    commitsBehind: 1,
+    nowMs: Date.parse("2026-07-21T00:00:00Z"),
+  }).reason, "cooldown_elapsed");
+  assert.equal(evaluateRepoMemoryUpdatePolicy({
+    ...common,
+    commitsBehind: 0,
+    nowMs: Date.parse("2026-07-22T00:00:00Z"),
+  }).trigger, false);
 });
 
 test("adaptive policy triggers on either the commit threshold or cooldown", () => {
@@ -92,10 +114,10 @@ test("invalid policy and numeric values fall back to measured defaults", () => {
     commitThreshold: 0,
     cooldownHours: -1,
   }), {
-    policy: "adaptive",
+    policy: "daily",
     policySource: "invalid_fallback",
     commitThreshold: 5,
-    cooldownHours: 24,
+    cooldownHours: 72,
   });
   assert.equal(resolveRepoMemoryUpdatePolicy({ policy: "every_commit" }).policySource, "invalid_fallback");
 });

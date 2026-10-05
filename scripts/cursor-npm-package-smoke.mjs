@@ -125,6 +125,8 @@ try {
   for (const args of [["init", "--quiet"], ["config", "user.name", "Cursor Package Test"],
     ["config", "user.email", "cursor-package@example.invalid"], ["config", "commit.gpgsign", "false"],
     ["commit", "--quiet", "--allow-empty", "-m", "fixture"]]) await run("git", args, { cwd: maintenanceRepo });
+  await run("git", ["update-ref", "refs/remotes/origin/main", "HEAD"], { cwd: maintenanceRepo });
+  await run("git", ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"], { cwd: maintenanceRepo });
   const cursorAgent = join(root, "missing cursor agent");
   // Both Skill origins use the session's absolute helper; no shell environment
   // inheritance or client installation path determines the selected runner.
@@ -135,7 +137,7 @@ try {
         env: { ...env, ...maintenance.env, MEMORAX_CODE_CURSOR_AGENT_COMMAND: cursorAgent },
       }));
     assert.equal(decision.ok, true);
-    assert.equal(decision.reason, "bundle_missing");
+    assert.equal(decision.reason, "shared_build_due");
     assert.equal(decision.job.dryRun, true);
     assert.equal(decision.job.runner, "cursor");
     assert.equal(decision.job.repo, maintenanceRepo);

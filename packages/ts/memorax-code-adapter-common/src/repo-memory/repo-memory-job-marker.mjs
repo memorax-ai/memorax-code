@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { atomicWriteJson } from "../config-utils.mjs";
+import { repoMemoryRepositoryPath } from "./repo-memory-repository.mjs";
+import { writePrivateJsonRecord } from "../runtime-record.mjs";
 
 export const DEFAULT_REPO_MEMORY_JOB_MARKER_TTL_MS = 6 * 60 * 60 * 1000;
 const REPO_MEMORY_JOB_MARKER_VERSION = 1;
@@ -21,9 +22,13 @@ export function repoMemoryJobsDir(memoraxCodeHome) {
 }
 
 export function markerPathForRepo(memoraxCodeHome, repoRealpath) {
-  const repoKey = repoKeyForPath(repoRealpath);
+  const repoKey = repoKeyForPath(repoMemoryRepositoryPath(repoRealpath));
   const inProgressDir = join(repoMemoryJobsDir(memoraxCodeHome), "in-progress");
   return { repoKey, inProgressDir, markerPath: join(inProgressDir, `${repoKey}.json`) };
+}
+
+function legacyMarkerPathForRepo(home, repo) {
+  return join(repoMemoryJobsDir(home), "in-progress", `${repoKeyForPath(repo)}.json`);
 }
 
 export function startupLockPathForRepo(memoraxCodeHome, repoRealpath) {
@@ -34,7 +39,10 @@ export function startupLockPathForRepo(memoraxCodeHome, repoRealpath) {
 
 export function readActiveRepoMemoryJobMarker(input) {
   const repoRealpath = input.repoRealpath;
-  const { repoKey, markerPath } = markerPathForRepo(input.memoraxCodeHome, repoRealpath);
+  const info = markerPathForRepo(input.memoraxCodeHome, repoRealpath);
+  const legacyPath = legacyMarkerPathForRepo(input.memoraxCodeHome, repoRealpath);
+  const markerPath = existsSync(info.markerPath) ? info.markerPath : legacyPath;
+  const repoKey = markerPath === info.markerPath ? info.repoKey : repoKeyForPath(repoRealpath);
   if (!existsSync(markerPath)) return { active: false, reason: "missing", markerPath, repoKey };
 
   let marker;
@@ -52,7 +60,7 @@ export function readActiveRepoMemoryJobMarker(input) {
     const expiresAtMs = Date.parse(marker.leaseExpiresAt || "");
     const nowMs = Number.isFinite(input.nowMs) ? input.nowMs : Date.now();
     const valid = marker.ownerKind === "lease"
-      && marker.repo === repoRealpath && marker.repoKey === repoKey
+      && markerRepositoryMatches(marker, repoKey)
       && ["build", "update"].includes(marker.mode)
       && [marker.jobId, marker.jobPath, marker.runner, marker.runId].every(isNonEmptyString)
       && Number.isFinite(startedAtMs) && Number.isFinite(expiresAtMs)
@@ -80,7 +88,7 @@ export function readActiveRepoMemoryJobMarker(input) {
       repoKey,
     };
   }
-  if (marker?.repo !== repoRealpath || marker?.repoKey !== repoKey) {
+  if (!markerRepositoryMatches(marker, repoKey)) {
     removePath(markerPath);
     return { active: false, reason: "repo_mismatch", marker, markerPath, repoKey };
   }
@@ -123,7 +131,9 @@ export function readActiveRepoMemoryJobMarker(input) {
 export function writeRepoMemoryJobMarker(input) {
   const { inProgressDir, markerPath } = markerPathForRepo(input.memoraxCodeHome, input.marker.repo);
   mkdirSync(inProgressDir, { recursive: true });
-  atomicWriteJson(markerPath, input.marker);
+  writePrivateJsonRecord(markerPath, input.marker, { durableBoundary: input.memoraxCodeHome });
+  const legacyPath = legacyMarkerPathForRepo(input.memoraxCodeHome, input.marker.repo);
+  if (legacyPath !== markerPath) writePrivateJsonRecord(legacyPath, { ...input.marker, repoKey: repoKeyForPath(input.marker.repo) }, { durableBoundary: input.memoraxCodeHome });
   return markerPath;
 }
 
@@ -142,12 +152,22 @@ export function removeRepoMemoryJobMarkerIfOwned(input) {
   }
   if (marker?.jobId !== input.jobId || marker?.runId !== input.runId) return false;
   removePath(markerPath);
+  const legacyPath = legacyMarkerPathForRepo(input.memoraxCodeHome, input.repoRealpath);
+  if (legacyPath !== markerPath) {
+    try {
+      const legacy = JSON.parse(readFileSync(legacyPath, "utf8"));
+      if (legacy.jobId === input.jobId && legacy.runId === input.runId) removePath(legacyPath);
+    } catch { /* A legacy runtime may already have removed its marker. */ }
+  }
   return !existsSync(markerPath);
 }
 
 export function tryAcquireRepoMemoryStartupLock(input) {
   const repoRealpath = input.repoRealpath;
-  const { repoKey, inProgressDir, lockDir, lockPath } = startupLockPathForRepo(input.memoraxCodeHome, repoRealpath);
+  const info = startupLockPathForRepo(input.memoraxCodeHome, repoRealpath);
+  const repoKey = input.legacy ? repoKeyForPath(repoRealpath) : info.repoKey;
+  const inProgressDir = info.inProgressDir;
+  const lockDir = join(inProgressDir, `${repoKey}.lockdir`), lockPath = join(lockDir, "lock.json");
   mkdirSync(inProgressDir, { recursive: true });
 
   try {
@@ -183,11 +203,29 @@ export function tryAcquireRepoMemoryStartupLock(input) {
     removePath(lockDir);
     throw error;
   }
+  if (!input.legacy && repoKeyForPath(repoRealpath) !== repoKey) {
+    const legacy = tryAcquireRepoMemoryStartupLock({ ...input, legacy: true });
+    if (!legacy.acquired) {
+      releaseRepoMemoryStartupLock(lock);
+      return legacy;
+    }
+    lock.legacyLock = legacy.lock;
+  }
   return { acquired: true, lock };
+}
+
+export function assertRepoMemoryStartupLockOwned(lock) {
+  let current;
+  try { current = JSON.parse(readFileSync(lock.lockPath, "utf8")); } catch { /* Missing ownership fails closed. */ }
+  if (!lock?.token || current?.token !== lock.token || current?.pid !== process.pid) {
+    throw new Error("repo memory startup lock ownership lost");
+  }
+  if (lock.legacyLock) assertRepoMemoryStartupLockOwned(lock.legacyLock);
 }
 
 export function releaseRepoMemoryStartupLock(lock) {
   if (!lock?.lockDir || !lock?.lockPath || !lock?.token) return;
+  if (lock.legacyLock) releaseRepoMemoryStartupLock(lock.legacyLock);
   try {
     const current = JSON.parse(readFileSync(lock.lockPath, "utf8"));
     if (current?.token !== lock.token) return;
@@ -224,11 +262,13 @@ function classifyStartupLock(input) {
   }
 
   const startedAtMs = Date.parse(lock.startedAt || "");
-  if (!Number.isFinite(startedAtMs) || nowMs - startedAtMs > ttlMs) {
+  if (!Number.isFinite(startedAtMs)) {
     return { stale: true, reason: "ttl_expired", token: lock.token };
   }
   if (!Number.isInteger(lock.pid) || lock.pid <= 0) return { stale: true, reason: "invalid_pid", token: lock.token };
 
+  // Snapshot preparation can outlast the initialization TTL. A live owner
+  // retains its lock until release; age alone must not permit another launch.
   try {
     process.kill(lock.pid, 0);
     return { stale: false, reason: "locked", token: lock.token };
@@ -266,6 +306,15 @@ function sleep(ms) {
 
 function isNonEmptyString(value) {
   return typeof value === "string" && value.trim().length > 0;
+}
+
+function markerRepositoryMatches(marker, repoKey) {
+  try {
+    return marker?.repoKey === repoKey
+      && (repoKeyForPath(repoMemoryRepositoryPath(marker.repo)) === repoKey || repoKeyForPath(marker.repo) === repoKey);
+  } catch {
+    return false;
+  }
 }
 
 function removePath(path) {
