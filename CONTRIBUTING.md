@@ -1153,6 +1153,9 @@ jobs before claiming macOS acceptance. This is not a Cursor CLI test or
 three-platform acceptance. Every cell consumes the same validated candidate npm
 artifact as the existing native checks; package failure cannot be hidden by a
 passing matrix cell. The aggregate check requires all selected cells to pass.
+The macOS wrapper also runs the existing Cursor installed-package smoke before
+starting the App. This reuses lifecycle and configuration-preservation coverage;
+its synthetic Hook/database fixtures do not count as native App evidence.
 
 The canary starts the official App in a fresh Docker container under Xvfb on
 Linux, or directly under `sandbox-exec` on a fresh GitHub-hosted macOS runner.

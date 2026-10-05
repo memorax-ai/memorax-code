@@ -45,13 +45,15 @@ test("macOS wrapper CLI rejects incomplete invocation with only a fixed error", 
 });
 
 test("the actual macOS orchestration fails closed before launch and preserves cleanup failures", async (t) => {
-  const source = await readFile(new URL("./cursor-app-macos-check.mjs", import.meta.url), "utf8");
+  const source = (await readFile(new URL("./cursor-app-macos-check.mjs", import.meta.url), "utf8")).replaceAll("\r\n", "\n");
   const body = source.split("export async function runMacosCheck(")[1]?.split("\nif (process.argv[1]")[0];
   assert.ok(body);
   for (const kind of ["native-failure", "native-cleanup-failure", "proof-failure", "candidate-install-failure", "probe-install-failure",
+    "package-smoke-failure", "package-smoke-timeout", "package-smoke-abort",
     "artifact-failure", "prelaunch-detach-failure", "busy-detach", "busy-detach-with-native-cleanup", "invalid-report", "missing-report"]) {
     await t.test(kind, async () => {
       const calls = [], output = new Map();
+      const abort = new AbortController();
       const error = (code) => Object.assign(new Error(code), { code });
       const report = { status: "FAIL", client: "cursor", kind: "app-native-session-flows", platform: "darwin",
         node: "24.20.0", version: "3.21.18", stage: "native-submit", errorCode: "CURSOR_APP_DRIVER",
@@ -94,6 +96,19 @@ test("the actual macOS orchestration fails closed before launch and preserves cl
             const prefix = args[args.indexOf("--prefix") + 1];
             if ((kind === "candidate-install-failure" && prefix.endsWith("/candidate"))
               || (kind === "probe-install-failure" && prefix.endsWith("/probe"))) throw error("CURSOR_APP_MACOS_INSTALL_FAILED");
+          } else if (args[0].endsWith("cursor-npm-package-smoke.mjs")) {
+            calls.push(["package-smoke"]);
+            assert.deepEqual(Array.from(args), ["/owned/scripts/cursor-npm-package-smoke.mjs",
+              "/owned/runtime/candidate/node_modules/@memorax/memorax-code"]);
+            assert.equal(options.cwd, "/owned/runtime");
+            assert.equal(options.timeout, 180_000);
+            assert.equal(options.maxBuffer, 1024 * 1024);
+            assert.equal(options.killSignal, "SIGKILL");
+            assert.equal(options.signal, abort.signal);
+            if (kind.startsWith("package-smoke-")) throw Object.assign(new Error("/private/unpublished-canary"), {
+              code: kind === "package-smoke-timeout" ? "ETIMEDOUT" : kind === "package-smoke-abort" ? "ABORT_ERR" : 1,
+              stdout: "/private/unpublished-canary", stderr: "/private/unpublished-canary",
+            });
           } else {
             calls.push(["native"]);
             assert.equal(args[0], "/owned/scripts/cursor-app-native-check.mjs");
@@ -128,14 +143,28 @@ test("the actual macOS orchestration fails closed before launch and preserves cl
           } finally { calls.push(["detach"]); }
         },
       }, { timeout: 100 });
-      const result = await run("/owned/candidate.tgz", "/owned/report", { releaseManifest: "frozen inventory", channel: "baseline" });
+      const result = await run("/owned/candidate.tgz", "/owned/report", {
+        releaseManifest: "frozen inventory", channel: "baseline", signal: abort.signal,
+      });
       assert.equal(result.status, "FAIL");
       assert.equal(JSON.stringify(result).includes("unpublished-canary"), false);
       assert.equal(output.get("/owned/report/report.json"), `${JSON.stringify(result, null, 2)}\n`);
       assert.deepEqual(calls[0], ["proof"]);
       if (kind === "proof-failure") assert.deepEqual(calls, [["proof"]]);
-      if (["proof-failure", "candidate-install-failure", "probe-install-failure", "artifact-failure", "prelaunch-detach-failure"].includes(kind)) {
+      if (["proof-failure", "candidate-install-failure", "probe-install-failure", "artifact-failure", "prelaunch-detach-failure"].includes(kind)
+        || kind.startsWith("package-smoke-")) {
         assert.equal(calls.some(([type]) => type === "native"), false);
+      }
+      const smoke = calls.findIndex(([type]) => type === "package-smoke");
+      if (["proof-failure", "candidate-install-failure", "probe-install-failure"].includes(kind)) assert.equal(smoke, -1);
+      else {
+        assert.equal(smoke, 3, "The package smoke must follow both installs");
+        if (kind.startsWith("package-smoke-")) {
+          assert.equal(calls.some(([type]) => type === "artifact"), false);
+          assert.equal(result.stage, "macos-package-smoke");
+          assert.equal(result.errorCode, "CURSOR_APP_MACOS_PACKAGE_SMOKE");
+          assert.equal(result.cleanupError, "CURSOR_APP_MACOS_CLEANUP");
+        } else assert.ok(smoke < calls.findIndex(([type]) => type === "artifact"));
       }
       if (kind.endsWith("install-failure")) {
         assert.equal(result.stage, "macos-installation");
@@ -144,7 +173,8 @@ test("the actual macOS orchestration fails closed before launch and preserves cl
         assert.equal(calls.filter(([type]) => type === "install").length, kind === "candidate-install-failure" ? 1 : 2);
       }
       const removed = calls.findIndex(([type]) => type === "remove");
-      if (["native-cleanup-failure", "prelaunch-detach-failure", "busy-detach", "busy-detach-with-native-cleanup", "invalid-report", "missing-report"].includes(kind)) {
+      if (["native-cleanup-failure", "prelaunch-detach-failure", "busy-detach", "busy-detach-with-native-cleanup", "invalid-report", "missing-report"].includes(kind)
+        || kind.startsWith("package-smoke-")) {
         assert.equal(removed, -1); assert.ok(result.cleanupError);
       } else if (kind !== "proof-failure") assert.ok(removed > 0);
       if (kind === "native-failure") {

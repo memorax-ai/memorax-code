@@ -62,6 +62,16 @@ export async function runMacosCheck(candidatePath, reportPath, { releaseManifest
         check(false, prefix === "candidate" ? "CURSOR_APP_MACOS_CANDIDATE_INSTALL" : "CURSOR_APP_MACOS_PROBE_INSTALL");
       }
     }
+    report.stage = "macos-package-smoke";
+    try {
+      await exec(process.execPath, [join(scripts, "cursor-npm-package-smoke.mjs"),
+        join(root, "candidate/node_modules/@memorax/memorax-code")],
+      { cwd: root, env, timeout: 180_000, signal, maxBuffer: 1024 * 1024, killSignal: "SIGKILL" });
+    } catch {
+      // A failed smoke cannot confirm that its owned Backend has stopped.
+      cleanupFailed = true;
+      check(false, "CURSOR_APP_MACOS_PACKAGE_SMOKE");
+    }
     report.stage = "macos-acquisition";
     await withCursorMacosApp({ release, root, signal }, async ({ appPath, evidence }) => {
       artifact = evidence;
