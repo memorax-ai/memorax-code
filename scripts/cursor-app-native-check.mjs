@@ -11,7 +11,7 @@ import { startCursorAgentMock } from "./cursor-app-mock-server.mjs";
 import { assertCursorAppNativeContent, assertCursorAppWritebacks } from "./cursor-app-native-content-check.mjs";
 import { assertCursorAppSkillReference, assertCursorAppMemoryOperation } from "./cursor-app-memory-check.mjs";
 
-const [packageRoot, appPath, expectedVersion, playwrightRoot, reportDir] = process.argv.slice(2);
+const [packageRoot, appPath, expectedVersion, playwrightRoot, reportDir, expectedNodeMajor = "24"] = process.argv.slice(2);
 const report = { status: "FAIL", client: "cursor", kind: "app-native-session-flows", platform: process.platform,
   node: process.versions.node, stage: "preflight", evidence: { nativeContent: [] } };
 const prompt = "For this synthetic Cursor acceptance, keep answers concise.\nPreserve this marker: \u8bb0\u5fc6-42.";
@@ -279,7 +279,9 @@ async function runTurn(sessionId) {
 }
 
 try {
-  check(process.argv.length === 7 && process.platform === "linux" && Number(process.versions.node.split(".")[0]) === 24,
+  const [nodeMajor, nodeMinor] = process.versions.node.split(".").map(Number);
+  check([7, 8].includes(process.argv.length) && process.platform === "linux" && ["22", "24"].includes(expectedNodeMajor)
+    && nodeMajor === Number(expectedNodeMajor) && (nodeMajor !== 22 || nodeMinor >= 13),
     "CURSOR_APP_ARGUMENTS");
   check(process.getuid() !== 0 && Object.values(networkInterfaces()).flat().every((item) => item.internal), "CURSOR_APP_ISOLATION");
   check((await readFile("/proc/net/route", "utf8")).trim().split("\n").length === 1, "CURSOR_APP_EXTERNAL_ROUTE");

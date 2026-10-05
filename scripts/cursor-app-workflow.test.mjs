@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
+import { baselineRelease, validateLinuxRelease } from "./cursor-app-release.mjs";
 
 const source = (await readFile(new URL("../.github/workflows/macos-codex-install.yml", import.meta.url), "utf8"))
   .replaceAll("\r\n", "\n");
@@ -26,10 +27,14 @@ function script(id, name) {
 }
 
 function selected(id, options = {}) {
-  const { event = "pull_request", provider = false, diagnostic = false, cancelled = false } = options;
-  const ready = Object.hasOwn(options, "ready") ? options.ready : "true";
   const condition = job(id).match(/^    if: (.+)$/m)?.[1];
   assert.ok(condition);
+  return evaluateCondition(condition, options);
+}
+
+function evaluateCondition(condition, options = {}) {
+  const { event = "pull_request", provider = false, diagnostic = false, cancelled = false } = options;
+  const ready = Object.hasOwn(options, "ready") ? options.ready : "true";
   return Boolean(runInNewContext(condition.replaceAll("needs.package.outputs.artifact-ready", 'needs.package.outputs["artifact-ready"]'), {
     github: { event_name: event }, inputs: { check_deepseek: provider, diagnose_opencode_initialization: diagnostic },
     needs: { package: { outputs: { "artifact-ready": ready } } }, always: () => true, cancelled: () => cancelled,
@@ -54,21 +59,77 @@ test("Cursor App jobs retain normal triggers and exclude the two dedicated manua
   assert.doesNotMatch(triggers, /paths(?:-ignore)?:/);
 });
 
-test("Cursor App is one Node 24 Linux canary using the validated candidate and only its public report", () => {
+test("Cursor App matrix uses the validated candidate, frozen release inventory and unique public reports", () => {
   const canary = job("cursor-app"), result = job("cursor-app-result");
   assert.match(job("package"), /^        run: node --test scripts\/cursor-app-\*\.test\.mjs$/m);
   assert.match(canary, /^    needs: package$/m);
-  assert.match(canary, /^    runs-on: ubuntu-24\.04$/m);
-  assert.match(canary, /^          node-version: '24'$/m);
-  assert.match(canary, /^    name: Cursor App canary \(Linux, Node 24, 3\.21\.18\)$/m);
+  assert.match(canary, /^    runs-on: \$\{\{ matrix\.os \}\}$/m);
+  assert.match(canary, /^          node-version: \$\{\{ matrix\.node \}\}$/m);
+  assert.match(canary, /^    name: Cursor App \$\{\{ matrix\.channel \}\} \$\{\{ matrix\.cursor \}\} \(Linux, Node \$\{\{ matrix\.node \}\}\)$/m);
+  assert.match(canary, /^      fail-fast: false$/m);
+  assert.match(canary, /^      matrix: \$\{\{ fromJSON\(needs\.package\.outputs\.cursor-matrix\) \}\}$/m);
+  assert.match(job("package"), /^      cursor-matrix: \$\{\{ steps\.cursor-versions\.outputs\.matrix \}\}$/m);
   assert.match(canary, /actions\/download-artifact@v4\n        with:\n          name: memorax-code-package\n          path: dist\/npm\/tarballs/);
+  assert.match(canary, /actions\/download-artifact@v4\n        with:\n          name: cursor-app-releases\n          path: \$\{\{ runner\.temp \}\}\/cursor-app-releases/);
   const uploads = canary.split("      - uses: actions/upload-artifact@v4\n");
   assert.equal(uploads.length, 2);
   assert.match(uploads[1], /^        if: always\(\)$/m);
   assert.match(uploads[1], /^          path: \$\{\{ runner\.temp \}\}\/cursor-app-report\/report\.json$/m);
   assert.match(uploads[1], /^          if-no-files-found: error$/m);
+  assert.match(uploads[1], /^          name: cursor-app-linux-\$\{\{ matrix\.channel \}\}-node-\$\{\{ matrix\.node \}\}-report$/m);
   assert.match(result, /^    needs: \[package, cursor-app\]$/m);
-  assert.doesNotMatch(canary + result, /continue-on-error:|strategy:|matrix:/);
+  assert.doesNotMatch(canary + result, /continue-on-error:/);
+  assert.doesNotMatch(canary, /resolve-linux|api\/download|latest\.json/);
+});
+
+test("Cursor release acquisition runs once outside the matrix and excludes dedicated diagnostics", () => {
+  const step = job("package").split("      - name: Resolve and freeze Cursor App releases once for this run\n")[1];
+  const condition = step.match(/^        if: (.+)$/m)?.[1];
+  assert.ok(condition);
+  for (const event of ["pull_request", "push", "workflow_dispatch"]) {
+    for (const provider of [false, true]) for (const diagnostic of [false, true]) {
+      assert.equal(evaluateCondition(condition, { event, provider, diagnostic }),
+        event !== "workflow_dispatch" || (!provider && !diagnostic));
+    }
+  }
+  assert.equal((source.match(/node scripts\/cursor-app-release\.mjs resolve-linux/g) ?? []).length, 1);
+  assert.match(step, /name: cursor-app-releases\n          path: \$\{\{ runner\.temp \}\}\/cursor-app-releases\.json\n          if-no-files-found: error/);
+});
+
+test("Cursor matrix keeps baseline Node 22 and merges Node 24 channels only for the exact same artifact", () => {
+  const run = script("package", "Resolve and freeze Cursor App releases once for this run");
+  const code = run.match(/node --input-type=module <<'NODE'\n([\s\S]*?)\nNODE/)?.[1].replace(/^import .+;\n/gm, "");
+  assert.ok(code);
+  const baseline = baselineRelease("linux-x64");
+  function execute(latest, schemaVersion = 1) {
+    const output = new Map(), manifest = { schemaVersion, baseline: { "linux-x64": baseline }, latest: { "linux-x64": latest } };
+    runInNewContext(code, { process: { env: { RUNNER_TEMP: "/synthetic temp", GITHUB_OUTPUT: "output", GITHUB_STEP_SUMMARY: "summary" } },
+      readFileSync(path) { assert.equal(path, "/synthetic temp/cursor-app-releases.json"); return JSON.stringify(manifest); },
+      appendFileSync(path, content) { assert.ok(!output.has(path)); output.set(path, content); }, validateLinuxRelease,
+    }, { timeout: 100 });
+    assert.match(output.get("summary"), /macOS and Windows remain outside this matrix\. No version fallback\./);
+    return JSON.parse(output.get("output").slice("matrix=".length)).include;
+  }
+  const same = { ...baseline, channel: "latest", hashSource: "official-apt-sha256", size: 123456 };
+  assert.deepEqual(execute(same), [
+    { os: "ubuntu-24.04", node: "24", cursor: baseline.version, release: "baseline", channel: "baseline+latest" },
+    { os: "ubuntu-24.04", node: "22", cursor: baseline.version, release: "baseline", channel: "baseline" },
+  ]);
+  const newer = { ...same, version: "3.23.12", commitSha: "2d29876d567da1607532b23bbf2cd5ddbca496fe",
+    url: "https://downloads.cursor.com/production/2d29876d567da1607532b23bbf2cd5ddbca496fe/linux/x64/deb/amd64/deb/cursor_3.23.12_amd64.deb",
+    sha256: "4b38d23926c72f2080e2ba108593e38f3688312464d70adc9088db63a53c0346", debVersion: "3.23.12-1790831722" };
+  const matrix = execute(newer);
+  assert.deepEqual(matrix.map(({ node, release, channel }) => ({ node, release, channel })), [
+    { node: "24", release: "baseline", channel: "baseline" },
+    { node: "22", release: "baseline", channel: "baseline" },
+    { node: "24", release: "latest", channel: "latest" },
+  ]);
+  assert.equal(new Set(matrix.map((cell) => `${cell.channel}-${cell.node}`)).size, matrix.length);
+  assert.equal(execute({ ...same, commitSha: "a".repeat(40), url: same.url.replace(same.commitSha, "a".repeat(40)),
+    sha256: "f".repeat(64) }).length, 3);
+  assert.throws(() => execute({ ...newer, sha256: null }));
+  assert.throws(() => execute({ ...newer, platform: "linux-arm64" }));
+  assert.throws(() => execute(newer, 2));
 });
 
 test("Cursor App invocation accepts only one regular candidate and preserves quoted paths", { skip: process.platform === "win32" }, async (t) => {
@@ -86,12 +147,13 @@ test("Cursor App invocation accepts only one regular candidate and preserves quo
     if (kind === "symlink") { await writeFile(join(cwd, "target"), "synthetic tarball"); await symlink(join(cwd, "target"), candidate); }
     const actual = spawnSync("/bin/bash", ["-e", "-o", "pipefail", "-c", `node() { printf '%s\\n' "$@" > "$CALLS"; }\n${run}`], {
       cwd, encoding: "utf8", timeout: 5_000,
-      env: { PATH: "/usr/bin:/bin", HOME: cwd, RUNNER_TEMP: runnerTemp, CALLS: calls },
+      env: { PATH: "/usr/bin:/bin", HOME: cwd, RUNNER_TEMP: runnerTemp, CALLS: calls, CURSOR_RELEASE: "latest", CURSOR_NODE: "24" },
     });
     assert.ifError(actual.error);
     assert.equal(actual.status, kind === "single" ? 0 : 1, kind);
     if (kind === "single") assert.deepEqual((await readFile(calls, "utf8")).trimEnd().split("\n"), [
       "scripts/cursor-app-container-check.mjs", `dist/npm/tarballs/${name}`, join(runnerTemp, "cursor-app-report"),
+      join(runnerTemp, "cursor-app-releases/cursor-app-releases.json"), "latest", "24",
     ]);
     else await assert.rejects(readFile(calls), { code: "ENOENT" });
   }
@@ -113,10 +175,10 @@ test("Cursor App summary fails every non-success dependency and states the limit
       assert.equal(actual.status, packageResult === "success" && cursorResult === "success" ? 0 : 1,
         `package=${packageResult}, cursor=${cursorResult}`);
       const text = await readFile(summary, "utf8");
-      assert.ok(text.includes(`Package: **${packageResult}**`) && text.includes(`Cursor App Linux canary: **${cursorResult}**`));
-      assert.match(text, /Six real App runs exercise repeated-prompt follow-up, independent sessions, App restart\/resume and explicit Skill Search\/Add through native Read\/Shell tools/);
+      assert.ok(text.includes(`Package: **${packageResult}**`) && text.includes(`Cursor App Linux matrix: **${cursorResult}**`));
+      assert.match(text, /Six real App runs per cell exercise repeated-prompt follow-up, independent sessions, App restart\/resume and explicit Skill Search\/Add through native Read\/Shell tools/);
       assert.match(text, /Scripted tool requests do not validate model-driven Skill selection/);
-      assert.match(text, /This Linux canary does not validate real login, hosted models, full functional coverage or three-platform acceptance/);
+      assert.match(text, /This Linux matrix does not validate real login, hosted models, full functional coverage or three-platform acceptance/);
     }
   }
 });

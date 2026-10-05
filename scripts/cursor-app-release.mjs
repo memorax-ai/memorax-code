@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
+import { verifyLinuxAptReleases } from "./cursor-app-apt.mjs";
 
 const platforms = ["linux-x64", "linux-arm64", "darwin-arm64", "win32-x64-user"];
 const provenance = JSON.parse(readFileSync(new URL("./fixtures/cursor-app/provenance.json", import.meta.url), "utf8")).cursor;
@@ -12,6 +13,11 @@ const baselineCommit = "c4730f7d93d787d9ab120af715999f0345ee5bc5";
 function fail(code) { throw Object.assign(new Error(code), { code }); }
 function check(value, code = "CURSOR_RELEASE_METADATA_INVALID") { if (!value) fail(code); }
 function checkPlatform(platform) { check(platforms.includes(platform), "CURSOR_RELEASE_PLATFORM_INVALID"); }
+function validDebVersion(debVersion, version) {
+  if (typeof debVersion !== "string" || !debVersion.startsWith(version + "-")) return false;
+  const revision = debVersion.slice(version.length + 1);
+  return revision === revision.trim() && /^[1-9]\d*$/.test(revision) && Number.isSafeInteger(Number(revision));
+}
 function artifactUrl(platform, version, commitSha) {
   const prefix = `https://downloads.cursor.com/production/${commitSha}`;
   if (platform === "darwin-arm64") return `${prefix}/darwin/arm64/Cursor-darwin-arm64.dmg`;
@@ -27,9 +33,10 @@ export function baselineRelease(platform) {
   const url = artifactUrl(platform, provenance.version, baselineCommit);
   const pin = platform.startsWith("linux-") ? provenance[platform === "linux-x64" ? "amd64" : "arm64"] : undefined;
   if (platform.startsWith("linux-")) check(pin?.url === url && typeof pin.sha256 === "string" && pin.sha256.length === 64
-    && hashPattern.test(pin.sha256) && provenance.hashSource === "observed-sha256", "CURSOR_RELEASE_BASELINE_INVALID");
+    && hashPattern.test(pin.sha256) && provenance.hashSource === "observed-sha256"
+    && validDebVersion(pin.debVersion, provenance.version), "CURSOR_RELEASE_BASELINE_INVALID");
   return Object.freeze({ platform, version: provenance.version, commitSha: baselineCommit, url, channel: "baseline",
-    sha256: pin?.sha256 ?? null, hashSource: pin ? "observed-sha256" : "not-provided" });
+    sha256: pin?.sha256 ?? null, hashSource: pin ? "observed-sha256" : "not-provided", ...(pin ? { debVersion: pin.debVersion } : {}) });
 }
 
 export function resolveDownload(platform, metadata) {
@@ -47,7 +54,28 @@ export function resolveDownload(platform, metadata) {
   // The public download API does not authenticate any artifact checksum.
   return Object.freeze({ platform, version, commitSha, url, channel: "latest",
     sha256: knownArtifact ? baseline.sha256 : null,
-    hashSource: knownArtifact ? baseline.hashSource : "not-provided" });
+    hashSource: knownArtifact ? baseline.hashSource : "not-provided",
+    ...(knownArtifact && baseline.debVersion ? { debVersion: baseline.debVersion } : {}) });
+}
+
+export function validateLinuxRelease(input, platform) {
+  check(["linux-x64", "linux-arm64"].includes(platform) && input?.platform === platform, "CURSOR_RELEASE_PLATFORM_INVALID");
+  const source = resolveDownload(platform, { version: input.version, commitSha: input.commitSha, debUrl: input.url });
+  check(typeof input.sha256 === "string" && input.sha256.length === 64 && hashPattern.test(input.sha256)
+    && validDebVersion(input.debVersion, input.version), "CURSOR_RELEASE_LINUX_INVALID");
+  check(["baseline", "latest"].includes(input.channel), "CURSOR_RELEASE_LINUX_INVALID");
+  const baseline = baselineRelease(platform);
+  if (source.url === baseline.url) check(input.sha256 === baseline.sha256 && input.debVersion === baseline.debVersion,
+    "CURSOR_RELEASE_PIN_CONFLICT");
+  const release = { ...source, channel: input.channel, sha256: input.sha256, hashSource: input.hashSource, debVersion: input.debVersion };
+  if (input.channel === "latest") {
+    check(input.hashSource === "official-apt-sha256" && Number.isSafeInteger(input.size) && input.size > 0
+      && input.size <= 300_000_000, "CURSOR_RELEASE_LINUX_INVALID");
+    release.size = input.size;
+  } else {
+    check(Object.keys(baseline).every((key) => key === "channel" || release[key] === baseline[key]), "CURSOR_RELEASE_PIN_CONFLICT");
+  }
+  return Object.freeze(release);
 }
 
 async function fetchDownloadMetadata(url) {
@@ -64,8 +92,9 @@ async function fetchDownloadMetadata(url) {
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }
 
-export async function resolveLatest({ fetchJson = fetchDownloadMetadata, manifestPath } = {}) {
+export async function resolveLatest({ fetchJson = fetchDownloadMetadata, manifestPath, verifyLinux = false, aptOptions } = {}) {
   check(manifestPath === undefined || (typeof manifestPath === "string" && manifestPath.length > 0), "CURSOR_RELEASE_FREEZE_FAILED");
+  check(typeof verifyLinux === "boolean", "CURSOR_RELEASE_ARGUMENTS_INVALID");
   const baseline = {}, latest = {};
   for (const platform of platforms) {
     const errorPrefix = `CURSOR_RELEASE_${platform.replaceAll("-", "_").toUpperCase()}`;
@@ -81,6 +110,10 @@ export async function resolveLatest({ fetchJson = fetchDownloadMetadata, manifes
   const releases = Object.values(latest);
   check(releases.every((release) => release.version === releases[0].version && release.commitSha === releases[0].commitSha),
     "CURSOR_RELEASE_LATEST_INCOHERENT");
+  if (verifyLinux) {
+    const verified = await verifyLinuxAptReleases(latest, aptOptions);
+    for (const platform of ["linux-x64", "linux-arm64"]) latest[platform] = validateLinuxRelease(verified[platform], platform);
+  }
   const manifest = Object.freeze({ schemaVersion: 1, baseline: Object.freeze(baseline), latest: Object.freeze(latest) });
   if (manifestPath !== undefined) {
     try { await writeFile(manifestPath, JSON.stringify(manifest, null, 2) + "\n", { flag: "wx", mode: 0o600 }); }
@@ -96,8 +129,9 @@ async function main(args) {
     console.log(JSON.stringify(baselineRelease(value)));
     return;
   }
-  check(command === "resolve" && (args.length === 1 || args.length === 2), "CURSOR_RELEASE_ARGUMENTS_INVALID");
-  console.log(JSON.stringify(await resolveLatest({ manifestPath: value })));
+  check((command === "resolve" && (args.length === 1 || args.length === 2))
+    || (command === "resolve-linux" && args.length === 2), "CURSOR_RELEASE_ARGUMENTS_INVALID");
+  console.log(JSON.stringify(await resolveLatest({ manifestPath: value, verifyLinux: command === "resolve-linux" })));
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

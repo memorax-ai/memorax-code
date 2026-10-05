@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { baselineRelease, validateLinuxRelease } from "./cursor-app-release.mjs";
 
 const exec = promisify(execFile);
 const scripts = dirname(fileURLToPath(import.meta.url));
@@ -13,6 +14,7 @@ const assets = join(scripts, "fixtures/cursor-app");
 const provenance = JSON.parse(readFileSync(join(assets, "provenance.json"), "utf8"));
 const uuid = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
 const imagePattern = /^sha256:[a-f0-9]{64}$/;
+const versionPattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const label = "memorax.cursor-app-ci";
 const codePattern = /^CURSOR_(?:APP|MOCK|AGENT|CONTAINER)_[A-Z0-9_]{1,100}$/;
 const stages = new Set(["preflight", "candidate-install", "app-start", "native-submit", "agent-transport",
@@ -30,35 +32,56 @@ function resourceNames(runId) {
   return { name, volume: `${name}-artifacts`, image: `memorax-cursor-app-ci:${runId}` };
 }
 
-export function cursorAppRelease(architecture) {
+export function cursorAppRelease(architecture, { releaseManifest, channel = "baseline" } = {}) {
   const arch = ["x64", "x86_64", "amd64"].includes(architecture) ? "amd64"
     : ["arm64", "aarch64"].includes(architecture) ? "arm64" : undefined;
   check(arch, "CURSOR_CONTAINER_ARCH");
-  return { arch, version: provenance.cursor.version, hashSource: provenance.cursor.hashSource, ...provenance.cursor[arch] };
+  check(["baseline", "latest"].includes(channel), "CURSOR_CONTAINER_RELEASE");
+  const platform = arch === "amd64" ? "linux-x64" : "linux-arm64";
+  check(releaseManifest === undefined ? channel === "baseline"
+    : releaseManifest?.schemaVersion === 1 && typeof releaseManifest[channel] === "object"
+      && releaseManifest[channel] !== null && !Array.isArray(releaseManifest[channel]), "CURSOR_CONTAINER_RELEASE");
+  const descriptor = releaseManifest === undefined ? baselineRelease(platform) : releaseManifest[channel][platform];
+  check(descriptor?.channel === channel, "CURSOR_CONTAINER_RELEASE");
+  try { return { ...validateLinuxRelease(descriptor, platform), arch }; }
+  catch { fail("CURSOR_CONTAINER_RELEASE"); }
 }
 
-export function makeContainerArgs({ runId, imageId, seccompPath }) {
+export function cursorAppNodeImage(nodeMajor) {
+  check(["22", "24"].includes(nodeMajor), "CURSOR_CONTAINER_NODE");
+  const image = provenance.baseImages?.[nodeMajor];
+  check(typeof image === "string" && new RegExp(`^node:${nodeMajor}-bookworm@sha256:[a-f0-9]{64}$`).test(image), "CURSOR_CONTAINER_NODE");
+  return image;
+}
+
+export function makeContainerArgs({ runId, imageId, seccompPath, expectedVersion = provenance.cursor.version, nodeMajor = "24" }) {
   const { name, volume } = resourceNames(runId);
   check(imagePattern.test(imageId), "CURSOR_CONTAINER_IDENTITY");
   check(isAbsolute(seccompPath) && !/[\0\r\n]/.test(seccompPath), "CURSOR_CONTAINER_SECCOMP");
+  check(typeof expectedVersion === "string" && versionPattern.test(expectedVersion), "CURSOR_CONTAINER_RELEASE");
+  cursorAppNodeImage(nodeMajor);
   return ["create", "--name", name, "--label", `${label}=${runId}`, "--init", "--user", "1000:1000",
     "--network", "none", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges=true",
     "--security-opt", `seccomp=${seccompPath}`, "--ipc", "private",
     "--tmpfs", "/tmp:rw,nosuid,nodev,size=1g", "--shm-size", "512m", "--memory", "3g", "--pids-limit", "1024",
     "--mount", `type=volume,source=${volume},destination=/artifacts`, imageId,
     "xvfb-run", "--auto-servernum", "--server-args=-screen 0 1280x800x24", "node", "/opt/check/cursor-app-native-check.mjs",
-    "/opt/candidate/node_modules/@memorax/memorax-code", "/opt/cursor-app/usr/share/cursor/cursor", "3.21.18",
-    "/opt/probe/node_modules/playwright-core", "/artifacts"];
+    "/opt/candidate/node_modules/@memorax/memorax-code", "/opt/cursor-app/usr/share/cursor/cursor", expectedVersion,
+    "/opt/probe/node_modules/playwright-core", "/artifacts", nodeMajor];
 }
 
-export function projectNativeReport(input) {
+export function projectNativeReport(input, { expectedVersion = provenance.cursor.version, nodeMajor = "24" } = {}) {
+  check(typeof expectedVersion === "string" && versionPattern.test(expectedVersion), "CURSOR_CONTAINER_RELEASE");
+  cursorAppNodeImage(nodeMajor);
+  const nodeVersion = typeof input?.node === "string" && input.node.match(versionPattern);
   check(input && ["PASS", "FAIL"].includes(input.status) && input.client === "cursor"
     && input.kind === "app-native-session-flows" && input.platform === "linux"
-    && /^24\.\d+\.\d+$/.test(input.node) && stages.has(input.stage), "CURSOR_CONTAINER_REPORT");
+    && nodeVersion && nodeVersion[1] === nodeMajor && (nodeMajor !== "22" || Number(nodeVersion[2]) >= 13)
+    && stages.has(input.stage), "CURSOR_CONTAINER_REPORT");
   const report = { status: input.status, client: "cursor", kind: input.kind, platform: "linux", node: input.node,
     stage: input.stage, evidence: {} };
   if (input.version !== undefined) {
-    check(input.version === "3.21.18", "CURSOR_CONTAINER_REPORT");
+    check(input.version === expectedVersion, "CURSOR_CONTAINER_REPORT");
     report.version = input.version;
   }
   for (const key of ["errorCode", "cleanupError", "nativeContentError"]) if (input[key] !== undefined) {
@@ -91,7 +114,7 @@ export function projectNativeReport(input) {
       ancillaryRequestCount: count(agent.ancillaryRequestCount), unsupportedRpcCount: count(agent.unsupportedRpcCount), errors: agent.errors ?? [] };
   }
   if (input.memoryRequestCount !== undefined) report.memoryRequestCount = count(input.memoryRequestCount);
-  if (report.status === "PASS") check(report.stage === "complete" && report.version === "3.21.18" && !report.errorCode && !report.cleanupError && !report.nativeContentError
+  if (report.status === "PASS") check(report.stage === "complete" && report.version === expectedVersion && !report.errorCode && !report.cleanupError && !report.nativeContentError
     && completedEvidence.every((key) => report.evidence[key] === true)
     && content?.length === 6 && [3, 6, 3, 9, 15, 21].every((blobs, index) => content[index]?.composerMatched === true
       && content[index]?.stateMatched === true && content[index]?.blobCount === blobs)
@@ -177,7 +200,26 @@ async function regularFile(path) {
   return info;
 }
 
-export async function runContainerCheck(candidatePath, reportPath, { signal } = {}) {
+export async function verifyCursorAppArtifact(path, release) {
+  const info = await regularFile(path);
+  check(typeof release?.sha256 === "string" && /^[a-f0-9]{64}$/.test(release.sha256)
+    && (release.size === undefined || Number.isSafeInteger(release.size) && release.size > 0 && info.size === release.size),
+  "CURSOR_CONTAINER_ARTIFACT_INTEGRITY");
+  check(await hashFile(path) === release.sha256, "CURSOR_CONTAINER_ARTIFACT_INTEGRITY");
+}
+
+export async function readReleaseManifest(path) {
+  try {
+    check(typeof path === "string" && path.length > 0 && !/[\0\r\n]/.test(path), "CURSOR_CONTAINER_RELEASE_MANIFEST");
+    check((await regularFile(path)).size <= 64 * 1024, "CURSOR_CONTAINER_RELEASE_MANIFEST");
+    const manifest = JSON.parse(await readFile(path, "utf8"));
+    check(manifest && typeof manifest === "object" && !Array.isArray(manifest) && manifest.schemaVersion === 1,
+      "CURSOR_CONTAINER_RELEASE_MANIFEST");
+    return manifest;
+  } catch { fail("CURSOR_CONTAINER_RELEASE_MANIFEST"); }
+}
+
+export async function runContainerCheck(candidatePath, reportPath, { releaseManifest, channel = "baseline", nodeMajor = "24", signal } = {}) {
   const runId = randomUUID(), names = resourceNames(runId);
   let report = { status: "FAIL", client: "cursor", kind: "app-native-session-flows", stage: "container-preflight", evidence: {} };
   let root, output, dockerStarted = false, cleaned = false, metadata, runDocker = docker;
@@ -192,21 +234,24 @@ export async function runContainerCheck(candidatePath, reportPath, { signal } = 
     const directory = await lstat(destination);
     check(directory.isDirectory() && !directory.isSymbolicLink() && (await readdir(destination)).length === 0, "CURSOR_CONTAINER_OUTPUT");
     output = await realpath(destination);
+    const nodeImage = cursorAppNodeImage(nodeMajor);
+    check(["baseline", "latest"].includes(channel), "CURSOR_CONTAINER_RELEASE");
     root = await mkdtemp(join(tmpdir(), "memorax-cursor-app-ci-"));
     const endpoint = await resolveLocalDockerEndpoint();
     const dockerEnvironment = { ...process.env, DOCKER_CONTEXT: "", DOCKER_HOST: endpoint };
     runDocker = (args, options) => command("docker", ["--host", endpoint, ...args], { ...options, env: dockerEnvironment });
     const info = JSON.parse(await checked(["info", "--format", "{{json .}}"], { signal }));
     check(info.OSType === "linux", "CURSOR_CONTAINER_DAEMON");
-    const release = cursorAppRelease(info.Architecture);
-    metadata = { architecture: release.arch, version: release.version, sha256: release.sha256, hashSource: release.hashSource, cleanup: false };
+    const release = cursorAppRelease(info.Architecture, { releaseManifest, channel });
+    metadata = { architecture: release.arch, platform: release.platform, channel, nodeMajor, version: release.version,
+      commitSha: release.commitSha, sha256: release.sha256, hashSource: release.hashSource, cleanup: false };
     report.stage = "container-acquisition";
     const deb = join(root, "cursor.deb");
     const downloaded = await command("curl", ["--fail", "--location", "--proto", "=https", "--proto-redir", "=https",
       "--connect-timeout", "20", "--max-time", "600", "--retry", "2", "--max-filesize", "300000000", "--silent", "--show-error",
       "--output", deb, release.url], { timeout: 610_000, signal });
     check(downloaded.code === 0, "CURSOR_CONTAINER_DOWNLOAD_FAILED");
-    check(await hashFile(deb) === release.sha256, "CURSOR_CONTAINER_ARTIFACT_INTEGRITY");
+    await verifyCursorAppArtifact(deb, release);
     await copyFile(candidate, join(root, "candidate.tgz"));
     await copyFile(join(assets, "Dockerfile"), join(root, "Dockerfile"));
     await copyFile(join(assets, "seccomp-profile.json"), join(root, "seccomp-profile.json"));
@@ -220,12 +265,15 @@ export async function runContainerCheck(candidatePath, reportPath, { signal } = 
     report.stage = "container-build";
     dockerStarted = true;
     await checked(["build", "--label", `${label}=${runId}`, "--tag", names.image,
-      "--build-arg", `CURSOR_DEB_VERSION=${release.debVersion}`, "--file", join(root, "Dockerfile"), root], { timeout: 20 * 60_000, signal });
+      "--build-arg", `NODE_IMAGE=${nodeImage}`, "--build-arg", `NODE_MAJOR=${nodeMajor}`,
+      "--build-arg", `CURSOR_APP_VERSION=${release.version}`, "--build-arg", `CURSOR_DEB_VERSION=${release.debVersion}`,
+      "--file", join(root, "Dockerfile"), root], { timeout: 20 * 60_000, signal });
     report.stage = "container-create";
     const imageId = await checked(["image", "inspect", "--format", "{{.Id}}", names.image], { signal });
     check(imagePattern.test(imageId), "CURSOR_CONTAINER_IDENTITY");
     await checked(["volume", "create", "--label", `${label}=${runId}`, names.volume], { signal });
-    const containerId = await checked(makeContainerArgs({ runId, imageId, seccompPath: join(root, "seccomp-profile.json") }), { signal });
+    const expected = { expectedVersion: release.version, nodeMajor };
+    const containerId = await checked(makeContainerArgs({ runId, imageId, seccompPath: join(root, "seccomp-profile.json"), ...expected }), { signal });
     check(/^[a-f0-9]{64}$/.test(containerId), "CURSOR_CONTAINER_IDENTITY");
     report.stage = "container-native";
     const started = await runDocker(["start", "--attach", containerId], { timeout: 10 * 60_000, signal });
@@ -234,7 +282,7 @@ export async function runContainerCheck(candidatePath, reportPath, { signal } = 
     await checked(["cp", `${containerId}:/artifacts/report.json`, join(root, "native-report.json")], { signal });
     const reportFile = await regularFile(join(root, "native-report.json"));
     check(reportFile.size <= 64 * 1024, "CURSOR_CONTAINER_REPORT");
-    report = projectNativeReport(JSON.parse(await readFile(join(root, "native-report.json"), "utf8")));
+    report = projectNativeReport(JSON.parse(await readFile(join(root, "native-report.json"), "utf8")), expected);
     check(started.code === 0 && state.ExitCode === 0, "CURSOR_CONTAINER_NATIVE_EXIT");
   } catch (error) {
     report.status = "FAIL";
@@ -263,8 +311,11 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   process.once("SIGINT", () => abort.abort());
   process.once("SIGTERM", () => abort.abort());
   try {
-    check(process.argv.length === 4, "CURSOR_CONTAINER_ARGUMENTS");
-    const report = await runContainerCheck(process.argv[2], process.argv[3], { signal: abort.signal });
+    check([4, 7].includes(process.argv.length), "CURSOR_CONTAINER_ARGUMENTS");
+    const selection = process.argv.length === 7 ? {
+      releaseManifest: await readReleaseManifest(process.argv[4]), channel: process.argv[5], nodeMajor: process.argv[6],
+    } : {};
+    const report = await runContainerCheck(process.argv[2], process.argv[3], { ...selection, signal: abort.signal });
     console.log(JSON.stringify(report, null, 2));
     if (report.status !== "PASS") process.exitCode = 1;
   } catch (error) {

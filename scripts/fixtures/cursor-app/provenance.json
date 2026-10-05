@@ -21,6 +21,9 @@
     "sha256": "4debb487d48531ac6604095194719d8a2f6d939fbb6200bed9df90e7b255dac8",
     "difference": "Add chroot to the existing clone, setns and unshare allowance for Chromium's unprivileged user-namespace sandbox. Runtime capabilities remain empty."
   },
-  "baseImage": "node:24-bookworm@sha256:64af3819f9275802414d7cdc38c27e9d82bd564dec4d4da87d008255d36c63b4",
+  "baseImages": {
+    "22": "node:22-bookworm@sha256:363e1587494626837fa7f9a23bdb453d13b0ff3c67c705c2805cfc69c2d2fad7",
+    "24": "node:24-bookworm@sha256:64af3819f9275802414d7cdc38c27e9d82bd564dec4d4da87d008255d36c63b4"
+  },
   "playwrightVersion": "1.58.2"
 }

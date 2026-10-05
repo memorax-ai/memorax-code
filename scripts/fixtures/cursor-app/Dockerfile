@@ -1,4 +1,6 @@
-FROM node:24-bookworm@sha256:64af3819f9275802414d7cdc38c27e9d82bd564dec4d4da87d008255d36c63b4
+ARG NODE_IMAGE
+FROM ${NODE_IMAGE}
+ARG NODE_MAJOR
 
 RUN sed -i 's|http://deb.debian.org/|https://deb.debian.org/|g' /etc/apt/sources.list.d/debian.sources \
     && apt-get -o Acquire::Retries=3 update \
@@ -10,12 +12,13 @@ RUN sed -i 's|http://deb.debian.org/|https://deb.debian.org/|g' /etc/apt/sources
 
 COPY cursor.deb /tmp/cursor.deb
 ARG CURSOR_DEB_VERSION
+ARG CURSOR_APP_VERSION
 RUN test "$(dpkg-deb --field /tmp/cursor.deb Package)" = cursor \
     && test "$(dpkg-deb --field /tmp/cursor.deb Version)" = "$CURSOR_DEB_VERSION" \
     && test "$(dpkg-deb --field /tmp/cursor.deb Architecture)" = "$(dpkg --print-architecture)" \
     && dpkg-deb --extract /tmp/cursor.deb /opt/cursor-app \
     && rm /tmp/cursor.deb \
-    && node -e 'const p=require("/opt/cursor-app/usr/share/cursor/resources/app/package.json"); if(p.version!=="3.21.18"||process.versions.node.split(".")[0]!=="24") process.exit(1)'
+    && node -e 'const p=require("/opt/cursor-app/usr/share/cursor/resources/app/package.json"), [major,minor]=process.versions.node.split(".").map(Number); if(p.version!==process.env.CURSOR_APP_VERSION||!["22","24"].includes(process.env.NODE_MAJOR)||String(major)!==process.env.NODE_MAJOR||(major===22&&minor<13)) process.exit(1)'
 
 RUN npm install --prefix /opt/probe --ignore-scripts --no-audit --no-fund --package-lock=false \
        --registry=https://registry.npmjs.org/ playwright-core@1.58.2

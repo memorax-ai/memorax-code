@@ -34,6 +34,7 @@ jobs:
       opencode-matrix: ${{ steps.opencode-versions.outputs.matrix }}
       claude-matrix: ${{ steps.claude-versions.outputs.matrix }}
       codebuddy-matrix: ${{ steps.codebuddy-versions.outputs.matrix }}
+      cursor-matrix: ${{ steps.cursor-versions.outputs.matrix }}
       artifact-ready: ${{ steps.package-check.outputs.artifact-ready }}
     steps:
       - uses: actions/checkout@v7
@@ -137,6 +138,37 @@ jobs:
             `CodeBuddy Code baseline: **${baseline}**; npm latest resolved for this run: **${latest}**.\n\n` +
             `${include.length} required lifecycle, interruption, native memory, Skill, permission and Repo Memory configuration jobs; no version fallback. WorkBuddy is outside this scope; client-specific coverage remains bounded.\n`);
           NODE
+      - name: Resolve and freeze Cursor App releases once for this run
+        if: github.event_name != 'workflow_dispatch' || !(inputs.check_deepseek || inputs.diagnose_opencode_initialization)
+        id: cursor-versions
+        shell: bash
+        run: |
+          node scripts/cursor-app-release.mjs resolve-linux "$RUNNER_TEMP/cursor-app-releases.json"
+          node --input-type=module <<'NODE'
+          import { appendFileSync, readFileSync } from 'node:fs';
+          import { validateLinuxRelease } from './scripts/cursor-app-release.mjs';
+          const manifest = JSON.parse(readFileSync(`${process.env.RUNNER_TEMP}/cursor-app-releases.json`, 'utf8'));
+          if (manifest.schemaVersion !== 1) throw new Error('Invalid frozen Cursor release inventory');
+          const baseline = validateLinuxRelease(manifest.baseline['linux-x64'], 'linux-x64');
+          const latest = validateLinuxRelease(manifest.latest['linux-x64'], 'linux-x64');
+          const same = ['version', 'commitSha', 'url', 'sha256', 'debVersion'].every((key) => baseline[key] === latest[key]);
+          const include = [
+            { os: 'ubuntu-24.04', node: '24', cursor: baseline.version, release: 'baseline', channel: same ? 'baseline+latest' : 'baseline' },
+            { os: 'ubuntu-24.04', node: '22', cursor: baseline.version, release: 'baseline', channel: 'baseline' },
+          ];
+          if (!same) include.push({ os: 'ubuntu-24.04', node: '24', cursor: latest.version, release: 'latest', channel: 'latest' });
+          appendFileSync(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify({ include })}\n`);
+          appendFileSync(process.env.GITHUB_STEP_SUMMARY,
+            `Cursor App baseline: **${baseline.version}**; desktop latest frozen for this run: **${latest.version}**.\n\n` +
+            `${include.length} required Linux App jobs, including baseline on Node 22. macOS and Windows remain outside this matrix. No version fallback.\n`);
+          NODE
+      - uses: actions/upload-artifact@v4
+        if: github.event_name != 'workflow_dispatch' || !(inputs.check_deepseek || inputs.diagnose_opencode_initialization)
+        with:
+          name: cursor-app-releases
+          path: ${{ runner.temp }}/cursor-app-releases.json
+          if-no-files-found: error
+          retention-days: 7
       - name: Verify test assertions reject malformed content and unexpected failures
         run: node --test scripts/native-process-cleanup.test.mjs scripts/codex-native-content-check.test.mjs scripts/codex-lifecycle-assertions.test.mjs scripts/codex-writeback-diagnostics.test.mjs scripts/opencode-native-support.test.mjs scripts/opencode-initialization-diagnostic.test.mjs scripts/opencode-initialization-layouts.test.mjs scripts/claude-native-content-check.test.mjs scripts/claude-native-support.test.mjs scripts/claude-permissions-support.test.mjs scripts/claude-lifecycle-assertions.test.mjs scripts/claude-lifecycle-process.test.mjs scripts/claude-background-assertions.test.mjs scripts/claude-install-interruption-driver.test.mjs scripts/codebuddy-native-content-check.test.mjs scripts/codebuddy-native-support.test.mjs scripts/codebuddy-install-cleanup.test.mjs scripts/codebuddy-lifecycle-assertions.test.mjs scripts/codebuddy-install-interruption-driver.test.mjs scripts/codebuddy-permissions-support.test.mjs scripts/codebuddy-background-assertions.test.mjs
       - name: Verify shared CodeBuddy and WorkBuddy native and install contracts
@@ -335,10 +367,13 @@ jobs:
         run: ./scripts/codebuddy-install-check.ps1 -TarballDirectory dist/npm/tarballs -CodeBuddyVersion $env:CODEBUDDY_VERSION
 
   cursor-app:
-    name: Cursor App canary (Linux, Node 24, 3.21.18)
+    name: Cursor App ${{ matrix.channel }} ${{ matrix.cursor }} (Linux, Node ${{ matrix.node }})
     needs: package
     if: always() && !cancelled() && needs.package.outputs.artifact-ready == 'true' && !(github.event_name == 'workflow_dispatch' && (inputs.check_deepseek || inputs.diagnose_opencode_initialization))
-    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.package.outputs.cursor-matrix) }}
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v7
@@ -346,22 +381,30 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v7
         with:
-          node-version: '24'
+          node-version: ${{ matrix.node }}
           package-manager-cache: false
       - uses: actions/download-artifact@v4
         with:
           name: memorax-code-package
           path: dist/npm/tarballs
+      - uses: actions/download-artifact@v4
+        with:
+          name: cursor-app-releases
+          path: ${{ runner.temp }}/cursor-app-releases
       - name: Verify isolated native Cursor App writeback
         shell: bash
+        env:
+          CURSOR_RELEASE: ${{ matrix.release }}
+          CURSOR_NODE: ${{ matrix.node }}
         run: |
           set -- dist/npm/tarballs/memorax-memorax-code-*.tgz
           [[ "$#" -eq 1 && -f "$1" && ! -L "$1" ]] || exit 1
-          node scripts/cursor-app-container-check.mjs "$1" "$RUNNER_TEMP/cursor-app-report"
+          node scripts/cursor-app-container-check.mjs "$1" "$RUNNER_TEMP/cursor-app-report" \
+            "$RUNNER_TEMP/cursor-app-releases/cursor-app-releases.json" "$CURSOR_RELEASE" "$CURSOR_NODE"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: cursor-app-linux-canary-report
+          name: cursor-app-linux-${{ matrix.channel }}-node-${{ matrix.node }}-report
           path: ${{ runner.temp }}/cursor-app-report/report.json
           if-no-files-found: error
           retention-days: 7
@@ -495,7 +538,7 @@ jobs:
           PACKAGE_RESULT: ${{ needs.package.result }}
           CURSOR_RESULT: ${{ needs.cursor-app.result }}
         run: |
-          printf 'Package: **%s**\n\nCursor App Linux canary: **%s**.\n\nUbuntu 24.04, Node 24, pinned Cursor 3.21.18. Six real App runs exercise repeated-prompt follow-up, independent sessions, App restart/resume and explicit Skill Search/Add through native Read/Shell tools, using a local protocol mock, native database persistence and exact automatic Add with synthetic authentication. Scripted tool requests do not validate model-driven Skill selection. This Linux canary does not validate real login, hosted models, full functional coverage or three-platform acceptance.\n' "$PACKAGE_RESULT" "$CURSOR_RESULT" >> "$GITHUB_STEP_SUMMARY"
+          printf 'Package: **%s**\n\nCursor App Linux matrix: **%s**.\n\nUbuntu 24.04, baseline/latest on Node 24 and baseline on Node 22. Six real App runs per cell exercise repeated-prompt follow-up, independent sessions, App restart/resume and explicit Skill Search/Add through native Read/Shell tools, using a local protocol mock, native database persistence and exact automatic Add with synthetic authentication. Scripted tool requests do not validate model-driven Skill selection. This Linux matrix does not validate real login, hosted models, full functional coverage or three-platform acceptance.\n' "$PACKAGE_RESULT" "$CURSOR_RESULT" >> "$GITHUB_STEP_SUMMARY"
           if [[ "$PACKAGE_RESULT" != success || "$CURSOR_RESULT" != success ]]; then
             echo '::error::The package and Cursor App canary must both succeed. Failed, cancelled or skipped dependencies do not pass this check.'
             exit 1

@@ -1140,11 +1140,16 @@ successful native jobs on each target platform.
 ### Cursor App Native Canary
 
 The native-client workflow also runs a deliberately bounded **Cursor Desktop
-App** canary: Ubuntu 24.04, Node 24, and Cursor **3.21.18**. It is not a Cursor CLI
-test and does not yet provide the three-platform or baseline/latest coverage of
-the other native harnesses. The job consumes the same validated candidate npm
+App** Linux matrix: baseline **3.21.18** and the once-resolved latest stable
+desktop release on Ubuntu 24.04 and Node 24, plus baseline on Node 22. Channels
+share a Node 24 cell only when their version, commit, URL, checksum and DEB
+version all match. Node 22.13 or newer is required for the native SQLite reader;
+Node 20 is not a supported Cursor automatic-writeback target. The container's
+actual Node runtime, not just the runner's `setup-node`, must match each cell.
+This is not a Cursor CLI test or three-platform acceptance. Every cell consumes
+the same validated candidate npm
 artifact as the existing native checks; package failure cannot be hidden by a
-passing canary.
+passing matrix cell. The aggregate check requires all selected cells to pass.
 
 The canary starts the official Linux App in a fresh Docker container under Xvfb.
 Its built-in smoke driver supplies synthetic authentication and submits prompts
@@ -1205,9 +1210,14 @@ Acceptance requires all of the following:
 - Successful client/Backend and container cleanup, with a final request-count
   audit to reject duplicate or late writeback.
 
-Build-time downloads use fixed official Cursor release URLs and pinned,
-independently observed SHA-256 hashes. Those hashes are reproducibility checks,
-not publisher-signed attestations. The runtime is non-root, has no external
+Build-time downloads use fixed official Cursor release URLs. Baseline SHA-256
+pins are independently observed reproducibility checks, not publisher-signed
+attestations. Latest Linux checksums and DEB versions come from official apt
+metadata: the pinned public key verifies `InRelease`, which authenticates each
+architecture's `Packages` digest and package entry. The official desktop API
+and apt release must agree. Resolution happens once in the package job and
+publishes one frozen inventory for every matrix cell; no job re-resolves latest
+or falls back to baseline. The runtime is non-root, has no external
 network, drops all capabilities, retains Chromium's sandbox and uses
 `no-new-privileges` plus the documented seccomp profile. Client homes, Backend
 state and native conversations are temporary. Only local Agent and Memory
@@ -1223,20 +1233,38 @@ node scripts/cursor-app-container-check.mjs \
   "$memorax_dev_root/cursor-app-report"
 ```
 
+The two-argument container command uses baseline and Node 24. To reproduce the
+version matrix, first freeze the inventory in an environment with `gpg` and
+`gpgv`, then select a release and container Node major explicitly:
+
+```bash
+node scripts/cursor-app-release.mjs resolve-linux \
+  "$memorax_dev_root/cursor-app-releases.json"
+node scripts/cursor-app-container-check.mjs \
+  dist/npm/tarballs/memorax-memorax-code-0.1.19.tgz \
+  "$memorax_dev_root/cursor-app-latest-report" \
+  "$memorax_dev_root/cursor-app-releases.json" latest 24
+node scripts/cursor-app-container-check.mjs \
+  dist/npm/tarballs/memorax-memorax-code-0.1.19.tgz \
+  "$memorax_dev_root/cursor-app-node22-report" \
+  "$memorax_dev_root/cursor-app-releases.json" baseline 22
+```
+
 Only `report.json` is exported and uploaded. Raw App logs, transcripts, SQLite
 files and Hook traces are not CI artifacts. Synthetic login is not real account
 authentication coverage. Native Continue/Retry/Edit, Backend restart,
 interruptions, permission races, model-driven Skill selection, Repo Memory workers,
-upgrade/uninstall, macOS, Windows, and the baseline/latest version matrix remain
-outside this bounded session-flow canary.
+upgrade/uninstall, macOS, and Windows remain outside this bounded session-flow
+matrix.
 
 `node scripts/cursor-app-release.mjs resolve <new-manifest-path>` prepares a
 single frozen baseline/latest inventory from the official desktop download
 feeds. It requires coherent versions and commits across Linux, macOS and
 Windows, rejects mutable or unexpected URLs, and never overwrites an existing
-manifest. Missing package checksums remain explicitly unavailable. This helper
-is preparation for the version matrix, not evidence of native acceptance or
-publisher-authenticated artifact integrity, and is not yet wired into CI.
+manifest. This metadata-only command leaves missing checksums explicitly
+unavailable and is not artifact-integrity or native-acceptance evidence. CI uses
+`resolve-linux` instead, which also verifies Linux apt metadata. macOS and
+Windows inventory entries are not native acceptance results.
 
 ## Pull Requests
 
