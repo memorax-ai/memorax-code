@@ -141,6 +141,8 @@ jobs:
         run: node --test scripts/native-process-cleanup.test.mjs scripts/codex-native-content-check.test.mjs scripts/codex-lifecycle-assertions.test.mjs scripts/codex-writeback-diagnostics.test.mjs scripts/opencode-native-support.test.mjs scripts/opencode-initialization-diagnostic.test.mjs scripts/opencode-initialization-layouts.test.mjs scripts/claude-native-content-check.test.mjs scripts/claude-native-support.test.mjs scripts/claude-permissions-support.test.mjs scripts/claude-lifecycle-assertions.test.mjs scripts/claude-lifecycle-process.test.mjs scripts/claude-background-assertions.test.mjs scripts/claude-install-interruption-driver.test.mjs scripts/codebuddy-native-content-check.test.mjs scripts/codebuddy-native-support.test.mjs scripts/codebuddy-install-cleanup.test.mjs scripts/codebuddy-lifecycle-assertions.test.mjs scripts/codebuddy-install-interruption-driver.test.mjs scripts/codebuddy-permissions-support.test.mjs scripts/codebuddy-background-assertions.test.mjs
       - name: Verify shared CodeBuddy and WorkBuddy native and install contracts
         run: node --test scripts/codebuddy-native-memory-support.test.mjs scripts/codebuddy-install-interruption-check.test.mjs scripts/workbuddy-install-entry.test.mjs
+      - name: Verify Cursor App canary contracts
+        run: node --test scripts/cursor-app-*.test.mjs
       - name: Build and validate the installable package
         id: package-check
         shell: bash
@@ -332,6 +334,38 @@ jobs:
           TMP: ${{ runner.temp }}
         run: ./scripts/codebuddy-install-check.ps1 -TarballDirectory dist/npm/tarballs -CodeBuddyVersion $env:CODEBUDDY_VERSION
 
+  cursor-app:
+    name: Cursor App canary (Linux, Node 24, 3.21.18)
+    needs: package
+    if: always() && !cancelled() && needs.package.outputs.artifact-ready == 'true' && !(github.event_name == 'workflow_dispatch' && (inputs.check_deepseek || inputs.diagnose_opencode_initialization))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: memorax-code-package
+          path: dist/npm/tarballs
+      - name: Verify isolated native Cursor App writeback
+        shell: bash
+        run: |
+          set -- dist/npm/tarballs/memorax-memorax-code-*.tgz
+          [[ "$#" -eq 1 && -f "$1" && ! -L "$1" ]] || exit 1
+          node scripts/cursor-app-container-check.mjs "$1" "$RUNNER_TEMP/cursor-app-report"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cursor-app-linux-canary-report
+          path: ${{ runner.temp }}/cursor-app-report/report.json
+          if-no-files-found: error
+          retention-days: 7
+
   opencode-initialization-diagnostic:
     name: OpenCode Windows initialization diagnostic (not functional acceptance)
     needs: package
@@ -445,6 +479,25 @@ jobs:
           printf 'Package: **%s**\n\nCodeBuddy functional matrix: **%s**\n\nShared lifecycle, setup interruption, native memory, Skill, permission and Repo Memory global-configuration checks; WorkBuddy is excluded and client-specific coverage remains bounded.\n' "$PACKAGE_RESULT" "$CODEBUDDY_RESULT" >> "$GITHUB_STEP_SUMMARY"
           if [[ "$PACKAGE_RESULT" != success || "$CODEBUDDY_RESULT" != success ]]; then
             echo '::error::All package and CodeBuddy functional matrix jobs must succeed. Failed, cancelled or skipped dependencies do not pass this check.'
+            exit 1
+          fi
+
+  cursor-app-result:
+    name: Cursor App canary result
+    if: always() && !(github.event_name == 'workflow_dispatch' && (inputs.check_deepseek || inputs.diagnose_opencode_initialization))
+    needs: [package, cursor-app]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Require the package and Cursor App canary to succeed
+        shell: bash
+        env:
+          PACKAGE_RESULT: ${{ needs.package.result }}
+          CURSOR_RESULT: ${{ needs.cursor-app.result }}
+        run: |
+          printf 'Package: **%s**\n\nCursor App Linux canary: **%s**.\n\nUbuntu 24.04, Node 24, pinned Cursor 3.21.18. Real App, local protocol mock, native database persistence and exact automatic Add with synthetic authentication. This single-turn Linux canary does not validate real login, hosted models, full functional coverage or three-platform acceptance.\n' "$PACKAGE_RESULT" "$CURSOR_RESULT" >> "$GITHUB_STEP_SUMMARY"
+          if [[ "$PACKAGE_RESULT" != success || "$CURSOR_RESULT" != success ]]; then
+            echo '::error::The package and Cursor App canary must both succeed. Failed, cancelled or skipped dependencies do not pass this check.'
             exit 1
           fi
 

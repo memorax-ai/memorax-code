@@ -1137,6 +1137,61 @@ desktop discovery or official Ubuntu desktop support. Implemented platform
 wrappers, acquisition tests, and a local runtime pass are not substitutes for
 successful native jobs on each target platform.
 
+### Cursor App Native Canary
+
+The native-client workflow also runs a deliberately bounded **Cursor Desktop
+App** canary: Ubuntu 24.04, Node 24, and Cursor **3.21.18**. It is not a Cursor CLI
+test and does not yet provide the three-platform or baseline/latest coverage of
+the other native harnesses. The job consumes the same validated candidate npm
+artifact as the existing native checks; package failure cannot be hidden by a
+passing canary.
+
+The canary starts the official Linux App in a fresh Docker container under Xvfb.
+Its built-in smoke driver supplies synthetic authentication and submits a prompt
+through the normal composer UI. `--smoke-test-use-real-agent-http` routes the
+Agent transport to a local Connect/protobuf service. The service sends a
+content-addressed user/assistant/turn graph, waits for each native KV write
+acknowledgement, and then sends the conversation checkpoint and completion.
+It does not use the App's simulated response stream, seed its conversation
+database, invoke Hooks directly, or bypass the product's native-content parser.
+
+Acceptance requires all of the following:
+
+- Exactly one native Agent request with the submitted prompt and matching
+  conversation identity, and all three KV acknowledgements.
+- A separate, read-only SQLite oracle matching the App's composer/generation,
+  conversation state and every emitted content-addressed blob byte for byte.
+- Installed native Hooks correlated to the real generation and completed turn.
+- Exactly one automatic Add whose full user/assistant text, Unicode, session,
+  workspace scope and client-qualified idempotency key match the fixture.
+- Successful client/Backend and container cleanup, with a final request-count
+  audit to reject duplicate or late writeback.
+
+Build-time downloads use fixed official Cursor release URLs and pinned,
+independently observed SHA-256 hashes. Those hashes are reproducibility checks,
+not publisher-signed attestations. The runtime is non-root, has no external
+network, drops all capabilities, retains Chromium's sandbox and uses
+`no-new-privileges` plus the documented seccomp profile. Client homes, Backend
+state and native conversations are temporary. Only local Agent and Memory
+fixtures are reachable; no real account or provider credentials are needed.
+
+To reproduce after building an installable candidate, use Node 24 and a local
+Linux-container Docker daemon:
+
+```bash
+node --test scripts/cursor-app-*.test.mjs
+node scripts/cursor-app-container-check.mjs \
+  dist/npm/tarballs/memorax-memorax-code-0.1.19.tgz \
+  "$memorax_dev_root/cursor-app-report"
+```
+
+Only `report.json` is exported and uploaded. Raw App logs, transcripts, SQLite
+files and Hook traces are not CI artifacts. Synthetic login is not real account
+authentication coverage. Multi-turn resume, interruptions, permission races,
+explicit Skill Search/Add, Repo Memory workers, upgrade/uninstall, macOS,
+Windows, and the baseline/latest version matrix remain outside this initial
+single-turn canary.
+
 ## Pull Requests
 
 A pull request should:
