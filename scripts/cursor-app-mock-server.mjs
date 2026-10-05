@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createServer as createHttpServer } from "node:http";
-import { createServer as createHttp2Server } from "node:http2";
+import { createServer as createHttp2Server, constants as http2Constants } from "node:http2";
 import { createConnection, createServer as createTcpServer } from "node:net";
 import { networkInterfaces } from "node:os";
 import {
@@ -35,7 +35,7 @@ const toolPlanErrorCodes = new Set([
   "CURSOR_APP_SKILL_REFERENCE", "CURSOR_APP_MEMORY_OPERATION", "CURSOR_APP_MEMORY_FIXTURE",
   "CURSOR_APP_MEMORY_TRANSPORT", "CURSOR_APP_MEMORY_RESULT_SCOPE", "CURSOR_APP_SEARCH_PAYLOAD",
   "CURSOR_APP_SEARCH_RESULT", "CURSOR_APP_EXPLICIT_ADD_TIMESTAMP", "CURSOR_APP_EXPLICIT_ADD_PAYLOAD",
-  "CURSOR_APP_EXPLICIT_ADD_RESULT",
+  "CURSOR_APP_EXPLICIT_ADD_RESULT", "CURSOR_APP_INTERRUPTION_IDENTITY", "CURSOR_APP_INTERRUPTION_TOOL_EXECUTED",
 ]);
 const ancillaryPaths = new Set([
   "/auth/full_stripe_profile",
@@ -63,8 +63,14 @@ export async function startCursorAgentMock({ answer, answers, toolSteps, timeout
   }
   const requests = [], runs = [], errors = [], connectionErrors = [], unknownRpcMethods = [];
   const sockets = new Set(), sessions = new Set(), requestIds = new Set(), listeners = [];
-  const histories = new Map(), activeConversations = new Set();
+  const histories = new Map(), activeConversations = new Set(), cancellationArms = new Map();
   let closed = false, closePromise, ancillaryRequestCount = 0, unsupportedRpcCount = 0;
+  function armCancellation(input) {
+    const arm = !closed && cancellationArms.get(input?.requestId);
+    if (!arm || !arm(input?.toolCallId)) {
+      throw Object.assign(new Error("CURSOR_AGENT_CANCELLATION_STATE"), { code: "CURSOR_AGENT_CANCELLATION_STATE" });
+    }
+  }
   const trackSocket = (socket) => {
     sockets.add(socket);
     socket.on("error", () => {});
@@ -116,10 +122,11 @@ export async function startCursorAgentMock({ answer, answers, toolSteps, timeout
     if (closed) session.destroy();
   });
   http2.on("stream", (stream, headers) => {
+    const streamSession = stream.session;
     const path = recordRequest(headers[":method"], headers[":path"], "h2c");
     const compression = headers["connect-content-encoding"] ?? "identity";
     const requestId = headers["x-request-id"];
-    let run, completion, pendingKv, pendingExec, selectedAnswer, kvReads, history;
+    let run, completion, pendingKv, pendingExec, selectedAnswer, kvReads, history, cancellation;
     let settled = false, totalBytes = 0, messageCount = 0;
     const acknowledged = new Set();
     const completedExecIds = new Set(), completedToolSteps = [];
@@ -132,7 +139,12 @@ export async function startCursorAgentMock({ answer, answers, toolSteps, timeout
       clearTimeout(timer);
       if (isAgentPath(path)) errors.push(code);
       else unsupportedRpcCount++;
-      if (run) { run.error = code; delete run.pendingTool; activeConversations.delete(run.conversationId); }
+      if (run) {
+        run.error = code;
+        delete run.pendingTool;
+        activeConversations.delete(run.conversationId);
+        cancellationArms.delete(run.requestId);
+      }
       if (!stream.destroyed && !stream.closed) {
         if (!stream.headersSent) stream.respond({ ":status": path === agentPath ? 200 : 404,
           "content-type": "application/connect+proto" });
@@ -149,7 +161,7 @@ export async function startCursorAgentMock({ answer, answers, toolSteps, timeout
       stream.close();
     }
     function advance() {
-      if (!run || settled || pendingKv !== undefined) return;
+      if (!run || settled || cancellation || pendingKv !== undefined) return;
       if (run.kvReadResultCount < kvReads.length) {
         const read = kvReads[run.kvReadResultCount];
         pendingKv = { ...read, type: "kvGetResult" };
@@ -221,12 +233,19 @@ export async function startCursorAgentMock({ answer, answers, toolSteps, timeout
       run.completed = true;
       histories.set(run.conversationId, [...history, completion]);
       activeConversations.delete(run.conversationId);
+      cancellationArms.delete(run.requestId);
       clearTimeout(timer);
       stream.end(encodeConnectEnvelope(Buffer.from("{}"), { endStream: true }));
     }
     function receive(bytes) {
-      const message = decodeAgentClientMessage(bytes, { requestId });
+      const message = decodeAgentClientMessage(bytes, { requestId, allowCancellation: Boolean(cancellation) });
       if (message.type === "heartbeat") return;
+      if (message.type === "cancelAction") {
+        if (!cancellation) { fail("CURSOR_APP_CLIENT_MESSAGE_UNSUPPORTED"); return; }
+        if (cancellation.actionReceived) { fail("CURSOR_AGENT_CANCELLATION_DUPLICATE"); return; }
+        cancellation.actionReceived = true;
+        return;
+      }
       if (message.type === "run") {
         if (run || requestIds.has(message.requestId)) { fail("CURSOR_AGENT_DUPLICATE_RUN"); return; }
         if (activeConversations.has(message.conversationId)) { fail("CURSOR_AGENT_CONVERSATION_BUSY"); return; }
@@ -244,16 +263,38 @@ export async function startCursorAgentMock({ answer, answers, toolSteps, timeout
         run = { ...message, inputConversationStateBytes: message.conversationStateBytes, inputRequestContext: message.requestContext,
           kvWrites: [], kvWriteCount: 0, kvAckCount: 0, kvReadCount: 0, kvReadResultCount: 0,
           toolResults: [], execRequestCount: 0, execResultCount: 0, execCloseCount: 0,
-          requestContextRequestCount: 0, requestContextResultCount: 0, requestContextCloseCount: 0, completed: false };
+          requestContextRequestCount: 0, requestContextResultCount: 0, requestContextCloseCount: 0, completed: false, cancelled: false };
         runs.push(run);
+        cancellationArms.set(run.requestId, (toolCallId) => {
+          if (settled || cancellation || stream.closed || stream.destroyed || completion || pendingKv
+            || run.kvWrites.length || run.kvWriteCount || run.kvAckCount
+            || run.requestContextRequestCount !== 1 || run.requestContextResultCount !== 1 || run.requestContextCloseCount !== 1
+            || pendingExec?.execution.kind !== "shell" || pendingExec.completed || pendingExec.closed
+            || pendingExec.execution.toolCallId !== toolCallId) return false;
+          cancellation = { id: pendingExec.execution.id, toolCallId, rejected: false, execClosed: false,
+            actionReceived: false, transportClosed: false, transportEvents: [] };
+          run.cancellation = cancellation;
+          return true;
+        });
         return;
       }
       if (message.type === "execResult" || message.type === "execControl") {
         if (completedExecIds.has(message.id)) { fail("CURSOR_AGENT_EXEC_DUPLICATE"); return; }
         if (!run || pendingExec?.execution.id !== message.id) { fail("CURSOR_AGENT_EXEC_UNKNOWN"); return; }
         if (message.type === "execResult") {
-          if (pendingExec.completed) { fail("CURSOR_AGENT_EXEC_DUPLICATE"); return; }
+          if (pendingExec.completed || cancellation?.rejected) { fail("CURSOR_AGENT_EXEC_DUPLICATE"); return; }
           if (message.error) run.execRejection = { id: message.id, kind: message.kind, rejectionKind: message.rejectionKind };
+          if (cancellation) {
+            const execution = pendingExec.execution;
+            if (message.kind !== execution.kind || message.execId !== undefined && message.execId !== execution.toolCallId
+              || (!message.error || message.rejectionKind === 4)
+                && (message.command !== execution.command || message.workingDirectory !== execution.workingDirectory)) {
+              fail("CURSOR_APP_EXEC_IDENTITY");
+            } else if (!message.error) fail("CURSOR_AGENT_CANCELLATION_EXECUTED");
+            else if (message.rejectionKind !== 4) fail("CURSOR_APP_EXEC_REJECTED");
+            else cancellation.rejected = true;
+            return;
+          }
           pendingExec.completed = completeToolExecution(pendingExec.execution, message);
           if (pendingExec.execution.kind === "requestContext") run.requestContextResultCount++;
           else run.execResultCount++;
@@ -263,9 +304,10 @@ export async function startCursorAgentMock({ answer, answers, toolSteps, timeout
           if (++pendingExec.heartbeats > 32) fail("CURSOR_AGENT_EXEC_HEARTBEAT_LIMIT");
         } else {
           if (pendingExec.closed) { fail("CURSOR_AGENT_EXEC_DUPLICATE"); return; }
-          if (!pendingExec.completed) { fail("CURSOR_AGENT_EXEC_RESULT_MISSING"); return; }
+          if (!pendingExec.completed && !cancellation?.rejected) { fail("CURSOR_AGENT_EXEC_RESULT_MISSING"); return; }
           pendingExec.closed = true;
-          if (pendingExec.execution.kind === "requestContext") run.requestContextCloseCount++;
+          if (cancellation) cancellation.execClosed = true;
+          else if (pendingExec.execution.kind === "requestContext") run.requestContextCloseCount++;
           else run.execCloseCount++;
         }
         return;
@@ -286,9 +328,40 @@ export async function startCursorAgentMock({ answer, answers, toolSteps, timeout
       acknowledged.add(message.id);
       pendingKv = undefined;
     }
-    stream.on("error", () => fail("CURSOR_AGENT_STREAM_ERROR"));
-    stream.once("aborted", () => fail("CURSOR_AGENT_STREAM_ABORTED"));
-    stream.once("close", () => { clearTimeout(timer); fail("CURSOR_AGENT_STREAM_CLOSED"); });
+    // The official transport maps its string-valued abort reason to INTERNAL_ERROR.
+    const isExpectedCancellation = () => cancellation && !settled && !closed
+      && !streamSession.closed && !streamSession.destroyed
+      && (stream.rstCode === http2Constants.NGHTTP2_CANCEL
+        || stream.rstCode === http2Constants.NGHTTP2_INTERNAL_ERROR && cancellation.actionReceived
+          && cancellation.rejected && cancellation.execClosed);
+    function recordCancellationTransport(event) {
+      if (!cancellation || cancellation.transportEvents.length >= 8) return;
+      cancellation.transportEvents.push({ event, rstCode: Number.isInteger(stream.rstCode) ? stream.rstCode : null,
+        streamClosed: stream.closed, streamDestroyed: stream.destroyed, sessionClosed: streamSession.closed,
+        sessionDestroyed: streamSession.destroyed, serverClosed: closed });
+    }
+    stream.on("error", () => {
+      recordCancellationTransport("error");
+      if (!isExpectedCancellation()) fail("CURSOR_AGENT_STREAM_ERROR");
+    });
+    stream.once("aborted", () => {
+      recordCancellationTransport("aborted");
+      if (!isExpectedCancellation()) fail("CURSOR_AGENT_STREAM_ABORTED");
+    });
+    stream.once("close", () => {
+      recordCancellationTransport("close");
+      clearTimeout(timer);
+      if (!isExpectedCancellation()) { fail("CURSOR_AGENT_STREAM_CLOSED"); return; }
+      try { decoder.finish(); }
+      catch (error) { fail(protocolErrorCodes.has(error.code) ? error.code : "CURSOR_AGENT_INVALID_MESSAGE"); return; }
+      settled = true;
+      run.cancelled = true;
+      cancellation.transportClosed = true;
+      cancellation.rstCode = stream.rstCode;
+      delete run.pendingTool;
+      activeConversations.delete(run.conversationId);
+      cancellationArms.delete(run.requestId);
+    });
     stream.on("data", (chunk) => {
       const completed = settled && run?.completed;
       if (settled && !completed) return;
@@ -310,7 +383,10 @@ export async function startCursorAgentMock({ answer, answers, toolSteps, timeout
           }
         }
         if (!completed) advance();
-      } catch (error) { reject(protocolErrorCodes.has(error.code) ? error.code : "CURSOR_AGENT_INVALID_MESSAGE"); }
+      } catch (error) {
+        if (run && error.code === "CURSOR_APP_CLIENT_MESSAGE_UNSUPPORTED") run.lastUnsupportedShape = error.wireShape;
+        reject(protocolErrorCodes.has(error.code) ? error.code : "CURSOR_AGENT_INVALID_MESSAGE");
+      }
     });
     stream.once("end", () => {
       if (settled && !run?.completed) return;
@@ -320,6 +396,8 @@ export async function startCursorAgentMock({ answer, answers, toolSteps, timeout
         return;
       }
       if (settled) return;
+      // The client can half-close its request before its CANCEL frame arrives.
+      if (cancellation) return;
       fail(!run ? "CURSOR_AGENT_RUN_MISSING" : run.kvReadResultCount < kvReads.length
         ? "CURSOR_AGENT_KV_READ_MISSING" : pendingExec ? "CURSOR_AGENT_EXEC_INCOMPLETE" : "CURSOR_AGENT_ACK_MISSING");
     });
@@ -369,6 +447,7 @@ export async function startCursorAgentMock({ answer, answers, toolSteps, timeout
   async function close() {
     if (closePromise) return closePromise;
     closed = true;
+    cancellationArms.clear();
     for (const session of sessions) session.destroy();
     for (const socket of sockets) socket.destroy();
     closePromise = Promise.all([...listeners, http1, http2].map((server) => new Promise((done) => server.close(done))));
@@ -383,7 +462,7 @@ export async function startCursorAgentMock({ answer, answers, toolSteps, timeout
     if (Object.values(networkInterfaces()).flat().some((entry) => entry?.internal && entry.address === "::1")) {
       await listen(createFront(), "::1", port);
     }
-    return { url: `http://localhost:${port}`, requests, runs, errors, connectionErrors, unknownRpcMethods, close,
+    return { url: `http://localhost:${port}`, requests, runs, errors, connectionErrors, unknownRpcMethods, armCancellation, close,
       get ancillaryRequestCount() { return ancillaryRequestCount; },
       get unsupportedRpcCount() { return unsupportedRpcCount; } };
   } catch (error) { await close(); throw error; }

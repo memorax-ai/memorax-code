@@ -19,9 +19,9 @@ const versionPattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const label = "memorax.cursor-app-ci";
 const codePattern = /^CURSOR_(?:APP|MOCK|AGENT|CONTAINER)_[A-Z0-9_]{1,100}$/;
 const stages = new Set(["preflight", "candidate-install", "app-start", "native-submit", "agent-transport",
-  "native-persistence", "automatic-add", "app-restart", "session-open", "cleanup", "complete"]);
+  "native-persistence", "automatic-add", "app-restart", "session-open", "pending-shell-interruption", "cleanup", "complete"]);
 const completedEvidence = ["agentTransport", "nativeHooks", "exactAutomaticAdd", "sameSessionFollowup", "sessionIsolation", "appResume",
-  "skillSearch", "skillAdd", "cleanup"];
+  "skillSearch", "skillAdd", "pendingShellInterrupted", "cleanup"];
 
 function fail(code) { throw Object.assign(new Error(code), { code }); }
 function check(value, code) { if (!value) fail(code); }
@@ -113,6 +113,8 @@ export function projectNativeReport(input, { expectedVersion = provenance.cursor
       execRequests: agent.execRequests.map(count), execResults: agent.execResults.map(count), execCloses: agent.execCloses.map(count),
       contextRequests: agent.contextRequests.map(count), contextResults: agent.contextResults.map(count), contextCloses: agent.contextCloses.map(count),
       ancillaryRequestCount: count(agent.ancillaryRequestCount), unsupportedRpcCount: count(agent.unsupportedRpcCount), errors: agent.errors ?? [] };
+    check(Array.isArray(agent.cancelled) && agent.cancelled.every((value) => typeof value === "boolean"), "CURSOR_CONTAINER_REPORT");
+    report.agent.cancelled = [...agent.cancelled];
   }
   if (input.memoryRequestCount !== undefined) report.memoryRequestCount = count(input.memoryRequestCount);
   if (input.diagnostics !== undefined) report.diagnostics = projectCursorAppDiagnostics(input.diagnostics);
@@ -120,17 +122,18 @@ export function projectNativeReport(input, { expectedVersion = provenance.cursor
     && completedEvidence.every((key) => report.evidence[key] === true)
     && content?.length === 6 && [3, 6, 3, 9, 15, 21].every((blobs, index) => content[index]?.composerMatched === true
       && content[index]?.stateMatched === true && content[index]?.blobCount === blobs)
-    && report.agent?.runs === 6 && report.agent.writes.length === 6 && [3, 3, 3, 3, 6, 6].every((value, index) => report.agent.writes[index] === value)
-    && report.agent.acknowledgements.length === 6 && [3, 3, 3, 3, 6, 6].every((value, index) => report.agent.acknowledgements[index] === value)
-    && report.agent.historyTurns.length === 6 && [0, 1, 0, 2, 3, 4].every((value, index) => report.agent.historyTurns[index] === value)
-    && report.agent.reads.length === 6 && [0, 3, 0, 6, 9, 15].every((value, index) => report.agent.reads[index] === value)
-    && report.agent.readResults.length === 6 && [0, 3, 0, 6, 9, 15].every((value, index) => report.agent.readResults[index] === value)
-    && report.agent.execRequests.length === 6 && [0, 0, 0, 0, 3, 3].every((value, index) => report.agent.execRequests[index] === value)
-    && report.agent.execResults.length === 6 && [0, 0, 0, 0, 3, 3].every((value, index) => report.agent.execResults[index] === value)
-    && report.agent.execCloses.length === 6 && [0, 0, 0, 0, 3, 3].every((value, index) => report.agent.execCloses[index] === value)
-    && report.agent.contextRequests.length === 6 && [1, 1, 1, 1, 1, 1].every((value, index) => report.agent.contextRequests[index] === value)
-    && report.agent.contextResults.length === 6 && [1, 1, 1, 1, 1, 1].every((value, index) => report.agent.contextResults[index] === value)
-    && report.agent.contextCloses.length === 6 && [1, 1, 1, 1, 1, 1].every((value, index) => report.agent.contextCloses[index] === value)
+    && report.agent?.runs === 7 && report.agent.writes.length === 7 && [3, 3, 3, 3, 6, 6, 0].every((value, index) => report.agent.writes[index] === value)
+    && report.agent.acknowledgements.length === 7 && [3, 3, 3, 3, 6, 6, 0].every((value, index) => report.agent.acknowledgements[index] === value)
+    && report.agent.historyTurns.length === 7 && [0, 1, 0, 2, 3, 4, 0].every((value, index) => report.agent.historyTurns[index] === value)
+    && report.agent.reads.length === 7 && [0, 3, 0, 6, 9, 15, 0].every((value, index) => report.agent.reads[index] === value)
+    && report.agent.readResults.length === 7 && [0, 3, 0, 6, 9, 15, 0].every((value, index) => report.agent.readResults[index] === value)
+    && report.agent.execRequests.length === 7 && [0, 0, 0, 0, 3, 3, 1].every((value, index) => report.agent.execRequests[index] === value)
+    && report.agent.execResults.length === 7 && [0, 0, 0, 0, 3, 3, 0].every((value, index) => report.agent.execResults[index] === value)
+    && report.agent.execCloses.length === 7 && [0, 0, 0, 0, 3, 3, 0].every((value, index) => report.agent.execCloses[index] === value)
+    && report.agent.contextRequests.length === 7 && [1, 1, 1, 1, 1, 1, 1].every((value, index) => report.agent.contextRequests[index] === value)
+    && report.agent.contextResults.length === 7 && [1, 1, 1, 1, 1, 1, 1].every((value, index) => report.agent.contextResults[index] === value)
+    && report.agent.contextCloses.length === 7 && [1, 1, 1, 1, 1, 1, 1].every((value, index) => report.agent.contextCloses[index] === value)
+    && report.agent.cancelled.length === 7 && [false, false, false, false, false, false, true].every((value, index) => report.agent.cancelled[index] === value)
     && report.agent.errors.length === 0 && report.memoryRequestCount === 8, "CURSOR_CONTAINER_REPORT");
   return report;
 }

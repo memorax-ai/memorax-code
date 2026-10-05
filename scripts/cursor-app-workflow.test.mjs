@@ -176,7 +176,8 @@ test("Cursor App summary fails every non-success dependency and states the limit
         `package=${packageResult}, cursor=${cursorResult}`);
       const text = await readFile(summary, "utf8");
       assert.ok(text.includes(`Package: **${packageResult}**`) && text.includes(`Cursor App Linux matrix: **${cursorResult}**`));
-      assert.match(text, /Six real App runs per cell exercise repeated-prompt follow-up, independent sessions, App restart\/resume and explicit Skill Search\/Add through native Read\/Shell tools/);
+      assert.match(text, /Six completed App runs per cell exercise repeated-prompt follow-up, independent sessions, App restart\/resume and explicit Skill Search\/Add through native Read\/Shell tools/);
+      assert.match(text, /A seventh run cancels a pending Shell through native Stop, requiring interrupted Hook state, no command execution and no additional Memory request/);
       assert.match(text, /Scripted tool requests do not validate model-driven Skill selection/);
       assert.match(text, /This Linux matrix does not validate real login, hosted models, full functional coverage or three-platform acceptance/);
     }

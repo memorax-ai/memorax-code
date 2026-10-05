@@ -5,6 +5,8 @@ const MAX_FRAME_BYTES = 16 * 1024 * 1024;
 const MAX_FIELDS = 32_768;
 const UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 const USER_FIELDS = new Set([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 19, 21, 22, 23, 24, 25, 26]);
+// Native Stop can abort the composer controller before submitting the explicit user reason.
+const CANCELLATION_REASONS = new Set(["user_stopped_generation", "composer_abort_controller_aborted"]);
 const utf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 function fail(code) { throw Object.assign(new Error(code), { code }); }
@@ -187,6 +189,13 @@ function execClient(body) {
   }
   const success = fields(single(result, selected[0], 2));
   const identity = { type: "execResult", id, kind, ...(exec.has(15) ? { execId: text(exec, 15) } : {}) };
+  if (kind === "shell" && selected[0] === 4) {
+    if ([...success.keys()].some((number) => ![1, 2, 3, 4].includes(number))) fail("CURSOR_APP_CLIENT_MESSAGE_UNSUPPORTED");
+    optionalText(success, 3);
+    boolean(success, 4);
+    return { ...identity, error: "CURSOR_APP_EXEC_REJECTED", rejectionKind: 4,
+      command: text(success, 1), workingDirectory: text(success, 2) };
+  }
   if (selected[0] !== 1) return { ...identity, error: "CURSOR_APP_EXEC_REJECTED", rejectionKind: selected[0] };
   if (kind === "requestContext") {
     const requestContextBytes = Buffer.from(single(success, 1, 2));
@@ -220,7 +229,48 @@ function execControl(body) {
 
 // Minimal agent.v1 wire contract from the official Cursor App 3.21.18 bundle.
 // Unknown request context is retained as bytes, never treated as prompt content.
-export function decodeAgentClientMessage(message, { requestId } = {}) {
+export function decodeAgentClientMessage(message, options = {}) {
+  try { return decodeClientMessage(message, options); }
+  catch (error) {
+    if (error.code === "CURSOR_APP_CLIENT_MESSAGE_UNSUPPORTED") error.wireShape = unsupportedWireShape(message);
+    throw error;
+  }
+}
+
+function unsupportedWireShape(message) {
+  const shape = {};
+  function layer(name, bytes) {
+    const source = fields(bytes), entries = [];
+    shape[name] = entries;
+    for (const [number, values] of source) for (const { wire } of values) {
+      entries.push({ number, wire });
+      if (entries.length === 16) return source;
+    }
+    return source;
+  }
+  try {
+    const outer = layer("outer", message);
+    if (outer.has(4)) {
+      const action = layer("action", single(outer, 4, 2));
+      if (action.has(3)) {
+        const cancel = layer("cancel", single(action, 3, 2)), reason = optionalText(cancel, 1);
+        shape.cancelReason = CANCELLATION_REASONS.has(reason) ? reason : "other";
+      }
+    } else if (outer.has(2)) {
+      const exec = layer("exec", single(outer, 2, 2)), kind = [2, 7, 10, 14].find((number) => exec.has(number));
+      if (kind !== undefined) {
+        const result = layer("result", single(exec, kind, 2)), variant = [1, 2, 3, 4, 5, 6, 7, 8, 9].find((number) => result.has(number));
+        if (variant !== undefined) layer("detail", single(result, variant, 2));
+      }
+    } else if (outer.has(5)) {
+      const control = layer("exec", single(outer, 5, 2)), variant = [1, 2, 3].find((number) => control.has(number));
+      if (variant !== undefined) layer("result", single(control, variant, 2));
+    }
+  } catch {}
+  return shape;
+}
+
+function decodeClientMessage(message, { requestId, allowCancellation = false } = {}) {
   const outer = fields(message);
   if (outer.size !== 1) fail("CURSOR_APP_PROTO_FIELD");
   const number = [...outer.keys()][0], body = single(outer, number, 2);
@@ -230,6 +280,15 @@ export function decodeAgentClientMessage(message, { requestId } = {}) {
   }
   if (number === 2) return execClient(body);
   if (number === 5) return execControl(body);
+  if (number === 4 && allowCancellation === true) {
+    const action = fields(body);
+    if (action.size !== 1 || !action.has(3)) fail("CURSOR_APP_CLIENT_MESSAGE_UNSUPPORTED");
+    const cancel = fields(single(action, 3, 2));
+    if (cancel.size !== 1 || !cancel.has(1) || !CANCELLATION_REASONS.has(text(cancel, 1))) {
+      fail("CURSOR_APP_CLIENT_MESSAGE_UNSUPPORTED");
+    }
+    return { type: "cancelAction" };
+  }
   if (number === 3) {
     const ack = fields(body);
     if ([...ack.keys()].some((number) => ![1, 2, 3].includes(number))) fail("CURSOR_APP_CLIENT_MESSAGE_UNSUPPORTED");

@@ -315,8 +315,71 @@ test("Exec control messages bind one ID and redact exceptions", () => {
   }
 });
 
+test("only the exact native user Stop action can be decoded when explicitly enabled", () => {
+  for (const reason of ["user_stopped_generation", "composer_abort_controller_aborted"]) {
+    const stopped = field(4, field(3, field(1, reason)));
+    assert.throws(() => decodeAgentClientMessage(stopped), { code: "CURSOR_APP_CLIENT_MESSAGE_UNSUPPORTED" });
+    assert.deepEqual(decodeAgentClientMessage(stopped, { allowCancellation: true }), { type: "cancelAction" });
+  }
+  for (const value of [
+    field(4, field(3, field(1, "new_message_submitted"))),
+    field(4, field(3, Buffer.concat([field(1, "user_stopped_generation"), field(3, Buffer.alloc(0))]))),
+    field(4, Buffer.concat([field(3, field(1, "user_stopped_generation")), field(11, "private-auth-canary")])),
+    field(4, field(2, Buffer.alloc(0))),
+  ]) assert.throws(() => decodeAgentClientMessage(value, { allowCancellation: true }),
+    { code: "CURSOR_APP_CLIENT_MESSAGE_UNSUPPORTED" });
+  assert.throws(() => decodeAgentClientMessage(field(4, field(3, Buffer.concat([
+    field(1, "user_stopped_generation"), field(1, "user_stopped_generation"),
+  ]))), { allowCancellation: true }), { code: "CURSOR_APP_PROTO_FIELD" });
+});
+
+test("unsupported client diagnostics retain only bounded numeric shapes and fixed cancellation reason categories", () => {
+  for (const reason of ["composer_abort_controller_aborted", "private-reason-canary"]) {
+    const cancel = Buffer.concat([field(1, reason), field(3, Buffer.alloc(0))]);
+    assert.throws(() => decodeAgentClientMessage(field(4, field(3, cancel)), { allowCancellation: true }), (error) => {
+      assert.equal(error.code, "CURSOR_APP_CLIENT_MESSAGE_UNSUPPORTED");
+      assert.deepEqual(error.wireShape, { outer: [{ number: 4, wire: 2 }], action: [{ number: 3, wire: 2 }],
+        cancel: [{ number: 1, wire: 2 }, { number: 3, wire: 2 }], cancelReason: reason === "composer_abort_controller_aborted" ? reason : "other" });
+      assert.equal(JSON.stringify(error.wireShape).includes("canary"), false);
+      return true;
+    });
+  }
+  const unknownExec = field(2, Buffer.concat([scalar(1, 123456), field(2, field(4, Buffer.concat([
+    field(1, "private-command-canary"), field(2, "private-cwd-canary"), field(5, "private-unknown-canary"),
+  ])))]));
+  assert.throws(() => decodeAgentClientMessage(unknownExec), (error) => {
+    assert.deepEqual(error.wireShape, { outer: [{ number: 2, wire: 2 }], exec: [{ number: 1, wire: 0 }, { number: 2, wire: 2 }],
+      result: [{ number: 4, wire: 2 }], detail: [{ number: 1, wire: 2 }, { number: 2, wire: 2 }, { number: 5, wire: 2 }] });
+    assert.equal(JSON.stringify(error.wireShape).includes("canary"), false);
+    assert.equal(JSON.stringify(error.wireShape).includes("123456"), false);
+    return true;
+  });
+  const manyFields = field(4, Buffer.concat(Array.from({ length: 32 }, (_, index) => field(index + 20, "private-canary"))));
+  assert.throws(() => decodeAgentClientMessage(manyFields, { allowCancellation: true }), (error) => {
+    assert.equal(error.wireShape.action.length, 16);
+    return true;
+  });
+});
+
+test("Shell rejection exposes only command identity for a strictly correlated cancellation", () => {
+  const command = "printf synthetic > stop-marker", workingDirectory = "/synthetic/workspace";
+  const body = message(field(1, command), field(2, workingDirectory), field(3, "private-rejection-reason"), scalar(4, 0));
+  const decoded = decodeAgentClientMessage(field(2, message(scalar(1, 9), field(15, userMessageId), field(2, field(4, body)))));
+  assert.deepEqual(decoded, { type: "execResult", id: 9, kind: "shell", execId: userMessageId,
+    error: "CURSOR_APP_EXEC_REJECTED", rejectionKind: 4, command, workingDirectory });
+  assert.equal(JSON.stringify(decoded).includes("private"), false);
+  const execution = createToolExecution(run(), { kind: "shell", command, workingDirectory, timeoutMs: 1000 },
+    { id: 9, toolCallId: userMessageId });
+  assert.throws(() => completeToolExecution(execution, decoded), /CURSOR_APP_EXEC_REJECTED/);
+  for (const invalid of [field(1, command), message(body, field(1, "duplicate")),
+    message(body, field(5, "unknown")), message(field(1, command), field(2, workingDirectory), scalar(4, 2))]) {
+    assert.throws(() => decodeAgentClientMessage(field(2, message(scalar(1, 9), field(2, field(4, invalid))))),
+      /CURSOR_APP_(PROTO|CLIENT)/);
+  }
+});
+
 test("Exec decoding rejects failure, ambiguous, binary or truncated tool results safely", () => {
-  for (const [kind, number, failures] of [["read", 7, [2, 3, 4, 5, 6]], ["shell", 2, [2, 3, 4, 5, 7]]]) {
+  for (const [kind, number, failures] of [["read", 7, [2, 3, 4, 5, 6]], ["shell", 2, [2, 3, 5, 7]]]) {
     for (const failure of failures) {
       const result = decodeAgentClientMessage(field(2, message(scalar(1, 1), field(number, field(failure, field(1, "private-error"))))));
       assert.deepEqual(result, { type: "execResult", id: 1, kind, error: "CURSOR_APP_EXEC_REJECTED", rejectionKind: failure });

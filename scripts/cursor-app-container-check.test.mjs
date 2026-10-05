@@ -33,13 +33,13 @@ function releaseManifest() {
 function nativeReport() {
   return { status: "PASS", client: "cursor", kind: "app-native-session-flows", platform: "linux", node: "24.15.0",
     version: "3.21.18", stage: "complete", evidence: { agentTransport: true, nativeHooks: true, exactAutomaticAdd: true,
-      sameSessionFollowup: true, sessionIsolation: true, appResume: true, skillSearch: true, skillAdd: true, cleanup: true,
+      sameSessionFollowup: true, sessionIsolation: true, appResume: true, skillSearch: true, skillAdd: true, pendingShellInterrupted: true, cleanup: true,
       nativeContent: [3, 6, 3, 9, 15, 21].map((blobCount) => ({ composerMatched: true, stateMatched: true, blobCount })) },
-    agent: { runs: 6, ancillaryRequestCount: 5, unsupportedRpcCount: 1,
-      errors: [], writes: [3, 3, 3, 3, 6, 6], acknowledgements: [3, 3, 3, 3, 6, 6], historyTurns: [0, 1, 0, 2, 3, 4],
-      reads: [0, 3, 0, 6, 9, 15], readResults: [0, 3, 0, 6, 9, 15],
-      execRequests: [0, 0, 0, 0, 3, 3], execResults: [0, 0, 0, 0, 3, 3], execCloses: [0, 0, 0, 0, 3, 3],
-      contextRequests: [1, 1, 1, 1, 1, 1], contextResults: [1, 1, 1, 1, 1, 1], contextCloses: [1, 1, 1, 1, 1, 1] }, memoryRequestCount: 8 };
+    agent: { runs: 7, ancillaryRequestCount: 5, unsupportedRpcCount: 1, cancelled: [false, false, false, false, false, false, true],
+      errors: [], writes: [3, 3, 3, 3, 6, 6, 0], acknowledgements: [3, 3, 3, 3, 6, 6, 0], historyTurns: [0, 1, 0, 2, 3, 4, 0],
+      reads: [0, 3, 0, 6, 9, 15, 0], readResults: [0, 3, 0, 6, 9, 15, 0],
+      execRequests: [0, 0, 0, 0, 3, 3, 1], execResults: [0, 0, 0, 0, 3, 3, 0], execCloses: [0, 0, 0, 0, 3, 3, 0],
+      contextRequests: [1, 1, 1, 1, 1, 1, 1], contextResults: [1, 1, 1, 1, 1, 1, 1], contextCloses: [1, 1, 1, 1, 1, 1, 1] }, memoryRequestCount: 8 };
 }
 
 test("release pins distinguish official artifact provenance from observed checksums", () => {
@@ -262,15 +262,16 @@ test("report projection drops raw diagnostics and requires completed native evid
   const report = projectNativeReport(input);
   assert.equal(report.status, "PASS");
   assert.equal(report.agent.ancillaryRequestCount, 5);
-  assert.deepEqual(report.agent.historyTurns, [0, 1, 0, 2, 3, 4]);
-  assert.deepEqual(report.agent.reads, [0, 3, 0, 6, 9, 15]);
-  assert.deepEqual(report.agent.readResults, [0, 3, 0, 6, 9, 15]);
-  assert.deepEqual(report.agent.execRequests, [0, 0, 0, 0, 3, 3]);
-  assert.deepEqual(report.agent.execResults, [0, 0, 0, 0, 3, 3]);
-  assert.deepEqual(report.agent.execCloses, [0, 0, 0, 0, 3, 3]);
-  assert.deepEqual(report.agent.contextRequests, [1, 1, 1, 1, 1, 1]);
-  assert.deepEqual(report.agent.contextResults, [1, 1, 1, 1, 1, 1]);
-  assert.deepEqual(report.agent.contextCloses, [1, 1, 1, 1, 1, 1]);
+  assert.deepEqual(report.agent.historyTurns, [0, 1, 0, 2, 3, 4, 0]);
+  assert.deepEqual(report.agent.reads, [0, 3, 0, 6, 9, 15, 0]);
+  assert.deepEqual(report.agent.readResults, [0, 3, 0, 6, 9, 15, 0]);
+  assert.deepEqual(report.agent.execRequests, [0, 0, 0, 0, 3, 3, 1]);
+  assert.deepEqual(report.agent.execResults, [0, 0, 0, 0, 3, 3, 0]);
+  assert.deepEqual(report.agent.execCloses, [0, 0, 0, 0, 3, 3, 0]);
+  assert.deepEqual(report.agent.contextRequests, [1, 1, 1, 1, 1, 1, 1]);
+  assert.deepEqual(report.agent.contextResults, [1, 1, 1, 1, 1, 1, 1]);
+  assert.deepEqual(report.agent.contextCloses, [1, 1, 1, 1, 1, 1, 1]);
+  assert.deepEqual(report.agent.cancelled, [false, false, false, false, false, false, true]);
   assert.equal(report.evidence.skillSearch, true);
   assert.equal(report.evidence.skillAdd, true);
   assert.deepEqual(report.evidence.nativeContent, nativeReport().evidence.nativeContent);
@@ -299,6 +300,11 @@ test("PASS rejects missing, reordered, duplicate or incomplete session-flow evid
     (r) => { delete r.evidence.cleanup; }, (r) => { delete r.evidence.sameSessionFollowup; },
     (r) => { r.evidence.sessionIsolation = false; }, (r) => { delete r.evidence.appResume; },
     (r) => { delete r.evidence.skillSearch; }, (r) => { r.evidence.skillAdd = false; },
+    (r) => { delete r.evidence.pendingShellInterrupted; },
+    (r) => { delete r.agent.cancelled; }, (r) => { r.agent.cancelled[6] = false; },
+    (r) => { r.agent.cancelled[0] = true; }, (r) => { delete r.agent.cancelled[6]; },
+    (r) => { r.agent.cancelled[6] = "true"; }, (r) => { r.agent.cancelled.pop(); },
+    (r) => { r.agent.execResults[6] = 1; }, (r) => { r.agent.writes[6] = 1; },
     (r) => { r.evidence.nativeContent[1].stateMatched = false; },
     (r) => { r.evidence.nativeContent[3].composerMatched = false; },
     (r) => { delete r.evidence.nativeContent; }, (r) => { r.evidence.nativeContent.pop(); },

@@ -1166,7 +1166,7 @@ response bytes before writing new content.
 It does not use the App's simulated response stream, seed its conversation
 database, invoke Hooks directly, or bypass the product's native-content parser.
 
-Six native runs exercise an initial turn in conversation A, a repeated prompt
+Six completed native runs exercise an initial turn in conversation A, a repeated prompt
 in A with a different answer, a new conversation B with the same initial prompt
 and answer, an App restart followed by another ordinary prompt in A, then
 explicit Skill Search and Add turns in A. Every run completes the native lazy
@@ -1185,9 +1185,19 @@ natural-language compliance coverage. The
 restart retains only this check's isolated App profile; it does not restart the
 Backend or exercise native Continue, Retry, or Edit operations.
 
+A seventh run in a fresh conversation prepares a marker-only Shell command and
+leaves it awaiting native approval. The driver first verifies the matching open
+turn and retained metadata, then clicks that human message's Stop control without
+approving the command. Cancellation requires the native cancel action, correlated
+Shell rejection, tool-stream close and transport termination. The Hook must mark
+that exact turn interrupted and discard its metadata. The marker must remain
+absent and the previous eight Memory requests unchanged, including after App and
+Backend cleanup. This does not inject late approval or exercise running-tool
+interruption.
+
 Acceptance requires all of the following:
 
-- Exactly six native Agent requests with each submitted prompt and matching
+- Exactly seven native Agent requests. The first six complete with each submitted prompt and matching
   conversation/generation identity, KV write/acknowledgement counts of
   `3, 3, 3, 3, 6, 6`, and prior-turn counts of `0, 1, 0, 2, 3, 4` in that order.
   History KV requests and validated results must each total
@@ -1195,6 +1205,10 @@ Acceptance requires all of the following:
   counts must each be `0, 0, 0, 0, 3, 3`. Separate RequestContext request, result
   and close counts must each be `1, 1, 1, 1, 1, 1`; this protocol exchange is
   neither a user-visible tool step nor a persisted conversation step.
+- The final interrupted run has no history, KV writes, acknowledgements or
+  successful tool results. It completes one RequestContext exchange and requests
+  exactly one Shell command, which is rejected. Only that final run is cancelled;
+  it must have one interrupted Hook outcome and no completed or materialized outcome.
 - A separate, read-only SQLite oracle matching the App's composer/generation,
   conversation state and every emitted content-addressed blob byte for byte
   after each run, with `3, 6, 3, 9, 15, 21` reachable blobs respectively.
@@ -1253,7 +1267,7 @@ node scripts/cursor-app-container-check.mjs \
 Only `report.json` is exported and uploaded. Raw App logs, transcripts, SQLite
 files and Hook traces are not CI artifacts. Synthetic login is not real account
 authentication coverage. Native Continue/Retry/Edit, Backend restart,
-interruptions, permission races, model-driven Skill selection, Repo Memory workers,
+running-tool interruption, late-approval races, model-driven Skill selection, Repo Memory workers,
 upgrade/uninstall, macOS, and Windows remain outside this bounded session-flow
 matrix.
 

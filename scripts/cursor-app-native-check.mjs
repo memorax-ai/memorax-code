@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { networkInterfaces } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -27,6 +27,8 @@ const fixtures = [
   { prompt: "Use the memorax-code skill to save the verified parser validation lesson.",
     answer: "The installed Skill saved the parser validation lesson.", operation: "add" },
 ];
+const interruptedFixture = { prompt: "Prepare the synthetic marker command, then wait for approval.",
+  answer: "This interrupted run must never complete." };
 const fixtureKey = "cursor-app-ci-synthetic-key", fixtureUser = "cursor-app-ci-synthetic-user";
 const skillQuery = "Which parser validation invariant applies to this synthetic task?";
 const skillMemory = "Validate parser input before interpreting structured data.";
@@ -35,6 +37,7 @@ const searchMemory = "CURSOR_NATIVE_SEARCH_RESULT: validate parser input before 
 const memoryRequests = [], turns = [];
 let agent, memory, app, browser, cli, page, started = false, appLog = "";
 let root, env, chromium, userData, workspace, failure, failureUi, skillRoot, skillText;
+let interruption;
 const referenceTexts = new Map();
 
 function check(value, code) { if (!value) throw Object.assign(new Error(code), { code }); }
@@ -76,7 +79,8 @@ async function ownedProcessesRemain({ includeBackend = true } = {}) {
     try { argv = (await readFile(`/proc/${entry}/cmdline`, "utf8")).split("\0"); }
     catch (error) { if (error.code === "ENOENT" || error.code === "ESRCH") continue; throw error; }
     if (argv[0]?.startsWith(`${dirname(appPath)}/`) || argv.some((arg) => arg === env.MEMORAX_CODE_HOME
-      || arg.startsWith(`${env.MEMORAX_CODE_HOME}/`) || (includeBackend && arg.startsWith(`${packageRoot}/`)))) return true;
+      || arg.startsWith(`${env.MEMORAX_CODE_HOME}/`) || (includeBackend && arg.startsWith(`${packageRoot}/`))
+      || (interruption && arg.includes(interruption.marker)))) return true;
   }
   return false;
 }
@@ -98,6 +102,15 @@ function assertSkillMemory(operation, result, request) {
     apiKey: fixtureKey, baseUserId: fixtureUser, workspaceName: basename(workspace) });
 }
 function toolSteps(run, results) {
+  if (run === agent.runs[fixtures.length]) {
+    check(interruption && run.prompt === interruptedFixture.prompt && run.conversationId === interruption.sessionId,
+      "CURSOR_APP_INTERRUPTION_IDENTITY");
+    if (!run.requestContextCloseCount) return { kind: "requestContext" };
+    check(results.length === 0, "CURSOR_APP_INTERRUPTION_TOOL_EXECUTED");
+    return { kind: "shell", command: [process.execPath, "-e",
+      "require('node:fs').writeFileSync(process.argv[1], 'unexpected execution')", interruption.marker].map(quote).join(" "),
+    workingDirectory: workspace, timeoutMs: 20000 };
+  }
   const fixture = fixtures[turns.length - 1];
   check(run.prompt === fixture?.prompt && run.conversationId === turns.at(-1).sessionId, "CURSOR_APP_SKILL_IDENTITY");
   if (!run.requestContextCloseCount) return { kind: "requestContext" };
@@ -279,6 +292,72 @@ async function runTurn(sessionId) {
   }
 }
 
+async function assertInterrupted() {
+  const run = agent.runs[fixtures.length];
+  check(run?.cancelled && !run.completed && !run.error && run.cancellation?.actionReceived === true
+    && run.cancellation.rejected === true && run.cancellation.execClosed === true && run.cancellation.transportClosed
+    && [2, 8].includes(run.cancellation.rstCode) && run.kvWriteCount === 0 && run.kvAckCount === 0
+    && run.execRequestCount === 1 && run.execResultCount === 0 && run.execCloseCount === 0
+    && run.requestContextRequestCount === 1 && run.requestContextResultCount === 1 && run.requestContextCloseCount === 1,
+  "CURSOR_APP_INTERRUPTION_TRANSPORT");
+  try { await lstat(interruption.marker); check(false, "CURSOR_APP_INTERRUPTION_TOOL_EXECUTED"); }
+  catch (error) { if (error.code !== "ENOENT") throw error; }
+  const diagnostics = await collectCursorAppDiagnostics({ home: env.MEMORAX_CODE_HOME,
+    sessionId: interruption.sessionId, turnId: run.requestId });
+  const store = diagnostics.turnStore, trace = diagnostics.trace;
+  check(store.readStatus === "present" && store.versionMatched && store.clientMatched && store.sessionMatched
+    && store.activePresent && store.turnMatched && store.state === "interrupted" && store.stopStatus === "aborted"
+    && store.reason === "interrupted" && !store.metadataPresent && trace.readStatus === "present"
+    && trace.turnStartCount === 1 && trace.interruptedCount === 1 && trace.completedCount === 0 && trace.materializedCount === 0,
+  "CURSOR_APP_INTERRUPTION_HOOK");
+  assertWriteback();
+}
+
+async function interruptPendingShell() {
+  const sessionId = await openSession();
+  interruption = { sessionId, marker: join(workspace, "cancelled-shell-marker") };
+  report.stage = "pending-shell-interruption";
+  const composer = page.locator(`[data-composer-id="${sessionId}"][data-composer-status]:visible`);
+  const input = composer.locator('[contenteditable="true"][role="textbox"]:visible');
+  await input.fill(interruptedFixture.prompt); await input.press("Enter");
+  let run, stop;
+  await waitFor(async () => {
+    check(!agent.errors.length, agent.errors[0]);
+    run = agent.runs[fixtures.length];
+    if (!run?.pendingTool) return false;
+    check(run.conversationId === sessionId && run.prompt === interruptedFixture.prompt && run.pendingTool.kind === "shell",
+      "CURSOR_APP_INTERRUPTION_IDENTITY");
+    const approval = composer.locator(`[data-tool-call-id="${run.pendingTool.toolCallId}"]:visible`)
+      .getByRole("button", { name: "Run", exact: true });
+    stop = composer.locator(`[data-message-role="human"][data-message-id="${run.userMessageId}"], `
+      + `[data-message-role="human"][data-server-bubble-id="${run.userMessageId}"]`)
+      .locator(".human-message-action-slot .stop-button:visible");
+    check(await approval.count() <= 1 && await stop.count() <= 1, "CURSOR_APP_INTERRUPTION_UI_AMBIGUOUS");
+    return await approval.count() === 1 && await approval.isVisible() && await stop.count() === 1;
+  }, "CURSOR_APP_INTERRUPTION_APPROVAL_TIMEOUT");
+  await waitFor(async () => {
+    const { turnStore: store, trace } = await collectCursorAppDiagnostics({ home: env.MEMORAX_CODE_HOME,
+      sessionId, turnId: run.requestId });
+    return store.readStatus === "present" && store.versionMatched && store.clientMatched && store.sessionMatched
+      && store.activePresent && store.turnMatched && store.state === "open" && store.stopStatus === "absent"
+      && store.metadataPresent && trace.readStatus === "present" && trace.turnStartCount === 1
+      && trace.completedCount === 0 && trace.interruptedCount === 0 && trace.materializedCount === 0;
+  }, "CURSOR_APP_INTERRUPTION_START_TIMEOUT");
+  agent.armCancellation({ requestId: run.requestId, toolCallId: run.pendingTool.toolCallId });
+  await stop.click({ timeout: 2000 });
+  await waitFor(async () => {
+    check(!agent.errors.length, agent.errors[0]);
+    return run.cancelled && await composer.getAttribute("data-composer-status") === "cancelled";
+  }, "CURSOR_APP_INTERRUPTION_TIMEOUT");
+  await waitFor(async () => {
+    try { await assertInterrupted(); return true; } catch (error) {
+      if (error.code !== "CURSOR_APP_INTERRUPTION_HOOK") throw error;
+      return false;
+    }
+  }, "CURSOR_APP_INTERRUPTION_HOOK_TIMEOUT");
+  report.evidence.pendingShellInterrupted = true;
+}
+
 try {
   const [nodeMajor, nodeMinor] = process.versions.node.split(".").map(Number);
   check([7, 8].includes(process.argv.length) && process.platform === "linux" && ["22", "24"].includes(expectedNodeMajor)
@@ -297,7 +376,7 @@ try {
   root = await mkdtemp("/tmp/memorax-cursor-app-ci-");
   const home = join(root, "home");
   userData = join(root, "app-data"); workspace = join(root, "workspace");
-  agent = await startCursorAgentMock({ answers: fixtures.map((fixture) => fixture.answer), toolSteps, timeoutMs: 60000 });
+  agent = await startCursorAgentMock({ answers: [...fixtures, interruptedFixture].map((fixture) => fixture.answer), toolSteps, timeoutMs: 60000 });
   memory = createServer(async (request, response) => {
     try {
       let raw = "";
@@ -377,6 +456,7 @@ try {
   check((await cli("status")).cursorAdapter?.cursorHooks?.runtimeObserved === true, "CURSOR_APP_HOOK_NOT_OBSERVED");
   report.evidence.nativeHooks = true;
   report.evidence.exactAutomaticAdd = true;
+  await interruptPendingShell();
   report.stage = "cleanup";
 } catch (error) {
   failure = error?.stack ?? String(error); report.errorCode = safeCode(error);
@@ -393,7 +473,7 @@ finally {
   } catch (error) { report.cleanupError ??= safeCode(error); }
   if (agent) {
     await bounded(agent.close(), "CURSOR_APP_AGENT_CLEANUP").catch(() => { report.cleanupError = "CURSOR_APP_AGENT_CLEANUP"; });
-    report.agent = { runs: agent.runs.length, writes: agent.runs.map((run) => run.kvWriteCount),
+    report.agent = { runs: agent.runs.length, cancelled: agent.runs.map((run) => run.cancelled === true), writes: agent.runs.map((run) => run.kvWriteCount),
       acknowledgements: agent.runs.map((run) => run.kvAckCount), ancillaryRequestCount: agent.ancillaryRequestCount,
       unsupportedRpcCount: agent.unsupportedRpcCount, historyTurns: agent.runs.map((run) => run.turnRefs.length),
       reads: agent.runs.map((run) => run.kvReadCount), readResults: agent.runs.map((run) => run.kvReadResultCount),
@@ -413,9 +493,10 @@ finally {
   }
   if (!report.errorCode && !report.cleanupError) {
     try {
-      check(turns.length === fixtures.length && agent.runs.length === fixtures.length
-        && agent.runs.every((run, index) => run.completed && run.kvWriteCount === (fixtures[index].operation ? 6 : 3)
+      check(turns.length === fixtures.length && agent.runs.length === fixtures.length + 1
+        && agent.runs.slice(0, fixtures.length).every((run, index) => run.completed && run.kvWriteCount === (fixtures[index].operation ? 6 : 3)
           && run.kvAckCount === run.kvWriteCount), "CURSOR_APP_FINAL_RUN_COUNT");
+      await assertInterrupted();
       assertWriteback();
       for (const [index, operation] of [[4, "search"], [5, "add"]]) {
         assertSkillMemory(operation, JSON.parse(agent.runs[index].toolResults[2].stdout), memoryRequests[index === 4 ? 4 : 6]);
@@ -436,6 +517,10 @@ finally {
         skills: run.requestContext.agentSkills.map(({ fullPath, parseError, disableModelInvocation }) => ({ fullPath, parseError: Boolean(parseError), disableModelInvocation })) },
       hookContexts: run.userHookAdditionalContexts?.map(({ hookEventName, content }) => ({ hookEventName, length: content.length })),
       contextParts: Boolean(run.requestContextParts), pendingTool: run.pendingTool, execRejection: run.execRejection, error: run.error,
+      lastUnsupportedShape: run.lastUnsupportedShape,
+      cancellation: run.cancellation && { actionReceived: run.cancellation.actionReceived, rejected: run.cancellation.rejected,
+        execClosed: run.cancellation.execClosed, transportClosed: run.cancellation.transportClosed, rstCode: run.cancellation.rstCode,
+        transportEvents: run.cancellation.transportEvents },
     })) ?? []), { mode: 0o600 });
     if (failure) await writeFile(join(reportDir, ".private/failure.log"), failure, { mode: 0o600 });
     if (failureUi) await writeFile(join(reportDir, ".private/ui.txt"), failureUi, { mode: 0o600 });

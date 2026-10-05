@@ -47,6 +47,10 @@ function execShellResult(id, command, workingDirectory, stdout, stderr = "") {
     field(1, command), field(2, workingDirectory), field(5, stdout), field(6, stderr),
   ])))]));
 }
+function execShellRejected(id, command, workingDirectory, { variant = 4, execId } = {}) {
+  return field(2, Buffer.concat([scalar(1, id), ...(execId ? [field(15, execId)] : []),
+    field(2, field(variant, Buffer.concat([field(1, command), field(2, workingDirectory), field(3, "private-rejection-canary")])))]));
+}
 function execControl(id, event = "close") {
   return field(5, field(event === "close" ? 1 : event === "heartbeat" ? 3 : 2,
     Buffer.concat([scalar(1, id), ...(event === "error" ? [field(2, "private-exec-error-canary")] : [])])));
@@ -54,6 +58,7 @@ function execControl(id, event = "close") {
 function execContextResult(id, context) {
   return field(2, Buffer.concat([scalar(1, id), field(10, field(1, field(1, context)))]));
 }
+function cancelAction(reason = "user_stopped_generation") { return field(4, field(3, field(1, reason))); }
 function identity(number) { return `${number.toString(16).padStart(8, "0")}-1111-4111-8111-111111111111`; }
 function frame(message, compression = "identity") {
   const bytes = compression === "gzip" ? gzipSync(message) : message;
@@ -170,6 +175,23 @@ async function completedRun(t, server, { prior = [], session = conversationId, t
     { flags: 0, body: field(1, field(14, Buffer.alloc(0))) }, { flags: 2, body: Buffer.from("{}") },
   ]);
   return run;
+}
+async function pendingShell(t, { context = true, timeoutMs = 15_000 } = {}) {
+  const step = { kind: "shell", command: "printf synthetic > stop-marker", workingDirectory: "/synthetic/workspace", timeoutMs: 1_000 };
+  const server = await mock(t, { timeoutMs, toolSteps(run, results) {
+    if (run.requestId !== requestId) return;
+    if (context && !run.requestContextCloseCount) return { kind: "requestContext" };
+    return results.length ? undefined : step;
+  } });
+  const stream = openRun(t, server);
+  stream.send(runMessage());
+  if (context) {
+    await waitFor(() => server.runs[0]?.requestContextRequestCount === 1);
+    stream.request.write(Buffer.concat([frame(execContextResult(1, Buffer.alloc(0))), frame(execControl(1))]));
+  }
+  await waitFor(() => server.runs[0]?.pendingTool?.kind === "shell");
+  const run = server.runs[0], tool = { ...run.pendingTool };
+  return { server, stream, run, tool, step, arm: () => server.armCancellation({ requestId, toolCallId: tool.toolCallId }) };
 }
 
 test("ordinary HTTP/1 ancillary services share the local port and retain only route metadata", async (t) => {
@@ -583,6 +605,8 @@ test("Exec heartbeats are correlated and bounded without extending the run deadl
 test("tool planning keeps only explicitly allowed fixed assertion codes and rejects unsupported descriptors", async (t) => {
   for (const [name, toolSteps, expected] of [
     ["fixed assertion", () => { throw Object.assign(new Error("private-plan-canary"), { nativeCode: "CURSOR_APP_SKILL_NOT_READ" }); }, "CURSOR_APP_SKILL_NOT_READ"],
+    ...["CURSOR_APP_INTERRUPTION_IDENTITY", "CURSOR_APP_INTERRUPTION_TOOL_EXECUTED"].map((code) =>
+      [code, () => { throw Object.assign(new Error("private-plan-canary"), { nativeCode: code }); }, code]),
     ["private exception", () => { throw new Error("private-plan-canary"); }, "CURSOR_AGENT_TOOL_PLAN_FAILED"],
     ["invented code", () => { throw { code: "CURSOR_APP_SKILL_PRIVATE_CANARY" }; }, "CURSOR_AGENT_TOOL_PLAN_FAILED"],
     ["unsupported kind", () => ({ kind: "write", path: "/synthetic" }), "CURSOR_APP_EXEC_OPTIONS"],
@@ -824,6 +848,259 @@ test("client cancellation records an incomplete run and releases its stream", as
   assert.ok(["CURSOR_AGENT_ACK_MISSING", "CURSOR_AGENT_STREAM_ABORTED"].includes(server.errors[0]));
   assert.equal(server.runs[0].completed, false);
   assert.equal(server.runs[0].kvAckCount, 0);
+});
+
+test("an explicitly armed pending Shell accepts only client CANCEL without completing the turn", async (t) => {
+  for (const response of ["none", "rejected", "rejected-and-closed"]) await t.test(response, async (t) => {
+    const { server, stream, run, tool, step, arm } = await pendingShell(t);
+    assert.equal(arm(), undefined);
+    assert.throws(arm, { code: "CURSOR_AGENT_CANCELLATION_STATE" });
+    stream.send(execControl(tool.id, "heartbeat"));
+    if (response !== "none") {
+      stream.send(execShellRejected(tool.id, step.command, step.workingDirectory, { execId: tool.toolCallId }));
+      await waitFor(() => run.cancellation.rejected);
+      if (response === "rejected-and-closed") {
+        stream.send(execControl(tool.id));
+        await waitFor(() => run.cancellation.execClosed);
+      }
+    }
+    stream.request.close(http2Constants.NGHTTP2_CANCEL);
+    await waitFor(() => run.cancelled || run.error);
+    assert.deepEqual(server.errors, []);
+    assert.equal(run.cancelled, true);
+    assert.equal(run.completed, false);
+    assert.equal(run.error, undefined);
+    assert.equal(run.pendingTool, undefined);
+    const { transportEvents, ...evidence } = run.cancellation;
+    assert.ok(transportEvents.some((entry) => entry.event === "close" && entry.rstCode === http2Constants.NGHTTP2_CANCEL));
+    assert.deepEqual(evidence, { id: tool.id, toolCallId: tool.toolCallId, rejected: response !== "none",
+      execClosed: response === "rejected-and-closed", actionReceived: false, transportClosed: true, rstCode: http2Constants.NGHTTP2_CANCEL });
+    assert.deepEqual([run.kvWriteCount, run.kvAckCount, run.execRequestCount, run.execResultCount, run.execCloseCount], [0, 0, 1, 0, 0]);
+    assert.deepEqual([run.requestContextRequestCount, run.requestContextResultCount, run.requestContextCloseCount], [1, 1, 1]);
+    assert.deepEqual(server.errors, []);
+    assert.equal(stream.frames.length, 3, "cancellation sends no tool completion, server abort or terminal answer");
+    assert.throws(arm, { code: "CURSOR_AGENT_CANCELLATION_STATE" });
+    const next = await completedRun(t, server);
+    assert.equal(next.turnRefs.length, 0, "cancelled turns are not admitted to completed history");
+    assert.equal(next.completed, true);
+    assert.deepEqual(server.errors, []);
+  });
+});
+
+test("a native Stop action is accepted only on its armed stream and still needs a client CANCEL", async (t) => {
+  for (const reason of ["user_stopped_generation", "composer_abort_controller_aborted"]) await t.test(reason, async (t) => {
+    const { server, stream, run, arm } = await pendingShell(t);
+    arm();
+    stream.send(cancelAction(reason));
+    await waitFor(() => run.cancellation.actionReceived || run.error);
+    assert.deepEqual(server.errors, []);
+    assert.equal(run.cancellation.actionReceived, true);
+    assert.equal(run.cancelled, false);
+    assert.equal(run.completed, false);
+    assert.deepEqual([run.execResultCount, run.execCloseCount, run.kvWriteCount], [0, 0, 0]);
+    stream.request.close(http2Constants.NGHTTP2_CANCEL);
+    await waitFor(() => run.cancelled || run.error);
+    assert.equal(run.cancelled, true);
+    assert.deepEqual(server.errors, []);
+    assert.equal(stream.frames.length, 3);
+  });
+});
+
+test("native Stop with a matching Shell rejection and Exec close permits the observed INTERNAL_ERROR stream reset", async (t) => {
+  for (const rstCode of [http2Constants.NGHTTP2_INTERNAL_ERROR, http2Constants.NGHTTP2_CANCEL]) await t.test(String(rstCode), async (t) => {
+    const { server, stream, run, tool, step, arm } = await pendingShell(t);
+    arm();
+    stream.request.write(Buffer.concat([
+      frame(cancelAction("composer_abort_controller_aborted")),
+      frame(execShellRejected(tool.id, step.command, step.workingDirectory, { execId: tool.toolCallId })),
+      frame(execControl(tool.id)),
+    ]));
+    await waitFor(() => run.cancellation.execClosed);
+    assert.equal(run.cancelled, false);
+    stream.request.close(rstCode);
+    await waitFor(() => run.cancelled || run.error);
+    assert.deepEqual(server.errors, []);
+    assert.equal(run.cancelled, true);
+    assert.equal(run.completed, false);
+    assert.equal(run.cancellation.rstCode, rstCode);
+    assert.equal(run.cancellation.transportClosed, true);
+    assert.deepEqual([run.cancellation.actionReceived, run.cancellation.rejected, run.cancellation.execClosed], [true, true, true]);
+    assert.deepEqual([run.execResultCount, run.execCloseCount, run.kvWriteCount, run.kvAckCount], [0, 0, 0, 0]);
+    assert.equal(stream.frames.length, 3);
+    assert.ok(run.cancellation.transportEvents.every((event) => !event.sessionClosed && !event.sessionDestroyed));
+  });
+});
+
+test("INTERNAL_ERROR requires all native cancellation evidence and never permits unrelated resets or a closed session", async (t) => {
+  for (const kind of ["unarmed", "missing-action", "missing-rejection", "missing-exec-close", "no-error-reset", "unknown-reset", "session-disconnect", "truncated"]) await t.test(kind, async (t) => {
+    const { server, stream, run, tool, step, arm } = await pendingShell(t);
+    if (kind !== "unarmed") {
+      arm();
+      const messages = [
+        ...(kind === "missing-action" ? [] : [cancelAction()]),
+        ...(kind === "missing-rejection" ? [] : [execShellRejected(tool.id, step.command, step.workingDirectory)]),
+        ...(kind === "missing-exec-close" ? [] : [execControl(tool.id)]),
+      ];
+      stream.request.write(Buffer.concat(messages.map((message) => frame(message))));
+      await waitFor(() => run.error || (kind === "missing-exec-close" ? run.cancellation.rejected : run.cancellation.execClosed));
+    }
+    if (!run.error) {
+      if (kind === "truncated") { stream.request.write(Buffer.from([0, 0])); await delay(20); }
+      if (kind === "session-disconnect") stream.client.destroy(new Error("private-disconnect-canary"), http2Constants.NGHTTP2_INTERNAL_ERROR);
+      else stream.request.close(kind === "no-error-reset" ? http2Constants.NGHTTP2_NO_ERROR
+        : kind === "unknown-reset" ? http2Constants.NGHTTP2_PROTOCOL_ERROR : http2Constants.NGHTTP2_INTERNAL_ERROR);
+    }
+    await waitFor(() => server.errors.length === 1);
+    assert.equal(run.cancelled, false);
+    assert.equal(run.completed, false);
+    assert.deepEqual([run.execResultCount, run.execCloseCount, run.kvWriteCount, run.kvAckCount], [0, 0, 0, 0]);
+    if (kind === "missing-rejection") assert.deepEqual(server.errors, ["CURSOR_AGENT_EXEC_RESULT_MISSING"]);
+    if (kind === "truncated") assert.deepEqual(server.errors, ["CURSOR_APP_CONNECT_TRUNCATED"]);
+    assert.throws(arm, { code: "CURSOR_AGENT_CANCELLATION_STATE" });
+  });
+});
+
+test("cancellation can arm only the exact unresolved Shell after a completed RequestContext", async (t) => {
+  const { server, stream, run, tool, step, arm } = await pendingShell(t);
+  for (const value of [undefined, null, {}, { requestId: identity(90), toolCallId: tool.toolCallId },
+    { requestId, toolCallId: identity(91) }]) {
+    assert.throws(() => server.armCancellation(value), { code: "CURSOR_AGENT_CANCELLATION_STATE" });
+    assert.equal(run.cancellation, undefined);
+  }
+  stream.send(execShellResult(tool.id, step.command, step.workingDirectory, "synthetic"));
+  await waitFor(() => run.execResultCount === 1);
+  assert.throws(arm, { code: "CURSOR_AGENT_CANCELLATION_STATE" });
+  stream.send(execControl(tool.id));
+  await waitFor(() => run.kvWriteCount === 1);
+  assert.throws(arm, { code: "CURSOR_AGENT_CANCELLATION_STATE" });
+  const noContext = await pendingShell(t, { context: false });
+  assert.throws(noContext.arm, { code: "CURSOR_AGENT_CANCELLATION_STATE" });
+  const pendingContext = await mock(t, { toolSteps: () => ({ kind: "requestContext" }) });
+  const contextStream = openRun(t, pendingContext);
+  contextStream.send(runMessage());
+  await waitFor(() => pendingContext.runs[0]?.requestContextRequestCount === 1);
+  assert.throws(() => pendingContext.armCancellation({ requestId, toolCallId: tool.toolCallId }),
+    { code: "CURSOR_AGENT_CANCELLATION_STATE" });
+  const pendingRead = await mock(t, { toolSteps: (run) => run.requestContextCloseCount
+    ? { kind: "read", path: "/synthetic/skill" } : { kind: "requestContext" } });
+  const readStream = openRun(t, pendingRead);
+  readStream.send(runMessage());
+  await waitFor(() => pendingRead.runs[0]?.requestContextRequestCount === 1);
+  readStream.request.write(Buffer.concat([frame(execContextResult(1, Buffer.alloc(0))), frame(execControl(1))]));
+  await waitFor(() => pendingRead.runs[0]?.pendingTool?.kind === "read");
+  assert.throws(() => pendingRead.armCancellation({ requestId, toolCallId: pendingRead.runs[0].pendingTool.toolCallId }),
+    { code: "CURSOR_AGENT_CANCELLATION_STATE" });
+});
+
+test("armed cancellation still rejects execution, unrelated results and malformed protocol messages", async (t) => {
+  for (const [name, messages, expected] of [
+    ["success", (p) => [execShellResult(p.tool.id, p.step.command, p.step.workingDirectory, "ran")], "CURSOR_AGENT_CANCELLATION_EXECUTED"],
+    ["other rejection", (p) => [execShellRejected(p.tool.id, p.step.command, p.step.workingDirectory, { variant: 5 })], "CURSOR_APP_EXEC_REJECTED"],
+    ["wrong command", (p) => [execShellRejected(p.tool.id, "other", p.step.workingDirectory)], "CURSOR_APP_EXEC_IDENTITY"],
+    ["wrong directory", (p) => [execShellRejected(p.tool.id, p.step.command, "/other")], "CURSOR_APP_EXEC_IDENTITY"],
+    ["wrong exec identity", (p) => [execShellRejected(p.tool.id, p.step.command, p.step.workingDirectory, { execId: identity(90) })], "CURSOR_APP_EXEC_IDENTITY"],
+    ["wrong ID", (p) => [execShellRejected(p.tool.id + 1, p.step.command, p.step.workingDirectory)], "CURSOR_AGENT_EXEC_UNKNOWN"],
+    ["wrong kind", (p) => [execReadResult(p.tool.id, "/synthetic", "content")], "CURSOR_APP_EXEC_IDENTITY"],
+    ["close before rejection", (p) => [execControl(p.tool.id)], "CURSOR_AGENT_EXEC_RESULT_MISSING"],
+    ["throw", (p) => [execControl(p.tool.id, "error")], "CURSOR_AGENT_EXEC_THROWN"],
+    ["duplicate rejection", (p) => Array(2).fill(execShellRejected(p.tool.id, p.step.command, p.step.workingDirectory)), "CURSOR_AGENT_EXEC_DUPLICATE"],
+    ["success after rejection", (p) => [execShellRejected(p.tool.id, p.step.command, p.step.workingDirectory),
+      execShellResult(p.tool.id, p.step.command, p.step.workingDirectory, "ran")], "CURSOR_AGENT_EXEC_DUPLICATE"],
+    ["success after rejected close", (p) => [cancelAction(), execShellRejected(p.tool.id, p.step.command, p.step.workingDirectory),
+      execControl(p.tool.id), execShellResult(p.tool.id, p.step.command, p.step.workingDirectory, "ran")], "CURSOR_AGENT_EXEC_DUPLICATE"],
+    ["duplicate close", (p) => [execShellRejected(p.tool.id, p.step.command, p.step.workingDirectory), execControl(p.tool.id), execControl(p.tool.id)], "CURSOR_AGENT_EXEC_DUPLICATE"],
+    ["unexpected KV ACK", (p) => [acknowledgement(p.tool.id)], "CURSOR_AGENT_UNKNOWN_ACK"],
+    ["duplicate Run", () => [runMessage()], "CURSOR_AGENT_DUPLICATE_RUN"],
+    ["duplicate Stop action", () => [cancelAction(), cancelAction()], "CURSOR_AGENT_CANCELLATION_DUPLICATE"],
+    ["duplicate controller Stop action", () => Array(2).fill(cancelAction("composer_abort_controller_aborted")), "CURSOR_AGENT_CANCELLATION_DUPLICATE"],
+    ["mixed Stop actions", () => [cancelAction("composer_abort_controller_aborted"), cancelAction()], "CURSOR_AGENT_CANCELLATION_DUPLICATE"],
+    ["other cancellation reason", () => [cancelAction("new_message_submitted")], "CURSOR_APP_CLIENT_MESSAGE_UNSUPPORTED"],
+  ]) await t.test(name, async (t) => {
+    const pending = await pendingShell(t), { server, stream, run } = pending;
+    pending.arm();
+    stream.request.write(Buffer.concat(messages(pending).map((message) => frame(message))));
+    await stream.done;
+    assert.equal(run.cancelled, false);
+    assert.equal(run.completed, false);
+    assert.equal(run.kvWriteCount, 0);
+    assert.deepEqual(server.errors, [expected]);
+    assert.throws(pending.arm, { code: "CURSOR_AGENT_CANCELLATION_STATE" });
+  });
+});
+
+test("expected cancellation never turns an ordinary close, timeout or shutdown into success", async (t) => {
+  for (const kind of ["normal-close", "error-close", "session-disconnect", "request-end", "timeout", "action-timeout", "shutdown", "unarmed", "unarmed-rejected", "unarmed-action", "unarmed-controller-action", "truncated"]) await t.test(kind, async (t) => {
+    const { server, stream, run, tool, step, arm } = await pendingShell(t, { timeoutMs: ["timeout", "action-timeout", "request-end"].includes(kind) ? 150 : 15_000 });
+    if (!kind.startsWith("unarmed")) arm();
+    if (kind === "shutdown") await server.close();
+    else if (kind === "session-disconnect") stream.client.destroy();
+    else if (kind === "unarmed-rejected") stream.send(execShellRejected(tool.id, step.command, step.workingDirectory));
+    else if (["unarmed-action", "action-timeout"].includes(kind)) stream.send(cancelAction());
+    else if (kind === "unarmed-controller-action") stream.send(cancelAction("composer_abort_controller_aborted"));
+    else if (kind === "request-end") stream.request.end();
+    else if (kind !== "timeout") {
+      if (kind === "truncated") { stream.request.write(Buffer.from([0, 0])); await delay(20); }
+      stream.request.close(kind === "normal-close" ? http2Constants.NGHTTP2_NO_ERROR
+        : kind === "error-close" ? http2Constants.NGHTTP2_INTERNAL_ERROR : http2Constants.NGHTTP2_CANCEL);
+    }
+    if (kind !== "shutdown") await waitFor(() => server.errors.length === 1 || run.cancelled);
+    assert.equal(run.cancelled, false, JSON.stringify(run.cancellation?.transportEvents));
+    assert.equal(run.completed, false);
+    assert.equal(run.kvWriteCount, 0);
+    if (kind === "session-disconnect") {
+      assert.deepEqual(server.errors, ["CURSOR_AGENT_STREAM_ABORTED"]);
+      assert.equal(run.cancellation.transportClosed, false);
+    }
+    if (["timeout", "action-timeout"].includes(kind)) assert.deepEqual(server.errors, ["CURSOR_AGENT_TIMEOUT"]);
+    if (kind === "unarmed-rejected") assert.deepEqual(server.errors, ["CURSOR_APP_EXEC_REJECTED"]);
+    if (["unarmed-action", "unarmed-controller-action"].includes(kind)) assert.deepEqual(server.errors, ["CURSOR_APP_CLIENT_MESSAGE_UNSUPPORTED"]);
+    if (kind === "truncated") assert.deepEqual(server.errors, ["CURSOR_APP_CONNECT_TRUNCATED"]);
+    assert.throws(arm, { code: "CURSOR_AGENT_CANCELLATION_STATE" });
+  });
+});
+
+test("arming one run does not authorize a Stop action on another stream", async (t) => {
+  for (const reason of ["user_stopped_generation", "composer_abort_controller_aborted"]) await t.test(reason, async (t) => {
+    const { server, run, arm } = await pendingShell(t);
+    arm();
+    const other = openRun(t, server, { headers: { "x-request-id": identity(90) } });
+    other.send(cancelAction(reason));
+    await other.done;
+    assert.equal(run.cancellation.actionReceived, false);
+    assert.equal(run.cancelled, false);
+    assert.equal(run.error, undefined);
+    assert.deepEqual(server.errors, ["CURSOR_APP_CLIENT_MESSAGE_UNSUPPORTED"]);
+  });
+});
+
+test("unsupported armed messages expose only private bounded protocol shapes", async (t) => {
+  const { server, stream, run, arm } = await pendingShell(t);
+  arm();
+  stream.send(cancelAction("private-reason-canary"));
+  await stream.done;
+  assert.deepEqual(run.lastUnsupportedShape, { outer: [{ number: 4, wire: 2 }], action: [{ number: 3, wire: 2 }],
+    cancel: [{ number: 1, wire: 2 }], cancelReason: "other" });
+  assert.equal(JSON.stringify(run.lastUnsupportedShape).includes("canary"), false);
+  assert.deepEqual(server.errors, ["CURSOR_APP_CLIENT_MESSAGE_UNSUPPORTED"]);
+  assert.equal(run.cancelled, false);
+});
+
+test("unexpected cancellation transport retains only fixed events, numeric reset codes and state flags", async (t) => {
+  const { server, stream, run, arm } = await pendingShell(t);
+  arm();
+  stream.request.close(http2Constants.NGHTTP2_NO_ERROR);
+  await waitFor(() => run.cancellation.transportEvents?.some((entry) => entry.event === "close"));
+  assert.equal(run.cancelled, false);
+  assert.equal(run.completed, false);
+  assert.equal(server.errors.length, 1);
+  assert.ok(run.cancellation.transportEvents.length <= 8);
+  for (const entry of run.cancellation.transportEvents) {
+    assert.deepEqual(Object.keys(entry), ["event", "rstCode", "streamClosed", "streamDestroyed", "sessionClosed", "sessionDestroyed", "serverClosed"]);
+    assert.ok(["aborted", "error", "close"].includes(entry.event));
+    assert.ok(entry.rstCode === null || Number.isInteger(entry.rstCode));
+    for (const key of ["streamClosed", "streamDestroyed", "sessionClosed", "sessionDestroyed", "serverClosed"]) assert.equal(typeof entry[key], "boolean");
+  }
+  assert.equal(run.cancellation.transportEvents.at(-1).rstCode, http2Constants.NGHTTP2_NO_ERROR);
 });
 
 test("duplicate runs are rejected within a stream and across requests", async (t) => {
