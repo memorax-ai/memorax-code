@@ -4,8 +4,8 @@ import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { collectCursorAppDiagnostics, collectCursorAppLaunchDiagnostics, isCursorAppDiagnostics,
-  projectCursorAppDiagnostics, projectCursorAppLaunchDiagnostics } from "./cursor-app-diagnostics.mjs";
+import { collectCursorAppDiagnostics, collectCursorAppLaunchDiagnostics, collectCursorAppStopDiagnostics, isCursorAppDiagnostics,
+  projectCursorAppDiagnostics, projectCursorAppLaunchDiagnostics, projectCursorAppStopDiagnostics } from "./cursor-app-diagnostics.mjs";
 
 const privateCanary = "private-content-path-token-canary";
 
@@ -39,6 +39,58 @@ test("launch diagnostic projection cannot reflect arbitrary fields or invalid st
     assert.equal(projectCursorAppLaunchDiagnostics({ spawnError }).spawnError, spawnError);
   }
 });
+
+test("Seatbelt apply denial requires the exact same-line marker", () => {
+  for (const log of ["sandbox_apply: Operation not permitted\n", `${privateCanary}: sandbox_apply: Operation not permitted\n`]) {
+    const result = collectCursorAppLaunchDiagnostics({ log });
+    assert.equal(result.markers.seatbeltApplyDenied, true);
+    assert.equal(JSON.stringify(result).includes(privateCanary), false);
+  }
+  for (const log of ["sandbox_apply:\nOperation not permitted", "sandbox_init: Operation not permitted",
+    "sandbox_apply: Invalid argument\nPermission denied", "sandbox_apply: Operation not permittedextra"]) {
+    assert.equal(collectCursorAppLaunchDiagnostics({ log }).markers.seatbeltApplyDenied, false);
+  }
+});
+
+test("candidate stop diagnostics retain only fixed JSON result and process fields", () => {
+  const result = collectCursorAppStopDiagnostics({ exitCode: 1, signal: null, timedOut: false,
+    stdout: JSON.stringify({ ok: false, action: "stop", error: privateCanary,
+      backend: { ok: false, errorCode: "BACKEND_OWNERSHIP_UNVERIFIED", stage: "verify_ownership",
+        failureReason: "process_probe_inconclusive", systemCode: "EPERM", processState: "unknown",
+        state: { pid: 12345, logPath: privateCanary, token: privateCanary }, error: privateCanary },
+      cursorAdapter: { ok: true, root: privateCanary }, diagnostics: { raw: privateCanary } }) });
+  assert.deepEqual(result, { exitCode: 1, signal: "none", timedOut: false, outputOverflow: false,
+    jsonStatus: "valid", actionMatched: true, ok: false,
+    backend: { present: true, ok: false, errorCode: "BACKEND_OWNERSHIP_UNVERIFIED", stage: "verify_ownership",
+      failureReason: "process_probe_inconclusive", systemCode: "EPERM", processState: "unknown" },
+    cursorAdapter: { present: true, ok: true } });
+  assert.deepEqual(projectCursorAppStopDiagnostics(result), result);
+  assert.equal(JSON.stringify(result).includes(privateCanary), false);
+  assert.equal(JSON.stringify(result).includes("12345"), false);
+});
+
+test("candidate stop diagnostics reject malformed output and arbitrary nested codes without reflecting them", () => {
+  for (const [stdout, expected] of [["", "absent"], [undefined, "absent"], [privateCanary, "invalid"],
+    ["null", "invalid"], ["[]", "invalid"], ["x".repeat(1024 * 1024 + 1), "oversized"]]) {
+    const result = collectCursorAppStopDiagnostics({ stdout, exitCode: null, signal: "SIGKILL", timedOut: true });
+    assert.equal(result.jsonStatus, expected); assert.equal(result.backend.present, false);
+    assert.equal(result.exitCode, null); assert.equal(result.signal, "SIGKILL"); assert.equal(result.timedOut, true);
+    assert.equal(JSON.stringify(result).includes(privateCanary), false);
+  }
+  const result = projectCursorAppStopDiagnostics({ exitCode: privateCanary, signal: privateCanary, timedOut: "true",
+    outputOverflow: 1, jsonStatus: privateCanary, actionMatched: 1, ok: "true", stdout: privateCanary, stderr: privateCanary,
+    backend: { present: "true", ok: 1, errorCode: "BACKEND_PRIVATE_CANARY", stage: privateCanary, failureReason: privateCanary,
+      systemCode: privateCanary, processState: privateCanary, state: privateCanary }, cursorAdapter: { present: 1, ok: "true" } });
+  assert.equal(result.exitCode, null); assert.equal(result.signal, "other"); assert.equal(result.jsonStatus, "other");
+  assert.equal(result.timedOut, false); assert.equal(result.outputOverflow, false); assert.equal(result.actionMatched, false);
+  for (const key of ["errorCode", "stage", "failureReason", "systemCode", "processState"]) assert.equal(result.backend[key], "other");
+  assert.deepEqual(result.cursorAdapter, { present: false, ok: false });
+  assert.equal(JSON.stringify(result).includes(privateCanary), false);
+  assert.equal(JSON.stringify(result).includes("BACKEND_PRIVATE_CANARY"), false);
+  for (const exitCode of [-1, 256, 1.5, "1"]) assert.equal(projectCursorAppStopDiagnostics({ exitCode }).exitCode, null);
+  for (const exitCode of [0, 1, 255]) assert.equal(projectCursorAppStopDiagnostics({ exitCode }).exitCode, exitCode);
+});
+
 async function fixture(callback) {
   const home = await realpath(await mkdtemp(join(tmpdir(), "memorax-cursor-diagnostics-")));
   const sessionId = randomUUID(), turnId = randomUUID();

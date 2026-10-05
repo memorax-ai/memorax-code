@@ -10,7 +10,7 @@ import { pathToFileURL } from "node:url";
 import { startCursorAgentMock } from "./cursor-app-mock-server.mjs";
 import { assertCursorAppNativeContent, assertCursorAppWritebacks } from "./cursor-app-native-content-check.mjs";
 import { assertCursorAppSkillReference, assertCursorAppMemoryOperation } from "./cursor-app-memory-check.mjs";
-import { collectCursorAppDiagnostics, collectCursorAppLaunchDiagnostics } from "./cursor-app-diagnostics.mjs";
+import { collectCursorAppDiagnostics, collectCursorAppLaunchDiagnostics, collectCursorAppStopDiagnostics } from "./cursor-app-diagnostics.mjs";
 
 const [packageRoot, appPath, expectedVersion, playwrightRoot, reportDir, expectedNodeMajor = "24"] = process.argv.slice(2);
 const report = { status: "FAIL", client: "cursor", kind: "app-native-session-flows", platform: process.platform,
@@ -69,14 +69,19 @@ function spawnOwned(file, args, options) {
 async function command(args, code) {
   const child = spawnOwned(process.execPath, [join(packageRoot, "bin/memorax-code.mjs"), ...args],
     { cwd: join(root, "workspace"), env, stdio: ["ignore", "pipe", "pipe"] });
-  let stdout = "", overflow = false;
+  let stdout = "", overflow = false, timedOut = false, stopDiagnostic;
   child.stdout.on("data", (chunk) => { stdout += chunk; if (stdout.length > 1024 * 1024) { overflow = true; child.kill("SIGKILL"); } });
   child.stderr.resume();
-  const timer = setTimeout(() => child.kill("SIGKILL"), 30000);
+  const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, 30000);
   try {
-    const [exitCode] = await once(child, "close");
+    const [exitCode, signal] = await once(child, "close");
+    if (args[0] === "stop") stopDiagnostic = collectCursorAppStopDiagnostics({ stdout, exitCode, signal, timedOut, outputOverflow: overflow });
     check(exitCode === 0 && !overflow, code);
     try { return JSON.parse(stdout); } catch { check(false, code); }
+  } catch (error) {
+    if (args[0] === "stop") report.candidateStop = stopDiagnostic ?? collectCursorAppStopDiagnostics({ stdout,
+      exitCode: child.exitCode, signal: child.signalCode, timedOut, outputOverflow: overflow });
+    throw error;
   } finally { clearTimeout(timer); }
 }
 async function ownedProcessesRemain({ includeBackend = true } = {}) {

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import test from "node:test";
@@ -90,6 +91,101 @@ test("PowerShell coordinator is hosted-Windows-only, SID-scoped and uses retaine
   assert.match(source, /bounded = \$true/);
   assert.match(source, /if \(\$report.status -ne 'PASS'\) \{ exit 1 \}\s+exit 0\s*$/);
   assert.doesNotMatch(source, /Set-NetFirewallProfile|CheckNetIsolation|Invoke-WebRequest|Invoke-RestMethod|taskkill|Stop-Process|Set-ExecutionPolicy/);
+});
+
+test("host guard identifies each failed check without exposing inputs or changing unrelated guards", async (t) => {
+  const available = spawnSync("pwsh", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "exit 0"],
+    { encoding: "utf8", timeout: 10000 });
+  if (available.error?.code === "ENOENT") return t.skip("PowerShell is not installed");
+  assert.equal(available.status, 0, "PowerShell is required to execute guard fixtures");
+  const source = (await readFile(new URL("./cursor-app-windows-isolation-check.ps1", import.meta.url), "utf8"))
+    .replaceAll("\r\n", "\n");
+  let guard = source.match(/function Assert-HostedRunner \{[\s\S]*?\n\}/)?.[0];
+  assert.ok(guard);
+  // Replace only OS identity calls; all conditions and diagnostics execute from the real guard.
+  for (const type of ["WindowsIdentity", "WindowsPrincipal"]) {
+    const target = `[System.Security.Principal.${type}]`;
+    assert.equal(guard.split(target).length, 2);
+    guard = guard.replace(target, `[Mock${type}]`);
+  }
+  const cases = [
+    { name: "originalImage", expected: null },
+    { name: "vs2026Image", env: { ImageOS: "win25-vs2026" }, expected: null },
+    { name: "platform", windows: false, expected: "platform" },
+    { name: "actions", env: { GITHUB_ACTIONS: "false" }, expected: "actions" },
+    { name: "runnerEnvironment", env: { RUNNER_ENVIRONMENT: "self-hosted" }, expected: "runnerEnvironment" },
+    { name: "runnerOs", env: { RUNNER_OS: "Linux" }, expected: "runnerOs" },
+    ...["win22", "windows-2025", "win25-vs2027", "Win25", "private-env-value"].map((value, index) =>
+      ({ name: `unknownImage${index}`, env: { ImageOS: value }, expected: "imageOs" })),
+    { name: "runId", env: { GITHUB_RUN_ID: "private-run-id" }, expected: "runId" },
+    ...Object.entries({ GITHUB_ACTIONS: "actions", RUNNER_ENVIRONMENT: "runnerEnvironment",
+      RUNNER_OS: "runnerOs", ImageOS: "imageOs", GITHUB_RUN_ID: "runId" }).map(([name, expected]) =>
+      ({ name: `missing${name}`, env: { [name]: null }, expected })),
+    { name: "admin", admin: false, expected: "admin" },
+    { name: "identityQueryError", identityError: true, expected: "admin" },
+    { name: "firewallService", service: "Stopped", expected: "firewallService" },
+    { name: "serviceQueryError", serviceError: true, expected: "firewallService" },
+    { name: "firewallProfiles", profilesEnabled: false, expected: "firewallProfiles" },
+    { name: "profileQueryError", profileError: true, expected: "firewallProfiles" },
+    { name: "firstFailure", windows: false, admin: false, service: "Stopped", expected: "platform" },
+  ];
+  const script = `
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+class MockWindowsIdentity {
+    static [bool] $Fail
+    static [MockWindowsIdentity] GetCurrent() {
+        if ([MockWindowsIdentity]::Fail) { throw 'private-identity-error' }
+        return [MockWindowsIdentity]::new()
+    }
+    [void] Dispose() {}
+}
+class MockWindowsPrincipal {
+    static [bool] $Allowed
+    MockWindowsPrincipal([MockWindowsIdentity] $identity) {}
+    [bool] IsInRole([object] $role) { return [MockWindowsPrincipal]::Allowed }
+}
+function Get-Service {
+    $script:queries += 'firewallService'
+    if ($case.ContainsKey('serviceError')) { throw 'private-service-error' }
+    [pscustomobject]@{ Status = $(if ($case.ContainsKey('service')) { $case.service } else { 'Running' }) }
+}
+function Get-NetFirewallProfile {
+    $script:queries += 'firewallProfiles'
+    if ($case.ContainsKey('profileError')) { throw 'private-profile-error' }
+    [pscustomobject]@{ Enabled = $true }
+    [pscustomobject]@{ Enabled = (-not $case.ContainsKey('profilesEnabled')) }
+    [pscustomobject]@{ Enabled = $true }
+}
+${guard}
+$results = foreach ($case in ('${JSON.stringify(cases)}' | ConvertFrom-Json -AsHashtable)) {
+    $values = @{ GITHUB_ACTIONS = 'true'; RUNNER_ENVIRONMENT = 'github-hosted'; RUNNER_OS = 'Windows'; ImageOS = 'win25'; GITHUB_RUN_ID = '123' }
+    if ($case.ContainsKey('env')) { foreach ($entry in $case.env.GetEnumerator()) { $values[$entry.Key] = $entry.Value } }
+    foreach ($entry in $values.GetEnumerator()) { [Environment]::SetEnvironmentVariable($entry.Key, $entry.Value, 'Process') }
+    Set-Variable -Name IsWindows -Value (-not $case.ContainsKey('windows')) -Scope Script -Force
+    [MockWindowsIdentity]::Fail = $case.ContainsKey('identityError')
+    [MockWindowsPrincipal]::Allowed = -not $case.ContainsKey('admin')
+    $report = [ordered]@{ failedGuard = 'stale' }
+    $script:queries = @()
+    $passed = $false
+    try { Assert-HostedRunner; $passed = $true } catch {}
+    [ordered]@{ name = $case.name; passed = $passed; report = $report; queries = @($script:queries) }
+}
+ConvertTo-Json -InputObject @($results) -Depth 6 -Compress
+`;
+  const result = spawnSync("pwsh", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+    { encoding: "utf8", timeout: 20000, maxBuffer: 1024 * 1024 });
+  assert.equal(result.status, 0, "PowerShell guard fixtures failed");
+  assert.equal(result.stderr, "");
+  assert.doesNotMatch(result.stdout, /private-|win25|self-hosted/);
+  const reports = JSON.parse(result.stdout);
+  assert.equal(reports.length, cases.length);
+  for (const [index, entry] of cases.entries()) {
+    const expectedQueries = entry.expected === null || entry.expected === "firewallProfiles"
+      ? ["firewallService", "firewallProfiles"] : entry.expected === "firewallService" ? ["firewallService"] : [];
+    assert.deepEqual(reports[index], { name: entry.name, passed: entry.expected === null,
+      report: entry.expected === null ? {} : { failedGuard: entry.expected }, queries: expectedQueries }, entry.name);
+  }
 });
 
 test("unproven process cleanup preserves the rule, account and private root for VM teardown", async () => {

@@ -25,6 +25,7 @@ const enumValue = (value, allowed, missing = "absent") => value === undefined ? 
 const count = (value) => Number.isSafeInteger(value) && value >= 0 && value <= maxEvents ? value : 0;
 const launchMarkers = {
   sandboxInitializationFailed: /sandbox_(?:init|apply|initialize)\s*[:(]|Failed to initialize sandbox|sandbox::Seatbelt/,
+  seatbeltApplyDenied: /sandbox_apply: Operation not permitted\b/,
   processSingletonFailed: /Failed to create a ProcessSingleton|Failed to create.*SingletonSocket/,
   networkServiceCrashed: /Network service crashed/,
   gpuProcessFailed: /GPU process isn't usable|GPU process launch failed/,
@@ -49,6 +50,48 @@ export function collectCursorAppLaunchDiagnostics(value) {
   const log = typeof value?.log === "string" ? value.log.slice(-maxBytes) : "";
   return projectCursorAppLaunchDiagnostics({ ...value,
     markers: Object.fromEntries(Object.entries(launchMarkers).map(([key, pattern]) => [key, pattern.test(log)])) });
+}
+
+const stopBackendEnums = {
+  errorCode: ["BACKEND_SERVICE_STATE_READ_FAILED", "BACKEND_SERVICE_STATE_INVALID", "BACKEND_SERVICE_STATE_UNSUPPORTED",
+    "BACKEND_OWNERSHIP_UNVERIFIED", "BACKEND_TERMINATE_FAILED", "BACKEND_STOP_TIMEOUT", "BACKEND_SERVICE_STATE_CLEANUP_FAILED"],
+  stage: ["read_state", "verify_ownership", "terminate", "wait_stopped", "cleanup_pid"],
+  failureReason: ["health_conflict", "process_mismatch", "process_not_found", "process_probe_inconclusive", "invalid_state", "unknown"],
+  systemCode: ["EACCES", "EPERM", "ENOENT", "ENOTDIR", "EISDIR", "EROFS", "EBUSY", "EIO", "ENOEXEC", "E2BIG", "ENOMEM",
+    "EINVAL", "ENAMETOOLONG", "ELOOP", "ESRCH", "EAGAIN", "ETIMEDOUT", "ECONNREFUSED", "ECONNRESET"],
+  processState: ["not-started", "stopped", "running", "unknown"],
+};
+
+export function projectCursorAppStopDiagnostics(value) {
+  return {
+    exitCode: Number.isInteger(value?.exitCode) && value.exitCode >= 0 && value.exitCode <= 255 ? value.exitCode : null,
+    signal: value?.signal == null ? "none" : enumValue(value.signal,
+      ["none", "SIGABRT", "SIGBUS", "SIGILL", "SIGKILL", "SIGSEGV", "SIGTERM", "SIGTRAP", "other"], "none"),
+    timedOut: value?.timedOut === true, outputOverflow: value?.outputOverflow === true,
+    jsonStatus: enumValue(value?.jsonStatus, ["absent", "valid", "invalid", "oversized", "other"]),
+    actionMatched: value?.actionMatched === true, ok: value?.ok === true,
+    backend: { present: value?.backend?.present === true, ok: value?.backend?.ok === true,
+      ...Object.fromEntries(Object.entries(stopBackendEnums).map(([key, allowed]) =>
+        [key, enumValue(value?.backend?.[key], [...allowed, "absent", "other"])])) },
+    cursorAdapter: { present: value?.cursorAdapter?.present === true, ok: value?.cursorAdapter?.ok === true },
+  };
+}
+
+export function collectCursorAppStopDiagnostics({ stdout, exitCode, signal, timedOut, outputOverflow } = {}) {
+  let result, jsonStatus = "absent";
+  if (typeof stdout === "string" && stdout.length) {
+    if (Buffer.byteLength(stdout) > maxBytes) jsonStatus = "oversized";
+    else {
+      try { result = JSON.parse(stdout); jsonStatus = record(result) ? "valid" : "invalid"; }
+      catch { jsonStatus = "invalid"; }
+    }
+  }
+  const backend = record(result?.backend) ? result.backend : {}, cursorAdapter = record(result?.cursorAdapter) ? result.cursorAdapter : {};
+  return projectCursorAppStopDiagnostics({ exitCode, signal, timedOut, outputOverflow, jsonStatus,
+    actionMatched: result?.action === "stop", ok: result?.ok === true,
+    backend: { ...Object.fromEntries(Object.keys(stopBackendEnums).map((key) => [key, backend[key]])),
+      present: record(result?.backend), ok: backend.ok === true },
+    cursorAdapter: { present: record(result?.cursorAdapter), ok: cursorAdapter.ok === true } });
 }
 
 export function projectCursorAppDiagnostics(value) {

@@ -239,7 +239,8 @@ function publicReport(platform, error, evidence, rows) {
   else {
     report.evidence = evidence;
     report.observations = { wildcardListeners: rows.map((row) => ({ depth: row.depth,
-      ipv4: row.wildcardIpv4, ipv6: row.wildcardIpv6 })) };
+      ipv4: row.wildcardIpv4, ipv6: row.wildcardIpv6 })),
+      sandboxReentry: rows.map((row) => ({ depth: row.depth, result: row.sandboxReentry })) };
   }
   return report;
 }

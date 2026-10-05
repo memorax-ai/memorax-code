@@ -316,16 +316,31 @@ test("failure reports retain only the diagnostic helper's bounded public project
     trace: { readStatus: "synthetic-secret", events: [{ content: "synthetic-answer" }] } };
   input.appLaunch = { spawned: true, exitCode: 1, signal: "synthetic-signal", spawnError: "synthetic-error",
     log: "synthetic-log", markers: { permissionDenied: true, private: "synthetic-private" } };
+  input.candidateStop = { exitCode: 1, signal: null, timedOut: false, outputOverflow: false, jsonStatus: "valid",
+    actionMatched: true, ok: false, stdout: "synthetic-stdout", stderr: "synthetic-stderr",
+    backend: { present: true, ok: false, errorCode: "BACKEND_OWNERSHIP_UNVERIFIED", stage: "verify_ownership",
+      failureReason: "process_probe_inconclusive", systemCode: "EPERM", processState: "unknown", state: { token: "synthetic-token" } },
+    cursorAdapter: { present: false, ok: false, error: "synthetic-error" } };
   const report = projectNativeReport(input);
   assert.equal(report.status, "FAIL");
   assert.ok(report.diagnostics);
   assert.equal(report.appLaunch.exitCode, 1);
   assert.equal(report.appLaunch.signal, "other");
   assert.equal(report.appLaunch.markers.permissionDenied, true);
+  assert.equal(report.candidateStop.exitCode, 1);
+  assert.equal(report.candidateStop.backend.errorCode, "BACKEND_OWNERSHIP_UNVERIFIED");
+  assert.equal(report.candidateStop.backend.systemCode, "EPERM");
+  assert.equal(report.candidateStop.backend.state, undefined);
   assert.equal(JSON.stringify(report).includes("synthetic"), false);
   input.evidence.exactAutomaticAdd = false;
   input.status = "PASS";
   assert.throws(() => projectNativeReport(input), /CURSOR_CONTAINER_REPORT/);
+});
+
+test("successful native reports never publish candidate-stop failure diagnostics", () => {
+  const input = nativeReport();
+  input.candidateStop = { stdout: "synthetic-private", backend: { errorCode: "BACKEND_STOP_TIMEOUT" } };
+  assert.equal(projectNativeReport(input).candidateStop, undefined);
 });
 
 test("PASS rejects missing, reordered, duplicate or incomplete session-flow evidence", () => {

@@ -29,10 +29,22 @@ $errorCodes = @('CURSOR_APP_WINDOWS_HOST_UNSUPPORTED', 'CURSOR_APP_WINDOWS_REPOR
     'CURSOR_APP_WINDOWS_CONTROLLER_UNREACHABLE', 'CURSOR_APP_WINDOWS_CLEANUP_FAILED')
 
 function Assert-HostedRunner {
-    if (-not $IsWindows -or $env:GITHUB_ACTIONS -cne 'true' -or $env:RUNNER_ENVIRONMENT -cne 'github-hosted' -or
-        $env:RUNNER_OS -cne 'Windows' -or $env:ImageOS -cne 'win25' -or $env:GITHUB_RUN_ID -notmatch '^\d+$') {
+    $report.failedGuard = 'platform'
+    if (-not $IsWindows) { throw 'CURSOR_APP_WINDOWS_HOST_UNSUPPORTED' }
+    $report.failedGuard = 'actions'
+    if ($env:GITHUB_ACTIONS -cne 'true') { throw 'CURSOR_APP_WINDOWS_HOST_UNSUPPORTED' }
+    $report.failedGuard = 'runnerEnvironment'
+    if ($env:RUNNER_ENVIRONMENT -cne 'github-hosted') { throw 'CURSOR_APP_WINDOWS_HOST_UNSUPPORTED' }
+    $report.failedGuard = 'runnerOs'
+    if ($env:RUNNER_OS -cne 'Windows') { throw 'CURSOR_APP_WINDOWS_HOST_UNSUPPORTED' }
+    $report.failedGuard = 'imageOs'
+    # GitHub's Windows 2025 images expose these exact ImageOS values.
+    if (@('win25', 'win25-vs2026') -cnotcontains $env:ImageOS) { throw 'CURSOR_APP_WINDOWS_HOST_UNSUPPORTED' }
+    $report.failedGuard = 'runId'
+    if ($env:GITHUB_RUN_ID -notmatch '^\d+$') {
         throw 'CURSOR_APP_WINDOWS_HOST_UNSUPPORTED'
     }
+    $report.failedGuard = 'admin'
     $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
     try {
         $principal = [System.Security.Principal.WindowsPrincipal]::new($identity)
@@ -40,10 +52,13 @@ function Assert-HostedRunner {
             throw 'CURSOR_APP_WINDOWS_HOST_UNSUPPORTED'
         }
     } finally { $identity.Dispose() }
-    if ((Get-Service MpsSvc).Status -ne 'Running' -or
-        @(Get-NetFirewallProfile | Where-Object { $_.Enabled -ne 'True' }).Count -ne 0) {
+    $report.failedGuard = 'firewallService'
+    if ((Get-Service MpsSvc).Status -ne 'Running') { throw 'CURSOR_APP_WINDOWS_HOST_UNSUPPORTED' }
+    $report.failedGuard = 'firewallProfiles'
+    if (@(Get-NetFirewallProfile | Where-Object { $_.Enabled -ne 'True' }).Count -ne 0) {
         throw 'CURSOR_APP_WINDOWS_HOST_UNSUPPORTED'
     }
+    $report.Remove('failedGuard')
 }
 
 function Read-PrivateJson([string]$Path) {

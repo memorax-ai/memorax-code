@@ -1294,7 +1294,9 @@ node scripts/cursor-app-container-check.mjs \
 Only `report.json` is exported and uploaded. Raw App logs, transcripts, SQLite
 files and Hook traces are not CI artifacts. App startup diagnostics publish
 only bounded exit codes, fixed signal/error enums and marker booleans, not raw
-stderr. Synthetic login is not real account
+stderr. Failed candidate stops retain only fixed Backend result enums,
+booleans and bounded process outcomes from the CLI's JSON output; raw command
+output, state, paths and error messages are not published. Synthetic login is not real account
 authentication coverage. Native Continue/Retry/Edit, Backend restart,
 running-tool interruption, late-approval races, model-driven Skill selection, Repo Memory workers,
 upgrade/uninstall and Windows remain outside this bounded session-flow
@@ -1335,6 +1337,8 @@ Each process also attempts to re-enter `sandbox-exec` with an allow-default
 profile and connect only to the denied loopback fixture. Re-entry must be
 explicitly refused with `EPERM`, or that connection must remain denied with
 `EPERM` or `EACCES`; successful access, timeout and ambiguous errors fail.
+The public re-entry observation contains only each generation's depth and fixed
+verdict (`REENTRY_DENIED`, `EPERM` or `EACCES`), never raw subprocess output.
 These local gates run before documentation-only IPv4 and IPv6 connection probes,
 which send no application data. Denial must be `EPERM` or `EACCES`; a timeout,
 address-in-use or routing error is not isolation evidence.
@@ -1364,6 +1368,10 @@ existing native workflow to select proof-only mode; the switch defaults to
 provider checks and native-result summaries, without cancelling normal
 acceptance runs. Selecting both proof switches runs both proofs. Neither switch
 changes pull-request, push or default manual acceptance.
+The runner guard accepts only the exact Windows 2025 `ImageOS` identities
+`win25` and `win25-vs2026`. A guard failure exposes only its fixed `failedGuard`
+enum, not environment values, paths, SIDs or raw errors; the field is absent
+after all guards pass.
 
 The Windows probe requires the hosted runner's administrator context to create
 one temporary standard local user and outbound TCP firewall block rules scoped

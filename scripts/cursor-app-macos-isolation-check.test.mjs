@@ -399,6 +399,10 @@ test("proof uses isolated environment and only publishes validated network evide
     { depth: 0, ipv4: "LISTENED", ipv6: "EACCES" },
     { depth: 1, ipv4: "EPERM", ipv6: "LISTENED" },
     { depth: 2, ipv4: "EPERM", ipv6: "EACCES" },
+  ], sandboxReentry: [
+    { depth: 0, result: "REENTRY_DENIED" },
+    { depth: 1, result: "EPERM" },
+    { depth: 2, result: "EACCES" },
   ] });
   assert.deepEqual(Object.keys(report).sort(), ["appStarted", "evidence", "inboundAddressIsolation", "kind",
     "nativeAcceptance", "observations", "platform", "schemaVersion", "scope", "status"]);
@@ -413,6 +417,10 @@ test("execution failures, malformed output and missing real fixture connections 
     [async () => { throw Object.assign(new Error("private ENOEXEC path/token"), { code: "ENOEXEC" }); }, "CURSOR_APP_MACOS_PROOF_FAILED"],
     [async () => { throw Object.assign(new Error("private timeout"), { code: "CURSOR_APP_MACOS_PROOF_TIMEOUT" }); }, "CURSOR_APP_MACOS_PROOF_TIMEOUT"],
     [async () => ({ pid: 100, stdout: "private malformed JSON" }), "CURSOR_APP_MACOS_PROOF_OUTPUT"],
+    [async () => {
+      const evidence = rows(process.pid); evidence[1].depth = "private-depth-canary";
+      return { pid: 100, stdout: JSON.stringify(evidence) };
+    }, "CURSOR_APP_MACOS_PROOF_INHERITANCE"],
     [async () => ({ pid: 100, stdout: JSON.stringify(rows(process.pid)) }), "CURSOR_APP_MACOS_PROOF_FIXTURE"],
     [async ({ args }) => {
       for (const port of [args.at(-6), args.at(-6), args.at(-6), args.at(-5)]) {
@@ -429,6 +437,7 @@ test("execution failures, malformed output and missing real fixture connections 
     assert.equal(report.status, "FAIL");
     assert.equal(report.errorCode, code);
     assert.equal(report.evidence, undefined);
+    assert.equal(report.observations, undefined);
     assert.ok(!JSON.stringify(report).includes("private"));
     assert.ok(!JSON.stringify(report).includes(root));
     await assert.rejects(access(root), { code: "ENOENT" });
@@ -450,7 +459,9 @@ test("proof failure exposes the first failing network gate without path, PID, po
   for (const [depth, failedGate, result, expected] of [[0, "listenerIpv4", "TIMEOUT", "TIMEOUT"],
     [1, "otherUnixBind", "LISTENED", "LISTENED"], [2, "otherUnixConnect", "private-value-canary", "OTHER"],
     [0, "wildcardIpv4", "TIMEOUT", "TIMEOUT"], [1, "wildcardIpv6", "private-value-canary", "OTHER"],
-    [0, "sandboxReentry", "CONNECTED", "CONNECTED"], [2, "sandboxReentry", "private-value-canary", "OTHER"]]) {
+    [0, "sandboxReentry", "CONNECTED", "CONNECTED"], [2, "sandboxReentry", "private-value-canary", "OTHER"],
+    [1, "sandboxReentry", { result: "EPERM", raw: "private-value-canary" }, "OTHER"],
+    [1, "sandboxReentry", undefined, "NOT_RUN"], [2, "sandboxReentry", null, "OTHER"]]) {
     const evidence = rows(process.pid);
     for (const row of evidence) row.wildcardIpv4 = row.wildcardIpv6 = "LISTENED";
     evidence[depth][failedGate] = result;
@@ -458,6 +469,7 @@ test("proof failure exposes the first failing network gate without path, PID, po
     const report = await runMacosIsolationProof({ platform: "darwin", execute: async () => ({ pid: 100, stdout: JSON.stringify(evidence) }) });
     assert.equal(report.status, "FAIL");
     assert.equal(report.evidence, undefined);
+    assert.equal(report.observations, undefined);
     if (failedGate === "sandboxReentry") assert.equal(report.errorCode, "CURSOR_APP_MACOS_REENTRY_NOT_RESTRICTED");
     assert.deepEqual(report.diagnostic, { depth, failedGate, result: expected });
     assert.ok(!JSON.stringify(report).includes("private"));
