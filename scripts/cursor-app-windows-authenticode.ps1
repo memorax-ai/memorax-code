@@ -32,43 +32,54 @@ function Assert-CursorPublisher($Signature) {
 }
 
 function Assert-PrivateDirectory([string]$Path, [bool]$Prepare) {
-    if (-not [IO.Path]::IsPathFullyQualified($Path) -or [IO.Path]::GetFullPath($Path) -cne $Path) {
-        throw 'CURSOR_APP_WINDOWS_ARTIFACT_ROOT'
-    }
-    $item = Microsoft.PowerShell.Management\Get-Item -LiteralPath $Path -Force
-    if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
-        throw 'CURSOR_APP_WINDOWS_ARTIFACT_ROOT'
-    }
-    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-    try { $currentSid = $identity.User } finally { $identity.Dispose() }
-    $systemSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-18')
-    if ($Prepare) {
-        if (@(Microsoft.PowerShell.Management\Get-ChildItem -LiteralPath $Path -Force).Count -ne 0) {
-            throw 'CURSOR_APP_WINDOWS_ARTIFACT_ROOT'
+    $stage = 'PATH_SHAPE'
+    try {
+        if (-not [IO.Path]::IsPathFullyQualified($Path) -or [IO.Path]::GetFullPath($Path) -cne $Path) {
+            throw 'invalid'
         }
-        $acl = [Security.AccessControl.DirectorySecurity]::new()
-        $acl.SetOwner($currentSid)
-        $acl.SetAccessRuleProtection($true, $false)
+        $stage = 'ITEM'
+        $item = Microsoft.PowerShell.Management\Get-Item -LiteralPath $Path -Force
+        if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw 'invalid'
+        }
+        $stage = 'IDENTITY'
+        $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+        try { $currentSid = $identity.User } finally { $identity.Dispose() }
+        $systemSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-18')
+        if ($Prepare) {
+            $stage = 'NOT_EMPTY'
+            if (@(Microsoft.PowerShell.Management\Get-ChildItem -LiteralPath $Path -Force).Count -ne 0) { throw 'invalid' }
+            $stage = 'ACL_SET'
+            $acl = [Security.AccessControl.DirectorySecurity]::new()
+            $acl.SetOwner($currentSid)
+            $acl.SetAccessRuleProtection($true, $false)
+            foreach ($sid in @($currentSid, $systemSid)) {
+                $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($sid, 'FullControl',
+                    'ContainerInherit, ObjectInherit', 'None', 'Allow'))
+            }
+            Microsoft.PowerShell.Security\Set-Acl -LiteralPath $Path -AclObject $acl
+        }
+        $stage = 'ACL_READ'
+        $actual = Microsoft.PowerShell.Security\Get-Acl -LiteralPath $Path
+        $rules = @($actual.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
+        $stage = 'PROTECTION'
+        if (-not $actual.AreAccessRulesProtected) { throw 'invalid' }
+        $stage = 'OWNER'
+        if ($actual.GetOwner([Security.Principal.SecurityIdentifier]).Value -cne $currentSid.Value) { throw 'invalid' }
+        $stage = 'RULE_COUNT'
+        if ($rules.Count -ne 2) { throw 'invalid' }
+        $stage = 'RULE_SHAPE'
         foreach ($sid in @($currentSid, $systemSid)) {
-            $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($sid, 'FullControl',
-                'ContainerInherit, ObjectInherit', 'None', 'Allow'))
+            $matching = @($rules | Where-Object { $_.IdentityReference.Value -ceq $sid.Value })
+            if ($matching.Count -ne 1 -or $matching[0].IsInherited -or
+                $matching[0].AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+                $matching[0].FileSystemRights -ne [Security.AccessControl.FileSystemRights]::FullControl -or
+                $matching[0].InheritanceFlags -ne ([Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit) -or
+                $matching[0].PropagationFlags -ne [Security.AccessControl.PropagationFlags]::None) {
+                throw 'invalid'
+            }
         }
-        Microsoft.PowerShell.Security\Set-Acl -LiteralPath $Path -AclObject $acl
-    }
-    $actual = Microsoft.PowerShell.Security\Get-Acl -LiteralPath $Path
-    $rules = @($actual.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
-    if (-not $actual.AreAccessRulesProtected -or $actual.GetOwner([Security.Principal.SecurityIdentifier]).Value -cne $currentSid.Value -or
-        $rules.Count -ne 2) { throw 'CURSOR_APP_WINDOWS_ARTIFACT_ROOT' }
-    foreach ($sid in @($currentSid, $systemSid)) {
-        $matching = @($rules | Where-Object { $_.IdentityReference.Value -ceq $sid.Value })
-        if ($matching.Count -ne 1 -or $matching[0].IsInherited -or
-            $matching[0].AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
-            $matching[0].FileSystemRights -ne [Security.AccessControl.FileSystemRights]::FullControl -or
-            $matching[0].InheritanceFlags -ne ([Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit) -or
-            $matching[0].PropagationFlags -ne [Security.AccessControl.PropagationFlags]::None) {
-            throw 'CURSOR_APP_WINDOWS_ARTIFACT_ROOT'
-        }
-    }
+    } catch { throw ('CURSOR_APP_WINDOWS_ARTIFACT_ROOT_' + $stage) }
 }
 
 try {
@@ -89,9 +100,13 @@ try {
     exit 0
 } catch {
     $code = $_.Exception.Message
-    if (@('CURSOR_APP_WINDOWS_ARTIFACT_PLATFORM', 'CURSOR_APP_WINDOWS_ARTIFACT_ROOT',
-        'CURSOR_APP_WINDOWS_ARTIFACT_SIGNATURE', 'CURSOR_APP_WINDOWS_ARTIFACT_PUBLISHER') -cnotcontains $code) {
-        $code = if ($Operation -ceq 'prepare') { 'CURSOR_APP_WINDOWS_ARTIFACT_ROOT' } else { 'CURSOR_APP_WINDOWS_ARTIFACT_SIGNATURE' }
+    if (@('CURSOR_APP_WINDOWS_ARTIFACT_PLATFORM', 'CURSOR_APP_WINDOWS_ARTIFACT_SIGNATURE', 'CURSOR_APP_WINDOWS_ARTIFACT_PUBLISHER',
+        'CURSOR_APP_WINDOWS_ARTIFACT_ROOT_PATH_SHAPE', 'CURSOR_APP_WINDOWS_ARTIFACT_ROOT_ITEM',
+        'CURSOR_APP_WINDOWS_ARTIFACT_ROOT_IDENTITY', 'CURSOR_APP_WINDOWS_ARTIFACT_ROOT_NOT_EMPTY',
+        'CURSOR_APP_WINDOWS_ARTIFACT_ROOT_ACL_SET', 'CURSOR_APP_WINDOWS_ARTIFACT_ROOT_ACL_READ',
+        'CURSOR_APP_WINDOWS_ARTIFACT_ROOT_PROTECTION', 'CURSOR_APP_WINDOWS_ARTIFACT_ROOT_OWNER',
+        'CURSOR_APP_WINDOWS_ARTIFACT_ROOT_RULE_COUNT', 'CURSOR_APP_WINDOWS_ARTIFACT_ROOT_RULE_SHAPE') -cnotcontains $code) {
+        $code = if ($Operation -ceq 'prepare') { 'CURSOR_APP_WINDOWS_ARTIFACT_HELPER' } else { 'CURSOR_APP_WINDOWS_ARTIFACT_SIGNATURE' }
     }
     [Console]::WriteLine(([ordered]@{ status = 'FAIL'; errorCode = $code } | ConvertTo-Json -Compress))
     exit 1

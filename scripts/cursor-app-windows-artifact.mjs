@@ -12,6 +12,8 @@ const publisher = "Anysphere, Inc.";
 const maxDownloadBytes = 600_000_000;
 const maxCommandBytes = 4096;
 const prefix = "CURSOR_APP_WINDOWS_ARTIFACT_";
+const rootStages = ["PATH_SHAPE", "ITEM", "IDENTITY", "NOT_EMPTY", "ACL_SET", "ACL_READ", "PROTECTION",
+  "OWNER", "RULE_COUNT", "RULE_SHAPE"];
 const helperPath = fileURLToPath(new URL("./cursor-app-windows-authenticode.ps1", import.meta.url));
 
 function failure(suffix) {
@@ -74,17 +76,18 @@ async function download(release, path, fetchImpl, signal) {
 }
 
 function outputJson(stdout) {
-  check(typeof stdout === "string" && Buffer.byteLength(stdout) <= maxCommandBytes, "SIGNATURE");
+  check(typeof stdout === "string" && Buffer.byteLength(stdout) <= maxCommandBytes, "HELPER_OUTPUT");
   const value = JSON.parse(stdout);
-  check(value && typeof value === "object" && !Array.isArray(value), "SIGNATURE");
+  check(value && typeof value === "object" && !Array.isArray(value), "HELPER_OUTPUT");
   return value;
 }
 
 async function runHelper(execute, operation, ownedRoot, signal) {
-  const suffix = operation === "prepare" ? "ROOT" : "SIGNATURE";
+  const phase = operation.toUpperCase();
+  const suffix = "HELPER_" + phase;
   const powershellHome = "C:\\Program Files\\PowerShell\\7";
   const systemRoot = "C:\\Windows";
-  let primaryError, childClosed, requiresClose = false;
+  let primaryError, childClosed, requiresClose = false, processingOutput = false;
   try {
     checkAborted(signal);
     requiresClose = execute === executeFile;
@@ -101,6 +104,7 @@ async function runHelper(execute, operation, ownedRoot, signal) {
       childClosed = new Promise((resolve) => pending.child.once("close", () => resolve(true)));
     }
     const result = await pending;
+    processingOutput = true;
     check(result && (result.code === undefined || result.code === 0) && result.stderr === "", suffix);
     const value = outputJson(result.stdout);
     const expected = operation === "prepare" ? { status: "PASS", operation, privateDirectory: true }
@@ -108,15 +112,21 @@ async function runHelper(execute, operation, ownedRoot, signal) {
     check(Object.keys(value).length === Object.keys(expected).length
       && Object.keys(expected).every((key) => value[key] === expected[key]), suffix);
   } catch (error) {
-    primaryError = failure(signal?.aborted ? "ABORTED" : error?.code === "ETIMEDOUT"
-      || (error?.killed === true && error.signal === "SIGKILL" && error.code !== "ERR_CHILD_PROCESS_STDIO_MAXBUFFER")
-      ? suffix + "_TIMEOUT" : suffix);
-    if (!signal?.aborted && Number.isInteger(error?.code) && error.code !== 0 && error.stderr === "") {
+    const timedOut = error?.code === "ETIMEDOUT"
+      || (error?.killed === true && error.signal === "SIGKILL" && error.code !== "ERR_CHILD_PROCESS_STDIO_MAXBUFFER");
+    primaryError = failure(signal?.aborted ? "ABORTED" : timedOut ? suffix + "_TIMEOUT"
+      : processingOutput || error?.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" ? suffix + "_OUTPUT"
+      : typeof error?.syscall === "string" && /^spawn(?: |$)/.test(error.syscall) ? suffix + "_SPAWN" : suffix + "_EXIT");
+    if (!signal?.aborted && !timedOut && Number.isInteger(error?.code) && error.code !== 0 && error.stderr === "") {
       try {
         const value = outputJson(error.stdout);
-        if (Object.keys(value).length === 2 && value.status === "FAIL"
-          && [prefix + "ROOT", prefix + "SIGNATURE", prefix + "PUBLISHER"].includes(value.errorCode)) {
-          primaryError = failure(value.errorCode.slice(prefix.length));
+        if (Object.keys(value).length === 2 && value.status === "FAIL") {
+          const rootStage = rootStages.find((stage) => value.errorCode === prefix + "ROOT_" + stage);
+          if (rootStage) primaryError = failure(`ROOT_${phase}_${rootStage}`);
+          else if (value.errorCode === prefix + "PLATFORM"
+            || (operation === "verify" && [prefix + "SIGNATURE", prefix + "PUBLISHER"].includes(value.errorCode))) {
+            primaryError = failure(value.errorCode.slice(prefix.length));
+          }
         }
       } catch { /* Only the helper's fixed diagnostic schema is accepted. */ }
     }
@@ -165,12 +175,15 @@ export async function verifyCursorWindowsInstaller({ release, root, signal, exec
     && isAbsolute(root) && !/[\0\r\n]/.test(root), "ARGUMENTS");
   const selected = validateRelease(release, release?.channel);
   checkAborted(signal);
-  let ownedRoot;
+  let ownedRoot, rootStage = "ROOT_ITEM";
   try {
     const stat = await lstat(root);
-    check(stat.isDirectory() && !stat.isSymbolicLink(), "ROOT");
-    ownedRoot = await mkdtemp(join(await realpath(root), "cursor-windows-artifact-"));
-  } catch { throw failure("ROOT"); }
+    check(stat.isDirectory() && !stat.isSymbolicLink(), rootStage);
+    rootStage = "ROOT_RESOLVE";
+    const canonicalRoot = await realpath(root);
+    rootStage = "ROOT_CREATE";
+    ownedRoot = await mkdtemp(join(canonicalRoot, "cursor-windows-artifact-"));
+  } catch { throw failure(rootStage); }
   let primaryError, cleanupError, artifact;
   try {
     await runHelper(execute, "prepare", ownedRoot, signal);

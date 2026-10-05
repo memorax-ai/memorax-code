@@ -15,6 +15,8 @@ const latest = resolveDownload("win32-x64-user", { version: "3.23.12", commitSha
 const manifest = { schemaVersion: 1, baseline: { "win32-x64-user": baseline }, latest: { "win32-x64-user": latest } };
 const bytes = Buffer.from("Synthetic unsigned bytes. Never execute this fixture.");
 const prefix = "CURSOR_APP_WINDOWS_ARTIFACT_";
+const rootStages = ["PATH_SHAPE", "ITEM", "IDENTITY", "NOT_EMPTY", "ACL_SET", "ACL_READ", "PROTECTION",
+  "OWNER", "RULE_COUNT", "RULE_SHAPE"];
 const helper = async () => (await readFile(new URL("./cursor-app-windows-authenticode.ps1", import.meta.url), "utf8"))
   .replaceAll("\r\n", "\n");
 const error = (suffix) => ({ code: prefix + suffix, message: prefix + suffix });
@@ -132,7 +134,8 @@ test("latest is independently selected without falling back to baseline", async 
 test("unsupported hosts, release changes, roots and aborts fail before download", async (t) => {
   const state = await fixture(t);
   for (const [overrides, suffix] of [[{ platform: "linux" }, "PLATFORM"], [{ root: "relative" }, "ARGUMENTS"],
-    [{ root: join(state.root, "unrelated") }, "ROOT"], [{ release: { ...baseline, sha256: "a".repeat(64) } }, "RELEASE"],
+    [{ root: join(state.root, "unrelated") }, "ROOT_ITEM"], [{ root: join(state.root, "missing") }, "ROOT_ITEM"],
+    [{ release: { ...baseline, sha256: "a".repeat(64) } }, "RELEASE"],
     [{ execute: null }, "ARGUMENTS"], [{ fetchImpl: null }, "ARGUMENTS"], [{ signal: AbortSignal.abort() }, "ABORTED"]]) {
     await assert.rejects(state.run(overrides), error(suffix));
   }
@@ -168,21 +171,59 @@ test("helper output is exact fixed JSON and rejects diagnostics, false verificat
       { stdout: JSON.stringify({ status: "PASS", operation, authenticodeVerified: false, publisherVerified: true }), stderr: "" },
       { stdout: JSON.stringify({ status: "PASS", operation, authenticodeVerified: true, publisherVerified: true, path: "private" }), stderr: "" }]) {
       const state = await fixture(t, { outputs: { [operation]: output } });
-      await assert.rejects(state.run(), error(operation === "prepare" ? "ROOT" : "SIGNATURE"));
+      await assert.rejects(state.run(), error(`HELPER_${operation.toUpperCase()}_OUTPUT`));
       await state.assertClean();
     }
   }
-  for (const [caught, suffix] of [
-    [new Error("private stderr and path"), "SIGNATURE"],
-    [{ code: 1, stdout: JSON.stringify({ status: "FAIL", errorCode: prefix + "PUBLISHER" }), stderr: "" }, "PUBLISHER"],
-    [{ code: 1, stdout: JSON.stringify({ status: "FAIL", errorCode: "private-code" }), stderr: "" }, "SIGNATURE"],
-    [{ code: "ETIMEDOUT" }, "SIGNATURE_TIMEOUT"],
-    [{ code: null, killed: true, signal: "SIGKILL" }, "SIGNATURE_TIMEOUT"],
-    [{ code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER", killed: true, signal: "SIGKILL" }, "SIGNATURE"],
-  ]) {
-    const state = await fixture(t, { commandError: { operation: "verify", error: caught } });
+});
+
+test("helper root failures expose only fixed stages bound to the requested operation", async (t) => {
+  for (const operation of ["prepare", "verify"]) {
+    for (const stage of rootStages) {
+      const state = await fixture(t, { commandError: { operation, error: { code: 1, stderr: "",
+        stdout: JSON.stringify({ status: "FAIL", errorCode: prefix + "ROOT_" + stage }) } } });
+      await assert.rejects(state.run(), error(`ROOT_${operation.toUpperCase()}_${stage}`));
+      assert.equal(state.fetches.length, operation === "prepare" ? 0 : 1);
+      await state.assertClean();
+    }
+  }
+  for (const suffix of ["PLATFORM", "SIGNATURE", "PUBLISHER"]) {
+    const state = await fixture(t, { commandError: { operation: "verify", error: { code: 1, stderr: "",
+      stdout: JSON.stringify({ status: "FAIL", errorCode: prefix + suffix }) } } });
     await assert.rejects(state.run(), error(suffix));
     await state.assertClean();
+  }
+});
+
+test("helper execution failures and untrusted diagnostics never become ACL or signature findings", async (t) => {
+  const privateText = "C:\\Users\\private-account\\private-path CN=private-certificate raw-stderr-canary";
+  const rootFailure = { status: "FAIL", errorCode: prefix + "ROOT_OWNER" };
+  for (const operation of ["prepare", "verify"]) {
+    for (const [caught, suffix] of [
+      [new Error(privateText), "EXIT"],
+      [{ code: "ENOENT", syscall: "spawn " + privateText, message: privateText }, "SPAWN"],
+      [{ code: "EACCES", syscall: "spawn " + privateText, message: privateText }, "SPAWN"],
+      [{ code: "ETIMEDOUT", message: privateText }, "TIMEOUT"],
+      [{ code: null, killed: true, signal: "SIGKILL", stderr: privateText }, "TIMEOUT"],
+      [{ code: 1, killed: true, signal: "SIGKILL", stdout: JSON.stringify(rootFailure), stderr: "" }, "TIMEOUT"],
+      [{ code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER", killed: true, signal: "SIGKILL", stderr: privateText }, "OUTPUT"],
+      [{ code: 1, stdout: JSON.stringify({ status: "FAIL", errorCode: privateText }), stderr: "" }, "EXIT"],
+      [{ code: 1, stdout: JSON.stringify({ ...rootFailure, path: privateText }), stderr: "" }, "EXIT"],
+      [{ code: 1, stdout: JSON.stringify(rootFailure), stderr: privateText }, "EXIT"],
+      [{ code: 1, stdout: JSON.stringify({ status: "FAIL", errorCode: prefix + "ROOT_UNKNOWN" }), stderr: "" }, "EXIT"],
+      [{ code: 1, stdout: "private invalid JSON", stderr: "" }, "EXIT"],
+      [{ code: 1, stdout: JSON.stringify(rootFailure).repeat(4096), stderr: "" }, "EXIT"],
+    ]) {
+      const state = await fixture(t, { commandError: { operation, error: caught } });
+      await assert.rejects(state.run(), (failure) => {
+        assert.equal(failure.code, `${prefix}HELPER_${operation.toUpperCase()}_${suffix}`);
+        assert.equal(failure.message, failure.code);
+        assert.equal(JSON.stringify(failure).includes(privateText), false);
+        assert.equal(failure.stack.includes(privateText), false);
+        return true;
+      });
+      await state.assertClean();
+    }
   }
 });
 
@@ -231,14 +272,14 @@ test("unproven helper exit retains its owned directory and preserves the primary
     pending.child = new EventEmitter();
     return pending;
   };
-  await assert.rejects(state.run({ execute }), { ...error("SIGNATURE"), cleanupErrorCode: prefix + "PROCESS_CLEANUP" });
+  await assert.rejects(state.run({ execute }), { ...error("HELPER_VERIFY_EXIT"), cleanupErrorCode: prefix + "PROCESS_CLEANUP" });
   assert.deepEqual(await readFile(state.path), bytes);
 });
 
 test("cleanup failure does not replace the signature error or return successful evidence",
   { skip: process.platform === "win32" || process.getuid?.() === 0 }, async (t) => {
     const state = await fixture(t, { onVerify: async ({ root }) => { await chmod(root, 0o500); throw new Error("private signature failure"); } });
-    await assert.rejects(state.run(), { ...error("SIGNATURE"), cleanupErrorCode: prefix + "CLEANUP" });
+    await assert.rejects(state.run(), { ...error("HELPER_VERIFY_EXIT"), cleanupErrorCode: prefix + "CLEANUP" });
   });
 
 test("static PowerShell helper is Windows-only and invokes only the system signature cmdlet", async () => {
@@ -250,9 +291,43 @@ test("static PowerShell helper is Windows-only and invokes only the system signa
   assert.match(source, /\$rules.Count -ne 2/);
   assert.match(source, /\$actual.AreAccessRulesProtected/);
   assert.match(source, /\$matching\[0\].IsInherited/);
+  for (const stage of rootStages) assert.ok(source.includes(`$stage = '${stage}'`));
   assert.match(source, /GetSingleElementType\(\).Value/);
   assert.match(source, /GetSingleElementValue\(\)/);
   assert.doesNotMatch(source, /Start-Process|Invoke-Expression|Import-Certificate|Set-ExecutionPolicy|\/VERYSILENT|Format-List/);
+});
+
+test("PowerShell public diagnostics whitelist fixed codes without paths, accounts, certificates or raw errors", async (t) => {
+  const available = spawnSync("pwsh", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "exit 0"],
+    { encoding: "utf8", timeout: 10000 });
+  if (available.error?.code === "ENOENT") return t.skip("PowerShell is not installed");
+  assert.equal(available.status, 0);
+  const source = await helper();
+  const catchBody = source.match(/\} catch \{\n(    \$code = \$_\.Exception\.Message[\s\S]*?)\n    exit 1\n\}\s*$/)?.[1];
+  assert.ok(catchBody);
+  const cases = ["prepare", "verify"].flatMap((operation) => [
+    ...rootStages.map((stage) => ({ operation, code: prefix + "ROOT_" + stage, expected: prefix + "ROOT_" + stage })),
+    ...["C:\\Users\\private-account\\private-path", "CN=private-certificate", "raw-stderr-canary",
+      prefix + "ROOT_OWNER\nprivate-account", prefix + "ROOT_UNKNOWN"].map((code) => ({ operation, code,
+      expected: prefix + (operation === "prepare" ? "HELPER" : "SIGNATURE") })),
+  ]);
+  const script = `
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+foreach ($case in ('${JSON.stringify(cases)}' | ConvertFrom-Json -AsHashtable)) {
+    $Operation = $case.operation
+    try { throw $case.code } catch {
+${catchBody}
+    }
+}
+`;
+  const result = spawnSync("pwsh", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+    { encoding: "utf8", timeout: 10000, maxBuffer: 65536 });
+  assert.equal(result.status, 0, "PowerShell fixed diagnostic fixtures failed");
+  assert.equal(result.stderr, "");
+  assert.equal(/private-account|private-path|private-certificate|raw-stderr-canary/.test(result.stdout), false);
+  assert.deepEqual(result.stdout.trim().split(/\r?\n/).map((line) => JSON.parse(line)),
+    cases.map(({ expected }) => ({ status: "FAIL", errorCode: expected })));
 });
 
 test("structured publisher validation rejects invalid trust, type, missing, duplicate and multivalued identities", async (t) => {
