@@ -1463,9 +1463,12 @@ authenticated checksum. The computed SHA-256 is only an observed receipt,
 not a vendor-provided pin.
 
 The trusted acquisition controller invokes the system
-`Get-AuthenticodeSignature` command without running the installer. Acceptance
-requires `Valid` status, an embedded `Authenticode` signature rather than a
-catalog signature, and exactly one subject CN and O, both equal to the
+`Get-AuthenticodeSignature` command without running the installer. Separate
+owned directories hold the installer's payload and the verifier's
+HOME, working directory and temporary files. PowerShell startup files must not
+populate the still-empty payload directory before its private ACL is applied.
+Signature acceptance requires `Valid` status, an embedded `Authenticode`
+signature rather than a catalog signature, and exactly one subject CN and O, both equal to the
 preconfigured publisher `Anysphere, Inc.`. Duplicate, multivalued, missing or
 different publisher attributes fail closed. This uses the current Windows
 trust policy without adding certificates or relaxing signature validation.

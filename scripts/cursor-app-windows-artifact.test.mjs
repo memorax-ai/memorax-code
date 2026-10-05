@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { access, chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 import { baselineRelease, resolveDownload } from "./cursor-app-release.mjs";
 import { selectCursorWindowsRelease, verifyCursorWindowsInstaller } from "./cursor-app-windows-artifact.mjs";
@@ -29,10 +29,18 @@ async function fixture(t, configuration = {}) {
   const state = { root, calls: [], fetches: [] };
   const execute = async (file, args, options) => {
     const operation = args[args.indexOf("-Operation") + 1];
-    state.ownedRoot = args[args.indexOf("-Directory") + 1];
-    state.path = join(state.ownedRoot, "CursorUserSetup.exe");
+    state.payloadRoot = args[args.indexOf("-Directory") + 1];
+    state.ownedRoot = dirname(state.payloadRoot);
+    state.runtimeRoot = options.cwd;
+    state.path = join(state.payloadRoot, "CursorUserSetup.exe");
     state.calls.push({ file, args, options, operation });
     assert.ok(["prepare", "verify"].includes(operation));
+    if (configuration.runtimeWrites) {
+      for (const key of ["HOME", "TMP"]) await writeFile(join(options.env[key], `${operation}-${key}.cache`), "runtime");
+    }
+    if (operation === "prepare" && (await readdir(state.payloadRoot)).length !== 0) {
+      throw { code: 1, stdout: JSON.stringify({ status: "FAIL", errorCode: prefix + "ROOT_NOT_EMPTY" }), stderr: "" };
+    }
     if (operation === configuration.fail) throw new Error("private command path and stderr");
     if (operation === configuration.commandError?.operation) throw configuration.commandError.error;
     if (operation === "verify") await configuration.onVerify?.(state);
@@ -96,8 +104,8 @@ test("verifies synthetic downloaded bytes statically and removes only its owned 
     assert.equal(call.file, "C:\\Program Files\\PowerShell\\7\\pwsh.exe");
     assert.deepEqual(call.args.slice(0, 4), ["-NoLogo", "-NoProfile", "-NonInteractive", "-File"]);
     assert.ok(call.args[4].endsWith("cursor-app-windows-authenticode.ps1"));
-    assert.deepEqual(call.args.slice(5), ["-Operation", call.operation, "-Directory", state.ownedRoot]);
-    assert.equal(call.options.cwd, state.ownedRoot);
+    assert.deepEqual(call.args.slice(5), ["-Operation", call.operation, "-Directory", state.payloadRoot]);
+    assert.equal(call.options.cwd, state.runtimeRoot);
     assert.equal(call.options.timeout, 120_000);
     assert.equal(call.options.maxBuffer, 4096);
     assert.equal(call.options.encoding, "utf8");
@@ -107,7 +115,7 @@ test("verifies synthetic downloaded bytes statically and removes only its owned 
       "PSModulePath", "ProgramFiles", "SystemRoot", "TEMP", "TMP", "USERPROFILE", "WINDIR"].sort());
     assert.equal(call.options.env.PSModulePath, "C:\\Program Files\\PowerShell\\7\\Modules");
     assert.equal(call.options.env.PATH, "C:\\Program Files\\PowerShell\\7;C:\\Windows\\System32");
-    for (const key of ["HOME", "USERPROFILE", "TEMP", "TMP"]) assert.equal(call.options.env[key], state.ownedRoot);
+    for (const key of ["HOME", "USERPROFILE", "TEMP", "TMP"]) assert.equal(call.options.env[key], state.runtimeRoot);
   }
   assert.equal(state.fetches.length, 1);
   assert.equal(state.fetches[0].url, baseline.url);
@@ -118,6 +126,25 @@ test("verifies synthetic downloaded bytes statically and removes only its owned 
   assert.deepEqual(options.headers, { "User-Agent": "memorax-cursor-app-ci" });
   assert.ok(options.signal instanceof AbortSignal);
   await assert.rejects(access(state.path), { code: "ENOENT" });
+  await state.assertClean();
+});
+
+test("PowerShell HOME and TMP startup files cannot pollute the empty payload or installer fingerprints", async (t) => {
+  const state = await fixture(t, { runtimeWrites: true, onVerify: async ({ payloadRoot, path }) => {
+    assert.deepEqual(await readdir(payloadRoot), ["CursorUserSetup.exe"]);
+    assert.deepEqual(await readFile(path), bytes);
+  } });
+  const result = await state.run();
+  assert.equal(result.authenticodeVerified, true);
+  assert.equal(result.observedSha256, createHash("sha256").update(bytes).digest("hex"));
+  assert.deepEqual(state.calls.map((call) => call.operation), ["prepare", "verify"]);
+  assert.equal(state.payloadRoot, join(state.ownedRoot, "payload"));
+  assert.equal(state.runtimeRoot, join(state.ownedRoot, "runtime"));
+  for (const call of state.calls) {
+    assert.equal(call.options.env.APPDATA, join(state.runtimeRoot, "AppData", "Roaming"));
+    assert.equal(call.options.env.LOCALAPPDATA, join(state.runtimeRoot, "AppData", "Local"));
+  }
+  await assert.rejects(access(state.ownedRoot), { code: "ENOENT" });
   await state.assertClean();
 });
 
@@ -245,7 +272,7 @@ test("symbolic-link replacement is rejected without deleting its target", { skip
 
 test("aborting a helper waits for its held child close before cleanup", async (t) => {
   const controller = new AbortController();
-  const state = await fixture(t);
+  const state = await fixture(t, { runtimeWrites: true });
   let closeObserved = false;
   const execute = (file, args, options) => {
     if (args[args.indexOf("-Operation") + 1] === "prepare") return state.options.execute(file, args, options);
@@ -254,7 +281,11 @@ test("aborting a helper waits for its held child close before cleanup", async (t
     pending.child = child;
     controller.abort();
     setImmediate(async () => {
-      try { await access(state.path); closeObserved = true; }
+      try {
+        await access(state.path);
+        await access(join(state.runtimeRoot, "prepare-HOME.cache"));
+        closeObserved = true;
+      }
       finally { child.emit("close", null, "SIGKILL"); }
     });
     return pending;
@@ -265,7 +296,7 @@ test("aborting a helper waits for its held child close before cleanup", async (t
 });
 
 test("unproven helper exit retains its owned directory and preserves the primary failure", async (t) => {
-  const state = await fixture(t);
+  const state = await fixture(t, { runtimeWrites: true });
   const execute = (file, args, options) => {
     if (args[args.indexOf("-Operation") + 1] === "prepare") return state.options.execute(file, args, options);
     const pending = Promise.reject(new Error("private failure"));
@@ -274,6 +305,8 @@ test("unproven helper exit retains its owned directory and preserves the primary
   };
   await assert.rejects(state.run({ execute }), { ...error("HELPER_VERIFY_EXIT"), cleanupErrorCode: prefix + "PROCESS_CLEANUP" });
   assert.deepEqual(await readFile(state.path), bytes);
+  assert.deepEqual((await readdir(state.ownedRoot)).sort(), ["payload", "runtime"]);
+  assert.equal(await readFile(join(state.runtimeRoot, "prepare-HOME.cache"), "utf8"), "runtime");
 });
 
 test("cleanup failure does not replace the signature error or return successful evidence",

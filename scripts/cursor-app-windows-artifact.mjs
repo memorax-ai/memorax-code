@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { lstat, mkdtemp, open, realpath, rm } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, open, realpath, rm } from "node:fs/promises";
 import { isAbsolute, join, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -82,7 +82,7 @@ function outputJson(stdout) {
   return value;
 }
 
-async function runHelper(execute, operation, ownedRoot, signal) {
+async function runHelper(execute, operation, payloadRoot, runtimeRoot, signal) {
   const phase = operation.toUpperCase();
   const suffix = "HELPER_" + phase;
   const powershellHome = "C:\\Program Files\\PowerShell\\7";
@@ -92,13 +92,13 @@ async function runHelper(execute, operation, ownedRoot, signal) {
     checkAborted(signal);
     requiresClose = execute === executeFile;
     const pending = execute(win32.join(powershellHome, "pwsh.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-File", helperPath,
-      "-Operation", operation, "-Directory", ownedRoot], { cwd: ownedRoot, signal, timeout: 120_000,
+      "-Operation", operation, "-Directory", payloadRoot], { cwd: runtimeRoot, signal, timeout: 120_000,
       maxBuffer: maxCommandBytes, encoding: "utf8", windowsHide: true, killSignal: "SIGKILL",
       env: { SystemRoot: systemRoot, WINDIR: systemRoot, COMSPEC: win32.join(systemRoot, "System32", "cmd.exe"),
         ProgramFiles: "C:\\Program Files", PATH: `${powershellHome};${systemRoot}\\System32`,
-        PSModulePath: win32.join(powershellHome, "Modules"), HOME: ownedRoot, USERPROFILE: ownedRoot,
-        APPDATA: join(ownedRoot, "AppData", "Roaming"), LOCALAPPDATA: join(ownedRoot, "AppData", "Local"),
-        TEMP: ownedRoot, TMP: ownedRoot } });
+        PSModulePath: win32.join(powershellHome, "Modules"), HOME: runtimeRoot, USERPROFILE: runtimeRoot,
+        APPDATA: join(runtimeRoot, "AppData", "Roaming"), LOCALAPPDATA: join(runtimeRoot, "AppData", "Local"),
+        TEMP: runtimeRoot, TMP: runtimeRoot } });
     if (pending?.child) {
       requiresClose = true;
       childClosed = new Promise((resolve) => pending.child.once("close", () => resolve(true)));
@@ -186,11 +186,17 @@ export async function verifyCursorWindowsInstaller({ release, root, signal, exec
   } catch { throw failure(rootStage); }
   let primaryError, cleanupError, artifact;
   try {
-    await runHelper(execute, "prepare", ownedRoot, signal);
-    const installerPath = join(ownedRoot, "CursorUserSetup.exe");
+    const payloadRoot = join(ownedRoot, "payload");
+    const runtimeRoot = join(ownedRoot, "runtime");
+    try {
+      await mkdir(payloadRoot, { mode: 0o700 });
+      await mkdir(runtimeRoot, { mode: 0o700 });
+    } catch { throw failure("ROOT_CREATE"); }
+    await runHelper(execute, "prepare", payloadRoot, runtimeRoot, signal);
+    const installerPath = join(payloadRoot, "CursorUserSetup.exe");
     artifact = await download(selected, installerPath, fetchImpl, signal);
     const before = await fingerprint(installerPath, artifact, signal);
-    await runHelper(execute, "verify", ownedRoot, signal);
+    await runHelper(execute, "verify", payloadRoot, runtimeRoot, signal);
     const after = await fingerprint(installerPath, artifact, signal);
     check(before.dev === after.dev && before.ino === after.ino, "CHANGED");
     checkAborted(signal);
