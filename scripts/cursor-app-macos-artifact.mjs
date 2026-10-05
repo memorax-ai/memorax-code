@@ -127,7 +127,7 @@ async function validateApp(appPath, release, execute, options) {
   } catch { throw failure("PACKAGE"); }
   check(info.CFBundleIdentifier === bundleIdentifier && info.CFBundleExecutable === "Cursor"
     && info.CFBundleShortVersionString === release.version && packageJson.version === release.version
-    && productJson.version === release.version && productJson.commit === release.commitSha
+    && productJson.version === release.version && productJson.realCommit === release.commitSha
     && productJson.darwinBundleIdentifier === bundleIdentifier, "PACKAGE");
   const executablePath = await containedFile(appPath, join(appPath, "Contents/MacOS/Cursor"), "ARCHITECTURE", maxDownloadBytes);
   let executable;

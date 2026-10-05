@@ -33,7 +33,7 @@ async function fixture(t, configuration = {}) {
   const info = { CFBundleIdentifier: "com.todesktop.230313mzl4w4u92", CFBundleExecutable: "Cursor",
     CFBundleShortVersionString: release.version, ...configuration.info };
   const packageJson = { version: release.version, ...configuration.packageJson };
-  const productJson = { version: release.version, commit: release.commitSha,
+  const productJson = { version: release.version, commit: release.commitSha.slice(0, -1) + "0", realCommit: release.commitSha,
     darwinBundleIdentifier: "com.todesktop.230313mzl4w4u92", ...configuration.productJson };
   const execute = async (file, args, options) => {
     const operation = file.endsWith("/hdiutil") ? args[0] : file.endsWith("/plutil")
@@ -161,6 +161,20 @@ posixTest("latest validates the selected exact release, without falling back to 
   assert.equal(evidence.commitSha, latest.commitSha);
   assert.equal(state.fetches[0].url, latest.url);
   await state.assertClean();
+});
+
+posixTest("release identity requires exact realCommit and never falls back to commit", async (t) => {
+  const state = await fixture(t);
+  assert.notEqual(baseline.commitSha.slice(0, -1) + "0", baseline.commitSha);
+  assert.equal((await state.run()).commitSha, baseline.commitSha);
+  await state.assertClean();
+  for (const realCommit of [undefined, null, "", baseline.commitSha.slice(0, -1) + "0"]) {
+    const invalid = await fixture(t, { productJson: { commit: baseline.commitSha, realCommit } });
+    await assert.rejects(invalid.run(), error("PACKAGE"));
+    assert.equal(invalid.callbackCount, 0);
+    assert.equal(invalid.calls.at(-1).operation, "detach");
+    await invalid.assertClean();
+  }
 });
 
 posixTest("rejects unsupported platforms, invalid roots and release tampering before acquiring", async (t) => {
@@ -299,7 +313,7 @@ posixTest("all static version, commit, bundle and executable fields must agree",
   for (const configuration of [
     { info: { CFBundleIdentifier: "other" } }, { info: { CFBundleExecutable: "../other" } },
     { info: { CFBundleShortVersionString: latest.version } }, { packageJson: { version: latest.version } },
-    { productJson: { version: latest.version } }, { productJson: { commit: "a".repeat(40) } },
+    { productJson: { version: latest.version } }, { productJson: { realCommit: "a".repeat(40) } },
     { productJson: { darwinBundleIdentifier: "other" } }, { infoJson: "not json" },
   ]) {
     const state = await fixture(t, configuration);

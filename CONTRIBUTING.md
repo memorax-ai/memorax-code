@@ -1239,7 +1239,9 @@ publishes one frozen inventory for every matrix cell; no job re-resolves latest
 or falls back to baseline. The macOS inventory has no publisher-provided
 checksum. Its read-only mounted DMG must supply an App with a valid deep code
 signature, the expected Apple-anchored signing identity and bundle identifier,
-Gatekeeper acceptance, and matching sealed version, commit and architecture.
+Gatekeeper acceptance, and matching sealed version, release commit and architecture.
+The signed `product.json` field `realCommit` must exactly match the frozen
+download API commit; the App's distinct mangled `commit` field is not a fallback.
 A computed DMG checksum is only an observed byte receipt, not an official
 checksum or a substitute for signature verification.
 
