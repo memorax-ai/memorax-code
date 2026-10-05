@@ -277,6 +277,23 @@ test("report projection drops raw diagnostics and requires completed native evid
   assert.equal(JSON.stringify(report).includes("synthetic"), false);
 });
 
+test("failure reports retain only the diagnostic helper's bounded public projection", () => {
+  const input = nativeReport();
+  input.status = "FAIL";
+  input.stage = "automatic-add";
+  input.errorCode = "CURSOR_APP_ADD_TIMEOUT";
+  input.diagnostics = { privatePath: "synthetic-private-path", sessionId: "synthetic-session",
+    turnStore: { readStatus: "synthetic-secret", reason: "synthetic-prompt", active: { token: "synthetic-token" } },
+    trace: { readStatus: "synthetic-secret", events: [{ content: "synthetic-answer" }] } };
+  const report = projectNativeReport(input);
+  assert.equal(report.status, "FAIL");
+  assert.ok(report.diagnostics);
+  assert.equal(JSON.stringify(report).includes("synthetic"), false);
+  input.evidence.exactAutomaticAdd = false;
+  input.status = "PASS";
+  assert.throws(() => projectNativeReport(input), /CURSOR_CONTAINER_REPORT/);
+});
+
 test("PASS rejects missing, reordered, duplicate or incomplete session-flow evidence", () => {
   for (const change of [
     (r) => { delete r.evidence.cleanup; }, (r) => { delete r.evidence.sameSessionFollowup; },

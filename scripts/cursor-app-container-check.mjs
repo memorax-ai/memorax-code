@@ -7,6 +7,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { baselineRelease, validateLinuxRelease } from "./cursor-app-release.mjs";
+import { projectCursorAppDiagnostics } from "./cursor-app-diagnostics.mjs";
 
 const exec = promisify(execFile);
 const scripts = dirname(fileURLToPath(import.meta.url));
@@ -114,6 +115,7 @@ export function projectNativeReport(input, { expectedVersion = provenance.cursor
       ancillaryRequestCount: count(agent.ancillaryRequestCount), unsupportedRpcCount: count(agent.unsupportedRpcCount), errors: agent.errors ?? [] };
   }
   if (input.memoryRequestCount !== undefined) report.memoryRequestCount = count(input.memoryRequestCount);
+  if (input.diagnostics !== undefined) report.diagnostics = projectCursorAppDiagnostics(input.diagnostics);
   if (report.status === "PASS") check(report.stage === "complete" && report.version === expectedVersion && !report.errorCode && !report.cleanupError && !report.nativeContentError
     && completedEvidence.every((key) => report.evidence[key] === true)
     && content?.length === 6 && [3, 6, 3, 9, 15, 21].every((blobs, index) => content[index]?.composerMatched === true
@@ -258,7 +260,7 @@ export async function runContainerCheck(candidatePath, reportPath, { releaseMani
     check(await hashFile(join(root, "seccomp-profile.json")) === provenance.seccomp.sha256, "CURSOR_CONTAINER_SECCOMP");
     await mkdir(join(root, "check"));
     for (const name of ["cursor-app-native-check.mjs", "cursor-app-protocol.mjs", "cursor-app-mock-server.mjs", "cursor-app-native-content-check.mjs",
-      "cursor-app-memory-check.mjs", "codex-native-content-check.mjs"]) {
+      "cursor-app-memory-check.mjs", "cursor-app-diagnostics.mjs", "codex-native-content-check.mjs"]) {
       await regularFile(join(scripts, name));
       await copyFile(join(scripts, name), join(root, "check", name));
     }

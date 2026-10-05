@@ -10,6 +10,7 @@ import { pathToFileURL } from "node:url";
 import { startCursorAgentMock } from "./cursor-app-mock-server.mjs";
 import { assertCursorAppNativeContent, assertCursorAppWritebacks } from "./cursor-app-native-content-check.mjs";
 import { assertCursorAppSkillReference, assertCursorAppMemoryOperation } from "./cursor-app-memory-check.mjs";
+import { collectCursorAppDiagnostics } from "./cursor-app-diagnostics.mjs";
 
 const [packageRoot, appPath, expectedVersion, playwrightRoot, reportDir, expectedNodeMajor = "24"] = process.argv.slice(2);
 const report = { status: "FAIL", client: "cursor", kind: "app-native-session-flows", platform: process.platform,
@@ -379,6 +380,9 @@ try {
   report.stage = "cleanup";
 } catch (error) {
   failure = error?.stack ?? String(error); report.errorCode = safeCode(error);
+  const run = agent?.runs.at(-1);
+  if (env && run) report.diagnostics = await collectCursorAppDiagnostics({ home: env.MEMORAX_CODE_HOME,
+    sessionId: run.conversationId, turnId: run.requestId });
   failureUi = await page?.locator("body").innerText({ timeout: 1000 }).then((text) => text.slice(0, 32000)).catch(() => undefined);
 }
 finally {
