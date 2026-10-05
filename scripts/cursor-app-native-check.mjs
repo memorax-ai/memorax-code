@@ -38,7 +38,7 @@ const searchMemory = "CURSOR_NATIVE_SEARCH_RESULT: validate parser input before 
 const memoryRequests = [], turns = [];
 let agent, memory, app, browser, cli, page, started = false, appLog = "";
 let appLaunchLog = "", appSpawnError, appDebugEndpointSeen = false;
-let appStartedAt, appStartPending = false;
+let appStartedAt, appStartPending = false, appSandboxStream;
 let root, env, chromium, userData, workspace, failure, failureUi, skillRoot, skillText;
 let interruption;
 let macos, macosPaths, sandboxProfile, backendPort = 18787, debugPort = 9222;
@@ -199,9 +199,31 @@ async function assertProcessesStopped(options) {
   }
   check(false, "CURSOR_APP_CLEANUP_DESCENDANTS");
 }
+async function stopSandboxDiagnostics() {
+  const stream = appSandboxStream;
+  if (!stream) return;
+  appSandboxStream = undefined;
+  try {
+    const result = await stream.stop(Date.now());
+    if (appStartPending) report.appSandboxLog = projectCursorAppSandboxDiagnostics(result.diagnostics);
+    if (result.closed !== true) report.cleanupError ??= "CURSOR_APP_SANDBOX_LOG_CLEANUP";
+  } catch {
+    if (appStartPending) report.appSandboxLog = projectCursorAppSandboxDiagnostics({ status: "unavailable", reason: "execute-failed" });
+    report.cleanupError ??= "CURSOR_APP_SANDBOX_LOG_CLEANUP";
+  }
+}
 async function startApp() {
   appLaunchLog = ""; appSpawnError = undefined; appDebugEndpointSeen = false;
   appStartedAt = Date.now(); appStartPending = true;
+  if (macos) {
+    try {
+      appSandboxStream = await macos.startMacosSandboxDiagnostics({ appBundle: macosPaths.appBundle,
+        home: macosPaths.home, startedAt: appStartedAt });
+    } catch {
+      report.appSandboxLog = projectCursorAppSandboxDiagnostics({ status: "unavailable", reason: "execute-failed" });
+      report.cleanupError ??= "CURSOR_APP_SANDBOX_LOG_CLEANUP";
+    }
+  }
   const endpoint = macos?.createDevToolsEndpointReader(debugPort);
   let endpointError;
   app = spawnOwned(appPath, ["--user-data-dir", userData, "--extensions-dir", join(root, "extensions"), "--new-window",
@@ -240,6 +262,7 @@ async function startApp() {
   await bounded(page.evaluate(() => window.driver.whenWorkbenchRestored()), "CURSOR_APP_WORKBENCH_RESTORE_TIMEOUT", 30000);
   await assertLoopbackListeners();
   appStartPending = false;
+  await stopSandboxDiagnostics();
 }
 async function openSession(sessionId) {
   report.stage = "session-open";
@@ -541,18 +564,14 @@ try {
   if (app) report.appLaunch = collectCursorAppLaunchDiagnostics({ spawned: Boolean(app.pid),
     debugEndpointSeen: appDebugEndpointSeen, exitCode: app.exitCode, signal: app.signalCode,
     spawnError: appSpawnError, log: appLaunchLog });
-  if (macos && appStartPending) {
-    try {
-      report.appSandboxLog = await macos.collectMacosSandboxDiagnostics({ appBundle: macosPaths.appBundle,
-        startedAt: appStartedAt, endedAt: Date.now() });
-    } catch { report.appSandboxLog = projectCursorAppSandboxDiagnostics({ status: "unavailable", reason: "execute-failed" }); }
-  }
+  await stopSandboxDiagnostics();
   const run = agent?.runs.at(-1);
   if (env && run) report.diagnostics = await collectCursorAppDiagnostics({ home: env.MEMORAX_CODE_HOME,
     sessionId: run.conversationId, turnId: run.requestId });
   failureUi = await page?.locator("body").innerText({ timeout: 1000 }).then((text) => text.slice(0, 32000)).catch(() => undefined);
 }
 finally {
+  await stopSandboxDiagnostics();
   try { await stopApp(); } catch (error) { report.cleanupError = safeCode(error); }
   try { if (started) await cli("stop"); } catch (error) { report.cleanupError ??= safeCode(error); }
   try {

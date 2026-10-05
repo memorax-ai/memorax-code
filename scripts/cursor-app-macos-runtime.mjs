@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { createServer } from "node:net";
 import { posix as path } from "node:path";
 import { promisify } from "node:util";
@@ -69,63 +69,124 @@ export async function auditMacosProcesses(options, execute = exec) {
   return hasOwnedMacosProcesses(output, options);
 }
 
-export async function collectMacosSandboxDiagnostics({ appBundle, startedAt, endedAt,
-  platform = process.platform, environment = process.env }, execute = exec) {
-  const result = (status, reason, markers) => projectCursorAppSandboxDiagnostics({ status, reason, markers });
-  let bundle;
-  try { bundle = absolute(appBundle); } catch { return result("unavailable", "scope-mismatch"); }
-  const start = Math.floor(startedAt / 1000), end = Math.ceil(endedAt / 1000);
-  if (platform !== "darwin" || environment?.GITHUB_ACTIONS !== "true" || environment?.RUNNER_OS !== "macOS"
-    || bundle !== appBundle || !bundle.endsWith(".app") || !Number.isSafeInteger(startedAt)
-    || !Number.isSafeInteger(endedAt) || startedAt <= 0 || endedAt < startedAt || end - start > 120) {
-    return result("unavailable", "scope-mismatch");
-  }
-  const maxBuffer = 256 * 1024;
-  const predicate = 'subsystem == "org.chromium.sandbox" AND category == "chromium_logging"'
-    + ` AND processImagePath BEGINSWITH ${JSON.stringify(bundle + "/")}`;
-  let stdout, stderr;
-  try {
-    ({ stdout, stderr } = await execute("/usr/bin/log", ["show", "--style", "ndjson", "--no-pager", "--timezone", "UTC",
-      "--start", `@${start}`, "--end", `@${end}`, "--predicate", predicate], {
-      encoding: "utf8", timeout: 5000, maxBuffer, killSignal: "SIGKILL",
-      env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" },
-    }));
-  } catch (error) {
-    if (error?.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") return result("overflow", "overflow");
-    return result("unavailable", error?.code === "ETIMEDOUT" || error?.killed === true && error?.signal === "SIGKILL"
-      ? "timeout" : "execute-failed");
-  }
-  if (stderr) return result("unavailable", "execute-failed");
-  if (typeof stdout !== "string") return result("unavailable", "parse-invalid");
-  if (Buffer.byteLength(stdout) > maxBuffer) return result("overflow", "overflow");
-  const lines = stdout.split(/\r?\n/).filter((line) => line.trim()), markers = {};
+function sandboxLogResult(status, reason, markers) {
+  return projectCursorAppSandboxDiagnostics({ status, reason, markers });
+}
+
+function parseSandboxLog(stdout, { appBundle, startedAt, endedAt, predicate }) {
+  const result = sandboxLogResult;
+  const rawLines = stdout.split(/\r?\n/);
+  if (rawLines[0] === `Filtering the log data using "(${predicate}) AND type == 1024"`) rawLines.shift();
+  const lines = rawLines.filter((line) => line.trim()), markers = {};
   let events = 0;
   for (const [index, line] of lines.entries()) {
     let row;
     try { row = JSON.parse(line); } catch { return result("unavailable", "parse-invalid"); }
     if (!row || typeof row !== "object" || Array.isArray(row)) return result("unavailable", "parse-invalid");
-    // Apple's log(1) documents one trailing NDJSON record identified by "finished".
+    // A footer is optional when the owned stream is stopped by a signal.
     if (Object.hasOwn(row, "finished")) {
       if (index !== lines.length - 1 || ["eventMessage", "eventType", "processImagePath", "subsystem", "category", "timestamp"]
         .some((key) => Object.hasOwn(row, key))) return result("unavailable", "parse-invalid");
       continue;
     }
     if (row.eventType !== "logEvent" || typeof row.eventMessage !== "string" || typeof row.timestamp !== "string"
-      || !/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{6}\+0000$/.test(row.timestamp)
       || typeof row.processImagePath !== "string") return result("unavailable", "parse-invalid");
-    const time = Date.parse(row.timestamp.replace(" ", "T"));
+    const timestamp = row.timestamp.match(/^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\.(\d{6})([+-])(\d{2})(\d{2})$/);
+    if (!timestamp) return result("unavailable", "parse-invalid");
+    const local = `${timestamp[1].replace(" ", "T")}.${timestamp[2].slice(0, 3)}`;
+    const offset = (Number(timestamp[4]) * 60 + Number(timestamp[5])) * (timestamp[3] === "+" ? 1 : -1);
+    const time = Date.parse(`${local}${timestamp[3]}${timestamp[4]}:${timestamp[5]}`);
     if (row.subsystem !== "org.chromium.sandbox" || row.category !== "chromium_logging"
-      || !row.processImagePath.startsWith(bundle + "/") || path.normalize(row.processImagePath) !== row.processImagePath
-      || /[\0\r\n]/.test(row.processImagePath) || !Number.isFinite(time) || time < start * 1000 || time > end * 1000) {
+      || !row.processImagePath.startsWith(appBundle + "/") || path.normalize(row.processImagePath) !== row.processImagePath
+      || /[\0\r\n]/.test(row.processImagePath) || !Number.isFinite(time) || Number(timestamp[4]) > 23 || Number(timestamp[5]) > 59
+      || new Date(time + offset * 60000).toISOString().slice(0, 23) !== local) {
       return result("unavailable", "scope-mismatch");
     }
-    if (time < startedAt || time > endedAt || time === endedAt && row.timestamp.slice(23, 26) !== "000") continue;
+    if (time < startedAt || time > endedAt || time === endedAt && timestamp[2].slice(3) !== "000") continue;
     events++;
     for (const [key, value] of Object.entries(collectCursorAppLaunchDiagnostics({ log: row.eventMessage }).markers)) {
       markers[key] = markers[key] === true || value;
     }
   }
   return result(events ? "collected" : "empty", "none", markers);
+}
+
+export async function startMacosSandboxDiagnostics({ appBundle, home, startedAt,
+  platform = process.platform, environment = process.env }, spawnProcess = spawn) {
+  const unavailable = (reason) => ({ stop: async () => ({ closed: true, diagnostics: sandboxLogResult("unavailable", reason) }) });
+  try {
+    if (platform !== "darwin" || environment?.GITHUB_ACTIONS !== "true" || environment?.RUNNER_OS !== "macOS"
+      || absolute(appBundle) !== appBundle || !appBundle.endsWith(".app") || absolute(home) !== home
+      || !Number.isSafeInteger(startedAt) || startedAt <= 0) return unavailable("scope-mismatch");
+  } catch { return unavailable("scope-mismatch"); }
+  const predicate = 'subsystem == "org.chromium.sandbox" AND category == "chromium_logging"'
+    + ` AND processImagePath BEGINSWITH ${JSON.stringify(appBundle + "/")}`;
+  let child;
+  try {
+    child = spawnProcess("/usr/bin/log", ["stream", "--style", "ndjson", "--type", "log", "--timeout", "120", "--predicate", predicate], {
+      stdio: ["ignore", "pipe", "pipe"],
+      env: { HOME: home, CFFIXED_USER_HOME: home, PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" },
+    });
+  } catch { return unavailable("execute-failed"); }
+  let closed = false, stopping = false, fault, output = [], bytes = 0, stopPromise, killTimer, lifetimeTimer;
+  let onClose, onSpawn;
+  const closure = new Promise((resolve) => { onClose = resolve; });
+  const spawned = new Promise((resolve) => { onSpawn = resolve; });
+  const stopChild = () => {
+    if (closed || stopping) return;
+    stopping = true;
+    try { child.kill("SIGINT"); } catch { fault ??= ["unavailable", "execute-failed"]; }
+    killTimer = setTimeout(() => {
+      if (!closed) {
+        fault ??= ["unavailable", "timeout"];
+        try { child.kill("SIGKILL"); } catch { /* The retained handle remains unclosed. */ }
+      }
+    }, 1000);
+  };
+  child.once("spawn", () => onSpawn(true));
+  child.on("error", () => { fault ??= ["unavailable", "execute-failed"]; onSpawn(false); });
+  child.once("close", (code, signal) => {
+    closed = true;
+    if (!stopping || code !== 0 && signal !== "SIGINT") fault ??= ["unavailable", "execute-failed"];
+    clearTimeout(lifetimeTimer); clearTimeout(killTimer); onSpawn(false); onClose(true);
+  });
+  const capture = (chunk, stderr) => {
+    if (fault) return;
+    bytes += chunk.length;
+    if (bytes > 256 * 1024) {
+      fault = ["overflow", "overflow"]; output = []; stopChild();
+    } else if (stderr) {
+      fault = ["unavailable", "execute-failed"]; output = []; stopChild();
+    } else output.push(chunk);
+  };
+  child.stdout.on("data", (chunk) => capture(chunk, false));
+  child.stderr.on("data", (chunk) => capture(chunk, true));
+  lifetimeTimer = setTimeout(() => { fault ??= ["unavailable", "timeout"]; stopChild(); }, 120000);
+  const wait = async (promise, timeoutMs) => {
+    let timer;
+    try { return await Promise.race([promise, new Promise((resolve) => { timer = setTimeout(() => resolve(false), timeoutMs); })]); }
+    finally { clearTimeout(timer); }
+  };
+  // Process creation is not an acknowledgement that logd has subscribed to every event.
+  if (!await wait(spawned, 5000)) { fault ??= ["unavailable", "timeout"]; stopChild(); }
+  return { stop(endedAt) {
+    stopPromise ??= (async () => {
+      stopChild();
+      if (!await wait(closure, 2500)) fault ??= ["unavailable", "timeout"];
+      clearTimeout(lifetimeTimer); clearTimeout(killTimer);
+      let diagnostics;
+      if (!Number.isSafeInteger(endedAt) || endedAt < startedAt || endedAt - startedAt > 120000) {
+        diagnostics = sandboxLogResult("unavailable", "scope-mismatch");
+      } else if (fault) diagnostics = sandboxLogResult(...fault);
+      else {
+        try { diagnostics = parseSandboxLog(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(output)), { appBundle, startedAt, endedAt, predicate }); }
+        catch { diagnostics = sandboxLogResult("unavailable", "parse-invalid"); }
+      }
+      output = [];
+      return { closed, diagnostics };
+    })();
+    return stopPromise;
+  } };
 }
 
 export async function captureMacosDescendants(appPid, execute = exec) {
