@@ -364,7 +364,8 @@ internal sealed class CursorWindowsSessionNative : ICursorWindowsSessionNative
     {
         using (RegistryKey existing = Registry.LocalMachine.OpenSubKey(ProfileKey(sid))) Check(existing == null, "PROFILE_EXISTS");
         using (RegistryKey existing = Registry.Users.OpenSubKey(sid)) Check(existing == null, "PROFILE_EXISTS");
-        StringBuilder path = new StringBuilder(32768);
+        // Keep profile creation at MAX_PATH rather than the extended-path limit.
+        StringBuilder path = new StringBuilder(260);
         int result = Native.CreateProfile(sid, userName, path, (uint)path.Capacity);
         if (result != 0) throw new CursorWindowsSessionException(result == unchecked((int)0x800700B7) ? "PROFILE_EXISTS" : "PROFILE_CREATE")
             { NativeHResult = unchecked((uint)result) };

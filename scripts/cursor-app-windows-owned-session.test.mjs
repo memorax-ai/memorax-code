@@ -26,6 +26,8 @@ test("profile authority, complete token groups, secret lifetime and privilege re
   assert.match(text, /if \(result != 0\) throw new CursorWindowsSessionException\(result == unchecked\(\(int\)0x800700B7\)/);
   assert.match(text, /public uint\? NativeHResult \{ get; internal set; \}/);
   const create = text.slice(text.indexOf("public string CreateProfile(string userName, string sid)"), text.indexOf("private static void WithProfilePrivileges"));
+  assert.match(create, /StringBuilder path = new StringBuilder\(260\);/);
+  assert.match(create, /Native\.CreateProfile\(sid, userName, path, \(uint\)path\.Capacity\)/);
   assert.match(create, /NativeHResult = unchecked\(\(uint\)result\)/);
   assert.equal((text.match(/NativeHResult\s*=/g) ?? []).length, 1);
   assert.match(text, /GetUserProfileDirectoryW\(token, actual, ref size\)/);
