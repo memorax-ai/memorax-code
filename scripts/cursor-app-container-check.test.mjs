@@ -42,19 +42,16 @@ function nativeReport() {
       contextRequests: [1, 1, 1, 1, 1, 1, 1], contextResults: [1, 1, 1, 1, 1, 1, 1], contextCloses: [1, 1, 1, 1, 1, 1, 1] }, memoryRequestCount: 8 };
 }
 
-test("macOS requires its network proof and all actual loopback-listener checkpoints", () => {
+test("macOS requires actual loopback-listener checkpoints without an extra OS sandbox proof", () => {
   const report = nativeReport();
   report.platform = "darwin";
   assert.throws(() => projectNativeReport(report), { code: "CURSOR_CONTAINER_REPORT" });
-  assert.throws(() => projectNativeReport(report, { platform: "darwin" }), { code: "CURSOR_CONTAINER_REPORT" });
-  report.evidence.networkIsolation = true;
   assert.throws(() => projectNativeReport(report, { platform: "darwin" }), { code: "CURSOR_CONTAINER_REPORT" });
   report.evidence.loopbackListeners = true;
   report.listenerAuditCount = 10;
   assert.deepEqual(projectNativeReport(report, { platform: "darwin" }), report);
   for (const change of [
     (value) => { value.platform = "linux"; },
-    (value) => { value.evidence.networkIsolation = false; },
     (value) => { delete value.evidence.loopbackListeners; },
     (value) => { value.evidence.loopbackListeners = false; },
     (value) => { delete value.listenerAuditCount; },
@@ -67,6 +64,17 @@ test("macOS requires its network proof and all actual loopback-listener checkpoi
   ]) {
     const changed = structuredClone(report); change(changed);
     assert.throws(() => projectNativeReport(changed, { platform: "darwin" }), { code: "CURSOR_CONTAINER_REPORT" });
+  }
+});
+
+test("Windows requires the same native content, memory operations and cleanup as Linux", () => {
+  const report = nativeReport();
+  report.platform = "win32";
+  assert.deepEqual(projectNativeReport(report, { platform: "win32" }), report);
+  assert.throws(() => projectNativeReport(report), { code: "CURSOR_CONTAINER_REPORT" });
+  for (const key of ["nativeHooks", "exactAutomaticAdd", "skillSearch", "skillAdd", "pendingShellInterrupted", "cleanup"]) {
+    const changed = structuredClone(report); changed.evidence[key] = false;
+    assert.throws(() => projectNativeReport(changed, { platform: "win32" }), { code: "CURSOR_CONTAINER_REPORT" });
   }
 });
 

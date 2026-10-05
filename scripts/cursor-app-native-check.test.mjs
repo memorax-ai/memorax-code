@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { EventEmitter, once } from "node:events";
 import { readFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, join, win32 } from "node:path";
 import { PassThrough } from "node:stream";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
@@ -9,7 +9,7 @@ import { collectCursorAppStopDiagnostics, projectCursorAppSandboxDiagnostics } f
 
 const source = (await readFile(new URL("./cursor-app-native-check.mjs", import.meta.url), "utf8")).replaceAll("\r\n", "\n");
 
-test("actual candidate command keeps only macOS cleanup stop outside the sandbox and preserves outcomes", async () => {
+test("actual candidate commands use the owned spawn on every platform and preserve outcomes", async () => {
   const body = source.split("async function command(")[1]?.split("\nasync function ownedProcessesRemain(")[0];
   const cliBody = source.split("  cli = ")[1]?.split(";\n")[0];
   assert.ok(body);
@@ -18,7 +18,7 @@ test("actual candidate command keeps only macOS cleanup stop outside the sandbox
   const failure = { ok: false, action: "stop", backend: { ok: false, errorCode: "BACKEND_STOP_TIMEOUT",
     stage: "wait_stopped", processState: "running", state: { path: privateCanary }, error: privateCanary } };
   const modes = ["failed-stop", "successful-stop", "invalid-json", "failed-start", "failed-status", "failed-restart", "timeout", "overflow"];
-  for (const [isMacos, mode] of [false, true].flatMap((isMacos) => modes.map((mode) => [isMacos, mode]))) {
+  for (const [platform, mode] of ["linux", "darwin", "win32"].flatMap((platform) => modes.map((mode) => [platform, mode]))) {
     const action = ["failed-start", "failed-status", "failed-restart"].includes(mode) ? mode.slice(7) : "stop";
     const report = {}, kills = [], timers = [], env = { HOME: "/owned/home", MEMORAX_CODE_HOME: "/owned/state", CURSOR_HOME: "/owned/cursor" };
     const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough(), exitCode: null, signalCode: null });
@@ -30,7 +30,7 @@ test("actual candidate command keeps only macOS cleanup stop outside the sandbox
     };
     child.kill = (signal) => { kills.push(signal); queueMicrotask(() => close(null, signal)); };
     function startCommand(route, file, args, options) {
-      assert.equal(route, isMacos && action === "stop" ? "controller" : "owned");
+      assert.equal(route, "owned");
       assert.equal(file, "/owned/node");
       assert.deepEqual(Array.from(args), [join("/owned/package", "bin/memorax-code.mjs"), action,
         "--home", env.MEMORAX_CODE_HOME, "--cursor-home", env.CURSOR_HOME, "--port", "18787", "--clients", "cursor", "--json"]);
@@ -48,7 +48,7 @@ test("actual candidate command keeps only macOS cleanup stop outside the sandbox
     }
     const command = runInNewContext(`(async function command(${body})`, {
       process: { execPath: "/owned/node" }, packageRoot: "/owned/package", root: "/owned", env, report, join, once,
-      macos: isMacos ? {} : undefined,
+      macos: platform === "darwin" ? {} : undefined, windows: platform === "win32" ? {} : undefined,
       collectCursorAppStopDiagnostics(value) { collected = true; return collectCursorAppStopDiagnostics(value); },
       check(value, code) {
         if (action === "stop") assert.equal(collected, true, "stop JSON is projected before checking the exit");
@@ -119,7 +119,7 @@ test("sandbox stream stops once and preserves the primary failure while checking
   }
 });
 
-test("the trusted collector starts before the sandboxed App and closes on ready, failure and finally", async () => {
+test("the trusted collector starts before the owned App and closes on ready, failure and finally", async () => {
   const launch = source.split("async function startApp() {")[1].split("\nasync function openSession(")[0];
   assert.match(launch, /appStartedAt = Date\.now\(\); appStartPending = true;/);
   assert.ok(launch.indexOf("await macos.startMacosSandboxDiagnostics") < launch.indexOf("app = spawnOwned"));
@@ -148,26 +148,97 @@ test("the trusted collector starts before the sandboxed App and closes on ready,
   }
 });
 
-test("owned native commands and App launch retain the same macOS sandbox invocation without a shell", () => {
+test("owned native commands and App launch preserve direct spawn arguments without a shell", () => {
   const body = source.split("function spawnOwned(")[1]?.split("\nasync function command(")[0];
   assert.ok(body);
-  assert.match(source, /const spawnCommand = macos && args\[0\] === "stop" \? spawn : spawnOwned;/);
   assert.match(source, /app = spawnOwned\(appPath,/);
-  for (const sandboxed of [false, true]) {
+  for (const platform of ["linux", "darwin", "win32"]) {
     const calls = [], options = { env: { HOME: "/owned/home" }, cwd: "/owned/workspace" };
     const spawnOwned = runInNewContext(`(function spawnOwned(${body})`, {
-      sandboxProfile: "owned profile",
-      macos: sandboxed ? { sandboxInvocation(file, args, profile) {
-        assert.equal(profile, "owned profile"); return { file: "/usr/bin/sandbox-exec", args: ["-p", profile, file, ...args] };
-      } } : undefined,
+      macos: platform === "darwin" ? { sandboxInvocation() { assert.fail("no extra Seatbelt wrapper"); } } : undefined,
+      windows: platform === "win32" ? {} : undefined,
       spawn(file, args, actualOptions) { calls.push({ file, args, actualOptions }); return "owned child"; },
     }, { timeout: 100 });
     assert.equal(spawnOwned("/owned/Node", ["an argument with spaces"], options), "owned child");
     assert.equal(calls.length, 1);
     assert.equal(calls[0].actualOptions, options);
-    assert.equal(calls[0].file, sandboxed ? "/usr/bin/sandbox-exec" : "/owned/Node");
-    assert.deepEqual(Array.from(calls[0].args), sandboxed
-      ? ["-p", "owned profile", "/owned/Node", "an argument with spaces"] : ["an argument with spaces"]);
+    assert.equal(calls[0].file, "/owned/Node");
+    assert.deepEqual(Array.from(calls[0].args), ["an argument with spaces"]);
+    assert.equal(options.shell, undefined);
+  }
+});
+
+test("App launch keeps the default Chromium sandbox and forces isolated shell environment on native hosts", () => {
+  const launch = source.split("async function startApp() {")[1]?.split("\nasync function openSession(")[0];
+  const body = launch?.slice(launch.indexOf("  app = spawnOwned("), launch.indexOf("  const capture = "));
+  assert.ok(body);
+  for (const platform of ["linux", "darwin", "win32"]) {
+    const env = { HOME: "/owned/home" }, calls = [];
+    runInNewContext(body, {
+      macos: platform === "darwin" ? {} : undefined, windows: platform === "win32" ? {} : undefined,
+      appPath: "/owned/app", userData: "/owned/app-data", root: "/owned", workspace: "/owned/workspace",
+      agent: { url: "http://127.0.0.1:12345" }, debugPort: 12346, env, join,
+      spawnOwned(file, args, options) { calls.push({ file, args: Array.from(args), options }); },
+    }, { timeout: 100 });
+    assert.equal(calls.length, 1);
+    const { file, args, options } = calls[0];
+    assert.equal(file, "/owned/app"); assert.equal(options.env, env); assert.equal(options.shell, undefined);
+    assert.equal(args.includes("--force-disable-user-env"), platform !== "linux");
+    assert.equal(args.includes("--use-inmemory-secretstorage"), true);
+    assert.equal(args[args.indexOf("--test-backend-url") + 1], "http://127.0.0.1:12345");
+    assert.equal(args.includes("--remote-debugging-address=127.0.0.1"), true);
+    assert.equal(args.includes("--remote-debugging-port=12346"), true);
+    assert.equal(args.some((arg) => ["--no-sandbox", "--disable-setuid-sandbox", "--disable-gpu-sandbox"].includes(arg)), false);
+  }
+});
+
+test("native Shell commands keep POSIX quoting and route Windows Skill context and pending markers", () => {
+  const shell = source.slice(source.indexOf("function quote("), source.indexOf("\nfunction assertSkillMemory("));
+  const body = source.split("function toolSteps(")[1]?.split("\nasync function stopApp(")[0];
+  assert.ok(shell && body);
+  const posix = runInNewContext(`(() => { ${shell}; return shellCommand; })()`, { windows: undefined });
+  assert.equal(posix(["/owned/tool", "it's a value"], { FIXTURE: "a b" }), "'env' 'FIXTURE=a b' '/owned/tool' 'it'\\''s a value'");
+  for (const operation of ["search", "add", "interrupt"]) {
+    const calls = [], workspace = "C:\\owned\\workspace", skillRoot = "C:\\owned\\skills\\memorax-code";
+    const run = { prompt: "synthetic prompt", conversationId: "synthetic-session", requestContextCloseCount: 1 };
+    const interruption = { sessionId: run.conversationId, marker: "C:\\owned\\pending marker" };
+    const encodedCommand = "ZgBpAHgAdAB1AHIAZQA=", command = `powershell.exe -EncodedCommand ${encodedCommand}`;
+    const reference = win32.join(skillRoot, "references", `memorax-${operation}.md`);
+    const results = operation === "interrupt" ? [] : [
+      { kind: "read", path: win32.join(skillRoot, "SKILL.md"), content: "installed skill" },
+      { kind: "read", path: reference, content: "installed reference" },
+    ];
+    const toolSteps = runInNewContext(`(() => { ${shell}; return function toolSteps(${body}; })()`, {
+      process: { platform: "win32", execPath: "C:\\owned\\node.exe" }, join: win32.join,
+      agent: { runs: operation === "interrupt" ? [undefined, run] : [run] },
+      fixtures: [{ prompt: run.prompt, operation }], turns: [{ sessionId: run.conversationId }],
+      interruption,
+      interruptedFixture: { prompt: run.prompt }, workspace, skillRoot, skillText: "installed skill",
+      referenceTexts: new Map([[operation, "installed reference"]]),
+      skillQuery: "query ' value", skillMemory: "memory ' value", skillReason: "reason ' value",
+      windows: { windowsShellCommand(args, environment) {
+        calls.push({ args: Array.from(args), environment: { ...environment } }); return command;
+      } },
+      assertCursorAppSkillReference(content, actualOperation, platform) {
+        assert.equal(content, "installed reference"); assert.equal(actualOperation, operation); assert.equal(platform, "win32");
+        return "C:\\owned\\bin\\memorax-cli.cmd";
+      },
+      check(value, code) { if (!value) throw Object.assign(new Error(code), { code }); },
+    }, { timeout: 100 });
+    assert.deepEqual(JSON.parse(JSON.stringify(toolSteps(run, results))), {
+      kind: "shell", command, workingDirectory: workspace, timeoutMs: 20000,
+    });
+    assert.equal(interruption.encodedCommand, operation === "interrupt" ? encodedCommand : undefined);
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0], operation === "interrupt" ? {
+      args: ["C:\\owned\\node.exe", "-e", "require('node:fs').writeFileSync(process.argv[1], 'unexpected execution')", "C:\\owned\\pending marker"],
+      environment: {},
+    } : {
+      args: ["C:\\owned\\bin\\memorax-cli.cmd", ...(operation === "search"
+        ? ["search", "--query", "query ' value", "--json"]
+        : ["add", "--memory", "memory ' value", "--type", "procedural", "--reason", "reason ' value", "--json"])],
+      environment: { MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT: "cursor", MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID: run.conversationId },
+    });
   }
 });
 
@@ -184,6 +255,30 @@ test("macOS cleanup uses the read-only owned-path and observed-PID audit without
   assert.equal(calls[0].observedPids, observedMacosPids);
   assert.deepEqual(JSON.parse(JSON.stringify(calls)), [{ appBundle: "/owned/Cursor.app", packageRoot: "/owned/package",
     stateHome: "/owned/state", marker: "/owned/marker", includeBackend: false, selfPid: 123, observedPids: {} }]);
+});
+
+test("Windows cleanup delegates only the current owned paths and fails closed on audit errors", async () => {
+  const body = source.split("async function ownedProcessesRemain(")[1]?.split("\nasync function assertLoopbackListeners(")[0];
+  assert.ok(body);
+  for (const includeBackend of [true, false]) for (const result of [true, false, "error"]) {
+    const env = { MEMORAX_CODE_HOME: "C:\\owned\\state" }, calls = [];
+    const audit = runInNewContext(`(async function ownedProcessesRemain(${body})`, {
+      process: { pid: 123 }, macos: undefined, appPath: "C:\\owned\\Cursor.exe", packageRoot: "C:\\owned\\package",
+      env, interruption: { marker: "C:\\owned\\marker", encodedCommand: "ZgBpAHgAdAB1AHIAZQA=" },
+      windows: { async auditWindowsProcesses(options) {
+        calls.push(options);
+        if (result === "error") throw Object.assign(new Error("audit failed"), { code: "CURSOR_APP_WINDOWS_PROCESS_AUDIT" });
+        return result;
+      } },
+      readdir() { assert.fail("Windows must not use /proc"); },
+    }, { timeout: 100 });
+    if (result === "error") await assert.rejects(audit({ includeBackend }), { code: "CURSOR_APP_WINDOWS_PROCESS_AUDIT" });
+    else assert.equal(await audit(includeBackend ? undefined : { includeBackend }), result);
+    assert.equal(calls.length, 1); assert.equal(calls[0].env, env);
+    assert.deepEqual({ ...calls[0] }, { appPath: "C:\\owned\\Cursor.exe", packageRoot: "C:\\owned\\package",
+      stateHome: env.MEMORAX_CODE_HOME, marker: "C:\\owned\\marker", encodedCommand: "ZgBpAHgAdAB1AHIAZQA=",
+      includeBackend, selfPid: 123, env });
+  }
 });
 
 test("macOS cleanup records descendants before browser shutdown and still closes after an audit failure", async () => {
@@ -210,6 +305,37 @@ test("macOS cleanup records descendants before browser shutdown and still closes
   }
 });
 
+test("Windows App cleanup uses its held live child after browser close, never an exited or absent child", async () => {
+  const body = source.split("async function stopApp(")[1]?.split("\nasync function assertProcessesStopped(")[0];
+  assert.ok(body);
+  for (const mode of ["live", "exited", "signaled", "absent", "browser-exits", "browser-error"]) {
+    const calls = [], env = { HOME: "C:\\owned\\home" };
+    const app = mode === "absent" ? undefined : Object.assign(new EventEmitter(), {
+      pid: 201, exitCode: mode === "exited" ? 0 : null, signalCode: mode === "signaled" ? "SIGTERM" : null,
+      kill() { assert.fail("a closed Windows child must not receive fallback signals"); },
+    });
+    const error = Object.assign(new Error("browser close failed"), { code: "CURSOR_APP_BROWSER_CLEANUP" });
+    const stopApp = runInNewContext(`(async function stopApp(${body})`, {
+      macos: undefined, app, env, page: {}, once, bounded: (promise) => promise,
+      delay() { return new Promise(() => {}); },
+      browser: { async close() {
+        calls.push("browser");
+        if (mode === "browser-exits") app.exitCode = 0;
+        if (mode === "browser-error") throw error;
+      } },
+      windows: { async stopWindowsApp(child, actualEnv) {
+        calls.push("stop"); assert.equal(child, app); assert.equal(actualEnv, env);
+        assert.equal(child.exitCode, null); assert.equal(child.signalCode, null);
+        child.exitCode = 0; child.emit("close", 0, null);
+      } },
+      check(value, code) { if (!value) throw Object.assign(new Error(code), { code }); },
+    }, { timeout: 100 });
+    if (mode === "browser-error") await assert.rejects(stopApp(), (caught) => caught === error);
+    else await stopApp();
+    assert.deepEqual(calls, ["live", "browser-error"].includes(mode) ? ["browser", "stop"] : ["browser"]);
+  }
+});
+
 test("native cleanup audits the pending marker Node and Shell without killing discovered processes", async () => {
   const body = source.split("async function ownedProcessesRemain(")[1]?.split("\nasync function assertLoopbackListeners(")[0];
   assert.ok(body);
@@ -225,7 +351,7 @@ test("native cleanup audits the pending marker Node and Shell without killing di
     [["node", "/owned/state-other/tool.mjs"], true, false],
   ]) {
     const check = runInNewContext(`(async function ownedProcessesRemain(${body})`, {
-      process: { pid: 1 }, macos: undefined, dirname, appPath: "/owned/app/cursor", packageRoot: "/owned/package",
+      process: { pid: 1 }, macos: undefined, windows: undefined, dirname, appPath: "/owned/app/cursor", packageRoot: "/owned/package",
       env: { MEMORAX_CODE_HOME: "/owned/state" }, interruption: { marker },
       async readdir(path) { assert.equal(path, "/proc"); return ["1", "2", "self"]; },
       async readFile(path, encoding) {
@@ -265,4 +391,37 @@ test("actual macOS listener checks fail closed and leave Linux unchanged", async
     assert.equal(block.match(/await assertLoopbackListeners\(\)/g)?.length, expected);
   }
   assert.match(source, /check\(report\.listenerAuditCount === 10, "CURSOR_APP_MACOS_LISTENER_AUDIT_COUNT"\)/);
+});
+
+test("native preflight validates Node and platform without calling getuid on Windows", () => {
+  const body = source.split("\ntry {\n")[1]?.split("  // macOS Unix sockets")[0];
+  const windowsGuard = source.split('  } else if (process.platform === "win32") {\n')[1]?.split("    windows = await import(")[0];
+  assert.ok(body && windowsGuard);
+  for (const [platform, node, expectedNodeMajor, argc, uid, errorCode] of [
+    ["win32", "24.0.0", "24", 8], ["win32", "22.13.0", "22", 7],
+    ["linux", "24.0.0", "24", 8, 1000], ["darwin", "24.0.0", "24", 8, 501],
+    ["linux", "24.0.0", "24", 8, 0, "CURSOR_APP_ISOLATION"],
+    ["win32", "22.12.0", "22", 8, undefined, "CURSOR_APP_ARGUMENTS"],
+    ["win32", "20.0.0", "20", 8, undefined, "CURSOR_APP_ARGUMENTS"],
+    ["win32", "24.0.0", "22", 8, undefined, "CURSOR_APP_ARGUMENTS"],
+    ["win32", "24.0.0", "24", 6, undefined, "CURSOR_APP_ARGUMENTS"],
+    ["freebsd", "24.0.0", "24", 8, 1000, "CURSOR_APP_ARGUMENTS"],
+  ]) {
+    const preflight = runInNewContext(`(() => { ${body} })`, {
+      expectedNodeMajor, process: { platform, versions: { node }, argv: Array(argc),
+        getuid() { assert.notEqual(platform, "win32"); return uid; } },
+      check(value, code) { if (!value) throw Object.assign(new Error(code), { code }); },
+    }, { timeout: 100 });
+    if (errorCode) assert.throws(preflight, { code: errorCode }); else preflight();
+  }
+  for (const [actions, runnerOs, arch, allowed] of [
+    ["true", "Windows", "x64", true], [undefined, "Windows", "x64", false],
+    ["false", "Windows", "x64", false], ["true", "macOS", "x64", false], ["true", "Windows", "arm64", false],
+  ]) {
+    const guard = runInNewContext(`(() => { ${windowsGuard} })`, {
+      process: { env: { GITHUB_ACTIONS: actions, RUNNER_OS: runnerOs }, arch },
+      check(value, code) { if (!value) throw Object.assign(new Error(code), { code }); },
+    }, { timeout: 100 });
+    if (allowed) guard(); else assert.throws(guard, { code: "CURSOR_APP_WINDOWS_RUNNER" });
+  }
 });

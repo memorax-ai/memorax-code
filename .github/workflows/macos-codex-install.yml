@@ -164,6 +164,7 @@ jobs:
           import { appendFileSync, readFileSync } from 'node:fs';
           import { validateLinuxRelease } from './scripts/cursor-app-release.mjs';
           import { selectCursorMacosRelease } from './scripts/cursor-app-macos-artifact.mjs';
+          import { selectCursorWindowsRelease } from './scripts/cursor-app-windows-artifact.mjs';
           const manifest = JSON.parse(readFileSync(`${process.env.RUNNER_TEMP}/cursor-app-releases.json`, 'utf8'));
           if (manifest.schemaVersion !== 1) throw new Error('Invalid frozen Cursor release inventory');
           const baseline = validateLinuxRelease(manifest.baseline['linux-x64'], 'linux-x64');
@@ -179,10 +180,15 @@ jobs:
           const sameMacos = ['version', 'commitSha', 'url'].every((key) => macosBaseline[key] === macosLatest[key]);
           include.push({ os: 'macos-15', node: '24', cursor: macosBaseline.version, release: 'baseline', channel: sameMacos ? 'baseline+latest' : 'baseline' });
           if (!sameMacos) include.push({ os: 'macos-15', node: '24', cursor: macosLatest.version, release: 'latest', channel: 'latest' });
+          const windowsBaseline = selectCursorWindowsRelease(manifest, 'baseline');
+          const windowsLatest = selectCursorWindowsRelease(manifest, 'latest');
+          const sameWindows = ['version', 'commitSha', 'url'].every((key) => windowsBaseline[key] === windowsLatest[key]);
+          include.push({ os: 'windows-2025', node: '24', cursor: windowsBaseline.version, release: 'baseline', channel: sameWindows ? 'baseline+latest' : 'baseline' });
+          if (!sameWindows) include.push({ os: 'windows-2025', node: '24', cursor: windowsLatest.version, release: 'latest', channel: 'latest' });
           appendFileSync(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify({ include })}\n`);
           appendFileSync(process.env.GITHUB_STEP_SUMMARY,
             `Cursor App baseline: **${baseline.version}**; desktop latest frozen for this run: **${latest.version}**.\n\n` +
-            `${include.length} required Linux and macOS App jobs, including Linux baseline on Node 22. Windows remains outside this matrix. No version fallback.\n`);
+            `${include.length} required Linux, macOS and Windows App jobs, including Linux baseline on Node 22. No version fallback.\n`);
           NODE
       - uses: actions/upload-artifact@v4
         if: github.event_name != 'workflow_dispatch' || !(inputs.check_deepseek || inputs.diagnose_opencode_initialization)
@@ -424,6 +430,7 @@ jobs:
           case "$RUNNER_OS" in
             Linux) entrypoint=scripts/cursor-app-container-check.mjs ;;
             macOS) entrypoint=scripts/cursor-app-macos-check.mjs ;;
+            Windows) entrypoint=scripts/cursor-app-windows-check.mjs ;;
             *) echo 'Unsupported Cursor App runner.' >&2; exit 1 ;;
           esac
           node "$entrypoint" "$1" "$RUNNER_TEMP/cursor-app-report" \
@@ -565,7 +572,7 @@ jobs:
           PACKAGE_RESULT: ${{ needs.package.result }}
           CURSOR_RESULT: ${{ needs.cursor-app.result }}
         run: |
-          printf 'Package: **%s**\n\nCursor App Linux/macOS matrix: **%s**.\n\nUbuntu 24.04 and macOS 15, baseline/latest on Node 24 and Linux baseline on Node 22. Six completed App runs per cell exercise repeated-prompt follow-up, independent sessions, App restart/resume and explicit Skill Search/Add through native Read/Shell tools, using a local protocol mock, native database persistence and exact automatic Add with synthetic authentication. A seventh run cancels a pending Shell through native Stop, requiring interrupted Hook state, no command execution and no additional Memory request. Scripted tool requests do not validate model-driven Skill selection. macOS requires verified code signatures, Gatekeeper and a network-only sandbox on a fresh GitHub-hosted runner. This matrix does not validate real login, Keychain isolation, hosted models, full functional coverage or Windows acceptance.\n' "$PACKAGE_RESULT" "$CURSOR_RESULT" >> "$GITHUB_STEP_SUMMARY"
+          printf 'Package: **%s**\n\nCursor App Linux/macOS/Windows matrix: **%s**.\n\nUbuntu 24.04, macOS 15 and Windows 2025, baseline/latest on Node 24 and Linux baseline on Node 22. Six completed App runs per cell exercise repeated-prompt follow-up, independent sessions, App restart/resume and explicit Skill Search/Add through native Read/Shell tools, using a local protocol mock, native database persistence and exact automatic Add with synthetic authentication. A seventh run cancels a pending Shell through native Stop, requiring interrupted Hook state, no command execution and no additional Memory request. Scripted tool requests do not validate model-driven Skill selection. macOS and Windows use signature-verified Apps, isolated homes and local fixtures on fresh GitHub-hosted runners, without an additional Seatbelt or WFP prerequisite. Chromium sandboxing remains enabled. This matrix does not validate real login, OS credential-store isolation, hosted models or full functional coverage.\n' "$PACKAGE_RESULT" "$CURSOR_RESULT" >> "$GITHUB_STEP_SUMMARY"
           if [[ "$PACKAGE_RESULT" != success || "$CURSOR_RESULT" != success ]]; then
             echo '::error::The package and Cursor App canary must both succeed. Failed, cancelled or skipped dependencies do not pass this check.'
             exit 1

@@ -1141,24 +1141,24 @@ successful native jobs on each target platform.
 
 The native-client workflow defines a deliberately bounded **Cursor Desktop
 App** matrix: baseline **3.21.18** and the once-resolved latest stable desktop
-release on Ubuntu 24.04 (x64) and macOS 15 (arm64) with Node 24, plus Linux
+release on Ubuntu 24.04 (x64), macOS 15 (arm64), and Windows 2025 (x64) with Node 24, plus Linux
 baseline on Node 22. Channels share a Node 24 cell independently per platform:
 Linux requires matching version, commit, URL, checksum and DEB version; macOS
-requires matching version, commit and URL. Node 22.13 or newer is required for
+requires matching version, commit and URL; Windows requires matching version,
+commit and URL. Node 22.13 or newer is required for
 the native SQLite reader; Node 20 is not a supported Cursor automatic-writeback
 target. The actual native-check Node runtime, including the Linux container's
 runtime, must match each cell, not just the runner's `setup-node`.
-The macOS cells are newly implemented and require successful native GitHub
-jobs before claiming macOS acceptance. This is not a Cursor CLI test or
-three-platform acceptance. Every cell consumes the same validated candidate npm
+The macOS and Windows cells require successful native GitHub jobs before claiming
+three-platform acceptance. This is not a Cursor CLI test. Every cell consumes the same validated candidate npm
 artifact as the existing native checks; package failure cannot be hidden by a
 passing matrix cell. The aggregate check requires all selected cells to pass.
-The macOS wrapper also runs the existing Cursor installed-package smoke before
+The macOS and Windows wrappers also run the existing Cursor installed-package smoke before
 starting the App. This reuses lifecycle and configuration-preservation coverage;
 its synthetic Hook/database fixtures do not count as native App evidence.
 
 The canary starts the official App in a fresh Docker container under Xvfb on
-Linux, or directly under `sandbox-exec` on a fresh GitHub-hosted macOS runner.
+Linux, or with its default Chromium sandbox on a fresh GitHub-hosted macOS or Windows runner.
 Its built-in smoke driver supplies synthetic authentication and submits prompts
 through the normal composer UI. The official test-only application-storage
 command suppresses the fresh-login switch to the Agents window in the isolated
@@ -1229,7 +1229,7 @@ Acceptance requires all of the following:
   its CLI session, memory type, reason and idempotency key, separately from the
   native session used by automatic writeback and trace correlation.
 - Successful client/Backend and platform-resource cleanup, including the Linux
-  container or macOS owned processes and private App copy, with a final request-count
+  container or macOS/Windows owned processes and private App copy, with a final request-count
   audit to reject duplicate or late writeback.
 
 Acquisition uses fixed official Cursor release URLs. Linux baseline SHA-256
@@ -1255,20 +1255,14 @@ checksum or a substitute for signature verification.
 
 The Linux runtime is non-root, has no external network, drops all capabilities,
 retains Chromium's sandbox and uses `no-new-privileges` plus the documented
-seccomp profile. macOS first requires the network isolation proof below, then
-applies a network-only sandbox to the App and candidate `start` and `status`
-commands, including their Backend, Hook and tool descendants. The fixed
-`stop --clients cursor` cleanup command runs from the trusted controller outside
-that profile so the packaged CLI can perform its normal process-ownership
-probe. It retains the isolated home, exact CLI arguments and ownership checks;
-there is no unverified PID kill fallback. The live Backend and its descendants
-retain their original sandbox during shutdown. Outbound TCP is restricted to exact required
-loopback ports, and TCP listeners to the selected ports. The sandbox does not
-restrict listener addresses; the native checks audit actual loopback listeners
-as described below. Unix IPC is allowed only beneath the owned App user-data and
-temporary directories. The trusted local mock controller remains outside that
-profile. Both platforms use temporary client homes, Backend state and native
-conversations, synthetic authentication and local Agent and Memory fixtures.
+seccomp profile. The macOS functional checks do not apply an additional Seatbelt
+profile or disable Chromium's own sandbox. Windows functional checks do not
+require the separate WFP or temporary-OS-user diagnostics. All platforms use temporary client
+homes, Backend state and native conversations, synthetic authentication, and
+local Agent and Memory fixtures. On macOS and Windows, this verifies the configured model
+and Memory routes, not OS-enforced isolation of all App and descendant traffic.
+Candidate lifecycle commands retain their normal process-ownership checks;
+cleanup never falls back to unverified PID signals.
 
 The macOS entrypoint is restricted to the workflow's fresh GitHub-hosted runner,
 not a developer's logged-in desktop. It sets isolated `HOME`, `CFFIXED_USER_HOME`,
@@ -1276,6 +1270,25 @@ App user-data and shell startup paths and forces `--use-inmemory-secretstorage`.
 These settings do not constitute an OS filesystem sandbox or prove Keychain
 isolation. The test does not access real credentials or exercise a credential
 store, and no real model or MemoraX account is required.
+
+The Windows entrypoint likewise requires a fresh GitHub-hosted runner. It uses
+isolated user-data, extensions, home and AppData directories, a clean environment,
+and in-memory secret storage. The official installer and installed executable
+must pass Authenticode, publisher, architecture, version and release-commit
+checks before native startup. Installation waits for the installer process tree;
+native cleanup only terminates the still-live owned App child and audits remaining
+owned paths read-only. Unconfirmed cleanup fails the check and retains its state
+for runner teardown. No WFP policy, temporary OS account or credential-store
+integration is needed for this functional matrix.
+
+macOS native acceptance also requires ten read-only `lsof` checkpoints: after
+both App starts, after each of the six completed runs, and before and after
+cancelling the pending Shell. Each checkpoint must observe the Backend and CDP
+listeners on their configured ports; all observed App, Backend and descendant
+TCP listeners must use only `127.0.0.1` or `::1` on allowed ports. Passing requires
+`loopbackListeners: true` and `listenerAuditCount: 10`. This sampling does not
+cover every short-lived process between checkpoints or establish system-enforced
+inbound isolation.
 
 To reproduce after building an installable candidate, use Node 24 and a local
 Linux-container Docker daemon:
@@ -1323,7 +1336,7 @@ booleans and bounded process outcomes from the CLI's JSON output; raw command
 output, state, paths and error messages are not published. Synthetic login is not real account
 authentication coverage. Native Continue/Retry/Edit, Backend restart,
 running-tool interruption, late-approval races, model-driven Skill selection, Repo Memory workers,
-upgrade/uninstall and Windows remain outside this bounded session-flow
+native upgrade/uninstall remain outside this bounded session-flow
 matrix.
 
 `node scripts/cursor-app-release.mjs resolve <new-manifest-path>` prepares a
@@ -1370,15 +1383,8 @@ address-in-use or routing error is not isolation evidence.
 
 The same restrictions must hold in the child and grandchild process. The job
 fails on an unavailable or ineffective sandbox and uploads only its fixed-field
-`report.json`. The macOS native entrypoint requires this proof before App
-startup even when the proof-only switch is disabled. Native acceptance also
-requires ten read-only `lsof` checkpoints: after both App starts, after each of
-the six completed runs, and before and after cancelling the pending Shell. Each
-checkpoint must observe the Backend and CDP listeners on their configured ports;
-all observed App, Backend and descendant TCP listeners must use only
-`127.0.0.1` or `::1` on allowed ports. Passing requires `loopbackListeners: true`
-and `listenerAuditCount: 10`. This sampling does not cover every short-lived
-process between checkpoints or establish system-enforced inbound isolation.
+`report.json`. This optional proof is separate from the functional checks and
+is not required before native App startup.
 A passing network proof does not establish App compatibility,
 filesystem or credential isolation, or macOS functional coverage. The matrix
 must independently pass the signed-App and seven-flow native checks.

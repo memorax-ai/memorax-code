@@ -7,7 +7,6 @@ import test from "node:test";
 import { runInNewContext } from "node:vm";
 import { macosCheckEnvironment, runMacosCheck } from "./cursor-app-macos-check.mjs";
 import { projectNativeReport } from "./cursor-app-container-check.mjs";
-import { projectMacosNetworkDiagnostic } from "./cursor-app-macos-isolation-check.mjs";
 import { projectCursorMacosDetachDiagnostics } from "./cursor-app-macos-artifact.mjs";
 const { dirname, join, resolve } = posix;
 
@@ -46,9 +45,10 @@ test("macOS wrapper CLI rejects incomplete invocation with only a fixed error", 
 
 test("the actual macOS orchestration fails closed before launch and preserves cleanup failures", async (t) => {
   const source = (await readFile(new URL("./cursor-app-macos-check.mjs", import.meta.url), "utf8")).replaceAll("\r\n", "\n");
+  assert.doesNotMatch(source, /cursor-app-macos-isolation-check|runMacosIsolationProof|networkIsolationFailure/);
   const body = source.split("export async function runMacosCheck(")[1]?.split("\nif (process.argv[1]")[0];
   assert.ok(body);
-  for (const kind of ["native-failure", "native-cleanup-failure", "proof-failure", "candidate-install-failure", "probe-install-failure",
+  for (const kind of ["native-failure", "native-cleanup-failure", "candidate-install-failure", "probe-install-failure",
     "package-smoke-failure", "package-smoke-timeout", "package-smoke-abort",
     "artifact-failure", "prelaunch-detach-failure", "busy-detach", "busy-detach-with-native-cleanup", "invalid-report", "missing-report"]) {
     await t.test(kind, async () => {
@@ -57,7 +57,7 @@ test("the actual macOS orchestration fails closed before launch and preserves cl
       const error = (code) => Object.assign(new Error(code), { code });
       const report = { status: "FAIL", client: "cursor", kind: "app-native-session-flows", platform: "darwin",
         node: "24.20.0", version: "3.21.18", stage: "native-submit", errorCode: "CURSOR_APP_DRIVER",
-        evidence: { networkIsolation: true, cleanup: true }, privateCanary: "/private/unpublished-canary" };
+        evidence: { cleanup: true }, privateCanary: "/private/unpublished-canary" };
       if (["native-cleanup-failure", "busy-detach-with-native-cleanup"].includes(kind)) {
         report.cleanupError = "CURSOR_APP_CLEANUP_DESCENDANTS";
         report.evidence.cleanup = false;
@@ -66,7 +66,7 @@ test("the actual macOS orchestration fails closed before launch and preserves cl
         process: { platform: "darwin", arch: "arm64", versions: { node: "24.20.0" }, execPath: "/owned/node/bin/node",
           env: { GITHUB_ACTIONS: "true", RUNNER_OS: "macOS" } },
         dirname, join, resolve, scripts: "/owned/scripts", tmpdir: () => "/owned/tmp", macosCheckEnvironment, projectNativeReport,
-        projectMacosNetworkDiagnostic, projectCursorMacosDetachDiagnostics,
+        projectCursorMacosDetachDiagnostics,
         check(value, code) { if (!value) throw error(code); }, safeCode: (caught) => caught.code ?? "CURSOR_APP_MACOS_CHECK_FAILED",
         async lstat(path) {
           if (kind === "missing-report" && path.endsWith("report.json")) throw error("ENOENT");
@@ -79,10 +79,6 @@ test("the actual macOS orchestration fails closed before launch and preserves cl
         selectCursorMacosRelease(manifest, channel) {
           assert.equal(manifest, "frozen inventory"); assert.equal(channel, "baseline");
           return { version: "3.21.18" };
-        },
-        async runMacosIsolationProof() {
-          calls.push(["proof"]);
-          return { status: kind === "proof-failure" ? "FAIL" : "PASS", errorCode: "CURSOR_APP_MACOS_PROOF_FAILED" };
         },
         async exec(file, args, options) {
           assert.equal(file, "/owned/node/bin/node");
@@ -147,18 +143,18 @@ test("the actual macOS orchestration fails closed before launch and preserves cl
         releaseManifest: "frozen inventory", channel: "baseline", signal: abort.signal,
       });
       assert.equal(result.status, "FAIL");
+      assert.equal(result.evidence.networkIsolation, undefined);
       assert.equal(JSON.stringify(result).includes("unpublished-canary"), false);
       assert.equal(output.get("/owned/report/report.json"), `${JSON.stringify(result, null, 2)}\n`);
-      assert.deepEqual(calls[0], ["proof"]);
-      if (kind === "proof-failure") assert.deepEqual(calls, [["proof"]]);
-      if (["proof-failure", "candidate-install-failure", "probe-install-failure", "artifact-failure", "prelaunch-detach-failure"].includes(kind)
+      assert.deepEqual(calls[0], ["install"]);
+      if (["candidate-install-failure", "probe-install-failure", "artifact-failure", "prelaunch-detach-failure"].includes(kind)
         || kind.startsWith("package-smoke-")) {
         assert.equal(calls.some(([type]) => type === "native"), false);
       }
       const smoke = calls.findIndex(([type]) => type === "package-smoke");
-      if (["proof-failure", "candidate-install-failure", "probe-install-failure"].includes(kind)) assert.equal(smoke, -1);
+      if (["candidate-install-failure", "probe-install-failure"].includes(kind)) assert.equal(smoke, -1);
       else {
-        assert.equal(smoke, 3, "The package smoke must follow both installs");
+        assert.equal(smoke, 2, "The package smoke must follow both installs");
         if (kind.startsWith("package-smoke-")) {
           assert.equal(calls.some(([type]) => type === "artifact"), false);
           assert.equal(result.stage, "macos-package-smoke");
@@ -176,7 +172,7 @@ test("the actual macOS orchestration fails closed before launch and preserves cl
       if (["native-cleanup-failure", "prelaunch-detach-failure", "busy-detach", "busy-detach-with-native-cleanup", "invalid-report", "missing-report"].includes(kind)
         || kind.startsWith("package-smoke-")) {
         assert.equal(removed, -1); assert.ok(result.cleanupError);
-      } else if (kind !== "proof-failure") assert.ok(removed > 0);
+      } else assert.ok(removed > 0);
       if (kind === "native-failure") {
         assert.equal(result.errorCode, "CURSOR_APP_DRIVER");
         assert.ok(removed > calls.findIndex(([type]) => type === "detach"));

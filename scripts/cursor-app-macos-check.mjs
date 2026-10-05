@@ -5,7 +5,6 @@ import { dirname, join, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { projectNativeReport, readReleaseManifest } from "./cursor-app-container-check.mjs";
-import { runMacosIsolationProof, projectMacosNetworkDiagnostic } from "./cursor-app-macos-isolation-check.mjs";
 import { projectCursorMacosDetachDiagnostics, selectCursorMacosRelease, withCursorMacosApp } from "./cursor-app-macos-artifact.mjs";
 
 const exec = promisify(execFile);
@@ -25,7 +24,7 @@ export async function runMacosCheck(candidatePath, reportPath, { releaseManifest
   let root, output, artifact, nativeStarted = false, cleanupFailed = false;
   let report = { status: "FAIL", client: "cursor", kind: "app-native-session-flows", platform: "darwin", stage: "macos-preflight", evidence: {} };
   try {
-    // A network-only sandbox and isolated HOME do not prove Keychain isolation.
+    // Isolated HOME does not prove Keychain isolation.
     // This entrypoint is restricted to the workflow's fresh hosted macOS runner.
     check(process.platform === "darwin" && process.arch === "arm64" && process.env.GITHUB_ACTIONS === "true"
       && process.env.RUNNER_OS === "macOS", "CURSOR_APP_MACOS_RUNNER");
@@ -41,10 +40,6 @@ export async function runMacosCheck(candidatePath, reportPath, { releaseManifest
       "CURSOR_APP_MACOS_OUTPUT");
     output = await realpath(destination);
     const release = selectCursorMacosRelease(releaseManifest, channel);
-    const proof = await runMacosIsolationProof({ signal });
-    if (proof.status !== "PASS") report.networkIsolationFailure = projectMacosNetworkDiagnostic(proof.diagnostic);
-    check(proof.status === "PASS", proof.errorCode ?? "CURSOR_APP_MACOS_PROOF_FAILED");
-    report.evidence.networkIsolation = true;
     root = await realpath(await mkdtemp(join(tmpdir(), "memorax-cursor-macos-ci-")));
     const env = macosCheckEnvironment(root, process.execPath);
     await mkdir(env.HOME, { mode: 0o700 }); await mkdir(env.TMPDIR, { mode: 0o700 });
