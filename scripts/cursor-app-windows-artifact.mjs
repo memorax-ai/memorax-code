@@ -1,0 +1,206 @@
+import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
+import { lstat, mkdtemp, open, realpath, rm } from "node:fs/promises";
+import { isAbsolute, join, win32 } from "node:path";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
+import { baselineRelease, resolveDownload } from "./cursor-app-release.mjs";
+
+const executeFile = promisify(execFile);
+const platform = "win32-x64-user";
+const publisher = "Anysphere, Inc.";
+const maxDownloadBytes = 600_000_000;
+const maxCommandBytes = 4096;
+const prefix = "CURSOR_APP_WINDOWS_ARTIFACT_";
+const helperPath = fileURLToPath(new URL("./cursor-app-windows-authenticode.ps1", import.meta.url));
+
+function failure(suffix) {
+  const code = prefix + suffix;
+  return Object.assign(new Error(code), { code });
+}
+function check(value, suffix) { if (!value) throw failure(suffix); }
+function checkAborted(signal) { check(!signal?.aborted, "ABORTED"); }
+
+function validateRelease(input, channel) {
+  try {
+    check(input?.platform === platform && input.channel === channel && ["baseline", "latest"].includes(channel), "RELEASE");
+    const canonical = channel === "baseline" ? baselineRelease(platform)
+      : resolveDownload(platform, { version: input.version, commitSha: input.commitSha, downloadUrl: input.url });
+    check(Object.keys(canonical).every((key) => input[key] === canonical[key]), "RELEASE");
+    return canonical;
+  } catch { throw failure("RELEASE"); }
+}
+
+export function selectCursorWindowsRelease(manifest, channel) {
+  check(manifest?.schemaVersion === 1 && ["baseline", "latest"].includes(channel), "RELEASE");
+  return validateRelease(manifest[channel]?.[platform], channel);
+}
+
+async function download(release, path, fetchImpl, signal) {
+  const controller = new AbortController();
+  const downloadSignal = AbortSignal.any([controller.signal, AbortSignal.timeout(300_000), ...(signal ? [signal] : [])]);
+  let file;
+  try {
+    checkAborted(signal);
+    const response = await fetchImpl(release.url, { credentials: "omit", redirect: "error", cache: "no-store",
+      headers: { "User-Agent": "memorax-cursor-app-ci" }, signal: downloadSignal });
+    check(response?.status === 200 && response.body && response.redirected === false && response.url === release.url, "DOWNLOAD");
+    const length = response.headers.get("content-length");
+    const expectedBytes = length === null ? undefined : Number(length);
+    check(length === null || (/^[1-9]\d*$/.test(length) && Number.isSafeInteger(expectedBytes)
+      && expectedBytes <= maxDownloadBytes), "DOWNLOAD_SIZE");
+    file = await open(path, "wx", 0o600);
+    let bytes = 0;
+    const hash = createHash("sha256");
+    for await (const chunk of response.body) {
+      checkAborted(downloadSignal);
+      check(chunk instanceof Uint8Array, "DOWNLOAD");
+      bytes += chunk.byteLength;
+      check(bytes <= maxDownloadBytes, "DOWNLOAD_SIZE");
+      hash.update(chunk);
+      await file.writeFile(chunk);
+    }
+    check(bytes > 0 && (expectedBytes === undefined || bytes === expectedBytes), "DOWNLOAD_SIZE");
+    checkAborted(downloadSignal);
+    return { bytes, observedSha256: hash.digest("hex") };
+  } catch (error) {
+    if (signal?.aborted) throw failure("ABORTED");
+    if (error?.code === prefix + "DOWNLOAD_SIZE") throw error;
+    throw failure("DOWNLOAD");
+  } finally {
+    controller.abort();
+    await file?.close();
+  }
+}
+
+function outputJson(stdout) {
+  check(typeof stdout === "string" && Buffer.byteLength(stdout) <= maxCommandBytes, "SIGNATURE");
+  const value = JSON.parse(stdout);
+  check(value && typeof value === "object" && !Array.isArray(value), "SIGNATURE");
+  return value;
+}
+
+async function runHelper(execute, operation, ownedRoot, signal) {
+  const suffix = operation === "prepare" ? "ROOT" : "SIGNATURE";
+  const powershellHome = "C:\\Program Files\\PowerShell\\7";
+  const systemRoot = "C:\\Windows";
+  let primaryError, childClosed, requiresClose = false;
+  try {
+    checkAborted(signal);
+    requiresClose = execute === executeFile;
+    const pending = execute(win32.join(powershellHome, "pwsh.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-File", helperPath,
+      "-Operation", operation, "-Directory", ownedRoot], { cwd: ownedRoot, signal, timeout: 120_000,
+      maxBuffer: maxCommandBytes, encoding: "utf8", windowsHide: true, killSignal: "SIGKILL",
+      env: { SystemRoot: systemRoot, WINDIR: systemRoot, COMSPEC: win32.join(systemRoot, "System32", "cmd.exe"),
+        ProgramFiles: "C:\\Program Files", PATH: `${powershellHome};${systemRoot}\\System32`,
+        PSModulePath: win32.join(powershellHome, "Modules"), HOME: ownedRoot, USERPROFILE: ownedRoot,
+        APPDATA: join(ownedRoot, "AppData", "Roaming"), LOCALAPPDATA: join(ownedRoot, "AppData", "Local"),
+        TEMP: ownedRoot, TMP: ownedRoot } });
+    if (pending?.child) {
+      requiresClose = true;
+      childClosed = new Promise((resolve) => pending.child.once("close", () => resolve(true)));
+    }
+    const result = await pending;
+    check(result && (result.code === undefined || result.code === 0) && result.stderr === "", suffix);
+    const value = outputJson(result.stdout);
+    const expected = operation === "prepare" ? { status: "PASS", operation, privateDirectory: true }
+      : { status: "PASS", operation, authenticodeVerified: true, publisherVerified: true };
+    check(Object.keys(value).length === Object.keys(expected).length
+      && Object.keys(expected).every((key) => value[key] === expected[key]), suffix);
+  } catch (error) {
+    primaryError = failure(signal?.aborted ? "ABORTED" : error?.code === "ETIMEDOUT"
+      || (error?.killed === true && error.signal === "SIGKILL" && error.code !== "ERR_CHILD_PROCESS_STDIO_MAXBUFFER")
+      ? suffix + "_TIMEOUT" : suffix);
+    if (!signal?.aborted && Number.isInteger(error?.code) && error.code !== 0 && error.stderr === "") {
+      try {
+        const value = outputJson(error.stdout);
+        if (Object.keys(value).length === 2 && value.status === "FAIL"
+          && [prefix + "ROOT", prefix + "SIGNATURE", prefix + "PUBLISHER"].includes(value.errorCode)) {
+          primaryError = failure(value.errorCode.slice(prefix.length));
+        }
+      } catch { /* Only the helper's fixed diagnostic schema is accepted. */ }
+    }
+  }
+  if (requiresClose) {
+    let timer;
+    const closed = childClosed && await Promise.race([childClosed, new Promise((resolve) => {
+      timer = setTimeout(() => resolve(false), 5000);
+    })]);
+    clearTimeout(timer);
+    if (!closed) {
+      primaryError ??= failure("PROCESS_CLEANUP");
+      primaryError.cleanupErrorCode = prefix + "PROCESS_CLEANUP";
+    }
+  }
+  if (primaryError) throw primaryError;
+}
+
+async function fingerprint(path, expected, signal) {
+  let file;
+  try {
+    checkAborted(signal);
+    const stat = await lstat(path);
+    check(stat.isFile() && !stat.isSymbolicLink() && stat.size === expected.bytes && await realpath(path) === path, "CHANGED");
+    file = await open(path, "r");
+    const hash = createHash("sha256");
+    let bytes = 0;
+    for await (const chunk of file.createReadStream({ autoClose: false })) {
+      checkAborted(signal);
+      bytes += chunk.byteLength;
+      check(bytes <= expected.bytes, "CHANGED");
+      hash.update(chunk);
+    }
+    check(bytes === expected.bytes && hash.digest("hex") === expected.observedSha256, "CHANGED");
+    return { dev: stat.dev, ino: stat.ino };
+  } catch {
+    if (signal?.aborted) throw failure("ABORTED");
+    throw failure("CHANGED");
+  } finally { await file?.close(); }
+}
+
+export async function verifyCursorWindowsInstaller({ release, root, signal, execute = executeFile, fetchImpl = fetch,
+  platform: hostPlatform = process.platform } = {}) {
+  check(hostPlatform === "win32", "PLATFORM");
+  check(typeof execute === "function" && typeof fetchImpl === "function" && typeof root === "string"
+    && isAbsolute(root) && !/[\0\r\n]/.test(root), "ARGUMENTS");
+  const selected = validateRelease(release, release?.channel);
+  checkAborted(signal);
+  let ownedRoot;
+  try {
+    const stat = await lstat(root);
+    check(stat.isDirectory() && !stat.isSymbolicLink(), "ROOT");
+    ownedRoot = await mkdtemp(join(await realpath(root), "cursor-windows-artifact-"));
+  } catch { throw failure("ROOT"); }
+  let primaryError, cleanupError, artifact;
+  try {
+    await runHelper(execute, "prepare", ownedRoot, signal);
+    const installerPath = join(ownedRoot, "CursorUserSetup.exe");
+    artifact = await download(selected, installerPath, fetchImpl, signal);
+    const before = await fingerprint(installerPath, artifact, signal);
+    await runHelper(execute, "verify", ownedRoot, signal);
+    const after = await fingerprint(installerPath, artifact, signal);
+    check(before.dev === after.dev && before.ino === after.ino, "CHANGED");
+    checkAborted(signal);
+  } catch (error) {
+    primaryError = typeof error?.code === "string" && error.code.startsWith(prefix) && error.message === error.code
+      ? error : failure("VALIDATION");
+  } finally {
+    if (primaryError?.cleanupErrorCode === prefix + "PROCESS_CLEANUP") cleanupError = failure("PROCESS_CLEANUP");
+    else {
+      try {
+        await rm(ownedRoot, { recursive: true, force: true });
+        try { await lstat(ownedRoot); throw failure("CLEANUP"); }
+        catch (error) { if (error?.code !== "ENOENT") throw error; }
+      } catch { cleanupError = failure("CLEANUP"); }
+    }
+  }
+  if (!primaryError && signal?.aborted) primaryError = failure("ABORTED");
+  if (cleanupError) {
+    (primaryError ?? cleanupError).cleanupErrorCode = cleanupError.code;
+  }
+  if (primaryError || cleanupError) throw primaryError ?? cleanupError;
+  return Object.freeze({ platform, channel: selected.channel, version: selected.version, commitSha: selected.commitSha,
+    sha256: null, hashSource: "not-provided", ...artifact, authenticodeVerified: true, publisherVerified: true,
+    signatureType: "Authenticode", publisher, installerExecuted: false, appIdentityVerified: false,
+    appArchitectureVerified: false, ownedFilesRemoved: true });
+}

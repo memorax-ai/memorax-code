@@ -11,8 +11,10 @@ const source = (await readFile(new URL("../.github/workflows/cursor-app-windows-
 function step(name) {
   const parts = source.split(`      - name: ${name}\n`);
   assert.equal(parts.length, 2);
-  return parts[1].split(/\n      - /)[0];
+  return parts[1].split(/\n      - |\n  [a-z][a-z0-9-]*:\n/)[0];
 }
+
+const loopbackJob = source.split("\n  windows-loopback-proof:\n")[1].split("\n  windows-artifact-proof:\n")[0];
 
 function proofScript() {
   const body = step("Run Windows loopback feasibility proof (not native acceptance)").match(/^        run: \|\n([\s\S]*)$/m)?.[1];
@@ -20,13 +22,13 @@ function proofScript() {
   return body.split("\n").map((line) => line.slice(10)).join("\n").trimEnd();
 }
 
-test("Windows loopback workflow is manual or reusable only and cannot claim native acceptance", () => {
-  assert.match(source, /^name: Cursor App Windows loopback feasibility \(not native acceptance\)$/m);
+test("Windows prerequisite workflow is manual or reusable only and cannot claim native acceptance", () => {
+  assert.match(source, /^name: Cursor App Windows prerequisites \(not native acceptance\)$/m);
   assert.equal(source.split("\non:\n")[1].split("\npermissions:\n")[0].trimEnd(), "  workflow_dispatch:\n  workflow_call:");
   assert.equal(source.split("\npermissions:\n")[1].split("\njobs:\n")[0].trimEnd(), "  contents: read");
   assert.equal((source.match(/^\s*permissions:/gm) ?? []).length, 1);
   const jobs = source.split("\njobs:\n")[1];
-  assert.deepEqual([...jobs.matchAll(/^  ([a-z][a-z0-9-]*):$/gm)].map((match) => match[1]), ["windows-loopback-proof"]);
+  assert.deepEqual([...jobs.matchAll(/^  ([a-z][a-z0-9-]*):$/gm)].map((match) => match[1]), ["windows-loopback-proof", "windows-artifact-proof"]);
   assert.match(jobs, /^    name: Windows loopback feasibility \(not native acceptance\)$/m);
   assert.match(jobs, /^    runs-on: windows-2025$/m);
   assert.match(jobs, /^    timeout-minutes: 10$/m);
@@ -36,12 +38,12 @@ test("Windows loopback workflow is manual or reusable only and cannot claim nati
 });
 
 test("Windows loopback workflow invokes only its contracts and exact probe with one public report", () => {
-  assert.deepEqual([...source.matchAll(/\buses: (.+)$/gm)].map((match) => match[1]), [
+  assert.deepEqual([...loopbackJob.matchAll(/\buses: (.+)$/gm)].map((match) => match[1]), [
     "actions/checkout@v7", "actions/setup-node@v7", "actions/upload-artifact@v4",
   ]);
-  assert.equal((source.match(/^        run:/gm) ?? []).length, 2);
-  assert.equal((source.match(/^\s+if:/gm) ?? []).length, 1);
-  assert.equal((source.match(/^      - /gm) ?? []).length, 5);
+  assert.equal((loopbackJob.match(/^        run:/gm) ?? []).length, 2);
+  assert.equal((loopbackJob.match(/^\s+if:/gm) ?? []).length, 1);
+  assert.equal((loopbackJob.match(/^      - /gm) ?? []).length, 5);
   assert.equal(step("Test Windows loopback proof contracts").trimEnd(),
     "        run: node --test scripts/cursor-app-windows-isolation-probe.test.mjs scripts/cursor-app-windows-wfp.test.mjs scripts/cursor-app-windows-isolation-workflow.test.mjs scripts/cursor-app-isolation-workflow.test.mjs");
   assert.match(step("Run Windows loopback feasibility proof (not native acceptance)"), /^        shell: pwsh$/m);
@@ -60,6 +62,30 @@ test("Windows loopback workflow invokes only its contracts and exact probe with 
     "          path: ${{ runner.temp }}/cursor-app-windows-isolation/report.json",
     "          if-no-files-found: error",
   ].join("\n"));
+});
+
+test("Windows static artifact job is separate and uploads only its public report", () => {
+  const job = source.split("\n  windows-artifact-proof:\n")[1];
+  assert.match(job, /^    name: Windows installer signature \(not native acceptance\)$/m);
+  assert.match(job, /^    runs-on: windows-2025$/m);
+  assert.match(job, /^    timeout-minutes: 15$/m);
+  assert.deepEqual([...job.matchAll(/\buses: (.+)$/gm)].map((match) => match[1]), [
+    "actions/checkout@v7", "actions/setup-node@v7", "actions/upload-artifact@v4",
+  ]);
+  assert.equal(step("Test Windows artifact contracts").trimEnd(),
+    "        run: node --test scripts/cursor-app-windows-artifact.test.mjs scripts/cursor-app-windows-artifact-check.test.mjs scripts/cursor-app-windows-isolation-workflow.test.mjs");
+  assert.equal(step("Verify Windows installers without executing them").trimEnd(), [
+    "        shell: pwsh", "        run: |",
+    "          node scripts/cursor-app-windows-artifact-check.mjs (Join-Path $env:RUNNER_TEMP 'cursor-app-windows-artifact')",
+    "          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }",
+  ].join("\n"));
+  assert.equal(step("Upload public Windows artifact proof").trimEnd(), [
+    "        if: always()", "        uses: actions/upload-artifact@v4", "        with:",
+    "          name: cursor-app-windows-artifact-proof",
+    "          path: ${{ runner.temp }}/cursor-app-windows-artifact/report.json",
+    "          if-no-files-found: error",
+  ].join("\n"));
+  assert.doesNotMatch(loopbackJob, /artifact-check|resolveLatest|Invoke-WebRequest/);
 });
 
 test("Windows proof shell preserves script failure and passes an absolute report path with spaces", { skip: process.platform !== "win32" }, async (t) => {

@@ -1381,14 +1381,16 @@ must independently pass the signed-App and seven-flow native checks.
 
 #### Windows Loopback Feasibility Proof
 
-The explicitly requested `cursor-app-windows-isolation.yml` workflow runs only
-a direct-outbound policy probe using loopback fixtures on a fresh GitHub-hosted
-Windows 2025 runner with Node 24. Enable `check_cursor_windows_isolation` when
+The explicitly requested `cursor-app-windows-isolation.yml` workflow has two
+separate prerequisite jobs: a direct-outbound policy probe using loopback
+fixtures, and the static installer verification described below. Each uses a
+fresh GitHub-hosted Windows 2025 runner with Node 24. Enable
+`check_cursor_windows_isolation` when
 manually dispatching the
 existing native workflow to select proof-only mode; the switch defaults to
 `false`. Like the macOS proof switch, it skips packaging, all native matrices,
 provider checks and native-result summaries, without cancelling normal
-acceptance runs. Selecting both proof switches runs both proofs. Neither switch
+acceptance runs. Selecting both proof switches also runs the macOS proof. Neither switch
 changes pull-request, push or default manual acceptance.
 The runner guard accepts only the exact Windows 2025 `ImageOS` identities
 `win25` and `win25-vs2026`. A guard failure exposes only its fixed `failedGuard`
@@ -1448,6 +1450,37 @@ filters. The report therefore fixes `dnsBrokerIsolation` to `not-verified` and
 compatibility, full system network isolation, credential isolation, or native
 acceptance. Windows remains outside the Cursor App native
 matrix; macOS native acceptance must also independently pass its own checks.
+
+#### Windows Installer Artifact Proof
+
+The separate static artifact job resolves the common release inventory once,
+then validates the baseline and latest `win32-x64-user` descriptors before
+downloading either. Identical complete artifact identities share one download;
+equal version strings alone do not merge different commits or URLs. It accepts
+only the canonical, commit-qualified official download URL, disallows redirects,
+and bounds download time and size. The Windows download API supplies no
+authenticated checksum. The computed SHA-256 is only an observed receipt,
+not a vendor-provided pin.
+
+The trusted acquisition controller invokes the system
+`Get-AuthenticodeSignature` command without running the installer. Acceptance
+requires `Valid` status, an embedded `Authenticode` signature rather than a
+catalog signature, and exactly one subject CN and O, both equal to the
+preconfigured publisher `Anysphere, Inc.`. Duplicate, multivalued, missing or
+different publisher attributes fail closed. This uses the current Windows
+trust policy without adding certificates or relaxing signature validation.
+Certificate-chain and revocation checks may access public services; this job
+is not an offline or local-only network proof.
+
+Only a bounded public `report.json` is uploaded. It records release identity,
+observed download bytes and digest, verification booleans and cleanup status;
+it excludes installer files, paths, certificate objects and raw command output.
+Owned download directories are removed before success. An uncertain cleanup
+keeps the job failed and preserves state for disposable runner teardown.
+The report fixes `installerExecuted`, `appStarted`, `nativeAcceptance`,
+`appIdentityVerified` and `appArchitectureVerified` to `false`. A signed
+installer does not prove the extracted App's version, commit or architecture,
+safe unattended installation, an isolated Windows profile, or native sessions.
 
 ## Pull Requests
 
