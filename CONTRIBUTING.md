@@ -1247,10 +1247,12 @@ The Linux runtime is non-root, has no external network, drops all capabilities,
 retains Chromium's sandbox and uses `no-new-privileges` plus the documented
 seccomp profile. macOS first requires the network isolation proof below, then
 applies a network-only sandbox to the App and candidate CLI, including their
-Backend, Hook and tool descendants. Only exact required loopback ports and
-Unix IPC beneath the owned App user-data and temporary directories are allowed;
-arbitrary Unix socket paths are not allowed. The trusted local mock controller remains outside
-that profile. Both platforms use temporary client homes, Backend state and native
+Backend, Hook and tool descendants. Outbound TCP is restricted to exact required
+loopback ports, and TCP listeners to the selected ports. The sandbox does not
+restrict listener addresses; the native checks audit actual loopback listeners
+as described below. Unix IPC is allowed only beneath the owned App user-data and
+temporary directories. The trusted local mock controller remains outside that
+profile. Both platforms use temporary client homes, Backend state and native
 conversations, synthetic authentication and local Agent and Memory fixtures.
 
 The macOS entrypoint is restricted to the workflow's fresh GitHub-hosted runner,
@@ -1309,13 +1311,19 @@ entry alone is not native acceptance. Windows remains metadata-only.
 The explicitly requested `cursor-app-isolation.yml` workflow runs a separate
 network proof on macOS 15 with Node 24. On a feature branch, enable
 `check_cursor_macos_isolation` when manually dispatching the existing native
-workflow to call it alongside the normal matrix, with both dedicated diagnostic
-options disabled. It can also be dispatched directly after GitHub registers the
-new workflow. It does not download or start Cursor, access a
-credential store, or count as native acceptance. It first checks owned loopback
-fixtures, then requires `sandbox-exec` to permit only the selected outbound
+workflow to run **proof-only mode**. This switch takes precedence over the other
+manual diagnostic switches: packaging, native matrices, provider checks and
+native-result summaries are skipped. A separate concurrency group keeps this
+mode from cancelling a normal acceptance run. The default `false`, pull-request
+and push paths retain the full matrix. The proof workflow can also be dispatched
+directly after GitHub registers it. Proof-only mode does not download or start
+Cursor, access a credential store, or count as functional or native acceptance.
+It first checks owned loopback fixtures, then requires `sandbox-exec` to permit
+only the selected outbound
 port. It also requires binding and listening on the selected IPv4 and IPv6
-loopback ports while denying other ports and wildcard addresses. Owned Unix
+loopback ports while denying other ports. Seatbelt cannot prevent wildcard
+binding on an allowed port, so the proof records that behavior as an observation,
+not a system-level inbound-isolation guarantee. Owned Unix
 IPC must work, while Unix socket paths outside the private root must be denied.
 These local gates run before documentation-only IPv4 and IPv6 connection probes,
 which send no application data. Denial must be `EPERM` or `EACCES`; a timeout,
@@ -1324,7 +1332,15 @@ address-in-use or routing error is not isolation evidence.
 The same restrictions must hold in the child and grandchild process. The job
 fails on an unavailable or ineffective sandbox and uploads only its fixed-field
 `report.json`. The macOS native entrypoint requires this proof before App
-startup. A passing network proof does not establish App compatibility,
+startup even when the proof-only switch is disabled. Native acceptance also
+requires ten read-only `lsof` checkpoints: after both App starts, after each of
+the six completed runs, and before and after cancelling the pending Shell. Each
+checkpoint must observe the Backend and CDP listeners on their configured ports;
+all observed App, Backend and descendant TCP listeners must use only
+`127.0.0.1` or `::1` on allowed ports. Passing requires `loopbackListeners: true`
+and `listenerAuditCount: 10`. This sampling does not cover every short-lived
+process between checkpoints or establish system-enforced inbound isolation.
+A passing network proof does not establish App compatibility,
 filesystem or credential isolation, or macOS functional coverage. The matrix
 must independently pass the signed-App and seven-flow native checks.
 

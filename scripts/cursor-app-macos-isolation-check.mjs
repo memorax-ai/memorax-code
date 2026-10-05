@@ -9,7 +9,7 @@ const codes = new Set([
   "CURSOR_APP_MACOS_PROOF_ARGUMENTS", "CURSOR_APP_MACOS_PROOF_PLATFORM", "CURSOR_APP_MACOS_PROOF_FAILED",
   "CURSOR_APP_MACOS_PROOF_FIXTURE", "CURSOR_APP_MACOS_SANDBOX_EXEC_FAILED", "CURSOR_APP_MACOS_PROOF_TIMEOUT",
   "CURSOR_APP_MACOS_PROOF_OUTPUT", "CURSOR_APP_MACOS_LOOPBACK_UNAVAILABLE", "CURSOR_APP_MACOS_LOOPBACK_NOT_RESTRICTED",
-  "CURSOR_APP_MACOS_LISTENER_UNAVAILABLE", "CURSOR_APP_MACOS_LISTENER_NOT_RESTRICTED", "CURSOR_APP_MACOS_WILDCARD_NOT_RESTRICTED",
+  "CURSOR_APP_MACOS_LISTENER_UNAVAILABLE", "CURSOR_APP_MACOS_LISTENER_NOT_RESTRICTED", "CURSOR_APP_MACOS_WILDCARD_OBSERVATION_INVALID",
   "CURSOR_APP_MACOS_UNIX_UNAVAILABLE", "CURSOR_APP_MACOS_UNIX_NOT_RESTRICTED",
   "CURSOR_APP_MACOS_IPV4_NOT_DENIED", "CURSOR_APP_MACOS_IPV6_NOT_DENIED", "CURSOR_APP_MACOS_PROOF_INHERITANCE",
   "CURSOR_APP_MACOS_PROOF_CLEANUP",
@@ -17,6 +17,7 @@ const codes = new Set([
 function failure(code) { return Object.assign(new Error(code), { code }); }
 function check(condition, code) { if (!condition) throw failure(code); }
 function denied(value) { return value === "EPERM" || value === "EACCES"; }
+function wildcardObserved(value) { return value === "LISTENED" || denied(value); }
 const networkGates = ["allowedLoopback", "blockedLoopback", "listenerIpv4", "listenerIpv6", "otherListenerIpv4", "otherListenerIpv6",
   "wildcardIpv4", "wildcardIpv6", "unixUserData", "unixTmp", "otherUnixConnect", "otherUnixBind", "ipv4", "ipv6"];
 const networkResults = new Set(["CONNECTED", "LISTENED", "EPERM", "EACCES", "TIMEOUT", "OTHER", "NOT_RUN", "EADDRINUSE", "EADDRNOTAVAIL"]);
@@ -32,7 +33,8 @@ function networkDiagnostic(rows) {
     for (const failedGate of networkGates) {
       const result = row[failedGate];
       const passed = failedGate === "allowedLoopback" ? result === "CONNECTED"
-        : ["listenerIpv4", "listenerIpv6", "unixUserData", "unixTmp"].includes(failedGate) ? result === "LISTENED" : denied(result);
+        : ["listenerIpv4", "listenerIpv6", "unixUserData", "unixTmp"].includes(failedGate) ? result === "LISTENED"
+          : failedGate.startsWith("wildcard") ? wildcardObserved(result) : denied(result);
       if (!passed) return projectMacosNetworkDiagnostic({ depth, failedGate,
         result: networkResults.has(result) ? result : result === undefined ? "NOT_RUN" : "OTHER" });
     }
@@ -55,6 +57,7 @@ export function makeMacosNetworkProfile(outboundPorts, listenPorts = [], unixDir
       && !/[\x00-\x1f\x7f]/.test(directory)), "CURSOR_APP_MACOS_PROOF_ARGUMENTS");
   return `(version 1)\n(allow default)\n(deny network*)\n`
     + outbound.map((port) => `(allow network-outbound (remote tcp "localhost:${port}"))\n`).join("")
+    // SBPL's local localhost filter also permits wildcard binds at these ports.
     + listeners.map((port) => `(allow network-bind (local tcp "localhost:${port}"))\n`
       + `(allow network-inbound (local tcp "localhost:${port}"))\n`).join("")
     // Apple's container.sb uses subpath filters for private Unix-domain IPC.
@@ -62,7 +65,7 @@ export function makeMacosNetworkProfile(outboundPorts, listenPorts = [], unixDir
 }
 
 // Only owned loopback fixtures exchange synthetic data. All loopback and bind
-// gates must pass before connect-only probes to documentation addresses.
+// gates and wildcard observations must complete before external connect-only probes.
 export async function probeNetworkLevel(allowedPort, blockedPort, listenPort, blockedListenPort, depth, overrides = {}) {
   const { createConnection, createServer } = await import("node:net");
   const { unixPaths } = overrides;
@@ -136,7 +139,9 @@ export async function probeNetworkLevel(allowedPort, blockedPort, listenPort, bl
     ["wildcardIpv4", "0.0.0.0", listenPort, false], ["wildcardIpv6", "::", listenPort, false],
   ]) {
     row[field] = await bind(host, port, exchange);
-    if (exchange ? row[field] !== "LISTENED" : !["EPERM", "EACCES"].includes(row[field])) return [row];
+    const accepted = exchange ? row[field] === "LISTENED"
+      : field.startsWith("wildcard") ? ["LISTENED", "EPERM", "EACCES"].includes(row[field]) : ["EPERM", "EACCES"].includes(row[field]);
+    if (!accepted) return [row];
   }
   if (!unixPaths) return [row];
   for (const [field, path] of [["unixUserData", unixPaths.userData], ["unixTmp", unixPaths.tmp]]) {
@@ -174,7 +179,7 @@ export function assertMacosNetworkEvidence(rows, { pid, parentPid }) {
     check(denied(row.blockedLoopback), "CURSOR_APP_MACOS_LOOPBACK_NOT_RESTRICTED");
     check(row.listenerIpv4 === "LISTENED" && row.listenerIpv6 === "LISTENED", "CURSOR_APP_MACOS_LISTENER_UNAVAILABLE");
     check(denied(row.otherListenerIpv4) && denied(row.otherListenerIpv6), "CURSOR_APP_MACOS_LISTENER_NOT_RESTRICTED");
-    check(denied(row.wildcardIpv4) && denied(row.wildcardIpv6), "CURSOR_APP_MACOS_WILDCARD_NOT_RESTRICTED");
+    check(wildcardObserved(row.wildcardIpv4) && wildcardObserved(row.wildcardIpv6), "CURSOR_APP_MACOS_WILDCARD_OBSERVATION_INVALID");
     check(row.unixUserData === "LISTENED" && row.unixTmp === "LISTENED", "CURSOR_APP_MACOS_UNIX_UNAVAILABLE");
     check(denied(row.otherUnixConnect) && denied(row.otherUnixBind), "CURSOR_APP_MACOS_UNIX_NOT_RESTRICTED");
     check(denied(row.ipv4), "CURSOR_APP_MACOS_IPV4_NOT_DENIED");
@@ -184,7 +189,6 @@ export function assertMacosNetworkEvidence(rows, { pid, parentPid }) {
     "CURSOR_APP_MACOS_PROOF_INHERITANCE");
   return { allowedLoopback: true, otherLoopbackDenied: true, externalIpv4Denied: true,
     allowedListenerIpv4: true, allowedListenerIpv6: true, otherListenerPortsDenied: true,
-    wildcardIpv4Denied: true, wildcardIpv6Denied: true,
     ownedUnixIpc: true, otherUnixPathsDenied: true,
     externalIpv6Denied: true, inheritedChild: true, inheritedGrandchild: true };
 }
@@ -192,6 +196,7 @@ export function assertMacosNetworkEvidence(rows, { pid, parentPid }) {
 function publicReport(platform, error, evidence, rows) {
   const failed = error !== undefined || !evidence;
   const report = { schemaVersion: 1, kind: "network-isolation-proof", scope: "sandbox-exec-network-only",
+    inboundAddressIsolation: "not-enforced",
     platform: ["darwin", "linux", "win32"].includes(platform) ? platform : "other",
     status: failed ? "FAIL" : "PASS", appStarted: false, nativeAcceptance: false };
   if (failed) {
@@ -199,7 +204,11 @@ function publicReport(platform, error, evidence, rows) {
     const diagnostic = networkDiagnostic(rows);
     if (diagnostic) report.diagnostic = diagnostic;
   }
-  else report.evidence = evidence;
+  else {
+    report.evidence = evidence;
+    report.observations = { wildcardListeners: rows.map((row) => ({ depth: row.depth,
+      ipv4: row.wildcardIpv4, ipv6: row.wildcardIpv6 })) };
+  }
   return report;
 }
 

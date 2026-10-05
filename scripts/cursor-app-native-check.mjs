@@ -93,6 +93,12 @@ async function ownedProcessesRemain({ includeBackend = true } = {}) {
   }
   return false;
 }
+async function assertLoopbackListeners() {
+  if (!macos) return;
+  await macos.auditMacosListeners({ appPid: app.pid, appBundle: macosPaths.appBundle, packageRoot,
+    stateHome: env.MEMORAX_CODE_HOME, backendPort, debugPort, selfPid: process.pid });
+  report.listenerAuditCount = (report.listenerAuditCount ?? 0) + 1;
+}
 function assertWriteback() {
   const automatic = [];
   let position = 0;
@@ -218,6 +224,7 @@ async function startApp() {
     await window.driver.executeCommand("workbench.action.devAutoLoginFakeForTesting");
   }), "CURSOR_APP_FAKE_AUTH_TIMEOUT");
   await bounded(page.evaluate(() => window.driver.whenWorkbenchRestored()), "CURSOR_APP_WORKBENCH_RESTORE_TIMEOUT", 30000);
+  await assertLoopbackListeners();
 }
 async function openSession(sessionId) {
   report.stage = "session-open";
@@ -312,6 +319,7 @@ async function runTurn(sessionId) {
     check(calls.length === 1, "CURSOR_APP_SKILL_TRACE_IDENTITY");
     report.evidence[fixture.operation === "search" ? "skillSearch" : "skillAdd"] = true;
   }
+  await assertLoopbackListeners();
 }
 
 async function assertInterrupted() {
@@ -365,6 +373,7 @@ async function interruptPendingShell() {
       && store.metadataPresent && trace.readStatus === "present" && trace.turnStartCount === 1
       && trace.completedCount === 0 && trace.interruptedCount === 0 && trace.materializedCount === 0;
   }, "CURSOR_APP_INTERRUPTION_START_TIMEOUT");
+  await assertLoopbackListeners();
   agent.armCancellation({ requestId: run.requestId, toolCallId: run.pendingTool.toolCallId });
   await stop.click({ timeout: 2000 });
   await waitFor(async () => {
@@ -377,6 +386,7 @@ async function interruptPendingShell() {
       return false;
     }
   }, "CURSOR_APP_INTERRUPTION_HOOK_TIMEOUT");
+  await assertLoopbackListeners();
   report.evidence.pendingShellInterrupted = true;
 }
 
@@ -506,6 +516,10 @@ try {
   report.evidence.nativeHooks = true;
   report.evidence.exactAutomaticAdd = true;
   await interruptPendingShell();
+  if (macos) {
+    check(report.listenerAuditCount === 10, "CURSOR_APP_MACOS_LISTENER_AUDIT_COUNT");
+    report.evidence.loopbackListeners = true;
+  }
   report.stage = "cleanup";
 } catch (error) {
   failure = error?.stack ?? String(error); report.errorCode = safeCode(error);

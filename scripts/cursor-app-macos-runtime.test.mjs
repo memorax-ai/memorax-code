@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import test from "node:test";
-import { auditMacosProcesses, captureMacosDescendants, createDevToolsEndpointReader, hasOwnedMacosProcesses, macosRuntimePaths,
+import { auditMacosListeners, auditMacosProcesses, captureMacosDescendants, createDevToolsEndpointReader, hasOwnedMacosProcesses, macosRuntimePaths,
   reserveFreePort, sandboxInvocation } from "./cursor-app-macos-runtime.mjs";
 
 const root = "/private/tmp/cursor run";
@@ -147,6 +147,123 @@ test("descendant capture rejects missing roots, invalid or duplicate ps rows and
     async () => assert.fail("must not inspect invalid PID")), { code: "CURSOR_APP_MACOS_RUNTIME_ARGUMENTS" });
   for (const observedPids of [[], new Set(["42"]), new Set([0]), new Set([1.5])]) {
     assert.throws(() => hasOwnedMacosProcesses("50 /bin/true", { ...owners, observedPids }),
+      { code: "CURSOR_APP_MACOS_RUNTIME_ARGUMENTS" });
+  }
+});
+
+const listenerOptions = { ...owners, appPid: 50, backendPort: 43124, debugPort: port };
+const listenerError = { code: "CURSOR_APP_MACOS_LISTENER_AUDIT", message: "CURSOR_APP_MACOS_LISTENER_AUDIT" };
+const processRow = (pid, ppid, command, started = "Mon Oct  5 12:34:56 2026") => `${pid} ${ppid} ${started} ${command}\n`;
+const listenerProcesses = processRow(42, 1, `/opt/node controller ${packageRoot} ${stateHome}`)
+  + processRow(50, 42, appPath) + processRow(51, 50, "Cursor Helper: shared-process")
+  + processRow(52, 51, "Cursor Helper: renderer")
+  + processRow(60, 1, `/opt/node ${packageRoot}/lib/backend/server.mjs`)
+  + processRow(61, 60, "renamed-backend-child")
+  + processRow(70, 42, "local-mock-controller")
+  + processRow(71, 42, `${appBundle}-other/Contents/MacOS/Cursor`)
+  + processRow(72, 42, `/opt/node ${stateHome}-other/service`);
+const socketFields = (fd, address, type = "IPv4") => `f${fd}\0t${type}\0PTCP\0n${address}\0TST=LISTEN\0\n`;
+const listenerOutput = `p52\0\n${socketFields(4, `127.0.0.1:${port}`)}`
+  + `p60\0\n${socketFields(7, "127.0.0.1:43124")}${socketFields(8, "[::1]:43124", "IPv6")}`;
+function listenerExecutor({ before = listenerProcesses, after = before, output = listenerOutput, warning = "", fail } = {}) {
+  let inspected = false;
+  return async (file) => {
+    if (file === fail) throw new Error("private-command-output-canary");
+    if (file === "/usr/sbin/lsof") return { stdout: output, stderr: warning };
+    const stdout = inspected ? after : before;
+    inspected = true;
+    return { stdout };
+  };
+}
+
+test("listener audit selects App descendants and exact Backend owners, never the controller or its mock", async () => {
+  const calls = [], execute = listenerExecutor();
+  assert.equal(await auditMacosListeners(listenerOptions, async (file, args, options) => {
+    calls.push([file, args]);
+    assert.deepEqual(options, { encoding: "utf8", timeout: 5000, maxBuffer: 4 * 1024 * 1024,
+      env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" } });
+    return execute(file);
+  }), true);
+  assert.deepEqual(calls, [
+    ["/bin/ps", ["-axww", "-o", "pid=,ppid=,lstart=,command="]],
+    ["/usr/sbin/lsof", ["-nP", "-a", "-p", "50,51,52,60,61", "-iTCP", "-sTCP:LISTEN", "-F0pftPnT", "-T", "s"]],
+    ["/bin/ps", ["-axww", "-o", "pid=,ppid=,lstart=,command="]],
+  ]);
+});
+
+test("listener audit accepts either loopback family and a state-path Backend with different PIDs", async () => {
+  const options = { ...listenerOptions, appPid: 150 };
+  const before = processRow(150, 42, appPath) + processRow(151, 150, "renamed-helper")
+    + processRow(160, 1, `/opt/node ${stateHome}/runtime/backend.mjs`);
+  const output = `p151\0\n${socketFields(3, `[::1]:${port}`, "IPv6")}`
+    + `p160\0\n${socketFields(9, "127.0.0.1:43124")}`;
+  assert.equal(await auditMacosListeners(options, listenerExecutor({ before, output })), true);
+});
+
+test("listener audit rejects wildcard, non-loopback and additional owned listening ports", async () => {
+  for (const [address, type] of [[`*:${port}`, "IPv4"], [`0.0.0.0:${port}`, "IPv4"],
+    [`192.0.2.1:${port}`, "IPv4"], [`127.0.0.2:${port}`, "IPv4"], [`[::]:${port}`, "IPv6"],
+    [`[2001:db8::1]:${port}`, "IPv6"], [`[::ffff:127.0.0.1]:${port}`, "IPv6"],
+    ["127.0.0.1:43125", "IPv4"], [`localhost:${port}`, "IPv4"]]) {
+    const output = `${listenerOutput}p61\0\n${socketFields(3, address, type)}`;
+    await assert.rejects(auditMacosListeners(listenerOptions, listenerExecutor({ output })), listenerError);
+  }
+});
+
+test("listener audit requires both actual ports and cannot pass empty or partial exit-zero lsof output", async () => {
+  for (const output of ["", "\0\n", "p50\0\n", `p52\0\n${socketFields(4, `127.0.0.1:${port}`)}`,
+    `p60\0\n${socketFields(7, "127.0.0.1:43124")}`, listenerOutput.replace("TST=LISTEN\0\n", "")]) {
+    await assert.rejects(auditMacosListeners(listenerOptions, listenerExecutor({ output })), listenerError);
+  }
+});
+
+test("listener audit strictly parses NUL records, file identity, TCP state and selected PIDs", async () => {
+  for (const output of [listenerOutput.replaceAll("\0", "\n"), listenerOutput.slice(0, -1),
+    listenerOutput.replace("p52\0", "p70\0"), listenerOutput.replace("p52\0", "p42\0"),
+    listenerOutput.replace("p52\0\n", ""), listenerOutput.replace("p52\0", "p52\0extra\0"),
+    listenerOutput.replace("PTCP\0", "PUDP\0"), listenerOutput.replace("tIPv4\0", "tIPv6\0"),
+    listenerOutput.replace("TST=LISTEN", "TST=ESTABLISHED"), listenerOutput.replace("f4\0", "f4\0f5\0"),
+    listenerOutput.replace("f4\0", "funknown\0"), `${listenerOutput}p60\0\n`,
+    `${listenerOutput}${socketFields(7, "127.0.0.1:43124")}`]) {
+    await assert.rejects(auditMacosListeners(listenerOptions, listenerExecutor({ output })), listenerError);
+  }
+});
+
+test("listener audit conservatively fails disappearing or reused listener and App PIDs", async () => {
+  for (const pid of [50, 52, 60]) {
+    const lines = listenerProcesses.split("\n").filter((line) => line && !line.startsWith(`${pid} `)).join("\n") + "\n";
+    for (const after of [lines, lines + processRow(pid, 1, "/usr/bin/unrelated"),
+      listenerProcesses.replace(new RegExp(`(${pid} \\d+ Mon Oct  5 )12:34:56`), "$112:35:57")]) {
+      await assert.rejects(auditMacosListeners(listenerOptions, listenerExecutor({ after })), listenerError);
+    }
+  }
+});
+
+test("listener audit tolerates exited non-listening Hooks and reparented listeners with unchanged identities", async () => {
+  const after = listenerProcesses.split("\n").filter((line) => !line.startsWith("61 ")).join("\n")
+    .replace("52 51 ", "52 1 ");
+  assert.equal(await auditMacosListeners(listenerOptions, listenerExecutor({ after })), true);
+});
+
+test("listener audit rejects missing App ownership, malformed process snapshots and duplicate rows", async () => {
+  for (const before of ["", "private-process-canary", listenerProcesses.replace(appPath, "/usr/bin/unrelated"),
+    listenerProcesses + processRow(50, 1, appPath), listenerProcesses + "truncated\n",
+    listenerProcesses.replace("52 51", "99999999999999999999 51")]) {
+    await assert.rejects(auditMacosListeners(listenerOptions, listenerExecutor({ before })), listenerError);
+  }
+  await assert.rejects(auditMacosListeners(listenerOptions, listenerExecutor({ after: "private-output-canary" })), listenerError);
+});
+
+test("listener audit fails closed on execution errors or lsof warnings without exposing diagnostics", async () => {
+  for (const options of [{ fail: "/bin/ps" }, { fail: "/usr/sbin/lsof" }, { warning: "private-partial-output-canary" }]) {
+    await assert.rejects(auditMacosListeners(listenerOptions, listenerExecutor(options)), listenerError);
+  }
+});
+
+test("listener audit validates PIDs, paths and the two distinct ports before inspecting anything", async () => {
+  for (const change of [{ appPid: 42 }, { appPid: 1 }, { appPid: "50" }, { selfPid: 0 }, { appBundle: "/" },
+    { packageRoot: "relative" }, { backendPort: port }, { backendPort: "43124" }, { debugPort: 0 }]) {
+    await assert.rejects(auditMacosListeners({ ...listenerOptions, ...change }, async () => assert.fail("must not execute")),
       { code: "CURSOR_APP_MACOS_RUNTIME_ARGUMENTS" });
   }
 });

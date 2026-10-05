@@ -30,7 +30,7 @@ test("native CLI and App launch through the same macOS sandbox invocation withou
 });
 
 test("macOS cleanup uses the read-only owned-path and observed-PID audit without scanning Linux proc", async () => {
-  const body = source.split("async function ownedProcessesRemain(")[1]?.split("\nfunction assertWriteback()")[0];
+  const body = source.split("async function ownedProcessesRemain(")[1]?.split("\nasync function assertLoopbackListeners(")[0];
   const calls = [], observedMacosPids = new Set([234]);
   const audit = runInNewContext(`(async function ownedProcessesRemain(${body})`, {
     process: { pid: 123 }, macosPaths: { appBundle: "/owned/Cursor.app" }, packageRoot: "/owned/package",
@@ -69,7 +69,7 @@ test("macOS cleanup records descendants before browser shutdown and still closes
 });
 
 test("native cleanup audits the pending marker Node and Shell without killing discovered processes", async () => {
-  const body = source.split("async function ownedProcessesRemain(")[1]?.split("\nfunction assertWriteback()")[0];
+  const body = source.split("async function ownedProcessesRemain(")[1]?.split("\nasync function assertLoopbackListeners(")[0];
   assert.ok(body);
   const marker = "/owned/workspace/cancelled-shell-marker";
   for (const [argv, includeBackend, expected] of [
@@ -93,4 +93,34 @@ test("native cleanup audits the pending marker Node and Shell without killing di
     }, { timeout: 100 });
     assert.equal(await check({ includeBackend }), expected);
   }
+});
+
+test("actual macOS listener checks fail closed and leave Linux unchanged", async () => {
+  const body = source.split("async function assertLoopbackListeners(")[1]?.split("\nfunction assertWriteback()")[0];
+  assert.ok(body);
+  for (const mode of ["linux", "pass", "fail"]) {
+    const report = {}, calls = [];
+    const audit = runInNewContext(`(async function assertLoopbackListeners(${body})`, {
+      macos: mode === "linux" ? undefined : { async auditMacosListeners(options) {
+        calls.push(options);
+        if (mode === "fail") throw Object.assign(new Error("listener audit failed"), { code: "CURSOR_APP_MACOS_LISTENER_AUDIT" });
+      } }, app: { pid: 200 }, macosPaths: { appBundle: "/owned/Cursor.app" }, packageRoot: "/owned/package",
+      env: { MEMORAX_CODE_HOME: "/owned/state" }, backendPort: 18787, debugPort: 9222, process: { pid: 123 }, report,
+    }, { timeout: 100 });
+    if (mode === "fail") await assert.rejects(audit(), { code: "CURSOR_APP_MACOS_LISTENER_AUDIT" });
+    else await audit();
+    assert.equal(report.listenerAuditCount, mode === "pass" ? 1 : undefined);
+    assert.equal(calls.length, mode === "linux" ? 0 : 1);
+    if (calls.length) assert.deepEqual(JSON.parse(JSON.stringify(calls[0])), {
+      appPid: 200, appBundle: "/owned/Cursor.app", packageRoot: "/owned/package", stateHome: "/owned/state",
+      backendPort: 18787, debugPort: 9222, selfPid: 123,
+    });
+  }
+  for (const [start, end, expected] of [["async function startApp(", "async function openSession(", 1],
+    ["async function runTurn(", "async function assertInterrupted(", 1],
+    ["async function interruptPendingShell(", "\ntry {", 2]]) {
+    const block = source.split(start)[1].split(end)[0];
+    assert.equal(block.match(/await assertLoopbackListeners\(\)/g)?.length, expected);
+  }
+  assert.match(source, /check\(report\.listenerAuditCount === 10, "CURSOR_APP_MACOS_LISTENER_AUDIT_COUNT"\)/);
 });

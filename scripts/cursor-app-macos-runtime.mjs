@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 const exec = promisify(execFile);
 const argumentCode = "CURSOR_APP_MACOS_RUNTIME_ARGUMENTS";
 const processCode = "CURSOR_APP_MACOS_PROCESS_AUDIT";
+const listenerCode = "CURSOR_APP_MACOS_LISTENER_AUDIT";
 function failure(code) { return Object.assign(new Error(code), { code }); }
 function check(value, code = argumentCode) { if (!value) throw failure(code); }
 function absolute(value) {
@@ -90,6 +91,70 @@ export async function captureMacosDescendants(appPid, execute = exec) {
     for (const row of rows) if (row.pid !== process.pid && owned.has(row.ppid)) owned.add(row.pid);
   }
   return owned;
+}
+
+export async function auditMacosListeners({ appPid, appBundle, packageRoot, stateHome, backendPort, debugPort,
+  selfPid = process.pid }, execute = exec) {
+  check(Number.isSafeInteger(selfPid) && selfPid > 0 && Number.isSafeInteger(appPid) && appPid > 1 && appPid !== selfPid);
+  check(validPort(backendPort) && validPort(debugPort) && backendPort !== debugPort);
+  const appPattern = pathPattern(appBundle, true);
+  const patterns = [appPattern, pathPattern(packageRoot, true), pathPattern(stateHome, true)];
+  const options = { encoding: "utf8", timeout: 5000, maxBuffer: 4 * 1024 * 1024,
+    env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" } };
+  const inspect = async () => {
+    const { stdout, stderr } = await execute("/bin/ps", ["-axww", "-o", "pid=,ppid=,lstart=,command="], options);
+    check(!stderr && typeof stdout === "string" && stdout.length <= options.maxBuffer && stdout.trim(), listenerCode);
+    const rows = new Map();
+    for (const line of stdout.trim().split(/\r?\n/)) {
+      const row = line.match(/^\s*(\d+)\s+(\d+)\s+((?:Sun|Mon|Tue|Wed|Thu|Fri|Sat)\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4})\s+(.+)$/);
+      check(row && [row[1], row[2]].every((value) => Number.isSafeInteger(Number(value)))
+        && !rows.has(Number(row[1])), listenerCode);
+      rows.set(Number(row[1]), { ppid: Number(row[2]), started: row[3].replace(/\s+/g, " "), command: row[4] });
+    }
+    return rows;
+  };
+  try {
+    const before = await inspect();
+    check(before.has(appPid) && appPattern.test(before.get(appPid).command), listenerCode);
+    const owned = new Set([appPid]);
+    for (const [pid, row] of before) if (pid > 1 && pid !== selfPid && patterns.some((pattern) => pattern.test(row.command))) owned.add(pid);
+    let previous = 0;
+    while (previous !== owned.size) {
+      previous = owned.size;
+      for (const [pid, row] of before) if (pid > 1 && pid !== selfPid && owned.has(row.ppid)) owned.add(pid);
+    }
+    const { stdout, stderr } = await execute("/usr/sbin/lsof", ["-nP", "-a", "-p", [...owned].sort((a, b) => a - b).join(","),
+      "-iTCP", "-sTCP:LISTEN", "-F0pftPnT", "-T", "s"], options);
+    check(!stderr && typeof stdout === "string" && stdout.length <= options.maxBuffer && stdout.endsWith("\0\n"), listenerCode);
+    const seenProcesses = new Set(), listeners = new Set(), ports = new Set(), descriptors = new Set();
+    let pid;
+    for (const line of stdout.slice(0, -1).split("\n")) {
+      check(line.endsWith("\0"), listenerCode);
+      const fields = line.slice(0, -1).split("\0");
+      if (/^p\d+$/.test(fields[0])) {
+        pid = Number(fields[0].slice(1));
+        check(fields.length === 1 && owned.has(pid) && !seenProcesses.has(pid), listenerCode);
+        seenProcesses.add(pid);
+        continue;
+      }
+      const values = new Map(fields.map((field) => [field[0], field.slice(1)]));
+      check(pid && fields.length === 5 && values.size === 5 && /^f\d+$/.test(fields[0])
+        && ["IPv4", "IPv6"].includes(values.get("t")) && values.get("P") === "TCP"
+        && values.get("T") === "ST=LISTEN" && !descriptors.has(`${pid}:${values.get("f")}`), listenerCode);
+      const address = values.get("n")?.match(/^(127\.0\.0\.1|\[::1\]):(\d+)$/);
+      check(address && [String(backendPort), String(debugPort)].includes(address[2])
+        && values.get("t") === (address[1] === "127.0.0.1" ? "IPv4" : "IPv6"), listenerCode);
+      descriptors.add(`${pid}:${values.get("f")}`); listeners.add(pid); ports.add(Number(address[2]));
+    }
+    check(ports.has(backendPort) && ports.has(debugPort), listenerCode);
+    const after = await inspect();
+    // Only observed listeners and the App root must retain their process identity.
+    for (const owner of new Set([appPid, ...listeners])) {
+      check(after.has(owner) && after.get(owner).started === before.get(owner).started
+        && after.get(owner).command === before.get(owner).command, listenerCode);
+    }
+    return true;
+  } catch { throw failure(listenerCode); }
 }
 
 export function createDevToolsEndpointReader(port) {

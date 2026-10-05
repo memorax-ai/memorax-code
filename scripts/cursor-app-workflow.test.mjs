@@ -34,20 +34,21 @@ function selected(id, options = {}) {
 }
 
 function evaluateCondition(condition, options = {}) {
-  const { event = "pull_request", provider = false, diagnostic = false, cancelled = false } = options;
+  const { event = "pull_request", provider = false, diagnostic = false, isolation = false, cancelled = false } = options;
   const ready = Object.hasOwn(options, "ready") ? options.ready : "true";
   return Boolean(runInNewContext(condition.replaceAll("needs.package.outputs.artifact-ready", 'needs.package.outputs["artifact-ready"]'), {
-    github: { event_name: event }, inputs: { check_deepseek: provider, diagnose_opencode_initialization: diagnostic },
+    github: { event_name: event }, inputs: { check_deepseek: provider, diagnose_opencode_initialization: diagnostic,
+      check_cursor_macos_isolation: isolation },
     needs: { package: { outputs: { "artifact-ready": ready } } }, always: () => true, cancelled: () => cancelled,
   }, { timeout: 100 }));
 }
 
-test("Cursor App jobs retain normal triggers and exclude the two dedicated manual diagnostics", () => {
+test("Cursor App jobs retain normal triggers and exclude dedicated manual diagnostics and proof-only mode", () => {
   for (const event of ["pull_request", "push", "workflow_dispatch"]) {
     for (const provider of [false, true]) {
-      for (const diagnostic of [false, true]) {
-        const expected = event !== "workflow_dispatch" || (!provider && !diagnostic);
-        for (const id of ["cursor-app", "cursor-app-result"]) assert.equal(selected(id, { event, provider, diagnostic }), expected);
+      for (const diagnostic of [false, true]) for (const isolation of [false, true]) {
+        const expected = event !== "workflow_dispatch" || (!provider && !diagnostic && !isolation);
+        for (const id of ["cursor-app", "cursor-app-result"]) assert.equal(selected(id, { event, provider, diagnostic, isolation }), expected);
       }
     }
   }

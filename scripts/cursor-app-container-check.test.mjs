@@ -42,16 +42,24 @@ function nativeReport() {
       contextRequests: [1, 1, 1, 1, 1, 1, 1], contextResults: [1, 1, 1, 1, 1, 1, 1], contextCloses: [1, 1, 1, 1, 1, 1, 1] }, memoryRequestCount: 8 };
 }
 
-test("macOS reuses the complete native report oracle and additionally requires its network proof", () => {
+test("macOS requires its network proof and all actual loopback-listener checkpoints", () => {
   const report = nativeReport();
   report.platform = "darwin";
   assert.throws(() => projectNativeReport(report), { code: "CURSOR_CONTAINER_REPORT" });
   assert.throws(() => projectNativeReport(report, { platform: "darwin" }), { code: "CURSOR_CONTAINER_REPORT" });
   report.evidence.networkIsolation = true;
+  assert.throws(() => projectNativeReport(report, { platform: "darwin" }), { code: "CURSOR_CONTAINER_REPORT" });
+  report.evidence.loopbackListeners = true;
+  report.listenerAuditCount = 10;
   assert.deepEqual(projectNativeReport(report, { platform: "darwin" }), report);
   for (const change of [
     (value) => { value.platform = "linux"; },
     (value) => { value.evidence.networkIsolation = false; },
+    (value) => { delete value.evidence.loopbackListeners; },
+    (value) => { value.evidence.loopbackListeners = false; },
+    (value) => { delete value.listenerAuditCount; },
+    (value) => { value.listenerAuditCount = 9; },
+    (value) => { value.listenerAuditCount = 11; },
     (value) => { value.evidence.pendingShellInterrupted = false; },
     (value) => { value.agent.runs = 6; },
     (value) => { value.memoryRequestCount = 9; },

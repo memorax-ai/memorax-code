@@ -30,7 +30,7 @@ test("network profile only allows outbound TCP to the exact loopback port", () =
   }
 });
 
-test("network profile bounds exact outbound and listener ports without widening addresses", () => {
+test("network profile bounds exact outbound and listener ports", () => {
   const profile = makeMacosNetworkProfile([12345, 12347], [12347]);
   assert.equal(profile, '(version 1)\n(allow default)\n(deny network*)\n'
     + '(allow network-outbound (remote tcp "localhost:12345"))\n'
@@ -59,16 +59,14 @@ test("Unix IPC rules use only canonical directory filters and escape profile str
   }
 });
 
-test("only explicit OS denials pass for every level in the actual process chain", () => {
+test("restricted network gates require explicit OS denials at every process level", () => {
   assert.deepEqual(assertMacosNetworkEvidence(rows(), identity), { allowedLoopback: true, otherLoopbackDenied: true,
     allowedListenerIpv4: true, allowedListenerIpv6: true, otherListenerPortsDenied: true,
-    wildcardIpv4Denied: true, wildcardIpv6Denied: true,
     ownedUnixIpc: true, otherUnixPathsDenied: true,
     externalIpv4Denied: true, externalIpv6Denied: true, inheritedChild: true, inheritedGrandchild: true });
   for (const depth of [0, 1, 2]) {
     for (const [field, code] of [["blockedLoopback", "CURSOR_APP_MACOS_LOOPBACK_NOT_RESTRICTED"],
       ["otherListenerIpv4", "CURSOR_APP_MACOS_LISTENER_NOT_RESTRICTED"], ["otherListenerIpv6", "CURSOR_APP_MACOS_LISTENER_NOT_RESTRICTED"],
-      ["wildcardIpv4", "CURSOR_APP_MACOS_WILDCARD_NOT_RESTRICTED"], ["wildcardIpv6", "CURSOR_APP_MACOS_WILDCARD_NOT_RESTRICTED"],
       ["otherUnixConnect", "CURSOR_APP_MACOS_UNIX_NOT_RESTRICTED"], ["otherUnixBind", "CURSOR_APP_MACOS_UNIX_NOT_RESTRICTED"],
       ["ipv4", "CURSOR_APP_MACOS_IPV4_NOT_DENIED"], ["ipv6", "CURSOR_APP_MACOS_IPV6_NOT_DENIED"]]) {
       for (const outcome of ["CONNECTED", "LISTENED", "TIMEOUT", "EADDRINUSE", "ENETUNREACH", "ECONNREFUSED", "OTHER", "NOT_RUN", undefined]) {
@@ -87,6 +85,21 @@ test("only explicit OS denials pass for every level in the actual process chain"
         const sockets = rows(); sockets[depth][field] = outcome;
         assert.throws(() => assertMacosNetworkEvidence(sockets, identity), { code: "CURSOR_APP_MACOS_UNIX_UNAVAILABLE" });
       }
+    }
+  }
+});
+
+test("wildcard listeners are bounded observations, never inbound address denial evidence", () => {
+  for (const depth of [0, 1, 2]) for (const field of ["wildcardIpv4", "wildcardIpv6"]) {
+    for (const outcome of ["LISTENED", "EPERM", "EACCES"]) {
+      const evidence = rows(); evidence[depth][field] = outcome;
+      const result = assertMacosNetworkEvidence(evidence, identity);
+      assert.equal(Object.hasOwn(result, "wildcardIpv4Denied"), false);
+      assert.equal(Object.hasOwn(result, "wildcardIpv6Denied"), false);
+    }
+    for (const outcome of ["CONNECTED", "TIMEOUT", "EADDRINUSE", "EADDRNOTAVAIL", "OTHER", "NOT_RUN", undefined, "private-result-canary"]) {
+      const evidence = rows(); evidence[depth][field] = outcome;
+      assert.throws(() => assertMacosNetworkEvidence(evidence, identity), { code: "CURSOR_APP_MACOS_WILDCARD_OBSERVATION_INVALID" });
     }
   }
 });
@@ -129,7 +142,9 @@ test("every actual worker bind gate precedes external probes and stops on anythi
   const gates = [["127.0.0.1", 12347, true], ["::1", 12347, true], ["127.0.0.1", 12348, false],
     ["::1", 12348, false], ["0.0.0.0", 12347, false], ["::", 12347, false]];
   for (const [index, gate] of gates.entries()) {
-    for (const failed of gate[2] ? ["EPERM", "TIMEOUT", "EADDRINUSE"] : ["LISTENED", "TIMEOUT", "EADDRINUSE", "OTHER"]) {
+    for (const failed of gate[2] ? ["EPERM", "TIMEOUT", "EADDRINUSE"]
+      : index < 4 ? ["LISTENED", "TIMEOUT", "EADDRINUSE", "OTHER"]
+        : ["CONNECTED", "TIMEOUT", "EADDRINUSE", "EADDRNOTAVAIL", "OTHER", "NOT_RUN", undefined]) {
       const calls = [];
       const evidence = await probeNetworkLevel(12345, 12346, 12347, 12348, 0, {
         connect: async (host, port) => {
@@ -177,13 +192,18 @@ test("worker repeats the full proof in both child generations and stops at the g
     unixPaths,
     connect: async (host, port) => { calls.push([depth, "connect", host, port]); return port === 12345 ? "CONNECTED" : "EPERM"; },
     connectUnix: async (path) => { calls.push([depth, "unix-connect", path]); return "EACCES"; },
-    bind: async (host, port, exchange) => { calls.push([depth, "bind", host, port, exchange]); return exchange ? "LISTENED" : "EPERM"; },
+    bind: async (host, port, exchange) => {
+      calls.push([depth, "bind", host, port, exchange]);
+      return host === "0.0.0.0" || host === "::" ? ["LISTENED", "EPERM", "EACCES"][depth] : exchange ? "LISTENED" : "EPERM";
+    },
     bindUnix: async (path, exchange) => { calls.push([depth, "bind", path, undefined, exchange]); return exchange ? "LISTENED" : "EPERM"; },
     runChild: async (next) => { generations.push(next); return run(next); },
   });
   const evidence = await run(0);
   assert.deepEqual(generations, [1, 2]);
   assert.deepEqual(evidence.map((row) => row.depth), [0, 1, 2]);
+  assert.deepEqual(evidence.map((row) => [row.wildcardIpv4, row.wildcardIpv6]),
+    [["LISTENED", "LISTENED"], ["EPERM", "EPERM"], ["EACCES", "EACCES"]]);
   assert.deepEqual(calls, [0, 1, 2].flatMap((depth) => [[depth, "connect", "127.0.0.1", 12345], [depth, "connect", "127.0.0.1", 12346],
     [depth, "bind", "127.0.0.1", 12347, true], [depth, "bind", "::1", 12347, true],
     [depth, "bind", "127.0.0.1", 12348, false], [depth, "bind", "::1", 12348, false],
@@ -256,6 +276,7 @@ test("unsupported platforms fail without starting fixtures or a subprocess", asy
     assert.equal(report.status, "FAIL");
     assert.equal(report.appStarted, false);
     assert.equal(report.nativeAcceptance, false);
+    assert.equal(report.inboundAddressIsolation, "not-enforced");
     assert.ok(!JSON.stringify(report).includes("unknown-private-platform"));
   }
 });
@@ -285,14 +306,22 @@ test("proof uses isolated environment and only publishes validated network evide
       });
     }
     const evidence = rows(process.pid); evidence[0].privatePath = "/private/synthetic";
+    evidence[0].wildcardIpv4 = "LISTENED"; evidence[1].wildcardIpv6 = "LISTENED";
     return { pid: 100, stdout: JSON.stringify(evidence), stderr: "private synthetic credentials" };
   } });
   assert.equal(report.status, "PASS", JSON.stringify(report));
   assert.equal(report.kind, "network-isolation-proof");
   assert.equal(report.scope, "sandbox-exec-network-only");
+  assert.equal(report.inboundAddressIsolation, "not-enforced");
   assert.equal(report.appStarted, false);
   assert.equal(report.nativeAcceptance, false);
-  assert.deepEqual(Object.keys(report).sort(), ["appStarted", "evidence", "kind", "nativeAcceptance", "platform", "schemaVersion", "scope", "status"]);
+  assert.deepEqual(report.observations, { wildcardListeners: [
+    { depth: 0, ipv4: "LISTENED", ipv6: "EACCES" },
+    { depth: 1, ipv4: "EPERM", ipv6: "LISTENED" },
+    { depth: 2, ipv4: "EPERM", ipv6: "EACCES" },
+  ] });
+  assert.deepEqual(Object.keys(report).sort(), ["appStarted", "evidence", "inboundAddressIsolation", "kind",
+    "nativeAcceptance", "observations", "platform", "schemaVersion", "scope", "status"]);
   assert.ok(!JSON.stringify(report).includes("private"));
   assert.ok(!JSON.stringify(report).includes(ownedRoot));
   await assert.rejects(access(ownedRoot), { code: "ENOENT" });
@@ -328,8 +357,11 @@ test("network failure projection accepts only bounded depth and fixed gate/resul
 
 test("proof failure exposes the first failing network gate without path, PID, port or raw error", async () => {
   for (const [depth, failedGate, result, expected] of [[0, "listenerIpv4", "TIMEOUT", "TIMEOUT"],
-    [1, "otherUnixBind", "LISTENED", "LISTENED"], [2, "otherUnixConnect", "private-value-canary", "OTHER"]]) {
-    const evidence = rows(process.pid); evidence[depth][failedGate] = result;
+    [1, "otherUnixBind", "LISTENED", "LISTENED"], [2, "otherUnixConnect", "private-value-canary", "OTHER"],
+    [0, "wildcardIpv4", "TIMEOUT", "TIMEOUT"], [1, "wildcardIpv6", "private-value-canary", "OTHER"]]) {
+    const evidence = rows(process.pid);
+    for (const row of evidence) row.wildcardIpv4 = row.wildcardIpv6 = "LISTENED";
+    evidence[depth][failedGate] = result;
     evidence[depth].privatePath = "/private/canary";
     const report = await runMacosIsolationProof({ platform: "darwin", execute: async () => ({ pid: 100, stdout: JSON.stringify(evidence) }) });
     assert.equal(report.status, "FAIL");
