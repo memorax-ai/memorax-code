@@ -48,15 +48,15 @@ test("the actual macOS orchestration fails closed before launch and preserves cl
   const source = await readFile(new URL("./cursor-app-macos-check.mjs", import.meta.url), "utf8");
   const body = source.split("export async function runMacosCheck(")[1]?.split("\nif (process.argv[1]")[0];
   assert.ok(body);
-  for (const kind of ["native-failure", "proof-failure", "candidate-install-failure", "probe-install-failure",
-    "artifact-failure", "busy-detach", "busy-detach-with-native-cleanup", "invalid-report", "missing-report"]) {
+  for (const kind of ["native-failure", "native-cleanup-failure", "proof-failure", "candidate-install-failure", "probe-install-failure",
+    "artifact-failure", "prelaunch-detach-failure", "busy-detach", "busy-detach-with-native-cleanup", "invalid-report", "missing-report"]) {
     await t.test(kind, async () => {
       const calls = [], output = new Map();
       const error = (code) => Object.assign(new Error(code), { code });
       const report = { status: "FAIL", client: "cursor", kind: "app-native-session-flows", platform: "darwin",
         node: "24.20.0", version: "3.21.18", stage: "native-submit", errorCode: "CURSOR_APP_DRIVER",
         evidence: { networkIsolation: true, cleanup: true }, privateCanary: "/private/unpublished-canary" };
-      if (kind === "busy-detach-with-native-cleanup") {
+      if (["native-cleanup-failure", "busy-detach-with-native-cleanup"].includes(kind)) {
         report.cleanupError = "CURSOR_APP_CLEANUP_DESCENDANTS";
         report.evidence.cleanup = false;
       }
@@ -108,6 +108,13 @@ test("the actual macOS orchestration fails closed before launch and preserves cl
         async withCursorMacosApp(options, callback) {
           calls.push(["artifact"]);
           if (kind === "artifact-failure") throw error("CURSOR_APP_MACOS_ARTIFACT_SIGNATURE");
+          if (kind === "prelaunch-detach-failure") {
+            calls.push(["detach"]);
+            throw Object.assign(error("CURSOR_APP_MACOS_ARTIFACT_DETACH"), {
+              cleanupErrorCode: "CURSOR_APP_MACOS_ARTIFACT_DETACH",
+              artifactDetach: { exitCode: 16, stderrClass: "resource-busy", stderr: "/private/unpublished-canary" },
+            });
+          }
           try { return await callback({ appPath: "/owned/verified/Cursor.app/Contents/MacOS/Cursor", evidence: { signatureVerified: true } }); }
           catch (caught) {
             if (kind.startsWith("busy-detach")) {
@@ -127,7 +134,7 @@ test("the actual macOS orchestration fails closed before launch and preserves cl
       assert.equal(output.get("/owned/report/report.json"), `${JSON.stringify(result, null, 2)}\n`);
       assert.deepEqual(calls[0], ["proof"]);
       if (kind === "proof-failure") assert.deepEqual(calls, [["proof"]]);
-      if (["proof-failure", "candidate-install-failure", "probe-install-failure", "artifact-failure"].includes(kind)) {
+      if (["proof-failure", "candidate-install-failure", "probe-install-failure", "artifact-failure", "prelaunch-detach-failure"].includes(kind)) {
         assert.equal(calls.some(([type]) => type === "native"), false);
       }
       if (kind.endsWith("install-failure")) {
@@ -137,7 +144,7 @@ test("the actual macOS orchestration fails closed before launch and preserves cl
         assert.equal(calls.filter(([type]) => type === "install").length, kind === "candidate-install-failure" ? 1 : 2);
       }
       const removed = calls.findIndex(([type]) => type === "remove");
-      if (["busy-detach", "busy-detach-with-native-cleanup", "invalid-report", "missing-report"].includes(kind)) {
+      if (["native-cleanup-failure", "prelaunch-detach-failure", "busy-detach", "busy-detach-with-native-cleanup", "invalid-report", "missing-report"].includes(kind)) {
         assert.equal(removed, -1); assert.ok(result.cleanupError);
       } else if (kind !== "proof-failure") assert.ok(removed > 0);
       if (kind === "native-failure") {
@@ -150,7 +157,13 @@ test("the actual macOS orchestration fails closed before launch and preserves cl
         exitCode: kind === "busy-detach" ? 1 : null, signal: kind === "busy-detach" ? "none" : "other",
         timedOut: false, outputOverflow: false, stderrClass: kind === "busy-detach" ? "resource-busy" : "other",
       });
-      else assert.equal(result.artifactDetach, undefined);
+      else if (kind === "prelaunch-detach-failure") {
+        assert.equal(result.stage, "macos-acquisition");
+        assert.equal(result.errorCode, "CURSOR_APP_MACOS_ARTIFACT_DETACH");
+        assert.equal(result.artifactCleanupError, "CURSOR_APP_MACOS_ARTIFACT_DETACH");
+        assert.deepEqual(result.artifactDetach, { exitCode: 16, signal: "none", timedOut: false,
+          outputOverflow: false, stderrClass: "resource-busy" });
+      } else assert.equal(result.artifactDetach, undefined);
       if (kind === "busy-detach-with-native-cleanup") assert.equal(result.cleanupError, "CURSOR_APP_CLEANUP_DESCENDANTS");
     });
   }

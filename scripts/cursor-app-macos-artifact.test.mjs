@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { access, chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { access, chmod, cp, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -54,11 +54,15 @@ async function fixture(t, configuration = {}) {
       : file.endsWith("/codesign") && args.includes("--test-requirement") ? "identity" : file.split("/").at(-1);
     state.calls.push({ operation, file, args, options });
     if (operation === configuration.fail) throw new Error("private command stderr and path must not escape");
+    if (operation === configuration.failCopied && args.at(-1).startsWith(state.copiedPath)) {
+      throw new Error("private copied-App diagnostic must not escape");
+    }
     if (operation === configuration.commandError?.operation) throw configuration.commandError.error;
     if (operation === "attach") {
       state.mountpoint = args[args.indexOf("-mountpoint") + 1];
       state.ownedRoot = dirname(state.mountpoint);
       state.appPath = join(state.mountpoint, "Cursor.app");
+      state.copiedPath = join(state.ownedRoot, "Cursor.app");
       for (const directory of ["Contents/Resources/app", "Contents/MacOS"]) {
         await mkdir(join(state.appPath, directory), { recursive: true });
       }
@@ -73,7 +77,15 @@ async function fixture(t, configuration = {}) {
       "system-entities": [{ "dev-entry": "/dev/disk999" }, { "dev-entry": "/dev/disk999s1", "mount-point": state.mountpoint }],
     }) };
     if (operation === "info-json") return { stdout: configuration.infoJson ?? JSON.stringify(info) };
-    assert.ok(["codesign", "identity", "spctl", "detach"].includes(operation), "only fixed validation commands are permitted");
+    if (operation === "ditto") {
+      assert.deepEqual(args, [state.appPath, state.copiedPath]);
+      await cp(state.appPath, state.copiedPath, { recursive: true, verbatimSymlinks: true });
+      await configuration.mutateCopy?.(state);
+    }
+    if (operation === "detach" && operation !== configuration.failCode && state.appPath) {
+      await rm(state.appPath, { recursive: true, force: true });
+    }
+    assert.ok(["codesign", "identity", "spctl", "detach", "ditto"].includes(operation), "only fixed acquisition commands are permitted");
     return { stdout: "", code: operation === configuration.failCode ? 1 : 0 };
   };
   const fetchImpl = async (url, options) => {
@@ -116,15 +128,19 @@ test("selects only frozen canonical darwin-arm64 descriptors and retains unavail
   assert.throws(() => selectCursorMacosRelease(changedBaseline, "baseline"), error("RELEASE"));
 });
 
-posixTest("acquires into an owned child, validates before callback, and detaches before removing it", async (t) => {
+posixTest("verifies a private App copy and detaches its image before invoking the callback", async (t) => {
   const state = await fixture(t);
   const result = await state.run(async ({ appPath, evidence }) => {
-    assert.equal(appPath, join(state.appPath, "Contents/MacOS/Cursor"));
+    assert.equal(appPath, join(state.copiedPath, "Contents/MacOS/Cursor"));
+    assert.deepEqual(await readFile(appPath), executable());
+    await assert.rejects(access(state.appPath), { code: "ENOENT" });
     assert.equal((await readFile(join(state.ownedRoot, "Cursor.dmg"))).equals(image), true);
-    assert.deepEqual(state.calls.map((call) => call.operation), ["attach", "mount-json", "codesign", "identity", "spctl", "info-json"]);
+    assert.deepEqual(state.calls.map((call) => call.operation), ["attach", "mount-json", "codesign", "identity", "spctl", "info-json",
+      "ditto", "codesign", "identity", "spctl", "info-json", "detach"]);
     assert.deepEqual(evidence, { platform: "darwin-arm64", channel: "baseline", version: baseline.version,
       commitSha: baseline.commitSha, sha256: null, hashSource: "not-provided", bytes: image.length,
       observedSha256: createHash("sha256").update(image).digest("hex"), architecture: "arm64", readOnlyMount: true,
+      copiedBundleVerified: true, imageDetachedBeforeLaunch: true,
       signatureVerified: true, bundleIdentifier: "com.todesktop.230313mzl4w4u92", teamIdentifier: "VDXQ22DGB9",
       gatekeeperAccepted: true, packageIdentityVerified: true });
     assert.ok(Object.isFrozen(evidence));
@@ -146,6 +162,11 @@ posixTest("acquires into an owned child, validates before callback, and detaches
   const assessment = state.calls.find((call) => call.operation === "spctl");
   assert.equal(assessment.file, "/usr/sbin/spctl");
   assert.deepEqual(assessment.args, ["--assess", "--type", "execute", state.appPath]);
+  for (const operation of ["codesign", "identity", "spctl"]) {
+    const calls = state.calls.filter((call) => call.operation === operation);
+    assert.equal(calls.length, 2);
+    assert.equal(calls[1].args.at(-1), state.copiedPath);
+  }
   for (const call of state.calls) {
     assert.equal(call.options.cwd, state.ownedRoot);
     assert.deepEqual(call.options.env, { PATH: "/usr/bin:/bin:/usr/sbin:/sbin", HOME: state.ownedRoot,
@@ -173,6 +194,42 @@ posixTest("latest validates the selected exact release, without falling back to 
   assert.equal(evidence.version, latest.version);
   assert.equal(evidence.commitSha, latest.commitSha);
   assert.equal(state.fetches[0].url, latest.url);
+  await state.assertClean();
+});
+
+posixTest("a copied App must pass every signature, identity and package gate again", async (t) => {
+  for (const [failCopied, suffix] of [["codesign", "SIGNATURE"], ["identity", "IDENTITY"],
+    ["spctl", "ASSESSMENT"], ["info-json", "PACKAGE"]]) {
+    const state = await fixture(t, { failCopied });
+    await assert.rejects(state.run(), error(suffix));
+    assert.equal(state.callbackCount, 0);
+    assert.equal(state.calls.filter((call) => call.operation === failCopied).length, 2);
+    assert.equal(state.calls.filter((call) => call.operation === "detach").length, 1);
+    await state.assertClean();
+  }
+  for (const [relative, contents, suffix] of [["Contents/Resources/app/product.json", "{}", "PACKAGE"],
+    ["Contents/MacOS/Cursor", Buffer.alloc(32), "ARCHITECTURE"]]) {
+    const state = await fixture(t, { mutateCopy: ({ copiedPath }) => writeFile(join(copiedPath, relative), contents) });
+    await assert.rejects(state.run(), error(suffix));
+    assert.equal(state.callbackCount, 0);
+    await state.assertClean();
+  }
+  const escaped = await fixture(t, { mutateCopy: async ({ copiedPath, root }) => {
+    const path = join(copiedPath, "Contents/Resources/app/product.json");
+    await rm(path); await symlink(join(root, "unrelated"), path);
+  } });
+  await assert.rejects(escaped.run(), error("PACKAGE"));
+  assert.equal(escaped.callbackCount, 0);
+  await escaped.assertClean();
+});
+
+posixTest("aborting during copy detaches without invoking the callback or keeping partial files", async (t) => {
+  const controller = new AbortController();
+  const state = await fixture(t, { mutateCopy: () => controller.abort() });
+  await assert.rejects(state.run(undefined, { signal: controller.signal }), error("ABORTED"));
+  assert.equal(state.callbackCount, 0);
+  assert.equal(state.calls.filter((call) => call.operation === "detach").length, 1);
+  assert.equal(state.calls.at(-1).options.signal, undefined);
   await state.assertClean();
 });
 
@@ -264,14 +321,14 @@ posixTest("failed and aborted streams cannot reach mount or callback", async (t)
 
 posixTest("each failed mount, signature, or assessment gate detaches and fails before callback", async (t) => {
   for (const [operation, suffix] of [["attach", "MOUNT"], ["mount-json", "MOUNT_METADATA"], ["codesign", "SIGNATURE"], ["identity", "IDENTITY"],
-    ["spctl", "ASSESSMENT"], ["info-json", "PACKAGE"]]) {
+    ["spctl", "ASSESSMENT"], ["info-json", "PACKAGE"], ["ditto", "COPY"]]) {
     const state = await fixture(t, { fail: operation });
     await assert.rejects(state.run(), error(suffix));
     assert.equal(state.callbackCount, 0);
     assert.equal(state.calls.at(-1).operation, "detach");
     await state.assertClean();
   }
-  for (const [failCode, suffix] of [["codesign", "SIGNATURE"], ["identity", "IDENTITY"], ["spctl", "ASSESSMENT"]]) {
+  for (const [failCode, suffix] of [["codesign", "SIGNATURE"], ["identity", "IDENTITY"], ["spctl", "ASSESSMENT"], ["ditto", "COPY"]]) {
     const state = await fixture(t, { failCode });
     await assert.rejects(state.run(), error(suffix));
     await state.assertClean();
@@ -280,7 +337,7 @@ posixTest("each failed mount, signature, or assessment gate detaches and fails b
 
 posixTest("command timeouts remain distinct from rejection, with abort taking precedence", async (t) => {
   for (const details of [{ killed: true, signal: "SIGKILL", code: null }, { code: "ETIMEDOUT" }]) {
-    for (const [operation, suffix] of [["attach", "MOUNT"], ["codesign", "SIGNATURE"], ["identity", "IDENTITY"], ["spctl", "ASSESSMENT"]]) {
+    for (const [operation, suffix] of [["attach", "MOUNT"], ["codesign", "SIGNATURE"], ["identity", "IDENTITY"], ["spctl", "ASSESSMENT"], ["ditto", "COPY"]]) {
       const state = await fixture(t, { commandError: { operation, error: Object.assign(new Error("private timeout details"), details) } });
       await assert.rejects(state.run(), error(suffix + "_TIMEOUT"));
       assert.equal(state.callbackCount, 0);
@@ -369,7 +426,7 @@ posixTest("package files and executable cannot escape the mounted application vi
   }
 });
 
-posixTest("callback failure or abort still detaches independently of the original signal", async (t) => {
+posixTest("callback failure or abort retains its private App copy for verified outer cleanup", async (t) => {
   const state = await fixture(t);
   const controller = new AbortController();
   const original = Object.assign(new Error("CURSOR_APP_NATIVE_FAILED"), { code: "CURSOR_APP_NATIVE_FAILED" });
@@ -378,27 +435,26 @@ posixTest("callback failure or abort still detaches independently of the origina
   assert.equal(original.artifactDetach, undefined);
   assert.equal(state.calls.at(-1).operation, "detach");
   assert.equal(state.calls.at(-1).options.signal, undefined);
-  await state.assertClean();
+  assert.equal(state.calls.filter((call) => call.operation === "detach").length, 1);
+  await access(state.copiedPath);
+  await assert.rejects(access(state.appPath), { code: "ENOENT" });
+  assert.equal(await readFile(join(state.root, "unrelated"), "utf8"), "preserve");
 });
 
-posixTest("busy detach never force-detaches or removes the mount, and preserves primary failure", async (t) => {
-  for (const callbackFails of [false, true]) {
+posixTest("busy detach prevents native launch, never retries and preserves an earlier acquisition failure", async (t) => {
+  for (const copyFails of [false, true]) {
     const state = await fixture(t, { commandError: { operation: "detach", error: Object.assign(new Error("private detach diagnostic"),
-      { code: 1, stderr: "hdiutil: detach failed - Resource busy\n", stdout: "private command output" }) } });
-    const original = Object.assign(new Error("CURSOR_APP_NATIVE_FAILED"), { code: "CURSOR_APP_NATIVE_FAILED" });
-    await assert.rejects(state.run(async () => { if (callbackFails) throw original; return "not returned"; }), (caught) => {
-      if (callbackFails) {
-        assert.equal(caught, original);
-        assert.equal(caught.cleanupErrorCode, prefix + "DETACH");
-      } else {
-        assert.equal(caught.code, prefix + "DETACH");
-        assert.equal(caught.cleanupErrorCode, prefix + "DETACH");
-      }
+      { code: 1, stderr: "hdiutil: detach failed - Resource busy\n", stdout: "private command output" }) },
+      fail: copyFails ? "ditto" : undefined });
+    await assert.rejects(state.run(), (caught) => {
+      assert.equal(caught.code, prefix + (copyFails ? "COPY" : "DETACH"));
+      assert.equal(caught.cleanupErrorCode, prefix + "DETACH");
       assert.deepEqual(caught.artifactDetach, { exitCode: 1, signal: "none", timedOut: false, outputOverflow: false,
         stderrClass: "resource-busy" });
       assert.equal(JSON.stringify(caught).includes("private"), false);
       return true;
     });
+    assert.equal(state.callbackCount, 0);
     await access(state.mountpoint);
     await access(join(state.ownedRoot, "Cursor.dmg"));
     assert.deepEqual(state.calls.at(-1).args, ["detach", state.mountpoint]);

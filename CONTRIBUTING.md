@@ -1226,7 +1226,7 @@ Acceptance requires all of the following:
   its CLI session, memory type, reason and idempotency key, separately from the
   native session used by automatic writeback and trace correlation.
 - Successful client/Backend and platform-resource cleanup, including the Linux
-  container or macOS owned processes and mounted image, with a final request-count
+  container or macOS owned processes and private App copy, with a final request-count
   audit to reject duplicate or late writeback.
 
 Acquisition uses fixed official Cursor release URLs. Linux baseline SHA-256
@@ -1240,6 +1240,11 @@ or falls back to baseline. The macOS inventory has no publisher-provided
 checksum. Its read-only mounted DMG must supply an App with a valid deep code
 signature, the expected Apple-anchored signing identity and bundle identifier,
 Gatekeeper acceptance, and matching sealed version, release commit and architecture.
+The verified App is copied with `ditto` into the test's private artifact directory
+and passes those same validation gates again. The DMG must detach successfully
+before native startup; the App never runs from the mounted image. Copy, validation
+or detach failure prevents launch, with no force-detach or retry. After a native
+failure, the private copy remains until the outer controller verifies process cleanup.
 The signed `product.json` field `realCommit` must exactly match the frozen
 download API commit; the App's distinct mangled `commit` field is not a fallback.
 A computed DMG checksum is only an observed byte receipt, not an official

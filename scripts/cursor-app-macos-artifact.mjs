@@ -190,7 +190,14 @@ export async function withCursorMacosApp({ release, root, signal, execute = exec
   const imagePath = join(ownedRoot, "Cursor.dmg");
   const options = { cwd: ownedRoot, signal, env: { PATH: "/usr/bin:/bin:/usr/sbin:/sbin", HOME: ownedRoot,
     CFFIXED_USER_HOME: ownedRoot, TMPDIR: ownedRoot, TMP: ownedRoot, TEMP: ownedRoot, LANG: "C", LC_ALL: "C" } };
-  let attachAttempted = false, invokingCallback = false, primaryError, cleanupError, value;
+  let attachAttempted = false, detachAttempted = false, invokingCallback = false, primaryError, cleanupError, value;
+  const detach = async () => {
+    detachAttempted = true;
+    try {
+      // Cleanup remains bounded even when acquisition or the callback was aborted.
+      await command(execute, "/usr/bin/hdiutil", ["detach", mountpoint], { ...options, signal: undefined, timeout: 30_000 }, "DETACH");
+    } catch (error) { cleanupError = error; throw error; }
+  };
   try {
     const artifact = await download(selected, imagePath, fetchImpl, signal);
     await mkdir(mountpoint, { mode: 0o700 });
@@ -204,11 +211,16 @@ export async function withCursorMacosApp({ release, root, signal, execute = exec
     check(Array.isArray(mounted["system-entities"]), "MOUNT_METADATA");
     const volumes = mounted["system-entities"].filter((entry) => entry?.["mount-point"] !== undefined);
     check(volumes.length === 1 && volumes[0]["mount-point"] === mountpoint, "MOUNT_METADATA");
-    const bundlePath = join(mountpoint, "Cursor.app");
+    const mountedBundle = join(mountpoint, "Cursor.app");
+    await validateApp(mountedBundle, selected, execute, options);
+    const bundlePath = join(ownedRoot, "Cursor.app");
+    await command(execute, "/usr/bin/ditto", [mountedBundle, bundlePath], options, "COPY");
     await validateApp(bundlePath, selected, execute, options);
+    await detach();
     checkAborted(signal);
     const evidence = Object.freeze({ platform, channel: selected.channel, version: selected.version, commitSha: selected.commitSha,
       sha256: null, hashSource: "not-provided", ...artifact, architecture: "arm64", readOnlyMount: true,
+      copiedBundleVerified: true, imageDetachedBeforeLaunch: true,
       signatureVerified: true, bundleIdentifier, teamIdentifier, gatekeeperAccepted: true, packageIdentityVerified: true });
     invokingCallback = true;
     value = await callback({ appPath: join(bundlePath, "Contents/MacOS/Cursor"), evidence });
@@ -217,13 +229,12 @@ export async function withCursorMacosApp({ release, root, signal, execute = exec
     primaryError = error instanceof Error && (invokingCallback
       || (typeof error.code === "string" && error.code.startsWith(codePrefix) && error.message === error.code)) ? error : failure("VALIDATION");
   } finally {
-    if (attachAttempted) {
-      try {
-        // Cleanup remains bounded even when the acquisition or callback signal was aborted.
-        await command(execute, "/usr/bin/hdiutil", ["detach", mountpoint], { ...options, signal: undefined, timeout: 30_000 }, "DETACH");
-      } catch (error) { cleanupError = error; }
+    if (attachAttempted && !detachAttempted) {
+      try { await detach(); } catch { /* The original error and cleanup diagnostic are retained separately. */ }
     }
-    if (!cleanupError) {
+    // A failed callback may still own live App processes. The outer controller
+    // removes its root only after independently verifying native cleanup.
+    if (!cleanupError && !(invokingCallback && primaryError)) {
       try { await rm(ownedRoot, { recursive: true, force: true }); }
       catch { cleanupError = failure("CLEANUP"); }
     }
