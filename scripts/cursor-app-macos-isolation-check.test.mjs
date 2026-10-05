@@ -214,7 +214,7 @@ test("worker repeats the full proof in both child generations and stops at the g
       assert.doesNotMatch(args[5], /198\.51\.100|2001:db8/);
       assert.equal(options.timeout, 2500); assert.equal(options.killSignal, "SIGKILL");
       assert.equal(options.maxBuffer, 4096); assert.equal(options.encoding, "utf8");
-      assert.equal(options.env, process.env);
+      assert.equal(options.env === process.env, true);
       assert.deepEqual(options.stdio, ["ignore", "pipe", "pipe"]);
       return depth === 0 ? { status: 1, stdout: "", stderr: "sandbox-exec: sandbox_apply: Operation not permitted\n" }
         : { status: 0, stdout: `${depth === 1 ? "EPERM" : "EACCES"}\n`, stderr: "" };
