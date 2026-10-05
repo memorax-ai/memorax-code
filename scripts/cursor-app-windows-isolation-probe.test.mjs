@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { copyFile, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer } from "node:net";
-import { createSocket } from "node:dgram";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import test from "node:test";
+import { runInNewContext } from "node:vm";
 import {
-  classifyConnectionError, connectToFixture, parseProbeConfig, sendToFixture, summarizeLevels,
+  classifyConnectionError, connectToFixture, createFixturePair, parseProbeConfig, sendToFixture, summarizeLevels,
 } from "./cursor-app-windows-isolation-probe.mjs";
 
 const config = { allowed4: 31001, denied4: 31002, allowed6: 31003, denied6: 31004 };
@@ -73,14 +74,9 @@ test("TCP and UDP fixtures share numeric ports while mapped probes use actual IP
     await Promise.all(udpServers.map((server) => new Promise((resolve) => server.close(resolve))));
   });
   for (const host of ["127.0.0.1", "::1"]) {
-    const tcp = createServer((socket) => socket.once("data", (data) => socket.end(data.toString() === "cursor-loopback-proof\n" ? "fixture-ok\n" : "wrong")));
-    tcpServers.push(tcp);
-    await new Promise((resolve, reject) => { tcp.once("error", reject); tcp.listen({ host, port: 0, ipv6Only: true }, resolve); });
-    const port = tcp.address().port;
-    const udp = createSocket({ type: host === "::1" ? "udp6" : "udp4", ipv6Only: host === "::1" });
-    udpServers.push(udp);
-    udp.on("message", (data, peer) => udp.send(data.toString() === "cursor-loopback-proof\n" ? "fixture-ok\n" : "wrong", peer.port, peer.address));
-    await new Promise((resolve, reject) => { udp.once("error", reject); udp.bind(port, host, resolve); });
+    const { server, datagram, port } = await createFixturePair(host);
+    tcpServers.push(server); udpServers.push(datagram);
+    assert.equal(server.address().port, datagram.address().port);
     assert.equal(await connectToFixture(host, port), "CONNECTED");
     assert.equal(await sendToFixture(host, port), "CONNECTED");
     if (host === "127.0.0.1") {
@@ -90,6 +86,51 @@ test("TCP and UDP fixtures share numeric ports while mapped probes use actual IP
   }
   await assert.rejects(sendToFixture("example.com", 1234), /PROBE_CONFIG_INVALID/);
   await assert.rejects(sendToFixture("192.0.2.1", 1234), /PROBE_CONFIG_INVALID/);
+});
+
+test("fixture port selection retries only bounded bind conflicts before publishing a jointly bound pair", async () => {
+  const source = await readFile(new URL("./cursor-app-windows-isolation-probe.mjs", import.meta.url), "utf8");
+  const body = source.match(/export (async function createFixturePair[\s\S]*?)(?=\nasync function fixtures)/)?.[1];
+  assert.ok(body);
+  for (const [protocol, code, persistent] of [["udp", "EACCES", false], ["tcp", "EACCES", false],
+    ["tcp", "EADDRINUSE", false], ["udp", "EADDRINUSE", false], ["tcp", "EACCES", true], ["udp", "EAFNOSUPPORT", false]]) {
+    const sockets = [], calls = [];
+    let attempt = 0;
+    const make = (kind) => {
+      if (kind === "tcp") attempt++;
+      const socket = new EventEmitter(), current = attempt;
+      socket.closed = false;
+      const bind = (callback) => {
+        calls.push([current, kind]);
+        queueMicrotask(() => {
+          if (kind === protocol && (persistent || current === 1)) socket.emit("error", Object.assign(new Error(code), { code }));
+          else callback();
+        });
+      };
+      socket.bind = (port, host, callback) => { assert.equal(port, 0); assert.equal(host, "127.0.0.1"); bind(callback); };
+      socket.listen = (options, callback) => { assert.equal(options.port, 31000 + current); bind(callback); };
+      socket.address = () => ({ port: 31000 + current });
+      sockets.push(socket);
+      return socket;
+    };
+    const run = runInNewContext(`(${body})`, {
+      createTcpFixture: () => make("tcp"), createSocket: () => make("udp"),
+      closeFixture: async (socket) => { socket.closed = true; },
+    });
+    if (persistent || code === "EAFNOSUPPORT") {
+      await assert.rejects(run("127.0.0.1"), persistent ? /PROBE_FIXTURE_PORT_UNAVAILABLE/ : { code });
+      assert.equal(attempt, persistent ? 12 : 1);
+      assert.ok(sockets.every((socket) => socket.closed));
+    } else {
+      const pair = await run("127.0.0.1");
+      assert.equal(attempt, 2);
+      assert.equal(pair.port, 31002);
+      assert.ok(sockets.slice(0, 2).every((socket) => socket.closed));
+      assert.ok(sockets.slice(2).every((socket) => !socket.closed));
+      assert.deepEqual(calls.slice(-2), [[2, "udp"], [2, "tcp"]]);
+    }
+  }
+  await assert.rejects(createFixturePair("192.0.2.1"), /PROBE_CONFIG_INVALID/);
 });
 
 test("summary rejects missing, reordered, extra or unrecognized private output", () => {

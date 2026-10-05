@@ -126,6 +126,54 @@ async function publish(path, value) {
   await rename(temporary, path);
 }
 
+function createTcpFixture(sockets) {
+  return createServer((socket) => {
+    sockets.add(socket);
+    socket.on("error", () => {});
+    socket.once("close", () => sockets.delete(socket));
+    socket.setTimeout(1500, () => socket.destroy());
+    let received = "";
+    socket.on("data", (data) => {
+      received += data.toString("utf8");
+      if (received === request) socket.end(response);
+      else if (received.length >= request.length) socket.destroy();
+    });
+  });
+}
+
+function closeFixture(server) {
+  return new Promise((resolve) => { try { server.close(resolve); } catch { resolve(); } });
+}
+
+export async function createFixturePair(host, sockets = new Set()) {
+  if (!["127.0.0.1", "::1"].includes(host)) throw new Error("PROBE_CONFIG_INVALID");
+  // A port selected for one protocol may be reserved for the other on Windows.
+  // Select a jointly bound pair before publishing ports or installing policy.
+  for (let attempt = 0; attempt < 12; attempt++) {
+    const server = createTcpFixture(sockets);
+    const datagram = createSocket({ type: host === "::1" ? "udp6" : "udp4", ipv6Only: host === "::1" });
+    try {
+      await new Promise((resolve, reject) => {
+        datagram.once("error", reject);
+        datagram.bind(0, host, resolve);
+      });
+      const port = datagram.address().port;
+      await new Promise((resolve, reject) => {
+        server.once("error", reject);
+        server.listen({ host, port, ipv6Only: true }, resolve);
+      });
+      datagram.on("message", (data, peer) => {
+        if (data.toString("utf8") === request) datagram.send(response, peer.port, peer.address);
+      });
+      return { server, datagram, port };
+    } catch (error) {
+      await Promise.all([closeFixture(server), closeFixture(datagram)]);
+      if (!["EACCES", "EADDRINUSE"].includes(error?.code)) throw error;
+    }
+  }
+  throw new Error("PROBE_FIXTURE_PORT_UNAVAILABLE");
+}
+
 async function fixtures(configPath) {
   const servers = [], datagrams = [], sockets = new Set(), config = {};
   let stop;
@@ -136,46 +184,27 @@ async function fixtures(configPath) {
   process.stdin.once("end", stop);
   try {
     for (const key of portKeys) {
-      const server = createServer((socket) => {
-        sockets.add(socket);
-        socket.on("error", () => {});
-        socket.once("close", () => sockets.delete(socket));
-        socket.setTimeout(1500, () => socket.destroy());
-        let received = "";
-        socket.on("data", (data) => {
-          received += data.toString("utf8");
-          if (received === request) socket.end(response);
-          else if (received.length >= request.length) socket.destroy();
-        });
-      });
+      const host = key.endsWith("4") ? "127.0.0.1" : "::1";
+      if (key.startsWith("allowed")) {
+        const pair = await createFixturePair(host, sockets);
+        servers.push(pair.server); datagrams.push(pair.datagram);
+        config[key] = pair.port;
+        continue;
+      }
+      const server = createTcpFixture(sockets);
       servers.push(server);
       await new Promise((resolve, reject) => {
         server.once("error", reject);
-        server.listen({ host: key.endsWith("4") ? "127.0.0.1" : "::1", port: 0, ipv6Only: true }, resolve);
+        server.listen({ host, port: 0, ipv6Only: true }, resolve);
       });
       config[key] = server.address().port;
-    }
-    // UDP shares the allowed TCP port numbers, so the protocol condition is exercised.
-    for (const [key, host] of [["allowed4", "127.0.0.1"], ["allowed6", "::1"]]) {
-      const server = createSocket({ type: key.endsWith("4") ? "udp4" : "udp6", ipv6Only: key.endsWith("6") });
-      datagrams.push(server);
-      server.on("message", (data, peer) => {
-        if (data.toString("utf8") === request) server.send(response, peer.port, peer.address);
-      });
-      await new Promise((resolve, reject) => {
-        server.once("error", reject);
-        server.bind(config[key], host, resolve);
-      });
     }
     await publish(configPath, parseProbeConfig(config));
     await stopped;
   } finally {
     clearTimeout(deadline);
     for (const socket of sockets) socket.destroy();
-    await Promise.all(servers.map((server) => new Promise((resolve) => server.close(resolve))));
-    await Promise.all(datagrams.map((server) => new Promise((resolve) => {
-      try { server.close(resolve); } catch { resolve(); }
-    })));
+    await Promise.all([...servers, ...datagrams].map(closeFixture));
     process.stdin.pause();
   }
 }

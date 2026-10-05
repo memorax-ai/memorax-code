@@ -33,6 +33,15 @@ test("WFP proof installs exact TCP permits over same-SID default blocks and keep
   assert.ok(source.indexOf("VerifyPolicy(engine, plan, false);") < source.indexOf("engine.Close();"));
 });
 
+test("WFP action verification compares the unsigned SDK action type", async () => {
+  const source = await readFile(new URL("./cursor-app-windows-wfp.cpp", import.meta.url), "utf8");
+  const verification = source.match(/bool OwnedFilter\([\s\S]*?(?=\nFWPM_SUBLAYER0 BuildSubLayer)/)?.[0];
+  assert.ok(verification);
+  assert.match(verification, /const FWP_ACTION_TYPE expectedAction = allow \? FWP_ACTION_PERMIT : FWP_ACTION_BLOCK;/);
+  assert.match(verification, /filter\.action\.type != expectedAction/);
+  assert.doesNotMatch(verification, /filter\.action\.type\s*[!=]=\s*\(allow\s*\?/);
+});
+
 test("coordinator closes installation before probing and retains WFP objects on uncertain process cleanup", async () => {
   const source = await coordinator();
   assert.match(source, /scope = 'windows-wfp-user-direct-outbound-only'/);
@@ -204,12 +213,13 @@ int main() {
         Require(plan.allowWeight > plan.blockWeight, "test");
         for (size_t index = 0; index < 4; ++index) {
             const bool allow = index < 2;
+            const FWP_ACTION_TYPE expectedAction = allow ? FWP_ACTION_PERMIT : FWP_ACTION_BLOCK;
             FWPM_FILTER0 filter{}; std::array<FWPM_FILTER_CONDITION0, 4> conditions{};
             auto reset = [&] { BuildFilter(plan, index, filter, conditions); Require(OwnedFilter(filter, plan, index), "test"); };
             auto rejected = [&] { Require(!OwnedFilter(filter, plan, index), "test"); reset(); };
             reset();
             Require(filter.numFilterConditions == (allow ? 4u : 1u), "test");
-            Require(filter.action.type == (allow ? FWP_ACTION_PERMIT : FWP_ACTION_BLOCK), "test");
+            Require(filter.action.type == expectedAction, "test");
             Require(filter.flags == 0, "test");
             Require(!OwnedFilter(filter, plan, (index + 2) % 4), "test");
             filter.numFilterConditions = 0; rejected();

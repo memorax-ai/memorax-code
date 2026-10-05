@@ -109,11 +109,12 @@ bool OwnedFilter(const FWPM_FILTER0& filter, const Plan& plan, size_t index) {
     if (index >= plan.keys.size()) return false;
     const bool allow = index < 2;
     const size_t family = index % 2;
+    const FWP_ACTION_TYPE expectedAction = allow ? FWP_ACTION_PERMIT : FWP_ACTION_BLOCK;
     if (filter.filterKey != plan.keys[index] || filter.subLayerKey != plan.subLayer ||
         filter.layerKey != (family == 0 ? FWPM_LAYER_ALE_AUTH_CONNECT_V4 : FWPM_LAYER_ALE_AUTH_CONNECT_V6) ||
         filter.flags != 0 || filter.providerKey || filter.providerData.size != 0 || filter.rawContext != 0 ||
         !filter.displayData.name || wcscmp(filter.displayData.name, kName) != 0 ||
-        filter.action.type != (allow ? FWP_ACTION_PERMIT : FWP_ACTION_BLOCK) || filter.weight.type != FWP_UINT64 ||
+        filter.action.type != expectedAction || filter.weight.type != FWP_UINT64 ||
         !filter.weight.uint64 || *filter.weight.uint64 != (allow ? plan.allowWeight : plan.blockWeight) ||
         filter.numFilterConditions != (allow ? 4u : 1u) || !filter.filterCondition) return false;
     unsigned seen = 0;
