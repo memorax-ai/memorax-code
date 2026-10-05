@@ -1387,17 +1387,27 @@ Node version preflight exposes only bounded numeric source/copied versions,
 exit codes, output lengths and fixed result classifications. Paths and raw
 subprocess output are not published.
 
-The Windows probe requires the hosted runner's administrator context to create
-one temporary standard local user and outbound TCP firewall block rules scoped
-to that new SID and selected denied fixture ports. It does not change the global
-firewall profile or default policy, use an AppContainer or add a loopback
-exemption. A parent, child and grandchild ordinary Node process under the new
-identity test only owned IPv4/IPv6 loopback fixtures. The probe makes no external
-network requests and does not download or start Cursor, access a credential
-store, or use existing account credentials. Cleanup removes only the rules and
-user created by this run and closes its owned processes. If process cleanup
-cannot be proven, the probe fails and retains its rules, account and private
-root for teardown of the disposable runner VM.
+The Windows probe uses the hosted runner's administrator context to compile a
+CI-only C++ helper against the installed Windows SDK in a controller-only
+directory. It creates one temporary standard local user and an owned WFP
+sublayer with two `ALE_AUTH_CONNECT_V4/V6` block filters. Each filter requires
+the exact new SID, TCP, loopback address and denied fixture port. Ordinary
+non-dynamic, nonpersistent WFP objects survive the helper's engine close;
+separate readback verifies this before the restricted probe. It does not change
+the global firewall profile or default policy, use an AppContainer or add a
+loopback exemption. A parent, child and grandchild ordinary Node process under
+the new identity test only owned IPv4/IPv6 loopback fixtures. The probe makes no
+external network requests and does not download or start Cursor, access a
+credential store, or use existing account credentials.
+
+After owned processes stop, cleanup verifies exact object keys and conditions
+before transactional deletion and confirms absence. If process or object
+ownership cannot be proven, the probe fails and retains the restrictions,
+account and private directories for disposable runner VM teardown. The public
+scope is `windows-wfp-user-tcp-loopback-only`; diagnostics expose only fixed
+steps, address-family enums and numeric API errors, never SIDs, object keys,
+paths or raw errors. Evidence includes `filtersSurviveEngineClose`, and cleanup
+reports `wfpObjectsRemoved`.
 
 The job fails on an ineffective restriction or unsuccessful cleanup and uploads
 only its fixed-field `report.json`. A passing probe would establish only whether

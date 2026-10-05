@@ -21,7 +21,7 @@ jobs:
           node-version: "24"
           package-manager-cache: false
       - name: Test Windows loopback proof contracts
-        run: node --test scripts/cursor-app-windows-isolation-probe.test.mjs scripts/cursor-app-windows-isolation-workflow.test.mjs scripts/cursor-app-isolation-workflow.test.mjs
+        run: node --test scripts/cursor-app-windows-isolation-probe.test.mjs scripts/cursor-app-windows-wfp.test.mjs scripts/cursor-app-windows-isolation-workflow.test.mjs scripts/cursor-app-isolation-workflow.test.mjs
       - name: Run Windows loopback feasibility proof (not native acceptance)
         shell: pwsh
         run: |

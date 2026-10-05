@@ -6,20 +6,21 @@ Set-StrictMode -Version Latest
 
 $report = [ordered]@{
     schemaVersion = 1; kind = 'network-isolation-proof'; platform = 'win32'
-    scope = 'windows-firewall-localuser-tcp-loopback-only'; status = 'FAIL'; stage = 'guard'
+    scope = 'windows-wfp-user-tcp-loopback-only'; status = 'FAIL'; stage = 'guard'
     appStarted = $false; nativeAcceptance = $false; externalProbes = $false
     evidence = [ordered]@{ freshStandardUser = $false; baselineFixturesReachable = $false
         parentChildGrandchildSameSid = $false; allowedLoopback = $false; deniedLoopback = $false
-        controllerStillReachesDenied = $false }
+        controllerStillReachesDenied = $false; filtersSurviveEngineClose = $false }
     counts = [ordered]@{ processLevels = 0; verifiedTokens = 0; deniedAttempts = 0 }
     observations = @()
-    cleanup = [ordered]@{ bounded = $true; processHandlesClosed = $false; firewallRulesRemoved = $false
+    cleanup = [ordered]@{ bounded = $true; processHandlesClosed = $false; wfpObjectsRemoved = $false
         userRemoved = $false; ownedFilesRemoved = $false }
 }
 $root = $null; $user = $null; $userName = $null; $securePassword = $null; $node = $null; $probe = $null
+$controllerRoot = $null; $wfp = $null; $wfpArguments = $null; $buildProcessesClosed = $true
+$wfpProcessesClosed = $true
 $canWriteReport = $false
 $owned = [System.Collections.Generic.List[System.Diagnostics.Process]]::new()
-$ruleNames = [System.Collections.Generic.List[string]]::new()
 $errorCodes = @('CURSOR_APP_WINDOWS_HOST_UNSUPPORTED', 'CURSOR_APP_WINDOWS_REPORT_INVALID',
     'CURSOR_APP_WINDOWS_SETUP_FAILED', 'CURSOR_APP_WINDOWS_FIXTURES_FAILED',
     'CURSOR_APP_WINDOWS_PROBE_FAILED', 'CURSOR_APP_WINDOWS_PROBE_OUTPUT_INVALID',
@@ -70,11 +71,12 @@ function Read-PrivateJson([string]$Path) {
     return [System.IO.File]::ReadAllText($Path) | ConvertFrom-Json -AsHashtable
 }
 
-function Start-OwnedNode([string[]]$Arguments, [bool]$AsProbeUser = $false, [string]$Executable = $node) {
+function Start-OwnedNode([string[]]$Arguments, [bool]$AsProbeUser = $false, [string]$Executable = $node,
+    [string]$WorkingDirectory = $root) {
     $info = [System.Diagnostics.ProcessStartInfo]::new()
     $info.FileName = $Executable
     foreach ($argument in $Arguments) { $info.ArgumentList.Add($argument) }
-    $info.WorkingDirectory = $root
+    $info.WorkingDirectory = $WorkingDirectory
     $info.UseShellExecute = $false
     $info.CreateNoWindow = $true
     $info.RedirectStandardInput = $true
@@ -85,7 +87,7 @@ function Start-OwnedNode([string[]]$Arguments, [bool]$AsProbeUser = $false, [str
         $value = [System.Environment]::GetEnvironmentVariable($name)
         if ($value) { $info.Environment[$name] = $value }
     }
-    $info.Environment['PATH'] = "$root;$env:SystemRoot\System32"
+    $info.Environment['PATH'] = "$WorkingDirectory;$env:SystemRoot\System32"
     $info.Environment['PATHEXT'] = '.COM;.EXE;.BAT;.CMD'
     $info.Environment['HOME'] = (Join-Path $root 'home')
     $info.Environment['USERPROFILE'] = (Join-Path $root 'home')
@@ -162,22 +164,77 @@ function Invoke-ProbeRun([string]$Mode) {
     return (Invoke-OwnedNode @($probe, 'summarize', $directory, $Mode)) | ConvertFrom-Json -AsHashtable
 }
 
-function Assert-OwnedRule($Rule, [bool]$TrackDiagnostic = $false) {
-    if ($TrackDiagnostic) { $report.firewallDiagnostic.step = 'security-read' }
-    $security = $Rule | Get-NetFirewallSecurityFilter
-    if ($TrackDiagnostic) { $report.firewallDiagnostic.step = 'security-parse' }
-    $descriptor = [System.Security.AccessControl.RawSecurityDescriptor]::new($security.LocalUser)
-    if ($TrackDiagnostic) { $report.firewallDiagnostic.step = 'security-verify' }
-    if ($security.Authentication -ne 'NotRequired' -or $descriptor.DiscretionaryAcl.Count -ne 1 -or
-        $descriptor.DiscretionaryAcl[0].SecurityIdentifier.Value -cne $user.SID.Value) {
-        throw 'CURSOR_APP_WINDOWS_FIREWALL_FAILED'
+function Build-WfpHelper([string]$Source, [string]$Destination) {
+    $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+    $installation = @(& $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2>$null)
+    if ($LASTEXITCODE -ne 0 -or $installation.Count -ne 1) { throw 'CURSOR_APP_WINDOWS_SETUP_FAILED' }
+    $developer = Join-Path $installation[0] 'Common7\Tools\VsDevCmd.bat'
+    foreach ($path in @($Source, $Destination, $developer)) {
+        if (-not [System.IO.Path]::IsPathFullyQualified($path) -or $path -match '["&|<>^%!\r\n]') {
+            throw 'CURSOR_APP_WINDOWS_SETUP_FAILED'
+        }
     }
+    $info = [System.Diagnostics.ProcessStartInfo]::new()
+    $info.FileName = $env:COMSPEC
+    $info.Arguments = '/d /s /c "call "' + $developer + '" -no_logo -arch=x64 -host_arch=x64 && cl.exe /nologo /W4 /WX /EHsc /std:c++17 /MT "' + $Source + '" /Fe:"' + $Destination + '" /Fo:"' + $Destination + '.obj" /link Fwpuclnt.lib Advapi32.lib Rpcrt4.lib"'
+    $info.WorkingDirectory = [System.IO.Path]::GetDirectoryName($Destination)
+    $info.UseShellExecute = $false; $info.CreateNoWindow = $true
+    $info.RedirectStandardOutput = $true; $info.RedirectStandardError = $true
+    $info.Environment.Clear()
+    foreach ($name in @('SystemRoot', 'WINDIR', 'COMSPEC', 'SystemDrive', 'ProgramFiles', 'ProgramFiles(x86)', 'ProgramW6432')) {
+        $value = [System.Environment]::GetEnvironmentVariable($name)
+        if ($value) { $info.Environment[$name] = $value }
+    }
+    $info.Environment['PATH'] = "$env:SystemRoot\System32"
+    $info.Environment['PATHEXT'] = '.COM;.EXE;.BAT;.CMD'
+    $info.Environment['VSCMD_SKIP_SENDTELEMETRY'] = '1'
+    $info.Environment['TEMP'] = $info.WorkingDirectory; $info.Environment['TMP'] = $info.WorkingDirectory
+    $process = [System.Diagnostics.Process]::new()
+    $process.StartInfo = $info
+    if (-not $process.Start()) { $process.Dispose(); throw 'CURSOR_APP_WINDOWS_SETUP_FAILED' }
+    $owned.Add($process)
+    $script:buildProcessesClosed = $false
+    $stdout = $process.StandardOutput.ReadToEndAsync(); $stderr = $process.StandardError.ReadToEndAsync()
+    if (-not $process.WaitForExit(60000) -or -not $stdout.Wait(1000) -or -not $stderr.Wait(1000)) {
+        throw 'CURSOR_APP_WINDOWS_SETUP_FAILED'
+    }
+    $script:buildProcessesClosed = $true
+    if ($process.ExitCode -ne 0 -or $stdout.Result.Length -gt 65536 -or $stderr.Result.Length -gt 65536 -or
+        -not (Test-Path -LiteralPath $Destination -PathType Leaf)) { throw 'CURSOR_APP_WINDOWS_SETUP_FAILED' }
 }
 
-function Find-PersistentRule([string]$Name) {
-    $matches = @(Get-NetFirewallRule -PolicyStore PersistentStore -ErrorAction Stop | Where-Object { $_.Name -ceq $Name })
-    if ($matches.Count -gt 1) { throw 'CURSOR_APP_WINDOWS_FIREWALL_FAILED' }
-    if ($matches.Count -eq 1) { return $matches[0] }
+function Invoke-Wfp([string]$Action, [bool]$TrackDiagnostic = $true) {
+    if (@('install', 'verify', 'remove') -cnotcontains $Action) { throw 'CURSOR_APP_WINDOWS_FIREWALL_FAILED' }
+    $process = Start-OwnedNode (@($Action) + $wfpArguments) -Executable $wfp -WorkingDirectory $controllerRoot
+    try {
+        $process.StandardInput.Close()
+        if (-not $process.WaitForExit(15000)) { throw 'CURSOR_APP_WINDOWS_FIREWALL_FAILED' }
+        $output = $process.StandardOutput.ReadToEnd()
+        if ($output.Length -gt 2048 -or $process.StandardError.ReadToEnd().Length -ne 0) {
+            throw 'CURSOR_APP_WINDOWS_FIREWALL_FAILED'
+        }
+        $result = $output | ConvertFrom-Json -AsHashtable
+        if ($process.ExitCode -eq 0 -and $result.Count -eq 2 -and $result.status -ceq 'PASS' -and
+            ($result.filterCount -is [long] -or $result.filterCount -is [int]) -and $result.filterCount -eq 2) { return }
+        $steps = @('input', 'engine-open', 'transaction-begin', 'precheck', 'sublayer-add', 'filter-plan',
+            'filter-add', 'verify-sublayer', 'verify-filter', 'verify-policy', 'transaction-commit',
+            'engine-close', 'filter-delete', 'sublayer-delete', 'verify-removed', 'unexpected')
+        if ($TrackDiagnostic -and $result.Count -eq 4 -and $result.status -ceq 'FAIL' -and
+            $steps -ccontains $result.step -and @('none', 'ipv4', 'ipv6') -ccontains $result.family -and
+            ($result.nativeErrorCode -is [long] -or $result.nativeErrorCode -is [int]) -and
+            $result.nativeErrorCode -ge 0 -and $result.nativeErrorCode -le 4294967295) {
+            $report.firewallDiagnostic = [ordered]@{ step = $result.step; family = $result.family; nativeErrorCode = $result.nativeErrorCode }
+        }
+        throw 'CURSOR_APP_WINDOWS_FIREWALL_FAILED'
+    } finally {
+        $closed = $false
+        try {
+            if (-not $process.HasExited) { $process.Kill() }
+            $closed = $process.WaitForExit(5000)
+        } catch {}
+        if ($closed) { $null = $owned.Remove($process); $process.Dispose() }
+        else { $script:wfpProcessesClosed = $false }
+    }
 }
 
 try {
@@ -232,6 +289,21 @@ try {
     $report.nodeVersionPreflight.versionsMatch = $report.nodeVersionPreflight.source.classification -eq 'semver' -and
         $report.nodeVersionPreflight.copied.classification -eq 'semver' -and $versionOutputs.source -ceq $versionOutputs.copied
     if ($versionOutputs.copied -notmatch '^v24\.\d+\.\d+$') { throw 'CURSOR_APP_WINDOWS_HOST_UNSUPPORTED' }
+    $controllerRoot = Join-Path $env:RUNNER_TEMP ('cursor-windows-wfp-' + [Guid]::NewGuid().ToString('N'))
+    $null = New-Item -ItemType Directory -Path $controllerRoot
+    $currentIdentity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+    try { $currentSid = $currentIdentity.User } finally { $currentIdentity.Dispose() }
+    $controllerAcl = Get-Acl -LiteralPath $controllerRoot
+    $controllerAcl.SetAccessRuleProtection($true, $false)
+    foreach ($sid in @($currentSid, [System.Security.Principal.SecurityIdentifier]::new('S-1-5-18'))) {
+        $controllerAcl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($sid, 'FullControl',
+            'ContainerInherit, ObjectInherit', 'None', 'Allow'))
+    }
+    Set-Acl -LiteralPath $controllerRoot -AclObject $controllerAcl
+    $wfp = Join-Path $controllerRoot 'cursor-app-windows-wfp.exe'
+    $wfpSource = Join-Path $controllerRoot 'cursor-app-windows-wfp.cpp'
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'cursor-app-windows-wfp.cpp') -Destination $wfpSource
+    Build-WfpHelper $wfpSource $wfp
     $userName = 'mxp' + [Guid]::NewGuid().ToString('N').Substring(0, 14)
     $password = [Convert]::ToBase64String([System.Security.Cryptography.RandomNumberGenerator]::GetBytes(24)) + 'Aa1!'
     $securePassword = ConvertTo-SecureString $password -AsPlainText -Force
@@ -246,8 +318,6 @@ try {
     }
     $acl = Get-Acl -LiteralPath $root
     $acl.SetAccessRuleProtection($true, $false)
-    $currentIdentity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
-    try { $currentSid = $currentIdentity.User } finally { $currentIdentity.Dispose() }
     foreach ($sid in @($currentSid,
         [System.Security.Principal.SecurityIdentifier]::new('S-1-5-18'), $user.SID)) {
         $rights = if ($sid -eq $user.SID) { 'Modify' } else { 'FullControl' }
@@ -269,28 +339,11 @@ try {
     if (-not $baseline.passed) { throw $baseline.errorCode }
     $report.evidence.baselineFixturesReachable = $true
     $report.stage = 'firewall'
-    $localUserSddl = "D:(A;;CC;;;$($user.SID.Value))"
-    foreach ($family in @('4', '6')) {
-        $report.firewallDiagnostic = [ordered]@{ family = $(if ($family -eq '4') { 'ipv4' } else { 'ipv6' }); step = 'precheck' }
-        $ruleName = 'MemoraxCursorProof-' + [Guid]::NewGuid().ToString('N')
-        if (Find-PersistentRule $ruleName) {
-            throw 'CURSOR_APP_WINDOWS_FIREWALL_FAILED'
-        }
-        $ruleNames.Add($ruleName)
-        $address = if ($family -eq '4') { '127.0.0.1' } else { '::1' }
-        $report.firewallDiagnostic.step = 'create'
-        $null = New-NetFirewallRule -Name $ruleName -DisplayName $ruleName -PolicyStore PersistentStore `
-            -Enabled True -Profile Any -Direction Outbound -Action Block -Protocol TCP `
-            -RemoteAddress $address -RemotePort $config["denied$family"] -LocalUser $localUserSddl -Authentication NotRequired
-        $report.firewallDiagnostic.step = 'active-read'
-        $activeRule = Get-NetFirewallRule -Name $ruleName -PolicyStore ActiveStore
-        Assert-OwnedRule $activeRule -TrackDiagnostic $true
-        $report.firewallDiagnostic.step = 'action-verify'
-        if ($activeRule.Enabled -ne 'True' -or $activeRule.Action -ne 'Block' -or $activeRule.Direction -ne 'Outbound') {
-            throw 'CURSOR_APP_WINDOWS_FIREWALL_FAILED'
-        }
-    }
-    $report.Remove('firewallDiagnostic')
+    $wfpArguments = @($user.SID.Value, [Guid]::NewGuid().ToString(), [Guid]::NewGuid().ToString(),
+        [Guid]::NewGuid().ToString(), [string]$config.denied4, [string]$config.denied6)
+    Invoke-Wfp 'install'
+    Invoke-Wfp 'verify'
+    $report.evidence.filtersSurviveEngineClose = $true
     $report.stage = 'restricted'
     $restricted = Invoke-ProbeRun 'restricted'
     $report.counts.processLevels = $restricted.levelCount
@@ -307,13 +360,6 @@ try {
     $report.status = 'PASS'
     $report.stage = 'done'
 } catch {
-    if ($report.stage -eq 'firewall' -and $report.Contains('firewallDiagnostic')) {
-        $nativeError = $_.Exception.PSObject.Properties['NativeErrorCode']
-        if ($nativeError -and ($nativeError.Value -is [int] -or
-            ($nativeError.Value -is [Enum] -and [Enum]::GetUnderlyingType($nativeError.Value.GetType()) -eq [int]))) {
-            $report.firewallDiagnostic.nativeErrorCode = [int]$nativeError.Value
-        }
-    }
     $code = $_.Exception.Message
     $report.errorCode = if ($errorCodes -ccontains $code) { $code } else {
         switch ($report.stage) {
@@ -325,7 +371,7 @@ try {
         }
     }
 } finally {
-    $processesClosed = $true
+    $processesClosed = $buildProcessesClosed -and $wfpProcessesClosed
     foreach ($process in $owned) {
         try {
             if (-not $process.HasExited) { $process.Kill() }
@@ -353,21 +399,18 @@ try {
             if ($remaining -ne 0 -or $unproven) { $processesClosed = $false }
         } catch { $processesClosed = $false }
     }
-    $report.cleanup.processHandlesClosed = $processesClosed
     $rulesRemoved = $false
     if ($processesClosed) {
-        $rulesRemoved = $true
-        foreach ($name in $ruleNames) {
-            try {
-                $rule = Find-PersistentRule $name
-                if ($rule) { Assert-OwnedRule $rule; $rule | Remove-NetFirewallRule }
-                if (Find-PersistentRule $name) { $rulesRemoved = $false }
-            } catch { $rulesRemoved = $false }
-        }
+        try {
+            if ($wfpArguments) { Invoke-Wfp 'remove' $false }
+            $rulesRemoved = $true
+        } catch { $rulesRemoved = $false }
     }
-    $report.cleanup.firewallRulesRemoved = $rulesRemoved
+    $processesClosed = $processesClosed -and $wfpProcessesClosed
+    $report.cleanup.processHandlesClosed = $processesClosed
+    $report.cleanup.wfpObjectsRemoved = $rulesRemoved
     try {
-        if (-not $processesClosed) { throw 'PROCESS_CLEANUP_UNPROVEN' }
+        if (-not $processesClosed -or -not $rulesRemoved) { throw 'PROCESS_CLEANUP_UNPROVEN' }
         if ($user) {
             $remainingUser = @(Get-LocalUser -ErrorAction Stop | Where-Object { $_.SID -eq $user.SID })
             if ($remainingUser.Count -gt 1) { throw 'USER_OWNERSHIP_CHANGED' }
@@ -380,9 +423,9 @@ try {
         $report.cleanup.userRemoved = $true
     } catch { $report.cleanup.userRemoved = $false }
     try {
-        if ($root -and (Test-Path -LiteralPath $root)) {
-            if (-not $processesClosed) { throw 'PROCESS_CLEANUP_UNPROVEN' }
-            Remove-Item -LiteralPath $root -Recurse -Force
+        if (-not $processesClosed -or -not $rulesRemoved) { throw 'PROCESS_CLEANUP_UNPROVEN' }
+        foreach ($directory in @($root, $controllerRoot)) {
+            if ($directory -and (Test-Path -LiteralPath $directory)) { Remove-Item -LiteralPath $directory -Recurse -Force }
         }
         $report.cleanup.ownedFilesRemoved = $true
     } catch { $report.cleanup.ownedFilesRemoved = $false }

@@ -43,7 +43,7 @@ test("Windows loopback workflow invokes only its contracts and exact probe with 
   assert.equal((source.match(/^\s+if:/gm) ?? []).length, 1);
   assert.equal((source.match(/^      - /gm) ?? []).length, 5);
   assert.equal(step("Test Windows loopback proof contracts").trimEnd(),
-    "        run: node --test scripts/cursor-app-windows-isolation-probe.test.mjs scripts/cursor-app-windows-isolation-workflow.test.mjs scripts/cursor-app-isolation-workflow.test.mjs");
+    "        run: node --test scripts/cursor-app-windows-isolation-probe.test.mjs scripts/cursor-app-windows-wfp.test.mjs scripts/cursor-app-windows-isolation-workflow.test.mjs scripts/cursor-app-isolation-workflow.test.mjs");
   assert.match(step("Run Windows loopback feasibility proof (not native acceptance)"), /^        shell: pwsh$/m);
   assert.equal(proofScript(), [
     "$reportDirectory = Join-Path $env:RUNNER_TEMP 'cursor-app-windows-isolation'",
