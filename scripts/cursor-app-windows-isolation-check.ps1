@@ -6,8 +6,9 @@ Set-StrictMode -Version Latest
 
 $report = [ordered]@{
     schemaVersion = 1; kind = 'network-isolation-proof'; platform = 'win32'
-    scope = 'windows-wfp-user-direct-outbound-only'; status = 'FAIL'; stage = 'guard'
+    scope = 'windows-wfp-user-tcp-allowlist-udp-bind-block'; status = 'FAIL'; stage = 'guard'
     dnsBrokerIsolation = 'not-verified'; otherSidBrokerIsolation = 'not-enforced'
+    udpPolicy = 'same-sid-resource-assignment-block'
     appStarted = $false; nativeAcceptance = $false; externalProbes = $false
     evidence = [ordered]@{ freshStandardUser = $false; baselineFixturesReachable = $false
         parentChildGrandchildSameSid = $false; allowedLoopback = $false; deniedLoopback = $false
@@ -217,7 +218,7 @@ function Invoke-Wfp([string]$Action, [bool]$TrackDiagnostic = $true) {
         }
         $result = $output | ConvertFrom-Json -AsHashtable
         if ($process.ExitCode -eq 0 -and $result.Count -eq 2 -and $result.status -ceq 'PASS' -and
-            ($result.filterCount -is [long] -or $result.filterCount -is [int]) -and $result.filterCount -eq 4) { return }
+            ($result.filterCount -is [long] -or $result.filterCount -is [int]) -and $result.filterCount -eq 6) { return }
         $steps = @('input', 'engine-open', 'transaction-begin', 'precheck', 'sublayer-add', 'filter-plan',
             'filter-add', 'verify-sublayer', 'verify-filter', 'verify-policy', 'transaction-commit',
             'engine-close', 'filter-delete', 'sublayer-delete', 'verify-removed', 'unexpected')
@@ -343,6 +344,7 @@ try {
     $report.stage = 'firewall'
     $wfpArguments = @($user.SID.Value, [Guid]::NewGuid().ToString(), [Guid]::NewGuid().ToString(),
         [Guid]::NewGuid().ToString(), [Guid]::NewGuid().ToString(), [Guid]::NewGuid().ToString(),
+        [Guid]::NewGuid().ToString(), [Guid]::NewGuid().ToString(),
         [string]$config.allowed4, [string]$config.allowed6)
     Invoke-Wfp 'install'
     Invoke-Wfp 'verify'
@@ -354,12 +356,13 @@ try {
     $report.observations = $restricted.observations
     $report.evidence.parentChildGrandchildSameSid = $report.counts.verifiedTokens -eq 6
     $report.evidence.allowedLoopback = @($restricted.observations | Where-Object {
-        $_.allowed4 -ne 'CONNECTED' -or $_.allowed6 -ne 'CONNECTED' }).Count -eq 0 -and $restricted.levelCount -eq 3
+        $_.allowed4 -ne 'CONNECTED' -or $_.allowed6 -ne 'CONNECTED' -or $_.mappedTcp -ne 'CONNECTED'
+        }).Count -eq 0 -and $restricted.levelCount -eq 3
     $report.evidence.udpDenied = @($restricted.observations | Where-Object {
         $_.udp4 -ne 'ACCESS_DENIED' -or $_.udp6 -ne 'ACCESS_DENIED' -or $_.mappedUdp -ne 'ACCESS_DENIED'
         }).Count -eq 0 -and $restricted.levelCount -eq 3
     $report.evidence.mappedIpv6Denied = @($restricted.observations | Where-Object {
-        $_.mappedTcp -ne 'ACCESS_DENIED' -or $_.mappedUdp -ne 'ACCESS_DENIED'
+        $_.mappedDeniedTcp -ne 'ACCESS_DENIED' -or $_.mappedUdp -ne 'ACCESS_DENIED'
         }).Count -eq 0 -and $restricted.levelCount -eq 3
     if (-not $restricted.passed) { throw $restricted.errorCode }
     $report.evidence.deniedLoopback = $true

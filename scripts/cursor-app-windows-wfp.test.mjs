@@ -14,12 +14,19 @@ function runPowerShell(script, timeout = 25000) {
     { encoding: "utf8", timeout, maxBuffer: 1024 * 1024 });
 }
 
-test("WFP proof installs exact TCP permits over same-SID default blocks and keeps static objects after engine close", async () => {
+test("WFP proof installs exact TCP permits, same-SID default blocks and UDP bind blocks with static lifetime", async () => {
   const source = await readFile(new URL("./cursor-app-windows-wfp.cpp", import.meta.url), "utf8");
   for (const key of ["FWPM_CONDITION_ALE_USER_ID", "FWPM_CONDITION_IP_PROTOCOL",
     "FWPM_CONDITION_IP_REMOTE_ADDRESS", "FWPM_CONDITION_IP_REMOTE_PORT"])
     assert.ok(source.includes(key), key);
-  assert.match(source, /numFilterConditions = allow \? 4 : 1;/);
+  assert.match(source, /std::array<GUID, 6> keys;/);
+  assert.match(source, /FWPM_LAYER_ALE_RESOURCE_ASSIGNMENT_V4/);
+  assert.match(source, /FWPM_LAYER_ALE_RESOURCE_ASSIGNMENT_V6/);
+  assert.match(source, /numFilterConditions = allow \? 4 : udpBinding \? 2 : 1;/);
+  assert.match(source, /conditionValue\.uint8 = static_cast<UINT8>\(udpBinding \? 17 : 6\);/);
+  assert.match(source, /return seen == \(allow \? 15u : udpBinding \? 3u : 1u\);/);
+  assert.match(source, /present == 7/);
+  assert.match(source, /argc == 12/);
   assert.match(source, /FWP_ACTION_PERMIT : FWP_ACTION_BLOCK/);
   assert.match(source, /allowWeight = 0xFFFFFFFFFFFFFFFFull/);
   assert.match(source, /blockWeight = 0xFFFFFFFFFFFFFFFEull/);
@@ -44,18 +51,60 @@ test("WFP action verification compares the unsigned SDK action type", async () =
 
 test("coordinator closes installation before probing and retains WFP objects on uncertain process cleanup", async () => {
   const source = await coordinator();
-  assert.match(source, /scope = 'windows-wfp-user-direct-outbound-only'/);
+  assert.match(source, /scope = 'windows-wfp-user-tcp-allowlist-udp-bind-block'/);
   assert.match(source, /dnsBrokerIsolation = 'not-verified'/);
   assert.match(source, /otherSidBrokerIsolation = 'not-enforced'/);
+  assert.match(source, /udpPolicy = 'same-sid-resource-assignment-block'/);
   assert.ok(source.indexOf("Invoke-Wfp 'install'") < source.indexOf("Invoke-Wfp 'verify'"));
   assert.ok(source.indexOf("Invoke-Wfp 'verify'") < source.indexOf("Invoke-ProbeRun 'restricted'"));
   assert.match(source, /if \(\$processesClosed\) \{[\s\S]*?Invoke-Wfp 'remove' \$false/);
   assert.match(source, /\$controllerAcl\.SetAccessRuleProtection\(\$true, \$false\)/);
   assert.doesNotMatch(source, /New-NetFirewallRule|Remove-NetFirewallRule|Set-NetFirewallProfile/);
   assert.match(source, /\$wfpArguments = @\(\$user\.SID\.Value[\s\S]*?Invoke-Wfp 'install'/);
+  const argumentPlan = source.match(/\$wfpArguments = @\(\$user\.SID\.Value[\s\S]*?(?=\n    Invoke-Wfp 'install')/)?.[0];
+  assert.equal(argumentPlan?.match(/\[Guid\]::NewGuid\(\)/g)?.length, 7);
   assert.match(source, /\[string\]\$config.allowed4, \[string\]\$config.allowed6\)/);
   assert.match(source, /\$info\.Environment\.Clear\(\)/);
   assert.ok(source.indexOf("Set-Acl -LiteralPath $controllerRoot") < source.indexOf("Build-WfpHelper $wfpSource $wfp"));
+  const probeRun = source.match(/function Invoke-ProbeRun\([\s\S]*?(?=\nfunction Build-WfpHelper)/)?.[0];
+  assert.ok(probeRun);
+  assert.match(probeRun, /if \(-not \$worker\.WaitForExit\(20000\) -or \$worker\.ExitCode -ne 0\) \{ throw 'CURSOR_APP_WINDOWS_PROBE_FAILED' \}/);
+  assert.ok(probeRun.indexOf("$worker.WaitForExit(20000)") < probeRun.indexOf("return (Invoke-OwnedNode"));
+  const probe = await readFile(new URL("./cursor-app-windows-isolation-probe.mjs", import.meta.url), "utf8");
+  assert.match(probe, /child\.once\("exit", \(code\) => code === 0 \? resolve\(\) : reject/);
+  assert.match(probe, /if \(childDone\) await childDone;/);
+});
+
+test("coordinator separates mapped TCP permits from denied TCP and UDP evidence", async (t) => {
+  const available = runPowerShell("exit 0", 10000);
+  if (available.error?.code === "ENOENT") return t.skip("PowerShell is not installed");
+  assert.equal(available.status, 0);
+  const source = await coordinator();
+  const projection = source.match(/^    \$report\.evidence\.parentChildGrandchildSameSid[\s\S]*?(?=    if \(-not \$restricted\.passed\))/m)?.[0];
+  assert.ok(projection);
+  const rows = Array.from({ length: 3 }, () => ({ allowed4: "CONNECTED", allowed6: "CONNECTED", mappedTcp: "CONNECTED",
+    mappedDeniedTcp: "ACCESS_DENIED", udp4: "ACCESS_DENIED", udp6: "ACCESS_DENIED", mappedUdp: "ACCESS_DENIED" }));
+  const cases = [
+    { name: "success", rows, levelCount: 3, expected: [true, true, true] },
+    ...["mappedTcp", "mappedDeniedTcp", "udp4", "udp6", "mappedUdp"].map((key) => ({ name: key,
+      rows: rows.map((row, index) => index === 1 ? { ...row, [key]: "TIMEOUT" } : row), levelCount: 3,
+      expected: [key !== "mappedTcp", !["udp4", "udp6", "mappedUdp"].includes(key), !["mappedDeniedTcp", "mappedUdp"].includes(key)] })),
+    { name: "incomplete", rows: rows.slice(0, 2), levelCount: 2, expected: [false, false, false] },
+  ];
+  const result = runPowerShell(`
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+$results = foreach ($case in ('${JSON.stringify(cases)}' | ConvertFrom-Json -AsHashtable)) {
+    $report = [ordered]@{ counts = [ordered]@{ verifiedTokens = 6 }; evidence = [ordered]@{} }
+    $restricted = @{ observations = $case.rows; levelCount = $case.levelCount }
+${projection}
+    @($report.evidence.allowedLoopback, $report.evidence.udpDenied, $report.evidence.mappedIpv6Denied)
+}
+ConvertTo-Json -InputObject @($results) -Compress
+`);
+  assert.equal(result.status, 0, "PowerShell observation projection fixtures failed");
+  assert.equal(result.stderr, "");
+  assert.deepEqual(JSON.parse(result.stdout), cases.flatMap((entry) => entry.expected));
 });
 
 test("actual WFP invocation projects fixed diagnostics and pins its own cleanup process", async (t) => {
@@ -70,7 +119,7 @@ test("actual WFP invocation projects fixed diagnostics and pins its own cleanup 
     "filter-delete", "sublayer-delete", "verify-removed", "unexpected"];
   const failure = { status: "FAIL", step: "filter-add", family: "ipv6", nativeErrorCode: 5 };
   const cases = [
-    { name: "success", result: { status: "PASS", filterCount: 4 }, exitCode: 0, passed: true },
+    { name: "success", result: { status: "PASS", filterCount: 6 }, exitCode: 0, passed: true },
     ...steps.map((step) => ({ name: step, result: { ...failure, step }, exitCode: 1, diagnostic: { step, family: "ipv6", nativeErrorCode: 5 } })),
     { name: "maxDword", result: { ...failure, family: "none", nativeErrorCode: 4294967295 }, exitCode: 1,
       diagnostic: { step: "filter-add", family: "none", nativeErrorCode: 4294967295 } },
@@ -78,13 +127,14 @@ test("actual WFP invocation projects fixed diagnostics and pins its own cleanup 
       { step: "private-canary-step" }, { family: "private-canary-family" }, { nativeErrorCode: "private-canary-code" },
       { nativeErrorCode: -1 }, { nativeErrorCode: 4294967296 }, { nativeErrorCode: 1.5 }, { private: "private-canary" },
     ].map((change, index) => ({ name: `invalidFailure${index}`, result: { ...failure, ...change }, exitCode: 1 })),
-    { name: "stringCount", result: { status: "PASS", filterCount: "4" }, exitCode: 0 },
+    { name: "stringCount", result: { status: "PASS", filterCount: "6" }, exitCode: 0 },
     { name: "wrongCount", result: { status: "PASS", filterCount: 0 }, exitCode: 0 },
-    { name: "extraOutput", result: { status: "PASS", filterCount: 4, private: "private-canary" }, exitCode: 0 },
-    { name: "nonzeroSuccess", result: { status: "PASS", filterCount: 4 }, exitCode: 1 },
+    { name: "oldCount", result: { status: "PASS", filterCount: 4 }, exitCode: 0 },
+    { name: "extraOutput", result: { status: "PASS", filterCount: 6, private: "private-canary" }, exitCode: 0 },
+    { name: "nonzeroSuccess", result: { status: "PASS", filterCount: 6 }, exitCode: 1 },
     { name: "malformed", raw: "private-canary-not-json", exitCode: 1 },
     { name: "oversized", raw: "private-canary".repeat(200), exitCode: 1 },
-    { name: "stderr", result: { status: "PASS", filterCount: 4 }, exitCode: 0, stderr: "private-canary-error" },
+    { name: "stderr", result: { status: "PASS", filterCount: 6 }, exitCode: 0, stderr: "private-canary-error" },
     { name: "timeout", timeout: true, result: failure, exitCode: 1 },
     { name: "unprovenCleanup", timeout: true, unprovenCleanup: true, result: failure, exitCode: 1 },
     { name: "cleanupFailurePreservesOriginal", result: failure, exitCode: 1, track: false },
@@ -93,7 +143,7 @@ test("actual WFP invocation projects fixed diagnostics and pins its own cleanup 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 function Start-OwnedNode([string[]]$Arguments, [bool]$AsProbeUser = $false, [string]$Executable, [string]$WorkingDirectory) {
-    if ($Arguments.Count -ne 9 -or $AsProbeUser -or $Executable -cne 'controller-helper' -or $WorkingDirectory -cne 'controller-root') { throw 'FIXTURE_ARGUMENTS_INVALID' }
+    if ($Arguments.Count -ne 11 -or $AsProbeUser -or $Executable -cne 'controller-helper' -or $WorkingDirectory -cne 'controller-root') { throw 'FIXTURE_ARGUMENTS_INVALID' }
     $text = if ($case.ContainsKey('raw')) { $case.raw } else { $case.result | ConvertTo-Json -Compress }
     $stderr = if ($case.ContainsKey('stderr')) { $case.stderr } else { '' }
     $instance = [pscustomobject]@{ StandardInput = [IO.StringWriter]::new(); StandardOutput = [IO.StringReader]::new($text)
@@ -113,7 +163,7 @@ function Start-OwnedNode([string[]]$Arguments, [bool]$AsProbeUser = $false, [str
 ${helper}
 $results = foreach ($case in ('${JSON.stringify(cases)}' | ConvertFrom-Json -AsHashtable)) {
     $report = [ordered]@{}; $wfp = 'controller-helper'; $controllerRoot = 'controller-root'
-    $wfpArguments = @('private-canary-SID', 'layer', 'key1', 'key2', 'key3', 'key4', '31001', '31003')
+    $wfpArguments = @('private-canary-SID', 'layer', 'key1', 'key2', 'key3', 'key4', 'key5', 'key6', '31001', '31003')
     $owned = [System.Collections.Generic.List[object]]::new(); $script:wfpProcessesClosed = $true
     $track = -not $case.ContainsKey('track'); $passed = $false
     if (-not $track) { $report.firewallDiagnostic = [ordered]@{ step = 'verify-policy'; family = 'none'; nativeErrorCode = 13 } }
@@ -208,26 +258,34 @@ int main() {
         constexpr auto key6 = L"951835f3-a0ec-4cb1-a507-71f31f778003";
         constexpr auto block4 = L"951835f3-a0ec-4cb1-a507-71f31f778004";
         constexpr auto block6 = L"951835f3-a0ec-4cb1-a507-71f31f778005";
-        Plan plan(sid, layer, key4, key6, block4, block6, L"31001", L"31003");
-        Plan foreign(L"S-1-5-21-111-222-333-1002", layer, key4, key6, block4, block6, L"31001", L"31003");
+        constexpr auto udp4 = L"951835f3-a0ec-4cb1-a507-71f31f778006";
+        constexpr auto udp6 = L"951835f3-a0ec-4cb1-a507-71f31f778007";
+        Plan plan(sid, layer, key4, key6, block4, block6, udp4, udp6, L"31001", L"31003");
+        Plan foreign(L"S-1-5-21-111-222-333-1002", layer, key4, key6, block4, block6, udp4, udp6, L"31001", L"31003");
         Require(plan.allowWeight > plan.blockWeight, "test");
-        for (size_t index = 0; index < 4; ++index) {
+        for (size_t index = 0; index < 6; ++index) {
             const bool allow = index < 2;
+            const bool udpBinding = index >= 4;
             const FWP_ACTION_TYPE expectedAction = allow ? FWP_ACTION_PERMIT : FWP_ACTION_BLOCK;
             FWPM_FILTER0 filter{}; std::array<FWPM_FILTER_CONDITION0, 4> conditions{};
             auto reset = [&] { BuildFilter(plan, index, filter, conditions); Require(OwnedFilter(filter, plan, index), "test"); };
             auto rejected = [&] { Require(!OwnedFilter(filter, plan, index), "test"); reset(); };
             reset();
-            Require(filter.numFilterConditions == (allow ? 4u : 1u), "test");
+            Require(filter.numFilterConditions == (allow ? 4u : udpBinding ? 2u : 1u), "test");
             Require(filter.action.type == expectedAction, "test");
             Require(filter.flags == 0, "test");
-            Require(!OwnedFilter(filter, plan, (index + 2) % 4), "test");
+            Require(!OwnedFilter(filter, plan, (index + 2) % 6), "test");
+            Require(!OwnedFilter(filter, plan, 6), "test");
             filter.numFilterConditions = 0; rejected();
             filter.numFilterConditions = 3; rejected();
             filter.filterCondition = nullptr; rejected();
             filter.filterKey = plan.subLayer; rejected();
             filter.subLayerKey = plan.keys[index]; rejected();
             filter.layerKey = GUID{}; rejected();
+            filter.layerKey = udpBinding
+                ? (index % 2 == 0 ? FWPM_LAYER_ALE_AUTH_CONNECT_V4 : FWPM_LAYER_ALE_AUTH_CONNECT_V6)
+                : (index % 2 == 0 ? FWPM_LAYER_ALE_RESOURCE_ASSIGNMENT_V4 : FWPM_LAYER_ALE_RESOURCE_ASSIGNMENT_V6);
+            rejected();
             filter.flags = 1; rejected();
             filter.providerKey = &plan.subLayer; rejected();
             filter.providerData.size = 1; rejected();
@@ -239,7 +297,7 @@ int main() {
             filter.displayData.name = nullptr; rejected();
             conditions[0].conditionValue.sd = &foreign.sid; rejected();
             conditions[0].conditionValue.sd = nullptr; rejected();
-            for (size_t field = 0; field < (allow ? 4u : 1u); ++field) {
+            for (size_t field = 0; field < (allow ? 4u : udpBinding ? 2u : 1u); ++field) {
                 conditions[field].matchType = FWP_MATCH_NOT_EQUAL; rejected();
                 conditions[field].conditionValue.type = FWP_EMPTY; rejected();
                 conditions[field].fieldKey = GUID{}; rejected();
@@ -254,6 +312,12 @@ int main() {
                 rejected();
                 std::swap(conditions[0], conditions[3]);
                 Require(OwnedFilter(filter, plan, index), "test");
+            } else if (udpBinding) {
+                filter.numFilterConditions = 1; rejected();
+                conditions[1].conditionValue.uint8 = 6; rejected();
+                conditions[1].fieldKey = conditions[0].fieldKey; rejected();
+                std::swap(conditions[0], conditions[1]);
+                Require(OwnedFilter(filter, plan, index), "test");
             } else {
                 filter.numFilterConditions = 2; rejected();
             }
@@ -267,14 +331,20 @@ int main() {
         }
         for (auto badSid : {L"S-1-1-0", L"S-1-5-21-111-222-333-1001)(A;;CC;;;WD", L"private-canary"}) {
             bool invalid = false;
-            try { Plan bad(badSid, layer, key4, key6, block4, block6, L"31001", L"31003"); } catch (const Failure& e) { invalid = std::strcmp(e.step, "input") == 0; }
+            try { Plan bad(badSid, layer, key4, key6, block4, block6, udp4, udp6, L"31001", L"31003"); } catch (const Failure& e) { invalid = std::strcmp(e.step, "input") == 0; }
             Require(invalid, "test");
         }
         bool duplicate = false;
-        try { Plan bad(sid, layer, key4, key6, key4, block6, L"31001", L"31003"); } catch (const Failure&) { duplicate = true; }
+        try { Plan bad(sid, layer, key4, key6, key4, block6, udp4, udp6, L"31001", L"31003"); } catch (const Failure&) { duplicate = true; }
         Require(duplicate, "test");
         duplicate = false;
-        try { Plan bad(sid, layer, key4, key6, block4, layer, L"31001", L"31003"); } catch (const Failure&) { duplicate = true; }
+        try { Plan bad(sid, layer, key4, key6, block4, layer, udp4, udp6, L"31001", L"31003"); } catch (const Failure&) { duplicate = true; }
+        Require(duplicate, "test");
+        duplicate = false;
+        try { Plan bad(sid, layer, key4, key6, block4, block6, key4, udp6, L"31001", L"31003"); } catch (const Failure&) { duplicate = true; }
+        Require(duplicate, "test");
+        duplicate = false;
+        try { Plan bad(sid, layer, key4, key6, block4, block6, udp4, layer, L"31001", L"31003"); } catch (const Failure&) { duplicate = true; }
         Require(duplicate, "test");
         Require(PrintFailure({"input", "none", 0xFFFFFFFFul}) == 1, "test");
         std::puts("{\\"status\\":\\"PASS\\",\\"scope\\":\\"in-memory-only\\"}");

@@ -1401,23 +1401,30 @@ subprocess output are not published.
 The Windows probe uses the hosted runner's administrator context to compile a
 CI-only C++ helper against the installed Windows SDK in a controller-only
 directory. It creates one temporary standard local user and an owned WFP
-sublayer at `ALE_AUTH_CONNECT_V4/V6`. Two higher-weight soft permits require
+sublayer. At `ALE_AUTH_CONNECT_V4/V6`, two higher-weight soft permits require
 the exact new SID, TCP, `127.0.0.1` or `::1`, and the selected allowed fixture
 port. Two lower-weight SID-only blocks deny all other direct outbound
 connections under that identity. Readback verifies the distinct permit and
 block roles, weights and exact conditions; no repeated not-equal port
-conditions are used. Soft permits do not override other providers' blocks. Ordinary
+conditions are used. Two additional `ALE_RESOURCE_ASSIGNMENT_V4/V6` blocks
+match only that SID and UDP, rejecting explicit or implicit socket binding
+before a datagram can be sent. This also prevents that test user's UDP
+receiving endpoints; it is stronger than outbound-only UDP filtering. The
+original connect-layer blocks remain in place. Soft permits do not override
+other providers' blocks. Ordinary
 non-dynamic, nonpersistent WFP objects survive the helper's engine close;
 separate readback verifies this before the restricted probe. It does not change
 the global firewall profile or default policy, use an AppContainer or add a
 loopback exemption. A parent, child and grandchild ordinary Node process under
 the new identity test only owned IPv4/IPv6 loopback fixtures. Baseline and
-controller checks must exchange synthetic data with every fixture. Restricted
-checks allow only the two selected TCP endpoints and require explicit access
-denial for other TCP ports, UDP on the same numeric ports as allowed TCP, and
-mapped IPv6 TCP/UDP to the otherwise allowed IPv4 port. Mapped probes use IPv6
-sockets and remain deliberately outside the allowlist; normalization or any
-ambiguous outcome fails the proof rather than weakening the gate. The probe makes no
+controller checks must exchange synthetic data with every fixture. Baseline
+workers exit before policy installation and readback; restricted workers create
+new sockets afterwards. Restricted checks allow only the two selected TCP
+endpoints and require explicit access denial for other TCP ports and UDP on
+the same numeric ports as allowed TCP. Mapped IPv6 probes use IPv6 sockets:
+TCP to the allowed IPv4 endpoint must succeed, TCP to the denied IPv4 port
+must be explicitly refused with access denial, and mapped UDP must be denied.
+Neither a timeout nor another ambiguous outcome proves denial. The probe makes no
 external or DNS requests and does not download or start Cursor, access a
 credential store, or use existing account credentials.
 
@@ -1425,9 +1432,10 @@ After owned processes stop, cleanup verifies exact object keys and conditions
 before transactional deletion and confirms absence. If process or object
 ownership cannot be proven, the probe fails and retains the restrictions,
 account and private directories for disposable runner VM teardown. The public
-scope is `windows-wfp-user-direct-outbound-only`; diagnostics expose only fixed
+scope is `windows-wfp-user-tcp-allowlist-udp-bind-block`; diagnostics expose only fixed
 steps, address-family enums and numeric API errors, never SIDs, object keys,
-paths or raw errors. Evidence includes `filtersSurviveEngineClose`, `udpDenied`
+paths or raw errors. The fixed `udpPolicy` names the SID-scoped resource-assignment
+restriction without claiming it passed. Evidence includes `filtersSurviveEngineClose`, `udpDenied`
 and `mappedIpv6Denied`, and cleanup reports `wfpObjectsRemoved`.
 
 The job fails on an ineffective restriction or unsuccessful cleanup and uploads

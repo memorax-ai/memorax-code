@@ -40,7 +40,7 @@ UINT16 ParsePort(const wchar_t* text) {
 }
 struct Plan {
     GUID subLayer;
-    std::array<GUID, 4> keys;
+    std::array<GUID, 6> keys;
     std::array<UINT16, 2> ports;
     PSECURITY_DESCRIPTOR security = nullptr;
     FWP_BYTE_BLOB sid{};
@@ -48,9 +48,10 @@ struct Plan {
     UINT64 allowWeight = 0xFFFFFFFFFFFFFFFFull;
     UINT64 blockWeight = 0xFFFFFFFFFFFFFFFEull;
     Plan(const wchar_t* user, const wchar_t* layer, const wchar_t* allow4, const wchar_t* allow6,
-         const wchar_t* block4, const wchar_t* block6,
+         const wchar_t* block4, const wchar_t* block6, const wchar_t* udp4, const wchar_t* udp6,
          const wchar_t* port4, const wchar_t* port6)
-        : subLayer(ParseGuid(layer)), keys{ParseGuid(allow4), ParseGuid(allow6), ParseGuid(block4), ParseGuid(block6)},
+        : subLayer(ParseGuid(layer)), keys{ParseGuid(allow4), ParseGuid(allow6), ParseGuid(block4), ParseGuid(block6),
+              ParseGuid(udp4), ParseGuid(udp6)},
           ports{ParsePort(port4), ParsePort(port6)} {
         for (size_t index = 0; index < keys.size(); ++index) {
             Require(subLayer != keys[index], "input");
@@ -76,16 +77,19 @@ void BuildFilter(Plan& plan, size_t index, FWPM_FILTER0& filter,
                  std::array<FWPM_FILTER_CONDITION0, 4>& conditions) {
     Require(index < plan.keys.size(), "filter-plan");
     const bool allow = index < 2;
+    const bool udpBinding = index >= 4;
     const size_t family = index % 2;
     filter = {}; conditions = {};
     filter.filterKey = plan.keys[index];
     filter.displayData.name = kName;
     filter.flags = 0;
-    filter.layerKey = family == 0 ? FWPM_LAYER_ALE_AUTH_CONNECT_V4 : FWPM_LAYER_ALE_AUTH_CONNECT_V6;
+    filter.layerKey = udpBinding
+        ? (family == 0 ? FWPM_LAYER_ALE_RESOURCE_ASSIGNMENT_V4 : FWPM_LAYER_ALE_RESOURCE_ASSIGNMENT_V6)
+        : (family == 0 ? FWPM_LAYER_ALE_AUTH_CONNECT_V4 : FWPM_LAYER_ALE_AUTH_CONNECT_V6);
     filter.subLayerKey = plan.subLayer;
     filter.weight.type = FWP_UINT64;
     filter.weight.uint64 = allow ? &plan.allowWeight : &plan.blockWeight;
-    filter.numFilterConditions = allow ? 4 : 1;
+    filter.numFilterConditions = allow ? 4 : udpBinding ? 2 : 1;
     filter.filterCondition = conditions.data();
     // The exact soft permit wins only inside this owned sublayer; other providers may still block it.
     filter.action.type = allow ? FWP_ACTION_PERMIT : FWP_ACTION_BLOCK;
@@ -93,10 +97,11 @@ void BuildFilter(Plan& plan, size_t index, FWPM_FILTER0& filter,
     conditions[0].fieldKey = FWPM_CONDITION_ALE_USER_ID;
     conditions[0].conditionValue.type = FWP_SECURITY_DESCRIPTOR_TYPE;
     conditions[0].conditionValue.sd = &plan.sid;
-    if (!allow) return;
+    if (!allow && !udpBinding) return;
     conditions[1].fieldKey = FWPM_CONDITION_IP_PROTOCOL;
     conditions[1].conditionValue.type = FWP_UINT8;
-    conditions[1].conditionValue.uint8 = 6;
+    conditions[1].conditionValue.uint8 = static_cast<UINT8>(udpBinding ? 17 : 6);
+    if (udpBinding) return;
     conditions[2].fieldKey = FWPM_CONDITION_IP_REMOTE_ADDRESS;
     conditions[2].conditionValue.type = family == 0 ? FWP_UINT32 : FWP_BYTE_ARRAY16_TYPE;
     if (family == 0) conditions[2].conditionValue.uint32 = 0x7F000001;
@@ -108,15 +113,19 @@ void BuildFilter(Plan& plan, size_t index, FWPM_FILTER0& filter,
 bool OwnedFilter(const FWPM_FILTER0& filter, const Plan& plan, size_t index) {
     if (index >= plan.keys.size()) return false;
     const bool allow = index < 2;
+    const bool udpBinding = index >= 4;
     const size_t family = index % 2;
     const FWP_ACTION_TYPE expectedAction = allow ? FWP_ACTION_PERMIT : FWP_ACTION_BLOCK;
+    const GUID& expectedLayer = udpBinding
+        ? (family == 0 ? FWPM_LAYER_ALE_RESOURCE_ASSIGNMENT_V4 : FWPM_LAYER_ALE_RESOURCE_ASSIGNMENT_V6)
+        : (family == 0 ? FWPM_LAYER_ALE_AUTH_CONNECT_V4 : FWPM_LAYER_ALE_AUTH_CONNECT_V6);
     if (filter.filterKey != plan.keys[index] || filter.subLayerKey != plan.subLayer ||
-        filter.layerKey != (family == 0 ? FWPM_LAYER_ALE_AUTH_CONNECT_V4 : FWPM_LAYER_ALE_AUTH_CONNECT_V6) ||
+        filter.layerKey != expectedLayer ||
         filter.flags != 0 || filter.providerKey || filter.providerData.size != 0 || filter.rawContext != 0 ||
         !filter.displayData.name || wcscmp(filter.displayData.name, kName) != 0 ||
         filter.action.type != expectedAction || filter.weight.type != FWP_UINT64 ||
         !filter.weight.uint64 || *filter.weight.uint64 != (allow ? plan.allowWeight : plan.blockWeight) ||
-        filter.numFilterConditions != (allow ? 4u : 1u) || !filter.filterCondition) return false;
+        filter.numFilterConditions != (allow ? 4u : udpBinding ? 2u : 1u) || !filter.filterCondition) return false;
     unsigned seen = 0;
     for (UINT32 i = 0; i < filter.numFilterConditions; ++i) {
         const auto& condition = filter.filterCondition[i];
@@ -127,9 +136,9 @@ bool OwnedFilter(const FWPM_FILTER0& filter, const Plan& plan, size_t index) {
             bit = 1;
             if (value.type != FWP_SECURITY_DESCRIPTOR_TYPE || !value.sd || !value.sd->data ||
                 value.sd->size != plan.sid.size || memcmp(value.sd->data, plan.sid.data, plan.sid.size) != 0) return false;
-        } else if (allow && condition.fieldKey == FWPM_CONDITION_IP_PROTOCOL) {
+        } else if ((allow || udpBinding) && condition.fieldKey == FWPM_CONDITION_IP_PROTOCOL) {
             bit = 2;
-            if (value.type != FWP_UINT8 || value.uint8 != 6) return false;
+            if (value.type != FWP_UINT8 || value.uint8 != (udpBinding ? 17 : 6)) return false;
         } else if (allow && condition.fieldKey == FWPM_CONDITION_IP_REMOTE_ADDRESS) {
             bit = 4;
             if (family == 0) {
@@ -143,7 +152,7 @@ bool OwnedFilter(const FWPM_FILTER0& filter, const Plan& plan, size_t index) {
         if (bit == 0 || (seen & bit)) return false;
         seen |= bit;
     }
-    return seen == (allow ? 15u : 1u);
+    return seen == (allow ? 15u : udpBinding ? 3u : 1u);
 }
 FWPM_SUBLAYER0 BuildSubLayer(const Plan& plan) {
     FWPM_SUBLAYER0 layer{};
@@ -198,8 +207,8 @@ bool VerifyPolicy(Engine& engine, const Plan& plan, bool allowAbsent) {
         Require(memory.pointer && OwnedFilter(*static_cast<FWPM_FILTER0*>(memory.pointer), plan, index), "verify-filter", family);
         ++present;
     }
-    Require(present == 5 || (allowAbsent && present == 0), "verify-policy");
-    return present == 5;
+    Require(present == 7 || (allowAbsent && present == 0), "verify-policy");
+    return present == 7;
 }
 void Run(const std::wstring& action, Plan& plan) {
     Engine engine;
@@ -241,11 +250,11 @@ int PrintFailure(const Failure& error) {
 #ifndef CURSOR_WFP_UNIT_TEST
 int wmain(int argc, wchar_t** argv) {
     try {
-        Require(argc == 10 && (wcscmp(argv[1], L"install") == 0 || wcscmp(argv[1], L"verify") == 0 ||
+        Require(argc == 12 && (wcscmp(argv[1], L"install") == 0 || wcscmp(argv[1], L"verify") == 0 ||
             wcscmp(argv[1], L"remove") == 0), "input");
-        Plan plan(argv[2], argv[3], argv[4], argv[5], argv[6], argv[7], argv[8], argv[9]);
+        Plan plan(argv[2], argv[3], argv[4], argv[5], argv[6], argv[7], argv[8], argv[9], argv[10], argv[11]);
         Run(argv[1], plan);
-        std::puts("{\"status\":\"PASS\",\"filterCount\":4}");
+        std::puts("{\"status\":\"PASS\",\"filterCount\":6}");
         return 0;
     } catch (const Failure& error) { return PrintFailure(error); }
     catch (...) { return PrintFailure({"unexpected", "none", ERROR_INVALID_DATA}); }

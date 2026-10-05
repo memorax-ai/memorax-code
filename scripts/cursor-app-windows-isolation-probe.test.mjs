@@ -14,7 +14,8 @@ import {
 const config = { allowed4: 31001, denied4: 31002, allowed6: 31003, denied6: 31004 };
 function levels(denied = "ACCESS_DENIED") {
   return [0, 1, 2].map((depth) => ({ depth, allowed4: "CONNECTED", allowed6: "CONNECTED",
-    denied4: denied, denied6: denied, mappedTcp: denied, udp4: denied, udp6: denied, mappedUdp: denied }));
+    denied4: denied, denied6: denied, mappedTcp: "CONNECTED", mappedDeniedTcp: denied,
+    udp4: denied, udp6: denied, mappedUdp: denied }));
 }
 
 test("probe input accepts numeric loopback ports with distinct allow/deny ports per family", () => {
@@ -49,12 +50,12 @@ test("baseline and restricted runs require every gate at all three depths", () =
     assert.equal(summarizeLevels(levels(outcome), "restricted").errorCode,
       "CURSOR_APP_WINDOWS_DENIAL_UNPROVEN");
   }
-  for (const depth of [0, 1, 2]) for (const key of ["allowed4", "allowed6", "denied4", "denied6", "mappedTcp", "udp4", "udp6", "mappedUdp"]) {
+  for (const depth of [0, 1, 2]) for (const key of ["allowed4", "allowed6", "denied4", "denied6", "mappedTcp", "mappedDeniedTcp", "udp4", "udp6", "mappedUdp"]) {
     const input = levels();
     input[depth][key] = "OTHER";
     assert.equal(summarizeLevels(input, "restricted").passed, false, `${depth}:${key}`);
   }
-  for (const key of ["denied4", "denied6", "mappedTcp", "udp4", "udp6", "mappedUdp"]) {
+  for (const key of ["denied4", "denied6", "mappedDeniedTcp", "udp4", "udp6", "mappedUdp"]) {
     for (const outcome of ["CONNECTED", "TIMEOUT", "REFUSED", "OTHER"]) {
       const input = levels();
       input[1][key] = outcome;
@@ -62,12 +63,19 @@ test("baseline and restricted runs require every gate at all three depths", () =
         ? "CURSOR_APP_WINDOWS_LOOPBACK_NOT_RESTRICTED" : "CURSOR_APP_WINDOWS_DENIAL_UNPROVEN", `${key}:${outcome}`);
     }
   }
+  for (const outcome of ["ACCESS_DENIED", "TIMEOUT", "REFUSED", "OTHER"]) {
+    const input = levels();
+    input[1].mappedTcp = outcome;
+    assert.equal(summarizeLevels(input, "restricted").errorCode, "CURSOR_APP_WINDOWS_ALLOWED_LOOPBACK_FAILED");
+  }
 });
 
 test("TCP and UDP fixtures share numeric ports while mapped probes use actual IPv6 sockets", async (t) => {
   const source = await readFile(new URL("./cursor-app-windows-isolation-probe.mjs", import.meta.url), "utf8");
   assert.match(source, /createConnection\(\{ host, port, family: host.includes\(":"\) \? 6 : 4 \}\)/);
   assert.match(source, /createSocket\(host.includes\(":"\) \? "udp6" : "udp4"\)/);
+  assert.match(source, /key: "mappedTcp", host: "::ffff:127\.0\.0\.1", port: "allowed4", allowed: true/);
+  assert.match(source, /key: "mappedDeniedTcp", host: "::ffff:127\.0\.0\.1", port: "denied4"/);
   const tcpServers = [], udpServers = [];
   t.after(async () => {
     await Promise.all(tcpServers.map((server) => new Promise((resolve) => server.close(resolve))));

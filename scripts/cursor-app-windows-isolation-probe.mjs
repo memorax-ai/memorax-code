@@ -11,12 +11,14 @@ const checks = [
   { key: "denied4", host: "127.0.0.1", port: "denied4" },
   { key: "allowed6", host: "::1", port: "allowed6", allowed: true },
   { key: "denied6", host: "::1", port: "denied6" },
-  { key: "mappedTcp", host: "::ffff:127.0.0.1", port: "allowed4" },
+  { key: "mappedTcp", host: "::ffff:127.0.0.1", port: "allowed4", allowed: true },
+  { key: "mappedDeniedTcp", host: "::ffff:127.0.0.1", port: "denied4" },
   { key: "udp4", host: "127.0.0.1", port: "allowed4", udp: true },
   { key: "udp6", host: "::1", port: "allowed6", udp: true },
   { key: "mappedUdp", host: "::ffff:127.0.0.1", port: "allowed4", udp: true },
 ];
 const keys = checks.map(({ key }) => key);
+const allowedKeys = checks.filter(({ allowed }) => allowed).map(({ key }) => key);
 const deniedKeys = checks.filter(({ allowed }) => !allowed).map(({ key }) => key);
 const outcomes = new Set(["CONNECTED", "ACCESS_DENIED", "REFUSED", "TIMEOUT", "OTHER", "INVALID_RESPONSE"]);
 const request = "cursor-loopback-proof\n", response = "fixture-ok\n";
@@ -104,7 +106,7 @@ export function summarizeLevels(input, mode) {
   let errorCode;
   if (mode === "baseline" && input.some((entry) => keys.some((key) => entry[key] !== "CONNECTED")))
     errorCode = "CURSOR_APP_WINDOWS_BASELINE_UNREACHABLE";
-  else if (input.some((entry) => entry.allowed4 !== "CONNECTED" || entry.allowed6 !== "CONNECTED"))
+  else if (input.some((entry) => allowedKeys.some((key) => entry[key] !== "CONNECTED")))
     errorCode = "CURSOR_APP_WINDOWS_ALLOWED_LOOPBACK_FAILED";
   else if (mode === "restricted" && input.some((entry) => deniedKeys.some((key) => entry[key] === "CONNECTED")))
     errorCode = "CURSOR_APP_WINDOWS_LOOPBACK_NOT_RESTRICTED";
