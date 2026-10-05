@@ -1292,7 +1292,9 @@ node scripts/cursor-app-container-check.mjs \
 ```
 
 Only `report.json` is exported and uploaded. Raw App logs, transcripts, SQLite
-files and Hook traces are not CI artifacts. Synthetic login is not real account
+files and Hook traces are not CI artifacts. App startup diagnostics publish
+only bounded exit codes, fixed signal/error enums and marker booleans, not raw
+stderr. Synthetic login is not real account
 authentication coverage. Native Continue/Retry/Edit, Backend restart,
 running-tool interruption, late-approval races, model-driven Skill selection, Repo Memory workers,
 upgrade/uninstall and Windows remain outside this bounded session-flow
@@ -1306,7 +1308,7 @@ manifest. This metadata-only command leaves missing checksums explicitly
 unavailable and is not artifact-integrity or native-acceptance evidence. CI uses
 `resolve-linux` instead, which also verifies Linux apt metadata. A macOS entry
 additionally requires signed-App acquisition and the native check; an inventory
-entry alone is not native acceptance. Windows remains metadata-only.
+entry alone is not native acceptance. Windows release acquisition remains metadata-only.
 
 #### macOS Network Isolation Proof
 
@@ -1320,6 +1322,8 @@ mode from cancelling a normal acceptance run. The default `false`, pull-request
 and push paths retain the full matrix. The proof workflow can also be dispatched
 directly after GitHub registers it. Proof-only mode does not download or start
 Cursor, access a credential store, or count as functional or native acceptance.
+Both this switch and `check_cursor_windows_isolation` may be selected together;
+only the two requested proofs run, each on its own platform.
 It first checks owned loopback fixtures, then requires `sandbox-exec` to permit
 only the selected outbound
 port. It also requires binding and listening on the selected IPv4 and IPv6
@@ -1345,6 +1349,36 @@ process between checkpoints or establish system-enforced inbound isolation.
 A passing network proof does not establish App compatibility,
 filesystem or credential isolation, or macOS functional coverage. The matrix
 must independently pass the signed-App and seven-flow native checks.
+
+#### Windows Loopback Feasibility Proof
+
+The explicitly requested `cursor-app-windows-isolation.yml` workflow runs only
+a loopback feasibility probe on a fresh GitHub-hosted Windows 2025 runner with
+Node 24. Enable `check_cursor_windows_isolation` when manually dispatching the
+existing native workflow to select proof-only mode; the switch defaults to
+`false`. Like the macOS proof switch, it skips packaging, all native matrices,
+provider checks and native-result summaries, without cancelling normal
+acceptance runs. Selecting both proof switches runs both proofs. Neither switch
+changes pull-request, push or default manual acceptance.
+
+The Windows probe requires the hosted runner's administrator context to create
+one temporary standard local user and outbound TCP firewall block rules scoped
+to that new SID and selected denied fixture ports. It does not change the global
+firewall profile or default policy, use an AppContainer or add a loopback
+exemption. A parent, child and grandchild ordinary Node process under the new
+identity test only owned IPv4/IPv6 loopback fixtures. The probe makes no external
+network requests and does not download or start Cursor, access a credential
+store, or use existing account credentials. Cleanup removes only the rules and
+user created by this run and closes its owned processes. If process cleanup
+cannot be proven, the probe fails and retains its rules, account and private
+root for teardown of the disposable runner VM.
+
+The job fails on an ineffective restriction or unsuccessful cleanup and uploads
+only its fixed-field `report.json`. A passing probe would establish only whether
+this SID-scoped approach can allow and deny the selected loopback connections.
+It is not Windows App compatibility, full network isolation, credential
+isolation, or native acceptance. Windows remains outside the Cursor App native
+matrix; macOS native acceptance must also independently pass its own checks.
 
 ## Pull Requests
 

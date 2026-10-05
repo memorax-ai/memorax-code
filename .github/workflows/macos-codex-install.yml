@@ -15,6 +15,10 @@ on:
         description: Run only the macOS network isolation proof without downloading or starting Cursor
         type: boolean
         default: false
+      check_cursor_windows_isolation:
+        description: Run only the Windows loopback feasibility proof without downloading or starting Cursor
+        type: boolean
+        default: false
   pull_request:
   push:
     branches: [main]
@@ -23,7 +27,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: codex-install-${{ github.ref }}-${{ github.event_name == 'workflow_dispatch' && inputs.check_cursor_macos_isolation && 'cursor-proof' || inputs.diagnose_opencode_initialization && 'diagnostic' || 'acceptance' }}
+  group: codex-install-${{ github.ref }}-${{ github.event_name == 'workflow_dispatch' && inputs.check_cursor_macos_isolation && inputs.check_cursor_windows_isolation && 'cursor-proofs' || github.event_name == 'workflow_dispatch' && inputs.check_cursor_macos_isolation && 'cursor-proof' || github.event_name == 'workflow_dispatch' && inputs.check_cursor_windows_isolation && 'cursor-windows-proof' || inputs.diagnose_opencode_initialization && 'diagnostic' || 'acceptance' }}
   cancel-in-progress: true
 
 jobs:
@@ -31,8 +35,12 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && inputs.check_cursor_macos_isolation
     uses: ./.github/workflows/cursor-app-isolation.yml
 
+  cursor-windows-loopback-proof:
+    if: github.event_name == 'workflow_dispatch' && inputs.check_cursor_windows_isolation
+    uses: ./.github/workflows/cursor-app-windows-isolation.yml
+
   package:
-    if: (github.event_name != 'workflow_dispatch' || !inputs.check_deepseek || inputs.diagnose_opencode_initialization) && !(github.event_name == 'workflow_dispatch' && inputs.check_cursor_macos_isolation)
+    if: (github.event_name != 'workflow_dispatch' || !inputs.check_deepseek || inputs.diagnose_opencode_initialization) && !(github.event_name == 'workflow_dispatch' && (inputs.check_cursor_macos_isolation || inputs.check_cursor_windows_isolation))
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
@@ -225,7 +233,7 @@ jobs:
   install:
     name: Codex ${{ matrix.channel }} ${{ matrix.codex }} (${{ matrix.os }}, Node ${{ matrix.node }})
     needs: package
-    if: always() && !cancelled() && needs.package.outputs.artifact-ready == 'true' && !inputs.diagnose_opencode_initialization && !(github.event_name == 'workflow_dispatch' && inputs.check_cursor_macos_isolation)
+    if: always() && !cancelled() && needs.package.outputs.artifact-ready == 'true' && !inputs.diagnose_opencode_initialization && !(github.event_name == 'workflow_dispatch' && (inputs.check_cursor_macos_isolation || inputs.check_cursor_windows_isolation))
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.package.outputs.codex-matrix) }}
@@ -263,7 +271,7 @@ jobs:
   opencode:
     name: OpenCode ${{ matrix.channel }} ${{ matrix.opencode }} (${{ matrix.os }}, Node ${{ matrix.node }})
     needs: package
-    if: always() && !cancelled() && needs.package.outputs.artifact-ready == 'true' && !inputs.diagnose_opencode_initialization && !(github.event_name == 'workflow_dispatch' && inputs.check_cursor_macos_isolation)
+    if: always() && !cancelled() && needs.package.outputs.artifact-ready == 'true' && !inputs.diagnose_opencode_initialization && !(github.event_name == 'workflow_dispatch' && (inputs.check_cursor_macos_isolation || inputs.check_cursor_windows_isolation))
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.package.outputs.opencode-matrix) }}
@@ -303,7 +311,7 @@ jobs:
   claude:
     name: Claude smoke ${{ matrix.channel }} ${{ matrix.claude }} (${{ matrix.os }}, Node ${{ matrix.node }})
     needs: package
-    if: always() && !cancelled() && needs.package.outputs.artifact-ready == 'true' && !inputs.diagnose_opencode_initialization && !(github.event_name == 'workflow_dispatch' && inputs.check_cursor_macos_isolation)
+    if: always() && !cancelled() && needs.package.outputs.artifact-ready == 'true' && !inputs.diagnose_opencode_initialization && !(github.event_name == 'workflow_dispatch' && (inputs.check_cursor_macos_isolation || inputs.check_cursor_windows_isolation))
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.package.outputs.claude-matrix) }}
@@ -343,7 +351,7 @@ jobs:
   codebuddy:
     name: CodeBuddy functional ${{ matrix.channel }} ${{ matrix.codebuddy }} (${{ matrix.os }}, Node ${{ matrix.node }})
     needs: package
-    if: always() && !cancelled() && needs.package.outputs.artifact-ready == 'true' && !inputs.diagnose_opencode_initialization && !(github.event_name == 'workflow_dispatch' && inputs.check_cursor_macos_isolation)
+    if: always() && !cancelled() && needs.package.outputs.artifact-ready == 'true' && !inputs.diagnose_opencode_initialization && !(github.event_name == 'workflow_dispatch' && (inputs.check_cursor_macos_isolation || inputs.check_cursor_windows_isolation))
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.package.outputs.codebuddy-matrix) }}
@@ -383,7 +391,7 @@ jobs:
   cursor-app:
     name: Cursor App ${{ matrix.channel }} ${{ matrix.cursor }} (${{ matrix.os }}, Node ${{ matrix.node }})
     needs: package
-    if: always() && !cancelled() && needs.package.outputs.artifact-ready == 'true' && !(github.event_name == 'workflow_dispatch' && (inputs.check_deepseek || inputs.diagnose_opencode_initialization || inputs.check_cursor_macos_isolation))
+    if: always() && !cancelled() && needs.package.outputs.artifact-ready == 'true' && !(github.event_name == 'workflow_dispatch' && (inputs.check_deepseek || inputs.diagnose_opencode_initialization || inputs.check_cursor_macos_isolation || inputs.check_cursor_windows_isolation))
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.package.outputs.cursor-matrix) }}
@@ -431,7 +439,7 @@ jobs:
   opencode-initialization-diagnostic:
     name: OpenCode Windows initialization diagnostic (not functional acceptance)
     needs: package
-    if: github.event_name == 'workflow_dispatch' && inputs.diagnose_opencode_initialization && !inputs.check_cursor_macos_isolation && needs.package.outputs.artifact-ready == 'true'
+    if: github.event_name == 'workflow_dispatch' && inputs.diagnose_opencode_initialization && !inputs.check_cursor_macos_isolation && !inputs.check_cursor_windows_isolation && needs.package.outputs.artifact-ready == 'true'
     runs-on: windows-2025
     timeout-minutes: 25
     steps:
@@ -489,7 +497,7 @@ jobs:
 
   opencode-result:
     name: OpenCode functional result
-    if: always() && !(github.event_name == 'workflow_dispatch' && (inputs.check_deepseek || inputs.diagnose_opencode_initialization || inputs.check_cursor_macos_isolation))
+    if: always() && !(github.event_name == 'workflow_dispatch' && (inputs.check_deepseek || inputs.diagnose_opencode_initialization || inputs.check_cursor_macos_isolation || inputs.check_cursor_windows_isolation))
     needs: [package, opencode]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
@@ -508,7 +516,7 @@ jobs:
 
   claude-result:
     name: Claude native smoke result
-    if: always() && !(github.event_name == 'workflow_dispatch' && (inputs.check_deepseek || inputs.diagnose_opencode_initialization || inputs.check_cursor_macos_isolation))
+    if: always() && !(github.event_name == 'workflow_dispatch' && (inputs.check_deepseek || inputs.diagnose_opencode_initialization || inputs.check_cursor_macos_isolation || inputs.check_cursor_windows_isolation))
     needs: [package, claude]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
@@ -527,7 +535,7 @@ jobs:
 
   codebuddy-result:
     name: CodeBuddy functional result
-    if: always() && !(github.event_name == 'workflow_dispatch' && (inputs.check_deepseek || inputs.diagnose_opencode_initialization || inputs.check_cursor_macos_isolation))
+    if: always() && !(github.event_name == 'workflow_dispatch' && (inputs.check_deepseek || inputs.diagnose_opencode_initialization || inputs.check_cursor_macos_isolation || inputs.check_cursor_windows_isolation))
     needs: [package, codebuddy]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
@@ -546,7 +554,7 @@ jobs:
 
   cursor-app-result:
     name: Cursor App canary result
-    if: always() && !(github.event_name == 'workflow_dispatch' && (inputs.check_deepseek || inputs.diagnose_opencode_initialization || inputs.check_cursor_macos_isolation))
+    if: always() && !(github.event_name == 'workflow_dispatch' && (inputs.check_deepseek || inputs.diagnose_opencode_initialization || inputs.check_cursor_macos_isolation || inputs.check_cursor_windows_isolation))
     needs: [package, cursor-app]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
@@ -565,7 +573,7 @@ jobs:
 
   functional-result:
     name: ${{ github.event_name == 'workflow_dispatch' && inputs.check_deepseek && 'Codex provider-only result' || 'Codex functional result' }}
-    if: always() && !inputs.diagnose_opencode_initialization && !(github.event_name == 'workflow_dispatch' && inputs.check_cursor_macos_isolation)
+    if: always() && !inputs.diagnose_opencode_initialization && !(github.event_name == 'workflow_dispatch' && (inputs.check_cursor_macos_isolation || inputs.check_cursor_windows_isolation))
     needs: [package, install, provider]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
@@ -590,7 +598,7 @@ jobs:
           fi
 
   provider:
-    if: github.event_name == 'workflow_dispatch' && inputs.check_deepseek && !inputs.diagnose_opencode_initialization && !inputs.check_cursor_macos_isolation
+    if: github.event_name == 'workflow_dispatch' && inputs.check_deepseek && !inputs.diagnose_opencode_initialization && !inputs.check_cursor_macos_isolation && !inputs.check_cursor_windows_isolation
     runs-on: ubuntu-24.04
     environment: test
     timeout-minutes: 5

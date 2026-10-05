@@ -22,20 +22,27 @@ function proofScript() {
   return body.split("\n").map((line) => line.slice(10)).join("\n").trimEnd();
 }
 
-test("native workflow calls only the proof when its explicit manual switch is selected", async () => {
+test("native workflow calls each selected proof only under explicit manual dispatch", async () => {
   const caller = await readFile(new URL("../.github/workflows/macos-codex-install.yml", import.meta.url), "utf8");
   assert.match(caller, /check_cursor_macos_isolation:\n        description: Run only the macOS network isolation proof without downloading or starting Cursor\n        type: boolean\n        default: false/);
-  const job = caller.split("\n  cursor-macos-network-proof:\n")[1]?.split(/\n  [a-z][a-z0-9-]*:\n/)[0];
-  assert.ok(job);
-  assert.match(job, /^    uses: \.\/\.github\/workflows\/cursor-app-isolation.yml$/m);
-  assert.doesNotMatch(job, /continue-on-error:|secrets:|needs:/);
-  const condition = job.match(/^    if: (.+)$/m)?.[1];
-  assert.ok(condition);
-  for (const event of ["push", "pull_request", "workflow_dispatch"]) {
-    for (const requested of [false, true]) for (const provider of [false, true]) for (const diagnostic of [false, true]) {
-      assert.equal(Boolean(runInNewContext(condition, { github: { event_name: event },
-        inputs: { check_cursor_macos_isolation: requested, check_deepseek: provider, diagnose_opencode_initialization: diagnostic },
-      }, { timeout: 100 })), event === "workflow_dispatch" && requested);
+  assert.match(caller, /check_cursor_windows_isolation:\n        description: Run only the Windows loopback feasibility proof without downloading or starting Cursor\n        type: boolean\n        default: false/);
+  for (const [id, workflow, flag] of [["cursor-macos-network-proof", "cursor-app-isolation.yml", "check_cursor_macos_isolation"],
+    ["cursor-windows-loopback-proof", "cursor-app-windows-isolation.yml", "check_cursor_windows_isolation"]]) {
+    const job = caller.split(`\n  ${id}:\n`)[1]?.split(/\n  [a-z][a-z0-9-]*:\n/)[0];
+    assert.ok(job);
+    assert.equal(job.match(/^    uses: (.+)$/m)?.[1], `./.github/workflows/${workflow}`);
+    assert.doesNotMatch(job, /continue-on-error:|secrets:|needs:/);
+    const condition = job.match(/^    if: (.+)$/m)?.[1];
+    assert.ok(condition);
+    for (const event of ["push", "pull_request", "workflow_dispatch"]) {
+      for (const macos of [false, true]) for (const windows of [false, true]) {
+        for (const provider of [false, true]) for (const diagnostic of [false, true]) {
+          const inputs = { check_cursor_macos_isolation: macos, check_cursor_windows_isolation: windows,
+            check_deepseek: provider, diagnose_opencode_initialization: diagnostic };
+          assert.equal(Boolean(runInNewContext(condition, { github: { event_name: event }, inputs }, { timeout: 100 })),
+            event === "workflow_dispatch" && inputs[flag]);
+        }
+      }
     }
   }
 });
@@ -48,14 +55,15 @@ test("proof-only mode skips all packaging, native checks and native summaries wi
     .map((match) => [match[1], match[2].match(/^    if: (.+)$/m)?.[1]]));
   const nativeJobs = ["install", "opencode", "claude", "codebuddy", "cursor-app"];
   const resultJobs = ["opencode-result", "claude-result", "codebuddy-result", "cursor-app-result", "functional-result"];
-  assert.deepEqual([...jobs.keys()].sort(), ["cursor-macos-network-proof", "package", ...nativeJobs, ...resultJobs,
+  assert.deepEqual([...jobs.keys()].sort(), ["cursor-macos-network-proof", "cursor-windows-loopback-proof", "package", ...nativeJobs, ...resultJobs,
     "opencode-initialization-diagnostic", "provider"].sort());
   for (const event of ["push", "pull_request", "workflow_dispatch"]) {
-    for (const requested of [false, true]) for (const provider of [false, true]) for (const diagnostic of [false, true]) {
+    for (const requested of [false, true]) for (const windows of [false, true]) for (const provider of [false, true]) for (const diagnostic of [false, true]) {
       for (const ready of [undefined, "false", "true"]) {
-        const manual = event === "workflow_dispatch", proofOnly = manual && requested;
+        const manual = event === "workflow_dispatch", proofOnly = manual && (requested || windows);
         const acceptance = !manual || (!provider && !diagnostic), artifactReady = ready === "true";
-        const expected = { "cursor-macos-network-proof": proofOnly,
+        const proofs = { "cursor-macos-network-proof": manual && requested, "cursor-windows-loopback-proof": manual && windows };
+        const expected = { ...proofs,
           package: !manual || !provider || diagnostic,
           install: artifactReady && !diagnostic, opencode: artifactReady && !diagnostic,
           claude: artifactReady && !diagnostic, codebuddy: artifactReady && !diagnostic,
@@ -65,12 +73,12 @@ test("proof-only mode skips all packaging, native checks and native summaries wi
         for (const [id, condition] of jobs) {
           assert.ok(condition, `${id} must explicitly gate proof-only mode`);
           const actual = Boolean(runInNewContext(condition.replaceAll("needs.package.outputs.artifact-ready", 'needs.package.outputs["artifact-ready"]'), {
-            github: { event_name: event }, inputs: { check_cursor_macos_isolation: requested, check_deepseek: provider,
+            github: { event_name: event }, inputs: { check_cursor_macos_isolation: requested, check_cursor_windows_isolation: windows, check_deepseek: provider,
               diagnose_opencode_initialization: diagnostic }, needs: { package: { outputs: { "artifact-ready": ready } } },
             always: () => true, cancelled: () => false,
           }, { timeout: 100 }));
-          assert.equal(actual, proofOnly ? id === "cursor-macos-network-proof" : expected[id],
-            `${id}: event=${event}, proof=${requested}, provider=${provider}, diagnostic=${diagnostic}, ready=${ready}`);
+          assert.equal(actual, proofOnly ? (proofs[id] ?? false) : expected[id],
+            `${id}: event=${event}, macos=${requested}, windows=${windows}, provider=${provider}, diagnostic=${diagnostic}, ready=${ready}`);
         }
       }
     }
@@ -81,14 +89,19 @@ test("proof-only dispatches cannot cancel normal acceptance or other diagnostic 
   const caller = await readFile(new URL("../.github/workflows/macos-codex-install.yml", import.meta.url), "utf8");
   const group = caller.match(/^  group: (.+)$/m)?.[1];
   assert.ok(group);
-  const render = (event, requested = false, diagnostic = false) => group.replace(/\$\{\{(.+?)\}\}/g,
+  const render = (event, { macos = false, windows = false, diagnostic = false } = {}) => group.replace(/\$\{\{(.+?)\}\}/g,
     (_, expression) => runInNewContext(expression, { github: { event_name: event, ref: "refs/heads/synthetic" },
-      inputs: { check_cursor_macos_isolation: requested, diagnose_opencode_initialization: diagnostic } }, { timeout: 100 }));
-  assert.equal(render("workflow_dispatch", true), "codex-install-refs/heads/synthetic-cursor-proof");
-  assert.equal(render("workflow_dispatch", true, true), render("workflow_dispatch", true));
+      inputs: { check_cursor_macos_isolation: macos, check_cursor_windows_isolation: windows,
+        diagnose_opencode_initialization: diagnostic } }, { timeout: 100 }));
+  assert.equal(render("workflow_dispatch", { macos: true }), "codex-install-refs/heads/synthetic-cursor-proof");
+  assert.equal(render("workflow_dispatch", { windows: true }), "codex-install-refs/heads/synthetic-cursor-windows-proof");
+  assert.equal(render("workflow_dispatch", { macos: true, windows: true }), "codex-install-refs/heads/synthetic-cursor-proofs");
+  for (const requested of [{ macos: true }, { windows: true }, { macos: true, windows: true }]) {
+    assert.equal(render("workflow_dispatch", { ...requested, diagnostic: true }), render("workflow_dispatch", requested));
+    for (const event of ["pull_request", "push"]) assert.equal(render(event, requested), render(event));
+  }
   assert.equal(render("workflow_dispatch"), "codex-install-refs/heads/synthetic-acceptance");
-  assert.equal(render("workflow_dispatch", false, true), "codex-install-refs/heads/synthetic-diagnostic");
-  for (const event of ["pull_request", "push"]) assert.equal(render(event, true), render(event));
+  assert.equal(render("workflow_dispatch", { diagnostic: true }), "codex-install-refs/heads/synthetic-diagnostic");
 });
 
 test("network proof allows only manual or reusable calls to a read-only macOS Node 24 job", () => {
