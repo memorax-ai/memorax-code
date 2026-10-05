@@ -23,7 +23,11 @@ test("Windows session binds suspended identity and job before resume without bre
 
 test("profile authority, complete token groups, secret lifetime and privilege restoration remain explicit", async () => {
   const text = await source();
-  assert.match(text, /result == 0, result == unchecked\(\(int\)0x800700B7\)/);
+  assert.match(text, /if \(result != 0\) throw new CursorWindowsSessionException\(result == unchecked\(\(int\)0x800700B7\)/);
+  assert.match(text, /public uint\? NativeHResult \{ get; internal set; \}/);
+  const create = text.slice(text.indexOf("public string CreateProfile(string userName, string sid)"), text.indexOf("private static void WithProfilePrivileges"));
+  assert.match(create, /NativeHResult = unchecked\(\(uint\)result\)/);
+  assert.equal((text.match(/NativeHResult\s*=/g) ?? []).length, 1);
   assert.match(text, /GetUserProfileDirectoryW\(token, actual, ref size\)/);
   assert.match(text, /Registry.Users.OpenSubKey\(sid\)/);
   assert.match(text, /DeleteProfileW\(sid, path, null\)/);
@@ -64,6 +68,7 @@ internal sealed class CursorWindowsSessionFake : ICursorWindowsSessionNative
 {
     internal readonly List<string> Calls = new List<string>();
     internal string Fail;
+    internal CursorWindowsSessionException ProfileFailure;
     internal bool Exited, Hold, Loaded, FailAfterLoad, FailTermination, FailDeleteVerification;
     internal uint Active;
     internal string Command, EnvironmentText;
@@ -71,7 +76,8 @@ internal sealed class CursorWindowsSessionFake : ICursorWindowsSessionNative
     public void CreateJob(ref IntPtr job) { job = (IntPtr)1; Step("job"); }
     public void Authenticate(string user, string sid, IntPtr secret, ref IntPtr token)
     { Step("authenticate"); if (Marshal.ReadInt16(secret) == 0) throw new Exception("empty"); token = (IntPtr)2; }
-    public string CreateProfile(string user, string sid) { Step("createProfile"); return @"C:\Users\mxfixture"; }
+    public string CreateProfile(string user, string sid)
+    { Step("createProfile"); if (ProfileFailure != null) throw ProfileFailure; return @"C:\Users\mxfixture"; }
     public void LoadProfile(IntPtr token, string user, ref IntPtr profile)
     {
         Step("loadProfile"); profile = (IntPtr)3; Loaded = true;
@@ -173,6 +179,19 @@ public static class CursorWindowsSessionFixture
         Assert(!fake.Calls.Contains("delete") && !session.GetState().ProfileCreated);
         passed.Add("failed-create-does-not-authorize-delete");
 
+        foreach (uint result in new uint[] { 0x80070005, 0x800700B7, 1 })
+        {
+            string code = result == 0x800700B7 ? "PROFILE_EXISTS" : "PROFILE_CREATE";
+            fake = new CursorWindowsSessionFake { ProfileFailure = new CursorWindowsSessionException(code) { NativeHResult = result } };
+            session = New(fake);
+            failure = Fails(() => session.CreateAndLoadProfile(), code);
+            Assert(failure.NativeHResult == result && Object.ReferenceEquals(failure, fake.ProfileFailure));
+            Assert(!session.GetState().ProfileCreated && !fake.Calls.Contains("loadProfile"));
+            Assert(Fails(() => session.DeleteProfile(), "PROFILE_OWNERSHIP").NativeHResult == null);
+        }
+        Assert(new CursorWindowsSessionException("PROFILE_CREATE").NativeHResult == null);
+        passed.Add("create-profile-hresult-is-numeric-and-preserved");
+
         fake = new CursorWindowsSessionFake { Fail = "loadProfile" }; session = New(fake);
         Fails(() => session.CreateAndLoadProfile(), "PROFILE_PREPARE");
         Assert(session.GetState().ProfileCreated && !session.GetState().ProfileLoaded);
@@ -228,7 +247,7 @@ try {
   assert.equal(result.stderr, "");
   assert.doesNotMatch(result.stdout, /private-account|private-path|private-password/);
   assert.deepEqual(JSON.parse(result.stdout), ["leader-exit-is-not-job-empty", "suspended-failure-never-resumes", "cleanup-error-preserves-primary-and-handles",
-    "unknown-closure-retains-every-owned-resource", "failed-create-does-not-authorize-delete",
+    "unknown-closure-retains-every-owned-resource", "failed-create-does-not-authorize-delete", "create-profile-hresult-is-numeric-and-preserved",
     "created-profile-cleaned-after-load-failure", "partial-load-retains-original-handle",
     "failed-unload-prevents-delete", "unverified-delete-retains-owned-handles", "unused-session-cleanup-is-idempotent", "native-profile-cannot-be-replaced-by-env", "argument-quoting"]);
 });

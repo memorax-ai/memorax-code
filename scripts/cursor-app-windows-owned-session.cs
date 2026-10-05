@@ -15,6 +15,7 @@ public sealed class CursorWindowsSessionException : Exception
 {
     public string Code { get; private set; }
     public string CleanupErrorCode { get; internal set; }
+    public uint? NativeHResult { get; internal set; }
     internal CursorWindowsSessionException(string suffix) : base("CURSOR_APP_WINDOWS_SESSION_" + suffix)
     { Code = Message; }
 }
@@ -365,7 +366,8 @@ internal sealed class CursorWindowsSessionNative : ICursorWindowsSessionNative
         using (RegistryKey existing = Registry.Users.OpenSubKey(sid)) Check(existing == null, "PROFILE_EXISTS");
         StringBuilder path = new StringBuilder(32768);
         int result = Native.CreateProfile(sid, userName, path, (uint)path.Capacity);
-        Check(result == 0, result == unchecked((int)0x800700B7) ? "PROFILE_EXISTS" : "PROFILE_CREATE");
+        if (result != 0) throw new CursorWindowsSessionException(result == unchecked((int)0x800700B7) ? "PROFILE_EXISTS" : "PROFILE_CREATE")
+            { NativeHResult = unchecked((uint)result) };
         return path.ToString();
     }
 

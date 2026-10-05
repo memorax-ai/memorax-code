@@ -97,6 +97,18 @@ function Get-SessionErrorCode([System.Exception]$Exception) {
     return 'CURSOR_APP_WINDOWS_SESSION_CLEANUP_UNPROVEN'
 }
 
+function Get-SessionNativeHResult([System.Exception]$Exception) {
+    $inner = $Exception
+    foreach ($depth in 0..3) {
+        if ($inner.GetType().FullName -ceq 'CursorWindowsSessionException' -and $inner.NativeHResult -is [uint32]) {
+            return $inner.NativeHResult
+        }
+        if (-not $inner.InnerException) { break }
+        $inner = $inner.InnerException
+    }
+    return $null
+}
+
 function Start-OwnedNode([string[]]$Arguments, [bool]$AsProbeUser = $false, [string]$Executable = $node,
     [string]$WorkingDirectory = $root) {
     $info = [System.Diagnostics.ProcessStartInfo]::new()
@@ -503,7 +515,11 @@ try {
     $report.stage = 'done'
 } catch {
     $code = $_.Exception.Message
-    if ($report.stage -in @('install-profile', 'install-run')) { $report.sessionErrorCode = Get-SessionErrorCode $_.Exception }
+    if ($report.stage -in @('install-profile', 'install-run')) {
+        $report.sessionErrorCode = Get-SessionErrorCode $_.Exception
+        $nativeResult = Get-SessionNativeHResult $_.Exception
+        if ($null -ne $nativeResult) { $report.sessionNativeHResult = $nativeResult }
+    }
     $report.errorCode = if ($errorCodes -ccontains $code -or $code -cmatch '^CURSOR_APP_WINDOWS_INSTALL_(INPUT|MEDIA_CHANGED|TIMEOUT|EXIT|APP_VERIFICATION)$') { $code } else {
         switch ($report.stage) {
             'guard' { 'CURSOR_APP_WINDOWS_HOST_UNSUPPORTED' }

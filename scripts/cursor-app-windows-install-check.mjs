@@ -55,6 +55,10 @@ export function installationEvidence(value, release) {
       ["installedVerifierErrorCode", /^CURSOR_APP_WINDOWS_ARTIFACT_[A-Z0-9_]{1,80}$/]]) {
       if (pattern.test(value[key] ?? "")) error.diagnostic[key] = value[key];
     }
+    if (["CURSOR_APP_WINDOWS_SESSION_PROFILE_CREATE", "CURSOR_APP_WINDOWS_SESSION_PROFILE_EXISTS"].includes(value.sessionErrorCode)
+      && Number.isSafeInteger(value.sessionNativeHResult) && value.sessionNativeHResult > 0 && value.sessionNativeHResult <= 0xffffffff) {
+      error.diagnostic.sessionNativeHResult = value.sessionNativeHResult;
+    }
     throw error;
   }
   const required = ["freshStandardUser", "baselineFixturesReachable", "parentChildGrandchildSameSid", "allowedLoopback",

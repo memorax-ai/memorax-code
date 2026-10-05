@@ -148,6 +148,51 @@ test("setup diagnostics expose only the fixed initialization stage", () => {
   }
 });
 
+test("profile creation diagnostics accept only its bounded numeric HRESULT", () => {
+  for (const sessionNativeHResult of [0x80070005, 0xffffffff, 0, -1, 0x100000000, 1.5, "private-error", undefined]) {
+    for (const suffix of ["PROFILE_CREATE", "PROFILE_EXISTS", "PROFILE_LOAD"]) {
+      const value = { ...proof(), status: "FAIL", stage: "install-profile", sessionNativeHResult,
+        sessionErrorCode: "CURSOR_APP_WINDOWS_SESSION_" + suffix };
+      assert.throws(() => installationEvidence(value, release), (error) => {
+        const expected = suffix !== "PROFILE_LOAD" && Number.isInteger(sessionNativeHResult)
+          && sessionNativeHResult > 0 && sessionNativeHResult <= 0xffffffff ? sessionNativeHResult : undefined;
+        assert.equal(error.diagnostic.sessionNativeHResult, expected);
+        assert.doesNotMatch(JSON.stringify(error), /private-error/);
+        return true;
+      });
+    }
+  }
+});
+
+test("PowerShell projects the native HRESULT through a wrapped exception without raw messages", async (t) => {
+  const available = spawnSync("pwsh", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "exit 0"],
+    { encoding: "utf8", timeout: 10000 });
+  if (available.error?.code === "ENOENT") return t.skip("PowerShell is not installed");
+  assert.equal(available.status, 0);
+  const source = (await readFile(new URL("./cursor-app-windows-isolation-check.ps1", import.meta.url), "utf8")).replaceAll("\r\n", "\n");
+  const helper = source.match(/function Get-SessionNativeHResult\([\s\S]*?\n\}/)?.[0];
+  assert.ok(helper);
+  const result = spawnSync("pwsh", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", `
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+Add-Type 'public class CursorWindowsSessionException : System.Exception {
+    public uint? NativeHResult { get; set; }
+    public CursorWindowsSessionException() : base("private-native-message") {} }'
+${helper}
+$native = [CursorWindowsSessionException]::new()
+$native.NativeHResult = [uint32]2147942405
+$wrapped = [System.Exception]::new('private-outer-message', $native)
+$withCode = Get-SessionNativeHResult $wrapped
+$native.NativeHResult = $null
+$withoutCode = Get-SessionNativeHResult $wrapped
+$ordinary = Get-SessionNativeHResult ([System.Exception]::new('private-ordinary-message'))
+ConvertTo-Json -Compress @{ withCode = $withCode; withoutCode = $withoutCode; ordinary = $ordinary }
+`], { encoding: "utf8", timeout: 15000, maxBuffer: 8192 });
+  assert.equal(result.status, 0); assert.equal(result.stderr, "");
+  assert.deepEqual(JSON.parse(result.stdout), { withCode: 2147942405, withoutCode: null, ordinary: null });
+  assert.doesNotMatch(result.stdout, /private-/);
+});
+
 test("controller failures confirm closure only with a complete cleanup report", async (t) => {
   for (const clean of [false, true]) {
     const f = await fixture(t), value = proof();
