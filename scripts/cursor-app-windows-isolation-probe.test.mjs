@@ -75,7 +75,8 @@ test("owned loopback fixture exchange is required, not merely a successful conne
 });
 
 test("PowerShell coordinator is hosted-Windows-only, SID-scoped and uses retained process handles", async () => {
-  const source = await readFile(new URL("./cursor-app-windows-isolation-check.ps1", import.meta.url), "utf8");
+  const source = (await readFile(new URL("./cursor-app-windows-isolation-check.ps1", import.meta.url), "utf8"))
+    .replaceAll("\r\n", "\n");
   for (const text of ["GITHUB_ACTIONS", "RUNNER_ENVIRONMENT", "github-hosted", "RUNNER_OS", "ImageOS", "win25",
     "WindowsBuiltInRole]::Administrator", "-LocalUser $localUserSddl", "-Authentication NotRequired",
     "$info.Environment.Clear()", "$info.LoadUserProfile = $false", "GetOwnerSid", ".Kill()", "finally {"])
@@ -92,7 +93,8 @@ test("PowerShell coordinator is hosted-Windows-only, SID-scoped and uses retaine
 });
 
 test("unproven process cleanup preserves the rule, account and private root for VM teardown", async () => {
-  const source = await readFile(new URL("./cursor-app-windows-isolation-check.ps1", import.meta.url), "utf8");
+  const source = (await readFile(new URL("./cursor-app-windows-isolation-check.ps1", import.meta.url), "utf8"))
+    .replaceAll("\r\n", "\n");
   const cleanup = source.split("    $report.cleanup.processHandlesClosed = $processesClosed\n")[1];
   assert.ok(cleanup);
   assert.match(cleanup, /\$rulesRemoved = \$false\s+if \(\$processesClosed\) \{\s+\$rulesRemoved = \$true/);

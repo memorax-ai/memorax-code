@@ -23,7 +23,8 @@ function proofScript() {
 }
 
 test("native workflow calls each selected proof only under explicit manual dispatch", async () => {
-  const caller = await readFile(new URL("../.github/workflows/macos-codex-install.yml", import.meta.url), "utf8");
+  const caller = (await readFile(new URL("../.github/workflows/macos-codex-install.yml", import.meta.url), "utf8"))
+    .replaceAll("\r\n", "\n");
   assert.match(caller, /check_cursor_macos_isolation:\n        description: Run only the macOS network isolation proof without downloading or starting Cursor\n        type: boolean\n        default: false/);
   assert.match(caller, /check_cursor_windows_isolation:\n        description: Run only the Windows loopback feasibility proof without downloading or starting Cursor\n        type: boolean\n        default: false/);
   for (const [id, workflow, flag] of [["cursor-macos-network-proof", "cursor-app-isolation.yml", "check_cursor_macos_isolation"],
@@ -48,7 +49,8 @@ test("native workflow calls each selected proof only under explicit manual dispa
 });
 
 test("proof-only mode skips all packaging, native checks and native summaries without changing other modes", async () => {
-  const caller = await readFile(new URL("../.github/workflows/macos-codex-install.yml", import.meta.url), "utf8");
+  const caller = (await readFile(new URL("../.github/workflows/macos-codex-install.yml", import.meta.url), "utf8"))
+    .replaceAll("\r\n", "\n");
   const jobsSource = caller.split("\njobs:\n")[1];
   assert.ok(jobsSource);
   const jobs = new Map([...jobsSource.matchAll(/^  ([a-z][a-z0-9-]*):\n([\s\S]*?)(?=^  [a-z][a-z0-9-]*:\n|$(?![\s\S]))/gm)]
@@ -86,7 +88,8 @@ test("proof-only mode skips all packaging, native checks and native summaries wi
 });
 
 test("proof-only dispatches cannot cancel normal acceptance or other diagnostic runs", async () => {
-  const caller = await readFile(new URL("../.github/workflows/macos-codex-install.yml", import.meta.url), "utf8");
+  const caller = (await readFile(new URL("../.github/workflows/macos-codex-install.yml", import.meta.url), "utf8"))
+    .replaceAll("\r\n", "\n");
   const group = caller.match(/^  group: (.+)$/m)?.[1];
   assert.ok(group);
   const render = (event, { macos = false, windows = false, diagnostic = false } = {}) => group.replace(/\$\{\{(.+?)\}\}/g,
