@@ -6,6 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
 import { baselineRelease, validateLinuxRelease } from "./cursor-app-release.mjs";
+import { selectCursorMacosRelease } from "./cursor-app-macos-artifact.mjs";
 
 const source = (await readFile(new URL("../.github/workflows/macos-codex-install.yml", import.meta.url), "utf8"))
   .replaceAll("\r\n", "\n");
@@ -65,7 +66,7 @@ test("Cursor App matrix uses the validated candidate, frozen release inventory a
   assert.match(canary, /^    needs: package$/m);
   assert.match(canary, /^    runs-on: \$\{\{ matrix\.os \}\}$/m);
   assert.match(canary, /^          node-version: \$\{\{ matrix\.node \}\}$/m);
-  assert.match(canary, /^    name: Cursor App \$\{\{ matrix\.channel \}\} \$\{\{ matrix\.cursor \}\} \(Linux, Node \$\{\{ matrix\.node \}\}\)$/m);
+  assert.match(canary, /^    name: Cursor App \$\{\{ matrix\.channel \}\} \$\{\{ matrix\.cursor \}\} \(\$\{\{ matrix\.os \}\}, Node \$\{\{ matrix\.node \}\}\)$/m);
   assert.match(canary, /^      fail-fast: false$/m);
   assert.match(canary, /^      matrix: \$\{\{ fromJSON\(needs\.package\.outputs\.cursor-matrix\) \}\}$/m);
   assert.match(job("package"), /^      cursor-matrix: \$\{\{ steps\.cursor-versions\.outputs\.matrix \}\}$/m);
@@ -76,7 +77,7 @@ test("Cursor App matrix uses the validated candidate, frozen release inventory a
   assert.match(uploads[1], /^        if: always\(\)$/m);
   assert.match(uploads[1], /^          path: \$\{\{ runner\.temp \}\}\/cursor-app-report\/report\.json$/m);
   assert.match(uploads[1], /^          if-no-files-found: error$/m);
-  assert.match(uploads[1], /^          name: cursor-app-linux-\$\{\{ matrix\.channel \}\}-node-\$\{\{ matrix\.node \}\}-report$/m);
+  assert.match(uploads[1], /^          name: cursor-app-\$\{\{ matrix\.os \}\}-\$\{\{ matrix\.channel \}\}-node-\$\{\{ matrix\.node \}\}-report$/m);
   assert.match(result, /^    needs: \[package, cursor-app\]$/m);
   assert.doesNotMatch(canary + result, /continue-on-error:/);
   assert.doesNotMatch(canary, /resolve-linux|api\/download|latest\.json/);
@@ -96,66 +97,108 @@ test("Cursor release acquisition runs once outside the matrix and excludes dedic
   assert.match(step, /name: cursor-app-releases\n          path: \$\{\{ runner\.temp \}\}\/cursor-app-releases\.json\n          if-no-files-found: error/);
 });
 
-test("Cursor matrix keeps baseline Node 22 and merges Node 24 channels only for the exact same artifact", () => {
+test("Cursor matrix independently merges exact platform releases and keeps Linux baseline Node 22", () => {
   const run = script("package", "Resolve and freeze Cursor App releases once for this run");
   const code = run.match(/node --input-type=module <<'NODE'\n([\s\S]*?)\nNODE/)?.[1].replace(/^import .+;\n/gm, "");
   assert.ok(code);
-  const baseline = baselineRelease("linux-x64");
-  function execute(latest, schemaVersion = 1) {
-    const output = new Map(), manifest = { schemaVersion, baseline: { "linux-x64": baseline }, latest: { "linux-x64": latest } };
+  assert.match(run, /import \{ selectCursorMacosRelease \} from '\.\/scripts\/cursor-app-macos-artifact\.mjs';/);
+  const baseline = baselineRelease("linux-x64"), macos = baselineRelease("darwin-arm64");
+  const same = { ...baseline, channel: "latest", hashSource: "official-apt-sha256", size: 123456 };
+  const sameMacos = { ...macos, channel: "latest" };
+  function execute(latest, latestMacos = sameMacos, schemaVersion = 1, macosBaseline = macos) {
+    const output = new Map(), manifest = { schemaVersion, baseline: { "linux-x64": baseline, "darwin-arm64": macosBaseline },
+      latest: { "linux-x64": latest, "darwin-arm64": latestMacos } };
     runInNewContext(code, { process: { env: { RUNNER_TEMP: "/synthetic temp", GITHUB_OUTPUT: "output", GITHUB_STEP_SUMMARY: "summary" } },
       readFileSync(path) { assert.equal(path, "/synthetic temp/cursor-app-releases.json"); return JSON.stringify(manifest); },
-      appendFileSync(path, content) { assert.ok(!output.has(path)); output.set(path, content); }, validateLinuxRelease,
+      appendFileSync(path, content) { assert.ok(!output.has(path)); output.set(path, content); }, validateLinuxRelease, selectCursorMacosRelease,
     }, { timeout: 100 });
-    assert.match(output.get("summary"), /macOS and Windows remain outside this matrix\. No version fallback\./);
-    return JSON.parse(output.get("output").slice("matrix=".length)).include;
+    assert.match(output.get("summary"), /Linux and macOS App jobs, including Linux baseline on Node 22\. Windows remains outside this matrix\. No version fallback\./);
+    const include = JSON.parse(output.get("output").slice("matrix=".length)).include;
+    assert.equal(new Set(include.map((cell) => `${cell.os}-${cell.channel}-${cell.node}`)).size, include.length);
+    assert.deepEqual([...new Set(include.map((cell) => cell.os))].sort(), ["macos-15", "ubuntu-24.04"]);
+    assert.ok(include.every((cell) => cell.os !== "macos-15" || cell.node === "24"));
+    assert.equal(include.filter((cell) => cell.node === "22").length, 1);
+    return include;
   }
-  const same = { ...baseline, channel: "latest", hashSource: "official-apt-sha256", size: 123456 };
   assert.deepEqual(execute(same), [
     { os: "ubuntu-24.04", node: "24", cursor: baseline.version, release: "baseline", channel: "baseline+latest" },
     { os: "ubuntu-24.04", node: "22", cursor: baseline.version, release: "baseline", channel: "baseline" },
+    { os: "macos-15", node: "24", cursor: macos.version, release: "baseline", channel: "baseline+latest" },
   ]);
   const newer = { ...same, version: "3.23.12", commitSha: "2d29876d567da1607532b23bbf2cd5ddbca496fe",
     url: "https://downloads.cursor.com/production/2d29876d567da1607532b23bbf2cd5ddbca496fe/linux/x64/deb/amd64/deb/cursor_3.23.12_amd64.deb",
     sha256: "4b38d23926c72f2080e2ba108593e38f3688312464d70adc9088db63a53c0346", debVersion: "3.23.12-1790831722" };
-  const matrix = execute(newer);
-  assert.deepEqual(matrix.map(({ node, release, channel }) => ({ node, release, channel })), [
-    { node: "24", release: "baseline", channel: "baseline" },
-    { node: "22", release: "baseline", channel: "baseline" },
-    { node: "24", release: "latest", channel: "latest" },
+  const newerMacos = { ...sameMacos, version: newer.version, commitSha: newer.commitSha,
+    url: `https://downloads.cursor.com/production/${newer.commitSha}/darwin/arm64/Cursor-darwin-arm64.dmg` };
+  const matrix = execute(newer, newerMacos);
+  assert.deepEqual(matrix, [
+    { os: "ubuntu-24.04", node: "24", cursor: baseline.version, release: "baseline", channel: "baseline" },
+    { os: "ubuntu-24.04", node: "22", cursor: baseline.version, release: "baseline", channel: "baseline" },
+    { os: "ubuntu-24.04", node: "24", cursor: newer.version, release: "latest", channel: "latest" },
+    { os: "macos-15", node: "24", cursor: macos.version, release: "baseline", channel: "baseline" },
+    { os: "macos-15", node: "24", cursor: newerMacos.version, release: "latest", channel: "latest" },
   ]);
-  assert.equal(new Set(matrix.map((cell) => `${cell.channel}-${cell.node}`)).size, matrix.length);
+  assert.equal(execute(newer).length, 4);
+  assert.equal(execute(same, newerMacos).length, 4);
   assert.equal(execute({ ...same, commitSha: "a".repeat(40), url: same.url.replace(same.commitSha, "a".repeat(40)),
-    sha256: "f".repeat(64) }).length, 3);
+    sha256: "f".repeat(64) }).length, 4);
+  assert.throws(() => execute({ ...same, sha256: "f".repeat(64) }));
+  assert.throws(() => execute({ ...same, debVersion: `${same.version}-1790000000` }));
+  assert.equal(execute(same, { ...sameMacos, commitSha: "a".repeat(40),
+    url: sameMacos.url.replace(sameMacos.commitSha, "a".repeat(40)) }).length, 4);
+  assert.equal(execute(same, { ...sameMacos, version: "3.21.19" }).length, 4);
   assert.throws(() => execute({ ...newer, sha256: null }));
   assert.throws(() => execute({ ...newer, platform: "linux-arm64" }));
-  assert.throws(() => execute(newer, 2));
+  assert.throws(() => execute(newer, { ...newerMacos, platform: "darwin-x64" }));
+  assert.throws(() => execute(newer, { ...newerMacos, channel: "baseline" }));
+  assert.throws(() => execute(newer, { ...newerMacos, url: newerMacos.url.replace("downloads.cursor.com", "example.invalid") }));
+  assert.throws(() => execute(newer, undefined, 1, { ...macos, version: "3.21.19" }));
+  assert.throws(() => execute(newer, undefined, 2));
 });
 
-test("Cursor App invocation accepts only one regular candidate and preserves quoted paths", { skip: process.platform === "win32" }, async (t) => {
+test("Cursor App invocation selects the native platform, rejects unknown systems and preserves quoted paths", { skip: process.platform === "win32" }, async (t) => {
   const root = await mkdtemp(join(tmpdir(), "cursor-app-workflow-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const run = script("cursor-app", "Verify isolated native Cursor App writeback");
-  for (const kind of ["missing", "single", "multiple", "directory", "symlink"]) {
-    const cwd = join(root, kind), tarballs = join(cwd, "dist/npm/tarballs"), calls = join(cwd, "calls");
-    const runnerTemp = join(cwd, "runner temp");
-    await mkdir(tarballs, { recursive: true });
-    const name = "memorax-memorax-code-fixture with spaces.tgz", candidate = join(tarballs, name);
-    if (["single", "multiple"].includes(kind)) await writeFile(candidate, "synthetic tarball");
-    if (kind === "multiple") await writeFile(join(tarballs, "memorax-memorax-code-other.tgz"), "synthetic second tarball");
-    if (kind === "directory") await mkdir(candidate);
-    if (kind === "symlink") { await writeFile(join(cwd, "target"), "synthetic tarball"); await symlink(join(cwd, "target"), candidate); }
-    const actual = spawnSync("/bin/bash", ["-e", "-o", "pipefail", "-c", `node() { printf '%s\\n' "$@" > "$CALLS"; }\n${run}`], {
-      cwd, encoding: "utf8", timeout: 5_000,
-      env: { PATH: "/usr/bin:/bin", HOME: cwd, RUNNER_TEMP: runnerTemp, CALLS: calls, CURSOR_RELEASE: "latest", CURSOR_NODE: "24" },
+  for (const [runnerOs, entrypoint] of [["Linux", "container"], ["macOS", "macos"], ["Windows", null], ["", null]]) {
+    for (const kind of ["missing", "single", "multiple", "directory", "symlink"]) {
+      const cwd = join(root, runnerOs || "unknown", kind), tarballs = join(cwd, "dist/npm/tarballs"), calls = join(cwd, "calls");
+      const runnerTemp = join(cwd, "runner temp");
+      await mkdir(tarballs, { recursive: true });
+      const name = "memorax-memorax-code-fixture with spaces.tgz", candidate = join(tarballs, name);
+      if (["single", "multiple"].includes(kind)) await writeFile(candidate, "synthetic tarball");
+      if (kind === "multiple") await writeFile(join(tarballs, "memorax-memorax-code-other.tgz"), "synthetic second tarball");
+      if (kind === "directory") await mkdir(candidate);
+      if (kind === "symlink") { await writeFile(join(cwd, "target"), "synthetic tarball"); await symlink(join(cwd, "target"), candidate); }
+      const actual = spawnSync("/bin/bash", ["-e", "-o", "pipefail", "-c", `node() { printf '%s\\n' "$@" > "$CALLS"; }\n${run}`], {
+        cwd, encoding: "utf8", timeout: 5_000,
+        env: { PATH: "/usr/bin:/bin", HOME: cwd, RUNNER_TEMP: runnerTemp, RUNNER_OS: runnerOs, CALLS: calls,
+          CURSOR_RELEASE: "latest", CURSOR_NODE: "24" },
+      });
+      assert.ifError(actual.error);
+      assert.equal(actual.status, kind === "single" && entrypoint ? 0 : 1, `${runnerOs}: ${kind}`);
+      if (kind === "single" && entrypoint) assert.deepEqual((await readFile(calls, "utf8")).trimEnd().split("\n"), [
+        `scripts/cursor-app-${entrypoint}-check.mjs`, `dist/npm/tarballs/${name}`, join(runnerTemp, "cursor-app-report"),
+        join(runnerTemp, "cursor-app-releases/cursor-app-releases.json"), "latest", "24",
+      ]);
+      else await assert.rejects(readFile(calls), { code: "ENOENT" });
+    }
+  }
+});
+
+test("Cursor App invocation retains either platform entrypoint failure", { skip: process.platform === "win32" }, async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "cursor-app-workflow-failure-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await mkdir(join(root, "dist/npm/tarballs"), { recursive: true });
+  await writeFile(join(root, "dist/npm/tarballs/memorax-memorax-code-fixture.tgz"), "synthetic tarball");
+  for (const runnerOs of ["Linux", "macOS"]) {
+    const actual = spawnSync("/bin/bash", ["-e", "-o", "pipefail", "-c",
+      `node() { return 7; }\n${script("cursor-app", "Verify isolated native Cursor App writeback")}`], {
+      cwd: root, encoding: "utf8", timeout: 5_000,
+      env: { PATH: "/usr/bin:/bin", HOME: root, RUNNER_OS: runnerOs, RUNNER_TEMP: root, CURSOR_RELEASE: "baseline", CURSOR_NODE: "24" },
     });
     assert.ifError(actual.error);
-    assert.equal(actual.status, kind === "single" ? 0 : 1, kind);
-    if (kind === "single") assert.deepEqual((await readFile(calls, "utf8")).trimEnd().split("\n"), [
-      "scripts/cursor-app-container-check.mjs", `dist/npm/tarballs/${name}`, join(runnerTemp, "cursor-app-report"),
-      join(runnerTemp, "cursor-app-releases/cursor-app-releases.json"), "latest", "24",
-    ]);
-    else await assert.rejects(readFile(calls), { code: "ENOENT" });
+    assert.equal(actual.status, 7, runnerOs);
   }
 });
 
@@ -175,11 +218,13 @@ test("Cursor App summary fails every non-success dependency and states the limit
       assert.equal(actual.status, packageResult === "success" && cursorResult === "success" ? 0 : 1,
         `package=${packageResult}, cursor=${cursorResult}`);
       const text = await readFile(summary, "utf8");
-      assert.ok(text.includes(`Package: **${packageResult}**`) && text.includes(`Cursor App Linux matrix: **${cursorResult}**`));
+      assert.ok(text.includes(`Package: **${packageResult}**`) && text.includes(`Cursor App Linux/macOS matrix: **${cursorResult}**`));
+      assert.match(text, /Ubuntu 24\.04 and macOS 15, baseline\/latest on Node 24 and Linux baseline on Node 22/);
       assert.match(text, /Six completed App runs per cell exercise repeated-prompt follow-up, independent sessions, App restart\/resume and explicit Skill Search\/Add through native Read\/Shell tools/);
       assert.match(text, /A seventh run cancels a pending Shell through native Stop, requiring interrupted Hook state, no command execution and no additional Memory request/);
       assert.match(text, /Scripted tool requests do not validate model-driven Skill selection/);
-      assert.match(text, /This Linux matrix does not validate real login, hosted models, full functional coverage or three-platform acceptance/);
+      assert.match(text, /macOS requires verified code signatures, Gatekeeper and a network-only sandbox on a fresh GitHub-hosted runner/);
+      assert.match(text, /This matrix does not validate real login, Keychain isolation, hosted models, full functional coverage or Windows acceptance/);
     }
   }
 });

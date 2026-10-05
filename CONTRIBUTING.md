@@ -1139,19 +1139,23 @@ successful native jobs on each target platform.
 
 ### Cursor App Native Canary
 
-The native-client workflow also runs a deliberately bounded **Cursor Desktop
-App** Linux matrix: baseline **3.21.18** and the once-resolved latest stable
-desktop release on Ubuntu 24.04 and Node 24, plus baseline on Node 22. Channels
-share a Node 24 cell only when their version, commit, URL, checksum and DEB
-version all match. Node 22.13 or newer is required for the native SQLite reader;
-Node 20 is not a supported Cursor automatic-writeback target. The container's
-actual Node runtime, not just the runner's `setup-node`, must match each cell.
-This is not a Cursor CLI test or three-platform acceptance. Every cell consumes
-the same validated candidate npm
+The native-client workflow defines a deliberately bounded **Cursor Desktop
+App** matrix: baseline **3.21.18** and the once-resolved latest stable desktop
+release on Ubuntu 24.04 (x64) and macOS 15 (arm64) with Node 24, plus Linux
+baseline on Node 22. Channels share a Node 24 cell independently per platform:
+Linux requires matching version, commit, URL, checksum and DEB version; macOS
+requires matching version, commit and URL. Node 22.13 or newer is required for
+the native SQLite reader; Node 20 is not a supported Cursor automatic-writeback
+target. The actual native-check Node runtime, including the Linux container's
+runtime, must match each cell, not just the runner's `setup-node`.
+The macOS cells are newly implemented and require successful native GitHub
+jobs before claiming macOS acceptance. This is not a Cursor CLI test or
+three-platform acceptance. Every cell consumes the same validated candidate npm
 artifact as the existing native checks; package failure cannot be hidden by a
 passing matrix cell. The aggregate check requires all selected cells to pass.
 
-The canary starts the official Linux App in a fresh Docker container under Xvfb.
+The canary starts the official App in a fresh Docker container under Xvfb on
+Linux, or directly under `sandbox-exec` on a fresh GitHub-hosted macOS runner.
 Its built-in smoke driver supplies synthetic authentication and submits prompts
 through the normal composer UI. The official test-only application-storage
 command suppresses the fresh-login switch to the Agents window in the isolated
@@ -1221,21 +1225,40 @@ Acceptance requires all of the following:
   Search preserves the fixture answer, item and receipt. Explicit Add retains
   its CLI session, memory type, reason and idempotency key, separately from the
   native session used by automatic writeback and trace correlation.
-- Successful client/Backend and container cleanup, with a final request-count
+- Successful client/Backend and platform-resource cleanup, including the Linux
+  container or macOS owned processes and mounted image, with a final request-count
   audit to reject duplicate or late writeback.
 
-Build-time downloads use fixed official Cursor release URLs. Baseline SHA-256
+Acquisition uses fixed official Cursor release URLs. Linux baseline SHA-256
 pins are independently observed reproducibility checks, not publisher-signed
 attestations. Latest Linux checksums and DEB versions come from official apt
 metadata: the pinned public key verifies `InRelease`, which authenticates each
 architecture's `Packages` digest and package entry. The official desktop API
 and apt release must agree. Resolution happens once in the package job and
 publishes one frozen inventory for every matrix cell; no job re-resolves latest
-or falls back to baseline. The runtime is non-root, has no external
-network, drops all capabilities, retains Chromium's sandbox and uses
-`no-new-privileges` plus the documented seccomp profile. Client homes, Backend
-state and native conversations are temporary. Only local Agent and Memory
-fixtures are reachable; no real account or provider credentials are needed.
+or falls back to baseline. The macOS inventory has no publisher-provided
+checksum. Its read-only mounted DMG must supply an App with a valid deep code
+signature, the expected Apple-anchored signing identity and bundle identifier,
+Gatekeeper acceptance, and matching sealed version, commit and architecture.
+A computed DMG checksum is only an observed byte receipt, not an official
+checksum or a substitute for signature verification.
+
+The Linux runtime is non-root, has no external network, drops all capabilities,
+retains Chromium's sandbox and uses `no-new-privileges` plus the documented
+seccomp profile. macOS first requires the network isolation proof below, then
+applies a network-only sandbox to the App and candidate CLI, including their
+Backend, Hook and tool descendants. Only exact required loopback ports and
+Unix IPC beneath the owned App user-data and temporary directories are allowed;
+arbitrary Unix socket paths are not allowed. The trusted local mock controller remains outside
+that profile. Both platforms use temporary client homes, Backend state and native
+conversations, synthetic authentication and local Agent and Memory fixtures.
+
+The macOS entrypoint is restricted to the workflow's fresh GitHub-hosted runner,
+not a developer's logged-in desktop. It sets isolated `HOME`, `CFFIXED_USER_HOME`,
+App user-data and shell startup paths and forces `--use-inmemory-secretstorage`.
+These settings do not constitute an OS filesystem sandbox or prove Keychain
+isolation. The test does not access real credentials or exercise a credential
+store, and no real model or MemoraX account is required.
 
 To reproduce after building an installable candidate, use Node 24 and a local
 Linux-container Docker daemon:
@@ -1268,7 +1291,7 @@ Only `report.json` is exported and uploaded. Raw App logs, transcripts, SQLite
 files and Hook traces are not CI artifacts. Synthetic login is not real account
 authentication coverage. Native Continue/Retry/Edit, Backend restart,
 running-tool interruption, late-approval races, model-driven Skill selection, Repo Memory workers,
-upgrade/uninstall, macOS, and Windows remain outside this bounded session-flow
+upgrade/uninstall and Windows remain outside this bounded session-flow
 matrix.
 
 `node scripts/cursor-app-release.mjs resolve <new-manifest-path>` prepares a
@@ -1277,8 +1300,9 @@ feeds. It requires coherent versions and commits across Linux, macOS and
 Windows, rejects mutable or unexpected URLs, and never overwrites an existing
 manifest. This metadata-only command leaves missing checksums explicitly
 unavailable and is not artifact-integrity or native-acceptance evidence. CI uses
-`resolve-linux` instead, which also verifies Linux apt metadata. macOS and
-Windows inventory entries are not native acceptance results.
+`resolve-linux` instead, which also verifies Linux apt metadata. A macOS entry
+additionally requires signed-App acquisition and the native check; an inventory
+entry alone is not native acceptance. Windows remains metadata-only.
 
 #### macOS Network Isolation Proof
 
@@ -1288,17 +1312,21 @@ network proof on macOS 15 with Node 24. On a feature branch, enable
 workflow to call it alongside the normal matrix, with both dedicated diagnostic
 options disabled. It can also be dispatched directly after GitHub registers the
 new workflow. It does not download or start Cursor, access a
-credential store, or count as native acceptance. It first checks two owned
-loopback listeners, then requires `sandbox-exec` to allow only the selected
-port and explicitly deny the other with `EPERM` or `EACCES`. Only after that
-local gate succeeds does it probe documentation-only IPv4 and IPv6 addresses
-without sending application data. A timeout is not isolation evidence.
+credential store, or count as native acceptance. It first checks owned loopback
+fixtures, then requires `sandbox-exec` to permit only the selected outbound
+port. It also requires binding and listening on the selected IPv4 and IPv6
+loopback ports while denying other ports and wildcard addresses. Owned Unix
+IPC must work, while Unix socket paths outside the private root must be denied.
+These local gates run before documentation-only IPv4 and IPv6 connection probes,
+which send no application data. Denial must be `EPERM` or `EACCES`; a timeout,
+address-in-use or routing error is not isolation evidence.
 
 The same restrictions must hold in the child and grandchild process. The job
 fails on an unavailable or ineffective sandbox and uploads only its fixed-field
-`report.json`. A passing network proof does not establish App compatibility,
-filesystem or credential isolation, or macOS functional coverage; those remain
-separate prerequisites before adding a native macOS matrix cell.
+`report.json`. The macOS native entrypoint requires this proof before App
+startup. A passing network proof does not establish App compatibility,
+filesystem or credential isolation, or macOS functional coverage. The matrix
+must independently pass the signed-App and seven-flow native checks.
 
 ## Pull Requests
 

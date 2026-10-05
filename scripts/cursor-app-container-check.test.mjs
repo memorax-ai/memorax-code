@@ -42,6 +42,26 @@ function nativeReport() {
       contextRequests: [1, 1, 1, 1, 1, 1, 1], contextResults: [1, 1, 1, 1, 1, 1, 1], contextCloses: [1, 1, 1, 1, 1, 1, 1] }, memoryRequestCount: 8 };
 }
 
+test("macOS reuses the complete native report oracle and additionally requires its network proof", () => {
+  const report = nativeReport();
+  report.platform = "darwin";
+  assert.throws(() => projectNativeReport(report), { code: "CURSOR_CONTAINER_REPORT" });
+  assert.throws(() => projectNativeReport(report, { platform: "darwin" }), { code: "CURSOR_CONTAINER_REPORT" });
+  report.evidence.networkIsolation = true;
+  assert.deepEqual(projectNativeReport(report, { platform: "darwin" }), report);
+  for (const change of [
+    (value) => { value.platform = "linux"; },
+    (value) => { value.evidence.networkIsolation = false; },
+    (value) => { value.evidence.pendingShellInterrupted = false; },
+    (value) => { value.agent.runs = 6; },
+    (value) => { value.memoryRequestCount = 9; },
+    (value) => { value.evidence.nativeContent[5].blobCount = 20; },
+  ]) {
+    const changed = structuredClone(report); change(changed);
+    assert.throws(() => projectNativeReport(changed, { platform: "darwin" }), { code: "CURSOR_CONTAINER_REPORT" });
+  }
+});
+
 test("release pins distinguish official artifact provenance from observed checksums", () => {
   for (const arch of ["x64", "x86_64", "amd64"]) {
     const release = cursorAppRelease(arch);

@@ -155,6 +155,7 @@ jobs:
           node --input-type=module <<'NODE'
           import { appendFileSync, readFileSync } from 'node:fs';
           import { validateLinuxRelease } from './scripts/cursor-app-release.mjs';
+          import { selectCursorMacosRelease } from './scripts/cursor-app-macos-artifact.mjs';
           const manifest = JSON.parse(readFileSync(`${process.env.RUNNER_TEMP}/cursor-app-releases.json`, 'utf8'));
           if (manifest.schemaVersion !== 1) throw new Error('Invalid frozen Cursor release inventory');
           const baseline = validateLinuxRelease(manifest.baseline['linux-x64'], 'linux-x64');
@@ -165,10 +166,15 @@ jobs:
             { os: 'ubuntu-24.04', node: '22', cursor: baseline.version, release: 'baseline', channel: 'baseline' },
           ];
           if (!same) include.push({ os: 'ubuntu-24.04', node: '24', cursor: latest.version, release: 'latest', channel: 'latest' });
+          const macosBaseline = selectCursorMacosRelease(manifest, 'baseline');
+          const macosLatest = selectCursorMacosRelease(manifest, 'latest');
+          const sameMacos = ['version', 'commitSha', 'url'].every((key) => macosBaseline[key] === macosLatest[key]);
+          include.push({ os: 'macos-15', node: '24', cursor: macosBaseline.version, release: 'baseline', channel: sameMacos ? 'baseline+latest' : 'baseline' });
+          if (!sameMacos) include.push({ os: 'macos-15', node: '24', cursor: macosLatest.version, release: 'latest', channel: 'latest' });
           appendFileSync(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify({ include })}\n`);
           appendFileSync(process.env.GITHUB_STEP_SUMMARY,
             `Cursor App baseline: **${baseline.version}**; desktop latest frozen for this run: **${latest.version}**.\n\n` +
-            `${include.length} required Linux App jobs, including baseline on Node 22. macOS and Windows remain outside this matrix. No version fallback.\n`);
+            `${include.length} required Linux and macOS App jobs, including Linux baseline on Node 22. Windows remains outside this matrix. No version fallback.\n`);
           NODE
       - uses: actions/upload-artifact@v4
         if: github.event_name != 'workflow_dispatch' || !(inputs.check_deepseek || inputs.diagnose_opencode_initialization)
@@ -375,7 +381,7 @@ jobs:
         run: ./scripts/codebuddy-install-check.ps1 -TarballDirectory dist/npm/tarballs -CodeBuddyVersion $env:CODEBUDDY_VERSION
 
   cursor-app:
-    name: Cursor App ${{ matrix.channel }} ${{ matrix.cursor }} (Linux, Node ${{ matrix.node }})
+    name: Cursor App ${{ matrix.channel }} ${{ matrix.cursor }} (${{ matrix.os }}, Node ${{ matrix.node }})
     needs: package
     if: always() && !cancelled() && needs.package.outputs.artifact-ready == 'true' && !(github.event_name == 'workflow_dispatch' && (inputs.check_deepseek || inputs.diagnose_opencode_initialization))
     strategy:
@@ -407,12 +413,17 @@ jobs:
         run: |
           set -- dist/npm/tarballs/memorax-memorax-code-*.tgz
           [[ "$#" -eq 1 && -f "$1" && ! -L "$1" ]] || exit 1
-          node scripts/cursor-app-container-check.mjs "$1" "$RUNNER_TEMP/cursor-app-report" \
+          case "$RUNNER_OS" in
+            Linux) entrypoint=scripts/cursor-app-container-check.mjs ;;
+            macOS) entrypoint=scripts/cursor-app-macos-check.mjs ;;
+            *) echo 'Unsupported Cursor App runner.' >&2; exit 1 ;;
+          esac
+          node "$entrypoint" "$1" "$RUNNER_TEMP/cursor-app-report" \
             "$RUNNER_TEMP/cursor-app-releases/cursor-app-releases.json" "$CURSOR_RELEASE" "$CURSOR_NODE"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: cursor-app-linux-${{ matrix.channel }}-node-${{ matrix.node }}-report
+          name: cursor-app-${{ matrix.os }}-${{ matrix.channel }}-node-${{ matrix.node }}-report
           path: ${{ runner.temp }}/cursor-app-report/report.json
           if-no-files-found: error
           retention-days: 7
@@ -546,7 +557,7 @@ jobs:
           PACKAGE_RESULT: ${{ needs.package.result }}
           CURSOR_RESULT: ${{ needs.cursor-app.result }}
         run: |
-          printf 'Package: **%s**\n\nCursor App Linux matrix: **%s**.\n\nUbuntu 24.04, baseline/latest on Node 24 and baseline on Node 22. Six completed App runs per cell exercise repeated-prompt follow-up, independent sessions, App restart/resume and explicit Skill Search/Add through native Read/Shell tools, using a local protocol mock, native database persistence and exact automatic Add with synthetic authentication. A seventh run cancels a pending Shell through native Stop, requiring interrupted Hook state, no command execution and no additional Memory request. Scripted tool requests do not validate model-driven Skill selection. This Linux matrix does not validate real login, hosted models, full functional coverage or three-platform acceptance.\n' "$PACKAGE_RESULT" "$CURSOR_RESULT" >> "$GITHUB_STEP_SUMMARY"
+          printf 'Package: **%s**\n\nCursor App Linux/macOS matrix: **%s**.\n\nUbuntu 24.04 and macOS 15, baseline/latest on Node 24 and Linux baseline on Node 22. Six completed App runs per cell exercise repeated-prompt follow-up, independent sessions, App restart/resume and explicit Skill Search/Add through native Read/Shell tools, using a local protocol mock, native database persistence and exact automatic Add with synthetic authentication. A seventh run cancels a pending Shell through native Stop, requiring interrupted Hook state, no command execution and no additional Memory request. Scripted tool requests do not validate model-driven Skill selection. macOS requires verified code signatures, Gatekeeper and a network-only sandbox on a fresh GitHub-hosted runner. This matrix does not validate real login, Keychain isolation, hosted models, full functional coverage or Windows acceptance.\n' "$PACKAGE_RESULT" "$CURSOR_RESULT" >> "$GITHUB_STEP_SUMMARY"
           if [[ "$PACKAGE_RESULT" != success || "$CURSOR_RESULT" != success ]]; then
             echo '::error::The package and Cursor App canary must both succeed. Failed, cancelled or skipped dependencies do not pass this check.'
             exit 1

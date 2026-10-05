@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { baselineRelease, validateLinuxRelease } from "./cursor-app-release.mjs";
 import { projectCursorAppDiagnostics } from "./cursor-app-diagnostics.mjs";
+import { projectMacosNetworkDiagnostic } from "./cursor-app-macos-isolation-check.mjs";
 
 const exec = promisify(execFile);
 const scripts = dirname(fileURLToPath(import.meta.url));
@@ -71,15 +72,16 @@ export function makeContainerArgs({ runId, imageId, seccompPath, expectedVersion
     "/opt/probe/node_modules/playwright-core", "/artifacts", nodeMajor];
 }
 
-export function projectNativeReport(input, { expectedVersion = provenance.cursor.version, nodeMajor = "24" } = {}) {
+export function projectNativeReport(input, { expectedVersion = provenance.cursor.version, nodeMajor = "24", platform = "linux" } = {}) {
   check(typeof expectedVersion === "string" && versionPattern.test(expectedVersion), "CURSOR_CONTAINER_RELEASE");
+  check(["linux", "darwin"].includes(platform), "CURSOR_CONTAINER_REPORT");
   cursorAppNodeImage(nodeMajor);
   const nodeVersion = typeof input?.node === "string" && input.node.match(versionPattern);
   check(input && ["PASS", "FAIL"].includes(input.status) && input.client === "cursor"
-    && input.kind === "app-native-session-flows" && input.platform === "linux"
+    && input.kind === "app-native-session-flows" && input.platform === platform
     && nodeVersion && nodeVersion[1] === nodeMajor && (nodeMajor !== "22" || Number(nodeVersion[2]) >= 13)
     && stages.has(input.stage), "CURSOR_CONTAINER_REPORT");
-  const report = { status: input.status, client: "cursor", kind: input.kind, platform: "linux", node: input.node,
+  const report = { status: input.status, client: "cursor", kind: input.kind, platform, node: input.node,
     stage: input.stage, evidence: {} };
   if (input.version !== undefined) {
     check(input.version === expectedVersion, "CURSOR_CONTAINER_REPORT");
@@ -92,6 +94,10 @@ export function projectNativeReport(input, { expectedVersion = provenance.cursor
   for (const key of completedEvidence) if (input.evidence?.[key] !== undefined) {
     check(typeof input.evidence[key] === "boolean", "CURSOR_CONTAINER_REPORT");
     report.evidence[key] = input.evidence[key];
+  }
+  if (platform === "darwin" && input.evidence?.networkIsolation !== undefined) {
+    check(typeof input.evidence.networkIsolation === "boolean", "CURSOR_CONTAINER_REPORT");
+    report.evidence.networkIsolation = input.evidence.networkIsolation;
   }
   const content = input.evidence?.nativeContent;
   if (content !== undefined) {
@@ -118,8 +124,12 @@ export function projectNativeReport(input, { expectedVersion = provenance.cursor
   }
   if (input.memoryRequestCount !== undefined) report.memoryRequestCount = count(input.memoryRequestCount);
   if (input.diagnostics !== undefined) report.diagnostics = projectCursorAppDiagnostics(input.diagnostics);
+  if (platform === "darwin" && input.networkIsolationFailure !== undefined) {
+    report.networkIsolationFailure = projectMacosNetworkDiagnostic(input.networkIsolationFailure);
+  }
   if (report.status === "PASS") check(report.stage === "complete" && report.version === expectedVersion && !report.errorCode && !report.cleanupError && !report.nativeContentError
     && completedEvidence.every((key) => report.evidence[key] === true)
+    && (platform !== "darwin" || report.evidence.networkIsolation === true && input.networkIsolationFailure === undefined)
     && content?.length === 6 && [3, 6, 3, 9, 15, 21].every((blobs, index) => content[index]?.composerMatched === true
       && content[index]?.stateMatched === true && content[index]?.blobCount === blobs)
     && report.agent?.runs === 7 && report.agent.writes.length === 7 && [3, 3, 3, 3, 6, 6, 0].every((value, index) => report.agent.writes[index] === value)

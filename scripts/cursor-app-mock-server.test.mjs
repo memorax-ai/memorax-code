@@ -186,10 +186,11 @@ async function pendingShell(t, { context = true, timeoutMs = 15_000 } = {}) {
   const stream = openRun(t, server);
   stream.send(runMessage());
   if (context) {
-    await waitFor(() => server.runs[0]?.requestContextRequestCount === 1);
+    await waitFor(() => stream.frames.length === 1 && server.runs[0]?.requestContextRequestCount === 1);
     stream.request.write(Buffer.concat([frame(execContextResult(1, Buffer.alloc(0))), frame(execControl(1))]));
   }
-  await waitFor(() => server.runs[0]?.pendingTool?.kind === "shell");
+  // The client must receive the pending Shell before a test resets its stream.
+  await waitFor(() => stream.frames.length === (context ? 3 : 2) && server.runs[0]?.pendingTool?.kind === "shell");
   const run = server.runs[0], tool = { ...run.pendingTool };
   return { server, stream, run, tool, step, arm: () => server.armCancellation({ requestId, toolCallId: tool.toolCallId }) };
 }

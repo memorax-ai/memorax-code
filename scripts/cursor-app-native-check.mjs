@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { lstat, mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
-import { networkInterfaces } from "node:os";
+import { networkInterfaces, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
@@ -38,6 +38,8 @@ const memoryRequests = [], turns = [];
 let agent, memory, app, browser, cli, page, started = false, appLog = "";
 let root, env, chromium, userData, workspace, failure, failureUi, skillRoot, skillText;
 let interruption;
+let macos, macosPaths, sandboxProfile, backendPort = 18787, debugPort = 9222;
+const observedMacosPids = new Set();
 const referenceTexts = new Map();
 
 function check(value, code) { if (!value) throw Object.assign(new Error(code), { code }); }
@@ -59,8 +61,12 @@ async function waitFor(predicate, code, timeoutMs = 30000) {
   } while (Date.now() < deadline);
   check(false, code);
 }
+function spawnOwned(file, args, options) {
+  const invocation = macos ? macos.sandboxInvocation(file, args, sandboxProfile) : { file, args };
+  return spawn(invocation.file, invocation.args, options);
+}
 async function command(args, code) {
-  const child = spawn(process.execPath, [join(packageRoot, "bin/memorax-code.mjs"), ...args],
+  const child = spawnOwned(process.execPath, [join(packageRoot, "bin/memorax-code.mjs"), ...args],
     { cwd: join(root, "workspace"), env, stdio: ["ignore", "pipe", "pipe"] });
   let stdout = "", overflow = false;
   child.stdout.on("data", (chunk) => { stdout += chunk; if (stdout.length > 1024 * 1024) { overflow = true; child.kill("SIGKILL"); } });
@@ -73,6 +79,9 @@ async function command(args, code) {
   } finally { clearTimeout(timer); }
 }
 async function ownedProcessesRemain({ includeBackend = true } = {}) {
+  if (macos) return macos.auditMacosProcesses({ appBundle: macosPaths.appBundle, packageRoot,
+    stateHome: env.MEMORAX_CODE_HOME, marker: interruption?.marker, includeBackend, selfPid: process.pid,
+    observedPids: observedMacosPids });
   for (const entry of await readdir("/proc")) {
     if (!/^\d+$/.test(entry) || Number(entry) === process.pid) continue;
     let argv;
@@ -148,7 +157,11 @@ function toolSteps(run, results) {
 }
 async function stopApp() {
   let closeError;
-  try { await bounded(browser?.close(), "CURSOR_APP_BROWSER_CLEANUP"); } catch (error) { closeError = error; }
+  if (macos && app && app.exitCode === null && app.signalCode === null) {
+    try { for (const pid of await macos.captureMacosDescendants(app.pid)) observedMacosPids.add(pid); }
+    catch (error) { closeError = error; }
+  }
+  try { await bounded(browser?.close(), "CURSOR_APP_BROWSER_CLEANUP"); } catch (error) { closeError ??= error; }
   browser = undefined;
   page = undefined;
   if (app && app.exitCode === null && app.signalCode === null) {
@@ -163,7 +176,7 @@ async function stopApp() {
   if (closeError) throw closeError;
 }
 async function assertProcessesStopped(options) {
-  // Never kill discovered PIDs; the owned container teardown removes any surviving descendants.
+  // Never kill discovered PIDs; residual descendants fail acceptance for runner/container teardown.
   for (let attempt = 0; attempt < 25; attempt++) {
     if (!await ownedProcessesRemain(options)) return;
     await delay(200);
@@ -171,19 +184,28 @@ async function assertProcessesStopped(options) {
   check(false, "CURSOR_APP_CLEANUP_DESCENDANTS");
 }
 async function startApp() {
-  app = spawn(appPath, ["--user-data-dir", userData, "--extensions-dir", join(root, "extensions"), "--new-window",
+  const endpoint = macos?.createDevToolsEndpointReader(debugPort);
+  let endpointError;
+  app = spawnOwned(appPath, ["--user-data-dir", userData, "--extensions-dir", join(root, "extensions"), "--new-window",
     "--skip-onboarding", "--skip-welcome", "--skip-release-notes", "--skip-add-to-recently-opened",
     "--disable-updates", "--disable-telemetry", "--disable-crash-reporter", "--use-inmemory-secretstorage",
     "--enable-smoke-test-driver", "--smoke-test-use-real-agent-http", "--test-backend-url", agent.url,
-    "--remote-debugging-address=127.0.0.1", "--remote-debugging-port=9222", workspace],
+    ...(macos ? ["--force-disable-user-env"] : []),
+    "--remote-debugging-address=127.0.0.1", `--remote-debugging-port=${debugPort}`, workspace],
   { cwd: workspace, env, stdio: ["ignore", "pipe", "pipe"] });
   const capture = (chunk) => { appLog = (appLog + chunk).slice(-1024 * 1024); };
-  app.stdout.on("data", capture); app.stderr.on("data", capture);
+  app.stdout.on("data", capture);
+  app.stderr.on("data", (chunk) => {
+    capture(chunk);
+    try { endpoint?.push(chunk); } catch (error) { endpointError = error; }
+  });
   app.on("error", () => { report.appSpawnFailed = true; });
   await waitFor(async () => {
-    try { return (await fetch("http://127.0.0.1:9222/json/version", { signal: AbortSignal.timeout(300) })).ok; } catch { return false; }
+    if (endpointError) throw endpointError;
+    if (endpoint) return Boolean(endpoint.get());
+    try { return (await fetch(`http://127.0.0.1:${debugPort}/json/version`, { signal: AbortSignal.timeout(300) })).ok; } catch { return false; }
   }, "CURSOR_APP_DEBUG_PORT");
-  browser = await chromium.connectOverCDP("http://127.0.0.1:9222", { timeout: 5000 });
+  browser = await chromium.connectOverCDP(endpoint?.get() ?? `http://127.0.0.1:${debugPort}`, { timeout: 5000 });
   await waitFor(async () => {
     page = browser.contexts().flatMap((context) => context.pages()).find((item) => item.url().includes("workbench.html"));
     return page && await page.evaluate(() => Boolean(window.driver)).catch(() => false);
@@ -360,20 +382,34 @@ async function interruptPendingShell() {
 
 try {
   const [nodeMajor, nodeMinor] = process.versions.node.split(".").map(Number);
-  check([7, 8].includes(process.argv.length) && process.platform === "linux" && ["22", "24"].includes(expectedNodeMajor)
+  check([7, 8].includes(process.argv.length) && ["linux", "darwin"].includes(process.platform) && ["22", "24"].includes(expectedNodeMajor)
     && nodeMajor === Number(expectedNodeMajor) && (nodeMajor !== 22 || nodeMinor >= 13),
     "CURSOR_APP_ARGUMENTS");
-  check(process.getuid() !== 0 && Object.values(networkInterfaces()).flat().every((item) => item.internal), "CURSOR_APP_ISOLATION");
-  check((await readFile("/proc/net/route", "utf8")).trim().split("\n").length === 1, "CURSOR_APP_EXTERNAL_ROUTE");
-  const security = await readFile("/proc/self/status", "utf8");
-  check(/^CapEff:\s+0+$/m.test(security) && /^NoNewPrivs:\s+1$/m.test(security) && /^Seccomp:\s+2$/m.test(security), "CURSOR_APP_SANDBOX");
-  let externalReachable = false;
-  try { await fetch("http://192.0.2.1:80", { signal: AbortSignal.timeout(1000) }); externalReachable = true; } catch {}
-  check(!externalReachable, "CURSOR_APP_EXTERNAL_NETWORK");
-  report.version = JSON.parse(await readFile(join(dirname(appPath), "resources/app/package.json"), "utf8")).version;
+  check(process.getuid() !== 0, "CURSOR_APP_ISOLATION");
+  // macOS Unix sockets have a short path limit; do not nest under the wrapper's TMPDIR.
+  root = await realpath(await mkdtemp(join(process.platform === "darwin" ? "/tmp" : tmpdir(), "memorax-cursor-app-ci-")));
+  if (process.platform === "darwin") {
+    check(process.env.GITHUB_ACTIONS === "true" && process.env.RUNNER_OS === "macOS" && process.arch === "arm64",
+      "CURSOR_APP_MACOS_RUNNER");
+    macos = await import("./cursor-app-macos-runtime.mjs");
+    const { runMacosIsolationProof, projectMacosNetworkDiagnostic } = await import("./cursor-app-macos-isolation-check.mjs");
+    const proof = await runMacosIsolationProof();
+    if (proof.status !== "PASS") report.networkIsolationFailure = projectMacosNetworkDiagnostic(proof.diagnostic);
+    check(proof.status === "PASS", proof.errorCode ?? "CURSOR_APP_MACOS_PROOF_FAILED");
+    report.evidence.networkIsolation = true;
+    macosPaths = macos.macosRuntimePaths({ root, appPath, packageRoot, nodePath: process.execPath });
+  } else {
+    check(Object.values(networkInterfaces()).flat().every((item) => item.internal), "CURSOR_APP_ISOLATION");
+    check((await readFile("/proc/net/route", "utf8")).trim().split("\n").length === 1, "CURSOR_APP_EXTERNAL_ROUTE");
+    const security = await readFile("/proc/self/status", "utf8");
+    check(/^CapEff:\s+0+$/m.test(security) && /^NoNewPrivs:\s+1$/m.test(security) && /^Seccomp:\s+2$/m.test(security), "CURSOR_APP_SANDBOX");
+    let externalReachable = false;
+    try { await fetch("http://192.0.2.1:80", { signal: AbortSignal.timeout(1000) }); externalReachable = true; } catch {}
+    check(!externalReachable, "CURSOR_APP_EXTERNAL_NETWORK");
+  }
+  report.version = JSON.parse(await readFile(macosPaths?.resourcesPackage ?? join(dirname(appPath), "resources/app/package.json"), "utf8")).version;
   check(report.version === expectedVersion, "CURSOR_APP_VERSION");
   ({ chromium } = await import(pathToFileURL(join(playwrightRoot, "index.mjs")).href));
-  root = await mkdtemp("/tmp/memorax-cursor-app-ci-");
   const home = join(root, "home");
   userData = join(root, "app-data"); workspace = join(root, "workspace");
   agent = await startCursorAgentMock({ answers: [...fixtures, interruptedFixture].map((fixture) => fixture.answer), toolSteps, timeoutMs: 60000 });
@@ -391,6 +427,11 @@ try {
     } catch { memoryRequests.push({ invalid: true }); response.writeHead(400); response.end(); }
   });
   await new Promise((resolve) => memory.listen(0, "127.0.0.1", resolve));
+  if (macos) {
+    backendPort = await macos.reserveFreePort();
+    debugPort = await macos.reserveFreePort();
+    check(backendPort !== debugPort, "CURSOR_APP_MACOS_PORTS");
+  }
   env = {
     PATH: `${join(dirname(dirname(packageRoot)), ".bin")}:/usr/local/bin:/usr/bin:/bin`, HOME: home, USERPROFILE: home, LANG: "C.UTF-8",
     DISPLAY: process.env.DISPLAY, XAUTHORITY: process.env.XAUTHORITY,
@@ -407,14 +448,22 @@ try {
     MEMORAX_CODE_MEMORAX_API_KEY: fixtureKey, MEMORAX_CODE_MEMORAX_USER_ID: fixtureUser,
     MEMORAX_CODE_MEMORY_WRITEBACK_ENABLED: "true", MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_ENABLED: "false",
     MEMORAX_CODE_MEMORY_WRITEBACK_CHUNK_ENABLED: "false",
+    ...(macosPaths?.env ?? {}),
   };
-  for (const path of [home, join(userData, "User"), workspace, env.CURSOR_HOME, env.XDG_RUNTIME_DIR]) await mkdir(path, { recursive: true, mode: 0o700 });
+  for (const path of [home, join(userData, "User"), workspace, env.CURSOR_HOME, env.XDG_RUNTIME_DIR,
+    ...(macos ? [macosPaths.tmp] : [])]) await mkdir(path, { recursive: true, mode: 0o700 });
+  if (macos) {
+    const { makeMacosNetworkProfile } = await import("./cursor-app-macos-isolation-check.mjs");
+    sandboxProfile = makeMacosNetworkProfile([Number(new URL(agent.url).port), memory.address().port, backendPort, debugPort],
+      [backendPort, debugPort], [userData, macosPaths.tmp]);
+  }
   // Cursor's login Shell sources /etc/profile, which resets the inherited PATH.
   await writeFile(join(home, ".profile"), `export PATH=${quote(env.PATH)}\n`);
+  if (macos) await writeFile(join(home, ".zprofile"), `export PATH=${quote(env.PATH)}\n`);
   await writeFile(join(userData, "User/settings.json"), JSON.stringify({ "update.mode": "none", "telemetry.telemetryLevel": "off",
     "extensions.autoUpdate": false, "extensions.autoCheckUpdates": false, "workbench.startupEditor": "none", "security.workspace.trust.enabled": false }));
   cli = (action) => command([action, "--home", env.MEMORAX_CODE_HOME, "--cursor-home", env.CURSOR_HOME,
-    "--port", "18787", "--clients", "cursor", "--json"], `CURSOR_APP_CANDIDATE_${action.toUpperCase()}`);
+    "--port", String(backendPort), "--clients", "cursor", "--json"], `CURSOR_APP_CANDIDATE_${action.toUpperCase()}`);
   report.stage = "candidate-install";
   started = true;
   check((await cli("start")).cursorAdapter?.enabled === true, "CURSOR_APP_ADAPTER_DISABLED");
@@ -506,6 +555,11 @@ finally {
   if (!report.cleanupError) report.evidence.cleanup = true;
   report.memoryRequestCount = memoryRequests.length;
   if (!report.errorCode && !report.cleanupError) { report.status = "PASS"; report.stage = "complete"; }
+  if (macos && root && !report.cleanupError) {
+    await rm(root, { recursive: true, force: true }).catch(() => {
+      report.status = "FAIL"; report.cleanupError = "CURSOR_APP_MACOS_STATE_CLEANUP"; report.evidence.cleanup = false;
+    });
+  }
   if (reportDir) {
     await mkdir(reportDir, { recursive: true });
     // This directory is private debugging material and is never a CI upload target.
