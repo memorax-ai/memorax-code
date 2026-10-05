@@ -308,6 +308,120 @@ ConvertTo-Json -InputObject @($results) -Depth 8 -Compress
   }
 });
 
+test("firewall diagnostics preserve exact failed steps and exclude private error details", async (t) => {
+  const available = spawnSync("pwsh", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "exit 0"],
+    { encoding: "utf8", timeout: 10000 });
+  if (available.error?.code === "ENOENT") return t.skip("PowerShell is not installed");
+  assert.equal(available.status, 0, "PowerShell is required to execute firewall fixtures");
+  const source = (await readFile(new URL("./cursor-app-windows-isolation-check.ps1", import.meta.url), "utf8"))
+    .replaceAll("\r\n", "\n");
+  let helper = source.match(/function Assert-OwnedRule\([\s\S]*?(?=\nfunction Find-PersistentRule)/)?.[0];
+  const findRule = source.match(/function Find-PersistentRule\([\s\S]*?(?=\ntry \{)/)?.[0];
+  const rules = source.match(/    \$report\.stage = 'firewall'\n[\s\S]*?(?=    \$report\.stage = 'restricted')/)?.[0];
+  const failure = source.split("\n} catch {\n")[1]?.split("\n} finally {\n")[0];
+  assert.ok(helper); assert.ok(findRule); assert.ok(rules); assert.ok(failure);
+  const descriptor = "[System.Security.AccessControl.RawSecurityDescriptor]";
+  assert.equal(helper.split(descriptor).length, 2);
+  helper = helper.replace(descriptor, "[MockSecurityDescriptor]");
+  const steps = ["precheck", "create", "active-read", "security-read", "security-parse", "security-verify", "action-verify"];
+  const cases = [{ family: "4", step: "success" },
+    ...["4", "6"].flatMap((family) => steps.map((step) => ({ family, step }))),
+    { family: "4", step: "create", code: "integer", expectedCode: 5 },
+    { family: "4", step: "create", code: "enum", expectedCode: 2 },
+    { family: "4", step: "create", code: "private-string" },
+    { family: "4", step: "create", code: "out-of-range" },
+    { family: "4", step: "security-verify", security: "authentication" },
+    { family: "4", step: "security-verify", security: "multiple-accounts" }];
+  const script = `
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+class FirewallFixtureException : System.Exception {
+    [object] $NativeErrorCode
+    FirewallFixtureException([object] $code) : base('private-canary-error') { $this.NativeErrorCode = $code }
+}
+class MockSecurityDescriptor {
+    [object[]] $DiscretionaryAcl
+    MockSecurityDescriptor([string] $value) {
+        if ($value -eq 'malformed') { throw 'private-canary-SDDL' }
+        $sid = if ($value -eq 'foreign') { 'private-canary-other-SID' } else { 'private-canary-SID' }
+        $this.DiscretionaryAcl = @([pscustomobject]@{ SecurityIdentifier = [pscustomobject]@{ Value = $sid } })
+        if ($value -eq 'multiple-accounts') { $this.DiscretionaryAcl += $this.DiscretionaryAcl[0] }
+    }
+}
+function Fail-At([string]$Step) {
+    if ($family -ne $case.family -or $case.step -ne $Step) { return }
+    $native = if ($case.ContainsKey('code')) {
+        switch ($case.code) { 'integer' { [int]5 }; 'enum' { [DayOfWeek]::Tuesday }; 'private-string' { 'private-canary-code' }; 'out-of-range' { [long]4294967296 } }
+    } else { $null }
+    throw [FirewallFixtureException]::new($native)
+}
+function Get-NetFirewallRule {
+    [CmdletBinding()] param([string]$PolicyStore, [string]$Name)
+    if ($PolicyStore -eq 'PersistentStore') { Fail-At 'precheck'; return }
+    Fail-At 'active-read'
+    [pscustomobject]@{ Enabled = 'True'; Action = $(if ($family -eq $case.family -and $case.step -eq 'action-verify') { 'Allow' } else { 'Block' }); Direction = 'Outbound' }
+}
+function New-NetFirewallRule { Fail-At 'create' }
+function Get-NetFirewallSecurityFilter {
+    param([Parameter(ValueFromPipeline = $true)]$Rule)
+    process {
+        if ($Rule.PSObject.Properties['cleanup']) {
+            [pscustomobject]@{ LocalUser = 'owned'; Authentication = $(if ($Rule.cleanup -eq 'fail') { 'Required' } else { 'NotRequired' }) }
+            return
+        }
+        Fail-At 'security-read'
+        $local = 'owned'; $authentication = 'NotRequired'
+        if ($family -eq $case.family) {
+            if ($case.step -eq 'security-parse') { $local = 'malformed' }
+            if ($case.step -eq 'security-verify') {
+                $local = 'foreign'
+                if ($case.ContainsKey('security')) {
+                    if ($case.security -eq 'authentication') { $local = 'owned'; $authentication = 'Required' }
+                    else { $local = 'multiple-accounts' }
+                }
+            }
+        }
+        [pscustomobject]@{ LocalUser = $local; Authentication = $authentication }
+    }
+}
+${helper}
+${findRule}
+$results = foreach ($case in ('${JSON.stringify(cases)}' | ConvertFrom-Json -AsHashtable)) {
+    $report = [ordered]@{}
+    $user = [pscustomobject]@{ SID = [pscustomobject]@{ Value = 'private-canary-SID' } }
+    $config = @{ denied4 = 31002; denied6 = 31004 }
+    $ruleNames = [System.Collections.Generic.List[string]]::new()
+    $errorCodes = @('CURSOR_APP_WINDOWS_FIREWALL_FAILED')
+    try {
+${rules}
+    } catch {
+${failure}
+    }
+    $beforeCleanup = $report | ConvertTo-Json -Depth 6 -Compress
+    Assert-OwnedRule ([pscustomobject]@{ cleanup = 'success' })
+    try { Assert-OwnedRule ([pscustomobject]@{ cleanup = 'fail' }) } catch {}
+    [ordered]@{ report = $report; failurePreserved = ($beforeCleanup -ceq ($report | ConvertTo-Json -Depth 6 -Compress)) }
+}
+ConvertTo-Json -InputObject @($results) -Depth 8 -Compress
+`;
+  const result = spawnSync("pwsh", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+    { encoding: "utf8", timeout: 25000, maxBuffer: 1024 * 1024 });
+  assert.equal(result.status, 0, "PowerShell firewall fixtures failed");
+  assert.equal(result.stderr, "");
+  assert.doesNotMatch(result.stdout, /private-canary|MemoraxCursorProof|D:\(/);
+  const reports = JSON.parse(result.stdout);
+  assert.equal(reports.length, cases.length);
+  for (const [index, entry] of cases.entries()) {
+    const report = { stage: "firewall" };
+    if (entry.step !== "success") {
+      report.firewallDiagnostic = { family: entry.family === "4" ? "ipv4" : "ipv6", step: entry.step,
+        ...(entry.expectedCode === undefined ? {} : { nativeErrorCode: entry.expectedCode }) };
+      report.errorCode = "CURSOR_APP_WINDOWS_FIREWALL_FAILED";
+    }
+    assert.deepEqual(reports[index], { report, failurePreserved: true }, `${entry.family}:${entry.step}:${entry.code ?? entry.security ?? "default"}`);
+  }
+});
+
 test("unproven process cleanup preserves the rule, account and private root for VM teardown", async () => {
   const source = (await readFile(new URL("./cursor-app-windows-isolation-check.ps1", import.meta.url), "utf8"))
     .replaceAll("\r\n", "\n");

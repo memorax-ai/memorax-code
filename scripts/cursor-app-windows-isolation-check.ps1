@@ -162,9 +162,12 @@ function Invoke-ProbeRun([string]$Mode) {
     return (Invoke-OwnedNode @($probe, 'summarize', $directory, $Mode)) | ConvertFrom-Json -AsHashtable
 }
 
-function Assert-OwnedRule($Rule) {
+function Assert-OwnedRule($Rule, [bool]$TrackDiagnostic = $false) {
+    if ($TrackDiagnostic) { $report.firewallDiagnostic.step = 'security-read' }
     $security = $Rule | Get-NetFirewallSecurityFilter
+    if ($TrackDiagnostic) { $report.firewallDiagnostic.step = 'security-parse' }
     $descriptor = [System.Security.AccessControl.RawSecurityDescriptor]::new($security.LocalUser)
+    if ($TrackDiagnostic) { $report.firewallDiagnostic.step = 'security-verify' }
     if ($security.Authentication -ne 'NotRequired' -or $descriptor.DiscretionaryAcl.Count -ne 1 -or
         $descriptor.DiscretionaryAcl[0].SecurityIdentifier.Value -cne $user.SID.Value) {
         throw 'CURSOR_APP_WINDOWS_FIREWALL_FAILED'
@@ -268,21 +271,26 @@ try {
     $report.stage = 'firewall'
     $localUserSddl = "D:(A;;CC;;;$($user.SID.Value))"
     foreach ($family in @('4', '6')) {
+        $report.firewallDiagnostic = [ordered]@{ family = $(if ($family -eq '4') { 'ipv4' } else { 'ipv6' }); step = 'precheck' }
         $ruleName = 'MemoraxCursorProof-' + [Guid]::NewGuid().ToString('N')
         if (Find-PersistentRule $ruleName) {
             throw 'CURSOR_APP_WINDOWS_FIREWALL_FAILED'
         }
         $ruleNames.Add($ruleName)
         $address = if ($family -eq '4') { '127.0.0.1' } else { '::1' }
+        $report.firewallDiagnostic.step = 'create'
         $null = New-NetFirewallRule -Name $ruleName -DisplayName $ruleName -PolicyStore PersistentStore `
             -Enabled True -Profile Any -Direction Outbound -Action Block -Protocol TCP `
             -RemoteAddress $address -RemotePort $config["denied$family"] -LocalUser $localUserSddl -Authentication NotRequired
+        $report.firewallDiagnostic.step = 'active-read'
         $activeRule = Get-NetFirewallRule -Name $ruleName -PolicyStore ActiveStore
-        Assert-OwnedRule $activeRule
+        Assert-OwnedRule $activeRule -TrackDiagnostic $true
+        $report.firewallDiagnostic.step = 'action-verify'
         if ($activeRule.Enabled -ne 'True' -or $activeRule.Action -ne 'Block' -or $activeRule.Direction -ne 'Outbound') {
             throw 'CURSOR_APP_WINDOWS_FIREWALL_FAILED'
         }
     }
+    $report.Remove('firewallDiagnostic')
     $report.stage = 'restricted'
     $restricted = Invoke-ProbeRun 'restricted'
     $report.counts.processLevels = $restricted.levelCount
@@ -299,6 +307,13 @@ try {
     $report.status = 'PASS'
     $report.stage = 'done'
 } catch {
+    if ($report.stage -eq 'firewall' -and $report.Contains('firewallDiagnostic')) {
+        $nativeError = $_.Exception.PSObject.Properties['NativeErrorCode']
+        if ($nativeError -and ($nativeError.Value -is [int] -or
+            ($nativeError.Value -is [Enum] -and [Enum]::GetUnderlyingType($nativeError.Value.GetType()) -eq [int]))) {
+            $report.firewallDiagnostic.nativeErrorCode = [int]$nativeError.Value
+        }
+    }
     $code = $_.Exception.Message
     $report.errorCode = if ($errorCodes -ccontains $code) { $code } else {
         switch ($report.stage) {
