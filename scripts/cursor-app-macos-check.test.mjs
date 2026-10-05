@@ -47,7 +47,8 @@ test("the actual macOS orchestration fails closed before launch and preserves cl
   const source = await readFile(new URL("./cursor-app-macos-check.mjs", import.meta.url), "utf8");
   const body = source.split("export async function runMacosCheck(")[1]?.split("\nif (process.argv[1]")[0];
   assert.ok(body);
-  for (const kind of ["native-failure", "proof-failure", "install-failure", "artifact-failure", "busy-detach", "invalid-report", "missing-report"]) {
+  for (const kind of ["native-failure", "proof-failure", "candidate-install-failure", "probe-install-failure",
+    "artifact-failure", "busy-detach", "invalid-report", "missing-report"]) {
     await t.test(kind, async () => {
       const calls = [], output = new Map();
       const error = (code) => Object.assign(new Error(code), { code });
@@ -82,7 +83,12 @@ test("the actual macOS orchestration fails closed before launch and preserves cl
           if (args[0].endsWith("npm-cli.js")) {
             calls.push(["install"]);
             assert.ok(args.includes("--ignore-scripts") && args.includes("--globalconfig") && args.includes("--userconfig"));
-            if (kind === "install-failure") throw error("CURSOR_APP_MACOS_INSTALL_FAILED");
+            const userConfig = args[args.indexOf("--userconfig") + 1], globalConfig = args[args.indexOf("--globalconfig") + 1];
+            assert.notEqual(userConfig, globalConfig, "npm refuses to load the same file for two configuration layers");
+            assert.equal(output.get(userConfig), ""); assert.equal(output.get(globalConfig), "");
+            const prefix = args[args.indexOf("--prefix") + 1];
+            if ((kind === "candidate-install-failure" && prefix.endsWith("/candidate"))
+              || (kind === "probe-install-failure" && prefix.endsWith("/probe"))) throw error("CURSOR_APP_MACOS_INSTALL_FAILED");
           } else {
             calls.push(["native"]);
             assert.equal(args[0], "/owned/scripts/cursor-app-native-check.mjs");
@@ -110,7 +116,15 @@ test("the actual macOS orchestration fails closed before launch and preserves cl
       assert.equal(output.get("/owned/report/report.json"), `${JSON.stringify(result, null, 2)}\n`);
       assert.deepEqual(calls[0], ["proof"]);
       if (kind === "proof-failure") assert.deepEqual(calls, [["proof"]]);
-      if (["proof-failure", "install-failure", "artifact-failure"].includes(kind)) assert.equal(calls.some(([type]) => type === "native"), false);
+      if (["proof-failure", "candidate-install-failure", "probe-install-failure", "artifact-failure"].includes(kind)) {
+        assert.equal(calls.some(([type]) => type === "native"), false);
+      }
+      if (kind.endsWith("install-failure")) {
+        assert.equal(result.stage, "macos-installation");
+        assert.equal(result.errorCode, kind === "candidate-install-failure"
+          ? "CURSOR_APP_MACOS_CANDIDATE_INSTALL" : "CURSOR_APP_MACOS_PROBE_INSTALL");
+        assert.equal(calls.filter(([type]) => type === "install").length, kind === "candidate-install-failure" ? 1 : 2);
+      }
       const removed = calls.findIndex(([type]) => type === "remove");
       if (["busy-detach", "invalid-report", "missing-report"].includes(kind)) {
         assert.equal(removed, -1); assert.ok(result.cleanupError);

@@ -48,13 +48,19 @@ export async function runMacosCheck(candidatePath, reportPath, { releaseManifest
     root = await realpath(await mkdtemp(join(tmpdir(), "memorax-cursor-macos-ci-")));
     const env = macosCheckEnvironment(root, process.execPath);
     await mkdir(env.HOME, { mode: 0o700 }); await mkdir(env.TMPDIR, { mode: 0o700 });
-    const npmConfig = join(root, "empty.npmrc");
-    await writeFile(npmConfig, "", { flag: "wx", mode: 0o600 });
+    report.stage = "macos-installation";
+    const npmUserConfig = join(root, "empty-user.npmrc"), npmGlobalConfig = join(root, "empty-global.npmrc");
+    await writeFile(npmUserConfig, "", { flag: "wx", mode: 0o600 });
+    await writeFile(npmGlobalConfig, "", { flag: "wx", mode: 0o600 });
     const npm = join(dirname(process.execPath), "../lib/node_modules/npm/bin/npm-cli.js");
     for (const [prefix, target] of [["candidate", candidate], ["probe", "playwright-core@1.58.2"]]) {
-      await exec(process.execPath, [npm, "install", "--prefix", join(root, prefix), "--ignore-scripts", "--no-audit", "--no-fund",
-        "--package-lock=false", "--registry=https://registry.npmjs.org/", "--userconfig", npmConfig, "--globalconfig", npmConfig, target],
-      { cwd: root, env, timeout: 180_000, signal, maxBuffer: 1024 * 1024 });
+      try {
+        await exec(process.execPath, [npm, "install", "--prefix", join(root, prefix), "--ignore-scripts", "--no-audit", "--no-fund",
+          "--package-lock=false", "--registry=https://registry.npmjs.org/", "--userconfig", npmUserConfig, "--globalconfig", npmGlobalConfig, target],
+        { cwd: root, env, timeout: 180_000, signal, maxBuffer: 1024 * 1024 });
+      } catch {
+        check(false, prefix === "candidate" ? "CURSOR_APP_MACOS_CANDIDATE_INSTALL" : "CURSOR_APP_MACOS_PROBE_INSTALL");
+      }
     }
     report.stage = "macos-acquisition";
     await withCursorMacosApp({ release, root, signal }, async ({ appPath, evidence }) => {
