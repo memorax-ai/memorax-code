@@ -13,6 +13,12 @@ const signatureRequirement = `=identifier "${bundleIdentifier}" and anchor apple
 const maxDownloadBytes = 600_000_000;
 const maxMetadataBytes = 1024 * 1024;
 const codePrefix = "CURSOR_APP_MACOS_ARTIFACT_";
+const detachStderrClasses = new Map([
+  ["hdiutil: detach failed - Resource busy", "resource-busy"],
+  ["hdiutil: detach failed - Operation not permitted", "operation-not-permitted"],
+  ["hdiutil: detach failed - Permission denied", "permission-denied"],
+  ["hdiutil: detach failed - No such file or directory", "missing-target"],
+]);
 
 function failure(suffix) {
   const code = codePrefix + suffix;
@@ -20,6 +26,28 @@ function failure(suffix) {
 }
 function check(value, suffix) { if (!value) throw failure(suffix); }
 function checkAborted(signal) { check(!signal?.aborted, "ABORTED"); }
+
+export function projectCursorMacosDetachDiagnostics(value) {
+  return {
+    exitCode: Number.isInteger(value?.exitCode) && value.exitCode >= 0 && value.exitCode <= 255 ? value.exitCode : null,
+    signal: value?.signal == null ? "none"
+      : ["none", "SIGABRT", "SIGBUS", "SIGILL", "SIGKILL", "SIGSEGV", "SIGTERM", "SIGTRAP"].includes(value.signal) ? value.signal : "other",
+    timedOut: value?.timedOut === true, outputOverflow: value?.outputOverflow === true,
+    stderrClass: value?.stderrClass === undefined ? "absent"
+      : [...detachStderrClasses.values(), "absent", "other"].includes(value.stderrClass) ? value.stderrClass : "other",
+  };
+}
+
+function detachDiagnostics(error, result, timedOut) {
+  const stderr = error?.stderr ?? result?.stderr;
+  let stderrClass = stderr === undefined || stderr === "" ? "absent" : "other";
+  if (typeof stderr === "string" && Buffer.byteLength(stderr) <= 4096) {
+    const matches = new Set(stderr.split(/\r?\n/).map((line) => detachStderrClasses.get(line)).filter(Boolean));
+    if (matches.size === 1) stderrClass = [...matches][0];
+  }
+  return projectCursorMacosDetachDiagnostics({ exitCode: typeof error?.code === "number" ? error.code : result?.code,
+    signal: error?.signal ?? result?.signal, timedOut, outputOverflow: error?.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER", stderrClass });
+}
 
 function validateRelease(input, channel) {
   try {
@@ -74,18 +102,21 @@ async function download(release, path, fetchImpl, signal) {
 }
 
 async function command(execute, file, args, options, suffix) {
+  let result;
   try {
     checkAborted(options.signal);
-    const result = await execute(file, args, { timeout: 120_000, maxBuffer: maxMetadataBytes, encoding: "utf8",
+    result = await execute(file, args, { timeout: 120_000, maxBuffer: maxMetadataBytes, encoding: "utf8",
       killSignal: "SIGKILL", ...options });
     check(result && (result.code === undefined || result.code === 0) && typeof result.stdout === "string"
       && Buffer.byteLength(result.stdout) <= maxMetadataBytes, suffix);
     return result.stdout;
   } catch (error) {
     if (options.signal?.aborted) throw failure("ABORTED");
-    if (error?.code === "ETIMEDOUT" || (error?.killed === true && error.signal === "SIGKILL"
-      && error.code !== "ERR_CHILD_PROCESS_STDIO_MAXBUFFER")) throw failure(suffix + "_TIMEOUT");
-    throw failure(suffix);
+    const timedOut = error?.code === "ETIMEDOUT" || (error?.killed === true && error.signal === "SIGKILL"
+      && error.code !== "ERR_CHILD_PROCESS_STDIO_MAXBUFFER");
+    const caught = failure(timedOut ? suffix + "_TIMEOUT" : suffix);
+    if (suffix === "DETACH") caught.artifactDetach = detachDiagnostics(error, result, timedOut);
+    throw caught;
   }
 }
 
@@ -199,7 +230,10 @@ export async function withCursorMacosApp({ release, root, signal, execute = exec
   }
   if (cleanupError) cleanupError.cleanupErrorCode = cleanupError.code;
   if (primaryError) {
-    if (cleanupError) primaryError.cleanupErrorCode = cleanupError.code;
+    if (cleanupError) {
+      primaryError.cleanupErrorCode = cleanupError.code;
+      if (cleanupError.artifactDetach) primaryError.artifactDetach = cleanupError.artifactDetach;
+    }
     throw primaryError;
   }
   if (cleanupError) throw cleanupError;

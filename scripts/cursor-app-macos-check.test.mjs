@@ -8,6 +8,7 @@ import { runInNewContext } from "node:vm";
 import { macosCheckEnvironment, runMacosCheck } from "./cursor-app-macos-check.mjs";
 import { projectNativeReport } from "./cursor-app-container-check.mjs";
 import { projectMacosNetworkDiagnostic } from "./cursor-app-macos-isolation-check.mjs";
+import { projectCursorMacosDetachDiagnostics } from "./cursor-app-macos-artifact.mjs";
 const { dirname, join, resolve } = posix;
 
 test("macOS acquisition and native controller use only isolated state and an environment whitelist", () => {
@@ -63,7 +64,7 @@ test("the actual macOS orchestration fails closed before launch and preserves cl
         process: { platform: "darwin", arch: "arm64", versions: { node: "24.20.0" }, execPath: "/owned/node/bin/node",
           env: { GITHUB_ACTIONS: "true", RUNNER_OS: "macOS" } },
         dirname, join, resolve, scripts: "/owned/scripts", tmpdir: () => "/owned/tmp", macosCheckEnvironment, projectNativeReport,
-        projectMacosNetworkDiagnostic,
+        projectMacosNetworkDiagnostic, projectCursorMacosDetachDiagnostics,
         check(value, code) { if (!value) throw error(code); }, safeCode: (caught) => caught.code ?? "CURSOR_APP_MACOS_CHECK_FAILED",
         async lstat(path) {
           if (kind === "missing-report" && path.endsWith("report.json")) throw error("ENOENT");
@@ -109,7 +110,13 @@ test("the actual macOS orchestration fails closed before launch and preserves cl
           if (kind === "artifact-failure") throw error("CURSOR_APP_MACOS_ARTIFACT_SIGNATURE");
           try { return await callback({ appPath: "/owned/verified/Cursor.app/Contents/MacOS/Cursor", evidence: { signatureVerified: true } }); }
           catch (caught) {
-            if (kind.startsWith("busy-detach")) caught.cleanupErrorCode = "CURSOR_APP_MACOS_ARTIFACT_DETACH";
+            if (kind.startsWith("busy-detach")) {
+              caught.cleanupErrorCode = "CURSOR_APP_MACOS_ARTIFACT_DETACH";
+              caught.artifactDetach = { exitCode: 1, signal: "none", timedOut: false, outputOverflow: false,
+                stderrClass: "resource-busy", stderr: "/private/unpublished-canary", path: "/private/unpublished-canary" };
+              if (kind === "busy-detach-with-native-cleanup") Object.assign(caught.artifactDetach,
+                { exitCode: "unpublished-canary", signal: "unpublished-canary", stderrClass: "unpublished-canary" });
+            }
             throw caught;
           } finally { calls.push(["detach"]); }
         },
@@ -139,6 +146,11 @@ test("the actual macOS orchestration fails closed before launch and preserves cl
       }
       if (kind === "busy-detach") assert.equal(result.cleanupError, "CURSOR_APP_MACOS_ARTIFACT_DETACH");
       if (kind.startsWith("busy-detach")) assert.equal(result.artifactCleanupError, "CURSOR_APP_MACOS_ARTIFACT_DETACH");
+      if (kind.startsWith("busy-detach")) assert.deepEqual(result.artifactDetach, {
+        exitCode: kind === "busy-detach" ? 1 : null, signal: kind === "busy-detach" ? "none" : "other",
+        timedOut: false, outputOverflow: false, stderrClass: kind === "busy-detach" ? "resource-busy" : "other",
+      });
+      else assert.equal(result.artifactDetach, undefined);
       if (kind === "busy-detach-with-native-cleanup") assert.equal(result.cleanupError, "CURSOR_APP_CLEANUP_DESCENDANTS");
     });
   }

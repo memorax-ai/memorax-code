@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { collectCursorAppDiagnostics, collectCursorAppLaunchDiagnostics, collectCursorAppStopDiagnostics, isCursorAppDiagnostics,
-  projectCursorAppDiagnostics, projectCursorAppLaunchDiagnostics, projectCursorAppStopDiagnostics } from "./cursor-app-diagnostics.mjs";
+  projectCursorAppDiagnostics, projectCursorAppLaunchDiagnostics, projectCursorAppSandboxDiagnostics, projectCursorAppStopDiagnostics } from "./cursor-app-diagnostics.mjs";
 
 const privateCanary = "private-content-path-token-canary";
 
@@ -88,6 +88,41 @@ test("SandboxSerializer diagnostics distinguish exact policy modes and bounded s
       " Operation not permittedextra", " Operation not permitted.", ` ${"x".repeat(256)}Operation not permitted`]) {
       assert.equal(collectCursorAppLaunchDiagnostics({ log: prefix + suffix }).markers.sandboxPolicyPermissionDenied, false);
     }
+  }
+});
+
+test("Seatbelt pipe diagnostics distinguish exact length and body read failures", () => {
+  for (const [marker, prefix] of [["sandboxPipeLengthReadFailed", "SeatbeltExec: buffer length read failed"],
+    ["sandboxPipeBodyReadFailed", "SeatbeltExec: buffer read failed"]]) {
+    for (const suffix of ["", "\n", "\r\n", `: ${privateCanary}`]) {
+      const result = collectCursorAppLaunchDiagnostics({ log: prefix + suffix });
+      assert.equal(result.markers[marker], true); assert.equal(JSON.stringify(result).includes(privateCanary), false);
+    }
+    for (const log of [prefix + "extra", prefix.replace(" read ", "\nread "), prefix.replace("read", "write"),
+      prefix.replace("SeatbeltExec: ", "")]) {
+      assert.equal(collectCursorAppLaunchDiagnostics({ log }).markers[marker], false);
+    }
+  }
+});
+
+test("sandbox log projection publishes only coherent fixed statuses, reasons and collected marker booleans", () => {
+  for (const [status, reason] of [["collected", "none"], ["empty", "none"], ["overflow", "overflow"],
+    ...["execute-failed", "timeout", "parse-invalid", "scope-mismatch"].map((reason) => ["unavailable", reason])]) {
+    const result = projectCursorAppSandboxDiagnostics({ status, reason, raw: privateCanary,
+      markers: { permissionDenied: true, sandboxCompiledPolicyFailed: "true", [privateCanary]: true } });
+    assert.equal(result.status, status); assert.equal(result.reason, reason);
+    assert.equal(result.markers.permissionDenied, status === "collected");
+    assert.equal(result.markers.sandboxCompiledPolicyFailed, false);
+    assert.equal(JSON.stringify(result).includes(privateCanary), false);
+    assert.deepEqual(projectCursorAppSandboxDiagnostics(result), result);
+  }
+  for (const value of [undefined, {}, { status: privateCanary, reason: privateCanary },
+    { status: "collected", reason: "execute-failed", markers: { permissionDenied: true } },
+    { status: "unavailable", reason: "none" }, { status: "overflow", reason: "timeout" }]) {
+    const result = projectCursorAppSandboxDiagnostics(value);
+    assert.equal(result.status, "unavailable"); assert.equal(result.reason, "parse-invalid");
+    assert.ok(Object.values(result.markers).every((value) => value === false));
+    assert.equal(JSON.stringify(result).includes(privateCanary), false);
   }
 });
 

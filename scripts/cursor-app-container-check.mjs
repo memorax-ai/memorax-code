@@ -7,7 +7,8 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { baselineRelease, validateLinuxRelease } from "./cursor-app-release.mjs";
-import { projectCursorAppDiagnostics, projectCursorAppLaunchDiagnostics, projectCursorAppStopDiagnostics } from "./cursor-app-diagnostics.mjs";
+import { projectCursorAppDiagnostics, projectCursorAppLaunchDiagnostics, projectCursorAppSandboxDiagnostics,
+  projectCursorAppStopDiagnostics } from "./cursor-app-diagnostics.mjs";
 import { projectMacosNetworkDiagnostic } from "./cursor-app-macos-isolation-check.mjs";
 
 const exec = promisify(execFile);
@@ -129,6 +130,9 @@ export function projectNativeReport(input, { expectedVersion = provenance.cursor
   if (input.diagnostics !== undefined) report.diagnostics = projectCursorAppDiagnostics(input.diagnostics);
   if (input.appLaunch !== undefined) report.appLaunch = projectCursorAppLaunchDiagnostics(input.appLaunch);
   if (input.status === "FAIL" && input.candidateStop !== undefined) report.candidateStop = projectCursorAppStopDiagnostics(input.candidateStop);
+  if (platform === "darwin" && input.status === "FAIL" && input.appSandboxLog !== undefined) {
+    report.appSandboxLog = projectCursorAppSandboxDiagnostics(input.appSandboxLog);
+  }
   if (platform === "darwin" && input.networkIsolationFailure !== undefined) {
     report.networkIsolationFailure = projectMacosNetworkDiagnostic(input.networkIsolationFailure);
   }

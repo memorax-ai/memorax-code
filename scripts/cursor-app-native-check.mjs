@@ -10,7 +10,8 @@ import { pathToFileURL } from "node:url";
 import { startCursorAgentMock } from "./cursor-app-mock-server.mjs";
 import { assertCursorAppNativeContent, assertCursorAppWritebacks } from "./cursor-app-native-content-check.mjs";
 import { assertCursorAppSkillReference, assertCursorAppMemoryOperation } from "./cursor-app-memory-check.mjs";
-import { collectCursorAppDiagnostics, collectCursorAppLaunchDiagnostics, collectCursorAppStopDiagnostics } from "./cursor-app-diagnostics.mjs";
+import { collectCursorAppDiagnostics, collectCursorAppLaunchDiagnostics, collectCursorAppStopDiagnostics,
+  projectCursorAppSandboxDiagnostics } from "./cursor-app-diagnostics.mjs";
 
 const [packageRoot, appPath, expectedVersion, playwrightRoot, reportDir, expectedNodeMajor = "24"] = process.argv.slice(2);
 const report = { status: "FAIL", client: "cursor", kind: "app-native-session-flows", platform: process.platform,
@@ -37,6 +38,7 @@ const searchMemory = "CURSOR_NATIVE_SEARCH_RESULT: validate parser input before 
 const memoryRequests = [], turns = [];
 let agent, memory, app, browser, cli, page, started = false, appLog = "";
 let appLaunchLog = "", appSpawnError, appDebugEndpointSeen = false;
+let appStartedAt, appStartPending = false;
 let root, env, chromium, userData, workspace, failure, failureUi, skillRoot, skillText;
 let interruption;
 let macos, macosPaths, sandboxProfile, backendPort = 18787, debugPort = 9222;
@@ -199,6 +201,7 @@ async function assertProcessesStopped(options) {
 }
 async function startApp() {
   appLaunchLog = ""; appSpawnError = undefined; appDebugEndpointSeen = false;
+  appStartedAt = Date.now(); appStartPending = true;
   const endpoint = macos?.createDevToolsEndpointReader(debugPort);
   let endpointError;
   app = spawnOwned(appPath, ["--user-data-dir", userData, "--extensions-dir", join(root, "extensions"), "--new-window",
@@ -236,6 +239,7 @@ async function startApp() {
   }), "CURSOR_APP_FAKE_AUTH_TIMEOUT");
   await bounded(page.evaluate(() => window.driver.whenWorkbenchRestored()), "CURSOR_APP_WORKBENCH_RESTORE_TIMEOUT", 30000);
   await assertLoopbackListeners();
+  appStartPending = false;
 }
 async function openSession(sessionId) {
   report.stage = "session-open";
@@ -537,6 +541,12 @@ try {
   if (app) report.appLaunch = collectCursorAppLaunchDiagnostics({ spawned: Boolean(app.pid),
     debugEndpointSeen: appDebugEndpointSeen, exitCode: app.exitCode, signal: app.signalCode,
     spawnError: appSpawnError, log: appLaunchLog });
+  if (macos && appStartPending) {
+    try {
+      report.appSandboxLog = await macos.collectMacosSandboxDiagnostics({ appBundle: macosPaths.appBundle,
+        startedAt: appStartedAt, endedAt: Date.now() });
+    } catch { report.appSandboxLog = projectCursorAppSandboxDiagnostics({ status: "unavailable", reason: "execute-failed" }); }
+  }
   const run = agent?.runs.at(-1);
   if (env && run) report.diagnostics = await collectCursorAppDiagnostics({ home: env.MEMORAX_CODE_HOME,
     sessionId: run.conversationId, turnId: run.requestId });

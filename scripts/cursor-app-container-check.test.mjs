@@ -70,6 +70,28 @@ test("macOS requires its network proof and all actual loopback-listener checkpoi
   }
 });
 
+test("only failed macOS reports publish fixed sandbox log diagnostics without raw records", () => {
+  const input = nativeReport();
+  input.platform = "darwin"; input.status = "FAIL"; input.stage = "app-start"; input.errorCode = "CURSOR_APP_EXITED";
+  input.appSandboxLog = { status: "collected", reason: "none", path: "private-log-canary",
+    processID: 12345, eventMessage: "private-log-canary", markers: { sandboxCompiledPolicyFailed: true,
+      permissionDenied: "true", "private-log-canary": true } };
+  const report = projectNativeReport(input, { platform: "darwin" });
+  assert.equal(report.status, "FAIL"); assert.equal(report.errorCode, "CURSOR_APP_EXITED");
+  assert.equal(report.appSandboxLog.status, "collected"); assert.equal(report.appSandboxLog.reason, "none");
+  assert.equal(report.appSandboxLog.markers.sandboxCompiledPolicyFailed, true);
+  assert.equal(report.appSandboxLog.markers.permissionDenied, false);
+  for (const value of ["private-log-canary", "12345", "eventMessage"]) assert.equal(JSON.stringify(report).includes(value), false);
+  input.appSandboxLog.status = "private-log-canary";
+  assert.equal(projectNativeReport(input, { platform: "darwin" }).appSandboxLog.status, "unavailable");
+  input.platform = "linux";
+  assert.equal(projectNativeReport(input).appSandboxLog, undefined);
+  const passed = nativeReport();
+  passed.platform = "darwin"; passed.evidence.networkIsolation = true; passed.evidence.loopbackListeners = true;
+  passed.listenerAuditCount = 10; passed.appSandboxLog = input.appSandboxLog;
+  assert.equal(projectNativeReport(passed, { platform: "darwin" }).appSandboxLog, undefined);
+});
+
 test("release pins distinguish official artifact provenance from observed checksums", () => {
   for (const arch of ["x64", "x86_64", "amd64"]) {
     const release = cursorAppRelease(arch);

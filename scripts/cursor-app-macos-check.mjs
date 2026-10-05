@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { projectNativeReport, readReleaseManifest } from "./cursor-app-container-check.mjs";
 import { runMacosIsolationProof, projectMacosNetworkDiagnostic } from "./cursor-app-macos-isolation-check.mjs";
-import { selectCursorMacosRelease, withCursorMacosApp } from "./cursor-app-macos-artifact.mjs";
+import { projectCursorMacosDetachDiagnostics, selectCursorMacosRelease, withCursorMacosApp } from "./cursor-app-macos-artifact.mjs";
 
 const exec = promisify(execFile);
 const scripts = dirname(fileURLToPath(import.meta.url));
@@ -87,6 +87,7 @@ export async function runMacosCheck(candidatePath, reportPath, { releaseManifest
       cleanupFailed = true;
       report.artifactCleanupError = safeCode({ code: error.cleanupErrorCode });
       report.cleanupError ??= report.artifactCleanupError;
+      if (error.artifactDetach !== undefined) report.artifactDetach = projectCursorMacosDetachDiagnostics(error.artifactDetach);
     }
   } finally {
     // A busy mounted App or unverified descendant must remain for runner teardown.

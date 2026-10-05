@@ -1299,7 +1299,13 @@ node scripts/cursor-app-container-check.mjs \
 Only `report.json` is exported and uploaded. Raw App logs, transcripts, SQLite
 files and Hook traces are not CI artifacts. App startup diagnostics publish
 only bounded exit codes, fixed signal/error enums and marker booleans, not raw
-stderr. Failed candidate stops retain only fixed Backend result enums,
+stderr. On macOS App-start failure, the trusted controller may also read at most
+120 seconds of unified logs for the owned App bundle and Chromium sandbox
+subsystem. It publishes only fixed collection status/reason enums and marker
+booleans; missing or invalid logs never replace the original failure. No raw
+unified logs, paths or PIDs are retained. Failed DMG detach diagnostics contain
+only bounded exit/signal outcomes, fixed status and stderr classifications, not
+raw text. Failed candidate stops retain only fixed Backend result enums,
 booleans and bounded process outcomes from the CLI's JSON output; raw command
 output, state, paths and error messages are not published. Synthetic login is not real account
 authentication coverage. Native Continue/Retry/Edit, Backend restart,

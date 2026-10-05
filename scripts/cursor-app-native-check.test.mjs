@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { PassThrough } from "node:stream";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
-import { collectCursorAppStopDiagnostics } from "./cursor-app-diagnostics.mjs";
+import { collectCursorAppStopDiagnostics, projectCursorAppSandboxDiagnostics } from "./cursor-app-diagnostics.mjs";
 
 const source = (await readFile(new URL("./cursor-app-native-check.mjs", import.meta.url), "utf8")).replaceAll("\r\n", "\n");
 
@@ -84,6 +84,40 @@ test("native failures capture the current App outcome before cleanup changes pro
   assert.match(source, /appLaunchLog = ""; appSpawnError = undefined; appDebugEndpointSeen = false;/);
   assert.match(source, /exitCode: app\.exitCode, signal: app\.signalCode/);
   assert.match(source, /spawnError: appSpawnError, log: appLaunchLog/);
+});
+
+test("only macOS start failures collect bounded sandbox diagnostics before cleanup without replacing the failure", async () => {
+  const start = source.indexOf("  if (macos && appStartPending) {");
+  const end = source.indexOf("\n  const run = agent?.runs.at(-1);", start);
+  const cleanup = source.indexOf("finally {\n  try { await stopApp();");
+  assert.ok(start > 0 && end > start && cleanup > end);
+  const body = source.slice(start, end);
+  for (const [isMacos, appStartPending, throws] of [[false, true, false], [true, false, false], [true, true, false], [true, true, true]]) {
+    const report = { status: "FAIL", errorCode: "CURSOR_APP_EXITED" };
+    let calls = 0;
+    const capture = runInNewContext(`(async function() { ${body} })`, {
+      report, appStartPending, appStartedAt: 1000, macosPaths: { appBundle: "/owned/Cursor.app" },
+      Date: { now: () => 2000 }, projectCursorAppSandboxDiagnostics,
+      macos: isMacos ? { async collectMacosSandboxDiagnostics(options) {
+        calls++;
+        assert.deepEqual(JSON.parse(JSON.stringify(options)), { appBundle: "/owned/Cursor.app", startedAt: 1000, endedAt: 2000 });
+        if (throws) throw new Error("private-log-canary");
+        return projectCursorAppSandboxDiagnostics({ status: "collected", reason: "none", markers: { sandboxCompiledPolicyFailed: true } });
+      } } : undefined,
+    }, { timeout: 100 });
+    await capture();
+    assert.equal(calls, isMacos && appStartPending ? 1 : 0);
+    assert.equal(report.status, "FAIL"); assert.equal(report.errorCode, "CURSOR_APP_EXITED");
+    if (calls) {
+      assert.equal(report.appSandboxLog.status, throws ? "unavailable" : "collected");
+      assert.equal(report.appSandboxLog.reason, throws ? "execute-failed" : "none");
+    } else assert.equal(report.appSandboxLog, undefined);
+    assert.equal(JSON.stringify(report).includes("private-log-canary"), false);
+  }
+  const launch = source.split("async function startApp() {")[1].split("\nasync function openSession(")[0];
+  assert.match(launch, /appStartedAt = Date\.now\(\); appStartPending = true;/);
+  assert.ok(launch.indexOf("appStartPending = true") < launch.indexOf("app = spawnOwned"));
+  assert.match(launch, /await assertLoopbackListeners\(\);\n  appStartPending = false;\n}/);
 });
 
 test("owned native commands and App launch retain the same macOS sandbox invocation without a shell", () => {

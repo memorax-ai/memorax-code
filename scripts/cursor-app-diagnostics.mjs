@@ -31,6 +31,8 @@ const launchMarkers = {
   sandboxCompiledPolicyFailed: /SandboxSerializer: Failed to apply compiled policy:/,
   sandboxSourcePolicyFailed: /SandboxSerializer: Failed to initialize sandbox with source mode policy:/,
   sandboxPolicyPermissionDenied: /SandboxSerializer: Failed to (?:deserialize policy|apply compiled policy|initialize sandbox with source mode policy):[^\r\n]{0,256}Operation not permitted(?:\r?\n|$)/,
+  sandboxPipeLengthReadFailed: /SeatbeltExec: buffer length read failed(?=:|\r?\n|$)/,
+  sandboxPipeBodyReadFailed: /SeatbeltExec: buffer read failed(?=:|\r?\n|$)/,
   processSingletonFailed: /Failed to create a ProcessSingleton|Failed to create.*SingletonSocket/,
   networkServiceCrashed: /Network service crashed/,
   gpuProcessFailed: /GPU process isn't usable|GPU process launch failed/,
@@ -55,6 +57,18 @@ export function collectCursorAppLaunchDiagnostics(value) {
   const log = typeof value?.log === "string" ? value.log.slice(-maxBytes) : "";
   return projectCursorAppLaunchDiagnostics({ ...value,
     markers: Object.fromEntries(Object.entries(launchMarkers).map(([key, pattern]) => [key, pattern.test(log)])) });
+}
+
+export function projectCursorAppSandboxDiagnostics(value) {
+  const statuses = ["collected", "empty", "unavailable", "overflow"];
+  const reasons = ["execute-failed", "timeout", "parse-invalid", "scope-mismatch"];
+  let status = value?.status, reason = value?.reason;
+  if (!statuses.includes(status) || (status === "unavailable" ? !reasons.includes(reason)
+    : reason !== (status === "overflow" ? "overflow" : "none"))) {
+    status = "unavailable"; reason = "parse-invalid";
+  }
+  return { status, reason, markers: Object.fromEntries(Object.keys(launchMarkers)
+    .map((key) => [key, status === "collected" && value?.markers?.[key] === true])) };
 }
 
 const stopBackendEnums = {

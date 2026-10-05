@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import test from "node:test";
-import { auditMacosListeners, auditMacosProcesses, captureMacosDescendants, createDevToolsEndpointReader, hasOwnedMacosProcesses, macosRuntimePaths,
+import { auditMacosListeners, auditMacosProcesses, captureMacosDescendants, collectMacosSandboxDiagnostics, createDevToolsEndpointReader, hasOwnedMacosProcesses, macosRuntimePaths,
   reserveFreePort, sandboxInvocation } from "./cursor-app-macos-runtime.mjs";
 
 const root = "/private/tmp/cursor run";
@@ -94,6 +94,130 @@ test("macOS process inspection executes bounded ps with a clean environment and 
   assert.equal(calls, 1);
   await assert.rejects(auditMacosProcesses(owners, async () => { throw new Error("private-process-canary"); }),
     { message: "CURSOR_APP_MACOS_PROCESS_AUDIT", code: "CURSOR_APP_MACOS_PROCESS_AUDIT" });
+});
+
+const logStart = Date.parse("2026-10-05T12:34:00.000Z");
+const logOptions = { appBundle, startedAt: logStart, endedAt: logStart + 30000, platform: "darwin",
+  environment: { GITHUB_ACTIONS: "true", RUNNER_OS: "macOS", PRIVATE_TOKEN: "private-log-canary" } };
+const logRecord = (eventMessage, changes = {}) => ({ eventType: "logEvent", timestamp: "2026-10-05 12:34:15.123456+0000",
+  subsystem: "org.chromium.sandbox", category: "chromium_logging", processImagePath: `${appBundle}/Contents/MacOS/Cursor`,
+  processID: 123, eventMessage, ...changes });
+const logLines = (...rows) => rows.map(JSON.stringify).join("\n") + "\n";
+function assertPrivateLogDropped(result) {
+  for (const text of [root, appBundle, "private-log-canary", "123", "eventMessage", "processID", "timestamp"])
+    assert.equal(JSON.stringify(result).includes(text), false);
+}
+
+test("macOS sandbox logs use a bounded exact owned-App predicate and project individual records", async () => {
+  const result = await collectMacosSandboxDiagnostics(logOptions, async (file, args, options) => {
+    assert.equal(file, "/usr/bin/log");
+    assert.deepEqual(args, ["show", "--style", "ndjson", "--no-pager", "--timezone", "UTC",
+      "--start", `@${logStart / 1000}`, "--end", `@${logStart / 1000 + 30}`, "--predicate",
+      `subsystem == "org.chromium.sandbox" AND category == "chromium_logging" AND processImagePath BEGINSWITH ${JSON.stringify(appBundle + "/")}`]);
+    assert.deepEqual(options, { encoding: "utf8", timeout: 5000, maxBuffer: 256 * 1024, killSignal: "SIGKILL",
+      env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" } });
+    return { stdout: logLines(logRecord("SeatbeltExec: buffer length read failed: private-log-canary"),
+      logRecord("SandboxSerializer: Failed to apply compiled policy: Operation not permitted"), { finished: 1 }), stderr: "" };
+  });
+  assert.equal(result.status, "collected"); assert.equal(result.reason, "none");
+  assert.equal(result.markers.sandboxPipeLengthReadFailed, true);
+  assert.equal(result.markers.sandboxCompiledPolicyFailed, true);
+  assert.equal(result.markers.sandboxPolicyPermissionDenied, true);
+  assert.equal(result.markers.sandboxPipeBodyReadFailed, false);
+  assertPrivateLogDropped(result);
+});
+
+test("sandbox logs do not manufacture same-line markers across separate records", async () => {
+  const result = await collectMacosSandboxDiagnostics(logOptions, async () => ({ stdout: logLines(
+    logRecord("SandboxSerializer: Failed to apply compiled policy:"), logRecord("Operation not permitted")) }));
+  assert.equal(result.status, "collected"); assert.equal(result.markers.sandboxCompiledPolicyFailed, true);
+  assert.equal(result.markers.permissionDenied, true); assert.equal(result.markers.sandboxPolicyPermissionDenied, false);
+});
+
+test("sandbox log markers use the precise launch interval within rounded query bounds", async () => {
+  const options = { ...logOptions, startedAt: logStart + 800, endedAt: logStart + 30200 };
+  for (const timestamp of ["2026-10-05 12:34:00.100000+0000", "2026-10-05 12:34:00.799999+0000",
+    "2026-10-05 12:34:30.200001+0000", "2026-10-05 12:34:30.900000+0000"]) {
+    const result = await collectMacosSandboxDiagnostics(options, async () => ({
+      stdout: logLines(logRecord("SeatbeltExec: buffer read failed", { timestamp })),
+    }));
+    assert.equal(result.status, "empty"); assert.equal(result.reason, "none");
+    assert.ok(Object.values(result.markers).every((value) => value === false));
+  }
+  for (const timestamp of ["2026-10-05 12:34:00.800000+0000", "2026-10-05 12:34:30.200000+0000"]) {
+    const result = await collectMacosSandboxDiagnostics(options, async () => ({ stdout: logLines(
+      logRecord("SeatbeltExec: buffer length read failed", { timestamp: "2026-10-05 12:34:00.100000+0000" }),
+      logRecord("SeatbeltExec: buffer read failed", { timestamp })) }));
+    assert.equal(result.status, "collected"); assert.equal(result.reason, "none");
+    assert.equal(result.markers.sandboxPipeBodyReadFailed, true);
+    assert.equal(result.markers.sandboxPipeLengthReadFailed, false);
+  }
+});
+
+test("sandbox log collection distinguishes empty output from invalid records and only ignores a final footer", async () => {
+  for (const stdout of ["", "\n", logLines({ finished: 1, statistics: "private-log-canary" })]) {
+    const result = await collectMacosSandboxDiagnostics(logOptions, async () => ({ stdout }));
+    assert.equal(result.status, "empty"); assert.equal(result.reason, "none");
+    assert.ok(Object.values(result.markers).every((value) => value === false)); assertPrivateLogDropped(result);
+  }
+  for (const stdout of ["private-log-canary", "[]\n", "null\n", logLines({}),
+    logLines({ finished: 1 }, logRecord("private-log-canary")), logLines({ finished: 1 }, { finished: 1 }),
+    logLines({ finished: 1, eventMessage: "private-log-canary" }),
+    logLines(logRecord(42)), logLines(logRecord("private-log-canary", { eventType: "activityCreateEvent" })),
+    logLines(logRecord("private-log-canary", { timestamp: "not-a-time" })),
+    logLines(logRecord("private-log-canary", { processImagePath: null })), undefined]) {
+    const result = await collectMacosSandboxDiagnostics(logOptions, async () => ({ stdout }));
+    assert.equal(result.status, "unavailable"); assert.equal(result.reason, "parse-invalid");
+    assert.ok(Object.values(result.markers).every((value) => value === false)); assertPrivateLogDropped(result);
+  }
+});
+
+test("sandbox log scope mismatch discards partial markers and never publishes adjacent records", async () => {
+  for (const change of [{ subsystem: "private-log-canary" }, { category: "other" },
+    { processImagePath: `${appBundle}-other/Contents/MacOS/Cursor` },
+    { processImagePath: `${appBundle}/../Other.app/Contents/MacOS/Cursor` },
+    { processImagePath: `${appBundle}/private\ncanary` },
+    { timestamp: "2026-10-05 12:33:59.999999+0000" }, { timestamp: "2026-10-05 12:34:31.000000+0000" },
+    { timestamp: "2026-99-99 12:34:15.123456+0000" }]) {
+    const result = await collectMacosSandboxDiagnostics(logOptions, async () => ({ stdout: logLines(
+      logRecord("SeatbeltExec: buffer read failed"), logRecord("private-log-canary", change)) }));
+    assert.equal(result.status, "unavailable"); assert.equal(result.reason, "scope-mismatch");
+    assert.ok(Object.values(result.markers).every((value) => value === false)); assertPrivateLogDropped(result);
+  }
+});
+
+test("sandbox log collection refuses non-CI, broad or oversized launch windows before execution", async () => {
+  for (const change of [{ platform: "linux" }, { environment: {} }, { environment: { GITHUB_ACTIONS: "true", RUNNER_OS: "Linux" } },
+    { appBundle: "/" }, { appBundle: "relative.app" }, { appBundle: "/private/tmp/Other" },
+    { appBundle: "/private/tmp/a/../Cursor.app" }, { appBundle: "/private/tmp/private\ncanary.app" },
+    { startedAt: undefined }, { startedAt: "0" }, { startedAt: 0 }, { startedAt: logStart + 1.5 },
+    { endedAt: logStart - 1 }, { endedAt: logStart + 120001 }]) {
+    let called = false;
+    const result = await collectMacosSandboxDiagnostics({ ...logOptions, ...change }, async () => { called = true; });
+    assert.equal(called, false); assert.equal(result.status, "unavailable"); assert.equal(result.reason, "scope-mismatch");
+    assertPrivateLogDropped(result);
+  }
+});
+
+test("sandbox log execution failures, timeouts and output limits remain fixed diagnostic outcomes", async () => {
+  for (const [error, status, reason] of [
+    [new Error("private-log-canary"), "unavailable", "execute-failed"],
+    [{ code: "EPERM", stderr: "private-log-canary" }, "unavailable", "execute-failed"],
+    [{ code: "ETIMEDOUT", stdout: "private-log-canary" }, "unavailable", "timeout"],
+    [{ killed: true, signal: "SIGKILL" }, "unavailable", "timeout"],
+    [{ code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER", killed: true, signal: "SIGKILL" }, "overflow", "overflow"],
+  ]) {
+    const result = await collectMacosSandboxDiagnostics(logOptions, async () => { throw error; });
+    assert.equal(result.status, status); assert.equal(result.reason, reason); assertPrivateLogDropped(result);
+  }
+  for (const [output, status, reason] of [
+    [{ stdout: "x".repeat(256 * 1024 + 1) }, "overflow", "overflow"],
+    [{ stdout: logLines(logRecord("SeatbeltExec: buffer read failed")), stderr: "private-log-canary" }, "unavailable", "execute-failed"],
+  ]) {
+    const result = await collectMacosSandboxDiagnostics(logOptions, async () => output);
+    assert.equal(result.status, status); assert.equal(result.reason, reason);
+    assert.ok(Object.values(result.markers).every((value) => value === false)); assertPrivateLogDropped(result);
+  }
 });
 
 test("descendant capture includes the live App root and transitive children from one bounded snapshot", async () => {

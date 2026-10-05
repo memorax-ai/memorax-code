@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { baselineRelease, resolveDownload } from "./cursor-app-release.mjs";
-import { selectCursorMacosRelease, withCursorMacosApp } from "./cursor-app-macos-artifact.mjs";
+import { projectCursorMacosDetachDiagnostics, selectCursorMacosRelease, withCursorMacosApp } from "./cursor-app-macos-artifact.mjs";
 
 const baseline = baselineRelease("darwin-arm64");
 const latest = resolveDownload("darwin-arm64", { version: "3.23.12", commitSha: "1".repeat(40),
@@ -15,6 +15,19 @@ const image = Buffer.from("synthetic image bytes, never mounted by a real proces
 const prefix = "CURSOR_APP_MACOS_ARTIFACT_";
 const posixTest = process.platform === "win32" ? test.skip : test;
 function error(suffix) { return { code: prefix + suffix, message: prefix + suffix }; }
+
+test("detach projection retains only bounded outcomes and fixed enums", () => {
+  const input = { exitCode: 1, signal: "SIGKILL", timedOut: true, outputOverflow: false, stderrClass: "resource-busy" };
+  assert.deepEqual(projectCursorMacosDetachDiagnostics({ ...input, stderr: "private", path: "/private", token: "private" }), input);
+  const invalid = projectCursorMacosDetachDiagnostics({ exitCode: "private", signal: "private", timedOut: "true",
+    outputOverflow: 1, stderrClass: "private", stderr: "private" });
+  assert.deepEqual(invalid, { exitCode: null, signal: "other", timedOut: false, outputOverflow: false, stderrClass: "other" });
+  assert.equal(JSON.stringify(invalid).includes("private"), false);
+  for (const exitCode of [-1, 256, 1.5, "1", NaN, Infinity]) {
+    assert.equal(projectCursorMacosDetachDiagnostics({ exitCode }).exitCode, null);
+  }
+  for (const exitCode of [0, 1, 255]) assert.equal(projectCursorMacosDetachDiagnostics({ exitCode }).exitCode, exitCode);
+});
 
 function executable() {
   const header = Buffer.alloc(32);
@@ -362,6 +375,7 @@ posixTest("callback failure or abort still detaches independently of the origina
   const original = Object.assign(new Error("CURSOR_APP_NATIVE_FAILED"), { code: "CURSOR_APP_NATIVE_FAILED" });
   await assert.rejects(state.run(async () => { controller.abort(); throw original; }, { signal: controller.signal }),
     (caught) => caught === original);
+  assert.equal(original.artifactDetach, undefined);
   assert.equal(state.calls.at(-1).operation, "detach");
   assert.equal(state.calls.at(-1).options.signal, undefined);
   await state.assertClean();
@@ -369,7 +383,8 @@ posixTest("callback failure or abort still detaches independently of the origina
 
 posixTest("busy detach never force-detaches or removes the mount, and preserves primary failure", async (t) => {
   for (const callbackFails of [false, true]) {
-    const state = await fixture(t, { fail: "detach" });
+    const state = await fixture(t, { commandError: { operation: "detach", error: Object.assign(new Error("private detach diagnostic"),
+      { code: 1, stderr: "hdiutil: detach failed - Resource busy\n", stdout: "private command output" }) } });
     const original = Object.assign(new Error("CURSOR_APP_NATIVE_FAILED"), { code: "CURSOR_APP_NATIVE_FAILED" });
     await assert.rejects(state.run(async () => { if (callbackFails) throw original; return "not returned"; }), (caught) => {
       if (callbackFails) {
@@ -379,14 +394,75 @@ posixTest("busy detach never force-detaches or removes the mount, and preserves 
         assert.equal(caught.code, prefix + "DETACH");
         assert.equal(caught.cleanupErrorCode, prefix + "DETACH");
       }
+      assert.deepEqual(caught.artifactDetach, { exitCode: 1, signal: "none", timedOut: false, outputOverflow: false,
+        stderrClass: "resource-busy" });
+      assert.equal(JSON.stringify(caught).includes("private"), false);
       return true;
     });
     await access(state.mountpoint);
     await access(join(state.ownedRoot, "Cursor.dmg"));
     assert.deepEqual(state.calls.at(-1).args, ["detach", state.mountpoint]);
+    assert.equal(state.calls.filter((call) => call.operation === "detach").length, 1);
     assert.equal(await readFile(join(state.root, "unrelated"), "utf8"), "preserve");
   }
   const timedOut = await fixture(t, { commandError: { operation: "detach", error: Object.assign(new Error("private timeout"), { code: "ETIMEDOUT" }) } });
   await assert.rejects(timedOut.run(), { ...error("DETACH_TIMEOUT"), cleanupErrorCode: prefix + "DETACH_TIMEOUT" });
   await access(timedOut.mountpoint);
+});
+
+posixTest("detach diagnostics classify only bounded complete fixed hdiutil error lines", async (t) => {
+  for (const [stderr, stderrClass] of [
+    ["hdiutil: detach failed - Operation not permitted\n", "operation-not-permitted"],
+    ["hdiutil: detach failed - Permission denied\r\n", "permission-denied"],
+    ["hdiutil: detach failed - No such file or directory", "missing-target"],
+    ["private hdiutil: detach failed - Resource busy\n", "other"],
+    ["hdiutil: detach failed -\nResource busy", "other"],
+    ["hdiutil: detach failed - Resource busy private", "other"],
+    ["hdiutil: detach failed - Resource busy\nhdiutil: detach failed - Permission denied\n", "other"],
+    ["x".repeat(4096) + "\nhdiutil: detach failed - Resource busy\n", "other"],
+    [Buffer.from("private"), "other"], ["", "absent"], [undefined, "absent"],
+  ]) {
+    const state = await fixture(t, { commandError: { operation: "detach", error: Object.assign(new Error("private diagnostic"),
+      { code: 1, stderr, stdout: "private command output" }) } });
+    await assert.rejects(state.run(), (caught) => {
+      assert.equal(caught.code, prefix + "DETACH");
+      assert.equal(caught.artifactDetach.stderrClass, stderrClass);
+      assert.equal(JSON.stringify(caught).includes("private"), false);
+      return true;
+    });
+    assert.equal(state.calls.filter((call) => call.operation === "detach").length, 1);
+    await access(state.mountpoint);
+  }
+});
+
+posixTest("detach diagnostics preserve timeout and output-overflow distinctions without retrying", async (t) => {
+  for (const [details, suffix, expected] of [
+    [{ code: "ETIMEDOUT" }, "DETACH_TIMEOUT", { exitCode: null, signal: "none", timedOut: true, outputOverflow: false }],
+    [{ code: null, killed: true, signal: "SIGKILL" }, "DETACH_TIMEOUT", { exitCode: null, signal: "SIGKILL", timedOut: true, outputOverflow: false }],
+    [{ code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER", killed: true, signal: "SIGKILL" }, "DETACH",
+      { exitCode: null, signal: "SIGKILL", timedOut: false, outputOverflow: true }],
+    [{ code: 1, killed: true, signal: "SIGTERM" }, "DETACH", { exitCode: 1, signal: "SIGTERM", timedOut: false, outputOverflow: false }],
+    [{ code: "ENOENT", signal: "private" }, "DETACH", { exitCode: null, signal: "other", timedOut: false, outputOverflow: false }],
+  ]) {
+    const state = await fixture(t, { commandError: { operation: "detach", error: Object.assign(new Error("private"), details) } });
+    await assert.rejects(state.run(), (caught) => {
+      assert.equal(caught.code, prefix + suffix);
+      assert.equal(caught.cleanupErrorCode, prefix + suffix);
+      assert.deepEqual(caught.artifactDetach, { ...expected, stderrClass: "absent" });
+      assert.equal(JSON.stringify(caught).includes("private"), false);
+      return true;
+    });
+    assert.equal(state.calls.filter((call) => call.operation === "detach").length, 1);
+    assert.equal(state.calls.at(-1).options.timeout, 30_000);
+    assert.equal(state.calls.at(-1).options.signal, undefined);
+    assert.deepEqual(state.calls.at(-1).args, ["detach", state.mountpoint]);
+    await access(state.mountpoint);
+  }
+  const state = await fixture(t, { failCode: "detach" });
+  await assert.rejects(state.run(), (caught) => {
+    assert.equal(caught.code, prefix + "DETACH");
+    assert.equal(caught.artifactDetach.exitCode, 1);
+    return true;
+  });
+  await access(state.mountpoint);
 });

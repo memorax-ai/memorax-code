@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { createServer } from "node:net";
 import { posix as path } from "node:path";
 import { promisify } from "node:util";
+import { collectCursorAppLaunchDiagnostics, projectCursorAppSandboxDiagnostics } from "./cursor-app-diagnostics.mjs";
 
 const exec = promisify(execFile);
 const argumentCode = "CURSOR_APP_MACOS_RUNTIME_ARGUMENTS";
@@ -66,6 +67,65 @@ export async function auditMacosProcesses(options, execute = exec) {
     }));
   } catch { throw failure(processCode); }
   return hasOwnedMacosProcesses(output, options);
+}
+
+export async function collectMacosSandboxDiagnostics({ appBundle, startedAt, endedAt,
+  platform = process.platform, environment = process.env }, execute = exec) {
+  const result = (status, reason, markers) => projectCursorAppSandboxDiagnostics({ status, reason, markers });
+  let bundle;
+  try { bundle = absolute(appBundle); } catch { return result("unavailable", "scope-mismatch"); }
+  const start = Math.floor(startedAt / 1000), end = Math.ceil(endedAt / 1000);
+  if (platform !== "darwin" || environment?.GITHUB_ACTIONS !== "true" || environment?.RUNNER_OS !== "macOS"
+    || bundle !== appBundle || !bundle.endsWith(".app") || !Number.isSafeInteger(startedAt)
+    || !Number.isSafeInteger(endedAt) || startedAt <= 0 || endedAt < startedAt || end - start > 120) {
+    return result("unavailable", "scope-mismatch");
+  }
+  const maxBuffer = 256 * 1024;
+  const predicate = 'subsystem == "org.chromium.sandbox" AND category == "chromium_logging"'
+    + ` AND processImagePath BEGINSWITH ${JSON.stringify(bundle + "/")}`;
+  let stdout, stderr;
+  try {
+    ({ stdout, stderr } = await execute("/usr/bin/log", ["show", "--style", "ndjson", "--no-pager", "--timezone", "UTC",
+      "--start", `@${start}`, "--end", `@${end}`, "--predicate", predicate], {
+      encoding: "utf8", timeout: 5000, maxBuffer, killSignal: "SIGKILL",
+      env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" },
+    }));
+  } catch (error) {
+    if (error?.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") return result("overflow", "overflow");
+    return result("unavailable", error?.code === "ETIMEDOUT" || error?.killed === true && error?.signal === "SIGKILL"
+      ? "timeout" : "execute-failed");
+  }
+  if (stderr) return result("unavailable", "execute-failed");
+  if (typeof stdout !== "string") return result("unavailable", "parse-invalid");
+  if (Buffer.byteLength(stdout) > maxBuffer) return result("overflow", "overflow");
+  const lines = stdout.split(/\r?\n/).filter((line) => line.trim()), markers = {};
+  let events = 0;
+  for (const [index, line] of lines.entries()) {
+    let row;
+    try { row = JSON.parse(line); } catch { return result("unavailable", "parse-invalid"); }
+    if (!row || typeof row !== "object" || Array.isArray(row)) return result("unavailable", "parse-invalid");
+    // Apple's log(1) documents one trailing NDJSON record identified by "finished".
+    if (Object.hasOwn(row, "finished")) {
+      if (index !== lines.length - 1 || ["eventMessage", "eventType", "processImagePath", "subsystem", "category", "timestamp"]
+        .some((key) => Object.hasOwn(row, key))) return result("unavailable", "parse-invalid");
+      continue;
+    }
+    if (row.eventType !== "logEvent" || typeof row.eventMessage !== "string" || typeof row.timestamp !== "string"
+      || !/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{6}\+0000$/.test(row.timestamp)
+      || typeof row.processImagePath !== "string") return result("unavailable", "parse-invalid");
+    const time = Date.parse(row.timestamp.replace(" ", "T"));
+    if (row.subsystem !== "org.chromium.sandbox" || row.category !== "chromium_logging"
+      || !row.processImagePath.startsWith(bundle + "/") || path.normalize(row.processImagePath) !== row.processImagePath
+      || /[\0\r\n]/.test(row.processImagePath) || !Number.isFinite(time) || time < start * 1000 || time > end * 1000) {
+      return result("unavailable", "scope-mismatch");
+    }
+    if (time < startedAt || time > endedAt || time === endedAt && row.timestamp.slice(23, 26) !== "000") continue;
+    events++;
+    for (const [key, value] of Object.entries(collectCursorAppLaunchDiagnostics({ log: row.eventMessage }).markers)) {
+      markers[key] = markers[key] === true || value;
+    }
+  }
+  return result(events ? "collected" : "empty", "none", markers);
 }
 
 export async function captureMacosDescendants(appPid, execute = exec) {
