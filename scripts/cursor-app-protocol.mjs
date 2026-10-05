@@ -152,11 +152,18 @@ export function decodeAgentClientMessage(message, { requestId } = {}) {
   }
   if (number === 3) {
     const ack = fields(body);
-    if ([...ack.keys()].some((number) => ![1, 3].includes(number))) fail("CURSOR_APP_CLIENT_MESSAGE_UNSUPPORTED");
-    const id = single(ack, 1, 0), result = fields(single(ack, 3, 2));
+    if ([...ack.keys()].some((number) => ![1, 2, 3].includes(number))) fail("CURSOR_APP_CLIENT_MESSAGE_UNSUPPORTED");
+    if (ack.has(2) === ack.has(3)) fail("CURSOR_APP_PROTO_FIELD");
+    const reading = ack.has(2), id = single(ack, 1, 0), result = fields(single(ack, reading ? 2 : 3, 2));
     if (id < 1n || id > 0xffff_ffffn) fail("CURSOR_APP_KV_ID");
-    const error = single(result, 1, 2, false);
+    if ([...result.keys()].some((number) => !(reading ? [1, 2] : [1]).includes(number))) fail("CURSOR_APP_CLIENT_MESSAGE_UNSUPPORTED");
+    const error = single(result, reading ? 2 : 1, 2, false);
     if (error !== undefined) fields(error);
+    if (reading) {
+      const data = single(result, 1, 2, false);
+      return { type: "kvGetResult", id: Number(id), ...(data === undefined ? {} : { bytes: Buffer.from(data) }),
+        ...(error === undefined ? {} : { error: "CURSOR_APP_KV_READ_FAILED" }) };
+    }
     return { type: "kvAck", id: Number(id), ...(error === undefined ? {} : { error: "CURSOR_APP_KV_WRITE_FAILED" }) };
   }
   if (number !== 1) fail("CURSOR_APP_CLIENT_MESSAGE_UNSUPPORTED");
@@ -184,6 +191,13 @@ function scalar(number, value) { return Buffer.concat([varint(number * 8), varin
 function field(number, value) {
   const data = typeof value === "string" ? Buffer.from(value) : bytes(value);
   return Buffer.concat([varint(number * 8 + 2), varint(data.length), data]);
+}
+
+export function createGetBlobMessage({ id, blobId }) {
+  if (!Number.isInteger(id) || id < 1 || id > 0xffff_ffff) fail("CURSOR_APP_KV_ID");
+  const reference = bytes(blobId);
+  if (reference.length !== 32) fail("CURSOR_APP_PROTO_REFERENCE");
+  return field(4, Buffer.concat([scalar(1, id), field(2, field(1, reference))]));
 }
 
 export function createCompletedTurn(run, { answer, firstKvId = 1 } = {}) {

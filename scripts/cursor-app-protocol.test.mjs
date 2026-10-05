@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import test from "node:test";
 import { gzipSync } from "node:zlib";
 import {
-  createCompletedTurn, createConnectDecoder, decodeAgentClientMessage, encodeConnectEnvelope,
+  createCompletedTurn, createConnectDecoder, createGetBlobMessage, decodeAgentClientMessage, encodeConnectEnvelope,
 } from "./cursor-app-protocol.mjs";
 
 const requestId = "11111111-1111-4111-8111-111111111111";
@@ -140,8 +140,41 @@ test("KV acknowledgements correlate native IDs and redact native error contents"
   const failed = field(3, message(scalar(1, 8), field(3, field(1, field(1, "synthetic private diagnostic")))));
   assert.deepEqual(decodeAgentClientMessage(failed), { type: "kvAck", id: 8, error: "CURSOR_APP_KV_WRITE_FAILED" });
   assert.throws(() => decodeAgentClientMessage(field(3, field(3, Buffer.alloc(0)))), /CURSOR_APP_PROTO_FIELD/);
-  assert.throws(() => decodeAgentClientMessage(field(3, message(scalar(1, 7), field(2, Buffer.alloc(0))))), /CURSOR_APP_CLIENT_MESSAGE_UNSUPPORTED/);
+  assert.throws(() => decodeAgentClientMessage(field(3, message(scalar(1, 7), field(4, Buffer.alloc(0))))), /CURSOR_APP_CLIENT_MESSAGE_UNSUPPORTED/);
   assert.deepEqual(decodeAgentClientMessage(field(7, Buffer.alloc(0))), { type: "heartbeat" });
+});
+
+test("KV reads encode hash references and decode exact bytes without exposing native errors", () => {
+  const bytes = Buffer.from([0, 255, 3, 4]), blobId = hash(bytes);
+  assert.deepEqual(createGetBlobMessage({ id: 11, blobId }), field(4, message(scalar(1, 11), field(2, field(1, blobId)))));
+  assert.deepEqual(decodeAgentClientMessage(field(3, message(scalar(1, 11), field(2, field(1, bytes))))),
+    { type: "kvGetResult", id: 11, bytes });
+  assert.deepEqual(decodeAgentClientMessage(field(3, message(scalar(1, 12), field(2, Buffer.alloc(0))))),
+    { type: "kvGetResult", id: 12 });
+  assert.deepEqual(decodeAgentClientMessage(field(3, message(scalar(1, 13), field(2, field(1, Buffer.alloc(0)))))),
+    { type: "kvGetResult", id: 13, bytes: Buffer.alloc(0) });
+  const failed = field(3, message(scalar(1, 14), field(2, field(2, field(1, "synthetic private diagnostic")))));
+  assert.deepEqual(decodeAgentClientMessage(failed), { type: "kvGetResult", id: 14, error: "CURSOR_APP_KV_READ_FAILED" });
+});
+
+test("KV reads reject ambiguous results, invalid IDs and malformed references", () => {
+  const result = field(2, field(1, Buffer.from("synthetic")));
+  for (const body of [message(scalar(1, 1), result, result), message(scalar(1, 1), result, field(3, Buffer.alloc(0))),
+    message(scalar(1, 1), field(2, message(field(1, "one"), field(1, "two")))),
+    message(scalar(1, 1), field(2, scalar(1, 1)))]) {
+    assert.throws(() => decodeAgentClientMessage(field(3, body)), /CURSOR_APP_PROTO_FIELD/);
+  }
+  assert.throws(() => decodeAgentClientMessage(field(3, message(scalar(1, 1), field(2, field(3, Buffer.alloc(0)))))),
+    /CURSOR_APP_CLIENT_MESSAGE_UNSUPPORTED/);
+  for (const id of [0, -1, 1.5, 0x1_0000_0000]) {
+    assert.throws(() => createGetBlobMessage({ id, blobId: Buffer.alloc(32) }), /CURSOR_APP_KV_ID/);
+  }
+  for (const id of [0, 0x1_0000_0000]) {
+    assert.throws(() => decodeAgentClientMessage(field(3, message(scalar(1, id), result))), /CURSOR_APP_KV_ID/);
+  }
+  for (const blobId of [Buffer.alloc(0), Buffer.alloc(31), Buffer.alloc(33)]) {
+    assert.throws(() => createGetBlobMessage({ id: 1, blobId }), /CURSOR_APP_PROTO_REFERENCE/);
+  }
 });
 
 test("completion produces the native content graph and preserves prior state without file writes", () => {

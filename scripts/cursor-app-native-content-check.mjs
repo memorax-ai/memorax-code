@@ -120,3 +120,20 @@ export function assertCursorAppWriteback(input) {
     throw new ContentCheckError("CURSOR_APP_ADD_INVALID");
   }
 }
+
+export function assertCursorAppWritebacks(input) {
+  try {
+    const { requests, turns, apiKey, baseUserId, workspaceName } = input ?? {};
+    check(Array.isArray(turns) && turns.length > 0, "CURSOR_APP_ADD_EXPECTED");
+    check(Array.isArray(requests) && requests.length === turns.length, "CURSOR_APP_MEMORY_REQUEST_COUNT");
+    for (let index = 0; index < turns.length; index += 1) {
+      const turn = turns[index];
+      assertCursorAppWriteback({ requests: [requests[index]], sessionId: turn?.sessionId,
+        prompt: turn?.prompt, answer: turn?.answer, apiKey, baseUserId, workspaceName });
+    }
+    return { automaticAdd: turns.length };
+  } catch (error) {
+    if (error instanceof ContentCheckError) throw error;
+    throw new ContentCheckError("CURSOR_APP_ADD_INVALID");
+  }
+}

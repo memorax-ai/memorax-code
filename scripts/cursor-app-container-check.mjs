@@ -16,7 +16,8 @@ const imagePattern = /^sha256:[a-f0-9]{64}$/;
 const label = "memorax.cursor-app-ci";
 const codePattern = /^CURSOR_(?:APP|MOCK|AGENT|CONTAINER)_[A-Z0-9_]{1,100}$/;
 const stages = new Set(["preflight", "candidate-install", "app-start", "native-submit", "agent-transport",
-  "native-persistence", "automatic-add", "cleanup", "complete"]);
+  "native-persistence", "automatic-add", "app-restart", "session-open", "cleanup", "complete"]);
+const completedEvidence = ["agentTransport", "nativeHooks", "exactAutomaticAdd", "sameSessionFollowup", "sessionIsolation", "appResume", "cleanup"];
 
 function fail(code) { throw Object.assign(new Error(code), { code }); }
 function check(value, code) { if (!value) fail(code); }
@@ -51,7 +52,7 @@ export function makeContainerArgs({ runId, imageId, seccompPath }) {
 
 export function projectNativeReport(input) {
   check(input && ["PASS", "FAIL"].includes(input.status) && input.client === "cursor"
-    && input.kind === "app-native-single-turn" && input.platform === "linux"
+    && input.kind === "app-native-session-flows" && input.platform === "linux"
     && /^24\.\d+\.\d+$/.test(input.node) && stages.has(input.stage), "CURSOR_CONTAINER_REPORT");
   const report = { status: input.status, client: "cursor", kind: input.kind, platform: "linux", node: input.node,
     stage: input.stage, evidence: {} };
@@ -63,29 +64,38 @@ export function projectNativeReport(input) {
     check(typeof input[key] === "string" && codePattern.test(input[key]), "CURSOR_CONTAINER_REPORT");
     report[key] = input[key];
   }
-  for (const key of ["agentTransport", "nativeHooks", "exactAutomaticAdd", "cleanup"]) if (input.evidence?.[key] !== undefined) {
+  for (const key of completedEvidence) if (input.evidence?.[key] !== undefined) {
     check(typeof input.evidence[key] === "boolean", "CURSOR_CONTAINER_REPORT");
     report.evidence[key] = input.evidence[key];
   }
   const content = input.evidence?.nativeContent;
   if (content !== undefined) {
-    check(typeof content.composerMatched === "boolean" && typeof content.stateMatched === "boolean", "CURSOR_CONTAINER_REPORT");
-    report.evidence.nativeContent = { composerMatched: content.composerMatched, stateMatched: content.stateMatched, blobCount: count(content.blobCount) };
+    check(Array.isArray(content), "CURSOR_CONTAINER_REPORT");
+    report.evidence.nativeContent = content.map((item) => {
+      check(item && typeof item.composerMatched === "boolean" && typeof item.stateMatched === "boolean", "CURSOR_CONTAINER_REPORT");
+      return { composerMatched: item.composerMatched, stateMatched: item.stateMatched, blobCount: count(item.blobCount) };
+    });
   }
   if (input.agent !== undefined) {
     const agent = input.agent;
-    check(Array.isArray(agent.writes) && Array.isArray(agent.acknowledgements)
+    check(Array.isArray(agent.writes) && Array.isArray(agent.acknowledgements) && Array.isArray(agent.historyTurns)
+      && Array.isArray(agent.reads) && Array.isArray(agent.readResults)
       && Array.isArray(agent.errors ?? []) && (agent.errors ?? []).every((value) => typeof value === "string" && codePattern.test(value)), "CURSOR_CONTAINER_REPORT");
     report.agent = { runs: count(agent.runs), writes: agent.writes.map(count), acknowledgements: agent.acknowledgements.map(count),
+      historyTurns: agent.historyTurns.map(count), reads: agent.reads.map(count), readResults: agent.readResults.map(count),
       ancillaryRequestCount: count(agent.ancillaryRequestCount), unsupportedRpcCount: count(agent.unsupportedRpcCount), errors: agent.errors ?? [] };
   }
   if (input.memoryRequestCount !== undefined) report.memoryRequestCount = count(input.memoryRequestCount);
   if (report.status === "PASS") check(report.stage === "complete" && report.version === "3.21.18" && !report.errorCode && !report.cleanupError && !report.nativeContentError
-    && ["agentTransport", "nativeHooks", "exactAutomaticAdd", "cleanup"].every((key) => report.evidence[key] === true)
-    && content?.composerMatched === true && content?.stateMatched === true && content.blobCount === 3
-    && report.agent?.runs === 1 && report.agent.writes.length === 1 && report.agent.writes[0] === 3
-    && report.agent.acknowledgements.length === 1 && report.agent.acknowledgements[0] === 3
-    && report.agent.errors.length === 0 && report.memoryRequestCount === 1, "CURSOR_CONTAINER_REPORT");
+    && completedEvidence.every((key) => report.evidence[key] === true)
+    && content?.length === 4 && [3, 6, 3, 9].every((blobs, index) => content[index]?.composerMatched === true
+      && content[index]?.stateMatched === true && content[index]?.blobCount === blobs)
+    && report.agent?.runs === 4 && report.agent.writes.length === 4 && [3, 3, 3, 3].every((value, index) => report.agent.writes[index] === value)
+    && report.agent.acknowledgements.length === 4 && [3, 3, 3, 3].every((value, index) => report.agent.acknowledgements[index] === value)
+    && report.agent.historyTurns.length === 4 && [0, 1, 0, 2].every((value, index) => report.agent.historyTurns[index] === value)
+    && report.agent.reads.length === 4 && [0, 3, 0, 6].every((value, index) => report.agent.reads[index] === value)
+    && report.agent.readResults.length === 4 && [0, 3, 0, 6].every((value, index) => report.agent.readResults[index] === value)
+    && report.agent.errors.length === 0 && report.memoryRequestCount === 4, "CURSOR_CONTAINER_REPORT");
   return report;
 }
 
@@ -158,7 +168,7 @@ async function regularFile(path) {
 
 export async function runContainerCheck(candidatePath, reportPath, { signal } = {}) {
   const runId = randomUUID(), names = resourceNames(runId);
-  let report = { status: "FAIL", client: "cursor", kind: "app-native-single-turn", stage: "container-preflight", evidence: {} };
+  let report = { status: "FAIL", client: "cursor", kind: "app-native-session-flows", stage: "container-preflight", evidence: {} };
   let root, output, dockerStarted = false, cleaned = false, metadata, runDocker = docker;
   const checked = (args, options) => checkedDocker(args, options, runDocker);
   try {

@@ -495,7 +495,7 @@ jobs:
           PACKAGE_RESULT: ${{ needs.package.result }}
           CURSOR_RESULT: ${{ needs.cursor-app.result }}
         run: |
-          printf 'Package: **%s**\n\nCursor App Linux canary: **%s**.\n\nUbuntu 24.04, Node 24, pinned Cursor 3.21.18. Real App, local protocol mock, native database persistence and exact automatic Add with synthetic authentication. This single-turn Linux canary does not validate real login, hosted models, full functional coverage or three-platform acceptance.\n' "$PACKAGE_RESULT" "$CURSOR_RESULT" >> "$GITHUB_STEP_SUMMARY"
+          printf 'Package: **%s**\n\nCursor App Linux canary: **%s**.\n\nUbuntu 24.04, Node 24, pinned Cursor 3.21.18. Four real App runs exercise repeated-prompt follow-up, independent sessions and App restart/resume, using a local protocol mock, native database persistence and exact automatic Add with synthetic authentication. This Linux canary does not validate real login, hosted models, full functional coverage or three-platform acceptance.\n' "$PACKAGE_RESULT" "$CURSOR_RESULT" >> "$GITHUB_STEP_SUMMARY"
           if [[ "$PACKAGE_RESULT" != success || "$CURSOR_RESULT" != success ]]; then
             echo '::error::The package and Cursor App canary must both succeed. Failed, cancelled or skipped dependencies do not pass this check.'
             exit 1

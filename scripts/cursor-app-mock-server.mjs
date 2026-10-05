@@ -1,9 +1,10 @@
+import { createHash } from "node:crypto";
 import { createServer as createHttpServer } from "node:http";
 import { createServer as createHttp2Server } from "node:http2";
 import { createConnection, createServer as createTcpServer } from "node:net";
 import { networkInterfaces } from "node:os";
 import {
-  createCompletedTurn, createConnectDecoder, decodeAgentClientMessage, encodeConnectEnvelope,
+  createCompletedTurn, createConnectDecoder, createGetBlobMessage, decodeAgentClientMessage, encodeConnectEnvelope,
 } from "./cursor-app-protocol.mjs";
 
 const agentPath = "/agent.v1.AgentService/Run";
@@ -13,6 +14,7 @@ const corsHeaders = { "access-control-allow-origin": "*", "access-control-allow-
   "access-control-allow-headers": "content-type, authorization" };
 const unsupportedAncillaryPaths = new Set([
   "/agent.v1.AgentService/UpdateConversationMetadata", "/aiserver.v1.AnalyticsService/SubmitLogs",
+  "/agent.v1.AgentService/GetNewChatNudgeParameterizedModelPicker",
 ]);
 const protocolErrorCodes = new Set([
   "CURSOR_APP_CONNECT_COMPRESSION", "CURSOR_APP_CONNECT_END_STREAM", "CURSOR_APP_CONNECT_FLAGS",
@@ -38,13 +40,16 @@ const ancillaryPaths = new Set([
 ]);
 function isAgentPath(path) { return /^\/agent\.v[0-9]+\./.test(path) && !unsupportedAncillaryPaths.has(path); }
 
-export async function startCursorAgentMock({ answer, timeoutMs = 15_000 }) {
-  if (typeof answer !== "string" || !answer.length || Buffer.byteLength(answer) > maxFrameBytes
+export async function startCursorAgentMock({ answer, answers, timeoutMs = 15_000 }) {
+  const answerSequence = answers === undefined ? undefined : Array.isArray(answers) ? [...answers] : [];
+  if (!(answerSequence ?? [answer]).length || (answerSequence ?? [answer]).some((value) =>
+    typeof value !== "string" || !value.trim() || Buffer.byteLength(value) > maxFrameBytes)
     || !Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60_000) {
     throw Object.assign(new Error("CURSOR_MOCK_OPTIONS_INVALID"), { nativeCode: "CURSOR_MOCK_OPTIONS_INVALID" });
   }
   const requests = [], runs = [], errors = [], connectionErrors = [], unknownRpcMethods = [];
   const sockets = new Set(), sessions = new Set(), requestIds = new Set(), listeners = [];
+  const histories = new Map(), activeConversations = new Set();
   let closed = false, closePromise, ancillaryRequestCount = 0, unsupportedRpcCount = 0;
   const trackSocket = (socket) => {
     sockets.add(socket);
@@ -100,7 +105,7 @@ export async function startCursorAgentMock({ answer, timeoutMs = 15_000 }) {
     const path = recordRequest(headers[":method"], headers[":path"], "h2c");
     const compression = headers["connect-content-encoding"] ?? "identity";
     const requestId = headers["x-request-id"];
-    let run, completion, pendingAck, settled = false, totalBytes = 0, messageCount = 0;
+    let run, completion, pendingKv, kvReads, history, settled = false, totalBytes = 0, messageCount = 0;
     const acknowledged = new Set();
     const timer = setTimeout(() => fail("CURSOR_AGENT_TIMEOUT"), timeoutMs);
     const decoder = createConnectDecoder({ compression: compression === "gzip" ? "gzip" : "identity", maxFrameBytes });
@@ -111,7 +116,7 @@ export async function startCursorAgentMock({ answer, timeoutMs = 15_000 }) {
       clearTimeout(timer);
       if (isAgentPath(path)) errors.push(code);
       else unsupportedRpcCount++;
-      if (run) run.error = code;
+      if (run) { run.error = code; activeConversations.delete(run.conversationId); }
       if (!stream.destroyed && !stream.closed) {
         if (!stream.headersSent) stream.respond({ ":status": path === agentPath ? 200 : 404,
           "content-type": "application/connect+proto" });
@@ -120,10 +125,17 @@ export async function startCursorAgentMock({ answer, timeoutMs = 15_000 }) {
       }
     }
     function advance() {
-      if (!run || settled || pendingAck !== undefined) return;
+      if (!run || settled || pendingKv !== undefined) return;
+      if (run.kvReadResultCount < kvReads.length) {
+        const read = kvReads[run.kvReadResultCount];
+        pendingKv = { ...read, type: "kvGetResult" };
+        send(createGetBlobMessage(read));
+        run.kvReadCount++;
+        return;
+      }
       if (run.kvAckCount < completion.kvWrites.length) {
         const write = completion.kvWrites[run.kvAckCount];
-        pendingAck = write.id;
+        pendingKv = { id: write.id, type: "kvAck" };
         send(write.message);
         run.kvWriteCount++;
         return;
@@ -133,6 +145,8 @@ export async function startCursorAgentMock({ answer, timeoutMs = 15_000 }) {
       send(completion.turnEndedMessage);
       settled = true;
       run.completed = true;
+      histories.set(run.conversationId, [...history, completion]);
+      activeConversations.delete(run.conversationId);
       clearTimeout(timer);
       stream.end(encodeConnectEnvelope(Buffer.from("{}"), { endStream: true }));
     }
@@ -141,21 +155,39 @@ export async function startCursorAgentMock({ answer, timeoutMs = 15_000 }) {
       if (message.type === "heartbeat") return;
       if (message.type === "run") {
         if (run || requestIds.has(message.requestId)) { fail("CURSOR_AGENT_DUPLICATE_RUN"); return; }
-        completion = createCompletedTurn(message, { answer, firstKvId: 1 });
+        if (activeConversations.has(message.conversationId)) { fail("CURSOR_AGENT_CONVERSATION_BUSY"); return; }
+        history = histories.get(message.conversationId) ?? [];
+        if (message.turnRefs.length !== history.length
+          || message.turnRefs.some((reference, index) => !reference.equals(history[index].turnBlobId))) {
+          fail("CURSOR_AGENT_HISTORY_MISMATCH"); return;
+        }
+        if (answerSequence && runs.length >= answerSequence.length) { fail("CURSOR_AGENT_ANSWER_EXHAUSTED"); return; }
+        kvReads = history.flatMap((turn) => turn.kvWrites).map((write, index) =>
+          ({ id: index + 1, blobId: write.blobId, bytes: write.bytes }));
+        completion = createCompletedTurn(message, { answer: answerSequence?.[runs.length] ?? answer, firstKvId: kvReads.length + 1 });
         requestIds.add(message.requestId);
+        activeConversations.add(message.conversationId);
         run = { ...message, inputConversationStateBytes: message.conversationStateBytes,
           conversationStateBytes: completion.conversationStateBytes, turnBlobId: completion.turnBlobId,
-          kvWrites: completion.kvWrites, kvWriteCount: 0, kvAckCount: 0, completed: false };
+          kvWrites: completion.kvWrites, kvWriteCount: 0, kvAckCount: 0, kvReadCount: 0, kvReadResultCount: 0, completed: false };
         runs.push(run);
         return;
       }
-      if (message.type !== "kvAck") { fail("CURSOR_AGENT_UNKNOWN_MESSAGE"); return; }
-      if (acknowledged.has(message.id)) { fail("CURSOR_AGENT_DUPLICATE_ACK"); return; }
-      if (!run || pendingAck !== message.id) { fail("CURSOR_AGENT_UNKNOWN_ACK"); return; }
-      if (message.error !== undefined) { fail("CURSOR_AGENT_KV_REJECTED"); return; }
+      const reading = message.type === "kvGetResult";
+      if (!reading && message.type !== "kvAck") { fail("CURSOR_AGENT_UNKNOWN_MESSAGE"); return; }
+      if (acknowledged.has(message.id)) { fail(reading ? "CURSOR_AGENT_DUPLICATE_KV_READ" : "CURSOR_AGENT_DUPLICATE_ACK"); return; }
+      if (!run || pendingKv?.id !== message.id) { fail(reading ? "CURSOR_AGENT_UNKNOWN_KV_READ" : "CURSOR_AGENT_UNKNOWN_ACK"); return; }
+      if (pendingKv.type !== message.type) { fail("CURSOR_AGENT_KV_RESULT_MISMATCH"); return; }
+      if (message.error !== undefined) { fail(reading ? "CURSOR_AGENT_KV_READ_REJECTED" : "CURSOR_AGENT_KV_REJECTED"); return; }
+      if (reading) {
+        if (!message.bytes?.length) { fail("CURSOR_AGENT_KV_READ_MISSING"); return; }
+        if (!message.bytes.equals(pendingKv.bytes) || !createHash("sha256").update(message.bytes).digest().equals(pendingKv.blobId)) {
+          fail("CURSOR_AGENT_KV_READ_MISMATCH"); return;
+        }
+        run.kvReadResultCount++;
+      } else run.kvAckCount++;
       acknowledged.add(message.id);
-      run.kvAckCount++;
-      pendingAck = undefined;
+      pendingKv = undefined;
     }
     stream.on("error", () => fail("CURSOR_AGENT_STREAM_ERROR"));
     stream.once("aborted", () => fail("CURSOR_AGENT_STREAM_ABORTED"));
@@ -177,7 +209,8 @@ export async function startCursorAgentMock({ answer, timeoutMs = 15_000 }) {
       if (settled) return;
       try { decoder.finish(); }
       catch (error) { fail(protocolErrorCodes.has(error.code) ? error.code : "CURSOR_AGENT_INVALID_MESSAGE"); return; }
-      fail(run ? "CURSOR_AGENT_ACK_MISSING" : "CURSOR_AGENT_RUN_MISSING");
+      fail(!run ? "CURSOR_AGENT_RUN_MISSING" : run.kvReadResultCount < kvReads.length
+        ? "CURSOR_AGENT_KV_READ_MISSING" : "CURSOR_AGENT_ACK_MISSING");
     });
     if (path !== agentPath) fail(isAgentPath(path) ? "CURSOR_AGENT_ROUTE_INVALID" : "CURSOR_MOCK_UNKNOWN_ROUTE");
     else if (headers[":method"] !== "POST") fail("CURSOR_MOCK_METHOD_INVALID");

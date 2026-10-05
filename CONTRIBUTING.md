@@ -1147,23 +1147,39 @@ artifact as the existing native checks; package failure cannot be hidden by a
 passing canary.
 
 The canary starts the official Linux App in a fresh Docker container under Xvfb.
-Its built-in smoke driver supplies synthetic authentication and submits a prompt
-through the normal composer UI. `--smoke-test-use-real-agent-http` routes the
+Its built-in smoke driver supplies synthetic authentication and submits prompts
+through the normal composer UI. The official test-only application-storage
+command suppresses the fresh-login switch to the Agents window in the isolated
+profile; it does not modify conversation content or Hook state.
+`--smoke-test-use-real-agent-http` routes the
 Agent transport to a local Connect/protobuf service. The service sends a
 content-addressed user/assistant/turn graph, waits for each native KV write
 acknowledgement, and then sends the conversation checkpoint and completion.
+For a run with history, it first requests every previous user/assistant/turn
+blob back from the App and validates the response bytes before writing new
+content.
 It does not use the App's simulated response stream, seed its conversation
 database, invoke Hooks directly, or bypass the product's native-content parser.
 
+Four native runs exercise an initial turn in conversation A, a repeated prompt
+in A with a different answer, a new conversation B with the same initial prompt
+and answer, and an App restart followed by another ordinary prompt in A. The
+restart retains only this check's isolated App profile; it does not restart the
+Backend or exercise native Continue, Retry, or Edit operations.
+
 Acceptance requires all of the following:
 
-- Exactly one native Agent request with the submitted prompt and matching
-  conversation identity, and all three KV acknowledgements.
+- Exactly four native Agent requests with each submitted prompt and matching
+  conversation/generation identity, three KV acknowledgements per run, and
+  prior-turn counts of `0, 1, 0, 2` in that order. History KV requests and
+  validated results must each total `0, 3, 0, 6` across those runs.
 - A separate, read-only SQLite oracle matching the App's composer/generation,
-  conversation state and every emitted content-addressed blob byte for byte.
-- Installed native Hooks correlated to the real generation and completed turn.
-- Exactly one automatic Add whose full user/assistant text, Unicode, session,
-  workspace scope and client-qualified idempotency key match the fixture.
+  conversation state and every emitted content-addressed blob byte for byte
+  after each run, with `3, 6, 3, 9` reachable blobs respectively.
+- Installed native Hooks correlated to each real generation and completed turn.
+- Exactly four automatic Adds whose full user/assistant text, Unicode, session,
+  workspace scope and client-qualified idempotency keys match their respective
+  fixtures, including repeated prompts and identical content across sessions.
 - Successful client/Backend and container cleanup, with a final request-count
   audit to reject duplicate or late writeback.
 
@@ -1187,10 +1203,10 @@ node scripts/cursor-app-container-check.mjs \
 
 Only `report.json` is exported and uploaded. Raw App logs, transcripts, SQLite
 files and Hook traces are not CI artifacts. Synthetic login is not real account
-authentication coverage. Multi-turn resume, interruptions, permission races,
-explicit Skill Search/Add, Repo Memory workers, upgrade/uninstall, macOS,
-Windows, and the baseline/latest version matrix remain outside this initial
-single-turn canary.
+authentication coverage. Native Continue/Retry/Edit, Backend restart,
+interruptions, permission races, explicit Skill Search/Add, Repo Memory workers,
+upgrade/uninstall, macOS, Windows, and the baseline/latest version matrix remain
+outside this bounded session-flow canary.
 
 ## Pull Requests
 

@@ -24,13 +24,20 @@ function field(number, value) {
   const bytes = Buffer.from(value);
   return Buffer.concat([varint(number * 8 + 2), varint(bytes.length), bytes]);
 }
-function runMessage(state = Buffer.alloc(0)) {
-  const user = Buffer.concat([field(1, prompt), field(2, userMessageId)]);
-  return field(1, Buffer.concat([field(1, state), field(2, field(1, field(1, user))), field(5, conversationId)]));
+function runMessage(state = Buffer.alloc(0), { text = prompt, session = conversationId, userId = userMessageId } = {}) {
+  const user = Buffer.concat([field(1, text), field(2, userId)]);
+  return field(1, Buffer.concat([field(1, state), field(2, field(1, field(1, user))), field(5, session)]));
 }
 function acknowledgement(id, failed = false) {
   return field(3, Buffer.concat([scalar(1, id), field(3, failed ? field(1, field(1, "private-error-canary")) : Buffer.alloc(0))]));
 }
+function readResult(id, bytes, failed = false) {
+  const result = Buffer.concat([bytes === undefined ? Buffer.alloc(0) : field(1, bytes),
+    failed ? field(2, field(1, "private-error-canary")) : Buffer.alloc(0)]);
+  return field(3, Buffer.concat([scalar(1, id), field(2, result)]));
+}
+function readRequest(id, blobId) { return field(4, Buffer.concat([scalar(1, id), field(2, field(1, blobId))])); }
+function identity(number) { return `${number.toString(16).padStart(8, "0")}-1111-4111-8111-111111111111`; }
 function frame(message, compression = "identity") {
   const bytes = compression === "gzip" ? gzipSync(message) : message;
   const header = Buffer.alloc(5);
@@ -118,6 +125,35 @@ function assertFailed(server, stream, code, { writes = 1, acks = 0 } = {}) {
   assert.deepEqual(JSON.parse(stream.frames.at(-1).body), { error: { code: "invalid_argument", message: code } });
   assert.deepEqual(server.errors, [code]);
 }
+async function completedRun(t, server, { prior = [], session = conversationId, text = prompt, expectedAnswer = answer } = {}) {
+  const index = server.runs.length;
+  const stream = openRun(t, server, { headers: { "x-request-id": identity(index + 10) }, compression: "gzip" });
+  const state = Buffer.concat([scalar(10, 1), ...prior.map((run) => field(8, run.turnBlobId))]);
+  stream.send(runMessage(state, { session, text, userId: identity(index + 100) }));
+  const reads = prior.flatMap((run) => run.kvWrites);
+  for (const [index, read] of reads.entries()) {
+    await waitFor(() => stream.frames.length === index + 1);
+    assert.deepEqual(stream.frames[index], { flags: 0, body: readRequest(index + 1, read.blobId) });
+    assert.equal(server.runs.at(-1).kvWriteCount, 0);
+    stream.send(readResult(index + 1, read.bytes));
+  }
+  for (let index = 0; index < 3; index++) {
+    await waitFor(() => stream.frames.length === reads.length + index + 1);
+    stream.send(acknowledgement(reads.length + index + 1));
+  }
+  await stream.done;
+  const run = server.runs.at(-1);
+  assert.equal(run.completed, true);
+  assert.deepEqual(run.kvWrites.map((write) => write.id), [reads.length + 1, reads.length + 2, reads.length + 3]);
+  assert.deepEqual(stream.frames, [
+    ...reads.map((read, index) => ({ flags: 0, body: readRequest(index + 1, read.blobId) })),
+    ...run.kvWrites.map((write) => ({ flags: 0, body: write.message })),
+    { flags: 0, body: field(3, run.conversationStateBytes) },
+    { flags: 0, body: field(1, field(1, field(1, expectedAnswer))) },
+    { flags: 0, body: field(1, field(14, Buffer.alloc(0))) }, { flags: 2, body: Buffer.from("{}") },
+  ]);
+  return run;
+}
 
 test("ordinary HTTP/1 ancillary services share the local port and retain only route metadata", async (t) => {
   const server = await mock(t);
@@ -174,9 +210,10 @@ test("HTTP/1 Agent requests and unsupported Agent methods remain fatal transport
   assert.deepEqual(server.runs, []);
 });
 
-test("known metadata and log RPCs remain rejected auxiliary requests without accepting their content", async (t) => {
+test("known metadata, model-picker nudge and log RPCs remain rejected auxiliary requests without accepting their content", async (t) => {
   const server = await mock(t);
-  for (const path of ["/agent.v1.AgentService/UpdateConversationMetadata", "/aiserver.v1.AnalyticsService/SubmitLogs"]) {
+  for (const path of ["/agent.v1.AgentService/UpdateConversationMetadata",
+    "/agent.v1.AgentService/GetNewChatNudgeParameterizedModelPicker", "/aiserver.v1.AnalyticsService/SubmitLogs"]) {
     const stream = openRun(t, server, { headers: { ":path": path } });
     stream.request.write(frame(field(1, "synthetic-log-payload-canary")));
     await stream.done;
@@ -184,16 +221,30 @@ test("known metadata and log RPCs remain rejected auxiliary requests without acc
   }
   assert.deepEqual(server.errors, []);
   assert.deepEqual(server.runs, []);
-  assert.equal(server.ancillaryRequestCount, 2);
-  assert.equal(server.unsupportedRpcCount, 2);
+  assert.equal(server.ancillaryRequestCount, 3);
+  assert.equal(server.unsupportedRpcCount, 3);
   assert.equal(JSON.stringify({ requests: server.requests, diagnostics: server.unknownRpcMethods }).includes("canary"), false);
+});
+
+test("the model-picker auxiliary exception does not permit neighboring Agent RPCs", async (t) => {
+  const server = await mock(t);
+  for (const path of ["/agent.v1.AgentService/GetNewChatNudgeParameterizedModelPickerExtra",
+    "/agent.v2.AgentService/GetNewChatNudgeParameterizedModelPicker"]) {
+    const stream = openRun(t, server, { headers: { ":path": path } });
+    await stream.done;
+    assert.equal(stream.status, 404);
+  }
+  assert.deepEqual(server.errors, ["CURSOR_AGENT_ROUTE_INVALID", "CURSOR_AGENT_ROUTE_INVALID"]);
+  assert.equal(server.ancillaryRequestCount, 0);
+  assert.equal(server.unsupportedRpcCount, 0);
+  assert.deepEqual(server.runs, []);
 });
 
 test("fragmented h2c prefaces and gzip Connect frames complete only after sequential KV acknowledgements", async (t) => {
   const server = await mock(t);
   const url = await fragmentPreface(t, server);
   const stream = openRun(t, server, { compression: "gzip", url });
-  const state = field(8, Buffer.alloc(32, 7));
+  const state = scalar(10, 1);
   const wire = frame(runMessage(state), "gzip");
   for (const [start, end] of [[0, 1], [1, 3], [3, 9], [9, wire.length]]) {
     stream.request.write(wire.subarray(start, end));
@@ -221,6 +272,8 @@ test("fragmented h2c prefaces and gzip Connect frames complete only after sequen
   assert.deepEqual(run.conversationStateBytes, Buffer.concat([state, field(8, run.turnBlobId)]));
   assert.equal(run.kvWriteCount, 3);
   assert.equal(run.kvAckCount, 3);
+  assert.equal(run.kvReadCount, 0);
+  assert.equal(run.kvReadResultCount, 0);
   assert.equal(run.completed, true);
   assert.deepEqual(stream.frames, [
     ...run.kvWrites.map((write) => ({ flags: 0, body: write.message })),
@@ -235,8 +288,150 @@ test("fragmented h2c prefaces and gzip Connect frames complete only after sequen
   assert.deepEqual(await ancillary(server, "/aiserver.v1.AnalyticsService/Batch"), { status: 200, body: "{}" });
 });
 
+test("four runs verify per-session history before writes across fresh client connections", async (t) => {
+  const answers = [answer, "Second synthetic answer", answer, "Restarted synthetic answer"];
+  const server = await mock(t, { answers });
+  const first = await completedRun(t, server);
+  const second = await completedRun(t, server, { prior: [first], expectedAnswer: answers[1] });
+  const isolated = await completedRun(t, server, { session: identity(500) });
+  const resumed = await completedRun(t, server, { prior: [first, second], text: "Synthetic prompt after restart", expectedAnswer: answers[3] });
+  assert.deepEqual(server.runs.map((run) => run.kvReadCount), [0, 3, 0, 6]);
+  assert.deepEqual(server.runs.map((run) => run.kvReadResultCount), [0, 3, 0, 6]);
+  assert.deepEqual(server.runs.map((run) => run.turnRefs.length), [0, 1, 0, 2]);
+  assert.ok(server.runs.every((run) => run.kvWriteCount === 3 && run.kvAckCount === 3));
+  assert.notEqual(first.userMessageId, second.userMessageId);
+  assert.notEqual(first.requestId, second.requestId);
+  assert.equal(first.prompt, second.prompt);
+  assert.equal(first.prompt, isolated.prompt);
+  assert.notDeepEqual(first.turnBlobId, isolated.turnBlobId);
+  assert.deepEqual(first.kvWrites[1].bytes, isolated.kvWrites[1].bytes);
+  assert.deepEqual(resumed.turnRefs, [first.turnBlobId, second.turnBlobId]);
+  assert.deepEqual(server.errors, []);
+  const extra = openRun(t, server, { headers: { "x-request-id": identity(600) } });
+  extra.send(runMessage(Buffer.alloc(0), { session: identity(601) }));
+  await extra.done;
+  assert.equal(server.runs.length, 4);
+  assert.deepEqual(server.errors, ["CURSOR_AGENT_ANSWER_EXHAUSTED"]);
+});
+
+test("answer sequences reject invalid fixtures and do not require the legacy answer option", async (t) => {
+  for (const answers of [[], "not-an-array", [""], ["  "], [1]]) {
+    await assert.rejects(startCursorAgentMock({ answer, answers }), { nativeCode: "CURSOR_MOCK_OPTIONS_INVALID" });
+  }
+  const server = await mock(t, { answer: undefined, answers: [answer] });
+  await completedRun(t, server);
+  assert.deepEqual(server.errors, []);
+});
+
+test("unknown, missing, reordered, duplicated and cross-session histories fail before GET or SET", async (t) => {
+  const server = await mock(t);
+  const first = await completedRun(t, server);
+  const second = await completedRun(t, server, { prior: [first] });
+  const other = await completedRun(t, server, { session: identity(500) });
+  for (const [index, refs] of [[], [first.turnBlobId], [second.turnBlobId, first.turnBlobId],
+    [first.turnBlobId, first.turnBlobId], [first.turnBlobId, other.turnBlobId], [Buffer.alloc(32, 7)]].entries()) {
+    const stream = openRun(t, server, { headers: { "x-request-id": identity(index + 600) } });
+    stream.send(runMessage(Buffer.concat(refs.map((ref) => field(8, ref))), { session: index === 5 ? identity(700) : conversationId }));
+    await stream.done;
+    assert.equal(stream.frames.length, 1);
+    assert.equal(stream.frames[0].flags, 2);
+    assert.equal(server.errors.at(-1), "CURSOR_AGENT_HISTORY_MISMATCH");
+    assert.equal(server.runs.length, 3);
+  }
+});
+
+test("same-session runs are locked until the previous stream completes or fails", async (t) => {
+  const server = await mock(t);
+  const first = openRun(t, server);
+  first.send(runMessage());
+  await waitFor(() => first.frames.length === 1);
+  const concurrent = openRun(t, server, { headers: { "x-request-id": identity(600) } });
+  concurrent.send(runMessage());
+  await concurrent.done;
+  assert.deepEqual(server.errors, ["CURSOR_AGENT_CONVERSATION_BUSY"]);
+  assert.equal(server.runs.length, 1);
+  first.send(acknowledgement(1, true));
+  await first.done;
+  await completedRun(t, server);
+  assert.equal(server.runs[0].completed, false);
+  assert.equal(server.runs[1].turnRefs.length, 0);
+});
+
+test("invalid KV reads fail without new writes, checkpoints or content", async (t) => {
+  for (const kind of ["unknown", "duplicate", "failed", "missing", "empty", "mismatch", "wrong-type", "ended", "timeout"]) {
+    await t.test(kind, async (t) => {
+      const server = await mock(t, { timeoutMs: kind === "timeout" ? 250 : 15_000 });
+      const first = await completedRun(t, server);
+      const stream = openRun(t, server, { headers: { "x-request-id": identity(600) } });
+      stream.send(runMessage(field(8, first.turnBlobId)));
+      await waitFor(() => stream.frames.length === 1);
+      if (kind === "duplicate") {
+        stream.send(readResult(1, first.kvWrites[0].bytes));
+        await waitFor(() => stream.frames.length === 2);
+      }
+      if (kind === "ended") stream.request.end();
+      else if (kind === "wrong-type") stream.send(acknowledgement(1));
+      else if (kind !== "timeout") stream.send(readResult(kind === "unknown" ? 999 : 1,
+        kind === "missing" ? undefined : kind === "empty" ? Buffer.alloc(0)
+          : kind === "mismatch" ? Buffer.from("private-mismatch-canary") : first.kvWrites[0].bytes, kind === "failed"));
+      await stream.done;
+      const code = { unknown: "CURSOR_AGENT_UNKNOWN_KV_READ", duplicate: "CURSOR_AGENT_DUPLICATE_KV_READ",
+        failed: "CURSOR_AGENT_KV_READ_REJECTED", missing: "CURSOR_AGENT_KV_READ_MISSING", empty: "CURSOR_AGENT_KV_READ_MISSING",
+        mismatch: "CURSOR_AGENT_KV_READ_MISMATCH", "wrong-type": "CURSOR_AGENT_KV_RESULT_MISMATCH",
+        ended: "CURSOR_AGENT_KV_READ_MISSING", timeout: "CURSOR_AGENT_TIMEOUT" }[kind];
+      assert.deepEqual(server.errors, [code]);
+      const run = server.runs[1];
+      assert.equal(run.completed, false);
+      assert.equal(run.kvWriteCount, 0);
+      assert.equal(run.kvAckCount, 0);
+      assert.equal(run.kvReadCount, kind === "duplicate" ? 2 : 1);
+      assert.equal(run.kvReadResultCount, kind === "duplicate" ? 1 : 0);
+      assert.equal(stream.frames.filter((entry) => entry.flags === 0).length, run.kvReadCount);
+      assert.equal(JSON.stringify(server.errors).includes("canary"), false);
+    });
+  }
+});
+
+test("duplicate final GET in one chunk fails before the first new write", async (t) => {
+  const server = await mock(t);
+  const first = await completedRun(t, server);
+  const stream = openRun(t, server, { headers: { "x-request-id": identity(600) } });
+  stream.send(runMessage(field(8, first.turnBlobId)));
+  for (const index of [0, 1]) {
+    await waitFor(() => stream.frames.length === index + 1);
+    stream.send(readResult(index + 1, first.kvWrites[index].bytes));
+  }
+  await waitFor(() => stream.frames.length === 3);
+  const last = frame(readResult(3, first.kvWrites[2].bytes));
+  stream.request.write(Buffer.concat([last, last]));
+  await stream.done;
+  assert.deepEqual(server.errors, ["CURSOR_AGENT_DUPLICATE_KV_READ"]);
+  assert.equal(server.runs[1].kvReadResultCount, 3);
+  assert.equal(server.runs[1].kvWriteCount, 0);
+  assert.equal(server.runs[1].completed, false);
+});
+
+test("a failed continuation releases its lock without adding an uncompleted turn to history", async (t) => {
+  const server = await mock(t);
+  const first = await completedRun(t, server);
+  const failed = openRun(t, server, { headers: { "x-request-id": identity(600) } });
+  failed.send(runMessage(field(8, first.turnBlobId)));
+  for (const [index, write] of first.kvWrites.entries()) {
+    await waitFor(() => failed.frames.length === index + 1);
+    failed.send(readResult(index + 1, write.bytes));
+  }
+  await waitFor(() => failed.frames.length === 4);
+  failed.send(acknowledgement(4, true));
+  await failed.done;
+  const next = await completedRun(t, server, { prior: [first] });
+  assert.equal(server.runs[1].completed, false);
+  assert.deepEqual(next.turnRefs, [first.turnBlobId]);
+  assert.equal(next.kvReadResultCount, 3);
+  assert.deepEqual(server.errors, ["CURSOR_AGENT_KV_REJECTED"]);
+});
+
 test("unknown, duplicate and failed KV acknowledgements never emit a completed turn", async (t) => {
-  for (const kind of ["unknown", "duplicate", "failed"]) {
+  for (const kind of ["unknown", "duplicate", "failed", "wrong-type"]) {
     await t.test(kind, async (t) => {
       const server = await mock(t);
       const stream = openRun(t, server);
@@ -246,10 +441,12 @@ test("unknown, duplicate and failed KV acknowledgements never emit a completed t
         stream.send(acknowledgement(1));
         await waitFor(() => stream.frames.length === 2);
       }
-      stream.send(acknowledgement(kind === "unknown" ? 999 : 1, kind === "failed"));
+      stream.send(kind === "wrong-type" ? readResult(1, Buffer.from("private-error-canary"))
+        : acknowledgement(kind === "unknown" ? 999 : 1, kind === "failed"));
       await stream.done;
       const code = kind === "unknown" ? "CURSOR_AGENT_UNKNOWN_ACK"
-        : kind === "duplicate" ? "CURSOR_AGENT_DUPLICATE_ACK" : "CURSOR_AGENT_KV_REJECTED";
+        : kind === "duplicate" ? "CURSOR_AGENT_DUPLICATE_ACK" : kind === "wrong-type"
+          ? "CURSOR_AGENT_KV_RESULT_MISMATCH" : "CURSOR_AGENT_KV_REJECTED";
       assertFailed(server, stream, code, kind === "duplicate" ? { writes: 2, acks: 1 } : {});
       assert.equal(JSON.stringify(server.errors).includes("private-error-canary"), false);
     });
@@ -347,6 +544,7 @@ test("malformed, oversized and excessive messages are bounded and rejected", asy
     [oversized, false, "CURSOR_APP_CONNECT_FRAME_TOO_LARGE"],
     [Buffer.concat(Array.from({ length: 129 }, () => frame(field(7, Buffer.alloc(0))))), false, "CURSOR_AGENT_TOO_MANY_MESSAGES"],
     [frame(acknowledgement(1)), false, "CURSOR_AGENT_UNKNOWN_ACK"],
+    [frame(readResult(1, Buffer.from("private-error-canary"))), false, "CURSOR_AGENT_UNKNOWN_KV_READ"],
   ]) {
     await t.test(code, async (t) => {
       const server = await mock(t);

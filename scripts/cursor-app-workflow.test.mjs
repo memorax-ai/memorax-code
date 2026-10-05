@@ -114,7 +114,8 @@ test("Cursor App summary fails every non-success dependency and states the limit
         `package=${packageResult}, cursor=${cursorResult}`);
       const text = await readFile(summary, "utf8");
       assert.ok(text.includes(`Package: **${packageResult}**`) && text.includes(`Cursor App Linux canary: **${cursorResult}**`));
-      assert.match(text, /single-turn Linux canary does not validate real login, hosted models, full functional coverage or three-platform acceptance/);
+      assert.match(text, /Four real App runs exercise repeated-prompt follow-up, independent sessions and App restart\/resume/);
+      assert.match(text, /This Linux canary does not validate real login, hosted models, full functional coverage or three-platform acceptance/);
     }
   }
 });

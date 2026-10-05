@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
-import { assertCursorAppNativeContent, assertCursorAppWriteback } from "./cursor-app-native-content-check.mjs";
+import { assertCursorAppNativeContent, assertCursorAppWriteback, assertCursorAppWritebacks } from "./cursor-app-native-content-check.mjs";
 
 const sessionId = "11111111-1111-4111-8111-111111111111";
 const generationId = "22222222-2222-4222-8222-222222222222";
@@ -197,25 +197,25 @@ test("native oracle rejects malformed, incorrectly addressed and duplicate expec
   rejects({ ...f.input, kvWrites: [write, write] }, "CURSOR_APP_DATABASE_EXPECTED_BLOB_DUPLICATE");
 });
 
-function writebackFixture() {
-  const prompt = "Synthetic prompt\n\u8bb0\u5fc6-42 \u00e9";
-  const answer = "Synthetic answer\n\u8bb0\u5fc6-42 \ud83e\uddea";
+function writebackFixture({ sessionId: turnSessionId = sessionId,
+  prompt = "Synthetic prompt\n\u8bb0\u5fc6-42 \u00e9",
+  answer = "Synthetic answer\n\u8bb0\u5fc6-42 \ud83e\uddea" } = {}) {
   const apiKey = "synthetic-private-api-key", baseUserId = "synthetic-user", workspaceName = "synthetic-workspace";
   const userId = `${baseUserId}@${workspaceName}`;
   const hash = (text) => createHash("sha256").update(text).digest("hex").slice(0, 16);
   const body = {
     messages: [{ role: "user", content: prompt, timestamp: 123 }, { role: "assistant", content: answer, timestamp: 124 }],
-    session_id: sessionId, user_id: userId,
-    metadata: { memorax_code_session_id: sessionId, memorax_code_base_user_id: baseUserId,
+    session_id: turnSessionId, user_id: userId,
+    metadata: { memorax_code_session_id: turnSessionId, memorax_code_base_user_id: baseUserId,
       memorax_code_workspace: workspaceName, memorax_code_memory_scope: "workspace-name.v1",
-      idempotency_key: `automatic:cursor:${hash(userId)}:${sessionId}:${hash(prompt)}:${hash(answer)}` },
+      idempotency_key: `automatic:cursor:${hash(userId)}:${turnSessionId}:${hash(prompt)}:${hash(answer)}` },
   };
-  return { sessionId, prompt, answer, apiKey, baseUserId, workspaceName,
+  return { sessionId: turnSessionId, prompt, answer, apiKey, baseUserId, workspaceName,
     requests: [{ method: "POST", path: "/v1/memories/add", authorization: `Token ${apiKey}`, body }] };
 }
 
-function rejectsWriteback(input, code) {
-  assert.throws(() => assertCursorAppWriteback(input), (error) => {
+function rejectsWriteback(input, code, oracle = assertCursorAppWriteback) {
+  assert.throws(() => oracle(input), (error) => {
     assert.equal(error.code, code);
     assert.equal(error.message, code);
     assert.equal(error.cause, undefined);
@@ -328,4 +328,76 @@ test("writeback oracle rejects incomplete expectations and suppresses unexpected
   const input = writebackFixture();
   Object.defineProperty(input.requests[0], "body", { get() { throw new Error("private receiver failure"); } });
   rejectsWriteback(input, "CURSOR_APP_ADD_INVALID");
+});
+
+function writebacksFixture() {
+  const first = writebackFixture();
+  const turns = [
+    { sessionId, prompt: first.prompt, answer: first.answer },
+    { sessionId, prompt: first.prompt, answer: "Synthetic second answer\n\u8bb0\u5fc6-42 \ud83e\uddea" },
+    { sessionId: userMessageId, prompt: first.prompt, answer: first.answer },
+    { sessionId, prompt: "Synthetic resumed prompt\n\u8bb0\u5fc6-42 \u00e9",
+      answer: "Synthetic resumed answer\n\u8bb0\u5fc6-42 \ud83e\uddea" },
+  ];
+  return { requests: turns.map((turn) => writebackFixture(turn).requests[0]), turns,
+    apiKey: first.apiKey, baseUserId: first.baseUserId, workspaceName: first.workspaceName };
+}
+
+test("writebacks oracle matches ordered repeated prompts, isolated sessions and a resumed session", () => {
+  const input = writebacksFixture(), before = structuredClone(input);
+  assert.deepEqual(assertCursorAppWritebacks(input), { automaticAdd: 4 });
+  assert.deepEqual(input, before);
+});
+
+test("writebacks oracle rejects missing, extra and late receiver requests", () => {
+  const input = writebacksFixture();
+  for (const requests of [undefined, null, {}, [], input.requests.slice(0, -1),
+    [...input.requests, input.requests[0]], [...input.requests, { method: "POST", path: "/v1/memories/search" }]]) {
+    rejectsWriteback({ ...input, requests }, "CURSOR_APP_MEMORY_REQUEST_COUNT", assertCursorAppWritebacks);
+  }
+});
+
+test("writebacks oracle rejects replaying or reordering turns with the same prompt but different answers", () => {
+  for (const reorder of [(requests) => { requests[1] = requests[0]; },
+    (requests) => { [requests[0], requests[1]] = [requests[1], requests[0]]; }]) {
+    const input = writebacksFixture();
+    reorder(input.requests);
+    rejectsWriteback(input, "CURSOR_APP_ADD_CONTENT", assertCursorAppWritebacks);
+  }
+});
+
+test("writebacks oracle rejects cross-session replay and reordering even when message text is identical", () => {
+  for (const reorder of [(requests) => { requests[2] = requests[0]; },
+    (requests) => { [requests[0], requests[2]] = [requests[2], requests[0]]; }]) {
+    const input = writebacksFixture();
+    reorder(input.requests);
+    rejectsWriteback(input, "CURSOR_APP_ADD_SESSION", assertCursorAppWritebacks);
+  }
+});
+
+test("writebacks oracle rejects truncated Unicode, mixed turns and an invalid later scope", () => {
+  for (const mutate of [
+    (body) => { body.messages[1].content = body.messages[1].content.slice(0, -1); },
+    (body) => { body.messages[0].content = writebackFixture().prompt; },
+  ]) {
+    const input = writebacksFixture();
+    mutate(input.requests[3].body);
+    rejectsWriteback(input, "CURSOR_APP_ADD_CONTENT", assertCursorAppWritebacks);
+  }
+  const input = writebacksFixture();
+  input.requests[3].body.metadata.memorax_code_workspace = "other-workspace";
+  rejectsWriteback(input, "CURSOR_APP_ADD_SCOPE", assertCursorAppWritebacks);
+});
+
+test("writebacks oracle validates every expectation and keeps errors redacted", () => {
+  const input = writebacksFixture();
+  for (const turns of [undefined, null, {}, []]) {
+    rejectsWriteback({ ...input, turns }, "CURSOR_APP_ADD_EXPECTED", assertCursorAppWritebacks);
+  }
+  for (const turn of [undefined, null, {}, { ...input.turns[3], sessionId: "private-invalid-session" }]) {
+    rejectsWriteback({ ...input, turns: [...input.turns.slice(0, -1), turn] },
+      "CURSOR_APP_ADD_EXPECTED", assertCursorAppWritebacks);
+  }
+  Object.defineProperty(input.turns[3], "answer", { get() { throw new Error("private fixture failure"); } });
+  rejectsWriteback(input, "CURSOR_APP_ADD_INVALID", assertCursorAppWritebacks);
 });
