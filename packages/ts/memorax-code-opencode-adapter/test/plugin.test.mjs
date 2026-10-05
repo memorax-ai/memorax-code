@@ -497,6 +497,90 @@ test("the managed Repo Memory agent is registered and isolated from prompt handl
   assert.equal(output.message.system, undefined);
 });
 
+for (const fixture of [
+  { name: "selects medium", variants: { medium: { reasoningEffort: "medium" } }, expected: "medium" },
+  { name: "overrides the native variant when medium exists", variants: { medium: {} }, initial: "high", expected: "medium" },
+  { name: "preserves the native variant without medium", variants: { high: {} }, initial: "high", expected: "high" },
+  { name: "preserves default behavior with no variants", variants: {}, expected: undefined },
+  { name: "preserves default behavior with missing variants", expected: undefined },
+  { name: "preserves the native variant when the model is missing", missingModel: true, initial: "high", expected: "high" },
+  { name: "preserves the native variant when metadata is unavailable", failure: true, initial: "high", expected: "high" },
+]) {
+  test(`Repo Memory ${fixture.name} for the resolved model`, async () => {
+    const queries = [];
+    const providers = [
+      { id: "other", models: { selected: { variants: { medium: {} } } } },
+      {
+        id: "configured",
+        models: {
+          other: { variants: { medium: {} } },
+          ...(!fixture.missingModel ? { selected: { variants: fixture.variants } } : {}),
+        },
+      },
+    ];
+    const originalProviders = structuredClone(providers);
+    const hooks = await createPluginWithoutReminders({
+      backendConnection: { url: "http://127.0.0.1:8787" },
+      fetchImpl: () => assert.fail("Repo Memory must not send a memory turn start"),
+    })(pluginInput({
+      client: { config: { async providers(input) {
+        queries.push(input);
+        if (fixture.failure) throw new Error("Model metadata unavailable");
+        return { data: { providers } };
+      } } },
+    }));
+    const output = promptOutput("repo-memory-user", "Maintain Repo Memory.");
+    output.message.model = {
+      providerID: "configured",
+      modelID: "selected",
+      ...(fixture.initial ? { variant: fixture.initial } : {}),
+    };
+    const originalOutput = structuredClone(output);
+    try {
+      await hooks["chat.message"]({
+        sessionID: "repo-memory-session",
+        agent: OPENCODE_REPO_MEMORY_AGENT,
+        model: { providerID: "other", modelID: "selected" },
+      }, output);
+      assert.deepEqual(output, {
+        ...originalOutput,
+        message: {
+          ...originalOutput.message,
+          model: {
+            providerID: "configured",
+            modelID: "selected",
+            ...(fixture.expected ? { variant: fixture.expected } : {}),
+          },
+        },
+      });
+      assert.equal(queries.length, 1);
+      assert.deepEqual(queries[0].query, { directory: "/repo/directory" });
+      assert.equal(queries[0].throwOnError, true);
+      assert.equal(queries[0].signal instanceof AbortSignal, true);
+      assert.deepEqual(providers, originalProviders);
+    } finally {
+      await hooks.dispose();
+    }
+  });
+}
+
+test("foreground prompts preserve their variant without reading model metadata", async () => {
+  const hooks = await createPluginWithoutReminders({
+    backendConnection: { url: "http://127.0.0.1:8787" },
+    fetchImpl: responseSequence([], [{ ok: true }]),
+  })(pluginInput({
+    client: { config: { providers: () => assert.fail("foreground model selection stays native") } },
+  }));
+  const output = promptOutput("foreground-user", "Explain the code.");
+  output.message.model = { providerID: "configured", modelID: "selected", variant: "high" };
+  try {
+    await hooks["chat.message"]({ sessionID: "foreground-session", agent: "build" }, output);
+    assert.deepEqual(output.message.model, { providerID: "configured", modelID: "selected", variant: "high" });
+  } finally {
+    await hooks.dispose();
+  }
+});
+
 test("OpenCode forwards first-prompt and post-compaction reminders once", async () => {
   const memoraxCodeHome = await mkdtemp(join(tmpdir(), "memorax-code-opencode-reminder-"));
   const requests = [];

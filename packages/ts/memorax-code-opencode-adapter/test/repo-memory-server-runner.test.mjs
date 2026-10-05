@@ -183,7 +183,7 @@ test("OpenCode repo memory runner owns a temporary server when the inherited ser
     const result = await runOpenCodeRepoMemory({
       serverUrl: "http://127.0.0.1:9",
       repo: root,
-      prompt: "Build Repo Memory.",
+      prompt: "Update Repo Memory.",
     }, {
       env: {
         MEMORAX_CODE_MEMORY_CLI_SESSION_ID: "parent-fallback",
@@ -218,6 +218,10 @@ test("OpenCode repo memory runner owns a temporary server when the inherited ser
     assert.deepEqual(requests.map((request) => request.method), ["POST", "POST", "DELETE"]);
     assert.equal(requests.every((request) => request.authorization === authorization), true);
     assert.equal(JSON.parse(requests[0].body).parentID, "parent-fallback");
+    assert.deepEqual(JSON.parse(requests[1].body), {
+      agent: OPENCODE_REPO_MEMORY_AGENT,
+      parts: [{ type: "text", text: "Update Repo Memory." }],
+    });
     assert.deepEqual(killSignals, ["SIGTERM"]);
   } finally {
     await server.close();

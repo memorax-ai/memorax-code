@@ -21,6 +21,7 @@ import { OPENCODE_REPO_MEMORY_AGENT } from "./repo-memory-server-runner.mjs";
 const DEFAULT_BACKEND_PROMPT_WAIT_TIMEOUT_MS = 5_000;
 const TURN_START_TIMEOUT_MS = 12_000;
 const REMINDER_TRACE_TIMEOUT_MS = 1_000;
+const MODEL_METADATA_TIMEOUT_MS = 5_000;
 const WRITEBACK_TIMEOUT_MS = 5_000;
 const MAX_PENDING_TURNS = 256;
 const MEMORY_SKILL_INVOCATION = "the `memorax-code` skill";
@@ -176,7 +177,27 @@ export function createMemoraxOpenCodePlugin(options = {}) {
         const promptSignal = input?.signal instanceof AbortSignal
           ? AbortSignal.any([input.signal, guidanceLifetime.signal]) : guidanceLifetime.signal;
         if (!pluginEnabled(options) || promptSignal.aborted) return;
-        if (stringValue(input?.agent) === OPENCODE_REPO_MEMORY_AGENT) return;
+        if (stringValue(input?.agent) === OPENCODE_REPO_MEMORY_AGENT) {
+          const model = output?.message?.model;
+          if (!model?.providerID || !model?.modelID) return;
+          try {
+            // Inspect the resolved model so native model selection stays authoritative.
+            const response = await client.config.providers({
+              query: { directory },
+              throwOnError: true,
+              signal: AbortSignal.any([promptSignal, AbortSignal.timeout(MODEL_METADATA_TIMEOUT_MS)]),
+            });
+            if (!pluginEnabled(options) || promptSignal.aborted) return;
+            const provider = response?.data?.providers?.find((entry) => entry.id === model.providerID);
+            const medium = provider?.models?.[model.modelID]?.variants?.medium;
+            if (medium && typeof medium === "object" && !Array.isArray(medium)) {
+              model.variant = "medium";
+            }
+          } catch {
+            debug(options, "opencode repo memory model metadata unavailable", "preserving native variant");
+          }
+          return;
+        }
         const userMessageId = stringValue(output?.message?.id) ?? stringValue(input?.messageID);
         const sessionId = stringValue(input?.sessionID);
         if (Array.isArray(output?.parts) && output.parts.some((part) => part?.type === "compaction")) return;
