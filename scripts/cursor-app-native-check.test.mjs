@@ -9,14 +9,18 @@ import { collectCursorAppStopDiagnostics } from "./cursor-app-diagnostics.mjs";
 
 const source = (await readFile(new URL("./cursor-app-native-check.mjs", import.meta.url), "utf8")).replaceAll("\r\n", "\n");
 
-test("actual candidate command captures only failed stop diagnostics and preserves command outcomes", async () => {
+test("actual candidate command keeps only macOS cleanup stop outside the sandbox and preserves outcomes", async () => {
   const body = source.split("async function command(")[1]?.split("\nasync function ownedProcessesRemain(")[0];
+  const cliBody = source.split("  cli = ")[1]?.split(";\n")[0];
   assert.ok(body);
+  assert.ok(cliBody);
   const privateCanary = "private-stop-path-token-canary";
   const failure = { ok: false, action: "stop", backend: { ok: false, errorCode: "BACKEND_STOP_TIMEOUT",
     stage: "wait_stopped", processState: "running", state: { path: privateCanary }, error: privateCanary } };
-  for (const mode of ["failed-stop", "successful-stop", "invalid-json", "failed-start", "timeout", "overflow"]) {
-    const report = {}, kills = [], timers = [], env = { HOME: "/owned/home" };
+  const modes = ["failed-stop", "successful-stop", "invalid-json", "failed-start", "failed-status", "failed-restart", "timeout", "overflow"];
+  for (const [isMacos, mode] of [false, true].flatMap((isMacos) => modes.map((mode) => [isMacos, mode]))) {
+    const action = ["failed-start", "failed-status", "failed-restart"].includes(mode) ? mode.slice(7) : "stop";
+    const report = {}, kills = [], timers = [], env = { HOME: "/owned/home", MEMORAX_CODE_HOME: "/owned/state", CURSOR_HOME: "/owned/cursor" };
     const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough(), exitCode: null, signalCode: null });
     let closed = false, collected = false;
     const close = (exitCode, signal = null) => {
@@ -25,36 +29,43 @@ test("actual candidate command captures only failed stop diagnostics and preserv
       child.stdout.end(); child.stderr.end(); child.emit("close", exitCode, signal);
     };
     child.kill = (signal) => { kills.push(signal); queueMicrotask(() => close(null, signal)); };
+    function startCommand(route, file, args, options) {
+      assert.equal(route, isMacos && action === "stop" ? "controller" : "owned");
+      assert.equal(file, "/owned/node");
+      assert.deepEqual(Array.from(args), [join("/owned/package", "bin/memorax-code.mjs"), action,
+        "--home", env.MEMORAX_CODE_HOME, "--cursor-home", env.CURSOR_HOME, "--port", "18787", "--clients", "cursor", "--json"]);
+      assert.equal(options.cwd, join("/owned", "workspace")); assert.equal(options.env === env, true);
+      assert.deepEqual(Array.from(options.stdio), ["ignore", "pipe", "pipe"]);
+      assert.equal(options.shell, undefined);
+      queueMicrotask(() => {
+        child.stderr.write(privateCanary);
+        if (mode === "timeout") { timers[0](); return; }
+        if (mode === "overflow") { child.stdout.write("x".repeat(1024 * 1024 + 1)); return; }
+        child.stdout.write(mode === "invalid-json" ? privateCanary : JSON.stringify(mode === "successful-stop" ? { ok: true } : failure));
+        close(mode === "successful-stop" || mode === "invalid-json" ? 0 : 1);
+      });
+      return child;
+    }
     const command = runInNewContext(`(async function command(${body})`, {
       process: { execPath: "/owned/node" }, packageRoot: "/owned/package", root: "/owned", env, report, join, once,
+      macos: isMacos ? {} : undefined,
       collectCursorAppStopDiagnostics(value) { collected = true; return collectCursorAppStopDiagnostics(value); },
       check(value, code) {
-        if (mode !== "failed-start") assert.equal(collected, true, "stop JSON is projected before checking the exit");
+        if (action === "stop") assert.equal(collected, true, "stop JSON is projected before checking the exit");
         if (!value) throw Object.assign(new Error(code), { code });
       },
       setTimeout(callback, timeout) { assert.equal(timeout, 30000); timers.push(callback); return callback; },
       clearTimeout(timer) { assert.equal(timer, timers[0]); timers.length = 0; },
-      spawnOwned(file, args, options) {
-        assert.equal(file, "/owned/node"); assert.equal(args[0], join("/owned/package", "bin/memorax-code.mjs"));
-        assert.equal(args[1], mode === "failed-start" ? "start" : "stop");
-        assert.equal(options.cwd, join("/owned", "workspace")); assert.equal(options.env === env, true);
-        assert.deepEqual(Array.from(options.stdio), ["ignore", "pipe", "pipe"]);
-        queueMicrotask(() => {
-          child.stderr.write(privateCanary);
-          if (mode === "timeout") { timers[0](); return; }
-          if (mode === "overflow") { child.stdout.write("x".repeat(1024 * 1024 + 1)); return; }
-          child.stdout.write(mode === "invalid-json" ? privateCanary : JSON.stringify(mode === "successful-stop" ? { ok: true } : failure));
-          close(mode === "successful-stop" || mode === "invalid-json" ? 0 : 1);
-        });
-        return child;
-      },
+      spawn: (...args) => startCommand("controller", ...args),
+      spawnOwned: (...args) => startCommand("owned", ...args),
     }, { timeout: 100 });
-    const code = mode === "failed-start" ? "CURSOR_APP_CANDIDATE_START" : "CURSOR_APP_CANDIDATE_STOP";
-    if (mode === "successful-stop") assert.equal((await command(["stop"], code)).ok, true);
-    else await assert.rejects(command([mode === "failed-start" ? "start" : "stop"], code), { code });
+    const cli = runInNewContext(cliBody, { command, env, backendPort: 18787 }, { timeout: 100 });
+    const code = `CURSOR_APP_CANDIDATE_${action.toUpperCase()}`;
+    if (mode === "successful-stop") assert.equal((await cli(action)).ok, true);
+    else await assert.rejects(cli(action), { code });
     assert.equal(timers.length, 0);
     assert.deepEqual(kills, ["timeout", "overflow"].includes(mode) ? ["SIGKILL"] : []);
-    if (["successful-stop", "failed-start"].includes(mode)) assert.equal(report.candidateStop, undefined);
+    if (mode === "successful-stop" || action !== "stop") assert.equal(report.candidateStop, undefined);
     else {
       assert.ok(report.candidateStop);
       assert.equal(report.candidateStop.timedOut, mode === "timeout");
@@ -75,10 +86,10 @@ test("native failures capture the current App outcome before cleanup changes pro
   assert.match(source, /spawnError: appSpawnError, log: appLaunchLog/);
 });
 
-test("native CLI and App launch through the same macOS sandbox invocation without a shell", () => {
+test("owned native commands and App launch retain the same macOS sandbox invocation without a shell", () => {
   const body = source.split("function spawnOwned(")[1]?.split("\nasync function command(")[0];
   assert.ok(body);
-  assert.match(source, /const child = spawnOwned\(process\.execPath,/);
+  assert.match(source, /const spawnCommand = macos && args\[0\] === "stop" \? spawn : spawnOwned;/);
   assert.match(source, /app = spawnOwned\(appPath,/);
   for (const sandboxed of [false, true]) {
     const calls = [], options = { env: { HOME: "/owned/home" }, cwd: "/owned/workspace" };

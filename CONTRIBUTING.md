@@ -1248,8 +1248,13 @@ checksum or a substitute for signature verification.
 The Linux runtime is non-root, has no external network, drops all capabilities,
 retains Chromium's sandbox and uses `no-new-privileges` plus the documented
 seccomp profile. macOS first requires the network isolation proof below, then
-applies a network-only sandbox to the App and candidate CLI, including their
-Backend, Hook and tool descendants. Outbound TCP is restricted to exact required
+applies a network-only sandbox to the App and candidate `start` and `status`
+commands, including their Backend, Hook and tool descendants. The fixed
+`stop --clients cursor` cleanup command runs from the trusted controller outside
+that profile so the packaged CLI can perform its normal process-ownership
+probe. It retains the isolated home, exact CLI arguments and ownership checks;
+there is no unverified PID kill fallback. The live Backend and its descendants
+retain their original sandbox during shutdown. Outbound TCP is restricted to exact required
 loopback ports, and TCP listeners to the selected ports. The sandbox does not
 restrict listener addresses; the native checks audit actual loopback listeners
 as described below. Unix IPC is allowed only beneath the owned App user-data and
@@ -1372,6 +1377,9 @@ The runner guard accepts only the exact Windows 2025 `ImageOS` identities
 `win25` and `win25-vs2026`. A guard failure exposes only its fixed `failedGuard`
 enum, not environment values, paths, SIDs or raw errors; the field is absent
 after all guards pass.
+Node version preflight exposes only bounded numeric source/copied versions,
+exit codes, output lengths and fixed result classifications. Paths and raw
+subprocess output are not published.
 
 The Windows probe requires the hosted runner's administrator context to create
 one temporary standard local user and outbound TCP firewall block rules scoped

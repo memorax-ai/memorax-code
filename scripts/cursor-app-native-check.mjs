@@ -67,7 +67,9 @@ function spawnOwned(file, args, options) {
   return spawn(invocation.file, invocation.args, options);
 }
 async function command(args, code) {
-  const child = spawnOwned(process.execPath, [join(packageRoot, "bin/memorax-code.mjs"), ...args],
+  // The trusted cleanup controller must retain access to the CLI's process-ownership probe.
+  const spawnCommand = macos && args[0] === "stop" ? spawn : spawnOwned;
+  const child = spawnCommand(process.execPath, [join(packageRoot, "bin/memorax-code.mjs"), ...args],
     { cwd: join(root, "workspace"), env, stdio: ["ignore", "pipe", "pipe"] });
   let stdout = "", overflow = false, timedOut = false, stopDiagnostic;
   child.stdout.on("data", (chunk) => { stdout += chunk; if (stdout.length > 1024 * 1024) { overflow = true; child.kill("SIGKILL"); } });

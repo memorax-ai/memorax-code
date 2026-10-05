@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { copyFile, mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import {
   classifyConnectionError, connectToFixture, parseProbeConfig, summarizeLevels,
@@ -185,6 +187,109 @@ ConvertTo-Json -InputObject @($results) -Depth 6 -Compress
       ? ["firewallService", "firewallProfiles"] : entry.expected === "firewallService" ? ["firewallService"] : [];
     assert.deepEqual(reports[index], { name: entry.name, passed: entry.expected === null,
       report: entry.expected === null ? {} : { failedGuard: entry.expected }, queries: expectedQueries }, entry.name);
+  }
+});
+
+test("version preflight checks owned real Node and projects only bounded numeric diagnostics", async (t) => {
+  const available = spawnSync("pwsh", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "exit 0"],
+    { encoding: "utf8", timeout: 10000 });
+  if (available.error?.code === "ENOENT") return t.skip("PowerShell is not installed");
+  assert.equal(available.status, 0, "PowerShell is required to execute version fixtures");
+  const source = (await readFile(new URL("./cursor-app-windows-isolation-check.ps1", import.meta.url), "utf8"))
+    .replaceAll("\r\n", "\n");
+  const helpers = source.match(/function Start-OwnedNode\([\s\S]*?(?=\nfunction Wait-Ready)/)?.[0];
+  const preflight = source.match(/    \$report\.nodeVersionPreflight = [\s\S]*?(?=    \$userName =)/)?.[0];
+  assert.ok(helpers);
+  assert.ok(preflight);
+  const quote = (value) => `'${value.replaceAll("'", "''")}'`;
+  const run = (script) => {
+    const result = spawnSync("pwsh", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+      { encoding: "utf8", timeout: 25000, maxBuffer: 1024 * 1024 });
+    assert.equal(result.status, 0, "PowerShell version fixtures failed");
+    assert.equal(result.stderr, "");
+    assert.doesNotMatch(result.stdout, /private-canary/);
+    return JSON.parse(result.stdout);
+  };
+  const root = await mkdtemp(join(tmpdir(), "memorax-windows-node preflight-"));
+  try {
+    const node = join(root, "node.exe");
+    await copyFile(process.execPath, node);
+    const actual = run(`
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+$root = ${quote(root)}
+$sourceNode = ${quote(process.execPath)}
+$node = ${quote(node)}
+$owned = [System.Collections.Generic.List[System.Diagnostics.Process]]::new()
+$report = [ordered]@{}
+$errorCode = $null
+${helpers}
+try {
+${preflight}
+} catch { $errorCode = if ($_.Exception.Message -ceq 'CURSOR_APP_WINDOWS_HOST_UNSUPPORTED') { $_.Exception.Message } else { 'FIXTURE_FAILED' } }
+finally {
+    foreach ($process in $owned) {
+        if (-not $process.HasExited) { $process.Kill() }
+        $null = $process.WaitForExit(5000)
+        $process.Dispose()
+    }
+}
+[ordered]@{ report = $report; errorCode = $errorCode; processCount = $owned.Count } | ConvertTo-Json -Depth 6 -Compress
+`);
+    const [major, minor, patch] = process.versions.node.split(".").map(Number);
+    assert.equal(actual.errorCode, major === 24 ? null : "CURSOR_APP_WINDOWS_HOST_UNSUPPORTED");
+    assert.equal(actual.processCount, 2);
+    assert.equal(actual.report.nodeVersionPreflight.versionsMatch, true);
+    for (const kind of ["source", "copied"]) {
+      const observation = actual.report.nodeVersionPreflight[kind];
+      assert.equal(observation.classification, "semver");
+      assert.equal(observation.exitCode, 0);
+      assert.deepEqual(observation.version, { major, minor, patch });
+      assert.ok(observation.outputLength >= process.version.length + 1 && observation.outputLength <= process.version.length + 2);
+      assert.deepEqual(Object.keys(observation).sort(), ["classification", "exitCode", "outputLength", "version"]);
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
+
+  const cases = [
+    { name: "matching", output: "v24.2.3\n", classification: "semver", version: { major: 24, minor: 2, patch: 3 }, errorCode: null, versionsMatch: true },
+    { name: "different", output: "v24.2.4\n", classification: "semver", version: { major: 24, minor: 2, patch: 4 }, errorCode: null },
+    { name: "wrongMajor", output: "v22.2.3\n", classification: "semver", version: { major: 22, minor: 2, patch: 3 }, errorCode: "CURSOR_APP_WINDOWS_HOST_UNSUPPORTED" },
+    { name: "missing", output: "", classification: "missing", errorCode: "CURSOR_APP_WINDOWS_HOST_UNSUPPORTED" },
+    { name: "privateOutput", output: "private-canary-output", classification: "non-semver", errorCode: "CURSOR_APP_WINDOWS_HOST_UNSUPPORTED" },
+    { name: "oversized", oversized: true, classification: "oversized", errorCode: "CURSOR_APP_WINDOWS_PROBE_OUTPUT_INVALID" },
+    { name: "nonzeroExit", output: "v24.2.3\n", classification: "semver", version: { major: 24, minor: 2, patch: 3 }, exitCode: 7, errorCode: "CURSOR_APP_WINDOWS_PROBE_FAILED" },
+    { name: "privateError", output: "v24.2.3\n", classification: "semver", version: { major: 24, minor: 2, patch: 3 }, stderr: "private-canary-error", errorCode: "CURSOR_APP_WINDOWS_PROBE_OUTPUT_INVALID" },
+  ];
+  const reports = run(`
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+function Start-OwnedNode([string[]]$Arguments, [bool]$AsProbeUser = $false, [string]$Executable = $node) {
+    if ($Arguments.Count -ne 1 -or $Arguments[0] -cne '--version' -or @('source', 'copied') -cnotcontains $Executable) { throw 'FIXTURE_ARGUMENTS_INVALID' }
+    $text = if ($Executable -eq 'source') { "v24.2.3\`n" } elseif ($case.ContainsKey('oversized')) { 'private-canary' * 1000 } else { $case.output }
+    $stderr = if ($Executable -eq 'copied' -and $case.ContainsKey('stderr')) { $case.stderr } else { '' }
+    $exitCode = if ($Executable -eq 'copied' -and $case.ContainsKey('exitCode')) { $case.exitCode } else { 0 }
+    $instance = [pscustomobject]@{ StandardInput = [System.IO.StringWriter]::new(); StandardOutput = [System.IO.StringReader]::new($text)
+        StandardError = [System.IO.StringReader]::new($stderr); ExitCode = [int]$exitCode }
+    $instance | Add-Member -MemberType ScriptMethod -Name WaitForExit -Value { param([int]$Timeout); return $true }
+    return $instance
+}
+$results = foreach ($case in ('${JSON.stringify(cases)}' | ConvertFrom-Json -AsHashtable)) {
+    $sourceNode = 'source'; $node = 'copied'; $report = [ordered]@{}; $errorCode = $null
+    try {
+${preflight}
+    } catch { $errorCode = if (@('CURSOR_APP_WINDOWS_HOST_UNSUPPORTED', 'CURSOR_APP_WINDOWS_PROBE_FAILED', 'CURSOR_APP_WINDOWS_PROBE_OUTPUT_INVALID') -ccontains $_.Exception.Message) { $_.Exception.Message } else { 'FIXTURE_FAILED' } }
+    [ordered]@{ name = $case.name; report = $report; errorCode = $errorCode; executableUnchanged = ($node -ceq 'copied') }
+}
+ConvertTo-Json -InputObject @($results) -Depth 8 -Compress
+`);
+  assert.equal(reports.length, cases.length);
+  for (const [index, entry] of cases.entries()) {
+    const copied = { classification: entry.classification, outputLength: entry.oversized ? 8192 : entry.output.length,
+      exitCode: entry.exitCode ?? 0, ...(entry.version ? { version: entry.version } : {}) };
+    assert.deepEqual(reports[index], { name: entry.name, report: { nodeVersionPreflight: {
+      versionsMatch: entry.versionsMatch ?? false,
+      source: { classification: "semver", outputLength: 8, exitCode: 0, version: { major: 24, minor: 2, patch: 3 } }, copied,
+    } }, errorCode: entry.errorCode, executableUnchanged: true }, entry.name);
   }
 });
 

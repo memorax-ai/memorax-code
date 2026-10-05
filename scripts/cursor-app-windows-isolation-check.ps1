@@ -70,9 +70,9 @@ function Read-PrivateJson([string]$Path) {
     return [System.IO.File]::ReadAllText($Path) | ConvertFrom-Json -AsHashtable
 }
 
-function Start-OwnedNode([string[]]$Arguments, [bool]$AsProbeUser = $false) {
+function Start-OwnedNode([string[]]$Arguments, [bool]$AsProbeUser = $false, [string]$Executable = $node) {
     $info = [System.Diagnostics.ProcessStartInfo]::new()
-    $info.FileName = $node
+    $info.FileName = $Executable
     foreach ($argument in $Arguments) { $info.ArgumentList.Add($argument) }
     $info.WorkingDirectory = $root
     $info.UseShellExecute = $false
@@ -197,7 +197,38 @@ try {
     $probe = Join-Path $root 'cursor-app-windows-isolation-probe.mjs'
     Copy-Item -LiteralPath $sourceNode -Destination $node
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'cursor-app-windows-isolation-probe.mjs') -Destination $probe
-    if ((Invoke-OwnedNode @('--version')).Trim() -notmatch '^v24\.\d+\.\d+$') { throw 'CURSOR_APP_WINDOWS_HOST_UNSUPPORTED' }
+    # Compare the selected binary and owned copy without publishing paths or command output.
+    $report.nodeVersionPreflight = [ordered]@{ versionsMatch = $false }
+    $versionOutputs = @{}
+    foreach ($kind in @('source', 'copied')) {
+        $diagnostic = [ordered]@{ classification = 'missing'; outputLength = 0; exitCode = $null }
+        $report.nodeVersionPreflight[$kind] = $diagnostic
+        $executable = if ($kind -eq 'source') { $sourceNode } else { $node }
+        $process = Start-OwnedNode @('--version') -Executable $executable
+        $process.StandardInput.Close()
+        if (-not $process.WaitForExit(15000)) { throw 'CURSOR_APP_WINDOWS_PROBE_FAILED' }
+        $diagnostic.exitCode = $process.ExitCode
+        $output = $process.StandardOutput.ReadToEnd()
+        $diagnostic.outputLength = [Math]::Min($output.Length, 8192)
+        $trimmed = $output.Trim()
+        if ($output.Length -gt 8192) {
+            $diagnostic.classification = 'oversized'
+        } elseif ($trimmed.Length -ne 0) {
+            $diagnostic.classification = 'non-semver'
+            if ($trimmed -cmatch '^v([0-9]{1,6})\.([0-9]{1,6})\.([0-9]{1,6})$') {
+                $diagnostic.classification = 'semver'
+                $diagnostic.version = [ordered]@{ major = [int]$Matches[1]; minor = [int]$Matches[2]; patch = [int]$Matches[3] }
+            }
+        }
+        if ($process.ExitCode -ne 0) { throw 'CURSOR_APP_WINDOWS_PROBE_FAILED' }
+        if ($output.Length -gt 8192 -or $process.StandardError.ReadToEnd().Length -ne 0) {
+            throw 'CURSOR_APP_WINDOWS_PROBE_OUTPUT_INVALID'
+        }
+        $versionOutputs[$kind] = $trimmed
+    }
+    $report.nodeVersionPreflight.versionsMatch = $report.nodeVersionPreflight.source.classification -eq 'semver' -and
+        $report.nodeVersionPreflight.copied.classification -eq 'semver' -and $versionOutputs.source -ceq $versionOutputs.copied
+    if ($versionOutputs.copied -notmatch '^v24\.\d+\.\d+$') { throw 'CURSOR_APP_WINDOWS_HOST_UNSUPPORTED' }
     $userName = 'mxp' + [Guid]::NewGuid().ToString('N').Substring(0, 14)
     $password = [Convert]::ToBase64String([System.Security.Cryptography.RandomNumberGenerator]::GetBytes(24)) + 'Aa1!'
     $securePassword = ConvertTo-SecureString $password -AsPlainText -Force
