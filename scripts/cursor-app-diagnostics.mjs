@@ -26,6 +26,11 @@ const count = (value) => Number.isSafeInteger(value) && value >= 0 && value <= m
 const launchMarkers = {
   sandboxInitializationFailed: /sandbox_(?:init|apply|initialize)\s*[:(]|Failed to initialize sandbox|sandbox::Seatbelt/,
   seatbeltApplyDenied: /sandbox_apply: Operation not permitted\b/,
+  helperSandboxInitializationFailed: /Failed to initialize sandbox\./,
+  sandboxPolicyDeserializeFailed: /SandboxSerializer: Failed to deserialize policy:/,
+  sandboxCompiledPolicyFailed: /SandboxSerializer: Failed to apply compiled policy:/,
+  sandboxSourcePolicyFailed: /SandboxSerializer: Failed to initialize sandbox with source mode policy:/,
+  sandboxPolicyPermissionDenied: /SandboxSerializer: Failed to (?:deserialize policy|apply compiled policy|initialize sandbox with source mode policy):[^\r\n]{0,256}Operation not permitted(?:\r?\n|$)/,
   processSingletonFailed: /Failed to create a ProcessSingleton|Failed to create.*SingletonSocket/,
   networkServiceCrashed: /Network service crashed/,
   gpuProcessFailed: /GPU process isn't usable|GPU process launch failed/,

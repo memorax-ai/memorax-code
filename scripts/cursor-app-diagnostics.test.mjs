@@ -52,6 +52,45 @@ test("Seatbelt apply denial requires the exact same-line marker", () => {
   }
 });
 
+test("Helper sandbox initialization uses its exact sentence, not the broader secure-mode diagnostic", () => {
+  for (const log of ["Failed to initialize sandbox.", `${privateCanary}: Failed to initialize sandbox.\n`]) {
+    const result = collectCursorAppLaunchDiagnostics({ log });
+    assert.equal(result.markers.helperSandboxInitializationFailed, true);
+    assert.equal(JSON.stringify(result).includes(privateCanary), false);
+  }
+  for (const log of ["Failed to initialize sandbox", "Failed to initialize sandbox in secure mode.",
+    "Failed to initialize sandbox\n.", "Failed to initialize sandboxx."]) {
+    assert.equal(collectCursorAppLaunchDiagnostics({ log }).markers.helperSandboxInitializationFailed, false);
+  }
+});
+
+test("SandboxSerializer diagnostics distinguish exact policy modes and bounded same-line access denial", () => {
+  const prefixes = {
+    sandboxPolicyDeserializeFailed: "SandboxSerializer: Failed to deserialize policy:",
+    sandboxCompiledPolicyFailed: "SandboxSerializer: Failed to apply compiled policy:",
+    sandboxSourcePolicyFailed: "SandboxSerializer: Failed to initialize sandbox with source mode policy:",
+  };
+  for (const [marker, prefix] of Object.entries(prefixes)) {
+    const result = collectCursorAppLaunchDiagnostics({ log: `${privateCanary}: ${prefix} ${privateCanary}\n` });
+    for (const key of Object.keys(prefixes)) assert.equal(result.markers[key], key === marker);
+    assert.equal(result.markers.sandboxPolicyPermissionDenied, false);
+    assert.equal(JSON.stringify(result).includes(privateCanary), false);
+    for (const log of [prefix.slice(0, -1), prefix.replace("SandboxSerializer: ", ""),
+      prefix.replace("Serializer: ", "Serializer:\n"), prefix.replace("policy:", "policies:")]) {
+      assert.equal(collectCursorAppLaunchDiagnostics({ log }).markers[marker], false);
+    }
+    for (const ending of ["", "\n", "\r\n"]) {
+      const denied = collectCursorAppLaunchDiagnostics({ log: `${prefix} ${privateCanary}: Operation not permitted${ending}` });
+      assert.equal(denied.markers.sandboxPolicyPermissionDenied, true);
+      assert.equal(JSON.stringify(denied).includes(privateCanary), false);
+    }
+    for (const suffix of ["\nOperation not permitted", "\rOperation not permitted", " EPERM", " Permission denied",
+      " Operation not permittedextra", " Operation not permitted.", ` ${"x".repeat(256)}Operation not permitted`]) {
+      assert.equal(collectCursorAppLaunchDiagnostics({ log: prefix + suffix }).markers.sandboxPolicyPermissionDenied, false);
+    }
+  }
+});
+
 test("candidate stop diagnostics retain only fixed JSON result and process fields", () => {
   const result = collectCursorAppStopDiagnostics({ exitCode: 1, signal: null, timedOut: false,
     stdout: JSON.stringify({ ok: false, action: "stop", error: privateCanary,

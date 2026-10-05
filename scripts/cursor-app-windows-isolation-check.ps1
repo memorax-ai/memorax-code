@@ -185,7 +185,7 @@ try {
     $canWriteReport = $true
     Assert-HostedRunner
     $report.stage = 'setup'
-    $sourceNode = (Get-Command node -CommandType Application).Source
+    $sourceNode = @(Get-Command node -CommandType Application)[0].Source
     if ([System.IO.Path]::GetFileName($sourceNode) -ine 'node.exe' -or -not $env:RUNNER_TEMP -or
         -not (Test-Path -LiteralPath $env:RUNNER_TEMP -PathType Container)) { throw 'CURSOR_APP_WINDOWS_SETUP_FAILED' }
     $root = Join-Path $env:RUNNER_TEMP ('cursor-windows-proof-' + [Guid]::NewGuid().ToString('N'))

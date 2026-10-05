@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { copyFile, mkdtemp, readFile, rm } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import test from "node:test";
 import {
   classifyConnectionError, connectToFixture, parseProbeConfig, summarizeLevels,
@@ -190,7 +190,7 @@ ConvertTo-Json -InputObject @($results) -Depth 6 -Compress
   }
 });
 
-test("version preflight checks owned real Node and projects only bounded numeric diagnostics", async (t) => {
+test("version preflight selects the first PATH Node and projects only bounded numeric diagnostics", async (t) => {
   const available = spawnSync("pwsh", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "exit 0"],
     { encoding: "utf8", timeout: 10000 });
   if (available.error?.code === "ENOENT") return t.skip("PowerShell is not installed");
@@ -198,8 +198,10 @@ test("version preflight checks owned real Node and projects only bounded numeric
   const source = (await readFile(new URL("./cursor-app-windows-isolation-check.ps1", import.meta.url), "utf8"))
     .replaceAll("\r\n", "\n");
   const helpers = source.match(/function Start-OwnedNode\([\s\S]*?(?=\nfunction Wait-Ready)/)?.[0];
+  const resolver = source.match(/^    \$sourceNode = [^\n]+$/m)?.[0];
   const preflight = source.match(/    \$report\.nodeVersionPreflight = [\s\S]*?(?=    \$userName =)/)?.[0];
   assert.ok(helpers);
+  assert.ok(resolver);
   assert.ok(preflight);
   const quote = (value) => `'${value.replaceAll("'", "''")}'`;
   const run = (script) => {
@@ -213,13 +215,22 @@ test("version preflight checks owned real Node and projects only bounded numeric
   const root = await mkdtemp(join(tmpdir(), "memorax-windows-node preflight-"));
   try {
     const node = join(root, "node.exe");
-    await copyFile(process.execPath, node);
+    const candidates = [join(root, "first"), join(root, "second")];
+    const executableName = process.platform === "win32" ? "node.exe" : "node";
+    for (const directory of candidates) {
+      await mkdir(directory);
+      await copyFile(process.execPath, join(directory, executableName));
+    }
     const actual = run(`
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $root = ${quote(root)}
-$sourceNode = ${quote(process.execPath)}
+$env:PATH = ${quote(candidates.join(delimiter))}
+$candidateCount = @(Get-Command node -CommandType Application).Count
+${resolver}
+$selectedFirst = $sourceNode -is [string] -and $sourceNode -eq ${quote(join(candidates[0], executableName))}
 $node = ${quote(node)}
+Copy-Item -LiteralPath $sourceNode -Destination $node
 $owned = [System.Collections.Generic.List[System.Diagnostics.Process]]::new()
 $report = [ordered]@{}
 $errorCode = $null
@@ -234,9 +245,13 @@ finally {
         $process.Dispose()
     }
 }
-[ordered]@{ report = $report; errorCode = $errorCode; processCount = $owned.Count } | ConvertTo-Json -Depth 6 -Compress
+[ordered]@{ report = $report; errorCode = $errorCode; processCount = $owned.Count; candidateCount = $candidateCount
+    sourceCount = @($sourceNode).Count; selectedFirst = $selectedFirst } | ConvertTo-Json -Depth 6 -Compress
 `);
     const [major, minor, patch] = process.versions.node.split(".").map(Number);
+    assert.equal(actual.candidateCount, 2);
+    assert.equal(actual.sourceCount, 1);
+    assert.equal(actual.selectedFirst, true);
     assert.equal(actual.errorCode, major === 24 ? null : "CURSOR_APP_WINDOWS_HOST_UNSUPPORTED");
     assert.equal(actual.processCount, 2);
     assert.equal(actual.report.nodeVersionPreflight.versionsMatch, true);
