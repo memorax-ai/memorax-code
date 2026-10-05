@@ -442,11 +442,22 @@ test("listener audit accepts either loopback family and a state-path Backend wit
   assert.equal(await auditMacosListeners(options, listenerExecutor({ before, output })), true);
 });
 
-test("listener audit rejects wildcard, non-loopback and additional owned listening ports", async () => {
+test("listener audit permits additional owned loopback services while requiring both expected ports", async () => {
+  for (const [address, type] of [["127.0.0.1:49152", "IPv4"], ["[::1]:49153", "IPv6"]]) {
+    const extra = `p51\0\n${socketFields(9, address, type)}`;
+    assert.equal(await auditMacosListeners(listenerOptions, listenerExecutor({ output: listenerOutput + extra })), true);
+    await assert.rejects(auditMacosListeners(listenerOptions, listenerExecutor({ output: extra })), listenerError);
+    await assert.rejects(auditMacosListeners(listenerOptions, listenerExecutor({ output: listenerOutput + extra,
+      after: listenerProcesses.replace("51 50", "51 1").replace("Cursor Helper: shared-process", "/usr/bin/unrelated") })), listenerError);
+  }
+});
+
+test("listener audit rejects wildcard, non-loopback and invalid owned listening ports", async () => {
   for (const [address, type] of [[`*:${port}`, "IPv4"], [`0.0.0.0:${port}`, "IPv4"],
     [`192.0.2.1:${port}`, "IPv4"], [`127.0.0.2:${port}`, "IPv4"], [`[::]:${port}`, "IPv6"],
     [`[2001:db8::1]:${port}`, "IPv6"], [`[::ffff:127.0.0.1]:${port}`, "IPv6"],
-    ["127.0.0.1:43125", "IPv4"], [`localhost:${port}`, "IPv4"]]) {
+    ["127.0.0.1:0", "IPv4"], ["[::1]:65536", "IPv6"], ["127.0.0.1:99999999999999999999", "IPv4"],
+    [`localhost:${port}`, "IPv4"]]) {
     const output = `${listenerOutput}p61\0\n${socketFields(3, address, type)}`;
     await assert.rejects(auditMacosListeners(listenerOptions, listenerExecutor({ output })), listenerError);
   }

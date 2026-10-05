@@ -263,7 +263,7 @@ export async function auditMacosListeners({ appPid, appBundle, packageRoot, stat
         && ["IPv4", "IPv6"].includes(values.get("t")) && values.get("P") === "TCP"
         && values.get("T") === "ST=LISTEN" && !descriptors.has(`${pid}:${values.get("f")}`), listenerCode);
       const address = values.get("n")?.match(/^(127\.0\.0\.1|\[::1\]):(\d+)$/);
-      check(address && [String(backendPort), String(debugPort)].includes(address[2])
+      check(address && validPort(Number(address[2]))
         && values.get("t") === (address[1] === "127.0.0.1" ? "IPv4" : "IPv6"), listenerCode);
       descriptors.add(`${pid}:${values.get("f")}`); listeners.add(pid); ports.add(Number(address[2]));
     }

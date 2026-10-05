@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
 import { projectNativeReport } from "./cursor-app-container-check.mjs";
-import { runWindowsCheck, windowsCheckEnvironment, windowsInstallerCommand } from "./cursor-app-windows-check.mjs";
+import { projectWindowsInstallerOutcome, runWindowsCheck, windowsCheckEnvironment, windowsInstallerCommand } from "./cursor-app-windows-check.mjs";
 
 test("Windows wrapper builds a clean environment with only the hosted Git directory added", () => {
   const env = windowsCheckEnvironment("C:\\owned root", "C:\\node\\node.exe", "D:\\Windows");
@@ -36,30 +36,52 @@ test("Windows installer invocation is silent, prevents automatic App start and w
   const script = Buffer.from(args.at(-1), "base64").toString("utf16le");
   assert.match(script, /Start-Process -FilePath 'C:\\owned '' installer\\CursorUserSetup\.exe'/);
   assert.match(script, /'\/VERYSILENT','\/SUPPRESSMSGBOXES','\/NORESTART','\/MERGETASKS=!runcode','\/DIR="C:\\owned app\\Cursor"'/);
-  assert.match(script, /-Wait -PassThru; exit \$installer\.ExitCode$/);
+  assert.match(script, /-Wait -PassThru;/);
+  assert.match(script, /status='exited';exitCode=\$installer\.ExitCode;nativeErrorCode=\$null/);
   assert.doesNotMatch(script, /ExecutionPolicy|RunAs|no-sandbox/i);
   for (const invalid of ["relative", "C:\\a\0b", "C:\\a\r\nb", 'C:\\a"b']) {
     assert.throws(() => windowsInstallerCommand(invalid, "C:\\app"), { code: "CURSOR_APP_WINDOWS_ARGUMENTS" });
   }
 });
 
-test("the real encoded installer script preserves arguments and exit status with a synthetic PowerShell command", (t) => {
+test("the real encoded installer script distinguishes installer exit from launch error without private output", (t) => {
   const available = spawnSync("pwsh", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "exit 0"], { encoding: "utf8", timeout: 10000 });
   if (available.error?.code === "ENOENT") return t.skip("PowerShell is not installed");
   assert.equal(available.status, 0);
   const args = windowsInstallerCommand("C:\\owned ' \u5b89\u88c5\\CursorUserSetup.exe", "C:\\owned app\\Cursor");
-  const script = `function Start-Process {
+  for (const kind of ["exited", "launch-error"]) {
+    const script = `function Start-Process {
 param([string]$FilePath, [string[]]$ArgumentList, [switch]$Wait, [switch]$PassThru)
 if ($FilePath -cne 'C:\\owned '' \u5b89\u88c5\\CursorUserSetup.exe' -or -not $Wait -or -not $PassThru) { throw 'FIXTURE_ARGUMENTS' }
 if (($ArgumentList -join '|') -cne '/VERYSILENT|/SUPPRESSMSGBOXES|/NORESTART|/MERGETASKS=!runcode|/DIR="C:\\owned app\\Cursor"') { throw 'FIXTURE_FLAGS' }
-[pscustomobject]@{ ExitCode=7 }
+${kind === "exited" ? "[pscustomobject]@{ ExitCode=7 }" : "throw [ComponentModel.Win32Exception]::new(5, 'private-canary')"}
 }
 ${Buffer.from(args.at(-1), "base64").toString("utf16le")}`;
-  const result = spawnSync("pwsh", ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")],
-    { encoding: "utf8", timeout: 10000 });
-  assert.equal(result.status, 7);
-  assert.equal(result.stdout, "");
-  assert.equal(result.stderr, "");
+    const result = spawnSync("pwsh", ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")],
+      { encoding: "utf8", timeout: 10000 });
+    assert.equal(result.status, kind === "exited" ? 7 : 1);
+    assert.deepEqual(JSON.parse(result.stdout), { status: kind, exitCode: kind === "exited" ? 7 : null, nativeErrorCode: kind === "exited" ? null : 5 });
+    assert.equal(result.stderr, "");
+    assert.equal(result.stdout.includes("private-canary"), false);
+  }
+});
+
+test("installer outcome projection accepts only fixed statuses and bounded integers", () => {
+  for (const exitCode of [-2147483648, 0, 2147483647]) {
+    const outcome = { status: "exited", exitCode, nativeErrorCode: null };
+    assert.deepEqual(projectWindowsInstallerOutcome(JSON.stringify(outcome)), outcome);
+  }
+  const native = { status: "launch-error", exitCode: null, nativeErrorCode: 5 };
+  assert.deepEqual(projectWindowsInstallerOutcome(JSON.stringify(native), { code: 1 }), native);
+  for (const stdout of ["private-canary", "x".repeat(4097), JSON.stringify({ ...native, raw: "private-canary" }),
+    JSON.stringify({ ...native, nativeErrorCode: 2147483648 }), JSON.stringify({ ...native, status: "private-canary" })]) {
+    assert.deepEqual(projectWindowsInstallerOutcome(stdout), { status: "invalid-output", exitCode: null, nativeErrorCode: null });
+  }
+  for (const [error, status, exitCode] of [[{ code: 1 }, "powershell-exit", 1], [{ code: "ABORT_ERR" }, "aborted", null],
+    [{ code: "ETIMEDOUT" }, "timeout", null], [{ killed: true, signal: "SIGKILL" }, "timeout", null],
+    [{ code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER", killed: true, signal: "SIGKILL" }, "output-overflow", null]]) {
+    assert.deepEqual(projectWindowsInstallerOutcome("private-canary", error), { status, exitCode, nativeErrorCode: null });
+  }
 });
 
 test("Windows wrapper CLI requires the same five arguments as the other native wrappers", () => {
@@ -107,7 +129,7 @@ test("Windows orchestration uses verified artifacts and preserves every native o
         process: { platform: "win32", arch: "x64", versions: { node: "24.20.0" }, execPath: "C:\\node\\node.exe",
           env: { GITHUB_ACTIONS: "true", RUNNER_OS: "Windows", SystemRoot: "C:\\Windows", GITHUB_TOKEN: "private-canary" } },
         dirname: win32.dirname, join: win32.join, resolve: win32.resolve, scripts: "C:\\scripts", tmpdir: () => "C:\\temp",
-        gitDirectory: "C:\\Program Files\\Git\\cmd", windowsCheckEnvironment, windowsInstallerCommand, projectNativeReport,
+        gitDirectory: "C:\\Program Files\\Git\\cmd", windowsCheckEnvironment, windowsInstallerCommand, projectWindowsInstallerOutcome, projectNativeReport,
         check(value, code) { if (!value) throw error(code); }, safeCode: (caught) => /^CURSOR_/.test(caught.code ?? "") ? caught.code : "CURSOR_APP_WINDOWS_CHECK_FAILED",
         async lstat(path) {
           if (kind === "missing-report" && path.endsWith("report.json")) throw error("ENOENT");
@@ -136,6 +158,7 @@ test("Windows orchestration uses verified artifacts and preserves every native o
             calls.push("installer"); assert.equal(options.timeout, 300_000);
             assert.deepEqual(Array.from(args), windowsInstallerCommand("C:\\verified\\CursorUserSetup.exe", "C:\\runtime\\home\\AppData\\Local\\Programs\\Cursor"));
             if (kind === "installer-failure") throw error("ETIMEDOUT");
+            return { stdout: JSON.stringify({ status: "exited", exitCode: 0, nativeErrorCode: null }), stderr: "" };
           } else {
             calls.push("native"); assert.equal(file, "C:\\node\\node.exe");
             assert.deepEqual(Array.from(args), ["C:\\scripts\\cursor-app-native-check.mjs", "C:\\runtime\\candidate\\node_modules\\@memorax\\memorax-code",
@@ -181,6 +204,7 @@ test("Windows orchestration uses verified artifacts and preserves every native o
       }
       if (kind === "native-failure") assert.equal(result.errorCode, "CURSOR_APP_EXITED");
       if (kind === "native-exit-with-pass") assert.equal(result.errorCode, "CURSOR_APP_WINDOWS_NATIVE_EXIT");
+      if (kind === "installer-failure") assert.deepEqual(result.windowsInstaller, { status: "timeout", exitCode: null, nativeErrorCode: null });
     });
   }
 });

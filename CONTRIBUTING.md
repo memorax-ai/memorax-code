@@ -1285,7 +1285,8 @@ macOS native acceptance also requires ten read-only `lsof` checkpoints: after
 both App starts, after each of the six completed runs, and before and after
 cancelling the pending Shell. Each checkpoint must observe the Backend and CDP
 listeners on their configured ports; all observed App, Backend and descendant
-TCP listeners must use only `127.0.0.1` or `::1` on allowed ports. Passing requires
+TCP listeners must use only `127.0.0.1` or `::1`; additional valid loopback ports
+are allowed without replacing either required listener. Passing requires
 `loopbackListeners: true` and `listenerAuditCount: 10`. This sampling does not
 cover every short-lived process between checkpoints or establish system-enforced
 inbound isolation.

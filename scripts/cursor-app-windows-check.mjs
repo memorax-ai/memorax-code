@@ -30,13 +30,37 @@ export function windowsInstallerCommand(installerPath, appDirectory) {
   const quote = (value) => `'${value.replaceAll("'", "''")}'`;
   const args = ["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/MERGETASKS=!runcode", `/DIR="${appDirectory}"`];
   // On Windows, Start-Process -Wait waits for the installer and its descendants.
-  const script = `$ErrorActionPreference='Stop'; $installer=Start-Process -FilePath ${quote(installerPath)} `
-    + `-ArgumentList ${args.map(quote).join(",")} -Wait -PassThru; exit $installer.ExitCode`;
+  const script = `$ErrorActionPreference='Stop'; try { $installer=Start-Process -FilePath ${quote(installerPath)} `
+    + `-ArgumentList ${args.map(quote).join(",")} -Wait -PassThru; `
+    + `[ordered]@{status='exited';exitCode=$installer.ExitCode;nativeErrorCode=$null} | ConvertTo-Json -Compress; exit $installer.ExitCode `
+    + `} catch { $native=$null; $current=$_.Exception; for($i=0;$i -lt 8 -and $null -ne $current;$i++) { `
+    + `if($current -is [ComponentModel.Win32Exception]) { $native=$current.NativeErrorCode; break }; $current=$current.InnerException }; `
+    + `[ordered]@{status='launch-error';exitCode=$null;nativeErrorCode=$native} | ConvertTo-Json -Compress; exit 1 }`;
   return ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")];
 }
 
+export function projectWindowsInstallerOutcome(stdout, error) {
+  const integer = (value) => Number.isInteger(value) && value >= -2147483648 && value <= 2147483647;
+  let status = "invalid-output";
+  if (error?.code === "ABORT_ERR") status = "aborted";
+  else if (error?.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") status = "output-overflow";
+  else if (error?.code === "ETIMEDOUT" || (error?.killed === true && error.signal === "SIGKILL")) status = "timeout";
+  else {
+    try {
+      const value = typeof stdout === "string" && Buffer.byteLength(stdout) <= 4096 ? JSON.parse(stdout) : null;
+      if (value && Object.keys(value).sort().join(",") === "exitCode,nativeErrorCode,status"
+        && ((value.status === "exited" && integer(value.exitCode) && value.nativeErrorCode === null)
+          || (value.status === "launch-error" && value.exitCode === null && (value.nativeErrorCode === null || integer(value.nativeErrorCode))))) {
+        return { status: value.status, exitCode: value.exitCode, nativeErrorCode: value.nativeErrorCode };
+      }
+    } catch { /* Never include raw PowerShell output or exception text. */ }
+    if (error) status = "powershell-exit";
+  }
+  return { status, exitCode: integer(error?.code) ? error.code : null, nativeErrorCode: null };
+}
+
 export async function runWindowsCheck(candidatePath, reportPath, { releaseManifest, channel, nodeMajor = "24", signal } = {}) {
-  let root, output, artifact, nativeStarted = false, cleanupFailed = false;
+  let root, output, artifact, installerOutcome, nativeStarted = false, cleanupFailed = false;
   let report = { status: "FAIL", client: "cursor", kind: "app-native-session-flows", platform: "win32", stage: "windows-preflight", evidence: {} };
   try {
     // This uses the fresh hosted runner account, not a private Windows logon profile.
@@ -88,11 +112,16 @@ export async function runWindowsCheck(candidatePath, reportPath, { releaseManife
         report.stage = "windows-app-installation";
         const appDirectory = join(env.LOCALAPPDATA, "Programs", "Cursor");
         try {
-          await exec(join(env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+          const result = await exec(join(env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
             windowsInstallerCommand(installerPath, appDirectory),
             { cwd: root, env, timeout: 300_000, signal, maxBuffer: 64 * 1024, killSignal: "SIGKILL", windowsHide: true });
+          installerOutcome = projectWindowsInstallerOutcome(result.stdout);
+          check(installerOutcome.status === "exited" && installerOutcome.exitCode === 0, "CURSOR_APP_WINDOWS_INSTALLER_EXIT");
           installerClosed = true;
-        } catch { check(false, "CURSOR_APP_WINDOWS_INSTALLER_EXIT"); }
+        } catch (error) {
+          installerOutcome ??= projectWindowsInstallerOutcome(error.stdout, error);
+          check(false, "CURSOR_APP_WINDOWS_INSTALLER_EXIT");
+        }
         report.stage = "windows-app-verification";
         const installed = await verifyCursorWindowsInstalledApp({ release, root, profileRoot: env.HOME, appDirectory, signal });
         artifact.appIdentityVerified = installed.appIdentityVerified;
@@ -134,6 +163,7 @@ export async function runWindowsCheck(candidatePath, reportPath, { releaseManife
     } else if (root) cleanupFailed = true;
     if (cleanupFailed) { report.status = "FAIL"; report.cleanupError ??= "CURSOR_APP_WINDOWS_CLEANUP"; }
     if (artifact) report.windows = artifact;
+    if (installerOutcome) report.windowsInstaller = installerOutcome;
     if (output) await writeFile(join(output, "report.json"), `${JSON.stringify(report, null, 2)}\n`, { flag: "wx", mode: 0o600 });
   }
   return report;
