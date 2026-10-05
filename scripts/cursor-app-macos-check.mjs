@@ -83,7 +83,11 @@ export async function runMacosCheck(candidatePath, reportPath, { releaseManifest
   } catch (error) {
     report.status = "FAIL";
     report.errorCode ??= safeCode(error);
-    if (error.cleanupErrorCode) { cleanupFailed = true; report.cleanupError = safeCode({ code: error.cleanupErrorCode }); }
+    if (error.cleanupErrorCode) {
+      cleanupFailed = true;
+      report.artifactCleanupError = safeCode({ code: error.cleanupErrorCode });
+      report.cleanupError ??= report.artifactCleanupError;
+    }
   } finally {
     // A busy mounted App or unverified descendant must remain for runner teardown.
     if (root && !cleanupFailed && (!nativeStarted || report.evidence.cleanup === true)) {

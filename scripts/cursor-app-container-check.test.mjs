@@ -314,9 +314,14 @@ test("failure reports retain only the diagnostic helper's bounded public project
   input.diagnostics = { privatePath: "synthetic-private-path", sessionId: "synthetic-session",
     turnStore: { readStatus: "synthetic-secret", reason: "synthetic-prompt", active: { token: "synthetic-token" } },
     trace: { readStatus: "synthetic-secret", events: [{ content: "synthetic-answer" }] } };
+  input.appLaunch = { spawned: true, exitCode: 1, signal: "synthetic-signal", spawnError: "synthetic-error",
+    log: "synthetic-log", markers: { permissionDenied: true, private: "synthetic-private" } };
   const report = projectNativeReport(input);
   assert.equal(report.status, "FAIL");
   assert.ok(report.diagnostics);
+  assert.equal(report.appLaunch.exitCode, 1);
+  assert.equal(report.appLaunch.signal, "other");
+  assert.equal(report.appLaunch.markers.permissionDenied, true);
   assert.equal(JSON.stringify(report).includes("synthetic"), false);
   input.evidence.exactAutomaticAdd = false;
   input.status = "PASS";

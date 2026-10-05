@@ -23,6 +23,33 @@ const reasons = new Set([
 const record = (value) => Boolean(value && typeof value === "object" && !Array.isArray(value));
 const enumValue = (value, allowed, missing = "absent") => value === undefined ? missing : allowed.includes(value) ? value : "other";
 const count = (value) => Number.isSafeInteger(value) && value >= 0 && value <= maxEvents ? value : 0;
+const launchMarkers = {
+  sandboxInitializationFailed: /sandbox_(?:init|apply|initialize)\s*[:(]|Failed to initialize sandbox|sandbox::Seatbelt/,
+  processSingletonFailed: /Failed to create a ProcessSingleton|Failed to create.*SingletonSocket/,
+  networkServiceCrashed: /Network service crashed/,
+  gpuProcessFailed: /GPU process isn't usable|GPU process launch failed/,
+  machRegistrationFailed: /bootstrap_(?:check_in|register).*failed/,
+  readOnlyFilesystem: /Read-only file system|\bEROFS\b/,
+  permissionDenied: /Operation not permitted|Permission denied|\bEACCES\b|\bEPERM\b/,
+};
+
+export function projectCursorAppLaunchDiagnostics(value) {
+  return {
+    spawned: value?.spawned === true, debugEndpointSeen: value?.debugEndpointSeen === true,
+    exitCode: Number.isInteger(value?.exitCode) && value.exitCode >= 0 && value.exitCode <= 255 ? value.exitCode : null,
+    signal: value?.signal == null ? "none" : enumValue(value.signal,
+      ["none", "SIGABRT", "SIGBUS", "SIGILL", "SIGKILL", "SIGSEGV", "SIGTERM", "SIGTRAP", "other"], "none"),
+    spawnError: value?.spawnError == null ? "none" : enumValue(value.spawnError,
+      ["none", "ENOENT", "EACCES", "ENOEXEC", "other"], "none"),
+    markers: Object.fromEntries(Object.keys(launchMarkers).map((key) => [key, value?.markers?.[key] === true])),
+  };
+}
+
+export function collectCursorAppLaunchDiagnostics(value) {
+  const log = typeof value?.log === "string" ? value.log.slice(-maxBytes) : "";
+  return projectCursorAppLaunchDiagnostics({ ...value,
+    markers: Object.fromEntries(Object.entries(launchMarkers).map(([key, pattern]) => [key, pattern.test(log)])) });
+}
 
 export function projectCursorAppDiagnostics(value) {
   const store = record(value?.turnStore) ? value.turnStore : {}, trace = record(value?.trace) ? value.trace : {};

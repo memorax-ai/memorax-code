@@ -4,9 +4,41 @@ import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { collectCursorAppDiagnostics, isCursorAppDiagnostics, projectCursorAppDiagnostics } from "./cursor-app-diagnostics.mjs";
+import { collectCursorAppDiagnostics, collectCursorAppLaunchDiagnostics, isCursorAppDiagnostics,
+  projectCursorAppDiagnostics, projectCursorAppLaunchDiagnostics } from "./cursor-app-diagnostics.mjs";
 
 const privateCanary = "private-content-path-token-canary";
+
+test("launch diagnostics expose only bounded process outcomes and fixed stderr markers", () => {
+  const result = collectCursorAppLaunchDiagnostics({ spawned: true, debugEndpointSeen: false, exitCode: null,
+    signal: "SIGABRT", log: `${privateCanary}: sandbox_init: Operation not permitted\nNetwork service crashed` });
+  assert.equal(result.signal, "SIGABRT");
+  assert.equal(result.exitCode, null);
+  assert.equal(result.markers.sandboxInitializationFailed, true);
+  assert.equal(result.markers.permissionDenied, true);
+  assert.equal(result.markers.networkServiceCrashed, true);
+  assert.equal(result.markers.gpuProcessFailed, false);
+  assert.equal(JSON.stringify(result).includes(privateCanary), false);
+  assert.deepEqual(projectCursorAppLaunchDiagnostics(result), result);
+  assert.equal(collectCursorAppLaunchDiagnostics({ log: "sandbox_init: " + "x".repeat(1024 * 1024) })
+    .markers.sandboxInitializationFailed, false);
+});
+
+test("launch diagnostic projection cannot reflect arbitrary fields or invalid statuses", () => {
+  for (const exitCode of [-1, 256, 1.5, "1", privateCanary]) {
+    const result = projectCursorAppLaunchDiagnostics({ spawned: "true", debugEndpointSeen: 1, exitCode,
+      signal: privateCanary, spawnError: privateCanary, log: privateCanary, privatePath: privateCanary,
+      markers: { permissionDenied: "true", [privateCanary]: true } });
+    assert.equal(result.spawned, false); assert.equal(result.debugEndpointSeen, false);
+    assert.equal(result.exitCode, null); assert.equal(result.signal, "other"); assert.equal(result.spawnError, "other");
+    assert.ok(Object.values(result.markers).every((value) => value === false));
+    assert.equal(JSON.stringify(result).includes(privateCanary), false);
+  }
+  for (const exitCode of [0, 1, 255]) assert.equal(projectCursorAppLaunchDiagnostics({ exitCode }).exitCode, exitCode);
+  for (const spawnError of ["ENOENT", "EACCES", "ENOEXEC"]) {
+    assert.equal(projectCursorAppLaunchDiagnostics({ spawnError }).spawnError, spawnError);
+  }
+});
 async function fixture(callback) {
   const home = await realpath(await mkdtemp(join(tmpdir(), "memorax-cursor-diagnostics-")));
   const sessionId = randomUUID(), turnId = randomUUID();

@@ -48,13 +48,17 @@ test("the actual macOS orchestration fails closed before launch and preserves cl
   const body = source.split("export async function runMacosCheck(")[1]?.split("\nif (process.argv[1]")[0];
   assert.ok(body);
   for (const kind of ["native-failure", "proof-failure", "candidate-install-failure", "probe-install-failure",
-    "artifact-failure", "busy-detach", "invalid-report", "missing-report"]) {
+    "artifact-failure", "busy-detach", "busy-detach-with-native-cleanup", "invalid-report", "missing-report"]) {
     await t.test(kind, async () => {
       const calls = [], output = new Map();
       const error = (code) => Object.assign(new Error(code), { code });
       const report = { status: "FAIL", client: "cursor", kind: "app-native-session-flows", platform: "darwin",
         node: "24.20.0", version: "3.21.18", stage: "native-submit", errorCode: "CURSOR_APP_DRIVER",
         evidence: { networkIsolation: true, cleanup: true }, privateCanary: "/private/unpublished-canary" };
+      if (kind === "busy-detach-with-native-cleanup") {
+        report.cleanupError = "CURSOR_APP_CLEANUP_DESCENDANTS";
+        report.evidence.cleanup = false;
+      }
       const run = runInNewContext(`(async function runMacosCheck(${body})`, {
         process: { platform: "darwin", arch: "arm64", versions: { node: "24.20.0" }, execPath: "/owned/node/bin/node",
           env: { GITHUB_ACTIONS: "true", RUNNER_OS: "macOS" } },
@@ -105,7 +109,7 @@ test("the actual macOS orchestration fails closed before launch and preserves cl
           if (kind === "artifact-failure") throw error("CURSOR_APP_MACOS_ARTIFACT_SIGNATURE");
           try { return await callback({ appPath: "/owned/verified/Cursor.app/Contents/MacOS/Cursor", evidence: { signatureVerified: true } }); }
           catch (caught) {
-            if (kind === "busy-detach") caught.cleanupErrorCode = "CURSOR_APP_MACOS_ARTIFACT_DETACH";
+            if (kind.startsWith("busy-detach")) caught.cleanupErrorCode = "CURSOR_APP_MACOS_ARTIFACT_DETACH";
             throw caught;
           } finally { calls.push(["detach"]); }
         },
@@ -126,7 +130,7 @@ test("the actual macOS orchestration fails closed before launch and preserves cl
         assert.equal(calls.filter(([type]) => type === "install").length, kind === "candidate-install-failure" ? 1 : 2);
       }
       const removed = calls.findIndex(([type]) => type === "remove");
-      if (["busy-detach", "invalid-report", "missing-report"].includes(kind)) {
+      if (["busy-detach", "busy-detach-with-native-cleanup", "invalid-report", "missing-report"].includes(kind)) {
         assert.equal(removed, -1); assert.ok(result.cleanupError);
       } else if (kind !== "proof-failure") assert.ok(removed > 0);
       if (kind === "native-failure") {
@@ -134,6 +138,8 @@ test("the actual macOS orchestration fails closed before launch and preserves cl
         assert.ok(removed > calls.findIndex(([type]) => type === "detach"));
       }
       if (kind === "busy-detach") assert.equal(result.cleanupError, "CURSOR_APP_MACOS_ARTIFACT_DETACH");
+      if (kind.startsWith("busy-detach")) assert.equal(result.artifactCleanupError, "CURSOR_APP_MACOS_ARTIFACT_DETACH");
+      if (kind === "busy-detach-with-native-cleanup") assert.equal(result.cleanupError, "CURSOR_APP_CLEANUP_DESCENDANTS");
     });
   }
 });

@@ -6,6 +6,15 @@ import { runInNewContext } from "node:vm";
 
 const source = await readFile(new URL("./cursor-app-native-check.mjs", import.meta.url), "utf8");
 
+test("native failures capture the current App outcome before cleanup changes process state", () => {
+  const capture = source.indexOf("if (app) report.appLaunch = collectCursorAppLaunchDiagnostics(");
+  const cleanup = source.indexOf("finally {\n  try { await stopApp();");
+  assert.ok(capture > 0 && cleanup > capture);
+  assert.match(source, /appLaunchLog = ""; appSpawnError = undefined; appDebugEndpointSeen = false;/);
+  assert.match(source, /exitCode: app\.exitCode, signal: app\.signalCode/);
+  assert.match(source, /spawnError: appSpawnError, log: appLaunchLog/);
+});
+
 test("native CLI and App launch through the same macOS sandbox invocation without a shell", () => {
   const body = source.split("function spawnOwned(")[1]?.split("\nasync function command(")[0];
   assert.ok(body);

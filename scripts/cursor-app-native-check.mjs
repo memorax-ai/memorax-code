@@ -10,7 +10,7 @@ import { pathToFileURL } from "node:url";
 import { startCursorAgentMock } from "./cursor-app-mock-server.mjs";
 import { assertCursorAppNativeContent, assertCursorAppWritebacks } from "./cursor-app-native-content-check.mjs";
 import { assertCursorAppSkillReference, assertCursorAppMemoryOperation } from "./cursor-app-memory-check.mjs";
-import { collectCursorAppDiagnostics } from "./cursor-app-diagnostics.mjs";
+import { collectCursorAppDiagnostics, collectCursorAppLaunchDiagnostics } from "./cursor-app-diagnostics.mjs";
 
 const [packageRoot, appPath, expectedVersion, playwrightRoot, reportDir, expectedNodeMajor = "24"] = process.argv.slice(2);
 const report = { status: "FAIL", client: "cursor", kind: "app-native-session-flows", platform: process.platform,
@@ -36,6 +36,7 @@ const skillReason = "Preserve the verified parser validation invariant.";
 const searchMemory = "CURSOR_NATIVE_SEARCH_RESULT: validate parser input before interpreting it.";
 const memoryRequests = [], turns = [];
 let agent, memory, app, browser, cli, page, started = false, appLog = "";
+let appLaunchLog = "", appSpawnError, appDebugEndpointSeen = false;
 let root, env, chromium, userData, workspace, failure, failureUi, skillRoot, skillText;
 let interruption;
 let macos, macosPaths, sandboxProfile, backendPort = 18787, debugPort = 9222;
@@ -190,6 +191,7 @@ async function assertProcessesStopped(options) {
   check(false, "CURSOR_APP_CLEANUP_DESCENDANTS");
 }
 async function startApp() {
+  appLaunchLog = ""; appSpawnError = undefined; appDebugEndpointSeen = false;
   const endpoint = macos?.createDevToolsEndpointReader(debugPort);
   let endpointError;
   app = spawnOwned(appPath, ["--user-data-dir", userData, "--extensions-dir", join(root, "extensions"), "--new-window",
@@ -203,14 +205,16 @@ async function startApp() {
   app.stdout.on("data", capture);
   app.stderr.on("data", (chunk) => {
     capture(chunk);
+    appLaunchLog = (appLaunchLog + chunk).slice(-1024 * 1024);
     try { endpoint?.push(chunk); } catch (error) { endpointError = error; }
   });
-  app.on("error", () => { report.appSpawnFailed = true; });
+  app.on("error", (error) => { report.appSpawnFailed = true; appSpawnError = error.code; });
   await waitFor(async () => {
     if (endpointError) throw endpointError;
     if (endpoint) return Boolean(endpoint.get());
     try { return (await fetch(`http://127.0.0.1:${debugPort}/json/version`, { signal: AbortSignal.timeout(300) })).ok; } catch { return false; }
   }, "CURSOR_APP_DEBUG_PORT");
+  appDebugEndpointSeen = true;
   browser = await chromium.connectOverCDP(endpoint?.get() ?? `http://127.0.0.1:${debugPort}`, { timeout: 5000 });
   await waitFor(async () => {
     page = browser.contexts().flatMap((context) => context.pages()).find((item) => item.url().includes("workbench.html"));
@@ -523,6 +527,9 @@ try {
   report.stage = "cleanup";
 } catch (error) {
   failure = error?.stack ?? String(error); report.errorCode = safeCode(error);
+  if (app) report.appLaunch = collectCursorAppLaunchDiagnostics({ spawned: Boolean(app.pid),
+    debugEndpointSeen: appDebugEndpointSeen, exitCode: app.exitCode, signal: app.signalCode,
+    spawnError: appSpawnError, log: appLaunchLog });
   const run = agent?.runs.at(-1);
   if (env && run) report.diagnostics = await collectCursorAppDiagnostics({ home: env.MEMORAX_CODE_HOME,
     sessionId: run.conversationId, turnId: run.requestId });
