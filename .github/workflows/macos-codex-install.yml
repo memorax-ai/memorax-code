@@ -11,6 +11,10 @@ on:
         description: Run only the isolated Windows OpenCode initialization diagnostic
         type: boolean
         default: false
+      check_cursor_macos_isolation:
+        description: Also run the macOS network isolation proof without starting Cursor
+        type: boolean
+        default: false
   pull_request:
   push:
     branches: [main]
@@ -23,6 +27,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  cursor-macos-network-proof:
+    if: github.event_name == 'workflow_dispatch' && inputs.check_cursor_macos_isolation && !inputs.check_deepseek && !inputs.diagnose_opencode_initialization
+    uses: ./.github/workflows/cursor-app-isolation.yml
+
   package:
     if: github.event_name != 'workflow_dispatch' || !inputs.check_deepseek || inputs.diagnose_opencode_initialization
     runs-on: ubuntu-24.04

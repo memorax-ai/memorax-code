@@ -1266,6 +1266,26 @@ unavailable and is not artifact-integrity or native-acceptance evidence. CI uses
 `resolve-linux` instead, which also verifies Linux apt metadata. macOS and
 Windows inventory entries are not native acceptance results.
 
+#### macOS Network Isolation Proof
+
+The explicitly requested `cursor-app-isolation.yml` workflow runs a separate
+network proof on macOS 15 with Node 24. On a feature branch, enable
+`check_cursor_macos_isolation` when manually dispatching the existing native
+workflow to call it alongside the normal matrix, with both dedicated diagnostic
+options disabled. It can also be dispatched directly after GitHub registers the
+new workflow. It does not download or start Cursor, access a
+credential store, or count as native acceptance. It first checks two owned
+loopback listeners, then requires `sandbox-exec` to allow only the selected
+port and explicitly deny the other with `EPERM` or `EACCES`. Only after that
+local gate succeeds does it probe documentation-only IPv4 and IPv6 addresses
+without sending application data. A timeout is not isolation evidence.
+
+The same restrictions must hold in the child and grandchild process. The job
+fails on an unavailable or ineffective sandbox and uploads only its fixed-field
+`report.json`. A passing network proof does not establish App compatibility,
+filesystem or credential isolation, or macOS functional coverage; those remain
+separate prerequisites before adding a native macOS matrix cell.
+
 ## Pull Requests
 
 A pull request should:
