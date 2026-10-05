@@ -15,11 +15,13 @@ const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 function nativeReport() {
   return { status: "PASS", client: "cursor", kind: "app-native-session-flows", platform: "linux", node: "24.15.0",
     version: "3.21.18", stage: "complete", evidence: { agentTransport: true, nativeHooks: true, exactAutomaticAdd: true,
-      sameSessionFollowup: true, sessionIsolation: true, appResume: true, cleanup: true,
-      nativeContent: [3, 6, 3, 9].map((blobCount) => ({ composerMatched: true, stateMatched: true, blobCount })) },
-    agent: { runs: 4, ancillaryRequestCount: 5, unsupportedRpcCount: 1,
-      errors: [], writes: [3, 3, 3, 3], acknowledgements: [3, 3, 3, 3], historyTurns: [0, 1, 0, 2],
-      reads: [0, 3, 0, 6], readResults: [0, 3, 0, 6] }, memoryRequestCount: 4 };
+      sameSessionFollowup: true, sessionIsolation: true, appResume: true, skillSearch: true, skillAdd: true, cleanup: true,
+      nativeContent: [3, 6, 3, 9, 15, 21].map((blobCount) => ({ composerMatched: true, stateMatched: true, blobCount })) },
+    agent: { runs: 6, ancillaryRequestCount: 5, unsupportedRpcCount: 1,
+      errors: [], writes: [3, 3, 3, 3, 6, 6], acknowledgements: [3, 3, 3, 3, 6, 6], historyTurns: [0, 1, 0, 2, 3, 4],
+      reads: [0, 3, 0, 6, 9, 15], readResults: [0, 3, 0, 6, 9, 15],
+      execRequests: [0, 0, 0, 0, 3, 3], execResults: [0, 0, 0, 0, 3, 3], execCloses: [0, 0, 0, 0, 3, 3],
+      contextRequests: [1, 1, 1, 1, 1, 1], contextResults: [1, 1, 1, 1, 1, 1], contextCloses: [1, 1, 1, 1, 1, 1] }, memoryRequestCount: 8 };
 }
 
 test("release pins distinguish official artifact provenance from observed checksums", () => {
@@ -101,9 +103,17 @@ test("report projection drops raw diagnostics and requires completed native evid
   const report = projectNativeReport(input);
   assert.equal(report.status, "PASS");
   assert.equal(report.agent.ancillaryRequestCount, 5);
-  assert.deepEqual(report.agent.historyTurns, [0, 1, 0, 2]);
-  assert.deepEqual(report.agent.reads, [0, 3, 0, 6]);
-  assert.deepEqual(report.agent.readResults, [0, 3, 0, 6]);
+  assert.deepEqual(report.agent.historyTurns, [0, 1, 0, 2, 3, 4]);
+  assert.deepEqual(report.agent.reads, [0, 3, 0, 6, 9, 15]);
+  assert.deepEqual(report.agent.readResults, [0, 3, 0, 6, 9, 15]);
+  assert.deepEqual(report.agent.execRequests, [0, 0, 0, 0, 3, 3]);
+  assert.deepEqual(report.agent.execResults, [0, 0, 0, 0, 3, 3]);
+  assert.deepEqual(report.agent.execCloses, [0, 0, 0, 0, 3, 3]);
+  assert.deepEqual(report.agent.contextRequests, [1, 1, 1, 1, 1, 1]);
+  assert.deepEqual(report.agent.contextResults, [1, 1, 1, 1, 1, 1]);
+  assert.deepEqual(report.agent.contextCloses, [1, 1, 1, 1, 1, 1]);
+  assert.equal(report.evidence.skillSearch, true);
+  assert.equal(report.evidence.skillAdd, true);
   assert.deepEqual(report.evidence.nativeContent, nativeReport().evidence.nativeContent);
   assert.equal(JSON.stringify(report).includes("synthetic"), false);
 });
@@ -112,6 +122,7 @@ test("PASS rejects missing, reordered, duplicate or incomplete session-flow evid
   for (const change of [
     (r) => { delete r.evidence.cleanup; }, (r) => { delete r.evidence.sameSessionFollowup; },
     (r) => { r.evidence.sessionIsolation = false; }, (r) => { delete r.evidence.appResume; },
+    (r) => { delete r.evidence.skillSearch; }, (r) => { r.evidence.skillAdd = false; },
     (r) => { r.evidence.nativeContent[1].stateMatched = false; },
     (r) => { r.evidence.nativeContent[3].composerMatched = false; },
     (r) => { delete r.evidence.nativeContent; }, (r) => { r.evidence.nativeContent.pop(); },
@@ -119,14 +130,14 @@ test("PASS rejects missing, reordered, duplicate or incomplete session-flow evid
     (r) => { r.evidence.nativeContent.reverse(); },
     (r) => { r.evidence.nativeContent[2] = { ...r.evidence.nativeContent[1] }; },
     (r) => { r.evidence.nativeContent = r.evidence.nativeContent[0]; },
-    (r) => { r.agent.acknowledgements = [3, 3, 3, 2]; }, (r) => { r.agent.writes = [3, 3, 3]; },
+    (r) => { r.agent.acknowledgements = [3, 3, 3, 3, 6, 5]; }, (r) => { r.agent.writes = [3, 3, 3, 3, 6]; },
     (r) => { delete r.agent.writes[1]; }, (r) => { delete r.agent.acknowledgements[1]; },
     (r) => { r.agent.runs = 5; }, (r) => { delete r.agent.historyTurns; },
-    (r) => { r.agent.historyTurns = [0, 0, 1, 2]; }, (r) => { r.agent.historyTurns = [0, 1, 0]; },
-    (r) => { r.agent.historyTurns = [0, 1, 0, 0]; }, (r) => { r.agent.historyTurns[1] = "1"; },
+    (r) => { r.agent.historyTurns = [0, 0, 1, 2, 3, 4]; }, (r) => { r.agent.historyTurns = [0, 1, 0, 2, 3]; },
+    (r) => { r.agent.historyTurns = [0, 1, 0, 0, 3, 4]; }, (r) => { r.agent.historyTurns[1] = "1"; },
     (r) => { delete r.agent.historyTurns[1]; },
     (r) => { delete r.agent.reads; }, (r) => { delete r.agent.readResults; },
-    (r) => { r.agent.reads = [0, 0, 3, 6]; }, (r) => { r.agent.readResults = [0, 3, 0, 5]; },
+    (r) => { r.agent.reads = [0, 0, 3, 6, 9, 15]; }, (r) => { r.agent.readResults = [0, 3, 0, 6, 9, 14]; },
     (r) => { r.agent.reads.pop(); }, (r) => { delete r.agent.readResults[3]; },
     (r) => { r.memoryRequestCount = 5; }, (r) => { r.kind = "app-native-single-turn"; },
     (r) => { r.nativeContentError = "CURSOR_APP_NATIVE_CONTENT_TIMEOUT"; },
@@ -135,6 +146,26 @@ test("PASS rejects missing, reordered, duplicate or incomplete session-flow evid
     const invalid = nativeReport();
     change(invalid);
     assert.throws(() => projectNativeReport(invalid), /CURSOR_CONTAINER_REPORT/);
+  }
+});
+
+test("PASS rejects missing, sparse, reordered and nonnumeric native tool or context evidence", () => {
+  for (const field of ["execRequests", "execResults", "execCloses", "contextRequests", "contextResults", "contextCloses"]) {
+    for (const change of [
+      (r) => { delete r.agent[field]; },
+      (r) => { delete r.agent[field][4]; },
+      (r) => { r.agent[field].pop(); },
+      (r) => { r.agent[field].push(3); },
+      (r) => { if (field.startsWith("exec")) r.agent[field].reverse(); else r.agent[field][0] = 0; },
+      (r) => { r.agent[field][5] = 2; },
+      (r) => { r.agent[field][4] = "3"; },
+      (r) => { r.agent[field][4] = NaN; },
+      (r) => { r.agent[field] = { 4: 3, 5: 3 }; },
+    ]) {
+      const invalid = nativeReport();
+      change(invalid);
+      assert.throws(() => projectNativeReport(invalid), /CURSOR_CONTAINER_REPORT/);
+    }
   }
 });
 
@@ -148,6 +179,12 @@ test("FAIL preserves bounded partial evidence for restart and session-open diagn
   failure.agent.historyTurns = [0, 1];
   failure.agent.reads = [0, 3];
   failure.agent.readResults = [0, 3];
+  failure.agent.execRequests = [0, 0];
+  failure.agent.execResults = [0, 0];
+  failure.agent.execCloses = [0, 0];
+  failure.agent.contextRequests = [1, 1];
+  failure.agent.contextResults = [1, 1];
+  failure.agent.contextCloses = [1, 1];
   failure.errorCode = "CURSOR_APP_SESSION_TIMEOUT";
   for (const stage of ["app-restart", "session-open"]) {
     failure.stage = stage;

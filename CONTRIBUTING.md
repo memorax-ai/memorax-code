@@ -1153,33 +1153,55 @@ command suppresses the fresh-login switch to the Agents window in the isolated
 profile; it does not modify conversation content or Hook state.
 `--smoke-test-use-real-agent-http` routes the
 Agent transport to a local Connect/protobuf service. The service sends a
-content-addressed user/assistant/turn graph, waits for each native KV write
+content-addressed native turn graph, waits for each native KV write
 acknowledgement, and then sends the conversation checkpoint and completion.
 For a run with history, it first requests every previous user/assistant/turn
-blob back from the App and validates the response bytes before writing new
-content.
+blob, including previous tool steps, back from the App and validates the
+response bytes before writing new content.
 It does not use the App's simulated response stream, seed its conversation
 database, invoke Hooks directly, or bypass the product's native-content parser.
 
-Four native runs exercise an initial turn in conversation A, a repeated prompt
+Six native runs exercise an initial turn in conversation A, a repeated prompt
 in A with a different answer, a new conversation B with the same initial prompt
-and answer, and an App restart followed by another ordinary prompt in A. The
+and answer, an App restart followed by another ordinary prompt in A, then
+explicit Skill Search and Add turns in A. Every run completes the native lazy
+RequestContext exchange. Skill turns require discovery in their current native
+context and the Hook instructions received for that same conversation. Retained
+instructions come only from completed turns referenced by the native history
+of the current run. The local mock service remains running across the App
+restart. This does not assert that Hook context is persisted in the App database.
+Each Skill turn uses native Read tools to read the installed router and
+operation reference, followed by native
+Shell execution of the public `memorax-cli` command. The driver approves each
+Shell command once through the matching conversation and tool-call UI; it does
+not enable global autorun or bypass native approval. The protocol fixture
+requests those tools explicitly; this is not model-driven Skill-selection or
+natural-language compliance coverage. The
 restart retains only this check's isolated App profile; it does not restart the
 Backend or exercise native Continue, Retry, or Edit operations.
 
 Acceptance requires all of the following:
 
-- Exactly four native Agent requests with each submitted prompt and matching
-  conversation/generation identity, three KV acknowledgements per run, and
-  prior-turn counts of `0, 1, 0, 2` in that order. History KV requests and
-  validated results must each total `0, 3, 0, 6` across those runs.
+- Exactly six native Agent requests with each submitted prompt and matching
+  conversation/generation identity, KV write/acknowledgement counts of
+  `3, 3, 3, 3, 6, 6`, and prior-turn counts of `0, 1, 0, 2, 3, 4` in that order.
+  History KV requests and validated results must each total
+  `0, 3, 0, 6, 9, 15` across those runs. Native tool request, result and close
+  counts must each be `0, 0, 0, 0, 3, 3`. Separate RequestContext request, result
+  and close counts must each be `1, 1, 1, 1, 1, 1`; this protocol exchange is
+  neither a user-visible tool step nor a persisted conversation step.
 - A separate, read-only SQLite oracle matching the App's composer/generation,
   conversation state and every emitted content-addressed blob byte for byte
-  after each run, with `3, 6, 3, 9` reachable blobs respectively.
+  after each run, with `3, 6, 3, 9, 15, 21` reachable blobs respectively.
 - Installed native Hooks correlated to each real generation and completed turn.
-- Exactly four automatic Adds whose full user/assistant text, Unicode, session,
+- Exactly six automatic Adds whose full user/assistant text, Unicode, session,
   workspace scope and client-qualified idempotency keys match their respective
   fixtures, including repeated prompts and identical content across sessions.
+- Exactly one explicit Search and one explicit Add, each with matching HTTP
+  authentication, full payload, workspace scope and native Shell JSON result.
+  Search preserves the fixture answer, item and receipt. Explicit Add retains
+  its CLI session, memory type, reason and idempotency key, separately from the
+  native session used by automatic writeback and trace correlation.
 - Successful client/Backend and container cleanup, with a final request-count
   audit to reject duplicate or late writeback.
 
@@ -1204,9 +1226,17 @@ node scripts/cursor-app-container-check.mjs \
 Only `report.json` is exported and uploaded. Raw App logs, transcripts, SQLite
 files and Hook traces are not CI artifacts. Synthetic login is not real account
 authentication coverage. Native Continue/Retry/Edit, Backend restart,
-interruptions, permission races, explicit Skill Search/Add, Repo Memory workers,
+interruptions, permission races, model-driven Skill selection, Repo Memory workers,
 upgrade/uninstall, macOS, Windows, and the baseline/latest version matrix remain
 outside this bounded session-flow canary.
+
+`node scripts/cursor-app-release.mjs resolve <new-manifest-path>` prepares a
+single frozen baseline/latest inventory from the official desktop download
+feeds. It requires coherent versions and commits across Linux, macOS and
+Windows, rejects mutable or unexpected URLs, and never overwrites an existing
+manifest. Missing package checksums remain explicitly unavailable. This helper
+is preparation for the version matrix, not evidence of native acceptance or
+publisher-authenticated artifact integrity, and is not yet wired into CI.
 
 ## Pull Requests
 

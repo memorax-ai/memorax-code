@@ -3,7 +3,8 @@ import { createHash } from "node:crypto";
 import test from "node:test";
 import { gzipSync } from "node:zlib";
 import {
-  createCompletedTurn, createConnectDecoder, createGetBlobMessage, decodeAgentClientMessage, encodeConnectEnvelope,
+  completeToolExecution, createCompletedTurn, createConnectDecoder, createGetBlobMessage, createToolExecution,
+  decodeAgentClientMessage, encodeConnectEnvelope,
 } from "./cursor-app-protocol.mjs";
 
 const requestId = "11111111-1111-4111-8111-111111111111";
@@ -90,6 +91,16 @@ test("Connect encoder emits binary and end-stream envelopes without implicit com
   assert.deepEqual(encodeConnectEnvelope(Buffer.from([10, 0])), Buffer.from([0, 0, 0, 0, 2, 10, 0]));
   assert.deepEqual(encodeConnectEnvelope(Buffer.from("{}"), { endStream: true }), frame(Buffer.from("{}"), 2));
   assert.throws(() => encodeConnectEnvelope(Buffer.from("invalid"), { endStream: true }), /CURSOR_APP_CONNECT_END_STREAM/);
+});
+
+test("explicit Connect terminal errors are rejected without exposing remote details", () => {
+  const terminal = encodeConnectEnvelope(Buffer.from(JSON.stringify({ error: {
+    code: "aborted", message: "private-terminal-error-canary",
+  } })), { endStream: true });
+  for (const input of [terminal, message(frame(Buffer.from("synthetic message")), terminal)]) {
+    assert.throws(() => createConnectDecoder().push(input), (error) => error.code === "CURSOR_APP_CONNECT_REMOTE_ERROR"
+      && error.message === "CURSOR_APP_CONNECT_REMOTE_ERROR");
+  }
 });
 
 test("Run decoding binds real request, conversation and user identities and preserves native bytes", () => {
@@ -207,4 +218,116 @@ test("completion keeps Unicode exactly and rejects empty answers or invalid KV I
   for (const firstKvId of [0, -1, 1.5, 0xffff_fffe]) {
     assert.throws(() => createCompletedTurn(run(), { answer, firstKvId }), /CURSOR_APP_KV_ID/);
   }
+});
+
+test("Run context decodes official Hook and installed Skill fields without scanning arbitrary bytes", () => {
+  const skill = message(field(1, "/synthetic/skills/memorax-code/SKILL.md"), field(2, "skill metadata"), field(3, "Synthetic skill"));
+  const context = message(field(25, "Exact sessionStart context"), field(29, skill));
+  const user = message(field(1, prompt), field(2, userMessageId), field(21,
+    message(field(1, "beforeSubmitPrompt"), field(2, "Exact prompt context"))));
+  const decoded = run({ action: field(1, message(field(1, user), field(2, context))) });
+  assert.deepEqual(decoded.requestContext, { hooksAdditionalContext: "Exact sessionStart context",
+    agentSkills: [{ fullPath: "/synthetic/skills/memorax-code/SKILL.md", content: "skill metadata", description: "Synthetic skill",
+      disableModelInvocation: false, environments: [], disabledEnvironments: [] }] });
+  assert.deepEqual(decoded.userHookAdditionalContexts, [{ hookEventName: "beforeSubmitPrompt", content: "Exact prompt context" }]);
+  const fake = run({ extraRun: field(99, context) });
+  assert.equal(fake.requestContext, undefined);
+  const parts = message(field(3, hash(skill)), scalar(4, skill.length), field(9, context));
+  const withParts = run({ action: message(field(1, field(1, fixture().userBytes)), field(17, parts)) });
+  assert.deepEqual(withParts.requestContextParts.skillsBlobId, hash(skill));
+  assert.deepEqual(withParts.requestContextParts.dynamicContext, decoded.requestContext);
+  assert.throws(() => run({ action: field(1, message(field(1, user), field(2, message(field(25, "one"), field(25, "two"))))) }),
+    /CURSOR_APP_PROTO_FIELD/);
+});
+
+test("Read Exec correlates wire results and persists the native content in a tool step", () => {
+  const input = run(), path = "/synthetic/SKILL.md", content = "Native skill\nUnicode \u8bb0\u5fc6";
+  const execution = createToolExecution(input, { kind: "read", path }, { id: 4, toolCallId: userMessageId });
+  const args = message(field(1, path), field(2, userMessageId));
+  assert.deepEqual(execution.execMessage, field(2, message(scalar(1, 4), field(15, userMessageId), field(7, args))));
+  const toolArgs = field(1, path), startedTool = message(field(8, field(1, toolArgs)), field(57, userMessageId));
+  assert.deepEqual(execution.startedMessage, field(1, field(2, message(field(1, userMessageId), field(2, startedTool)))));
+  const success = message(field(1, path), field(2, content), scalar(3, 2), scalar(4, Buffer.byteLength(content)));
+  const result = decodeAgentClientMessage(field(2, message(scalar(1, 4), field(7, field(1, success)), scalar(39, 10))));
+  const completed = completeToolExecution(execution, result);
+  assert.deepEqual(completed.result, { kind: "read", path, content, totalLines: 2, fileSize: Buffer.byteLength(content) });
+  const toolSuccess = message(field(1, content), scalar(4, 2), scalar(5, Buffer.byteLength(content)), field(7, path));
+  const tool = message(field(8, message(field(1, toolArgs), field(2, field(1, toolSuccess)))), field(57, userMessageId));
+  assert.deepEqual(completed.stepBytes, field(2, tool));
+  assert.deepEqual(completed.completedMessage, field(1, field(3, message(field(1, userMessageId), field(2, tool)))));
+  const turn = createCompletedTurn(input, { answer, toolSteps: [completed.stepBytes], firstKvId: 5 });
+  assert.equal(turn.kvWrites.length, 4);
+  assert.deepEqual(turn.kvWrites[1].bytes, completed.stepBytes);
+  assert.deepEqual(turn.kvWrites[2].bytes, field(1, field(1, answer)));
+  assert.deepEqual(turn.kvWrites[3].bytes, field(1, message(field(1, hash(input.userMessageBytes)),
+    field(2, hash(completed.stepBytes)), field(2, hash(field(1, field(1, answer)))), field(3, requestId))));
+});
+
+test("RequestContext Exec fetches native context without a visible or persisted tool step", () => {
+  const execution = createToolExecution(run(), { kind: "requestContext" }, { id: 10, toolCallId: userMessageId });
+  assert.deepEqual(execution.execMessage, field(2, message(scalar(1, 10), field(15, userMessageId),
+    field(10, message(field(2, conversationId), scalar(7, 0))))));
+  assert.equal(execution.startedMessage, undefined);
+  const context = message(field(25, "Synthetic sessionStart context"),
+    field(29, message(field(1, "/synthetic/SKILL.md"), field(3, "Synthetic Skill"))));
+  const decoded = decodeAgentClientMessage(field(2, message(scalar(1, 10), field(10, field(1, field(1, context))))));
+  const completed = completeToolExecution(execution, decoded);
+  assert.deepEqual(completed.result, { hooksAdditionalContext: "Synthetic sessionStart context", agentSkills: [
+    { fullPath: "/synthetic/SKILL.md", content: "", description: "Synthetic Skill", disableModelInvocation: false,
+      environments: [], disabledEnvironments: [] },
+  ] });
+  assert.deepEqual(completed.requestContextBytes, context);
+  assert.equal(completed.stepBytes, undefined);
+  assert.equal(completed.completedMessage, undefined);
+  assert.throws(() => completeToolExecution(execution, { ...decoded, id: 9 }), /CURSOR_APP_EXEC_IDENTITY/);
+  const rejected = decodeAgentClientMessage(field(2, message(scalar(1, 10), field(10, field(2, field(1, "private-context-error"))))));
+  assert.throws(() => completeToolExecution(execution, rejected), /CURSOR_APP_EXEC_REJECTED/);
+  assert.equal(JSON.stringify(rejected).includes("private"), false);
+});
+
+test("Shell Exec leaves native approval enabled and preserves exact successful native result bytes", () => {
+  const command = "memorax-cli search --query synthetic", workingDirectory = "/synthetic/workspace";
+  const execution = createToolExecution(run(), { kind: "shell", command, workingDirectory, timeoutMs: 10_000 },
+    { id: 5, toolCallId: userMessageId });
+  const args = message(field(1, command), field(2, workingDirectory), scalar(3, 10_000), field(4, userMessageId),
+    field(8, scalar(1, 1)), scalar(13, 1), scalar(14, 10_000), scalar(17, 1), field(21, conversationId), field(23, requestId));
+  assert.deepEqual(execution.execMessage, field(2, message(scalar(1, 5), field(15, userMessageId), field(2, args))));
+  const stdout = "{\"results\":[\"native\"]}\n";
+  const nativeResult = field(1, message(field(1, command), field(2, workingDirectory), field(5, stdout), scalar(7, 12)));
+  const result = decodeAgentClientMessage(field(2, message(scalar(1, 5), field(2, nativeResult))));
+  const completed = completeToolExecution(execution, result);
+  assert.deepEqual(completed.result, { kind: "shell", command, workingDirectory, stdout, stderr: "", exitCode: 0 });
+  assert.deepEqual(completed.stepBytes, field(2, message(field(1, message(field(1, args), field(2, nativeResult))), field(57, userMessageId))));
+  assert.throws(() => completeToolExecution(execution, { ...result, id: 6 }), /CURSOR_APP_EXEC_IDENTITY/);
+  assert.throws(() => completeToolExecution(execution, { ...result, command: "changed" }), /CURSOR_APP_EXEC_IDENTITY/);
+});
+
+test("Exec control messages bind one ID and redact exceptions", () => {
+  for (const [number, event] of [[1, "close"], [2, "error"], [3, "heartbeat"]]) {
+    const body = message(scalar(1, 9), ...(number === 2 ? [field(2, "private-error"), field(3, "private-stack")] : []));
+    const decoded = decodeAgentClientMessage(field(5, field(number, body)));
+    assert.deepEqual(decoded, { type: "execControl", id: 9, event });
+    assert.equal(JSON.stringify(decoded).includes("private"), false);
+  }
+  for (const value of [field(5, message(field(1, scalar(1, 9)), field(3, scalar(1, 9)))),
+    field(5, field(1, scalar(1, 0))), field(5, field(4, scalar(1, 9)))]) {
+    assert.throws(() => decodeAgentClientMessage(value), /CURSOR_APP_(PROTO|EXEC|CLIENT)/);
+  }
+});
+
+test("Exec decoding rejects failure, ambiguous, binary or truncated tool results safely", () => {
+  for (const [kind, number, failures] of [["read", 7, [2, 3, 4, 5, 6]], ["shell", 2, [2, 3, 4, 5, 7]]]) {
+    for (const failure of failures) {
+      const result = decodeAgentClientMessage(field(2, message(scalar(1, 1), field(number, field(failure, field(1, "private-error"))))));
+      assert.deepEqual(result, { type: "execResult", id: 1, kind, error: "CURSOR_APP_EXEC_REJECTED", rejectionKind: failure });
+    }
+  }
+  for (const success of [message(field(1, "/synthetic"), field(2, "truncated"), scalar(6, 1)),
+    message(field(1, "/synthetic"), field(5, Buffer.from([1, 2]))),
+    message(field(1, "/synthetic"), field(2, "one"), field(2, "two"))]) {
+    assert.throws(() => decodeAgentClientMessage(field(2, message(scalar(1, 1), field(7, field(1, success))))), /CURSOR_APP_(EXEC|PROTO)/);
+  }
+  const empty = field(1, Buffer.alloc(0));
+  assert.throws(() => decodeAgentClientMessage(field(2, message(scalar(1, 1), field(2, empty), field(7, empty)))), /CURSOR_APP_PROTO_FIELD/);
+  assert.throws(() => createToolExecution(run(), { kind: "write", path: "/synthetic" }, { id: 1, toolCallId: userMessageId }), /CURSOR_APP_EXEC_OPTIONS/);
 });

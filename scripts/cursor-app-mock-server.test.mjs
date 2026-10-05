@@ -37,6 +37,23 @@ function readResult(id, bytes, failed = false) {
   return field(3, Buffer.concat([scalar(1, id), field(2, result)]));
 }
 function readRequest(id, blobId) { return field(4, Buffer.concat([scalar(1, id), field(2, field(1, blobId))])); }
+function execReadResult(id, path, content) {
+  return field(2, Buffer.concat([scalar(1, id), field(7, field(1, Buffer.concat([
+    field(1, path), field(2, content), scalar(3, content.split("\n").length), scalar(4, Buffer.byteLength(content)),
+  ])))]));
+}
+function execShellResult(id, command, workingDirectory, stdout, stderr = "") {
+  return field(2, Buffer.concat([scalar(1, id), field(2, field(1, Buffer.concat([
+    field(1, command), field(2, workingDirectory), field(5, stdout), field(6, stderr),
+  ])))]));
+}
+function execControl(id, event = "close") {
+  return field(5, field(event === "close" ? 1 : event === "heartbeat" ? 3 : 2,
+    Buffer.concat([scalar(1, id), ...(event === "error" ? [field(2, "private-exec-error-canary")] : [])])));
+}
+function execContextResult(id, context) {
+  return field(2, Buffer.concat([scalar(1, id), field(10, field(1, field(1, context)))]));
+}
 function identity(number) { return `${number.toString(16).padStart(8, "0")}-1111-4111-8111-111111111111`; }
 function frame(message, compression = "identity") {
   const bytes = compression === "gzip" ? gzipSync(message) : message;
@@ -57,7 +74,7 @@ async function waitFor(predicate) {
     await delay(5);
   }
 }
-function openRun(t, server, { compression = "identity", headers = {}, url = server.url } = {}) {
+function openRun(t, server, { compression = "identity", headers = {}, url = server.url, endRequestOnResponse = true } = {}) {
   const client = connectHttp2(url);
   const clientErrors = [];
   client.on("error", (error) => clientErrors.push(error.code));
@@ -77,7 +94,7 @@ function openRun(t, server, { compression = "identity", headers = {}, url = serv
       pending = pending.subarray(5 + length);
     }
   });
-  const done = new Promise((resolve) => request.once("end", () => { request.end(); resolve(); }));
+  const done = new Promise((resolve) => request.once("end", () => { if (endRequestOnResponse) request.end(); resolve(); }));
   return { client, request, frames, done, clientErrors, get status() { return status; },
     send(message) { request.write(frame(message, compression)); } };
 }
@@ -286,6 +303,320 @@ test("fragmented h2c prefaces and gzip Connect frames complete only after sequen
   assert.deepEqual(server.errors, []);
   assert.deepEqual(server.requests, [{ method: "POST", path: agentPath, protocol: "h2c" }]);
   assert.deepEqual(await ancillary(server, "/aiserver.v1.AnalyticsService/Batch"), { status: 200, body: "{}" });
+});
+
+test("post-completion DATA cannot hide another Run, Exec or KV result or malformed trailing bytes", async (t) => {
+  for (const [name, payload, expected, end] of [
+    ["Run", frame(runMessage()), "CURSOR_AGENT_DUPLICATE_RUN", false],
+    ["Exec", frame(execControl(1)), "CURSOR_AGENT_MESSAGE_AFTER_COMPLETION", false],
+    ["KV", frame(acknowledgement(3)), "CURSOR_AGENT_MESSAGE_AFTER_COMPLETION", false],
+    ["invalid", Buffer.from([4, 0, 0, 0, 0]), "CURSOR_APP_CONNECT_FLAGS", false],
+    ["partial", Buffer.from([0, 0]), "CURSOR_APP_CONNECT_TRUNCATED", true],
+    ["excessive heartbeats", Buffer.concat(Array.from({ length: 129 }, () => frame(field(7, Buffer.alloc(0))))), "CURSOR_AGENT_TOO_MANY_MESSAGES", false],
+  ]) await t.test(name, async (t) => {
+    const server = await mock(t);
+    const stream = openRun(t, server, { endRequestOnResponse: false });
+    stream.send(runMessage());
+    for (let id = 1; id <= 3; id++) {
+      await waitFor(() => server.runs[0]?.kvWriteCount === id);
+      stream.send(acknowledgement(id));
+    }
+    await stream.done;
+    assert.equal(server.runs[0].completed, true);
+    stream.request.write(payload);
+    if (end) stream.request.end();
+    await waitFor(() => server.errors.length === 1);
+    assert.equal(server.runs.length, 1);
+    assert.equal(server.runs[0].completed, false);
+    assert.equal(server.runs[0].error, expected);
+    assert.deepEqual(server.errors, [expected]);
+  });
+});
+
+test("bounded native client heartbeats after completion and an ordinary request close remain successful", async (t) => {
+  const server = await mock(t);
+  const stream = openRun(t, server, { endRequestOnResponse: false });
+  stream.send(runMessage());
+  for (let id = 1; id <= 3; id++) {
+    await waitFor(() => server.runs[0]?.kvWriteCount === id);
+    stream.send(acknowledgement(id));
+  }
+  await stream.done;
+  stream.send(field(7, Buffer.alloc(0)));
+  stream.request.end();
+  await new Promise((resolve) => stream.request.once("close", resolve));
+  assert.equal(server.runs[0].completed, true);
+  assert.deepEqual(server.errors, []);
+});
+
+test("a terminal Connect error coalesced with the last KV ACK prevents completion", async (t) => {
+  const server = await mock(t);
+  const stream = openRun(t, server);
+  stream.send(runMessage());
+  for (const id of [1, 2]) {
+    await waitFor(() => server.runs[0]?.kvWriteCount === id);
+    stream.send(acknowledgement(id));
+  }
+  await waitFor(() => server.runs[0]?.kvWriteCount === 3);
+  const terminal = frame(Buffer.from(JSON.stringify({ error: { code: "aborted", message: "private-terminal-canary" } })));
+  terminal[0] = 2;
+  stream.request.write(Buffer.concat([frame(acknowledgement(3)), terminal]));
+  await stream.done;
+  assertFailed(server, stream, "CURSOR_APP_CONNECT_REMOTE_ERROR", { writes: 3, acks: 2 });
+  assert.equal(JSON.stringify(server.errors).includes("canary"), false);
+});
+
+test("native Read and Shell results require matching stream closes before tool persistence and the final answer", async (t) => {
+  const steps = [{ kind: "read", path: "/synthetic/skill/SKILL.md" },
+    { kind: "read", path: "/synthetic/skill/references/memory.md" },
+    { kind: "shell", command: "memorax-cli search synthetic", workingDirectory: "/synthetic/workspace", timeoutMs: 1_000 }];
+  const content = ["Synthetic skill\n", "Synthetic reference\n"];
+  const seen = [];
+  const server = await mock(t, { toolSteps(run, results) {
+    if (run.requestId !== requestId) return undefined;
+    assert.equal(run.requestId, requestId);
+    assert.equal(run.kvWriteCount, 0);
+    seen.push([...results]);
+    return steps[results.length];
+  } });
+  const stream = openRun(t, server);
+  stream.send(runMessage());
+  for (const [index, step] of steps.entries()) {
+    await waitFor(() => server.runs[0]?.execRequestCount === index + 1);
+    const run = server.runs[0], pending = { ...run.pendingTool };
+    assert.equal(pending.id, index + 1);
+    assert.equal(pending.kind, step.kind);
+    assert.match(pending.toolCallId, /^[a-f0-9-]{36}$/);
+    await waitFor(() => stream.frames.length === index * 3 + 2);
+    assert.equal(stream.frames[index * 3].body[0], 10, "ToolStarted is sent before Exec");
+    assert.equal(stream.frames[index * 3 + 1].body[0], 18, "Exec uses the native channel");
+    stream.send(execControl(pending.id, "heartbeat"));
+    stream.send(step.kind === "read" ? execReadResult(pending.id, step.path, content[index])
+      : execShellResult(pending.id, step.command, step.workingDirectory, '{"synthetic":true}\n'));
+    await waitFor(() => run.execResultCount === index + 1);
+    assert.deepEqual(run.pendingTool, pending);
+    assert.equal(run.execCloseCount, index);
+    assert.equal(run.toolResults.length, index);
+    assert.equal(run.kvWriteCount, 0);
+    stream.send(execControl(pending.id));
+  }
+  await waitFor(() => server.runs[0]?.kvWriteCount === 1);
+  const run = server.runs[0];
+  assert.equal(run.pendingTool, undefined);
+  assert.equal(run.execRequestCount, 3);
+  assert.equal(run.execResultCount, 3);
+  assert.equal(run.execCloseCount, 3);
+  assert.equal(seen.length, 4);
+  assert.deepEqual(run.toolResults, [
+    { kind: "read", path: steps[0].path, content: content[0], totalLines: 2, fileSize: Buffer.byteLength(content[0]) },
+    { kind: "read", path: steps[1].path, content: content[1], totalLines: 2, fileSize: Buffer.byteLength(content[1]) },
+    { kind: "shell", command: steps[2].command, workingDirectory: steps[2].workingDirectory,
+      stdout: '{"synthetic":true}\n', stderr: "", exitCode: 0 },
+  ]);
+  assert.deepEqual(run.kvWrites.map((write) => write.id), [4, 5, 6, 7, 8, 9]);
+  for (const [index, write] of run.kvWrites.entries()) {
+    await waitFor(() => run.kvWriteCount === index + 1);
+    stream.send(acknowledgement(write.id));
+  }
+  await stream.done;
+  assert.equal(run.completed, true);
+  assert.equal(run.kvAckCount, 6);
+  assert.equal(run.kvWrites.filter((write) => write.bytes.equals(field(1, field(1, answer)))).length, 1);
+  assert.equal(run.kvWrites[1].bytes[0], 18, "persisted Read is a native ConversationStep tool call");
+  assert.equal(run.kvWrites[2].bytes[0], 18);
+  assert.equal(run.kvWrites[3].bytes[0], 18);
+  const resumed = await completedRun(t, server, { prior: [run] });
+  assert.equal(resumed.kvReadCount, 6);
+  assert.equal(resumed.kvReadResultCount, 6);
+  assert.equal(resumed.execRequestCount, 0);
+  assert.equal(resumed.execResultCount, 0);
+  assert.equal(resumed.execCloseCount, 0);
+  assert.deepEqual(server.errors, []);
+});
+
+test("native context must complete its correlated handshake before Skill tools and is not added to their graph", async (t) => {
+  const hook = "Synthetic current sessionStart context", skillPath = "/synthetic/skill/SKILL.md";
+  const context = Buffer.concat([field(25, hook), field(29, field(1, skillPath))]);
+  const server = await mock(t, { toolSteps(run, results) {
+    if (!run.requestContextCloseCount) return { kind: "requestContext" };
+    assert.equal(run.requestContext.hooksAdditionalContext, hook);
+    assert.equal(run.requestContext.agentSkills[0].fullPath, skillPath);
+    return results.length ? undefined : { kind: "read", path: skillPath };
+  } });
+  const stream = openRun(t, server);
+  stream.send(runMessage());
+  await waitFor(() => stream.frames.length === 1);
+  const run = server.runs[0];
+  assert.equal(run.requestContextRequestCount, 1);
+  assert.equal(run.pendingTool, undefined);
+  assert.equal(run.execRequestCount, 0);
+  assert.equal(stream.frames[0].body[0], 18, "context is only a native Exec request, not ToolStarted");
+  stream.send(execContextResult(1, context));
+  await waitFor(() => run.requestContextResultCount === 1);
+  assert.equal(run.requestContext, undefined, "result is not published until its stream closes");
+  assert.equal(run.kvWriteCount, 0);
+  assert.equal(run.execRequestCount, 0);
+  stream.send(execControl(1));
+  await waitFor(() => run.pendingTool?.id === 2);
+  assert.equal(run.requestContextCloseCount, 1);
+  assert.deepEqual(run.requestContextBytes, context);
+  stream.request.write(Buffer.concat([frame(execReadResult(2, skillPath, "native skill")), frame(execControl(2))]));
+  await waitFor(() => run.kvWriteCount === 1);
+  assert.equal(run.toolResults.length, 1);
+  assert.equal(run.kvWrites.length, 4);
+  assert.deepEqual(run.kvWrites.map((write) => write.id), [3, 4, 5, 6]);
+  for (const [index, write] of run.kvWrites.entries()) {
+    await waitFor(() => run.kvWriteCount === index + 1);
+    stream.send(acknowledgement(write.id));
+  }
+  await stream.done;
+  assert.equal(run.completed, true);
+  assert.equal(run.execRequestCount, 1);
+  assert.equal(run.execResultCount, 1);
+  assert.equal(run.execCloseCount, 1);
+  assert.deepEqual(server.errors, []);
+});
+
+test("a repeated context request fails instead of silently rebinding the same turn", async (t) => {
+  const server = await mock(t, { toolSteps: () => ({ kind: "requestContext" }) });
+  const stream = openRun(t, server);
+  stream.send(runMessage());
+  await waitFor(() => stream.frames.length === 1);
+  stream.request.write(Buffer.concat([frame(execContextResult(1, Buffer.alloc(0))), frame(execControl(1))]));
+  await stream.done;
+  assert.equal(server.runs[0].requestContextCloseCount, 1);
+  assert.equal(server.runs[0].kvWriteCount, 0);
+  assert.equal(server.runs[0].completed, false);
+  assert.deepEqual(server.errors, ["CURSOR_AGENT_CONTEXT_DUPLICATE"]);
+});
+
+for (const [name, input, code] of [
+  ["unknown result ID", (tool) => execReadResult(tool.id + 1, "/synthetic/skill", "content"), "CURSOR_AGENT_EXEC_UNKNOWN"],
+  ["wrong result path", (tool) => execReadResult(tool.id, "/synthetic/other", "content"), "CURSOR_APP_EXEC_IDENTITY"],
+  ["wrong result kind", (tool) => execShellResult(tool.id, "command", "/synthetic", "content"), "CURSOR_APP_EXEC_IDENTITY"],
+  ["close before result", (tool) => execControl(tool.id), "CURSOR_AGENT_EXEC_RESULT_MISSING"],
+  ["native throw", (tool) => execControl(tool.id, "error"), "CURSOR_AGENT_EXEC_THROWN"],
+]) {
+  test(`native Exec rejects ${name} without writing a final turn`, async (t) => {
+    const server = await mock(t, { toolSteps: () => ({ kind: "read", path: "/synthetic/skill" }) });
+    const stream = openRun(t, server);
+    stream.send(runMessage());
+    await waitFor(() => server.runs[0]?.pendingTool);
+    stream.send(input(server.runs[0].pendingTool));
+    await stream.done;
+    const run = server.runs[0];
+    assert.equal(run.completed, false);
+    assert.equal(run.kvWriteCount, 0);
+    assert.equal(run.pendingTool, undefined);
+    assert.deepEqual(server.errors, [code]);
+    assert.deepEqual(stream.frames.at(-2), { flags: 0, body: field(5, field(1, scalar(1, 1))) });
+    assert.equal(JSON.stringify(server.errors).includes("private-exec"), false);
+  });
+}
+
+test("native Exec missing close times out without publishing even a successful result", async (t) => {
+  const server = await mock(t, { timeoutMs: 80, toolSteps: () => ({ kind: "read", path: "/synthetic/skill" }) });
+  const stream = openRun(t, server);
+  stream.send(runMessage());
+  await waitFor(() => server.runs[0]?.pendingTool);
+  stream.send(execReadResult(server.runs[0].pendingTool.id, "/synthetic/skill", "content"));
+  await stream.done;
+  assert.equal(server.runs[0].execResultCount, 1);
+  assert.equal(server.runs[0].execCloseCount, 0);
+  assert.equal(server.runs[0].toolResults.length, 0);
+  assert.equal(server.runs[0].kvWriteCount, 0);
+  assert.equal(server.runs[0].completed, false);
+  assert.deepEqual(server.errors, ["CURSOR_AGENT_TIMEOUT"]);
+  assert.deepEqual(stream.frames.at(-2), { flags: 0, body: field(5, field(1, scalar(1, 1))) });
+});
+
+test("private native rejection diagnostics retain only the correlated ID, kind and numeric result case", async (t) => {
+  const server = await mock(t, { toolSteps: () => ({ kind: "shell", command: "synthetic command",
+    workingDirectory: "/synthetic/workspace", timeoutMs: 1_000 }) });
+  const stream = openRun(t, server);
+  stream.send(runMessage());
+  await waitFor(() => server.runs[0]?.pendingTool);
+  stream.send(field(2, Buffer.concat([scalar(1, 1), field(2, field(5, field(1, "private-native-rejection-canary")))])));
+  await stream.done;
+  assert.deepEqual(server.runs[0].execRejection, { id: 1, kind: "shell", rejectionKind: 5 });
+  assert.equal(server.runs[0].completed, false);
+  assert.equal(server.runs[0].kvWriteCount, 0);
+  assert.deepEqual(server.errors, ["CURSOR_APP_EXEC_REJECTED"]);
+  assert.equal(JSON.stringify(server.runs[0].execRejection).includes("canary"), false);
+});
+
+test("duplicate result and close frames in one chunk fail before any tool or final graph is committed", async (t) => {
+  for (const duplicate of ["result", "close"]) await t.test(duplicate, async (t) => {
+    const server = await mock(t, { toolSteps: (_run, results) => results.length ? undefined : { kind: "read", path: "/synthetic/skill" } });
+    const stream = openRun(t, server);
+    stream.send(runMessage());
+    await waitFor(() => server.runs[0]?.pendingTool);
+    const id = server.runs[0].pendingTool.id;
+    const result = frame(execReadResult(id, "/synthetic/skill", "content")), close = frame(execControl(id));
+    stream.request.write(Buffer.concat(duplicate === "result" ? [result, result, close] : [result, close, close]));
+    await stream.done;
+    assert.equal(server.runs[0].kvWriteCount, 0);
+    assert.equal(server.runs[0].toolResults.length, 0);
+    assert.equal(server.runs[0].completed, false);
+    assert.deepEqual(server.errors, ["CURSOR_AGENT_EXEC_DUPLICATE"]);
+  });
+});
+
+test("Exec heartbeats are correlated and bounded without extending the run deadline", async (t) => {
+  for (const [kind, expected] of [["unknown", "CURSOR_AGENT_EXEC_UNKNOWN"], ["excessive", "CURSOR_AGENT_EXEC_HEARTBEAT_LIMIT"],
+    ["ended", "CURSOR_AGENT_EXEC_INCOMPLETE"]]) await t.test(kind, async (t) => {
+    const server = await mock(t, { toolSteps: () => ({ kind: "read", path: "/synthetic/skill" }) });
+    const stream = openRun(t, server);
+    stream.send(runMessage());
+    await waitFor(() => server.runs[0]?.pendingTool);
+    const id = server.runs[0].pendingTool.id;
+    if (kind === "unknown") stream.send(execControl(id + 1, "heartbeat"));
+    else if (kind === "excessive") stream.request.write(Buffer.concat(Array.from({ length: 33 }, () => frame(execControl(id, "heartbeat")))));
+    else stream.request.end();
+    await stream.done;
+    assert.equal(server.runs[0].kvWriteCount, 0);
+    assert.equal(server.runs[0].completed, false);
+    assert.deepEqual(server.errors, [expected]);
+  });
+});
+
+test("tool planning keeps only explicitly allowed fixed assertion codes and rejects unsupported descriptors", async (t) => {
+  for (const [name, toolSteps, expected] of [
+    ["fixed assertion", () => { throw Object.assign(new Error("private-plan-canary"), { nativeCode: "CURSOR_APP_SKILL_NOT_READ" }); }, "CURSOR_APP_SKILL_NOT_READ"],
+    ["private exception", () => { throw new Error("private-plan-canary"); }, "CURSOR_AGENT_TOOL_PLAN_FAILED"],
+    ["invented code", () => { throw { code: "CURSOR_APP_SKILL_PRIVATE_CANARY" }; }, "CURSOR_AGENT_TOOL_PLAN_FAILED"],
+    ["unsupported kind", () => ({ kind: "write", path: "/synthetic" }), "CURSOR_APP_EXEC_OPTIONS"],
+    ["approval override", () => ({ kind: "shell", command: "echo synthetic", workingDirectory: "/synthetic", timeoutMs: 10, skipApproval: true }), "CURSOR_APP_EXEC_OPTIONS"],
+    ["async callback", async () => undefined, "CURSOR_APP_EXEC_OPTIONS"],
+    ["rejected async callback", async () => { throw new Error("private-plan-canary"); }, "CURSOR_APP_EXEC_OPTIONS"],
+  ]) await t.test(name, async (t) => {
+    const server = await mock(t, { toolSteps });
+    const stream = openRun(t, server);
+    stream.send(runMessage());
+    await stream.done;
+    assert.equal(server.runs[0].kvWriteCount, 0);
+    assert.equal(server.runs[0].completed, false);
+    assert.deepEqual(server.errors, [expected]);
+    assert.equal(JSON.stringify(server.errors).includes("canary"), false);
+  });
+  await assert.rejects(() => startCursorAgentMock({ answer, toolSteps: {} }), /CURSOR_MOCK_OPTIONS_INVALID/);
+});
+
+test("tool plans have a finite step budget even if the callback never finishes", async (t) => {
+  const server = await mock(t, { toolSteps: () => ({ kind: "read", path: "/synthetic/skill" }) });
+  const stream = openRun(t, server);
+  stream.send(runMessage());
+  for (let index = 0; index < 8; index++) {
+    await waitFor(() => server.runs[0]?.execRequestCount === index + 1);
+    const { id } = server.runs[0].pendingTool;
+    stream.request.write(Buffer.concat([frame(execReadResult(id, "/synthetic/skill", "content")), frame(execControl(id))]));
+  }
+  await stream.done;
+  assert.equal(server.runs[0].execRequestCount, 8);
+  assert.equal(server.runs[0].execResultCount, 8);
+  assert.equal(server.runs[0].execCloseCount, 8);
+  assert.equal(server.runs[0].kvWriteCount, 0);
+  assert.deepEqual(server.errors, ["CURSOR_AGENT_EXEC_LIMIT"]);
 });
 
 test("four runs verify per-session history before writes across fresh client connections", async (t) => {

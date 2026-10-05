@@ -114,7 +114,8 @@ test("Cursor App summary fails every non-success dependency and states the limit
         `package=${packageResult}, cursor=${cursorResult}`);
       const text = await readFile(summary, "utf8");
       assert.ok(text.includes(`Package: **${packageResult}**`) && text.includes(`Cursor App Linux canary: **${cursorResult}**`));
-      assert.match(text, /Four real App runs exercise repeated-prompt follow-up, independent sessions and App restart\/resume/);
+      assert.match(text, /Six real App runs exercise repeated-prompt follow-up, independent sessions, App restart\/resume and explicit Skill Search\/Add through native Read\/Shell tools/);
+      assert.match(text, /Scripted tool requests do not validate model-driven Skill selection/);
       assert.match(text, /This Linux canary does not validate real login, hosted models, full functional coverage or three-platform acceptance/);
     }
   }
