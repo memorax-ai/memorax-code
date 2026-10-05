@@ -11,7 +11,8 @@ const context = { jobPath: resolve("fixture/jobs/job-fixture/job.json"), reposit
 const prompt = `${workerPromptMarker}\n\nComplete the entire synthetic job prompt.\n`;
 const job = () => ({ version: 1, jobId: "job-fixture", runId: "a".repeat(32), runner: "claude", mode: "build",
   repo: context.repository, snapshotHead: context.snapshotHead, status: "failed", failureReason: "artifact_validation_failed", exitCode: 0, validationExitCode: 1,
-  command: [context.claudeCommand, "--print", "--output-format", "text", "--dangerously-skip-permissions", "--no-session-persistence", prompt],
+  command: [context.claudeCommand, "--print", "--output-format", "text", "--dangerously-skip-permissions", "--no-session-persistence",
+    "--effort", "medium", "--settings", JSON.stringify({ env: { CLAUDE_CODE_EFFORT_LEVEL: "medium" } }), prompt],
   sharedSnapshot: { ref: "refs/remotes/origin/main", branch: "main", head: context.snapshotHead, baseHead: null },
   prompt, finalMessageSource: "stdout", finalMessagePath: join(dirname(context.jobPath), "final-message.txt"),
   outputLogPath: join(dirname(context.jobPath), "output.log"), pid: 12345, workerPid: 12345, childPid: 12346 });
@@ -40,6 +41,16 @@ test("Claude background job rejects added model overrides, altered persistence a
 test("Claude background job rejects malformed process identities", () => {
   for (const change of [{ pid: -1 }, { workerPid: 0 }, { childPid: "12346" }, { childPid: 12345 }, { workerPid: 99 }]) {
     assert.throws(() => assertBackgroundJob({ ...job(), ...change }, context), { nativeCode: "BACKGROUND_JOB_PID_INVALID" });
+  }
+});
+
+test("Claude background job requires medium effort and its environment precedence override", () => {
+  const command = job().command;
+  for (const altered of [command.filter((_, index) => ![6, 7].includes(index)),
+    command.filter((_, index) => ![8, 9].includes(index)), command.map((part) => part === "medium" ? "high" : part),
+    command.map((part, index) => index === 9 ? JSON.stringify({ env: { CLAUDE_CODE_EFFORT_LEVEL: "high" } }) : part)]) {
+    assert.throws(() => assertBackgroundJob({ ...job(), command: altered }, context),
+      { nativeCode: "BACKGROUND_JOB_COMMAND_MISMATCH" });
   }
 });
 

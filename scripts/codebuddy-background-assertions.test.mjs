@@ -13,7 +13,7 @@ const prompt = `${workerPromptMarker}\n\nPreserve the full synthetic worker prom
 const job = (client = "codebuddy") => ({ version: 1, jobId: "job-fixture", runId: "a".repeat(32), runner: client, mode: "build",
   repo: context.repository, snapshotHead: context.snapshotHead, status: "failed", failureReason: "artifact_validation_failed",
   exitCode: 0, validationExitCode: 1, command: [context.codebuddyCommand, "--plugin-dir", context.pluginRoot,
-    "--print", "--output-format", "text", "--dangerously-skip-permissions", "--no-session-persistence", prompt],
+    "--print", "--output-format", "text", "--dangerously-skip-permissions", "--no-session-persistence", "--effort", "medium", prompt],
   sharedSnapshot: { ref: "refs/remotes/origin/main", branch: "main", head: context.snapshotHead, baseHead: null },
   prompt, finalMessageSource: "stdout", finalMessagePath: join(dirname(context.jobPath), "final-message.txt"),
   outputLogPath: join(dirname(context.jobPath), "output.log"), pid: 12345, workerPid: 12345, childPid: 12346 });
@@ -87,6 +87,11 @@ for (const client of ["codebuddy", "workbuddy"]) {
       { nativeCode: "BACKGROUND_JOB_COMMAND_MISMATCH" });
     assert.throws(() => assertBackgroundJob({ ...actual, command: [actual.command[0], "--plugin-dir", "foreign-plugin", ...actual.command.slice(3)] }, selected),
       { nativeCode: "BACKGROUND_JOB_COMMAND_MISMATCH" });
+    for (const command of [actual.command.filter((_, index) => ![8, 9].includes(index)),
+      actual.command.map((part) => part === "medium" ? "high" : part)]) {
+      assert.throws(() => assertBackgroundJob({ ...actual, command }, selected),
+        { nativeCode: "BACKGROUND_JOB_COMMAND_MISMATCH" });
+    }
   });
 
   test(`${client} model evidence binds the full worker prompt and matching foreground prompt`, () => {

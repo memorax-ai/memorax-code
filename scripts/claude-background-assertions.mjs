@@ -28,7 +28,8 @@ export function assertBackgroundJob(job, { jobPath, repository, snapshotHead, cl
     && ["preparing", "started", "running", "failed", "succeeded"].includes(job.status), "BACKGROUND_JOB_AUTHORITY_MISMATCH");
   check(typeof job.prompt === "string" && job.prompt.startsWith(workerPromptMarker)
     && JSON.stringify(job.command) === JSON.stringify([claudeCommand, "--print", "--output-format", "text",
-      "--dangerously-skip-permissions", "--no-session-persistence", job.prompt]), "BACKGROUND_JOB_COMMAND_MISMATCH");
+      "--dangerously-skip-permissions", "--no-session-persistence", "--effort", "medium", "--settings",
+      JSON.stringify({ env: { CLAUDE_CODE_EFFORT_LEVEL: "medium" } }), job.prompt]), "BACKGROUND_JOB_COMMAND_MISMATCH");
   check(job.finalMessageSource === "stdout" && job.finalMessagePath === join(dirname(jobPath), "final-message.txt")
     && job.outputLogPath === join(dirname(jobPath), "output.log"), "BACKGROUND_JOB_OUTPUT_AUTHORITY_MISMATCH");
   for (const key of ["pid", "workerPid", "childPid"]) {
