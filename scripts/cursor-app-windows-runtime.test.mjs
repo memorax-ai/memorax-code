@@ -74,8 +74,9 @@ test("Windows cleanup audits only owned paths and never kills discovered PIDs", 
       return { stdout: JSON.stringify(rows) };
     }), expected);
   }
-  for (const stdout of ["invalid", "null", '{"error":"private-canary"}', '[{"ProcessId":"124"}]']) {
-    await assert.rejects(auditWindowsProcesses(options, async () => ({ stdout })), code("PROCESS_AUDIT"));
+  for (const [stdout, suffix] of [["invalid", "PROCESS_JSON_INVALID"], ["null", "PROCESS_ROWS_INVALID"],
+    ['{"error":"private-canary"}', "PROCESS_ROWS_INVALID"], ['[{"ProcessId":"124"}]', "PROCESS_ROWS_INVALID"]]) {
+    await assert.rejects(auditWindowsProcesses(options, async () => ({ stdout })), code(suffix));
   }
   const shell = windowsShellCommand([paths.nodePath, "-e", "process.exit(0)", options.marker]);
   const encodedCommand = shell.split(" ").at(-1);
@@ -83,6 +84,36 @@ test("Windows cleanup audits only owned paths and never kills discovered PIDs", 
   assert.equal(hasOwnedWindowsProcesses([row], options), false);
   assert.equal(hasOwnedWindowsProcesses([row], { ...options, encodedCommand }), true);
   assert.equal(hasOwnedWindowsProcesses([{ ...row, CommandLine: shell + "another" }], { ...options, encodedCommand }), false);
+});
+
+test("Windows process-query diagnostics keep only fixed failure codes", async () => {
+  const options = { appPath: paths.appPath, packageRoot: paths.packageRoot, stateHome: "C:\\owned state",
+    selfPid: 123, env: windowsRuntimePaths(paths).env };
+  for (const [fields, suffix] of [
+    [{ code: "ETIMEDOUT" }, "QUERY_TIMEOUT"],
+    [{ killed: true, signal: "SIGTERM" }, "QUERY_TIMEOUT"],
+    [{ code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER", killed: true }, "QUERY_FAILED"],
+    [{ code: "ENOENT" }, "QUERY_FAILED"],
+    [{ code: 1, stderr: "private-canary CommandNotFoundException private-canary" }, "QUERY_COMMAND_NOT_FOUND"],
+    [{ code: 1, stderr: "private-canary Microsoft.Management.Infrastructure.CimException private-canary" }, "QUERY_CIM_FAILED"],
+    [{ code: 1, stderr: "private-canary unknown failure" }, "QUERY_FAILED"],
+  ]) {
+    await assert.rejects(auditWindowsProcesses(options, async (file, args, settings) => {
+      assert.equal(file, "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
+      assert.deepEqual(args, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
+        "$ErrorActionPreference='Stop'; @(Get-CimInstance Win32_Process | Select-Object ProcessId,ExecutablePath,CommandLine) | ConvertTo-Json -Compress"]);
+      assert.equal(settings.env, options.env);
+      assert.equal(settings.timeout, 10000);
+      assert.equal(settings.maxBuffer, 4 * 1024 * 1024);
+      throw Object.assign(new Error("private-canary"), { stdout: "private-canary", ...fields });
+    }), (error) => {
+      assert.equal(error.code, `CURSOR_APP_WINDOWS_PROCESS_${suffix}`);
+      assert.equal(error.message, error.code);
+      assert.deepEqual(Object.keys(error), ["code"]);
+      assert.equal(JSON.stringify(error).includes("private-canary"), false);
+      return true;
+    });
+  }
 });
 
 test("Windows App tree cleanup ignores exited children even if their PID is reused", async () => {

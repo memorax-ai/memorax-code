@@ -44,7 +44,7 @@ const launchMarkers = {
 export function projectCursorAppLaunchDiagnostics(value) {
   return {
     spawned: value?.spawned === true, debugEndpointSeen: value?.debugEndpointSeen === true,
-    exitCode: Number.isInteger(value?.exitCode) && value.exitCode >= 0 && value.exitCode <= 255 ? value.exitCode : null,
+    exitCode: Number.isInteger(value?.exitCode) && value.exitCode >= 0 && value.exitCode <= 0xffff_ffff ? value.exitCode : null,
     signal: value?.signal == null ? "none" : enumValue(value.signal,
       ["none", "SIGABRT", "SIGBUS", "SIGILL", "SIGKILL", "SIGSEGV", "SIGTERM", "SIGTRAP", "other"], "none"),
     spawnError: value?.spawnError == null ? "none" : enumValue(value.spawnError,

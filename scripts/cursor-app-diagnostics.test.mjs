@@ -140,7 +140,7 @@ test("launch diagnostics expose only bounded process outcomes and fixed stderr m
 });
 
 test("launch diagnostic projection cannot reflect arbitrary fields or invalid statuses", () => {
-  for (const exitCode of [-1, 256, 1.5, "1", privateCanary]) {
+  for (const exitCode of [-1, 0x1_0000_0000, 1.5, "1", privateCanary]) {
     const result = projectCursorAppLaunchDiagnostics({ spawned: "true", debugEndpointSeen: 1, exitCode,
       signal: privateCanary, spawnError: privateCanary, log: privateCanary, privatePath: privateCanary,
       markers: { permissionDenied: "true", [privateCanary]: true } });
@@ -149,7 +149,10 @@ test("launch diagnostic projection cannot reflect arbitrary fields or invalid st
     assert.ok(Object.values(result.markers).every((value) => value === false));
     assert.equal(JSON.stringify(result).includes(privateCanary), false);
   }
-  for (const exitCode of [0, 1, 255]) assert.equal(projectCursorAppLaunchDiagnostics({ exitCode }).exitCode, exitCode);
+  for (const exitCode of [0, 1, 255, 256, 0xc0000135, 0xc0000409, 0xffff_ffff]) {
+    const collected = collectCursorAppLaunchDiagnostics({ exitCode });
+    assert.equal(projectCursorAppLaunchDiagnostics(collected).exitCode, exitCode);
+  }
   for (const spawnError of ["ENOENT", "EACCES", "ENOEXEC"]) {
     assert.equal(projectCursorAppLaunchDiagnostics({ spawnError }).spawnError, spawnError);
   }

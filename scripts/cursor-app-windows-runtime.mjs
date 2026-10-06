@@ -50,13 +50,26 @@ export function hasOwnedWindowsProcesses(rows, { appPath, packageRoot, stateHome
 }
 
 export async function auditWindowsProcesses(options, execute = exec) {
+  const fail = (suffix) => {
+    const code = `CURSOR_APP_WINDOWS_PROCESS_${suffix}`;
+    throw Object.assign(new Error(code), { code });
+  };
+  let stdout;
   try {
-    const { stdout } = await execute(path.join(options.env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+    ({ stdout } = await execute(path.join(options.env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
       ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
         "$ErrorActionPreference='Stop'; @(Get-CimInstance Win32_Process | Select-Object ProcessId,ExecutablePath,CommandLine) | ConvertTo-Json -Compress"],
-      { env: options.env, encoding: "utf8", timeout: 10000, maxBuffer: 4 * 1024 * 1024, windowsHide: true });
-    return hasOwnedWindowsProcesses(JSON.parse(stdout), options);
-  } catch { throw Object.assign(new Error("CURSOR_APP_WINDOWS_PROCESS_AUDIT"), { code: "CURSOR_APP_WINDOWS_PROCESS_AUDIT" }); }
+      { env: options.env, encoding: "utf8", timeout: 10000, maxBuffer: 4 * 1024 * 1024, windowsHide: true }));
+  } catch (error) {
+    if (error?.code === "ETIMEDOUT" || (error?.killed === true && error?.code !== "ERR_CHILD_PROCESS_STDIO_MAXBUFFER")) fail("QUERY_TIMEOUT");
+    const stderr = typeof error?.stderr === "string" ? error.stderr : "";
+    if (/\bCommandNotFoundException\b/.test(stderr)) fail("QUERY_COMMAND_NOT_FOUND");
+    if (/\bCimException\b/.test(stderr)) fail("QUERY_CIM_FAILED");
+    fail("QUERY_FAILED");
+  }
+  let rows;
+  try { rows = JSON.parse(stdout); } catch { fail("JSON_INVALID"); }
+  try { return hasOwnedWindowsProcesses(rows, options); } catch { fail("ROWS_INVALID"); }
 }
 
 export async function stopWindowsApp(child, env, execute = exec) {

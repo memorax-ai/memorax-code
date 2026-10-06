@@ -1313,8 +1313,10 @@ node scripts/cursor-app-container-check.mjs \
 
 Only `report.json` is exported and uploaded. Raw App logs, transcripts, SQLite
 files and Hook traces are not CI artifacts. App startup diagnostics publish
-only bounded exit codes, fixed signal/error enums and marker booleans, not raw
-stderr. Failed DMG detach diagnostics contain
+only bounded 32-bit exit codes, fixed signal/error enums and marker booleans, not raw
+stderr. Windows cleanup errors distinguish process-query, JSON and row-validation
+failures using fixed codes, without publishing process lists or PowerShell output.
+Failed DMG detach diagnostics contain
 only bounded exit/signal outcomes, fixed status and stderr classifications, not
 raw text. Failed candidate stops retain only fixed Backend result enums,
 booleans and bounded process outcomes from the CLI's JSON output; raw command
