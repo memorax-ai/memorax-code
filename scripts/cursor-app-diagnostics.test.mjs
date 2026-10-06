@@ -4,10 +4,45 @@ import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { collectCursorAppDiagnostics, collectCursorAppLaunchDiagnostics, collectCursorAppStopDiagnostics, isCursorAppDiagnostics,
-  projectCursorAppDiagnostics, projectCursorAppLaunchDiagnostics, projectCursorAppStopDiagnostics } from "./cursor-app-diagnostics.mjs";
+import { collectCursorAppDiagnostics, collectCursorAppLaunchDiagnostics, collectCursorAppShellDiagnostics,
+  collectCursorAppStopDiagnostics, isCursorAppDiagnostics, projectCursorAppDiagnostics,
+  projectCursorAppLaunchDiagnostics, projectCursorAppShellDiagnostics, projectCursorAppStopDiagnostics } from "./cursor-app-diagnostics.mjs";
 
 const privateCanary = "private-content-path-token-canary";
+
+test("Shell diagnostics bind completed approval clicks to the exact failed tool and redact all identities", () => {
+  const toolCallId = randomUUID();
+  const run = { error: "CURSOR_APP_EXEC_REJECTED", requestId: privateCanary, command: privateCanary,
+    execRejection: { kind: "shell", toolCallId, rejectionKind: 2, exitCode: 127, stderr: privateCanary },
+    shellApproval: { toolCallId, clicked: false } };
+  assert.deepEqual(collectCursorAppShellDiagnostics(run), { rejectionKind: 2, approvalClicked: false, exitCode: 127 });
+  run.shellApproval.clicked = true;
+  assert.deepEqual(collectCursorAppShellDiagnostics(run), { rejectionKind: 2, approvalClicked: true, exitCode: 127 });
+  assert.equal(JSON.stringify(collectCursorAppShellDiagnostics(run)).includes(privateCanary), false);
+  for (const changed of [undefined, { ...run, error: "CURSOR_APP_EXEC_IDENTITY" },
+    { ...run, execRejection: { ...run.execRejection, kind: "read" } },
+    { ...run, shellApproval: { toolCallId: randomUUID(), clicked: true } },
+    { ...run, shellApproval: { toolCallId, clicked: "true" } },
+    { ...run, shellApproval: undefined }]) assert.equal(collectCursorAppShellDiagnostics(changed), undefined);
+});
+
+test("Shell report projection permits only fixed result cases, booleans and actual int32 failure codes", () => {
+  for (const rejectionKind of [2, 3, 4, 5, 7]) {
+    const result = projectCursorAppShellDiagnostics({ rejectionKind, approvalClicked: true,
+      exitCode: 127, command: privateCanary, path: privateCanary, stdout: privateCanary, toolCallId: privateCanary });
+    assert.deepEqual(result, { rejectionKind, approvalClicked: true, ...(rejectionKind === 2 ? { exitCode: 127 } : {}) });
+    assert.deepEqual(projectCursorAppShellDiagnostics(result), result);
+    assert.equal(JSON.stringify(result).includes(privateCanary), false);
+  }
+  for (const exitCode of [-0x8000_0000, -1, 0, 0x7fff_ffff]) {
+    assert.equal(projectCursorAppShellDiagnostics({ rejectionKind: 2, exitCode }).exitCode, exitCode);
+  }
+  for (const exitCode of [undefined, null, "127", privateCanary, 1.5, NaN, Infinity, -0x8000_0001, 0x8000_0000]) {
+    assert.equal(Object.hasOwn(projectCursorAppShellDiagnostics({ rejectionKind: 2, exitCode }), "exitCode"), false);
+  }
+  assert.deepEqual(projectCursorAppShellDiagnostics({ rejectionKind: privateCanary, approvalClicked: "true", exitCode: 127 }),
+    { rejectionKind: "other", approvalClicked: false });
+});
 
 test("launch diagnostics expose only bounded process outcomes and fixed stderr markers", () => {
   const result = collectCursorAppLaunchDiagnostics({ spawned: true, debugEndpointSeen: false, exitCode: null,

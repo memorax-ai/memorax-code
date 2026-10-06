@@ -59,6 +59,24 @@ export function collectCursorAppLaunchDiagnostics(value) {
     markers: Object.fromEntries(Object.entries(launchMarkers).map(([key, pattern]) => [key, pattern.test(log)])) });
 }
 
+export function projectCursorAppShellDiagnostics(value) {
+  return {
+    rejectionKind: enumValue(value?.rejectionKind, [2, 3, 4, 5, 7, "absent", "other"]),
+    approvalClicked: value?.approvalClicked === true,
+    ...(value?.rejectionKind === 2 && Number.isInteger(value.exitCode)
+      && value.exitCode >= -0x8000_0000 && value.exitCode <= 0x7fff_ffff ? { exitCode: value.exitCode } : {}),
+  };
+}
+
+export function collectCursorAppShellDiagnostics(run) {
+  const result = run?.execRejection, approval = run?.shellApproval;
+  if (run?.error !== "CURSOR_APP_EXEC_REJECTED" || result?.kind !== "shell"
+    || typeof result.toolCallId !== "string" || !uuid.test(result.toolCallId)
+    || approval?.toolCallId !== result.toolCallId || typeof approval.clicked !== "boolean") return undefined;
+  return projectCursorAppShellDiagnostics({ rejectionKind: result.rejectionKind,
+    approvalClicked: approval.clicked, exitCode: result.exitCode });
+}
+
 const stopBackendEnums = {
   errorCode: ["BACKEND_SERVICE_STATE_READ_FAILED", "BACKEND_SERVICE_STATE_INVALID", "BACKEND_SERVICE_STATE_UNSUPPORTED",
     "BACKEND_OWNERSHIP_UNVERIFIED", "BACKEND_TERMINATE_FAILED", "BACKEND_STOP_TIMEOUT", "BACKEND_SERVICE_STATE_CLEANUP_FAILED"],

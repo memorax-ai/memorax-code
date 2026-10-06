@@ -1,12 +1,69 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFile } from "node:fs/promises";
-import { win32 } from "node:path";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
 import { projectNativeReport } from "./cursor-app-container-check.mjs";
-import { projectWindowsInstallerOutcome, runWindowsCheck, windowsCheckEnvironment, windowsInstallerCommand } from "./cursor-app-windows-check.mjs";
+import { projectWindowsInstallerLog, projectWindowsInstallerOutcome, readWindowsInstallerLog, runWindowsCheck,
+  windowsCheckEnvironment, windowsInstallerCommand } from "./cursor-app-windows-check.mjs";
+
+const innoLog = (...records) => Buffer.from("\ufeff" + records.map((record) =>
+  `2026-10-06 12:34:56.789   ${record.replaceAll("\n", "\r\n" + " ".repeat(26))}\r\n`).join(""));
+
+test("installer log projection associates only known error text within the same Inno record", () => {
+  for (const [message, category, systemErrorCode] of [
+    ['Setup was unable to create the directory "C:\\private-canary".\n\nError 5: private-canary', "directory", 5],
+    ["Exception message:\nAn error occurred while trying to copy a file:\nC:\\private-canary\nCreateFile failed; code 32.", "file", 32],
+    ["Error writing to registry key:\nHKCU\\private-canary\n\nRegSetValueEx failed; code 5.\nprivate-canary", "registry", 5],
+    ["Unable to execute file:\nC:\\private-canary\n\nCreateProcess failed; code 2.\nprivate-canary", "execute", 2],
+    ["Exception message:\nprivate-canary", "exception", null],
+    ["Error 4294967295: private-canary", "unknown", 4294967295],
+  ]) {
+    const result = projectWindowsInstallerLog(innoLog(message, "Rolling back changes."));
+    assert.deepEqual(result, { readStatus: "ok", category, systemErrorCode });
+    assert.equal(JSON.stringify(result).includes("private-canary"), false);
+  }
+  for (const records of [
+    ["-- File entry --", "Error 5: private-canary"],
+    ["-- Registry entry --", "Error 5: private-canary"],
+  ]) assert.deepEqual(projectWindowsInstallerLog(innoLog(...records)), { readStatus: "ok", category: "unknown", systemErrorCode: 5 });
+  assert.deepEqual(projectWindowsInstallerLog(innoLog("Error writing to registry key:\nHKCU\\private-canary", "Error 5: private-canary")),
+    { readStatus: "ok", category: "registry", systemErrorCode: null });
+  for (const bytes of [Buffer.from("private-canary Error 5: token"), innoLog("Error 4294967296: private-canary"),
+    innoLog("Error -1: private-canary"), innoLog("Command line: private-canary (Error code: 5)"),
+    innoLog("-- File entry --", "-- Registry entry --", "Installation process succeeded.")]) {
+    assert.deepEqual(projectWindowsInstallerLog(bytes), { readStatus: "ok", category: "unknown", systemErrorCode: null });
+  }
+  for (const bytes of [Buffer.from([0xc3, 0x28]), Buffer.from("private-canary", "utf16le")]) {
+    assert.deepEqual(projectWindowsInstallerLog(bytes), { readStatus: "invalid-encoding", category: "unknown", systemErrorCode: null });
+  }
+});
+
+test("private installer log reads are bounded, regular-file-only and never expose paths or content", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-installer-log-"));
+  try {
+    const path = join(root, "private-canary.log");
+    assert.deepEqual(await readWindowsInstallerLog(`${path}\0`), { readStatus: "read-error", category: "unknown", systemErrorCode: null });
+    assert.deepEqual(await readWindowsInstallerLog(path), { readStatus: "missing", category: "unknown", systemErrorCode: null });
+    await mkdir(path);
+    assert.equal((await readWindowsInstallerLog(path)).readStatus, "not-regular");
+    await rm(path, { recursive: true });
+    await writeFile(path, innoLog("CreateFile failed; code 5.\nprivate-canary"));
+    assert.deepEqual(await readWindowsInstallerLog(path), { readStatus: "ok", category: "file", systemErrorCode: 5 });
+    await writeFile(path, Buffer.alloc(1024 * 1024 + 1, 0x61));
+    assert.deepEqual(await readWindowsInstallerLog(path), { readStatus: "too-large", category: "unknown", systemErrorCode: null });
+    await writeFile(path, Buffer.from([0xff]));
+    assert.equal((await readWindowsInstallerLog(path)).readStatus, "invalid-encoding");
+    const target = join(root, "private-canary-target.log"), link = join(root, "private-canary-link.log");
+    await writeFile(target, innoLog("CreateFile failed; code 5."));
+    try { await symlink(target, link); }
+    catch (error) { if (process.platform === "win32" && error.code === "EPERM") return t.diagnostic("Symlink creation requires Windows privileges"); throw error; }
+    assert.deepEqual(await readWindowsInstallerLog(link), { readStatus: "not-regular", category: "unknown", systemErrorCode: null });
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
 
 test("Windows wrapper builds a clean environment with only the hosted Git directory added", () => {
   const env = windowsCheckEnvironment("C:\\owned root", "C:\\node\\node.exe", "D:\\Windows");
@@ -31,16 +88,17 @@ test("the Windows wrapper does not run on a developer desktop or another platfor
 });
 
 test("Windows installer invocation is silent, prevents automatic App start and waits for descendants", () => {
-  const args = windowsInstallerCommand("C:\\owned ' installer\\CursorUserSetup.exe", "C:\\owned app\\Cursor");
+  const args = windowsInstallerCommand("C:\\owned ' installer\\CursorUserSetup.exe", "C:\\owned app\\Cursor", "C:\\owned ' private\\installer.log");
   assert.deepEqual(args.slice(0, -1), ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand"]);
   const script = Buffer.from(args.at(-1), "base64").toString("utf16le");
   assert.match(script, /Start-Process -FilePath 'C:\\owned '' installer\\CursorUserSetup\.exe'/);
-  assert.match(script, /'\/VERYSILENT','\/SUPPRESSMSGBOXES','\/NORESTART','\/MERGETASKS=!runcode','\/DIR="C:\\owned app\\Cursor"'/);
+  assert.match(script, /'\/VERYSILENT','\/SUPPRESSMSGBOXES','\/NORESTART','\/MERGETASKS=!runcode','\/DIR="C:\\owned app\\Cursor"','\/LOG="C:\\owned '' private\\installer\.log"'/);
   assert.match(script, /-Wait -PassThru;/);
   assert.match(script, /status='exited';exitCode=\$installer\.ExitCode;nativeErrorCode=\$null/);
   assert.doesNotMatch(script, /ExecutionPolicy|RunAs|no-sandbox/i);
   for (const invalid of ["relative", "C:\\a\0b", "C:\\a\r\nb", 'C:\\a"b']) {
-    assert.throws(() => windowsInstallerCommand(invalid, "C:\\app"), { code: "CURSOR_APP_WINDOWS_ARGUMENTS" });
+    assert.throws(() => windowsInstallerCommand(invalid, "C:\\app", "C:\\private\\installer.log"), { code: "CURSOR_APP_WINDOWS_ARGUMENTS" });
+    assert.throws(() => windowsInstallerCommand("C:\\installer.exe", "C:\\app", invalid), { code: "CURSOR_APP_WINDOWS_ARGUMENTS" });
   }
 });
 
@@ -48,12 +106,12 @@ test("the real encoded installer script distinguishes installer exit from launch
   const available = spawnSync("pwsh", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "exit 0"], { encoding: "utf8", timeout: 10000 });
   if (available.error?.code === "ENOENT") return t.skip("PowerShell is not installed");
   assert.equal(available.status, 0);
-  const args = windowsInstallerCommand("C:\\owned ' \u5b89\u88c5\\CursorUserSetup.exe", "C:\\owned app\\Cursor");
+  const args = windowsInstallerCommand("C:\\owned ' \u5b89\u88c5\\CursorUserSetup.exe", "C:\\owned app\\Cursor", "C:\\owned ' private\\installer.log");
   for (const kind of ["exited", "launch-error"]) {
     const script = `function Start-Process {
 param([string]$FilePath, [string[]]$ArgumentList, [switch]$Wait, [switch]$PassThru)
 if ($FilePath -cne 'C:\\owned '' \u5b89\u88c5\\CursorUserSetup.exe' -or -not $Wait -or -not $PassThru) { throw 'FIXTURE_ARGUMENTS' }
-if (($ArgumentList -join '|') -cne '/VERYSILENT|/SUPPRESSMSGBOXES|/NORESTART|/MERGETASKS=!runcode|/DIR="C:\\owned app\\Cursor"') { throw 'FIXTURE_FLAGS' }
+if (($ArgumentList -join '|') -cne '/VERYSILENT|/SUPPRESSMSGBOXES|/NORESTART|/MERGETASKS=!runcode|/DIR="C:\\owned app\\Cursor"|/LOG="C:\\owned '' private\\installer.log"') { throw 'FIXTURE_FLAGS' }
 ${kind === "exited" ? "[pscustomobject]@{ ExitCode=7 }" : "throw [ComponentModel.Win32Exception]::new(5, 'private-canary')"}
 }
 ${Buffer.from(args.at(-1), "base64").toString("utf16le")}`;
@@ -113,7 +171,7 @@ test("Windows orchestration uses verified artifacts and preserves every native o
   assert.doesNotMatch(source, /cursor-app-windows-isolation|owned-session|runWindowsIsolation|New-LocalUser|WFP/);
   const body = source.split("export async function runWindowsCheck(")[1]?.split("\nif (process.argv[1]")[0];
   assert.ok(body);
-  for (const kind of ["success", "candidate-failure", "probe-failure", "smoke-failure", "artifact-failure", "installer-failure",
+  for (const kind of ["success", "candidate-failure", "probe-failure", "smoke-failure", "artifact-failure", "installer-failure", "installer-exit-five",
     "installed-failure", "installed-cleanup-failure", "native-failure", "native-exit-with-pass", "native-cleanup-failure",
     "invalid-report", "missing-report", "artifact-cleanup-failure", "state-cleanup-failure"]) {
     await t.test(kind, async () => {
@@ -137,6 +195,10 @@ test("Windows orchestration uses verified artifacts and preserves every native o
         },
         async mkdir() {}, async readdir() { return []; }, async realpath(path) { return path; }, async mkdtemp() { return "C:\\runtime"; },
         async writeFile(path, value) { output.set(path, value); },
+        async readWindowsInstallerLog(path) {
+          assert.equal(path, "C:\\runtime\\installer.log");
+          return { readStatus: "read-error", category: "unknown", systemErrorCode: null };
+        },
         async rm(path) { calls.push("remove"); assert.equal(path, "C:\\runtime"); if (kind === "state-cleanup-failure") throw error("EBUSY"); },
         selectCursorWindowsRelease(manifest, channel) {
           assert.equal(manifest, "frozen inventory"); assert.equal(channel, "baseline"); return { version: "3.21.18" };
@@ -156,8 +218,11 @@ test("Windows orchestration uses verified artifacts and preserves every native o
             if (kind === "smoke-failure") throw error("ETIMEDOUT");
           } else if (file.endsWith("powershell.exe")) {
             calls.push("installer"); assert.equal(options.timeout, 300_000);
-            assert.deepEqual(Array.from(args), windowsInstallerCommand("C:\\verified\\CursorUserSetup.exe", "C:\\runtime\\home\\AppData\\Local\\Programs\\Cursor"));
+            assert.deepEqual(Array.from(args), windowsInstallerCommand("C:\\verified\\CursorUserSetup.exe", "C:\\runtime\\home\\AppData\\Local\\Programs\\Cursor", "C:\\runtime\\installer.log"));
             if (kind === "installer-failure") throw error("ETIMEDOUT");
+            if (kind === "installer-exit-five") throw Object.assign(error(5), {
+              stdout: JSON.stringify({ status: "exited", exitCode: 5, nativeErrorCode: null }),
+            });
             return { stdout: JSON.stringify({ status: "exited", exitCode: 0, nativeErrorCode: null }), stderr: "" };
           } else {
             calls.push("native"); assert.equal(file, "C:\\node\\node.exe");
@@ -195,16 +260,23 @@ test("Windows orchestration uses verified artifacts and preserves every native o
       assert.equal(result.status, kind === "success" ? "PASS" : "FAIL");
       assert.equal(JSON.stringify(result).includes("private-canary"), false);
       assert.equal(output.get("C:\\report\\report.json"), `${JSON.stringify(result, null, 2)}\n`);
-      const retained = ["smoke-failure", "installer-failure", "installed-cleanup-failure", "native-cleanup-failure", "invalid-report", "missing-report", "artifact-cleanup-failure"].includes(kind);
+      const retained = ["smoke-failure", "installer-failure", "installer-exit-five", "installed-cleanup-failure", "native-cleanup-failure", "invalid-report", "missing-report", "artifact-cleanup-failure"].includes(kind);
       assert.equal(calls.includes("remove"), !retained);
       if (retained || kind === "state-cleanup-failure") assert.ok(result.cleanupError);
       if (kind === "success") assert.deepEqual(calls, ["candidate", "probe", "smoke", "artifact", "installer", "verify-installed", "native", "confirmed", "remove"]);
-      if (["candidate-failure", "probe-failure", "smoke-failure", "artifact-failure", "installer-failure", "installed-failure", "installed-cleanup-failure"].includes(kind)) {
+      if (["candidate-failure", "probe-failure", "smoke-failure", "artifact-failure", "installer-failure", "installer-exit-five", "installed-failure", "installed-cleanup-failure"].includes(kind)) {
         assert.equal(calls.includes("native"), false);
       }
       if (kind === "native-failure") assert.equal(result.errorCode, "CURSOR_APP_EXITED");
       if (kind === "native-exit-with-pass") assert.equal(result.errorCode, "CURSOR_APP_WINDOWS_NATIVE_EXIT");
       if (kind === "installer-failure") assert.deepEqual(result.windowsInstaller, { status: "timeout", exitCode: null, nativeErrorCode: null });
+      if (kind === "installer-exit-five") {
+        assert.equal(result.errorCode, "CURSOR_APP_WINDOWS_INSTALLER_EXIT");
+        assert.deepEqual(result.windowsInstaller, { status: "exited", exitCode: 5, nativeErrorCode: null });
+      }
+      if (calls.includes("installer") && result.status !== "PASS") {
+        assert.deepEqual(result.windowsInstallerLog, { readStatus: "read-error", category: "unknown", systemErrorCode: null });
+      } else assert.equal(result.windowsInstallerLog, undefined);
     });
   }
 });

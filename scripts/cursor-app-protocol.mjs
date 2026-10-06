@@ -125,6 +125,15 @@ function unsigned(source, number, max = 0xffff_ffff, required = false) {
   if (value < 0n || value > BigInt(max)) fail("CURSOR_APP_PROTO_FIELD");
   return Number(value);
 }
+function diagnosticInt32(source, number) {
+  try {
+    const value = single(source, number, 0, false);
+    if (value === undefined) return undefined;
+    if (value <= 0x7fff_ffffn) return Number(value);
+    if (value >= 0xffff_ffff_8000_0000n) return Number(value - 0x1_0000_0000_0000_0000n);
+  } catch { /* Invalid diagnostic fields must not replace the native failure. */ }
+  return undefined;
+}
 function repeated(source, number, decode) {
   return (source.get(number) ?? []).map(({ wire, value }) => {
     if (wire !== 2) fail("CURSOR_APP_PROTO_FIELD");
@@ -196,7 +205,12 @@ function execClient(body) {
     return { ...identity, error: "CURSOR_APP_EXEC_REJECTED", rejectionKind: 4,
       command: text(success, 1), workingDirectory: text(success, 2) };
   }
-  if (selected[0] !== 1) return { ...identity, error: "CURSOR_APP_EXEC_REJECTED", rejectionKind: selected[0] };
+  if (selected[0] !== 1) {
+    // agent.v1.ShellFailure field 3 is int32, not a code on the other result variants.
+    const exitCode = kind === "shell" && selected[0] === 2 ? diagnosticInt32(success, 3) : undefined;
+    return { ...identity, error: "CURSOR_APP_EXEC_REJECTED", rejectionKind: selected[0],
+      ...(exitCode === undefined ? {} : { exitCode }) };
+  }
   if (kind === "requestContext") {
     const requestContextBytes = Buffer.from(single(success, 1, 2));
     boolean(success, 2);

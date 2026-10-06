@@ -553,19 +553,59 @@ test("native Exec missing close times out without publishing even a successful r
   assert.deepEqual(stream.frames.at(-2), { flags: 0, body: field(5, field(1, scalar(1, 1))) });
 });
 
-test("private native rejection diagnostics retain only the correlated ID, kind and numeric result case", async (t) => {
+test("private native rejection diagnostics retain only correlated identities and the numeric result case", async (t) => {
   const server = await mock(t, { toolSteps: () => ({ kind: "shell", command: "synthetic command",
     workingDirectory: "/synthetic/workspace", timeoutMs: 1_000 }) });
   const stream = openRun(t, server);
   stream.send(runMessage());
   await waitFor(() => server.runs[0]?.pendingTool);
+  const toolCallId = server.runs[0].pendingTool.toolCallId;
+  assert.deepEqual(server.runs[0].shellApproval, { toolCallId, clicked: false });
   stream.send(field(2, Buffer.concat([scalar(1, 1), field(2, field(5, field(1, "private-native-rejection-canary")))])));
   await stream.done;
-  assert.deepEqual(server.runs[0].execRejection, { id: 1, kind: "shell", rejectionKind: 5 });
+  assert.deepEqual(server.runs[0].execRejection, { id: 1, kind: "shell", toolCallId, rejectionKind: 5 });
+  assert.equal(server.firstShellFailure, server.runs[0]);
   assert.equal(server.runs[0].completed, false);
   assert.equal(server.runs[0].kvWriteCount, 0);
   assert.deepEqual(server.errors, ["CURSOR_APP_EXEC_REJECTED"]);
   assert.equal(JSON.stringify(server.runs[0].execRejection).includes("canary"), false);
+});
+
+test("the first failed Shell retains its approval and exit evidence across a later retry", async (t) => {
+  const server = await mock(t, { toolSteps: () => ({ kind: "shell", command: "synthetic command",
+    workingDirectory: "/synthetic/workspace", timeoutMs: 1_000 }) });
+  for (let index = 0; index < 2; index++) {
+    const stream = openRun(t, server, { headers: { "x-request-id": identity(index + 10) } });
+    stream.send(runMessage(Buffer.alloc(0), { userId: identity(index + 20) }));
+    await waitFor(() => server.runs[index]?.pendingTool);
+    const run = server.runs[index];
+    assert.equal(run.shellApproval.clicked, false);
+    if (!index) run.shellApproval.clicked = true;
+    const detail = Buffer.concat([field(1, "private-command-canary"), field(2, "private-path-canary"),
+      scalar(3, index ? 1 : 127), field(6, "private-error-canary")]);
+    stream.send(field(2, Buffer.concat([scalar(1, run.pendingTool.id), field(15, run.pendingTool.toolCallId),
+      field(2, field(2, detail))])));
+    await stream.done;
+    assert.equal(server.firstShellFailure, server.runs[0]);
+    assert.equal(server.firstShellFailure.shellApproval.clicked, true);
+    assert.equal(server.firstShellFailure.execRejection.exitCode, 127);
+    assert.equal(run.completed, false);
+    assert.equal(run.kvWriteCount, 0);
+    assert.equal(JSON.stringify(run.execRejection).includes("canary"), false);
+  }
+  assert.deepEqual(server.errors, ["CURSOR_APP_EXEC_REJECTED", "CURSOR_APP_EXEC_REJECTED"]);
+});
+
+test("mismatched Shell result identity cannot become a correlated failure diagnostic", async (t) => {
+  const server = await mock(t, { toolSteps: () => ({ kind: "shell", command: "synthetic command",
+    workingDirectory: "/synthetic/workspace", timeoutMs: 1_000 }) });
+  const stream = openRun(t, server);
+  stream.send(runMessage());
+  await waitFor(() => server.runs[0]?.pendingTool);
+  stream.send(field(2, Buffer.concat([scalar(1, 1), field(15, identity(99)), field(2, field(2, scalar(3, 127)))])));
+  await stream.done;
+  assert.deepEqual(server.errors, ["CURSOR_APP_EXEC_IDENTITY"]);
+  assert.equal(server.firstShellFailure, undefined);
 });
 
 test("duplicate result and close frames in one chunk fail before any tool or final graph is committed", async (t) => {

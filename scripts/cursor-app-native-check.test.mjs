@@ -5,7 +5,7 @@ import { dirname, join, win32 } from "node:path";
 import { PassThrough } from "node:stream";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
-import { collectCursorAppStopDiagnostics } from "./cursor-app-diagnostics.mjs";
+import { collectCursorAppShellDiagnostics, collectCursorAppStopDiagnostics } from "./cursor-app-diagnostics.mjs";
 
 const source = (await readFile(new URL("./cursor-app-native-check.mjs", import.meta.url), "utf8")).replaceAll("\r\n", "\n");
 
@@ -84,6 +84,57 @@ test("native failures capture the current App outcome before cleanup changes pro
   assert.match(source, /appLaunchLog = ""; appSpawnError = undefined; appDebugEndpointSeen = false;/);
   assert.match(source, /exitCode: app\.exitCode, signal: app\.signalCode/);
   assert.match(source, /spawnError: appSpawnError, log: appLaunchLog/);
+});
+
+test("actual Run approval records only completed clicks on the matching run and tool", async () => {
+  const body = source.split("async function runTurn(")[1]?.split("\nasync function assertInterrupted(")[0];
+  assert.ok(body);
+  for (const mode of ["clicked", "click-failed", "not-visible"]) {
+    const toolCallId = "11111111-1111-4111-8111-111111111111", sessionId = "synthetic-session";
+    const run = { conversationId: sessionId, prompt: "synthetic prompt", completed: false,
+      pendingTool: { kind: "shell", toolCallId }, shellApproval: { toolCallId, clicked: false } };
+    const retry = { ...run, shellApproval: { toolCallId: "22222222-2222-4222-8222-222222222222", clicked: false } };
+    const agent = { errors: [], runs: [run] }, selectors = [];
+    const code = "CURSOR_APP_EXEC_REJECTED", error = Object.assign(new Error(code), { code });
+    const button = {
+      async count() { return mode === "not-visible" ? 0 : 1; }, async isVisible() { return true; },
+      async click(options) {
+        assert.equal(options.timeout, 2000);
+        agent.runs.push(retry);
+        if (mode === "click-failed") throw error;
+      },
+    };
+    const locator = { locator(selector) { selectors.push(selector); return locator; },
+      async fill(value) { assert.equal(value, run.prompt); }, async press(value) { assert.equal(value, "Enter"); },
+      getByRole(role, options) { assert.equal(role, "button"); assert.equal(options.name, "Run"); assert.equal(options.exact, true); return button; } };
+    const runTurn = runInNewContext(`(async function runTurn(${body})`, {
+      turns: [], fixtures: [{ prompt: run.prompt, operation: "search" }], report: {}, agent,
+      page: { locator(selector) { selectors.push(selector); return locator; } },
+      async waitFor(predicate) { await predicate(); throw error; },
+      check(value, actualCode) { if (!value) throw Object.assign(new Error(actualCode), { code: actualCode }); },
+    }, { timeout: 100 });
+    await assert.rejects(runTurn(sessionId), { code });
+    assert.equal(run.shellApproval.toolCallId, toolCallId);
+    assert.equal(run.shellApproval.clicked, mode === "clicked");
+    assert.equal(retry.shellApproval.clicked, false);
+    assert.ok(selectors.includes(`[data-tool-call-id="${toolCallId}"]:visible`));
+    assert.ok(selectors.includes(`[data-composer-id="${sessionId}"][data-composer-status]:visible`));
+  }
+});
+
+test("actual failure capture uses the first rejected Shell, never the last retry", () => {
+  const capture = source.match(/  const shellResult = collectCursorAppShellDiagnostics\([^\n]+\);\n  if \(shellResult\) report\.shellResult = shellResult;/)?.[0];
+  assert.ok(capture);
+  const toolCallId = "11111111-1111-4111-8111-111111111111";
+  const first = { error: "CURSOR_APP_EXEC_REJECTED", execRejection: { kind: "shell", toolCallId, rejectionKind: 2, exitCode: 127 },
+    shellApproval: { toolCallId, clicked: true } };
+  const retry = { ...first, execRejection: { ...first.execRejection, exitCode: 1 }, shellApproval: { toolCallId, clicked: false } };
+  const report = {};
+  runInNewContext(capture, { report, agent: { firstShellFailure: first, runs: [first, retry] }, collectCursorAppShellDiagnostics });
+  assert.deepEqual(report.shellResult, { rejectionKind: 2, approvalClicked: true, exitCode: 127 });
+  const unrelated = {};
+  runInNewContext(capture, { report: unrelated, agent: { runs: [retry] }, collectCursorAppShellDiagnostics });
+  assert.equal(unrelated.shellResult, undefined);
 });
 
 test("owned native commands and App launch preserve direct spawn arguments without a shell", () => {

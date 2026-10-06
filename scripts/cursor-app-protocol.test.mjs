@@ -378,6 +378,25 @@ test("Shell rejection exposes only command identity for a strictly correlated ca
   }
 });
 
+test("ShellFailure diagnostics retain only an explicitly encoded signed int32 exit code", () => {
+  const decode = (detail, variant = 2) => decodeAgentClientMessage(field(2,
+    message(scalar(1, 9), field(2, field(variant, detail)))));
+  const privateFields = message(field(1, "private-command-canary"), field(2, "private-path-canary"),
+    field(5, "private-output-canary"), field(6, "private-error-canary"));
+  for (const exitCode of [-0x8000_0000, -1, 0, 1, 127, 0x7fff_ffff]) {
+    const result = decode(message(privateFields, scalar(3, BigInt.asUintN(64, BigInt(exitCode)))));
+    assert.deepEqual(result, { type: "execResult", id: 9, kind: "shell",
+      error: "CURSOR_APP_EXEC_REJECTED", rejectionKind: 2, exitCode });
+    assert.equal(JSON.stringify(result).includes("canary"), false);
+  }
+  for (const invalid of [Buffer.alloc(0), scalar(3, 0x8000_0000), scalar(3, 0xffff_ffff),
+    scalar(3, 0xffff_ffff_7fff_ffffn), field(3, "private-exit-canary"), message(scalar(3, 1), scalar(3, 2))]) {
+    assert.deepEqual(decode(message(privateFields, invalid)), { type: "execResult", id: 9, kind: "shell",
+      error: "CURSOR_APP_EXEC_REJECTED", rejectionKind: 2 });
+  }
+  for (const variant of [3, 5, 7]) assert.equal(decode(scalar(3, 127), variant).exitCode, undefined);
+});
+
 test("Exec decoding rejects failure, ambiguous, binary or truncated tool results safely", () => {
   for (const [kind, number, failures] of [["read", 7, [2, 3, 4, 5, 6]], ["shell", 2, [2, 3, 5, 7]]]) {
     for (const failure of failures) {

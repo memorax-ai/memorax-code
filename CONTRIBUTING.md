@@ -1313,7 +1313,14 @@ stderr. Failed DMG detach diagnostics contain
 only bounded exit/signal outcomes, fixed status and stderr classifications, not
 raw text. Failed candidate stops retain only fixed Backend result enums,
 booleans and bounded process outcomes from the CLI's JSON output; raw command
-output, state, paths and error messages are not published. Synthetic login is not real account
+output, state, paths and error messages are not published. Failed Shell tools
+publish only their fixed result category, whether the matching Run click
+completed, and an exit code when supplied by that result. Windows installation
+uses a private installer log; failure reports retain only its read status,
+recognized operation category and numeric error code. Neither diagnostic
+publishes commands, paths, raw tool output or installer logs, and unavailable
+diagnostics never replace the original failure or relax acceptance checks.
+Synthetic login is not real account
 authentication coverage. Native Continue/Retry/Edit, Backend restart,
 running-tool interruption, late-approval races, model-driven Skill selection, Repo Memory workers,
 native upgrade/uninstall remain outside this bounded session-flow

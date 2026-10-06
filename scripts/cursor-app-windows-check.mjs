@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -24,11 +24,11 @@ export function windowsCheckEnvironment(root, nodePath, systemRoot = "C:\\Window
     GITHUB_ACTIONS: "true", RUNNER_OS: "Windows" };
 }
 
-export function windowsInstallerCommand(installerPath, appDirectory) {
-  check([installerPath, appDirectory].every((value) => typeof value === "string" && win32.isAbsolute(value)
+export function windowsInstallerCommand(installerPath, appDirectory, logPath) {
+  check([installerPath, appDirectory, logPath].every((value) => typeof value === "string" && win32.isAbsolute(value)
     && !/[\0\r\n"]/.test(value)), "CURSOR_APP_WINDOWS_ARGUMENTS");
   const quote = (value) => `'${value.replaceAll("'", "''")}'`;
-  const args = ["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/MERGETASKS=!runcode", `/DIR="${appDirectory}"`];
+  const args = ["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/MERGETASKS=!runcode", `/DIR="${appDirectory}"`, `/LOG="${logPath}"`];
   // On Windows, Start-Process -Wait waits for the installer and its descendants.
   const script = `$ErrorActionPreference='Stop'; try { $installer=Start-Process -FilePath ${quote(installerPath)} `
     + `-ArgumentList ${args.map(quote).join(",")} -Wait -PassThru; `
@@ -59,8 +59,64 @@ export function projectWindowsInstallerOutcome(stdout, error) {
   return { status, exitCode: integer(error?.code) ? error.code : null, nativeErrorCode: null };
 }
 
+const installerLogLimit = 1024 * 1024;
+
+export function projectWindowsInstallerLog(bytes) {
+  const result = { readStatus: "ok", category: "unknown", systemErrorCode: null };
+  if (bytes.length > installerLogLimit) return { ...result, readStatus: "too-large" };
+  let text;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    if (text.includes("\0")) throw new Error();
+  } catch { return { ...result, readStatus: "invalid-encoding" }; }
+  // Inno's format is not an API: recognize only fixed error text in one timestamped record.
+  // Source: jrsoftware/issrc is-6_4_3, Setup.LoggingFunc.pas and Files/Default.isl.
+  const records = text.matchAll(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} {3}([^\r\n]*(?:\r?\n {26}[^\r\n]*)*)/gm);
+  for (const record of records) {
+    const message = record[1].replace(/\r?\n {26}/g, "\n");
+    const category = [
+      ["directory", /^Setup was unable to create the directory "/m],
+      ["file", /^(?:An error occurred while trying to (?:read the (?:existing|source) file|create a file in the destination directory|copy a file|replace the existing file|rename a file in the destination directory):|(?:CreateFile|DeleteFile|MoveFile|MoveFileEx) failed; code \d+\.)$/m],
+      ["registry", /^(?:Error (?:opening|creating|writing to) registry key:|(?:RegSetValueEx|RegCreateKeyEx|RegOpenKeyEx) failed; code \d+\.)$/m],
+      ["execute", /^(?:Unable to execute file:|(?:CreateProcess|ShellExecuteEx) failed; code \d+\.)$/m],
+      ["exception", /^(?:Exception message:|Fatal exception during installation process \([A-Za-z0-9_]+\):)$/m],
+    ].find(([, pattern]) => pattern.test(message))?.[0] ?? "unknown";
+    const code = message.match(/^Error (\d{1,10}):[^\n]*$/m)?.[1]
+      ?? message.match(/^(?:CreateFile|DeleteFile|MoveFile|MoveFileEx|RegSetValueEx|RegCreateKeyEx|RegOpenKeyEx|CreateProcess|ShellExecuteEx) failed; code (\d{1,10})\.$/m)?.[1];
+    const systemErrorCode = code !== undefined && Number(code) <= 4294967295 ? Number(code) : null;
+    if (category !== "unknown" || systemErrorCode !== null) return { ...result, category, systemErrorCode };
+  }
+  return result;
+}
+
+export async function readWindowsInstallerLog(path) {
+  let handle;
+  let result = { readStatus: "read-error", category: "unknown", systemErrorCode: null };
+  try {
+    const info = await lstat(path);
+    if (!info.isFile() || info.isSymbolicLink()) return { ...result, readStatus: "not-regular" };
+    if (info.size > installerLogLimit) return { ...result, readStatus: "too-large" };
+    handle = await open(path, "r");
+    const opened = await handle.stat();
+    if (!opened.isFile() || opened.dev !== info.dev || opened.ino !== info.ino) return { ...result, readStatus: "changed" };
+    const bytes = Buffer.alloc(installerLogLimit + 1);
+    let length = 0;
+    while (length < bytes.length) {
+      const { bytesRead } = await handle.read(bytes, length, bytes.length - length, length);
+      if (!bytesRead) break;
+      length += bytesRead;
+    }
+    const after = await handle.stat();
+    if (length > installerLogLimit) result.readStatus = "too-large";
+    else if (length !== info.size || after.size !== info.size || after.mtimeMs !== info.mtimeMs) result.readStatus = "changed";
+    else result = projectWindowsInstallerLog(bytes.subarray(0, length));
+  } catch (error) { result.readStatus = error.code === "ENOENT" ? "missing" : "read-error"; }
+  finally { try { await handle?.close(); } catch { result = { readStatus: "read-error", category: "unknown", systemErrorCode: null }; } }
+  return result;
+}
+
 export async function runWindowsCheck(candidatePath, reportPath, { releaseManifest, channel, nodeMajor = "24", signal } = {}) {
-  let root, output, artifact, installerOutcome, nativeStarted = false, cleanupFailed = false;
+  let root, output, artifact, installerOutcome, installerLog, nativeStarted = false, cleanupFailed = false;
   let report = { status: "FAIL", client: "cursor", kind: "app-native-session-flows", platform: "win32", stage: "windows-preflight", evidence: {} };
   try {
     // This uses the fresh hosted runner account, not a private Windows logon profile.
@@ -110,10 +166,10 @@ export async function runWindowsCheck(candidatePath, reportPath, { releaseManife
       artifact = { installerSignatureVerified: true, publisherVerified: true, appIdentityVerified: false, appArchitectureVerified: false };
       try {
         report.stage = "windows-app-installation";
-        const appDirectory = join(env.LOCALAPPDATA, "Programs", "Cursor");
+        const appDirectory = join(env.LOCALAPPDATA, "Programs", "Cursor"), logPath = join(root, "installer.log");
         try {
           const result = await exec(join(env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
-            windowsInstallerCommand(installerPath, appDirectory),
+            windowsInstallerCommand(installerPath, appDirectory, logPath),
             { cwd: root, env, timeout: 300_000, signal, maxBuffer: 64 * 1024, killSignal: "SIGKILL", windowsHide: true });
           installerOutcome = projectWindowsInstallerOutcome(result.stdout);
           check(installerOutcome.status === "exited" && installerOutcome.exitCode === 0, "CURSOR_APP_WINDOWS_INSTALLER_EXIT");
@@ -121,6 +177,8 @@ export async function runWindowsCheck(candidatePath, reportPath, { releaseManife
         } catch (error) {
           installerOutcome ??= projectWindowsInstallerOutcome(error.stdout, error);
           check(false, "CURSOR_APP_WINDOWS_INSTALLER_EXIT");
+        } finally {
+          installerLog = await readWindowsInstallerLog(logPath);
         }
         report.stage = "windows-app-verification";
         const installed = await verifyCursorWindowsInstalledApp({ release, root, profileRoot: env.HOME, appDirectory, signal });
@@ -164,6 +222,7 @@ export async function runWindowsCheck(candidatePath, reportPath, { releaseManife
     if (cleanupFailed) { report.status = "FAIL"; report.cleanupError ??= "CURSOR_APP_WINDOWS_CLEANUP"; }
     if (artifact) report.windows = artifact;
     if (installerOutcome) report.windowsInstaller = installerOutcome;
+    if (installerLog && report.status !== "PASS") report.windowsInstallerLog = installerLog;
     if (output) await writeFile(join(output, "report.json"), `${JSON.stringify(report, null, 2)}\n`, { flag: "wx", mode: 0o600 });
   }
   return report;

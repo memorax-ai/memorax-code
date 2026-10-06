@@ -64,7 +64,7 @@ export async function startCursorAgentMock({ answer, answers, toolSteps, timeout
   const requests = [], runs = [], errors = [], connectionErrors = [], unknownRpcMethods = [];
   const sockets = new Set(), sessions = new Set(), requestIds = new Set(), listeners = [];
   const histories = new Map(), activeConversations = new Set(), cancellationArms = new Map();
-  let closed = false, closePromise, ancillaryRequestCount = 0, unsupportedRpcCount = 0;
+  let closed = false, closePromise, firstShellFailure, ancillaryRequestCount = 0, unsupportedRpcCount = 0;
   function armCancellation(input) {
     const arm = !closed && cancellationArms.get(input?.requestId);
     if (!arm || !arm(input?.toolCallId)) {
@@ -141,6 +141,7 @@ export async function startCursorAgentMock({ answer, answers, toolSteps, timeout
       else unsupportedRpcCount++;
       if (run) {
         run.error = code;
+        if (code === "CURSOR_APP_EXEC_REJECTED" && run.execRejection?.kind === "shell") firstShellFailure ??= run;
         delete run.pendingTool;
         activeConversations.delete(run.conversationId);
         cancellationArms.delete(run.requestId);
@@ -207,6 +208,7 @@ export async function startCursorAgentMock({ answer, answers, toolSteps, timeout
           if (context) run.requestContextRequestCount++;
           else {
             run.pendingTool = { id: execution.id, toolCallId: execution.toolCallId, kind: execution.kind };
+            if (execution.kind === "shell") run.shellApproval = { toolCallId: execution.toolCallId, clicked: false };
             run.execRequestCount++;
             send(execution.startedMessage);
           }
@@ -263,6 +265,7 @@ export async function startCursorAgentMock({ answer, answers, toolSteps, timeout
         run = { ...message, inputConversationStateBytes: message.conversationStateBytes, inputRequestContext: message.requestContext,
           kvWrites: [], kvWriteCount: 0, kvAckCount: 0, kvReadCount: 0, kvReadResultCount: 0,
           toolResults: [], execRequestCount: 0, execResultCount: 0, execCloseCount: 0,
+          shellApproval: { toolCallId: undefined, clicked: false },
           requestContextRequestCount: 0, requestContextResultCount: 0, requestContextCloseCount: 0, completed: false, cancelled: false };
         runs.push(run);
         cancellationArms.set(run.requestId, (toolCallId) => {
@@ -283,7 +286,9 @@ export async function startCursorAgentMock({ answer, answers, toolSteps, timeout
         if (!run || pendingExec?.execution.id !== message.id) { fail("CURSOR_AGENT_EXEC_UNKNOWN"); return; }
         if (message.type === "execResult") {
           if (pendingExec.completed || cancellation?.rejected) { fail("CURSOR_AGENT_EXEC_DUPLICATE"); return; }
-          if (message.error) run.execRejection = { id: message.id, kind: message.kind, rejectionKind: message.rejectionKind };
+          if (message.error) run.execRejection = { id: message.id, kind: message.kind,
+            toolCallId: pendingExec.execution.toolCallId, rejectionKind: message.rejectionKind,
+            ...(message.exitCode === undefined ? {} : { exitCode: message.exitCode }) };
           if (cancellation) {
             const execution = pendingExec.execution;
             if (message.kind !== execution.kind || message.execId !== undefined && message.execId !== execution.toolCallId
@@ -463,6 +468,7 @@ export async function startCursorAgentMock({ answer, answers, toolSteps, timeout
       await listen(createFront(), "::1", port);
     }
     return { url: `http://localhost:${port}`, requests, runs, errors, connectionErrors, unknownRpcMethods, armCancellation, close,
+      get firstShellFailure() { return firstShellFailure; },
       get ancillaryRequestCount() { return ancillaryRequestCount; },
       get unsupportedRpcCount() { return unsupportedRpcCount; } };
   } catch (error) { await close(); throw error; }

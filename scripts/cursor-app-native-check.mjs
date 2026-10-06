@@ -10,7 +10,8 @@ import { pathToFileURL } from "node:url";
 import { startCursorAgentMock } from "./cursor-app-mock-server.mjs";
 import { assertCursorAppNativeContent, assertCursorAppWritebacks } from "./cursor-app-native-content-check.mjs";
 import { assertCursorAppSkillReference, assertCursorAppMemoryOperation } from "./cursor-app-memory-check.mjs";
-import { collectCursorAppDiagnostics, collectCursorAppLaunchDiagnostics, collectCursorAppStopDiagnostics } from "./cursor-app-diagnostics.mjs";
+import { collectCursorAppDiagnostics, collectCursorAppLaunchDiagnostics,
+  collectCursorAppShellDiagnostics, collectCursorAppStopDiagnostics } from "./cursor-app-diagnostics.mjs";
 
 const [packageRoot, appPath, expectedVersion, playwrightRoot, reportDir, expectedNodeMajor = "24"] = process.argv.slice(2);
 const report = { status: "FAIL", client: "cursor", kind: "app-native-session-flows", platform: process.platform,
@@ -288,6 +289,7 @@ async function runTurn(sessionId) {
       if (count === 1 && await button.isVisible()) {
         await button.click({ timeout: 2000 });
         approvedTools.add(pending.toolCallId);
+        run.shellApproval = { toolCallId: pending.toolCallId, clicked: true };
       }
     }
     return run?.completed;
@@ -523,6 +525,8 @@ try {
   report.stage = "cleanup";
 } catch (error) {
   failure = error?.stack ?? String(error); report.errorCode = safeCode(error);
+  const shellResult = collectCursorAppShellDiagnostics(agent?.firstShellFailure);
+  if (shellResult) report.shellResult = shellResult;
   if (app) report.appLaunch = collectCursorAppLaunchDiagnostics({ spawned: Boolean(app.pid),
     debugEndpointSeen: appDebugEndpointSeen, exitCode: app.exitCode, signal: app.signalCode,
     spawnError: appSpawnError, log: appLaunchLog });

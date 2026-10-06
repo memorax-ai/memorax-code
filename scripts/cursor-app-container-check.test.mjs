@@ -340,10 +340,30 @@ test("failure reports retain only the diagnostic helper's bounded public project
   assert.throws(() => projectNativeReport(input), /CURSOR_CONTAINER_REPORT/);
 });
 
-test("successful native reports never publish candidate-stop failure diagnostics", () => {
+test("Shell failure reports project only fixed outcomes without changing failure or PASS gates", () => {
+  for (const platform of ["linux", "darwin", "win32"]) {
+    const input = { ...nativeReport(), platform, status: "FAIL", stage: "agent-transport", errorCode: "CURSOR_APP_EXEC_REJECTED",
+      shellResult: { rejectionKind: 2, approvalClicked: true, exitCode: 127,
+        command: "private-shell-canary", stderr: "private-shell-canary", toolCallId: "private-shell-canary" } };
+    const report = projectNativeReport(input, { platform });
+    assert.equal(report.status, "FAIL");
+    assert.equal(report.errorCode, "CURSOR_APP_EXEC_REJECTED");
+    assert.deepEqual(report.shellResult, { rejectionKind: 2, approvalClicked: true, exitCode: 127 });
+    assert.equal(JSON.stringify(report).includes("canary"), false);
+    input.shellResult = { rejectionKind: "private-shell-canary", approvalClicked: "true", exitCode: 0x8000_0000 };
+    assert.deepEqual(projectNativeReport(input, { platform }).shellResult, { rejectionKind: "other", approvalClicked: false });
+    input.status = "PASS";
+    input.evidence.exactAutomaticAdd = false;
+    assert.throws(() => projectNativeReport(input, { platform }), /CURSOR_CONTAINER_REPORT/);
+  }
+});
+
+test("successful native reports never publish stop or Shell failure diagnostics", () => {
   const input = nativeReport();
   input.candidateStop = { stdout: "synthetic-private", backend: { errorCode: "BACKEND_STOP_TIMEOUT" } };
+  input.shellResult = { rejectionKind: 2, approvalClicked: true, exitCode: 127 };
   assert.equal(projectNativeReport(input).candidateStop, undefined);
+  assert.equal(projectNativeReport(input).shellResult, undefined);
 });
 
 test("PASS rejects missing, reordered, duplicate or incomplete session-flow evidence", () => {
