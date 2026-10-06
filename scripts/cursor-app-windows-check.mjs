@@ -3,6 +3,7 @@ import { lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rm, writeFile
 import { dirname, join, resolve, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { cursorHookCommand } from "../packages/ts/memorax-code-cursor-adapter/src/config.mjs";
 import { projectNativeReport, readReleaseManifest } from "./cursor-app-container-check.mjs";
 import { selectCursorWindowsRelease, verifyCursorWindowsInstalledApp, withVerifiedCursorWindowsInstaller } from "./cursor-app-windows-artifact.mjs";
 import { windowsRuntimePaths } from "./cursor-app-windows-runtime.mjs";
@@ -140,8 +141,48 @@ export async function readWindowsInstallerLog(path) {
   return result;
 }
 
+export function projectWindowsHookInput(stdout, error) {
+  if (error?.code === "ABORT_ERR") return { status: "aborted" };
+  if (error?.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") return { status: "output-overflow" };
+  if (error?.code === "ETIMEDOUT" || (error?.killed === true && error.signal === "SIGKILL")) return { status: "timeout" };
+  if (error) return { status: "powershell-exit" };
+  try {
+    const value = typeof stdout === "string" && Buffer.byteLength(stdout) <= 4096 ? JSON.parse(stdout) : null;
+    if (value && Object.keys(value).sort().join(",") === "jsonParsed,leadingBom,payloadEquals"
+      && [value.leadingBom, value.jsonParsed, value.payloadEquals].every((field) => typeof field === "boolean")) {
+      return { status: "observed", leadingBom: value.leadingBom, jsonParsed: value.jsonParsed, payloadEquals: value.payloadEquals };
+    }
+  } catch { /* Never include raw probe output or exception text. */ }
+  return { status: "invalid-output" };
+}
+
+export async function probeWindowsHookInput(root, env, signal) {
+  const probePath = join(root, "hook-input-probe.mjs"), payloadPath = join(root, "hook-input-probe.json");
+  const payload = JSON.stringify({ marker: "cursor-hook-input" });
+  try {
+    await writeFile(probePath, [
+      'let input = "";',
+      'for await (const chunk of process.stdin) input += chunk;',
+      'let value, jsonParsed = false;',
+      'try { value = JSON.parse(input); jsonParsed = true; } catch {}',
+      'process.stdout.write(JSON.stringify({ leadingBom: input.charCodeAt(0) === 0xfeff, jsonParsed,',
+      `payloadEquals: jsonParsed && JSON.stringify(value) === ${JSON.stringify(payload)} }));`,
+    ].join("\n"), { flag: "wx", mode: 0o600 });
+    await writeFile(payloadPath, payload, { flag: "wx", mode: 0o600 });
+  } catch { return { status: "setup-error" }; }
+  const powershell = join(env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+  const command = cursorHookCommand(probePath, "win32", process.execPath, powershell);
+  // Match Cursor's Windows Hook stdin pipeline, including its encoding choice.
+  const script = `$OutputEncoding = [System.Text.Encoding]::UTF8; Get-Content -LiteralPath '${payloadPath.replaceAll("'", "''")}' -Raw | & { $input | ${command} }`;
+  try {
+    const result = await exec(powershell, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-c", script],
+      { cwd: root, env, encoding: "utf8", timeout: 30_000, signal, maxBuffer: 4096, killSignal: "SIGKILL", windowsHide: true });
+    return projectWindowsHookInput(result.stdout);
+  } catch (error) { return projectWindowsHookInput(undefined, error); }
+}
+
 export async function runWindowsCheck(candidatePath, reportPath, { releaseManifest, channel, nodeMajor = "24", signal } = {}) {
-  let root, output, artifact, installerOutcome, installerLog, nativeStarted = false, cleanupFailed = false;
+  let root, output, artifact, installerOutcome, installerLog, windowsHookInput, nativeStarted = false, cleanupFailed = false;
   let report = { status: "FAIL", client: "cursor", kind: "app-native-session-flows", platform: "win32", stage: "windows-preflight", evidence: {} };
   try {
     // This uses the fresh hosted runner account, not a private Windows logon profile.
@@ -214,6 +255,7 @@ export async function runWindowsCheck(candidatePath, reportPath, { releaseManife
         artifact.appIdentityVerified = installed.appIdentityVerified;
         artifact.appArchitectureVerified = installed.appArchitectureVerified;
         artifact.appSignatureVerified = installed.authenticodeVerified;
+        windowsHookInput = await probeWindowsHookInput(root, env, signal);
         report.stage = "windows-native";
         const nativeOutput = join(root, "native-report");
         nativeStarted = true;
@@ -252,6 +294,7 @@ export async function runWindowsCheck(candidatePath, reportPath, { releaseManife
     if (artifact) report.windows = artifact;
     if (installerOutcome) report.windowsInstaller = installerOutcome;
     if (installerLog && report.status !== "PASS") report.windowsInstallerLog = installerLog;
+    if (windowsHookInput && report.status !== "PASS") report.windowsHookInput = windowsHookInput;
     if (output) await writeFile(join(output, "report.json"), `${JSON.stringify(report, null, 2)}\n`, { flag: "wx", mode: 0o600 });
   }
   return report;

@@ -6,7 +6,9 @@ import { join, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
+import { cursorHookCommand } from "../packages/ts/memorax-code-cursor-adapter/src/config.mjs";
 import { projectNativeReport } from "./cursor-app-container-check.mjs";
+import * as windowsCheck from "./cursor-app-windows-check.mjs";
 import { projectWindowsInstallerLog, projectWindowsInstallerOutcome, readWindowsInstallerLog, runWindowsCheck,
   windowsCheckEnvironment, windowsInstallerCommand } from "./cursor-app-windows-check.mjs";
 
@@ -206,6 +208,70 @@ test("installer outcome projection accepts only fixed statuses and bounded integ
   }
 });
 
+test("Windows Hook input projection exposes only fixed status and three booleans", () => {
+  const observation = { leadingBom: true, jsonParsed: false, payloadEquals: false };
+  assert.deepEqual(windowsCheck.projectWindowsHookInput(JSON.stringify(observation)), { status: "observed", ...observation });
+  for (const stdout of ["private-canary", "x".repeat(4097), "null", "[]", JSON.stringify({ ...observation, raw: "private-canary" }),
+    JSON.stringify({ ...observation, leadingBom: "private-canary" }), JSON.stringify({ jsonParsed: true, payloadEquals: true })]) {
+    assert.deepEqual(windowsCheck.projectWindowsHookInput(stdout), { status: "invalid-output" });
+  }
+  for (const [error, status] of [[{ code: "ABORT_ERR" }, "aborted"], [{ code: "ETIMEDOUT" }, "timeout"],
+    [{ killed: true, signal: "SIGKILL" }, "timeout"], [{ code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" }, "output-overflow"],
+    [{ code: 1 }, "powershell-exit"], [{ code: "ENOENT", message: "private-canary", stderr: "private-canary" }, "powershell-exit"]]) {
+    assert.deepEqual(windowsCheck.projectWindowsHookInput(JSON.stringify(observation), error), { status });
+  }
+});
+
+test("Windows Hook input probe reproduces the official PowerShell pipeline with the product command", async () => {
+  const source = (await readFile(new URL("./cursor-app-windows-check.mjs", import.meta.url), "utf8")).replaceAll("\r\n", "\n");
+  const body = source.split("export async function probeWindowsHookInput(")[1]?.split("\nexport async function runWindowsCheck(")[0];
+  assert.ok(body);
+  for (const kind of ["observed", "setup-error", "timeout", "invalid-output"]) {
+    const files = new Map(), signal = new AbortController().signal;
+    const root = "C:\\owned ' private-canary", env = { SystemRoot: "D:\\Windows", HOME: "C:\\owned-home" };
+    const powershell = "D:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
+    const nodePath = "C:\\node\\node.exe", probePath = win32.join(root, "hook-input-probe.mjs");
+    const payloadPath = win32.join(root, "hook-input-probe.json");
+    let calls = 0;
+    const probe = runInNewContext(`(async function probeWindowsHookInput(${body})`, {
+      process: { execPath: nodePath }, Buffer, join: win32.join, cursorHookCommand,
+      projectWindowsHookInput: windowsCheck.projectWindowsHookInput,
+      async writeFile(path, contents, options) {
+        assert.equal(options.flag, "wx"); assert.equal(options.mode, 0o600);
+        if (kind === "setup-error") throw new Error("private-canary");
+        files.set(path, contents);
+      },
+      async exec(file, args, options) {
+        calls++;
+        assert.equal(file, powershell);
+        const command = cursorHookCommand(probePath, "win32", nodePath, powershell);
+        assert.deepEqual(Array.from(args), ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-c",
+          `$OutputEncoding = [System.Text.Encoding]::UTF8; Get-Content -LiteralPath '${payloadPath.replaceAll("'", "''")}' -Raw | & { $input | ${command} }`]);
+        assert.equal(options.cwd, root); assert.equal(options.env, env); assert.equal(options.signal, signal);
+        assert.equal(options.encoding, "utf8"); assert.equal(options.timeout, 30_000); assert.equal(options.maxBuffer, 4096);
+        assert.equal(options.killSignal, "SIGKILL"); assert.equal(options.windowsHide, true); assert.equal(options.shell, undefined);
+        assert.equal(files.get(payloadPath), '{"marker":"cursor-hook-input"}');
+        if (kind === "timeout") throw Object.assign(new Error("private-canary"), { code: "ETIMEDOUT", stdout: "private-canary" });
+        return { stdout: kind === "invalid-output" ? "private-canary" : '{"leadingBom":false,"jsonParsed":true,"payloadEquals":true}', stderr: "" };
+      },
+    }, { timeout: 100 });
+    const result = JSON.parse(JSON.stringify(await probe(root, env, signal)));
+    assert.equal(JSON.stringify(result).includes("private-canary"), false);
+    assert.equal(calls, kind === "setup-error" ? 0 : 1);
+    assert.deepEqual(result, kind === "observed" ? { status: "observed", leadingBom: false, jsonParsed: true, payloadEquals: true } : { status: kind });
+    if (kind !== "observed") continue;
+    for (const [input, expected] of [[files.get(payloadPath), [false, true, true]],
+      ["\ufeff" + files.get(payloadPath), [true, false, false]], ["private-canary", [false, false, false]]]) {
+      let stdout = "";
+      await runInNewContext(`(async () => { ${files.get(probePath)} })()`, {
+        process: { stdin: (async function* () { yield input; })(), stdout: { write(value) { stdout += value; } } },
+      }, { timeout: 100 });
+      assert.deepEqual(JSON.parse(stdout), { leadingBom: expected[0], jsonParsed: expected[1], payloadEquals: expected[2] });
+      assert.equal(stdout.includes("private-canary"), false);
+    }
+  }
+});
+
 test("Windows wrapper CLI requires the same five arguments as the other native wrappers", () => {
   const script = fileURLToPath(new URL("./cursor-app-windows-check.mjs", import.meta.url));
   for (const args of [[], ["candidate"], ["candidate", "report", "manifest", "baseline"],
@@ -235,7 +301,7 @@ test("Windows orchestration uses verified artifacts and preserves every native o
   assert.doesNotMatch(source, /cursor-app-windows-isolation|owned-session|runWindowsIsolation|New-LocalUser|WFP/);
   const body = source.split("export async function runWindowsCheck(")[1]?.split("\nif (process.argv[1]")[0];
   assert.ok(body);
-  for (const kind of ["success", "missing-runner-temp", "relative-runner-temp", "candidate-failure", "probe-failure", "smoke-failure", "artifact-failure", "installer-failure", "installer-exit-five",
+  for (const kind of ["success", "hook-probe-failure", "missing-runner-temp", "relative-runner-temp", "candidate-failure", "probe-failure", "smoke-failure", "artifact-failure", "installer-failure", "installer-exit-five",
     "installed-failure", "installed-cleanup-failure", "native-failure", "native-exit-with-pass", "native-cleanup-failure",
     "invalid-report", "missing-report", "artifact-cleanup-failure", "state-cleanup-failure"]) {
     await t.test(kind, async () => {
@@ -311,6 +377,12 @@ test("Windows orchestration uses verified artifacts and preserves every native o
           }
           return { appIdentityVerified: true, appArchitectureVerified: true, authenticodeVerified: true };
         },
+        async probeWindowsHookInput(root, env, signal) {
+          calls.push("hook-input"); assert.equal(root, "C:\\runtime"); assert.equal(env.HOME, "C:\\runtime\\home");
+          assert.equal(signal, abort.signal);
+          return kind === "hook-probe-failure" ? { status: "timeout" }
+            : { status: "observed", leadingBom: true, jsonParsed: false, payloadEquals: false };
+        },
         async withVerifiedCursorWindowsInstaller(options, callback) {
           calls.push("artifact"); if (kind === "artifact-failure") throw error("CURSOR_APP_WINDOWS_ARTIFACT_SIGNATURE");
           let confirmed = false, caught;
@@ -324,7 +396,8 @@ test("Windows orchestration uses verified artifacts and preserves every native o
         },
       }, { timeout: 100 });
       const result = await run("C:\\candidate.tgz", "C:\\report", { releaseManifest: "frozen inventory", channel: "baseline", signal: abort.signal });
-      assert.equal(result.status, kind === "success" ? "PASS" : "FAIL");
+      const success = ["success", "hook-probe-failure"].includes(kind);
+      assert.equal(result.status, success ? "PASS" : "FAIL");
       assert.equal(JSON.stringify(result).includes("private-canary"), false);
       assert.equal(output.get("C:\\report\\report.json"), `${JSON.stringify(result, null, 2)}\n`);
       const retained = ["smoke-failure", "installer-failure", "installer-exit-five", "installed-cleanup-failure", "native-cleanup-failure", "invalid-report", "missing-report", "artifact-cleanup-failure"].includes(kind);
@@ -334,7 +407,10 @@ test("Windows orchestration uses verified artifacts and preserves every native o
         assert.deepEqual(calls, []);
       }
       if (retained || kind === "state-cleanup-failure") assert.ok(result.cleanupError);
-      if (kind === "success") assert.deepEqual(calls, ["candidate", "probe", "smoke", "artifact", "installer", "verify-installed", "native", "confirmed", "remove"]);
+      if (success) assert.deepEqual(calls, ["candidate", "probe", "smoke", "artifact", "installer", "verify-installed", "hook-input", "native", "confirmed", "remove"]);
+      if (calls.includes("hook-input") && !success) {
+        assert.deepEqual(result.windowsHookInput, { status: "observed", leadingBom: true, jsonParsed: false, payloadEquals: false });
+      } else assert.equal(result.windowsHookInput, undefined);
       if (["candidate-failure", "probe-failure", "smoke-failure", "artifact-failure", "installer-failure", "installer-exit-five", "installed-failure", "installed-cleanup-failure"].includes(kind)) {
         assert.equal(calls.includes("native"), false);
       }
