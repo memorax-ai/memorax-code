@@ -385,23 +385,51 @@ test("ShellFailure diagnostics retain only an explicitly encoded signed int32 ex
     field(5, "private-output-canary"), field(6, "private-error-canary"));
   for (const exitCode of [-0x8000_0000, -1, 0, 1, 127, 0x7fff_ffff]) {
     const result = decode(message(privateFields, scalar(3, BigInt.asUintN(64, BigInt(exitCode)))));
-    assert.deepEqual(result, { type: "execResult", id: 9, kind: "shell",
+    const { output, ...actual } = result;
+    assert.deepEqual(actual, { type: "execResult", id: 9, kind: "shell",
       error: "CURSOR_APP_EXEC_REJECTED", rejectionKind: 2, exitCode });
+    assert.equal(output?.stdoutStatus, "present"); assert.equal(output?.stderrStatus, "present");
+    assert.equal(output?.cliJson, "invalid");
     assert.equal(JSON.stringify(result).includes("canary"), false);
   }
   for (const invalid of [Buffer.alloc(0), scalar(3, 0x8000_0000), scalar(3, 0xffff_ffff),
     scalar(3, 0xffff_ffff_7fff_ffffn), field(3, "private-exit-canary"), message(scalar(3, 1), scalar(3, 2))]) {
-    assert.deepEqual(decode(message(privateFields, invalid)), { type: "execResult", id: 9, kind: "shell",
+    const { output, ...actual } = decode(message(privateFields, invalid));
+    assert.deepEqual(actual, { type: "execResult", id: 9, kind: "shell",
       error: "CURSOR_APP_EXEC_REJECTED", rejectionKind: 2 });
+    assert.equal(output?.stdoutStatus, "present");
   }
   for (const variant of [3, 5, 7]) assert.equal(decode(scalar(3, 127), variant).exitCode, undefined);
+});
+
+test("ShellFailure output is projected before returning the decoded message and cannot replace its failure", () => {
+  const decode = (detail) => decodeAgentClientMessage(field(2, message(scalar(1, 9), field(2, field(2, detail)))));
+  const json = JSON.stringify({ ok: false, action: "memory.search", errorCode: "MEMORY_SCOPE_UNAVAILABLE",
+    stage: "scope", error: "private-path-token-canary" });
+  const result = decode(message(scalar(3, 1), field(5, json), field(6, "private-canary: Operation not permitted")));
+  assert.equal(result.output.cliJson, "valid");
+  assert.equal(result.output.errorCode, "MEMORY_SCOPE_UNAVAILABLE");
+  assert.equal(result.output.markers.permissionDenied, true);
+  assert.equal(result.error, "CURSOR_APP_EXEC_REJECTED");
+  assert.equal(JSON.stringify(result).includes("canary"), false);
+  for (const [detail, expected] of [[Buffer.alloc(0), "absent"], [field(5, Buffer.alloc(65537)), "oversized"],
+    [field(5, Buffer.from([0xc3, 0x28])), "invalid"], [scalar(5, 1), "invalid"],
+    [message(field(5, json), field(5, json)), "invalid"]]) {
+    const rejected = decode(message(scalar(3, 1), detail));
+    assert.equal(rejected.error, "CURSOR_APP_EXEC_REJECTED");
+    assert.equal(rejected.exitCode, 1);
+    assert.equal(rejected.output.stdoutStatus, expected);
+    assert.equal(rejected.output.cliJson, expected);
+  }
 });
 
 test("Exec decoding rejects failure, ambiguous, binary or truncated tool results safely", () => {
   for (const [kind, number, failures] of [["read", 7, [2, 3, 4, 5, 6]], ["shell", 2, [2, 3, 5, 7]]]) {
     for (const failure of failures) {
       const result = decodeAgentClientMessage(field(2, message(scalar(1, 1), field(number, field(failure, field(1, "private-error"))))));
-      assert.deepEqual(result, { type: "execResult", id: 1, kind, error: "CURSOR_APP_EXEC_REJECTED", rejectionKind: failure });
+      const { output, ...actual } = result;
+      assert.deepEqual(actual, { type: "execResult", id: 1, kind, error: "CURSOR_APP_EXEC_REJECTED", rejectionKind: failure });
+      assert.equal(output?.stdoutStatus, kind === "shell" && failure === 2 ? "absent" : undefined);
     }
   }
   for (const success of [message(field(1, "/synthetic"), field(2, "truncated"), scalar(6, 1)),

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { gunzipSync } from "node:zlib";
+import { collectCursorAppShellOutputDiagnostics } from "./cursor-app-diagnostics.mjs";
 
 const MAX_FRAME_BYTES = 16 * 1024 * 1024;
 const MAX_FIELDS = 32_768;
@@ -134,6 +135,14 @@ function diagnosticInt32(source, number) {
   } catch { /* Invalid diagnostic fields must not replace the native failure. */ }
   return undefined;
 }
+function diagnosticText(source, number) {
+  try {
+    const value = single(source, number, 2, false);
+    if (value === undefined) return { status: "absent" };
+    if (value.length > 64 * 1024) return { status: "oversized" };
+    return { status: "present", text: utf8.decode(value) };
+  } catch { return { status: "invalid" }; }
+}
 function repeated(source, number, decode) {
   return (source.get(number) ?? []).map(({ wire, value }) => {
     if (wire !== 2) fail("CURSOR_APP_PROTO_FIELD");
@@ -209,7 +218,10 @@ function execClient(body) {
     // agent.v1.ShellFailure field 3 is int32, not a code on the other result variants.
     const exitCode = kind === "shell" && selected[0] === 2 ? diagnosticInt32(success, 3) : undefined;
     return { ...identity, error: "CURSOR_APP_EXEC_REJECTED", rejectionKind: selected[0],
-      ...(exitCode === undefined ? {} : { exitCode }) };
+      ...(exitCode === undefined ? {} : { exitCode }),
+      ...(kind === "shell" && selected[0] === 2 ? { output: collectCursorAppShellOutputDiagnostics({
+        stdout: diagnosticText(success, 5), stderr: diagnosticText(success, 6),
+      }) } : {}) };
   }
   if (kind === "requestContext") {
     const requestContextBytes = Buffer.from(single(success, 1, 2));

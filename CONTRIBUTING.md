@@ -1315,9 +1315,11 @@ raw text. Failed candidate stops retain only fixed Backend result enums,
 booleans and bounded process outcomes from the CLI's JSON output; raw command
 output, state, paths and error messages are not published. Failed Shell tools
 publish only their fixed result category, whether the matching Run click
-completed, and an exit code when supplied by that result. Windows installation
-uses a private installer log; failure reports retain only its read status,
-recognized operation category and numeric error code. Neither diagnostic
+completed, and an exit code when supplied by that result. Bounded failure output
+is reduced to fixed CLI error enums and stderr marker booleans. Windows
+installation uses a private installer log, reading at most its last 1 MiB;
+failure reports retain only its read status (including truncated-tail reads),
+recognized error category and numeric error code. Neither diagnostic
 publishes commands, paths, raw tool output or installer logs, and unavailable
 diagnostics never replace the original failure or relax acceptance checks.
 Synthetic login is not real account

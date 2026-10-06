@@ -6,6 +6,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 import { gzipSync } from "node:zlib";
 import { startCursorAgentMock } from "./cursor-app-mock-server.mjs";
+import { collectCursorAppShellDiagnostics } from "./cursor-app-diagnostics.mjs";
 
 const agentPath = "/agent.v1.AgentService/Run";
 const requestId = "11111111-1111-4111-8111-111111111111";
@@ -581,14 +582,22 @@ test("the first failed Shell retains its approval and exit evidence across a lat
     const run = server.runs[index];
     assert.equal(run.shellApproval.clicked, false);
     if (!index) run.shellApproval.clicked = true;
+    const stdout = JSON.stringify({ ok: false, action: "memory.search",
+      errorCode: index ? "MEMORY_CONFIG_MISSING" : "MEMORY_SCOPE_UNAVAILABLE", stage: index ? "configuration" : "scope",
+      error: "private-error-canary", diagnostic: { path: "private-path-canary" } });
     const detail = Buffer.concat([field(1, "private-command-canary"), field(2, "private-path-canary"),
-      scalar(3, index ? 1 : 127), field(6, "private-error-canary")]);
+      scalar(3, index ? 1 : 127), field(5, stdout), field(6, "private-error-canary")]);
     stream.send(field(2, Buffer.concat([scalar(1, run.pendingTool.id), field(15, run.pendingTool.toolCallId),
       field(2, field(2, detail))])));
     await stream.done;
     assert.equal(server.firstShellFailure, server.runs[0]);
     assert.equal(server.firstShellFailure.shellApproval.clicked, true);
     assert.equal(server.firstShellFailure.execRejection.exitCode, 127);
+    const diagnostic = collectCursorAppShellDiagnostics(server.firstShellFailure);
+    assert.equal(diagnostic.output.cliJson, "valid");
+    assert.equal(diagnostic.output.errorCode, "MEMORY_SCOPE_UNAVAILABLE");
+    assert.equal(diagnostic.output.stage, "scope");
+    assert.equal(JSON.stringify(diagnostic).includes("canary"), false);
     assert.equal(run.completed, false);
     assert.equal(run.kvWriteCount, 0);
     assert.equal(JSON.stringify(run.execRejection).includes("canary"), false);

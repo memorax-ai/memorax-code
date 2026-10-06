@@ -34,7 +34,8 @@ test("installer log projection associates only known error text within the same 
     { readStatus: "ok", category: "registry", systemErrorCode: null });
   for (const bytes of [Buffer.from("private-canary Error 5: token"), innoLog("Error 4294967296: private-canary"),
     innoLog("Error -1: private-canary"), innoLog("Command line: private-canary (Error code: 5)"),
-    innoLog("-- File entry --", "-- Registry entry --", "Installation process succeeded.")]) {
+    innoLog("-- File entry --", "-- Registry entry --", "Installation process succeeded."),
+    innoLog("Rolling back changes.", "DeleteFile failed; code 5.")]) {
     assert.deepEqual(projectWindowsInstallerLog(bytes), { readStatus: "ok", category: "unknown", systemErrorCode: null });
   }
   for (const bytes of [Buffer.from([0xc3, 0x28]), Buffer.from("private-canary", "utf16le")]) {
@@ -54,7 +55,7 @@ test("private installer log reads are bounded, regular-file-only and never expos
     await writeFile(path, innoLog("CreateFile failed; code 5.\nprivate-canary"));
     assert.deepEqual(await readWindowsInstallerLog(path), { readStatus: "ok", category: "file", systemErrorCode: 5 });
     await writeFile(path, Buffer.alloc(1024 * 1024 + 1, 0x61));
-    assert.deepEqual(await readWindowsInstallerLog(path), { readStatus: "too-large", category: "unknown", systemErrorCode: null });
+    assert.deepEqual(await readWindowsInstallerLog(path), { readStatus: "tail", category: "unknown", systemErrorCode: null });
     await writeFile(path, Buffer.from([0xff]));
     assert.equal((await readWindowsInstallerLog(path)).readStatus, "invalid-encoding");
     const target = join(root, "private-canary-target.log"), link = join(root, "private-canary-link.log");
@@ -62,6 +63,35 @@ test("private installer log reads are bounded, regular-file-only and never expos
     try { await symlink(target, link); }
     catch (error) { if (process.platform === "win32" && error.code === "EPERM") return t.diagnostic("Symlink creation requires Windows privileges"); throw error; }
     assert.deepEqual(await readWindowsInstallerLog(link), { readStatus: "not-regular", category: "unknown", systemErrorCode: null });
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("large installer logs retain complete tail errors across line and UTF-8 boundaries", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-installer-tail-"));
+  const limit = 1024 * 1024;
+  const error = innoLog("Error writing to registry key:\nHKCU\\private-canary\nRegSetValueEx failed; code 5.",
+    "Rolling back changes.", "DeleteFile failed; code 32.").subarray(3);
+  try {
+    const path = join(root, "private-canary.log");
+    for (const bytes of [
+      Buffer.concat([Buffer.alloc(limit * 2, 0x61), Buffer.from("\n"), error]),
+      Buffer.concat([Buffer.alloc(limit, 0x61), Buffer.from("\xc3\xa9\n", "latin1"), error,
+        Buffer.alloc(limit - error.length - 2, 0x61)]),
+      Buffer.concat([Buffer.alloc(limit, 0x61), Buffer.from("\r\n"), error,
+        Buffer.alloc(limit - error.length, 0x61)]),
+    ]) {
+      await writeFile(path, bytes);
+      const result = await readWindowsInstallerLog(path);
+      assert.deepEqual(result, { readStatus: "tail", category: "registry", systemErrorCode: 5 });
+      assert.equal(JSON.stringify(result).includes("private-canary"), false);
+    }
+    const partial = innoLog("Exception message:\nCreateFile failed; code 32.\nprivate-canary").subarray(3);
+    const harmless = innoLog("-- File entry --", "Rolling back changes.", "DeleteFile failed; code 5.").subarray(3);
+    await writeFile(path, Buffer.concat([Buffer.alloc(limit, 0x61), partial, harmless,
+      Buffer.alloc(limit - partial.length - harmless.length + 35, 0x61)]));
+    assert.deepEqual(await readWindowsInstallerLog(path), { readStatus: "tail", category: "unknown", systemErrorCode: null });
+    await writeFile(path, Buffer.concat([Buffer.alloc(limit, 0x61), Buffer.from("\n"), error, Buffer.from([0xff])]));
+    assert.deepEqual(await readWindowsInstallerLog(path), { readStatus: "invalid-encoding", category: "unknown", systemErrorCode: null });
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

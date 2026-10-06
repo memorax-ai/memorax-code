@@ -59,12 +59,65 @@ export function collectCursorAppLaunchDiagnostics(value) {
     markers: Object.fromEntries(Object.entries(launchMarkers).map(([key, pattern]) => [key, pattern.test(log)])) });
 }
 
+const shellCliEnums = {
+  errorCode: ["MEMORY_INPUT_INVALID", "MEMORY_INPUT_UNREADABLE", "MEMORY_ADD_DISABLED", "MEMORY_CONFIG_MISSING",
+    "MEMORY_SCOPE_UNAVAILABLE", "MEMORY_SCOPE_MISMATCH", "MEMORY_CLI_INTERNAL", "MEMORAX_HTTP_ERROR",
+    "MEMORAX_INVALID_JSON", "MEMORAX_TIMEOUT", "MEMORAX_TRANSPORT_ERROR", "MEMORAX_RESPONSE_REJECTED", "MEMORAX_INVALID_RESPONSE"],
+  stage: ["input", "configuration", "scope", "request", "response", "internal"],
+  systemCode: ["ENOENT", "EACCES", "EPERM", "ENOSPC", "EROFS", "ENOTDIR", "EISDIR", "EMFILE", "ENOTFOUND", "EAI_AGAIN",
+    "ECONNREFUSED", "ECONNRESET", "EPIPE", "ENETUNREACH", "EHOSTUNREACH", "ETIMEDOUT", "ESOCKETTIMEDOUT",
+    "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT", "UND_ERR_SOCKET",
+    "DEPTH_ZERO_SELF_SIGNED_CERT", "SELF_SIGNED_CERT_IN_CHAIN", "CERT_HAS_EXPIRED", "CERT_NOT_YET_VALID",
+    "ERR_TLS_CERT_ALTNAME_INVALID", "UNABLE_TO_VERIFY_LEAF_SIGNATURE", "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
+    "ERR_SSL_WRONG_VERSION_NUMBER", "ERR_SSL_SSLV3_ALERT_HANDSHAKE_FAILURE"],
+};
+const shellOutputMarkers = {
+  unsupportedNodeVersion: /memorax-code: MemoraX Code requires Node\.js 20 or newer;/,
+  nodeModuleNotFound: /(?:^|\r?\n)(?:Error \[ERR_MODULE_NOT_FOUND\]:|Error: Cannot find module )/,
+  commandNotFound: /(?:^|\r?\n)env: (?:memorax-cli|node): No such file or directory(?:\r?\n|$)/,
+  permissionDenied: launchMarkers.permissionDenied,
+};
+
+function projectShellOutputDiagnostics(value) {
+  return {
+    stdoutStatus: enumValue(value?.stdoutStatus, ["absent", "present", "invalid", "oversized", "other"]),
+    stderrStatus: enumValue(value?.stderrStatus, ["absent", "present", "invalid", "oversized", "other"]),
+    cliJson: enumValue(value?.cliJson, ["absent", "valid", "invalid", "oversized", "unmatched", "other"]),
+    ...Object.fromEntries(Object.entries(shellCliEnums).map(([key, allowed]) =>
+      [key, value?.cliJson === "valid" ? enumValue(value[key], [...allowed, "absent", "other"]) : "absent"])),
+    markers: Object.fromEntries(Object.keys(shellOutputMarkers).map((key) => [key, value?.markers?.[key] === true])),
+  };
+}
+
+export function collectCursorAppShellOutputDiagnostics(value) {
+  const read = (part) => {
+    if (part === undefined || part?.status === "absent") return { status: "absent" };
+    if (["invalid", "oversized"].includes(part?.status)) return { status: part.status };
+    if (part?.status !== "present" || typeof part.text !== "string") return { status: "invalid" };
+    return Buffer.byteLength(part.text) > 64 * 1024 ? { status: "oversized" } : { status: "present", text: part.text };
+  };
+  const stdout = read(value?.stdout), stderr = read(value?.stderr);
+  let result, cliJson = stdout.status === "present" ? "absent" : stdout.status;
+  if (stdout.text?.trim()) {
+    try {
+      const parsed = JSON.parse(stdout.text);
+      if (record(parsed) && parsed.ok === false && ["memory.search", "memory.add"].includes(parsed.action)) {
+        result = parsed; cliJson = "valid";
+      } else cliJson = "unmatched";
+    } catch { cliJson = "invalid"; }
+  }
+  return projectShellOutputDiagnostics({ stdoutStatus: stdout.status, stderrStatus: stderr.status, cliJson,
+    ...Object.fromEntries(Object.keys(shellCliEnums).map((key) => [key, result?.[key]])),
+    markers: Object.fromEntries(Object.entries(shellOutputMarkers).map(([key, pattern]) => [key, pattern.test(stderr.text ?? "")])) });
+}
+
 export function projectCursorAppShellDiagnostics(value) {
   return {
     rejectionKind: enumValue(value?.rejectionKind, [2, 3, 4, 5, 7, "absent", "other"]),
     approvalClicked: value?.approvalClicked === true,
     ...(value?.rejectionKind === 2 && Number.isInteger(value.exitCode)
       && value.exitCode >= -0x8000_0000 && value.exitCode <= 0x7fff_ffff ? { exitCode: value.exitCode } : {}),
+    ...(value?.rejectionKind === 2 && value.output !== undefined ? { output: projectShellOutputDiagnostics(value.output) } : {}),
   };
 }
 
@@ -74,7 +127,7 @@ export function collectCursorAppShellDiagnostics(run) {
     || typeof result.toolCallId !== "string" || !uuid.test(result.toolCallId)
     || approval?.toolCallId !== result.toolCallId || typeof approval.clicked !== "boolean") return undefined;
   return projectCursorAppShellDiagnostics({ rejectionKind: result.rejectionKind,
-    approvalClicked: approval.clicked, exitCode: result.exitCode });
+    approvalClicked: approval.clicked, exitCode: result.exitCode, output: result.output });
 }
 
 const stopBackendEnums = {

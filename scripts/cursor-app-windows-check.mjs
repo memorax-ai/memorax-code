@@ -74,6 +74,7 @@ export function projectWindowsInstallerLog(bytes) {
   const records = text.matchAll(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} {3}([^\r\n]*(?:\r?\n {26}[^\r\n]*)*)/gm);
   for (const record of records) {
     const message = record[1].replace(/\r?\n {26}/g, "\n");
+    if (message === "Rolling back changes.") break;
     const category = [
       ["directory", /^Setup was unable to create the directory "/m],
       ["file", /^(?:An error occurred while trying to (?:read the (?:existing|source) file|create a file in the destination directory|copy a file|replace the existing file|rename a file in the destination directory):|(?:CreateFile|DeleteFile|MoveFile|MoveFileEx) failed; code \d+\.)$/m],
@@ -95,21 +96,26 @@ export async function readWindowsInstallerLog(path) {
   try {
     const info = await lstat(path);
     if (!info.isFile() || info.isSymbolicLink()) return { ...result, readStatus: "not-regular" };
-    if (info.size > installerLogLimit) return { ...result, readStatus: "too-large" };
     handle = await open(path, "r");
     const opened = await handle.stat();
     if (!opened.isFile() || opened.dev !== info.dev || opened.ino !== info.ino) return { ...result, readStatus: "changed" };
-    const bytes = Buffer.alloc(installerLogLimit + 1);
+    const start = Math.max(0, info.size - installerLogLimit), position = start ? start - 1 : 0;
+    const bytes = Buffer.alloc(info.size - position);
     let length = 0;
     while (length < bytes.length) {
-      const { bytesRead } = await handle.read(bytes, length, bytes.length - length, length);
+      const { bytesRead } = await handle.read(bytes, length, bytes.length - length, position + length);
       if (!bytesRead) break;
       length += bytesRead;
     }
     const after = await handle.stat();
-    if (length > installerLogLimit) result.readStatus = "too-large";
-    else if (length !== info.size || after.size !== info.size || after.mtimeMs !== info.mtimeMs) result.readStatus = "changed";
-    else result = projectWindowsInstallerLog(bytes.subarray(0, length));
+    if (length !== bytes.length || after.size !== info.size || after.mtimeMs !== info.mtimeMs) result.readStatus = "changed";
+    else {
+      // One preceding byte preserves complete boundary lines; discard partial UTF-8 before decoding.
+      const newline = start && bytes[0] !== 10 ? bytes.indexOf(10, 1) : -1;
+      const offset = !start ? 0 : bytes[0] === 10 ? 1 : newline < 0 ? length : newline + 1;
+      result = projectWindowsInstallerLog(bytes.subarray(offset, length));
+      if (start && result.readStatus === "ok") result.readStatus = "tail";
+    }
   } catch (error) { result.readStatus = error.code === "ENOENT" ? "missing" : "read-error"; }
   finally { try { await handle?.close(); } catch { result = { readStatus: "read-error", category: "unknown", systemErrorCode: null }; } }
   return result;

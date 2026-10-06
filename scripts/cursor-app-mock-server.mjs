@@ -288,7 +288,8 @@ export async function startCursorAgentMock({ answer, answers, toolSteps, timeout
           if (pendingExec.completed || cancellation?.rejected) { fail("CURSOR_AGENT_EXEC_DUPLICATE"); return; }
           if (message.error) run.execRejection = { id: message.id, kind: message.kind,
             toolCallId: pendingExec.execution.toolCallId, rejectionKind: message.rejectionKind,
-            ...(message.exitCode === undefined ? {} : { exitCode: message.exitCode }) };
+            ...(message.exitCode === undefined ? {} : { exitCode: message.exitCode }),
+            ...(message.output === undefined ? {} : { output: message.output }) };
           if (cancellation) {
             const execution = pendingExec.execution;
             if (message.kind !== execution.kind || message.execId !== undefined && message.execId !== execution.toolCallId

@@ -350,6 +350,15 @@ test("Shell failure reports project only fixed outcomes without changing failure
     assert.equal(report.errorCode, "CURSOR_APP_EXEC_REJECTED");
     assert.deepEqual(report.shellResult, { rejectionKind: 2, approvalClicked: true, exitCode: 127 });
     assert.equal(JSON.stringify(report).includes("canary"), false);
+    input.shellResult.output = { stdoutStatus: "present", stderrStatus: "present", cliJson: "valid",
+      errorCode: "MEMORY_CONFIG_MISSING", stage: "configuration", systemCode: "private-shell-canary",
+      stdout: "private-shell-canary", stderr: "private-shell-canary", markers: { permissionDenied: true, private: "private-shell-canary" } };
+    const projected = projectNativeReport(input, { platform });
+    assert.equal(projected.shellResult.output.errorCode, "MEMORY_CONFIG_MISSING");
+    assert.equal(projected.shellResult.output.systemCode, "other");
+    assert.equal(projected.shellResult.output.markers.permissionDenied, true);
+    assert.equal(JSON.stringify(projected).includes("canary"), false);
+    assert.equal(projected.status, "FAIL");
     input.shellResult = { rejectionKind: "private-shell-canary", approvalClicked: "true", exitCode: 0x8000_0000 };
     assert.deepEqual(projectNativeReport(input, { platform }).shellResult, { rejectionKind: "other", approvalClicked: false });
     input.status = "PASS";

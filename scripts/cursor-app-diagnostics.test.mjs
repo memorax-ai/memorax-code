@@ -4,11 +4,75 @@ import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { collectCursorAppDiagnostics, collectCursorAppLaunchDiagnostics, collectCursorAppShellDiagnostics,
+import { collectCursorAppDiagnostics, collectCursorAppLaunchDiagnostics, collectCursorAppShellDiagnostics, collectCursorAppShellOutputDiagnostics,
   collectCursorAppStopDiagnostics, isCursorAppDiagnostics, projectCursorAppDiagnostics,
   projectCursorAppLaunchDiagnostics, projectCursorAppShellDiagnostics, projectCursorAppStopDiagnostics } from "./cursor-app-diagnostics.mjs";
 
 const privateCanary = "private-content-path-token-canary";
+
+test("Shell failure output keeps only recognized CLI JSON codes and fixed stderr markers", () => {
+  const output = collectCursorAppShellOutputDiagnostics({
+    stdout: { status: "present", text: JSON.stringify({ ok: false, action: "memory.search", errorCode: "MEMORY_CONFIG_MISSING",
+      stage: "configuration", systemCode: "ENOENT", query: privateCanary, diagnostic: { path: privateCanary }, error: privateCanary }) },
+    stderr: { status: "present", text: `${privateCanary}: Permission denied\nError [ERR_MODULE_NOT_FOUND]: ${privateCanary}` },
+  });
+  assert.deepEqual(output, { stdoutStatus: "present", stderrStatus: "present", cliJson: "valid",
+    errorCode: "MEMORY_CONFIG_MISSING", stage: "configuration", systemCode: "ENOENT",
+    markers: { unsupportedNodeVersion: false, nodeModuleNotFound: true, commandNotFound: false, permissionDenied: true } });
+  assert.equal(JSON.stringify(output).includes(privateCanary), false);
+  const result = projectCursorAppShellDiagnostics({ rejectionKind: 2, approvalClicked: true, exitCode: 1, output });
+  assert.deepEqual(result.output, output);
+  assert.deepEqual(projectCursorAppShellDiagnostics(result), result);
+});
+
+test("Shell output ignores unrelated JSON, unknown codes, arbitrary fields and invalid text without reflecting them", () => {
+  for (const text of ["", privateCanary, "[]", "null", JSON.stringify({ ok: true, action: "memory.search" }),
+    JSON.stringify({ ok: false, action: privateCanary, errorCode: "MEMORY_CONFIG_MISSING" })]) {
+    const output = collectCursorAppShellOutputDiagnostics({ stdout: { status: "present", text } });
+    assert.notEqual(output.cliJson, "valid");
+    assert.equal(output.errorCode, "absent");
+    assert.equal(JSON.stringify(output).includes(privateCanary), false);
+  }
+  for (const action of ["memory.search", "memory.add"]) {
+    const output = collectCursorAppShellOutputDiagnostics({ stdout: { status: "present", text: JSON.stringify({
+      ok: false, action, errorCode: privateCanary, stage: privateCanary, systemCode: privateCanary,
+    }) } });
+    assert.equal(output.cliJson, "valid");
+    assert.equal(output.errorCode, "other"); assert.equal(output.stage, "other"); assert.equal(output.systemCode, "other");
+    assert.equal(JSON.stringify(output).includes(privateCanary), false);
+  }
+  for (const status of ["absent", "invalid", "oversized"]) {
+    const output = collectCursorAppShellOutputDiagnostics({ stdout: { status, text: privateCanary } });
+    assert.equal(output.stdoutStatus, status);
+    assert.equal(output.cliJson, status);
+  }
+  const oversized = collectCursorAppShellOutputDiagnostics({ stdout: { status: "present", text: "x".repeat(65537) },
+    stderr: { status: "present", text: "Permission denied".repeat(5000) } });
+  assert.equal(oversized.stdoutStatus, "oversized"); assert.equal(oversized.stderrStatus, "oversized");
+  assert.equal(oversized.markers.permissionDenied, false);
+  const forged = projectCursorAppShellDiagnostics({ rejectionKind: 2, output: { stdoutStatus: privateCanary,
+    cliJson: privateCanary, errorCode: privateCanary, stage: privateCanary, systemCode: privateCanary,
+    stdout: privateCanary, stderr: privateCanary, markers: { commandNotFound: "true", arbitrary: privateCanary } } });
+  assert.equal(JSON.stringify(forged).includes(privateCanary), false);
+  assert.equal(forged.output.markers.commandNotFound, false);
+});
+
+test("Shell stderr markers are bounded fixed text observations, never diagnostic authority", () => {
+  for (const [marker, text] of [
+    ["unsupportedNodeVersion", "memorax-code: MemoraX Code requires Node.js 20 or newer; the current runtime is Node.js 18."],
+    ["nodeModuleNotFound", "Error: Cannot find module '/private-canary'"],
+    ["commandNotFound", "env: memorax-cli: No such file or directory"],
+    ["commandNotFound", "env: node: No such file or directory"],
+    ...["Permission denied", "Operation not permitted", "EACCES", "EPERM"].map((text) => ["permissionDenied", text]),
+  ]) {
+    const output = collectCursorAppShellOutputDiagnostics({ stderr: { status: "present", text } });
+    assert.equal(output.markers[marker], true);
+    assert.equal(output.errorCode, "absent");
+  }
+  const output = collectCursorAppShellOutputDiagnostics({ stdout: { status: "present", text: "Permission denied" },
+    stderr: { status: "present", text: "private command_not_found ERR_MODULE_NOT_FOUNDish" } });
+  assert.ok(Object.values(output.markers).every((value) => value === false));
+});
 
 test("Shell diagnostics bind completed approval clicks to the exact failed tool and redact all identities", () => {
   const toolCallId = randomUUID();
