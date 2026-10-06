@@ -38,6 +38,7 @@ const toolPlanErrorCodes = new Set([
   "CURSOR_APP_MEMORY_TRANSPORT", "CURSOR_APP_MEMORY_RESULT_SCOPE", "CURSOR_APP_SEARCH_PAYLOAD",
   "CURSOR_APP_SEARCH_RESULT", "CURSOR_APP_EXPLICIT_ADD_TIMESTAMP", "CURSOR_APP_EXPLICIT_ADD_PAYLOAD",
   "CURSOR_APP_EXPLICIT_ADD_RESULT", "CURSOR_APP_INTERRUPTION_IDENTITY", "CURSOR_APP_INTERRUPTION_TOOL_EXECUTED",
+  "CURSOR_APP_PERMISSION_IDENTITY", "CURSOR_APP_PERMISSION_REJECTION",
 ]);
 const ancillaryPaths = new Set([
   "/auth/full_stripe_profile",
@@ -259,6 +260,15 @@ export async function startCursorAgentMock({ answer, answers, toolSteps, timeout
       if (message.type === "run") {
         if (run || requestIds.has(message.requestId)) { fail("CURSOR_AGENT_DUPLICATE_RUN"); return; }
         if (activeConversations.has(message.conversationId)) { fail("CURSOR_AGENT_CONVERSATION_BUSY"); return; }
+        if (message.prependUserMessages) {
+          const previous = runs.findLast((item) => item.conversationId === message.conversationId);
+          const [prepended] = message.prependUserMessages;
+          if (message.prependUserMessages.length !== 1 || previous?.cancelled !== true || previous.completed || previous.error
+            || prepended.userMessageId !== previous.userMessageId || prepended.prompt !== previous.prompt
+            || message.userMessageId === previous.userMessageId) {
+            fail("CURSOR_AGENT_RECOVERY_MISMATCH"); return;
+          }
+        }
         history = histories.get(message.conversationId) ?? [];
         if (message.turnRefs.length !== history.length
           || message.turnRefs.some((reference, index) => !reference.equals(history[index].turnBlobId))) {
@@ -314,6 +324,7 @@ export async function startCursorAgentMock({ answer, answers, toolSteps, timeout
             return;
           }
           pendingExec.completed = completeToolExecution(pendingExec.execution, message);
+          if (pendingExec.completed.result.rejected === true) delete run.execRejection;
           if (pendingExec.execution.kind === "requestContext") run.requestContextResultCount++;
           else run.execResultCount++;
         } else if (message.event === "error") fail("CURSOR_AGENT_EXEC_THROWN");

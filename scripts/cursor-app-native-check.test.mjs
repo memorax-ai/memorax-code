@@ -86,16 +86,17 @@ test("native failures capture the current App outcome before cleanup changes pro
   assert.match(source, /spawnError: appSpawnError, log: appLaunchLog/);
 });
 
-test("actual Run approval records only completed clicks on the matching run and tool", async () => {
+test("native Run and Skip record only completed clicks on the matching run and tool", async () => {
   const body = source.split("async function runTurn(")[1]?.split("\nasync function assertInterrupted(")[0];
   assert.ok(body);
-  for (const mode of ["clicked", "click-failed", "not-visible"]) {
+  for (const permission of [undefined, "deny"]) for (const mode of ["clicked", "click-failed", "not-visible", "wrong-session", "marker-exists"]) {
+    if (!permission && mode === "marker-exists") continue;
     const toolCallId = "11111111-1111-4111-8111-111111111111", sessionId = "synthetic-session";
     const run = { conversationId: sessionId, prompt: "synthetic prompt", completed: false,
       pendingTool: { kind: "shell", toolCallId }, shellApproval: { toolCallId, clicked: false } };
     const retry = { ...run, shellApproval: { toolCallId: "22222222-2222-4222-8222-222222222222", clicked: false } };
-    const agent = { errors: [], runs: [run] }, selectors = [];
-    let submitted = 0;
+    const agent = { errors: [], runs: [] }, selectors = [];
+    let submitted = 0, markerChecks = 0;
     const code = "CURSOR_APP_EXEC_REJECTED", error = Object.assign(new Error(code), { code });
     const button = {
       async count() { return mode === "not-visible" ? 0 : 1; }, async isVisible() { return true; },
@@ -106,24 +107,115 @@ test("actual Run approval records only completed clicks on the matching run and 
       },
     };
     const locator = { locator(selector) { selectors.push(selector); return locator; },
-      getByRole(role, options) { assert.equal(role, "button"); assert.equal(options.name, "Run"); assert.equal(options.exact, true); return button; } };
+      getByRole(role, options) { assert.equal(role, "button"); assert.equal(options.name, permission ? "Skip" : "Run"); assert.equal(options.exact, true); return button; } };
     const turns = [];
     const runTurn = runInNewContext(`(async function runTurn(${body})`, {
-      turns, fixtures: [{ prompt: run.prompt, operation: "search" }], report: {}, agent,
+      turns, fixtures: [{ prompt: run.prompt, ...(permission ? { permission } : { operation: "search" }) }], report: {}, agent,
       workspace: "/owned/project-beta", basename,
+      denial: { marker: "/owned/project-beta/denied-marker" },
+      async assertMarkerAbsent(marker, code) {
+        assert.equal(marker, "/owned/project-beta/denied-marker"); markerChecks += 1;
+        if (mode === "marker-exists") throw Object.assign(new Error(code), { code });
+      },
       page: { locator(selector) { selectors.push(selector); return locator; } },
-      async submitPrompt(input, fixture) { assert.equal(input, locator); assert.equal(fixture.prompt, run.prompt); submitted += 1; },
+      async submitPrompt(input, fixture) {
+        assert.equal(input, locator); assert.equal(fixture.prompt, run.prompt); submitted += 1;
+        if (mode === "wrong-session") run.conversationId = "different-session";
+        agent.runs.push(run);
+      },
       async waitFor(predicate) { await predicate(); throw error; },
       check(value, actualCode) { if (!value) throw Object.assign(new Error(actualCode), { code: actualCode }); },
     }, { timeout: 100 });
-    await assert.rejects(runTurn(sessionId), { code });
+    await assert.rejects(runTurn(sessionId), { code: mode === "wrong-session" ? "CURSOR_APP_SKILL_APPROVAL_IDENTITY"
+      : mode === "marker-exists" ? "CURSOR_APP_PERMISSION_TOOL_EXECUTED" : code });
     assert.equal(submitted, 1);
     assert.equal(turns[0].workspaceName, "project-beta");
     assert.equal(run.shellApproval.toolCallId, toolCallId);
-    assert.equal(run.shellApproval.clicked, mode === "clicked");
+    assert.equal(run.shellApproval.clicked, !permission && mode === "clicked");
+    assert.equal(run.shellRejection?.clicked, permission && mode === "clicked" ? true : undefined);
+    assert.equal(markerChecks, permission && !["not-visible", "wrong-session"].includes(mode) ? 1 : 0);
     assert.equal(retry.shellApproval.clicked, false);
-    assert.ok(selectors.includes(`[data-tool-call-id="${toolCallId}"]:visible`));
+    assert.equal(selectors.includes(`[data-tool-call-id="${toolCallId}"]:visible`), mode !== "wrong-session");
     assert.ok(selectors.includes(`[data-composer-id="${sessionId}"][data-composer-status]:visible`));
+  }
+});
+
+test("same-session recovery uses a new run and excludes the cancelled turn from completed history", async () => {
+  const body = source.split("async function runTurn(")[1]?.split("\nasync function assertInterrupted(")[0];
+  for (const mode of ["recovered", "cancelled-history", "reused-id"]) {
+    const prior = { conversationId: "same-session", requestId: "old-request", userMessageId: "old-message",
+      cancelled: true, completed: false, kvWrites: [], turnBlobId: Buffer.alloc(32) };
+    const fixture = { prompt: "new prompt", answer: "new answer" };
+    const run = { conversationId: prior.conversationId, prompt: fixture.prompt, completed: true,
+      requestId: mode === "reused-id" ? prior.requestId : "new-request", userMessageId: "new-message",
+      turnRefs: mode === "cancelled-history" ? [prior.turnBlobId] : [], kvReadCount: 0, kvReadResultCount: 0,
+      kvWriteCount: 3, kvAckCount: 3, requestContextRequestCount: 1, requestContextResultCount: 1, requestContextCloseCount: 1 };
+    const agent = { runs: [prior], errors: [] }, turns = [], report = {};
+    const locator = { locator: () => locator };
+    const runTurn = runInNewContext(`(async function runTurn(${body})`, {
+      agent, turns, report, workspace: "/owned/workspace", basename,
+      page: { locator: () => locator },
+      async submitPrompt(input, actual) { assert.equal(actual, fixture); agent.runs.push(run); },
+      async waitFor(predicate) {
+        if (report.stage === "native-persistence") throw Object.assign(new Error("transport verified"), { code: "VERIFIED" });
+        assert.equal(await predicate(), true);
+      },
+      check(value, code) { if (!value) throw Object.assign(new Error(code), { code }); },
+    });
+    await assert.rejects(runTurn(prior.conversationId, fixture), { code: mode === "cancelled-history"
+      ? "CURSOR_APP_HISTORY_MISMATCH" : mode === "reused-id" ? "CURSOR_APP_REUSED_TURN_IDENTITY" : "VERIFIED" });
+    assert.equal(turns.length, 1);
+    assert.equal(turns[0].prompt, fixture.prompt);
+    assert.equal(turns[0].sessionId, prior.conversationId);
+  }
+});
+
+test("interruption oracle retains the old terminal trace after the same session recovers", async () => {
+  const body = source.split("async function assertInterrupted(")[1]?.split("\nasync function interruptPendingShell(")[0];
+  for (const recovered of [false, true]) for (const mode of ["valid", "tool-ran", "old-completed", "old-materialized", "late-add",
+    ...(recovered ? ["different-session", "same-request", "wrong-active", "new-not-materialized"] : ["wrong-state"])]) {
+    const interruption = { sessionId: "same-session", runIndex: 1, marker: "/owned/cancelled-marker" };
+    const old = { requestId: "old-request", cancelled: true, completed: false,
+      cancellation: { actionReceived: true, rejected: true, execClosed: true, transportClosed: true, rstCode: 8 },
+      kvWriteCount: 0, kvAckCount: 0, execRequestCount: 1, execResultCount: 0, execCloseCount: 0,
+      requestContextRequestCount: 1, requestContextResultCount: 1, requestContextCloseCount: 1 };
+    const next = { conversationId: mode === "different-session" ? "another-session" : interruption.sessionId,
+      requestId: mode === "same-request" ? old.requestId : "new-request", completed: true, prompt: "recovery prompt" };
+    const store = { readStatus: "present", versionMatched: true, clientMatched: true, sessionMatched: true,
+      activePresent: true, turnMatched: true, state: "interrupted", stopStatus: "aborted", reason: "interrupted", metadataPresent: false };
+    const trace = { readStatus: "present", turnStartCount: 1, interruptedCount: 1,
+      completedCount: mode === "old-completed" ? 1 : 0, materializedCount: mode === "old-materialized" ? 1 : 0 };
+    const reads = [];
+    let writebackChecks = 0;
+    const assertInterrupted = runInNewContext(`(async function assertInterrupted(${body})`, {
+      interruption, agent: { runs: [{ completed: true }, old, ...(recovered ? [next] : [])] },
+      recoveryFixture: { prompt: next.prompt }, env: { MEMORAX_CODE_HOME: "/owned/state" },
+      async assertMarkerAbsent(marker, code) {
+        assert.equal(marker, interruption.marker);
+        if (mode === "tool-ran") throw Object.assign(new Error(code), { code });
+      },
+      async collectCursorAppDiagnostics({ sessionId, turnId }) {
+        assert.equal(sessionId, interruption.sessionId); reads.push(turnId);
+        if (turnId === old.requestId) return { turnStore: recovered ? { turnMatched: false } :
+          { ...store, state: mode === "wrong-state" ? "open" : store.state }, trace };
+        assert.equal(turnId, next.requestId);
+        return { turnStore: { ...store, turnMatched: mode !== "wrong-active", state: "accepted", stopStatus: "completed" },
+          trace: { ...trace, interruptedCount: 0, materializedCount: mode === "new-not-materialized" ? 0 : 1, completedCount: 1 } };
+      },
+      assertWriteback() {
+        writebackChecks += 1;
+        if (mode === "late-add") throw Object.assign(new Error("exact writebacks differ"), { code: "EXACT_WRITEBACK_MISMATCH" });
+      },
+      check(value, code) { if (!value) throw Object.assign(new Error(code), { code }); },
+    });
+    if (mode === "valid") {
+      await assertInterrupted({ recovered });
+      assert.deepEqual(reads, recovered ? [old.requestId, next.requestId] : [old.requestId]);
+      assert.equal(writebackChecks, 1);
+    } else await assert.rejects(assertInterrupted({ recovered }), { code: mode === "tool-ran"
+      ? "CURSOR_APP_INTERRUPTION_TOOL_EXECUTED" : mode === "late-add" ? "EXACT_WRITEBACK_MISMATCH"
+        : ["different-session", "same-request"].includes(mode) ? "CURSOR_APP_RECOVERY_IDENTITY"
+          : ["wrong-active", "new-not-materialized"].includes(mode) ? "CURSOR_APP_RECOVERY_HOOK" : "CURSOR_APP_INTERRUPTION_HOOK" });
   }
 });
 
@@ -198,8 +290,9 @@ test("native sequence opens a second workspace then restores the original sessio
     const secondWorkspace = paths.join(root, "project-beta");
     const env = { MEMORAX_CODE_HOME: paths.join(root, "state") }, userData = paths.join(root, "app-data");
     const turns = [], starts = [], stops = [], audits = [], created = [], commands = [], snapshots = [];
+    let freshSessions = 0;
     const context = { root, firstWorkspace, workspace: firstWorkspace, env, userData, join: paths.join,
-      report: { evidence: {} }, app: undefined,
+      report: { evidence: {} }, app: undefined, recoveryFixture: { prompt: "recovery" },
       async mkdir(path) { created.push(path); },
       async startApp() {
         assert.equal(context.app, undefined);
@@ -208,11 +301,17 @@ test("native sequence opens a second workspace then restores the original sessio
       },
       async stopApp() { stops.push(context.workspace); context.app = undefined; },
       async assertProcessesStopped(options) { audits.push(options.includeBackend); },
-      async openSession(id) { return id ?? (context.workspace === firstWorkspace ? "session-a" : "session-b"); },
-      async runTurn(sessionId) { turns.push({ sessionId, workspace: context.workspace }); },
+      async openSession(id) { return id ?? ["session-a", "session-b", "session-deny"][freshSessions++]; },
+      async runTurn(sessionId, fixture) {
+        if (sessionId === "session-cancel") assert.equal(fixture, context.recoveryFixture);
+        turns.push({ sessionId, workspace: context.workspace });
+      },
       assertWriteback() {}, assertSnapshot(sessionId) { snapshots.push(sessionId); },
       async cli(action) { commands.push(action); return { cursorAdapter: { cursorHooks: { runtimeObserved: true } } }; },
-      async interruptPendingShell() { assert.equal(context.workspace, firstWorkspace); },
+      async interruptPendingShell() {
+        assert.equal(context.workspace, firstWorkspace); context.interruption = { sessionId: "session-cancel" };
+      },
+      async assertInterrupted(options) { assert.equal(options.recovered, true); },
       check(value, code) { assert.ok(value, code); },
     };
     await runInNewContext(`(async () => {${body}})()`, context, { timeout: 100 });
@@ -227,10 +326,14 @@ test("native sequence opens a second workspace then restores the original sessio
       { sessionId: "session-a", workspace: firstWorkspace },
       { sessionId: "session-b", workspace: secondWorkspace },
       ...Array.from({ length: 3 }, () => ({ sessionId: "session-a", workspace: firstWorkspace })),
+      { sessionId: "session-deny", workspace: firstWorkspace },
+      { sessionId: "session-cancel", workspace: firstWorkspace },
     ]);
     assert.deepEqual(snapshots, ["session-a", "session-a", "session-b"]);
     assert.equal(context.report.evidence.workspaceIsolation, true);
     assert.equal(context.report.evidence.appResume, true);
+    assert.equal(context.report.evidence.sameSessionRecovered, true);
+    assert.equal(freshSessions, 3);
   }
 });
 
@@ -346,7 +449,7 @@ test("native Skill tools require the exact current manually attached file and st
           hooksAdditionalContext: "MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT=cursor and MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID=synthetic-session" } };
       const toolSteps = runInNewContext(`(function toolSteps(${body})`, {
         process: { platform }, join: pathJoin, skillRoot, skillText, agent: { runs: [prior, run] },
-        fixtures: [{ prompt: run.prompt, operation: "search" }, {}], turns: [{ sessionId: run.conversationId }],
+        interruption: undefined, turns: [{ sessionId: run.conversationId, prompt: run.prompt, operation: "search" }],
         check(value, code) { if (!value) throw Object.assign(new Error(code), { code }); },
       }, { timeout: 100 });
       if (suffix) assert.throws(() => toolSteps(run, []), (error) => {
@@ -378,7 +481,7 @@ test("native Shell commands keep POSIX quoting and route Windows Skill context a
   for (const operation of ["search", "add", "interrupt"]) {
     const calls = [], workspace = "C:\\owned\\workspace", skillRoot = "C:\\owned\\skills\\memorax-code";
     const run = { prompt: "synthetic prompt", conversationId: "synthetic-session", requestContextCloseCount: 1 };
-    const interruption = { sessionId: run.conversationId, marker: "C:\\owned\\pending marker" };
+    const interruption = { sessionId: run.conversationId, runIndex: 1, marker: "C:\\owned\\pending marker" };
     const encodedCommand = "ZgBpAHgAdAB1AHIAZQA=", command = `powershell.exe -EncodedCommand ${encodedCommand}`;
     const reference = win32.join(skillRoot, "references", `memorax-${operation}.md`);
     const results = operation === "interrupt" ? [] : [
@@ -389,7 +492,7 @@ test("native Shell commands keep POSIX quoting and route Windows Skill context a
       process: { platform: "win32", execPath: "C:\\owned\\node.exe" }, join: win32.join,
       env: { MEMORAX_CODE_MEMORAX_ENDPOINT: "http://127.0.0.1:12345", MEMORAX_CODE_HOME: "C:\\owned\\state" },
       agent: { runs: operation === "interrupt" ? [undefined, run] : [run] },
-      fixtures: [{ prompt: run.prompt, operation }], turns: [{ sessionId: run.conversationId }],
+      turns: [{ sessionId: run.conversationId, prompt: run.prompt, operation }],
       interruption,
       interruptedFixture: { prompt: run.prompt }, workspace, skillRoot, skillText: "installed skill",
       referenceTexts: new Map([[operation, "installed reference"]]),
@@ -430,8 +533,8 @@ test("POSIX Skill commands bind fixture state and request network access only on
     const agent = { runs: [run] };
     const toolSteps = runInNewContext(`(() => { ${shell}; return function toolSteps(${body}; })()`, {
       process: { platform, execPath: "/owned/node" }, windows: undefined, env, join, agent,
-      fixtures: [{ prompt: run.prompt, operation }], turns: [{ sessionId: run.conversationId }],
-      interruption: { sessionId: run.conversationId, marker: "/owned/pending" }, interruptedFixture: { prompt: run.prompt },
+      turns: [{ sessionId: run.conversationId, prompt: run.prompt, operation }],
+      interruption: { sessionId: run.conversationId, runIndex: 1, marker: "/owned/pending" }, interruptedFixture: { prompt: run.prompt },
       workspace: "/owned/workspace", skillRoot: "/owned/skill", skillText: "installed skill",
       referenceTexts: new Map([[operation, "installed reference"]]),
       skillQuery: "query", skillMemory: "memory", skillReason: "reason",

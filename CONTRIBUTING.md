@@ -1173,7 +1173,7 @@ response bytes before writing new content.
 It does not use the App's simulated response stream, seed its conversation
 database, invoke Hooks directly, or bypass the product's native-content parser.
 
-Six completed native runs exercise an initial turn in conversation A, a repeated prompt
+The first six completed native runs exercise an initial turn in conversation A, a repeated prompt
 in A with a different answer, a new conversation B in a separate non-Git workspace
 with the same initial prompt and answer, a return to the original workspace followed
 by another ordinary prompt in A, then
@@ -1206,41 +1206,60 @@ synthetic account and running Backend. Returning to the original workspace
 resumes conversation A. These restarts do not exercise native Continue, Retry,
 or Edit operations.
 
-A seventh run in a fresh conversation prepares a marker-only Shell command and
-leaves it awaiting native approval. The driver first verifies the matching open
-turn and retained metadata, then clicks that human message's Stop control without
+A seventh run in a fresh conversation requests a marker-only Shell command.
+The driver rejects that command through its matching native approval UI. The
+native rejected-tool result must return to the mock service, after which the
+conversation completes normally and produces one exact automatic Add. Tool
+denial is not treated as turn cancellation, and its marker must remain absent.
+
+An eighth run in another fresh conversation leaves a marker-only Shell command
+awaiting native approval. The driver first verifies the matching open turn and
+retained metadata, then clicks that human message's Stop control without
 approving the command. Cancellation requires the native cancel action, correlated
 Shell rejection, tool-stream close and transport termination. The Hook must mark
 that exact turn interrupted and discard its metadata. The marker must remain
-absent and the previous eight Memory requests unchanged, including after App and
-Backend cleanup. This does not inject late approval or exercise running-tool
-interruption.
+absent and the previous nine Memory requests unchanged. A ninth run submits a
+new prompt in that same conversation without restarting the App or Backend. It
+must complete normally and produce exactly one automatic Add, without including
+the cancelled prompt or partial response. Any prepended unconfirmed message must
+exactly match that conversation's most recent unconsumed cancelled turn by native
+user-message ID and prompt; it is input context, not completed history or writeback.
+Both markers remain absent and the
+total stays at ten Memory requests after App and Backend cleanup. This does not
+inject late approval or exercise running-tool interruption.
 
 Acceptance requires all of the following:
 
-- Exactly seven native Agent requests. The first six complete with each submitted prompt and matching
+- Exactly nine native Agent requests. The first six complete with each submitted prompt and matching
   conversation/generation identity, KV write/acknowledgement counts of
   `3, 3, 3, 3, 6, 6`, and prior-turn counts of `0, 1, 0, 2, 3, 4` in that order.
   History KV requests and validated results must each total
   `0, 3, 0, 6, 9, 15` across those runs. Native tool request, result and close
-  counts must each be `0, 0, 0, 0, 3, 3`. Separate RequestContext request, result
-  and close counts must each be `1, 1, 1, 1, 1, 1`; this protocol exchange is
-  neither a user-visible tool step nor a persisted conversation step.
-- The final interrupted run has no history, KV writes, acknowledgements or
-  successful tool results. It completes one RequestContext exchange and requests
-  exactly one Shell command, which is rejected. Only that final run is cancelled;
+  counts must each be `0, 0, 0, 0, 3, 3`. The denied, interrupted and recovered
+  runs add KV write/acknowledgement counts of `4, 0, 3`, no completed history or
+  history KV reads, tool request counts of `1, 1, 0`, and tool result/close counts
+  of `1, 0, 0`. Every run completes exactly one separate RequestContext request,
+  result and close; this protocol exchange is neither a user-visible tool step
+  nor a persisted conversation step.
+- The eighth, interrupted run has no history, KV writes, acknowledgements or
+  successful tool results. It requests exactly one Shell command, which is
+  rejected. Only that run is cancelled;
   it must have one interrupted Hook outcome and no completed or materialized outcome.
 - A separate, read-only SQLite oracle matching the App's composer/generation,
   conversation state and every emitted content-addressed blob byte for byte
-  after each run, with `3, 6, 3, 9, 15, 21` reachable blobs respectively.
+  after each completed run, with `3, 6, 3, 9, 15, 21, 4, 3` reachable blobs respectively.
 - Installed native Hooks correlated to each real generation and completed turn.
-- Exactly six automatic Adds whose full user/assistant text, Unicode, session,
+- Exactly eight automatic Adds whose full user/assistant text, Unicode, session,
   workspace scope and client-qualified idempotency keys match their respective
   fixtures, including repeated prompts and identical content across sessions.
   Each turn retains its own expected workspace: conversation B must use the
   second directory's scope, and resumed conversation A must retain the first.
   This covers distinct non-Git workspace names, not Git/worktree identity or
   cross-workspace Search.
+- Native Shell denial followed by normal completion, plus same-session recovery
+  after pending-tool cancellation. The denied tool has no file effect but its
+  completed turn writes back; the cancelled turn has no Add and only the new
+  recovery turn writes back. Missing either result cannot pass the public report.
 - Exactly one explicit Search and one explicit Add, each with matching HTTP
   authentication, full payload, workspace scope and native Shell JSON result.
   Search preserves the fixture answer, item and receipt. Explicit Add retains
@@ -1352,7 +1371,7 @@ publishes commands, paths, raw tool output or installer logs, and unavailable
 diagnostics never replace the original failure or relax acceptance checks.
 Synthetic login is not real account
 authentication coverage. Native Continue/Retry/Edit, Backend restart,
-running-tool interruption, late-approval races, model-driven Skill selection, Repo Memory workers,
+preauthorized-tool mode, running-tool interruption, late-approval races, model-driven Skill selection, Repo Memory workers,
 native upgrade/uninstall remain outside this bounded session-flow
 matrix.
 

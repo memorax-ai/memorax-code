@@ -248,7 +248,7 @@ function execClient(body) {
     optionalText(success, 3);
     boolean(success, 4);
     return { ...identity, error: "CURSOR_APP_EXEC_REJECTED", rejectionKind: 4,
-      command: text(success, 1), workingDirectory: text(success, 2) };
+      command: text(success, 1), workingDirectory: text(success, 2), resultBytes };
   }
   if (selected[0] !== 1) {
     // agent.v1.ShellFailure field 3 is int32, not a code on the other result variants.
@@ -374,7 +374,7 @@ function decodeClientMessage(message, { requestId, allowCancellation = false } =
   const turnRefs = references(fields(conversationStateBytes)), action = fields(single(run, 2, 2));
   if (!action.has(1) || [...action.keys()].some((number) => ![1, 11, 15, 17].includes(number))) fail("CURSOR_APP_RUN_UNSUPPORTED");
   const userAction = fields(single(action, 1, 2));
-  if ([...userAction.keys()].some((number) => ![1, 2, 3].includes(number))) fail("CURSOR_APP_RUN_UNSUPPORTED");
+  if ([...userAction.keys()].some((number) => ![1, 2, 3, 4].includes(number))) fail("CURSOR_APP_RUN_UNSUPPORTED");
   const userMessageBytes = Buffer.from(single(userAction, 1, 2));
   const context = single(userAction, 2, 2, false), partsBytes = single(action, 17, 2, false);
   const parts = partsBytes === undefined ? undefined : fields(partsBytes);
@@ -382,6 +382,7 @@ function decodeClientMessage(message, { requestId, allowCancellation = false } =
   if (skillsBlobId === undefined ? parts?.has(4) : skillsBlobId.length !== 32) fail("CURSOR_APP_PROTO_REFERENCE");
   const skillsByteLength = skillsBlobId === undefined ? undefined : unsigned(parts, 4, MAX_FRAME_BYTES);
   return { type: "run", requestId, conversationId, ...userMessage(userMessageBytes), userMessageBytes, conversationStateBytes, turnRefs,
+    ...(userAction.has(4) ? { prependUserMessages: repeated(userAction, 4, userMessage) } : {}),
     ...(context === undefined ? {} : { requestContext: requestContext(context) }),
     ...(parts === undefined ? {} : { requestContextParts: {
       ...(skillsBlobId === undefined ? {} : { skillsBlobId: Buffer.from(skillsBlobId), skillsByteLength }),
@@ -440,7 +441,8 @@ export function createToolExecution(run, step, { id, toolCallId }) {
   } else if (step?.kind === "shell" && validText(step.command) && validText(step.workingDirectory)
     && Number.isInteger(step.timeoutMs) && step.timeoutMs > 0 && step.timeoutMs <= 60_000
     && (step.networkAccess === undefined || step.networkAccess === true)
-    && Object.keys(step).every((key) => ["kind", "command", "workingDirectory", "timeoutMs", "networkAccess"].includes(key))) {
+    && (step.expectRejection === undefined || step.expectRejection === true)
+    && Object.keys(step).every((key) => ["kind", "command", "workingDirectory", "timeoutMs", "networkAccess", "expectRejection"].includes(key))) {
     argsBytes = Buffer.concat([field(1, step.command), field(2, step.workingDirectory), scalar(3, step.timeoutMs), field(4, toolCallId),
       // No invented command parse or approval bypass: the App owns permission review.
       field(8, scalar(1, 1)),
@@ -456,8 +458,10 @@ export function createToolExecution(run, step, { id, toolCallId }) {
 
 export function completeToolExecution(execution, message) {
   if (message.type !== "execResult" || message.id !== execution.id || message.kind !== execution.kind
-    || message.execId && message.execId !== execution.toolCallId) fail("CURSOR_APP_EXEC_IDENTITY");
-  if (message.error) fail("CURSOR_APP_EXEC_REJECTED");
+    || message.execId !== undefined && message.execId !== execution.toolCallId) fail("CURSOR_APP_EXEC_IDENTITY");
+  const rejected = execution.kind === "shell" && execution.expectRejection === true
+    && message.error === "CURSOR_APP_EXEC_REJECTED" && message.rejectionKind === 4;
+  if ((message.error || execution.expectRejection) && !rejected) fail("CURSOR_APP_EXEC_REJECTED");
   if (execution.kind === "requestContext") return { result: message.requestContext, requestContextBytes: message.requestContextBytes };
   let result, resultBytes;
   if (execution.kind === "read") {
@@ -467,7 +471,7 @@ export function completeToolExecution(execution, message) {
   } else {
     if (message.command !== execution.command || message.workingDirectory !== execution.workingDirectory) fail("CURSOR_APP_EXEC_IDENTITY");
     result = { kind: "shell", command: message.command, workingDirectory: message.workingDirectory,
-      stdout: message.stdout, stderr: message.stderr, exitCode: message.exitCode };
+      ...(rejected ? { rejected: true } : { stdout: message.stdout, stderr: message.stderr, exitCode: message.exitCode }) };
     resultBytes = message.resultBytes;
   }
   const toolBytes = toolCall(execution, resultBytes);

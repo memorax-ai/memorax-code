@@ -33,13 +33,14 @@ function releaseManifest() {
 function nativeReport() {
   return { status: "PASS", client: "cursor", kind: "app-native-session-flows", platform: "linux", node: "24.15.0",
     version: "3.21.18", stage: "complete", evidence: { agentTransport: true, nativeHooks: true, exactAutomaticAdd: true,
-      sameSessionFollowup: true, sessionIsolation: true, workspaceIsolation: true, appResume: true, skillSearch: true, skillAdd: true, pendingShellInterrupted: true, cleanup: true,
-      nativeContent: [3, 6, 3, 9, 15, 21].map((blobCount) => ({ composerMatched: true, stateMatched: true, blobCount })) },
-    agent: { runs: 7, ancillaryRequestCount: 5, unsupportedRpcCount: 1, cancelled: [false, false, false, false, false, false, true],
-      errors: [], writes: [3, 3, 3, 3, 6, 6, 0], acknowledgements: [3, 3, 3, 3, 6, 6, 0], historyTurns: [0, 1, 0, 2, 3, 4, 0],
-      reads: [0, 3, 0, 6, 9, 15, 0], readResults: [0, 3, 0, 6, 9, 15, 0],
-      execRequests: [0, 0, 0, 0, 3, 3, 1], execResults: [0, 0, 0, 0, 3, 3, 0], execCloses: [0, 0, 0, 0, 3, 3, 0],
-      contextRequests: [1, 1, 1, 1, 1, 1, 1], contextResults: [1, 1, 1, 1, 1, 1, 1], contextCloses: [1, 1, 1, 1, 1, 1, 1] }, memoryRequestCount: 8 };
+      sameSessionFollowup: true, sessionIsolation: true, workspaceIsolation: true, appResume: true, skillSearch: true, skillAdd: true,
+      shellDenied: true, pendingShellInterrupted: true, sameSessionRecovered: true, cleanup: true,
+      nativeContent: [3, 6, 3, 9, 15, 21, 4, 3].map((blobCount) => ({ composerMatched: true, stateMatched: true, blobCount })) },
+    agent: { runs: 9, ancillaryRequestCount: 5, unsupportedRpcCount: 1, cancelled: [false, false, false, false, false, false, false, true, false],
+      errors: [], writes: [3, 3, 3, 3, 6, 6, 4, 0, 3], acknowledgements: [3, 3, 3, 3, 6, 6, 4, 0, 3], historyTurns: [0, 1, 0, 2, 3, 4, 0, 0, 0],
+      reads: [0, 3, 0, 6, 9, 15, 0, 0, 0], readResults: [0, 3, 0, 6, 9, 15, 0, 0, 0],
+      execRequests: [0, 0, 0, 0, 3, 3, 1, 1, 0], execResults: [0, 0, 0, 0, 3, 3, 1, 0, 0], execCloses: [0, 0, 0, 0, 3, 3, 1, 0, 0],
+      contextRequests: [1, 1, 1, 1, 1, 1, 1, 1, 1], contextResults: [1, 1, 1, 1, 1, 1, 1, 1, 1], contextCloses: [1, 1, 1, 1, 1, 1, 1, 1, 1] }, memoryRequestCount: 10 };
 }
 
 test("macOS requires the same native content, memory operations and cleanup as Linux", () => {
@@ -295,6 +296,22 @@ test("all platforms require completed cross-workspace evidence for PASS", () => 
   }
 });
 
+test("all platforms require native denial and same-session recovery evidence for PASS", () => {
+  for (const platform of ["linux", "darwin", "win32"]) {
+    const input = { ...nativeReport(), platform };
+    const report = projectNativeReport(input, { platform });
+    assert.equal(report.evidence.shellDenied, true);
+    assert.equal(report.evidence.sameSessionRecovered, true);
+    for (const key of ["shellDenied", "sameSessionRecovered"]) {
+      for (const value of [undefined, false, "true", { private: "synthetic-token" }]) {
+        const invalid = structuredClone(input);
+        invalid.evidence[key] = value;
+        assert.throws(() => projectNativeReport(invalid, { platform }), { code: "CURSOR_CONTAINER_REPORT" });
+      }
+    }
+  }
+});
+
 test("report projection drops raw diagnostics and requires completed native evidence for PASS", () => {
   const input = nativeReport();
   input.privatePath = "/synthetic/private";
@@ -305,16 +322,16 @@ test("report projection drops raw diagnostics and requires completed native evid
   const report = projectNativeReport(input);
   assert.equal(report.status, "PASS");
   assert.equal(report.agent.ancillaryRequestCount, 5);
-  assert.deepEqual(report.agent.historyTurns, [0, 1, 0, 2, 3, 4, 0]);
-  assert.deepEqual(report.agent.reads, [0, 3, 0, 6, 9, 15, 0]);
-  assert.deepEqual(report.agent.readResults, [0, 3, 0, 6, 9, 15, 0]);
-  assert.deepEqual(report.agent.execRequests, [0, 0, 0, 0, 3, 3, 1]);
-  assert.deepEqual(report.agent.execResults, [0, 0, 0, 0, 3, 3, 0]);
-  assert.deepEqual(report.agent.execCloses, [0, 0, 0, 0, 3, 3, 0]);
-  assert.deepEqual(report.agent.contextRequests, [1, 1, 1, 1, 1, 1, 1]);
-  assert.deepEqual(report.agent.contextResults, [1, 1, 1, 1, 1, 1, 1]);
-  assert.deepEqual(report.agent.contextCloses, [1, 1, 1, 1, 1, 1, 1]);
-  assert.deepEqual(report.agent.cancelled, [false, false, false, false, false, false, true]);
+  assert.deepEqual(report.agent.historyTurns, [0, 1, 0, 2, 3, 4, 0, 0, 0]);
+  assert.deepEqual(report.agent.reads, [0, 3, 0, 6, 9, 15, 0, 0, 0]);
+  assert.deepEqual(report.agent.readResults, [0, 3, 0, 6, 9, 15, 0, 0, 0]);
+  assert.deepEqual(report.agent.execRequests, [0, 0, 0, 0, 3, 3, 1, 1, 0]);
+  assert.deepEqual(report.agent.execResults, [0, 0, 0, 0, 3, 3, 1, 0, 0]);
+  assert.deepEqual(report.agent.execCloses, [0, 0, 0, 0, 3, 3, 1, 0, 0]);
+  assert.deepEqual(report.agent.contextRequests, [1, 1, 1, 1, 1, 1, 1, 1, 1]);
+  assert.deepEqual(report.agent.contextResults, [1, 1, 1, 1, 1, 1, 1, 1, 1]);
+  assert.deepEqual(report.agent.contextCloses, [1, 1, 1, 1, 1, 1, 1, 1, 1]);
+  assert.deepEqual(report.agent.cancelled, [false, false, false, false, false, false, false, true, false]);
   assert.equal(report.evidence.skillSearch, true);
   assert.equal(report.evidence.skillAdd, true);
   assert.deepEqual(report.evidence.nativeContent, nativeReport().evidence.nativeContent);
@@ -393,10 +410,10 @@ test("PASS rejects missing, reordered, duplicate or incomplete session-flow evid
     (r) => { r.evidence.sessionIsolation = false; }, (r) => { delete r.evidence.appResume; },
     (r) => { delete r.evidence.skillSearch; }, (r) => { r.evidence.skillAdd = false; },
     (r) => { delete r.evidence.pendingShellInterrupted; },
-    (r) => { delete r.agent.cancelled; }, (r) => { r.agent.cancelled[6] = false; },
-    (r) => { r.agent.cancelled[0] = true; }, (r) => { delete r.agent.cancelled[6]; },
-    (r) => { r.agent.cancelled[6] = "true"; }, (r) => { r.agent.cancelled.pop(); },
-    (r) => { r.agent.execResults[6] = 1; }, (r) => { r.agent.writes[6] = 1; },
+    (r) => { delete r.agent.cancelled; }, (r) => { r.agent.cancelled[7] = false; },
+    (r) => { r.agent.cancelled[0] = true; }, (r) => { delete r.agent.cancelled[7]; },
+    (r) => { r.agent.cancelled[7] = "true"; }, (r) => { r.agent.cancelled.pop(); },
+    (r) => { r.agent.execResults[7] = 1; }, (r) => { r.agent.writes[7] = 1; },
     (r) => { r.evidence.nativeContent[1].stateMatched = false; },
     (r) => { r.evidence.nativeContent[3].composerMatched = false; },
     (r) => { delete r.evidence.nativeContent; }, (r) => { r.evidence.nativeContent.pop(); },
@@ -420,6 +437,27 @@ test("PASS rejects missing, reordered, duplicate or incomplete session-flow evid
     const invalid = nativeReport();
     change(invalid);
     assert.throws(() => projectNativeReport(invalid), /CURSOR_CONTAINER_REPORT/);
+  }
+});
+
+test("PASS requires distinct denied, interrupted and recovered native outcomes", () => {
+  for (const change of [
+    (r) => { r.agent.runs = 7; },
+    (r) => { r.agent.cancelled[6] = true; }, (r) => { r.agent.cancelled[8] = true; },
+    (r) => { r.agent.writes[6] = 3; }, (r) => { r.agent.acknowledgements[6] = 3; },
+    (r) => { r.agent.execRequests[6] = 0; }, (r) => { r.agent.execResults[6] = 0; },
+    (r) => { r.agent.execCloses[6] = 0; },
+    (r) => { r.agent.acknowledgements[7] = 1; }, (r) => { r.agent.execCloses[7] = 1; },
+    (r) => { r.agent.writes[8] = 0; }, (r) => { r.agent.acknowledgements[8] = 0; },
+    (r) => { r.agent.historyTurns[8] = 1; }, (r) => { r.agent.reads[8] = 3; },
+    (r) => { r.agent.readResults[8] = 3; }, (r) => { r.agent.execRequests[8] = 1; },
+    (r) => { r.evidence.nativeContent[6].blobCount = 3; },
+    (r) => { r.evidence.nativeContent[7].blobCount = 0; },
+    (r) => { r.memoryRequestCount = 8; },
+  ]) {
+    const invalid = nativeReport();
+    change(invalid);
+    assert.throws(() => projectNativeReport(invalid), { code: "CURSOR_CONTAINER_REPORT" });
   }
 });
 

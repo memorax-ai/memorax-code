@@ -26,9 +26,10 @@ function field(number, value) {
   const bytes = Buffer.from(value);
   return Buffer.concat([varint(number * 8 + 2), varint(bytes.length), bytes]);
 }
-function runMessage(state = Buffer.alloc(0), { text = prompt, session = conversationId, userId = userMessageId, context, parts } = {}) {
+function runMessage(state = Buffer.alloc(0), { text = prompt, session = conversationId, userId = userMessageId, context, parts, prepend = [] } = {}) {
   const user = Buffer.concat([field(1, text), field(2, userId)]);
-  const action = Buffer.concat([field(1, Buffer.concat([field(1, user), ...(context === undefined ? [] : [field(2, context)])])),
+  const action = Buffer.concat([field(1, Buffer.concat([field(1, user), ...(context === undefined ? [] : [field(2, context)]),
+    ...prepend.map((bytes) => field(4, bytes))])),
     ...(parts === undefined ? [] : [field(17, parts)])]);
   return field(1, Buffer.concat([field(1, state), field(2, action), field(5, session)]));
 }
@@ -155,11 +156,11 @@ function assertFailed(server, stream, code, { writes = 1, acks = 0 } = {}) {
   assert.deepEqual(JSON.parse(stream.frames.at(-1).body), { error: { code: "invalid_argument", message: code } });
   assert.deepEqual(server.errors, [code]);
 }
-async function completedRun(t, server, { prior = [], session = conversationId, text = prompt, expectedAnswer = answer } = {}) {
+async function completedRun(t, server, { prior = [], session = conversationId, text = prompt, expectedAnswer = answer, prepend } = {}) {
   const index = server.runs.length;
   const stream = openRun(t, server, { headers: { "x-request-id": identity(index + 10) }, compression: "gzip" });
   const state = Buffer.concat([scalar(10, 1), ...prior.map((run) => field(8, run.turnBlobId))]);
-  stream.send(runMessage(state, { session, text, userId: identity(index + 100) }));
+  stream.send(runMessage(state, { session, text, userId: identity(index + 100), prepend }));
   const reads = prior.flatMap((run) => run.kvWrites);
   for (const [index, read] of reads.entries()) {
     await waitFor(() => stream.frames.length === index + 1);
@@ -734,6 +735,70 @@ test("native Exec missing close times out without publishing even a successful r
   assert.deepEqual(stream.frames.at(-2), { flags: 0, body: field(5, field(1, scalar(1, 1))) });
 });
 
+test("an expected native Shell rejection waits for close and every ACK before completing", async (t) => {
+  const step = { kind: "shell", command: "printf synthetic > rejected-marker", workingDirectory: "/synthetic/workspace",
+    timeoutMs: 1000, expectRejection: true };
+  const server = await mock(t, { toolSteps: (_run, results) => results.length ? undefined : step });
+  const stream = openRun(t, server);
+  stream.send(runMessage());
+  await waitFor(() => server.runs[0]?.pendingTool);
+  const run = server.runs[0], tool = { ...run.pendingTool };
+  stream.send(execShellRejected(tool.id, step.command, step.workingDirectory, { execId: tool.toolCallId }));
+  await waitFor(() => run.execResultCount === 1);
+  assert.equal(run.execCloseCount, 0);
+  assert.equal(run.toolResults.length, 0);
+  assert.equal(run.kvWriteCount, 0);
+  assert.equal(run.completed, false);
+  stream.send(execControl(tool.id));
+  await waitFor(() => run.kvWriteCount === 1);
+  assert.deepEqual(run.toolResults, [{ kind: "shell", command: step.command, workingDirectory: step.workingDirectory, rejected: true }]);
+  assert.deepEqual([run.execRequestCount, run.execResultCount, run.execCloseCount], [1, 1, 1]);
+  assert.equal(run.kvWrites.length, 4);
+  const nativeResult = field(4, Buffer.concat([field(1, step.command), field(2, step.workingDirectory), field(3, "private-rejection-canary")]));
+  assert.equal(run.kvWrites[1].bytes.includes(nativeResult), true);
+  for (const [index, write] of run.kvWrites.entries()) {
+    await waitFor(() => run.kvWriteCount === index + 1);
+    assert.equal(run.completed, false);
+    assert.equal(run.kvAckCount, index);
+    stream.send(acknowledgement(write.id));
+  }
+  await stream.done;
+  assert.equal(run.completed, true);
+  assert.equal(run.cancelled, false);
+  assert.equal(run.kvAckCount, 4);
+  assert.equal(run.execRejection, undefined);
+  assert.equal(server.firstShellFailure, undefined);
+  assert.deepEqual(server.errors, []);
+});
+
+test("expected Shell rejection still fails on execution, mismatched results and incomplete handshakes", async (t) => {
+  for (const kind of ["success", "failure", "wrong-command", "wrong-cwd", "wrong-exec", "duplicate", "missing-close"]) {
+    await t.test(kind, async (t) => {
+      const step = { kind: "shell", command: "printf synthetic > rejected-marker", workingDirectory: "/synthetic/workspace",
+        timeoutMs: 1000, expectRejection: true };
+      const server = await mock(t, { timeoutMs: kind === "missing-close" ? 100 : 15_000,
+        toolSteps: (_run, results) => results.length ? undefined : step });
+      const stream = openRun(t, server);
+      stream.send(runMessage());
+      await waitFor(() => server.runs[0]?.pendingTool);
+      const run = server.runs[0], tool = { ...run.pendingTool };
+      const result = kind === "success" ? execShellResult(tool.id, step.command, step.workingDirectory, "")
+        : execShellRejected(tool.id, kind === "wrong-command" ? "other command" : step.command,
+          kind === "wrong-cwd" ? "/other/workspace" : step.workingDirectory,
+          { variant: kind === "failure" ? 5 : 4, execId: kind === "wrong-exec" ? identity(99) : tool.toolCallId });
+      stream.request.write(Buffer.concat([frame(result), ...(kind === "duplicate" ? [frame(result), frame(execControl(tool.id))] : [])]));
+      await stream.done;
+      const code = kind.startsWith("wrong-") ? "CURSOR_APP_EXEC_IDENTITY"
+        : kind === "duplicate" ? "CURSOR_AGENT_EXEC_DUPLICATE" : kind === "missing-close" ? "CURSOR_AGENT_TIMEOUT" : "CURSOR_APP_EXEC_REJECTED";
+      assert.deepEqual(server.errors, [code]);
+      assert.equal(run.kvWriteCount, 0);
+      assert.equal(run.execCloseCount, 0);
+      assert.equal(run.toolResults.length, 0);
+      assert.equal(run.completed, false);
+    });
+  }
+});
+
 test("private native rejection diagnostics retain only correlated identities and the numeric result case", async (t) => {
   const server = await mock(t, { toolSteps: () => ({ kind: "shell", command: "synthetic command",
     workingDirectory: "/synthetic/workspace", timeoutMs: 1_000 }) });
@@ -838,6 +903,7 @@ test("tool planning keeps only explicitly allowed fixed assertion codes and reje
   for (const [name, toolSteps, expected] of [
     ["fixed assertion", () => { throw Object.assign(new Error("private-plan-canary"), { nativeCode: "CURSOR_APP_SKILL_NOT_READ" }); }, "CURSOR_APP_SKILL_NOT_READ"],
     ...["CURSOR_APP_INTERRUPTION_IDENTITY", "CURSOR_APP_INTERRUPTION_TOOL_EXECUTED",
+      "CURSOR_APP_PERMISSION_IDENTITY", "CURSOR_APP_PERMISSION_REJECTION",
       "CURSOR_APP_SKILL_ATTACHMENT_PATH", "CURSOR_APP_SKILL_ATTACHMENT_TYPE", "CURSOR_APP_SKILL_ATTACHMENT_CONTENT"].map((code) =>
       [code, () => { throw Object.assign(new Error("private-plan-canary"), { nativeCode: code }); }, code]),
     ["private exception", () => { throw new Error("private-plan-canary"); }, "CURSOR_AGENT_TOOL_PLAN_FAILED"],
@@ -1161,6 +1227,57 @@ test("native Stop with a matching Shell rejection and Exec close permits the obs
     assert.deepEqual([run.execResultCount, run.execCloseCount, run.kvWriteCount, run.kvAckCount], [0, 0, 0, 0]);
     assert.equal(stream.frames.length, 3);
     assert.ok(run.cancellation.transportEvents.every((event) => !event.sessionClosed && !event.sessionDestroyed));
+    const prepend = [Buffer.concat([field(1, run.prompt), field(2, run.userMessageId), scalar(4, 1), field(8, "rebuilt rich text")])];
+    const resumed = await completedRun(t, server, { session: run.conversationId, text: "Synthetic recovery after Stop", prepend });
+    assert.equal(resumed.conversationId, run.conversationId);
+    assert.notEqual(resumed.requestId, run.requestId);
+    assert.notEqual(resumed.userMessageId, run.userMessageId);
+    assert.deepEqual(resumed.turnRefs, []);
+    assert.deepEqual(resumed.prependUserMessages, [{ prompt: run.prompt, userMessageId: run.userMessageId }]);
+    assert.equal(resumed.kvReadCount, 0);
+    assert.equal(resumed.completed, true);
+    assert.deepEqual(resumed.kvWrites[0].bytes, resumed.userMessageBytes);
+    const next = await completedRun(t, server, { session: run.conversationId, prior: [resumed] });
+    assert.deepEqual(next.turnRefs, [resumed.turnBlobId]);
+    assert.equal(next.kvReadCount, 3, "only the completed recovery turn belongs to session history");
+    assert.equal(next.kvReadResultCount, 3);
+    assert.equal(next.completed, true);
+    assert.deepEqual(server.errors, []);
+  });
+});
+
+test("prepended user context must match only the last cancelled run in the same conversation", async (t) => {
+  for (const kind of ["unknown", "not-cancelled", "completed", "wrong-session", "wrong-message", "wrong-prompt",
+    "duplicate", "current-message-reused", "consumed"]) await t.test(kind, async (t) => {
+    let server, previous, prior = [];
+    if (kind === "unknown" || kind === "completed") {
+      server = await mock(t);
+      if (kind === "completed") { previous = await completedRun(t, server); prior = [previous]; }
+    } else {
+      const pending = await pendingShell(t);
+      ({ server, run: previous } = pending);
+      if (kind !== "not-cancelled") {
+        pending.arm();
+        pending.stream.request.close(http2Constants.NGHTTP2_CANCEL);
+        await waitFor(() => previous.cancelled || previous.error);
+        assert.equal(previous.cancelled, true);
+      }
+    }
+    const oldId = previous?.userMessageId ?? userMessageId, oldPrompt = previous?.prompt ?? prompt;
+    const oldMessage = Buffer.concat([field(1, oldPrompt), field(2, oldId)]);
+    if (kind === "consumed") prior = [await completedRun(t, server, { prepend: [oldMessage] })];
+    const before = server.runs.length, stream = openRun(t, server, { headers: { "x-request-id": identity(900) } });
+    const prepend = kind === "wrong-message" ? [Buffer.concat([field(1, oldPrompt), field(2, identity(901))])]
+      : kind === "wrong-prompt" ? [Buffer.concat([field(1, "changed old prompt"), field(2, oldId)])]
+        : kind === "duplicate" ? [oldMessage, oldMessage] : [oldMessage];
+    stream.send(runMessage(Buffer.concat(prior.map((run) => field(8, run.turnBlobId))), {
+      session: kind === "wrong-session" ? identity(902) : conversationId,
+      userId: kind === "current-message-reused" ? oldId : identity(903), prepend,
+    }));
+    await stream.done;
+    assert.equal(server.runs.length, before);
+    assert.deepEqual(server.errors, [kind === "not-cancelled" ? "CURSOR_AGENT_CONVERSATION_BUSY" : "CURSOR_AGENT_RECOVERY_MISMATCH"]);
+    assert.equal(stream.frames.length, 1, "invalid recovery produces no GET, SET or tool execution");
   });
 });
 

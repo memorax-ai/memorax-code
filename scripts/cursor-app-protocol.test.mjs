@@ -187,6 +187,26 @@ test("Run decoding rejects unsupported user actions and nonordinary user content
   assert.throws(() => run({ state: field(8, Buffer.alloc(0)) }), /CURSOR_APP_PROTO_REFERENCE/);
 });
 
+test("Run prepended user context stays separate from the current user and obeys ordinary message rules", () => {
+  const current = fixture().userBytes;
+  const previous = message(field(1, "Synthetic cancelled prompt"), field(2, conversationId), scalar(4, 1), field(8, "synthetic rich text"));
+  const decoded = run({ action: field(1, message(field(1, current), field(4, previous))) });
+  assert.deepEqual(decoded.prependUserMessages, [{ prompt: "Synthetic cancelled prompt", userMessageId: conversationId }]);
+  assert.equal(decoded.prompt, prompt);
+  assert.equal(decoded.userMessageId, userMessageId);
+  assert.deepEqual(decoded.userMessageBytes, current);
+  const completion = createCompletedTurn(decoded, { answer });
+  assert.equal(completion.kvWrites.length, 3);
+  assert.deepEqual(completion.kvWrites[0].bytes, current);
+  for (const extra of [scalar(5, 1), scalar(24, 1), field(18, Buffer.alloc(32)), field(19, Buffer.alloc(32)), field(27, "agent")]) {
+    assert.throws(() => run({ action: field(1, message(field(1, current), field(4, message(previous, extra)))) }),
+      /CURSOR_APP_RUN_UNSUPPORTED/);
+  }
+  assert.throws(() => run({ action: field(1, message(field(1, current), scalar(4, 1))) }), /CURSOR_APP_PROTO_FIELD/);
+  for (const number of [6, 7]) assert.throws(() => run({ action: field(1,
+    message(field(1, current), field(number, Buffer.alloc(0)))) }), /CURSOR_APP_RUN_UNSUPPORTED/);
+});
+
 test("protobuf decoding rejects invalid wire values, duplicate oneofs and truncated nested fields", () => {
   for (const bytes of [Buffer.from([0]), Buffer.from([15]), Buffer.from([10, 2, 0]), Buffer.alloc(11, 255)]) {
     assert.throws(() => decodeAgentClientMessage(bytes, { requestId }), /CURSOR_APP_PROTO/);
@@ -446,6 +466,42 @@ test("Shell network requests preserve the filesystem sandbox and native approval
     /CURSOR_APP_EXEC_OPTIONS/);
 });
 
+test("an explicitly expected Shell rejection preserves the native result without changing its request", () => {
+  const step = { kind: "shell", command: "printf synthetic > rejected-marker", workingDirectory: "/synthetic/workspace", timeoutMs: 1000 };
+  const options = { id: 9, toolCallId: userMessageId };
+  const ordinary = createToolExecution(run(), step, options);
+  const execution = createToolExecution(run(), { ...step, expectRejection: true }, options);
+  assert.deepEqual(execution.execMessage, ordinary.execMessage);
+  assert.deepEqual(execution.startedMessage, ordinary.startedMessage);
+  const nativeResult = field(4, message(field(1, step.command), field(2, step.workingDirectory),
+    field(3, "private-rejection-reason"), scalar(4, 0)));
+  const decoded = decodeAgentClientMessage(field(2, message(scalar(1, 9), field(15, userMessageId), field(2, nativeResult))));
+  const completed = completeToolExecution(execution, decoded);
+  assert.deepEqual(completed.result, { kind: "shell", command: step.command, workingDirectory: step.workingDirectory, rejected: true });
+  assert.equal(JSON.stringify(completed.result).includes("private"), false);
+  assert.deepEqual(completed.stepBytes, field(2, message(field(1, message(field(1, execution.toolArgsBytes),
+    field(2, nativeResult))), field(57, userMessageId))));
+  const turn = createCompletedTurn(run(), { answer, toolSteps: [completed.stepBytes] });
+  assert.equal(turn.kvWrites.length, 4);
+  assert.deepEqual(turn.kvWrites[1].bytes, completed.stepBytes);
+  assert.deepEqual(turn.kvWrites[2].bytes, field(1, field(1, answer)));
+  assert.throws(() => completeToolExecution(ordinary, decoded), /CURSOR_APP_EXEC_REJECTED/);
+  for (const changed of [{ id: 10 }, { execId: requestId }, { execId: "" }, { kind: "read" },
+    { command: "different command" }, { workingDirectory: "/different/workspace" }]) {
+    assert.throws(() => completeToolExecution(execution, { ...decoded, ...changed }), /CURSOR_APP_EXEC_IDENTITY/);
+  }
+  for (const variant of [1, 2, 3, 5, 7]) {
+    const result = decodeAgentClientMessage(field(2, message(scalar(1, 9), field(2, field(variant,
+      message(field(1, step.command), field(2, step.workingDirectory)))))));
+    assert.throws(() => completeToolExecution(execution, result), /CURSOR_APP_EXEC_REJECTED/);
+  }
+  for (const expectRejection of [false, 1, "true", null, {}]) {
+    assert.throws(() => createToolExecution(run(), { ...step, expectRejection }, options), /CURSOR_APP_EXEC_OPTIONS/);
+  }
+  assert.throws(() => createToolExecution(run(), { kind: "read", path: "/synthetic/skill", expectRejection: true }, options),
+    /CURSOR_APP_EXEC_OPTIONS/);
+});
+
 test("Exec control messages bind one ID and redact exceptions", () => {
   for (const [number, event] of [[1, "close"], [2, "error"], [3, "heartbeat"]]) {
     const body = message(scalar(1, 9), ...(number === 2 ? [field(2, "private-error"), field(3, "private-stack")] : []));
@@ -505,13 +561,15 @@ test("unsupported client diagnostics retain only bounded numeric shapes and fixe
   });
 });
 
-test("Shell rejection exposes only command identity for a strictly correlated cancellation", () => {
+test("Shell rejection keeps native bytes internally and only normalized command identity", () => {
   const command = "printf synthetic > stop-marker", workingDirectory = "/synthetic/workspace";
   const body = message(field(1, command), field(2, workingDirectory), field(3, "private-rejection-reason"), scalar(4, 0));
   const decoded = decodeAgentClientMessage(field(2, message(scalar(1, 9), field(15, userMessageId), field(2, field(4, body)))));
   assert.deepEqual(decoded, { type: "execResult", id: 9, kind: "shell", execId: userMessageId,
-    error: "CURSOR_APP_EXEC_REJECTED", rejectionKind: 4, command, workingDirectory });
-  assert.equal(JSON.stringify(decoded).includes("private"), false);
+    error: "CURSOR_APP_EXEC_REJECTED", rejectionKind: 4, command, workingDirectory, resultBytes: field(4, body) });
+  const { resultBytes, ...normalized } = decoded;
+  assert.equal(JSON.stringify(normalized).includes("private"), false);
+  assert.deepEqual(resultBytes, field(4, body));
   const execution = createToolExecution(run(), { kind: "shell", command, workingDirectory, timeoutMs: 1000 },
     { id: 9, toolCallId: userMessageId });
   assert.throws(() => completeToolExecution(execution, decoded), /CURSOR_APP_EXEC_REJECTED/);

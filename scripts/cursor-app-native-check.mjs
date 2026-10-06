@@ -27,9 +27,13 @@ const fixtures = [
     answer: "The installed Skill search returned the parser validation lesson.", operation: "search" },
   { prompt: "/memorax-code Use the memorax-code skill to save the verified parser validation lesson.",
     answer: "The installed Skill saved the parser validation lesson.", operation: "add" },
+  { prompt: "Prepare the synthetic marker command so I can decline its execution.",
+    answer: "The command was declined and did not execute.", permission: "deny" },
 ];
 const interruptedFixture = { prompt: "Prepare the synthetic marker command, then wait for approval.",
   answer: "This interrupted run must never complete." };
+const recoveryFixture = { prompt: "Continue this synthetic conversation with a new concise answer.",
+  answer: "This new turn completed after the previous turn was cancelled." };
 const fixtureKey = "cursor-app-ci-synthetic-key", fixtureUser = "cursor-app-ci-synthetic-user";
 const skillQuery = "Which parser validation invariant applies to this synthetic task?";
 const skillMemory = "Validate parser input before interpreting structured data.";
@@ -39,7 +43,7 @@ const memoryRequests = [], turns = [];
 let agent, memory, app, browser, cli, page, started = false, appLog = "";
 let appLaunchLog = "", appSpawnError, appDebugEndpointSeen = false;
 let root, env, chromium, userData, workspace, failure, failureUi, skillRoot, skillText;
-let interruption;
+let interruption, denial;
 let macos, macosPaths, windows, windowsPaths, backendPort = 18787, debugPort = 9222;
 const observedMacosPids = new Set();
 const referenceTexts = new Map();
@@ -62,6 +66,10 @@ async function waitFor(predicate, code, timeoutMs = 30000) {
     await delay(200);
   } while (Date.now() < deadline);
   check(false, code);
+}
+async function assertMarkerAbsent(marker, code) {
+  try { await lstat(marker); check(false, code); }
+  catch (error) { if (error.code !== "ENOENT") throw error; }
 }
 function spawnOwned(file, args, options) {
   return spawn(file, args, options);
@@ -124,7 +132,7 @@ function assertSkillMemory(operation, result, request) {
     apiKey: fixtureKey, baseUserId: fixtureUser, workspaceName: basename(workspace) });
 }
 function toolSteps(run, results) {
-  if (run === agent.runs[fixtures.length]) {
+  if (interruption && run === agent.runs[interruption.runIndex]) {
     check(interruption && run.prompt === interruptedFixture.prompt && run.conversationId === interruption.sessionId,
       "CURSOR_APP_INTERRUPTION_IDENTITY");
     if (!run.requestContextCloseCount) return { kind: "requestContext" };
@@ -135,9 +143,18 @@ function toolSteps(run, results) {
     return { kind: "shell", command,
     workingDirectory: workspace, timeoutMs: 20000 };
   }
-  const fixture = fixtures[turns.length - 1];
+  const fixture = turns.at(-1);
   check(run.prompt === fixture?.prompt && run.conversationId === turns.at(-1).sessionId, "CURSOR_APP_SKILL_IDENTITY");
   if (!run.requestContextCloseCount) return { kind: "requestContext" };
+  if (fixture.permission === "deny") {
+    check(denial && run.conversationId === denial.sessionId, "CURSOR_APP_PERMISSION_IDENTITY");
+    if (results.length === 0) return { kind: "shell", command: shellCommand([process.execPath, "-e",
+      "require('node:fs').writeFileSync(process.argv[1], 'unexpected execution')", denial.marker]),
+    workingDirectory: workspace, timeoutMs: 20000, expectRejection: true };
+    check(results.length === 1 && results[0].kind === "shell" && results[0].rejected === true,
+      "CURSOR_APP_PERMISSION_REJECTION");
+    return;
+  }
   if (!fixture.operation) return;
   const reference = join(skillRoot, "references", `memorax-${fixture.operation}.md`);
   if (results.length === 0) {
@@ -295,9 +312,9 @@ async function submitPrompt(input, fixture) {
   }
   await input.press("Enter");
 }
-async function runTurn(sessionId) {
-  const index = turns.length, fixture = fixtures[index];
-  const approvedTools = new Set();
+async function runTurn(sessionId, fixture = fixtures[turns.length]) {
+  const index = agent.runs.length;
+  const decidedTools = new Set();
   turns.push({ sessionId, workspaceName: basename(workspace), ...fixture });
   report.stage = "native-submit";
   const input = page.locator(`[data-composer-id="${sessionId}"][data-composer-status]:visible`)
@@ -307,30 +324,33 @@ async function runTurn(sessionId) {
   await waitFor(async () => {
     check(!agent.errors.length, agent.errors[0]);
     const run = agent.runs[index], pending = run?.pendingTool;
-    if (pending?.kind === "shell" && !approvedTools.has(pending.toolCallId)) {
-      check(fixture.operation && run.conversationId === sessionId && run.prompt === fixture.prompt,
+    if (pending?.kind === "shell" && !decidedTools.has(pending.toolCallId)) {
+      check((fixture.operation || fixture.permission === "deny") && run.conversationId === sessionId && run.prompt === fixture.prompt,
         "CURSOR_APP_SKILL_APPROVAL_IDENTITY");
       const button = page.locator(`[data-composer-id="${sessionId}"][data-composer-status]:visible`)
-        .locator(`[data-tool-call-id="${pending.toolCallId}"]:visible`).getByRole("button", { name: "Run", exact: true });
+        .locator(`[data-tool-call-id="${pending.toolCallId}"]:visible`)
+        .getByRole("button", { name: fixture.permission === "deny" ? "Skip" : "Run", exact: true });
       const count = await button.count();
       check(count <= 1, "CURSOR_APP_SKILL_APPROVAL_AMBIGUOUS");
       if (count === 1 && await button.isVisible()) {
+        if (fixture.permission === "deny") await assertMarkerAbsent(denial.marker, "CURSOR_APP_PERMISSION_TOOL_EXECUTED");
         await button.click({ timeout: 2000 });
-        approvedTools.add(pending.toolCallId);
-        run.shellApproval = { toolCallId: pending.toolCallId, clicked: true };
+        decidedTools.add(pending.toolCallId);
+        if (fixture.permission === "deny") run.shellRejection = { toolCallId: pending.toolCallId, clicked: true };
+        else run.shellApproval = { toolCallId: pending.toolCallId, clicked: true };
       }
     }
     return run?.completed;
   }, "CURSOR_APP_AGENT_TIMEOUT", 90000);
   check(agent.runs.length === index + 1, "CURSOR_APP_RUN_COUNT");
-  const run = agent.runs[index], previous = agent.runs.slice(0, index).filter((item) => item.conversationId === sessionId);
+  const run = agent.runs[index], previous = agent.runs.slice(0, index).filter((item) => item.conversationId === sessionId && item.completed);
   check(run.conversationId === sessionId && run.prompt === fixture.prompt, "CURSOR_APP_RUN_PROMPT_IDENTITY");
   check(new Set(agent.runs.map((item) => item.requestId)).size === index + 1
     && new Set(agent.runs.map((item) => item.userMessageId)).size === index + 1, "CURSOR_APP_REUSED_TURN_IDENTITY");
   check(run.turnRefs.length === previous.length && run.turnRefs.every((ref, position) => ref.equals(previous[position].turnBlobId)), "CURSOR_APP_HISTORY_MISMATCH");
   const previousBlobs = previous.reduce((count, item) => count + item.kvWrites.length, 0);
   check(run.kvReadCount === previousBlobs && run.kvReadResultCount === previousBlobs, "CURSOR_APP_HISTORY_READ_COUNT");
-  const writes = fixture.operation ? 6 : 3;
+  const writes = fixture.operation ? 6 : fixture.permission === "deny" ? 4 : 3;
   check(run.kvWriteCount === writes && run.kvAckCount === writes, "CURSOR_APP_KV_ACK_COUNT");
   check(run.requestContextRequestCount === 1 && run.requestContextResultCount === 1 && run.requestContextCloseCount === 1,
     "CURSOR_APP_SKILL_CONTEXT_COUNT");
@@ -354,38 +374,60 @@ async function runTurn(sessionId) {
     && event.trace.session_id === sessionId && event.trace.turn_id === run.requestId && event.outcome === "completed"), "CURSOR_APP_HOOK_COMPLETION");
   if (fixture.operation) {
     check(run.execRequestCount === 3 && run.execResultCount === 3 && run.execCloseCount === 3, "CURSOR_APP_SKILL_EXEC_COUNT");
-    check(approvedTools.size === 1, "CURSOR_APP_SKILL_APPROVAL_COUNT");
+    check(decidedTools.size === 1, "CURSOR_APP_SKILL_APPROVAL_COUNT");
     const calls = events.filter((event) => event.type === `memory_cli_${fixture.operation}` && event.trace?.client === "cursor"
       && event.trace.session_id === sessionId && event.trace.turn_id === run.requestId && event.ok === true);
     check(calls.length === 1, "CURSOR_APP_SKILL_TRACE_IDENTITY");
     report.evidence[fixture.operation === "search" ? "skillSearch" : "skillAdd"] = true;
   }
+  if (fixture.permission === "deny") {
+    check(decidedTools.size === 1 && run.shellRejection?.clicked === true && run.shellApproval?.clicked === false
+      && run.execRequestCount === 1 && run.execResultCount === 1 && run.execCloseCount === 1
+      && run.toolResults.length === 1 && run.toolResults[0].rejected === true,
+    "CURSOR_APP_PERMISSION_REJECTION");
+    await assertMarkerAbsent(denial.marker, "CURSOR_APP_PERMISSION_TOOL_EXECUTED");
+    report.evidence.shellDenied = true;
+  }
 }
 
-async function assertInterrupted() {
-  const run = agent.runs[fixtures.length];
+async function assertInterrupted({ recovered = false } = {}) {
+  const run = agent.runs[interruption.runIndex];
   check(run?.cancelled && !run.completed && !run.error && run.cancellation?.actionReceived === true
     && run.cancellation.rejected === true && run.cancellation.execClosed === true && run.cancellation.transportClosed
     && [2, 8].includes(run.cancellation.rstCode) && run.kvWriteCount === 0 && run.kvAckCount === 0
     && run.execRequestCount === 1 && run.execResultCount === 0 && run.execCloseCount === 0
     && run.requestContextRequestCount === 1 && run.requestContextResultCount === 1 && run.requestContextCloseCount === 1,
   "CURSOR_APP_INTERRUPTION_TRANSPORT");
-  try { await lstat(interruption.marker); check(false, "CURSOR_APP_INTERRUPTION_TOOL_EXECUTED"); }
-  catch (error) { if (error.code !== "ENOENT") throw error; }
+  await assertMarkerAbsent(interruption.marker, "CURSOR_APP_INTERRUPTION_TOOL_EXECUTED");
   const diagnostics = await collectCursorAppDiagnostics({ home: env.MEMORAX_CODE_HOME,
     sessionId: interruption.sessionId, turnId: run.requestId });
   const store = diagnostics.turnStore, trace = diagnostics.trace;
-  check(store.readStatus === "present" && store.versionMatched && store.clientMatched && store.sessionMatched
-    && store.activePresent && store.turnMatched && store.state === "interrupted" && store.stopStatus === "aborted"
-    && store.reason === "interrupted" && !store.metadataPresent && trace.readStatus === "present"
-    && trace.turnStartCount === 1 && trace.interruptedCount === 1 && trace.completedCount === 0 && trace.materializedCount === 0,
+  check(trace.readStatus === "present" && trace.turnStartCount === 1 && trace.interruptedCount === 1
+    && trace.completedCount === 0 && trace.materializedCount === 0,
   "CURSOR_APP_INTERRUPTION_HOOK");
+  if (!recovered) {
+    check(store.readStatus === "present" && store.versionMatched && store.clientMatched && store.sessionMatched
+      && store.activePresent && store.turnMatched && store.state === "interrupted" && store.stopStatus === "aborted"
+      && store.reason === "interrupted" && !store.metadataPresent, "CURSOR_APP_INTERRUPTION_HOOK");
+  } else {
+    const next = agent.runs[interruption.runIndex + 1];
+    check(next?.completed && next.conversationId === interruption.sessionId && next.requestId !== run.requestId
+      && next.prompt === recoveryFixture.prompt, "CURSOR_APP_RECOVERY_IDENTITY");
+    const current = await collectCursorAppDiagnostics({ home: env.MEMORAX_CODE_HOME,
+      sessionId: interruption.sessionId, turnId: next.requestId });
+    const active = current.turnStore;
+    check(active.readStatus === "present" && active.versionMatched && active.clientMatched && active.sessionMatched
+      && active.activePresent && active.turnMatched && active.state === "accepted" && active.stopStatus === "completed"
+      && !active.metadataPresent && current.trace.turnStartCount === 1 && current.trace.completedCount === 1
+      && current.trace.interruptedCount === 0 && current.trace.materializedCount === 1,
+    "CURSOR_APP_RECOVERY_HOOK");
+  }
   assertWriteback();
 }
 
 async function interruptPendingShell() {
   const sessionId = await openSession();
-  interruption = { sessionId, marker: join(workspace, "cancelled-shell-marker") };
+  interruption = { sessionId, runIndex: agent.runs.length, marker: join(workspace, "cancelled-shell-marker") };
   report.stage = "pending-shell-interruption";
   const composer = page.locator(`[data-composer-id="${sessionId}"][data-composer-status]:visible`);
   const input = composer.locator('[contenteditable="true"][role="textbox"]:visible');
@@ -393,7 +435,7 @@ async function interruptPendingShell() {
   let run, stop;
   await waitFor(async () => {
     check(!agent.errors.length, agent.errors[0]);
-    run = agent.runs[fixtures.length];
+    run = agent.runs[interruption.runIndex];
     if (!run?.pendingTool) return false;
     check(run.conversationId === sessionId && run.prompt === interruptedFixture.prompt && run.pendingTool.kind === "shell",
       "CURSOR_APP_INTERRUPTION_IDENTITY");
@@ -462,7 +504,7 @@ try {
   const home = join(root, "home");
   const firstWorkspace = join(root, "workspace");
   userData = join(root, "app-data"); workspace = firstWorkspace;
-  agent = await startCursorAgentMock({ answers: [...fixtures, interruptedFixture].map((fixture) => fixture.answer), toolSteps, timeoutMs: 60000 });
+  agent = await startCursorAgentMock({ answers: [...fixtures, interruptedFixture, recoveryFixture].map((fixture) => fixture.answer), toolSteps, timeoutMs: 60000 });
   memory = createServer(async (request, response) => {
     try {
       let raw = "";
@@ -559,7 +601,13 @@ try {
   check((await cli("status")).cursorAdapter?.cursorHooks?.runtimeObserved === true, "CURSOR_APP_HOOK_NOT_OBSERVED");
   report.evidence.nativeHooks = true;
   report.evidence.exactAutomaticAdd = true;
+  const deniedSession = await openSession();
+  denial = { sessionId: deniedSession, marker: join(workspace, "denied-shell-marker") };
+  await runTurn(deniedSession);
   await interruptPendingShell();
+  await runTurn(interruption.sessionId, recoveryFixture);
+  await assertInterrupted({ recovered: true });
+  report.evidence.sameSessionRecovered = true;
   report.stage = "cleanup";
 } catch (error) {
   failure = error?.stack ?? String(error); report.errorCode = safeCode(error);
@@ -601,10 +649,14 @@ finally {
   }
   if (!report.errorCode && !report.cleanupError) {
     try {
-      check(turns.length === fixtures.length && agent.runs.length === fixtures.length + 1
-        && agent.runs.slice(0, fixtures.length).every((run, index) => run.completed && run.kvWriteCount === (fixtures[index].operation ? 6 : 3)
+      check(turns.length === fixtures.length + 1 && agent.runs.length === fixtures.length + 2
+        && agent.runs.slice(0, fixtures.length).every((run, index) => run.completed
+          && run.kvWriteCount === (fixtures[index].operation ? 6 : fixtures[index].permission === "deny" ? 4 : 3)
           && run.kvAckCount === run.kvWriteCount), "CURSOR_APP_FINAL_RUN_COUNT");
-      await assertInterrupted();
+      const recovered = agent.runs.at(-1);
+      check(recovered.completed && recovered.kvWriteCount === 3 && recovered.kvAckCount === 3, "CURSOR_APP_FINAL_RUN_COUNT");
+      await assertInterrupted({ recovered: true });
+      await assertMarkerAbsent(denial.marker, "CURSOR_APP_PERMISSION_TOOL_EXECUTED");
       assertWriteback();
       for (const [index, operation] of [[4, "search"], [5, "add"]]) {
         assertSkillMemory(operation, JSON.parse(agent.runs[index].toolResults[2].stdout), memoryRequests[index === 4 ? 4 : 6]);
