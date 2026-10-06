@@ -160,7 +160,10 @@ function toolSteps(run, results) {
     const executable = assertCursorAppSkillReference(results[1].content, fixture.operation, process.platform);
     const args = fixture.operation === "search" ? ["search", "--query", skillQuery, "--json"]
       : ["add", "--memory", skillMemory, "--type", "procedural", "--reason", skillReason, "--json"];
-    return { kind: "shell", command: shellCommand([executable, ...args], { MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT: "cursor",
+    return { kind: "shell", command: shellCommand([executable, ...args], {
+      MEMORAX_CODE_MEMORAX_ENDPOINT: env.MEMORAX_CODE_MEMORAX_ENDPOINT,
+      MEMORAX_CODE_HOME: env.MEMORAX_CODE_HOME,
+      MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT: "cursor",
       MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID: run.conversationId }),
     workingDirectory: workspace, timeoutMs: 20000 };
   }

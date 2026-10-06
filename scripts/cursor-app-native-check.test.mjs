@@ -199,6 +199,7 @@ test("native Shell commands keep POSIX quoting and route Windows Skill context a
     ];
     const toolSteps = runInNewContext(`(() => { ${shell}; return function toolSteps(${body}; })()`, {
       process: { platform: "win32", execPath: "C:\\owned\\node.exe" }, join: win32.join,
+      env: { MEMORAX_CODE_MEMORAX_ENDPOINT: "http://127.0.0.1:12345", MEMORAX_CODE_HOME: "C:\\owned\\state" },
       agent: { runs: operation === "interrupt" ? [undefined, run] : [run] },
       fixtures: [{ prompt: run.prompt, operation }], turns: [{ sessionId: run.conversationId }],
       interruption,
@@ -226,8 +227,38 @@ test("native Shell commands keep POSIX quoting and route Windows Skill context a
       args: ["C:\\owned\\bin\\memorax-cli.cmd", ...(operation === "search"
         ? ["search", "--query", "query ' value", "--json"]
         : ["add", "--memory", "memory ' value", "--type", "procedural", "--reason", "reason ' value", "--json"])],
-      environment: { MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT: "cursor", MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID: run.conversationId },
+      environment: { MEMORAX_CODE_MEMORAX_ENDPOINT: "http://127.0.0.1:12345", MEMORAX_CODE_HOME: "C:\\owned\\state",
+        MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT: "cursor", MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID: run.conversationId },
     });
+  }
+});
+
+test("macOS Skill commands explicitly bind the existing mock endpoint and isolated state home", () => {
+  const shell = source.slice(source.indexOf("function quote("), source.indexOf("\nfunction assertSkillMemory("));
+  const body = source.split("function toolSteps(")[1]?.split("\nasync function stopApp(")[0];
+  const env = { MEMORAX_CODE_MEMORAX_ENDPOINT: "http://127.0.0.1:12345", MEMORAX_CODE_HOME: "/owned/state ' space" };
+  const run = { prompt: "synthetic prompt", conversationId: "synthetic-session", requestContextCloseCount: 1 };
+  for (const operation of ["search", "add"]) {
+    const toolSteps = runInNewContext(`(() => { ${shell}; return function toolSteps(${body}; })()`, {
+      process: { platform: "darwin" }, windows: undefined, env, join,
+      agent: { runs: [run] }, fixtures: [{ prompt: run.prompt, operation }], turns: [{ sessionId: run.conversationId }],
+      workspace: "/owned/workspace", skillRoot: "/owned/skill", skillText: "installed skill",
+      referenceTexts: new Map([[operation, "installed reference"]]),
+      skillQuery: "query", skillMemory: "memory", skillReason: "reason",
+      assertCursorAppSkillReference: () => "memorax-cli",
+      check(value, code) { if (!value) throw Object.assign(new Error(code), { code }); },
+    }, { timeout: 100 });
+    const result = toolSteps(run, [
+      { kind: "read", path: "/owned/skill/SKILL.md", content: "installed skill" },
+      { kind: "read", path: `/owned/skill/references/memorax-${operation}.md`, content: "installed reference" },
+    ]);
+    const args = operation === "search" ? "'search' '--query' 'query' '--json'"
+      : "'add' '--memory' 'memory' '--type' 'procedural' '--reason' 'reason' '--json'";
+    assert.equal(result.command, "'env' 'MEMORAX_CODE_MEMORAX_ENDPOINT=http://127.0.0.1:12345' "
+      + "'MEMORAX_CODE_HOME=/owned/state '\\'' space' 'MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT=cursor' "
+      + `'MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID=synthetic-session' 'memorax-cli' ${args}`);
+    assert.equal(result.workingDirectory, "/owned/workspace");
+    assert.equal(result.timeoutMs, 20000);
   }
 });
 
