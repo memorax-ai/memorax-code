@@ -150,3 +150,29 @@ test("lifecycle cleanup verifies shutdown even when the first npm install failed
     assert.equal(JSON.stringify(report).includes("private-canary"), false);
   }
 });
+
+test("Cursor interruption PTYs run under the existing external terminal deadline before dependency removal", async () => {
+  const source = await readFile(new URL("./cursor-lifecycle-check.mjs", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /startCursorSetupInterruption\(/);
+  assert.match(source, /await run\(\[interruptionScript, packageRoot,/);
+  assert.match(source, /JSON\.parse\(error\.stdout\)\.cleanupFailed === true\) commandsClean = false/);
+  const start = source.indexOf("  async function run(args,"), end = source.indexOf("\n  async function npm(args)", start);
+  assert.ok(start > 0 && end > start);
+  const calls = [], commands = new Set();
+  const run = runInNewContext(`(${source.slice(start, end).trim()})`, {
+    check(value) { assert.ok(value); }, interrupted: false, commands, fixtureKey: "synthetic-key",
+    process: { execPath: "/fixture/node" }, workspace: "/fixture/workspace", env: { HOME: "/fixture/home" },
+    ptyScript: "/fixture/pty.mjs", interruptionScript: "/fixture/interruption.mjs",
+    assertCredentialNotEchoed() {},
+    startLifecycleCommand(command, args, options) {
+      calls.push({ command, args, options });
+      return { result: Promise.resolve({ stdout: '{"status":"PASS"}', stderr: "" }) };
+    },
+  }, { timeout: 100 });
+  await run(["/fixture/interruption.mjs", "/fixture/package", "/fixture/pty", "after-config-write"]);
+  await run(["/fixture/pty.mjs"]);
+  await run(["/fixture/product.mjs"]);
+  assert.deepEqual(calls.map(({ options }) => options.terminal), [true, true, false]);
+  assert.ok(calls.every(({ options }) => options.timeoutMs === 180000));
+  assert.equal(commands.size, 0);
+});

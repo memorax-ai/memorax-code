@@ -13,7 +13,7 @@ import { classifyLifecycleRequest } from "./claude-lifecycle-assertions.mjs";
 import { startLifecycleCommand } from "./claude-lifecycle-process.mjs";
 import { snapshotCursorHooks, assertCursorHooks, verifyCursorLifecycleIntegration,
   assertCursorLifecycleIntegrationAbsent } from "./cursor-lifecycle-assertions.mjs";
-import { cursorInterruptionPhases, startCursorSetupInterruption } from "./cursor-lifecycle-interruption.mjs";
+import { cursorInterruptionPhases } from "./cursor-lifecycle-interruption.mjs";
 
 const fixtureKey = `sk_${"C".repeat(43)}`, fixtureUser = "cursor-lifecycle-saved-account";
 const searchMemory = "CURSOR_LIFECYCLE_SAVED_ACCOUNT_RESULT";
@@ -44,6 +44,7 @@ export async function runCursorLifecycleCheck(candidatePath, reportDirectory, pr
   let unexpectedRequests = 0, malformedRequests = 0;
   const commands = new Set(), backendPids = new Set(), preserved = new Map(), searches = [];
   const ptyScript = join(scripts, "codex-setup-pty.mjs");
+  const interruptionScript = join(scripts, "cursor-lifecycle-interruption-cli.mjs");
   const completionPath = () => join(stateHome, "runtime/setup/setup-completion.json");
   const pidPath = () => join(stateHome, "runtime/backend/backend.pid.json");
   const transitionPath = () => join(stateHome, "runtime/install/package-transition.json");
@@ -226,12 +227,16 @@ export async function runCursorLifecycleCheck(candidatePath, reportDirectory, pr
         + (await readFile(configPath, "utf8")).replace("cursor = true", "cursor = true \t"), { mode: 0o600 });
       await seedMemory();
       const protectedConfig = snapshotProtectedConfiguration(parse(await readFile(configPath, "utf8")));
-      const pending = startCursorSetupInterruption({ phase, packageRoot, ptyRoot: join(root, "terminal/node_modules/node-pty"),
-        workspace, env, key: fixtureKey, verifyPreserved: () => retained(protectedConfig) });
-      commands.add(pending);
-      try { Object.assign(result, await pending.result); }
-      catch (error) { if (error.cleanupFailed) commandsClean = false; throw error; }
-      finally { commands.delete(pending); }
+      try {
+        const { status, ...interruption } = JSON.parse((await run([interruptionScript, packageRoot,
+          join(root, "terminal/node_modules/node-pty"), phase])).stdout);
+        check(status === "PASS", "CURSOR_LIFECYCLE_INTERRUPTION_FAILED");
+        Object.assign(result, interruption);
+      } catch (error) {
+        try { if (JSON.parse(error.stdout).cleanupFailed === true) commandsClean = false; } catch {}
+        throw error;
+      }
+      await retained(protectedConfig);
       report.stage = `setup-recovery-${phase}`;
       await terminal("reuse"); await ready(); await retained(protectedConfig); await savedAccountSearch(); await stop();
       Object.assign(result, { status: "PASS", retryWithoutAccountInput: true, cursorIntegrationVerified: true,
@@ -260,7 +265,7 @@ export async function runCursorLifecycleCheck(candidatePath, reportDirectory, pr
   async function run(args, input = "", cleanupCommand = false) {
     check(!interrupted || cleanupCommand, "CURSOR_LIFECYCLE_INTERRUPTED");
     const pending = startLifecycleCommand(process.execPath, args, { cwd: workspace, env, input,
-      timeoutMs: cleanupCommand ? 15000 : 180000, terminal: args[0] === ptyScript });
+      timeoutMs: cleanupCommand ? 15000 : 180000, terminal: args[0] === ptyScript || args[0] === interruptionScript });
     commands.add(pending);
     try {
       const result = await pending.result;
