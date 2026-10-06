@@ -164,16 +164,23 @@ function hookContexts(source, number) {
     return { hookEventName: text(entry, 1), content: text(entry, 2) };
   });
 }
+function agentSkill(value) {
+  const skill = fields(value), decodeText = (bytes) => text(fields(field(1, bytes)), 1);
+  return { fullPath: text(skill, 1), content: optionalText(skill, 2), description: optionalText(skill, 3),
+    ...(skill.has(4) ? { parseError: text(skill, 4) } : {}), disableModelInvocation: boolean(skill, 8),
+    environments: repeated(skill, 5, decodeText), disabledEnvironments: repeated(skill, 6, decodeText) };
+}
+export function decodeSkillsPart(value) {
+  const part = fields(value);
+  if ([...part.keys()].some((number) => ![1, 2].includes(number))) fail("CURSOR_APP_PROTO_FIELD");
+  if (part.has(2)) fields(single(part, 2, 2));
+  return repeated(part, 1, agentSkill);
+}
 function requestContext(value) {
   const context = fields(value);
   return { hooksAdditionalContext: optionalText(context, 25),
     ...(context.has(43) ? { agentSkillsInfoComplete: boolean(context, 43) } : {}),
-    agentSkills: repeated(context, 29, (value) => {
-    const skill = fields(value), decodeText = (bytes) => text(fields(field(1, bytes)), 1);
-    return { fullPath: text(skill, 1), content: optionalText(skill, 2), description: optionalText(skill, 3),
-      ...(skill.has(4) ? { parseError: text(skill, 4) } : {}), disableModelInvocation: boolean(skill, 8),
-      environments: repeated(skill, 5, decodeText), disabledEnvironments: repeated(skill, 6, decodeText) };
-  }) };
+    agentSkills: repeated(context, 29, agentSkill) };
 }
 function identity(value) {
   if (typeof value !== "string" || !UUID.test(value)) fail("CURSOR_APP_RUN_IDENTITY");
@@ -356,10 +363,12 @@ function decodeClientMessage(message, { requestId, allowCancellation = false } =
   const context = single(userAction, 2, 2, false), partsBytes = single(action, 17, 2, false);
   const parts = partsBytes === undefined ? undefined : fields(partsBytes);
   const skillsBlobId = parts && single(parts, 3, 2, false), dynamic = parts && single(parts, 9, 2, false);
+  if (skillsBlobId === undefined ? parts?.has(4) : skillsBlobId.length !== 32) fail("CURSOR_APP_PROTO_REFERENCE");
+  const skillsByteLength = skillsBlobId === undefined ? undefined : unsigned(parts, 4, MAX_FRAME_BYTES);
   return { type: "run", requestId, conversationId, ...userMessage(userMessageBytes), userMessageBytes, conversationStateBytes, turnRefs,
     ...(context === undefined ? {} : { requestContext: requestContext(context) }),
     ...(parts === undefined ? {} : { requestContextParts: {
-      ...(skillsBlobId === undefined ? {} : { skillsBlobId: Buffer.from(skillsBlobId), skillsByteLength: unsigned(parts, 4) }),
+      ...(skillsBlobId === undefined ? {} : { skillsBlobId: Buffer.from(skillsBlobId), skillsByteLength }),
       ...(dynamic === undefined ? {} : { dynamicContext: requestContext(dynamic) }),
     } }) };
 }

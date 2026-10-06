@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { request as httpRequest } from "node:http";
 import { connect as connectHttp2, constants as http2Constants } from "node:http2";
 import { connect, createServer } from "node:net";
@@ -25,9 +26,15 @@ function field(number, value) {
   const bytes = Buffer.from(value);
   return Buffer.concat([varint(number * 8 + 2), varint(bytes.length), bytes]);
 }
-function runMessage(state = Buffer.alloc(0), { text = prompt, session = conversationId, userId = userMessageId } = {}) {
+function runMessage(state = Buffer.alloc(0), { text = prompt, session = conversationId, userId = userMessageId, context, parts } = {}) {
   const user = Buffer.concat([field(1, text), field(2, userId)]);
-  return field(1, Buffer.concat([field(1, state), field(2, field(1, field(1, user))), field(5, session)]));
+  const action = Buffer.concat([field(1, Buffer.concat([field(1, user), ...(context === undefined ? [] : [field(2, context)])])),
+    ...(parts === undefined ? [] : [field(17, parts)])]);
+  return field(1, Buffer.concat([field(1, state), field(2, action), field(5, session)]));
+}
+function skillsReference(bytes, { byteLength = bytes.length, dynamic } = {}) {
+  return Buffer.concat([field(3, createHash("sha256").update(bytes).digest()), scalar(4, byteLength),
+    ...(dynamic === undefined ? [] : [field(9, dynamic)])]);
 }
 function acknowledgement(id, failed = false) {
   return field(3, Buffer.concat([scalar(1, id), field(3, failed ? field(1, field(1, "private-error-canary")) : Buffer.alloc(0))]));
@@ -456,6 +463,179 @@ test("native Read and Shell results require matching stream closes before tool p
   assert.equal(resumed.execResultCount, 0);
   assert.equal(resumed.execCloseCount, 0);
   assert.deepEqual(server.errors, []);
+});
+
+test("current Run SkillsPart GET restores its initial catalog without replacing Exec context or history reads", async (t) => {
+  const skillPath = "/synthetic/skills/SKILL.md", bytes = field(1, field(1, skillPath));
+  const server = await mock(t, { toolSteps(run, results) {
+    if (!run.requestContextParts) { assert.equal(run.inputRequestContext, undefined); return; }
+    assert.equal(run.contextKvReadResultCount, 1);
+    assert.equal(run.inputRequestContext.hooksAdditionalContext, "initial dynamic context");
+    assert.equal(run.inputRequestContext.agentSkills[0].fullPath, skillPath);
+    if (!run.requestContextCloseCount) return { kind: "requestContext" };
+    assert.deepEqual(run.requestContext.agentSkills, []);
+    return results.length ? undefined : { kind: "read", path: skillPath };
+  } });
+  const first = await completedRun(t, server);
+  const stream = openRun(t, server, { headers: { "x-request-id": identity(600) } });
+  stream.send(runMessage(field(8, first.turnBlobId), { parts: skillsReference(bytes, {
+    dynamic: Buffer.concat([field(25, "initial dynamic context"), scalar(43, 1)]),
+  }) }));
+  for (const [index, write] of first.kvWrites.entries()) {
+    await waitFor(() => stream.frames.length === index + 1);
+    assert.deepEqual(stream.frames[index].body, readRequest(index + 1, write.blobId));
+    stream.send(readResult(index + 1, write.bytes));
+  }
+  await waitFor(() => stream.frames.length === 4);
+  const current = server.runs.at(-1);
+  assert.notEqual(current, first);
+  assert.equal(current.kvReadCount, 3);
+  assert.equal(current.kvReadResultCount, 3);
+  assert.equal(current.contextKvReadCount, 1);
+  assert.equal(current.contextKvReadResultCount, 0);
+  assert.equal(current.requestContextRequestCount, 0);
+  assert.equal(current.inputRequestContext, undefined);
+  assert.deepEqual(stream.frames[3].body, readRequest(4, createHash("sha256").update(bytes).digest()));
+  stream.send(readResult(4, bytes));
+  await waitFor(() => current.requestContextRequestCount === 1);
+  stream.request.write(Buffer.concat([frame(execContextResult(5, field(25, "later Exec context"))), frame(execControl(5))]));
+  await waitFor(() => current.pendingTool?.id === 6);
+  stream.request.write(Buffer.concat([frame(execReadResult(6, skillPath, "native skill")), frame(execControl(6))]));
+  await waitFor(() => current.kvWriteCount === 1);
+  assert.deepEqual(current.kvWrites.map((write) => write.id), [7, 8, 9, 10]);
+  for (const [index, write] of current.kvWrites.entries()) {
+    await waitFor(() => current.kvWriteCount === index + 1);
+    stream.send(acknowledgement(write.id));
+  }
+  await stream.done;
+  assert.equal(current.completed, true);
+  assert.equal(current.contextKvReadResultCount, 1);
+  assert.equal(current.inputRequestContext.agentSkillsInfoComplete, true);
+  assert.equal(current.inputRequestContext.hooksAdditionalContext, "initial dynamic context");
+  assert.equal(current.requestContext.hooksAdditionalContext, "later Exec context");
+  assert.equal(current.toolResults[0].content, "native skill");
+  const resumed = await completedRun(t, server, { prior: [first, current] });
+  assert.equal(resumed.inputRequestContext, undefined, "history never supplies a later Run's initial catalog");
+  assert.equal(resumed.contextKvReadCount, 0);
+  assert.equal(resumed.contextKvReadResultCount, 0);
+  assert.equal(resumed.kvReadResultCount, 7);
+  assert.deepEqual(server.errors, []);
+});
+
+test("SkillsPart GET accepts explicit empty bytes and rejects conflicting complete inline catalogs", async (t) => {
+  const skill = field(1, "/synthetic/skills/SKILL.md"), other = field(1, "/private-conflict-canary/SKILL.md");
+  for (const [name, bytes, context, dynamic, expectedPath, conflict] of [
+    ["empty", Buffer.alloc(0), undefined, Buffer.alloc(0), undefined, false],
+    ["same inline", field(1, skill), field(29, skill), Buffer.alloc(0), "/synthetic/skills/SKILL.md", false],
+    ["conflicting inline", field(1, skill), field(29, other), Buffer.alloc(0), undefined, true],
+    ["empty inline conflict", field(1, skill), Buffer.alloc(0), Buffer.alloc(0), undefined, true],
+    ["incomplete inline", field(1, skill), Buffer.concat([field(29, other), scalar(43, 0)]), Buffer.alloc(0), "/synthetic/skills/SKILL.md", false],
+    ["incomplete reference", field(1, other), field(29, skill), scalar(43, 0), "/synthetic/skills/SKILL.md", false],
+  ]) await t.test(name, async (t) => {
+    const server = await mock(t), stream = openRun(t, server);
+    stream.send(runMessage(Buffer.alloc(0), { context, parts: skillsReference(bytes, { dynamic }) }));
+    await waitFor(() => stream.frames.length === 1);
+    assert.deepEqual(stream.frames[0].body, readRequest(1, createHash("sha256").update(bytes).digest()));
+    stream.send(readResult(1, bytes));
+    if (conflict) {
+      await stream.done;
+      assert.deepEqual(server.errors, ["CURSOR_AGENT_CONTEXT_CONFLICT"]);
+      assert.equal(server.runs[0].kvWriteCount, 0);
+      assert.equal(server.runs[0].completed, false);
+      assert.equal(JSON.stringify(server.errors).includes("canary"), false);
+      return;
+    }
+    await waitFor(() => server.runs[0]?.kvWriteCount === 1);
+    const run = server.runs[0];
+    assert.equal(run.inputRequestContext.agentSkills[0]?.fullPath, expectedPath);
+    assert.equal(run.inputRequestContext.agentSkills.length, expectedPath ? 1 : 0);
+    assert.equal(run.contextKvReadCount, 1);
+    assert.equal(run.contextKvReadResultCount, 1);
+    assert.equal(run.kvReadCount, 0);
+    assert.deepEqual(run.kvWrites.map((write) => write.id), [2, 3, 4]);
+    for (const [index, write] of run.kvWrites.entries()) {
+      await waitFor(() => run.kvWriteCount === index + 1);
+      stream.send(acknowledgement(write.id));
+    }
+    await stream.done;
+    assert.equal(run.completed, true);
+    assert.deepEqual(server.errors, []);
+  });
+});
+
+test("dynamic-only Run context is not an initial Skill catalog", async (t) => {
+  const server = await mock(t, { toolSteps(run) { assert.equal(run.inputRequestContext, undefined); } });
+  const stream = openRun(t, server);
+  stream.send(runMessage(Buffer.alloc(0), { parts: field(9, field(25, "dynamic-only")) }));
+  await waitFor(() => server.runs[0]?.kvWriteCount === 1);
+  const run = server.runs[0];
+  assert.equal(run.contextKvReadCount, 0);
+  for (const [index, write] of run.kvWrites.entries()) {
+    await waitFor(() => run.kvWriteCount === index + 1);
+    stream.send(acknowledgement(write.id));
+  }
+  await stream.done;
+  assert.equal(run.completed, true);
+  assert.deepEqual(server.errors, []);
+});
+
+test("dual Run SkillsPart preserves inline dynamic metadata when parts omit dynamic context", async (t) => {
+  const bytes = field(1, field(1, "/synthetic/skills/SKILL.md"));
+  const context = Buffer.concat([field(25, "current inline hook"), scalar(43, 0)]);
+  let plannedContext;
+  const server = await mock(t, { toolSteps(run) { plannedContext = run.inputRequestContext; } });
+  const stream = openRun(t, server);
+  stream.send(runMessage(Buffer.alloc(0), { context, parts: skillsReference(bytes) }));
+  await waitFor(() => stream.frames.length === 1);
+  assert.equal(plannedContext, undefined);
+  stream.send(readResult(1, bytes));
+  await waitFor(() => server.runs[0]?.kvWriteCount === 1);
+  const run = server.runs[0];
+  assert.equal(plannedContext.agentSkillsInfoComplete, false);
+  assert.equal(plannedContext.hooksAdditionalContext, "current inline hook");
+  assert.equal(plannedContext.agentSkills[0].fullPath, "/synthetic/skills/SKILL.md");
+  assert.equal(run.contextKvReadResultCount, 1);
+  for (const [index, write] of run.kvWrites.entries()) {
+    await waitFor(() => run.kvWriteCount === index + 1);
+    stream.send(acknowledgement(write.id));
+  }
+  await stream.done;
+  assert.equal(run.completed, true);
+  assert.deepEqual(server.errors, []);
+});
+
+test("SkillsPart GET fails closed before planning tools on invalid results", async (t) => {
+  for (const kind of ["unknown", "duplicate", "failed", "missing", "empty", "hash", "length", "typed", "wrong-type", "ended", "timeout"]) {
+    await t.test(kind, async (t) => {
+      let planned = 0;
+      const server = await mock(t, { timeoutMs: kind === "timeout" ? 100 : 15_000, toolSteps() { planned++; } });
+      const bytes = kind === "typed" ? field(1, scalar(1, 1)) : field(1, field(1, "/private-skill-canary/SKILL.md"));
+      const stream = openRun(t, server);
+      stream.send(runMessage(Buffer.alloc(0), { parts: skillsReference(bytes, { byteLength: bytes.length + (kind === "length" ? 1 : 0) }) }));
+      await waitFor(() => stream.frames.length === 1);
+      if (kind === "ended") stream.request.end();
+      else if (kind === "wrong-type") stream.send(acknowledgement(1));
+      else if (kind === "duplicate") {
+        const result = frame(readResult(1, bytes));
+        stream.request.write(Buffer.concat([result, result]));
+      } else if (kind !== "timeout") stream.send(readResult(kind === "unknown" ? 999 : 1,
+        kind === "missing" ? undefined : kind === "empty" ? Buffer.alloc(0)
+          : kind === "hash" ? Buffer.alloc(bytes.length) : bytes, kind === "failed"));
+      await stream.done;
+      const code = { unknown: "CURSOR_AGENT_UNKNOWN_KV_READ", duplicate: "CURSOR_AGENT_DUPLICATE_KV_READ",
+        failed: "CURSOR_AGENT_KV_READ_REJECTED", missing: "CURSOR_AGENT_KV_READ_MISSING", empty: "CURSOR_AGENT_KV_READ_MISMATCH",
+        hash: "CURSOR_AGENT_KV_READ_MISMATCH", length: "CURSOR_AGENT_KV_READ_MISMATCH", typed: "CURSOR_APP_PROTO_FIELD",
+        "wrong-type": "CURSOR_AGENT_KV_RESULT_MISMATCH", ended: "CURSOR_AGENT_KV_READ_MISSING", timeout: "CURSOR_AGENT_TIMEOUT" }[kind];
+      assert.deepEqual(server.errors, [code]);
+      assert.equal(server.runs[0].completed, false);
+      assert.equal(server.runs[0].kvWriteCount, 0);
+      assert.equal(server.runs[0].contextKvReadCount, 1);
+      assert.equal(server.runs[0].contextKvReadResultCount, kind === "duplicate" ? 1 : 0);
+      assert.equal(server.runs[0].kvReadResultCount, 0);
+      assert.equal(planned, 0);
+      assert.equal(JSON.stringify(server.errors).includes("canary"), false);
+    });
+  }
 });
 
 test("native context must complete its correlated handshake before Skill tools and is not added to their graph", async (t) => {

@@ -4,7 +4,7 @@ import test from "node:test";
 import { gzipSync } from "node:zlib";
 import {
   completeToolExecution, createCompletedTurn, createConnectDecoder, createGetBlobMessage, createToolExecution,
-  decodeAgentClientMessage, encodeConnectEnvelope,
+  decodeAgentClientMessage, decodeSkillsPart, encodeConnectEnvelope,
 } from "./cursor-app-protocol.mjs";
 
 const requestId = "11111111-1111-4111-8111-111111111111";
@@ -238,6 +238,64 @@ test("Run context decodes official Hook and installed Skill fields without scann
   assert.deepEqual(withParts.requestContextParts.dynamicContext, decoded.requestContext);
   assert.throws(() => run({ action: field(1, message(field(1, user), field(2, message(field(25, "one"), field(25, "two"))))) }),
     /CURSOR_APP_PROTO_FIELD/);
+});
+
+test("SkillsPart decodes repeated native Skills and keeps optional options out of the result", () => {
+  const skills = [field(1, "/synthetic/skills/memorax-code/SKILL.md"), message(field(1, "C:\\synthetic\\SKILL.md"),
+    field(2, "Native \u8bb0\u5fc6"), field(3, "Synthetic skill"), field(4, "Synthetic parse issue"),
+    field(5, "local"), field(5, "remote"), field(6, "disabled"), scalar(8, 1))];
+  const expected = [
+    { fullPath: "/synthetic/skills/memorax-code/SKILL.md", content: "", description: "", disableModelInvocation: false,
+      environments: [], disabledEnvironments: [] },
+    { fullPath: "C:\\synthetic\\SKILL.md", content: "Native \u8bb0\u5fc6", description: "Synthetic skill",
+      parseError: "Synthetic parse issue", disableModelInvocation: true, environments: ["local", "remote"], disabledEnvironments: ["disabled"] },
+  ];
+  const part = message(...skills.map((skill) => field(1, skill)), field(2, field(1, "private-options-canary")));
+  assert.deepEqual(decodeSkillsPart(part), expected);
+  assert.equal(JSON.stringify(decodeSkillsPart(part)).includes("private-options-canary"), false);
+  assert.deepEqual(decodeSkillsPart(Buffer.alloc(0)), []);
+  assert.deepEqual(decodeSkillsPart(field(2, Buffer.alloc(0))), []);
+  assert.deepEqual(run({ action: field(1, message(field(1, fixture().userBytes),
+    field(2, message(...skills.map((skill) => field(29, skill)))))) }).requestContext.agentSkills, expected);
+});
+
+test("SkillsPart rejects malformed schema, text, booleans and oversized content with fixed errors", () => {
+  for (const [part, suffix] of [
+    [scalar(1, 1), "FIELD"], [field(1, Buffer.alloc(0)), "FIELD"],
+    [field(1, field(1, Buffer.from([0xc3, 0x28]))), "UTF8"],
+    [field(1, message(field(1, "private-skill-canary"), scalar(8, 2))), "FIELD"],
+    [field(1, message(field(1, "private-skill-canary"), field(8, "true"))), "FIELD"],
+    [field(1, message(field(1, "one"), field(1, "two"))), "FIELD"],
+    [scalar(2, 1), "FIELD"], [message(field(2, Buffer.alloc(0)), field(2, Buffer.alloc(0))), "FIELD"],
+    [field(2, Buffer.from([15])), "WIRE"], [field(3, "private-unknown-canary"), "FIELD"],
+    [Buffer.alloc(16 * 1024 * 1024 + 1), "TOO_LARGE"], ["private-not-bytes-canary", "BYTES"],
+  ]) {
+    assert.throws(() => decodeSkillsPart(part), (error) => {
+      assert.equal(error.code, `CURSOR_APP_PROTO_${suffix}`);
+      assert.equal(error.message, error.code);
+      assert.deepEqual(Object.keys(error), ["code"]);
+      return true;
+    });
+  }
+});
+
+test("Run SkillsPart references require a SHA256 ID and a bounded declared byte length", () => {
+  const decode = (parts) => run({ action: message(field(1, field(1, fixture().userBytes)), field(17, parts)) });
+  const blobId = hash(Buffer.alloc(0));
+  assert.deepEqual(decode(field(3, blobId)).requestContextParts, { skillsBlobId: blobId, skillsByteLength: 0 });
+  for (const size of [0, 1, 16 * 1024 * 1024]) {
+    assert.equal(decode(message(field(3, blobId), scalar(4, size))).requestContextParts.skillsByteLength, size);
+  }
+  assert.deepEqual(decode(field(1, blobId)).requestContextParts, {});
+  for (const [parts, suffix] of [
+    ...[0, 31, 33, 64].map((length) => [field(3, Buffer.alloc(length)), "REFERENCE"]),
+    [scalar(4, 0), "REFERENCE"], [scalar(4, 1), "REFERENCE"],
+    [scalar(3, 1), "FIELD"], [message(field(3, blobId), field(3, blobId)), "FIELD"],
+    [message(field(3, blobId), field(4, "private-size-canary")), "FIELD"],
+    [message(field(3, blobId), scalar(4, 0), scalar(4, 1)), "FIELD"],
+    ...[16 * 1024 * 1024 + 1, 0x100000000, 0x20000000000000n, 0xffffffffffffffffn]
+      .map((size) => [message(field(3, blobId), scalar(4, size)), "FIELD"]),
+  ]) assert.throws(() => decode(parts), { code: `CURSOR_APP_PROTO_${suffix}` });
 });
 
 test("Skill discovery readiness preserves optional true, false and unknown values", () => {

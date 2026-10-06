@@ -3,9 +3,10 @@ import { createServer as createHttpServer } from "node:http";
 import { createServer as createHttp2Server, constants as http2Constants } from "node:http2";
 import { createConnection, createServer as createTcpServer } from "node:net";
 import { networkInterfaces } from "node:os";
+import { isDeepStrictEqual } from "node:util";
 import {
   completeToolExecution, createCompletedTurn, createConnectDecoder, createExecAbortMessage, createGetBlobMessage, createToolExecution,
-  decodeAgentClientMessage, encodeConnectEnvelope,
+  decodeAgentClientMessage, decodeSkillsPart, encodeConnectEnvelope,
 } from "./cursor-app-protocol.mjs";
 
 const agentPath = "/agent.v1.AgentService/Run";
@@ -127,8 +128,8 @@ export async function startCursorAgentMock({ answer, answers, toolSteps, timeout
     const path = recordRequest(headers[":method"], headers[":path"], "h2c");
     const compression = headers["connect-content-encoding"] ?? "identity";
     const requestId = headers["x-request-id"];
-    let run, completion, pendingKv, pendingExec, selectedAnswer, kvReads, history, cancellation;
-    let settled = false, totalBytes = 0, messageCount = 0;
+    let run, completion, pendingKv, pendingExec, selectedAnswer, kvReads, contextRead, history, cancellation;
+    let settled = false, totalBytes = 0, messageCount = 0, nextId = 1;
     const acknowledged = new Set();
     const completedExecIds = new Set(), completedToolSteps = [];
     const timer = setTimeout(() => fail("CURSOR_AGENT_TIMEOUT"), timeoutMs);
@@ -171,6 +172,12 @@ export async function startCursorAgentMock({ answer, answers, toolSteps, timeout
         run.kvReadCount++;
         return;
       }
+      if (contextRead && !run.contextKvReadResultCount) {
+        pendingKv = { ...contextRead, type: "kvGetResult", context: true };
+        send(createGetBlobMessage(contextRead));
+        run.contextKvReadCount++;
+        return;
+      }
       if (pendingExec) {
         if (!pendingExec.closed) return;
         const completed = pendingExec.completed;
@@ -203,7 +210,7 @@ export async function startCursorAgentMock({ answer, answers, toolSteps, timeout
           if (context && run.requestContextRequestCount) { fail("CURSOR_AGENT_CONTEXT_DUPLICATE"); return; }
           if (!context && run.execRequestCount >= 8) { fail("CURSOR_AGENT_EXEC_LIMIT"); return; }
           const execution = createToolExecution(run, step, {
-            id: kvReads.length + run.execRequestCount + run.requestContextRequestCount + 1, toolCallId: randomUUID(),
+            id: nextId++, toolCallId: randomUUID(),
           });
           pendingExec = { execution, closed: false, heartbeats: 0 };
           if (context) run.requestContextRequestCount++;
@@ -217,7 +224,7 @@ export async function startCursorAgentMock({ answer, answers, toolSteps, timeout
           return;
         }
         completion = createCompletedTurn(run, { answer: selectedAnswer, toolSteps: completedToolSteps,
-          firstKvId: kvReads.length + run.execRequestCount + run.requestContextRequestCount + 1 });
+          firstKvId: nextId });
         run.conversationStateBytes = completion.conversationStateBytes;
         run.turnBlobId = completion.turnBlobId;
         run.kvWrites = completion.kvWrites;
@@ -258,13 +265,16 @@ export async function startCursorAgentMock({ answer, answers, toolSteps, timeout
           fail("CURSOR_AGENT_HISTORY_MISMATCH"); return;
         }
         if (answerSequence && runs.length >= answerSequence.length) { fail("CURSOR_AGENT_ANSWER_EXHAUSTED"); return; }
-        kvReads = history.flatMap((turn) => turn.kvWrites).map((write, index) =>
-          ({ id: index + 1, blobId: write.blobId, bytes: write.bytes }));
+        kvReads = history.flatMap((turn) => turn.kvWrites).map((write) =>
+          ({ id: nextId++, blobId: write.blobId, bytes: write.bytes }));
+        if (message.requestContextParts?.skillsBlobId) contextRead = { id: nextId++,
+          blobId: message.requestContextParts.skillsBlobId, byteLength: message.requestContextParts.skillsByteLength };
         selectedAnswer = answerSequence?.[runs.length] ?? answer;
         requestIds.add(message.requestId);
         activeConversations.add(message.conversationId);
         run = { ...message, inputConversationStateBytes: message.conversationStateBytes, inputRequestContext: message.requestContext,
           kvWrites: [], kvWriteCount: 0, kvAckCount: 0, kvReadCount: 0, kvReadResultCount: 0,
+          contextKvReadCount: 0, contextKvReadResultCount: 0,
           toolResults: [], execRequestCount: 0, execResultCount: 0, execCloseCount: 0,
           shellApproval: { toolCallId: undefined, clicked: false },
           requestContextRequestCount: 0, requestContextResultCount: 0, requestContextCloseCount: 0, completed: false, cancelled: false };
@@ -327,11 +337,30 @@ export async function startCursorAgentMock({ answer, answers, toolSteps, timeout
       if (pendingKv.type !== message.type) { fail("CURSOR_AGENT_KV_RESULT_MISMATCH"); return; }
       if (message.error !== undefined) { fail(reading ? "CURSOR_AGENT_KV_READ_REJECTED" : "CURSOR_AGENT_KV_REJECTED"); return; }
       if (reading) {
-        if (!message.bytes?.length) { fail("CURSOR_AGENT_KV_READ_MISSING"); return; }
-        if (!message.bytes.equals(pendingKv.bytes) || !createHash("sha256").update(message.bytes).digest().equals(pendingKv.blobId)) {
-          fail("CURSOR_AGENT_KV_READ_MISMATCH"); return;
+        if (pendingKv.context) {
+          if (message.bytes === undefined) { fail("CURSOR_AGENT_KV_READ_MISSING"); return; }
+          if (message.bytes.length !== pendingKv.byteLength
+            || !createHash("sha256").update(message.bytes).digest().equals(pendingKv.blobId)) {
+            fail("CURSOR_AGENT_KV_READ_MISMATCH"); return;
+          }
+          const initial = run.inputRequestContext;
+          const restored = { ...(run.requestContextParts.dynamicContext ?? initial ?? { hooksAdditionalContext: "" }),
+            agentSkills: decodeSkillsPart(message.bytes) };
+          if (initial && initial.agentSkillsInfoComplete !== false && restored.agentSkillsInfoComplete !== false
+            && !isDeepStrictEqual(initial.agentSkills, restored.agentSkills)) {
+            fail("CURSOR_AGENT_CONTEXT_CONFLICT"); return;
+          }
+          if (!initial || initial.agentSkillsInfoComplete === false || restored.agentSkillsInfoComplete !== false) {
+            run.inputRequestContext = restored;
+          }
+          run.contextKvReadResultCount++;
+        } else {
+          if (!message.bytes?.length) { fail("CURSOR_AGENT_KV_READ_MISSING"); return; }
+          if (!message.bytes.equals(pendingKv.bytes) || !createHash("sha256").update(message.bytes).digest().equals(pendingKv.blobId)) {
+            fail("CURSOR_AGENT_KV_READ_MISMATCH"); return;
+          }
+          run.kvReadResultCount++;
         }
-        run.kvReadResultCount++;
       } else run.kvAckCount++;
       acknowledged.add(message.id);
       pendingKv = undefined;
@@ -406,7 +435,7 @@ export async function startCursorAgentMock({ answer, answers, toolSteps, timeout
       if (settled) return;
       // The client can half-close its request before its CANCEL frame arrives.
       if (cancellation) return;
-      fail(!run ? "CURSOR_AGENT_RUN_MISSING" : run.kvReadResultCount < kvReads.length
+      fail(!run ? "CURSOR_AGENT_RUN_MISSING" : run.kvReadResultCount < kvReads.length || contextRead && !run.contextKvReadResultCount
         ? "CURSOR_AGENT_KV_READ_MISSING" : pendingExec ? "CURSOR_AGENT_EXEC_INCOMPLETE" : "CURSOR_AGENT_ACK_MISSING");
     });
     if (path !== agentPath) fail(isAgentPath(path) ? "CURSOR_AGENT_ROUTE_INVALID" : "CURSOR_MOCK_UNKNOWN_ROUTE");

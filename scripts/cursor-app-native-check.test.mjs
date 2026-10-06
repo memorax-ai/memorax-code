@@ -226,6 +226,35 @@ test("native Skill discovery classifies failures without changing exact-path acc
   }
 });
 
+test("Skill discovery uses only a complete current Run initial catalog before its later Exec snapshot", () => {
+  const body = source.split("function toolSteps(")[1]?.split("\nasync function stopApp(")[0];
+  assert.ok(body);
+  const skillRoot = "C:\\synthetic\\skills", match = { fullPath: win32.join(skillRoot, "SKILL.md") };
+  const full = { agentSkills: [match] }, empty = { agentSkills: [] };
+  for (const [input, latest, suffix] of [
+    [full, empty, undefined], [empty, full, "LIST_EMPTY"],
+    [{ ...full, agentSkillsInfoComplete: true }, empty, undefined],
+    [{ ...empty, agentSkillsInfoComplete: true }, full, "LIST_EMPTY"],
+    [{ ...empty, agentSkillsInfoComplete: false }, full, undefined],
+    [{ ...full, agentSkillsInfoComplete: false }, empty, "LIST_EMPTY"],
+    [{ agentSkills: [{ fullPath: "C:\\private-other-canary\\SKILL.md" }] }, full, "PATH_MISMATCH"],
+    [undefined, full, undefined], [undefined, empty, "LIST_EMPTY"],
+  ]) {
+    const prior = { conversationId: "synthetic-session", completed: true, turnBlobId: Buffer.alloc(32), inputRequestContext: full };
+    const run = { prompt: "synthetic prompt", conversationId: prior.conversationId, requestContextCloseCount: 1,
+      turnRefs: [prior.turnBlobId], inputRequestContext: input, requestContextParts: { dynamicContext: full },
+      requestContext: { ...latest,
+        hooksAdditionalContext: "MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT=cursor and MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID=synthetic-session" } };
+    const toolSteps = runInNewContext(`(function toolSteps(${body})`, {
+      join: win32.join, skillRoot, agent: { runs: [prior, run] },
+      fixtures: [{ prompt: run.prompt, operation: "search" }, {}], turns: [{ sessionId: run.conversationId }],
+      check(value, code) { if (!value) throw Object.assign(new Error(code), { code }); },
+    }, { timeout: 100 });
+    if (suffix) assert.throws(() => toolSteps(run, []), { code: `CURSOR_APP_SKILL_${suffix}`, message: `CURSOR_APP_SKILL_${suffix}` });
+    else assert.deepEqual(JSON.parse(JSON.stringify(toolSteps(run, []))), { kind: "read", path: match.fullPath });
+  }
+});
+
 test("native Shell commands keep POSIX quoting and route Windows Skill context and pending markers", () => {
   const shell = source.slice(source.indexOf("function quote("), source.indexOf("\nfunction assertSkillMemory("));
   const body = source.split("function toolSteps(")[1]?.split("\nasync function stopApp(")[0];

@@ -1178,7 +1178,11 @@ in A with a different answer, a new conversation B with the same initial prompt
 and answer, an App restart followed by another ordinary prompt in A, then
 explicit Skill Search and Add turns in A. Every run completes the native lazy
 RequestContext exchange. Skill turns require discovery in their current native
-context and the Hook instructions received for that same conversation. Retained
+context and the Hook instructions received for that same conversation.
+Skill catalogs come from the current run's complete initial context, including
+referenced Skills parts verified by byte length and SHA-256, or its native
+RequestContext result when no complete initial catalog was supplied. These
+snapshots are not combined with other runs or a filesystem inventory. Retained
 instructions come only from completed turns referenced by the native history
 of the current run. The local mock service remains running across the App
 restart. This does not assert that Hook context is persisted in the App database.
