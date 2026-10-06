@@ -1177,13 +1177,12 @@ Six completed native runs exercise an initial turn in conversation A, a repeated
 in A with a different answer, a new conversation B with the same initial prompt
 and answer, an App restart followed by another ordinary prompt in A, then
 explicit Skill Search and Add turns in A. Every run completes the native lazy
-RequestContext exchange. Skill turns require discovery in their current native
-context and the Hook instructions received for that same conversation.
-Skill discovery prefers the native RequestContext result when it contains a
-catalog or explicitly reports discovery complete. Otherwise, a nonempty complete
-initial catalog from the same run may supply it; referenced Skills parts are
-verified by byte length and SHA-256. An empty initial catalog never overrides a
-newer catalog. Snapshots are not combined with other runs or a filesystem inventory. Retained
+RequestContext exchange. Skill turns select `/memorax-code` from the native slash
+menu and require its Skill mention in the composer. The submitted native message
+must carry the installed Skill's exact path and complete body (without YAML
+frontmatter) as a manually attached rule. A RequestContext Skill catalog is not
+required or used as a substitute for that attachment. Skill turns also require
+the Hook instructions received for that same conversation. Retained
 instructions come only from completed turns referenced by the native history
 of the current run. The local mock service remains running across the App
 restart. This does not assert that Hook context is persisted in the App database.
@@ -1322,9 +1321,9 @@ only bounded 32-bit exit codes, fixed signal/error enums and marker booleans, no
 stderr. Windows cleanup errors distinguish process-query, JSON and row-validation
 failures using fixed codes, without publishing process lists or PowerShell output.
 Windows App-stop failures retain only fixed error categories or bounded numeric
-exit codes. Skill-discovery failures distinguish incomplete discovery, an empty
-list, a path mismatch, parsing errors and disabled invocation using fixed codes;
-Skill paths and parser messages remain private.
+exit codes. Skill-entry failures distinguish a missing or ambiguous native menu
+item, a missing or ambiguous mention, and an invalid native attachment using fixed
+codes; Skill paths and contents remain private.
 Failed DMG detach diagnostics contain
 only bounded exit/signal outcomes, fixed status and stderr classifications, not
 raw text. Failed candidate stops retain only fixed Backend result enums,

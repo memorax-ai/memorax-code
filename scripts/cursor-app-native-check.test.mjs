@@ -95,6 +95,7 @@ test("actual Run approval records only completed clicks on the matching run and 
       pendingTool: { kind: "shell", toolCallId }, shellApproval: { toolCallId, clicked: false } };
     const retry = { ...run, shellApproval: { toolCallId: "22222222-2222-4222-8222-222222222222", clicked: false } };
     const agent = { errors: [], runs: [run] }, selectors = [];
+    let submitted = 0;
     const code = "CURSOR_APP_EXEC_REJECTED", error = Object.assign(new Error(code), { code });
     const button = {
       async count() { return mode === "not-visible" ? 0 : 1; }, async isVisible() { return true; },
@@ -105,15 +106,16 @@ test("actual Run approval records only completed clicks on the matching run and 
       },
     };
     const locator = { locator(selector) { selectors.push(selector); return locator; },
-      async fill(value) { assert.equal(value, run.prompt); }, async press(value) { assert.equal(value, "Enter"); },
       getByRole(role, options) { assert.equal(role, "button"); assert.equal(options.name, "Run"); assert.equal(options.exact, true); return button; } };
     const runTurn = runInNewContext(`(async function runTurn(${body})`, {
       turns: [], fixtures: [{ prompt: run.prompt, operation: "search" }], report: {}, agent,
       page: { locator(selector) { selectors.push(selector); return locator; } },
+      async submitPrompt(input, fixture) { assert.equal(input, locator); assert.equal(fixture.prompt, run.prompt); submitted += 1; },
       async waitFor(predicate) { await predicate(); throw error; },
       check(value, actualCode) { if (!value) throw Object.assign(new Error(actualCode), { code: actualCode }); },
     }, { timeout: 100 });
     await assert.rejects(runTurn(sessionId), { code });
+    assert.equal(submitted, 1);
     assert.equal(run.shellApproval.toolCallId, toolCallId);
     assert.equal(run.shellApproval.clicked, mode === "clicked");
     assert.equal(retry.shellApproval.clicked, false);
@@ -183,84 +185,126 @@ test("App launch keeps the default Chromium sandbox and forces isolated shell en
   }
 });
 
-test("native Skill discovery classifies failures without changing exact-path acceptance or exposing content", () => {
+test("native submission selects one Skill menu item and preserves its mention while typing the prompt", async () => {
+  const body = source.split("async function submitPrompt(")[1]?.split("\nasync function runTurn(")[0];
+  assert.ok(body);
+  for (const [operation, menuCount, mentionCount, suffix] of [
+    [undefined, 0, 0, undefined], ["search", 1, 1, undefined], ["add", 1, 1, undefined],
+    ["search", 0, 0, "MENU"], ["search", 2, 0, "MENU"],
+    ["search", 1, 0, "MENTION"], ["search", 1, 2, "MENTION"],
+  ]) {
+    const promptBody = "synthetic prompt with a private-content-canary";
+    const fixture = { prompt: operation ? `/memorax-code ${promptBody}` : promptBody, operation };
+    const events = [], fills = [], inserted = [], presses = [];
+    let hasMention = false, text = "";
+    const input = {
+      async fill(value) { events.push("fill"); fills.push(value); text = value; hasMention = false; },
+      async pressSequentially(value) {
+        assert.equal(text, "");
+        assert.equal(value, "/memorax-code");
+        events.push("type"); text += value;
+      },
+      locator(selector) {
+        assert.equal(selector, '[data-typeahead-type="cursor_skill"][data-mention-name="memorax-code"]');
+        return { async count() { events.push("mention"); return mentionCount; } };
+      },
+      async press(key) {
+        events.push(key); presses.push(key);
+        if (key === "Enter") {
+          assert.equal(text, fixture.prompt);
+          assert.equal(hasMention, Boolean(operation));
+        } else assert.equal(key, "End");
+      },
+    };
+    const item = {
+      async count() { events.push("menu"); return menuCount; },
+      async click() { events.push("click"); hasMention = true; text = "/memorax-code "; },
+    };
+    const submitPrompt = runInNewContext(`(async function submitPrompt(${body})`, {
+      page: {
+        locator(selector) {
+          assert.equal(selector, ".ui-slash-menu__content:visible");
+          return { locator(titleSelector) {
+            assert.equal(titleSelector, ".ui-slash-menu__item-title");
+            return { filter({ hasText }) {
+              assert.equal(hasText.test("/memorax-code"), true);
+              assert.equal(hasText.test("/memorax-code-other"), false);
+              assert.equal(hasText.test("Create /memorax-code skill"), false);
+              return item;
+            } };
+          } };
+        },
+        keyboard: { async insertText(value) {
+          events.push("insert"); inserted.push(value); text += value;
+          assert.equal(hasMention, true);
+          assert.equal(value, promptBody);
+        } },
+      },
+      async waitFor(predicate, code) {
+        if (!await predicate()) throw Object.assign(new Error(code), { code });
+      },
+    }, { timeout: 100 });
+    if (suffix) await assert.rejects(submitPrompt(input, fixture), (error) => {
+      assert.equal(error.code, `CURSOR_APP_SKILL_${suffix}`);
+      assert.equal(error.message, error.code);
+      assert.equal(JSON.stringify(error).includes("canary"), false);
+      return true;
+    });
+    else await submitPrompt(input, fixture);
+    assert.deepEqual(fills, [operation ? "" : fixture.prompt]);
+    assert.deepEqual(presses, suffix ? [] : operation ? ["End", "Enter"] : ["Enter"]);
+    assert.deepEqual(inserted, operation && !suffix ? [promptBody] : []);
+    assert.deepEqual(events, !operation ? ["fill", "Enter"] : suffix === "MENU" ? ["fill", "type", "menu"]
+      : suffix === "MENTION" ? ["fill", "type", "menu", "click", "mention"]
+      : ["fill", "type", "menu", "click", "mention", "End", "insert", "Enter"]);
+  }
+});
+
+test("native Skill tools require the exact current manually attached file and still read its full installed text", () => {
   const body = source.split("function toolSteps(")[1]?.split("\nasync function stopApp(")[0];
   assert.ok(body);
-  const skillRoot = "C:\\private-path-canary\\skills\\memorax-code";
-  const match = { fullPath: win32.join(skillRoot, "SKILL.md"), disableModelInvocation: false };
-  const other = { ...match, fullPath: "C:\\private-other-canary\\SKILL.md" };
-  const malformed = { ...match, parseError: "private-parse-canary" };
-  const disabled = { ...match, disableModelInvocation: true };
-  for (const [ready, agentSkills, suffix] of [
-    [false, [], "DISCOVERY_PENDING"], [false, [other], "DISCOVERY_PENDING"],
-    [true, [], "LIST_EMPTY"], [undefined, [], "LIST_EMPTY"],
-    [true, [other], "PATH_MISMATCH"], [undefined, [other], "PATH_MISMATCH"],
-    [true, [{ ...match, fullPath: match.fullPath.replaceAll("\\", "/") }], "PATH_MISMATCH"],
-    [true, [{ ...match, fullPath: match.fullPath.replace(/^C:/, "c:") }], "PATH_MISMATCH"],
-    [true, [malformed], "PARSE_ERROR"], [false, [malformed], "PARSE_ERROR"],
-    [true, [disabled], "DISABLED"], [undefined, [disabled], "DISABLED"],
-    [true, [malformed, disabled], "DISABLED"],
-    [true, [match], undefined], [false, [match], undefined], [undefined, [match], undefined],
-    [true, [malformed, disabled, match], undefined],
-    [true, [{ ...match, parseError: "" }], undefined],
-  ]) {
-    const run = { prompt: "synthetic prompt", conversationId: "synthetic-session", requestContextCloseCount: 1,
-      requestContext: { agentSkills, ...(ready === undefined ? {} : { agentSkillsInfoComplete: ready }),
-        hooksAdditionalContext: "MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT=cursor and MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID=synthetic-session" } };
-    const toolSteps = runInNewContext(`(function toolSteps(${body})`, {
-      join: win32.join, skillRoot, agent: { runs: [run] },
-      fixtures: [{ prompt: run.prompt, operation: "search" }], turns: [{ sessionId: run.conversationId }],
-      check(value, code) { if (!value) throw Object.assign(new Error(code), { code }); },
-    }, { timeout: 100 });
-    if (suffix) {
-      assert.throws(() => toolSteps(run, []), (error) => {
-        assert.equal(error.code, `CURSOR_APP_SKILL_${suffix}`);
+  for (const newline of ["\n", "\r\n"]) {
+    const skillRoot = "C:\\private-path-canary\\skills\\memorax-code";
+    const content = "# Installed Skill\n\nKeep this exact body and trailing newline.\n";
+    const skillText = ["---", "name: memorax-code", "description: synthetic", "---", "", " \t", content].join("\n").replaceAll("\n", newline);
+    const match = { fullPath: win32.join(skillRoot, "SKILL.md"), content, manuallyAttached: true };
+    const other = { ...match, fullPath: "C:\\private-other-canary\\SKILL.md" };
+    for (const selected of [undefined, [], [other], [match, match],
+      [{ ...match, manuallyAttached: false }], [{ ...match, manuallyAttached: undefined }],
+      [{ ...match, content: "private-content-canary" }], [{ ...match, content: content.trimEnd() }],
+      [{ ...match, content: skillText }],
+      [{ ...match, fullPath: match.fullPath.replaceAll("\\", "/") }],
+      [{ ...match, fullPath: match.fullPath.replace(/^C:/, "c:") }], [match], [other, match],
+    ]) {
+      const valid = selected?.filter((rule) => rule.fullPath === match.fullPath).length === 1
+        && selected.find((rule) => rule.fullPath === match.fullPath)?.manuallyAttached === true
+        && selected.find((rule) => rule.fullPath === match.fullPath)?.content === content;
+      const prior = { conversationId: "synthetic-session", completed: true, turnBlobId: Buffer.alloc(32), selectedCursorRules: [match] };
+      const run = { prompt: "/memorax-code synthetic prompt", conversationId: prior.conversationId,
+        requestContextCloseCount: 1, turnRefs: [], selectedCursorRules: selected,
+        inputRequestContext: { agentSkills: [match], agentSkillsInfoComplete: true },
+        requestContext: { agentSkills: [match], agentSkillsInfoComplete: true,
+          hooksAdditionalContext: "MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT=cursor and MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID=synthetic-session" } };
+      const toolSteps = runInNewContext(`(function toolSteps(${body})`, {
+        join: win32.join, skillRoot, skillText, agent: { runs: [prior, run] },
+        fixtures: [{ prompt: run.prompt, operation: "search" }, {}], turns: [{ sessionId: run.conversationId }],
+        check(value, code) { if (!value) throw Object.assign(new Error(code), { code }); },
+      }, { timeout: 100 });
+      if (!valid) assert.throws(() => toolSteps(run, []), (error) => {
+        assert.equal(error.code, "CURSOR_APP_SKILL_ATTACHMENT");
         assert.equal(error.message, error.code);
         assert.deepEqual(Object.keys(error), ["code"]);
         assert.equal(JSON.stringify(error).includes("canary"), false);
         return true;
       });
-    } else {
-      assert.deepEqual(JSON.parse(JSON.stringify(toolSteps(run, []))), { kind: "read", path: match.fullPath });
+      else {
+        assert.deepEqual(JSON.parse(JSON.stringify(toolSteps(run, []))), { kind: "read", path: match.fullPath });
+        assert.deepEqual(JSON.parse(JSON.stringify(toolSteps(run, [{ kind: "read", path: match.fullPath, content: skillText }]))),
+          { kind: "read", path: win32.join(skillRoot, "references", "memorax-search.md") });
+        assert.throws(() => toolSteps(run, [{ kind: "read", path: match.fullPath, content }]),
+          { code: "CURSOR_APP_SKILL_NOT_READ" });
+      }
     }
-  }
-});
-
-test("Skill discovery prefers fresh Exec and uses a complete nonempty current Run catalog only for an incomplete empty snapshot", () => {
-  const body = source.split("function toolSteps(")[1]?.split("\nasync function stopApp(")[0];
-  assert.ok(body);
-  const skillRoot = "C:\\synthetic\\skills", match = { fullPath: win32.join(skillRoot, "SKILL.md") };
-  const full = { agentSkills: [match] }, empty = { agentSkills: [] };
-  const wrongPath = { agentSkills: [{ fullPath: "C:\\private-other-canary\\SKILL.md" }] };
-  for (const [input, latest, suffix] of [
-    [full, empty, undefined], [empty, full, undefined],
-    [{ ...full, agentSkillsInfoComplete: true }, empty, undefined],
-    [{ ...empty, agentSkillsInfoComplete: true }, full, undefined],
-    [{ ...empty, agentSkillsInfoComplete: false }, full, undefined],
-    [{ ...full, agentSkillsInfoComplete: false }, empty, "LIST_EMPTY"],
-    [full, { ...empty, agentSkillsInfoComplete: true }, "LIST_EMPTY"],
-    [full, { ...empty, agentSkillsInfoComplete: false }, undefined],
-    [full, { ...full, agentSkillsInfoComplete: false }, undefined],
-    [empty, { ...empty, agentSkillsInfoComplete: false }, "DISCOVERY_PENDING"],
-    [{ ...full, agentSkillsInfoComplete: false }, { ...empty, agentSkillsInfoComplete: false }, "DISCOVERY_PENDING"],
-    [wrongPath, full, undefined], [full, wrongPath, "PATH_MISMATCH"],
-    [full, { agentSkills: [{ ...match, parseError: "private-parse-canary" }] }, "PARSE_ERROR"],
-    [full, { agentSkills: [{ ...match, disableModelInvocation: true }] }, "DISABLED"],
-    [empty, empty, "LIST_EMPTY"],
-    [undefined, full, undefined], [undefined, empty, "LIST_EMPTY"],
-  ]) {
-    const prior = { conversationId: "synthetic-session", completed: true, turnBlobId: Buffer.alloc(32), inputRequestContext: full };
-    const run = { prompt: "synthetic prompt", conversationId: prior.conversationId, requestContextCloseCount: 1,
-      turnRefs: [prior.turnBlobId], inputRequestContext: input, requestContextParts: { dynamicContext: full },
-      requestContext: { ...latest,
-        hooksAdditionalContext: "MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT=cursor and MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID=synthetic-session" } };
-    const toolSteps = runInNewContext(`(function toolSteps(${body})`, {
-      join: win32.join, skillRoot, agent: { runs: [prior, run] },
-      fixtures: [{ prompt: run.prompt, operation: "search" }, {}], turns: [{ sessionId: run.conversationId }],
-      check(value, code) { if (!value) throw Object.assign(new Error(code), { code }); },
-    }, { timeout: 100 });
-    if (suffix) assert.throws(() => toolSteps(run, []), { code: `CURSOR_APP_SKILL_${suffix}`, message: `CURSOR_APP_SKILL_${suffix}` });
-    else assert.deepEqual(JSON.parse(JSON.stringify(toolSteps(run, []))), { kind: "read", path: match.fullPath });
   }
 });
 

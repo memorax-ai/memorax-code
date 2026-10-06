@@ -23,9 +23,9 @@ const fixtures = [
   { prompt, answer: "This is the second concise reply.\nPreserved marker: \u8bb0\u5fc6-42." },
   { prompt, answer },
   { prompt: "Use numbered steps for changes in this resumed synthetic session.", answer: "I will use numbered steps for changes in this resumed session." },
-  { prompt: "Use the memorax-code skill to search coding memory for the parser validation lesson.",
+  { prompt: "/memorax-code Use the memorax-code skill to search coding memory for the parser validation lesson.",
     answer: "The installed Skill search returned the parser validation lesson.", operation: "search" },
-  { prompt: "Use the memorax-code skill to save the verified parser validation lesson.",
+  { prompt: "/memorax-code Use the memorax-code skill to save the verified parser validation lesson.",
     answer: "The installed Skill saved the parser validation lesson.", operation: "add" },
 ];
 const interruptedFixture = { prompt: "Prepare the synthetic marker command, then wait for approval.",
@@ -147,16 +147,11 @@ function toolSteps(run, results) {
       ...(item.userHookAdditionalContexts ?? []).map((context) => context.content)]).filter(Boolean);
     check(contexts.some((context) => context.includes(`MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT=cursor and MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID=${run.conversationId}`)),
       "CURSOR_APP_SKILL_HOOK_CONTEXT");
-    const fresh = run.requestContext, initial = run.inputRequestContext;
-    const skillContext = !fresh?.agentSkills?.length && fresh?.agentSkillsInfoComplete !== true
-      && initial?.agentSkills?.length > 0 && initial.agentSkillsInfoComplete !== false ? initial : fresh;
-    const skills = skillContext?.agentSkills ?? [];
-    const matching = skills.filter((skill) => skill.fullPath === join(skillRoot, "SKILL.md"));
-    check(matching.length > 0, skillContext?.agentSkillsInfoComplete === false ? "CURSOR_APP_SKILL_DISCOVERY_PENDING"
-      : skills.length === 0 ? "CURSOR_APP_SKILL_LIST_EMPTY" : "CURSOR_APP_SKILL_PATH_MISMATCH");
-    const parsed = matching.filter((skill) => !skill.parseError);
-    check(parsed.length > 0, "CURSOR_APP_SKILL_PARSE_ERROR");
-    check(parsed.some((skill) => !skill.disableModelInvocation), "CURSOR_APP_SKILL_DISABLED");
+    const matching = (run.selectedCursorRules ?? []).filter((rule) => rule.fullPath === join(skillRoot, "SKILL.md"));
+    // Cursor attaches the selected Skill body without its YAML frontmatter.
+    const body = skillText.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n(?:[ \t]*\r?\n)*/, "").replaceAll("\r\n", "\n");
+    check(matching.length === 1 && matching[0].manuallyAttached && matching[0].content === body,
+      "CURSOR_APP_SKILL_ATTACHMENT");
     return { kind: "read", path: join(skillRoot, "SKILL.md") };
   }
   check(results[0].kind === "read" && results[0].path === join(skillRoot, "SKILL.md")
@@ -279,6 +274,23 @@ function assertSnapshot(sessionId) {
     sessionId, generationId: latest.requestId, conversationStateBytes: latest.conversationStateBytes,
     kvWrites: sessionRuns.flatMap((run) => run.kvWrites) });
 }
+async function submitPrompt(input, fixture) {
+  if (fixture.operation) {
+    await input.fill("");
+    await input.pressSequentially("/memorax-code");
+    const item = page.locator(".ui-slash-menu__content:visible")
+      .locator(".ui-slash-menu__item-title").filter({ hasText: /^\/memorax-code$/ });
+    await waitFor(async () => await item.count() === 1, "CURSOR_APP_SKILL_MENU");
+    await item.click();
+    const mention = input.locator('[data-typeahead-type="cursor_skill"][data-mention-name="memorax-code"]');
+    await waitFor(async () => await mention.count() === 1, "CURSOR_APP_SKILL_MENTION");
+    await input.press("End");
+    await page.keyboard.insertText(fixture.prompt.slice("/memorax-code ".length));
+  } else {
+    await input.fill(fixture.prompt);
+  }
+  await input.press("Enter");
+}
 async function runTurn(sessionId) {
   const index = turns.length, fixture = fixtures[index];
   const approvedTools = new Set();
@@ -286,7 +298,7 @@ async function runTurn(sessionId) {
   report.stage = "native-submit";
   const input = page.locator(`[data-composer-id="${sessionId}"][data-composer-status]:visible`)
     .locator('[contenteditable="true"][role="textbox"]:visible');
-  await input.fill(fixture.prompt); await input.press("Enter");
+  await submitPrompt(input, fixture);
   report.stage = "agent-transport";
   await waitFor(async () => {
     check(!agent.errors.length, agent.errors[0]);

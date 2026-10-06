@@ -197,13 +197,29 @@ function references(state) {
     return Buffer.from(value);
   });
 }
+function selectedCursorRule(value) {
+  const rule = fields(single(fields(value), 1, 2));
+  let manuallyAttached = false;
+  if (rule.has(3)) {
+    const type = fields(single(rule, 3, 2)), variants = [...type.keys()];
+    if (variants.length > 1 || variants.some((number) => ![1, 2, 3, 4].includes(number))) fail("CURSOR_APP_PROTO_FIELD");
+    if (variants.length) {
+      const detail = fields(single(type, variants[0], 2));
+      manuallyAttached = variants[0] === 4;
+      if (manuallyAttached && detail.size) fail("CURSOR_APP_PROTO_FIELD");
+    }
+  }
+  return { fullPath: text(rule, 1), content: optionalText(rule, 2), manuallyAttached };
+}
 function userMessage(data) {
   const user = fields(data);
   if ([...user.keys()].some((number) => !USER_FIELDS.has(number))
     || boolean(user, 5) || boolean(user, 24) || user.has(18) || user.has(19)) fail("CURSOR_APP_RUN_UNSUPPORTED");
   const prompt = text(user, 1), userMessageId = identity(text(user, 2));
   if (!prompt.trim()) fail("CURSOR_APP_RUN_PROMPT");
-  return { prompt, userMessageId, ...(user.has(21) ? { userHookAdditionalContexts: hookContexts(user, 21) } : {}) };
+  return { prompt, userMessageId,
+    ...(user.has(3) ? { selectedCursorRules: repeated(fields(single(user, 3, 2)), 10, selectedCursorRule) } : {}),
+    ...(user.has(21) ? { userHookAdditionalContexts: hookContexts(user, 21) } : {}) };
 }
 
 function execClient(body) {

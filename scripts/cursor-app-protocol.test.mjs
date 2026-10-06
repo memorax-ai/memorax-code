@@ -115,6 +115,57 @@ test("Run decoding binds real request, conversation and user identities and pres
   assert.equal(run({ user: message(field(1, exactPrompt), field(2, userMessageId)) }).prompt, exactPrompt);
 });
 
+test("Run decodes native selected Cursor rules without changing the prompt or persisted user bytes", () => {
+  const fullPath = "C:\\synthetic\\skills\\memorax-code\\SKILL.md", content = "Exact \u4e2d\u6587 body\r\n";
+  const manual = message(field(1, fullPath), field(2, content), field(3, field(4, Buffer.alloc(0))), field(14, "ignored metadata"));
+  const global = message(field(1, "/synthetic/global.mdc"), field(3, field(1, Buffer.alloc(0))));
+  const user = message(field(1, `/memorax-code ${prompt}`), field(2, userMessageId),
+    field(3, message(field(10, field(1, manual)), field(10, field(1, global)), field(1, "other selected context"))));
+  const decoded = run({ user });
+  assert.deepEqual(decoded.selectedCursorRules, [
+    { fullPath, content, manuallyAttached: true },
+    { fullPath: "/synthetic/global.mdc", content: "", manuallyAttached: false },
+  ]);
+  assert.equal(decoded.prompt, `/memorax-code ${prompt}`);
+  assert.deepEqual(decoded.userMessageBytes, user);
+  assert.deepEqual(createCompletedTurn(decoded, { answer }).kvWrites[0].bytes, user);
+});
+
+test("Run selected rules come only from their native context field and require a manual type marker", () => {
+  const rule = field(1, "/synthetic/SKILL.md");
+  const base = message(field(1, prompt), field(2, userMessageId));
+  assert.equal(Object.hasOwn(run(), "selectedCursorRules"), false);
+  assert.equal(Object.hasOwn(run({ user: message(base, field(8, "selectedCursorRules manuallyAttached")) }), "selectedCursorRules"), false);
+  assert.deepEqual(run({ user: message(base, field(3, Buffer.alloc(0))) }).selectedCursorRules, []);
+  for (const type of [Buffer.alloc(0), field(3, Buffer.alloc(0)), field(3, field(2, field(1, "*.md")))]) {
+    const decoded = run({ user: message(base, field(3, field(10, field(1, message(rule, type))))) });
+    assert.deepEqual(decoded.selectedCursorRules, [{ fullPath: "/synthetic/SKILL.md", content: "", manuallyAttached: false }]);
+  }
+});
+
+test("Run selected rules reject malformed nested structures without exposing attachment content", () => {
+  const base = message(field(1, prompt), field(2, userMessageId));
+  const rule = message(field(1, "/private-attachment-canary"), field(2, "private-attachment-canary"));
+  const selected = (value) => field(10, field(1, value));
+  for (const context of [scalar(10, 1), field(10, Buffer.alloc(0)), field(10, scalar(1, 1)),
+    field(10, message(field(1, rule), field(1, rule))), selected(message(rule, field(1, "duplicate"))),
+    selected(message(rule, scalar(2, 1))), selected(message(rule, scalar(3, 1))),
+    selected(message(rule, field(3, scalar(4, 1)))),
+    selected(message(rule, field(3, message(field(1, Buffer.alloc(0)), field(4, Buffer.alloc(0)))))),
+    selected(message(rule, field(3, message(field(4, Buffer.alloc(0)), field(4, Buffer.alloc(0)))))),
+    selected(message(rule, field(3, field(4, field(1, "unexpected"))))),
+    selected(message(rule, field(3, field(5, Buffer.alloc(0)))))]) {
+    assert.throws(() => run({ user: message(base, field(3, context)) }),
+      (error) => error.code === "CURSOR_APP_PROTO_FIELD" && error.message === error.code);
+  }
+  for (const extra of [scalar(3, 1), message(field(3, Buffer.alloc(0)), field(3, Buffer.alloc(0)))]) {
+    assert.throws(() => run({ user: message(base, extra) }), /CURSOR_APP_PROTO_FIELD/);
+  }
+  for (const invalidRule of [field(1, Buffer.from([0xc3, 0x28])), message(field(1, "path"), field(2, Buffer.from([0xc3, 0x28])))]) {
+    assert.throws(() => run({ user: message(base, field(3, field(10, field(1, invalidRule)))) }), /CURSOR_APP_PROTO_UTF8/);
+  }
+});
+
 test("Run decoding fails closed for absent, conflicting or malformed native identities", () => {
   for (const value of [undefined, "", "not-a-uuid", `${requestId}\n`]) {
     assert.throws(() => decodeAgentClientMessage(fixture().bytes, { requestId: value }), /CURSOR_APP_RUN_IDENTITY/);
