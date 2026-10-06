@@ -147,8 +147,9 @@ function toolSteps(run, results) {
       ...(item.userHookAdditionalContexts ?? []).map((context) => context.content)]).filter(Boolean);
     check(contexts.some((context) => context.includes(`MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT=cursor and MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID=${run.conversationId}`)),
       "CURSOR_APP_SKILL_HOOK_CONTEXT");
-    const skillContext = run.inputRequestContext && run.inputRequestContext.agentSkillsInfoComplete !== false
-      ? run.inputRequestContext : run.requestContext;
+    const fresh = run.requestContext, initial = run.inputRequestContext;
+    const skillContext = !fresh?.agentSkills?.length && fresh?.agentSkillsInfoComplete !== true
+      && initial?.agentSkills?.length > 0 && initial.agentSkillsInfoComplete !== false ? initial : fresh;
     const skills = skillContext?.agentSkills ?? [];
     const matching = skills.filter((skill) => skill.fullPath === join(skillRoot, "SKILL.md"));
     check(matching.length > 0, skillContext?.agentSkillsInfoComplete === false ? "CURSOR_APP_SKILL_DISCOVERY_PENDING"
