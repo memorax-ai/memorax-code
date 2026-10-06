@@ -206,10 +206,11 @@ async function startApp() {
   appLaunchLog = ""; appSpawnError = undefined; appDebugEndpointSeen = false;
   const endpoint = macos?.createDevToolsEndpointReader(debugPort);
   let endpointError;
+  // Electron on Windows rejects a standalone URL followed by more arguments.
   app = spawnOwned(appPath, ["--user-data-dir", userData, "--extensions-dir", join(root, "extensions"), "--new-window",
     "--skip-onboarding", "--skip-welcome", "--skip-release-notes", "--skip-add-to-recently-opened",
     "--disable-updates", "--disable-telemetry", "--disable-crash-reporter", "--use-inmemory-secretstorage",
-    "--enable-smoke-test-driver", "--smoke-test-use-real-agent-http", "--test-backend-url", agent.url,
+    "--enable-smoke-test-driver", "--smoke-test-use-real-agent-http", `--test-backend-url=${agent.url}`,
     ...(macos || windows ? ["--force-disable-user-env"] : []),
     "--remote-debugging-address=127.0.0.1", `--remote-debugging-port=${debugPort}`, workspace],
   { cwd: workspace, env, stdio: ["ignore", "pipe", "pipe"] });

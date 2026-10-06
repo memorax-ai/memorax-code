@@ -174,7 +174,9 @@ test("App launch keeps the default Chromium sandbox and forces isolated shell en
     assert.equal(file, "/owned/app"); assert.equal(options.env, env); assert.equal(options.shell, undefined);
     assert.equal(args.includes("--force-disable-user-env"), platform !== "linux");
     assert.equal(args.includes("--use-inmemory-secretstorage"), true);
-    assert.equal(args[args.indexOf("--test-backend-url") + 1], "http://127.0.0.1:12345");
+    assert.equal(args.includes("--test-backend-url=http://127.0.0.1:12345"), true);
+    assert.equal(args.includes("--test-backend-url"), false);
+    assert.equal(args.includes("http://127.0.0.1:12345"), false);
     assert.equal(args.includes("--remote-debugging-address=127.0.0.1"), true);
     assert.equal(args.includes("--remote-debugging-port=12346"), true);
     assert.equal(args.some((arg) => ["--no-sandbox", "--disable-setuid-sandbox", "--disable-gpu-sandbox"].includes(arg)), false);
