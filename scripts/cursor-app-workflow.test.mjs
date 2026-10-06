@@ -64,7 +64,7 @@ test("Cursor App jobs retain normal triggers and exclude dedicated manual diagno
 
 test("Cursor App matrix uses the validated candidate, frozen release inventory and unique public reports", () => {
   const canary = job("cursor-app"), result = job("cursor-app-result");
-  assert.match(job("package"), /^        run: node --test scripts\/cursor-app-\*\.test\.mjs$/m);
+  assert.match(job("package"), /^        run: node --test scripts\/cursor-app-\*\.test\.mjs scripts\/cursor-lifecycle-\*\.test\.mjs$/m);
   assert.match(canary, /^    needs: package$/m);
   assert.match(canary, /^    runs-on: \$\{\{ matrix\.os \}\}$/m);
   assert.match(canary, /^          node-version: \$\{\{ matrix\.node \}\}$/m);
@@ -75,14 +75,28 @@ test("Cursor App matrix uses the validated candidate, frozen release inventory a
   assert.match(canary, /actions\/download-artifact@v4\n        with:\n          name: memorax-code-package\n          path: dist\/npm\/tarballs/);
   assert.match(canary, /actions\/download-artifact@v4\n        with:\n          name: cursor-app-releases\n          path: \$\{\{ runner\.temp \}\}\/cursor-app-releases/);
   const uploads = canary.split("      - uses: actions/upload-artifact@v4\n");
-  assert.equal(uploads.length, 2);
-  assert.match(uploads[1], /^        if: always\(\)$/m);
-  assert.match(uploads[1], /^          path: \$\{\{ runner\.temp \}\}\/cursor-app-report\/report\.json$/m);
-  assert.match(uploads[1], /^          if-no-files-found: error$/m);
-  assert.match(uploads[1], /^          name: cursor-app-\$\{\{ matrix\.os \}\}-\$\{\{ matrix\.channel \}\}-node-\$\{\{ matrix\.node \}\}-report$/m);
+  assert.equal(uploads.length, 3);
+  for (const [index, kind] of [[1, "lifecycle"], [2, "app"]]) {
+    assert.match(uploads[index], /^        if: always\(\)$/m);
+    assert.match(uploads[index], new RegExp(`^          path: \\$\\{\\{ runner\\.temp \\}\\}/cursor-${kind}-report/report\\.json$`, "m"));
+    assert.match(uploads[index], /^          if-no-files-found: error$/m);
+    assert.match(uploads[index], new RegExp(`^          name: cursor-${kind}-\\$\\{\\{ matrix\\.os \\}\\}-\\$\\{\\{ matrix\\.channel \\}\\}-node-\\$\\{\\{ matrix\\.node \\}\\}-report$`, "m"));
+  }
   assert.match(result, /^    needs: \[package, cursor-app\]$/m);
   assert.doesNotMatch(canary + result, /continue-on-error:/);
   assert.doesNotMatch(canary, /resolve-linux|api\/download|latest\.json/);
+});
+
+test("Cursor package lifecycle is required in every cell before native App execution", () => {
+  const canary = job("cursor-app"), name = "Verify Cursor package lifecycle and saved account";
+  const step = canary.split(`      - name: ${name}\n`);
+  assert.equal(step.length, 2);
+  const lifecycle = step[1].split(/\n      - /)[0];
+  assert.match(lifecycle, /^        shell: bash$/m);
+  assert.doesNotMatch(lifecycle, /^        (?:if|continue-on-error):/m);
+  assert.ok(canary.indexOf("name: memorax-code-package") < canary.indexOf(`- name: ${name}`));
+  assert.ok(canary.indexOf(`- name: ${name}`) < canary.indexOf("- name: Verify isolated native Cursor App writeback"));
+  assert.match(script("cursor-app", name), /node scripts\/cursor-lifecycle-check\.mjs "\$1" "\$RUNNER_TEMP\/cursor-lifecycle-report"/);
 });
 
 test("Cursor release acquisition runs once outside the matrix and excludes dedicated diagnostics", () => {
@@ -222,6 +236,33 @@ test("Cursor App invocation retains every platform entrypoint failure", { skip: 
   }
 });
 
+test("Cursor lifecycle invocation preserves quoted inputs and command failures", { skip: process.platform === "win32" }, async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "cursor-lifecycle-workflow-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const run = script("cursor-app", "Verify Cursor package lifecycle and saved account");
+  for (const kind of ["missing", "single", "multiple", "directory", "symlink", "failed"]) {
+    const cwd = join(root, kind), tarballs = join(cwd, "dist/npm/tarballs"), calls = join(cwd, "calls");
+    const runnerTemp = join(cwd, "runner temp"), name = "memorax-memorax-code-fixture with spaces.tgz";
+    await mkdir(tarballs, { recursive: true });
+    const candidate = join(tarballs, name);
+    if (["single", "multiple", "failed"].includes(kind)) await writeFile(candidate, "synthetic tarball");
+    if (kind === "multiple") await writeFile(join(tarballs, "memorax-memorax-code-other.tgz"), "synthetic second tarball");
+    if (kind === "directory") await mkdir(candidate);
+    if (kind === "symlink") { await writeFile(join(cwd, "target"), "synthetic tarball"); await symlink(join(cwd, "target"), candidate); }
+    const actual = spawnSync("/bin/bash", ["-e", "-o", "pipefail", "-c",
+      `node() { printf '%s\\n' "$@" > "$CALLS"; return "$RESULT"; }\n${run}`], {
+      cwd, encoding: "utf8", timeout: 5_000,
+      env: { PATH: "/usr/bin:/bin", HOME: cwd, RUNNER_TEMP: runnerTemp, CALLS: calls, RESULT: kind === "failed" ? "7" : "0" },
+    });
+    assert.ifError(actual.error);
+    assert.equal(actual.status, kind === "single" ? 0 : kind === "failed" ? 7 : 1, kind);
+    if (["single", "failed"].includes(kind)) assert.deepEqual((await readFile(calls, "utf8")).trimEnd().split("\n"), [
+      "scripts/cursor-lifecycle-check.mjs", `dist/npm/tarballs/${name}`, join(runnerTemp, "cursor-lifecycle-report"),
+    ]);
+    else await assert.rejects(readFile(calls), { code: "ENOENT" });
+  }
+});
+
 test("Cursor App summary fails every non-success dependency and states the limited native scope", { skip: process.platform === "win32" }, async (t) => {
   const root = await mkdtemp(join(tmpdir(), "cursor-app-summary-"));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -246,6 +287,7 @@ test("Cursor App summary fails every non-success dependency and states the limit
       assert.match(text, /macOS and Windows use signature-verified Apps, isolated homes and local fixtures on fresh GitHub-hosted runners, without an additional Seatbelt or WFP prerequisite/);
       assert.match(text, /Chromium sandboxing remains enabled/);
       assert.match(text, /This matrix does not validate real login, OS credential-store isolation, hosted models or full functional coverage/);
+      assert.match(text, /Every cell also requires the isolated MemoraX package lifecycle check: fresh\/repeat setup, uninstall\/reinstall, real previous-version upgrade, download and replacement failure recovery, and saved account\/configuration retention; setup interruption is excluded/);
     }
   }
 });

@@ -186,7 +186,7 @@ jobs:
       - name: Verify shared CodeBuddy and WorkBuddy native and install contracts
         run: node --test scripts/codebuddy-native-memory-support.test.mjs scripts/codebuddy-install-interruption-check.test.mjs scripts/workbuddy-install-entry.test.mjs
       - name: Verify Cursor App canary contracts
-        run: node --test scripts/cursor-app-*.test.mjs
+        run: node --test scripts/cursor-app-*.test.mjs scripts/cursor-lifecycle-*.test.mjs
       - name: Build and validate the installable package
         id: package-check
         shell: bash
@@ -403,6 +403,12 @@ jobs:
         with:
           name: cursor-app-releases
           path: ${{ runner.temp }}/cursor-app-releases
+      - name: Verify Cursor package lifecycle and saved account
+        shell: bash
+        run: |
+          set -- dist/npm/tarballs/memorax-memorax-code-*.tgz
+          [[ "$#" -eq 1 && -f "$1" && ! -L "$1" ]] || exit 1
+          node scripts/cursor-lifecycle-check.mjs "$1" "$RUNNER_TEMP/cursor-lifecycle-report"
       - name: Verify isolated native Cursor App writeback
         shell: bash
         env:
@@ -419,6 +425,13 @@ jobs:
           esac
           node "$entrypoint" "$1" "$RUNNER_TEMP/cursor-app-report" \
             "$RUNNER_TEMP/cursor-app-releases/cursor-app-releases.json" "$CURSOR_RELEASE" "$CURSOR_NODE"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cursor-lifecycle-${{ matrix.os }}-${{ matrix.channel }}-node-${{ matrix.node }}-report
+          path: ${{ runner.temp }}/cursor-lifecycle-report/report.json
+          if-no-files-found: error
+          retention-days: 7
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -557,6 +570,7 @@ jobs:
           CURSOR_RESULT: ${{ needs.cursor-app.result }}
         run: |
           printf 'Package: **%s**\n\nCursor App Linux/macOS/Windows matrix: **%s**.\n\nUbuntu 24.04, macOS 15 and Windows 2025, baseline/latest on Node 24 and Linux baseline on Node 22. Six completed App runs per cell exercise repeated-prompt follow-up, independent sessions, App restart/resume and explicit Skill Search/Add through native Read/Shell tools, using a local protocol mock, native database persistence and exact automatic Add with synthetic authentication. A seventh run cancels a pending Shell through native Stop, requiring interrupted Hook state, no command execution and no additional Memory request. Scripted tool requests do not validate model-driven Skill selection. macOS and Windows use signature-verified Apps, isolated homes and local fixtures on fresh GitHub-hosted runners, without an additional Seatbelt or WFP prerequisite. Chromium sandboxing remains enabled. This matrix does not validate real login, OS credential-store isolation, hosted models or full functional coverage.\n' "$PACKAGE_RESULT" "$CURSOR_RESULT" >> "$GITHUB_STEP_SUMMARY"
+          printf '\nEvery cell also requires the isolated MemoraX package lifecycle check: fresh/repeat setup, uninstall/reinstall, real previous-version upgrade, download and replacement failure recovery, and saved account/configuration retention; setup interruption is excluded.\n' >> "$GITHUB_STEP_SUMMARY"
           if [[ "$PACKAGE_RESULT" != success || "$CURSOR_RESULT" != success ]]; then
             echo '::error::The package and Cursor App canary must both succeed. Failed, cancelled or skipped dependencies do not pass this check.'
             exit 1

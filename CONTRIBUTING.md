@@ -1153,6 +1153,21 @@ The macOS and Windows cells require successful native GitHub jobs before claimin
 three-platform acceptance. This is not a Cursor CLI test. Every cell consumes the same validated candidate npm
 artifact as the existing native checks; package failure cannot be hidden by a
 passing matrix cell. The aggregate check requires all selected cells to pass.
+Before the App check, every cell runs the platform-independent Node driver
+`scripts/cursor-lifecycle-check.mjs TARBALL REPORT_DIR` with its selected runner
+Node version. It creates an isolated npm global prefix and client/Backend state
+to check fresh and repeated setup, uninstall/reinstall, a real upgrade from the
+published MemoraX Code **0.1.18** package, and saved account/configuration
+retention. That baseline predates Cursor support: its Backend must be ready
+before upgrade, and the candidate must install the complete Cursor integration.
+Download failure and a fault-injected candidate `postinstall` exercise
+real npm replacement failure, recovery and retry. This step does not start the
+Cursor App and does not cover setup interruption. Linux runs this package
+lifecycle check on the fresh runner; its subsequent App check remains inside
+the existing container. Lifecycle failure prevents native App execution and
+fails the cell. Only `cursor-lifecycle-report/report.json` is uploaded, separately
+from the native App report.
+
 The macOS and Windows wrappers also run the existing Cursor installed-package smoke before
 starting the App. This reuses lifecycle and configuration-preservation coverage;
 its synthetic Hook/database fixtures do not count as native App evidence.
