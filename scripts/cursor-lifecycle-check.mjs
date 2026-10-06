@@ -13,6 +13,7 @@ import { classifyLifecycleRequest } from "./claude-lifecycle-assertions.mjs";
 import { startLifecycleCommand } from "./claude-lifecycle-process.mjs";
 import { snapshotCursorHooks, assertCursorHooks, verifyCursorLifecycleIntegration,
   assertCursorLifecycleIntegrationAbsent } from "./cursor-lifecycle-assertions.mjs";
+import { cursorInterruptionPhases, startCursorSetupInterruption } from "./cursor-lifecycle-interruption.mjs";
 
 const fixtureKey = `sk_${"C".repeat(43)}`, fixtureUser = "cursor-lifecycle-saved-account";
 const searchMemory = "CURSOR_LIFECYCLE_SAVED_ACCOUNT_RESULT";
@@ -213,6 +214,30 @@ export async function runCursorLifecycleCheck(candidatePath, reportDirectory, pr
       "CURSOR_LIFECYCLE_FAULT_SCRIPT_REMAINS");
     await savedAccountSearch();
     report.checks.push("retry_restores_unmodified_candidate");
+    await stop();
+    report.setupInterruption = [];
+    for (const phase of cursorInterruptionPhases) {
+      report.stage = `setup-interruption-${phase}`;
+      const result = { id: phase, status: "FAIL" };
+      report.setupInterruption.push(result);
+      await prepareHome(`interruption-${phase}`);
+      const configPath = join(stateHome, "config.toml");
+      await writeFile(configPath, `[memorax]\nendpoint = ${JSON.stringify(savedEndpoint)}\nuser_id = ${JSON.stringify(fixtureUser)}\napi_key = ${JSON.stringify(fixtureKey)}\n`
+        + (await readFile(configPath, "utf8")).replace("cursor = true", "cursor = true \t"), { mode: 0o600 });
+      await seedMemory();
+      const protectedConfig = snapshotProtectedConfiguration(parse(await readFile(configPath, "utf8")));
+      const pending = startCursorSetupInterruption({ phase, packageRoot, ptyRoot: join(root, "terminal/node_modules/node-pty"),
+        workspace, env, key: fixtureKey, verifyPreserved: () => retained(protectedConfig) });
+      commands.add(pending);
+      try { Object.assign(result, await pending.result); }
+      catch (error) { if (error.cleanupFailed) commandsClean = false; throw error; }
+      finally { commands.delete(pending); }
+      report.stage = `setup-recovery-${phase}`;
+      await terminal("reuse"); await ready(); await retained(protectedConfig); await savedAccountSearch(); await stop();
+      Object.assign(result, { status: "PASS", retryWithoutAccountInput: true, cursorIntegrationVerified: true,
+        savedAccountRequestVerified: true, cleanup: "PASS" });
+    }
+    report.checks.push("four_stage_setup_interruption_recovery");
     check(!interrupted, "CURSOR_LIFECYCLE_INTERRUPTED");
     report.status = "PASS"; report.stage = "complete";
   } catch (error) {
@@ -224,7 +249,7 @@ export async function runCursorLifecycleCheck(candidatePath, reportDirectory, pr
   } finally {
     await cleanup();
     report.requests = { unexpected: unexpectedRequests, malformed: malformedRequests, savedAccountSearch: searches.length };
-    if (report.status === "PASS" && (unexpectedRequests !== 0 || malformedRequests !== 0 || searches.length !== 3)) {
+    if (report.status === "PASS" && (unexpectedRequests !== 0 || malformedRequests !== 0 || searches.length !== 7)) {
       report.status = "FAIL"; report.error = "CURSOR_LIFECYCLE_REQUEST_AUDIT";
     }
     for (const [signal, handler] of signalHandlers) process.off(signal, handler);

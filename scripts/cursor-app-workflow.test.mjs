@@ -99,6 +99,26 @@ test("Cursor package lifecycle is required in every cell before native App execu
   assert.match(script("cursor-app", name), /node scripts\/cursor-lifecycle-check\.mjs "\$1" "\$RUNNER_TEMP\/cursor-lifecycle-report"/);
 });
 
+test("Cursor lifecycle documents four setup interruption stages within the existing check", async () => {
+  const summary = script("cursor-app-result", "Require the package and Cursor App canary to succeed");
+  const contributing = await readFile(new URL("../CONTRIBUTING.md", import.meta.url), "utf8");
+  const lifecycle = contributing.split("Before the App check, every cell runs")[1]
+    ?.split("The macOS and Windows wrappers")[0]?.replace(/\s+/g, " ");
+  assert.ok(lifecycle);
+  for (const stage of ["after-config-write", "before-backend-start", "after-backend-start", "saved-account-key-cancel"]) {
+    assert.ok(summary.includes(stage), stage);
+    assert.ok(lifecycle.includes(`\`${stage}\``), stage);
+  }
+  assert.doesNotMatch(summary + lifecycle, /setup interruption is excluded|does not cover setup interruption/);
+  assert.match(lifecycle, /real PTY/);
+  assert.match(lifecycle, /existing Backend lock/);
+  assert.match(lifecycle, /test-only Node child gate/);
+  assert.match(lifecycle, /retry requires no account input/);
+  assert.match(lifecycle, /complete Cursor integration and a local saved-account Search/);
+  assert.match(lifecycle, /does not simulate power loss/);
+  assert.match(lifecycle, /does not start the Cursor App/);
+});
+
 test("Cursor release acquisition runs once outside the matrix and excludes dedicated diagnostics", () => {
   const step = job("package").split("      - name: Resolve and freeze Cursor App releases once for this run\n")[1];
   const condition = step.match(/^        if: (.+)$/m)?.[1];
@@ -287,7 +307,7 @@ test("Cursor App summary fails every non-success dependency and states the limit
       assert.match(text, /macOS and Windows use signature-verified Apps, isolated homes and local fixtures on fresh GitHub-hosted runners, without an additional Seatbelt or WFP prerequisite/);
       assert.match(text, /Chromium sandboxing remains enabled/);
       assert.match(text, /This matrix does not validate real login, OS credential-store isolation, hosted models or full functional coverage/);
-      assert.match(text, /Every cell also requires the isolated MemoraX package lifecycle check: fresh\/repeat setup, uninstall\/reinstall, real previous-version upgrade, download and replacement failure recovery, and saved account\/configuration retention; setup interruption is excluded/);
+      assert.match(text, /Every cell also requires the isolated MemoraX package lifecycle check: fresh\/repeat setup, uninstall\/reinstall, real previous-version upgrade, download and replacement failure recovery, saved account\/configuration retention, and four setup interruption stages/);
     }
   }
 });

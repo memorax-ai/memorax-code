@@ -1161,12 +1161,17 @@ published MemoraX Code **0.1.18** package, and saved account/configuration
 retention. That baseline predates Cursor support: its Backend must be ready
 before upgrade, and the candidate must install the complete Cursor integration.
 Download failure and a fault-injected candidate `postinstall` exercise
-real npm replacement failure, recovery and retry. This step does not start the
-Cursor App and does not cover setup interruption. Linux runs this package
-lifecycle check on the fresh runner; its subsequent App check remains inside
-the existing container. Lifecycle failure prevents native App execution and
-fails the cell. Only `cursor-lifecycle-report/report.json` is uploaded, separately
-from the native App report.
+real npm replacement failure, recovery and retry. The same driver covers setup
+interruption at four stages: `after-config-write`, `before-backend-start`,
+`after-backend-start`, and `saved-account-key-cancel`. These checks use a real PTY,
+the existing Backend lock and a test-only Node child gate. Each retry requires no
+account input and verifies the complete Cursor integration and a local
+saved-account Search.
+This step does not simulate power loss and does not start the Cursor App.
+Linux runs this package lifecycle check on the fresh runner; its subsequent App
+check remains inside the existing container. Lifecycle failure prevents native
+App execution and fails the cell. Only `cursor-lifecycle-report/report.json` is
+uploaded, separately from the native App report.
 
 The macOS and Windows wrappers also run the existing Cursor installed-package smoke before
 starting the App. This reuses lifecycle and configuration-preservation coverage;
