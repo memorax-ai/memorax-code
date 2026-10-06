@@ -6,6 +6,7 @@ import { PassThrough } from "node:stream";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
 import { collectCursorAppShellDiagnostics, collectCursorAppStopDiagnostics } from "./cursor-app-diagnostics.mjs";
+import { stopWindowsApp } from "./cursor-app-windows-runtime.mjs";
 
 const source = (await readFile(new URL("./cursor-app-native-check.mjs", import.meta.url), "utf8")).replaceAll("\r\n", "\n");
 
@@ -649,6 +650,50 @@ test("Windows App cleanup uses its held live child after browser close, never an
     if (mode === "browser-error") await assert.rejects(stopApp(), (caught) => caught === error);
     else await stopApp();
     assert.deepEqual(calls, ["live", "browser-error"].includes(mode) ? ["browser", "stop"] : ["browser"]);
+  }
+});
+
+test("Windows App stop preserves the first failure snapshot through repeated cleanup", async () => {
+  const body = source.split("async function stopApp(")[1]?.split("\nasync function assertProcessesStopped(")[0];
+  assert.ok(body);
+  for (const primaryError of [undefined, "CURSOR_APP_ADD_TIMEOUT"]) {
+    const report = primaryError ? { errorCode: primaryError } : {};
+    const env = { SystemRoot: "C:\\Windows" }, failures = [];
+    const app = Object.assign(new EventEmitter(), { pid: 201, exitCode: null, signalCode: null,
+      kill() { assert.fail("failed taskkill must not introduce fallback signals"); } });
+    let stops = 0;
+    const stopApp = runInNewContext(`(async function stopApp(${body})`, {
+      macos: undefined, app, env, report, page: {}, once, bounded: (promise) => promise,
+      browser: { async close() {} },
+      windows: { async stopWindowsApp(child, actualEnv) {
+        try {
+          return await stopWindowsApp(child, actualEnv, async () => {
+            stops += 1;
+            if (stops === 2) child.exitCode = 0;
+            throw Object.assign(new Error("private-stop-canary"), { code: stops === 1 ? 128 : 1,
+              stdout: "private-stop-canary", stderr: stops === 1
+                ? 'ERROR: The process "201" not found.\nprivate-stop-canary'
+                : "ERROR: Access is denied.\nprivate-stop-canary" });
+          });
+        } catch (error) { failures.push(error); throw error; }
+      } },
+      check(value, code) { if (!value) throw Object.assign(new Error(code), { code }); },
+    }, { timeout: 100 });
+    await assert.rejects(stopApp(), (error) => error === failures[0]
+      && error.code === "CURSOR_APP_WINDOWS_APP_STOP_EXIT_128");
+    const snapshot = report.windowsAppStop;
+    assert.deepEqual(snapshot, { taskkillExitCode: 128, childExitCode: null, childSignal: "none", timedOut: false,
+      outputOverflow: false, markers: { processNotFound: true, accessDenied: false } });
+    await assert.rejects(stopApp(), (error) => error === failures[1]
+      && error.code === "CURSOR_APP_WINDOWS_APP_STOP_EXIT_1");
+    assert.equal(failures[1].windowsAppStop.childExitCode, 0);
+    assert.equal(failures[1].windowsAppStop.markers.accessDenied, true);
+    assert.equal(report.windowsAppStop, snapshot);
+    assert.equal(snapshot.childExitCode, null);
+    assert.equal(report.errorCode, primaryError);
+    assert.equal(JSON.stringify(report).includes("private-stop-canary"), false);
+    assert.equal(stops, 2);
+    app.emit("close", 0, null);
   }
 });
 

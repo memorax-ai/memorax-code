@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { win32 as path } from "node:path";
 import { promisify } from "node:util";
+import { collectCursorAppWindowsStopDiagnostics } from "./cursor-app-diagnostics.mjs";
 
 const exec = promisify(execFile);
 const argumentCode = "CURSOR_APP_WINDOWS_RUNTIME_ARGUMENTS";
@@ -86,7 +87,7 @@ export async function stopWindowsApp(child, env, execute = exec) {
     else if (error?.code === "ENOENT") suffix = "UNAVAILABLE";
     else if (Number.isInteger(error?.code) && error.code >= 0 && error.code <= 0xffffffff) suffix = `EXIT_${error.code}`;
     const code = `CURSOR_APP_WINDOWS_APP_STOP_${suffix}`;
-    throw Object.assign(new Error(code), { code });
+    throw Object.assign(new Error(code), { code, windowsAppStop: collectCursorAppWindowsStopDiagnostics({ error, child }) });
   }
 }
 

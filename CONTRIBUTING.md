@@ -1348,8 +1348,15 @@ files and Hook traces are not CI artifacts. App startup diagnostics publish
 only bounded 32-bit exit codes, fixed signal/error enums and marker booleans, not raw
 stderr. Windows cleanup errors distinguish process-query, JSON and row-validation
 failures using fixed codes, without publishing process lists or PowerShell output.
-Windows App-stop failures retain only fixed error categories or bounded numeric
-exit codes. Skill-entry failures distinguish a missing or ambiguous native menu
+Windows App-stop failures retain the first failed `taskkill` outcome, bounded
+command and held-child exit codes, a fixed child signal, timeout/overflow flags,
+and fixed stderr marker booleans. They publish no PID, command, path or raw output;
+an observed child exit does not override the original failure. Stored Backend
+diagnostic markers expose only known operations, reasons and correlation scopes.
+Turn-scoped markers must match the requested turn; session-scoped markers remain
+separate and do not establish a failure in that particular turn. An empty diagnostic
+list does not prove that a Hook never ran. Raw marker keys are never published.
+Skill-entry failures distinguish a missing or ambiguous native menu
 item, a missing or ambiguous mention, and an invalid native attachment path, type
 or content using fixed codes; Skill paths and contents remain private.
 Failed DMG detach diagnostics contain

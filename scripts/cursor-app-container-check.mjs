@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { baselineRelease, validateLinuxRelease } from "./cursor-app-release.mjs";
 import { projectCursorAppDiagnostics, projectCursorAppLaunchDiagnostics,
-  projectCursorAppShellDiagnostics, projectCursorAppStopDiagnostics } from "./cursor-app-diagnostics.mjs";
+  projectCursorAppShellDiagnostics, projectCursorAppStopDiagnostics, projectCursorAppWindowsStopDiagnostics } from "./cursor-app-diagnostics.mjs";
 
 const exec = promisify(execFile);
 const scripts = dirname(fileURLToPath(import.meta.url));
@@ -123,6 +123,9 @@ export function projectNativeReport(input, { expectedVersion = provenance.cursor
   if (input.appLaunch !== undefined) report.appLaunch = projectCursorAppLaunchDiagnostics(input.appLaunch);
   if (input.status === "FAIL" && input.candidateStop !== undefined) report.candidateStop = projectCursorAppStopDiagnostics(input.candidateStop);
   if (input.status === "FAIL" && input.shellResult !== undefined) report.shellResult = projectCursorAppShellDiagnostics(input.shellResult);
+  if (input.status === "FAIL" && platform === "win32" && input.windowsAppStop !== undefined) {
+    report.windowsAppStop = projectCursorAppWindowsStopDiagnostics(input.windowsAppStop);
+  }
   if (report.status === "PASS") check(report.stage === "complete" && report.version === expectedVersion && !report.errorCode && !report.cleanupError && !report.nativeContentError
     && completedEvidence.every((key) => report.evidence[key] === true)
     && content?.length === 8 && [3, 6, 3, 9, 15, 21, 4, 3].every((blobs, index) => content[index]?.composerMatched === true

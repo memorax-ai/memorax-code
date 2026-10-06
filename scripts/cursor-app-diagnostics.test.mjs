@@ -5,8 +5,9 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { collectCursorAppDiagnostics, collectCursorAppLaunchDiagnostics, collectCursorAppShellDiagnostics, collectCursorAppShellOutputDiagnostics,
-  collectCursorAppStopDiagnostics, isCursorAppDiagnostics, projectCursorAppDiagnostics,
-  projectCursorAppLaunchDiagnostics, projectCursorAppShellDiagnostics, projectCursorAppStopDiagnostics } from "./cursor-app-diagnostics.mjs";
+  collectCursorAppStopDiagnostics, collectCursorAppWindowsStopDiagnostics, isCursorAppDiagnostics, projectCursorAppDiagnostics,
+  projectCursorAppLaunchDiagnostics, projectCursorAppShellDiagnostics, projectCursorAppStopDiagnostics,
+  projectCursorAppWindowsStopDiagnostics } from "./cursor-app-diagnostics.mjs";
 
 const privateCanary = "private-content-path-token-canary";
 
@@ -262,6 +263,66 @@ test("candidate stop diagnostics reject malformed output and arbitrary nested co
   for (const exitCode of [0, 1, 255]) assert.equal(projectCursorAppStopDiagnostics({ exitCode }).exitCode, exitCode);
 });
 
+test("Windows App stop diagnostics capture the held child at failure without claiming process disappearance", () => {
+  const child = { pid: 12345, exitCode: null, signalCode: null };
+  const error = { code: 128, stderr: 'ERROR: The process "12345" not found.\r\n' + privateCanary,
+    stdout: privateCanary, message: privateCanary, cmd: privateCanary };
+  const result = collectCursorAppWindowsStopDiagnostics({ error, child });
+  assert.deepEqual(result, { taskkillExitCode: 128, childExitCode: null, childSignal: "none",
+    timedOut: false, outputOverflow: false, markers: { processNotFound: true, accessDenied: false } });
+  child.exitCode = 0;
+  assert.equal(result.childExitCode, null);
+  assert.equal(collectCursorAppWindowsStopDiagnostics({ error, child }).childExitCode, 0);
+  assert.deepEqual(projectCursorAppWindowsStopDiagnostics(result), result);
+  assert.equal(JSON.stringify(result).includes(privateCanary), false);
+  assert.equal(JSON.stringify(result).includes("12345"), false);
+});
+
+test("Windows App stop diagnostics use bounded stderr only and distinguish timeout from output overflow", () => {
+  for (const stderr of ["ERROR: Access is denied.\r\n", "Reason: Access is denied.\n",
+    Buffer.from("Reason: Access is denied.\r\n")]) {
+    const result = collectCursorAppWindowsStopDiagnostics({ error: { code: 1, stderr } });
+    assert.equal(result.markers.accessDenied, true);
+  }
+  for (const error of [{ code: "ETIMEDOUT" }, { killed: true, signal: "SIGTERM" }]) {
+    const result = collectCursorAppWindowsStopDiagnostics({ error, child: { signalCode: "SIGKILL" } });
+    assert.equal(result.timedOut, true); assert.equal(result.outputOverflow, false);
+    assert.equal(result.taskkillExitCode, null); assert.equal(result.childSignal, "SIGKILL");
+  }
+  const overflow = collectCursorAppWindowsStopDiagnostics({
+    error: { code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER", killed: true },
+  });
+  assert.equal(overflow.timedOut, false); assert.equal(overflow.outputOverflow, true);
+  for (const error of [{ message: "ERROR: Access is denied." }, { stdout: "ERROR: Access is denied." },
+    { stderr: "ERROR: Access is denied." + "x".repeat(64 * 1024) },
+    { stderr: "\u00e9".repeat(32 * 1024) + "\nERROR: Access is denied." },
+    { stderr: Buffer.alloc(64 * 1024 + 1, "x") }, { stderr: { toString: () => "ERROR: Access is denied." } },
+    { stderr: "ERROR: Access is denied.extra\nReason:\nAccess is denied.\n" },
+    { stderr: `ERROR: The process "${privateCanary}" not found.\n` }]) {
+    const result = collectCursorAppWindowsStopDiagnostics({ error });
+    assert.deepEqual(result.markers, { processNotFound: false, accessDenied: false });
+    assert.equal(JSON.stringify(result).includes(privateCanary), false);
+  }
+});
+
+test("Windows App stop projection accepts only uint32 outcomes, fixed signals and literal booleans", () => {
+  for (const code of [0, 1, 128, 256, 0xc0000135, 0xffff_ffff]) {
+    const result = projectCursorAppWindowsStopDiagnostics({ taskkillExitCode: code, childExitCode: code });
+    assert.equal(result.taskkillExitCode, code); assert.equal(result.childExitCode, code);
+  }
+  for (const code of [-1, 0x1_0000_0000, 1.5, "128", NaN, privateCanary]) {
+    const result = projectCursorAppWindowsStopDiagnostics({ taskkillExitCode: code, childExitCode: code,
+      childSignal: privateCanary, timedOut: "true", outputOverflow: 1, stderr: privateCanary, pid: 12345,
+      markers: { processNotFound: "true", accessDenied: 1, [privateCanary]: true } });
+    assert.deepEqual(result, { taskkillExitCode: null, childExitCode: null, childSignal: "other",
+      timedOut: false, outputOverflow: false, markers: { processNotFound: false, accessDenied: false } });
+    assert.equal(JSON.stringify(result).includes(privateCanary), false);
+  }
+  for (const childSignal of ["none", "SIGABRT", "SIGBUS", "SIGILL", "SIGKILL", "SIGSEGV", "SIGTERM", "SIGTRAP", "other"]) {
+    assert.equal(projectCursorAppWindowsStopDiagnostics({ childSignal }).childSignal, childSignal);
+  }
+});
+
 async function fixture(callback) {
   const home = await realpath(await mkdtemp(join(tmpdir(), "memorax-cursor-diagnostics-")));
   const sessionId = randomUUID(), turnId = randomUUID();
@@ -292,12 +353,84 @@ test("Cursor diagnostics correlate only the exact active generation and matching
     const actual = await collectCursorAppDiagnostics(f);
     assert.deepEqual(actual.turnStore, { readStatus: "present", versionMatched: true, clientMatched: true,
       sessionMatched: true, activePresent: true, turnMatched: true, state: "open", stopStatus: "completed",
-      reason: "native_final_response_pending", responseDigestPresent: true, metadataPresent: true, retryUntilPresent: true });
+      reason: "native_final_response_pending", responseDigestPresent: true, metadataPresent: true, retryUntilPresent: true,
+      diagnostics: [] });
     assert.deepEqual(actual.trace, { readStatus: "present", eventCount: 7, turnStartCount: 1,
       completedCount: 1, interruptedCount: 1, materializedCount: 1 });
     assertSanitized(actual, f);
     assert.deepEqual(JSON.parse(await readFile(f.store, "utf8")), f.record);
   });
+});
+
+const diagnosticKey = (...parts) => createHash("sha256").update(JSON.stringify(parts)).digest("hex");
+
+test("Cursor stored diagnostic keys distinguish current-turn failures from session classification failures", async () => {
+  await fixture(async (f) => {
+    delete f.record.active;
+    const otherTurn = randomUUID();
+    f.record.diagnosticKeys = [diagnosticKey("memory.writeback", f.turnId, "start_missing"),
+      diagnosticKey("memory.turn-start", "database_native_format_invalid"),
+      diagnosticKey("memory.turn-start", otherTurn, "workspace_scope_mismatch"),
+      diagnosticKey("memory.writeback", "start_missing"), diagnosticKey("memory.turn-start", "database_unavailable"),
+      diagnosticKey("memory.turn-start", "database_state_missing"), diagnosticKey(privateCanary, f.turnId, "start_missing"),
+      diagnosticKey("memory.writeback", f.turnId, privateCanary)];
+    await writeFile(f.store, JSON.stringify(f.record));
+    const actual = await collectCursorAppDiagnostics(f);
+    assert.equal(actual.turnStore.activePresent, false);
+    assert.deepEqual(actual.turnStore.diagnostics, [
+      { operation: "memory.writeback", reason: "start_missing", scope: "turn" },
+      { operation: "memory.turn-start", reason: "database_native_format_invalid", scope: "session" },
+    ]);
+    const next = await collectCursorAppDiagnostics({ ...f, turnId: randomUUID() });
+    assert.deepEqual(next.turnStore.diagnostics, [
+      { operation: "memory.turn-start", reason: "database_native_format_invalid", scope: "session" },
+    ]);
+    assertSanitized(actual, f);
+    for (const key of f.record.diagnosticKeys) assert.equal(JSON.stringify(actual).includes(key), false);
+    assert.deepEqual(JSON.parse(await readFile(f.store, "utf8")), f.record);
+  });
+});
+
+test("Cursor diagnostic key projection requires matching store identity and bounded valid digest entries", async () => {
+  await fixture(async (f) => {
+    const key = diagnosticKey("memory.turn-start", f.turnId, "database_native_format_invalid");
+    for (const change of [{ version: 1 }, { client: "codex" }, { sessionId: randomUUID() },
+      { diagnosticKeys: [key, privateCanary] }, { diagnosticKeys: Array(65).fill(key) },
+      { diagnosticKeys: [key.toUpperCase()] }, { diagnosticKeys: key }, { diagnosticKeys: null }]) {
+      await writeFile(f.store, JSON.stringify({ ...f.record, diagnosticKeys: [key], ...change }));
+      const actual = await collectCursorAppDiagnostics(f);
+      assert.deepEqual(actual.turnStore.diagnostics, []); assertSanitized(actual, f);
+    }
+    f.record.diagnosticKeys = ["memory.turn-start", "memory.pre-compact", "memory.writeback"]
+      .map((operation) => diagnosticKey(operation, f.turnId, "database_native_format_invalid"));
+    f.record.diagnosticKeys.push(f.record.diagnosticKeys[0]);
+    await writeFile(f.store, JSON.stringify(f.record));
+    const actual = await collectCursorAppDiagnostics(f);
+    assert.deepEqual(actual.turnStore.diagnostics, ["memory.turn-start", "memory.pre-compact", "memory.writeback"]
+      .map((operation) => ({ operation, reason: "database_native_format_invalid", scope: "turn" })));
+    assertSanitized(actual, f);
+  });
+});
+
+test("Cursor recorded diagnostic projection excludes invalid scopes and nonclassification session reasons", () => {
+  const entry = { operation: "memory.turn-start", reason: "database_native_format_invalid", scope: "session" };
+  const turnStore = { readStatus: "present", versionMatched: true, clientMatched: true, sessionMatched: true,
+    diagnostics: [entry, { ...entry, scope: "turn", secret: privateCanary }, { ...entry, operation: "memory.writeback" },
+      { ...entry, reason: "database_unavailable" }, { ...entry, scope: privateCanary },
+      { ...entry, reason: privateCanary }, { ...entry, operation: privateCanary }, entry] };
+  const actual = projectCursorAppDiagnostics({ turnStore });
+  assert.deepEqual(actual.turnStore.diagnostics, [{ ...entry, scope: "turn" }, entry]);
+  assert.equal(JSON.stringify(actual).includes(privateCanary), false);
+  assert.equal(isCursorAppDiagnostics(actual), true);
+  for (const change of [{ readStatus: "invalid" }, { versionMatched: false }, { clientMatched: false },
+    { sessionMatched: false }, { diagnostics: Array(65).fill(entry) }, { diagnostics: privateCanary }]) {
+    assert.deepEqual(projectCursorAppDiagnostics({ turnStore: { ...turnStore, ...change } }).turnStore.diagnostics, []);
+  }
+  for (const reason of ["database_runtime_unavailable", "database_path_invalid", "database_replaced",
+    "database_snapshot_too_large", "database_native_format_invalid"]) {
+    assert.deepEqual(projectCursorAppDiagnostics({ turnStore: { ...turnStore, diagnostics: [{ ...entry, reason }] } })
+      .turnStore.diagnostics, [{ ...entry, reason }]);
+  }
 });
 
 test("Cursor diagnostics retain interruption status without requiring a response digest", async () => {

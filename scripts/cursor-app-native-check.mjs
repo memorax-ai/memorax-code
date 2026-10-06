@@ -208,8 +208,13 @@ async function stopApp() {
   page = undefined;
   if (app && app.exitCode === null && app.signalCode === null) {
     const closed = once(app, "close");
-    if (windows) await windows.stopWindowsApp(app, env);
-    else app.kill("SIGTERM");
+    if (windows) {
+      try { await windows.stopWindowsApp(app, env); }
+      catch (error) {
+        if (error?.windowsAppStop) report.windowsAppStop ??= error.windowsAppStop;
+        throw error;
+      }
+    } else app.kill("SIGTERM");
     if (!await Promise.race([closed.then(() => true), delay(5000).then(() => false)])) {
       app.kill("SIGKILL");
       check(await Promise.race([closed.then(() => true), delay(5000).then(() => false)]), "CURSOR_APP_CLEANUP_TIMEOUT");

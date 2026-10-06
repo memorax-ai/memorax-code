@@ -20,6 +20,12 @@ const reasons = new Set([
   "native_user_simulated", "native_user_steer", "native_user_external_text", "native_user_empty",
   "continuation_user_unbound", "completion_event_missing", "response_digest_missing", "decision_error",
 ]);
+const diagnosticCandidates = [
+  ...["memory.turn-start", "memory.pre-compact", "memory.writeback"].flatMap((operation) =>
+    [...reasons].map((reason) => ({ operation, reason, scope: "turn" }))),
+  ...["database_runtime_unavailable", "database_path_invalid", "database_replaced", "database_snapshot_too_large",
+    "database_native_format_invalid"].map((reason) => ({ operation: "memory.turn-start", reason, scope: "session" })),
+];
 const record = (value) => Boolean(value && typeof value === "object" && !Array.isArray(value));
 const enumValue = (value, allowed, missing = "absent") => value === undefined ? missing : allowed.includes(value) ? value : "other";
 const count = (value) => Number.isSafeInteger(value) && value >= 0 && value <= maxEvents ? value : 0;
@@ -176,6 +182,32 @@ export function collectCursorAppStopDiagnostics({ stdout, exitCode, signal, time
     cursorAdapter: { present: record(result?.cursorAdapter), ok: cursorAdapter.ok === true } });
 }
 
+export function projectCursorAppWindowsStopDiagnostics(value) {
+  const exitCode = (code) => Number.isInteger(code) && code >= 0 && code <= 0xffff_ffff ? code : null;
+  return {
+    taskkillExitCode: exitCode(value?.taskkillExitCode), childExitCode: exitCode(value?.childExitCode),
+    childSignal: value?.childSignal == null ? "none" : enumValue(value.childSignal,
+      ["none", "SIGABRT", "SIGBUS", "SIGILL", "SIGKILL", "SIGSEGV", "SIGTERM", "SIGTRAP", "other"], "none"),
+    timedOut: value?.timedOut === true, outputOverflow: value?.outputOverflow === true,
+    markers: { processNotFound: value?.markers?.processNotFound === true, accessDenied: value?.markers?.accessDenied === true },
+  };
+}
+
+export function collectCursorAppWindowsStopDiagnostics({ error, child } = {}) {
+  let stderr = "";
+  if (typeof error?.stderr === "string" && error.stderr.length <= 64 * 1024 && Buffer.byteLength(error.stderr) <= 64 * 1024) {
+    stderr = error.stderr;
+  } else if (Buffer.isBuffer(error?.stderr) && error.stderr.length <= 64 * 1024) stderr = error.stderr.toString("utf8");
+  return projectCursorAppWindowsStopDiagnostics({ taskkillExitCode: error?.code,
+    childExitCode: child?.exitCode, childSignal: child?.signalCode,
+    timedOut: error?.code === "ETIMEDOUT" || (error?.killed === true && error?.code !== "ERR_CHILD_PROCESS_STDIO_MAXBUFFER"),
+    outputOverflow: error?.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER",
+    markers: {
+      processNotFound: /(?:^|\r?\n)ERROR: The process "[0-9]{1,10}" not found\.(?:\r?\n|$)/.test(stderr),
+      accessDenied: /(?:^|\r?\n)(?:ERROR|Reason): Access is denied\.(?:\r?\n|$)/.test(stderr),
+    } });
+}
+
 export function projectCursorAppDiagnostics(value) {
   const store = record(value?.turnStore) ? value.turnStore : {}, trace = record(value?.trace) ? value.trace : {};
   return {
@@ -188,6 +220,11 @@ export function projectCursorAppDiagnostics(value) {
       reason: store.reason === undefined || store.reason === "absent" ? "absent" : reasons.has(store.reason) ? store.reason : "other",
       responseDigestPresent: store.responseDigestPresent === true, metadataPresent: store.metadataPresent === true,
       retryUntilPresent: store.retryUntilPresent === true,
+      diagnostics: store.readStatus === "present" && store.versionMatched === true && store.clientMatched === true
+        && store.sessionMatched === true && Array.isArray(store.diagnostics) && store.diagnostics.length <= 64
+        ? diagnosticCandidates.filter((candidate) => store.diagnostics.some((item) => record(item)
+          && item.operation === candidate.operation && item.reason === candidate.reason && item.scope === candidate.scope))
+          .map((item) => ({ ...item })) : [],
     },
     trace: {
       readStatus: readStatuses.includes(trace.readStatus) ? trace.readStatus : "unavailable",
@@ -253,6 +290,14 @@ export async function collectCursorAppDiagnostics(input) {
         state: active.state, stopStatus: active.stopStatus, reason: active.reason,
         responseDigestPresent: typeof active.responseDigest === "string" && /^[a-f0-9]{64}$/.test(active.responseDigest),
         metadataPresent: Object.hasOwn(active, "metadata"), retryUntilPresent: Number.isSafeInteger(active.retryUntil) && active.retryUntil >= 0 };
+      if (turnStore.versionMatched && turnStore.clientMatched && turnStore.sessionMatched
+        && Array.isArray(value.diagnosticKeys) && value.diagnosticKeys.length <= 64
+        && value.diagnosticKeys.every((key) => typeof key === "string" && /^[a-f0-9]{64}$/.test(key))) {
+        const keys = new Set(value.diagnosticKeys);
+        // Session classification keys omit the turn ID and must stay explicitly session-scoped.
+        turnStore.diagnostics = diagnosticCandidates.filter(({ operation, reason, scope }) => keys.has(createHash("sha256")
+          .update(JSON.stringify(scope === "session" ? [operation, reason] : [operation, turnId, reason])).digest("hex")));
+      }
     } catch { turnStore = { readStatus: "invalid" }; }
   }
   if (events.readStatus === "present") {

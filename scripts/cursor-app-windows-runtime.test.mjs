@@ -138,7 +138,7 @@ test("Windows App tree cleanup ignores exited children even if their PID is reus
   assert.equal(calls, 1);
 });
 
-test("Windows App stop failures expose only bounded fixed error codes", async () => {
+test("Windows App stop failures expose only bounded fixed error codes and snapshots", async () => {
   const env = windowsRuntimePaths(paths).env;
   for (const [fields, suffix] of [
     [{ code: "ETIMEDOUT" }, "TIMEOUT"],
@@ -162,7 +162,13 @@ test("Windows App stop failures expose only bounded fixed error codes", async ()
     }), (error) => {
       assert.equal(error.code, `CURSOR_APP_WINDOWS_APP_STOP_${suffix}`);
       assert.equal(error.message, error.code);
-      assert.deepEqual(Object.keys(error), ["code"]);
+      assert.deepEqual(Object.keys(error), ["code", "windowsAppStop"]);
+      assert.deepEqual(error.windowsAppStop, {
+        taskkillExitCode: Number.isInteger(fields.code) && fields.code >= 0 && fields.code <= 0xffffffff ? fields.code : null,
+        childExitCode: null, childSignal: "none", timedOut: suffix === "TIMEOUT",
+        outputOverflow: fields.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER",
+        markers: { processNotFound: false, accessDenied: false },
+      });
       assert.equal(JSON.stringify(error).includes("private-canary"), false);
       return true;
     });
@@ -171,11 +177,24 @@ test("Windows App stop failures expose only bounded fixed error codes", async ()
 
 test("Windows App stop does not swallow command failure if the held child exits meanwhile", async () => {
   const child = { pid: 123, exitCode: null, signalCode: null };
+  let snapshot;
   await assert.rejects(stopWindowsApp(child, windowsRuntimePaths(paths).env, async () => {
     child.exitCode = 0;
-    throw Object.assign(new Error("private-canary"), { code: 128 });
-  }), code("APP_STOP_EXIT_128"));
+    throw Object.assign(new Error("private-canary"), { code: 128,
+      stderr: 'ERROR: The process "123" not found.\nprivate-canary', stdout: "private-canary" });
+  }), (error) => {
+    assert.equal(error.code, "CURSOR_APP_WINDOWS_APP_STOP_EXIT_128");
+    snapshot = error.windowsAppStop;
+    assert.deepEqual(snapshot, { taskkillExitCode: 128, childExitCode: 0, childSignal: "none", timedOut: false,
+      outputOverflow: false, markers: { processNotFound: true, accessDenied: false } });
+    assert.equal(JSON.stringify(error).includes("private-canary"), false);
+    return true;
+  });
   assert.equal(child.exitCode, 0);
+  child.exitCode = 1;
+  child.signalCode = "SIGTERM";
+  assert.equal(snapshot.childExitCode, 0);
+  assert.equal(snapshot.childSignal, "none");
 });
 
 test("Windows Shell commands preserve explicit argv and environment through one fixed encoded shell", () => {

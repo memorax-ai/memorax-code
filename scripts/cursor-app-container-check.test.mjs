@@ -369,6 +369,29 @@ test("failure reports retain only the diagnostic helper's bounded public project
   assert.throws(() => projectNativeReport(input), /CURSOR_CONTAINER_REPORT/);
 });
 
+test("failure reports expose correlated stored diagnostic enums without private identities", () => {
+  const matching = [
+    { operation: "memory.writeback", reason: "start_missing", scope: "turn" },
+    { operation: "memory.turn-start", reason: "database_native_format_invalid", scope: "session" },
+  ];
+  const input = { ...nativeReport(), status: "FAIL", stage: "automatic-add", errorCode: "CURSOR_APP_ADD_TIMEOUT",
+    diagnostics: { turnStore: { readStatus: "present", versionMatched: true, clientMatched: true, sessionMatched: true,
+      activePresent: false, diagnosticKeys: ["private-diagnostic-canary"], diagnostics: [
+        ...matching.map((entry) => ({ ...entry, turnId: "private-diagnostic-canary", key: "private-diagnostic-canary" })),
+        { operation: "private-diagnostic-canary", reason: "start_missing", scope: "turn" },
+        { operation: "memory.writeback", reason: "private-diagnostic-canary", scope: "turn" },
+        { operation: "memory.writeback", reason: "start_missing", scope: "session" },
+      ] } } };
+  const report = projectNativeReport(input);
+  assert.deepEqual(report.diagnostics.turnStore.diagnostics, matching);
+  assert.equal(report.diagnostics.turnStore.activePresent, false);
+  assert.equal(report.errorCode, "CURSOR_APP_ADD_TIMEOUT");
+  assert.equal(report.status, "FAIL");
+  assert.equal(JSON.stringify(report).includes("private-diagnostic-canary"), false);
+  input.diagnostics.turnStore.sessionMatched = false;
+  assert.deepEqual(projectNativeReport(input).diagnostics.turnStore.diagnostics, []);
+});
+
 test("Shell failure reports project only fixed outcomes without changing failure or PASS gates", () => {
   for (const platform of ["linux", "darwin", "win32"]) {
     const input = { ...nativeReport(), platform, status: "FAIL", stage: "agent-transport", errorCode: "CURSOR_APP_EXEC_REJECTED",
@@ -396,12 +419,38 @@ test("Shell failure reports project only fixed outcomes without changing failure
   }
 });
 
+test("Windows stop failure reports retain only the bounded failure-time snapshot", () => {
+  const input = { ...nativeReport(), status: "FAIL", platform: "win32", stage: "workspace-switch",
+    errorCode: "CURSOR_APP_WINDOWS_APP_STOP_EXIT_128", cleanupError: "CURSOR_APP_WINDOWS_APP_STOP_EXIT_128",
+    windowsAppStop: { taskkillExitCode: 128, childExitCode: 0, childSignal: "none", timedOut: false, outputOverflow: false,
+      markers: { processNotFound: true, accessDenied: false, private: "private-stop-canary" },
+      pid: 12345, command: "private-stop-canary", stderr: "private-stop-canary" } };
+  const report = projectNativeReport(input, { platform: "win32" });
+  assert.deepEqual(report.windowsAppStop, { taskkillExitCode: 128, childExitCode: 0, childSignal: "none",
+    timedOut: false, outputOverflow: false, markers: { processNotFound: true, accessDenied: false } });
+  assert.equal(report.status, "FAIL");
+  assert.equal(report.errorCode, input.errorCode);
+  assert.equal(report.cleanupError, input.cleanupError);
+  assert.equal(JSON.stringify(report).includes("private-stop-canary"), false);
+  input.windowsAppStop = { taskkillExitCode: "128", childExitCode: 0x1_0000_0000, childSignal: "private-stop-canary",
+    timedOut: "true", outputOverflow: 1, markers: { processNotFound: "true", accessDenied: 1 } };
+  assert.deepEqual(projectNativeReport(input, { platform: "win32" }).windowsAppStop, {
+    taskkillExitCode: null, childExitCode: null, childSignal: "other", timedOut: false, outputOverflow: false,
+    markers: { processNotFound: false, accessDenied: false } });
+  for (const platform of ["linux", "darwin"]) {
+    assert.equal(projectNativeReport({ ...input, platform }, { platform }).windowsAppStop, undefined);
+  }
+});
+
 test("successful native reports never publish stop or Shell failure diagnostics", () => {
   const input = nativeReport();
   input.candidateStop = { stdout: "synthetic-private", backend: { errorCode: "BACKEND_STOP_TIMEOUT" } };
   input.shellResult = { rejectionKind: 2, approvalClicked: true, exitCode: 127 };
   assert.equal(projectNativeReport(input).candidateStop, undefined);
   assert.equal(projectNativeReport(input).shellResult, undefined);
+  input.platform = "win32";
+  input.windowsAppStop = { taskkillExitCode: 128, stderr: "synthetic-private" };
+  assert.equal(projectNativeReport(input, { platform: "win32" }).windowsAppStop, undefined);
 });
 
 test("PASS rejects missing, reordered, duplicate or incomplete session-flow evidence", () => {
