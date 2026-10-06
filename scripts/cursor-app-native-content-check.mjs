@@ -123,13 +123,13 @@ export function assertCursorAppWriteback(input) {
 
 export function assertCursorAppWritebacks(input) {
   try {
-    const { requests, turns, apiKey, baseUserId, workspaceName } = input ?? {};
+    const { requests, turns, apiKey, baseUserId } = input ?? {};
     check(Array.isArray(turns) && turns.length > 0, "CURSOR_APP_ADD_EXPECTED");
     check(Array.isArray(requests) && requests.length === turns.length, "CURSOR_APP_MEMORY_REQUEST_COUNT");
     for (let index = 0; index < turns.length; index += 1) {
       const turn = turns[index];
       assertCursorAppWriteback({ requests: [requests[index]], sessionId: turn?.sessionId,
-        prompt: turn?.prompt, answer: turn?.answer, apiKey, baseUserId, workspaceName });
+        prompt: turn?.prompt, answer: turn?.answer, apiKey, baseUserId, workspaceName: turn?.workspaceName });
     }
     return { automaticAdd: turns.length };
   } catch (error) {

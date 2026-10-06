@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { EventEmitter, once } from "node:events";
 import { readFile } from "node:fs/promises";
-import { dirname, join, posix, win32 } from "node:path";
+import { basename, dirname, join, posix, win32 } from "node:path";
 import { PassThrough } from "node:stream";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
@@ -107,8 +107,10 @@ test("actual Run approval records only completed clicks on the matching run and 
     };
     const locator = { locator(selector) { selectors.push(selector); return locator; },
       getByRole(role, options) { assert.equal(role, "button"); assert.equal(options.name, "Run"); assert.equal(options.exact, true); return button; } };
+    const turns = [];
     const runTurn = runInNewContext(`(async function runTurn(${body})`, {
-      turns: [], fixtures: [{ prompt: run.prompt, operation: "search" }], report: {}, agent,
+      turns, fixtures: [{ prompt: run.prompt, operation: "search" }], report: {}, agent,
+      workspace: "/owned/project-beta", basename,
       page: { locator(selector) { selectors.push(selector); return locator; } },
       async submitPrompt(input, fixture) { assert.equal(input, locator); assert.equal(fixture.prompt, run.prompt); submitted += 1; },
       async waitFor(predicate) { await predicate(); throw error; },
@@ -116,6 +118,7 @@ test("actual Run approval records only completed clicks on the matching run and 
     }, { timeout: 100 });
     await assert.rejects(runTurn(sessionId), { code });
     assert.equal(submitted, 1);
+    assert.equal(turns[0].workspaceName, "project-beta");
     assert.equal(run.shellApproval.toolCallId, toolCallId);
     assert.equal(run.shellApproval.clicked, mode === "clicked");
     assert.equal(retry.shellApproval.clicked, false);
@@ -182,6 +185,52 @@ test("App launch keeps the default Chromium sandbox and forces isolated shell en
     assert.equal(args.includes("--remote-debugging-address=127.0.0.1"), true);
     assert.equal(args.includes("--remote-debugging-port=12346"), true);
     assert.equal(args.some((arg) => ["--no-sandbox", "--disable-setuid-sandbox", "--disable-gpu-sandbox"].includes(arg)), false);
+    assert.equal(args.at(-1), "/owned/workspace");
+    assert.equal(options.cwd, "/owned/workspace");
+  }
+});
+
+test("native sequence opens a second workspace then restores the original session without restarting Backend", async () => {
+  const body = source.split('  report.stage = "app-start";')[1]?.split('  report.stage = "cleanup";')[0];
+  assert.ok(body);
+  for (const paths of [posix, win32]) {
+    const root = paths.resolve("/owned"), firstWorkspace = paths.join(root, "workspace");
+    const secondWorkspace = paths.join(root, "project-beta");
+    const env = { MEMORAX_CODE_HOME: paths.join(root, "state") }, userData = paths.join(root, "app-data");
+    const turns = [], starts = [], stops = [], audits = [], created = [], commands = [], snapshots = [];
+    const context = { root, firstWorkspace, workspace: firstWorkspace, env, userData, join: paths.join,
+      report: { evidence: {} }, app: undefined,
+      async mkdir(path) { created.push(path); },
+      async startApp() {
+        assert.equal(context.app, undefined);
+        context.app = { pid: starts.length + 1 };
+        starts.push({ workspace: context.workspace, env: context.env, userData: context.userData });
+      },
+      async stopApp() { stops.push(context.workspace); context.app = undefined; },
+      async assertProcessesStopped(options) { audits.push(options.includeBackend); },
+      async openSession(id) { return id ?? (context.workspace === firstWorkspace ? "session-a" : "session-b"); },
+      async runTurn(sessionId) { turns.push({ sessionId, workspace: context.workspace }); },
+      assertWriteback() {}, assertSnapshot(sessionId) { snapshots.push(sessionId); },
+      async cli(action) { commands.push(action); return { cursorAdapter: { cursorHooks: { runtimeObserved: true } } }; },
+      async interruptPendingShell() { assert.equal(context.workspace, firstWorkspace); },
+      check(value, code) { assert.ok(value, code); },
+    };
+    await runInNewContext(`(async () => {${body}})()`, context, { timeout: 100 });
+    assert.deepEqual(starts.map((item) => item.workspace), [firstWorkspace, secondWorkspace, firstWorkspace]);
+    assert.ok(starts.every((item) => item.env === env && item.userData === userData));
+    assert.deepEqual(stops, [firstWorkspace, secondWorkspace]);
+    assert.deepEqual(audits, [false, false]);
+    assert.deepEqual(created, [secondWorkspace]);
+    assert.deepEqual(commands, ["status"]);
+    assert.deepEqual(turns, [
+      { sessionId: "session-a", workspace: firstWorkspace },
+      { sessionId: "session-a", workspace: firstWorkspace },
+      { sessionId: "session-b", workspace: secondWorkspace },
+      ...Array.from({ length: 3 }, () => ({ sessionId: "session-a", workspace: firstWorkspace })),
+    ]);
+    assert.deepEqual(snapshots, ["session-a", "session-a", "session-b"]);
+    assert.equal(context.report.evidence.workspaceIsolation, true);
+    assert.equal(context.report.evidence.appResume, true);
   }
 });
 

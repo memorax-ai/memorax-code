@@ -110,7 +110,7 @@ function assertWriteback() {
   }
   check(memoryRequests.length === position, "CURSOR_APP_MEMORY_REQUEST_COUNT");
   return assertCursorAppWritebacks({ requests: automatic, turns, apiKey: fixtureKey,
-    baseUserId: fixtureUser, workspaceName: basename(workspace) });
+    baseUserId: fixtureUser });
 }
 function quote(value) { return `'${value.replaceAll("'", "'\\''")}'`; }
 function shellCommand(args, environment = {}) {
@@ -298,7 +298,7 @@ async function submitPrompt(input, fixture) {
 async function runTurn(sessionId) {
   const index = turns.length, fixture = fixtures[index];
   const approvedTools = new Set();
-  turns.push({ sessionId, ...fixture });
+  turns.push({ sessionId, workspaceName: basename(workspace), ...fixture });
   report.stage = "native-submit";
   const input = page.locator(`[data-composer-id="${sessionId}"][data-composer-status]:visible`)
     .locator('[contenteditable="true"][role="textbox"]:visible');
@@ -460,7 +460,8 @@ try {
   check(report.version === expectedVersion, "CURSOR_APP_VERSION");
   ({ chromium } = await import(pathToFileURL(join(playwrightRoot, "index.mjs")).href));
   const home = join(root, "home");
-  userData = join(root, "app-data"); workspace = join(root, "workspace");
+  const firstWorkspace = join(root, "workspace");
+  userData = join(root, "app-data"); workspace = firstWorkspace;
   agent = await startCursorAgentMock({ answers: [...fixtures, interruptedFixture].map((fixture) => fixture.answer), toolSteps, timeoutMs: 60000 });
   memory = createServer(async (request, response) => {
     try {
@@ -523,6 +524,13 @@ try {
   await openSession(firstSession);
   await runTurn(firstSession);
   report.evidence.sameSessionFollowup = true;
+  report.stage = "workspace-switch";
+  await stopApp();
+  await assertProcessesStopped({ includeBackend: false });
+  assertWriteback();
+  workspace = join(root, "project-beta");
+  await mkdir(workspace);
+  await startApp();
   const secondSession = await openSession();
   check(secondSession !== firstSession, "CURSOR_APP_SESSION_NOT_ISOLATED");
   await runTurn(secondSession);
@@ -531,6 +539,7 @@ try {
   await stopApp();
   await assertProcessesStopped({ includeBackend: false });
   assertWriteback();
+  workspace = firstWorkspace;
   await startApp();
   check(app.pid !== oldPid, "CURSOR_APP_RESTART_IDENTITY");
   await openSession(firstSession);
@@ -545,6 +554,7 @@ try {
   assertSnapshot(firstSession);
   assertSnapshot(secondSession);
   report.evidence.sessionIsolation = true;
+  report.evidence.workspaceIsolation = true;
   report.evidence.agentTransport = true;
   check((await cli("status")).cursorAdapter?.cursorHooks?.runtimeObserved === true, "CURSOR_APP_HOOK_NOT_OBSERVED");
   report.evidence.nativeHooks = true;

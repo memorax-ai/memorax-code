@@ -199,8 +199,8 @@ test("native oracle rejects malformed, incorrectly addressed and duplicate expec
 
 function writebackFixture({ sessionId: turnSessionId = sessionId,
   prompt = "Synthetic prompt\n\u8bb0\u5fc6-42 \u00e9",
-  answer = "Synthetic answer\n\u8bb0\u5fc6-42 \ud83e\uddea" } = {}) {
-  const apiKey = "synthetic-private-api-key", baseUserId = "synthetic-user", workspaceName = "synthetic-workspace";
+  answer = "Synthetic answer\n\u8bb0\u5fc6-42 \ud83e\uddea", workspaceName = "synthetic-workspace" } = {}) {
+  const apiKey = "synthetic-private-api-key", baseUserId = "synthetic-user";
   const userId = `${baseUserId}@${workspaceName}`;
   const hash = (text) => createHash("sha256").update(text).digest("hex").slice(0, 16);
   const body = {
@@ -333,20 +333,37 @@ test("writeback oracle rejects incomplete expectations and suppresses unexpected
 function writebacksFixture() {
   const first = writebackFixture();
   const turns = [
-    { sessionId, prompt: first.prompt, answer: first.answer },
-    { sessionId, prompt: first.prompt, answer: "Synthetic second answer\n\u8bb0\u5fc6-42 \ud83e\uddea" },
-    { sessionId: userMessageId, prompt: first.prompt, answer: first.answer },
-    { sessionId, prompt: "Synthetic resumed prompt\n\u8bb0\u5fc6-42 \u00e9",
+    { sessionId, workspaceName: "project-alpha", prompt: first.prompt, answer: first.answer },
+    { sessionId, workspaceName: "project-alpha", prompt: first.prompt, answer: "Synthetic second answer\n\u8bb0\u5fc6-42 \ud83e\uddea" },
+    { sessionId: userMessageId, workspaceName: "project-beta", prompt: first.prompt, answer: first.answer },
+    { sessionId, workspaceName: "project-alpha", prompt: "Synthetic resumed prompt\n\u8bb0\u5fc6-42 \u00e9",
       answer: "Synthetic resumed answer\n\u8bb0\u5fc6-42 \ud83e\uddea" },
   ];
   return { requests: turns.map((turn) => writebackFixture(turn).requests[0]), turns,
-    apiKey: first.apiKey, baseUserId: first.baseUserId, workspaceName: first.workspaceName };
+    apiKey: first.apiKey, baseUserId: first.baseUserId };
 }
 
-test("writebacks oracle matches ordered repeated prompts, isolated sessions and a resumed session", () => {
+test("writebacks oracle matches ordered repeated prompts and A/B/A workspace scopes", () => {
   const input = writebacksFixture(), before = structuredClone(input);
   assert.deepEqual(assertCursorAppWritebacks(input), { automaticAdd: 4 });
   assert.deepEqual(input, before);
+});
+
+test("writebacks oracle rejects workspace B using workspace A scope and idempotency", () => {
+  const input = writebacksFixture();
+  input.requests[2] = writebackFixture({ ...input.turns[2], workspaceName: input.turns[0].workspaceName }).requests[0];
+  rejectsWriteback(input, "CURSOR_APP_ADD_SCOPE", assertCursorAppWritebacks);
+});
+
+test("writebacks oracle requires every turn workspace without a global fallback", () => {
+  for (let index = 0; index < 4; index += 1) {
+    for (const value of [undefined, null, "", " ", 1]) {
+      const input = writebacksFixture();
+      input.workspaceName = input.turns[index].workspaceName;
+      input.turns[index].workspaceName = value;
+      rejectsWriteback(input, "CURSOR_APP_ADD_EXPECTED", assertCursorAppWritebacks);
+    }
+  }
 });
 
 test("writebacks oracle rejects missing, extra and late receiver requests", () => {

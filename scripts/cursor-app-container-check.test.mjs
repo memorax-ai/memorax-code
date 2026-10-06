@@ -33,7 +33,7 @@ function releaseManifest() {
 function nativeReport() {
   return { status: "PASS", client: "cursor", kind: "app-native-session-flows", platform: "linux", node: "24.15.0",
     version: "3.21.18", stage: "complete", evidence: { agentTransport: true, nativeHooks: true, exactAutomaticAdd: true,
-      sameSessionFollowup: true, sessionIsolation: true, appResume: true, skillSearch: true, skillAdd: true, pendingShellInterrupted: true, cleanup: true,
+      sameSessionFollowup: true, sessionIsolation: true, workspaceIsolation: true, appResume: true, skillSearch: true, skillAdd: true, pendingShellInterrupted: true, cleanup: true,
       nativeContent: [3, 6, 3, 9, 15, 21].map((blobCount) => ({ composerMatched: true, stateMatched: true, blobCount })) },
     agent: { runs: 7, ancillaryRequestCount: 5, unsupportedRpcCount: 1, cancelled: [false, false, false, false, false, false, true],
       errors: [], writes: [3, 3, 3, 3, 6, 6, 0], acknowledgements: [3, 3, 3, 3, 6, 6, 0], historyTurns: [0, 1, 0, 2, 3, 4, 0],
@@ -283,6 +283,18 @@ test("report projection rejects a different App or Node runtime than the selecte
   assert.equal(projectNativeReport(minimum, { nodeMajor: "22" }).status, "PASS");
 });
 
+test("all platforms require completed cross-workspace evidence for PASS", () => {
+  for (const platform of ["linux", "darwin", "win32"]) {
+    const input = { ...nativeReport(), platform };
+    assert.equal(projectNativeReport(input, { platform }).evidence.workspaceIsolation, true);
+    for (const value of [undefined, false, "true"]) {
+      const invalid = structuredClone(input);
+      invalid.evidence.workspaceIsolation = value;
+      assert.throws(() => projectNativeReport(invalid, { platform }), { code: "CURSOR_CONTAINER_REPORT" });
+    }
+  }
+});
+
 test("report projection drops raw diagnostics and requires completed native evidence for PASS", () => {
   const input = nativeReport();
   input.privatePath = "/synthetic/private";
@@ -431,7 +443,7 @@ test("PASS rejects missing, sparse, reordered and nonnumeric native tool or cont
   }
 });
 
-test("FAIL preserves bounded partial evidence for restart and session-open diagnostics", () => {
+test("FAIL preserves bounded partial evidence for workspace-switch, restart and session-open diagnostics", () => {
   const failure = nativeReport();
   failure.status = "FAIL";
   failure.evidence.nativeContent = failure.evidence.nativeContent.slice(0, 2);
@@ -448,7 +460,7 @@ test("FAIL preserves bounded partial evidence for restart and session-open diagn
   failure.agent.contextResults = [1, 1];
   failure.agent.contextCloses = [1, 1];
   failure.errorCode = "CURSOR_APP_SESSION_TIMEOUT";
-  for (const stage of ["app-restart", "session-open"]) {
+  for (const stage of ["workspace-switch", "app-restart", "session-open"]) {
     failure.stage = stage;
     const report = projectNativeReport(failure);
     assert.equal(report.stage, stage);

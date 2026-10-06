@@ -20,8 +20,8 @@ const versionPattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const label = "memorax.cursor-app-ci";
 const codePattern = /^CURSOR_(?:APP|MOCK|AGENT|CONTAINER)_[A-Z0-9_]{1,100}$/;
 const stages = new Set(["preflight", "candidate-install", "app-start", "native-submit", "agent-transport",
-  "native-persistence", "automatic-add", "app-restart", "session-open", "pending-shell-interruption", "cleanup", "complete"]);
-const completedEvidence = ["agentTransport", "nativeHooks", "exactAutomaticAdd", "sameSessionFollowup", "sessionIsolation", "appResume",
+  "native-persistence", "automatic-add", "workspace-switch", "app-restart", "session-open", "pending-shell-interruption", "cleanup", "complete"]);
+const completedEvidence = ["agentTransport", "nativeHooks", "exactAutomaticAdd", "sameSessionFollowup", "sessionIsolation", "workspaceIsolation", "appResume",
   "skillSearch", "skillAdd", "pendingShellInterrupted", "cleanup"];
 
 function fail(code) { throw Object.assign(new Error(code), { code }); }

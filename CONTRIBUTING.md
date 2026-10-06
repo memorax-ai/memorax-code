@@ -1174,8 +1174,9 @@ It does not use the App's simulated response stream, seed its conversation
 database, invoke Hooks directly, or bypass the product's native-content parser.
 
 Six completed native runs exercise an initial turn in conversation A, a repeated prompt
-in A with a different answer, a new conversation B with the same initial prompt
-and answer, an App restart followed by another ordinary prompt in A, then
+in A with a different answer, a new conversation B in a separate non-Git workspace
+with the same initial prompt and answer, a return to the original workspace followed
+by another ordinary prompt in A, then
 explicit Skill Search and Add turns in A. Every run completes the native lazy
 RequestContext exchange. Skill turns select `/memorax-code` from the native slash
 menu and require its Skill mention in the composer. The submitted native message
@@ -1199,9 +1200,11 @@ network permission is not a loopback-only allowlist; the commands still use the
 explicit local fixture endpoint. Other platforms and the pending cancellation
 command retain their existing permission requests. The fixture
 requests those tools explicitly; this is not model-driven Skill-selection or
-natural-language compliance coverage. The
-restart retains only this check's isolated App profile; it does not restart the
-Backend or exercise native Continue, Retry, or Edit operations.
+natural-language compliance coverage. Both workspace switches restart the App
+with the actual target directory, retaining the same isolated App profile,
+synthetic account and running Backend. Returning to the original workspace
+resumes conversation A. These restarts do not exercise native Continue, Retry,
+or Edit operations.
 
 A seventh run in a fresh conversation prepares a marker-only Shell command and
 leaves it awaiting native approval. The driver first verifies the matching open
@@ -1234,6 +1237,10 @@ Acceptance requires all of the following:
 - Exactly six automatic Adds whose full user/assistant text, Unicode, session,
   workspace scope and client-qualified idempotency keys match their respective
   fixtures, including repeated prompts and identical content across sessions.
+  Each turn retains its own expected workspace: conversation B must use the
+  second directory's scope, and resumed conversation A must retain the first.
+  This covers distinct non-Git workspace names, not Git/worktree identity or
+  cross-workspace Search.
 - Exactly one explicit Search and one explicit Add, each with matching HTTP
   authentication, full payload, workspace scope and native Shell JSON result.
   Search preserves the fixture answer, item and receipt. Explicit Add retains
