@@ -240,6 +240,27 @@ test("Run context decodes official Hook and installed Skill fields without scann
     /CURSOR_APP_PROTO_FIELD/);
 });
 
+test("Skill discovery readiness preserves optional true, false and unknown values", () => {
+  const execution = createToolExecution(run(), { kind: "requestContext" }, { id: 10, toolCallId: userMessageId });
+  const decoders = [
+    (context) => run({ action: field(1, message(field(1, fixture().userBytes), field(2, context))) }).requestContext,
+    (context) => completeToolExecution(execution,
+      decodeAgentClientMessage(field(2, message(scalar(1, 10), field(10, field(1, field(1, context))))))).result,
+  ];
+  for (const value of [undefined, false, true]) {
+    const context = value === undefined ? Buffer.alloc(0) : scalar(43, value ? 1 : 0);
+    for (const decode of decoders) {
+      const decoded = decode(context);
+      assert.equal(Object.hasOwn(decoded, "agentSkillsInfoComplete"), value !== undefined);
+      assert.equal(decoded.agentSkillsInfoComplete, value);
+      assert.deepEqual(decoded.agentSkills, []);
+    }
+  }
+  for (const context of [scalar(43, 2), field(43, "private-readiness-canary"), message(scalar(43, 0), scalar(43, 1))]) {
+    for (const decode of decoders) assert.throws(() => decode(context), { code: "CURSOR_APP_PROTO_FIELD" });
+  }
+});
+
 test("Read Exec correlates wire results and persists the native content in a tool step", () => {
   const input = run(), path = "/synthetic/SKILL.md", content = "Native skill\nUnicode \u8bb0\u5fc6";
   const execution = createToolExecution(input, { kind: "read", path }, { id: 4, toolCallId: userMessageId });

@@ -77,8 +77,17 @@ export async function auditWindowsProcesses(options, execute = exec) {
 export async function stopWindowsApp(child, env, execute = exec) {
   // Never rediscover or kill an exited child's potentially reused PID.
   if (!child?.pid || child.exitCode != null || child.signalCode != null) return;
-  await execute(path.join(env.SystemRoot, "System32", "taskkill.exe"), ["/PID", String(child.pid), "/T", "/F"],
-    { env, windowsHide: true, timeout: 10000, maxBuffer: 64 * 1024 });
+  try {
+    await execute(path.join(env.SystemRoot, "System32", "taskkill.exe"), ["/PID", String(child.pid), "/T", "/F"],
+      { env, windowsHide: true, timeout: 10000, maxBuffer: 64 * 1024 });
+  } catch (error) {
+    let suffix = "FAILED";
+    if (error?.code === "ETIMEDOUT" || (error?.killed === true && error?.code !== "ERR_CHILD_PROCESS_STDIO_MAXBUFFER")) suffix = "TIMEOUT";
+    else if (error?.code === "ENOENT") suffix = "UNAVAILABLE";
+    else if (Number.isInteger(error?.code) && error.code >= 0 && error.code <= 0xffffffff) suffix = `EXIT_${error.code}`;
+    const code = `CURSOR_APP_WINDOWS_APP_STOP_${suffix}`;
+    throw Object.assign(new Error(code), { code });
+  }
 }
 
 export function windowsShellCommand(args, environment = {}) {

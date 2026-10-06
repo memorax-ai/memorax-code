@@ -138,6 +138,46 @@ test("Windows App tree cleanup ignores exited children even if their PID is reus
   assert.equal(calls, 1);
 });
 
+test("Windows App stop failures expose only bounded fixed error codes", async () => {
+  const env = windowsRuntimePaths(paths).env;
+  for (const [fields, suffix] of [
+    [{ code: "ETIMEDOUT" }, "TIMEOUT"],
+    [{ killed: true, signal: "SIGTERM" }, "TIMEOUT"],
+    [{ code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER", killed: true }, "FAILED"],
+    [{ code: "ENOENT" }, "UNAVAILABLE"],
+    [{ code: 1 }, "EXIT_1"],
+    [{ code: 128 }, "EXIT_128"],
+    [{ code: 0xffffffff }, "EXIT_4294967295"],
+    ...[-1, 0x100000000, 1.5, NaN, Infinity, "128", "private-canary", null, undefined]
+      .map((code) => [{ code }, "FAILED"]),
+  ]) {
+    await assert.rejects(stopWindowsApp({ pid: 123, exitCode: null, signalCode: null }, env, async (file, args, settings) => {
+      assert.equal(file, "C:\\Windows\\System32\\taskkill.exe");
+      assert.deepEqual(args, ["/PID", "123", "/T", "/F"]);
+      assert.equal(settings.env, env);
+      assert.equal(settings.windowsHide, true);
+      assert.equal(settings.timeout, 10000);
+      assert.equal(settings.maxBuffer, 64 * 1024);
+      throw Object.assign(new Error("private-canary"), { stdout: "private-canary", stderr: "private-canary", ...fields });
+    }), (error) => {
+      assert.equal(error.code, `CURSOR_APP_WINDOWS_APP_STOP_${suffix}`);
+      assert.equal(error.message, error.code);
+      assert.deepEqual(Object.keys(error), ["code"]);
+      assert.equal(JSON.stringify(error).includes("private-canary"), false);
+      return true;
+    });
+  }
+});
+
+test("Windows App stop does not swallow command failure if the held child exits meanwhile", async () => {
+  const child = { pid: 123, exitCode: null, signalCode: null };
+  await assert.rejects(stopWindowsApp(child, windowsRuntimePaths(paths).env, async () => {
+    child.exitCode = 0;
+    throw Object.assign(new Error("private-canary"), { code: 128 });
+  }), code("APP_STOP_EXIT_128"));
+  assert.equal(child.exitCode, 0);
+});
+
 test("Windows Shell commands preserve explicit argv and environment through one fixed encoded shell", () => {
   const command = windowsShellCommand(["memorax-cli.cmd", "add", "--memory", "quote ' and \" with space; $env:SECRET", "\u8bb0\u5fc6"],
     { MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT: "cursor", FIXTURE: "value'quoted" });

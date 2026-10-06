@@ -147,8 +147,13 @@ function toolSteps(run, results) {
       ...(item.userHookAdditionalContexts ?? []).map((context) => context.content)]).filter(Boolean);
     check(contexts.some((context) => context.includes(`MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT=cursor and MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID=${run.conversationId}`)),
       "CURSOR_APP_SKILL_HOOK_CONTEXT");
-    check(run.requestContext?.agentSkills.some((skill) => skill.fullPath === join(skillRoot, "SKILL.md")
-      && !skill.parseError && !skill.disableModelInvocation), "CURSOR_APP_SKILL_NOT_DISCOVERED");
+    const skills = run.requestContext?.agentSkills ?? [];
+    const matching = skills.filter((skill) => skill.fullPath === join(skillRoot, "SKILL.md"));
+    check(matching.length > 0, run.requestContext?.agentSkillsInfoComplete === false ? "CURSOR_APP_SKILL_DISCOVERY_PENDING"
+      : skills.length === 0 ? "CURSOR_APP_SKILL_LIST_EMPTY" : "CURSOR_APP_SKILL_PATH_MISMATCH");
+    const parsed = matching.filter((skill) => !skill.parseError);
+    check(parsed.length > 0, "CURSOR_APP_SKILL_PARSE_ERROR");
+    check(parsed.some((skill) => !skill.disableModelInvocation), "CURSOR_APP_SKILL_DISABLED");
     return { kind: "read", path: join(skillRoot, "SKILL.md") };
   }
   check(results[0].kind === "read" && results[0].path === join(skillRoot, "SKILL.md")

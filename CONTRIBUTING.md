@@ -1316,6 +1316,10 @@ files and Hook traces are not CI artifacts. App startup diagnostics publish
 only bounded 32-bit exit codes, fixed signal/error enums and marker booleans, not raw
 stderr. Windows cleanup errors distinguish process-query, JSON and row-validation
 failures using fixed codes, without publishing process lists or PowerShell output.
+Windows App-stop failures retain only fixed error categories or bounded numeric
+exit codes. Skill-discovery failures distinguish incomplete discovery, an empty
+list, a path mismatch, parsing errors and disabled invocation using fixed codes;
+Skill paths and parser messages remain private.
 Failed DMG detach diagnostics contain
 only bounded exit/signal outcomes, fixed status and stderr classifications, not
 raw text. Failed candidate stops retain only fixed Backend result enums,

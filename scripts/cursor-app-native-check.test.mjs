@@ -183,6 +183,49 @@ test("App launch keeps the default Chromium sandbox and forces isolated shell en
   }
 });
 
+test("native Skill discovery classifies failures without changing exact-path acceptance or exposing content", () => {
+  const body = source.split("function toolSteps(")[1]?.split("\nasync function stopApp(")[0];
+  assert.ok(body);
+  const skillRoot = "C:\\private-path-canary\\skills\\memorax-code";
+  const match = { fullPath: win32.join(skillRoot, "SKILL.md"), disableModelInvocation: false };
+  const other = { ...match, fullPath: "C:\\private-other-canary\\SKILL.md" };
+  const malformed = { ...match, parseError: "private-parse-canary" };
+  const disabled = { ...match, disableModelInvocation: true };
+  for (const [ready, agentSkills, suffix] of [
+    [false, [], "DISCOVERY_PENDING"], [false, [other], "DISCOVERY_PENDING"],
+    [true, [], "LIST_EMPTY"], [undefined, [], "LIST_EMPTY"],
+    [true, [other], "PATH_MISMATCH"], [undefined, [other], "PATH_MISMATCH"],
+    [true, [{ ...match, fullPath: match.fullPath.replaceAll("\\", "/") }], "PATH_MISMATCH"],
+    [true, [{ ...match, fullPath: match.fullPath.replace(/^C:/, "c:") }], "PATH_MISMATCH"],
+    [true, [malformed], "PARSE_ERROR"], [false, [malformed], "PARSE_ERROR"],
+    [true, [disabled], "DISABLED"], [undefined, [disabled], "DISABLED"],
+    [true, [malformed, disabled], "DISABLED"],
+    [true, [match], undefined], [false, [match], undefined], [undefined, [match], undefined],
+    [true, [malformed, disabled, match], undefined],
+    [true, [{ ...match, parseError: "" }], undefined],
+  ]) {
+    const run = { prompt: "synthetic prompt", conversationId: "synthetic-session", requestContextCloseCount: 1,
+      requestContext: { agentSkills, ...(ready === undefined ? {} : { agentSkillsInfoComplete: ready }),
+        hooksAdditionalContext: "MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT=cursor and MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID=synthetic-session" } };
+    const toolSteps = runInNewContext(`(function toolSteps(${body})`, {
+      join: win32.join, skillRoot, agent: { runs: [run] },
+      fixtures: [{ prompt: run.prompt, operation: "search" }], turns: [{ sessionId: run.conversationId }],
+      check(value, code) { if (!value) throw Object.assign(new Error(code), { code }); },
+    }, { timeout: 100 });
+    if (suffix) {
+      assert.throws(() => toolSteps(run, []), (error) => {
+        assert.equal(error.code, `CURSOR_APP_SKILL_${suffix}`);
+        assert.equal(error.message, error.code);
+        assert.deepEqual(Object.keys(error), ["code"]);
+        assert.equal(JSON.stringify(error).includes("canary"), false);
+        return true;
+      });
+    } else {
+      assert.deepEqual(JSON.parse(JSON.stringify(toolSteps(run, []))), { kind: "read", path: match.fullPath });
+    }
+  }
+});
+
 test("native Shell commands keep POSIX quoting and route Windows Skill context and pending markers", () => {
   const shell = source.slice(source.indexOf("function quote("), source.indexOf("\nfunction assertSkillMemory("));
   const body = source.split("function toolSteps(")[1]?.split("\nasync function stopApp(")[0];

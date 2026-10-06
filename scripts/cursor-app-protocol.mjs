@@ -166,7 +166,9 @@ function hookContexts(source, number) {
 }
 function requestContext(value) {
   const context = fields(value);
-  return { hooksAdditionalContext: optionalText(context, 25), agentSkills: repeated(context, 29, (value) => {
+  return { hooksAdditionalContext: optionalText(context, 25),
+    ...(context.has(43) ? { agentSkillsInfoComplete: boolean(context, 43) } : {}),
+    agentSkills: repeated(context, 29, (value) => {
     const skill = fields(value), decodeText = (bytes) => text(fields(field(1, bytes)), 1);
     return { fullPath: text(skill, 1), content: optionalText(skill, 2), description: optionalText(skill, 3),
       ...(skill.has(4) ? { parseError: text(skill, 4) } : {}), disableModelInvocation: boolean(skill, 8),

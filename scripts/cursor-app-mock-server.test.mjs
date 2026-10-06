@@ -657,7 +657,9 @@ test("Exec heartbeats are correlated and bounded without extending the run deadl
 test("tool planning keeps only explicitly allowed fixed assertion codes and rejects unsupported descriptors", async (t) => {
   for (const [name, toolSteps, expected] of [
     ["fixed assertion", () => { throw Object.assign(new Error("private-plan-canary"), { nativeCode: "CURSOR_APP_SKILL_NOT_READ" }); }, "CURSOR_APP_SKILL_NOT_READ"],
-    ...["CURSOR_APP_INTERRUPTION_IDENTITY", "CURSOR_APP_INTERRUPTION_TOOL_EXECUTED"].map((code) =>
+    ...["CURSOR_APP_INTERRUPTION_IDENTITY", "CURSOR_APP_INTERRUPTION_TOOL_EXECUTED",
+      "CURSOR_APP_SKILL_DISCOVERY_PENDING", "CURSOR_APP_SKILL_LIST_EMPTY", "CURSOR_APP_SKILL_PATH_MISMATCH",
+      "CURSOR_APP_SKILL_PARSE_ERROR", "CURSOR_APP_SKILL_DISABLED"].map((code) =>
       [code, () => { throw Object.assign(new Error("private-plan-canary"), { nativeCode: code }); }, code]),
     ["private exception", () => { throw new Error("private-plan-canary"); }, "CURSOR_AGENT_TOOL_PLAN_FAILED"],
     ["invented code", () => { throw { code: "CURSOR_APP_SKILL_PRIVATE_CANARY" }; }, "CURSOR_AGENT_TOOL_PLAN_FAILED"],
