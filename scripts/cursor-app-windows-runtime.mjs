@@ -59,7 +59,7 @@ export async function auditWindowsProcesses(options, execute = exec) {
     ({ stdout } = await execute(path.join(options.env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
       ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
         "$ErrorActionPreference='Stop'; @(Get-CimInstance Win32_Process | Select-Object ProcessId,ExecutablePath,CommandLine) | ConvertTo-Json -Compress"],
-      { env: options.env, encoding: "utf8", timeout: 10000, maxBuffer: 4 * 1024 * 1024, windowsHide: true }));
+      { env: options.env, encoding: "utf8", timeout: 30000, maxBuffer: 4 * 1024 * 1024, windowsHide: true }));
   } catch (error) {
     if (error?.code === "ETIMEDOUT" || (error?.killed === true && error?.code !== "ERR_CHILD_PROCESS_STDIO_MAXBUFFER")) fail("QUERY_TIMEOUT");
     const stderr = typeof error?.stderr === "string" ? error.stderr : "";

@@ -71,6 +71,7 @@ test("Windows cleanup audits only owned paths and never kills discovered PIDs", 
       assert.ok(args.at(-1).includes("Get-CimInstance Win32_Process"));
       assert.doesNotMatch(args.at(-1), /Stop-Process|taskkill/);
       assert.equal(settings.env, options.env);
+      assert.equal(settings.timeout, 30000);
       return { stdout: JSON.stringify(rows) };
     }), expected);
   }
@@ -103,7 +104,7 @@ test("Windows process-query diagnostics keep only fixed failure codes", async ()
       assert.deepEqual(args, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
         "$ErrorActionPreference='Stop'; @(Get-CimInstance Win32_Process | Select-Object ProcessId,ExecutablePath,CommandLine) | ConvertTo-Json -Compress"]);
       assert.equal(settings.env, options.env);
-      assert.equal(settings.timeout, 10000);
+      assert.equal(settings.timeout, 30000);
       assert.equal(settings.maxBuffer, 4 * 1024 * 1024);
       throw Object.assign(new Error("private-canary"), { stdout: "private-canary", ...fields });
     }), (error) => {
