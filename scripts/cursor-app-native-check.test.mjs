@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { EventEmitter, once } from "node:events";
 import { readFile } from "node:fs/promises";
-import { dirname, join, win32 } from "node:path";
+import { dirname, join, posix, win32 } from "node:path";
 import { PassThrough } from "node:stream";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
@@ -263,22 +263,32 @@ test("native submission selects one Skill menu item and preserves its mention wh
 test("native Skill tools require the exact current manually attached file and still read its full installed text", () => {
   const body = source.split("function toolSteps(")[1]?.split("\nasync function stopApp(")[0];
   assert.ok(body);
-  for (const newline of ["\n", "\r\n"]) {
-    const skillRoot = "C:\\private-path-canary\\skills\\memorax-code";
+  for (const [platform, skillRoot, nativePath] of [
+    ["win32", "C:\\private-path-canary\\skills\\memorax-code", "c:\\private-path-canary\\skills\\memorax-code\\SKILL.md"],
+    ["win32", "D:\\private-path-canary\\skills\\memorax-code", "d:\\private-path-canary\\skills\\memorax-code\\SKILL.md"],
+    ["win32", "c:\\private-path-canary\\skills\\memorax-code", "c:\\private-path-canary\\skills\\memorax-code\\SKILL.md"],
+    ["win32", "d:\\private-path-canary\\skills\\memorax-code", "d:\\private-path-canary\\skills\\memorax-code\\SKILL.md"],
+    ["linux", "/private-path-canary/skills/memorax-code", "/private-path-canary/skills/memorax-code/SKILL.md"],
+    ["darwin", "/private-path-canary/skills/memorax-code", "/private-path-canary/skills/memorax-code/SKILL.md"],
+  ]) for (const newline of ["\n", "\r\n"]) {
+    const pathJoin = platform === "win32" ? win32.join : posix.join;
+    const installedPath = pathJoin(skillRoot, "SKILL.md");
     const content = "# Installed Skill\n\nKeep this exact body and trailing newline.\n";
     const skillText = ["---", "name: memorax-code", "description: synthetic", "---", "", " \t", content].join("\n").replaceAll("\n", newline);
-    const match = { fullPath: win32.join(skillRoot, "SKILL.md"), content, manuallyAttached: true };
-    const other = { ...match, fullPath: "C:\\private-other-canary\\SKILL.md" };
-    for (const selected of [undefined, [], [other], [match, match],
-      [{ ...match, manuallyAttached: false }], [{ ...match, manuallyAttached: undefined }],
-      [{ ...match, content: "private-content-canary" }], [{ ...match, content: content.trimEnd() }],
-      [{ ...match, content: skillText }],
-      [{ ...match, fullPath: match.fullPath.replaceAll("\\", "/") }],
-      [{ ...match, fullPath: match.fullPath.replace(/^C:/, "c:") }], [match], [other, match],
+    const match = { fullPath: nativePath, content, manuallyAttached: true };
+    const other = { ...match, fullPath: pathJoin(skillRoot, "private-other-canary", "SKILL.md") };
+    const differentSeparator = platform === "win32" ? nativePath.replaceAll("\\", "/") : nativePath.replaceAll("/", "\\");
+    for (const [selected, suffix] of [
+      [undefined, "PATH"], [[], "PATH"], [[other], "PATH"], [[match, match], "PATH"],
+      [[{ ...match, manuallyAttached: false }], "TYPE"], [[{ ...match, manuallyAttached: undefined }], "TYPE"],
+      [[{ ...match, content: "private-content-canary" }], "CONTENT"], [[{ ...match, content: content.trimEnd() }], "CONTENT"],
+      [[{ ...match, content: skillText }], "CONTENT"],
+      [[{ ...match, fullPath: differentSeparator }], "PATH"],
+      [[{ ...match, fullPath: nativePath.replace("private-path-canary", "Private-path-canary") }], "PATH"],
+      [[{ ...match, fullPath: nativePath.replace("SKILL.md", "skill.md") }], "PATH"],
+      ...(platform === "win32" ? [[[{ ...match, fullPath: nativePath.replace(/^[a-z]:/, (drive) => drive.toUpperCase()) }], "PATH"]] : []),
+      [[match], undefined], [[other, match], undefined],
     ]) {
-      const valid = selected?.filter((rule) => rule.fullPath === match.fullPath).length === 1
-        && selected.find((rule) => rule.fullPath === match.fullPath)?.manuallyAttached === true
-        && selected.find((rule) => rule.fullPath === match.fullPath)?.content === content;
       const prior = { conversationId: "synthetic-session", completed: true, turnBlobId: Buffer.alloc(32), selectedCursorRules: [match] };
       const run = { prompt: "/memorax-code synthetic prompt", conversationId: prior.conversationId,
         requestContextCloseCount: 1, turnRefs: [], selectedCursorRules: selected,
@@ -286,22 +296,24 @@ test("native Skill tools require the exact current manually attached file and st
         requestContext: { agentSkills: [match], agentSkillsInfoComplete: true,
           hooksAdditionalContext: "MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT=cursor and MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID=synthetic-session" } };
       const toolSteps = runInNewContext(`(function toolSteps(${body})`, {
-        join: win32.join, skillRoot, skillText, agent: { runs: [prior, run] },
+        process: { platform }, join: pathJoin, skillRoot, skillText, agent: { runs: [prior, run] },
         fixtures: [{ prompt: run.prompt, operation: "search" }, {}], turns: [{ sessionId: run.conversationId }],
         check(value, code) { if (!value) throw Object.assign(new Error(code), { code }); },
       }, { timeout: 100 });
-      if (!valid) assert.throws(() => toolSteps(run, []), (error) => {
-        assert.equal(error.code, "CURSOR_APP_SKILL_ATTACHMENT");
+      if (suffix) assert.throws(() => toolSteps(run, []), (error) => {
+        assert.equal(error.code, `CURSOR_APP_SKILL_ATTACHMENT_${suffix}`);
         assert.equal(error.message, error.code);
         assert.deepEqual(Object.keys(error), ["code"]);
         assert.equal(JSON.stringify(error).includes("canary"), false);
         return true;
       });
       else {
-        assert.deepEqual(JSON.parse(JSON.stringify(toolSteps(run, []))), { kind: "read", path: match.fullPath });
-        assert.deepEqual(JSON.parse(JSON.stringify(toolSteps(run, [{ kind: "read", path: match.fullPath, content: skillText }]))),
-          { kind: "read", path: win32.join(skillRoot, "references", "memorax-search.md") });
-        assert.throws(() => toolSteps(run, [{ kind: "read", path: match.fullPath, content }]),
+        assert.deepEqual(JSON.parse(JSON.stringify(toolSteps(run, []))), { kind: "read", path: installedPath });
+        assert.deepEqual(JSON.parse(JSON.stringify(toolSteps(run, [{ kind: "read", path: installedPath, content: skillText }]))),
+          { kind: "read", path: pathJoin(skillRoot, "references", "memorax-search.md") });
+        if (nativePath !== installedPath) assert.throws(() => toolSteps(run, [{ kind: "read", path: nativePath, content: skillText }]),
+          { code: "CURSOR_APP_SKILL_NOT_READ" });
+        assert.throws(() => toolSteps(run, [{ kind: "read", path: installedPath, content }]),
           { code: "CURSOR_APP_SKILL_NOT_READ" });
       }
     }

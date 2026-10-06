@@ -1180,7 +1180,9 @@ explicit Skill Search and Add turns in A. Every run completes the native lazy
 RequestContext exchange. Skill turns select `/memorax-code` from the native slash
 menu and require its Skill mention in the composer. The submitted native message
 must carry the installed Skill's exact path and complete body (without YAML
-frontmatter) as a manually attached rule. A RequestContext Skill catalog is not
+frontmatter) as a manually attached rule. The expected path follows Cursor's
+native `URI.fsPath` format, including its lowercase Windows drive letter; the
+remaining path is compared exactly. A RequestContext Skill catalog is not
 required or used as a substitute for that attachment. Skill turns also require
 the Hook instructions received for that same conversation. Retained
 instructions come only from completed turns referenced by the native history
@@ -1322,8 +1324,8 @@ stderr. Windows cleanup errors distinguish process-query, JSON and row-validatio
 failures using fixed codes, without publishing process lists or PowerShell output.
 Windows App-stop failures retain only fixed error categories or bounded numeric
 exit codes. Skill-entry failures distinguish a missing or ambiguous native menu
-item, a missing or ambiguous mention, and an invalid native attachment using fixed
-codes; Skill paths and contents remain private.
+item, a missing or ambiguous mention, and an invalid native attachment path, type
+or content using fixed codes; Skill paths and contents remain private.
 Failed DMG detach diagnostics contain
 only bounded exit/signal outcomes, fixed status and stderr classifications, not
 raw text. Failed candidate stops retain only fixed Backend result enums,

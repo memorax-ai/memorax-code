@@ -147,11 +147,15 @@ function toolSteps(run, results) {
       ...(item.userHookAdditionalContexts ?? []).map((context) => context.content)]).filter(Boolean);
     check(contexts.some((context) => context.includes(`MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT=cursor and MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID=${run.conversationId}`)),
       "CURSOR_APP_SKILL_HOOK_CONTEXT");
-    const matching = (run.selectedCursorRules ?? []).filter((rule) => rule.fullPath === join(skillRoot, "SKILL.md"));
+    const installedPath = join(skillRoot, "SKILL.md");
+    // Cursor's URI.fsPath serializes Windows drive letters in lowercase.
+    const nativePath = process.platform === "win32" ? installedPath.replace(/^[A-Z]:/, (drive) => drive.toLowerCase()) : installedPath;
+    const matching = (run.selectedCursorRules ?? []).filter((rule) => rule.fullPath === nativePath);
+    check(matching.length === 1, "CURSOR_APP_SKILL_ATTACHMENT_PATH");
+    check(matching[0].manuallyAttached, "CURSOR_APP_SKILL_ATTACHMENT_TYPE");
     // Cursor attaches the selected Skill body without its YAML frontmatter.
     const body = skillText.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n(?:[ \t]*\r?\n)*/, "").replaceAll("\r\n", "\n");
-    check(matching.length === 1 && matching[0].manuallyAttached && matching[0].content === body,
-      "CURSOR_APP_SKILL_ATTACHMENT");
+    check(matching[0].content === body, "CURSOR_APP_SKILL_ATTACHMENT_CONTENT");
     return { kind: "read", path: join(skillRoot, "SKILL.md") };
   }
   check(results[0].kind === "read" && results[0].path === join(skillRoot, "SKILL.md")
