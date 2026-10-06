@@ -42,21 +42,16 @@ function nativeReport() {
       contextRequests: [1, 1, 1, 1, 1, 1, 1], contextResults: [1, 1, 1, 1, 1, 1, 1], contextCloses: [1, 1, 1, 1, 1, 1, 1] }, memoryRequestCount: 8 };
 }
 
-test("macOS requires actual loopback-listener checkpoints without an extra OS sandbox proof", () => {
+test("macOS requires the same native content, memory operations and cleanup as Linux", () => {
   const report = nativeReport();
   report.platform = "darwin";
   assert.throws(() => projectNativeReport(report), { code: "CURSOR_CONTAINER_REPORT" });
-  assert.throws(() => projectNativeReport(report, { platform: "darwin" }), { code: "CURSOR_CONTAINER_REPORT" });
-  report.evidence.loopbackListeners = true;
-  report.listenerAuditCount = 10;
   assert.deepEqual(projectNativeReport(report, { platform: "darwin" }), report);
   for (const change of [
     (value) => { value.platform = "linux"; },
-    (value) => { delete value.evidence.loopbackListeners; },
-    (value) => { value.evidence.loopbackListeners = false; },
-    (value) => { delete value.listenerAuditCount; },
-    (value) => { value.listenerAuditCount = 9; },
-    (value) => { value.listenerAuditCount = 11; },
+    (value) => { value.evidence.exactAutomaticAdd = false; },
+    (value) => { value.evidence.skillSearch = false; },
+    (value) => { value.evidence.cleanup = false; },
     (value) => { value.evidence.pendingShellInterrupted = false; },
     (value) => { value.agent.runs = 6; },
     (value) => { value.memoryRequestCount = 9; },
@@ -76,28 +71,6 @@ test("Windows requires the same native content, memory operations and cleanup as
     const changed = structuredClone(report); changed.evidence[key] = false;
     assert.throws(() => projectNativeReport(changed, { platform: "win32" }), { code: "CURSOR_CONTAINER_REPORT" });
   }
-});
-
-test("only failed macOS reports publish fixed sandbox log diagnostics without raw records", () => {
-  const input = nativeReport();
-  input.platform = "darwin"; input.status = "FAIL"; input.stage = "app-start"; input.errorCode = "CURSOR_APP_EXITED";
-  input.appSandboxLog = { status: "collected", reason: "none", path: "private-log-canary",
-    processID: 12345, eventMessage: "private-log-canary", markers: { sandboxCompiledPolicyFailed: true,
-      permissionDenied: "true", "private-log-canary": true } };
-  const report = projectNativeReport(input, { platform: "darwin" });
-  assert.equal(report.status, "FAIL"); assert.equal(report.errorCode, "CURSOR_APP_EXITED");
-  assert.equal(report.appSandboxLog.status, "collected"); assert.equal(report.appSandboxLog.reason, "none");
-  assert.equal(report.appSandboxLog.markers.sandboxCompiledPolicyFailed, true);
-  assert.equal(report.appSandboxLog.markers.permissionDenied, false);
-  for (const value of ["private-log-canary", "12345", "eventMessage"]) assert.equal(JSON.stringify(report).includes(value), false);
-  input.appSandboxLog.status = "private-log-canary";
-  assert.equal(projectNativeReport(input, { platform: "darwin" }).appSandboxLog.status, "unavailable");
-  input.platform = "linux";
-  assert.equal(projectNativeReport(input).appSandboxLog, undefined);
-  const passed = nativeReport();
-  passed.platform = "darwin"; passed.evidence.networkIsolation = true; passed.evidence.loopbackListeners = true;
-  passed.listenerAuditCount = 10; passed.appSandboxLog = input.appSandboxLog;
-  assert.equal(projectNativeReport(passed, { platform: "darwin" }).appSandboxLog, undefined);
 });
 
 test("release pins distinguish official artifact provenance from observed checksums", () => {

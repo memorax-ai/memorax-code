@@ -7,8 +7,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { baselineRelease, resolveDownload } from "./cursor-app-release.mjs";
-import { prepareCursorWindowsControllerDirectory, selectCursorWindowsRelease, verifyCursorWindowsInstaller,
-  withVerifiedCursorWindowsInstaller } from "./cursor-app-windows-artifact.mjs";
+import { selectCursorWindowsRelease, withVerifiedCursorWindowsInstaller } from "./cursor-app-windows-artifact.mjs";
 
 const baseline = baselineRelease("win32-x64-user");
 const latest = resolveDownload("win32-x64-user", { version: "3.23.12", commitSha: "1".repeat(40),
@@ -58,7 +57,11 @@ async function fixture(t, configuration = {}) {
       body: (async function* () { yield bytes.subarray(0, 4); yield bytes.subarray(4); })(), ...configuration.response };
   };
   state.options = { release, root, platform: "win32", execute, fetchImpl };
-  state.run = (overrides = {}) => verifyCursorWindowsInstaller({ ...state.options, ...overrides });
+  state.run = async (overrides = {}) => {
+    const { verification } = await withVerifiedCursorWindowsInstaller({ ...state.options, ...overrides },
+      async ({ confirmProcessesClosed }) => { confirmProcessesClosed(); });
+    return verification;
+  };
   state.assertClean = async () => assert.deepEqual(await readdir(root), ["unrelated"]);
   return state;
 }
@@ -90,54 +93,13 @@ test("selects only canonical frozen Windows UserSetup descriptors without invent
     baseline: { "win32-x64-user": { ...latest, channel: "baseline" } } }, "baseline"), error("RELEASE"));
 });
 
-test("controller directory preparation uses the existing empty-directory ACL helper without owning caller cleanup", async (t) => {
-  const state = await fixture(t), directory = join(state.root, "bundle"), runtimeDirectory = join(state.root, "runtime");
-  await mkdir(directory); await mkdir(runtimeDirectory);
-  assert.equal(await prepareCursorWindowsControllerDirectory({ directory, runtimeDirectory,
-    execute: state.options.execute, platform: "win32" }), undefined);
-  assert.deepEqual(state.calls.map((call) => call.operation), ["prepare"]);
-  assert.deepEqual(state.calls[0].args.slice(5), ["-Operation", "prepare", "-Directory", directory]);
-  assert.equal(state.calls[0].options.cwd, runtimeDirectory);
-  assert.equal(state.calls[0].options.env.HOME, runtimeDirectory);
-  assert.deepEqual((await readdir(state.root)).sort(), ["bundle", "runtime", "unrelated"]);
-  assert.deepEqual(await readdir(directory), []);
-});
-
-test("controller directory preparation rejects unsupported or aliased paths before invoking helpers", async (t) => {
-  const state = await fixture(t), directory = join(state.root, "bundle"), runtimeDirectory = join(state.root, "runtime");
-  const options = { directory, runtimeDirectory, execute: state.options.execute, platform: "win32" };
-  for (const override of [{ platform: "linux" }, { directory: "relative" }, { runtimeDirectory: "relative" },
-    { runtimeDirectory: directory }, { runtimeDirectory: directory.toUpperCase() }, { runtimeDirectory: directory + "/" },
-    { directory: directory + "\nprivate" }, { execute: null }, { signal: AbortSignal.abort() }]) {
-    await assert.rejects(prepareCursorWindowsControllerDirectory({ ...options, ...override }));
-  }
-  assert.equal(state.calls.length, 0);
-});
-
-test("controller directory preparation preserves fixed helper failure and unconfirmed process cleanup", async (t) => {
-  const state = await fixture(t), directory = join(state.root, "bundle"), runtimeDirectory = join(state.root, "runtime");
-  await mkdir(directory); await mkdir(runtimeDirectory);
-  await writeFile(join(directory, "existing"), "preserve");
-  const options = { directory, runtimeDirectory, execute: state.options.execute, platform: "win32" };
-  await assert.rejects(prepareCursorWindowsControllerDirectory(options), error("ROOT_PREPARE_NOT_EMPTY"));
-  assert.equal(await readFile(join(directory, "existing"), "utf8"), "preserve");
-  await rm(join(directory, "existing"));
-  await assert.rejects(prepareCursorWindowsControllerDirectory({ ...options, execute(...args) {
-    const pending = state.options.execute(...args);
-    pending.child = new EventEmitter();
-    return pending;
-  } }), { code: prefix + "PROCESS_CLEANUP", cleanupErrorCode: prefix + "PROCESS_CLEANUP" });
-  assert.deepEqual((await readdir(state.root)).sort(), ["bundle", "runtime", "unrelated"]);
-});
-
-test("verifies synthetic downloaded bytes statically and removes only its owned directory before returning", async (t) => {
+test("verifies synthetic downloaded bytes and removes only its owned directory after the callback closes", async (t) => {
   const state = await fixture(t, { onVerify: async ({ path }) => assert.deepEqual(await readFile(path), bytes) });
   const result = await state.run();
   assert.deepEqual(result, { platform: "win32-x64-user", channel: "baseline", version: baseline.version,
     commitSha: baseline.commitSha, sha256: null, hashSource: "not-provided", bytes: bytes.length,
     observedSha256: createHash("sha256").update(bytes).digest("hex"), authenticodeVerified: true,
-    publisherVerified: true, signatureType: "Authenticode", publisher: "Anysphere, Inc.", installerExecuted: false,
-    appIdentityVerified: false, appArchitectureVerified: false, ownedFilesRemoved: true });
+    publisherVerified: true, signatureType: "Authenticode", publisher: "Anysphere, Inc.", ownedFilesRemoved: true });
   assert.ok(Object.isFrozen(result));
   assert.equal(JSON.stringify(result).includes(state.root), false);
   assert.deepEqual(state.calls.map((call) => call.operation), ["prepare", "verify"]);
@@ -208,9 +170,7 @@ test("verified installer use stays private and waits for explicit process cleanu
   assert.equal(result.result, value);
   assert.equal(result.verification.authenticodeVerified, true);
   assert.equal(result.verification.ownedFilesRemoved, true);
-  for (const key of ["installerExecuted", "appIdentityVerified", "appArchitectureVerified", "installerPath"]) {
-    assert.equal(Object.hasOwn(result.verification, key), false);
-  }
+  assert.equal(Object.hasOwn(result.verification, "installerPath"), false);
   assert.equal(JSON.stringify(result.verification).includes(state.root), false);
   await state.assertClean();
 });

@@ -150,16 +150,6 @@ async function runHelper(execute, operation, payloadRoot, runtimeRoot, signal, i
   if (primaryError) throw primaryError;
 }
 
-export async function prepareCursorWindowsControllerDirectory({ directory, runtimeDirectory, signal,
-  execute = executeFile, platform: hostPlatform = process.platform } = {}) {
-  check(hostPlatform === "win32", "PLATFORM");
-  check(typeof execute === "function" && [directory, runtimeDirectory].every((path) =>
-    typeof path === "string" && isAbsolute(path) && !/[\0\r\n]/.test(path))
-    && win32.normalize(directory).replace(/[\\/]+$/, "").toLowerCase()
-      !== win32.normalize(runtimeDirectory).replace(/[\\/]+$/, "").toLowerCase(), "ARGUMENTS");
-  await runHelper(execute, "prepare", directory, runtimeDirectory, signal);
-}
-
 async function fingerprint(path, expected, signal) {
   let file;
   try {
@@ -215,17 +205,15 @@ async function useVerifiedInstaller({ release, root, signal, execute = executeFi
     const after = await fingerprint(installerPath, artifact, signal);
     check(before.dev === after.dev && before.ino === after.ino, "CHANGED");
     checkAborted(signal);
-    if (callback) {
-      callbackStarted = true;
-      invokingCallback = true;
-      result = await callback(Object.freeze({ installerPath, release: selected, artifact: Object.freeze({ ...artifact }),
-        confirmProcessesClosed() { check(invokingCallback, "CALLBACK"); processesClosed = true; } }));
-      invokingCallback = false;
-      check(processesClosed, "PROCESS_CLEANUP");
-      const used = await fingerprint(installerPath, artifact, signal);
-      check(before.dev === used.dev && before.ino === used.ino, "CHANGED");
-      checkAborted(signal);
-    }
+    callbackStarted = true;
+    invokingCallback = true;
+    result = await callback(Object.freeze({ installerPath, release: selected, artifact: Object.freeze({ ...artifact }),
+      confirmProcessesClosed() { check(invokingCallback, "CALLBACK"); processesClosed = true; } }));
+    invokingCallback = false;
+    check(processesClosed, "PROCESS_CLEANUP");
+    const used = await fingerprint(installerPath, artifact, signal);
+    check(before.dev === used.dev && before.ino === used.ino, "CHANGED");
+    checkAborted(signal);
   } catch (error) {
     primaryError = error instanceof Error && (invokingCallback
       || (typeof error.code === "string" && error.code.startsWith(prefix) && error.message === error.code))
@@ -252,11 +240,6 @@ async function useVerifiedInstaller({ release, root, signal, execute = executeFi
     sha256: null, hashSource: "not-provided", ...artifact, authenticodeVerified: true, publisherVerified: true,
     signatureType: "Authenticode", publisher, ownedFilesRemoved: true });
   return Object.freeze({ verification, result });
-}
-
-export async function verifyCursorWindowsInstaller(options) {
-  const { verification } = await useVerifiedInstaller(options);
-  return Object.freeze({ ...verification, installerExecuted: false, appIdentityVerified: false, appArchitectureVerified: false });
 }
 
 export async function withVerifiedCursorWindowsInstaller(options, callback) {

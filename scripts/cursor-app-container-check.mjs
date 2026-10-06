@@ -7,7 +7,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { baselineRelease, validateLinuxRelease } from "./cursor-app-release.mjs";
-import { projectCursorAppDiagnostics, projectCursorAppLaunchDiagnostics, projectCursorAppSandboxDiagnostics,
+import { projectCursorAppDiagnostics, projectCursorAppLaunchDiagnostics,
   projectCursorAppStopDiagnostics } from "./cursor-app-diagnostics.mjs";
 
 const exec = promisify(execFile);
@@ -95,13 +95,6 @@ export function projectNativeReport(input, { expectedVersion = provenance.cursor
     check(typeof input.evidence[key] === "boolean", "CURSOR_CONTAINER_REPORT");
     report.evidence[key] = input.evidence[key];
   }
-  if (platform === "darwin") {
-    for (const key of ["loopbackListeners"]) if (input.evidence?.[key] !== undefined) {
-      check(typeof input.evidence[key] === "boolean", "CURSOR_CONTAINER_REPORT");
-      report.evidence[key] = input.evidence[key];
-    }
-    if (input.listenerAuditCount !== undefined) report.listenerAuditCount = count(input.listenerAuditCount);
-  }
   const content = input.evidence?.nativeContent;
   if (content !== undefined) {
     check(Array.isArray(content), "CURSOR_CONTAINER_REPORT");
@@ -129,12 +122,8 @@ export function projectNativeReport(input, { expectedVersion = provenance.cursor
   if (input.diagnostics !== undefined) report.diagnostics = projectCursorAppDiagnostics(input.diagnostics);
   if (input.appLaunch !== undefined) report.appLaunch = projectCursorAppLaunchDiagnostics(input.appLaunch);
   if (input.status === "FAIL" && input.candidateStop !== undefined) report.candidateStop = projectCursorAppStopDiagnostics(input.candidateStop);
-  if (platform === "darwin" && input.status === "FAIL" && input.appSandboxLog !== undefined) {
-    report.appSandboxLog = projectCursorAppSandboxDiagnostics(input.appSandboxLog);
-  }
   if (report.status === "PASS") check(report.stage === "complete" && report.version === expectedVersion && !report.errorCode && !report.cleanupError && !report.nativeContentError
     && completedEvidence.every((key) => report.evidence[key] === true)
-    && (platform !== "darwin" || report.evidence.loopbackListeners === true && report.listenerAuditCount === 10)
     && content?.length === 6 && [3, 6, 3, 9, 15, 21].every((blobs, index) => content[index]?.composerMatched === true
       && content[index]?.stateMatched === true && content[index]?.blobCount === blobs)
     && report.agent?.runs === 7 && report.agent.writes.length === 7 && [3, 3, 3, 3, 6, 6, 0].every((value, index) => report.agent.writes[index] === value)

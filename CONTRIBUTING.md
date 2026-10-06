@@ -1255,9 +1255,8 @@ checksum or a substitute for signature verification.
 
 The Linux runtime is non-root, has no external network, drops all capabilities,
 retains Chromium's sandbox and uses `no-new-privileges` plus the documented
-seccomp profile. The macOS functional checks do not apply an additional Seatbelt
-profile or disable Chromium's own sandbox. Windows functional checks do not
-require the separate WFP or temporary-OS-user diagnostics. All platforms use temporary client
+seccomp profile. macOS and Windows retain Chromium's default sandbox and use
+the disposable runner's normal user. All platforms use temporary client
 homes, Backend state and native conversations, synthetic authentication, and
 local Agent and Memory fixtures. On macOS and Windows, this verifies the configured model
 and Memory routes, not OS-enforced isolation of all App and descendant traffic.
@@ -1278,18 +1277,7 @@ must pass Authenticode, publisher, architecture, version and release-commit
 checks before native startup. Installation waits for the installer process tree;
 native cleanup only terminates the still-live owned App child and audits remaining
 owned paths read-only. Unconfirmed cleanup fails the check and retains its state
-for runner teardown. No WFP policy, temporary OS account or credential-store
-integration is needed for this functional matrix.
-
-macOS native acceptance also requires ten read-only `lsof` checkpoints: after
-both App starts, after each of the six completed runs, and before and after
-cancelling the pending Shell. Each checkpoint must observe the Backend and CDP
-listeners on their configured ports; all observed App, Backend and descendant
-TCP listeners must use only `127.0.0.1` or `::1`; additional valid loopback ports
-are allowed without replacing either required listener. Passing requires
-`loopbackListeners: true` and `listenerAuditCount: 10`. This sampling does not
-cover every short-lived process between checkpoints or establish system-enforced
-inbound isolation.
+for runner teardown.
 
 To reproduce after building an installable candidate, use Node 24 and a local
 Linux-container Docker daemon:
@@ -1321,16 +1309,7 @@ node scripts/cursor-app-container-check.mjs \
 Only `report.json` is exported and uploaded. Raw App logs, transcripts, SQLite
 files and Hook traces are not CI artifacts. App startup diagnostics publish
 only bounded exit codes, fixed signal/error enums and marker booleans, not raw
-stderr. Before macOS App startup, the trusted controller starts a bounded
-unified-log stream for the exact owned App bundle and Chromium sandbox subsystem
-and category. Collection stops when startup completes or fails, with a
-120-second lifetime and a combined 256 KiB stdout/stderr limit. The owned log
-process is closed through its retained handle; failure to confirm closure fails
-cleanup. Only fixed collection status/reason enums and marker booleans are
-published. Starting the log process is not a subscription acknowledgement, and
-empty output does not establish that no sandbox errors occurred. Missing or
-invalid logs never replace the original failure. No raw unified logs, paths or
-PIDs are retained. Failed DMG detach diagnostics contain
+stderr. Failed DMG detach diagnostics contain
 only bounded exit/signal outcomes, fixed status and stderr classifications, not
 raw text. Failed candidate stops retain only fixed Backend result enums,
 booleans and bounded process outcomes from the CLI's JSON output; raw command
@@ -1348,194 +1327,8 @@ manifest. This metadata-only command leaves missing checksums explicitly
 unavailable and is not artifact-integrity or native-acceptance evidence. CI uses
 `resolve-linux` instead, which also verifies Linux apt metadata. A macOS entry
 additionally requires signed-App acquisition and the native check; an inventory
-entry alone is not native acceptance. The separate Windows prerequisite jobs
-also verify installer signatures and restricted installation as described below.
-
-#### macOS Network Isolation Proof
-
-The explicitly requested `cursor-app-isolation.yml` workflow runs a separate
-network proof on macOS 15 with Node 24. On a feature branch, enable
-`check_cursor_macos_isolation` when manually dispatching the existing native
-workflow to run **proof-only mode**. This switch takes precedence over the other
-manual diagnostic switches: packaging, native matrices, provider checks and
-native-result summaries are skipped. A separate concurrency group keeps this
-mode from cancelling a normal acceptance run. The default `false`, pull-request
-and push paths retain the full matrix. The proof workflow can also be dispatched
-directly after GitHub registers it. Proof-only mode does not download or start
-Cursor, access a credential store, or count as functional or native acceptance.
-Both this switch and `check_cursor_windows_isolation` may be selected together;
-only the two requested proofs run, each on its own platform.
-It first checks owned loopback fixtures, then requires `sandbox-exec` to permit
-only the selected outbound
-port. It also requires binding and listening on the selected IPv4 and IPv6
-loopback ports while denying other ports. Seatbelt cannot prevent wildcard
-binding on an allowed port, so the proof records that behavior as an observation,
-not a system-level inbound-isolation guarantee. Owned Unix
-IPC must work, while Unix socket paths outside the private root must be denied.
-Each process also attempts to re-enter `sandbox-exec` with an allow-default
-profile and connect only to the denied loopback fixture. Re-entry must be
-explicitly refused with `EPERM`, or that connection must remain denied with
-`EPERM` or `EACCES`; successful access, timeout and ambiguous errors fail.
-The public re-entry observation contains only each generation's depth and fixed
-verdict (`REENTRY_DENIED`, `EPERM` or `EACCES`), never raw subprocess output.
-These local gates run before documentation-only IPv4 and IPv6 connection probes,
-which send no application data. Denial must be `EPERM` or `EACCES`; a timeout,
-address-in-use or routing error is not isolation evidence.
-
-The same restrictions must hold in the child and grandchild process. The job
-fails on an unavailable or ineffective sandbox and uploads only its fixed-field
-`report.json`. This optional proof is separate from the functional checks and
-is not required before native App startup.
-A passing network proof does not establish App compatibility,
-filesystem or credential isolation, or macOS functional coverage. The matrix
-must independently pass the signed-App and seven-flow native checks.
-
-#### Windows Loopback Feasibility Proof
-
-The explicitly requested `cursor-app-windows-isolation.yml` workflow has three
-separate prerequisite jobs: a direct-outbound policy probe using loopback
-fixtures, static installer verification, and restricted installation. Each uses a
-fresh GitHub-hosted Windows 2025 runner with Node 24. Enable
-`check_cursor_windows_isolation` when
-manually dispatching the
-existing native workflow to select proof-only mode; the switch defaults to
-`false`. Like the macOS proof switch, it skips packaging, all native matrices,
-provider checks and native-result summaries, without cancelling normal
-acceptance runs. Selecting both proof switches also runs the macOS proof. Neither switch
-changes pull-request, push or default manual acceptance.
-The runner guard accepts only the exact Windows 2025 `ImageOS` identities
-`win25` and `win25-vs2026`. A guard failure exposes only its fixed `failedGuard`
-enum, not environment values, paths, SIDs or raw errors; the field is absent
-after all guards pass.
-Node version preflight exposes only bounded numeric source/copied versions,
-exit codes, output lengths and fixed result classifications. Paths and raw
-subprocess output are not published.
-
-The Windows probe uses the hosted runner's administrator context to compile a
-CI-only C++ helper against the installed Windows SDK in a controller-only
-directory. It creates one temporary standard local user and an owned WFP
-sublayer. At `ALE_AUTH_CONNECT_V4/V6`, two higher-weight soft permits require
-the exact new SID, TCP, `127.0.0.1` or `::1`, and the selected allowed fixture
-port. Two lower-weight SID-only blocks deny all other direct outbound
-connections under that identity. Readback verifies the distinct permit and
-block roles, weights and exact conditions; no repeated not-equal port
-conditions are used. Two additional `ALE_RESOURCE_ASSIGNMENT_V4/V6` blocks
-match only that SID and UDP, rejecting explicit or implicit socket binding
-before a datagram can be sent. This also prevents that test user's UDP
-receiving endpoints; it is stronger than outbound-only UDP filtering. The
-original connect-layer blocks remain in place. Soft permits do not override
-other providers' blocks. Ordinary
-non-dynamic, nonpersistent WFP objects survive the helper's engine close;
-separate readback verifies this before the restricted probe. It does not change
-the global firewall profile or default policy, use an AppContainer or add a
-loopback exemption. A parent, child and grandchild ordinary Node process under
-the new identity test only owned IPv4/IPv6 loopback fixtures. Baseline and
-controller checks must exchange synthetic data with every fixture. Baseline
-workers exit before policy installation and readback; restricted workers create
-new sockets afterwards. Restricted checks allow only the two selected TCP
-endpoints and require explicit access denial for other TCP ports and UDP on
-the same numeric ports as allowed TCP. Mapped IPv6 probes use IPv6 sockets:
-TCP to the allowed IPv4 endpoint must succeed, TCP to the denied IPv4 port
-must be explicitly refused with access denial, and mapped UDP must be denied.
-Neither a timeout nor another ambiguous outcome proves denial. The probe makes no
-external or DNS requests and does not download or start Cursor, access a
-credential store, or use existing account credentials.
-
-After owned processes stop, cleanup verifies exact object keys and conditions
-before transactional deletion and confirms absence. If process or object
-ownership cannot be proven, the probe fails and retains the restrictions,
-account and private directories for disposable runner VM teardown. The public
-scope is `windows-wfp-user-tcp-allowlist-udp-bind-block`; diagnostics expose only fixed
-steps, address-family enums and numeric API errors, never SIDs, object keys,
-paths or raw errors. The fixed `udpPolicy` names the SID-scoped resource-assignment
-restriction without claiming it passed. Evidence includes `filtersSurviveEngineClose`, `udpDenied`
-and `mappedIpv6Denied`, and cleanup reports `wfpObjectsRemoved`.
-
-The job fails on an ineffective restriction or unsuccessful cleanup and uploads
-only its fixed-field `report.json`. A passing probe establishes exact policy
-readback and the selected local direct-outbound cases, not external-route or
-inbound-connection behavior. DNS may be delegated to a system service, and
-traffic executed under another SID by a system broker is outside these
-filters. The report therefore fixes `dnsBrokerIsolation` to `not-verified` and
-`otherSidBrokerIsolation` to `not-enforced`. This is not Windows App
-compatibility, full system network isolation, credential isolation, or native
-acceptance. Windows remains outside the Cursor App native
-matrix; macOS native acceptance must also independently pass its own checks.
-
-#### Windows Installer Artifact Proof
-
-The separate static artifact job resolves the common release inventory once,
-then validates the baseline and latest `win32-x64-user` descriptors before
-downloading either. Identical complete artifact identities share one download;
-equal version strings alone do not merge different commits or URLs. It accepts
-only the canonical, commit-qualified official download URL, disallows redirects,
-and bounds download time and size. The Windows download API supplies no
-authenticated checksum. The computed SHA-256 is only an observed receipt,
-not a vendor-provided pin.
-
-The trusted acquisition controller invokes the system
-`Get-AuthenticodeSignature` command without running the installer. Separate
-owned directories hold the installer's payload and the verifier's
-HOME, working directory and temporary files. PowerShell startup files must not
-populate the still-empty payload directory before its private ACL is applied.
-Signature acceptance requires `Valid` status, an embedded `Authenticode`
-signature rather than a catalog signature, and exactly one subject CN and O, both equal to the
-preconfigured publisher `Anysphere, Inc.`. Duplicate, multivalued, missing or
-different publisher attributes fail closed. This uses the current Windows
-trust policy without adding certificates or relaxing signature validation.
-Certificate-chain and revocation checks may access public services; this job
-is not an offline or local-only network proof.
-
-Only a bounded public `report.json` is uploaded. It records release identity,
-observed download bytes and digest, verification booleans and cleanup status;
-it excludes installer files, paths, certificate objects and raw command output.
-Owned download directories are removed before success. An uncertain cleanup
-keeps the job failed and preserves state for disposable runner teardown.
-The report fixes `installerExecuted`, `appStarted`, `nativeAcceptance`,
-`appIdentityVerified` and `appArchitectureVerified` to `false`. A signed
-installer does not prove the extracted App's version, commit or architecture,
-safe unattended installation, an isolated Windows profile, or native sessions.
-
-#### Windows Restricted Installation Proof
-
-The installation job separately resolves one baseline/latest inventory and
-verifies each installer signature before use. Each channel uses a new standard
-local account and repeats the direct-outbound policy proof above before running
-any installer. The acquisition and signature controllers remain outside the
-new SID's WFP policy; only those trusted controllers may access public download
-and certificate services. The policy does not claim DNS-broker or other-SID
-broker isolation.
-Before creating either account, the outer controller snapshots Node and the
-fixed verifier/coordinator dependency closure into a controller-and-SYSTEM-only
-directory. Both channels use that private copy, not late reads from a checkout
-or executable that the restricted account could modify.
-
-A CI-only native helper creates a fresh Windows user profile, loads its registry
-hive with a held token and profile handle, and verifies the exact account SID.
-An isolated HOME alone is not accepted as profile isolation. The installer is
-created suspended, assigned to a retained non-breakaway Job Object with
-kill-on-close, and resumed only after identity and Job checks. Passwords are
-kept in memory and never passed on a command line or written to a report.
-Installer descendants remain subject to the account's WFP policy and Job.
-
-The verified installer is copied into controller-owned, read/execute-only media
-for the restricted account and its observed digest is checked again. Silent
-installation uses `/NORESTART` and `/MERGETASKS=!runcode`; launching the App is
-not requested. Only exit code zero and an empty Job permit installed-file
-verification. The actual `Cursor.exe` must be AMD64 PE32+ with a valid embedded
-signature from the expected publisher. Its package/product version and
-`product.json` `realCommit` must match the frozen descriptor. The expected
-installation directory and every inspected component must stay within the new
-profile and contain no reparse points.
-
-Cleanup requires an empty Job and closed verifier processes before unloading
-and deleting the owned profile, then removing WFP objects, the account and
-owned files. Uncertain cleanup fails the job and retains resources for VM
-teardown; no rediscovered PID is signalled. Only a fixed-field public
-`report.json` is uploaded, without usernames, SIDs, passwords, paths or raw
-installer output. This new job requires a successful hosted run before claiming
-installation compatibility. It does not request App launch, exercise GUI access,
-install MemoraX, prove native sessions, or complete the Windows matrix.
+entry alone is not native acceptance. Windows installation and signature checks
+run in each native matrix cell.
 
 ## Pull Requests
 

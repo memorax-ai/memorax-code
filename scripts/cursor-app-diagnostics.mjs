@@ -59,18 +59,6 @@ export function collectCursorAppLaunchDiagnostics(value) {
     markers: Object.fromEntries(Object.entries(launchMarkers).map(([key, pattern]) => [key, pattern.test(log)])) });
 }
 
-export function projectCursorAppSandboxDiagnostics(value) {
-  const statuses = ["collected", "empty", "unavailable", "overflow"];
-  const reasons = ["execute-failed", "timeout", "parse-invalid", "scope-mismatch"];
-  let status = value?.status, reason = value?.reason;
-  if (!statuses.includes(status) || (status === "unavailable" ? !reasons.includes(reason)
-    : reason !== (status === "overflow" ? "overflow" : "none"))) {
-    status = "unavailable"; reason = "parse-invalid";
-  }
-  return { status, reason, markers: Object.fromEntries(Object.keys(launchMarkers)
-    .map((key) => [key, status === "collected" && value?.markers?.[key] === true])) };
-}
-
 const stopBackendEnums = {
   errorCode: ["BACKEND_SERVICE_STATE_READ_FAILED", "BACKEND_SERVICE_STATE_INVALID", "BACKEND_SERVICE_STATE_UNSUPPORTED",
     "BACKEND_OWNERSHIP_UNVERIFIED", "BACKEND_TERMINATE_FAILED", "BACKEND_STOP_TIMEOUT", "BACKEND_SERVICE_STATE_CLEANUP_FAILED"],
