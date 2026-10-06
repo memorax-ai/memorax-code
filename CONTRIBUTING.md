@@ -1187,6 +1187,11 @@ operation reference, followed by native
 Shell execution of the public `memorax-cli` command. The driver approves each
 Shell command once through the matching conversation and tool-call UI; it does
 not enable global autorun or bypass native approval. The protocol fixture
+requests network access for the two macOS Skill Shell commands to reach the
+local mock, while retaining the workspace filesystem sandbox. This per-command
+network permission is not a loopback-only allowlist; the commands still use the
+explicit local fixture endpoint. Other platforms and the pending cancellation
+command retain their existing permission requests. The fixture
 requests those tools explicitly; this is not model-driven Skill-selection or
 natural-language compliance coverage. The
 restart retains only this check's isolated App profile; it does not restart the

@@ -165,7 +165,7 @@ function toolSteps(run, results) {
       MEMORAX_CODE_HOME: env.MEMORAX_CODE_HOME,
       MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT: "cursor",
       MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID: run.conversationId }),
-    workingDirectory: workspace, timeoutMs: 20000 };
+    workingDirectory: workspace, timeoutMs: 20000, ...(process.platform === "darwin" ? { networkAccess: true } : {}) };
   }
   check(results.length === 3 && results[2].kind === "shell" && results[2].exitCode === 0,
     "CURSOR_APP_SKILL_COMMAND_FAILED");

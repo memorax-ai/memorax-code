@@ -412,10 +412,13 @@ export function createToolExecution(run, step, { id, toolCallId }) {
     argsBytes = Buffer.concat([toolArgsBytes, field(2, toolCallId)]);
   } else if (step?.kind === "shell" && validText(step.command) && validText(step.workingDirectory)
     && Number.isInteger(step.timeoutMs) && step.timeoutMs > 0 && step.timeoutMs <= 60_000
-    && Object.keys(step).every((key) => ["kind", "command", "workingDirectory", "timeoutMs"].includes(key))) {
+    && (step.networkAccess === undefined || step.networkAccess === true)
+    && Object.keys(step).every((key) => ["kind", "command", "workingDirectory", "timeoutMs", "networkAccess"].includes(key))) {
     argsBytes = Buffer.concat([field(1, step.command), field(2, step.workingDirectory), scalar(3, step.timeoutMs), field(4, toolCallId),
       // No invented command parse or approval bypass: the App owns permission review.
-      field(8, scalar(1, 1)), scalar(13, 1), scalar(14, step.timeoutMs), scalar(17, 1),
+      field(8, scalar(1, 1)),
+      ...(step.networkAccess ? [field(9, Buffer.concat([scalar(1, 2), scalar(2, 1)]))] : []),
+      scalar(13, 1), scalar(14, step.timeoutMs), scalar(17, 1),
       field(21, identity(run.conversationId)), field(23, identity(run.requestId))]);
     toolArgsBytes = argsBytes;
   } else fail("CURSOR_APP_EXEC_OPTIONS");

@@ -233,15 +233,17 @@ test("native Shell commands keep POSIX quoting and route Windows Skill context a
   }
 });
 
-test("macOS Skill commands explicitly bind the existing mock endpoint and isolated state home", () => {
+test("POSIX Skill commands bind fixture state and request network access only on macOS", () => {
   const shell = source.slice(source.indexOf("function quote("), source.indexOf("\nfunction assertSkillMemory("));
   const body = source.split("function toolSteps(")[1]?.split("\nasync function stopApp(")[0];
   const env = { MEMORAX_CODE_MEMORAX_ENDPOINT: "http://127.0.0.1:12345", MEMORAX_CODE_HOME: "/owned/state ' space" };
   const run = { prompt: "synthetic prompt", conversationId: "synthetic-session", requestContextCloseCount: 1 };
-  for (const operation of ["search", "add"]) {
+  for (const platform of ["darwin", "linux"]) for (const operation of ["search", "add"]) {
+    const agent = { runs: [run] };
     const toolSteps = runInNewContext(`(() => { ${shell}; return function toolSteps(${body}; })()`, {
-      process: { platform: "darwin" }, windows: undefined, env, join,
-      agent: { runs: [run] }, fixtures: [{ prompt: run.prompt, operation }], turns: [{ sessionId: run.conversationId }],
+      process: { platform, execPath: "/owned/node" }, windows: undefined, env, join, agent,
+      fixtures: [{ prompt: run.prompt, operation }], turns: [{ sessionId: run.conversationId }],
+      interruption: { sessionId: run.conversationId, marker: "/owned/pending" }, interruptedFixture: { prompt: run.prompt },
       workspace: "/owned/workspace", skillRoot: "/owned/skill", skillText: "installed skill",
       referenceTexts: new Map([[operation, "installed reference"]]),
       skillQuery: "query", skillMemory: "memory", skillReason: "reason",
@@ -259,6 +261,9 @@ test("macOS Skill commands explicitly bind the existing mock endpoint and isolat
       + `'MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID=synthetic-session' 'memorax-cli' ${args}`);
     assert.equal(result.workingDirectory, "/owned/workspace");
     assert.equal(result.timeoutMs, 20000);
+    assert.equal(result.networkAccess, platform === "darwin" ? true : undefined);
+    agent.runs = [undefined, run];
+    assert.equal(toolSteps(run, []).networkAccess, undefined);
   }
 });
 

@@ -302,6 +302,20 @@ test("Shell Exec leaves native approval enabled and preserves exact successful n
   assert.throws(() => completeToolExecution(execution, { ...result, command: "changed" }), /CURSOR_APP_EXEC_IDENTITY/);
 });
 
+test("Shell network requests preserve the filesystem sandbox and native approval", () => {
+  const step = { kind: "shell", command: "memorax-cli search --query synthetic", workingDirectory: "/synthetic/workspace", timeoutMs: 10_000 };
+  const execution = createToolExecution(run(), { ...step, networkAccess: true }, { id: 5, toolCallId: userMessageId });
+  const args = message(field(1, step.command), field(2, step.workingDirectory), scalar(3, step.timeoutMs), field(4, userMessageId),
+    field(8, scalar(1, 1)), field(9, message(scalar(1, 2), scalar(2, 1))),
+    scalar(13, 1), scalar(14, step.timeoutMs), scalar(17, 1), field(21, conversationId), field(23, requestId));
+  assert.deepEqual(execution.execMessage, field(2, message(scalar(1, 5), field(15, userMessageId), field(2, args))));
+  for (const extra of [
+    ...[false, "true", 1, null, {}].map((networkAccess) => ({ networkAccess })),
+    { networkAccess: true, skipApproval: true }, { requestedSandboxPolicy: {} }, { sandboxPolicy: {} },
+  ]) assert.throws(() => createToolExecution(run(), { ...step, ...extra }, { id: 5, toolCallId: userMessageId }),
+    /CURSOR_APP_EXEC_OPTIONS/);
+});
+
 test("Exec control messages bind one ID and redact exceptions", () => {
   for (const [number, event] of [[1, "close"], [2, "error"], [3, "heartbeat"]]) {
     const body = message(scalar(1, 9), ...(number === 2 ? [field(2, "private-error"), field(3, "private-stack")] : []));
