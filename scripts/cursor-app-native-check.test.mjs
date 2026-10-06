@@ -610,7 +610,7 @@ test("macOS cleanup records descendants before browser shutdown and still closes
         calls.push("capture"); assert.equal(pid, 201);
         if (failCapture) throw error;
         return new Set([201, 202]);
-      } }, app, observedMacosPids, page: {},
+      } }, windows: undefined, app, observedMacosPids, page: {},
       browser: { async close() { calls.push("close"); app.exitCode = 0; } },
       bounded: (promise) => promise,
       once() { assert.fail("an exited owned child must not receive signals"); },
@@ -619,6 +619,74 @@ test("macOS cleanup records descendants before browser shutdown and still closes
     else await stopApp();
     assert.deepEqual(calls, ["capture", "close"]);
     assert.deepEqual([...observedMacosPids], failCapture ? [200] : [200, 201, 202]);
+  }
+});
+
+test("Windows App cleanup attempts bounded native quit and releases its exit listener before fallback", async () => {
+  const body = source.split("async function stopApp(")[1]?.split("\nasync function assertProcessesStopped(")[0];
+  assert.ok(body);
+  for (const mode of ["quit-exit", "disconnect-exit", "delayed-exit", "rejected", "timeout", "quit-no-exit", "no-page", "exited", "signaled", "no-child"]) {
+    const calls = [], env = { HOME: "C:\\owned\\home" };
+    const app = mode === "no-child" ? undefined : Object.assign(new EventEmitter(), {
+      pid: 201, exitCode: mode === "exited" ? 0 : null, signalCode: mode === "signaled" ? "SIGTERM" : null,
+      kill() { assert.fail("native quit or one taskkill must not cause a duplicate kill"); },
+    });
+    const quits = !["no-page", "exited", "signaled", "no-child"].includes(mode);
+    const fallback = ["rejected", "timeout", "quit-no-exit", "no-page"].includes(mode);
+    const timeout = Object.assign(new Error("CURSOR_APP_WINDOWS_QUIT_TIMEOUT"), { code: "CURSOR_APP_WINDOWS_QUIT_TIMEOUT" });
+    let bounds = 0, quitSettled;
+    const stopApp = runInNewContext(`(async function stopApp(${body})`, {
+      macos: undefined, app, env, report: {}, once,
+      page: mode === "no-page" ? undefined : { evaluate: (callback) => callback() },
+      window: { driver: { executeCommand(command, ...args) {
+        calls.push("quit");
+        assert.equal(command, "workbench.action.quit"); assert.deepEqual(args, []);
+        assert.equal(app.listenerCount("exit"), 1);
+        if (["quit-exit", "disconnect-exit"].includes(mode)) {
+          app.exitCode = 0; app.emit("exit", 0, null); app.emit("close", 0, null);
+        }
+        if (["disconnect-exit", "rejected"].includes(mode)) return Promise.reject(new Error("private-quit-canary"));
+        if (mode === "timeout") return new Promise(() => {});
+        return Promise.resolve();
+      } } },
+      async bounded(promise, code, milliseconds) {
+        if (code === "CURSOR_APP_WINDOWS_QUIT_TIMEOUT") {
+          bounds++;
+          assert.equal(milliseconds, 5000);
+          quitSettled = false;
+          promise.then(() => { quitSettled = true; }, () => { quitSettled = true; });
+          for (let turn = 0; turn < 8; turn++) await Promise.resolve();
+          const settledBeforeExit = quitSettled;
+          if (mode === "delayed-exit") {
+            app.exitCode = 0; app.emit("exit", 0, null); app.emit("close", 0, null);
+            await promise;
+            quitSettled = settledBeforeExit;
+          }
+          if (fallback) throw timeout;
+        }
+        return await promise;
+      },
+      browser: { async close() {
+        calls.push("browser");
+        assert.equal(app?.listenerCount("exit") ?? 0, 0);
+      } },
+      windows: { async stopWindowsApp(child, actualEnv) {
+        calls.push("taskkill"); assert.equal(child, app); assert.equal(actualEnv, env);
+        assert.equal(child.exitCode, null); assert.equal(child.signalCode, null);
+        assert.equal(child.listenerCount("exit"), 0);
+        child.exitCode = 0; child.emit("exit", 0, null); child.emit("close", 0, null);
+      } },
+      delay() { return new Promise(() => {}); },
+      check(value, code) { if (!value) throw Object.assign(new Error(code), { code }); },
+    }, { timeout: 100 });
+    await stopApp();
+    assert.equal(bounds, Number(quits), mode);
+    if (quits) assert.equal(quitSettled, !fallback && mode !== "delayed-exit", `${mode}: quit evaluation alone cannot prove child exit`);
+    assert.deepEqual(calls, [...(quits ? ["quit"] : []), "browser", ...(fallback ? ["taskkill"] : [])], mode);
+    assert.equal(app?.listenerCount("exit") ?? 0, 0);
+    const completedCalls = [...calls];
+    await stopApp();
+    assert.deepEqual(calls, completedCalls, mode);
   }
 });
 
@@ -633,7 +701,7 @@ test("Windows App cleanup uses its held live child after browser close, never an
     });
     const error = Object.assign(new Error("browser close failed"), { code: "CURSOR_APP_BROWSER_CLEANUP" });
     const stopApp = runInNewContext(`(async function stopApp(${body})`, {
-      macos: undefined, app, env, page: {}, once, bounded: (promise) => promise,
+      macos: undefined, app, env, page: undefined, once, bounded: (promise) => promise,
       delay() { return new Promise(() => {}); },
       browser: { async close() {
         calls.push("browser");
@@ -663,7 +731,7 @@ test("Windows App stop preserves the first failure snapshot through repeated cle
       kill() { assert.fail("failed taskkill must not introduce fallback signals"); } });
     let stops = 0;
     const stopApp = runInNewContext(`(async function stopApp(${body})`, {
-      macos: undefined, app, env, report, page: {}, once, bounded: (promise) => promise,
+      macos: undefined, app, env, report, page: undefined, once, bounded: (promise) => promise,
       browser: { async close() {} },
       windows: { async stopWindowsApp(child, actualEnv) {
         try {

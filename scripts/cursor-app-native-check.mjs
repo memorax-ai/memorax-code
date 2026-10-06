@@ -199,6 +199,17 @@ function toolSteps(run, results) {
 }
 async function stopApp() {
   let closeError;
+  if (windows && page && app && app.exitCode === null && app.signalCode === null) {
+    let onExit;
+    const exited = new Promise((resolve) => { onExit = resolve; app.once("exit", onExit); });
+    try {
+      // Quitting can close the renderer before its command reply reaches Playwright.
+      const quit = page.evaluate(() => window.driver.executeCommand("workbench.action.quit")).catch(() => {});
+      await bounded(Promise.all([quit, exited]), "CURSOR_APP_WINDOWS_QUIT_TIMEOUT", 5000);
+    } catch {
+      // A vetoed or unavailable native exit still uses the owned-child fallback below.
+    } finally { app.removeListener("exit", onExit); }
+  }
   if (macos && app && app.exitCode === null && app.signalCode === null) {
     try { for (const pid of await macos.captureMacosDescendants(app.pid)) observedMacosPids.add(pid); }
     catch (error) { closeError = error; }

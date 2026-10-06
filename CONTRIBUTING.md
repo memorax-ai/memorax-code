@@ -1311,10 +1311,12 @@ The Windows entrypoint likewise requires a fresh GitHub-hosted runner. It uses
 isolated user-data, extensions, home and AppData directories, a clean environment,
 and in-memory secret storage. The official installer and installed executable
 must pass Authenticode, publisher, architecture, version and release-commit
-checks before native startup. Installation waits for the installer process tree;
-native cleanup only terminates the still-live owned App child and audits remaining
-owned paths read-only. Unconfirmed cleanup fails the check and retains its state
-for runner teardown.
+checks before native startup. Installation waits for the installer process tree.
+Windows cleanup first requests the native `workbench.action.quit` command and
+waits briefly for the held App child to exit. If native exit is unavailable or
+does not finish, the existing forced cleanup targets only the still-live owned
+App child. Remaining owned paths are audited read-only; forced-cleanup errors
+and unconfirmed cleanup still fail the check and retain state for runner teardown.
 
 To reproduce after building an installable candidate, use Node 24 and a local
 Linux-container Docker daemon:
