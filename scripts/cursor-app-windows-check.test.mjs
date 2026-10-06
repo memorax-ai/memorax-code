@@ -13,17 +13,51 @@ import { projectWindowsInstallerLog, projectWindowsInstallerOutcome, readWindows
 const innoLog = (...records) => Buffer.from("\ufeff" + records.map((record) =>
   `2026-10-06 12:34:56.789   ${record.replaceAll("\n", "\r\n" + " ".repeat(26))}\r\n`).join(""));
 
+test("installer file diagnostics retain only fixed operations and the current destination length", () => {
+  const destination = `C:\\private-canary\\${"nested\\".repeat(40)}file.js`;
+  for (const [action, fileOperation] of [
+    ["read the existing file", "read-existing"], ["read the source file", "read-source"],
+    ["create a file in the destination directory", "create"], ["copy a file", "copy"],
+    ["replace the existing file", "replace"], ["rename a file in the destination directory", "rename"],
+  ]) {
+    const result = projectWindowsInstallerLog(innoLog("-- File entry --", `Dest filename: ${destination}`,
+      `Exception message:\nAn error occurred while trying to ${action}:\n${destination}\nCreateFile failed; code 3.`));
+    assert.deepEqual(result, { readStatus: "ok", category: "file", systemErrorCode: 3,
+      fileOperation, systemOperation: "CreateFile", destinationPathLength: destination.length });
+    assert.equal(JSON.stringify(result).includes("private-canary"), false);
+  }
+  for (const systemOperation of ["CreateFile", "DeleteFile", "MoveFile", "MoveFileEx"]) {
+    assert.deepEqual(projectWindowsInstallerLog(innoLog(`${systemOperation} failed; code 3.`)),
+      { readStatus: "ok", category: "file", systemErrorCode: 3, systemOperation });
+  }
+});
+
+test("installer destination diagnostics never reuse another entry or a partial tail context", () => {
+  for (const records of [
+    ["Dest filename: C:\\private-canary"],
+    ["-- File entry --", "Dest filename: C:\\private-canary", "-- File entry --"],
+    ["-- File entry --", "Dest filename: C:\\private-canary", "-- Registry entry --"],
+  ]) {
+    assert.deepEqual(projectWindowsInstallerLog(innoLog(...records, "CreateFile failed; code 3.")),
+      { readStatus: "ok", category: "file", systemErrorCode: 3, systemOperation: "CreateFile" });
+  }
+  assert.deepEqual(projectWindowsInstallerLog(innoLog("-- File entry --", "Dest filename: C:\\private-canary",
+    "Error writing to registry key:\nRegSetValueEx failed; code 5.")),
+  { readStatus: "ok", category: "registry", systemErrorCode: 5 });
+});
+
 test("installer log projection associates only known error text within the same Inno record", () => {
-  for (const [message, category, systemErrorCode] of [
+  for (const [message, category, systemErrorCode, details = {}] of [
     ['Setup was unable to create the directory "C:\\private-canary".\n\nError 5: private-canary', "directory", 5],
-    ["Exception message:\nAn error occurred while trying to copy a file:\nC:\\private-canary\nCreateFile failed; code 32.", "file", 32],
+    ["Exception message:\nAn error occurred while trying to copy a file:\nC:\\private-canary\nCreateFile failed; code 32.", "file", 32,
+      { fileOperation: "copy", systemOperation: "CreateFile" }],
     ["Error writing to registry key:\nHKCU\\private-canary\n\nRegSetValueEx failed; code 5.\nprivate-canary", "registry", 5],
     ["Unable to execute file:\nC:\\private-canary\n\nCreateProcess failed; code 2.\nprivate-canary", "execute", 2],
     ["Exception message:\nprivate-canary", "exception", null],
     ["Error 4294967295: private-canary", "unknown", 4294967295],
   ]) {
     const result = projectWindowsInstallerLog(innoLog(message, "Rolling back changes."));
-    assert.deepEqual(result, { readStatus: "ok", category, systemErrorCode });
+    assert.deepEqual(result, { readStatus: "ok", category, systemErrorCode, ...details });
     assert.equal(JSON.stringify(result).includes("private-canary"), false);
   }
   for (const records of [
@@ -53,7 +87,7 @@ test("private installer log reads are bounded, regular-file-only and never expos
     assert.equal((await readWindowsInstallerLog(path)).readStatus, "not-regular");
     await rm(path, { recursive: true });
     await writeFile(path, innoLog("CreateFile failed; code 5.\nprivate-canary"));
-    assert.deepEqual(await readWindowsInstallerLog(path), { readStatus: "ok", category: "file", systemErrorCode: 5 });
+    assert.deepEqual(await readWindowsInstallerLog(path), { readStatus: "ok", category: "file", systemErrorCode: 5, systemOperation: "CreateFile" });
     await writeFile(path, Buffer.alloc(1024 * 1024 + 1, 0x61));
     assert.deepEqual(await readWindowsInstallerLog(path), { readStatus: "tail", category: "unknown", systemErrorCode: null });
     await writeFile(path, Buffer.from([0xff]));

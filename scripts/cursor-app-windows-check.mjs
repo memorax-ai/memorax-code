@@ -72,9 +72,15 @@ export function projectWindowsInstallerLog(bytes) {
   // Inno's format is not an API: recognize only fixed error text in one timestamped record.
   // Source: jrsoftware/issrc is-6_4_3, Setup.LoggingFunc.pas and Files/Default.isl.
   const records = text.matchAll(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} {3}([^\r\n]*(?:\r?\n {26}[^\r\n]*)*)/gm);
+  let fileEntry = false, destinationPathLength;
   for (const record of records) {
     const message = record[1].replace(/\r?\n {26}/g, "\n");
     if (message === "Rolling back changes.") break;
+    if (/^-- .+ entry --$/.test(message)) {
+      fileEntry = message === "-- File entry --";
+      destinationPathLength = undefined;
+    }
+    if (fileEntry && /^Dest filename: [^\n]+$/.test(message)) destinationPathLength = message.length - "Dest filename: ".length;
     const category = [
       ["directory", /^Setup was unable to create the directory "/m],
       ["file", /^(?:An error occurred while trying to (?:read the (?:existing|source) file|create a file in the destination directory|copy a file|replace the existing file|rename a file in the destination directory):|(?:CreateFile|DeleteFile|MoveFile|MoveFileEx) failed; code \d+\.)$/m],
@@ -85,7 +91,21 @@ export function projectWindowsInstallerLog(bytes) {
     const code = message.match(/^Error (\d{1,10}):[^\n]*$/m)?.[1]
       ?? message.match(/^(?:CreateFile|DeleteFile|MoveFile|MoveFileEx|RegSetValueEx|RegCreateKeyEx|RegOpenKeyEx|CreateProcess|ShellExecuteEx) failed; code (\d{1,10})\.$/m)?.[1];
     const systemErrorCode = code !== undefined && Number(code) <= 4294967295 ? Number(code) : null;
-    if (category !== "unknown" || systemErrorCode !== null) return { ...result, category, systemErrorCode };
+    if (category !== "unknown" || systemErrorCode !== null) {
+      const details = {};
+      if (category === "file") {
+        const fileOperation = [
+          ["read-existing", "read the existing file"], ["read-source", "read the source file"],
+          ["create", "create a file in the destination directory"], ["copy", "copy a file"],
+          ["replace", "replace the existing file"], ["rename", "rename a file in the destination directory"],
+        ].find(([, action]) => message.split("\n").includes(`An error occurred while trying to ${action}:`))?.[0];
+        const systemOperation = message.match(/^(CreateFile|DeleteFile|MoveFile|MoveFileEx) failed; code \d+\.$/m)?.[1];
+        if (fileOperation) details.fileOperation = fileOperation;
+        if (systemOperation) details.systemOperation = systemOperation;
+        if (destinationPathLength !== undefined) details.destinationPathLength = destinationPathLength;
+      }
+      return { ...result, category, systemErrorCode, ...details };
+    }
   }
   return result;
 }

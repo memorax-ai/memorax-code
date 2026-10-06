@@ -1326,7 +1326,8 @@ sandbox policy retains only its fixed type and optional network-access boolean;
 missing network access is not interpreted as denial, and policy paths are omitted. Windows
 installation uses a private installer log, reading at most its last 1 MiB;
 failure reports retain only its read status (including truncated-tail reads),
-recognized error category and numeric error code. Neither diagnostic
+recognized error category, numeric error code, fixed file/Win32 operation names,
+and the current file entry's destination path length when available. Neither diagnostic
 publishes commands, paths, raw tool output or installer logs, and unavailable
 diagnostics never replace the original failure or relax acceptance checks.
 Synthetic login is not real account
