@@ -5,14 +5,86 @@ import { createServer } from "node:http";
 import { realpathSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, posix, win32 } from "node:path";
 import test from "node:test";
+import { runInNewContext } from "node:vm";
 import { enableCursorAdapter } from "../src/config.mjs";
 import { cursorDatabasePath } from "../src/native-database-path.mjs";
 import { DEFAULT_ENSURE_BACKEND_START_TIMEOUT_MS } from "../../memorax-code-adapter-common/src/hooks/ensure-backend-runner.mjs";
 
 const sessionId = "11111111-1111-4111-8111-111111111111";
 const turnId = "22222222-2222-4222-8222-222222222222";
+
+test("Cursor Hook accepts one leading UTF-8 BOM without changing native content", async () => {
+  const fixture = await createFixture();
+  try {
+    const prompt = "  exact prompt \u8bb0\u5fc6-42\n";
+    const payload = JSON.stringify({ conversation_id: sessionId, generation_id: turnId,
+      workspace_roots: [fixture.root], hook_event_name: "beforeSubmitPrompt", prompt });
+    const result = await runHook(fixture, `\ufeff${payload}`);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(JSON.parse(result.stdout).continue, true);
+    assert.equal(fixture.requests.find(request => request.path === "/memory/turn-start")?.body.prompt, prompt);
+    const count = fixture.requests.length;
+    for (const input of [`\ufeff\ufeff${payload}`, ` \ufeff${payload}`, "\ufeff{", "\ufeff[]"]) {
+      assert.equal((await runHook(fixture, input)).stdout, "");
+      assert.equal(fixture.requests.length, count);
+    }
+  } finally { await fixture.close(); }
+});
+
+test("Cursor native path normalization only converts Windows URI drive prefixes", async () => {
+  const source = (await readFile(new URL("../hooks/runtime-hook.mjs", import.meta.url), "utf8")).replace(/\r\n/g, "\n");
+  const implementation = source.match(/function absolutePath\(value\) \{[\s\S]*?\n\}/)?.[0];
+  assert.ok(implementation);
+  const cases = [
+    ["/C:/workspace", "C:/workspace", "/C:/workspace"],
+    ["/d:/", "d:/", "/d:/"],
+    ["/C:", undefined, "/C:"],
+    ["/C:relative", undefined, "/C:relative"],
+    ["/C:/name%20with space ", "C:/name%20with space ", "/C:/name%20with space "],
+    ...["C:/workspace", "C:\\workspace", "\\\\server\\share\\workspace", "//server/share/workspace", "/C:\\workspace", "/C%3A/workspace"]
+      .map(value => [value, value, value]),
+    ...["file:///C:/workspace", "relative", "C:relative", "/C:/invalid\npath", "/C:/invalid\0path", "", null]
+      .map(value => [value, undefined, undefined]),
+  ];
+  for (const platform of ["win32", "linux", "darwin"]) {
+    const absolutePath = runInNewContext(`(${implementation})`, {
+      process: { platform }, isAbsolute: (platform === "win32" ? win32 : posix).isAbsolute, win32,
+    });
+    for (const [input, windows, unix] of cases) {
+      assert.equal(absolutePath(input), platform === "win32" ? windows : unix,
+        `${platform}: ${JSON.stringify(input)}`);
+    }
+  }
+});
+
+test("Cursor Hook preserves workspace authority while normalizing native Windows paths", async () => {
+  const fixture = await createFixture();
+  try {
+    const nativeRoot = process.platform === "win32"
+      ? `/${fixture.root.replaceAll("\\", "/")}` : "/C:/synthetic workspace";
+    const expected = process.platform === "win32" ? nativeRoot.slice(1) : nativeRoot;
+    for (const [event, path] of [
+      [{ hook_event_name: "beforeSubmitPrompt", prompt: "native workspace" }, "/memory/turn-start"],
+      [{ hook_event_name: "afterAgentResponse", text: "native response" }, "/memory/writeback"],
+      [{ hook_event_name: "stop", status: "completed" }, "/memory/writeback"],
+      [{ hook_event_name: "preCompact" }, "/memory/pre-compact"],
+    ]) {
+      const count = fixture.requests.length;
+      const result = await runHook(fixture, { ...event, workspace_roots: [nativeRoot],
+        cwd: join(fixture.root, "unrelated-workspace") });
+      assert.equal(result.status, 0, result.stderr);
+      const requests = fixture.requests.slice(count).filter(request => request.path === path);
+      assert.equal(requests.length, 1);
+      assert.equal(requests[0].body.cwd, expected);
+    }
+    const count = fixture.requests.length;
+    await runHook(fixture, { hook_event_name: "beforeSubmitPrompt", prompt: "no cwd fallback",
+      workspace_roots: ["relative"], cwd: fixture.root });
+    assert.equal(fixture.requests.length, count);
+  } finally { await fixture.close(); }
+});
 
 test("Cursor starts preserve native identity, exact prompts, missing paths and empty Continue", async () => {
   const fixture = await createFixture();
@@ -622,7 +694,7 @@ function runHook(fixture, input, env = {}, timeoutMs = 10_000) {
     child.stderr.on("data", chunk => { stderr += chunk; });
     child.on("error", reject);
     child.on("close", status => resolve({ status, stdout: stdout.trim(), stderr }));
-    child.stdin.end(JSON.stringify({ conversation_id: sessionId, generation_id: turnId,
+    child.stdin.end(typeof input === "string" ? input : JSON.stringify({ conversation_id: sessionId, generation_id: turnId,
       workspace_roots: [fixture.root], ...input }));
   });
 }

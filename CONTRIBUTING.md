@@ -1316,9 +1316,6 @@ files and Hook traces are not CI artifacts. App startup diagnostics publish
 only bounded 32-bit exit codes, fixed signal/error enums and marker booleans, not raw
 stderr. Windows cleanup errors distinguish process-query, JSON and row-validation
 failures using fixed codes, without publishing process lists or PowerShell output.
-The Windows Hook-input probe sends a synthetic payload through the native
-PowerShell pipeline; failure reports expose only a fixed status and BOM,
-JSON-parse and payload-match booleans, never raw input or output.
 Failed DMG detach diagnostics contain
 only bounded exit/signal outcomes, fixed status and stderr classifications, not
 raw text. Failed candidate stops retain only fixed Backend result enums,

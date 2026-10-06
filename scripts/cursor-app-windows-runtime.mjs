@@ -16,8 +16,10 @@ export function windowsRuntimePaths({ root, appPath, packageRoot, nodePath, syst
   check(path.basename(appPath).toLowerCase() === "cursor.exe" && path.basename(nodePath).toLowerCase() === "node.exe");
   const home = path.join(root, "home"), tmp = path.join(root, "tmp"), system = absolute(systemRoot);
   const powershell = path.join(system, "System32", "WindowsPowerShell", "v1.0");
+  // Keep the runner's PowerShell 7 available for Cursor's native UTF-8 Hook pipeline.
+  const powershell7 = path.join(path.parse(system).root, "Program Files", "PowerShell", "7");
   const bins = [path.join(path.dirname(path.dirname(packageRoot)), ".bin"), path.dirname(nodePath),
-    path.join(system, "System32"), system, powershell];
+    path.join(system, "System32"), system, powershell, powershell7];
   return { home, tmp, resourcesPackage: path.join(path.dirname(appPath), "resources", "app", "package.json"),
     env: {
       SystemRoot: system, WINDIR: system, SystemDrive: system.slice(0, 2), COMSPEC: path.join(system, "System32", "cmd.exe"),

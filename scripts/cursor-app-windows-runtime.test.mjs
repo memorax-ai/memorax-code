@@ -9,7 +9,9 @@ const code = (suffix) => ({ code: `CURSOR_APP_WINDOWS_${suffix}` });
 
 test("Windows runtime paths build an isolated whitelist instead of inheriting host credentials", () => {
   const previous = process.env.CURSOR_API_KEY;
+  const previousPath = process.env.PATH;
   process.env.CURSOR_API_KEY = "private-canary";
+  process.env.PATH = "Z:\\private-canary\\bin";
   try {
     const result = windowsRuntimePaths(paths);
     assert.equal(result.home, "C:\\owned test\\home");
@@ -21,7 +23,7 @@ test("Windows runtime paths build an isolated whitelist instead of inheriting ho
     assert.equal(result.env.LOCALAPPDATA, result.home + "\\AppData\\Local");
     assert.equal(result.env.CURSOR_CONFIG_DIR, result.home + "\\.cursor");
     assert.equal(result.env.TEMP, result.tmp);
-    assert.equal(result.env.PATH, "C:\\candidate\\node_modules\\.bin;C:\\node;C:\\Windows\\System32;C:\\Windows;C:\\Windows\\System32\\WindowsPowerShell\\v1.0");
+    assert.equal(result.env.PATH, "C:\\candidate\\node_modules\\.bin;C:\\node;C:\\Windows\\System32;C:\\Windows;C:\\Windows\\System32\\WindowsPowerShell\\v1.0;C:\\Program Files\\PowerShell\\7");
     assert.equal(result.env.COMSPEC, "C:\\Windows\\System32\\cmd.exe");
     assert.equal(result.env.PATHEXT, ".COM;.EXE;.BAT;.CMD");
     assert.equal(result.env.SystemRoot, "C:\\Windows");
@@ -31,6 +33,8 @@ test("Windows runtime paths build an isolated whitelist instead of inheriting ho
   } finally {
     if (previous === undefined) delete process.env.CURSOR_API_KEY;
     else process.env.CURSOR_API_KEY = previous;
+    if (previousPath === undefined) delete process.env.PATH;
+    else process.env.PATH = previousPath;
   }
 });
 
@@ -48,6 +52,7 @@ test("Windows runtime uses the explicit system root without inheriting arbitrary
   assert.equal(env.SystemRoot, "D:\\Windows");
   assert.equal(env.SystemDrive, "D:");
   assert.equal(env.COMSPEC, "D:\\Windows\\System32\\cmd.exe");
+  assert.equal(env.PATH, "C:\\candidate\\node_modules\\.bin;C:\\node;D:\\Windows\\System32;D:\\Windows;D:\\Windows\\System32\\WindowsPowerShell\\v1.0;D:\\Program Files\\PowerShell\\7");
   assert.throws(() => windowsRuntimePaths({ ...paths, systemRoot: "relative" }), code("RUNTIME_ARGUMENTS"));
 });
 
