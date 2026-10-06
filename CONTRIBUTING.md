@@ -1324,7 +1324,8 @@ completed, and an exit code when supplied by that result. Bounded failure output
 is reduced to fixed CLI error enums and stderr marker booleans. Returned Shell
 sandbox policy retains only its fixed type and optional network-access boolean;
 missing network access is not interpreted as denial, and policy paths are omitted. Windows
-installation uses a private installer log, reading at most its last 1 MiB;
+installation uses a short owned directory under `RUNNER_TEMP` to avoid legacy
+installer path-length limits, and a private installer log, reading at most its last 1 MiB;
 failure reports retain only its read status (including truncated-tail reads),
 recognized error category, numeric error code, fixed file/Win32 operation names,
 and the current file entry's destination path length when available. Neither diagnostic

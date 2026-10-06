@@ -235,11 +235,12 @@ test("Windows orchestration uses verified artifacts and preserves every native o
   assert.doesNotMatch(source, /cursor-app-windows-isolation|owned-session|runWindowsIsolation|New-LocalUser|WFP/);
   const body = source.split("export async function runWindowsCheck(")[1]?.split("\nif (process.argv[1]")[0];
   assert.ok(body);
-  for (const kind of ["success", "candidate-failure", "probe-failure", "smoke-failure", "artifact-failure", "installer-failure", "installer-exit-five",
+  for (const kind of ["success", "missing-runner-temp", "relative-runner-temp", "candidate-failure", "probe-failure", "smoke-failure", "artifact-failure", "installer-failure", "installer-exit-five",
     "installed-failure", "installed-cleanup-failure", "native-failure", "native-exit-with-pass", "native-cleanup-failure",
     "invalid-report", "missing-report", "artifact-cleanup-failure", "state-cleanup-failure"]) {
     await t.test(kind, async () => {
       const calls = [], output = new Map(), abort = new AbortController();
+      const invalidTemp = kind.endsWith("runner-temp");
       const error = (code) => Object.assign(new Error("private-canary"), { code });
       const native = nativeReport(); native.privateCanary = "private-canary";
       if (["native-failure", "native-cleanup-failure"].includes(kind)) {
@@ -249,15 +250,17 @@ test("Windows orchestration uses verified artifacts and preserves every native o
       if (kind === "invalid-report") native.platform = "linux";
       const run = runInNewContext(`(async function runWindowsCheck(${body})`, {
         process: { platform: "win32", arch: "x64", versions: { node: "24.20.0" }, execPath: "C:\\node\\node.exe",
-          env: { GITHUB_ACTIONS: "true", RUNNER_OS: "Windows", SystemRoot: "C:\\Windows", GITHUB_TOKEN: "private-canary" } },
-        dirname: win32.dirname, join: win32.join, resolve: win32.resolve, scripts: "C:\\scripts", tmpdir: () => "C:\\temp",
+          env: { GITHUB_ACTIONS: "true", RUNNER_OS: "Windows", SystemRoot: "C:\\Windows", GITHUB_TOKEN: "private-canary",
+            RUNNER_TEMP: kind === "missing-runner-temp" ? undefined : kind === "relative-runner-temp" ? "relative" : "D:\\a\\_temp" } },
+        dirname: win32.dirname, join: win32.join, resolve: win32.resolve, win32, scripts: "C:\\scripts",
         gitDirectory: "C:\\Program Files\\Git\\cmd", windowsCheckEnvironment, windowsInstallerCommand, projectWindowsInstallerOutcome, projectNativeReport,
         check(value, code) { if (!value) throw error(code); }, safeCode: (caught) => /^CURSOR_/.test(caught.code ?? "") ? caught.code : "CURSOR_APP_WINDOWS_CHECK_FAILED",
         async lstat(path) {
           if (kind === "missing-report" && path.endsWith("report.json")) throw error("ENOENT");
           return { isFile: () => true, isDirectory: () => true, isSymbolicLink: () => false, size: 100 };
         },
-        async mkdir() {}, async readdir() { return []; }, async realpath(path) { return path; }, async mkdtemp() { return "C:\\runtime"; },
+        async mkdir() {}, async readdir() { return []; }, async realpath(path) { return path; },
+        async mkdtemp(prefix) { assert.equal(prefix, "D:\\a\\_temp\\mx-cursor-"); return "C:\\runtime"; },
         async writeFile(path, value) { output.set(path, value); },
         async readWindowsInstallerLog(path) {
           assert.equal(path, "C:\\runtime\\installer.log");
@@ -325,7 +328,11 @@ test("Windows orchestration uses verified artifacts and preserves every native o
       assert.equal(JSON.stringify(result).includes("private-canary"), false);
       assert.equal(output.get("C:\\report\\report.json"), `${JSON.stringify(result, null, 2)}\n`);
       const retained = ["smoke-failure", "installer-failure", "installer-exit-five", "installed-cleanup-failure", "native-cleanup-failure", "invalid-report", "missing-report", "artifact-cleanup-failure"].includes(kind);
-      assert.equal(calls.includes("remove"), !retained);
+      assert.equal(calls.includes("remove"), !retained && !invalidTemp);
+      if (invalidTemp) {
+        assert.equal(result.errorCode, "CURSOR_APP_WINDOWS_RUNNER_TEMP");
+        assert.deepEqual(calls, []);
+      }
       if (retained || kind === "state-cleanup-failure") assert.ok(result.cleanupError);
       if (kind === "success") assert.deepEqual(calls, ["candidate", "probe", "smoke", "artifact", "installer", "verify-installed", "native", "confirmed", "remove"]);
       if (["candidate-failure", "probe-failure", "smoke-failure", "artifact-failure", "installer-failure", "installer-exit-five", "installed-failure", "installed-cleanup-failure"].includes(kind)) {

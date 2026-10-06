@@ -1,6 +1,5 @@
 import { execFile } from "node:child_process";
 import { lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { dirname, join, resolve, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -160,7 +159,11 @@ export async function runWindowsCheck(candidatePath, reportPath, { releaseManife
       "CURSOR_APP_WINDOWS_OUTPUT");
     output = await realpath(destination);
     const release = selectCursorWindowsRelease(releaseManifest, channel);
-    root = await realpath(await mkdtemp(join(tmpdir(), "memorax-cursor-windows-ci-")));
+    const runnerTemp = process.env.RUNNER_TEMP;
+    check(typeof runnerTemp === "string" && win32.isAbsolute(runnerTemp) && !/[\0\r\n]/.test(runnerTemp),
+      "CURSOR_APP_WINDOWS_RUNNER_TEMP");
+    // Keep Inno's deep destination paths below the legacy MoveFile path limit.
+    root = await realpath(await mkdtemp(join(await realpath(runnerTemp), "mx-cursor-")));
     const env = windowsCheckEnvironment(root, process.execPath, process.env.SystemRoot);
     await mkdir(env.HOME, { mode: 0o700 }); await mkdir(env.TMPDIR, { mode: 0o700 });
     const git = join(gitDirectory, "git.exe"), gitInfo = await lstat(git);
