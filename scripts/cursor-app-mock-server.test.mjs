@@ -587,8 +587,9 @@ test("the first failed Shell retains its approval and exit evidence across a lat
       error: "private-error-canary", diagnostic: { path: "private-path-canary" } });
     const detail = Buffer.concat([field(1, "private-command-canary"), field(2, "private-path-canary"),
       scalar(3, index ? 1 : 127), field(5, stdout), field(6, "private-error-canary")]);
+    const policy = Buffer.concat([scalar(1, index ? 1 : 2), scalar(2, index ? 1 : 0), field(3, "private-policy-path-canary")]);
     stream.send(field(2, Buffer.concat([scalar(1, run.pendingTool.id), field(15, run.pendingTool.toolCallId),
-      field(2, field(2, detail))])));
+      field(2, Buffer.concat([field(2, detail), field(101, policy)]))])));
     await stream.done;
     assert.equal(server.firstShellFailure, server.runs[0]);
     assert.equal(server.firstShellFailure.shellApproval.clicked, true);
@@ -597,6 +598,7 @@ test("the first failed Shell retains its approval and exit evidence across a lat
     assert.equal(diagnostic.output.cliJson, "valid");
     assert.equal(diagnostic.output.errorCode, "MEMORY_SCOPE_UNAVAILABLE");
     assert.equal(diagnostic.output.stage, "scope");
+    assert.deepEqual(diagnostic.sandboxPolicy, { type: "workspace_readwrite", networkAccess: false });
     assert.equal(JSON.stringify(diagnostic).includes("canary"), false);
     assert.equal(run.completed, false);
     assert.equal(run.kvWriteCount, 0);

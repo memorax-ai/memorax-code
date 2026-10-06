@@ -1316,7 +1316,9 @@ booleans and bounded process outcomes from the CLI's JSON output; raw command
 output, state, paths and error messages are not published. Failed Shell tools
 publish only their fixed result category, whether the matching Run click
 completed, and an exit code when supplied by that result. Bounded failure output
-is reduced to fixed CLI error enums and stderr marker booleans. Windows
+is reduced to fixed CLI error enums and stderr marker booleans. Returned Shell
+sandbox policy retains only its fixed type and optional network-access boolean;
+missing network access is not interpreted as denial, and policy paths are omitted. Windows
 installation uses a private installer log, reading at most its last 1 MiB;
 failure reports retain only its read status (including truncated-tail reads),
 recognized error category and numeric error code. Neither diagnostic

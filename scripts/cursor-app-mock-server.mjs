@@ -289,6 +289,7 @@ export async function startCursorAgentMock({ answer, answers, toolSteps, timeout
           if (message.error) run.execRejection = { id: message.id, kind: message.kind,
             toolCallId: pendingExec.execution.toolCallId, rejectionKind: message.rejectionKind,
             ...(message.exitCode === undefined ? {} : { exitCode: message.exitCode }),
+            ...(message.sandboxPolicy === undefined ? {} : { sandboxPolicy: message.sandboxPolicy }),
             ...(message.output === undefined ? {} : { output: message.output }) };
           if (cancellation) {
             const execution = pendingExec.execution;

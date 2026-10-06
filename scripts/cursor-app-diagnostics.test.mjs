@@ -108,6 +108,22 @@ test("Shell report projection permits only fixed result cases, booleans and actu
     { rejectionKind: "other", approvalClicked: false });
 });
 
+test("Shell policy report projection retains only fixed type and optional network access", () => {
+  for (const type of ["unspecified", "insecure_none", "workspace_readwrite", "workspace_readonly", "absent", "invalid", "other"]) {
+    for (const networkAccess of [true, false, "absent", "invalid", "other"]) {
+      const result = projectCursorAppShellDiagnostics({ rejectionKind: 2,
+        sandboxPolicy: { type, networkAccess, paths: [privateCanary], networkPolicy: privateCanary } });
+      assert.deepEqual(result.sandboxPolicy, { type, networkAccess });
+      assert.deepEqual(projectCursorAppShellDiagnostics(result), result);
+      assert.equal(JSON.stringify(result).includes(privateCanary), false);
+    }
+  }
+  const result = projectCursorAppShellDiagnostics({ rejectionKind: 2,
+    sandboxPolicy: { type: privateCanary, networkAccess: privateCanary } });
+  assert.deepEqual(result.sandboxPolicy, { type: "other", networkAccess: "other" });
+  assert.equal(JSON.stringify(result).includes(privateCanary), false);
+});
+
 test("launch diagnostics expose only bounded process outcomes and fixed stderr markers", () => {
   const result = collectCursorAppLaunchDiagnostics({ spawned: true, debugEndpointSeen: false, exitCode: null,
     signal: "SIGABRT", log: `${privateCanary}: sandbox_init: Operation not permitted\nNetwork service crashed` });

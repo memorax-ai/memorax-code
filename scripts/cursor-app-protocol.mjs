@@ -143,6 +143,15 @@ function diagnosticText(source, number) {
     return { status: "present", text: utf8.decode(value) };
   } catch { return { status: "invalid" }; }
 }
+function diagnosticSandboxPolicy(source) {
+  if (!source.has(101)) return undefined;
+  try {
+    const policy = fields(single(source, 101, 2));
+    const type = ["unspecified", "insecure_none", "workspace_readwrite", "workspace_readonly"][unsigned(policy, 1)] ?? "other";
+    const networkAccess = policy.has(2) ? Boolean(unsigned(policy, 2, 1)) : "absent";
+    return { type, networkAccess };
+  } catch { return { type: "invalid", networkAccess: "invalid" }; }
+}
 function repeated(source, number, decode) {
   return (source.get(number) ?? []).map(({ wire, value }) => {
     if (wire !== 2) fail("CURSOR_APP_PROTO_FIELD");
@@ -206,7 +215,9 @@ function execClient(body) {
     fail("CURSOR_APP_CLIENT_MESSAGE_UNSUPPORTED");
   }
   const success = fields(single(result, selected[0], 2));
-  const identity = { type: "execResult", id, kind, ...(exec.has(15) ? { execId: text(exec, 15) } : {}) };
+  const sandboxPolicy = kind === "shell" ? diagnosticSandboxPolicy(result) : undefined;
+  const identity = { type: "execResult", id, kind, ...(exec.has(15) ? { execId: text(exec, 15) } : {}),
+    ...(sandboxPolicy === undefined ? {} : { sandboxPolicy }) };
   if (kind === "shell" && selected[0] === 4) {
     if ([...success.keys()].some((number) => ![1, 2, 3, 4].includes(number))) fail("CURSOR_APP_CLIENT_MESSAGE_UNSUPPORTED");
     optionalText(success, 3);

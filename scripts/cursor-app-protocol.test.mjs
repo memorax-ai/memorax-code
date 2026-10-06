@@ -423,6 +423,34 @@ test("ShellFailure output is projected before returning the decoded message and 
   }
 });
 
+test("Shell policy diagnostics distinguish absent network access and never retain policy paths", () => {
+  const decode = (policy) => decodeAgentClientMessage(field(2, message(scalar(1, 9),
+    field(2, message(field(2, scalar(3, 1)), policy)))));
+  assert.equal(decode(Buffer.alloc(0)).sandboxPolicy, undefined);
+  for (const [value, type] of [[0, "unspecified"], [1, "insecure_none"], [2, "workspace_readwrite"],
+    [3, "workspace_readonly"], [99, "other"]]) {
+    for (const networkAccess of [undefined, false, true]) {
+      const policy = message(scalar(1, value), ...(networkAccess === undefined ? [] : [scalar(2, Number(networkAccess))]),
+        field(3, "private-path-token-canary"), field(4, "private-domain-canary"));
+      const result = decode(field(101, policy));
+      assert.deepEqual(result.sandboxPolicy, { type, networkAccess: networkAccess ?? "absent" });
+      assert.equal(result.error, "CURSOR_APP_EXEC_REJECTED");
+      assert.equal(result.exitCode, 1);
+      assert.equal(JSON.stringify(result).includes("canary"), false);
+    }
+  }
+  assert.deepEqual(decode(field(101, Buffer.alloc(0))).sandboxPolicy, { type: "unspecified", networkAccess: "absent" });
+  for (const invalid of [scalar(101, 1), field(101, Buffer.from([0x80])),
+    message(field(101, Buffer.alloc(0)), field(101, Buffer.alloc(0))),
+    field(101, message(scalar(1, 2), scalar(2, 2))), field(101, field(1, "private-canary"))]) {
+    const result = decode(invalid);
+    assert.deepEqual(result.sandboxPolicy, { type: "invalid", networkAccess: "invalid" });
+    assert.equal(result.error, "CURSOR_APP_EXEC_REJECTED");
+    assert.equal(result.exitCode, 1);
+    assert.equal(JSON.stringify(result).includes("canary"), false);
+  }
+});
+
 test("Exec decoding rejects failure, ambiguous, binary or truncated tool results safely", () => {
   for (const [kind, number, failures] of [["read", 7, [2, 3, 4, 5, 6]], ["shell", 2, [2, 3, 5, 7]]]) {
     for (const failure of failures) {

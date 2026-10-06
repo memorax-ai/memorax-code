@@ -118,6 +118,10 @@ export function projectCursorAppShellDiagnostics(value) {
     ...(value?.rejectionKind === 2 && Number.isInteger(value.exitCode)
       && value.exitCode >= -0x8000_0000 && value.exitCode <= 0x7fff_ffff ? { exitCode: value.exitCode } : {}),
     ...(value?.rejectionKind === 2 && value.output !== undefined ? { output: projectShellOutputDiagnostics(value.output) } : {}),
+    ...(value?.sandboxPolicy === undefined ? {} : { sandboxPolicy: {
+      type: enumValue(value.sandboxPolicy?.type, ["unspecified", "insecure_none", "workspace_readwrite", "workspace_readonly", "absent", "invalid", "other"]),
+      networkAccess: enumValue(value.sandboxPolicy?.networkAccess, [true, false, "absent", "invalid", "other"]),
+    } }),
   };
 }
 
@@ -127,7 +131,7 @@ export function collectCursorAppShellDiagnostics(run) {
     || typeof result.toolCallId !== "string" || !uuid.test(result.toolCallId)
     || approval?.toolCallId !== result.toolCallId || typeof approval.clicked !== "boolean") return undefined;
   return projectCursorAppShellDiagnostics({ rejectionKind: result.rejectionKind,
-    approvalClicked: approval.clicked, exitCode: result.exitCode, output: result.output });
+    approvalClicked: approval.clicked, exitCode: result.exitCode, output: result.output, sandboxPolicy: result.sandboxPolicy });
 }
 
 const stopBackendEnums = {
