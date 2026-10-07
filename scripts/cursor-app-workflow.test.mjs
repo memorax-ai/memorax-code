@@ -301,9 +301,10 @@ test("Cursor App summary fails every non-success dependency and states the limit
       const text = await readFile(summary, "utf8");
       assert.ok(text.includes(`Package: **${packageResult}**`) && text.includes(`Cursor App Linux/macOS/Windows matrix: **${cursorResult}**`));
       assert.match(text, /Ubuntu 24\.04, macOS 15 and Windows 2025, baseline\/latest on Node 24 and Linux baseline on Node 22/);
-      assert.match(text, /Six completed App runs per cell exercise repeated-prompt follow-up, independent sessions, App restart\/resume and explicit Skill Search\/Add through native Read\/Shell tools/);
-      assert.match(text, /A seventh run cancels a pending Shell through native Stop, requiring interrupted Hook state, no command execution and no additional Memory request/);
-      assert.match(text, /Scripted tool requests do not validate model-driven Skill selection/);
+      assert.match(text, /Eleven native App runs per cell cover repeated-prompt follow-up, cross-workspace isolation, App restart\/resume, explicit Skill Search\/Add, Shell denial, pending-Shell interruption and same-session recovery/);
+      assert.match(text, /native Task: the managed child inherits model selection, claims the job and finishes without a bundle, requiring artifact_validation_failed, no published bundle, exited lease guard and no child automatic Add/);
+      assert.match(text, /Nine completed foreground turns produce exactly nine automatic Adds; the two explicit Skill operations bring the total Memory requests to eleven/);
+      assert.match(text, /Scripted tool requests do not validate model-driven Skill selection or successful Repo Memory generation/);
       assert.match(text, /macOS and Windows use signature-verified Apps, isolated homes and local fixtures on fresh GitHub-hosted runners, without an additional Seatbelt or WFP prerequisite/);
       assert.match(text, /Chromium sandboxing remains enabled/);
       assert.match(text, /This matrix does not validate real login, OS credential-store isolation, hosted models or full functional coverage/);

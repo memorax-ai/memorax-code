@@ -4,7 +4,7 @@ import test from "node:test";
 import { gzipSync } from "node:zlib";
 import {
   completeToolExecution, createCompletedTurn, createConnectDecoder, createGetBlobMessage, createToolExecution,
-  decodeAgentClientMessage, decodeSkillsPart, encodeConnectEnvelope,
+  decodeAgentClientMessage, decodeSkillsPart, decodeSubagentsPart, encodeConnectEnvelope,
 } from "./cursor-app-protocol.mjs";
 
 const requestId = "11111111-1111-4111-8111-111111111111";
@@ -512,6 +512,129 @@ test("Exec control messages bind one ID and redact exceptions", () => {
   for (const value of [field(5, message(field(1, scalar(1, 9)), field(3, scalar(1, 9)))),
     field(5, field(1, scalar(1, 0))), field(5, field(4, scalar(1, 9)))]) {
     assert.throws(() => decodeAgentClientMessage(value), /CURSOR_APP_(PROTO|EXEC|CLIENT)/);
+  }
+});
+
+test("Run reads the native requested model or legacy model without accepting conflicting identities", () => {
+  for (const number of [3, 9]) assert.equal(run({ extraRun: field(number, field(1, "default")) }).modelId, "default");
+  assert.equal(run({ extraRun: message(field(3, field(1, "default")), field(9, field(1, "default"))) }).modelId, "default");
+  assert.equal(Object.hasOwn(run(), "modelId"), false);
+  for (const extraRun of [message(field(3, field(1, "default")), field(9, field(1, "other"))),
+    field(9, scalar(1, 1)), message(field(9, field(1, "default")), field(9, field(1, "default")))]) {
+    assert.throws(() => run({ extraRun }), /CURSOR_APP_PROTO_FIELD/);
+  }
+});
+
+test("Task Exec uses the native managed definition, inherited model and exact background delegation", () => {
+  const managedBytes = message(field(1, "/synthetic/.cursor/agents/memorax-repo-memory.md"),
+    field(2, "memorax-repo-memory"), field(3, "Managed worker"), field(5, "inherit"),
+    field(6, "Exact installed worker instructions"), scalar(8, 1));
+  const input = run({ action: field(1, message(field(1, fixture().userBytes),
+    field(2, message(field(22, managedBytes), scalar(42, 1))))),
+    extraRun: field(9, field(1, "synthetic-model")) });
+  assert.equal(input.modelId, "synthetic-model");
+  assert.equal(input.requestContext.customSubagents[0].prompt, "Exact installed worker instructions");
+  const step = { kind: "task", subagentType: "memorax-repo-memory", model: "inherit", background: true,
+    description: "Run the delegated job", prompt: "Exact native delegation\nclaim synthetic ticket" };
+  const execution = createToolExecution(input, step, { id: 7, toolCallId: userMessageId });
+  const args = message(field(1, userMessageId), field(2, step.subagentType), field(3, input.modelId),
+    field(4, step.prompt), scalar(7, 1), field(9, conversationId), scalar(14, 1), field(16, conversationId));
+  assert.deepEqual(execution.execMessage, field(2, message(scalar(1, 7), field(15, userMessageId), field(28, args))));
+  assert.deepEqual(execution.toolArgsBytes, message(field(1, step.description), field(2, step.prompt),
+    field(3, field(3, managedBytes)), field(4, "inherit"), scalar(8, 1)));
+  const childId = "44444444-4444-4444-8444-444444444444";
+  const decoded = decodeAgentClientMessage(field(2, message(scalar(1, 7), field(15, userMessageId),
+    field(28, field(1, message(field(1, childId), scalar(4, 1), field(5, "/private/native-transcript")))))));
+  const completed = completeToolExecution(execution, decoded);
+  assert.deepEqual(completed.result, { kind: "task", agentId: childId, isBackground: true, backgroundReason: 1 });
+  assert.deepEqual(completed.stepBytes, field(2, message(field(19, message(field(1, execution.toolArgsBytes),
+    field(2, field(1, message(field(2, childId), scalar(3, 1), scalar(6, 1), field(7, "/private/native-transcript")))))), field(57, userMessageId))));
+  for (const changed of [{ model: "other" }, { background: false }, { subagentType: "generic" }]) {
+    assert.throws(() => createToolExecution(input, { ...step, ...changed }, { id: 7, toolCallId: userMessageId }), /CURSOR_APP_EXEC_TASK_OPTIONS/);
+  }
+  for (const modelId of [undefined, "", "private-model-canary\0"]) {
+    assert.throws(() => createToolExecution({ ...input, modelId }, step, { id: 7, toolCallId: userMessageId }),
+      (error) => error.code === "CURSOR_APP_EXEC_TASK_MODEL" && error.message === error.code);
+  }
+  for (const changed of [{ requestContext: undefined },
+    { requestContext: { ...input.requestContext, customSubagents: [...input.requestContext.customSubagents, ...input.requestContext.customSubagents] } }]) {
+    assert.throws(() => createToolExecution({ ...input, ...changed }, step, { id: 7, toolCallId: userMessageId }), /CURSOR_APP_EXEC_TASK_DEFINITION/);
+  }
+  assert.throws(() => completeToolExecution(execution, { ...decoded, backgroundReason: 0 }), /CURSOR_APP_EXEC_REJECTED/);
+  assert.throws(() => completeToolExecution(execution, { ...decoded, execId: "" }), /CURSOR_APP_EXEC_IDENTITY/);
+  const child = run({ extraRun: message(field(3, field(1, "synthetic-model")), field(11, step.subagentType)) });
+  assert.equal(child.subagentTypeName, step.subagentType);
+});
+
+test("native subagent catalogs preserve actual definitions and validate their referenced blob contract", () => {
+  const managed = message(field(1, "/synthetic/agent.md"), field(2, "memorax-repo-memory"), field(5, "inherit"),
+    field(6, "Exact instructions"), scalar(8, 1));
+  const list = decodeSubagentsPart(field(1, managed));
+  assert.deepEqual(list, [{ fullPath: "/synthetic/agent.md", name: "memorax-repo-memory", description: "",
+    model: "inherit", prompt: "Exact instructions", isBackground: true, bytes: managed }]);
+  assert.deepEqual(decodeSubagentsPart(Buffer.alloc(0)), []);
+  const decode = (parts) => run({ action: message(field(1, field(1, fixture().userBytes)), field(17, parts)) });
+  const blobId = hash(field(1, managed));
+  assert.deepEqual(decode(field(5, blobId)).requestContextParts, { subagentsBlobId: blobId, subagentsByteLength: 0 });
+  assert.equal(decode(message(field(5, blobId), scalar(6, 256))).requestContextParts.subagentsByteLength, 256);
+  for (const invalid of [field(5, Buffer.alloc(31)), scalar(6, 1),
+    message(field(5, blobId), scalar(6, 16 * 1024 * 1024 + 1))]) {
+    assert.throws(() => decode(invalid), /CURSOR_APP_PROTO_(REFERENCE|FIELD)/);
+  }
+  for (const invalid of [field(2, managed), field(1, message(managed, scalar(8, 2))),
+    field(1, message(managed, field(2, "duplicate"))), field(1, field(1, "incomplete"))]) {
+    assert.throws(() => decodeSubagentsPart(invalid), /CURSOR_APP_PROTO_FIELD/);
+  }
+  for (const ready of [undefined, 0, 1]) {
+    const context = message(field(22, managed), ...(ready === undefined ? [] : [scalar(42, ready)]));
+    const decoded = run({ action: field(1, message(field(1, fixture().userBytes), field(2, context))) });
+    assert.deepEqual(decoded.requestContext.customSubagents, list);
+    assert.equal(decoded.requestContext.customSubagentsInfoComplete, ready === undefined ? undefined : Boolean(ready));
+  }
+});
+
+test("background completion decoding contains only native identities and fixed numeric categories", () => {
+  const childId = "44444444-4444-4444-8444-444444444444";
+  const detail = message(field(1, childId), scalar(2, 2), scalar(3, 1), field(4, "private-title-canary"),
+    field(5, "private-body-canary"), field(6, "/private/transcript-canary"), scalar(8, 1), field(9, childId), field(10, userMessageId));
+  const decoded = decodeAgentClientMessage(fixture({ action: field(12, field(1, detail)),
+    extraRun: field(3, field(1, "synthetic-model")) }).bytes, { requestId });
+  assert.deepEqual(decoded, { type: "taskNotification", requestId, conversationId, conversationStateBytes: Buffer.alloc(0),
+    turnRefs: [], modelId: "synthetic-model", notifications: [{ taskId: childId, kind: 2, status: 1, reason: 1,
+      subagentId: childId, toolCallId: userMessageId }] });
+  assert.equal(JSON.stringify(decoded).includes("private"), false);
+  for (const action of [field(12, Buffer.alloc(0)), field(12, message(field(1, detail), field(1, detail))),
+    message(field(12, field(1, detail)), field(1, field(1, fixture().userBytes))),
+    field(12, field(1, message(detail, field(14, "private-unknown")))),
+    field(12, field(1, message(detail, field(10, requestId))))]) {
+    assert.throws(() => run({ action }), /CURSOR_APP_(RUN_UNSUPPORTED|PROTO_FIELD)/);
+  }
+});
+
+test("an expected Shell exit one preserves the exact native failure and never accepts another failure", () => {
+  const step = { kind: "shell", command: "node helper finish", workingDirectory: "/synthetic/workspace", timeoutMs: 1000 };
+  const options = { id: 9, toolCallId: userMessageId };
+  const ordinary = createToolExecution(run(), step, options);
+  const expected = createToolExecution(run(), { ...step, expectedExitCode: 1 }, options);
+  assert.deepEqual(expected.execMessage, ordinary.execMessage);
+  const stdout = '{"ok":false,"status":"failed","failureReason":"artifact_validation_failed"}\n';
+  const result = (extra = Buffer.alloc(0), code = 1, variant = 2, command = step.command) => {
+    const native = field(variant, message(field(1, command), field(2, step.workingDirectory), scalar(3, code), field(5, stdout), extra));
+    return { native, decoded: decodeAgentClientMessage(field(2, message(scalar(1, 9), field(15, userMessageId), field(2, native)))) };
+  };
+  const { decoded, native } = result();
+  const completed = completeToolExecution(expected, decoded);
+  assert.deepEqual(completed.result, { kind: "shell", command: step.command, workingDirectory: step.workingDirectory,
+    stdout, stderr: "", exitCode: 1 });
+  assert.deepEqual(completed.stepBytes, field(2, message(field(1, message(field(1, expected.toolArgsBytes), field(2, native))), field(57, userMessageId))));
+  assert.throws(() => completeToolExecution(ordinary, decoded), /CURSOR_APP_EXEC_REJECTED/);
+  for (const rejected of [result(Buffer.alloc(0), 2), result(Buffer.alloc(0), 0, 1),
+    result(field(4, "SIGTERM")), result(scalar(11, 1)), result(scalar(10, 1)), result(scalar(15, 1))]) {
+    assert.throws(() => completeToolExecution(expected, rejected.decoded), /CURSOR_APP_EXEC_REJECTED/);
+  }
+  assert.throws(() => completeToolExecution(expected, result(Buffer.alloc(0), 1, 2, "other").decoded), /CURSOR_APP_EXEC_IDENTITY/);
+  for (const extra of [{ expectedExitCode: 2 }, { expectedExitCode: "1" }, { expectedExitCode: 1, expectRejection: true }]) {
+    assert.throws(() => createToolExecution(run(), { ...step, ...extra }, options), /CURSOR_APP_EXEC_OPTIONS/);
   }
 });
 

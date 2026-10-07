@@ -176,9 +176,22 @@ export function decodeSkillsPart(value) {
   if (part.has(2)) fields(single(part, 2, 2));
   return repeated(part, 1, agentSkill);
 }
+function customSubagent(value) {
+  const source = fields(value);
+  return { fullPath: text(source, 1), name: text(source, 2), description: optionalText(source, 3),
+    model: optionalText(source, 5), prompt: optionalText(source, 6), isBackground: boolean(source, 8),
+    bytes: Buffer.from(value) };
+}
+export function decodeSubagentsPart(value) {
+  const part = fields(value);
+  if ([...part.keys()].some((number) => number !== 1)) fail("CURSOR_APP_PROTO_FIELD");
+  return repeated(part, 1, customSubagent);
+}
 function requestContext(value) {
   const context = fields(value);
   return { hooksAdditionalContext: optionalText(context, 25),
+    ...(context.has(22) || context.has(42) ? { customSubagents: repeated(context, 22, customSubagent) } : {}),
+    ...(context.has(42) ? { customSubagentsInfoComplete: boolean(context, 42) } : {}),
     ...(context.has(43) ? { agentSkillsInfoComplete: boolean(context, 43) } : {}),
     agentSkills: repeated(context, 29, agentSkill) };
 }
@@ -225,15 +238,15 @@ function userMessage(data) {
 function execClient(body) {
   const exec = fields(body), id = unsigned(exec, 1, 0xffff_ffff, true);
   if (!id) fail("CURSOR_APP_EXEC_IDENTITY");
-  if ([...exec.keys()].some((number) => ![1, 2, 7, 10, 15, 39, 45].includes(number))) fail("CURSOR_APP_CLIENT_MESSAGE_UNSUPPORTED");
+  if ([...exec.keys()].some((number) => ![1, 2, 7, 10, 15, 28, 39, 45].includes(number))) fail("CURSOR_APP_CLIENT_MESSAGE_UNSUPPORTED");
   unsigned(exec, 39, 0x7fff_ffff);
   hookContexts(exec, 45);
-  const messages = [2, 7, 10].filter((number) => exec.has(number));
+  const messages = [2, 7, 10, 28].filter((number) => exec.has(number));
   if (messages.length !== 1) fail("CURSOR_APP_PROTO_FIELD");
-  const kind = messages[0] === 7 ? "read" : messages[0] === 10 ? "requestContext" : "shell";
+  const kind = messages[0] === 7 ? "read" : messages[0] === 10 ? "requestContext" : messages[0] === 28 ? "task" : "shell";
   const resultBytes = Buffer.from(single(exec, messages[0], 2));
   const result = fields(resultBytes), variants = kind === "read" ? [1, 2, 3, 4, 5, 6]
-    : kind === "requestContext" ? [1, 2, 3] : [1, 2, 3, 4, 5, 7];
+    : kind === "requestContext" ? [1, 2, 3] : kind === "task" ? [1, 2] : [1, 2, 3, 4, 5, 7];
   const selected = variants.filter((number) => result.has(number));
   if (selected.length !== 1) fail("CURSOR_APP_PROTO_FIELD");
   if ([...result.keys()].some((number) => ![...variants, ...(kind === "shell" ? [101, 102, 103] : [])].includes(number))) {
@@ -253,11 +266,22 @@ function execClient(body) {
   if (selected[0] !== 1) {
     // agent.v1.ShellFailure field 3 is int32, not a code on the other result variants.
     const exitCode = kind === "shell" && selected[0] === 2 ? diagnosticInt32(success, 3) : undefined;
-    return { ...identity, error: "CURSOR_APP_EXEC_REJECTED", rejectionKind: selected[0],
+    const rejected = { ...identity, error: "CURSOR_APP_EXEC_REJECTED", rejectionKind: selected[0],
       ...(exitCode === undefined ? {} : { exitCode }),
       ...(kind === "shell" && selected[0] === 2 ? { output: collectCursorAppShellOutputDiagnostics({
         stdout: diagnosticText(success, 5), stderr: diagnosticText(success, 6),
       }) } : {}) };
+    // Only an explicitly expected nonzero Shell step may consume these private native bytes.
+    if (kind === "shell" && selected[0] === 2) Object.defineProperty(rejected, "resultBytes", { value: resultBytes });
+    return rejected;
+  }
+  if (kind === "task") {
+    if ([...success.keys()].some((number) => ![1, 2, 3, 4, 5].includes(number))) fail("CURSOR_APP_CLIENT_MESSAGE_UNSUPPORTED");
+    const agentId = text(success, 1);
+    if (!UUID.test(agentId)) fail("CURSOR_APP_EXEC_IDENTITY");
+    return { ...identity, agentId, backgroundReason: unsigned(success, 4, 3),
+      finalMessage: optionalText(success, 2), toolCallCount: unsigned(success, 3, 0x7fff_ffff),
+      ...(success.has(5) ? { transcriptPath: text(success, 5) } : {}) };
   }
   if (kind === "requestContext") {
     const requestContextBytes = Buffer.from(single(success, 1, 2));
@@ -372,6 +396,24 @@ function decodeClientMessage(message, { requestId, allowCancellation = false } =
   const run = fields(body), conversationId = identity(text(run, 5));
   const conversationStateBytes = Buffer.from(single(run, 1, 2));
   const turnRefs = references(fields(conversationStateBytes)), action = fields(single(run, 2, 2));
+  const models = [3, 9].filter((number) => run.has(number)).map((number) => optionalText(fields(single(run, number, 2)), 1));
+  if (models.length === 2 && models[0] !== models[1]) fail("CURSOR_APP_PROTO_FIELD");
+  const model = models.length ? { modelId: models[0] } : {};
+  if (action.has(12)) {
+    if ([...action.keys()].some((number) => ![11, 12, 15, 17].includes(number))) fail("CURSOR_APP_RUN_UNSUPPORTED");
+    const completed = fields(single(action, 12, 2));
+    if ([...completed.keys()].some((number) => number !== 1)) fail("CURSOR_APP_RUN_UNSUPPORTED");
+    const notifications = repeated(completed, 1, (value) => {
+      const item = fields(value);
+      if ([...item.keys()].some((number) => number < 1 || number > 13)) fail("CURSOR_APP_RUN_UNSUPPORTED");
+      for (const number of [4, 5, 6, 7]) optionalText(item, number);
+      unsigned(item, 11, 1); unsigned(item, 12, Number.MAX_SAFE_INTEGER); boolean(item, 13);
+      return { taskId: identity(text(item, 1)), kind: unsigned(item, 2, 2), status: unsigned(item, 3, 3),
+        reason: unsigned(item, 8, 5), subagentId: identity(text(item, 9)), toolCallId: identity(text(item, 10)) };
+    });
+    if (notifications.length !== 1) fail("CURSOR_APP_RUN_UNSUPPORTED");
+    return { type: "taskNotification", requestId, conversationId, conversationStateBytes, turnRefs, ...model, notifications };
+  }
   if (!action.has(1) || [...action.keys()].some((number) => ![1, 11, 15, 17].includes(number))) fail("CURSOR_APP_RUN_UNSUPPORTED");
   const userAction = fields(single(action, 1, 2));
   if ([...userAction.keys()].some((number) => ![1, 2, 3, 4].includes(number))) fail("CURSOR_APP_RUN_UNSUPPORTED");
@@ -381,11 +423,17 @@ function decodeClientMessage(message, { requestId, allowCancellation = false } =
   const skillsBlobId = parts && single(parts, 3, 2, false), dynamic = parts && single(parts, 9, 2, false);
   if (skillsBlobId === undefined ? parts?.has(4) : skillsBlobId.length !== 32) fail("CURSOR_APP_PROTO_REFERENCE");
   const skillsByteLength = skillsBlobId === undefined ? undefined : unsigned(parts, 4, MAX_FRAME_BYTES);
-  return { type: "run", requestId, conversationId, ...userMessage(userMessageBytes), userMessageBytes, conversationStateBytes, turnRefs,
+  const subagentsBlobId = parts && single(parts, 5, 2, false);
+  if (subagentsBlobId === undefined ? parts?.has(6) : subagentsBlobId.length !== 32) fail("CURSOR_APP_PROTO_REFERENCE");
+  const subagentsByteLength = subagentsBlobId === undefined ? undefined : unsigned(parts, 6, MAX_FRAME_BYTES);
+  return { type: "run", requestId, conversationId, ...model,
+    ...(run.has(11) ? { subagentTypeName: text(run, 11) } : {}),
+    ...userMessage(userMessageBytes), userMessageBytes, conversationStateBytes, turnRefs,
     ...(userAction.has(4) ? { prependUserMessages: repeated(userAction, 4, userMessage) } : {}),
     ...(context === undefined ? {} : { requestContext: requestContext(context) }),
     ...(parts === undefined ? {} : { requestContextParts: {
       ...(skillsBlobId === undefined ? {} : { skillsBlobId: Buffer.from(skillsBlobId), skillsByteLength }),
+      ...(subagentsBlobId === undefined ? {} : { subagentsBlobId: Buffer.from(subagentsBlobId), subagentsByteLength }),
       ...(dynamic === undefined ? {} : { dynamicContext: requestContext(dynamic) }),
     } }) };
 }
@@ -416,9 +464,10 @@ export function createExecAbortMessage(id) {
   if (!Number.isInteger(id) || id < 1 || id > 0xffff_ffff) fail("CURSOR_APP_EXEC_IDENTITY");
   return field(5, field(1, scalar(1, id)));
 }
+export function createTurnEndedMessage() { return field(1, field(14, Buffer.alloc(0))); }
 
 function toolCall(execution, resultBytes) {
-  return Buffer.concat([field(execution.kind === "read" ? 8 : 1, Buffer.concat([field(1, execution.toolArgsBytes),
+  return Buffer.concat([field(execution.kind === "read" ? 8 : execution.kind === "task" ? 19 : 1, Buffer.concat([field(1, execution.toolArgsBytes),
     ...(resultBytes === undefined ? [] : [field(2, resultBytes)])])), field(57, execution.toolCallId)]);
 }
 function toolUpdate(execution, toolBytes, completed) {
@@ -442,7 +491,9 @@ export function createToolExecution(run, step, { id, toolCallId }) {
     && Number.isInteger(step.timeoutMs) && step.timeoutMs > 0 && step.timeoutMs <= 60_000
     && (step.networkAccess === undefined || step.networkAccess === true)
     && (step.expectRejection === undefined || step.expectRejection === true)
-    && Object.keys(step).every((key) => ["kind", "command", "workingDirectory", "timeoutMs", "networkAccess", "expectRejection"].includes(key))) {
+    && (step.expectedExitCode === undefined || [0, 1].includes(step.expectedExitCode))
+    && !(step.expectRejection && step.expectedExitCode !== undefined)
+    && Object.keys(step).every((key) => ["kind", "command", "workingDirectory", "timeoutMs", "networkAccess", "expectRejection", "expectedExitCode"].includes(key))) {
     argsBytes = Buffer.concat([field(1, step.command), field(2, step.workingDirectory), scalar(3, step.timeoutMs), field(4, toolCallId),
       // No invented command parse or approval bypass: the App owns permission review.
       field(8, scalar(1, 1)),
@@ -450,10 +501,22 @@ export function createToolExecution(run, step, { id, toolCallId }) {
       scalar(13, 1), scalar(14, step.timeoutMs), scalar(17, 1),
       field(21, identity(run.conversationId)), field(23, identity(run.requestId))]);
     toolArgsBytes = argsBytes;
+  } else if (step?.kind === "task") {
+    if (!validText(run.modelId)) fail("CURSOR_APP_EXEC_TASK_MODEL");
+    if (step.subagentType !== "memorax-repo-memory" || step.model !== "inherit" || step.background !== true
+      || !validText(step.description) || !validText(step.prompt)
+      || !Object.keys(step).every((key) => ["kind", "subagentType", "model", "background", "description", "prompt"].includes(key))) fail("CURSOR_APP_EXEC_TASK_OPTIONS");
+    const matching = (run.customSubagents ?? run.requestContext?.customSubagents ?? []).filter((entry) => entry.name === step.subagentType);
+    if (matching.length !== 1 || matching[0].model !== "inherit" || matching[0].isBackground !== true) fail("CURSOR_APP_EXEC_TASK_DEFINITION");
+    const managed = customSubagent(matching[0].bytes);
+    if (managed.name !== step.subagentType || managed.model !== "inherit" || !managed.isBackground || !validText(managed.prompt)) fail("CURSOR_APP_EXEC_TASK_DEFINITION");
+    toolArgsBytes = Buffer.concat([field(1, step.description), field(2, step.prompt), field(3, field(3, managed.bytes)), field(4, "inherit"), scalar(8, 1)]);
+    argsBytes = Buffer.concat([field(1, toolCallId), field(2, step.subagentType), field(3, run.modelId), field(4, step.prompt),
+      scalar(7, 1), field(9, identity(run.conversationId)), scalar(14, 1), field(16, identity(run.conversationId))]);
   } else fail("CURSOR_APP_EXEC_OPTIONS");
   const execution = { ...step, id, toolCallId, toolArgsBytes };
   return { ...execution, startedMessage: toolUpdate(execution, toolCall(execution), false),
-    execMessage: field(2, Buffer.concat([scalar(1, id), field(15, toolCallId), field(step.kind === "read" ? 7 : 2, argsBytes)])) };
+    execMessage: field(2, Buffer.concat([scalar(1, id), field(15, toolCallId), field(step.kind === "read" ? 7 : step.kind === "task" ? 28 : 2, argsBytes)])) };
 }
 
 export function completeToolExecution(execution, message) {
@@ -461,13 +524,27 @@ export function completeToolExecution(execution, message) {
     || message.execId !== undefined && message.execId !== execution.toolCallId) fail("CURSOR_APP_EXEC_IDENTITY");
   const rejected = execution.kind === "shell" && execution.expectRejection === true
     && message.error === "CURSOR_APP_EXEC_REJECTED" && message.rejectionKind === 4;
-  if ((message.error || execution.expectRejection) && !rejected) fail("CURSOR_APP_EXEC_REJECTED");
+  const expectedFailure = execution.kind === "shell" && execution.expectedExitCode === 1
+    && message.error === "CURSOR_APP_EXEC_REJECTED" && message.rejectionKind === 2 && message.exitCode === 1;
+  if ((message.error || execution.expectRejection || execution.expectedExitCode === 1) && !rejected && !expectedFailure) fail("CURSOR_APP_EXEC_REJECTED");
+  if (expectedFailure) {
+    const result = fields(message.resultBytes), failure = fields(single(result, 2, 2));
+    if (optionalText(failure, 4) || unsigned(failure, 10) || boolean(failure, 11) || unsigned(failure, 15)
+      || boolean(result, 102) || diagnosticInt32(failure, 3) !== 1) fail("CURSOR_APP_EXEC_REJECTED");
+    message = { ...message, command: text(failure, 1), workingDirectory: text(failure, 2),
+      stdout: optionalText(failure, 5), stderr: optionalText(failure, 6), resultBytes: message.resultBytes };
+  }
   if (execution.kind === "requestContext") return { result: message.requestContext, requestContextBytes: message.requestContextBytes };
   let result, resultBytes;
   if (execution.kind === "read") {
     if (message.path !== execution.path) fail("CURSOR_APP_EXEC_IDENTITY");
     result = { kind: "read", path: message.path, content: message.content, totalLines: message.totalLines, fileSize: message.fileSize };
     resultBytes = field(1, Buffer.concat([field(1, message.content), scalar(4, message.totalLines), scalar(5, message.fileSize), field(7, message.path)]));
+  } else if (execution.kind === "task") {
+    if (message.backgroundReason !== 1 || message.finalMessage || message.toolCallCount !== 0) fail("CURSOR_APP_EXEC_REJECTED");
+    result = { kind: "task", agentId: message.agentId, isBackground: true, backgroundReason: 1 };
+    resultBytes = field(1, Buffer.concat([field(2, message.agentId), scalar(3, 1), scalar(6, 1),
+      ...(message.transcriptPath === undefined ? [] : [field(7, message.transcriptPath)])]));
   } else {
     if (message.command !== execution.command || message.workingDirectory !== execution.workingDirectory) fail("CURSOR_APP_EXEC_IDENTITY");
     result = { kind: "shell", command: message.command, workingDirectory: message.workingDirectory,
@@ -507,6 +584,6 @@ export function createCompletedTurn(run, { answer, firstKvId = 1, toolSteps = []
     kvWrites, conversationStateBytes, turnBlobId,
     checkpointMessage: field(3, conversationStateBytes),
     textMessage: field(1, field(1, field(1, answer))),
-    turnEndedMessage: field(1, field(14, Buffer.alloc(0))),
+    turnEndedMessage: createTurnEndedMessage(),
   };
 }

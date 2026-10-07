@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
-import { assertCursorAppNativeContent, assertCursorAppWriteback, assertCursorAppWritebacks } from "./cursor-app-native-content-check.mjs";
+import { assertCursorAppNativeContent, assertCursorAppNativeSubagent, assertCursorAppWriteback, assertCursorAppWritebacks } from "./cursor-app-native-content-check.mjs";
 
 const sessionId = "11111111-1111-4111-8111-111111111111";
 const generationId = "22222222-2222-4222-8222-222222222222";
@@ -197,6 +197,95 @@ test("native oracle rejects malformed, incorrectly addressed and duplicate expec
   rejects({ ...f.input, kvWrites: [write, write] }, "CURSOR_APP_DATABASE_EXPECTED_BLOB_DUPLICATE");
 });
 
+async function subagentFixture(t, options) {
+  const f = await fixture(t, options);
+  const child = { composerId: userMessageId,
+    subagentInfo: { parentComposerId: sessionId, subagentTypeName: "memorax-repo-memory" } };
+  const parent = { ...f.composer, subagentComposerIds: [userMessageId] };
+  const writeChild = (value = child) => f.put(`composerData:${userMessageId}`, JSON.stringify(value));
+  f.writeComposer(parent);
+  writeChild();
+  return { ...f, parent, child, writeChild,
+    input: { databasePath: f.databasePath, parentSessionId: sessionId, childSessionId: userMessageId } };
+}
+
+function rejectsSubagent(input, code) {
+  assert.throws(() => assertCursorAppNativeSubagent(input), (error) => {
+    assert.equal(error.code, code);
+    assert.equal(error.message, code);
+    assert.equal(error.cause, undefined);
+    return true;
+  });
+}
+
+test("native subagent oracle requires both persisted links without modifying the database", async (t) => {
+  const f = await subagentFixture(t);
+  const before = await readFile(f.databasePath);
+  assert.deepEqual(assertCursorAppNativeSubagent(f.input), { parentLinked: true, childLinked: true });
+  assert.deepEqual(await readFile(f.databasePath), before);
+  f.put(`composerData:${userMessageId}`, Buffer.from(JSON.stringify(f.child)));
+  assert.deepEqual(assertCursorAppNativeSubagent(f.input), { parentLinked: true, childLinked: true });
+});
+
+test("native subagent oracle rejects missing and duplicate parent or child rows", async (t) => {
+  const f = await subagentFixture(t, { unique: false });
+  f.database.prepare("DELETE FROM cursorDiskKV WHERE key = ?").run(`composerData:${sessionId}`);
+  f.writeComposer(f.parent);
+  for (const [id, value] of [[sessionId, f.parent], [userMessageId, f.child]]) {
+    f.database.prepare("DELETE FROM cursorDiskKV WHERE key = ?").run(`composerData:${id}`);
+    rejectsSubagent(f.input, "CURSOR_APP_DATABASE_COMPOSER_MISSING");
+    f.put(`composerData:${id}`, JSON.stringify(value));
+    f.put(`composerData:${id}`, JSON.stringify(value));
+    rejectsSubagent(f.input, "CURSOR_APP_DATABASE_ROW_AMBIGUOUS");
+    f.database.prepare("DELETE FROM cursorDiskKV WHERE key = ?").run(`composerData:${id}`);
+    f.put(`composerData:${id}`, JSON.stringify(value));
+  }
+});
+
+test("native subagent oracle validates stored identity, parent and exact managed type", async (t) => {
+  const f = await subagentFixture(t);
+  for (const composerId of [undefined, null, sessionId, "private mismatched composer"]) {
+    f.writeChild({ ...f.child, composerId });
+    rejectsSubagent(f.input, "CURSOR_APP_DATABASE_SESSION_MISMATCH");
+  }
+  for (const subagentInfo of [undefined, null, [], {}, { ...f.child.subagentInfo, parentComposerId: generationId },
+    { ...f.child.subagentInfo, parentComposerId: userMessageId }]) {
+    f.writeChild({ ...f.child, subagentInfo });
+    rejectsSubagent(f.input, "CURSOR_APP_DATABASE_SUBAGENT_PARENT_MISMATCH");
+  }
+  for (const subagentTypeName of [undefined, null, "explore", "private managed type", "memorax-repo-memory "]) {
+    f.writeChild({ ...f.child, subagentInfo: { ...f.child.subagentInfo, subagentTypeName } });
+    rejectsSubagent(f.input, "CURSOR_APP_DATABASE_SUBAGENT_TYPE_MISMATCH");
+  }
+});
+
+test("native subagent oracle rejects absent, malformed or duplicated parent links", async (t) => {
+  const f = await subagentFixture(t);
+  for (const subagentComposerIds of [undefined, null, {}, [], [generationId], [userMessageId, userMessageId],
+    [userMessageId, null], [userMessageId, ""]]) {
+    f.writeComposer({ ...f.parent, subagentComposerIds });
+    rejectsSubagent(f.input, "CURSOR_APP_DATABASE_SUBAGENT_LINK_MISMATCH");
+  }
+});
+
+test("native subagent oracle redacts invalid records, inputs and database errors", async (t) => {
+  const f = await subagentFixture(t);
+  for (const value of [null, 7, "private not-json", "null", "[]", Buffer.from([0xc3, 0x28])]) {
+    f.put(`composerData:${userMessageId}`, value);
+    rejectsSubagent(f.input, "CURSOR_APP_DATABASE_COMPOSER_INVALID");
+  }
+  for (const field of ["parentSessionId", "childSessionId"]) {
+    for (const value of [undefined, null, "private identity"]) {
+      rejectsSubagent({ ...f.input, [field]: value }, "CURSOR_APP_DATABASE_EXPECTED_IDENTITY");
+    }
+  }
+  rejectsSubagent({ ...f.input, childSessionId: sessionId }, "CURSOR_APP_DATABASE_EXPECTED_IDENTITY");
+  rejectsSubagent({ ...f.input, databasePath: "private-relative-path" }, "CURSOR_APP_DATABASE_PATH");
+  const missing = join(f.root, "private-missing-child-db");
+  rejectsSubagent({ ...f.input, databasePath: missing }, "CURSOR_APP_DATABASE_READ_FAILED");
+  await assert.rejects(stat(missing), { code: "ENOENT" });
+});
+
 function writebackFixture({ sessionId: turnSessionId = sessionId,
   prompt = "Synthetic prompt\n\u8bb0\u5fc6-42 \u00e9",
   answer = "Synthetic answer\n\u8bb0\u5fc6-42 \ud83e\uddea", workspaceName = "synthetic-workspace" } = {}) {
@@ -306,6 +395,26 @@ test("writeback oracle rejects cross-user, cross-workspace and wrong scope-versi
   }
 });
 
+test("writeback oracle accepts Git scope only when explicitly expected and keeps scope identity exact", () => {
+  const input = { ...writebackFixture({ workspaceName: "worker-repository" }), scope: "repository-name.v1" };
+  input.requests[0].body.metadata.memorax_code_memory_scope = "repository-name.v1";
+  assert.deepEqual(assertCursorAppWriteback(input), { automaticAdd: 1 });
+  rejectsWriteback({ ...input, scope: undefined }, "CURSOR_APP_ADD_SCOPE");
+  for (const scope of [null, false, "general.v1", "private scope", {}]) {
+    rejectsWriteback({ ...input, scope }, "CURSOR_APP_ADD_EXPECTED");
+  }
+  for (const [field, value] of [["user_id", "other-user@worker-repository"],
+    ["memorax_code_base_user_id", "other-user"], ["memorax_code_workspace", "other-repository"],
+    ["memorax_code_memory_scope", "workspace-name.v1"]]) {
+    const invalid = structuredClone(input), body = invalid.requests[0].body;
+    (field === "user_id" ? body : body.metadata)[field] = value;
+    rejectsWriteback(invalid, "CURSOR_APP_ADD_SCOPE");
+  }
+  const invalid = structuredClone(input);
+  invalid.requests[0].body.metadata.idempotency_key = "private incorrect idempotency";
+  rejectsWriteback(invalid, "CURSOR_APP_ADD_IDEMPOTENCY");
+});
+
 test("writeback oracle verifies the Cursor client and every automatic idempotency component", () => {
   for (let part = 0; part < 6; part += 1) {
     const input = writebackFixture(), metadata = input.requests[0].body.metadata;
@@ -347,6 +456,19 @@ test("writebacks oracle matches ordered repeated prompts and A/B/A workspace sco
   const input = writebacksFixture(), before = structuredClone(input);
   assert.deepEqual(assertCursorAppWritebacks(input), { automaticAdd: 4 });
   assert.deepEqual(input, before);
+});
+
+test("writebacks oracle preserves default local scope while explicitly checking the Git worker parent", () => {
+  const input = writebacksFixture();
+  const worker = { ...writebackFixture({ workspaceName: "worker-repository", sessionId: generationId }),
+    scope: "repository-name.v1" };
+  worker.requests[0].body.metadata.memorax_code_memory_scope = worker.scope;
+  input.turns.push({ sessionId: worker.sessionId, prompt: worker.prompt, answer: worker.answer,
+    workspaceName: worker.workspaceName, scope: worker.scope });
+  input.requests.push(worker.requests[0]);
+  assert.deepEqual(assertCursorAppWritebacks(input), { automaticAdd: 5 });
+  input.requests[0].body.metadata.memorax_code_memory_scope = worker.scope;
+  rejectsWriteback(input, "CURSOR_APP_ADD_SCOPE", assertCursorAppWritebacks);
 });
 
 test("writebacks oracle rejects workspace B using workspace A scope and idempotency", () => {

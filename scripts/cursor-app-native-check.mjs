@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
 import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -7,9 +7,12 @@ import { networkInterfaces, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 import { startCursorAgentMock } from "./cursor-app-mock-server.mjs";
-import { assertCursorAppNativeContent, assertCursorAppWritebacks } from "./cursor-app-native-content-check.mjs";
+import { assertCursorAppNativeContent, assertCursorAppNativeSubagent, assertCursorAppWritebacks } from "./cursor-app-native-content-check.mjs";
 import { assertCursorAppSkillReference, assertCursorAppMemoryOperation } from "./cursor-app-memory-check.mjs";
+import { parseCursorRepoMemoryDelegation, parseCursorRepoMemoryClaim, assertCursorRepoMemoryRejected,
+  verifyCursorRepoMemoryFailure } from "./cursor-app-repo-memory-check.mjs";
 import { collectCursorAppDiagnostics, collectCursorAppLaunchDiagnostics,
   collectCursorAppShellDiagnostics, collectCursorAppStopDiagnostics } from "./cursor-app-diagnostics.mjs";
 
@@ -34,6 +37,9 @@ const interruptedFixture = { prompt: "Prepare the synthetic marker command, then
   answer: "This interrupted run must never complete." };
 const recoveryFixture = { prompt: "Continue this synthetic conversation with a new concise answer.",
   answer: "This new turn completed after the previous turn was cancelled." };
+const repoMemoryFixture = { prompt: "Report that the synthetic repository is ready, while delegating its pending Repo Memory job.",
+  answer: "The synthetic repository is ready and its Repo Memory job was delegated." };
+const repoMemoryWorkerAnswer = "No Repo Memory bundle was authored; the finish check correctly rejected the missing artifact.";
 const fixtureKey = "cursor-app-ci-synthetic-key", fixtureUser = "cursor-app-ci-synthetic-user";
 const skillQuery = "Which parser validation invariant applies to this synthetic task?";
 const skillMemory = "Validate parser input before interpreting structured data.";
@@ -43,10 +49,28 @@ const memoryRequests = [], turns = [];
 let agent, memory, app, browser, cli, page, started = false, appLog = "";
 let appLaunchLog = "", appSpawnError, appDebugEndpointSeen = false;
 let root, env, chromium, userData, workspace, failure, failureUi, skillRoot, skillText;
-let interruption, denial;
+let interruption, denial, repoMemory, repoMemoryHelper, repoMemoryDefinition;
 let macos, macosPaths, windows, windowsPaths, backendPort = 18787, debugPort = 9222;
 const observedMacosPids = new Set();
 const referenceTexts = new Map();
+const exec = promisify(execFile);
+
+async function prepareRepoMemoryWorkspace() {
+  const repo = join(root, "cursor-repo-memory");
+  await mkdir(repo);
+  await writeFile(join(repo, "README.md"), "# Synthetic Cursor Repo Memory acceptance\n");
+  const git = async (...args) => (await exec("git", args, { cwd: repo, env,
+    encoding: "utf8", timeout: 10000, maxBuffer: 64 * 1024, windowsHide: true })).stdout.trim();
+  await git("init", "--initial-branch=main");
+  await git("add", "README.md");
+  await git("-c", "user.name=CI Fixture", "-c", "user.email=ci@example.invalid", "-c", "commit.gpgSign=false", "commit", "-m", "Synthetic fixture");
+  await git("remote", "add", "origin", "https://example.invalid/ci/cursor-repo-memory.git");
+  const head = await git("rev-parse", "HEAD");
+  await git("update-ref", "refs/remotes/origin/main", head);
+  await git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main");
+  check(/^[a-f0-9]{40}$/.test(head), "CURSOR_APP_REPO_MEMORY_FIXTURE");
+  return { repo, head };
+}
 
 function check(value, code) { if (!value) throw Object.assign(new Error(code), { code }); }
 function safeCode(error) { return /^CURSOR_(?:APP|AGENT|MOCK)_[A-Z0-9_]+$/.test(error?.code) ? error.code : "CURSOR_APP_CHECK_FAILED"; }
@@ -126,10 +150,10 @@ function shellCommand(args, environment = {}) {
     : [...(Object.keys(environment).length ? ["env", ...Object.entries(environment).map(([key, value]) => `${key}=${value}`)] : []),
       ...args].map(quote).join(" ");
 }
-function assertSkillMemory(operation, result, request) {
+function assertSkillMemory(operation, result, request, workspaceName) {
   return assertCursorAppMemoryOperation({ request, result, operation, query: skillQuery,
     memory: operation === "search" ? searchMemory : skillMemory, reason: skillReason, sessionId: "memorax-cli",
-    apiKey: fixtureKey, baseUserId: fixtureUser, workspaceName: basename(workspace) });
+    apiKey: fixtureKey, baseUserId: fixtureUser, workspaceName });
 }
 function toolSteps(run, results) {
   if (interruption && run === agent.runs[interruption.runIndex]) {
@@ -195,7 +219,7 @@ function toolSteps(run, results) {
     "CURSOR_APP_SKILL_COMMAND_FAILED");
   let result;
   try { result = JSON.parse(results[2].stdout); } catch { check(false, "CURSOR_APP_SKILL_RESULT_JSON"); }
-  assertSkillMemory(fixture.operation, result, memoryRequests[fixture.operation === "search" ? 4 : 6]);
+  assertSkillMemory(fixture.operation, result, memoryRequests[fixture.operation === "search" ? 4 : 6], fixture.workspaceName);
 }
 async function stopApp() {
   let closeError;
@@ -486,6 +510,132 @@ async function interruptPendingShell() {
   report.evidence.pendingShellInterrupted = true;
 }
 
+function repoMemoryTools(run, results) {
+  if (!run.requestContextCloseCount) return { kind: "requestContext" };
+  if (run.conversationId === repoMemory.sessionId) {
+    check(run.prompt === repoMemoryFixture.prompt, "CURSOR_APP_REPO_MEMORY_PARENT");
+    if (results.length === 0) {
+      const definitions = (run.customSubagents ?? []).filter((item) => item.name === "memorax-repo-memory");
+      const nativePath = process.platform === "win32"
+        ? repoMemoryDefinition.path.replace(/^[A-Z]:/, (drive) => drive.toLowerCase()) : repoMemoryDefinition.path;
+      check(definitions.length === 1 && definitions[0].fullPath === nativePath && definitions[0].model === "inherit"
+        && definitions[0].isBackground === true && definitions[0].prompt.trim() === repoMemoryDefinition.body,
+      "CURSOR_APP_REPO_MEMORY_DEFINITION");
+      const context = [run.requestContext?.hooksAdditionalContext,
+        ...(run.userHookAdditionalContexts ?? []).map((item) => item.content)].filter(Boolean).join("\n");
+      repoMemory.request = parseCursorRepoMemoryDelegation(context, { executable: process.execPath,
+        helper: repoMemoryHelper, stateHome: env.MEMORAX_CODE_HOME, repo: workspace });
+      return { kind: "task", subagentType: "memorax-repo-memory", prompt: repoMemory.request.delegation.prompt,
+        description: "Validate the delegated Repo Memory job", model: "inherit", background: true };
+    }
+    check(results.length === 1 && results[0].kind === "task" && results[0].isBackground === true,
+      "CURSOR_APP_REPO_MEMORY_TASK");
+    return;
+  }
+  check(run.parentConversationId === repoMemory.sessionId && run.subagentTypeName === "memorax-repo-memory"
+    && run.prompt === repoMemory.request?.delegation.prompt, "CURSOR_APP_REPO_MEMORY_CHILD");
+  let invocation;
+  if (results.length === 0) invocation = repoMemory.request.claim;
+  else {
+    check(results[0].kind === "shell" && results[0].exitCode === 0, "CURSOR_APP_REPO_MEMORY_CLAIM");
+    repoMemory.claimed ??= parseCursorRepoMemoryClaim(results[0].stdout, repoMemory.request);
+    if (results.length === 1) invocation = repoMemory.claimed.finish;
+    else {
+      check(results.length === 2 && results[1].kind === "shell" && results[1].exitCode === 1,
+        "CURSOR_APP_REPO_MEMORY_FINISH");
+      assertCursorRepoMemoryRejected(results[1].stdout, repoMemory.claimed);
+      repoMemory.rejected = true;
+      return;
+    }
+  }
+  return { kind: "shell", command: shellCommand([invocation.executable, ...invocation.args], invocation.env),
+    workingDirectory: workspace, timeoutMs: 20000, ...(results.length === 1 ? { expectedExitCode: 1 } : {}),
+    ...(process.platform === "darwin" ? { networkAccess: true } : {}) };
+}
+
+function assertRepoMemoryNativeContent() {
+  const [parent, child] = agent.runs.slice(repoMemory.runIndex);
+  assertCursorAppNativeSubagent({ databasePath: env.MEMORAX_CODE_CURSOR_DATABASE_PATH,
+    parentSessionId: parent.conversationId, childSessionId: child.conversationId });
+  const notifications = agent.notifications.filter((run) => run.conversationId === parent.conversationId);
+  check(notifications.length <= 1, "CURSOR_APP_REPO_MEMORY_NOTIFICATION");
+  const notification = notifications[0], item = notification?.notifications?.[0];
+  if (notification) check(notification.completed && !notification.error && notification.notifications.length === 1
+    && item.subagentId === child.conversationId && item.toolCallId === child.taskToolCallId,
+  "CURSOR_APP_REPO_MEMORY_NOTIFICATION");
+  // Background notifications do not checkpoint a new user graph or persisted generation.
+  return assertCursorAppNativeContent({ databasePath: env.MEMORAX_CODE_CURSOR_DATABASE_PATH,
+    sessionId: parent.conversationId, generationId: parent.requestId,
+    conversationStateBytes: parent.conversationStateBytes,
+    kvWrites: parent.kvWrites });
+}
+
+async function runRepoMemoryWorker() {
+  report.stage = "repo-memory-worker";
+  await stopApp();
+  await assertProcessesStopped({ includeBackend: false });
+  const fixture = await prepareRepoMemoryWorkspace();
+  workspace = fixture.repo;
+  await startApp();
+  const sessionId = await openSession();
+  repoMemory = { ...fixture, sessionId, runIndex: agent.runs.length };
+  report.stage = "repo-memory-worker";
+  turns.push({ sessionId, workspaceName: basename(workspace), scope: "repository-name.v1", ...repoMemoryFixture });
+  const input = page.locator(`[data-composer-id="${sessionId}"][data-composer-status]:visible`)
+    .locator('[contenteditable="true"][role="textbox"]:visible');
+  await submitPrompt(input, repoMemoryFixture);
+  const approved = new Set(), opened = new Set();
+  await waitFor(async () => {
+    check(!agent.errors.length, agent.errors[0]);
+    const parent = agent.runs[repoMemory.runIndex], child = agent.runs[repoMemory.runIndex + 1];
+    if (child?.pendingTool?.kind === "shell" && !approved.has(child.pendingTool.toolCallId)) {
+      check(child.parentConversationId === sessionId, "CURSOR_APP_REPO_MEMORY_CHILD");
+      const composer = page.locator(`[data-composer-id="${child.conversationId}"][data-composer-location="editor"][data-composer-status]:visible`);
+      check(await composer.count() <= 1, "CURSOR_APP_REPO_MEMORY_APPROVAL");
+      if (await composer.count() === 0) {
+        if (!opened.has(child.conversationId)) {
+          await page.evaluate((id) => window.driver.executeCommand("composer.openComposer", id, { openInNewTab: true }), child.conversationId);
+          opened.add(child.conversationId);
+        }
+        return false;
+      }
+      const button = composer.locator(`[data-tool-call-id="${child.pendingTool.toolCallId}"]:visible`)
+        .getByRole("button", { name: "Run", exact: true });
+      check(await button.count() <= 1, "CURSOR_APP_REPO_MEMORY_APPROVAL");
+      if (await button.count() === 1 && await button.isVisible()) {
+        const toolCallId = child.pendingTool.toolCallId;
+        await button.click({ timeout: 2000 });
+        approved.add(toolCallId);
+        child.shellApproval = { toolCallId, clicked: true };
+      }
+    }
+    return parent?.completed && child?.completed && repoMemory.rejected;
+  }, "CURSOR_APP_REPO_MEMORY_TIMEOUT", 90000);
+  const [parent, child] = agent.runs.slice(repoMemory.runIndex);
+  check(agent.runs.length === repoMemory.runIndex + 2 && parent.prompt === repoMemoryFixture.prompt
+    && parent.conversationId === sessionId && child.parentConversationId === sessionId
+    && child.conversationId === parent.toolResults[0].agentId && child.conversationId !== sessionId
+    && parent.modelId && child.modelId === parent.modelId, "CURSOR_APP_REPO_MEMORY_IDENTITY");
+  for (const [run, tools] of [[parent, 1], [child, 2]]) {
+    check(run.completed && !run.error && run.execRequestCount === tools && run.execResultCount === tools
+      && run.execCloseCount === tools && run.kvWriteCount === tools + 3 && run.kvAckCount === tools + 3
+      && run.requestContextRequestCount === 1 && run.requestContextResultCount === 1 && run.requestContextCloseCount === 1,
+    "CURSOR_APP_REPO_MEMORY_TRANSPORT");
+  }
+  await waitFor(() => {
+    try {
+      repoMemory.content = assertRepoMemoryNativeContent();
+      return true;
+    } catch (error) { report.nativeContentError = safeCode(error); return false; }
+  }, "CURSOR_APP_REPO_MEMORY_PERSISTENCE");
+  delete report.nativeContentError;
+  report.evidence.nativeContent.push(repoMemory.content);
+  await verifyCursorRepoMemoryFailure(repoMemory.claimed, { parentSessionId: sessionId, snapshotHead: fixture.head });
+  await waitFor(() => memoryRequests.length >= turns.length + 2, "CURSOR_APP_REPO_MEMORY_WRITEBACK");
+  assertWriteback();
+  report.evidence.repoMemoryWorker = true;
+}
+
 try {
   const [nodeMajor, nodeMinor] = process.versions.node.split(".").map(Number);
   check([7, 8].includes(process.argv.length) && ["linux", "darwin", "win32"].includes(process.platform) && ["22", "24"].includes(expectedNodeMajor)
@@ -520,7 +670,9 @@ try {
   const home = join(root, "home");
   const firstWorkspace = join(root, "workspace");
   userData = join(root, "app-data"); workspace = firstWorkspace;
-  agent = await startCursorAgentMock({ answers: [...fixtures, interruptedFixture, recoveryFixture].map((fixture) => fixture.answer), toolSteps, timeoutMs: 60000 });
+  agent = await startCursorAgentMock({ answers: [...fixtures, interruptedFixture, recoveryFixture, repoMemoryFixture,
+    { answer: repoMemoryWorkerAnswer }].map((fixture) => fixture.answer),
+  toolSteps: (run, results) => repoMemory ? repoMemoryTools(run, results) : toolSteps(run, results), timeoutMs: 60000 });
   memory = createServer(async (request, response) => {
     try {
       let raw = "";
@@ -556,8 +708,10 @@ try {
     MEMORAX_CODE_MEMORAX_API_KEY: fixtureKey, MEMORAX_CODE_MEMORAX_USER_ID: fixtureUser,
     MEMORAX_CODE_MEMORY_WRITEBACK_ENABLED: "true", MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_ENABLED: "false",
     MEMORAX_CODE_MEMORY_WRITEBACK_CHUNK_ENABLED: "false",
+    GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: join(home, "missing-git-config"), GIT_TERMINAL_PROMPT: "0",
     ...(macosPaths?.env ?? windowsPaths?.env ?? {}),
   };
+  if (windows) env.PATH += ";C:\\Program Files\\Git\\cmd";
   for (const path of [home, join(userData, "User"), workspace, env.CURSOR_HOME, env.XDG_RUNTIME_DIR,
     ...(macos ? [macosPaths.tmp] : windows ? [windowsPaths.tmp, env.APPDATA, env.LOCALAPPDATA] : [])]) await mkdir(path, { recursive: true, mode: 0o700 });
   // Cursor's login Shell sources /etc/profile, which resets the inherited PATH.
@@ -569,7 +723,12 @@ try {
     "--port", String(backendPort), "--clients", "cursor", "--json"], `CURSOR_APP_CANDIDATE_${action.toUpperCase()}`);
   report.stage = "candidate-install";
   started = true;
-  check((await cli("start")).cursorAdapter?.enabled === true, "CURSOR_APP_ADAPTER_DISABLED");
+  const installation = (await cli("start")).cursorAdapter;
+  check(installation?.enabled === true, "CURSOR_APP_ADAPTER_DISABLED");
+  repoMemoryHelper = join(installation.installPath, "repo-memory-job.mjs");
+  repoMemoryDefinition = { path: installation.repoMemoryAgentPath,
+    body: (await readFile(installation.repoMemoryAgentPath, "utf8"))
+      .replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, "").replaceAll("\r\n", "\n").trim() };
   skillRoot = join(env.CURSOR_HOME, "skills/memorax-code");
   skillText = await readFile(join(skillRoot, "SKILL.md"), "utf8");
   for (const operation of ["search", "add"]) {
@@ -624,6 +783,7 @@ try {
   await runTurn(interruption.sessionId, recoveryFixture);
   await assertInterrupted({ recovered: true });
   report.evidence.sameSessionRecovered = true;
+  await runRepoMemoryWorker();
   report.stage = "cleanup";
 } catch (error) {
   failure = error?.stack ?? String(error); report.errorCode = safeCode(error);
@@ -665,17 +825,18 @@ finally {
   }
   if (!report.errorCode && !report.cleanupError) {
     try {
-      check(turns.length === fixtures.length + 1 && agent.runs.length === fixtures.length + 2
+      check(turns.length === fixtures.length + 2 && agent.runs.length === fixtures.length + 4
         && agent.runs.slice(0, fixtures.length).every((run, index) => run.completed
           && run.kvWriteCount === (fixtures[index].operation ? 6 : fixtures[index].permission === "deny" ? 4 : 3)
           && run.kvAckCount === run.kvWriteCount), "CURSOR_APP_FINAL_RUN_COUNT");
-      const recovered = agent.runs.at(-1);
+      const recovered = agent.runs[interruption.runIndex + 1];
       check(recovered.completed && recovered.kvWriteCount === 3 && recovered.kvAckCount === 3, "CURSOR_APP_FINAL_RUN_COUNT");
       await assertInterrupted({ recovered: true });
       await assertMarkerAbsent(denial.marker, "CURSOR_APP_PERMISSION_TOOL_EXECUTED");
+      assertRepoMemoryNativeContent();
       assertWriteback();
       for (const [index, operation] of [[4, "search"], [5, "add"]]) {
-        assertSkillMemory(operation, JSON.parse(agent.runs[index].toolResults[2].stdout), memoryRequests[index === 4 ? 4 : 6]);
+        assertSkillMemory(operation, JSON.parse(agent.runs[index].toolResults[2].stdout), memoryRequests[index === 4 ? 4 : 6], turns[index].workspaceName);
       }
     } catch (error) { report.errorCode = safeCode(error); }
   }
@@ -694,6 +855,7 @@ finally {
     await writeFile(join(reportDir, ".private/app.log"), appLog, { mode: 0o600 });
     await writeFile(join(reportDir, ".private/unknown-rpc.json"), JSON.stringify(agent?.unknownRpcMethods ?? []), { mode: 0o600 });
     await writeFile(join(reportDir, ".private/run-shapes.json"), JSON.stringify(agent?.runs.map((run) => ({
+      conversationId: run.conversationId, requestId: run.requestId,
       context: run.requestContext && { hookContentLength: run.requestContext.hooksAdditionalContext?.length,
         skills: run.requestContext.agentSkills.map(({ fullPath, parseError, disableModelInvocation }) => ({ fullPath, parseError: Boolean(parseError), disableModelInvocation })) },
       hookContexts: run.userHookAdditionalContexts?.map(({ hookEventName, content }) => ({ hookEventName, length: content.length })),
@@ -702,6 +864,10 @@ finally {
       cancellation: run.cancellation && { actionReceived: run.cancellation.actionReceived, rejected: run.cancellation.rejected,
         execClosed: run.cancellation.execClosed, transportClosed: run.cancellation.transportClosed, rstCode: run.cancellation.rstCode,
         transportEvents: run.cancellation.transportEvents },
+    })) ?? []), { mode: 0o600 });
+    await writeFile(join(reportDir, ".private/notification-shapes.json"), JSON.stringify(agent?.notifications.map((run) => ({
+      conversationId: run.conversationId, requestId: run.requestId, notifications: run.notifications,
+      completed: run.completed, error: run.error,
     })) ?? []), { mode: 0o600 });
     if (failure) await writeFile(join(reportDir, ".private/failure.log"), failure, { mode: 0o600 });
     if (failureUi) await writeFile(join(reportDir, ".private/ui.txt"), failureUi, { mode: 0o600 });

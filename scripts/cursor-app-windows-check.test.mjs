@@ -222,13 +222,13 @@ function nativeReport() {
   return { status: "PASS", client: "cursor", kind: "app-native-session-flows", platform: "win32", node: "24.20.0",
     version: "3.21.18", stage: "complete", evidence: { agentTransport: true, nativeHooks: true, exactAutomaticAdd: true,
       sameSessionFollowup: true, sessionIsolation: true, workspaceIsolation: true, appResume: true, skillSearch: true, skillAdd: true,
-      shellDenied: true, pendingShellInterrupted: true, sameSessionRecovered: true, cleanup: true,
-      nativeContent: [3, 6, 3, 9, 15, 21, 4, 3].map((blobCount) => ({ composerMatched: true, stateMatched: true, blobCount })) },
-    agent: { runs: 9, ancillaryRequestCount: 5, unsupportedRpcCount: 1, cancelled: [false, false, false, false, false, false, false, true, false], errors: [],
-      writes: [3, 3, 3, 3, 6, 6, 4, 0, 3], acknowledgements: [3, 3, 3, 3, 6, 6, 4, 0, 3], historyTurns: [0, 1, 0, 2, 3, 4, 0, 0, 0],
-      reads: [0, 3, 0, 6, 9, 15, 0, 0, 0], readResults: [0, 3, 0, 6, 9, 15, 0, 0, 0],
-      execRequests: [0, 0, 0, 0, 3, 3, 1, 1, 0], execResults: [0, 0, 0, 0, 3, 3, 1, 0, 0], execCloses: [0, 0, 0, 0, 3, 3, 1, 0, 0],
-      contextRequests: [1, 1, 1, 1, 1, 1, 1, 1, 1], contextResults: [1, 1, 1, 1, 1, 1, 1, 1, 1], contextCloses: [1, 1, 1, 1, 1, 1, 1, 1, 1] }, memoryRequestCount: 10 };
+      shellDenied: true, pendingShellInterrupted: true, sameSessionRecovered: true, repoMemoryWorker: true, cleanup: true,
+      nativeContent: [3, 6, 3, 9, 15, 21, 4, 3, 4].map((blobCount) => ({ composerMatched: true, stateMatched: true, blobCount })) },
+    agent: { runs: 11, ancillaryRequestCount: 5, unsupportedRpcCount: 1, cancelled: [false, false, false, false, false, false, false, true, false, false, false], errors: [],
+      writes: [3, 3, 3, 3, 6, 6, 4, 0, 3, 4, 5], acknowledgements: [3, 3, 3, 3, 6, 6, 4, 0, 3, 4, 5], historyTurns: [0, 1, 0, 2, 3, 4, 0, 0, 0, 0, 0],
+      reads: [0, 3, 0, 6, 9, 15, 0, 0, 0, 0, 0], readResults: [0, 3, 0, 6, 9, 15, 0, 0, 0, 0, 0],
+      execRequests: [0, 0, 0, 0, 3, 3, 1, 1, 0, 1, 2], execResults: [0, 0, 0, 0, 3, 3, 1, 0, 0, 1, 2], execCloses: [0, 0, 0, 0, 3, 3, 1, 0, 0, 1, 2],
+      contextRequests: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1], contextResults: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1], contextCloses: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1] }, memoryRequestCount: 11 };
 }
 
 test("Windows orchestration uses verified artifacts and preserves every native or cleanup failure", async (t) => {

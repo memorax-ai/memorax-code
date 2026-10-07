@@ -6,7 +6,7 @@ import { networkInterfaces } from "node:os";
 import { isDeepStrictEqual } from "node:util";
 import {
   completeToolExecution, createCompletedTurn, createConnectDecoder, createExecAbortMessage, createGetBlobMessage, createToolExecution,
-  decodeAgentClientMessage, decodeSkillsPart, encodeConnectEnvelope,
+  createTurnEndedMessage, decodeAgentClientMessage, decodeSkillsPart, decodeSubagentsPart, encodeConnectEnvelope,
 } from "./cursor-app-protocol.mjs";
 
 const agentPath = "/agent.v1.AgentService/Run";
@@ -27,6 +27,7 @@ const protocolErrorCodes = new Set([
   "CURSOR_APP_PROTO_WIRE", "CURSOR_APP_RUN_IDENTITY", "CURSOR_APP_RUN_PROMPT", "CURSOR_APP_RUN_UNSUPPORTED",
   "CURSOR_APP_CLIENT_MESSAGE_UNSUPPORTED", "CURSOR_APP_KV_ID", "CURSOR_APP_RESPONSE_TEXT",
   "CURSOR_APP_EXEC_IDENTITY", "CURSOR_APP_EXEC_OPTIONS", "CURSOR_APP_EXEC_REJECTED",
+  "CURSOR_APP_EXEC_TASK_MODEL", "CURSOR_APP_EXEC_TASK_OPTIONS", "CURSOR_APP_EXEC_TASK_DEFINITION",
   "CURSOR_APP_EXEC_READ_UNSUPPORTED", "CURSOR_APP_EXEC_SHELL_UNSUPPORTED",
 ]);
 const toolPlanErrorCodes = new Set([
@@ -39,6 +40,9 @@ const toolPlanErrorCodes = new Set([
   "CURSOR_APP_SEARCH_RESULT", "CURSOR_APP_EXPLICIT_ADD_TIMESTAMP", "CURSOR_APP_EXPLICIT_ADD_PAYLOAD",
   "CURSOR_APP_EXPLICIT_ADD_RESULT", "CURSOR_APP_INTERRUPTION_IDENTITY", "CURSOR_APP_INTERRUPTION_TOOL_EXECUTED",
   "CURSOR_APP_PERMISSION_IDENTITY", "CURSOR_APP_PERMISSION_REJECTION",
+  ...["FIXTURE", "PARENT", "DEFINITION", "TASK", "CHILD", "CLAIM", "FINISH", "APPROVAL", "TIMEOUT", "IDENTITY",
+    "TRANSPORT", "PERSISTENCE", "WRITEBACK", "DELEGATION_INVALID", "CLAIM_INVALID", "FINISH_INVALID", "STATE_INVALID",
+    "GUARD_REMAINS"].map((suffix) => `CURSOR_APP_REPO_MEMORY_${suffix}`),
 ]);
 const ancillaryPaths = new Set([
   "/auth/full_stripe_profile",
@@ -64,9 +68,10 @@ export async function startCursorAgentMock({ answer, answers, toolSteps, timeout
     || !Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60_000) {
     throw Object.assign(new Error("CURSOR_MOCK_OPTIONS_INVALID"), { nativeCode: "CURSOR_MOCK_OPTIONS_INVALID" });
   }
-  const requests = [], runs = [], errors = [], connectionErrors = [], unknownRpcMethods = [];
+  const requests = [], runs = [], notifications = [], errors = [], connectionErrors = [], unknownRpcMethods = [];
   const sockets = new Set(), sessions = new Set(), requestIds = new Set(), listeners = [];
   const histories = new Map(), activeConversations = new Set(), cancellationArms = new Map();
+  const tasks = new Map();
   let closed = false, closePromise, firstShellFailure, ancillaryRequestCount = 0, unsupportedRpcCount = 0;
   function armCancellation(input) {
     const arm = !closed && cancellationArms.get(input?.requestId);
@@ -129,7 +134,7 @@ export async function startCursorAgentMock({ answer, answers, toolSteps, timeout
     const path = recordRequest(headers[":method"], headers[":path"], "h2c");
     const compression = headers["connect-content-encoding"] ?? "identity";
     const requestId = headers["x-request-id"];
-    let run, completion, pendingKv, pendingExec, selectedAnswer, kvReads, contextRead, history, cancellation;
+    let run, completion, pendingKv, pendingExec, selectedAnswer, kvReads, contextRead, subagentsRead, history, cancellation;
     let settled = false, totalBytes = 0, messageCount = 0, nextId = 1;
     const acknowledged = new Set();
     const completedExecIds = new Set(), completedToolSteps = [];
@@ -174,9 +179,24 @@ export async function startCursorAgentMock({ answer, answers, toolSteps, timeout
         return;
       }
       if (contextRead && !run.contextKvReadResultCount) {
-        pendingKv = { ...contextRead, type: "kvGetResult", context: true };
+        pendingKv = { ...contextRead, type: "kvGetResult", context: "skills" };
         send(createGetBlobMessage(contextRead));
         run.contextKvReadCount++;
+        return;
+      }
+      if (subagentsRead && !run.subagentContextKvReadResultCount) {
+        pendingKv = { ...subagentsRead, type: "kvGetResult", context: "subagents" };
+        send(createGetBlobMessage(subagentsRead));
+        run.subagentContextKvReadCount++;
+        return;
+      }
+      if (run.type === "taskNotification") {
+        send(createTurnEndedMessage());
+        settled = true;
+        run.completed = true;
+        activeConversations.delete(run.conversationId);
+        clearTimeout(timer);
+        stream.end(encodeConnectEnvelope(Buffer.from("{}"), { endStream: true }));
         return;
       }
       if (pendingExec) {
@@ -213,6 +233,12 @@ export async function startCursorAgentMock({ answer, answers, toolSteps, timeout
           const execution = createToolExecution(run, step, {
             id: nextId++, toolCallId: randomUUID(),
           });
+          if (execution.kind === "task") {
+            if (run.subagentTypeName || [...tasks.values()].some((task) => task.parent === run)) {
+              fail("CURSOR_AGENT_TASK_DUPLICATE"); return;
+            }
+            tasks.set(execution.toolCallId, { parent: run, execution });
+          }
           pendingExec = { execution, closed: false, heartbeats: 0 };
           if (context) run.requestContextRequestCount++;
           else {
@@ -257,9 +283,29 @@ export async function startCursorAgentMock({ answer, answers, toolSteps, timeout
         cancellation.actionReceived = true;
         return;
       }
-      if (message.type === "run") {
+      if (message.type === "run" || message.type === "taskNotification") {
         if (run || requestIds.has(message.requestId)) { fail("CURSOR_AGENT_DUPLICATE_RUN"); return; }
         if (activeConversations.has(message.conversationId)) { fail("CURSOR_AGENT_CONVERSATION_BUSY"); return; }
+        let task;
+        if (message.type === "taskNotification") {
+          const [item] = message.notifications;
+          task = tasks.get(item.toolCallId);
+          if (!task || task.notified || task.parent.conversationId !== message.conversationId || !task.parent.completed
+            || task.parent.error || !task.child?.completed || task.child.error || task.agentId !== task.child.conversationId
+            || item.taskId !== task.agentId || item.subagentId !== task.agentId || item.kind !== 2 || item.status !== 1
+            || item.reason !== 1 || message.modelId !== task.parent.modelId) {
+            fail("CURSOR_AGENT_TASK_NOTIFICATION_MISMATCH"); return;
+          }
+        } else if (message.subagentTypeName !== undefined) {
+          const matches = [...tasks.values()].filter((item) => !item.child && !item.parent.error
+            && item.execution.subagentType === message.subagentTypeName && item.execution.prompt === message.prompt
+            && item.parent.modelId === message.modelId && item.parent.conversationId !== message.conversationId
+            && (item.agentId === undefined || item.agentId === message.conversationId));
+          if (matches.length !== 1 || message.turnRefs.length || message.prependUserMessages) {
+            fail("CURSOR_AGENT_TASK_CHILD_MISMATCH"); return;
+          }
+          [task] = matches;
+        }
         if (message.prependUserMessages) {
           const previous = runs.findLast((item) => item.conversationId === message.conversationId);
           const [prepended] = message.prependUserMessages;
@@ -274,20 +320,38 @@ export async function startCursorAgentMock({ answer, answers, toolSteps, timeout
           || message.turnRefs.some((reference, index) => !reference.equals(history[index].turnBlobId))) {
           fail("CURSOR_AGENT_HISTORY_MISMATCH"); return;
         }
-        if (answerSequence && runs.length >= answerSequence.length) { fail("CURSOR_AGENT_ANSWER_EXHAUSTED"); return; }
+        if (message.type === "run" && answerSequence && runs.length >= answerSequence.length) { fail("CURSOR_AGENT_ANSWER_EXHAUSTED"); return; }
         kvReads = history.flatMap((turn) => turn.kvWrites).map((write) =>
           ({ id: nextId++, blobId: write.blobId, bytes: write.bytes }));
         if (message.requestContextParts?.skillsBlobId) contextRead = { id: nextId++,
           blobId: message.requestContextParts.skillsBlobId, byteLength: message.requestContextParts.skillsByteLength };
+        if (message.requestContextParts?.subagentsBlobId) subagentsRead = { id: nextId++,
+          blobId: message.requestContextParts.subagentsBlobId, byteLength: message.requestContextParts.subagentsByteLength };
         selectedAnswer = answerSequence?.[runs.length] ?? answer;
         requestIds.add(message.requestId);
         activeConversations.add(message.conversationId);
         run = { ...message, inputConversationStateBytes: message.conversationStateBytes, inputRequestContext: message.requestContext,
           kvWrites: [], kvWriteCount: 0, kvAckCount: 0, kvReadCount: 0, kvReadResultCount: 0,
           contextKvReadCount: 0, contextKvReadResultCount: 0,
+          subagentContextKvReadCount: 0, subagentContextKvReadResultCount: 0,
           toolResults: [], execRequestCount: 0, execResultCount: 0, execCloseCount: 0,
           shellApproval: { toolCallId: undefined, clicked: false },
           requestContextRequestCount: 0, requestContextResultCount: 0, requestContextCloseCount: 0, completed: false, cancelled: false };
+        if (message.type === "taskNotification") {
+          task.notified = true;
+          notifications.push(run);
+          return;
+        }
+        Object.defineProperty(run, "customSubagents", { enumerable: true, get() {
+          const fresh = run.requestContext, initial = run.inputRequestContext;
+          if (fresh?.customSubagents?.length || fresh?.customSubagentsInfoComplete === true) return fresh.customSubagents ?? [];
+          return initial?.customSubagentsInfoComplete !== false ? initial?.customSubagents ?? [] : [];
+        } });
+        if (task) {
+          run.parentConversationId = task.parent.conversationId;
+          run.taskToolCallId = task.execution.toolCallId;
+          task.child = run;
+        }
         runs.push(run);
         cancellationArms.set(run.requestId, (toolCallId) => {
           if (settled || cancellation || stream.closed || stream.destroyed || completion || pendingKv
@@ -324,7 +388,15 @@ export async function startCursorAgentMock({ answer, answers, toolSteps, timeout
             return;
           }
           pendingExec.completed = completeToolExecution(pendingExec.execution, message);
-          if (pendingExec.completed.result.rejected === true) delete run.execRejection;
+          if (pendingExec.execution.kind === "task") {
+            const task = tasks.get(pendingExec.execution.toolCallId), agentId = pendingExec.completed.result.agentId;
+            if (task.child && task.child.conversationId !== agentId || agentId === run.conversationId
+              || [...tasks.values()].some((other) => other !== task && other.agentId === agentId)) {
+              fail("CURSOR_AGENT_TASK_CHILD_MISMATCH"); return;
+            }
+            task.agentId = agentId;
+          }
+          if (pendingExec.completed.result.rejected === true || pendingExec.execution.expectedExitCode === 1) delete run.execRejection;
           if (pendingExec.execution.kind === "requestContext") run.requestContextResultCount++;
           else run.execResultCount++;
         } else if (message.event === "error") fail("CURSOR_AGENT_EXEC_THROWN");
@@ -355,6 +427,21 @@ export async function startCursorAgentMock({ answer, answers, toolSteps, timeout
             fail("CURSOR_AGENT_KV_READ_MISMATCH"); return;
           }
           const initial = run.inputRequestContext;
+          if (pendingKv.context === "subagents") {
+            const restored = { ...(initial ?? { hooksAdditionalContext: "", agentSkills: [] }),
+              ...run.requestContextParts.dynamicContext,
+              ...(initial?.agentSkills ? { agentSkills: initial.agentSkills } : {}),
+              customSubagents: decodeSubagentsPart(message.bytes) };
+            if (initial?.customSubagents && initial.customSubagentsInfoComplete !== false && restored.customSubagentsInfoComplete !== false
+              && !isDeepStrictEqual(initial.customSubagents, restored.customSubagents)) {
+              fail("CURSOR_AGENT_CONTEXT_CONFLICT"); return;
+            }
+            run.inputRequestContext = restored;
+            run.subagentContextKvReadResultCount++;
+            acknowledged.add(message.id);
+            pendingKv = undefined;
+            return;
+          }
           const restored = { ...(run.requestContextParts.dynamicContext ?? initial ?? { hooksAdditionalContext: "" }),
             agentSkills: decodeSkillsPart(message.bytes) };
           if (initial && initial.agentSkillsInfoComplete !== false && restored.agentSkillsInfoComplete !== false
@@ -447,6 +534,7 @@ export async function startCursorAgentMock({ answer, answers, toolSteps, timeout
       // The client can half-close its request before its CANCEL frame arrives.
       if (cancellation) return;
       fail(!run ? "CURSOR_AGENT_RUN_MISSING" : run.kvReadResultCount < kvReads.length || contextRead && !run.contextKvReadResultCount
+        || subagentsRead && !run.subagentContextKvReadResultCount
         ? "CURSOR_AGENT_KV_READ_MISSING" : pendingExec ? "CURSOR_AGENT_EXEC_INCOMPLETE" : "CURSOR_AGENT_ACK_MISSING");
     });
     if (path !== agentPath) fail(isAgentPath(path) ? "CURSOR_AGENT_ROUTE_INVALID" : "CURSOR_MOCK_UNKNOWN_ROUTE");
@@ -510,7 +598,7 @@ export async function startCursorAgentMock({ answer, answers, toolSteps, timeout
     if (Object.values(networkInterfaces()).flat().some((entry) => entry?.internal && entry.address === "::1")) {
       await listen(createFront(), "::1", port);
     }
-    return { url: `http://localhost:${port}`, requests, runs, errors, connectionErrors, unknownRpcMethods, armCancellation, close,
+    return { url: `http://localhost:${port}`, requests, runs, notifications, errors, connectionErrors, unknownRpcMethods, armCancellation, close,
       get firstShellFailure() { return firstShellFailure; },
       get ancillaryRequestCount() { return ancillaryRequestCount; },
       get unsupportedRpcCount() { return unsupportedRpcCount; } };

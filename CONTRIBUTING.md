@@ -1244,13 +1244,24 @@ must complete normally and produce exactly one automatic Add, without including
 the cancelled prompt or partial response. Any prepended unconfirmed message must
 exactly match that conversation's most recent unconsumed cancelled turn by native
 user-message ID and prompt; it is input context, not completed history or writeback.
-Both markers remain absent and the
-total stays at ten Memory requests after App and Backend cleanup. This does not
+Both markers remain absent and this sequence
+ends with ten Memory requests. This does not
 inject late approval or exercise running-tool interruption.
+
+The final two runs exercise Repo Memory in another isolated Git workspace. A real
+foreground Hook delegates through Cursor's native Task tool, and the child
+inherits the foreground model selection rather than launching a separately configured
+global CLI worker. The child must claim the supervised job and run its finish
+command. The deterministic response authors no Repo Memory bundle, so artifact
+validation must leave the job failed rather than falsely complete. The parent
+turn still requires exact automatic Add; the child must not write back as an
+ordinary user conversation. The final total stays at eleven Memory requests,
+including after App and Backend cleanup. This checks native delegation and failure handling,
+not successful Repo Memory generation or worker permission inheritance.
 
 Acceptance requires all of the following:
 
-- Exactly nine native Agent requests. The first six complete with each submitted prompt and matching
+- Exactly eleven native Agent runs. The first six complete with each submitted prompt and matching
   conversation/generation identity, KV write/acknowledgement counts of
   `3, 3, 3, 3, 6, 6`, and prior-turn counts of `0, 1, 0, 2, 3, 4` in that order.
   History KV requests and validated results must each total
@@ -1258,7 +1269,11 @@ Acceptance requires all of the following:
   counts must each be `0, 0, 0, 0, 3, 3`. The denied, interrupted and recovered
   runs add KV write/acknowledgement counts of `4, 0, 3`, no completed history or
   history KV reads, tool request counts of `1, 1, 0`, and tool result/close counts
-  of `1, 0, 0`. Every run completes exactly one separate RequestContext request,
+  of `1, 0, 0`. The Repo Memory parent and child add KV write/acknowledgement
+  counts of `4, 5`, tool request/result/close counts of `1, 2`, and no completed
+  history or history KV reads. Native background completion notifications do
+  not count as additional user or worker turns.
+  Every run completes exactly one separate RequestContext request,
   result and close; this protocol exchange is neither a user-visible tool step
   nor a persisted conversation step.
 - The eighth, interrupted run has no history, KV writes, acknowledgements or
@@ -1267,15 +1282,19 @@ Acceptance requires all of the following:
   it must have one interrupted Hook outcome and no completed or materialized outcome.
 - A separate, read-only SQLite oracle matching the App's composer/generation,
   conversation state and every emitted content-addressed blob byte for byte
-  after each completed run, with `3, 6, 3, 9, 15, 21, 4, 3` reachable blobs respectively.
+  after each completed foreground run, with `3, 6, 3, 9, 15, 21, 4, 3, 4` reachable
+  blobs respectively. The child composer must independently retain the exact
+  parent and managed subagent type; the parent's native child list must contain
+  that child without duplicate entries.
 - Installed native Hooks correlated to each real generation and completed turn.
-- Exactly eight automatic Adds whose full user/assistant text, Unicode, session,
+- Exactly nine automatic Adds whose full user/assistant text, Unicode, session,
   workspace scope and client-qualified idempotency keys match their respective
   fixtures, including repeated prompts and identical content across sessions.
   Each turn retains its own expected workspace: conversation B must use the
   second directory's scope, and resumed conversation A must retain the first.
-  This covers distinct non-Git workspace names, not Git/worktree identity or
-  cross-workspace Search.
+  The separate worker parent must use its expected Git repository scope rather
+  than local-folder scope. Cross-workspace separation still covers distinct
+  non-Git workspace names, not linked worktrees or cross-workspace Search.
 - Native Shell denial followed by normal completion, plus same-session recovery
   after pending-tool cancellation. The denied tool has no file effect but its
   completed turn writes back; the cancelled turn has no Add and only the new
@@ -1285,6 +1304,9 @@ Acceptance requires all of the following:
   Search preserves the fixture answer, item and receipt. Explicit Add retains
   its CLI session, memory type, reason and idempotency key, separately from the
   native session used by automatic writeback and trace correlation.
+- Native Repo Memory worker evidence from the foreground Hook, Task child,
+  supervised claim and failed no-bundle validation. Missing worker evidence
+  cannot pass the public report on any platform.
 - Successful client/Backend and platform-resource cleanup, including the Linux
   container or macOS/Windows owned processes and private App copy, with a final request-count
   audit to reject duplicate or late writeback.
@@ -1400,7 +1422,7 @@ publishes commands, paths, raw tool output or installer logs, and unavailable
 diagnostics never replace the original failure or relax acceptance checks.
 Synthetic login is not real account
 authentication coverage. Native Continue/Retry/Edit, Backend restart,
-preauthorized-tool mode, running-tool interruption, late-approval races, model-driven Skill selection, Repo Memory workers,
+preauthorized-tool mode, running-tool interruption, late-approval races, model-driven Skill selection, successful Repo Memory generation,
 native upgrade/uninstall remain outside this bounded session-flow
 matrix.
 

@@ -20,9 +20,10 @@ const versionPattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const label = "memorax.cursor-app-ci";
 const codePattern = /^CURSOR_(?:APP|MOCK|AGENT|CONTAINER)_[A-Z0-9_]{1,100}$/;
 const stages = new Set(["preflight", "candidate-install", "app-start", "native-submit", "agent-transport",
-  "native-persistence", "automatic-add", "workspace-switch", "app-restart", "session-open", "pending-shell-interruption", "cleanup", "complete"]);
+  "native-persistence", "automatic-add", "workspace-switch", "app-restart", "session-open", "pending-shell-interruption",
+  "repo-memory-worker", "cleanup", "complete"]);
 const completedEvidence = ["agentTransport", "nativeHooks", "exactAutomaticAdd", "sameSessionFollowup", "sessionIsolation", "workspaceIsolation", "appResume",
-  "skillSearch", "skillAdd", "shellDenied", "pendingShellInterrupted", "sameSessionRecovered", "cleanup"];
+  "skillSearch", "skillAdd", "shellDenied", "pendingShellInterrupted", "sameSessionRecovered", "repoMemoryWorker", "cleanup"];
 
 function fail(code) { throw Object.assign(new Error(code), { code }); }
 function check(value, code) { if (!value) fail(code); }
@@ -128,21 +129,21 @@ export function projectNativeReport(input, { expectedVersion = provenance.cursor
   }
   if (report.status === "PASS") check(report.stage === "complete" && report.version === expectedVersion && !report.errorCode && !report.cleanupError && !report.nativeContentError
     && completedEvidence.every((key) => report.evidence[key] === true)
-    && content?.length === 8 && [3, 6, 3, 9, 15, 21, 4, 3].every((blobs, index) => content[index]?.composerMatched === true
+    && content?.length === 9 && [3, 6, 3, 9, 15, 21, 4, 3, 4].every((blobs, index) => content[index]?.composerMatched === true
       && content[index]?.stateMatched === true && content[index]?.blobCount === blobs)
-    && report.agent?.runs === 9 && report.agent.writes.length === 9 && [3, 3, 3, 3, 6, 6, 4, 0, 3].every((value, index) => report.agent.writes[index] === value)
-    && report.agent.acknowledgements.length === 9 && [3, 3, 3, 3, 6, 6, 4, 0, 3].every((value, index) => report.agent.acknowledgements[index] === value)
-    && report.agent.historyTurns.length === 9 && [0, 1, 0, 2, 3, 4, 0, 0, 0].every((value, index) => report.agent.historyTurns[index] === value)
-    && report.agent.reads.length === 9 && [0, 3, 0, 6, 9, 15, 0, 0, 0].every((value, index) => report.agent.reads[index] === value)
-    && report.agent.readResults.length === 9 && [0, 3, 0, 6, 9, 15, 0, 0, 0].every((value, index) => report.agent.readResults[index] === value)
-    && report.agent.execRequests.length === 9 && [0, 0, 0, 0, 3, 3, 1, 1, 0].every((value, index) => report.agent.execRequests[index] === value)
-    && report.agent.execResults.length === 9 && [0, 0, 0, 0, 3, 3, 1, 0, 0].every((value, index) => report.agent.execResults[index] === value)
-    && report.agent.execCloses.length === 9 && [0, 0, 0, 0, 3, 3, 1, 0, 0].every((value, index) => report.agent.execCloses[index] === value)
-    && report.agent.contextRequests.length === 9 && [1, 1, 1, 1, 1, 1, 1, 1, 1].every((value, index) => report.agent.contextRequests[index] === value)
-    && report.agent.contextResults.length === 9 && [1, 1, 1, 1, 1, 1, 1, 1, 1].every((value, index) => report.agent.contextResults[index] === value)
-    && report.agent.contextCloses.length === 9 && [1, 1, 1, 1, 1, 1, 1, 1, 1].every((value, index) => report.agent.contextCloses[index] === value)
-    && report.agent.cancelled.length === 9 && [false, false, false, false, false, false, false, true, false].every((value, index) => report.agent.cancelled[index] === value)
-    && report.agent.errors.length === 0 && report.memoryRequestCount === 10, "CURSOR_CONTAINER_REPORT");
+    && report.agent?.runs === 11 && report.agent.writes.length === 11 && [3, 3, 3, 3, 6, 6, 4, 0, 3, 4, 5].every((value, index) => report.agent.writes[index] === value)
+    && report.agent.acknowledgements.length === 11 && [3, 3, 3, 3, 6, 6, 4, 0, 3, 4, 5].every((value, index) => report.agent.acknowledgements[index] === value)
+    && report.agent.historyTurns.length === 11 && [0, 1, 0, 2, 3, 4, 0, 0, 0, 0, 0].every((value, index) => report.agent.historyTurns[index] === value)
+    && report.agent.reads.length === 11 && [0, 3, 0, 6, 9, 15, 0, 0, 0, 0, 0].every((value, index) => report.agent.reads[index] === value)
+    && report.agent.readResults.length === 11 && [0, 3, 0, 6, 9, 15, 0, 0, 0, 0, 0].every((value, index) => report.agent.readResults[index] === value)
+    && report.agent.execRequests.length === 11 && [0, 0, 0, 0, 3, 3, 1, 1, 0, 1, 2].every((value, index) => report.agent.execRequests[index] === value)
+    && report.agent.execResults.length === 11 && [0, 0, 0, 0, 3, 3, 1, 0, 0, 1, 2].every((value, index) => report.agent.execResults[index] === value)
+    && report.agent.execCloses.length === 11 && [0, 0, 0, 0, 3, 3, 1, 0, 0, 1, 2].every((value, index) => report.agent.execCloses[index] === value)
+    && report.agent.contextRequests.length === 11 && [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1].every((value, index) => report.agent.contextRequests[index] === value)
+    && report.agent.contextResults.length === 11 && [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1].every((value, index) => report.agent.contextResults[index] === value)
+    && report.agent.contextCloses.length === 11 && [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1].every((value, index) => report.agent.contextCloses[index] === value)
+    && report.agent.cancelled.length === 11 && [false, false, false, false, false, false, false, true, false, false, false].every((value, index) => report.agent.cancelled[index] === value)
+    && report.agent.errors.length === 0 && report.memoryRequestCount === 11, "CURSOR_CONTAINER_REPORT");
   return report;
 }
 
@@ -271,7 +272,7 @@ export async function runContainerCheck(candidatePath, reportPath, { releaseMani
     check(await hashFile(join(root, "seccomp-profile.json")) === provenance.seccomp.sha256, "CURSOR_CONTAINER_SECCOMP");
     await mkdir(join(root, "check"));
     for (const name of ["cursor-app-native-check.mjs", "cursor-app-protocol.mjs", "cursor-app-mock-server.mjs", "cursor-app-native-content-check.mjs",
-      "cursor-app-memory-check.mjs", "cursor-app-diagnostics.mjs", "codex-native-content-check.mjs"]) {
+      "cursor-app-memory-check.mjs", "cursor-app-repo-memory-check.mjs", "cursor-app-diagnostics.mjs", "codex-native-content-check.mjs"]) {
       await regularFile(join(scripts, name));
       await copyFile(join(scripts, name), join(root, "check", name));
     }

@@ -26,12 +26,16 @@ function field(number, value) {
   const bytes = Buffer.from(value);
   return Buffer.concat([varint(number * 8 + 2), varint(bytes.length), bytes]);
 }
-function runMessage(state = Buffer.alloc(0), { text = prompt, session = conversationId, userId = userMessageId, context, parts, prepend = [] } = {}) {
+function runMessage(state = Buffer.alloc(0), { text = prompt, session = conversationId, userId = userMessageId, context, parts,
+  prepend = [], modelId, requestedModelId, subagentTypeName } = {}) {
   const user = Buffer.concat([field(1, text), field(2, userId)]);
   const action = Buffer.concat([field(1, Buffer.concat([field(1, user), ...(context === undefined ? [] : [field(2, context)]),
     ...prepend.map((bytes) => field(4, bytes))])),
     ...(parts === undefined ? [] : [field(17, parts)])]);
-  return field(1, Buffer.concat([field(1, state), field(2, action), field(5, session)]));
+  return field(1, Buffer.concat([field(1, state), field(2, action), field(5, session),
+    ...(modelId === undefined ? [] : [field(3, field(1, modelId))]),
+    ...(requestedModelId === undefined ? [] : [field(9, field(1, requestedModelId))]),
+    ...(subagentTypeName === undefined ? [] : [field(11, subagentTypeName)])]));
 }
 function skillsReference(bytes, { byteLength = bytes.length, dynamic } = {}) {
   return Buffer.concat([field(3, createHash("sha256").update(bytes).digest()), scalar(4, byteLength),
@@ -66,6 +70,42 @@ function execControl(id, event = "close") {
 }
 function execContextResult(id, context) {
   return field(2, Buffer.concat([scalar(1, id), field(10, field(1, field(1, context)))]));
+}
+function execTaskResult(id, toolCallId, agentId) {
+  return field(2, Buffer.concat([scalar(1, id), field(15, toolCallId),
+    field(28, field(1, Buffer.concat([field(1, agentId), scalar(4, 1)])))]));
+}
+const taskStep = { kind: "task", subagentType: "memorax-repo-memory", model: "inherit", background: true,
+  description: "Synthetic Repo Memory job", prompt: "Exact delegated synthetic Repo Memory job\nclaim fixture ticket" };
+const taskModel = "synthetic-parent-model", childSession = "44444444-4444-4444-8444-444444444444";
+function managedSubagent() {
+  return Buffer.concat([field(1, "/synthetic/.cursor/agents/memorax-repo-memory.md"), field(2, taskStep.subagentType),
+    field(3, "Installed definition"), field(5, "inherit"), field(6, "Exact installed worker instructions"), scalar(8, 1)]);
+}
+async function pendingTask(t, options = {}) {
+  const server = await mock(t, { answers: ["Parent answer", "Child answer"], toolSteps(run, results) {
+    return run.subagentTypeName ? undefined : results.length ? undefined : taskStep;
+  }, ...options });
+  const parent = openRun(t, server);
+  parent.send(runMessage(Buffer.alloc(0), { requestedModelId: taskModel, context: field(22, managedSubagent()) }));
+  await waitFor(() => server.runs[0]?.pendingTool?.kind === "task" && parent.frames.length === 2);
+  return { server, parent, run: server.runs[0], pending: { ...server.runs[0].pendingTool } };
+}
+async function finishWrites(stream, run) {
+  await waitFor(() => run.kvWriteCount === 1);
+  for (const [index, write] of run.kvWrites.entries()) {
+    await waitFor(() => run.kvWriteCount === index + 1);
+    stream.send(acknowledgement(write.id));
+  }
+  await stream.done;
+  assert.equal(run.completed, true);
+}
+function taskNotification(state, toolCallId, { taskId = childSession, subagentId = childSession, kind = 2,
+  status = 1, reason = 1, session = conversationId, modelId = taskModel } = {}) {
+  const detail = Buffer.concat([field(1, taskId), scalar(2, kind), scalar(3, status), field(4, "private-title-canary"),
+    field(5, "private-detail-canary"), field(6, "/private/output-canary"), scalar(8, reason),
+    field(9, subagentId), field(10, toolCallId)]);
+  return field(1, Buffer.concat([field(1, state), field(2, field(12, field(1, detail))), field(3, field(1, modelId)), field(5, session)]));
 }
 function cancelAction(reason = "user_stopped_generation") { return field(4, field(3, field(1, reason))); }
 function identity(number) { return `${number.toString(16).padStart(8, "0")}-1111-4111-8111-111111111111`; }
@@ -464,6 +504,218 @@ test("native Read and Shell results require matching stream closes before tool p
   assert.equal(resumed.execResultCount, 0);
   assert.equal(resumed.execCloseCount, 0);
   assert.deepEqual(server.errors, []);
+});
+
+test("Task planning reports fixed model, options and native definition failures before any execution", async (t) => {
+  for (const [name, suffix] of [["model", "MODEL"], ["options", "OPTIONS"], ["definition", "DEFINITION"]]) await t.test(name, async (t) => {
+    const server = await mock(t, { toolSteps: () => name === "options"
+      ? { ...taskStep, subagentType: "private-options-canary" } : taskStep });
+    const stream = openRun(t, server);
+    stream.send(runMessage(Buffer.alloc(0), { requestedModelId: name === "model" ? undefined : taskModel,
+      context: name === "definition" ? Buffer.alloc(0) : field(22, managedSubagent()) }));
+    await stream.done;
+    assert.deepEqual(server.errors, [`CURSOR_APP_EXEC_TASK_${suffix}`]);
+    assert.deepEqual([server.runs[0].execRequestCount, server.runs[0].kvWriteCount], [0, 0]);
+    assert.equal(JSON.stringify(server.errors).includes("canary"), false);
+  });
+});
+
+test("native background Task binds its real child, expected failed finish and one completion notification", async (t) => {
+  const commands = ["node helper claim", "node helper finish"];
+  const fixture = await pendingTask(t, { toolSteps(run, results) {
+    if (!run.subagentTypeName) return results.length ? undefined : taskStep;
+    return results.length < 2 ? { kind: "shell", command: commands[results.length], workingDirectory: "/synthetic/workspace",
+      timeoutMs: 1000, ...(results.length === 1 ? { expectedExitCode: 1 } : {}) } : undefined;
+  } });
+  const { server, parent, run, pending } = fixture;
+  const child = openRun(t, server, { headers: { "x-request-id": identity(20) } });
+  child.send(runMessage(Buffer.alloc(0), { text: taskStep.prompt, session: childSession, userId: identity(21),
+    modelId: taskModel, subagentTypeName: taskStep.subagentType }));
+  await waitFor(() => server.runs[1]?.pendingTool?.kind === "shell");
+  const worker = server.runs[1];
+  assert.equal(worker.parentConversationId, conversationId);
+  assert.equal(worker.taskToolCallId, pending.toolCallId);
+  assert.equal(worker.modelId, run.modelId);
+  assert.equal(worker.prompt, taskStep.prompt);
+  parent.send(execTaskResult(pending.id, pending.toolCallId, childSession));
+  await waitFor(() => run.execResultCount === 1);
+  assert.equal(run.kvWriteCount, 0);
+  parent.send(execControl(pending.id));
+  await finishWrites(parent, run);
+  assert.equal(run.kvWrites.length, 4);
+  assert.deepEqual(run.toolResults, [{ kind: "task", agentId: childSession, isBackground: true, backgroundReason: 1 }]);
+  const outputs = ['{"ok":true,"status":"claimed"}', '{"ok":false,"status":"failed","failureReason":"artifact_validation_failed"}'];
+  for (const index of [0, 1]) {
+    await waitFor(() => worker.execRequestCount === index + 1);
+    const tool = { ...worker.pendingTool };
+    child.send(index === 0 ? execShellResult(tool.id, commands[index], "/synthetic/workspace", outputs[index])
+      : field(2, Buffer.concat([scalar(1, tool.id), field(15, tool.toolCallId), field(2, field(2, Buffer.concat([
+        field(1, commands[index]), field(2, "/synthetic/workspace"), scalar(3, 1), field(5, outputs[index]),
+      ])))])));
+    await waitFor(() => worker.execResultCount === index + 1);
+    assert.equal(worker.toolResults.length, index);
+    child.send(execControl(tool.id));
+  }
+  await finishWrites(child, worker);
+  assert.equal(worker.kvWrites.length, 5);
+  assert.deepEqual(worker.toolResults.map((result) => result.exitCode), [0, 1]);
+  assert.equal(worker.execRejection, undefined);
+  assert.equal(server.firstShellFailure, undefined);
+  const notice = openRun(t, server, { headers: { "x-request-id": identity(30) } });
+  notice.send(taskNotification(run.conversationStateBytes, pending.toolCallId));
+  for (const [index, write] of run.kvWrites.entries()) {
+    await waitFor(() => notice.frames.length === index + 1);
+    assert.deepEqual(notice.frames[index].body, readRequest(index + 1, write.blobId));
+    notice.send(readResult(index + 1, write.bytes));
+  }
+  await notice.done;
+  assert.equal(server.runs.length, 2);
+  assert.equal(server.notifications.length, 1);
+  assert.equal(server.notifications[0].completed, true);
+  assert.equal(server.notifications[0].kvWriteCount, 0);
+  assert.equal(server.notifications[0].kvReadCount, 4);
+  assert.equal(JSON.stringify(server.notifications).includes("private"), false);
+  assert.deepEqual(notice.frames.slice(-2), [{ flags: 0, body: field(1, field(14, Buffer.alloc(0))) },
+    { flags: 2, body: Buffer.from("{}") }]);
+  assert.deepEqual(server.errors, []);
+  const duplicate = openRun(t, server, { headers: { "x-request-id": identity(31) } });
+  duplicate.send(taskNotification(run.conversationStateBytes, pending.toolCallId));
+  await duplicate.done;
+  assert.deepEqual(server.errors, ["CURSOR_AGENT_TASK_NOTIFICATION_MISMATCH"]);
+});
+
+test("background Task rejects unrelated child Runs and does not accept a notification before actual completion", async (t) => {
+  for (const [name, changed] of [["prompt", { text: "unrelated prompt" }], ["model", { modelId: "other" }],
+    ["name", { subagentTypeName: "generic" }], ["parent-session", { session: conversationId }]]) await t.test(name, async (t) => {
+    const { server } = await pendingTask(t);
+    const child = openRun(t, server, { headers: { "x-request-id": identity(20) } });
+    child.send(runMessage(Buffer.alloc(0), { text: taskStep.prompt, session: childSession, userId: identity(21),
+      modelId: taskModel, subagentTypeName: taskStep.subagentType, ...changed }));
+    await child.done;
+    assert.deepEqual(server.errors, [name === "parent-session" ? "CURSOR_AGENT_CONVERSATION_BUSY" : "CURSOR_AGENT_TASK_CHILD_MISMATCH"]);
+    assert.equal(server.runs.length, 1);
+  });
+  await t.test("unregistered child", async (t) => {
+    const server = await mock(t);
+    const child = openRun(t, server);
+    child.send(runMessage(Buffer.alloc(0), { modelId: taskModel, subagentTypeName: taskStep.subagentType }));
+    await child.done;
+    assert.deepEqual(server.errors, ["CURSOR_AGENT_TASK_CHILD_MISMATCH"]);
+    assert.equal(server.runs.length, 0);
+  });
+  await t.test("notification without completed child", async (t) => {
+    const { server, parent, run, pending } = await pendingTask(t);
+    parent.send(execTaskResult(pending.id, pending.toolCallId, childSession));
+    parent.send(execControl(pending.id));
+    await finishWrites(parent, run);
+    const notice = openRun(t, server, { headers: { "x-request-id": identity(30) } });
+    notice.send(taskNotification(run.conversationStateBytes, pending.toolCallId));
+    await notice.done;
+    assert.equal(server.notifications.length, 0);
+    assert.deepEqual(server.errors, ["CURSOR_AGENT_TASK_NOTIFICATION_MISMATCH"]);
+  });
+  await t.test("Task response agent does not match real child", async (t) => {
+    const { server, parent, run, pending } = await pendingTask(t);
+    const child = openRun(t, server, { headers: { "x-request-id": identity(20) } });
+    child.send(runMessage(Buffer.alloc(0), { text: taskStep.prompt, session: childSession, userId: identity(21),
+      modelId: taskModel, subagentTypeName: taskStep.subagentType }));
+    await waitFor(() => server.runs.length === 2);
+    parent.send(execTaskResult(pending.id, pending.toolCallId, identity(99)));
+    await parent.done;
+    assert.equal(run.kvWriteCount, 0);
+    assert.deepEqual(server.errors, ["CURSOR_AGENT_TASK_CHILD_MISMATCH"]);
+  });
+});
+
+test("native SubagentsPart requires a present exact length and SHA256 before Task planning", async (t) => {
+  for (const mode of ["valid", "missing", "hash", "length", "typed", "fresh-empty"]) await t.test(mode, async (t) => {
+    const part = field(1, managedSubagent()), digest = createHash("sha256").update(part).digest();
+    const server = await mock(t, { toolSteps(run, results) {
+      if (mode === "fresh-empty" && !run.requestContextCloseCount) return { kind: "requestContext" };
+      return results.length ? undefined : taskStep;
+    } });
+    const stream = openRun(t, server);
+    const invalidPart = field(2, managedSubagent());
+    const content = mode === "typed" ? invalidPart : part;
+    stream.send(runMessage(Buffer.alloc(0), { modelId: taskModel,
+      parts: Buffer.concat([field(5, mode === "typed" ? createHash("sha256").update(content).digest() : digest),
+        scalar(6, content.length + (mode === "length" ? 1 : 0))]) }));
+    await waitFor(() => stream.frames.length === 1);
+    stream.send(readResult(1, mode === "missing" ? undefined : mode === "hash" ? Buffer.alloc(part.length) : content));
+    const run = server.runs[0];
+    if (mode === "valid") {
+      await waitFor(() => run.pendingTool?.kind === "task");
+      assert.equal(run.customSubagents[0].prompt, "Exact installed worker instructions");
+      assert.equal(run.subagentContextKvReadResultCount, 1);
+      assert.equal(run.contextKvReadResultCount, 0);
+      stream.send(execTaskResult(run.pendingTool.id, run.pendingTool.toolCallId, childSession));
+      stream.send(execControl(run.pendingTool.id));
+      await finishWrites(stream, run);
+      assert.deepEqual(server.errors, []);
+    } else {
+      if (mode === "fresh-empty") {
+        await waitFor(() => run.requestContextRequestCount === 1);
+        stream.send(execContextResult(2, scalar(42, 1)));
+        stream.send(execControl(2));
+      }
+      await stream.done;
+      assert.equal(run.kvWriteCount, 0);
+      assert.deepEqual(server.errors, [mode === "missing" ? "CURSOR_AGENT_KV_READ_MISSING" : mode === "typed"
+        ? "CURSOR_APP_PROTO_FIELD" : mode === "fresh-empty" ? "CURSOR_APP_EXEC_TASK_DEFINITION" : "CURSOR_AGENT_KV_READ_MISMATCH"]);
+    }
+  });
+});
+
+test("native Task notifications fail closed for wrong identities, status, model and parent history", async (t) => {
+  for (const [name, changes] of [["agent", { subagentId: identity(99) }], ["task", { taskId: identity(99) }],
+    ["kind", { kind: 1 }], ["status", { status: 2 }], ["progress", { reason: 2 }],
+    ["model", { modelId: "other" }], ["parent", { session: identity(99) }], ["history", {}], ["tool", {}]]) {
+    await t.test(name, async (t) => {
+      const { server, parent, run, pending } = await pendingTask(t);
+      parent.send(execTaskResult(pending.id, pending.toolCallId, childSession));
+      parent.send(execControl(pending.id));
+      await finishWrites(parent, run);
+      const child = openRun(t, server, { headers: { "x-request-id": identity(20) } });
+      child.send(runMessage(Buffer.alloc(0), { text: taskStep.prompt, session: childSession, userId: identity(21),
+        modelId: taskModel, subagentTypeName: taskStep.subagentType }));
+      await waitFor(() => server.runs.length === 2);
+      await finishWrites(child, server.runs[1]);
+      const notice = openRun(t, server, { headers: { "x-request-id": identity(30) } });
+      notice.send(taskNotification(name === "history" ? Buffer.alloc(0) : run.conversationStateBytes,
+        name === "tool" ? identity(99) : pending.toolCallId, changes));
+      await notice.done;
+      assert.equal(server.notifications.length, 0);
+      assert.equal(server.runs.length, 2);
+      assert.deepEqual(server.errors, [name === "history" ? "CURSOR_AGENT_HISTORY_MISMATCH" : "CURSOR_AGENT_TASK_NOTIFICATION_MISMATCH"]);
+      assert.equal(JSON.stringify(server.errors).includes("private"), false);
+    });
+  }
+});
+
+test("SubagentsPart keeps same-Run dynamic metadata and does not hide a conflicting complete inline catalog", async (t) => {
+  for (const mode of ["dynamic", "inline", "conflict"]) await t.test(mode, async (t) => {
+    const part = field(1, managedSubagent());
+    const server = await mock(t, { toolSteps() {} });
+    const stream = openRun(t, server);
+    const metadata = Buffer.concat([field(25, "Exact synthetic Hook context"), scalar(42, 0)]);
+    stream.send(runMessage(Buffer.alloc(0), { context: mode === "inline" ? metadata : mode === "conflict" ? scalar(42, 1) : Buffer.alloc(0),
+      parts: Buffer.concat([field(5, createHash("sha256").update(part).digest()), scalar(6, part.length),
+        ...(mode === "dynamic" ? [field(9, metadata)] : [])]) }));
+    await waitFor(() => stream.frames.length === 1);
+    stream.send(readResult(1, part));
+    const run = server.runs[0];
+    if (mode === "conflict") {
+      await stream.done;
+      assert.deepEqual(server.errors, ["CURSOR_AGENT_CONTEXT_CONFLICT"]);
+      assert.equal(run.kvWriteCount, 0);
+    } else {
+      await finishWrites(stream, run);
+      assert.equal(run.inputRequestContext.hooksAdditionalContext, "Exact synthetic Hook context");
+      assert.equal(run.inputRequestContext.customSubagentsInfoComplete, false);
+      assert.deepEqual(run.customSubagents, []);
+      assert.deepEqual(server.errors, []);
+    }
+  });
 });
 
 test("current Run SkillsPart GET restores its initial catalog without replacing Exec context or history reads", async (t) => {

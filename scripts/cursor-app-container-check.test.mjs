@@ -34,13 +34,13 @@ function nativeReport() {
   return { status: "PASS", client: "cursor", kind: "app-native-session-flows", platform: "linux", node: "24.15.0",
     version: "3.21.18", stage: "complete", evidence: { agentTransport: true, nativeHooks: true, exactAutomaticAdd: true,
       sameSessionFollowup: true, sessionIsolation: true, workspaceIsolation: true, appResume: true, skillSearch: true, skillAdd: true,
-      shellDenied: true, pendingShellInterrupted: true, sameSessionRecovered: true, cleanup: true,
-      nativeContent: [3, 6, 3, 9, 15, 21, 4, 3].map((blobCount) => ({ composerMatched: true, stateMatched: true, blobCount })) },
-    agent: { runs: 9, ancillaryRequestCount: 5, unsupportedRpcCount: 1, cancelled: [false, false, false, false, false, false, false, true, false],
-      errors: [], writes: [3, 3, 3, 3, 6, 6, 4, 0, 3], acknowledgements: [3, 3, 3, 3, 6, 6, 4, 0, 3], historyTurns: [0, 1, 0, 2, 3, 4, 0, 0, 0],
-      reads: [0, 3, 0, 6, 9, 15, 0, 0, 0], readResults: [0, 3, 0, 6, 9, 15, 0, 0, 0],
-      execRequests: [0, 0, 0, 0, 3, 3, 1, 1, 0], execResults: [0, 0, 0, 0, 3, 3, 1, 0, 0], execCloses: [0, 0, 0, 0, 3, 3, 1, 0, 0],
-      contextRequests: [1, 1, 1, 1, 1, 1, 1, 1, 1], contextResults: [1, 1, 1, 1, 1, 1, 1, 1, 1], contextCloses: [1, 1, 1, 1, 1, 1, 1, 1, 1] }, memoryRequestCount: 10 };
+      shellDenied: true, pendingShellInterrupted: true, sameSessionRecovered: true, repoMemoryWorker: true, cleanup: true,
+      nativeContent: [3, 6, 3, 9, 15, 21, 4, 3, 4].map((blobCount) => ({ composerMatched: true, stateMatched: true, blobCount })) },
+    agent: { runs: 11, ancillaryRequestCount: 5, unsupportedRpcCount: 1, cancelled: [false, false, false, false, false, false, false, true, false, false, false],
+      errors: [], writes: [3, 3, 3, 3, 6, 6, 4, 0, 3, 4, 5], acknowledgements: [3, 3, 3, 3, 6, 6, 4, 0, 3, 4, 5], historyTurns: [0, 1, 0, 2, 3, 4, 0, 0, 0, 0, 0],
+      reads: [0, 3, 0, 6, 9, 15, 0, 0, 0, 0, 0], readResults: [0, 3, 0, 6, 9, 15, 0, 0, 0, 0, 0],
+      execRequests: [0, 0, 0, 0, 3, 3, 1, 1, 0, 1, 2], execResults: [0, 0, 0, 0, 3, 3, 1, 0, 0, 1, 2], execCloses: [0, 0, 0, 0, 3, 3, 1, 0, 0, 1, 2],
+      contextRequests: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1], contextResults: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1], contextCloses: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1] }, memoryRequestCount: 11 };
 }
 
 test("macOS requires the same native content, memory operations and cleanup as Linux", () => {
@@ -71,6 +71,46 @@ test("Windows requires the same native content, memory operations and cleanup as
   for (const key of ["nativeHooks", "exactAutomaticAdd", "skillSearch", "skillAdd", "pendingShellInterrupted", "cleanup"]) {
     const changed = structuredClone(report); changed.evidence[key] = false;
     assert.throws(() => projectNativeReport(changed, { platform: "win32" }), { code: "CURSOR_CONTAINER_REPORT" });
+  }
+});
+
+test("every platform requires native Repo Memory worker evidence before reporting PASS", () => {
+  for (const platform of ["linux", "darwin", "win32"]) {
+    const input = { ...nativeReport(), platform };
+    assert.equal(projectNativeReport(input, { platform }).evidence.repoMemoryWorker, true);
+    for (const value of [undefined, false, null, 1, "true"]) {
+      const invalid = structuredClone(input);
+      if (value === undefined) delete invalid.evidence.repoMemoryWorker;
+      else invalid.evidence.repoMemoryWorker = value;
+      assert.throws(() => projectNativeReport(invalid, { platform }), { code: "CURSOR_CONTAINER_REPORT" });
+    }
+    const failure = { ...input, status: "FAIL", stage: "repo-memory-worker", errorCode: "CURSOR_APP_REPO_MEMORY_WORKER" };
+    failure.evidence = { ...input.evidence, repoMemoryWorker: false };
+    const projected = projectNativeReport(failure, { platform });
+    assert.equal(projected.evidence.repoMemoryWorker, false);
+    assert.equal(projected.stage, "repo-memory-worker");
+  }
+});
+
+test("Repo Memory evidence cannot hide missing parent or child execution, content or extra writeback", () => {
+  for (const platform of ["linux", "darwin", "win32"]) {
+    for (const mutate of [
+      (value) => { value.agent.runs = 9; },
+      (value) => { value.evidence.nativeContent.pop(); },
+      (value) => { value.evidence.nativeContent[8].blobCount = 3; },
+      (value) => { value.memoryRequestCount = 10; },
+      (value) => { value.memoryRequestCount = 12; },
+      ...["writes", "acknowledgements", "historyTurns", "reads", "readResults", "execRequests", "execResults",
+        "execCloses", "contextRequests", "contextResults", "contextCloses", "cancelled"].flatMap((key) => [
+        (value) => { value.agent[key].pop(); },
+        (value) => { value.agent[key][9] = typeof value.agent[key][9] === "boolean" ? true : value.agent[key][9] + 1; },
+        (value) => { value.agent[key][10] = typeof value.agent[key][10] === "boolean" ? true : value.agent[key][10] + 1; },
+      ]),
+    ]) {
+      const input = { ...nativeReport(), platform };
+      mutate(input);
+      assert.throws(() => projectNativeReport(input, { platform }), { code: "CURSOR_CONTAINER_REPORT" });
+    }
   }
 });
 
@@ -322,16 +362,16 @@ test("report projection drops raw diagnostics and requires completed native evid
   const report = projectNativeReport(input);
   assert.equal(report.status, "PASS");
   assert.equal(report.agent.ancillaryRequestCount, 5);
-  assert.deepEqual(report.agent.historyTurns, [0, 1, 0, 2, 3, 4, 0, 0, 0]);
-  assert.deepEqual(report.agent.reads, [0, 3, 0, 6, 9, 15, 0, 0, 0]);
-  assert.deepEqual(report.agent.readResults, [0, 3, 0, 6, 9, 15, 0, 0, 0]);
-  assert.deepEqual(report.agent.execRequests, [0, 0, 0, 0, 3, 3, 1, 1, 0]);
-  assert.deepEqual(report.agent.execResults, [0, 0, 0, 0, 3, 3, 1, 0, 0]);
-  assert.deepEqual(report.agent.execCloses, [0, 0, 0, 0, 3, 3, 1, 0, 0]);
-  assert.deepEqual(report.agent.contextRequests, [1, 1, 1, 1, 1, 1, 1, 1, 1]);
-  assert.deepEqual(report.agent.contextResults, [1, 1, 1, 1, 1, 1, 1, 1, 1]);
-  assert.deepEqual(report.agent.contextCloses, [1, 1, 1, 1, 1, 1, 1, 1, 1]);
-  assert.deepEqual(report.agent.cancelled, [false, false, false, false, false, false, false, true, false]);
+  assert.deepEqual(report.agent.historyTurns, [0, 1, 0, 2, 3, 4, 0, 0, 0, 0, 0]);
+  assert.deepEqual(report.agent.reads, [0, 3, 0, 6, 9, 15, 0, 0, 0, 0, 0]);
+  assert.deepEqual(report.agent.readResults, [0, 3, 0, 6, 9, 15, 0, 0, 0, 0, 0]);
+  assert.deepEqual(report.agent.execRequests, [0, 0, 0, 0, 3, 3, 1, 1, 0, 1, 2]);
+  assert.deepEqual(report.agent.execResults, [0, 0, 0, 0, 3, 3, 1, 0, 0, 1, 2]);
+  assert.deepEqual(report.agent.execCloses, [0, 0, 0, 0, 3, 3, 1, 0, 0, 1, 2]);
+  assert.deepEqual(report.agent.contextRequests, [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]);
+  assert.deepEqual(report.agent.contextResults, [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]);
+  assert.deepEqual(report.agent.contextCloses, [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]);
+  assert.deepEqual(report.agent.cancelled, [false, false, false, false, false, false, false, true, false, false, false]);
   assert.equal(report.evidence.skillSearch, true);
   assert.equal(report.evidence.skillAdd, true);
   assert.deepEqual(report.evidence.nativeContent, nativeReport().evidence.nativeContent);

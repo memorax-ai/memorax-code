@@ -10,6 +10,51 @@ import { stopWindowsApp } from "./cursor-app-windows-runtime.mjs";
 
 const source = (await readFile(new URL("./cursor-app-native-check.mjs", import.meta.url), "utf8")).replaceAll("\r\n", "\n");
 
+test("Skill memory validation retains its turn workspace after the worker changes workspace", () => {
+  const body = source.split("function assertSkillMemory(")[1]?.split("\nfunction toolSteps(")[0];
+  assert.ok(body);
+  const validate = runInNewContext(`(function assertSkillMemory(${body})`, {
+    workspace: "/owned/cursor-repo-memory", basename,
+    skillQuery: "query", searchMemory: "search", skillMemory: "add", skillReason: "reason",
+    fixtureKey: "synthetic-key", fixtureUser: "synthetic-user",
+    assertCursorAppMemoryOperation(options) { return options; },
+  });
+  for (const operation of ["search", "add"]) {
+    assert.equal(validate(operation, {}, {}, "original-workspace").workspaceName, "original-workspace");
+  }
+  assert.match(source, /assertSkillMemory\(fixture\.operation, result, memoryRequests\[fixture\.operation === "search" \? 4 : 6\], fixture\.workspaceName\)/);
+  assert.match(source, /assertSkillMemory\(operation, JSON\.parse\(agent\.runs\[index\]\.toolResults\[2\]\.stdout\), memoryRequests\[index === 4 \? 4 : 6\], turns\[index\]\.workspaceName\)/);
+});
+
+test("Repo Memory fixture publishes local mainline authority without contacting a remote", async () => {
+  const body = source.split("async function prepareRepoMemoryWorkspace(")[1]?.split("\nfunction check(")[0];
+  assert.ok(body);
+  const calls = [], head = "a".repeat(40), env = { HOME: "/owned/home" };
+  const prepare = runInNewContext(`(async function prepareRepoMemoryWorkspace(${body})`, {
+    root: "/owned", join, env,
+    async mkdir(path) { assert.equal(path, join("/owned", "cursor-repo-memory")); },
+    async writeFile(path, content) {
+      assert.equal(path, join("/owned", "cursor-repo-memory", "README.md"));
+      assert.match(content, /Synthetic Cursor/);
+    },
+    async exec(file, args, options) {
+      assert.equal(file, "git"); assert.equal(options.env, env);
+      assert.equal(options.cwd, join("/owned", "cursor-repo-memory"));
+      assert.equal(options.timeout, 10000); assert.equal(options.shell, undefined);
+      calls.push(Array.from(args));
+      return { stdout: args[0] === "rev-parse" ? `${head}\n` : "" };
+    },
+    check(value) { assert.ok(value); },
+  });
+  const result = await prepare();
+  assert.equal(result.head, head);
+  assert.equal(result.repo, join("/owned", "cursor-repo-memory"));
+  assert.deepEqual(calls.slice(-3), [["rev-parse", "HEAD"], ["update-ref", "refs/remotes/origin/main", head],
+    ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]]);
+  assert.ok(calls.every((args) => !args.includes("fetch") && !args.includes("push") && !args.includes("pull")));
+  assert.match(source, /GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: join\(home, "missing-git-config"\), GIT_TERMINAL_PROMPT: "0"/);
+});
+
 test("actual candidate commands use the owned spawn on every platform and preserve outcomes", async () => {
   const body = source.split("async function command(")[1]?.split("\nasync function ownedProcessesRemain(")[0];
   const cliBody = source.split("  cli = ")[1]?.split(";\n")[0];
@@ -313,6 +358,7 @@ test("native sequence opens a second workspace then restores the original sessio
         assert.equal(context.workspace, firstWorkspace); context.interruption = { sessionId: "session-cancel" };
       },
       async assertInterrupted(options) { assert.equal(options.recovered, true); },
+      async runRepoMemoryWorker() { assert.equal(turns.length, 8); },
       check(value, code) { assert.ok(value, code); },
     };
     await runInNewContext(`(async () => {${body}})()`, context, { timeout: 100 });
