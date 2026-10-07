@@ -558,7 +558,7 @@ function repoMemoryTools(run, results) {
   }
   return { kind: "shell", command: shellCommand([invocation.executable, ...invocation.args], invocation.env),
     workingDirectory: workspace, timeoutMs: 20000, ...(results.length === 1 ? { expectedExitCode: 1 } : {}),
-    ...(process.platform === "darwin" ? { networkAccess: true } : {}) };
+    ...(process.platform === "darwin" ? results.length === 1 ? { fullPermissions: true } : { networkAccess: true } : {}) };
 }
 
 function assertRepoMemoryNativeContent() {
@@ -566,16 +566,19 @@ function assertRepoMemoryNativeContent() {
   assertCursorAppNativeSubagent({ databasePath: env.MEMORAX_CODE_CURSOR_DATABASE_PATH,
     parentSessionId: parent.conversationId, childSessionId: child.conversationId });
   const notifications = agent.notifications.filter((run) => run.conversationId === parent.conversationId);
-  check(notifications.length <= 1, "CURSOR_APP_REPO_MEMORY_NOTIFICATION");
+  check(notifications.length === 1, "CURSOR_APP_REPO_MEMORY_NOTIFICATION");
   const notification = notifications[0], item = notification?.notifications?.[0];
-  if (notification) check(notification.completed && !notification.error && notification.notifications.length === 1
+  check(notification.completed && !notification.error && notification.notifications.length === 1
     && item.subagentId === child.conversationId && item.toolCallId === child.taskToolCallId,
   "CURSOR_APP_REPO_MEMORY_NOTIFICATION");
-  // Background notifications do not checkpoint a new user graph or persisted generation.
-  return assertCursorAppNativeContent({ databasePath: env.MEMORAX_CODE_CURSOR_DATABASE_PATH,
-    sessionId: parent.conversationId, generationId: parent.requestId,
-    conversationStateBytes: parent.conversationStateBytes,
-    kvWrites: parent.kvWrites });
+  // A background wakeup can persist its generation later, without a new user checkpoint.
+  const snapshot = { databasePath: env.MEMORAX_CODE_CURSOR_DATABASE_PATH,
+    sessionId: parent.conversationId, conversationStateBytes: parent.conversationStateBytes, kvWrites: parent.kvWrites };
+  try { return assertCursorAppNativeContent({ ...snapshot, generationId: parent.requestId }); }
+  catch (error) {
+    if (error.code !== "CURSOR_APP_DATABASE_GENERATION_MISMATCH") throw error;
+    return assertCursorAppNativeContent({ ...snapshot, generationId: notification.requestId });
+  }
 }
 
 async function runRepoMemoryWorker() {
@@ -630,9 +633,15 @@ async function runRepoMemoryWorker() {
       && run.requestContextRequestCount === 1 && run.requestContextResultCount === 1 && run.requestContextCloseCount === 1,
     "CURSOR_APP_REPO_MEMORY_TRANSPORT");
   }
-  await waitFor(() => {
+  await waitFor(async () => {
+    check(!agent.errors.length, agent.errors[0]);
     try {
       repoMemory.content = assertRepoMemoryNativeContent();
+      for (const run of [parent, child]) {
+        const composer = page.locator(`[data-composer-id="${run.conversationId}"][data-composer-status]`
+          + (run === child ? '[data-composer-location="editor"]' : "") + ":visible");
+        if (await composer.count() !== 1 || await composer.getAttribute("data-composer-status") !== "completed") return false;
+      }
       return true;
     } catch (error) { report.nativeContentError = safeCode(error); return false; }
   }, "CURSOR_APP_REPO_MEMORY_PERSISTENCE");

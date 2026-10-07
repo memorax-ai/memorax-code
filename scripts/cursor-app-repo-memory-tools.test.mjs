@@ -18,6 +18,10 @@ const approvalStart = source.indexOf("  const approved = new Set(), opened = new
 const approvalEnd = source.indexOf("\n  const [parent, child] = agent.runs.slice(repoMemory.runIndex);", approvalStart);
 assert.ok(approvalStart > contentEnd && approvalEnd > approvalStart);
 const approvalBody = source.slice(approvalStart, approvalEnd);
+const persistenceStart = source.indexOf("  await waitFor(async () => {", approvalEnd);
+const persistenceEnd = source.indexOf('\n  }, "CURSOR_APP_REPO_MEMORY_PERSISTENCE");', persistenceStart);
+assert.ok(persistenceStart > approvalEnd && persistenceEnd > persistenceStart);
+const persistenceBody = source.slice(persistenceStart + "  await waitFor(".length, persistenceEnd + "\n  }".length);
 const marker = "MemoraX Code missing Repo Memory build: launch this native background delegation once, then continue your task:";
 
 function fixture(platform = "linux") {
@@ -83,6 +87,8 @@ test("Repo Memory tools require native context, then parent Task and child claim
     const finish = f.run(f.child, [f.claimResult]);
     assert.equal(finish.kind, "shell");
     assert.equal(finish.expectedExitCode, 1);
+    assert.equal(finish.fullPermissions, platform === "darwin" ? true : undefined);
+    assert.equal(finish.networkAccess, undefined);
     assert.deepEqual(f.commands[1], { args: [f.invocation("finish", f.token).executable, ...f.invocation("finish", f.token).args],
       env: f.invocation("finish", f.token).env });
     assert.equal(f.repoMemory.rejected, undefined);
@@ -155,7 +161,7 @@ test("Repo Memory finish failures retain only existing sanitized Shell diagnosti
   assert.equal(f.repoMemory.rejected, undefined);
 });
 
-function nativeContentFixture() {
+function nativeContentFixture({ generationId = "parent-generation", failureCode } = {}) {
   const parent = { conversationId: "parent-session", requestId: "parent-generation",
     conversationStateBytes: Buffer.from("parent-state"), kvWrites: [{ bytes: Buffer.from("parent-blob") }] };
   const child = { conversationId: "child-session", taskToolCallId: "parent-task" };
@@ -167,14 +173,22 @@ function nativeContentFixture() {
   const run = runInNewContext(`(${contentBody})`, {
     agent, repoMemory: { runIndex: 1 }, env: { MEMORAX_CODE_CURSOR_DATABASE_PATH: "/owned/state.vscdb" },
     assertCursorAppNativeSubagent(options) { subagentCalls.push(options); },
-    assertCursorAppNativeContent(options) { contentCalls.push(options); return evidence; },
+    assertCursorAppNativeContent(options) {
+      contentCalls.push(options);
+      const code = failureCode ?? (options.generationId === generationId ? undefined : "CURSOR_APP_DATABASE_GENERATION_MISMATCH");
+      if (code) throw Object.assign(new Error(code), { code });
+      return evidence;
+    },
     check(value, code) { if (!value) throw Object.assign(new Error(code), { code }); },
   }, { timeout: 100 });
   return { run, agent, parent, child, notification, subagentCalls, contentCalls, evidence };
 }
 
-test("Repo Memory native content uses the completed parent graph when no notification exists", () => {
+test("Repo Memory native content waits for the background notification before cleanup", () => {
   const f = nativeContentFixture();
+  assert.throws(() => f.run(), { code: "CURSOR_APP_REPO_MEMORY_NOTIFICATION" });
+  assert.equal(f.contentCalls.length, 0);
+  f.agent.notifications.push(f.notification);
   assert.equal(f.run(), f.evidence);
   assert.deepEqual({ ...f.subagentCalls[0] }, { databasePath: "/owned/state.vscdb",
     parentSessionId: f.parent.conversationId, childSessionId: f.child.conversationId });
@@ -195,6 +209,25 @@ test("Repo Memory background notification does not replace the parent's persiste
   f.agent.notifications.push({ ...f.notification });
   assert.throws(() => f.run(), { code: "CURSOR_APP_REPO_MEMORY_NOTIFICATION" });
   assert.equal(f.contentCalls.length, 1, "A later duplicate must be rechecked before reading native content");
+});
+
+test("Repo Memory accepts only the parent or its verified notification generation with the same checkpoint", () => {
+  for (const generationId of ["parent-generation", "notification-generation", "foreign-generation"]) {
+    const f = nativeContentFixture({ generationId });
+    f.agent.notifications.push(f.notification);
+    if (generationId === "foreign-generation") assert.throws(() => f.run(), { code: "CURSOR_APP_DATABASE_GENERATION_MISMATCH" });
+    else assert.equal(f.run(), f.evidence);
+    assert.equal(f.contentCalls.length, generationId === "parent-generation" ? 1 : 2);
+    for (const call of f.contentCalls) {
+      assert.equal(call.conversationStateBytes, f.parent.conversationStateBytes);
+      assert.equal(call.kvWrites, f.parent.kvWrites);
+    }
+  }
+  for (const failureCode of ["CURSOR_APP_DATABASE_STATE_MISMATCH", "CURSOR_APP_DATABASE_BLOB_MISMATCH"]) {
+    const f = nativeContentFixture({ failureCode }); f.agent.notifications.push(f.notification);
+    assert.throws(() => f.run(), { code: failureCode });
+    assert.equal(f.contentCalls.length, 1);
+  }
 });
 
 test("Repo Memory native content rejects foreign, incomplete, failed and ambiguous notifications", () => {
@@ -274,4 +307,60 @@ test("Repo Memory opens the missing native child in a new tab once, then tracks 
   } });
   assert.deepEqual(f.clicked, [{ toolCallId: "claim-tool", timeout: 2000 }, { toolCallId: "finish-tool", timeout: 2000 }]);
   assert.deepEqual({ ...f.child.shellApproval }, { toolCallId: "finish-tool", clicked: true });
+});
+
+function persistenceFixture() {
+  const f = nativeContentFixture(), report = {}, repoMemory = {}, events = [];
+  f.agent.errors = [];
+  f.agent.notifications.push(f.notification);
+  const ui = { parent: { count: 1, status: "completed" }, child: { count: 1, status: "completed" } };
+  const poll = runInNewContext(`(${persistenceBody})`, {
+    agent: f.agent, parent: f.parent, child: f.child, repoMemory, report,
+    assertRepoMemoryNativeContent() { events.push("snapshot"); return f.run(); },
+    page: { locator(selector) {
+      const role = selector === '[data-composer-id="parent-session"][data-composer-status]:visible' ? "parent" : "child";
+      if (role === "child") assert.equal(selector,
+        '[data-composer-id="child-session"][data-composer-status][data-composer-location="editor"]:visible');
+      events.push(role);
+      return { count: async () => ui[role].count, async getAttribute(name) {
+        assert.equal(name, "data-composer-status"); return ui[role].status;
+      } };
+    } },
+    safeCode: (error) => error.code,
+    check(value, code) { if (!value) throw Object.assign(new Error(code), { code }); },
+  }, { timeout: 100 });
+  return { ...f, poll, ui, report, repoMemory, events };
+}
+
+test("Repo Memory persistence requires the strict native snapshot and unique completed parent and child editors", async () => {
+  const f = persistenceFixture();
+  assert.equal(await f.poll(), true);
+  assert.deepEqual(f.events, ["snapshot", "parent", "child"]);
+  assert.equal(f.repoMemory.content, f.evidence);
+  assert.equal(f.report.nativeContentError, undefined);
+  for (const role of ["parent", "child"]) for (const change of [
+    { count: 0 }, { count: 2 }, { status: "generating" }, { status: "cancelled" }, { status: null },
+  ]) {
+    const pending = persistenceFixture(); Object.assign(pending.ui[role], change);
+    assert.equal(await pending.poll(), false);
+  }
+});
+
+test("Repo Memory persistence waits on missing or invalid native notifications before examining UI status", async () => {
+  for (const change of [(f) => { f.agent.notifications = []; },
+    (f) => { f.notification.notifications[0].subagentId = "foreign-child"; }]) {
+    const f = persistenceFixture(); change(f);
+    assert.equal(await f.poll(), false);
+    assert.deepEqual(f.events, ["snapshot"]);
+    assert.equal(f.report.nativeContentError, "CURSOR_APP_REPO_MEMORY_NOTIFICATION");
+  }
+});
+
+test("Repo Memory persistence propagates agent errors instead of retrying them as a pending snapshot", async () => {
+  const f = persistenceFixture();
+  f.agent.errors.push("CURSOR_AGENT_EXEC_DUPLICATE");
+  await assert.rejects(f.poll(), { code: "CURSOR_AGENT_EXEC_DUPLICATE" });
+  assert.deepEqual(f.events, []);
+  assert.equal(f.repoMemory.content, undefined);
+  assert.equal(f.report.nativeContentError, undefined);
 });

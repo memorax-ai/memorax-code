@@ -82,6 +82,11 @@ const shellOutputMarkers = {
   nodeModuleNotFound: /(?:^|\r?\n)(?:Error \[ERR_MODULE_NOT_FOUND\]:|Error: Cannot find module )/,
   commandNotFound: /(?:^|\r?\n)env: (?:memorax-cli|node): No such file or directory(?:\r?\n|$)/,
   permissionDenied: launchMarkers.permissionDenied,
+  jobBusy: /^\s*native repo memory job is busy\s*$/,
+  jobInvalid: /^\s*native repo memory job (?:identity|lease) is invalid\s*$/,
+  directoryConflict: /(?:^|\r?\n)(?:Error: )?(?:ENOTEMPTY|EEXIST): /,
+  pathMissing: /(?:^|\r?\n)(?:Error: )?ENOENT: /,
+  readOnlyFilesystem: /(?:^|\r?\n)(?:Error: )?EROFS: /,
 };
 
 function projectShellOutputDiagnostics(value) {

@@ -19,7 +19,8 @@ test("Shell failure output keeps only recognized CLI JSON codes and fixed stderr
   });
   assert.deepEqual(output, { stdoutStatus: "present", stderrStatus: "present", cliJson: "valid",
     errorCode: "MEMORY_CONFIG_MISSING", stage: "configuration", systemCode: "ENOENT",
-    markers: { unsupportedNodeVersion: false, nodeModuleNotFound: true, commandNotFound: false, permissionDenied: true } });
+    markers: { unsupportedNodeVersion: false, nodeModuleNotFound: true, commandNotFound: false, permissionDenied: true,
+      jobBusy: false, jobInvalid: false, directoryConflict: false, pathMissing: false, readOnlyFilesystem: false } });
   assert.equal(JSON.stringify(output).includes(privateCanary), false);
   const result = projectCursorAppShellDiagnostics({ rejectionKind: 2, approvalClicked: true, exitCode: 1, output });
   assert.deepEqual(result.output, output);
@@ -73,6 +74,61 @@ test("Shell stderr markers are bounded fixed text observations, never diagnostic
   const output = collectCursorAppShellOutputDiagnostics({ stdout: { status: "present", text: "Permission denied" },
     stderr: { status: "present", text: "private command_not_found ERR_MODULE_NOT_FOUNDish" } });
   assert.ok(Object.values(output.markers).every((value) => value === false));
+});
+
+test("Shell Repo Memory markers require the complete known job error after trimming", () => {
+  for (const [marker, message] of [
+    ["jobBusy", "native repo memory job is busy"],
+    ["jobInvalid", "native repo memory job identity is invalid"],
+    ["jobInvalid", "native repo memory job lease is invalid"],
+  ]) {
+    const output = collectCursorAppShellOutputDiagnostics({ stderr: { status: "present", text: ` \r\n${message}\r\n ` } });
+    assert.equal(output.markers[marker], true);
+    assert.equal(output.errorCode, "absent");
+    for (const text of [`${privateCanary}: ${message}`, `${message}: ${privateCanary}`, `${message}\n${privateCanary}`]) {
+      const rejected = collectCursorAppShellOutputDiagnostics({ stderr: { status: "present", text } });
+      assert.ok(Object.values(rejected.markers).every((value) => value === false));
+      assert.equal(JSON.stringify(rejected).includes(privateCanary), false);
+    }
+  }
+});
+
+test("Shell filesystem markers recognize only bounded Node error prefixes and redact their details", () => {
+  for (const [marker, code] of [["directoryConflict", "ENOTEMPTY"], ["directoryConflict", "EEXIST"],
+    ["pathMissing", "ENOENT"], ["readOnlyFilesystem", "EROFS"]]) {
+    for (const prefix of ["", "Error: ", `${privateCanary}\r\n`]) {
+      const output = collectCursorAppShellOutputDiagnostics({ stderr: {
+        status: "present", text: `${prefix}${code}: private operation '${privateCanary}'\n`,
+      } });
+      assert.equal(output.markers[marker], true);
+      assert.equal(JSON.stringify(output).includes(privateCanary), false);
+      assert.deepEqual(projectCursorAppShellDiagnostics({ rejectionKind: 2, output }).output, output);
+    }
+    for (const text of [`${privateCanary}: ${code}: unavailable`, `${code}_PRIVATE: unavailable`,
+      `${code} private operation`, `error: ${code}: unavailable`]) {
+      const output = collectCursorAppShellOutputDiagnostics({ stderr: { status: "present", text } });
+      assert.ok(Object.values(output.markers).every((value) => value === false));
+    }
+    const oversized = collectCursorAppShellOutputDiagnostics({ stderr: {
+      status: "present", text: `${code}: ${"x".repeat(65536)}`,
+    } });
+    assert.equal(oversized.stderrStatus, "oversized");
+    assert.equal(oversized.markers[marker], false);
+  }
+});
+
+test("Shell job and filesystem report markers are an exact boolean-only allowlist", () => {
+  const markers = { jobBusy: true, jobInvalid: true, directoryConflict: true, pathMissing: true, readOnlyFilesystem: true };
+  const result = projectCursorAppShellDiagnostics({ rejectionKind: 2, output: {
+    markers: { ...markers, [privateCanary]: true }, stderr: privateCanary, job: { token: privateCanary },
+  } });
+  for (const marker of Object.keys(markers)) assert.equal(result.output.markers[marker], true);
+  assert.equal(Object.hasOwn(result.output.markers, privateCanary), false);
+  assert.equal(JSON.stringify(result).includes(privateCanary), false);
+  const forged = projectCursorAppShellDiagnostics({ rejectionKind: 2, output: {
+    markers: Object.fromEntries(Object.keys(markers).map((marker) => [marker, privateCanary])),
+  } });
+  assert.ok(Object.values(forged.output.markers).every((value) => value === false));
 });
 
 test("Shell diagnostics bind completed approval clicks to the exact failed tool and redact all identities", () => {

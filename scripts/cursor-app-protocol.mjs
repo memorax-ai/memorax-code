@@ -490,14 +490,17 @@ export function createToolExecution(run, step, { id, toolCallId }) {
   } else if (step?.kind === "shell" && validText(step.command) && validText(step.workingDirectory)
     && Number.isInteger(step.timeoutMs) && step.timeoutMs > 0 && step.timeoutMs <= 60_000
     && (step.networkAccess === undefined || step.networkAccess === true)
+    && (step.fullPermissions === undefined || step.fullPermissions === true)
+    && !(step.networkAccess && step.fullPermissions)
     && (step.expectRejection === undefined || step.expectRejection === true)
     && (step.expectedExitCode === undefined || [0, 1].includes(step.expectedExitCode))
     && !(step.expectRejection && step.expectedExitCode !== undefined)
-    && Object.keys(step).every((key) => ["kind", "command", "workingDirectory", "timeoutMs", "networkAccess", "expectRejection", "expectedExitCode"].includes(key))) {
+    && Object.keys(step).every((key) => ["kind", "command", "workingDirectory", "timeoutMs", "networkAccess", "fullPermissions", "expectRejection", "expectedExitCode"].includes(key))) {
     argsBytes = Buffer.concat([field(1, step.command), field(2, step.workingDirectory), scalar(3, step.timeoutMs), field(4, toolCallId),
       // No invented command parse or approval bypass: the App owns permission review.
       field(8, scalar(1, 1)),
-      ...(step.networkAccess ? [field(9, Buffer.concat([scalar(1, 2), scalar(2, 1)]))] : []),
+      ...(step.fullPermissions ? [field(9, scalar(1, 1))]
+        : step.networkAccess ? [field(9, Buffer.concat([scalar(1, 2), scalar(2, 1)]))] : []),
       scalar(13, 1), scalar(14, step.timeoutMs), scalar(17, 1),
       field(21, identity(run.conversationId)), field(23, identity(run.requestId))]);
     toolArgsBytes = argsBytes;

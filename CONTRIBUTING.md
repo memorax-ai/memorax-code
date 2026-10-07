@@ -1258,6 +1258,9 @@ turn still requires exact automatic Add; the child must not write back as an
 ordinary user conversation. The final total stays at eleven Memory requests,
 including after App and Backend cleanup. This checks native delegation and failure handling,
 not successful Repo Memory generation or worker permission inheritance.
+On macOS, only the worker's finish command requests native full command
+permissions and still requires the App's Run approval. Other commands and
+Chromium sandbox settings remain unchanged.
 
 Acceptance requires all of the following:
 
@@ -1272,7 +1275,8 @@ Acceptance requires all of the following:
   of `1, 0, 0`. The Repo Memory parent and child add KV write/acknowledgement
   counts of `4, 5`, tool request/result/close counts of `1, 2`, and no completed
   history or history KV reads. Native background completion notifications do
-  not count as additional user or worker turns.
+  not count as additional user or worker turns. The matching completion
+  notification and both native completed states must settle before App cleanup.
   Every run completes exactly one separate RequestContext request,
   result and close; this protocol exchange is neither a user-visible tool step
   nor a persisted conversation step.

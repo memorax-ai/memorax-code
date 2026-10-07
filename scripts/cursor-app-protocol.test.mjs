@@ -452,16 +452,23 @@ test("Shell Exec leaves native approval enabled and preserves exact successful n
   assert.throws(() => completeToolExecution(execution, { ...result, command: "changed" }), /CURSOR_APP_EXEC_IDENTITY/);
 });
 
-test("Shell network requests preserve the filesystem sandbox and native approval", () => {
+test("Shell permission requests encode exact policies without bypassing native approval", () => {
   const step = { kind: "shell", command: "memorax-cli search --query synthetic", workingDirectory: "/synthetic/workspace", timeoutMs: 10_000 };
-  const execution = createToolExecution(run(), { ...step, networkAccess: true }, { id: 5, toolCallId: userMessageId });
-  const args = message(field(1, step.command), field(2, step.workingDirectory), scalar(3, step.timeoutMs), field(4, userMessageId),
-    field(8, scalar(1, 1)), field(9, message(scalar(1, 2), scalar(2, 1))),
-    scalar(13, 1), scalar(14, step.timeoutMs), scalar(17, 1), field(21, conversationId), field(23, requestId));
-  assert.deepEqual(execution.execMessage, field(2, message(scalar(1, 5), field(15, userMessageId), field(2, args))));
+  for (const [extra, policy] of [[{}, []],
+    [{ networkAccess: true }, [field(9, message(scalar(1, 2), scalar(2, 1)))]],
+    [{ fullPermissions: true }, [field(9, scalar(1, 1))]]]) {
+    const execution = createToolExecution(run(), { ...step, ...extra }, { id: 5, toolCallId: userMessageId });
+    const args = message(field(1, step.command), field(2, step.workingDirectory), scalar(3, step.timeoutMs), field(4, userMessageId),
+      field(8, scalar(1, 1)), ...policy,
+      scalar(13, 1), scalar(14, step.timeoutMs), scalar(17, 1), field(21, conversationId), field(23, requestId));
+    assert.deepEqual(execution.execMessage, field(2, message(scalar(1, 5), field(15, userMessageId), field(2, args))));
+    assert.deepEqual(execution.toolArgsBytes, args);
+  }
   for (const extra of [
     ...[false, "true", 1, null, {}].map((networkAccess) => ({ networkAccess })),
-    { networkAccess: true, skipApproval: true }, { requestedSandboxPolicy: {} }, { sandboxPolicy: {} },
+    ...[false, "true", 1, null, {}].map((fullPermissions) => ({ fullPermissions })),
+    { networkAccess: true, fullPermissions: true }, { networkAccess: true, skipApproval: true },
+    { fullPermissions: true, skipApproval: true }, { requestedSandboxPolicy: {} }, { sandboxPolicy: {} },
   ]) assert.throws(() => createToolExecution(run(), { ...step, ...extra }, { id: 5, toolCallId: userMessageId }),
     /CURSOR_APP_EXEC_OPTIONS/);
 });
