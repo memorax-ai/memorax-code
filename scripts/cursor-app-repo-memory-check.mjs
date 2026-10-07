@@ -81,10 +81,11 @@ export function parseCursorRepoMemoryClaim(stdout, request) {
 }
 
 export function assertCursorRepoMemoryRejected(stdout, claimed) {
-  const suffix = "FINISH_INVALID", result = json(stdout, suffix);
-  validateSummary(result, claimed, suffix);
-  check(result.ok === false && result.status === "failed" && result.failureReason === "artifact_validation_failed"
-    && result.snapshotHead === claimed.snapshotHead && result.expiresAt === claimed.expiresAt, suffix);
+  const result = json(stdout, "FINISH_JSON_INVALID");
+  validateSummary(result, claimed, "FINISH_SUMMARY_MISMATCH");
+  check(result.ok === false && result.status === "failed" && result.failureReason === "artifact_validation_failed",
+    "FINISH_OUTCOME_MISMATCH");
+  check(result.snapshotHead === claimed.snapshotHead && result.expiresAt === claimed.expiresAt, "FINISH_AUTHORITY_MISMATCH");
   return true;
 }
 

@@ -1158,6 +1158,13 @@ test("tool planning keeps only explicitly allowed fixed assertion codes and reje
       "CURSOR_APP_PERMISSION_IDENTITY", "CURSOR_APP_PERMISSION_REJECTION",
       "CURSOR_APP_SKILL_ATTACHMENT_PATH", "CURSOR_APP_SKILL_ATTACHMENT_TYPE", "CURSOR_APP_SKILL_ATTACHMENT_CONTENT"].map((code) =>
       [code, () => { throw Object.assign(new Error("private-plan-canary"), { nativeCode: code }); }, code]),
+    ...["DEFINITION_COUNT", "DEFINITION_PATH", "DEFINITION_MODEL", "DEFINITION_BACKGROUND", "DEFINITION_PROMPT",
+      "FINISH_JSON_INVALID", "FINISH_SUMMARY_MISMATCH", "FINISH_OUTCOME_MISMATCH", "FINISH_AUTHORITY_MISMATCH"].map((suffix) => {
+      const code = `CURSOR_APP_REPO_MEMORY_${suffix}`;
+      return [code, () => { throw Object.assign(new Error("private-plan-canary"), { code }); }, code];
+    }),
+    ...["DEFINITION", "FINISH_INVALID"].map((suffix) => [`retired worker code ${suffix}`,
+      () => { throw { code: `CURSOR_APP_REPO_MEMORY_${suffix}` }; }, "CURSOR_AGENT_TOOL_PLAN_FAILED"]),
     ["private exception", () => { throw new Error("private-plan-canary"); }, "CURSOR_AGENT_TOOL_PLAN_FAILED"],
     ["invented code", () => { throw { code: "CURSOR_APP_SKILL_PRIVATE_CANARY" }; }, "CURSOR_AGENT_TOOL_PLAN_FAILED"],
     ["unsupported kind", () => ({ kind: "write", path: "/synthetic" }), "CURSOR_APP_EXEC_OPTIONS"],

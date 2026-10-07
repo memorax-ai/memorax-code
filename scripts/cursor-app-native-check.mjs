@@ -14,7 +14,8 @@ import { assertCursorAppSkillReference, assertCursorAppMemoryOperation } from ".
 import { parseCursorRepoMemoryDelegation, parseCursorRepoMemoryClaim, assertCursorRepoMemoryRejected,
   verifyCursorRepoMemoryFailure } from "./cursor-app-repo-memory-check.mjs";
 import { collectCursorAppDiagnostics, collectCursorAppLaunchDiagnostics,
-  collectCursorAppShellDiagnostics, collectCursorAppStopDiagnostics } from "./cursor-app-diagnostics.mjs";
+  collectCursorAppShellDiagnostics, collectCursorAppShellOutputDiagnostics,
+  projectCursorAppShellDiagnostics, collectCursorAppStopDiagnostics } from "./cursor-app-diagnostics.mjs";
 
 const [packageRoot, appPath, expectedVersion, playwrightRoot, reportDir, expectedNodeMajor = "24"] = process.argv.slice(2);
 const report = { status: "FAIL", client: "cursor", kind: "app-native-session-flows", platform: process.platform,
@@ -516,11 +517,11 @@ function repoMemoryTools(run, results) {
     check(run.prompt === repoMemoryFixture.prompt, "CURSOR_APP_REPO_MEMORY_PARENT");
     if (results.length === 0) {
       const definitions = (run.customSubagents ?? []).filter((item) => item.name === "memorax-repo-memory");
-      const nativePath = process.platform === "win32"
-        ? repoMemoryDefinition.path.replace(/^[A-Z]:/, (drive) => drive.toLowerCase()) : repoMemoryDefinition.path;
-      check(definitions.length === 1 && definitions[0].fullPath === nativePath && definitions[0].model === "inherit"
-        && definitions[0].isBackground === true && definitions[0].prompt.trim() === repoMemoryDefinition.body,
-      "CURSOR_APP_REPO_MEMORY_DEFINITION");
+      check(definitions.length === 1, "CURSOR_APP_REPO_MEMORY_DEFINITION_COUNT");
+      check(definitions[0].fullPath === repoMemoryDefinition.path, "CURSOR_APP_REPO_MEMORY_DEFINITION_PATH");
+      check(definitions[0].model === "inherit", "CURSOR_APP_REPO_MEMORY_DEFINITION_MODEL");
+      check(definitions[0].isBackground === true, "CURSOR_APP_REPO_MEMORY_DEFINITION_BACKGROUND");
+      check(definitions[0].prompt.trim() === repoMemoryDefinition.body, "CURSOR_APP_REPO_MEMORY_DEFINITION_PROMPT");
       const context = [run.requestContext?.hooksAdditionalContext,
         ...(run.userHookAdditionalContexts ?? []).map((item) => item.content)].filter(Boolean).join("\n");
       repoMemory.request = parseCursorRepoMemoryDelegation(context, { executable: process.execPath,
@@ -543,7 +544,14 @@ function repoMemoryTools(run, results) {
     else {
       check(results.length === 2 && results[1].kind === "shell" && results[1].exitCode === 1,
         "CURSOR_APP_REPO_MEMORY_FINISH");
-      assertCursorRepoMemoryRejected(results[1].stdout, repoMemory.claimed);
+      try { assertCursorRepoMemoryRejected(results[1].stdout, repoMemory.claimed); }
+      catch (error) {
+        const output = collectCursorAppShellOutputDiagnostics(Object.fromEntries(["stdout", "stderr"].map((key) => [key,
+          results[1][key] ? { status: "present", text: results[1][key] } : { status: "absent" }])));
+        report.shellResult = projectCursorAppShellDiagnostics({ rejectionKind: 2, exitCode: results[1].exitCode,
+          approvalClicked: run.shellApproval?.clicked === true, output });
+        throw error;
+      }
       repoMemory.rejected = true;
       return;
     }

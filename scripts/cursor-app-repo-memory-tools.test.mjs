@@ -5,6 +5,7 @@ import test from "node:test";
 import { runInNewContext } from "node:vm";
 import { assertCursorRepoMemoryRejected, parseCursorRepoMemoryClaim,
   parseCursorRepoMemoryDelegation } from "./cursor-app-repo-memory-check.mjs";
+import { collectCursorAppShellOutputDiagnostics, projectCursorAppShellDiagnostics } from "./cursor-app-diagnostics.mjs";
 
 const source = await readFile(new URL("./cursor-app-native-check.mjs", import.meta.url), "utf8");
 const start = source.indexOf("function repoMemoryTools(run, results) {"), end = source.indexOf("\nfunction assertRepoMemoryNativeContent()", start);
@@ -34,17 +35,18 @@ function fixture(platform = "linux") {
     referencePath: paths.join(root, "generation/skills/memorax-code/references/repo-build.md"),
     prompt: `The complete delegated native job.\n${JSON.stringify(invocation("claim", ticket))}\nKeep this final instruction.` };
   const definition = { path: paths.join(root, "home/.cursor/agents/memorax-repo-memory.md"), body: "Managed worker instructions." };
-  const repoMemory = { sessionId }, repoMemoryFixture = { prompt: "Synthetic foreground prompt." }, commands = [];
+  const repoMemory = { sessionId }, repoMemoryFixture = { prompt: "Synthetic foreground prompt." }, commands = [], report = {};
   const run = runInNewContext(`(${body})`, {
     repoMemory, repoMemoryFixture, repoMemoryDefinition: definition, repoMemoryHelper: helper,
     workspace, env: { MEMORAX_CODE_HOME: stateHome }, process: { platform, execPath: executable },
     parseCursorRepoMemoryDelegation, parseCursorRepoMemoryClaim, assertCursorRepoMemoryRejected,
+    report, collectCursorAppShellOutputDiagnostics, projectCursorAppShellDiagnostics,
     shellCommand(args, environment) { commands.push({ args: Array.from(args), env: { ...environment } }); return "encoded-fixture-command"; },
     check(value, code) { if (!value) throw Object.assign(new Error(code), { code }); },
   }, { timeout: 100 });
   const parent = { conversationId: sessionId, prompt: repoMemoryFixture.prompt, requestContextCloseCount: 1,
     customSubagents: [{ name: "memorax-repo-memory", model: "inherit", isBackground: true, prompt: definition.body,
-      fullPath: platform === "win32" ? definition.path.replace(/^D:/, "d:") : definition.path }],
+      fullPath: definition.path }],
     requestContext: { hooksAdditionalContext: "Other installed session context." },
     userHookAdditionalContexts: [{ content: `${marker}\n${JSON.stringify(delegation)}` }] };
   const child = { conversationId: childId, parentConversationId: sessionId, subagentTypeName: "memorax-repo-memory",
@@ -56,7 +58,7 @@ function fixture(platform = "linux") {
     instructions: `Direct reference.\n${JSON.stringify(invocation("finish", token))}\n${JSON.stringify(invocation("abort", token))}` }) };
   const finishResult = { kind: "shell", exitCode: 1, stdout: JSON.stringify({ ...summary, ok: false, status: "failed",
     failureReason: "artifact_validation_failed" }) };
-  return { run, parent, child, commands, repoMemory, definition, delegation, claimResult, finishResult, workspace, invocation, ticket, token };
+  return { run, parent, child, commands, repoMemory, definition, delegation, claimResult, finishResult, workspace, invocation, ticket, token, report };
 }
 
 test("Repo Memory tools require native context, then parent Task and child claim/finish in order", () => {
@@ -91,13 +93,13 @@ test("Repo Memory tools require native context, then parent Task and child claim
 });
 
 test("Repo Memory parent rejects missing or changed installed custom agent definitions and Task results", () => {
-  for (const mutate of [
-    (run) => { run.customSubagents = []; }, (run) => { run.customSubagents.push(run.customSubagents[0]); },
-    (run) => { run.customSubagents[0].fullPath += "-foreign"; }, (run) => { run.customSubagents[0].model = "unrequested-model"; },
-    (run) => { run.customSubagents[0].isBackground = false; }, (run) => { run.customSubagents[0].prompt += " changed"; },
+  for (const [mutate, suffix] of [
+    [(run) => { run.customSubagents = []; }, "COUNT"], [(run) => { run.customSubagents.push(run.customSubagents[0]); }, "COUNT"],
+    [(run) => { run.customSubagents[0].fullPath += "-foreign"; }, "PATH"], [(run) => { run.customSubagents[0].model = "unrequested-model"; }, "MODEL"],
+    [(run) => { run.customSubagents[0].isBackground = false; }, "BACKGROUND"], [(run) => { run.customSubagents[0].prompt += " changed"; }, "PROMPT"],
   ]) {
     const f = fixture(); mutate(f.parent);
-    assert.throws(() => f.run(f.parent, []), { code: "CURSOR_APP_REPO_MEMORY_DEFINITION" });
+    assert.throws(() => f.run(f.parent, []), { code: `CURSOR_APP_REPO_MEMORY_DEFINITION_${suffix}` });
     assert.equal(f.commands.length, 0);
   }
   for (const results of [[{ kind: "shell", isBackground: true }], [{ kind: "task", isBackground: false }],
@@ -133,9 +135,24 @@ test("Repo Memory expected finish rejection cannot turn claim errors or other to
   assert.throws(() => f.run(f.child, [{ ...f.claimResult, stdout: "private-invalid-result" }]), { code: "CURSOR_APP_REPO_MEMORY_CLAIM_INVALID" });
   assert.throws(() => f.run(f.child, [f.claimResult,
     { ...f.finishResult, stdout: f.finishResult.stdout.replace("artifact_validation_failed", "child_failed") }]),
-  { code: "CURSOR_APP_REPO_MEMORY_FINISH_INVALID" });
+  { code: "CURSOR_APP_REPO_MEMORY_FINISH_OUTCOME_MISMATCH" });
   assert.equal(f.repoMemory.rejected, undefined);
   assert.throws(() => f.run(f.child, [f.claimResult, f.finishResult, f.finishResult]), { code: "CURSOR_APP_REPO_MEMORY_FINISH" });
+});
+
+test("Repo Memory finish failures retain only existing sanitized Shell diagnostics", () => {
+  const f = fixture("darwin"); f.run(f.parent, []);
+  f.child.shellApproval = { clicked: true };
+  assert.throws(() => f.run(f.child, [f.claimResult, { ...f.finishResult, stdout: "",
+    stderr: `Error: EPERM: operation not permitted, unlink '/private/canary/${f.token}/.git/config'` }]),
+  { code: "CURSOR_APP_REPO_MEMORY_FINISH_JSON_INVALID" });
+  assert.equal(f.report.shellResult.exitCode, 1);
+  assert.equal(f.report.shellResult.approvalClicked, true);
+  assert.equal(f.report.shellResult.output.stdoutStatus, "absent");
+  assert.equal(f.report.shellResult.output.markers.permissionDenied, true);
+  assert.equal(JSON.stringify(f.report).includes(f.token), false);
+  assert.equal(JSON.stringify(f.report).includes("private/canary"), false);
+  assert.equal(f.repoMemory.rejected, undefined);
 });
 
 function nativeContentFixture() {

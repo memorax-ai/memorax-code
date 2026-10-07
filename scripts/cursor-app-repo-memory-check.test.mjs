@@ -112,9 +112,20 @@ test("Repo Memory claim and final rejection require matching returned capabiliti
   }
   const claimed = parseCursorRepoMemoryClaim(JSON.stringify(f.claim), request);
   for (const result of [{ ...f.rejected, ok: true }, { ...f.rejected, status: "succeeded" },
-    { ...f.rejected, failureReason: "child_failed" }, { ...f.rejected, snapshotHead: "e".repeat(40) },
-    { ...f.rejected, jobPath: "/private-canary" }]) {
-    rejected(() => assertCursorRepoMemoryRejected(JSON.stringify(result), claimed), "FINISH_INVALID");
+    { ...f.rejected, failureReason: "child_failed" }]) {
+    rejected(() => assertCursorRepoMemoryRejected(JSON.stringify(result), claimed), "FINISH_OUTCOME_MISMATCH");
+  }
+  for (const result of [{ ...f.rejected, snapshotHead: "e".repeat(40) },
+    { ...f.rejected, expiresAt: "2026-10-07T06:00:02.000Z" }]) {
+    rejected(() => assertCursorRepoMemoryRejected(JSON.stringify(result), claimed), "FINISH_AUTHORITY_MISMATCH");
+  }
+  for (const result of [{ ...f.rejected, jobPath: "/private-canary" }, { ...f.rejected, runner: "other" },
+    { ...f.rejected, snapshotHead: "private-canary" }, { ...f.rejected, expiresAt: "private-canary" },
+    { ok: false, reason: "invalid_capability" }]) {
+    rejected(() => assertCursorRepoMemoryRejected(JSON.stringify(result), claimed), "FINISH_SUMMARY_MISMATCH");
+  }
+  for (const output of ["", "private-path-and-token", "{}\n{}", "null", "[]", "x".repeat(262145)]) {
+    rejected(() => assertCursorRepoMemoryRejected(output, claimed), "FINISH_JSON_INVALID");
   }
   for (const output of ["private-path-and-token", "{}\n{}", "x".repeat(262145)]) {
     rejected(() => parseCursorRepoMemoryClaim(output, request), "CLAIM_INVALID");
