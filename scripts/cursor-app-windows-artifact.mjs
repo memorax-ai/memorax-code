@@ -4,12 +4,11 @@ import { lstat, mkdir, mkdtemp, open, realpath, rm } from "node:fs/promises";
 import { isAbsolute, join, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { baselineRelease, resolveDownload } from "./cursor-app-release.mjs";
+import { downloadDesktopArtifact, validateDesktopRelease } from "./cursor-app-release.mjs";
 
 const executeFile = promisify(execFile);
 const platform = "win32-x64-user";
 const publisher = "Anysphere, Inc.";
-const maxDownloadBytes = 600_000_000;
 const maxCommandBytes = 4096;
 const prefix = "CURSOR_APP_WINDOWS_ARTIFACT_";
 const rootStages = ["PATH_SHAPE", "ITEM", "IDENTITY", "NOT_EMPTY", "ACL_SET", "ACL_READ", "PROTECTION",
@@ -24,55 +23,13 @@ function check(value, suffix) { if (!value) throw failure(suffix); }
 function checkAborted(signal) { check(!signal?.aborted, "ABORTED"); }
 
 function validateRelease(input, channel) {
-  try {
-    check(input?.platform === platform && input.channel === channel && ["baseline", "latest"].includes(channel), "RELEASE");
-    const canonical = channel === "baseline" ? baselineRelease(platform)
-      : resolveDownload(platform, { version: input.version, commitSha: input.commitSha, downloadUrl: input.url });
-    check(Object.keys(canonical).every((key) => input[key] === canonical[key]), "RELEASE");
-    return canonical;
-  } catch { throw failure("RELEASE"); }
+  try { return validateDesktopRelease(input, platform, channel); }
+  catch { throw failure("RELEASE"); }
 }
 
 export function selectCursorWindowsRelease(manifest, channel) {
   check(manifest?.schemaVersion === 1 && ["baseline", "latest"].includes(channel), "RELEASE");
   return validateRelease(manifest[channel]?.[platform], channel);
-}
-
-async function download(release, path, fetchImpl, signal) {
-  const controller = new AbortController();
-  const downloadSignal = AbortSignal.any([controller.signal, AbortSignal.timeout(300_000), ...(signal ? [signal] : [])]);
-  let file;
-  try {
-    checkAborted(signal);
-    const response = await fetchImpl(release.url, { credentials: "omit", redirect: "error", cache: "no-store",
-      headers: { "User-Agent": "memorax-cursor-app-ci" }, signal: downloadSignal });
-    check(response?.status === 200 && response.body && response.redirected === false && response.url === release.url, "DOWNLOAD");
-    const length = response.headers.get("content-length");
-    const expectedBytes = length === null ? undefined : Number(length);
-    check(length === null || (/^[1-9]\d*$/.test(length) && Number.isSafeInteger(expectedBytes)
-      && expectedBytes <= maxDownloadBytes), "DOWNLOAD_SIZE");
-    file = await open(path, "wx", 0o600);
-    let bytes = 0;
-    const hash = createHash("sha256");
-    for await (const chunk of response.body) {
-      checkAborted(downloadSignal);
-      check(chunk instanceof Uint8Array, "DOWNLOAD");
-      bytes += chunk.byteLength;
-      check(bytes <= maxDownloadBytes, "DOWNLOAD_SIZE");
-      hash.update(chunk);
-      await file.writeFile(chunk);
-    }
-    check(bytes > 0 && (expectedBytes === undefined || bytes === expectedBytes), "DOWNLOAD_SIZE");
-    checkAborted(downloadSignal);
-    return { bytes, observedSha256: hash.digest("hex") };
-  } catch (error) {
-    if (signal?.aborted) throw failure("ABORTED");
-    if (error?.code === prefix + "DOWNLOAD_SIZE") throw error;
-    throw failure("DOWNLOAD");
-  } finally {
-    controller.abort();
-    await file?.close();
-  }
 }
 
 function outputJson(stdout) {
@@ -173,8 +130,9 @@ async function fingerprint(path, expected, signal) {
   } finally { await file?.close(); }
 }
 
-async function useVerifiedInstaller({ release, root, signal, execute = executeFile, fetchImpl = fetch,
+export async function withVerifiedCursorWindowsInstaller({ release, root, signal, execute = executeFile, fetchImpl = fetch,
   platform: hostPlatform = process.platform } = {}, callback) {
+  check(typeof callback === "function", "ARGUMENTS");
   check(hostPlatform === "win32", "PLATFORM");
   check(typeof execute === "function" && typeof fetchImpl === "function" && typeof root === "string"
     && isAbsolute(root) && !/[\0\r\n]/.test(root), "ARGUMENTS");
@@ -199,7 +157,7 @@ async function useVerifiedInstaller({ release, root, signal, execute = executeFi
     } catch { throw failure("ROOT_CREATE"); }
     await runHelper(execute, "prepare", payloadRoot, runtimeRoot, signal);
     const installerPath = join(payloadRoot, "CursorUserSetup.exe");
-    artifact = await download(selected, installerPath, fetchImpl, signal);
+    artifact = await downloadDesktopArtifact(selected, installerPath, fetchImpl, signal, failure);
     const before = await fingerprint(installerPath, artifact, signal);
     await runHelper(execute, "verify", payloadRoot, runtimeRoot, signal);
     const after = await fingerprint(installerPath, artifact, signal);
@@ -242,11 +200,6 @@ async function useVerifiedInstaller({ release, root, signal, execute = executeFi
   return Object.freeze({ verification, result });
 }
 
-export async function withVerifiedCursorWindowsInstaller(options, callback) {
-  check(typeof callback === "function", "ARGUMENTS");
-  return useVerifiedInstaller(options, callback);
-}
-
 export async function verifyCursorWindowsInstalledApp({ release, root, profileRoot, appDirectory, signal,
   execute = executeFile, platform: hostPlatform = process.platform } = {}) {
   check(hostPlatform === "win32", "PLATFORM");
@@ -261,11 +214,7 @@ export async function verifyCursorWindowsInstalledApp({ release, root, profileRo
     ownedRoot = await mkdtemp(join(await realpath(root), "cursor-windows-installed-"));
   } catch { throw failure("ROOT_ITEM"); }
   try {
-    const payloadRoot = join(ownedRoot, "payload"), runtimeRoot = join(ownedRoot, "runtime");
-    await mkdir(payloadRoot, { mode: 0o700 });
-    await mkdir(runtimeRoot, { mode: 0o700 });
-    await runHelper(execute, "prepare", payloadRoot, runtimeRoot, signal);
-    await runHelper(execute, "installed", payloadRoot, runtimeRoot, signal, { profileRoot, appDirectory, release: selected });
+    await runHelper(execute, "installed", ownedRoot, ownedRoot, signal, { profileRoot, appDirectory, release: selected });
     checkAborted(signal);
   } catch (error) {
     primaryError = typeof error?.code === "string" && error.code.startsWith(prefix) && error.message === error.code

@@ -24,6 +24,14 @@ const stages = new Set(["preflight", "candidate-install", "app-start", "native-s
   "repo-memory-worker", "cleanup", "complete"]);
 const completedEvidence = ["agentTransport", "nativeHooks", "exactAutomaticAdd", "sameSessionFollowup", "sessionIsolation", "workspaceIsolation", "appResume",
   "skillSearch", "skillAdd", "shellDenied", "pendingShellInterrupted", "sameSessionRecovered", "repoMemoryWorker", "cleanup"];
+const completedCounts = {
+  writes: [3, 3, 3, 3, 6, 6, 4, 0, 3, 4, 5], acknowledgements: [3, 3, 3, 3, 6, 6, 4, 0, 3, 4, 5],
+  historyTurns: [0, 1, 0, 2, 3, 4, 0, 0, 0, 0, 0],
+  reads: [0, 3, 0, 6, 9, 15, 0, 0, 0, 0, 0], readResults: [0, 3, 0, 6, 9, 15, 0, 0, 0, 0, 0],
+  execRequests: [0, 0, 0, 0, 3, 3, 1, 1, 0, 1, 2],
+  execResults: [0, 0, 0, 0, 3, 3, 1, 0, 0, 1, 2], execCloses: [0, 0, 0, 0, 3, 3, 1, 0, 0, 1, 2],
+  contextRequests: Array(11).fill(1), contextResults: Array(11).fill(1), contextCloses: Array(11).fill(1),
+};
 
 function fail(code) { throw Object.assign(new Error(code), { code }); }
 function check(value, code) { if (!value) fail(code); }
@@ -106,16 +114,13 @@ export function projectNativeReport(input, { expectedVersion = provenance.cursor
   }
   if (input.agent !== undefined) {
     const agent = input.agent;
-    check(Array.isArray(agent.writes) && Array.isArray(agent.acknowledgements) && Array.isArray(agent.historyTurns)
-      && Array.isArray(agent.reads) && Array.isArray(agent.readResults)
-      && Array.isArray(agent.execRequests) && Array.isArray(agent.execResults) && Array.isArray(agent.execCloses)
-      && Array.isArray(agent.contextRequests) && Array.isArray(agent.contextResults) && Array.isArray(agent.contextCloses)
-      && Array.isArray(agent.errors ?? []) && (agent.errors ?? []).every((value) => typeof value === "string" && codePattern.test(value)), "CURSOR_CONTAINER_REPORT");
-    report.agent = { runs: count(agent.runs), writes: agent.writes.map(count), acknowledgements: agent.acknowledgements.map(count),
-      historyTurns: agent.historyTurns.map(count), reads: agent.reads.map(count), readResults: agent.readResults.map(count),
-      execRequests: agent.execRequests.map(count), execResults: agent.execResults.map(count), execCloses: agent.execCloses.map(count),
-      contextRequests: agent.contextRequests.map(count), contextResults: agent.contextResults.map(count), contextCloses: agent.contextCloses.map(count),
-      ancillaryRequestCount: count(agent.ancillaryRequestCount), unsupportedRpcCount: count(agent.unsupportedRpcCount), errors: agent.errors ?? [] };
+    check(Array.isArray(agent.errors ?? []) && (agent.errors ?? []).every((value) => typeof value === "string" && codePattern.test(value)), "CURSOR_CONTAINER_REPORT");
+    report.agent = { runs: count(agent.runs), ancillaryRequestCount: count(agent.ancillaryRequestCount),
+      unsupportedRpcCount: count(agent.unsupportedRpcCount), errors: agent.errors ?? [] };
+    for (const key of Object.keys(completedCounts)) {
+      check(Array.isArray(agent[key]), "CURSOR_CONTAINER_REPORT");
+      report.agent[key] = agent[key].map(count);
+    }
     check(Array.isArray(agent.cancelled) && agent.cancelled.every((value) => typeof value === "boolean"), "CURSOR_CONTAINER_REPORT");
     report.agent.cancelled = [...agent.cancelled];
   }
@@ -131,17 +136,8 @@ export function projectNativeReport(input, { expectedVersion = provenance.cursor
     && completedEvidence.every((key) => report.evidence[key] === true)
     && content?.length === 9 && [3, 6, 3, 9, 15, 21, 4, 3, 4].every((blobs, index) => content[index]?.composerMatched === true
       && content[index]?.stateMatched === true && content[index]?.blobCount === blobs)
-    && report.agent?.runs === 11 && report.agent.writes.length === 11 && [3, 3, 3, 3, 6, 6, 4, 0, 3, 4, 5].every((value, index) => report.agent.writes[index] === value)
-    && report.agent.acknowledgements.length === 11 && [3, 3, 3, 3, 6, 6, 4, 0, 3, 4, 5].every((value, index) => report.agent.acknowledgements[index] === value)
-    && report.agent.historyTurns.length === 11 && [0, 1, 0, 2, 3, 4, 0, 0, 0, 0, 0].every((value, index) => report.agent.historyTurns[index] === value)
-    && report.agent.reads.length === 11 && [0, 3, 0, 6, 9, 15, 0, 0, 0, 0, 0].every((value, index) => report.agent.reads[index] === value)
-    && report.agent.readResults.length === 11 && [0, 3, 0, 6, 9, 15, 0, 0, 0, 0, 0].every((value, index) => report.agent.readResults[index] === value)
-    && report.agent.execRequests.length === 11 && [0, 0, 0, 0, 3, 3, 1, 1, 0, 1, 2].every((value, index) => report.agent.execRequests[index] === value)
-    && report.agent.execResults.length === 11 && [0, 0, 0, 0, 3, 3, 1, 0, 0, 1, 2].every((value, index) => report.agent.execResults[index] === value)
-    && report.agent.execCloses.length === 11 && [0, 0, 0, 0, 3, 3, 1, 0, 0, 1, 2].every((value, index) => report.agent.execCloses[index] === value)
-    && report.agent.contextRequests.length === 11 && [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1].every((value, index) => report.agent.contextRequests[index] === value)
-    && report.agent.contextResults.length === 11 && [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1].every((value, index) => report.agent.contextResults[index] === value)
-    && report.agent.contextCloses.length === 11 && [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1].every((value, index) => report.agent.contextCloses[index] === value)
+    && report.agent?.runs === 11 && Object.entries(completedCounts).every(([key, values]) => report.agent[key].length === values.length
+      && values.every((value, index) => report.agent[key][index] === value))
     && report.agent.cancelled.length === 11 && [false, false, false, false, false, false, false, true, false, false, false].every((value, index) => report.agent.cancelled[index] === value)
     && report.agent.errors.length === 0 && report.memoryRequestCount === 11, "CURSOR_CONTAINER_REPORT");
   return report;

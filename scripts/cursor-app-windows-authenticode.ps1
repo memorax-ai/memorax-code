@@ -172,7 +172,7 @@ function Assert-InstalledCursor([string]$Profile, [string]$App, [string]$Expecte
 
 try {
     if (-not $IsWindows) { throw 'CURSOR_APP_WINDOWS_ARTIFACT_PLATFORM' }
-    Assert-PrivateDirectory $Directory ($Operation -ceq 'prepare')
+    if ($Operation -cne 'installed') { Assert-PrivateDirectory $Directory ($Operation -ceq 'prepare') }
     if ($Operation -ceq 'prepare') {
         [Console]::WriteLine('{"status":"PASS","operation":"prepare","privateDirectory":true}')
     } elseif ($Operation -ceq 'installed') {

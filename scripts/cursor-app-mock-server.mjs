@@ -70,7 +70,7 @@ export async function startCursorAgentMock({ answer, answers, toolSteps, timeout
     || !Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60_000) {
     throw Object.assign(new Error("CURSOR_MOCK_OPTIONS_INVALID"), { nativeCode: "CURSOR_MOCK_OPTIONS_INVALID" });
   }
-  const requests = [], runs = [], notifications = [], errors = [], connectionErrors = [], unknownRpcMethods = [];
+  const requests = [], runs = [], notifications = [], errors = [], connectionErrors = [];
   const sockets = new Set(), sessions = new Set(), requestIds = new Set(), listeners = [];
   const histories = new Map(), activeConversations = new Set(), cancellationArms = new Map();
   const tasks = new Map();
@@ -93,8 +93,6 @@ export async function startCursorAgentMock({ answer, answers, toolSteps, timeout
     requests.push({ method: ["GET", "HEAD", "POST", "OPTIONS"].includes(method) ? method : "<other>",
       path: path === agentPath || ancillaryPaths.has(path) ? path : "<unknown>", protocol });
     if (!isAgentPath(path)) ancillaryRequestCount++;
-    if (path !== agentPath && (protocol === "h2c" || !ancillaryPaths.has(path)) && path.length <= 160
-      && /^\/[A-Za-z0-9_.]+\/[A-Za-z0-9_]+$/.test(path) && !unknownRpcMethods.includes(path)) unknownRpcMethods.push(path);
     return path;
   };
   const http1 = createHttpServer((request, response) => {
@@ -362,7 +360,7 @@ export async function startCursorAgentMock({ answer, answers, toolSteps, timeout
             || pendingExec?.execution.kind !== "shell" || pendingExec.completed || pendingExec.closed
             || pendingExec.execution.toolCallId !== toolCallId) return false;
           cancellation = { id: pendingExec.execution.id, toolCallId, rejected: false, execClosed: false,
-            actionReceived: false, transportClosed: false, transportEvents: [] };
+            actionReceived: false, transportClosed: false };
           run.cancellation = cancellation;
           return true;
         });
@@ -471,22 +469,13 @@ export async function startCursorAgentMock({ answer, answers, toolSteps, timeout
       && (stream.rstCode === http2Constants.NGHTTP2_CANCEL
         || stream.rstCode === http2Constants.NGHTTP2_INTERNAL_ERROR && cancellation.actionReceived
           && cancellation.rejected && cancellation.execClosed);
-    function recordCancellationTransport(event) {
-      if (!cancellation || cancellation.transportEvents.length >= 8) return;
-      cancellation.transportEvents.push({ event, rstCode: Number.isInteger(stream.rstCode) ? stream.rstCode : null,
-        streamClosed: stream.closed, streamDestroyed: stream.destroyed, sessionClosed: streamSession.closed,
-        sessionDestroyed: streamSession.destroyed, serverClosed: closed });
-    }
     stream.on("error", () => {
-      recordCancellationTransport("error");
       if (!isExpectedCancellation()) fail("CURSOR_AGENT_STREAM_ERROR");
     });
     stream.once("aborted", () => {
-      recordCancellationTransport("aborted");
       if (!isExpectedCancellation()) fail("CURSOR_AGENT_STREAM_ABORTED");
     });
     stream.once("close", () => {
-      recordCancellationTransport("close");
       clearTimeout(timer);
       if (!isExpectedCancellation()) { fail("CURSOR_AGENT_STREAM_CLOSED"); return; }
       try { decoder.finish(); }
@@ -521,7 +510,6 @@ export async function startCursorAgentMock({ answer, answers, toolSteps, timeout
         }
         if (!completed) advance();
       } catch (error) {
-        if (run && error.code === "CURSOR_APP_CLIENT_MESSAGE_UNSUPPORTED") run.lastUnsupportedShape = error.wireShape;
         reject(protocolErrorCodes.has(error.code) ? error.code : "CURSOR_AGENT_INVALID_MESSAGE");
       }
     });
@@ -600,7 +588,7 @@ export async function startCursorAgentMock({ answer, answers, toolSteps, timeout
     if (Object.values(networkInterfaces()).flat().some((entry) => entry?.internal && entry.address === "::1")) {
       await listen(createFront(), "::1", port);
     }
-    return { url: `http://localhost:${port}`, requests, runs, notifications, errors, connectionErrors, unknownRpcMethods, armCancellation, close,
+    return { url: `http://localhost:${port}`, requests, runs, notifications, errors, connectionErrors, armCancellation, close,
       get firstShellFailure() { return firstShellFailure; },
       get ancillaryRequestCount() { return ancillaryRequestCount; },
       get unsupportedRpcCount() { return unsupportedRpcCount; } };

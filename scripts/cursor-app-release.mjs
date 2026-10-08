@@ -1,5 +1,6 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { writeFile } from "node:fs/promises";
+import { open, writeFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { verifyLinuxAptReleases } from "./cursor-app-apt.mjs";
 
@@ -76,6 +77,55 @@ export function validateLinuxRelease(input, platform) {
     check(Object.keys(baseline).every((key) => key === "channel" || release[key] === baseline[key]), "CURSOR_RELEASE_PIN_CONFLICT");
   }
   return Object.freeze(release);
+}
+
+export function validateDesktopRelease(input, platform, channel = input?.channel) {
+  check(["darwin-arm64", "win32-x64-user"].includes(platform) && input?.platform === platform
+    && input.channel === channel && ["baseline", "latest"].includes(channel));
+  const canonical = channel === "baseline" ? baselineRelease(platform)
+    : resolveDownload(platform, { version: input.version, commitSha: input.commitSha, downloadUrl: input.url });
+  check(Object.keys(canonical).every((key) => input[key] === canonical[key]));
+  return canonical;
+}
+
+export async function downloadDesktopArtifact(release, path, fetchImpl, signal, failure) {
+  const check = (value, suffix) => { if (!value) throw failure(suffix); };
+  const checkAborted = (value) => check(!value?.aborted, "ABORTED");
+  const maxDownloadBytes = 600_000_000;
+  const controller = new AbortController();
+  const downloadSignal = AbortSignal.any([controller.signal, AbortSignal.timeout(300_000), ...(signal ? [signal] : [])]);
+  let file;
+  try {
+    checkAborted(signal);
+    const response = await fetchImpl(release.url, { credentials: "omit", redirect: "error", cache: "no-store",
+      headers: { "User-Agent": "memorax-cursor-app-ci" }, signal: downloadSignal });
+    check(response?.status === 200 && response.body && response.redirected === false && response.url === release.url, "DOWNLOAD");
+    const length = response.headers.get("content-length");
+    const expectedBytes = length === null ? undefined : Number(length);
+    check(length === null || (/^[1-9]\d*$/.test(length) && Number.isSafeInteger(expectedBytes)
+      && expectedBytes <= maxDownloadBytes), "DOWNLOAD_SIZE");
+    file = await open(path, "wx", 0o600);
+    let bytes = 0;
+    const hash = createHash("sha256");
+    for await (const chunk of response.body) {
+      checkAborted(downloadSignal);
+      check(chunk instanceof Uint8Array, "DOWNLOAD");
+      bytes += chunk.byteLength;
+      check(bytes <= maxDownloadBytes, "DOWNLOAD_SIZE");
+      hash.update(chunk);
+      await file.writeFile(chunk);
+    }
+    check(bytes > 0 && (expectedBytes === undefined || bytes === expectedBytes), "DOWNLOAD_SIZE");
+    checkAborted(downloadSignal);
+    return { bytes, observedSha256: hash.digest("hex") };
+  } catch (error) {
+    if (signal?.aborted) throw failure("ABORTED");
+    if (error?.code === failure("DOWNLOAD_SIZE").code) throw error;
+    throw failure("DOWNLOAD");
+  } finally {
+    controller.abort();
+    await file?.close();
+  }
 }
 
 async function fetchDownloadMetadata(url) {

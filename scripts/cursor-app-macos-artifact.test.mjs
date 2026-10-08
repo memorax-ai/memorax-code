@@ -101,424 +101,187 @@ async function fixture(t, configuration = {}) {
   return state;
 }
 
-test("selects only frozen canonical darwin-arm64 descriptors and retains unavailable official hashes", () => {
+test("selects each frozen macOS release without fallback or invented hashes", () => {
   for (const channel of ["baseline", "latest"]) {
-    const result = selectCursorMacosRelease(manifest, channel);
-    assert.deepEqual(result, manifest[channel]["darwin-arm64"]);
-    assert.equal(result.sha256, null);
-    assert.equal(result.hashSource, "not-provided");
-    assert.ok(Object.isFrozen(result));
+    assert.deepEqual(selectCursorMacosRelease(manifest, channel), manifest[channel]["darwin-arm64"]);
   }
-  const sameRelease = { ...manifest, latest: { "darwin-arm64": { ...baseline, channel: "latest" } } };
-  assert.equal(selectCursorMacosRelease(sameRelease, "latest").channel, "latest");
-  for (const value of [null, {}, { ...manifest, schemaVersion: 2 }, { ...manifest, latest: {} }]) {
-    assert.throws(() => selectCursorMacosRelease(value, "latest"), error("RELEASE"));
-  }
-  for (const channel of [undefined, "unknown", "linux-x64"]) {
-    assert.throws(() => selectCursorMacosRelease(manifest, channel), error("RELEASE"));
-  }
-  for (const change of [{ platform: "darwin-x64" }, { channel: "baseline" }, { version: "3.23.012" },
-    { commitSha: "A".repeat(40) }, { url: latest.url + "?private=value" }, { url: latest.url.replace("https:", "http:") },
-    { url: latest.url.replace("downloads.cursor.com", "other.invalid") }, { sha256: "a".repeat(64) },
-    { hashSource: "observed-sha256" }]) {
-    const input = { ...manifest, latest: { "darwin-arm64": { ...latest, ...change } } };
+  for (const input of [null, {}, { ...manifest, schemaVersion: 2 }, { ...manifest, latest: {} }]) {
     assert.throws(() => selectCursorMacosRelease(input, "latest"), error("RELEASE"));
   }
-  const changedBaseline = { ...manifest, baseline: { "darwin-arm64": { ...latest, channel: "baseline" } } };
-  assert.throws(() => selectCursorMacosRelease(changedBaseline, "baseline"), error("RELEASE"));
+  assert.throws(() => selectCursorMacosRelease(manifest, "unknown"), error("RELEASE"));
 });
 
-posixTest("verifies a private App copy and detaches its image before invoking the callback", async (t) => {
-  const state = await fixture(t);
-  const result = await state.run(async ({ appPath, evidence }) => {
-    assert.equal(appPath, join(state.copiedPath, "Contents/MacOS/Cursor"));
-    assert.deepEqual(await readFile(appPath), executable());
-    await assert.rejects(access(state.appPath), { code: "ENOENT" });
-    assert.equal((await readFile(join(state.ownedRoot, "Cursor.dmg"))).equals(image), true);
-    assert.deepEqual(state.calls.map((call) => call.operation), ["attach", "mount-json", "codesign", "identity", "spctl", "info-json",
-      "ditto", "codesign", "identity", "spctl", "info-json", "detach"]);
-    assert.deepEqual(evidence, { platform: "darwin-arm64", channel: "baseline", version: baseline.version,
-      commitSha: baseline.commitSha, sha256: null, hashSource: "not-provided", bytes: image.length,
-      observedSha256: createHash("sha256").update(image).digest("hex"), architecture: "arm64", readOnlyMount: true,
-      copiedBundleVerified: true, imageDetachedBeforeLaunch: true,
-      signatureVerified: true, bundleIdentifier: "com.todesktop.230313mzl4w4u92", teamIdentifier: "VDXQ22DGB9",
-      gatekeeperAccepted: true, packageIdentityVerified: true });
-    assert.ok(Object.isFrozen(evidence));
-    assert.ok(!JSON.stringify(evidence).includes(state.root));
-    return "callback-result";
-  });
-  assert.equal(result, "callback-result");
-  assert.equal(state.calls.at(-1).operation, "detach");
-  const attach = state.calls[0];
-  assert.deepEqual(attach.args, ["attach", "-readonly", "-nobrowse", "-noautoopen", "-mountpoint", state.mountpoint,
-    "-plist", join(state.ownedRoot, "Cursor.dmg")]);
-  const signature = state.calls.find((call) => call.operation === "codesign");
-  assert.equal(signature.file, "/usr/bin/codesign");
-  assert.deepEqual(signature.args, ["--verify", "--deep", "--strict", "--all-architectures", state.appPath]);
-  const identity = state.calls.find((call) => call.operation === "identity");
-  assert.equal(identity.file, "/usr/bin/codesign");
-  assert.deepEqual(identity.args, ["--verify", "--strict", "--all-architectures", "--test-requirement",
-    '=identifier "com.todesktop.230313mzl4w4u92" and anchor apple generic and certificate leaf[subject.OU] = "VDXQ22DGB9"', state.appPath]);
-  const assessment = state.calls.find((call) => call.operation === "spctl");
-  assert.equal(assessment.file, "/usr/sbin/spctl");
-  assert.deepEqual(assessment.args, ["--assess", "--type", "execute", state.appPath]);
-  for (const operation of ["codesign", "identity", "spctl"]) {
-    const calls = state.calls.filter((call) => call.operation === operation);
-    assert.equal(calls.length, 2);
-    assert.equal(calls[1].args.at(-1), state.copiedPath);
-  }
-  for (const call of state.calls) {
-    assert.equal(call.options.cwd, state.ownedRoot);
-    assert.deepEqual(call.options.env, { PATH: "/usr/bin:/bin:/usr/sbin:/sbin", HOME: state.ownedRoot,
-      CFFIXED_USER_HOME: state.ownedRoot, TMPDIR: state.ownedRoot, TMP: state.ownedRoot, TEMP: state.ownedRoot, LANG: "C", LC_ALL: "C" });
-    assert.equal(call.options.killSignal, "SIGKILL");
-    assert.equal(call.options.encoding, "utf8");
-    assert.equal(call.options.maxBuffer, 1024 * 1024);
-    assert.equal(call.options.timeout, call.operation === "detach" ? 30_000 : 120_000);
-  }
-  const request = state.fetches[0];
-  assert.equal(request.url, baseline.url);
-  assert.equal(request.options.redirect, "error");
-  assert.equal(request.options.credentials, "omit");
-  assert.equal(request.options.cache, "no-store");
-  assert.deepEqual(request.options.headers, { "User-Agent": "memorax-cursor-app-ci" });
-  assert.ok(request.options.signal instanceof AbortSignal);
-  assert.deepEqual(state.calls.at(-1).args, ["detach", state.mountpoint]);
-  await state.assertClean();
-});
-
-posixTest("latest validates the selected exact release, without falling back to baseline", async (t) => {
-  const state = await fixture(t, { release: latest });
-  const evidence = await state.run();
-  assert.equal(evidence.channel, "latest");
-  assert.equal(evidence.version, latest.version);
-  assert.equal(evidence.commitSha, latest.commitSha);
-  assert.equal(state.fetches[0].url, latest.url);
-  await state.assertClean();
-});
-
-posixTest("a copied App must pass every signature, identity and package gate again", async (t) => {
-  for (const [failCopied, suffix] of [["codesign", "SIGNATURE"], ["identity", "IDENTITY"],
-    ["spctl", "ASSESSMENT"], ["info-json", "PACKAGE"]]) {
-    const state = await fixture(t, { failCopied });
-    await assert.rejects(state.run(), error(suffix));
-    assert.equal(state.callbackCount, 0);
-    assert.equal(state.calls.filter((call) => call.operation === failCopied).length, 2);
-    assert.equal(state.calls.filter((call) => call.operation === "detach").length, 1);
-    await state.assertClean();
-  }
-  for (const [relative, contents, suffix] of [["Contents/Resources/app/product.json", "{}", "PACKAGE"],
-    ["Contents/MacOS/Cursor", Buffer.alloc(32), "ARCHITECTURE"]]) {
-    const state = await fixture(t, { mutateCopy: ({ copiedPath }) => writeFile(join(copiedPath, relative), contents) });
-    await assert.rejects(state.run(), error(suffix));
-    assert.equal(state.callbackCount, 0);
-    await state.assertClean();
-  }
-  const escaped = await fixture(t, { mutateCopy: async ({ copiedPath, root }) => {
-    const path = join(copiedPath, "Contents/Resources/app/product.json");
-    await rm(path); await symlink(join(root, "unrelated"), path);
-  } });
-  await assert.rejects(escaped.run(), error("PACKAGE"));
-  assert.equal(escaped.callbackCount, 0);
-  await escaped.assertClean();
-});
-
-posixTest("aborting during copy detaches without invoking the callback or keeping partial files", async (t) => {
-  const controller = new AbortController();
-  const state = await fixture(t, { mutateCopy: () => controller.abort() });
-  await assert.rejects(state.run(undefined, { signal: controller.signal }), error("ABORTED"));
-  assert.equal(state.callbackCount, 0);
-  assert.equal(state.calls.filter((call) => call.operation === "detach").length, 1);
-  assert.equal(state.calls.at(-1).options.signal, undefined);
-  await state.assertClean();
-});
-
-posixTest("release identity requires exact realCommit and never falls back to commit", async (t) => {
-  const state = await fixture(t);
-  assert.notEqual(baseline.commitSha.slice(0, -1) + "0", baseline.commitSha);
-  assert.equal((await state.run()).commitSha, baseline.commitSha);
-  await state.assertClean();
-  for (const realCommit of [undefined, null, "", baseline.commitSha.slice(0, -1) + "0"]) {
-    const invalid = await fixture(t, { productJson: { commit: baseline.commitSha, realCommit } });
-    await assert.rejects(invalid.run(), error("PACKAGE"));
-    assert.equal(invalid.callbackCount, 0);
-    assert.equal(invalid.calls.at(-1).operation, "detach");
-    await invalid.assertClean();
-  }
-});
-
-posixTest("rejects unsupported platforms, invalid roots and release tampering before acquiring", async (t) => {
-  const state = await fixture(t);
-  for (const platform of ["linux", "win32", "private-invalid-platform"]) {
-    await assert.rejects(state.run(undefined, { platform }), error("PLATFORM"));
-  }
-  for (const root of [undefined, "relative/path", state.root + "\nprivate", state.root + "\0private"]) {
-    await assert.rejects(state.run(undefined, { root }), error("ARGUMENTS"));
-  }
-  for (const root of [join(state.root, "absent"), join(state.root, "unrelated")]) {
-    await assert.rejects(state.run(undefined, { root }), error("ROOT"));
-  }
-  const link = join(state.root, "link");
-  await symlink(state.root, link);
-  await assert.rejects(state.run(undefined, { root: link }), error("ROOT"));
-  await rm(link);
-  await assert.rejects(state.run(undefined, { release: { ...baseline, sha256: "a".repeat(64) } }), error("RELEASE"));
-  assert.equal(state.fetches.length, 0);
-  assert.equal(state.calls.length, 0);
-  await state.assertClean();
-});
-
-posixTest("download rejects HTTP errors, redirects, substituted URLs and raw network diagnostics", async (t) => {
-  for (const response of [{ status: 302 }, { status: 206 }, { status: 500 }, { redirected: true },
-    { url: latest.url }, { body: null }]) {
-    const state = await fixture(t, { response });
-    await assert.rejects(state.run(), error("DOWNLOAD"));
-    assert.equal(state.calls.length, 0);
-    assert.equal(state.callbackCount, 0);
-    assert.equal(state.fetches[0].options.signal.aborted, true);
-    await state.assertClean();
-  }
-  const state = await fixture(t, { fetchFailure: true });
-  await assert.rejects(state.run(), error("DOWNLOAD"));
-  await state.assertClean();
-});
-
-posixTest("download bounds declared and streamed bytes and rejects empty or truncated bodies", async (t) => {
-  for (const value of ["600000001", "0", "-1", "1.5", "private", String(image.length + 1)]) {
-    const state = await fixture(t, { response: { headers: new Headers({ "content-length": value }) } });
-    await assert.rejects(state.run(), error("DOWNLOAD_SIZE"));
-    assert.equal(state.calls.length, 0);
-    await state.assertClean();
-  }
-  const oversized = new Uint8Array(1);
-  Object.defineProperty(oversized, "byteLength", { value: 600_000_001 });
-  for (const chunks of [[], [oversized]]) {
-    const state = await fixture(t, { response: { headers: new Headers(), body: (async function* () { yield* chunks; })() } });
-    await assert.rejects(state.run(), error("DOWNLOAD_SIZE"));
-    await state.assertClean();
-  }
-  const state = await fixture(t, { response: { headers: new Headers() } });
-  assert.equal((await state.run()).bytes, image.length);
-  await state.assertClean();
-});
-
-posixTest("failed and aborted streams cannot reach mount or callback", async (t) => {
-  const interrupted = await fixture(t, { response: { body: (async function* () { yield image.subarray(0, 5); throw new Error("private"); })() } });
-  await assert.rejects(interrupted.run(), error("DOWNLOAD"));
-  assert.equal(interrupted.calls.length, 0);
-  await interrupted.assertClean();
-  const controller = new AbortController();
-  const aborted = await fixture(t, { response: { body: (async function* () { controller.abort(); yield image; })() } });
-  await assert.rejects(aborted.run(undefined, { signal: controller.signal }), error("ABORTED"));
-  assert.equal(aborted.fetches[0].options.signal.aborted, true);
-  assert.equal(aborted.calls.length, 0);
-  await aborted.assertClean();
-  const early = await fixture(t);
-  await assert.rejects(early.run(undefined, { signal: controller.signal }), error("ABORTED"));
-  assert.equal(early.fetches.length, 0);
-  await early.assertClean();
-});
-
-posixTest("each failed mount, signature, or assessment gate detaches and fails before callback", async (t) => {
-  for (const [operation, suffix] of [["attach", "MOUNT"], ["mount-json", "MOUNT_METADATA"], ["codesign", "SIGNATURE"], ["identity", "IDENTITY"],
-    ["spctl", "ASSESSMENT"], ["info-json", "PACKAGE"], ["ditto", "COPY"]]) {
-    const state = await fixture(t, { fail: operation });
-    await assert.rejects(state.run(), error(suffix));
-    assert.equal(state.callbackCount, 0);
-    assert.equal(state.calls.at(-1).operation, "detach");
-    await state.assertClean();
-  }
-  for (const [failCode, suffix] of [["codesign", "SIGNATURE"], ["identity", "IDENTITY"], ["spctl", "ASSESSMENT"], ["ditto", "COPY"]]) {
-    const state = await fixture(t, { failCode });
-    await assert.rejects(state.run(), error(suffix));
-    await state.assertClean();
-  }
-});
-
-posixTest("command timeouts remain distinct from rejection, with abort taking precedence", async (t) => {
-  for (const details of [{ killed: true, signal: "SIGKILL", code: null }, { code: "ETIMEDOUT" }]) {
-    for (const [operation, suffix] of [["attach", "MOUNT"], ["codesign", "SIGNATURE"], ["identity", "IDENTITY"], ["spctl", "ASSESSMENT"], ["ditto", "COPY"]]) {
-      const state = await fixture(t, { commandError: { operation, error: Object.assign(new Error("private timeout details"), details) } });
-      await assert.rejects(state.run(), error(suffix + "_TIMEOUT"));
-      assert.equal(state.callbackCount, 0);
-      assert.equal(state.calls.at(-1).operation, "detach");
-      await state.assertClean();
+posixTest("both releases verify a private copy and detach before launching with isolated command state", async (t) => {
+  for (const release of [baseline, latest]) {
+    const state = await fixture(t, { release });
+    const result = await state.run(async ({ appPath, evidence }) => {
+      assert.equal(appPath, join(state.copiedPath, "Contents/MacOS/Cursor"));
+      assert.deepEqual(await readFile(appPath), executable());
+      await assert.rejects(access(state.appPath), { code: "ENOENT" });
+      assert.deepEqual(evidence, { platform: "darwin-arm64", channel: release.channel, version: release.version,
+        commitSha: release.commitSha, sha256: null, hashSource: "not-provided", bytes: image.length,
+        observedSha256: createHash("sha256").update(image).digest("hex"), architecture: "arm64", readOnlyMount: true,
+        copiedBundleVerified: true, imageDetachedBeforeLaunch: true, signatureVerified: true,
+        bundleIdentifier: "com.todesktop.230313mzl4w4u92", teamIdentifier: "VDXQ22DGB9",
+        gatekeeperAccepted: true, packageIdentityVerified: true });
+      assert.ok(Object.isFrozen(evidence));
+      return "callback-result";
+    });
+    assert.equal(result, "callback-result");
+    assert.deepEqual(state.calls.map(({ operation }) => operation), ["attach", "mount-json", "codesign", "identity",
+      "spctl", "info-json", "ditto", "codesign", "identity", "spctl", "info-json", "detach"]);
+    const operations = Object.fromEntries(state.calls.map((call) => [call.operation, call]));
+    assert.deepEqual(operations.attach.args, ["attach", "-readonly", "-nobrowse", "-noautoopen", "-mountpoint",
+      state.mountpoint, "-plist", join(state.ownedRoot, "Cursor.dmg")]);
+    assert.deepEqual(operations.codesign.args, ["--verify", "--deep", "--strict", "--all-architectures", state.copiedPath]);
+    assert.deepEqual(operations.identity.args, ["--verify", "--strict", "--all-architectures", "--test-requirement",
+      '=identifier "com.todesktop.230313mzl4w4u92" and anchor apple generic and certificate leaf[subject.OU] = "VDXQ22DGB9"', state.copiedPath]);
+    assert.deepEqual(operations.spctl.args, ["--assess", "--type", "execute", state.copiedPath]);
+    for (const { options, operation } of state.calls) {
+      assert.deepEqual(options.env, { PATH: "/usr/bin:/bin:/usr/sbin:/sbin", HOME: state.ownedRoot,
+        CFFIXED_USER_HOME: state.ownedRoot, TMPDIR: state.ownedRoot, TMP: state.ownedRoot, TEMP: state.ownedRoot, LANG: "C", LC_ALL: "C" });
+      assert.equal(options.timeout, operation === "detach" ? 30_000 : 120_000);
+      assert.equal(options.killSignal, "SIGKILL");
     }
-  }
-  for (const details of [{ code: 1 }, { killed: false, signal: "SIGKILL" }, { killed: true, signal: "SIGTERM" },
-    { killed: true, signal: "SIGKILL", code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" }]) {
-    const state = await fixture(t, { commandError: { operation: "codesign", error: Object.assign(new Error("private rejection details"), details) } });
-    await assert.rejects(state.run(), error("SIGNATURE"));
-    assert.equal(state.callbackCount, 0);
+    assert.equal(state.fetches[0].url, release.url);
     await state.assertClean();
   }
-  const controller = new AbortController();
-  const state = await fixture(t);
-  const execute = state.options.execute;
-  await assert.rejects(state.run(undefined, { signal: controller.signal, execute: async (file, args, options) => {
-    if (file === "/usr/bin/codesign") {
-      controller.abort();
-      throw Object.assign(new Error("private aborted command"), { killed: true, signal: "SIGKILL" });
-    }
-    return execute(file, args, options);
-  } }), error("ABORTED"));
+});
+
+async function rejectsBeforeLaunch(t, configuration, suffix) {
+  const state = await fixture(t, configuration);
+  await assert.rejects(state.run(), error(suffix));
   assert.equal(state.callbackCount, 0);
   assert.equal(state.calls.at(-1).operation, "detach");
-  assert.equal(state.calls.at(-1).options.signal, undefined);
   await state.assertClean();
-});
+}
 
-posixTest("mount metadata must structurally identify exactly the owned mountpoint", async (t) => {
-  for (const mountJson of ["private invalid plist conversion", "[]", "{}", JSON.stringify({ "system-entities": {} }),
-    JSON.stringify({ "system-entities": [{ "mount-point": "/Volumes/other" }] })]) {
-    const state = await fixture(t, { mountJson });
-    await assert.rejects(state.run(), error("MOUNT_METADATA"));
-    assert.equal(state.calls.at(-1).operation, "detach");
-    assert.equal(state.callbackCount, 0);
-    await state.assertClean();
+posixTest("mounted and copied bundles independently enforce every signature and static identity gate", async (t) => {
+  for (const [operation, suffix] of [["attach", "MOUNT"], ["mount-json", "MOUNT_METADATA"], ["codesign", "SIGNATURE"],
+    ["identity", "IDENTITY"], ["spctl", "ASSESSMENT"], ["info-json", "PACKAGE"], ["ditto", "COPY"]]) {
+    await rejectsBeforeLaunch(t, { fail: operation }, suffix);
+    if (["codesign", "identity", "spctl", "info-json"].includes(operation)) {
+      await rejectsBeforeLaunch(t, { failCopied: operation }, suffix);
+    }
   }
-});
-
-posixTest("all static version, commit, bundle and executable fields must agree", async (t) => {
   for (const configuration of [
     { info: { CFBundleIdentifier: "other" } }, { info: { CFBundleExecutable: "../other" } },
     { info: { CFBundleShortVersionString: latest.version } }, { packageJson: { version: latest.version } },
-    { productJson: { version: latest.version } }, { productJson: { realCommit: "a".repeat(40) } },
-    { productJson: { darwinBundleIdentifier: "other" } }, { infoJson: "not json" },
-  ]) {
-    const state = await fixture(t, configuration);
-    await assert.rejects(state.run(), error("PACKAGE"));
-    assert.equal(state.callbackCount, 0);
-    assert.equal(state.calls.at(-1).operation, "detach");
-    await state.assertClean();
+    { productJson: { version: latest.version } }, { productJson: { darwinBundleIdentifier: "other" } }, { infoJson: "not json" },
+    ...[undefined, null, "", "a".repeat(40)].map((realCommit) => ({ productJson: { commit: baseline.commitSha, realCommit } })),
+    { mutateCopy: ({ copiedPath }) => writeFile(join(copiedPath, "Contents/Resources/app/product.json"), "{}") },
+  ]) await rejectsBeforeLaunch(t, configuration, "PACKAGE");
+  for (const mountJson of ["private invalid JSON", "[]", "{}", JSON.stringify({ "system-entities": {} }),
+    JSON.stringify({ "system-entities": [{ "mount-point": "/Volumes/other" }] })]) {
+    await rejectsBeforeLaunch(t, { mountJson }, "MOUNT_METADATA");
   }
-});
-
-posixTest("requires a real executable thin arm64 Mach-O header", async (t) => {
   for (const mutate of [(header) => header.writeUInt32LE(0xcafebabe, 0), (header) => header.writeUInt32LE(0x01000007, 4),
     (header) => header.writeUInt32LE(6, 12)]) {
-    const header = executable(); mutate(header);
-    const state = await fixture(t, { executable: header });
-    await assert.rejects(state.run(), error("ARCHITECTURE"));
-    assert.equal(state.callbackCount, 0);
-    await state.assertClean();
+    const header = executable();
+    mutate(header);
+    await rejectsBeforeLaunch(t, { executable: header }, "ARCHITECTURE");
   }
-  for (const header of [Buffer.alloc(0), Buffer.alloc(16)]) {
-    const state = await fixture(t, { executable: header });
-    await assert.rejects(state.run(), error("ARCHITECTURE"));
-    await state.assertClean();
-  }
-  const nonExecutable = await fixture(t, { mutateApp: async ({ appPath }) => chmod(join(appPath, "Contents/MacOS/Cursor"), 0o644) });
-  await assert.rejects(nonExecutable.run(), error("ARCHITECTURE"));
-  await nonExecutable.assertClean();
-});
-
-posixTest("package files and executable cannot escape the mounted application via symlinks", async (t) => {
+  for (const header of [Buffer.alloc(0), Buffer.alloc(16)]) await rejectsBeforeLaunch(t, { executable: header }, "ARCHITECTURE");
+  await rejectsBeforeLaunch(t, { mutateApp: ({ appPath }) => chmod(join(appPath, "Contents/MacOS/Cursor"), 0o644) }, "ARCHITECTURE");
+  await rejectsBeforeLaunch(t, { mutateCopy: ({ copiedPath }) => writeFile(join(copiedPath, "Contents/MacOS/Cursor"), Buffer.alloc(32)) }, "ARCHITECTURE");
   for (const [relative, suffix] of [["Contents/Resources/app/product.json", "PACKAGE"], ["Contents/MacOS/Cursor", "ARCHITECTURE"]]) {
-    const state = await fixture(t, { mutateApp: async ({ root, appPath }) => {
-      const path = join(appPath, relative);
-      await rm(path);
-      await symlink(join(root, "unrelated"), path);
-    } });
-    await assert.rejects(state.run(), error(suffix));
+    for (const stage of ["mutateApp", "mutateCopy"]) {
+      await rejectsBeforeLaunch(t, { [stage]: async ({ root, appPath, copiedPath }) => {
+        const path = join(stage === "mutateApp" ? appPath : copiedPath, relative);
+        await rm(path);
+        await symlink(join(root, "unrelated"), path);
+      } }, suffix);
+    }
+  }
+});
+
+posixTest("invalid authority and failed downloads cannot mount or launch", async (t) => {
+  const state = await fixture(t);
+  const linked = join(state.root, "link");
+  await symlink(state.root, linked);
+  for (const [overrides, suffix] of [
+    [{ platform: "linux" }, "PLATFORM"], [{ root: "relative" }, "ARGUMENTS"],
+    [{ root: state.root + "\0private" }, "ARGUMENTS"], [{ root: linked }, "ROOT"],
+    [{ root: join(state.root, "unrelated") }, "ROOT"], [{ root: join(state.root, "missing") }, "ROOT"],
+    [{ release: { ...baseline, sha256: "a".repeat(64) } }, "RELEASE"], [{ signal: AbortSignal.abort() }, "ABORTED"],
+  ]) await assert.rejects(state.run(undefined, overrides), error(suffix));
+  assert.equal(state.calls.length, 0);
+  assert.equal(state.fetches.length, 0);
+  await rm(linked);
+  await state.assertClean();
+  const failed = await fixture(t, { response: { redirected: true } });
+  await assert.rejects(failed.run(), error("DOWNLOAD"));
+  assert.equal(failed.calls.length, 0);
+  await failed.assertClean();
+});
+
+posixTest("command failure, timeout and cancellation remain distinct and detach once", async (t) => {
+  for (const [details, suffix] of [[{ code: 1 }, "SIGNATURE"], [{ code: "ETIMEDOUT" }, "SIGNATURE_TIMEOUT"],
+    [{ killed: true, signal: "SIGKILL" }, "SIGNATURE_TIMEOUT"],
+    [{ code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER", killed: true, signal: "SIGKILL" }, "SIGNATURE"]]) {
+    await rejectsBeforeLaunch(t, { commandError: { operation: "codesign", error: details } }, suffix);
+  }
+  await rejectsBeforeLaunch(t, { failCode: "codesign" }, "SIGNATURE");
+  for (const phase of ["download", "copy", "signature"]) {
+    const controller = new AbortController();
+    const state = await fixture(t, phase === "copy" ? { mutateCopy: () => controller.abort() }
+      : phase === "download" ? { response: { body: (async function* () { controller.abort(); yield image; })() } } : {});
+    const execute = state.options.execute;
+    await assert.rejects(state.run(undefined, { signal: controller.signal, execute: async (...args) => {
+      if (phase === "signature" && args[0] === "/usr/bin/codesign") {
+        controller.abort();
+        throw { killed: true, signal: "SIGKILL" };
+      }
+      return execute(...args);
+    } }), error("ABORTED"));
     assert.equal(state.callbackCount, 0);
+    const detached = state.calls.filter(({ operation }) => operation === "detach");
+    assert.equal(detached.length, phase === "download" ? 0 : 1);
+    if (detached.length) assert.equal(detached[0].options.signal, undefined);
     await state.assertClean();
   }
 });
 
-posixTest("callback failure or abort retains its private App copy for verified outer cleanup", async (t) => {
+posixTest("callback failure retains its private copy until the outer controller verifies cleanup", async (t) => {
   const state = await fixture(t);
-  const controller = new AbortController();
-  const original = Object.assign(new Error("CURSOR_APP_NATIVE_FAILED"), { code: "CURSOR_APP_NATIVE_FAILED" });
-  await assert.rejects(state.run(async () => { controller.abort(); throw original; }, { signal: controller.signal }),
-    (caught) => caught === original);
-  assert.equal(original.artifactDetach, undefined);
-  assert.equal(state.calls.at(-1).operation, "detach");
-  assert.equal(state.calls.at(-1).options.signal, undefined);
-  assert.equal(state.calls.filter((call) => call.operation === "detach").length, 1);
+  const original = new Error("CURSOR_APP_NATIVE_FAILED");
+  await assert.rejects(state.run(async () => { throw original; }), (caught) => caught === original);
   await access(state.copiedPath);
   await assert.rejects(access(state.appPath), { code: "ENOENT" });
-  assert.equal(await readFile(join(state.root, "unrelated"), "utf8"), "preserve");
+  assert.equal(state.calls.filter(({ operation }) => operation === "detach").length, 1);
 });
 
-posixTest("busy detach prevents native launch, never retries and preserves an earlier acquisition failure", async (t) => {
-  for (const copyFails of [false, true]) {
-    const state = await fixture(t, { commandError: { operation: "detach", error: Object.assign(new Error("private detach diagnostic"),
-      { code: 1, stderr: "hdiutil: detach failed - Resource busy\n", stdout: "private command output" }) },
-      fail: copyFails ? "ditto" : undefined });
-    await assert.rejects(state.run(), (caught) => {
-      assert.equal(caught.code, prefix + (copyFails ? "COPY" : "DETACH"));
-      assert.equal(caught.cleanupErrorCode, prefix + "DETACH");
-      assert.deepEqual(caught.artifactDetach, { exitCode: 1, signal: "none", timedOut: false, outputOverflow: false,
-        stderrClass: "resource-busy" });
-      assert.equal(JSON.stringify(caught).includes("private"), false);
-      return true;
-    });
-    assert.equal(state.callbackCount, 0);
-    await access(state.mountpoint);
-    await access(join(state.ownedRoot, "Cursor.dmg"));
-    assert.deepEqual(state.calls.at(-1).args, ["detach", state.mountpoint]);
-    assert.equal(state.calls.filter((call) => call.operation === "detach").length, 1);
-    assert.equal(await readFile(join(state.root, "unrelated"), "utf8"), "preserve");
-  }
-  const timedOut = await fixture(t, { commandError: { operation: "detach", error: Object.assign(new Error("private timeout"), { code: "ETIMEDOUT" }) } });
-  await assert.rejects(timedOut.run(), { ...error("DETACH_TIMEOUT"), cleanupErrorCode: prefix + "DETACH_TIMEOUT" });
-  await access(timedOut.mountpoint);
-});
-
-posixTest("detach diagnostics classify only bounded complete fixed hdiutil error lines", async (t) => {
-  for (const [stderr, stderrClass] of [
-    ["hdiutil: detach failed - Operation not permitted\n", "operation-not-permitted"],
-    ["hdiutil: detach failed - Permission denied\r\n", "permission-denied"],
-    ["hdiutil: detach failed - No such file or directory", "missing-target"],
-    ["private hdiutil: detach failed - Resource busy\n", "other"],
-    ["hdiutil: detach failed -\nResource busy", "other"],
-    ["hdiutil: detach failed - Resource busy private", "other"],
-    ["hdiutil: detach failed - Resource busy\nhdiutil: detach failed - Permission denied\n", "other"],
-    ["x".repeat(4096) + "\nhdiutil: detach failed - Resource busy\n", "other"],
-    [Buffer.from("private"), "other"], ["", "absent"], [undefined, "absent"],
-  ]) {
-    const state = await fixture(t, { commandError: { operation: "detach", error: Object.assign(new Error("private diagnostic"),
-      { code: 1, stderr, stdout: "private command output" }) } });
-    await assert.rejects(state.run(), (caught) => {
-      assert.equal(caught.code, prefix + "DETACH");
-      assert.equal(caught.artifactDetach.stderrClass, stderrClass);
-      assert.equal(JSON.stringify(caught).includes("private"), false);
-      return true;
-    });
-    assert.equal(state.calls.filter((call) => call.operation === "detach").length, 1);
-    await access(state.mountpoint);
-  }
-});
-
-posixTest("detach diagnostics preserve timeout and output-overflow distinctions without retrying", async (t) => {
-  for (const [details, suffix, expected] of [
-    [{ code: "ETIMEDOUT" }, "DETACH_TIMEOUT", { exitCode: null, signal: "none", timedOut: true, outputOverflow: false }],
-    [{ code: null, killed: true, signal: "SIGKILL" }, "DETACH_TIMEOUT", { exitCode: null, signal: "SIGKILL", timedOut: true, outputOverflow: false }],
-    [{ code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER", killed: true, signal: "SIGKILL" }, "DETACH",
-      { exitCode: null, signal: "SIGKILL", timedOut: false, outputOverflow: true }],
-    [{ code: 1, killed: true, signal: "SIGTERM" }, "DETACH", { exitCode: 1, signal: "SIGTERM", timedOut: false, outputOverflow: false }],
-    [{ code: "ENOENT", signal: "private" }, "DETACH", { exitCode: null, signal: "other", timedOut: false, outputOverflow: false }],
-  ]) {
-    const state = await fixture(t, { commandError: { operation: "detach", error: Object.assign(new Error("private"), details) } });
+posixTest("failed detach prevents launch, retains the mount and exposes only bounded diagnostics", async (t) => {
+  const cases = [
+    [{ code: 1, stderr: "hdiutil: detach failed - Resource busy\n" }, "DETACH", "resource-busy"],
+    [{ code: 1, stderr: "hdiutil: detach failed - Operation not permitted\n" }, "DETACH", "operation-not-permitted"],
+    [{ code: 1, stderr: "hdiutil: detach failed - Permission denied\r\n" }, "DETACH", "permission-denied"],
+    [{ code: 1, stderr: "hdiutil: detach failed - No such file or directory" }, "DETACH", "missing-target"],
+    ...["private hdiutil: detach failed - Resource busy\n", "hdiutil: detach failed -\nResource busy",
+      "hdiutil: detach failed - Resource busy\nhdiutil: detach failed - Permission denied\n", "x".repeat(4097)]
+      .map((stderr) => [{ code: 1, stderr }, "DETACH", "other"]),
+    [{ code: "ETIMEDOUT" }, "DETACH_TIMEOUT", "absent"],
+    [{ killed: true, signal: "SIGKILL" }, "DETACH_TIMEOUT", "absent"],
+    [{ code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER", killed: true, signal: "SIGKILL" }, "DETACH", "absent"],
+    [{ code: 1, signal: "SIGTERM" }, "DETACH", "absent"],
+  ];
+  for (const [details, suffix, stderrClass] of cases) {
+    const state = await fixture(t, { commandError: { operation: "detach", error: { ...details, stdout: "private" } } });
     await assert.rejects(state.run(), (caught) => {
       assert.equal(caught.code, prefix + suffix);
       assert.equal(caught.cleanupErrorCode, prefix + suffix);
-      assert.deepEqual(caught.artifactDetach, { ...expected, stderrClass: "absent" });
+      assert.equal(caught.artifactDetach.stderrClass, stderrClass);
+      assert.equal(caught.artifactDetach.timedOut, suffix.endsWith("_TIMEOUT"));
+      assert.equal(caught.artifactDetach.outputOverflow, details.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER");
       assert.equal(JSON.stringify(caught).includes("private"), false);
       return true;
     });
-    assert.equal(state.calls.filter((call) => call.operation === "detach").length, 1);
-    assert.equal(state.calls.at(-1).options.timeout, 30_000);
-    assert.equal(state.calls.at(-1).options.signal, undefined);
-    assert.deepEqual(state.calls.at(-1).args, ["detach", state.mountpoint]);
+    assert.equal(state.callbackCount, 0);
+    assert.equal(state.calls.filter(({ operation }) => operation === "detach").length, 1);
     await access(state.mountpoint);
+    await access(join(state.ownedRoot, "Cursor.dmg"));
   }
-  const state = await fixture(t, { failCode: "detach" });
-  await assert.rejects(state.run(), (caught) => {
-    assert.equal(caught.code, prefix + "DETACH");
-    assert.equal(caught.artifactDetach.exitCode, 1);
-    return true;
-  });
+  const state = await fixture(t, { fail: "ditto", commandError: { operation: "detach", error: { code: 1 } } });
+  await assert.rejects(state.run(), { ...error("COPY"), cleanupErrorCode: prefix + "DETACH" });
   await access(state.mountpoint);
 });

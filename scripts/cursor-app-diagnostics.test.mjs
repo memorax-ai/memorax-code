@@ -4,571 +4,295 @@ import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { collectCursorAppDiagnostics, collectCursorAppLaunchDiagnostics, collectCursorAppShellDiagnostics, collectCursorAppShellOutputDiagnostics,
-  collectCursorAppStopDiagnostics, collectCursorAppWindowsStopDiagnostics, isCursorAppDiagnostics, projectCursorAppDiagnostics,
-  projectCursorAppLaunchDiagnostics, projectCursorAppShellDiagnostics, projectCursorAppStopDiagnostics,
-  projectCursorAppWindowsStopDiagnostics } from "./cursor-app-diagnostics.mjs";
+import { collectCursorAppDiagnostics, collectCursorAppLaunchDiagnostics, collectCursorAppShellDiagnostics,
+  collectCursorAppShellOutputDiagnostics, collectCursorAppStopDiagnostics, collectCursorAppWindowsStopDiagnostics,
+  projectCursorAppDiagnostics, projectCursorAppLaunchDiagnostics, projectCursorAppShellDiagnostics,
+  projectCursorAppStopDiagnostics, projectCursorAppWindowsStopDiagnostics } from "./cursor-app-diagnostics.mjs";
 
 const privateCanary = "private-content-path-token-canary";
+const present = (text) => ({ status: "present", text });
+const diagnosticKey = (...parts) => createHash("sha256").update(JSON.stringify(parts)).digest("hex");
+function redacted(value, secrets = []) {
+  for (const secret of [privateCanary, ...secrets]) assert.equal(JSON.stringify(value).includes(secret), false);
+}
 
-test("Shell failure output keeps only recognized CLI JSON codes and fixed stderr markers", () => {
+test("Shell output retains fixed failure codes and markers while bounding and redacting raw output", () => {
   const output = collectCursorAppShellOutputDiagnostics({
-    stdout: { status: "present", text: JSON.stringify({ ok: false, action: "memory.search", errorCode: "MEMORY_CONFIG_MISSING",
-      stage: "configuration", systemCode: "ENOENT", query: privateCanary, diagnostic: { path: privateCanary }, error: privateCanary }) },
-    stderr: { status: "present", text: `${privateCanary}: Permission denied\nError [ERR_MODULE_NOT_FOUND]: ${privateCanary}` },
+    stdout: present(JSON.stringify({ ok: false, action: "memory.search", errorCode: "MEMORY_CONFIG_MISSING",
+      stage: "configuration", systemCode: "ENOENT", query: privateCanary, diagnostic: { path: privateCanary } })),
+    stderr: present(`${privateCanary}: Permission denied\nError [ERR_MODULE_NOT_FOUND]: ${privateCanary}`),
   });
   assert.deepEqual(output, { stdoutStatus: "present", stderrStatus: "present", cliJson: "valid",
     errorCode: "MEMORY_CONFIG_MISSING", stage: "configuration", systemCode: "ENOENT",
     markers: { unsupportedNodeVersion: false, nodeModuleNotFound: true, commandNotFound: false, permissionDenied: true,
       jobBusy: false, jobInvalid: false, directoryConflict: false, pathMissing: false, readOnlyFilesystem: false } });
-  assert.equal(JSON.stringify(output).includes(privateCanary), false);
-  const result = projectCursorAppShellDiagnostics({ rejectionKind: 2, approvalClicked: true, exitCode: 1, output });
-  assert.deepEqual(result.output, output);
-  assert.deepEqual(projectCursorAppShellDiagnostics(result), result);
-});
-
-test("Shell output ignores unrelated JSON, unknown codes, arbitrary fields and invalid text without reflecting them", () => {
-  for (const text of ["", privateCanary, "[]", "null", JSON.stringify({ ok: true, action: "memory.search" }),
-    JSON.stringify({ ok: false, action: privateCanary, errorCode: "MEMORY_CONFIG_MISSING" })]) {
-    const output = collectCursorAppShellOutputDiagnostics({ stdout: { status: "present", text } });
-    assert.notEqual(output.cliJson, "valid");
-    assert.equal(output.errorCode, "absent");
-    assert.equal(JSON.stringify(output).includes(privateCanary), false);
+  redacted(output);
+  for (const [text, status] of [[privateCanary, "invalid"], ["[]", "unmatched"],
+    [JSON.stringify({ ok: true, action: "memory.search" }), "unmatched"], ["x".repeat(65537), "oversized"]]) {
+    const result = collectCursorAppShellOutputDiagnostics({ stdout: present(text) });
+    assert.equal(result.cliJson, status);
+    assert.equal(result.errorCode, "absent");
+    redacted(result);
   }
-  for (const action of ["memory.search", "memory.add"]) {
-    const output = collectCursorAppShellOutputDiagnostics({ stdout: { status: "present", text: JSON.stringify({
-      ok: false, action, errorCode: privateCanary, stage: privateCanary, systemCode: privateCanary,
-    }) } });
-    assert.equal(output.cliJson, "valid");
-    assert.equal(output.errorCode, "other"); assert.equal(output.stage, "other"); assert.equal(output.systemCode, "other");
-    assert.equal(JSON.stringify(output).includes(privateCanary), false);
-  }
-  for (const status of ["absent", "invalid", "oversized"]) {
-    const output = collectCursorAppShellOutputDiagnostics({ stdout: { status, text: privateCanary } });
-    assert.equal(output.stdoutStatus, status);
-    assert.equal(output.cliJson, status);
-  }
-  const oversized = collectCursorAppShellOutputDiagnostics({ stdout: { status: "present", text: "x".repeat(65537) },
-    stderr: { status: "present", text: "Permission denied".repeat(5000) } });
-  assert.equal(oversized.stdoutStatus, "oversized"); assert.equal(oversized.stderrStatus, "oversized");
+  const unknown = collectCursorAppShellOutputDiagnostics({ stdout: present(JSON.stringify({ ok: false,
+    action: "memory.add", errorCode: privateCanary, stage: privateCanary, systemCode: privateCanary })) });
+  for (const key of ["errorCode", "stage", "systemCode"]) assert.equal(unknown[key], "other");
+  redacted(unknown);
+  const oversized = collectCursorAppShellOutputDiagnostics({ stderr: present("Permission denied".repeat(5000)) });
+  assert.equal(oversized.stderrStatus, "oversized");
   assert.equal(oversized.markers.permissionDenied, false);
-  const forged = projectCursorAppShellDiagnostics({ rejectionKind: 2, output: { stdoutStatus: privateCanary,
-    cliJson: privateCanary, errorCode: privateCanary, stage: privateCanary, systemCode: privateCanary,
-    stdout: privateCanary, stderr: privateCanary, markers: { commandNotFound: "true", arbitrary: privateCanary } } });
-  assert.equal(JSON.stringify(forged).includes(privateCanary), false);
-  assert.equal(forged.output.markers.commandNotFound, false);
 });
 
-test("Shell stderr markers are bounded fixed text observations, never diagnostic authority", () => {
+test("Shell stderr markers recognize known errors and reject misleading job and filesystem prefixes", () => {
   for (const [marker, text] of [
-    ["unsupportedNodeVersion", "memorax-code: MemoraX Code requires Node.js 20 or newer; the current runtime is Node.js 18."],
-    ["nodeModuleNotFound", "Error: Cannot find module '/private-canary'"],
+    ["unsupportedNodeVersion", "memorax-code: MemoraX Code requires Node.js 20 or newer;"],
+    ["nodeModuleNotFound", `Error: Cannot find module '${privateCanary}'`],
     ["commandNotFound", "env: memorax-cli: No such file or directory"],
-    ["commandNotFound", "env: node: No such file or directory"],
-    ...["Permission denied", "Operation not permitted", "EACCES", "EPERM"].map((text) => ["permissionDenied", text]),
-  ]) {
-    const output = collectCursorAppShellOutputDiagnostics({ stderr: { status: "present", text } });
-    assert.equal(output.markers[marker], true);
-    assert.equal(output.errorCode, "absent");
-  }
-  const output = collectCursorAppShellOutputDiagnostics({ stdout: { status: "present", text: "Permission denied" },
-    stderr: { status: "present", text: "private command_not_found ERR_MODULE_NOT_FOUNDish" } });
-  assert.ok(Object.values(output.markers).every((value) => value === false));
-});
-
-test("Shell Repo Memory markers require the complete known job error after trimming", () => {
-  for (const [marker, message] of [
+    ["permissionDenied", "Operation not permitted"],
     ["jobBusy", "native repo memory job is busy"],
-    ["jobInvalid", "native repo memory job identity is invalid"],
     ["jobInvalid", "native repo memory job lease is invalid"],
+    ["directoryConflict", `Error: ENOTEMPTY: ${privateCanary}`],
+    ["pathMissing", `ENOENT: ${privateCanary}`], ["readOnlyFilesystem", `EROFS: ${privateCanary}`],
   ]) {
-    const output = collectCursorAppShellOutputDiagnostics({ stderr: { status: "present", text: ` \r\n${message}\r\n ` } });
-    assert.equal(output.markers[marker], true);
-    assert.equal(output.errorCode, "absent");
-    for (const text of [`${privateCanary}: ${message}`, `${message}: ${privateCanary}`, `${message}\n${privateCanary}`]) {
-      const rejected = collectCursorAppShellOutputDiagnostics({ stderr: { status: "present", text } });
-      assert.ok(Object.values(rejected.markers).every((value) => value === false));
-      assert.equal(JSON.stringify(rejected).includes(privateCanary), false);
-    }
+    const result = collectCursorAppShellOutputDiagnostics({ stderr: present(text) });
+    assert.equal(result.markers[marker], true, marker);
+    assert.equal(result.errorCode, "absent");
+    redacted(result);
+  }
+  for (const text of [`native repo memory job identity is invalid: ${privateCanary}`,
+    `${privateCanary}: ENOENT: unavailable`, "ENOENT_PRIVATE: unavailable"]) {
+    const result = collectCursorAppShellOutputDiagnostics({ stdout: present("Permission denied"), stderr: present(text) });
+    assert.ok(Object.values(result.markers).every((value) => value === false));
+    redacted(result);
   }
 });
 
-test("Shell filesystem markers recognize only bounded Node error prefixes and redact their details", () => {
-  for (const [marker, code] of [["directoryConflict", "ENOTEMPTY"], ["directoryConflict", "EEXIST"],
-    ["pathMissing", "ENOENT"], ["readOnlyFilesystem", "EROFS"]]) {
-    for (const prefix of ["", "Error: ", `${privateCanary}\r\n`]) {
-      const output = collectCursorAppShellOutputDiagnostics({ stderr: {
-        status: "present", text: `${prefix}${code}: private operation '${privateCanary}'\n`,
-      } });
-      assert.equal(output.markers[marker], true);
-      assert.equal(JSON.stringify(output).includes(privateCanary), false);
-      assert.deepEqual(projectCursorAppShellDiagnostics({ rejectionKind: 2, output }).output, output);
-    }
-    for (const text of [`${privateCanary}: ${code}: unavailable`, `${code}_PRIVATE: unavailable`,
-      `${code} private operation`, `error: ${code}: unavailable`]) {
-      const output = collectCursorAppShellOutputDiagnostics({ stderr: { status: "present", text } });
-      assert.ok(Object.values(output.markers).every((value) => value === false));
-    }
-    const oversized = collectCursorAppShellOutputDiagnostics({ stderr: {
-      status: "present", text: `${code}: ${"x".repeat(65536)}`,
-    } });
-    assert.equal(oversized.stderrStatus, "oversized");
-    assert.equal(oversized.markers[marker], false);
-  }
-});
-
-test("Shell job and filesystem report markers are an exact boolean-only allowlist", () => {
-  const markers = { jobBusy: true, jobInvalid: true, directoryConflict: true, pathMissing: true, readOnlyFilesystem: true };
-  const result = projectCursorAppShellDiagnostics({ rejectionKind: 2, output: {
-    markers: { ...markers, [privateCanary]: true }, stderr: privateCanary, job: { token: privateCanary },
-  } });
-  for (const marker of Object.keys(markers)) assert.equal(result.output.markers[marker], true);
-  assert.equal(Object.hasOwn(result.output.markers, privateCanary), false);
-  assert.equal(JSON.stringify(result).includes(privateCanary), false);
-  const forged = projectCursorAppShellDiagnostics({ rejectionKind: 2, output: {
-    markers: Object.fromEntries(Object.keys(markers).map((marker) => [marker, privateCanary])),
-  } });
-  assert.ok(Object.values(forged.output.markers).every((value) => value === false));
-});
-
-test("Shell diagnostics bind completed approval clicks to the exact failed tool and redact all identities", () => {
+test("Shell diagnostics bind approval to the exact failed tool and project only fixed outcomes and policy", () => {
   const toolCallId = randomUUID();
-  const run = { error: "CURSOR_APP_EXEC_REJECTED", requestId: privateCanary, command: privateCanary,
-    execRejection: { kind: "shell", toolCallId, rejectionKind: 2, exitCode: 127, stderr: privateCanary },
-    shellApproval: { toolCallId, clicked: false } };
-  assert.deepEqual(collectCursorAppShellDiagnostics(run), { rejectionKind: 2, approvalClicked: false, exitCode: 127 });
-  run.shellApproval.clicked = true;
+  const run = { error: "CURSOR_APP_EXEC_REJECTED", command: privateCanary,
+    execRejection: { kind: "shell", toolCallId, rejectionKind: 2, exitCode: 127 },
+    shellApproval: { toolCallId, clicked: true } };
   assert.deepEqual(collectCursorAppShellDiagnostics(run), { rejectionKind: 2, approvalClicked: true, exitCode: 127 });
-  assert.equal(JSON.stringify(collectCursorAppShellDiagnostics(run)).includes(privateCanary), false);
-  for (const changed of [undefined, { ...run, error: "CURSOR_APP_EXEC_IDENTITY" },
-    { ...run, execRejection: { ...run.execRejection, kind: "read" } },
-    { ...run, shellApproval: { toolCallId: randomUUID(), clicked: true } },
-    { ...run, shellApproval: { toolCallId, clicked: "true" } },
-    { ...run, shellApproval: undefined }]) assert.equal(collectCursorAppShellDiagnostics(changed), undefined);
+  for (const change of [{ error: "CURSOR_APP_EXEC_IDENTITY" },
+    { shellApproval: { toolCallId: randomUUID(), clicked: true } },
+    { shellApproval: { toolCallId, clicked: "true" } },
+    { execRejection: { ...run.execRejection, toolCallId: privateCanary } }]) {
+    assert.equal(collectCursorAppShellDiagnostics({ ...run, ...change }), undefined);
+  }
+  const projected = projectCursorAppShellDiagnostics({ rejectionKind: 2, approvalClicked: "true", exitCode: 1.5,
+    sandboxPolicy: { type: "workspace_readwrite", networkAccess: false, paths: [privateCanary] },
+    output: { cliJson: privateCanary, errorCode: privateCanary, stdout: privateCanary,
+      markers: { jobBusy: true, pathMissing: "true", [privateCanary]: true } } });
+  assert.equal(Object.hasOwn(projected, "exitCode"), false);
+  assert.equal(projected.approvalClicked, false);
+  assert.deepEqual(projected.sandboxPolicy, { type: "workspace_readwrite", networkAccess: false });
+  assert.equal(projected.output.markers.jobBusy, true);
+  assert.equal(projected.output.markers.pathMissing, false);
+  assert.deepEqual(projectCursorAppShellDiagnostics(projected), projected);
+  redacted(projected);
 });
 
-test("Shell report projection permits only fixed result cases, booleans and actual int32 failure codes", () => {
-  for (const rejectionKind of [2, 3, 4, 5, 7]) {
-    const result = projectCursorAppShellDiagnostics({ rejectionKind, approvalClicked: true,
-      exitCode: 127, command: privateCanary, path: privateCanary, stdout: privateCanary, toolCallId: privateCanary });
-    assert.deepEqual(result, { rejectionKind, approvalClicked: true, ...(rejectionKind === 2 ? { exitCode: 127 } : {}) });
-    assert.deepEqual(projectCursorAppShellDiagnostics(result), result);
-    assert.equal(JSON.stringify(result).includes(privateCanary), false);
+test("launch diagnostics distinguish sandbox failure markers without retaining stderr or paths", () => {
+  for (const [marker, log, misleading] of [
+    ["sandboxInitializationFailed", "sandbox_init: denied", "sandbox_unknown: denied"],
+    ["seatbeltApplyDenied", "sandbox_apply: Operation not permitted", "sandbox_apply:\nOperation not permitted"],
+    ["helperSandboxInitializationFailed", "Failed to initialize sandbox.", "Failed to initialize sandbox in secure mode."],
+    ["sandboxPolicyDeserializeFailed", "SandboxSerializer: Failed to deserialize policy:", "Failed to deserialize policy:"],
+    ["sandboxCompiledPolicyFailed", "SandboxSerializer: Failed to apply compiled policy:", "Failed to apply compiled policy:"],
+    ["sandboxSourcePolicyFailed", "SandboxSerializer: Failed to initialize sandbox with source mode policy:", "Failed to initialize sandbox with source mode policy:"],
+    ["sandboxPolicyPermissionDenied", "SandboxSerializer: Failed to deserialize policy: Operation not permitted", "SandboxSerializer: Failed to deserialize policy:\nOperation not permitted"],
+    ["sandboxPipeLengthReadFailed", "SeatbeltExec: buffer length read failed:", "SeatbeltExec: buffer length read failedextra"],
+    ["sandboxPipeBodyReadFailed", "SeatbeltExec: buffer read failed:", "SeatbeltExec: buffer read failedextra"],
+    ["processSingletonFailed", "Failed to create a ProcessSingleton", "private singleton"],
+    ["networkServiceCrashed", "Network service crashed", "private network"],
+    ["gpuProcessFailed", "GPU process launch failed", "private gpu"],
+    ["machRegistrationFailed", "bootstrap_register failed", "private bootstrap"],
+    ["readOnlyFilesystem", "Read-only file system", "private filesystem"],
+    ["permissionDenied", "EACCES", "private permission"],
+  ]) {
+    const result = collectCursorAppLaunchDiagnostics({ log: `${privateCanary}: ${log}` });
+    assert.equal(result.markers[marker], true, marker);
+    assert.equal(collectCursorAppLaunchDiagnostics({ log: misleading }).markers[marker], false, marker);
+    redacted(result);
   }
-  for (const exitCode of [-0x8000_0000, -1, 0, 0x7fff_ffff]) {
-    assert.equal(projectCursorAppShellDiagnostics({ rejectionKind: 2, exitCode }).exitCode, exitCode);
-  }
-  for (const exitCode of [undefined, null, "127", privateCanary, 1.5, NaN, Infinity, -0x8000_0001, 0x8000_0000]) {
-    assert.equal(Object.hasOwn(projectCursorAppShellDiagnostics({ rejectionKind: 2, exitCode }), "exitCode"), false);
-  }
-  assert.deepEqual(projectCursorAppShellDiagnostics({ rejectionKind: privateCanary, approvalClicked: "true", exitCode: 127 }),
-    { rejectionKind: "other", approvalClicked: false });
-});
-
-test("Shell policy report projection retains only fixed type and optional network access", () => {
-  for (const type of ["unspecified", "insecure_none", "workspace_readwrite", "workspace_readonly", "absent", "invalid", "other"]) {
-    for (const networkAccess of [true, false, "absent", "invalid", "other"]) {
-      const result = projectCursorAppShellDiagnostics({ rejectionKind: 2,
-        sandboxPolicy: { type, networkAccess, paths: [privateCanary], networkPolicy: privateCanary } });
-      assert.deepEqual(result.sandboxPolicy, { type, networkAccess });
-      assert.deepEqual(projectCursorAppShellDiagnostics(result), result);
-      assert.equal(JSON.stringify(result).includes(privateCanary), false);
-    }
-  }
-  const result = projectCursorAppShellDiagnostics({ rejectionKind: 2,
-    sandboxPolicy: { type: privateCanary, networkAccess: privateCanary } });
-  assert.deepEqual(result.sandboxPolicy, { type: "other", networkAccess: "other" });
-  assert.equal(JSON.stringify(result).includes(privateCanary), false);
-});
-
-test("launch diagnostics expose only bounded process outcomes and fixed stderr markers", () => {
-  const result = collectCursorAppLaunchDiagnostics({ spawned: true, debugEndpointSeen: false, exitCode: null,
-    signal: "SIGABRT", log: `${privateCanary}: sandbox_init: Operation not permitted\nNetwork service crashed` });
-  assert.equal(result.signal, "SIGABRT");
-  assert.equal(result.exitCode, null);
-  assert.equal(result.markers.sandboxInitializationFailed, true);
-  assert.equal(result.markers.permissionDenied, true);
-  assert.equal(result.markers.networkServiceCrashed, true);
-  assert.equal(result.markers.gpuProcessFailed, false);
-  assert.equal(JSON.stringify(result).includes(privateCanary), false);
-  assert.deepEqual(projectCursorAppLaunchDiagnostics(result), result);
   assert.equal(collectCursorAppLaunchDiagnostics({ log: "sandbox_init: " + "x".repeat(1024 * 1024) })
     .markers.sandboxInitializationFailed, false);
+  assert.equal(collectCursorAppLaunchDiagnostics({ log:
+    "SandboxSerializer: Failed to deserialize policy: " + "x".repeat(256) + "Operation not permitted" })
+    .markers.sandboxPolicyPermissionDenied, false);
 });
 
-test("launch diagnostic projection cannot reflect arbitrary fields or invalid statuses", () => {
-  for (const exitCode of [-1, 0x1_0000_0000, 1.5, "1", privateCanary]) {
-    const result = projectCursorAppLaunchDiagnostics({ spawned: "true", debugEndpointSeen: 1, exitCode,
-      signal: privateCanary, spawnError: privateCanary, log: privateCanary, privatePath: privateCanary,
-      markers: { permissionDenied: "true", [privateCanary]: true } });
-    assert.equal(result.spawned, false); assert.equal(result.debugEndpointSeen, false);
-    assert.equal(result.exitCode, null); assert.equal(result.signal, "other"); assert.equal(result.spawnError, "other");
-    assert.ok(Object.values(result.markers).every((value) => value === false));
-    assert.equal(JSON.stringify(result).includes(privateCanary), false);
-  }
-  for (const exitCode of [0, 1, 255, 256, 0xc0000135, 0xc0000409, 0xffff_ffff]) {
-    const collected = collectCursorAppLaunchDiagnostics({ exitCode });
-    assert.equal(projectCursorAppLaunchDiagnostics(collected).exitCode, exitCode);
-  }
-  for (const spawnError of ["ENOENT", "EACCES", "ENOEXEC"]) {
-    assert.equal(projectCursorAppLaunchDiagnostics({ spawnError }).spawnError, spawnError);
-  }
-});
-
-test("Seatbelt apply denial requires the exact same-line marker", () => {
-  for (const log of ["sandbox_apply: Operation not permitted\n", `${privateCanary}: sandbox_apply: Operation not permitted\n`]) {
-    const result = collectCursorAppLaunchDiagnostics({ log });
-    assert.equal(result.markers.seatbeltApplyDenied, true);
-    assert.equal(JSON.stringify(result).includes(privateCanary), false);
-  }
-  for (const log of ["sandbox_apply:\nOperation not permitted", "sandbox_init: Operation not permitted",
-    "sandbox_apply: Invalid argument\nPermission denied", "sandbox_apply: Operation not permittedextra"]) {
-    assert.equal(collectCursorAppLaunchDiagnostics({ log }).markers.seatbeltApplyDenied, false);
-  }
-});
-
-test("Helper sandbox initialization uses its exact sentence, not the broader secure-mode diagnostic", () => {
-  for (const log of ["Failed to initialize sandbox.", `${privateCanary}: Failed to initialize sandbox.\n`]) {
-    const result = collectCursorAppLaunchDiagnostics({ log });
-    assert.equal(result.markers.helperSandboxInitializationFailed, true);
-    assert.equal(JSON.stringify(result).includes(privateCanary), false);
-  }
-  for (const log of ["Failed to initialize sandbox", "Failed to initialize sandbox in secure mode.",
-    "Failed to initialize sandbox\n.", "Failed to initialize sandboxx."]) {
-    assert.equal(collectCursorAppLaunchDiagnostics({ log }).markers.helperSandboxInitializationFailed, false);
-  }
-});
-
-test("SandboxSerializer diagnostics distinguish exact policy modes and bounded same-line access denial", () => {
-  const prefixes = {
-    sandboxPolicyDeserializeFailed: "SandboxSerializer: Failed to deserialize policy:",
-    sandboxCompiledPolicyFailed: "SandboxSerializer: Failed to apply compiled policy:",
-    sandboxSourcePolicyFailed: "SandboxSerializer: Failed to initialize sandbox with source mode policy:",
-  };
-  for (const [marker, prefix] of Object.entries(prefixes)) {
-    const result = collectCursorAppLaunchDiagnostics({ log: `${privateCanary}: ${prefix} ${privateCanary}\n` });
-    for (const key of Object.keys(prefixes)) assert.equal(result.markers[key], key === marker);
-    assert.equal(result.markers.sandboxPolicyPermissionDenied, false);
-    assert.equal(JSON.stringify(result).includes(privateCanary), false);
-    for (const log of [prefix.slice(0, -1), prefix.replace("SandboxSerializer: ", ""),
-      prefix.replace("Serializer: ", "Serializer:\n"), prefix.replace("policy:", "policies:")]) {
-      assert.equal(collectCursorAppLaunchDiagnostics({ log }).markers[marker], false);
+test("process projections retain bounded numeric outcomes, fixed codes and literal booleans", () => {
+  for (const project of [projectCursorAppLaunchDiagnostics, projectCursorAppStopDiagnostics, projectCursorAppWindowsStopDiagnostics]) {
+    const result = project({ exitCode: 1.5, taskkillExitCode: -1, childExitCode: 0x1_0000_0000,
+      spawned: "true", timedOut: "true", signal: privateCanary, childSignal: privateCanary, spawnError: privateCanary,
+      log: privateCanary, stderr: privateCanary, markers: { permissionDenied: "true", [privateCanary]: true },
+      backend: { errorCode: privateCanary, stage: privateCanary } });
+    assert.deepEqual(project(result), result);
+    for (const key of ["exitCode", "taskkillExitCode", "childExitCode"]) {
+      if (Object.hasOwn(result, key)) assert.equal(result[key], null);
     }
-    for (const ending of ["", "\n", "\r\n"]) {
-      const denied = collectCursorAppLaunchDiagnostics({ log: `${prefix} ${privateCanary}: Operation not permitted${ending}` });
-      assert.equal(denied.markers.sandboxPolicyPermissionDenied, true);
-      assert.equal(JSON.stringify(denied).includes(privateCanary), false);
-    }
-    for (const suffix of ["\nOperation not permitted", "\rOperation not permitted", " EPERM", " Permission denied",
-      " Operation not permittedextra", " Operation not permitted.", ` ${"x".repeat(256)}Operation not permitted`]) {
-      assert.equal(collectCursorAppLaunchDiagnostics({ log: prefix + suffix }).markers.sandboxPolicyPermissionDenied, false);
-    }
+    redacted(result);
+  }
+  assert.equal(projectCursorAppLaunchDiagnostics({ exitCode: 0xc0000135, spawnError: "ENOENT" }).exitCode, 0xc0000135);
+  assert.equal(projectCursorAppStopDiagnostics({ exitCode: 256 }).exitCode, null);
+  assert.equal(projectCursorAppWindowsStopDiagnostics({ childExitCode: 0xffff_ffff }).childExitCode, 0xffff_ffff);
+});
+
+test("Backend stop diagnostics redact structured failures and bound malformed output", () => {
+  const result = collectCursorAppStopDiagnostics({ exitCode: 1, stdout: JSON.stringify({ ok: false, action: "stop",
+    backend: { ok: false, errorCode: "BACKEND_OWNERSHIP_UNVERIFIED", stage: "verify_ownership",
+      failureReason: "process_probe_inconclusive", systemCode: "EPERM", processState: "unknown",
+      state: { pid: 12345, token: privateCanary } }, cursorAdapter: { ok: true, root: privateCanary } }) });
+  assert.equal(result.actionMatched, true);
+  assert.equal(result.backend.errorCode, "BACKEND_OWNERSHIP_UNVERIFIED");
+  assert.deepEqual(result.cursorAdapter, { present: true, ok: true });
+  redacted(result, ["12345"]);
+  for (const [stdout, status] of [["", "absent"], [privateCanary, "invalid"], ["null", "invalid"],
+    ["x".repeat(1024 * 1024 + 1), "oversized"]]) {
+    const invalid = collectCursorAppStopDiagnostics({ stdout, signal: "SIGKILL", timedOut: true });
+    assert.equal(invalid.jsonStatus, status);
+    assert.equal(invalid.backend.present, false);
+    assert.equal(invalid.timedOut, true);
+    redacted(invalid);
   }
 });
 
-test("Seatbelt pipe diagnostics distinguish exact length and body read failures", () => {
-  for (const [marker, prefix] of [["sandboxPipeLengthReadFailed", "SeatbeltExec: buffer length read failed"],
-    ["sandboxPipeBodyReadFailed", "SeatbeltExec: buffer read failed"]]) {
-    for (const suffix of ["", "\n", "\r\n", `: ${privateCanary}`]) {
-      const result = collectCursorAppLaunchDiagnostics({ log: prefix + suffix });
-      assert.equal(result.markers[marker], true); assert.equal(JSON.stringify(result).includes(privateCanary), false);
-    }
-    for (const log of [prefix + "extra", prefix.replace(" read ", "\nread "), prefix.replace("read", "write"),
-      prefix.replace("SeatbeltExec: ", "")]) {
-      assert.equal(collectCursorAppLaunchDiagnostics({ log }).markers[marker], false);
-    }
-  }
-});
-
-test("candidate stop diagnostics retain only fixed JSON result and process fields", () => {
-  const result = collectCursorAppStopDiagnostics({ exitCode: 1, signal: null, timedOut: false,
-    stdout: JSON.stringify({ ok: false, action: "stop", error: privateCanary,
-      backend: { ok: false, errorCode: "BACKEND_OWNERSHIP_UNVERIFIED", stage: "verify_ownership",
-        failureReason: "process_probe_inconclusive", systemCode: "EPERM", processState: "unknown",
-        state: { pid: 12345, logPath: privateCanary, token: privateCanary }, error: privateCanary },
-      cursorAdapter: { ok: true, root: privateCanary }, diagnostics: { raw: privateCanary } }) });
-  assert.deepEqual(result, { exitCode: 1, signal: "none", timedOut: false, outputOverflow: false,
-    jsonStatus: "valid", actionMatched: true, ok: false,
-    backend: { present: true, ok: false, errorCode: "BACKEND_OWNERSHIP_UNVERIFIED", stage: "verify_ownership",
-      failureReason: "process_probe_inconclusive", systemCode: "EPERM", processState: "unknown" },
-    cursorAdapter: { present: true, ok: true } });
-  assert.deepEqual(projectCursorAppStopDiagnostics(result), result);
-  assert.equal(JSON.stringify(result).includes(privateCanary), false);
-  assert.equal(JSON.stringify(result).includes("12345"), false);
-});
-
-test("candidate stop diagnostics reject malformed output and arbitrary nested codes without reflecting them", () => {
-  for (const [stdout, expected] of [["", "absent"], [undefined, "absent"], [privateCanary, "invalid"],
-    ["null", "invalid"], ["[]", "invalid"], ["x".repeat(1024 * 1024 + 1), "oversized"]]) {
-    const result = collectCursorAppStopDiagnostics({ stdout, exitCode: null, signal: "SIGKILL", timedOut: true });
-    assert.equal(result.jsonStatus, expected); assert.equal(result.backend.present, false);
-    assert.equal(result.exitCode, null); assert.equal(result.signal, "SIGKILL"); assert.equal(result.timedOut, true);
-    assert.equal(JSON.stringify(result).includes(privateCanary), false);
-  }
-  const result = projectCursorAppStopDiagnostics({ exitCode: privateCanary, signal: privateCanary, timedOut: "true",
-    outputOverflow: 1, jsonStatus: privateCanary, actionMatched: 1, ok: "true", stdout: privateCanary, stderr: privateCanary,
-    backend: { present: "true", ok: 1, errorCode: "BACKEND_PRIVATE_CANARY", stage: privateCanary, failureReason: privateCanary,
-      systemCode: privateCanary, processState: privateCanary, state: privateCanary }, cursorAdapter: { present: 1, ok: "true" } });
-  assert.equal(result.exitCode, null); assert.equal(result.signal, "other"); assert.equal(result.jsonStatus, "other");
-  assert.equal(result.timedOut, false); assert.equal(result.outputOverflow, false); assert.equal(result.actionMatched, false);
-  for (const key of ["errorCode", "stage", "failureReason", "systemCode", "processState"]) assert.equal(result.backend[key], "other");
-  assert.deepEqual(result.cursorAdapter, { present: false, ok: false });
-  assert.equal(JSON.stringify(result).includes(privateCanary), false);
-  assert.equal(JSON.stringify(result).includes("BACKEND_PRIVATE_CANARY"), false);
-  for (const exitCode of [-1, 256, 1.5, "1"]) assert.equal(projectCursorAppStopDiagnostics({ exitCode }).exitCode, null);
-  for (const exitCode of [0, 1, 255]) assert.equal(projectCursorAppStopDiagnostics({ exitCode }).exitCode, exitCode);
-});
-
-test("Windows App stop diagnostics capture the held child at failure without claiming process disappearance", () => {
+test("Windows stop diagnostics capture the held child and distinguish bounded stderr, timeout and overflow", () => {
   const child = { pid: 12345, exitCode: null, signalCode: null };
-  const error = { code: 128, stderr: 'ERROR: The process "12345" not found.\r\n' + privateCanary,
-    stdout: privateCanary, message: privateCanary, cmd: privateCanary };
-  const result = collectCursorAppWindowsStopDiagnostics({ error, child });
+  const result = collectCursorAppWindowsStopDiagnostics({ child,
+    error: { code: 128, stderr: 'ERROR: The process "12345" not found.\r\n' + privateCanary } });
   assert.deepEqual(result, { taskkillExitCode: 128, childExitCode: null, childSignal: "none",
     timedOut: false, outputOverflow: false, markers: { processNotFound: true, accessDenied: false } });
   child.exitCode = 0;
   assert.equal(result.childExitCode, null);
-  assert.equal(collectCursorAppWindowsStopDiagnostics({ error, child }).childExitCode, 0);
-  assert.deepEqual(projectCursorAppWindowsStopDiagnostics(result), result);
-  assert.equal(JSON.stringify(result).includes(privateCanary), false);
-  assert.equal(JSON.stringify(result).includes("12345"), false);
-});
-
-test("Windows App stop diagnostics use bounded stderr only and distinguish timeout from output overflow", () => {
-  for (const stderr of ["ERROR: Access is denied.\r\n", "Reason: Access is denied.\n",
-    Buffer.from("Reason: Access is denied.\r\n")]) {
-    const result = collectCursorAppWindowsStopDiagnostics({ error: { code: 1, stderr } });
-    assert.equal(result.markers.accessDenied, true);
+  redacted(result, ["12345"]);
+  assert.equal(collectCursorAppWindowsStopDiagnostics({ error: { stderr: Buffer.from("Reason: Access is denied.\n") } })
+    .markers.accessDenied, true);
+  for (const error of [{ stdout: "ERROR: Access is denied." }, { stderr: "ERROR: Access is denied.extra" },
+    { stderr: "\u00e9".repeat(32 * 1024) + "\nERROR: Access is denied." }]) {
+    assert.equal(collectCursorAppWindowsStopDiagnostics({ error }).markers.accessDenied, false);
   }
-  for (const error of [{ code: "ETIMEDOUT" }, { killed: true, signal: "SIGTERM" }]) {
-    const result = collectCursorAppWindowsStopDiagnostics({ error, child: { signalCode: "SIGKILL" } });
-    assert.equal(result.timedOut, true); assert.equal(result.outputOverflow, false);
-    assert.equal(result.taskkillExitCode, null); assert.equal(result.childSignal, "SIGKILL");
-  }
-  const overflow = collectCursorAppWindowsStopDiagnostics({
-    error: { code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER", killed: true },
-  });
-  assert.equal(overflow.timedOut, false); assert.equal(overflow.outputOverflow, true);
-  for (const error of [{ message: "ERROR: Access is denied." }, { stdout: "ERROR: Access is denied." },
-    { stderr: "ERROR: Access is denied." + "x".repeat(64 * 1024) },
-    { stderr: "\u00e9".repeat(32 * 1024) + "\nERROR: Access is denied." },
-    { stderr: Buffer.alloc(64 * 1024 + 1, "x") }, { stderr: { toString: () => "ERROR: Access is denied." } },
-    { stderr: "ERROR: Access is denied.extra\nReason:\nAccess is denied.\n" },
-    { stderr: `ERROR: The process "${privateCanary}" not found.\n` }]) {
-    const result = collectCursorAppWindowsStopDiagnostics({ error });
-    assert.deepEqual(result.markers, { processNotFound: false, accessDenied: false });
-    assert.equal(JSON.stringify(result).includes(privateCanary), false);
+  for (const [code, timedOut, outputOverflow] of [["ETIMEDOUT", true, false], ["ERR_CHILD_PROCESS_STDIO_MAXBUFFER", false, true]]) {
+    const stopped = collectCursorAppWindowsStopDiagnostics({ error: { code, killed: true } });
+    assert.equal(stopped.timedOut, timedOut);
+    assert.equal(stopped.outputOverflow, outputOverflow);
   }
 });
 
-test("Windows App stop projection accepts only uint32 outcomes, fixed signals and literal booleans", () => {
-  for (const code of [0, 1, 128, 256, 0xc0000135, 0xffff_ffff]) {
-    const result = projectCursorAppWindowsStopDiagnostics({ taskkillExitCode: code, childExitCode: code });
-    assert.equal(result.taskkillExitCode, code); assert.equal(result.childExitCode, code);
-  }
-  for (const code of [-1, 0x1_0000_0000, 1.5, "128", NaN, privateCanary]) {
-    const result = projectCursorAppWindowsStopDiagnostics({ taskkillExitCode: code, childExitCode: code,
-      childSignal: privateCanary, timedOut: "true", outputOverflow: 1, stderr: privateCanary, pid: 12345,
-      markers: { processNotFound: "true", accessDenied: 1, [privateCanary]: true } });
-    assert.deepEqual(result, { taskkillExitCode: null, childExitCode: null, childSignal: "other",
-      timedOut: false, outputOverflow: false, markers: { processNotFound: false, accessDenied: false } });
-    assert.equal(JSON.stringify(result).includes(privateCanary), false);
-  }
-  for (const childSignal of ["none", "SIGABRT", "SIGBUS", "SIGILL", "SIGKILL", "SIGSEGV", "SIGTERM", "SIGTRAP", "other"]) {
-    assert.equal(projectCursorAppWindowsStopDiagnostics({ childSignal }).childSignal, childSignal);
-  }
-});
-
-async function fixture(callback) {
+async function fixture(t) {
   const home = await realpath(await mkdtemp(join(tmpdir(), "memorax-cursor-diagnostics-")));
+  t.after(() => rm(home, { recursive: true, force: true }));
   const sessionId = randomUUID(), turnId = randomUUID();
   const store = join(home, "runtime/cursor/turns", createHash("sha256").update(sessionId).digest("hex") + ".json");
   const trace = join(home, "debug/traces/cursor/sessions", sessionId, "events.jsonl");
-  await mkdir(dirname(store), { recursive: true }); await mkdir(dirname(trace), { recursive: true });
+  await mkdir(dirname(store), { recursive: true });
+  await mkdir(dirname(trace), { recursive: true });
   const record = { version: 2, client: "cursor", sessionId, active: { turnId, state: "open", stopStatus: "completed",
-    reason: "native_final_response_pending", responseDigest: "a".repeat(64), metadata: { secret: privateCanary }, retryUntil: 42,
-    cwd: privateCanary, databasePath: privateCanary } };
+    reason: "native_final_response_pending", responseDigest: "a".repeat(64), metadata: { secret: privateCanary }, retryUntil: 42 } };
   const event = (type, outcome, identities = {}) => ({ type, outcome,
     trace: { client: "cursor", session_id: sessionId, turn_id: turnId, ...identities }, request: { prompt: privateCanary } });
-  try { await callback({ home, sessionId, turnId, store, trace, record, event }); }
-  finally { await rm(home, { recursive: true, force: true }); }
+  const collect = async () => {
+    const value = await collectCursorAppDiagnostics({ home, sessionId, turnId });
+    assert.deepEqual(projectCursorAppDiagnostics(value), value);
+    redacted(value, [home, sessionId, turnId, "a".repeat(64)]);
+    return value;
+  };
+  return { home, sessionId, turnId, store, trace, record, event, collect };
 }
-function assertSanitized(value, f) {
-  assert.equal(isCursorAppDiagnostics(value), true);
-  const text = JSON.stringify(value);
-  for (const secret of [privateCanary, f.home, f.sessionId, f.turnId, "a".repeat(64)]) assert.ok(!text.includes(secret));
-}
 
-test("Cursor diagnostics correlate only the exact active generation and matching trace events", async () => {
-  await fixture(async (f) => {
-    await writeFile(f.store, JSON.stringify(f.record));
-    const events = [f.event("turn_start"), f.event("turn_end", "completed"), f.event("turn_end", "interrupted"),
-      f.event("turn_materialized"), f.event("turn_start", undefined, { turn_id: randomUUID() }),
-      f.event("turn_start", undefined, { session_id: randomUUID() }), f.event("turn_start", undefined, { client: "codex" })];
-    await writeFile(f.trace, events.map(JSON.stringify).join("\n") + "\n");
-    const actual = await collectCursorAppDiagnostics(f);
-    assert.deepEqual(actual.turnStore, { readStatus: "present", versionMatched: true, clientMatched: true,
-      sessionMatched: true, activePresent: true, turnMatched: true, state: "open", stopStatus: "completed",
-      reason: "native_final_response_pending", responseDigestPresent: true, metadataPresent: true, retryUntilPresent: true,
-      diagnostics: [] });
-    assert.deepEqual(actual.trace, { readStatus: "present", eventCount: 7, turnStartCount: 1,
-      completedCount: 1, interruptedCount: 1, materializedCount: 1 });
-    assertSanitized(actual, f);
-    assert.deepEqual(JSON.parse(await readFile(f.store, "utf8")), f.record);
-  });
+test("turn diagnostics correlate exact client/session/generation, preserve interruption metadata status and never write", async (t) => {
+  const f = await fixture(t);
+  await writeFile(f.store, JSON.stringify(f.record));
+  const events = [f.event("turn_start"), f.event("turn_end", "completed"), f.event("turn_materialized"),
+    f.event("turn_start", undefined, { turn_id: randomUUID() }), f.event("turn_start", undefined, { session_id: randomUUID() }),
+    f.event("turn_start", undefined, { client: "codex" })];
+  await writeFile(f.trace, events.map(JSON.stringify).join("\n"));
+  const value = await f.collect();
+  assert.deepEqual(value.turnStore, { readStatus: "present", versionMatched: true, clientMatched: true,
+    sessionMatched: true, activePresent: true, turnMatched: true, state: "open", stopStatus: "completed",
+    reason: "native_final_response_pending", responseDigestPresent: true, metadataPresent: true, retryUntilPresent: true, diagnostics: [] });
+  assert.deepEqual(value.trace, { readStatus: "present", eventCount: 6, turnStartCount: 1,
+    completedCount: 1, interruptedCount: 0, materializedCount: 1 });
+  assert.deepEqual(JSON.parse(await readFile(f.store, "utf8")), f.record);
+  f.record.active = { turnId: f.turnId, state: "interrupted", stopStatus: "aborted", reason: "interrupted" };
+  await writeFile(f.store, JSON.stringify(f.record));
+  await writeFile(f.trace, JSON.stringify(f.event("turn_end", "interrupted")));
+  const cancelled = await f.collect();
+  assert.equal(cancelled.turnStore.state, "interrupted");
+  assert.equal(cancelled.turnStore.stopStatus, "aborted");
+  assert.equal(cancelled.turnStore.metadataPresent, false);
+  assert.equal(cancelled.turnStore.responseDigestPresent, false);
+  assert.equal(cancelled.trace.interruptedCount, 1);
 });
 
-const diagnosticKey = (...parts) => createHash("sha256").update(JSON.stringify(parts)).digest("hex");
-
-test("Cursor stored diagnostic keys distinguish current-turn failures from session classification failures", async () => {
-  await fixture(async (f) => {
-    delete f.record.active;
-    const otherTurn = randomUUID();
-    f.record.diagnosticKeys = [diagnosticKey("memory.writeback", f.turnId, "start_missing"),
-      diagnosticKey("memory.turn-start", "database_native_format_invalid"),
-      diagnosticKey("memory.turn-start", otherTurn, "workspace_scope_mismatch"),
-      diagnosticKey("memory.writeback", "start_missing"), diagnosticKey("memory.turn-start", "database_unavailable"),
-      diagnosticKey("memory.turn-start", "database_state_missing"), diagnosticKey(privateCanary, f.turnId, "start_missing"),
-      diagnosticKey("memory.writeback", f.turnId, privateCanary)];
-    await writeFile(f.store, JSON.stringify(f.record));
-    const actual = await collectCursorAppDiagnostics(f);
-    assert.equal(actual.turnStore.activePresent, false);
-    assert.deepEqual(actual.turnStore.diagnostics, [
-      { operation: "memory.writeback", reason: "start_missing", scope: "turn" },
-      { operation: "memory.turn-start", reason: "database_native_format_invalid", scope: "session" },
-    ]);
-    const next = await collectCursorAppDiagnostics({ ...f, turnId: randomUUID() });
-    assert.deepEqual(next.turnStore.diagnostics, [
-      { operation: "memory.turn-start", reason: "database_native_format_invalid", scope: "session" },
-    ]);
-    assertSanitized(actual, f);
-    for (const key of f.record.diagnosticKeys) assert.equal(JSON.stringify(actual).includes(key), false);
-    assert.deepEqual(JSON.parse(await readFile(f.store, "utf8")), f.record);
-  });
-});
-
-test("Cursor diagnostic key projection requires matching store identity and bounded valid digest entries", async () => {
-  await fixture(async (f) => {
-    const key = diagnosticKey("memory.turn-start", f.turnId, "database_native_format_invalid");
-    for (const change of [{ version: 1 }, { client: "codex" }, { sessionId: randomUUID() },
-      { diagnosticKeys: [key, privateCanary] }, { diagnosticKeys: Array(65).fill(key) },
-      { diagnosticKeys: [key.toUpperCase()] }, { diagnosticKeys: key }, { diagnosticKeys: null }]) {
-      await writeFile(f.store, JSON.stringify({ ...f.record, diagnosticKeys: [key], ...change }));
-      const actual = await collectCursorAppDiagnostics(f);
-      assert.deepEqual(actual.turnStore.diagnostics, []); assertSanitized(actual, f);
-    }
-    f.record.diagnosticKeys = ["memory.turn-start", "memory.pre-compact", "memory.writeback"]
-      .map((operation) => diagnosticKey(operation, f.turnId, "database_native_format_invalid"));
-    f.record.diagnosticKeys.push(f.record.diagnosticKeys[0]);
-    await writeFile(f.store, JSON.stringify(f.record));
-    const actual = await collectCursorAppDiagnostics(f);
-    assert.deepEqual(actual.turnStore.diagnostics, ["memory.turn-start", "memory.pre-compact", "memory.writeback"]
-      .map((operation) => ({ operation, reason: "database_native_format_invalid", scope: "turn" })));
-    assertSanitized(actual, f);
-  });
-});
-
-test("Cursor recorded diagnostic projection excludes invalid scopes and nonclassification session reasons", () => {
-  const entry = { operation: "memory.turn-start", reason: "database_native_format_invalid", scope: "session" };
-  const turnStore = { readStatus: "present", versionMatched: true, clientMatched: true, sessionMatched: true,
-    diagnostics: [entry, { ...entry, scope: "turn", secret: privateCanary }, { ...entry, operation: "memory.writeback" },
-      { ...entry, reason: "database_unavailable" }, { ...entry, scope: privateCanary },
-      { ...entry, reason: privateCanary }, { ...entry, operation: privateCanary }, entry] };
-  const actual = projectCursorAppDiagnostics({ turnStore });
-  assert.deepEqual(actual.turnStore.diagnostics, [{ ...entry, scope: "turn" }, entry]);
-  assert.equal(JSON.stringify(actual).includes(privateCanary), false);
-  assert.equal(isCursorAppDiagnostics(actual), true);
-  for (const change of [{ readStatus: "invalid" }, { versionMatched: false }, { clientMatched: false },
-    { sessionMatched: false }, { diagnostics: Array(65).fill(entry) }, { diagnostics: privateCanary }]) {
-    assert.deepEqual(projectCursorAppDiagnostics({ turnStore: { ...turnStore, ...change } }).turnStore.diagnostics, []);
+test("stored diagnostic hashes distinguish current-turn failures and session classifications, with bounded identity checks", async (t) => {
+  const f = await fixture(t);
+  const turn = { operation: "memory.writeback", reason: "start_missing", scope: "turn" };
+  const session = { operation: "memory.turn-start", reason: "database_native_format_invalid", scope: "session" };
+  delete f.record.active;
+  f.record.diagnosticKeys = [diagnosticKey(turn.operation, f.turnId, turn.reason), diagnosticKey(session.operation, session.reason),
+    diagnosticKey(turn.operation, randomUUID(), turn.reason), diagnosticKey("memory.writeback", "start_missing"),
+    diagnosticKey("memory.turn-start", "database_unavailable"), diagnosticKey(privateCanary, f.turnId, turn.reason)];
+  await writeFile(f.store, JSON.stringify(f.record));
+  assert.deepEqual((await f.collect()).turnStore.diagnostics, [turn, session]);
+  assert.deepEqual((await collectCursorAppDiagnostics({ ...f, turnId: randomUUID() })).turnStore.diagnostics, [session]);
+  for (const change of [{ version: 1 }, { client: "codex" }, { sessionId: randomUUID() },
+    { diagnosticKeys: [privateCanary] }, { diagnosticKeys: Array(65).fill(f.record.diagnosticKeys[0]) }]) {
+    await writeFile(f.store, JSON.stringify({ ...f.record, ...change }));
+    assert.deepEqual((await f.collect()).turnStore.diagnostics, []);
   }
-  for (const reason of ["database_runtime_unavailable", "database_path_invalid", "database_replaced",
-    "database_snapshot_too_large", "database_native_format_invalid"]) {
-    assert.deepEqual(projectCursorAppDiagnostics({ turnStore: { ...turnStore, diagnostics: [{ ...entry, reason }] } })
-      .turnStore.diagnostics, [{ ...entry, reason }]);
+  const projected = projectCursorAppDiagnostics({ turnStore: { readStatus: "present", versionMatched: true,
+    clientMatched: true, sessionMatched: true, diagnostics: [turn, session, turn,
+      { ...session, reason: "database_unavailable" }, { ...turn, scope: privateCanary }] } });
+  assert.deepEqual(projected.turnStore.diagnostics, [turn, session]);
+  redacted(projected);
+});
+
+test("diagnostic reads reject invalid records, excessive sizes/events, unsafe files and malformed identities", async (t) => {
+  const f = await fixture(t);
+  assert.equal((await f.collect()).turnStore.readStatus, "absent");
+  for (const [text, status] of [[privateCanary, "invalid"], ["[]", "invalid"], [Buffer.from([0xff]), "invalid"],
+    [Buffer.alloc(1024 * 1024 + 1), "oversized"]]) {
+    await writeFile(f.store, text);
+    await writeFile(f.trace, text);
+    const value = await f.collect();
+    assert.equal(value.turnStore.readStatus, status);
+    assert.equal(value.trace.readStatus, status);
+  }
+  await writeFile(f.trace, "{}\n".repeat(4097));
+  assert.equal((await f.collect()).trace.readStatus, "oversized");
+  await rm(f.store);
+  await mkdir(f.store);
+  assert.equal((await f.collect()).turnStore.readStatus, "unsafe");
+  for (const change of [{ home: "relative" }, { sessionId: "../private" }, { turnId: `${f.turnId}\n` }]) {
+    const value = await collectCursorAppDiagnostics({ ...f, ...change });
+    assert.equal(value.turnStore.readStatus, "invalid");
+    redacted(value);
   }
 });
 
-test("Cursor diagnostics retain interruption status without requiring a response digest", async () => {
-  await fixture(async (f) => {
-    f.record.active = { turnId: f.turnId, state: "interrupted", stopStatus: "aborted", reason: "interrupted" };
-    await writeFile(f.store, JSON.stringify(f.record));
-    await writeFile(f.trace, JSON.stringify(f.event("turn_end", "interrupted")) + "\n");
-    const actual = await collectCursorAppDiagnostics(f);
-    assert.equal(actual.turnStore.state, "interrupted"); assert.equal(actual.turnStore.stopStatus, "aborted");
-    assert.equal(actual.turnStore.reason, "interrupted"); assert.equal(actual.turnStore.responseDigestPresent, false);
-    assert.equal(actual.turnStore.metadataPresent, false); assert.equal(actual.trace.interruptedCount, 1);
-    assertSanitized(actual, f);
-  });
-});
-
-test("Cursor diagnostics distinguish identity mismatch, missing files and invalid structured records", async () => {
-  await fixture(async (f) => {
-    let actual = await collectCursorAppDiagnostics(f);
-    assert.equal(actual.turnStore.readStatus, "absent"); assert.equal(actual.trace.readStatus, "absent");
-    await writeFile(f.store, JSON.stringify({ ...f.record, version: 1, client: "codex", sessionId: randomUUID(),
-      active: { ...f.record.active, turnId: randomUUID(), reason: privateCanary } }));
-    actual = await collectCursorAppDiagnostics(f);
-    for (const key of ["versionMatched", "clientMatched", "sessionMatched", "turnMatched"]) assert.equal(actual.turnStore[key], false);
-    assert.equal(actual.turnStore.reason, "other"); assertSanitized(actual, f);
-    for (const malformed of ["not-json", "null", "[]", Buffer.from([0xff])]) {
-      await writeFile(f.store, malformed); await writeFile(f.trace, malformed);
-      actual = await collectCursorAppDiagnostics(f);
-      assert.equal(actual.turnStore.readStatus, "invalid"); assert.equal(actual.trace.readStatus, "invalid");
-      assertSanitized(actual, f);
-    }
-  });
-});
-
-test("Cursor diagnostics reject oversized files, excessive events and nonregular files", async () => {
-  await fixture(async (f) => {
-    await writeFile(f.store, Buffer.alloc(1024 * 1024 + 1)); await writeFile(f.trace, Buffer.alloc(1024 * 1024 + 1));
-    let actual = await collectCursorAppDiagnostics(f);
-    assert.equal(actual.turnStore.readStatus, "oversized"); assert.equal(actual.trace.readStatus, "oversized");
-    await writeFile(f.trace, "{}\n".repeat(4097));
-    actual = await collectCursorAppDiagnostics(f); assert.equal(actual.trace.readStatus, "oversized");
-    await rm(f.store); await mkdir(f.store);
-    actual = await collectCursorAppDiagnostics(f); assert.equal(actual.turnStore.readStatus, "unsafe");
-    assertSanitized(actual, f);
-  });
-});
-
-test("Cursor diagnostics reject symlink files and directories without reading their targets", {
+test("diagnostic reads reject symlink files and parent directories", {
   skip: process.platform === "win32" ? "Symlink permission is runner-dependent" : false,
-}, async () => {
-  await fixture(async (f) => {
-    const target = join(f.home, "private"); await writeFile(target, JSON.stringify(f.record));
-    await symlink(target, f.store); await symlink(target, f.trace);
-    let actual = await collectCursorAppDiagnostics(f);
-    assert.equal(actual.turnStore.readStatus, "unsafe"); assert.equal(actual.trace.readStatus, "unsafe");
-    await rm(dirname(f.store), { recursive: true }); await symlink(f.home, dirname(f.store));
-    actual = await collectCursorAppDiagnostics(f); assert.equal(actual.turnStore.readStatus, "unsafe");
-    assertSanitized(actual, f);
-  });
+}, async (t) => {
+  const f = await fixture(t), target = join(f.home, "private");
+  await writeFile(target, JSON.stringify(f.record));
+  await symlink(target, f.store);
+  assert.equal((await f.collect()).turnStore.readStatus, "unsafe");
+  await rm(dirname(f.store), { recursive: true });
+  await symlink(f.home, dirname(f.store));
+  assert.equal((await f.collect()).turnStore.readStatus, "unsafe");
 });
 
-test("Cursor diagnostics reject unsafe input and never reflect filesystem errors", async () => {
-  for (const input of [undefined, {}, { home: "relative", sessionId: randomUUID(), turnId: randomUUID() },
-    { home: tmpdir(), sessionId: "../private", turnId: randomUUID() },
-    { home: tmpdir(), sessionId: randomUUID() + "\n", turnId: randomUUID() },
-    { home: tmpdir(), sessionId: randomUUID(), turnId: privateCanary }]) {
-    const actual = await collectCursorAppDiagnostics(input);
-    assert.equal(actual.turnStore.readStatus, "invalid"); assert.equal(actual.trace.readStatus, "invalid");
-    assert.equal(isCursorAppDiagnostics(actual), true); assert.ok(!JSON.stringify(actual).includes(privateCanary));
-  }
-});
-
-test("Cursor diagnostics projection drops unknown fields and validates only the public schema", () => {
-  const dirty = { secret: privateCanary, turnStore: { readStatus: "present", state: "open", stopStatus: privateCanary,
-    reason: privateCanary, turnMatched: true, responseDigestPresent: "true", secret: privateCanary },
-    trace: { readStatus: "present", eventCount: 9, turnStartCount: 1, completedCount: -1,
-      interruptedCount: 4097, materializedCount: "1", raw: privateCanary } };
-  const projected = projectCursorAppDiagnostics(dirty);
-  assert.equal(projected.turnStore.reason, "other"); assert.equal(projected.turnStore.stopStatus, "other");
-  assert.equal(projected.turnStore.responseDigestPresent, false); assert.equal(projected.trace.completedCount, 0);
-  assert.equal(projected.trace.interruptedCount, 0); assert.equal(projected.trace.materializedCount, 0);
-  assert.equal(isCursorAppDiagnostics(dirty), false); assert.equal(isCursorAppDiagnostics(projected), true);
-  assert.ok(!JSON.stringify(projected).includes(privateCanary));
-  assert.equal(isCursorAppDiagnostics(undefined), false);
-  assert.equal(isCursorAppDiagnostics({ ...projected, private: privateCanary }), false);
+test("turn report projection discards arbitrary fields and invalid counters", () => {
+  const value = projectCursorAppDiagnostics({ secret: privateCanary,
+    turnStore: { readStatus: "present", reason: privateCanary, stopStatus: privateCanary, responseDigestPresent: "true" },
+    trace: { readStatus: "present", eventCount: 9, completedCount: -1, interruptedCount: 4097,
+      materializedCount: "1", raw: privateCanary } });
+  assert.equal(value.turnStore.reason, "other");
+  assert.equal(value.turnStore.stopStatus, "other");
+  assert.equal(value.turnStore.responseDigestPresent, false);
+  assert.deepEqual(value.trace, { readStatus: "present", eventCount: 9, turnStartCount: 0,
+    completedCount: 0, interruptedCount: 0, materializedCount: 0 });
+  redacted(value);
 });

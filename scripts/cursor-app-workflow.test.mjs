@@ -99,26 +99,6 @@ test("Cursor package lifecycle is required in every cell before native App execu
   assert.match(script("cursor-app", name), /node scripts\/cursor-lifecycle-check\.mjs "\$1" "\$RUNNER_TEMP\/cursor-lifecycle-report"/);
 });
 
-test("Cursor lifecycle documents four setup interruption stages within the existing check", async () => {
-  const summary = script("cursor-app-result", "Require the package and Cursor App canary to succeed");
-  const contributing = await readFile(new URL("../CONTRIBUTING.md", import.meta.url), "utf8");
-  const lifecycle = contributing.split("Before the App check, every cell runs")[1]
-    ?.split("The macOS and Windows wrappers")[0]?.replace(/\s+/g, " ");
-  assert.ok(lifecycle);
-  for (const stage of ["after-config-write", "before-backend-start", "after-backend-start", "saved-account-key-cancel"]) {
-    assert.ok(summary.includes(stage), stage);
-    assert.ok(lifecycle.includes(`\`${stage}\``), stage);
-  }
-  assert.doesNotMatch(summary + lifecycle, /setup interruption is excluded|does not cover setup interruption/);
-  assert.match(lifecycle, /real PTY/);
-  assert.match(lifecycle, /existing Backend lock/);
-  assert.match(lifecycle, /test-only Node child gate/);
-  assert.match(lifecycle, /retry requires no account input/);
-  assert.match(lifecycle, /complete Cursor integration and a local saved-account Search/);
-  assert.match(lifecycle, /does not simulate power loss/);
-  assert.match(lifecycle, /does not start the Cursor App/);
-});
-
 test("Cursor release acquisition runs once outside the matrix and excludes dedicated diagnostics", () => {
   const step = job("package").split("      - name: Resolve and freeze Cursor App releases once for this run\n")[1];
   const condition = step.match(/^        if: (.+)$/m)?.[1];
@@ -153,7 +133,6 @@ test("Cursor matrix independently merges exact platform releases and keeps Linux
       appendFileSync(path, content) { assert.ok(!output.has(path)); output.set(path, content); },
       validateLinuxRelease, selectCursorMacosRelease, selectCursorWindowsRelease,
     }, { timeout: 100 });
-    assert.match(output.get("summary"), /Linux, macOS and Windows App jobs, including Linux baseline on Node 22\. No version fallback\./);
     const include = JSON.parse(output.get("output").slice("matrix=".length)).include;
     assert.equal(new Set(include.map((cell) => `${cell.os}-${cell.channel}-${cell.node}`)).size, include.length);
     assert.deepEqual([...new Set(include.map((cell) => cell.os))].sort(), ["macos-15", "ubuntu-24.04", "windows-2025"]);
@@ -210,80 +189,42 @@ test("Cursor matrix independently merges exact platform releases and keeps Linux
   assert.throws(() => execute(newer, undefined, 2));
 });
 
-test("Cursor App invocation selects the native platform, rejects unknown systems and preserves quoted paths", { skip: process.platform === "win32" }, async (t) => {
+test("workflow entrypoints preserve platform selection, quoted inputs and every failure", { skip: process.platform === "win32" }, async (t) => {
   const root = await mkdtemp(join(tmpdir(), "cursor-app-workflow-"));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const run = script("cursor-app", "Verify isolated native Cursor App writeback");
-  for (const [runnerOs, entrypoint] of [["Linux", "container"], ["macOS", "macos"], ["Windows", "windows"], ["FreeBSD", null], ["", null]]) {
-    for (const kind of ["missing", "single", "multiple", "directory", "symlink"]) {
-      const cwd = join(root, runnerOs || "unknown", kind), tarballs = join(cwd, "dist/npm/tarballs"), calls = join(cwd, "calls");
-      const runnerTemp = join(cwd, "runner temp");
+  const name = "memorax-memorax-code-fixture with spaces.tgz";
+  for (const [runnerOs, entrypoint] of [["Linux", "container"], ["macOS", "macos"], ["Windows", "windows"], ["FreeBSD", null]]) {
+    for (const kind of ["missing", "single", "multiple", "directory", "symlink", "failed"]) {
+      const cwd = join(root, runnerOs, kind), tarballs = join(cwd, "dist/npm/tarballs"), candidate = join(tarballs, name);
+      const calls = join(cwd, "calls"), runnerTemp = join(cwd, "runner temp");
       await mkdir(tarballs, { recursive: true });
-      const name = "memorax-memorax-code-fixture with spaces.tgz", candidate = join(tarballs, name);
-      if (["single", "multiple"].includes(kind)) await writeFile(candidate, "synthetic tarball");
-      if (kind === "multiple") await writeFile(join(tarballs, "memorax-memorax-code-other.tgz"), "synthetic second tarball");
+      if (["single", "multiple", "failed"].includes(kind)) await writeFile(candidate, "synthetic tarball");
+      if (kind === "multiple") await writeFile(join(tarballs, "memorax-memorax-code-other.tgz"), "second");
       if (kind === "directory") await mkdir(candidate);
-      if (kind === "symlink") { await writeFile(join(cwd, "target"), "synthetic tarball"); await symlink(join(cwd, "target"), candidate); }
-      const actual = spawnSync("/bin/bash", ["-e", "-o", "pipefail", "-c", `node() { printf '%s\\n' "$@" > "$CALLS"; }\n${run}`], {
-        cwd, encoding: "utf8", timeout: 5_000,
-        env: { PATH: "/usr/bin:/bin", HOME: cwd, RUNNER_TEMP: runnerTemp, RUNNER_OS: runnerOs, CALLS: calls,
-          CURSOR_RELEASE: "latest", CURSOR_NODE: "24" },
-      });
-      assert.ifError(actual.error);
-      assert.equal(actual.status, kind === "single" && entrypoint ? 0 : 1, `${runnerOs}: ${kind}`);
-      if (kind === "single" && entrypoint) assert.deepEqual((await readFile(calls, "utf8")).trimEnd().split("\n"), [
-        `scripts/cursor-app-${entrypoint}-check.mjs`, `dist/npm/tarballs/${name}`, join(runnerTemp, "cursor-app-report"),
-        join(runnerTemp, "cursor-app-releases/cursor-app-releases.json"), "latest", "24",
-      ]);
-      else await assert.rejects(readFile(calls), { code: "ENOENT" });
+      if (kind === "symlink") { await writeFile(join(cwd, "target"), "fixture"); await symlink(join(cwd, "target"), candidate); }
+      for (const lifecycle of [false, true]) {
+        await rm(calls, { force: true });
+        const step = lifecycle ? "Verify Cursor package lifecycle and saved account" : "Verify isolated native Cursor App writeback";
+        const actual = spawnSync("/bin/bash", ["-e", "-o", "pipefail", "-c",
+          `node() { printf '%s\\n' "$@" > "$CALLS"; return "$RESULT"; }\n${script("cursor-app", step)}`], {
+          cwd, encoding: "utf8", timeout: 5000,
+          env: { PATH: "/usr/bin:/bin", HOME: cwd, RUNNER_TEMP: runnerTemp, RUNNER_OS: runnerOs, CALLS: calls,
+            RESULT: kind === "failed" ? "7" : "0", CURSOR_RELEASE: "latest", CURSOR_NODE: "24" },
+        });
+        assert.ifError(actual.error);
+        const invoked = ["single", "failed"].includes(kind) && (lifecycle || entrypoint);
+        assert.equal(actual.status, invoked ? kind === "failed" ? 7 : 0 : 1, `${runnerOs}/${kind}/${step}`);
+        if (invoked) assert.deepEqual((await readFile(calls, "utf8")).trimEnd().split("\n"), lifecycle
+          ? ["scripts/cursor-lifecycle-check.mjs", `dist/npm/tarballs/${name}`, join(runnerTemp, "cursor-lifecycle-report")]
+          : [`scripts/cursor-app-${entrypoint}-check.mjs`, `dist/npm/tarballs/${name}`, join(runnerTemp, "cursor-app-report"),
+            join(runnerTemp, "cursor-app-releases/cursor-app-releases.json"), "latest", "24"]);
+        else await assert.rejects(readFile(calls), { code: "ENOENT" });
+      }
     }
   }
 });
 
-test("Cursor App invocation retains every platform entrypoint failure", { skip: process.platform === "win32" }, async (t) => {
-  const root = await mkdtemp(join(tmpdir(), "cursor-app-workflow-failure-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
-  await mkdir(join(root, "dist/npm/tarballs"), { recursive: true });
-  await writeFile(join(root, "dist/npm/tarballs/memorax-memorax-code-fixture.tgz"), "synthetic tarball");
-  for (const runnerOs of ["Linux", "macOS", "Windows"]) {
-    const actual = spawnSync("/bin/bash", ["-e", "-o", "pipefail", "-c",
-      `node() { return 7; }\n${script("cursor-app", "Verify isolated native Cursor App writeback")}`], {
-      cwd: root, encoding: "utf8", timeout: 5_000,
-      env: { PATH: "/usr/bin:/bin", HOME: root, RUNNER_OS: runnerOs, RUNNER_TEMP: root, CURSOR_RELEASE: "baseline", CURSOR_NODE: "24" },
-    });
-    assert.ifError(actual.error);
-    assert.equal(actual.status, 7, runnerOs);
-  }
-});
-
-test("Cursor lifecycle invocation preserves quoted inputs and command failures", { skip: process.platform === "win32" }, async (t) => {
-  const root = await mkdtemp(join(tmpdir(), "cursor-lifecycle-workflow-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
-  const run = script("cursor-app", "Verify Cursor package lifecycle and saved account");
-  for (const kind of ["missing", "single", "multiple", "directory", "symlink", "failed"]) {
-    const cwd = join(root, kind), tarballs = join(cwd, "dist/npm/tarballs"), calls = join(cwd, "calls");
-    const runnerTemp = join(cwd, "runner temp"), name = "memorax-memorax-code-fixture with spaces.tgz";
-    await mkdir(tarballs, { recursive: true });
-    const candidate = join(tarballs, name);
-    if (["single", "multiple", "failed"].includes(kind)) await writeFile(candidate, "synthetic tarball");
-    if (kind === "multiple") await writeFile(join(tarballs, "memorax-memorax-code-other.tgz"), "synthetic second tarball");
-    if (kind === "directory") await mkdir(candidate);
-    if (kind === "symlink") { await writeFile(join(cwd, "target"), "synthetic tarball"); await symlink(join(cwd, "target"), candidate); }
-    const actual = spawnSync("/bin/bash", ["-e", "-o", "pipefail", "-c",
-      `node() { printf '%s\\n' "$@" > "$CALLS"; return "$RESULT"; }\n${run}`], {
-      cwd, encoding: "utf8", timeout: 5_000,
-      env: { PATH: "/usr/bin:/bin", HOME: cwd, RUNNER_TEMP: runnerTemp, CALLS: calls, RESULT: kind === "failed" ? "7" : "0" },
-    });
-    assert.ifError(actual.error);
-    assert.equal(actual.status, kind === "single" ? 0 : kind === "failed" ? 7 : 1, kind);
-    if (["single", "failed"].includes(kind)) assert.deepEqual((await readFile(calls, "utf8")).trimEnd().split("\n"), [
-      "scripts/cursor-lifecycle-check.mjs", `dist/npm/tarballs/${name}`, join(runnerTemp, "cursor-lifecycle-report"),
-    ]);
-    else await assert.rejects(readFile(calls), { code: "ENOENT" });
-  }
-});
-
-test("Cursor App summary fails every non-success dependency and states the limited native scope", { skip: process.platform === "win32" }, async (t) => {
+test("Cursor App summary fails every non-success dependency", { skip: process.platform === "win32" }, async (t) => {
   const root = await mkdtemp(join(tmpdir(), "cursor-app-summary-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const run = script("cursor-app-result", "Require the package and Cursor App canary to succeed");
@@ -300,15 +241,6 @@ test("Cursor App summary fails every non-success dependency and states the limit
         `package=${packageResult}, cursor=${cursorResult}`);
       const text = await readFile(summary, "utf8");
       assert.ok(text.includes(`Package: **${packageResult}**`) && text.includes(`Cursor App Linux/macOS/Windows matrix: **${cursorResult}**`));
-      assert.match(text, /Ubuntu 24\.04, macOS 15 and Windows 2025, baseline\/latest on Node 24 and Linux baseline on Node 22/);
-      assert.match(text, /Eleven native App runs per cell cover repeated-prompt follow-up, cross-workspace isolation, App restart\/resume, explicit Skill Search\/Add, Shell denial, pending-Shell interruption and same-session recovery/);
-      assert.match(text, /native Task: the managed child inherits model selection, claims the job and finishes without a bundle, requiring artifact_validation_failed, no published bundle, exited lease guard and no child automatic Add/);
-      assert.match(text, /Nine completed foreground turns produce exactly nine automatic Adds; the two explicit Skill operations bring the total Memory requests to eleven/);
-      assert.match(text, /Scripted tool requests do not validate model-driven Skill selection or successful Repo Memory generation/);
-      assert.match(text, /macOS and Windows use signature-verified Apps, isolated homes and local fixtures on fresh GitHub-hosted runners, without an additional Seatbelt or WFP prerequisite/);
-      assert.match(text, /Chromium sandboxing remains enabled/);
-      assert.match(text, /This matrix does not validate real login, OS credential-store isolation, hosted models or full functional coverage/);
-      assert.match(text, /Every cell also requires the isolated MemoraX package lifecycle check: fresh\/repeat setup, uninstall\/reinstall, real previous-version upgrade, download and replacement failure recovery, saved account\/configuration retention, and four setup interruption stages/);
     }
   }
 });

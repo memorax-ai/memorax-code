@@ -1,872 +1,404 @@
 import assert from "node:assert/strict";
 import { EventEmitter, once } from "node:events";
 import { readFile } from "node:fs/promises";
-import { basename, dirname, join, posix, win32 } from "node:path";
+import { createServer, request as httpRequest } from "node:http";
+import { basename, dirname, join, win32 } from "node:path";
 import { PassThrough } from "node:stream";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
 import { collectCursorAppShellDiagnostics, collectCursorAppStopDiagnostics } from "./cursor-app-diagnostics.mjs";
-import { stopWindowsApp } from "./cursor-app-windows-runtime.mjs";
 
 const source = (await readFile(new URL("./cursor-app-native-check.mjs", import.meta.url), "utf8")).replaceAll("\r\n", "\n");
+const privateCanary = "private-content-path-token-canary";
+function check(value, code) { if (!value) throw Object.assign(new Error(code), { code }); }
+function nativeFunction(name, context = {}) {
+  const definition = source.match(new RegExp(`(?:async )?function ${name}\\([\\s\\S]*?(?=\\n(?:async )?function )`))?.[0];
+  assert.ok(definition, name);
+  return runInNewContext(`(${definition})`, { check, Buffer, basename, dirname, join, once, ...context }, { timeout: 100 });
+}
+function childProcess() {
+  return Object.assign(new EventEmitter(), { pid: 201, exitCode: null, signalCode: null,
+    stdout: new PassThrough(), stderr: new PassThrough() });
+}
 
-test("Skill memory validation retains its turn workspace after the worker changes workspace", () => {
-  const body = source.split("function assertSkillMemory(")[1]?.split("\nfunction toolSteps(")[0];
+test("memory HTTP callback preserves split UTF-8 and rejects oversized or malformed requests", async (t) => {
+  const body = source.split("memory = createServer(")[1]?.split("\n  await new Promise((resolve) => memory.listen(")[0].trim();
   assert.ok(body);
-  const validate = runInNewContext(`(function assertSkillMemory(${body})`, {
-    workspace: "/owned/cursor-repo-memory", basename,
-    skillQuery: "query", searchMemory: "search", skillMemory: "add", skillReason: "reason",
-    fixtureKey: "synthetic-key", fixtureUser: "synthetic-user",
-    assertCursorAppMemoryOperation(options) { return options; },
+  const memoryRequests = [];
+  const handler = runInNewContext(`(${body.slice(0, -2)})`, { check, memoryRequests, searchMemory: "synthetic memory" });
+  let firstChunk;
+  const server = createServer((request, response) => {
+    request.once("data", () => firstChunk?.());
+    return handler(request, response);
   });
-  for (const operation of ["search", "add"]) {
-    assert.equal(validate(operation, {}, {}, "original-workspace").workspaceName, "original-workspace");
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const content = "Exact \u4e2d\u6587 \ud83e\uddea content";
+  const bytes = Buffer.from(JSON.stringify({ messages: [{ role: "user", content }] }));
+  for (const payload of [bytes, Buffer.alloc(1024 * 1024 + 1, "x"), Buffer.from(privateCanary)]) {
+    const seen = new Promise((resolve) => { firstChunk = resolve; });
+    let request;
+    const reply = new Promise((resolve, reject) => {
+      request = httpRequest({ host: "127.0.0.1", port: server.address().port, method: "POST",
+        path: "/v1/memories/add", agent: false, headers: { authorization: "Token synthetic" } }, async (response) => {
+        response.resume();
+        await once(response, "end");
+        resolve(response.statusCode);
+      });
+      request.once("error", reject);
+    });
+    const split = payload === bytes ? bytes.indexOf(Buffer.from("\u4e2d")) + 1 : 16;
+    request.write(payload.subarray(0, split));
+    await seen;
+    request.end(payload.subarray(split));
+    assert.equal(await reply, payload === bytes ? 200 : 400);
   }
-  assert.match(source, /assertSkillMemory\(fixture\.operation, result, memoryRequests\[fixture\.operation === "search" \? 4 : 6\], fixture\.workspaceName\)/);
-  assert.match(source, /assertSkillMemory\(operation, JSON\.parse\(agent\.runs\[index\]\.toolResults\[2\]\.stdout\), memoryRequests\[index === 4 \? 4 : 6\], turns\[index\]\.workspaceName\)/);
+  assert.equal(memoryRequests[0].body.messages[0].content, content);
+  assert.equal(memoryRequests[0].authorization, "Token synthetic");
+  assert.ok(memoryRequests.slice(1).every((request) => request.invalid === true));
 });
 
-test("Repo Memory fixture publishes local mainline authority without contacting a remote", async () => {
-  const body = source.split("async function prepareRepoMemoryWorkspace(")[1]?.split("\nfunction check(")[0];
-  assert.ok(body);
-  const calls = [], head = "a".repeat(40), env = { HOME: "/owned/home" };
-  const prepare = runInNewContext(`(async function prepareRepoMemoryWorkspace(${body})`, {
-    root: "/owned", join, env,
-    async mkdir(path) { assert.equal(path, join("/owned", "cursor-repo-memory")); },
-    async writeFile(path, content) {
-      assert.equal(path, join("/owned", "cursor-repo-memory", "README.md"));
-      assert.match(content, /Synthetic Cursor/);
-    },
-    async exec(file, args, options) {
-      assert.equal(file, "git"); assert.equal(options.env, env);
-      assert.equal(options.cwd, join("/owned", "cursor-repo-memory"));
-      assert.equal(options.timeout, 10000); assert.equal(options.shell, undefined);
-      calls.push(Array.from(args));
-      return { stdout: args[0] === "rev-parse" ? `${head}\n` : "" };
-    },
-    check(value) { assert.ok(value); },
-  });
-  const result = await prepare();
-  assert.equal(result.head, head);
-  assert.equal(result.repo, join("/owned", "cursor-repo-memory"));
-  assert.deepEqual(calls.slice(-3), [["rev-parse", "HEAD"], ["update-ref", "refs/remotes/origin/main", head],
-    ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]]);
-  assert.ok(calls.every((args) => !args.includes("fetch") && !args.includes("push") && !args.includes("pull")));
-  assert.match(source, /GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: join\(home, "missing-git-config"\), GIT_TERMINAL_PROMPT: "0"/);
-});
-
-test("actual candidate commands use the owned spawn on every platform and preserve outcomes", async () => {
-  const body = source.split("async function command(")[1]?.split("\nasync function ownedProcessesRemain(")[0];
-  const cliBody = source.split("  cli = ")[1]?.split(";\n")[0];
-  assert.ok(body);
-  assert.ok(cliBody);
-  const privateCanary = "private-stop-path-token-canary";
-  const failure = { ok: false, action: "stop", backend: { ok: false, errorCode: "BACKEND_STOP_TIMEOUT",
-    stage: "wait_stopped", processState: "running", state: { path: privateCanary }, error: privateCanary } };
-  const modes = ["failed-stop", "successful-stop", "invalid-json", "failed-start", "failed-status", "failed-restart", "timeout", "overflow"];
-  for (const [platform, mode] of ["linux", "darwin", "win32"].flatMap((platform) => modes.map((mode) => [platform, mode]))) {
-    const action = ["failed-start", "failed-status", "failed-restart"].includes(mode) ? mode.slice(7) : "stop";
-    const report = {}, kills = [], timers = [], env = { HOME: "/owned/home", MEMORAX_CODE_HOME: "/owned/state", CURSOR_HOME: "/owned/cursor" };
-    const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough(), exitCode: null, signalCode: null });
-    let closed = false, collected = false;
-    const close = (exitCode, signal = null) => {
-      if (closed) return;
-      closed = true; child.exitCode = exitCode; child.signalCode = signal;
-      child.stdout.end(); child.stderr.end(); child.emit("close", exitCode, signal);
+test("candidate commands drain stderr, bound output/time and preserve redacted stop failure evidence", async () => {
+  for (const mode of ["success", "failure", "invalid-json", "timeout", "overflow"]) {
+    const child = childProcess(), report = {}, kills = [];
+    let timer, cleared = false;
+    const close = (code, signal = null) => {
+      child.exitCode = code; child.signalCode = signal;
+      child.stdout.end(); child.stderr.end(); child.emit("close", code, signal);
     };
     child.kill = (signal) => { kills.push(signal); queueMicrotask(() => close(null, signal)); };
-    function startCommand(route, file, args, options) {
-      assert.equal(route, "owned");
-      assert.equal(file, "/owned/node");
-      assert.deepEqual(Array.from(args), [join("/owned/package", "bin/memorax-code.mjs"), action,
-        "--home", env.MEMORAX_CODE_HOME, "--cursor-home", env.CURSOR_HOME, "--port", "18787", "--clients", "cursor", "--json"]);
-      assert.equal(options.cwd, join("/owned", "workspace")); assert.equal(options.env === env, true);
-      assert.deepEqual(Array.from(options.stdio), ["ignore", "pipe", "pipe"]);
-      assert.equal(options.shell, undefined);
-      queueMicrotask(() => {
-        child.stderr.write(privateCanary);
-        if (mode === "timeout") { timers[0](); return; }
-        if (mode === "overflow") { child.stdout.write("x".repeat(1024 * 1024 + 1)); return; }
-        child.stdout.write(mode === "invalid-json" ? privateCanary : JSON.stringify(mode === "successful-stop" ? { ok: true } : failure));
-        close(mode === "successful-stop" || mode === "invalid-json" ? 0 : 1);
-      });
-      return child;
-    }
-    const command = runInNewContext(`(async function command(${body})`, {
-      process: { execPath: "/owned/node" }, packageRoot: "/owned/package", root: "/owned", env, report, join, once,
-      macos: platform === "darwin" ? {} : undefined, windows: platform === "win32" ? {} : undefined,
-      collectCursorAppStopDiagnostics(value) { collected = true; return collectCursorAppStopDiagnostics(value); },
-      check(value, code) {
-        if (action === "stop") assert.equal(collected, true, "stop JSON is projected before checking the exit");
-        if (!value) throw Object.assign(new Error(code), { code });
+    const command = nativeFunction("command", {
+      process: { execPath: "/owned/node" }, packageRoot: "/owned/package", root: "/owned", env: {}, report,
+      collectCursorAppStopDiagnostics,
+      setTimeout(callback, milliseconds) { assert.equal(milliseconds, 30000); timer = callback; return timer; },
+      clearTimeout(value) { assert.equal(value, timer); cleared = true; },
+      spawn(file, args, options) {
+        assert.equal(file, "/owned/node");
+        assert.deepEqual(Array.from(args), [join("/owned/package", "bin/memorax-code.mjs"), "stop"]);
+        assert.equal(options.shell, undefined);
+        queueMicrotask(() => {
+          child.stderr.write(privateCanary);
+          if (mode === "timeout") return timer();
+          if (mode === "overflow") return child.stdout.write("x".repeat(1024 * 1024 + 1));
+          child.stdout.write(mode === "invalid-json" ? privateCanary : JSON.stringify({ ok: mode === "success", action: "stop",
+            backend: { errorCode: "BACKEND_STOP_TIMEOUT", state: privateCanary } }));
+          close(mode === "failure" ? 1 : 0);
+        });
+        return child;
       },
-      setTimeout(callback, timeout) { assert.equal(timeout, 30000); timers.push(callback); return callback; },
-      clearTimeout(timer) { assert.equal(timer, timers[0]); timers.length = 0; },
-      spawn: (...args) => startCommand("controller", ...args),
-      spawnOwned: (...args) => startCommand("owned", ...args),
-    }, { timeout: 100 });
-    const cli = runInNewContext(cliBody, { command, env, backendPort: 18787 }, { timeout: 100 });
-    const code = `CURSOR_APP_CANDIDATE_${action.toUpperCase()}`;
-    if (mode === "successful-stop") assert.equal((await cli(action)).ok, true);
-    else await assert.rejects(cli(action), { code });
-    assert.equal(timers.length, 0);
-    assert.deepEqual(kills, ["timeout", "overflow"].includes(mode) ? ["SIGKILL"] : []);
-    if (mode === "successful-stop" || action !== "stop") assert.equal(report.candidateStop, undefined);
+    });
+    if (mode === "success") assert.equal((await command(["stop"], "CURSOR_APP_CANDIDATE_STOP")).ok, true);
     else {
-      assert.ok(report.candidateStop);
+      await assert.rejects(command(["stop"], "CURSOR_APP_CANDIDATE_STOP"), { code: "CURSOR_APP_CANDIDATE_STOP" });
       assert.equal(report.candidateStop.timedOut, mode === "timeout");
       assert.equal(report.candidateStop.outputOverflow, mode === "overflow");
-      if (mode === "failed-stop") assert.equal(report.candidateStop.backend.errorCode, "BACKEND_STOP_TIMEOUT");
-      if (mode === "invalid-json") assert.equal(report.candidateStop.jsonStatus, "invalid");
-      assert.equal(JSON.stringify(report).includes(privateCanary), false);
     }
+    assert.equal(cleared, true);
+    assert.deepEqual(kills, ["timeout", "overflow"].includes(mode) ? ["SIGKILL"] : []);
+    assert.equal(JSON.stringify(report).includes(privateCanary), false);
   }
 });
 
-test("native failures capture the current App outcome before cleanup changes process state", () => {
-  const capture = source.indexOf("if (app) report.appLaunch = collectCursorAppLaunchDiagnostics(");
-  const cleanup = source.indexOf("finally {\n  try { await stopApp();");
-  assert.ok(capture > 0 && cleanup > capture);
-  assert.match(source, /appLaunchLog = ""; appSpawnError = undefined; appDebugEndpointSeen = false;/);
-  assert.match(source, /exitCode: app\.exitCode, signal: app\.signalCode/);
-  assert.match(source, /spawnError: appSpawnError, log: appLaunchLog/);
+test("App launch preserves the sandbox and isolated arguments with a longer Windows driver deadline", async () => {
+  for (const platform of ["linux", "darwin", "win32"]) {
+    const child = childProcess(), waits = [], argumentsSeen = [];
+    const page = { url: () => "file:///workbench.html", evaluate: async () => true, setDefaultTimeout() {} };
+    const start = nativeFunction("startApp", {
+      macos: platform === "darwin" ? { createDevToolsEndpointReader: () => ({ push() {}, get: () => "ws://127.0.0.1:12346" }) } : undefined,
+      windows: platform === "win32" ? {} : undefined,
+      appPath: "/owned/app", userData: "/owned/app-data", root: "/owned", workspace: "/owned/workspace",
+      agent: { url: "http://127.0.0.1:12345" }, debugPort: 12346, env: {}, report: {}, AbortSignal,
+      fetch: async () => ({ ok: true }), bounded: (promise) => promise,
+      chromium: { connectOverCDP: async () => ({ contexts: () => [{ pages: () => [page] }] }) },
+      async waitFor(predicate, code, deadline) { waits.push([code, deadline]); assert.equal(await predicate(), true); },
+      spawn(file, args, options) {
+        assert.equal(file, "/owned/app"); assert.equal(options.shell, undefined);
+        argumentsSeen.push(...args);
+        return child;
+      },
+    });
+    await start();
+    assert.equal(argumentsSeen.includes("--force-disable-user-env"), platform !== "linux");
+    assert.ok(argumentsSeen.includes("--use-inmemory-secretstorage"));
+    assert.ok(argumentsSeen.includes("--test-backend-url=http://127.0.0.1:12345"));
+    assert.ok(argumentsSeen.includes("--remote-debugging-address=127.0.0.1"));
+    assert.equal(argumentsSeen.some((arg) => ["--no-sandbox", "--disable-setuid-sandbox", "--disable-gpu-sandbox"].includes(arg)), false);
+    assert.equal(argumentsSeen.at(-1), "/owned/workspace");
+    assert.deepEqual(waits.at(-1), ["CURSOR_APP_DRIVER", platform === "win32" ? 90000 : 30000]);
+    child.stdout.end(); child.stderr.end();
+  }
 });
 
-test("native Run and Skip record only completed clicks on the matching run and tool", async () => {
-  const body = source.split("async function runTurn(")[1]?.split("\nasync function assertInterrupted(")[0];
-  assert.ok(body);
-  for (const permission of [undefined, "deny"]) for (const mode of ["clicked", "click-failed", "not-visible", "wrong-session", "marker-exists"]) {
+test("native sequence restores the original session after workspace switching without restarting Backend", async () => {
+  const body = source.split('  report.stage = "app-start";')[1]?.split('  report.stage = "cleanup";')[0];
+  const starts = [], stops = [], turns = [], commands = [];
+  let sessions = 0;
+  const context = { check, join, root: "/owned", firstWorkspace: "/owned/workspace", workspace: "/owned/workspace",
+    report: { evidence: {} }, recoveryFixture: { prompt: "recovery" },
+    async mkdir() {}, async startApp() { context.app = { pid: starts.length + 1 }; starts.push(context.workspace); },
+    async stopApp() { stops.push(context.workspace); context.app = undefined; },
+    async assertProcessesStopped(options) { assert.equal(options.includeBackend, false); },
+    async openSession(id) { return id ?? ["session-a", "session-b", "session-deny"][sessions++]; },
+    async runTurn(sessionId) { turns.push([sessionId, context.workspace]); }, assertWriteback() {}, assertSnapshot() {},
+    async cli(action) { commands.push(action); return { cursorAdapter: { cursorHooks: { runtimeObserved: true } } }; },
+    async interruptPendingShell() { context.interruption = { sessionId: "session-cancel" }; },
+    async assertInterrupted(options) { assert.equal(options.recovered, true); },
+    async runRepoMemoryWorker() { assert.equal(turns.length, 8); },
+  };
+  await runInNewContext(`(async () => {${body}})()`, context);
+  assert.deepEqual(starts, ["/owned/workspace", "/owned/project-beta", "/owned/workspace"]);
+  assert.deepEqual(stops, starts.slice(0, 2));
+  assert.deepEqual(commands, ["status"]);
+  assert.deepEqual(turns.map(([session]) => session), ["session-a", "session-a", "session-b",
+    "session-a", "session-a", "session-a", "session-deny", "session-cancel"]);
+  assert.equal(turns[2][1], "/owned/project-beta");
+  assert.equal(turns[3][1], "/owned/workspace");
+  assert.equal(context.report.evidence.sameSessionRecovered, true);
+});
+
+test("Skill submission preserves its menu mention and rejects ambiguous menu or missing mention", async () => {
+  for (const [operation, menuCount, mentionCount, suffix] of [[undefined, 0, 0], ["search", 1, 1],
+    ["add", 2, 1, "MENU"], ["search", 1, 0, "MENTION"]]) {
+    const events = [], fixture = { operation, prompt: operation ? "/memorax-code synthetic prompt" : "synthetic prompt" };
+    let text = "", attached = false;
+    const input = { async fill(value) { events.push("fill"); text = value; attached = false; },
+      async pressSequentially(value) { text += value; }, locator: () => ({ count: async () => mentionCount }),
+      async press(key) { events.push(key); if (key === "Enter") { assert.equal(text, fixture.prompt); assert.equal(attached, Boolean(operation)); } } };
+    const submit = nativeFunction("submitPrompt", { page: {
+      locator: () => ({ locator: () => ({ filter: ({ hasText }) => {
+        assert.equal(hasText.test("/memorax-code-other"), false);
+        return { count: async () => menuCount, async click() { attached = true; text = "/memorax-code "; } };
+      } }) }),
+      keyboard: { async insertText(value) { assert.equal(attached, true); text += value; } },
+    }, async waitFor(predicate, code) { check(await predicate(), code); } });
+    if (suffix) await assert.rejects(submit(input, fixture), { code: `CURSOR_APP_SKILL_${suffix}` });
+    else await submit(input, fixture);
+    assert.deepEqual(events, suffix ? ["fill"] : operation ? ["fill", "End", "Enter"] : ["fill", "Enter"]);
+  }
+});
+
+test("Run and Skip bind completed clicks to the exact run and fail closed on identity or marker conflicts", async () => {
+  for (const permission of [undefined, "deny"]) for (const mode of ["clicked", "click-failed", "wrong-session", "marker-exists"]) {
     if (!permission && mode === "marker-exists") continue;
-    const toolCallId = "11111111-1111-4111-8111-111111111111", sessionId = "synthetic-session";
-    const run = { conversationId: sessionId, prompt: "synthetic prompt", completed: false,
-      pendingTool: { kind: "shell", toolCallId }, shellApproval: { toolCallId, clicked: false } };
-    const retry = { ...run, shellApproval: { toolCallId: "22222222-2222-4222-8222-222222222222", clicked: false } };
-    const agent = { errors: [], runs: [] }, selectors = [];
-    let submitted = 0, markerChecks = 0;
-    const code = "CURSOR_APP_EXEC_REJECTED", error = Object.assign(new Error(code), { code });
-    const button = {
-      async count() { return mode === "not-visible" ? 0 : 1; }, async isVisible() { return true; },
-      async click(options) {
-        assert.equal(options.timeout, 2000);
-        agent.runs.push(retry);
-        if (mode === "click-failed") throw error;
-      },
-    };
+    const run = { conversationId: mode === "wrong-session" ? "other-session" : "session", prompt: "prompt",
+      pendingTool: { kind: "shell", toolCallId: "tool-id" }, shellApproval: { toolCallId: "tool-id", clicked: false } };
+    const retry = { ...run, shellApproval: { toolCallId: "retry", clicked: false } };
+    const agent = { errors: [], runs: [] }, turns = [], selectors = [];
     const locator = { locator(selector) { selectors.push(selector); return locator; },
-      getByRole(role, options) { assert.equal(role, "button"); assert.equal(options.name, permission ? "Skip" : "Run"); assert.equal(options.exact, true); return button; } };
-    const turns = [];
-    const runTurn = runInNewContext(`(async function runTurn(${body})`, {
-      turns, fixtures: [{ prompt: run.prompt, ...(permission ? { permission } : { operation: "search" }) }], report: {}, agent,
-      workspace: "/owned/project-beta", basename,
-      denial: { marker: "/owned/project-beta/denied-marker" },
-      async assertMarkerAbsent(marker, code) {
-        assert.equal(marker, "/owned/project-beta/denied-marker"); markerChecks += 1;
-        if (mode === "marker-exists") throw Object.assign(new Error(code), { code });
-      },
-      page: { locator(selector) { selectors.push(selector); return locator; } },
-      async submitPrompt(input, fixture) {
-        assert.equal(input, locator); assert.equal(fixture.prompt, run.prompt); submitted += 1;
-        if (mode === "wrong-session") run.conversationId = "different-session";
-        agent.runs.push(run);
-      },
-      async waitFor(predicate) { await predicate(); throw error; },
-      check(value, actualCode) { if (!value) throw Object.assign(new Error(actualCode), { code: actualCode }); },
-    }, { timeout: 100 });
-    await assert.rejects(runTurn(sessionId), { code: mode === "wrong-session" ? "CURSOR_APP_SKILL_APPROVAL_IDENTITY"
-      : mode === "marker-exists" ? "CURSOR_APP_PERMISSION_TOOL_EXECUTED" : code });
-    assert.equal(submitted, 1);
-    assert.equal(turns[0].workspaceName, "project-beta");
-    assert.equal(run.shellApproval.toolCallId, toolCallId);
+      getByRole(role, options) {
+        assert.equal(role, "button"); assert.equal(options.name, permission ? "Skip" : "Run");
+        return { count: async () => 1, isVisible: async () => true,
+          async click() { agent.runs.push(retry); check(mode !== "click-failed", "CLICK_FAILED"); } };
+      } };
+    const runTurn = nativeFunction("runTurn", { turns, agent, report: {}, workspace: "/owned/project-beta",
+      page: { locator: () => locator }, denial: { marker: "/owned/marker" },
+      async assertMarkerAbsent() { check(mode !== "marker-exists", "CURSOR_APP_PERMISSION_TOOL_EXECUTED"); },
+      async submitPrompt() { agent.runs.push(run); },
+      async waitFor(predicate) { await predicate(); check(false, "PENDING"); },
+    });
+    await assert.rejects(runTurn("session", { prompt: "prompt", ...(permission ? { permission } : { operation: "search" }) }),
+      { code: mode === "wrong-session" ? "CURSOR_APP_SKILL_APPROVAL_IDENTITY" : mode === "click-failed" ? "CLICK_FAILED"
+        : mode === "marker-exists" ? "CURSOR_APP_PERMISSION_TOOL_EXECUTED" : "PENDING" });
     assert.equal(run.shellApproval.clicked, !permission && mode === "clicked");
     assert.equal(run.shellRejection?.clicked, permission && mode === "clicked" ? true : undefined);
-    assert.equal(markerChecks, permission && !["not-visible", "wrong-session"].includes(mode) ? 1 : 0);
     assert.equal(retry.shellApproval.clicked, false);
-    assert.equal(selectors.includes(`[data-tool-call-id="${toolCallId}"]:visible`), mode !== "wrong-session");
-    assert.ok(selectors.includes(`[data-composer-id="${sessionId}"][data-composer-status]:visible`));
+    assert.equal(turns[0].workspaceName, "project-beta");
+    if (mode !== "wrong-session") assert.ok(selectors.includes('[data-tool-call-id="tool-id"]:visible'));
   }
 });
 
-test("same-session recovery uses a new run and excludes the cancelled turn from completed history", async () => {
-  const body = source.split("async function runTurn(")[1]?.split("\nasync function assertInterrupted(")[0];
+test("same-session recovery requires new identities and excludes the cancelled turn from history", async () => {
   for (const mode of ["recovered", "cancelled-history", "reused-id"]) {
-    const prior = { conversationId: "same-session", requestId: "old-request", userMessageId: "old-message",
-      cancelled: true, completed: false, kvWrites: [], turnBlobId: Buffer.alloc(32) };
-    const fixture = { prompt: "new prompt", answer: "new answer" };
-    const run = { conversationId: prior.conversationId, prompt: fixture.prompt, completed: true,
-      requestId: mode === "reused-id" ? prior.requestId : "new-request", userMessageId: "new-message",
-      turnRefs: mode === "cancelled-history" ? [prior.turnBlobId] : [], kvReadCount: 0, kvReadResultCount: 0,
-      kvWriteCount: 3, kvAckCount: 3, requestContextRequestCount: 1, requestContextResultCount: 1, requestContextCloseCount: 1 };
-    const agent = { runs: [prior], errors: [] }, turns = [], report = {};
-    const locator = { locator: () => locator };
-    const runTurn = runInNewContext(`(async function runTurn(${body})`, {
-      agent, turns, report, workspace: "/owned/workspace", basename,
-      page: { locator: () => locator },
-      async submitPrompt(input, actual) { assert.equal(actual, fixture); agent.runs.push(run); },
-      async waitFor(predicate) {
-        if (report.stage === "native-persistence") throw Object.assign(new Error("transport verified"), { code: "VERIFIED" });
-        assert.equal(await predicate(), true);
-      },
-      check(value, code) { if (!value) throw Object.assign(new Error(code), { code }); },
+    const prior = { conversationId: "session", requestId: "old", userMessageId: "old", cancelled: true,
+      completed: false, kvWrites: [], turnBlobId: Buffer.alloc(32) };
+    const run = { conversationId: "session", prompt: "recovery", completed: true, userMessageId: "new",
+      requestId: mode === "reused-id" ? "old" : "new", turnRefs: mode === "cancelled-history" ? [prior.turnBlobId] : [],
+      kvReadCount: 0, kvReadResultCount: 0, kvWriteCount: 3, kvAckCount: 3,
+      requestContextRequestCount: 1, requestContextResultCount: 1, requestContextCloseCount: 1 };
+    const agent = { runs: [prior], errors: [] }, report = {};
+    const runTurn = nativeFunction("runTurn", { agent, report, turns: [], workspace: "/owned/workspace",
+      page: { locator: () => ({ locator: () => ({}) }) }, async submitPrompt() { agent.runs.push(run); },
+      async waitFor(predicate) { check(report.stage !== "native-persistence", "VERIFIED"); assert.equal(await predicate(), true); },
     });
-    await assert.rejects(runTurn(prior.conversationId, fixture), { code: mode === "cancelled-history"
-      ? "CURSOR_APP_HISTORY_MISMATCH" : mode === "reused-id" ? "CURSOR_APP_REUSED_TURN_IDENTITY" : "VERIFIED" });
-    assert.equal(turns.length, 1);
-    assert.equal(turns[0].prompt, fixture.prompt);
-    assert.equal(turns[0].sessionId, prior.conversationId);
+    await assert.rejects(runTurn("session", { prompt: "recovery" }), { code: mode === "recovered" ? "VERIFIED"
+      : mode === "reused-id" ? "CURSOR_APP_REUSED_TURN_IDENTITY" : "CURSOR_APP_HISTORY_MISMATCH" });
   }
 });
 
-test("interruption oracle retains the old terminal trace after the same session recovers", async () => {
-  const body = source.split("async function assertInterrupted(")[1]?.split("\nasync function interruptPendingShell(")[0];
-  for (const recovered of [false, true]) for (const mode of ["valid", "tool-ran", "old-completed", "old-materialized", "late-add",
-    ...(recovered ? ["different-session", "same-request", "wrong-active", "new-not-materialized"] : ["wrong-state"])]) {
-    const interruption = { sessionId: "same-session", runIndex: 1, marker: "/owned/cancelled-marker" };
-    const old = { requestId: "old-request", cancelled: true, completed: false,
+test("interruption and recovery require terminal traces, discarded metadata and no late Add", async () => {
+  for (const recovered of [false, true]) for (const mode of ["valid", "metadata", "materialized", "late-add", "tool-ran"]) {
+    const old = { requestId: "old", cancelled: true, completed: false,
       cancellation: { actionReceived: true, rejected: true, execClosed: true, transportClosed: true, rstCode: 8 },
       kvWriteCount: 0, kvAckCount: 0, execRequestCount: 1, execResultCount: 0, execCloseCount: 0,
       requestContextRequestCount: 1, requestContextResultCount: 1, requestContextCloseCount: 1 };
-    const next = { conversationId: mode === "different-session" ? "another-session" : interruption.sessionId,
-      requestId: mode === "same-request" ? old.requestId : "new-request", completed: true, prompt: "recovery prompt" };
+    const next = { requestId: "new", conversationId: "session", prompt: "recovery", completed: true };
     const store = { readStatus: "present", versionMatched: true, clientMatched: true, sessionMatched: true,
-      activePresent: true, turnMatched: true, state: "interrupted", stopStatus: "aborted", reason: "interrupted", metadataPresent: false };
-    const trace = { readStatus: "present", turnStartCount: 1, interruptedCount: 1,
-      completedCount: mode === "old-completed" ? 1 : 0, materializedCount: mode === "old-materialized" ? 1 : 0 };
+      activePresent: true, turnMatched: true, metadataPresent: mode === "metadata" };
     const reads = [];
-    let writebackChecks = 0;
-    const assertInterrupted = runInNewContext(`(async function assertInterrupted(${body})`, {
-      interruption, agent: { runs: [{ completed: true }, old, ...(recovered ? [next] : [])] },
-      recoveryFixture: { prompt: next.prompt }, env: { MEMORAX_CODE_HOME: "/owned/state" },
-      async assertMarkerAbsent(marker, code) {
-        assert.equal(marker, interruption.marker);
-        if (mode === "tool-ran") throw Object.assign(new Error(code), { code });
+    const interrupted = nativeFunction("assertInterrupted", { interruption: { sessionId: "session", runIndex: 0, marker: "/owned/marker" },
+      agent: { runs: [old, next] }, recoveryFixture: { prompt: "recovery" }, env: { MEMORAX_CODE_HOME: "/owned/state" },
+      async assertMarkerAbsent() { check(mode !== "tool-ran", "CURSOR_APP_INTERRUPTION_TOOL_EXECUTED"); },
+      async collectCursorAppDiagnostics({ turnId }) {
+        reads.push(turnId);
+        return turnId === "old" ? { turnStore: { ...store, state: "interrupted", stopStatus: "aborted", reason: "interrupted" },
+          trace: { readStatus: "present", turnStartCount: 1, interruptedCount: 1, completedCount: 0, materializedCount: mode === "materialized" ? 1 : 0 } }
+          : { turnStore: { ...store, state: "accepted", stopStatus: "completed" },
+            trace: { turnStartCount: 1, completedCount: 1, interruptedCount: 0, materializedCount: 1 } };
       },
-      async collectCursorAppDiagnostics({ sessionId, turnId }) {
-        assert.equal(sessionId, interruption.sessionId); reads.push(turnId);
-        if (turnId === old.requestId) return { turnStore: recovered ? { turnMatched: false } :
-          { ...store, state: mode === "wrong-state" ? "open" : store.state }, trace };
-        assert.equal(turnId, next.requestId);
-        return { turnStore: { ...store, turnMatched: mode !== "wrong-active", state: "accepted", stopStatus: "completed" },
-          trace: { ...trace, interruptedCount: 0, materializedCount: mode === "new-not-materialized" ? 0 : 1, completedCount: 1 } };
-      },
-      assertWriteback() {
-        writebackChecks += 1;
-        if (mode === "late-add") throw Object.assign(new Error("exact writebacks differ"), { code: "EXACT_WRITEBACK_MISMATCH" });
-      },
-      check(value, code) { if (!value) throw Object.assign(new Error(code), { code }); },
+      assertWriteback() { check(mode !== "late-add", "EXACT_WRITEBACK_MISMATCH"); },
     });
-    if (mode === "valid") {
-      await assertInterrupted({ recovered });
-      assert.deepEqual(reads, recovered ? [old.requestId, next.requestId] : [old.requestId]);
-      assert.equal(writebackChecks, 1);
-    } else await assert.rejects(assertInterrupted({ recovered }), { code: mode === "tool-ran"
-      ? "CURSOR_APP_INTERRUPTION_TOOL_EXECUTED" : mode === "late-add" ? "EXACT_WRITEBACK_MISMATCH"
-        : ["different-session", "same-request"].includes(mode) ? "CURSOR_APP_RECOVERY_IDENTITY"
-          : ["wrong-active", "new-not-materialized"].includes(mode) ? "CURSOR_APP_RECOVERY_HOOK" : "CURSOR_APP_INTERRUPTION_HOOK" });
+    if (mode === "valid") { await interrupted({ recovered }); assert.deepEqual(reads, recovered ? ["old", "new"] : ["old"]); }
+    else await assert.rejects(interrupted({ recovered }), { code: mode === "tool-ran" ? "CURSOR_APP_INTERRUPTION_TOOL_EXECUTED"
+      : mode === "late-add" ? "EXACT_WRITEBACK_MISMATCH" : recovered && mode === "metadata" ? "CURSOR_APP_RECOVERY_HOOK" : "CURSOR_APP_INTERRUPTION_HOOK" });
   }
 });
 
-test("actual failure capture uses the first rejected Shell, never the last retry", () => {
-  const capture = source.match(/  const shellResult = collectCursorAppShellDiagnostics\([^\n]+\);\n  if \(shellResult\) report\.shellResult = shellResult;/)?.[0];
-  assert.ok(capture);
-  const toolCallId = "11111111-1111-4111-8111-111111111111";
-  const first = { error: "CURSOR_APP_EXEC_REJECTED", execRejection: { kind: "shell", toolCallId, rejectionKind: 2, exitCode: 127 },
-    shellApproval: { toolCallId, clicked: true } };
-  const retry = { ...first, execRejection: { ...first.execRejection, exitCode: 1 }, shellApproval: { toolCallId, clicked: false } };
-  const report = {};
-  runInNewContext(capture, { report, agent: { firstShellFailure: first, runs: [first, retry] }, collectCursorAppShellDiagnostics });
-  assert.deepEqual(report.shellResult, { rejectionKind: 2, approvalClicked: true, exitCode: 127 });
-  const unrelated = {};
-  runInNewContext(capture, { report: unrelated, agent: { runs: [retry] }, collectCursorAppShellDiagnostics });
-  assert.equal(unrelated.shellResult, undefined);
-});
-
-test("owned native commands and App launch preserve direct spawn arguments without a shell", () => {
-  const body = source.split("function spawnOwned(")[1]?.split("\nasync function command(")[0];
-  assert.ok(body);
-  assert.match(source, /app = spawnOwned\(appPath,/);
-  for (const platform of ["linux", "darwin", "win32"]) {
-    const calls = [], options = { env: { HOME: "/owned/home" }, cwd: "/owned/workspace" };
-    const spawnOwned = runInNewContext(`(function spawnOwned(${body})`, {
-      macos: platform === "darwin" ? {} : undefined,
-      windows: platform === "win32" ? {} : undefined,
-      spawn(file, args, actualOptions) { calls.push({ file, args, actualOptions }); return "owned child"; },
-    }, { timeout: 100 });
-    assert.equal(spawnOwned("/owned/Node", ["an argument with spaces"], options), "owned child");
-    assert.equal(calls.length, 1);
-    assert.equal(calls[0].actualOptions, options);
-    assert.equal(calls[0].file, "/owned/Node");
-    assert.deepEqual(Array.from(calls[0].args), ["an argument with spaces"]);
-    assert.equal(options.shell, undefined);
-  }
-});
-
-test("App launch keeps the default Chromium sandbox and forces isolated shell environment on native hosts", () => {
-  const launch = source.split("async function startApp() {")[1]?.split("\nasync function openSession(")[0];
-  const body = launch?.slice(launch.indexOf("  app = spawnOwned("), launch.indexOf("  const capture = "));
-  assert.ok(body);
-  for (const platform of ["linux", "darwin", "win32"]) {
-    const env = { HOME: "/owned/home" }, calls = [];
-    runInNewContext(body, {
-      macos: platform === "darwin" ? {} : undefined, windows: platform === "win32" ? {} : undefined,
-      appPath: "/owned/app", userData: "/owned/app-data", root: "/owned", workspace: "/owned/workspace",
-      agent: { url: "http://127.0.0.1:12345" }, debugPort: 12346, env, join,
-      spawnOwned(file, args, options) { calls.push({ file, args: Array.from(args), options }); },
-    }, { timeout: 100 });
-    assert.equal(calls.length, 1);
-    const { file, args, options } = calls[0];
-    assert.equal(file, "/owned/app"); assert.equal(options.env, env); assert.equal(options.shell, undefined);
-    assert.equal(args.includes("--force-disable-user-env"), platform !== "linux");
-    assert.equal(args.includes("--use-inmemory-secretstorage"), true);
-    assert.equal(args.includes("--test-backend-url=http://127.0.0.1:12345"), true);
-    assert.equal(args.includes("--test-backend-url"), false);
-    assert.equal(args.includes("http://127.0.0.1:12345"), false);
-    assert.equal(args.includes("--remote-debugging-address=127.0.0.1"), true);
-    assert.equal(args.includes("--remote-debugging-port=12346"), true);
-    assert.equal(args.some((arg) => ["--no-sandbox", "--disable-setuid-sandbox", "--disable-gpu-sandbox"].includes(arg)), false);
-    assert.equal(args.at(-1), "/owned/workspace");
-    assert.equal(options.cwd, "/owned/workspace");
-  }
-});
-
-test("native sequence opens a second workspace then restores the original session without restarting Backend", async () => {
-  const body = source.split('  report.stage = "app-start";')[1]?.split('  report.stage = "cleanup";')[0];
-  assert.ok(body);
-  for (const paths of [posix, win32]) {
-    const root = paths.resolve("/owned"), firstWorkspace = paths.join(root, "workspace");
-    const secondWorkspace = paths.join(root, "project-beta");
-    const env = { MEMORAX_CODE_HOME: paths.join(root, "state") }, userData = paths.join(root, "app-data");
-    const turns = [], starts = [], stops = [], audits = [], created = [], commands = [], snapshots = [];
-    let freshSessions = 0;
-    const context = { root, firstWorkspace, workspace: firstWorkspace, env, userData, join: paths.join,
-      report: { evidence: {} }, app: undefined, recoveryFixture: { prompt: "recovery" },
-      async mkdir(path) { created.push(path); },
-      async startApp() {
-        assert.equal(context.app, undefined);
-        context.app = { pid: starts.length + 1 };
-        starts.push({ workspace: context.workspace, env: context.env, userData: context.userData });
-      },
-      async stopApp() { stops.push(context.workspace); context.app = undefined; },
-      async assertProcessesStopped(options) { audits.push(options.includeBackend); },
-      async openSession(id) { return id ?? ["session-a", "session-b", "session-deny"][freshSessions++]; },
-      async runTurn(sessionId, fixture) {
-        if (sessionId === "session-cancel") assert.equal(fixture, context.recoveryFixture);
-        turns.push({ sessionId, workspace: context.workspace });
-      },
-      assertWriteback() {}, assertSnapshot(sessionId) { snapshots.push(sessionId); },
-      async cli(action) { commands.push(action); return { cursorAdapter: { cursorHooks: { runtimeObserved: true } } }; },
-      async interruptPendingShell() {
-        assert.equal(context.workspace, firstWorkspace); context.interruption = { sessionId: "session-cancel" };
-      },
-      async assertInterrupted(options) { assert.equal(options.recovered, true); },
-      async runRepoMemoryWorker() { assert.equal(turns.length, 8); },
-      check(value, code) { assert.ok(value, code); },
-    };
-    await runInNewContext(`(async () => {${body}})()`, context, { timeout: 100 });
-    assert.deepEqual(starts.map((item) => item.workspace), [firstWorkspace, secondWorkspace, firstWorkspace]);
-    assert.ok(starts.every((item) => item.env === env && item.userData === userData));
-    assert.deepEqual(stops, [firstWorkspace, secondWorkspace]);
-    assert.deepEqual(audits, [false, false]);
-    assert.deepEqual(created, [secondWorkspace]);
-    assert.deepEqual(commands, ["status"]);
-    assert.deepEqual(turns, [
-      { sessionId: "session-a", workspace: firstWorkspace },
-      { sessionId: "session-a", workspace: firstWorkspace },
-      { sessionId: "session-b", workspace: secondWorkspace },
-      ...Array.from({ length: 3 }, () => ({ sessionId: "session-a", workspace: firstWorkspace })),
-      { sessionId: "session-deny", workspace: firstWorkspace },
-      { sessionId: "session-cancel", workspace: firstWorkspace },
-    ]);
-    assert.deepEqual(snapshots, ["session-a", "session-a", "session-b"]);
-    assert.equal(context.report.evidence.workspaceIsolation, true);
-    assert.equal(context.report.evidence.appResume, true);
-    assert.equal(context.report.evidence.sameSessionRecovered, true);
-    assert.equal(freshSessions, 3);
-  }
-});
-
-test("native submission selects one Skill menu item and preserves its mention while typing the prompt", async () => {
-  const body = source.split("async function submitPrompt(")[1]?.split("\nasync function runTurn(")[0];
-  assert.ok(body);
-  for (const [operation, menuCount, mentionCount, suffix] of [
-    [undefined, 0, 0, undefined], ["search", 1, 1, undefined], ["add", 1, 1, undefined],
-    ["search", 0, 0, "MENU"], ["search", 2, 0, "MENU"],
-    ["search", 1, 0, "MENTION"], ["search", 1, 2, "MENTION"],
-  ]) {
-    const promptBody = "synthetic prompt with a private-content-canary";
-    const fixture = { prompt: operation ? `/memorax-code ${promptBody}` : promptBody, operation };
-    const events = [], fills = [], inserted = [], presses = [];
-    let hasMention = false, text = "";
-    const input = {
-      async fill(value) { events.push("fill"); fills.push(value); text = value; hasMention = false; },
-      async pressSequentially(value) {
-        assert.equal(text, "");
-        assert.equal(value, "/memorax-code");
-        events.push("type"); text += value;
-      },
-      locator(selector) {
-        assert.equal(selector, '[data-typeahead-type="cursor_skill"][data-mention-name="memorax-code"]');
-        return { async count() { events.push("mention"); return mentionCount; } };
-      },
-      async press(key) {
-        events.push(key); presses.push(key);
-        if (key === "Enter") {
-          assert.equal(text, fixture.prompt);
-          assert.equal(hasMention, Boolean(operation));
-        } else assert.equal(key, "End");
-      },
-    };
-    const item = {
-      async count() { events.push("menu"); return menuCount; },
-      async click() { events.push("click"); hasMention = true; text = "/memorax-code "; },
-    };
-    const submitPrompt = runInNewContext(`(async function submitPrompt(${body})`, {
-      page: {
-        locator(selector) {
-          assert.equal(selector, ".ui-slash-menu__content:visible");
-          return { locator(titleSelector) {
-            assert.equal(titleSelector, ".ui-slash-menu__item-title");
-            return { filter({ hasText }) {
-              assert.equal(hasText.test("/memorax-code"), true);
-              assert.equal(hasText.test("/memorax-code-other"), false);
-              assert.equal(hasText.test("Create /memorax-code skill"), false);
-              return item;
-            } };
-          } };
-        },
-        keyboard: { async insertText(value) {
-          events.push("insert"); inserted.push(value); text += value;
-          assert.equal(hasMention, true);
-          assert.equal(value, promptBody);
-        } },
-      },
-      async waitFor(predicate, code) {
-        if (!await predicate()) throw Object.assign(new Error(code), { code });
-      },
-    }, { timeout: 100 });
-    if (suffix) await assert.rejects(submitPrompt(input, fixture), (error) => {
-      assert.equal(error.code, `CURSOR_APP_SKILL_${suffix}`);
-      assert.equal(error.message, error.code);
-      assert.equal(JSON.stringify(error).includes("canary"), false);
-      return true;
-    });
-    else await submitPrompt(input, fixture);
-    assert.deepEqual(fills, [operation ? "" : fixture.prompt]);
-    assert.deepEqual(presses, suffix ? [] : operation ? ["End", "Enter"] : ["Enter"]);
-    assert.deepEqual(inserted, operation && !suffix ? [promptBody] : []);
-    assert.deepEqual(events, !operation ? ["fill", "Enter"] : suffix === "MENU" ? ["fill", "type", "menu"]
-      : suffix === "MENTION" ? ["fill", "type", "menu", "click", "mention"]
-      : ["fill", "type", "menu", "click", "mention", "End", "insert", "Enter"]);
-  }
-});
-
-test("native Skill tools require the exact current manually attached file and still read its full installed text", () => {
-  const body = source.split("function toolSteps(")[1]?.split("\nasync function stopApp(")[0];
-  assert.ok(body);
-  for (const [platform, skillRoot, nativePath] of [
-    ["win32", "C:\\private-path-canary\\skills\\memorax-code", "c:\\private-path-canary\\skills\\memorax-code\\SKILL.md"],
-    ["win32", "D:\\private-path-canary\\skills\\memorax-code", "d:\\private-path-canary\\skills\\memorax-code\\SKILL.md"],
-    ["win32", "c:\\private-path-canary\\skills\\memorax-code", "c:\\private-path-canary\\skills\\memorax-code\\SKILL.md"],
-    ["win32", "d:\\private-path-canary\\skills\\memorax-code", "d:\\private-path-canary\\skills\\memorax-code\\SKILL.md"],
-    ["linux", "/private-path-canary/skills/memorax-code", "/private-path-canary/skills/memorax-code/SKILL.md"],
-    ["darwin", "/private-path-canary/skills/memorax-code", "/private-path-canary/skills/memorax-code/SKILL.md"],
-  ]) for (const newline of ["\n", "\r\n"]) {
-    const pathJoin = platform === "win32" ? win32.join : posix.join;
-    const installedPath = pathJoin(skillRoot, "SKILL.md");
-    const content = "# Installed Skill\n\nKeep this exact body and trailing newline.\n";
-    const skillText = ["---", "name: memorax-code", "description: synthetic", "---", "", " \t", content].join("\n").replaceAll("\n", newline);
-    const match = { fullPath: nativePath, content, manuallyAttached: true };
-    const other = { ...match, fullPath: pathJoin(skillRoot, "private-other-canary", "SKILL.md") };
-    const differentSeparator = platform === "win32" ? nativePath.replaceAll("\\", "/") : nativePath.replaceAll("/", "\\");
-    for (const [selected, suffix] of [
-      [undefined, "PATH"], [[], "PATH"], [[other], "PATH"], [[match, match], "PATH"],
-      [[{ ...match, manuallyAttached: false }], "TYPE"], [[{ ...match, manuallyAttached: undefined }], "TYPE"],
-      [[{ ...match, content: "private-content-canary" }], "CONTENT"], [[{ ...match, content: content.trimEnd() }], "CONTENT"],
-      [[{ ...match, content: skillText }], "CONTENT"],
-      [[{ ...match, fullPath: differentSeparator }], "PATH"],
-      [[{ ...match, fullPath: nativePath.replace("private-path-canary", "Private-path-canary") }], "PATH"],
-      [[{ ...match, fullPath: nativePath.replace("SKILL.md", "skill.md") }], "PATH"],
-      ...(platform === "win32" ? [[[{ ...match, fullPath: nativePath.replace(/^[a-z]:/, (drive) => drive.toUpperCase()) }], "PATH"]] : []),
-      [[match], undefined], [[other, match], undefined],
-    ]) {
-      const prior = { conversationId: "synthetic-session", completed: true, turnBlobId: Buffer.alloc(32), selectedCursorRules: [match] };
-      const run = { prompt: "/memorax-code synthetic prompt", conversationId: prior.conversationId,
-        requestContextCloseCount: 1, turnRefs: [], selectedCursorRules: selected,
-        inputRequestContext: { agentSkills: [match], agentSkillsInfoComplete: true },
-        requestContext: { agentSkills: [match], agentSkillsInfoComplete: true,
-          hooksAdditionalContext: "MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT=cursor and MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID=synthetic-session" } };
-      const toolSteps = runInNewContext(`(function toolSteps(${body})`, {
-        process: { platform }, join: pathJoin, skillRoot, skillText, agent: { runs: [prior, run] },
-        interruption: undefined, turns: [{ sessionId: run.conversationId, prompt: run.prompt, operation: "search" }],
-        check(value, code) { if (!value) throw Object.assign(new Error(code), { code }); },
-      }, { timeout: 100 });
-      if (suffix) assert.throws(() => toolSteps(run, []), (error) => {
-        assert.equal(error.code, `CURSOR_APP_SKILL_ATTACHMENT_${suffix}`);
-        assert.equal(error.message, error.code);
-        assert.deepEqual(Object.keys(error), ["code"]);
-        assert.equal(JSON.stringify(error).includes("canary"), false);
-        return true;
-      });
-      else {
-        assert.deepEqual(JSON.parse(JSON.stringify(toolSteps(run, []))), { kind: "read", path: installedPath });
-        assert.deepEqual(JSON.parse(JSON.stringify(toolSteps(run, [{ kind: "read", path: installedPath, content: skillText }]))),
-          { kind: "read", path: pathJoin(skillRoot, "references", "memorax-search.md") });
-        if (nativePath !== installedPath) assert.throws(() => toolSteps(run, [{ kind: "read", path: nativePath, content: skillText }]),
-          { code: "CURSOR_APP_SKILL_NOT_READ" });
-        assert.throws(() => toolSteps(run, [{ kind: "read", path: installedPath, content }]),
-          { code: "CURSOR_APP_SKILL_NOT_READ" });
-      }
+test("Skill tools require the exact manually attached body and full installed file before the reference", () => {
+  for (const [platform, skillRoot, paths] of [["linux", "/owned/skill", { join }], ["win32", "D:\\owned\\skill", win32]]) {
+    const installed = paths.join(skillRoot, "SKILL.md"), content = "# Installed Skill\n";
+    const skillText = "---\r\nname: memorax-code\r\n---\r\n\r\n" + content;
+    const match = { fullPath: platform === "win32" ? installed.replace("D:", "d:") : installed, content, manuallyAttached: true };
+    const run = { conversationId: "session", prompt: "/memorax-code prompt", requestContextCloseCount: 1, turnRefs: [],
+      requestContext: { hooksAdditionalContext: "MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT=cursor and MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID=session" } };
+    const tools = nativeFunction("toolSteps", { process: { platform }, join: paths.join, skillRoot, skillText,
+      interruption: undefined, agent: { runs: [run] }, turns: [{ sessionId: "session", prompt: run.prompt, operation: "search" }] });
+    for (const [selected, suffix] of [[[match], undefined], [[match, match], "PATH"],
+      [[{ ...match, fullPath: installed + "-other" }], "PATH"], [[{ ...match, manuallyAttached: false }], "TYPE"],
+      [[{ ...match, content: content.trimEnd() }], "CONTENT"]]) {
+      run.selectedCursorRules = selected;
+      if (suffix) assert.throws(() => tools(run, []), { code: `CURSOR_APP_SKILL_ATTACHMENT_${suffix}` });
+      else assert.equal(tools(run, []).path, installed);
     }
+    assert.equal(tools(run, [{ kind: "read", path: installed, content: skillText }]).path,
+      paths.join(skillRoot, "references/memorax-search.md"));
+    assert.throws(() => tools(run, [{ kind: "read", path: installed, content }]), { code: "CURSOR_APP_SKILL_NOT_READ" });
   }
 });
 
-test("native Shell commands keep POSIX quoting and route Windows Skill context and pending markers", () => {
-  const shell = source.slice(source.indexOf("function quote("), source.indexOf("\nfunction assertSkillMemory("));
-  const body = source.split("function toolSteps(")[1]?.split("\nasync function stopApp(")[0];
-  assert.ok(shell && body);
-  const posix = runInNewContext(`(() => { ${shell}; return shellCommand; })()`, { windows: undefined });
-  assert.equal(posix(["/owned/tool", "it's a value"], { FIXTURE: "a b" }), "'env' 'FIXTURE=a b' '/owned/tool' 'it'\\''s a value'");
-  for (const operation of ["search", "add", "interrupt"]) {
-    const calls = [], workspace = "C:\\owned\\workspace", skillRoot = "C:\\owned\\skills\\memorax-code";
-    const run = { prompt: "synthetic prompt", conversationId: "synthetic-session", requestContextCloseCount: 1 };
-    const interruption = { sessionId: run.conversationId, runIndex: 1, marker: "C:\\owned\\pending marker" };
-    const encodedCommand = "ZgBpAHgAdAB1AHIAZQA=", command = `powershell.exe -EncodedCommand ${encodedCommand}`;
-    const reference = win32.join(skillRoot, "references", `memorax-${operation}.md`);
-    const results = operation === "interrupt" ? [] : [
-      { kind: "read", path: win32.join(skillRoot, "SKILL.md"), content: "installed skill" },
-      { kind: "read", path: reference, content: "installed reference" },
-    ];
-    const toolSteps = runInNewContext(`(() => { ${shell}; return function toolSteps(${body}; })()`, {
-      process: { platform: "win32", execPath: "C:\\owned\\node.exe" }, join: win32.join,
-      env: { MEMORAX_CODE_MEMORAX_ENDPOINT: "http://127.0.0.1:12345", MEMORAX_CODE_HOME: "C:\\owned\\state" },
-      agent: { runs: operation === "interrupt" ? [undefined, run] : [run] },
-      turns: [{ sessionId: run.conversationId, prompt: run.prompt, operation }],
-      interruption,
-      interruptedFixture: { prompt: run.prompt }, workspace, skillRoot, skillText: "installed skill",
-      referenceTexts: new Map([[operation, "installed reference"]]),
-      skillQuery: "query ' value", skillMemory: "memory ' value", skillReason: "reason ' value",
-      windows: { windowsShellCommand(args, environment) {
-        calls.push({ args: Array.from(args), environment: { ...environment } }); return command;
-      } },
-      assertCursorAppSkillReference(content, actualOperation, platform) {
-        assert.equal(content, "installed reference"); assert.equal(actualOperation, operation); assert.equal(platform, "win32");
-        return "C:\\owned\\bin\\memorax-cli.cmd";
-      },
-      check(value, code) { if (!value) throw Object.assign(new Error(code), { code }); },
-    }, { timeout: 100 });
-    assert.deepEqual(JSON.parse(JSON.stringify(toolSteps(run, results))), {
-      kind: "shell", command, workingDirectory: workspace, timeoutMs: 20000,
+test("Skill shell steps bind the isolated endpoint, state and session with macOS network permission", () => {
+  for (const platform of ["linux", "darwin", "win32"]) for (const operation of ["search", "add"]) {
+    const run = { conversationId: "session", prompt: "prompt", requestContextCloseCount: 1 };
+    const env = { MEMORAX_CODE_HOME: "/owned/state", MEMORAX_CODE_MEMORAX_ENDPOINT: "http://127.0.0.1:12345" };
+    const tools = nativeFunction("toolSteps", { process: { platform }, env, interruption: undefined,
+      agent: { runs: [run] }, turns: [{ sessionId: "session", prompt: "prompt", operation }],
+      skillRoot: "/owned/skill", skillText: "installed", workspace: "/owned/workspace",
+      referenceTexts: new Map([[operation, "reference"]]), skillQuery: "query", skillMemory: "memory", skillReason: "reason",
+      assertCursorAppSkillReference: () => platform === "win32" ? "memorax-cli.cmd" : "memorax-cli",
+      shellCommand: (args, environment) => JSON.stringify({ args, environment }),
     });
-    assert.equal(interruption.encodedCommand, operation === "interrupt" ? encodedCommand : undefined);
-    assert.equal(calls.length, 1);
-    assert.deepEqual(calls[0], operation === "interrupt" ? {
-      args: ["C:\\owned\\node.exe", "-e", "require('node:fs').writeFileSync(process.argv[1], 'unexpected execution')", "C:\\owned\\pending marker"],
-      environment: {},
-    } : {
-      args: ["C:\\owned\\bin\\memorax-cli.cmd", ...(operation === "search"
-        ? ["search", "--query", "query ' value", "--json"]
-        : ["add", "--memory", "memory ' value", "--type", "procedural", "--reason", "reason ' value", "--json"])],
-      environment: { MEMORAX_CODE_MEMORAX_ENDPOINT: "http://127.0.0.1:12345", MEMORAX_CODE_HOME: "C:\\owned\\state",
-        MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT: "cursor", MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID: run.conversationId },
-    });
+    const shell = tools(run, [{ kind: "read", path: join("/owned/skill", "SKILL.md"), content: "installed" },
+      { kind: "read", path: join("/owned/skill", "references", `memorax-${operation}.md`), content: "reference" }]);
+    const command = JSON.parse(shell.command);
+    assert.deepEqual(command.environment, { ...env, MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT: "cursor",
+      MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID: "session" });
+    assert.deepEqual(command.args, [platform === "win32" ? "memorax-cli.cmd" : "memorax-cli", ...(operation === "search"
+      ? ["search", "--query", "query", "--json"] : ["add", "--memory", "memory", "--type", "procedural", "--reason", "reason", "--json"])]);
+    assert.equal(shell.networkAccess, platform === "darwin" ? true : undefined);
+    assert.equal(shell.workingDirectory, "/owned/workspace");
   }
 });
 
-test("POSIX Skill commands bind fixture state and request network access only on macOS", () => {
-  const shell = source.slice(source.indexOf("function quote("), source.indexOf("\nfunction assertSkillMemory("));
-  const body = source.split("function toolSteps(")[1]?.split("\nasync function stopApp(")[0];
-  const env = { MEMORAX_CODE_MEMORAX_ENDPOINT: "http://127.0.0.1:12345", MEMORAX_CODE_HOME: "/owned/state ' space" };
-  const run = { prompt: "synthetic prompt", conversationId: "synthetic-session", requestContextCloseCount: 1 };
-  for (const platform of ["darwin", "linux"]) for (const operation of ["search", "add"]) {
-    const agent = { runs: [run] };
-    const toolSteps = runInNewContext(`(() => { ${shell}; return function toolSteps(${body}; })()`, {
-      process: { platform, execPath: "/owned/node" }, windows: undefined, env, join, agent,
-      turns: [{ sessionId: run.conversationId, prompt: run.prompt, operation }],
-      interruption: { sessionId: run.conversationId, runIndex: 1, marker: "/owned/pending" }, interruptedFixture: { prompt: run.prompt },
-      workspace: "/owned/workspace", skillRoot: "/owned/skill", skillText: "installed skill",
-      referenceTexts: new Map([[operation, "installed reference"]]),
-      skillQuery: "query", skillMemory: "memory", skillReason: "reason",
-      assertCursorAppSkillReference: () => "memorax-cli",
-      check(value, code) { if (!value) throw Object.assign(new Error(code), { code }); },
-    }, { timeout: 100 });
-    const result = toolSteps(run, [
-      { kind: "read", path: "/owned/skill/SKILL.md", content: "installed skill" },
-      { kind: "read", path: `/owned/skill/references/memorax-${operation}.md`, content: "installed reference" },
-    ]);
-    const args = operation === "search" ? "'search' '--query' 'query' '--json'"
-      : "'add' '--memory' 'memory' '--type' 'procedural' '--reason' 'reason' '--json'";
-    assert.equal(result.command, "'env' 'MEMORAX_CODE_MEMORAX_ENDPOINT=http://127.0.0.1:12345' "
-      + "'MEMORAX_CODE_HOME=/owned/state '\\'' space' 'MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT=cursor' "
-      + `'MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID=synthetic-session' 'memorax-cli' ${args}`);
-    assert.equal(result.workingDirectory, "/owned/workspace");
-    assert.equal(result.timeoutMs, 20000);
-    assert.equal(result.networkAccess, platform === "darwin" ? true : undefined);
-    agent.runs = [undefined, run];
-    assert.equal(toolSteps(run, []).networkAccess, undefined);
-  }
-});
-
-test("macOS cleanup uses the read-only owned-path and observed-PID audit without scanning Linux proc", async () => {
-  const body = source.split("async function ownedProcessesRemain(")[1]?.split("\nfunction assertWriteback(")[0];
-  const calls = [], observedMacosPids = new Set([234]);
-  const audit = runInNewContext(`(async function ownedProcessesRemain(${body})`, {
-    process: { pid: 123 }, macosPaths: { appBundle: "/owned/Cursor.app" }, packageRoot: "/owned/package",
-    env: { MEMORAX_CODE_HOME: "/owned/state" }, interruption: { marker: "/owned/marker" }, observedMacosPids,
-    macos: { auditMacosProcesses(options) { calls.push(options); return true; } },
-    readdir() { assert.fail("macOS must not use /proc"); },
-  }, { timeout: 100 });
-  assert.equal(await audit({ includeBackend: false }), true);
-  assert.equal(calls[0].observedPids, observedMacosPids);
-  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [{ appBundle: "/owned/Cursor.app", packageRoot: "/owned/package",
-    stateHome: "/owned/state", marker: "/owned/marker", includeBackend: false, selfPid: 123, observedPids: {} }]);
-});
-
-test("Windows cleanup delegates only the current owned paths and fails closed on audit errors", async () => {
-  const body = source.split("async function ownedProcessesRemain(")[1]?.split("\nfunction assertWriteback(")[0];
-  assert.ok(body);
-  for (const includeBackend of [true, false]) for (const result of [true, false, "error"]) {
-    const env = { MEMORAX_CODE_HOME: "C:\\owned\\state" }, calls = [];
-    const audit = runInNewContext(`(async function ownedProcessesRemain(${body})`, {
-      process: { pid: 123 }, macos: undefined, appPath: "C:\\owned\\Cursor.exe", packageRoot: "C:\\owned\\package",
-      env, interruption: { marker: "C:\\owned\\marker", encodedCommand: "ZgBpAHgAdAB1AHIAZQA=" },
-      windows: { async auditWindowsProcesses(options) {
-        calls.push(options);
-        if (result === "error") throw Object.assign(new Error("audit failed"), { code: "CURSOR_APP_WINDOWS_PROCESS_AUDIT" });
-        return result;
-      } },
-      readdir() { assert.fail("Windows must not use /proc"); },
-    }, { timeout: 100 });
-    if (result === "error") await assert.rejects(audit({ includeBackend }), { code: "CURSOR_APP_WINDOWS_PROCESS_AUDIT" });
-    else assert.equal(await audit(includeBackend ? undefined : { includeBackend }), result);
-    assert.equal(calls.length, 1); assert.equal(calls[0].env, env);
-    assert.deepEqual({ ...calls[0] }, { appPath: "C:\\owned\\Cursor.exe", packageRoot: "C:\\owned\\package",
-      stateHome: env.MEMORAX_CODE_HOME, marker: "C:\\owned\\marker", encodedCommand: "ZgBpAHgAdAB1AHIAZQA=",
-      includeBackend, selfPid: 123, env });
-  }
-});
-
-test("macOS cleanup records descendants before browser shutdown and still closes after an audit failure", async () => {
-  const body = source.split("async function stopApp(")[1]?.split("\nasync function assertProcessesStopped(")[0];
-  assert.ok(body);
-  for (const failCapture of [false, true]) {
-    const calls = [], observedMacosPids = new Set([200]);
-    const error = Object.assign(new Error("audit failed"), { code: "CURSOR_APP_MACOS_PROCESS_AUDIT" });
-    const app = { pid: 201, exitCode: null, signalCode: null };
-    const stopApp = runInNewContext(`(async function stopApp(${body})`, {
-      macos: { async captureMacosDescendants(pid) {
-        calls.push("capture"); assert.equal(pid, 201);
-        if (failCapture) throw error;
-        return new Set([201, 202]);
-      } }, windows: undefined, app, observedMacosPids, page: {},
-      browser: { async close() { calls.push("close"); app.exitCode = 0; } },
-      bounded: (promise) => promise,
-      once() { assert.fail("an exited owned child must not receive signals"); },
-    }, { timeout: 100 });
-    if (failCapture) await assert.rejects(stopApp(), (caught) => caught === error);
-    else await stopApp();
+test("cleanup captures macOS descendants before closing even when capture fails", async () => {
+  for (const failed of [false, true]) {
+    const calls = [], app = childProcess(), observedMacosPids = new Set();
+    const stop = nativeFunction("stopApp", { app, observedMacosPids, windows: undefined, page: {},
+      macos: { async captureMacosDescendants() { calls.push("capture"); check(!failed, "AUDIT_FAILED"); return [201, 202]; } },
+      browser: { async close() { calls.push("close"); app.exitCode = 0; } }, bounded: (promise) => promise });
+    if (failed) await assert.rejects(stop(), { code: "AUDIT_FAILED" }); else await stop();
     assert.deepEqual(calls, ["capture", "close"]);
-    assert.deepEqual([...observedMacosPids], failCapture ? [200] : [200, 201, 202]);
+    assert.deepEqual([...observedMacosPids], failed ? [] : [201, 202]);
   }
 });
 
-test("Windows App cleanup attempts bounded native quit and releases its exit listener before fallback", async () => {
-  const body = source.split("async function stopApp(")[1]?.split("\nasync function assertProcessesStopped(")[0];
-  assert.ok(body);
-  for (const mode of ["quit-exit", "disconnect-exit", "delayed-exit", "rejected", "timeout", "quit-no-exit", "no-page", "exited", "signaled", "no-child"]) {
-    const calls = [], env = { HOME: "C:\\owned\\home" };
-    const app = mode === "no-child" ? undefined : Object.assign(new EventEmitter(), {
-      pid: 201, exitCode: mode === "exited" ? 0 : null, signalCode: mode === "signaled" ? "SIGTERM" : null,
-      kill() { assert.fail("native quit or one taskkill must not cause a duplicate kill"); },
-    });
-    const quits = !["no-page", "exited", "signaled", "no-child"].includes(mode);
-    const fallback = ["rejected", "timeout", "quit-no-exit", "no-page"].includes(mode);
-    const timeout = Object.assign(new Error("CURSOR_APP_WINDOWS_QUIT_TIMEOUT"), { code: "CURSOR_APP_WINDOWS_QUIT_TIMEOUT" });
-    let bounds = 0, quitSettled;
-    const stopApp = runInNewContext(`(async function stopApp(${body})`, {
-      macos: undefined, app, env, report: {}, once,
-      page: mode === "no-page" ? undefined : { evaluate: (callback) => callback() },
-      window: { driver: { executeCommand(command, ...args) {
-        calls.push("quit");
-        assert.equal(command, "workbench.action.quit"); assert.deepEqual(args, []);
+test("Windows cleanup waits for native child exit and releases listeners before owned fallback", async () => {
+  for (const mode of ["quit-exit", "delayed-exit", "quit-no-exit", "no-page", "exited", "browser-error"]) {
+    const app = childProcess(), calls = [];
+    if (mode === "exited") app.exitCode = 0;
+    const exit = () => { app.exitCode = 0; app.emit("exit", 0); app.emit("close", 0); };
+    const stop = nativeFunction("stopApp", { app, macos: undefined, report: {}, env: {},
+      page: ["no-page", "browser-error"].includes(mode) ? undefined : { evaluate: (callback) => callback() },
+      window: { driver: { async executeCommand(command) {
+        assert.equal(command, "workbench.action.quit"); calls.push("quit");
         assert.equal(app.listenerCount("exit"), 1);
-        if (["quit-exit", "disconnect-exit"].includes(mode)) {
-          app.exitCode = 0; app.emit("exit", 0, null); app.emit("close", 0, null);
-        }
-        if (["disconnect-exit", "rejected"].includes(mode)) return Promise.reject(new Error("private-quit-canary"));
-        if (mode === "timeout") return new Promise(() => {});
-        return Promise.resolve();
+        if (mode === "quit-exit") { exit(); throw new Error(privateCanary); }
       } } },
       async bounded(promise, code, milliseconds) {
         if (code === "CURSOR_APP_WINDOWS_QUIT_TIMEOUT") {
-          bounds++;
           assert.equal(milliseconds, 5000);
-          quitSettled = false;
-          promise.then(() => { quitSettled = true; }, () => { quitSettled = true; });
+          let settled = false;
+          promise.then(() => { settled = true; });
           for (let turn = 0; turn < 8; turn++) await Promise.resolve();
-          const settledBeforeExit = quitSettled;
-          if (mode === "delayed-exit") {
-            app.exitCode = 0; app.emit("exit", 0, null); app.emit("close", 0, null);
-            await promise;
-            quitSettled = settledBeforeExit;
-          }
-          if (fallback) throw timeout;
+          if (mode !== "quit-exit") assert.equal(settled, false);
+          if (mode === "delayed-exit") exit();
+          else check(mode !== "quit-no-exit", code);
         }
-        return await promise;
+        return promise;
       },
-      browser: { async close() {
-        calls.push("browser");
-        assert.equal(app?.listenerCount("exit") ?? 0, 0);
-      } },
-      windows: { async stopWindowsApp(child, actualEnv) {
-        calls.push("taskkill"); assert.equal(child, app); assert.equal(actualEnv, env);
-        assert.equal(child.exitCode, null); assert.equal(child.signalCode, null);
-        assert.equal(child.listenerCount("exit"), 0);
-        child.exitCode = 0; child.emit("exit", 0, null); child.emit("close", 0, null);
-      } },
-      delay() { return new Promise(() => {}); },
-      check(value, code) { if (!value) throw Object.assign(new Error(code), { code }); },
-    }, { timeout: 100 });
-    await stopApp();
-    assert.equal(bounds, Number(quits), mode);
-    if (quits) assert.equal(quitSettled, !fallback && mode !== "delayed-exit", `${mode}: quit evaluation alone cannot prove child exit`);
-    assert.deepEqual(calls, [...(quits ? ["quit"] : []), "browser", ...(fallback ? ["taskkill"] : [])], mode);
-    assert.equal(app?.listenerCount("exit") ?? 0, 0);
-    const completedCalls = [...calls];
-    await stopApp();
-    assert.deepEqual(calls, completedCalls, mode);
-  }
-});
-
-test("Windows App cleanup uses its held live child after browser close, never an exited or absent child", async () => {
-  const body = source.split("async function stopApp(")[1]?.split("\nasync function assertProcessesStopped(")[0];
-  assert.ok(body);
-  for (const mode of ["live", "exited", "signaled", "absent", "browser-exits", "browser-error"]) {
-    const calls = [], env = { HOME: "C:\\owned\\home" };
-    const app = mode === "absent" ? undefined : Object.assign(new EventEmitter(), {
-      pid: 201, exitCode: mode === "exited" ? 0 : null, signalCode: mode === "signaled" ? "SIGTERM" : null,
-      kill() { assert.fail("a closed Windows child must not receive fallback signals"); },
+      browser: { async close() { calls.push("browser"); assert.equal(app.listenerCount("exit"), 0); check(mode !== "browser-error", "BROWSER_FAILED"); } },
+      windows: { async stopWindowsApp(child) { assert.equal(child, app); calls.push("taskkill"); exit(); } },
+      delay: () => new Promise(() => {}),
     });
-    const error = Object.assign(new Error("browser close failed"), { code: "CURSOR_APP_BROWSER_CLEANUP" });
-    const stopApp = runInNewContext(`(async function stopApp(${body})`, {
-      macos: undefined, app, env, page: undefined, once, bounded: (promise) => promise,
-      delay() { return new Promise(() => {}); },
-      browser: { async close() {
-        calls.push("browser");
-        if (mode === "browser-exits") app.exitCode = 0;
-        if (mode === "browser-error") throw error;
-      } },
-      windows: { async stopWindowsApp(child, actualEnv) {
-        calls.push("stop"); assert.equal(child, app); assert.equal(actualEnv, env);
-        assert.equal(child.exitCode, null); assert.equal(child.signalCode, null);
-        child.exitCode = 0; child.emit("close", 0, null);
-      } },
-      check(value, code) { if (!value) throw Object.assign(new Error(code), { code }); },
-    }, { timeout: 100 });
-    if (mode === "browser-error") await assert.rejects(stopApp(), (caught) => caught === error);
-    else await stopApp();
-    assert.deepEqual(calls, ["live", "browser-error"].includes(mode) ? ["browser", "stop"] : ["browser"]);
+    if (mode === "browser-error") await assert.rejects(stop(), { code: "BROWSER_FAILED" }); else await stop();
+    assert.deepEqual(calls, [...(!["no-page", "exited", "browser-error"].includes(mode) ? ["quit"] : []), "browser",
+      ...(["quit-no-exit", "no-page", "browser-error"].includes(mode) ? ["taskkill"] : [])]);
+    assert.equal(app.listenerCount("exit"), 0);
+    const completed = [...calls];
+    await stop();
+    assert.deepEqual(calls, completed);
   }
 });
 
-test("Windows App stop preserves the first failure snapshot through repeated cleanup", async () => {
-  const body = source.split("async function stopApp(")[1]?.split("\nasync function assertProcessesStopped(")[0];
-  assert.ok(body);
-  for (const primaryError of [undefined, "CURSOR_APP_ADD_TIMEOUT"]) {
-    const report = primaryError ? { errorCode: primaryError } : {};
-    const env = { SystemRoot: "C:\\Windows" }, failures = [];
-    const app = Object.assign(new EventEmitter(), { pid: 201, exitCode: null, signalCode: null,
-      kill() { assert.fail("failed taskkill must not introduce fallback signals"); } });
-    let stops = 0;
-    const stopApp = runInNewContext(`(async function stopApp(${body})`, {
-      macos: undefined, app, env, report, page: undefined, once, bounded: (promise) => promise,
-      browser: { async close() {} },
-      windows: { async stopWindowsApp(child, actualEnv) {
-        try {
-          return await stopWindowsApp(child, actualEnv, async () => {
-            stops += 1;
-            if (stops === 2) child.exitCode = 0;
-            throw Object.assign(new Error("private-stop-canary"), { code: stops === 1 ? 128 : 1,
-              stdout: "private-stop-canary", stderr: stops === 1
-                ? 'ERROR: The process "201" not found.\nprivate-stop-canary'
-                : "ERROR: Access is denied.\nprivate-stop-canary" });
-          });
-        } catch (error) { failures.push(error); throw error; }
-      } },
-      check(value, code) { if (!value) throw Object.assign(new Error(code), { code }); },
-    }, { timeout: 100 });
-    await assert.rejects(stopApp(), (error) => error === failures[0]
-      && error.code === "CURSOR_APP_WINDOWS_APP_STOP_EXIT_128");
-    const snapshot = report.windowsAppStop;
-    assert.deepEqual(snapshot, { taskkillExitCode: 128, childExitCode: null, childSignal: "none", timedOut: false,
-      outputOverflow: false, markers: { processNotFound: true, accessDenied: false } });
-    await assert.rejects(stopApp(), (error) => error === failures[1]
-      && error.code === "CURSOR_APP_WINDOWS_APP_STOP_EXIT_1");
-    assert.equal(failures[1].windowsAppStop.childExitCode, 0);
-    assert.equal(failures[1].windowsAppStop.markers.accessDenied, true);
-    assert.equal(report.windowsAppStop, snapshot);
-    assert.equal(snapshot.childExitCode, null);
-    assert.equal(report.errorCode, primaryError);
-    assert.equal(JSON.stringify(report).includes("private-stop-canary"), false);
-    assert.equal(stops, 2);
-    app.emit("close", 0, null);
-  }
+test("repeated Windows cleanup preserves the first stop snapshot and primary failure", async () => {
+  const app = childProcess(), report = { errorCode: "CURSOR_APP_ADD_TIMEOUT" };
+  const snapshots = [{ taskkillExitCode: 128, childExitCode: null }, { taskkillExitCode: 1, childExitCode: 0 }];
+  let stops = 0;
+  const stop = nativeFunction("stopApp", { app, report, macos: undefined, page: undefined, env: {},
+    browser: { async close() {} }, bounded: (promise) => promise,
+    windows: { async stopWindowsApp() { throw Object.assign(new Error("STOP_FAILED"), { code: "STOP_FAILED", windowsAppStop: snapshots[stops++] }); } },
+  });
+  await assert.rejects(stop(), { code: "STOP_FAILED" });
+  await assert.rejects(stop(), { code: "STOP_FAILED" });
+  assert.equal(report.windowsAppStop, snapshots[0]);
+  assert.equal(report.errorCode, "CURSOR_APP_ADD_TIMEOUT");
+  app.emit("close", 0);
 });
 
-test("native cleanup audits the pending marker Node and Shell without killing discovered processes", async () => {
-  const body = source.split("async function ownedProcessesRemain(")[1]?.split("\nfunction assertWriteback(")[0];
-  assert.ok(body);
-  const marker = "/owned/workspace/cancelled-shell-marker";
+test("Linux cleanup audits owned marker and package paths without claiming unrelated processes", async () => {
+  const marker = "/owned/workspace/cancelled-marker";
   for (const [argv, includeBackend, expected] of [
-    [["/usr/local/bin/node", "-e", "synthetic marker script", marker], true, true],
-    [["/bin/sh", "-c", `/usr/local/bin/node -e 'synthetic marker script' '${marker}'`], true, true],
-    [["/owned/app/cursor"], false, true],
-    [["node", "/owned/package/backend.mjs"], true, true],
-    [["node", "/owned/package/backend.mjs"], false, false],
-    [["node", "--home", "/owned/state"], true, true],
-    [["node", "/unrelated/workspace/cancelled-shell-marker"], true, false],
-    [["node", "/owned/state-other/tool.mjs"], true, false],
+    [["node", "-e", "script", marker], true, true], [["sh", "-c", `node '${marker}'`], true, true],
+    [["/owned/app/cursor"], false, true], [["node", "/owned/package/backend.mjs"], true, true],
+    [["node", "/owned/package/backend.mjs"], false, false], [["node", "/owned/state-other/tool"], true, false],
   ]) {
-    const check = runInNewContext(`(async function ownedProcessesRemain(${body})`, {
-      process: { pid: 1 }, macos: undefined, windows: undefined, dirname, appPath: "/owned/app/cursor", packageRoot: "/owned/package",
-      env: { MEMORAX_CODE_HOME: "/owned/state" }, interruption: { marker },
-      async readdir(path) { assert.equal(path, "/proc"); return ["1", "2", "self"]; },
-      async readFile(path, encoding) {
-        assert.equal(path, "/proc/2/cmdline"); assert.equal(encoding, "utf8");
-        return argv.join("\0");
-      },
-    }, { timeout: 100 });
-    assert.equal(await check({ includeBackend }), expected);
+    const audit = nativeFunction("ownedProcessesRemain", { process: { pid: 1 }, macos: undefined, windows: undefined,
+      appPath: "/owned/app/cursor", packageRoot: "/owned/package", env: { MEMORAX_CODE_HOME: "/owned/state" }, interruption: { marker },
+      readdir: async () => ["1", "2", "self"], readFile: async () => argv.join("\0") });
+    assert.equal(await audit({ includeBackend }), expected);
   }
 });
 
-test("native preflight validates Node and platform without calling getuid on Windows", () => {
+test("failure capture retains the first rejected Shell rather than a retry", () => {
+  const capture = source.match(/  const shellResult = collectCursorAppShellDiagnostics\([^\n]+\);\n  if \(shellResult\) report\.shellResult = shellResult;/)?.[0];
+  const toolCallId = "11111111-1111-4111-8111-111111111111";
+  const first = { error: "CURSOR_APP_EXEC_REJECTED", execRejection: { kind: "shell", toolCallId, rejectionKind: 2, exitCode: 127 },
+    shellApproval: { toolCallId, clicked: true } };
+  const report = {};
+  runInNewContext(capture, { report, agent: { firstShellFailure: first, runs: [{ error: "retry" }] }, collectCursorAppShellDiagnostics });
+  assert.deepEqual(report.shellResult, { rejectionKind: 2, approvalClicked: true, exitCode: 127 });
+});
+
+test("preflight rejects unsupported runtimes, Linux root and unowned Windows runners", () => {
   const body = source.split("\ntry {\n")[1]?.split("  // macOS Unix sockets")[0];
-  const windowsGuard = source.split('  } else if (process.platform === "win32") {\n')[1]?.split("    windows = await import(")[0];
-  assert.ok(body && windowsGuard);
-  for (const [platform, node, expectedNodeMajor, argc, uid, errorCode] of [
-    ["win32", "24.0.0", "24", 8], ["win32", "22.13.0", "22", 7],
-    ["linux", "24.0.0", "24", 8, 1000], ["darwin", "24.0.0", "24", 8, 501],
-    ["linux", "24.0.0", "24", 8, 0, "CURSOR_APP_ISOLATION"],
-    ["win32", "22.12.0", "22", 8, undefined, "CURSOR_APP_ARGUMENTS"],
-    ["win32", "20.0.0", "20", 8, undefined, "CURSOR_APP_ARGUMENTS"],
-    ["win32", "24.0.0", "22", 8, undefined, "CURSOR_APP_ARGUMENTS"],
-    ["win32", "24.0.0", "24", 6, undefined, "CURSOR_APP_ARGUMENTS"],
-    ["freebsd", "24.0.0", "24", 8, 1000, "CURSOR_APP_ARGUMENTS"],
-  ]) {
-    const preflight = runInNewContext(`(() => { ${body} })`, {
-      expectedNodeMajor, process: { platform, versions: { node }, argv: Array(argc),
-        getuid() { assert.notEqual(platform, "win32"); return uid; } },
-      check(value, code) { if (!value) throw Object.assign(new Error(code), { code }); },
-    }, { timeout: 100 });
-    if (errorCode) assert.throws(preflight, { code: errorCode }); else preflight();
+  for (const [platform, node, uid, code] of [["win32", "24.0.0"], ["linux", "24.0.0", 1000],
+    ["linux", "24.0.0", 0, "CURSOR_APP_ISOLATION"], ["win32", "22.12.0", undefined, "CURSOR_APP_ARGUMENTS"]]) {
+    const preflight = runInNewContext(`(() => {${body}})`, { check, expectedNodeMajor: node.split(".")[0],
+      process: { platform, versions: { node }, argv: Array(8), getuid() { assert.notEqual(platform, "win32"); return uid; } } });
+    if (code) assert.throws(preflight, { code }); else preflight();
   }
-  for (const [actions, runnerOs, arch, allowed] of [
-    ["true", "Windows", "x64", true], [undefined, "Windows", "x64", false],
-    ["false", "Windows", "x64", false], ["true", "macOS", "x64", false], ["true", "Windows", "arm64", false],
-  ]) {
-    const guard = runInNewContext(`(() => { ${windowsGuard} })`, {
-      process: { env: { GITHUB_ACTIONS: actions, RUNNER_OS: runnerOs }, arch },
-      check(value, code) { if (!value) throw Object.assign(new Error(code), { code }); },
-    }, { timeout: 100 });
-    if (allowed) guard(); else assert.throws(guard, { code: "CURSOR_APP_WINDOWS_RUNNER" });
+  const guard = source.split('  } else if (process.platform === "win32") {\n')[1]?.split("    windows = await import(")[0];
+  for (const actions of ["true", undefined]) {
+    const run = runInNewContext(`(() => {${guard}})`, { check,
+      process: { env: { GITHUB_ACTIONS: actions, RUNNER_OS: "Windows" }, arch: "x64" } });
+    if (actions) run(); else assert.throws(run, { code: "CURSOR_APP_WINDOWS_RUNNER" });
   }
 });

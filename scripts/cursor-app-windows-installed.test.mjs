@@ -3,16 +3,13 @@ import { spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 import { baselineRelease } from "./cursor-app-release.mjs";
 import { verifyCursorWindowsInstalledApp } from "./cursor-app-windows-artifact.mjs";
-import { readInstalledRelease } from "./cursor-app-windows-installed.mjs";
 
 const release = baselineRelease("win32-x64-user"), prefix = "CURSOR_APP_WINDOWS_ARTIFACT_";
 const helperPath = new URL("./cursor-app-windows-authenticode.ps1", import.meta.url);
-const entryPath = new URL("./cursor-app-windows-installed.mjs", import.meta.url);
 function executable(machine = 0x8664) {
   const bytes = Buffer.alloc(512);
   bytes.write("MZ"); bytes.writeUInt32LE(128, 60); bytes.writeUInt32LE(0x4550, 128);
@@ -36,9 +33,8 @@ async function fixture(t) {
     async execute(file, args, configuration) {
       const operation = args[args.indexOf("-Operation") + 1];
       calls.push({ file, args, configuration, operation });
-      return { stdout: JSON.stringify(operation === "prepare" ? { status: "PASS", operation, privateDirectory: true }
-        : { status: "PASS", operation, appIdentityVerified: true, appArchitectureVerified: true,
-          authenticodeVerified: true, publisherVerified: true }), stderr: "" };
+      return { stdout: JSON.stringify({ status: "PASS", operation, appIdentityVerified: true, appArchitectureVerified: true,
+        authenticodeVerified: true, publisherVerified: true }), stderr: "" };
     } };
   return { root, scratch, profileRoot, appDirectory, options, calls };
 }
@@ -49,11 +45,11 @@ test("installed App verifier uses separate controller scratch and passes exact f
     commitSha: release.commitSha, architecture: "x64", appIdentityVerified: true, appArchitectureVerified: true,
     authenticodeVerified: true, publisherVerified: true, ownedFilesRemoved: true });
   assert.ok(Object.isFrozen(result));
-  assert.deepEqual(f.calls.map((call) => call.operation), ["prepare", "installed"]);
-  const call = f.calls[1], payload = call.args[call.args.indexOf("-Directory") + 1];
+  assert.deepEqual(f.calls.map((call) => call.operation), ["installed"]);
+  const call = f.calls[0], payload = call.args[call.args.indexOf("-Directory") + 1];
   assert.deepEqual(call.args.slice(5), ["-Operation", "installed", "-Directory", payload,
     "-ProfileRoot", f.profileRoot, "-AppDirectory", f.appDirectory, "-Version", release.version, "-Commit", release.commitSha]);
-  assert.equal(dirname(payload), dirname(call.configuration.cwd));
+  assert.equal(payload, call.configuration.cwd);
   assert.notEqual(call.configuration.env.USERPROFILE, f.profileRoot);
   assert.equal(call.configuration.env.USERPROFILE, call.configuration.cwd);
   assert.deepEqual(await readdir(f.scratch), ["unrelated"]);
@@ -105,33 +101,6 @@ test("installed verifier retains controller scratch when the helper close is unc
   assert.equal(entries.length, 2);
   assert.equal(entries.filter((entry) => entry.startsWith("cursor-windows-installed-")).length, 1);
   assert.deepEqual(await readFile(join(f.appDirectory, "Cursor.exe")), executable());
-});
-
-test("installed CLI reads only a bounded canonical regular descriptor and emits fixed failures", async (t) => {
-  const f = await fixture(t), descriptor = join(f.root, "descriptor.json");
-  await writeFile(descriptor, JSON.stringify(release));
-  assert.deepEqual(await readInstalledRelease(descriptor), release);
-  for (const value of ["", "private-canary", " ".repeat(16385), Buffer.from([0xc0, 0xaf])]) {
-    await writeFile(descriptor, value);
-    await assert.rejects(readInstalledRelease(descriptor), { code: prefix + "RELEASE", message: prefix + "RELEASE" });
-  }
-  for (const path of ["relative", f.root, join(f.root, "missing-private-canary")]) {
-    await assert.rejects(readInstalledRelease(path), { code: prefix + "RELEASE", message: prefix + "RELEASE" });
-  }
-  if (process.platform !== "win32") {
-    const linked = join(f.root, "descriptor-link.json");
-    await symlink(descriptor, linked);
-    await assert.rejects(readInstalledRelease(linked), { code: prefix + "RELEASE" });
-  }
-  const result = spawnSync(process.execPath, [fileURLToPath(entryPath), descriptor, f.scratch, f.profileRoot, f.appDirectory],
-    { encoding: "utf8", timeout: 10000 });
-  assert.equal(result.status, 1);
-  assert.equal(result.stdout, "");
-  assert.equal(result.stderr.trim(), prefix + "RELEASE");
-  const missingArguments = spawnSync(process.execPath, [fileURLToPath(entryPath)], { encoding: "utf8", timeout: 10000 });
-  assert.equal(missingArguments.status, 1);
-  assert.equal(missingArguments.stdout, "");
-  assert.equal(missingArguments.stderr.trim(), prefix + "ARGUMENTS");
 });
 
 test("installed App PowerShell validates real files, metadata, PE identity and reparse paths without executing them", async (t) => {

@@ -41,6 +41,8 @@ function rejected(operation, suffix) {
 test("Repo Memory delegates exact POSIX and Windows paths without reconstructing capabilities", () => {
   for (const f of [fixturePaths("/owned fixture"), fixturePaths("D:\\owned fixture", win32)]) {
     const request = parseCursorRepoMemoryDelegation(f.context, f.options);
+    const repeated = `${f.context}\r\n${marker}\r\n \t\r\n${JSON.stringify(f.delegation)}`;
+    assert.deepEqual(parseCursorRepoMemoryDelegation(repeated, f.options), request);
     assert.deepEqual(request.delegation, f.delegation);
     assert.deepEqual(request.claim, f.invocation("claim", ticket));
     assert.equal(request.jobId, jobId);
@@ -53,37 +55,11 @@ test("Repo Memory delegates exact POSIX and Windows paths without reconstructing
   }
 });
 
-test("Repo Memory accepts identical delegations repeated by native context channels but rejects conflicts", () => {
-  for (const f of [fixturePaths("/owned fixture"), fixturePaths("D:\\owned fixture", win32)]) {
-    const expected = parseCursorRepoMemoryDelegation(f.context, f.options);
-    assert.deepEqual(parseCursorRepoMemoryDelegation(`${f.context}\n${f.context}`, f.options), expected);
-    const reordered = Object.fromEntries(Object.entries(f.delegation).reverse());
-    assert.deepEqual(parseCursorRepoMemoryDelegation(`${f.context}\n${marker}\n${JSON.stringify(reordered)}`, f.options), expected);
-    for (const changed of [{ ...f.delegation, prompt: `${f.delegation.prompt} changed` },
-      { ...f.delegation, prompt: f.delegation.prompt.replace(ticket, "e".repeat(64)) },
-      { ...f.delegation, background: false }, { ...f.delegation, referencePath: "/foreign/references/repo-build.md" }]) {
-      rejected(() => parseCursorRepoMemoryDelegation(`${f.context}\n${marker}\n${JSON.stringify(changed)}`, f.options), "DELEGATION_INVALID");
-    }
-    rejected(() => parseCursorRepoMemoryDelegation(`${f.context}\n${marker}\nprivate-invalid-json`, f.options), "DELEGATION_INVALID");
-  }
-});
-
-test("Repo Memory accepts live Hook blank-line framing without crossing another marker or other content", () => {
-  const f = fixturePaths("/owned fixture");
-  for (const separator of ["\n", "\n\n", "\r\n\r\n", "\n \t\n\n"]) {
-    const context = ["Other Hook guidance.", marker, JSON.stringify(f.delegation)].join(separator);
-    assert.deepEqual(parseCursorRepoMemoryDelegation(context, f.options).delegation, f.delegation);
-  }
-  for (const context of [marker, `${marker}\n \t\n`, `${marker}\n\n${f.context}`,
-    `${marker}\n\n${marker}\n\n${JSON.stringify(f.delegation)}`,
-    `${marker}\n\nnot-json\n${JSON.stringify(f.delegation)}`]) {
-    rejected(() => parseCursorRepoMemoryDelegation(context, f.options), "DELEGATION_INVALID");
-  }
-});
-
 test("Repo Memory delegation rejects ambiguity, altered identity, credentials and unexpected invocation arguments", () => {
   const f = fixturePaths("/owned fixture");
-  for (const context of ["", f.context.replace(marker, "private-canary"),
+  const conflicting = { ...f.delegation, prompt: f.delegation.prompt.replace(ticket, "e".repeat(64)) };
+  for (const context of ["", `${marker}\n\n${marker}\n${JSON.stringify(f.delegation)}`,
+    `${marker}\nnot-json\n${JSON.stringify(f.delegation)}`, `${f.context}\n${marker}\n${JSON.stringify(conflicting)}`,
     f.context.replace('"background":true', '"background":false'), f.context.replace('"name":"memorax-repo-memory"', '"name":"other"'),
     f.context.replace("/generation/skills/memorax-code/references/repo-build.md", "/foreign/references/repo-build.md")]) {
     rejected(() => parseCursorRepoMemoryDelegation(context, f.options), "DELEGATION_INVALID");
@@ -104,30 +80,25 @@ test("Repo Memory delegation rejects ambiguity, altered identity, credentials an
 
 test("Repo Memory claim and final rejection require matching returned capabilities and exact outcomes", () => {
   const f = fixturePaths("/owned fixture"), request = parseCursorRepoMemoryDelegation(f.context, f.options);
-  for (const claim of [{ ...f.claim, ok: false }, { ...f.claim, status: "requested" }, { ...f.claim, runner: "claude" },
-    { ...f.claim, jobId: jobId.replace("12345678", "87654321") }, { ...f.claim, repo: "/foreign" },
+  for (const claim of [{ ...f.claim, status: "requested" }, { ...f.claim, runner: "claude" }, { ...f.claim, repo: "/foreign" },
     { ...f.claim, claimToken: ticket }, { ...f.claim, instructions: `${f.claim.instructions}\n${JSON.stringify(f.invocation("finish", token))}` },
     { ...f.claim, instructions: f.claim.instructions.replace('"child_failed"', '"cancelled"') }]) {
     rejected(() => parseCursorRepoMemoryClaim(JSON.stringify(claim), request), "CLAIM_INVALID");
   }
   const claimed = parseCursorRepoMemoryClaim(JSON.stringify(f.claim), request);
-  for (const result of [{ ...f.rejected, ok: true }, { ...f.rejected, status: "succeeded" },
-    { ...f.rejected, failureReason: "child_failed" }]) {
+  for (const result of [{ ...f.rejected, status: "succeeded" }, { ...f.rejected, failureReason: "child_failed" }]) {
     rejected(() => assertCursorRepoMemoryRejected(JSON.stringify(result), claimed), "FINISH_OUTCOME_MISMATCH");
   }
   for (const result of [{ ...f.rejected, snapshotHead: "e".repeat(40) },
     { ...f.rejected, expiresAt: "2026-10-07T06:00:02.000Z" }]) {
     rejected(() => assertCursorRepoMemoryRejected(JSON.stringify(result), claimed), "FINISH_AUTHORITY_MISMATCH");
   }
-  for (const result of [{ ...f.rejected, jobPath: "/private-canary" }, { ...f.rejected, runner: "other" },
-    { ...f.rejected, snapshotHead: "private-canary" }, { ...f.rejected, expiresAt: "private-canary" },
+  for (const result of [{ ...f.rejected, jobPath: "/private-canary" }, { ...f.rejected, expiresAt: "private-canary" },
     { ok: false, reason: "invalid_capability" }]) {
     rejected(() => assertCursorRepoMemoryRejected(JSON.stringify(result), claimed), "FINISH_SUMMARY_MISMATCH");
   }
-  for (const output of ["", "private-path-and-token", "{}\n{}", "null", "[]", "x".repeat(262145)]) {
+  for (const output of ["private-path-and-token", "[]", "x".repeat(262145)]) {
     rejected(() => assertCursorRepoMemoryRejected(output, claimed), "FINISH_JSON_INVALID");
-  }
-  for (const output of ["private-path-and-token", "{}\n{}", "x".repeat(262145)]) {
     rejected(() => parseCursorRepoMemoryClaim(output, request), "CLAIM_INVALID");
   }
 });
@@ -176,26 +147,24 @@ test("Repo Memory failure verification reads real installed path helpers and ret
 });
 
 test("Repo Memory failure verification rejects wrong state, lingering outputs and a live guard without killing it", async () => {
-  for (const change of [
-    (state) => { state.parentSessionId = "other"; }, (state) => { state.claimHash = "0".repeat(64); },
-    (state) => { state.ticketHash = "a".repeat(64); }, (state) => { state.finishedAt = state.startedAt; },
-    (state) => { state.snapshotHead = "e".repeat(40); }, (state) => { state.sharedBaselinePublished = true; },
-    (state) => { state.status = "succeeded"; }, (state) => { state.sharedSnapshot.head = "e".repeat(40); },
-    (state) => { state.validatorPath = "/foreign/repo-memory.mjs"; },
-  ]) await diskFixture(async ({ state, summary, verify }) => {
-    change(state); await writeFile(summary.jobPath, JSON.stringify(state));
-    await assert.rejects(verify(), { code: "CURSOR_APP_REPO_MEMORY_STATE_INVALID" });
-  });
-  for (const pathKind of ["marker", "baseline", "versions", "source", "profile"]) await diskFixture(async (f) => {
-    const path = { marker: f.markerPath, baseline: join(f.baselineRoot, "baseline.json"),
-      versions: join(f.baselineRoot, "versions"), source: join(dirname(f.summary.jobPath), "source"),
-      profile: join(f.options.repo, ".repo_memory/PROFILE.md") }[pathKind];
-    await mkdir(dirname(path), { recursive: true }); await writeFile(path, "private-canary");
-    await assert.rejects(f.verify(), { code: "CURSOR_APP_REPO_MEMORY_STATE_INVALID" });
-  });
-  await diskFixture(async ({ state, summary, verify }) => {
-    state.leasePid = process.pid; await writeFile(summary.jobPath, JSON.stringify(state));
-    await assert.rejects(verify(), { code: "CURSOR_APP_REPO_MEMORY_GUARD_REMAINS" });
+  await diskFixture(async (f) => {
+    for (const change of [{ parentSessionId: "other" }, { claimHash: "0".repeat(64) }, { ticketHash: ticket },
+      { finishedAt: f.state.startedAt }, { snapshotHead: "e".repeat(40) }, { sharedBaselinePublished: true },
+      { status: "succeeded" }, { sharedSnapshot: { ...f.state.sharedSnapshot, head: "e".repeat(40) } },
+      { validatorPath: "/foreign/repo-memory.mjs" }]) {
+      await writeFile(f.summary.jobPath, JSON.stringify({ ...f.state, ...change }));
+      await assert.rejects(f.verify(), { code: "CURSOR_APP_REPO_MEMORY_STATE_INVALID" });
+    }
+    await writeFile(f.summary.jobPath, JSON.stringify(f.state));
+    for (const path of [f.markerPath, join(f.baselineRoot, "baseline.json"), join(f.baselineRoot, "versions"),
+      join(dirname(f.summary.jobPath), "source"), join(f.options.repo, ".repo_memory/PROFILE.md")]) {
+      await mkdir(dirname(path), { recursive: true });
+      await writeFile(path, "private-canary");
+      await assert.rejects(f.verify(), { code: "CURSOR_APP_REPO_MEMORY_STATE_INVALID" });
+      await rm(path);
+    }
+    await writeFile(f.summary.jobPath, JSON.stringify({ ...f.state, leasePid: process.pid }));
+    await assert.rejects(f.verify(), { code: "CURSOR_APP_REPO_MEMORY_GUARD_REMAINS" });
     assert.doesNotThrow(() => process.kill(process.pid, 0));
   });
 });

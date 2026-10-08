@@ -1,9 +1,8 @@
 import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
 import { lstat, mkdir, mkdtemp, open, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { isAbsolute, join, sep } from "node:path";
 import { promisify } from "node:util";
-import { baselineRelease, resolveDownload } from "./cursor-app-release.mjs";
+import { downloadDesktopArtifact, validateDesktopRelease } from "./cursor-app-release.mjs";
 
 const executeFile = promisify(execFile);
 const platform = "darwin-arm64";
@@ -50,55 +49,13 @@ function detachDiagnostics(error, result, timedOut) {
 }
 
 function validateRelease(input, channel) {
-  try {
-    check(input?.platform === platform && input.channel === channel && ["baseline", "latest"].includes(channel), "RELEASE");
-    const canonical = channel === "baseline" ? baselineRelease(platform)
-      : resolveDownload(platform, { version: input.version, commitSha: input.commitSha, downloadUrl: input.url });
-    check(Object.keys(canonical).every((key) => input[key] === canonical[key]), "RELEASE");
-    return canonical;
-  } catch { throw failure("RELEASE"); }
+  try { return validateDesktopRelease(input, platform, channel); }
+  catch { throw failure("RELEASE"); }
 }
 
 export function selectCursorMacosRelease(manifest, channel) {
   check(manifest?.schemaVersion === 1 && ["baseline", "latest"].includes(channel), "RELEASE");
   return validateRelease(manifest[channel]?.[platform], channel);
-}
-
-async function download(release, path, fetchImpl, signal) {
-  const controller = new AbortController();
-  const downloadSignal = AbortSignal.any([controller.signal, AbortSignal.timeout(300_000), ...(signal ? [signal] : [])]);
-  let file;
-  try {
-    checkAborted(signal);
-    const response = await fetchImpl(release.url, { credentials: "omit", redirect: "error", cache: "no-store",
-      headers: { "User-Agent": "memorax-cursor-app-ci" }, signal: downloadSignal });
-    check(response?.status === 200 && response.body && response.redirected === false && response.url === release.url, "DOWNLOAD");
-    const lengthHeader = response.headers.get("content-length");
-    const expectedBytes = lengthHeader === null ? undefined : Number(lengthHeader);
-    check(lengthHeader === null || (/^[1-9]\d*$/.test(lengthHeader) && Number.isSafeInteger(expectedBytes)
-      && expectedBytes <= maxDownloadBytes), "DOWNLOAD_SIZE");
-    file = await open(path, "wx", 0o600);
-    let bytes = 0;
-    const hash = createHash("sha256");
-    for await (const chunk of response.body) {
-      checkAborted(downloadSignal);
-      check(chunk instanceof Uint8Array, "DOWNLOAD");
-      bytes += chunk.byteLength;
-      check(bytes <= maxDownloadBytes, "DOWNLOAD_SIZE");
-      hash.update(chunk);
-      await file.writeFile(chunk);
-    }
-    check(bytes > 0 && (expectedBytes === undefined || bytes === expectedBytes), "DOWNLOAD_SIZE");
-    checkAborted(downloadSignal);
-    return { bytes, observedSha256: hash.digest("hex") };
-  } catch (error) {
-    if (signal?.aborted) throw failure("ABORTED");
-    if (error?.code === codePrefix + "DOWNLOAD_SIZE") throw error;
-    throw failure("DOWNLOAD");
-  } finally {
-    controller.abort();
-    await file?.close();
-  }
 }
 
 async function command(execute, file, args, options, suffix) {
@@ -199,7 +156,7 @@ export async function withCursorMacosApp({ release, root, signal, execute = exec
     } catch (error) { cleanupError = error; throw error; }
   };
   try {
-    const artifact = await download(selected, imagePath, fetchImpl, signal);
+    const artifact = await downloadDesktopArtifact(selected, imagePath, fetchImpl, signal, failure);
     await mkdir(mountpoint, { mode: 0o700 });
     attachAttempted = true;
     const plist = await command(execute, "/usr/bin/hdiutil", ["attach", "-readonly", "-nobrowse", "-noautoopen",

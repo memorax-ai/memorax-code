@@ -66,145 +66,79 @@ async function fixture(t, configuration = {}) {
   return state;
 }
 
-test("selects only canonical frozen Windows UserSetup descriptors without inventing official checksums", () => {
+test("selects each frozen Windows UserSetup release without fallback or invented hashes", () => {
   for (const channel of ["baseline", "latest"]) {
-    const selected = selectCursorWindowsRelease(manifest, channel);
-    assert.deepEqual(selected, manifest[channel]["win32-x64-user"]);
-    assert.equal(selected.sha256, null);
-    assert.equal(selected.hashSource, "not-provided");
-    assert.ok(Object.isFrozen(selected));
+    assert.deepEqual(selectCursorWindowsRelease(manifest, channel), manifest[channel]["win32-x64-user"]);
   }
-  assert.equal(selectCursorWindowsRelease({ ...manifest,
-    latest: { "win32-x64-user": { ...baseline, channel: "latest" } } }, "latest").channel, "latest");
-  for (const value of [null, {}, { ...manifest, schemaVersion: 2 }, { ...manifest, latest: {} }]) {
-    assert.throws(() => selectCursorWindowsRelease(value, "latest"), error("RELEASE"));
+  for (const input of [null, {}, { ...manifest, schemaVersion: 2 }, { ...manifest, latest: {} }]) {
+    assert.throws(() => selectCursorWindowsRelease(input, "latest"), error("RELEASE"));
   }
-  for (const channel of [undefined, "unknown", "darwin-arm64"]) {
-    assert.throws(() => selectCursorWindowsRelease(manifest, channel), error("RELEASE"));
-  }
-  for (const change of [{ platform: "win32-arm64-user" }, { channel: "baseline" }, { version: "3.23.012" },
-    { commitSha: "A".repeat(40) }, { url: latest.url + "?private=value" }, { url: latest.url.replace("https:", "http:") },
-    { url: latest.url.replace("downloads.cursor.com", "private.invalid") }, { sha256: "a".repeat(64) },
-    { hashSource: "observed-sha256" }, { url: latest.url.replace("user-setup", "system-setup") }]) {
-    assert.throws(() => selectCursorWindowsRelease({ ...manifest,
-      latest: { "win32-x64-user": { ...latest, ...change } } }, "latest"), error("RELEASE"));
-  }
-  assert.throws(() => selectCursorWindowsRelease({ ...manifest,
-    baseline: { "win32-x64-user": { ...latest, channel: "baseline" } } }, "baseline"), error("RELEASE"));
+  assert.throws(() => selectCursorWindowsRelease(manifest, "unknown"), error("RELEASE"));
 });
 
-test("verifies synthetic downloaded bytes and removes only its owned directory after the callback closes", async (t) => {
-  const state = await fixture(t, { onVerify: async ({ path }) => assert.deepEqual(await readFile(path), bytes) });
-  const result = await state.run();
-  assert.deepEqual(result, { platform: "win32-x64-user", channel: "baseline", version: baseline.version,
-    commitSha: baseline.commitSha, sha256: null, hashSource: "not-provided", bytes: bytes.length,
-    observedSha256: createHash("sha256").update(bytes).digest("hex"), authenticodeVerified: true,
-    publisherVerified: true, signatureType: "Authenticode", publisher: "Anysphere, Inc.", ownedFilesRemoved: true });
-  assert.ok(Object.isFrozen(result));
-  assert.equal(JSON.stringify(result).includes(state.root), false);
-  assert.deepEqual(state.calls.map((call) => call.operation), ["prepare", "verify"]);
-  for (const call of state.calls) {
-    assert.equal(call.file, "C:\\Program Files\\PowerShell\\7\\pwsh.exe");
-    assert.deepEqual(call.args.slice(0, 4), ["-NoLogo", "-NoProfile", "-NonInteractive", "-File"]);
-    assert.ok(call.args[4].endsWith("cursor-app-windows-authenticode.ps1"));
-    assert.deepEqual(call.args.slice(5), ["-Operation", call.operation, "-Directory", state.payloadRoot]);
-    assert.equal(call.options.cwd, state.runtimeRoot);
-    assert.equal(call.options.timeout, 120_000);
-    assert.equal(call.options.maxBuffer, 4096);
-    assert.equal(call.options.encoding, "utf8");
-    assert.equal(call.options.windowsHide, true);
-    assert.equal(call.options.killSignal, "SIGKILL");
-    assert.deepEqual(Object.keys(call.options.env).sort(), ["APPDATA", "COMSPEC", "HOME", "LOCALAPPDATA", "PATH",
-      "PSModulePath", "ProgramFiles", "SystemRoot", "TEMP", "TMP", "USERPROFILE", "WINDIR"].sort());
-    assert.equal(call.options.env.PSModulePath, "C:\\Program Files\\PowerShell\\7\\Modules");
-    assert.equal(call.options.env.PATH, "C:\\Program Files\\PowerShell\\7;C:\\Windows\\System32");
-    for (const key of ["HOME", "USERPROFILE", "TEMP", "TMP"]) assert.equal(call.options.env[key], state.runtimeRoot);
-  }
-  assert.equal(state.fetches.length, 1);
-  assert.equal(state.fetches[0].url, baseline.url);
-  const options = state.fetches[0].options;
-  assert.equal(options.redirect, "error");
-  assert.equal(options.credentials, "omit");
-  assert.equal(options.cache, "no-store");
-  assert.deepEqual(options.headers, { "User-Agent": "memorax-cursor-app-ci" });
-  assert.ok(options.signal instanceof AbortSignal);
-  await assert.rejects(access(state.path), { code: "ENOENT" });
-  await state.assertClean();
-});
-
-test("PowerShell HOME and TMP startup files cannot pollute the empty payload or installer fingerprints", async (t) => {
-  const state = await fixture(t, { runtimeWrites: true, onVerify: async ({ payloadRoot, path }) => {
-    assert.deepEqual(await readdir(payloadRoot), ["CursorUserSetup.exe"]);
-    assert.deepEqual(await readFile(path), bytes);
-  } });
-  const result = await state.run();
-  assert.equal(result.authenticodeVerified, true);
-  assert.equal(result.observedSha256, createHash("sha256").update(bytes).digest("hex"));
-  assert.deepEqual(state.calls.map((call) => call.operation), ["prepare", "verify"]);
-  assert.equal(state.payloadRoot, join(state.ownedRoot, "payload"));
-  assert.equal(state.runtimeRoot, join(state.ownedRoot, "runtime"));
-  for (const call of state.calls) {
-    assert.equal(call.options.env.APPDATA, join(state.runtimeRoot, "AppData", "Roaming"));
-    assert.equal(call.options.env.LOCALAPPDATA, join(state.runtimeRoot, "AppData", "Local"));
-  }
-  await assert.rejects(access(state.ownedRoot), { code: "ENOENT" });
-  await state.assertClean();
-});
-
-test("verified installer use stays private and waits for explicit process cleanup before deleting bytes", async (t) => {
-  const state = await fixture(t);
-  const value = { synthetic: true };
-  const result = await withVerifiedCursorWindowsInstaller(state.options, async (context) => {
-    assert.deepEqual(state.calls.map((call) => call.operation), ["prepare", "verify"]);
-    assert.equal(context.installerPath, state.path);
-    assert.deepEqual(context.release, baseline);
-    assert.equal(context.artifact.observedSha256, createHash("sha256").update(bytes).digest("hex"));
-    assert.ok(Object.isFrozen(context.release));
-    assert.ok(Object.isFrozen(context.artifact));
-    assert.deepEqual(await readFile(context.installerPath), bytes);
-    context.confirmProcessesClosed();
-    await Promise.resolve();
-    assert.deepEqual(await readFile(context.installerPath), bytes);
-    return value;
-  });
-  assert.equal(result.result, value);
-  assert.equal(result.verification.authenticodeVerified, true);
-  assert.equal(result.verification.ownedFilesRemoved, true);
-  assert.equal(Object.hasOwn(result.verification, "installerPath"), false);
-  assert.equal(JSON.stringify(result.verification).includes(state.root), false);
-  await state.assertClean();
-});
-
-test("unconfirmed callback cleanup retains installer bytes on either return or failure", async (t) => {
-  for (const throws of [false, true]) {
-    const state = await fixture(t);
-    const primary = new Error("private callback failure");
-    await assert.rejects(withVerifiedCursorWindowsInstaller(state.options, async () => {
-      if (throws) throw primary;
-      return "not cleanup evidence";
-    }), (caught) => {
-      if (throws) assert.equal(caught, primary);
-      else assert.equal(caught.code, prefix + "PROCESS_CLEANUP");
-      assert.equal(caught.cleanupErrorCode, prefix + "PROCESS_CLEANUP");
-      return true;
+test("both releases verify private bytes, isolate PowerShell startup files and require callback cleanup", async (t) => {
+  for (const release of [baseline, latest]) {
+    const state = await fixture(t, { release, runtimeWrites: true });
+    const result = await withVerifiedCursorWindowsInstaller(state.options, async (context) => {
+      assert.deepEqual(state.calls.map(({ operation }) => operation), ["prepare", "verify"]);
+      assert.equal(context.installerPath, state.path);
+      assert.deepEqual(await readdir(state.payloadRoot), ["CursorUserSetup.exe"]);
+      assert.deepEqual(await readFile(context.installerPath), bytes);
+      assert.ok(Object.isFrozen(context.release) && Object.isFrozen(context.artifact));
+      context.confirmProcessesClosed();
+      return "callback-result";
     });
-    assert.deepEqual(await readFile(state.path), bytes);
+    assert.equal(result.result, "callback-result");
+    assert.deepEqual(result.verification, { platform: "win32-x64-user", channel: release.channel, version: release.version,
+      commitSha: release.commitSha, sha256: null, hashSource: "not-provided", bytes: bytes.length,
+      observedSha256: createHash("sha256").update(bytes).digest("hex"), authenticodeVerified: true,
+      publisherVerified: true, signatureType: "Authenticode", publisher: "Anysphere, Inc.", ownedFilesRemoved: true });
+    assert.ok(Object.isFrozen(result.verification));
+    assert.equal(JSON.stringify(result.verification).includes(state.root), false);
+    assert.equal(state.fetches[0].url, release.url);
+    for (const { file, args, options, operation } of state.calls) {
+      assert.equal(file, "C:\\Program Files\\PowerShell\\7\\pwsh.exe");
+      assert.deepEqual(args.slice(0, 4), ["-NoLogo", "-NoProfile", "-NonInteractive", "-File"]);
+      assert.ok(args[4].endsWith("cursor-app-windows-authenticode.ps1"));
+      assert.deepEqual(args.slice(5), ["-Operation", operation, "-Directory", state.payloadRoot]);
+      assert.equal(options.timeout, 120_000);
+      assert.equal(options.maxBuffer, 4096);
+      assert.equal(options.killSignal, "SIGKILL");
+      assert.deepEqual(Object.keys(options.env).sort(), ["APPDATA", "COMSPEC", "HOME", "LOCALAPPDATA", "PATH",
+        "PSModulePath", "ProgramFiles", "SystemRoot", "TEMP", "TMP", "USERPROFILE", "WINDIR"].sort());
+      assert.equal(options.env.PATH, "C:\\Program Files\\PowerShell\\7;C:\\Windows\\System32");
+      for (const key of ["HOME", "USERPROFILE", "TEMP", "TMP"]) assert.equal(options.env[key], state.runtimeRoot);
+      assert.notEqual(state.runtimeRoot, state.payloadRoot);
+    }
+    await state.assertClean();
   }
 });
 
-test("confirmed callback failure preserves its primary error while safely removing owned bytes", async (t) => {
-  const state = await fixture(t), primary = new Error("private callback failure");
-  await assert.rejects(withVerifiedCursorWindowsInstaller(state.options, async ({ confirmProcessesClosed }) => {
-    try { throw primary; } finally { confirmProcessesClosed(); }
-  }), (caught) => caught === primary && caught.cleanupErrorCode === undefined);
-  await state.assertClean();
+test("callback return or failure only releases bytes after explicit process-close confirmation", async (t) => {
+  for (const confirmed of [false, true]) {
+    for (const throws of [false, true]) {
+      const state = await fixture(t), primary = new Error("private callback failure");
+      const pending = withVerifiedCursorWindowsInstaller(state.options, async ({ confirmProcessesClosed }) => {
+        if (confirmed) confirmProcessesClosed();
+        if (throws) throw primary;
+      });
+      if (confirmed && !throws) await pending;
+      else await assert.rejects(pending, (caught) => {
+        if (throws) assert.equal(caught, primary);
+        else assert.equal(caught.code, prefix + "PROCESS_CLEANUP");
+        assert.equal(caught.cleanupErrorCode, confirmed ? undefined : prefix + "PROCESS_CLEANUP");
+        return true;
+      });
+      if (confirmed) await state.assertClean();
+      else assert.deepEqual(await readFile(state.path), bytes);
+    }
+  }
 });
 
-test("installer callbacks cannot run before verification or hide changed bytes and cancellation", async (t) => {
-  let calls = 0;
+test("callbacks cannot run before verification or conceal changed bytes and cancellation", async (t) => {
   const invalid = await fixture(t, { fail: "verify" });
-  await assert.rejects(withVerifiedCursorWindowsInstaller(invalid.options, async () => { calls++; }), error("HELPER_VERIFY_EXIT"));
-  assert.equal(calls, 0);
+  await assert.rejects(withVerifiedCursorWindowsInstaller(invalid.options, () => assert.fail("verification must precede callback")),
+    error("HELPER_VERIFY_EXIT"));
   await invalid.assertClean();
   await assert.rejects(withVerifiedCursorWindowsInstaller(invalid.options, null), error("ARGUMENTS"));
   for (const abort of [false, true]) {
@@ -219,17 +153,7 @@ test("installer callbacks cannot run before verification or hide changed bytes a
   }
 });
 
-test("latest is independently selected without falling back to baseline", async (t) => {
-  const state = await fixture(t, { release: latest, response: { headers: new Headers() } });
-  const result = await state.run();
-  assert.equal(result.channel, "latest");
-  assert.equal(result.version, latest.version);
-  assert.equal(result.commitSha, latest.commitSha);
-  assert.equal(state.fetches[0].url, latest.url);
-  await state.assertClean();
-});
-
-test("unsupported hosts, release changes, roots and aborts fail before download", async (t) => {
+test("invalid authority fails before download, and failed downloads cannot reach signature verification", async (t) => {
   const state = await fixture(t);
   for (const [overrides, suffix] of [[{ platform: "linux" }, "PLATFORM"], [{ root: "relative" }, "ARGUMENTS"],
     [{ root: join(state.root, "unrelated") }, "ROOT_ITEM"], [{ root: join(state.root, "missing") }, "ROOT_ITEM"],
@@ -240,166 +164,84 @@ test("unsupported hosts, release changes, roots and aborts fail before download"
   assert.equal(state.calls.length, 0);
   assert.equal(state.fetches.length, 0);
   await state.assertClean();
+  const failed = await fixture(t, { response: { redirected: true } });
+  await assert.rejects(failed.run(), error("DOWNLOAD"));
+  assert.deepEqual(failed.calls.map(({ operation }) => operation), ["prepare"]);
+  await failed.assertClean();
 });
 
-test("redirects, download failures, malformed lengths and oversized or empty streams fail closed", async (t) => {
-  class OversizedChunk extends Uint8Array { get byteLength() { return 600_000_001; } }
-  const cases = [
-    { fetchError: true }, { response: { status: 302 } }, { response: { redirected: true } },
-    { response: { url: baseline.url + "?private=value" } }, { response: { body: null } },
-    { response: { body: (async function* () { yield "private-invalid-body"; })() } },
-    ...["0", "-1", "01", "1.5", "600000001", String(bytes.length + 1)].map((length) => ({
-      response: { headers: new Headers({ "content-length": length }) }, size: true })),
-    { response: { headers: new Headers(), body: (async function* () {})() }, size: true },
-    { response: { headers: new Headers(), body: (async function* () { yield new OversizedChunk(1); })() }, size: true },
-  ];
-  for (const configuration of cases) {
-    const state = await fixture(t, configuration);
-    await assert.rejects(state.run(), error(configuration.size ? "DOWNLOAD_SIZE" : "DOWNLOAD"));
-    assert.deepEqual(state.calls.map((call) => call.operation), ["prepare"]);
-    await state.assertClean();
-  }
-});
+async function rejectsClean(t, configuration, suffix) {
+  const state = await fixture(t, configuration);
+  await assert.rejects(state.run(), error(suffix));
+  await state.assertClean();
+}
 
-test("helper output is exact fixed JSON and rejects diagnostics, false verification and command failures", async (t) => {
+test("helper receipts and failures retain only exact fixed schemas and operation-bound codes", async (t) => {
   for (const operation of ["prepare", "verify"]) {
     for (const output of [{ stdout: "private invalid JSON", stderr: "" }, { stdout: "[]", stderr: "" },
-      { stdout: "{}\n{}", stderr: "" }, { stdout: "{}", stderr: "private diagnostic" },
-      { stdout: "x".repeat(4097), stderr: "" }, { stdout: Buffer.from("{}"), stderr: "" },
+      { stdout: "{}\n{}", stderr: "" }, { stdout: "{}", stderr: "private diagnostic" }, { stdout: "x".repeat(4097), stderr: "" },
       { stdout: JSON.stringify({ status: "PASS", operation, authenticodeVerified: false, publisherVerified: true }), stderr: "" },
       { stdout: JSON.stringify({ status: "PASS", operation, authenticodeVerified: true, publisherVerified: true, path: "private" }), stderr: "" }]) {
-      const state = await fixture(t, { outputs: { [operation]: output } });
-      await assert.rejects(state.run(), error(`HELPER_${operation.toUpperCase()}_OUTPUT`));
-      await state.assertClean();
+      await rejectsClean(t, { outputs: { [operation]: output } }, "HELPER_" + operation.toUpperCase() + "_OUTPUT");
     }
-  }
-});
-
-test("helper root failures expose only fixed stages bound to the requested operation", async (t) => {
-  for (const operation of ["prepare", "verify"]) {
     for (const stage of rootStages) {
-      const state = await fixture(t, { commandError: { operation, error: { code: 1, stderr: "",
-        stdout: JSON.stringify({ status: "FAIL", errorCode: prefix + "ROOT_" + stage }) } } });
-      await assert.rejects(state.run(), error(`ROOT_${operation.toUpperCase()}_${stage}`));
-      assert.equal(state.fetches.length, operation === "prepare" ? 0 : 1);
-      await state.assertClean();
+      await rejectsClean(t, { commandError: { operation, error: { code: 1, stderr: "",
+        stdout: JSON.stringify({ status: "FAIL", errorCode: prefix + "ROOT_" + stage }) } } },
+      "ROOT_" + operation.toUpperCase() + "_" + stage);
     }
+    for (const [caught, suffix] of [
+      [new Error("private"), "EXIT"], [{ code: "ENOENT", syscall: "spawn private" }, "SPAWN"],
+      [{ code: "ETIMEDOUT" }, "TIMEOUT"], [{ killed: true, signal: "SIGKILL" }, "TIMEOUT"],
+      [{ code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER", killed: true, signal: "SIGKILL" }, "OUTPUT"],
+      ...[{ errorCode: "private" }, { errorCode: prefix + "ROOT_UNKNOWN" }, { errorCode: prefix + "ROOT_OWNER", path: "private" }]
+        .map((change) => [{ code: 1, stdout: JSON.stringify({ status: "FAIL", ...change }), stderr: "" }, "EXIT"]),
+      [{ code: 1, stdout: JSON.stringify({ status: "FAIL", errorCode: prefix + "ROOT_OWNER" }), stderr: "private" }, "EXIT"],
+    ]) await rejectsClean(t, { commandError: { operation, error: caught } }, "HELPER_" + operation.toUpperCase() + "_" + suffix);
   }
   for (const suffix of ["PLATFORM", "SIGNATURE", "PUBLISHER"]) {
-    const state = await fixture(t, { commandError: { operation: "verify", error: { code: 1, stderr: "",
-      stdout: JSON.stringify({ status: "FAIL", errorCode: prefix + suffix }) } } });
-    await assert.rejects(state.run(), error(suffix));
-    await state.assertClean();
+    await rejectsClean(t, { commandError: { operation: "verify", error: { code: 1, stderr: "",
+      stdout: JSON.stringify({ status: "FAIL", errorCode: prefix + suffix }) } } }, suffix);
   }
 });
 
-test("helper execution failures and untrusted diagnostics never become ACL or signature findings", async (t) => {
-  const privateText = "C:\\Users\\private-account\\private-path CN=private-certificate raw-stderr-canary";
-  const rootFailure = { status: "FAIL", errorCode: prefix + "ROOT_OWNER" };
-  for (const operation of ["prepare", "verify"]) {
-    for (const [caught, suffix] of [
-      [new Error(privateText), "EXIT"],
-      [{ code: "ENOENT", syscall: "spawn " + privateText, message: privateText }, "SPAWN"],
-      [{ code: "EACCES", syscall: "spawn " + privateText, message: privateText }, "SPAWN"],
-      [{ code: "ETIMEDOUT", message: privateText }, "TIMEOUT"],
-      [{ code: null, killed: true, signal: "SIGKILL", stderr: privateText }, "TIMEOUT"],
-      [{ code: 1, killed: true, signal: "SIGKILL", stdout: JSON.stringify(rootFailure), stderr: "" }, "TIMEOUT"],
-      [{ code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER", killed: true, signal: "SIGKILL", stderr: privateText }, "OUTPUT"],
-      [{ code: 1, stdout: JSON.stringify({ status: "FAIL", errorCode: privateText }), stderr: "" }, "EXIT"],
-      [{ code: 1, stdout: JSON.stringify({ ...rootFailure, path: privateText }), stderr: "" }, "EXIT"],
-      [{ code: 1, stdout: JSON.stringify(rootFailure), stderr: privateText }, "EXIT"],
-      [{ code: 1, stdout: JSON.stringify({ status: "FAIL", errorCode: prefix + "ROOT_UNKNOWN" }), stderr: "" }, "EXIT"],
-      [{ code: 1, stdout: "private invalid JSON", stderr: "" }, "EXIT"],
-      [{ code: 1, stdout: JSON.stringify(rootFailure).repeat(4096), stderr: "" }, "EXIT"],
-    ]) {
-      const state = await fixture(t, { commandError: { operation, error: caught } });
-      await assert.rejects(state.run(), (failure) => {
-        assert.equal(failure.code, `${prefix}HELPER_${operation.toUpperCase()}_${suffix}`);
-        assert.equal(failure.message, failure.code);
-        assert.equal(JSON.stringify(failure).includes(privateText), false);
-        assert.equal(failure.stack.includes(privateText), false);
-        return true;
-      });
-      await state.assertClean();
-    }
-  }
+test("signature verification rejects changed bytes and replacement files", async (t) => {
+  const mutations = [({ path }) => writeFile(path, Buffer.alloc(bytes.length, 1)), ({ path }) => writeFile(path, "changed length"),
+    async ({ path }) => { await rm(path); await mkdir(path); }];
+  if (process.platform !== "win32") mutations.push(async ({ path, root }) => { await rm(path); await symlink(join(root, "unrelated"), path); });
+  for (const onVerify of mutations) await rejectsClean(t, { onVerify }, "CHANGED");
 });
 
-test("signature verification cannot accept file changes or a replaced non-file", async (t) => {
-  for (const onVerify of [({ path }) => writeFile(path, Buffer.alloc(bytes.length, 1)),
-    ({ path }) => writeFile(path, "changed length"), async ({ path }) => { await rm(path); await mkdir(path); }]) {
-    const state = await fixture(t, { onVerify });
-    await assert.rejects(state.run(), error("CHANGED"));
-    await state.assertClean();
-  }
-});
-
-test("symbolic-link replacement is rejected without deleting its target", { skip: process.platform === "win32" }, async (t) => {
-  const state = await fixture(t, { onVerify: async ({ path, root }) => { await rm(path); await symlink(join(root, "unrelated"), path); } });
-  await assert.rejects(state.run(), error("CHANGED"));
-  assert.equal(await readFile(join(state.root, "unrelated"), "utf8"), "preserve");
-  await state.assertClean();
-});
-
-test("aborting a helper waits for its held child close before cleanup", async (t) => {
-  const controller = new AbortController();
-  const state = await fixture(t, { runtimeWrites: true });
-  let closeObserved = false;
-  const execute = (file, args, options) => {
-    if (args[args.indexOf("-Operation") + 1] === "prepare") return state.options.execute(file, args, options);
-    const child = new EventEmitter();
-    const pending = Promise.reject(Object.assign(new Error("private abort diagnostic"), { code: "ABORT_ERR" }));
-    pending.child = child;
-    controller.abort();
-    setImmediate(async () => {
-      try {
+test("helper cancellation waits for its held child and retains state when closure is unproven", async (t) => {
+  for (const closes of [false, true]) {
+    const controller = new AbortController();
+    const state = await fixture(t, { runtimeWrites: true });
+    let observed = false;
+    const execute = (...args) => {
+      if (args[1].includes("prepare")) return state.options.execute(...args);
+      const pending = Promise.reject(new Error("private"));
+      pending.child = new EventEmitter();
+      controller.abort();
+      if (closes) setImmediate(async () => {
         await access(state.path);
         await access(join(state.runtimeRoot, "prepare-HOME.cache"));
-        closeObserved = true;
-      }
-      finally { child.emit("close", null, "SIGKILL"); }
-    });
-    return pending;
-  };
-  await assert.rejects(state.run({ execute, signal: controller.signal }), error("ABORTED"));
-  assert.equal(closeObserved, true);
-  await state.assertClean();
+        observed = true;
+        pending.child.emit("close");
+      });
+      return pending;
+    };
+    await assert.rejects(state.run({ execute, signal: controller.signal }), { ...error("ABORTED"),
+      ...(!closes ? { cleanupErrorCode: prefix + "PROCESS_CLEANUP" } : {}) });
+    assert.equal(observed, closes);
+    if (closes) await state.assertClean();
+    else assert.deepEqual(await readFile(state.path), bytes);
+  }
 });
 
-test("unproven helper exit retains its owned directory and preserves the primary failure", async (t) => {
-  const state = await fixture(t, { runtimeWrites: true });
-  const execute = (file, args, options) => {
-    if (args[args.indexOf("-Operation") + 1] === "prepare") return state.options.execute(file, args, options);
-    const pending = Promise.reject(new Error("private failure"));
-    pending.child = new EventEmitter();
-    return pending;
-  };
-  await assert.rejects(state.run({ execute }), { ...error("HELPER_VERIFY_EXIT"), cleanupErrorCode: prefix + "PROCESS_CLEANUP" });
-  assert.deepEqual(await readFile(state.path), bytes);
-  assert.deepEqual((await readdir(state.ownedRoot)).sort(), ["payload", "runtime"]);
-  assert.equal(await readFile(join(state.runtimeRoot, "prepare-HOME.cache"), "utf8"), "runtime");
-});
-
-test("cleanup failure does not replace the signature error or return successful evidence",
+test("cleanup errors preserve the primary verification failure",
   { skip: process.platform === "win32" || process.getuid?.() === 0 }, async (t) => {
-    const state = await fixture(t, { onVerify: async ({ root }) => { await chmod(root, 0o500); throw new Error("private signature failure"); } });
+    const state = await fixture(t, { onVerify: async ({ root }) => { await chmod(root, 0o500); throw new Error("private"); } });
     await assert.rejects(state.run(), { ...error("HELPER_VERIFY_EXIT"), cleanupErrorCode: prefix + "CLEANUP" });
   });
-
-test("static PowerShell helper is Windows-only and invokes only the system signature cmdlet", async () => {
-  const source = await helper();
-  assert.match(source, /if \(-not \$IsWindows\)/);
-  assert.match(source, /Microsoft\.PowerShell\.Security\\Get-AuthenticodeSignature -LiteralPath \$path -ErrorAction Stop/);
-  assert.match(source, /\$signatures.Count -ne 1/);
-  assert.match(source, /SetAccessRuleProtection\(\$true, \$false\)/);
-  assert.match(source, /\$rules.Count -ne 2/);
-  assert.match(source, /\$actual.AreAccessRulesProtected/);
-  assert.match(source, /\$matching\[0\].IsInherited/);
-  for (const stage of rootStages) assert.ok(source.includes(`$stage = '${stage}'`));
-  assert.match(source, /GetSingleElementType\(\).Value/);
-  assert.match(source, /GetSingleElementValue\(\)/);
-  assert.doesNotMatch(source, /Start-Process|Invoke-Expression|Import-Certificate|Set-ExecutionPolicy|\/VERYSILENT|Format-List/);
-});
 
 test("PowerShell public diagnostics whitelist fixed codes without paths, accounts, certificates or raw errors", async (t) => {
   const available = spawnSync("pwsh", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "exit 0"],

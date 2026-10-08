@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, open } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
-import { isDeepStrictEqual } from "node:util";
 
 const maxBytes = 1024 * 1024, maxEvents = 4096;
 const uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
@@ -237,10 +236,6 @@ export function projectCursorAppDiagnostics(value) {
       interruptedCount: count(trace.interruptedCount), materializedCount: count(trace.materializedCount),
     },
   };
-}
-
-export function isCursorAppDiagnostics(value) {
-  return isDeepStrictEqual(value, projectCursorAppDiagnostics(value));
 }
 
 async function readBounded(home, parts) {

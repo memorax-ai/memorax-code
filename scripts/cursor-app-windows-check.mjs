@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -58,90 +58,8 @@ export function projectWindowsInstallerOutcome(stdout, error) {
   return { status, exitCode: integer(error?.code) ? error.code : null, nativeErrorCode: null };
 }
 
-const installerLogLimit = 1024 * 1024;
-
-export function projectWindowsInstallerLog(bytes) {
-  const result = { readStatus: "ok", category: "unknown", systemErrorCode: null };
-  if (bytes.length > installerLogLimit) return { ...result, readStatus: "too-large" };
-  let text;
-  try {
-    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-    if (text.includes("\0")) throw new Error();
-  } catch { return { ...result, readStatus: "invalid-encoding" }; }
-  // Inno's format is not an API: recognize only fixed error text in one timestamped record.
-  // Source: jrsoftware/issrc is-6_4_3, Setup.LoggingFunc.pas and Files/Default.isl.
-  const records = text.matchAll(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} {3}([^\r\n]*(?:\r?\n {26}[^\r\n]*)*)/gm);
-  let fileEntry = false, destinationPathLength;
-  for (const record of records) {
-    const message = record[1].replace(/\r?\n {26}/g, "\n");
-    if (message === "Rolling back changes.") break;
-    if (/^-- .+ entry --$/.test(message)) {
-      fileEntry = message === "-- File entry --";
-      destinationPathLength = undefined;
-    }
-    if (fileEntry && /^Dest filename: [^\n]+$/.test(message)) destinationPathLength = message.length - "Dest filename: ".length;
-    const category = [
-      ["directory", /^Setup was unable to create the directory "/m],
-      ["file", /^(?:An error occurred while trying to (?:read the (?:existing|source) file|create a file in the destination directory|copy a file|replace the existing file|rename a file in the destination directory):|(?:CreateFile|DeleteFile|MoveFile|MoveFileEx) failed; code \d+\.)$/m],
-      ["registry", /^(?:Error (?:opening|creating|writing to) registry key:|(?:RegSetValueEx|RegCreateKeyEx|RegOpenKeyEx) failed; code \d+\.)$/m],
-      ["execute", /^(?:Unable to execute file:|(?:CreateProcess|ShellExecuteEx) failed; code \d+\.)$/m],
-      ["exception", /^(?:Exception message:|Fatal exception during installation process \([A-Za-z0-9_]+\):)$/m],
-    ].find(([, pattern]) => pattern.test(message))?.[0] ?? "unknown";
-    const code = message.match(/^Error (\d{1,10}):[^\n]*$/m)?.[1]
-      ?? message.match(/^(?:CreateFile|DeleteFile|MoveFile|MoveFileEx|RegSetValueEx|RegCreateKeyEx|RegOpenKeyEx|CreateProcess|ShellExecuteEx) failed; code (\d{1,10})\.$/m)?.[1];
-    const systemErrorCode = code !== undefined && Number(code) <= 4294967295 ? Number(code) : null;
-    if (category !== "unknown" || systemErrorCode !== null) {
-      const details = {};
-      if (category === "file") {
-        const fileOperation = [
-          ["read-existing", "read the existing file"], ["read-source", "read the source file"],
-          ["create", "create a file in the destination directory"], ["copy", "copy a file"],
-          ["replace", "replace the existing file"], ["rename", "rename a file in the destination directory"],
-        ].find(([, action]) => message.split("\n").includes(`An error occurred while trying to ${action}:`))?.[0];
-        const systemOperation = message.match(/^(CreateFile|DeleteFile|MoveFile|MoveFileEx) failed; code \d+\.$/m)?.[1];
-        if (fileOperation) details.fileOperation = fileOperation;
-        if (systemOperation) details.systemOperation = systemOperation;
-        if (destinationPathLength !== undefined) details.destinationPathLength = destinationPathLength;
-      }
-      return { ...result, category, systemErrorCode, ...details };
-    }
-  }
-  return result;
-}
-
-export async function readWindowsInstallerLog(path) {
-  let handle;
-  let result = { readStatus: "read-error", category: "unknown", systemErrorCode: null };
-  try {
-    const info = await lstat(path);
-    if (!info.isFile() || info.isSymbolicLink()) return { ...result, readStatus: "not-regular" };
-    handle = await open(path, "r");
-    const opened = await handle.stat();
-    if (!opened.isFile() || opened.dev !== info.dev || opened.ino !== info.ino) return { ...result, readStatus: "changed" };
-    const start = Math.max(0, info.size - installerLogLimit), position = start ? start - 1 : 0;
-    const bytes = Buffer.alloc(info.size - position);
-    let length = 0;
-    while (length < bytes.length) {
-      const { bytesRead } = await handle.read(bytes, length, bytes.length - length, position + length);
-      if (!bytesRead) break;
-      length += bytesRead;
-    }
-    const after = await handle.stat();
-    if (length !== bytes.length || after.size !== info.size || after.mtimeMs !== info.mtimeMs) result.readStatus = "changed";
-    else {
-      // One preceding byte preserves complete boundary lines; discard partial UTF-8 before decoding.
-      const newline = start && bytes[0] !== 10 ? bytes.indexOf(10, 1) : -1;
-      const offset = !start ? 0 : bytes[0] === 10 ? 1 : newline < 0 ? length : newline + 1;
-      result = projectWindowsInstallerLog(bytes.subarray(offset, length));
-      if (start && result.readStatus === "ok") result.readStatus = "tail";
-    }
-  } catch (error) { result.readStatus = error.code === "ENOENT" ? "missing" : "read-error"; }
-  finally { try { await handle?.close(); } catch { result = { readStatus: "read-error", category: "unknown", systemErrorCode: null }; } }
-  return result;
-}
-
 export async function runWindowsCheck(candidatePath, reportPath, { releaseManifest, channel, nodeMajor = "24", signal } = {}) {
-  let root, output, artifact, installerOutcome, installerLog, nativeStarted = false, cleanupFailed = false;
+  let root, output, artifact, installerOutcome, nativeStarted = false, cleanupFailed = false;
   let report = { status: "FAIL", client: "cursor", kind: "app-native-session-flows", platform: "win32", stage: "windows-preflight", evidence: {} };
   try {
     // This uses the fresh hosted runner account, not a private Windows logon profile.
@@ -201,13 +119,12 @@ export async function runWindowsCheck(candidatePath, reportPath, { releaseManife
             windowsInstallerCommand(installerPath, appDirectory, logPath),
             { cwd: root, env, timeout: 300_000, signal, maxBuffer: 64 * 1024, killSignal: "SIGKILL", windowsHide: true });
           installerOutcome = projectWindowsInstallerOutcome(result.stdout);
+          installerClosed = installerOutcome.status === "exited";
           check(installerOutcome.status === "exited" && installerOutcome.exitCode === 0, "CURSOR_APP_WINDOWS_INSTALLER_EXIT");
-          installerClosed = true;
         } catch (error) {
           installerOutcome ??= projectWindowsInstallerOutcome(error.stdout, error);
+          installerClosed = installerOutcome.status === "exited";
           check(false, "CURSOR_APP_WINDOWS_INSTALLER_EXIT");
-        } finally {
-          installerLog = await readWindowsInstallerLog(logPath);
         }
         report.stage = "windows-app-verification";
         const installed = await verifyCursorWindowsInstalledApp({ release, root, profileRoot: env.HOME, appDirectory, signal });
@@ -251,7 +168,6 @@ export async function runWindowsCheck(candidatePath, reportPath, { releaseManife
     if (cleanupFailed) { report.status = "FAIL"; report.cleanupError ??= "CURSOR_APP_WINDOWS_CLEANUP"; }
     if (artifact) report.windows = artifact;
     if (installerOutcome) report.windowsInstaller = installerOutcome;
-    if (installerLog && report.status !== "PASS") report.windowsInstallerLog = installerLog;
     if (output) await writeFile(join(output, "report.json"), `${JSON.stringify(report, null, 2)}\n`, { flag: "wx", mode: 0o600 });
   }
   return report;

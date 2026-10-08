@@ -43,74 +43,43 @@ function nativeReport() {
       contextRequests: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1], contextResults: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1], contextCloses: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1] }, memoryRequestCount: 11 };
 }
 
-test("macOS requires the same native content, memory operations and cleanup as Linux", () => {
-  const report = nativeReport();
-  report.platform = "darwin";
-  assert.throws(() => projectNativeReport(report), { code: "CURSOR_CONTAINER_REPORT" });
-  assert.deepEqual(projectNativeReport(report, { platform: "darwin" }), report);
-  for (const change of [
-    (value) => { value.platform = "linux"; },
-    (value) => { value.evidence.exactAutomaticAdd = false; },
-    (value) => { value.evidence.skillSearch = false; },
-    (value) => { value.evidence.cleanup = false; },
-    (value) => { value.evidence.pendingShellInterrupted = false; },
-    (value) => { value.agent.runs = 6; },
-    (value) => { value.memoryRequestCount = 9; },
-    (value) => { value.evidence.nativeContent[5].blobCount = 20; },
-  ]) {
-    const changed = structuredClone(report); change(changed);
-    assert.throws(() => projectNativeReport(changed, { platform: "darwin" }), { code: "CURSOR_CONTAINER_REPORT" });
-  }
-});
-
-test("Windows requires the same native content, memory operations and cleanup as Linux", () => {
-  const report = nativeReport();
-  report.platform = "win32";
-  assert.deepEqual(projectNativeReport(report, { platform: "win32" }), report);
-  assert.throws(() => projectNativeReport(report), { code: "CURSOR_CONTAINER_REPORT" });
-  for (const key of ["nativeHooks", "exactAutomaticAdd", "skillSearch", "skillAdd", "pendingShellInterrupted", "cleanup"]) {
-    const changed = structuredClone(report); changed.evidence[key] = false;
-    assert.throws(() => projectNativeReport(changed, { platform: "win32" }), { code: "CURSOR_CONTAINER_REPORT" });
-  }
-});
-
-test("every platform requires native Repo Memory worker evidence before reporting PASS", () => {
+test("every platform requires complete ordered native evidence, not just a PASS label", () => {
   for (const platform of ["linux", "darwin", "win32"]) {
     const input = { ...nativeReport(), platform };
-    assert.equal(projectNativeReport(input, { platform }).evidence.repoMemoryWorker, true);
-    for (const value of [undefined, false, null, 1, "true"]) {
+    const project = (value) => projectNativeReport(value, { platform });
+    assert.deepEqual(project(input), input);
+    const reject = (mutate) => {
       const invalid = structuredClone(input);
-      if (value === undefined) delete invalid.evidence.repoMemoryWorker;
-      else invalid.evidence.repoMemoryWorker = value;
-      assert.throws(() => projectNativeReport(invalid, { platform }), { code: "CURSOR_CONTAINER_REPORT" });
+      mutate(invalid);
+      assert.throws(() => project(invalid), { code: "CURSOR_CONTAINER_REPORT" });
+    };
+    for (const key of Object.keys(input.evidence).filter((key) => key !== "nativeContent")) {
+      for (const value of [undefined, false, "true"]) reject((r) => { r.evidence[key] = value; });
     }
-    const failure = { ...input, status: "FAIL", stage: "repo-memory-worker", errorCode: "CURSOR_APP_REPO_MEMORY_WORKER" };
-    failure.evidence = { ...input.evidence, repoMemoryWorker: false };
-    const projected = projectNativeReport(failure, { platform });
-    assert.equal(projected.evidence.repoMemoryWorker, false);
-    assert.equal(projected.stage, "repo-memory-worker");
-  }
-});
-
-test("Repo Memory evidence cannot hide missing parent or child execution, content or extra writeback", () => {
-  for (const platform of ["linux", "darwin", "win32"]) {
+    for (const key of Object.keys(input.agent).filter((key) => Array.isArray(input.agent[key]) && key !== "errors")) {
+      reject((r) => { delete r.agent[key]; });
+      reject((r) => { r.agent[key].pop(); });
+      reject((r) => { r.agent[key].push(0); });
+      // Every turn matters, including denied, interrupted, recovered, parent and child.
+      for (let index = 0; index < 11; index++) {
+        reject((r) => { delete r.agent[key][index]; });
+        reject((r) => { r.agent[key][index] = key === "cancelled" ? !r.agent[key][index] : r.agent[key][index] + 1; });
+      }
+      for (const value of ["1", NaN, -1]) reject((r) => { r.agent[key][0] = value; });
+    }
+    for (let index = 0; index < 9; index++) for (const key of ["composerMatched", "stateMatched", "blobCount"]) {
+      reject((r) => { r.evidence.nativeContent[index][key] = key === "blobCount" ? 0 : false; });
+    }
     for (const mutate of [
-      (value) => { value.agent.runs = 9; },
-      (value) => { value.evidence.nativeContent.pop(); },
-      (value) => { value.evidence.nativeContent[8].blobCount = 3; },
-      (value) => { value.memoryRequestCount = 10; },
-      (value) => { value.memoryRequestCount = 12; },
-      ...["writes", "acknowledgements", "historyTurns", "reads", "readResults", "execRequests", "execResults",
-        "execCloses", "contextRequests", "contextResults", "contextCloses", "cancelled"].flatMap((key) => [
-        (value) => { value.agent[key].pop(); },
-        (value) => { value.agent[key][9] = typeof value.agent[key][9] === "boolean" ? true : value.agent[key][9] + 1; },
-        (value) => { value.agent[key][10] = typeof value.agent[key][10] === "boolean" ? true : value.agent[key][10] + 1; },
-      ]),
-    ]) {
-      const input = { ...nativeReport(), platform };
-      mutate(input);
-      assert.throws(() => projectNativeReport(input, { platform }), { code: "CURSOR_CONTAINER_REPORT" });
-    }
+      (r) => { delete r.evidence.nativeContent; }, (r) => { r.evidence.nativeContent.pop(); },
+      (r) => { delete r.evidence.nativeContent[1]; }, (r) => { r.evidence.nativeContent.reverse(); },
+      (r) => { r.evidence.nativeContent[2] = r.evidence.nativeContent[1]; },
+      (r) => { r.agent.runs--; }, (r) => { r.agent.errors = ["CURSOR_APP_EXEC_REJECTED"]; },
+      (r) => { r.memoryRequestCount--; }, (r) => { r.memoryRequestCount++; },
+      (r) => { r.stage = "native-submit"; }, (r) => { r.kind = "other"; },
+      (r) => { r.platform = "other"; }, (r) => { r.version = "3.22.0"; },
+      ...["errorCode", "cleanupError", "nativeContentError"].map((key) => (r) => { r[key] = "CURSOR_APP_CHECK_FAILED"; }),
+    ]) reject(mutate);
   }
 });
 
@@ -324,278 +293,61 @@ test("report projection rejects a different App or Node runtime than the selecte
   assert.equal(projectNativeReport(minimum, { nodeMajor: "22" }).status, "PASS");
 });
 
-test("all platforms require completed cross-workspace evidence for PASS", () => {
+test("public reports drop raw data and project failure diagnostics without weakening the gate", () => {
   for (const platform of ["linux", "darwin", "win32"]) {
-    const input = { ...nativeReport(), platform };
-    assert.equal(projectNativeReport(input, { platform }).evidence.workspaceIsolation, true);
-    for (const value of [undefined, false, "true"]) {
-      const invalid = structuredClone(input);
-      invalid.evidence.workspaceIsolation = value;
-      assert.throws(() => projectNativeReport(invalid, { platform }), { code: "CURSOR_CONTAINER_REPORT" });
-    }
-  }
-});
+    const project = (value) => projectNativeReport(value, { platform });
+    const input = { ...nativeReport(), platform, privatePath: "private-canary" };
+    input.evidence.nativeContent[0].databasePath = "private-canary";
+    input.evidence.sessionIds = ["private-canary"];
+    input.agent.requests = [{ token: "private-canary" }];
+    assert.deepEqual(project(input), { ...nativeReport(), platform });
 
-test("all platforms require native denial and same-session recovery evidence for PASS", () => {
-  for (const platform of ["linux", "darwin", "win32"]) {
-    const input = { ...nativeReport(), platform };
-    const report = projectNativeReport(input, { platform });
-    assert.equal(report.evidence.shellDenied, true);
-    assert.equal(report.evidence.sameSessionRecovered, true);
-    for (const key of ["shellDenied", "sameSessionRecovered"]) {
-      for (const value of [undefined, false, "true", { private: "synthetic-token" }]) {
-        const invalid = structuredClone(input);
-        invalid.evidence[key] = value;
-        assert.throws(() => projectNativeReport(invalid, { platform }), { code: "CURSOR_CONTAINER_REPORT" });
-      }
-    }
-  }
-});
-
-test("report projection drops raw diagnostics and requires completed native evidence for PASS", () => {
-  const input = nativeReport();
-  input.privatePath = "/synthetic/private";
-  input.evidence.nativeContent[0].databasePath = "/synthetic/native/database";
-  input.evidence.sessionIds = ["synthetic-session-a", "synthetic-session-b"];
-  input.agent.requests = [{ path: "/synthetic/private/token" }];
-  input.agent.secret = "synthetic-token";
-  const report = projectNativeReport(input);
-  assert.equal(report.status, "PASS");
-  assert.equal(report.agent.ancillaryRequestCount, 5);
-  assert.deepEqual(report.agent.historyTurns, [0, 1, 0, 2, 3, 4, 0, 0, 0, 0, 0]);
-  assert.deepEqual(report.agent.reads, [0, 3, 0, 6, 9, 15, 0, 0, 0, 0, 0]);
-  assert.deepEqual(report.agent.readResults, [0, 3, 0, 6, 9, 15, 0, 0, 0, 0, 0]);
-  assert.deepEqual(report.agent.execRequests, [0, 0, 0, 0, 3, 3, 1, 1, 0, 1, 2]);
-  assert.deepEqual(report.agent.execResults, [0, 0, 0, 0, 3, 3, 1, 0, 0, 1, 2]);
-  assert.deepEqual(report.agent.execCloses, [0, 0, 0, 0, 3, 3, 1, 0, 0, 1, 2]);
-  assert.deepEqual(report.agent.contextRequests, [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]);
-  assert.deepEqual(report.agent.contextResults, [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]);
-  assert.deepEqual(report.agent.contextCloses, [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]);
-  assert.deepEqual(report.agent.cancelled, [false, false, false, false, false, false, false, true, false, false, false]);
-  assert.equal(report.evidence.skillSearch, true);
-  assert.equal(report.evidence.skillAdd, true);
-  assert.deepEqual(report.evidence.nativeContent, nativeReport().evidence.nativeContent);
-  assert.equal(JSON.stringify(report).includes("synthetic"), false);
-});
-
-test("failure reports retain only the diagnostic helper's bounded public projection", () => {
-  const input = nativeReport();
-  input.status = "FAIL";
-  input.stage = "automatic-add";
-  input.errorCode = "CURSOR_APP_ADD_TIMEOUT";
-  input.diagnostics = { privatePath: "synthetic-private-path", sessionId: "synthetic-session",
-    turnStore: { readStatus: "synthetic-secret", reason: "synthetic-prompt", active: { token: "synthetic-token" } },
-    trace: { readStatus: "synthetic-secret", events: [{ content: "synthetic-answer" }] } };
-  input.appLaunch = { spawned: true, exitCode: 1, signal: "synthetic-signal", spawnError: "synthetic-error",
-    log: "synthetic-log", markers: { permissionDenied: true, private: "synthetic-private" } };
-  input.candidateStop = { exitCode: 1, signal: null, timedOut: false, outputOverflow: false, jsonStatus: "valid",
-    actionMatched: true, ok: false, stdout: "synthetic-stdout", stderr: "synthetic-stderr",
-    backend: { present: true, ok: false, errorCode: "BACKEND_OWNERSHIP_UNVERIFIED", stage: "verify_ownership",
-      failureReason: "process_probe_inconclusive", systemCode: "EPERM", processState: "unknown", state: { token: "synthetic-token" } },
-    cursorAdapter: { present: false, ok: false, error: "synthetic-error" } };
-  const report = projectNativeReport(input);
-  assert.equal(report.status, "FAIL");
-  assert.ok(report.diagnostics);
-  assert.equal(report.appLaunch.exitCode, 1);
-  assert.equal(report.appLaunch.signal, "other");
-  assert.equal(report.appLaunch.markers.permissionDenied, true);
-  assert.equal(report.candidateStop.exitCode, 1);
-  assert.equal(report.candidateStop.backend.errorCode, "BACKEND_OWNERSHIP_UNVERIFIED");
-  assert.equal(report.candidateStop.backend.systemCode, "EPERM");
-  assert.equal(report.candidateStop.backend.state, undefined);
-  assert.equal(JSON.stringify(report).includes("synthetic"), false);
-  input.evidence.exactAutomaticAdd = false;
-  input.status = "PASS";
-  assert.throws(() => projectNativeReport(input), /CURSOR_CONTAINER_REPORT/);
-});
-
-test("failure reports expose correlated stored diagnostic enums without private identities", () => {
-  const matching = [
-    { operation: "memory.writeback", reason: "start_missing", scope: "turn" },
-    { operation: "memory.turn-start", reason: "database_native_format_invalid", scope: "session" },
-  ];
-  const input = { ...nativeReport(), status: "FAIL", stage: "automatic-add", errorCode: "CURSOR_APP_ADD_TIMEOUT",
-    diagnostics: { turnStore: { readStatus: "present", versionMatched: true, clientMatched: true, sessionMatched: true,
-      activePresent: false, diagnosticKeys: ["private-diagnostic-canary"], diagnostics: [
-        ...matching.map((entry) => ({ ...entry, turnId: "private-diagnostic-canary", key: "private-diagnostic-canary" })),
-        { operation: "private-diagnostic-canary", reason: "start_missing", scope: "turn" },
-        { operation: "memory.writeback", reason: "private-diagnostic-canary", scope: "turn" },
-        { operation: "memory.writeback", reason: "start_missing", scope: "session" },
-      ] } } };
-  const report = projectNativeReport(input);
-  assert.deepEqual(report.diagnostics.turnStore.diagnostics, matching);
-  assert.equal(report.diagnostics.turnStore.activePresent, false);
-  assert.equal(report.errorCode, "CURSOR_APP_ADD_TIMEOUT");
-  assert.equal(report.status, "FAIL");
-  assert.equal(JSON.stringify(report).includes("private-diagnostic-canary"), false);
-  input.diagnostics.turnStore.sessionMatched = false;
-  assert.deepEqual(projectNativeReport(input).diagnostics.turnStore.diagnostics, []);
-});
-
-test("Shell failure reports project only fixed outcomes without changing failure or PASS gates", () => {
-  for (const platform of ["linux", "darwin", "win32"]) {
-    const input = { ...nativeReport(), platform, status: "FAIL", stage: "agent-transport", errorCode: "CURSOR_APP_EXEC_REJECTED",
-      shellResult: { rejectionKind: 2, approvalClicked: true, exitCode: 127,
-        command: "private-shell-canary", stderr: "private-shell-canary", toolCallId: "private-shell-canary" } };
-    const report = projectNativeReport(input, { platform });
+    input.status = "FAIL";
+    input.stage = "automatic-add";
+    input.errorCode = "CURSOR_APP_ADD_TIMEOUT";
+    input.diagnostics = { turnStore: { readStatus: "present", versionMatched: true, clientMatched: true,
+      sessionMatched: true, activePresent: false, token: "private-canary", diagnostics: [
+        { operation: "memory.writeback", reason: "start_missing", scope: "turn", key: "private-canary" },
+      ] } };
+    input.appLaunch = { spawned: true, exitCode: 1, signal: "private-canary", log: "private-canary",
+      markers: { permissionDenied: true } };
+    input.candidateStop = { exitCode: 1, timedOut: true, stdout: "private-canary" };
+    input.shellResult = { rejectionKind: 2, approvalClicked: true, exitCode: 127, stderr: "private-canary" };
+    input.windowsAppStop = { taskkillExitCode: 128, childExitCode: 0, stderr: "private-canary" };
+    const report = project(input);
     assert.equal(report.status, "FAIL");
-    assert.equal(report.errorCode, "CURSOR_APP_EXEC_REJECTED");
+    assert.equal(report.errorCode, input.errorCode);
+    assert.deepEqual(report.diagnostics.turnStore.diagnostics, [
+      { operation: "memory.writeback", reason: "start_missing", scope: "turn" },
+    ]);
+    assert.equal(report.appLaunch.exitCode, 1);
+    assert.equal(report.appLaunch.signal, "other");
+    assert.equal(report.candidateStop.timedOut, true);
     assert.deepEqual(report.shellResult, { rejectionKind: 2, approvalClicked: true, exitCode: 127 });
-    assert.equal(JSON.stringify(report).includes("canary"), false);
-    input.shellResult.output = { stdoutStatus: "present", stderrStatus: "present", cliJson: "valid",
-      errorCode: "MEMORY_CONFIG_MISSING", stage: "configuration", systemCode: "private-shell-canary",
-      stdout: "private-shell-canary", stderr: "private-shell-canary", markers: { permissionDenied: true, private: "private-shell-canary" } };
-    const projected = projectNativeReport(input, { platform });
-    assert.equal(projected.shellResult.output.errorCode, "MEMORY_CONFIG_MISSING");
-    assert.equal(projected.shellResult.output.systemCode, "other");
-    assert.equal(projected.shellResult.output.markers.permissionDenied, true);
-    assert.equal(JSON.stringify(projected).includes("canary"), false);
-    assert.equal(projected.status, "FAIL");
-    input.shellResult = { rejectionKind: "private-shell-canary", approvalClicked: "true", exitCode: 0x8000_0000 };
-    assert.deepEqual(projectNativeReport(input, { platform }).shellResult, { rejectionKind: "other", approvalClicked: false });
+    assert.equal(report.windowsAppStop?.taskkillExitCode, platform === "win32" ? 128 : undefined);
+    assert.equal(JSON.stringify(report).includes("private-canary"), false);
     input.status = "PASS";
-    input.evidence.exactAutomaticAdd = false;
-    assert.throws(() => projectNativeReport(input, { platform }), /CURSOR_CONTAINER_REPORT/);
+    assert.throws(() => project(input), /CURSOR_CONTAINER_REPORT/);
+    delete input.errorCode;
+    input.stage = "complete";
+    for (const key of ["candidateStop", "shellResult", "windowsAppStop"]) assert.equal(project(input)[key], undefined);
   }
 });
 
-test("Windows stop failure reports retain only the bounded failure-time snapshot", () => {
-  const input = { ...nativeReport(), status: "FAIL", platform: "win32", stage: "workspace-switch",
-    errorCode: "CURSOR_APP_WINDOWS_APP_STOP_EXIT_128", cleanupError: "CURSOR_APP_WINDOWS_APP_STOP_EXIT_128",
-    windowsAppStop: { taskkillExitCode: 128, childExitCode: 0, childSignal: "none", timedOut: false, outputOverflow: false,
-      markers: { processNotFound: true, accessDenied: false, private: "private-stop-canary" },
-      pid: 12345, command: "private-stop-canary", stderr: "private-stop-canary" } };
-  const report = projectNativeReport(input, { platform: "win32" });
-  assert.deepEqual(report.windowsAppStop, { taskkillExitCode: 128, childExitCode: 0, childSignal: "none",
-    timedOut: false, outputOverflow: false, markers: { processNotFound: true, accessDenied: false } });
-  assert.equal(report.status, "FAIL");
-  assert.equal(report.errorCode, input.errorCode);
-  assert.equal(report.cleanupError, input.cleanupError);
-  assert.equal(JSON.stringify(report).includes("private-stop-canary"), false);
-  input.windowsAppStop = { taskkillExitCode: "128", childExitCode: 0x1_0000_0000, childSignal: "private-stop-canary",
-    timedOut: "true", outputOverflow: 1, markers: { processNotFound: "true", accessDenied: 1 } };
-  assert.deepEqual(projectNativeReport(input, { platform: "win32" }).windowsAppStop, {
-    taskkillExitCode: null, childExitCode: null, childSignal: "other", timedOut: false, outputOverflow: false,
-    markers: { processNotFound: false, accessDenied: false } });
-  for (const platform of ["linux", "darwin"]) {
-    assert.equal(projectNativeReport({ ...input, platform }, { platform }).windowsAppStop, undefined);
-  }
-});
-
-test("successful native reports never publish stop or Shell failure diagnostics", () => {
-  const input = nativeReport();
-  input.candidateStop = { stdout: "synthetic-private", backend: { errorCode: "BACKEND_STOP_TIMEOUT" } };
-  input.shellResult = { rejectionKind: 2, approvalClicked: true, exitCode: 127 };
-  assert.equal(projectNativeReport(input).candidateStop, undefined);
-  assert.equal(projectNativeReport(input).shellResult, undefined);
-  input.platform = "win32";
-  input.windowsAppStop = { taskkillExitCode: 128, stderr: "synthetic-private" };
-  assert.equal(projectNativeReport(input, { platform: "win32" }).windowsAppStop, undefined);
-});
-
-test("PASS rejects missing, reordered, duplicate or incomplete session-flow evidence", () => {
-  for (const change of [
-    (r) => { delete r.evidence.cleanup; }, (r) => { delete r.evidence.sameSessionFollowup; },
-    (r) => { r.evidence.sessionIsolation = false; }, (r) => { delete r.evidence.appResume; },
-    (r) => { delete r.evidence.skillSearch; }, (r) => { r.evidence.skillAdd = false; },
-    (r) => { delete r.evidence.pendingShellInterrupted; },
-    (r) => { delete r.agent.cancelled; }, (r) => { r.agent.cancelled[7] = false; },
-    (r) => { r.agent.cancelled[0] = true; }, (r) => { delete r.agent.cancelled[7]; },
-    (r) => { r.agent.cancelled[7] = "true"; }, (r) => { r.agent.cancelled.pop(); },
-    (r) => { r.agent.execResults[7] = 1; }, (r) => { r.agent.writes[7] = 1; },
-    (r) => { r.evidence.nativeContent[1].stateMatched = false; },
-    (r) => { r.evidence.nativeContent[3].composerMatched = false; },
-    (r) => { delete r.evidence.nativeContent; }, (r) => { r.evidence.nativeContent.pop(); },
-    (r) => { delete r.evidence.nativeContent[1]; },
-    (r) => { r.evidence.nativeContent.reverse(); },
-    (r) => { r.evidence.nativeContent[2] = { ...r.evidence.nativeContent[1] }; },
-    (r) => { r.evidence.nativeContent = r.evidence.nativeContent[0]; },
-    (r) => { r.agent.acknowledgements = [3, 3, 3, 3, 6, 5]; }, (r) => { r.agent.writes = [3, 3, 3, 3, 6]; },
-    (r) => { delete r.agent.writes[1]; }, (r) => { delete r.agent.acknowledgements[1]; },
-    (r) => { r.agent.runs = 5; }, (r) => { delete r.agent.historyTurns; },
-    (r) => { r.agent.historyTurns = [0, 0, 1, 2, 3, 4]; }, (r) => { r.agent.historyTurns = [0, 1, 0, 2, 3]; },
-    (r) => { r.agent.historyTurns = [0, 1, 0, 0, 3, 4]; }, (r) => { r.agent.historyTurns[1] = "1"; },
-    (r) => { delete r.agent.historyTurns[1]; },
-    (r) => { delete r.agent.reads; }, (r) => { delete r.agent.readResults; },
-    (r) => { r.agent.reads = [0, 0, 3, 6, 9, 15]; }, (r) => { r.agent.readResults = [0, 3, 0, 6, 9, 14]; },
-    (r) => { r.agent.reads.pop(); }, (r) => { delete r.agent.readResults[3]; },
-    (r) => { r.memoryRequestCount = 5; }, (r) => { r.kind = "app-native-single-turn"; },
-    (r) => { r.nativeContentError = "CURSOR_APP_NATIVE_CONTENT_TIMEOUT"; },
-    (r) => { r.version = "3.22.0"; }, (r) => { r.platform = "darwin"; },
-  ]) {
-    const invalid = nativeReport();
-    change(invalid);
-    assert.throws(() => projectNativeReport(invalid), /CURSOR_CONTAINER_REPORT/);
-  }
-});
-
-test("PASS requires distinct denied, interrupted and recovered native outcomes", () => {
-  for (const change of [
-    (r) => { r.agent.runs = 7; },
-    (r) => { r.agent.cancelled[6] = true; }, (r) => { r.agent.cancelled[8] = true; },
-    (r) => { r.agent.writes[6] = 3; }, (r) => { r.agent.acknowledgements[6] = 3; },
-    (r) => { r.agent.execRequests[6] = 0; }, (r) => { r.agent.execResults[6] = 0; },
-    (r) => { r.agent.execCloses[6] = 0; },
-    (r) => { r.agent.acknowledgements[7] = 1; }, (r) => { r.agent.execCloses[7] = 1; },
-    (r) => { r.agent.writes[8] = 0; }, (r) => { r.agent.acknowledgements[8] = 0; },
-    (r) => { r.agent.historyTurns[8] = 1; }, (r) => { r.agent.reads[8] = 3; },
-    (r) => { r.agent.readResults[8] = 3; }, (r) => { r.agent.execRequests[8] = 1; },
-    (r) => { r.evidence.nativeContent[6].blobCount = 3; },
-    (r) => { r.evidence.nativeContent[7].blobCount = 0; },
-    (r) => { r.memoryRequestCount = 8; },
-  ]) {
-    const invalid = nativeReport();
-    change(invalid);
-    assert.throws(() => projectNativeReport(invalid), { code: "CURSOR_CONTAINER_REPORT" });
-  }
-});
-
-test("PASS rejects missing, sparse, reordered and nonnumeric native tool or context evidence", () => {
-  for (const field of ["execRequests", "execResults", "execCloses", "contextRequests", "contextResults", "contextCloses"]) {
-    for (const change of [
-      (r) => { delete r.agent[field]; },
-      (r) => { delete r.agent[field][4]; },
-      (r) => { r.agent[field].pop(); },
-      (r) => { r.agent[field].push(3); },
-      (r) => { if (field.startsWith("exec")) r.agent[field].reverse(); else r.agent[field][0] = 0; },
-      (r) => { r.agent[field][5] = 2; },
-      (r) => { r.agent[field][4] = "3"; },
-      (r) => { r.agent[field][4] = NaN; },
-      (r) => { r.agent[field] = { 4: 3, 5: 3 }; },
-    ]) {
-      const invalid = nativeReport();
-      change(invalid);
-      assert.throws(() => projectNativeReport(invalid), /CURSOR_CONTAINER_REPORT/);
-    }
-  }
-});
-
-test("FAIL preserves bounded partial evidence for workspace-switch, restart and session-open diagnostics", () => {
-  const failure = nativeReport();
-  failure.status = "FAIL";
-  failure.evidence.nativeContent = failure.evidence.nativeContent.slice(0, 2);
-  failure.agent.runs = 2;
-  failure.agent.writes = [3, 3];
-  failure.agent.acknowledgements = [3, 3];
-  failure.agent.historyTurns = [0, 1];
-  failure.agent.reads = [0, 3];
-  failure.agent.readResults = [0, 3];
-  failure.agent.execRequests = [0, 0];
-  failure.agent.execResults = [0, 0];
-  failure.agent.execCloses = [0, 0];
-  failure.agent.contextRequests = [1, 1];
-  failure.agent.contextResults = [1, 1];
-  failure.agent.contextCloses = [1, 1];
-  failure.errorCode = "CURSOR_APP_SESSION_TIMEOUT";
-  for (const stage of ["workspace-switch", "app-restart", "session-open"]) {
-    failure.stage = stage;
-    const report = projectNativeReport(failure);
+test("FAIL retains valid partial progress but rejects arbitrary error text", () => {
+  const input = { ...nativeReport(), status: "FAIL", errorCode: "CURSOR_APP_SESSION_TIMEOUT" };
+  input.evidence.nativeContent.length = 2;
+  input.agent.runs = 2;
+  for (const key of Object.keys(input.agent)) if (Array.isArray(input.agent[key])) input.agent[key] = input.agent[key].slice(0, 2);
+  for (const stage of ["workspace-switch", "app-restart", "session-open", "repo-memory-worker"]) {
+    input.stage = stage;
+    const report = projectNativeReport(input);
     assert.equal(report.stage, stage);
-    assert.equal(report.errorCode, "CURSOR_APP_SESSION_TIMEOUT");
     assert.equal(report.evidence.nativeContent.length, 2);
+    assert.equal(report.errorCode, input.errorCode);
   }
-  failure.errorCode = "synthetic-token";
-  assert.throws(() => projectNativeReport(failure), /CURSOR_CONTAINER_REPORT/);
+  input.errorCode = "private-canary";
+  assert.throws(() => projectNativeReport(input), /CURSOR_CONTAINER_REPORT/);
 });
 
 function dockerFixture(rows = {}) {

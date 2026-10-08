@@ -47,9 +47,9 @@ const skillMemory = "Validate parser input before interpreting structured data."
 const skillReason = "Preserve the verified parser validation invariant.";
 const searchMemory = "CURSOR_NATIVE_SEARCH_RESULT: validate parser input before interpreting it.";
 const memoryRequests = [], turns = [];
-let agent, memory, app, browser, cli, page, started = false, appLog = "";
+let agent, memory, app, browser, cli, page, started = false;
 let appLaunchLog = "", appSpawnError, appDebugEndpointSeen = false;
-let root, env, chromium, userData, workspace, failure, failureUi, skillRoot, skillText;
+let root, env, chromium, userData, workspace, skillRoot, skillText;
 let interruption, denial, repoMemory, repoMemoryHelper, repoMemoryDefinition;
 let macos, macosPaths, windows, windowsPaths, backendPort = 18787, debugPort = 9222;
 const observedMacosPids = new Set();
@@ -96,13 +96,11 @@ async function assertMarkerAbsent(marker, code) {
   try { await lstat(marker); check(false, code); }
   catch (error) { if (error.code !== "ENOENT") throw error; }
 }
-function spawnOwned(file, args, options) {
-  return spawn(file, args, options);
-}
 async function command(args, code) {
-  const child = spawnOwned(process.execPath, [join(packageRoot, "bin/memorax-code.mjs"), ...args],
+  const child = spawn(process.execPath, [join(packageRoot, "bin/memorax-code.mjs"), ...args],
     { cwd: join(root, "workspace"), env, stdio: ["ignore", "pipe", "pipe"] });
   let stdout = "", overflow = false, timedOut = false, stopDiagnostic;
+  child.stdout.setEncoding("utf8");
   child.stdout.on("data", (chunk) => { stdout += chunk; if (stdout.length > 1024 * 1024) { overflow = true; child.kill("SIGKILL"); } });
   child.stderr.resume();
   const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, 30000);
@@ -272,17 +270,15 @@ async function startApp() {
   const endpoint = macos?.createDevToolsEndpointReader(debugPort);
   let endpointError;
   // Electron on Windows rejects a standalone URL followed by more arguments.
-  app = spawnOwned(appPath, ["--user-data-dir", userData, "--extensions-dir", join(root, "extensions"), "--new-window",
+  app = spawn(appPath, ["--user-data-dir", userData, "--extensions-dir", join(root, "extensions"), "--new-window",
     "--skip-onboarding", "--skip-welcome", "--skip-release-notes", "--skip-add-to-recently-opened",
     "--disable-updates", "--disable-telemetry", "--disable-crash-reporter", "--use-inmemory-secretstorage",
     "--enable-smoke-test-driver", "--smoke-test-use-real-agent-http", `--test-backend-url=${agent.url}`,
     ...(macos || windows ? ["--force-disable-user-env"] : []),
     "--remote-debugging-address=127.0.0.1", `--remote-debugging-port=${debugPort}`, workspace],
   { cwd: workspace, env, stdio: ["ignore", "pipe", "pipe"] });
-  const capture = (chunk) => { appLog = (appLog + chunk).slice(-1024 * 1024); };
-  app.stdout.on("data", capture);
+  app.stdout.resume();
   app.stderr.on("data", (chunk) => {
-    capture(chunk);
     appLaunchLog = (appLaunchLog + chunk).slice(-1024 * 1024);
     try { endpoint?.push(chunk); } catch (error) { endpointError = error; }
   });
@@ -297,7 +293,7 @@ async function startApp() {
   await waitFor(async () => {
     page = browser.contexts().flatMap((context) => context.pages()).find((item) => item.url().includes("workbench.html"));
     return page && await page.evaluate(() => Boolean(window.driver)).catch(() => false);
-  }, "CURSOR_APP_DRIVER");
+  }, "CURSOR_APP_DRIVER", windows ? 90000 : 30000);
   page.setDefaultTimeout(10000);
   await bounded(page.evaluate(async () => {
     // Keep synthetic login from replacing the IDE window with the Agents window.
@@ -693,6 +689,7 @@ try {
   memory = createServer(async (request, response) => {
     try {
       let raw = "";
+      request.setEncoding("utf8");
       for await (const chunk of request) { raw += chunk; check(raw.length <= 1024 * 1024, "CURSOR_APP_MEMORY_BODY"); }
       check(request.method === "POST" && ["/v1/memories/add", "/v1/memories/search"].includes(request.url), "CURSOR_APP_MEMORY_ROUTE");
       memoryRequests.push({ method: request.method, path: request.url, authorization: request.headers.authorization, body: JSON.parse(raw) });
@@ -803,7 +800,7 @@ try {
   await runRepoMemoryWorker();
   report.stage = "cleanup";
 } catch (error) {
-  failure = error?.stack ?? String(error); report.errorCode = safeCode(error);
+  report.errorCode = safeCode(error);
   const shellResult = collectCursorAppShellDiagnostics(agent?.firstShellFailure);
   if (shellResult) report.shellResult = shellResult;
   if (app) report.appLaunch = collectCursorAppLaunchDiagnostics({ spawned: Boolean(app.pid),
@@ -812,7 +809,6 @@ try {
   const run = agent?.runs.at(-1);
   if (env && run) report.diagnostics = await collectCursorAppDiagnostics({ home: env.MEMORAX_CODE_HOME,
     sessionId: run.conversationId, turnId: run.requestId });
-  failureUi = await page?.locator("body").innerText({ timeout: 1000 }).then((text) => text.slice(0, 32000)).catch(() => undefined);
 }
 finally {
   try { await stopApp(); } catch (error) { report.cleanupError = safeCode(error); }
@@ -867,27 +863,6 @@ finally {
   }
   if (reportDir) {
     await mkdir(reportDir, { recursive: true });
-    // This directory is private debugging material and is never a CI upload target.
-    await mkdir(join(reportDir, ".private"), { recursive: true, mode: 0o700 });
-    await writeFile(join(reportDir, ".private/app.log"), appLog, { mode: 0o600 });
-    await writeFile(join(reportDir, ".private/unknown-rpc.json"), JSON.stringify(agent?.unknownRpcMethods ?? []), { mode: 0o600 });
-    await writeFile(join(reportDir, ".private/run-shapes.json"), JSON.stringify(agent?.runs.map((run) => ({
-      conversationId: run.conversationId, requestId: run.requestId,
-      context: run.requestContext && { hookContentLength: run.requestContext.hooksAdditionalContext?.length,
-        skills: run.requestContext.agentSkills.map(({ fullPath, parseError, disableModelInvocation }) => ({ fullPath, parseError: Boolean(parseError), disableModelInvocation })) },
-      hookContexts: run.userHookAdditionalContexts?.map(({ hookEventName, content }) => ({ hookEventName, length: content.length })),
-      contextParts: Boolean(run.requestContextParts), pendingTool: run.pendingTool, execRejection: run.execRejection, error: run.error,
-      lastUnsupportedShape: run.lastUnsupportedShape,
-      cancellation: run.cancellation && { actionReceived: run.cancellation.actionReceived, rejected: run.cancellation.rejected,
-        execClosed: run.cancellation.execClosed, transportClosed: run.cancellation.transportClosed, rstCode: run.cancellation.rstCode,
-        transportEvents: run.cancellation.transportEvents },
-    })) ?? []), { mode: 0o600 });
-    await writeFile(join(reportDir, ".private/notification-shapes.json"), JSON.stringify(agent?.notifications.map((run) => ({
-      conversationId: run.conversationId, requestId: run.requestId, notifications: run.notifications,
-      completed: run.completed, error: run.error,
-    })) ?? []), { mode: 0o600 });
-    if (failure) await writeFile(join(reportDir, ".private/failure.log"), failure, { mode: 0o600 });
-    if (failureUi) await writeFile(join(reportDir, ".private/ui.txt"), failureUi, { mode: 0o600 });
     await writeFile(join(reportDir, "report.json"), `${JSON.stringify(report, null, 2)}\n`);
   }
 }

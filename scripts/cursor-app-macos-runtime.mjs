@@ -49,26 +49,23 @@ export function hasOwnedMacosProcesses(output, { appBundle, packageRoot, stateHo
   return owned;
 }
 
-export async function auditMacosProcesses(options, execute = exec) {
-  let output;
+async function processSnapshot(args, execute) {
   try {
-    ({ stdout: output } = await execute("/bin/ps", ["-axww", "-o", "pid=,command="], {
+    const { stdout } = await execute("/bin/ps", args, {
       encoding: "utf8", timeout: 5000, maxBuffer: 4 * 1024 * 1024,
       env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" },
-    }));
+    });
+    return stdout;
   } catch { throw failure(processCode); }
-  return hasOwnedMacosProcesses(output, options);
+}
+
+export async function auditMacosProcesses(options, execute = exec) {
+  return hasOwnedMacosProcesses(await processSnapshot(["-axww", "-o", "pid=,command="], execute), options);
 }
 
 export async function captureMacosDescendants(appPid, execute = exec) {
   check(Number.isSafeInteger(appPid) && appPid > 1 && appPid !== process.pid);
-  let output;
-  try {
-    ({ stdout: output } = await execute("/bin/ps", ["-ax", "-o", "pid=,ppid="], {
-      encoding: "utf8", timeout: 5000, maxBuffer: 4 * 1024 * 1024,
-      env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" },
-    }));
-  } catch { throw failure(processCode); }
+  const output = await processSnapshot(["-ax", "-o", "pid=,ppid="], execute);
   check(typeof output === "string" && output.length <= 4 * 1024 * 1024 && output.trim(), processCode);
   const rows = output.trim().split(/\r?\n/).map((line) => {
     const row = line.match(/^\s*(\d+)\s+(\d+)\s*$/);

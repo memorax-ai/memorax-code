@@ -1139,307 +1139,124 @@ successful native jobs on each target platform.
 
 ### Cursor App Native Canary
 
-The native-client workflow defines a deliberately bounded **Cursor Desktop
-App** matrix: baseline **3.21.18** and the once-resolved latest stable desktop
-release on Ubuntu 24.04 (x64), macOS 15 (arm64), and Windows 2025 (x64) with Node 24, plus Linux
-baseline on Node 22. Channels share a Node 24 cell independently per platform:
-Linux requires matching version, commit, URL, checksum and DEB version; macOS
-requires matching version, commit and URL; Windows requires matching version,
-commit and URL. Node 22.13 or newer is required for
-the native SQLite reader; Node 20 is not a supported Cursor automatic-writeback
-target. The actual native-check Node runtime, including the Linux container's
-runtime, must match each cell, not just the runner's `setup-node`.
-The macOS and Windows cells require successful native GitHub jobs before claiming
-three-platform acceptance. This is not a Cursor CLI test. Every cell consumes the same validated candidate npm
-artifact as the existing native checks; package failure cannot be hidden by a
-passing matrix cell. The aggregate check requires all selected cells to pass.
-Before the App check, every cell runs the platform-independent Node driver
-`scripts/cursor-lifecycle-check.mjs TARBALL REPORT_DIR` with its selected runner
-Node version. It creates an isolated npm global prefix and client/Backend state
-to check fresh and repeated setup, uninstall/reinstall, a real upgrade from the
-published MemoraX Code **0.1.18** package, and saved account/configuration
-retention. That baseline predates Cursor support: its Backend must be ready
-before upgrade, and the candidate must install the complete Cursor integration.
-Download failure and a fault-injected candidate `postinstall` exercise
-real npm replacement failure, recovery and retry. The same driver covers setup
-interruption at four stages: `after-config-write`, `before-backend-start`,
-`after-backend-start`, and `saved-account-key-cancel`. These checks use a real PTY,
-the existing Backend lock and a test-only Node child gate. Each retry requires no
-account input and verifies the complete Cursor integration and a local
-saved-account Search.
-This step does not simulate power loss and does not start the Cursor App.
-Linux runs this package lifecycle check on the fresh runner; its subsequent App
-check remains inside the existing container. Lifecycle failure prevents native
-App execution and fails the cell. Only `cursor-lifecycle-report/report.json` is
-uploaded, separately from the native App report.
+The native-client workflow tests the official **Cursor Desktop App**, not Cursor
+CLI, on Ubuntu 24.04 x64, macOS 15 arm64 and Windows 2025 x64. Each platform runs
+baseline **3.21.18** and the latest stable release on Node 24. Identical release
+identities share a cell; Linux also runs baseline on Node 22.13 or newer for its
+native SQLite reader. The native-check process must use the selected Node
+version, including inside the Linux container.
 
-The macOS and Windows wrappers also run the existing Cursor installed-package smoke before
-starting the App. This reuses lifecycle and configuration-preservation coverage;
-its synthetic Hook/database fixtures do not count as native App evidence.
+Release resolution runs once in the package job. Every cell consumes the frozen
+inventory and the same validated candidate npm artifact, with no latest-version
+fallback. Package, lifecycle, native acceptance and cleanup failures fail the
+aggregate; a local or single-platform pass is not three-platform evidence.
 
-The canary starts the official App in a fresh Docker container under Xvfb on
-Linux, or with its default Chromium sandbox on a fresh GitHub-hosted macOS or Windows runner.
-Its built-in smoke driver supplies synthetic authentication and submits prompts
-through the normal composer UI. The official test-only application-storage
-command suppresses the fresh-login switch to the Agents window in the isolated
-profile; it does not modify conversation content or Hook state.
-`--smoke-test-use-real-agent-http` routes the
-Agent transport to a local Connect/protobuf service. The service sends a
-content-addressed native turn graph, waits for each native KV write
-acknowledgement, and then sends the conversation checkpoint and completion.
-For a run with history, it first requests every previous user/assistant/turn
-blob, including previous tool steps, back from the App and validates the
-response bytes before writing new content.
-It does not use the App's simulated response stream, seed its conversation
-database, invoke Hooks directly, or bypass the product's native-content parser.
+#### Functional Coverage
 
-The first six completed native runs exercise an initial turn in conversation A, a repeated prompt
-in A with a different answer, a new conversation B in a separate non-Git workspace
-with the same initial prompt and answer, a return to the original workspace followed
-by another ordinary prompt in A, then
-explicit Skill Search and Add turns in A. Every run completes the native lazy
-RequestContext exchange. Skill turns select `/memorax-code` from the native slash
-menu and require its Skill mention in the composer. The submitted native message
-must carry the installed Skill's exact path and complete body (without YAML
-frontmatter) as a manually attached rule. The expected path follows Cursor's
-native `URI.fsPath` format, including its lowercase Windows drive letter; the
-remaining path is compared exactly. A RequestContext Skill catalog is not
-required or used as a substitute for that attachment. Skill turns also require
-the Hook instructions received for that same conversation. Retained
-instructions come only from completed turns referenced by the native history
-of the current run. The local mock service remains running across the App
-restart. This does not assert that Hook context is persisted in the App database.
-Each Skill turn uses native Read tools to read the installed router and
-operation reference, followed by native
-Shell execution of the public `memorax-cli` command. The driver approves each
-Shell command once through the matching conversation and tool-call UI; it does
-not enable global autorun or bypass native approval. The protocol fixture
-requests network access for the two macOS Skill Shell commands to reach the
-local mock, while retaining the workspace filesystem sandbox. This per-command
-network permission is not a loopback-only allowlist; the commands still use the
-explicit local fixture endpoint. Other platforms and the pending cancellation
-command retain their existing permission requests. The fixture
-requests those tools explicitly; this is not model-driven Skill-selection or
-natural-language compliance coverage. Both workspace switches restart the App
-with the actual target directory, retaining the same isolated App profile,
-synthetic account and running Backend. Returning to the original workspace
-resumes conversation A. These restarts do not exercise native Continue, Retry,
-or Edit operations.
+Every cell first runs `scripts/cursor-lifecycle-check.mjs TARBALL REPORT_DIR` in
+an isolated npm prefix and client/Backend home. It covers fresh/repeated setup,
+uninstall/reinstall, saved account/configuration retention, real upgrade from
+published MemoraX Code **0.1.18**, rejected download, replacement failure and retry.
+That baseline predates Cursor support: its Backend must be ready before upgrade,
+and the candidate must install the complete Cursor integration. Four real-PTY
+setup interruptions cover `after-config-write`, `before-backend-start`,
+`after-backend-start` and `saved-account-key-cancel`. A test-only child gate and
+the existing Backend lock control these boundaries; recovery requires no account
+input, complete installation and a saved-account Search. This does not simulate
+power loss or start the App. macOS and Windows also run the installed-package
+smoke; its synthetic Hook/database fixtures are not native App evidence.
 
-A seventh run in a fresh conversation requests a marker-only Shell command.
-The driver rejects that command through its matching native approval UI. The
-native rejected-tool result must return to the mock service, after which the
-conversation completes normally and produces one exact automatic Add. Tool
-denial is not treated as turn cancellation, and its marker must remain absent.
+The App uses Cursor's built-in smoke driver for synthetic login and real composer
+UI input, with `--smoke-test-use-real-agent-http` pointing to the local Agent
+mock. The fixture uses the real Connect/protobuf transport, validates history KV
+bytes returned by the App, waits for native write acknowledgements, and completes
+the checkpoint. It never seeds the database, invokes Hooks directly or substitutes
+a simulated response stream. A separate read-only SQLite oracle verifies native
+composer/generation identity, checkpoint and every reachable content-addressed
+blob byte.
 
-An eighth run in another fresh conversation leaves a marker-only Shell command
-awaiting native approval. The driver first verifies the matching open turn and
-retained metadata, then clicks that human message's Stop control without
-approving the command. Cancellation requires the native cancel action, correlated
-Shell rejection, tool-stream close and transport termination. The Hook must mark
-that exact turn interrupted and discard its metadata. The marker must remain
-absent and the previous nine Memory requests unchanged. A ninth run submits a
-new prompt in that same conversation without restarting the App or Backend. It
-must complete normally and produce exactly one automatic Add, without including
-the cancelled prompt or partial response. Any prepended unconfirmed message must
-exactly match that conversation's most recent unconsumed cancelled turn by native
-user-message ID and prompt; it is input context, not completed history or writeback.
-Both markers remain absent and this sequence
-ends with ten Memory requests. This does not
-inject late approval or exercise running-tool interruption.
+The eleven native runs cover:
 
-The final two runs exercise Repo Memory in another isolated Git workspace. A real
-foreground Hook delegates through Cursor's native Task tool, and the child
-inherits the foreground model selection rather than launching a separately configured
-global CLI worker. The child must claim the supervised job and run its finish
-command. The deterministic response authors no Repo Memory bundle, so artifact
-validation must leave the job failed rather than falsely complete. The parent
-turn still requires exact automatic Add; the child must not write back as an
-ordinary user conversation. The final total stays at eleven Memory requests,
-including after App and Backend cleanup. This checks native delegation and failure handling,
-not successful Repo Memory generation or worker permission inheritance.
-On macOS, only the worker's finish command requests native full command
-permissions and still requires the App's Run approval. Other commands and
-Chromium sandbox settings remain unchanged.
+- Repeated prompts and follow-up in conversation A, conversation B in a genuinely
+  different non-Git workspace, and App restart/resume back in A. Each turn retains
+  its own workspace scope.
+- Native `/memorax-code` Skill selection, exact installed attachment, Read of the
+  router and operation reference, then approved Shell Search/Add through the
+  public CLI. Scripted tool requests do not test autonomous Skill selection.
+- Shell denial through the matching UI: no file effect, normal completed turn,
+  and exact automatic Add.
+- Stop while awaiting Shell approval: correlated native cancellation and
+  interrupted Hook metadata, no file effect or Add, then a new successful turn in
+  the same session without restarting App or Backend. Cancelled content must not
+  enter completed history or the recovery Add.
+- Repo Memory in an isolated Git repository: a real foreground Hook delegates a
+  native Task to the managed child using the foreground model. The child claims
+  the supervised job and finishes without authoring a bundle, requiring
+  `failed/artifact_validation_failed`, no publication and an exited lease guard.
+  Parent/child native identities and completion notification must match. Only
+  the parent writes back; this is not successful bundle-generation coverage.
 
-Acceptance requires all of the following:
+The final audit requires nine exact automatic Adds plus the two explicit Skill
+requests, with complete Unicode/multiline content, authentication, client/session
+identity, local or Git scope and idempotency keys. Exact ordered transport and
+native-content counts are enforced by the executable report gate. Missing,
+duplicate, cross-session or late requests fail, including after cleanup.
 
-- Exactly eleven native Agent runs. The first six complete with each submitted prompt and matching
-  conversation/generation identity, KV write/acknowledgement counts of
-  `3, 3, 3, 3, 6, 6`, and prior-turn counts of `0, 1, 0, 2, 3, 4` in that order.
-  History KV requests and validated results must each total
-  `0, 3, 0, 6, 9, 15` across those runs. Native tool request, result and close
-  counts must each be `0, 0, 0, 0, 3, 3`. The denied, interrupted and recovered
-  runs add KV write/acknowledgement counts of `4, 0, 3`, no completed history or
-  history KV reads, tool request counts of `1, 1, 0`, and tool result/close counts
-  of `1, 0, 0`. The Repo Memory parent and child add KV write/acknowledgement
-  counts of `4, 5`, tool request/result/close counts of `1, 2`, and no completed
-  history or history KV reads. Native background completion notifications do
-  not count as additional user or worker turns. The matching completion
-  notification and both native completed states must settle before App cleanup.
-  Every run completes exactly one separate RequestContext request,
-  result and close; this protocol exchange is neither a user-visible tool step
-  nor a persisted conversation step.
-- The eighth, interrupted run has no history, KV writes, acknowledgements or
-  successful tool results. It requests exactly one Shell command, which is
-  rejected. Only that run is cancelled;
-  it must have one interrupted Hook outcome and no completed or materialized outcome.
-- A separate, read-only SQLite oracle matching the App's composer/generation,
-  conversation state and every emitted content-addressed blob byte for byte
-  after each completed foreground run, with `3, 6, 3, 9, 15, 21, 4, 3, 4` reachable
-  blobs respectively. The child composer must independently retain the exact
-  parent and managed subagent type; the parent's native child list must contain
-  that child without duplicate entries.
-- Installed native Hooks correlated to each real generation and completed turn.
-- Exactly nine automatic Adds whose full user/assistant text, Unicode, session,
-  workspace scope and client-qualified idempotency keys match their respective
-  fixtures, including repeated prompts and identical content across sessions.
-  Each turn retains its own expected workspace: conversation B must use the
-  second directory's scope, and resumed conversation A must retain the first.
-  The separate worker parent must use its expected Git repository scope rather
-  than local-folder scope. Cross-workspace separation still covers distinct
-  non-Git workspace names, not linked worktrees or cross-workspace Search.
-- Native Shell denial followed by normal completion, plus same-session recovery
-  after pending-tool cancellation. The denied tool has no file effect but its
-  completed turn writes back; the cancelled turn has no Add and only the new
-  recovery turn writes back. Missing either result cannot pass the public report.
-- Exactly one explicit Search and one explicit Add, each with matching HTTP
-  authentication, full payload, workspace scope and native Shell JSON result.
-  Search preserves the fixture answer, item and receipt. Explicit Add retains
-  its CLI session, memory type, reason and idempotency key, separately from the
-  native session used by automatic writeback and trace correlation.
-- Native Repo Memory worker evidence from the foreground Hook, Task child,
-  supervised claim and failed no-bundle validation. Missing worker evidence
-  cannot pass the public report on any platform.
-- Successful client/Backend and platform-resource cleanup, including the Linux
-  container or macOS/Windows owned processes and private App copy, with a final request-count
-  audit to reject duplicate or late writeback.
+#### Acquisition and Isolation
 
-Acquisition uses fixed official Cursor release URLs. Linux baseline SHA-256
-pins are independently observed reproducibility checks, not publisher-signed
-attestations. Latest Linux checksums and DEB versions come from official apt
-metadata: the pinned public key verifies `InRelease`, which authenticates each
-architecture's `Packages` digest and package entry. The official desktop API
-and apt release must agree. Resolution happens once in the package job and
-publishes one frozen inventory for every matrix cell; no job re-resolves latest
-or falls back to baseline. The macOS inventory has no publisher-provided
-checksum. Its read-only mounted DMG must supply an App with a valid deep code
-signature, the expected Apple-anchored signing identity and bundle identifier,
-Gatekeeper acceptance, and matching sealed version, release commit and architecture.
-The verified App is copied with `ditto` into the test's private artifact directory
-and passes those same validation gates again. The DMG must detach successfully
-before native startup; the App never runs from the mounted image. Copy, validation
-or detach failure prevents launch, with no force-detach or retry. After a native
-failure, the private copy remains until the outer controller verifies process cleanup.
-The signed `product.json` field `realCommit` must exactly match the frozen
-download API commit; the App's distinct mangled `commit` field is not a fallback.
-A computed DMG checksum is only an observed byte receipt, not an official
-checksum or a substitute for signature verification.
+Linux baseline hashes are recorded reproducibility pins, not publisher-signed
+attestations. Latest Linux releases require the official download API and apt
+metadata to agree; the pinned apt key authenticates `InRelease`, package indexes
+and SHA-256. macOS verifies the mounted App's deep Apple-anchored signature,
+publisher, bundle ID, Gatekeeper result, architecture, sealed version and
+`realCommit`, then repeats validation on the private copy and detaches before
+launch. Windows verifies the official installer and installed executable's
+Authenticode, publisher, architecture, version and release commit, waiting for
+the installer process tree. Observed desktop hashes do not replace signatures.
 
-The Linux runtime is non-root, has no external network, drops all capabilities,
-retains Chromium's sandbox and uses `no-new-privileges` plus the documented
-seccomp profile. macOS and Windows retain Chromium's default sandbox and use
-the disposable runner's normal user. All platforms use temporary client
-homes, Backend state and native conversations, synthetic authentication, and
-local Agent and Memory fixtures. On macOS and Windows, this verifies the configured model
-and Memory routes, not OS-enforced isolation of all App and descendant traffic.
-Candidate lifecycle commands retain their normal process-ownership checks;
-cleanup never falls back to unverified PID signals.
+Linux runs non-root under Xvfb in a network-disabled Docker container with
+Chromium sandboxing, dropped capabilities, no-new-privileges and the pinned
+seccomp profile. macOS and Windows require fresh GitHub-hosted runners, retain
+Chromium's default sandbox and isolate client homes, App data, shell environment
+and Backend state. All use synthetic credentials, in-memory App secret storage
+and local Agent/Memory fixtures. These macOS/Windows settings verify configured
+routes, not OS-enforced isolation of all traffic or credential stores.
 
-The macOS entrypoint is restricted to the workflow's fresh GitHub-hosted runner,
-not a developer's logged-in desktop. It sets isolated `HOME`, `CFFIXED_USER_HOME`,
-App user-data and shell startup paths and forces `--use-inmemory-secretstorage`.
-These settings do not constitute an OS filesystem sandbox or prove Keychain
-isolation. The test does not access real credentials or exercise a credential
-store, and no real model or MemoraX account is required.
+Native Shell commands require their matching Run approval. On macOS the Skill
+commands request network access to the local fixture, and the worker finish
+command requests full command permissions; these are not loopback-only sandbox
+policies. Cleanup targets only owned live processes. Windows first requests
+native quit, then falls back only for the held live App child. Unconfirmed cleanup
+fails and retains isolated state for runner teardown.
 
-The Windows entrypoint likewise requires a fresh GitHub-hosted runner. It uses
-isolated user-data, extensions, home and AppData directories, a clean environment,
-and in-memory secret storage. The official installer and installed executable
-must pass Authenticode, publisher, architecture, version and release-commit
-checks before native startup. Installation waits for the installer process tree.
-Windows cleanup first requests the native `workbench.action.quit` command and
-waits briefly for the held App child to exit. If native exit is unavailable or
-does not finish, the existing forced cleanup targets only the still-live owned
-App child. Remaining owned paths are audited read-only; forced-cleanup errors
-and unconfirmed cleanup still fail the check and retain state for runner teardown.
+#### Reproduction and Reports
 
-To reproduce after building an installable candidate, use Node 24 and a local
-Linux-container Docker daemon:
+After validating an installable candidate, use Node 24 and a local Linux-container
+Docker daemon:
 
 ```bash
-node --test scripts/cursor-app-*.test.mjs
+node --test scripts/cursor-app-*.test.mjs scripts/cursor-lifecycle*.test.mjs
 node scripts/cursor-app-container-check.mjs \
   dist/npm/tarballs/memorax-memorax-code-0.1.19.tgz \
   "$memorax_dev_root/cursor-app-report"
 ```
 
-The two-argument container command uses baseline and Node 24. To reproduce the
-version matrix, first freeze the inventory in an environment with `gpg` and
-`gpgv`, then select a release and container Node major explicitly:
+The two-argument command selects baseline and Node 24. For another matrix cell,
+freeze releases with `node scripts/cursor-app-release.mjs resolve-linux MANIFEST`
+(requires `gpg` and `gpgv`), then append `MANIFEST latest 24` or
+`MANIFEST baseline 22` to the container command. The metadata-only `resolve`
+command does not verify Linux apt metadata and is not CI acceptance evidence.
 
-```bash
-node scripts/cursor-app-release.mjs resolve-linux \
-  "$memorax_dev_root/cursor-app-releases.json"
-node scripts/cursor-app-container-check.mjs \
-  dist/npm/tarballs/memorax-memorax-code-0.1.19.tgz \
-  "$memorax_dev_root/cursor-app-latest-report" \
-  "$memorax_dev_root/cursor-app-releases.json" latest 24
-node scripts/cursor-app-container-check.mjs \
-  dist/npm/tarballs/memorax-memorax-code-0.1.19.tgz \
-  "$memorax_dev_root/cursor-app-node22-report" \
-  "$memorax_dev_root/cursor-app-releases.json" baseline 22
-```
+Only lifecycle and native `report.json` files are uploaded. Diagnostic helpers
+allow only fixed error/status enums, bounded counts and marker booleans; raw
+App/installer logs, command output, transcripts, database files, Hook traces,
+credentials, PIDs and private paths are excluded. Diagnostics never replace the
+original failure or relax acceptance.
 
-Only `report.json` is exported and uploaded. Raw App logs, transcripts, SQLite
-files and Hook traces are not CI artifacts. App startup diagnostics publish
-only bounded 32-bit exit codes, fixed signal/error enums and marker booleans, not raw
-stderr. Windows cleanup errors distinguish process-query, JSON and row-validation
-failures using fixed codes, without publishing process lists or PowerShell output.
-Windows App-stop failures retain the first failed `taskkill` outcome, bounded
-command and held-child exit codes, a fixed child signal, timeout/overflow flags,
-and fixed stderr marker booleans. They publish no PID, command, path or raw output;
-an observed child exit does not override the original failure. Stored Backend
-diagnostic markers expose only known operations, reasons and correlation scopes.
-Turn-scoped markers must match the requested turn; session-scoped markers remain
-separate and do not establish a failure in that particular turn. An empty diagnostic
-list does not prove that a Hook never ran. Raw marker keys are never published.
-Skill-entry failures distinguish a missing or ambiguous native menu
-item, a missing or ambiguous mention, and an invalid native attachment path, type
-or content using fixed codes; Skill paths and contents remain private.
-Failed DMG detach diagnostics contain
-only bounded exit/signal outcomes, fixed status and stderr classifications, not
-raw text. Failed candidate stops retain only fixed Backend result enums,
-booleans and bounded process outcomes from the CLI's JSON output; raw command
-output, state, paths and error messages are not published. Failed Shell tools
-publish only their fixed result category, whether the matching Run click
-completed, and an exit code when supplied by that result. Bounded failure output
-is reduced to fixed CLI error enums and stderr marker booleans. Returned Shell
-sandbox policy retains only its fixed type and optional network-access boolean;
-missing network access is not interpreted as denial, and policy paths are omitted. Windows
-installation uses a short owned directory under `RUNNER_TEMP` to avoid legacy
-installer path-length limits, and a private installer log, reading at most its last 1 MiB;
-failure reports retain only its read status (including truncated-tail reads),
-recognized error category, numeric error code, fixed file/Win32 operation names,
-and the current file entry's destination path length when available. Neither diagnostic
-publishes commands, paths, raw tool output or installer logs, and unavailable
-diagnostics never replace the original failure or relax acceptance checks.
-Synthetic login is not real account
-authentication coverage. Native Continue/Retry/Edit, Backend restart,
-preauthorized-tool mode, running-tool interruption, late-approval races, model-driven Skill selection, successful Repo Memory generation,
-native upgrade/uninstall remain outside this bounded session-flow
-matrix.
-
-`node scripts/cursor-app-release.mjs resolve <new-manifest-path>` prepares a
-single frozen baseline/latest inventory from the official desktop download
-feeds. It requires coherent versions and commits across Linux, macOS and
-Windows, rejects mutable or unexpected URLs, and never overwrites an existing
-manifest. This metadata-only command leaves missing checksums explicitly
-unavailable and is not artifact-integrity or native-acceptance evidence. CI uses
-`resolve-linux` instead, which also verifies Linux apt metadata. A macOS entry
-additionally requires signed-App acquisition and the native check; an inventory
-entry alone is not native acceptance. Windows installation and signature checks
-run in each native matrix cell.
+Real login, hosted models, OS credential-store isolation, native Continue/Retry/
+Edit, Backend restart, preauthorized tools, running-tool interruption,
+late-approval races, linked worktrees, cross-workspace Search, successful Repo
+Memory generation and native App upgrade/uninstall remain outside this matrix.
 
 ## Pull Requests
 
