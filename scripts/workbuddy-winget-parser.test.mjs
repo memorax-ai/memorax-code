@@ -6,7 +6,7 @@ import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import test from "node:test";
-import { baselineRelease, parseWingetManifest, resolveFeed } from "./workbuddy-release-matrix.mjs";
+import { baselineRelease, parseWingetManifest, resolveFeed, resolveLatest } from "./workbuddy-release-matrix.mjs";
 
 const execute = promisify(execFile);
 const script = fileURLToPath(new URL("./workbuddy-release-matrix.mjs", import.meta.url));
@@ -51,6 +51,37 @@ test("real winget YAML parsing preserves quoted, reordered and commented install
       platform, desktopVersion: version, productVersion: "5.7.0", runtimeVersion: null,
       sha256: hash.toLowerCase(), url: feed.url, channel: "latest",
     });
+  }
+});
+
+test("Windows fallback resolves a real YAML manifest without bypassing its parser or installer checks", parserOnly, async () => {
+  const sha = "1".repeat(40), requested = "5.8.0.42000000";
+  const run = (candidate) => resolveLatest({
+    parseYaml: (text) => parseWingetManifest(text, parseDocument),
+    fetchText: async (url) => {
+      if (url.startsWith("https://www.workbuddy.cn/")) {
+        const selected = new URL(url).searchParams.get("platform").slice("workbuddy-".length);
+        const release = baselineRelease(selected);
+        return JSON.stringify(selected === platform ? { ...feed, version: requested, productVersion: requested,
+          url: feed.url.replace(version, requested) } : { version: release.desktopVersion,
+          productVersion: release.desktopVersion, url: release.url, sha256hash: release.sha256 });
+      }
+      if (url.endsWith("/commits/master")) return JSON.stringify({ sha });
+      if (url.includes("/5.8.0/")) throw Object.assign(new Error("missing manifest"), { status: 404 });
+      if (url.includes("/contents/")) return JSON.stringify([{ name: "5.7.0", type: "dir" }]);
+      assert.equal(url, `https://raw.githubusercontent.com/microsoft/winget-pkgs/${sha}/manifests/t/Tencent/WorkBuddy/5.7.0/Tencent.WorkBuddy.installer.yaml`);
+      return candidate;
+    },
+  });
+  const row = (await run(source)).include.find((entry) => entry.release.channel === "fallback");
+  assert.equal(row.requestedDesktopVersion, requested);
+  assert.equal(row.release.desktopVersion, version);
+  assert.equal(row.release.sha256, hash.toLowerCase());
+  for (const invalid of [`${source}PackageIdentifier: Other\n`, source.replaceAll(hash, "invalid-hash"),
+    source.replaceAll(feed.url, feed.url.replace("download.codebuddy.cn", "example.com")),
+    source.replaceAll(feed.url, feed.url.replace(version, "5.6.9.39000000")),
+    source.replace(userInstaller, userInstaller + userInstaller)]) {
+    await assert.rejects(run(invalid), { code: "WORKBUDDY_LATEST_WIN32_X64_USER_WINGET_FALLBACK_FAILED" });
   }
 });
 
@@ -100,7 +131,7 @@ test("offline select-json works without an available optional YAML module", asyn
 test("offline select-json validates supplied descriptors and redacts all failure output", async () => {
   await fixture(async ({ root, run }) => {
     const secret = "PRIVATE_DESCRIPTOR_SECRET_DO_NOT_PRINT";
-    const failureMessage = "WORKBUDDY_RELEASE_RESOLUTION_FAILED: release metadata, checksum or parser validation failed; no version fallback.\n";
+    const failureMessage = "WORKBUDDY_RELEASE_RESOLUTION_FAILED: release metadata, checksum or parser validation failed; no unverified version fallback.\n";
     const path = join(root, `${secret}.json`);
     await writeFile(path, JSON.stringify(baseline));
     const selected = await run(["select-json", platform, path]);

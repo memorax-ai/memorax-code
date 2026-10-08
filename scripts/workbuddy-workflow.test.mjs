@@ -55,6 +55,7 @@ test("WorkBuddy matrix retains the package gate and one aggregate result", () =>
   assert.match(job("workbuddy-native"), /^    needs: workbuddy-package$/m);
   assert.match(job("workbuddy-native"), /^      fail-fast: false$/m);
   assert.match(job("workbuddy-package"), /^      matrix: \$\{\{ steps\.releases\.outputs\.matrix \}\}$/m);
+  assert.match(job("workbuddy-package"), /^      coverage: \$\{\{ steps\.releases\.outputs\.coverage \}\}$/m);
   assert.match(job("workbuddy-package"), /^        run: node scripts\/workbuddy-release-matrix\.mjs resolve$/m);
   assert.match(job("workbuddy-native"), /^      matrix: \$\{\{ fromJSON\(needs\.workbuddy-package\.outputs\.matrix\) \}\}$/m);
   assert.match(job("workbuddy-native"), /^          node-version: \$\{\{ matrix\.node \}\}$/m);
@@ -67,6 +68,7 @@ test("WorkBuddy matrix retains the package gate and one aggregate result", () =>
   assert.match(result, /^    needs: \[workbuddy-package, workbuddy-native\]$/m);
   assert.match(result, /PACKAGE_RESULT: \$\{\{ needs\.workbuddy-package\.result \}\}/);
   assert.match(result, /WORKBUDDY_RESULT: \$\{\{ needs\.workbuddy-native\.result \}\}/);
+  assert.match(result, /WORKBUDDY_COVERAGE: \$\{\{ needs\.workbuddy-package\.outputs\.coverage \}\}/);
   for (const id of ["workbuddy-package", "workbuddy-native", "workbuddy-result"]) {
     assert.doesNotMatch(job(id), /continue-on-error:/);
   }
@@ -157,22 +159,32 @@ for (const scenario of ["baseline", "latest", "baseline runtime mismatch", "prod
   });
 }
 
-test("WorkBuddy aggregate rejects failed, cancelled or skipped dependencies", { skip: process.platform === "win32" }, async () => {
+test("WorkBuddy aggregate reports actual coverage and rejects unsuccessful dependencies or missing coverage", { skip: process.platform === "win32" }, async () => {
   const body = job("workbuddy-result").match(/^        run: \|\n([\s\S]*)$/m)?.[1];
   assert.ok(body);
   const script = body.split("\n").map((line) => line.slice(10)).join("\n");
   const root = await mkdtemp(join(tmpdir(), "workbuddy-workflow-"));
+  const summaryPath = join(root, "summary.md");
   try {
     for (const packageResult of ["success", "failure", "cancelled", "skipped"]) {
       for (const nativeResult of ["success", "failure", "cancelled", "skipped"]) {
-        const result = spawnSync("/bin/bash", ["-e", "-o", "pipefail", "-c", script], {
-          cwd: root, encoding: "utf8", timeout: 5_000,
-          env: { PATH: "/usr/bin:/bin", HOME: root, GITHUB_STEP_SUMMARY: join(root, "summary.md"),
-            PACKAGE_RESULT: packageResult, WORKBUDDY_RESULT: nativeResult },
-        });
-        assert.ifError(result.error);
-        assert.equal(result.status, packageResult === "success" && nativeResult === "success" ? 0 : 1,
-          `package=${packageResult}, native=${nativeResult}: ${result.stderr}`);
+        for (const coverage of ["All official latest releases resolved.",
+          "Coverage degraded: Windows latest 5.7.6.40409493 not tested (winget manifest missing); selected 5.6.2.39298511.", ""]) {
+          await writeFile(summaryPath, "");
+          const result = spawnSync("/bin/bash", ["-e", "-o", "pipefail", "-c", script], {
+            cwd: root, encoding: "utf8", timeout: 5_000,
+            env: { PATH: "/usr/bin:/bin", HOME: root, GITHUB_STEP_SUMMARY: summaryPath,
+              PACKAGE_RESULT: packageResult, WORKBUDDY_RESULT: nativeResult, WORKBUDDY_COVERAGE: coverage },
+          });
+          assert.ifError(result.error);
+          assert.equal(result.status, packageResult === "success" && nativeResult === "success" && coverage ? 0 : 1,
+            `package=${packageResult}, native=${nativeResult}, coverage=${coverage}: ${result.stderr}`);
+          const summary = await readFile(summaryPath, "utf8");
+          assert.ok(summary.includes(coverage || "Coverage unavailable."));
+          assert.ok(summary.includes(`Package: **${packageResult}**`));
+          assert.ok(summary.includes(`WorkBuddy matrix: **${nativeResult}**`));
+          assert.doesNotMatch(summary, /Verified baseline\/latest/);
+        }
       }
     }
   } finally {

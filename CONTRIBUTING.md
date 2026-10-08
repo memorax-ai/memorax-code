@@ -921,7 +921,8 @@ The `CI` workflow runs WorkBuddy native checks automatically for pull requests
 targeting `main` and pushes to `main`, on `ubuntu-24.04` (x64), `macos-15`
 (arm64), and `windows-2025` (x64), using Node.js 24. Each platform runs its
 fixed baseline and the latest official desktop release resolved once for that
-run. Identical full versions, URLs, and checksums share one `baseline+latest`
+run, subject to the narrow Windows fallback below. Identical full versions,
+URLs, and checksums share one `baseline+latest`
 job; a different desktop build still gets a separate job even if its bundled
 CLI version is unchanged. One additional Ubuntu job uses the minimum supported
 Node.js 20 with the fixed Linux baseline. All four to seven jobs run the complete
@@ -932,6 +933,9 @@ that same validated artifact. Matrix failures do not cancel the other platforms.
 The `WorkBuddy functional result` check requires both the package and the entire
 native matrix to succeed. Failed, cancelled, or unexpectedly skipped dependencies
 fail that check; intentionally unselected manual runs skip it as well.
+The aggregate also requires the resolver's coverage report. A successful matrix
+can have degraded Windows coverage: its summary names the untested official
+latest and the selected older release instead of claiming latest coverage.
 Each runner consumes the frozen release description and checks its selected
 SHA-256 before extracting or mounting the official desktop package. The
 WorkBuddy-specific resolver in `scripts/workbuddy-release-matrix.mjs` owns the
@@ -939,9 +943,9 @@ baseline records, feed validation, and matrix; the three acquisition helpers
 also accept a validated release JSON file while retaining their standalone
 baseline defaults. Desktop and bundled CLI versions are checked separately,
 because the official platform releases are not synchronized. Baselines require
-the exact known CLI version; latest jobs read a stable CLI version from the
-verified package and compare it with the real command's `--version` before the
-native suites. The current fixed baselines are:
+the exact known CLI version; latest and fallback jobs read a stable CLI version
+from the verified package and compare it with the real command's `--version`
+before the native suites. The current fixed baselines are:
 
 | Runner | Official desktop package | Bundled CLI |
 | --- | --- | --- |
@@ -968,13 +972,26 @@ is converted to the DMG URL in the same manner as the official download page.
 When the Windows feed has an empty checksum, the resolver freezes one commit
 of Microsoft's `winget-pkgs` repository and reads the matching WorkBuddy
 installer manifest from that immutable revision. It requires a unique x64/user
-entry with the exact official URL and product version. The YAML parser
+entry with the exact official URL and product version. Only when that exact
+manifest returns HTTP 404 does it list WorkBuddy version directories at the same
+frozen commit and select the highest stable three-part version below the
+requested official product version. That single fallback must pass the same
+manifest validation, including its exact official installer URL, full desktop
+build and SHA-256; the Windows runner still requires the valid Tencent signature.
+The manifest URL and digest select the full build; the installer's PE product
+version only confirms its three-part product version. A fallback identical to
+the baseline runs once as `baseline`, never `baseline+latest`; other selected
+older releases are labeled `fallback`. Coverage explicitly remains degraded,
+with the requested official latest recorded as untested.
+
+The YAML parser
 (`yaml@2.9.1`) is installed without lifecycle scripts in an isolated runner
 temporary directory, not added to product dependencies; package-job helper
 tests exercise the real parser. Native jobs and offline release selection need
-only Node built-ins. Missing or malformed metadata, a lagging winget manifest,
-conflicting known pins, invalid signatures, or digest mismatches fail the check
-without falling back to the baseline or reporting latest coverage as passed.
+only Node built-ins. All other feed, network, metadata, signature, or checksum
+errors fail the check. A missing older candidate, invalid selected manifest,
+conflicting known pin, or failed acquisition also fails; the resolver does not
+continue trying progressively older versions.
 
 The macOS runner also requires Apple's notarization assessment and Tencent's
 Developer ID signature before using the read-only mounted application. Linux

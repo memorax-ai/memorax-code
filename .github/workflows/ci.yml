@@ -71,6 +71,7 @@ jobs:
     timeout-minutes: 20
     outputs:
       matrix: ${{ steps.releases.outputs.matrix }}
+      coverage: ${{ steps.releases.outputs.coverage }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -294,9 +295,14 @@ jobs:
         env:
           PACKAGE_RESULT: ${{ needs.workbuddy-package.result }}
           WORKBUDDY_RESULT: ${{ needs.workbuddy-native.result }}
+          WORKBUDDY_COVERAGE: ${{ needs.workbuddy-package.outputs.coverage }}
         run: |
-          printf 'Package: **%s**\n\nWorkBuddy matrix: **%s**\n\nVerified baseline/latest bundled runtimes; the two explicit runtime interrupt cases remain separate strict manual diagnostics.\n' "$PACKAGE_RESULT" "$WORKBUDDY_RESULT" >> "$GITHUB_STEP_SUMMARY"
+          printf 'Package: **%s**\n\nWorkBuddy matrix: **%s**\n\n%s\n\nThe two explicit runtime interrupt cases remain separate strict manual diagnostics.\n' "$PACKAGE_RESULT" "$WORKBUDDY_RESULT" "${WORKBUDDY_COVERAGE:-Coverage unavailable.}" >> "$GITHUB_STEP_SUMMARY"
           if [[ "$PACKAGE_RESULT" != success || "$WORKBUDDY_RESULT" != success ]]; then
             echo '::error::All package and WorkBuddy matrix jobs must succeed. Failed, cancelled or skipped dependencies do not pass this check.'
+            exit 1
+          fi
+          if [[ -z "$WORKBUDDY_COVERAGE" ]]; then
+            echo '::error::WorkBuddy release coverage is missing.'
             exit 1
           fi

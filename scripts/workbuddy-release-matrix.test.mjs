@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { baselineRelease, buildMatrix, resolveFeed, resolveLatest, validateRelease } from "./workbuddy-release-matrix.mjs";
+import { baselineRelease, buildMatrix, coverageSummary, resolveFeed, resolveLatest, validateRelease } from "./workbuddy-release-matrix.mjs";
 
 const platforms = ["linux-x64-deb", "darwin-arm64", "win32-x64-user"];
 const linuxFeedHash = "03d756b259d7086c22098fa077589a032d60948d1de7313473360eefe11e240f";
@@ -124,4 +124,89 @@ test("WorkBuddy discovery fails without fallback on network, JSON, or winget fai
     const platform = new URL(url).searchParams.get("platform").slice("workbuddy-".length);
     return JSON.stringify({ ...feed(platform), ...(platform === "win32-x64-user" ? { sha256hash: "" } : {}) });
   }, parseYaml: () => assert.fail("Must reject mutable ref before parsing") }), { code: "WORKBUDDY_LATEST_WIN32_X64_USER_WINGET_COMMIT_FAILED" });
+});
+
+function fallbackDiscovery({ versions = ["5.6.2"], selectedVersion = "5.6.2", changes = {},
+  manifestError = 404, manifestSource, feedChanges = {}, directoryError, candidateError } = {}) {
+  const sha = "1".repeat(40), calls = [];
+  const baseline = baselineRelease("win32-x64-user");
+  const windows = { ...feed("win32-x64-user", true), sha256hash: "", ...feedChanges };
+  const fullVersion = selectedVersion === baseline.productVersion ? baseline.desktopVersion : `${selectedVersion}.39000000`;
+  const url = baseline.url.replace(baseline.desktopVersion, fullVersion);
+  const manifest = { PackageIdentifier: "Tencent.WorkBuddy", PackageVersion: selectedVersion, ManifestType: "installer",
+    Installers: [{ Architecture: "x64", Scope: "user", InstallerUrl: url,
+      InstallerSha256: selectedVersion === baseline.productVersion ? baseline.sha256 : "b".repeat(64) }], ...changes };
+  return { calls, run: () => resolveLatest({ parseYaml: JSON.parse, fetchText: async (url) => {
+    calls.push(url);
+    if (url.startsWith("https://www.workbuddy.cn/v2/update?")) {
+      const platform = new URL(url).searchParams.get("platform").slice("workbuddy-".length);
+      return JSON.stringify(platform === "win32-x64-user" ? windows : feed(platform));
+    }
+    if (url.endsWith("/commits/master")) return JSON.stringify({ sha });
+    if (url.includes("/5.7.0/Tencent.WorkBuddy.installer.yaml")) {
+      if (manifestSource !== undefined) return manifestSource;
+      throw Object.assign(new Error("manifest request failed"), { status: manifestError });
+    }
+    if (url.includes("/contents/")) {
+      assert.equal(url, `https://api.github.com/repos/microsoft/winget-pkgs/contents/manifests/t/Tencent/WorkBuddy?ref=${sha}`);
+      if (directoryError) throw directoryError;
+      return JSON.stringify(versions.map((name) => ({ name, type: "dir" })));
+    }
+    assert.equal(url, `https://raw.githubusercontent.com/microsoft/winget-pkgs/${sha}/manifests/t/Tencent/WorkBuddy/${selectedVersion}/Tencent.WorkBuddy.installer.yaml`);
+    if (candidateError) throw candidateError;
+    return JSON.stringify(manifest);
+  } }) };
+}
+
+test("Windows missing latest manifest falls back without claiming latest or duplicating baseline", async () => {
+  const { run, calls } = fallbackDiscovery();
+  const matrix = await run();
+  const windows = matrix.include.filter((row) => row.release.platform === "win32-x64-user");
+  assert.equal(matrix.include.length, 4);
+  assert.equal(windows.length, 1);
+  assert.deepEqual(windows[0].release, baselineRelease("win32-x64-user"));
+  assert.equal(windows[0].requestedDesktopVersion, "5.7.0.40000000");
+  assert.equal(coverageSummary(matrix), "Coverage degraded: Windows latest 5.7.0.40000000 not tested (winget manifest missing); selected 5.6.2.39298511.");
+  assert.equal(calls.filter((url) => url.endsWith("/commits/master")).length, 1);
+  assert.equal(coverageSummary(buildMatrix(releases())), "All official latest releases resolved.");
+});
+
+test("Windows fallback selects the highest stable lower version numerically, not fixed baseline", async () => {
+  const matrix = await fallbackDiscovery({ versions: ["5.6.2", "5.6.9", "5.6.10", "5.7.0", "5.8.0", "5.6.11-beta", "05.6.12", "5.6.12\n"],
+    selectedVersion: "5.6.10" }).run();
+  const windows = matrix.include.filter((row) => row.release.platform === "win32-x64-user");
+  assert.equal(windows.length, 2);
+  assert.deepEqual(windows.map((row) => row.release.channel), ["baseline", "fallback"]);
+  assert.equal(windows[1].release.desktopVersion, "5.6.10.39000000");
+  assert.equal(windows[1].requestedDesktopVersion, "5.7.0.40000000");
+  assert.equal(windows[1].release.runtimeVersion, null);
+  assert.deepEqual(validateRelease(windows[1].release, "win32-x64-user"), windows[1].release);
+  assert.throws(() => validateRelease({ ...releases()["darwin-arm64"], channel: "fallback" }, "darwin-arm64"));
+});
+
+test("Windows fallback is limited to a missing exact manifest, never transport or invalid metadata", async () => {
+  for (const manifestSource of ["invalid YAML", "null", "{}"]) {
+    const fixture = fallbackDiscovery({ manifestSource });
+    await assert.rejects(fixture.run());
+    assert.equal(fixture.calls.some((url) => url.includes("/contents/")), false);
+  }
+  for (const status of [401, 403, 429, 500, "404", null]) {
+    const fixture = fallbackDiscovery({ manifestError: status });
+    await assert.rejects(fixture.run());
+    assert.equal(fixture.calls.some((url) => url.includes("/contents/")), false);
+  }
+  for (const change of [{ version: "bad" }, { productVersion: "5.6.2" }, { sha256hash: null }, { sha256hash: "bad" },
+    { url: "https://example.com/WorkBuddy.exe" }]) {
+    const fixture = fallbackDiscovery({ feedChanges: change });
+    await assert.rejects(fixture.run());
+    assert.equal(fixture.calls.some((url) => url.includes("/contents/")), false);
+  }
+  for (const options of [{ versions: [] }, { versions: ["5.7.0", "5.8.0"] },
+    { directoryError: Object.assign(new Error("directory missing"), { status: 404 }) },
+    { candidateError: Object.assign(new Error("candidate missing"), { status: 404 }) },
+    { changes: { PackageIdentifier: "Other" } }, { changes: { PackageVersion: "5.6.1" } },
+    { changes: { Installers: [] } }, { changes: { Installers: [{ Architecture: "x64", Scope: "user",
+      InstallerUrl: baselineRelease("win32-x64-user").url, InstallerSha256: "a".repeat(64) }] } }]) {
+    await assert.rejects(fallbackDiscovery(options).run());
+  }
 });

@@ -3,6 +3,7 @@ import { appendFile, readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 
 const desktopVersion = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+const productVersion = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const digest = /^[a-fA-F0-9]{64}$/;
 const downloadRoot = "https://download.codebuddy.cn/workbuddy/saas";
 const platforms = [
@@ -31,6 +32,22 @@ export function baselineRelease(platform) {
     channel: "baseline" };
 }
 
+function validateDownload(platform, version, url) {
+  assert.match(version, desktopVersion);
+  const prefix = `${downloadRoot}/${platform}/WorkBuddy-${platform}-${version}-`;
+  assert.equal(typeof url, "string");
+  assert.ok(!/[\r\n]/.test(url) && url.startsWith(prefix));
+  assert.match(url.slice(prefix.length), new RegExp(`^[a-f0-9]{8}\\.${pins[platform][3]}$`));
+}
+
+function compareVersions(left, right) {
+  const a = left.split(".").map(BigInt), b = right.split(".").map(BigInt);
+  for (let index = 0; index < a.length; index += 1) {
+    if (a[index] !== b[index]) return a[index] > b[index] ? 1 : -1;
+  }
+  return 0;
+}
+
 export function validateRelease(value, platform) {
   const baseline = baselineRelease(platform);
   assert.equal(value?.platform, platform, "WORKBUDDY_RELEASE_PLATFORM_MISMATCH");
@@ -40,18 +57,15 @@ export function validateRelease(value, platform) {
   }
   assert.match(value.desktopVersion, desktopVersion);
   assert.equal(value.productVersion, value.desktopVersion.split(".").slice(0, 3).join("."));
-  const extension = pins[platform][3];
-  const prefix = `${downloadRoot}/${platform}/WorkBuddy-${platform}-${value.desktopVersion}-`;
-  assert.equal(typeof value.url, "string");
-  assert.ok(value.url.startsWith(prefix));
-  assert.match(value.url.slice(prefix.length), new RegExp(`^[a-f0-9]{8}\\.${extension}$`));
+  validateDownload(platform, value.desktopVersion, value.url);
   assert.match(value.sha256, digest);
-  assert.ok(["baseline", "baseline+latest", "latest"].includes(value.channel));
+  assert.ok(["baseline", "baseline+latest", "latest", "fallback"].includes(value.channel));
+  if (value.channel === "fallback") assert.equal(platform, "win32-x64-user");
   const release = Object.fromEntries(Object.keys(baseline).map((key) => [key, value[key]]));
   release.sha256 = release.sha256.toLowerCase();
   // A known immutable URL must never be repinned by a feed or supplied description.
   if (release.url === baseline.url) assert.equal(release.sha256, baseline.sha256, "WORKBUDDY_RELEASE_PIN_CONFLICT");
-  if (release.channel === "latest") assert.equal(release.runtimeVersion, null);
+  if (["latest", "fallback"].includes(release.channel)) assert.equal(release.runtimeVersion, null);
   else assert.deepEqual({ ...release, channel: "baseline" }, baseline);
   return release;
 }
@@ -85,18 +99,32 @@ export function resolveFeed(platform, feed, wingetManifest) {
   return release;
 }
 
-export function buildMatrix(latestByPlatform) {
+export function buildMatrix(latestByPlatform, requestedByPlatform = {}) {
   const include = [];
   for (const { platform, os, arch } of platforms) {
     const baseline = baselineRelease(platform);
     const latest = validateRelease(latestByPlatform[platform], platform);
-    assert.equal(latest.channel, "latest");
+    assert.ok(["latest", "fallback"].includes(latest.channel));
+    const fallback = latest.channel === "fallback";
+    const requestedDesktopVersion = requestedByPlatform[platform];
+    if (fallback) {
+      assert.match(requestedDesktopVersion, desktopVersion);
+      assert.ok(compareVersions(latest.desktopVersion, requestedDesktopVersion) < 0);
+    }
     const same = latest.desktopVersion === baseline.desktopVersion && latest.url === baseline.url && latest.sha256 === baseline.sha256;
-    include.push({ os, arch, node: "24", release: { ...baseline, channel: same ? "baseline+latest" : "baseline" } });
+    include.push({ os, arch, node: "24", release: { ...baseline, channel: same && !fallback ? "baseline+latest" : "baseline" } });
     if (!same) include.push({ os, arch, node: "24", release: latest });
+    if (fallback) include.at(-1).requestedDesktopVersion = requestedDesktopVersion;
   }
   include.push({ os: "ubuntu-24.04", arch: "x64", node: "20", release: baselineRelease("linux-x64-deb") });
   return { include };
+}
+
+export function coverageSummary(matrix) {
+  const fallback = matrix.include.find((row) => row.requestedDesktopVersion);
+  return fallback
+    ? `Coverage degraded: Windows latest ${fallback.requestedDesktopVersion} not tested (winget manifest missing); selected ${fallback.release.desktopVersion}.`
+    : "All official latest releases resolved.";
 }
 
 async function fetchPublicText(url) {
@@ -105,7 +133,7 @@ async function fetchPublicText(url) {
     headers.Authorization = `Bearer ${process.env.GITHUB_TOKEN}`;
   }
   const response = await fetch(url, { headers, redirect: "error", signal: AbortSignal.timeout(30_000) });
-  assert.ok(response.ok, "WORKBUDDY_RELEASE_METADATA_HTTP_FAILED");
+  if (!response.ok) throw Object.assign(new Error("WORKBUDDY_RELEASE_METADATA_HTTP_FAILED"), { status: response.status });
   const chunks = [];
   let size = 0;
   for await (const chunk of response.body) {
@@ -117,20 +145,46 @@ async function fetchPublicText(url) {
 }
 
 export async function resolveLatest({ fetchText = fetchPublicText, parseYaml } = {}) {
-  const latest = {};
+  const latest = {}, requested = {};
   for (const { platform } of platforms) {
     let stage = "FEED";
     try {
       const feed = JSON.parse(await fetchText(`https://www.workbuddy.cn/v2/update?platform=workbuddy-${platform}`));
       let manifest;
       if (platform === "win32-x64-user" && feed.sha256hash === "") {
-        assert.match(feed.version, desktopVersion);
+        validateDownload(platform, feed.version, feed.url);
+        assert.equal(feed.productVersion, feed.version);
         stage = "WINGET_COMMIT";
         const { sha } = JSON.parse(await fetchText("https://api.github.com/repos/microsoft/winget-pkgs/commits/master"));
         assert.match(sha, /^[a-f0-9]{40}$/);
         const version = feed.version.split(".").slice(0, 3).join(".");
         stage = "WINGET_MANIFEST";
-        const source = await fetchText(`https://raw.githubusercontent.com/microsoft/winget-pkgs/${sha}/manifests/t/Tencent/WorkBuddy/${version}/Tencent.WorkBuddy.installer.yaml`);
+        const manifestUrl = (selected) => `https://raw.githubusercontent.com/microsoft/winget-pkgs/${sha}/manifests/t/Tencent/WorkBuddy/${selected}/Tencent.WorkBuddy.installer.yaml`;
+        let source;
+        try { source = await fetchText(manifestUrl(version)); }
+        catch (error) {
+          if (error.status !== 404) throw error;
+          stage = "WINGET_FALLBACK";
+          const entries = JSON.parse(await fetchText(`https://api.github.com/repos/microsoft/winget-pkgs/contents/manifests/t/Tencent/WorkBuddy?ref=${sha}`));
+          assert.ok(Array.isArray(entries));
+          const previous = entries.filter((entry) => entry.type === "dir" && productVersion.test(entry.name) && !/[\r\n]/.test(entry.name)
+            && compareVersions(entry.name, version) < 0).map((entry) => entry.name)
+            .sort((a, b) => compareVersions(b, a))[0];
+          assert.ok(previous, "WORKBUDDY_WINGET_PREVIOUS_VERSION_MISSING");
+          const older = parseYaml(await fetchText(manifestUrl(previous)));
+          assert.equal(older.PackageVersion, previous);
+          assert.ok(Array.isArray(older.Installers));
+          const installers = older.Installers.filter((entry) => entry.Architecture === "x64"
+            && (entry.Scope ?? older.Scope) === "user");
+          assert.equal(installers.length, 1, "WORKBUDDY_WINGET_INSTALLER_NOT_UNIQUE");
+          assert.equal(typeof installers[0].InstallerUrl, "string");
+          const fullVersion = installers[0].InstallerUrl.match(/WorkBuddy-win32-x64-user-(\d+\.\d+\.\d+\.\d+)-[a-f0-9]{8}\.exe$/)?.[1];
+          const selected = resolveFeed(platform, { version: fullVersion, productVersion: fullVersion,
+            url: installers[0].InstallerUrl, sha256hash: "" }, older);
+          latest[platform] = { ...selected, channel: "fallback" };
+          requested[platform] = feed.version;
+          continue;
+        }
         assert.equal(typeof parseYaml, "function", "WORKBUDDY_WINGET_PARSER_REQUIRED");
         manifest = parseYaml(source);
       }
@@ -142,7 +196,7 @@ export async function resolveLatest({ fetchText = fetchPublicText, parseYaml } =
       throw error;
     }
   }
-  return buildMatrix(latest);
+  return buildMatrix(latest, requested);
 }
 
 export function parseWingetManifest(source, parseDocument) {
@@ -167,9 +221,11 @@ async function main(args) {
   // Only online resolution needs YAML. Native jobs and offline helper tests use built-ins.
   const { parseDocument } = await import(pathToFileURL(process.env.WORKBUDDY_YAML_MODULE).href);
   const matrix = await resolveLatest({ parseYaml: (source) => parseWingetManifest(source, parseDocument) });
-  if (process.env.GITHUB_OUTPUT) await appendFile(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify(matrix)}\n`);
+  const coverage = coverageSummary(matrix);
+  if (process.env.GITHUB_OUTPUT) await appendFile(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify(matrix)}\ncoverage=${coverage}\n`);
+  if (matrix.include.some((row) => row.requestedDesktopVersion)) console.error(`::warning::${coverage}`);
   if (process.env.GITHUB_STEP_SUMMARY) {
-    await appendFile(process.env.GITHUB_STEP_SUMMARY, "### WorkBuddy Release Matrix\n\n" + matrix.include.map((row) =>
+    await appendFile(process.env.GITHUB_STEP_SUMMARY, `### WorkBuddy Release Matrix\n\n${coverage}\n\n` + matrix.include.map((row) =>
       `- ${row.os} (${row.arch}), Node ${row.node}: ${row.release.channel}, desktop ${row.release.desktopVersion}, SHA-256 ${row.release.sha256}`).join("\n") + "\n");
   }
   console.log(JSON.stringify(matrix));
@@ -178,7 +234,7 @@ async function main(args) {
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main(process.argv.slice(2)).catch((error) => {
     const code = /^WORKBUDDY_LATEST_[A-Z0-9_]+_FAILED$/.test(error.code ?? "") ? error.code : "WORKBUDDY_RELEASE_RESOLUTION_FAILED";
-    console.error(`${code}: release metadata, checksum or parser validation failed; no version fallback.`);
+    console.error(`${code}: release metadata, checksum or parser validation failed; no unverified version fallback.`);
     process.exitCode = 1;
   });
 }
