@@ -52,8 +52,14 @@ export function selectNativeTurnContent(records, { sessionId, prompt, finalText 
     for (const child of children.get(pending[index]) ?? []) {
       check(!visited.has(child.id), "NATIVE_TRANSCRIPT_LINEAGE_INVALID");
       visited.add(child.id);
-      // A later user starts a different turn, even when its parent is this final.
-      if (child.type === "message" && child.role === "user") continue;
+      if (child.type === "message" && child.role === "user") {
+        const metadata = child.providerData, requestId = user.providerData?.conversationRequestId;
+        // Native task reminders stay in the current request; actual user turns do not.
+        const reminder = metadata?.isMeta === true && metadata.skipRun === true && metadata.startsNewUserRequest === false
+          && ["task", "todo"].includes(metadata.taskReminderKind)
+          && child.sessionId === sessionId && identifier(requestId) && metadata.conversationRequestId === requestId;
+        if (!reminder) continue;
+      }
       branch.push(child);
       pending.push(child.id);
     }

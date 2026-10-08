@@ -171,6 +171,69 @@ test("CodeBuddy native oracle does not cross a newer user to reuse an older matc
   fails([user(), current, { ...assistant(), parentId: current.id }], "NATIVE_TRANSCRIPT_FINAL_MISSING");
 });
 
+function taskReminderTurn(kind = "todo") {
+  const providerData = { conversationRequestId: "request-fixture" };
+  const first = { ...user(), providerData };
+  const read = { id: "read", type: "function_call", callId: "read-call", parentId: first.id,
+    name: "Read", arguments: JSON.stringify({ file_path: "synthetic-reference.md" }) };
+  const readResult = { id: "read-result", type: "function_call_result", callId: read.callId, parentId: read.id, status: "completed" };
+  const reminder = { id: "reminder", type: "message", role: "user", sessionId: identity.sessionId, parentId: readResult.id,
+    providerData: { ...providerData, isMeta: true, skipRun: true, startsNewUserRequest: false,
+      taskReminderKind: kind, taskReminderAnchorId: "model-input-anchor" },
+    content: [{ type: "input_text", text: "<system-reminder>Synthetic task reminder.</system-reminder>" }] };
+  const bash = { id: "bash", type: "function_call", callId: "bash-call", parentId: reminder.id,
+    name: "Bash", arguments: JSON.stringify({ command: "synthetic command" }) };
+  const bashResult = { id: "bash-result", type: "function_call_result", callId: bash.callId, parentId: bash.id, status: "completed" };
+  return [first, read, readResult, reminder, bash, bashResult, { ...assistant(), parentId: bashResult.id }];
+}
+
+test("CodeBuddy native oracle crosses same-request task reminders without treating them as prompts", () => {
+  for (const kind of ["task", "todo"]) {
+    const records = taskReminderTurn(kind);
+    const selected = selectNativeTurnContent(records, identity);
+    assert.equal(selected.user.content, identity.prompt);
+    assert.equal(selected.assistant.content, identity.finalText);
+    assert.deepEqual(selected.lineage, records);
+    assertNativeToolCalls(selected.lineage, [
+      { id: "read-call", name: "Read", input: { file_path: "synthetic-reference.md" } },
+      { id: "bash-call", name: "Bash", input: { command: "synthetic command" } },
+    ]);
+  }
+});
+
+test("CodeBuddy native oracle does not cross unproven reminders or a new user request", () => {
+  for (const patch of [{ isMeta: undefined }, { isMeta: false }, { skipRun: undefined }, { skipRun: false },
+    { startsNewUserRequest: undefined }, { startsNewUserRequest: true }, { taskReminderKind: undefined },
+    { taskReminderKind: "unknown" },
+    { conversationRequestId: undefined }, { conversationRequestId: "other-request" }]) {
+    const records = taskReminderTurn();
+    Object.assign(records[3].providerData, patch);
+    fails(records, "NATIVE_TRANSCRIPT_FINAL_MISSING");
+  }
+  for (const change of [
+    (records) => { delete records[0].providerData; },
+    (records) => { delete records[3].providerData; },
+    (records) => { delete records[3].sessionId; },
+  ]) {
+    const records = taskReminderTurn();
+    change(records);
+    fails(records, "NATIVE_TRANSCRIPT_FINAL_MISSING");
+  }
+  const records = taskReminderTurn();
+  records[3].sessionId = "other-session";
+  fails(records, "NATIVE_TRANSCRIPT_SESSION_MISMATCH");
+});
+
+test("CodeBuddy native reminders do not hide genuine turn boundaries or unfinished replies", () => {
+  const records = taskReminderTurn();
+  const next = { ...user(), id: "next-user", parentId: "reminder", content: [{ type: "input_text", text: "Next prompt." }] };
+  records[4].parentId = next.id;
+  fails([...records.slice(0, 4), next, ...records.slice(4)], "NATIVE_TRANSCRIPT_FINAL_MISSING");
+  const unfinished = taskReminderTurn();
+  unfinished.at(-1).status = "incomplete";
+  fails(unfinished, "NATIVE_TRANSCRIPT_FINAL_INCOMPLETE");
+});
+
 test("CodeBuddy native oracle rejects omitted or reordered paragraphs and extra final content", () => {
   const complete = "First.\n\nMiddle.\n\nLast.";
   for (const actual of ["First.\n\nLast.", "Last.\n\nMiddle.\n\nFirst.", `${complete}\nInjected.`, ` ${complete}`]) {
