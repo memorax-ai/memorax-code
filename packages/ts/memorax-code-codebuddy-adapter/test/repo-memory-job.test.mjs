@@ -73,7 +73,7 @@ test("CodeBuddy repo memory worker materializes and validates a repository bundl
 });
 
 for (const client of ["codebuddy", "workbuddy"]) {
-  test(`${client} repo memory worker applies client-specific server environment isolation`, async () => {
+  test(`${client} repo memory worker isolates the foreground listener while preserving model configuration`, async () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), `memorax-${client}-repo-memory-env-`)));
     const repo = join(root, "repo");
     initRepo(repo);
@@ -109,10 +109,8 @@ process.stdout.write(JSON.stringify(Object.fromEntries(names.map((name) => [name
     assert.equal(state.failureReason, "artifact_validation_failed");
     assert.equal(state.exitCode, 0);
     const expectedEnv = { ...inheritedEnv };
-    if (client === "codebuddy") {
-      delete expectedEnv.SERVER__PORT;
-      delete expectedEnv.SERVER__HOST;
-    }
+    delete expectedEnv.SERVER__PORT;
+    delete expectedEnv.SERVER__HOST;
     assert.deepEqual(JSON.parse(readFileSync(state.finalMessagePath, "utf8")), expectedEnv);
   });
 }
