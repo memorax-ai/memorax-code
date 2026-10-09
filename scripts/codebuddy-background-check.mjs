@@ -10,7 +10,7 @@ import { assertNativeHookCorrelation } from "./codebuddy-native-memory-support.m
 import { CodeBuddyControlSession } from "./codebuddy-permissions-support.mjs";
 import { assertBackgroundJob, assertBackgroundModelRequests, assertBackgroundNoopResult, assertForegroundResult,
   assertGlobalConfiguration, backgroundInputText, backgroundProcessesExited, modelEnvironmentOverrides,
-  summarizeBackgroundJobs, workerPromptMarker, foregroundPromptForClient, foregroundAnswer, backgroundAnswer,
+  summarizeBackgroundJobs, readBackgroundStartDiagnostic, workerPromptMarker, foregroundPromptForClient, foregroundAnswer, backgroundAnswer,
 } from "./codebuddy-background-assertions.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -161,6 +161,10 @@ try {
     // before the diagnostic can probe or summarize any recorded process.
     report.backgroundJobs = { available: true, ...summarizeBackgroundJobs(await jobs(), processPresent) };
   } catch { report.backgroundJobs = { available: false }; }
+  try {
+    report.backgroundStart = await readBackgroundStartDiagnostic({ stateHome: harness?.stateHome, client,
+      sessionId: control?.events.find((event) => event.type === "system" && event.subtype === "init")?.session_id });
+  } catch { report.backgroundStart = { available: false }; }
 } finally {
   try { await harness?.close(); report.cleanup = "PASS"; }
   catch (error) { report.cleanup = error.nativeCode ?? "BACKGROUND_CLEANUP_FAILED"; }

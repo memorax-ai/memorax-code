@@ -1,7 +1,9 @@
-import { basename, dirname, join } from "node:path";
+import { createHash } from "node:crypto";
+import { readFile, realpath, stat } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { check, fixtureModel } from "./codebuddy-native-support.mjs";
 import { assertCompleteText } from "./codex-native-content-check.mjs";
-import { matchesNativeModel } from "./codebuddy-native-content-check.mjs";
+import { matchesNativeModel, summarizeWritebackTrace } from "./codebuddy-native-content-check.mjs";
 
 export const workerPromptMarker = "This invocation is the authorized background repo-memory worker.";
 export const foregroundPrompt = "Check this repository's global CodeBuddy model configuration.";
@@ -108,4 +110,52 @@ export function summarizeBackgroundJobs(validatedJobs, processPresent) {
       childAlive: job.childPid !== undefined && Boolean(processPresent(job.childPid)) };
   });
   return { jobCount: jobs.length, jobs };
+}
+
+export async function readBackgroundStartDiagnostic({ stateHome, client, sessionId }) {
+  const summary = { trace: "unavailable", pending: "unavailable", turnStarts: null, skillReminders: null,
+    pendingMatchesPrompt: null, jobsDirectory: "unavailable" };
+  let root;
+  try { root = await realpath(stateHome); } catch { return summary; }
+  const contained = (path) => {
+    const value = relative(root, path);
+    return value !== ".." && !value.startsWith("../") && !value.startsWith("..\\") && !isAbsolute(value);
+  };
+  try {
+    const path = await realpath(join(root, "repo-memory-jobs"));
+    if (contained(path) && (await stat(path)).isDirectory()) summary.jobsDirectory = "present";
+  } catch (error) { summary.jobsDirectory = error.code === "ENOENT" ? "missing" : "unavailable"; }
+  if (!["codebuddy", "workbuddy"].includes(client) || typeof sessionId !== "string"
+    || !/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(sessionId)) return summary;
+
+  const read = async (path, parse) => {
+    try {
+      const target = await realpath(path), info = await stat(target);
+      if (!contained(target) || !info.isFile() || info.size > 1024 * 1024) return { status: "unavailable" };
+      return { status: "available", value: parse(await readFile(target, "utf8")) };
+    } catch (error) { return { status: error.code === "ENOENT" ? "missing" : "unavailable" }; }
+  };
+  const record = (text) => {
+    const value = JSON.parse(text);
+    check(value && typeof value === "object" && !Array.isArray(value), "BACKGROUND_DIAGNOSTIC_RECORD_INVALID");
+    return value;
+  };
+  const trace = await read(join(root, "debug", "traces", client, "sessions", sessionId, "events.jsonl"),
+    (text) => text.split(/\r?\n/).filter(Boolean).map(record));
+  const pending = await read(join(root, "adapters", client, "pending.json"), record);
+  const promptHash = createHash("sha256").update(foregroundPromptForClient(client).trim()).digest("hex");
+  const events = trace.value ?? [];
+  const hook = summarizeWritebackTrace(events, pending.value, { client, sessionId, promptHash });
+  summary.trace = trace.status;
+  summary.pending = pending.status;
+  if (trace.status === "available") {
+    summary.turnStarts = hook.turnStarts;
+    // This event is recorded only after the Hook receives turn-start's response.
+    summary.skillReminders = events.filter((event) => event.type === "skill_reminder" && event.ok === true
+      && event.trace?.client === client && event.trace.session_id === sessionId
+      && typeof event.trace.turn_id === "string" && event.trace.turn_id.startsWith(`${sessionId}:`)
+      && event.trace.turn_id.endsWith(`:${promptHash}`)).length;
+  }
+  if (pending.status === "available") summary.pendingMatchesPrompt = hook.pendingMatchesPrompt;
+  return summary;
 }

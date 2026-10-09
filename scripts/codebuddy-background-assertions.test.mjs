@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fixtureModel } from "./codebuddy-native-support.mjs";
 import { assertBackgroundJob, assertBackgroundModelRequests, assertBackgroundNoopResult, assertForegroundResult,
   assertGlobalConfiguration, backgroundInputText, backgroundProcessesExited, modelEnvironmentOverrides,
-  summarizeBackgroundJobs, workerPromptMarker, foregroundPrompt, foregroundPromptForClient, foregroundAnswer, backgroundAnswer,
+  summarizeBackgroundJobs, readBackgroundStartDiagnostic, workerPromptMarker, foregroundPrompt, foregroundPromptForClient, foregroundAnswer, backgroundAnswer,
 } from "./codebuddy-background-assertions.mjs";
 
 const context = { jobPath: resolve("fixture/jobs/job-fixture/job.json"), repository: resolve("fixture/repo"),
@@ -279,3 +282,62 @@ test("background diagnostics retain preparation failures without treating prepar
       .jobs[0].failureReason, failureReason);
   }
 });
+
+test("background start diagnostics match the client, session and prompt without disclosing or changing records", async (t) => {
+  const { stateHome, put, sessionId } = await startDiagnosticFixture(t);
+  const secret = "PRIVATE_TRACE_BODY_PATH_PID_TOKEN_CANARY";
+  await mkdir(join(stateHome, "repo-memory-jobs"));
+  for (const client of ["codebuddy", "workbuddy"]) {
+    const hash = createHash("sha256").update(foregroundPromptForClient(client)).digest("hex");
+    const trace = { client, session_id: sessionId, turn_id: `${sessionId}:0:${hash}` };
+    const records = [trace, { ...trace, client: client === "codebuddy" ? "workbuddy" : "codebuddy" },
+      { ...trace, session_id: "foreign-session" }, { ...trace, turn_id: `${sessionId}:0:${"b".repeat(64)}` }]
+      .flatMap((trace) => ["turn_start", "skill_reminder"].map((type) => ({ type, trace, ok: true, response: secret })));
+    const tracePath = join(stateHome, "debug", "traces", client, "sessions", sessionId, "events.jsonl");
+    const pendingPath = join(stateHome, "adapters", client, "pending.json");
+    const raw = records.map((record) => JSON.stringify(record)).join("\n") + "\n";
+    await put(tracePath, raw);
+    await put(pendingPath, JSON.stringify({ [sessionId]: { turnId: trace.turn_id, transcriptPath: secret } }));
+    const input = { stateHome, client, sessionId };
+    const summary = await readBackgroundStartDiagnostic(input);
+    assert.deepEqual(summary, { trace: "available", pending: "available", turnStarts: 1, skillReminders: 1,
+      pendingMatchesPrompt: true, jobsDirectory: "present" });
+    for (const value of [secret, sessionId, stateHome, hash]) assert.equal(JSON.stringify(summary).includes(value), false);
+    assert.equal(await readFile(tracePath, "utf8"), raw);
+    await put(pendingPath, JSON.stringify({ "foreign-session": { turnId: trace.turn_id } }));
+    assert.equal((await readBackgroundStartDiagnostic(input)).pendingMatchesPrompt, false);
+  }
+});
+
+test("background start diagnostics distinguish missing evidence from unavailable identity or files", async (t) => {
+  const { stateHome, sessionId, put } = await startDiagnosticFixture(t);
+  const input = { stateHome, client: "codebuddy", sessionId };
+  assert.deepEqual(await readBackgroundStartDiagnostic(input), { trace: "missing", pending: "missing",
+    turnStarts: null, skillReminders: null, pendingMatchesPrompt: null, jobsDirectory: "missing" });
+  const invalid = await readBackgroundStartDiagnostic({ ...input, sessionId: "../PRIVATE_SESSION" });
+  assert.equal(invalid.trace, "unavailable");
+  assert.equal(invalid.pending, "unavailable");
+  await put(join(stateHome, "repo-memory-jobs"), "PRIVATE_NOT_A_DIRECTORY");
+  const tracePath = join(stateHome, "debug", "traces", "codebuddy", "sessions", sessionId, "events.jsonl");
+  await put(join(stateHome, "adapters", "codebuddy", "pending.json"), "PRIVATE_INVALID_JSON");
+  for (const text of ["null\n", "PRIVATE_OVERSIZED_TRACE".repeat(60000)]) {
+    await put(tracePath, text);
+    assert.deepEqual(await readBackgroundStartDiagnostic(input), { trace: "unavailable", pending: "unavailable",
+      turnStarts: null, skillReminders: null, pendingMatchesPrompt: null, jobsDirectory: "unavailable" });
+  }
+});
+
+test("background start diagnostics do not treat an unreadable state root as absent evidence", async (t) => {
+  const { stateHome, sessionId } = await startDiagnosticFixture(t);
+  await rm(stateHome, { recursive: true });
+  assert.deepEqual(await readBackgroundStartDiagnostic({ stateHome, client: "codebuddy", sessionId }), {
+    trace: "unavailable", pending: "unavailable", turnStarts: null, skillReminders: null,
+    pendingMatchesPrompt: null, jobsDirectory: "unavailable" });
+});
+
+async function startDiagnosticFixture(t) {
+  const stateHome = await mkdtemp(join(tmpdir(), "background-diagnostic-"));
+  t.after(() => rm(stateHome, { recursive: true, force: true }));
+  const put = async (path, text) => { await mkdir(dirname(path), { recursive: true }); await writeFile(path, text); };
+  return { stateHome, sessionId: "private-session-canary", put };
+}
