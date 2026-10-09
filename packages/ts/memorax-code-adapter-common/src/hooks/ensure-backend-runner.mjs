@@ -224,11 +224,11 @@ function savedStartDiagnostic(stdout) {
     if (report?.action !== "start" || report.ok !== false || typeof report.backend?.ok !== "boolean") return false;
     const reportKeys = {
       codex: "codexAdapter", claude: "claudeAdapter", dsh: "dshAdapter", opencode: "opencodeAdapter",
-      codebuddy: "codebuddyAdapter", workbuddy: "workbuddyAdapter", trae: "traeAdapter",
+      codebuddy: "codebuddyAdapter", workbuddy: "workbuddyAdapter", trae: "traeAdapter", cursor: "cursorAdapter",
     };
     if (Object.hasOwn(report, "clientFailures") && !Array.isArray(report.clientFailures)) return false;
     const clientFailures = report.clientFailures ?? [];
-    if (clientFailures.length > 7) return false;
+    if (clientFailures.length > Object.keys(reportKeys).length) return false;
     const diagnostics = report.backend.ok === false ? [report.diagnostic] : [];
     const seenClients = new Set();
     for (const entry of clientFailures) {

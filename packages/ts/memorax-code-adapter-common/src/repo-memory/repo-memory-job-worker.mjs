@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { atomicWriteJson, readJsonFile, stringOption } from "../config-utils.mjs";
 import {
@@ -11,6 +11,8 @@ import {
   readRepoMemoryJobWorkerContext,
   repoMemoryJobWorkerEnv,
 } from "./repo-memory-job-context.mjs";
+import { gitHead, profileLocalHead, resolveCommit } from "./repo-memory-job-artifacts.mjs";
+import { publishSharedRepoMemorySnapshot, sharedSnapshotRoot } from "./repo-memory-shared-bundle.mjs";
 import { resolveWindowsCliInvocation } from "../windows-cli-invocation.mjs";
 
 let activeChild;
@@ -72,11 +74,12 @@ async function main(args) {
     return finishFailed(request, state, workerContext, "worker_interrupted", { signal: requestedSignal });
   }
 
+  const sourceRepo = state.sharedSnapshot ? sharedSnapshotRoot(request.jobPath) : repo;
   const runner = runnerName(state.runner);
   const command = normalizedCommand(state.command);
   const childResult = await runClient(command, {
     captureStdout: finalMessageSource(state.finalMessageSource) === "stdout",
-    cwd: repo,
+    cwd: sourceRepo,
     env: {
       ...repoMemoryJobWorkerEnv(workerContext),
       MEMORAX_CODE_REPO_MEMORY_SNAPSHOT_HEAD: state.snapshotHead,
@@ -119,7 +122,7 @@ async function main(args) {
     });
   }
 
-  const currentHead = gitHead(repo);
+  const currentHead = gitHead(sourceRepo);
   if (currentHead !== state.snapshotHead) {
     return finishFailed(request, state, workerContext, "snapshot_changed", {
       exitCode: childResult.code,
@@ -128,7 +131,8 @@ async function main(args) {
     });
   }
 
-  const validation = validateBundle(repo, request.validatorPath);
+  const memoryRoot = sourceRepo;
+  const validation = validateBundle(memoryRoot, request.validatorPath);
   if (!validation.ok) {
     return finishFailed(request, state, workerContext, "artifact_validation_failed", {
       exitCode: childResult.code,
@@ -137,7 +141,7 @@ async function main(args) {
     });
   }
 
-  const profileHead = profileLocalHead(join(repo, ".repo_memory", "PROFILE.md"));
+  const profileHead = profileLocalHead(join(memoryRoot, ".repo_memory", "PROFILE.md"));
   const resolvedProfileHead = profileHead ? resolveCommit(repo, profileHead) : undefined;
   if (!resolvedProfileHead || resolvedProfileHead !== state.snapshotHead) {
     return finishFailed(request, state, workerContext, "profile_head_mismatch", {
@@ -365,11 +369,21 @@ function validateBundle(repo, validator) {
 
 function finishSucceeded(request, state, workerContext, details) {
   try {
+    const ownership = readActiveRepoMemoryJobMarker({ memoraxCodeHome: request.memoraxCodeHome, repoRealpath: state.repo });
+    if (!ownership.active || ownership.marker.jobId !== state.jobId || ownership.marker.runId !== state.runId) {
+      return finishFailed(request, state, workerContext, "job_ownership_lost");
+    }
+    const sharedBaselinePublished = state.sharedSnapshot ? publishSharedRepoMemorySnapshot({
+      home: request.memoraxCodeHome, repo: state.repo, snapshot: state.sharedSnapshot,
+      root: sharedSnapshotRoot(request.jobPath), validate: (path) => validateBundle(path, request.validatorPath).ok,
+    }) : false;
+    if (state.sharedSnapshot && !sharedBaselinePublished) return finishFailed(request, state, workerContext, "shared_publication_rejected");
     writeJobState(request.jobPath, {
       ...state,
       status: "succeeded",
       finishedAt: new Date().toISOString(),
       exitCode: details.exitCode,
+      sharedBaselinePublished,
       validation: {
         ok: true,
         exitCode: details.validationExitCode,
@@ -400,6 +414,7 @@ function finishFailed(request, state, workerContext, failureReason, details = {}
 }
 
 function removeOwnedMarker(request, state, workerContext) {
+  if (state.sharedSnapshot) rmSync(sharedSnapshotRoot(request.jobPath), { recursive: true, force: true });
   removeRepoMemoryJobMarkerIfOwned({
     memoraxCodeHome: request.memoraxCodeHome,
     repoRealpath: state.repo,
@@ -454,32 +469,6 @@ function nonEmptyFile(path) {
   } catch {
     return false;
   }
-}
-
-function profileLocalHead(path) {
-  try {
-    const text = readFileSync(path, "utf8").replace(/^\uFEFF/, "");
-    const match = text.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n/);
-    if (!match) return undefined;
-    const line = match[1].split(/\r?\n/).find((entry) => /^local_head\s*:/.test(entry.trim()));
-    return stringOption(line?.replace(/^\s*local_head\s*:\s*/, "").trim().replace(/^['"]|['"]$/g, ""));
-  } catch {
-    return undefined;
-  }
-}
-
-function resolveCommit(repo, ref) {
-  const result = spawnSync("git", ["rev-parse", "--verify", `${ref}^{commit}`], {
-    cwd: repo,
-    encoding: "utf8",
-  });
-  return result.status === 0 ? result.stdout.trim() : undefined;
-}
-
-function gitHead(repo) {
-  const head = resolveCommit(repo, "HEAD");
-  if (!head) throw new Error(`git could not resolve HEAD in ${repo}`);
-  return head;
 }
 
 function definedEntries(value) {

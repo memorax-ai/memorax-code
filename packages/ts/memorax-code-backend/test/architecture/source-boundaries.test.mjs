@@ -31,6 +31,8 @@ const nativeReaders = [
   "clients/dsh/session-turn.ts",
   "clients/opencode/message-turn.ts",
   "clients/codebuddy/jsonl-history.ts",
+  "clients/cursor/database-snapshot.ts",
+  "clients/cursor/database-turn.ts",
 ];
 const clientMemoryRuntimes = [];
 for (const module of clientModules) {
@@ -47,13 +49,29 @@ const rules = [
   },
   {
     name: "provider kernel stays independent from server and adapter lifecycle",
-    importers: ["provider/memorax/adapter.ts", "provider/memorax/http.ts"],
+    importers: ["provider/memorax/adapter.ts", "provider/memorax/http.ts", "provider/jev/adapter.ts"],
     forbidden: ["server-", "entrypoints/", "transport/http/", "clients/codex/plugin-install"],
   },
   {
-    name: "memorax config stays independent from server routing",
-    importers: ["config/memorax-code.ts", "provider/memorax/config.ts"],
+    name: "provider config stays independent from server routing",
+    importers: ["config/memorax-code.ts", "provider/memorax/config.ts", "provider/jev/config.ts"],
     forbidden: ["server-", "entrypoints/", "transport/http/"],
+  },
+  {
+    name: "Jev evaluates normalized input without native content, trace, filesystem, or lifecycle authority",
+    importers: ["provider/jev/adapter.ts"],
+    forbidden: [
+      "clients/",
+      "trace/",
+      "repository/",
+      "node:fs",
+      "node:fs/promises",
+      "node:child_process",
+      "app/",
+      "lifecycle/",
+      "memory/background-diagnostics",
+      "memory/cli-diagnostics",
+    ],
   },
   {
     name: "repository memory identity stays independent from child processes and synchronous filesystem I/O",
@@ -61,15 +79,20 @@ const rules = [
     forbidden: ["node:child_process", "node:fs"],
   },
   {
+    name: "search guidance uses materialized context without native parsing or retained trace authority",
+    importers: ["memory/search-guidance.ts"],
+    forbidden: ["clients/", "trace/", "node:fs", "node:fs/promises", "app/", "lifecycle/", "transport/"],
+  },
+  {
     name: "request-time memory production does not depend on adapter lifecycle",
     importers: [
-      "memory/automatic-retrieval.ts",
       "memory/automatic-writeback.ts",
       "memory/harness-runtime.ts",
       ...clientMemoryRuntimes,
       ...nativeReaders,
       "memory/coding-context.ts",
       "memory/turn-coordinator.ts",
+      "memory/search-guidance.ts",
       "memory/service.ts",
       "memory/writeback-buffer.ts",
       "memory/writeback-chunk.ts",
@@ -95,16 +118,17 @@ const rules = [
       "lifecycle/",
       "provider/memorax/adapter",
       "provider/memorax/http",
+      "provider/jev/adapter",
     ],
   },
   {
     name: "memory service kernel receives Backend diagnostics through a port",
     importers: [
-      "memory/automatic-retrieval.ts",
       "memory/automatic-writeback.ts",
       "memory/harness-runtime.ts",
       ...clientMemoryRuntimes,
       "provider/memorax/adapter.ts",
+      "provider/jev/adapter.ts",
       "memory/turn-coordinator.ts",
       "memory/service.ts",
     ],

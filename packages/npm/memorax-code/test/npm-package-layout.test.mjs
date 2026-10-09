@@ -4,6 +4,7 @@ import {
   isAllowedNpmPackFilePath,
   isAllowedNpmPackPath,
   isReviewedCredentialRuntimePath,
+  requiredNpmPackagePaths,
 } from "../../../../scripts/npm-package-layout.mjs";
 import { npmShippedDocs } from "../../../../scripts/npm-shipped-docs.mjs";
 
@@ -68,8 +69,18 @@ test("Trae adapter ships the canonical MemoraX skill and Hook runtime", () => {
   assert.equal(isAllowedNpmPackPath("lib/memorax-code-trae-adapter/hooks/runtime-hook.mjs"), true);
 });
 
+test("Cursor native Repo Memory agent must be included in the npm package", () => {
+  for (const path of [
+    "lib/memorax-code-cursor-adapter/agents/memorax-repo-memory.md",
+    "lib/memorax-code-cursor-adapter/src/native-repo-memory.mjs",
+  ]) {
+    assert.equal(isAllowedNpmPackFilePath(path), true);
+    assert.ok(requiredNpmPackagePaths({ bin: { "memorax-code": "bin/memorax-code.mjs" } }).includes(path));
+  }
+});
+
 test("runtime package accepts the User Profile launcher and rejects Python artifacts", () => {
-  for (const adapter of ["codex", "claude", "dsh", "opencode", "codebuddy", "trae"]) {
+  for (const adapter of ["codex", "claude", "dsh", "opencode", "codebuddy", "trae", "cursor"]) {
     const scripts = `lib/memorax-code-${adapter}-adapter/skills/memorax-code/scripts`;
     assert.equal(isAllowedNpmPackFilePath(`${scripts}/user-profile-memory.mjs`), true);
     for (const suffix of ["py", "pyc", "pyo"]) {

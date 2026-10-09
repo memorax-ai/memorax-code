@@ -13,7 +13,7 @@ import type { TraceContext } from "../trace/context.js";
 import type { PendingCodingSessionTurn } from "../coding-sessions/contracts.js";
 
 export type MemoryWritebackBufferDecision = {
-  client: "codex" | "claude-code" | "opencode" | "dsh" | "codebuddy" | "workbuddy" | "trae";
+  client: "codex" | "claude-code" | "opencode" | "dsh" | "codebuddy" | "workbuddy" | "trae" | "cursor";
   sessionKey: string;
   idempotencyKey: string;
   messages: WritebackMessage[];

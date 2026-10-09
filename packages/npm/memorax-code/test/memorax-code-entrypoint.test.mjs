@@ -314,7 +314,7 @@ test("user-profile preserves piped helper output and exit status without requiri
       "process.exitCode = 7;",
       "",
     ].join("\n"));
-    const args = ["list", "--repo", join(fixture.root, "repo with spaces")];
+    const args = ["list", "--home", join(fixture.root, "home with spaces")];
 
     const result = runCli(fixture, ["user-profile", ...args]);
 

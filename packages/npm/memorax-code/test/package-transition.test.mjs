@@ -16,6 +16,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { parse } from "../../../ts/memorax-code-backend/node_modules/smol-toml/dist/index.js";
 
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const adapterCommonRoot = join(packageRoot, "..", "..", "ts", "memorax-code-adapter-common", "src");
@@ -27,19 +28,72 @@ test("fresh install and configured-but-stopped install are lifecycle no-ops", as
   for (const name of ["fresh", "configured-but-stopped"]) {
     await t.test(name, async () => {
       const fixture = await createFixture();
+      const path = join(fixture.home, "config.toml");
+      const original = "[clients]\ncodex = true\n";
       try {
         if (name === "configured-but-stopped") {
           await mkdir(fixture.home, { recursive: true });
-          await writeFile(join(fixture.home, "config.toml"), "[clients]\ncodex = true\n");
+          await writeFile(path, original);
         }
         assert.equal((await runEntry(fixture, "preinstall")).code, 0);
+        if (name === "configured-but-stopped") assert.equal(await readFile(path, "utf8"), original);
         assert.equal((await runEntry(fixture, "postinstall")).code, 0);
+        if (name === "fresh") {
+          assert.equal(await pathExists(fixture.home), false);
+        } else {
+          const updated = await readFile(path, "utf8");
+          assert.equal(updated.startsWith(original), true);
+          assert.deepEqual(parse(updated), { ...parse(original), jev: { enabled: false, api_key: "" } });
+          const after = await stat(path);
+          assert.equal((await runEntry(fixture, "preinstall")).code, 0);
+          assert.equal((await runEntry(fixture, "postinstall")).code, 0);
+          assert.equal(await readFile(path, "utf8"), updated);
+          const repeated = await stat(path);
+          assert.equal(repeated.ino, after.ino);
+          assert.equal(repeated.mtimeMs, after.mtimeMs);
+        }
         assert.equal(await pathExists(fixture.logPath), false);
         assert.equal(await pathExists(join(fixture.home, "runtime", "install")), false);
       } finally {
         await fixture.cleanup();
       }
     });
+  }
+});
+
+test("postinstall preserves malformed config and reports a content-free migration failure", async () => {
+  const fixture = await createFixture();
+  const path = join(fixture.home, "config.toml");
+  const original = '[memorax]\napi_key = "malformed-config-key-canary"\nbroken = [\n';
+  try {
+    await mkdir(fixture.home, { recursive: true });
+    await writeFile(path, original);
+    assert.equal((await runEntry(fixture, "preinstall")).code, 0);
+    const { runUpdateInstallWithDiagnostics } = await import(pathToFileURL(join(fixture.root, "lib", "update-diagnostics.mjs")).href);
+    let result;
+    const installation = await runUpdateInstallWithDiagnostics(async (env) => {
+      result = await runEntry({ ...fixture, env: { ...fixture.env, ...env } }, "postinstall");
+      return { exitCode: result.code, signal: null };
+    }, {});
+    assert.equal(result.code, 1);
+    assert.equal(await readFile(path, "utf8"), original);
+    assert.match(result.stderr, /INSTALL_CONFIG_MIGRATION_FAILED.*config:/);
+    assert.doesNotMatch(result.stdout + result.stderr, /malformed-config-key-canary|broken =|api_key/);
+    const diagnostics = await readDiagnostics(fixture);
+    assert.equal(diagnostics.length, 1);
+    assert.equal(diagnostics[0].errorCode, "INSTALL_CONFIG_MIGRATION_FAILED");
+    assert.equal(diagnostics[0].stage, "config");
+    assert.equal(diagnostics[0].recordReason, "invalid_toml");
+    assert.equal(diagnostics[0].configStage, "parse_existing");
+    assert.equal(diagnostics[0].configState, "preserved");
+    assert.equal(diagnostics[0].operation, "install.config");
+    assert.equal(installation.failure.children.length, 1);
+    assert.equal(installation.failure.children[0].fields.configStage, "parse_existing");
+    assert.equal(installation.failure.children[0].fields.configState, "preserved");
+    assert.doesNotMatch(JSON.stringify(diagnostics), /malformed-config-key-canary|broken =|api_key/);
+    assert.equal(await pathExists(fixture.logPath), false);
+  } finally {
+    await fixture.cleanup();
   }
 });
 
@@ -122,6 +176,28 @@ test("a live Backend is retired before replacement and restored once afterward",
   }
 });
 
+test("postinstall publishes a one-shot marker when an update parent requests it", async () => {
+  const fixture = await createFixture({ transitionText: recordText() });
+  try {
+    const transition = await import(pathToFileURL(join(fixture.root, "lib", "package-transition.mjs")).href);
+    await transition.runNpmPostinstallPackageTransition({
+      memoraxCodeHome: fixture.home,
+      memoraxCodeBin: join(fixture.root, "bin", "memorax-code.mjs"),
+      writeRestoreMarker: true,
+    });
+    assert.equal(
+      transition.consumePackageRestoreMarker(fixture.home, "123e4567-e89b-42d3-a456-426614174000"),
+      true,
+    );
+    assert.equal(
+      transition.consumePackageRestoreMarker(fixture.home, "123e4567-e89b-42d3-a456-426614174000"),
+      false,
+    );
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 test("relative MEMORAX_CODE_HOME is resolved before lifecycle commands change cwd", async () => {
   const fixture = await createFixture({ pid: process.pid });
   try {
@@ -142,8 +218,12 @@ test("relative MEMORAX_CODE_HOME is resolved before lifecycle commands change cw
 
 test("managed DSH state is quiesced and restored without Backend PID authority", async () => {
   const fixture = await createFixture({ withDshState: true });
+  const path = join(fixture.home, "config.toml");
+  const original = "[clients]\ncodex = false\n";
   try {
+    await writeFile(path, original);
     assert.equal((await runEntry(fixture, "preinstall")).code, 0);
+    assert.equal(await readFile(path, "utf8"), original);
     assert.equal(JSON.parse(await readFile(fixture.transitionPath, "utf8")).state, "retired");
     const stopCall = (await readCalls(fixture))[0];
     assert.equal(stopCall.command, "stop");
@@ -151,6 +231,10 @@ test("managed DSH state is quiesced and restored without Backend PID authority",
 
     assert.equal((await runEntry(fixture, "postinstall")).code, 0);
     assert.deepEqual((await readCalls(fixture)).map((call) => call.command), ["stop", "start", "status"]);
+    const updated = await readFile(path, "utf8");
+    assert.equal(updated.startsWith(original), true);
+    assert.deepEqual(parse(updated), { ...parse(original), jev: { enabled: false, api_key: "" } });
+    assert.equal(await pathExists(fixture.transitionPath), false);
   } finally {
     await fixture.cleanup();
   }
@@ -389,9 +473,13 @@ test("postinstall rejects invalid and unsupported transition records without con
   for (const [name, text] of scenarios) {
     await t.test(name, async () => {
       const fixture = await createFixture({ transitionText: text, publicUpdate: true });
+      const path = join(fixture.home, "config.toml");
+      const original = "[clients]\ncodex = false\n";
       try {
+        await writeFile(path, original);
         const result = await runEntry(fixture, "postinstall");
         assert.equal(result.code, 1);
+        assert.equal(await readFile(path, "utf8"), original);
         const [diagnostic] = await readDiagnostics(fixture);
         assert.equal(diagnostic.stage, "transition_read");
         assert.equal(diagnostic.errorCode, name === "unsupported version"
@@ -593,11 +681,12 @@ async function createFixture({
     }
     await writeFile(target, source);
   }
-  for (const relativePath of ["config-utils.mjs", "diagnostic-record.mjs", "deployment-failure.mjs", "runtime-record.mjs", "windows-directory-retry.mjs", "package-recovery.mjs"]) {
+  for (const relativePath of ["config-utils.mjs", "diagnostic-record.mjs", "deployment-failure.mjs", "runtime-record.mjs", "windows-directory-retry.mjs", "package-recovery.mjs", "memorax-code-config-file.mjs", "jev-config-defaults.mjs"]) {
     const target = join(root, "lib", "memorax-code-adapter-common", "src", relativePath);
     await mkdir(dirname(target), { recursive: true });
     await cp(join(adapterCommonRoot, relativePath), target);
   }
+  await cp(join(packageRoot, "..", "..", "ts", "memorax-code-backend", "node_modules", "smol-toml"), join(root, "node_modules", "smol-toml"), { recursive: true });
   if (publicUpdate) {
     // Exercise the shipped update CLI and transition module against a fake lifecycle CLI.
     await cp(join(packageRoot, "bin", "memorax-code.mjs"), join(root, "bin", "update-cli.mjs"));

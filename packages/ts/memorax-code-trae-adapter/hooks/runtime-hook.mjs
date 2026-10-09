@@ -10,9 +10,10 @@ import { writeTraeRuntimeObservation } from "../src/runtime-observation.mjs";
 const hookObservedAt = Date.now();
 const runtimeRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const commonRoot = join(runtimeRoot, "memorax-code-adapter-common", "src");
-const { buildRepoProcedureMemoryContext } = await import(pathToFileURL(join(commonRoot, "repo-memory", "repo-procedure-memory-context.mjs")).href);
-const { buildRepoUserProfilePreferencesContext } = await import(pathToFileURL(join(commonRoot, "repo-memory", "repo-user-profile-context.mjs")).href);
+const { buildProcedureMemoryContext } = await import(pathToFileURL(join(commonRoot, "personal-memory", "procedure-memory-context.mjs")).href);
+const { buildUserProfilePreferencesContext } = await import(pathToFileURL(join(commonRoot, "personal-memory", "user-profile-context.mjs")).href);
 const { resolveBackendConnection } = await import(pathToFileURL(join(commonRoot, "backend-connection.mjs")).href);
+const { requestMemorySearchGuidance } = await import(pathToFileURL(join(commonRoot, "hooks", "memory-search-guidance.mjs")).href);
 const { postBackendCommand } = await import(pathToFileURL(join(commonRoot, "backend-command.mjs")).href);
 const {
   atomicWriteJson,
@@ -65,6 +66,7 @@ const reminderOptions = {
 const personalMemoryContextOptions = {
   adapterDir: "trae",
   debugEnv: "MEMORAX_CODE_TRAE_HOOK_DEBUG",
+  memoraxCodeHome: home,
   sessionKeyPrefix: "trae",
 };
 const activeTurnsPath = join(home, "adapters", "trae", "active-turns.json");
@@ -97,7 +99,7 @@ if (event === "SessionStart") {
   const workspaceKind = stringValue(input.workspace_kind) ?? stringValue(input.workspaceKind);
   const activeTurnPlan = prepareActiveTurn({ sessionId, prompt, cwd, workspaceKind });
   const activeTurn = activeTurnPlan.record;
-  const response = await post("/memory/turn-start", {
+  const turnStartCommand = {
     version: 1,
     client: "trae",
     sessionId,
@@ -105,32 +107,22 @@ if (event === "SessionStart") {
     prompt,
     cwd,
     workspaceKind,
-  });
+  };
+  const response = await post("/memory/turn-start", turnStartCommand);
   // Only accepted starts may replace the persisted prompt used to pair Stop.
   if (response?.ok !== true || !commitActiveTurn(activeTurnPlan)) process.exit(0);
-  const repoMemoryWorktree = stringValue(response?.repoMemoryWorktree);
   const reminderResult = await evaluateMemorySkillReminder({
     ...reminderOptions,
+    evaluateSearchGuidance: () => requestMemorySearchGuidance({ body: turnStartCommand, memoraxCodeHome: home }),
     additionalReminderContext: personalMemoryReminderContext(MEMORY_SKILL_INVOCATION),
     memorySkillInvocation: MEMORY_SKILL_INVOCATION,
     remindOnFirstTurn: true,
     requireTranscriptPath: false,
-    ...(repoMemoryWorktree ? {
-      memoryImpactContext: MEMORY_IMPACT_REMINDER_CONTEXT,
-      buildCadenceReminderContext: (hookInput) => buildRepoProcedureMemoryContext({
-        ...hookInput,
-        cwd: repoMemoryWorktree,
-      }, personalMemoryContextOptions),
-      buildPersonalMemoryContext: (hookInput) => buildRepoUserProfilePreferencesContext({
-        ...hookInput,
-        cwd: repoMemoryWorktree,
-      }, personalMemoryContextOptions),
-    } : {}),
+    memoryImpactContext: MEMORY_IMPACT_REMINDER_CONTEXT,
+    buildCadenceReminderContext: () => buildProcedureMemoryContext(personalMemoryContextOptions),
+    buildPersonalMemoryContext: () => buildUserProfilePreferencesContext(personalMemoryContextOptions),
   }, { ...input, turnId: activeTurn.turnId, workspaceKind });
-  const context = [
-    stringValue(response?.additionalContext),
-    stringValue(reminderResult?.additionalContext),
-  ].filter(Boolean).join("\n\n");
+  const context = stringValue(reminderResult?.additionalContext);
   const systemMessage = stringValue(response?.userNotice);
   if (context || systemMessage) {
     process.stdout.write(`${JSON.stringify({

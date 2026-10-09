@@ -106,6 +106,13 @@ try {
   if (packedTraeSkill !== canonicalSkill) {
     throw new Error("npm pack Trae skill must remain byte-identical to the canonical skill");
   }
+  const packedCursorSkill = await readFile(
+    join(extracted, "package", "lib/memorax-code-cursor-adapter/skills/memorax-code/SKILL.md"),
+    "utf8",
+  );
+  if (packedCursorSkill !== canonicalSkill) {
+    throw new Error("npm pack Cursor skill must remain byte-identical to the canonical skill");
+  }
   await assertLocalTraceOnly({
     repoRoot,
     artifactRoots: [extracted],

@@ -1,14 +1,114 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import fs from "node:fs";
 import * as nodeFs from "node:fs";
 import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, readlink, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { parse } from "../../../ts/memorax-code-backend/node_modules/smol-toml/dist/index.js";
+import { appendMissingJevConfig } from "../../../ts/memorax-code-adapter-common/src/jev-config-defaults.mjs";
 import {
   CONFIG_UPDATE_WARNING,
   updateConfigFileAtomically,
+  updateConfigFileWithLock,
 } from "../../../ts/memorax-code-adapter-common/src/memorax-code-config-file.mjs";
+
+test("Jev defaults preserve existing definitions and append missing defaults without rewriting text", () => {
+  for (const original of [
+    '[jev]\nenabled = true\napi_key = "existing-key"\nfuture_option = "keep"\n',
+    '[jev]\nenabled = false # Intentionally disabled.\n',
+    '[jev]\napi_key = "existing-key"\n',
+    'jev = { enabled = true, api_key = "existing-key" }\n',
+    'jev.enabled = true\njev.api_key = "existing-key"\n',
+    '["jev"]\nenabled = true\n',
+    'jev = "invalid but user-owned"\n',
+  ]) {
+    assert.equal(appendMissingJevConfig(original, parse(original)), original);
+  }
+  for (const original of ["", '[memorax]\napi_key = "keep"', '# Keep comments.\r\n[memorax]\r\napi_key = "keep"\r\n']) {
+    const updated = appendMissingJevConfig(original, parse(original));
+    assert.ok(updated.startsWith(original));
+    assert.deepEqual(parse(updated), { ...parse(original), jev: { enabled: false, api_key: "" } });
+    assert.equal(appendMissingJevConfig(updated, parse(updated)), updated);
+    if (original.includes("\r\n")) assert.doesNotMatch(updated, /(?<!\r)\n/);
+  }
+});
+
+test("existing-only config migration does not create an absent home", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-config-absent-"));
+  try {
+    const path = join(root, "absent", "config.toml");
+    assert.equal(updateConfigFileWithLock({ path, parseToml: parse, transform: (text) => text }), "unchanged");
+    assert.deepEqual(await readdir(root), []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("concurrent config migration and preference update retain both changes", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-config-concurrent-"));
+  const path = join(root, "config.toml");
+  const releasePath = join(root, "release");
+  const children = [];
+  const configModule = new URL("../../../ts/memorax-code-adapter-common/src/memorax-code-config-file.mjs", import.meta.url).href;
+  const defaultsModule = new URL("../../../ts/memorax-code-adapter-common/src/jev-config-defaults.mjs", import.meta.url).href;
+  const tomlModule = new URL("../../../ts/memorax-code-backend/node_modules/smol-toml/dist/index.js", import.meta.url).href;
+  function start(transform) {
+    const child = spawn(process.execPath, ["--input-type=module", "-e", [
+      'import * as fs from "node:fs";',
+      `import { updateConfigFileWithLock } from ${JSON.stringify(configModule)};`,
+      `import { appendMissingJevConfig } from ${JSON.stringify(defaultsModule)};`,
+      `import { parse } from ${JSON.stringify(tomlModule)};`,
+      'process.send("started");',
+      `const result = updateConfigFileWithLock({path: ${JSON.stringify(path)}, parseToml: parse, transform: ${transform}});`,
+      'process.exit(result === "updated" ? 0 : 1);',
+    ].join("\n")], { stdio: ["ignore", "pipe", "pipe", "ipc"] });
+    children.push(child);
+    let stderr = "";
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    const done = new Promise((resolve, reject) => {
+      child.on("error", reject);
+      child.on("exit", (code) => resolve({ code, stderr }));
+    });
+    const entered = new Promise((resolve) => child.on("message", (message) => {
+      if (message === "entered") resolve();
+    }));
+    const started = new Promise((resolve) => child.once("message", resolve));
+    return { done, entered, started };
+  }
+  try {
+    await writeFile(path, '[memorax]\napi_key = "preserved-secret"\n');
+    const preference = start(`(text) => {
+      process.send("entered");
+      const deadline = Date.now() + 3000;
+      while (!fs.existsSync(${JSON.stringify(releasePath)})) {
+        if (Date.now() >= deadline) throw new Error("test barrier timed out");
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+      }
+      return text + '\\n[memory.add]\\noutput_language = "en"\\n';
+    }`);
+    await Promise.race([preference.entered, preference.done.then((result) => {
+      throw new Error(`preference writer exited before reading config: ${result.stderr}`);
+    })]);
+    const migration = start("appendMissingJevConfig");
+    await migration.started;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await writeFile(releasePath, "release");
+    for (const result of await Promise.all([preference.done, migration.done])) {
+      assert.equal(result.code, 0, result.stderr);
+    }
+    assert.deepEqual(parse(await readFile(path, "utf8")), {
+      memorax: { api_key: "preserved-secret" },
+      memory: { add: { output_language: "en" } },
+      jev: { enabled: false, api_key: "" },
+    });
+  } finally {
+    for (const child of children) if (child.exitCode === null) child.kill();
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 const configUpdateBlock = [
   "[feature.sample]",
@@ -31,6 +131,77 @@ function updateOptions(path, overrides = {}) {
     ...overrides,
   };
 }
+
+test("locked config updates preserve the primary failure when lock release also fails", async (t) => {
+  for (const [name, verificationFails, rollbackFails] of [
+    ["verification and rollback fail", true, true],
+    ["verification fails and rollback succeeds", true, false],
+    ["only lock release fails after a successful update", false, false],
+  ]) {
+    await t.test(name, async () => {
+      const root = await mkdtemp(join(tmpdir(), "memorax-code-config-unlock-failure-"));
+      const path = join(root, "config.toml");
+      const original = '[memorax]\nuser_id = "preserved-user"\n';
+      const originalRead = fs.readFileSync;
+      const failures = [];
+      const warnings = [];
+      let readCalls = 0;
+      let renameCalls = 0;
+      let releaseReadCalls = 0;
+      try {
+        await writeFile(path, original);
+        fs.readFileSync = (target, ...args) => {
+          if (target === `${path}.lock`) {
+            releaseReadCalls += 1;
+            throw Object.assign(new Error("private lock failure"), { code: "EACCES" });
+          }
+          return originalRead(target, ...args);
+        };
+        syncBuiltinESMExports();
+        const result = updateConfigFileWithLock(updateOptions(path, {
+          operations: {
+            readFileSync: (...args) => {
+              readCalls += 1;
+              if (readCalls === 2 && verificationFails) {
+                throw Object.assign(new Error("private verification failure"), { code: "EIO" });
+              }
+              return originalRead(...args);
+            },
+            renameSync: (...args) => {
+              renameCalls += 1;
+              if (renameCalls === 2 && rollbackFails) {
+                throw Object.assign(new Error("private rollback failure"), { code: "EPERM" });
+              }
+              return nodeFs.renameSync(...args);
+            },
+          },
+          warn: (message) => warnings.push(message),
+          onFailure: (failure) => failures.push(failure),
+        }));
+        assert.equal(result, "failed");
+        assert.equal(releaseReadCalls, 1);
+        assert.equal(await readFile(path, "utf8"), verificationFails && !rollbackFails ? original : appendConfigBlock(original));
+        const backups = (await readdir(root)).filter((entry) => entry.endsWith(".bak"));
+        assert.equal(backups.length, rollbackFails ? 1 : 0);
+        if (rollbackFails) assert.equal(await readFile(join(root, backups[0]), "utf8"), original);
+        assert.deepEqual(failures, [verificationFails ? {
+          stage: "verify", errorCode: "CONFIG_VERIFY_FAILED", systemCode: "EIO",
+          configState: rollbackFails ? "unknown" : "restored",
+          cleanupErrorCode: rollbackFails ? "CONFIG_ROLLBACK_FAILED" : "CONFIG_LOCK_RELEASE_FAILED",
+          cleanupSystemCode: rollbackFails ? "EPERM" : "EACCES",
+        } : {
+          stage: "unlock", errorCode: "CONFIG_UNLOCK_FAILED", configState: "unknown", systemCode: "EACCES",
+        }]);
+        assert.deepEqual(warnings, [CONFIG_UPDATE_WARNING]);
+        assert.doesNotMatch(JSON.stringify(failures), /private|preserved-user|config\.toml/);
+      } finally {
+        fs.readFileSync = originalRead;
+        syncBuiltinESMExports();
+        await rm(root, { recursive: true, force: true });
+      }
+    });
+  }
+});
 
 test("atomic config seeding creates mode 0600 and preserves existing bytes, mode, and owner", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-config-seed-success-"));

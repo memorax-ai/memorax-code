@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  parsePreCompactCommand,
   parseSkillReminderCommand,
   parseTurnStartCommand,
   parseWritebackCommand,
@@ -8,7 +9,62 @@ import {
 import { contentTurnId, memoryHookCommands } from "../support/memory-hook-commands.mjs";
 
 const INVALID = { ok: false, error: "invalid memory Hook command" };
+
+test("Cursor pre-compact accepts only native identity and absolute local paths", () => {
+  const { start } = memoryHookCommands().find(({ start }) => start.client === "cursor");
+  const { prompt, ...command } = start;
+  assert.deepEqual(parsePreCompactCommand(command), { ok: true, command });
+  const { transcriptPath, ...withoutTranscript } = command;
+  assert.deepEqual(parsePreCompactCommand(withoutTranscript), { ok: true, command: withoutTranscript });
+  for (const [name, fields] of [
+    ["missing version", { version: undefined }],
+    ["unsupported version", { version: 2 }],
+    ["missing client", { client: undefined }],
+    ["foreign client", { client: "codex" }],
+    ["unknown client", { client: "unknown-client" }],
+    ["missing conversation", { sessionId: undefined }],
+    ["invalid conversation", { sessionId: "session" }],
+    ["missing generation", { turnId: undefined }],
+    ["invalid generation", { turnId: "generation" }],
+    ["missing workspace", { cwd: undefined }],
+    ["relative workspace", { cwd: "workspace" }],
+    ["NUL workspace", { cwd: "/tmp/workspace\0" }],
+    ["missing database", { databasePath: undefined }],
+    ["relative database", { databasePath: "state.vscdb" }],
+    ["NUL database", { databasePath: "/tmp/state.vscdb\0" }],
+    ["relative transcript", { transcriptPath: "transcript.jsonl" }],
+    ["NUL transcript", { transcriptPath: "/tmp/transcript.jsonl\0" }],
+    ["invalid transcript", { transcriptPath: null }],
+    ["prompt is not an observation field", { prompt: "Do not register a turn." }],
+    ["content is not authority", { content: "Not native context." }],
+    ["trigger is not success authority", { trigger: "manual" }],
+    ["workspace classification is not accepted", { workspaceKind: "general" }],
+    ["unknown field", { unexpected: true }],
+  ]) {
+    assert.deepEqual(parsePreCompactCommand({ ...command, ...fields }), INVALID, name);
+  }
+});
+
 const invalidFields = {
+  cursor: {
+    start: [
+      ["missing database authority", { databasePath: undefined }],
+      ["relative database path", { databasePath: "state.vscdb" }],
+      ["missing generation", { turnId: undefined }],
+      ["invalid conversation", { sessionId: "not-a-conversation" }],
+      ["missing workspace", { cwd: undefined }],
+      ["absent prompt observation", { prompt: undefined }],
+      ["foreign prompt identity", { promptId: "claude-prompt" }],
+    ],
+    writeback: [
+      ["missing database authority", { databasePath: undefined }],
+      ["native response fallback forbidden", { lastAssistantMessage: "Hook text" }],
+      ["stop cannot carry response digest", { responseDigest: "a".repeat(64) }],
+      ["unknown completion status", { status: "success" }],
+      ["non-string status", { status: ["completed"] }],
+      ["missing generation", { turnId: undefined }],
+    ],
+  },
   codex: {
     start: [
       ["unknown field", { unexpected: true }],
@@ -105,5 +161,99 @@ test("Trae reminder commands preserve Hook correlation without foreign transcrip
   const { prompt, ...identity } = start;
   const command = { ...identity, content: "Use the memorax-code skill.", triggers: ["cadence"] };
   assert.deepEqual(parseSkillReminderCommand(command), { ok: true, command });
+  const guided = { ...command, triggers: ["search_guidance"] };
+  assert.deepEqual(parseSkillReminderCommand(guided), { ok: true, command: guided });
   assert.deepEqual(parseSkillReminderCommand({ ...command, transcriptPath: "/tmp/trae.jsonl" }), INVALID);
+});
+
+test("Cursor response digests and empty continuation prompts retain exact native identity", () => {
+  const { start } = memoryHookCommands().find(({ start }) => start.client === "cursor");
+  const { prompt, ...identity } = start;
+  const response = { ...identity, phase: "response", responseDigest: "a".repeat(64) };
+  assert.deepEqual(parseWritebackCommand(response), { ok: true, command: response });
+  for (const fields of [{ status: "completed" }, { responseDigest: "A".repeat(64) }, { responseDigest: "short" }]) {
+    assert.deepEqual(parseWritebackCommand({ ...response, ...fields }), INVALID);
+  }
+  const continuation = { ...start, prompt: "" };
+  assert.deepEqual(parseTurnStartCommand(continuation), { ok: true, command: continuation });
+  const { transcriptPath, ...firstPrompt } = start;
+  assert.deepEqual(parseTurnStartCommand(firstPrompt), { ok: true, command: firstPrompt });
+  const reminder = { ...identity, content: "Use the memorax-code skill.", triggers: ["cadence"] };
+  delete reminder.transcriptPath;
+  delete reminder.databasePath;
+  assert.deepEqual(parseSkillReminderCommand(reminder), { ok: true, command: reminder });
+});
+
+test("Cursor Hook commands preserve native path bytes without accepting blank paths", () => {
+  const { start, writeback } = memoryHookCommands().find(({ start }) => start.client === "cursor");
+  const paths = {
+    cwd: start.cwd + " ", databasePath: start.databasePath + " ", transcriptPath: start.transcriptPath + " ",
+  };
+  const { prompt, ...identity } = { ...start, ...paths };
+  const { databasePath, transcriptPath, ...reminderIdentity } = identity;
+  const commands = [
+    ["turn-start", parseTurnStartCommand, { ...identity, prompt }],
+    ["writeback-response", parseWritebackCommand, { ...identity, phase: "response", responseDigest: "a".repeat(64) }],
+    ["writeback-stop", parseWritebackCommand, { ...writeback, ...paths }],
+    ["pre-compact", parsePreCompactCommand, identity],
+    ["skill-reminder", parseSkillReminderCommand, {
+      ...reminderIdentity, content: "Use the memorax-code skill.", triggers: ["cadence"],
+    }],
+  ];
+  for (const [name, parse, command] of commands) {
+    assert.deepEqual(parse(command), { ok: true, command }, name + ": exact paths");
+    for (const field of ["cwd", "databasePath", "transcriptPath"]) {
+      if (!(field in command)) continue;
+      for (const value of [" ", null]) {
+        assert.deepEqual(parse({ ...command, [field]: value }), INVALID, name + ": invalid " + field);
+      }
+    }
+  }
+});
+
+test("Cursor projectless Hook commands preserve General identity without a workspace", () => {
+  const { start } = memoryHookCommands().find(({ start }) => start.client === "cursor");
+  const projectlessIdentity = { ...start };
+  delete projectlessIdentity.cwd;
+  delete projectlessIdentity.transcriptPath;
+  delete projectlessIdentity.prompt;
+  const projectless = { ...projectlessIdentity, workspaceKind: "projectless" };
+  const turnStart = { ...projectless, prompt: "A projectless Cursor prompt." };
+  assert.deepEqual(parseTurnStartCommand(turnStart), { ok: true, command: turnStart });
+
+  const response = { ...projectless, phase: "response", responseDigest: "a".repeat(64) };
+  assert.deepEqual(parseWritebackCommand(response), { ok: true, command: response });
+  const preCompact = { ...projectless };
+  assert.deepEqual(parsePreCompactCommand(preCompact), { ok: true, command: preCompact });
+  const reminder = { ...projectless, content: "Use the memorax-code skill.", triggers: ["cadence"] };
+  delete reminder.databasePath;
+  assert.deepEqual(parseSkillReminderCommand(reminder), { ok: true, command: reminder });
+
+  assert.deepEqual(parseTurnStartCommand({ ...projectless, workspaceKind: "general", prompt: "invalid" }), INVALID);
+  assert.deepEqual(parseTurnStartCommand({ ...projectlessIdentity, prompt: "missing classification" }), INVALID);
+});
+
+test("Cursor Hook commands require exactly one workspace identity", () => {
+  const { start, writeback } = memoryHookCommands().find(({ start }) => start.client === "cursor");
+  const { prompt, ...identity } = start;
+  const { databasePath, transcriptPath, ...reminderIdentity } = identity;
+  const commands = [
+    ["turn-start", parseTurnStartCommand, start],
+    ["writeback-response", parseWritebackCommand, { ...identity, phase: "response", responseDigest: "a".repeat(64) }],
+    ["writeback-stop", parseWritebackCommand, writeback],
+    ["pre-compact", parsePreCompactCommand, identity],
+    ["skill-reminder", parseSkillReminderCommand, {
+      ...reminderIdentity, content: "Use the memorax-code skill.", triggers: ["cadence"],
+    }],
+  ];
+  for (const [name, parse, command] of commands) {
+    assert.deepEqual(parse(command), { ok: true, command }, name + ": workspace");
+    const { cwd, ...withoutWorkspace } = command;
+    const projectless = { ...withoutWorkspace, workspaceKind: "projectless" };
+    assert.deepEqual(parse(projectless), { ok: true, command: projectless }, name + ": projectless");
+  }
+  assert.deepEqual(
+    commands.map(([name, parse, command]) => [name, parse({ ...command, workspaceKind: "projectless" })]),
+    commands.map(([name]) => [name, INVALID]),
+  );
 });

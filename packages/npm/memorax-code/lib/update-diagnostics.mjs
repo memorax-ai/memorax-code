@@ -22,6 +22,7 @@ const STAGES = {
   restore: "The installed Backend could not be restored.",
   verify: "The restored Backend could not be verified.",
   consume: "The completed package transition could not be consumed.",
+  config: "Existing configuration could not be safely updated with optional defaults.",
   unknown: "The package update could not be completed.",
 };
 const CODE_MESSAGES = {
@@ -39,6 +40,7 @@ const CODE_MESSAGES = {
 const CODES = new Set([
   "UPDATE_FAILED", "UPDATE_VERSION_CHECK_FAILED", "UPDATE_VERSION_RESPONSE_INVALID",
   "UPDATE_INSTALL_FAILED", "UPDATE_INSTALLED_PACKAGE_MISMATCH", "UPDATE_RECONCILE_FAILED", "UPDATE_STATE_WRITE_FAILED",
+  "INSTALL_CONFIG_MIGRATION_FAILED",
   "PACKAGE_TRANSITION_ID_INVALID",
   "UPDATE_SETUP_STATE_INVALID", "PACKAGE_TRANSITION_FAILED", "PACKAGE_TRANSITION_PENDING",
   "PACKAGE_TRANSITION_DURABILITY_UNCERTAIN", "PACKAGE_TRANSITION_PID_REMAINS",
@@ -65,6 +67,7 @@ const RECORD_REASONS = new Set([
   "unknown_fields", "unknown_or_missing_fields", "invalid_transition_id", "invalid_started_at",
   "invalid_source_version", "invalid_retired_at", "invalid_completed_at", "invalid_completed_by_version",
   "invalid_path", "invalid_parent_path", "revision_changed",
+  "not_regular_file", "invalid_toml", "content_mismatch", "type_mismatch", "mode_mismatch", "owner_mismatch",
   "invalid_pid", "missing_instance_id", "invalid_instance_id", "invalid_host", "invalid_port",
   "invalid_url", "invalid_log_path", "invalid_token_path", "invalid_token", "invalid_created_at", "invalid_rotated_at",
 ]);
@@ -75,6 +78,11 @@ const FAILURE_REASONS = new Set([
   "invalid_state", "unknown",
 ]);
 const SIGNALS = new Set(["SIGTERM", "SIGKILL", "SIGINT", "SIGABRT", "SIGHUP"]);
+const CONFIG_STAGES = new Set([
+  "read", "parse_existing", "transform", "parse_candidate", "prepare_directory", "check_permissions",
+  "write_temp", "backup", "publish", "verify", "cleanup", "lock", "unlock",
+]);
+const CONFIG_STATES = new Set(["preserved", "restored", "removed", "unknown"]);
 const BACKEND_STAGES = new Set([
   "lock", "resolve_connection", "read_state", "resolve_token", "prepare_runtime", "spawn",
   "persist_pid", "health", "persist_token", "persist_connection", "verify_ownership",
@@ -96,7 +104,7 @@ const RECOVERY_MESSAGES = {
   "not-attempted": "No matching retired transition was available for automatic restoration.",
   "unsupported-package": "The installed package does not support guarded restoration; explicit recovery is required.",
 };
-const OPERATIONS = new Set(["update", "update.automatic", "update.recover", "install.retire", "install.restore"]);
+const OPERATIONS = new Set(["update", "update.automatic", "update.recover", "install.retire", "install.restore", "install.config"]);
 const RELAY_PATH = "MEMORAX_CODE_UPDATE_DIAGNOSTIC_PATH";
 const RELAY_NONCE = "MEMORAX_CODE_UPDATE_DIAGNOSTIC_NONCE";
 const RELAY_MAX_BYTES = 256 * 1024;
@@ -117,6 +125,8 @@ export class UpdateFailure extends Error {
     const recordReason = fields.recordReason ?? error?.reason;
     if (RECORD_REASONS.has(recordReason)) this.recordReason = recordReason;
     if (FAILURE_REASONS.has(fields.failureReason)) this.failureReason = fields.failureReason;
+    if (CONFIG_STAGES.has(fields.configStage)) this.configStage = fields.configStage;
+    if (CONFIG_STATES.has(fields.configState)) this.configState = fields.configState;
     const exitCode = command?.exitCode ?? command?.status;
     if (Number.isInteger(exitCode) && exitCode >= 0 && exitCode <= 255) this.commandExitCode = exitCode;
     if (SIGNALS.has(command?.signal)) this.commandSignal = command.signal;
@@ -172,14 +182,16 @@ function updateFailureFields(failure, version, operation) {
     impact: ["version_check", "setup_state"].includes(failure.stage)
       ? "This check did not install a replacement package."
       : "Package or Backend changes may already have occurred; verify local state before retrying.",
-    userAction: [401, 403].includes(failure.httpStatus)
+    userAction: failure.stage === "config"
+      ? "Check the configuration format and write permissions, then retry npm install or memorax-code setup."
+      : [401, 403].includes(failure.httpStatus)
       ? "Check npm registry authentication and package access, then retry the update."
       : failure.httpStatus === 429 ? "Wait before retrying the npm registry request."
         : failure.stage === "version_check"
       ? "Check npm registry access and configuration, then retry the update."
       : "Run memorax-code status. Inspect any pending package transition before retrying or running memorax-code update --recover.",
   };
-  for (const key of ["systemCode", "recordReason", "failureReason", "commandExitCode", "commandSignal", "httpStatus"]) {
+  for (const key of ["systemCode", "recordReason", "failureReason", "configStage", "configState", "commandExitCode", "commandSignal", "httpStatus"]) {
     if (failure[key] !== undefined) fields[key] = failure[key];
   }
   for (const key of ["installedVersion", "targetVersion"]) {
@@ -303,7 +315,7 @@ function relayUpdateDiagnostic({ fields, diagnostic }) {
 }
 
 function printFailure(fields, diagnostic, write) {
-  const detail = [fields.systemCode, fields.recordReason, fields.failureReason, fields.credentialReason,
+  const detail = [fields.systemCode, fields.recordReason, fields.failureReason, fields.configStage, fields.credentialReason,
     fields.httpStatus === undefined ? undefined : `HTTP ${fields.httpStatus}`].filter(Boolean).join(", ");
   write(`[MemoraX Code Update]: [${fields.errorCode}] ${fields.client ? `${fields.client}.` : ""}${fields.stage}: ${fields.error}${detail ? ` (${detail})` : ""}`);
   if (fields.commandExitCode !== undefined) write(`Command exit status: ${fields.commandExitCode}`);
@@ -359,6 +371,7 @@ export function projectUpdateDiagnosticMessage(message) {
     const failure = new UpdateFailure(value.errorCode, value.stage, {
       systemCode: value.systemCode, recordReason: value.recordReason,
       failureReason: value.failureReason, httpStatus: value.httpStatus,
+      configStage: value.configStage, configState: value.configState,
       commandResult: { exitCode: value.commandExitCode, signal: value.commandSignal },
     });
     if (CODES.has(value.recoveryErrorCode) && Object.hasOwn(STAGES, value.recoveryStage)) {
@@ -382,8 +395,8 @@ function lifecycleDiagnostics(command) {
   const children = backend ? [backend] : [];
   let report;
   try { report = JSON.parse(String(command?.stdout ?? "")); } catch { return children; }
-  const clients = new Set(["codex", "claude", "opencode", "codebuddy", "workbuddy", "trae", "dsh"]);
-  for (const entry of Array.isArray(report?.clientFailures) ? report.clientFailures.slice(0, 7) : []) {
+  const clients = new Set(["codex", "claude", "opencode", "codebuddy", "workbuddy", "trae", "cursor", "dsh"]);
+  for (const entry of Array.isArray(report?.clientFailures) ? report.clientFailures.slice(0, clients.size) : []) {
     const projected = projectDeploymentFailure(entry?.failure);
     const diagnostic = projectDiagnostic(entry?.diagnostic);
     if (!clients.has(entry?.client) || !projected || !diagnostic) continue;

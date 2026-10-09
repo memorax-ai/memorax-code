@@ -28,7 +28,10 @@ The user selects a repository, not a memory directory. Do not ask for a `.repo_m
 
 Script-generated artifacts: `raw/prepare-report.json`, `raw/git-commits.json`, and optional `raw/github-facets.json` or `raw/gitlab-facets.json`. Agent-authored durable artifacts: `PROFILE.md`, repository-native supporting conceptual pages when the repository has enough surface area, `resources/commits.md`, `resources/prs.md`, and `resources/issues.md`. Temporary planning artifact `.repo_memory/_plan.md` is allowed during drafting but must be removed before final validation.
 
-User-managed sidecars may coexist under `.repo_memory/procedure-memory/` and `.repo_memory/user-profile/`. Builder scripts preserve them and exclude them from bundle validation; this skill must not create, edit, or summarize their contents as repo-memory evidence.
+Global Personal Memory lives under `$MEMORAX_CODE_HOME/personal-memory/` and is
+outside the Repo Memory bundle. The builder does not create, edit, migrate, or
+summarize personal memory. Legacy personal-memory files under `.repo_memory/`
+are ignored and remain untouched.
 
 ## Wiki-Style Output Contract
 
@@ -71,6 +74,21 @@ If the directory is not a git repository, do not create `.repo_memory/` and do n
 - If this is a new project, run `git init` first, make at least one commit, then rerun the `repo-build` operation.
 - If you only want file inspection, continue by inspecting files without repo memory.
 ```
+
+## Shared Mainline Jobs
+
+A supervised shared build supplies a private Git snapshot as the target repository.
+Use that exact path and snapshot SHA for collection, project understanding,
+authoring, and validation. The ordinary collector and Wiki output contract stay
+the same. Keep evidence links repository-relative: the source checkout is temporary.
+Do not switch to the caller's development worktree or change Git refs.
+Do not run `git fetch`, `git pull`, or `git ls-remote` to refresh or select the snapshot.
+Continue using the packaged collector to retrieve GitHub/GitLab PR, MR, and issue evidence
+through `gh`/`glab`, including branch and commit metadata,
+when enabled by the history policy and provider access is available.
+The supervisor publishes the validated bundle to repository-shared storage.
+Explicit local builds remain scoped to the user-selected repository and do not
+replace the shared baseline.
 
 ## Path Convention
 

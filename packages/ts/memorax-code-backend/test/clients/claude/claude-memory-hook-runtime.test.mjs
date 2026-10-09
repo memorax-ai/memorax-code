@@ -593,7 +593,7 @@ test("Claude Stop closes trace even when exact transcript validation blocks writ
   }
 });
 
-test("Claude trace write failures do not block retrieval or exact-transcript writeback", async () => {
+test("Claude trace write failures do not block Turn tracking or exact-transcript writeback", async () => {
   const fixture = await transcriptFixture("Fail-open prompt.", "Fail-open answer.");
   const blockerRoot = await mkdtemp(join(tmpdir(), "memorax-code-claude-hook-trace-blocker-"));
   await writeFile(join(blockerRoot, "debug"), "not a directory", "utf8");
@@ -700,7 +700,7 @@ test("Claude Hooks deduplicate lifecycle events and append late transcript mater
   }
 });
 
-test("Claude automatic retrieval counts each prompt id once per session", async () => {
+test("Claude Turn tracking keeps exact prompt identities without automatic Search", async () => {
   const requests = [];
   const env = {
     ...TRACE_DISABLED_ENV,
@@ -709,28 +709,7 @@ test("Claude automatic retrieval counts each prompt id once per session", async 
   const runtime = createClaudeMemoryHookRuntime({
     automaticWriteback: () => ({ accepted: true }),
     env,
-    fetchImpl: async (url, init) => {
-      requests.push({
-        url: String(url),
-        body: JSON.parse(init.body),
-      });
-      return new Response(JSON.stringify({
-        success: true,
-        data: {
-          task_id: "claude-retrieval-dedupe",
-          status: "completed",
-          data: [{
-            id: "memory-1",
-            memory: "Deduplicated Claude retrieval context.",
-            score: 0.9,
-            metadata: { memory_type: "core" },
-          }],
-        },
-      }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      });
-    },
+    fetchImpl: async (url) => { requests.push(String(url)); throw new Error("unexpected Search"); },
     maxEntries: 2,
     repositoryMemorySession: repositoryRuntime({
       baseUrl: "http://memorax.test",
@@ -755,16 +734,12 @@ test("Claude automatic retrieval counts each prompt id once per session", async 
       sessionId: "session-claude-other",
     });
 
-    assert.match(first.additionalContext, /Deduplicated Claude retrieval context/);
+    assert.deepEqual(first, { ok: true });
     assert.deepEqual(duplicate, { ok: true });
-    assert.match(nextPrompt.additionalContext, /Deduplicated Claude retrieval context/);
-    assert.match(otherSession.additionalContext, /Deduplicated Claude retrieval context/);
-    assert.equal(requests.length, 3);
-    assert.deepEqual(requests.map(({ body }) => body.query), [
-      "Hook prompt.",
-      "Hook prompt.",
-      "Hook prompt.",
-    ]);
+    assert.deepEqual(nextPrompt, { ok: true });
+    assert.deepEqual(otherSession, { ok: true });
+    assert.deepEqual(requests, []);
+    assert.equal(runtime.size(), 2);
   } finally {
     runtime.close();
   }

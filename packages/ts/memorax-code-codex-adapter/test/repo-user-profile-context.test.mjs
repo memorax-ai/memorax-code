@@ -1,5 +1,5 @@
 import { strict as assert } from "node:assert";
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -11,9 +11,10 @@ const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const runtimeHookPath = join(packageRoot, "hooks", "runtime-hook.mjs");
 const hookPath = [runtimeHookPath, "memory-skill-reminder"];
 const captureHookPath = [runtimeHookPath, "capture-cwd"];
-const MEMORY_REMINDER_CONTEXT = "MemoraX Code reminder: proactively invoke $memorax-code whenever coding memory might help, even when uncertain; follow the skill's router to decide whether any memory operation is needed. Also use $memorax-code for repository-scoped personal memory, and classify the authority before reading or writing.";
-const PROFILE_REMINDER_CONTEXT = "MemoraX Code personal-memory reminder: Use $memorax-code when the user states a durable current-repo identity or interaction preference, asks to list or recall stored personal memory, or explicitly asks to save, update, forget, or delete it. Route reusable action sequences and work rules to procedure memory; do not store repository facts, one-off task details, or secrets.";
+const MEMORY_REMINDER_CONTEXT = "MemoraX Code reminder: proactively invoke $memorax-code whenever coding memory might help, even when uncertain; follow the skill's router to decide whether any memory operation is needed. Also use $memorax-code for global personal memory, including working rules or preferences the user wants kept, and classify the authority before reading or writing. When a personal-memory save accompanies another task, write it only after every task action has finished, do not mention the planned save in preambles or progress messages, and report it only at the end of the final answer.";
+const PROFILE_REMINDER_CONTEXT = "MemoraX Code personal-memory reminder: Use $memorax-code when the user states a working rule or preference meant to keep applying after the current task, judged by intent rather than by trigger words such as remember, or asks to list, recall, update, forget, or delete personal memory. Route how-to-work rules to procedure memory and communication or presentation preferences to profile memory; do not store repository facts, one-off task details, or secrets. When a personal-memory save accompanies another task, write it only after every task action has finished, do not mention the planned save in preambles or progress messages, and report it only at the end of the final answer.";
 const authorizedWorktreeOverrides = new Map();
+const authorizedGuidanceDecisions = new Map();
 const authorizedBackendRequests = [];
 let authorizedBackendUrl;
 const authorizedBackend = createServer(async (request, response) => {
@@ -24,9 +25,12 @@ const authorizedBackend = createServer(async (request, response) => {
   const repositoryWorktree = authorizedWorktreeOverrides.has(parsed.sessionId)
     ? authorizedWorktreeOverrides.get(parsed.sessionId)
     : parsed.cwd;
-  const result = request.url === "/memory/turn-start" && repositoryWorktree
-    ? { ok: true, repoMemoryWorktree: repositoryWorktree }
-    : { ok: true };
+  const guidanceDecision = authorizedGuidanceDecisions.get(parsed.sessionId)?.get(parsed.turnId);
+  const result = request.url === "/memory/search-guidance"
+    ? guidanceDecision ? { ok: true, decision: guidanceDecision } : { ok: false, reason: "disabled" }
+    : request.url === "/memory/turn-start" && repositoryWorktree
+      ? { ok: true, repoMemoryWorktree: repositoryWorktree }
+      : { ok: true };
   response.writeHead(200, { "content-type": "application/json" });
   response.end(JSON.stringify(result));
 });
@@ -43,11 +47,11 @@ after(async () => {
 test("active preferences join the first prompt and the first prompt after compact", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-user-profile-context-lifecycle-"));
   try {
-    const repo = await createRepo(root, "lifecycle");
+    const repo = await createWorkspace(root, "lifecycle");
     const memoraxCodeHome = join(root, "memorax-code");
     await writeRegistry(memoraxCodeHome, "native-thread");
     await writeFile(join(memoraxCodeHome, "config.toml"), "[memory.skill_reminder]\ninterval_turns = 3\n");
-    await writePreferences(repo, [
+    await writePreferences(memoraxCodeHome, [
       preference("pref_language", "用户偏好使用中文交流。", "与用户交流时。", "用户明确要求其他语言。"),
       preference("pref_summary", "用户偏好先给出结论。", "汇报实现或诊断结果时。", "用户要求展开推导过程时。"),
     ]);
@@ -67,9 +71,9 @@ test("active preferences join the first prompt and the first prompt after compac
     const firstContext = reminderContext(outputs[0].stdout);
     assert.ok(firstContext.includes(MEMORY_REMINDER_CONTEXT));
     assert.ok(firstContext.includes(PROFILE_REMINDER_CONTEXT));
-    assert.ok(firstContext.includes("Active repo-scoped user preferences"));
+    assert.ok(firstContext.includes("Active user-scoped preferences"));
     assert.ok(firstContext.indexOf(MEMORY_REMINDER_CONTEXT) < firstContext.indexOf(PROFILE_REMINDER_CONTEXT));
-    assert.ok(firstContext.indexOf(PROFILE_REMINDER_CONTEXT) < firstContext.indexOf("Active repo-scoped user preferences"));
+    assert.ok(firstContext.indexOf(PROFILE_REMINDER_CONTEXT) < firstContext.indexOf("Active user-scoped preferences"));
     assert.match(firstContext, /Description: 用户偏好使用中文交流。/);
     assert.match(firstContext, /Applies when: 与用户交流时。/);
     assert.match(firstContext, /Do not apply when: 用户明确要求其他语言。/);
@@ -77,7 +81,8 @@ test("active preferences join the first prompt and the first prompt after compac
     assert.match(firstContext, /Natural final-answer mention for supported coding agents:/);
     assert.match(firstContext, /begin the final answer with one brief opening paragraph/);
     assert.match(firstContext, /successful explicit `memorax-cli search`/);
-    assert.match(firstContext, /automatic Coding Memory retrieval/);
+    assert.match(firstContext, /Do not report active Add, automatic writeback, or Repo Memory build or update/);
+    assert.match(firstContext, /A personal-memory save, update, or deletion made in the current turn is not memory that helped the current turn/);
     assert.doesNotMatch(firstContext, /memorax-impact/);
     for (const index of [1, 2]) assert.equal(outputs[index].stdout, "");
     const laterCadenceContext = reminderContext(outputs[3].stdout);
@@ -121,10 +126,10 @@ test("active preferences join the first prompt and the first prompt after compac
 test("empty preferences preserve the existing reminder payloads", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-user-profile-context-empty-"));
   try {
-    const repo = await createRepo(root, "empty");
+    const repo = await createWorkspace(root, "empty");
     const memoraxCodeHome = join(root, "memorax-code");
     await writeRegistry(memoraxCodeHome, "native-thread");
-    await writePreferences(repo, []);
+    await writePreferences(memoraxCodeHome, []);
 
     const first = await runHook(hookPath, {
       hook_event_name: "UserPromptSubmit",
@@ -159,13 +164,13 @@ test("empty preferences preserve the existing reminder payloads", async () => {
 test("preference and procedure contexts stay in one ordered payload", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-user-profile-context-combined-"));
   try {
-    const repo = await createRepo(root, "combined");
+    const repo = await createWorkspace(root, "combined");
     const memoraxCodeHome = join(root, "memorax-code");
     await writeRegistry(memoraxCodeHome, "native-thread");
-    await writePreferences(repo, [
+    await writePreferences(memoraxCodeHome, [
       preference("pref_language", "用户偏好使用中文交流。", "与用户交流时。", "用户明确要求其他语言。"),
     ]);
-    await writeProcedure(repo, "pull-request.md", "# Pull Request\n\n1. Create pull requests as drafts.");
+    await writeProcedure(memoraxCodeHome, "pull-request.md", "# Pull Request\n\n1. Create pull requests as drafts.");
 
     const result = await runHook(hookPath, {
       hook_event_name: "UserPromptSubmit",
@@ -179,35 +184,31 @@ test("preference and procedure contexts stay in one ordered payload", async () =
     const context = reminderContext(result.stdout);
     assert.ok(context.includes(MEMORY_REMINDER_CONTEXT));
     assert.ok(context.includes(PROFILE_REMINDER_CONTEXT));
-    assert.ok(context.includes("Active repo-scoped user preferences"));
-    assert.ok(context.includes("Active repo-scoped procedure memories"));
+    assert.ok(context.includes("Active user-scoped preferences"));
+    assert.ok(context.includes("Active user-scoped procedure memories"));
     assert.ok(context.indexOf(MEMORY_REMINDER_CONTEXT) < context.indexOf(PROFILE_REMINDER_CONTEXT));
-    assert.ok(context.indexOf(PROFILE_REMINDER_CONTEXT) < context.indexOf("Active repo-scoped user preferences"));
-    assert.ok(context.indexOf("Active repo-scoped user preferences") < context.indexOf("Active repo-scoped procedure memories"));
+    assert.ok(context.indexOf(PROFILE_REMINDER_CONTEXT) < context.indexOf("Active user-scoped preferences"));
+    assert.ok(context.indexOf("Active user-scoped preferences") < context.indexOf("Active user-scoped procedure memories"));
     assert.equal(result.stdout.trim().split(/\r?\n/).length, 1);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
 
-test("repo-scoped contexts use the Backend-authorized worktree and trace the injected content", async () => {
+test("global personal contexts ignore the native workspace and trace the injected content", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-personal-memory-scope-"));
   const unavailableSession = "scope-unavailable";
   const authorizedSession = "scope-authorized";
   try {
-    const hookRepo = await createRepo(root, "hook-scope");
-    const authorizedRepo = await createRepo(root, "authorized-scope");
+    const hookRepo = await createWorkspace(root, "hook-scope");
+    const otherWorkspace = await createWorkspace(root, "other-scope");
     const memoraxCodeHome = join(root, "memorax-code");
-    await writePreferences(hookRepo, [
-      preference("pref_hook", "hook repo profile must not appear", "always", "never"),
+    await writePreferences(memoraxCodeHome, [
+      preference("pref_global", "global profile", "always", "never"),
     ]);
-    await writeProcedure(hookRepo, "hook.md", "# Hook repo procedure must not appear");
-    await writePreferences(authorizedRepo, [
-      preference("pref_authorized", "authorized repo profile", "always", "never"),
-    ]);
-    await writeProcedure(authorizedRepo, "authorized.md", "# Authorized repo procedure");
+    await writeProcedure(memoraxCodeHome, "global.md", "# Global procedure");
     authorizedWorktreeOverrides.set(unavailableSession, undefined);
-    authorizedWorktreeOverrides.set(authorizedSession, authorizedRepo);
+    authorizedWorktreeOverrides.set(authorizedSession, undefined);
 
     const unavailable = await runHook(hookPath, {
       hook_event_name: "UserPromptSubmit",
@@ -217,45 +218,159 @@ test("repo-scoped contexts use the Backend-authorized worktree and trace the inj
       cwd: hookRepo,
       prompt: "prompt without repository authority",
     }, { MEMORAX_CODE_HOME: memoraxCodeHome });
-    assert.equal(reminderContext(unavailable.stdout), MEMORY_REMINDER_CONTEXT);
+    const unavailableContext = reminderContext(unavailable.stdout);
+    assert.match(unavailableContext, /Description: global profile/);
+    assert.match(unavailableContext, /Global procedure/);
 
     const authorized = await runHook(hookPath, {
       hook_event_name: "UserPromptSubmit",
       session_id: authorizedSession,
       transcript_path: "/tmp/scope-authorized.jsonl",
       turn_id: "turn-authorized",
-      cwd: hookRepo,
-      prompt: "prompt with repository authority",
+      cwd: otherWorkspace,
+      prompt: "prompt in an unrelated workspace",
     }, { MEMORAX_CODE_HOME: memoraxCodeHome });
     const authorizedContext = reminderContext(authorized.stdout);
-    assert.match(authorizedContext, /Description: authorized repo profile/);
-    assert.match(authorizedContext, /Authorized repo procedure/);
-    assert.doesNotMatch(authorizedContext, /hook repo profile must not appear/);
-    assert.doesNotMatch(authorizedContext, /Hook repo procedure must not appear/);
+    assert.match(authorizedContext, /Description: global profile/);
+    assert.match(authorizedContext, /Global procedure/);
+    assert.doesNotMatch(authorizedContext, /repo profile|repo procedure/);
 
     const unavailableRequests = authorizedBackendRequests.filter(
       (request) => request.body.sessionId === unavailableSession,
     );
     assert.deepEqual(unavailableRequests.map((request) => request.path), [
       "/memory/turn-start",
+      "/memory/search-guidance",
       "/memory/skill-reminder",
     ]);
-    assert.equal(unavailableRequests[1].body.cwd, hookRepo);
-    assert.equal(unavailableRequests[1].body.content, MEMORY_REMINDER_CONTEXT);
-    assert.deepEqual(unavailableRequests[1].body.triggers, ["cadence"]);
+    assert.deepEqual(unavailableRequests[1].body, unavailableRequests[0].body);
+    assert.equal(unavailableRequests[2].body.cwd, hookRepo);
+    assert.equal(unavailableRequests[2].body.content, unavailableContext);
+    assert.deepEqual(unavailableRequests[2].body.triggers, ["cadence"]);
     const authorizedRequests = authorizedBackendRequests.filter(
       (request) => request.body.sessionId === authorizedSession,
     );
     assert.deepEqual(authorizedRequests.map((request) => request.path), [
       "/memory/turn-start",
+      "/memory/search-guidance",
       "/memory/skill-reminder",
     ]);
-    assert.equal(authorizedRequests[1].body.cwd, hookRepo);
-    assert.equal(authorizedRequests[1].body.content, authorizedContext);
-    assert.deepEqual(authorizedRequests[1].body.triggers, ["cadence"]);
+    assert.deepEqual(authorizedRequests[1].body, authorizedRequests[0].body);
+    assert.equal(authorizedRequests[2].body.cwd, otherWorkspace);
+    assert.equal(authorizedRequests[2].body.content, authorizedContext);
+    assert.deepEqual(authorizedRequests[2].body.triggers, ["cadence"]);
   } finally {
     authorizedWorktreeOverrides.delete(unavailableSession);
     authorizedWorktreeOverrides.delete(authorizedSession);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+
+test("Codex injects global personal memory when Turn registration fails", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-personal-memory-registration-"));
+  let fixture;
+  const requests = [];
+  const backend = createServer((request, response) => {
+    request.resume();
+    requests.push(request.url);
+    response.writeHead(fixture.status, { "content-type": "application/json" });
+    response.end(fixture.body);
+  });
+  await new Promise((resolveListen) => backend.listen(0, "127.0.0.1", resolveListen));
+  try {
+    for (fixture of [
+      { name: "http-rejected", status: 503, body: '{"ok":false}' },
+      { name: "body-rejected", status: 200, body: '{"ok":false}' },
+      { name: "invalid-body", status: 200, body: "invalid JSON" },
+      { name: "unavailable", url: "http://127.0.0.1:1" },
+    ]) {
+      const memoraxCodeHome = join(root, fixture.name);
+      await writePreferences(memoraxCodeHome, [preference("pref_global", "Global preference", "Always", "Never")]);
+      await writeProcedure(memoraxCodeHome, "global.md", "# Global procedure");
+      requests.length = 0;
+      const result = await runHook(hookPath, {
+        hook_event_name: "UserPromptSubmit",
+        session_id: fixture.name,
+        transcript_path: join(root, "session.jsonl"),
+        turn_id: "turn-1",
+        cwd: root,
+        prompt: "First prompt",
+      }, {
+        MEMORAX_CODE_HOME: memoraxCodeHome,
+        MEMORAX_CODE_BACKEND_URL: fixture.url ?? `http://127.0.0.1:${backend.address().port}`,
+      });
+      assert.equal(result.code, 0, result.stderr);
+      const context = reminderContext(result.stdout);
+      assert.ok(context.startsWith(MEMORY_REMINDER_CONTEXT), fixture.name);
+      assert.ok(context.includes(PROFILE_REMINDER_CONTEXT), fixture.name);
+      assert.match(context, /Description: Global preference/, fixture.name);
+      assert.match(context, /# Global procedure/, fixture.name);
+      // Search guidance and the reminder trace still require an accepted Turn.
+      assert.deepEqual(requests, fixture.url ? [] : ["/memory/turn-start"]);
+    }
+  } finally {
+    await new Promise((resolveClose) => backend.close(resolveClose));
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("native Codex prompts evaluate Jev independently of personal-memory cadence and skip duplicates", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-jev-native-hook-"));
+  const sessionId = "jev-native-thread";
+  authorizedGuidanceDecisions.set(sessionId, new Map([
+    ["turn-1", "skip"], ["turn-2", "search"], ["turn-3", "skip"], ["turn-4", "skip"],
+  ]));
+  try {
+    const repo = await createWorkspace(root, "jev");
+    const memoraxCodeHome = join(root, "memorax-code");
+    await writeRegistry(memoraxCodeHome, sessionId);
+    await writeFile(join(memoraxCodeHome, "config.toml"), "[memory.skill_reminder]\ninterval_turns = 3\n");
+    await writePreferences(memoraxCodeHome, [preference("pref_jev", "Prefer concise fixture responses.", "Always.", "")]);
+    await writeProcedure(memoraxCodeHome, "fixture-testing.md", "# Fixture testing\n\nRun the focused fixture test first.");
+    const prompt = (turn) => runHook(hookPath, {
+      hook_event_name: "UserPromptSubmit", session_id: sessionId, turn_id: "turn-" + turn,
+      transcript_path: join(root, "session.jsonl"), cwd: repo, prompt: "Task " + turn,
+    }, { MEMORAX_CODE_HOME: memoraxCodeHome, HOME: root, USERPROFILE: root });
+
+    const first = await prompt(1);
+    assert.equal(first.code, 0, first.stderr);
+    const firstContext = reminderContext(first.stdout);
+    assert.match(firstContext, /Prefer concise fixture responses/);
+    assert.match(firstContext, /Run the focused fixture test first/);
+    assert.doesNotMatch(firstContext, /proactively invoke|Jev selected/);
+
+    const second = await prompt(2);
+    assert.equal(second.code, 0, second.stderr);
+    const secondContext = reminderContext(second.stdout);
+    assert.match(secondContext, /Jev selected Coding Memory search/);
+    assert.match(secondContext, /\$memorax-code/);
+    assert.match(secondContext, /references\/memorax-search\.md/);
+    assert.doesNotMatch(secondContext, /search --query|without rereading/);
+    assert.doesNotMatch(secondContext, /proactively invoke|personal-memory reminder|Prefer concise fixture responses|Run the focused fixture test first/);
+    const duplicate = await prompt(2);
+    assert.equal(duplicate.code, 0, duplicate.stderr);
+    assert.equal(duplicate.stdout, "");
+    const third = await prompt(3);
+    assert.equal(third.code, 0, third.stderr);
+    assert.equal(third.stdout, "");
+
+    const fourth = await prompt(4);
+    assert.equal(fourth.code, 0, fourth.stderr);
+    const fourthContext = reminderContext(fourth.stdout);
+    assert.match(fourthContext, /Run the focused fixture test first/);
+    assert.doesNotMatch(fourthContext, /Prefer concise fixture responses|proactively invoke|Jev selected/);
+    const requests = authorizedBackendRequests.filter(({ body }) => body.sessionId === sessionId);
+    const guidance = requests.filter(({ path }) => path === "/memory/search-guidance");
+    assert.deepEqual(guidance.map(({ body }) => body.turnId), ["turn-1", "turn-2", "turn-3", "turn-4"]);
+    for (const { body } of guidance) {
+      assert.deepEqual(body, requests.find((request) => request.path === "/memory/turn-start" && request.body.turnId === body.turnId).body);
+    }
+    assert.deepEqual(requests.filter(({ path }) => path === "/memory/skill-reminder").map(({ body }) => body.triggers), [
+      ["search_guidance", "cadence"], ["search_guidance"], ["search_guidance", "cadence"],
+    ]);
+  } finally {
+    authorizedGuidanceDecisions.delete(sessionId);
     await rm(root, { recursive: true, force: true });
   }
 });
@@ -271,10 +386,9 @@ function preference(id, description, appliesWhen, doNotApplyWhen) {
   };
 }
 
-async function writePreferences(repo, entries) {
-  const directory = join(repo, ".repo_memory", "user-profile");
+async function writePreferences(memoraxCodeHome, entries) {
+  const directory = join(memoraxCodeHome, "personal-memory", "user-profile");
   await mkdir(directory, { recursive: true });
-  await writeFile(join(repo, ".gitignore"), ".repo_memory/\n");
   const activeCount = entries.filter((entry) => entry.status === "active").length;
   const blocks = entries.map((entry) => [
     `## Preference ${entry.id}`,
@@ -291,16 +405,16 @@ async function writePreferences(repo, entries) {
   ].join("\n"));
   const text = [
     "---",
-    'schema: "repo_user_profile_memory.v0.1"',
-    'scope: "repo"',
-    'owner: "repo-user-profile-memory"',
+    'schema: "user_profile_memory.v0.1"',
+    'scope: "user"',
+    'owner: "user-profile-memory"',
     'trust_state: "user_stated"',
     'updated_at: "2026-07-18T00:00:00.000Z"',
     `active_count: ${activeCount}`,
     `total_count: ${entries.length}`,
     "---",
     "",
-    "# Repo-Scoped User Profile And Preferences",
+    "# User Profile And Preferences",
     "",
     "## Active Preferences",
     "",
@@ -310,29 +424,17 @@ async function writePreferences(repo, entries) {
   await writeFile(join(directory, "preferences.md"), text);
 }
 
-async function writeProcedure(repo, name, content) {
-  const directory = join(repo, ".repo_memory", "procedure-memory");
+async function writeProcedure(memoraxCodeHome, name, content) {
+  const directory = join(memoraxCodeHome, "personal-memory", "procedure-memory");
   await mkdir(directory, { recursive: true });
   await writeFile(join(directory, name), `${content.trim()}\n`);
 }
 
-async function createRepo(root, name) {
+async function createWorkspace(root, name) {
   const repo = join(root, `repo-${name}`);
   await mkdir(repo);
-  runGit(repo, ["init", "-b", "main"]);
   await writeFile(join(repo, "README.md"), "# Test repo\n");
-  runGit(repo, ["add", "README.md"]);
-  runGit(repo, ["commit", "-m", "initial docs"]);
   return repo;
-}
-
-function runGit(cwd, args) {
-  const result = spawnSync(
-    "git",
-    ["-c", "user.name=Profile Test", "-c", "user.email=profile-test@example.invalid", ...args],
-    { cwd, encoding: "utf8" },
-  );
-  assert.equal(result.status, 0, result.stderr || result.stdout);
 }
 
 async function writeRegistry(memoraxCodeHome, sessionId) {

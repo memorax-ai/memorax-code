@@ -69,7 +69,7 @@ test("MemoraX adapter uses the injected HTTP transport for retrieval", async () 
     {
       provider_id: "memory.memorax",
       slot: "state_context",
-      operation: "retrieve",
+      operation: "query",
       query: "project memory",
     },
     {

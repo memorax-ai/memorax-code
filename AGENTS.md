@@ -84,8 +84,12 @@ contracts in the same change.
 - Use the [isolated development environment](CONTRIBUTING.md#isolated-development-environment)
   for lifecycle, install, migration, or destructive tests; isolate MemoraX state
   and every affected client home, alias, and command source.
-- Real-client and MemoraX-backed tests require explicit opt-in. Keep credentials
-  and artifacts outside Git and redact shared results.
+- Native-client tests may run automatically only with isolated client and Backend
+  state, synthetic credentials, and model and memory requests restricted to local
+  mock services, as in [Codex functional CI](CONTRIBUTING.md#codex-functional-ci).
+  All other real-client tests, live-provider, live MemoraX/Jev, and real system
+  credential-store checks require explicit opt-in. Keep credentials and artifacts
+  outside Git and redact shared results.
 
 ## 6. Git and Handoff
 

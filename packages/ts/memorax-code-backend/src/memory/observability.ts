@@ -1,26 +1,19 @@
 import type { TraceContext, TraceRelatedTurn } from "../trace/context.js";
 
 export type MemoryObservabilitySource =
-  | "automatic_retrieval"
   | "automatic_writeback"
   | "codex_hook_writeback"
-  | "codex_hook_retrieval"
-  | "claude_hook_retrieval"
   | "claude_hook_writeback"
-  | "dsh_native_retrieval"
   | "dsh_native_writeback"
-  | "opencode_plugin_retrieval"
   | "opencode_plugin_writeback"
-  | "codebuddy_hook_retrieval"
   | "codebuddy_hook_writeback"
-  | "workbuddy_hook_retrieval"
   | "workbuddy_hook_writeback"
-  | "trae_hook_retrieval"
   | "trae_hook_writeback"
+  | "cursor_hook_writeback"
   | "memory_cli"
   | "unknown";
 
-export type MemoryObservabilityOperation = "query" | "retrieve" | "writeback";
+export type MemoryObservabilityOperation = "query" | "writeback";
 
 export type MemoryObservabilityRelatedTurn = TraceRelatedTurn;
 

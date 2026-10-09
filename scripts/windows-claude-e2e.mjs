@@ -21,7 +21,7 @@ const assertions = {
   adapterReady: false,
   sessionStartHookExecuted: false,
   memoryCliSessionBound: false,
-  userPromptRetrievalHookExecuted: false,
+  userPromptTurnStartHookExecuted: false,
   userPromptReminderHookExecuted: false,
   writebackHookExecuted: false,
   hookAuthForwarded: false,
@@ -262,19 +262,18 @@ async function main() {
     workspace_kind: "project",
   };
   const capturedPrompt = await runHook(captureHook, hookEnv, userPromptInput);
-  const retrieval = await runHook(memoryTurnHook, memoryHookEnv, userPromptInput);
+  const turnStartHook = await runHook(memoryTurnHook, memoryHookEnv, userPromptInput);
   const reminder = await runHook(reminderHook, memoryHookEnv, userPromptInput);
-  const retrievalOutput = parseJson(retrieval.stdout);
+  const turnStartOutput = parseJson(turnStartHook.stdout);
   const reminderOutput = parseJson(reminder.stdout);
   const turnStart = recorder.requests.find((request) => request.path === "/memory/turn-start");
   const reminderTrace = recorder.requests.find(
     (request) => request.path === "/memory/skill-reminder",
   );
-  assertions.userPromptRetrievalHookExecuted = capturedPrompt.code === 0
-    && retrieval.code === 0
-    && retrievalOutput?.hookSpecificOutput?.hookEventName === "UserPromptSubmit"
-    && String(retrievalOutput?.hookSpecificOutput?.additionalContext ?? "")
-      .includes("windows Claude recalled context")
+  assertions.userPromptTurnStartHookExecuted = capturedPrompt.code === 0
+    && turnStartHook.code === 0
+    && turnStartOutput?.systemMessage === "windows Claude pending Add quota notice"
+    && turnStartOutput?.hookSpecificOutput === undefined
     && turnStart?.body?.client === "claude-code"
     && turnStart?.body?.sessionId === sessionId
     && turnStart?.body?.promptId === "windows-claude-prompt-1"
@@ -328,7 +327,7 @@ async function main() {
     && samePath(registered?.transcriptPath, transcriptPath);
   if (!assertions.sessionStartHookExecuted
     || !assertions.memoryCliSessionBound
-    || !assertions.userPromptRetrievalHookExecuted
+    || !assertions.userPromptTurnStartHookExecuted
     || !assertions.userPromptReminderHookExecuted
     || !assertions.writebackHookExecuted
     || !assertions.hookAuthForwarded
@@ -394,7 +393,7 @@ async function startMemoryHookRecorder() {
     });
     response.writeHead(200, { "content-type": "application/json" });
     response.end(JSON.stringify(path === "/memory/turn-start"
-      ? { ok: true, additionalContext: "windows Claude recalled context" }
+      ? { ok: true, userNotice: "windows Claude pending Add quota notice" }
       : { ok: true }));
   });
   await new Promise((done, reject) => {

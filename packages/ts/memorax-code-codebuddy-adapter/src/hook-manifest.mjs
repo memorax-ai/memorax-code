@@ -35,7 +35,7 @@ export function updateCodeBuddyUserPromptHook(settings, command) {
     if (hooks.length === group.hooks.length) return [group];
     return hooks.length > 0 ? [{ ...group, hooks }] : [];
   });
-  if (command) filtered.push({ hooks: [{ type: "command", command, timeout: 15 }] });
+  if (command) filtered.push({ hooks: [{ type: "command", command, timeout: 20 }] });
   if (filtered.length > 0) settings.hooks.UserPromptSubmit = filtered;
   else delete settings.hooks.UserPromptSubmit;
 }

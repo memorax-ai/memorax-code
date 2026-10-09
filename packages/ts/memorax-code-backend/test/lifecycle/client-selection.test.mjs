@@ -46,7 +46,7 @@ test("managed clients use persisted config", () => {
 });
 
 test("--clients accepts exact client sets and overrides persisted configuration", () => {
-  for (const client of ["codex", "claude", "dsh", "opencode", "codebuddy", "workbuddy", "trae"]) {
+  for (const client of ["codex", "claude", "dsh", "opencode", "codebuddy", "workbuddy", "trae", "cursor"]) {
     const expected = { codex: false, claude: false, dsh: false, opencode: false, [client]: true };
     assert.deepEqual(parseManagedClients(client), expected);
     assert.deepEqual(parseManagedClients(` ${client.toUpperCase()}, ${client} `), expected);
@@ -54,7 +54,7 @@ test("--clients accepts exact client sets and overrides persisted configuration"
   }
   assert.deepEqual(parseManagedClients("codex,dsh,opencode"), { codex: true, claude: false, dsh: true, opencode: true });
   assert.deepEqual(parseManagedClients("codex,claude,dsh,opencode,trae"), { codex: true, claude: true, dsh: true, opencode: true, trae: true });
-  assert.deepEqual(parseManagedClients("all"), { codex: true, claude: true, dsh: true, opencode: true, codebuddy: true, workbuddy: true, trae: true });
+  assert.deepEqual(parseManagedClients("all"), { codex: true, claude: true, dsh: true, opencode: true, codebuddy: true, workbuddy: true, trae: true, cursor: true });
   assert.deepEqual(parseManagedClients("none"), { codex: false, claude: false, dsh: false, opencode: false });
 });
 
@@ -65,7 +65,7 @@ test("optional managed clients are omitted unless explicitly enabled", () => {
     dsh: true,
     opencode: false,
   });
-  for (const client of ["codebuddy", "workbuddy", "trae"]) {
+  for (const client of ["codebuddy", "workbuddy", "trae", "cursor"]) {
     assert.deepEqual(resolveManagedClients([], { clients: { [client]: true, dsh: false } }), {
       codex: false,
       claude: false,
@@ -176,6 +176,24 @@ test("active managed clients migrate legacy state without DSH or OpenCode to dis
       dsh: false,
       opencode: false,
     });
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+
+test("Cursor selection is retained in active state and invalid configuration fails closed", async () => {
+  const home = await mkdtemp(join(tmpdir(), "memorax-code-cursor-selection-"));
+  const clients = { codex: false, claude: false, dsh: false, opencode: false, cursor: true };
+  try {
+    writeActiveManagedClients(home, clients);
+    assert.deepEqual(readActiveManagedClients(home), clients);
+    await writeFile(join(home, "config.toml"), '[clients]\ncursor = "true"\n');
+    assert.throws(() => loadManagedClientsConfig(home), /clients\.cursor must be a boolean/);
+    await writeFile(join(home, "config.toml"), '[clients]\ncursor = true\ndsh = false\n[trace.cursor]\nenabled = false\ncapture_content = false\nretention_days = 2\nmax_event_chars = 80\nmax_file_bytes = 2048\n');
+    const config = loadManagedClientsConfig(home);
+    assert.deepEqual(resolveManagedClients([], config), clients);
+    assert.deepEqual(config.trace.cursor, { enabled: false, capture_content: false, retention_days: 2, max_event_chars: 80, max_file_bytes: 2048 });
   } finally {
     await rm(home, { recursive: true, force: true });
   }

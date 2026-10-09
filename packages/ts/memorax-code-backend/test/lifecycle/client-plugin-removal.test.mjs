@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { prepareClientPluginRemovalCleanup } from "../../dist/lifecycle/client-plugin-removal.js";
 import { enableTraeAdapter } from "../../../memorax-code-trae-adapter/src/config.mjs";
+import { enableCursorAdapter } from "../../../memorax-code-cursor-adapter/src/config.mjs";
 
 test("package-removal cleanup is prepared before shutdown and removes all client integrations", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-client-plugin-removal-"));
@@ -42,6 +43,9 @@ test("package-removal cleanup is prepared before shutdown and removes all client
   const openCodeSkill = join(openCodeConfigDir, "skills", "memorax-code");
   const openCodeState = join(memoraxCodeHome, "adapters", "opencode", "state.json");
   const traeHome = join(home, "trae-home");
+  const cursorHome = join(home, "cursor-home");
+  const cursorHooks = join(cursorHome, "hooks.json");
+  const cursorSkill = join(cursorHome, "skills", "memorax-code");
   const traeHooks = join(traeHome, "hooks.json");
   const traeSkill = join(traeHome, "skills", "memorax-code");
 
@@ -114,6 +118,10 @@ test("package-removal cleanup is prepared before shutdown and removes all client
         UserPromptSubmit: [{ hooks: [{ type: "command", command: "user-owned-trae-hook" }] }],
       },
     }, null, 2)}\n`);
+    await mkdir(cursorHome, { recursive: true });
+    await writeFile(cursorHooks, JSON.stringify({ version: 1, hooks: { beforeSubmitPrompt: [{ command: "user-owned-cursor-hook" }] } }));
+    const cursorInstall = await enableCursorAdapter({ memoraxCodeHome, cursorHome });
+    assert.equal(cursorInstall.ok, true);
     const traeInstall = await enableTraeAdapter({ memoraxCodeHome, traeHome });
     assert.equal(traeInstall.ok, true);
     await writeNativeCliFixture(claudeCommand, "claude", `#!/usr/bin/env node
@@ -156,12 +164,16 @@ writeFileSync(path, JSON.stringify(manifest, null, 2) + "\\n");
     assert.equal(report.dshPlugin?.ok, true);
     assert.equal(report.opencodePlugin?.ok, true);
     assert.equal(report.traePlugin?.ok, true);
+    assert.equal(report.cursorPlugin?.ok, true);
     await assert.rejects(stat(codexPluginManifest), /ENOENT/);
     await assert.rejects(stat(openCodePlugin), /ENOENT/);
     await assert.rejects(stat(openCodeSkill), /ENOENT/);
     await assert.rejects(stat(openCodeState), /ENOENT/);
     await assert.rejects(stat(traeSkill), /ENOENT/);
+    await assert.rejects(stat(cursorSkill), /ENOENT/);
     await assert.rejects(stat(join(memoraxCodeHome, "adapters", "trae", "state.json")), /ENOENT/);
+    await assert.rejects(stat(join(memoraxCodeHome, "adapters", "cursor", "state.json")), /ENOENT/);
+    assert.deepEqual(JSON.parse(await readFile(cursorHooks, "utf8")), { version: 1, hooks: { beforeSubmitPrompt: [{ command: "user-owned-cursor-hook" }] } });
     const remainingTraeHooks = JSON.parse(await readFile(traeHooks, "utf8"));
     assert.equal(JSON.stringify(remainingTraeHooks).includes("user-owned-trae-hook"), true);
     assert.equal(JSON.stringify(remainingTraeHooks).includes("--memorax-code-trae-hook-v1"), false);
@@ -185,4 +197,30 @@ writeFileSync(path, JSON.stringify(manifest, null, 2) + "\\n");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+
+test("package removal cleans up Cursor without requiring another client installation", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-cursor-package-removal-"));
+  const home = join(root, "user");
+  const memoraxCodeHome = join(root, "backend");
+  const cursorHome = join(root, "custom-cursor");
+  try {
+    await mkdir(cursorHome, { recursive: true });
+    await writeFile(join(cursorHome, "hooks.json"), JSON.stringify({ version: 1, hooks: { stop: [{ command: "keep-user-hook" }] } }));
+    assert.equal((await enableCursorAdapter({ memoraxCodeHome, cursorHome })).ok, true);
+    const cleanup = await prepareClientPluginRemovalCleanup({
+      memoraxCodeHome, homeDir: home,
+      codexHome: join(home, "codex"), claudeHome: join(home, "claude"),
+      dshHome: join(home, "dsh"), openCodeConfigDir: join(home, "opencode"),
+      codeBuddyHome: join(home, "codebuddy"), workBuddyHome: join(home, "workbuddy"), traeHome: join(home, "trae"),
+      codexCommand: join(home, process.platform === "win32" ? "missing-codex.exe" : "missing-codex"), claudeCommand: join(home, "missing-claude"), dshCommand: join(home, "missing-dsh"),
+    });
+    const report = await cleanup();
+    assert.equal(report.ok, true);
+    assert.equal(report.cursorPlugin.ok, true);
+    await assert.rejects(stat(join(cursorHome, "skills", "memorax-code")), /ENOENT/);
+    await assert.rejects(stat(join(memoraxCodeHome, "adapters", "cursor")), /ENOENT/);
+    assert.deepEqual(JSON.parse(await readFile(join(cursorHome, "hooks.json"), "utf8")), { version: 1, hooks: { stop: [{ command: "keep-user-hook" }] } });
+  } finally { await rm(root, { recursive: true, force: true }); }
 });

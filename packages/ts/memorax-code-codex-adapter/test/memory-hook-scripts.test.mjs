@@ -37,9 +37,12 @@ test("combined UserPromptSubmit hook posts user prompt and first reminder to Bac
     assert.equal(result.code, 0, result.stderr);
     assert.match(JSON.parse(result.stdout).hookSpecificOutput.additionalContext, /\$memorax-code/);
     assert.equal(result.stderr, "");
-    assert.equal(requests.length, 2);
-    assert.equal(requests[0].path, "/memory/turn-start");
-    assert.equal(requests[1].path, "/memory/skill-reminder");
+    assert.deepEqual(requests.map((request) => request.path), [
+      "/memory/turn-start",
+      "/memory/search-guidance",
+      "/memory/skill-reminder",
+    ]);
+    assert.deepEqual(requests[1].body, requests[0].body);
     assert.equal(requestHeaders[0]["x-memorax-code-backend-token"], "backend-token");
     assert.deepEqual(requests[0].body, {
       version: 1,
@@ -51,7 +54,7 @@ test("combined UserPromptSubmit hook posts user prompt and first reminder to Bac
       workspaceKind: "projectless",
       transcriptPath: "/tmp/transcript.jsonl",
     });
-    assert.deepEqual(requests[1].body, {
+    assert.deepEqual(requests[2].body, {
       version: 1,
       client: "codex",
       sessionId: "session-1",
@@ -95,9 +98,16 @@ test("combined UserPromptSubmit hook refreshes Backend connection authority befo
     assert.equal(result.stderr, "");
     assert.match(JSON.parse(result.stdout).hookSpecificOutput.additionalContext, /\$memorax-code/);
     assert.deepEqual(turnRecorder.requests.map((request) => request.path), ["/memory/turn-start"]);
-    assert.deepEqual(reminderRecorder.requests.map((request) => request.path), ["/memory/skill-reminder"]);
+    assert.deepEqual(reminderRecorder.requests.map((request) => request.path), [
+      "/memory/search-guidance",
+      "/memory/skill-reminder",
+    ]);
+    assert.deepEqual(reminderRecorder.requests[0].body, turnRecorder.requests[0].body);
     assert.equal(turnRecorder.requestHeaders[0]["x-memorax-code-backend-token"], "initial-token");
-    assert.equal(reminderRecorder.requestHeaders[0]["x-memorax-code-backend-token"], "replacement-token");
+    assert.deepEqual(reminderRecorder.requestHeaders.map((headers) => headers["x-memorax-code-backend-token"]), [
+      "replacement-token",
+      "replacement-token",
+    ]);
   } finally {
     turnRecorder.server.close();
     reminderRecorder.server.close();
@@ -326,7 +336,8 @@ async function listenRecorder({ beforeResponse, status = 200 } = {}) {
     });
     await beforeResponse?.();
     response.writeHead(status, { "content-type": "application/json" });
-    response.end(JSON.stringify({ ok: true }));
+    response.end(JSON.stringify(request.url === "/memory/search-guidance"
+      ? { ok: false, reason: "disabled" } : { ok: true }));
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();

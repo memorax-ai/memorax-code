@@ -216,7 +216,8 @@ async function main() {
     && userPrompt.code === 0
     && userPromptOutput?.hookSpecificOutput?.hookEventName === "UserPromptSubmit"
     && String(userPromptOutput?.hookSpecificOutput?.additionalContext ?? "")
-      .includes("windows Codex recalled context")
+      .includes("MemoraX Code reminder:")
+    && userPromptOutput?.systemMessage === "windows Codex pending Add quota notice"
     && turnStart?.body?.sessionId === sessionId
     && turnStart?.body?.turnId === "windows-codex-turn-1"
     && turnStart?.body?.prompt === "Recall the Windows Hook contract."
@@ -411,7 +412,7 @@ async function startMemoryHookRecorder() {
     });
     response.writeHead(200, { "content-type": "application/json" });
     response.end(JSON.stringify(path === "/memory/turn-start"
-      ? { ok: true, additionalContext: "windows Codex recalled context" }
+      ? { ok: true, userNotice: "windows Codex pending Add quota notice" }
       : { ok: true }));
   });
   await new Promise((done, reject) => {

@@ -36,8 +36,8 @@ test("memory observability isolates synchronous sink failures", () => {
   ]);
 
   const event = {
-    source: "automatic_retrieval",
-    operation: "retrieve",
+    source: "memory_cli",
+    operation: "query",
     ok: true,
   };
   observability.recordEvent(event);
@@ -147,8 +147,8 @@ test("session trace observability follows live file switches and isolates client
         for (const [enabled, phase] of [[false, "initial-disabled"], [true, "enabled"], [false, "disabled"], [true, "re-enabled"]]) {
           await configure(enabled);
           observability.recordEvent({
-            source: "claude_hook_retrieval",
-            operation: "retrieve",
+            source: "memory_cli",
+            operation: "query",
             ok: true,
             traceContext: {
               schemaVersion: "1",

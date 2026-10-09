@@ -1,5 +1,6 @@
 export const DEFAULT_MEMORY_SKILL_REMINDER_INTERVAL_TURNS = 5;
 const DEFAULT_MEMORY_SKILL_INVOCATION = "$memorax-code";
+const PERSONAL_MEMORY_SAVE_TIMING_CONTEXT = "When a personal-memory save accompanies another task, write it only after every task action has finished, do not mention the planned save in preambles or progress messages, and report it only at the end of the final answer.";
 
 export const MEMORY_IMPACT_REMINDER_CONTEXT = [
   "Natural final-answer mention for supported coding agents:",
@@ -13,21 +14,39 @@ export const MEMORY_IMPACT_REMINDER_CONTEXT = [
   "Use direct task attribution such as `这次我参考了 MemoraX Code 的 Memory...`, `I used MemoraX Code Memory...`, or `Memory from MemoraX Code helped...`.",
   "Do not repeat the task or result, reproduce the memory, or narrate the full execution steps or reasoning.",
   "Do not report a routine language or tone preference.",
-  "Do not report active Add, automatic writeback, Repo Memory build or update, or automatic Coding Memory retrieval as memory that helped the current turn.",
+  "Do not report active Add, automatic writeback, or Repo Memory build or update as memory that helped the current turn.",
+  "A personal-memory save, update, or deletion made in the current turn is not memory that helped the current turn.",
   "Do not add a heading, card, label, or colon-led report, and do not open with stock wording such as `MemoraX Code 的 Memory 提示：`, `本轮借助...`, `Memory impact:`, or `The memory said...`.",
   "Use only normal visible prose. Do not include HTML or XML comments, Markdown markers, tags, zero-width text, hidden control text, or metadata.",
 ].join(" ");
 
 export function memorySkillReminderContext(memorySkillInvocation) {
   const invocation = nonEmptyString(memorySkillInvocation) ?? DEFAULT_MEMORY_SKILL_INVOCATION;
-  return `MemoraX Code reminder: proactively invoke ${invocation} whenever coding memory might help, even when uncertain; follow the skill's router to decide whether any memory operation is needed. Also use ${invocation} for repository-scoped personal memory, and classify the authority before reading or writing.`;
+  return `MemoraX Code reminder: proactively invoke ${invocation} whenever coding memory might help, even when uncertain; follow the skill's router to decide whether any memory operation is needed. Also use ${invocation} for global personal memory, including working rules or preferences the user wants kept, and classify the authority before reading or writing. ${PERSONAL_MEMORY_SAVE_TIMING_CONTEXT}`;
+}
+
+export function memorySearchGuidanceContext(memorySkillInvocation) {
+  const invocation = nonEmptyString(memorySkillInvocation) ?? DEFAULT_MEMORY_SKILL_INVOCATION;
+  return [
+    "MemoraX Code: Jev selected Coding Memory search for this task.",
+    `Use ${invocation} for its Coding Memory Search operation.`,
+    "Read the Skill's references/memorax-search.md completely in a standalone tool call and wait for its full contents before constructing queries or executing Search.",
+    "Follow that reference's Query Workflow, workspace and platform rules, failure handling, and result-use instructions to search for the current task.",
+  ].join(" ");
+}
+
+export function codingMemoryReminderContext(result, memorySkillInvocation) {
+  if (result?.ok === true && result.decision === "search") return memorySearchGuidanceContext(memorySkillInvocation);
+  if (result?.ok === true && result.decision === "skip") return undefined;
+  return memorySkillReminderContext(memorySkillInvocation);
 }
 
 export function personalMemoryReminderContext(memorySkillInvocation) {
   const invocation = nonEmptyString(memorySkillInvocation) ?? DEFAULT_MEMORY_SKILL_INVOCATION;
   return [
-    `MemoraX Code personal-memory reminder: Use ${invocation} when the user states a durable current-repo identity or interaction preference, asks to list or recall stored personal memory, or explicitly asks to save, update, forget, or delete it.`,
-    "Route reusable action sequences and work rules to procedure memory; do not store repository facts, one-off task details, or secrets.",
+    `MemoraX Code personal-memory reminder: Use ${invocation} when the user states a working rule or preference meant to keep applying after the current task, judged by intent rather than by trigger words such as remember, or asks to list, recall, update, forget, or delete personal memory.`,
+    "Route how-to-work rules to procedure memory and communication or presentation preferences to profile memory; do not store repository facts, one-off task details, or secrets.",
+    PERSONAL_MEMORY_SAVE_TIMING_CONTEXT,
   ].join(" ");
 }
 

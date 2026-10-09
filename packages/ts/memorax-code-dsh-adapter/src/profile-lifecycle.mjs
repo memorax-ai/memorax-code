@@ -91,6 +91,7 @@ const PROFILE_BUNDLE_FILES = Object.freeze([
   "src/backend-client.mjs",
   "src/dsh-message.mjs",
   "src/dsh-version.mjs",
+  "src/reminder-cadence.mjs",
   "src/http-client.mjs",
   "src/personal-context-worker.mjs",
   "src/personal-context.mjs",
@@ -106,14 +107,17 @@ const PROFILE_BUNDLE_FILES = Object.freeze([
   "memorax-code-adapter-common/src/hooks/hook-diagnostics.mjs",
   "memorax-code-adapter-common/src/hooks/memory-skill-reminder-policy.mjs",
   "memorax-code-adapter-common/src/repo-memory/repo-memory-auto-build.mjs",
+  "memorax-code-adapter-common/src/repo-memory/repo-memory-job-artifacts.mjs",
   "memorax-code-adapter-common/src/repo-memory/repo-memory-job-context.mjs",
   "memorax-code-adapter-common/src/repo-memory/repo-memory-job-marker.mjs",
   "memorax-code-adapter-common/src/repo-memory/repo-memory-job-supervisor.mjs",
   "memorax-code-adapter-common/src/repo-memory/repo-memory-job-worker.mjs",
-  "memorax-code-adapter-common/src/repo-memory/repo-procedure-memory-context.mjs",
+  "memorax-code-adapter-common/src/repo-memory/repo-memory-repository.mjs",
+  "memorax-code-adapter-common/src/repo-memory/repo-memory-shared-bundle.mjs",
+  "memorax-code-adapter-common/src/personal-memory/procedure-memory-context.mjs",
   "memorax-code-adapter-common/src/repo-memory/repo-memory-update-policy-evaluator.mjs",
   "memorax-code-adapter-common/src/repo-memory/repo-memory-update-policy.mjs",
-  "memorax-code-adapter-common/src/repo-memory/repo-user-profile-context.mjs",
+  "memorax-code-adapter-common/src/personal-memory/user-profile-context.mjs",
   "memorax-code-adapter-common/src/runtime-record.mjs",
   "memorax-code-adapter-common/src/windows-directory-retry.mjs",
   "memorax-code-adapter-common/src/windows-cli-invocation.mjs",
@@ -1320,7 +1324,7 @@ async function installWindowsDshPnpmCompatibility() {
       try {
         // Read the selected shim's target: pnpm and Corepack can coexist in one prefix.
         const shim = readFileSync(executable, "utf8").replaceAll("\\", "/");
-        const target = /%(?:dp0%|~dp0)[/]((?:node_modules\/|\.\.\/)(?:pnpm\/bin\/pnpm\.cjs|corepack\/dist\/pnpm\.js))"/i.exec(shim)?.[1];
+        const target = /%(?:dp0%|~dp0)[/]((?:node_modules\/|\.\.\/)(?:pnpm\/bin\/pnpm\.cjs|pnpm\/pnpm\.exe|corepack\/dist\/pnpm\.js))"/i.exec(shim)?.[1];
         const candidate = target && join(dirname(executable), target);
         if (candidate && existsSync(candidate)) entrypoint = candidate;
       } catch (error) {
@@ -1333,6 +1337,9 @@ async function installWindowsDshPnpmCompatibility() {
         signal: null,
         error: Object.assign(new Error("Cannot resolve pnpm's Windows Node entrypoint"), { code: "ENOEXEC" }),
       };
+    }
+    if (/\.exe$/i.test(entrypoint)) {
+      return spawn(entrypoint, args, { ...options, shell: false });
     }
     // Forward the original arguments, including literal percent signs, without
     // cmd.exe expansion. DSH still owns Profile mutation and reconciliation.

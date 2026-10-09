@@ -9,7 +9,7 @@ import {
 } from "../config-utils.mjs";
 import {
   isMemorySkillReminderDue,
-  memorySkillReminderContext,
+  codingMemoryReminderContext,
   personalMemoryReminderContext,
   resolveMemorySkillReminderIntervalTurns,
 } from "./memory-skill-reminder-policy.mjs";
@@ -62,48 +62,76 @@ export async function evaluateMemorySkillReminder(options, input) {
         sessionId,
         turnId,
       );
-      if (next.duplicate) return next;
       const sessionState = next.state.sessions[sessionId];
-      const memoryReminderDue = isMemorySkillReminderDue(
+      const pendingCadence = sessionState?.cadenceReminderPending === true;
+      const pendingProfile = sessionState?.initialProfilePending === true;
+      if (next.duplicate && !pendingCadence && !pendingProfile) return next;
+      const memoryReminderDue = pendingCadence || (!next.duplicate && isMemorySkillReminderDue(
         sessionState?.turnCount,
         intervalTurns,
         options.remindOnFirstTurn !== false,
-      );
+      ));
+      const initialProfileDue = pendingProfile || (memoryReminderDue && sessionState?.turnCount === 1);
       const supplementalReminderDue = options.supplementalReminderAfterCompact === true
         && sessionState?.supplementalReminderPending === true;
+      if (pendingCadence) sessionState.cadenceReminderPending = false;
+      if (pendingProfile) sessionState.initialProfilePending = false;
       if (supplementalReminderDue) sessionState.supplementalReminderPending = false;
       atomicWriteJson(statePath, next.state);
       return {
         ...next,
+        duplicate: false,
         memoryReminderDue,
+        initialProfileDue,
         supplementalReminderDue,
-        turnCount: sessionState?.turnCount,
       };
     });
-    if (update.duplicate) return undefined;
-    const { memoryReminderDue, supplementalReminderDue } = update;
-
-    const baseAdditionalContext = stringOption(options.baseAdditionalContext);
     const systemMessage = stringOption(options.systemMessage);
-    if (!baseAdditionalContext && !memoryReminderDue && !supplementalReminderDue && !systemMessage) return undefined;
+    // Backend notices are already claimed and must survive local reminder deduplication.
+    if (update.duplicate) return systemMessage ? { systemMessage } : undefined;
+    const { memoryReminderDue, initialProfileDue, supplementalReminderDue } = update;
+    let discarded = false;
+    const discard = () => {
+      if (discarded) return;
+      discarded = true;
+      if (!memoryReminderDue && !initialProfileDue && !supplementalReminderDue) return;
+      // Restore delivery obligations without rolling back another Turn's identity or count.
+      markRemindersPendingForSession(options, sessionId, {
+        ...(memoryReminderDue ? { cadenceReminderPending: true } : {}),
+        ...(initialProfileDue ? { initialProfilePending: true } : {}),
+        ...(supplementalReminderDue ? { supplementalReminderPending: true } : {}),
+      });
+    };
+    const cancelled = () => {
+      if (!options.signal?.aborted) return false;
+      discard();
+      return true;
+    };
+    if (cancelled()) return undefined;
+    const searchGuidance = await evaluateSearchGuidance(options, input);
+    if (!memoryReminderDue && !initialProfileDue && !supplementalReminderDue && !systemMessage
+      && searchGuidance?.decision !== "search") return undefined;
+    if (cancelled()) return undefined;
     const cadenceReminderContext = memoryReminderDue
       ? await buildCadenceReminderContext(options, input)
       : undefined;
-    const personalMemoryContext = supplementalReminderDue || (memoryReminderDue && update.turnCount === 1)
+    const personalMemoryContext = supplementalReminderDue || initialProfileDue
       ? await buildPersonalMemoryContext(options, input)
       : undefined;
+    if (cancelled()) return undefined;
     const reminderContext = stringOption(combinedReminderContext(options, {
       memoryReminderDue,
       supplementalReminderDue,
-    }, cadenceReminderContext, personalMemoryContext));
-    const additionalContext = [baseAdditionalContext, reminderContext].filter(Boolean).join("\n\n");
+    }, cadenceReminderContext, personalMemoryContext, searchGuidance));
     const triggers = [
+      ...(searchGuidance?.ok === true ? ["search_guidance"] : []),
       ...(memoryReminderDue ? ["cadence"] : []),
       ...(supplementalReminderDue ? ["post_compaction"] : []),
     ];
     return {
+      ...(options.signal && (memoryReminderDue || initialProfileDue || supplementalReminderDue) ? { discard } : {}),
       ...(systemMessage ? { systemMessage } : {}),
-      ...(additionalContext ? { additionalContext } : {}),
+      ...(reminderContext ? { additionalContext: reminderContext } : {}),
       ...(reminderContext ? {
         reminder: {
           sessionId,
@@ -145,6 +173,10 @@ export function markSupplementalReminderAfterCompact(options, input) {
 }
 
 export function markSupplementalReminderForSession(options, sessionId) {
+  markRemindersPendingForSession(options, sessionId, { supplementalReminderPending: true });
+}
+
+function markRemindersPendingForSession(options, sessionId, pending) {
   try {
     const normalizedSessionId = stringOption(sessionId);
     if (!normalizedSessionId) return;
@@ -152,10 +184,11 @@ export function markSupplementalReminderForSession(options, sessionId) {
     const statePath = join(memoraxCodeHome, "adapters", options.adapterDir, "memory-skill-reminders.json");
     withJsonFileLock(statePath, () => {
       const existing = readJsonFile(statePath);
-      atomicWriteJson(statePath, markSupplementalReminderPending(
+      atomicWriteJson(statePath, markRemindersPending(
         existing?.unreadable ? undefined : existing?.value,
         options.runtime,
         normalizedSessionId,
+        pending,
       ));
     });
   } catch (error) {
@@ -187,14 +220,28 @@ async function buildPersonalMemoryContext(options, input) {
   }
 }
 
-function combinedReminderContext(options, due, cadenceReminderContext, personalMemoryContext) {
+async function evaluateSearchGuidance(options, input) {
+  if (typeof options.evaluateSearchGuidance !== "function") return undefined;
+  try {
+    const result = await options.evaluateSearchGuidance(input);
+    return result?.ok === true && ["search", "skip"].includes(result.decision) ? result : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function combinedReminderContext(options, due, cadenceReminderContext, personalMemoryContext, searchGuidance) {
   const contexts = [];
-  if (due.memoryReminderDue) contexts.push(memorySkillReminderContext(options.memorySkillInvocation));
-  if (due.supplementalReminderDue || personalMemoryContext) {
+  if (due.memoryReminderDue || searchGuidance?.ok === true) {
+    const codingContext = codingMemoryReminderContext(searchGuidance, options.memorySkillInvocation);
+    if (codingContext) contexts.push(codingContext);
+  }
+  if (due.supplementalReminderDue || personalMemoryContext
+    || (due.memoryReminderDue && searchGuidance?.ok === true)) {
     const additionalReminderContext = stringOption(options.additionalReminderContext);
     if (additionalReminderContext) contexts.push(additionalReminderContext);
   }
-  if (personalMemoryContext || (due.memoryReminderDue && cadenceReminderContext)) {
+  if (personalMemoryContext || (due.memoryReminderDue && cadenceReminderContext) || searchGuidance?.decision === "search") {
     const memoryImpactContext = stringOption(options.memoryImpactContext);
     if (memoryImpactContext) contexts.push(memoryImpactContext);
   }
@@ -236,14 +283,14 @@ function nextReminderState(existing, runtime, sessionId, turnId) {
   return { state, duplicate: false };
 }
 
-function markSupplementalReminderPending(existing, runtime, sessionId) {
+function markRemindersPending(existing, runtime, sessionId, pending) {
   const state = reminderState(existing, runtime);
   const current = state.sessions[sessionId] && typeof state.sessions[sessionId] === "object" && !Array.isArray(state.sessions[sessionId])
     ? state.sessions[sessionId]
     : {};
   state.sessions[sessionId] = {
     ...current,
-    supplementalReminderPending: true,
+    ...pending,
     lastSeenAt: state.updatedAt,
   };
   return state;

@@ -344,3 +344,32 @@ test("reconcile has no retained state across consecutive calls", async () => {
   assert.deepEqual(first, { status: "enabled", reason: "ready", recovered: false });
   assert.deepEqual(calls, ["start", "status", "isReady", "start", "status", "isReady"]);
 });
+
+test("Cursor setup failure leaves recovered Backend running when client setup failed", async () => {
+  const calls = [];
+  const events = [];
+  const result = await reconcileSetup({
+    start: async () => {
+      calls.push("start");
+      return {
+        status: 1,
+        stdout: JSON.stringify({
+          ok: false,
+          action: "start",
+          backend: { ok: true, reason: "cursor_adapter_enable_failed_backend_recovered" },
+          cursorAdapter: { ok: false, action: "enable", error: "EPERM: rename" },
+        }),
+      };
+    },
+    stop: async () => { calls.push("stop"); return succeeded; },
+    status: async () => { calls.push("status"); return succeeded; },
+    isReady: async () => { calls.push("ready"); return true; },
+    onEvent: (event) => events.push(event),
+  });
+
+  const { commandResult, ...summary } = result;
+  assert.deepEqual(summary, { status: "not-verified", reason: "adapter-setup-failed" });
+  assert.equal(JSON.parse(commandResult.stdout).backend.ok, true);
+  assert.deepEqual(calls, ["start"]);
+  assert.equal(events.find((event) => event.type === "start-failed").reason, "adapter-setup-failed");
+});

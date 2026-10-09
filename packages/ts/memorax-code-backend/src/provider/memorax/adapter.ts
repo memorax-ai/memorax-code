@@ -162,7 +162,7 @@ export async function invokeMemoraxMemoryProvider(
   const providerId = request.provider_id?.trim() || MEMORAX_PROVIDER_ID;
   if (providerId !== MEMORAX_PROVIDER_ID) return { ok: false, error: `unsupported MemoraX provider id ${providerId}` };
   const operation = request.operation;
-  if (operation !== "query" && operation !== "retrieve" && operation !== "writeback") {
+  if (operation !== "query" && operation !== "writeback") {
     return { ok: false, error: `unsupported MemoraX memory operation ${operation}` };
   }
   if (operation === "writeback") {
@@ -173,9 +173,7 @@ export async function invokeMemoraxMemoryProvider(
 
   const query = typeof request.query === "string" && request.query.trim()
     ? request.query.trim()
-    : operation === "retrieve"
-      ? run.prompt.trim()
-      : "";
+    : "";
   if (!query) return { ok: false, error: "query is required" };
 
   const context = isRecord(request.context) ? request.context : {};

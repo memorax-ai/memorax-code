@@ -1,18 +1,15 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile, readFile, rm, truncate } from 'node:fs/promises';
+import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { resolveCodingSearchContext } from '../../dist/memory/coding-context.js';
 import { prepareCodingSessionTurn } from '../../dist/coding-sessions/coding-turn.js';
 import { invokeMemoraxMemoryProvider } from '../../dist/provider/memorax/adapter.js';
-import { retrieveAutomaticMemoryContext } from '../../dist/memory/automatic-retrieval.js';
-import { memoraxConfigFromEnv } from '../../dist/provider/memorax/config.js';
 import { createHash } from 'node:crypto';
 
 const contract = JSON.parse(await readFile(new URL('../fixtures/helpful-contract.json', import.meta.url),'utf8'));
 const env = {
-  MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED:'true',
   MEMORAX_CODE_MEMORAX_ENDPOINT:'http://memorax.test',
   MEMORAX_CODE_MEMORAX_API_KEY:'fixture-key',
   MEMORAX_CODE_MEMORAX_USER_ID:'fixture-user',
@@ -193,31 +190,6 @@ test('Codex Helpful internal IDs cannot supply missing or conflicting outer iden
     const trace = await fixture(t, 'codex', () => native);
     assert.equal(await resolveCodingSearchContext(trace), undefined, `outer identity case ${index}`);
   }
-});
-test('automatic Search sends only normalized coding_context, never native paths',async t=>{
-  const trace=await fixture(t,'codex',xs=>[...xs.slice(0,2),
-    {type:'response_item',payload:{type:'message',role:'user',
-      content:[{type:'input_text',text:'Run tests.'}],
-      internal_chat_message_metadata_passthrough:{turn_id:'internal-turn',prompt_origin:'end_user'}}}]);
-  const requests=[];
-  await retrieveAutomaticMemoryContext({env,query:'Run tests.',traceContext:trace,
-    repositoryMemory:{ok:true,memory:{config:memoraxConfigFromEnv(env).config,scope}},
-    fetchImpl:async (_url,init)=>{requests.push(JSON.parse(init.body));return new Response(JSON.stringify({data:{task_id:'server-id',data:[]}}),{status:200});},
-  });
-  assert.deepEqual(requests[0].coding_context,contract.coding_context);
-  assert.equal(JSON.stringify(requests[0]).includes(trace.transcriptPath),false);
-  assert.equal(requests[0].search_id,undefined);
-});
-test('automatic Search continues without correlation when the transcript is oversized',async t=>{
-  const trace=await fixture(t);
-  await truncate(trace.transcriptPath,16*1024*1024+1);
-  const requests=[];
-  await retrieveAutomaticMemoryContext({env,query:'Run tests.',traceContext:trace,
-    repositoryMemory:{ok:true,memory:{config:memoraxConfigFromEnv(env).config,scope}},
-    fetchImpl:async (_url,init)=>{requests.push(JSON.parse(init.body));return new Response(JSON.stringify({data:{task_id:'server-id',data:[]}}),{status:200});},
-  });
-  assert.equal(requests.length,1);
-  assert.equal(requests[0].coding_context,undefined);
 });
 test('provider rejects untrusted request-context correlation by omission',async ()=>{
   const requests=[];

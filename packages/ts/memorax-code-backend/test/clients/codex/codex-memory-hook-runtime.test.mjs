@@ -6,6 +6,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { runMemoryCli } from "../../../dist/memory/cli.js";
 import { createCodexMemoryHookRuntime } from "../../../dist/clients/codex/memory-hook-runtime.js";
+import { createMemoryTurnCoordinator } from "../../../dist/memory/turn-coordinator.js";
 import { tracePaths } from "../../../dist/trace/config.js";
 import {
   memoraxAddFetch,
@@ -198,7 +199,7 @@ test("Codex pending writebacks are bounded without evicting accepted work", asyn
   await waitFor(() => f.requests.length === 1, "original pending turn must survive capacity rejection");
 });
 
-test("Codex Hook retrieves automatic memory once per exact turn", async () => {
+test("Codex Hook records exact turns and writes back without automatic Search", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-hook-retrieval-"));
   const transcriptPath = await writeRollout(root, "session-retrieval", [{
     turnId: "turn-retrieval",
@@ -228,7 +229,7 @@ test("Codex Hook retrieves automatic memory once per exact turn", async () => {
       transcriptPath,
     });
     assert.equal(first.ok, true);
-    assert.match(first.additionalContext, /Keep malformed input fail-closed/);
+    assert.equal(first.additionalContext, undefined);
     assert.equal(first.repoMemoryWorktree, TEST_REPO_ROOT);
 
     assert.deepEqual(await controller.recordTurnStart({
@@ -259,13 +260,8 @@ test("Codex Hook retrieves automatic memory once per exact turn", async () => {
       transcriptPath,
     }), GIT_TURN_START_RESULT);
 
-    assert.equal(requests.length, 1);
-    assert.equal(requests[0].body.query, "Recall the parser boundary.");
-    assert.equal(events.length, 1);
-    assert.equal(events[0].source, "codex_hook_retrieval");
-    assert.equal(events[0].operation, "retrieve");
-    assert.equal(events[0].traceContext.sessionId, "session-retrieval");
-    assert.equal(events[0].traceContext.turnId, "turn-retrieval");
+    assert.deepEqual(requests, []);
+    assert.deepEqual(events, []);
   } finally {
     controller.close();
     await rm(root, { recursive: true, force: true });
@@ -957,7 +953,6 @@ test("Codex General recovery respects the native header and existing local bindi
     MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED: "true",
   };
   const metadata = (id, cwd) => ({ type: "session_meta", payload: { id, cwd } });
-  const { fetchImpl, requests } = memoraxSearchFetch("Scoped test memory.");
   try {
     for (const [sessionId, records, initialKind] of [
       ["wrong-session", [metadata("other-session", workspace)]],
@@ -967,7 +962,8 @@ test("Codex General recovery respects the native header and existing local bindi
     ]) {
       const transcriptPath = join(root, `${sessionId}.jsonl`);
       await writeFile(transcriptPath, `${records.map((record) => JSON.stringify(record)).join("\n")}\n`);
-      const controller = createCodexMemoryHookRuntime({ env, fetchImpl, automaticWriteback: () => ({ accepted: true }) });
+      const turnCoordinator = createMemoryTurnCoordinator({ automaticWriteback: () => ({ accepted: true }) });
+      const controller = createCodexMemoryHookRuntime({ env, turnCoordinator });
       try {
         if (initialKind) {
           await controller.recordTurnStart({
@@ -978,10 +974,12 @@ test("Codex General recovery respects the native header and existing local bindi
         const result = await controller.recordTurnStart({
           sessionId, turnId: "next", prompt: "Use only the authorized session scope.", cwd: nested, transcriptPath,
         });
-        assert.match(result.additionalContext, /Scoped test memory/, sessionId);
-        assert.equal(requests.at(-1).body.user_id, `user-1@${initialKind ? "task" : "nested"}`, sessionId);
+        assert.deepEqual(result, { ok: true });
+        const turn = turnCoordinator.getTurn({ client: "codex", sessionId, clientTurnId: "next" });
+        assert.equal(turn.repositoryScope.effectiveUserId, `user-1@${initialKind ? "task" : "nested"}`, sessionId);
       } finally {
         controller.close();
+        turnCoordinator.close();
       }
     }
   } finally {

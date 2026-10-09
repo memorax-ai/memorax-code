@@ -26,19 +26,19 @@ test("Claude plugin manifest installs backend, turn-start, and writeback Hooks",
     "node \"${CLAUDE_PLUGIN_ROOT}/hooks/runtime-hook.mjs\" memory-cli-session",
   ), true);
   assert.equal(commands.UserPromptSubmit.includes(
-    "node \"${CLAUDE_PLUGIN_ROOT}/hooks/runtime-hook.mjs\" memory-turn",
+    "node \"${CLAUDE_PLUGIN_ROOT}/hooks/runtime-hook.mjs\" memory-skill-reminder",
   ), true);
   assert.equal(commands.Stop.includes(
     "node \"${CLAUDE_PLUGIN_ROOT}/hooks/runtime-hook.mjs\" memory-turn",
   ), true);
-  assert.equal(manifest.hooks.UserPromptSubmit[0].hooks[1].timeout, 15);
+  assert.equal(manifest.hooks.UserPromptSubmit[0].hooks[1].timeout, 20);
   assert.equal(manifest.hooks.Stop[0].hooks[1].timeout, 10);
-  assert.match(runtime, /RETRIEVAL_BACKEND_TIMEOUT_MS = 12_000/);
+  assert.match(runtime, /TURN_START_BACKEND_TIMEOUT_MS = 12_000/);
   assert.match(runtime, /DEFAULT_BACKEND_TIMEOUT_MS = 5_000/);
-  assert.match(runtime, /path === "\/memory\/turn-start" \? RETRIEVAL_BACKEND_TIMEOUT_MS : DEFAULT_BACKEND_TIMEOUT_MS/);
+  assert.match(runtime, /path === "\/memory\/turn-start" \? TURN_START_BACKEND_TIMEOUT_MS : DEFAULT_BACKEND_TIMEOUT_MS/);
 });
 
-test("Claude UserPromptSubmit retrieves memory context with the submitted prompt", async () => {
+test("Claude UserPromptSubmit records the prompt and only forwards the pending Add notice", async () => {
   const recorder = await listenRecorder({
     ok: true,
     additionalContext: "Hidden MemoraX Code external memory context.\n\nRemember the Hook boundary.",
@@ -53,7 +53,7 @@ test("Claude UserPromptSubmit retrieves memory context with the submitted prompt
       hook_event_name: "UserPromptSubmit",
       session_id: "session-claude-hook",
       prompt_id: "prompt-claude-hook",
-      prompt: "Use this prompt only as the automatic retrieval query.",
+      prompt: "Record this prompt for exact Turn tracking.",
       transcript_path: "/tmp/claude-transcript.jsonl",
       cwd: "/repo",
       workspace_kind: "project",
@@ -63,10 +63,6 @@ test("Claude UserPromptSubmit retrieves memory context with the submitted prompt
     assert.equal(result.stderr, "");
     assert.deepEqual(JSON.parse(result.stdout), {
       systemMessage: "Your MemoraX trial quota is running low.",
-      hookSpecificOutput: {
-        hookEventName: "UserPromptSubmit",
-        additionalContext: "Hidden MemoraX Code external memory context.\n\nRemember the Hook boundary.",
-      },
     });
     assert.equal(recorder.requestHeaders[0]["x-memorax-code-backend-token"], "backend-token");
     assert.deepEqual(recorder.requests, [{
@@ -77,7 +73,7 @@ test("Claude UserPromptSubmit retrieves memory context with the submitted prompt
         sessionId: "session-claude-hook",
         promptId: "prompt-claude-hook",
         transcriptPath: "/tmp/claude-transcript.jsonl",
-        prompt: "Use this prompt only as the automatic retrieval query.",
+        prompt: "Record this prompt for exact Turn tracking.",
         cwd: "/repo",
         workspaceKind: "project",
       },

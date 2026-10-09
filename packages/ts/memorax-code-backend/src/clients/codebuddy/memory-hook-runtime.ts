@@ -38,12 +38,10 @@ export function createCodeBuddyMemoryHookRuntime(options: Options = {}): CodeBud
   const now = options.now ?? (() => Date.now());
   const memory = createHarnessMemoryRuntime({
     client,
-    retrievalSource: `${client}_hook_retrieval`,
     writebackSource: `${client}_hook_writeback`,
     diagnosticPrefix: `${client}_memory_hook`,
     traceFailureEvent: `${client}_trace.write_failed`,
     turnStartTraceSource: `${client}-hook`,
-    deduplicateRetrieval: false,
   }, { readCodingSessionTurn: readCodeBuddyArchiveSource, ...options });
   const coordinator = memory.turnCoordinator;
   return {
@@ -62,7 +60,6 @@ export function createCodeBuddyMemoryHookRuntime(options: Options = {}): CodeBud
         createdAt: now(),
         traceContext,
         prompt: command.prompt,
-        retrievalTraceContext: traceContextFromCodeBuddyHookBody(command),
       });
     },
     async writeback(command) {
@@ -75,7 +72,7 @@ export function createCodeBuddyMemoryHookRuntime(options: Options = {}): CodeBud
         return { ok: true, scheduled: false, reason: "transcript_path_mismatch" };
       }
       const traceContext = traceContextForWriteback(command, entry);
-      const transcript = await readWithRetry({ transcriptPath: command.transcriptPath, sessionId: command.sessionId, turnId: command.turnId }, options);
+      const transcript = await readWithRetry({ client, transcriptPath: command.transcriptPath, sessionId: command.sessionId, turnId: command.turnId }, options);
       if (!transcript.ok) {
         await recordCodeBuddyTurnEnd(options, traceContext, undefined, transcript.reason);
         return { ok: true, scheduled: false, reason: transcript.reason };
@@ -115,7 +112,7 @@ export function createCodeBuddyMemoryHookRuntime(options: Options = {}): CodeBud
   };
 }
 
-async function readWithRetry(input: { transcriptPath: string; sessionId: string; turnId: string }, options: Options) {
+async function readWithRetry(input: { client: "codebuddy" | "workbuddy"; transcriptPath: string; sessionId: string; turnId: string }, options: Options) {
   const attempts = options.transcriptReadAttempts ?? 6;
   const request = { ...input, captureCodingItems: options.captureCodingTurns };
   let result = await readCodeBuddyTranscriptTurn(request);
@@ -211,6 +208,7 @@ async function reconcilePreviousInterruptedTurn(
   // Trace and cached metadata only locate the candidate; the native transcript
   // must confirm interruption before we close it and discard pending metadata.
   const transcript = await readCodeBuddyInterruptedTranscriptTurn({
+    client,
     transcriptPath: candidate.transcriptPath,
     sessionId: candidate.sessionId,
     turnId: candidate.turnId,

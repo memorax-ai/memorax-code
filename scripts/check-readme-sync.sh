@@ -58,9 +58,8 @@ if [[ "$english_changed" -ne "$chinese_changed" ]]; then
   cat >&2 <<'MSG'
 README language sync check failed.
 
-README.md and README.zh.md must be updated together. If a README-only change is
-truly language-specific, update the other README with an equivalent note or a
-no-op wording/date adjustment so reviewers see that both versions were checked.
+README.md and README.zh.md must both be updated in the same change.
+Update both language versions before merging, including language-specific edits.
 MSG
   echo >&2
   echo "Changed files:" >&2

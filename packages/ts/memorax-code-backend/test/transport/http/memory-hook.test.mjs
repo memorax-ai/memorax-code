@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -40,7 +41,7 @@ test("Backend memory hook endpoints record and write back a turn", async () => {
     reply: "HTTP hook answer.",
   }]);
   const { fetchImpl, requests } = memoraxAddFetch();
-  const restoreEnv = withEnv(WRITEBACK_ENV);
+  const restoreEnv = withEnv({ ...WRITEBACK_ENV, MEMORAX_CODE_HOME: join(root, "state") });
   const originalFetch = globalThis.fetch;
   globalThis.fetch = fetchImpl;
   const state = createBackendState();
@@ -107,6 +108,23 @@ test("Backend memory hook endpoints record and write back a turn", async () => {
     assert.equal(traeStart.status, 200);
     assert.deepEqual(await traeStart.json(), GIT_TURN_START_RESULT);
 
+    const cursorStart = {
+      version: 1, client: "cursor", sessionId: randomUUID(), turnId: randomUUID(),
+      prompt: "HTTP Cursor Hook prompt.", cwd: TEST_WORKSPACE,
+      databasePath: join(root, "state.vscdb"),
+    };
+    for (const recorded of [true, false]) {
+      const result = await originalFetch(`${url}/memory/turn-start`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(cursorStart),
+      });
+      assert.equal(result.status, 200);
+      assert.deepEqual(await result.json(), recorded
+        ? { ...GIT_TURN_START_RESULT, recorded: true }
+        : { ok: true, recorded: false });
+    }
+
     const traeWriteback = await originalFetch(`${url}/memory/writeback`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -158,10 +176,17 @@ test("memory Hook HTTP routes reject invalid commands before dispatch and forwar
   const url = await listen(server);
   try {
     for (const { start, writeback } of memoryHookCommands()) {
-      for (const [path, operation, command, expected] of [
+      const phases = [
         ["turn-start", "start", start, startResult],
         ["writeback", "writeback", writeback, writebackResult],
-      ]) {
+      ];
+      if (writeback.client === "cursor") {
+        const { status, ...response } = writeback;
+        phases.push(["writeback", "writeback", {
+          ...response, phase: "response", responseDigest: "a".repeat(64),
+        }, writebackResult]);
+      }
+      for (const [path, operation, command, expected] of phases) {
         const name = `${command.client} ${operation}`;
         const request = (body) => fetch(`${url}/memory/${path}`, {
           method: "POST",
@@ -179,6 +204,54 @@ test("memory Hook HTTP routes reject invalid commands before dispatch and forwar
         assert.deepEqual(calls.splice(0), [{ operation, command }], `${name}: dispatch exactly once`);
       }
     }
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("pre-compact HTTP validates Cursor observation identity without ordinary turn dispatch", async () => {
+  const calls = [];
+  const result = { ok: true, recorded: true };
+  const dependencies = {
+    memoryService: {
+      recordPreCompact(command) {
+        calls.push(command);
+        return result;
+      },
+      recordTurnStart() { assert.fail("pre-compact must not register an ordinary turn"); },
+      writebackTurn() { assert.fail("pre-compact must not write back content"); },
+    },
+  };
+  const server = createServer(async (req, res) => {
+    const handled = await handleMemoryHookRequest(dependencies, new URL(req.url, "http://localhost"), req, res);
+    if (!handled) { res.writeHead(404); res.end(); }
+  });
+  const url = await listen(server);
+  const command = {
+    version: 1, client: "cursor", sessionId: randomUUID(), turnId: randomUUID(),
+    cwd: TEST_WORKSPACE, databasePath: join(TEST_WORKSPACE, "state.vscdb"),
+  };
+  const request = (body) => fetch(`${url}/memory/pre-compact`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+  });
+  try {
+    for (const fields of [
+      { client: "codex" }, { sessionId: undefined }, { turnId: undefined },
+      { cwd: "relative" }, { databasePath: undefined }, { databasePath: "state.vscdb" },
+      { transcriptPath: "transcript.jsonl" }, { trigger: "manual" }, { prompt: "Hook prompt" },
+    ]) {
+      const response = await request({ ...command, ...fields });
+      assert.equal(response.status, 400);
+      assert.deepEqual(await response.json(), { ok: false, error: "invalid memory Hook command" });
+      assert.deepEqual(calls, []);
+    }
+    const response = await request(command);
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), result);
+    assert.deepEqual(calls, [command]);
+    const wrongMethod = await fetch(`${url}/memory/pre-compact`);
+    assert.equal(wrongMethod.status, 404);
+    assert.equal(calls.length, 1);
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }

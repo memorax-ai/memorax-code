@@ -33,14 +33,9 @@
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/runtime-hook.mjs\" memory-turn",
-            "statusMessage": "Retrieving MemoraX Code memory",
-            "timeout": 15
-          },
-          {
-            "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/runtime-hook.mjs\" memory-skill-reminder",
-            "statusMessage": "Checking MemoraX Code memory reminder"
+            "statusMessage": "Recording MemoraX Code turn and checking reminders",
+            "timeout": 20
           }
         ]
       }

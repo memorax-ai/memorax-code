@@ -13,6 +13,7 @@ const packagePrefixes = [
   "lib/memorax-code-opencode-adapter/",
   "lib/memorax-code-codebuddy-adapter/",
   "lib/memorax-code-trae-adapter/",
+  "lib/memorax-code-cursor-adapter/",
 ];
 const packageFiles = new Set([
   "bin",
@@ -24,6 +25,7 @@ const packageFiles = new Set([
   "bin/memorax-code-opencode.mjs",
   "bin/memorax-code-codebuddy.mjs",
   "bin/memorax-code-trae.mjs",
+  "bin/memorax-code-cursor.mjs",
   "bin/memorax-code-npm-preinstall.mjs",
   "bin/memorax-code.mjs",
   "bin/memorax-cli.mjs",
@@ -138,6 +140,10 @@ export function requiredNpmPackagePaths(manifest) {
     "lib/memorax-code-codebuddy-adapter/hooks/hooks.json",
     "lib/memorax-code-codebuddy-adapter/hooks/runtime-hook.mjs",
     "lib/memorax-code-trae-adapter/hooks/runtime-hook.mjs",
+    "lib/memorax-code-cursor-adapter/hooks/runtime-hook.mjs",
+    "lib/memorax-code-cursor-adapter/hooks/repo-memory-job.mjs",
+    "lib/memorax-code-cursor-adapter/agents/memorax-repo-memory.md",
+    "lib/memorax-code-cursor-adapter/src/native-repo-memory.mjs",
   ];
 }
 

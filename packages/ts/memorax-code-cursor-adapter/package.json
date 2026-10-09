@@ -1,0 +1,13 @@
+{
+  "name": "@memorax-code/cursor-adapter",
+  "version": "0.1.19",
+  "private": true,
+  "type": "module",
+  "description": "Cursor Hook adapter for MemoraX Code memory services.",
+  "bin": {
+    "memorax-code-cursor": "src/cli.mjs"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  }
+}

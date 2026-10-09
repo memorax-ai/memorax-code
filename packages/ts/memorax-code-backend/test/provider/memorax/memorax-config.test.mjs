@@ -16,7 +16,6 @@ import {
   memoraxAddOptionsFromContext,
   memoraxConfigFromEnv,
   seedMissingMemoraxCodeConfig,
-  startupRetrieveTimeoutMs,
 } from "../../../dist/provider/memorax/config.js";
 import {
   normalizeMemoraxBaseUrl,
@@ -66,17 +65,26 @@ test("seeded MemoraX Code config exposes high-signal choices without a tuning ca
   assert.match(config, /# endpoint = "https:\/\/platform\.memorax\.net" # MemoraX service URL\./);
   assert.match(config, /# api_key = "" # MemoraX API key used by the local Backend\./);
   assert.match(config, /# user_id = "" # MemoraX base user ID; requests derive a workspace-scoped namespace\./);
-  assert.match(config, /\[memory\.retrieval\]\nenabled = false # Auto-inject retrieved memories into supported client prompts\./);
+  assert.match(config, /\[memory\.retrieval\]\nrough_filter_enabled = true/);
   assert.match(config, /rough_filter_enabled = true/);
   assert.match(config, /rough_filter_stale_days = 30/);
   assert.match(config, /rough_filter_max_usage = 0/);
   assert.match(config, /score_formula_id = "semantic_decay_plus_helpful"/);
   assert.match(config, /score_formula_version = 2/);
+  assert.match(config, /\[jev\]\nenabled = false/);
+  assert.match(config, /api_key = "" # TypeSafe API key/);
+  assert.deepEqual(loadMemoraxCodeConfig(root).jev, { enabled: false });
+  assert.doesNotMatch(config, /Auto-inject retrieved memories|Automatic Hook retrieval/);
   assert.match(config, /\[memory\.writeback\]/);
   assert.match(config, /enabled = true # Allow supported client sessions to write memories after replies\./);
   assert.match(config, /\[memory\.add\]\noutput_language = "zh" # Language for newly generated MemoraX memories\./);
   assert.match(config, /interval_turns = 5 # Show the MemoraX Code skill reminder every N native client turns, starting on the first turn\./);
   assert.match(config, /\[memory\.repo_update\]/);
+  assert.deepEqual(loadMemoraxCodeConfig(root).memory.repo_update, {
+    policy: "daily",
+    commit_threshold: 5,
+    cooldown_hours: 72,
+  });
   assert.match(config, /\[trace\.codex\]/);
   assert.match(config, /enabled = true # Enable local Codex session memory trace collection\./);
   assert.match(config, /capture_content = true # Store content in local Codex trace events\./);
@@ -177,7 +185,6 @@ test("MemoraX Code loads configured-home TOML and resolves credentials, writebac
   const options = await memoraxAddOptionsFromContext({}, env);
   assert.equal(status.configured, true);
   assert.equal(status.search.enabled, true);
-  assert.equal(status.search.retrievalEnabled, false);
   assert.equal(status.writeback.writebackEnabled, true);
   assert.equal(status.cli.addEnabled, true);
   assert.equal(options.ok, true);
@@ -212,7 +219,20 @@ test("config loaders reject an unfinished value ending in a comment without hang
   assert.equal(result.status, 0, result.stderr || result.stdout);
 });
 
-test("memory config status merges explicit config fields and env overrides", async () => {
+test("ordinary config loader never prints credential source from TOML parse failures", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-config-private-parse-error-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const configPath = join(root, "config.toml");
+  await writeFile(configPath, '[jev]\nenabled = true\napi_key = "fixture-private-key-must-not-appear\n');
+  const warnings = [];
+  t.mock.method(console, "warn", (message) => warnings.push(message));
+
+  assert.deepEqual(loadMemoraxCodeConfig(root), {});
+  assert.deepEqual(warnings, [`failed to parse MemoraX Code config ${configPath}`]);
+  assert.doesNotMatch(warnings.join("\n"), /fixture-private-key-must-not-appear|api_key/);
+});
+
+test("memory config status preserves Search tuning and ignores removed automatic Search settings", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-config-status-"));
   await writeFile(join(root, "config.toml"), [
     "[memorax]",
@@ -223,7 +243,7 @@ test("memory config status merges explicit config fields and env overrides", asy
     "startup_timeout_ms = 2500",
     "",
     "[memory.retrieval]",
-    "enabled = false",
+    "enabled = true",
     "top_k = 4",
     "k_dense = 3",
     "k_sparse = 2",
@@ -256,18 +276,27 @@ test("memory config status merges explicit config fields and env overrides", asy
   const env = {
     MEMORAX_CODE_HOME: root,
     MEMORAX_CODE_MEMORAX_TOP_K: "9",
+    MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED: "true",
+    MEMORAX_CODE_MEMORAX_STARTUP_TIMEOUT_MS: "2000",
     MEMORAX_CODE_MEMORY_WRITEBACK_ENABLED: "true",
   };
+  const warnings = [];
+  const config = loadMemoraxCodeConfig(root, { warn: (message) => warnings.push(message) });
   const status = await memoryConfigStatus(env);
 
+  assert.deepEqual(warnings, []);
+  assert.equal(Object.hasOwn(config.memorax, "startup_timeout_ms"), false);
+  assert.equal(Object.hasOwn(config.memory.retrieval, "enabled"), false);
+  assert.equal(Object.hasOwn(status.search, "startupTimeoutMs"), false);
+  assert.equal(Object.hasOwn(status.search, "retrievalEnabled"), false);
   assert.equal(status.configured, true);
+  assert.equal(status.search.enabled, true);
   assert.equal(status.baseUrl, "http://file-memorax.test");
   assert.equal(status.userId, "file-user");
   assert.equal(status.search.topK, 9);
   assert.equal(status.search.kDense, 3);
   assert.equal(status.search.kSparse, 2);
   assert.equal(status.search.timeoutMs, 7000);
-  assert.equal(status.search.startupTimeoutMs, 2500);
   assert.equal(status.search.minScore, 0.25);
   assert.equal(status.search.maxContextChars, 5000);
   assert.equal(status.search.maxItemChars, 500);
@@ -278,7 +307,6 @@ test("memory config status merges explicit config fields and env overrides", asy
   assert.equal(status.search.scoreFormulaVersion, 2);
   assert.deepEqual(status.search.memoryTypeOrder, ["project_fact", "core"]);
   assert.equal(status.search.renderByMemoryType, false);
-  assert.equal(status.search.retrievalEnabled, false);
   assert.equal(status.writeback.writebackEnabled, true);
   assert.equal(status.writeback.writebackBufferEnabled, false);
   assert.deepEqual(status.writeback.writebackBuffer, {
@@ -338,8 +366,6 @@ test("memoryConfigStatus reports effective writeback and add settings", async ()
     MEMORAX_CODE_MEMORAX_K_DENSE: "5",
     MEMORAX_CODE_MEMORAX_K_SPARSE: "2",
     MEMORAX_CODE_MEMORAX_TIMEOUT_MS: "9000",
-    MEMORAX_CODE_MEMORAX_STARTUP_TIMEOUT_MS: "2000",
-    MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED: "true",
     MEMORAX_CODE_MEMORY_WRITEBACK_ENABLED: "true",
     MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_ENABLED: "false",
     MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_MAX_TURNS: "2",
@@ -359,8 +385,6 @@ test("memoryConfigStatus reports effective writeback and add settings", async ()
   assert.equal(status.search.kDense, 5);
   assert.equal(status.search.kSparse, 2);
   assert.equal(status.search.timeoutMs, 9000);
-  assert.equal(status.search.startupTimeoutMs, 2000);
-  assert.equal(status.search.retrievalEnabled, true);
   assert.equal(status.writeback.globalEnabled, true);
   assert.equal(status.writeback.writebackEnabled, true);
   assert.equal(status.writeback.writebackBufferEnabled, false);
@@ -419,8 +443,6 @@ test("writeback helper config preserves positive integer fallback semantics", ()
     maxAgeMs: 600000,
     maxChars: 70,
   });
-  assert.equal(startupRetrieveTimeoutMs({ MEMORAX_CODE_MEMORAX_STARTUP_TIMEOUT_MS: "20000" }, 9000), 9000);
-  assert.equal(startupRetrieveTimeoutMs({ MEMORAX_CODE_MEMORAX_STARTUP_TIMEOUT_MS: "50" }, 9000), 100);
 });
 
 test("writeback helper config treats -1 buffer interval as automatic add disabled", async () => {

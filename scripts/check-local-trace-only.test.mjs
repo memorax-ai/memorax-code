@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { collectLocalTraceOnlyFailures } from "./check-local-trace-only.mjs";
 
 const checker = fileURLToPath(new URL("./check-local-trace-only.mjs", import.meta.url));
 
@@ -348,7 +349,7 @@ test("local-only trace gate rejects an unreviewed trace-aware MemoraX caller", a
     });
     assert.equal(initialized.status, 0, initialized.stderr);
     await writeFile(
-      join(sourceDir, "memory", "automatic-retrieval.ts"),
+      join(sourceDir, "memory", "automatic-writeback.ts"),
       [
         'import { invokeMemoraxMemoryProvider } from "../provider/memorax/adapter.js";',
         'import { readCurrentTraceTurn } from "../trace/store.js";',
@@ -371,9 +372,9 @@ test("local-only trace gate rejects an unreviewed trace-aware MemoraX caller", a
 
     const result = await runChecker(undefined, copiedChecker);
     assert.equal(result.code, 1);
-    assert.match(result.stderr, /memory\/automatic-retrieval\.ts: unreviewed trace-aware outbound bridge/);
     assert.match(result.stderr, /coding-sessions\/unreviewed-upload\.ts: undeclared network-capable production module/);
     assert.match(result.stderr, /coding-sessions\/unreviewed-upload\.ts: unreviewed trace-aware outbound bridge/);
+    assert.match(result.stderr, /memory\/automatic-writeback\.ts: unreviewed trace-aware outbound bridge/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -442,6 +443,39 @@ test("local-only trace gate rejects provider transport imports in trace core", a
     const result = await runChecker(undefined, copiedChecker);
     assert.equal(result.code, 1);
     assert.match(result.stderr, /trace\/store\.ts: local trace core depends on network capability/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("local-only trace gate confines Jev outbound authority to its reviewed adapter", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-local-trace-jev-"));
+  const backend = join(root, "lib", "memorax-code-backend", "dist");
+  const adapter = join(backend, "provider", "jev", "adapter.js");
+  const inspect = () => collectLocalTraceOnlyFailures({ artifactRoots: [root], includeSource: false });
+  try {
+    await mkdir(join(adapter, ".."), { recursive: true });
+    await writeFile(adapter, "export const evaluate = () => fetch('https://api.typesafe.ai/v1/systemone');\n");
+    assert.deepEqual(await inspect(), []);
+
+    const sources = [
+      ["provider/jev/adapter.js", 'import { readCurrentTraceTurn } from "../../trace/store.js";'],
+      ["provider/jev/unreviewed-bridge.js", 'import { evaluate } from "./adapter.js";\nimport { readCurrentTraceTurn } from "../../trace/store.js";'],
+      ["memory/unreviewed-jev.js", 'import { evaluate } from "../provider/jev/adapter.js";'],
+      ["trace/store.js", 'import { evaluate } from "../provider/jev/adapter.js";'],
+    ];
+    for (const [path, content] of sources) {
+      const file = join(backend, path);
+      await mkdir(join(file, ".."), { recursive: true });
+      await writeFile(file, content);
+    }
+
+    const failures = (await inspect()).join("\n");
+    assert.match(failures, /provider\/jev\/adapter\.ts: unreviewed trace-aware outbound bridge/);
+    assert.match(failures, /provider\/jev\/unreviewed-bridge\.ts: undeclared network-capable production module/);
+    assert.match(failures, /provider\/jev\/unreviewed-bridge\.ts: unreviewed trace-aware outbound bridge/);
+    assert.match(failures, /memory\/unreviewed-jev\.ts: undeclared network-capable production module/);
+    assert.match(failures, /trace\/store\.ts: local trace core depends on network capability/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

@@ -369,7 +369,6 @@ test("OpenCode finalizes an explicit MessageAbortedError without writeback", asy
 test("OpenCode runtime routes SDK content and carries write quota to the next prompt", async () => {
   const memoraxCodeHome = await mkdtemp(join(tmpdir(), "memorax-code-opencode-runtime-"));
   const requests = [];
-  let searchCalls = 0;
   const runtime = createOpenCodeMemoryHookRuntime({
     memoraxCodeHome,
     captureCodingTurns: true,
@@ -388,21 +387,8 @@ test("OpenCode runtime routes SDK content and carries write quota to the next pr
     fetchImpl: async (url, init) => {
       const request = { url: String(url), body: JSON.parse(init.body) };
       requests.push(request);
-      const searching = request.url.endsWith("/v1/memories/search");
-      if (searching) searchCalls += 1;
-      return new Response(JSON.stringify(searching ? {
-        success: true,
-        data: {
-          task_id: "search-1",
-          status: "completed",
-          data: [{
-            id: "memory-1",
-            memory: "OpenCode can reuse the shared retrieval runtime.",
-            score: 0.9,
-            metadata: { memory_type: "core" },
-          }],
-        },
-      } : {
+      assert.match(request.url, /\/v1\/memories\/add$/);
+      return new Response(JSON.stringify({
         success: true,
         data: {
           task_id: "writeback-1",
@@ -425,7 +411,7 @@ test("OpenCode runtime routes SDK content and carries write quota to the next pr
       cwd: TEST_WORKSPACE,
       workspaceKind: "project",
     });
-    assert.match(start.additionalContext, /shared retrieval runtime/);
+    assert.equal(start.additionalContext, undefined);
 
     assert.deepEqual(await runtime.writeback({
       version: 1,
@@ -438,16 +424,15 @@ test("OpenCode runtime routes SDK content and carries write quota to the next pr
       cwd: TEST_WORKSPACE,
       workspaceKind: "project",
     }), { ok: true, scheduled: true });
-    await waitFor(() => requests.length === 2);
+    await waitFor(() => requests.length === 1);
     assert.deepEqual(requests.map((request) => new URL(request.url).pathname), [
-      "/v1/memories/search",
       "/v1/memories/add",
     ]);
-    assert.deepEqual(requests[1].body.messages.map(({ role, content }) => ({ role, content })), [
+    assert.deepEqual(requests[0].body.messages.map(({ role, content }) => ({ role, content })), [
       { role: "user", content: "OpenCode user prompt." },
       { role: "assistant", content: "OpenCode assistant reply." },
     ]);
-    assert.deepEqual(requests[1].body.messages.map(({ timestamp }) => timestamp), [
+    assert.deepEqual(requests[0].body.messages.map(({ timestamp }) => timestamp), [
       1_700_000_000_000,
       1_700_000_060_000,
     ]);
@@ -460,17 +445,6 @@ test("OpenCode runtime routes SDK content and carries write quota to the next pr
       { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: "OpenCode assistant reply." }] },
     ]);
 
-    assert.deepEqual(await runtime.recordTurnStart({
-      version: 1,
-      client: "opencode",
-      sessionId: "session-1",
-      userMessageId: "user-1",
-      prompt: "OpenCode user prompt.",
-      cwd: TEST_WORKSPACE,
-      workspaceKind: "project",
-    }), { ok: true, repoMemoryWorktree: start.repoMemoryWorktree });
-    assert.equal(searchCalls, 1);
-
     const next = await runtime.recordTurnStart({
       version: 1,
       client: "opencode",
@@ -481,7 +455,13 @@ test("OpenCode runtime routes SDK content and carries write quota to the next pr
       workspaceKind: "project",
     });
     assert.equal(next.userNotice, "memory_write: 9");
-    assert.doesNotMatch(next.additionalContext, /memory_write/);
+    assert.equal(next.additionalContext, undefined);
+    const repeated = await runtime.recordTurnStart({
+      version: 1, client: "opencode", sessionId: "session-1", userMessageId: "user-2",
+      prompt: "OpenCode second prompt.", cwd: TEST_WORKSPACE, workspaceKind: "project",
+    });
+    assert.equal(repeated.userNotice, undefined);
+    assert.equal(requests.length, 1);
   } finally {
     runtime.close();
     await rm(memoraxCodeHome, { recursive: true, force: true });

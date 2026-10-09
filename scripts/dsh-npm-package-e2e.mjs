@@ -123,7 +123,9 @@ async function main() {
     "add", "README.md", ".gitignore"], paths.workspace, env);
   await run("git", ["-c", "user.name=DSH E2E", "-c", "user.email=e2e@example.invalid",
     "commit", "--quiet", "-m", "fixture"], paths.workspace, env);
-  await writePersonalContextFixtures(paths.workspace);
+  await run("git", ["update-ref", "refs/remotes/origin/main", "HEAD"], paths.workspace, env);
+  await run("git", ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"], paths.workspace, env);
+  await writePersonalContextFixtures(paths.memoraxHome);
 
   progress("installing the pinned DSH release and its test-only dependencies");
   await run("npm", ["install", "-g", "--prefix", paths.prefix, DSH_SPEC,
@@ -245,7 +247,7 @@ async function main() {
     "maintain", "--repo", paths.workspace, "--dry-run"], paths.workspace,
   { ...runtimeEnv, MEMORAX_CODE_HOME: ambientMemoraxHome })).stdout);
   assert.equal(dryRun.action, "build");
-  assert.equal(dryRun.reason, "bundle_missing");
+  assert.equal(dryRun.reason, "shared_build_due");
   assert.equal(dryRun.repo, await realpath(paths.workspace));
   assert.equal(dryRun.job?.dryRun, true);
   assert.equal(dryRun.job?.runner, "dsh");
@@ -258,7 +260,7 @@ async function main() {
   assert.equal(status.dshAdapter?.integration, "plugin");
   backendPid = validPid((await readJson(backendStatePath)).pid);
 
-  progress("running a real DSH Turn through Search, personal context, skill, Repo Memory, and Add");
+  progress("running a real DSH Turn through tracking, personal context, skill, Repo Memory, and Add");
   const firstLlmRequest = llmServer.requests.length;
   const repoMemoryHelperSource = await readFile(profileRepoMemoryHelper, "utf8");
   await writeFile(profileRepoMemoryHelper, repoMemoryDispatchRecorderSource(), "utf8");
@@ -275,14 +277,14 @@ async function main() {
     await writeFile(profileRepoMemoryHelper, repoMemoryHelperSource, "utf8");
   }
   await waitFor(() => requests("/v1/memories/add").length === 1, "first Add");
-  assert.equal(requests("/v1/memories/search")[0]?.body?.query, FIRST_PROMPT);
+  assert.equal(requests("/v1/memories/search").length, 0);
   assertAdd(requests("/v1/memories/add")[0], FIRST_PROMPT);
   const firstLlmRequests = llmServer.requests.slice(firstLlmRequest);
   assert.ok(firstLlmRequests.length >= 2);
   const firstModelRequest = firstLlmRequests.find((request) =>
     JSON.stringify(request.body).includes(FIRST_PROMPT));
   assert.ok(firstModelRequest);
-  assert.match(JSON.stringify(firstModelRequest.body), new RegExp(RECALL));
+  assert.doesNotMatch(JSON.stringify(firstModelRequest.body), new RegExp(RECALL));
   assert.match(JSON.stringify(firstModelRequest.body), new RegExp(USER_PROFILE));
   assert.match(JSON.stringify(firstModelRequest.body), new RegExp(PROCEDURE_MEMORY));
   assert.match(JSON.stringify(firstModelRequest.body), new RegExp(MEMORY_REMINDER));
@@ -293,7 +295,7 @@ async function main() {
   const [, firstSession] = firstSessionEntry;
   const firstSessionId = JSON.parse(firstSession.split("\n", 1)[0]).id;
   assert.ok(typeof firstSessionId === "string" && firstSessionId);
-  assert.match(firstSession, new RegExp(RECALL));
+  assert.doesNotMatch(firstSession, new RegExp(RECALL));
   assert.match(firstSession, new RegExp(USER_PROFILE));
   assert.match(firstSession, new RegExp(PROCEDURE_MEMORY));
   assert.match(firstSession, new RegExp(MEMORY_REMINDER));
@@ -321,6 +323,14 @@ async function main() {
     paths.workspace,
   ], paths.workspace, runtimeEnv)).stdout);
   assert.equal(repoMemoryValidation.ok, true);
+  // Later Turns reuse the shared baseline instead of starting unrelated authoring.
+  const { publishSharedRepoMemorySnapshot } = await import(pathToFileURL(join(profilePackage,
+    "memorax-code-adapter-common", "src", "repo-memory", "repo-memory-shared-bundle.mjs")).href);
+  assert.equal(publishSharedRepoMemorySnapshot({
+    home: paths.memoraxHome, repo: await realpath(paths.workspace), root: paths.workspace,
+    snapshot: { ref: "refs/remotes/origin/main", branch: "main", head: repoMemoryHead, baseHead: null },
+    validate: () => repoMemoryValidation.ok,
+  }), true);
 
   progress("crashing and resuming one real DSH session to reconcile its interrupted Turn");
   const interruptedRunnerPath = join(headless, "memorax-interrupted-e2e-runner.mjs");
@@ -394,7 +404,7 @@ async function main() {
   const resumeStartIndex = interruptedTrace.findIndex((event) => event.type === "turn_start"
     && event.trace?.turn_id === String(resumeTurn));
   assert.ok(interruptedTrace.indexOf(crashTurnEnds[0]) < resumeStartIndex,
-    "interrupted reconciliation did not finish before resumed retrieval");
+    "interrupted reconciliation did not finish before resumed Turn tracking");
 
   progress("recovering a crashed Backend from the current DSH generation");
   const crashedPid = backendPid;
@@ -408,7 +418,7 @@ async function main() {
     resolve(initialState.runtimeBundleRoot));
   backendPid = validPid((await readJson(backendStatePath)).pid);
   assert.notEqual(backendPid, crashedPid);
-  assert.equal(requests("/v1/memories/search").at(-1)?.body?.query, RECOVERY_PROMPT);
+  assert.equal(requests("/v1/memories/search").length, 0);
   assertAdd(requests("/v1/memories/add").at(-1), RECOVERY_PROMPT);
 
   progress("reconciling a Profile created after installation");
@@ -528,25 +538,25 @@ function assertAdd(request, prompt) {
   assert.doesNotMatch(serialized, /skill_content/);
 }
 
-async function writePersonalContextFixtures(workspace) {
-  const profileRoot = join(workspace, ".repo_memory", "user-profile");
-  const procedureRoot = join(workspace, ".repo_memory", "procedure-memory");
+async function writePersonalContextFixtures(memoraxHome) {
+  const profileRoot = join(memoraxHome, "personal-memory", "user-profile");
+  const procedureRoot = join(memoraxHome, "personal-memory", "procedure-memory");
   await Promise.all([
     mkdir(profileRoot, { recursive: true }),
     mkdir(procedureRoot, { recursive: true }),
   ]);
   await writeFile(join(profileRoot, "preferences.md"), [
     "---",
-    'schema: "repo_user_profile_memory.v0.1"',
-    'scope: "repo"',
-    'owner: "repo-user-profile-memory"',
+    'schema: "user_profile_memory.v0.1"',
+    'scope: "user"',
+    'owner: "user-profile-memory"',
     'trust_state: "user_stated"',
     'updated_at: "2026-08-16T00:00:00.000Z"',
     "active_count: 1",
     "total_count: 1",
     "---",
     "",
-    "# Repo-Scoped User Profile And Preferences",
+    "# User Profile And Preferences",
     "",
     "## Active Preferences",
     "",

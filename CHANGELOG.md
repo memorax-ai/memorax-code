@@ -6,6 +6,74 @@ behavior.
 
 ## Unreleased
 
+## [0.1.19] - 2026-09-28
+
+### Added
+
+- Added independently managed Cursor integration with native Hooks, the shared
+  Skill, scoped Search/Add, automatic writeback from verified native
+  conversation records, personal-memory context, and local diagnostics.
+  Repo Memory builds and maintenance use Cursor's native background subagent.
+- Added optional Jev guidance for Coding Memory Search. When explicitly
+  enabled with a separate API key, it evaluates each eligible user request and
+  guides the agent to the shared Skill's Search workflow. Jev is disabled by
+  default; unavailable or failed evaluations retain the usual reminder cadence.
+  Setup and npm upgrades add disabled defaults when no Jev configuration exists,
+  preserving existing settings.
+
+### Changed
+
+- Removed automatic remote Search from prompt Hooks. Search runs through the
+  shared Skill or `memorax-cli search`; Hooks continue to provide local memory
+  context and reminders, and automatic writeback remains available.
+- Made User Profile and Procedure Memory local to the user's MemoraX Code home
+  and shared across repositories and non-Git workspaces. Clients using the same
+  home reuse the same preferences and procedures.
+- Updated the shared Skill to recognize durable, general working rules and
+  communication preferences from user intent without requiring "remember"
+  wording. Agents are instructed to finish the current task before saving and
+  confirm the change at the end, asking when scope or permanence is unclear.
+
+### Fixed
+
+- Retried transient Windows JSON-lock acquisition failures within the existing
+  timeout, improving concurrent local-state and personal-memory writes.
+- Fixed DSH plugin installation on Windows when the `pnpm.cmd` launcher points
+  to the standalone `pnpm.exe` distribution.
+- Reduced redundant Backend restarts during foreground and automatic npm
+  updates by reusing a healthy, successfully restored Backend when the selected
+  clients still match. Other cases retain the full reconciliation path.
+- Preserved explicit client choices during reinstall and update when a legacy
+  `[clients]` table omits Codex or Claude. Invalid client values now stop setup
+  without rewriting the saved configuration.
+
+### Upgrade notes
+
+Personal memory now lives under `$MEMORAX_CODE_HOME/personal-memory`, defaulting
+to `~/.memorax-code/personal-memory`. Existing personal-memory files under
+`.repo_memory/` are ignored without migration or fallback; Repo Memory remains
+repository-local. `memorax-code user-profile` accepts `--home DIR` in place of
+the removed `--repo` option. See [personal memory storage](docs/configuration.md#personal-memory-storage).
+
+The former `[memory.retrieval].enabled` and `[memorax].startup_timeout_ms`
+settings and their environment overrides are ignored. The
+`search.retrievalEnabled` and `search.startupTimeoutMs` status fields have also
+been removed; update scripts that consume them. Explicit Search retains its
+other retrieval settings and normal request timeout. See [retrieval](docs/configuration.md#retrieval).
+
+Cursor database-backed features require the Backend to run on Node.js 22.13 or
+later with built-in SQLite; Node.js 24 is recommended. Restart or refresh Cursor
+and open a new conversation after activation. During automatic update
+reconciliation, a detected Cursor installation is enabled when `cursor` is
+absent from an existing `[clients]` selection; an explicit `cursor = false`
+is preserved.
+See [Cursor integration](docs/configuration.md#cursor-integration-paths).
+
+Enabling Jev sends the current request and, when available, the preceding
+validated user request and final assistant reply to TypeSafe. Each text field
+is trimmed and limited to 4,000 characters without content redaction. A key
+alone does not enable Jev. See [Jev configuration](docs/configuration.md#jev-provider-configuration).
+
 ## [0.1.18] - 2026-09-16
 
 ### Added
@@ -364,6 +432,7 @@ Later upgrades do not require this workaround.
 - Required a non-empty MemoraX user ID and API key during interactive setup,
   with clearer registration guidance.
 
+[0.1.19]: https://www.npmjs.com/package/@memorax/memorax-code/v/0.1.19
 [0.1.18]: https://www.npmjs.com/package/@memorax/memorax-code/v/0.1.18
 [0.1.17]: https://www.npmjs.com/package/@memorax/memorax-code/v/0.1.17
 [0.1.15]: https://www.npmjs.com/package/@memorax/memorax-code/v/0.1.15

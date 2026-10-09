@@ -1,7 +1,7 @@
 import {
   type AutomaticMemoryWritebackRejectionReason,
 } from "../../memory/automatic-writeback.js";
-import { createHarnessMemoryRuntime } from "../../memory/harness-runtime.js";
+import { createHarnessMemoryRuntime, type HarnessMemoryRuntimeOptions } from "../../memory/harness-runtime.js";
 import type {
   DshTurnStartCommand,
   DshWritebackCommand,
@@ -46,6 +46,7 @@ export type DshMemoryHookRuntimeOptions = {
   diagnosticLogger?: MemoryDiagnosticLogger;
   env?: Record<string, string | undefined>;
   fetchImpl?: typeof fetch;
+  searchGuidance?: HarnessMemoryRuntimeOptions["searchGuidance"];
   now?: () => number;
   maxEntries?: number;
   memoryObservability?: MemoryObservabilityHook;
@@ -68,12 +69,10 @@ export function createDshMemoryHookRuntime(
   const now = options.now ?? (() => Date.now());
   const harness = createHarnessMemoryRuntime({
     client: DSH_MEMORY_TURN_CLIENT,
-    retrievalSource: "dsh_native_retrieval",
     writebackSource: "dsh_native_writeback",
     diagnosticPrefix: "dsh_memory",
     traceFailureEvent: "dsh_trace.write_failed",
     turnStartTraceSource: "dsh-cordis",
-    deduplicateRetrieval: true,
     quotaNotices: false,
   }, options);
   const { turnCoordinator } = harness;
@@ -95,7 +94,6 @@ export function createDshMemoryHookRuntime(
         prompt: command.prompt,
         traceContext,
         traceRequest: { start_seq: command.startSeq },
-        retrievalKeySuffix: String(command.startSeq),
         diagnosticFields: {
           sessionId: command.sessionId,
           turn: command.turn,
@@ -154,6 +152,7 @@ export function createDshMemoryHookRuntime(
         }),
         userText: materialized.turn.userPrompt,
         assistantText: materialized.turn.assistantReply,
+        searchAssistantText: materialized.turn.finalAssistantReply,
         userTimestamp: materialized.turn.userTimestamp,
         assistantTimestamp: materialized.turn.assistantTimestamp,
         traceContext,

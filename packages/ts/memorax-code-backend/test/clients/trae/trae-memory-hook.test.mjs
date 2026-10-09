@@ -250,35 +250,33 @@ test("Trae runtime preserves a replacement Turn when an older Stop finishes", as
   }
 });
 
-test("Trae accepts the replacement Turn Stop while its start retrieval is pending", async () => {
-  const fixture = await createFixture("pending-retrieval-stop");
+test("Trae accepts the replacement Turn Stop while its quota notice claim is pending", async () => {
+  const fixture = await createFixture("pending-notice-stop");
   const writes = [];
   let now = 1_700_000_000_000;
-  let searchCalls = 0;
-  let markSecondSearchStarted;
-  let releaseSecondSearch;
-  const secondSearchStarted = new Promise((resolve) => { markSecondSearchStarted = resolve; });
-  const secondSearchGate = new Promise((resolve) => { releaseSecondSearch = resolve; });
+  let noticeClaims = 0;
+  let markSecondNoticeStarted;
+  let releaseSecondNotice;
+  const secondNoticeStarted = new Promise((resolve) => { markSecondNoticeStarted = resolve; });
+  const secondNoticeGate = new Promise((resolve) => { releaseSecondNotice = resolve; });
   const runtime = createTraeMemoryHookRuntime({
     env: configuredEnv(fixture.home, {
       MEMORAX_CODE_TRAE_TRACE_ENABLED: "false",
-      MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED: "true",
     }),
     now: () => now,
     ttlMs: 5,
     cleanupIntervalMs: 60_000,
     automaticWriteback: (request) => { writes.push(request); return { accepted: true }; },
-    fetchImpl: async (url) => {
-      assert.match(String(url), /\/v1\/memories\/search$/);
-      searchCalls += 1;
-      if (searchCalls === 2) {
-        markSecondSearchStarted();
-        await secondSearchGate;
-      }
-      return new Response(JSON.stringify({
-        success: true,
-        data: { task_id: `search-${searchCalls}`, status: "completed", data: [] },
-      }), { status: 200, headers: { "content-type": "application/json" } });
+    pendingQuotaNotice: {
+      queue() {},
+      async claim() {
+        noticeClaims += 1;
+        if (noticeClaims === 2) {
+          markSecondNoticeStarted();
+          await secondNoticeGate;
+        }
+      },
+      close() {},
     },
   });
   const first = turnStart("trae-pending-session", "Start the first Turn.", fixture.workspace, now);
@@ -288,13 +286,13 @@ test("Trae accepts the replacement Turn Stop while its start retrieval is pendin
     await runtime.recordTurnStart(first);
     now += 1;
     pendingStart = runtime.recordTurnStart(second);
-    await secondSearchStarted;
+    await secondNoticeStarted;
     // Stop prunes coordinator metadata at this time. The active snapshot must
     // already refer to the replacement even though its start has not returned.
     now += 10;
     assert.deepEqual(await runtime.writeback({
       ...second,
-      lastAssistantMessage: "The replacement completed before Search returned.",
+      lastAssistantMessage: "The replacement completed before its notice claim returned.",
     }), { ok: true, scheduled: true });
     assert.deepEqual(await runtime.writeback({
       ...first,
@@ -302,11 +300,11 @@ test("Trae accepts the replacement Turn Stop while its start retrieval is pendin
     }), { ok: true, scheduled: false, reason: "interrupted" });
     assert.deepEqual(writes.map(({ userText }) => userText), [second.prompt]);
     assert.equal(runtime.size(), 0);
-    assert.equal(searchCalls, 2);
-    releaseSecondSearch();
+    assert.equal(noticeClaims, 2);
+    releaseSecondNotice();
     assert.deepEqual(await pendingStart, { ok: true });
   } finally {
-    releaseSecondSearch();
+    releaseSecondNotice();
     if (pendingStart) await Promise.allSettled([pendingStart]);
     runtime.close();
     await fixture.cleanup();

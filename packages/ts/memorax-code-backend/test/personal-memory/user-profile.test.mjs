@@ -12,38 +12,36 @@ const cli = fileURLToPath(new URL("../../dist/user-profile.js", import.meta.url)
 // legacy inactive-record format. Tests do not need the previous interpreter.
 const legacyFixture = readFileSync(new URL("./fixtures/legacy-preferences.md", import.meta.url), "utf8");
 
-function workspace(t, name = "repo with 中文 spaces") {
+function workspace(t, name = "home with 中文 spaces") {
   const root = mkdtempSync(join(tmpdir(), "memorax-user-profile-ts-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  const repo = join(root, name);
-  mkdirSync(repo);
-  const git = spawnSync("git", ["init", "-b", "main"], { cwd: repo, encoding: "utf8" });
-  assert.equal(git.status, 0, git.stderr);
-  return realpathSync(repo);
+  const home = join(root, name);
+  mkdirSync(home);
+  return realpathSync(home);
 }
 
-function preferencesPath(repo) {
-  return join(repo, ".repo_memory", "user-profile", "preferences.md");
+function preferencesPath(home) {
+  return join(home, "personal-memory", "user-profile", "preferences.md");
 }
 
-function raw(command, repo, args = []) {
-  return spawnSync(process.execPath, [cli, "user-profile", command, "--repo", repo, ...args], {
+function raw(command, home, args = [], options = {}) {
+  return spawnSync(process.execPath, [cli, "user-profile", command, "--home", home, ...args], {
     encoding: "utf8",
     windowsHide: true,
+    ...options,
   });
 }
 
-function run(command, repo, args = []) {
-  const result = raw(command, repo, args);
+function run(command, home, args = [], options = {}) {
+  const result = raw(command, home, args, options);
   assert.equal(result.status, 0, result.stderr || result.stdout);
   return JSON.parse(result.stdout);
 }
 
-function seed(repo, text = legacyFixture) {
-  const path = preferencesPath(repo);
+function seed(home, text = legacyFixture) {
+  const path = preferencesPath(home);
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, text);
-  writeFileSync(join(repo, ".gitignore"), ".repo_memory/\n");
   return path;
 }
 
@@ -89,16 +87,61 @@ test("legacy preferences retain IDs, fields and timestamps across CRLF updates a
   }
 });
 
-test("listing an empty nested repository is read-only", (t) => {
+test("listing an empty global home is read-only", (t) => {
   const repo = workspace(t);
-  const nested = join(repo, "nested", "folder");
+  const nested = join(dirname(repo), "nested", "folder");
   mkdirSync(nested, { recursive: true });
-  const listed = run("list", nested);
+  const listed = run("list", repo, [], { cwd: nested });
   assert.equal(listed.active_count, 0);
   assert.deepEqual(listed.preferences, []);
   assert.equal(listed.preferences_path, preferencesPath(repo));
-  assert.equal(existsSync(join(repo, ".repo_memory")), false);
-  assert.equal(existsSync(join(repo, ".gitignore")), false);
+  assert.equal(existsSync(join(repo, "personal-memory")), false);
+});
+
+test("global preferences are shared across non-git working directories and ignore old repo storage", (t) => {
+  const home = workspace(t, "global-home");
+  const root = dirname(home);
+  const firstCwd = join(root, "first-cwd");
+  const secondCwd = join(root, "second-cwd");
+  mkdirSync(firstCwd);
+  mkdirSync(secondCwd);
+  const oldPath = join(firstCwd, ".repo_memory", "user-profile", "preferences.md");
+  mkdirSync(dirname(oldPath), { recursive: true });
+  const oldRepoFixture = legacyFixture
+    .replace("user_profile_memory.v0.1", "repo_user_profile_memory.v0.1")
+    .replace('scope: "user"', 'scope: "repo"')
+    .replace('owner: "user-profile-memory"', 'owner: "repo-user-profile-memory"');
+  writeFileSync(oldPath, oldRepoFixture);
+
+  const initial = run("list", home, [], { cwd: firstCwd });
+  assert.deepEqual(initial.preferences, []);
+  assert.equal(existsSync(preferencesPath(home)), false);
+  assert.equal(readFileSync(oldPath, "utf8"), oldRepoFixture);
+
+  const added = run("add", home, [
+    "--type", "communication",
+    "--description", "User prefers global answers.",
+    "--applies-when", "Answering questions from any working directory.",
+  ], { cwd: secondCwd });
+  assert.equal(added.active_count, 1);
+  const listed = run("list", home, [], { cwd: firstCwd });
+  assert.equal(listed.preferences[0].description, "User prefers global answers.");
+  assert.equal(listed.preferences_path, preferencesPath(home));
+  assert.equal(readFileSync(oldPath, "utf8"), oldRepoFixture);
+  assert.equal(existsSync(join(firstCwd, ".gitignore")), false);
+  assert.equal(existsSync(join(secondCwd, ".gitignore")), false);
+});
+
+test("CLI defaults to MEMORAX_CODE_HOME when --home is omitted", (t) => {
+  const home = workspace(t, "configured-global-home");
+  const result = raw("add", home, [
+    "--type", "workflow", "--description", "Keep preferences across repositories.",
+    "--applies-when", "Always.",
+  ], { env: { ...process.env, MEMORAX_CODE_HOME: home } });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const stored = readFileSync(preferencesPath(home), "utf8");
+  assert.match(stored, /scope: "user"/);
+  assert.match(stored, /owner: "user-profile-memory"/);
 });
 
 test("Unicode case folding preserves multilingual duplicate detection without merging dotless i", (t) => {
@@ -177,11 +220,10 @@ test("blank descriptions are rejected before creating or rewriting storage", (t)
       assert.match(result.stderr, /description must not be empty/);
       if (command === "update") {
         assert.equal(readFileSync(path, "utf8"), legacyFixture);
-        assert.equal(readFileSync(join(repo, ".gitignore"), "utf8"), ".repo_memory/\n");
+        assert.equal(existsSync(join(repo, "personal-memory")), true);
         assert.equal(run("list", repo).active_count, 1);
       } else {
-        assert.equal(existsSync(join(repo, ".repo_memory")), false);
-        assert.equal(existsSync(join(repo, ".gitignore")), false);
+        assert.equal(existsSync(join(repo, "personal-memory")), false);
       }
     }
   }
@@ -242,8 +284,7 @@ test("CLI validation and help are side-effect free, while inline values retain e
   const help = raw("add", repo, ["--help"]);
   assert.equal(help.status, 0);
   assert.match(help.stdout, /--description/);
-  assert.equal(existsSync(join(repo, ".repo_memory")), false);
-  assert.equal(existsSync(join(repo, ".gitignore")), false);
+  assert.equal(existsSync(join(repo, "personal-memory")), false);
 
   run("add", repo, ["--type=environment", "--description=Use FOO=bar in this repo.", "--applies-when=Configuring tests."]);
   assert.equal(run("list", repo).preferences[0].description, "Use FOO=bar in this repo.");
@@ -252,11 +293,11 @@ test("CLI validation and help are side-effect free, while inline values retain e
 test("symlinked preference parents are rejected without touching their targets", (t) => {
   const repo = workspace(t);
   const outside = workspace(t, "outside");
-  const target = join(outside, "user-profile");
-  mkdirSync(target);
+  const target = join(outside, "personal-memory", "user-profile");
+  mkdirSync(target, { recursive: true });
   writeFileSync(join(target, "preferences.md"), legacyFixture);
-  mkdirSync(join(repo, ".repo_memory"));
-  symlinkSync(target, join(repo, ".repo_memory", "user-profile"), process.platform === "win32" ? "junction" : "dir");
+  mkdirSync(join(repo, "personal-memory"));
+  symlinkSync(target, join(repo, "personal-memory", "user-profile"), process.platform === "win32" ? "junction" : "dir");
   const result = raw("delete", repo, ["--id", "pref_20260710_legacy-workflow"]);
   assert.equal(result.status, 1);
   assert.match(result.stderr, /preferences directories must be regular directories/);

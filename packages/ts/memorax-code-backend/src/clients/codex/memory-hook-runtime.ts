@@ -114,12 +114,10 @@ export function createCodexMemoryHookRuntime(options: CodexMemoryHookRuntimeOpti
   const now = options.now ?? (() => Date.now());
   const memory = createHarnessMemoryRuntime({
     client: CODEX_MEMORY_TURN_CLIENT,
-    retrievalSource: "codex_hook_retrieval",
     writebackSource: "codex_hook_writeback",
     diagnosticPrefix: "memory_hook",
     traceFailureEvent: "codex_trace.write_failed",
     turnStartTraceSource: "codex-hook",
-    deduplicateRetrieval: true,
   }, { readCodingSessionTurn: readCodexArchiveSource, ...options });
   const { turnCoordinator } = memory;
   const pending = new Map<string, PendingWriteback>();

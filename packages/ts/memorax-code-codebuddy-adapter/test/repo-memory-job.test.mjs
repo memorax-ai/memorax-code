@@ -4,39 +4,58 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } fro
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { enableCodeBuddyAdapter, codeBuddyInstallPath } from "../src/config.mjs";
+import { enableCodeBuddyAdapter, codeBuddyInstallPath, readManagedCodeBuddyTarget } from "../src/config.mjs";
 
-test("CodeBuddy repo memory launcher pins its plugin and uses non-persistent print mode", async () => {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "memorax-codebuddy-repo-memory-dry-run-")));
-  const repo = join(root, "repo");
-  initRepo(repo);
-  const home = join(root, "workbuddy");
-  const command = join(root, "codebuddy");
-  writeFileSync(command, "#!/bin/sh\n", { mode: 0o755 });
-  await enableCodeBuddyAdapter({ codeBuddyHome: home, codeBuddyCommand: command });
-  const result = runInstalledJob(home, ["start", "--mode", "build", "--repo", repo, "--dry-run"], {
-    MEMORAX_CODE_HOME: join(root, "memorax-code"),
-    CODEBUDDY_PLUGIN_ROOT: "/c/Users/incorrect/plugin/root",
-  });
-  assert.equal(result.status, 0, result.stderr);
-  const payload = JSON.parse(result.stdout);
-  assert.equal(payload.runner, "codebuddy");
-  assert.equal(payload.finalMessageSource, "stdout");
-  assert.deepEqual(payload.command.slice(0, 8), [
-    command,
-    "--plugin-dir",
-    codeBuddyInstallPath(home),
-    "--print",
-    "--output-format",
-    "text",
-    "--dangerously-skip-permissions",
-    "--no-session-persistence",
-  ]);
-  assert.match(payload.prompt, /repo-build operation/);
-  assert.match(payload.prompt, /the `memorax-code` skill/);
-  assert.doesNotMatch(payload.prompt, /memorax-code-codebuddy-adapter:memorax-code/);
-  assert.doesNotMatch(payload.prompt, /\$memorax-code/);
-});
+for (const client of ["codebuddy", "workbuddy"]) {
+  for (const mode of ["build", "update"]) {
+    test(`${client} repo memory ${mode} uses medium effort with its native model and plugin`, async () => {
+      const root = realpathSync(mkdtempSync(join(tmpdir(), "memorax-codebuddy-repo-memory-dry-run-")));
+      const repo = join(root, "repo");
+      initRepo(repo);
+      const home = join(root, `${client}-home`);
+      const memoraxCodeHome = join(root, "memorax-code");
+      const command = join(root, "codebuddy");
+      writeFileSync(command, "#!/bin/sh\n", { mode: 0o755 });
+      await enableCodeBuddyAdapter({ client, codeBuddyHome: home, codeBuddyCommand: command, memoraxCodeHome });
+      assert.equal((await readManagedCodeBuddyTarget({ client, memoraxCodeHome })).codeBuddyHome, home);
+      if (mode === "update") {
+        mkdirSync(join(repo, ".repo_memory"), { recursive: true });
+        writeFileSync(join(repo, ".repo_memory", "PROFILE.md"), "# Repo memory fixture\n");
+      }
+      const settingsPath = join(home, "settings.json");
+      const settings = JSON.parse(readFileSync(settingsPath, "utf8"));
+      settings.model = "fixture-model";
+      settings.effortLevel = "high";
+      const settingsText = `${JSON.stringify(settings)}\n`;
+      writeFileSync(settingsPath, settingsText);
+      const result = runInstalledJob(home, ["start", "--mode", mode, "--repo", repo, "--dry-run"], {
+        MEMORAX_CODE_HOME: memoraxCodeHome,
+        CODEBUDDY_PLUGIN_ROOT: "/c/Users/incorrect/plugin/root",
+      });
+      assert.equal(result.status, 0, result.stderr);
+      const payload = JSON.parse(result.stdout);
+      assert.equal(payload.runner, client);
+      assert.equal(payload.finalMessageSource, "stdout");
+      assert.deepEqual(payload.command.slice(0, -1), [
+        command,
+        "--plugin-dir",
+        codeBuddyInstallPath(home),
+        "--print",
+        "--output-format",
+        "text",
+        "--dangerously-skip-permissions",
+        "--no-session-persistence",
+        "--effort",
+        "medium",
+      ]);
+      assert.equal(readFileSync(settingsPath, "utf8"), settingsText);
+      assert.match(payload.prompt, new RegExp(`repo-${mode} operation`));
+      assert.match(payload.prompt, /the `memorax-code` skill/);
+      assert.doesNotMatch(payload.prompt, /memorax-code-codebuddy-adapter:memorax-code/);
+      assert.doesNotMatch(payload.prompt, /\$memorax-code/);
+    });
+  }
+}
 
 test("CodeBuddy repo memory worker materializes and validates a repository bundle", async () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "memorax-codebuddy-repo-memory-worker-")));
@@ -53,7 +72,9 @@ test("CodeBuddy repo memory worker materializes and validates a repository bundl
     codeBuddyHome: home,
     codeBuddyCommand: command,
     memoraxCodeCommand,
+    memoraxCodeHome,
   });
+  assert.equal((await readManagedCodeBuddyTarget({ memoraxCodeHome })).codeBuddyHome, home);
   const result = runInstalledJob(home, ["start", "--mode", "build", "--repo", repo], {
     MEMORAX_CODE_HOME: memoraxCodeHome,
     MEMORAX_CODE_CODEBUDDY_COMMAND: command,
@@ -68,6 +89,51 @@ test("CodeBuddy repo memory worker materializes and validates a repository bundl
   assert.equal(readFileSync(join(repo, ".repo_memory", "PROFILE.md"), "utf8").includes("repo_memory_profile.v0.1"), true);
 });
 
+for (const client of ["codebuddy", "workbuddy"]) {
+  test(`${client} repo memory worker applies client-specific server environment isolation`, async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), `memorax-${client}-repo-memory-env-`)));
+    const repo = join(root, "repo");
+    initRepo(repo);
+    const home = join(root, `${client}-home`);
+    const memoraxCodeHome = join(root, "memorax-code");
+    const command = join(root, process.platform === "win32" ? "codebuddy.mjs" : "codebuddy");
+    const inheritedEnv = {
+      SERVER__PORT: "18765",
+      SERVER__HOST: "127.0.0.2",
+      CODEBUDDY_BASE_URL: "http://127.0.0.1:1",
+      CODEBUDDY_API_KEY: "fixture-api-key",
+      CODEBUDDY_AUTH_TOKEN: "fixture-auth-token",
+      CODEBUDDY_MODEL: "fixture-model",
+      CODEBUDDY_SMALL_FAST_MODEL: "fixture-small-model",
+      CODEBUDDY_BIG_SLOW_MODEL: "fixture-large-model",
+      CODEBUDDY_CODE_SUBAGENT_MODEL: "fixture-subagent-model",
+    };
+    writeFileSync(command, `#!/usr/bin/env node
+const names = ${JSON.stringify(Object.keys(inheritedEnv))};
+process.stdout.write(JSON.stringify(Object.fromEntries(names.map((name) => [name, process.env[name]]))));
+`, { mode: 0o755 });
+    const memoraxCodeCommand = realpathSync(new URL("../../memorax-code-backend/dist/repo-memory.js", import.meta.url));
+    await enableCodeBuddyAdapter({ client, codeBuddyHome: home, codeBuddyCommand: command, memoraxCodeCommand, memoraxCodeHome });
+    const result = runInstalledJob(home, ["start", "--mode", "build", "--repo", repo], {
+      ...inheritedEnv,
+      MEMORAX_CODE_HOME: memoraxCodeHome,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const state = waitForTerminal(JSON.parse(result.stdout).jobPath);
+    assert.equal(state.runner, client);
+    // The environment probe exits successfully without authoring a bundle.
+    assert.equal(state.status, "failed");
+    assert.equal(state.failureReason, "artifact_validation_failed");
+    assert.equal(state.exitCode, 0);
+    const expectedEnv = { ...inheritedEnv };
+    if (client === "codebuddy") {
+      delete expectedEnv.SERVER__PORT;
+      delete expectedEnv.SERVER__HOST;
+    }
+    assert.deepEqual(JSON.parse(readFileSync(state.finalMessagePath, "utf8")), expectedEnv);
+  });
+}
+
 test("CodeBuddy repo memory worker bounds a non-returning headless client", async () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "memorax-codebuddy-repo-memory-timeout-")));
   const repo = join(root, "repo");
@@ -75,7 +141,8 @@ test("CodeBuddy repo memory worker bounds a non-returning headless client", asyn
   const home = join(root, "workbuddy");
   const memoraxCodeHome = join(root, "memorax-code");
   const command = writeHangingCodeBuddy(join(root, "codebuddy"));
-  await enableCodeBuddyAdapter({ codeBuddyHome: home, codeBuddyCommand: command });
+  await enableCodeBuddyAdapter({ codeBuddyHome: home, codeBuddyCommand: command, memoraxCodeHome });
+  assert.equal((await readManagedCodeBuddyTarget({ memoraxCodeHome })).codeBuddyHome, home);
   const result = runInstalledJob(home, ["start", "--mode", "build", "--repo", repo], {
     MEMORAX_CODE_HOME: memoraxCodeHome,
     MEMORAX_CODE_CODEBUDDY_COMMAND: command,

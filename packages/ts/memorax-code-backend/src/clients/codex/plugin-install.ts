@@ -44,6 +44,7 @@ type MarketplaceFile = {
 
 export type CodexPluginInstallOptions = {
   codexHome?: string;
+  memoraxCodeHome?: string;
   marketplacePath?: string;
   homeDir?: string;
   pluginSourcePath?: string;
@@ -133,6 +134,7 @@ export type BackendRemovalCleanupReport = {
 
 export async function installCodexPlugin(options: CodexPluginInstallOptions = {}): Promise<CodexPluginInstallReport> {
   const home = resolveHome(options.homeDir);
+  const memoraxCodeHome = resolve(nonEmpty(options.memoraxCodeHome) ?? nonEmpty(process.env.MEMORAX_CODE_HOME) ?? join(home, ".memorax-code"));
   const codexHome = resolveCodexHome(options.codexHome, home);
   const marketplacePath = resolve(options.marketplacePath ?? join(home, ".agents", "plugins", "marketplace.json"));
   const pluginSourcePath = resolve(options.pluginSourcePath ?? defaultPluginSourcePath(codexHome));
@@ -150,13 +152,14 @@ export async function installCodexPlugin(options: CodexPluginInstallOptions = {}
     return await updateVersionedCodexPlugin(
       codexHome,
       sourceRoot,
+      memoraxCodeHome,
       options.codexCommand ?? process.env.CODEX_CLI_PATH,
     );
   }
   const sourcePath = marketplaceSourcePath(marketplacePath, pluginSourcePath);
 
   await stagePluginSource(sourceRoot, pluginSourcePath);
-  await writePluginMetadata(pluginSourcePath, options.codexCommand ?? process.env.CODEX_CLI_PATH);
+  await writePluginMetadata(pluginSourcePath, memoraxCodeHome, options.codexCommand ?? process.env.CODEX_CLI_PATH);
   const changed = await upsertPersonalMarketplace(marketplacePath, pluginEntry(sourcePath));
   const marketplace = await readMarketplace(marketplacePath);
 
@@ -179,6 +182,7 @@ export async function installCodexPlugin(options: CodexPluginInstallOptions = {}
 async function updateVersionedCodexPlugin(
   codexHome: string,
   sourceRoot: string,
+  memoraxCodeHome: string,
   codexCommand?: string,
 ): Promise<CodexPluginInstallReport> {
   const manifest = await readJsonRecord(join(sourceRoot, ".codex-plugin", "plugin.json"));
@@ -190,14 +194,14 @@ async function updateVersionedCodexPlugin(
   const pluginSourcePath = join(marketplaceRoot, "versions", version, "plugins", PLUGIN_NAME);
   // Existing sessions may still reference an older directory. Publish or reuse
   // immutable versioned artifacts before switching the marketplace pointer.
-  await publishImmutableDirectory(pluginSourcePath, dirname(pluginSourcePath), version, async (temporaryRoot) => {
+  await publishImmutableDirectory(pluginSourcePath, dirname(pluginSourcePath), version, memoraxCodeHome, async (temporaryRoot) => {
     await stagePluginSource(sourceRoot, temporaryRoot);
-    await writePluginMetadata(temporaryRoot, codexCommand);
+    await writePluginMetadata(temporaryRoot, memoraxCodeHome, codexCommand);
   });
 
   const cacheRoot = join(codexHome, "plugins", "cache", CLI_MARKETPLACE_NAME, PLUGIN_NAME);
   const cachePath = join(cacheRoot, version);
-  await publishImmutableDirectory(cachePath, dirname(cacheRoot), version, async (temporaryRoot) => {
+  await publishImmutableDirectory(cachePath, dirname(cacheRoot), version, memoraxCodeHome, async (temporaryRoot) => {
     await cp(pluginSourcePath, temporaryRoot, { recursive: true }).catch((error) => {
       throw attachDeploymentFailure(error, "plugin-stage");
     });
@@ -512,10 +516,11 @@ async function publishImmutableDirectory(
   targetRoot: string,
   temporaryParent: string,
   version: string,
+  memoraxCodeHome: string,
   stage: (temporaryRoot: string) => Promise<void>,
 ): Promise<void> {
   if (existsSync(targetRoot)) {
-    await verifyVersionedPlugin(targetRoot, version);
+    await verifyVersionedPlugin(targetRoot, version, memoraxCodeHome);
     return;
   }
   await mkdir(temporaryParent, { recursive: true }).catch((error) => {
@@ -528,7 +533,7 @@ async function publishImmutableDirectory(
   let stageError: unknown;
   try {
     await stage(temporaryRoot);
-    await verifyVersionedPlugin(temporaryRoot, version);
+    await verifyVersionedPlugin(temporaryRoot, version, memoraxCodeHome);
     await mkdir(dirname(targetRoot), { recursive: true });
     await rename(temporaryRoot, targetRoot);
   } catch (error) {
@@ -547,7 +552,7 @@ async function publishImmutableDirectory(
   }
 }
 
-async function verifyVersionedPlugin(root: string, version: string): Promise<void> {
+async function verifyVersionedPlugin(root: string, version: string, memoraxCodeHome: string): Promise<void> {
   try {
     const manifest = await readJsonRecord(join(root, ".codex-plugin", "plugin.json"));
     const pluginInterface = isRecord(manifest?.interface) ? manifest.interface : undefined;
@@ -562,6 +567,9 @@ async function verifyVersionedPlugin(root: string, version: string): Promise<voi
       || stringField(shell, "shellVersion") !== version
       || !stringField(metadata, "memoraxCodeCommand")) {
       throw new Error(`Codex plugin artifact version does not match ${version}`);
+    }
+    if (stringField(metadata, "memoraxCodeHome") !== memoraxCodeHome) {
+      throw new Error("Codex plugin artifact memoraxCodeHome is missing or does not match the configured personal-memory home");
     }
     if (!isCompleteCodexPluginArtifact(root)) {
       throw new Error("Codex plugin artifact is missing the manifest or memory skill");
@@ -659,13 +667,14 @@ function mjsFiles(root: string): string[] {
   return files;
 }
 
-async function writePluginMetadata(pluginSourcePath: string, codexCommand?: string): Promise<void> {
+async function writePluginMetadata(pluginSourcePath: string, memoraxCodeHome: string, codexCommand?: string): Promise<void> {
   try {
     const normalizedCodexCommand = nonEmpty(codexCommand);
     const npmExecPath = nonEmpty(process.env.MEMORAX_CODE_NPM_EXEC_PATH);
     const metadata = {
       version: 1,
       memoraxCodeCommand: process.argv[1],
+      memoraxCodeHome,
       ...(normalizedCodexCommand ? { codexCommand: normalizedCodexCommand } : {}),
       ...(npmExecPath ? { npmExecPath } : {}),
     };

@@ -1,20 +1,20 @@
 ---
 name: memorax-code
 description: >-
-  Use this skill as the single router for persistent coding and repository-local
-  memory. Invoke it whenever a request may involve prior-work knowledge,
-  repository memory, reusable procedures or rules, durable profile or
-  interaction preferences, or information worth retaining beyond the current
-  task. This applies without memory wording, including habits, preferences,
-  checklists, action sequences, prerequisites, gates, exceptions, validation
-  rules, communication style, preferred language, or result presentation.
-  Classify the request as coding memory, repository memory, personal procedure
-  memory, personal profile memory, or no persistent memory, then route it to the
-  matching operation. Invoking this router does not require coding-memory
-  search. Reuse a relevant coding-memory result already retrieved in this
-  conversation; otherwise let the matching operation decide on search. Prefer
-  this router over underlying memory workflows. Ask one focused question only when
-  memory authority remains ambiguous.
+  Use this skill as the single router for persistent coding, repository-local,
+  and user-global personal memory. Invoke it whenever a request may involve
+  prior-work knowledge, repository memory, reusable procedures or rules,
+  durable profile or interaction preferences, or information worth retaining
+  beyond the current task. This applies without memory wording, including
+  habits, preferences, checklists, action sequences, prerequisites, gates,
+  exceptions, validation rules, communication style, preferred language, or
+  result presentation. Classify the request as coding memory, repository
+  memory, personal procedure memory, personal profile memory, or no persistent
+  memory, then route it to the matching operation. Invoking this router does
+  not require coding-memory search. Reuse a relevant coding-memory result
+  already retrieved in this conversation; otherwise let the matching operation
+  decide on search. Prefer this router over underlying memory workflows. Ask
+  one focused question only when memory authority remains ambiguous.
 ---
 
 # MemoraX Code
@@ -46,7 +46,11 @@ Use repo memory for repository identity, architecture maps, module routing, loca
 
 ### Personal Memory
 
-Use personal memory for user-owned repository procedures and durable profile or interaction preferences stored under `.repo_memory/procedure-memory/` and `.repo_memory/user-profile/`.
+Use personal memory for user-owned procedures and durable profile or interaction
+preferences stored globally under `$MEMORAX_CODE_HOME/personal-memory/`. The
+default home is `~/.memorax-code`; the two authorities are
+`procedure-memory/*.md` and `user-profile/preferences.md`. Applicability may
+mention a repository, tool, or workflow, but the files are not repository-local.
 
 - Read [references/personal-read.md](references/personal-read.md) to list, recall, or apply personal memory.
 - Read [references/personal-write.md](references/personal-write.md) to save, update, forget, or delete personal memory.
@@ -66,15 +70,29 @@ Use personal memory for user-owned repository procedures and durable profile or 
 Examples:
 
 - "先测试再提 PR，帮我记住" routes to personal procedure write.
+- "以后优先使用 node 来读取 git" routes to personal procedure write even without "记住".
 - "我喜欢中文简短回答" routes to personal profile write.
+- "这次先别跑测试" stays with the current task and is not saved.
 - "之前这个 bug 怎么修的？" routes to MemoraX Code coding memory search unless the user asks for commit or PR evidence.
 - "这个仓库的架构是什么？" routes to repo memory read.
 - "重新生成仓库 memory" routes to repo memory build.
 - "更新一下 memory" requires clarification when no authority is identifiable.
 
+Decide personal-memory writes by intent, not wording. Save a procedure or
+profile preference when the user means it to keep applying after the current
+task, it covers a class of situations rather than one current object, and it is
+the user's own rule or preference, even without words such as "remember" or
+"记住". Finish the current task first and keep memory remarks at the end of
+the answer: when the intent is clear, save it and say so briefly; when
+durability or scope is unclear, ask one short question instead of saving, never
+before or during the task. When a save accompanies another task, write it only
+after every task action, including any command the task still needs to run, has
+finished, and do not mention the planned save in preambles or progress messages.
+Deleting saved memory still requires an explicit request.
+
 ## Natural Final-Answer Mention
 
-In Codex, Claude Code, DeepSeek Harness, OpenCode, CodeBuddy/WorkBuddy, and Trae, mention memory in the final answer when memory read in the current turn materially changed localization, a decision, implementation, validation, or the delivered answer. Eligible sources are an accepted Coding Memory result from a successful explicit `memorax-cli search`, a relevant Repo Memory read, applied Procedure Memory, or applied Profile Memory. A Search or read alone is insufficient: omit the mention for empty, unrelated, stale, rejected, merely confirmatory, or unused memory.
+In Codex, Claude Code, DeepSeek Harness, OpenCode, CodeBuddy/WorkBuddy, Trae, and Cursor, mention memory in the final answer when memory read in the current turn materially changed localization, a decision, implementation, validation, or the delivered answer. Eligible sources are an accepted Coding Memory result from a successful explicit `memorax-cli search`, a relevant Repo Memory read, applied Procedure Memory, or applied Profile Memory. A Search or read alone is insufficient: omit the mention for empty, unrelated, stale, rejected, merely confirmatory, or unused memory.
 
 Treat accepted memory as materially helpful when the answer uses it to recover or substantiate historical intent, rationale, a prior decision, a constraint, or a reusable lesson, even when live code independently confirms the conclusion. `Merely confirmatory` means the answer does not rely on the memory for a claim and the memory changes neither its framing, scope, nor confidence.
 
@@ -82,7 +100,7 @@ When eligible, begin the final answer with one brief opening paragraph before th
 
 Keep it conversational. Do not add a heading, card, label, or colon-led report. Do not open with stock wording such as `MemoraX Code 的 Memory 提示：`, `本轮借助...`, `Memory impact:`, or `The memory said...`. Use only normal visible prose: do not include HTML or XML comments, Markdown markers, tags, zero-width text, hidden control text, or metadata. A natural shape is: `这次我参考了 MemoraX Code 的 Memory，避开了之前验证过无效的修复路径。`
 
-Do not report active Add, automatic writeback, Repo Memory build or update, or automatic coding-memory retrieval as memory that helped the current turn. Omit the opening paragraph when no eligible memory materially helped.
+Do not report active Add, automatic writeback, or Repo Memory build or update as memory that helped the current turn. A personal-memory save, update, or deletion made in the current turn is not memory that helped the current turn. Omit the opening paragraph when no eligible memory materially helped.
 
 ## Shared Rules
 
@@ -90,7 +108,13 @@ For MemoraX Code coding memory, run the platform command from the active task wo
 
 The installed Hook and session binding supply the authoritative workspace root; do not run Git commands to discover or replace it. The Backend resolves repository scope from that trusted workspace and read-only filesystem Git metadata.
 
-Repo memory and personal memory remain local `.repo_memory` authorities. Resolve their repository root exactly as described by the selected reference, including its Git requirements.
+Repo memory remains a local repository authority. Resolve its shared mainline
+baseline with the repo-read reference; linked worktrees read the same published
+bundle. Explicit local builds remain in `.repo_memory`. Personal memory is a separate global authority under `$MEMORAX_CODE_HOME/personal-memory`
+(`~/.memorax-code/personal-memory` by default). Resolve that home using the
+personal read/write reference's environment and installation metadata rules; reads and writes
+do not require Git, a repository root, or a worktree. Existing personal-memory
+files under `.repo_memory` are ignored and are not migrated.
 
 Apply instructions in this order: system and developer instructions, `AGENTS.md`, the current user request, then stored memory. Memory is guidance or historical context, not proof of current repository behavior.
 

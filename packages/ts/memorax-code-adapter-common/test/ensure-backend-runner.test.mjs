@@ -220,10 +220,42 @@ async function recoveryDiagnostics(home) {
   return await Promise.all(files.map(async (name) => JSON.parse(await readFile(join(directory, name), "utf8"))));
 }
 
-test("Hook recovery retains timeout, spawn errno, and termination signal without changing its return", async (t) => {
+test("Hook recovery skips child start when its second health check exhausts the recovery budget", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-ensure-budget-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  let now = Date.now();
+  let healthChecks = 0;
+  let starts = 0;
+  const debug = [];
+  t.mock.method(Date, "now", () => now);
+  t.mock.method(globalThis, "fetch", async () => {
+    if (++healthChecks === 2) now += 50;
+    return new Response(null, { status: 503 });
+  });
+  const result = await ensureBackendAvailable({
+    client: "codex",
+    backendConnection: { url: "http://127.0.0.1:9", source: "environment" },
+    memoraxCodeCommand: process.execPath,
+    healthTimeoutValue: "50",
+    startTimeoutValue: "50",
+    resolveHomes: () => ({ memoraxCodeHome: root }),
+    buildStartArgs: () => { starts += 1; throw new Error("must not start after budget exhaustion"); },
+    debug: (message) => debug.push(message),
+  });
+  assert.equal(result, undefined);
+  assert.equal(healthChecks, 2);
+  assert.equal(starts, 0);
+  assert.deepEqual(debug, []);
+  assert.deepEqual(await recoveryDiagnostics(root), []);
+});
+
+test("Hook recovery retains timeout, spawn errno, and termination signal without changing its return", { timeout: 15_000 }, async (t) => {
+  // Filesystem and health-check scheduling must not consume the child-timeout fixture's budget.
+  const now = Date.now();
+  t.mock.method(Date, "now", () => now);
   t.mock.method(globalThis, "fetch", async () => new Response(null, { status: 503 }));
   const cases = [
-    { name: "timeout", script: "setInterval(() => {}, 1000)", timeout: "100", code: "HOOK_BACKEND_START_TIMEOUT", exit: 124 },
+    { name: "timeout", script: "setTimeout(() => process.exit(99), 10_000)", timeout: "100", code: "HOOK_BACKEND_START_TIMEOUT", exit: 124 },
     { name: "spawn", script: "", code: "HOOK_BACKEND_START_SPAWN_FAILED", exit: 127, systemCode: "ENOENT" },
     ...(process.platform === "win32" ? [] : [{ name: "signal", script: "process.kill(process.pid, 'SIGTERM')", code: "HOOK_BACKEND_START_INTERRUPTED", exit: 0, signal: "SIGTERM" }]),
   ];
@@ -281,4 +313,33 @@ test("Hook recovery reuses saved child diagnostics and falls back for unusable b
     assert.equal(records[0].errorCode, kind === "saved" ? "BACKEND_START_FAILED" : "HOOK_BACKEND_START_FAILED");
     assert.equal(JSON.stringify(records).includes("private-invalid-id"), false);
   }
+});
+
+
+test("Hook recovery reuses saved diagnostics when all eight lifecycle clients fail", async (t) => {
+  t.mock.method(globalThis, "fetch", async () => new Response(null, { status: 503 }));
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-ensure-all-clients-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const writerUrl = new URL("../src/diagnostic-record.mjs", import.meta.url).href;
+  const clients = {
+    codex: "codexAdapter", claude: "claudeAdapter", dsh: "dshAdapter", opencode: "opencodeAdapter",
+    codebuddy: "codebuddyAdapter", workbuddy: "workbuddyAdapter", trae: "traeAdapter", cursor: "cursorAdapter",
+  };
+  const script = 'const { writeDiagnosticRecord } = await import(' + JSON.stringify(writerUrl) + ');'
+    + 'const report = { action: "start", ok: false, backend: { ok: true }, clientFailures: [] };'
+    + 'for (const [client, key] of Object.entries(' + JSON.stringify(clients) + ')) {'
+    + 'const diagnostic = writeDiagnosticRecord(' + JSON.stringify(root)
+    + ', { source: "memorax-code", operation: "backend.start", errorCode: "BACKEND_START_FAILED" });'
+    + 'report[key] = { ok: false }; report.clientFailures.push({ client, diagnostic }); }'
+    + 'console.log(JSON.stringify(report)); process.exit(1);';
+  await ensureBackendAvailable({
+    client: "cursor",
+    backendConnection: { url: "http://127.0.0.1:9", source: "environment" },
+    memoraxCodeCommand: process.execPath,
+    resolveHomes: () => ({ memoraxCodeHome: root }),
+    buildStartArgs: () => ["--input-type=module", "-e", script, "--"],
+  });
+  const records = await recoveryDiagnostics(root);
+  assert.equal(records.length, Object.keys(clients).length);
+  assert.ok(records.every(record => record.source === "memorax-code"));
 });

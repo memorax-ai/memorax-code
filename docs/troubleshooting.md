@@ -12,6 +12,7 @@ memorax-code status --clients dsh
 memorax-code-opencode doctor
 memorax-code-codebuddy status --json
 memorax-code-trae status --json
+memorax-code-cursor status --json
 memorax-code logs
 ```
 
@@ -22,10 +23,10 @@ same command once with `memorax-cli.cmd`, preserving its arguments and working
 directory. Do not run `Set-ExecutionPolicy` for MemoraX commands.
 
 `memorax-code status` checks the Backend and selected client integrations,
-including DSH, OpenCode, CodeBuddy/WorkBuddy, and Trae. `memorax-cli status`
+including DSH, OpenCode, CodeBuddy/WorkBuddy, Trae, and Cursor. `memorax-cli status`
 checks credentials, scope, and memory switches without printing secrets.
 Codex, Claude Code, and OpenCode provide client-specific `doctor` commands;
-CodeBuddy/WorkBuddy and Trae provide adapter status commands, and DSH uses the
+CodeBuddy/WorkBuddy, Trae, and Cursor provide adapter status commands, and DSH uses the
 shared lifecycle status.
 
 Lifecycle summaries include every selected client. A configured integration
@@ -410,10 +411,9 @@ memorax-code start
 memorax-cli status
 ```
 
-Automatic retrieval is disabled by default and is independent from explicit
-search. Automatic writeback requires `[memory.writeback] enabled = true` and
-must not be disabled by
-`MEMORAX_CODE_MEMORAX_WRITEBACK_ENABLED=false`.
+Search runs through the Skill or explicit `memorax-cli search`; Hooks do not
+issue Search requests. Automatic writeback requires `[memory.writeback] enabled = true`
+and must not be disabled by `MEMORAX_CODE_MEMORAX_WRITEBACK_ENABLED=false`.
 
 ## Hook ran, but automatic writeback is missing
 
@@ -465,14 +465,16 @@ If no diagnostic explains the symptom, check each stage in order:
    credentials, and workspace scope. Compare the Backend and client's actual
    environment with [writeback settings](configuration.md#writeback-and-explicit-add).
    A status command in a different shell cannot inspect their inherited
-   overrides. Automatic Search being disabled does not disable writeback.
+   overrides. Automatic writeback does not require a preceding Search.
 2. Confirm that the session has a completed turn with matching native content.
    Codex and Claude diagnostics such as `turn_id_missing`, `prompt_id_missing`,
    `transcript_unavailable`, `transcript_session_mismatch`, or `turn_not_found`
    identify correlation or native-history failures. Restore the client's
    access to its own history and retry in a new session; do not substitute a
    Hook's message text or another client's transcript. For Trae, completion
-   instead requires its validated `UserPromptSubmit`/`Stop` pair.
+   instead requires its validated `UserPromptSubmit`/`Stop` pair. Cursor requires
+   matching native database content and a completed Hook;
+   see [Cursor writeback checks](#cursor-hooks-skill-or-automatic-writeback-is-unavailable).
    For Codex, a provider-supplied assistant internal turn ID can differ from
    the local rollout turn ID without blocking writeback. A remaining
    `turn_metadata_mismatch` can indicate conflicting user-message metadata or
@@ -691,6 +693,99 @@ If the directory remains after all older Hook processes have exited, remove
 only that leftover directory and retry. Keep `pending.json` and any regular
 file lock; a regular file is the current lock format.
 
+## Cursor Hooks, Skill, or automatic writeback is unavailable
+
+```sh
+memorax-code start --clients cursor
+memorax-code-cursor status --json
+```
+
+`start --clients` selects the full managed client set; include any other
+integrations you want to retain. Cursor uses `CURSOR_HOME`, otherwise `~/.cursor`;
+`--cursor-home` overrides the root for a command. Setup manages only its marked
+`sessionStart`, `beforeSubmitPrompt`, `preCompact`, `afterAgentResponse`, and `stop` entries in
+`hooks.json`, plus `skills/memorax-code/`. It does not change Cursor's third-party
+integration setting or require a Claude Code installation.
+
+Restart or refresh Cursor, open a new conversation with either a single-root
+workspace or no folder selected, and send a prompt. A no-folder conversation is
+the projectless `General` scope and does not require a physical workspace root.
+`cursorHooks.status` changes from `unverified` to `observed` when a managed Hook
+runs. Seeing an inherited Claude Skill alone does not prove that the native
+Cursor integration is configured. For `hooks_invalid`, repair
+the existing JSON before rerunning start. For `skill_conflict`, preserve or move
+the unmanaged Skill deliberately before installing the managed one.
+
+Two `memorax-code` Skill entries can appear when Cursor also imports the Claude
+Code plugin. The native Cursor Hooks supply the current session's Repo Memory
+maintenance entrypoint, which takes precedence over either Skill's relative
+helper path. Refresh the integration and start a new conversation after updating
+so that this guidance is present. Disabling third-party imports is not required.
+If the supplied helper is unavailable, maintenance is skipped rather than handed
+to Claude Code; inspect the managed Cursor installation and its
+`~/.cursor/agents/memorax-repo-memory.md` definition.
+
+The conversation database uses Cursor's application-data directory, not
+`CURSOR_HOME`. Check the [native database paths](configuration.md#cursor-integration-paths)
+for your platform. If Cursor uses a custom `--user-data-dir`, set
+`MEMORAX_CODE_CURSOR_DATABASE_PATH` to its absolute
+`User/globalStorage/state.vscdb` path and restart the integration. Enabling the
+adapter saves this explicit path for later GUI-launched Hooks. A relative,
+empty, or malformed override is rejected with `database_path_invalid`; it does
+not select a different profile. `database_unavailable` means the selected file
+could not be opened or read. Keep Cursor's native database and WAL together;
+do not substitute an exported JSONL or another client's history.
+
+For `database_runtime_unavailable`, run the Backend with Node.js 22.13 or later
+and restart it. Cursor automatic Add and compaction restoration require built-in `node:sqlite`; the
+remaining integrations and explicit CLI commands keep their existing runtime
+requirements. A configured or observed Hook alone does not prove that this
+database capability is available.
+
+Use the Skill for CLI Search and manual Add. This integration uses
+`beforeSubmitPrompt` context for personal memory and reminders. Follow the
+session-start instructions to provide the explicit Cursor client/session
+environment for CLI commands; shell tools are not assumed to inherit Hook
+environment variables.
+
+If personal memory is missing after compaction, first confirm that the managed
+`preCompact` Hook is configured and the Backend can read the correct native
+database. This Hook only captures a baseline. Restoration requires later database
+evidence that new summary archives replaced the observed root context; a completed
+UI status or a `preCompact` event alone is insufficient. The next nonempty prompt
+must be registered successfully and have an authorized Git worktree. Empty
+Continue prompts do not trigger restoration, and there is no immediate-delivery
+guarantee within the same continuing task. Profile preferences and the personal
+reminder can be restored outside the regular cadence; Procedure Memory keeps its
+normal cadence. Missing baselines, unreadable databases, or incompatible history
+skip recovery rather than guessing from Hook text.
+
+Automatic Add requires native database content matching the observed generation,
+original user, and final-response digest, plus a completed Stop. Missing content
+is retried for up to 30 seconds, including after a Backend restart within that
+deadline. A missing initial transcript path no longer blocks automatic Add.
+While this retry is active, pending database reads do not create failure records.
+If the deadline expires, `memorax-code logs --diagnostics` shows one
+`CURSOR_NATIVE_CONTENT_TIMEOUT` record and the private pending Turn state is
+retained. If the exact native Turn is saved later, a matching completion Hook
+or the final exact read before the next prompt replaces it can still enqueue
+it. Restarting the Backend does not extend the deadline; the timeout record
+describes the expired retry window.
+
+`native_generation_pending`, `native_turn_pending`, and
+`native_final_response_pending` indicate that matching content is not yet visible.
+`continuation_user_unbound` means Continue lacks an observed terminal predecessor;
+`native_continuation_replaced` and `native_continuation_prefix_changed` indicate
+that the captured native binding changed. Non-retryable native database,
+correlation, and format failures are saved as content-free Cursor diagnostics;
+saved session diagnostic keys suppress repeated reports across Hooks and Backend
+restarts. Simulated, steer, external, or empty user messages and interrupted
+Turns remain normal skips. No rejected content is reconstructed from Hook text,
+UI bubbles, or JSONL.
+Start an ordinary prompt to establish fresh authority, or explicitly save a
+selected lesson through the Skill. See
+[Cursor configuration](configuration.md#cursor-integration-paths).
+
 ## Trae Global Hooks or Skill is inactive
 
 ```sh
@@ -716,7 +811,14 @@ copy generated runtime files or edit entries containing
 Trae currently provides no stable raw Session or headless CLI. Automatic
 writeback therefore requires a matching `UserPromptSubmit` and `Stop` Hook
 pair, and automatic background Repo Memory jobs are not available. Explicit
-Search/Add and Skill-driven Repo Memory remain available.
+Search/Add and Skill-driven Repo Memory remain available. Cursor uses its native
+background subagent for Repo Memory initial build and maintenance; it does not
+require a separate CLI. Refresh Cursor after updating to load the managed agent.
+If a job remains pending, check that the parent actually launched the background
+Task and that the child is not waiting for a normal Cursor tool approval. A Task
+launch or completion message is not enough: the helper must finish snapshot and
+bundle validation. Do not launch a replacement while the original child is still
+editing, including after a lease expires.
 
 ## DeepSeek Harness Profile integration is inactive
 
@@ -856,8 +958,9 @@ worktrees share the remote repository identity; ordinary non-Git workspaces use
 the normalized folder name. Recognized default chat directories share
 `General`. Resolution never falls back to the bare base user ID.
 
-A live Codex, Claude Code, DSH, or OpenCode session remains pinned to the
-repository or local workspace resolved at the start of the session. Starting
+A live Codex, Claude Code, DSH, OpenCode, or Cursor session remains pinned to
+the repository or local workspace resolved at the start of the session. A
+Cursor no-folder session remains in its projectless `General` scope. Starting
 the client from a parent workspace and then entering a nested Git repository
 does not rebind the session. The only in-session scope upgrade is from a direct
 `.git` directory whose internal metadata was malformed or incomplete to a
@@ -883,8 +986,9 @@ session from the target repository or local workspace and verify that its
 `.git` metadata is readable and valid. These failures stop Search or Add before
 any request is sent to MemoraX.
 
-Recognized default chat directories in Codex, WorkBuddy, and OpenCode
-intentionally share `General` under the same Base User ID. Check the
+Recognized default chat directories or contexts in Codex, WorkBuddy, OpenCode, and Cursor
+intentionally share `General` under the same Base User ID. Cursor's no-folder
+conversation is the projectless form of this scope. Check the
 [directory rules](configuration.md#memory-scope) if the scope is unexpected;
 ordinary selected directories and verified Git repositories keep their normal
 scope. Existing memories under `Codex-General` or the previous default-folder
@@ -896,6 +1000,38 @@ MemoraX Code does not proxy client model requests. If `memorax-code status` and
 the available client-specific diagnostics are healthy, inspect the provider
 URL, credentials, model selection, and network settings owned by that client.
 Do not copy model-provider credentials into `$MEMORAX_CODE_HOME`.
+
+## A new worktree does not build Repo Memory
+
+Linked worktrees intentionally share one mainline Repo Memory baseline within
+one MemoraX home. They do not each build or receive a local copy. The read-only
+`repo-memory resolve --repo-path PATH` helper returns the shared bundle path.
+An existing local bundle is a fallback only when shared memory is absent.
+
+Automatic build and update require a locally resolvable `origin/HEAD` target.
+The helper does not discover or retrieve it from a server. Normal fetch/pull
+workflows supply updated mainline commits. The caller may remain on a feature
+branch with uncommitted changes; authoring uses a separate fixed snapshot.
+Feature-only commits do not advance the shared baseline. The configured policy
+requires new mainline commits, and failed attempts wait for the cooldown.
+
+Source links in memory refer to the reader's worktree. Verify relevant current
+files when branches differ; file counts, deletions, and manifest edits do not
+invalidate the whole map. A large refactor can make individual mapped areas
+unreliable. Mainline history replacement defers automatic maintenance for explicit
+recovery while supported parts of the old map remain useful historical guidance.
+
+Shared state is under `$MEMORAX_CODE_HOME/repo-memory-bases/<repository-key>/`.
+`baseline.json` identifies the current published commit and immutable version.
+Failed candidates do not advance that record. Existing local bundles and personal
+memory are not removed. If the shared artifact is corrupt, stop that repository's
+jobs, back up and remove only its matching shared directory, then let an eligible
+maintenance call build again from the locally identified mainline. Do not remove
+other repository state or publish private files in an issue. There is no automatic
+version pruning; readers may still hold an older immutable version.
+
+See [repository maintenance configuration](configuration.md#skill-reminder-and-repository-maintenance)
+for trigger timing, storage, and policy settings.
 
 ## Safe issue reports
 

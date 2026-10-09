@@ -120,9 +120,10 @@ export function withJsonFileLock(path, operation, options = {}) {
   const acquisition = {};
   try {
     while (!tryAcquireJsonFileLock(lockPath, ownerId, acquisition)) {
-      if (removeStaleJsonFileLock(lockPath, staleMs, observedProcessStarts)) continue;
+      if (!acquisition.openError && removeStaleJsonFileLock(lockPath, staleMs, observedProcessStarts)) continue;
       const remainingMs = deadline - Date.now();
       if (remainingMs <= 0) {
+        if (acquisition.openError) throw acquisition.openError;
         const error = new Error(`timed out waiting for JSON state lock: ${lockPath}`);
         error.code = "JSON_FILE_LOCK_TIMEOUT";
         error.path = path;
@@ -171,9 +172,10 @@ export async function withJsonFileLockAsync(path, operation, options = {}) {
   try {
     while (!tryAcquireJsonFileLock(lockPath, ownerId, acquisition)) {
       throwIfJsonFileLockAborted(signal, path, lockPath);
-      if (removeStaleJsonFileLock(lockPath, staleMs, observedProcessStarts)) continue;
+      if (!acquisition.openError && removeStaleJsonFileLock(lockPath, staleMs, observedProcessStarts)) continue;
       const remainingMs = deadline - Date.now();
       if (remainingMs <= 0) {
+        if (acquisition.openError) throw acquisition.openError;
         const error = new Error(`timed out waiting for JSON state lock: ${lockPath}`);
         error.code = "JSON_FILE_LOCK_TIMEOUT";
         error.path = path;
@@ -199,6 +201,7 @@ export async function withJsonFileLockAsync(path, operation, options = {}) {
 }
 
 function tryAcquireJsonFileLock(lockPath, ownerId, acquisition) {
+  acquisition.openError = undefined;
   if (acquisition.descriptor === undefined) {
     let descriptor;
     try {
@@ -223,6 +226,13 @@ function tryAcquireJsonFileLock(lockPath, ownerId, acquisition) {
         releaseJsonFileLock(lockPath, ownerId, { error });
       }
       if (error?.code === "EEXIST") return false;
+      // Windows may deny exclusive creation while a deleted lock is still open.
+      // Retry only the open, within the caller's acquisition deadline.
+      if (descriptor === undefined && process.platform === "win32"
+        && error?.code === "EPERM") {
+        acquisition.openError = error;
+        return false;
+      }
       throw error;
     }
   }
@@ -276,7 +286,7 @@ function removeStaleJsonFileLock(lockPath, staleMs, observedProcessStarts) {
   const staleByAge = Date.now() - snapshot.mtimeMs >= staleMs;
   if (snapshot.pid) {
     if (pidIsAlive(snapshot.pid)) {
-      if (!staleByAge) return false;
+      if (!staleByAge || recentWindowsProcessStart(snapshot.processStartedAtMs)) return false;
       // PID liveness alone is insufficient because operating systems reuse PIDs.
       // A matching process birth keeps even a long-running owner authoritative.
       const liveProcessStartedAtMs = observedProcessStart(
@@ -353,6 +363,7 @@ function reapClaimOwnerIsAlive(pid, expectedProcessStartedAtMs, observedProcessS
     return false;
   }
   if (!pidIsAlive(pid)) return false;
+  if (recentWindowsProcessStart(expectedProcessStartedAtMs)) return true;
   const actualProcessStartedAtMs = observedProcessStart(pid, observedProcessStarts);
   if (actualProcessStartedAtMs === undefined) return true;
   return sameProcessStart(expectedProcessStartedAtMs, actualProcessStartedAtMs);
@@ -424,6 +435,14 @@ function pidIsAlive(pid) {
   } catch (error) {
     return error?.code !== "ESRCH";
   }
+}
+
+// A recently started live PID remains protected by the existing identity tolerance.
+// Defer costly Windows queries without caching an inferred process birth.
+function recentWindowsProcessStart(startedAtMs) {
+  if (process.platform !== "win32" || !Number.isFinite(startedAtMs)) return false;
+  const ageMs = Date.now() - startedAtMs;
+  return ageMs >= 0 && ageMs <= PROCESS_START_TOLERANCE_MS;
 }
 
 function observedProcessStart(pid, observedProcessStarts) {

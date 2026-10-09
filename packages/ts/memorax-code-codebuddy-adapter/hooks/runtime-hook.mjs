@@ -15,9 +15,10 @@ const commonRoot = resolveCommonSourceRoot(pluginRoot);
 const { codeBuddyMetadataClient, defaultCodeBuddyHome, defaultWorkBuddyHome, readCodeBuddyPackageMetadata } = await import(pathToFileURL(join(commonRoot, "clients", "codebuddy-command.mjs")).href);
 const { scheduleMissingRepoMemoryBuild } = await import(pathToFileURL(join(commonRoot, "repo-memory", "repo-memory-auto-build.mjs")).href);
 const { isRepoMemoryJobWorker } = await import(pathToFileURL(join(commonRoot, "repo-memory", "repo-memory-job-context.mjs")).href);
-const { buildRepoProcedureMemoryContext } = await import(pathToFileURL(join(commonRoot, "repo-memory", "repo-procedure-memory-context.mjs")).href);
-const { buildRepoUserProfilePreferencesContext } = await import(pathToFileURL(join(commonRoot, "repo-memory", "repo-user-profile-context.mjs")).href);
+const { buildProcedureMemoryContext } = await import(pathToFileURL(join(commonRoot, "personal-memory", "procedure-memory-context.mjs")).href);
+const { buildUserProfilePreferencesContext } = await import(pathToFileURL(join(commonRoot, "personal-memory", "user-profile-context.mjs")).href);
 const { resolveBackendConnection } = await import(pathToFileURL(join(commonRoot, "backend-connection.mjs")).href);
+const { requestMemorySearchGuidance } = await import(pathToFileURL(join(commonRoot, "hooks", "memory-search-guidance.mjs")).href);
 const { postBackendCommand } = await import(pathToFileURL(join(commonRoot, "backend-command.mjs")).href);
 const { resolveWorkBuddyWorkspaceKind } = await import(pathToFileURL(join(commonRoot, "default-workspace.mjs")).href);
 const { ensureBackendAvailable, stringValue: commonStringValue } = await import(pathToFileURL(join(commonRoot, "hooks", "ensure-backend-runner.mjs")).href);
@@ -74,6 +75,7 @@ const reminderOptions = {
 const personalMemoryContextOptions = {
   adapterDir: client,
   debugEnv: "MEMORAX_CODE_CODEBUDDY_HOOK_DEBUG",
+  memoraxCodeHome: home,
   sessionKeyPrefix: client,
 };
 if (event === "SessionStart") await bindMemoryCliTraceSession(sessionId);
@@ -120,7 +122,8 @@ if (event === "SessionStart") {
       updatedAt: now,
     };
   });
-  const response = await post("/memory/turn-start", { version: 1, client, sessionId, turnId, transcriptPath, prompt, cwd: stringValue(input.cwd), workspaceKind });
+  const turnStartCommand = { version: 1, client, sessionId, turnId, transcriptPath, prompt, cwd: stringValue(input.cwd), workspaceKind };
+  const response = await post("/memory/turn-start", turnStartCommand);
   const repoMemoryWorktree = stringValue(response?.repoMemoryWorktree);
   scheduleMissingRepoMemoryBuild(repoMemoryWorktree, {
     debugEnv: "MEMORAX_CODE_CODEBUDDY_HOOK_DEBUG",
@@ -128,26 +131,17 @@ if (event === "SessionStart") {
   });
   const reminderResult = await evaluateMemorySkillReminder({
     ...reminderOptions,
+    evaluateSearchGuidance: response?.ok === true
+      ? () => requestMemorySearchGuidance({ body: turnStartCommand, memoraxCodeHome: home }) : undefined,
     additionalReminderContext: personalMemoryReminderContext(MEMORY_SKILL_INVOCATION),
     memorySkillInvocation: MEMORY_SKILL_INVOCATION,
     remindOnFirstTurn: true,
     requireTranscriptPath: true,
-    ...(repoMemoryWorktree ? {
-      memoryImpactContext: MEMORY_IMPACT_REMINDER_CONTEXT,
-      buildCadenceReminderContext: (hookInput) => buildRepoProcedureMemoryContext({
-        ...hookInput,
-        cwd: repoMemoryWorktree,
-      }, personalMemoryContextOptions),
-      buildPersonalMemoryContext: (hookInput) => buildRepoUserProfilePreferencesContext({
-        ...hookInput,
-        cwd: repoMemoryWorktree,
-      }, personalMemoryContextOptions),
-    } : {}),
+    memoryImpactContext: MEMORY_IMPACT_REMINDER_CONTEXT,
+    buildCadenceReminderContext: () => buildProcedureMemoryContext(personalMemoryContextOptions),
+    buildPersonalMemoryContext: () => buildUserProfilePreferencesContext(personalMemoryContextOptions),
   }, { ...input, turnId, workspaceKind });
-  const context = [
-    stringValue(response?.additionalContext),
-    stringValue(reminderResult?.additionalContext),
-  ].filter(Boolean).join("\n\n");
+  const context = stringValue(reminderResult?.additionalContext);
   const systemMessage = stringValue(response?.userNotice);
   if (context || systemMessage) process.stdout.write(`${JSON.stringify({
     ...(systemMessage ? { systemMessage } : {}),

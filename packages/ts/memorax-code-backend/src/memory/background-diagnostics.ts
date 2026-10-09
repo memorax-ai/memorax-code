@@ -48,14 +48,14 @@ const REJECTIONS: Record<string, { stage: string; error: string }> = {
   decision_error: { stage: "enqueue", error: "The completed Turn could not be prepared for automatic writeback." },
 };
 
-export function recordWritebackRejection(reason: string, context: BackgroundWritebackContext): void {
+export function recordWritebackRejection(reason: string, context: BackgroundWritebackContext): boolean {
   try {
     // OpenCode also uses this reason for an interrupted Turn after cached
     // metadata expires. Its unchanged result cannot prove a writeback fault.
-    if (context.client === "opencode" && reason === "turn_metadata_mismatch") return;
+    if (context.client === "opencode" && reason === "turn_metadata_mismatch") return false;
     const failure = Object.hasOwn(REJECTIONS, reason) ? REJECTIONS[reason] : undefined;
-    if (!failure || !memoryWritebackEnabled(context.env ?? process.env)) return;
-    record(context, {
+    if (!failure || !memoryWritebackEnabled(context.env ?? process.env)) return false;
+    return record(context, {
       ...failure,
       errorCode: `WRITEBACK_${reason.toUpperCase()}`,
       failureReason: reason,
@@ -66,7 +66,7 @@ export function recordWritebackRejection(reason: string, context: BackgroundWrit
           ? "Start a new session in the intended workspace and check that its repository metadata is readable."
           : "Retry after the client finishes saving this Turn; if it persists, share the diagnostic and client version.",
     });
-  } catch { /* Reporting must never change the Hook outcome. */ }
+  } catch { return false; /* Reporting must never change the Hook outcome. */ }
 }
 
 export function recordAutomaticAddFailure(
@@ -107,8 +107,8 @@ function record(
     stage: string; errorCode: string; error: string; impact: string; userAction: string;
     failureReason?: string; systemCode?: string; httpStatus?: number; retryAfterMs?: number;
   },
-): void {
-  writeDiagnosticRecord(context.memoraxCodeHome ?? defaultMemoraxCodeHome(context.env), {
+): boolean {
+  return writeDiagnosticRecord(context.memoraxCodeHome ?? defaultMemoraxCodeHome(context.env), {
     source: "automatic-writeback",
     operation: "memory.writeback",
     ...failure,
@@ -118,7 +118,7 @@ function record(
     client: context.client,
     ...(context.sessionId ? { sessionHash: identityHash(context.sessionId) } : {}),
     ...(context.turnId ? { turnHash: identityHash(context.turnId) } : {}),
-  });
+  }).recorded;
 }
 
 function packageVersion(): string {

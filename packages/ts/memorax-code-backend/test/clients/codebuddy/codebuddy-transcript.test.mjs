@@ -9,6 +9,8 @@ import {
   codeBuddyInterruptedTranscriptTurnFromJsonLines,
   codeBuddyTranscriptTurnFromJsonLines,
   readCodeBuddyArchiveSource,
+  readCodeBuddyInterruptedTranscriptTurn,
+  readCodeBuddyTranscriptTurn,
 } from "../../../dist/clients/codebuddy/jsonl-history.js";
 import { materializePendingCodingSessionTurn, preparePendingCodingSessionTurn } from "../../../dist/coding-sessions/attachment.js";
 import { prepareCodingSessionTurn } from "../../../dist/coding-sessions/coding-turn.js";
@@ -144,6 +146,154 @@ test("extracts hidden user query and completed assistant branch", () => {
   assert.equal(result.turn.assistantTimestamp, Date.parse("2026-09-07T00:05:00.000Z"));
 });
 
+test("CodeBuddy and WorkBuddy match native Hook line-break removal without changing completed or interrupted content", () => {
+  for (const newline of ["\n", "\r\n", "\r"]) {
+    const prompt = `First caf\u00e9 paragraph.${newline}${newline}  Second\tparagraph.`;
+    const input = { sessionId, turnId: provisionalTurnId("First caf\u00e9 paragraph.  Second\tparagraph.") };
+    for (const client of [undefined, "codebuddy", "workbuddy"]) {
+      for (const [status, parse] of transcriptReaders()) {
+        for (const source of ["plain", "wrapped", "original"]) {
+          const records = turnRecords(prompt, "1", status);
+          const block = records[0].content[0];
+          if (source === "wrapped") block.text = `<system-reminder>hidden</system-reminder><user_query>${prompt}</user_query>`;
+          if (source === "original") {
+            block.text = "Expanded Skill instructions must not become the prompt.";
+            block.providerData = { content: prompt };
+          }
+          const result = parse(records.map(JSON.stringify).join("\n"), { ...input, client });
+          assert.equal(result.ok, true, `${client ?? "default"}/${status}/${source}/${JSON.stringify(newline)}`);
+          assert.equal(result.turn.userPrompt, prompt);
+          assert.equal(result.turn.assistantReply, "Reply\nwith paragraphs.");
+          assert.equal(result.turn.turnId, input.turnId);
+        }
+      }
+    }
+  }
+});
+
+test("retains exact multiline prompt matching for CodeBuddy and WorkBuddy", () => {
+  for (const newline of ["\n", "\r\n", "\r"]) {
+    const prompt = `First paragraph.${newline}${newline}Second paragraph.`;
+    for (const client of ["codebuddy", "workbuddy"]) {
+      for (const [status, parse] of transcriptReaders()) {
+        const result = parse(turnRecords(prompt, "1", status).map(JSON.stringify).join("\n"), {
+          sessionId, client, turnId: provisionalTurnId(prompt),
+        });
+        assert.equal(result.ok, true, `${client}/${status}/${JSON.stringify(newline)}`);
+        assert.equal(result.turn.userPrompt, prompt);
+      }
+    }
+  }
+});
+
+test("does not enable line-break compatibility for other or unknown clients", () => {
+  for (const client of ["claude", "opencode", "unknown"]) {
+    for (const [status, parse] of transcriptReaders()) {
+      assert.deepEqual(parse(turnRecords("first\nsecond", "1", status).map(JSON.stringify).join("\n"), {
+        sessionId, client, turnId: provisionalTurnId("firstsecond"),
+      }), { ok: false, reason: "user_prompt_missing" }, `${client}/${status}`);
+    }
+  }
+});
+
+test("multiple input_text blocks keep exact matching without a flattened fallback", () => {
+  for (const [extra, prompt] of [
+    [{ type: "input_text", text: "c\nd" }, "a\nb\nc\nd"],
+    [{ type: "input_text", text: "" }, "a\nb"],
+    [{ type: "input_text", text: 42 }, "a\nb"],
+    [{ type: "input_text" }, "a\nb"],
+  ]) {
+    for (const client of ["codebuddy", "workbuddy"]) {
+      for (const [status, parse] of transcriptReaders()) {
+        const records = turnRecords("a\nb", "1", status);
+        records[0].content.push(extra);
+        const transcript = records.map(JSON.stringify).join("\n");
+        const exact = parse(transcript, { sessionId, client, turnId: provisionalTurnId(prompt) });
+        assert.equal(exact.ok, true, `${client}/${status}`);
+        assert.equal(exact.turn.userPrompt, prompt);
+        assert.deepEqual(parse(transcript, { sessionId, client, turnId: provisionalTurnId(prompt.replace(/\r\n|\r|\n/g, "")) }),
+          { ok: false, reason: "user_prompt_missing" }, `${client}/${status}`);
+      }
+    }
+  }
+});
+
+test("line-break compatibility keeps the exact UTF-8 boundary and excludes earlier collisions", () => {
+  for (const newline of ["\n", "\r\n"]) {
+    for (const client of ["codebuddy", "workbuddy"]) {
+      for (const [status, parse] of transcriptReaders()) {
+        const first = turnRecords("caf\u00e9ab", "1", status).map(JSON.stringify).join(newline) + newline;
+        const second = turnRecords("caf\u00e9a\nb", "2", status).map(JSON.stringify).join(newline) + newline;
+        const boundary = Buffer.byteLength(first, "utf8");
+        const result = parse(first + second, { sessionId, client, turnId: provisionalTurnId("caf\u00e9ab", boundary) });
+        assert.equal(result.ok, true, `${client}/${status}/${JSON.stringify(newline)}`);
+        assert.equal(result.turn.userPrompt, "caf\u00e9a\nb");
+        assert.equal(result.turn.sessionTurnIndex, 2);
+        assert.deepEqual(parse(first + second, { sessionId, client, turnId: provisionalTurnId("caf\u00e9ab", boundary + 1) }),
+          { ok: false, reason: "user_prompt_missing" }, `${client}/${status}`);
+        assert.deepEqual(parse(first + second, { sessionId, client, turnId: provisionalTurnId("caf\u00e9ab") }),
+          { ok: false, reason: "turn_ambiguous" }, `${client}/${status}`);
+      }
+    }
+  }
+});
+
+test("rejects every ambiguous union of exact and line-break-normalized candidates", () => {
+  for (const prompts of [["ab", "a\nb"], ["a\nb", "ab"], ["a\nb", "a\r\nb"]]) {
+    for (const client of ["codebuddy", "workbuddy"]) {
+      for (const [status, parse] of transcriptReaders()) {
+        const records = prompts.flatMap((prompt, index) => turnRecords(prompt, String(index), status));
+        assert.deepEqual(parse(records.map(JSON.stringify).join("\n"), {
+          sessionId, client, turnId: provisionalTurnId("ab"),
+        }), { ok: false, reason: "turn_ambiguous" }, `${client}/${status}/${JSON.stringify(prompts)}`);
+      }
+    }
+  }
+});
+
+test("line-break compatibility does not remove spaces, tabs, or Unicode line separators", () => {
+  for (const client of ["codebuddy", "workbuddy"]) {
+    for (const [status, parse] of transcriptReaders()) {
+      const records = turnRecords("alpha \n beta\tgamma\u2028delta", "1", status).map(JSON.stringify).join("\n");
+      const valid = parse(records, { sessionId, client, turnId: provisionalTurnId("alpha  beta\tgamma\u2028delta") });
+      assert.equal(valid.ok, true, `${client}/${status}`);
+      for (const wrong of ["alpha beta\tgamma\u2028delta", "alpha  beta gamma\u2028delta", "alpha  beta\tgammadelta"]) {
+        assert.deepEqual(parse(records, { sessionId, client, turnId: provisionalTurnId(wrong) }),
+          { ok: false, reason: "user_prompt_missing" }, `${client}/${status}/${wrong}`);
+      }
+    }
+  }
+});
+
+test("line-break compatibility still requires the matching native session", () => {
+  for (const client of ["codebuddy", "workbuddy"]) {
+    for (const [status, parse] of transcriptReaders()) {
+      const foreign = turnRecords("a\nb", "foreign", status, "other-session");
+      const input = { sessionId, client, turnId: provisionalTurnId("ab") };
+      assert.deepEqual(parse(foreign.map(JSON.stringify).join("\n"), input), { ok: false, reason: "user_prompt_missing" });
+      const result = parse([...foreign, ...turnRecords("a\rb", "local", status)].map(JSON.stringify).join("\n"), input);
+      assert.equal(result.ok, true, `${client}/${status}`);
+      assert.equal(result.turn.userPrompt, "a\rb");
+    }
+  }
+});
+
+test("file readers propagate the client-specific multiline matching contract", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-codebuddy-transcript-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const transcriptPath = join(root, "session.jsonl");
+  for (const [status, read] of [["completed", readCodeBuddyTranscriptTurn], ["incomplete", readCodeBuddyInterruptedTranscriptTurn]]) {
+    await writeFile(transcriptPath, turnRecords("first\nsecond", "1", status).map(JSON.stringify).join("\n"));
+    const input = { transcriptPath, sessionId, turnId: provisionalTurnId("firstsecond") };
+    for (const client of [undefined, "codebuddy", "workbuddy"]) {
+      const result = await read({ ...input, client });
+      assert.equal(result.ok, true, `${client ?? "default"}/${status}`);
+      assert.equal(result.turn.userPrompt, "first\nsecond");
+    }
+    assert.deepEqual(await read({ ...input, client: "unknown" }), { ok: false, reason: "user_prompt_missing" });
+  }
+});
+
 test("prefers native original input over expanded Skill content", () => {
   const prompt = "/memorax-code explain <user_query>literal tags</user_query>";
   const user = { id: "u1", type: "message", role: "user", sessionId, timestamp: 1_700_000_000_000, content: [
@@ -174,16 +324,15 @@ test("prefers native original input over expanded Skill content", () => {
 test("does not fall back to displayed text when native original input is invalid or mismatched", () => {
   const prompt = "/memorax-code remember this";
   for (const original of ["another prompt", "", "   ", null, 42, [prompt], { text: prompt }]) {
-    const transcript = [
-      { id: "u1", type: "message", role: "user", sessionId, content: [
-        { type: "input_text", text: prompt, providerData: { content: original } },
-      ] },
-      { id: "a1", type: "message", role: "assistant", parentId: "u1", status: "completed",
-        content: [{ type: "output_text", text: "must not persist" }] },
-    ].map(JSON.stringify).join("\n");
-    assert.deepEqual(codeBuddyTranscriptTurnFromJsonLines(transcript, {
-      sessionId, turnId: provisionalTurnId(prompt),
-    }), { ok: false, reason: "user_prompt_missing" }, JSON.stringify(original));
+    for (const client of [undefined, "codebuddy", "workbuddy"]) {
+      for (const [status, parse] of transcriptReaders()) {
+        const records = turnRecords(prompt, "1", status);
+        records[0].content[0].providerData = { content: original };
+        assert.deepEqual(parse(records.map(JSON.stringify).join("\n"), {
+          sessionId, client, turnId: provisionalTurnId(prompt),
+        }), { ok: false, reason: "user_prompt_missing" }, `${client ?? "default"}/${status}/${JSON.stringify(original)}`);
+      }
+    }
   }
 });
 
@@ -466,4 +615,16 @@ function provisionalTurnId(prompt, boundary = 0, targetSessionId = sessionId) {
 
 function promptDigest(prompt) {
   return createHash("sha256").update(prompt.trim()).digest("hex");
+}
+
+function transcriptReaders() {
+  return [["completed", codeBuddyTranscriptTurnFromJsonLines], ["incomplete", codeBuddyInterruptedTranscriptTurnFromJsonLines]];
+}
+
+function turnRecords(prompt, id, status, targetSessionId = sessionId) {
+  return [
+    { id: `u-${id}`, type: "message", role: "user", sessionId: targetSessionId, content: [{ type: "input_text", text: prompt }] },
+    { id: `a-${id}`, type: "message", role: "assistant", sessionId: targetSessionId, parentId: `u-${id}`, status,
+      content: [{ type: "output_text", text: "Reply\nwith paragraphs." }] },
+  ];
 }

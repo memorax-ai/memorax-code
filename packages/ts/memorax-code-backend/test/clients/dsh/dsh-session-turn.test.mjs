@@ -16,6 +16,7 @@ test("DSH turn materialization accepts one exact native interval and excludes pl
       endSeq: 10,
       userPrompt: "Implement the DSH adapter.",
       assistantReply: "I will inspect.\n\nThe adapter is ready.",
+      finalAssistantReply: "The adapter is ready.",
       userTimestamp: 1_700_000_000_001,
       assistantTimestamp: 1_700_000_000_010,
       outcome: "completed",

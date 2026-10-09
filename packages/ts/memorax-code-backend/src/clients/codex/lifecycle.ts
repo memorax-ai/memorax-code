@@ -27,7 +27,7 @@ export async function enableCodexAdapterForStart(
     let options = codexAdapterOptions(argv, serviceOptions, backendUrl);
     const codexHome = typeof options.codexHome === "string" ? options.codexHome : undefined;
     if (!isCodexPluginActive({ codexHome }) && !isCodexPluginStaged({ codexHome })) {
-      const installed = await maybeInstallCodexPluginForStart(argv);
+      const installed = await maybeInstallCodexPluginForStart(argv, serviceOptions.home);
       if (installed) {
         backendLog(green("Codex plugin source registered. Activate the MemoraX Code Codex Adapter plugin, then restart or refresh Codex."));
       } else if (installed === false) {
@@ -115,10 +115,10 @@ function codexPluginActivationRequired(): AdapterReport {
   };
 }
 
-async function maybeInstallCodexPluginForStart(argv: string[]): Promise<boolean | undefined> {
+async function maybeInstallCodexPluginForStart(argv: string[], memoraxCodeHome?: string): Promise<boolean | undefined> {
   if (argv.includes("--json")) return undefined;
   if (argv.includes("--yes")) {
-    await installCodexPlugin(codexPluginInstallOptions(argv));
+    await installCodexPlugin({ ...codexPluginInstallOptions(argv), memoraxCodeHome });
     return true;
   }
   if (!canPromptOnStdin()) return undefined;
@@ -127,7 +127,7 @@ async function maybeInstallCodexPluginForStart(argv: string[]): Promise<boolean 
     const answer = await rl.question(`${BACKEND_PREFIX} Install MemoraX Code Codex Adapter plugin now? [y/N] `);
     if (!process.stdout.isTTY) process.stdout.write("\n");
     if (!/^y(?:es)?$/i.test(answer.trim())) return false;
-    await installCodexPlugin(codexPluginInstallOptions(argv));
+    await installCodexPlugin({ ...codexPluginInstallOptions(argv), memoraxCodeHome });
     return true;
   } finally {
     rl.close();

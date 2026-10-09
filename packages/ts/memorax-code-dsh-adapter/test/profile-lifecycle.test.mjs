@@ -249,6 +249,11 @@ async function verifyWindowsDshPnpmPreload(preload) {
       shim: '"%_prog%" "%~dp0\\node_modules\\corepack\\dist\\pnpm.js" %*',
       otherEntrypoint: pnpmEntrypoint,
     },
+    {
+      command: shimCommand,
+      entrypoint: path.join(prefix, "node_modules", "pnpm", "pnpm.exe"),
+      shim: '"%dp0%\\node_modules\\pnpm\\pnpm.exe" %*',
+    },
     { command: nativeCommand },
   ]) {
     calls.length = 0;
@@ -262,8 +267,8 @@ async function verifyWindowsDshPnpmPreload(preload) {
     if (fixture.shim) shims.set(fixture.command, fixture.shim);
     assert.equal(spawnSync("pnpm", args, options), result);
     assert.deepEqual(calls, [{
-      command: fixture.entrypoint ? process.execPath : fixture.command,
-      args: fixture.entrypoint ? [fixture.entrypoint, ...args] : args,
+      command: fixture.entrypoint && !/\.exe$/i.test(fixture.entrypoint) ? process.execPath : fixture.entrypoint ?? fixture.command,
+      args: fixture.entrypoint && !/\.exe$/i.test(fixture.entrypoint) ? [fixture.entrypoint, ...args] : args,
       options: { ...options, shell: false },
     }]);
     assert.equal(calls[0].options.env, options.env);

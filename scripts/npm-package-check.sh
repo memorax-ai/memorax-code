@@ -13,7 +13,8 @@ unset \
   WORKBUDDY_HOME \
   WORKBUDDY_CONFIG_DIR \
   TRAE_CN_HOME \
-  TRAE_HOME
+  TRAE_HOME \
+  CURSOR_HOME
 
 out_dir="${1:-dist/npm}"
 
@@ -34,9 +35,14 @@ fi
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
+# Never reuse an earlier artifact-validation result after an interrupted check.
+rm -f "$out_dir/check-result.json"
+
 node scripts/check-docs.mjs
 scripts/build-npm-packages.sh "$out_dir"
+set +e
 (
+  set -e
   unset GIT_INDEX_FILE
   isolated_test_home="$(mktemp -d)"
   trap 'rm -rf "$isolated_test_home"' EXIT
@@ -50,8 +56,16 @@ scripts/build-npm-packages.sh "$out_dir"
   CODEBUDDY_HOME="$isolated_test_home/.codebuddy" \
   WORKBUDDY_HOME="$isolated_test_home/.workbuddy" \
   TRAE_CN_HOME="$isolated_test_home/.trae-cn" \
+  CURSOR_HOME="$isolated_test_home/.cursor" \
     make test-npm-package
 )
+npm_tests_status=$?
+set -e
+# Keep validating the actual artifact after a contract regression, while
+# preserving that failure as the final exit status.
+if [[ "$npm_tests_status" -ne 0 ]]; then
+  node scripts/check-local-trace-only.mjs
+fi
 
 # Keep the live registry from replacing the staged future release during smoke tests.
 export MEMORAX_CODE_AUTO_UPDATE=false
@@ -94,6 +108,7 @@ expected_bins = {
     "memorax-code-opencode": "bin/memorax-code-opencode.mjs",
     "memorax-code-codebuddy": "bin/memorax-code-codebuddy.mjs",
     "memorax-code-trae": "bin/memorax-code-trae.mjs",
+    "memorax-code-cursor": "bin/memorax-code-cursor.mjs",
 }
 assert package_manifest.get("bin") == expected_bins, package_manifest.get("bin")
 for relative in expected_bins.values():
@@ -108,6 +123,7 @@ expected_library_dirs = {
     "memorax-code-opencode-adapter",
     "memorax-code-codebuddy-adapter",
     "memorax-code-trae-adapter",
+    "memorax-code-cursor-adapter",
 }
 actual_library_dirs = {
     path.name
@@ -163,6 +179,8 @@ codex_skill = package_root / "lib" / "memorax-code-codex-adapter" / "skills" / "
 assert dsh_skill.read_bytes() == codex_skill.read_bytes()
 trae_skill = package_root / "lib" / "memorax-code-trae-adapter" / "skills" / "memorax-code" / "SKILL.md"
 assert trae_skill.read_bytes() == codex_skill.read_bytes()
+cursor_skill = package_root / "lib" / "memorax-code-cursor-adapter" / "skills" / "memorax-code" / "SKILL.md"
+assert cursor_skill.read_bytes() == codex_skill.read_bytes()
 PY_STAGED_PACKAGE
 
 tarball_dir="$out_dir/tarballs"
@@ -248,6 +266,7 @@ export OPENCODE_CONFIG_DIR="$home_dir/.config/opencode-memorax-code-package-chec
 export CODEBUDDY_HOME="$home_dir/.codebuddy-memorax-code-package-check"
 export WORKBUDDY_HOME="$home_dir/.workbuddy-memorax-code-package-check"
 export TRAE_CN_HOME="$home_dir/.trae-cn-memorax-code-package-check"
+export CURSOR_HOME="$home_dir/.cursor-memorax-code-package-check"
 package_install_port="$(node -e 'const net = require("node:net"); const server = net.createServer(); server.listen(0, "127.0.0.1", () => { console.log(server.address().port); server.close(); });')"
 export MEMORAX_CODE_BACKEND_PORT="$package_install_port"
 
@@ -262,6 +281,7 @@ for unexpected in \
   "$CODEBUDDY_HOME" \
   "$WORKBUDDY_HOME" \
   "$TRAE_CN_HOME" \
+  "$CURSOR_HOME" \
   "$MEMORAX_CODE_HOME/config.toml" \
   "$MEMORAX_CODE_HOME/runtime/setup/setup-completion.json" \
   "$MEMORAX_CODE_HOME/runtime/install/package-transition.json" \
@@ -274,6 +294,42 @@ do
     exit 1
   fi
 done
+
+# Upgrading a configured but stopped installation must reconcile optional
+# defaults even though no Backend restoration or foreground setup runs.
+legacy_stopped_home="$home_dir/legacy-stopped"
+node --input-type=module - "$legacy_stopped_home" <<'NODE_LEGACY_CONFIG'
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+const home = process.argv[2];
+mkdirSync(home, { mode: 0o700 });
+writeFileSync(join(home, "config.toml"), [
+  "# Existing user choices must survive npm replacement.",
+  "[memorax]", 'api_key = "fixture-existing-key"', 'user_id = "fixture-user"',
+  "[memory.writeback]", "enabled = false",
+  "[custom]", 'label = "preserved"', "",
+].join("\r\n"), { mode: 0o600 });
+NODE_LEGACY_CONFIG
+cp "$legacy_stopped_home/config.toml" "$home_dir/legacy-stopped-before.toml"
+MEMORAX_CODE_HOME="$legacy_stopped_home" npm install -g --prefix "$prefix" "$main_tgz" --silent
+node --input-type=module - "$prefix" "$legacy_stopped_home" "$home_dir/legacy-stopped-before.toml" <<'NODE_LEGACY_VERIFY'
+import assert from "node:assert/strict";
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import { createRequire } from "node:module";
+import { join } from "node:path";
+const [prefix, home, beforePath] = process.argv.slice(2);
+const require = createRequire(join(prefix, "lib/node_modules/@memorax/memorax-code/package.json"));
+const { parse } = require("smol-toml");
+const before = readFileSync(beforePath, "utf8");
+const after = readFileSync(join(home, "config.toml"), "utf8");
+assert.ok(after.startsWith(before));
+assert.doesNotMatch(after, /(?<!\r)\n/);
+const expected = parse(before);
+expected.jev = parse('enabled = false\napi_key = ""\n');
+assert.deepEqual(parse(after), expected);
+assert.deepEqual(readdirSync(home), ["config.toml"]);
+assert.equal(statSync(join(home, "config.toml")).mode & 0o777, 0o600);
+NODE_LEGACY_VERIFY
 
 if "$prefix/bin/memorax-code" >"$home_dir/before-setup.stdout" 2>"$home_dir/before-setup.stderr"; then
   echo "npm-package-check: no-argument CLI unexpectedly accepted incomplete setup" >&2
@@ -299,6 +355,7 @@ assert actual == expected, actual
 PY_INSTALLED_DOCS
 
 check_required_files "$package_install_root"
+node scripts/cursor-npm-package-smoke.mjs "$package_install_root"
 
 node --input-type=module -e '
   const lifecycle = await import(new URL("./lib/dsh-plugin-install.mjs", `file://${process.argv[1]}/`).href);
@@ -316,6 +373,7 @@ printf '%s\n' 'package-check-user' 'package-check-key' | \
   MEMORAX_CODE_SKIP_CODEBUDDY_ADAPTER_INSTALL=1 \
   MEMORAX_CODE_SKIP_WORKBUDDY_ADAPTER_INSTALL=1 \
   MEMORAX_CODE_SKIP_TRAE_ADAPTER_INSTALL=1 \
+  MEMORAX_CODE_SKIP_CURSOR_ADAPTER_INSTALL=1 \
   "$prefix/bin/memorax-code" setup --existing-account \
     >"$home_dir/setup.stdout" 2>"$home_dir/setup.stderr"
 node --input-type=module - "$MEMORAX_CODE_HOME/config.toml" <<'NODE_DISABLE_DSH'
@@ -348,9 +406,9 @@ config_sections = {
 }
 assert config_sections == {
     "clients",
+    "jev",
     "memorax",
     "memory.add",
-    "memory.retrieval",
     "memory.repo_update",
     "memory.skill_reminder",
     "memory.writeback",
@@ -361,6 +419,7 @@ assert config_sections == {
     "trace.dsh",
     "trace.opencode",
     "trace.trae",
+    "trace.cursor",
 }
 assert 'user_id = "package-check-user"' in config_text
 assert 'api_key = "package-check-key"' in config_text
@@ -372,6 +431,7 @@ assert "opencode = false" in config_text
 assert "codebuddy = false" in config_text
 assert "workbuddy = false" in config_text
 assert "trae = false" in config_text
+assert "cursor = false" in config_text
 assert memorax_code_config.stat().st_mode & 0o777 == 0o600
 completion = json.loads((home / ".memorax-code" / "runtime" / "setup" / "setup-completion.json").read_text())
 assert completion["version"] == 1
@@ -792,4 +852,6 @@ if [[ "${MEMORAX_CODE_DSH_E2E:-}" == "1" ]]; then
     node scripts/dsh-npm-package-e2e.mjs
 fi
 
-printf 'npm-package-check: completed\n'
+printf '{"artifactChecks":"PASS","npmTestsExitCode":%s}\n' "$npm_tests_status" > "$out_dir/check-result.json"
+printf 'npm-package-check: artifact checks passed; npm test exit status: %s\n' "$npm_tests_status"
+exit "$npm_tests_status"

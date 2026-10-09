@@ -30,6 +30,7 @@ const STABLE_SHELL_REQUIRED_FILES = Object.freeze([
   "runtime-hooks/memory-skill-reminder.mjs",
   "runtime-hooks/memory-turn.mjs",
   "memorax-code-adapter-common/src/backend-connection.mjs",
+  "memorax-code-adapter-common/src/backend-command.mjs",
   "memorax-code-adapter-common/src/hooks/capture-cwd-hook.mjs",
   "memorax-code-adapter-common/src/hooks/client-hook-launcher.mjs",
   "memorax-code-adapter-common/src/config-utils.mjs",
@@ -39,11 +40,16 @@ const STABLE_SHELL_REQUIRED_FILES = Object.freeze([
   "memorax-code-adapter-common/src/hooks/hook-diagnostics.mjs",
   "memorax-code-adapter-common/src/hooks/hook-runtime-generation.mjs",
   "memorax-code-adapter-common/src/hooks/memory-skill-reminder-hook.mjs",
+  "memorax-code-adapter-common/src/hooks/memory-search-guidance.mjs",
   "memorax-code-adapter-common/src/hooks/memory-skill-reminder-policy.mjs",
   "memorax-code-adapter-common/src/repo-memory/repo-memory-auto-build.mjs",
+  "memorax-code-adapter-common/src/repo-memory/repo-memory-job-artifacts.mjs",
+  "memorax-code-adapter-common/src/repo-memory/repo-memory-job-marker.mjs",
+  "memorax-code-adapter-common/src/repo-memory/repo-memory-repository.mjs",
+  "memorax-code-adapter-common/src/repo-memory/repo-memory-shared-bundle.mjs",
   "memorax-code-adapter-common/src/repo-memory/repo-memory-job-context.mjs",
-  "memorax-code-adapter-common/src/repo-memory/repo-procedure-memory-context.mjs",
-  "memorax-code-adapter-common/src/repo-memory/repo-user-profile-context.mjs",
+  "memorax-code-adapter-common/src/personal-memory/procedure-memory-context.mjs",
+  "memorax-code-adapter-common/src/personal-memory/user-profile-context.mjs",
   "memorax-code-adapter-common/src/runtime-record.mjs",
   "memorax-code-adapter-common/src/windows-directory-retry.mjs",
 ]);
@@ -111,7 +117,7 @@ export function ensureClaudePluginInstalled(options = {}) {
       }
     }
     const installPath = stringOption(installedPlugin.installPath);
-    writeInstalledPluginMetadata(installPath, claudeCommand);
+    writeInstalledPluginMetadata(installPath, claudeCommand, memoraxCodeHome);
     writePluginState({
       claudeHome,
       memoraxCodeHome,
@@ -208,7 +214,7 @@ export function ensureClaudePluginInstalled(options = {}) {
       installPath: stringOption(installedPlugin?.installPath),
     };
   }
-  writeInstalledPluginMetadata(verification.installPath, claudeCommand);
+  writeInstalledPluginMetadata(verification.installPath, claudeCommand, memoraxCodeHome);
   writePluginState({
     claudeHome,
     memoraxCodeHome,
@@ -234,11 +240,12 @@ export function ensureClaudePluginInstalled(options = {}) {
   };
 }
 
-function writeInstalledPluginMetadata(installPath, claudeCommand) {
+function writeInstalledPluginMetadata(installPath, claudeCommand, memoraxCodeHome) {
   try {
     const npmExecPath = stringOption(process.env.MEMORAX_CODE_NPM_EXEC_PATH);
     atomicWriteJson(join(installPath, ".memorax-code-package.json"), {
       version: 1,
+      memoraxCodeHome: resolve(memoraxCodeHome),
       memoraxCodeCommand: process.argv[1],
       claudeCommand,
       ...(npmExecPath ? { npmExecPath } : {}),

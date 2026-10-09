@@ -99,8 +99,8 @@ test("trace context captures an opaque Git project identity", async () => {
       memoraxCodeHome: root,
       traceContext: context,
       type: "memory_retrieve",
-      source: "automatic_retrieval",
-      operation: "retrieve",
+      source: "memory_cli",
+      operation: "query",
       ok: true,
       now: () => new Date("2026-07-09T00:00:01.000Z"),
     });
@@ -128,8 +128,8 @@ test("trace store sanitizes session content and preserves metadata when capture 
       memoraxCodeHome: root,
       traceContext: context,
       type: "memory_retrieve",
-      source: "automatic_retrieval",
-      operation: "retrieve",
+      source: "memory_cli",
+      operation: "query",
       ok: true,
       usage: {
         input_tokens: 120,
@@ -154,7 +154,7 @@ test("trace store sanitizes session content and preserves metadata when capture 
     assert.equal(event.trace.session_id, "session/with/slash");
     assert.equal(event.trace.context_origin, "codex-hook-body");
     assert.equal(event.trace.contextOrigin, undefined);
-    assert.equal(event.source, "automatic_retrieval");
+    assert.equal(event.source, "memory_cli");
     assert.deepEqual(event.usage, {
       input_tokens: 120,
       cached_input_tokens: 80,
@@ -446,8 +446,8 @@ test("trace store writes one max_file_bytes warning across concurrent writers an
       config,
       traceContext: context,
       type: "memory_retrieve",
-      source: "automatic_retrieval",
-      operation: "retrieve",
+      source: "memory_cli",
+      operation: "query",
       ok: true,
       request: { query: `too large ${index}` },
       now: () => new Date("2026-07-09T00:05:00.000Z"),
@@ -474,8 +474,8 @@ test("trace store writes one max_file_bytes warning across concurrent writers an
       config,
       traceContext: context,
       type: "memory_retrieve",
-      source: "automatic_retrieval",
-      operation: "retrieve",
+      source: "memory_cli",
+      operation: "query",
       ok: true,
       request: { query: "should not be written again" },
       now: () => new Date("2026-07-09T00:06:00.000Z"),
@@ -810,8 +810,8 @@ test("event and current-turn writes honor cross-process retention debounce marke
         ...options,
         traceContext: context,
         type: "memory_retrieve",
-        source: "automatic_retrieval",
-        operation: "retrieve",
+        source: "memory_cli",
+        operation: "query",
         ok: true,
         request: { query: "do not scan every CLI append" },
       }) : await writeCurrentCodexTurn(context, options);

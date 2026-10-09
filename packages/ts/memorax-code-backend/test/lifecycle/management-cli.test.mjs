@@ -87,6 +87,37 @@ test("Backend status exposes minimal state and the CLI prints a concise summary"
   }
 });
 
+test("status reports Jev configuration separately from readiness and never exposes its key", { timeout: 15_000 }, async (t) => {
+  const home = await mkdtemp(join(tmpdir(), "memorax-code-status-jev-"));
+  const configPath = join(home, "config.toml");
+  const server = createBackendServer(createBackendState("127.0.0.1", { sessionHome: home }));
+  const backendUrl = await listen(server);
+  t.after(async () => {
+    await new Promise((resolve) => server.close(resolve));
+    await rm(home, { recursive: true, force: true });
+  });
+  const cliPath = fileURLToPath(new URL("../../dist/memorax-code.js", import.meta.url));
+  const args = ["status", "--home", home, "--backend-url", backendUrl, "--clients", "none"];
+  for (const entry of [
+    { config: '[jev]\nenabled = false\napi_key = "fixture-private-jev-key"\n', state: "disabled", enabled: false },
+    { config: '[jev]\nenabled = true\n', state: "missing_key", enabled: true },
+    { config: '[jev]\nenabled = true\napi_key = "fixture-private-jev-key"\n', state: "configured", enabled: true },
+  ]) {
+    await writeFile(configPath, entry.config);
+    const result = await runCli(cliPath, [...args, "--json"]);
+    assert.equal(result.code, 0, result.stderr);
+    const report = JSON.parse(result.stdout);
+    assert.equal(report.ok, true);
+    assert.deepEqual(report.jev, { enabled: entry.enabled, state: entry.state });
+    assert.doesNotMatch(result.stdout + result.stderr, /fixture-private-jev-key|apiKey|api_key/);
+    assert.equal(await readFile(configPath, "utf8"), entry.config);
+  }
+  const human = await runCli(cliPath, args);
+  assert.equal(human.code, 0, human.stderr);
+  assert.match(human.stdout, /Jev configuration: configured \(API key not validated\)/);
+  assert.doesNotMatch(human.stdout + human.stderr, /fixture-private-jev-key/);
+});
+
 test("memorax-code lifecycle rejects an invalid connection authority without blocking stop", async () => {
   const home = await mkdtemp(join(tmpdir(), "memorax-code-stop-invalid-connection-home-"));
   const authorityDir = join(home, "runtime", "backend");

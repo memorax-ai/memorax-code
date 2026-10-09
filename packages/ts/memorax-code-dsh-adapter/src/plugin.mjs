@@ -13,18 +13,21 @@ const DEFAULT_WRITEBACK_DRAIN_TIMEOUT_MS = 4_000;
 const MAX_REMINDER_TRACE_TIMEOUT_MS = 1_000;
 const MAX_RESUME_RECONCILIATION_WAIT_MS = 12_000;
 
-/** Register DSH-native retrieval and durable Turn writeback listeners. */
+/** Register DSH-native Turn tracking and durable writeback listeners. */
 export function registerMemoraxCodePlugin(ctx, dependencies) {
   const assertEnabled = dependencies?.assertEnabled;
   const backendClient = dependencies?.backendClient;
   const createUserMessage = dependencies?.createUserMessage;
   const loadPersonalContext = dependencies?.loadPersonalContext ?? loadDshPersonalContext;
+  const memoraxCodeHome = nonEmptyString(dependencies?.memoraxCodeHome);
   const scheduleRepoMemoryBuild = dependencies?.scheduleRepoMemoryBuild;
   const intervalTurns = dependencies?.intervalTurns;
   const isReminderDue = dependencies?.isReminderDue;
   const memoryImpactContext = nonEmptyString(dependencies?.memoryImpactContext);
   const memoryReminderContext = nonEmptyString(dependencies?.memoryReminderContext);
   const personalMemoryReminderContext = nonEmptyString(dependencies?.personalMemoryReminderContext);
+  const searchGuidanceContext = nonEmptyString(dependencies?.searchGuidanceContext);
+  const reminderCadence = dependencies?.reminderCadence;
   const defer = dependencies?.defer ?? queueMicrotask;
   const debug = dependencies?.debug ?? process.env.MEMORAX_CODE_DSH_DEBUG === "1";
   const drainTimeoutMs = positiveInteger(
@@ -65,7 +68,7 @@ export function registerMemoraxCodePlugin(ctx, dependencies) {
   const personalContexts = new WeakMap();
   const pendingContextMessages = new WeakMap();
   const writebackTails = new WeakMap();
-  const retrievalLifetime = new AbortController();
+  const turnStartLifetime = new AbortController();
   const resumeReconciliations = new WeakMap();
   const writebackLifetime = new AbortController();
   const pendingReminderTraces = new Set();
@@ -130,7 +133,7 @@ export function registerMemoraxCodePlugin(ctx, dependencies) {
       }
       sessionTurns.set(turn, {
         startSeq: event.seq,
-        retrievalAttempted: false,
+        turnStartAttempted: false,
         turnStartRecorded: false,
         closed: false,
       });
@@ -175,17 +178,18 @@ export function registerMemoraxCodePlugin(ctx, dependencies) {
     if (!cwd) return decision;
     if (!runtimeEnabled(assertEnabled, ctx, debug)) return decision;
 
-    const retrievalSignal = signal
-      ? AbortSignal.any([signal, retrievalLifetime.signal])
-      : retrievalLifetime.signal;
-    const recallContext = await collectRecallContext({
+    const turnStartSignal = signal
+      ? AbortSignal.any([signal, turnStartLifetime.signal])
+      : turnStartLifetime.signal;
+    await recordTurnStart({
       backendClient,
       ctx,
       debug,
       decision,
       scheduleRepoMemoryBuild,
+      searchGuidanceContext,
       session: agent.session,
-      signal: retrievalSignal,
+      signal: turnStartSignal,
       step,
       turn,
       turns,
@@ -203,11 +207,15 @@ export function registerMemoraxCodePlugin(ctx, dependencies) {
       loadPersonalContext,
       memoryImpactContext,
       memoryReminderContext,
+      memoraxCodeHome,
       personalContexts,
       personalMemoryReminderContext,
-      repoMemoryWorktree: turns.get(agent.session)?.get(turn)?.repoMemoryWorktree,
+      searchGuidanceContext,
+      reminderCadence,
+      searchGuidance: step === 1 ? turns.get(agent.session)?.get(turn)?.searchGuidance : undefined,
+      turnStartCommand: turns.get(agent.session)?.get(turn)?.turnStartCommand,
       session: agent.session,
-      signal: retrievalSignal,
+      signal: turnStartSignal,
       step,
       turn,
     });
@@ -215,10 +223,7 @@ export function registerMemoraxCodePlugin(ctx, dependencies) {
       personalContext?.discard();
       return decision;
     }
-    const context = [
-      recallContext,
-      personalContext?.context,
-    ].filter(Boolean).join("\n\n");
+    const context = personalContext?.context;
     if (!context) {
       personalContext?.commit();
       return decision;
@@ -254,7 +259,7 @@ export function registerMemoraxCodePlugin(ctx, dependencies) {
   if (typeof ctx.effect === "function") {
     ctx.effect(() => async () => {
       accepting = false;
-      retrievalLifetime.abort(new Error("memorax-code DSH plugin disposed"));
+      turnStartLifetime.abort(new Error("memorax-code DSH plugin disposed"));
       await Promise.all([
         waitForPending(pendingWritebacks, drainTimeoutMs),
         waitForPending(pendingReminderTraces, MAX_REMINDER_TRACE_TIMEOUT_MS),
@@ -303,23 +308,23 @@ function discardPendingContextMessages(pendingMessages, session, turn) {
   pending.personalContext.discard();
 }
 
-async function collectRecallContext(options) {
+async function recordTurnStart(options) {
   if (options.step !== 1) return undefined;
   const state = options.turns.get(options.session)?.get(options.turn);
   if (!state || state.invalid || state.closed) return undefined;
-  if (state.retrievalAttempted) {
+  if (state.turnStartAttempted) {
     try {
       await waitForAbortable(
-        state.retrievalPending,
+        state.turnStartPending,
         options.signal,
-        "DSH duplicate Turn retrieval wait aborted",
+        "DSH duplicate Turn start wait aborted",
       );
     } catch {
       // The pre-step boundary handles an aborted caller.
     }
     return undefined;
   }
-  state.retrievalAttempted = true;
+  state.turnStartAttempted = true;
   const prompt = userPrompt(options.decision.messages);
   if (!prompt) return undefined;
 
@@ -338,8 +343,9 @@ async function collectRecallContext(options) {
         prompt,
       });
       const response = await options.backendClient.recordTurnStart(command, { signal: options.signal });
-      if (options.signal?.aborted) return undefined;
+      if (options.signal?.aborted || response?.ok !== true) return undefined;
       state.turnStartRecorded = true;
+      state.turnStartCommand = command;
       state.repoMemoryWorktree = nonEmptyString(response?.repoMemoryWorktree);
       if (state.repoMemoryWorktree && typeof options.scheduleRepoMemoryBuild === "function") {
         try {
@@ -348,17 +354,23 @@ async function collectRecallContext(options) {
           debugFailure(options.ctx, options.debug, "Repo Memory scheduling", error);
         }
       }
-      return nonEmptyString(response?.additionalContext);
+      if (options.searchGuidanceContext
+        && typeof options.backendClient.evaluateSearchGuidance === "function") {
+        try {
+          const result = await options.backendClient.evaluateSearchGuidance(command, { signal: options.signal });
+          if (result?.ok === true && ["search", "skip"].includes(result.decision)) state.searchGuidance = result;
+        } catch { /* Guidance failure preserves the existing Skill reminder cadence. */ }
+      }
     } catch (error) {
-      debugFailure(options.ctx, options.debug, "retrieval", error);
+      debugFailure(options.ctx, options.debug, "Turn start", error);
       return undefined;
     }
   })();
-  state.retrievalPending = pending;
+  state.turnStartPending = pending;
   try {
     return await pending;
   } finally {
-    if (state.retrievalPending === pending) state.retrievalPending = undefined;
+    if (state.turnStartPending === pending) state.turnStartPending = undefined;
   }
 }
 
@@ -370,6 +382,7 @@ async function collectPersonalContext(options) {
     options.intervalTurns,
     options.memoryReminderContext,
     options.personalMemoryReminderContext,
+    state.acceptedReminder ?? options.reminderCadence?.read(options.session.id),
   );
   const firstObservation = !state.observed;
   const compactionGeneration = projection.compactionGeneration;
@@ -379,7 +392,8 @@ async function collectPersonalContext(options) {
   const includeProfile = firstObservation
     || state.appliedCompactionGeneration < compactionGeneration;
   const includeProcedure = firstObservation || cadenceDue;
-  if (!includeProfile && !includeProcedure) return undefined;
+  const guidance = options.searchGuidance;
+  if (!includeProfile && !includeProcedure && !guidance) return undefined;
   if (state.lastAttempt?.turn === options.turn
     && state.lastAttempt?.compactionGeneration === compactionGeneration) return undefined;
   const attempt = { turn: options.turn, compactionGeneration };
@@ -388,10 +402,10 @@ async function collectPersonalContext(options) {
   let loaded = false;
   let profileContext;
   let procedureContext;
-  if (options.repoMemoryWorktree) {
+  if (options.turnStartCommand && (includeProfile || includeProcedure)) {
     try {
       const result = await options.loadPersonalContext({
-        cwd: options.repoMemoryWorktree,
+        memoraxCodeHome: options.memoraxCodeHome,
         includeProfile,
         includeProcedure,
       }, { signal: options.signal });
@@ -404,25 +418,31 @@ async function collectPersonalContext(options) {
         state.lastAttempt = undefined;
       }
       debugFailure(options.ctx, options.debug, "personal context", error);
-      if (!cadenceDue && !postCompactionDue) return undefined;
+      if (!cadenceDue && !postCompactionDue && !guidance) return undefined;
     }
   }
   const triggers = [
     ...(cadenceDue ? ["cadence"] : []),
     ...(postCompactionDue ? ["post_compaction"] : []),
+    ...(guidance ? ["search_guidance"] : []),
   ];
   const reminderParts = [];
-  if (cadenceDue) reminderParts.push(options.memoryReminderContext);
-  if (postCompactionDue || (cadenceDue && firstObservation && profileContext)) {
+  if (guidance?.decision === "search") reminderParts.push(options.searchGuidanceContext);
+  else if (cadenceDue && !guidance) reminderParts.push(options.memoryReminderContext);
+  if (postCompactionDue || (cadenceDue && (guidance || (firstObservation && profileContext)))) {
     reminderParts.push(options.personalMemoryReminderContext);
   }
-  if (profileContext || procedureContext) reminderParts.push(options.memoryImpactContext);
+  if (profileContext || procedureContext || guidance?.decision === "search") reminderParts.push(options.memoryImpactContext);
   if (profileContext) reminderParts.push(profileContext);
   if (procedureContext) reminderParts.push(procedureContext);
   return {
     context: reminderParts.join("\n\n"),
     triggers,
     commit() {
+      if (cadenceDue && options.turnStartCommand) {
+        state.acceptedReminder = { startSeq: options.turnStartCommand.startSeq, turn: options.turnStartCommand.turn };
+        options.reminderCadence?.commit(options.session.id, state.acceptedReminder);
+      }
       if (loaded) {
         state.observed = true;
         if (includeProfile) state.appliedCompactionGeneration = compactionGeneration;
@@ -625,6 +645,7 @@ function reminderProjection(
   intervalTurns,
   memoryReminderContext,
   personalMemoryReminderContext,
+  acceptedReminder,
 ) {
   const events = ownedSessionEvents(session);
   if (!events) {
@@ -640,6 +661,10 @@ function reminderProjection(
   for (const event of events) {
     if (event?.type === "turn/start" && turnsSinceReminder !== undefined) {
       turnsSinceReminder += 1;
+    }
+    if (event?.type === "turn/start" && event.seq === acceptedReminder?.startSeq
+      && event.data?.turn === acceptedReminder.turn) {
+      turnsSinceReminder = 0;
     }
     if (isSuccessfulCompaction(event)) {
       compactionGeneration += 1;

@@ -1,12 +1,49 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { createBackendState } from "../../dist/app/state.js";
 import { createMemoryService } from "../../dist/memory/service.js";
+import { cursorTurnStatePath } from "../../dist/clients/cursor/turn-store.js";
 import { clientTracePaths } from "../../dist/trace/config.js";
+import { databaseFixture } from "../clients/cursor/support/database-fixtures.mjs";
+
+test("memory service delegates Cursor pre-compact without replacing the active user turn", async (t) => {
+  const fixture = await databaseFixture();
+  t.after(() => fixture.cleanup());
+  const home = join(fixture.directory, "memorax");
+  const workspace = await realpath(fixture.directory);
+  await repairGitMetadata(workspace, "cursor-pre-compact");
+  const start = { version: 1, client: "cursor", sessionId: fixture.sessionId, turnId: randomUUID(),
+    cwd: workspace, databasePath: fixture.databasePath, prompt: "Synthetic user turn before compaction." };
+  let requests = 0;
+  const service = createMemoryService({ memoraxCodeHome: home,
+    env: { MEMORAX_CODE_HOME: home, MEMORAX_CODE_DEBUG: "false",
+      MEMORAX_CODE_CURSOR_TRACE_ENABLED: "false",
+      MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test", MEMORAX_CODE_MEMORAX_API_KEY: "synthetic-secret",
+      MEMORAX_CODE_MEMORAX_USER_ID: "synthetic-user" },
+    fetchImpl: async () => { requests += 1; throw new Error("compaction observation must stay local"); },
+  });
+  t.after(() => service.close());
+  const turnStart = await service.recordTurnStart(start);
+  assert.equal(turnStart.recorded, true);
+  assert.equal(turnStart.repoMemoryWorktree, workspace);
+  fixture.writeCompaction({
+    latestGenerationId: start.turnId, rootMessageIds: ["a".repeat(64), "b".repeat(64)],
+  });
+  const statePath = cursorTurnStatePath(home, fixture.sessionId);
+  const before = JSON.parse(await readFile(statePath, "utf8"));
+  const { prompt, ...identity } = start;
+  const result = await service.recordPreCompact({ ...identity, turnId: randomUUID() });
+  assert.deepEqual(result, { ok: true, recorded: true });
+  const after = JSON.parse(await readFile(statePath, "utf8"));
+  assert.deepEqual(after.active, before.active);
+  assert.deepEqual(after.retiredTurnIds, before.retiredTurnIds);
+  await service.drain();
+  assert.equal(requests, 0);
+});
 
 test("Backend state does not own the memory service", () => {
   const state = createBackendState("127.0.0.1");
@@ -105,7 +142,6 @@ test("CodeBuddy and WorkBuddy isolate equal native IDs through service writeback
   const service = createMemoryService({
     env: {
       MEMORAX_CODE_HOME: home,
-      MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED: "false",
       MEMORAX_CODE_MEMORY_WRITEBACK_ENABLED: "true",
       MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_ENABLED: "false",
       MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
@@ -185,7 +221,6 @@ test("memory service surfaces automatic Add quota on the next supported client t
       MEMORAX_CODE_CODEX_TRACE_ENABLED: "false",
       MEMORAX_CODE_CLAUDE_TRACE_ENABLED: "false",
       MEMORAX_CODE_CODEBUDDY_TRACE_ENABLED: "false",
-      MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED: "false",
       MEMORAX_CODE_MEMORY_WRITEBACK_ENABLED: "true",
       MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_ENABLED: "false",
       MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
@@ -330,7 +365,6 @@ test("memory service discards fallback writeback when turn start upgrades the se
     env: {
       MEMORAX_CODE_HOME: memoraxCodeHome,
       MEMORAX_CODE_CODEX_TRACE_ENABLED: "false",
-      MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED: "false",
       MEMORAX_CODE_MEMORY_WRITEBACK_ENABLED: "true",
       MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_ENABLED: "true",
       MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_MAX_TURNS: "8",
@@ -633,7 +667,7 @@ test("memory service records confirmed completion failures without changing Hook
         },
         memoraxCodeHome,
         env: { MEMORAX_CODE_HOME: memoraxCodeHome, MEMORAX_CODE_DEBUG: "false",
-          MEMORAX_CODE_CODEX_TRACE_ENABLED: "false", MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED: "false",
+          MEMORAX_CODE_CODEX_TRACE_ENABLED: "false",
           MEMORAX_CODE_MEMORY_WRITEBACK_ENABLED: String(!scenario.disabled),
           MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_ENABLED: "false",
           MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test", MEMORAX_CODE_MEMORAX_API_KEY: "secret",

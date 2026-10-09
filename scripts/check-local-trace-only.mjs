@@ -21,6 +21,7 @@ const reviewedNetworkSources = new Set([
   "packages/ts/memorax-code-adapter-common/src/backend-command.mjs",
   "packages/ts/memorax-code-adapter-common/src/backend-command.d.mts",
   "packages/ts/memorax-code-adapter-common/src/hooks/ensure-backend-runner.mjs",
+  "packages/ts/memorax-code-adapter-common/src/hooks/memory-search-guidance.mjs",
   "packages/ts/memorax-code-backend/src/app/backend-server.ts",
   "packages/ts/memorax-code-backend/src/clients/claude/memory-hook-runtime.ts",
   "packages/ts/memorax-code-backend/src/clients/codex/memory-hook-runtime.ts",
@@ -28,14 +29,15 @@ const reviewedNetworkSources = new Set([
   "packages/ts/memorax-code-backend/src/clients/opencode/memory-hook-runtime.ts",
   "packages/ts/memorax-code-backend/src/lifecycle/backend/service.ts",
   "packages/ts/memorax-code-backend/src/lifecycle/backend/status.ts",
-  "packages/ts/memorax-code-backend/src/memory/automatic-retrieval.ts",
   "packages/ts/memorax-code-backend/src/memory/automatic-writeback.ts",
   "packages/ts/memorax-code-backend/src/memory/cli.ts",
   "packages/ts/memorax-code-backend/src/memory/harness-runtime.ts",
   "packages/ts/memorax-code-backend/src/memory/service.ts",
   "packages/ts/memorax-code-backend/src/memory/turn-coordinator.ts",
+  "packages/ts/memorax-code-backend/src/memory/search-guidance.ts",
   "packages/ts/memorax-code-backend/src/memory/writeback-buffer.ts",
   "packages/ts/memorax-code-backend/src/repo-memory/detect-updates.ts",
+  "packages/ts/memorax-code-backend/src/provider/jev/adapter.ts",
   "packages/ts/memorax-code-backend/src/provider/memorax/adapter.ts",
   "packages/ts/memorax-code-backend/src/provider/memorax/http.ts",
   "packages/ts/memorax-code-backend/src/transport/http/health.ts",
@@ -54,8 +56,10 @@ const reviewedNetworkSources = new Set([
   "packages/ts/memorax-code-opencode-adapter/src/repo-memory-server-runner.mjs",
   "packages/ts/memorax-code-backend/src/clients/codebuddy/memory-hook-runtime.ts",
   "packages/ts/memorax-code-backend/src/clients/trae/memory-hook-runtime.ts",
+  "packages/ts/memorax-code-backend/src/clients/cursor/memory-hook-runtime.ts",
   "packages/ts/memorax-code-codebuddy-adapter/hooks/runtime-hook.mjs",
   "packages/ts/memorax-code-trae-adapter/hooks/runtime-hook.mjs",
+  "packages/ts/memorax-code-cursor-adapter/hooks/runtime-hook.mjs",
 ]);
 
 const localTraceCoreSources = new Set([
@@ -75,6 +79,7 @@ const localTraceCoreSources = new Set([
 ]);
 
 const providerTransportSources = new Set([
+  "packages/ts/memorax-code-backend/src/provider/jev/adapter.ts",
   "packages/ts/memorax-code-backend/src/provider/memorax/adapter.ts",
   "packages/ts/memorax-code-backend/src/provider/memorax/http.ts",
 ]);
@@ -93,13 +98,15 @@ const reviewedBackgroundDiagnosticSources = new Set([
   "packages/ts/memorax-code-backend/src/memory/automatic-writeback.ts",
 ]);
 
-const providerTransportSourcePrefix =
-  "packages/ts/memorax-code-backend/src/provider/memorax/";
+const providerTransportSourcePrefixes = [
+  "packages/ts/memorax-code-backend/src/provider/jev/",
+  "packages/ts/memorax-code-backend/src/provider/memorax/",
+];
 const lifecycleContractsSource =
   "packages/ts/memorax-code-backend/src/lifecycle/contracts.ts";
 const lifecycleFetchTypeProperty = /^\s*fetch\?:\s*typeof\s+fetch;\s*$/m;
 const nestedProviderTransportImport =
-  /from\s+["'](?:\.\.?\/)+provider\/memorax\/(?:adapter|http)\.js["']/;
+  /from\s+["'](?:\.\.?\/)+provider\/(?:memorax|jev)\/(?:adapter|http)\.js["']/;
 const siblingProviderTransportImport =
   /from\s+["']\.\/(?:adapter|http)\.js["']/;
 
@@ -116,6 +123,7 @@ const networkCapabilityPatterns = [
 const outboundCapabilityPatterns = [
   [/\b(?:fetch|fetchImpl)\s*\(/, "HTTP request"],
   [/\b(?:invokeMemoraxMemoryProvider|callMemo(?:Search|Add))\s*\(/, "MemoraX request"],
+  [/\bevaluateJevSearch\s*\(/, "Jev request"],
   [/\bnew\s+(?:WebSocket|XMLHttpRequest)\b/, "browser network request"],
   [/node:(?:https|http2|net|tls|dgram)\b/, "outbound-capable Node network module"],
   [/(?:^|[^A-Za-z0-9_])(?:curl|wget)(?:[^A-Za-z0-9_]|$)/m, "external network command"],
@@ -247,7 +255,7 @@ function inspectProductionSource(content, sourcePath, failures) {
 function importsProviderTransport(content, sourcePath) {
   return nestedProviderTransportImport.test(content)
     || (
-      sourcePath.startsWith(providerTransportSourcePrefix)
+      providerTransportSourcePrefixes.some((prefix) => sourcePath.startsWith(prefix))
       && siblingProviderTransportImport.test(content)
     );
 }

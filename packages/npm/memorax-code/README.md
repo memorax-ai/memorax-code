@@ -1,13 +1,13 @@
 # @memorax/memorax-code
 
 MemoraX Code adds persistent coding memory to Codex, Claude Code,
-CodeBuddy CLI, WorkBuddy, DeepSeek Harness, OpenCode, and Trae.
+CodeBuddy CLI, WorkBuddy, DeepSeek Harness, OpenCode, Trae, and Cursor.
 
 ## Requirements
 
 - Node.js 20 or newer (Node.js 24 LTS recommended) and npm.
 - At least one of Codex, Claude Code, CodeBuddy CLI, WorkBuddy, DeepSeek Harness,
-  OpenCode Desktop or CLI, or Trae.
+  OpenCode Desktop or CLI, Trae, or Cursor.
 
 ## Install
 
@@ -83,6 +83,13 @@ from Plugins or `/plugins` if it is not already enabled.
 For Trae, open Settings and enable **Global Hooks** once before starting a new
 Trae session; setup installs the managed Hooks and Skill but cannot switch that
 Trae setting reliably.
+Cursor installs native user Hooks and the shared Skill under `~/.cursor`,
+independently of Claude Code; `CURSOR_HOME` overrides that root. Restart or
+refresh Cursor and open a new conversation. Use the Skill for CLI Search and
+manual Add. Automatic Add uses verified completed turns from Cursor's native
+SQLite database. Automatic prompt retrieval is not enabled for Cursor. See the
+Cursor section in
+`docs/configuration.md` for writeback conditions.
 
 ## Verify
 

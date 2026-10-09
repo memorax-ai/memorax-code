@@ -41,7 +41,7 @@ starts without the architecture, failed attempts, repository rules, or working
 preferences established before it.
 
 MemoraX Code gives Codex, Claude Code, CodeBuddy CLI, WorkBuddy, DeepSeek Harness,
-OpenCode, and Trae a shared memory layer for that context.
+OpenCode, Trae, and Cursor a shared memory layer for that context.
 It can recall prior engineering knowledge, capture reusable lessons from
 completed work, maintain repository knowledge, and carry your procedures and
 preferences into future sessions.
@@ -53,7 +53,7 @@ and validation sooner.
 ## Quick Start
 
 Prepare Node.js 20+ (Node.js 24 LTS recommended) and at least one of Codex,
-Claude Code, CodeBuddy CLI, WorkBuddy, DeepSeek Harness, OpenCode, or Trae.
+Claude Code, CodeBuddy CLI, WorkBuddy, DeepSeek Harness, OpenCode, Trae, or Cursor.
 
 For DeepSeek Harness (DSH), current releases require Node.js
 `^22.19.0 || >=24.0.0`. Install or initialize DSH first, create at least one
@@ -156,6 +156,25 @@ refresh every detected coding agent after setup.
 | DeepSeek Harness | Restart or refresh DSH to load the plugin registered in existing Profiles. |
 | OpenCode | Restart or refresh the client to discover the managed plugin and Skill. |
 | Trae | In **Settings → Hooks → Global → Configured Hooks**, enable the registered Global Hooks once. Setup installs the Hooks and Skill; this switch requires manual activation. |
+| Cursor | Restart or refresh Cursor, then open a new conversation to load its native user Hooks, shared Skill, and managed background subagent. |
+
+Cursor installs independently of Claude Code under `~/.cursor/hooks.json` and
+`~/.cursor/skills/memorax-code/`; setup preserves its third-party integration
+setting. Use the Skill for CLI Search and manual Add. Automatic Add reads verified
+native database turns and requires Node.js 22.13+
+with built-in SQLite (Node.js 24 recommended). It supports ordinary prompts,
+edited resends, and continuations bound to an observed preceding turn; interrupted
+or ambiguously correlated content is skipped. Prompt Hooks inject trusted User
+Profile preferences on the first eligible turn and Procedure Memory on the
+configured reminder cadence. The default Procedure cadence is turns 1, 6, and
+11 (then every five turns). After a recorded compaction is verified against the
+native database, the next nonempty, registered prompt restores Profile and
+personal reminders; Procedure keeps its normal cadence. Missing evidence skips
+recovery, and restoration during the same continuing task is not guaranteed.
+Repo Memory initial builds and policy-based maintenance use Cursor's native
+background subagent; no separate Cursor CLI or
+CLI login is required. Cursor may request normal tool approvals. See
+[Cursor configuration](docs/configuration.md#cursor-integration-paths).
 
 Open a project, start a new client session, and send one prompt. Then run
 these commands from the project directory:
@@ -198,8 +217,8 @@ together. Supported formula IDs are
 `semantic_decay_plus_helpful`, `joint_decay_semantic_helpful`,
 `geometric_semantic_decay_helpful`, `linear_semantic_decay_helpful`, and
 `semantic_gate_decay_plus_helpful`. Invalid IDs, versions, or filter ranges are
-rejected locally before an HTTP request is sent. Without experiment flags, both
-the CLI and automatic Hook retrieval send the default `scored`/`summary`
+rejected locally before an HTTP request is sent. Without experiment flags,
+explicit CLI Search sends the default `scored`/`summary`
 request with `semantic_decay_plus_helpful@2` and the `30`-day/`0` rough-filter
 thresholds. Explicit compatibility fields still take precedence.
 
@@ -227,7 +246,7 @@ to bootstrap setup or repair a stale terminal environment.
 ### Try Cross-Session Memory
 
 Clone the example repository from the product website, then open Codex, Claude
-Code, CodeBuddy CLI, WorkBuddy, DeepSeek Harness, OpenCode, or Trae in the project directory:
+Code, CodeBuddy CLI, WorkBuddy, DeepSeek Harness, OpenCode, Trae, or Cursor in the project directory:
 
 ```bash
 git clone https://github.com/SWE-agent/test-repo.git
@@ -235,7 +254,7 @@ cd test-repo
 ```
 
 Invoke the Skill as `$memorax-code` in Codex or `/memorax-code` in Claude Code
-or DeepSeek Harness. In OpenCode, CodeBuddy CLI, WorkBuddy, or Trae, ask the agent
+or DeepSeek Harness. In OpenCode, CodeBuddy CLI, WorkBuddy, Trae, or Cursor, ask the agent
 to use the `memorax-code` skill by name. The prompts below use its product name
 and work in all supported clients.
 
@@ -272,15 +291,25 @@ the current repository.
 | **Personal&nbsp;Memory** | How should the agent communicate and collaborate with you? | User Profile preferences such as language, tone, explanation depth, and result format |
 | **Procedure&nbsp;Memory** | How should this kind of task be carried out? | Reusable steps, checklists, prerequisites, exceptions, and validation gates |
 
-Personal Memory and Procedure Memory stay in the current repository under
-`.repo_memory/`. When saved content already exists, MemoraX Code compares its
-meaning before writing: an equivalent request makes no change; a durable
-refinement or conflict updates the matching entry and removes the superseded
-wording; an invalid scope is corrected, or the entry is deleted only when it is
-wholly obsolete. An explicit forget request deletes only the named preference,
-procedure topic, section, or step and leaves unrelated memory unchanged.
-One-time task instructions do not change saved memory, and the Agent asks before
-writing when the durable intent or target is unclear.
+Personal Memory and Procedure Memory are global to the user under
+`$MEMORAX_CODE_HOME/personal-memory/` (default `~/.memorax-code/personal-memory/`): User Profile
+uses `user-profile/preferences.md`, and each Procedure topic uses its own file
+under `procedure-memory/`. Applicability may mention a repository, tool, or
+workflow, but no personal-memory layer exists inside a repository. Existing
+`.repo_memory` personal-memory files are ignored and are not migrated. The
+Agent saves by intent rather than wording: when you state a working rule or
+preference meant to keep applying beyond the current task, it saves it without
+waiting for "remember" and tells you what it stored; rules about how to work go
+to Procedure Memory, and communication or presentation preferences go to the
+User Profile. When saved content already exists,
+MemoraX Code compares its meaning before writing: an equivalent request makes
+no change; a durable refinement or conflict updates the matching entry and
+removes the superseded wording; an invalid scope is corrected, or the entry is
+deleted only when it is wholly obsolete. An explicit forget request deletes
+only the named preference, procedure topic, section, or step and leaves
+unrelated memory unchanged. One-time task instructions do not change saved
+memory, and the Agent asks before writing when the durable intent or target is
+unclear.
 
 ## Product Capabilities
 
@@ -289,18 +318,27 @@ writing when the durable intent or target is unclear.
 | **Background memory writeback** | Extracts reusable knowledge from completed turns and writes it to Coding Memory in the background. |
 | **Preference continuity** | Records User Profile preferences and injects them into future tasks on a configured cadence. |
 | **Procedure reuse** | Records reusable task procedures and reminds future agents to apply them. |
-| **Visible memory impact** | In Codex, Claude Code, CodeBuddy CLI, WorkBuddy, DeepSeek Harness, OpenCode, and Trae, opens the final answer with a brief natural-language note when an explicit Coding Memory Search or a Repo, Procedure, or Profile Memory available to the current turn materially guided the task. |
-| **Background Repo Memory maintenance** | Automatically organizes repository structure, entry points, and history evidence in supported headless-capable clients, then updates them according to policy to reduce repeated searching and summarization. Trae can use the Skill for Repo Memory, but does not currently expose a headless worker for automatic maintenance. |
+| **Visible memory impact** | In Codex, Claude Code, CodeBuddy CLI, WorkBuddy, DeepSeek Harness, OpenCode, Trae, and Cursor, opens the final answer with a brief natural-language note when an explicit Coding Memory Search or a Repo, Procedure, or Profile Memory available to the current turn materially guided the task. |
+| **Background Repo Memory maintenance** | Maintains one shared baseline from the locally known default branch. Any worktree can trigger a build or policy-driven update; all branches reuse the map and verify current source without per-worktree builds. Existing local bundles are preserved. Trae remains Skill-only; Cursor uses its native background subagent. |
 | **Active memory control** | Lets you search and add memory through the bundled MemoraX Code skill or the CLI. |
-| **Client integration** | Integrates with Codex, Claude Code, CodeBuddy CLI, WorkBuddy, DeepSeek Harness, OpenCode, and Trae to trigger memory retrieval, reminders, and writeback. Automatic quota reminders are currently available in Codex, Claude Code, CodeBuddy CLI, WorkBuddy, OpenCode, and Trae. |
+| **Client integration** | Integrates with Codex, Claude Code, CodeBuddy CLI, WorkBuddy, DeepSeek Harness, OpenCode, Trae, and Cursor for Skill-driven Search, local reminders, and automatic writeback. Automatic quota reminders are currently available in Codex, Claude Code, CodeBuddy CLI, WorkBuddy, OpenCode, and Trae. |
 | **Local observability** | Uses content-controlled local trace and reconciliation records to inspect activity counts, retrieval, and writeback status. |
 
 ## Your Memory, Your Control
 
 MemoraX is required for cloud-backed memory. Completing setup activates
 MemoraX search/add and the generated configuration's automatic writeback;
-there is no second writeback confirmation. Automatic retrieval remains off
-until explicitly enabled.
+there is no second writeback confirmation. Search runs when the agent uses the
+Skill or you invoke the CLI. Hooks provide local memory context and reminders
+without issuing Search requests.
+
+Optional [Jev configuration](docs/configuration.md#jev-provider-configuration)
+lets a separate TypeSafe model judge each eligible distinct user request. When
+Search is useful, the agent reads the `memorax-code` Skill's Search reference
+and follows its query and execution guidance. It sends bounded current-request
+and previous-turn text to TypeSafe, uses your Jev key, and is disabled by default.
+Failures fall back to the normal Skill reminder cadence; the agent still
+executes Search.
 
 New configurations also enable coding-session collection for Codex, Claude
 Code, OpenCode, CodeBuddy, and WorkBuddy. Automatic QA Add includes an optional
@@ -359,8 +397,10 @@ Debug off, without adding messages to the conversation or blocking the coding ta
 or `memorax-code logs --id <diagnostic-id>` for details you can review and share.
 
 Coding Memory follows the repository or workspace. Recognized default chat
-directories in Codex, WorkBuddy, and OpenCode share `General` under the same
-configured MemoraX user ID. Existing memories are not migrated; see
+directories or contexts in Codex, WorkBuddy, OpenCode, and Cursor share `General` under the
+same configured MemoraX user ID. A Cursor conversation with no folder selected
+uses this shared `@General` scope; opening a repository uses that repository's
+normal scope. Existing memories are not migrated; see
 [memory scope](docs/configuration.md#memory-scope) for the directory rules.
 
 Guest quota reminders may display the complete Mark ID. Treat reminder text
@@ -401,6 +441,8 @@ memorax-code update
 Setup also enables background updates while the managed Backend is running.
 An update briefly stops a running managed Backend and restores it with the
 retained client selection.
+Setup after reinstall and updates preserve explicit client choices even when
+older configuration omits `codex` or `claude`.
 See [update settings](docs/configuration.md#setup-automatic-update-and-package-transition-state)
 for release channels, custom state roots, client selection, Backend restoration,
 and disabling background checks. Restart or refresh a client after an update

@@ -6,11 +6,13 @@ import {
   isMemorySkillReminderDue,
   MEMORY_IMPACT_REMINDER_CONTEXT,
   memorySkillReminderContext,
+  memorySearchGuidanceContext,
   personalMemoryReminderContext,
   resolveMemorySkillReminderIntervalTurns,
 } from "../memorax-code-adapter-common/src/hooks/memory-skill-reminder-policy.mjs";
 import { scheduleMissingRepoMemoryBuild } from "../memorax-code-adapter-common/src/repo-memory/repo-memory-auto-build.mjs";
 import { isRepoMemoryJobWorker } from "../memorax-code-adapter-common/src/repo-memory/repo-memory-job-context.mjs";
+import { createDshReminderCadence } from "./reminder-cadence.mjs";
 import backendClient from "./backend-client.mjs";
 import { createDshUserMessage } from "./dsh-message.mjs";
 import { loadDshPersonalContext } from "./personal-context.mjs";
@@ -45,9 +47,15 @@ export function apply(ctx) {
     createUserMessage: createDshUserMessage,
     intervalTurns,
     isReminderDue: isMemorySkillReminderDue,
+    memoraxCodeHome: runtime.memoraxCodeHome,
     memoryImpactContext: MEMORY_IMPACT_REMINDER_CONTEXT,
     memoryReminderContext: memorySkillReminderContext("/memorax-code"),
-    loadPersonalContext: (input, options) => loadDshPersonalContext(input, {
+    searchGuidanceContext: memorySearchGuidanceContext("/memorax-code"),
+    reminderCadence: createDshReminderCadence(runtime.memoraxCodeHome),
+    loadPersonalContext: (input, options) => loadDshPersonalContext({
+      ...input,
+      memoraxCodeHome: runtime.memoraxCodeHome,
+    }, {
       ...options,
       env: runtimeEnv,
     }),

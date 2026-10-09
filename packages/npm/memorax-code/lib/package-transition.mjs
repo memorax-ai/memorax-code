@@ -16,6 +16,7 @@ import {
 export const PACKAGE_TRANSITION_RECORD_VERSION = 1;
 export const PACKAGE_TRANSITION_FRESHNESS_MS = 15 * 60 * 1_000;
 export const PACKAGE_TRANSITION_COMMAND_TIMEOUT_MS = 45_000;
+export const PACKAGE_RESTORE_MARKER_VERSION = 1;
 
 const RETIRING_KEYS = new Set([
   "version",
@@ -45,6 +46,38 @@ export class PackageTransitionRecordError extends RuntimeRecordError {
 
 export function packageTransitionPath(memoraxCodeHome = defaultMemoraxCodeHome()) {
   return join(memoraxCodeHome, "runtime", "install", "package-transition.json");
+}
+
+export function packageRestoreMarkerPath(memoraxCodeHome = defaultMemoraxCodeHome()) {
+  return join(memoraxCodeHome, "runtime", "install", "package-restored.json");
+}
+
+export function writePackageRestoreMarker({ memoraxCodeHome, transitionId, restoredAt = new Date().toISOString() }) {
+  if (!UUID_PATTERN.test(String(transitionId ?? ""))) return false;
+  const result = writePrivateJsonRecord(packageRestoreMarkerPath(memoraxCodeHome), {
+    version: PACKAGE_RESTORE_MARKER_VERSION,
+    transitionId,
+    restoredAt,
+  }, { durableBoundary: resolve(memoraxCodeHome) });
+  return result.durability === "confirmed";
+}
+
+export function consumePackageRestoreMarker(memoraxCodeHome, transitionId) {
+  const path = packageRestoreMarkerPath(memoraxCodeHome);
+  const state = readJsonRuntimeRecord(path);
+  let matches = false;
+  if (state.status === "present") {
+    matches = state.value.version === PACKAGE_RESTORE_MARKER_VERSION
+      && state.value.transitionId === transitionId
+      && UUID_PATTERN.test(String(state.value.transitionId ?? ""))
+      && ISO_TIMESTAMP_PATTERN.test(String(state.value.restoredAt ?? ""));
+  }
+  try {
+    unlinkSync(path);
+  } catch (error) {
+    if (error?.code !== "ENOENT") return false;
+  }
+  return matches;
 }
 
 export function readPackageTransitionRecord(memoraxCodeHome = defaultMemoraxCodeHome()) {
@@ -264,6 +297,18 @@ async function postinstallPackageTransition(options, context) {
       throw transitionError("PACKAGE_TRANSITION_REPLACED", "package transition changed before it could be consumed");
     }
     unlinkSync(transitionPath);
+    if (options.writeRestoreMarker === true) {
+      try {
+        writePackageRestoreMarker({
+          memoraxCodeHome,
+          transitionId: current.record.transitionId,
+          restoredAt: nowIso(options),
+        });
+      } catch {
+        // The marker only enables an update fast path; a failed marker must
+        // not turn a successfully restored Backend into an install failure.
+      }
+    }
     if (context.firstFailure) {
       context.firstFailure.recoveryStatus = "restored";
       reportUpdateFailure(context.firstFailure, {

@@ -51,12 +51,10 @@ export function createOpenCodeMemoryHookRuntime(
   const now = options.now ?? (() => Date.now());
   const memory = createHarnessMemoryRuntime({
     client: OPENCODE_MEMORY_TURN_CLIENT,
-    retrievalSource: "opencode_plugin_retrieval",
     writebackSource: "opencode_plugin_writeback",
     diagnosticPrefix: "opencode_memory",
     traceFailureEvent: "opencode_trace.write_failed",
     turnStartTraceSource: "opencode-plugin",
-    deduplicateRetrieval: true,
   }, options);
   const { turnCoordinator } = memory;
 

@@ -2,6 +2,7 @@ import { recordHookFailure } from "./hooks/hook-diagnostics.mjs";
 
 const HOOK_OPERATIONS = new Map([
   ["/memory/turn-start", "memory.turn-start"],
+  ["/memory/pre-compact", "memory.pre-compact"],
   ["/memory/writeback", "memory.writeback"],
 ]);
 

@@ -1,10 +1,10 @@
 # Security Policy
 
 MemoraX Code is a local-first integration for Codex, Claude Code,
-CodeBuddy/WorkBuddy, DeepSeek Harness (DSH), OpenCode, and Trae with an optional
+CodeBuddy/WorkBuddy, DeepSeek Harness (DSH), OpenCode, Trae, and Cursor with an optional
 external bind mode and required communication with MemoraX for cloud-backed memory. Security reports should
-distinguish the local Backend, client-owned provider traffic, and MemoraX
-memory traffic.
+distinguish the local Backend, client-owned provider traffic, MemoraX
+memory traffic, and the optional Jev evaluation provider.
 
 ## Supported Versions
 
@@ -29,9 +29,11 @@ Please allow time for triage and remediation before public disclosure.
 
 ### Client and local Backend
 
-- Codex, Claude Code, CodeBuddy/WorkBuddy, DeepSeek Harness, OpenCode, and Trae own provider credentials,
+- Codex, Claude Code, CodeBuddy/WorkBuddy, DeepSeek Harness, OpenCode, Trae, and Cursor own provider credentials,
   models, native tools, and provider traffic. MemoraX Code does not proxy
-  model-provider traffic and does not need client provider credentials.
+  model-provider traffic and does not need client provider credentials. The
+  optional Jev evaluation adapter uses its own explicit configuration and key;
+  it does not execute client tasks or inherit their provider credentials.
 - The managed Backend binds to loopback by default. External binding requires
   explicit opt-in and a Backend token; deployment operators must provide an
   appropriate authenticated and encrypted network boundary.
@@ -83,7 +85,18 @@ Please allow time for triage and remediation before public disclosure.
   authority and must not be copied between users or edited by hand.
 - The managed CodeBuddy/WorkBuddy plugin reads native JSONL transcripts from the
   client-owned project history and sends only normalized turn data required for
-  retrieval, trace, or writeback.
+  correlation, trace, or writeback.
+- The Cursor adapter manages only its marked native user Hooks and shared Skill
+  under `CURSOR_HOME` (default `~/.cursor`), independently of Claude Code. It
+  preserves unrelated configuration and Cursor's third-party integration switch.
+  Automatic writeback reads native SQLite conversation state and referenced blobs
+  in a read-only transaction. Exact native request/user identity, prompt digest,
+  completed Hook, and final-response digest authorize the selected text. Continue
+  additionally validates the original user and unchanged native branch/step prefix.
+  Database paths and pending correlation records remain local. No database copy,
+  UI bubble, JSONL fallback, tool text, or thinking content is sent to MemoraX.
+  Ambiguous or unsupported content and interrupted runs do not write back. Hook
+  response text is used only for digest comparison, never as fallback content.
 - The managed Trae adapter merges only marker-owned `SessionStart`,
   `UserPromptSubmit`, and `Stop` entries into Trae's `hooks.json`, refuses to
   replace an unmanaged `memorax-code` Skill, and removes only managed assets.
@@ -95,17 +108,37 @@ Please allow time for triage and remediation before public disclosure.
   are bound to one active Turn with a prompt-derived Turn ID; a new
   prompt interrupts the old Turn, and late or mismatched completion events do
   not write back. Hook fields are not a fallback for any other client.
-- Initial Repo Memory builds use only the Git worktree returned by an
+- Initial Repo Memory build triggers accept only the Git worktree returned by an
   authenticated Backend turn-start request. Backend or workspace-scope
   failures skip the build; client integrations do not fall back to
   adapter-local workspace input.
-- Codex and OpenCode read repository-local User Profile and Procedure Memory
-  only from the worktree authorized by the current Backend turn-start result.
-  Without that authority they keep only the generic Skill reminder and do not
-  fall back to the client `cwd` for repository-local content.
-- User Profile storage rejects symbolic links in `.repo_memory`, its
-  `user-profile` directory, and `preferences.md`. Invalid preference files are
-  rejected without rewriting their contents; listing does not create storage.
+- Repo Memory sharing is local to a canonical Git common directory and one
+  MemoraX home. Remote URLs do not authorize sharing between clones. One validated
+  mainline baseline is held in private local storage and is not sent to MemoraX.
+  Any authorized worktree may trigger maintenance, including a dirty feature
+  worktree; only the fixed local `origin/HEAD` target selects authoring content.
+  Workers use a private local clone with checkout hooks disabled, without changing
+  source refs or registering a worktree. Normal collection retains its configured
+  provider-evidence policy. Validation checks unchanged snapshot source, artifact
+  provenance, job ownership, and the previous baseline before atomic publication.
+  All branches read one immutable version as guidance and verify current source.
+  Personal-memory sidecars are excluded and bundle copies reject symbolic links.
+  Existing local bundles and user edits remain untouched. Completed jobs remove
+  their temporary checkout; published versions and operational records remain
+  local. These checks do not sandbox authoring or prove semantic accuracy.
+- Personal Memory is global user-owned state under
+  `$MEMORAX_CODE_HOME/personal-memory/` (default `~/.memorax-code/personal-memory/`). User
+  Profile is `user-profile/preferences.md`; Procedure Memory consists of direct
+  `procedure-memory/*.md` topic files. Personal-memory reads and writes do not
+  require Git, a repository root, or a worktree. Applicability may mention a
+  repository, tool, or workflow without making the storage repository-scoped.
+- User Profile storage rejects symbolic links in the global personal-memory
+  directories and `preferences.md`. Invalid preference files are rejected
+  without rewriting their contents; listing does not create storage. The file
+  uses schema `user_profile_memory.v0.1`, scope `user`, and owner
+  `user-profile-memory`.
+- Existing personal-memory files under `.repo_memory/` are ignored and are not
+  migrated. Repository-local `.repo_memory` remains Repo Memory only.
 - MemoraX-backed Search, Add, and automatic writeback may downgrade malformed
   or incomplete internal metadata in a direct `.git` directory to the
   canonical workspace folder identity. The CLI exposes the fallback reason,
@@ -130,10 +163,17 @@ Repo Memory runners use the following native execution permissions:
 | OpenCode | A dedicated session allows `edit`, `bash`, `webfetch`, `doom_loop`, and `external_directory` for `*` |
 | DSH | Uses the selected managed headless Profile via `--profile`; the adapter supplies no additional permission flag |
 | Trae | No automatic background runner |
+| Cursor | Native `Task` dispatches the managed `memorax-repo-memory` background subagent, inherits the parent model, and uses Cursor's normal tool permissions |
 
 Run these jobs only against trusted source in an appropriately trusted local
 environment. Worker timeouts and repository validation bound lifecycle and
 identity; they do not restrict filesystem or tool access to that repository.
+
+Cursor requires a delegation ticket claim before work, limits the claim by a
+lease, and validates job ownership, the repository snapshot, and the generated
+bundle before accepting completion. These checks do not create a filesystem
+sandbox, limit the subagent's tool permissions, or forcibly stop it when the
+lease expires. Cursor does not use a standalone Agent CLI for these jobs.
 
 ### MemoraX memory traffic
 
@@ -167,21 +207,21 @@ user can also explicitly run `memorax-code account --show-mark-id` directly in
 a local terminal. Neither path prints the API key. Treat conversations,
 screenshots, and logs containing a displayed Mark ID as sensitive.
 
-MemoraX-backed search, retrieval, and writeback require a Base User ID, API
+MemoraX-backed Search, Add, and automatic writeback require a Base User ID, API
 key, and network access. Foreground setup discloses automatic writeback and
 coding-session collection before
-creating or accepting credentials. Completing setup activates search/add and
-the generated configuration's automatic writeback; automatic retrieval
-remains disabled until explicitly enabled.
+creating or accepting credentials. Completing setup activates Search/Add and
+the generated configuration's automatic writeback.
 
-Memory searches send the query and repository-scoped identity to MemoraX.
-When DSH, OpenCode, or Trae automatic retrieval is enabled, each eligible direct user
-prompt is used as the search query.
+Memory searches send the query and repository-scoped identity to MemoraX when
+the agent or user invokes `memorax-cli search`. Hooks do not send prompts to
+MemoraX for Search.
 Active adds and automatic writeback send the selected content needed to create
 memory. Automatic writeback may include selected user instructions and the
 matching final assistant response from an exact Codex rollout, Claude Code or
 CodeBuddy/WorkBuddy transcript, DSH persisted Session Event Log interval,
-OpenCode SDK session-message Turn, or Trae's validated Hook pair. It does not
+OpenCode SDK session-message Turn, Cursor's correlated native SQLite turn and steps, or
+Trae's validated Hook pair. It does not
 send the retained trace file, raw transcript path, raw DSH interval, SDK
 message records, or trace-only provenance as part of that payload.
 
@@ -259,6 +299,49 @@ budget for the `coding_context` object, including archive metadata, is omitted w
 content-free local diagnostic instead of blocking QA. QA messages and other Add
 fields do not count toward this archive budget; their existing limits remain.
 
+### Jev semantic judgment traffic
+
+Jev is a separate hosted service, disabled by default. Its adapter requires
+an explicit enable setting and a Jev API key in private configuration or an
+environment override. The configured key is used only to construct the
+Authorization bearer header for the fixed TypeSafe HTTPS endpoint; provider
+results and configuration status do not expose the configured credential.
+When enabled and configured, each eligible distinct user request can invoke
+Jev before the agent receives retrieval guidance, independently of the Skill
+reminder cadence. Repeated native Turn events are deduplicated. Disabled Jev
+keeps the existing reminder cadence without sending conversation content to
+TypeSafe.
+
+When invoked, the adapter sends fixed Coding Memory retrieval criteria and
+bounded original text: the current user request and, when supplied, the
+previous user request and final assistant reply. Text is trimmed and length
+limited but is not redacted, including any literal credentials or examples
+already present in that text. The adapter does not read native transcripts,
+retained trace, diagnostic records, or repository files, or add Session, Turn,
+repository-identity, or local-provenance metadata fields. The external service's
+own terms and data-handling policy govern the text it receives.
+
+The Backend keeps bounded context in memory for this decision, qualified by
+client, session, and scope. Prior context comes only from the immediately
+preceding observed, validated native completion, independently of automatic
+Add enablement; it is not read from
+retained trace and is not written to a new conversation-history file. Restart,
+eviction, or missing eligible prior content leaves current-request-only input.
+A missing registered current request prevents evaluation.
+Submitted native references must match the registered values and field
+presence. Explicit interruption or rollback invalidates the matching guidance
+context and any in-flight decision; a late start or completion for that
+invalidated Turn cannot reactivate its retained context.
+
+A valid Jev response produces a binary Search or skip recommendation from its
+probability. It cannot authorize session correlation, scope changes, completion,
+permissions, or memory writes. Invalid configuration prevents a request;
+non-execution, invalid input or responses, and transport failures return a
+separate unsuccessful result with a fixed reason, without exposing raw response
+bodies or exception details. Failed evaluation falls back to the existing
+reminder cadence and does not add a generic reminder on other turns. Jev does
+not execute Search or suppress independent personal-memory delivery.
+
 ## Local Data and Diagnostics
 
 `MEMORAX_CODE_HOME` defaults to `~/.memorax-code` and contains configuration,
@@ -311,12 +394,12 @@ modifies diagnostic storage. These files are not signed: review their text befor
 sharing, especially if edited by another local process. Current status and raw
 Backend logs can include additional local information and require separate review.
 
-Codex, Claude Code, CodeBuddy/WorkBuddy, DSH, OpenCode, and Trae local trace capture is enabled by default.
+Codex, Claude Code, CodeBuddy/WorkBuddy, DSH, OpenCode, Trae, and Cursor local trace capture is enabled by default.
 Depending on the enabled client capabilities, traces may include prompts,
 responses, recalled memory, writeback content, reminder text, and local paths.
 Trace files stay under `MEMORAX_CODE_HOME`. The shipped package has no trace
 uploader, collector, receiver, or export command. This does not change the
-separate MemoraX queries and writeback described above.
+separate MemoraX queries, writeback, or opt-in Jev evaluation described above.
 
 Disabling trace event capture preserves current-turn operational records for
 client/session identity, workspace association, and exact recovery. These local

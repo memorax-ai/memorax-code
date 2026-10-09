@@ -87,6 +87,7 @@ for (const { key, name, label } of [
   { key: "codebuddyAdapter", name: "CodeBuddy CLI", label: "CodeBuddy" },
   { key: "workbuddyAdapter", name: "WorkBuddy", label: "WorkBuddy" },
   { key: "traeAdapter", name: "Trae", label: "Trae" },
+  { key: "cursorAdapter", name: "Cursor", label: "Cursor" },
 ]) {
   test(`${name}-only lifecycle guidance describes the changed integration`, (t) => {
     const started = captureReport(t, printLifecycleResult, {
