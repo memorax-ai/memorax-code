@@ -330,6 +330,7 @@ function scanCodexRolloutTurn(
   const seenTurnIds = new Set<string>();
   const turnContextIds = new Set<string>();
   const userMessageTurnIds = new Set<string>();
+  const pendingResponseItemUserTurnIds = new Set<string>();
 
   const observeTurn = (turnId: string | undefined, source: "turn_context" | "task_started"): void => {
     activeTurnId = turnId;
@@ -373,6 +374,9 @@ function scanCodexRolloutTurn(
     if (record.type === "turn_context") {
       const turnId = stringValue(payload.turn_id) ?? stringValue(payload.turnId);
       observeTurn(turnId, "turn_context");
+      if (turnId && pendingResponseItemUserTurnIds.has(turnId)) {
+        userMessageTurnIds.add(turnId);
+      }
       if (turnId === targetTurnId) {
         targetSeen = true;
         targetBoundarySeen = true;
@@ -382,17 +386,18 @@ function scanCodexRolloutTurn(
     if (record.type === "response_item") {
       if (activeTurnId && payload.type === "message" && payload.role === "user"
         && responseItemMessageText(payload.content, "user")) {
-        const responseTurnId = responseItemTurnId(payload);
-        if (!responseTurnId || responseTurnId === activeTurnId) userMessageTurnIds.add(activeTurnId);
+        // A response item is owned by the enclosing outer turn. If the
+        // response arrives before turn_context, wait for that boundary before
+        // counting it in the session index.
+        if (turnContextIds.has(activeTurnId)) {
+          userMessageTurnIds.add(activeTurnId);
+        } else {
+          pendingResponseItemUserTurnIds.add(activeTurnId);
+        }
       }
       if (activeTurnId === targetTurnId) {
         let codingItem: ResponseItem | undefined;
         if (captureCodingItems) {
-          const responseTurnId = responseItemTurnId(payload);
-          if (responseTurnId && responseTurnId !== activeTurnId) {
-            turnMetadataMismatch = true;
-            continue;
-          }
           codingItem = codingItemFromResponseItem(payload);
           if (codingItem && !(codingItem.type === "message" && codingItem.role === "user")) {
             codingItemCandidates.push({ recordIndex, source: "response_item", item: codingItem });
@@ -407,7 +412,9 @@ function scanCodexRolloutTurn(
             || (role === "assistant" && payload.phase === "final_answer");
           if (authoritativeMessage && message) {
             const responseTurnId = responseItemTurnId(payload);
-            if (responseTurnId && responseTurnId !== activeTurnId) {
+            // Assistant metadata may retain a provider turn ID. The local rollout
+            // boundary determines its Turn; user message IDs must still match.
+            if (role === "user" && responseTurnId && responseTurnId !== activeTurnId) {
               turnMetadataMismatch = true;
               continue;
             }
@@ -575,6 +582,15 @@ function scanCodexRolloutTurn(
   };
 }
 
+function responseItemTurnId(payload: JsonRecord): string | undefined {
+  const metadata = isRecord(payload.internal_chat_message_metadata_passthrough)
+    ? payload.internal_chat_message_metadata_passthrough
+    : undefined;
+  return metadata
+    ? stringValue(metadata.turn_id) ?? stringValue(metadata.turnId)
+    : undefined;
+}
+
 type CodexCodingItemCandidate = Readonly<{
   recordIndex: number;
   source: "response_item" | "event_msg";
@@ -675,15 +691,6 @@ function codingItemFromResponseItem(payload: JsonRecord): ResponseItem | undefin
 
 function codingItemText(value: unknown): string {
   return typeof value === "string" ? value : codingEventText(value);
-}
-
-function responseItemTurnId(payload: JsonRecord): string | undefined {
-  const metadata = isRecord(payload.internal_chat_message_metadata_passthrough)
-    ? payload.internal_chat_message_metadata_passthrough
-    : undefined;
-  return metadata
-    ? stringValue(metadata.turn_id) ?? stringValue(metadata.turnId)
-    : undefined;
 }
 
 function responseItemMessageText(value: unknown, role: string | undefined): string | undefined {

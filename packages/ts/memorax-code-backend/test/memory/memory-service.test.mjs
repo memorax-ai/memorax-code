@@ -605,6 +605,7 @@ test("memory service records confirmed completion failures without changing Hook
     { name: "wrong native session", wrongSession: true, reason: "transcript_session_mismatch", stage: "correlation" },
     { name: "unreadable workspace", wrongWorkspace: true, reason: "workspace_scope_unavailable", stage: "scope" },
     { name: "incomplete assistant output", incomplete: true, reason: "assistant_message_missing", quiet: true },
+    { name: "exhausted native reads", incomplete: true, exhaust: true, reason: "assistant_message_missing", stage: "content-read" },
     { name: "disabled writeback", missing: true, disabled: true, reason: "transcript_unavailable", quiet: true },
     { name: "unavailable diagnostic directory", missing: true, blocked: true, reason: "transcript_unavailable" },
   ]) {
@@ -624,7 +625,12 @@ test("memory service records confirmed completion failures without changing Hook
         : await writeRollout(root, scenario.wrongSession ? "different-native-session" : sessionId,
           [{ turnId, prompt: "Private prompt marker.", reply: scenario.incomplete ? "" : "Private answer marker." }]);
       const requests = [];
+      const retryTimers = [];
       const service = createMemoryService({
+        scheduleWritebackRetry: (callback) => {
+          retryTimers.push(callback);
+          return () => { const i = retryTimers.indexOf(callback); if (i >= 0) retryTimers.splice(i, 1); };
+        },
         memoraxCodeHome,
         env: { MEMORAX_CODE_HOME: memoraxCodeHome, MEMORAX_CODE_DEBUG: "false",
           MEMORAX_CODE_CODEX_TRACE_ENABLED: "false", MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED: "false",
@@ -638,8 +644,23 @@ test("memory service records confirmed completion failures without changing Hook
       const command = { version: 1, client: "codex", sessionId, turnId, transcriptPath,
         cwd: scenario.wrongWorkspace ? join(root, "missing-workspace") : workspace };
       const result = await service.writebackTurn({ ...command, lastAssistantMessage: "Private answer marker." });
-      assert.deepEqual(result, { ok: true, scheduled: false, reason: scenario.reason });
+      assert.deepEqual(result, { ok: true, scheduled: false, reason: scenario.reason,
+        ...(scenario.incomplete ? { deferred: true } : {}) });
+      if (scenario.exhaust) {
+        const directory = join(memoraxCodeHome, "runtime", "diagnostics");
+        assert.deepEqual(await readdir(directory).catch(() => []), []);
+        for (let attempt = 0; attempt < 5; attempt++) {
+          assert.equal(retryTimers.length, 1);
+          retryTimers.shift()();
+          const deadline = Date.now() + 1000;
+          while (!retryTimers.length && !(await readdir(directory).catch(() => [])).length) {
+            assert.ok(Date.now() < deadline, "background read must settle");
+            await new Promise((resolve) => setTimeout(resolve, 5));
+          }
+        }
+      }
       await service.drain();
+      assert.equal(retryTimers.length, 0);
       assert.equal(requests.length, 0);
       if (scenario.blocked) {
         assert.equal(await readFile(join(memoraxCodeHome, "runtime", "diagnostics"), "utf8"), "occupied");
@@ -651,7 +672,7 @@ test("memory service records confirmed completion failures without changing Hook
       assert.equal(files.length, 1);
       const record = JSON.parse(await readFile(join(directory, files[0]), "utf8"));
       assert.equal(record.source, "automatic-writeback");
-      assert.equal(record.failureReason, scenario.reason);
+      assert.equal(record.failureReason, scenario.exhaust ? "native_content_timeout" : scenario.reason);
       assert.equal(record.stage, scenario.stage);
       assert.equal(record.client, "codex");
       assert.match(record.errorCode, /^WRITEBACK_/);

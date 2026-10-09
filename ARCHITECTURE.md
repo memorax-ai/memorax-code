@@ -1073,14 +1073,20 @@ contract coverage, not real-client E2E results.
 | CodeBuddy/WorkBuddy | Correlated native transcript JSONL | [CodeBuddy](packages/ts/memorax-code-backend/test/clients/codebuddy) | [CodeBuddy adapter](packages/ts/memorax-code-codebuddy-adapter/test) |
 | Trae | Validated Turn-ID and correlated `UserPromptSubmit`/`Stop` Hook pair | [Trae](packages/ts/memorax-code-backend/test/clients/trae) | [Trae adapter](packages/ts/memorax-code-trae-adapter/test) |
 
+Codex selects messages using the rollout Session header and local Turn lifecycle
+boundaries. Assistant passthrough metadata may retain a provider turn ID; it
+does not select or replace the local Turn, and a difference alone does not
+reject its final response. Conflicting user-message metadata and mismatched
+client, Session, or Turn identities in the local coordinator still fail closed.
+
 For Codex Helpful Search correlation, user response items inherit the active
 outer Turn established by `task_started` or `turn_context`. This path verifies
 the session and explicit native user-event identities independently of the
 writeback Turn-index reader. Internal passthrough `turn_id` / `turnId` values
-neither supply nor veto Helpful Search identity; optional `prompt_origin` remains
-descriptive provenance. Messages outside an active interval cannot supply the
-prompt. Automatic QA writeback, archive parsing, and their Turn-index validation
-retain their separate existing identity checks.
+neither supply nor veto Helpful Search, automatic writeback, or archive identity;
+optional `prompt_origin` remains descriptive provenance. Messages outside an
+active interval cannot supply the prompt. The outer event's session and turn
+identity is still validated, so an event-level conflict remains a rejection.
 
 ### 6.2 State classes and shutdown ownership
 
@@ -1125,6 +1131,11 @@ intake, waits for active requests, and then drains the memory service and
 observability within one deadline. It waits for already-started background
 work before closing the memory service. Lifecycle control requests shutdown
 rather than reaching into those resources and closing them ad hoc.
+Codex completion can schedule bounded, process-local rereads when the exact
+native final reply is not yet available. Conversation closure and pending rereads
+are independent; retries retain the original Turn authority. Memory-service drain
+cancels waiting rereads and settles active ones before draining automatic Add.
+Close prevents late reads from enqueueing. Pending rereads are not durable state.
 
 ### 6.3 Observability and local-only data flow
 

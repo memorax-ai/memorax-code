@@ -185,6 +185,10 @@ OpenCode SDK session-message Turn, or Trae's validated Hook pair. It does not
 send the retained trace file, raw transcript path, raw DSH interval, SDK
 message records, or trace-only provenance as part of that payload.
 
+Provider-supplied assistant metadata cannot override Codex
+[local Session and Turn identity](ARCHITECTURE.md#native-writeback-authority)
+when selecting content for automatic writeback.
+
 Automatic QA writeback also sends the selected native message/event timestamps
 or explicitly labelled local observation times. An aligned source-label array
 in Add metadata distinguishes them; it contains no transcript paths or trace

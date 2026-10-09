@@ -4,7 +4,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { invokeMemoraxMemoryProvider } from "../../../dist/provider/memorax/adapter.js";
+import { buildMemoraxSearchPayload, invokeMemoraxMemoryProvider } from "../../../dist/provider/memorax/adapter.js";
 import { memoraxConfigFromEnv } from "../../../dist/provider/memorax/config.js";
 import { CODING_SESSION_BATCH_MAX_BYTES } from "../../../dist/coding-sessions/contracts.js";
 import { listen } from "../../support/helpers.mjs";
@@ -22,6 +22,45 @@ function testRepositoryScope(baseUserId = "user-1", repositorySlug = "memorax-co
     boundWorkspaceRoot: "/test/repository",
   };
 }
+
+test("MemoraX adapter applies Search defaults and preserves explicit compatibility overrides", () => {
+  const resolved = memoraxConfigFromEnv({
+    MEMORAX_CODE_MEMORAX_API_KEY: "secret",
+    MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
+  });
+  assert.equal(resolved.ok, true);
+  const defaults = buildMemoraxSearchPayload(
+    resolved.config,
+    "default query",
+    {},
+    testRepositoryScope(),
+  );
+  assert.deepEqual(
+    {
+      mode: defaults.mode,
+      output_mode: defaults.output_mode,
+      score_formula: defaults.score_formula,
+      rough_filter: defaults.rough_filter,
+    },
+    {
+      mode: "scored",
+      output_mode: "summary",
+      score_formula: { id: "semantic_decay_plus_helpful", version: 2 },
+      rough_filter: { stale_days: 30, max_usage: 0 },
+    },
+  );
+  const fast = buildMemoraxSearchPayload(resolved.config, "fast", { mode: "fast" }, testRepositoryScope());
+  assert.equal(fast.mode, "fast");
+  assert.equal("score_formula" in fast, false);
+  const facts = buildMemoraxSearchPayload(resolved.config, "facts", { output_mode: "facts" }, testRepositoryScope());
+  assert.equal("score_formula" in facts, false);
+  const raw = buildMemoraxSearchPayload(resolved.config, "raw", { output_mode: "raw" }, testRepositoryScope());
+  assert.equal(raw.output_mode, "raw");
+  assert.equal("score_formula" in raw, false);
+  const optedOut = buildMemoraxSearchPayload(resolved.config, "opt out", { score_formula: null }, testRepositoryScope());
+  assert.equal(optedOut.mode, "fast");
+  assert.equal("score_formula" in optedOut, false);
+});
 
 test("MemoraX adapter uses the injected HTTP transport for retrieval", async () => {
   const requests = [];
@@ -75,6 +114,10 @@ test("MemoraX adapter uses the injected HTTP transport for retrieval", async () 
       top_k: 6,
       k_dense: 6,
       k_sparse: 6,
+      mode: "scored",
+      output_mode: "summary",
+      score_formula: { id: "semantic_decay_plus_helpful", version: 2 },
+      rough_filter: { stale_days: 30, max_usage: 0 },
     },
   }]);
   assert.match(result.result.tool_result_payload.answer, /Injected HTTP preserves repository-scoped retrieval/);
@@ -408,6 +451,10 @@ test("MemoraX adapter maps query to /v1/memories/search and separates items from
       top_k: 3,
       k_dense: 3,
       k_sparse: 3,
+      mode: "scored",
+      output_mode: "summary",
+      score_formula: { id: "semantic_decay_plus_helpful", version: 2 },
+      rough_filter: { stale_days: 30, max_usage: 0 },
       min_semantic_similarity: 0.5,
       filters: { and: [{ app_id: { eq: "memorax-code" } }] },
     });

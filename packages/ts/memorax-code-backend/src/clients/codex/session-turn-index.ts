@@ -38,6 +38,7 @@ export function codexSessionTurnIndexFromJsonLines(
   const seenTurnIds = new Set<string>();
   const turnContextIds = new Set<string>();
   const userMessageTurnIds = new Set<string>();
+  const pendingResponseItemUserTurnIds = new Set<string>();
   let activeTurnId: string | undefined;
 
   const observeTurn = (turnId: string | undefined, source: "turn_context" | "task_started"): void => {
@@ -68,19 +69,20 @@ export function codexSessionTurnIndexFromJsonLines(
     if (record.type === "turn_context") {
       const turnId = stringValue(payload.turn_id) ?? stringValue(payload.turnId);
       observeTurn(turnId, "turn_context");
+      if (turnId && pendingResponseItemUserTurnIds.has(turnId)) {
+        userMessageTurnIds.add(turnId);
+      }
       continue;
     }
     if (record.type === "response_item" && activeTurnId
       && payload.type === "message" && payload.role === "user") {
-      const metadata = isRecord(payload.internal_chat_message_metadata_passthrough)
-        ? payload.internal_chat_message_metadata_passthrough
-        : {};
-      const responseTurnId = stringValue(metadata.turn_id) ?? stringValue(metadata.turnId);
       const hasUserText = Array.isArray(payload.content) && payload.content.some((item: unknown) => (
         isRecord(item) && item.type === "input_text" && stringValue(item.text) !== undefined
       ));
-      if (hasUserText && (!responseTurnId || responseTurnId === activeTurnId)) {
+      if (hasUserText && turnContextIds.has(activeTurnId)) {
         userMessageTurnIds.add(activeTurnId);
+      } else if (hasUserText) {
+        pendingResponseItemUserTurnIds.add(activeTurnId);
       }
       continue;
     }
@@ -129,8 +131,9 @@ function isRecord(value: unknown): value is JsonRecord {
 export function codexHelpfulPromptFromJsonLines(
   transcript: string, input: { sessionId: string; turnId: string },
 ): { agent_role?: "main" | "subagent"; prompt_origin?: "end_user" | "system" } | undefined {
-  // Helpful verifies its own outer identity; the writeback index reader also
-  // checks internal passthrough IDs and is not this path's identity authority.
+  // Helpful uses enclosing native turn events as its identity authority. The
+  // writeback parser additionally rejects a conflicting user-message ID, while
+  // provider assistant IDs remain descriptive metadata.
   const sessionIds = new Set<string>();
   const roles = new Set<"main" | "subagent">();
   const origins = new Set<"end_user" | "system">();

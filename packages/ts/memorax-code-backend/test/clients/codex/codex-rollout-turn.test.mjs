@@ -9,7 +9,7 @@ import {
 } from "../../../dist/clients/codex/rollout-turn.js";
 import { codexSessionTurnIndexFromJsonLines } from "../../../dist/clients/codex/session-turn-index.js";
 
-test("Codex native completed item mirrors supply QA and one archive turn without resolving conflicting metadata", () => {
+test("Codex native completed item mirrors supply QA and reject conflicting outer identities", () => {
   const user = {type:"event_msg",payload:{type:"item_completed",thread_id:"session-1",turn_id:"turn-1",
     item:{id:"user-1",type:"UserMessage",content:[{type:"text",text:"Native prompt."}]}}};
   const records = [
@@ -25,9 +25,12 @@ test("Codex native completed item mirrors supply QA and one archive turn without
   assert.equal(turn.turn.userPrompt,"Native prompt.");
   assert.equal(turn.turn.assistantReply,"Native answer.");
   assert.equal(turn.turn.items.length,2);
-  const conflict=[...records.slice(0,-1),responseItemUserMessage("Conflict.","wrong-turn"),records.at(-1)];
-  for(const parser of [codexRolloutTurnFromJsonLines,codexCodingSessionTurnFromJsonLines]) {
-    assert.deepEqual(parser(jsonLines(conflict),input),{ok:false,reason:"turn_metadata_mismatch"});
+  for (const identity of [{ turn_id: "wrong-turn" }, { thread_id: "wrong-session" }]) {
+    const conflict = [...records.slice(0, -1),
+      { ...user, payload: { ...user.payload, ...identity } }, records.at(-1)];
+    for (const parser of [codexRolloutTurnFromJsonLines, codexCodingSessionTurnFromJsonLines]) {
+      assert.deepEqual(parser(jsonLines(conflict), input), { ok: false, reason: "turn_metadata_mismatch" });
+    }
   }
 });
 
@@ -102,6 +105,7 @@ test("Codex coding items preserve native fields and text blocks without duplicat
     sessionMeta("session-1"),
     taskStarted("turn-1"),
     turnContext("turn-1"),
+    turnContext("turn-1"),
     { type: "response_item", payload: user },
     userMessage("Inspect the parser."),
     responseMessage("assistant", "Reading the parser.", "commentary", "turn-1"),
@@ -164,6 +168,7 @@ test("Codex turn indexes stay aligned across response-item turns and interrupted
     turnAborted("background-task"),
     responseItemUserMessage("Outside a turn."),
     taskStarted("turn-2"),
+    turnContext("turn-2"),
     responseItemUserMessage("Second prompt.", "turn-2"),
     responseMessage("assistant", "Second reply.", "final_answer", "turn-2"),
     taskComplete("turn-2"),
@@ -265,38 +270,46 @@ test("Codex rollout reader prefers response_item messages over legacy event mess
   });
 });
 
-test("Codex rollout reader fails closed for conflicting response_item turn metadata", () => {
-  for (const conflictingRole of ["user", "assistant"]) {
-    const transcript = jsonLines([
-      sessionMeta("session-1"),
-      taskStarted("turn-1"),
-      turnContext("turn-1"),
-      responseItemUserMessage(
-        "Current-format prompt.",
-        conflictingRole === "user" ? "other-turn" : "turn-1",
-      ),
-      userMessage("Legacy prompt."),
-      responseMessage(
-        "assistant",
-        "Current-format final reply.",
-        "final_answer",
-        conflictingRole === "assistant" ? "other-turn" : "turn-1",
-      ),
-      agentMessage("Legacy final reply.", "final_answer"),
-      taskComplete("turn-1", "Legacy final reply."),
-    ]);
+test("Codex rollout readers use outer turns despite provider assistant metadata IDs", () => {
+  const transcript = jsonLines([
+    sessionMeta("session-1"),
+    taskStarted("turn-1"),
+    turnContext("turn-1"),
+    responseItemUserMessage("Current-format prompt.", "turn-1"),
+    responseMessage("assistant", "Current-format final reply.", "final_answer", "other-turn"),
+    agentMessage("Legacy final reply.", "final_answer"),
+    taskComplete("turn-1", "Legacy final reply."),
+  ]);
 
-    assert.deepEqual(codexRolloutTurnFromJsonLines(transcript, {
-      sessionId: "session-1",
-      turnId: "turn-1",
-    }), { ok: false, reason: "turn_metadata_mismatch" });
-    assert.deepEqual(codexCodingSessionTurnFromJsonLines(transcript, {
-      sessionId: "session-1",
-      turnId: "turn-1",
+  for (const parser of [codexRolloutTurnFromJsonLines, codexCodingSessionTurnFromJsonLines]) {
+    const result = parser(transcript, { sessionId: "session-1", turnId: "turn-1" });
+    assert.equal(result.ok, true);
+    assert.equal(result.turn.turnId, "turn-1");
+    assert.equal(result.turn.userPrompt, "Current-format prompt.");
+    assert.equal(result.turn.assistantReply, "Current-format final reply.");
+    if ("items" in result.turn) {
+      assert.equal(result.turn.sessionTurnIndex, 1);
+      assert.equal(result.turn.items.length, 2);
+    }
+  }
+  assert.deepEqual(codexSessionTurnIndexFromJsonLines(transcript, {
+    sessionId: "session-1", turnId: "turn-1",
+  }), { ok: true, sessionTurnIndex: 1 });
+
+  for (const key of ["turn_id", "turnId"]) {
+    const user = responseItemUserMessage("Current-format prompt.", "turn-1");
+    user.payload.internal_chat_message_metadata_passthrough = { [key]: "other-turn" };
+    const conflicting = jsonLines([
+      sessionMeta("session-1"), taskStarted("turn-1"), turnContext("turn-1"), user,
+      responseMessage("assistant", "Current-format final reply.", "final_answer", "provider-turn"),
+      taskComplete("turn-1", "Current-format final reply."),
+    ]);
+    assert.deepEqual(codexRolloutTurnFromJsonLines(conflicting, {
+      sessionId: "session-1", turnId: "turn-1",
     }), { ok: false, reason: "turn_metadata_mismatch" });
   }
 
-  assert.deepEqual(codexInterruptedRolloutTurnFromJsonLines(jsonLines([
+  const interrupted = codexInterruptedRolloutTurnFromJsonLines(jsonLines([
     sessionMeta("session-1"),
     taskStarted("turn-1"),
     turnContext("turn-1"),
@@ -307,7 +320,41 @@ test("Codex rollout reader fails closed for conflicting response_item turn metad
   ]), {
     sessionId: "session-1",
     turnId: "turn-1",
-  }), { ok: false, reason: "turn_metadata_mismatch" });
+  });
+  assert.deepEqual(interrupted, { ok: false, reason: "turn_metadata_mismatch" });
+});
+
+test("Codex passthrough IDs cannot claim another outer turn or messages outside a turn", () => {
+  const transcript = jsonLines([
+    sessionMeta("session-1"),
+    responseItemUserMessage("Before any turn.", "turn-1"),
+    taskStarted("turn-1"),
+    turnContext("turn-1"),
+    responseItemUserMessage("First prompt.", "turn-2"),
+    responseMessage("assistant", "First answer.", "final_answer", "turn-2"),
+    taskComplete("turn-1", "First answer."),
+    responseItemUserMessage("After completion.", "turn-1"),
+    taskStarted("turn-2"),
+    turnContext("turn-2"),
+    responseItemUserMessage("Second prompt.", "turn-1"),
+    responseMessage("assistant", "Second answer.", "final_answer", "turn-1"),
+    taskComplete("turn-2", "Second answer."),
+  ]);
+  for (const [turnId, index, prompt, reply] of [
+    ["turn-1", 1, "First prompt.", "First answer."],
+    ["turn-2", 2, "Second prompt.", "Second answer."],
+  ]) {
+    const input = { sessionId: "session-1", turnId };
+    const result = codexCodingSessionTurnFromJsonLines(transcript, input);
+    assert.deepEqual(result, { ok: false, reason: "turn_metadata_mismatch" });
+    assert.deepEqual(codexSessionTurnIndexFromJsonLines(transcript, input),
+      { ok: true, sessionTurnIndex: index });
+  }
+  assert.deepEqual(codexRolloutTurnFromJsonLines(jsonLines([
+    sessionMeta("session-1"),
+    responseItemUserMessage("Unowned prompt.", "turn-1"),
+    responseMessage("assistant", "Unowned answer.", "final_answer", "turn-1"),
+  ]), { sessionId: "session-1", turnId: "turn-1" }), { ok: false, reason: "turn_not_found" });
 });
 
 test("Codex rollout reader aggregates cumulative token snapshots for the complete turn", () => {

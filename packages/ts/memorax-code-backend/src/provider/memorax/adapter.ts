@@ -1,5 +1,10 @@
 import {
   MEMORAX_DEFAULT_MEMORY_OUTPUT_LANGUAGE,
+  MEMORAX_DEFAULT_ROUGH_FILTER_ENABLED,
+  MEMORAX_DEFAULT_ROUGH_FILTER_MAX_USAGE,
+  MEMORAX_DEFAULT_ROUGH_FILTER_STALE_DAYS,
+  MEMORAX_DEFAULT_SCORE_FORMULA_ID,
+  MEMORAX_DEFAULT_SCORE_FORMULA_VERSION,
   MEMORAX_PROVIDER_ID,
   clampInteger,
   memoraxAddOptionsFromContext,
@@ -102,7 +107,7 @@ type MemoraxSearchPayload = {
   k_dense: number;
   k_sparse: number;
   mode?: "fast" | "slow" | "scored";
-  output_mode?: "facts" | "summary";
+  output_mode?: "facts" | "summary" | "raw";
   score_formula?: {
     id: string;
     version: number;
@@ -261,12 +266,18 @@ export function buildMemoraxSearchPayload(
   const topK = clampInteger(limit ?? config.topK, 1, 100);
   const kDense = typeof context.k_dense === "number" ? clampInteger(context.k_dense, 0, 100) : config.kDense ?? topK;
   const kSparse = typeof context.k_sparse === "number" ? clampInteger(context.k_sparse, 0, 100) : config.kSparse ?? topK;
+  const modeExplicit = Object.prototype.hasOwnProperty.call(context, "mode");
   const mode = context.mode === "fast" || context.mode === "slow" || context.mode === "scored"
     ? context.mode
-    : undefined;
-  const outputMode = context.output_mode === "facts" || context.output_mode === "summary"
+    : modeExplicit ? undefined : "scored";
+  const outputModeExplicit = Object.prototype.hasOwnProperty.call(context, "output_mode");
+  const outputMode = context.output_mode === "facts"
+    || context.output_mode === "summary"
+    || context.output_mode === "raw"
     ? context.output_mode
-    : undefined;
+    : outputModeExplicit ? undefined : "summary";
+  const scoreFormulaExplicit = Object.prototype.hasOwnProperty.call(context, "score_formula");
+  const scoreFormulaDisabled = scoreFormulaExplicit && context.score_formula === null;
   const parsedScoreFormula = isRecord(context.score_formula)
     && typeof context.score_formula.id === "string"
     && context.score_formula.id.trim().length > 0
@@ -274,17 +285,27 @@ export function buildMemoraxSearchPayload(
     && Number.isSafeInteger(context.score_formula.version)
     && context.score_formula.version > 0
     ? { id: context.score_formula.id.trim(), version: context.score_formula.version }
-    : undefined;
+    : !scoreFormulaExplicit
+      ? {
+        id: config.scoreFormulaId ?? MEMORAX_DEFAULT_SCORE_FORMULA_ID,
+        version: config.scoreFormulaVersion ?? MEMORAX_DEFAULT_SCORE_FORMULA_VERSION,
+      }
+      : undefined;
   const summaryOutputRequired = parsedScoreFormula !== undefined
     && SEARCH_EXPERIMENT_FORMULA_IDS.includes(
       parsedScoreFormula.id as (typeof SEARCH_EXPERIMENT_FORMULA_IDS)[number],
     );
-  const scoreFormula = mode === "scored" && (!summaryOutputRequired || outputMode === "summary")
+  const scoreFormula = !scoreFormulaDisabled
+    && mode === "scored"
+    && (!summaryOutputRequired || outputMode === "summary")
     ? parsedScoreFormula
     : undefined;
-  const effectiveMode = mode === "scored" && scoreFormula === undefined
-    ? undefined
-    : mode;
+  const effectiveMode = scoreFormulaDisabled && (mode === "scored" || !modeExplicit)
+    ? "fast"
+    : mode === "scored" && scoreFormula === undefined
+      ? undefined
+      : mode;
+  const roughFilterExplicit = Object.prototype.hasOwnProperty.call(context, "rough_filter");
   const roughFilter = isRecord(context.rough_filter)
     && typeof context.rough_filter.stale_days === "number"
     && Number.isSafeInteger(context.rough_filter.stale_days)
@@ -298,7 +319,12 @@ export function buildMemoraxSearchPayload(
       stale_days: context.rough_filter.stale_days,
       max_usage: context.rough_filter.max_usage,
     }
-    : undefined;
+    : !roughFilterExplicit && (config.roughFilterEnabled ?? MEMORAX_DEFAULT_ROUGH_FILTER_ENABLED)
+      ? {
+        stale_days: config.roughFilterStaleDays ?? MEMORAX_DEFAULT_ROUGH_FILTER_STALE_DAYS,
+        max_usage: config.roughFilterMaxUsage ?? MEMORAX_DEFAULT_ROUGH_FILTER_MAX_USAGE,
+      }
+      : undefined;
   return {
     query,
     user_id: repositoryScope.effectiveUserId,

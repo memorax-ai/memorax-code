@@ -69,13 +69,24 @@ type CodexMemoryHookWritebackSkipReason =
   | "turn_id_missing"
   | "turn_metadata_mismatch"
   | "config_missing"
+  | "native_retry_capacity"
   | CodexRolloutTurnFailureReason
   | RepositoryMemoryScopeFailureReason
   | AutomaticMemoryWritebackRejectionReason;
 
 export type CodexMemoryHookWritebackResult =
   | { ok: true; scheduled: true }
-  | { ok: true; scheduled: false; reason: CodexMemoryHookWritebackSkipReason };
+  | { ok: true; scheduled: false; reason: CodexMemoryHookWritebackSkipReason; deferred?: true };
+
+type WritebackAttempt = CodexMemoryHookWritebackResult & { retryable?: true };
+type PendingWriteback = {
+  command: CodexWritebackCommand;
+  result: Promise<CodexMemoryHookWritebackResult>;
+  read?: () => Promise<WritebackAttempt>;
+  cancelTimer?: () => void;
+  running?: Promise<void>;
+  attempts: number;
+};
 
 type CodexMemoryHookWritebackRequest = Omit<CodexWritebackCommand, "version" | "client"> & {
   traceContext?: TraceContext;
@@ -83,16 +94,21 @@ type CodexMemoryHookWritebackRequest = Omit<CodexWritebackCommand, "version" | "
 
 export type CodexMemoryHookRuntimeOptions = HarnessMemoryRuntimeOptions & {
   captureCodingTurns?: boolean;
+  scheduleWritebackRetry?: (callback: () => void, delayMs: number) => () => void;
+  onDeferredWritebackFailure?: (command: CodexWritebackCommand, reason: string) => void;
 };
 
 export type CodexMemoryHookRuntime = {
   recordTurnStart(command: CodexTurnStartCommand): Promise<MemoryHookTurnStartResult>;
   writeback(command: CodexWritebackCommand): Promise<CodexMemoryHookWritebackResult>;
   size(): number;
+  drain(): Promise<void>;
   close(): void;
 };
 
 const CODEX_MEMORY_TURN_CLIENT = "codex" as const;
+const WRITEBACK_RETRY_DELAYS_MS = [100, 250, 500, 1_000, 2_000];
+const MAX_PENDING_WRITEBACKS = 256;
 
 export function createCodexMemoryHookRuntime(options: CodexMemoryHookRuntimeOptions = {}): CodexMemoryHookRuntime {
   const now = options.now ?? (() => Date.now());
@@ -106,6 +122,46 @@ export function createCodexMemoryHookRuntime(options: CodexMemoryHookRuntimeOpti
     deduplicateRetrieval: true,
   }, { readCodingSessionTurn: readCodexArchiveSource, ...options });
   const { turnCoordinator } = memory;
+  const pending = new Map<string, PendingWriteback>();
+  let accepting = true;
+  let closed = false;
+  const stopped = (): CodexMemoryHookWritebackResult => ({ ok: true, scheduled: false, reason: "runtime_closed" });
+  const schedule = options.scheduleWritebackRetry ?? ((callback, delayMs) => {
+    const timer = setTimeout(callback, delayMs);
+    timer.unref?.();
+    return () => clearTimeout(timer);
+  });
+
+  function finish(key: string, task: PendingWriteback, result: CodexMemoryHookWritebackResult, reason?: string) {
+    pending.delete(key);
+    options.diagnosticLogger?.("memory_hook.writeback_retry", {
+      scheduled: result.scheduled, attempts: task.attempts,
+      ...(!result.scheduled ? { reason: reason ?? result.reason } : {}),
+    });
+    if (!result.scheduled) options.onDeferredWritebackFailure?.(task.command, reason ?? result.reason);
+  }
+
+  function retryLater(key: string, task: PendingWriteback): CodexMemoryHookWritebackResult {
+    if (!accepting) {
+      finish(key, task, stopped());
+      return stopped();
+    }
+    task.cancelTimer = schedule(() => {
+      task.cancelTimer = undefined;
+      task.attempts++;
+      task.running = (async () => {
+        try {
+          const { retryable, ...result } = await task.read!();
+          if (closed) return;
+          if (retryable && task.attempts < WRITEBACK_RETRY_DELAYS_MS.length) retryLater(key, task);
+          else finish(key, task, result, retryable ? "native_content_timeout" : undefined);
+        } catch {
+          if (!closed) finish(key, task, { ok: true, scheduled: false, reason: "decision_error" });
+        }
+      })();
+    }, WRITEBACK_RETRY_DELAYS_MS[task.attempts]!);
+    return { ok: true, scheduled: false, reason: "assistant_message_missing", deferred: true };
+  }
 
   return {
     async recordTurnStart(command) {
@@ -143,50 +199,106 @@ export function createCodexMemoryHookRuntime(options: CodexMemoryHookRuntimeOpti
         },
       });
     },
-    async writeback(command) {
-      turnCoordinator.pruneExpired();
-      const request = writebackRequestFromCommand(command);
-      if (!request.sessionId) return { ok: true, scheduled: false, reason: "missing_session_id" };
-      if (!request.lastAssistantMessage) return { ok: true, scheduled: false, reason: "assistant_message_missing" };
-      const coordinatorKey = request.turnId
-        ? codexTurnKey(request.sessionId, request.turnId)
-        : undefined;
-      const entry = coordinatorKey ? turnCoordinator.getTurn(coordinatorKey) : undefined;
-      const recoveredTraceContext = !entry
-        ? await recoverExactCurrentTurnTraceContext(request, options)
-        : undefined;
-      const transcriptPath = request.transcriptPath
-        ?? entry?.transcriptPath
-        ?? recoveredTraceContext?.transcriptPath;
-      if (!transcriptPath) {
-        options.diagnosticLogger?.("memory_hook.writeback", {
-          scheduled: false,
-          reason: "non_materialized_session",
-          sessionId: request.sessionId,
-          turnId: request.turnId,
-        });
-        return { ok: true, scheduled: false, reason: "non_materialized_session" };
+    writeback(command) {
+      if (!accepting) return Promise.resolve(stopped());
+      if (!command.sessionId || !command.turnId || !command.lastAssistantMessage) {
+        return prepareWriteback(command);
       }
-      const traceContext = traceContextForWriteback(request, entry, recoveredTraceContext);
-      if (!request.turnId) {
-        await recordTurnEnd(options, traceContext, request.lastAssistantMessage);
-        options.diagnosticLogger?.("memory_hook.writeback", {
-          scheduled: false,
-          reason: "turn_id_missing",
-          sessionId: request.sessionId,
-        });
-        return { ok: true, scheduled: false, reason: "turn_id_missing" };
+      const key = JSON.stringify([CODEX_MEMORY_TURN_CLIENT, command.sessionId, command.turnId]);
+      const existing = pending.get(key);
+      if (existing) {
+        // A duplicate must not replace the pinned request's authority.
+        if (["transcriptPath", "cwd", "workspaceKind"].some((field) => {
+          const name = field as "transcriptPath" | "cwd" | "workspaceKind";
+          return command[name] !== undefined && command[name] !== existing.command[name];
+        })) return Promise.resolve({ ok: true, scheduled: false, reason: "turn_metadata_mismatch" });
+        return existing.result;
       }
-      const sessionTurnIndex = entry?.sessionTurnIndex ?? await resolveSessionTurnIndex({
+      if (pending.size >= MAX_PENDING_WRITEBACKS) {
+        return Promise.resolve({ ok: true, scheduled: false, reason: "native_retry_capacity" });
+      }
+      const task: PendingWriteback = { command: { ...command }, result: Promise.resolve(stopped()), attempts: 0 };
+      pending.set(key, task);
+      task.result = prepareWriteback(task.command, task).then(({ retryable, ...result }) => {
+        if (retryable && !closed) return retryLater(key, task);
+        pending.delete(key);
+        return result;
+      }, (error) => { pending.delete(key); throw error; });
+      return task.result;
+    },
+    size() {
+      return memory.size();
+    },
+    async drain() {
+      accepting = false;
+      const tasks = [...pending.values()];
+      for (const [key, task] of pending) {
+        if (task.cancelTimer) {
+          task.cancelTimer();
+          task.cancelTimer = undefined;
+          finish(key, task, stopped());
+        }
+      }
+      await Promise.allSettled(tasks.flatMap((task) => [task.result, ...(task.running ? [task.running] : [])]));
+    },
+    close() {
+      accepting = false;
+      closed = true;
+      for (const task of pending.values()) task.cancelTimer?.();
+      pending.clear();
+      memory.close();
+    },
+  };
+
+  async function prepareWriteback(command: CodexWritebackCommand, task?: PendingWriteback): Promise<WritebackAttempt> {
+    turnCoordinator.pruneExpired();
+    const request = writebackRequestFromCommand(command);
+    if (!request.sessionId) return { ok: true, scheduled: false, reason: "missing_session_id" };
+    if (!request.lastAssistantMessage) return { ok: true, scheduled: false, reason: "assistant_message_missing" };
+    const coordinatorKey = request.turnId
+      ? codexTurnKey(request.sessionId, request.turnId)
+      : undefined;
+    const entry = coordinatorKey ? turnCoordinator.getTurn(coordinatorKey) : undefined;
+    const recoveredTraceContext = !entry
+      ? await recoverExactCurrentTurnTraceContext(request, options)
+      : undefined;
+    const transcriptPath = request.transcriptPath
+      ?? entry?.transcriptPath
+      ?? recoveredTraceContext?.transcriptPath;
+    if (!transcriptPath) {
+      options.diagnosticLogger?.("memory_hook.writeback", {
+        scheduled: false,
+        reason: "non_materialized_session",
         sessionId: request.sessionId,
         turnId: request.turnId,
-        transcriptPath,
-      }, options.diagnosticLogger);
-      const rolloutInput = {
-        transcriptPath,
+      });
+      return { ok: true, scheduled: false, reason: "non_materialized_session" };
+    }
+    const traceContext = traceContextForWriteback(request, entry, recoveredTraceContext);
+    if (!request.turnId) {
+      await recordTurnEnd(options, traceContext, request.lastAssistantMessage);
+      options.diagnosticLogger?.("memory_hook.writeback", {
+        scheduled: false,
+        reason: "turn_id_missing",
         sessionId: request.sessionId,
-        turnId: request.turnId,
-      };
+      });
+      return { ok: true, scheduled: false, reason: "turn_id_missing" };
+    }
+    const sessionTurnIndex = entry?.sessionTurnIndex ?? await resolveSessionTurnIndex({
+      sessionId: request.sessionId,
+      turnId: request.turnId,
+      transcriptPath,
+    }, options.diagnosticLogger);
+    const rolloutInput = {
+      transcriptPath,
+      sessionId: request.sessionId,
+      turnId: request.turnId,
+    };
+    if (task) task.read = readAndComplete;
+    return readAndComplete();
+
+    async function readAndComplete(): Promise<WritebackAttempt> {
+      if (closed) return stopped();
       let codingSessionTurn: CodexCodingSessionTurn | undefined;
       let rollout: CodexRolloutTurnResult;
       if (options.captureCodingTurns) {
@@ -194,6 +306,24 @@ export function createCodexMemoryHookRuntime(options: CodexMemoryHookRuntimeOpti
         if (source.ok) {
           codingSessionTurn = source.turn;
           rollout = source;
+        } else if (source.reason === "assistant_message_missing") {
+          // Keep the coding-session authority together with the QA authority.
+          // The transcript can gain its final record between this read and the
+          // QA fallback below; accepting that fallback would write QA while
+          // silently dropping the coding_context attachment.
+          options.diagnosticLogger?.("memory_hook.writeback", {
+            scheduled: false,
+            reason: source.reason,
+            sessionId: request.sessionId,
+            turnId: request.turnId,
+            error: source.error,
+          });
+          return {
+            ok: true,
+            scheduled: false,
+            reason: source.reason,
+            retryable: true,
+          };
         } else {
           // Source collection validates tool identities beyond the QA contract.
           // Keep rejected source data out while letting the existing QA reader
@@ -203,6 +333,7 @@ export function createCodexMemoryHookRuntime(options: CodexMemoryHookRuntimeOpti
       } else {
         rollout = await readCodexRolloutTurn(rolloutInput);
       }
+      if (closed) return stopped();
       await recordTurnEnd(
         options,
         traceContext,
@@ -220,19 +351,18 @@ export function createCodexMemoryHookRuntime(options: CodexMemoryHookRuntimeOpti
           turnId: request.turnId,
           error: rollout.error,
         });
-        return { ok: true, scheduled: false, reason: rollout.reason };
+        return { ok: true, scheduled: false, reason: rollout.reason,
+          ...(rollout.reason === "assistant_message_missing" ? { retryable: true as const } : {}) };
       }
+      const repositoryMemory = await resolveCurrentHookRepositoryMemory(
+        entry, request, options, memory, recoveredTraceContext,
+      );
+      if (closed) return stopped();
       const writeback = await memory.completeTurn({
         sessionId: request.sessionId,
-        clientTurnId: request.turnId,
+        clientTurnId: rolloutInput.turnId,
         metadata: entry,
-        resolveRepositoryMemory: () => resolveCurrentHookRepositoryMemory(
-          entry,
-          request,
-          options,
-          memory,
-          recoveredTraceContext,
-        ),
+        resolveRepositoryMemory: async () => repositoryMemory,
         userText: rollout.turn.userPrompt,
         assistantText: rollout.turn.assistantReply,
         userTimestamp: rollout.turn.userTimestamp,
@@ -273,14 +403,8 @@ export function createCodexMemoryHookRuntime(options: CodexMemoryHookRuntimeOpti
         contentSource: "codex_rollout",
       });
       return { ok: true, scheduled: true };
-    },
-    size() {
-      return memory.size();
-    },
-    close() {
-      memory.close();
-    },
-  };
+    }
+  }
 }
 
 async function resolveSessionTurnIndex(input: {

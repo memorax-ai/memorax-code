@@ -35,7 +35,7 @@ import type {
 
 export type MemoryServiceOptions = Omit<
   CodexMemoryHookRuntimeOptions,
-  "automaticWriteback" | "captureCodingTurns" | "pendingQuotaNotice" | "repositoryMemorySession" | "turnCoordinator"
+  "automaticWriteback" | "captureCodingTurns" | "pendingQuotaNotice" | "repositoryMemorySession" | "turnCoordinator" | "onDeferredWritebackFailure"
 > & Pick<ClaudeMemoryHookRuntimeOptions, "transcriptReadAttempts" | "transcriptRetryDelayMs">;
 
 type MemoryHookWritebackResult =
@@ -83,6 +83,9 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
   });
   const codexHook = createCodexMemoryHookRuntime({
     ...options,
+    onDeferredWritebackFailure: (command, reason) => recordWritebackRejection(reason, {
+      memoraxCodeHome, env, client: "codex", sessionId: command.sessionId, turnId: command.turnId,
+    }),
     captureCodingTurns,
     pendingQuotaNotice,
     repositoryMemorySession,
@@ -130,7 +133,7 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
   });
   async function observeWriteback(command: WritebackCommand, pending: Promise<MemoryHookWritebackResult>): Promise<MemoryHookWritebackResult> {
     const result = await pending;
-    if (!result.scheduled) {
+    if (!result.scheduled && !("deferred" in result && result.deferred)) {
       recordWritebackRejection(result.reason, {
         memoraxCodeHome: options.memoraxCodeHome,
         env: options.env,
@@ -185,6 +188,7 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
       return unsupportedMemoryHookCommand(command);
     },
     async drain() {
+      await codexHook.drain();
       await automaticWriteback.drain();
     },
     close() {

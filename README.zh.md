@@ -226,7 +226,10 @@ MemoraX Code 会先比较含义：语义相同的请求不重复写入；长期�
 
 ## 你的记忆，由你控制
 
-云端记忆依赖 MemoraX。完成安装引导后，会启用 MemoraX 搜索/添加，以及生成配置中的自动写回；
+云端记忆依赖 MemoraX。Search 未指定兼容覆盖时，客户端默认发送
+`scored + summary`、`semantic_decay_plus_helpful@2`，并启用 30 天、usage 0 的粗筛。
+显式 `mode=fast/slow`、非 summary 输出或 `score_formula=null` 可关闭默认公式。
+完成安装引导后，会启用 MemoraX 搜索/添加，以及生成配置中的自动写回；
 不会再出现第二次写回确认。自动召回默认保持关闭，需要显式启用。
 
 新生成的配置还会启用 Codex、Claude Code、OpenCode、CodeBuddy 和 WorkBuddy 的编码会话采集。
@@ -245,10 +248,14 @@ OpenCode 将准备好的 SDK items 保留在内存中。这条链路为尽力交
 服务端为全部归档轮建立索引，只读取源 Search 的 N～N+K 向后窗口（K 默认 2）；
 来源轮或窗口索引未齐时等待到任务 TTL，不消费模型尝试，也不产生负反馈。
 轨迹采集仍需单独开启。升级时先迁移服务端数据库及更新服务端，再更新客户端，并新开会话验证。
-Codex Helpful Search 使用外层原生轮次事件关联提问，内部透传 metadata 的 `turn_id` 不作为其身份依据。
+Codex Helpful Search 只使用外层原生轮次事件建立身份，不让透传 ID 建立关联。
+自动写回和归档也使用相同的外层边界；助手消息的 provider ID 即使不同也可以接受，
+但用户消息 metadata 或外层事件的 session／轮次冲突仍会拒绝。
 详见[原生身份规则](ARCHITECTURE.md#native-writeback-authority)。
 自动写回和归档保留各自现有的校验，不受此规则调整影响。
-Codex 轮次元数据冲突、大日志／读取失败、截断证据和归档丢失仍可能漏评。
+若 Codex 结束时原生日志中的最终回复尚不可读，Backend 会先返回 Hook，再在当前进程中最多延迟重读五次。
+待补采任务不跨重启恢复；本地接受不代表 OSS 已归档。详见[写回诊断](docs/troubleshooting.md#hook-ran-but-automatic-writeback-is-missing)。
+外层轮次身份冲突、大日志／读取失败、截断证据和归档丢失仍可能漏评。
 客户端展示截断与服务端使用完整候选正文之间的归因风险仍保留，不能保证漏评比例很小。
 
 受支持客户端的本地 trace 默认开启。根据客户端能力，`MEMORAX_CODE_HOME` 下保留的 trace

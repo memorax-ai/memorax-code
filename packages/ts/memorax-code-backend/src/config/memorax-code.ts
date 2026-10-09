@@ -37,6 +37,11 @@ export type MemoraxCodeConfig = Readonly<{
       k_dense?: number;
       k_sparse?: number;
       min_score?: number;
+      rough_filter_enabled?: boolean;
+      rough_filter_stale_days?: number;
+      rough_filter_max_usage?: number;
+      score_formula_id?: string;
+      score_formula_version?: number;
       max_context_chars?: number;
       max_item_chars?: number;
       render_by_memory_type?: boolean;
@@ -176,6 +181,11 @@ export function renderDefaultMemoraxCodeConfig(): string {
     "# Automatic Hook retrieval is opt-in.",
     "[memory.retrieval]",
     "enabled = false # Auto-inject retrieved memories into supported client prompts.",
+    "rough_filter_enabled = true # Exclude stale or overused memories before ranking.",
+    "rough_filter_stale_days = 30",
+    "rough_filter_max_usage = 0",
+    'score_formula_id = "semantic_decay_plus_helpful"',
+    "score_formula_version = 2",
     "",
     "# Automatic writeback sends selected prompts and final answers to MemoraX.",
     "[memory.writeback]",
@@ -338,6 +348,11 @@ function normalizeMemoraxCodeConfig(value: unknown): MemoraxCodeConfig {
         k_dense: numberField(retrieval, "k_dense"),
         k_sparse: numberField(retrieval, "k_sparse"),
         min_score: numberField(retrieval, "min_score"),
+        rough_filter_enabled: booleanField(retrieval, "rough_filter_enabled"),
+        rough_filter_stale_days: numberField(retrieval, "rough_filter_stale_days"),
+        rough_filter_max_usage: numberField(retrieval, "rough_filter_max_usage"),
+        score_formula_id: stringField(retrieval, "score_formula_id"),
+        score_formula_version: numberField(retrieval, "score_formula_version"),
         max_context_chars: numberField(retrieval, "max_context_chars"),
         max_item_chars: numberField(retrieval, "max_item_chars"),
         render_by_memory_type: booleanField(retrieval, "render_by_memory_type"),

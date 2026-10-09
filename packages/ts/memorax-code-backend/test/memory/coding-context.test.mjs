@@ -146,13 +146,14 @@ test('Codex response without origin can register, and explicit system origin is 
     assert.equal(context.prompt_origin,origin);
   }
 });
-test('Codex Helpful accepts outer-only identity without changing writeback or archive validation', async t => {
+test('Codex Helpful uses outer identity while writeback rejects conflicting user metadata', async t => {
   const { codexSessionTurnIndexFromJsonLines } = await import('../../dist/clients/codex/session-turn-index.js');
   const { codexRolloutTurnFromJsonLines, codexCodingSessionTurnFromJsonLines } =
     await import('../../dist/clients/codex/rollout-turn.js');
   for (const key of ['turn_id', 'turnId']) {
     const trace = await fixture(t, 'codex', xs => [
       ...xs.slice(0, 2),
+      { type: 'turn_context', payload: { turn_id: 'turn-7' } },
       { type: 'response_item', payload: { type: 'message', role: 'user',
         content: [{ type: 'input_text', text: 'Run tests.' }],
         internal_chat_message_metadata_passthrough: { [key]: 'internal-user-turn' } } },
@@ -166,9 +167,10 @@ test('Codex Helpful accepts outer-only identity without changing writeback or ar
     const transcript = await readFile(trace.transcriptPath, 'utf8');
     const input = { sessionId: trace.sessionId, turnId: trace.turnId };
     assert.deepEqual(codexSessionTurnIndexFromJsonLines(transcript, input),
-      { ok: false, reason: 'turn_not_found' });
+      { ok: true, sessionTurnIndex: 1 });
     for (const parser of [codexRolloutTurnFromJsonLines, codexCodingSessionTurnFromJsonLines]) {
-      assert.deepEqual(parser(transcript, input), { ok: false, reason: 'turn_metadata_mismatch' });
+      const result = parser(transcript, input);
+      assert.deepEqual(result, { ok: false, reason: 'turn_metadata_mismatch' });
     }
   }
 });

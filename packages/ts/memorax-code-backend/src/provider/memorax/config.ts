@@ -20,6 +20,11 @@ export const MEMORAX_DEFAULT_MEMORY_TYPE_ORDER = ["core", "episodic", "semantic"
 export const MEMORAX_DEFAULT_STARTUP_TIMEOUT_MS = 3000;
 export const MEMORAX_MIN_STARTUP_TIMEOUT_MS = 100;
 export const MEMORAX_MAX_STARTUP_TIMEOUT_MS = 10_000;
+export const MEMORAX_DEFAULT_ROUGH_FILTER_ENABLED = true;
+export const MEMORAX_DEFAULT_ROUGH_FILTER_STALE_DAYS = 30;
+export const MEMORAX_DEFAULT_ROUGH_FILTER_MAX_USAGE = 0;
+export const MEMORAX_DEFAULT_SCORE_FORMULA_ID = "semantic_decay_plus_helpful";
+export const MEMORAX_DEFAULT_SCORE_FORMULA_VERSION = 2;
 
 export const MEMORY_WRITEBACK_BUFFER_DEFAULT_MAX_TURNS = 8;
 export const MEMORY_WRITEBACK_BUFFER_DEFAULT_MAX_AGE_MS = 10 * 60 * 1000;
@@ -41,6 +46,11 @@ export type MemoraxAdapterConfig = Readonly<{
   kSparse: number;
   timeoutMs: number;
   minScore?: number;
+  roughFilterEnabled: boolean;
+  roughFilterStaleDays: number;
+  roughFilterMaxUsage: number;
+  scoreFormulaId: string;
+  scoreFormulaVersion: number;
   maxContextChars: number;
   maxItemChars: number;
   memoryTypeOrder: readonly string[];
@@ -77,6 +87,11 @@ export type MemoraxConfigStatus = Readonly<{
     timeoutMs: number;
     startupTimeoutMs: number;
     minScore?: number;
+    roughFilterEnabled: boolean;
+    roughFilterStaleDays: number;
+    roughFilterMaxUsage: number;
+    scoreFormulaId: string;
+    scoreFormulaVersion: number;
     maxContextChars: number;
     maxItemChars: number;
     memoryTypeOrder: readonly string[];
@@ -143,6 +158,11 @@ function memoraxSearchConfig(
   | "timeoutMs"
   | "maxContextChars"
   | "maxItemChars"
+  | "roughFilterEnabled"
+  | "roughFilterStaleDays"
+  | "roughFilterMaxUsage"
+  | "scoreFormulaId"
+  | "scoreFormulaVersion"
   | "memoryTypeOrder"
   | "renderByMemoryType"
 > {
@@ -154,6 +174,31 @@ function memoraxSearchConfig(
     timeoutMs: clampInteger(env.MEMORAX_CODE_MEMORAX_TIMEOUT_MS ?? config.memorax?.timeout_ms, 1000, 120_000, config.memorax?.timeout_ms ?? 5000),
     maxContextChars: clampInteger(env.MEMORAX_CODE_MEMORAX_MAX_CONTEXT_CHARS ?? config.memory?.retrieval?.max_context_chars, 256, 200_000, config.memory?.retrieval?.max_context_chars ?? 4000),
     maxItemChars: clampInteger(env.MEMORAX_CODE_MEMORAX_MAX_ITEM_CHARS ?? config.memory?.retrieval?.max_item_chars, 64, 50_000, config.memory?.retrieval?.max_item_chars ?? 1000),
+    roughFilterEnabled: parseBoolean(
+      env.MEMORAX_CODE_MEMORAX_ROUGH_FILTER_ENABLED,
+      config.memory?.retrieval?.rough_filter_enabled ?? MEMORAX_DEFAULT_ROUGH_FILTER_ENABLED,
+    ) ?? MEMORAX_DEFAULT_ROUGH_FILTER_ENABLED,
+    roughFilterStaleDays: clampInteger(
+      env.MEMORAX_CODE_MEMORAX_ROUGH_FILTER_STALE_DAYS ?? config.memory?.retrieval?.rough_filter_stale_days,
+      1,
+      36_500,
+      config.memory?.retrieval?.rough_filter_stale_days ?? MEMORAX_DEFAULT_ROUGH_FILTER_STALE_DAYS,
+    ),
+    roughFilterMaxUsage: clampInteger(
+      env.MEMORAX_CODE_MEMORAX_ROUGH_FILTER_MAX_USAGE ?? config.memory?.retrieval?.rough_filter_max_usage,
+      0,
+      2_147_483_647,
+      config.memory?.retrieval?.rough_filter_max_usage ?? MEMORAX_DEFAULT_ROUGH_FILTER_MAX_USAGE,
+    ),
+    scoreFormulaId: stringValue(
+      env.MEMORAX_CODE_MEMORAX_SCORE_FORMULA_ID ?? config.memory?.retrieval?.score_formula_id,
+    ) ?? MEMORAX_DEFAULT_SCORE_FORMULA_ID,
+    scoreFormulaVersion: clampInteger(
+      env.MEMORAX_CODE_MEMORAX_SCORE_FORMULA_VERSION ?? config.memory?.retrieval?.score_formula_version,
+      1,
+      2_147_483_647,
+      config.memory?.retrieval?.score_formula_version ?? MEMORAX_DEFAULT_SCORE_FORMULA_VERSION,
+    ),
     memoryTypeOrder: parseStringList(env.MEMORAX_CODE_MEMORAX_MEMORY_TYPE_ORDER ?? config.memory?.retrieval?.memory_type_order, config.memory?.retrieval?.memory_type_order ?? [...MEMORAX_DEFAULT_MEMORY_TYPE_ORDER]),
     renderByMemoryType: parseBoolean(env.MEMORAX_CODE_MEMORAX_RENDER_BY_MEMORY_TYPE, config.memory?.retrieval?.render_by_memory_type ?? true),
   };
@@ -329,6 +374,11 @@ export function memoryConfigStatus(
       ...(searchConfig.minScore === undefined ? {} : { minScore: searchConfig.minScore }),
       maxContextChars: searchConfig.maxContextChars,
       maxItemChars: searchConfig.maxItemChars,
+      roughFilterEnabled: searchConfig.roughFilterEnabled,
+      roughFilterStaleDays: searchConfig.roughFilterStaleDays,
+      roughFilterMaxUsage: searchConfig.roughFilterMaxUsage,
+      scoreFormulaId: searchConfig.scoreFormulaId,
+      scoreFormulaVersion: searchConfig.scoreFormulaVersion,
       memoryTypeOrder: searchConfig.memoryTypeOrder,
       renderByMemoryType: searchConfig.renderByMemoryType,
     },

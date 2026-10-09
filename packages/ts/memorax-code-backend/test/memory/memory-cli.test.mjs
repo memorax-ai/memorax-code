@@ -784,6 +784,13 @@ test("memory CLI search reads query file and calls MemoraX search", async () => 
     assert.equal(requests[0].body.top_k, 6);
     assert.equal(requests[0].body.k_dense, 6);
     assert.equal(requests[0].body.k_sparse, 6);
+    assert.equal(requests[0].body.mode, "scored");
+    assert.equal(requests[0].body.output_mode, "summary");
+    assert.deepEqual(requests[0].body.score_formula, {
+      id: "semantic_decay_plus_helpful",
+      version: 2,
+    });
+    assert.deepEqual(requests[0].body.rough_filter, { stale_days: 30, max_usage: 0 });
     assert.match(result.answer, /short direct answers/);
     assert.deepEqual(observedQuota, {
       featureCode: "memory_search",

@@ -497,6 +497,11 @@ the `[memory.retrieval]` TOML table.
 | `k_dense` | `MEMORAX_CODE_MEMORAX_K_DENSE` | effective `top_k` |
 | `k_sparse` | `MEMORAX_CODE_MEMORAX_K_SPARSE` | effective `top_k`; `0` disables sparse |
 | `min_score` | `MEMORAX_CODE_MEMORAX_MIN_SCORE` | unset; range `0..1` |
+| `rough_filter_enabled` | `MEMORAX_CODE_MEMORAX_ROUGH_FILTER_ENABLED` | `true` |
+| `rough_filter_stale_days` | `MEMORAX_CODE_MEMORAX_ROUGH_FILTER_STALE_DAYS` | `30` |
+| `rough_filter_max_usage` | `MEMORAX_CODE_MEMORAX_ROUGH_FILTER_MAX_USAGE` | `0` |
+| `score_formula_id` | `MEMORAX_CODE_MEMORAX_SCORE_FORMULA_ID` | `semantic_decay_plus_helpful` |
+| `score_formula_version` | `MEMORAX_CODE_MEMORAX_SCORE_FORMULA_VERSION` | `2` |
 | `max_context_chars` | `MEMORAX_CODE_MEMORAX_MAX_CONTEXT_CHARS` | `4000` |
 | `max_item_chars` | `MEMORAX_CODE_MEMORAX_MAX_ITEM_CHARS` | `1000` |
 | `render_by_memory_type` | `MEMORAX_CODE_MEMORAX_RENDER_BY_MEMORY_TYPE` | `true` |
@@ -506,6 +511,14 @@ The TOML form of `memory_type_order` is an array of strings; the environment
 form is comma-separated. `enabled` controls automatic prompt retrieval only.
 Explicit `memorax-cli search` remains available when
 credentials and a trusted workspace scope resolve.
+
+When a Search caller does not provide an override, the client sends
+`mode="scored"`, `output_mode="summary"`, the
+`semantic_decay_plus_helpful@2` formula reference, and the default rough-filter
+thresholds. Explicit `mode="fast"`/`"slow"`, a non-summary output mode, or
+`score_formula=null` preserves the compatibility path and disables the default
+formula. The server still fills the formula's internal parameters from its
+registry.
 
 ## Writeback and explicit add
 
@@ -870,7 +883,9 @@ gate independently identified sessions. Identity failures do not block Search.
 
 Codex accepts native user events, response messages and exact session/turn-bound
 `item_completed.UserMessage` records, including absent prompt-origin metadata.
-Conflicting native turn metadata is still rejected, not reconciled by mirrors.
+Conflicting outer native session/turn events are still rejected. Internal
+response-item passthrough turn IDs are descriptive metadata and are not
+reconciled against the enclosing outer Turn.
 Claude accepts independent sidechain and system-origin prompts, but excludes
 embedded parent-session sidechains, tool results, notifications and summaries.
 CodeBuddy/WorkBuddy resolve the Hook boundary/digest reference to the native user

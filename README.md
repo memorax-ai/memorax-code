@@ -198,8 +198,10 @@ together. Supported formula IDs are
 `semantic_decay_plus_helpful`, `joint_decay_semantic_helpful`,
 `geometric_semantic_decay_helpful`, `linear_semantic_decay_helpful`, and
 `semantic_gate_decay_plus_helpful`. Invalid IDs, versions, or filter ranges are
-rejected locally before an HTTP request is sent. Automatic Hook retrieval keeps
-its existing default payload unless these experiment flags are explicitly used.
+rejected locally before an HTTP request is sent. Without experiment flags, both
+the CLI and automatic Hook retrieval send the default `scored`/`summary`
+request with `semantic_decay_plus_helpful@2` and the `30`-day/`0` rough-filter
+thresholds. Explicit compatibility fields still take precedence.
 
 `rough_filter` is always transmitted for experiment traceability, but the
 server deployment remains authoritative for whether it takes effect. The
@@ -325,11 +327,18 @@ window, N through N+K (K defaults to 2). Missing source/window indexes wait unti
 the task TTL without consuming model attempts or producing negative feedback.
 Archive collection still requires separate opt-in. Upgrade the server schema and
 server before the client; start new sessions for validation after upgrading.
-Codex Helpful Search uses outer native Turn events to associate the prompt;
-internal passthrough `turn_id` values do not determine its identity. See the
+Codex Helpful Search uses outer native Turn events and does not let passthrough
+IDs establish its identity. Automatic writeback and archive parsing use the
+same outer boundary, accept a differing provider assistant ID, but reject
+conflicting user-message metadata or outer event-level session/Turn identities.
+See the
 [native authority rules](ARCHITECTURE.md#native-writeback-authority).
 Automatic writeback and archive validation remain separate and unchanged.
-Conflicting Codex turn metadata, oversized/unreadable transcripts, truncated evidence
+If Codex's native final reply is not yet readable at completion, the Backend
+returns the Hook promptly and performs up to five delayed reads in the same
+process. Pending reads do not survive a restart; local acceptance does not prove
+OSS archival. See [writeback diagnosis](docs/troubleshooting.md#hook-ran-but-automatic-writeback-is-missing).
+Oversized/unreadable transcripts, outer-event identity conflicts, truncated evidence
 and archive loss may still prevent evaluation. Client display truncation versus full
 server candidate content remains an attribution risk; no small miss rate is guaranteed.
 
