@@ -112,9 +112,9 @@ export function summarizeBackgroundJobs(validatedJobs, processPresent) {
   return { jobCount: jobs.length, jobs };
 }
 
-export async function readBackgroundStartDiagnostic({ stateHome, client, sessionId }) {
+export async function readBackgroundStartDiagnostic({ stateHome, client, sessionId, repository }) {
   const summary = { trace: "unavailable", pending: "unavailable", turnStarts: null, skillReminders: null,
-    pendingMatchesPrompt: null, jobsDirectory: "unavailable" };
+    pendingMatchesPrompt: null, pendingWorkspaceMatches: null, pendingProjectless: null, jobsDirectory: "unavailable" };
   let root;
   try { root = await realpath(stateHome); } catch { return summary; }
   const contained = (path) => {
@@ -156,6 +156,32 @@ export async function readBackgroundStartDiagnostic({ stateHome, client, session
       && typeof event.trace.turn_id === "string" && event.trace.turn_id.startsWith(`${sessionId}:`)
       && event.trace.turn_id.endsWith(`:${promptHash}`)).length;
   }
-  if (pending.status === "available") summary.pendingMatchesPrompt = hook.pendingMatchesPrompt;
+  if (pending.status === "available") {
+    summary.pendingMatchesPrompt = hook.pendingMatchesPrompt;
+    const current = pending.value[sessionId];
+    if (hook.pendingMatchesPrompt) {
+      if (typeof repository === "string") summary.pendingWorkspaceMatches = current?.cwd === repository;
+      summary.pendingProjectless = current?.workspaceKind === "projectless";
+    }
+  }
   return summary;
+}
+
+export function summarizeBackgroundHookFailures(history, { client, sessionId }) {
+  if (history?.ok !== true || !Array.isArray(history.records) || history.records.length > 1000
+    || !["codebuddy", "workbuddy"].includes(client) || typeof sessionId !== "string" || !sessionId) return { available: false };
+  const sessionHash = createHash("sha256").update(sessionId).digest("hex").slice(0, 24);
+  const matches = history.records.filter((entry) => entry?.source === "client-hook"
+    && entry.client === client && entry.sessionHash === sessionHash
+    && ["hook.runtime", "hook.ensure-backend", "memory.turn-start"].includes(entry.operation));
+  const codes = ["HOOK_RUNTIME_FAILED", "HOOK_BACKEND_CONNECTION_INVALID", "HOOK_BACKEND_START_TIMEOUT",
+    "HOOK_BACKEND_START_SPAWN_FAILED", "HOOK_BACKEND_START_INTERRUPTED", "HOOK_BACKEND_START_FAILED",
+    "HOOK_BACKEND_RECOVERY_FAILED", "HOOK_BACKEND_REQUEST_TIMEOUT", "HOOK_BACKEND_REQUEST_FAILED", "HOOK_BACKEND_HTTP_REJECTED"];
+  const systemCodes = ["ENOENT", "ENOEXEC", "EACCES", "EPERM", "ENOSPC", "EROFS", "ENOTDIR", "EISDIR", "EMFILE",
+    "ENAMETOOLONG", "ECONNREFUSED", "ECONNRESET", "ENOTFOUND", "EAI_AGAIN", "ETIMEDOUT", "ERR_MODULE_NOT_FOUND", "MODULE_NOT_FOUND"];
+  return { available: true, incomplete: history.skipped !== 0 || history.records.length === 1000 || matches.length > 10,
+    failures: matches.slice(0, 10).map((entry) => ({ operation: entry.operation,
+      errorCode: codes.includes(entry.errorCode) ? entry.errorCode : "other",
+      systemCode: systemCodes.includes(entry.systemCode) ? entry.systemCode : null,
+      httpStatus: Number.isInteger(entry.httpStatus) && entry.httpStatus >= 100 && entry.httpStatus <= 599 ? entry.httpStatus : null })) };
 }

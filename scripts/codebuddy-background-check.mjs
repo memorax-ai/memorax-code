@@ -8,9 +8,10 @@ import { check, createNativeHarness, fixtureModel, waitFor } from "./codebuddy-n
 import { selectNativeTurnContent } from "./codebuddy-native-content-check.mjs";
 import { assertNativeHookCorrelation } from "./codebuddy-native-memory-support.mjs";
 import { CodeBuddyControlSession } from "./codebuddy-permissions-support.mjs";
+import { backgroundGitPath, probeBackgroundGit } from "./codebuddy-background-git.mjs";
 import { assertBackgroundJob, assertBackgroundModelRequests, assertBackgroundNoopResult, assertForegroundResult,
   assertGlobalConfiguration, backgroundInputText, backgroundProcessesExited, modelEnvironmentOverrides,
-  summarizeBackgroundJobs, readBackgroundStartDiagnostic, workerPromptMarker, foregroundPromptForClient, foregroundAnswer, backgroundAnswer,
+  summarizeBackgroundJobs, readBackgroundStartDiagnostic, summarizeBackgroundHookFailures, workerPromptMarker, foregroundPromptForClient, foregroundAnswer, backgroundAnswer,
 } from "./codebuddy-background-assertions.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -64,7 +65,7 @@ try {
     if (await stat(candidate).then((info) => info.isFile(), () => false)) { gitCommand = candidate; break; }
   }
   check(gitCommand, "BACKGROUND_FIXTURE_REQUIRES_GIT");
-  harness.env.PATH += `${delimiter}${dirname(gitCommand)}`;
+  harness.env.PATH = backgroundGitPath(harness.env.PATH, gitCommand);
   const git = (args) => execFileAsync(gitCommand, ["-c", "core.multiPackIndex=false", ...args],
     { cwd: repository, env: harness.env, timeout: 10_000, windowsHide: true });
   await git(["init", "--quiet"]);
@@ -162,9 +163,18 @@ try {
     report.backgroundJobs = { available: true, ...summarizeBackgroundJobs(await jobs(), processPresent) };
   } catch { report.backgroundJobs = { available: false }; }
   try {
-    report.backgroundStart = await readBackgroundStartDiagnostic({ stateHome: harness?.stateHome, client,
+    report.backgroundStart = await readBackgroundStartDiagnostic({ stateHome: harness?.stateHome, client, repository,
       sessionId: control?.events.find((event) => event.type === "system" && event.subtype === "init")?.session_id });
   } catch { report.backgroundStart = { available: false }; }
+  if (stage === "background worker result" && report.backgroundStart?.jobsDirectory === "missing") {
+    try {
+      const history = JSON.parse((await harness.runProduct(["logs", "--diagnostics", "--limit", "1000", "--json"], { timeout: 5000 })).stdout);
+      report.backgroundHookFailures = summarizeBackgroundHookFailures(history, { client,
+        sessionId: control.events.find((event) => event.type === "system" && event.subtype === "init")?.session_id });
+    } catch { report.backgroundHookFailures = { available: false }; }
+    try { report.gitAfterFailure = await probeBackgroundGit({ repository, snapshotHead, env: harness.env }); }
+    catch { report.gitAfterFailure = { available: false }; }
+  }
 } finally {
   try { await harness?.close(); report.cleanup = "PASS"; }
   catch (error) { report.cleanup = error.nativeCode ?? "BACKGROUND_CLEANUP_FAILED"; }

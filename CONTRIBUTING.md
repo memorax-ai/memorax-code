@@ -871,6 +871,13 @@ Memory generation, per-turn model override inheritance, worker permission
 inheritance, or independent background native session identity; the product
 worker disables session persistence.
 
+CodeBuddy and WorkBuddy share the selected fixture Git on the worker's PATH,
+without displacing the isolated Node or native-client commands. If no job is
+created, failure reports include matching Hook failure codes, pending workspace
+checks, and read-only Git ref/HEAD probes marked `after_failure`. These probes
+describe the later environment, not the original scheduler's decision; they
+do not retry scheduling or replace the original failure.
+
 The shared categories align with the other client suites, but their native
 protocols and bounded assertions are not identical. WorkBuddy, Desktop/editor
 UI, ordinary-user/UAC behavior, real credential stores, live model quality, and

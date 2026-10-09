@@ -7,7 +7,7 @@ import test from "node:test";
 import { fixtureModel } from "./codebuddy-native-support.mjs";
 import { assertBackgroundJob, assertBackgroundModelRequests, assertBackgroundNoopResult, assertForegroundResult,
   assertGlobalConfiguration, backgroundInputText, backgroundProcessesExited, modelEnvironmentOverrides,
-  summarizeBackgroundJobs, readBackgroundStartDiagnostic, workerPromptMarker, foregroundPrompt, foregroundPromptForClient, foregroundAnswer, backgroundAnswer,
+  summarizeBackgroundJobs, readBackgroundStartDiagnostic, summarizeBackgroundHookFailures, workerPromptMarker, foregroundPrompt, foregroundPromptForClient, foregroundAnswer, backgroundAnswer,
 } from "./codebuddy-background-assertions.mjs";
 
 const context = { jobPath: resolve("fixture/jobs/job-fixture/job.json"), repository: resolve("fixture/repo"),
@@ -297,15 +297,20 @@ test("background start diagnostics match the client, session and prompt without 
     const pendingPath = join(stateHome, "adapters", client, "pending.json");
     const raw = records.map((record) => JSON.stringify(record)).join("\n") + "\n";
     await put(tracePath, raw);
-    await put(pendingPath, JSON.stringify({ [sessionId]: { turnId: trace.turn_id, transcriptPath: secret } }));
-    const input = { stateHome, client, sessionId };
+    await put(pendingPath, JSON.stringify({ [sessionId]: { turnId: trace.turn_id, transcriptPath: secret, cwd: secret } }));
+    const input = { stateHome, client, sessionId, repository: secret };
     const summary = await readBackgroundStartDiagnostic(input);
     assert.deepEqual(summary, { trace: "available", pending: "available", turnStarts: 1, skillReminders: 1,
-      pendingMatchesPrompt: true, jobsDirectory: "present" });
+      pendingMatchesPrompt: true, pendingWorkspaceMatches: true, pendingProjectless: false, jobsDirectory: "present" });
     for (const value of [secret, sessionId, stateHome, hash]) assert.equal(JSON.stringify(summary).includes(value), false);
     assert.equal(await readFile(tracePath, "utf8"), raw);
+    await put(pendingPath, JSON.stringify({ [sessionId]: { turnId: trace.turn_id, cwd: "other", workspaceKind: "projectless" } }));
+    const changed = await readBackgroundStartDiagnostic(input);
+    assert.equal(changed.pendingWorkspaceMatches, false);
+    assert.equal(changed.pendingProjectless, true);
     await put(pendingPath, JSON.stringify({ "foreign-session": { turnId: trace.turn_id } }));
     assert.equal((await readBackgroundStartDiagnostic(input)).pendingMatchesPrompt, false);
+    assert.equal((await readBackgroundStartDiagnostic(input)).pendingWorkspaceMatches, null);
   }
 });
 
@@ -313,7 +318,7 @@ test("background start diagnostics distinguish missing evidence from unavailable
   const { stateHome, sessionId, put } = await startDiagnosticFixture(t);
   const input = { stateHome, client: "codebuddy", sessionId };
   assert.deepEqual(await readBackgroundStartDiagnostic(input), { trace: "missing", pending: "missing",
-    turnStarts: null, skillReminders: null, pendingMatchesPrompt: null, jobsDirectory: "missing" });
+    turnStarts: null, skillReminders: null, pendingMatchesPrompt: null, pendingWorkspaceMatches: null, pendingProjectless: null, jobsDirectory: "missing" });
   const invalid = await readBackgroundStartDiagnostic({ ...input, sessionId: "../PRIVATE_SESSION" });
   assert.equal(invalid.trace, "unavailable");
   assert.equal(invalid.pending, "unavailable");
@@ -323,7 +328,7 @@ test("background start diagnostics distinguish missing evidence from unavailable
   for (const text of ["null\n", "PRIVATE_OVERSIZED_TRACE".repeat(60000)]) {
     await put(tracePath, text);
     assert.deepEqual(await readBackgroundStartDiagnostic(input), { trace: "unavailable", pending: "unavailable",
-      turnStarts: null, skillReminders: null, pendingMatchesPrompt: null, jobsDirectory: "unavailable" });
+      turnStarts: null, skillReminders: null, pendingMatchesPrompt: null, pendingWorkspaceMatches: null, pendingProjectless: null, jobsDirectory: "unavailable" });
   }
 });
 
@@ -332,7 +337,32 @@ test("background start diagnostics do not treat an unreadable state root as abse
   await rm(stateHome, { recursive: true });
   assert.deepEqual(await readBackgroundStartDiagnostic({ stateHome, client: "codebuddy", sessionId }), {
     trace: "unavailable", pending: "unavailable", turnStarts: null, skillReminders: null,
-    pendingMatchesPrompt: null, jobsDirectory: "unavailable" });
+    pendingMatchesPrompt: null, pendingWorkspaceMatches: null, pendingProjectless: null, jobsDirectory: "unavailable" });
+});
+
+test("background Hook failures correlate the client and session and expose only fixed diagnostic fields", () => {
+  const secret = "PRIVATE_SESSION_PATH_TOKEN_MESSAGE_CANARY", client = "workbuddy";
+  const sessionHash = createHash("sha256").update(secret).digest("hex").slice(0, 24);
+  const failure = { source: "client-hook", client, sessionHash, operation: "memory.turn-start",
+    errorCode: "HOOK_BACKEND_HTTP_REJECTED", systemCode: "ECONNRESET", httpStatus: 503, error: secret };
+  const records = [failure, { ...failure, client: "codebuddy" }, { ...failure, sessionHash: "other" },
+    { ...failure, operation: "memory.writeback" }, { ...failure, source: "other" },
+    { ...failure, errorCode: secret, systemCode: secret, httpStatus: secret }];
+  const history = { ok: true, skipped: 0, records }, original = structuredClone(history);
+  const summary = summarizeBackgroundHookFailures(history, { client, sessionId: secret });
+  assert.deepEqual(summary, { available: true, incomplete: false, failures: [
+    { operation: "memory.turn-start", errorCode: "HOOK_BACKEND_HTTP_REJECTED", systemCode: "ECONNRESET", httpStatus: 503 },
+    { operation: "memory.turn-start", errorCode: "other", systemCode: null, httpStatus: null },
+  ] });
+  for (const value of [secret, sessionHash]) assert.equal(JSON.stringify(summary).includes(value), false);
+  assert.deepEqual(history, original);
+  assert.equal(summarizeBackgroundHookFailures({ ...history, skipped: 1 }, { client, sessionId: secret }).incomplete, true);
+  const bounded = summarizeBackgroundHookFailures({ ...history, records: Array(11).fill(failure) }, { client, sessionId: secret });
+  assert.equal(bounded.incomplete, true);
+  assert.equal(bounded.failures.length, 10);
+  for (const invalid of [undefined, { ok: false }, { ok: true, records: Array(1001).fill(failure) }]) {
+    assert.deepEqual(summarizeBackgroundHookFailures(invalid, { client, sessionId: secret }), { available: false });
+  }
 });
 
 async function startDiagnosticFixture(t) {
