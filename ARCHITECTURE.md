@@ -937,6 +937,9 @@ selects a background build, update, or no-op according to policy. DSH
 maintenance runs through an enabled, managed headless-capable Profile. For
 OpenCode, both on-demand maintenance and first-eligible-prompt initialization
 run through a short-lived subagent session.
+The OpenCode plugin checks the resolved model's native variants during that
+agent's `chat.message` hook and selects `medium` when available. Missing variants
+or unavailable model metadata preserve native selection and defaults.
 The detached worker reuses the active OpenCode server when it is reachable.
 When no server URL is available or initial session creation fails at the
 transport layer, a worker with a configured OpenCode command can start an

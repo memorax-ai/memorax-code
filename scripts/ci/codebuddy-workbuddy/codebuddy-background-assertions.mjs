@@ -56,7 +56,7 @@ export function assertBackgroundJob(job, { jobPath, repository, snapshotHead, co
     && ["preparing", "started", "running", "failed", "succeeded"].includes(job.status), "BACKGROUND_JOB_AUTHORITY_MISMATCH");
   check(typeof job.prompt === "string" && job.prompt.startsWith(workerPromptMarker)
     && JSON.stringify(job.command) === JSON.stringify([codebuddyCommand, "--plugin-dir", pluginRoot,
-      "--print", "--output-format", "text", "--dangerously-skip-permissions", "--no-session-persistence", job.prompt]),
+      "--print", "--output-format", "text", "--dangerously-skip-permissions", "--no-session-persistence", "--effort", "medium", job.prompt]),
   "BACKGROUND_JOB_COMMAND_MISMATCH");
   check(job.finalMessageSource === "stdout" && job.finalMessagePath === join(dirname(jobPath), "final-message.txt")
     && job.outputLogPath === join(dirname(jobPath), "output.log"), "BACKGROUND_JOB_OUTPUT_AUTHORITY_MISMATCH");
