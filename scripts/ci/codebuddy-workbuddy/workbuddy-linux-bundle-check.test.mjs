@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -68,7 +69,7 @@ for (const args of [[], ["x64"]]) {
       assert.deepEqual(await curlArgs(), ["--disable", "--fail", "--silent", "--show-error", "--location",
         "--proto", "=https", "--proto-redir", "=https", "--connect-timeout", "30", "--max-time", "600",
         "--retry", "2", "--retry-max-time", "900",
-        "--write-out", "%{http_code}\\n%header{content-length}\\n%header{content-range}\\n",
+        "--write-out", "%{http_code}\\n%header{content-length}\\n%header{content-range}\\n%{url_effective}\\n%{num_redirects}\\n%header{etag}\\n%header{last-modified}\\n%header{content-encoding}\\n",
         "--output", join(destination, "WorkBuddy.deb.partial"),
         "https://download.codebuddy.cn/workbuddy/saas/linux-x64-deb/WorkBuddy-linux-x64-deb-5.5.6.38337834-5f969292.deb"]);
       assert.deepEqual(await dpkgArgs(), fields.flatMap((field) => ["--field", join(destination, "WorkBuddy.deb.partial"), field])
@@ -216,6 +217,67 @@ test("WorkBuddy Linux download failure omits malformed and oversized response me
   }
 });
 
+test("WorkBuddy Linux opt-in retains completed downloads without weakening the hash gate", posixOnly, async () => {
+  const effectiveUrl = "https://download.codebuddy.cn/private-path-canary?signature=private-query-canary";
+  const digest = (value) => createHash("sha256").update(value).digest("hex");
+  for (const hash of [sha256, "0".repeat(64)]) {
+    await fixture(async ({ run, calls, destination, diagnosticDir }) => {
+      const result = await run([destination]);
+      assert.equal(result.code, hash === sha256 ? 0 : 1);
+      assert.equal(result.stderr, hash === sha256 ? "" : "WORKBUDDY_BUNDLE_HASH_MISMATCH\n" + diagnosticLine({ actualSha256: hash }));
+      assert.deepEqual(await readdir(diagnosticDir), ["WorkBuddy.deb", "download.json"]);
+      assert.equal(await readFile(join(diagnosticDir, "WorkBuddy.deb"), "utf8"), "Synthetic deb.\n");
+      const metadata = await readFile(join(diagnosticDir, "download.json"), "utf8");
+      assert.deepEqual(JSON.parse(metadata), {
+        expectedSha256: sha256, actualSha256: hash, bytes: 15, curlExit: 0,
+        httpStatus: 200, contentLength: 15, contentRange: null, packageRetained: true,
+        requestedUrl: "https://download.codebuddy.cn/workbuddy/saas/linux-x64-deb/WorkBuddy-linux-x64-deb-5.5.6.38337834-5f969292.deb",
+        effectiveOrigin: "https://download.codebuddy.cn", pathMatchedRequested: false,
+        pathSha256: digest("/private-path-canary"), effectiveUrlSha256: digest(effectiveUrl), redirectCount: 1,
+        etag: '"0123456789abcdef0123456789abcdef-2"', lastModified: "Wed, 01 Jul 2026 12:00:00 GMT", contentEncoding: "gzip",
+      });
+      assert.doesNotMatch(metadata + result.stdout + result.stderr, /private-(?:path|query|credential)-canary/);
+      assert.deepEqual(await calls(), hash === sha256
+        ? ["curl", "sha256sum", ...fields.map((field) => `field:${field}`), "extract"] : ["curl", "sha256sum"]);
+      assert.deepEqual(await readdir(destination), hash === sha256 ? ["WorkBuddy.deb", "extracted"] : []);
+    }, { capture: true, hash, effectiveUrl, redirectCount: "1", etag: '"0123456789abcdef0123456789abcdef-2"',
+      lastModified: "Wed, 01 Jul 2026 12:00:00 GMT", contentEncoding: "gzip", curlError: "private-credential-canary" });
+  }
+});
+
+test("WorkBuddy Linux opt-in keeps only sanitized metadata after an incomplete download", posixOnly, async () => {
+  await fixture(async ({ run, destination, diagnosticDir }) => {
+    const result = await run([destination]);
+    assert.equal(result.code, 1);
+    assert.equal(result.stderr, "WORKBUDDY_BUNDLE_DOWNLOAD_FAILED\n" + diagnosticLine({ curlExit: 22 }));
+    assert.deepEqual(await readdir(diagnosticDir), ["download.json"]);
+    const text = await readFile(join(diagnosticDir, "download.json"), "utf8");
+    const metadata = JSON.parse(text);
+    assert.equal(metadata.packageRetained, false);
+    for (const field of ["effectiveOrigin", "pathMatchedRequested", "pathSha256", "effectiveUrlSha256", "redirectCount", "etag", "lastModified", "contentEncoding"]) {
+      assert.equal(metadata[field], null, field);
+    }
+    assert.doesNotMatch(text + result.stdout + result.stderr, /private-canary/);
+    assert.deepEqual(await readdir(destination), []);
+  }, { capture: true, curlExit: "22", effectiveUrl: "https://private-canary@example.invalid/private-canary",
+    redirectCount: "private-canary", etag: "private-canary", lastModified: "private-canary", contentEncoding: "private-canary" });
+});
+
+test("WorkBuddy Linux diagnostic capture failure preserves the original acquisition result", posixOnly, async () => {
+  for (const hash of [sha256, "0".repeat(64)]) {
+    await fixture(async ({ run, destination, diagnosticDir }) => {
+      await mkdir(diagnosticDir);
+      await writeFile(join(diagnosticDir, "sentinel"), "Existing diagnostic.\n");
+      const result = await run([destination]);
+      assert.equal(result.code, hash === sha256 ? 0 : 1);
+      assert.equal(result.stderr, (hash === sha256 ? "" : "WORKBUDDY_BUNDLE_HASH_MISMATCH\n" + diagnosticLine({ actualSha256: hash }))
+        + "WORKBUDDY_BUNDLE_DIAGNOSTIC_CAPTURE_FAILED\n");
+      assert.deepEqual(await readdir(diagnosticDir), ["sentinel"]);
+      assert.equal(await readFile(join(diagnosticDir, "sentinel"), "utf8"), "Existing diagnostic.\n");
+    }, { capture: true, hash });
+  }
+});
+
 test("WorkBuddy Linux acquisition reports extraction failure without publishing a command", posixOnly, async () => {
   await fixture(async ({ run, calls, destination }) => {
     const result = await run([destination]);
@@ -262,11 +324,13 @@ for (const mutation of ["runtime version", "runtime package", "runtime bin", "mi
 
 async function fixture(callback, { os = "Linux", machine = "x86_64", hash = sha256, curlExit = "0", hashExit = "0",
   httpStatus = "200", contentLength = "15", contentRange = "", curlError = "",
+  capture = false, effectiveUrl = "", redirectCount = "0", etag = "", lastModified = "", contentEncoding = "",
   packageName = "workbuddy", packageVersion = "5.5.6", packageArch = "amd64", fieldExit = "0", extractExit = "0" } = {}) {
   const root = await realpath(await mkdtemp(join(tmpdir(), "workbuddy-linux-bundle-check-")));
   const bin = join(root, "bin"), destination = join(root, "download"), packageRoot = join(root, "package");
   const callLog = join(root, "calls"), curlLog = join(root, "curl-args"), dpkgLog = join(root, "dpkg-args");
   const releasePath = join(root, "release.json");
+  const diagnosticDir = join(root, "diagnostic");
   try {
     await Promise.all([bin, destination, join(root, "home"), join(root, "tmp"), join(packageRoot, cliRelative, "bin")]
       .map((path) => mkdir(path, { recursive: true })));
@@ -286,7 +350,7 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 printf 'Synthetic deb.\\n' > "$output"
-printf '%s\\n%s\\n%s\\n' "$FAKE_HTTP_STATUS" "$FAKE_CONTENT_LENGTH" "$FAKE_CONTENT_RANGE"
+printf '%s\\n' "$FAKE_HTTP_STATUS" "$FAKE_CONTENT_LENGTH" "$FAKE_CONTENT_RANGE" "$FAKE_EFFECTIVE_URL" "$FAKE_REDIRECT_COUNT" "$FAKE_ETAG" "$FAKE_LAST_MODIFIED" "$FAKE_CONTENT_ENCODING"
 printf '%s\\n' "$FAKE_CURL_ERROR" >&2
 exit "$FAKE_CURL_EXIT"`,
       sha256sum: `printf 'sha256sum\\n' >> "$FAKE_CALLS"
@@ -322,6 +386,9 @@ fi`,
       MEMORAX_CODE_HOME: join(root, "state"), FAKE_OS: os, FAKE_MACHINE: machine, FAKE_HASH: hash,
       FAKE_CURL_EXIT: curlExit, FAKE_HASH_EXIT: hashExit, FAKE_PACKAGE_NAME: packageName,
       FAKE_HTTP_STATUS: httpStatus, FAKE_CONTENT_LENGTH: contentLength, FAKE_CONTENT_RANGE: contentRange, FAKE_CURL_ERROR: curlError,
+      FAKE_EFFECTIVE_URL: effectiveUrl, FAKE_REDIRECT_COUNT: redirectCount, FAKE_ETAG: etag,
+      FAKE_LAST_MODIFIED: lastModified, FAKE_CONTENT_ENCODING: contentEncoding,
+      ...(capture ? { WORKBUDDY_DOWNLOAD_DIAGNOSTIC_DIR: diagnosticDir } : {}),
       FAKE_PACKAGE_VERSION: packageVersion, FAKE_PACKAGE_ARCH: packageArch, FAKE_FIELD_EXIT: fieldExit,
       FAKE_EXTRACT_EXIT: extractExit, FAKE_PACKAGE_ROOT: packageRoot, FAKE_CALLS: callLog,
       FAKE_CURL_ARGS: curlLog, FAKE_DPKG_ARGS: dpkgLog };
@@ -336,7 +403,7 @@ fi`,
         return { code: error.code, stdout: error.stdout, stderr: error.stderr };
       }
     };
-    await callback({ root, destination, packageRoot, releasePath, metadata, run, calls: () => lines(callLog),
+    await callback({ root, destination, packageRoot, releasePath, diagnosticDir, metadata, run, calls: () => lines(callLog),
       curlArgs: () => lines(curlLog), dpkgArgs: () => lines(dpkgLog) });
   } finally {
     await rm(root, { recursive: true, force: true });

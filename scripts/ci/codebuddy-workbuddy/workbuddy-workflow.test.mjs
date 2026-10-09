@@ -74,6 +74,39 @@ test("WorkBuddy matrix retains the package gate and one aggregate result", () =>
   }
 });
 
+test("Linux download evidence is retained only for explicit manual diagnosis, including failed acquisition", () => {
+  const native = job("workbuddy-native");
+  const acquire = native.split("      - name: Acquire and extract the selected official Linux package\n")[1]
+    .split("      - name:")[0];
+  const capture = acquire.match(/WORKBUDDY_DOWNLOAD_DIAGNOSTIC_DIR: \$\{\{ (.+) \}\}/)?.[1];
+  assert.ok(capture);
+  const upload = native.split("      - name: Retain Linux download evidence for manual diagnosis\n")[1]
+    .split("      - name:")[0];
+  const condition = upload.match(/^        if: (.+)$/m)?.[1];
+  assert.ok(condition);
+  for (const event of ["pull_request", "push", "workflow_dispatch"]) {
+    for (const selected of [false, true]) {
+      const context = { github: { event_name: event }, inputs: { diagnose_workbuddy: selected },
+        runner: { os: "Linux", temp: "/owned" }, always: () => true,
+        format: (pattern, value) => pattern.replace("{0}", value) };
+      const enabled = event === "workflow_dispatch" && selected;
+      assert.equal(runInNewContext(capture, context), enabled ? "/owned/workbuddy-download-diagnostic" : "");
+      assert.equal(runInNewContext(condition, context), enabled);
+      for (const os of ["macOS", "Windows"]) {
+        assert.equal(runInNewContext(condition, { ...context, runner: { os } }), false);
+      }
+    }
+  }
+  assert.match(upload, /uses: actions\/upload-artifact@v4/);
+  assert.match(upload, /name: workbuddy-linux-download-node-\$\{\{ matrix.node \}\}-\$\{\{ matrix.release.channel \}\}/);
+  assert.match(upload, /retention-days: 1/);
+  assert.match(upload, /compression-level: 0/);
+  assert.match(upload, /if-no-files-found: error/);
+  assert.match(upload, /workbuddy-download-diagnostic\/WorkBuddy\.deb/);
+  assert.match(upload, /workbuddy-download-diagnostic\/download\.json/);
+  assert.doesNotMatch(upload, /path:.*\*|\.headers|\.partial|\.download/);
+});
+
 test("WorkBuddy mounted metadata validation follows signature gates and treats the release as data", () => {
   const native = job("workbuddy-native");
   let previous = -1;

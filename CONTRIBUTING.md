@@ -987,6 +987,12 @@ new download. Other Linux latest releases use their official feed checksum.
 Any mismatch fails before extraction. A new mismatch requires explicit source
 review; do not bypass verification or automatically replace the expected hash.
 
+Manual `diagnose_workbuddy` runs retain each Linux download and a content-free
+response report as a one-day artifact, including checksum failures, for offline
+comparison. Normal PR and push runs do not retain these packages. Retained
+downloads are evidence, not trusted executables; never install or run a package
+whose checksum failed. Response reports omit raw headers and signed URL queries.
+
 Latest discovery uses each platform's official update feed. The macOS ZIP URL
 is converted to the DMG URL in the same manner as the official download page.
 When the Windows feed has an empty checksum, the resolver freezes one commit

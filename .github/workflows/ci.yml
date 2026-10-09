@@ -210,10 +210,23 @@ jobs:
       - name: Acquire and extract the selected official Linux package
         if: runner.os == 'Linux'
         shell: bash
+        env:
+          WORKBUDDY_DOWNLOAD_DIAGNOSTIC_DIR: ${{ github.event_name == 'workflow_dispatch' && inputs.diagnose_workbuddy && format('{0}/workbuddy-download-diagnostic', runner.temp) || '' }}
         run: |
           mkdir "$RUNNER_TEMP/workbuddy-bundle"
           bash scripts/ci/codebuddy-workbuddy/workbuddy-linux-bundle-check.sh "$RUNNER_TEMP/workbuddy-bundle" x64 \
             "$RUNNER_TEMP/workbuddy-release.json" > "$RUNNER_TEMP/workbuddy-bundle.json"
+      - name: Retain Linux download evidence for manual diagnosis
+        if: always() && runner.os == 'Linux' && github.event_name == 'workflow_dispatch' && inputs.diagnose_workbuddy
+        uses: actions/upload-artifact@v4
+        with:
+          name: workbuddy-linux-download-node-${{ matrix.node }}-${{ matrix.release.channel }}
+          path: |
+            ${{ runner.temp }}/workbuddy-download-diagnostic/WorkBuddy.deb
+            ${{ runner.temp }}/workbuddy-download-diagnostic/download.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
       - name: Acquire and extract the signed official Windows package
         if: runner.os == 'Windows'
         shell: pwsh

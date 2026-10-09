@@ -15,9 +15,12 @@ fail() {
 }
 
 download_diagnostic() {
-  node --input-type=module - "$sha256" "${actual%% *}" "$partial" "$transfer" "$curl_exit" <<'NODE' >&2 2>/dev/null || true
-import { lstatSync, readFileSync } from 'node:fs';
-const [expected, actual, partial, transfer, exit] = process.argv.slice(2);
+  node --input-type=module - "$sha256" "${actual%% *}" "$partial" "$transfer" "$curl_exit" \
+    "$url" "${WORKBUDDY_DOWNLOAD_DIAGNOSTIC_DIR:-}" "${1:-failure}" <<'NODE' >&2 2>/dev/null || true
+import { chmodSync, constants, copyFileSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { join } from 'node:path';
+const [expected, actual, partial, transfer, exit, requested, directory, mode] = process.argv.slice(2);
 const hash = (value) => /^[a-fA-F0-9]{64}$/.test(value) ? value.toLowerCase() : null;
 const integer = (value) => /^\d{1,16}$/.test(value) && Number.isSafeInteger(Number(value)) ? Number(value) : null;
 let bytes = null, fields = [];
@@ -27,15 +30,50 @@ try {
 } catch {}
 try {
   const info = lstatSync(transfer);
-  if (info.isFile() && info.size <= 256) fields = readFileSync(transfer, 'utf8').split('\n');
+  if (info.isFile() && info.size <= 16384) fields = readFileSync(transfer, 'utf8').split('\n');
 } catch {}
-const [status, length, range] = fields.length === 4 ? fields : [];
-console.log('WORKBUDDY_BUNDLE_DIAGNOSTIC ' + JSON.stringify({
+if (fields.length !== 9) fields = [];
+const [status, length, range] = fields.slice(0, 3).join('\n').length <= 256 ? fields : [];
+const diagnostic = {
   expectedSha256: hash(expected), actualSha256: hash(actual), bytes, curlExit: integer(exit),
   httpStatus: /^[1-5]\d{2}$/.test(status) ? Number(status) : null,
   contentLength: integer(length),
   contentRange: /^bytes (?:\d{1,16}-\d{1,16}|\*)\/(?:\d{1,16}|\*)$/.test(range) ? range : null,
-}));
+};
+if (mode === 'failure') console.log('WORKBUDDY_BUNDLE_DIAGNOSTIC ' + JSON.stringify(diagnostic));
+if (directory) {
+  try {
+    const [, , , effective, redirects, etag, modified, encoding] = fields;
+    const requestedUrl = new URL(requested);
+    let effectiveUrl = null;
+    try {
+      const parsed = new URL(effective);
+      if (parsed.protocol === 'https:' && !parsed.username && !parsed.password) effectiveUrl = parsed;
+    } catch {}
+    const digest = (value) => createHash('sha256').update(value).digest('hex');
+    mkdirSync(directory, { mode: 0o700 });
+    const packageRetained = exit === '0' && bytes !== null;
+    if (packageRetained) {
+      const target = join(directory, 'WorkBuddy.deb');
+      copyFileSync(partial, target, constants.COPYFILE_EXCL);
+      chmodSync(target, 0o600);
+    }
+    writeFileSync(join(directory, 'download.json'), JSON.stringify({
+      ...diagnostic, packageRetained,
+      requestedUrl: requestedUrl.origin + requestedUrl.pathname,
+      effectiveOrigin: effectiveUrl?.origin ?? null,
+      pathMatchedRequested: effectiveUrl ? effectiveUrl.pathname === requestedUrl.pathname : null,
+      pathSha256: effectiveUrl ? digest(effectiveUrl.pathname) : null,
+      effectiveUrlSha256: effectiveUrl ? digest(effective) : null,
+      redirectCount: integer(redirects),
+      etag: /^"[a-fA-F0-9]{32}(?:-\d{1,6})?"$/.test(etag) ? etag : null,
+      lastModified: typeof modified === 'string' && modified.length === 29 && new Date(modified).toUTCString() === modified ? modified : null,
+      contentEncoding: ['identity', 'gzip', 'br', 'deflate', 'zstd'].includes(encoding) ? encoding : null,
+    }, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
+  } catch {
+    console.log('WORKBUDDY_BUNDLE_DIAGNOSTIC_CAPTURE_FAILED');
+  }
+}
 NODE
 }
 
@@ -73,7 +111,7 @@ curl_exit=0
 curl --disable --fail --silent --show-error --location \
   --proto '=https' --proto-redir '=https' --connect-timeout 30 --max-time 600 \
   --retry 2 --retry-max-time 900 \
-  --write-out '%{http_code}\n%header{content-length}\n%header{content-range}\n' \
+  --write-out '%{http_code}\n%header{content-length}\n%header{content-range}\n%{url_effective}\n%{num_redirects}\n%header{etag}\n%header{last-modified}\n%header{content-encoding}\n' \
   --output "$partial" "$url" >"$transfer" 2>/dev/null || curl_exit=$?
 [[ "$curl_exit" == 0 ]] || fail WORKBUDDY_BUNDLE_DOWNLOAD_FAILED
 [[ -f "$partial" && ! -L "$partial" ]] || fail WORKBUDDY_BUNDLE_DOWNLOAD_MISSING
@@ -81,6 +119,7 @@ if ! actual="$(sha256sum "$partial" 2>/dev/null)"; then
   fail WORKBUDDY_BUNDLE_HASH_FAILED
 fi
 [[ "${actual%% *}" == "$sha256" ]] || fail WORKBUDDY_BUNDLE_HASH_MISMATCH
+if [[ -n "${WORKBUDDY_DOWNLOAD_DIAGNOSTIC_DIR:-}" ]]; then download_diagnostic capture; fi
 for field in Package Version Architecture; do
   case "$field" in
     Package) expected=workbuddy ;;
