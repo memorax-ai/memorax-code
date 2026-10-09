@@ -316,8 +316,8 @@ prose accuracy or command behavior.
 
 Native Windows package smoke coverage lives in
 [windows-npm-package-e2e.mjs](scripts/windows-npm-package-e2e.mjs). The separate
-[Codex](scripts/windows-codex-e2e.mjs) and
-[Claude](scripts/windows-claude-e2e.mjs) runners use real clients for installation.
+[Codex](scripts/ci/codex/windows-codex-e2e.mjs) and
+[Claude](scripts/ci/claude/windows-claude-e2e.mjs) runners use real clients for installation.
 The older Claude runner supplies synthetic Hook inputs; it does not establish
 native conversation or transcript writeback. Inspect each script's prerequisites
 and isolation before using it; a macOS/Linux suite or
@@ -330,6 +330,19 @@ native-client and synthetic evidence separately, record platform and scenarios,
 redact output, and explain any relevant checks not run. Public fixtures must never contain
 real API keys, private transcripts, personal memory, or infrastructure
 credentials.
+
+### Native CI Script Layout
+
+Native-client runners, helpers, and their adjacent tests are grouped under
+`scripts/ci/`:
+
+- `codex/`, `claude/`, `opencode/`, and `cursor/` own each client's checks.
+- `codebuddy-workbuddy/` owns both clients' entrypoints and shared checks.
+- `shared/` owns cross-client cleanup tests and Windows user PATH utilities.
+
+Keep existing Make targets as the developer entrypoints. Repository-wide build,
+package, documentation, and release scripts remain directly in `scripts/`;
+Cursor App image assets remain in `scripts/fixtures/cursor-app/`.
 
 ### Codex Functional CI
 
@@ -433,7 +446,7 @@ A Repo Memory worker case checks shared global model and provider configuration
 and remains required in the native conversation check.
 Session-specific model/provider override inheritance is pending implementation,
 so the installation wrappers report it as skipped and do not run
-`scripts/codex-model-inheritance-check.mjs`. That standalone script is retained
+`scripts/ci/codex/codex-model-inheritance-check.mjs`. That standalone script is retained
 as a future acceptance check: it sets a different foreground model or provider
 and requires the worker to use that override in its actual HTTP request and
 native record. Running it directly with an installed package root and Codex CLI
@@ -472,14 +485,14 @@ To reproduce on macOS or Linux inside an isolated development environment:
 
 ```bash
 memorax_dev make npm-package-check
-scripts/codex-install-check.sh dist/npm/tarballs 0.147.0 0.1.17
+scripts/ci/codex/codex-install-check.sh dist/npm/tarballs 0.147.0 0.1.17
 ```
 
 On Windows, download the workflow's package artifact into `dist/npm/tarballs`,
 then use a disposable PowerShell 7 session with Node.js and npm on PATH:
 
 ```powershell
-./scripts/codex-install-check.ps1 -TarballDirectory dist/npm/tarballs -CodexVersion 0.147.0 -PreviousVersion 0.1.17
+./scripts/ci/codex/codex-install-check.ps1 -TarballDirectory dist/npm/tarballs -CodexVersion 0.147.0 -PreviousVersion 0.1.17
 ```
 
 The Windows wrapper removes its temporary npm directory from the user PATH in
@@ -582,7 +595,7 @@ control, and UI reachability require separate investigation. To run it with an
 installed package, OpenCode executable, and the wrapper's test dependencies:
 
 ```bash
-node scripts/opencode-permissions-check.mjs PACKAGE_ROOT OPENCODE_EXECUTABLE --late-approval
+node scripts/ci/opencode/opencode-permissions-check.mjs PACKAGE_ROOT OPENCODE_EXECUTABLE --late-approval
 ```
 
 For startup investigation, manual dispatch with
@@ -606,19 +619,19 @@ package and run the baseline. To reuse an already validated package or select
 another exact client version:
 
 ```bash
-bash scripts/opencode-install-check.sh dist/npm/tarballs 1.18.18 0.1.18
+bash scripts/ci/opencode/opencode-install-check.sh dist/npm/tarballs 1.18.18 0.1.18
 ```
 
 On native Windows, download the package artifact and use a disposable
 PowerShell 7 session with Node.js, npm, and Git for Windows available:
 
 ```powershell
-./scripts/opencode-install-check.ps1 -TarballDirectory dist/npm/tarballs -OpenCodeVersion 1.18.18 -PreviousVersion 0.1.18
+./scripts/ci/opencode/opencode-install-check.ps1 -TarballDirectory dist/npm/tarballs -OpenCodeVersion 1.18.18 -PreviousVersion 0.1.18
 ```
 
 The Windows wrapper reuses the same exact-prefix user PATH cleanup guard as
 Codex, including its interruption and concurrent-update limitations. Local
-`node scripts/opencode-e2e.mjs [TARBALL_DIR] [OPENCODE_VERSION]` delegates to
+`node scripts/ci/opencode/opencode-e2e.mjs [TARBALL_DIR] [OPENCODE_VERSION]` delegates to
 these platform wrappers; it no longer creates a separate candidate package or
 injects a prebuilt Repo Memory bundle.
 
@@ -751,17 +764,17 @@ and run the baseline. To reuse a validated artifact or select another exact
 Claude version:
 
 ```bash
-bash scripts/claude-install-check.sh dist/npm/tarballs 2.1.277 0.1.18
+bash scripts/ci/claude/claude-install-check.sh dist/npm/tarballs 2.1.277 0.1.18
 ```
 
 On native Windows, download the package artifact and use a disposable
 PowerShell 7 session with Node.js 22 or later, npm, and Git for Windows:
 
 ```powershell
-./scripts/claude-install-check.ps1 -TarballDirectory dist/npm/tarballs -ClaudeVersion 2.1.277 -PreviousVersion 0.1.18
+./scripts/ci/claude/claude-install-check.ps1 -TarballDirectory dist/npm/tarballs -ClaudeVersion 2.1.277 -PreviousVersion 0.1.18
 ```
 
-Local `node scripts/claude-e2e.mjs [TARBALL_DIR] [CLAUDE_VERSION] [PREVIOUS_VERSION]`
+Local `node scripts/ci/claude/claude-e2e.mjs [TARBALL_DIR] [CLAUDE_VERSION] [PREVIOUS_VERSION]`
 delegates to the platform wrappers. It does not build or validate the package
 itself; use the Make target when the artifact has not already passed
 `npm-package-check`.
@@ -902,17 +915,17 @@ On macOS or Linux, `memorax_dev make test-codebuddy-e2e` validates the package
 and runs the baseline. To reuse a validated artifact:
 
 ```bash
-bash scripts/codebuddy-install-check.sh dist/npm/tarballs 2.159.0 0.1.18
+bash scripts/ci/codebuddy-workbuddy/codebuddy-install-check.sh dist/npm/tarballs 2.159.0 0.1.18
 ```
 
 On native Windows, use a disposable PowerShell 7 session with Node.js 20 or
 later, npm, and Git for Windows:
 
 ```powershell
-./scripts/codebuddy-install-check.ps1 -TarballDirectory dist/npm/tarballs -CodeBuddyVersion 2.159.0 -PreviousVersion 0.1.18
+./scripts/ci/codebuddy-workbuddy/codebuddy-install-check.ps1 -TarballDirectory dist/npm/tarballs -CodeBuddyVersion 2.159.0 -PreviousVersion 0.1.18
 ```
 
-`node scripts/codebuddy-e2e.mjs [TARBALL_DIR] [CODEBUDDY_VERSION] [PREVIOUS_VERSION]`
+`node scripts/ci/codebuddy-workbuddy/codebuddy-e2e.mjs [TARBALL_DIR] [CODEBUDDY_VERSION] [PREVIOUS_VERSION]`
 delegates to the platform wrappers. It does not itself build or validate the
 package; use the Make target when the artifact has not passed
 `npm-package-check`.
@@ -945,7 +958,7 @@ can have degraded Windows coverage: its summary names the untested official
 latest and the selected older release instead of claiming latest coverage.
 Each runner consumes the frozen release description and checks its selected
 SHA-256 before extracting or mounting the official desktop package. The
-WorkBuddy-specific resolver in `scripts/workbuddy-release-matrix.mjs` owns the
+WorkBuddy-specific resolver in `scripts/ci/codebuddy-workbuddy/workbuddy-release-matrix.mjs` owns the
 baseline records, feed validation, and matrix; the three acquisition helpers
 also accept a validated release JSON file while retaining their standalone
 baseline defaults. Desktop and bundled CLI versions are checked separately,
@@ -962,7 +975,7 @@ before the native suites. The current fixed baselines are:
 
 The Linux DEB uses a maintainer-recorded SHA-256, not a vendor-published checksum.
 On 2026-10-03, two independent downloads from the fixed official HTTPS URL in
-`scripts/workbuddy-linux-bundle-check.sh` produced a 429,302,312-byte file with
+`scripts/ci/codebuddy-workbuddy/workbuddy-linux-bundle-check.sh` produced a 429,302,312-byte file with
 SHA-256 `2ef1bca217d29d9c2ba988c82079aa6ea0077e9f1ff882c6ab5dd7998bddf721`.
 The [official update feed](https://www.workbuddy.cn/v2/update?platform=workbuddy-linux-x64-deb)
 instead reported `03d756b259d7086c22098fa077589a032d60948d1de7313473360eefe11e240f`
@@ -1025,7 +1038,7 @@ Memory worker suites with its tarball directory, the actual bundled
 `cli/bin/codebuddy` entrypoint, and its exact runtime version:
 
 ```bash
-memorax_dev node scripts/workbuddy-e2e.mjs dist/npm/tarballs \
+memorax_dev node scripts/ci/codebuddy-workbuddy/workbuddy-e2e.mjs dist/npm/tarballs \
   "$WORKBUDDY_BUNDLED_COMMAND" "$WORKBUDDY_RUNTIME_VERSION" 0.1.18
 ```
 
@@ -1050,7 +1063,7 @@ account, WorkBuddy installation, a native turn and explicit Search.
 To run only native Memory/Skill checks against an already installed candidate:
 
 ```bash
-memorax_dev node scripts/workbuddy-native-check.mjs \
+memorax_dev node scripts/ci/codebuddy-workbuddy/workbuddy-native-check.mjs \
   "$memorax_dev_root/npm/lib/node_modules/@memorax/memorax-code" \
   "$WORKBUDDY_BUNDLED_COMMAND" "$WORKBUDDY_RUNTIME_VERSION"
 ```
@@ -1127,10 +1140,10 @@ foreground exit.
 These two suites can also run independently against the installed candidate:
 
 ```bash
-memorax_dev node scripts/codebuddy-permissions-check.mjs \
+memorax_dev node scripts/ci/codebuddy-workbuddy/codebuddy-permissions-check.mjs \
   "$memorax_dev_root/npm/lib/node_modules/@memorax/memorax-code" \
   "$WORKBUDDY_BUNDLED_COMMAND" "$WORKBUDDY_RUNTIME_VERSION" workbuddy
-memorax_dev node scripts/codebuddy-background-check.mjs \
+memorax_dev node scripts/ci/codebuddy-workbuddy/codebuddy-background-check.mjs \
   "$memorax_dev_root/npm/lib/node_modules/@memorax/memorax-code" \
   "$WORKBUDDY_BUNDLED_COMMAND" "$WORKBUDDY_RUNTIME_VERSION" workbuddy
 ```
@@ -1139,11 +1152,11 @@ Run either strict interrupt diagnostic separately, so a failure in one does not
 prevent investigating the other:
 
 ```bash
-memorax_dev node scripts/codebuddy-permissions-check.mjs \
+memorax_dev node scripts/ci/codebuddy-workbuddy/codebuddy-permissions-check.mjs \
   "$memorax_dev_root/npm/lib/node_modules/@memorax/memorax-code" \
   "$WORKBUDDY_BUNDLED_COMMAND" "$WORKBUDDY_RUNTIME_VERSION" workbuddy \
   --interrupt-case user-inflight-interrupt
-memorax_dev node scripts/codebuddy-permissions-check.mjs \
+memorax_dev node scripts/ci/codebuddy-workbuddy/codebuddy-permissions-check.mjs \
   "$memorax_dev_root/npm/lib/node_modules/@memorax/memorax-code" \
   "$WORKBUDDY_BUNDLED_COMMAND" "$WORKBUDDY_RUNTIME_VERSION" workbuddy \
   --interrupt-case user-wait-interrupt
@@ -1177,7 +1190,7 @@ aggregate; a local or single-platform pass is not three-platform evidence.
 
 #### Functional Coverage
 
-Every cell first runs `scripts/cursor-lifecycle-check.mjs TARBALL REPORT_DIR` in
+Every cell first runs `scripts/ci/cursor/cursor-lifecycle-check.mjs TARBALL REPORT_DIR` in
 an isolated npm prefix and client/Backend home. It covers fresh/repeated setup,
 uninstall/reinstall, saved account/configuration retention, real upgrade from
 published MemoraX Code **0.1.18**, rejected download, replacement failure and retry.
@@ -1259,14 +1272,14 @@ After validating an installable candidate, use Node 24 and a local Linux-contain
 Docker daemon:
 
 ```bash
-node --test scripts/cursor-app-*.test.mjs scripts/cursor-lifecycle*.test.mjs
-node scripts/cursor-app-container-check.mjs \
+node --test scripts/ci/cursor/cursor-app-*.test.mjs scripts/ci/cursor/cursor-lifecycle*.test.mjs
+node scripts/ci/cursor/cursor-app-container-check.mjs \
   dist/npm/tarballs/memorax-memorax-code-0.1.19.tgz \
   "$memorax_dev_root/cursor-app-report"
 ```
 
 The two-argument command selects baseline and Node 24. For another matrix cell,
-freeze releases with `node scripts/cursor-app-release.mjs resolve-linux MANIFEST`
+freeze releases with `node scripts/ci/cursor/cursor-app-release.mjs resolve-linux MANIFEST`
 (requires `gpg` and `gpgv`), then append `MANIFEST latest 24` or
 `MANIFEST baseline 22` to the container command. The metadata-only `resolve`
 command does not verify Linux apt metadata and is not CI acceptance evidence.

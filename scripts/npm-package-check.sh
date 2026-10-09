@@ -355,7 +355,7 @@ assert actual == expected, actual
 PY_INSTALLED_DOCS
 
 check_required_files "$package_install_root"
-node scripts/cursor-npm-package-smoke.mjs "$package_install_root"
+node scripts/ci/cursor/cursor-npm-package-smoke.mjs "$package_install_root"
 
 node --input-type=module -e '
   const lifecycle = await import(new URL("./lib/dsh-plugin-install.mjs", `file://${process.argv[1]}/`).href);

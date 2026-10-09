@@ -33,7 +33,7 @@ jobs:
           node-version: '24'
           package-manager-cache: false
       - name: Verify WorkBuddy workflow contract
-        run: node --test scripts/workbuddy-workflow.test.mjs
+        run: node --test scripts/ci/codebuddy-workbuddy/workbuddy-workflow.test.mjs
       - name: Run the existing regression suite
         shell: bash
         run: |
@@ -91,12 +91,12 @@ jobs:
           entry="$(node -p "require.resolve('yaml', { paths: [process.argv[1]] })" "$deps")"
           printf 'WORKBUDDY_YAML_MODULE=%s\n' "$entry" >> "$GITHUB_ENV"
       - name: Verify WorkBuddy and shared native test contracts
-        run: node --test scripts/codebuddy-*.test.mjs scripts/workbuddy-*.test.mjs
+        run: node --test scripts/ci/codebuddy-workbuddy/codebuddy-*.test.mjs scripts/ci/codebuddy-workbuddy/workbuddy-*.test.mjs
       - name: Resolve each platform's latest release once
         id: releases
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: node scripts/workbuddy-release-matrix.mjs resolve
+        run: node scripts/ci/codebuddy-workbuddy/workbuddy-release-matrix.mjs resolve
       - name: Build and validate the candidate package
         shell: bash
         run: |
@@ -141,7 +141,7 @@ jobs:
           TMPDIR: ${{ runner.temp }}
           TEMP: ${{ runner.temp }}
           TMP: ${{ runner.temp }}
-        run: node --test scripts/workbuddy-*.test.mjs
+        run: node --test scripts/ci/codebuddy-workbuddy/workbuddy-*.test.mjs
       - name: Validate the frozen release for this runner
         shell: bash
         env:
@@ -151,7 +151,7 @@ jobs:
           import assert from 'node:assert/strict';
           import { writeFileSync } from 'node:fs';
           import { join } from 'node:path';
-          import { validateRelease } from './scripts/workbuddy-release-matrix.mjs';
+          import { validateRelease } from './scripts/ci/codebuddy-workbuddy/workbuddy-release-matrix.mjs';
           const platforms = { linux: 'linux-x64-deb', darwin: 'darwin-arm64', win32: 'win32-x64-user' };
           assert.equal(process.arch, process.platform === 'darwin' ? 'arm64' : 'x64');
           const release = validateRelease(JSON.parse(process.env.RELEASE_JSON), platforms[process.platform]);
@@ -162,7 +162,7 @@ jobs:
         shell: bash
         run: |
           mkdir "$RUNNER_TEMP/workbuddy-bundle"
-          bash scripts/workbuddy-macos-bundle-check.sh "$RUNNER_TEMP/workbuddy-bundle" arm64 \
+          bash scripts/ci/codebuddy-workbuddy/workbuddy-macos-bundle-check.sh "$RUNNER_TEMP/workbuddy-bundle" arm64 \
             "$RUNNER_TEMP/workbuddy-release.json" > "$RUNNER_TEMP/workbuddy-bundle.json"
       - name: Verify and mount the official application read-only
         if: runner.os == 'macOS'
@@ -212,7 +212,7 @@ jobs:
         shell: bash
         run: |
           mkdir "$RUNNER_TEMP/workbuddy-bundle"
-          bash scripts/workbuddy-linux-bundle-check.sh "$RUNNER_TEMP/workbuddy-bundle" x64 \
+          bash scripts/ci/codebuddy-workbuddy/workbuddy-linux-bundle-check.sh "$RUNNER_TEMP/workbuddy-bundle" x64 \
             "$RUNNER_TEMP/workbuddy-release.json" > "$RUNNER_TEMP/workbuddy-bundle.json"
       - name: Acquire and extract the signed official Windows package
         if: runner.os == 'Windows'
@@ -221,7 +221,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $destination = Join-Path $env:RUNNER_TEMP 'workbuddy-bundle'
           New-Item -ItemType Directory -Path $destination | Out-Null
-          $report = & ./scripts/workbuddy-windows-bundle-check.ps1 -Destination $destination -ReleaseFile (Join-Path $env:RUNNER_TEMP 'workbuddy-release.json')
+          $report = & ./scripts/ci/codebuddy-workbuddy/workbuddy-windows-bundle-check.ps1 -Destination $destination -ReleaseFile (Join-Path $env:RUNNER_TEMP 'workbuddy-release.json')
           if ($LASTEXITCODE -ne 0) { throw 'WorkBuddy package acquisition failed.' }
           $report | Set-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'workbuddy-bundle.json') -Encoding utf8
       - name: Record the verified bundled runtime
@@ -255,11 +255,11 @@ jobs:
           env -i PATH="$PATH" HOME="$test_root/user" \
             MEMORAX_CODE_HOME="$test_root/state" \
             npm_config_cache="$test_root/npm-cache" TMPDIR="$test_root/tmp" \
-            node scripts/workbuddy-e2e.mjs dist/npm/tarballs "$WORKBUDDY_BUNDLED_COMMAND" "$WORKBUDDY_RUNTIME_VERSION" 0.1.18
+            node scripts/ci/codebuddy-workbuddy/workbuddy-e2e.mjs dist/npm/tarballs "$WORKBUDDY_BUNDLED_COMMAND" "$WORKBUDDY_RUNTIME_VERSION" 0.1.18
       - name: Verify shared Windows user PATH cleanup
         if: runner.os == 'Windows'
         shell: pwsh
-        run: ./scripts/codex-install-user-path.test.ps1
+        run: ./scripts/ci/shared/codex-install-user-path.test.ps1
       - name: Run strict native WorkBuddy suites with isolated local services (Windows)
         id: native-windows
         if: runner.os == 'Windows'
@@ -268,7 +268,7 @@ jobs:
           TEMP: ${{ runner.temp }}
           TMP: ${{ runner.temp }}
         run: |
-          & node scripts/workbuddy-e2e.mjs dist/npm/tarballs $env:WORKBUDDY_BUNDLED_COMMAND $env:WORKBUDDY_RUNTIME_VERSION 0.1.18
+          & node scripts/ci/codebuddy-workbuddy/workbuddy-e2e.mjs dist/npm/tarballs $env:WORKBUDDY_BUNDLED_COMMAND $env:WORKBUDDY_RUNTIME_VERSION 0.1.18
           if ($LASTEXITCODE -ne 0) { throw 'WorkBuddy native suites failed; isolated state retained.' }
       - name: Unmount the owned WorkBuddy image
         if: always() && runner.os == 'macOS' && env.WORKBUDDY_IMAGE_ATTACHED == 'true'
