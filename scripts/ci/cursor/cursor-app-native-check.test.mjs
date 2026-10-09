@@ -6,7 +6,7 @@ import { basename, dirname, join, win32 } from "node:path";
 import { PassThrough } from "node:stream";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
-import { collectCursorAppShellDiagnostics, collectCursorAppStopDiagnostics } from "./cursor-app-diagnostics.mjs";
+import { collectCursorAppBackendDiagnostics, collectCursorAppShellDiagnostics, collectCursorAppStopDiagnostics } from "./cursor-app-diagnostics.mjs";
 
 const source = (await readFile(new URL("./cursor-app-native-check.mjs", import.meta.url), "utf8")).replaceAll("\r\n", "\n");
 const privateCanary = "private-content-path-token-canary";
@@ -95,6 +95,29 @@ test("candidate commands drain stderr, bound output/time and preserve redacted s
     }
     assert.equal(cleared, true);
     assert.deepEqual(kills, ["timeout", "overflow"].includes(mode) ? ["SIGKILL"] : []);
+    assert.equal(JSON.stringify(report).includes(privateCanary), false);
+  }
+});
+
+test("failure collection reads existing diagnostics without replacing the original failure", async () => {
+  const body = source.split("  const run = agent?.runs.at(-1);")[1]?.split("\n}\nfinally {")[0];
+  assert.ok(body);
+  const run = { conversationId: "11111111-1111-1111-1111-111111111111", requestId: "22222222-2222-2222-2222-222222222222" };
+  const identity = { sessionId: run.conversationId, turnId: run.requestId };
+  for (const failed of [false, true]) {
+    const report = { errorCode: "CURSOR_APP_ADD_TIMEOUT" };
+    await runInNewContext(`(async () => {${body}})()`, { run, report,
+      env: { MEMORAX_CODE_HOME: "/owned/state" }, userData: "/owned/app-data", collectCursorAppBackendDiagnostics,
+      async collectCursorAppDiagnostics(input) { assert.deepEqual({ ...input }, { home: "/owned/state", ...identity }); return {}; },
+      async collectCursorAppHookDiagnostics(input) { assert.deepEqual({ ...input }, { home: "/owned/app-data", ...identity }); return { readStatus: "absent" }; },
+      async command(args) {
+        assert.deepEqual(Array.from(args), ["logs", "--diagnostics", "--limit", "100", "--json", "--home", "/owned/state"]);
+        if (failed) throw new Error(privateCanary);
+        return { action: "diagnostics", ok: true, records: [] };
+      },
+    });
+    assert.equal(report.errorCode, "CURSOR_APP_ADD_TIMEOUT");
+    assert.equal(report.backendDiagnostics.readStatus, failed ? "unavailable" : "present");
     assert.equal(JSON.stringify(report).includes(privateCanary), false);
   }
 });

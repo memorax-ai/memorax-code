@@ -8,7 +8,35 @@ fi
 
 fail() {
   printf '%s\n' "$1" >&2
+  case "$1" in
+    WORKBUDDY_BUNDLE_DOWNLOAD_FAILED|WORKBUDDY_BUNDLE_HASH_MISMATCH) download_diagnostic ;;
+  esac
   exit 1
+}
+
+download_diagnostic() {
+  node --input-type=module - "$sha256" "${actual%% *}" "$partial" "$transfer" "$curl_exit" <<'NODE' >&2 2>/dev/null || true
+import { lstatSync, readFileSync } from 'node:fs';
+const [expected, actual, partial, transfer, exit] = process.argv.slice(2);
+const hash = (value) => /^[a-fA-F0-9]{64}$/.test(value) ? value.toLowerCase() : null;
+const integer = (value) => /^\d{1,16}$/.test(value) && Number.isSafeInteger(Number(value)) ? Number(value) : null;
+let bytes = null, fields = [];
+try {
+  const info = lstatSync(partial);
+  if (info.isFile() && Number.isSafeInteger(info.size)) bytes = info.size;
+} catch {}
+try {
+  const info = lstatSync(transfer);
+  if (info.isFile() && info.size <= 256) fields = readFileSync(transfer, 'utf8').split('\n');
+} catch {}
+const [status, length, range] = fields.length === 4 ? fields : [];
+console.log('WORKBUDDY_BUNDLE_DIAGNOSTIC ' + JSON.stringify({
+  expectedSha256: hash(expected), actualSha256: hash(actual), bytes, curlExit: integer(exit),
+  httpStatus: /^[1-5]\d{2}$/.test(status) ? Number(status) : null,
+  contentLength: integer(length),
+  contentRange: /^bytes (?:\d{1,16}-\d{1,16}|\*)\/(?:\d{1,16}|\*)$/.test(range) ? range : null,
+}));
+NODE
 }
 
 [[ $# -ge 1 && $# -le 3 ]] || fail WORKBUDDY_BUNDLE_ARGUMENTS_INVALID
@@ -37,13 +65,17 @@ if ! release="$(node "$script_dir/workbuddy-release-matrix.mjs" "${selection[@]}
 fi
 IFS=$'\t' read -r desktop_version product_version runtime_version sha256 url <<< "$release"
 partial="$destination/WorkBuddy.deb.partial"
-trap 'rm -f -- "$partial" 2>/dev/null' EXIT
+transfer="$destination/WorkBuddy.download"
+trap 'rm -f -- "$partial" "$transfer" 2>/dev/null' EXIT
+actual=""
+curl_exit=0
 
-if ! curl --disable --fail --silent --show-error --location \
+curl --disable --fail --silent --show-error --location \
   --proto '=https' --proto-redir '=https' --connect-timeout 30 --max-time 600 \
-  --retry 2 --retry-max-time 900 --output "$partial" "$url" >/dev/null 2>&1; then
-  fail WORKBUDDY_BUNDLE_DOWNLOAD_FAILED
-fi
+  --retry 2 --retry-max-time 900 \
+  --write-out '%{http_code}\n%header{content-length}\n%header{content-range}\n' \
+  --output "$partial" "$url" >"$transfer" 2>/dev/null || curl_exit=$?
+[[ "$curl_exit" == 0 ]] || fail WORKBUDDY_BUNDLE_DOWNLOAD_FAILED
 [[ -f "$partial" && ! -L "$partial" ]] || fail WORKBUDDY_BUNDLE_DOWNLOAD_MISSING
 if ! actual="$(sha256sum "$partial" 2>/dev/null)"; then
   fail WORKBUDDY_BUNDLE_HASH_FAILED

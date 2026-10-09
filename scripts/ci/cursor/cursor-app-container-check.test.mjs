@@ -250,10 +250,12 @@ test("container staging preserves Cursor and Codex relative imports without copy
   await stageCursorAppChecks(root);
   assert.deepEqual((await readdir(root)).sort(), ["codex", "cursor"]);
   assert.deepEqual(await readdir(join(root, "codex")), ["codex-native-content-check.mjs"]);
-  assert.equal((await readdir(join(root, "cursor"))).length, 7);
+  assert.equal((await readdir(join(root, "cursor"))).length, 8);
   const staged = await import(pathToFileURL(join(root, "cursor", "cursor-app-memory-check.mjs")));
   assert.equal(typeof staged.assertCursorAppSkillReference, "function");
   assert.equal(typeof staged.assertCursorAppMemoryOperation, "function");
+  const diagnostics = await import(pathToFileURL(join(root, "cursor", "cursor-app-hook-diagnostics.mjs")));
+  assert.equal(typeof diagnostics.collectCursorAppHookDiagnostics, "function");
 });
 
 test("seccomp is the pinned Playwright profile with only the documented chroot allowance", async () => {
@@ -323,6 +325,11 @@ test("public reports drop raw data and project failure diagnostics without weake
       ] } };
     input.appLaunch = { spawned: true, exitCode: 1, signal: "private-canary", log: "private-canary",
       markers: { permissionDenied: true } };
+    input.nativeHooks = { readStatus: "present", filesRead: 1, raw: "private-canary", executions: [] };
+    input.backendDiagnostics = { readStatus: "present", records: [
+      { operation: "memory.turn-start", reason: "turn_state_unavailable", errorCode: "CURSOR_TURN_STATE_UNAVAILABLE",
+        systemCode: "EACCES", error: "private-canary", sessionHash: "private-canary" },
+    ] };
     input.candidateStop = { exitCode: 1, timedOut: true, stdout: "private-canary" };
     input.shellResult = { rejectionKind: 2, approvalClicked: true, exitCode: 127, stderr: "private-canary" };
     input.windowsAppStop = { taskkillExitCode: 128, childExitCode: 0, stderr: "private-canary" };
@@ -334,6 +341,8 @@ test("public reports drop raw data and project failure diagnostics without weake
     ]);
     assert.equal(report.appLaunch.exitCode, 1);
     assert.equal(report.appLaunch.signal, "other");
+    assert.equal(report.nativeHooks.readStatus, "present");
+    assert.equal(report.backendDiagnostics.records[0].errorCode, "CURSOR_TURN_STATE_UNAVAILABLE");
     assert.equal(report.candidateStop.timedOut, true);
     assert.deepEqual(report.shellResult, { rejectionKind: 2, approvalClicked: true, exitCode: 127 });
     assert.equal(report.windowsAppStop?.taskkillExitCode, platform === "win32" ? 128 : undefined);
@@ -342,7 +351,7 @@ test("public reports drop raw data and project failure diagnostics without weake
     assert.throws(() => project(input), /CURSOR_CONTAINER_REPORT/);
     delete input.errorCode;
     input.stage = "complete";
-    for (const key of ["candidateStop", "shellResult", "windowsAppStop"]) assert.equal(project(input)[key], undefined);
+    for (const key of ["candidateStop", "shellResult", "windowsAppStop", "nativeHooks", "backendDiagnostics"]) assert.equal(project(input)[key], undefined);
   }
 });
 

@@ -238,6 +238,40 @@ export function projectCursorAppDiagnostics(value) {
   };
 }
 
+export function projectCursorAppBackendDiagnostics(value) {
+  return {
+    readStatus: enumValue(value?.readStatus, ["present", "unavailable", "invalid"]),
+    skipped: count(value?.skipped), historyTruncated: value?.historyTruncated === true,
+    records: value?.readStatus === "present" && Array.isArray(value.records) && value.records.length <= 100
+      ? value.records.filter((item) => record(item)
+        && ["memory.turn-start", "memory.pre-compact", "memory.writeback"].includes(item.operation)
+        && reasons.has(item.reason)).map((item) => ({
+          operation: item.operation, reason: item.reason,
+          errorCode: enumValue(item.errorCode, [`CURSOR_${item.reason.toUpperCase()}`, "CURSOR_NATIVE_CONTENT_TIMEOUT", "absent", "other"]),
+          systemCode: enumValue(item.systemCode, [...shellCliEnums.systemCode, "EBUSY", "EIO", "ELOOP", "ENFILE", "EINVAL", "absent", "other"]),
+        })) : [],
+  };
+}
+
+// The normal diagnostics CLI reads independent Backend failures even when the
+// session record could not be locked or saved. Never publish its raw records.
+export function collectCursorAppBackendDiagnostics(value, { sessionId, turnId }) {
+  if (value === undefined) return projectCursorAppBackendDiagnostics({ readStatus: "unavailable" });
+  if (!uuid.test(sessionId ?? "") || !uuid.test(turnId ?? "") || value?.action !== "diagnostics"
+    || value.ok !== true || !Array.isArray(value.records) || value.records.length > 100) {
+    return projectCursorAppBackendDiagnostics({ readStatus: "invalid" });
+  }
+  const hash = (id) => createHash("sha256").update(id).digest("hex").slice(0, 24);
+  return projectCursorAppBackendDiagnostics({ readStatus: "present", skipped: value.skipped,
+    historyTruncated: value.records.length === 100,
+    records: value.records.filter((item) => item?.schemaVersion === 1 && item.client === "cursor"
+      && ["client-hook", "automatic-writeback"].includes(item.source)
+      && item.sessionHash === hash(sessionId) && item.turnHash === hash(turnId))
+      .map((item) => ({ operation: item.operation, reason: item.failureReason,
+        errorCode: item.errorCode, systemCode: item.systemCode })),
+  });
+}
+
 async function readBounded(home, parts) {
   let file;
   try {

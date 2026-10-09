@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { collectCursorAppDiagnostics, collectCursorAppLaunchDiagnostics, collectCursorAppShellDiagnostics,
+  collectCursorAppBackendDiagnostics, projectCursorAppBackendDiagnostics,
   collectCursorAppShellOutputDiagnostics, collectCursorAppStopDiagnostics, collectCursorAppWindowsStopDiagnostics,
   projectCursorAppDiagnostics, projectCursorAppLaunchDiagnostics, projectCursorAppShellDiagnostics,
   projectCursorAppStopDiagnostics, projectCursorAppWindowsStopDiagnostics } from "./cursor-app-diagnostics.mjs";
@@ -15,6 +16,36 @@ const diagnosticKey = (...parts) => createHash("sha256").update(JSON.stringify(p
 function redacted(value, secrets = []) {
   for (const secret of [privateCanary, ...secrets]) assert.equal(JSON.stringify(value).includes(secret), false);
 }
+
+test("independent Backend diagnostics retain exact-turn failures without exposing raw history", () => {
+  const sessionId = randomUUID(), turnId = randomUUID(), identity = { sessionId, turnId };
+  const hash = (id) => createHash("sha256").update(id).digest("hex").slice(0, 24);
+  const failure = { schemaVersion: 1, client: "cursor", source: "client-hook",
+    sessionHash: hash(sessionId), turnHash: hash(turnId), operation: "memory.turn-start",
+    failureReason: "turn_state_unavailable", errorCode: "CURSOR_TURN_STATE_UNAVAILABLE", systemCode: "EACCES",
+    error: privateCanary, path: privateCanary };
+  const history = { action: "diagnostics", ok: true, skipped: 2, records: [failure,
+    ...[{ client: "codex" }, { schemaVersion: 2 }, { source: "private" },
+      { sessionHash: hash(randomUUID()) }, { turnHash: hash(randomUUID()) },
+      { operation: privateCanary }, { failureReason: privateCanary }].map((change) => ({ ...failure, ...change }))] };
+  const value = collectCursorAppBackendDiagnostics(history, identity);
+  assert.deepEqual(value, { readStatus: "present", skipped: 2, historyTruncated: false,
+    records: [{ operation: failure.operation, reason: failure.failureReason,
+      errorCode: failure.errorCode, systemCode: "EACCES" }] });
+  assert.deepEqual(projectCursorAppBackendDiagnostics(value), value);
+  redacted(value, [sessionId, turnId, failure.sessionHash, failure.turnHash]);
+  const unknown = collectCursorAppBackendDiagnostics({ ...history, records: [{ ...failure,
+    systemCode: privateCanary, errorCode: privateCanary }] }, identity);
+  assert.equal(unknown.records[0].systemCode, "other");
+  assert.equal(unknown.records[0].errorCode, "other");
+  redacted(unknown);
+  assert.equal(collectCursorAppBackendDiagnostics(undefined, identity).readStatus, "unavailable");
+  for (const change of [{ action: "logs" }, { ok: false }, { records: privateCanary }, { records: Array(101).fill(failure) }]) {
+    assert.equal(collectCursorAppBackendDiagnostics({ ...history, ...change }, identity).readStatus, "invalid");
+  }
+  assert.equal(collectCursorAppBackendDiagnostics(history, { ...identity, turnId: privateCanary }).readStatus, "invalid");
+  assert.equal(collectCursorAppBackendDiagnostics({ ...history, records: Array(100).fill(failure) }, identity).historyTruncated, true);
+});
 
 test("Shell output retains fixed failure codes and markers while bounding and redacting raw output", () => {
   const output = collectCursorAppShellOutputDiagnostics({

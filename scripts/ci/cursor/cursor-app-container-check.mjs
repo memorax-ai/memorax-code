@@ -8,7 +8,9 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { baselineRelease, validateLinuxRelease } from "./cursor-app-release.mjs";
 import { projectCursorAppDiagnostics, projectCursorAppLaunchDiagnostics,
+  projectCursorAppBackendDiagnostics,
   projectCursorAppShellDiagnostics, projectCursorAppStopDiagnostics, projectCursorAppWindowsStopDiagnostics } from "./cursor-app-diagnostics.mjs";
+import { projectCursorAppHookDiagnostics } from "./cursor-app-hook-diagnostics.mjs";
 
 const exec = promisify(execFile);
 const scripts = dirname(fileURLToPath(import.meta.url));
@@ -126,6 +128,8 @@ export function projectNativeReport(input, { expectedVersion = provenance.cursor
   }
   if (input.memoryRequestCount !== undefined) report.memoryRequestCount = count(input.memoryRequestCount);
   if (input.diagnostics !== undefined) report.diagnostics = projectCursorAppDiagnostics(input.diagnostics);
+  if (input.status === "FAIL" && input.nativeHooks !== undefined) report.nativeHooks = projectCursorAppHookDiagnostics(input.nativeHooks);
+  if (input.status === "FAIL" && input.backendDiagnostics !== undefined) report.backendDiagnostics = projectCursorAppBackendDiagnostics(input.backendDiagnostics);
   if (input.appLaunch !== undefined) report.appLaunch = projectCursorAppLaunchDiagnostics(input.appLaunch);
   if (input.status === "FAIL" && input.candidateStop !== undefined) report.candidateStop = projectCursorAppStopDiagnostics(input.candidateStop);
   if (input.status === "FAIL" && input.shellResult !== undefined) report.shellResult = projectCursorAppShellDiagnostics(input.shellResult);
@@ -232,7 +236,7 @@ export async function readReleaseManifest(path) {
 export async function stageCursorAppChecks(directory) {
   for (const [client, names] of [
     ["cursor", ["cursor-app-native-check.mjs", "cursor-app-protocol.mjs", "cursor-app-mock-server.mjs", "cursor-app-native-content-check.mjs",
-      "cursor-app-memory-check.mjs", "cursor-app-repo-memory-check.mjs", "cursor-app-diagnostics.mjs"]],
+      "cursor-app-memory-check.mjs", "cursor-app-repo-memory-check.mjs", "cursor-app-diagnostics.mjs", "cursor-app-hook-diagnostics.mjs"]],
     ["codex", ["codex-native-content-check.mjs"]],
   ]) {
     await mkdir(join(directory, client), { recursive: true });

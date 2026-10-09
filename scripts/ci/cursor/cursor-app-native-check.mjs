@@ -14,8 +14,10 @@ import { assertCursorAppSkillReference, assertCursorAppMemoryOperation } from ".
 import { parseCursorRepoMemoryDelegation, parseCursorRepoMemoryClaim, assertCursorRepoMemoryRejected,
   verifyCursorRepoMemoryFailure } from "./cursor-app-repo-memory-check.mjs";
 import { collectCursorAppDiagnostics, collectCursorAppLaunchDiagnostics,
+  collectCursorAppBackendDiagnostics,
   collectCursorAppShellDiagnostics, collectCursorAppShellOutputDiagnostics,
   projectCursorAppShellDiagnostics, collectCursorAppStopDiagnostics } from "./cursor-app-diagnostics.mjs";
+import { collectCursorAppHookDiagnostics } from "./cursor-app-hook-diagnostics.mjs";
 
 const [packageRoot, appPath, expectedVersion, playwrightRoot, reportDir, expectedNodeMajor = "24"] = process.argv.slice(2);
 const report = { status: "FAIL", client: "cursor", kind: "app-native-session-flows", platform: process.platform,
@@ -809,6 +811,13 @@ try {
   const run = agent?.runs.at(-1);
   if (env && run) report.diagnostics = await collectCursorAppDiagnostics({ home: env.MEMORAX_CODE_HOME,
     sessionId: run.conversationId, turnId: run.requestId });
+  if (env && run) {
+    const identity = { sessionId: run.conversationId, turnId: run.requestId };
+    report.nativeHooks = await collectCursorAppHookDiagnostics({ home: userData, ...identity });
+    const history = await command(["logs", "--diagnostics", "--limit", "100", "--json", "--home", env.MEMORAX_CODE_HOME],
+      "CURSOR_APP_DIAGNOSTICS_READ").catch(() => undefined);
+    report.backendDiagnostics = collectCursorAppBackendDiagnostics(history, identity);
+  }
 }
 finally {
   try { await stopApp(); } catch (error) { report.cleanupError = safeCode(error); }
