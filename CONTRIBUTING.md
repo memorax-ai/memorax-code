@@ -942,7 +942,7 @@ targeting `main` and pushes to `main`, on `ubuntu-24.04` (x64), `macos-15`
 (arm64), and `windows-2025` (x64), using Node.js 24. Each platform runs its
 fixed baseline and the latest official desktop release resolved once for that
 run, subject to the narrow Windows fallback below. Identical full versions,
-URLs, and checksums share one `baseline+latest`
+URLs, and checksums (advisory on Linux) share one `baseline+latest`
 job; a different desktop build still gets a separate job even if its bundled
 CLI version is unchanged. One additional Ubuntu job uses the minimum supported
 Node.js 20 with the fixed Linux baseline. All four to seven jobs run the complete
@@ -956,15 +956,16 @@ fail that check; intentionally unselected manual runs skip it as well.
 The aggregate also requires the resolver's coverage report. A successful matrix
 can have degraded Windows coverage: its summary names the untested official
 latest and the selected older release instead of claiming latest coverage.
-Each runner consumes the frozen release description and checks its selected
-SHA-256 before extracting or mounting the official desktop package. The
+Each runner consumes the frozen release description. macOS and Windows require
+its selected SHA-256 before mounting or extracting; Linux records the actual
+SHA-256 and warns on differences while requiring package and runtime identity. The
 WorkBuddy-specific resolver in `scripts/ci/codebuddy-workbuddy/workbuddy-release-matrix.mjs` owns the
 baseline records, feed validation, and matrix; the three acquisition helpers
 also accept a validated release JSON file while retaining their standalone
 baseline defaults. Desktop and bundled CLI versions are checked separately,
 because the official platform releases are not synchronized. Baselines require
 the exact known CLI version; latest and fallback jobs read a stable CLI version
-from the verified package and compare it with the real command's `--version`
+from the validated package metadata and compare it with the real command's `--version`
 before the native suites. The current fixed baselines are:
 
 | Runner | Official desktop package | Bundled CLI |
@@ -973,25 +974,28 @@ before the native suites. The current fixed baselines are:
 | macOS arm64 | `5.6.2.39298511` DMG | `2.147.0` |
 | Windows x64 | `5.6.2.39298511` EXE | `2.147.0` |
 
-The Linux DEB uses a maintainer-recorded SHA-256, not a vendor-published checksum.
-On 2026-10-03, two independent downloads from the fixed official HTTPS URL in
-`scripts/ci/codebuddy-workbuddy/workbuddy-linux-bundle-check.sh` produced a 429,302,312-byte file with
-SHA-256 `2ef1bca217d29d9c2ba988c82079aa6ea0077e9f1ff882c6ab5dd7998bddf721`.
-The [official update feed](https://www.workbuddy.cn/v2/update?platform=workbuddy-linux-x64-deb)
-instead reported `03d756b259d7086c22098fa077589a032d60948d1de7313473360eefe11e240f`
-for that same URL and version. This pin detects changes from the inspected
-download; it is not an independent publisher signature or proof that the initial
-file was authentic. The resolver applies this reviewed exception only to that
-exact URL, version, and incorrect feed checksum; it never learns a pin from a
-new download. Other Linux latest releases use their official feed checksum.
-Any mismatch fails before extraction. A new mismatch requires explicit source
-review; do not bypass verification or automatically replace the expected hash.
+Linux functional CI permits same-version rebuilds: the same official DEB URL
+was observed returning packages built on 2026-09-10 and 2026-09-21 with different
+hashes but the same product and bundled CLI versions. Its baseline hash is a
+maintainer-recorded reference; other latest releases retain the official feed
+hash as a reference. A difference emits an explicit warning and diagnostic,
+not an acquisition failure. The success report records the actual download hash;
+neither downloads nor feeds replace the baseline reference. Linux deduplicates
+the same full version and URL regardless of reference hash differences.
+
+The official HTTPS source, successful complete HTTP 200 response, valid DEB
+format, package name/version/architecture, and bundled CLI identity/version
+remain required. Partial responses and declared length mismatches fail before
+extraction. A matching version is not a publisher signature or proof of
+identical contents; these checks run only on isolated CI runners without
+business credentials. macOS and Windows checksum and signature gates are unchanged.
 
 Manual `diagnose_workbuddy` runs retain each Linux download and a content-free
-response report as a one-day artifact, including checksum failures, for offline
+response report as a one-day artifact, including checksum warnings, for offline
 comparison. Normal PR and push runs do not retain these packages. Retained
-downloads are evidence, not trusted executables; never install or run a package
-whose checksum failed. Response reports omit raw headers and signed URL queries.
+downloads are diagnostic evidence, not authenticated release artifacts. A Linux
+hash warning permits only the isolated functional checks after all remaining
+validation passes. Response reports omit raw headers and signed URL queries.
 
 Latest discovery uses each platform's official update feed. The macOS ZIP URL
 is converted to the DMG URL in the same manner as the official download page.
@@ -1015,8 +1019,9 @@ The YAML parser
 temporary directory, not added to product dependencies; package-job helper
 tests exercise the real parser. Native jobs and offline release selection need
 only Node built-ins. All other feed, network, metadata, signature, or checksum
-errors fail the check. A missing older candidate, invalid selected manifest,
-conflicting known pin, or failed acquisition also fails; the resolver does not
+errors fail the check, except the Linux hash differences described above.
+A missing older candidate, invalid selected manifest, conflicting non-Linux
+known pin, or failed acquisition also fails; the resolver does not
 continue trying progressively older versions.
 
 The macOS runner also requires Apple's notarization assessment and Tencent's

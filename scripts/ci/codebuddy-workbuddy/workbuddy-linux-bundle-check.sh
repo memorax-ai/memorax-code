@@ -9,7 +9,7 @@ fi
 fail() {
   printf '%s\n' "$1" >&2
   case "$1" in
-    WORKBUDDY_BUNDLE_DOWNLOAD_FAILED|WORKBUDDY_BUNDLE_HASH_MISMATCH) download_diagnostic ;;
+    WORKBUDDY_BUNDLE_DOWNLOAD_FAILED|WORKBUDDY_BUNDLE_RESPONSE_INVALID) download_diagnostic ;;
   esac
   exit 1
 }
@@ -52,7 +52,8 @@ if (directory) {
     } catch {}
     const digest = (value) => createHash('sha256').update(value).digest('hex');
     mkdirSync(directory, { mode: 0o700 });
-    const packageRetained = exit === '0' && bytes !== null;
+    const packageRetained = exit === '0' && status === '200' && range === '' && bytes > 0
+      && (length === '' || integer(length) === bytes);
     if (packageRetained) {
       const target = join(directory, 'WorkBuddy.deb');
       copyFileSync(partial, target, constants.COPYFILE_EXCL);
@@ -115,11 +116,33 @@ curl --disable --fail --silent --show-error --location \
   --output "$partial" "$url" >"$transfer" 2>/dev/null || curl_exit=$?
 [[ "$curl_exit" == 0 ]] || fail WORKBUDDY_BUNDLE_DOWNLOAD_FAILED
 [[ -f "$partial" && ! -L "$partial" ]] || fail WORKBUDDY_BUNDLE_DOWNLOAD_MISSING
+if ! node --input-type=module - "$partial" "$transfer" <<'NODE' 2>/dev/null
+import assert from 'node:assert/strict';
+import { lstatSync, readFileSync } from 'node:fs';
+const bytes = lstatSync(process.argv[2]).size;
+const transfer = lstatSync(process.argv[3]);
+assert.ok(Number.isSafeInteger(bytes) && bytes > 0 && transfer.isFile() && transfer.size <= 16384);
+const fields = readFileSync(process.argv[3], 'utf8').split('\n');
+assert.equal(fields.length, 9);
+const [status, length, range] = fields;
+assert.equal(status, '200');
+assert.equal(range, '');
+assert.ok(length === '' || (/^\d{1,16}$/.test(length) && Number(length) === bytes));
+NODE
+then
+  fail WORKBUDDY_BUNDLE_RESPONSE_INVALID
+fi
 if ! actual="$(sha256sum "$partial" 2>/dev/null)"; then
   fail WORKBUDDY_BUNDLE_HASH_FAILED
 fi
-[[ "${actual%% *}" == "$sha256" ]] || fail WORKBUDDY_BUNDLE_HASH_MISMATCH
-if [[ -n "${WORKBUDDY_DOWNLOAD_DIAGNOSTIC_DIR:-}" ]]; then download_diagnostic capture; fi
+actual="${actual%% *}"
+[[ "$actual" =~ ^[a-f0-9]{64}$ ]] || fail WORKBUDDY_BUNDLE_HASH_FAILED
+if [[ "$actual" != "$sha256" ]]; then
+  printf '%s\n' '::warning::WORKBUDDY_BUNDLE_HASH_MISMATCH_WARNING: Linux CI will continue only after package and runtime validation.' >&2
+  download_diagnostic
+elif [[ -n "${WORKBUDDY_DOWNLOAD_DIAGNOSTIC_DIR:-}" ]]; then
+  download_diagnostic capture
+fi
 for field in Package Version Architecture; do
   case "$field" in
     Package) expected=workbuddy ;;
@@ -166,4 +189,4 @@ if ! node "$script_dir/workbuddy-bundled-command-check.mjs" "$destination/$comma
   fail WORKBUDDY_BUNDLE_COMMAND_INVALID
 fi
 printf '{"desktopVersion":"%s","runtimeVersion":"%s","arch":"%s","sha256":"%s","command":"%s"}\n' \
-  "$desktop_version" "$actual_runtime" "$arch" "$sha256" "$command_relative"
+  "$desktop_version" "$actual_runtime" "$arch" "$actual" "$command_relative"

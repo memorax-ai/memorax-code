@@ -39,12 +39,22 @@ test("WorkBuddy does not deduplicate different desktop builds or changed artifac
   assert.equal(buildMatrix(latest).include.length, 5);
 });
 
-test("WorkBuddy only applies the reviewed Linux SHA exception to its exact historic artifact", () => {
-  assert.equal(resolveFeed("linux-x64-deb", feed("linux-x64-deb")).sha256, baselineRelease("linux-x64-deb").sha256);
-  for (const change of [{ version: "5.7.0.40000000" }, { url: feed("linux-x64-deb").url.replace("5f969292", "abcdef12") },
-    { sha256hash: "b".repeat(64) }]) {
-    assert.throws(() => resolveFeed("linux-x64-deb", { ...feed("linux-x64-deb"), ...change }));
+test("WorkBuddy Linux retains advisory feed hashes and deduplicates the same release URL", () => {
+  const platform = "linux-x64-deb";
+  const baseline = baselineRelease(platform);
+  for (const sha256hash of [linuxFeedHash, "b".repeat(64)]) {
+    const latest = resolveFeed(platform, { ...feed(platform), sha256hash });
+    assert.equal(latest.sha256, sha256hash);
+    const { include } = buildMatrix({ ...releases(), [platform]: latest });
+    assert.equal(include.length, 4);
+    const linux = include.filter((row) => row.release.platform === platform);
+    assert.deepEqual(linux.map((row) => row.release.channel), ["baseline+latest", "baseline"]);
+    for (const { release } of include) assert.deepEqual(validateRelease(release, release.platform), release);
+    assert.equal(linux[0].release.sha256, baseline.sha256);
   }
+  const newer = feed(platform, true);
+  assert.equal(resolveFeed(platform, { ...newer, sha256hash: linuxFeedHash }).sha256, linuxFeedHash);
+  assert.throws(() => resolveFeed(platform, { ...feed(platform), version: newer.version }));
 });
 
 test("WorkBuddy release validation rejects malformed, cross-platform and untrusted descriptions", () => {
@@ -65,11 +75,13 @@ test("WorkBuddy release validation rejects malformed, cross-platform and untrust
   }
 });
 
-test("WorkBuddy supplied latest descriptions cannot replace any known artifact checksum", () => {
+test("WorkBuddy known artifact checksums remain strict outside Linux", () => {
   for (const platform of [...platforms, "darwin-x64"]) {
     const latest = { ...baselineRelease(platform), channel: "latest", runtimeVersion: null };
     assert.deepEqual(validateRelease(latest, platform), latest);
-    assert.throws(() => validateRelease({ ...latest, sha256: "a".repeat(64) }, platform), /WORKBUDDY_RELEASE_PIN_CONFLICT/);
+    const changed = { ...latest, sha256: "a".repeat(64) };
+    if (platform === "linux-x64-deb") assert.deepEqual(validateRelease(changed, platform), changed);
+    else assert.throws(() => validateRelease(changed, platform), /WORKBUDDY_RELEASE_PIN_CONFLICT/);
   }
 });
 

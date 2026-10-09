@@ -12,7 +12,7 @@ const platforms = [
   { platform: "win32-x64-user", os: "windows-2025", arch: "x64" },
 ];
 const pins = {
-  // Maintainer-reviewed Linux exception; see CONTRIBUTING.md for provenance.
+  // Linux records a reference hash; same-version rebuilds are allowed in CI.
   "linux-x64-deb": ["5.5.6.38337834", "2.137.1", "5f969292", "deb",
     "2ef1bca217d29d9c2ba988c82079aa6ea0077e9f1ff882c6ab5dd7998bddf721"],
   "darwin-arm64": ["5.6.2.39298511", "2.147.0", "37a65c0b", "dmg",
@@ -22,7 +22,6 @@ const pins = {
   "win32-x64-user": ["5.6.2.39298511", "2.147.0", "37a65c0b", "exe",
     "627e5a565436d0876740af69c2747759648662c52958d2a5df1ba330a82c3025"],
 };
-const linuxFeedHash = "03d756b259d7086c22098fa077589a032d60948d1de7313473360eefe11e240f";
 
 export function baselineRelease(platform) {
   assert.ok(Object.hasOwn(pins, platform), "WORKBUDDY_RELEASE_PLATFORM_INVALID");
@@ -63,15 +62,16 @@ export function validateRelease(value, platform) {
   if (value.channel === "fallback") assert.equal(platform, "win32-x64-user");
   const release = Object.fromEntries(Object.keys(baseline).map((key) => [key, value[key]]));
   release.sha256 = release.sha256.toLowerCase();
-  // A known immutable URL must never be repinned by a feed or supplied description.
-  if (release.url === baseline.url) assert.equal(release.sha256, baseline.sha256, "WORKBUDDY_RELEASE_PIN_CONFLICT");
+  // Linux hashes are advisory because the official URL can serve same-version rebuilds.
+  if (platform !== "linux-x64-deb" && release.url === baseline.url) {
+    assert.equal(release.sha256, baseline.sha256, "WORKBUDDY_RELEASE_PIN_CONFLICT");
+  }
   if (["latest", "fallback"].includes(release.channel)) assert.equal(release.runtimeVersion, null);
   else assert.deepEqual({ ...release, channel: "baseline" }, baseline);
   return release;
 }
 
 export function resolveFeed(platform, feed, wingetManifest) {
-  const baseline = baselineRelease(platform);
   assert.match(feed?.version, desktopVersion);
   assert.equal(feed.productVersion, feed.version);
   let url = feed.url;
@@ -87,11 +87,6 @@ export function resolveFeed(platform, feed, wingetManifest) {
       && (installer.Scope ?? wingetManifest.Scope) === "user" && installer.InstallerUrl === url);
     assert.equal(matches.length, 1, "WORKBUDDY_WINGET_INSTALLER_NOT_UNIQUE");
     sha256 = matches[0].InstallerSha256;
-  }
-  if (platform === "linux-x64-deb" && sha256 === linuxFeedHash) {
-    assert.equal(feed.version, baseline.desktopVersion);
-    assert.equal(url, baseline.url);
-    sha256 = baseline.sha256;
   }
   const release = validateRelease({ platform, desktopVersion: feed.version,
     productVersion: feed.version.split(".").slice(0, 3).join("."), runtimeVersion: null,
@@ -111,7 +106,8 @@ export function buildMatrix(latestByPlatform, requestedByPlatform = {}) {
       assert.match(requestedDesktopVersion, desktopVersion);
       assert.ok(compareVersions(latest.desktopVersion, requestedDesktopVersion) < 0);
     }
-    const same = latest.desktopVersion === baseline.desktopVersion && latest.url === baseline.url && latest.sha256 === baseline.sha256;
+    const same = latest.desktopVersion === baseline.desktopVersion && latest.url === baseline.url
+      && (platform === "linux-x64-deb" || latest.sha256 === baseline.sha256);
     include.push({ os, arch, node: "24", release: { ...baseline, channel: same && !fallback ? "baseline+latest" : "baseline" } });
     if (!same) include.push({ os, arch, node: "24", release: latest });
     if (fallback) include.at(-1).requestedDesktopVersion = requestedDesktopVersion;
@@ -226,7 +222,7 @@ async function main(args) {
   if (matrix.include.some((row) => row.requestedDesktopVersion)) console.error(`::warning::${coverage}`);
   if (process.env.GITHUB_STEP_SUMMARY) {
     await appendFile(process.env.GITHUB_STEP_SUMMARY, `### WorkBuddy Release Matrix\n\n${coverage}\n\n` + matrix.include.map((row) =>
-      `- ${row.os} (${row.arch}), Node ${row.node}: ${row.release.channel}, desktop ${row.release.desktopVersion}, SHA-256 ${row.release.sha256}`).join("\n") + "\n");
+      `- ${row.os} (${row.arch}), Node ${row.node}: ${row.release.channel}, desktop ${row.release.desktopVersion}, SHA-256${row.release.platform === "linux-x64-deb" ? " (advisory reference)" : ""} ${row.release.sha256}`).join("\n") + "\n");
   }
   console.log(JSON.stringify(matrix));
 }

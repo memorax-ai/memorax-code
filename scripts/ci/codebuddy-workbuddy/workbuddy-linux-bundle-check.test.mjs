@@ -23,6 +23,11 @@ function diagnosticLine(overrides = {}) {
     bytes: 15, curlExit: 0, httpStatus: 200, contentLength: 15, contentRange: null, ...overrides })}\n`;
 }
 
+function hashWarning(actualSha256, expectedSha256 = sha256) {
+  return "::warning::WORKBUDDY_BUNDLE_HASH_MISMATCH_WARNING: Linux CI will continue only after package and runtime validation.\n"
+    + diagnosticLine({ actualSha256, expectedSha256 });
+}
+
 test("WorkBuddy Linux acquisition rejects unsupported OS and architecture before downloading", posixOnly, async () => {
   for (const [os, machine, expected] of [["Darwin", "x86_64", "LINUX_REQUIRED"],
     ["Linux", "aarch64", "ARCH_UNSUPPORTED"]]) {
@@ -55,7 +60,7 @@ test("WorkBuddy Linux acquisition requires an empty real destination and valid a
 });
 
 for (const args of [[], ["x64"]]) {
-  test(`WorkBuddy Linux acquisition pins and extracts the official x64 bundle (${args.length ? "explicit" : "detected"})`, posixOnly, async () => {
+  test(`WorkBuddy Linux acquisition validates and extracts the official x64 bundle (${args.length ? "explicit" : "detected"})`, posixOnly, async () => {
     await fixture(async ({ run, calls, curlArgs, dpkgArgs, destination }) => {
       const result = await run([destination, ...args]);
       assert.equal(result.code, 0, result.stderr);
@@ -80,20 +85,21 @@ for (const args of [[], ["x64"]]) {
   });
 }
 
-test("WorkBuddy Linux latest acquisition discovers the actual verified bundled runtime", posixOnly, async () => {
+test("WorkBuddy Linux latest acquisition discovers the bundled runtime after a hash warning", posixOnly, async () => {
+  const actualSha256 = "b".repeat(64);
   await fixture(async ({ run, calls, curlArgs, destination, releasePath, metadata, packageRoot }) => {
     metadata.publishConfig.customPackage.version = "2.160.1";
     await writeFile(join(packageRoot, cliRelative, "package.json"), JSON.stringify(metadata));
     const result = await run([destination, "x64", releasePath]);
     assert.equal(result.code, 0, result.stderr);
-    assert.equal(result.stderr, "");
+    assert.equal(result.stderr, hashWarning(actualSha256, latestRelease.sha256));
     assert.deepEqual(JSON.parse(result.stdout), { desktopVersion: latestRelease.desktopVersion,
-      runtimeVersion: "2.160.1", arch: "x64", sha256: latestRelease.sha256,
+      runtimeVersion: "2.160.1", arch: "x64", sha256: actualSha256,
       command: `extracted/${cliRelative}/bin/codebuddy` });
     assert.equal((await curlArgs()).at(-1), latestRelease.url);
     assert.deepEqual(await calls(), ["curl", "sha256sum", ...fields.map((field) => `field:${field}`), "extract"]);
     assert.deepEqual(await readdir(destination), ["WorkBuddy.deb", "extracted"]);
-  }, { hash: latestRelease.sha256, packageVersion: latestRelease.productVersion });
+  }, { hash: actualSha256, packageVersion: latestRelease.productVersion });
 });
 
 for (const channel of ["baseline", "baseline+latest"]) {
@@ -133,7 +139,7 @@ for (const invalid of ["missing", "empty path", "malformed", "platform", "runtim
 }
 
 for (const [name, options, expected, expectedCalls] of [
-  ["baseline digest", {}, "HASH_MISMATCH", ["curl", "sha256sum"]],
+  ["baseline digest and package version", {}, "PACKAGE_METADATA_INVALID", ["curl", "sha256sum", "field:Package", "field:Version"]],
   ["baseline package version", { hash: latestRelease.sha256 }, "PACKAGE_METADATA_INVALID", ["curl", "sha256sum", "field:Package", "field:Version"]],
 ]) {
   test(`WorkBuddy Linux latest acquisition rejects the ${name} for a different release`, posixOnly, async () => {
@@ -141,8 +147,7 @@ for (const [name, options, expected, expectedCalls] of [
       const result = await run([destination, "x64", releasePath]);
       assert.equal(result.code, 1);
       assert.equal(result.stdout, "");
-      assert.equal(result.stderr, `WORKBUDDY_BUNDLE_${expected}\n` + (expected === "HASH_MISMATCH"
-        ? diagnosticLine({ expectedSha256: latestRelease.sha256, actualSha256: sha256 }) : ""));
+      assert.equal(result.stderr, (options.hash ? "" : hashWarning(sha256, latestRelease.sha256)) + `WORKBUDDY_BUNDLE_${expected}\n`);
       assert.deepEqual(await calls(), expectedCalls);
       assert.deepEqual(await readdir(destination), []);
     }, options);
@@ -165,9 +170,8 @@ for (const version of ["latest", "2.160.1-beta.1", "02.160.1", "2.160", "2.160.1
 
 for (const [name, options, expected, expectedCalls] of [
   ["network failure", { curlExit: "22" }, "DOWNLOAD_FAILED", ["curl"]],
-  ["checksum mismatch", { hash: "0".repeat(64) }, "HASH_MISMATCH", ["curl", "sha256sum"]],
-  ["mismatched vendor feed checksum", { hash: "03d756b259d7086c22098fa077589a032d60948d1de7313473360eefe11e240f" }, "HASH_MISMATCH", ["curl", "sha256sum"]],
   ["checksum tool failure", { hashExit: "1" }, "HASH_FAILED", ["curl", "sha256sum"]],
+  ["invalid checksum output", { hash: "invalid-digest" }, "HASH_FAILED", ["curl", "sha256sum"]],
   ["package name mismatch", { packageName: "codebuddy" }, "PACKAGE_METADATA_INVALID", ["curl", "sha256sum", "field:Package"]],
   ["package version mismatch", { packageVersion: "5.6.2" }, "PACKAGE_METADATA_INVALID", ["curl", "sha256sum", "field:Package", "field:Version"]],
   ["package architecture mismatch", { packageArch: "arm64" }, "PACKAGE_METADATA_INVALID", ["curl", "sha256sum", ...fields.map((field) => `field:${field}`)]],
@@ -178,8 +182,7 @@ for (const [name, options, expected, expectedCalls] of [
       const result = await run([destination]);
       assert.equal(result.code, 1);
       assert.equal(result.stdout, "");
-      const diagnostic = expected === "HASH_MISMATCH" ? diagnosticLine({ actualSha256: options.hash })
-        : expected === "DOWNLOAD_FAILED" ? diagnosticLine({ curlExit: Number(options.curlExit) }) : "";
+      const diagnostic = expected === "DOWNLOAD_FAILED" ? diagnosticLine({ curlExit: Number(options.curlExit) }) : "";
       assert.equal(result.stderr, `WORKBUDDY_BUNDLE_${expected}\n${diagnostic}`);
       assert.deepEqual(await calls(), expectedCalls);
       assert.deepEqual(await readdir(destination), []);
@@ -187,18 +190,48 @@ for (const [name, options, expected, expectedCalls] of [
   });
 }
 
-test("WorkBuddy Linux hash mismatch records a partial HTTP range without exposing curl errors", posixOnly, async () => {
-  await fixture(async ({ run, calls, destination }) => {
+test("WorkBuddy Linux acquisition rejects partial responses even when curl succeeds", posixOnly, async () => {
+  await fixture(async ({ run, calls, destination, diagnosticDir }) => {
     const result = await run([destination]);
     assert.equal(result.code, 1);
     assert.equal(result.stdout, "");
-    assert.equal(result.stderr, "WORKBUDDY_BUNDLE_HASH_MISMATCH\n" + diagnosticLine({
-      actualSha256: "0".repeat(64), httpStatus: 206, contentRange: "bytes 0-14/429302312",
+    assert.equal(result.stderr, "WORKBUDDY_BUNDLE_RESPONSE_INVALID\n" + diagnosticLine({
+      httpStatus: 206, contentRange: "bytes 0-14/429302312",
     }));
-    assert.deepEqual(await calls(), ["curl", "sha256sum"]);
+    assert.deepEqual(await calls(), ["curl"]);
     assert.deepEqual(await readdir(destination), []);
-  }, { hash: "0".repeat(64), httpStatus: "206", contentRange: "bytes 0-14/429302312",
+    assert.deepEqual(await readdir(diagnosticDir), ["download.json"]);
+    assert.equal(JSON.parse(await readFile(join(diagnosticDir, "download.json"), "utf8")).packageRetained, false);
+  }, { capture: true, hash: "0".repeat(64), httpStatus: "206", contentRange: "bytes 0-14/429302312",
     curlError: "private-credential-canary https://example.invalid/?signed=private-url-canary" });
+});
+
+test("WorkBuddy Linux acquisition rejects non-200, ranged, and inconsistent response lengths", posixOnly, async () => {
+  for (const options of [{ httpStatus: "204" }, { contentRange: "bytes 0-14/15" },
+    { contentLength: "16" }, { contentLength: "private-header-canary" }]) {
+    await fixture(async ({ run, calls, destination }) => {
+      const result = await run([destination]);
+      assert.equal(result.code, 1);
+      assert.equal(result.stdout, "");
+      assert.match(result.stderr, /^WORKBUDDY_BUNDLE_RESPONSE_INVALID\nWORKBUDDY_BUNDLE_DIAGNOSTIC /);
+      assert.doesNotMatch(result.stderr, /private-header-canary/);
+      assert.deepEqual(await calls(), ["curl"]);
+      assert.deepEqual(await readdir(destination), []);
+    }, options);
+  }
+});
+
+test("WorkBuddy Linux hash drift warns without opt-in and reports the actual SHA", posixOnly, async () => {
+  const hash = "03d756b259d7086c22098fa077589a032d60948d1de7313473360eefe11e240f";
+  await fixture(async ({ run, calls, destination, diagnosticDir }) => {
+    const result = await run([destination]);
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stderr, "::warning::WORKBUDDY_BUNDLE_HASH_MISMATCH_WARNING: Linux CI will continue only after package and runtime validation.\n"
+      + diagnosticLine({ actualSha256: hash, contentLength: null }));
+    assert.equal(JSON.parse(result.stdout).sha256, hash);
+    assert.deepEqual(await calls(), ["curl", "sha256sum", ...fields.map((field) => `field:${field}`), "extract"]);
+    await assert.rejects(readdir(diagnosticDir), { code: "ENOENT" });
+  }, { hash, contentLength: "" });
 });
 
 test("WorkBuddy Linux download failure omits malformed and oversized response metadata", posixOnly, async () => {
@@ -217,14 +250,15 @@ test("WorkBuddy Linux download failure omits malformed and oversized response me
   }
 });
 
-test("WorkBuddy Linux opt-in retains completed downloads without weakening the hash gate", posixOnly, async () => {
+test("WorkBuddy Linux opt-in retains completed downloads and records hash drift", posixOnly, async () => {
   const effectiveUrl = "https://download.codebuddy.cn/private-path-canary?signature=private-query-canary";
   const digest = (value) => createHash("sha256").update(value).digest("hex");
   for (const hash of [sha256, "0".repeat(64)]) {
     await fixture(async ({ run, calls, destination, diagnosticDir }) => {
       const result = await run([destination]);
-      assert.equal(result.code, hash === sha256 ? 0 : 1);
-      assert.equal(result.stderr, hash === sha256 ? "" : "WORKBUDDY_BUNDLE_HASH_MISMATCH\n" + diagnosticLine({ actualSha256: hash }));
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(result.stderr, hash === sha256 ? "" : hashWarning(hash));
+      assert.equal(JSON.parse(result.stdout).sha256, hash);
       assert.deepEqual(await readdir(diagnosticDir), ["WorkBuddy.deb", "download.json"]);
       assert.equal(await readFile(join(diagnosticDir, "WorkBuddy.deb"), "utf8"), "Synthetic deb.\n");
       const metadata = await readFile(join(diagnosticDir, "download.json"), "utf8");
@@ -237,9 +271,8 @@ test("WorkBuddy Linux opt-in retains completed downloads without weakening the h
         etag: '"0123456789abcdef0123456789abcdef-2"', lastModified: "Wed, 01 Jul 2026 12:00:00 GMT", contentEncoding: "gzip",
       });
       assert.doesNotMatch(metadata + result.stdout + result.stderr, /private-(?:path|query|credential)-canary/);
-      assert.deepEqual(await calls(), hash === sha256
-        ? ["curl", "sha256sum", ...fields.map((field) => `field:${field}`), "extract"] : ["curl", "sha256sum"]);
-      assert.deepEqual(await readdir(destination), hash === sha256 ? ["WorkBuddy.deb", "extracted"] : []);
+      assert.deepEqual(await calls(), ["curl", "sha256sum", ...fields.map((field) => `field:${field}`), "extract"]);
+      assert.deepEqual(await readdir(destination), ["WorkBuddy.deb", "extracted"]);
     }, { capture: true, hash, effectiveUrl, redirectCount: "1", etag: '"0123456789abcdef0123456789abcdef-2"',
       lastModified: "Wed, 01 Jul 2026 12:00:00 GMT", contentEncoding: "gzip", curlError: "private-credential-canary" });
   }
@@ -264,17 +297,18 @@ test("WorkBuddy Linux opt-in keeps only sanitized metadata after an incomplete d
 });
 
 test("WorkBuddy Linux diagnostic capture failure preserves the original acquisition result", posixOnly, async () => {
-  for (const hash of [sha256, "0".repeat(64)]) {
+  for (const curlExit of ["0", "22"]) {
     await fixture(async ({ run, destination, diagnosticDir }) => {
       await mkdir(diagnosticDir);
       await writeFile(join(diagnosticDir, "sentinel"), "Existing diagnostic.\n");
       const result = await run([destination]);
-      assert.equal(result.code, hash === sha256 ? 0 : 1);
-      assert.equal(result.stderr, (hash === sha256 ? "" : "WORKBUDDY_BUNDLE_HASH_MISMATCH\n" + diagnosticLine({ actualSha256: hash }))
+      assert.equal(result.code, curlExit === "0" ? 0 : 1);
+      assert.equal(result.stderr, (curlExit === "0" ? hashWarning("0".repeat(64))
+        : "WORKBUDDY_BUNDLE_DOWNLOAD_FAILED\n" + diagnosticLine({ curlExit: 22 }))
         + "WORKBUDDY_BUNDLE_DIAGNOSTIC_CAPTURE_FAILED\n");
       assert.deepEqual(await readdir(diagnosticDir), ["sentinel"]);
       assert.equal(await readFile(join(diagnosticDir, "sentinel"), "utf8"), "Existing diagnostic.\n");
-    }, { capture: true, hash });
+    }, { capture: true, hash: "0".repeat(64), curlExit });
   }
 });
 
@@ -316,9 +350,9 @@ for (const mutation of ["runtime version", "runtime package", "runtime bin", "mi
       const result = await run([destination]);
       assert.equal(result.code, 1);
       assert.equal(result.stdout, "");
-      assert.equal(result.stderr, "WORKBUDDY_BUNDLE_RUNTIME_METADATA_INVALID\n");
+      assert.equal(result.stderr, hashWarning("0".repeat(64)) + "WORKBUDDY_BUNDLE_RUNTIME_METADATA_INVALID\n");
       assert.deepEqual(await calls(), ["curl", "sha256sum", ...fields.map((field) => `field:${field}`), "extract"]);
-    });
+    }, { hash: "0".repeat(64) });
   });
 }
 
