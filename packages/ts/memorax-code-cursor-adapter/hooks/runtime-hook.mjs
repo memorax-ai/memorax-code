@@ -208,8 +208,9 @@ async function post(path, body, timeoutMs = 12_000) {
 async function readJsonStdin() {
   try {
     let text = "";
-    for await (const chunk of process.stdin) text += chunk;
-    const value = JSON.parse(text);
+    for await (const chunk of process.stdin.setEncoding("utf8")) text += chunk;
+    // Cursor's Windows PowerShell pipeline can prefix Hook JSON with a UTF-8 BOM.
+    const value = JSON.parse(text.replace(/^\ufeff/, ""));
     return isRecord(value) ? value : {};
   } catch { return {}; }
 }
@@ -226,6 +227,11 @@ function uuid(value) {
 }
 
 function absolutePath(value) {
+  if (process.platform === "win32" && typeof value === "string") {
+    // Cursor workspace URI paths include a slash before the Windows drive.
+    if (/^\/[A-Za-z]:(?:$|[^/\\])/.test(value)) return undefined;
+    if (/^\/[A-Za-z]:\//.test(value)) value = value.slice(1);
+  }
   return typeof value === "string" && value.trim() && !/[\r\n\0]/.test(value)
     && (isAbsolute(value) || win32.isAbsolute(value)) ? value : undefined;
 }

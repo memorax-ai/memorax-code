@@ -1,0 +1,879 @@
+#!/usr/bin/env node
+import { execFile, spawn } from "node:child_process";
+import { once } from "node:events";
+import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
+import { networkInterfaces, tmpdir } from "node:os";
+import { basename, dirname, join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
+import { pathToFileURL } from "node:url";
+import { promisify } from "node:util";
+import { startCursorAgentMock } from "./cursor-app-mock-server.mjs";
+import { assertCursorAppNativeContent, assertCursorAppNativeSubagent, assertCursorAppWritebacks } from "./cursor-app-native-content-check.mjs";
+import { assertCursorAppSkillReference, assertCursorAppMemoryOperation } from "./cursor-app-memory-check.mjs";
+import { parseCursorRepoMemoryDelegation, parseCursorRepoMemoryClaim, assertCursorRepoMemoryRejected,
+  verifyCursorRepoMemoryFailure } from "./cursor-app-repo-memory-check.mjs";
+import { collectCursorAppDiagnostics, collectCursorAppLaunchDiagnostics,
+  collectCursorAppBackendDiagnostics,
+  collectCursorAppShellDiagnostics, collectCursorAppShellOutputDiagnostics,
+  projectCursorAppShellDiagnostics, collectCursorAppStopDiagnostics } from "./cursor-app-diagnostics.mjs";
+import { collectCursorAppHookDiagnostics } from "./cursor-app-hook-diagnostics.mjs";
+
+const [packageRoot, appPath, expectedVersion, playwrightRoot, reportDir, expectedNodeMajor = "24"] = process.argv.slice(2);
+const report = { status: "FAIL", client: "cursor", kind: "app-native-session-flows", platform: process.platform,
+  node: process.versions.node, stage: "preflight", evidence: { nativeContent: [] } };
+const prompt = "For this synthetic Cursor acceptance, keep answers concise.\nPreserve this marker: \u8bb0\u5fc6-42.";
+const answer = "I will keep answers concise.\nPreserved marker: \u8bb0\u5fc6-42.";
+const fixtures = [
+  { prompt, answer },
+  { prompt, answer: "This is the second concise reply.\nPreserved marker: \u8bb0\u5fc6-42." },
+  { prompt, answer },
+  { prompt: "Use numbered steps for changes in this resumed synthetic session.", answer: "I will use numbered steps for changes in this resumed session." },
+  { prompt: "/memorax-code Use the memorax-code skill to search coding memory for the parser validation lesson.",
+    answer: "The installed Skill search returned the parser validation lesson.", operation: "search" },
+  { prompt: "/memorax-code Use the memorax-code skill to save the verified parser validation lesson.",
+    answer: "The installed Skill saved the parser validation lesson.", operation: "add" },
+  { prompt: "Prepare the synthetic marker command so I can decline its execution.",
+    answer: "The command was declined and did not execute.", permission: "deny" },
+];
+const interruptedFixture = { prompt: "Prepare the synthetic marker command, then wait for approval.",
+  answer: "This interrupted run must never complete." };
+const recoveryFixture = { prompt: "Continue this synthetic conversation with a new concise answer.",
+  answer: "This new turn completed after the previous turn was cancelled." };
+const repoMemoryFixture = { prompt: "Report that the synthetic repository is ready, while delegating its pending Repo Memory job.",
+  answer: "The synthetic repository is ready and its Repo Memory job was delegated." };
+const repoMemoryWorkerAnswer = "No Repo Memory bundle was authored; the finish check correctly rejected the missing artifact.";
+const fixtureKey = "cursor-app-ci-synthetic-key", fixtureUser = "cursor-app-ci-synthetic-user";
+const skillQuery = "Which parser validation invariant applies to this synthetic task?";
+const skillMemory = "Validate parser input before interpreting structured data.";
+const skillReason = "Preserve the verified parser validation invariant.";
+const searchMemory = "CURSOR_NATIVE_SEARCH_RESULT: validate parser input before interpreting it.";
+const memoryRequests = [], turns = [];
+let agent, memory, app, browser, cli, page, started = false;
+let appLaunchLog = "", appSpawnError, appDebugEndpointSeen = false;
+let root, env, chromium, userData, workspace, skillRoot, skillText;
+let interruption, denial, repoMemory, repoMemoryHelper, repoMemoryDefinition;
+let macos, macosPaths, windows, windowsPaths, backendPort = 18787, debugPort = 9222;
+const observedMacosPids = new Set();
+const referenceTexts = new Map();
+const exec = promisify(execFile);
+
+async function prepareRepoMemoryWorkspace() {
+  const repo = join(root, "cursor-repo-memory");
+  await mkdir(repo);
+  await writeFile(join(repo, "README.md"), "# Synthetic Cursor Repo Memory acceptance\n");
+  const git = async (...args) => (await exec("git", args, { cwd: repo, env,
+    encoding: "utf8", timeout: 10000, maxBuffer: 64 * 1024, windowsHide: true })).stdout.trim();
+  await git("init", "--initial-branch=main");
+  await git("add", "README.md");
+  await git("-c", "user.name=CI Fixture", "-c", "user.email=ci@example.invalid", "-c", "commit.gpgSign=false", "commit", "-m", "Synthetic fixture");
+  await git("remote", "add", "origin", "https://example.invalid/ci/cursor-repo-memory.git");
+  const head = await git("rev-parse", "HEAD");
+  await git("update-ref", "refs/remotes/origin/main", head);
+  await git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main");
+  check(/^[a-f0-9]{40}$/.test(head), "CURSOR_APP_REPO_MEMORY_FIXTURE");
+  return { repo, head };
+}
+
+function check(value, code) { if (!value) throw Object.assign(new Error(code), { code }); }
+function safeCode(error) { return /^CURSOR_(?:APP|AGENT|MOCK)_[A-Z0-9_]+$/.test(error?.code) ? error.code : "CURSOR_APP_CHECK_FAILED"; }
+async function bounded(promise, code, timeoutMs = 10000) {
+  let timer;
+  try {
+    return await Promise.race([promise, new Promise((_, reject) => {
+      timer = setTimeout(() => reject(Object.assign(new Error(code), { code })), timeoutMs);
+    })]);
+  } finally { clearTimeout(timer); }
+}
+async function waitFor(predicate, code, timeoutMs = 30000) {
+  const deadline = Date.now() + timeoutMs;
+  do {
+    check(!app || (app.exitCode === null && app.signalCode === null), "CURSOR_APP_EXITED");
+    if (await bounded(Promise.resolve().then(predicate), code, 5000)) return;
+    await delay(200);
+  } while (Date.now() < deadline);
+  check(false, code);
+}
+async function assertMarkerAbsent(marker, code) {
+  try { await lstat(marker); check(false, code); }
+  catch (error) { if (error.code !== "ENOENT") throw error; }
+}
+async function command(args, code) {
+  const child = spawn(process.execPath, [join(packageRoot, "bin/memorax-code.mjs"), ...args],
+    { cwd: join(root, "workspace"), env, stdio: ["ignore", "pipe", "pipe"] });
+  let stdout = "", overflow = false, timedOut = false, stopDiagnostic;
+  child.stdout.setEncoding("utf8");
+  child.stdout.on("data", (chunk) => { stdout += chunk; if (stdout.length > 1024 * 1024) { overflow = true; child.kill("SIGKILL"); } });
+  child.stderr.resume();
+  const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, 30000);
+  try {
+    const [exitCode, signal] = await once(child, "close");
+    if (args[0] === "stop") stopDiagnostic = collectCursorAppStopDiagnostics({ stdout, exitCode, signal, timedOut, outputOverflow: overflow });
+    check(exitCode === 0 && !overflow, code);
+    try { return JSON.parse(stdout); } catch { check(false, code); }
+  } catch (error) {
+    if (args[0] === "stop") report.candidateStop = stopDiagnostic ?? collectCursorAppStopDiagnostics({ stdout,
+      exitCode: child.exitCode, signal: child.signalCode, timedOut, outputOverflow: overflow });
+    throw error;
+  } finally { clearTimeout(timer); }
+}
+async function ownedProcessesRemain({ includeBackend = true } = {}) {
+  if (macos) return macos.auditMacosProcesses({ appBundle: macosPaths.appBundle, packageRoot,
+    stateHome: env.MEMORAX_CODE_HOME, marker: interruption?.marker, includeBackend, selfPid: process.pid,
+    observedPids: observedMacosPids });
+  if (windows) return windows.auditWindowsProcesses({ appPath, packageRoot, stateHome: env.MEMORAX_CODE_HOME,
+    marker: interruption?.marker, encodedCommand: interruption?.encodedCommand, includeBackend, selfPid: process.pid, env });
+  for (const entry of await readdir("/proc")) {
+    if (!/^\d+$/.test(entry) || Number(entry) === process.pid) continue;
+    let argv;
+    try { argv = (await readFile(`/proc/${entry}/cmdline`, "utf8")).split("\0"); }
+    catch (error) { if (error.code === "ENOENT" || error.code === "ESRCH") continue; throw error; }
+    if (argv[0]?.startsWith(`${dirname(appPath)}/`) || argv.some((arg) => arg === env.MEMORAX_CODE_HOME
+      || arg.startsWith(`${env.MEMORAX_CODE_HOME}/`) || (includeBackend && arg.startsWith(`${packageRoot}/`))
+      || (interruption && arg.includes(interruption.marker)))) return true;
+  }
+  return false;
+}
+function assertWriteback() {
+  const automatic = [];
+  let position = 0;
+  for (const turn of turns) {
+    if (turn.operation) position++;
+    automatic.push(memoryRequests[position++]);
+  }
+  check(memoryRequests.length === position, "CURSOR_APP_MEMORY_REQUEST_COUNT");
+  return assertCursorAppWritebacks({ requests: automatic, turns, apiKey: fixtureKey,
+    baseUserId: fixtureUser });
+}
+function quote(value) { return `'${value.replaceAll("'", "'\\''")}'`; }
+function shellCommand(args, environment = {}) {
+  return windows ? windows.windowsShellCommand(args, environment)
+    : [...(Object.keys(environment).length ? ["env", ...Object.entries(environment).map(([key, value]) => `${key}=${value}`)] : []),
+      ...args].map(quote).join(" ");
+}
+function assertSkillMemory(operation, result, request, workspaceName) {
+  return assertCursorAppMemoryOperation({ request, result, operation, query: skillQuery,
+    memory: operation === "search" ? searchMemory : skillMemory, reason: skillReason, sessionId: "memorax-cli",
+    apiKey: fixtureKey, baseUserId: fixtureUser, workspaceName });
+}
+function toolSteps(run, results) {
+  if (interruption && run === agent.runs[interruption.runIndex]) {
+    check(interruption && run.prompt === interruptedFixture.prompt && run.conversationId === interruption.sessionId,
+      "CURSOR_APP_INTERRUPTION_IDENTITY");
+    if (!run.requestContextCloseCount) return { kind: "requestContext" };
+    check(results.length === 0, "CURSOR_APP_INTERRUPTION_TOOL_EXECUTED");
+    const command = shellCommand([process.execPath, "-e",
+      "require('node:fs').writeFileSync(process.argv[1], 'unexpected execution')", interruption.marker]);
+    if (windows) interruption.encodedCommand = command.split(" ").at(-1);
+    return { kind: "shell", command,
+    workingDirectory: workspace, timeoutMs: 20000 };
+  }
+  const fixture = turns.at(-1);
+  check(run.prompt === fixture?.prompt && run.conversationId === turns.at(-1).sessionId, "CURSOR_APP_SKILL_IDENTITY");
+  if (!run.requestContextCloseCount) return { kind: "requestContext" };
+  if (fixture.permission === "deny") {
+    check(denial && run.conversationId === denial.sessionId, "CURSOR_APP_PERMISSION_IDENTITY");
+    if (results.length === 0) return { kind: "shell", command: shellCommand([process.execPath, "-e",
+      "require('node:fs').writeFileSync(process.argv[1], 'unexpected execution')", denial.marker]),
+    workingDirectory: workspace, timeoutMs: 20000, expectRejection: true };
+    check(results.length === 1 && results[0].kind === "shell" && results[0].rejected === true,
+      "CURSOR_APP_PERMISSION_REJECTION");
+    return;
+  }
+  if (!fixture.operation) return;
+  const reference = join(skillRoot, "references", `memorax-${fixture.operation}.md`);
+  if (results.length === 0) {
+    const sessionRuns = agent.runs.filter((item) => item.conversationId === run.conversationId
+      && (item === run || (item.completed && run.turnRefs.some((ref) => ref.equals(item.turnBlobId)))));
+    const contexts = sessionRuns.flatMap((item) => [item.requestContext?.hooksAdditionalContext,
+      ...(item.userHookAdditionalContexts ?? []).map((context) => context.content)]).filter(Boolean);
+    check(contexts.some((context) => context.includes(`MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT=cursor and MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID=${run.conversationId}`)),
+      "CURSOR_APP_SKILL_HOOK_CONTEXT");
+    const installedPath = join(skillRoot, "SKILL.md");
+    // Cursor's URI.fsPath serializes Windows drive letters in lowercase.
+    const nativePath = process.platform === "win32" ? installedPath.replace(/^[A-Z]:/, (drive) => drive.toLowerCase()) : installedPath;
+    const matching = (run.selectedCursorRules ?? []).filter((rule) => rule.fullPath === nativePath);
+    check(matching.length === 1, "CURSOR_APP_SKILL_ATTACHMENT_PATH");
+    check(matching[0].manuallyAttached, "CURSOR_APP_SKILL_ATTACHMENT_TYPE");
+    // Cursor attaches the selected Skill body without its YAML frontmatter.
+    const body = skillText.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n(?:[ \t]*\r?\n)*/, "").replaceAll("\r\n", "\n");
+    check(matching[0].content === body, "CURSOR_APP_SKILL_ATTACHMENT_CONTENT");
+    return { kind: "read", path: join(skillRoot, "SKILL.md") };
+  }
+  check(results[0].kind === "read" && results[0].path === join(skillRoot, "SKILL.md")
+    && results[0].content === skillText, "CURSOR_APP_SKILL_NOT_READ");
+  if (results.length === 1) return { kind: "read", path: reference };
+  check(results[1].kind === "read" && results[1].path === reference
+    && results[1].content === referenceTexts.get(fixture.operation), "CURSOR_APP_SKILL_REFERENCE_NOT_READ");
+  if (results.length === 2) {
+    const executable = assertCursorAppSkillReference(results[1].content, fixture.operation, process.platform);
+    const args = fixture.operation === "search" ? ["search", "--query", skillQuery, "--json"]
+      : ["add", "--memory", skillMemory, "--type", "procedural", "--reason", skillReason, "--json"];
+    return { kind: "shell", command: shellCommand([executable, ...args], {
+      MEMORAX_CODE_MEMORAX_ENDPOINT: env.MEMORAX_CODE_MEMORAX_ENDPOINT,
+      MEMORAX_CODE_HOME: env.MEMORAX_CODE_HOME,
+      MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT: "cursor",
+      MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID: run.conversationId }),
+    workingDirectory: workspace, timeoutMs: 20000, ...(process.platform === "darwin" ? { networkAccess: true } : {}) };
+  }
+  check(results.length === 3 && results[2].kind === "shell" && results[2].exitCode === 0,
+    "CURSOR_APP_SKILL_COMMAND_FAILED");
+  let result;
+  try { result = JSON.parse(results[2].stdout); } catch { check(false, "CURSOR_APP_SKILL_RESULT_JSON"); }
+  assertSkillMemory(fixture.operation, result, memoryRequests[fixture.operation === "search" ? 4 : 6], fixture.workspaceName);
+}
+async function stopApp() {
+  let closeError;
+  if (windows && page && app && app.exitCode === null && app.signalCode === null) {
+    let onExit;
+    const exited = new Promise((resolve) => { onExit = resolve; app.once("exit", onExit); });
+    try {
+      // Quitting can close the renderer before its command reply reaches Playwright.
+      const quit = page.evaluate(() => window.driver.executeCommand("workbench.action.quit")).catch(() => {});
+      await bounded(Promise.all([quit, exited]), "CURSOR_APP_WINDOWS_QUIT_TIMEOUT", 5000);
+    } catch {
+      // A vetoed or unavailable native exit still uses the owned-child fallback below.
+    } finally { app.removeListener("exit", onExit); }
+  }
+  if (macos && app && app.exitCode === null && app.signalCode === null) {
+    try { for (const pid of await macos.captureMacosDescendants(app.pid)) observedMacosPids.add(pid); }
+    catch (error) { closeError = error; }
+  }
+  try { await bounded(browser?.close(), "CURSOR_APP_BROWSER_CLEANUP"); } catch (error) { closeError ??= error; }
+  browser = undefined;
+  page = undefined;
+  if (app && app.exitCode === null && app.signalCode === null) {
+    const closed = once(app, "close");
+    if (windows) {
+      try { await windows.stopWindowsApp(app, env); }
+      catch (error) {
+        if (error?.windowsAppStop) report.windowsAppStop ??= error.windowsAppStop;
+        throw error;
+      }
+    } else app.kill("SIGTERM");
+    if (!await Promise.race([closed.then(() => true), delay(5000).then(() => false)])) {
+      app.kill("SIGKILL");
+      check(await Promise.race([closed.then(() => true), delay(5000).then(() => false)]), "CURSOR_APP_CLEANUP_TIMEOUT");
+    }
+  }
+  app = undefined;
+  if (closeError) throw closeError;
+}
+async function assertProcessesStopped(options) {
+  // Never kill discovered PIDs; residual descendants fail acceptance for runner/container teardown.
+  for (let attempt = 0; attempt < 25; attempt++) {
+    if (!await ownedProcessesRemain(options)) return;
+    await delay(200);
+  }
+  check(false, "CURSOR_APP_CLEANUP_DESCENDANTS");
+}
+async function startApp() {
+  appLaunchLog = ""; appSpawnError = undefined; appDebugEndpointSeen = false;
+  const endpoint = macos?.createDevToolsEndpointReader(debugPort);
+  let endpointError;
+  // Electron on Windows rejects a standalone URL followed by more arguments.
+  app = spawn(appPath, ["--user-data-dir", userData, "--extensions-dir", join(root, "extensions"), "--new-window",
+    "--skip-onboarding", "--skip-welcome", "--skip-release-notes", "--skip-add-to-recently-opened",
+    "--disable-updates", "--disable-telemetry", "--disable-crash-reporter", "--use-inmemory-secretstorage",
+    "--enable-smoke-test-driver", "--smoke-test-use-real-agent-http", `--test-backend-url=${agent.url}`,
+    ...(macos || windows ? ["--force-disable-user-env"] : []),
+    "--remote-debugging-address=127.0.0.1", `--remote-debugging-port=${debugPort}`, workspace],
+  { cwd: workspace, env, stdio: ["ignore", "pipe", "pipe"] });
+  app.stdout.resume();
+  app.stderr.on("data", (chunk) => {
+    appLaunchLog = (appLaunchLog + chunk).slice(-1024 * 1024);
+    try { endpoint?.push(chunk); } catch (error) { endpointError = error; }
+  });
+  app.on("error", (error) => { report.appSpawnFailed = true; appSpawnError = error.code; });
+  await waitFor(async () => {
+    if (endpointError) throw endpointError;
+    if (endpoint) return Boolean(endpoint.get());
+    try { return (await fetch(`http://127.0.0.1:${debugPort}/json/version`, { signal: AbortSignal.timeout(300) })).ok; } catch { return false; }
+  }, "CURSOR_APP_DEBUG_PORT");
+  appDebugEndpointSeen = true;
+  browser = await chromium.connectOverCDP(endpoint?.get() ?? `http://127.0.0.1:${debugPort}`, { timeout: 5000 });
+  await waitFor(async () => {
+    page = browser.contexts().flatMap((context) => context.pages()).find((item) => item.url().includes("workbench.html"));
+    return page && await page.evaluate(() => Boolean(window.driver)).catch(() => false);
+  }, "CURSOR_APP_DRIVER", windows ? 90000 : 30000);
+  page.setDefaultTimeout(10000);
+  await bounded(page.evaluate(async () => {
+    // Keep synthetic login from replacing the IDE window with the Agents window.
+    await window.driver.executeCommand("workbench.action.devSetApplicationStorageForTesting",
+      "cursor.glassDefaultOnLogin.handledAtMs", Date.now(), "application");
+    await window.driver.executeCommand("workbench.action.devAutoLoginFakeForTesting");
+  }), "CURSOR_APP_FAKE_AUTH_TIMEOUT");
+  await bounded(page.evaluate(() => window.driver.whenWorkbenchRestored()), "CURSOR_APP_WORKBENCH_RESTORE_TIMEOUT", 30000);
+}
+async function openSession(sessionId) {
+  report.stage = "session-open";
+  await bounded(page.evaluate((id) => id
+    ? window.driver.executeCommand("composer.openComposer", id, { openInNewTab: false })
+    : window.driver.executeCommand("workbench.action.chat.open"), sessionId), "CURSOR_APP_CHAT_OPEN_TIMEOUT");
+  if (sessionId) {
+    // The visible composer is mounted only after its persisted data has loaded.
+    await waitFor(async () => await page.locator(`[data-composer-id="${sessionId}"][data-composer-status]:visible`).count() === 1,
+      "CURSOR_APP_COMPOSER_NOT_READY");
+  }
+  let selected;
+  await waitFor(async () => {
+    selected = (await page.evaluate(() => window.driver.executeCommand("workbench.action.devGetComposerDataForTesting")))?.composerId;
+    return typeof selected === "string" && selected.length > 0
+      && (sessionId ? selected === sessionId : !turns.some((turn) => turn.sessionId === selected));
+  }, "CURSOR_APP_SESSION");
+  const composer = page.locator(`[data-composer-id="${selected}"][data-composer-status]:visible`);
+  const hasHistory = agent.runs.some((run) => run.conversationId === selected && run.completed);
+  await waitFor(async () => await composer.count() === 1
+    && (!hasHistory || await composer.getAttribute("data-composer-status") === "completed"), "CURSOR_APP_COMPOSER_NOT_READY");
+  return selected;
+}
+function assertSnapshot(sessionId) {
+  const sessionRuns = agent.runs.filter((run) => run.conversationId === sessionId);
+  const latest = sessionRuns.at(-1);
+  return assertCursorAppNativeContent({ databasePath: env.MEMORAX_CODE_CURSOR_DATABASE_PATH,
+    sessionId, generationId: latest.requestId, conversationStateBytes: latest.conversationStateBytes,
+    kvWrites: sessionRuns.flatMap((run) => run.kvWrites) });
+}
+async function submitPrompt(input, fixture) {
+  if (fixture.operation) {
+    await input.fill("");
+    await input.pressSequentially("/memorax-code");
+    const item = page.locator(".ui-slash-menu__content:visible")
+      .locator(".ui-slash-menu__item-title").filter({ hasText: /^\/memorax-code$/ });
+    await waitFor(async () => await item.count() === 1, "CURSOR_APP_SKILL_MENU");
+    await item.click();
+    const mention = input.locator('[data-typeahead-type="cursor_skill"][data-mention-name="memorax-code"]');
+    await waitFor(async () => await mention.count() === 1, "CURSOR_APP_SKILL_MENTION");
+    await input.press("End");
+    await page.keyboard.insertText(fixture.prompt.slice("/memorax-code ".length));
+  } else {
+    await input.fill(fixture.prompt);
+  }
+  await input.press("Enter");
+}
+async function runTurn(sessionId, fixture = fixtures[turns.length]) {
+  const index = agent.runs.length;
+  const decidedTools = new Set();
+  turns.push({ sessionId, workspaceName: basename(workspace), ...fixture });
+  report.stage = "native-submit";
+  const input = page.locator(`[data-composer-id="${sessionId}"][data-composer-status]:visible`)
+    .locator('[contenteditable="true"][role="textbox"]:visible');
+  await submitPrompt(input, fixture);
+  report.stage = "agent-transport";
+  await waitFor(async () => {
+    check(!agent.errors.length, agent.errors[0]);
+    const run = agent.runs[index], pending = run?.pendingTool;
+    if (pending?.kind === "shell" && !decidedTools.has(pending.toolCallId)) {
+      check((fixture.operation || fixture.permission === "deny") && run.conversationId === sessionId && run.prompt === fixture.prompt,
+        "CURSOR_APP_SKILL_APPROVAL_IDENTITY");
+      const button = page.locator(`[data-composer-id="${sessionId}"][data-composer-status]:visible`)
+        .locator(`[data-tool-call-id="${pending.toolCallId}"]:visible`)
+        .getByRole("button", { name: fixture.permission === "deny" ? "Skip" : "Run", exact: true });
+      const count = await button.count();
+      check(count <= 1, "CURSOR_APP_SKILL_APPROVAL_AMBIGUOUS");
+      if (count === 1 && await button.isVisible()) {
+        if (fixture.permission === "deny") await assertMarkerAbsent(denial.marker, "CURSOR_APP_PERMISSION_TOOL_EXECUTED");
+        await button.click({ timeout: 2000 });
+        decidedTools.add(pending.toolCallId);
+        if (fixture.permission === "deny") run.shellRejection = { toolCallId: pending.toolCallId, clicked: true };
+        else run.shellApproval = { toolCallId: pending.toolCallId, clicked: true };
+      }
+    }
+    return run?.completed;
+  }, "CURSOR_APP_AGENT_TIMEOUT", 90000);
+  check(agent.runs.length === index + 1, "CURSOR_APP_RUN_COUNT");
+  const run = agent.runs[index], previous = agent.runs.slice(0, index).filter((item) => item.conversationId === sessionId && item.completed);
+  check(run.conversationId === sessionId && run.prompt === fixture.prompt, "CURSOR_APP_RUN_PROMPT_IDENTITY");
+  check(new Set(agent.runs.map((item) => item.requestId)).size === index + 1
+    && new Set(agent.runs.map((item) => item.userMessageId)).size === index + 1, "CURSOR_APP_REUSED_TURN_IDENTITY");
+  check(run.turnRefs.length === previous.length && run.turnRefs.every((ref, position) => ref.equals(previous[position].turnBlobId)), "CURSOR_APP_HISTORY_MISMATCH");
+  const previousBlobs = previous.reduce((count, item) => count + item.kvWrites.length, 0);
+  check(run.kvReadCount === previousBlobs && run.kvReadResultCount === previousBlobs, "CURSOR_APP_HISTORY_READ_COUNT");
+  const writes = fixture.operation ? 6 : fixture.permission === "deny" ? 4 : 3;
+  check(run.kvWriteCount === writes && run.kvAckCount === writes, "CURSOR_APP_KV_ACK_COUNT");
+  check(run.requestContextRequestCount === 1 && run.requestContextResultCount === 1 && run.requestContextCloseCount === 1,
+    "CURSOR_APP_SKILL_CONTEXT_COUNT");
+  report.stage = "native-persistence";
+  let content;
+  await waitFor(() => {
+    try { content = assertSnapshot(sessionId); return true; }
+    catch (error) { report.nativeContentError = safeCode(error); return false; }
+  }, "CURSOR_APP_NATIVE_CONTENT_TIMEOUT");
+  delete report.nativeContentError;
+  report.evidence.nativeContent.push(content);
+  report.stage = "automatic-add";
+  await waitFor(() => memoryRequests.length >= turns.length + turns.filter((turn) => turn.operation).length, "CURSOR_APP_ADD_TIMEOUT");
+  assertWriteback();
+  const events = (await readFile(join(env.MEMORAX_CODE_HOME, "debug/traces/cursor/sessions", sessionId, "events.jsonl"), "utf8"))
+    .trim().split(/\r?\n/).filter(Boolean).map(JSON.parse);
+  const starts = events.filter((event) => event.type === "turn_start" && event.trace?.client === "cursor"
+    && event.trace.session_id === sessionId && event.trace.turn_id === run.requestId);
+  check(starts.length === 1, "CURSOR_APP_HOOK_CORRELATION");
+  check(events.some((event) => event.type === "turn_end" && event.trace?.client === "cursor"
+    && event.trace.session_id === sessionId && event.trace.turn_id === run.requestId && event.outcome === "completed"), "CURSOR_APP_HOOK_COMPLETION");
+  if (fixture.operation) {
+    check(run.execRequestCount === 3 && run.execResultCount === 3 && run.execCloseCount === 3, "CURSOR_APP_SKILL_EXEC_COUNT");
+    check(decidedTools.size === 1, "CURSOR_APP_SKILL_APPROVAL_COUNT");
+    const calls = events.filter((event) => event.type === `memory_cli_${fixture.operation}` && event.trace?.client === "cursor"
+      && event.trace.session_id === sessionId && event.trace.turn_id === run.requestId && event.ok === true);
+    check(calls.length === 1, "CURSOR_APP_SKILL_TRACE_IDENTITY");
+    report.evidence[fixture.operation === "search" ? "skillSearch" : "skillAdd"] = true;
+  }
+  if (fixture.permission === "deny") {
+    check(decidedTools.size === 1 && run.shellRejection?.clicked === true && run.shellApproval?.clicked === false
+      && run.execRequestCount === 1 && run.execResultCount === 1 && run.execCloseCount === 1
+      && run.toolResults.length === 1 && run.toolResults[0].rejected === true,
+    "CURSOR_APP_PERMISSION_REJECTION");
+    await assertMarkerAbsent(denial.marker, "CURSOR_APP_PERMISSION_TOOL_EXECUTED");
+    report.evidence.shellDenied = true;
+  }
+}
+
+async function assertInterrupted({ recovered = false } = {}) {
+  const run = agent.runs[interruption.runIndex];
+  check(run?.cancelled && !run.completed && !run.error && run.cancellation?.actionReceived === true
+    && run.cancellation.rejected === true && run.cancellation.execClosed === true && run.cancellation.transportClosed
+    && [2, 8].includes(run.cancellation.rstCode) && run.kvWriteCount === 0 && run.kvAckCount === 0
+    && run.execRequestCount === 1 && run.execResultCount === 0 && run.execCloseCount === 0
+    && run.requestContextRequestCount === 1 && run.requestContextResultCount === 1 && run.requestContextCloseCount === 1,
+  "CURSOR_APP_INTERRUPTION_TRANSPORT");
+  await assertMarkerAbsent(interruption.marker, "CURSOR_APP_INTERRUPTION_TOOL_EXECUTED");
+  const diagnostics = await collectCursorAppDiagnostics({ home: env.MEMORAX_CODE_HOME,
+    sessionId: interruption.sessionId, turnId: run.requestId });
+  const store = diagnostics.turnStore, trace = diagnostics.trace;
+  check(trace.readStatus === "present" && trace.turnStartCount === 1 && trace.interruptedCount === 1
+    && trace.completedCount === 0 && trace.materializedCount === 0,
+  "CURSOR_APP_INTERRUPTION_HOOK");
+  if (!recovered) {
+    check(store.readStatus === "present" && store.versionMatched && store.clientMatched && store.sessionMatched
+      && store.activePresent && store.turnMatched && store.state === "interrupted" && store.stopStatus === "aborted"
+      && store.reason === "interrupted" && !store.metadataPresent, "CURSOR_APP_INTERRUPTION_HOOK");
+  } else {
+    const next = agent.runs[interruption.runIndex + 1];
+    check(next?.completed && next.conversationId === interruption.sessionId && next.requestId !== run.requestId
+      && next.prompt === recoveryFixture.prompt, "CURSOR_APP_RECOVERY_IDENTITY");
+    const current = await collectCursorAppDiagnostics({ home: env.MEMORAX_CODE_HOME,
+      sessionId: interruption.sessionId, turnId: next.requestId });
+    const active = current.turnStore;
+    check(active.readStatus === "present" && active.versionMatched && active.clientMatched && active.sessionMatched
+      && active.activePresent && active.turnMatched && active.state === "accepted" && active.stopStatus === "completed"
+      && !active.metadataPresent && current.trace.turnStartCount === 1 && current.trace.completedCount === 1
+      && current.trace.interruptedCount === 0 && current.trace.materializedCount === 1,
+    "CURSOR_APP_RECOVERY_HOOK");
+  }
+  assertWriteback();
+}
+
+async function interruptPendingShell() {
+  const sessionId = await openSession();
+  interruption = { sessionId, runIndex: agent.runs.length, marker: join(workspace, "cancelled-shell-marker") };
+  report.stage = "pending-shell-interruption";
+  const composer = page.locator(`[data-composer-id="${sessionId}"][data-composer-status]:visible`);
+  const input = composer.locator('[contenteditable="true"][role="textbox"]:visible');
+  await input.fill(interruptedFixture.prompt); await input.press("Enter");
+  let run, stop;
+  await waitFor(async () => {
+    check(!agent.errors.length, agent.errors[0]);
+    run = agent.runs[interruption.runIndex];
+    if (!run?.pendingTool) return false;
+    check(run.conversationId === sessionId && run.prompt === interruptedFixture.prompt && run.pendingTool.kind === "shell",
+      "CURSOR_APP_INTERRUPTION_IDENTITY");
+    const approval = composer.locator(`[data-tool-call-id="${run.pendingTool.toolCallId}"]:visible`)
+      .getByRole("button", { name: "Run", exact: true });
+    stop = composer.locator(`[data-message-role="human"][data-message-id="${run.userMessageId}"], `
+      + `[data-message-role="human"][data-server-bubble-id="${run.userMessageId}"]`)
+      .locator(".human-message-action-slot .stop-button:visible");
+    check(await approval.count() <= 1 && await stop.count() <= 1, "CURSOR_APP_INTERRUPTION_UI_AMBIGUOUS");
+    return await approval.count() === 1 && await approval.isVisible() && await stop.count() === 1;
+  }, "CURSOR_APP_INTERRUPTION_APPROVAL_TIMEOUT");
+  await waitFor(async () => {
+    const { turnStore: store, trace } = await collectCursorAppDiagnostics({ home: env.MEMORAX_CODE_HOME,
+      sessionId, turnId: run.requestId });
+    return store.readStatus === "present" && store.versionMatched && store.clientMatched && store.sessionMatched
+      && store.activePresent && store.turnMatched && store.state === "open" && store.stopStatus === "absent"
+      && store.metadataPresent && trace.readStatus === "present" && trace.turnStartCount === 1
+      && trace.completedCount === 0 && trace.interruptedCount === 0 && trace.materializedCount === 0;
+  }, "CURSOR_APP_INTERRUPTION_START_TIMEOUT");
+  agent.armCancellation({ requestId: run.requestId, toolCallId: run.pendingTool.toolCallId });
+  await stop.click({ timeout: 2000 });
+  await waitFor(async () => {
+    check(!agent.errors.length, agent.errors[0]);
+    return run.cancelled && await composer.getAttribute("data-composer-status") === "cancelled";
+  }, "CURSOR_APP_INTERRUPTION_TIMEOUT");
+  await waitFor(async () => {
+    try { await assertInterrupted(); return true; } catch (error) {
+      if (error.code !== "CURSOR_APP_INTERRUPTION_HOOK") throw error;
+      return false;
+    }
+  }, "CURSOR_APP_INTERRUPTION_HOOK_TIMEOUT");
+  report.evidence.pendingShellInterrupted = true;
+}
+
+function repoMemoryTools(run, results) {
+  if (!run.requestContextCloseCount) return { kind: "requestContext" };
+  if (run.conversationId === repoMemory.sessionId) {
+    check(run.prompt === repoMemoryFixture.prompt, "CURSOR_APP_REPO_MEMORY_PARENT");
+    if (results.length === 0) {
+      const definitions = (run.customSubagents ?? []).filter((item) => item.name === "memorax-repo-memory");
+      check(definitions.length === 1, "CURSOR_APP_REPO_MEMORY_DEFINITION_COUNT");
+      check(definitions[0].fullPath === repoMemoryDefinition.path, "CURSOR_APP_REPO_MEMORY_DEFINITION_PATH");
+      check(definitions[0].model === "inherit", "CURSOR_APP_REPO_MEMORY_DEFINITION_MODEL");
+      check(definitions[0].isBackground === true, "CURSOR_APP_REPO_MEMORY_DEFINITION_BACKGROUND");
+      check(definitions[0].prompt.trim() === repoMemoryDefinition.body, "CURSOR_APP_REPO_MEMORY_DEFINITION_PROMPT");
+      const context = [run.requestContext?.hooksAdditionalContext,
+        ...(run.userHookAdditionalContexts ?? []).map((item) => item.content)].filter(Boolean).join("\n");
+      repoMemory.request = parseCursorRepoMemoryDelegation(context, { executable: process.execPath,
+        helper: repoMemoryHelper, stateHome: env.MEMORAX_CODE_HOME, repo: workspace });
+      return { kind: "task", subagentType: "memorax-repo-memory", prompt: repoMemory.request.delegation.prompt,
+        description: "Validate the delegated Repo Memory job", model: "inherit", background: true };
+    }
+    check(results.length === 1 && results[0].kind === "task" && results[0].isBackground === true,
+      "CURSOR_APP_REPO_MEMORY_TASK");
+    return;
+  }
+  check(run.parentConversationId === repoMemory.sessionId && run.subagentTypeName === "memorax-repo-memory"
+    && run.prompt === repoMemory.request?.delegation.prompt, "CURSOR_APP_REPO_MEMORY_CHILD");
+  let invocation;
+  if (results.length === 0) invocation = repoMemory.request.claim;
+  else {
+    check(results[0].kind === "shell" && results[0].exitCode === 0, "CURSOR_APP_REPO_MEMORY_CLAIM");
+    repoMemory.claimed ??= parseCursorRepoMemoryClaim(results[0].stdout, repoMemory.request);
+    if (results.length === 1) invocation = repoMemory.claimed.finish;
+    else {
+      check(results.length === 2 && results[1].kind === "shell" && results[1].exitCode === 1,
+        "CURSOR_APP_REPO_MEMORY_FINISH");
+      try { assertCursorRepoMemoryRejected(results[1].stdout, repoMemory.claimed); }
+      catch (error) {
+        const output = collectCursorAppShellOutputDiagnostics(Object.fromEntries(["stdout", "stderr"].map((key) => [key,
+          results[1][key] ? { status: "present", text: results[1][key] } : { status: "absent" }])));
+        report.shellResult = projectCursorAppShellDiagnostics({ rejectionKind: 2, exitCode: results[1].exitCode,
+          approvalClicked: run.shellApproval?.clicked === true, output });
+        throw error;
+      }
+      repoMemory.rejected = true;
+      return;
+    }
+  }
+  return { kind: "shell", command: shellCommand([invocation.executable, ...invocation.args], invocation.env),
+    workingDirectory: workspace, timeoutMs: 20000, ...(results.length === 1 ? { expectedExitCode: 1 } : {}),
+    ...(process.platform === "darwin" ? results.length === 1 ? { fullPermissions: true } : { networkAccess: true } : {}) };
+}
+
+function assertRepoMemoryNativeContent() {
+  const [parent, child] = agent.runs.slice(repoMemory.runIndex);
+  assertCursorAppNativeSubagent({ databasePath: env.MEMORAX_CODE_CURSOR_DATABASE_PATH,
+    parentSessionId: parent.conversationId, childSessionId: child.conversationId });
+  const notifications = agent.notifications.filter((run) => run.conversationId === parent.conversationId);
+  check(notifications.length === 1, "CURSOR_APP_REPO_MEMORY_NOTIFICATION");
+  const notification = notifications[0], item = notification?.notifications?.[0];
+  check(notification.completed && !notification.error && notification.notifications.length === 1
+    && item.subagentId === child.conversationId && item.toolCallId === child.taskToolCallId,
+  "CURSOR_APP_REPO_MEMORY_NOTIFICATION");
+  // A background wakeup can persist its generation later, without a new user checkpoint.
+  const snapshot = { databasePath: env.MEMORAX_CODE_CURSOR_DATABASE_PATH,
+    sessionId: parent.conversationId, conversationStateBytes: parent.conversationStateBytes, kvWrites: parent.kvWrites };
+  try { return assertCursorAppNativeContent({ ...snapshot, generationId: parent.requestId }); }
+  catch (error) {
+    if (error.code !== "CURSOR_APP_DATABASE_GENERATION_MISMATCH") throw error;
+    return assertCursorAppNativeContent({ ...snapshot, generationId: notification.requestId });
+  }
+}
+
+async function runRepoMemoryWorker() {
+  report.stage = "repo-memory-worker";
+  await stopApp();
+  await assertProcessesStopped({ includeBackend: false });
+  const fixture = await prepareRepoMemoryWorkspace();
+  workspace = fixture.repo;
+  await startApp();
+  const sessionId = await openSession();
+  repoMemory = { ...fixture, sessionId, runIndex: agent.runs.length };
+  report.stage = "repo-memory-worker";
+  turns.push({ sessionId, workspaceName: basename(workspace), scope: "repository-name.v1", ...repoMemoryFixture });
+  const input = page.locator(`[data-composer-id="${sessionId}"][data-composer-status]:visible`)
+    .locator('[contenteditable="true"][role="textbox"]:visible');
+  await submitPrompt(input, repoMemoryFixture);
+  const approved = new Set(), opened = new Set();
+  await waitFor(async () => {
+    check(!agent.errors.length, agent.errors[0]);
+    const parent = agent.runs[repoMemory.runIndex], child = agent.runs[repoMemory.runIndex + 1];
+    if (child?.pendingTool?.kind === "shell" && !approved.has(child.pendingTool.toolCallId)) {
+      check(child.parentConversationId === sessionId, "CURSOR_APP_REPO_MEMORY_CHILD");
+      const composer = page.locator(`[data-composer-id="${child.conversationId}"][data-composer-location="editor"][data-composer-status]:visible`);
+      check(await composer.count() <= 1, "CURSOR_APP_REPO_MEMORY_APPROVAL");
+      if (await composer.count() === 0) {
+        if (!opened.has(child.conversationId)) {
+          await page.evaluate((id) => window.driver.executeCommand("composer.openComposer", id, { openInNewTab: true }), child.conversationId);
+          opened.add(child.conversationId);
+        }
+        return false;
+      }
+      const button = composer.locator(`[data-tool-call-id="${child.pendingTool.toolCallId}"]:visible`)
+        .getByRole("button", { name: "Run", exact: true });
+      check(await button.count() <= 1, "CURSOR_APP_REPO_MEMORY_APPROVAL");
+      if (await button.count() === 1 && await button.isVisible()) {
+        const toolCallId = child.pendingTool.toolCallId;
+        await button.click({ timeout: 2000 });
+        approved.add(toolCallId);
+        child.shellApproval = { toolCallId, clicked: true };
+      }
+    }
+    return parent?.completed && child?.completed && repoMemory.rejected;
+  }, "CURSOR_APP_REPO_MEMORY_TIMEOUT", 90000);
+  const [parent, child] = agent.runs.slice(repoMemory.runIndex);
+  check(agent.runs.length === repoMemory.runIndex + 2 && parent.prompt === repoMemoryFixture.prompt
+    && parent.conversationId === sessionId && child.parentConversationId === sessionId
+    && child.conversationId === parent.toolResults[0].agentId && child.conversationId !== sessionId
+    && parent.modelId && child.modelId === parent.modelId, "CURSOR_APP_REPO_MEMORY_IDENTITY");
+  for (const [run, tools] of [[parent, 1], [child, 2]]) {
+    check(run.completed && !run.error && run.execRequestCount === tools && run.execResultCount === tools
+      && run.execCloseCount === tools && run.kvWriteCount === tools + 3 && run.kvAckCount === tools + 3
+      && run.requestContextRequestCount === 1 && run.requestContextResultCount === 1 && run.requestContextCloseCount === 1,
+    "CURSOR_APP_REPO_MEMORY_TRANSPORT");
+  }
+  await waitFor(async () => {
+    check(!agent.errors.length, agent.errors[0]);
+    try {
+      repoMemory.content = assertRepoMemoryNativeContent();
+      for (const run of [parent, child]) {
+        const composer = page.locator(`[data-composer-id="${run.conversationId}"][data-composer-status]`
+          + (run === child ? '[data-composer-location="editor"]' : "") + ":visible");
+        if (await composer.count() !== 1 || await composer.getAttribute("data-composer-status") !== "completed") return false;
+      }
+      return true;
+    } catch (error) { report.nativeContentError = safeCode(error); return false; }
+  }, "CURSOR_APP_REPO_MEMORY_PERSISTENCE");
+  delete report.nativeContentError;
+  report.evidence.nativeContent.push(repoMemory.content);
+  await verifyCursorRepoMemoryFailure(repoMemory.claimed, { parentSessionId: sessionId, snapshotHead: fixture.head });
+  await waitFor(() => memoryRequests.length >= turns.length + 2, "CURSOR_APP_REPO_MEMORY_WRITEBACK");
+  assertWriteback();
+  report.evidence.repoMemoryWorker = true;
+}
+
+try {
+  const [nodeMajor, nodeMinor] = process.versions.node.split(".").map(Number);
+  check([7, 8].includes(process.argv.length) && ["linux", "darwin", "win32"].includes(process.platform) && ["22", "24"].includes(expectedNodeMajor)
+    && nodeMajor === Number(expectedNodeMajor) && (nodeMajor !== 22 || nodeMinor >= 13),
+    "CURSOR_APP_ARGUMENTS");
+  check(process.platform === "win32" || process.getuid() !== 0, "CURSOR_APP_ISOLATION");
+  // macOS Unix sockets have a short path limit; do not nest under the wrapper's TMPDIR.
+  root = await realpath(await mkdtemp(join(process.platform === "darwin" ? "/tmp" : tmpdir(), "memorax-cursor-app-ci-")));
+  if (process.platform === "darwin") {
+    check(process.env.GITHUB_ACTIONS === "true" && process.env.RUNNER_OS === "macOS" && process.arch === "arm64",
+      "CURSOR_APP_MACOS_RUNNER");
+    macos = await import("./cursor-app-macos-runtime.mjs");
+    macosPaths = macos.macosRuntimePaths({ root, appPath, packageRoot, nodePath: process.execPath });
+  } else if (process.platform === "win32") {
+    check(process.env.GITHUB_ACTIONS === "true" && process.env.RUNNER_OS === "Windows" && process.arch === "x64",
+      "CURSOR_APP_WINDOWS_RUNNER");
+    windows = await import("./cursor-app-windows-runtime.mjs");
+    windowsPaths = windows.windowsRuntimePaths({ root, appPath, packageRoot, nodePath: process.execPath,
+      systemRoot: process.env.SystemRoot });
+  } else {
+    check(Object.values(networkInterfaces()).flat().every((item) => item.internal), "CURSOR_APP_ISOLATION");
+    check((await readFile("/proc/net/route", "utf8")).trim().split("\n").length === 1, "CURSOR_APP_EXTERNAL_ROUTE");
+    const security = await readFile("/proc/self/status", "utf8");
+    check(/^CapEff:\s+0+$/m.test(security) && /^NoNewPrivs:\s+1$/m.test(security) && /^Seccomp:\s+2$/m.test(security), "CURSOR_APP_SANDBOX");
+    let externalReachable = false;
+    try { await fetch("http://192.0.2.1:80", { signal: AbortSignal.timeout(1000) }); externalReachable = true; } catch {}
+    check(!externalReachable, "CURSOR_APP_EXTERNAL_NETWORK");
+  }
+  report.version = JSON.parse(await readFile(macosPaths?.resourcesPackage ?? join(dirname(appPath), "resources/app/package.json"), "utf8")).version;
+  check(report.version === expectedVersion, "CURSOR_APP_VERSION");
+  ({ chromium } = await import(pathToFileURL(join(playwrightRoot, "index.mjs")).href));
+  const home = join(root, "home");
+  const firstWorkspace = join(root, "workspace");
+  userData = join(root, "app-data"); workspace = firstWorkspace;
+  agent = await startCursorAgentMock({ answers: [...fixtures, interruptedFixture, recoveryFixture, repoMemoryFixture,
+    { answer: repoMemoryWorkerAnswer }].map((fixture) => fixture.answer),
+  toolSteps: (run, results) => repoMemory ? repoMemoryTools(run, results) : toolSteps(run, results), timeoutMs: 60000 });
+  memory = createServer(async (request, response) => {
+    try {
+      let raw = "";
+      request.setEncoding("utf8");
+      for await (const chunk of request) { raw += chunk; check(raw.length <= 1024 * 1024, "CURSOR_APP_MEMORY_BODY"); }
+      check(request.method === "POST" && ["/v1/memories/add", "/v1/memories/search"].includes(request.url), "CURSOR_APP_MEMORY_ROUTE");
+      memoryRequests.push({ method: request.method, path: request.url, authorization: request.headers.authorization, body: JSON.parse(raw) });
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ success: true, data: request.url.endsWith("/add")
+        ? { task_id: "cursor-app-ci-task", status: "completed" }
+        : { task_id: "native-search", status: "completed", data: [{ id: "fixture-memory", memory: searchMemory,
+          metadata: { memory_type: "procedural" }, score: 0.95 }] } }));
+    } catch { memoryRequests.push({ invalid: true }); response.writeHead(400); response.end(); }
+  });
+  await new Promise((resolve) => memory.listen(0, "127.0.0.1", resolve));
+  if (macos) {
+    backendPort = await macos.reserveFreePort();
+    debugPort = await macos.reserveFreePort();
+    check(backendPort !== debugPort, "CURSOR_APP_MACOS_PORTS");
+  }
+  env = {
+    PATH: `${join(dirname(dirname(packageRoot)), ".bin")}:/usr/local/bin:/usr/bin:/bin`, HOME: home, USERPROFILE: home, LANG: "C.UTF-8",
+    DISPLAY: process.env.DISPLAY, XAUTHORITY: process.env.XAUTHORITY,
+    XDG_CONFIG_HOME: join(home, ".config"), XDG_CACHE_HOME: join(home, ".cache"),
+    XDG_DATA_HOME: join(home, ".local/share"), XDG_STATE_HOME: join(home, ".local/state"),
+    XDG_RUNTIME_DIR: join(root, "runtime"), TMPDIR: "/tmp",
+    CURSOR_HOME: join(home, ".cursor"), CURSOR_CONFIG_DIR: join(home, ".cursor"),
+    CODEX_HOME: join(home, ".codex"), CLAUDE_CONFIG_DIR: join(home, ".claude"),
+    OPENCODE_CONFIG_DIR: join(home, ".opencode"), CODEBUDDY_CONFIG_DIR: join(home, ".codebuddy"),
+    MEMORAX_CODE_HOME: join(root, "state"), MEMORAX_CODE_AUTO_UPDATE: "false", MEMORAX_CODE_JEV_ENABLED: "false",
+    MEMORAX_CODE_CURSOR_DATABASE_PATH: join(userData, "User/globalStorage/state.vscdb"),
+    MEMORAX_CODE_CURSOR_ENSURE_BACKEND: "false", MEMORAX_CODE_CURSOR_TRACE_ENABLED: "true",
+    MEMORAX_CODE_MEMORAX_ENDPOINT: `http://127.0.0.1:${memory.address().port}`,
+    MEMORAX_CODE_MEMORAX_API_KEY: fixtureKey, MEMORAX_CODE_MEMORAX_USER_ID: fixtureUser,
+    MEMORAX_CODE_MEMORY_WRITEBACK_ENABLED: "true", MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_ENABLED: "false",
+    MEMORAX_CODE_MEMORY_WRITEBACK_CHUNK_ENABLED: "false",
+    GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: join(home, "missing-git-config"), GIT_TERMINAL_PROMPT: "0",
+    ...(macosPaths?.env ?? windowsPaths?.env ?? {}),
+  };
+  if (windows) env.PATH += ";C:\\Program Files\\Git\\cmd";
+  for (const path of [home, join(userData, "User"), workspace, env.CURSOR_HOME, env.XDG_RUNTIME_DIR,
+    ...(macos ? [macosPaths.tmp] : windows ? [windowsPaths.tmp, env.APPDATA, env.LOCALAPPDATA] : [])]) await mkdir(path, { recursive: true, mode: 0o700 });
+  // Cursor's login Shell sources /etc/profile, which resets the inherited PATH.
+  if (!windows) await writeFile(join(home, ".profile"), `export PATH=${quote(env.PATH)}\n`);
+  if (macos) await writeFile(join(home, ".zprofile"), `export PATH=${quote(env.PATH)}\n`);
+  await writeFile(join(userData, "User/settings.json"), JSON.stringify({ "update.mode": "none", "telemetry.telemetryLevel": "off",
+    "extensions.autoUpdate": false, "extensions.autoCheckUpdates": false, "workbench.startupEditor": "none", "security.workspace.trust.enabled": false }));
+  cli = (action) => command([action, "--home", env.MEMORAX_CODE_HOME, "--cursor-home", env.CURSOR_HOME,
+    "--port", String(backendPort), "--clients", "cursor", "--json"], `CURSOR_APP_CANDIDATE_${action.toUpperCase()}`);
+  report.stage = "candidate-install";
+  started = true;
+  const installation = (await cli("start")).cursorAdapter;
+  check(installation?.enabled === true, "CURSOR_APP_ADAPTER_DISABLED");
+  repoMemoryHelper = join(installation.installPath, "repo-memory-job.mjs");
+  repoMemoryDefinition = { path: installation.repoMemoryAgentPath,
+    body: (await readFile(installation.repoMemoryAgentPath, "utf8"))
+      .replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, "").replaceAll("\r\n", "\n").trim() };
+  skillRoot = join(env.CURSOR_HOME, "skills/memorax-code");
+  skillText = await readFile(join(skillRoot, "SKILL.md"), "utf8");
+  for (const operation of ["search", "add"]) {
+    referenceTexts.set(operation, await readFile(join(skillRoot, "references", `memorax-${operation}.md`), "utf8"));
+  }
+  report.stage = "app-start";
+  await startApp();
+  const firstSession = await openSession();
+  await runTurn(firstSession);
+  await openSession(firstSession);
+  await runTurn(firstSession);
+  report.evidence.sameSessionFollowup = true;
+  report.stage = "workspace-switch";
+  await stopApp();
+  await assertProcessesStopped({ includeBackend: false });
+  assertWriteback();
+  workspace = join(root, "project-beta");
+  await mkdir(workspace);
+  await startApp();
+  const secondSession = await openSession();
+  check(secondSession !== firstSession, "CURSOR_APP_SESSION_NOT_ISOLATED");
+  await runTurn(secondSession);
+  report.stage = "app-restart";
+  const oldPid = app.pid;
+  await stopApp();
+  await assertProcessesStopped({ includeBackend: false });
+  assertWriteback();
+  workspace = firstWorkspace;
+  await startApp();
+  check(app.pid !== oldPid, "CURSOR_APP_RESTART_IDENTITY");
+  await openSession(firstSession);
+  assertSnapshot(firstSession);
+  assertWriteback();
+  await runTurn(firstSession);
+  report.evidence.appResume = true;
+  await openSession(firstSession);
+  await runTurn(firstSession);
+  await openSession(firstSession);
+  await runTurn(firstSession);
+  assertSnapshot(firstSession);
+  assertSnapshot(secondSession);
+  report.evidence.sessionIsolation = true;
+  report.evidence.workspaceIsolation = true;
+  report.evidence.agentTransport = true;
+  check((await cli("status")).cursorAdapter?.cursorHooks?.runtimeObserved === true, "CURSOR_APP_HOOK_NOT_OBSERVED");
+  report.evidence.nativeHooks = true;
+  report.evidence.exactAutomaticAdd = true;
+  const deniedSession = await openSession();
+  denial = { sessionId: deniedSession, marker: join(workspace, "denied-shell-marker") };
+  await runTurn(deniedSession);
+  await interruptPendingShell();
+  await runTurn(interruption.sessionId, recoveryFixture);
+  await assertInterrupted({ recovered: true });
+  report.evidence.sameSessionRecovered = true;
+  await runRepoMemoryWorker();
+  report.stage = "cleanup";
+} catch (error) {
+  report.errorCode = safeCode(error);
+  const shellResult = collectCursorAppShellDiagnostics(agent?.firstShellFailure);
+  if (shellResult) report.shellResult = shellResult;
+  if (app) report.appLaunch = collectCursorAppLaunchDiagnostics({ spawned: Boolean(app.pid),
+    debugEndpointSeen: appDebugEndpointSeen, exitCode: app.exitCode, signal: app.signalCode,
+    spawnError: appSpawnError, log: appLaunchLog });
+  const run = agent?.runs.at(-1);
+  if (env && run) report.diagnostics = await collectCursorAppDiagnostics({ home: env.MEMORAX_CODE_HOME,
+    sessionId: run.conversationId, turnId: run.requestId });
+  if (env && run) {
+    const identity = { sessionId: run.conversationId, turnId: run.requestId };
+    report.nativeHooks = await collectCursorAppHookDiagnostics({ home: userData, ...identity });
+    const history = await command(["logs", "--diagnostics", "--limit", "100", "--json", "--home", env.MEMORAX_CODE_HOME],
+      "CURSOR_APP_DIAGNOSTICS_READ").catch(() => undefined);
+    report.backendDiagnostics = collectCursorAppBackendDiagnostics(history, identity);
+  }
+}
+finally {
+  try { await stopApp(); } catch (error) { report.cleanupError = safeCode(error); }
+  try { if (started) await cli("stop"); } catch (error) { report.cleanupError ??= safeCode(error); }
+  try {
+    if (started) await assertProcessesStopped();
+  } catch (error) { report.cleanupError ??= safeCode(error); }
+  if (agent) {
+    await bounded(agent.close(), "CURSOR_APP_AGENT_CLEANUP").catch(() => { report.cleanupError = "CURSOR_APP_AGENT_CLEANUP"; });
+    report.agent = { runs: agent.runs.length, cancelled: agent.runs.map((run) => run.cancelled === true), writes: agent.runs.map((run) => run.kvWriteCount),
+      acknowledgements: agent.runs.map((run) => run.kvAckCount), ancillaryRequestCount: agent.ancillaryRequestCount,
+      unsupportedRpcCount: agent.unsupportedRpcCount, historyTurns: agent.runs.map((run) => run.turnRefs.length),
+      reads: agent.runs.map((run) => run.kvReadCount), readResults: agent.runs.map((run) => run.kvReadResultCount),
+      execRequests: agent.runs.map((run) => run.execRequestCount), execResults: agent.runs.map((run) => run.execResultCount),
+      execCloses: agent.runs.map((run) => run.execCloseCount),
+      contextRequests: agent.runs.map((run) => run.requestContextRequestCount),
+      contextResults: agent.runs.map((run) => run.requestContextResultCount),
+      contextCloses: agent.runs.map((run) => run.requestContextCloseCount) };
+    if (agent.errors.length) {
+      report.agent.errors = agent.errors;
+      report.errorCode ??= safeCode({ code: agent.errors[0] });
+    }
+  }
+  if (memory) {
+    memory.closeAllConnections();
+    await bounded(new Promise((resolve) => memory.close(resolve)), "CURSOR_APP_MEMORY_CLEANUP").catch((error) => { report.cleanupError = safeCode(error); });
+  }
+  if (!report.errorCode && !report.cleanupError) {
+    try {
+      check(turns.length === fixtures.length + 2 && agent.runs.length === fixtures.length + 4
+        && agent.runs.slice(0, fixtures.length).every((run, index) => run.completed
+          && run.kvWriteCount === (fixtures[index].operation ? 6 : fixtures[index].permission === "deny" ? 4 : 3)
+          && run.kvAckCount === run.kvWriteCount), "CURSOR_APP_FINAL_RUN_COUNT");
+      const recovered = agent.runs[interruption.runIndex + 1];
+      check(recovered.completed && recovered.kvWriteCount === 3 && recovered.kvAckCount === 3, "CURSOR_APP_FINAL_RUN_COUNT");
+      await assertInterrupted({ recovered: true });
+      await assertMarkerAbsent(denial.marker, "CURSOR_APP_PERMISSION_TOOL_EXECUTED");
+      assertRepoMemoryNativeContent();
+      assertWriteback();
+      for (const [index, operation] of [[4, "search"], [5, "add"]]) {
+        assertSkillMemory(operation, JSON.parse(agent.runs[index].toolResults[2].stdout), memoryRequests[index === 4 ? 4 : 6], turns[index].workspaceName);
+      }
+    } catch (error) { report.errorCode = safeCode(error); }
+  }
+  if (!report.cleanupError) report.evidence.cleanup = true;
+  report.memoryRequestCount = memoryRequests.length;
+  if (!report.errorCode && !report.cleanupError) { report.status = "PASS"; report.stage = "complete"; }
+  if ((macos || windows) && root && !report.cleanupError) {
+    await rm(root, { recursive: true, force: true }).catch(() => {
+      report.status = "FAIL"; report.cleanupError = "CURSOR_APP_STATE_CLEANUP"; report.evidence.cleanup = false;
+    });
+  }
+  if (reportDir) {
+    await mkdir(reportDir, { recursive: true });
+    await writeFile(join(reportDir, "report.json"), `${JSON.stringify(report, null, 2)}\n`);
+  }
+}
+console.log(JSON.stringify(report, null, 2));
+if (report.status !== "PASS") process.exitCode = 1;

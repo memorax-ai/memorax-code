@@ -867,6 +867,8 @@ test("MemoraX adapter preserves prebuilt code evidence packs", async () => {
 });
 
 for (const [systemCode, message] of [
+  ["EACCES", "MemoraX connection permission denied"],
+  ["EPERM", "MemoraX connection not permitted"],
   ["ENOTFOUND", "MemoraX hostname could not be resolved"],
   ["ECONNREFUSED", "MemoraX connection was refused"],
   ["ECONNRESET", "MemoraX connection was reset"],

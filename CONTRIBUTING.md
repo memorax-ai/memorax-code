@@ -316,8 +316,8 @@ prose accuracy or command behavior.
 
 Native Windows package smoke coverage lives in
 [windows-npm-package-e2e.mjs](scripts/windows-npm-package-e2e.mjs). The separate
-[Codex](scripts/windows-codex-e2e.mjs) and
-[Claude](scripts/windows-claude-e2e.mjs) runners use real clients for installation.
+[Codex](scripts/ci/codex/windows-codex-e2e.mjs) and
+[Claude](scripts/ci/claude/windows-claude-e2e.mjs) runners use real clients for installation.
 The older Claude runner supplies synthetic Hook inputs; it does not establish
 native conversation or transcript writeback. Inspect each script's prerequisites
 and isolation before using it; a macOS/Linux suite or
@@ -330,6 +330,19 @@ native-client and synthetic evidence separately, record platform and scenarios,
 redact output, and explain any relevant checks not run. Public fixtures must never contain
 real API keys, private transcripts, personal memory, or infrastructure
 credentials.
+
+### Native CI Script Layout
+
+Native-client runners, helpers, and their adjacent tests are grouped under
+`scripts/ci/`:
+
+- `codex/`, `claude/`, `opencode/`, and `cursor/` own each client's checks.
+- `codebuddy-workbuddy/` owns both clients' entrypoints and shared checks.
+- `shared/` owns cross-client cleanup tests and Windows user PATH utilities.
+
+Keep existing Make targets as the developer entrypoints. Repository-wide build,
+package, documentation, and release scripts remain directly in `scripts/`;
+Cursor App image assets remain in `scripts/fixtures/cursor-app/`.
 
 ### Codex Functional CI
 
@@ -433,7 +446,7 @@ A Repo Memory worker case checks shared global model and provider configuration
 and remains required in the native conversation check.
 Session-specific model/provider override inheritance is pending implementation,
 so the installation wrappers report it as skipped and do not run
-`scripts/codex-model-inheritance-check.mjs`. That standalone script is retained
+`scripts/ci/codex/codex-model-inheritance-check.mjs`. That standalone script is retained
 as a future acceptance check: it sets a different foreground model or provider
 and requires the worker to use that override in its actual HTTP request and
 native record. Running it directly with an installed package root and Codex CLI
@@ -472,14 +485,14 @@ To reproduce on macOS or Linux inside an isolated development environment:
 
 ```bash
 memorax_dev make npm-package-check
-scripts/codex-install-check.sh dist/npm/tarballs 0.147.0 0.1.17
+scripts/ci/codex/codex-install-check.sh dist/npm/tarballs 0.147.0 0.1.17
 ```
 
 On Windows, download the workflow's package artifact into `dist/npm/tarballs`,
 then use a disposable PowerShell 7 session with Node.js and npm on PATH:
 
 ```powershell
-./scripts/codex-install-check.ps1 -TarballDirectory dist/npm/tarballs -CodexVersion 0.147.0 -PreviousVersion 0.1.17
+./scripts/ci/codex/codex-install-check.ps1 -TarballDirectory dist/npm/tarballs -CodexVersion 0.147.0 -PreviousVersion 0.1.17
 ```
 
 The Windows wrapper removes its temporary npm directory from the user PATH in
@@ -582,7 +595,7 @@ control, and UI reachability require separate investigation. To run it with an
 installed package, OpenCode executable, and the wrapper's test dependencies:
 
 ```bash
-node scripts/opencode-permissions-check.mjs PACKAGE_ROOT OPENCODE_EXECUTABLE --late-approval
+node scripts/ci/opencode/opencode-permissions-check.mjs PACKAGE_ROOT OPENCODE_EXECUTABLE --late-approval
 ```
 
 For startup investigation, manual dispatch with
@@ -606,19 +619,19 @@ package and run the baseline. To reuse an already validated package or select
 another exact client version:
 
 ```bash
-bash scripts/opencode-install-check.sh dist/npm/tarballs 1.18.18 0.1.18
+bash scripts/ci/opencode/opencode-install-check.sh dist/npm/tarballs 1.18.18 0.1.18
 ```
 
 On native Windows, download the package artifact and use a disposable
 PowerShell 7 session with Node.js, npm, and Git for Windows available:
 
 ```powershell
-./scripts/opencode-install-check.ps1 -TarballDirectory dist/npm/tarballs -OpenCodeVersion 1.18.18 -PreviousVersion 0.1.18
+./scripts/ci/opencode/opencode-install-check.ps1 -TarballDirectory dist/npm/tarballs -OpenCodeVersion 1.18.18 -PreviousVersion 0.1.18
 ```
 
 The Windows wrapper reuses the same exact-prefix user PATH cleanup guard as
 Codex, including its interruption and concurrent-update limitations. Local
-`node scripts/opencode-e2e.mjs [TARBALL_DIR] [OPENCODE_VERSION]` delegates to
+`node scripts/ci/opencode/opencode-e2e.mjs [TARBALL_DIR] [OPENCODE_VERSION]` delegates to
 these platform wrappers; it no longer creates a separate candidate package or
 injects a prebuilt Repo Memory bundle.
 
@@ -751,17 +764,17 @@ and run the baseline. To reuse a validated artifact or select another exact
 Claude version:
 
 ```bash
-bash scripts/claude-install-check.sh dist/npm/tarballs 2.1.277 0.1.18
+bash scripts/ci/claude/claude-install-check.sh dist/npm/tarballs 2.1.277 0.1.18
 ```
 
 On native Windows, download the package artifact and use a disposable
 PowerShell 7 session with Node.js 22 or later, npm, and Git for Windows:
 
 ```powershell
-./scripts/claude-install-check.ps1 -TarballDirectory dist/npm/tarballs -ClaudeVersion 2.1.277 -PreviousVersion 0.1.18
+./scripts/ci/claude/claude-install-check.ps1 -TarballDirectory dist/npm/tarballs -ClaudeVersion 2.1.277 -PreviousVersion 0.1.18
 ```
 
-Local `node scripts/claude-e2e.mjs [TARBALL_DIR] [CLAUDE_VERSION] [PREVIOUS_VERSION]`
+Local `node scripts/ci/claude/claude-e2e.mjs [TARBALL_DIR] [CLAUDE_VERSION] [PREVIOUS_VERSION]`
 delegates to the platform wrappers. It does not build or validate the package
 itself; use the Make target when the artifact has not already passed
 `npm-package-check`.
@@ -871,6 +884,13 @@ Memory generation, per-turn model override inheritance, worker permission
 inheritance, or independent background native session identity; the product
 worker disables session persistence.
 
+CodeBuddy and WorkBuddy share the selected fixture Git on the worker's PATH,
+without displacing the isolated Node or native-client commands. If no job is
+created, failure reports include matching Hook failure codes, pending workspace
+checks, and read-only Git ref/HEAD probes marked `after_failure`. These probes
+describe the later environment, not the original scheduler's decision; they
+do not retry scheduling or replace the original failure.
+
 The shared categories align with the other client suites, but their native
 protocols and bounded assertions are not identical. WorkBuddy, Desktop/editor
 UI, ordinary-user/UAC behavior, real credential stores, live model quality, and
@@ -895,17 +915,17 @@ On macOS or Linux, `memorax_dev make test-codebuddy-e2e` validates the package
 and runs the baseline. To reuse a validated artifact:
 
 ```bash
-bash scripts/codebuddy-install-check.sh dist/npm/tarballs 2.159.0 0.1.18
+bash scripts/ci/codebuddy-workbuddy/codebuddy-install-check.sh dist/npm/tarballs 2.159.0 0.1.18
 ```
 
 On native Windows, use a disposable PowerShell 7 session with Node.js 20 or
 later, npm, and Git for Windows:
 
 ```powershell
-./scripts/codebuddy-install-check.ps1 -TarballDirectory dist/npm/tarballs -CodeBuddyVersion 2.159.0 -PreviousVersion 0.1.18
+./scripts/ci/codebuddy-workbuddy/codebuddy-install-check.ps1 -TarballDirectory dist/npm/tarballs -CodeBuddyVersion 2.159.0 -PreviousVersion 0.1.18
 ```
 
-`node scripts/codebuddy-e2e.mjs [TARBALL_DIR] [CODEBUDDY_VERSION] [PREVIOUS_VERSION]`
+`node scripts/ci/codebuddy-workbuddy/codebuddy-e2e.mjs [TARBALL_DIR] [CODEBUDDY_VERSION] [PREVIOUS_VERSION]`
 delegates to the platform wrappers. It does not itself build or validate the
 package; use the Make target when the artifact has not passed
 `npm-package-check`.
@@ -921,7 +941,8 @@ The `CI` workflow runs WorkBuddy native checks automatically for pull requests
 targeting `main` and pushes to `main`, on `ubuntu-24.04` (x64), `macos-15`
 (arm64), and `windows-2025` (x64), using Node.js 24. Each platform runs its
 fixed baseline and the latest official desktop release resolved once for that
-run. Identical full versions, URLs, and checksums share one `baseline+latest`
+run, subject to the narrow Windows fallback below. Identical full versions,
+URLs, and checksums (advisory on Linux) share one `baseline+latest`
 job; a different desktop build still gets a separate job even if its bundled
 CLI version is unchanged. One additional Ubuntu job uses the minimum supported
 Node.js 20 with the fixed Linux baseline. All four to seven jobs run the complete
@@ -932,16 +953,20 @@ that same validated artifact. Matrix failures do not cancel the other platforms.
 The `WorkBuddy functional result` check requires both the package and the entire
 native matrix to succeed. Failed, cancelled, or unexpectedly skipped dependencies
 fail that check; intentionally unselected manual runs skip it as well.
-Each runner consumes the frozen release description and checks its selected
-SHA-256 before extracting or mounting the official desktop package. The
-WorkBuddy-specific resolver in `scripts/workbuddy-release-matrix.mjs` owns the
+The aggregate also requires the resolver's coverage report. A successful matrix
+can have degraded Windows coverage: its summary names the untested official
+latest and the selected older release instead of claiming latest coverage.
+Each runner consumes the frozen release description. macOS and Windows require
+its selected SHA-256 before mounting or extracting; Linux records the actual
+SHA-256 and warns on differences while requiring package and runtime identity. The
+WorkBuddy-specific resolver in `scripts/ci/codebuddy-workbuddy/workbuddy-release-matrix.mjs` owns the
 baseline records, feed validation, and matrix; the three acquisition helpers
 also accept a validated release JSON file while retaining their standalone
 baseline defaults. Desktop and bundled CLI versions are checked separately,
 because the official platform releases are not synchronized. Baselines require
-the exact known CLI version; latest jobs read a stable CLI version from the
-verified package and compare it with the real command's `--version` before the
-native suites. The current fixed baselines are:
+the exact known CLI version; latest and fallback jobs read a stable CLI version
+from the validated package metadata and compare it with the real command's `--version`
+before the native suites. The current fixed baselines are:
 
 | Runner | Official desktop package | Bundled CLI |
 | --- | --- | --- |
@@ -949,32 +974,55 @@ native suites. The current fixed baselines are:
 | macOS arm64 | `5.6.2.39298511` DMG | `2.147.0` |
 | Windows x64 | `5.6.2.39298511` EXE | `2.147.0` |
 
-The Linux DEB uses a maintainer-recorded SHA-256, not a vendor-published checksum.
-On 2026-10-03, two independent downloads from the fixed official HTTPS URL in
-`scripts/workbuddy-linux-bundle-check.sh` produced a 429,302,312-byte file with
-SHA-256 `2ef1bca217d29d9c2ba988c82079aa6ea0077e9f1ff882c6ab5dd7998bddf721`.
-The [official update feed](https://www.workbuddy.cn/v2/update?platform=workbuddy-linux-x64-deb)
-instead reported `03d756b259d7086c22098fa077589a032d60948d1de7313473360eefe11e240f`
-for that same URL and version. This pin detects changes from the inspected
-download; it is not an independent publisher signature or proof that the initial
-file was authentic. The resolver applies this reviewed exception only to that
-exact URL, version, and incorrect feed checksum; it never learns a pin from a
-new download. Other Linux latest releases use their official feed checksum.
-Any mismatch fails before extraction. A new mismatch requires explicit source
-review; do not bypass verification or automatically replace the expected hash.
+Linux functional CI permits same-version rebuilds: the same official DEB URL
+was observed returning packages built on 2026-09-10 and 2026-09-21 with different
+hashes but the same product and bundled CLI versions. Its baseline hash is a
+maintainer-recorded reference; other latest releases retain the official feed
+hash as a reference. A difference emits an explicit warning and diagnostic,
+not an acquisition failure. The success report records the actual download hash;
+neither downloads nor feeds replace the baseline reference. Linux deduplicates
+the same full version and URL regardless of reference hash differences.
+
+The official HTTPS source, successful complete HTTP 200 response, valid DEB
+format, package name/version/architecture, and bundled CLI identity/version
+remain required. Partial responses and declared length mismatches fail before
+extraction. A matching version is not a publisher signature or proof of
+identical contents; these checks run only on isolated CI runners without
+business credentials. macOS and Windows checksum and signature gates are unchanged.
+
+Manual `diagnose_workbuddy` runs retain each Linux download and a content-free
+response report as a one-day artifact, including checksum warnings, for offline
+comparison. Normal PR and push runs do not retain these packages. Retained
+downloads are diagnostic evidence, not authenticated release artifacts. A Linux
+hash warning permits only the isolated functional checks after all remaining
+validation passes. Response reports omit raw headers and signed URL queries.
 
 Latest discovery uses each platform's official update feed. The macOS ZIP URL
 is converted to the DMG URL in the same manner as the official download page.
 When the Windows feed has an empty checksum, the resolver freezes one commit
 of Microsoft's `winget-pkgs` repository and reads the matching WorkBuddy
 installer manifest from that immutable revision. It requires a unique x64/user
-entry with the exact official URL and product version. The YAML parser
+entry with the exact official URL and product version. Only when that exact
+manifest returns HTTP 404 does it list WorkBuddy version directories at the same
+frozen commit and select the highest stable three-part version below the
+requested official product version. That single fallback must pass the same
+manifest validation, including its exact official installer URL, full desktop
+build and SHA-256; the Windows runner still requires the valid Tencent signature.
+The manifest URL and digest select the full build; the installer's PE product
+version only confirms its three-part product version. A fallback identical to
+the baseline runs once as `baseline`, never `baseline+latest`; other selected
+older releases are labeled `fallback`. Coverage explicitly remains degraded,
+with the requested official latest recorded as untested.
+
+The YAML parser
 (`yaml@2.9.1`) is installed without lifecycle scripts in an isolated runner
 temporary directory, not added to product dependencies; package-job helper
 tests exercise the real parser. Native jobs and offline release selection need
-only Node built-ins. Missing or malformed metadata, a lagging winget manifest,
-conflicting known pins, invalid signatures, or digest mismatches fail the check
-without falling back to the baseline or reporting latest coverage as passed.
+only Node built-ins. All other feed, network, metadata, signature, or checksum
+errors fail the check, except the Linux hash differences described above.
+A missing older candidate, invalid selected manifest, conflicting non-Linux
+known pin, or failed acquisition also fails; the resolver does not
+continue trying progressively older versions.
 
 The macOS runner also requires Apple's notarization assessment and Tencent's
 Developer ID signature before using the read-only mounted application. Linux
@@ -1001,7 +1049,7 @@ Memory worker suites with its tarball directory, the actual bundled
 `cli/bin/codebuddy` entrypoint, and its exact runtime version:
 
 ```bash
-memorax_dev node scripts/workbuddy-e2e.mjs dist/npm/tarballs \
+memorax_dev node scripts/ci/codebuddy-workbuddy/workbuddy-e2e.mjs dist/npm/tarballs \
   "$WORKBUDDY_BUNDLED_COMMAND" "$WORKBUDDY_RUNTIME_VERSION" 0.1.18
 ```
 
@@ -1026,7 +1074,7 @@ account, WorkBuddy installation, a native turn and explicit Search.
 To run only native Memory/Skill checks against an already installed candidate:
 
 ```bash
-memorax_dev node scripts/workbuddy-native-check.mjs \
+memorax_dev node scripts/ci/codebuddy-workbuddy/workbuddy-native-check.mjs \
   "$memorax_dev_root/npm/lib/node_modules/@memorax/memorax-code" \
   "$WORKBUDDY_BUNDLED_COMMAND" "$WORKBUDDY_RUNTIME_VERSION"
 ```
@@ -1103,10 +1151,10 @@ foreground exit.
 These two suites can also run independently against the installed candidate:
 
 ```bash
-memorax_dev node scripts/codebuddy-permissions-check.mjs \
+memorax_dev node scripts/ci/codebuddy-workbuddy/codebuddy-permissions-check.mjs \
   "$memorax_dev_root/npm/lib/node_modules/@memorax/memorax-code" \
   "$WORKBUDDY_BUNDLED_COMMAND" "$WORKBUDDY_RUNTIME_VERSION" workbuddy
-memorax_dev node scripts/codebuddy-background-check.mjs \
+memorax_dev node scripts/ci/codebuddy-workbuddy/codebuddy-background-check.mjs \
   "$memorax_dev_root/npm/lib/node_modules/@memorax/memorax-code" \
   "$WORKBUDDY_BUNDLED_COMMAND" "$WORKBUDDY_RUNTIME_VERSION" workbuddy
 ```
@@ -1115,11 +1163,11 @@ Run either strict interrupt diagnostic separately, so a failure in one does not
 prevent investigating the other:
 
 ```bash
-memorax_dev node scripts/codebuddy-permissions-check.mjs \
+memorax_dev node scripts/ci/codebuddy-workbuddy/codebuddy-permissions-check.mjs \
   "$memorax_dev_root/npm/lib/node_modules/@memorax/memorax-code" \
   "$WORKBUDDY_BUNDLED_COMMAND" "$WORKBUDDY_RUNTIME_VERSION" workbuddy \
   --interrupt-case user-inflight-interrupt
-memorax_dev node scripts/codebuddy-permissions-check.mjs \
+memorax_dev node scripts/ci/codebuddy-workbuddy/codebuddy-permissions-check.mjs \
   "$memorax_dev_root/npm/lib/node_modules/@memorax/memorax-code" \
   "$WORKBUDDY_BUNDLED_COMMAND" "$WORKBUDDY_RUNTIME_VERSION" workbuddy \
   --interrupt-case user-wait-interrupt
@@ -1136,6 +1184,127 @@ these checks exercise the headless CLI on the Ubuntu runner, not automatic Linux
 desktop discovery or official Ubuntu desktop support. Implemented platform
 wrappers, acquisition tests, and a local runtime pass are not substitutes for
 successful native jobs on each target platform.
+
+### Cursor App Native Canary
+
+The native-client workflow tests the official **Cursor Desktop App**, not Cursor
+CLI, on Ubuntu 24.04 x64, macOS 15 arm64 and Windows 2025 x64. Each platform runs
+baseline **3.21.18** and the latest stable release on Node 24. Identical release
+identities share a cell; Linux also runs baseline on Node 22.13 or newer for its
+native SQLite reader. The native-check process must use the selected Node
+version, including inside the Linux container.
+
+Release resolution runs once in the package job. Every cell consumes the frozen
+inventory and the same validated candidate npm artifact, with no latest-version
+fallback. Package, lifecycle, native acceptance and cleanup failures fail the
+aggregate; a local or single-platform pass is not three-platform evidence.
+
+#### Functional Coverage
+
+Every cell first runs `scripts/ci/cursor/cursor-lifecycle-check.mjs TARBALL REPORT_DIR` in
+an isolated npm prefix and client/Backend home. It covers fresh/repeated setup,
+uninstall/reinstall, saved account/configuration retention, real upgrade from
+published MemoraX Code **0.1.18**, rejected download, replacement failure and retry.
+That baseline predates Cursor support: its Backend must be ready before upgrade,
+and the candidate must install the complete Cursor integration. Four real-PTY
+setup interruptions cover `after-config-write`, `before-backend-start`,
+`after-backend-start` and `saved-account-key-cancel`. A test-only child gate and
+the existing Backend lock control these boundaries; recovery requires no account
+input, complete installation and a saved-account Search. This does not simulate
+power loss or start the App. macOS and Windows also run the installed-package
+smoke; its synthetic Hook/database fixtures are not native App evidence.
+
+The App uses Cursor's built-in smoke driver for synthetic login and real composer
+UI input, with `--smoke-test-use-real-agent-http` pointing to the local Agent
+mock. The fixture uses the real Connect/protobuf transport, validates history KV
+bytes returned by the App, waits for native write acknowledgements, and completes
+the checkpoint. It never seeds the database, invokes Hooks directly or substitutes
+a simulated response stream. A separate read-only SQLite oracle verifies native
+composer/generation identity, checkpoint and every reachable content-addressed
+blob byte.
+
+The eleven native runs cover:
+
+- Repeated prompts and follow-up in conversation A, conversation B in a genuinely
+  different non-Git workspace, and App restart/resume back in A. Each turn retains
+  its own workspace scope.
+- Native `/memorax-code` Skill selection, exact installed attachment, Read of the
+  router and operation reference, then approved Shell Search/Add through the
+  public CLI. Scripted tool requests do not test autonomous Skill selection.
+- Shell denial through the matching UI: no file effect, normal completed turn,
+  and exact automatic Add.
+- Stop while awaiting Shell approval: correlated native cancellation and
+  interrupted Hook metadata, no file effect or Add, then a new successful turn in
+  the same session without restarting App or Backend. Cancelled content must not
+  enter completed history or the recovery Add.
+- Repo Memory in an isolated Git repository: a real foreground Hook delegates a
+  native Task to the managed child using the foreground model. The child claims
+  the supervised job and finishes without authoring a bundle, requiring
+  `failed/artifact_validation_failed`, no publication and an exited lease guard.
+  Parent/child native identities and completion notification must match. Only
+  the parent writes back; this is not successful bundle-generation coverage.
+
+The final audit requires nine exact automatic Adds plus the two explicit Skill
+requests, with complete Unicode/multiline content, authentication, client/session
+identity, local or Git scope and idempotency keys. Exact ordered transport and
+native-content counts are enforced by the executable report gate. Missing,
+duplicate, cross-session or late requests fail, including after cleanup.
+
+#### Acquisition and Isolation
+
+Linux baseline hashes are recorded reproducibility pins, not publisher-signed
+attestations. Latest Linux releases require the official download API and apt
+metadata to agree; the pinned apt key authenticates `InRelease`, package indexes
+and SHA-256. macOS verifies the mounted App's deep Apple-anchored signature,
+publisher, bundle ID, Gatekeeper result, architecture, sealed version and
+`realCommit`, then repeats validation on the private copy and detaches before
+launch. Windows verifies the official installer and installed executable's
+Authenticode, publisher, architecture, version and release commit, waiting for
+the installer process tree. Observed desktop hashes do not replace signatures.
+
+Linux runs non-root under Xvfb in a network-disabled Docker container with
+Chromium sandboxing, dropped capabilities, no-new-privileges and the pinned
+seccomp profile. macOS and Windows require fresh GitHub-hosted runners, retain
+Chromium's default sandbox and isolate client homes, App data, shell environment
+and Backend state. All use synthetic credentials, in-memory App secret storage
+and local Agent/Memory fixtures. These macOS/Windows settings verify configured
+routes, not OS-enforced isolation of all traffic or credential stores.
+
+Native Shell commands require their matching Run approval. On macOS the Skill
+commands request network access to the local fixture, and the worker finish
+command requests full command permissions; these are not loopback-only sandbox
+policies. Cleanup targets only owned live processes. Windows first requests
+native quit, then falls back only for the held live App child. Unconfirmed cleanup
+fails and retains isolated state for runner teardown.
+
+#### Reproduction and Reports
+
+After validating an installable candidate, use Node 24 and a local Linux-container
+Docker daemon:
+
+```bash
+node --test scripts/ci/cursor/cursor-app-*.test.mjs scripts/ci/cursor/cursor-lifecycle*.test.mjs
+node scripts/ci/cursor/cursor-app-container-check.mjs \
+  dist/npm/tarballs/memorax-memorax-code-0.1.19.tgz \
+  "$memorax_dev_root/cursor-app-report"
+```
+
+The two-argument command selects baseline and Node 24. For another matrix cell,
+freeze releases with `node scripts/ci/cursor/cursor-app-release.mjs resolve-linux MANIFEST`
+(requires `gpg` and `gpgv`), then append `MANIFEST latest 24` or
+`MANIFEST baseline 22` to the container command. The metadata-only `resolve`
+command does not verify Linux apt metadata and is not CI acceptance evidence.
+
+Only lifecycle and native `report.json` files are uploaded. Diagnostic helpers
+allow only fixed error/status enums, bounded counts and marker booleans; raw
+App/installer logs, command output, transcripts, database files, Hook traces,
+credentials, PIDs and private paths are excluded. Diagnostics never replace the
+original failure or relax acceptance.
+
+Real login, hosted models, OS credential-store isolation, native Continue/Retry/
+Edit, Backend restart, preauthorized tools, running-tool interruption,
+late-approval races, linked worktrees, cross-workspace Search, successful Repo
+Memory generation and native App upgrade/uninstall remain outside this matrix.
 
 ## Pull Requests
 

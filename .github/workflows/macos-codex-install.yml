@@ -24,7 +24,7 @@ concurrency:
 
 jobs:
   package:
-    if: github.event_name != 'workflow_dispatch' || !inputs.check_deepseek || inputs.diagnose_opencode_initialization
+    if: (github.event_name != 'workflow_dispatch' || !inputs.check_deepseek || inputs.diagnose_opencode_initialization)
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
@@ -34,6 +34,7 @@ jobs:
       opencode-matrix: ${{ steps.opencode-versions.outputs.matrix }}
       claude-matrix: ${{ steps.claude-versions.outputs.matrix }}
       codebuddy-matrix: ${{ steps.codebuddy-versions.outputs.matrix }}
+      cursor-matrix: ${{ steps.cursor-versions.outputs.matrix }}
       artifact-ready: ${{ steps.package-check.outputs.artifact-ready }}
     steps:
       - uses: actions/checkout@v7
@@ -137,10 +138,55 @@ jobs:
             `CodeBuddy Code baseline: **${baseline}**; npm latest resolved for this run: **${latest}**.\n\n` +
             `${include.length} required lifecycle, interruption, native memory, Skill, permission and Repo Memory configuration jobs; no version fallback. WorkBuddy is outside this scope; client-specific coverage remains bounded.\n`);
           NODE
+      - name: Resolve and freeze Cursor App releases once for this run
+        if: github.event_name != 'workflow_dispatch' || !(inputs.check_deepseek || inputs.diagnose_opencode_initialization)
+        id: cursor-versions
+        shell: bash
+        run: |
+          node scripts/ci/cursor/cursor-app-release.mjs resolve-linux "$RUNNER_TEMP/cursor-app-releases.json"
+          node --input-type=module <<'NODE'
+          import { appendFileSync, readFileSync } from 'node:fs';
+          import { validateLinuxRelease } from './scripts/ci/cursor/cursor-app-release.mjs';
+          import { selectCursorMacosRelease } from './scripts/ci/cursor/cursor-app-macos-artifact.mjs';
+          import { selectCursorWindowsRelease } from './scripts/ci/cursor/cursor-app-windows-artifact.mjs';
+          const manifest = JSON.parse(readFileSync(`${process.env.RUNNER_TEMP}/cursor-app-releases.json`, 'utf8'));
+          if (manifest.schemaVersion !== 1) throw new Error('Invalid frozen Cursor release inventory');
+          const baseline = validateLinuxRelease(manifest.baseline['linux-x64'], 'linux-x64');
+          const latest = validateLinuxRelease(manifest.latest['linux-x64'], 'linux-x64');
+          const same = ['version', 'commitSha', 'url', 'sha256', 'debVersion'].every((key) => baseline[key] === latest[key]);
+          const include = [
+            { os: 'ubuntu-24.04', node: '24', cursor: baseline.version, release: 'baseline', channel: same ? 'baseline+latest' : 'baseline' },
+            { os: 'ubuntu-24.04', node: '22', cursor: baseline.version, release: 'baseline', channel: 'baseline' },
+          ];
+          if (!same) include.push({ os: 'ubuntu-24.04', node: '24', cursor: latest.version, release: 'latest', channel: 'latest' });
+          const macosBaseline = selectCursorMacosRelease(manifest, 'baseline');
+          const macosLatest = selectCursorMacosRelease(manifest, 'latest');
+          const sameMacos = ['version', 'commitSha', 'url'].every((key) => macosBaseline[key] === macosLatest[key]);
+          include.push({ os: 'macos-15', node: '24', cursor: macosBaseline.version, release: 'baseline', channel: sameMacos ? 'baseline+latest' : 'baseline' });
+          if (!sameMacos) include.push({ os: 'macos-15', node: '24', cursor: macosLatest.version, release: 'latest', channel: 'latest' });
+          const windowsBaseline = selectCursorWindowsRelease(manifest, 'baseline');
+          const windowsLatest = selectCursorWindowsRelease(manifest, 'latest');
+          const sameWindows = ['version', 'commitSha', 'url'].every((key) => windowsBaseline[key] === windowsLatest[key]);
+          include.push({ os: 'windows-2025', node: '24', cursor: windowsBaseline.version, release: 'baseline', channel: sameWindows ? 'baseline+latest' : 'baseline' });
+          if (!sameWindows) include.push({ os: 'windows-2025', node: '24', cursor: windowsLatest.version, release: 'latest', channel: 'latest' });
+          appendFileSync(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify({ include })}\n`);
+          appendFileSync(process.env.GITHUB_STEP_SUMMARY,
+            `Cursor App baseline: **${baseline.version}**; desktop latest frozen for this run: **${latest.version}**.\n\n` +
+            `${include.length} required Linux, macOS and Windows App jobs, including Linux baseline on Node 22. No version fallback.\n`);
+          NODE
+      - uses: actions/upload-artifact@v4
+        if: github.event_name != 'workflow_dispatch' || !(inputs.check_deepseek || inputs.diagnose_opencode_initialization)
+        with:
+          name: cursor-app-releases
+          path: ${{ runner.temp }}/cursor-app-releases.json
+          if-no-files-found: error
+          retention-days: 7
       - name: Verify test assertions reject malformed content and unexpected failures
-        run: node --test scripts/native-process-cleanup.test.mjs scripts/codex-native-content-check.test.mjs scripts/codex-lifecycle-assertions.test.mjs scripts/codex-writeback-diagnostics.test.mjs scripts/opencode-native-support.test.mjs scripts/opencode-initialization-diagnostic.test.mjs scripts/opencode-initialization-layouts.test.mjs scripts/claude-native-content-check.test.mjs scripts/claude-native-support.test.mjs scripts/claude-permissions-support.test.mjs scripts/claude-lifecycle-assertions.test.mjs scripts/claude-lifecycle-process.test.mjs scripts/claude-background-assertions.test.mjs scripts/claude-install-interruption-driver.test.mjs scripts/codebuddy-native-content-check.test.mjs scripts/codebuddy-native-support.test.mjs scripts/codebuddy-install-cleanup.test.mjs scripts/codebuddy-lifecycle-assertions.test.mjs scripts/codebuddy-install-interruption-driver.test.mjs scripts/codebuddy-permissions-support.test.mjs scripts/codebuddy-background-assertions.test.mjs
+        run: node --test scripts/ci/shared/native-process-cleanup.test.mjs scripts/ci/codex/codex-native-content-check.test.mjs scripts/ci/codex/codex-lifecycle-assertions.test.mjs scripts/ci/codex/codex-writeback-diagnostics.test.mjs scripts/ci/opencode/opencode-native-support.test.mjs scripts/ci/opencode/opencode-initialization-diagnostic.test.mjs scripts/ci/opencode/opencode-initialization-layouts.test.mjs scripts/ci/claude/claude-native-content-check.test.mjs scripts/ci/claude/claude-native-support.test.mjs scripts/ci/claude/claude-permissions-support.test.mjs scripts/ci/claude/claude-lifecycle-assertions.test.mjs scripts/ci/claude/claude-lifecycle-process.test.mjs scripts/ci/claude/claude-background-assertions.test.mjs scripts/ci/claude/claude-install-interruption-driver.test.mjs scripts/ci/codebuddy-workbuddy/codebuddy-native-content-check.test.mjs scripts/ci/codebuddy-workbuddy/codebuddy-native-support.test.mjs scripts/ci/codebuddy-workbuddy/codebuddy-install-cleanup.test.mjs scripts/ci/codebuddy-workbuddy/codebuddy-lifecycle-assertions.test.mjs scripts/ci/codebuddy-workbuddy/codebuddy-install-interruption-driver.test.mjs scripts/ci/codebuddy-workbuddy/codebuddy-permissions-support.test.mjs scripts/ci/codebuddy-workbuddy/codebuddy-background-assertions.test.mjs
       - name: Verify shared CodeBuddy and WorkBuddy native and install contracts
-        run: node --test scripts/codebuddy-native-memory-support.test.mjs scripts/codebuddy-install-interruption-check.test.mjs scripts/workbuddy-install-entry.test.mjs
+        run: node --test scripts/ci/codebuddy-workbuddy/codebuddy-native-memory-support.test.mjs scripts/ci/codebuddy-workbuddy/codebuddy-install-interruption-check.test.mjs scripts/ci/codebuddy-workbuddy/workbuddy-install-entry.test.mjs
+      - name: Verify Cursor App canary contracts
+        run: node --test scripts/ci/cursor/cursor-app-*.test.mjs scripts/ci/cursor/cursor-lifecycle-*.test.mjs
       - name: Build and validate the installable package
         id: package-check
         shell: bash
@@ -200,17 +246,17 @@ jobs:
         shell: bash
         env:
           CODEX_VERSION: ${{ matrix.codex }}
-        run: scripts/codex-install-check.sh dist/npm/tarballs "$CODEX_VERSION"
+        run: scripts/ci/codex/codex-install-check.sh dist/npm/tarballs "$CODEX_VERSION"
       - name: Verify Windows user PATH cleanup on success, failure and interruption
         if: runner.os == 'Windows'
         shell: pwsh
-        run: ./scripts/codex-install-user-path.test.ps1
+        run: ./scripts/ci/shared/codex-install-user-path.test.ps1
       - name: Verify lifecycle, native writeback, permissions and shared configuration (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         env:
           CODEX_VERSION: ${{ matrix.codex }}
-        run: ./scripts/codex-install-check.ps1 -TarballDirectory dist/npm/tarballs -CodexVersion $env:CODEX_VERSION
+        run: ./scripts/ci/codex/codex-install-check.ps1 -TarballDirectory dist/npm/tarballs -CodexVersion $env:CODEX_VERSION
 
   opencode:
     name: OpenCode ${{ matrix.channel }} ${{ matrix.opencode }} (${{ matrix.os }}, Node ${{ matrix.node }})
@@ -238,11 +284,11 @@ jobs:
         shell: bash
         env:
           OPENCODE_VERSION: ${{ matrix.opencode }}
-        run: bash scripts/opencode-install-check.sh dist/npm/tarballs "$OPENCODE_VERSION"
+        run: bash scripts/ci/opencode/opencode-install-check.sh dist/npm/tarballs "$OPENCODE_VERSION"
       - name: Verify shared Windows user PATH cleanup
         if: runner.os == 'Windows'
         shell: pwsh
-        run: ./scripts/codex-install-user-path.test.ps1
+        run: ./scripts/ci/shared/codex-install-user-path.test.ps1
       - name: Verify lifecycle, native memory, permissions and recovery (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -250,7 +296,7 @@ jobs:
           OPENCODE_VERSION: ${{ matrix.opencode }}
           TEMP: ${{ runner.temp }}
           TMP: ${{ runner.temp }}
-        run: ./scripts/opencode-install-check.ps1 -TarballDirectory dist/npm/tarballs -OpenCodeVersion $env:OPENCODE_VERSION
+        run: ./scripts/ci/opencode/opencode-install-check.ps1 -TarballDirectory dist/npm/tarballs -OpenCodeVersion $env:OPENCODE_VERSION
 
   claude:
     name: Claude smoke ${{ matrix.channel }} ${{ matrix.claude }} (${{ matrix.os }}, Node ${{ matrix.node }})
@@ -278,11 +324,11 @@ jobs:
         shell: bash
         env:
           CLAUDE_VERSION: ${{ matrix.claude }}
-        run: bash scripts/claude-install-check.sh dist/npm/tarballs "$CLAUDE_VERSION"
+        run: bash scripts/ci/claude/claude-install-check.sh dist/npm/tarballs "$CLAUDE_VERSION"
       - name: Verify shared Windows user PATH cleanup
         if: runner.os == 'Windows'
         shell: pwsh
-        run: ./scripts/codex-install-user-path.test.ps1
+        run: ./scripts/ci/shared/codex-install-user-path.test.ps1
       - name: Verify Claude lifecycle, interruption, native flows and Repo Memory configuration (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -290,7 +336,7 @@ jobs:
           CLAUDE_VERSION: ${{ matrix.claude }}
           TEMP: ${{ runner.temp }}
           TMP: ${{ runner.temp }}
-        run: ./scripts/claude-install-check.ps1 -TarballDirectory dist/npm/tarballs -ClaudeVersion $env:CLAUDE_VERSION
+        run: ./scripts/ci/claude/claude-install-check.ps1 -TarballDirectory dist/npm/tarballs -ClaudeVersion $env:CLAUDE_VERSION
 
   codebuddy:
     name: CodeBuddy functional ${{ matrix.channel }} ${{ matrix.codebuddy }} (${{ matrix.os }}, Node ${{ matrix.node }})
@@ -318,11 +364,11 @@ jobs:
         shell: bash
         env:
           CODEBUDDY_VERSION: ${{ matrix.codebuddy }}
-        run: bash scripts/codebuddy-install-check.sh dist/npm/tarballs "$CODEBUDDY_VERSION"
+        run: bash scripts/ci/codebuddy-workbuddy/codebuddy-install-check.sh dist/npm/tarballs "$CODEBUDDY_VERSION"
       - name: Verify shared Windows user PATH cleanup
         if: runner.os == 'Windows'
         shell: pwsh
-        run: ./scripts/codex-install-user-path.test.ps1
+        run: ./scripts/ci/shared/codex-install-user-path.test.ps1
       - name: Verify CodeBuddy lifecycle, interruption, native flows and Repo Memory configuration (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -330,7 +376,69 @@ jobs:
           CODEBUDDY_VERSION: ${{ matrix.codebuddy }}
           TEMP: ${{ runner.temp }}
           TMP: ${{ runner.temp }}
-        run: ./scripts/codebuddy-install-check.ps1 -TarballDirectory dist/npm/tarballs -CodeBuddyVersion $env:CODEBUDDY_VERSION
+        run: ./scripts/ci/codebuddy-workbuddy/codebuddy-install-check.ps1 -TarballDirectory dist/npm/tarballs -CodeBuddyVersion $env:CODEBUDDY_VERSION
+
+  cursor-app:
+    name: Cursor App ${{ matrix.channel }} ${{ matrix.cursor }} (${{ matrix.os }}, Node ${{ matrix.node }})
+    needs: package
+    if: always() && !cancelled() && needs.package.outputs.artifact-ready == 'true' && !(github.event_name == 'workflow_dispatch' && (inputs.check_deepseek || inputs.diagnose_opencode_initialization))
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.package.outputs.cursor-matrix) }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+          package-manager-cache: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: memorax-code-package
+          path: dist/npm/tarballs
+      - uses: actions/download-artifact@v4
+        with:
+          name: cursor-app-releases
+          path: ${{ runner.temp }}/cursor-app-releases
+      - name: Verify Cursor package lifecycle and saved account
+        shell: bash
+        run: |
+          set -- dist/npm/tarballs/memorax-memorax-code-*.tgz
+          [[ "$#" -eq 1 && -f "$1" && ! -L "$1" ]] || exit 1
+          node scripts/ci/cursor/cursor-lifecycle-check.mjs "$1" "$RUNNER_TEMP/cursor-lifecycle-report"
+      - name: Verify isolated native Cursor App writeback
+        shell: bash
+        env:
+          CURSOR_RELEASE: ${{ matrix.release }}
+          CURSOR_NODE: ${{ matrix.node }}
+        run: |
+          set -- dist/npm/tarballs/memorax-memorax-code-*.tgz
+          [[ "$#" -eq 1 && -f "$1" && ! -L "$1" ]] || exit 1
+          case "$RUNNER_OS" in
+            Linux) entrypoint=scripts/ci/cursor/cursor-app-container-check.mjs ;;
+            macOS) entrypoint=scripts/ci/cursor/cursor-app-macos-check.mjs ;;
+            Windows) entrypoint=scripts/ci/cursor/cursor-app-windows-check.mjs ;;
+            *) echo 'Unsupported Cursor App runner.' >&2; exit 1 ;;
+          esac
+          node "$entrypoint" "$1" "$RUNNER_TEMP/cursor-app-report" \
+            "$RUNNER_TEMP/cursor-app-releases/cursor-app-releases.json" "$CURSOR_RELEASE" "$CURSOR_NODE"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cursor-lifecycle-${{ matrix.os }}-${{ matrix.channel }}-node-${{ matrix.node }}-report
+          path: ${{ runner.temp }}/cursor-lifecycle-report/report.json
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cursor-app-${{ matrix.os }}-${{ matrix.channel }}-node-${{ matrix.node }}-report
+          path: ${{ runner.temp }}/cursor-app-report/report.json
+          if-no-files-found: error
+          retention-days: 7
 
   opencode-initialization-diagnostic:
     name: OpenCode Windows initialization diagnostic (not functional acceptance)
@@ -387,7 +495,7 @@ jobs:
           $rg = & $node -e 'process.stdout.write(require(process.argv[1]).rgPath)' (Join-Path $prefix 'node_modules/@vscode/ripgrep')
           if ($LASTEXITCODE -ne 0) { throw 'Diagnostic ripgrep resolution failed.' }
           $env:PATH = "$(Split-Path $rg -Parent);$env:PATH"
-          & $node scripts/opencode-initialization-diagnostic.mjs (Join-Path $prefix 'node_modules/@memorax/memorax-code') (Join-Path $prefix 'node_modules/opencode-ai/bin/opencode.exe') $osTempBase $runnerTempBase
+          & $node scripts/ci/opencode/opencode-initialization-diagnostic.mjs (Join-Path $prefix 'node_modules/@memorax/memorax-code') (Join-Path $prefix 'node_modules/opencode-ai/bin/opencode.exe') $osTempBase $runnerTempBase
           if ($LASTEXITCODE -ne 0) { throw 'The diagnostic reported a failure; inspect the recorded trials.' }
           Remove-Item -LiteralPath $root -Recurse -Force
 
@@ -448,6 +556,26 @@ jobs:
             exit 1
           fi
 
+  cursor-app-result:
+    name: Cursor App canary result
+    if: always() && !(github.event_name == 'workflow_dispatch' && (inputs.check_deepseek || inputs.diagnose_opencode_initialization))
+    needs: [package, cursor-app]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Require the package and Cursor App canary to succeed
+        shell: bash
+        env:
+          PACKAGE_RESULT: ${{ needs.package.result }}
+          CURSOR_RESULT: ${{ needs.cursor-app.result }}
+        run: |
+          printf 'Package: **%s**\n\nCursor App Linux/macOS/Windows matrix: **%s**.\n\nUbuntu 24.04, macOS 15 and Windows 2025, baseline/latest on Node 24 and Linux baseline on Node 22. Eleven native App runs per cell cover repeated-prompt follow-up, cross-workspace isolation, App restart/resume, explicit Skill Search/Add, Shell denial, pending-Shell interruption and same-session recovery. A real foreground Hook also delegates a Repo Memory job through native Task: the managed child inherits model selection, claims the job and finishes without a bundle, requiring artifact_validation_failed, no published bundle, exited lease guard and no child automatic Add. Nine completed foreground turns produce exactly nine automatic Adds; the two explicit Skill operations bring the total Memory requests to eleven. Scripted tool requests do not validate model-driven Skill selection or successful Repo Memory generation. macOS and Windows use signature-verified Apps, isolated homes and local fixtures on fresh GitHub-hosted runners, without an additional Seatbelt or WFP prerequisite. Chromium sandboxing remains enabled. This matrix does not validate real login, OS credential-store isolation, hosted models or full functional coverage.\n' "$PACKAGE_RESULT" "$CURSOR_RESULT" >> "$GITHUB_STEP_SUMMARY"
+          printf '\nEvery cell also requires the isolated MemoraX package lifecycle check: fresh/repeat setup, uninstall/reinstall, real previous-version upgrade, download and replacement failure recovery, saved account/configuration retention, and four setup interruption stages: after-config-write, before-backend-start, after-backend-start, saved-account-key-cancel. The setup checkpoints use a real PTY, the existing Backend lock and a test-only Node child gate; retries require no account input and verify complete Cursor integration plus a local saved-account Search. This does not simulate power loss or start the Cursor App.\n' >> "$GITHUB_STEP_SUMMARY"
+          if [[ "$PACKAGE_RESULT" != success || "$CURSOR_RESULT" != success ]]; then
+            echo '::error::The package and Cursor App canary must both succeed. Failed, cancelled or skipped dependencies do not pass this check.'
+            exit 1
+          fi
+
   functional-result:
     name: ${{ github.event_name == 'workflow_dispatch' && inputs.check_deepseek && 'Codex provider-only result' || 'Codex functional result' }}
     if: always() && !inputs.diagnose_opencode_initialization
@@ -500,4 +628,4 @@ jobs:
           LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
           LLM_MODEL: ${{ vars.LLM_MODEL }}
           LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
-        run: node scripts/codex-provider-smoke.mjs "$RUNNER_TEMP/provider-cli/bin/codex"
+        run: node scripts/ci/codex/codex-provider-smoke.mjs "$RUNNER_TEMP/provider-cli/bin/codex"
