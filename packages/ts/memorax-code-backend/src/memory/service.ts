@@ -1,4 +1,6 @@
 import { createAutomaticMemoryWritebackRuntime } from "./automatic-writeback.js";
+import { readCodingSessionSourceTurn } from "./coding-session-source.js";
+import { codingSessionsEnabled, loadMemoraxCodeConfig } from "../config/memorax-code.js";
 import { recordWritebackRejection } from "./background-diagnostics.js";
 import {
   createCodexMemoryHookRuntime,
@@ -36,7 +38,7 @@ import type {
 
 export type MemoryServiceOptions = Omit<
   CodexMemoryHookRuntimeOptions,
-  "automaticWriteback" | "pendingQuotaNotice" | "repositoryMemorySession" | "turnCoordinator" | "searchGuidance"
+  "automaticWriteback" | "captureCodingTurns" | "pendingQuotaNotice" | "repositoryMemorySession" | "turnCoordinator" | "onDeferredWritebackFailure" | "searchGuidance"
 > & Pick<ClaudeMemoryHookRuntimeOptions, "transcriptReadAttempts" | "transcriptRetryDelayMs">;
 
 type MemoryHookWritebackResult =
@@ -59,6 +61,8 @@ export type MemoryService = {
 };
 
 export function createMemoryService(options: MemoryServiceOptions = {}): MemoryService {
+  const env = options.env ?? process.env;
+  const memoraxCodeHome = options.memoraxCodeHome ?? env.MEMORAX_CODE_HOME?.trim();
   const searchGuidance = createMemorySearchGuidanceRuntime(options);
   const pendingQuotaNotice = createPendingQuotaNoticeRuntime({
     claimQuotaNotice: options.claimQuotaNotice,
@@ -66,12 +70,17 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
     env: options.env,
   });
   const automaticWriteback = createAutomaticMemoryWritebackRuntime({
-    memoraxCodeHome: options.memoraxCodeHome,
+    memoraxCodeHome,
     diagnosticLogger: options.diagnosticLogger,
     queueQuotaNotice: pendingQuotaNotice.queue,
+    readCodingSessionTurn: readCodingSessionSourceTurn,
   });
+  const fileConfig = loadMemoraxCodeConfig(memoraxCodeHome);
+  const captureCodingTurns = codingSessionsEnabled(env, fileConfig);
   const repositoryMemorySession = createRepositoryMemorySessionRuntime({
-    onScopeUpgrade: automaticWriteback.discardForScopeUpgrade,
+    onScopeUpgrade(upgrade) {
+      automaticWriteback.discardForScopeUpgrade(upgrade);
+    },
   });
   const turnCoordinator = createMemoryTurnCoordinator({
     automaticWriteback: automaticWriteback.enqueue,
@@ -84,6 +93,10 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
   });
   const codexHook = createCodexMemoryHookRuntime({
     ...options,
+    onDeferredWritebackFailure: (command, reason) => recordWritebackRejection(reason, {
+      memoraxCodeHome, env, client: "codex", sessionId: command.sessionId, turnId: command.turnId,
+    }),
+    captureCodingTurns,
     searchGuidance,
     pendingQuotaNotice,
     repositoryMemorySession,
@@ -91,6 +104,7 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
   });
   const claudeHook = createClaudeMemoryHookRuntime({
     ...options,
+    captureCodingTurns,
     searchGuidance,
     pendingQuotaNotice,
     repositoryMemorySession,
@@ -98,6 +112,7 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
   });
   const openCodeHook = createOpenCodeMemoryHookRuntime({
     ...options,
+    captureCodingTurns,
     searchGuidance,
     pendingQuotaNotice,
     repositoryMemorySession,
@@ -111,6 +126,7 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
   });
   const codeBuddyHook = createCodeBuddyMemoryHookRuntime({
     ...options,
+    captureCodingTurns,
     searchGuidance,
     pendingQuotaNotice,
     repositoryMemorySession,
@@ -118,6 +134,7 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
   });
   const workBuddyHook = createCodeBuddyMemoryHookRuntime({
     ...options,
+    captureCodingTurns,
     searchGuidance,
     client: "workbuddy",
     pendingQuotaNotice,
@@ -140,7 +157,7 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
   });
   async function observeWriteback(command: WritebackCommand, pending: Promise<MemoryHookWritebackResult>): Promise<MemoryHookWritebackResult> {
     const result = await pending;
-    if (!result.scheduled) {
+    if (!result.scheduled && !("deferred" in result && result.deferred)) {
       recordWritebackRejection(result.reason, {
         memoraxCodeHome: options.memoraxCodeHome,
         env: options.env,
@@ -207,6 +224,7 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
       return unsupportedMemoryHookCommand(command);
     },
     async drain() {
+      await codexHook.drain();
       await automaticWriteback.drain();
     },
     close() {

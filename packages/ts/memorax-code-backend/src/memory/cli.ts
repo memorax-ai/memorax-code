@@ -1,3 +1,5 @@
+import { resolveCodingSearchContext } from "./coding-context.js";
+import { searchExperimentConfigFromArgs } from "./search-experiment-config.js";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { backendDebug } from "../shared/debug-log.js";
@@ -146,6 +148,11 @@ async function memorySearch(args: string[], options: MemoryCliOptions): Promise<
   const queryResult = await readTextArg(args, "--query", "--query-file", "query");
   if (!queryResult.ok) return { ...queryResult, action: "memory.search" };
   const query = queryResult.text;
+  const experimentConfigResult = await searchExperimentConfigFromArgs(args, options.cwd ?? process.cwd());
+  if (!experimentConfigResult.ok) {
+    return { ok: false, action: "memory.search", query, error: experimentConfigResult.error };
+  }
+  const experimentConfig = experimentConfigResult.config;
   const repositoryMemory = await resolveMemoryCliRepositoryMemory(options);
   if (!repositoryMemory.ok) {
     return memoryCliRepositoryFailure("memory.search", repositoryMemory, { query });
@@ -163,6 +170,19 @@ async function memorySearch(args: string[], options: MemoryCliOptions): Promise<
       query,
       context: {
         ...(limitFromArgs(args) === undefined ? {} : { limit: limitFromArgs(args) }),
+        ...(experimentConfig.formula
+          ? {
+            mode: "scored",
+            output_mode: "summary",
+            score_formula: {
+              id: experimentConfig.formula,
+              version: experimentConfig.formula === "semantic_decay_plus_helpful" ? 2 : 1,
+            },
+          }
+          : {}),
+        ...(experimentConfig.staleDays === undefined
+          ? {}
+          : { rough_filter: { stale_days: experimentConfig.staleDays, max_usage: experimentConfig.maxUsage } }),
       },
     },
     {
@@ -173,6 +193,7 @@ async function memorySearch(args: string[], options: MemoryCliOptions): Promise<
       observability: observability.hook,
       observabilitySource: "memory_cli",
       repositoryScope: repositoryMemory.memory.scope,
+      codingContext: await resolveCodingSearchContext(repositoryMemory.traceContext),
     },
   );
   await observability.flush();

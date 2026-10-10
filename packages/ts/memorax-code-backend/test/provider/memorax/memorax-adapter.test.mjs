@@ -4,7 +4,9 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { invokeMemoraxMemoryProvider } from "../../../dist/provider/memorax/adapter.js";
+import { buildMemoraxSearchPayload, invokeMemoraxMemoryProvider } from "../../../dist/provider/memorax/adapter.js";
+import { memoraxConfigFromEnv } from "../../../dist/provider/memorax/config.js";
+import { CODING_SESSION_BATCH_MAX_BYTES } from "../../../dist/coding-sessions/contracts.js";
 import { listen } from "../../support/helpers.mjs";
 
 function testRepositoryScope(baseUserId = "user-1", repositorySlug = "memorax-code") {
@@ -20,6 +22,45 @@ function testRepositoryScope(baseUserId = "user-1", repositorySlug = "memorax-co
     boundWorkspaceRoot: "/test/repository",
   };
 }
+
+test("MemoraX adapter applies Search defaults and preserves explicit compatibility overrides", () => {
+  const resolved = memoraxConfigFromEnv({
+    MEMORAX_CODE_MEMORAX_API_KEY: "secret",
+    MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
+  });
+  assert.equal(resolved.ok, true);
+  const defaults = buildMemoraxSearchPayload(
+    resolved.config,
+    "default query",
+    {},
+    testRepositoryScope(),
+  );
+  assert.deepEqual(
+    {
+      mode: defaults.mode,
+      output_mode: defaults.output_mode,
+      score_formula: defaults.score_formula,
+      rough_filter: defaults.rough_filter,
+    },
+    {
+      mode: "scored",
+      output_mode: "summary",
+      score_formula: { id: "semantic_decay_plus_helpful", version: 2 },
+      rough_filter: { stale_days: 30, max_usage: 0 },
+    },
+  );
+  const fast = buildMemoraxSearchPayload(resolved.config, "fast", { mode: "fast" }, testRepositoryScope());
+  assert.equal(fast.mode, "fast");
+  assert.equal("score_formula" in fast, false);
+  const facts = buildMemoraxSearchPayload(resolved.config, "facts", { output_mode: "facts" }, testRepositoryScope());
+  assert.equal("score_formula" in facts, false);
+  const raw = buildMemoraxSearchPayload(resolved.config, "raw", { output_mode: "raw" }, testRepositoryScope());
+  assert.equal(raw.output_mode, "raw");
+  assert.equal("score_formula" in raw, false);
+  const optedOut = buildMemoraxSearchPayload(resolved.config, "opt out", { score_formula: null }, testRepositoryScope());
+  assert.equal(optedOut.mode, "fast");
+  assert.equal("score_formula" in optedOut, false);
+});
 
 test("MemoraX adapter uses the injected HTTP transport for retrieval", async () => {
   const requests = [];
@@ -73,6 +114,10 @@ test("MemoraX adapter uses the injected HTTP transport for retrieval", async () 
       top_k: 6,
       k_dense: 6,
       k_sparse: 6,
+      mode: "scored",
+      output_mode: "summary",
+      score_formula: { id: "semantic_decay_plus_helpful", version: 2 },
+      rough_filter: { stale_days: 30, max_usage: 0 },
     },
   }]);
   assert.match(result.result.tool_result_payload.answer, /Injected HTTP preserves repository-scoped retrieval/);
@@ -84,6 +129,137 @@ test("MemoraX adapter uses the injected HTTP transport for retrieval", async () 
     limit: 100,
   });
   assert.equal("quota" in result.result.tool_result_payload, false);
+});
+
+test("MemoraX adapter forwards scored formula and rough-filter parameters", async () => {
+  const requests = [];
+  const result = await invokeMemoraxMemoryProvider(
+    { sessionId: "formula-session", prompt: "fallback prompt" },
+    {
+      provider_id: "memory.memorax",
+      slot: "state_context",
+      operation: "query",
+      query: "formula query",
+      context: {
+        mode: "scored",
+        output_mode: "summary",
+        score_formula: { id: "semantic_decay_plus_helpful", version: 2 },
+        rough_filter: { stale_days: 90, max_usage: 1 },
+      },
+    },
+    {
+      env: {
+        MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
+        MEMORAX_CODE_MEMORAX_API_KEY: "secret",
+        MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
+      },
+      fetchImpl: async (_url, init) => {
+        requests.push(JSON.parse(String(init?.body)));
+        return new Response(JSON.stringify({ success: true, data: { data: [] } }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      },
+      repositoryScope: testRepositoryScope(),
+    },
+  );
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(requests[0].mode, "scored");
+  assert.deepEqual(requests[0].output_mode, "summary");
+  assert.deepEqual(requests[0].score_formula, {
+    id: "semantic_decay_plus_helpful",
+    version: 2,
+  });
+  assert.deepEqual(requests[0].rough_filter, { stale_days: 90, max_usage: 1 });
+});
+
+test("MemoraX adapter drops invalid formula and rough-filter parameters", async () => {
+  const requests = [];
+  const result = await invokeMemoraxMemoryProvider(
+    { sessionId: "invalid-parameters", prompt: "fallback prompt" },
+    {
+      provider_id: "memory.memorax",
+      slot: "state_context",
+      operation: "query",
+      query: "invalid parameters",
+      context: {
+        mode: "scored",
+        output_mode: "summary",
+        score_formula: { id: "", version: 0 },
+        rough_filter: { stale_days: 0, max_usage: -1 },
+      },
+    },
+    {
+      env: {
+        MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
+        MEMORAX_CODE_MEMORAX_API_KEY: "secret",
+        MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
+      },
+      fetchImpl: async (_url, init) => {
+        requests.push(JSON.parse(String(init?.body)));
+        return new Response(JSON.stringify({ success: true, data: { data: [] } }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      },
+      repositoryScope: testRepositoryScope(),
+    },
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal("mode" in requests[0], false);
+  assert.equal("score_formula" in requests[0], false);
+  assert.equal("rough_filter" in requests[0], false);
+});
+
+test("MemoraX adapter keeps formula fields schema-coherent", async () => {
+  const requests = [];
+  for (const context of [
+    {
+      mode: "fast",
+      output_mode: "summary",
+      score_formula: { id: "semantic_decay_plus_helpful", version: 1 },
+    },
+    {
+      mode: "scored",
+      output_mode: "facts",
+      score_formula: { id: "semantic_decay_plus_helpful", version: 1 },
+    },
+  ]) {
+    const result = await invokeMemoraxMemoryProvider(
+      { sessionId: "incoherent-formula", prompt: "fallback prompt" },
+      {
+        provider_id: "memory.memorax",
+        slot: "state_context",
+        operation: "query",
+        query: "incoherent formula",
+        context,
+      },
+      {
+        env: {
+          MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
+          MEMORAX_CODE_MEMORAX_API_KEY: "secret",
+          MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
+        },
+        fetchImpl: async (_url, init) => {
+          requests.push(JSON.parse(String(init?.body)));
+          return new Response(JSON.stringify({ success: true, data: { data: [] } }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        },
+        repositoryScope: testRepositoryScope(),
+      },
+    );
+    assert.equal(result.ok, true);
+  }
+
+  assert.equal(requests[0].mode, "fast");
+  assert.equal("score_formula" in requests[0], false);
+  assert.equal("mode" in requests[1], false);
+  assert.equal(requests[1].output_mode, "facts");
+  assert.equal("score_formula" in requests[1], false);
 });
 
 test("MemoraX adapter omits incomplete balance entries", async () => {
@@ -275,6 +451,10 @@ test("MemoraX adapter maps query to /v1/memories/search and separates items from
       top_k: 3,
       k_dense: 3,
       k_sparse: 3,
+      mode: "scored",
+      output_mode: "summary",
+      score_formula: { id: "semantic_decay_plus_helpful", version: 2 },
+      rough_filter: { stale_days: 30, max_usage: 0 },
       min_semantic_similarity: 0.5,
       filters: { and: [{ app_id: { eq: "memorax-code" } }] },
     });
@@ -993,4 +1173,171 @@ test("MemoraX adapter preserves supported empty Search and asynchronous Add ackn
       else assert.equal(result.result.dispatch_receipt.accepted, true);
     }
   }
+});
+
+function codingSessionAttachmentWritebackFixture(turnCount = 1) {
+  const repositoryScope = testRepositoryScope();
+  const env = {
+    MEMORAX_CODE_MEMORAX_ENDPOINT: "https://memorax.test",
+    MEMORAX_CODE_MEMORAX_API_KEY: "test-key",
+    MEMORAX_CODE_MEMORAX_USER_ID: repositoryScope.baseUserId,
+    MEMORAX_CODE_CODING_SESSIONS_ENABLED: "true",
+  };
+  const configured = memoraxConfigFromEnv(env, {});
+  assert.equal(configured.ok, true);
+  const messages = [
+    { role: "user", content: "Review the upload boundary.", timestamp: 1777392000000 },
+    { role: "assistant", content: "The upload boundary is verified.", timestamp: 1777392000001 },
+  ];
+  return {
+    run: { sessionId: "coding-context-session", prompt: messages[0].content },
+    request: {
+      operation: "writeback",
+      context: { idempotencyKey: "coding-context-writeback", contentType: "code", mode: "default", messages },
+    },
+    options: {
+      config: configured.config,
+      env,
+      repositoryScope,
+      observabilitySource: "codex_hook_writeback",
+      codingSessionAttachment: {
+        schema_version: 1,
+        redaction_version: 1,
+        batch_id: "coding-context-batch",
+        client: "codex",
+        session_id: "coding-context-session",
+        repository_slug: repositoryScope.repositorySlug,
+        turns: Array.from({ length: turnCount }, (_, index) => ({
+          turn_id: `turn-${index + 1}`,
+          turn_index: index + 1,
+          closed_at: "2026-01-01T00:00:00.000Z",
+          item_count: 3,
+        })),
+        items: Array.from({ length: turnCount }, (_, index) => [
+          { type: "message", role: "user", content: [{ type: "input_text", text: messages[0].content }] },
+          { type: "function_call_output", call_id: `call-${index + 1}`, output: "archive-only-tool-sentinel" },
+          { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: messages[1].content }] },
+        ]).flat(),
+      },
+    },
+  };
+}
+
+test("MemoraX adapter attaches Responses items to QA Add without claiming OSS storage or recording archive bodies", async () => {
+  for (const status of [200, 202, 503]) {
+    const { run, request, options } = codingSessionAttachmentWritebackFixture();
+    const requests = [];
+    const events = [];
+    const result = await invokeMemoraxMemoryProvider(run, request, {
+      ...options,
+      codingSessionAttachment: { ...options.codingSessionAttachment, event: "dreaming", user_id: "must-not-be-forwarded", transcriptPath: "/private/local/transcript" },
+      observability: { recordEvent: (event) => events.push(event) },
+      fetchImpl: async (url, init) => {
+        requests.push({ url: String(url), body: JSON.parse(init.body) });
+        return Response.json({ success: true, data: { task_id: "qa-task", status: "accepted" } }, { status });
+      },
+    });
+    assert.equal(result.ok, status !== 503);
+    if (result.ok) {
+      assert.equal(result.result.dispatch_receipt.accepted, true);
+      assert.equal(result.result.tool_result_payload.raw.data.status, "accepted");
+      assert.equal(result.result.tool_result_payload.stored, undefined);
+    }
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].url, "https://memorax.test/v1/memories/add");
+    assert.equal(requests[0].body.event, undefined);
+    assert.equal(requests[0].body.dreaming, undefined);
+    assert.equal(requests[0].body.user_id, options.repositoryScope.effectiveUserId);
+    assert.equal(requests[0].body.content_type, "code");
+    assert.equal(requests[0].body.async_mode, true);
+    assert.deepEqual(requests[0].body.messages, request.context.messages);
+    assert.deepEqual(requests[0].body.coding_context, options.codingSessionAttachment);
+    assert.equal(events.length, 1);
+    assert.deepEqual(events[0].request.payload.messages, request.context.messages);
+    assert.equal(events[0].request.payload.coding_context, undefined);
+    assert.doesNotMatch(JSON.stringify(events), /archive-only-tool-sentinel|coding-context-batch|function_call_output/);
+  }
+});
+
+test("MemoraX adapter rejects invalid or unapproved typed attachments and ignores context injection", async () => {
+  const { run, request, options } = codingSessionAttachmentWritebackFixture();
+  let calls = 0;
+  const fetchImpl = async () => {
+    calls += 1;
+    return Response.json({ success: true, data: { task_id: "qa-task", status: "accepted" } }, { status: 202 });
+  };
+  const invalidCases = [
+    { ...options, env: { ...options.env, MEMORAX_CODE_CODING_SESSIONS_ENABLED: "false" } },
+    { ...options, observabilitySource: "memory_cli" },
+    { ...options, observabilitySource: "claude_hook_writeback" },
+    { ...options, codingSessionAttachment: { ...options.codingSessionAttachment, session_id: "another-session" } },
+    { ...options, codingSessionAttachment: { ...options.codingSessionAttachment, repository_slug: "another-repository" } },
+    { ...options, codingSessionAttachment: { ...options.codingSessionAttachment, batch_id: " " } },
+    { ...options, codingSessionAttachment: { ...options.codingSessionAttachment, turns: [] } },
+    { ...options, codingSessionAttachment: { ...options.codingSessionAttachment, schema_version: 2 } },
+    { ...options, codingSessionAttachment: { ...options.codingSessionAttachment, turns: [{ ...options.codingSessionAttachment.turns[0], item_count: 2 }] } },
+  ];
+  for (const candidate of invalidCases) {
+    const result = await invokeMemoraxMemoryProvider(run, request, { ...candidate, fetchImpl });
+    assert.equal(result.ok, false);
+    assert.match(result.errorCode, /^MEMORAX_CODING_SESSION_(?:ATTACHMENT_NOT_ALLOWED|SCOPE_MISMATCH|INVALID_BATCH)$/);
+  }
+  const notCode = await invokeMemoraxMemoryProvider(run, {
+    ...request, context: { ...request.context, contentType: "dialogue" },
+  }, { ...options, fetchImpl });
+  assert.equal(notCode.ok, false);
+  assert.equal(notCode.errorCode, "MEMORAX_CODING_SESSION_ATTACHMENT_NOT_ALLOWED");
+  assert.equal(calls, 0);
+  const plain = await invokeMemoraxMemoryProvider(run, {
+    ...request, context: { ...request.context, coding_context: options.codingSessionAttachment, dreaming: options.codingSessionAttachment, event: "dreaming" },
+  }, {
+    ...options,
+    codingSessionAttachment: undefined,
+    observabilitySource: "memory_cli",
+    fetchImpl: async (_url, init) => {
+      const body = JSON.parse(init.body);
+      assert.equal(body.coding_context, undefined);
+      assert.equal(body.dreaming, undefined);
+      assert.equal(body.event, undefined);
+      return Response.json({ success: true });
+    },
+  });
+  assert.equal(plain.ok, true);
+});
+
+test("MemoraX adapter bounds only the archive object and leaves QA outside its byte budget", async () => {
+  const { run, request, options } = codingSessionAttachmentWritebackFixture(11);
+  const measure = () => Buffer.byteLength(JSON.stringify(options.codingSessionAttachment), "utf8");
+  for (const item of options.codingSessionAttachment.items) {
+    if (item.type === "message") item.content[0].text = "中".repeat(15_000);
+  }
+  options.codingSessionAttachment.items[0].content[0].text += "x".repeat(CODING_SESSION_BATCH_MAX_BYTES - measure());
+  assert.equal(measure(), 2 * 1024 * 1024);
+  let calls = 0;
+  const fetchImpl = async (_url, init) => {
+    calls += 1;
+    assert.equal(Buffer.byteLength(JSON.stringify(JSON.parse(init.body).coding_context), "utf8"), CODING_SESSION_BATCH_MAX_BYTES);
+    assert.ok(Buffer.byteLength(init.body, "utf8") > CODING_SESSION_BATCH_MAX_BYTES);
+    return Response.json({ success: true }, { status: 202 });
+  };
+  assert.equal((await invokeMemoraxMemoryProvider(run, request, { ...options, fetchImpl })).ok, true);
+  request.context.messages[0].content += "More QA context. ".repeat(1000);
+  assert.equal((await invokeMemoraxMemoryProvider(run, request, { ...options, fetchImpl })).ok, true);
+  options.codingSessionAttachment.items[0].content[0].text += "x";
+  const oversized = await invokeMemoraxMemoryProvider(run, request, { ...options, fetchImpl });
+  assert.equal(oversized.ok, false);
+  assert.equal(oversized.errorCode, "MEMORAX_CODING_SESSION_BATCH_TOO_LARGE");
+  assert.equal(calls, 2);
+  const plain = await invokeMemoraxMemoryProvider(run, {
+    ...request,
+    context: { ...request.context, messages: [{ role: "user", content: "x".repeat(CODING_SESSION_BATCH_MAX_BYTES) }] },
+  }, {
+    ...options,
+    codingSessionAttachment: undefined,
+    fetchImpl: async (_url, init) => {
+      assert.ok(Buffer.byteLength(init.body, "utf8") > CODING_SESSION_BATCH_MAX_BYTES);
+      return Response.json({ success: true });
+    },
+  });
+  assert.equal(plain.ok, true);
 });

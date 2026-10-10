@@ -1,0 +1,36 @@
+{
+  "coding_context": {
+    "client": "codex",
+    "session_id": "session-contract",
+    "turn_id": "turn-7",
+    "agent_role": "main",
+    "prompt_origin": "end_user"
+  },
+  "coding_turns": [
+    {
+      "schema_version": 1,
+      "client": "codex",
+      "session_id": "session-contract",
+      "turn_id": "turn-7",
+      "turn_index": 7,
+      "outcome": "completed",
+      "closed_at": "2026-09-01T00:00:00Z",
+      "redaction_version": 1,
+      "agent_role": "main",
+      "prompt_origin": "end_user",
+      "events": [
+        {
+          "index": 1,
+          "type": "user_message",
+          "content": "Run the project tests."
+        },
+        {
+          "index": 2,
+          "type": "assistant_message",
+          "phase": "final",
+          "content": "The project uses npm test."
+        }
+      ]
+    }
+  ]
+}

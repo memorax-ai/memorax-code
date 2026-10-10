@@ -36,6 +36,9 @@ export type TraceContext = Readonly<{
   nativeRequestId?: string;
   requestId?: string;
   transcriptPath?: string;
+  agentRole?: "main" | "subagent";
+  promptOrigin?: "end_user" | "system";
+  nativePromptVerified?: boolean;
   cwd?: string;
   memoryProject?: MemoryProjectIdentity;
   workspaceKind?: string;
@@ -104,6 +107,7 @@ export function traceContextFromOpenCodeHookBody(
     client: "opencode",
     sessionId,
     turnId,
+    ...traceProvenance(body),
     cwd,
     memoryProject: resolveMemoryProject(cwd),
     workspaceKind: stringField(body, "workspaceKind"),
@@ -219,6 +223,7 @@ export function traceContextFromCurrentTurnRecord(
     nativeRequestId: stringField(trace, "native_request_id") ?? stringField(trace, "nativeRequestId"),
     requestId: stringField(trace, "request_id") ?? stringField(trace, "requestId"),
     transcriptPath: readPathField(trace, "transcript_path") ?? readPathField(trace, "transcriptPath"),
+    ...traceProvenance(trace),
     cwd,
     memoryProject: memoryProjectFromUnknown(trace.memory_project)
       ?? memoryProjectFromUnknown(trace.memoryProject)
@@ -238,6 +243,9 @@ export function traceContextJson(context: TraceContext): Record<string, unknown>
     native_request_id: context.nativeRequestId,
     request_id: context.requestId,
     transcript_path: context.transcriptPath,
+    agentRole: context.agentRole,
+    promptOrigin: context.promptOrigin,
+    nativePromptVerified: context.nativePromptVerified,
     cwd: context.cwd,
     memory_project: context.memoryProject ? {
       project_id: context.memoryProject.projectId,
@@ -251,6 +259,14 @@ export function traceContextJson(context: TraceContext): Record<string, unknown>
 
 function pruneTraceContext(value: TraceContext): TraceContext {
   return pruneRecord(value) as TraceContext;
+}
+
+function traceProvenance(value: Record<string, unknown>): Pick<TraceContext, "agentRole" | "promptOrigin" | "nativePromptVerified"> {
+  return {
+    ...(value.agentRole === "main" || value.agentRole === "subagent" ? { agentRole: value.agentRole } : {}),
+    ...(value.promptOrigin === "end_user" || value.promptOrigin === "system" ? { promptOrigin: value.promptOrigin } : {}),
+    ...(value.nativePromptVerified === true ? { nativePromptVerified: true } : {}),
+  };
 }
 
 function pruneRecord<T extends Record<string, unknown>>(value: T): T {

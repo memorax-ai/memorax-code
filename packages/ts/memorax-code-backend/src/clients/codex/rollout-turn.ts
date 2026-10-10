@@ -1,6 +1,10 @@
 import { readFile } from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import { parseNativeMessageTimestamp } from "../../shared/message-time.js";
+import { codingEventText, type CodingSessionNativeSource, type CodingSessionSourceTurn, type ResponseItem, type ResponseJsonObject, type ResponseJsonValue } from "../../coding-sessions/coding-turn.js";
+import type { NativeCodingSessionTurnRef } from "../../coding-sessions/contracts.js";
+import { readNativeTranscriptSnapshot } from "../../shared/native-transcript-snapshot.js";
+import { codexHelpfulPromptFromJsonLines } from "./session-turn-index.js";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -81,6 +85,23 @@ export type CodexRolloutTurnResult =
   | { ok: true; turn: CodexRolloutTurn }
   | { ok: false; reason: CodexRolloutTurnFailureReason; error?: string };
 
+export type CodexCodingSessionTurn = CodexRolloutTurn & {
+  sessionTurnIndex: number;
+  items: ResponseItem[];
+  closedAt?: string;
+  source?: CodingSessionNativeSource;
+  agent_role?: "main" | "subagent";
+  prompt_origin?: "end_user" | "system";
+};
+
+export type CodexCodingSessionTurnResult =
+  | { ok: true; turn: CodexCodingSessionTurn }
+  | {
+    ok: false;
+    reason: CodexRolloutTurnFailureReason | "turn_index_missing" | "turn_not_completed";
+    error?: string;
+  };
+
 export type CodexInterruptedRolloutTurn = CodexRolloutTurn & {
   interruptedAt?: string;
   sessionTurnIndex?: number;
@@ -131,6 +152,43 @@ export async function readCodexInterruptedRolloutTurn(input: {
   return codexInterruptedRolloutTurnFromJsonLines(transcript, input);
 }
 
+export async function readCodexCodingSessionTurn(input: {
+  transcriptPath: string;
+  sessionId: string;
+  turnId: string;
+  endBytes?: number;
+}): Promise<CodexCodingSessionTurnResult> {
+  try {
+    const snapshot = await readNativeTranscriptSnapshot(input);
+    const result = codexCodingSessionTurnFromJsonLines(snapshot.text, input);
+    return result.ok ? {
+      ok: true,
+      turn: { ...result.turn, source: { transcriptPath: input.transcriptPath, endBytes: snapshot.endBytes },
+        ...codexHelpfulPromptFromJsonLines(snapshot.text, input) },
+    } : result;
+  } catch (error) {
+    return {
+      ok: false,
+      reason: "transcript_unavailable",
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+export async function readCodexArchiveSource(
+  ref: NativeCodingSessionTurnRef,
+): Promise<CodingSessionSourceTurn | undefined> {
+  if (ref.client !== "codex") return undefined;
+  const result = await readCodexCodingSessionTurn({
+    ...ref.source, sessionId: ref.sessionId, turnId: ref.turnId,
+  });
+  if (!result.ok || result.turn.sessionTurnIndex !== ref.turnIndex) return undefined;
+  const { agent_role: _role, prompt_origin: _origin, ...identity } = ref;
+  return { ...identity, items: result.turn.items,
+    ...(result.turn.agent_role ? { agent_role: result.turn.agent_role } : {}),
+    ...(result.turn.prompt_origin ? { prompt_origin: result.turn.prompt_origin } : {}) };
+}
+
 export function codexRolloutTurnFromJsonLines(
   transcript: string,
   input: { sessionId: string; turnId: string },
@@ -177,6 +235,34 @@ export function codexInterruptedRolloutTurnFromJsonLines(
   };
 }
 
+export function codexCodingSessionTurnFromJsonLines(
+  transcript: string,
+  input: { sessionId: string; turnId: string },
+): CodexCodingSessionTurnResult {
+  const scan = scanCodexRolloutTurn(transcript, input.turnId, true);
+  if (!codexRolloutSessionMatches(scan, input.sessionId)) {
+    return { ok: false, reason: "transcript_session_mismatch" };
+  }
+  if (scan.turnMetadataMismatch) return { ok: false, reason: "turn_metadata_mismatch" };
+  if (!scan.targetSeen) return { ok: false, reason: "turn_not_found" };
+  if (!scan.userPrompt) return { ok: false, reason: "user_prompt_missing" };
+  if (!scan.assistantReply) return { ok: false, reason: "assistant_message_missing" };
+  if (scan.interrupted || scan.rolledBack) return { ok: false, reason: "turn_not_completed" };
+  const sessionTurnIndex = sessionTurnIndexFromScan(scan, input.turnId);
+  if (sessionTurnIndex === undefined) return { ok: false, reason: "turn_index_missing" };
+  return {
+    ok: true,
+    turn: {
+      ...rolloutTurnFromScan(scan, input, scan.userPrompt, scan.assistantReply),
+      ...(scan.userTimestamp === undefined ? {} : { userTimestamp: scan.userTimestamp }),
+      ...(scan.assistantTimestamp === undefined ? {} : { assistantTimestamp: scan.assistantTimestamp }),
+      sessionTurnIndex,
+      items: completedCodingItems(scan, scan.userPrompt, scan.assistantReply),
+      ...(scan.completedAt ? { closedAt: scan.completedAt } : {}),
+    },
+  };
+}
+
 type CodexRolloutTurnScan = {
   authoritySessionId?: string;
   authoritySource?: string;
@@ -189,6 +275,10 @@ type CodexRolloutTurnScan = {
   userTimestamp?: number;
   assistantTimestamp?: number;
   visibleAssistantMessages: string[];
+  codingItemCandidates: CodexCodingItemCandidate[];
+  responseItemUser?: ResponseItem;
+  responseItemAssistant?: ResponseItem;
+  completedAt?: string;
   interrupted: boolean;
   interruptedAt?: string;
   rolledBack: boolean;
@@ -200,7 +290,11 @@ type CodexRolloutTurnScan = {
   userMessageTurnIds: Set<string>;
 };
 
-function scanCodexRolloutTurn(transcript: string, targetTurnId: string): CodexRolloutTurnScan {
+function scanCodexRolloutTurn(
+  transcript: string,
+  targetTurnId: string,
+  captureCodingItems = false,
+): CodexRolloutTurnScan {
   let authoritySessionId: string | undefined;
   let ambiguousSessionMetadata = false;
   let composite = false;
@@ -215,6 +309,10 @@ function scanCodexRolloutTurn(transcript: string, targetTurnId: string): CodexRo
   let assistantTimestamp: number | undefined;
   let completedTimestamp: number | undefined;
   const visibleAssistantMessages: string[] = [];
+  const codingItemCandidates: CodexCodingItemCandidate[] = [];
+  let responseItemUser: ResponseItem | undefined;
+  let responseItemAssistant: ResponseItem | undefined;
+  let completedAt: string | undefined;
   let responseItemUserPrompt: string | undefined;
   let responseItemAssistantReply: string | undefined;
   let responseItemUserTimestamp: number | undefined;
@@ -232,16 +330,17 @@ function scanCodexRolloutTurn(transcript: string, targetTurnId: string): CodexRo
   const seenTurnIds = new Set<string>();
   const turnContextIds = new Set<string>();
   const userMessageTurnIds = new Set<string>();
+  const pendingResponseItemUserTurnIds = new Set<string>();
 
   const observeTurn = (turnId: string | undefined, source: "turn_context" | "task_started"): void => {
     activeTurnId = turnId;
+    if (turnId && source === "turn_context") turnContextIds.add(turnId);
     if (!turnId || seenTurnIds.has(turnId)) return;
     seenTurnIds.add(turnId);
     orderedTurnIds.push(turnId);
-    if (source === "turn_context") turnContextIds.add(turnId);
   };
 
-  for (const line of transcript.split(/\r?\n/)) {
+  for (const [recordIndex, line] of transcript.split(/\r?\n/).entries()) {
     if (!line.trim()) continue;
     const authorityHeaderCandidate = !firstNonBlankLineSeen;
     firstNonBlankLineSeen = true;
@@ -275,6 +374,9 @@ function scanCodexRolloutTurn(transcript: string, targetTurnId: string): CodexRo
     if (record.type === "turn_context") {
       const turnId = stringValue(payload.turn_id) ?? stringValue(payload.turnId);
       observeTurn(turnId, "turn_context");
+      if (turnId && pendingResponseItemUserTurnIds.has(turnId)) {
+        userMessageTurnIds.add(turnId);
+      }
       if (turnId === targetTurnId) {
         targetSeen = true;
         targetBoundarySeen = true;
@@ -282,7 +384,25 @@ function scanCodexRolloutTurn(transcript: string, targetTurnId: string): CodexRo
       continue;
     }
     if (record.type === "response_item") {
+      if (activeTurnId && payload.type === "message" && payload.role === "user"
+        && responseItemMessageText(payload.content, "user")) {
+        // A response item is owned by the enclosing outer turn. If the
+        // response arrives before turn_context, wait for that boundary before
+        // counting it in the session index.
+        if (turnContextIds.has(activeTurnId)) {
+          userMessageTurnIds.add(activeTurnId);
+        } else {
+          pendingResponseItemUserTurnIds.add(activeTurnId);
+        }
+      }
       if (activeTurnId === targetTurnId) {
+        let codingItem: ResponseItem | undefined;
+        if (captureCodingItems) {
+          codingItem = codingItemFromResponseItem(payload);
+          if (codingItem && !(codingItem.type === "message" && codingItem.role === "user")) {
+            codingItemCandidates.push({ recordIndex, source: "response_item", item: codingItem });
+          }
+        }
         const activities = activityCandidatesFromResponseItem(payload);
         if (activities.length > 0) targetActivityGroups.push(activities);
         if (stringValue(payload.type) === "message") {
@@ -299,12 +419,13 @@ function scanCodexRolloutTurn(transcript: string, targetTurnId: string): CodexRo
               continue;
             }
             if (role === "user") {
-              userMessageTurnIds.add(activeTurnId);
               responseItemUserPrompt = message;
               responseItemUserTimestamp = parseNativeMessageTimestamp(record.timestamp);
+              responseItemUser = codingItem;
             } else {
               responseItemAssistantReply = message;
               responseItemAssistantTimestamp = parseNativeMessageTimestamp(record.timestamp);
+              responseItemAssistant = codingItem;
             }
           }
         }
@@ -314,6 +435,30 @@ function scanCodexRolloutTurn(transcript: string, targetTurnId: string): CodexRo
     if (record.type !== "event_msg") continue;
 
     const eventType = stringValue(payload.type);
+    if (eventType === "item_completed" && isRecord(payload.item)
+      && ["UserMessage", "AgentMessage"].includes(String(payload.item.type))) {
+      const item = payload.item;
+      const matches = payload.thread_id === authoritySessionId && payload.turn_id === activeTurnId;
+      if (activeTurnId === targetTurnId || payload.turn_id === targetTurnId) {
+        if (!matches || activeTurnId !== targetTurnId) {
+          turnMetadataMismatch = true;
+          continue;
+        }
+        const text = Array.isArray(item.content) ? item.content.flatMap((part: unknown) => (
+          isRecord(part) && ["text", "Text"].includes(String(part.type)) && nonBlankString(part.text)
+            ? [String(part.text)] : []
+        )).join("\n\n") : "";
+        if (text && item.type === "UserMessage") {
+          userPrompt ??= text;
+          userTimestamp ??= parseNativeMessageTimestamp(record.timestamp);
+        } else if (text && item.type === "AgentMessage" && item.phase === "final_answer") {
+          assistantReply ??= text;
+          assistantTimestamp ??= parseNativeMessageTimestamp(record.timestamp);
+        }
+      }
+      if (matches && activeTurnId && item.type === "UserMessage") userMessageTurnIds.add(activeTurnId);
+      continue;
+    }
     if (eventType === "task_started") {
       const startedTurnId = stringValue(payload.turn_id) ?? stringValue(payload.turnId);
       if (awaitingTargetSuccessor && startedTurnId && startedTurnId !== targetTurnId) {
@@ -332,6 +477,7 @@ function scanCodexRolloutTurn(transcript: string, targetTurnId: string): CodexRo
         targetSeen = true;
         assistantReply ??= nonBlankString(payload.last_agent_message) ?? nonBlankString(payload.lastAgentMessage);
         completedTimestamp = parseNativeMessageTimestamp(record.timestamp);
+        completedAt = rolloutRecordTimestamp(record, payload);
       }
       if (completedTurnId && completedTurnId === activeTurnId) activeTurnId = undefined;
       continue;
@@ -382,6 +528,18 @@ function scanCodexRolloutTurn(transcript: string, targetTurnId: string): CodexRo
       if (!message) continue;
       if (payload.phase === "commentary" || payload.phase === "final_answer") {
         visibleAssistantMessages.push(message);
+        if (captureCodingItems) {
+          codingItemCandidates.push({
+            recordIndex,
+            source: "event_msg",
+            item: {
+              type: "message",
+              role: "assistant",
+              phase: payload.phase,
+              content: [{ type: "output_text", text: message }],
+            },
+          });
+        }
       }
       if (payload.phase === "final_answer") {
         assistantReply = message;
@@ -408,6 +566,10 @@ function scanCodexRolloutTurn(transcript: string, targetTurnId: string): CodexRo
       ? assistantTimestamp
       : responseItemAssistantTimestamp),
     visibleAssistantMessages,
+    codingItemCandidates,
+    responseItemUser,
+    responseItemAssistant,
+    completedAt,
     interrupted,
     interruptedAt,
     rolledBack,
@@ -427,6 +589,108 @@ function responseItemTurnId(payload: JsonRecord): string | undefined {
   return metadata
     ? stringValue(metadata.turn_id) ?? stringValue(metadata.turnId)
     : undefined;
+}
+
+type CodexCodingItemCandidate = Readonly<{
+  recordIndex: number;
+  source: "response_item" | "event_msg";
+  item: ResponseItem;
+}>;
+
+function completedCodingItems(
+  scan: CodexRolloutTurnScan,
+  userPrompt: string,
+  assistantReply: string,
+): ResponseItem[] {
+  const hasResponseItemAssistant = scan.codingItemCandidates.some((candidate) => (
+    candidate.source === "response_item" && candidate.item.type === "message"
+      && candidate.item.role === "assistant"
+  ));
+  const intermediate = scan.codingItemCandidates
+    .filter((candidate) => {
+      if (candidate.item.type === "message" && candidate.item.role === "assistant"
+        && candidate.item.phase === "final_answer") return false;
+      return !(hasResponseItemAssistant
+        && candidate.source === "event_msg"
+        && candidate.item.type === "message" && candidate.item.role === "assistant");
+    })
+    .sort((left, right) => left.recordIndex - right.recordIndex)
+    .map((candidate) => candidate.item);
+  return [
+    scan.responseItemUser ?? { type: "message", role: "user", content: [{ type: "input_text", text: userPrompt }] },
+    ...intermediate,
+    scan.responseItemAssistant ?? {
+      type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: assistantReply }],
+    },
+  ];
+}
+
+function codingItemFromResponseItem(payload: JsonRecord): ResponseItem | undefined {
+  const type = stringValue(payload.type);
+  const id = typeof payload.id === "string" ? { id: payload.id } : {};
+  if (type === "message") {
+    if (!Array.isArray(payload.content)) return undefined;
+    const role = stringValue(payload.role);
+    if (role === "user") {
+      const content = payload.content.flatMap((block) => (
+        isRecord(block) && stringValue(block.type) === "input_text" && typeof block.text === "string"
+          ? [{ type: "input_text" as const, text: block.text }] : []
+      ));
+      return content.some((part) => part.text.trim()) ? { type, role, content, ...id } : undefined;
+    }
+    if (role !== "assistant" || (payload.phase !== "commentary" && payload.phase !== "final_answer")) return undefined;
+    const content = payload.content.flatMap((block) => (
+      isRecord(block) && stringValue(block.type) === "output_text" && typeof block.text === "string"
+        ? [{ type: "output_text" as const, text: block.text }] : []
+    ));
+    return content.some((part) => part.text.trim()) ? { type, role, phase: payload.phase, content, ...id } : undefined;
+  }
+  const status = typeof payload.status === "string" ? { status: payload.status } : {};
+  if (type === "web_search_call") {
+    return isRecord(payload.action)
+      ? { type, ...id, ...status, action: payload.action as ResponseJsonObject }
+      : undefined;
+  }
+  if (type === "tool_search_call" || type === "tool_search_output") {
+    if (payload.execution !== undefined && payload.execution !== "server" && payload.execution !== "client") return undefined;
+    if (payload.call_id !== undefined && payload.call_id !== null && !nonBlankString(payload.call_id)) return undefined;
+    if (payload.execution === "client" && !nonBlankString(payload.call_id)) return undefined;
+    const identity = {
+      ...id,
+      ...status,
+      ...(payload.execution === "server" || payload.execution === "client" ? { execution: payload.execution } as const : {}),
+      ...(payload.call_id === null || typeof payload.call_id === "string" ? { call_id: payload.call_id } : {}),
+    };
+    if (type === "tool_search_call") {
+      return payload.arguments === undefined ? undefined : { type, ...identity, arguments: payload.arguments as ResponseJsonValue };
+    }
+    return Array.isArray(payload.tools) && payload.tools.every(isRecord)
+      ? { type, ...identity, tools: payload.tools as ResponseJsonObject[] }
+      : undefined;
+  }
+  const callId = nonBlankString(payload.call_id);
+  if (!callId) return undefined;
+  if (type === "function_call" || type === "custom_tool_call") {
+    const name = nonBlankString(payload.name);
+    if (!name) return undefined;
+    if (type === "custom_tool_call") {
+      return { type, call_id: callId, name, input: codingItemText(payload.input), ...id };
+    }
+    return {
+      type,
+      call_id: callId,
+      name,
+      arguments: codingItemText(payload.arguments),
+      ...(typeof payload.namespace === "string" ? { namespace: payload.namespace } : {}),
+      ...id,
+    };
+  }
+  if (type !== "function_call_output" && type !== "custom_tool_call_output") return undefined;
+  return { type, call_id: callId, output: codingItemText(payload.output), ...id };
+}
+
+function codingItemText(value: unknown): string {
+  return typeof value === "string" ? value : codingEventText(value);
 }
 
 function responseItemMessageText(value: unknown, role: string | undefined): string | undefined {

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { test } from "node:test";
@@ -27,6 +27,177 @@ const WRITEBACK_ENV = {
   MEMORAX_CODE_MEMORAX_API_KEY: "secret",
   MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
 };
+
+function retryClock() {
+  const timers = [];
+  const delays = [];
+  return {
+    timers, delays,
+    schedule(callback, delay) {
+      const timer = { callback };
+      timers.push(timer);
+      delays.push(delay);
+      return () => { const index = timers.indexOf(timer); if (index >= 0) timers.splice(index, 1); };
+    },
+    fire() { assert.ok(timers.length); timers.shift().callback(); },
+  };
+}
+
+async function lateReplyFixture(t, overrides = {}) {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-late-reply-"));
+  const sessionId = "session-late-reply";
+  const turnId = "turn-late-reply";
+  const transcriptPath = await writeRollout(root, sessionId, [{ turnId, prompt: "Verify the delayed final reply.", reply: "Native final reply." }]);
+  const records = (await readFile(transcriptPath, "utf8")).trim().split("\n").map(JSON.parse);
+  delete records.at(-1).payload.phase;
+  await writeFile(transcriptPath, records.map(JSON.stringify).join("\n") + "\n");
+  const clock = retryClock();
+  const events = [];
+  const failures = [];
+  const transport = memoraxAddFetch();
+  const controller = createCodexMemoryHookRuntime({
+    env: { ...WRITEBACK_ENV, MEMORAX_CODE_HOME: root, MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED: "false",
+      MEMORAX_CODE_CODING_SESSIONS_ENABLED: "true" },
+    memoraxCodeHome: root, captureCodingTurns: true, fetchImpl: transport.fetchImpl,
+    scheduleWritebackRetry: clock.schedule,
+    diagnosticLogger: (name, fields) => events.push({ name, fields }),
+    onDeferredWritebackFailure: (_command, reason) => failures.push(reason),
+    ...overrides,
+  });
+  t.after(async () => { controller.close(); await rm(root, { recursive: true, force: true }); });
+  const command = { version: 1, client: "codex", sessionId, turnId, transcriptPath,
+    cwd: TEST_WORKSPACE, lastAssistantMessage: "Hook text must never supply the final reply." };
+  await controller.recordTurnStart({ ...command, prompt: "Verify the delayed final reply." });
+  const complete = () => appendFile(transcriptPath, JSON.stringify({ timestamp: "2026-07-16T00:00:04.000Z",
+    type: "event_msg", payload: { type: "task_complete", turn_id: turnId, last_agent_message: "Native final reply." } }) + "\n");
+  return { root, command, controller, clock, events, failures, complete, requests: transport.requests };
+}
+
+for (const captureCodingTurns of [true, false]) {
+  test(`Codex defers a late native reply and sends the original turn (archive=${captureCodingTurns})`, async (t) => {
+    const f = await lateReplyFixture(t, { captureCodingTurns });
+    const results = await Promise.all([f.controller.writeback(f.command), f.controller.writeback(f.command)]);
+    assert.deepEqual(results, Array(2).fill({ ok: true, scheduled: false, reason: "assistant_message_missing", deferred: true }));
+    assert.deepEqual(f.clock.delays, [100]);
+    assert.equal(f.requests.length, 0);
+    assert.deepEqual(await f.controller.writeback({ ...f.command, transcriptPath: "conflicting.jsonl" }),
+      { ok: true, scheduled: false, reason: "turn_metadata_mismatch" });
+    await f.complete();
+    await appendFile(f.command.transcriptPath, [
+      { type: "event_msg", payload: { type: "task_started", turn_id: "next-turn" } },
+      { type: "turn_context", payload: { turn_id: "next-turn" } },
+      { type: "event_msg", payload: { type: "user_message", message: "Unrelated next prompt." } },
+    ].map(JSON.stringify).join("\n") + "\n");
+    await f.controller.recordTurnStart({ ...f.command, turnId: "next-turn", prompt: "Unrelated next prompt." });
+    f.clock.fire();
+    await waitFor(() => f.requests.length === 1, "delayed turn should reach Add");
+    assert.equal(f.requests[0].body.messages[1].content, "Native final reply.");
+    assert.equal(Boolean(f.requests[0].body.coding_context), captureCodingTurns);
+    assert.equal(JSON.stringify(f.requests[0].body).includes("Unrelated next prompt."), false);
+    assert.equal(f.clock.timers.length, 0);
+    assert.deepEqual(f.failures, []);
+    assert.equal(f.events.some((event) => event.name === "memory_hook.writeback_retry" && event.fields.scheduled), true);
+  });
+}
+
+test("Codex keeps a coding attachment pending when its native final record is late", async (t) => {
+  const f = await lateReplyFixture(t, { captureCodingTurns: true });
+  const first = await f.controller.writeback(f.command);
+  assert.deepEqual(first, {
+    ok: true, scheduled: false, reason: "assistant_message_missing", deferred: true,
+  });
+  assert.deepEqual(f.clock.delays, [100]);
+  assert.equal(f.requests.length, 0);
+
+  await f.complete();
+  f.clock.fire();
+  await waitFor(() => f.requests.length === 1, "late coding turn should reach Add");
+  assert.equal(Boolean(f.requests[0].body.coding_context), true);
+});
+
+test("Codex stops after exactly five delayed native reads", async (t) => {
+  const f = await lateReplyFixture(t);
+  await f.controller.writeback(f.command);
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    f.clock.fire();
+    await waitFor(() => f.clock.timers.length === 1 || f.failures.length === 1, "retry should settle");
+  }
+  assert.deepEqual(f.clock.delays, [100, 250, 500, 1000, 2000]);
+  assert.deepEqual(f.failures, ["native_content_timeout"]);
+  assert.equal(f.requests.length, 0);
+  assert.equal(f.events.filter((event) => event.name === "memory_hook.writeback" && event.fields.reason === "assistant_message_missing").length, 6);
+});
+
+test("Codex retries neither missing Hook text nor a new native identity error", async (t) => {
+  const f = await lateReplyFixture(t);
+  assert.deepEqual(await f.controller.writeback({ ...f.command, lastAssistantMessage: "" }),
+    { ok: true, scheduled: false, reason: "assistant_message_missing" });
+  assert.equal(f.clock.timers.length, 0);
+  await f.controller.writeback(f.command);
+  await writeFile(f.command.transcriptPath, JSON.stringify({ type: "session_meta", payload: { id: "another-session" } }) + "\n");
+  f.clock.fire();
+  await waitFor(() => f.failures.length === 1, "identity failure should stop retrying");
+  assert.deepEqual(f.failures, ["transcript_session_mismatch"]);
+  assert.deepEqual(f.clock.delays, [100]);
+  assert.equal(f.requests.length, 0);
+});
+
+test("Codex ready native replies and enqueue rejection never schedule retries", async (t) => {
+  const f = await lateReplyFixture(t, { automaticWriteback: () => ({ accepted: false, reason: "config_missing" }) });
+  await f.complete();
+  assert.deepEqual(await f.controller.writeback(f.command), { ok: true, scheduled: false, reason: "config_missing" });
+  assert.deepEqual(f.clock.delays, []);
+});
+
+for (const action of ["drain", "close"]) {
+  test(`Codex ${action} cancels waiting native reads`, async (t) => {
+    const f = await lateReplyFixture(t);
+    await f.controller.writeback(f.command);
+    await f.controller[action]();
+    await f.complete();
+    assert.equal(f.clock.timers.length, 0);
+    assert.deepEqual(await f.controller.writeback(f.command), { ok: true, scheduled: false, reason: "runtime_closed" });
+    assert.equal(f.requests.length, 0);
+  });
+}
+
+test("Codex close prevents enqueue after an already-started retry read", async (t) => {
+  const f = await lateReplyFixture(t);
+  await f.controller.writeback(f.command);
+  await f.complete();
+  f.clock.fire();
+  f.controller.close();
+  await f.controller.drain();
+  assert.equal(f.requests.length, 0);
+  assert.equal(f.clock.timers.length, 0);
+});
+
+test("Codex drain settles an active native reread before returning", async (t) => {
+  const accepted = [];
+  const f = await lateReplyFixture(t, {
+    automaticWriteback: (input) => { accepted.push(input); return { accepted: true }; },
+  });
+  await f.controller.writeback(f.command);
+  await f.complete();
+  f.clock.fire();
+  await f.controller.drain();
+  assert.equal(accepted.length, 1);
+  assert.equal(accepted[0].assistantText, "Native final reply.");
+  assert.equal(f.clock.timers.length, 0);
+});
+
+test("Codex pending writebacks are bounded without evicting accepted work", async (t) => {
+  const f = await lateReplyFixture(t);
+  await f.controller.writeback(f.command);
+  const attempts = Array.from({ length: 255 }, (_, i) => f.controller.writeback({ ...f.command, turnId: `unknown-${i}` }));
+  assert.deepEqual(await f.controller.writeback({ ...f.command, turnId: "overflow" }),
+    { ok: true, scheduled: false, reason: "native_retry_capacity" });
+  await Promise.all(attempts);
+  assert.deepEqual(f.clock.delays, [100]);
+  await f.complete();
+  f.clock.fire();
+  await waitFor(() => f.requests.length === 1, "original pending turn must survive capacity rejection");
+});
 
 test("Codex Hook records exact turns and writes back without automatic Search", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-hook-retrieval-"));
@@ -146,6 +317,7 @@ test("memory hook writeback accepts repeated authority metadata and provider ass
     turnId: "turn-1",
     prompt: "Remember this persisted Codex turn.\n",
     reply: "Stored persisted Codex answer.\n",
+    commentaries: ["Inspecting the persisted turn."],
   }], {
     prefixRecords: [{
       timestamp: "2026-07-16T00:00:00.500Z",
@@ -168,8 +340,9 @@ test("memory hook writeback accepts repeated authority metadata and provider ass
   const { fetchImpl, requests } = memoraxAddFetch();
   const events = [];
   const controller = createCodexMemoryHookRuntime({
-    env: WRITEBACK_ENV,
+    env: { ...WRITEBACK_ENV, MEMORAX_CODE_HOME: root, MEMORAX_CODE_CODING_SESSIONS_ENABLED: "true" },
     fetchImpl,
+    captureCodingTurns: true,
     memoryObservability: { recordEvent: (event) => events.push(event) },
   });
   try {
@@ -195,6 +368,14 @@ test("memory hook writeback accepts repeated authority metadata and provider ass
 
     assert.equal(requests[0].body.messages[0].content, "Remember this persisted Codex turn.");
     assert.equal(requests[0].body.messages[1].content, "Stored persisted Codex answer.");
+    assert.equal(requests[0].body.event, undefined);
+    assert.equal(requests[0].body.coding_context.session_id, "session-hook");
+    assert.equal(requests[0].body.coding_context.turns[0].turn_id, "turn-1");
+    assert.deepEqual(requests[0].body.coding_context.items, [
+      { type: "message", role: "user", content: [{ type: "input_text", text: "Remember this persisted Codex turn.\n" }] },
+      { type: "message", id: "provider-message-1", role: "assistant", phase: "final_answer",
+        content: [{ type: "output_text", text: "Stored persisted Codex answer.\n" }] },
+    ]);
     assert.deepEqual(requests[0].body.messages.map((message) => message.timestamp), [
       Date.parse("2026-07-16T00:00:02.000Z"),
       Date.parse("2026-07-16T00:00:03.000Z"),
@@ -211,6 +392,44 @@ test("memory hook writeback accepts repeated authority metadata and provider ass
     assert.equal(events.at(-1).traceContext.client, "codex");
     assert.equal(events.at(-1).traceContext.sessionId, "session-hook");
     assert.equal(events.at(-1).traceContext.turnId, "turn-1");
+  } finally {
+    controller.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Codex tool passthrough IDs do not block automatic QA and archive writeback", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-hook-source-identity-"));
+  const transcriptPath = await writeRollout(root, "session-source-identity", [{
+    turnId: "turn-1", prompt: "Inspect the parser.", reply: "The parser is correct.", toolCalls: ["read parser"],
+  }]);
+  const records = (await readFile(transcriptPath, "utf8")).trim().split("\n").map(JSON.parse);
+  const tool = records.find((record) => record.type === "response_item");
+  tool.payload = {
+    type: "function_call", call_id: "call-other", name: "read", arguments: "{}",
+    internal_chat_message_metadata_passthrough: { turn_id: "other-turn" },
+  };
+  await writeFile(transcriptPath, `${records.map(JSON.stringify).join("\n")}\n`);
+  const { fetchImpl, requests } = memoraxAddFetch();
+  const controller = createCodexMemoryHookRuntime({
+    env: { ...WRITEBACK_ENV, MEMORAX_CODE_HOME: root, MEMORAX_CODE_CODEX_TRACE_ENABLED: "false", MEMORAX_CODE_CODING_SESSIONS_ENABLED: "true" },
+    fetchImpl,
+    captureCodingTurns: true,
+  });
+  try {
+    await controller.recordTurnStart({
+      sessionId: "session-source-identity", turnId: "turn-1", prompt: "Inspect the parser.",
+      transcriptPath, cwd: root,
+    });
+    assert.deepEqual(await controller.writeback({
+      sessionId: "session-source-identity", turnId: "turn-1", lastAssistantMessage: "The parser is correct.",
+      transcriptPath, cwd: root,
+    }), { ok: true, scheduled: true });
+    await waitFor(() => requests.length === 1, "QA writeback must not depend on source collection");
+    assert.deepEqual(requests[0].body.messages.map(({ content }) => content), ["Inspect the parser.", "The parser is correct."]);
+    assert.ok(requests[0].body.coding_context, "The outer native turn must supply the archive");
+    assert.ok(JSON.stringify(requests[0].body.coding_context).includes("call-other"));
+    assert.equal(JSON.stringify(requests[0].body.coding_context).includes("other-turn"), false);
   } finally {
     controller.close();
     await rm(root, { recursive: true, force: true });

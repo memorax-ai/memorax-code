@@ -1,5 +1,8 @@
 import { readFile } from "node:fs/promises";
 import { parseNativeMessageTimestamp } from "../../shared/message-time.js";
+import { codingEventText, codingToolOutputText, type CodingSessionNativeSource, type CodingSessionSourceTurn, type ResponseItem } from "../../coding-sessions/coding-turn.js";
+import type { NativeCodingSessionTurnRef } from "../../coding-sessions/contracts.js";
+import { readNativeTranscriptSnapshot } from "../../shared/native-transcript-snapshot.js";
 import { codeBuddyPromptDigest, parseCodeBuddyTurnId } from "./turn-id.js";
 
 export type CodeBuddyHistoryRecord = Readonly<Record<string, unknown>>;
@@ -12,6 +15,11 @@ export type CodeBuddyTurn = Readonly<{
   userTimestamp?: number;
   assistantTimestamp?: number;
   activities: readonly CodeBuddyActivity[];
+  items?: readonly ResponseItem[];
+  source?: CodingSessionNativeSource;
+  nativeTurnId?: string;
+  agent_role?: "main" | "subagent";
+  prompt_origin?: "end_user" | "system";
 }>;
 export type CodeBuddyActivity = Readonly<{ kind: "tool"; name: string; input?: string; output?: string }>;
 export type CodeBuddyTurnFailureReason =
@@ -32,12 +40,37 @@ type ParsedHistoryRecord = CodeBuddyHistoryRecord & { [RECORD_OFFSET]?: number }
 
 export async function readCodeBuddyTranscriptTurn(input: {
   transcriptPath: string; sessionId: string; turnId: string;
+  captureCodingItems?: boolean;
+  endBytes?: number;
   client?: "codebuddy" | "workbuddy";
 }): Promise<CodeBuddyTurnResult> {
-  let text: string;
-  try { text = await readFile(input.transcriptPath, "utf8"); }
+  try {
+    if (!input.captureCodingItems && input.endBytes === undefined) {
+      return codeBuddyTranscriptTurnFromJsonLines(await readFile(input.transcriptPath, "utf8"), input);
+    }
+    const snapshot = await readNativeTranscriptSnapshot(input);
+    const result = codeBuddyTranscriptTurnFromJsonLines(snapshot.text, input);
+    return result.ok ? {
+      ok: true,
+      turn: { ...result.turn, source: { transcriptPath: input.transcriptPath, endBytes: snapshot.endBytes } },
+    } : result;
+  }
   catch (error) { return { ok: false, reason: "transcript_unavailable", error: error instanceof Error ? error.message : String(error) }; }
-  return codeBuddyTranscriptTurnFromJsonLines(text, input);
+}
+
+export async function readCodeBuddyArchiveSource(
+  ref: NativeCodingSessionTurnRef,
+): Promise<CodingSessionSourceTurn | undefined> {
+  if (ref.client !== "codebuddy" && ref.client !== "workbuddy") return undefined;
+  const result = await readCodeBuddyTranscriptTurn({
+    ...ref.source, sessionId: ref.sessionId, turnId: ref.source.correlationTurnId ?? ref.turnId, captureCodingItems: true,
+  });
+  if (!result.ok || !result.turn.items || result.turn.sessionTurnIndex !== ref.turnIndex) return undefined;
+  if (result.turn.nativeTurnId !== ref.turnId) return undefined;
+  const { agent_role: _role, prompt_origin: _origin, ...identity } = ref;
+  return { ...identity, items: result.turn.items,
+    ...(result.turn.agent_role ? { agent_role: result.turn.agent_role } : {}),
+    ...(result.turn.prompt_origin ? { prompt_origin: result.turn.prompt_origin } : {}) };
 }
 
 export async function readCodeBuddyInterruptedTranscriptTurn(input: {
@@ -52,7 +85,7 @@ export async function readCodeBuddyInterruptedTranscriptTurn(input: {
 
 export function codeBuddyTranscriptTurnFromJsonLines(
   text: string,
-  input: { sessionId: string; turnId: string; client?: "codebuddy" | "workbuddy" },
+  input: { sessionId: string; turnId: string; captureCodingItems?: boolean; client?: "codebuddy" | "workbuddy" },
 ): CodeBuddyTurnResult {
   const selected = selectCodeBuddyTurnBranch(text, input);
   if (!selected.ok) return selected;
@@ -69,12 +102,17 @@ export function codeBuddyTranscriptTurnFromJsonLines(
     turn: {
       sessionId: input.sessionId,
       turnId: input.turnId,
+      nativeTurnId: stringField(selected.user, "id"),
+      ...codeBuddyTurnProvenance(selected.user),
       userPrompt: selected.userPrompt,
       assistantReply: reply,
       ...(selected.userTimestamp !== undefined ? { userTimestamp: selected.userTimestamp } : {}),
       ...(assistantTimestamp !== undefined ? { assistantTimestamp } : {}),
       activities: turnActivities(selected.records),
       sessionTurnIndex: selected.sessionTurnIndex,
+      ...(selected.eventRecords ? {
+        items: completedResponseItems(selected.eventRecords, selected.user, assistant),
+      } : {}),
     },
   };
 }
@@ -109,6 +147,8 @@ export function codeBuddyInterruptedTranscriptTurnFromJsonLines(
 
 type SelectedCodeBuddyTurnBranch = Readonly<{
   records: ParsedHistoryRecord[];
+  eventRecords?: ParsedHistoryRecord[];
+  user: ParsedHistoryRecord;
   userPrompt: string;
   userTimestamp?: number;
   sessionTurnIndex: number;
@@ -116,15 +156,16 @@ type SelectedCodeBuddyTurnBranch = Readonly<{
 
 function selectCodeBuddyTurnBranch(
   text: string,
-  input: { sessionId: string; turnId: string; client?: "codebuddy" | "workbuddy" },
+  input: { sessionId: string; turnId: string; captureCodingItems?: boolean; client?: "codebuddy" | "workbuddy" },
 ): { ok: true } & SelectedCodeBuddyTurnBranch | {
   ok: false;
   reason: "malformed_transcript" | "turn_not_found" | "user_prompt_missing" | "turn_ambiguous";
 } {
   const identity = parseCodeBuddyTurnId(input);
   if (!identity) return { ok: false, reason: "turn_not_found" };
-  const records = parseJsonLines(text);
-  if (!records) return { ok: false, reason: "malformed_transcript" };
+  const parsed = parseJsonLines(text, input.captureCodingItems);
+  if (!parsed) return { ok: false, reason: "malformed_transcript" };
+  const { records } = parsed;
   const session = records.filter((record) => stringField(record, "sessionId") === input.sessionId);
   const users = session.filter((record) => record.role === "user" && visibleUserPrompt(record));
   // CodeBuddy and WorkBuddy Hooks can remove line breaks from one input_text block.
@@ -149,16 +190,43 @@ function selectCodeBuddyTurnBranch(
   const userId = stringField(user, "id");
   const userPrompt = visibleUserPrompt(user);
   if (!userId || !userPrompt) return { ok: false, reason: "turn_not_found" };
+  const branch = recordsInBranch(records, userId);
+  const parentIds = new Set([userId, ...branch.flatMap((record) => stringField(record, "id") ?? [])]);
   return {
     ok: true,
-    records: recordsInBranch(records, userId),
+    records: branch,
+    user,
+    ...(parsed.eventRecords ? {
+      eventRecords: parsed.eventRecords.filter((record) => parentIds.has(stringField(record, "parentId") ?? "")),
+    } : {}),
     userPrompt,
     userTimestamp: parseNativeMessageTimestamp(user.timestamp),
     sessionTurnIndex: users.indexOf(user) + 1,
   };
 }
 
-function parseJsonLines(text: string): ParsedHistoryRecord[] | undefined {
+function codeBuddyTurnProvenance(record: CodeBuddyHistoryRecord): {
+  agent_role?: "main" | "subagent"; prompt_origin?: "end_user" | "system";
+} {
+  // Only explicit native provenance establishes origin, not eligibility.
+  return {
+    ...(record.agent_role === "main" || record.agent_role === "subagent" ? { agent_role: record.agent_role } : {}),
+    ...(record.prompt_origin === "end_user" || record.prompt_origin === "system" ? { prompt_origin: record.prompt_origin } : {}),
+  };
+}
+
+export function codeBuddyHelpfulPromptFromJsonLines(text: string, input: { sessionId: string; turnId: string }) {
+  const selected = selectCodeBuddyTurnBranch(text, input);
+  if (!selected.ok) return undefined;
+  const provenance = codeBuddyTurnProvenance(selected.user);
+  const turnId = stringField(selected.user, "id");
+  return turnId ? { turnId, turnIndex: selected.sessionTurnIndex, ...provenance } : undefined;
+}
+
+function parseJsonLines(text: string, captureCodingItems = false): {
+  records: ParsedHistoryRecord[];
+  eventRecords?: ParsedHistoryRecord[];
+} | undefined {
   const records: ParsedHistoryRecord[] = [];
   let cursor = 0;
   let byteOffset = 0;
@@ -185,12 +253,16 @@ function parseJsonLines(text: string): ParsedHistoryRecord[] | undefined {
   }
   const byId = new Map<string, CodeBuddyHistoryRecord>();
   const withoutId: CodeBuddyHistoryRecord[] = [];
+  const byEvent = captureCodingItems ? new Map<string | ParsedHistoryRecord, ParsedHistoryRecord>() : undefined;
   for (const record of records) {
     const id = stringField(record, "id");
     if (id) byId.set(id, record);
     else withoutId.push(record);
+    // WorkBuddy can reuse one native node ID for text and multiple tool calls.
+    // Ancestry uses the latest node; collection retains distinct event snapshots.
+    byEvent?.set(id ? JSON.stringify([id, stringField(record, "type"), stringField(record, "callId")]) : record, record);
   }
-  return [...withoutId, ...byId.values()];
+  return { records: [...withoutId, ...byId.values()], ...(byEvent ? { eventRecords: [...byEvent.values()] } : {}) };
 }
 
 function visibleUserPrompt(record: CodeBuddyHistoryRecord): string | undefined {
@@ -230,6 +302,10 @@ function messageContentText(value: unknown, expectedType: "input_text" | "output
 
 function contentText(value: unknown): string | undefined {
   if (typeof value === "string") return value;
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const text = (value as Record<string, unknown>).text;
+    return typeof text === "string" ? text : undefined;
+  }
   if (!Array.isArray(value)) return undefined;
   const parts = value.flatMap((item) => {
     if (!item || typeof item !== "object") return [];
@@ -237,6 +313,68 @@ function contentText(value: unknown): string | undefined {
     return typeof text === "string" ? [text] : [];
   });
   return parts.join("\n") || undefined;
+}
+
+function completedResponseItems(
+  records: readonly ParsedHistoryRecord[],
+  user: ParsedHistoryRecord,
+  assistant: ParsedHistoryRecord,
+): ResponseItem[] {
+  const inputBlocks = (Array.isArray(user.content) ? user.content : []).filter((block) => (
+    block && typeof block === "object" && block.type === "input_text"
+  ));
+  const originals = inputBlocks.flatMap((block) => (
+    block.providerData && typeof block.providerData === "object" && !Array.isArray(block.providerData)
+      && typeof block.providerData.content === "string"
+      ? [{ type: "input_text" as const, text: block.providerData.content as string }] : []
+  ));
+  let userContent = originals.length ? originals : inputBlocks.flatMap((block) => (
+    typeof block.text === "string" ? [{ type: "input_text" as const, text: block.text as string }] : []
+  ));
+  const match = originals.length ? undefined : userContent.map(({ text }) => text).join("\n").match(/<user_query>([\s\S]*?)<\/user_query>/);
+  if (match) {
+    const start = match.index! + "<user_query>".length;
+    const end = start + match[1].length;
+    let offset = 0;
+    userContent = userContent.flatMap(({ text }) => {
+      const from = Math.max(start, offset);
+      const to = Math.min(end, offset + text.length);
+      const blockStart = offset;
+      offset += text.length + 1;
+      return to > from || (text.length === 0 && blockStart >= start && blockStart <= end)
+        ? [{ type: "input_text" as const, text: text.slice(from - blockStart, to - blockStart) }] : [];
+    });
+  }
+  const items: ResponseItem[] = [{ type: "message", role: "user", content: userContent }];
+  for (const record of records) {
+    if (record === assistant || (record[RECORD_OFFSET] ?? 0) > (assistant[RECORD_OFFSET] ?? Infinity)) continue;
+    if (record.type === "message" && record.role === "assistant") {
+      const text = assistantText(record);
+      const content = (Array.isArray(record.content) ? record.content : []).flatMap((block) => (
+        block && typeof block === "object" && block.type === "output_text" && typeof block.text === "string"
+          ? [{ type: "output_text" as const, text: block.text as string }] : []
+      ));
+      if (text) items.push({ type: "message", role: "assistant", phase: "commentary", content });
+      continue;
+    }
+    const callId = stringField(record, "callId");
+    if (!callId) continue;
+    if (record.type === "function_call") {
+      const tool = stringField(record, "name") ?? stringField(record, "function");
+      if (tool) items.push({ type: "function_call", call_id: callId, name: tool, arguments: codingEventText(record.arguments) });
+    } else if (record.type === "function_call_result") {
+      items.push({
+        type: "function_call_output", call_id: callId,
+        output: codingToolOutputText(typeof record.status === "string" ? { output: record.output, status: record.status } : record.output),
+      });
+    }
+  }
+  const finalContent = (Array.isArray(assistant.content) ? assistant.content : []).flatMap((block) => (
+    block && typeof block === "object" && block.type === "output_text" && typeof block.text === "string"
+      ? [{ type: "output_text" as const, text: block.text as string }] : []
+  ));
+  items.push({ type: "message", role: "assistant", phase: "final_answer", content: finalContent });
+  return items;
 }
 
 function recordsInBranch(records: ParsedHistoryRecord[], userId: string): ParsedHistoryRecord[] {

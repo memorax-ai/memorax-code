@@ -4,6 +4,7 @@ import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { codingSessionsEnabled } from "../../../dist/config/memorax-code.js";
 import {
   MEMORY_CLI_DEFAULT_SESSION_ID,
   MEMORAX_DEFAULT_BASE_URL,
@@ -56,15 +57,24 @@ test("seeded MemoraX Code config exposes high-signal choices without a tuning ca
     assert.equal((await stat(join(root, "config.toml"))).mode & 0o777, 0o600);
   }
   const config = await readFile(join(root, "config.toml"), "utf8");
+  assert.match(config, /\[coding_sessions\]\nenabled = true/);
+  assert.equal(codingSessionsEnabled({}, loadMemoraxCodeConfig(root)), true);
   assert.match(config, /\[clients\]\ncodex = true\nclaude = true/);
   assert.match(config, /\[memorax\]/);
+  assert.match(config, /\[coding_sessions\]\nenabled = true/);
   assert.match(config, /# endpoint = "https:\/\/platform\.memorax\.net" # MemoraX service URL\./);
   assert.match(config, /# api_key = "" # MemoraX API key used by the local Backend\./);
   assert.match(config, /# user_id = "" # MemoraX base user ID; requests derive a workspace-scoped namespace\./);
+  assert.match(config, /\[memory\.retrieval\]\nrough_filter_enabled = true/);
+  assert.match(config, /rough_filter_enabled = true/);
+  assert.match(config, /rough_filter_stale_days = 30/);
+  assert.match(config, /rough_filter_max_usage = 0/);
+  assert.match(config, /score_formula_id = "semantic_decay_plus_helpful"/);
+  assert.match(config, /score_formula_version = 2/);
   assert.match(config, /\[jev\]\nenabled = false/);
   assert.match(config, /api_key = "" # TypeSafe API key/);
   assert.deepEqual(loadMemoraxCodeConfig(root).jev, { enabled: false });
-  assert.doesNotMatch(config, /\[memory\.retrieval\]|Automatic Hook retrieval/);
+  assert.doesNotMatch(config, /Auto-inject retrieved memories|Automatic Hook retrieval/);
   assert.match(config, /\[memory\.writeback\]/);
   assert.match(config, /enabled = true # Allow supported client sessions to write memories after replies\./);
   assert.match(config, /\[memory\.add\]\noutput_language = "zh" # Language for newly generated MemoraX memories\./);
@@ -109,9 +119,19 @@ test("MemoraX config resolver centralizes defaults and clamps env values", () =>
   assert.equal(result.config.maxItemChars, 64);
 });
 
+test("Coding collection requires an explicit setting and preserves environment precedence", () => {
+  assert.equal(codingSessionsEnabled({}, {}), false);
+  assert.equal(codingSessionsEnabled({}, { coding_sessions: { enabled: true } }), true);
+  assert.equal(codingSessionsEnabled({ MEMORAX_CODE_CODING_SESSIONS_ENABLED: "false" }, { coding_sessions: { enabled: true } }), false);
+  assert.equal(codingSessionsEnabled({ MEMORAX_CODE_CODING_SESSIONS_ENABLED: "true" }, { coding_sessions: { enabled: false } }), true);
+});
+
 test("MemoraX Code loads configured-home TOML and resolves credentials, writeback, and Add defaults", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-config-loader-"));
   await writeFile(join(root, "config.toml"), [
+    "[coding_sessions]",
+    "enabled = true",
+    "",
     "[clients]",
     "codex = false",
     "claude = true",
@@ -139,6 +159,8 @@ test("MemoraX Code loads configured-home TOML and resolves credentials, writebac
 
   const config = loadMemoraxCodeConfig(root);
 
+  assert.deepEqual(config.coding_sessions, { enabled: true });
+  assert.equal(codingSessionsEnabled({ MEMORAX_CODE_CODING_SESSIONS_ENABLED: "false" }, config), false);
   assert.deepEqual(config.clients, { codex: false, claude: true });
   assert.equal(config.memorax?.endpoint, "http://file-memorax.test/");
   assert.equal(config.memorax?.user_id, "file-user");
@@ -278,6 +300,11 @@ test("memory config status preserves Search tuning and ignores removed automatic
   assert.equal(status.search.minScore, 0.25);
   assert.equal(status.search.maxContextChars, 5000);
   assert.equal(status.search.maxItemChars, 500);
+  assert.equal(status.search.roughFilterEnabled, true);
+  assert.equal(status.search.roughFilterStaleDays, 30);
+  assert.equal(status.search.roughFilterMaxUsage, 0);
+  assert.equal(status.search.scoreFormulaId, "semantic_decay_plus_helpful");
+  assert.equal(status.search.scoreFormulaVersion, 2);
   assert.deepEqual(status.search.memoryTypeOrder, ["project_fact", "core"]);
   assert.equal(status.search.renderByMemoryType, false);
   assert.equal(status.writeback.writebackEnabled, true);
@@ -306,6 +333,7 @@ test("config without automatic memory fields keeps writeback off and defaults la
   ].join("\n"), "utf8");
 
   const status = await memoryConfigStatus({ MEMORAX_CODE_HOME: root });
+  assert.equal(codingSessionsEnabled({}, loadMemoraxCodeConfig(root)), false);
   const options = await memoraxAddOptionsFromContext({}, {
     MEMORAX_CODE_HOME: root,
   });

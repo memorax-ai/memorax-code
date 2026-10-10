@@ -47,7 +47,7 @@ are not a compatibility contract.
 
 The generated template selects the existing client integrations, including the
 optional CodeBuddy/WorkBuddy, Trae, and Cursor adapters, enables automatic
-writeback, sets the preferred language to Chinese (`zh`), uses a five-turn skill
+writeback and coding-session collection, sets the preferred language to Chinese (`zh`), uses a five-turn skill
 reminder and a 72-hour repository-update interval, and
 enables content-bearing local traces for every supported client. Foreground
 setup may narrow `[clients]` to clients detected on the host. The tables below
@@ -737,6 +737,11 @@ Hooks do not issue Search requests. The fields below belong in the
 | `k_dense` | `MEMORAX_CODE_MEMORAX_K_DENSE` | effective `top_k` |
 | `k_sparse` | `MEMORAX_CODE_MEMORAX_K_SPARSE` | effective `top_k`; `0` disables sparse |
 | `min_score` | `MEMORAX_CODE_MEMORAX_MIN_SCORE` | unset; range `0..1` |
+| `rough_filter_enabled` | `MEMORAX_CODE_MEMORAX_ROUGH_FILTER_ENABLED` | `true` |
+| `rough_filter_stale_days` | `MEMORAX_CODE_MEMORAX_ROUGH_FILTER_STALE_DAYS` | `30` |
+| `rough_filter_max_usage` | `MEMORAX_CODE_MEMORAX_ROUGH_FILTER_MAX_USAGE` | `0` |
+| `score_formula_id` | `MEMORAX_CODE_MEMORAX_SCORE_FORMULA_ID` | `semantic_decay_plus_helpful` |
+| `score_formula_version` | `MEMORAX_CODE_MEMORAX_SCORE_FORMULA_VERSION` | `2` |
 | `max_context_chars` | `MEMORAX_CODE_MEMORAX_MAX_CONTEXT_CHARS` | `4000` |
 | `max_item_chars` | `MEMORAX_CODE_MEMORAX_MAX_ITEM_CHARS` | `1000` |
 | `render_by_memory_type` | `MEMORAX_CODE_MEMORAX_RENDER_BY_MEMORY_TYPE` | `true` |
@@ -751,6 +756,14 @@ The removed `[memory.retrieval].enabled` and `[memorax].startup_timeout_ms`
 fields, and their former `MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED` and
 `MEMORAX_CODE_MEMORAX_STARTUP_TIMEOUT_MS` environment overrides, are ignored.
 They cannot enable Hook Search or change the timeout for explicit Search.
+
+When a Search caller does not provide an override, the client sends
+`mode="scored"`, `output_mode="summary"`, the
+`semantic_decay_plus_helpful@2` formula reference, and the default rough-filter
+thresholds. Explicit `mode="fast"`/`"slow"`, a non-summary output mode, or
+`score_formula=null` preserves the compatibility path and disables the default
+formula. The server still fills the formula's internal parameters from its
+registry.
 
 ## Writeback and explicit add
 
@@ -772,8 +785,9 @@ belong in the `[memory.writeback]` TOML table.
 
 Automatic writeback and explicit Add have separate configuration gates.
 `[memory.writeback].enabled` does not disable explicit `memorax-cli add`;
-`[memory.cli].add_enabled` does not disable automatic writeback. The global
-environment switch can disable both, as described below.
+`[memory.cli].add_enabled` does not disable automatic writeback. Coding-session
+collection has an additional gate on automatic writeback. The global
+environment switch can disable all memory writes, as described below.
 
 | Field | Environment override | Fallback |
 | --- | --- | --- |
@@ -808,6 +822,11 @@ Remove conflicting environment overrides that enable either feature, then run
 Setting only the first table disables automatic writeback while keeping
 explicit Add available. Search is independent of both switches.
 
+To disable coding-session attachments while retaining automatic QA writeback,
+set `[coding_sessions] enabled = false` and remove any enabling
+`MEMORAX_CODE_CODING_SESSIONS_ENABLED` override. Disabling automatic writeback
+also stops its attachments; explicit Add never carries them.
+
 For a temporary override, export the global switch before restarting the
 Backend and launching any clients that run memory commands. In Bash or Zsh:
 
@@ -831,6 +850,180 @@ new CLI processes must inherit the override too. The controls apply to new
 write decisions. They do not cancel requests already sent or guarantee that
 previously buffered turns are discarded: graceful Backend shutdown can flush
 those turns. They also do not delete memories already stored in MemoraX.
+
+### Coding-session collection
+
+New configurations include `[coding_sessions] enabled = true`. Existing
+configurations without this field remain disabled. The environment override is
+`MEMORAX_CODE_CODING_SESSIONS_ENABLED`; restart the Backend after changing this
+startup setting. Collection adds an optional attachment to automatic QA Add;
+it does not schedule separate requests. Automatic writeback must also be
+enabled. `MEMORAX_CODE_MEMORAX_WRITEBACK_ENABLED=false` disables automatic QA
+writeback, its attachments, and explicit Add.
+
+Codex, Claude Code, OpenCode, CodeBuddy, and WorkBuddy collect only matching,
+completed native Turns observed by their completion path. There is no discovery
+or bulk collection of historical sessions. Interrupted Turns are excluded. DSH, Trae, and Cursor continue
+to send QA only. Collection projects selected user text, visible assistant text,
+and tool calls/results into a shared `ResponseItem` subset. Codex allowlists
+native `response_item` fields; legacy `event_msg` text is used only when the
+corresponding native message is absent. The other supported clients convert
+their native records to the same subset. Reasoning, internal metadata, binary
+attachments, raw session files, native transcript paths, and local trace
+provenance are not uploaded. This is a selected text/tool archive, not a complete
+Responses API transcript that can be replayed directly.
+
+Item text uses local best-effort redaction. Each text field is limited to
+128,000 characters, each Turn to 512 items and 2 MiB of compact UTF-8 JSON.
+Optional Turn metadata `truncation` contains `original_item_count` and
+`truncated_text_fields` to report loss while preparing the collected subset; it
+does not claim that the native log was fully collected. Redaction and truncation
+can also change tool arguments or output. These controls are independent of
+ordinary QA chunking.
+
+Attachments contain whole Turns from one client, session, connection, and
+repository scope. Only the **`coding_context` archive object** is capped at
+**2 MiB (2,097,152 bytes)** of compact UTF-8 JSON, including its items and
+archive metadata. QA messages and other Add fields do not count toward this
+budget and retain their existing limits. The complete Add request can therefore
+exceed 2 MiB. This is an archive limit, not a separate size-triggered uploader
+or a process-wide memory cap.
+
+Attachments follow the existing automatic QA buffer: by default, it flushes
+after eight completed Turns, at its QA character limit, after ten minutes
+without another accepted QA Turn, or on graceful drain. Configuration overrides
+and unbuffered writeback still apply. There is no independent 50-Turn trigger,
+30-minute or 24-hour archive timer, cursor scan, or archive-only request.
+
+When an archive would exceed 2 MiB, the planner divides it at whole-Turn
+boundaries and then applies the existing QA text chunking. A Turn's complete
+archive items travel only with the first QA part containing that Turn; later
+QA fragments do not repeat them. If one Turn's archive object, including its
+archive metadata, cannot fit on its own, that Turn is sent as QA only and a
+content-free local diagnostic reports the omitted attachment. The plugin does
+not silently truncate it further or block all later QA behind the oversized
+Turn.
+
+An automatic request to `/v1/memories/add` carries the optional `coding_context`
+object alongside the usual QA fields, with no top-level `event`:
+
+```json
+{
+  "messages": [
+    { "role": "user", "content": "Review the module.", "timestamp": 1784160000000 },
+    { "role": "assistant", "content": "The module was reviewed.", "timestamp": 1784160003000 }
+  ],
+  "user_id": "resolved-scoped-user-id",
+  "memory_output_language": "zh",
+  "content_type": "code",
+  "mode": "default",
+  "session_id": "native-session-id",
+  "async_mode": true,
+  "timestamp": 1784160000000,
+  "metadata": { "source": "memorax-code", "idempotency_key": "stable-qa-part-id" },
+  "coding_context": {
+    "schema_version": 1,
+    "redaction_version": 1,
+    "batch_id": "stable-batch-id",
+    "client": "codex",
+    "session_id": "native-session-id",
+    "repository_slug": "owner/repository",
+    "turns": [
+      {
+        "turn_id": "native-turn-id",
+        "turn_index": 1,
+        "closed_at": "2026-07-16T00:00:03.000Z",
+        "item_count": 4
+      }
+    ],
+    "items": [
+      { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "Review the module." }] },
+      { "type": "function_call", "call_id": "call-1", "name": "read_file", "arguments": "{\"path\":\"src/main.ts\"}" },
+      { "type": "function_call_output", "call_id": "call-1", "output": "Module contents." },
+      { "type": "message", "role": "assistant", "phase": "final_answer", "content": [{ "type": "output_text", "text": "The module was reviewed." }] }
+    ]
+  }
+}
+```
+
+`turns` is nonempty and sorted by native `turn_index`; its `item_count` values
+partition the flat `items` array into contiguous Turn slices in that order.
+The first `turn_index` identifies the batch's source position. There is no
+process-local chunk counter to restart at zero; `batch_id` is the unique batch
+identity and stays fixed across retries. Each Turn includes its completion time
+and optional loss metadata; repository identity belongs to the batch envelope.
+
+The subset supports user `message` items with `input_text` content, assistant
+`message` items with `output_text` content and `commentary` or `final_answer`
+phase, `function_call`/`function_call_output`, and
+`custom_tool_call`/`custom_tool_call_output`. These calls and outputs share `call_id`;
+function calls carry `name`, string `arguments`, and optional `namespace`, while
+custom calls carry `name` and string `input`. Outputs carry string `output`.
+An optional native `id` is retained. Items do not acquire custom `index` or
+`tool_result` fields.
+
+Codex also retains `web_search_call` with its structured `action`,
+`tool_search_call` with native `arguments`, and `tool_search_output` with its
+`tools` array. Native `status`, `execution`, and optional or nullable `call_id`
+are retained where applicable, not synthesized. Web search does not require a
+`call_id`; client-executed tool search does, while hosted tool search may use
+`null` or omit it. Search actions, arguments, and loaded tool definitions keep
+their JSON structure and order, with nested text subject to the same redaction
+and text limits. A structured search item that cannot fit the remaining Turn
+byte budget is omitted whole and reflected in `original_item_count`, rather
+than emitting a partial JSON object. This list is a collected subset, not an
+exhaustive list of every tool supported by Codex or the Responses API.
+
+Archive mapping preserves selected text blocks and their whitespace instead of
+reusing QA's joined/trimmed text. Tool strings retain their formatting; objects
+and arrays are JSON-encoded in full, subject to the same binary omission,
+redaction, and bounds above. Native tool error indicators are encoded inside
+the string `output`, not as new item fields: Claude uses `{content, is_error}`
+when a boolean `is_error` is present; CodeBuddy/WorkBuddy use `{output, status}`
+when a native string status is present; OpenCode errors use `{status, error}`
+plus `output` if present. Successful results without those indicators retain
+their original output shape. These are source-specific tool-result contents,
+not extra Responses API status values.
+Text nested in these result objects also passes the existing redaction rules
+before JSON escaping, so status wrapping does not hide native credential text.
+
+OpenCode emits each selected text block once. In its terminal assistant message,
+the last contiguous text group becomes `final_answer`; earlier groups remain
+`commentary` around their tools. The archive contract still requires the final
+answer at the end of each Turn, so tools following that final text group are
+placed before it. Ordinary QA text extraction is unchanged.
+
+The server must accept this combined contract and split QA extraction from
+archive handling internally. The ordinary Add response, including HTTP `202`,
+acknowledges **QA acceptance only**, not completed OSS storage. The plugin does
+not wait for or poll a `stored` receipt. An event-only server requires a matching
+update before this plugin behavior can be deployed. The server owns OSS
+credentials and object paths; the plugin does not connect directly to OSS.
+
+For Codex, Claude Code, CodeBuddy, and WorkBuddy, the in-memory QA buffer keeps
+only frozen native references and prepared-content digests for attachments.
+Those references include exact file-prefix byte boundaries, native identity
+and order, and completion time. When QA flushes, the owning
+client reader reconstructs and redacts that exact Turn; its digest must match
+the completion-time digest. Missing, truncated, rewritten, or scope-mismatched
+source data omits the attachment with a local diagnostic while preserving QA.
+Native paths and references never enter the remote payload or local Add trace.
+
+OpenCode keeps its prepared SDK items with the buffered QA instead of guessing
+a native database location. After preparation, attachment identity, contents,
+and QA part identity stay fixed through the existing bounded Add retries.
+For a valid coding attachment, deduplication also includes the native Turn ID:
+two distinct Turns with equal QA text keep their respective archive data.
+Repeated handling of the same accepted Turn is suppressed; QA-only writeback
+retains its existing text-based deduplication.
+There is no independent archive retry or persistent upload progress. A Backend
+crash or exhausted retries can lose pending work; successful QA acceptance also
+does not prove later archive completion. Legacy files under
+`runtime/coding-sessions/` are not read, replayed, or deleted by this path.
+
+Parsing, projection, serialization, and requests still use transient memory;
+the request byte limit is not a process-wide memory cap. Graceful drain follows
+the existing QA buffer and the Backend's overall shutdown deadline.
 
 ### Automatic writeback timestamps
 
@@ -891,6 +1084,53 @@ always active for automatic writeback, but it is not a complete
 data-loss-prevention system and may miss unknown or weak-context sensitive
 formats. Explicit `memorax-cli add` content and Search queries are sent as
 entered and do not pass through this detector.
+
+### Automatic Helpful correlation
+
+All five archive clients support the separate Search correlation contract:
+`client`, `session_id`, `turn_id`, plus optional `agent_role` (`main/subagent`)
+and `prompt_origin` (`end_user/system`). The server generates `data.task_id`
+(Search ID). Native identity and a valid native prompt must be verified;
+unknown provenance is omitted, not invented. Launch mode and provenance do not
+gate independently identified sessions. Identity failures do not block Search.
+
+Codex accepts native user events, response messages and exact session/turn-bound
+`item_completed.UserMessage` records, including absent prompt-origin metadata.
+Conflicting outer native session/turn events are rejected. Search correlation
+uses the enclosing Turn rather than internal response-item passthrough IDs.
+Writeback separately rejects conflicting user-message passthrough turn IDs;
+provider assistant/tool passthrough IDs do not replace the enclosing Turn.
+Claude accepts independent sidechain and system-origin prompts, but excludes
+embedded parent-session sidechains, tool results, notifications and summaries.
+CodeBuddy/WorkBuddy resolve the Hook boundary/digest reference to the native user
+message ID even when provenance is absent. OpenCode validates SDK session and
+user-message/part identities and persists a local `nativePromptVerified` flag
+through its versioned plugin command and current-turn record; IDs alone are
+insufficient. Its explicit non-synthetic flag establishes end-user provenance,
+not eligibility. The verification flag is never sent to MemoraX.
+Search before a native prompt has
+been persisted may omit correlation; a later explicit Search can qualify.
+
+Add uses the same native identity, storing optional provenance in the OSS batch.
+The server indexes all archived Turns, then reads only the Search's `[N,N+K]`
+window. K defaults to 2, must be at least 2, and is snapshotted per task. Turns
+N through N+K-1 provide full QA; N+K provides only the user message. Source rows
+missing when the Worker runs defer with `source_not_archived` or
+`window_not_archived`, using the existing retry interval until task TTL
+(default seven days). Waiting consumes no model attempt. Truncated evidence
+still skips; missing evidence never counts as negative Helpful. Existing
+feedback and historical terminal tasks remain intact.
+
+Upgrade the server's provenance constraints and API/worker before clients.
+Start fresh sessions for acceptance tests because newly eligible system prompts
+can change session-relative turn indexes. Keep automatic QA writeback and archive
+collection enabled explicitly for evaluation; neither this change nor an explicit
+Add enables collection. Old `coding_turns` requests remain unsupported.
+This path remains best effort: transcript budgets, native conflicts and archive
+loss can prevent registration or evaluation. No backfill, archive repair, display
+exposure protocol or ranking change is introduced; full candidate text can still
+exceed client-rendered text. Test registration coverage separately from completed
+evaluations, and do not count missing evidence as negative feedback.
 
 ## Personal memory storage
 

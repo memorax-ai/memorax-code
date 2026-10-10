@@ -197,6 +197,39 @@ remote connectivity and credentials; follow the cross-session example below.
 For client-specific diagnostic commands, see
 [Troubleshooting](docs/troubleshooting.md).
 
+#### Search scoring experiments
+
+For an explicit scoring experiment, `memorax-cli search` can send a supported
+formula and rough filter together with the normal search request:
+
+```bash
+memorax-cli search --query "如何验证这个修改？" \
+  --formula semantic_decay_plus_helpful \
+  --stale-days 90 \
+  --max-usage 1
+```
+
+The command sends `mode: "scored"`, `output_mode: "summary"`,
+`score_formula: {id, version}` (formula A uses
+`semantic_decay_plus_helpful@2`; the other A—E formulas remain at version 1), and
+`rough_filter: {stale_days, max_usage}`. The rough-filter pair must be supplied
+together. Supported formula IDs are
+`semantic_decay_plus_helpful`, `joint_decay_semantic_helpful`,
+`geometric_semantic_decay_helpful`, `linear_semantic_decay_helpful`, and
+`semantic_gate_decay_plus_helpful`. Invalid IDs, versions, or filter ranges are
+rejected locally before an HTTP request is sent. Without experiment flags,
+explicit CLI Search sends the default `scored`/`summary`
+request with `semantic_decay_plus_helpful@2` and the `30`-day/`0` rough-filter
+thresholds. Explicit compatibility fields still take precedence.
+
+`rough_filter` is always transmitted for experiment traceability, but the
+server deployment remains authoritative for whether it takes effect. The
+current MemoraX server requires `SEARCH.ROUGH_FILTER_ENABLED=true` and applies
+its configured stale-day and usage thresholds instead of request overrides;
+configure those server values to match the CLI experiment values before
+comparing results. Formula fields are forwarded only as a schema-coherent
+`mode="scored"`/`output_mode="summary"` group.
+
 ### Installation Troubleshooting
 
 Package installation does not launch setup automatically; run one of the setup
@@ -307,6 +340,46 @@ and previous-turn text to TypeSafe, uses your Jev key, and is disabled by defaul
 Failures fall back to the normal Skill reminder cadence; the agent still
 executes Search.
 
+New configurations also enable coding-session collection for Codex, Claude
+Code, OpenCode, CodeBuddy, and WorkBuddy. Automatic QA Add includes an optional
+`coding_context` attachment with locally redacted completed Turns: prompts, visible
+assistant messages, and tool calls/results. It does not upload whole native
+session files or reasoning. This selected OpenAI Responses items subset requires
+a MemoraX endpoint supporting the combined QA/attachment contract; an event-only
+server needs a matching update. An Add receipt confirms QA acceptance, not OSS storage.
+Existing configurations without this setting remain disabled; see
+[collection controls](docs/configuration.md#coding-session-collection).
+Attachments use the existing QA triggers: eight Turns by default, the QA
+character limit, inactivity, or graceful drain. Codex, Claude Code, CodeBuddy,
+and WorkBuddy keep frozen native-file references in the QA buffer and reread
+selected content at flush; OpenCode keeps prepared SDK items in memory. This
+best-effort path has no separate archive queue, timer, or restart recovery.
+
+Automatic Helpful uses the same native session and Turn identity as the archive.
+Search correlation and archive attachments are separate contracts. Optional
+`agent_role` and `prompt_origin` come from native metadata; unknown provenance is
+omitted and does not exclude Helpful. Independently verified sessions are eligible
+regardless of launch mode, agent role or prompt origin; ambiguous identity is not.
+The server indexes every archived Turn and evaluates only the Search's forward
+window, N through N+K (K defaults to 2). Missing source/window indexes wait until
+the task TTL without consuming model attempts or producing negative feedback.
+Archive collection still requires separate opt-in. Upgrade the server schema and
+server before the client; start new sessions for validation after upgrading.
+Codex Helpful Search uses outer native Turn events and does not let passthrough
+IDs establish its identity. Automatic writeback and archive parsing use the
+same outer boundary, accept a differing provider assistant ID, but reject
+conflicting user-message metadata or outer event-level session/Turn identities.
+See the
+[native authority rules](ARCHITECTURE.md#native-writeback-authority).
+Automatic writeback and archive validation remain separate and unchanged.
+If Codex's native final reply is not yet readable at completion, the Backend
+returns the Hook promptly and performs up to five delayed reads in the same
+process. Pending reads do not survive a restart; local acceptance does not prove
+OSS archival. See [writeback diagnosis](docs/troubleshooting.md#hook-ran-but-automatic-writeback-is-missing).
+Oversized/unreadable transcripts, outer-event identity conflicts, truncated evidence
+and archive loss may still prevent evaluation. Client display truncation versus full
+server candidate content remains an attribution risk; no small miss rate is guaranteed.
+
 Local trace capture is enabled by default for supported clients. Depending on
 client capabilities, retained traces under `MEMORAX_CODE_HOME` may contain
 prompts, responses, recalled memory, reminder text, and local paths. Use the
@@ -342,6 +415,13 @@ path.
 
 QA writeback preserves available native timestamps and labels observation-time
 fallbacks; see [message timestamps](docs/configuration.md#automatic-writeback-timestamps).
+
+New configurations also enable coding-session collection for Codex, Claude
+Code, OpenCode, CodeBuddy, and WorkBuddy. Automatic Add includes locally
+redacted user prompts, visible assistant messages, and tool calls/results as
+separate archival data. Raw session files and hidden reasoning are not uploaded;
+redaction is best-effort. Existing configurations without this setting remain
+off. See [collection controls](docs/configuration.md#coding-session-collection).
 
 Sign in to [MemoraX Console](https://platform.memorax.net/) at any time to view,
 edit, or delete saved memories. MemoraX Cloud does not receive model-provider
@@ -410,3 +490,5 @@ memory, or local trace artifacts in a public report.
 ## License
 
 MemoraX Code is available under the [MIT License](LICENSE).
+
+Search can include verified `coding_context` for server-side automatic Helpful. The server correlates it with archived batches, reads the N through N+K window, and preserves existing feedback. Missing indexes wait until the task TTL; truncated evidence is skipped, not negative feedback. See [configuration](docs/configuration.md#automatic-helpful-correlation).

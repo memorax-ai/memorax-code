@@ -243,7 +243,10 @@ Profile 使用 `user-profile/preferences.md`，每个 Procedure 主题在
 
 ## 你的记忆，由你控制
 
-云端记忆依赖 MemoraX。完成安装引导后，会启用 MemoraX 搜索/添加，以及生成配置中的自动写回；
+云端记忆依赖 MemoraX。Search 未指定兼容覆盖时，客户端默认发送
+`scored + summary`、`semantic_decay_plus_helpful@2`，并启用 30 天、usage 0 的粗筛。
+显式 `mode=fast/slow`、非 summary 输出或 `score_formula=null` 可关闭默认公式。
+完成安装引导后，会启用 MemoraX 搜索/添加，以及生成配置中的自动写回；
 不会再出现第二次写回确认。Search 由 Agent 通过 Skill 主动调用，或由您直接运行 CLI；
 Hook 继续提供本地记忆上下文与提醒，不发起 Search 请求。
 
@@ -252,6 +255,32 @@ Hook 继续提供本地记忆上下文与提醒，不发起 Search 请求。
 中的 Search 指引，再按照其中的规则构造查询并执行搜索。
 该功能使用您配置的 Jev Key，默认关闭；开启后会将限长的本轮请求与上一轮交互文本
 发送给 TypeSafe。调用失败时按原有周期提供 Skill 提醒，Search 仍由 Agent 执行。
+
+新生成的配置还会启用 Codex、Claude Code、OpenCode、CodeBuddy 和 WorkBuddy 的编码会话采集。
+自动 QA Add 会携带可选的 `coding_context` 附件，包含本地脱敏后的已完成 Turn：用户指令、可见助手消息和工具调用／结果，
+不会上传整份原生 session 文件或思维链。这是选定的 OpenAI Responses items 子集，
+需要 MemoraX 服务端支持 QA 与附件合并的协议；仅支持独立 event 请求的服务端需要同步更新。
+Add 回执只确认 QA 已接收，不代表 OSS 已落盘。
+已有配置缺少该设置时保持关闭，详见[采集控制](docs/configuration.md#coding-session-collection)。
+附件沿用 QA 的现有触发规则：默认每 8 轮、达到 QA 字数上限、空闲或正常退出时上报。
+Codex、Claude Code、CodeBuddy 和 WorkBuddy 在 QA 缓冲中保留冻结的原生文件引用，发送前重新读取选定内容；
+OpenCode 将准备好的 SDK items 保留在内存中。这条链路为尽力交付，没有独立归档队列、计时器或重启恢复。
+
+自动 Helpful 的 Search 和 Add 使用相同的原生会话及轮次身份，两者的关联对象与附件类型分开。
+可选的 `agent_role`、`prompt_origin` 来自原生元数据；来源未知时省略，不影响 Helpful 资格。
+独立且身份可核验的 session 不因启动方式、主／子 agent 或提问来源被排除，身份不明仍不能登记。
+服务端为全部归档轮建立索引，只读取源 Search 的 N～N+K 向后窗口（K 默认 2）；
+来源轮或窗口索引未齐时等待到任务 TTL，不消费模型尝试，也不产生负反馈。
+轨迹采集仍需单独开启。升级时先迁移服务端数据库及更新服务端，再更新客户端，并新开会话验证。
+Codex Helpful Search 只使用外层原生轮次事件建立身份，不让透传 ID 建立关联。
+自动写回和归档也使用相同的外层边界；助手消息的 provider ID 即使不同也可以接受，
+但用户消息 metadata 或外层事件的 session／轮次冲突仍会拒绝。
+详见[原生身份规则](ARCHITECTURE.md#native-writeback-authority)。
+自动写回和归档保留各自现有的校验，不受此规则调整影响。
+若 Codex 结束时原生日志中的最终回复尚不可读，Backend 会先返回 Hook，再在当前进程中最多延迟重读五次。
+待补采任务不跨重启恢复；本地接受不代表 OSS 已归档。详见[写回诊断](docs/troubleshooting.md#hook-ran-but-automatic-writeback-is-missing)。
+外层轮次身份冲突、大日志／读取失败、截断证据和归档丢失仍可能漏评。
+客户端展示截断与服务端使用完整候选正文之间的归因风险仍保留，不能保证漏评比例很小。
 
 受支持客户端的本地 trace 默认开启。根据客户端能力，`MEMORAX_CODE_HOME` 下保留的 trace
 可能包含用户指令、Agent 回复、召回的 Memory、提醒文本和本地路径。可通过
@@ -276,6 +305,11 @@ Coding Memory 按仓库或工作区确定范围。Codex、WorkBuddy、OpenCode �
 文件或本地 trace 路径。
 
 QA 写回会保留可用的原生时间戳，并标明使用观测时间的回退情况，详见[消息时间戳](docs/configuration.md#automatic-writeback-timestamps)。
+
+新配置还会为 Codex、Claude Code、OpenCode、CodeBuddy 和 WorkBuddy 开启 coding-session 采集。
+自动 Add 会附带经过本地脱敏的用户指令、助手可见消息、工具调用及结果，作为独立的归档数据。
+不会上传原始 Session 文件或隐藏推理；脱敏为尽力而为。已有配置缺少此设置时保持关闭，
+详见[采集控制](docs/configuration.md#coding-session-collection)。
 
 登录 [MemoraX Console](https://platform.memorax.net/) 后，可以随时查看、修改或删除已经保存的记忆。
 MemoraX 云端不会接收模型服务商凭据或本地 Backend Token。
@@ -335,3 +369,5 @@ memorax-code uninstall
 ## 开源许可证
 
 MemoraX Code 基于 [MIT License](LICENSE) 开源。
+
+Search 可携带经校验的 `coding_context`，供服务端关联 Add batch 并读取 N～N+K 窗口；已有反馈不会被自动覆盖，缺失或裁剪的证据不计负反馈。详见[配置说明](docs/configuration.md#automatic-helpful-correlation)。

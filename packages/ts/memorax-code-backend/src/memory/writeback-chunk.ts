@@ -11,6 +11,8 @@ export type WritebackMessage = {
   content: string;
   timestamp?: number;
   timestampSource?: "native" | "observed";
+  // Local planning identity only; provider payloads project it out.
+  sourceTurnId?: string;
 };
 
 export type MemoryWritebackAddPart = {

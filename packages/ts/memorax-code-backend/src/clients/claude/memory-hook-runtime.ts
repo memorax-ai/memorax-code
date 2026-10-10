@@ -1,6 +1,9 @@
 import {
   readClaudeInterruptedTranscriptTurn,
+  readClaudeCodingSessionTurn,
+  readClaudeArchiveSource,
   readClaudeTranscriptTurn,
+  type ClaudeCodingSessionTurnResult,
   type ClaudeInterruptedTranscriptTurn,
   type ClaudeTranscriptTurn,
   type ClaudeTranscriptTurnFailureReason,
@@ -55,6 +58,7 @@ export type ClaudeMemoryHookWritebackResult =
   | { ok: true; scheduled: false; reason: ClaudeMemoryHookWritebackSkipReason };
 
 export type ClaudeMemoryHookRuntimeOptions = HarnessMemoryRuntimeOptions & {
+  captureCodingTurns?: boolean;
   transcriptReadAttempts?: number;
   transcriptRetryDelayMs?: number;
 };
@@ -80,7 +84,7 @@ export function createClaudeMemoryHookRuntime(
     diagnosticPrefix: "claude_memory_hook",
     traceFailureEvent: "claude_trace.write_failed",
     turnStartTraceSource: "claude-hook",
-  }, options);
+  }, { readCodingSessionTurn: readClaudeArchiveSource, ...options });
   const { turnCoordinator } = memory;
 
   return {
@@ -174,6 +178,20 @@ export function createClaudeMemoryHookRuntime(
         assistantText: transcript.turn.assistantReply,
         userTimestamp: transcript.turn.userTimestamp,
         assistantTimestamp: transcript.turn.assistantTimestamp,
+        ...("items" in transcript.turn && transcript.turn.closedAt ? {
+          codingTurn: {
+            client: CLAUDE_MEMORY_TURN_CLIENT,
+            sessionId: transcript.turn.sessionId,
+            turnId: transcript.turn.promptId,
+            turnIndex: transcript.turn.sessionTurnIndex,
+            items: transcript.turn.items,
+            outcome: "completed",
+            closedAt: transcript.turn.closedAt,
+            source: transcript.turn.source,
+            ...(transcript.turn.agent_role ? { agent_role: transcript.turn.agent_role } : {}),
+            ...(transcript.turn.prompt_origin ? { prompt_origin: transcript.turn.prompt_origin } : {}),
+          },
+        } : {}),
         traceContext,
       });
       if (!writeback.scheduled) {
@@ -209,14 +227,16 @@ export function createClaudeMemoryHookRuntime(
 async function readExactTranscriptTurnWithRetry(
   input: { transcriptPath: string; sessionId: string; promptId: string },
   options: ClaudeMemoryHookRuntimeOptions,
-): Promise<ClaudeTranscriptTurnResult> {
+): Promise<ClaudeTranscriptTurnResult | ClaudeCodingSessionTurnResult> {
   // Stop may arrive before transcript writes finish. Retry read/content
   // availability failures, but reject identity mismatches and branch ambiguity.
   const attempts = positiveInteger(options.transcriptReadAttempts, DEFAULT_TRANSCRIPT_READ_ATTEMPTS);
   const retryDelayMs = nonNegativeInteger(options.transcriptRetryDelayMs, DEFAULT_TRANSCRIPT_RETRY_DELAY_MS);
-  let result: ClaudeTranscriptTurnResult = { ok: false, reason: "turn_not_found" };
+  let result: ClaudeTranscriptTurnResult | ClaudeCodingSessionTurnResult = { ok: false, reason: "turn_not_found" };
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    result = await readClaudeTranscriptTurn(input);
+    result = options.captureCodingTurns
+      ? await readClaudeCodingSessionTurn(input)
+      : await readClaudeTranscriptTurn(input);
     if (result.ok || !transientTranscriptFailure(result.reason) || attempt === attempts) return result;
     await new Promise<void>((resolve) => setTimeout(resolve, retryDelayMs));
   }
