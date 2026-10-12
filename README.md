@@ -69,7 +69,7 @@ as the coding agent. MemoraX search and writeback require network access.
 
 #### 1. Install the Package
 
-```bash
+```bash 
 npm install -g @memorax/memorax-code
 ```
 
@@ -79,7 +79,7 @@ running managed Backend during package replacement.
 
 #### 2. Connect a MemoraX Account (Recommended)
 
-[Create a MemoraX account](https://platform.memorax.net/) or use an existing
+[Create a MemoraX account](https://platform.memorax.net/) or use an existing self-hosted/local
 one, then run from a normal interactive terminal:
 
 ```bash
