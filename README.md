@@ -69,7 +69,7 @@ as the coding agent. MemoraX search and writeback require network access.
 
 #### 1. Install the Package
 
-```bash 
+```bash
 npm install -g @memorax/memorax-code
 ```
 
@@ -79,7 +79,7 @@ running managed Backend during package replacement.
 
 #### 2. Connect a MemoraX Account (Recommended)
 
-[Create a MemoraX account](https://platform.memorax.net/) or use an existing self-hosted/local
+[Create a MemoraX account](https://platform.memorax.net/) or use an existing
 one, then run from a normal interactive terminal:
 
 ```bash
@@ -87,6 +87,19 @@ memorax-code setup --existing-account
 ```
 
 Follow the setup prompts to enter your MemoraX username and API key locally.
+
+Self-hosting MemoraX? Set `MEMORAX_CODE_MEMORAX_ENDPOINT` to your service's
+base URL before running setup. Otherwise, setup keeps the default cloud
+endpoint `https://platform.memorax.net`, and later Search and writeback
+requests send your API key and memory content there:
+
+```bash
+MEMORAX_CODE_MEMORAX_ENDPOINT=https://memorax.example.com memorax-code setup --existing-account
+```
+
+Use the same variable for the non-interactive command below. See
+[MemoraX connection](docs/configuration.md#memorax-connection) for the stored
+`endpoint` setting and its environment overrides.
 
 For a coding agent without an interactive terminal, pass the API key through
 stdin. The examples assume `MEMORAX_SETUP_API_KEY` is already provided by the
