@@ -700,9 +700,23 @@ that recover do not produce terminal failure records.
   on hosted tools. The other clients convert their own native records.
   This excludes reasoning and internal metadata and is not a complete Responses
   API transcript for direct replay. Normalization owns redaction and per-Turn
-  bounds. Archive mapping preserves selected text blocks and tool strings;
-  structured tool results and native error indicators stay inside string outputs,
+  bounds. Valid JSON function arguments are redacted as structured values and
+  serialized back to JSON; unchanged arguments retain native formatting. Native
+  non-JSON arguments remain redacted text. Function calls exceeding the argument
+  text limit or remaining Turn budget are omitted whole with loss metadata, never
+  sliced into partial JSON. Archive mapping preserves selected text blocks and
+  tool strings; structured tool results and native error indicators stay inside string outputs,
   without changing ordinary QA text materialization. DSH and Trae remain QA-only.
+  Claude resolves QA and optional items from one native snapshot. Repeated UUID
+  records ignore `cwd`, `gitBranch`, `slug`, and auxiliary user `toolUseResult`;
+  only visible human messages use outer prompt IDs as Turn identity. Tool results
+  use Session, parent lineage, and selected call identity instead. Conflicts reject
+  the Turns they can affect; unresolved ancestry remains fail-closed rather than
+  selecting an earlier completion. Task notifications and system prompts bound
+  parent traversal so their replies cannot replace an earlier interactive QA.
+  Tool results outside the terminal parent chain require a matching selected
+  call and verified ancestry within the same frozen Turn. Optional projection
+  failures omit the attachment after QA has been resolved.
   The coordinator checks client/session/Turn identity and scope before QA
   enqueue. When collection is enabled, automatic QA Add can carry an optional
   `coding_context` attachment; explicit Add and clients without a supported projection
@@ -718,6 +732,9 @@ that recover do not produce terminal failure records.
   retains QA delivery, omits that attachment, and records a content-free local
   diagnostic. Sorted native Turn metadata partitions the flat item array;
   stable batch IDs identify attachments across the existing Add retries.
+  Attachment assembly and size checks finish before dispatch. If either throws,
+  writeback records a content-free diagnostic and uses the original QA-only
+  chunking plan; QA validation and provider errors retain their existing behavior.
 - File-backed Codex, Claude Code, CodeBuddy, and WorkBuddy QA buffers hold only
   frozen native references and prepared-content digests for their attachments,
   not a second archive body. A reference includes the exact transcript prefix,

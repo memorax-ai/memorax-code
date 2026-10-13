@@ -41,6 +41,7 @@ export async function combinedMemoryWritebackParts(
   }
   if (!turns.some((turn) => turn.archive)) return memoryWritebackAddParts(decision, env);
 
+  let attachmentAssemblyFailed = false;
   function partsFor(group: MaterializedTurn[]): CombinedWritebackPart[] {
     const attached = new Set<string>();
     const byId = new Map(group.map((turn) => [String(turn.index), turn]));
@@ -57,13 +58,24 @@ export async function combinedMemoryWritebackParts(
         archives.push(archive);
         attached.add(id);
       }
-      return { ...part, ...(archives.length ? { codingContext: codingSessionAttachment(archives, scope) } : {}) };
+      if (!archives.length) return part;
+      try {
+        return { ...part, codingContext: codingSessionAttachment(archives, scope) };
+      } catch {
+        attachmentAssemblyFailed = true;
+        return part;
+      }
     });
   }
 
   function fits(parts: CombinedWritebackPart[]): boolean {
-    return parts.every((part) => !part.codingContext
-      || Buffer.byteLength(JSON.stringify(part.codingContext), "utf8") <= CODING_SESSION_BATCH_MAX_BYTES);
+    try {
+      return parts.every((part) => !part.codingContext
+        || Buffer.byteLength(JSON.stringify(part.codingContext), "utf8") <= CODING_SESSION_BATCH_MAX_BYTES);
+    } catch {
+      attachmentAssemblyFailed = true;
+      return true; // The tentative archive plan will be discarded before dispatch.
+    }
   }
 
   const result: CombinedWritebackPart[] = [];
@@ -82,5 +94,9 @@ export async function combinedMemoryWritebackParts(
     group.push(turn);
   }
   if (group.length) result.push(...partsFor(group));
+  if (attachmentAssemblyFailed) {
+    options.diagnosticLogger("coding_sessions.attachment_skipped", { reason: "assembly_failed" });
+    return memoryWritebackAddParts(decision, env);
+  }
   return result;
 }

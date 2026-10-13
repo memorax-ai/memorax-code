@@ -127,3 +127,202 @@ test("Claude archive materialization preserves text blocks, tool errors, and its
   assert.ok(materialized);
   assert.deepEqual(materialized, prepareCodingSessionTurn({ ...source, repositorySlug: scope.repositorySlug }));
 });
+
+function siblingToolRecords(results = []) {
+  return [
+    userRecord({ uuid: "sibling-user", content: "Inspect one file." }),
+    assistantRecord({ uuid: "sibling-call", parentUuid: "sibling-user", stopReason: "tool_use", content: [
+      { type: "tool_use", id: "selected-call", name: "Read", input: { path: "sample.txt" } },
+    ] }),
+    ...results,
+    assistantRecord({ uuid: "sibling-final", parentUuid: "sibling-call", stopReason: "end_turn", timestamp: closedAt, content: "Inspected the file." }),
+  ];
+}
+
+function siblingResult(uuid, content, options = {}) {
+  return userRecord({
+    uuid, parentUuid: "sibling-call",
+    content: [{ type: "tool_result", tool_use_id: "selected-call", content }],
+    ...options,
+  });
+}
+
+test("Claude archive includes a proven sibling tool result before the selected final", () => {
+  const records = siblingToolRecords([
+    siblingResult("sibling-result", "Selected output."),
+    userRecord({ uuid: "unselected-result", parentUuid: "sibling-call", content: [
+      { type: "tool_result", tool_use_id: "unknown-call", content: "Unknown output." },
+    ] }),
+  ]);
+  const result = claudeCodingSessionTurnFromJsonLines(jsonLines(records), identity);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.turn.items.map((item) => item.type), ["message", "function_call", "function_call_output", "message"]);
+  assert.deepEqual(result.turn.items[2], { type: "function_call_output", call_id: "selected-call", output: "Selected output." });
+  assert.equal(result.turn.assistantReply, "Inspected the file.");
+});
+
+test("Claude archive cannot borrow tool results across prompts, system notifications, or sidechains", () => {
+  const unrelated = [
+    siblingResult("other-prompt-result", "Other prompt.", { promptId: "other-prompt", parentUuid: "other-user" }),
+    { ...siblingResult("sidechain-result", "Sidechain output."), isSidechain: true },
+    siblingResult("missing-parent-result", "Unproven parent.", { parentUuid: "missing-parent" }),
+    userRecord({ uuid: "other-user", parentUuid: "sibling-call", promptId: "other-prompt", content: "Another human task." }),
+    siblingResult("other-user-result", "Other human output.", { parentUuid: "other-user" }),
+    userRecord({ uuid: "system-user", parentUuid: "sibling-call", origin: { kind: "task-notification" }, content: "Internal notification." }),
+    siblingResult("system-result", "Notification output.", { parentUuid: "system-user" }),
+    assistantRecord({ uuid: "other-branch-call", parentUuid: "sibling-call", stopReason: "tool_use", content: [
+      { type: "tool_use", id: "other-call", name: "Read", input: {} },
+    ] }),
+    siblingResult("other-branch-result", "Alternative branch output.", { parentUuid: "other-branch-call" }),
+  ];
+  const result = claudeCodingSessionTurnFromJsonLines(jsonLines(siblingToolRecords(unrelated)), identity);
+  assert.equal(result.ok, true);
+  assert.equal(result.turn.items.filter((item) => item.type === "function_call_output").length, 0);
+});
+
+test("Claude archive coalesces identical result snapshots and omits conflicting outputs", () => {
+  for (const [secondContent, expectedCount] of [["Selected output.", 1], ["Conflicting output.", 0]]) {
+    const result = claudeCodingSessionTurnFromJsonLines(jsonLines(siblingToolRecords([
+      siblingResult("result-one", "Selected output."),
+      siblingResult("result-two", secondContent),
+    ])), identity);
+    assert.equal(result.ok, true);
+    assert.equal(result.turn.items.filter((item) => item.type === "function_call_output").length, expectedCount);
+  }
+  const result = claudeCodingSessionTurnFromJsonLines(jsonLines(siblingToolRecords([
+    siblingResult("result-conflict", "Selected output."),
+    siblingResult("result-conflict", "Conflicting output."),
+  ])), identity);
+  assert.equal(result.ok, true);
+  assert.equal(result.turn.items.filter((item) => item.type === "function_call_output").length, 0);
+});
+
+test("Claude archive does not collect a sibling result appended after its completed prefix", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-claude-sibling-boundary-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const transcriptPath = join(root, "transcript.jsonl");
+  const transcript = jsonLines(siblingToolRecords([siblingResult("bounded-result", "Bounded output.")])) + "\n";
+  await writeFile(transcriptPath, transcript);
+  const result = await readClaudeCodingSessionTurn({ ...identity, transcriptPath });
+  assert.equal(result.ok, true);
+  const source = {
+    client: "claude-code", sessionId: SESSION_ID, turnId: PROMPT_ID,
+    turnIndex: result.turn.sessionTurnIndex, outcome: "completed", closedAt,
+    source: result.turn.source, items: result.turn.items,
+  };
+  const pending = preparePendingCodingSessionTurn(source, { repositorySlug: "sibling-tests" });
+  assert.ok(pending);
+  await appendFile(transcriptPath, jsonLines([siblingResult("late-result", "Later conflicting output.")]) + "\n");
+  const reread = await readClaudeArchiveSource(pending.reference);
+  assert.deepEqual(reread?.items, result.turn.items);
+  assert.deepEqual(result.turn.items.find((item) => item.type === "function_call_output"), {
+    type: "function_call_output", call_id: "selected-call", output: "Bounded output.",
+  });
+});
+
+test("Claude archive keeps the proven result when an unrelated branch reuses its call id", () => {
+  const result = claudeCodingSessionTurnFromJsonLines(jsonLines(siblingToolRecords([
+    siblingResult("proven-result", "Selected output."),
+    userRecord({ uuid: "other-prompt-human", promptId: "another-prompt", parentUuid: "sibling-call", content: "Another task." }),
+    siblingResult("wrong-prompt-result", "Other prompt output.", { promptId: "another-prompt", parentUuid: "other-prompt-human" }),
+    assistantRecord({ uuid: "unrelated-branch", parentUuid: "sibling-call", stopReason: null, content: "Off-branch work." }),
+    siblingResult("wrong-branch-result", "Other branch output.", { parentUuid: "unrelated-branch" }),
+  ])), identity);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.turn.items.filter((item) => item.type === "function_call_output"), [
+    { type: "function_call_output", call_id: "selected-call", output: "Selected output." },
+  ]);
+});
+
+test("Claude archive omits outputs for conflicting selected calls and error flags", () => {
+  const records = siblingToolRecords([siblingResult("result", "Selected output.")]);
+  records[1].message.content.push({ type: "tool_use", id: "selected-call", name: "Write", input: {} });
+  const duplicateCall = claudeCodingSessionTurnFromJsonLines(jsonLines(records), identity);
+  assert.equal(duplicateCall.ok, true);
+  assert.equal(duplicateCall.turn.items.filter((item) => item.type === "function_call_output").length, 0);
+  const first = siblingResult("first-result", "Selected output.");
+  const second = siblingResult("second-result", "Selected output.");
+  first.message.content[0].is_error = false;
+  second.message.content[0].is_error = true;
+  const conflictingError = claudeCodingSessionTurnFromJsonLines(jsonLines(siblingToolRecords([first, second])), identity);
+  assert.equal(conflictingError.ok, true);
+  assert.equal(conflictingError.turn.items.filter((item) => item.type === "function_call_output").length, 0);
+});
+
+test("Claude archive ignores conflicting result identities outside the selected call branch", () => {
+  for (const parentUuid of ["missing-parent", "unselected-assistant"]) {
+    const records = siblingToolRecords([
+      siblingResult("proven-main-result", "Selected output."),
+      assistantRecord({ uuid: "unselected-assistant", parentUuid: "sibling-call", stopReason: null, content: "Unselected work." }),
+      siblingResult("unrelated-conflict", "Conflicting output one.", { parentUuid }),
+      siblingResult("unrelated-conflict", "Conflicting output two.", { parentUuid }),
+    ]);
+    records.at(-1).parentUuid = "proven-main-result";
+    const result = claudeCodingSessionTurnFromJsonLines(jsonLines(records), identity);
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.turn.items.filter((item) => item.type === "function_call_output"), [
+      { type: "function_call_output", call_id: "selected-call", output: "Selected output." },
+    ]);
+  }
+});
+
+test("Claude archive still omits a proven result when its call has a conflicting sibling identity", () => {
+  const records = siblingToolRecords([
+    siblingResult("proven-main-result", "Selected output."),
+    siblingResult("related-conflict", "Conflicting output one."),
+    siblingResult("related-conflict", "Conflicting output two."),
+  ]);
+  records.at(-1).parentUuid = "proven-main-result";
+  const result = claudeCodingSessionTurnFromJsonLines(jsonLines(records), identity);
+  assert.equal(result.ok, true);
+  assert.equal(result.turn.items.filter((item) => item.type === "function_call_output").length, 0);
+});
+
+test("Claude archive preserves selected parent-chain order when result rows precede their calls", () => {
+  const [prompt, call, result, terminal] = siblingToolRecords([siblingResult("selected-parent-result", "Selected output.")]);
+  terminal.parentUuid = result.uuid;
+  const transcript = jsonLines([prompt, result, call, terminal]);
+  assert.equal(claudeTranscriptTurnFromJsonLines(transcript, identity).ok, true);
+  const archive = claudeCodingSessionTurnFromJsonLines(transcript, identity);
+  assert.equal(archive.ok, true);
+  assert.deepEqual(archive.turn.items.map((item) => item.type), ["message", "function_call", "function_call_output", "message"]);
+  assert.deepEqual(archive.turn.items[2], {
+    type: "function_call_output", call_id: "selected-call", output: "Selected output.",
+  });
+});
+
+test("Claude archive applies file-order bounds only to new sibling results", () => {
+  const [prompt, call, selectedResult, terminal] = siblingToolRecords([siblingResult("selected-parent-result", "Selected output.")]);
+  call.message.content.push({ type: "tool_use", id: "sibling-extra-call", name: "Read", input: {} });
+  terminal.parentUuid = selectedResult.uuid;
+  const sibling = (uuid, content) => userRecord({ uuid, parentUuid: call.uuid, content: [
+    { type: "tool_result", tool_use_id: "sibling-extra-call", content },
+  ] });
+  const archive = claudeCodingSessionTurnFromJsonLines(jsonLines([
+    prompt, selectedResult, sibling("too-early-sibling", "Early conflicting output."), call,
+    sibling("proven-sibling", "Sibling output."), terminal,
+  ]), identity);
+  assert.equal(archive.ok, true);
+  const { items } = archive.turn;
+  const outputs = items.filter((item) => item.type === "function_call_output");
+  assert.equal(outputs.length, 2);
+  assert.equal(outputs.some((item) => item.output === "Early conflicting output."), false);
+  for (const output of outputs) {
+    const callIndex = items.findIndex((item) => item.type === "function_call" && item.call_id === output.call_id);
+    assert.ok(callIndex >= 0 && callIndex < items.indexOf(output));
+    assert.ok(items.indexOf(output) < items.length - 1);
+  }
+});
+
+test("Claude archive uses native parents instead of rewritten tool result prompt labels", () => {
+  const output = siblingResult("rewritten-result", "Selected output.");
+  const transcript = jsonLines(siblingToolRecords([
+    { ...output, promptId: "earlier-label", toolUseResult: { rendered: "first" } },
+    { ...output, promptId: "later-label", toolUseResult: { rendered: "second" } },
+  ]));
+  const result = claudeCodingSessionTurnFromJsonLines(transcript, identity);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.turn.items.filter((item) => item.type === "function_call_output"), [
+    { type: "function_call_output", call_id: "selected-call", output: "Selected output." },
+  ]);
+});

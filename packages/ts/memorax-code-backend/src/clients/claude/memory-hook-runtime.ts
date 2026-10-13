@@ -1,6 +1,6 @@
 import {
   readClaudeInterruptedTranscriptTurn,
-  readClaudeCodingSessionTurn,
+  readClaudeWritebackTurn,
   readClaudeArchiveSource,
   readClaudeTranscriptTurn,
   type ClaudeCodingSessionTurnResult,
@@ -235,7 +235,13 @@ async function readExactTranscriptTurnWithRetry(
   let result: ClaudeTranscriptTurnResult | ClaudeCodingSessionTurnResult = { ok: false, reason: "turn_not_found" };
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     result = options.captureCodingTurns
-      ? await readClaudeCodingSessionTurn(input)
+      ? await readClaudeWritebackTurn({
+        ...input,
+        captureCodingItems: true,
+        onArchiveSkipped: () => options.diagnosticLogger?.("coding_sessions.attachment_skipped", {
+          reason: "projection_failed",
+        }),
+      })
       : await readClaudeTranscriptTurn(input);
     if (result.ok || !transientTranscriptFailure(result.reason) || attempt === attempts) return result;
     await new Promise<void>((resolve) => setTimeout(resolve, retryDelayMs));

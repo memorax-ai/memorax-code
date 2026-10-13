@@ -186,6 +186,55 @@ test("an oversized single Turn skips its archive without losing QA or a followin
     || Buffer.byteLength(JSON.stringify(body.coding_context), "utf8") <= 2 * 1024 * 1024), true);
 });
 
+test("attachment assembly failure leaves the complete QA batch deliverable", async (t) => {
+  const run = setup(t);
+  run.enqueue(sourceTurn(1));
+  run.enqueue({ ...sourceTurn(2), turnIndex: 1 }, { userText: "Question 2.", assistantText: "Answer 2." });
+  assert.equal(run.requests.length, 0);
+  await run.runtime.drain();
+  assert.equal(run.requests.length, 1);
+  assert.equal(run.requests[0].body.coding_context, undefined);
+  assert.deepEqual(run.requests[0].body.messages.map(({ content }) => content), [
+    "Question 1.", "Answer 1.", "Question 2.", "Answer 2.",
+  ]);
+  assert.equal(run.diagnostics.filter(({ message, fields }) => message === "coding_sessions.attachment_skipped"
+    && fields.reason === "assembly_failed").length, 1);
+});
+
+test("attachment size calculation failure leaves QA deliverable before dispatch", async (t) => {
+  const byteLength = Buffer.byteLength;
+  t.mock.method(Buffer, "byteLength", (value, encoding) => {
+    if (typeof value === "string" && value.startsWith('{"schema_version":1,"redaction_version":1,')) {
+      throw new Error("synthetic attachment size failure");
+    }
+    return byteLength(value, encoding);
+  });
+  const run = setup(t);
+  run.enqueue(sourceTurn(1));
+  assert.equal(run.requests.length, 0);
+  await run.runtime.drain();
+  assert.equal(run.requests.length, 1);
+  assert.equal(run.requests[0].body.coding_context, undefined);
+  assert.deepEqual(run.requests[0].body.messages.map(({ content }) => content), ["Question 1.", "Answer 1."]);
+  assert.equal(run.diagnostics.filter(({ message, fields }) => message === "coding_sessions.attachment_skipped"
+    && fields.reason === "assembly_failed").length, 1);
+});
+
+test("a native materialization exception leaves buffered QA deliverable", async (t) => {
+  const run = setup(t);
+  const source = sourceTurn(1);
+  run.enqueue(source);
+  const unreadable = { ...source };
+  Object.defineProperty(unreadable, "items", { get() { throw new Error("synthetic native read failure"); } });
+  run.sources.set(source.turnId, unreadable);
+  await run.runtime.drain();
+  assert.equal(run.requests.length, 1);
+  assert.equal(run.requests[0].body.coding_context, undefined);
+  assert.deepEqual(run.requests[0].body.messages.map(({ content }) => content), ["Question 1.", "Answer 1."]);
+  assert.ok(run.diagnostics.some(({ message, fields }) => message === "coding_sessions.attachment_skipped"
+    && fields.reason === "source_unavailable_or_changed"));
+});
+
 for (const changed of [false, true]) {
   test(`${changed ? "changed" : "missing"} native content leaves buffered QA deliverable`, async (t) => {
     const run = setup(t);

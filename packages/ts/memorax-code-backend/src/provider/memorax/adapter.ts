@@ -488,9 +488,10 @@ function validateCodingContextAttachment(
       errorCode: "MEMORAX_CODING_SESSION_ATTACHMENT_NOT_ALLOWED",
     };
   }
+  const traceClient = options.traceContext?.client === "claude" ? "claude-code" : options.traceContext?.client;
   if (attachment.session_id !== run.sessionId
     || attachment.repository_slug !== scope.repositorySlug
-    || (options.traceContext && options.traceContext.client !== attachment.client)) {
+    || (options.traceContext && traceClient !== attachment.client)) {
     return {
       ok: false,
       error: "Coding Session attachment does not match its writeback scope",

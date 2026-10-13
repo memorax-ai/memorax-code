@@ -1079,6 +1079,36 @@ test("MemoraX adapter attaches Responses items to QA Add without claiming OSS st
   }
 });
 
+test("MemoraX adapter maps the Claude trace alias without allowing cross-client attachments", async () => {
+  for (const [traceClient, attachmentClient, accepted] of [
+    ["claude", "claude-code", true],
+    ["codex", "codex", true],
+    ["claude", "codex", false],
+    ["codex", "claude-code", false],
+    ["opencode", "claude-code", false],
+  ]) {
+    const { run, request, options } = codingContextWritebackFixture();
+    let calls = 0;
+    const result = await invokeMemoraxMemoryProvider(run, request, {
+      ...options,
+      observabilitySource: "automatic_writeback",
+      traceContext: {
+        schemaVersion: "1", client: traceClient, sessionId: run.sessionId,
+        contextOrigin: "manual", capturedAt: "2026-01-01T00:00:00.000Z",
+      },
+      codingContext: { ...options.codingContext, client: attachmentClient },
+      fetchImpl: async (_url, init) => {
+        calls += 1;
+        assert.equal(JSON.parse(init.body).coding_context.client, attachmentClient);
+        return Response.json({ success: true, data: { task_id: "qa-task", status: "accepted" } }, { status: 202 });
+      },
+    });
+    assert.equal(result.ok, accepted, `${traceClient} / ${attachmentClient}`);
+    if (!accepted) assert.equal(result.errorCode, "MEMORAX_CODING_SESSION_SCOPE_MISMATCH");
+    assert.equal(calls, accepted ? 1 : 0);
+  }
+});
+
 test("MemoraX adapter rejects invalid or unapproved typed attachments and ignores context injection", async () => {
   const { run, request, options } = codingContextWritebackFixture();
   let calls = 0;

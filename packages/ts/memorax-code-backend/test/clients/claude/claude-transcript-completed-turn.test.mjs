@@ -329,6 +329,98 @@ test("Claude transcript rejects multiple completed branches for one prompt", () 
   }), { ok: false, reason: "turn_ambiguous" });
 });
 
+test("Claude transcript coalesces identical UUID snapshots with only workspace metadata changes", () => {
+  const prompt = userRecord({ uuid: "user-snapshot", content: "Keep one completed answer." });
+  const terminal = assistantRecord({
+    uuid: "assistant-snapshot", parentUuid: "user-snapshot", messageId: "message-snapshot",
+    stopReason: "end_turn", timestamp: "2026-09-01T08:03:00.000Z", content: "Completed answer.",
+  });
+  const transcript = jsonLines([
+    prompt,
+    { ...terminal, cwd: "/workspace/first", gitBranch: "feature-first", slug: "first" },
+    { ...terminal, cwd: "/workspace/second", gitBranch: "feature-second", slug: "second" },
+    terminal,
+  ]);
+  for (const read of [claudeTranscriptTurnFromJsonLines, claudeCodingSessionTurnFromJsonLines]) {
+    const result = read(transcript, { sessionId: SESSION_ID, promptId: PROMPT_ID });
+    assert.equal(result.ok, true);
+    assert.equal(result.turn.assistantReply, "Completed answer.");
+    if ("items" in result.turn) {
+      assert.equal(result.turn.items.filter((item) => item.phase === "final_answer").length, 1);
+    }
+  }
+});
+
+test("Claude transcript rejects conflicting UUID records instead of trusting the final snapshot", () => {
+  const prompt = userRecord({ uuid: "user-conflict", content: "Keep identity exact." });
+  const terminal = assistantRecord({
+    uuid: "assistant-conflict", parentUuid: "user-conflict", messageId: "message-conflict",
+    stopReason: "end_turn", content: "Original answer.",
+  });
+  const conflicts = [
+    [terminal, { ...terminal, message: { ...terminal.message, content: "Changed answer." } }],
+    [terminal, { ...terminal, parentUuid: "unrelated-user" }],
+    [terminal, { ...terminal, isSidechain: true }],
+    [terminal, { ...terminal, message: { ...terminal.message, stop_reason: null } }],
+    [prompt, { ...prompt, message: { role: "user", content: "Changed prompt." } }],
+    [prompt, { ...prompt, promptId: "another-prompt" }],
+  ];
+  for (const conflicting of conflicts) {
+    for (const snapshots of [conflicting, [...conflicting].reverse()]) {
+      const records = conflicting[0] === prompt ? [...snapshots, terminal] : [prompt, ...snapshots];
+      for (const read of [claudeTranscriptTurnFromJsonLines, claudeCodingSessionTurnFromJsonLines]) {
+        assert.deepEqual(read(jsonLines(records), { sessionId: SESSION_ID, promptId: PROMPT_ID }), {
+          ok: false, reason: "turn_ambiguous",
+        });
+      }
+    }
+  }
+});
+
+test("Claude transcript does not let system notification completions replace a human answer", () => {
+  const prompt = userRecord({ uuid: "user-before-notification", content: "Complete the human task." });
+  const terminal = assistantRecord({
+    uuid: "assistant-before-notification", parentUuid: prompt.uuid,
+    stopReason: "end_turn", content: "Human answer.",
+  });
+  for (const notificationFields of [{ origin: { kind: "task-notification" } }, { promptSource: "system" }]) {
+    for (const content of [[{ type: "thinking", thinking: "Internal follow-up." }], "Notification answer."]) {
+      const transcript = jsonLines([
+        prompt, terminal,
+        userRecord({
+          uuid: "system-notification", parentUuid: terminal.uuid, content: "Task completed.",
+          ...notificationFields,
+        }),
+        assistantRecord({ uuid: "notification-terminal", parentUuid: "system-notification", stopReason: "end_turn", content }),
+      ]);
+      for (const read of [claudeTranscriptTurnFromJsonLines, claudeCodingSessionTurnFromJsonLines]) {
+        const result = read(transcript, { sessionId: SESSION_ID, promptId: PROMPT_ID });
+        assert.equal(result.ok, true);
+        assert.equal(result.turn.assistantReply, "Human answer.");
+        if ("items" in result.turn) {
+          assert.equal(JSON.stringify(result.turn.items).includes("Notification"), false);
+        }
+      }
+    }
+  }
+});
+
+test("Claude transcript cannot use a notification-only completion as the human answer", () => {
+  const transcript = jsonLines([
+    userRecord({ uuid: "human-without-answer", content: "Still awaiting an answer." }),
+    userRecord({
+      uuid: "system-only", parentUuid: "human-without-answer", content: "Task notification.",
+      origin: { kind: "task-notification" },
+    }),
+    assistantRecord({ uuid: "system-only-answer", parentUuid: "system-only", stopReason: "end_turn", content: "System answer." }),
+  ]);
+  for (const read of [claudeTranscriptTurnFromJsonLines, claudeCodingSessionTurnFromJsonLines]) {
+    assert.deepEqual(read(transcript, { sessionId: SESSION_ID, promptId: PROMPT_ID }), {
+      ok: false, reason: "assistant_message_missing",
+    });
+  }
+});
+
 test("Claude transcript coalesces ancestor and descendant end_turn snapshots", () => {
   const transcript = jsonLines([
     userRecord({ uuid: "user-terminal-lineage", content: "Recover one terminal lineage." }),
@@ -651,5 +743,98 @@ test("Claude transcript fails closed on malformed completed JSONL records", () =
     const result = claudeTranscriptTurnFromJsonLines(transcript, { sessionId: SESSION_ID, promptId: PROMPT_ID });
     assert.equal(result.ok, false);
     assert.equal(result.reason, "transcript_unavailable");
+  }
+});
+
+test("Claude transcript does not guess an earlier answer when a human terminal descendant is textless", () => {
+  const transcript = jsonLines([
+    userRecord({ uuid: "human-prompt", content: "Wait for the final completion." }),
+    assistantRecord({ uuid: "visible-terminal", parentUuid: "human-prompt", stopReason: "end_turn", content: "Earlier answer." }),
+    assistantRecord({ uuid: "textless-terminal", parentUuid: "visible-terminal", stopReason: "end_turn", content: [{ type: "thinking", thinking: "Continuing." }] }),
+  ]);
+  for (const read of [claudeTranscriptTurnFromJsonLines, claudeCodingSessionTurnFromJsonLines]) {
+    assert.deepEqual(read(transcript, { sessionId: SESSION_ID, promptId: PROMPT_ID }), {
+      ok: false, reason: "assistant_message_missing",
+    });
+  }
+});
+
+test("Claude transcript ignores non-human snapshot prompt labels and auxiliary tool result metadata", () => {
+  const prompt = userRecord({ uuid: "metadata-user", content: "Read the selected file." });
+  const call = assistantRecord({ uuid: "metadata-call", parentUuid: prompt.uuid, stopReason: "tool_use", content: [
+    { type: "tool_use", id: "metadata-tool", name: "Read", input: {} },
+  ] });
+  const result = userRecord({ uuid: "metadata-result", parentUuid: call.uuid, timestamp: "2026-09-01T08:02:00.000Z", content: [
+    { type: "tool_result", tool_use_id: "metadata-tool", content: "Native message output." },
+  ] });
+  const meta = userRecord({ uuid: "metadata-context", parentUuid: result.uuid, isMeta: true, content: "Hidden context." });
+  const terminal = assistantRecord({ uuid: "metadata-final", parentUuid: meta.uuid, stopReason: "end_turn", content: "Selected answer." });
+  const transcript = jsonLines([
+    prompt, call,
+    { ...result, promptId: "older-label", toolUseResult: { presentation: "first" } },
+    { ...result, promptId: "newer-label", toolUseResult: { presentation: "second" } },
+    { ...meta, promptId: "older-label" }, { ...meta, promptId: "newer-label" }, terminal,
+  ]);
+  for (const read of [claudeTranscriptTurnFromJsonLines, claudeCodingSessionTurnFromJsonLines]) {
+    const parsed = read(transcript, { sessionId: SESSION_ID, promptId: PROMPT_ID });
+    assert.equal(parsed.ok, true);
+    assert.equal(parsed.turn.assistantReply, "Selected answer.");
+    if ("items" in parsed.turn) {
+      assert.deepEqual(parsed.turn.items.filter((item) => item.type === "function_call_output"), [
+        { type: "function_call_output", call_id: "metadata-tool", output: "Native message output." },
+      ]);
+    }
+  }
+});
+
+test("Claude transcript limits conflicting human identities to their reachable prompts", () => {
+  const other = userRecord({ uuid: "conflicting-human", promptId: "other-prompt-one", content: "Another task." });
+  const transcript = jsonLines([
+    other, { ...other, promptId: "other-prompt-two" },
+    assistantRecord({ uuid: "other-terminal", parentUuid: other.uuid, stopReason: "end_turn", content: "Other answer." }),
+    userRecord({ uuid: "unaffected-human", content: "The selected task." }),
+    assistantRecord({ uuid: "unaffected-terminal", parentUuid: "unaffected-human", stopReason: "end_turn", content: "Selected answer." }),
+  ]);
+  for (const read of [claudeTranscriptTurnFromJsonLines, claudeCodingSessionTurnFromJsonLines]) {
+    assert.equal(read(transcript, { sessionId: SESSION_ID, promptId: PROMPT_ID }).ok, true);
+    for (const promptId of ["other-prompt-one", "other-prompt-two"]) {
+      assert.deepEqual(read(transcript, { sessionId: SESSION_ID, promptId }), { ok: false, reason: "turn_ambiguous" });
+    }
+  }
+});
+
+test("Claude transcript checks every conflicting parent before excluding a branch from the requested prompt", () => {
+  const bridge = assistantRecord({ uuid: "conflicting-parent", parentUuid: "first-human", stopReason: null, content: "Working." });
+  for (const variants of [[bridge, { ...bridge, parentUuid: "second-human" }], [{ ...bridge, parentUuid: "second-human" }, bridge]]) {
+    const transcript = jsonLines([
+      userRecord({ uuid: "first-human", promptId: "first-prompt", content: "First task." }),
+      userRecord({ uuid: "second-human", promptId: "second-prompt", content: "Second task." }),
+      ...variants,
+      assistantRecord({ uuid: "conflicting-terminal", parentUuid: bridge.uuid, stopReason: "end_turn", content: "Uncertain answer." }),
+      userRecord({ uuid: "unaffected-human", content: "Selected task." }),
+      assistantRecord({ uuid: "unaffected-terminal", parentUuid: "unaffected-human", stopReason: "end_turn", content: "Selected answer." }),
+    ]);
+    for (const read of [claudeTranscriptTurnFromJsonLines, claudeCodingSessionTurnFromJsonLines]) {
+      for (const promptId of ["first-prompt", "second-prompt"]) {
+        assert.deepEqual(read(transcript, { sessionId: SESSION_ID, promptId }), { ok: false, reason: "turn_ambiguous" });
+      }
+      assert.equal(read(transcript, { sessionId: SESSION_ID, promptId: PROMPT_ID }).ok, true);
+    }
+  }
+});
+
+test("Claude transcript retains ambiguity when a conflicting lineage is missing or cyclic", () => {
+  const bridge = assistantRecord({ uuid: "unresolved-parent", parentUuid: "other-human", stopReason: null, content: "Working." });
+  for (const unresolvedParent of ["missing-parent", bridge.uuid]) {
+    const transcript = jsonLines([
+      userRecord({ uuid: "selected-human", content: "Selected task." }),
+      assistantRecord({ uuid: "earlier-answer", parentUuid: "selected-human", stopReason: "end_turn", content: "Earlier answer." }),
+      userRecord({ uuid: "other-human", promptId: "other-prompt", content: "Other task." }),
+      bridge, { ...bridge, parentUuid: unresolvedParent },
+      assistantRecord({ uuid: "uncertain-terminal", parentUuid: bridge.uuid, stopReason: "end_turn", content: "Uncertain answer." }),
+    ]);
+    for (const read of [claudeTranscriptTurnFromJsonLines, claudeCodingSessionTurnFromJsonLines]) {
+      assert.deepEqual(read(transcript, { sessionId: SESSION_ID, promptId: PROMPT_ID }), { ok: false, reason: "turn_ambiguous" });
+    }
   }
 });

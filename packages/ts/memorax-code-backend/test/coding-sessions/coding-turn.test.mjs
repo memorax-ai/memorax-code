@@ -284,6 +284,143 @@ test("client tool search still requires call identity and cannot turn into a hos
   assert.deepEqual(prepared.truncation, { original_item_count: 6, truncated_text_fields: 0 });
 });
 
+test("function arguments redact decoded strings without breaking JSON escapes or containers", () => {
+  const args = {
+    command: 'printf "first@example.test"\nAuthorization: synthetic-header-secret',
+    nested: [{ contact: '"second@example.test"', keep: [null, false, 7] }],
+    'third@example.test': 'value with \\ and "quotes"',
+  };
+  const original = structuredClone(args);
+  const prepared = prepareWithTools([{
+    type: "function_call", call_id: "call-1", name: "inspect", arguments: JSON.stringify(args),
+  }]);
+  const decoded = JSON.parse(prepared.items[1].arguments);
+  assert.deepEqual(decoded, {
+    command: 'printf "[REDACTED:EMAIL]"\nAuthorization: [REDACTED:AUTH_TOKEN]',
+    nested: [{ contact: '"[REDACTED:EMAIL]"', keep: [null, false, 7] }],
+    '[REDACTED:EMAIL]': 'value with \\ and "quotes"',
+  });
+  assert.deepEqual(args, original);
+  assert.equal(prepared.truncation, undefined);
+});
+
+test("function argument JSON retains credential, numeric, local-path, and binary redaction", () => {
+  const args = {
+    password: "synthetic-password", token: 12345, secret: true,
+    headers: { Authorization: "synthetic-auth-value", Cookie: "session=synthetic-cookie-value" },
+    access_token: ["synthetic-array-secret", 6789],
+    client_secret: { nested: "synthetic-object-secret" },
+    path: homedir() + "/private/file", contactNumber: 123456789012,
+    quoted: '{"password":"synthetic-quoted-secret"}',
+    image: "data:image/png;base64,AAAA", bytes: { type: "Buffer", data: [1, 2] },
+    keep: [null, false, 42], placeholder: "[REDACTED:EMAIL]",
+  };
+  const prepared = prepareWithTools([{
+    type: "function_call", call_id: "call-1", name: "inspect", arguments: JSON.stringify(args),
+  }]);
+  const decoded = JSON.parse(prepared.items[1].arguments);
+  assert.equal(decoded.password, "[REDACTED:CREDENTIAL]");
+  assert.equal(decoded.token, "[REDACTED:CREDENTIAL]");
+  assert.equal(decoded.secret, "[REDACTED:CREDENTIAL]");
+  assert.equal(decoded.client_secret, "[REDACTED:CREDENTIAL]");
+  assert.deepEqual(decoded.headers, { Authorization: "[REDACTED:AUTH_TOKEN]", Cookie: "[REDACTED:COOKIE]" });
+  assert.deepEqual(decoded.access_token, ["[REDACTED:CREDENTIAL]", "[REDACTED:CREDENTIAL]"]);
+  assert.equal(decoded.path, "[REDACTED:LOCAL_PATH]/private/file");
+  assert.equal(decoded.contactNumber, "[REDACTED:LONG_NUMBER]");
+  assert.equal(decoded.image, "[BINARY_CONTENT_OMITTED]");
+  assert.equal(decoded.bytes, "[BINARY_CONTENT_OMITTED]");
+  assert.deepEqual(decoded.keep, [null, false, 42]);
+  assert.equal(decoded.placeholder, "[REDACTED:EMAIL]");
+  assert.doesNotMatch(prepared.items[1].arguments, /synthetic-(?:password|auth-value|cookie-value|array-secret|object-secret|quoted-secret)|123456789012|base64,AAAA/);
+});
+
+test("sensitive argument values remain redacted when the field name is also redacted", () => {
+  for (const value of ["synthetic-passphrase", { nested: "synthetic-passphrase" }, ["synthetic-passphrase"]]) {
+    const prepared = prepareWithTools([{
+      type: "function_call", call_id: "call-1", name: "inspect",
+      arguments: JSON.stringify({ "account-123456789-password": value }),
+    }]);
+    const decoded = JSON.parse(prepared.items[1].arguments);
+    assert.deepEqual(decoded, {
+      "account-[REDACTED:LONG_NUMBER]-password": Array.isArray(value) ? ["[REDACTED:CREDENTIAL]"] : "[REDACTED:CREDENTIAL]",
+    });
+    assert.doesNotMatch(prepared.items[1].arguments, /synthetic-passphrase/);
+  }
+});
+
+test("function argument JSON preserves root types and unchanged native formatting", () => {
+  for (const text of [' { "z": 1, "a": 2 }\n', ' [true, null, 7] ', ' "plain text" ', ' false ', ' null ', ' 12 ']) {
+    const prepared = prepareWithTools([{ type: "function_call", call_id: "call-1", name: "inspect", arguments: text }]);
+    assert.equal(prepared.items[1].arguments, text);
+    assert.deepEqual(JSON.parse(prepared.items[1].arguments), JSON.parse(text));
+  }
+  for (const [args, expected] of [[123456789012, "[REDACTED:LONG_NUMBER]"], ['"first@example.test"', '"[REDACTED:EMAIL]"']]) {
+    const prepared = prepareWithTools([{ type: "function_call", call_id: "call-1", name: "inspect", arguments: JSON.stringify(args) }]);
+    assert.equal(JSON.parse(prepared.items[1].arguments), expected);
+  }
+});
+
+test("large integer argument literals remain redacted after numeric parsing", () => {
+  for (const text of ['1000000000000000000000000000000', '{"value":1000000000000000000000000000000}', '1e400']) {
+    const prepared = prepareWithTools([{ type: "function_call", call_id: "call-1", name: "inspect", arguments: text }]);
+    const decoded = JSON.parse(prepared.items[1].arguments);
+    assert.deepEqual(decoded, text.startsWith("{") ? { value: "[REDACTED:LONG_NUMBER]" } : "[REDACTED:LONG_NUMBER]");
+  }
+});
+
+test("discarded duplicate argument values cannot bypass raw credential or path redaction", () => {
+  const inputs = [
+    ['{"password":"synthetic-passphrase","password":"<password>"}', { password: "<password>" }],
+    ['{"path":' + JSON.stringify(homedir() + '/private') + ',"path":"public"}', { path: "public" }],
+  ];
+  for (const [text, expected] of inputs) {
+    const prepared = prepareWithTools([{ type: "function_call", call_id: "call-1", name: "inspect", arguments: text }]);
+    assert.deepEqual(JSON.parse(prepared.items[1].arguments), expected);
+    assert.doesNotMatch(prepared.items[1].arguments, /synthetic-passphrase/);
+    assert.equal(prepared.items[1].arguments.includes(homedir()), false);
+  }
+});
+
+test("underflowed argument exponents cannot bypass raw numeric redaction", () => {
+  const prepared = prepareWithTools([{
+    type: "function_call", call_id: "call-1", name: "inspect", arguments: '{"value":1e-123456789}',
+  }]);
+  assert.deepEqual(JSON.parse(prepared.items[1].arguments), { value: 0 });
+  assert.doesNotMatch(prepared.items[1].arguments, /123456789/);
+});
+
+test("malformed native function arguments retain redacted text without inventing JSON", () => {
+  const prepared = prepareWithTools([{
+    type: "function_call", call_id: "call-1", name: "inspect", arguments: 'email=first@example.test; {unfinished',
+  }]);
+  assert.equal(prepared.items[1].arguments, 'email=[REDACTED:EMAIL]; {unfinished');
+});
+
+test("function arguments exceeding the text limit are omitted whole with QA and results retained", () => {
+  for (const args of [{ payload: "x".repeat(128_001) }, { left: "x".repeat(64_000), right: "y".repeat(64_000) }]) {
+    const output = { type: "function_call_output", call_id: "call-1", output: "Inspection complete." };
+    const prepared = prepareWithTools([
+      { type: "function_call", call_id: "call-1", name: "inspect", arguments: JSON.stringify(args) }, output,
+    ]);
+    assert.deepEqual(prepared.items.map((item) => item.type), ["message", "function_call_output", "message"]);
+    assert.deepEqual(prepared.items[1], output);
+    assert.deepEqual(prepared.truncation, { original_item_count: 4, truncated_text_fields: 1 });
+  }
+});
+
+test("function arguments are not sliced into invalid JSON under Turn byte pressure", () => {
+  const outputs = Array.from({ length: 5 }, (_, index) => ({
+    type: "function_call_output", call_id: "call-" + index, output: "中".repeat(128_000),
+  }));
+  const prepared = prepareWithTools([
+    { type: "function_call", call_id: "call-0", name: "inspect", arguments: JSON.stringify({ payload: "文".repeat(100_000) }) },
+    ...outputs,
+  ]);
+  assert.deepEqual(prepared.items.slice(1, -1), outputs);
+  assert.deepEqual(prepared.truncation, { original_item_count: 8, truncated_text_fields: 0 });
+  assert.ok(Buffer.byteLength(JSON.stringify(prepared), "utf8") <= CODING_TURN_MAX_BYTES);
+});
+
 function prepareWithTools(items) {
   return prepareCodingSessionTurn({
     client: "codex", sessionId: "session-1", turnId: "turn-1", turnIndex: 1,

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -100,6 +101,63 @@ test("Claude Hook writeback uses exact transcript content and native times", asy
     assert.equal(diagnostics.some(({ event }) => event === "claude_memory_hook.assistant_message_mismatch"), true);
   } finally {
     runtime.close();
+    await fixture.remove();
+  }
+});
+
+test("Claude Hook preserves QA when optional archive projection throws", async () => {
+  const fixture = await transcriptFixture("Preserve this native prompt.", "Preserve this native answer.", {
+    assistantRecords: completedAssistantRecords("Preserve this native answer.").map((record) => ({
+      ...record, timestamp: "2026-09-01T08:03:00.000Z",
+    })),
+  });
+  try {
+    // Module mocking stays in a child process; production readers need no test hook.
+    const script = `
+      import assert from "node:assert/strict";
+      import { mock } from "node:test";
+      const codingUrl = ${JSON.stringify(new URL("../../../dist/coding-sessions/coding-turn.js", import.meta.url).href)};
+      const coding = await import(codingUrl);
+      let projections = 0;
+      mock.module(codingUrl, { namedExports: {
+        ...coding,
+        codingEventText() { projections += 1; throw new Error("synthetic projection failure"); },
+      } });
+      const { createClaudeMemoryHookRuntime } = await import(${JSON.stringify(new URL("../../../dist/clients/claude/memory-hook-runtime.js", import.meta.url).href)});
+      const writebacks = [];
+      const diagnostics = [];
+      const runtime = createClaudeMemoryHookRuntime({
+        captureCodingTurns: true,
+        transcriptReadAttempts: 1,
+        memoraxCodeHome: ${JSON.stringify(join(fixture.root, "state"))},
+        env: { MEMORAX_CODE_CLAUDE_TRACE_ENABLED: "false", MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED: "false" },
+        diagnosticLogger: (event, fields) => diagnostics.push({ event, fields }),
+        automaticWriteback(options) { writebacks.push(options); return { accepted: true }; },
+        repositoryMemorySession: { async resolve() { return { ok: true, memory: { config: {}, scope: ${JSON.stringify(SCOPE)} } }; } },
+      });
+      try {
+        await runtime.recordTurnStart(${JSON.stringify(turnStart(fixture.path))});
+        const result = await runtime.writeback(${JSON.stringify({
+          version: 1, client: "claude-code", sessionId: SESSION_ID, promptId: PROMPT_ID,
+          transcriptPath: fixture.path, cwd: SCOPE.boundWorkspaceRoot, lastAssistantMessage: "Hook diagnostic only.",
+        })});
+        assert.deepEqual(result, { ok: true, scheduled: true });
+        assert.equal(projections, 1);
+        assert.equal(writebacks.length, 1);
+        assert.equal(writebacks[0].userText, "Preserve this native prompt.");
+        assert.equal(writebacks[0].assistantText, "Preserve this native answer.");
+        assert.equal(writebacks[0].codingTurn, undefined);
+        assert.equal(runtime.size(), 0);
+        assert.ok(diagnostics.some(({ event, fields }) => event === "coding_sessions.attachment_skipped"
+          && fields.reason === "projection_failed"));
+        assert.equal(JSON.stringify(diagnostics).includes("synthetic projection failure"), false);
+      } finally { runtime.close(); }
+    `;
+    const result = spawnSync(process.execPath, ["--experimental-test-module-mocks", "--input-type=module", "--eval", script], {
+      encoding: "utf8", timeout: 5000,
+    });
+    assert.equal(result.status, 0, result.stderr || result.error?.message);
+  } finally {
     await fixture.remove();
   }
 });

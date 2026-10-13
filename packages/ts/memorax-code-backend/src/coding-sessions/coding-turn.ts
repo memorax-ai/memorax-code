@@ -198,13 +198,33 @@ function prepareItem(
     if (!name) return undefined;
     if (item.type === "custom_tool_call") return { type: item.type, ...identity, call_id: callId, name, input: redactSourceText(item.input, () => onTruncated(0)) };
     const namespace = item.namespace && boundedEventIdentifier(item.namespace, 255);
-    return { type: item.type, ...identity, call_id: callId, name, arguments: redactSourceText(item.arguments, () => onTruncated(0)), ...(namespace ? { namespace } : {}) };
+    const argumentsText = redactFunctionArguments(item.arguments, () => onTruncated(0));
+    return argumentsText === undefined ? undefined
+      : { type: item.type, ...identity, call_id: callId, name, arguments: argumentsText, ...(namespace ? { namespace } : {}) };
   }
   return { type: item.type, ...identity, call_id: callId, output: redactSourceText(item.output, () => onTruncated(0)) };
 }
 
 function isSearchToolItem(item: ResponseItem): item is Extract<ResponseItem, { type: "web_search_call" | "tool_search_call" | "tool_search_output" }> {
   return item.type === "web_search_call" || item.type === "tool_search_call" || item.type === "tool_search_output";
+}
+
+function redactFunctionArguments(value: string, onTruncated: () => void): string | undefined {
+  let parsed: ResponseJsonValue;
+  try {
+    parsed = JSON.parse(value) as ResponseJsonValue;
+  } catch {
+    // Native non-JSON arguments remain text; do not invent a JSON wrapper.
+    return redactSourceText(value, onTruncated);
+  }
+  const serialized = JSON.stringify(redactToolJson(parsed, onTruncated));
+  if (serialized.length > CODING_TURN_TEXT_MAX_CHARS) {
+    onTruncated();
+    return undefined;
+  }
+  // Discarded duplicate values and numeric parsing must not bypass raw redaction.
+  return value.length <= CODING_TURN_TEXT_MAX_CHARS && JSON.stringify(parsed) === serialized
+    && redactSourceText(value, () => {}) === value ? value : serialized;
 }
 
 function redactToolJson(value: ResponseJsonValue, onTruncated: (fieldIndex: number) => void): ResponseJsonValue {
@@ -218,14 +238,21 @@ function redactToolJson(value: ResponseJsonValue, onTruncated: (fieldIndex: numb
       const prefix = `${key}: `;
       return text(redactMemoryPayloadText(prefix + item).text.slice(prefix.length));
     }
-    if (key && (typeof item === "string" || typeof item === "number")) {
+    if (key && !Array.isArray(item)) {
       // Apply the existing key-sensitive rule without replacing JSON punctuation.
       const prefix = `${JSON.stringify(key)}:`;
-      if (redactMemoryPayloadText(prefix + JSON.stringify(item)).text === `${prefix}[REDACTED:CREDENTIAL]`) {
+      const redactedPrefix = redactMemoryPayloadText(prefix).text;
+      if (redactMemoryPayloadText(prefix + JSON.stringify(item)).text.startsWith(`${redactedPrefix}[REDACTED:CREDENTIAL]`)) {
         return "[REDACTED:CREDENTIAL]";
       }
     }
     if (typeof item === "string") return text(item);
+    if (typeof item === "number") {
+      // Parsing large integer literals can turn their digits into exponent notation.
+      if (!Number.isFinite(item) || (Number.isInteger(item) && Math.abs(item) >= 1e21)) return "[REDACTED:LONG_NUMBER]";
+      const redacted = redactMemoryPayloadText(String(item));
+      return redacted.redacted ? redacted.text : item;
+    }
     if (Array.isArray(item)) return item.map((part) => visit(part, key));
     if (item === null || typeof item !== "object") return item;
     if (isSerializedBuffer(item)) return BINARY_CONTENT_OMITTED;
@@ -274,7 +301,7 @@ function fitItem(
 ): ResponseItem | undefined {
   if (itemBytes(item) <= budget) return item;
   // Keep structured tool records valid; omit an oversized record atomically.
-  if (isSearchToolItem(item)) return undefined;
+  if (isSearchToolItem(item) || item.type === "function_call") return undefined;
   if (item.type === "message") {
     let remaining = budget - itemBytes({ ...item, content: [] });
     const content = item.content.flatMap((part, fieldIndex) => {
@@ -292,13 +319,12 @@ function fitItem(
     if (!hasMeaningfulMemoryPayloadText(content.map((part) => part.text).join("\n"))) return undefined;
     return { ...item, content } as ResponseItem;
   }
-  const text = "arguments" in item ? item.arguments : "input" in item ? item.input : item.output;
+  const text = "input" in item ? item.input : item.output;
   const textBudget = budget - itemBytes(item) + jsonBytes(text) - 2;
   if (textBudget < 0) return undefined;
   const bounded = fitText(text, textBudget);
   onTruncated(0);
-  return "arguments" in item ? { ...item, arguments: bounded }
-    : "input" in item ? { ...item, input: bounded } : { ...item, output: bounded };
+  return "input" in item ? { ...item, input: bounded } : { ...item, output: bounded };
 }
 
 function fitText(text: string, textBudget: number): string {

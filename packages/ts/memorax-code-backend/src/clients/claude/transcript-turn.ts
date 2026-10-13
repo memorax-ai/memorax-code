@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { isDeepStrictEqual } from "node:util";
 import { parseNativeMessageTimestamp } from "../../shared/message-time.js";
 import { codingEventText, codingToolOutputText, type CodingSessionNativeSource, type CodingSessionSourceTurn, type ResponseItem } from "../../coding-sessions/coding-turn.js";
 import type { NativeCodingSessionTurnRef } from "../../coding-sessions/contracts.js";
@@ -119,6 +120,31 @@ export function claudeTranscriptTurnFromJsonLines(
   return resolveClaudeCompletedTranscriptTurn(transcript, input, false);
 }
 
+export async function readClaudeWritebackTurn(input: {
+  transcriptPath: string;
+  sessionId: string;
+  promptId: string;
+  captureCodingItems?: boolean;
+  onArchiveSkipped?: () => void;
+}): Promise<ClaudeTranscriptTurnResult | ClaudeCodingSessionTurnResult> {
+  try {
+    const snapshot = await readNativeTranscriptSnapshot(input);
+    const result = resolveClaudeCompletedTranscriptTurn(
+      snapshot.text, input, input.captureCodingItems === true, () => input.onArchiveSkipped?.(),
+    );
+    return result.ok && "items" in result.turn ? {
+      ok: true,
+      turn: { ...result.turn, source: { transcriptPath: input.transcriptPath, endBytes: snapshot.endBytes } },
+    } : result;
+  } catch (error) {
+    return {
+      ok: false,
+      reason: "transcript_unavailable",
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 export async function readClaudeCodingSessionTurn(input: {
   transcriptPath: string;
   sessionId: string;
@@ -171,6 +197,13 @@ function resolveClaudeCompletedTranscriptTurn(
   transcript: string,
   input: { sessionId: string; promptId: string },
   captureCodingItems: boolean,
+  onArchiveSkipped: () => void,
+): ClaudeTranscriptTurnResult | ClaudeCodingSessionTurnResult;
+function resolveClaudeCompletedTranscriptTurn(
+  transcript: string,
+  input: { sessionId: string; promptId: string },
+  captureCodingItems: boolean,
+  onArchiveSkipped?: () => void,
 ): ClaudeTranscriptTurnResult | ClaudeCodingSessionTurnResult {
   const requested = requestedTranscriptRecords(transcript, input.sessionId);
   if (!requested.ok) return requested;
@@ -181,7 +214,7 @@ function resolveClaudeCompletedTranscriptTurn(
   ));
   if (promptRecords.length === 0) return { ok: false, reason: "turn_not_found" };
   const sessionTurnIndex = interactivePromptIndex(records, input.promptId);
-  const recordsByUuid = indexRecordsByUuid(records);
+  const { recordsByUuid, conflictsByUuid } = indexRecordsByUuid(records);
 
   const candidates: Array<{
     branch: ClaudePromptBranch;
@@ -194,10 +227,15 @@ function resolveClaudeCompletedTranscriptTurn(
   let ambiguousBranch = false;
   for (const record of records) {
     if (!isCompletedAssistantRecord(record)) continue;
+    const uuid = stringValue(record.uuid);
+    const indexedRecord = uuid ? recordsByUuid.get(uuid) : undefined;
+    if (indexedRecord && indexedRecord !== record) continue;
     const assistantReply = completedAssistantReply(record);
     const branch = promptBranch(record, recordsByUuid);
     if (branch.ambiguous) {
-      ambiguousBranch = true;
+      if (ambiguousBranchMayAffectPrompt(record, input.promptId, recordsByUuid, conflictsByUuid)) {
+        ambiguousBranch = true;
+      }
       continue;
     }
     if (branch.promptId === input.promptId && branch.userPrompt) {
@@ -221,25 +259,30 @@ function resolveClaudeCompletedTranscriptTurn(
   }
   const candidate = terminalCandidates[0];
   if (candidate?.assistantReply && sessionTurnIndex !== undefined) {
-    const closedAt = transcriptRecordTimestamp(candidate.branch.records[0]!);
-    return {
-      ok: true,
-      turn: {
-        sessionId: input.sessionId,
-        promptId: input.promptId,
-        sessionTurnIndex,
-        userPrompt: candidate.userPrompt,
-        assistantReply: candidate.assistantReply,
-        ...(candidate.branch.userTimestamp === undefined ? {} : { userTimestamp: candidate.branch.userTimestamp }),
-        ...(candidate.assistantTimestamp === undefined ? {} : { assistantTimestamp: candidate.assistantTimestamp }),
-        ...(captureCodingItems ? {
-          items: completedClaudeResponseItems(candidate.branch),
-          ...(closedAt ? { closedAt } : {}),
-        } : {}),
-        activities: candidate.activities,
-        ...(candidate.usage ? { usage: candidate.usage } : {}),
-      },
+    const turn: ClaudeTranscriptTurn = {
+      sessionId: input.sessionId,
+      promptId: input.promptId,
+      sessionTurnIndex,
+      userPrompt: candidate.userPrompt,
+      assistantReply: candidate.assistantReply,
+      ...(candidate.branch.userTimestamp === undefined ? {} : { userTimestamp: candidate.branch.userTimestamp }),
+      ...(candidate.assistantTimestamp === undefined ? {} : { assistantTimestamp: candidate.assistantTimestamp }),
+      activities: candidate.activities,
+      ...(candidate.usage ? { usage: candidate.usage } : {}),
     };
+    if (!captureCodingItems) return { ok: true, turn };
+    try {
+      const closedAt = transcriptRecordTimestamp(candidate.branch.records[0]!);
+      return { ok: true, turn: {
+        ...turn,
+        items: completedClaudeResponseItems(candidate.branch, records, recordsByUuid),
+        ...(closedAt ? { closedAt } : {}),
+      } };
+    } catch (error) {
+      if (!onArchiveSkipped) throw error;
+      onArchiveSkipped();
+      return { ok: true, turn };
+    }
   }
   if (!promptRecords.some((record) => visibleUserPrompt(record))) {
     return { ok: false, reason: "user_prompt_missing" };
@@ -259,7 +302,7 @@ export function claudeInterruptedTranscriptTurnFromJsonLines(
   ));
   if (promptRecords.length === 0) return { ok: false, reason: "turn_not_found" };
   const sessionTurnIndex = interactivePromptIndex(records, input.promptId);
-  const recordsByUuid = indexRecordsByUuid(records);
+  const { recordsByUuid, conflictsByUuid } = indexRecordsByUuid(records);
 
   const candidates: Array<{
     userPrompt: string;
@@ -273,7 +316,9 @@ export function claudeInterruptedTranscriptTurnFromJsonLines(
     if (!interruptionMarker(record)) continue;
     const prompt = promptOnBranch(record, recordsByUuid, input.promptId);
     if (prompt.ambiguous) {
-      ambiguousBranch = true;
+      if (ambiguousBranchMayAffectPrompt(record, input.promptId, recordsByUuid, conflictsByUuid)) {
+        ambiguousBranch = true;
+      }
       continue;
     }
     if (!prompt.userPrompt || !prompt.assistantMessages) continue;
@@ -334,13 +379,78 @@ function requestedTranscriptRecords(
     : { ok: false, reason: "transcript_session_mismatch" };
 }
 
-function indexRecordsByUuid(records: JsonRecord[]): Map<string, JsonRecord> {
-  const indexed = new Map<string, JsonRecord>();
+function indexRecordsByUuid(records: JsonRecord[]): {
+  recordsByUuid: Map<string, JsonRecord | undefined>;
+  conflictsByUuid: Map<string, JsonRecord[]>;
+} {
+  const recordsByUuid = new Map<string, JsonRecord | undefined>();
+  const conflictsByUuid = new Map<string, JsonRecord[]>();
   for (const record of records) {
     const uuid = stringValue(record.uuid);
-    if (uuid) indexed.set(uuid, record);
+    if (!uuid) continue;
+    const conflicts = conflictsByUuid.get(uuid);
+    if (conflicts) {
+      conflicts.push(record);
+    } else if (!recordsByUuid.has(uuid)) {
+      recordsByUuid.set(uuid, record);
+    } else {
+      const previous = recordsByUuid.get(uuid)!;
+      if (!isDeepStrictEqual(recordSnapshot(previous), recordSnapshot(record))) {
+        // Keep every possible parent, without choosing a conflicting snapshot.
+        conflictsByUuid.set(uuid, [previous, record]);
+        recordsByUuid.set(uuid, undefined);
+      }
+    }
   }
-  return indexed;
+  return { recordsByUuid, conflictsByUuid };
+}
+
+function recordSnapshot(record: JsonRecord): JsonRecord {
+  const hasVisiblePrompt = Boolean(visibleUserPrompt(record));
+  return Object.fromEntries(Object.entries(record).filter(([key]) => (
+    !["cwd", "gitBranch", "slug"].includes(key)
+    && !(record.type === "user" && key === "toolUseResult")
+    && !(!hasVisiblePrompt && ["promptId", "prompt_id"].includes(key))
+  )));
+}
+
+function ambiguousBranchMayAffectPrompt(
+  terminal: JsonRecord,
+  promptId: string,
+  recordsByUuid: Map<string, JsonRecord | undefined>,
+  conflictsByUuid: Map<string, JsonRecord[]>,
+): boolean {
+  const pending: Array<{ record: JsonRecord; exit?: boolean }> = [{ record: terminal }];
+  const visiting = new Set<string | JsonRecord>();
+  const visited = new Set<string | JsonRecord>();
+  while (pending.length > 0) {
+    const { record, exit } = pending.pop()!;
+    const uuid = stringValue(record.uuid);
+    const key = uuid ?? record;
+    if (exit) {
+      visiting.delete(key);
+      visited.add(key);
+      continue;
+    }
+    if (visited.has(key)) continue;
+    if (visiting.has(key)) return true;
+    visiting.add(key);
+    pending.push({ record, exit: true });
+    for (const variant of (uuid ? conflictsByUuid.get(uuid) : undefined) ?? [record]) {
+      if (isSystemPromptRecord(variant)) continue;
+      if (visibleUserPrompt(variant)) {
+        const variantPromptId = promptIdFromRecord(variant);
+        if (!variantPromptId || variantPromptId === promptId) return true;
+        continue;
+      }
+      const parentUuid = stringValue(variant.parentUuid) ?? stringValue(variant.parent_uuid);
+      const parent = parentUuid
+        ? recordsByUuid.get(parentUuid) ?? conflictsByUuid.get(parentUuid)?.[0] : undefined;
+      if (!parent) return true;
+      pending.push({ record: parent });
+    }
+  }
+  return false;
 }
 
 function requestedSessionRecords(
@@ -428,7 +538,7 @@ function maximalTerminalLineages<T extends Readonly<{ branch: ClaudePromptBranch
 
 function promptBranch(
   terminal: JsonRecord,
-  recordsByUuid: Map<string, JsonRecord>,
+  recordsByUuid: Map<string, JsonRecord | undefined>,
 ): ClaudePromptBranch {
   const visited = new Set<string>();
   const assistantMessages: JsonRecord[] = [];
@@ -438,9 +548,12 @@ function promptBranch(
     branchRecords.push(current);
     const uuid = stringValue(current.uuid);
     if (uuid) {
-      if (visited.has(uuid)) return { assistantMessages, records: branchRecords, ambiguous: true };
+      if (visited.has(uuid) || (recordsByUuid.has(uuid) && !recordsByUuid.get(uuid))) {
+        return { assistantMessages, records: branchRecords, ambiguous: true };
+      }
       visited.add(uuid);
     }
+    if (isSystemPromptRecord(current)) break;
     const assistantMessage = assistantMessageFromRecord(current);
     if (assistantMessage) assistantMessages.push(assistantMessage);
     const prompt = visibleUserPrompt(current);
@@ -455,6 +568,9 @@ function promptBranch(
       };
     }
     const parentUuid: string | undefined = stringValue(current.parentUuid) ?? stringValue(current.parent_uuid);
+    if (parentUuid && recordsByUuid.has(parentUuid) && !recordsByUuid.get(parentUuid)) {
+      return { assistantMessages, records: branchRecords, ambiguous: true };
+    }
     current = parentUuid ? recordsByUuid.get(parentUuid) : undefined;
   }
   return { assistantMessages, records: branchRecords, ambiguous: false };
@@ -462,7 +578,7 @@ function promptBranch(
 
 function promptOnBranch(
   assistant: JsonRecord,
-  recordsByUuid: Map<string, JsonRecord>,
+  recordsByUuid: Map<string, JsonRecord | undefined>,
   promptId: string,
 ): { userPrompt?: string; assistantMessages?: JsonRecord[]; ambiguous: boolean } {
   const branch = promptBranch(assistant, recordsByUuid);
@@ -491,14 +607,19 @@ function isInteractiveUserRecord(record: JsonRecord): boolean {
     || record.isVisibleInTranscriptOnly === true) {
     return false;
   }
-  const origin = isRecord(record.origin) ? record.origin : undefined;
-  if (stringValue(origin?.kind)?.toLowerCase() === "task-notification"
-    || stringValue(record.promptSource ?? record.prompt_source)?.toLowerCase() === "system"
+  if (isSystemPromptRecord(record)
     || stringValue(record.interruptedMessageId ?? record.interrupted_message_id)) {
     return false;
   }
   const message = isRecord(record.message) ? record.message : undefined;
   return Boolean(message && message.role === "user");
+}
+
+function isSystemPromptRecord(record: JsonRecord): boolean {
+  if (record.type !== "user") return false;
+  const origin = isRecord(record.origin) ? record.origin : undefined;
+  return stringValue(origin?.kind)?.toLowerCase() === "task-notification"
+    || stringValue(record.promptSource ?? record.prompt_source)?.toLowerCase() === "system";
 }
 
 function interactivePromptIndex(
@@ -541,9 +662,24 @@ function interruptedAssistantReply(assistantMessages: JsonRecord[]): string {
   return textSegments.join("\n\n");
 }
 
-function completedClaudeResponseItems(branch: ClaudePromptBranch): ResponseItem[] {
+function completedClaudeResponseItems(
+  branch: ClaudePromptBranch,
+  records: JsonRecord[],
+  recordsByUuid: Map<string, JsonRecord | undefined>,
+): ResponseItem[] {
   const items: ResponseItem[] = [];
   const terminalRecord = branch.records[0];
+  const promptRecord = branch.records[branch.records.length - 1]!;
+  const turnRecords = records.slice(records.indexOf(promptRecord), records.indexOf(terminalRecord!) + 1);
+  const toolResults = completedClaudeToolResults(branch, turnRecords, recordsByUuid);
+  const selectedRecords = new Set(branch.records);
+  const siblingResults = new Map<JsonRecord, ResponseItem[]>();
+  for (const [callId, result] of toolResults) {
+    if (!result || selectedRecords.has(result.record)) continue;
+    const outputs = siblingResults.get(result.call) ?? [];
+    outputs.push({ type: "function_call_output", call_id: callId, output: result.output });
+    siblingResults.set(result.call, outputs);
+  }
   for (const record of branch.records.slice().reverse()) {
     if (visibleUserPrompt(record)) continue;
     if (record.isSidechain === true || record.isMeta === true
@@ -570,19 +706,17 @@ function completedClaudeResponseItems(branch: ClaudePromptBranch): ResponseItem[
         if (!callId || !tool) continue;
         items.push({ type: "function_call", call_id: callId, name: tool, arguments: codingEventText(block.input) });
       }
+      items.push(...(siblingResults.get(record) ?? []));
       continue;
     }
     if (message.role !== "user") continue;
     for (const block of message.content) {
       if (!isRecord(block) || block.type !== "tool_result") continue;
       const callId = stringValue(block.tool_use_id);
-      if (!callId) continue;
-      items.push({
-        type: "function_call_output",
-        call_id: callId,
-        output: codingToolOutputText(typeof block.is_error === "boolean"
-          ? { content: block.content, is_error: block.is_error } : block.content),
-      });
+      const result = callId ? toolResults.get(callId) : undefined;
+      if (!callId || !result || result.record !== record) continue;
+      items.push({ type: "function_call_output", call_id: callId, output: result.output });
+      toolResults.delete(callId);
     }
   }
   // The QA strings remain normalized; archive projection keeps native text blocks.
@@ -593,6 +727,68 @@ function completedClaudeResponseItems(branch: ClaudePromptBranch): ResponseItem[
     ...items,
     { type: "message", role: "assistant", phase: "final_answer", content: finalTexts.map((text) => ({ type: "output_text", text })) },
   ];
+}
+
+function completedClaudeToolResults(
+  branch: ClaudePromptBranch,
+  records: JsonRecord[],
+  recordsByUuid: Map<string, JsonRecord | undefined>,
+): Map<string, { record: JsonRecord; call: JsonRecord; output: string } | undefined> {
+  const calls = new Map<string, JsonRecord | undefined>();
+  const selectedRecords = new Set(branch.records);
+  const positions = new Map(records.map((record, index) => [record, index]));
+  for (const record of branch.records) {
+    const message = assistantMessageFromRecord(record);
+    if (!Array.isArray(message?.content)) continue;
+    for (const block of message.content) {
+      if (!isRecord(block) || block.type !== "tool_use" || !stringValue(block.name)) continue;
+      const callId = stringValue(block.id);
+      if (callId) calls.set(callId, calls.has(callId) ? undefined : record);
+    }
+  }
+  const results = new Map<string, { record: JsonRecord; call: JsonRecord; output: string } | undefined>();
+  for (const [position, record] of records.entries()) {
+    if (record.type !== "user" || visibleUserPrompt(record) || isSystemPromptRecord(record)
+      || record.isSidechain === true || record.isMeta === true
+      || record.isCompactSummary === true || record.isVisibleInTranscriptOnly === true) continue;
+    const message = isRecord(record.message) ? record.message : undefined;
+    if (message?.role !== "user" || !Array.isArray(message.content)) continue;
+    const parentUuid = stringValue(record.parentUuid) ?? stringValue(record.parent_uuid);
+    const parent = parentUuid ? recordsByUuid.get(parentUuid) : undefined;
+    if (!parent) continue;
+    const resultBranch = promptBranch(parent, recordsByUuid);
+    for (const block of message.content) {
+      if (!isRecord(block) || block.type !== "tool_result") continue;
+      const callId = stringValue(block.tool_use_id);
+      const call = callId ? calls.get(callId) : undefined;
+      if (!callId || !call || (!selectedRecords.has(record)
+        && (positions.get(call) ?? position) >= position)) continue;
+      const callIndex = resultBranch.records.indexOf(call);
+      if (resultBranch.ambiguous || callIndex < 0
+        || resultBranch.records[resultBranch.records.length - 1] !== branch.records[branch.records.length - 1]
+        || resultBranch.records.slice(0, callIndex).some((ancestor) => (
+          ancestor.isSidechain === true || ancestor.isMeta === true
+          || ancestor.isCompactSummary === true || ancestor.isVisibleInTranscriptOnly === true
+          || (ancestor.type === "assistant" && !selectedRecords.has(ancestor))
+        ))) continue;
+      const uuid = stringValue(record.uuid);
+      if (uuid && recordsByUuid.has(uuid) && !recordsByUuid.get(uuid)) {
+        results.set(callId, undefined);
+        continue;
+      }
+      const output = codingToolOutputText(typeof block.is_error === "boolean"
+        ? { content: block.content, is_error: block.is_error } : block.content);
+      if (!results.has(callId)) results.set(callId, { record, call, output });
+      else {
+        const previous = results.get(callId);
+        if (previous?.output !== output) results.set(callId, undefined);
+        else if (selectedRecords.has(record) && !selectedRecords.has(previous.record)) {
+          results.set(callId, { record, call, output });
+        }
+      }
+    }
+  }
+  return results;
 }
 
 function archiveMessageTextBlocks(record: JsonRecord): string[] {
