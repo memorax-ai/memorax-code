@@ -1,0 +1,29 @@
+{
+  "cursor": {
+    "version": "3.21.18",
+    "source": "https://cursor.com/download",
+    "hashSource": "observed-sha256",
+    "observedAt": "2026-10-05",
+    "arm64": {
+      "debVersion": "3.21.18-1790045802",
+      "url": "https://downloads.cursor.com/production/c4730f7d93d787d9ab120af715999f0345ee5bc5/linux/arm64/deb/arm64/deb/cursor_3.21.18_arm64.deb",
+      "sha256": "d502d6a0dccc1472a5cec896b9526aace5e3dde8ba42775397f4366539ffc459"
+    },
+    "amd64": {
+      "debVersion": "3.21.18-1790045713",
+      "url": "https://downloads.cursor.com/production/c4730f7d93d787d9ab120af715999f0345ee5bc5/linux/x64/deb/amd64/deb/cursor_3.21.18_amd64.deb",
+      "sha256": "6966b4a4082b802d10e985b8228d428020690b2ca43d6d1d74c10a0703d1e1b1"
+    }
+  },
+  "seccomp": {
+    "source": "https://github.com/microsoft/playwright/blob/v1.58.2/utils/docker/seccomp_profile.json",
+    "upstreamSha256": "cc3e61cabda6bbc1e53e54d27ba4d55a9d3be829b6dd1a596f4a7b31b1cc7849",
+    "sha256": "4debb487d48531ac6604095194719d8a2f6d939fbb6200bed9df90e7b255dac8",
+    "difference": "Add chroot to the existing clone, setns and unshare allowance for Chromium's unprivileged user-namespace sandbox. Runtime capabilities remain empty."
+  },
+  "baseImages": {
+    "22": "node:22-bookworm@sha256:363e1587494626837fa7f9a23bdb453d13b0ff3c67c705c2805cfc69c2d2fad7",
+    "24": "node:24-bookworm@sha256:64af3819f9275802414d7cdc38c27e9d82bd564dec4d4da87d008255d36c63b4"
+  },
+  "playwrightVersion": "1.58.2"
+}

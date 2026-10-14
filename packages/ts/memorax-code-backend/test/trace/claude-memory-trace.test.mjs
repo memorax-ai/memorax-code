@@ -16,6 +16,9 @@ import {
 } from "../../dist/trace/config.js";
 import {
   traceContextFromClaudeHookBody,
+  traceContextFromCurrentTurnRecord,
+  traceContextFromCursorHookBody,
+  traceContextJson,
   traceContextFromOpenCodeHookBody,
 } from "../../dist/trace/context.js";
 import {
@@ -141,6 +144,28 @@ test("OpenCode Hook trace context maps SDK message identity", () => {
   });
 });
 
+test("Cursor trace and current-turn paths preserve native whitespace", () => {
+  const capturedAt = "2026-09-21T00:00:00.000Z";
+  const context = {
+    schemaVersion: "1", client: "cursor", sessionId: "cursor-session", turnId: "cursor-turn",
+    cwd: "/cursor-project ", transcriptPath: "/cursor-transcript.jsonl ",
+    contextOrigin: "cursor-hook-body", capturedAt,
+  };
+  for (const body of [
+    { client: "cursor", sessionId: context.sessionId, turnId: context.turnId,
+      cwd: context.cwd, transcriptPath: context.transcriptPath },
+    { conversation_id: context.sessionId, generation_id: context.turnId,
+      cwd: context.cwd, transcript_path: context.transcriptPath },
+  ]) {
+    assert.deepEqual(traceContextFromCursorHookBody(body, capturedAt), context);
+  }
+  for (const trace of [context, traceContextJson(context)]) {
+    assert.deepEqual(traceContextFromCurrentTurnRecord({ trace }), {
+      ...context, contextOrigin: "current-turn-file",
+    });
+  }
+});
+
 test("trace store isolates Codex, Claude, and OpenCode sessions with the same id", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-client-trace-isolation-"));
   const sessionId = "shared-session";
@@ -164,8 +189,8 @@ test("trace store isolates Codex, Claude, and OpenCode sessions with the same id
         memoraxCodeHome: root,
         traceContext: claude,
         type: "memory_retrieve",
-        source: "claude_hook_retrieval",
-        operation: "retrieve",
+        source: "memory_cli",
+        operation: "query",
         ok: true,
         request: { query: "claude query" },
       }),
@@ -173,8 +198,8 @@ test("trace store isolates Codex, Claude, and OpenCode sessions with the same id
         memoraxCodeHome: root,
         traceContext: codex,
         type: "memory_retrieve",
-        source: "codex_hook_retrieval",
-        operation: "retrieve",
+        source: "memory_cli",
+        operation: "query",
         ok: true,
         request: { query: "codex query" },
       }),
@@ -182,8 +207,8 @@ test("trace store isolates Codex, Claude, and OpenCode sessions with the same id
         memoraxCodeHome: root,
         traceContext: opencode,
         type: "memory_retrieve",
-        source: "opencode_plugin_retrieval",
-        operation: "retrieve",
+        source: "memory_cli",
+        operation: "query",
         ok: true,
         request: { query: "opencode query" },
       }),

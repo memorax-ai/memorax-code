@@ -1,8 +1,14 @@
-import { executeUserProfile, PREFERENCE_TYPES, StorageError, type UserProfileCommand } from "./user-profile.js";
+import {
+  defaultUserProfileHome,
+  executeUserProfile,
+  PREFERENCE_TYPES,
+  StorageError,
+  type UserProfileCommand,
+} from "./user-profile.js";
 
 class UsageError extends Error {}
 
-const COMMON_OPTIONS = ["repo"];
+const COMMON_OPTIONS = ["home"];
 const COMMAND_OPTIONS: Record<string, string[]> = {
   add: ["type", "description", "applies-when", "do-not-apply-when"],
   update: ["id", "description", "applies-when", "do-not-apply-when"],
@@ -12,14 +18,14 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
 
 function usage(command?: string): string {
   const commands: Record<string, string> = {
-    add: "add [--repo <repo>] --type <communication|workflow|environment|profile> --description <text> --applies-when <text> [--do-not-apply-when <text>]",
-    update: "update [--repo <repo>] --id <id> --description <text> [--applies-when <text>] [--do-not-apply-when <text>]",
-    delete: "delete [--repo <repo>] --id <id>",
-    list: "list [--repo <repo>]",
+    add: "add [--home <dir>] --type <communication|workflow|environment|profile> --description <text> --applies-when <text> [--do-not-apply-when <text>]",
+    update: "update [--home <dir>] --id <id> --description <text> [--applies-when <text>] [--do-not-apply-when <text>]",
+    delete: "delete [--home <dir>] --id <id>",
+    list: "list [--home <dir>]",
   };
   return command && Object.hasOwn(commands, command)
     ? `Usage: memorax-code user-profile ${commands[command]}\n`
-    : `Usage: memorax-code user-profile <add|update|delete|list> [options]\n\nManage repo-scoped user profile preferences.\n`;
+    : `Usage: memorax-code user-profile <add|update|delete|list> [options]\n\nManage global user profile preferences.\n`;
 }
 
 function parseCommand(args: string[]): UserProfileCommand {
@@ -48,11 +54,11 @@ function parseCommand(args: string[]): UserProfileCommand {
     if (value === undefined) throw new UsageError(`the following argument is required: --${name}`);
     return value;
   };
-  const repo = values.get("repo") ?? ".";
-  if (command === "list") return { command, repo };
-  if (command === "delete") return { command, repo, id: required("id") };
+  const home = values.get("home") ?? defaultUserProfileHome();
+  if (command === "list") return { command, home };
+  if (command === "delete") return { command, home, id: required("id") };
   if (command === "update") return {
-    command, repo, id: required("id"), description: required("description"),
+    command, home, id: required("id"), description: required("description"),
     appliesWhen: values.get("applies-when"), doNotApplyWhen: values.get("do-not-apply-when"),
   };
   const type = required("type");
@@ -60,7 +66,7 @@ function parseCommand(args: string[]): UserProfileCommand {
     throw new UsageError(`argument --type: invalid choice: '${type}'`);
   }
   return {
-    command: "add", repo, type: type as typeof PREFERENCE_TYPES[number], description: required("description"),
+    command: "add", home, type: type as typeof PREFERENCE_TYPES[number], description: required("description"),
     appliesWhen: required("applies-when"), doNotApplyWhen: values.get("do-not-apply-when") ?? "",
   };
 }

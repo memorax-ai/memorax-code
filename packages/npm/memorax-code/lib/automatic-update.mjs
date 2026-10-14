@@ -69,11 +69,12 @@ export async function runAutomaticUpdate(options) {
       env: { ...env, MEMORAX_CODE_AUTOMATIC_UPDATE_PROCESS: "1" },
       stdio: "ignore",
     }),
-    reconcile: async (targetVersion) => await runAutomaticSetup({
+    reconcile: async (targetVersion, setupOptions) => await runAutomaticSetup({
       env,
       memoraxCodeHome,
       packageRoot,
       targetVersion,
+      reuseRestoredBackend: setupOptions?.reuseRestoredBackend === true,
     }),
   });
 }
@@ -142,15 +143,16 @@ export async function runAutomaticUpdateCore(options) {
 
       let effectiveVersion = installedVersion;
       let updated = false;
+      let installResult;
       if (targetVersion !== installedVersion) {
         let installed = false;
         let failure;
         try {
-          const result = await installVersion(targetVersion);
-          installed = result === true || result?.exitCode === 0;
+          installResult = await installVersion(targetVersion);
+          installed = installResult === true || installResult?.exitCode === 0;
           if (!installed) {
-            failure = result?.failure;
-            if (typeof result?.installedVersion === "string") effectiveVersion = result.installedVersion;
+            failure = installResult?.failure;
+            if (typeof installResult?.installedVersion === "string") effectiveVersion = installResult.installedVersion;
           }
         } catch (error) {
           failure = error;
@@ -169,7 +171,9 @@ export async function runAutomaticUpdateCore(options) {
         let reconciled = false;
         let failure;
         try {
-          reconciled = await reconcile(effectiveVersion) === true;
+          reconciled = await reconcile(effectiveVersion, {
+            reuseRestoredBackend: installResult?.restored === true,
+          }) === true;
         } catch (error) {
           failure = error;
         }
@@ -225,7 +229,7 @@ function resolveTargetVersion({ channel, env, packageName }) {
   return version;
 }
 
-export async function runAutomaticSetup({ env, memoraxCodeHome, packageRoot, targetVersion }) {
+export async function runAutomaticSetup({ env, memoraxCodeHome, packageRoot, targetVersion, reuseRestoredBackend = false }) {
   const children = new Map();
   let childFailed = false;
   let stage = "setup_state";
@@ -241,6 +245,7 @@ export async function runAutomaticSetup({ env, memoraxCodeHome, packageRoot, tar
         MEMORAX_CODE_HOME: memoraxCodeHome,
         MEMORAX_CODE_SETUP_AUTOMATIC_UPDATE: "1",
         MEMORAX_CODE_SETUP_UPDATE: "1",
+        MEMORAX_CODE_SETUP_REUSE_RESTORED_BACKEND: reuseRestoredBackend ? "1" : "0",
       };
       delete setupEnv.MEMORAX_CODE_SETUP_MODE;
       let result;

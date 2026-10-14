@@ -96,13 +96,13 @@ export function printSetupClientDiagnostics(report, write = console.error) {
   return printed;
 }
 
-const CLIENTS = new Set(["codex", "claude", "dsh", "opencode", "codebuddy", "workbuddy", "trae"]);
+const CLIENTS = new Set(["codex", "claude", "dsh", "opencode", "codebuddy", "workbuddy", "trae", "cursor"]);
 
 // The updater consumes this projection over its private child-process channel.
 // Never trust free-form summaries or arbitrary metadata from a child message.
 export function projectSetupFailure(value) {
   if (value?.source !== "memorax-code-setup" || value.operation !== "setup") return undefined;
-  const configStages = ["read", "parse_existing", "transform", "parse_candidate", "prepare_directory", "check_permissions", "write_temp", "backup", "publish", "verify", "cleanup"];
+  const configStages = ["lock", "unlock", "read", "parse_existing", "transform", "parse_candidate", "prepare_directory", "check_permissions", "write_temp", "backup", "publish", "verify", "cleanup"];
   const credentialStages = ["credential_lock", "credential_load", "identity", "credential_create", "provision", "credential_complete", "retry", "unknown"];
   const credentialCodes = ["TRIAL_SETUP_FAILED", "TRIAL_PROVISION_CLIENT_FAILED", "TRIAL_PROVISION_FLOW_FAILED", "TRIAL_CREDENTIAL_BACKEND_ERROR", "TRIAL_CREDENTIAL_RECORD_INVALID", "JSON_FILE_LOCK_TIMEOUT", "JSON_FILE_LOCK_RELEASE_FAILED"];
   let kind = Object.keys(FAILURES).find((key) => FAILURES[key][0] === value.stage && FAILURES[key][1] === value.errorCode);
@@ -127,7 +127,7 @@ export function projectSetupFailure(value) {
   if (["SIGTERM", "SIGKILL", "SIGINT", "SIGABRT"].includes(value.commandSignal)) fields.commandSignal = value.commandSignal;
   if (Number.isInteger(value.httpStatus) && value.httpStatus >= 100 && value.httpStatus <= 599) fields.httpStatus = value.httpStatus;
   if (Number.isFinite(value.retryAfterMs) && value.retryAfterMs >= 0 && value.retryAfterMs <= 3_600_000) fields.retryAfterMs = value.retryAfterMs;
-  if (["CONFIG_CLEANUP_FAILED", "CONFIG_ROLLBACK_FAILED", "JSON_FILE_LOCK_RELEASE_FAILED"].includes(value.cleanupErrorCode)) {
+  if (["CONFIG_CLEANUP_FAILED", "CONFIG_ROLLBACK_FAILED", "CONFIG_LOCK_RELEASE_FAILED", "JSON_FILE_LOCK_RELEASE_FAILED"].includes(value.cleanupErrorCode)) {
     fields.cleanupErrorCode = value.cleanupErrorCode;
     if (SYSTEM_CODES.has(value.cleanupSystemCode)) fields.cleanupSystemCode = value.cleanupSystemCode;
   }

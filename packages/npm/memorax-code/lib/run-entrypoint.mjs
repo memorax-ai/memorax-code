@@ -117,6 +117,12 @@ export async function runTraeAdapterCli() {
   await import(pathToFileURL(entrypoint).href);
 }
 
+export async function runCursorAdapterCli() {
+  if (!ensureSupportedNodeRuntime()) return;
+  const entrypoint = join(packageRoot, "lib", "memorax-code-cursor-adapter", "src", "cli.mjs");
+  await import(pathToFileURL(entrypoint).href);
+}
+
 function ensureSupportedNodeRuntime() {
   const message = unsupportedNodeVersionMessage();
   if (!message) return true;

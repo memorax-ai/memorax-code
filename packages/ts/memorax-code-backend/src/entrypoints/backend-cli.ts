@@ -59,6 +59,7 @@ import {
   summarizeAdapterReport,
 } from "../lifecycle/client-reports.js";
 import { backendEnv } from "../config/backend-env.js";
+import { jevConfigStatus } from "../provider/jev/config.js";
 import {
   backendServiceHome,
   BackendLifecycleLockError,
@@ -87,7 +88,7 @@ export function runBackendCli(argv = process.argv): void {
       `Usage: ${usageName} [${commands}] [--backend-url URL] [--backend-token TOKEN] [--home DIR]`,
       "[--host HOST] [--port PORT] [--rotate] [--show]",
       "[--codex-command CMD]",
-      "[--codex-home DIR] [--claude-home DIR] [--dsh-home DIR] [--opencode-config-dir DIR] [--codebuddy-home DIR] [--workbuddy-home DIR] [--trae-home DIR]",
+      "[--codex-home DIR] [--claude-home DIR] [--dsh-home DIR] [--opencode-config-dir DIR] [--codebuddy-home DIR] [--workbuddy-home DIR] [--trae-home DIR] [--cursor-home DIR]",
       "[--dsh-command CMD] [--dsh-adapter-root DIR] [--memorax-code-command CMD]",
       `[--clients ${LIFECYCLE_CLIENTS.map(({ id }) => id).join("|")}|CLIENT,...|all|none]`,
       "[--json]",
@@ -265,6 +266,7 @@ async function startRawBackendServer(
         codeBuddyHome: argValue(argv, "--codebuddy-home"),
         workBuddyHome: argValue(argv, "--workbuddy-home"),
         traeHome: argValue(argv, "--trae-home"),
+        cursorHome: argValue(argv, "--cursor-home"),
         codexCommand: argValue(argv, "--codex-command"),
         claudeCommand: argValue(argv, "--claude-command"),
         dshCommand: argValue(argv, "--dsh-command"),
@@ -468,6 +470,7 @@ async function runCodexPluginCommand(argv: string[]): Promise<CodexPluginCommand
   if (subcommand === "activate") {
     return await activateCodexPlugin({
       codexHome: argValue(argv, "--codex-home"),
+      memoraxCodeHome: argValue(argv, "--home"),
       marketplacePath: argValue(argv, "--marketplace-path"),
       pluginSourcePath: argValue(argv, "--plugin-source-path"),
       codexCommand: argValue(argv, "--codex-command"),
@@ -503,6 +506,7 @@ async function runCodexPluginCommand(argv: string[]): Promise<CodexPluginCommand
   if (subcommand !== "install") throw new Error(`memorax-code codex-plugin: unknown command '${subcommand}'. Run 'memorax-code --help' for usage.`);
   return await installCodexPlugin({
     codexHome: argValue(argv, "--codex-home"),
+    memoraxCodeHome: argValue(argv, "--home"),
     marketplacePath: argValue(argv, "--marketplace-path"),
     pluginSourcePath: argValue(argv, "--plugin-source-path"),
     codexCommand: argValue(argv, "--codex-command"),
@@ -587,6 +591,15 @@ export function printMemoraxCodeStatus(report: MemoraxCodeStatusReport): void {
   if (backend.service) backendLog(`Backend service: ${backend.service}`);
   if (typeof backend.authRequired === "boolean") backendLog(`Client auth: ${backend.authRequired ? "required" : "not required"}`);
   printAdapterReports(report, true);
+  if (report.jev) {
+    const detail = {
+      disabled: "disabled",
+      missing_key: "enabled; API key missing",
+      configured: "configured (API key not validated)",
+      invalid_config: "invalid configuration; Jev calls disabled",
+    }[report.jev.state];
+    backendLog(`Jev configuration: ${detail}`);
+  }
   if (!suppressBackendGuidance()) {
     for (const line of statusGuidance(report)) backendLog(line);
   }
@@ -709,6 +722,7 @@ function backendConnectionStatusFailure(
   return {
     ok: false,
     action: "status",
+    jev: jevConfigStatus({ ...process.env, MEMORAX_CODE_HOME: backendServiceHome(serviceOptions) }),
     backend: {
       ok: false,
       url: state?.url ?? "",

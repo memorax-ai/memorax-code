@@ -498,7 +498,7 @@ function isolatedEnv(stateHome) {
     XDG_STATE_HOME: join(userHome, ".local", "state"), XDG_CACHE_HOME: join(userHome, ".cache"),
     MEMORAX_CODE_HOME: stateHome, MEMORAX_CODE_AUTO_UPDATE: "false", MEMORAX_CODE_INSTALL_WATCHDOG: "0",
     MEMORAX_CODE_BACKEND_TOKEN: backendToken, MEMORAX_CODE_BACKEND_LOOPBACK_AUTH: "1",
-    MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED: "false", MEMORAX_CODE_MEMORY_WRITEBACK_ENABLED: "false",
+    MEMORAX_CODE_MEMORY_WRITEBACK_ENABLED: "false",
     CODEX_HOME: join(userHome, ".codex"), DSH_HOME: join(userHome, ".dsh"),
     CLAUDE_CONFIG_DIR: join(userHome, ".claude"), CLAUDE_HOME: join(userHome, ".claude"),
     OPENCODE_CONFIG_DIR: join(userHome, ".config", "opencode"),

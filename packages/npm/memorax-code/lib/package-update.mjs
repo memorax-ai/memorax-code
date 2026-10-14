@@ -6,6 +6,7 @@ import { readPackageRecoveryRevision } from "./memorax-code-adapter-common/src/p
 import { runNpmCommand } from "./npm-invocation.mjs";
 import {
   assertNoPendingPackageTransition,
+  consumePackageRestoreMarker,
   readPackageTransitionRecord,
   runNpmPostinstallPackageTransition,
 } from "./package-transition.mjs";
@@ -28,6 +29,7 @@ export async function installPackageUpdate(options) {
       stage = "recovery_authority";
       const env = { ...options.env, MEMORAX_CODE_HOME: memoraxCodeHome,
         MEMORAX_CODE_PACKAGE_TRANSITION_ID: transitionId,
+        MEMORAX_CODE_PACKAGE_UPDATE_PARENT: "1",
         MEMORAX_CODE_PACKAGE_STOP_REVISION: readPackageRecoveryRevision(memoraxCodeHome) };
       let result;
       let failure;
@@ -48,9 +50,11 @@ export async function installPackageUpdate(options) {
         result = { ...result, exitCode: 1 };
       }
       if (result.exitCode === 0) {
+        const restored = consumePackageRestoreMarker(memoraxCodeHome, transitionId);
         stage = "install_lock";
-        return { ...result, installedVersion };
+        return { ...result, installedVersion, restored };
       }
+      consumePackageRestoreMarker(memoraxCodeHome, transitionId);
       const transition = readPackageTransitionRecord(memoraxCodeHome);
       const owned = transition.status === "valid" && transition.record.transitionId === transitionId;
       failure.installedVersion = installedVersion;

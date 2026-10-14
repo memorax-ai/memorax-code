@@ -11,7 +11,6 @@ const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../pack
 const builderSkillRoot = join(packageRoot, "skills", "memorax-code");
 const repoMemoryScript = join(builderSkillRoot, "scripts", "repo-memory.mjs");
 const defaultsPath = join(builderSkillRoot, "defaults.json");
-const userProfileScript = join(packageRoot, "skills", "memorax-code", "scripts", "user-profile-memory.mjs");
 
 function runGit(cwd, args) {
   const result = spawnSync(
@@ -582,7 +581,7 @@ test("memorax-code routes repo-build to app-neutral guidance", () => {
   const skill = readFileSync(join(builderSkillRoot, "references", "repo-build.md"), "utf8");
   const router = readFileSync(join(builderSkillRoot, "SKILL.md"), "utf8");
 
-  assert.match(router, /single router for persistent coding and repository-local\s+memory/);
+  assert.match(router, /single router for persistent coding, repository-local,\s+and user-global personal memory/);
   assert.match(router, /### Repo Memory/);
   assert.match(router, /references\/repo-build\.md/);
   assert.match(skill, /first-time creation, full rebuilds, or full refreshes/);
@@ -738,29 +737,14 @@ test("collect-all requires --reuse and preserves unknown files in an existing .r
   }
 });
 
-test("repo-memory prepare allows a user-profile-only .repo_memory sidecar", () => {
+test("repo-memory prepare leaves a legacy user-profile-only .repo_memory sidecar untouched", () => {
   const root = mkdtempSync(join(tmpdir(), "memorax-code-repo-memory-user-profile-sidecar."));
   try {
     const { repo, bin } = createRepoFixture(root);
 
-    const profile = spawnSync(process.execPath, [
-      userProfileScript,
-      "add",
-      "--repo",
-      repo,
-      "--type",
-      "communication",
-      "--description",
-      "User prefers concise Chinese answers in this repository.",
-      "--applies-when",
-      "Answering repo-local questions.",
-    ], {
-      cwd: packageRoot,
-      encoding: "utf8",
-      env: { ...providerFixtureEnv(bin) },
-    });
-    assert.equal(profile.status, 0, profile.stderr || profile.stdout);
     const profilePath = join(repo, ".repo_memory", "user-profile", "preferences.md");
+    mkdirSync(dirname(profilePath), { recursive: true });
+    writeFileSync(profilePath, "# Legacy personal memory remains untouched.\n");
     const originalProfile = readFileSync(profilePath);
 
     const prepared = spawnSync(process.execPath, [repoMemoryScript, "prepare", repo], {

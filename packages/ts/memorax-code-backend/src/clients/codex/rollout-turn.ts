@@ -387,7 +387,9 @@ function scanCodexRolloutTurn(
         let codingItem: ResponseItem | undefined;
         if (captureCodingItems) {
           const responseTurnId = responseItemTurnId(payload);
-          if (responseTurnId && responseTurnId !== activeTurnId) {
+          // Assistant passthrough metadata does not replace the local Turn boundary.
+          if (responseTurnId && responseTurnId !== activeTurnId
+            && !(payload.type === "message" && payload.role === "assistant")) {
             turnMetadataMismatch = true;
             continue;
           }
@@ -405,7 +407,9 @@ function scanCodexRolloutTurn(
             || (role === "assistant" && payload.phase === "final_answer");
           if (authoritativeMessage && message) {
             const responseTurnId = responseItemTurnId(payload);
-            if (responseTurnId && responseTurnId !== activeTurnId) {
+            // Assistant metadata may retain a provider turn ID. The local rollout
+            // boundary determines its Turn; user message IDs must still match.
+            if (role === "user" && responseTurnId && responseTurnId !== activeTurnId) {
               turnMetadataMismatch = true;
               continue;
             }

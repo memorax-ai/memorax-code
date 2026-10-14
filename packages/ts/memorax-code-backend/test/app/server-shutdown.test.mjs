@@ -183,7 +183,6 @@ test("Backend shutdown flushes a pending writeback before exit", { concurrency: 
   ]);
   const restoreEnv = withEnv({
     MEMORAX_CODE_CODEX_TRACE_ENABLED: "false",
-    MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED: "false",
     MEMORAX_CODE_MEMORY_WRITEBACK_ENABLED: "true",
     MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_ENABLED: "true",
     MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_MAX_TURNS: "8",

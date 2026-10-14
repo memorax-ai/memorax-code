@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
 import { pathToFileURL } from "node:url";
+import { createSkillReminderCommand } from "../src/protocol.mjs";
 
 const runtimeRoot = mkdtempSync(join(tmpdir(), "memorax-code-dsh-http-client-"));
 after(() => rmSync(runtimeRoot, { recursive: true, force: true }));
@@ -32,21 +33,27 @@ test("DSH Backend requests resolve current connection authority for each command
   const command = { version: 1, client: "dsh", sessionId: "session-1", turn: 1 };
   assert.deepEqual(await client.recordTurnStart(command), { ok: true });
   connection = { url: "http://127.0.0.1:8788", token: "rotated-test-token" };
-  await client.recordSkillReminder(command);
+  await client.evaluateSearchGuidance(command);
+  const reminder = createSkillReminderCommand({
+    sessionId: "session-1", turn: 1, cwd: "/workspace/project",
+    content: "Search guidance", triggers: ["search_guidance"],
+  });
+  await client.recordSkillReminder(reminder);
   await client.writebackTurn(command);
   assert.deepEqual(requests.map(({ url }) => url), [
     "http://127.0.0.1:8787/memory/turn-start",
+    "http://127.0.0.1:8788/memory/search-guidance",
     "http://127.0.0.1:8788/memory/skill-reminder",
     "http://127.0.0.1:8788/memory/writeback",
   ]);
   assert.deepEqual(requests.map(({ options }) => options.headers["x-memorax-code-backend-token"]), [
-    "first-test-token", "rotated-test-token", "rotated-test-token",
+    "first-test-token", "rotated-test-token", "rotated-test-token", "rotated-test-token",
   ]);
-  assert.deepEqual(requests.map(({ options }) => JSON.parse(options.body)), [command, command, command]);
+  assert.deepEqual(requests.map(({ options }) => JSON.parse(options.body)), [command, command, reminder, command]);
 });
 
 test("DSH Backend client retains caller cancellation for every command", async () => {
-  for (const method of ["recordTurnStart", "recordSkillReminder", "writebackTurn"]) {
+  for (const method of ["recordTurnStart", "evaluateSearchGuidance", "recordSkillReminder", "writebackTurn"]) {
     const controller = new AbortController();
     const reason = new Error("native DSH turn cancelled");
     let requestSignal;

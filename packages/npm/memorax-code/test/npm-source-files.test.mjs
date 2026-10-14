@@ -48,3 +48,10 @@ test("Codex plugin assets are declared npm source trees", () => {
     && mapping.destination === "lib/memorax-code-codex-adapter/assets"
   )));
 });
+
+test("Cursor native Repo Memory agent is a declared npm source tree", () => {
+  assert.ok(npmMainSourceTrees.some((mapping) => (
+    mapping.source === "packages/ts/memorax-code-cursor-adapter/agents"
+    && mapping.destination === "lib/memorax-code-cursor-adapter/agents"
+  )));
+});

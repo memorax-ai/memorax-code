@@ -118,6 +118,21 @@ test("Hook dispatch failures record one safe diagnostic with Debug off and prese
   assert.equal((await commandDiagnostics()).length, 1);
 });
 
+test("Cursor pre-compact transport failures retain their operation in diagnostics", async () => {
+  const response = new Response(null, { status: 409 });
+  const result = await postBackendCommand({
+    ...command,
+    path: "/memory/pre-compact",
+    body: { version: 1, client: "cursor", sessionId: "session-1", turnId: "turn-1" },
+    fetchImpl: async () => response,
+  });
+  assert.equal(result, response);
+  const [record] = await commandDiagnostics();
+  assert.equal(record.errorCode, "HOOK_BACKEND_HTTP_REJECTED");
+  assert.equal(record.client, "cursor");
+  assert.equal(record.operation, "memory.pre-compact");
+});
+
 test("Hook transport records only safe system information and preserves the original exception", async () => {
   const failure = Object.assign(new Error("secret request payload and /private/file"), { cause: { code: "ECONNREFUSED" } });
   await assert.rejects(postBackendCommand({ ...command, fetchImpl: async () => { throw failure; } }), (error) => error === failure);

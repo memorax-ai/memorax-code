@@ -15,6 +15,9 @@ try {
   const metadata = readCodeBuddyPackageMetadata(pluginRoot);
   const client = codeBuddyMetadataClient(metadata) ?? "codebuddy";
   if (metadata?.client !== undefined && metadata.client !== client) throw new Error("invalid CodeBuddy adapter client");
+  // Neither native runtime may reuse the foreground client's listening endpoint.
+  delete process.env.SERVER__PORT;
+  delete process.env.SERVER__HOST;
   if (typeof metadata?.codeBuddyHome === "string" && metadata.codeBuddyHome.trim()) {
     process.env.CODEBUDDY_HOME = metadata.codeBuddyHome;
     process.env.CODEBUDDY_CONFIG_DIR = metadata.codeBuddyHome;
@@ -43,6 +46,8 @@ try {
         "text",
         "--dangerously-skip-permissions",
         "--no-session-persistence",
+        "--effort",
+        "medium",
         prompt,
       ];
     },

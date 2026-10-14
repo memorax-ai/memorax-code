@@ -1,16 +1,16 @@
 ---
-schema: "repo_user_profile_memory.v0.1"
-scope: "repo"
-owner: "repo-user-profile-memory"
+schema: "user_profile_memory.v0.1"
+scope: "user"
+owner: "user-profile-memory"
 trust_state: "user_stated"
 updated_at: "2026-07-10T10:00:00.000Z"
 active_count: 1
 total_count: 2
 ---
 
-# Repo-Scoped User Profile And Preferences
+# User Profile And Preferences
 
-These memories are local to this repository. System, developer, and AGENTS.md instructions override current user instructions, and current user instructions override stored preferences. Do not treat these preferences as evidence about current code behavior.
+These memories are global to the user. System, developer, and AGENTS.md instructions override current user instructions, and current user instructions override stored preferences. Do not treat these preferences as evidence about current code behavior.
 
 ## Active Preferences
 

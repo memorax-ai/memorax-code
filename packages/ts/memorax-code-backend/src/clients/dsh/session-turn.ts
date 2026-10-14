@@ -8,6 +8,7 @@ export type DshSessionTurn = Readonly<{
   endSeq: number;
   userPrompt: string;
   assistantReply: string;
+  finalAssistantReply: string;
   userTimestamp?: number;
   assistantTimestamp?: number;
   outcome: string;
@@ -264,6 +265,7 @@ export function dshSessionEventTurn(input: DshSessionTurnInput): DshSessionTurnR
       endSeq: input.endSeq,
       userPrompt,
       assistantReply,
+      finalAssistantReply: assistantParts.at(-1)!.trim(),
       ...(userTimestamp !== undefined ? { userTimestamp } : {}),
       ...(assistantTimestamp !== undefined ? { assistantTimestamp } : {}),
       outcome,

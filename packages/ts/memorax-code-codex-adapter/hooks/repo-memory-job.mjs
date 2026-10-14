@@ -25,6 +25,8 @@ try {
         repo,
         "--sandbox",
         "danger-full-access",
+        "--config",
+        'model_reasoning_effort="medium"',
         "--output-last-message",
         finalMessagePath,
         prompt,

@@ -138,7 +138,7 @@ function record(value) {
 
 function skillReminderTriggers(value) {
   if (!Array.isArray(value) || value.length === 0
-    || value.some((trigger) => trigger !== "cadence" && trigger !== "post_compaction")) {
+    || value.some((trigger) => !["cadence", "post_compaction", "search_guidance"].includes(trigger))) {
     throw new TypeError("DSH triggers must be a non-empty array of supported reminder triggers");
   }
   return [...new Set(value)];

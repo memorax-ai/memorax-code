@@ -1,6 +1,6 @@
 import { postBackendCommand } from "../memorax-code-adapter-common/src/backend-command.mjs";
 
-const RETRIEVAL_BACKEND_TIMEOUT_MS = 12_000;
+const TURN_START_BACKEND_TIMEOUT_MS = 12_000;
 const DEFAULT_BACKEND_TIMEOUT_MS = 5_000;
 
 /** Create the narrow Backend port consumed by the Cordis plugin. */
@@ -17,6 +17,9 @@ export function createHttpBackendClient(options) {
     recordTurnStart(command, request = {}) {
       return post("/memory/turn-start", command, request.signal);
     },
+    evaluateSearchGuidance(command, request = {}) {
+      return post("/memory/search-guidance", command, request.signal);
+    },
     recordSkillReminder(command, request = {}) {
       return post("/memory/skill-reminder", command, request.signal);
     },
@@ -27,9 +30,9 @@ export function createHttpBackendClient(options) {
 
   async function post(path, body, callerSignal) {
     const connection = resolveConnection();
-    const timeoutMs = positiveInteger(
+    const timeoutMs = path === "/memory/search-guidance" ? 3_000 : positiveInteger(
       env.MEMORAX_CODE_DSH_MEMORY_HOOK_TIMEOUT_MS,
-      path === "/memory/turn-start" ? RETRIEVAL_BACKEND_TIMEOUT_MS : DEFAULT_BACKEND_TIMEOUT_MS,
+      path === "/memory/turn-start" ? TURN_START_BACKEND_TIMEOUT_MS : DEFAULT_BACKEND_TIMEOUT_MS,
     );
     const response = await postBackendCommand({
       connection,

@@ -33,7 +33,7 @@
             "type": "command",
             "command": "node \"$PLUGIN_ROOT/hooks/runtime-hook.mjs\" memory-skill-reminder",
             "commandWindows": "node \"${PLUGIN_ROOT}/hooks/runtime-hook.mjs\" memory-skill-reminder",
-            "statusMessage": "Retrieving MemoraX Code memory and checking reminders",
+            "statusMessage": "Recording MemoraX Code turn and checking reminders",
             "timeout": 20
           }
         ]

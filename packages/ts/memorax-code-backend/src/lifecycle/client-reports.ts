@@ -9,6 +9,7 @@ export const LIFECYCLE_CLIENTS = [
   { id: "codebuddy", name: "CodeBuddy CLI", reportKey: "codebuddyAdapter", skillKey: "codebuddySkills", hookKey: "codebuddyHooks" },
   { id: "workbuddy", name: "WorkBuddy", reportKey: "workbuddyAdapter", skillKey: "codebuddySkills", hookKey: "codebuddyHooks" },
   { id: "trae", name: "Trae", reportKey: "traeAdapter", skillKey: "traeSkills", hookKey: "traeHooks" },
+  { id: "cursor", name: "Cursor", reportKey: "cursorAdapter", skillKey: "cursorSkills", hookKey: "cursorHooks" },
 ] as const;
 
 export type LifecycleClient = typeof LIFECYCLE_CLIENTS[number];

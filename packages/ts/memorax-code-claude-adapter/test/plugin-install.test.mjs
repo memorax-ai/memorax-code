@@ -44,6 +44,7 @@ test("Claude plugin lifecycle uses the official CLI with the selected config hom
     assert.equal(metadata.version, 1);
     assert.equal(metadata.memoraxCodeCommand, process.argv[1]);
     assert.equal(metadata.claudeCommand, claudeCommand);
+    assert.equal(metadata.memoraxCodeHome, memoraxCodeHome);
     assert.equal(metadata.npmExecPath, npmExecPath);
     await writeFile(join(claudeHome, "settings.json"), `${JSON.stringify({
       extraKnownMarketplaces: { "memorax-code-local": { source: { source: "directory", path: marketplacePath } } },
@@ -138,6 +139,49 @@ test("Claude plugin lifecycle resolves a Windows cmd shim without a shell", asyn
       ],
       ["plugin", "marketplace", "remove", "memorax-code-local"],
     ]);
+  } finally {
+    if (previousCli === undefined) delete process.env.MEMORAX_CODE_CLAUDE_CLI_JS;
+    else process.env.MEMORAX_CODE_CLAUDE_CLI_JS = previousCli;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Claude plugin install refreshes the personal-memory home while preserving a current shell", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-claude-plugin-memory-home-"));
+  const cli = join(root, "claude-cli.mjs");
+  const previousCli = process.env.MEMORAX_CODE_CLAUDE_CLI_JS;
+  const options = {
+    claudeHome: join(root, "claude"),
+    memoraxCodeHome: join(root, "first memory home"),
+    marketplacePath: join(root, "marketplace"),
+    claudeCommand: "claude",
+    windowsCliResolution: {
+      platform: "win32",
+      resolvedCommand: "C:\\npm prefix\\claude.cmd",
+      nodePath: process.execPath,
+      existsSync: (candidate) => candidate === cli,
+    },
+  };
+  try {
+    process.env.MEMORAX_CODE_CLAUDE_CLI_JS = cli;
+    await mkdir(join(options.marketplacePath, ".claude-plugin"), { recursive: true });
+    await writeFile(join(options.marketplacePath, ".claude-plugin", "marketplace.json"), "{}\n");
+    await writeFakeClaude(cli);
+    const installed = ensureClaudePluginInstalled(options);
+    assert.equal(installed.ok, true);
+    const metadataPath = join(installed.installPath, ".memorax-code-package.json");
+    assert.equal(JSON.parse(await readFile(metadataPath, "utf8")).memoraxCodeHome, options.memoraxCodeHome);
+
+    await rm(metadataPath);
+    for (const memoraxCodeHome of [options.memoraxCodeHome, join(root, "second memory home")]) {
+      const refreshed = ensureClaudePluginInstalled({ ...options, memoraxCodeHome });
+      assert.equal(refreshed.ok, true);
+      assert.equal(refreshed.shellUnchanged, true);
+      assert.equal(refreshed.restartRequired, false);
+      assert.equal(JSON.parse(await readFile(metadataPath, "utf8")).memoraxCodeHome, memoraxCodeHome);
+    }
+    const calls = (await readFile(join(root, "calls.jsonl"), "utf8")).trim().split("\n").map(JSON.parse);
+    assert.equal(calls.filter(({ args }) => args[0] === "plugin" && ["install", "update"].includes(args[1])).length, 1);
   } finally {
     if (previousCli === undefined) delete process.env.MEMORAX_CODE_CLAUDE_CLI_JS;
     else process.env.MEMORAX_CODE_CLAUDE_CLI_JS = previousCli;

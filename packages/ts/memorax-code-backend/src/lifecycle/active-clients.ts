@@ -22,6 +22,7 @@ export function readActiveManagedClients(memoraxCodeHome: string): ManagedClient
       ...(value.codebuddy === true ? { codebuddy: true } : {}),
       ...(typeof value.workbuddy === "boolean" ? { workbuddy: value.workbuddy } : {}),
       ...(value.trae === true ? { trae: true } : {}),
+      ...(value.cursor === true ? { cursor: true } : {}),
     };
   } catch {
     return undefined;

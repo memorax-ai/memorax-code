@@ -76,6 +76,7 @@ async function stageMainPackage(destination) {
     "lib/memorax-code-opencode-adapter",
     "lib/memorax-code-codebuddy-adapter",
     "lib/memorax-code-trae-adapter",
+    "lib/memorax-code-cursor-adapter",
   ]) {
     await mkdir(join(destination, path), { recursive: true });
   }
@@ -124,6 +125,10 @@ async function stageMainPackage(destination) {
   await copyFile(
     "packages/ts/memorax-code-trae-adapter/package.json",
     join(destination, "lib/memorax-code-trae-adapter/package.json"),
+  );
+  await copyFile(
+    "packages/ts/memorax-code-cursor-adapter/package.json",
+    join(destination, "lib/memorax-code-cursor-adapter/package.json"),
   );
 
   await buildClaudeMarketplace({

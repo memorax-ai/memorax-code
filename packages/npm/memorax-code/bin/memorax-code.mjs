@@ -233,7 +233,10 @@ async function runUpdateCommand(args) {
     console.error("memorax-code update: package updated; run `memorax-code setup` from a terminal to reconcile clients and verify Hook changes");
     return 0;
   }
-  return await runSetupCommand(["--home", memoraxCodeHome], { updateMode: true });
+  return await runSetupCommand(["--home", memoraxCodeHome], {
+    updateMode: true,
+    reuseRestoredBackend: npmResult.restored === true,
+  });
 }
 
 async function runUpdateRecoveryCommand(memoraxCodeHome) {
@@ -283,7 +286,7 @@ async function runAutomaticUpdateCommand({ pkg, memoraxCodeHome }) {
   }
 }
 
-async function runSetupCommand(args, { updateMode = false } = {}) {
+async function runSetupCommand(args, { updateMode = false, reuseRestoredBackend = false } = {}) {
   if (args.includes("--help") || args.includes("-h")) {
     printSetupHelp();
     return 0;
@@ -324,6 +327,7 @@ async function runSetupCommand(args, { updateMode = false } = {}) {
       }
       return await spawnSetupProcess(memoraxCodeHome, {
         updateMode,
+        reuseRestoredBackend,
         setupMode,
         apiKey,
       });
@@ -495,7 +499,12 @@ function hasReadyMemoraxConfiguration(memoraxCodeHome) {
   return !result.error && !result.signal && result.status === 0;
 }
 
-async function spawnSetupProcess(memoraxCodeHome, { updateMode = false, setupMode = "automatic", apiKey } = {}) {
+async function spawnSetupProcess(memoraxCodeHome, {
+  updateMode = false,
+  reuseRestoredBackend = false,
+  setupMode = "automatic",
+  apiKey,
+} = {}) {
   ensureNpmPackageRuntimeEnv();
   const env = {
     ...process.env,
@@ -503,7 +512,9 @@ async function spawnSetupProcess(memoraxCodeHome, { updateMode = false, setupMod
   };
   delete env.MEMORAX_CODE_SETUP_UPDATE;
   delete env.MEMORAX_CODE_SETUP_MODE;
+  delete env.MEMORAX_CODE_SETUP_REUSE_RESTORED_BACKEND;
   if (updateMode) env.MEMORAX_CODE_SETUP_UPDATE = "1";
+  if (reuseRestoredBackend) env.MEMORAX_CODE_SETUP_REUSE_RESTORED_BACKEND = "1";
   if (setupMode !== "automatic") env.MEMORAX_CODE_SETUP_MODE = setupMode;
   const child = spawn(process.execPath, [
     join(packageRoot(), "bin", "memorax-code-setup.mjs"),

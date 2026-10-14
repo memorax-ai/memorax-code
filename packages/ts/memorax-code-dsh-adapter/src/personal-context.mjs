@@ -7,10 +7,13 @@ const workerPath = fileURLToPath(new URL("./personal-context-worker.mjs", import
 
 /** Load local personal-memory context without blocking the resident DSH process. */
 export function loadDshPersonalContext(input, options = {}) {
-  const cwd = nonEmptyString(input?.cwd);
+  const memoraxCodeHome = nonEmptyString(input?.memoraxCodeHome)
+    ?? nonEmptyString(options.memoraxCodeHome)
+    ?? nonEmptyString(options.env?.MEMORAX_CODE_HOME)
+    ?? nonEmptyString(process.env.MEMORAX_CODE_HOME);
   const includeProfile = input?.includeProfile === true;
   const includeProcedure = input?.includeProcedure === true;
-  if (!cwd) throw new TypeError("DSH personal context requires cwd");
+  if (!memoraxCodeHome) throw new TypeError("DSH personal context requires memoraxCodeHome");
   if (!includeProfile && !includeProcedure) return Promise.resolve({});
 
   const signal = options.signal;
@@ -77,7 +80,7 @@ export function loadDshPersonalContext(input, options = {}) {
       }
     });
     child.stdin.once("error", (error) => terminate(error));
-    child.stdin.end(`${JSON.stringify({ cwd, includeProfile, includeProcedure })}\n`);
+    child.stdin.end(`${JSON.stringify({ memoraxCodeHome, includeProfile, includeProcedure })}\n`);
   });
 }
 

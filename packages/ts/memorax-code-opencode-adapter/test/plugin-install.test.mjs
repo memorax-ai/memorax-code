@@ -84,7 +84,7 @@ test("OpenCode plugin install materializes a managed loader, canonical skill, an
     assert.equal(await readFile(join(installed.skillPath, "references", "search.md"), "utf8"), "search\n");
     assert.deepEqual(
       JSON.parse(await readFile(join(installed.skillPath, ".memorax-code-package.json"), "utf8")),
-      { version: 1, memoraxCodeCommand: fixture.memoraxCodeCommand },
+      { version: 1, memoraxCodeHome: fixture.options.memoraxCodeHome, memoraxCodeCommand: fixture.memoraxCodeCommand },
     );
     const repoMemoryRun = spawnSync(
       process.execPath,
@@ -136,6 +136,33 @@ test("OpenCode plugin install materializes a managed loader, canonical skill, an
       await readFile(helperUpdated.repoMemoryHelperPath, "utf8"),
       /Repo Memory helper source SHA-256: [a-f0-9]{64}/,
     );
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("OpenCode skill metadata restores its configured memory home", async () => {
+  const fixture = await createFixture("skill-home");
+  try {
+    const installed = ensureOpenCodePluginInstalled(fixture.options);
+    assert.equal(installed.ok, true);
+    const metadataPath = join(installed.skillPath, ".memorax-code-package.json");
+    for (const memoraxCodeHome of [undefined, join(fixture.root, "different-memory-home")]) {
+      await writeFile(metadataPath, `${JSON.stringify({
+        version: 1,
+        memoraxCodeHome,
+        memoraxCodeCommand: fixture.memoraxCodeCommand,
+      }, null, 2)}\n`);
+      const stale = readOpenCodePluginStatus(fixture.options);
+      assert.equal(stale.skillCurrent, false);
+      assert.equal(stale.reason, "skill_stale");
+
+      const refreshed = ensureOpenCodePluginInstalled(fixture.options);
+      assert.equal(refreshed.changed, true);
+      assert.equal(readOpenCodePluginStatus(fixture.options).current, true);
+      const metadata = JSON.parse(await readFile(metadataPath, "utf8"));
+      assert.equal(metadata.memoraxCodeHome, fixture.options.memoraxCodeHome);
+    }
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
   }

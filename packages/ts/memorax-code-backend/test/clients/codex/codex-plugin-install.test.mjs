@@ -297,6 +297,68 @@ test("bootstrap install and activation reuse complete artifacts and repair drift
   await installCodexPlugin(options);
 });
 
+test("Codex plugin personal-memory home follows CLI precedence and repairs bootstrap metadata", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-codex-personal-home-"));
+  const home = join(root, "home");
+  const codexHome = join(root, "codex");
+  const memoraxCodeHome = join(root, "custom memory");
+  const env = { HOME: home, CODEX_HOME: codexHome, MEMORAX_CODE_HOME: join(root, "environment memory") };
+  try {
+    const installed = await runMemoraxCode(["codex-plugin", "install", "--home", memoraxCodeHome, "--json"], env);
+    assert.equal(installed.code, 0, `${installed.stdout}\n${installed.stderr}`);
+    const pluginRoot = JSON.parse(installed.stdout).pluginSourcePath;
+    const metadataPath = join(pluginRoot, ".memorax-code-package.json");
+    const metadata = JSON.parse(await readFile(metadataPath, "utf8"));
+    assert.equal(metadata.memoraxCodeHome, memoraxCodeHome);
+    delete metadata.memoraxCodeHome;
+    await writeFile(metadataPath, `${JSON.stringify(metadata)}\n`);
+    const repaired = await runMemoraxCode(["codex-plugin", "install", `--home=${memoraxCodeHome}`, "--json"], env);
+    assert.equal(repaired.code, 0, `${repaired.stdout}\n${repaired.stderr}`);
+    const currentMetadata = await readFile(metadataPath, "utf8");
+    assert.equal(JSON.parse(currentMetadata).memoraxCodeHome, memoraxCodeHome);
+    const repeated = await runMemoraxCode(["codex-plugin", "install", "--home", memoraxCodeHome, "--json"], env);
+    assert.equal(repeated.code, 0, `${repeated.stdout}\n${repeated.stderr}`);
+    assert.equal(await readFile(metadataPath, "utf8"), currentMetadata);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Codex versioned personal-memory metadata must match before immutable reuse", async () => {
+  const fixture = await canonicalCodexFixture();
+  const memoraxCodeHome = join(fixture.root, "custom memory");
+  const options = { homeDir: fixture.home, codexHome: fixture.codexHome, memoraxCodeHome };
+  try {
+    const installed = await installCodexPlugin(options);
+    const metadataPaths = [
+      join(installed.pluginSourcePath, ".memorax-code-package.json"),
+      join(fixture.cacheRoot, fixture.version, ".memorax-code-package.json"),
+    ];
+    const originals = await Promise.all(metadataPaths.map((path) => readFile(path, "utf8")));
+    for (const text of originals) assert.equal(JSON.parse(text).memoraxCodeHome, memoraxCodeHome);
+    await installCodexPlugin(options);
+    assert.deepEqual(await Promise.all(metadataPaths.map((path) => readFile(path, "utf8"))), originals);
+    const marketplace = await readFile(fixture.marketplacePath, "utf8");
+    for (const [index, path] of metadataPaths.entries()) {
+      const metadata = JSON.parse(originals[index]);
+      if (index === 0) delete metadata.memoraxCodeHome;
+      else metadata.memoraxCodeHome = join(fixture.root, "different memory");
+      const changed = `${JSON.stringify(metadata)}\n`;
+      await writeFile(path, changed);
+      await assert.rejects(installCodexPlugin(options), (error) => {
+        assert.match(error.message, /memoraxCodeHome is missing or does not match/);
+        assert.equal(error.failure.stage, "verify");
+        return true;
+      });
+      assert.equal(await readFile(path, "utf8"), changed);
+      assert.equal(await readFile(fixture.marketplacePath, "utf8"), marketplace);
+      await writeFile(path, originals[index]);
+    }
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test("codex-plugin install publishes B, preserves A, and reuses same-version artifacts", async () => {
   const fixture = await canonicalCodexFixture();
   try {

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import childProcess, { spawn } from "node:child_process";
 import fs from "node:fs";
 import {
   access,
@@ -65,6 +65,140 @@ test("JSON state lock wait is bounded and releases the owning lock", async () =>
     });
     await assert.rejects(access(`${path}.lock`), /ENOENT/);
   } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("JSON state lock bounds Windows exclusive-create retries without reaping denied locks", async (t) => {
+  for (const acquire of [withJsonFileLock, withJsonFileLockAsync]) {
+    for (const [platform, code, failures, held = false] of [
+      ["win32", "EPERM", 2],
+      ["win32", "EPERM", Infinity],
+      ["win32", "EPERM", 1, true],
+      ["win32", "EACCES", 2],
+      ["win32", "EIO", 2],
+      ["linux", "EPERM", 2],
+    ]) {
+      await t.test([acquire.name, platform, code, failures, held].join(":"), async (t) => {
+        const root = await mkdtemp(join(tmpdir(), "memorax-code-json-lock-open-"));
+        const path = join(root, "state.json");
+        const lockPath = `${path}.lock`;
+        const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
+        const open = fs.openSync;
+        const blocked = Object.assign(new Error("exclusive create denied"), { code });
+        const recover = platform === "win32" && code === "EPERM" && Number.isFinite(failures) && !held;
+        const retry = platform === "win32" && code === "EPERM";
+        const original = JSON.stringify({ version: 1, ownerId: "existing", ...(held ? { pid: process.pid } : {}) });
+        if (!recover) {
+          await writeFile(lockPath, original);
+          const staleTime = new Date(Date.now() - 1000);
+          await utimes(lockPath, staleTime, staleTime);
+        }
+        let attempts = 0;
+        let calls = 0;
+        const operation = () => {
+          calls += 1;
+          const owner = JSON.parse(fs.readFileSync(lockPath, "utf8"));
+          assert.equal(owner.pid, process.pid);
+          assert.equal(owner.version, 1);
+          assert.equal(fs.statSync(lockPath).nlink, 1);
+          return "entered";
+        };
+        Object.defineProperty(process, "platform", { ...platformDescriptor, value: platform });
+        t.mock.method(fs, "openSync", (target, flags, ...options) => {
+          if (target === lockPath && flags === "wx" && ++attempts <= failures) throw blocked;
+          return open(target, flags, ...options);
+        });
+        const claims = t.mock.method(fs, "linkSync");
+        syncBuiltinESMExports();
+        try {
+          const options = { timeoutMs: 40, retryMs: 4, staleMs: 20, ensurePrivateDirectory: false };
+          if (recover) {
+            assert.equal(await acquire(path, operation, options), "entered");
+            assert.equal(calls, 1);
+            assert.equal(attempts, failures + 1);
+            assert.deepEqual(fs.readdirSync(root), []);
+          } else {
+            await assert.rejects(async () => acquire(path, operation, options), (error) => held
+              ? error?.code === "JSON_FILE_LOCK_TIMEOUT" && error.path === path && error.lockPath === lockPath
+              : error === blocked);
+            assert.equal(calls, 0);
+            assert.ok(retry ? attempts > 1 && attempts <= 12 : attempts === 1);
+            assert.equal(fs.readFileSync(lockPath, "utf8"), original);
+            assert.deepEqual(fs.readdirSync(root), ["state.json.lock"]);
+          }
+          assert.equal(claims.mock.callCount(), 0);
+        } finally {
+          Object.defineProperty(process, "platform", platformDescriptor);
+          t.mock.restoreAll();
+          syncBuiltinESMExports();
+          await rm(root, { recursive: true, force: true });
+        }
+      });
+    }
+  }
+});
+
+test("JSON state lock does not retry Windows owner-record write denial", async (t) => {
+  for (const acquire of [withJsonFileLock, withJsonFileLockAsync]) {
+    await t.test(acquire.name, async (t) => {
+      const root = await mkdtemp(join(tmpdir(), "memorax-code-json-lock-write-denied-"));
+      const path = join(root, "state.json");
+      const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
+      const write = fs.writeFileSync;
+      const blocked = Object.assign(new Error("owner write denied"), { code: "EPERM" });
+      Object.defineProperty(process, "platform", { ...platformDescriptor, value: "win32" });
+      const writes = t.mock.method(fs, "writeFileSync", (target) => {
+        write(target, '{"version":');
+        throw blocked;
+      });
+      syncBuiltinESMExports();
+      try {
+        await assert.rejects(async () => acquire(path, () => assert.fail("must not enter")), (error) => error === blocked);
+        assert.equal(writes.mock.callCount(), 1);
+        assert.equal(fs.readFileSync(`${path}.lock`, "utf8"), '{"version":');
+        assert.deepEqual(fs.readdirSync(root), ["state.json.lock"]);
+      } finally {
+        Object.defineProperty(process, "platform", platformDescriptor);
+        t.mock.restoreAll();
+        syncBuiltinESMExports();
+        await rm(root, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
+test("async JSON state lock yields and aborts during Windows exclusive-create retry", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-json-lock-open-abort-"));
+  const path = join(root, "state.json");
+  const lockPath = `${path}.lock`;
+  const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
+  const open = fs.openSync;
+  const controller = new AbortController();
+  let attempts = 0;
+  let eventLoopRan = false;
+  Object.defineProperty(process, "platform", { ...platformDescriptor, value: "win32" });
+  t.mock.method(fs, "openSync", (target, flags, ...options) => {
+    if (target === lockPath && flags === "wx") {
+      attempts += 1;
+      throw Object.assign(new Error("exclusive create denied"), { code: "EPERM" });
+    }
+    return open(target, flags, ...options);
+  });
+  syncBuiltinESMExports();
+  const timer = setTimeout(() => { eventLoopRan = true; controller.abort(); }, 0);
+  try {
+    await assert.rejects(withJsonFileLockAsync(path, () => assert.fail("must not enter"), {
+      timeoutMs: 1000, retryMs: 500, signal: controller.signal,
+    }), (error) => lockAbortError(error, path));
+    assert.equal(eventLoopRan, true);
+    assert.equal(attempts, 1);
+    assert.deepEqual(fs.readdirSync(root), []);
+  } finally {
+    clearTimeout(timer);
+    Object.defineProperty(process, "platform", platformDescriptor);
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
     await rm(root, { recursive: true, force: true });
   }
 });
@@ -476,6 +610,83 @@ test("JSON state lock bypasses an orphaned current reap claim", async () => {
     await assert.rejects(access(lockPath), /ENOENT/);
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Windows recent process protection expires without caching inferred owner or claim births", async (t) => {
+  for (const kind of ["owner", "claim"]) {
+    for (const state of ["recent", "expires", "dead", "old", "future"]) {
+      await t.test(kind + ":" + state, async (t) => {
+        const root = await mkdtemp(join(tmpdir(), "memorax-code-json-lock-recent-"));
+        const path = join(root, "state.json");
+        const lockPath = path + ".lock";
+        const base = Date.now();
+        const pid = process.pid + 2000000;
+        const startedAt = base + (state === "old" ? -6000 : state === "future" ? 1000 : 0);
+        const claimPath = lockPath + ".reap-v1-" + pid + "-" + startedAt + "-" + "b".repeat(24);
+        const raw = JSON.stringify({ version: 1, ownerId: "fixture", ...(kind === "owner"
+          ? { pid, processStartedAt: new Date(startedAt).toISOString() } : {}) });
+        await writeFile(lockPath, raw);
+        await utimes(lockPath, new Date(base - 60000), new Date(base - 60000));
+        if (kind === "claim") await link(lockPath, claimPath);
+        const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
+        const systemRoot = process.env.SystemRoot;
+        const powershell = join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+        const open = fs.openSync;
+        const exists = fs.existsSync;
+        const kill = process.kill;
+        let now = base;
+        let attempts = 0;
+        let queries = 0;
+        Object.defineProperty(process, "platform", { ...platformDescriptor, value: "win32" });
+        process.env.SystemRoot = root;
+        t.mock.method(Date, "now", () => now);
+        t.mock.method(fs, "existsSync", (target) => target === powershell || exists(target));
+        t.mock.method(process, "kill", (target, signal) => {
+          if (target !== pid) return kill(target, signal);
+          if (state === "dead") throw Object.assign(new Error("dead fixture PID"), { code: "ESRCH" });
+          return true;
+        });
+        t.mock.method(fs, "openSync", (target, flags, ...options) => {
+          if (target === lockPath && flags === "wx") {
+            attempts += 1;
+            if (state === "expires" && attempts === 2) {
+              assert.equal(queries, 0, "a recent live process must not need an OS birth query");
+              assert.equal(fs.readFileSync(lockPath, "utf8"), raw);
+              now = base + 6001;
+            } else now += 10;
+          }
+          return open(target, flags, ...options);
+        });
+        t.mock.method(childProcess, "spawnSync", (command) => {
+          queries += 1;
+          assert.equal(command, powershell);
+          return { status: 0, stdout: new Date(base - 60000).toISOString() };
+        });
+        syncBuiltinESMExports();
+        try {
+          const options = { timeoutMs: state === "expires" ? 10000 : 40, retryMs: 1, staleMs: 20, ensurePrivateDirectory: false };
+          if (state === "recent") {
+            assert.throws(() => withJsonFileLock(path, () => assert.fail("must retain live ownership"), options),
+              { code: "JSON_FILE_LOCK_TIMEOUT" });
+            assert.equal(queries, 0);
+            assert.equal(fs.readFileSync(lockPath, "utf8"), raw);
+            if (kind === "claim") assert.equal(fs.readFileSync(claimPath, "utf8"), raw);
+          } else {
+            assert.equal(withJsonFileLock(path, () => "recovered", options), "recovered");
+            assert.equal(queries, state === "dead" ? 0 : 1);
+            assert.deepEqual(fs.readdirSync(root), []);
+          }
+        } finally {
+          Object.defineProperty(process, "platform", platformDescriptor);
+          if (systemRoot === undefined) delete process.env.SystemRoot;
+          else process.env.SystemRoot = systemRoot;
+          t.mock.restoreAll();
+          syncBuiltinESMExports();
+          await rm(root, { recursive: true, force: true });
+        }
+      });
+    }
   }
 });
 

@@ -10,6 +10,7 @@ import { runMemoryCli } from "../../dist/memory/cli.js";
 import {
   traceContextFromClaudeHookBody,
   traceContextFromCodeBuddyHookBody,
+  traceContextFromCursorHookBody,
   traceContextFromDshTurnStart,
   traceContextFromHookBody,
   traceContextFromOpenCodeHookBody,
@@ -218,7 +219,7 @@ test("memory CLI rejects a nested repository outside the current turn scope", as
   assert.equal(result.workspaceScopeReason, "workspace_scope_mismatch");
   assert.equal(
     result.userAction,
-    "Start a new Codex, Claude Code, CodeBuddy CLI, WorkBuddy, DSH, or OpenCode session from the target repository or local workspace.",
+    "Start a new Codex, Claude Code, CodeBuddy CLI, WorkBuddy, DSH, OpenCode, or Cursor session from the target repository or local workspace.",
   );
   assert.equal(requestCount, 0);
 });
@@ -339,7 +340,7 @@ test("memory CLI gives the same scope recovery guidance for a Claude turn", asyn
   assert.equal(result.workspaceScopeReason, "workspace_scope_mismatch");
   assert.equal(
     result.userAction,
-    "Start a new Codex, Claude Code, CodeBuddy CLI, WorkBuddy, DSH, or OpenCode session from the target repository or local workspace.",
+    "Start a new Codex, Claude Code, CodeBuddy CLI, WorkBuddy, DSH, OpenCode, or Cursor session from the target repository or local workspace.",
   );
   assert.equal(requestCount, 0);
 });
@@ -435,6 +436,48 @@ test("memory CLI preserves projectless turn scope across trace settings", async 
       assert.equal(requests[1].metadata.memorax_code_memory_scope, "general.v1");
     }
   }
+});
+
+test("memory CLI binds a Cursor projectless turn without cwd to General", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-cli-cursor-projectless-"));
+  const commandWorkspace = join(root, "cursor-command-workspace");
+  const memoraxCodeHome = join(root, "memorax-code-home");
+  await mkdir(commandWorkspace, { recursive: true });
+  const sessionId = "cursor-projectless-session";
+  const env = {
+    MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT: "cursor",
+    MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID: sessionId,
+    MEMORAX_CODE_HOME: memoraxCodeHome,
+    MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
+    MEMORAX_CODE_MEMORAX_API_KEY: "secret",
+    MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
+  };
+  await writeCurrentTraceTurn(traceContextFromCursorHookBody({
+    client: "cursor", sessionId, turnId: "cursor-projectless-turn", workspaceKind: "projectless",
+  }), { memoraxCodeHome, env });
+  const requests = [];
+  const options = {
+    cwd: commandWorkspace,
+    env,
+    fetchImpl: async (url, init) => {
+      requests.push(JSON.parse(init.body));
+      const data = String(url).endsWith("/add") ? { task_id: "cursor-general-add", status: "queued" } : { data: [] };
+      return new Response(JSON.stringify({ success: true, data }), {
+        status: 200, headers: { "content-type": "application/json" },
+      });
+    },
+  };
+  try {
+    const search = await runMemoryCli(["search", "--query", "Cursor General scope"], options);
+    assert.equal(search.ok, true);
+    assert.equal(search.effectiveUserId, "user-1@General");
+    const add = await runMemoryCli([
+      "add", "--memory", "Keep Cursor General preferences.", "--type", "preference", "--reason", "Explicit test save.",
+    ], options);
+    assert.equal(add.ok, true);
+    assert.equal(add.effectiveUserId, "user-1@General");
+    assert.deepEqual(requests.map(({ user_id }) => user_id), ["user-1@General", "user-1@General"]);
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
 
 test("memory CLI validates command cwd before using a projectless turn without cwd", async (t) => {
@@ -946,7 +989,7 @@ test("memory CLI search binds to the current WorkBuddy trace and workspace", asy
   assert.equal(rejected.workspaceScopeReason, "workspace_scope_mismatch");
   assert.equal(
     rejected.userAction,
-    "Start a new Codex, Claude Code, CodeBuddy CLI, WorkBuddy, DSH, or OpenCode session from the target repository or local workspace.",
+    "Start a new Codex, Claude Code, CodeBuddy CLI, WorkBuddy, DSH, OpenCode, or Cursor session from the target repository or local workspace.",
   );
   assert.equal(requests.length, 1);
 
@@ -972,6 +1015,7 @@ test("memory CLI keeps same-ID client bindings separate from an inherited Codex 
     { client: "workbuddy", workspace: join(root, "WorkBuddy"), turnId: "workbuddy-turn", paths: (home) => clientTracePaths("workbuddy", home) },
     { client: "codex", workspace: join(root, "new-chat"), turnId: "codex-turn", paths: tracePaths },
     { client: "codebuddy", workspace: join(root, "cli-workspace"), turnId: "codebuddy-turn", paths: codeBuddyTracePaths },
+    { client: "cursor", workspace: join(root, "cursor-workspace"), turnId: "cursor-turn", paths: (home) => clientTracePaths("cursor", home) },
   ];
   for (const { workspace } of clients) await mkdir(join(workspace, "work"), { recursive: true });
   await writeCurrentCodexTurn(traceContextFromHookBody({
@@ -995,6 +1039,11 @@ test("memory CLI keeps same-ID client bindings separate from an inherited Codex 
     cwd: clients[0].workspace,
     workspaceKind: "projectless",
   }), { client: "opencode", memoraxCodeHome: root });
+  await writeCurrentTraceTurn(traceContextFromCursorHookBody({
+    sessionId,
+    turnId: "cursor-turn",
+    cwd: clients[4].workspace,
+  }), { client: "cursor", memoraxCodeHome: root });
   const requests = [];
   const fetchImpl = async (_url, init) => {
     requests.push(JSON.parse(init.body));
@@ -1023,9 +1072,9 @@ test("memory CLI keeps same-ID client bindings separate from an inherited Codex 
     };
     const result = await runMemoryCli(["search", "--query", "shared general preference"], options);
     assert.equal(result.ok, true, client);
-    assert.equal(result.scopeKind, client === "codebuddy" ? "local-directory" : "general", client);
+    assert.equal(result.scopeKind, ["codebuddy", "cursor"].includes(client) ? "local-directory" : "general", client);
     assert.equal(requests.length, index + 1);
-    assert.equal(requests[index].user_id, client === "codebuddy" ? "user-1@cli-workspace" : "user-1@General", client);
+    assert.equal(requests[index].user_id, client === "cursor" ? "user-1@cursor-workspace" : client === "codebuddy" ? "user-1@cli-workspace" : "user-1@General", client);
     const events = (await readFile(paths(root).eventsJsonl(sessionId), "utf8"))
       .trim()
       .split("\n")

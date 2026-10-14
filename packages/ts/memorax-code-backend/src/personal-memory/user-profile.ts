@@ -1,4 +1,3 @@
-import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
   closeSync,
@@ -15,14 +14,15 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { homedir } from "node:os";
 import { withJsonFileLock } from "../../../memorax-code-adapter-common/src/config-utils.mjs";
 
 export const PREFERENCE_TYPES = ["communication", "workflow", "environment", "profile"] as const;
 type PreferenceType = typeof PREFERENCE_TYPES[number];
 const STATUSES = new Set(["active", "superseded", "deleted"]);
 const MAX_PREFERENCES_BYTES = 64 * 1024;
-const SCHEMA = "repo_user_profile_memory.v0.1";
-const OWNER = "repo-user-profile-memory";
+const SCHEMA = "user_profile_memory.v0.1";
+const OWNER = "user-profile-memory";
 // Python str.split/strip whitespace, including NEL and the information separators.
 const WHITESPACE = "[\\u0009-\\u000d\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000]";
 const FIELD_WHITESPACE = new RegExp(`${WHITESPACE}+`, "g");
@@ -40,7 +40,7 @@ export interface Preference {
   status: "active";
 }
 
-export type UserProfileCommand = { repo: string } & (
+export type UserProfileCommand = { home: string } & (
   | { command: "list" }
   | { command: "add"; type: PreferenceType; description: string; appliesWhen: string; doNotApplyWhen: string }
   | { command: "update"; id: string; description: string; appliesWhen?: string; doNotApplyWhen?: string }
@@ -49,7 +49,7 @@ export type UserProfileCommand = { repo: string } & (
 
 export class StorageError extends Error {
   constructor(message: string) {
-    super(`Invalid repo user profile preferences: ${message}`);
+    super(`Invalid user profile preferences: ${message}`);
     this.name = "StorageError";
   }
 }
@@ -82,22 +82,18 @@ function normalizeScopeKey(value: string): string {
   return key === "-" ? "" : key;
 }
 
-function resolveRepo(path: string): string {
-  const start = resolve(path);
-  if (!existsSync(start)) throw new Error(`Repository path does not exist: ${start}`);
-  const canonical = realpathSync(start);
-  const result = spawnSync("git", ["rev-parse", "--show-toplevel"], {
-    cwd: canonical,
-    encoding: "utf8",
-    windowsHide: true,
-  });
-  if (result.error) throw result.error;
-  if (result.status === 0 && result.stdout.trim()) return realpathSync(result.stdout.trim());
-  return canonical;
+export function defaultUserProfileHome(env: NodeJS.ProcessEnv = process.env): string {
+  return resolve(env.MEMORAX_CODE_HOME?.trim() || join(homedir(), ".memorax-code"));
 }
 
-function preferencesPath(repo: string): string {
-  return join(repo, ".repo_memory", "user-profile", "preferences.md");
+function resolveHome(home: string): string {
+  if (!home.trim()) throw new Error("User Profile home must not be empty");
+  const absolute = resolve(home);
+  return existsSync(absolute) ? realpathSync(absolute) : absolute;
+}
+
+export function userProfilePreferencesPath(home: string): string {
+  return join(resolveHome(home), "personal-memory", "user-profile", "preferences.md");
 }
 
 function checkStoragePath(path: string): void {
@@ -120,21 +116,6 @@ function readUtf8(path: string): string {
     if (error instanceof TypeError) throw new StorageError("file is not valid UTF-8");
     throw error;
   }
-}
-
-function ensureGitignore(repo: string): boolean {
-  const path = join(repo, ".gitignore");
-  const existing = existsSync(path) ? readUtf8(path) : "";
-  const ignored = existing.split(/\r\n|[\n\r\v\f\u001c-\u001e\u0085\u2028\u2029]/).some((line) => {
-    const trimmed = strip(line);
-    if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith("!")) return false;
-    const rule = strip(trimmed.split("#", 1)[0]).replace(/^\/+/, "");
-    return rule === ".repo_memory" || rule === ".repo_memory/";
-  });
-  if (ignored) return false;
-  const separator = !existing || existing.endsWith("\n") ? "" : "\n";
-  writeFileSync(path, `${existing}${separator}.repo_memory/\n`, "utf8");
-  return true;
 }
 
 function stripTicks(value: string): string {
@@ -164,7 +145,7 @@ function parseCounts(text: string): { active: number; total: number } {
     }
     metadata.set(item[1], value);
   }
-  for (const [key, expected] of Object.entries({ schema: SCHEMA, scope: "repo", owner: OWNER, trust_state: "user_stated" })) {
+  for (const [key, expected] of Object.entries({ schema: SCHEMA, scope: "user", owner: OWNER, trust_state: "user_stated" })) {
     if (metadata.get(key) !== expected) throw new StorageError(`${key} mismatch`);
   }
   if (!metadata.has("active_count") || !metadata.has("total_count")) throw new StorageError("missing counts");
@@ -218,15 +199,15 @@ function renderPreferences(entries: Preference[], updatedAt: string): string {
   const parts = [
     "---",
     `schema: "${SCHEMA}"`,
-    'scope: "repo"',
+    'scope: "user"',
     `owner: "${OWNER}"`,
     'trust_state: "user_stated"',
     `updated_at: "${updatedAt}"`,
     `active_count: ${sorted.length}`,
     `total_count: ${sorted.length}`,
     "---", "",
-    "# Repo-Scoped User Profile And Preferences", "",
-    "These memories are local to this repository. System, developer, and AGENTS.md instructions override current user instructions, and current user instructions override stored preferences. Do not treat these preferences as evidence about current code behavior.",
+    "# User Profile And Preferences", "",
+    "These memories are global to the user. System, developer, and AGENTS.md instructions override current user instructions, and current user instructions override stored preferences. Do not treat these preferences as evidence about current code behavior.",
     "", "## Active Preferences", "",
   ];
   if (sorted.length) parts.push(sorted.map((entry) => [
@@ -299,8 +280,8 @@ export function executeUserProfile(args: UserProfileCommand): Record<string, unk
     // Reject before creating storage; readers cannot accept an empty active entry.
     throw new Error("Preference description must not be empty");
   }
-  const repo = resolveRepo(args.repo);
-  const path = preferencesPath(repo);
+  const home = resolveHome(args.home);
+  const path = userProfilePreferencesPath(home);
   if (args.command === "list") {
     const entries = readPreferences(path);
     return { ok: true, op: "list", active_count: entries.length, total_count: entries.length,
@@ -312,12 +293,11 @@ export function executeUserProfile(args: UserProfileCommand): Record<string, unk
   // Keep it untouched so an upgrade never removes another process's lock.
   return withJsonFileLock(path, () => {
     checkStoragePath(path);
-    const gitignoreUpdated = ensureGitignore(repo);
     if (!existsSync(path)) writePreferences(path, [], new Date().toISOString());
     const entries = readPreferences(path);
     const result = (status: string, id: string, count: number) => ({
       ok: true, op: args.command, status, id, active_count: count, total_count: count,
-      preferences_path: path, gitignore_updated: gitignoreUpdated,
+      preferences_path: path,
     });
     const timestamp = new Date().toISOString();
     if (args.command === "add") {

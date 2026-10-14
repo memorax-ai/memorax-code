@@ -53,6 +53,7 @@ export type AdapterReport = {
   opencodeSkills?: { ok?: boolean; status?: string };
   codebuddySkills?: { ok?: boolean; status?: string };
   traeSkills?: { ok?: boolean; status?: string };
+  cursorSkills?: { ok?: boolean; status?: string };
   codebuddyHooks?: {
     ok?: boolean;
     status?: string;
@@ -61,6 +62,13 @@ export type AdapterReport = {
     observationPath?: string;
   };
   traeHooks?: {
+    ok?: boolean;
+    status?: string;
+    configured?: boolean;
+    runtimeObserved?: boolean;
+    observationPath?: string;
+  };
+  cursorHooks?: {
     ok?: boolean;
     status?: string;
     configured?: boolean;

@@ -53,15 +53,14 @@ export function createTraeMemoryHookRuntime(
   const now = options.now ?? (() => Date.now());
   const memory = createHarnessMemoryRuntime({
     client: TRAE_MEMORY_TURN_CLIENT,
-    retrievalSource: "trae_hook_retrieval",
     writebackSource: "trae_hook_writeback",
     diagnosticPrefix: "trae_memory",
     traceFailureEvent: "trae_trace.write_failed",
     turnStartTraceSource: "trae-hook",
-    deduplicateRetrieval: true,
   }, options);
   const { turnCoordinator } = memory;
   const interruptedTurns = new Set<string>();
+  const completedTurns = new Set<string>();
   // Active snapshots outlive coordinator TTL to preserve long turns' interruption authority.
   const activeTurns = new Map<string, MemoryTurnState>();
   const turnStartOperations = new Map<string, Promise<MemoryHookTurnStartResult>>();
@@ -71,13 +70,14 @@ export function createTraeMemoryHookRuntime(
     async recordTurnStart(command) {
       turnCoordinator.pruneExpired();
       const commandKey = traeRuntimeTurnKey(command.sessionId, command.turnId);
-      if (interruptedTurns.has(commandKey)) return { ok: true };
+      if (interruptedTurns.has(commandKey) || completedTurns.has(commandKey)) return { ok: true };
       const previous = activeTurns.get(command.sessionId) ?? turnCoordinator.latestTurn({
         client: TRAE_MEMORY_TURN_CLIENT,
         sessionId: command.sessionId,
         excludeClientTurnId: command.turnId,
       });
-      if (previous && previous.clientTurnId !== command.turnId) {
+      if (previous && previous.clientTurnId !== command.turnId
+        && !completedTurns.has(traeRuntimeTurnKey(previous.sessionId, previous.clientTurnId))) {
         await interruptPreviousTurn(turnCoordinator, previous, options, now);
         rememberBounded(
           interruptedTurns,
@@ -95,7 +95,7 @@ export function createTraeMemoryHookRuntime(
         createdAt,
         traceContext,
         prompt: command.prompt,
-        // Publish before trace or retrieval can yield to a concurrent Stop.
+        // Publish before tracing can yield to a concurrent Stop.
         onTurnRegistered(turn) {
           activeTurns.delete(command.sessionId);
           activeTurns.set(command.sessionId, turn);
@@ -143,6 +143,8 @@ export function createTraeMemoryHookRuntime(
         assistantTimestampSource: "observed",
         traceContext,
       });
+      // A validated Stop stays completed even when automatic Add retains metadata.
+      if (!interruptedTurns.has(commandKey)) rememberBounded(completedTurns, commandKey, runtimeTurnLimit);
       await recordMaterializedTurn(traceContext, command, options);
       // Clear only the captured snapshot; a newer turn may have registered
       // while this Stop was awaiting completion.
@@ -168,6 +170,7 @@ export function createTraeMemoryHookRuntime(
 
     close() {
       interruptedTurns.clear();
+      completedTurns.clear();
       activeTurns.clear();
       turnStartOperations.clear();
       memory.close();

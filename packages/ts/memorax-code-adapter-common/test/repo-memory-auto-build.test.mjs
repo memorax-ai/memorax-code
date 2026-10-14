@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { sharedRepoMemoryPath } from "../src/repo-memory/repo-memory-shared-bundle.mjs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { test } from "node:test";
 import { scheduleMissingRepoMemoryBuild } from "../src/repo-memory/repo-memory-auto-build.mjs";
 
-test("Repo Memory auto-build schedules maintain only when PROFILE.md is missing", async () => {
+test("Repo Memory auto-build schedules maintain only when the shared baseline is missing, independently of local PROFILE", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-repo-auto-build-"));
   const repo = join(root, "repo");
   const pluginRoot = join(root, "plugin");
@@ -23,6 +25,10 @@ test("Repo Memory auto-build schedules maintain only when PROFILE.md is missing"
       "",
     ].join("\n"));
 
+    const initialized = spawnSync("git", ["init", repo], { encoding: "utf8" });
+    assert.equal(initialized.status, 0, initialized.stderr);
+    await mkdir(join(repo, ".repo_memory"), { recursive: true });
+    await writeFile(join(repo, ".repo_memory", "PROFILE.md"), "# Local Memory\n");
     assert.equal(scheduleMissingRepoMemoryBuild(repo, { pluginRoot, env }), true);
     const invocation = JSON.parse(await waitForFile(logPath));
     assert.deepEqual(invocation, {
@@ -32,9 +38,10 @@ test("Repo Memory auto-build schedules maintain only when PROFILE.md is missing"
     });
     assert.equal(env.MEMORAX_CODE_HOME, relative(process.cwd(), memoraxCodeHome));
 
-    await mkdir(join(repo, ".repo_memory"), { recursive: true });
-    await writeFile(join(repo, ".repo_memory", "PROFILE.md"), "# Repo Memory\n");
-    assert.equal(scheduleMissingRepoMemoryBuild(repo, { pluginRoot }), false);
+    const shared = sharedRepoMemoryPath(memoraxCodeHome, repo);
+    await mkdir(shared, { recursive: true });
+    await writeFile(join(shared, "baseline.json"), "{}");
+    assert.equal(scheduleMissingRepoMemoryBuild(repo, { pluginRoot, env }), false);
     assert.equal(scheduleMissingRepoMemoryBuild(undefined, { pluginRoot }), false);
   } finally {
     await rm(root, { recursive: true, force: true });

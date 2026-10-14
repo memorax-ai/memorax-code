@@ -4,6 +4,7 @@ import { executeGitCommitFacets, gitCommitFacetsUsage } from "./git-commit-facet
 import { executeGithubFacets, githubFacetsUsage } from "./github-resource-facets.js";
 import { executeGitlabFacets, gitlabFacetsUsage } from "./gitlab-resource-facets.js";
 import { executePrepare, prepareUsage } from "./prepare.js";
+import { executeResolve } from "./resolve.js";
 import type { CommandOutput, RepoMemoryContext } from "./shared.js";
 import { executeValidate, validateUsage } from "./validate.js";
 
@@ -12,6 +13,7 @@ export async function runRepoMemoryCli(args: string[], context: RepoMemoryContex
   const commandArgs = expandInlineLongOptions(rawCommandArgs);
   let output: CommandOutput;
   if (command === "prepare") output = executePrepare(commandArgs);
+  else if (command === "resolve") output = executeResolve(commandArgs);
   else if (command === "git-commits") output = executeGitCommitFacets(commandArgs);
   else if (command === "github-facets") output = await executeGithubFacets(commandArgs);
   else if (command === "gitlab-facets") output = await executeGitlabFacets(commandArgs);
@@ -44,6 +46,7 @@ function usage(): string {
     "Usage: memorax-code repo-memory <command> [options]",
     "",
     "Commands:",
+    "  memorax-code repo-memory resolve --repo-path PATH",
     `  ${prepareUsage()}`,
     `  ${gitCommitFacetsUsage()}`,
     `  ${githubFacetsUsage()}`,

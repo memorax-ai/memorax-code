@@ -5,7 +5,7 @@ import { readStdinJson } from "../../memorax-code-adapter-common/src/config-util
 import { scheduleMissingRepoMemoryBuild } from "../../memorax-code-adapter-common/src/repo-memory/repo-memory-auto-build.mjs";
 import { isRepoMemoryJobWorker } from "../../memorax-code-adapter-common/src/repo-memory/repo-memory-job-context.mjs";
 
-const RETRIEVAL_BACKEND_TIMEOUT_MS = 12_000;
+const TURN_START_BACKEND_TIMEOUT_MS = 12_000;
 const DEFAULT_BACKEND_TIMEOUT_MS = 5_000;
 
 if (isRepoMemoryJobWorker()) process.exit(0);
@@ -35,15 +35,10 @@ try {
       debugEnv: "MEMORAX_CODE_CLAUDE_HOOK_DEBUG",
       pluginRoot: process.env.CLAUDE_PLUGIN_ROOT,
     });
-    const additionalContext = stringValue(response?.additionalContext);
     const systemMessage = stringValue(response?.userNotice);
-    if (additionalContext || systemMessage) {
+    if (systemMessage) {
       process.stdout.write(`${JSON.stringify({
-        ...(systemMessage ? { systemMessage } : {}),
-        ...(additionalContext ? { hookSpecificOutput: {
-          hookEventName: "UserPromptSubmit",
-          additionalContext,
-        } } : {}),
+        systemMessage,
       })}\n`);
     }
   } else if (event === "Stop") {
@@ -72,7 +67,7 @@ async function postMemoryService(path, body) {
   const connection = resolveBackendConnection();
   const timeoutMs = parsePositiveInt(
     process.env.MEMORAX_CODE_CLAUDE_MEMORY_HOOK_TIMEOUT_MS,
-    path === "/memory/turn-start" ? RETRIEVAL_BACKEND_TIMEOUT_MS : DEFAULT_BACKEND_TIMEOUT_MS,
+    path === "/memory/turn-start" ? TURN_START_BACKEND_TIMEOUT_MS : DEFAULT_BACKEND_TIMEOUT_MS,
   );
   const response = await postBackendCommand({
     connection,

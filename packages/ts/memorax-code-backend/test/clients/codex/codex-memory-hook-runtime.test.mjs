@@ -6,6 +6,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { runMemoryCli } from "../../../dist/memory/cli.js";
 import { createCodexMemoryHookRuntime } from "../../../dist/clients/codex/memory-hook-runtime.js";
+import { createMemoryTurnCoordinator } from "../../../dist/memory/turn-coordinator.js";
 import { tracePaths } from "../../../dist/trace/config.js";
 import {
   memoraxAddFetch,
@@ -27,7 +28,7 @@ const WRITEBACK_ENV = {
   MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
 };
 
-test("Codex Hook retrieves automatic memory once per exact turn", async () => {
+test("Codex Hook records exact turns and writes back without automatic Search", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-hook-retrieval-"));
   const transcriptPath = await writeRollout(root, "session-retrieval", [{
     turnId: "turn-retrieval",
@@ -57,7 +58,7 @@ test("Codex Hook retrieves automatic memory once per exact turn", async () => {
       transcriptPath,
     });
     assert.equal(first.ok, true);
-    assert.match(first.additionalContext, /Keep malformed input fail-closed/);
+    assert.equal(first.additionalContext, undefined);
     assert.equal(first.repoMemoryWorktree, TEST_REPO_ROOT);
 
     assert.deepEqual(await controller.recordTurnStart({
@@ -88,13 +89,8 @@ test("Codex Hook retrieves automatic memory once per exact turn", async () => {
       transcriptPath,
     }), GIT_TURN_START_RESULT);
 
-    assert.equal(requests.length, 1);
-    assert.equal(requests[0].body.query, "Recall the parser boundary.");
-    assert.equal(events.length, 1);
-    assert.equal(events[0].source, "codex_hook_retrieval");
-    assert.equal(events[0].operation, "retrieve");
-    assert.equal(events[0].traceContext.sessionId, "session-retrieval");
-    assert.equal(events[0].traceContext.turnId, "turn-retrieval");
+    assert.deepEqual(requests, []);
+    assert.deepEqual(events, []);
   } finally {
     controller.close();
     await rm(root, { recursive: true, force: true });
@@ -142,7 +138,7 @@ test("memory hook preserves registered workspace failures instead of rebinding t
   }
 });
 
-test("memory hook writeback accepts repeated authority metadata in the exact Codex rollout turn", async () => {
+test("memory hook writeback accepts repeated authority metadata and provider assistant turn IDs", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-hook-rollout-source-"));
   const workspace = join(root, "memorax-code");
   await mkdir(workspace, { recursive: true });
@@ -158,6 +154,24 @@ test("memory hook writeback accepts repeated authority metadata in the exact Cod
       payload: { id: "session-hook" },
     }],
   });
+  const records = (await readFile(transcriptPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+  const commentaryRecord = records.find((record) => record.payload?.phase === "commentary");
+  commentaryRecord.type = "response_item";
+  commentaryRecord.payload = {
+    type: "message", role: "assistant", phase: "commentary",
+    content: [{ type: "output_text", text: commentaryRecord.payload.message }],
+  };
+  const finalRecord = records.at(-1);
+  finalRecord.type = "response_item";
+  finalRecord.payload = {
+    type: "message",
+    id: "provider-message-1",
+    role: "assistant",
+    phase: "final_answer",
+    content: [{ type: "output_text", text: finalRecord.payload.message }],
+    internal_chat_message_metadata_passthrough: { turn_id: "provider-turn-1" },
+  };
+  await writeFile(transcriptPath, `${records.map((record) => JSON.stringify(record)).join("\n")}\n`, "utf8");
   const { fetchImpl, requests } = memoraxAddFetch();
   const events = [];
   const controller = createCodexMemoryHookRuntime({
@@ -195,12 +209,14 @@ test("memory hook writeback accepts repeated authority metadata in the exact Cod
     assert.deepEqual(requests[0].body.coding_context.items, [
       { type: "message", role: "user", content: [{ type: "input_text", text: "Remember this persisted Codex turn.\n" }] },
       { type: "message", role: "assistant", phase: "commentary", content: [{ type: "output_text", text: "Inspecting the persisted turn." }] },
-      { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: "Stored persisted Codex answer.\n" }] },
+      { type: "message", id: "provider-message-1", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: "Stored persisted Codex answer.\n" }] },
     ]);
     assert.deepEqual(requests[0].body.messages.map((message) => message.timestamp), [
       Date.parse("2026-07-16T00:00:02.000Z"),
       Date.parse("2026-07-16T00:00:03.000Z"),
     ]);
+    assert.equal(requests[0].body.session_id, "session-hook");
+    assert.equal(requests[0].body.metadata.memorax_code_session_id, "session-hook");
     assert.equal(requests[0].body.user_id, "user-1@memorax-code");
     assert.equal(requests[0].body.metadata.memorax_code_base_user_id, "user-1");
     assert.equal(requests[0].body.metadata.memorax_code_workspace, "memorax-code");
@@ -208,6 +224,9 @@ test("memory hook writeback accepts repeated authority metadata in the exact Cod
     assert.equal("memorax_code_repository" in requests[0].body.metadata, false);
     assert.match(requests[0].body.metadata.idempotency_key, /^automatic:codex:/);
     assert.equal(events.at(-1).source, "codex_hook_writeback");
+    assert.equal(events.at(-1).traceContext.client, "codex");
+    assert.equal(events.at(-1).traceContext.sessionId, "session-hook");
+    assert.equal(events.at(-1).traceContext.turnId, "turn-1");
   } finally {
     controller.close();
     await rm(root, { recursive: true, force: true });
@@ -767,7 +786,6 @@ test("Codex General recovery respects the native header and existing local bindi
     MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED: "true",
   };
   const metadata = (id, cwd) => ({ type: "session_meta", payload: { id, cwd } });
-  const { fetchImpl, requests } = memoraxSearchFetch("Scoped test memory.");
   try {
     for (const [sessionId, records, initialKind] of [
       ["wrong-session", [metadata("other-session", workspace)]],
@@ -777,7 +795,8 @@ test("Codex General recovery respects the native header and existing local bindi
     ]) {
       const transcriptPath = join(root, `${sessionId}.jsonl`);
       await writeFile(transcriptPath, `${records.map((record) => JSON.stringify(record)).join("\n")}\n`);
-      const controller = createCodexMemoryHookRuntime({ env, fetchImpl, automaticWriteback: () => ({ accepted: true }) });
+      const turnCoordinator = createMemoryTurnCoordinator({ automaticWriteback: () => ({ accepted: true }) });
+      const controller = createCodexMemoryHookRuntime({ env, turnCoordinator });
       try {
         if (initialKind) {
           await controller.recordTurnStart({
@@ -788,10 +807,12 @@ test("Codex General recovery respects the native header and existing local bindi
         const result = await controller.recordTurnStart({
           sessionId, turnId: "next", prompt: "Use only the authorized session scope.", cwd: nested, transcriptPath,
         });
-        assert.match(result.additionalContext, /Scoped test memory/, sessionId);
-        assert.equal(requests.at(-1).body.user_id, `user-1@${initialKind ? "task" : "nested"}`, sessionId);
+        assert.deepEqual(result, { ok: true });
+        const turn = turnCoordinator.getTurn({ client: "codex", sessionId, clientTurnId: "next" });
+        assert.equal(turn.repositoryScope.effectiveUserId, `user-1@${initialKind ? "task" : "nested"}`, sessionId);
       } finally {
         controller.close();
+        turnCoordinator.close();
       }
     }
   } finally {

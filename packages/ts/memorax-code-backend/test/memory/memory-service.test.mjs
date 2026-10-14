@@ -1,12 +1,50 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { createBackendState } from "../../dist/app/state.js";
 import { createMemoryService } from "../../dist/memory/service.js";
+import { JEV_ENDPOINT, JEV_MODEL } from "../../dist/provider/jev/adapter.js";
+import { cursorTurnStatePath } from "../../dist/clients/cursor/turn-store.js";
 import { clientTracePaths } from "../../dist/trace/config.js";
+import { databaseFixture } from "../clients/cursor/support/database-fixtures.mjs";
+
+test("memory service delegates Cursor pre-compact without replacing the active user turn", async (t) => {
+  const fixture = await databaseFixture();
+  t.after(() => fixture.cleanup());
+  const home = join(fixture.directory, "memorax");
+  const workspace = await realpath(fixture.directory);
+  await repairGitMetadata(workspace, "cursor-pre-compact");
+  const start = { version: 1, client: "cursor", sessionId: fixture.sessionId, turnId: randomUUID(),
+    cwd: workspace, databasePath: fixture.databasePath, prompt: "Synthetic user turn before compaction." };
+  let requests = 0;
+  const service = createMemoryService({ memoraxCodeHome: home,
+    env: { MEMORAX_CODE_HOME: home, MEMORAX_CODE_DEBUG: "false",
+      MEMORAX_CODE_CURSOR_TRACE_ENABLED: "false",
+      MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test", MEMORAX_CODE_MEMORAX_API_KEY: "synthetic-secret",
+      MEMORAX_CODE_MEMORAX_USER_ID: "synthetic-user" },
+    fetchImpl: async () => { requests += 1; throw new Error("compaction observation must stay local"); },
+  });
+  t.after(() => service.close());
+  const turnStart = await service.recordTurnStart(start);
+  assert.equal(turnStart.recorded, true);
+  assert.equal(turnStart.repoMemoryWorktree, workspace);
+  fixture.writeCompaction({
+    latestGenerationId: start.turnId, rootMessageIds: ["a".repeat(64), "b".repeat(64)],
+  });
+  const statePath = cursorTurnStatePath(home, fixture.sessionId);
+  const before = JSON.parse(await readFile(statePath, "utf8"));
+  const { prompt, ...identity } = start;
+  const result = await service.recordPreCompact({ ...identity, turnId: randomUUID() });
+  assert.deepEqual(result, { ok: true, recorded: true });
+  const after = JSON.parse(await readFile(statePath, "utf8"));
+  assert.deepEqual(after.active, before.active);
+  assert.deepEqual(after.retiredTurnIds, before.retiredTurnIds);
+  await service.drain();
+  assert.equal(requests, 0);
+});
 
 test("Backend state does not own the memory service", () => {
   const state = createBackendState("127.0.0.1");
@@ -105,7 +143,6 @@ test("CodeBuddy and WorkBuddy isolate equal native IDs through service writeback
   const service = createMemoryService({
     env: {
       MEMORAX_CODE_HOME: home,
-      MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED: "false",
       MEMORAX_CODE_MEMORY_WRITEBACK_ENABLED: "true",
       MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_ENABLED: "false",
       MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
@@ -185,7 +222,6 @@ test("memory service surfaces automatic Add quota on the next supported client t
       MEMORAX_CODE_CODEX_TRACE_ENABLED: "false",
       MEMORAX_CODE_CLAUDE_TRACE_ENABLED: "false",
       MEMORAX_CODE_CODEBUDDY_TRACE_ENABLED: "false",
-      MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED: "false",
       MEMORAX_CODE_MEMORY_WRITEBACK_ENABLED: "true",
       MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_ENABLED: "false",
       MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
@@ -330,7 +366,6 @@ test("memory service discards fallback writeback when turn start upgrades the se
     env: {
       MEMORAX_CODE_HOME: memoraxCodeHome,
       MEMORAX_CODE_CODEX_TRACE_ENABLED: "false",
-      MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED: "false",
       MEMORAX_CODE_MEMORY_WRITEBACK_ENABLED: "true",
       MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_ENABLED: "true",
       MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_MAX_TURNS: "8",
@@ -387,7 +422,7 @@ test("memory service discards fallback writeback when turn start upgrades the se
   }
 });
 
-test("eight native Turns share one QA Add with optional Responses items and stable request retries", { timeout: 60_000 }, async (t) => {
+test("eight native Turns retain search guidance alongside optional archives and stable Add retries", { timeout: 60_000 }, async (t) => {
   for (const scenario of [
     { name: "both enabled", qa: true, archive: true },
     { name: "QA disabled", qa: false, archive: true },
@@ -406,13 +441,16 @@ test("eight native Turns share one QA Add with optional Responses items and stab
       }));
       const transcriptPath = await writeRollout(root, sessionId, turns);
       const requests = [];
+      const guidanceRequests = [];
       const diagnostics = [];
       const service = createMemoryService({
         memoraxCodeHome: home,
         env: {
           MEMORAX_CODE_HOME: home,
           MEMORAX_CODE_CODEX_TRACE_ENABLED: "false",
-          MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED: "false",
+          MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED: "true",
+          MEMORAX_CODE_JEV_ENABLED: "true",
+          MEMORAX_CODE_JEV_API_KEY: "synthetic-jev-key",
           MEMORAX_CODE_MEMORY_WRITEBACK_ENABLED: String(scenario.qa),
           ...(scenario.archive ? { MEMORAX_CODE_CODING_SESSIONS_ENABLED: "true" } : {}),
           MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
@@ -422,6 +460,10 @@ test("eight native Turns share one QA Add with optional Responses items and stab
         diagnosticLogger: (message, fields) => diagnostics.push({ message, fields }),
         fetchImpl: async (url, init) => {
           const body = JSON.parse(init.body);
+          if (String(url) === JEV_ENDPOINT) {
+            guidanceRequests.push(body.state);
+            return Response.json({ model: JEV_MODEL, answers: { search_needed: { type: "noul", noul: 0.8 } } });
+          }
           assert.equal(String(url), "http://memorax.test/v1/memories/add");
           requests.push(body);
           assert.equal(body.event, undefined);
@@ -434,15 +476,26 @@ test("eight native Turns share one QA Add with optional Responses items and stab
         },
       });
       t.after(() => service.close());
-      for (const turn of turns) {
+      assert.deepEqual(service.searchGuidanceStatus(), { enabled: true });
+      for (const [index, turn] of turns.entries()) {
         const command = { version: 1, client: "codex", sessionId, turnId: turn.turnId, cwd: workspace, transcriptPath };
-        await service.recordTurnStart({ ...command, prompt: turn.prompt });
+        const start = { ...command, prompt: turn.prompt };
+        await service.recordTurnStart(start);
+        const guidance = await service.evaluateSearchGuidance(start);
+        assert.equal(guidance.ok, true);
+        assert.equal(guidance.decision, "search");
+        assert.deepEqual(guidanceRequests[index], {
+          current_prompt: turn.prompt,
+          ...(index > 0 ? { previous_turn: { user: turns[index - 1].prompt, assistant: turns[index - 1].reply } } : {}),
+        });
         const result = await service.writebackTurn({ ...command, lastAssistantMessage: turn.reply });
         assert.equal(result.scheduled, scenario.qa);
         if (!scenario.qa) assert.equal(result.reason, "disabled");
       }
       if (scenario.qa) await waitForAcceptedWritebacks(diagnostics, 1);
       await service.drain();
+      assert.equal(guidanceRequests.length, 8, "guidance remains independent of QA and archive enablement");
+      assert.doesNotMatch(JSON.stringify(guidanceRequests), /Tool-only output|function_call/);
       assert.equal(requests.length, scenario.qa ? (scenario.archive ? 2 : 1) : 0);
       const archives = requests.flatMap((request) => request.coding_context ? [request.coding_context] : []);
       assert.equal(archives.length, scenario.qa && scenario.archive ? 2 : 0);
@@ -626,7 +679,7 @@ test("memory service records confirmed completion failures without changing Hook
       const service = createMemoryService({
         memoraxCodeHome,
         env: { MEMORAX_CODE_HOME: memoraxCodeHome, MEMORAX_CODE_DEBUG: "false",
-          MEMORAX_CODE_CODEX_TRACE_ENABLED: "false", MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED: "false",
+          MEMORAX_CODE_CODEX_TRACE_ENABLED: "false",
           MEMORAX_CODE_MEMORY_WRITEBACK_ENABLED: String(!scenario.disabled),
           MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_ENABLED: "false",
           MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test", MEMORAX_CODE_MEMORAX_API_KEY: "secret",

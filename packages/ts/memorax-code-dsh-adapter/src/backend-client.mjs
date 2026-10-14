@@ -79,6 +79,10 @@ export function createDshBackendClient(options = {}) {
       await waitForEnsure(ensureReady(), request?.signal, 12_000);
       return httpClient.recordTurnStart(command, request);
     },
+    async evaluateSearchGuidance(command, request) {
+      // The accepted Turn start already awaited recovery; guidance has its own short deadline.
+      return httpClient.evaluateSearchGuidance(command, request);
+    },
     async recordSkillReminder(command, request) {
       await waitForEnsure(ensureReady(), request?.signal, 5_000);
       return httpClient.recordSkillReminder(command, request);

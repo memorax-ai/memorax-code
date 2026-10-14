@@ -110,7 +110,7 @@ export function ensureOpenCodePluginInstalled(options = {}) {
   let stage = "skill-stage";
   try {
     if (!skillCurrent) {
-      materializeSkill(paths.skillSourcePath, paths.skillPath, paths.memoraxCodeCommand);
+      materializeSkill(paths.skillSourcePath, paths.skillPath, paths.memoraxCodeCommand, paths.memoraxCodeHome);
     }
     stage = "plugin-write";
     if (!pluginCurrent) atomicWriteText(paths.pluginPath, loader);
@@ -563,7 +563,7 @@ function createManagedRepoMemoryHelperLoader(paths, sourceSha256) {
   ].join("\n");
 }
 
-function materializeSkill(sourcePath, targetPath, memoraxCodeCommand) {
+function materializeSkill(sourcePath, targetPath, memoraxCodeCommand, memoraxCodeHome) {
   const stagePath = `${targetPath}.tmp-${process.pid}-${randomUUID()}`;
   let stage = "skill-stage";
   try {
@@ -571,7 +571,7 @@ function materializeSkill(sourcePath, targetPath, memoraxCodeCommand) {
     cpSync(sourcePath, stagePath, { recursive: true });
     atomicWriteJson(
       join(stagePath, SKILL_PACKAGE_METADATA),
-      skillPackageMetadata(memoraxCodeCommand),
+      skillPackageMetadata(memoraxCodeCommand, memoraxCodeHome),
     );
     stage = "skill-remove";
     withWindowsDirectoryRetry(() => rmSync(targetPath, { recursive: true, force: true }));
@@ -639,13 +639,14 @@ function skillContentsCurrent(paths) {
   return directoriesEqual(paths.skillSourcePath, paths.skillPath)
     && fileContentsEqual(
       join(paths.skillPath, SKILL_PACKAGE_METADATA),
-      `${JSON.stringify(skillPackageMetadata(paths.memoraxCodeCommand), null, 2)}\n`,
+      `${JSON.stringify(skillPackageMetadata(paths.memoraxCodeCommand, paths.memoraxCodeHome), null, 2)}\n`,
     );
 }
 
-function skillPackageMetadata(memoraxCodeCommand) {
+function skillPackageMetadata(memoraxCodeCommand, memoraxCodeHome) {
   return {
     version: 1,
+    memoraxCodeHome,
     ...(memoraxCodeCommand ? { memoraxCodeCommand } : {}),
   };
 }

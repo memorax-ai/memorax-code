@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import { createHash } from "node:crypto";
 
 export function contentTurnId(sessionId, boundary, prompt) {
@@ -43,5 +44,12 @@ export function memoryHookCommands() {
     { start: { ...codebuddy, prompt }, writeback: codebuddy },
     { start: { ...workbuddy, prompt }, writeback: workbuddy },
     { start: trae, writeback: { ...trae, lastAssistantMessage: `  ${lastAssistantMessage}  ` } },
+    {
+      start: { ...base("cursor"), sessionId: "11111111-1111-4111-8111-111111111111",
+        turnId: "22222222-2222-4222-8222-222222222222", databasePath: resolve("cursor-fixture", "state.vscdb"), cwd, prompt, transcriptPath },
+      writeback: { ...base("cursor"), sessionId: "11111111-1111-4111-8111-111111111111",
+        turnId: "22222222-2222-4222-8222-222222222222", databasePath: resolve("cursor-fixture", "state.vscdb"), cwd, transcriptPath,
+        phase: "stop", status: "completed" },
+    },
   ];
 }

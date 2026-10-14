@@ -15,6 +15,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
+import { withJsonFileLock } from "./config-utils.mjs";
 import { randomUUID } from "node:crypto";
 import { basename, dirname, join } from "node:path";
 
@@ -37,6 +38,44 @@ const defaultOperations = {
   writeFileSync,
 };
 
+// All setup and migration writers share this lock; package/lifecycle locks differ.
+export function updateConfigFileWithLock(options) {
+  const { path, warn = console.warn, onFailure } = options;
+  if (options.defaultText === undefined) {
+    try { lstatSync(path); } catch (error) {
+      if (isNodeError(error) && error.code === "ENOENT") return "unchanged";
+      return failed(warn, onFailure, "read", error);
+    }
+  }
+  let stage = "lock";
+  let result;
+  let primaryFailure;
+  try {
+    withJsonFileLock(path, () => {
+      result = updateConfigFileAtomically({
+        ...options,
+        warn: () => {},
+        onFailure: (failure) => { primaryFailure ??= failure; },
+      });
+      stage = "unlock";
+      return result;
+    });
+  } catch (error) {
+    const lockError = error?.code === "JSON_FILE_LOCK_RELEASE_FAILED" ? error.cause ?? error : error;
+    if (primaryFailure) {
+      return failed(warn, onFailure, primaryFailure.stage, undefined, {
+        ...primaryFailure,
+        ...(primaryFailure.cleanupErrorCode ? {} : cleanupFields(lockError, "CONFIG_LOCK_RELEASE_FAILED")),
+      });
+    }
+    return failed(warn, onFailure, stage, lockError, {
+      configState: result === "created" || result === "updated" ? "unknown" : "preserved",
+    });
+  }
+  if (primaryFailure) return failed(warn, onFailure, primaryFailure.stage, undefined, primaryFailure);
+  return result;
+}
+
 export function updateConfigFileAtomically({
   path,
   defaultText,
@@ -55,6 +94,8 @@ export function updateConfigFileAtomically({
   } catch (error) {
     if (!isNodeError(error) || error.code !== "ENOENT") return failed(warn, onFailure, "read", error);
   }
+
+  if (!existingStat && defaultText === undefined) return "unchanged";
 
   let existingText;
   if (existingStat) {

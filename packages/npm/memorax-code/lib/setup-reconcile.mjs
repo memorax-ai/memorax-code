@@ -104,7 +104,7 @@ function lifecycleReport(result) {
 }
 
 export function failedLifecycleAdapters(report) {
-  return ["codex", "claude", "dsh", "opencode", "codebuddy", "workbuddy", "trae"].flatMap((client) => {
+  return ["codex", "claude", "dsh", "opencode", "codebuddy", "workbuddy", "trae", "cursor"].flatMap((client) => {
     const adapter = report?.[`${client}Adapter`];
     return adapter?.ok === false ? [{ ...adapter, client }] : [];
   });

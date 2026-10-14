@@ -31,11 +31,13 @@ async function createPackageFixture(version) {
     "windows-directory-retry.mjs",
     "package-recovery.mjs",
     "setup-completion.mjs",
+    "memorax-code-config-file.mjs", "jev-config-defaults.mjs",
   ]) {
     const target = join(root, "lib", "memorax-code-adapter-common", "src", name);
     await mkdir(dirname(target), { recursive: true });
     await cp(join(commonRoot, name), target);
   }
+  await cp(join(packageRoot, "..", "..", "ts", "memorax-code-backend", "node_modules", "smol-toml"), join(root, "node_modules", "smol-toml"), { recursive: true });
   await cp(join(packageRoot, "lib", "run-entrypoint.mjs"), join(root, "lib", "run-entrypoint.mjs"));
   await cp(join(packageRoot, "lib", "setup-api-key-input.mjs"), join(root, "lib", "setup-api-key-input.mjs"));
   await cp(join(packageRoot, "lib", "resolve-claude-command.mjs"), join(root, "lib", "resolve-claude-command.mjs"));
