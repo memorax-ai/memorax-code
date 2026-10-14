@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import {
-  captureClaudeTurnStartCorrelation,
+  captureClaudeTurnStartSnapshot,
   type ClaudeTurnStartCorrelation,
+  type ClaudeTurnStartSnapshot,
   readClaudeInterruptedTranscriptTurn,
   readClaudeWritebackTurn,
   readClaudeArchiveSource,
@@ -81,8 +82,8 @@ const DEFAULT_TRANSCRIPT_READ_ATTEMPTS = 6;
 const DEFAULT_TRANSCRIPT_RETRY_DELAY_MS = 100;
 
 type ClaudeObservationStatus = {
-  closed: boolean;
-  pending?: Promise<ClaudeMemoryHookWritebackResult>;
+  settled: boolean;
+  pending?: Promise<void>;
 };
 
 type ClaudeStartObservation = {
@@ -120,12 +121,15 @@ export function createClaudeMemoryHookRuntime(
     }
   }
 
-  async function performWriteback(command: ClaudeWritebackCommand): Promise<ClaudeMemoryHookWritebackResult> {
+  async function performWriteback(
+    command: ClaudeWritebackCommand,
+    start: ClaudeStartObservation | undefined,
+    materialized?: ClaudeTranscriptTurnResult | ClaudeCodingSessionTurnResult,
+  ): Promise<ClaudeMemoryHookWritebackResult> {
     prune();
     const request = writebackRequestFromCommand(command);
     if (!request.sessionId) return skipped("missing_session_id");
     if (!request.lastAssistantMessage) return skipped("assistant_message_missing");
-    const start = starts.get(claudeStartAlias(request.sessionId, request.promptId));
     if (start && request.transcriptPath !== start.command.transcriptPath) return skipped("turn_metadata_mismatch");
     const clientTurnId = start?.key ?? request.promptId;
     const coordinatorKey = clientTurnId
@@ -143,21 +147,21 @@ export function createClaudeMemoryHookRuntime(
     }
 
     if (start?.previousStatus?.pending) {
-      try { await start.previousStatus.pending; } catch { /* An unaccepted predecessor remains unresolved. */ }
+      await start.previousStatus.pending;
     }
-    const transcript: ClaudeTranscriptTurnResult | ClaudeCodingSessionTurnResult = unresolvedPrevious(start) ? { ok: false, reason: "turn_ambiguous" } as const
-      : start?.failure ? { ok: false, reason: start.failure } as const
+    const transcript: ClaudeTranscriptTurnResult | ClaudeCodingSessionTurnResult = materialized ?? (start?.failure ? { ok: false, reason: start.failure } as const
       : await readExactTranscriptTurnWithRetry({
       transcriptPath,
       sessionId: request.sessionId,
       promptId: request.promptId,
       ...(start?.correlation ? { correlation: start.correlation } : {}),
-    }, options);
+    }, options));
     const turnEndRecord = await recordClaudeTurnEnd(
       options,
       traceContext,
       request.lastAssistantMessage,
       transcript.ok ? transcript.turn : undefined,
+      materialized ? "claude-transcript" : "claude-hook",
     );
     if (!transcript.ok) {
       options.diagnosticLogger?.("claude_memory_hook.writeback", {
@@ -174,7 +178,7 @@ export function createClaudeMemoryHookRuntime(
     }
     // The Hook reply is diagnostic evidence only; persisted transcript content
     // remains authoritative even when the two texts differ.
-    recordAssistantConsistencyDiagnostic(
+    if (!materialized) recordAssistantConsistencyDiagnostic(
       transcript.turn.assistantReply,
       request.lastAssistantMessage,
       request,
@@ -188,15 +192,10 @@ export function createClaudeMemoryHookRuntime(
     const nativeKey = JSON.stringify([request.sessionId, transcript.turn.nativeUserUuid,
       repositoryMemory.ok ? repositoryMemory.memory.scope : undefined]);
     if (accepted.has(nativeKey)) {
-      if (start) start.status.closed = true;
       return { ok: true, scheduled: true };
     }
     const pending = completing.get(nativeKey);
-    if (pending) {
-      const result = await pending;
-      if (result.scheduled && start) start.status.closed = true;
-      return result;
-    }
+    if (pending) return pending;
     const completion = (async (): Promise<ClaudeMemoryHookWritebackResult> => {
       const writeback = await memory.completeTurn({
         sessionId: request.sessionId,
@@ -243,11 +242,68 @@ export function createClaudeMemoryHookRuntime(
       });
       accepted.set(nativeKey, now());
       while (accepted.size > maxEntries) accepted.delete(accepted.keys().next().value!);
-      if (start) start.status.closed = true;
       return { ok: true, scheduled: true };
     })();
     completing.set(nativeKey, completion);
     try { return await completion; } finally { completing.delete(nativeKey); }
+  }
+
+  function observeProcessing(
+    start: ClaudeStartObservation | undefined,
+    completion: Promise<ClaudeMemoryHookWritebackResult>,
+  ): Promise<ClaudeMemoryHookWritebackResult> {
+    if (start) {
+      // Track every concurrent attempt: a fast rejection must not hide a slow Stop.
+      const pending = Promise.allSettled([start.previousStatus?.pending, start.status.pending, completion]).then(() => {
+        if (start.status.pending !== pending) return;
+        delete start.status.pending;
+        start.status.settled = true;
+      });
+      start.status.pending = pending;
+    }
+    return completion;
+  }
+
+  function settlePreviousStart(
+    previous: ClaudeStartObservation,
+    snapshot: ClaudeTurnStartSnapshot | undefined,
+  ): Promise<ClaudeMemoryHookWritebackResult> {
+    const input = {
+      sessionId: previous.command.sessionId,
+      promptId: previous.command.promptId,
+      correlation: previous.correlation,
+    };
+    // Resolve the captured prefix before waiting, so pending work retains only this Turn's result.
+    const transcript = !previous.failure && snapshot && previous.correlation
+      ? snapshot.writeback(input, {
+        captureCodingItems: options.captureCodingTurns,
+        onArchiveSkipped: () => options.diagnosticLogger?.("coding_sessions.attachment_skipped", {
+          reason: "projection_failed",
+        }),
+      }) : undefined;
+    const interrupted = transcript && !transcript.ok ? snapshot?.interrupted(input) : undefined;
+    const completion = (async (): Promise<ClaudeMemoryHookWritebackResult> => {
+      await previous.previousStatus?.pending;
+      if (transcript?.ok) {
+        return performWriteback({
+          ...previous.command, version: 1, client: CLAUDE_MEMORY_TURN_CLIENT,
+          lastAssistantMessage: transcript.turn.assistantReply,
+        }, previous, transcript);
+      }
+      if (interrupted?.ok) {
+        const traceContext = claudeObservationTrace(previous.command.traceContext, previous.key, previous.command.promptId);
+        if (traceContext) await recordClaudeInterruptedTurnEnd(options, traceContext, interrupted.turn);
+        turnCoordinator.discardTurn(claudeTurnKey(previous.command.sessionId, previous.key), "interrupted");
+        return skipped("assistant_message_missing");
+      }
+      turnCoordinator.discardTurn(claudeTurnKey(previous.command.sessionId, previous.key), "superseded");
+      options.diagnosticLogger?.("claude_memory_hook.previous_turn_superseded", {
+        sessionId: previous.command.sessionId, promptId: previous.command.promptId,
+        metadataDisposition: "discarded",
+      });
+      return skipped("assistant_message_missing");
+    })();
+    return observeProcessing(previous, completion);
   }
 
   return {
@@ -266,7 +322,7 @@ export function createClaudeMemoryHookRuntime(
         return { ok: true };
       }
       prune();
-      const snapshot = await captureClaudeTurnStartCorrelation(turn);
+      const snapshot = await captureClaudeTurnStartSnapshot(turn);
       const key = `claude-start:${createHash("sha256").update(JSON.stringify([
         turn.sessionId, turn.promptId, turn.transcriptPath, turn.cwd, turn.workspaceKind,
         snapshot.ok ? snapshot.correlation : ["unavailable", turn.createdAt],
@@ -274,12 +330,25 @@ export function createClaudeMemoryHookRuntime(
       const alias = claudeStartAlias(turn.sessionId, turn.promptId);
       const previous = starts.get(alias);
       const duplicate = previous?.key === key;
-      if (!duplicate) await reconcilePreviousInterruptedTurn(turnCoordinator, turn, options, now, starts);
+      let settlement: Promise<ClaudeMemoryHookWritebackResult> | undefined;
+      if (!duplicate) {
+        if (previous && !previous.status.settled && !previous.status.pending) {
+          const waiting = previous.previousStatus?.pending;
+          const pending = settlePreviousStart(previous,
+            snapshot.ok && snapshot.correlation.endBytes && previous.command.transcriptPath === turn.transcriptPath
+              ? snapshot.snapshot : undefined);
+          if (!waiting) settlement = pending;
+        } else if (!previous) {
+          await reconcilePreviousInterruptedTurn(
+            turnCoordinator, turn, options, now, starts, snapshot.ok ? snapshot.snapshot : undefined,
+          );
+        }
+      }
       const { prompt, ...identity } = turn;
       const observation: ClaudeStartObservation = duplicate ? previous : {
-        command: identity, key, status: { closed: false },
+        command: identity, key, status: { settled: false },
         ...(snapshot.ok ? { correlation: snapshot.correlation } : { failure: snapshot.reason }),
-        ...(previous && !previous.status.closed ? { previousStatus: previous.status } : {}),
+        ...(previous?.status.pending ? { previousStatus: previous.status } : {}),
       };
       starts.delete(alias);
       starts.set(alias, observation);
@@ -295,12 +364,14 @@ export function createClaudeMemoryHookRuntime(
         prompt,
         diagnosticFields: { sessionId: turn.sessionId, promptId: turn.promptId },
       });
+      // Publish this occurrence before waiting: a later start must not be overwritten.
+      await settlement;
       return { ...result, claudeTurnKey: key };
     },
     searchGuidanceTurnKey(command) {
       prune();
       const start = starts.get(claudeStartAlias(command.sessionId, command.promptId));
-      if (!start || start.status.closed || unresolvedPrevious(start) || start.failure || command.claudeTurnKey !== start.key
+      if (!start || start.status.settled || hasPendingPrevious(start) || start.failure || command.claudeTurnKey !== start.key
         || command.transcriptPath !== start.command.transcriptPath
         || createHash("sha256").update(command.prompt.trim()).digest("hex") !== start.correlation?.promptDigest
         || command.cwd !== start.command.cwd
@@ -309,11 +380,7 @@ export function createClaudeMemoryHookRuntime(
     },
     async writeback(command) {
       const start = starts.get(claudeStartAlias(command.sessionId, command.promptId));
-      const pending = performWriteback(command);
-      if (start) start.status.pending = pending;
-      try { return await pending; } finally {
-        if (start?.status.pending === pending) delete start.status.pending;
-      }
+      return observeProcessing(start, performWriteback(command, start));
     },
     size() {
       return memory.size();
@@ -393,6 +460,7 @@ async function recordClaudeTurnEnd(
   traceContext: TraceContext | undefined,
   assistantMessage: string,
   transcript?: ClaudeTranscriptTurn,
+  source: "claude-hook" | "claude-transcript" = "claude-hook",
 ): Promise<TraceEventWriteResult | undefined> {
   const eventId = traceTurnEventId(traceContext, "turn_end");
   const recorded = await recordTraceBestEffort("claude_memory_hook.turn_end_event", recordClaudeTraceEvent({
@@ -401,7 +469,7 @@ async function recordClaudeTurnEnd(
     env: options.env,
     traceContext,
     type: "turn_end",
-    source: "claude-hook",
+    source,
     operation: "reply",
     ok: true,
     outcome: "completed",
@@ -460,6 +528,7 @@ async function reconcilePreviousInterruptedTurn(
   options: ClaudeMemoryHookRuntimeOptions,
   now: () => number,
   starts: ReadonlyMap<string, ClaudeStartObservation>,
+  snapshot: ClaudeTurnStartSnapshot | undefined,
 ): Promise<void> {
   const candidate = await previousInterruptedTurnCandidate(
     turnCoordinator,
@@ -469,19 +538,21 @@ async function reconcilePreviousInterruptedTurn(
     starts,
   );
   if (!candidate) return;
-  const transcript = await readClaudeInterruptedTranscriptTurn({
-    transcriptPath: candidate.transcriptPath,
+  const selection = {
     sessionId: candidate.sessionId,
     promptId: candidate.promptId,
     ...(candidate.observation?.correlation ? { correlation: candidate.observation.correlation } : {}),
-  });
+  };
+  const transcript = snapshot && candidate.transcriptPath === currentTurn.transcriptPath
+    ? snapshot.interrupted(selection)
+    : await readClaudeInterruptedTranscriptTurn({ transcriptPath: candidate.transcriptPath, ...selection });
   if (!transcript.ok) return;
   await recordClaudeInterruptedTurnEnd(options, candidate.traceContext, transcript.turn);
   turnCoordinator.discardTurn(
     claudeTurnKey(candidate.sessionId, candidate.clientTurnId),
     "interrupted",
   );
-  if (candidate.observation) candidate.observation.status.closed = true;
+  if (candidate.observation) candidate.observation.status.settled = true;
   options.diagnosticLogger?.("claude_memory_hook.interrupted_turn_reconciled", {
     sessionId: candidate.sessionId,
     promptId: candidate.promptId,
@@ -522,7 +593,7 @@ async function previousInterruptedTurnCandidate(
       && start.command.sessionId === currentTurn.sessionId);
     const promptId = observation?.command.promptId ?? open.traceContext.nativeRequestId
       ?? (clientTurnId.startsWith("claude-start:") ? undefined : clientTurnId);
-    if (!promptId || observation?.status.closed || observation?.failure || unresolvedPrevious(observation)) return undefined;
+    if (!promptId || observation?.status.settled || observation?.failure || hasPendingPrevious(observation)) return undefined;
     const cached = turnCoordinator.getTurn(claudeTurnKey(currentTurn.sessionId, clientTurnId));
     return {
       sessionId: currentTurn.sessionId,
@@ -545,7 +616,7 @@ async function previousInterruptedTurnCandidate(
     && start.command.sessionId === currentTurn.sessionId);
   const promptId = observation?.command.promptId ?? cached.traceContext?.nativeRequestId
     ?? (cached.clientTurnId.startsWith("claude-start:") ? undefined : cached.clientTurnId);
-  if (!promptId || observation?.status.closed || observation?.failure || unresolvedPrevious(observation)) return undefined;
+  if (!promptId || observation?.status.settled || observation?.failure || hasPendingPrevious(observation)) return undefined;
   const transcriptPath = cached.transcriptPath ?? currentTurn.transcriptPath;
   const traceContext = cached.traceContext ?? traceContextFromClaudeHookBody({
     sessionId: cached.sessionId,
@@ -628,8 +699,8 @@ function claudeTurnKey(sessionId: string, promptId: string) {
   } as const;
 }
 
-function unresolvedPrevious(start: ClaudeStartObservation | undefined): boolean {
-  return start?.previousStatus !== undefined && !start.previousStatus.closed;
+function hasPendingPrevious(start: ClaudeStartObservation | undefined): boolean {
+  return start?.previousStatus?.pending !== undefined;
 }
 
 function claudeStartAlias(sessionId: string, promptId: string): string {

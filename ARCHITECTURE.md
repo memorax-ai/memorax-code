@@ -796,13 +796,25 @@ that recover do not produce terminal failure records.
   the Backend correlates the start prompt digest with a frozen transcript-prefix
   digest and byte boundary. The user record may already exist at start; its
   terminal record must first appear after the observed boundary. Rewritten
-  prefixes, multiple eligible users, and overlapping unresolved starts fail closed.
+  prefixes and multiple eligible native users fail closed.
   Hook text is correlation evidence, never fallback QA content.
   A bounded in-memory start observation identifies coordinator, guidance, and
   trace state; its local token is returned to the Claude reminder for guidance
   correlation and never sent to the memory provider. Native UUIDs identify
   archive references and completed-writeback deduplication, including concurrent
-  Stops. Enqueue rejection retains the observation for retry. Archive rereads
+  Stops. Processing settlement is independent of enqueue acceptance: a rejected
+  attempt retains metadata for retry without blocking later occurrences of the
+  same Hook prompt ID. Later completions wait only for actual in-flight work,
+  including concurrent attempts and inherited predecessor work. A new occurrence
+  reconciles an unprocessed predecessor within the transcript prefix observed at
+  that start: completed content uses ordinary writeback, confirmed interruption
+  is discarded as interrupted, and otherwise the predecessor is explicitly
+  discarded as superseded. This does not authorize ambiguous native content.
+  Reconciliation against the same transcript reuses that start's captured bytes
+  and parsed complete lines. This snapshot is local to the reconciliation;
+  later Starts, Stops, and archive materialization read native storage again.
+  A late Stop cannot borrow an older final; it still requires a completed native
+  Turn matching the current start and deduplicates by native UUID. Archive rereads
   select the native UUID within the frozen completion prefix.
   Tool results use Session, parent lineage, and selected call identity instead. Conflicts reject
   the Turns they can affect; unresolved ancestry remains fail-closed rather than

@@ -7,6 +7,9 @@ import type { NativeCodingSessionTurnRef } from "../../coding-sessions/contracts
 import { readNativeTranscriptSnapshot } from "../../shared/native-transcript-snapshot.js";
 
 type JsonRecord = Record<string, unknown>;
+type ClaudeTranscriptRecords =
+  | { ok: true; records: JsonRecord[]; offsets: Map<JsonRecord, number> }
+  | { ok: false };
 
 export type ClaudeTurnStartCorrelation = Readonly<{
   // Parse only complete lines, but pin every observed byte, including a partial tail.
@@ -28,6 +31,18 @@ type ClaudeTurnStartInput = Readonly<{ sessionId: string; promptId: string; prom
 export type ClaudeTurnStartCorrelationResult =
   | { ok: true; correlation: ClaudeTurnStartCorrelation }
   | { ok: false; reason: "transcript_unavailable" | "transcript_session_mismatch"; error?: string };
+
+export type ClaudeTurnStartSnapshot = Readonly<{
+  writeback(selection: ClaudeTurnSelection, options?: {
+    captureCodingItems?: boolean;
+    onArchiveSkipped?: () => void;
+  }): ClaudeTranscriptTurnResult | ClaudeCodingSessionTurnResult;
+  interrupted(selection: ClaudeTurnSelection): ClaudeInterruptedTranscriptTurnResult;
+}>;
+
+type ClaudeTurnStartSnapshotResult =
+  | { ok: true; correlation: ClaudeTurnStartCorrelation; snapshot: ClaudeTurnStartSnapshot }
+  | Extract<ClaudeTurnStartCorrelationResult, { ok: false }>;
 
 export type ClaudeTurnTokenUsage = {
   input_tokens: number;
@@ -104,6 +119,13 @@ export type ClaudeInterruptedTranscriptTurnResult =
 export async function captureClaudeTurnStartCorrelation(
   input: ClaudeTurnStartInput & { transcriptPath: string },
 ): Promise<ClaudeTurnStartCorrelationResult> {
+  const result = await captureClaudeTurnStartSnapshot(input);
+  return result.ok ? { ok: true, correlation: result.correlation } : result;
+}
+
+export async function captureClaudeTurnStartSnapshot(
+  input: ClaudeTurnStartInput & { transcriptPath: string },
+): Promise<ClaudeTurnStartSnapshotResult> {
   let bytes: Buffer;
   try {
     bytes = await readFile(input.transcriptPath);
@@ -113,20 +135,21 @@ export async function captureClaudeTurnStartCorrelation(
     }
     bytes = Buffer.alloc(0);
   }
-  return claudeTurnStartCorrelationFromBytes(bytes, input);
+  return claudeTurnStartSnapshotFromBytes(bytes, input);
 }
 
 export function claudeTurnStartCorrelationFromJsonLines(
   transcript: string,
   input: ClaudeTurnStartInput,
 ): ClaudeTurnStartCorrelationResult {
-  return claudeTurnStartCorrelationFromBytes(Buffer.from(transcript, "utf8"), input);
+  const result = claudeTurnStartSnapshotFromBytes(Buffer.from(transcript, "utf8"), input);
+  return result.ok ? { ok: true, correlation: result.correlation } : result;
 }
 
-function claudeTurnStartCorrelationFromBytes(
+function claudeTurnStartSnapshotFromBytes(
   bytes: Buffer,
-  input: ClaudeTurnStartInput,
-): ClaudeTurnStartCorrelationResult {
+  input: ClaudeTurnStartInput & { transcriptPath?: string },
+): ClaudeTurnStartSnapshotResult {
   if (!input.sessionId || !input.promptId || !input.prompt.trim()) {
     return { ok: false, reason: "transcript_unavailable", error: "Claude Turn start identity is incomplete." };
   }
@@ -139,9 +162,36 @@ function claudeTurnStartCorrelationFromBytes(
       && !requestedSessionRecords(parsed.records, input.sessionId)) {
       return { ok: false, reason: "transcript_session_mismatch" };
     }
-    return { ok: true, correlation: {
-      endBytes, observedEndBytes: bytes.length, prefixDigest: textDigest(bytes), promptDigest: textDigest(input.prompt.trim()),
-    } };
+    const transcriptPath = input.transcriptPath;
+    return {
+      ok: true,
+      correlation: {
+        endBytes, observedEndBytes: bytes.length, prefixDigest: textDigest(bytes), promptDigest: textDigest(input.prompt.trim()),
+      },
+      // This parsed prefix lives only through this Start's reconciliation, never in the session cache.
+      snapshot: {
+        writeback(selection, options = {}) {
+          try {
+            const result = resolveClaudeCompletedTranscriptTurn(
+              text, selection, options.captureCodingItems === true, () => options.onArchiveSkipped?.(), parsed,
+            );
+            return result.ok && "items" in result.turn && transcriptPath ? {
+              ok: true,
+              turn: { ...result.turn, source: { transcriptPath, endBytes } },
+            } : result;
+          } catch (error) {
+            return { ok: false, reason: "transcript_unavailable", error: error instanceof Error ? error.message : String(error) };
+          }
+        },
+        interrupted(selection) {
+          try {
+            return resolveClaudeInterruptedTranscriptTurn(text, selection, parsed);
+          } catch (error) {
+            return { ok: false, reason: "transcript_unavailable", error: error instanceof Error ? error.message : String(error) };
+          }
+        },
+      },
+    };
   } catch {
     return { ok: false, reason: "transcript_unavailable", error: "Claude Turn start contains invalid UTF-8." };
   }
@@ -165,6 +215,7 @@ export async function readClaudeTranscriptTurn(input: ClaudeTurnSelection & {
 
 export async function readClaudeInterruptedTranscriptTurn(input: ClaudeTurnSelection & {
   transcriptPath: string;
+  endBytes?: number;
 }): Promise<ClaudeInterruptedTranscriptTurnResult> {
   let transcript: string;
   try {
@@ -188,6 +239,7 @@ export function claudeTranscriptTurnFromJsonLines(
 
 export async function readClaudeWritebackTurn(input: ClaudeTurnSelection & {
   transcriptPath: string;
+  endBytes?: number;
   captureCodingItems?: boolean;
   onArchiveSkipped?: () => void;
 }): Promise<ClaudeTranscriptTurnResult | ClaudeCodingSessionTurnResult> {
@@ -260,14 +312,16 @@ function resolveClaudeCompletedTranscriptTurn(
   input: ClaudeTurnSelection,
   captureCodingItems: boolean,
   onArchiveSkipped: () => void,
+  parsed?: ClaudeTranscriptRecords,
 ): ClaudeTranscriptTurnResult | ClaudeCodingSessionTurnResult;
 function resolveClaudeCompletedTranscriptTurn(
   transcript: string,
   input: ClaudeTurnSelection,
   captureCodingItems: boolean,
   onArchiveSkipped?: () => void,
+  parsed?: ClaudeTranscriptRecords,
 ): ClaudeTranscriptTurnResult | ClaudeCodingSessionTurnResult {
-  const requested = requestedTranscriptRecords(transcript, input.sessionId);
+  const requested = requestedTranscriptRecords(transcript, input.sessionId, parsed);
   if (!requested.ok) return requested;
   const records = requested.records;
   const { recordsByUuid, conflictsByUuid } = indexRecordsByUuid(records);
@@ -351,7 +405,15 @@ export function claudeInterruptedTranscriptTurnFromJsonLines(
   transcript: string,
   input: ClaudeTurnSelection,
 ): ClaudeInterruptedTranscriptTurnResult {
-  const requested = requestedTranscriptRecords(transcript, input.sessionId);
+  return resolveClaudeInterruptedTranscriptTurn(transcript, input);
+}
+
+function resolveClaudeInterruptedTranscriptTurn(
+  transcript: string,
+  input: ClaudeTurnSelection,
+  parsed?: ClaudeTranscriptRecords,
+): ClaudeInterruptedTranscriptTurnResult {
+  const requested = requestedTranscriptRecords(transcript, input.sessionId, parsed);
   if (!requested.ok) return requested;
   const records = requested.records;
   const { recordsByUuid, conflictsByUuid } = indexRecordsByUuid(records);
@@ -467,6 +529,7 @@ function selectClaudeUser(
 function requestedTranscriptRecords(
   transcript: string,
   sessionId: string,
+  parsed = transcriptRecords(transcript),
 ):
   | { ok: true; records: JsonRecord[]; offsets: Map<JsonRecord, number> }
   | {
@@ -474,7 +537,6 @@ function requestedTranscriptRecords(
     reason: "transcript_unavailable" | "transcript_session_mismatch";
     error?: string;
   } {
-  const parsed = transcriptRecords(transcript);
   if (!parsed.ok) {
     return {
       ok: false,
@@ -586,9 +648,7 @@ function requestedSessionRecords(
     : records.slice(requestedSessionStart);
 }
 
-function transcriptRecords(transcript: string):
-  | { ok: true; records: JsonRecord[]; offsets: Map<JsonRecord, number> }
-  | { ok: false } {
+function transcriptRecords(transcript: string): ClaudeTranscriptRecords {
   const records: JsonRecord[] = [];
   const offsets = new Map<JsonRecord, number>();
   const lines = transcript.split("\n");
