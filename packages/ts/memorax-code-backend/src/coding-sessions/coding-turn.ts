@@ -1,9 +1,6 @@
 import { homedir } from "node:os";
 import type { MemoryDiagnosticLogger } from "../memory/observability.js";
-import {
-  hasMeaningfulMemoryPayloadText,
-  redactMemoryPayloadText,
-} from "../memory/payload-redaction.js";
+import { redactMemoryPayloadText } from "../memory/payload-redaction.js";
 
 export type CodingSessionClient = "codex" | "claude-code" | "opencode" | "codebuddy" | "workbuddy";
 
@@ -166,7 +163,8 @@ function prepareItem(
       if (part.type !== (item.role === "user" ? "input_text" : "output_text")) return [];
       return [redactSourceText(part.text, () => onTruncated(fieldIndex))];
     });
-    if (!hasMeaningfulMemoryPayloadText(texts.join("\n"))) return undefined;
+    // Archive messages require text blocks, not QA content eligibility.
+    if (texts.length === 0) return undefined;
     if (item.role === "user") return { type: "message", ...identity, role: "user", content: texts.map((text) => ({ type: "input_text", text })) };
     if (item.role !== "assistant" || (item.phase !== "commentary" && item.phase !== "final_answer")) return undefined;
     return { type: "message", ...identity, role: "assistant", phase: item.phase, content: texts.map((text) => ({ type: "output_text", text })) };
@@ -316,7 +314,7 @@ function fitItem(
       remaining -= jsonBytes(kept) + 1;
       return [kept];
     });
-    if (!hasMeaningfulMemoryPayloadText(content.map((part) => part.text).join("\n"))) return undefined;
+    if (content.length === 0) return undefined;
     return { ...item, content } as ResponseItem;
   }
   const text = "input" in item ? item.input : item.output;

@@ -694,14 +694,31 @@ that recover do not produce terminal failure records.
   capability owns joint QA/attachment scheduling. Codex, Claude Code, OpenCode,
   CodeBuddy, and WorkBuddy materialize
   an ordered text/tool `ResponseItem` subset from the same exact native Turn.
+  Codex modern `item_completed.UserMessage` events identify real user input
+  within the matching native Session and Turn. Exact text blocks and record
+  order correlate each event with its preceding `response_item`; those record
+  types do not share message IDs. QA and the archive's leading user item use
+  the same selected response record, including its timestamp. Native response
+  image wrappers are normalized only for input correlation, preserving text
+  blocks and image order; the selected response content is unchanged. Later
+  user-role context injections cannot replace that input. Duplicate native user events
+  are idempotent; conflicting identities, missing matches, and ambiguous matches
+  fail closed. Multiple genuine inputs retain the last selected input for the
+  single QA pair. Without modern user events, only a unique response user
+  candidate is accepted; the existing legacy text fallback remains available
+  when response text is absent, not when modern correlation fails.
   Codex allowlists native item fields and uses legacy event text only when its
   native message is absent; this includes structured web-search actions and
   tool-discovery calls/results without imposing function-call identity rules
   on hosted tools. The other clients convert their own native records.
   This excludes reasoning and internal metadata and is not a complete Responses
   API transcript for direct replay. Normalization owns redaction and per-Turn
-  bounds. Valid JSON function arguments are redacted as structured values and
-  serialized back to JSON; unchanged arguments retain native formatting. Native
+  bounds. Archive text blocks are retained regardless of content, including short
+  commands and redaction placeholders; QA content eligibility remains in ordinary
+  writeback. Messages still require a supported text block and the Turn must retain
+  its leading user and trailing final answer. Valid JSON function arguments are
+  redacted as structured values and serialized back to JSON; unchanged arguments
+  retain native formatting. Native
   non-JSON arguments remain redacted text. Function calls exceeding the argument
   text limit or remaining Turn budget are omitted whole with loss metadata, never
   sliced into partial JSON. Archive mapping preserves selected text blocks and

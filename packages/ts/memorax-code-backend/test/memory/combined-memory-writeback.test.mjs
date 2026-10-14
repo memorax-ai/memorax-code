@@ -85,6 +85,58 @@ test("native pending archives retain only frozen source authority and a digest",
   assert.equal(pending.reference.source.endBytes, 100);
 });
 
+test("valid tool archives do not bypass existing QA content rejection", async (t) => {
+  const run = setup(t);
+  const source = sourceTurn(1, 1);
+  source.items[2].output = "Tool inspection complete.";
+  assert.ok(preparePendingCodingSessionTurn(source, scope));
+
+  for (const [qa, reason] of [
+    [{ userText: "pwd" }, "user_prompt_empty"],
+    [{ assistantText: "pwd" }, "assistant_text_empty"],
+    [{ userText: "password=synthetic-password" }, "user_prompt_empty"],
+    [{ assistantText: "password=synthetic-password" }, "assistant_text_empty"],
+  ]) {
+    assert.deepEqual(run.enqueue(source, qa), { accepted: false, reason });
+  }
+  await run.runtime.drain();
+  assert.equal(run.requests.length, 0);
+  assert.equal(run.reads(), 0, "rejected QA must not schedule a separate archive reread");
+});
+
+test("ordinary QA keeps the default eight-Turn Add trigger and payload with archives", async (t) => {
+  const run = setup(t);
+  const expectedMessages = [];
+  for (let index = 1; index <= 8; index += 1) {
+    const source = sourceTurn(index, 1);
+    source.items[2].output = `Tool result ${index}.`;
+    assert.deepEqual(run.enqueue(source), { accepted: true });
+    expectedMessages.push(
+      { role: "user", content: `Question ${index}.` },
+      { role: "assistant", content: `Answer ${index}.` },
+    );
+    if (index < 8) {
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(run.requests.length, 0);
+      assert.equal(run.reads(), 0);
+    }
+  }
+
+  const deadline = Date.now() + 2000;
+  while (!run.requests.length && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(run.requests.length, 1, "the eighth Turn must trigger Add before shutdown");
+  const { body } = run.requests[0];
+  assert.deepEqual(body.messages.map(({ role, content }) => ({ role, content })), expectedMessages);
+  assert.equal(body.content_type, "code");
+  assert.equal(body.async_mode, true);
+  assert.deepEqual(body.coding_context.turns.map(({ turn_id }) => turn_id),
+    Array.from({ length: 8 }, (_, index) => `turn-${index + 1}`));
+  assert.equal(body.coding_context.items.filter(({ type }) => type === "function_call").length, 8);
+  assert.equal(body.coding_context.items.filter(({ type }) => type === "function_call_output").length, 8);
+  await run.runtime.drain();
+  assert.equal(run.requests.length, 1);
+});
+
 test("a combined batch between one and two MiB remains in one Add request", async (t) => {
   const run = setup(t);
   for (let index = 1; index <= 2; index += 1) run.enqueue(sourceTurn(index, 6));

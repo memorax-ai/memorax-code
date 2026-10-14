@@ -243,6 +243,293 @@ test("Codex rollout reader prefers response_item messages over legacy event mess
   });
 });
 
+test("Codex user identity keeps later context injections out of QA and archive", () => {
+  for (const injected of ["<environment_context>Injected workspace.</environment_context>", "<skill>Injected procedure.</skill>"]) {
+    const user = responseItemUserMessage("Explain the native parser.", "turn-1");
+    user.payload.id = "response-user";
+    user.timestamp = "2026-09-01T08:00:00.000Z";
+    const earlierContext = responseItemUserMessage(injected, "turn-1");
+    earlierContext.payload.id = "native-user";
+    const laterContext = responseItemUserMessage(injected, "turn-1");
+    laterContext.timestamp = "2026-09-01T08:01:00.000Z";
+    assertCodexSelectedUser([
+      sessionMeta("session-1"), taskStarted("turn-1"), turnContext("turn-1"),
+      earlierContext, user,
+      completedUserMessage(["Explain the native parser."], "native-user"),
+      laterContext,
+      responseMessage("assistant", "The parser selects native input.", "final_answer", "turn-1"),
+      taskComplete("turn-1"),
+    ], user, "Explain the native parser.");
+  }
+});
+
+test("Codex user identity preserves literal context tags and native text blocks", () => {
+  for (const text of ["<environment_context>Explain this tag.</environment_context>", "<skill>Explain this tag.</skill>"]) {
+    const user = responseItemUserMessage(text, "turn-1");
+    user.payload.content.push(
+      { type: "input_text", text: "\n" },
+      { type: "input_text", text: "" },
+      { type: "input_text", text: "  Keep this second block.\n" },
+    );
+    assertCodexSelectedUser([
+      sessionMeta("session-1"), taskStarted("turn-1"), turnContext("turn-1"),
+      user,
+      completedUserMessage([text, "\n", "", "  Keep this second block.\n"], "native-user"),
+      responseItemUserMessage("Unrelated injected context.", "turn-1"),
+      responseMessage("assistant", "The tags are literal user text.", "final_answer", "turn-1"),
+      taskComplete("turn-1"),
+    ], user, `${text}\n  Keep this second block.\n`);
+  }
+});
+
+test("Codex user identity matches native images without rewriting response text", () => {
+  const firstText = "Describe the provided image.";
+  const lastText = "Compare its visible labels.";
+  const open = '<image path="synthetic.png">';
+  const image = { type: "input_image", image_url: "data:image/png;base64,AAAA" };
+  for (const nativeType of ["image", "local_image"]) {
+    for (const wrapped of [false, true]) {
+      const user = responseItemUserMessage(firstText, "turn-1");
+      user.payload.content.push(
+        ...(wrapped ? [{ type: "input_text", text: open }, image, { type: "input_text", text: "</image>" }] : [image]),
+        { type: "input_text", text: lastText },
+      );
+      const native = completedUserMessage([], "native-image-user");
+      native.payload.item.content = [
+        { type: "text", text: firstText },
+        nativeType === "image" ? { type: nativeType, image_url: image.image_url } : { type: nativeType, path: "synthetic.png" },
+        { type: "text", text: lastText },
+      ];
+      assertCodexSelectedUser([
+        sessionMeta("session-1"), taskStarted("turn-1"), turnContext("turn-1"), user, native,
+        responseItemUserMessage("Later context is not the user input.", "turn-1"),
+        responseMessage("assistant", "The image contains labels.", "final_answer", "turn-1"), taskComplete("turn-1"),
+      ], user, wrapped ? `${firstText}\n${open}\n</image>\n${lastText}` : `${firstText}\n${lastText}`);
+    }
+  }
+  const literal = responseItemUserMessage(open, "turn-1");
+  literal.payload.content.push({ type: "input_text", text: "</image>" }, { type: "input_text", text: "Explain these literal tags." });
+  assertCodexSelectedUser([
+    sessionMeta("session-1"), taskStarted("turn-1"), turnContext("turn-1"), literal,
+    completedUserMessage([open, "</image>", "Explain these literal tags."], "native-text-user"),
+    responseMessage("assistant", "These are literal tags.", "final_answer", "turn-1"), taskComplete("turn-1"),
+  ], literal, `${open}\n</image>\nExplain these literal tags.`);
+  const literalImage = responseItemUserMessage(open, "turn-1");
+  literalImage.payload.content.push(image, { type: "input_text", text: "</image>" }, { type: "input_text", text: lastText });
+  const nativeLiteralImage = completedUserMessage([], "native-literal-image");
+  nativeLiteralImage.payload.item.content = [
+    { type: "text", text: open }, { type: "local_image", path: "synthetic.png" },
+    { type: "text", text: "</image>" }, { type: "text", text: lastText },
+  ];
+  assertCodexSelectedUser([
+    sessionMeta("session-1"), taskStarted("turn-1"), turnContext("turn-1"), literalImage, nativeLiteralImage,
+    responseMessage("assistant", "Literal tags surround the image.", "final_answer", "turn-1"), taskComplete("turn-1"),
+  ], literalImage, `${open}\n</image>\n${lastText}`);
+});
+
+test("Codex user identity rejects unmatched image structure and extra context", () => {
+  const text = (value) => ({ type: "input_text", text: value });
+  const caption = text("Describe the image.");
+  const open = text('<image path="synthetic.png">');
+  const close = text("</image>");
+  const image = { type: "input_image", image_url: "data:image/png;base64,AAAA" };
+  const cases = [
+    { name: "wrapper without input_image", nativeImage: true, content: [caption, open, close] },
+    { name: "image wrapper without native image", nativeImage: false, content: [caption, open, image, close] },
+    { name: "different image count", nativeImage: true, content: [caption, image, image] },
+    { name: "different image position", nativeImage: true, content: [image, caption] },
+    { name: "unknown content does not identify an image", nativeImage: true, content: [caption, { type: "input_file", file_id: "synthetic-file" }] },
+    { name: "ordinary context before image", nativeImage: true, content: [caption, text("Extra context."), open, image, close] },
+    { name: "ordinary context after image", nativeImage: true, content: [caption, open, image, close, text("Extra context.")] },
+    { name: "opening tag includes unrelated text", nativeImage: true, content: [caption, text('<image path="synthetic.png">Extra context.'), image, close] },
+    { name: "closing tag includes unrelated text", nativeImage: true, content: [caption, open, image, text("</image>Extra context.")] },
+    { name: "opening tag contains prose", nativeImage: true, content: [caption, text("<image arbitrary injected prose>"), image, close] },
+    { name: "opening tag contains a newline", nativeImage: true, content: [caption, text('<image\npath="synthetic.png">'), image, close] },
+    { name: "opening tag path contains a newline", nativeImage: true, content: [caption, text('<image path="synthetic\n.png">'), image, close] },
+  ];
+  for (const { name, nativeImage, content } of cases) {
+    const user = responseItemUserMessage("Describe the image.", "turn-1");
+    user.payload.content = content;
+    const native = completedUserMessage(["Describe the image."], "native-user");
+    if (nativeImage) native.payload.item.content.push({ type: "local_image", path: "synthetic.png" });
+    const transcript = jsonLines([
+      sessionMeta("session-1"), taskStarted("turn-1"), turnContext("turn-1"), user, native,
+      responseMessage("assistant", "An answer cannot repair the input shape.", "final_answer", "turn-1"), taskComplete("turn-1"),
+    ]);
+    const identity = { sessionId: "session-1", turnId: "turn-1" };
+    assert.deepEqual(codexRolloutTurnFromJsonLines(transcript, identity), { ok: false, reason: "user_prompt_missing" }, name);
+    assert.deepEqual(codexCodingSessionTurnFromJsonLines(transcript, identity), { ok: false, reason: "user_prompt_missing" }, name);
+  }
+});
+
+test("Codex user identity selects the last real input within its native message boundary", () => {
+  for (const secondText of ["Use the revised input.", "Use the initial input."]) {
+    const first = responseItemUserMessage("Use the initial input.", "turn-1");
+    first.payload.id = "response-first";
+    const last = responseItemUserMessage(secondText, "turn-1");
+    last.payload.id = "response-last";
+    last.timestamp = "2026-09-01T08:02:00.000Z";
+    assertCodexSelectedUser([
+      sessionMeta("session-1"), taskStarted("turn-1"), turnContext("turn-1"),
+      first, completedUserMessage(["Use the initial input."], "native-first"),
+      responseMessage("assistant", "Working on the input.", "commentary", "turn-1"),
+      last, completedUserMessage([secondText], "native-last"),
+      responseItemUserMessage("<skill>Injected after the real input.</skill>", "turn-1"),
+      responseMessage("assistant", "Applied the last input.", "final_answer", "turn-1"),
+      taskComplete("turn-1"),
+    ], last, secondText);
+  }
+});
+
+test("Codex user identity treats repeated native message identities as idempotent", () => {
+  for (const duplicateBeforeLastEvent of [true, false]) {
+    const first = completedUserMessage(["Initial input."], "native-first");
+    const last = responseItemUserMessage("Revised input.", "turn-1");
+    last.payload.id = "response-last";
+    assertCodexSelectedUser([
+      sessionMeta("session-1"), taskStarted("turn-1"), turnContext("turn-1"),
+      responseItemUserMessage("Initial input.", "turn-1"), first,
+      last,
+      ...(duplicateBeforeLastEvent ? [first] : []),
+      completedUserMessage(["Revised input."], "native-last"),
+      ...(!duplicateBeforeLastEvent ? [first] : []),
+      responseItemUserMessage("Later context must not replace native input.", "turn-1"),
+      responseMessage("assistant", "Applied the revised input.", "final_answer", "turn-1"),
+      taskComplete("turn-1"),
+    ], last, "Revised input.");
+  }
+});
+
+test("Codex user identity rejects a repeated native identity with different image content", () => {
+  for (const nativeType of ["image", "local_image"]) {
+    const user = responseItemUserMessage("Describe the image.", "turn-1");
+    user.payload.content.push({ type: "input_image", image_url: "data:image/png;base64,AAAA" });
+    const first = completedUserMessage(["Describe the image."], "same-native-id");
+    const changed = completedUserMessage(["Describe the image."], "same-native-id");
+    first.payload.item.content.push(nativeType === "image"
+      ? { type: nativeType, image_url: "data:image/png;base64,AAAA" }
+      : { type: nativeType, path: "synthetic-first.png" });
+    changed.payload.item.content.push(nativeType === "image"
+      ? { type: nativeType, image_url: "data:image/png;base64,BBBB" }
+      : { type: nativeType, path: "synthetic-second.png" });
+    const transcript = jsonLines([
+      sessionMeta("session-1"), taskStarted("turn-1"), turnContext("turn-1"), user, first, changed,
+      responseMessage("assistant", "The image has a label.", "final_answer", "turn-1"), taskComplete("turn-1"),
+    ]);
+    const identity = { sessionId: "session-1", turnId: "turn-1" };
+    const failure = { ok: false, reason: "user_prompt_ambiguous" };
+    assert.deepEqual(codexRolloutTurnFromJsonLines(transcript, identity), failure, nativeType);
+    assert.deepEqual(codexCodingSessionTurnFromJsonLines(transcript, identity), failure, nativeType);
+    assert.deepEqual(codexInterruptedRolloutTurnFromJsonLines(
+      transcript + jsonLines([turnAborted("turn-1")]), identity,
+    ), failure, nativeType);
+  }
+});
+
+test("Codex user identity fails closed for missing, conflicting, or ambiguous native association", () => {
+  const missingThread = completedUserMessage(["Actual input."], "native-user");
+  delete missingThread.payload.thread_id;
+  const missingTurn = completedUserMessage(["Actual input."], "native-user");
+  delete missingTurn.payload.turn_id;
+  const otherThread = completedUserMessage(["Actual input."], "native-user");
+  otherThread.payload.thread_id = "other-session";
+  const cases = [
+    { name: "missing matching response", reason: "user_prompt_missing", records: [
+      responseItemUserMessage("Injected context.", "turn-1"),
+      completedUserMessage(["Actual input."], "native-user"),
+    ] },
+    { name: "legacy text cannot repair missing modern association", reason: "user_prompt_missing", records: [
+      responseItemUserMessage("Injected context.", "turn-1"),
+      userMessage("Actual input."),
+      completedUserMessage(["Actual input."], "native-user"),
+    ] },
+    { name: "matching response occurs after the native boundary", reason: "user_prompt_missing", records: [
+      completedUserMessage(["Actual input."], "native-user"),
+      responseItemUserMessage("Actual input.", "turn-1"),
+    ] },
+    { name: "empty native input does not allow response fallback", reason: "user_prompt_missing", records: [
+      responseItemUserMessage("Actual input.", "turn-1"), completedUserMessage([], "native-user"),
+    ] },
+    { name: "missing native thread", reason: "turn_metadata_mismatch", records: [
+      responseItemUserMessage("Actual input.", "turn-1"), missingThread,
+    ] },
+    { name: "missing native turn", reason: "turn_metadata_mismatch", records: [
+      responseItemUserMessage("Actual input.", "turn-1"), missingTurn,
+    ] },
+    { name: "conflicting native thread", reason: "turn_metadata_mismatch", records: [
+      responseItemUserMessage("Actual input.", "turn-1"), otherThread,
+    ] },
+    { name: "conflicting native turn", reason: "turn_metadata_mismatch", records: [
+      responseItemUserMessage("Actual input.", "turn-1"),
+      completedUserMessage(["Actual input."], "native-user", "other-turn"),
+    ] },
+    { name: "indistinguishable earlier candidates", reason: "user_prompt_ambiguous", records: [
+      responseItemUserMessage("Actual input.", "turn-1"),
+      responseItemUserMessage("Actual input.", "turn-1"),
+      completedUserMessage(["Actual input."], "native-user"),
+    ] },
+    { name: "missing native item identity", reason: "user_prompt_ambiguous", records: [
+      responseItemUserMessage("Actual input.", "turn-1"),
+      completedUserMessage(["Actual input."], undefined),
+    ] },
+    { name: "conflicting repeated native identity", reason: "user_prompt_ambiguous", records: [
+      responseItemUserMessage("Initial input.", "turn-1"),
+      completedUserMessage(["Initial input."], "same-native-id"),
+      responseItemUserMessage("Revised input.", "turn-1"),
+      completedUserMessage(["Revised input."], "same-native-id"),
+    ] },
+    { name: "joined text is not identical text blocks", reason: "user_prompt_missing", records: [
+      responseItemUserMessage("First block.\nSecond block.", "turn-1"),
+      completedUserMessage(["First block.", "Second block."], "native-user"),
+    ] },
+    { name: "response-only multiple candidates", reason: "user_prompt_ambiguous", records: [
+      responseItemUserMessage("Initial candidate.", "turn-1"),
+      responseItemUserMessage("Later candidate.", "turn-1"),
+    ] },
+    { name: "legacy text cannot repair multiple response candidates", reason: "user_prompt_ambiguous", records: [
+      responseItemUserMessage("Initial candidate.", "turn-1"),
+      userMessage("Initial candidate."),
+      responseItemUserMessage("Later candidate.", "turn-1"),
+    ] },
+  ];
+  for (const { name, records, reason } of cases) {
+    const transcript = jsonLines([
+      sessionMeta("session-1"), taskStarted("turn-1"), turnContext("turn-1"),
+      ...records,
+      responseMessage("assistant", "A final reply cannot repair user identity.", "final_answer", "turn-1"),
+      taskComplete("turn-1"),
+    ]);
+    const identity = { sessionId: "session-1", turnId: "turn-1" };
+    assert.deepEqual(codexRolloutTurnFromJsonLines(transcript, identity), { ok: false, reason }, name);
+    assert.deepEqual(codexCodingSessionTurnFromJsonLines(transcript, identity), { ok: false, reason }, name);
+    assert.deepEqual(codexInterruptedRolloutTurnFromJsonLines(
+      transcript + jsonLines([turnAborted("turn-1")]), identity,
+    ), { ok: false, reason }, name);
+  }
+});
+
+test("Codex user identity cannot borrow matching response text from another turn", () => {
+  const transcript = jsonLines([
+    sessionMeta("session-1"), taskStarted("earlier-turn"), turnContext("earlier-turn"),
+    responseItemUserMessage("Repeated input.", "earlier-turn"),
+    completedUserMessage(["Repeated input."], "native-earlier", "earlier-turn"),
+    responseMessage("assistant", "Earlier answer.", "final_answer", "earlier-turn"),
+    taskComplete("earlier-turn"),
+    taskStarted("turn-1"), turnContext("turn-1"),
+    responseItemUserMessage("Unrelated injected context.", "turn-1"),
+    completedUserMessage(["Repeated input."], "native-target"),
+    responseMessage("assistant", "Target answer.", "final_answer", "turn-1"),
+    taskComplete("turn-1"),
+  ]);
+  const identity = { sessionId: "session-1", turnId: "turn-1" };
+  assert.deepEqual(codexRolloutTurnFromJsonLines(transcript, identity), {
+    ok: false, reason: "user_prompt_missing",
+  });
+  assert.deepEqual(codexCodingSessionTurnFromJsonLines(transcript, identity), {
+    ok: false, reason: "user_prompt_missing",
+  });
+});
+
 test("Codex rollout reader fails closed for conflicting response_item turn metadata", () => {
   for (const conflictingRole of ["user", "assistant"]) {
     const transcript = jsonLines([
@@ -835,6 +1122,37 @@ test("Codex interrupted rollout reader reports an unavailable transcript without
   assert.equal(result.reason, "transcript_unavailable");
   assert.equal(typeof result.error, "string");
 });
+
+function assertCodexSelectedUser(records, expectedResponse, expectedPrompt) {
+  const transcript = jsonLines(records);
+  const identity = { sessionId: "session-1", turnId: "turn-1" };
+  const qa = codexRolloutTurnFromJsonLines(transcript, identity);
+  const archive = codexCodingSessionTurnFromJsonLines(transcript, identity);
+  assert.equal(qa.ok, true);
+  assert.equal(archive.ok, true);
+  const { items, closedAt, sessionTurnIndex, ...archiveQa } = archive.turn;
+  assert.deepEqual(archiveQa, qa.turn);
+  assert.equal(qa.turn.userPrompt, expectedPrompt);
+  assert.equal(qa.turn.userTimestamp, Date.parse(expectedResponse.timestamp));
+  assert.deepEqual(items[0], {
+    type: "message", role: "user",
+    ...(expectedResponse.payload.id ? { id: expectedResponse.payload.id } : {}),
+    content: expectedResponse.payload.content.filter((part) => part.type === "input_text")
+      .map(({ text }) => ({ type: "input_text", text })),
+  });
+  assert.equal(items.filter((item) => item.type === "message" && item.role === "user").length, 1);
+}
+
+function completedUserMessage(texts, id, turnId = "turn-1") {
+  return {
+    timestamp: "2026-09-01T08:00:00.100Z",
+    type: "event_msg",
+    payload: {
+      type: "item_completed", thread_id: "session-1", turn_id: turnId,
+      item: { type: "UserMessage", id, content: texts.map((text) => ({ type: "text", text })) },
+    },
+  };
+}
 
 function jsonLines(records) {
   return `${records.map((record) => JSON.stringify(record)).join("\n")}\n`;

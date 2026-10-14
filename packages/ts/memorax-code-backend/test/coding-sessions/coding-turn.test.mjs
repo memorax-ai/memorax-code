@@ -8,6 +8,93 @@ import {
   prepareCodingSessionTurn,
 } from "../../dist/coding-sessions/coding-turn.js";
 
+test("archive messages retain short commands and redacted-only QA for every supported client", () => {
+  for (const client of ["codex", "claude-code", "opencode", "codebuddy", "workbuddy"]) {
+    const tool = { type: "function_call", call_id: "call-pwd", name: "shell", arguments: '{"command":"pwd"}' };
+    const turn = prepareCodingSessionTurn({
+      client, sessionId: "session-1", turnId: "turn-1", turnIndex: 1,
+      outcome: "completed", closedAt: "2026-08-30T08:00:00Z",
+      items: [
+        { type: "message", role: "user", content: [{ type: "input_text", text: "pwd" }] },
+        { type: "message", role: "assistant", phase: "commentary", content: [{ type: "output_text", text: "export" }] },
+        tool,
+        { type: "function_call_output", call_id: "call-pwd", output: homedir() },
+        { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: homedir() }] },
+      ],
+    });
+    assert.ok(turn, client);
+    assert.deepEqual(turn.items, [
+      { type: "message", role: "user", content: [{ type: "input_text", text: "pwd" }] },
+      { type: "message", role: "assistant", phase: "commentary", content: [{ type: "output_text", text: "export" }] },
+      tool,
+      { type: "function_call_output", call_id: "call-pwd", output: "[REDACTED:LOCAL_PATH]" },
+      { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: "[REDACTED:LOCAL_PATH]" }] },
+    ]);
+    assert.equal(turn.truncation, undefined);
+  }
+});
+
+test("archive text blocks are retained without judging their content", () => {
+  for (const text of ["", " \n\t", "...", "[REDACTED:CREDENTIAL]", "password: synthetic-passphrase"]) {
+    const items = [
+      { type: "message", role: "user", content: [{ type: "input_text", text }] },
+      { type: "message", role: "assistant", phase: "commentary", content: [{ type: "output_text", text }] },
+      { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text }] },
+    ];
+    const turn = prepareCodingSessionTurn({
+      client: "codex", sessionId: "session-1", turnId: "turn-1", turnIndex: 1,
+      outcome: "completed", closedAt: "2026-08-30T08:00:00Z", items,
+    });
+    assert.ok(turn);
+    const expected = text === "password: synthetic-passphrase" ? "password: [REDACTED:CREDENTIAL]" : text;
+    assert.deepEqual(turn.items, items.map((item) => ({ ...item, content: [{ ...item.content[0], text: expected }] })));
+    assert.equal(turn.truncation, undefined);
+  }
+});
+
+test("archive QA still requires supported text blocks and valid message roles and phases", () => {
+  const source = {
+    client: "codex", sessionId: "session-1", turnId: "turn-1", turnIndex: 1,
+    outcome: "completed", closedAt: "2026-08-30T08:00:00Z",
+    items: [
+      { type: "message", role: "user", content: [{ type: "input_text", text: "pwd" }] },
+      { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: "..." }] },
+    ],
+  };
+  for (const [index, replacement] of [
+    [0, { ...source.items[0], content: [] }],
+    [0, { ...source.items[0], content: [{ type: "output_text", text: "pwd" }] }],
+    [0, { ...source.items[0], role: "system" }],
+    [1, { ...source.items[1], content: [] }],
+    [1, { ...source.items[1], content: [{ type: "input_text", text: "..." }] }],
+    [1, { ...source.items[1], phase: "unknown" }],
+  ]) {
+    const items = source.items.with(index, replacement);
+    assert.equal(prepareCodingSessionTurn({ ...source, items }), undefined);
+  }
+});
+
+test("archive byte fitting preserves text blocks without applying content screening", () => {
+  const turn = prepareCodingSessionTurn({
+    client: "codex", sessionId: "session-1", turnId: "turn-1", turnIndex: 1,
+    outcome: "completed", closedAt: "2026-08-30T08:00:00Z",
+    items: [
+      { type: "message", role: "user", content: [
+        ...Array.from({ length: 3 }, () => ({ type: "input_text", text: "\u0001".repeat(128_000) })),
+        { type: "input_text", text: "Inspect the project." },
+      ] },
+      { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: "Done." }] },
+    ],
+  });
+  assert.ok(turn);
+  assert.equal(turn.items.length, 2);
+  assert.ok(turn.items[0].content.length > 0);
+  assert.ok(turn.items[0].content.every(({ text }) => /^\u0001*$/.test(text)));
+  assert.equal(turn.items[1].content[0].text, "Done.");
+  assert.ok(turn.truncation.truncated_text_fields > 0);
+  assert.ok(Buffer.byteLength(JSON.stringify(turn), "utf8") <= CODING_TURN_MAX_BYTES);
+});
+
 test("tool projection preserves string formatting and structured output", () => {
   for (const value of [' { "z": 1, "a": 2 }\n', '  build failed\n', '\n']) {
     assert.equal(codingEventText(value), value);

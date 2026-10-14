@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { createReadStream } from "node:fs";
+import { isDeepStrictEqual } from "node:util";
 import { parseNativeMessageTimestamp } from "../../shared/message-time.js";
 import { codingEventText, type CodingSessionNativeSource, type CodingSessionSourceTurn, type ResponseItem, type ResponseJsonObject, type ResponseJsonValue } from "../../coding-sessions/coding-turn.js";
 import type { NativeCodingSessionTurnRef } from "../../coding-sessions/contracts.js";
@@ -78,6 +79,7 @@ export type CodexRolloutTurnFailureReason =
   | "turn_metadata_mismatch"
   | "turn_not_found"
   | "user_prompt_missing"
+  | "user_prompt_ambiguous"
   | "assistant_message_missing";
 
 export type CodexRolloutTurnResult =
@@ -192,6 +194,7 @@ export function codexRolloutTurnFromJsonLines(
   }
   if (scan.turnMetadataMismatch) return { ok: false, reason: "turn_metadata_mismatch" };
   if (!scan.targetSeen) return { ok: false, reason: "turn_not_found" };
+  if (scan.userPromptAmbiguous) return { ok: false, reason: "user_prompt_ambiguous" };
   if (!scan.userPrompt) return { ok: false, reason: "user_prompt_missing" };
   if (!scan.assistantReply) return { ok: false, reason: "assistant_message_missing" };
   return {
@@ -214,6 +217,7 @@ export function codexInterruptedRolloutTurnFromJsonLines(
   }
   if (scan.turnMetadataMismatch) return { ok: false, reason: "turn_metadata_mismatch" };
   if (!scan.targetSeen) return { ok: false, reason: "turn_not_found" };
+  if (scan.userPromptAmbiguous) return { ok: false, reason: "user_prompt_ambiguous" };
   if (!scan.userPrompt) return { ok: false, reason: "user_prompt_missing" };
   if (!scan.interrupted) return { ok: false, reason: "turn_not_interrupted" };
   if (scan.rolledBack) return { ok: false, reason: "turn_rolled_back" };
@@ -238,6 +242,7 @@ export function codexCodingSessionTurnFromJsonLines(
   }
   if (scan.turnMetadataMismatch) return { ok: false, reason: "turn_metadata_mismatch" };
   if (!scan.targetSeen) return { ok: false, reason: "turn_not_found" };
+  if (scan.userPromptAmbiguous) return { ok: false, reason: "user_prompt_ambiguous" };
   if (!scan.userPrompt) return { ok: false, reason: "user_prompt_missing" };
   if (!scan.assistantReply) return { ok: false, reason: "assistant_message_missing" };
   if (scan.interrupted || scan.rolledBack) return { ok: false, reason: "turn_not_completed" };
@@ -263,6 +268,7 @@ type CodexRolloutTurnScan = {
   composite: boolean;
   targetSeen: boolean;
   turnMetadataMismatch: boolean;
+  userPromptAmbiguous: boolean;
   userPrompt?: string;
   assistantReply?: string;
   userTimestamp?: number;
@@ -303,12 +309,11 @@ function scanCodexRolloutTurn(
   let completedTimestamp: number | undefined;
   const visibleAssistantMessages: string[] = [];
   const codingItemCandidates: CodexCodingItemCandidate[] = [];
-  let responseItemUser: ResponseItem | undefined;
+  const responseItemUsers: CodexResponseUserMessage[] = [];
+  const nativeUserMessages: CodexNativeUserMessage[] = [];
   let responseItemAssistant: ResponseItem | undefined;
   let completedAt: string | undefined;
-  let responseItemUserPrompt: string | undefined;
   let responseItemAssistantReply: string | undefined;
-  let responseItemUserTimestamp: number | undefined;
   let responseItemAssistantTimestamp: number | undefined;
   let interrupted = false;
   let interruptedAt: string | undefined;
@@ -405,9 +410,14 @@ function scanCodexRolloutTurn(
               continue;
             }
             if (role === "user") {
-              responseItemUserPrompt = message;
-              responseItemUserTimestamp = parseNativeMessageTimestamp(record.timestamp);
-              responseItemUser = codingItem;
+              responseItemUsers.push({
+                recordIndex,
+                inputKey: userInputKey(payload.content, "input_text"),
+                wrappedImageKey: userInputKey(payload.content, "input_text", true),
+                prompt: message,
+                timestamp: parseNativeMessageTimestamp(record.timestamp),
+                item: codingItem,
+              });
             } else {
               responseItemAssistantReply = message;
               responseItemAssistantTimestamp = parseNativeMessageTimestamp(record.timestamp);
@@ -421,6 +431,22 @@ function scanCodexRolloutTurn(
     if (record.type !== "event_msg") continue;
 
     const eventType = stringValue(payload.type);
+    if (eventType === "item_completed" && isRecord(payload.item) && payload.item.type === "UserMessage") {
+      const turnId = nonBlankString(payload.turn_id);
+      if (activeTurnId !== targetTurnId && turnId !== targetTurnId) continue;
+      if (activeTurnId !== targetTurnId || turnId !== targetTurnId
+        || nonBlankString(payload.thread_id) !== authoritySessionId) {
+        turnMetadataMismatch = true;
+        continue;
+      }
+      nativeUserMessages.push({
+        recordIndex,
+        id: nonBlankString(payload.item.id),
+        inputKey: userInputKey(payload.item.content, "text"),
+        content: payload.item.content,
+      });
+      continue;
+    }
     if (eventType === "task_started") {
       const startedTurnId = stringValue(payload.turn_id) ?? stringValue(payload.turnId);
       if (awaitingTargetSuccessor && startedTurnId && startedTurnId !== targetTurnId) {
@@ -510,6 +536,8 @@ function scanCodexRolloutTurn(
     }
   }
 
+  const selectedUser = selectCodexUserMessage(responseItemUsers, nativeUserMessages);
+  const responseItemUser = selectedUser.candidate;
   return {
     authoritySessionId,
     authoritySource,
@@ -517,19 +545,21 @@ function scanCodexRolloutTurn(
     composite,
     targetSeen,
     turnMetadataMismatch,
-    // Current-format response items take precedence over legacy event mirrors;
-    // missing response-item text may use the matching Turn's legacy text.
-    userPrompt: responseItemUserPrompt ?? userPrompt,
+    userPromptAmbiguous: selectedUser.ambiguous,
+    // Modern UserMessage events identify the input; its matching response item
+    // still owns text and time. Failed modern correlation must not use legacy text.
+    userPrompt: responseItemUser?.prompt ?? (nativeUserMessages.length === 0 ? userPrompt : undefined),
     assistantReply: responseItemAssistantReply ?? assistantReply,
     // Text and time share the same record authority, even when that record has
     // no usable time. An exact task_complete can date completion separately.
-    userTimestamp: responseItemUserPrompt === undefined ? userTimestamp : responseItemUserTimestamp,
+    userTimestamp: responseItemUser ? responseItemUser.timestamp
+      : nativeUserMessages.length === 0 ? userTimestamp : undefined,
     assistantTimestamp: completedTimestamp ?? (responseItemAssistantReply === undefined
       ? assistantTimestamp
       : responseItemAssistantTimestamp),
     visibleAssistantMessages,
     codingItemCandidates,
-    responseItemUser,
+    responseItemUser: responseItemUser?.item,
     responseItemAssistant,
     completedAt,
     interrupted,
@@ -542,6 +572,80 @@ function scanCodexRolloutTurn(
     turnContextIds,
     userMessageTurnIds,
   };
+}
+
+type CodexResponseUserMessage = {
+  recordIndex: number;
+  inputKey?: string;
+  wrappedImageKey?: string;
+  prompt: string;
+  timestamp?: number;
+  item?: ResponseItem;
+};
+
+type CodexNativeUserMessage = {
+  recordIndex: number;
+  id?: string;
+  inputKey?: string;
+  content: unknown;
+};
+
+function userInputKey(content: unknown, type: "text" | "input_text", unwrapImages = false): string | undefined {
+  if (!Array.isArray(content)) return undefined;
+  const parts: ({ type: "text"; text: string } | { type: "image" })[] = [];
+  let unwrapped = false;
+  for (let index = 0; index < content.length; index += 1) {
+    const block = content[index];
+    if (!isRecord(block)) continue;
+    // Codex wraps response images in text markers. Normalize only that native
+    // structure for correlation; the selected response content stays untouched.
+    if (unwrapImages && type === "input_text" && block.type === "input_text" && typeof block.text === "string"
+      && /^<image(?:[ \t]+name=\[[^\]\r\n<>\u2028\u2029]+\])?(?:[ \t]+path="[^"\r\n<>\u2028\u2029]*")?>$/u.test(block.text)
+      && isRecord(content[index + 1]) && content[index + 1].type === "input_image"
+      && isRecord(content[index + 2]) && content[index + 2].type === "input_text"
+      && content[index + 2].text === "</image>") {
+      parts.push({ type: "image" });
+      unwrapped = true;
+      index += 2;
+    } else if (block.type === type && typeof block.text === "string") {
+      parts.push({ type: "text", text: block.text });
+    } else if (type === "text" ? block.type === "image" || block.type === "local_image" : block.type === "input_image") {
+      parts.push({ type: "image" });
+    }
+  }
+  if (unwrapImages && !unwrapped) return undefined;
+  return parts.some((part) => part.type === "text" && part.text.trim()) ? JSON.stringify(parts) : undefined;
+}
+
+function selectCodexUserMessage(
+  responses: CodexResponseUserMessage[],
+  nativeMessages: CodexNativeUserMessage[],
+): { candidate?: CodexResponseUserMessage; ambiguous: boolean } {
+  if (nativeMessages.length === 0) {
+    return { candidate: responses.length === 1 ? responses[0] : undefined, ambiguous: responses.length > 1 };
+  }
+  const seen = new Map<string, unknown>();
+  let previousBoundary = -1;
+  let candidate: CodexResponseUserMessage | undefined;
+  for (const message of nativeMessages) {
+    if (!message.id) return { ambiguous: true };
+    if (!message.inputKey) return { ambiguous: false };
+    if (seen.has(message.id)) {
+      if (!isDeepStrictEqual(seen.get(message.id), message.content)) return { ambiguous: true };
+      continue;
+    }
+    // The two native record types use different ID namespaces. Match exact
+    // text blocks before this event, after the previous distinct user event.
+    const matches = responses.filter((response) => (
+      response.recordIndex > previousBoundary && response.recordIndex < message.recordIndex
+        && (response.inputKey === message.inputKey || response.wrappedImageKey === message.inputKey)
+    ));
+    if (matches.length !== 1) return { ambiguous: matches.length > 1 };
+    candidate = matches[0];
+    seen.set(message.id, message.content);
+    previousBoundary = message.recordIndex;
+  }
+  return { candidate, ambiguous: false };
 }
 
 type CodexCodingItemCandidate = Readonly<{
