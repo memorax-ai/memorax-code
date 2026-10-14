@@ -91,6 +91,7 @@ type ClaudeStartObservation = {
   key: string;
   correlation?: ClaudeTurnStartCorrelation;
   failure?: ClaudeTranscriptTurnFailureReason;
+  guidanceValidated?: boolean;
   status: ClaudeObservationStatus;
   previousStatus?: ClaudeObservationStatus;
 };
@@ -322,7 +323,13 @@ export function createClaudeMemoryHookRuntime(
         return { ok: true };
       }
       prune();
-      const snapshot = await captureClaudeTurnStartSnapshot(turn);
+      let snapshot = await captureClaudeTurnStartSnapshot(turn);
+      let guidanceValidated = false;
+      if (snapshot.ok && options.searchGuidance?.isEnabled()) {
+        const validation = snapshot.snapshot.validate();
+        guidanceValidated = validation.ok;
+        if (!validation.ok) snapshot = validation;
+      }
       const key = `claude-start:${createHash("sha256").update(JSON.stringify([
         turn.sessionId, turn.promptId, turn.transcriptPath, turn.cwd, turn.workspaceKind,
         snapshot.ok ? snapshot.correlation : ["unavailable", turn.createdAt],
@@ -350,6 +357,7 @@ export function createClaudeMemoryHookRuntime(
         ...(snapshot.ok ? { correlation: snapshot.correlation } : { failure: snapshot.reason }),
         ...(previous?.status.pending ? { previousStatus: previous.status } : {}),
       };
+      if (guidanceValidated) observation.guidanceValidated = true;
       starts.delete(alias);
       starts.set(alias, observation);
       while (starts.size > maxEntries) starts.delete(starts.keys().next().value!);
@@ -371,7 +379,7 @@ export function createClaudeMemoryHookRuntime(
     searchGuidanceTurnKey(command) {
       prune();
       const start = starts.get(claudeStartAlias(command.sessionId, command.promptId));
-      if (!start || start.status.settled || hasPendingPrevious(start) || start.failure || command.claudeTurnKey !== start.key
+      if (!start || !start.guidanceValidated || start.status.settled || hasPendingPrevious(start) || start.failure || command.claudeTurnKey !== start.key
         || command.transcriptPath !== start.command.transcriptPath
         || createHash("sha256").update(command.prompt.trim()).digest("hex") !== start.correlation?.promptDigest
         || command.cwd !== start.command.cwd

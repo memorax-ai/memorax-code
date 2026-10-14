@@ -33,6 +33,7 @@ export type ClaudeTurnStartCorrelationResult =
   | { ok: false; reason: "transcript_unavailable" | "transcript_session_mismatch"; error?: string };
 
 export type ClaudeTurnStartSnapshot = Readonly<{
+  validate(): { ok: true } | Extract<ClaudeTurnStartCorrelationResult, { ok: false }>;
   writeback(selection: ClaudeTurnSelection, options?: {
     captureCodingItems?: boolean;
     onArchiveSkipped?: () => void;
@@ -120,7 +121,9 @@ export async function captureClaudeTurnStartCorrelation(
   input: ClaudeTurnStartInput & { transcriptPath: string },
 ): Promise<ClaudeTurnStartCorrelationResult> {
   const result = await captureClaudeTurnStartSnapshot(input);
-  return result.ok ? { ok: true, correlation: result.correlation } : result;
+  if (!result.ok) return result;
+  const validation = result.snapshot.validate();
+  return validation.ok ? { ok: true, correlation: result.correlation } : validation;
 }
 
 export async function captureClaudeTurnStartSnapshot(
@@ -143,7 +146,9 @@ export function claudeTurnStartCorrelationFromJsonLines(
   input: ClaudeTurnStartInput,
 ): ClaudeTurnStartCorrelationResult {
   const result = claudeTurnStartSnapshotFromBytes(Buffer.from(transcript, "utf8"), input);
-  return result.ok ? { ok: true, correlation: result.correlation } : result;
+  if (!result.ok) return result;
+  const validation = result.snapshot.validate();
+  return validation.ok ? { ok: true, correlation: result.correlation } : validation;
 }
 
 function claudeTurnStartSnapshotFromBytes(
@@ -154,47 +159,66 @@ function claudeTurnStartSnapshotFromBytes(
     return { ok: false, reason: "transcript_unavailable", error: "Claude Turn start identity is incomplete." };
   }
   const endBytes = bytes.lastIndexOf(10) + 1;
-  try {
-    const text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes.subarray(0, endBytes));
-    const parsed = transcriptRecords(text);
-    if (!parsed.ok) return { ok: false, reason: "transcript_unavailable", error: "Claude Turn start contains an invalid completed JSONL record." };
-    if (parsed.records.some((record) => sessionIdFromRecord(record) === input.sessionId)
-      && !requestedSessionRecords(parsed.records, input.sessionId)) {
-      return { ok: false, reason: "transcript_session_mismatch" };
+  const correlation = {
+    endBytes, observedEndBytes: bytes.length, prefixDigest: textDigest(bytes), promptDigest: textDigest(input.prompt.trim()),
+  };
+  const { sessionId, transcriptPath } = input;
+  let cached: { ok: true; text: string; parsed: Extract<ClaudeTranscriptRecords, { ok: true }> }
+    | Extract<ClaudeTurnStartCorrelationResult, { ok: false }> | undefined;
+  function parse() {
+    if (cached) return cached;
+    try {
+      const text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes.subarray(0, endBytes));
+      const parsed = transcriptRecords(text);
+      if (!parsed.ok) {
+        return cached = { ok: false, reason: "transcript_unavailable", error: "Claude Turn start contains an invalid completed JSONL record." };
+      }
+      if (parsed.records.some((record) => sessionIdFromRecord(record) === sessionId)
+        && !requestedSessionRecords(parsed.records, sessionId)) {
+        return cached = { ok: false, reason: "transcript_session_mismatch" };
+      }
+      return cached = { ok: true, text, parsed };
+    } catch {
+      return cached = { ok: false, reason: "transcript_unavailable", error: "Claude Turn start contains invalid UTF-8." };
+    } finally {
+      bytes = Buffer.alloc(0);
     }
-    const transcriptPath = input.transcriptPath;
-    return {
-      ok: true,
-      correlation: {
-        endBytes, observedEndBytes: bytes.length, prefixDigest: textDigest(bytes), promptDigest: textDigest(input.prompt.trim()),
-      },
-      // This parsed prefix lives only through this Start's reconciliation, never in the session cache.
-      snapshot: {
-        writeback(selection, options = {}) {
-          try {
-            const result = resolveClaudeCompletedTranscriptTurn(
-              text, selection, options.captureCodingItems === true, () => options.onArchiveSkipped?.(), parsed,
-            );
-            return result.ok && "items" in result.turn && transcriptPath ? {
-              ok: true,
-              turn: { ...result.turn, source: { transcriptPath, endBytes } },
-            } : result;
-          } catch (error) {
-            return { ok: false, reason: "transcript_unavailable", error: error instanceof Error ? error.message : String(error) };
-          }
-        },
-        interrupted(selection) {
-          try {
-            return resolveClaudeInterruptedTranscriptTurn(text, selection, parsed);
-          } catch (error) {
-            return { ok: false, reason: "transcript_unavailable", error: error instanceof Error ? error.message : String(error) };
-          }
-        },
-      },
-    };
-  } catch {
-    return { ok: false, reason: "transcript_unavailable", error: "Claude Turn start contains invalid UTF-8." };
   }
+  return {
+    ok: true,
+    correlation,
+    // Bytes and parsed records stay local to this Start, never in the session cache.
+    snapshot: {
+      validate() {
+        const result = parse();
+        return result.ok ? { ok: true } : result;
+      },
+      writeback(selection, options = {}) {
+        const captured = parse();
+        if (!captured.ok) return captured;
+        try {
+          const result = resolveClaudeCompletedTranscriptTurn(
+            captured.text, selection, options.captureCodingItems === true, () => options.onArchiveSkipped?.(), captured.parsed,
+          );
+          return result.ok && "items" in result.turn && transcriptPath ? {
+            ok: true,
+            turn: { ...result.turn, source: { transcriptPath, endBytes } },
+          } : result;
+        } catch (error) {
+          return { ok: false, reason: "transcript_unavailable", error: error instanceof Error ? error.message : String(error) };
+        }
+      },
+      interrupted(selection) {
+        const captured = parse();
+        if (!captured.ok) return captured;
+        try {
+          return resolveClaudeInterruptedTranscriptTurn(captured.text, selection, captured.parsed);
+        } catch (error) {
+          return { ok: false, reason: "transcript_unavailable", error: error instanceof Error ? error.message : String(error) };
+        }
+      },
+    },
+  };
 }
 
 export async function readClaudeTranscriptTurn(input: ClaudeTurnSelection & {

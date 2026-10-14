@@ -49,42 +49,61 @@ async function fixture(t) {
 
 async function observeNativeWork(transcriptPath, rows, action, afterRead) {
   const readFile = fs.readFile, open = fs.open, parse = JSON.parse;
-  const parses = new Map(rows.map(row => [JSON.stringify(row), 0]));
-  let reads = 0;
+  const decode = TextDecoder.prototype.decode;
+  const parses = new Map(rows.map(row => [typeof row === "string" ? row : JSON.stringify(row), 0]));
+  const counts = { reads: 0, decodes: 0, parses };
   fs.readFile = async (...args) => {
     const result = await readFile(...args);
     if (args[0] === transcriptPath) {
-      reads++;
+      counts.reads++;
       await afterRead?.();
     }
     return result;
   };
   fs.open = async (...args) => {
-    if (args[0] === transcriptPath) reads++;
+    if (args[0] === transcriptPath) counts.reads++;
     return open(...args);
   };
   JSON.parse = function (text, ...args) {
     if (parses.has(text)) parses.set(text, parses.get(text) + 1);
     return parse(text, ...args);
   };
+  TextDecoder.prototype.decode = function (...args) {
+    counts.decodes++;
+    return decode.apply(this, args);
+  };
   syncBuiltinESMExports();
   try {
-    return { result: await action(), counts: { reads, parses } };
+    return { result: await action(counts), counts };
   } finally {
     fs.readFile = readFile;
     fs.open = open;
     JSON.parse = parse;
+    TextDecoder.prototype.decode = decode;
     syncBuiltinESMExports();
   }
 }
 
-function assertSingleSnapshot(counts, rows) {
+function assertSingleSnapshot(counts, rows, parseCount = 1) {
   assert.equal(counts.reads, 1, "one native read");
-  assert.deepEqual([...counts.parses.values()], rows.map(() => 1), "each complete native line is parsed once");
+  assert.deepEqual([...counts.parses.values()], rows.map(() => parseCount), "complete native lines share one lazy parse");
 }
 
+test("Claude first Start captures native bytes without decoding or parsing history", { concurrency: false }, async (t) => {
+  const run = await fixture(t);
+  const rows = [...nativeTurn(1), nativeTurn(2)[0]];
+  await run.save(rows);
+  const observed = await observeNativeWork(run.command.transcriptPath, rows,
+    () => run.runtime.recordTurnStart({ ...run.command, prompt: "Request 2." }));
+  assert.equal(observed.result.ok, true);
+  assertSingleSnapshot(observed.counts, rows, 0);
+  assert.equal(observed.counts.decodes, 0);
+  assert.equal(run.runtime.size(), 1);
+  assert.equal(run.enqueued.length, 0);
+});
+
 for (const state of ["settled", "completed", "interrupted", "abandoned"]) {
-  test(`Claude Start reads and parses once when its reused-ID predecessor is ${state}`, { concurrency: false }, async (t) => {
+  test(`Claude Start reads once and parses only if needed when its reused-ID predecessor is ${state}`, { concurrency: false }, async (t) => {
     const run = await fixture(t);
     const first = nativeTurn(1);
     await run.save([]);
@@ -100,10 +119,67 @@ for (const state of ["settled", "completed", "interrupted", "abandoned"]) {
     const observed = await observeNativeWork(run.command.transcriptPath, rows,
       () => run.runtime.recordTurnStart({ ...run.command, prompt: "Request 2." }));
     assert.equal(observed.result.ok, true);
-    assertSingleSnapshot(observed.counts, rows);
+    assertSingleSnapshot(observed.counts, rows, state === "settled" ? 0 : 1);
+    assert.equal(observed.counts.decodes, state === "settled" ? 0 : 1);
     assert.deepEqual(run.enqueued.map(input => input.codingTurn.turnId),
       state === "completed" || state === "settled" ? ["user-1"] : []);
     assert.equal(run.runtime.size(), 1, "only the successor metadata remains open");
+  });
+}
+
+test("Claude snapshot parses once when validation or either selector first needs native records", { concurrency: false }, async (t) => {
+  const run = await fixture(t);
+  const rows = nativeTurn(1);
+  await run.save(rows);
+  for (const firstMethod of ["validate", "writeback", "interrupted"]) {
+    const observed = await observeNativeWork(run.command.transcriptPath, rows, async (counts) => {
+      const captured = await captureClaudeTurnStartSnapshot({ ...run.command, prompt: "Request 2." });
+      assert.equal(captured.ok, true);
+      assertSingleSnapshot(counts, rows, 0);
+      assert.equal(counts.decodes, 0);
+      const selection = { ...identity, nativeUserUuid: "user-1" };
+      captured.snapshot[firstMethod](selection);
+      assert.deepEqual(captured.snapshot.validate(), { ok: true });
+      assert.deepEqual(captured.snapshot.validate(), { ok: true });
+      const completed = captured.snapshot.writeback(selection, { captureCodingItems: true });
+      assert.equal(completed.ok, true);
+      assert.equal(completed.turn.assistantReply, "Answer 1.");
+      assert.equal(completed.turn.source.endBytes, Buffer.byteLength(lines(rows)));
+      assert.deepEqual(captured.snapshot.interrupted(selection), { ok: false, reason: "turn_not_interrupted" });
+    });
+    assertSingleSnapshot(observed.counts, rows);
+    assert.equal(observed.counts.decodes, 1);
+  }
+});
+
+for (const kind of ["invalid JSONL", "invalid UTF-8", "mixed sessions"]) {
+  test(`Claude snapshot defers and caches ${kind} failure for validation and selectors`, { concurrency: false }, async (t) => {
+    const run = await fixture(t);
+    const user = nativeTurn(1)[0];
+    const foreign = { ...nativeTurn(2)[0], sessionId: "other-session" };
+    const rows = kind === "mixed sessions" ? [user, foreign]
+      : kind === "invalid JSONL" ? [user, "{invalid}"] : [user];
+    const bytes = kind === "mixed sessions" ? Buffer.from(lines(rows))
+      : Buffer.concat([Buffer.from(lines([user])), kind === "invalid JSONL"
+        ? Buffer.from("{invalid}\n") : Buffer.from([0xc3, 0x28, 0x0a])]);
+    await fs.writeFile(run.command.transcriptPath, bytes);
+    for (const firstMethod of ["validate", "writeback", "interrupted"]) {
+      const observed = await observeNativeWork(run.command.transcriptPath, rows, async (counts) => {
+        const captured = await captureClaudeTurnStartSnapshot({ ...run.command, prompt: "Request 2." });
+        assert.equal(captured.ok, true, "capture must not parse or validate completed native lines");
+        assertSingleSnapshot(counts, rows, 0);
+        assert.equal(counts.decodes, 0);
+        const selection = { ...identity, nativeUserUuid: "user-1" };
+        const failure = captured.snapshot[firstMethod](selection);
+        assert.equal(failure.ok, false);
+        assert.equal(failure.reason, kind === "mixed sessions" ? "transcript_session_mismatch" : "transcript_unavailable");
+        assert.deepEqual(captured.snapshot.validate(), failure);
+        assert.deepEqual(captured.snapshot.writeback(selection), failure);
+        assert.deepEqual(captured.snapshot.interrupted(selection), failure);
+      });
+      assertSingleSnapshot(observed.counts, rows, kind === "invalid UTF-8" ? 0 : 1);
+      assert.equal(observed.counts.decodes, 1, "failed validation is not decoded again");
+    }
   });
 }
 
@@ -201,6 +277,38 @@ test("Claude snapshot excludes a partial final while retaining every observed by
   const fresh = await readClaudeWritebackTurn({ ...run.command, correlation: previous.correlation, captureCodingItems: true });
   assert.equal(fresh.ok, true);
   assert.equal(fresh.turn.assistantReply, "Answer 1.");
+});
+
+test("Claude lazy snapshot preserves CRLF and hashes an incomplete UTF-8 tail without decoding it", { concurrency: false }, async (t) => {
+  const run = await fixture(t);
+  const previous = lines(nativeTurn(1)).replaceAll("\n", "\r\n");
+  const completeLines = nativeTurn(1).map(row => `${JSON.stringify(row)}\r`);
+  const current = nativeTurn(2);
+  current[0].message.content = "中文请求";
+  const all = Buffer.from(previous + lines(current).replaceAll("\n", "\r\n"));
+  const cut = all.indexOf(Buffer.from(current[0].message.content)) + 1;
+  const observedBytes = all.subarray(0, cut);
+  await fs.writeFile(run.command.transcriptPath, observedBytes);
+  const observed = await observeNativeWork(run.command.transcriptPath, completeLines, async (counts) => {
+    const captured = await captureClaudeTurnStartSnapshot({ ...run.command, prompt: current[0].message.content });
+    assert.equal(captured.ok, true);
+    assertSingleSnapshot(counts, completeLines, 0);
+    assert.equal(counts.decodes, 0);
+    assert.equal(captured.correlation.endBytes, Buffer.byteLength(previous));
+    assert.equal(captured.correlation.observedEndBytes, cut);
+    assert.equal(captured.correlation.prefixDigest, createHash("sha256").update(observedBytes).digest("hex"));
+    await fs.appendFile(run.command.transcriptPath, all.subarray(cut));
+    assert.deepEqual(captured.snapshot.validate(), { ok: true });
+    assert.deepEqual(captured.snapshot.writeback({ ...identity, nativeUserUuid: "user-2" }),
+      { ok: false, reason: "turn_not_found" });
+    return captured.correlation;
+  });
+  assertSingleSnapshot(observed.counts, completeLines);
+  assert.equal(observed.counts.decodes, 1);
+  const fresh = await readClaudeWritebackTurn({ ...run.command, correlation: observed.result, captureCodingItems: true });
+  assert.equal(fresh.ok, true);
+  assert.equal(fresh.turn.nativeUserUuid, "user-2");
+  assert.equal(fresh.turn.userPrompt, current[0].message.content);
 });
 
 test("Claude snapshot selection still rejects changes to an earlier observed prefix", { concurrency: false }, async (t) => {

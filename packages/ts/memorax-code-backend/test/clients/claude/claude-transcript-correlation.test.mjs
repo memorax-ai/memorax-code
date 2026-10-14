@@ -164,6 +164,17 @@ test("Claude capture handles missing files, rejects unreadable or malformed star
   assert.equal(claudeTurnStartCorrelationFromJsonLines("{invalid}\n", input).ok, false);
   const mixed = lines([nativeTurn("current")[0], { ...nativeTurn("foreign")[0], sessionId: "other-session" }]);
   assert.deepEqual(claudeTurnStartCorrelationFromJsonLines(mixed, input), { ok: false, reason: "transcript_session_mismatch" });
+  const transcriptPath = join(root, "transcript.jsonl");
+  for (const [bytes, reason] of [
+    [Buffer.from("{invalid}\n"), "transcript_unavailable"],
+    [Buffer.from([0xc3, 0x28, 0x0a]), "transcript_unavailable"],
+    [Buffer.from(mixed), "transcript_session_mismatch"],
+  ]) {
+    await writeFile(transcriptPath, bytes);
+    const result = await captureClaudeTurnStartCorrelation({ ...input, transcriptPath });
+    assert.equal(result.ok, false, "the correlation-only API retains eager native validation");
+    assert.equal(result.reason, reason);
+  }
 });
 
 test("Claude byte correlation preserves CRLF and partial UTF-8 while selecting a later completion", async (t) => {

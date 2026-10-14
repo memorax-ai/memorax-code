@@ -811,8 +811,13 @@ that recover do not produce terminal failure records.
   is discarded as interrupted, and otherwise the predecessor is explicitly
   discarded as superseded. This does not authorize ambiguous native content.
   Reconciliation against the same transcript reuses that start's captured bytes
-  and parsed complete lines. This snapshot is local to the reconciliation;
-  later Starts, Stops, and archive materialization read native storage again.
+  and lazily parsed complete lines. An ordinary start captures only boundaries
+  and digests until reconciliation needs native records. When Jev is enabled,
+  start validation runs before guidance can use that observation; enabling Jev
+  later does not authorize an unvalidated observation. Repeated validation and
+  selection share the snapshot's parsed records or failure. The snapshot stays
+  local to that start; later Starts, Stops, and archive materialization read
+  native storage again.
   A late Stop cannot borrow an older final; it still requires a completed native
   Turn matching the current start and deduplicates by native UUID. Archive rereads
   select the native UUID within the frozen completion prefix.
