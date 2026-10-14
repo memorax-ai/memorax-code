@@ -4,7 +4,9 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { preparePendingCodingSessionTurn } from "../../dist/coding-sessions/attachment.js";
+import { CODING_SESSION_BATCH_MAX_BYTES } from "../../dist/coding-sessions/contracts.js";
 import { createAutomaticMemoryWritebackRuntime } from "../../dist/memory/automatic-writeback.js";
+import { combinedMemoryWritebackParts } from "../../dist/memory/writeback-archive.js";
 
 const home = await mkdtemp(join(tmpdir(), "memorax-combined-writeback-"));
 after(() => rm(home, { recursive: true, force: true }));
@@ -58,7 +60,7 @@ function setup(t, overrides = {}) {
     enqueue(source, qa = {}) {
       sources.set(source.turnId, source);
       return runtime.enqueue({
-        client: "codex", sessionKey: source.sessionId, repositoryScope: scope,
+        client: source.client, sessionKey: source.sessionId, repositoryScope: scope,
         userText: `Question ${source.turnIndex}.`, assistantText: `Answer ${source.turnIndex}.`,
         userTimestamp: 1789948800000, assistantTimestamp: 1789948801000,
         codingTurn: source, env: { ...env, ...overrides }, ...qa,
@@ -223,7 +225,7 @@ test("successive batches with identical QA preserve different archive Turn ident
   assert.notEqual(run.requests[0].body.metadata.idempotency_key, run.requests[1].body.metadata.idempotency_key);
 });
 
-test("an oversized single Turn skips its archive without losing QA or a following archive", async (t) => {
+test("a truncated large Turn retains its archive and QA alongside a following archive", async (t) => {
   const run = setup(t);
   run.enqueue(sourceTurn(1, 24));
   run.enqueue(sourceTurn(2));
@@ -231,11 +233,74 @@ test("an oversized single Turn skips its archive without losing QA or a followin
   assert.deepEqual(run.requests.flatMap(({ body }) => body.messages.map(({ content }) => content)), [
     "Question 1.", "Answer 1.", "Question 2.", "Answer 2.",
   ]);
-  assert.deepEqual(run.requests.flatMap(({ body }) => body.coding_context?.turns.map(({ turn_id }) => turn_id) ?? []), ["turn-2"]);
-  assert.ok(run.diagnostics.some(({ message, fields }) => message === "coding_sessions.attachment_skipped"
-    && fields.reason === "turn_exceeds_archive_limit"));
+  assert.deepEqual(run.requests.flatMap(({ body }) => body.coding_context?.turns.map(({ turn_id }) => turn_id) ?? []), ["turn-1", "turn-2"]);
+  assert.equal(run.requests[0].body.coding_context.turns[0].truncation.original_item_count, 50);
+  assert.equal(run.diagnostics.some(({ message }) => message === "coding_sessions.attachment_skipped"), false);
   assert.equal(run.requests.every(({ body }) => !body.coding_context
     || Buffer.byteLength(JSON.stringify(body.coding_context), "utf8") <= 2 * 1024 * 1024), true);
+});
+
+for (const client of ["codex", "opencode"]) {
+  for (const escaped of [false, true]) {
+    test(`large Turns reserve the complete attachment envelope (${client}, escaped=${escaped})`, async (t) => {
+      const run = setup(t);
+      const identifier = escaped ? '中"\\\u0001'.repeat(63) : "x".repeat(252);
+      const repositoryScope = { ...scope, repositorySlug: identifier };
+      const expectedIds = [];
+      for (let index = 1; index <= 2; index += 1) {
+        const source = {
+          ...sourceTurn(index, 24), client, sessionId: identifier,
+          turnId: `${identifier}-${index}`, turnIndex: Number.MAX_SAFE_INTEGER - 2 + index,
+        };
+        if (client === "opencode") delete source.source;
+        expectedIds.push(source.turnId);
+        assert.deepEqual(run.enqueue(source, {
+          repositoryScope, userText: `Question ${index}.`, assistantText: `Answer ${index}.`,
+        }), { accepted: true });
+      }
+      await run.runtime.drain();
+      assert.equal(run.reads(), client === "codex" ? 2 : 0);
+      assert.equal(run.requests.length, 2, "large archives must split at complete Turn boundaries");
+      assert.deepEqual(run.requests.flatMap(({ body }) => body.messages.map(({ content }) => content)), [
+        "Question 1.", "Answer 1.", "Question 2.", "Answer 2.",
+      ]);
+      assert.deepEqual(run.requests.flatMap(({ body }) => body.coding_context?.turns.map(({ turn_id }) => turn_id) ?? []), expectedIds);
+      for (const { body } of run.requests) {
+        const archive = body.coding_context;
+        const bytes = Buffer.byteLength(JSON.stringify(archive), "utf8");
+        assert.ok(bytes <= CODING_SESSION_BATCH_MAX_BYTES, `attachment exceeded its limit: ${bytes}`);
+        assert.ok(bytes > CODING_SESSION_BATCH_MAX_BYTES - 1024, "exercise the byte limit, not just the item limit");
+        assert.equal(archive.repository_slug, identifier);
+        assert.equal(archive.turns[0].item_count, archive.items.length);
+        assert.equal(archive.turns[0].truncation.original_item_count, 50);
+        assert.ok(archive.turns[0].truncation.truncated_text_fields > 0);
+        const calls = archive.items.filter(({ type }) => type === "function_call").map(({ call_id }) => call_id);
+        const outputs = archive.items.filter(({ type }) => type === "function_call_output").map(({ call_id }) => call_id);
+        assert.ok(calls.length > 0);
+        assert.deepEqual(calls, outputs);
+        assert.equal(archive.items[0].role, "user");
+        assert.equal(archive.items.at(-1).phase, "final_answer");
+      }
+      assert.equal(run.diagnostics.some(({ message }) => message === "coding_sessions.attachment_skipped"), false);
+    });
+  }
+}
+
+test("the final attachment size guard still rejects oversized prepared data while preserving QA", async () => {
+  const source = { ...sourceTurn(1, 1), client: "opencode", source: undefined };
+  const pending = preparePendingCodingSessionTurn(source, scope);
+  pending.prepared.items[2].output = "x".repeat(CODING_SESSION_BATCH_MAX_BYTES);
+  const messages = [{ role: "user", content: "Question 1." }, { role: "assistant", content: "Answer 1." }];
+  const diagnostics = [];
+  const parts = await combinedMemoryWritebackParts({
+    idempotencyKey: "oversized-prepared", messages, codingTurn: pending,
+  }, {
+    repositoryScope: scope, env,
+    diagnosticLogger: (message, fields) => diagnostics.push({ message, fields }),
+  });
+  assert.deepEqual(parts.flatMap(({ messages }) => messages.map(({ role, content }) => ({ role, content }))), messages);
+  assert.equal(parts.every((part) => part.codingContext === undefined), true);
+  assert.ok(diagnostics.some(({ fields }) => fields.reason === "turn_exceeds_archive_limit"));
 });
 
 test("attachment assembly failure leaves the complete QA batch deliverable", async (t) => {
@@ -256,7 +321,8 @@ test("attachment assembly failure leaves the complete QA batch deliverable", asy
 test("attachment size calculation failure leaves QA deliverable before dispatch", async (t) => {
   const byteLength = Buffer.byteLength;
   t.mock.method(Buffer, "byteLength", (value, encoding) => {
-    if (typeof value === "string" && value.startsWith('{"schema_version":1,"redaction_version":1,')) {
+    if (typeof value === "string" && value.startsWith('{"schema_version":1,"redaction_version":1,')
+      && !value.includes('"items":[]')) {
       throw new Error("synthetic attachment size failure");
     }
     return byteLength(value, encoding);

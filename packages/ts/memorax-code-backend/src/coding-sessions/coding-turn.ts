@@ -99,16 +99,21 @@ export function prepareCodingSessionTurn(
     closed_at: closedAt,
     ...(repositorySlug ? { repository_slug: repositorySlug } : {}),
   };
-  // Reserve the loss marker before fitting content, without changing source order.
+  // Budget the complete single-Turn wire attachment, including the loss marker.
   let remaining = CODING_TURN_MAX_BYTES - jsonBytes({
-    ...envelope,
+    schema_version: 1, redaction_version: 1, batch_id: "0".repeat(64),
+    client: turn.client, session_id: sessionId, repository_slug: repositorySlug ?? "",
+    turns: [{
+      turn_id: turnId, turn_index: turn.turnIndex, closed_at: closedAt,
+      item_count: CODING_TURN_MAX_ITEMS,
+      truncation: {
+        original_item_count: turn.items.length,
+        // Structured search items can contain many independently bounded strings.
+        truncated_text_fields: turn.items.some(isSearchToolItem) ? Number.MAX_SAFE_INTEGER
+          : turn.items.reduce((count, item) => count + (item.type === "message" ? item.content.length : 1), 0),
+      },
+    }],
     items: [],
-    truncation: {
-      original_item_count: turn.items.length,
-      // Structured search items can contain many independently bounded strings.
-      truncated_text_fields: turn.items.some(isSearchToolItem) ? Number.MAX_SAFE_INTEGER
-        : turn.items.reduce((count, item) => count + (item.type === "message" ? item.content.length : 1), 0),
-    },
   });
   const kept: Candidate[] = [];
   let requiredBytes = required.reduce((total, { item }) => total + itemBytes(item), 0);
