@@ -87,6 +87,7 @@ export type HarnessTurnCompletion = Readonly<AutomaticMemoryWritebackTiming & {
   metadata?: MemoryTurnState;
   userText: string;
   assistantText: string;
+  nativeTurnId?: string;
   codingTurn?: CodingSessionSourceTurn;
   searchAssistantText?: string;
   traceContext?: TraceContext;
@@ -223,10 +224,12 @@ export function createHarnessMemoryRuntime(
         resolveRepositoryMemory: input.resolveRepositoryMemory,
         userText: input.userText,
         assistantText: input.assistantText,
+        ...(definition.client === "claude-code" ? { nativeTurnId: input.nativeTurnId } : {}),
         ...(options.captureCodingTurns === true
           && input.codingTurn?.client === definition.client
           && input.codingTurn.sessionId === input.sessionId
-          && input.codingTurn.turnId === input.clientTurnId
+          && input.codingTurn.turnId === (definition.client === "claude-code"
+            ? input.nativeTurnId ?? input.clientTurnId : input.clientTurnId)
           ? { codingTurn: input.codingTurn } : {}),
         searchAssistantText: input.searchAssistantText,
         userTimestamp: input.userTimestamp,

@@ -36,7 +36,7 @@ const cases = [
     read: readCodexCodingSessionTurn,
   },
   {
-    client: "claude-code", turnId: "native-prompt",
+    client: "claude-code", turnId: "user-1",
     records: [
       { type: "user", uuid: "user-1", sessionId, promptId: "native-prompt", userType: "external", message: { role: "user", content: prompt } },
       { type: "assistant", uuid: "answer-1", parentUuid: "user-1", sessionId, timestamp: closedAt,
@@ -45,7 +45,7 @@ const cases = [
     // A later sibling must not change the already accepted native snapshot.
     appended: [{ type: "assistant", uuid: "answer-2", parentUuid: "user-1", sessionId,
       message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "Later answer." }] } }],
-    read: (input) => readClaudeCodingSessionTurn({ ...input, promptId: input.turnId }),
+    read: (input) => readClaudeCodingSessionTurn({ ...input, nativeUserUuid: input.turnId }),
   },
   ...["codebuddy", "workbuddy"].map((client) => ({
     client, turnId: `${sessionId}:0:${createHash("sha256").update(prompt).digest("hex")}`,
@@ -71,6 +71,7 @@ for (const fixture of cases) {
       const input = { transcriptPath, sessionId, turnId: fixture.turnId };
       const first = await fixture.read(input);
       assert.equal(first.ok, true);
+      if (fixture.client === "claude-code") assert.equal(first.turn.nativeUserUuid, fixture.turnId);
       assert.deepEqual(first.turn.source, { transcriptPath, endBytes: Buffer.byteLength(original) });
       const ref = {
         client: fixture.client, sessionId, turnId: fixture.turnId, turnIndex: 1,

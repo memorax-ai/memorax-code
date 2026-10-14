@@ -101,6 +101,7 @@ test("memory service exposes a sealed Hook facade and closes idempotently", asyn
       client: "claude-code",
       sessionId: "session-claude-memory-service",
       promptId: "prompt-claude-memory-service",
+      prompt: "Record this exact Claude turn in the runtime.",
       cwd: firstWorkspace,
       transcriptPath: join(memoraxCodeHome, "missing-claude-transcript.jsonl"),
     });
@@ -538,6 +539,80 @@ test("eight native Turns retain search guidance alongside optional archives and 
       }
     });
   }
+});
+
+test("Claude occurrence keys remain local while eight reused prompt IDs retain native archives", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-service-claude-occurrences-"));
+  const home = join(root, "home");
+  const workspace = join(root, "workspace");
+  await mkdir(workspace);
+  await repairGitMetadata(workspace, "claude-occurrences");
+  const transcriptPath = join(root, "claude.jsonl");
+  await writeFile(transcriptPath, "");
+  const sessionId = "claude-occurrence-session";
+  const prompt = "Review the next module using the previous result.";
+  const command = { version: 1, client: "claude-code", sessionId, promptId: "reused-prompt-id", cwd: workspace, transcriptPath };
+  const start = { ...command, prompt };
+  const requests = [];
+  const guidanceRequests = [];
+  const diagnostics = [];
+  const service = createMemoryService({
+    memoraxCodeHome: home,
+    env: {
+      MEMORAX_CODE_HOME: home, MEMORAX_CODE_CLAUDE_TRACE_ENABLED: "false",
+      MEMORAX_CODE_JEV_ENABLED: "true", MEMORAX_CODE_JEV_API_KEY: "synthetic-jev-key",
+      MEMORAX_CODE_MEMORY_WRITEBACK_ENABLED: "true",
+      MEMORAX_CODE_CODING_SESSIONS_ENABLED: "true", MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
+      MEMORAX_CODE_MEMORAX_API_KEY: "synthetic-key", MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
+    },
+    diagnosticLogger: (message, fields) => diagnostics.push({ message, fields }),
+    fetchImpl: async (url, init) => {
+      const body = JSON.parse(init.body);
+      assert.equal(JSON.stringify(body).includes("claude-start:"), false, "local occurrence keys never leave the Backend");
+      if (String(url) === JEV_ENDPOINT) {
+        guidanceRequests.push(body.state);
+        return Response.json({ model: JEV_MODEL, answers: { search_needed: { type: "noul", noul: 0.8 } } });
+      }
+      assert.equal(String(url), "http://memorax.test/v1/memories/add");
+      requests.push(body);
+      return Response.json({ success: true, data: { task_id: "qa-accepted", status: "accepted" } }, { status: 202 });
+    },
+  });
+  t.after(async () => { service.close(); await rm(root, { recursive: true, force: true }); });
+  const records = [];
+  const turnKeys = [];
+  for (let index = 1; index <= 8; index += 1) {
+    const registered = await service.recordTurnStart(start);
+    assert.match(registered.claudeTurnKey, /^claude-start:[a-f0-9]{64}$/);
+    assert.equal(turnKeys.includes(registered.claudeTurnKey), false);
+    turnKeys.push(registered.claudeTurnKey);
+    assert.deepEqual(await service.evaluateSearchGuidance(start), { ok: false, reason: "context_unavailable" });
+    if (index > 1) assert.deepEqual(await service.evaluateSearchGuidance({ ...start, claudeTurnKey: turnKeys[index - 2] }), {
+      ok: false, reason: "context_unavailable",
+    });
+    assert.equal((await service.evaluateSearchGuidance({ ...start, claudeTurnKey: registered.claudeTurnKey })).ok, true);
+    assert.deepEqual(guidanceRequests.at(-1), { current_prompt: prompt,
+      ...(index > 1 ? { previous_turn: { user: prompt, assistant: `Module ${index - 1} passed its checks.` } } : {}) });
+    const reply = `Module ${index} passed its checks.`;
+    records.push({ type: "user", userType: "external", isSidechain: false, uuid: `user-${index}`,
+      parentUuid: index === 1 ? null : `assistant-${index - 1}`, promptId: command.promptId, sessionId,
+      timestamp: `2026-10-01T08:0${index}:00.000Z`, message: { role: "user", content: prompt } },
+    { type: "assistant", isSidechain: false, uuid: `assistant-${index}`, parentUuid: `user-${index}`, sessionId,
+      timestamp: `2026-10-01T08:0${index}:30.000Z`, message: { role: "assistant", stop_reason: "end_turn",
+        content: [{ type: "text", text: reply }] } });
+    await writeFile(transcriptPath, records.map((record) => JSON.stringify(record)).join("\n") + "\n");
+    const completed = await service.writebackTurn({ ...command, lastAssistantMessage: reply });
+    assert.equal(completed.scheduled, true, `turn ${index}: ${JSON.stringify(completed)}`);
+    assert.deepEqual(await service.writebackTurn({ ...command, lastAssistantMessage: reply }), completed);
+    if (index < 8) assert.equal(requests.length, 0, "the existing eight-turn trigger is preserved");
+  }
+  await waitForAcceptedWritebacks(diagnostics, 1);
+  await service.drain();
+  assert.equal(guidanceRequests.length, 8);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].messages.length, 16);
+  assert.deepEqual(requests[0].coding_context.turns.map(({ turn_id }) => turn_id), Array.from({ length: 8 }, (_, index) => `user-${index + 1}`));
+  assert.deepEqual(requests[0].coding_context.turns.map(({ turn_index }) => turn_index), [1, 2, 3, 4, 5, 6, 7, 8]);
 });
 
 async function repairGitMetadata(workspace, repositoryName) {

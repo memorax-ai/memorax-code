@@ -59,6 +59,7 @@ test("Claude transcript resolves one exact completed prompt branch", () => {
     turn: {
       sessionId: SESSION_ID,
       promptId: PROMPT_ID,
+      nativeUserUuid: "user-visible",
       sessionTurnIndex: 1,
       userPrompt: "Materialized Claude prompt.",
       assistantReply: "Materialized Claude answer.",
@@ -174,6 +175,7 @@ test("Claude transcript aggregates exact-branch usage once per assistant message
     turn: {
       sessionId: SESSION_ID,
       promptId: PROMPT_ID,
+      nativeUserUuid: "user-visible",
       sessionTurnIndex: 1,
       userPrompt: "Measure this turn.",
       assistantReply: "Measured.",
@@ -225,6 +227,7 @@ test("Claude transcript omits usage when duplicate assistant message records dis
     turn: {
       sessionId: SESSION_ID,
       promptId: PROMPT_ID,
+      nativeUserUuid: "user-visible",
       sessionTurnIndex: 1,
       userPrompt: "Keep content despite uncertain usage.",
       assistantReply: "Content remains authoritative.",
@@ -280,6 +283,7 @@ test("Claude transcript excludes Hook-injected memory context from writeback con
     turn: {
       sessionId: SESSION_ID,
       promptId: PROMPT_ID,
+      nativeUserUuid: "user-visible",
       sessionTurnIndex: 1,
       userPrompt: "Implement the Hook retrieval boundary.",
       assistantReply: "Implemented without persisting the recalled marker.",
@@ -474,6 +478,7 @@ test("Claude transcript coalesces ancestor and descendant end_turn snapshots", (
     turn: {
       sessionId: SESSION_ID,
       promptId: PROMPT_ID,
+      nativeUserUuid: "user-terminal-lineage",
       sessionTurnIndex: 1,
       userPrompt: "Recover one terminal lineage.",
       assistantReply: "Final terminal snapshot.",
@@ -563,6 +568,7 @@ test("Claude transcript selects the completion whose nearest visible prompt has 
     turn: {
       sessionId: SESSION_ID,
       promptId: PROMPT_ID,
+      nativeUserUuid: "user-first",
       sessionTurnIndex: 1,
       userPrompt: "First prompt.",
       assistantReply: "First answer.",
@@ -608,6 +614,7 @@ test("Claude transcript accepts a contiguous historical session prefix", () => {
     turn: {
       sessionId: SESSION_ID,
       promptId: PROMPT_ID,
+      nativeUserUuid: "current-user",
       sessionTurnIndex: 1,
       userPrompt: "Current session prompt.",
       assistantReply: "Current session answer.",
@@ -639,7 +646,7 @@ test("Claude transcript rejects a foreign session after the requested session be
   }), { ok: false, reason: "transcript_session_mismatch" });
 });
 
-test("Claude transcript counts unique interactive prompt ids and excludes explicit non-turn user records", () => {
+test("Claude transcript counts native user UUIDs and excludes explicit non-turn user records", () => {
   const transcript = jsonLines([
     userRecord({
       uuid: "task-notification",
@@ -700,7 +707,8 @@ test("Claude transcript counts unique interactive prompt ids and excludes explic
     turn: {
       sessionId: SESSION_ID,
       promptId: PROMPT_ID,
-      sessionTurnIndex: 2,
+      nativeUserUuid: "target-user",
+      sessionTurnIndex: 3,
       userPrompt: "Target interactive prompt.",
       assistantReply: "Target interactive answer.",
       activities: [],

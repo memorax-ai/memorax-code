@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
@@ -199,7 +199,7 @@ for (const codingSessionsEnabled of [true, false]) {
           messageId: `message-final-${index}`, stopReason: "end_turn",
           content: [{ type: "text", text: reply }], timestamp: timestamp(3),
         });
-        records.push(
+        const turnRecords = [
           userRecord({
             sessionId, uuid: `user-${index}`, parentUuid: index === 1 ? null : `final-${index - 1}`,
             promptId, content: prompt, timestamp: timestamp(0),
@@ -223,18 +223,26 @@ for (const codingSessionsEnabled of [true, false]) {
           }),
           { ...final, gitBranch: "main", slug: "initial-snapshot" },
           { ...final, gitBranch: "feature", slug: "metadata-snapshot" },
-        );
-        await writeFile(transcriptPath, `${jsonLines(records)}\n`, "utf8");
+        ];
+        // Native user records may be written on either side of UserPromptSubmit.
+        const userWrittenAtStart = index % 2 === 0;
+        if (userWrittenAtStart) records.push(turnRecords[0]);
+        await writeFile(transcriptPath, records.length ? `${jsonLines(records)}\n` : "", "utf8");
         const start = await originalFetch(`${url}/memory/turn-start`, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
             version: 1, client: "claude-code", sessionId, promptId,
-            prompt: `Hook diagnostic prompt ${index}.`, cwd: TEST_WORKSPACE, transcriptPath,
+            prompt, cwd: TEST_WORKSPACE, transcriptPath,
           }),
         });
         assert.equal(start.status, 200);
-        assert.deepEqual(await start.json(), GIT_TURN_START_RESULT);
+        const { claudeTurnKey, ...startResult } = await start.json();
+        assert.match(claudeTurnKey, /^claude-start:[a-f0-9]{64}$/);
+        assert.deepEqual(startResult, GIT_TURN_START_RESULT);
+        const completedRecords = turnRecords.slice(userWrittenAtStart ? 1 : 0);
+        records.push(...completedRecords);
+        await appendFile(transcriptPath, `${jsonLines(completedRecords)}\n`, "utf8");
         const writeback = await originalFetch(`${url}/memory/writeback`, {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -269,7 +277,7 @@ for (const codingSessionsEnabled of [true, false]) {
         assert.equal(body.coding_context.client, "claude-code");
         assert.equal(body.coding_context.session_id, sessionId);
         assert.deepEqual(body.coding_context.turns.map(({ turn_id, turn_index, item_count }) => ({ turn_id, turn_index, item_count })),
-          Array.from({ length: 8 }, (_, index) => ({ turn_id: `prompt-${index + 1}`, turn_index: index + 1, item_count: 5 })));
+          Array.from({ length: 8 }, (_, index) => ({ turn_id: `user-${index + 1}`, turn_index: index + 1, item_count: 5 })));
         assert.deepEqual(body.coding_context.items, expectedItems);
       } else {
         assert.equal(body.coding_context, undefined);

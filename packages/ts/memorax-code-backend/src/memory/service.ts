@@ -52,7 +52,7 @@ type MemoryHookWritebackResult =
 
 export type MemoryService = {
   recordTurnStart(command: TurnStartCommand): Promise<MemoryHookTurnStartResult>;
-  evaluateSearchGuidance: MemorySearchGuidanceRuntime["evaluate"];
+  evaluateSearchGuidance(command: TurnStartCommand): ReturnType<MemorySearchGuidanceRuntime["evaluate"]>;
   searchGuidanceStatus(): { enabled: boolean };
   recordPreCompact(command: CursorPreCompactCommand): Promise<CursorMemoryHookPreCompactResult>;
   writebackTurn(command: WritebackCommand): Promise<MemoryHookWritebackResult>;
@@ -170,7 +170,11 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
   }
   let closed = false;
   return {
-    evaluateSearchGuidance: searchGuidance.evaluate,
+    async evaluateSearchGuidance(command) {
+      if (command.client !== "claude-code") return await searchGuidance.evaluate(command);
+      const key = claudeHook.searchGuidanceTurnKey(command);
+      return key ? await searchGuidance.evaluate(command, key) : { ok: false, reason: "context_unavailable" };
+    },
     searchGuidanceStatus() {
       return { enabled: searchGuidance.isEnabled() };
     },

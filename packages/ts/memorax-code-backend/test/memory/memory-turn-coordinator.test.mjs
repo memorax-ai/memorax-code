@@ -438,6 +438,32 @@ test("turn coordination never attaches coding data from a different client, sess
   } finally { coordinator.close(); }
 });
 
+test("turn coordination preserves Claude start metadata while checking native archive UUID", async () => {
+  const scope = repositoryScope("repo-a");
+  const writebacks = [];
+  const coordinator = createMemoryTurnCoordinator({
+    automaticWriteback: (input) => { writebacks.push(input); return { accepted: true }; },
+  });
+  try {
+    for (const client of ["claude-code", "codex"]) {
+      for (const turnId of ["native-user-uuid", "wrong-native-uuid"]) {
+        const metadata = coordinator.recordTurnStart(turnStart(client, scope));
+        const codingTurn = { client, sessionId: "shared-session", turnId };
+        assert.deepEqual(await coordinator.completeMaterializedTurn({
+          key: turnKey(client), metadata, nativeTurnId: "native-user-uuid", codingTurn,
+          resolveRepositoryMemory: async () => configuredMemory(scope),
+          userText: "A verified native prompt.", assistantText: "A verified native answer.",
+          writeback: { client, sessionKey: "shared-session" },
+        }), { scheduled: true, metadataDisposition: "consumed" });
+        const accepted = writebacks.at(-1);
+        assert.strictEqual(accepted.codingTurn, client === "claude-code" && turnId === "native-user-uuid" ? codingTurn : undefined);
+        assert.equal("nativeTurnId" in accepted, false);
+        assert.equal(coordinator.getTurn(turnKey(client)), undefined);
+      }
+    }
+  } finally { coordinator.close(); }
+});
+
 function turnStart(client, scope = repositoryScope("repo-a")) {
   return {
     ...turnKey(client),

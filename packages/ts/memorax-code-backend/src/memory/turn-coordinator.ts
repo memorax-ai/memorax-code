@@ -65,6 +65,8 @@ export type MemoryTurnCompletion = Readonly<AutomaticMemoryWritebackTiming & {
   resolveRepositoryMemory: () => Promise<ConfiguredRepositoryMemoryResult>;
   userText: string;
   assistantText: string;
+  // Claude's native user UUID is resolved after its start observation key.
+  nativeTurnId?: string;
   codingTurn?: CodingSessionSourceTurn;
   searchAssistantText?: string;
   writeback: Omit<AutomaticMemoryWritebackOptions, "userText" | "assistantText" | "repositoryScope" | "codingTurn">;
@@ -226,7 +228,8 @@ export function createMemoryTurnCoordinator(options: MemoryTurnCoordinatorOption
           assistantText: input.assistantText,
           ...(input.codingTurn?.client === input.key.client
             && input.codingTurn.sessionId === input.key.sessionId
-            && input.codingTurn.turnId === input.key.clientTurnId
+            && input.codingTurn.turnId === (input.key.client === "claude-code"
+              ? input.nativeTurnId ?? input.key.clientTurnId : input.key.clientTurnId)
             ? { codingTurn: input.codingTurn } : {}),
           // Metadata.createdAt is a start observation, not native message time.
           // Keep that distinction even when a legacy record has no timestamp.

@@ -107,7 +107,7 @@ test("Claude archive materialization preserves text blocks, tool errors, and its
   const result = await readClaudeCodingSessionTurn({ ...identity, transcriptPath });
   assert.equal(result.ok, true);
   const source = {
-    client: "claude-code", sessionId: SESSION_ID, turnId: PROMPT_ID,
+    client: "claude-code", sessionId: SESSION_ID, turnId: result.turn.nativeUserUuid,
     turnIndex: result.turn.sessionTurnIndex, outcome: "completed", closedAt,
     source: result.turn.source, items: result.turn.items,
   };
@@ -206,7 +206,7 @@ test("Claude archive does not collect a sibling result appended after its comple
   const result = await readClaudeCodingSessionTurn({ ...identity, transcriptPath });
   assert.equal(result.ok, true);
   const source = {
-    client: "claude-code", sessionId: SESSION_ID, turnId: PROMPT_ID,
+    client: "claude-code", sessionId: SESSION_ID, turnId: result.turn.nativeUserUuid,
     turnIndex: result.turn.sessionTurnIndex, outcome: "completed", closedAt,
     source: result.turn.source, items: result.turn.items,
   };

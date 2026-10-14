@@ -18,7 +18,7 @@ const BASE_COMMAND_KEYS = [
 ] as const;
 const TURN_START_KEYS: Readonly<Record<MemoryHookClient, ReadonlySet<string>>> = {
   codex: new Set([...BASE_COMMAND_KEYS, "turnId", "prompt", "transcriptPath"]),
-  "claude-code": new Set([...BASE_COMMAND_KEYS, "promptId", "prompt", "transcriptPath"]),
+  "claude-code": new Set([...BASE_COMMAND_KEYS, "promptId", "prompt", "transcriptPath", "claudeTurnKey"]),
   opencode: new Set([...BASE_COMMAND_KEYS, "userMessageId", "prompt"]),
   dsh: new Set(["version", "client", "sessionId", "turn", "startSeq", "cwd", "prompt"]),
   codebuddy: new Set([...BASE_COMMAND_KEYS, "turnId", "prompt", "transcriptPath"]),
@@ -89,6 +89,7 @@ export type ClaudeTurnStartCommand = MemoryHookCommandBase<"claude-code"> & Read
   promptId: string;
   prompt: string;
   transcriptPath: string;
+  claudeTurnKey?: string;
 }>;
 
 export type OpenCodeTurnStartCommand = MemoryHookCommandBase<"opencode"> & Readonly<{
@@ -149,6 +150,7 @@ export type MemoryHookTurnStartResult = Readonly<{
   ok: true;
   userNotice?: string;
   repoMemoryWorktree?: string;
+  claudeTurnKey?: string;
 }>;
 
 export type CodexWritebackCommand = MemoryHookCommandBase<"codex"> & Readonly<{
@@ -378,6 +380,9 @@ export function parseTurnStartCommand(
   const promptId = requiredStringField(value, "promptId");
   const transcriptPath = requiredStringField(value, "transcriptPath");
   if (!promptId || !transcriptPath) return invalidCommand();
+  if (Object.hasOwn(value, "claudeTurnKey") && (typeof value.claudeTurnKey !== "string"
+    || value.claudeTurnKey !== value.claudeTurnKey.trim()
+    || !/^claude-start:[a-f0-9]{64}$/.test(value.claudeTurnKey))) return invalidCommand();
   return {
     ok: true,
     command: {
@@ -386,6 +391,7 @@ export function parseTurnStartCommand(
       promptId,
       prompt,
       transcriptPath,
+      ...(typeof value.claudeTurnKey === "string" ? { claudeTurnKey: value.claudeTurnKey } : {}),
     },
   };
 }

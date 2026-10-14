@@ -791,8 +791,20 @@ that recover do not produce terminal failure records.
   without changing ordinary QA text materialization. DSH and Trae remain QA-only.
   Claude resolves QA and optional items from one native snapshot. Repeated UUID
   records ignore `cwd`, `gitBranch`, `slug`, and auxiliary user `toolUseResult`;
-  only visible human messages use outer prompt IDs as Turn identity. Tool results
-  use Session, parent lineage, and selected call identity instead. Conflicts reject
+  visible human record UUIDs identify native Turns and determine their indices.
+  A Hook prompt ID alone must resolve uniquely. When Claude reuses that ID,
+  the Backend correlates the start prompt digest with a frozen transcript-prefix
+  digest and byte boundary. The user record may already exist at start; its
+  terminal record must first appear after the observed boundary. Rewritten
+  prefixes, multiple eligible users, and overlapping unresolved starts fail closed.
+  Hook text is correlation evidence, never fallback QA content.
+  A bounded in-memory start observation identifies coordinator, guidance, and
+  trace state; its local token is returned to the Claude reminder for guidance
+  correlation and never sent to the memory provider. Native UUIDs identify
+  archive references and completed-writeback deduplication, including concurrent
+  Stops. Enqueue rejection retains the observation for retry. Archive rereads
+  select the native UUID within the frozen completion prefix.
+  Tool results use Session, parent lineage, and selected call identity instead. Conflicts reject
   the Turns they can affect; unresolved ancestry remains fail-closed rather than
   selecting an earlier completion. Task notifications and system prompts bound
   parent traversal so their replies cannot replace an earlier interactive QA.
