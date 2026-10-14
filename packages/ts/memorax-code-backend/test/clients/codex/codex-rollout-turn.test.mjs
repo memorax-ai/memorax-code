@@ -120,12 +120,108 @@ test("Codex coding items preserve native fields and text blocks without duplicat
       { type: "output_text", text: "" },
       { type: "output_text", text: "\nIts fields are preserved.  " },
     ] },
+    { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: "The parser is correct." }] },
   ]);
 
   const interrupted = transcript + jsonLines([turnAborted("turn-1"), threadRolledBack()]);
   assert.deepEqual(codexCodingSessionTurnFromJsonLines(interrupted, identity), {
     ok: false, reason: "turn_not_completed",
   });
+});
+
+test("Codex archive retains users, final messages, and tools in native record order without changing QA", () => {
+  const transcript = jsonLines([
+    sessionMeta("session-1"), taskStarted("turn-1"), turnContext("turn-1"),
+    responseItemUserMessage("Inspect the initial input.", "turn-1"),
+    completedUserMessage(["Inspect the initial input."], "native-first"),
+    responseMessage("assistant", "Inspecting the input.", "commentary", "turn-1"),
+    { type: "response_item", payload: { type: "function_call", call_id: "call-first", name: "read", arguments: "{}" } },
+    responseItemUserMessage("Include the revised input.", "turn-1"),
+    completedUserMessage(["Include the revised input."], "native-second"),
+    responseItemUserMessage("<skill>Unrelated injected context.</skill>", "turn-1"),
+    { type: "response_item", payload: { type: "function_call_output", call_id: "call-first", output: "Initial result." } },
+    responseMessage("assistant", "Initial final response.", "final_answer", "turn-1"),
+    { type: "response_item", payload: { type: "function_call", call_id: "call-last", name: "read", arguments: "{}" } },
+    responseMessage("assistant", "Revised final response.", "final_answer", "turn-1"),
+    { type: "response_item", payload: { type: "function_call_output", call_id: "call-last", output: "Last result." } },
+    taskComplete("turn-1"),
+  ]);
+  const identity = { sessionId: "session-1", turnId: "turn-1" };
+  const archive = codexCodingSessionTurnFromJsonLines(transcript, identity);
+  assert.equal(archive.ok, true);
+  const { items, closedAt, sessionTurnIndex, ...qa } = archive.turn;
+  assert.deepEqual(qa, codexRolloutTurnFromJsonLines(transcript, identity).turn);
+  assert.equal(qa.userPrompt, "Include the revised input.");
+  assert.equal(qa.assistantReply, "Revised final response.");
+  assert.deepEqual(items.map((item) => item.type === "message"
+    ? `${item.role}/${item.phase ?? "input"}:${item.content.map((block) => block.text).join("\n")}`
+    : `${item.type}:${item.call_id}`), [
+    "user/input:Inspect the initial input.",
+    "assistant/commentary:Inspecting the input.",
+    "function_call:call-first",
+    "user/input:Include the revised input.",
+    "function_call_output:call-first",
+    "assistant/final_answer:Initial final response.",
+    "function_call:call-last",
+    "assistant/final_answer:Revised final response.",
+    "function_call_output:call-last",
+  ]);
+});
+
+test("Codex archive preserves multiple legacy inputs at their original positions", () => {
+  const transcript = jsonLines([
+    sessionMeta("session-1"), taskStarted("turn-1"), turnContext("turn-1"),
+    userMessage("Initial legacy input."),
+    agentMessage("Intermediate legacy update.", "commentary"),
+    userMessage("Additional legacy input."),
+    agentMessage("Completed legacy response.", "final_answer"),
+    taskComplete("turn-1"),
+  ]);
+  const identity = { sessionId: "session-1", turnId: "turn-1" };
+  const archive = codexCodingSessionTurnFromJsonLines(transcript, identity);
+  assert.equal(archive.ok, true);
+  assert.equal(codexRolloutTurnFromJsonLines(transcript, identity).turn.userPrompt, "Additional legacy input.");
+  assert.deepEqual(archive.turn.items.map((item) => item.content[0].text), [
+    "Initial legacy input.", "Intermediate legacy update.", "Additional legacy input.", "Completed legacy response.",
+  ]);
+});
+
+test("Codex archive removes only one matching assistant mirror per response item", () => {
+  const transcript = jsonLines([
+    sessionMeta("session-1"), taskStarted("turn-1"), turnContext("turn-1"),
+    responseItemUserMessage("Inspect mixed native messages.", "turn-1"),
+    responseMessage("assistant", "Mirrored update.", "commentary", "turn-1"),
+    agentMessage("Mirrored update.", "commentary"),
+    agentMessage("Unique legacy update.", "commentary"),
+    agentMessage("Repeated update.", "commentary"),
+    agentMessage("Repeated update.", "commentary"),
+    responseMessage("assistant", "Repeated update.", "commentary", "turn-1"),
+    agentMessage("Legacy repeated update.", "commentary"),
+    agentMessage("Legacy repeated update.", "commentary"),
+    responseMessage("assistant", "Native repeated update.", "commentary", "turn-1"),
+    responseMessage("assistant", "Native repeated update.", "commentary", "turn-1"),
+    agentMessage("Same text, distinct phase.", "commentary"),
+    responseMessage("assistant", "Same text, distinct phase.", "final_answer", "turn-1"),
+    responseMessage("assistant", "Complete mixed messages.", "final_answer", "turn-1"),
+    agentMessage("Complete mixed messages.", "final_answer"),
+    taskComplete("turn-1"),
+  ]);
+  const source = codexCodingSessionTurnFromJsonLines(transcript, { sessionId: "session-1", turnId: "turn-1" });
+  assert.equal(source.ok, true);
+  assert.deepEqual(source.turn.items.filter((item) => item.role === "assistant")
+    .map((item) => [item.phase, item.content[0].text]), [
+    ["commentary", "Mirrored update."],
+    ["commentary", "Unique legacy update."],
+    ["commentary", "Repeated update."],
+    ["commentary", "Repeated update."],
+    ["commentary", "Legacy repeated update."],
+    ["commentary", "Legacy repeated update."],
+    ["commentary", "Native repeated update."],
+    ["commentary", "Native repeated update."],
+    ["commentary", "Same text, distinct phase."],
+    ["final_answer", "Same text, distinct phase."],
+    ["final_answer", "Complete mixed messages."],
+  ]);
 });
 
 test("Codex turn indexes stay aligned across response-item turns and interrupted boundaries", () => {
@@ -421,7 +517,7 @@ test("Codex user identity rejects unmatched image structure and extra context", 
   }
 });
 
-test("Codex user identity selects the last real input within its native message boundary", () => {
+test("Codex QA selects the last real input while its archive retains every identified input", () => {
   for (const secondText of ["Use the revised input.", "Use the initial input."]) {
     const first = responseItemUserMessage("Use the initial input.", "turn-1");
     first.payload.id = "response-first";
@@ -436,18 +532,19 @@ test("Codex user identity selects the last real input within its native message 
       responseItemUserMessage("<skill>Injected after the real input.</skill>", "turn-1"),
       responseMessage("assistant", "Applied the last input.", "final_answer", "turn-1"),
       taskComplete("turn-1"),
-    ], last, secondText);
+    ], last, secondText, [first, last]);
   }
 });
 
 test("Codex user identity treats repeated native message identities as idempotent", () => {
   for (const duplicateBeforeLastEvent of [true, false]) {
     const first = completedUserMessage(["Initial input."], "native-first");
+    const initialResponse = responseItemUserMessage("Initial input.", "turn-1");
     const last = responseItemUserMessage("Revised input.", "turn-1");
     last.payload.id = "response-last";
     assertCodexSelectedUser([
       sessionMeta("session-1"), taskStarted("turn-1"), turnContext("turn-1"),
-      responseItemUserMessage("Initial input.", "turn-1"), first,
+      initialResponse, first,
       last,
       ...(duplicateBeforeLastEvent ? [first] : []),
       completedUserMessage(["Revised input."], "native-last"),
@@ -455,7 +552,7 @@ test("Codex user identity treats repeated native message identities as idempoten
       responseItemUserMessage("Later context must not replace native input.", "turn-1"),
       responseMessage("assistant", "Applied the revised input.", "final_answer", "turn-1"),
       taskComplete("turn-1"),
-    ], last, "Revised input.");
+    ], last, "Revised input.", [initialResponse, last]);
   }
 });
 
@@ -1173,7 +1270,7 @@ test("Codex interrupted rollout reader reports an unavailable transcript without
   assert.equal(typeof result.error, "string");
 });
 
-function assertCodexSelectedUser(records, expectedResponse, expectedPrompt) {
+function assertCodexSelectedUser(records, expectedResponse, expectedPrompt, expectedArchiveUsers = [expectedResponse]) {
   const transcript = jsonLines(records);
   const identity = { sessionId: "session-1", turnId: "turn-1" };
   const qa = codexRolloutTurnFromJsonLines(transcript, identity);
@@ -1184,13 +1281,12 @@ function assertCodexSelectedUser(records, expectedResponse, expectedPrompt) {
   assert.deepEqual(archiveQa, qa.turn);
   assert.equal(qa.turn.userPrompt, expectedPrompt);
   assert.equal(qa.turn.userTimestamp, Date.parse(expectedResponse.timestamp));
-  assert.deepEqual(items[0], {
+  assert.deepEqual(items.filter((item) => item.type === "message" && item.role === "user"), expectedArchiveUsers.map((response) => ({
     type: "message", role: "user",
-    ...(expectedResponse.payload.id ? { id: expectedResponse.payload.id } : {}),
-    content: expectedResponse.payload.content.filter((part) => part.type === "input_text")
+    ...(response.payload.id ? { id: response.payload.id } : {}),
+    content: response.payload.content.filter((part) => part.type === "input_text")
       .map(({ text }) => ({ type: "input_text", text })),
-  });
-  assert.equal(items.filter((item) => item.type === "message" && item.role === "user").length, 1);
+  })));
 }
 
 function completedUserMessage(texts, id, turnId = "turn-1") {

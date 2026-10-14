@@ -754,8 +754,9 @@ that recover do not produce terminal failure records.
   Codex modern `item_completed.UserMessage` events identify real user input
   within the matching native Session and Turn. Exact text blocks and record
   order correlate each event with its preceding `response_item`; those record
-  types do not share message IDs. QA and the archive's leading user item use
-  the same selected response record, including its timestamp. Native response
+  types do not share message IDs. QA retains the last selected response record,
+  including its timestamp; the archive retains every matched genuine input in
+  native record order. Native response
   image wrappers are normalized only for input correlation, preserving text
   blocks and image order; the selected response content is unchanged. Later
   user-role context injections cannot replace that input. Duplicate native user events
@@ -764,21 +765,28 @@ that recover do not produce terminal failure records.
   single QA pair. Without modern user events, only a unique response user
   candidate is accepted; the existing legacy text fallback remains available
   when response text is absent, not when modern correlation fails.
-  Codex allowlists native item fields and uses legacy event text only when its
-  native message is absent; this includes structured web-search actions and
+  Codex allowlists native item fields and coalesces exact assistant mirrors
+  one-to-one across response and legacy event records, preserving distinct
+  legacy text and repeated messages from the same source. This includes structured web-search actions and
   tool-discovery calls/results without imposing function-call identity rules
   on hosted tools. The other clients convert their own native records.
   This excludes reasoning and internal metadata and is not a complete Responses
   API transcript for direct replay. Normalization owns redaction and per-Turn
   bounds. Archive text blocks are retained regardless of content, including short
   commands and redaction placeholders; QA content eligibility remains in ordinary
-  writeback. Messages still require a supported text block and the Turn must retain
-  its leading user and trailing final answer. Valid JSON function arguments are
-  redacted as structured values and serialized back to JSON; unchanged arguments
-  retain native formatting. Native
-  non-JSON arguments remain redacted text. Function calls exceeding the argument
-  text limit or remaining Turn budget are omitted whole with loss metadata, never
-  sliced into partial JSON. Archive mapping preserves selected text blocks and
+  writeback. Messages still require supported text blocks; completed archives
+  contain user input and final-answer text without imposing a single pair or
+  first/last positions. Selected JSONL records and SDK records/parts retain
+  their source order; assigning a phase never moves text across tools.
+  Valid JSON tool arguments, custom inputs, outputs, and JSON text inside output
+  wrappers are redacted structurally and serialized back to JSON; unchanged
+  values retain native formatting. Native non-JSON tool text remains text.
+  Normalization owns redaction after native projection. Structured tool text
+  exceeding its text limit or remaining Turn budget is omitted whole with loss
+  metadata, never sliced into partial JSON. Bounds retain user and final-answer
+  messages in place and treat selected calls/results sharing a tool identity as
+  one group; hosted tool-search records without call IDs are bounded together.
+  Neither rule invents missing native partners. Archive mapping preserves selected text blocks and
   tool strings; structured tool results and native error indicators stay inside string outputs,
   without changing ordinary QA text materialization. DSH and Trae remain QA-only.
   Claude resolves QA and optional items from one native snapshot. Repeated UUID

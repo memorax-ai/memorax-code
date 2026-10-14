@@ -857,7 +857,10 @@ native `response_item` fields; legacy `event_msg` text is used only when the
 corresponding native message is absent. The other supported clients convert
 their native records to the same subset. Reasoning, internal metadata, binary
 attachments, raw session files, native transcript paths, and local trace
-provenance are not uploaded. This is a selected text/tool archive, not a complete
+provenance are not uploaded. Selected records retain their native file or SDK
+order. Multiple genuine user inputs within one Turn are retained; final-answer
+text stays in place even when followed by tools. Ordinary QA still selects its
+existing single question/answer pair. This is a selected text/tool archive, not a complete
 Responses API transcript that can be replayed directly.
 
 Item text uses local best-effort redaction. Each text field is limited to
@@ -865,8 +868,13 @@ Item text uses local best-effort redaction. Each text field is limited to
 Optional Turn metadata `truncation` contains `original_item_count` and
 `truncated_text_fields` to report loss while preparing the collected subset; it
 does not claim that the native log was fully collected. Redaction and truncation
-can also change tool arguments or output. These controls are independent of
-ordinary QA chunking.
+can also change tool arguments or output. Valid JSON arguments, custom inputs,
+outputs, and JSON text inside result wrappers remain parseable after redaction.
+Oversized structured tool text is omitted whole instead of cut into invalid
+JSON. Selected tool calls and their results are bounded together, preserving
+the relative order of retained records. User and final-answer messages are
+retained in place; if they cannot fit the bounds, the archive is omitted while
+QA continues. These controls are independent of ordinary QA chunking.
 
 Attachments contain whole Turns from one client, session, connection, and
 repository scope. Only the **`coding_context` archive object** is capped at

@@ -68,21 +68,28 @@ export function prepareCodingSessionTurn(
   const markTruncated = (sourceIndex: number) => (fieldIndex: number) => {
     truncatedFields.add(`${sourceIndex}:${fieldIndex}`);
   };
-  const normalizedItems = turn.items
-    .flatMap((item, sourceIndex) => {
-      const normalized = prepareItem(item, markTruncated(sourceIndex));
-      return normalized ? [{ item: normalized, sourceIndex }] : [];
-    });
-  if (normalizedItems[0]?.item.type !== "message" || normalizedItems[0].item.role !== "user") return undefined;
-  if (normalizedItems.filter(({ item }) => item.type === "message" && item.role === "user").length !== 1) return undefined;
-  const finalIndexes = normalizedItems.flatMap(({ item }, index) => (
-    item.type === "message" && item.role === "assistant" && item.phase === "final_answer" ? [index] : []
+  type Candidate = { item: ResponseItem; sourceIndex: number };
+  const grouped = new Map<string, { items: Candidate[]; invalid: boolean }>();
+  turn.items.forEach((item, sourceIndex) => {
+    // Native tool groups may be interleaved; bounds must not split a selected pair.
+    const family = item.type === "function_call" || item.type === "function_call_output" ? "function"
+      : item.type === "custom_tool_call" || item.type === "custom_tool_call_output" ? "custom"
+        : item.type === "tool_search_call" || item.type === "tool_search_output" ? "search" : undefined;
+    const key = family && "call_id" in item && item.call_id
+      ? `${family}:${item.call_id.trim()}` : family === "search" ? "hosted-search" : `item:${sourceIndex}`;
+    const group = grouped.get(key) ?? { items: [], invalid: false };
+    const normalized = prepareItem(item, markTruncated(sourceIndex));
+    if (normalized) group.items.push({ item: normalized, sourceIndex });
+    else group.invalid = true;
+    grouped.set(key, group);
+  });
+  const groups = [...grouped.values()].filter((group) => !group.invalid).map((group) => group.items);
+  const required = groups.flat().filter(({ item }) => (
+    item.type === "message" && (item.role === "user" || item.phase === "final_answer")
   ));
-  if (finalIndexes.length !== 1 || finalIndexes[0] !== normalizedItems.length - 1) return undefined;
-
-  const candidates = normalizedItems.length > CODING_TURN_MAX_ITEMS
-    ? [normalizedItems[0], ...normalizedItems.slice(-(CODING_TURN_MAX_ITEMS - 1))]
-    : normalizedItems;
+  if (!required.some(({ item }) => item.type === "message" && item.role === "user")
+    || !required.some(({ item }) => item.type === "message" && item.role === "assistant")
+    || required.length > CODING_TURN_MAX_ITEMS) return undefined;
   const repositorySlug = boundedIdentifier(turn.repositorySlug);
   const envelope = {
     client: turn.client,
@@ -92,7 +99,7 @@ export function prepareCodingSessionTurn(
     closed_at: closedAt,
     ...(repositorySlug ? { repository_slug: repositorySlug } : {}),
   };
-  // Reserve the loss marker before fitting content; retain QA at both ends.
+  // Reserve the loss marker before fitting content, without changing source order.
   let remaining = CODING_TURN_MAX_BYTES - jsonBytes({
     ...envelope,
     items: [],
@@ -103,26 +110,34 @@ export function prepareCodingSessionTurn(
         : turn.items.reduce((count, item) => count + (item.type === "message" ? item.content.length : 1), 0),
     },
   });
-  const first = candidates[0];
-  const last = candidates[candidates.length - 1];
-  const firstBudget = Math.min(
-    itemBytes(first.item),
-    Math.max(remaining - itemBytes(last.item), Math.floor(remaining / 2)),
-  );
-  const user = fitItem(first.item, firstBudget, markTruncated(first.sourceIndex));
-  const final = fitItem(last.item, remaining - firstBudget, markTruncated(last.sourceIndex));
-  if (!user || !final) return undefined;
-  remaining -= itemBytes(user) + itemBytes(final);
-  const middle: ResponseItem[] = [];
-  for (let index = candidates.length - 2; index > 0; index -= 1) {
-    const candidate = candidates[index];
-    const item = fitItem(candidate.item, remaining, markTruncated(candidate.sourceIndex));
-    if (item) {
-      middle.push(item);
-      remaining -= itemBytes(item);
-    }
+  const kept: Candidate[] = [];
+  let requiredBytes = required.reduce((total, { item }) => total + itemBytes(item), 0);
+  for (const [index, candidate] of required.entries()) {
+    requiredBytes -= itemBytes(candidate.item);
+    const budget = Math.min(itemBytes(candidate.item), Math.max(
+      remaining - requiredBytes, Math.floor(remaining / (required.length - index)),
+    ));
+    const item = fitItem(candidate.item, budget, markTruncated(candidate.sourceIndex));
+    if (!item) return undefined;
+    kept.push({ ...candidate, item });
+    remaining -= itemBytes(item);
   }
-  const items = [user, ...middle.reverse(), final];
+  const requiredIndexes = new Set(required.map(({ sourceIndex }) => sourceIndex));
+  for (const group of groups.reverse()) {
+    if (requiredIndexes.has(group[0].sourceIndex) || kept.length + group.length > CODING_TURN_MAX_ITEMS) continue;
+    const fitted: Candidate[] = [];
+    let groupBudget = remaining;
+    for (const candidate of group) {
+      const item = fitItem(candidate.item, groupBudget, markTruncated(candidate.sourceIndex));
+      if (!item) break;
+      fitted.push({ ...candidate, item });
+      groupBudget -= itemBytes(item);
+    }
+    if (fitted.length !== group.length) continue;
+    kept.push(...fitted);
+    remaining = groupBudget;
+  }
+  const items = kept.sort((left, right) => left.sourceIndex - right.sourceIndex).map(({ item }) => item);
   const truncation = items.length < turn.items.length || truncatedFields.size > 0
     ? { original_item_count: turn.items.length, truncated_text_fields: truncatedFields.size }
     : undefined;
@@ -147,9 +162,7 @@ export function codingEventText(value: unknown): string {
 }
 
 export function codingToolOutputText(value: unknown): string {
-  if (value === undefined || typeof value === "string") return codingEventText(value);
-  // Wrapping native text with status must not hide credentials behind JSON escapes.
-  return stableJson(value, true);
+  return codingEventText(value);
 }
 
 function prepareItem(
@@ -173,7 +186,8 @@ function prepareItem(
     const status = item.status && boundedEventIdentifier(item.status, 32);
     const metadata = { ...identity, ...(status ? { status } : {}) };
     if (item.type === "web_search_call") {
-      return { type: item.type, ...metadata, action: redactToolJson(item.action, onTruncated) as ResponseJsonObject };
+      const action = redactToolJson(item.action, onTruncated) as ResponseJsonObject;
+      return toolJsonStringsFit(action) ? { type: item.type, ...metadata, action } : undefined;
     }
     const execution = item.execution;
     if (execution !== undefined && execution !== "server" && execution !== "client") return undefined;
@@ -184,9 +198,11 @@ function prepareItem(
       ...(execution ? { execution } : {}),
       ...(callId ? { call_id: callId } : item.call_id === null ? { call_id: null } : {}),
     };
+    const value = redactToolJson(item.type === "tool_search_call" ? item.arguments : item.tools, onTruncated);
+    if (!toolJsonStringsFit(value)) return undefined;
     return item.type === "tool_search_call"
-      ? { type: item.type, ...searchIdentity, arguments: redactToolJson(item.arguments, onTruncated) }
-      : { type: item.type, ...searchIdentity, tools: redactToolJson(item.tools, onTruncated) as readonly ResponseJsonObject[] };
+      ? { type: item.type, ...searchIdentity, arguments: value }
+      : { type: item.type, ...searchIdentity, tools: value as readonly ResponseJsonObject[] };
   }
   if (!["function_call", "custom_tool_call", "function_call_output", "custom_tool_call_output"].includes(item.type)) return undefined;
   const callId = boundedEventIdentifier(item.call_id, 512);
@@ -194,32 +210,39 @@ function prepareItem(
   if (item.type === "function_call" || item.type === "custom_tool_call") {
     const name = boundedEventIdentifier(item.name, 255);
     if (!name) return undefined;
-    if (item.type === "custom_tool_call") return { type: item.type, ...identity, call_id: callId, name, input: redactSourceText(item.input, () => onTruncated(0)) };
+    if (item.type === "custom_tool_call") {
+      const input = redactToolText(item.input, () => onTruncated(0));
+      return input === undefined ? undefined : { type: item.type, ...identity, call_id: callId, name, input };
+    }
     const namespace = item.namespace && boundedEventIdentifier(item.namespace, 255);
-    const argumentsText = redactFunctionArguments(item.arguments, () => onTruncated(0));
+    const argumentsText = redactToolText(item.arguments, () => onTruncated(0));
     return argumentsText === undefined ? undefined
       : { type: item.type, ...identity, call_id: callId, name, arguments: argumentsText, ...(namespace ? { namespace } : {}) };
   }
-  return { type: item.type, ...identity, call_id: callId, output: redactSourceText(item.output, () => onTruncated(0)) };
+  const output = redactToolText(item.output, () => onTruncated(0));
+  return output === undefined ? undefined : { type: item.type, ...identity, call_id: callId, output };
 }
 
 function isSearchToolItem(item: ResponseItem): item is Extract<ResponseItem, { type: "web_search_call" | "tool_search_call" | "tool_search_output" }> {
   return item.type === "web_search_call" || item.type === "tool_search_call" || item.type === "tool_search_output";
 }
 
-function redactFunctionArguments(value: string, onTruncated: () => void): string | undefined {
+function redactToolText(value: string, onTruncated: () => void): string | undefined {
+  const redacted = redactJsonText(value, onTruncated);
+  if (redacted.length <= CODING_TURN_TEXT_MAX_CHARS) return redacted;
+  onTruncated();
+  return undefined;
+}
+
+function redactJsonText(value: string, onTruncated: () => void): string {
   let parsed: ResponseJsonValue;
   try {
     parsed = JSON.parse(value) as ResponseJsonValue;
   } catch {
-    // Native non-JSON arguments remain text; do not invent a JSON wrapper.
+    // Native non-JSON text stays text; valid JSON is never redacted as punctuation.
     return redactSourceText(value, onTruncated);
   }
   const serialized = JSON.stringify(redactToolJson(parsed, onTruncated));
-  if (serialized.length > CODING_TURN_TEXT_MAX_CHARS) {
-    onTruncated();
-    return undefined;
-  }
   // Discarded duplicate values and numeric parsing must not bypass raw redaction.
   return value.length <= CODING_TURN_TEXT_MAX_CHARS && JSON.stringify(parsed) === serialized
     && redactSourceText(value, () => {}) === value ? value : serialized;
@@ -227,9 +250,12 @@ function redactFunctionArguments(value: string, onTruncated: () => void): string
 
 function redactToolJson(value: ResponseJsonValue, onTruncated: (fieldIndex: number) => void): ResponseJsonValue {
   let fieldIndex = 0;
-  const text = (value: string): string => {
+  const text = (value: string, structured = false): string => {
     const index = fieldIndex++;
-    return redactSourceText(value, () => onTruncated(index));
+    const redacted = structured ? redactJsonText(value, () => onTruncated(index))
+      : redactSourceText(value, () => onTruncated(index));
+    if (redacted.length > CODING_TURN_TEXT_MAX_CHARS) onTruncated(index);
+    return redacted;
   };
   const visit = (item: ResponseJsonValue, key?: string): ResponseJsonValue => {
     if (key && typeof item === "string" && /^(?:(?:proxy-)?authorization|(?:set-)?cookie)$/iu.test(key)) {
@@ -244,7 +270,7 @@ function redactToolJson(value: ResponseJsonValue, onTruncated: (fieldIndex: numb
         return "[REDACTED:CREDENTIAL]";
       }
     }
-    if (typeof item === "string") return text(item);
+    if (typeof item === "string") return text(item, true);
     if (typeof item === "number") {
       // Parsing large integer literals can turn their digits into exponent notation.
       if (!Number.isFinite(item) || (Number.isInteger(item) && Math.abs(item) >= 1e21)) return "[REDACTED:LONG_NUMBER]";
@@ -262,6 +288,12 @@ function redactToolJson(value: ResponseJsonValue, onTruncated: (fieldIndex: numb
     ]));
   };
   return visit(value);
+}
+
+function toolJsonStringsFit(value: ResponseJsonValue): boolean {
+  if (typeof value === "string") return value.length <= CODING_TURN_TEXT_MAX_CHARS;
+  if (Array.isArray(value)) return value.every(toolJsonStringsFit);
+  return value === null || typeof value !== "object" || Object.values(value).every(toolJsonStringsFit);
 }
 
 function redactSourceText(value: string, onTruncated: () => void): string {
@@ -318,6 +350,11 @@ function fitItem(
     return { ...item, content } as ResponseItem;
   }
   const text = "input" in item ? item.input : item.output;
+  // JSON tool text must remain parseable even when the remaining byte budget is small.
+  try {
+    JSON.parse(text);
+    return undefined;
+  } catch { /* Non-JSON tool text can be shortened. */ }
   const textBudget = budget - itemBytes(item) + jsonBytes(text) - 2;
   if (textBudget < 0) return undefined;
   const bounded = fitText(text, textBudget);
@@ -357,11 +394,9 @@ function redactHomePath(value: string): string {
   return redacted;
 }
 
-function stableJson(value: unknown, redactTextValues = false): string {
+function stableJson(value: unknown): string {
   try {
-    return JSON.stringify(sortJsonValue(value), redactTextValues ? (_key, item: unknown) => (
-      typeof item === "string" ? redactMemoryPayloadText(redactHomePath(item)).text : item
-    ) : undefined);
+    return JSON.stringify(sortJsonValue(value));
   } catch {
     return String(value ?? "");
   }

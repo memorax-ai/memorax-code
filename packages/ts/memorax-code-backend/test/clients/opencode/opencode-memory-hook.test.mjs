@@ -284,7 +284,7 @@ test("OpenCode archive retains tool error status and complete outputs", () => {
   assert.deepEqual(openCodeMessageTurn(messages, input), openCodeMessageTurn(openCodeMessages(), input));
 });
 
-test("OpenCode archive keeps trailing tools and places the last text run at the end once", () => {
+test("OpenCode archive preserves final text before trailing tools in native part order", () => {
   const messages = openCodeMessages();
   messages[1].parts = [
     textPart("assistant-1", "  Final block one.\n"),
@@ -297,12 +297,12 @@ test("OpenCode archive keeps trailing tools and places the last text run at the 
   assert.equal(collected.ok, true);
   assert.deepEqual(collected.turn.items, [
     { type: "message", role: "user", content: [{ type: "input_text", text: "OpenCode user prompt." }] },
-    { type: "function_call", name: "read", call_id: "read-1", arguments: "{}" },
-    { type: "function_call_output", call_id: "read-1", output: "result" },
     { type: "message", role: "assistant", phase: "final_answer", content: [
       { type: "output_text", text: "  Final block one.\n" },
       { type: "output_text", text: "\tFinal block two.  " },
     ] },
+    { type: "function_call", name: "read", call_id: "read-1", arguments: "{}" },
+    { type: "function_call_output", call_id: "read-1", output: "result" },
   ]);
 });
 
@@ -726,3 +726,28 @@ async function waitFor(predicate) {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
 }
+
+
+test("OpenCode archive preserves SDK order while keeping the selected terminal and completion boundary", () => {
+  const [user, terminal] = openCodeMessages();
+  const earlier = {
+    info: { ...terminal.info, id: "earlier", time: { created: 1_700_000_001_000, completed: 1_700_000_030_000 } },
+    parts: [textPart("earlier", "Earlier completed commentary.")],
+  };
+  const later = {
+    info: { ...terminal.info, id: "later", time: { created: 1_700_000_061_000, completed: 1_700_000_090_000 } },
+    parts: [textPart("later", "Outside the selected completion boundary.")],
+  };
+  const messages = [user, later, terminal, earlier];
+  const input = { sessionId: "session-1", userMessageId: "user-1", assistantMessageId: "assistant-1", turnIndex: 1 };
+  const ordinary = openCodeMessageTurn(messages, input);
+  const archive = openCodeCodingSessionTurn(messages, input);
+  assert.equal(archive.ok, true);
+  const { items, turnIndex: _turnIndex, closedAt: _closedAt, ...qa } = archive.turn;
+  assert.deepEqual(qa, ordinary.turn);
+  assert.deepEqual(items, [
+    { type: "message", role: "user", content: [{ type: "input_text", text: "OpenCode user prompt." }] },
+    { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: "OpenCode assistant reply." }] },
+    { type: "message", role: "assistant", phase: "commentary", content: [{ type: "output_text", text: "Earlier completed commentary." }] },
+  ]);
+});

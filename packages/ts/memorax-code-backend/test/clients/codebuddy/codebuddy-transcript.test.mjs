@@ -677,3 +677,32 @@ function turnRecords(prompt, id, status, targetSessionId = sessionId) {
       content: [{ type: "output_text", text: "Reply\nwith paragraphs." }] },
   ];
 }
+
+
+test("archive orders selected event snapshots by their own native offsets without changing QA", () => {
+  const records = [
+    { id: "u1", type: "message", role: "user", sessionId, content: [{ type: "input_text", text: "Inspect the file." }] },
+    { id: "call", type: "function_call", parentId: "u1", callId: "read-file", name: "Read", arguments: { version: 1 } },
+    { type: "message", role: "assistant", parentId: "call", content: [{ type: "output_text", text: "Reading the latest snapshot." }] },
+    { id: "result", type: "function_call_result", parentId: "call", callId: "read-file", output: "Selected output." },
+    { id: "call", type: "function_call", parentId: "u1", callId: "read-file", name: "Read", arguments: { version: 2 } },
+    { id: "a1", type: "message", role: "assistant", parentId: "result", status: "completed", content: [{ type: "output_text", text: "Done." }] },
+    { id: "late", type: "function_call_result", parentId: "call", callId: "read-file", output: "After the completed boundary." },
+  ];
+  const transcript = records.map(JSON.stringify).join("\n");
+  for (const client of ["codebuddy", "workbuddy"]) {
+    const input = { sessionId, client, turnId: provisionalTurnId("Inspect the file.") };
+    const ordinary = codeBuddyTranscriptTurnFromJsonLines(transcript, input);
+    const archive = codeBuddyTranscriptTurnFromJsonLines(transcript, { ...input, captureCodingItems: true });
+    assert.equal(archive.ok, true, client);
+    const { items, ...qa } = archive.turn;
+    assert.deepEqual(qa, ordinary.turn);
+    assert.deepEqual(items, [
+      { type: "message", role: "user", content: [{ type: "input_text", text: "Inspect the file." }] },
+      { type: "message", role: "assistant", phase: "commentary", content: [{ type: "output_text", text: "Reading the latest snapshot." }] },
+      { type: "function_call_output", call_id: "read-file", output: "Selected output." },
+      { type: "function_call", call_id: "read-file", name: "Read", arguments: '{"version":2}' },
+      { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: "Done." }] },
+    ]);
+  }
+});

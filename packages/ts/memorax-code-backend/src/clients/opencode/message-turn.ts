@@ -122,17 +122,24 @@ export function openCodeCodingSessionTurn(
   const terminalIndex = assistants.findIndex((message) => messageId(message) === input.assistantMessageId);
   if (terminalIndex < 0) return { ok: false, reason: "message_identity_mismatch" };
   const user = messages.find((message) => messageId(message) === input.userMessageId) as OpenCodeMessageRecord;
-  const items: ResponseItem[] = [{
-    type: "message", role: "user",
-    content: user.parts.flatMap((part) => (
-      isRecord(part) && visibleTextPart(part)
-      && stringField(part, "sessionID") === input.sessionId
-      && stringField(part, "messageID") === input.userMessageId
-        ? [{ type: "input_text" as const, text: String(part.text) }] : []
-    )),
-  }];
+  const items: ResponseItem[] = [];
+  const selectedAssistants = new Set(assistants.slice(0, terminalIndex + 1));
   let finalTextIndex = -1;
-  for (const assistant of assistants.slice(0, terminalIndex + 1)) {
+  for (const message of messages) {
+    if (message === user) {
+      items.push({
+        type: "message", role: "user",
+        content: user.parts.flatMap((part) => (
+          isRecord(part) && visibleTextPart(part)
+          && stringField(part, "sessionID") === input.sessionId
+          && stringField(part, "messageID") === input.userMessageId
+            ? [{ type: "input_text" as const, text: String(part.text) }] : []
+        )),
+      });
+      continue;
+    }
+    if (!isMessageRecord(message) || !selectedAssistants.has(message)) continue;
+    const assistant = message;
     const id = messageId(assistant);
     const parts = assistant.parts.filter((part): part is Record<string, unknown> => (
       isRecord(part)
@@ -142,7 +149,7 @@ export function openCodeCodingSessionTurn(
     let content: { type: "output_text"; text: string }[] = [];
     const flushText = () => {
       if (content.length === 0) return;
-      finalTextIndex = items.length;
+      if (id === input.assistantMessageId) finalTextIndex = items.length;
       items.push({ type: "message", role: "assistant", phase: "commentary", content });
       content = [];
     };
@@ -169,9 +176,9 @@ export function openCodeCodingSessionTurn(
     }
     flushText();
   }
-  const [finalText] = items.splice(finalTextIndex, 1);
+  const finalText = items[finalTextIndex];
   if (finalText.type === "message" && finalText.role === "assistant") {
-    items.push({ ...finalText, phase: "final_answer" });
+    items[finalTextIndex] = { ...finalText, phase: "final_answer" };
   }
   return { ok: true, turn: { ...materialized.turn, turnIndex: Number(input.turnIndex), items, closedAt: new Date(completed).toISOString() } };
 }

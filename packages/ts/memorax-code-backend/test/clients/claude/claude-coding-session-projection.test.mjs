@@ -278,15 +278,15 @@ test("Claude archive still omits a proven result when its call has a conflicting
   assert.equal(result.turn.items.filter((item) => item.type === "function_call_output").length, 0);
 });
 
-test("Claude archive preserves selected parent-chain order when result rows precede their calls", () => {
+test("Claude archive preserves native record order when a proven result precedes its call", () => {
   const [prompt, call, result, terminal] = siblingToolRecords([siblingResult("selected-parent-result", "Selected output.")]);
   terminal.parentUuid = result.uuid;
   const transcript = jsonLines([prompt, result, call, terminal]);
   assert.equal(claudeTranscriptTurnFromJsonLines(transcript, identity).ok, true);
   const archive = claudeCodingSessionTurnFromJsonLines(transcript, identity);
   assert.equal(archive.ok, true);
-  assert.deepEqual(archive.turn.items.map((item) => item.type), ["message", "function_call", "function_call_output", "message"]);
-  assert.deepEqual(archive.turn.items[2], {
+  assert.deepEqual(archive.turn.items.map((item) => item.type), ["message", "function_call_output", "function_call", "message"]);
+  assert.deepEqual(archive.turn.items[1], {
     type: "function_call_output", call_id: "selected-call", output: "Selected output.",
   });
 });
@@ -307,11 +307,14 @@ test("Claude archive applies file-order bounds only to new sibling results", () 
   const outputs = items.filter((item) => item.type === "function_call_output");
   assert.equal(outputs.length, 2);
   assert.equal(outputs.some((item) => item.output === "Early conflicting output."), false);
-  for (const output of outputs) {
-    const callIndex = items.findIndex((item) => item.type === "function_call" && item.call_id === output.call_id);
-    assert.ok(callIndex >= 0 && callIndex < items.indexOf(output));
-    assert.ok(items.indexOf(output) < items.length - 1);
-  }
+  assert.deepEqual(items.map((item) => [item.type, item.call_id]), [
+    ["message", undefined],
+    ["function_call_output", "selected-call"],
+    ["function_call", "selected-call"],
+    ["function_call", "sibling-extra-call"],
+    ["function_call_output", "sibling-extra-call"],
+    ["message", undefined],
+  ]);
 });
 
 test("Claude archive uses native parents instead of rewritten tool result prompt labels", () => {
@@ -324,5 +327,53 @@ test("Claude archive uses native parents instead of rewritten tool result prompt
   assert.equal(result.ok, true);
   assert.deepEqual(result.turn.items.filter((item) => item.type === "function_call_output"), [
     { type: "function_call_output", call_id: "selected-call", output: "Selected output." },
+  ]);
+});
+
+
+test("Claude archive keeps proven sibling outputs at their native positions", () => {
+  const records = siblingToolRecords([
+    assistantRecord({ uuid: "progress-after-call", parentUuid: "sibling-call", stopReason: null, content: "Waiting for the tool." }),
+    siblingResult("delayed-sibling", "Selected output."),
+  ]);
+  records.at(-1).parentUuid = "progress-after-call";
+  const transcript = jsonLines(records);
+  const ordinary = claudeTranscriptTurnFromJsonLines(transcript, identity);
+  const archive = claudeCodingSessionTurnFromJsonLines(transcript, identity);
+  assert.equal(archive.ok, true);
+  const { items, closedAt: _closedAt, ...qa } = archive.turn;
+  assert.deepEqual(qa, ordinary.turn);
+  assert.deepEqual(items.map((item) => [item.type, item.phase, item.call_id]), [
+    ["message", undefined, undefined],
+    ["function_call", undefined, "selected-call"],
+    ["message", "commentary", undefined],
+    ["function_call_output", undefined, "selected-call"],
+    ["message", "final_answer", undefined],
+  ]);
+});
+
+test("Claude archive keeps terminal text and tools interleaved without moving final text", () => {
+  const transcript = jsonLines([
+    userRecord({ uuid: "user", content: "Inspect the file." }),
+    assistantRecord({ uuid: "terminal", parentUuid: "user", stopReason: "end_turn", content: [
+      { type: "text", text: "  First final block.\n" },
+      { type: "text", text: "Second final block." },
+      { type: "tool_use", id: "terminal-call", name: "Read", input: { path: "sample.txt" } },
+      { type: "text", text: "  Last final block.\n" },
+    ] }),
+  ]);
+  const ordinary = claudeTranscriptTurnFromJsonLines(transcript, identity);
+  const archive = claudeCodingSessionTurnFromJsonLines(transcript, identity);
+  assert.equal(archive.ok, true);
+  const { items, closedAt: _closedAt, ...qa } = archive.turn;
+  assert.deepEqual(qa, ordinary.turn);
+  assert.deepEqual(items, [
+    { type: "message", role: "user", content: [{ type: "input_text", text: "Inspect the file." }] },
+    { type: "message", role: "assistant", phase: "final_answer", content: [
+      { type: "output_text", text: "  First final block.\n" },
+      { type: "output_text", text: "Second final block." },
+    ] },
+    { type: "function_call", call_id: "terminal-call", name: "Read", arguments: '{"path":"sample.txt"}' },
+    { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: "  Last final block.\n" }] },
   ]);
 });

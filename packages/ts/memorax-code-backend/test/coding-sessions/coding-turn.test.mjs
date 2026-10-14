@@ -8,6 +8,67 @@ import {
   prepareCodingSessionTurn,
 } from "../../dist/coding-sessions/coding-turn.js";
 
+test("archive preparation preserves multiple user messages and final answers in source order", () => {
+  const items = [
+    { type: "message", role: "user", content: [{ type: "input_text", text: "Inspect the project." }] },
+    { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: "Initial findings." }] },
+    { type: "message", role: "user", content: [{ type: "input_text", text: "Include the tests." }] },
+    { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: "Done." }] },
+    { type: "function_call", call_id: "call-1", name: "check", arguments: "{}" },
+    { type: "function_call_output", call_id: "call-1", output: "passed" },
+  ];
+  const turn = prepareCodingSessionTurn({
+    client: "codex", sessionId: "session-1", turnId: "turn-1", turnIndex: 1,
+    outcome: "completed", closedAt: "2026-08-30T08:00:00Z", items,
+  });
+  assert.deepEqual(turn?.items, items);
+  assert.equal(turn.truncation, undefined);
+});
+
+test("tool result redaction preserves structured wrappers and JSON text inside them", () => {
+  const sensitive = { password: "synthetic-passphrase", id: 123456789, keep: "visible" };
+  for (const value of [sensitive, { output: sensitive, status: "completed" }, {
+    content: JSON.stringify(sensitive), is_error: false,
+  }]) {
+    const turn = prepareCodingSessionTurn({
+      client: "workbuddy", sessionId: "session-1", turnId: "turn-1", turnIndex: 1,
+      outcome: "completed", closedAt: "2026-08-30T08:00:00Z",
+      items: [
+        { type: "message", role: "user", content: [{ type: "input_text", text: "Inspect the result." }] },
+        { type: "function_call_output", call_id: "call-1", output: codingToolOutputText(value) },
+        { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: "Done." }] },
+      ],
+    });
+    const output = turn.items[1].output;
+    const wrapper = JSON.parse(output);
+    const result = wrapper.content ? JSON.parse(wrapper.content) : wrapper.output ?? wrapper;
+    assert.deepEqual(result, { password: "[REDACTED:CREDENTIAL]", id: "[REDACTED:LONG_NUMBER]", keep: "visible" });
+    assert.doesNotMatch(output, /synthetic-passphrase|123456789/);
+  }
+});
+
+test("item limits preserve all user messages and omit complete tool groups without reordering", () => {
+  const user = (text) => ({ type: "message", role: "user", content: [{ type: "input_text", text }] });
+  const items = [user("Inspect the project.")];
+  for (let index = 0; index < 256; index++) {
+    items.push({ type: "function_call", call_id: `call-${index}`, name: "read", arguments: "{}" });
+    if (index === 100) items.push(user("Include the tests."));
+    items.push({ type: "function_call_output", call_id: `call-${index}`, output: "Read file." });
+  }
+  items.push({ type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: "Done." }] });
+  const turn = prepareCodingSessionTurn({
+    client: "codex", sessionId: "session-1", turnId: "turn-1", turnIndex: 1,
+    outcome: "completed", closedAt: "2026-08-30T08:00:00Z", items,
+  });
+  assert.ok(turn);
+  assert.equal(turn.items.filter((item) => item.role === "user").length, 2);
+  const calls = turn.items.filter((item) => item.type === "function_call").map((item) => item.call_id);
+  const outputs = turn.items.filter((item) => item.type === "function_call_output").map((item) => item.call_id);
+  assert.deepEqual(calls, outputs);
+  assert.equal(calls.length, 254);
+  assert.deepEqual(turn.items, items.filter((item) => !item.call_id || calls.includes(item.call_id)));
+});
+
 test("archive messages retain short commands and redacted-only QA for every supported client", () => {
   for (const client of ["codex", "claude-code", "opencode", "codebuddy", "workbuddy"]) {
     const tool = { type: "function_call", call_id: "call-pwd", name: "shell", arguments: '{"command":"pwd"}' };
@@ -105,14 +166,16 @@ test("tool projection preserves string formatting and structured output", () => 
   assert.equal(codingEventText(' { "image": "data:image/png;base64,AAAA" } '), '{"image":"[BINARY_CONTENT_OMITTED]"}');
 });
 
-test("tool status wrappers preserve redaction of native strings before JSON escaping", () => {
+test("tool status wrappers redact decoded native strings during archive preparation", () => {
   const sensitive = '{"password":"synthetic-passphrase"}\nAuthorization: native-auth-value';
   for (const value of [
     { content: sensitive, is_error: true },
     { output: sensitive, status: "error" },
     { status: "error", error: sensitive, output: [{ text: sensitive, type: "text" }] },
   ]) {
-    const output = codingToolOutputText(value);
+    const projected = codingToolOutputText(value);
+    assert.deepEqual(JSON.parse(projected), value);
+    const output = prepareWithTools([{ type: "function_call_output", call_id: "call-1", output: projected }]).items[1].output;
     assert.doesNotMatch(output, /synthetic-passphrase|native-auth-value/);
     assert.match(output, /REDACTED:CREDENTIAL/);
     assert.match(output, /REDACTED:AUTH_TOKEN/);
@@ -483,14 +546,13 @@ test("malformed native function arguments retain redacted text without inventing
   assert.equal(prepared.items[1].arguments, 'email=[REDACTED:EMAIL]; {unfinished');
 });
 
-test("function arguments exceeding the text limit are omitted whole with QA and results retained", () => {
+test("function arguments exceeding the text limit omit the selected tool pair with loss metadata", () => {
   for (const args of [{ payload: "x".repeat(128_001) }, { left: "x".repeat(64_000), right: "y".repeat(64_000) }]) {
     const output = { type: "function_call_output", call_id: "call-1", output: "Inspection complete." };
     const prepared = prepareWithTools([
       { type: "function_call", call_id: "call-1", name: "inspect", arguments: JSON.stringify(args) }, output,
     ]);
-    assert.deepEqual(prepared.items.map((item) => item.type), ["message", "function_call_output", "message"]);
-    assert.deepEqual(prepared.items[1], output);
+    assert.deepEqual(prepared.items.map((item) => item.type), ["message", "message"]);
     assert.deepEqual(prepared.truncation, { original_item_count: 4, truncated_text_fields: 1 });
   }
 });
@@ -503,9 +565,54 @@ test("function arguments are not sliced into invalid JSON under Turn byte pressu
     { type: "function_call", call_id: "call-0", name: "inspect", arguments: JSON.stringify({ payload: "文".repeat(100_000) }) },
     ...outputs,
   ]);
-  assert.deepEqual(prepared.items.slice(1, -1), outputs);
-  assert.deepEqual(prepared.truncation, { original_item_count: 8, truncated_text_fields: 0 });
+  const call = prepared.items.find((item) => item.type === "function_call");
+  assert.equal(JSON.parse(call.arguments).payload.length, 100_000);
+  const result = prepared.items.find((item) => item.call_id === call.call_id && item.type === "function_call_output");
+  assert.ok(result.output.length > 0 && result.output.length < outputs[0].output.length);
+  assert.deepEqual(prepared.items.slice(3, -1), outputs.slice(1));
+  assert.deepEqual(prepared.truncation, { original_item_count: 8, truncated_text_fields: 1 });
   assert.ok(Buffer.byteLength(JSON.stringify(prepared), "utf8") <= CODING_TURN_MAX_BYTES);
+});
+
+test("JSON tool outputs are omitted with their calls instead of being sliced under byte pressure", () => {
+  const fillers = Array.from({ length: 5 }, (_, index) => ({
+    type: "function_call_output", call_id: `filler-${index}`, output: "中".repeat(128_000),
+  }));
+  const prepared = prepareWithTools([
+    { type: "function_call", call_id: "call-1", name: "inspect", arguments: "{}" },
+    { type: "function_call_output", call_id: "call-1", output: JSON.stringify({ payload: "文".repeat(100_000) }) },
+    ...fillers,
+  ]);
+  assert.equal(prepared.items.some((item) => item.call_id === "call-1"), false);
+  assert.deepEqual(prepared.items.slice(1, -1), fillers);
+  assert.deepEqual(prepared.truncation, { original_item_count: 9, truncated_text_fields: 0 });
+  assert.ok(Buffer.byteLength(JSON.stringify(prepared), "utf8") <= CODING_TURN_MAX_BYTES);
+});
+
+test("structured search items omit oversized JSON strings without breaking JSON or server limits", () => {
+  const text = JSON.stringify({ payload: "x".repeat(128_000) });
+  for (const item of [
+    { type: "web_search_call", action: { type: "search", query: text } },
+    { type: "tool_search_call", arguments: text },
+    { type: "tool_search_output", tools: [{ description: text }] },
+  ]) {
+    const prepared = prepareWithTools([item]);
+    assert.deepEqual(prepared.items.map((entry) => entry.type), ["message", "message"]);
+    assert.deepEqual(prepared.truncation, { original_item_count: 3, truncated_text_fields: 1 });
+  }
+});
+
+test("item bounds keep hosted tool search records together without inventing call IDs", () => {
+  const prepared = prepareWithTools([
+    { type: "tool_search_call", call_id: null, arguments: { query: "files" } },
+    { type: "tool_search_output", tools: [{ name: "read" }] },
+    ...Array.from({ length: 509 }, () => ({
+      type: "message", role: "assistant", phase: "commentary", content: [{ type: "output_text", text: "Inspecting." }],
+    })),
+  ]);
+  assert.equal(prepared.items.length, 511);
+  assert.equal(prepared.items.some((item) => item.type.startsWith("tool_search")), false);
+  assert.deepEqual(prepared.truncation, { original_item_count: 513, truncated_text_fields: 0 });
 });
 
 function prepareWithTools(items) {

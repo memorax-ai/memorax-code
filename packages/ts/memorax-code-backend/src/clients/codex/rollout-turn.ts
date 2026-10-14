@@ -255,7 +255,7 @@ export function codexCodingSessionTurnFromJsonLines(
       ...(scan.userTimestamp === undefined ? {} : { userTimestamp: scan.userTimestamp }),
       ...(scan.assistantTimestamp === undefined ? {} : { assistantTimestamp: scan.assistantTimestamp }),
       sessionTurnIndex,
-      items: completedCodingItems(scan, scan.userPrompt, scan.assistantReply),
+      items: completedCodingItems(scan, scan.assistantReply),
       ...(scan.completedAt ? { closedAt: scan.completedAt } : {}),
     },
   };
@@ -275,8 +275,7 @@ type CodexRolloutTurnScan = {
   assistantTimestamp?: number;
   visibleAssistantMessages: string[];
   codingItemCandidates: CodexCodingItemCandidate[];
-  responseItemUser?: ResponseItem;
-  responseItemAssistant?: ResponseItem;
+  completedRecordIndex?: number;
   completedAt?: string;
   interrupted: boolean;
   interruptedAt?: string;
@@ -311,7 +310,7 @@ function scanCodexRolloutTurn(
   const codingItemCandidates: CodexCodingItemCandidate[] = [];
   const responseItemUsers: CodexResponseUserMessage[] = [];
   const nativeUserMessages: CodexNativeUserMessage[] = [];
-  let responseItemAssistant: ResponseItem | undefined;
+  let completedRecordIndex: number | undefined;
   let completedAt: string | undefined;
   let responseItemAssistantReply: string | undefined;
   let responseItemAssistantTimestamp: number | undefined;
@@ -425,7 +424,6 @@ function scanCodexRolloutTurn(
             } else {
               responseItemAssistantReply = message;
               responseItemAssistantTimestamp = parseNativeMessageTimestamp(record.timestamp);
-              responseItemAssistant = codingItem;
             }
           }
         }
@@ -470,6 +468,7 @@ function scanCodexRolloutTurn(
         assistantReply ??= nonBlankString(payload.last_agent_message) ?? nonBlankString(payload.lastAgentMessage);
         completedTimestamp = parseNativeMessageTimestamp(record.timestamp);
         completedAt = rolloutRecordTimestamp(record, payload);
+        completedRecordIndex = recordIndex;
       }
       if (completedTurnId && completedTurnId === activeTurnId) activeTurnId = undefined;
       continue;
@@ -511,6 +510,13 @@ function scanCodexRolloutTurn(
       if (message) {
         userPrompt = message;
         userTimestamp = parseNativeMessageTimestamp(record.timestamp);
+        if (captureCodingItems) {
+          codingItemCandidates.push({
+            recordIndex,
+            source: "event_msg",
+            item: { type: "message", role: "user", content: [{ type: "input_text", text: message }] },
+          });
+        }
       }
       continue;
     }
@@ -542,6 +548,9 @@ function scanCodexRolloutTurn(
 
   const selectedUser = selectCodexUserMessage(responseItemUsers, nativeUserMessages);
   const responseItemUser = selectedUser.candidate;
+  const codingUsers: CodexCodingItemCandidate[] = (selectedUser.candidates ?? []).flatMap((response) => (
+    response.item ? [{ recordIndex: response.recordIndex, source: "response_item", item: response.item }] : []
+  ));
   return {
     authoritySessionId,
     authoritySource,
@@ -562,9 +571,12 @@ function scanCodexRolloutTurn(
       ? assistantTimestamp
       : responseItemAssistantTimestamp),
     visibleAssistantMessages,
-    codingItemCandidates,
-    responseItemUser: responseItemUser?.item,
-    responseItemAssistant,
+    codingItemCandidates: [
+      ...codingItemCandidates.filter((candidate) => !(candidate.item.type === "message" && candidate.item.role === "user")
+        || (codingUsers.length === 0 && nativeUserMessages.length === 0)),
+      ...codingUsers,
+    ],
+    completedRecordIndex,
     completedAt,
     interrupted,
     interruptedAt,
@@ -624,13 +636,18 @@ function userInputKey(content: unknown, type: "text" | "input_text", unwrapImage
 function selectCodexUserMessage(
   responses: CodexResponseUserMessage[],
   nativeMessages: CodexNativeUserMessage[],
-): { candidate?: CodexResponseUserMessage; ambiguous: boolean } {
+): { candidate?: CodexResponseUserMessage; candidates?: CodexResponseUserMessage[]; ambiguous: boolean } {
   if (nativeMessages.length === 0) {
-    return { candidate: responses.length === 1 ? responses[0] : undefined, ambiguous: responses.length > 1 };
+    return {
+      candidate: responses.length === 1 ? responses[0] : undefined,
+      candidates: responses.length === 1 ? responses : [],
+      ambiguous: responses.length > 1,
+    };
   }
   const seen = new Map<string, unknown>();
   let previousBoundary = -1;
   let candidate: CodexResponseUserMessage | undefined;
+  const candidates: CodexResponseUserMessage[] = [];
   for (const message of nativeMessages) {
     if (!message.id) return { ambiguous: true };
     if (!message.inputKey) return { ambiguous: false };
@@ -646,10 +663,11 @@ function selectCodexUserMessage(
     ));
     if (matches.length !== 1) return { ambiguous: matches.length > 1 };
     candidate = matches[0];
+    candidates.push(candidate);
     seen.set(message.id, message.content);
     previousBoundary = message.recordIndex;
   }
-  return { candidate, ambiguous: false };
+  return { candidate, candidates, ambiguous: false };
 }
 
 type CodexCodingItemCandidate = Readonly<{
@@ -660,30 +678,37 @@ type CodexCodingItemCandidate = Readonly<{
 
 function completedCodingItems(
   scan: CodexRolloutTurnScan,
-  userPrompt: string,
   assistantReply: string,
 ): ResponseItem[] {
-  const hasResponseItemAssistant = scan.codingItemCandidates.some((candidate) => (
-    candidate.source === "response_item" && candidate.item.type === "message"
-      && candidate.item.role === "assistant"
-  ));
-  const intermediate = scan.codingItemCandidates
-    .filter((candidate) => {
-      if (candidate.item.type === "message" && candidate.item.role === "assistant"
-        && candidate.item.phase === "final_answer") return false;
-      return !(hasResponseItemAssistant
-        && candidate.source === "event_msg"
-        && candidate.item.type === "message" && candidate.item.role === "assistant");
-    })
-    .sort((left, right) => left.recordIndex - right.recordIndex)
-    .map((candidate) => candidate.item);
-  return [
-    scan.responseItemUser ?? { type: "message", role: "user", content: [{ type: "input_text", text: userPrompt }] },
-    ...intermediate,
-    scan.responseItemAssistant ?? {
-      type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: assistantReply }],
-    },
-  ];
+  const responseMirrors = new Map<string, number>();
+  for (const candidate of scan.codingItemCandidates) {
+    const key = assistantMirrorKey(candidate.item);
+    if (candidate.source === "response_item" && key !== undefined) {
+      responseMirrors.set(key, (responseMirrors.get(key) ?? 0) + 1);
+    }
+  }
+  // Match cross-source mirrors one for one; another assistant record is not
+  // evidence that this event's text was retained elsewhere in the turn.
+  const candidates = scan.codingItemCandidates.filter((candidate) => {
+    const key = assistantMirrorKey(candidate.item);
+    const remaining = key === undefined ? 0 : responseMirrors.get(key) ?? 0;
+    if (candidate.source !== "event_msg" || key === undefined || remaining === 0) return true;
+    responseMirrors.set(key, remaining - 1);
+    return false;
+  });
+  if (!candidates.some(({ item }) => item.type === "message" && item.role === "assistant" && item.phase === "final_answer")) {
+    candidates.push({
+      recordIndex: scan.completedRecordIndex ?? Number.MAX_SAFE_INTEGER,
+      source: "event_msg",
+      item: { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: assistantReply }] },
+    });
+  }
+  return candidates.sort((left, right) => left.recordIndex - right.recordIndex).map((candidate) => candidate.item);
+}
+
+function assistantMirrorKey(item: ResponseItem): string | undefined {
+  return item.type === "message" && item.role === "assistant"
+    ? JSON.stringify([item.phase, item.content.map((block) => block.text).join("\n")]) : undefined;
 }
 
 function codingItemFromResponseItem(payload: JsonRecord): ResponseItem | undefined {

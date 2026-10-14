@@ -318,16 +318,21 @@ function completedResponseItems(
         ? [{ type: "input_text" as const, text: text.slice(from - blockStart, to - blockStart) }] : [];
     });
   }
-  const items: ResponseItem[] = [{ type: "message", role: "user", content: userContent }];
-  for (const record of records) {
-    if (record === assistant || (record[RECORD_OFFSET] ?? 0) > (assistant[RECORD_OFFSET] ?? Infinity)) continue;
-    if (record.type === "message" && record.role === "assistant") {
+  const items: ResponseItem[] = [];
+  const ordered = [...new Set([user, ...records])].sort((left, right) => (left[RECORD_OFFSET] ?? 0) - (right[RECORD_OFFSET] ?? 0));
+  for (const record of ordered) {
+    if ((record[RECORD_OFFSET] ?? 0) > (assistant[RECORD_OFFSET] ?? Infinity)) continue;
+    if (record === user) {
+      items.push({ type: "message", role: "user", content: userContent });
+      continue;
+    }
+    if (record === assistant || (record.type === "message" && record.role === "assistant")) {
       const text = assistantText(record);
       const content = (Array.isArray(record.content) ? record.content : []).flatMap((block) => (
         block && typeof block === "object" && block.type === "output_text" && typeof block.text === "string"
           ? [{ type: "output_text" as const, text: block.text as string }] : []
       ));
-      if (text) items.push({ type: "message", role: "assistant", phase: "commentary", content });
+      if (text) items.push({ type: "message", role: "assistant", phase: record === assistant ? "final_answer" : "commentary", content });
       continue;
     }
     const callId = stringField(record, "callId");
@@ -342,11 +347,6 @@ function completedResponseItems(
       });
     }
   }
-  const finalContent = (Array.isArray(assistant.content) ? assistant.content : []).flatMap((block) => (
-    block && typeof block === "object" && block.type === "output_text" && typeof block.text === "string"
-      ? [{ type: "output_text" as const, text: block.text as string }] : []
-  ));
-  items.push({ type: "message", role: "assistant", phase: "final_answer", content: finalContent });
   return items;
 }
 

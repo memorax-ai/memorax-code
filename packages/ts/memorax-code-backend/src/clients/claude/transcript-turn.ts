@@ -673,40 +673,48 @@ function completedClaudeResponseItems(
   const turnRecords = records.slice(records.indexOf(promptRecord), records.indexOf(terminalRecord!) + 1);
   const toolResults = completedClaudeToolResults(branch, turnRecords, recordsByUuid);
   const selectedRecords = new Set(branch.records);
-  const siblingResults = new Map<JsonRecord, ResponseItem[]>();
-  for (const [callId, result] of toolResults) {
-    if (!result || selectedRecords.has(result.record)) continue;
-    const outputs = siblingResults.get(result.call) ?? [];
-    outputs.push({ type: "function_call_output", call_id: callId, output: result.output });
-    siblingResults.set(result.call, outputs);
+  for (const result of toolResults.values()) {
+    if (result) selectedRecords.add(result.record);
   }
-  for (const record of branch.records.slice().reverse()) {
+  for (const record of records) {
+    if (!selectedRecords.has(record)) continue;
+    if (record === promptRecord) {
+      items.push({ type: "message", role: "user", content: archiveMessageTextBlocks(record).map((text) => ({ type: "input_text", text })) });
+      continue;
+    }
     if (visibleUserPrompt(record)) continue;
     if (record.isSidechain === true || record.isMeta === true
       || record.isCompactSummary === true || record.isVisibleInTranscriptOnly === true) continue;
     const message = isRecord(record.message) ? record.message : undefined;
     if (!message || !Array.isArray(message.content)) {
-      if (record !== terminalRecord && message?.role === "assistant" && typeof message.content === "string") {
+      if (message?.role === "assistant" && typeof message.content === "string") {
         const content = visibleMessageText(message.content);
-        if (content) items.push({ type: "message", role: "assistant", phase: "commentary", content: [{ type: "output_text", text: message.content }] });
+        if (content) items.push({ type: "message", role: "assistant", phase: record === terminalRecord ? "final_answer" : "commentary", content: [{ type: "output_text", text: message.content }] });
       }
       continue;
     }
     if (message.role === "assistant") {
+      let finalContent: { type: "output_text"; text: string }[] = [];
+      const flushFinalText = () => {
+        if (finalContent.length === 0) return;
+        items.push({ type: "message", role: "assistant", phase: "final_answer", content: finalContent });
+        finalContent = [];
+      };
       for (const block of message.content) {
         if (!isRecord(block)) continue;
-        if (block.type === "text" && record !== terminalRecord && typeof block.text === "string") {
-          const content = nonBlankString(block.text);
-          if (content) items.push({ type: "message", role: "assistant", phase: "commentary", content: [{ type: "output_text", text: block.text }] });
+        if (block.type === "text" && typeof block.text === "string") {
+          if (record === terminalRecord) finalContent.push({ type: "output_text", text: block.text });
+          else if (nonBlankString(block.text)) items.push({ type: "message", role: "assistant", phase: "commentary", content: [{ type: "output_text", text: block.text }] });
           continue;
         }
         if (block.type !== "tool_use") continue;
         const callId = stringValue(block.id);
         const tool = stringValue(block.name);
         if (!callId || !tool) continue;
+        flushFinalText();
         items.push({ type: "function_call", call_id: callId, name: tool, arguments: codingEventText(block.input) });
       }
-      items.push(...(siblingResults.get(record) ?? []));
+      flushFinalText();
       continue;
     }
     if (message.role !== "user") continue;
@@ -719,21 +727,14 @@ function completedClaudeResponseItems(
       toolResults.delete(callId);
     }
   }
-  // The QA strings remain normalized; archive projection keeps native text blocks.
-  const userTexts = archiveMessageTextBlocks(branch.records[branch.records.length - 1]!);
-  const finalTexts = archiveMessageTextBlocks(terminalRecord!);
-  return [
-    { type: "message", role: "user", content: userTexts.map((text) => ({ type: "input_text", text })) },
-    ...items,
-    { type: "message", role: "assistant", phase: "final_answer", content: finalTexts.map((text) => ({ type: "output_text", text })) },
-  ];
+  return items;
 }
 
 function completedClaudeToolResults(
   branch: ClaudePromptBranch,
   records: JsonRecord[],
   recordsByUuid: Map<string, JsonRecord | undefined>,
-): Map<string, { record: JsonRecord; call: JsonRecord; output: string } | undefined> {
+): Map<string, { record: JsonRecord; output: string } | undefined> {
   const calls = new Map<string, JsonRecord | undefined>();
   const selectedRecords = new Set(branch.records);
   const positions = new Map(records.map((record, index) => [record, index]));
@@ -746,7 +747,7 @@ function completedClaudeToolResults(
       if (callId) calls.set(callId, calls.has(callId) ? undefined : record);
     }
   }
-  const results = new Map<string, { record: JsonRecord; call: JsonRecord; output: string } | undefined>();
+  const results = new Map<string, { record: JsonRecord; output: string } | undefined>();
   for (const [position, record] of records.entries()) {
     if (record.type !== "user" || visibleUserPrompt(record) || isSystemPromptRecord(record)
       || record.isSidechain === true || record.isMeta === true
@@ -778,12 +779,12 @@ function completedClaudeToolResults(
       }
       const output = codingToolOutputText(typeof block.is_error === "boolean"
         ? { content: block.content, is_error: block.is_error } : block.content);
-      if (!results.has(callId)) results.set(callId, { record, call, output });
+      if (!results.has(callId)) results.set(callId, { record, output });
       else {
         const previous = results.get(callId);
         if (previous?.output !== output) results.set(callId, undefined);
         else if (selectedRecords.has(record) && !selectedRecords.has(previous.record)) {
-          results.set(callId, { record, call, output });
+          results.set(callId, { record, output });
         }
       }
     }
