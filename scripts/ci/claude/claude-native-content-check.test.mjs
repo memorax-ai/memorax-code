@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { assertExactText, assertNativeReadText, assertNativeTurnTrace, selectNativeMemoraxPlugin, selectNativeTurnContent } from "./claude-native-content-check.mjs";
+import { assertExactText, assertNativeReadText, assertNativeTurnTrace, selectNativeMemoraxPlugin, selectNativeTurnContent, selectNativeTurnTrace } from "./claude-native-content-check.mjs";
 
 const identity = { sessionId: "session-fixture", assistantUuid: "assistant-final", prompt: "Native prompt.", answer: "Native answer." };
 const user = () => ({ type: "user", sessionId: identity.sessionId, uuid: "user-prompt", parentUuid: null,
@@ -243,3 +243,26 @@ for (const skillType of ["memory_cli_search", "memory_cli_add"]) {
     }
   });
 }
+
+test("Claude interrupted trace selection requires its unique Start without requiring a reconciled End", () => {
+  const [start, end] = turnTrace();
+  assert.deepEqual(selectNativeTurnTrace([start], traceSelection()), { turnId: start.trace.turn_id, events: [start] });
+  assert.throws(() => assertNativeTurnTrace([start], traceSelection()), { nativeCode: "NATIVE_HOOK_PROMPT_CORRELATION_MISSING" });
+  const recoveryPrompt = "Complete the independent follow-up.";
+  const recovery = turnTrace({ turnId: `claude-start:${"b".repeat(64)}`, prompt: recoveryPrompt });
+  end.outcome = "interrupted";
+  const events = [start, end, ...recovery];
+  assert.deepEqual(selectNativeTurnTrace(events, traceSelection()), { turnId: start.trace.turn_id, events: [start, end] });
+  assert.equal(assertNativeTurnTrace(events, traceSelection(recoveryPrompt)), recovery[0].trace.turn_id);
+});
+
+test("Claude interrupted trace selection cannot use missing, duplicate or foreign Start identity", () => {
+  const [start] = turnTrace();
+  for (const events of [[], [start, structuredClone(start)],
+    [{ ...start, ok: false }], [{ ...start, request: { prompt: "Different native input." } }],
+    [{ ...start, trace: { ...start.trace, native_request_id: "foreign-prompt" } }],
+    [{ ...start, trace: { ...start.trace, session_id: "foreign-session" } }],
+    [{ ...start, trace: { ...start.trace, client: "codex" } }]]) {
+    assert.throws(() => selectNativeTurnTrace(events, traceSelection()), { nativeCode: "NATIVE_HOOK_PROMPT_CORRELATION_MISSING" });
+  }
+});

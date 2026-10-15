@@ -71,7 +71,7 @@ export function selectNativeTurnContent(records, { sessionId, assistantUuid, pro
 
 // Prompt IDs can be reused. Match the fixture's exact prompt before comparing
 // occurrence identities; never choose the newest event with the same native ID.
-export function assertNativeTurnTrace(events, selected, { skillType } = {}) {
+export function selectNativeTurnTrace(events, selected) {
   const scoped = events.filter((event) => event.trace?.client === "claude"
     && event.trace.session_id === selected.sessionId);
   const starts = scoped.filter((event) => event.type === "turn_start"
@@ -82,12 +82,16 @@ export function assertNativeTurnTrace(events, selected, { skillType } = {}) {
     "NATIVE_HOOK_OCCURRENCE_ID_INVALID");
   const occurrence = scoped.filter((event) => event.trace.turn_id === turnId);
   // Repeated Hooks are deduplicated by event ID before the trace is persisted.
-  for (const type of ["turn_start", "turn_end"]) {
-    const matches = occurrence.filter((event) => event.type === type);
-    check(matches.length === 1 && matches[0].trace.native_request_id === selected.promptId
-      && matches[0].ok === true && (type !== "turn_end" || matches[0].outcome === "completed"),
+  check(occurrence.filter((event) => event.type === "turn_start").length === 1 && starts[0].ok === true,
     "NATIVE_HOOK_PROMPT_CORRELATION_MISSING");
-  }
+  return { turnId, events: occurrence };
+}
+
+export function assertNativeTurnTrace(events, selected, { skillType } = {}) {
+  const { turnId, events: occurrence } = selectNativeTurnTrace(events, selected);
+  const ends = occurrence.filter((event) => event.type === "turn_end");
+  check(ends.length === 1 && ends[0].trace.native_request_id === selected.promptId
+    && ends[0].ok === true && ends[0].outcome === "completed", "NATIVE_HOOK_PROMPT_CORRELATION_MISSING");
   if (skillType) {
     const matches = occurrence.filter((event) => event.type === skillType);
     check(matches.length === 1 && matches[0].trace.native_request_id === selected.promptId && matches[0].ok === true,
