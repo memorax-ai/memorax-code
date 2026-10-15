@@ -98,6 +98,49 @@ test("Claude archive retains scalar message text and only wraps explicit boolean
   }
 });
 
+test("Claude archive omits nested base64 images without dropping the selected tool pair", () => {
+  const content = [
+    { type: "text", text: "  Image previews\n" },
+    ...["QUJD", "REVG"].map((data) => ({
+      type: "image", source: { type: "base64", media_type: "image/png", data: data.repeat(40_000) },
+    })),
+  ];
+  const transcript = jsonLines([
+    userRecord({ uuid: "user", content: "Inspect the images." }),
+    assistantRecord({ uuid: "call", parentUuid: "user", stopReason: "tool_use", content: [
+      { type: "tool_use", id: "read-images", name: "Read", input: { path: "images.png" } },
+    ] }),
+    userRecord({ uuid: "result", parentUuid: "call", content: [
+      { type: "tool_result", tool_use_id: "read-images", content, is_error: false },
+    ] }),
+    assistantRecord({ uuid: "final", parentUuid: "result", stopReason: "end_turn", timestamp: closedAt, content: "Inspected the images." }),
+  ]);
+  const result = claudeCodingSessionTurnFromJsonLines(transcript, identity);
+  assert.equal(result.ok, true);
+  const prepared = prepareCodingSessionTurn({
+    client: "claude-code", sessionId: SESSION_ID, turnId: result.turn.nativeUserUuid,
+    turnIndex: result.turn.sessionTurnIndex, outcome: "completed", closedAt: result.turn.closedAt,
+    items: result.turn.items,
+  });
+  assert.ok(prepared);
+  assert.deepEqual(prepared.items.map((item) => item.type), [
+    "message", "function_call", "function_call_output", "message",
+  ]);
+  assert.deepEqual(prepared.items[1], {
+    type: "function_call", call_id: "read-images", name: "Read", arguments: '{"path":"images.png"}',
+  });
+  assert.equal(prepared.items[2].call_id, "read-images");
+  const expected = {
+    content: [content[0], ...content.slice(1).map((image) => ({
+      ...image, source: { ...image.source, data: "[BINARY_CONTENT_OMITTED]" },
+    }))],
+    is_error: false,
+  };
+  assert.deepEqual(JSON.parse(result.turn.items[2].output), expected);
+  assert.deepEqual(JSON.parse(prepared.items[2].output), expected);
+  assert.equal(prepared.truncation, undefined);
+});
+
 test("Claude archive materialization preserves text blocks, tool errors, and its frozen native digest", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "memorax-claude-projection-"));
   t.after(() => rm(root, { recursive: true, force: true }));

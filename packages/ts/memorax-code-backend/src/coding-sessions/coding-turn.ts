@@ -286,9 +286,8 @@ function redactToolJson(value: ResponseJsonValue, onTruncated: (fieldIndex: numb
     if (item === null || typeof item !== "object") return item;
     if (isSerializedBuffer(item)) return BINARY_CONTENT_OMITTED;
     const object = item as ResponseJsonObject;
-    const mediaPayload = typeof object.type === "string" && ["audio", "image", "video"].includes(object.type.toLowerCase());
     return Object.fromEntries(Object.entries(object).map(([key, part]) => [
-      text(key), mediaPayload && ["base64", "blob", "data"].includes(key.toLowerCase())
+      text(key), isBinaryPayloadField(object, key)
         ? BINARY_CONTENT_OMITTED : visit(part, key),
     ]));
   };
@@ -419,19 +418,25 @@ function sortJsonValue(value: unknown, onBinaryOmitted?: () => void): unknown {
     return BINARY_CONTENT_OMITTED;
   }
   const record = value as Record<string, unknown>;
-  const mediaPayload = typeof record.type === "string"
-    && ["audio", "image", "video"].includes(record.type.toLowerCase());
   return Object.fromEntries(
     Object.entries(record)
       .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
       .map(([key, item]) => {
-        if (mediaPayload && ["base64", "blob", "data"].includes(key.toLowerCase())) {
+        if (isBinaryPayloadField(record, key)) {
           onBinaryOmitted?.();
           return [key, BINARY_CONTENT_OMITTED];
         }
         return [key, sortJsonValue(item, onBinaryOmitted)];
       }),
   );
+}
+
+function isBinaryPayloadField(record: Readonly<Record<string, unknown>>, key: string): boolean {
+  if (typeof record.type !== "string") return false;
+  const type = record.type.toLowerCase();
+  const field = key.toLowerCase();
+  return type === "base64" && field === "data"
+    || ["audio", "image", "video"].includes(type) && ["base64", "blob", "data"].includes(field);
 }
 
 function isBinaryDataUri(value: string): boolean {

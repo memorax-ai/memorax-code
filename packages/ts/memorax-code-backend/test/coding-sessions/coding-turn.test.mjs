@@ -166,6 +166,62 @@ test("tool projection preserves string formatting and structured output", () => 
   assert.equal(codingEventText(' { "image": "data:image/png;base64,AAAA" } '), '{"image":"[BINARY_CONTENT_OMITTED]"}');
 });
 
+test("tool projection omits nested base64 sources from objects and JSON strings", () => {
+  for (const data of ["QUJD", "QUJD".repeat(50_000)]) {
+    const image = { type: "image", source: { type: "base64", media_type: "image/png", data } };
+    const content = [{ type: "text", text: "Image description." }, image];
+    for (const input of [content, JSON.stringify(content)]) {
+      for (const project of [codingEventText, codingToolOutputText]) {
+        const decoded = JSON.parse(project(input));
+        assert.ok(decoded[1].source.data === "[BINARY_CONTENT_OMITTED]", "nested binary source must be omitted");
+        assert.deepEqual(decoded, [content[0], {
+          type: "image", source: { type: "base64", media_type: "image/png", data: "[BINARY_CONTENT_OMITTED]" },
+        }]);
+      }
+    }
+    assert.equal(image.source.data, data);
+  }
+});
+
+test("archive preparation omits nested base64 in raw tool JSON before applying text limits", () => {
+  const image = { type: "image", source: { type: "base64", media_type: "image/png", data: "QUJD".repeat(50_000) } };
+  const value = { content: [{ type: "text", text: "Image description." }, image], is_error: false };
+  const prepared = prepareWithTools([
+    { type: "function_call", call_id: "call-1", name: "inspect", arguments: JSON.stringify({ image }) },
+    { type: "function_call_output", call_id: "call-1", output: JSON.stringify(value) },
+  ]);
+  assert.deepEqual(prepared.items.map((item) => item.type), ["message", "function_call", "function_call_output", "message"]);
+  const expectedImage = { type: "image", source: { type: "base64", media_type: "image/png", data: "[BINARY_CONTENT_OMITTED]" } };
+  assert.deepEqual(JSON.parse(prepared.items[1].arguments), { image: expectedImage });
+  assert.deepEqual(JSON.parse(prepared.items[2].output), { content: [value.content[0], expectedImage], is_error: false });
+  assert.equal(prepared.truncation, undefined);
+});
+
+test("base64 omission preserves ordinary data and URL source fields", () => {
+  const value = {
+    data: "QUJD", base64: "ordinary field", blob: "ordinary field",
+    nested: { type: "text", data: "QUJD" },
+    image: { type: "image", source: { type: "url", url: "https://example.test/image.png", data: "source metadata" } },
+  };
+  const raw = JSON.stringify(value, null, 2);
+  assert.deepEqual(JSON.parse(codingToolOutputText(value)), value);
+  assert.equal(codingToolOutputText(raw), raw);
+  const prepared = prepareWithTools([{ type: "function_call_output", call_id: "call-1", output: raw }]);
+  assert.equal(prepared.items[1].output, raw);
+});
+
+test("binary omission does not bypass the tool result text limit", () => {
+  const prepared = prepareWithTools([
+    { type: "function_call", call_id: "call-1", name: "inspect", arguments: "{}" },
+    { type: "function_call_output", call_id: "call-1", output: JSON.stringify({
+      image: { type: "image", source: { type: "base64", data: "QUJD".repeat(50_000) } },
+      text: "x".repeat(128_001),
+    }) },
+  ]);
+  assert.deepEqual(prepared.items.map((item) => item.type), ["message", "message"]);
+  assert.deepEqual(prepared.truncation, { original_item_count: 4, truncated_text_fields: 1 });
+});
+
 test("tool status wrappers redact decoded native strings during archive preparation", () => {
   const sensitive = '{"password":"synthetic-passphrase"}\nAuthorization: native-auth-value';
   for (const value of [
