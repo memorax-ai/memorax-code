@@ -107,6 +107,18 @@ test("Linux download evidence is retained only for explicit manual diagnosis, in
   assert.doesNotMatch(upload, /path:.*\*|\.headers|\.partial|\.download/);
 });
 
+test("WorkBuddy macOS verifies the selected archive type before common application gates", () => {
+  const native = job("workbuddy-native");
+  assert.ok(native.includes('["WorkBuddy.dmg", "WorkBuddy.zip"].includes(f)'));
+  assert.ok(native.includes('if [[ "$archive_name" == WorkBuddy.dmg ]]; then'));
+  assert.match(native, /ditto -x -k "\$image" "\$mountpoint"/);
+  const extracted = native.indexOf('ditto -x -k "$image" "$mountpoint"');
+  const signature = native.indexOf("codesign --verify --deep --strict --all-architectures");
+  assert.ok(extracted > 0 && signature > extracted);
+  assert.ok(native.includes('[[ -d "$app" && ! -L "$app" ]]'));
+  assert.ok(native.includes("if: always() && runner.os == 'macOS' && env.WORKBUDDY_IMAGE_ATTACHED == 'true'"));
+});
+
 test("WorkBuddy mounted metadata validation follows signature gates and treats the release as data", () => {
   const native = job("workbuddy-native");
   let previous = -1;

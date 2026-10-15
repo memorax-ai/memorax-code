@@ -295,6 +295,10 @@ async function runCase(phase) {
   } catch (error) {
     result.failureStage = stage;
     result.errors.push(safeCode(error));
+    if (error.commandDiagnostic) result.commandDiagnostic = error.commandDiagnostic;
+    result.receiverCounts = { model: harness.modelRequests.length, memory: harness.memoryRequests.length };
+    result.modelRequestRejections = harness.modelRequestRejections;
+    result.receiverErrors = harness.serverErrors.slice(0, 8);
   } finally {
     try {
       await cleanupSetup();

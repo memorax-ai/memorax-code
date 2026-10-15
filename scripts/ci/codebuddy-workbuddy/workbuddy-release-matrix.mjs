@@ -36,7 +36,8 @@ function validateDownload(platform, version, url) {
   const prefix = `${downloadRoot}/${platform}/WorkBuddy-${platform}-${version}-`;
   assert.equal(typeof url, "string");
   assert.ok(!/[\r\n]/.test(url) && url.startsWith(prefix));
-  assert.match(url.slice(prefix.length), new RegExp(`^[a-f0-9]{8}\\.${pins[platform][3]}$`));
+  const extension = platform.startsWith("darwin-") ? "(?:dmg|zip)" : pins[platform][3];
+  assert.match(url.slice(prefix.length), new RegExp(`^[a-f0-9]{8}\\.${extension}$`));
 }
 
 function compareVersions(left, right) {
@@ -74,9 +75,8 @@ export function validateRelease(value, platform) {
 export function resolveFeed(platform, feed, wingetManifest) {
   assert.match(feed?.version, desktopVersion);
   assert.equal(feed.productVersion, feed.version);
-  let url = feed.url;
-  // The official macOS download page selects DMG from the update-feed ZIP URL.
-  if (platform.startsWith("darwin-") && typeof url === "string") url = url.replace(/\.zip$/, ".dmg");
+  // Keep the feed URL and checksum paired; a ZIP digest cannot verify a DMG.
+  const url = feed.url;
   let sha256 = feed.sha256hash;
   if (platform === "win32-x64-user" && sha256 === "") {
     assert.equal(wingetManifest?.PackageIdentifier, "Tencent.WorkBuddy");

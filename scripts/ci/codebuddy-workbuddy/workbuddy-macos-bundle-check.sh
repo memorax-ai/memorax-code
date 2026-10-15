@@ -37,7 +37,8 @@ if ! release="$(node "$script_dir/workbuddy-release-matrix.mjs" "${selection[@]}
   fail WORKBUDDY_BUNDLE_RELEASE_INVALID
 fi
 IFS=$'\t' read -r desktop_version product_version runtime_version sha256 url <<< "$release"
-partial="$destination/WorkBuddy.dmg.partial"
+file="WorkBuddy.${url##*.}"
+partial="$destination/$file.partial"
 trap 'rm -f -- "$partial" 2>/dev/null' EXIT
 
 if ! curl --disable --fail --silent --show-error --location \
@@ -50,10 +51,10 @@ if ! actual="$(shasum -a 256 "$partial" 2>/dev/null)"; then
   fail WORKBUDDY_BUNDLE_HASH_FAILED
 fi
 [[ "${actual%% *}" == "$sha256" ]] || fail WORKBUDDY_BUNDLE_HASH_MISMATCH
-if ! mv -- "$partial" "$destination/WorkBuddy.dmg" 2>/dev/null; then
+if ! mv -- "$partial" "$destination/$file" 2>/dev/null; then
   fail WORKBUDDY_BUNDLE_DESTINATION_WRITE_FAILED
 fi
 runtime_json=null
 if [[ "$runtime_version" != discover ]]; then runtime_json="\"$runtime_version\""; fi
-printf '{"desktopVersion":"%s","runtimeVersion":%s,"arch":"%s","sha256":"%s","file":"WorkBuddy.dmg"}\n' \
-  "$desktop_version" "$runtime_json" "$arch" "$sha256"
+printf '{"desktopVersion":"%s","runtimeVersion":%s,"arch":"%s","sha256":"%s","file":"%s"}\n' \
+  "$desktop_version" "$runtime_json" "$arch" "$sha256" "$file"

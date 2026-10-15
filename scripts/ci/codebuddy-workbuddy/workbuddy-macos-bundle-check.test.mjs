@@ -17,7 +17,7 @@ const hashes = {
 function latestRelease(arch = "arm64") {
   return { platform: `darwin-${arch}`, desktopVersion: "5.7.0.40000000", productVersion: "5.7.0",
     runtimeVersion: null, sha256: "a".repeat(64), channel: "latest",
-    url: `https://download.codebuddy.cn/workbuddy/saas/darwin-${arch}/WorkBuddy-darwin-${arch}-5.7.0.40000000-abcdef12.dmg` };
+    url: `https://download.codebuddy.cn/workbuddy/saas/darwin-${arch}/WorkBuddy-darwin-${arch}-5.7.0.40000000-abcdef12.zip` };
 }
 
 test("WorkBuddy bundle acquisition rejects unsupported OS and architecture before downloading", posixOnly, async () => {
@@ -106,10 +106,10 @@ for (const arch of ["arm64", "x64"]) {
       assert.equal(result.code, 0, result.stderr);
       assert.equal(result.stderr, "");
       assert.deepEqual(JSON.parse(result.stdout), { desktopVersion: release.desktopVersion,
-        runtimeVersion: null, arch, sha256: release.sha256, file: "WorkBuddy.dmg" });
+        runtimeVersion: null, arch, sha256: release.sha256, file: "WorkBuddy.zip" });
       assert.equal((await curlArgs()).at(-1), release.url);
       assert.deepEqual(await calls(), ["curl", "shasum"]);
-      assert.deepEqual(await readdir(destination), ["WorkBuddy.dmg"]);
+      assert.deepEqual(await readdir(destination), ["WorkBuddy.zip"]);
     }, { release, hash: release.sha256 });
   });
 }
@@ -182,7 +182,7 @@ done
 printf 'Synthetic DMG.\\n' > "$output"
 exit "$FAKE_CURL_EXIT"`,
       shasum: `printf 'shasum\\n' >> "$FAKE_CALLS"
-[[ $# -eq 3 && "$1" == -a && "$2" == 256 && "$3" == */WorkBuddy.dmg.partial ]] || exit 2
+[[ $# -eq 3 && "$1" == -a && "$2" == 256 && "$3" == */WorkBuddy.*.partial ]] || exit 2
 printf '%s  %s\\n' "$FAKE_HASH" "$3"
 exit "$FAKE_HASH_EXIT"`,
     };

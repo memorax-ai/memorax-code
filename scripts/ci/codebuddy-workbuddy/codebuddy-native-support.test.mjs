@@ -5,7 +5,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { runInNewContext } from "node:vm";
 import {
   check, createNativeHarness, fixtureKey, fixtureModel, fixtureUser, processAlive, searchResult, sendChatCompletion,
@@ -436,7 +436,7 @@ test("CodeBuddy harness replaces inherited credentials, all client homes and net
   const canary = "inherited-synthetic-value-must-not-leak";
   const names = ["PATH", "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "CODEBUDDY_API_KEY", "CODEBUDDY_AUTH_TOKEN",
     "CODEBUDDY_BASE_URL", "CODEBUDDY_MODEL", "CODEBUDDY_HOME", "CODEBUDDY_CONFIG_DIR", "CODEBUDDY_PLUGIN_DIRS",
-    "CODEBUDDY_ENV_FILE", "CODEBUDDY_CUSTOM_HEADERS", "WORKBUDDY_HOME", "WORKBUDDY_CONFIG_DIR", "CODEX_HOME",
+    "CODEBUDDY_ENV_FILE", "CODEBUDDY_CUSTOM_HEADERS", "CODEBUDDY_FORCE_LITE_WB_BUNDLE", "WORKBUDDY_HOME", "WORKBUDDY_CONFIG_DIR", "CODEX_HOME",
     "CLAUDE_CONFIG_DIR", "CLAUDE_HOME", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_API_KEY",
     "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "DSH_HOME", "OPENCODE_CONFIG_DIR", "TRAE_HOME", "TRAE_CN_HOME", "CURSOR_HOME",
     "MEMORAX_CODE_HOME", "MEMORAX_CODE_BACKEND_URL", "MEMORAX_CODE_BACKEND_TOKEN", "MEMORAX_CODE_CODEBUDDY_COMMAND",
@@ -511,7 +511,7 @@ test("WorkBuddy harness isolates native aliases and selects only its own runtime
   const canary = "inherited-workbuddy-value-must-not-leak";
   const names = ["CODEBUDDY_HOME", "CODEBUDDY_CONFIG_DIR", "WORKBUDDY_HOME", "WORKBUDDY_CONFIG_DIR",
     "WORKBUDDY_CODEBUDDY_PATH", "MEMORAX_CODE_WORKBUDDY_COMMAND", "MEMORAX_CODE_CODEBUDDY_COMMAND",
-    "MEMORAX_CODE_WORKBUDDY_TRACE_ENABLED", "CODEBUDDY_API_KEY", "CODEBUDDY_AUTH_TOKEN", "HTTPS_PROXY"];
+    "MEMORAX_CODE_WORKBUDDY_TRACE_ENABLED", "CODEBUDDY_API_KEY", "CODEBUDDY_AUTH_TOKEN", "CODEBUDDY_FORCE_LITE_WB_BUNDLE", "HTTPS_PROXY"];
   const previous = new Map(names.map((name) => [name, process.env[name]]));
   let harness;
   try {
@@ -551,6 +551,38 @@ test("WorkBuddy harness isolates native aliases and selects only its own runtime
   assert.deepEqual(models.availableModels, [fixtureModel]);
   await assert.rejects(stat(join(harness.env.CODEBUDDY_HOME, "settings.json")), { code: "ENOENT" });
 });
+
+for (const [client, litePresent, expected] of [["workbuddy", true, "1"], ["workbuddy", false, null], ["codebuddy", true, null]]) {
+  test(`${client} selects its shipped lite bundle (${litePresent}) and preserves worker inheritance`, async () => {
+    const root = await mkdtemp(join(tmpdir(), "native-bundle-selection-"));
+    const command = join(root, "cli", "bin", "codebuddy");
+    let harness;
+    try {
+      await mkdir(dirname(command), { recursive: true });
+      await mkdir(join(root, "cli", "dist"));
+      if (litePresent) await writeFile(join(root, "cli", "dist", "codebuddy-lite-wb.mjs"), "// Synthetic bundle marker.\n");
+      const context = pathToFileURL(join(repoRoot, "packages/ts/memorax-code-adapter-common/src/repo-memory/repo-memory-job-context.mjs")).href;
+      await writeFile(command, `#!/usr/bin/env node
+        const { spawnSync } = require("node:child_process");
+        (async () => {
+          const { repoMemoryJobWorkerEnv } = await import(${JSON.stringify(context)});
+          const child = spawnSync(process.execPath, ["-e", 'process.stdout.write(JSON.stringify(process.env.CODEBUDDY_FORCE_LITE_WB_BUNDLE ?? null))'], {
+            env: repoMemoryJobWorkerEnv({ jobId: "20261015000000000-build-fixture-12345678", runId: "a".repeat(32) }), encoding: "utf8",
+          });
+          if (child.status !== 0) process.exit(1);
+          console.log(JSON.stringify({ foreground: process.env.CODEBUDDY_FORCE_LITE_WB_BUNDLE ?? null, worker: JSON.parse(child.stdout) }));
+        })().catch(() => process.exit(1));
+      `, { mode: 0o755 });
+      harness = await createNativeHarness({ packageRoot, codebuddyCommand: command, client, label: "bundle-selection" });
+      assert.equal(harness.env.CODEBUDDY_FORCE_LITE_WB_BUNDLE ?? null, expected);
+      const result = await harness.runCodeBuddy(["--fixture-worker"]);
+      assert.deepEqual(JSON.parse(result.stdout), { foreground: expected, worker: expected });
+    } finally {
+      await harness?.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+}
 
 for (const [selectedClient, reportClient] of [[undefined, "codebuddy"], ["workbuddy", "workbuddy"], ["workbuddy", "codebuddy"]]) {
   const client = selectedClient ?? "codebuddy";
@@ -719,6 +751,37 @@ test("command runner preserves stdin and split UTF-8 stdout and stderr", async (
   `], { input });
   assert.equal(result.stdout, input);
   assert.equal(result.stderr, input);
+});
+
+test("nonzero command diagnostics retain only bounded classifications, counts, and exit status", async (t) => {
+  const harness = await createHarness(t);
+  const privateText = "private-diagnostic-canary /Users/private/session C:\\private\\session Bearer secret-value";
+  const stdout = JSON.stringify({ type: "result", is_error: true, result: privateText,
+    subtype: "private-result-subtype" }) + "\n";
+  const stderr = "Error: unknown option --private-option " + privateText + "\n";
+  await assert.rejects(harness.runCodeBuddy(["-e", `
+    process.stdout.write(${JSON.stringify(stdout)});
+    process.stderr.write(${JSON.stringify(stderr)});
+    process.exitCode = 7;
+  `]), (error) => {
+    assert.equal(error.nativeCode, "NATIVE_COMMAND_FAILED");
+    assert.deepEqual(error.commandDiagnostic, { stdoutBytes: Buffer.byteLength(stdout), stderrBytes: Buffer.byteLength(stderr),
+      inspectedOutputTruncated: false, markers: ["unknown-option"], exitCode: 7, resultIsError: true, events: { result: 1 } });
+    assert.doesNotMatch(JSON.stringify(error), /private|Bearer|secret-value/);
+    return true;
+  });
+  await assert.rejects(harness.runCodeBuddy(["-e", `
+    process.stdout.write("x".repeat(65537));
+    process.stderr.write("x".repeat(65537) + "ECONNREFUSED private-diagnostic-canary");
+    process.exitCode = 9;
+  `]), (error) => {
+    assert.equal(error.commandDiagnostic.exitCode, 9);
+    assert.equal(error.commandDiagnostic.inspectedOutputTruncated, true);
+    assert.deepEqual(error.commandDiagnostic.markers, []);
+    assert.deepEqual(error.commandDiagnostic.events, {});
+    assert.ok(JSON.stringify(error.commandDiagnostic).length < 512);
+    return true;
+  });
 });
 
 for (const [name, source, code, timeout] of [

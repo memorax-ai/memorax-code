@@ -164,18 +164,25 @@ jobs:
           mkdir "$RUNNER_TEMP/workbuddy-bundle"
           bash scripts/ci/codebuddy-workbuddy/workbuddy-macos-bundle-check.sh "$RUNNER_TEMP/workbuddy-bundle" arm64 \
             "$RUNNER_TEMP/workbuddy-release.json" > "$RUNNER_TEMP/workbuddy-bundle.json"
-      - name: Verify and mount the official application read-only
+      - name: Open the verified archive and validate the official application
         if: runner.os == 'macOS'
         shell: bash
         run: |
-          image="$RUNNER_TEMP/workbuddy-bundle/WorkBuddy.dmg"
+          archive_name="$(node -e 'const f = require(process.argv[1]).file; if (!["WorkBuddy.dmg", "WorkBuddy.zip"].includes(f)) process.exit(1); process.stdout.write(f);' "$RUNNER_TEMP/workbuddy-bundle.json")"
+          image="$RUNNER_TEMP/workbuddy-bundle/$archive_name"
           mountpoint="$RUNNER_TEMP/workbuddy-bundle/mounted"
-          spctl --assess --type open --context context:primary-signature "$image" \
-            > "$RUNNER_TEMP/workbuddy-bundle/image-assessment.log" 2>&1
-          hdiutil attach -readonly -nobrowse -noautoopen -mountpoint "$mountpoint" "$image" \
-            > "$RUNNER_TEMP/workbuddy-bundle/mount.log" 2>&1
-          echo 'WORKBUDDY_IMAGE_ATTACHED=true' >> "$GITHUB_ENV"
+          if [[ "$archive_name" == WorkBuddy.dmg ]]; then
+            spctl --assess --type open --context context:primary-signature "$image" \
+              > "$RUNNER_TEMP/workbuddy-bundle/image-assessment.log" 2>&1
+            hdiutil attach -readonly -nobrowse -noautoopen -mountpoint "$mountpoint" "$image" \
+              > "$RUNNER_TEMP/workbuddy-bundle/mount.log" 2>&1
+            echo 'WORKBUDDY_IMAGE_ATTACHED=true' >> "$GITHUB_ENV"
+          else
+            mkdir "$mountpoint"
+            ditto -x -k "$image" "$mountpoint" > "$RUNNER_TEMP/workbuddy-bundle/extract.log" 2>&1
+          fi
           app="$mountpoint/WorkBuddy.app"
+          [[ -d "$app" && ! -L "$app" ]]
           codesign --verify --deep --strict --all-architectures \
             --test-requirement '=identifier "com.tencent.workbuddy.mac" and anchor apple generic and certificate leaf[subject.OU] = "FN2V63AD2J"' \
             "$app" > "$RUNNER_TEMP/workbuddy-bundle/signature.log" 2>&1

@@ -8,7 +8,7 @@ function feed(platform, newer = false) {
   const baseline = baselineRelease(platform);
   const version = newer ? "5.7.0.40000000" : baseline.desktopVersion;
   let url = baseline.url.replace(baseline.desktopVersion, version);
-  if (platform.startsWith("darwin-")) url = url.replace(/\.dmg$/, ".zip");
+  if (newer && platform.startsWith("darwin-")) url = url.replace(/\.dmg$/, ".zip");
   return { version, productVersion: version, url, sha256hash: newer ? "a".repeat(64)
     : platform === "linux-x64-deb" ? linuxFeedHash : baseline.sha256 };
 }
@@ -28,6 +28,25 @@ test("WorkBuddy latest deduplicates each platform and retains Linux minimum Node
       const rows = include.filter((row) => row.node === "24" && row.release.platform === platform);
       assert.deepEqual(rows.map((row) => row.release.channel), updated.includes(platform) ? ["baseline", "latest"] : ["baseline+latest"]);
     }
+  }
+});
+
+test("WorkBuddy macOS keeps each feed URL paired with its own checksum", () => {
+  const platform = "darwin-arm64";
+  const value = feed(platform, true);
+  const latest = resolveFeed(platform, value);
+  assert.ok(value.url.endsWith(".zip"));
+  assert.equal(latest.url, value.url);
+  assert.equal(latest.sha256, value.sha256hash);
+  const baseline = baselineRelease(platform);
+  const sameVersionZip = resolveFeed(platform, { version: baseline.desktopVersion, productVersion: baseline.desktopVersion,
+    url: baseline.url.replace(/\.dmg$/, ".zip"), sha256hash: "b".repeat(64) });
+  const rows = buildMatrix({ ...releases(), [platform]: sameVersionZip }).include.filter((row) => row.release.platform === platform);
+  assert.deepEqual(rows.map((row) => row.release.channel), ["baseline", "latest"]);
+  assert.equal(rows[0].release.url, baseline.url);
+  assert.equal(rows[1].release.url, sameVersionZip.url);
+  for (const extension of ["pkg", "zip?token=private", "zip/../other.zip"]) {
+    assert.throws(() => resolveFeed(platform, { ...value, url: value.url.replace(/zip$/, extension) }));
   }
 });
 
