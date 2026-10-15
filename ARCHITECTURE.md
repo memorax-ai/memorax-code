@@ -762,9 +762,12 @@ that recover do not produce terminal failure records.
   user-role context injections cannot replace that input. Duplicate native user events
   are idempotent; conflicting identities, missing matches, and ambiguous matches
   fail closed. Multiple genuine inputs retain the last selected input for the
-  single QA pair. Without modern user events, only a unique response user
-  candidate is accepted; the existing legacy text fallback remains available
-  when response text is absent, not when modern correlation fails.
+  single QA pair. Without modern user events, a unique response user retains
+  content and timestamp authority. Multiple response candidates require unique
+  exact matches to legacy `user_message` events within the same native Turn;
+  context injections cannot replace those matches. Legacy text remains available
+  when response text is absent, never to repair missing or ambiguous modern
+  correlation.
   Codex allowlists native item fields and coalesces exact assistant mirrors
   one-to-one across response and legacy event records, preserving distinct
   legacy text and repeated messages from the same source. This includes structured web-search actions and
@@ -799,8 +802,9 @@ that recover do not produce terminal failure records.
   prefixes and multiple eligible native users fail closed.
   Hook text is correlation evidence, never fallback QA content.
   A bounded in-memory start observation identifies coordinator, guidance, and
-  trace state; its local token is returned to the Claude reminder for guidance
-  correlation and never sent to the memory provider. Native UUIDs identify
+  trace state; trace events retain the Hook prompt ID as `native_request_id`
+  alongside their distinct occurrence `turn_id`. The local token is returned to
+  the Claude reminder for guidance correlation and never sent to the memory provider. Native UUIDs identify
   archive references and completed-writeback deduplication, including concurrent
   Stops. Processing settlement is independent of enqueue acceptance: a rejected
   attempt retains metadata for retry without blocking later occurrences of the

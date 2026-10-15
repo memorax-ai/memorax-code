@@ -69,6 +69,33 @@ export function selectNativeTurnContent(records, { sessionId, assistantUuid, pro
     assistant: { uuid: assistant.uuid, content: assistantText, timestamp: nativeTimestamp(assistant.timestamp) } };
 }
 
+// Prompt IDs can be reused. Match the fixture's exact prompt before comparing
+// occurrence identities; never choose the newest event with the same native ID.
+export function assertNativeTurnTrace(events, selected, { skillType } = {}) {
+  const scoped = events.filter((event) => event.trace?.client === "claude"
+    && event.trace.session_id === selected.sessionId);
+  const starts = scoped.filter((event) => event.type === "turn_start"
+    && event.trace.native_request_id === selected.promptId && event.request?.prompt === selected.user.content);
+  check(starts.length === 1, "NATIVE_HOOK_PROMPT_CORRELATION_MISSING");
+  const turnId = starts[0].trace.turn_id;
+  check(typeof turnId === "string" && /^claude-start:[a-f0-9]{64}$/.test(turnId),
+    "NATIVE_HOOK_OCCURRENCE_ID_INVALID");
+  const occurrence = scoped.filter((event) => event.trace.turn_id === turnId);
+  // Repeated Hooks are deduplicated by event ID before the trace is persisted.
+  for (const type of ["turn_start", "turn_end"]) {
+    const matches = occurrence.filter((event) => event.type === type);
+    check(matches.length === 1 && matches[0].trace.native_request_id === selected.promptId
+      && matches[0].ok === true && (type !== "turn_end" || matches[0].outcome === "completed"),
+    "NATIVE_HOOK_PROMPT_CORRELATION_MISSING");
+  }
+  if (skillType) {
+    const matches = occurrence.filter((event) => event.type === skillType);
+    check(matches.length === 1 && matches[0].trace.native_request_id === selected.promptId && matches[0].ok === true,
+      "NATIVE_SKILL_TRACE_BINDING_MISMATCH");
+  }
+  return turnId;
+}
+
 function visibleText(content) {
   if (typeof content === "string") return content;
   check(Array.isArray(content), "NATIVE_TRANSCRIPT_CONTENT_INVALID");

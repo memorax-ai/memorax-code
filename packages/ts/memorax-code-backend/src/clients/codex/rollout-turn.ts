@@ -310,6 +310,7 @@ function scanCodexRolloutTurn(
   const codingItemCandidates: CodexCodingItemCandidate[] = [];
   const responseItemUsers: CodexResponseUserMessage[] = [];
   const nativeUserMessages: CodexNativeUserMessage[] = [];
+  const legacyUserMessages: { prompt: string; metadataMismatch: boolean }[] = [];
   let completedRecordIndex: number | undefined;
   let completedAt: string | undefined;
   let responseItemAssistantReply: string | undefined;
@@ -508,6 +509,13 @@ function scanCodexRolloutTurn(
       if (activeTurnId !== targetTurnId) continue;
       const message = nonBlankString(payload.message);
       if (message) {
+        const eventTurnId = stringValue(payload.turn_id) ?? stringValue(payload.turnId);
+        const eventSessionId = stringValue(payload.thread_id);
+        legacyUserMessages.push({
+          prompt: message,
+          metadataMismatch: Boolean((eventTurnId && eventTurnId !== activeTurnId)
+            || (eventSessionId && eventSessionId !== authoritySessionId)),
+        });
         userPrompt = message;
         userTimestamp = parseNativeMessageTimestamp(record.timestamp);
         if (captureCodingItems) {
@@ -546,7 +554,8 @@ function scanCodexRolloutTurn(
     }
   }
 
-  const selectedUser = selectCodexUserMessage(responseItemUsers, nativeUserMessages);
+  const selectedUser = selectCodexUserMessage(responseItemUsers, nativeUserMessages, legacyUserMessages);
+  const allowLegacyText = nativeUserMessages.length === 0 && responseItemUsers.length === 0;
   const responseItemUser = selectedUser.candidate;
   const codingUsers: CodexCodingItemCandidate[] = (selectedUser.candidates ?? []).flatMap((response) => (
     response.item ? [{ recordIndex: response.recordIndex, source: "response_item", item: response.item }] : []
@@ -557,23 +566,23 @@ function scanCodexRolloutTurn(
     ambiguousSessionMetadata,
     composite,
     targetSeen,
-    turnMetadataMismatch,
+    turnMetadataMismatch: turnMetadataMismatch || selectedUser.metadataMismatch === true,
     userPromptAmbiguous: selectedUser.ambiguous,
-    // Modern UserMessage events identify the input; its matching response item
-    // still owns text and time. Failed modern correlation must not use legacy text.
-    userPrompt: responseItemUser?.prompt ?? (nativeUserMessages.length === 0 ? userPrompt : undefined),
+    // Native user events identify the input; its matching response item still
+    // owns text and time. Failed correlation must not use legacy text.
+    userPrompt: responseItemUser?.prompt ?? (allowLegacyText ? userPrompt : undefined),
     assistantReply: responseItemAssistantReply ?? assistantReply,
     // Text and time share the same record authority, even when that record has
     // no usable time. An exact task_complete can date completion separately.
     userTimestamp: responseItemUser ? responseItemUser.timestamp
-      : nativeUserMessages.length === 0 ? userTimestamp : undefined,
+      : allowLegacyText ? userTimestamp : undefined,
     assistantTimestamp: completedTimestamp ?? (responseItemAssistantReply === undefined
       ? assistantTimestamp
       : responseItemAssistantTimestamp),
     visibleAssistantMessages,
     codingItemCandidates: [
       ...codingItemCandidates.filter((candidate) => !(candidate.item.type === "message" && candidate.item.role === "user")
-        || (codingUsers.length === 0 && nativeUserMessages.length === 0)),
+        || allowLegacyText),
       ...codingUsers,
     ],
     completedRecordIndex,
@@ -636,8 +645,23 @@ function userInputKey(content: unknown, type: "text" | "input_text", unwrapImage
 function selectCodexUserMessage(
   responses: CodexResponseUserMessage[],
   nativeMessages: CodexNativeUserMessage[],
-): { candidate?: CodexResponseUserMessage; candidates?: CodexResponseUserMessage[]; ambiguous: boolean } {
+  legacyMessages: { prompt: string; metadataMismatch: boolean }[],
+): { candidate?: CodexResponseUserMessage; candidates?: CodexResponseUserMessage[]; ambiguous: boolean; metadataMismatch?: boolean } {
   if (nativeMessages.length === 0) {
+    if (legacyMessages.length > 0 && responses.length > 1) {
+      if (legacyMessages.some((message) => message.metadataMismatch)) return { ambiguous: false, metadataMismatch: true };
+      const candidates: CodexResponseUserMessage[] = [];
+      for (const message of legacyMessages) {
+        // Legacy events have no per-message identity and can precede or follow
+        // their response record. Require one exact match in this native Turn.
+        const matches = responses.filter((response) => response.prompt === message.prompt);
+        if (matches.length !== 1) return { ambiguous: matches.length > 1 };
+        const candidate = matches[0]!;
+        if (candidate.recordIndex <= (candidates.at(-1)?.recordIndex ?? -1)) return { ambiguous: true };
+        candidates.push(candidate);
+      }
+      return { candidate: candidates.at(-1), candidates, ambiguous: false };
+    }
     return {
       candidate: responses.length === 1 ? responses[0] : undefined,
       candidates: responses.length === 1 ? responses : [],

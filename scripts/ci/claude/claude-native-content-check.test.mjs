@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { assertExactText, assertNativeReadText, selectNativeMemoraxPlugin, selectNativeTurnContent } from "./claude-native-content-check.mjs";
+import { assertExactText, assertNativeReadText, assertNativeTurnTrace, selectNativeMemoraxPlugin, selectNativeTurnContent } from "./claude-native-content-check.mjs";
 
 const identity = { sessionId: "session-fixture", assistantUuid: "assistant-final", prompt: "Native prompt.", answer: "Native answer." };
 const user = () => ({ type: "user", sessionId: identity.sessionId, uuid: "user-prompt", parentUuid: null,
@@ -160,3 +160,86 @@ test("Claude native oracle errors never include private native content", () => {
     return true;
   });
 });
+
+function turnTrace({ turnId = `claude-start:${"a".repeat(64)}`, prompt = identity.prompt } = {}) {
+  const trace = { client: "claude", session_id: identity.sessionId, native_request_id: "prompt-fixture", turn_id: turnId };
+  return [
+    { type: "turn_start", trace: { ...trace }, ok: true, request: { prompt } },
+    { type: "turn_end", trace: { ...trace }, ok: true, outcome: "completed" },
+    ...["search", "add"].map((operation) => ({ type: `memory_cli_${operation}`, trace: { ...trace }, ok: true })),
+  ];
+}
+
+const traceSelection = (prompt = identity.prompt) => ({ sessionId: identity.sessionId, promptId: "prompt-fixture", user: { content: prompt } });
+
+test("Claude trace correlation preserves the raw fixture prompt and binds each Skill to its occurrence", () => {
+  // Local trace strings are captured verbatim; only outbound QA redacts this fixture canary.
+  const prompt = "Check sk_nativeFixtureOnlyAbcdefghijklmnop before continuing.";
+  const events = turnTrace({ prompt });
+  for (const skillType of [undefined, "memory_cli_search", "memory_cli_add"]) {
+    assert.equal(assertNativeTurnTrace(events, traceSelection(prompt), { skillType }), events[0].trace.turn_id);
+  }
+  assert.throws(() => assertNativeTurnTrace(events, traceSelection(prompt.replace(/sk_\w+/, "[REDACTED:API_KEY]"))),
+    { nativeCode: "NATIVE_HOOK_PROMPT_CORRELATION_MISSING" });
+});
+
+test("Claude trace correlation distinguishes reused prompt IDs without borrowing another occurrence", () => {
+  const nextPrompt = "A later prompt with the same native prompt ID.";
+  const first = turnTrace(), second = turnTrace({ turnId: `claude-start:${"b".repeat(64)}`, prompt: nextPrompt });
+  const unrelated = first.map((event) => ({ ...event, trace: { ...event.trace, client: "codex" } }));
+  const foreign = first.map((event) => ({ ...event, trace: { ...event.trace, session_id: "foreign-session" } }));
+  const events = [...first, ...unrelated, ...second, ...foreign];
+  for (const [prompt, turnId] of [[identity.prompt, first[0].trace.turn_id], [nextPrompt, second[0].trace.turn_id]]) {
+    assert.equal(assertNativeTurnTrace(events, traceSelection(prompt), { skillType: "memory_cli_search" }), turnId);
+  }
+  assert.throws(() => assertNativeTurnTrace([...first, ...turnTrace({ turnId: second[0].trace.turn_id })], traceSelection()),
+    { nativeCode: "NATIVE_HOOK_PROMPT_CORRELATION_MISSING" }, "identical prompts with distinct occurrences remain ambiguous");
+});
+
+test("Claude trace correlation rejects missing, mismatched and duplicated persisted lifecycle events", () => {
+  const cases = [
+    ["missing Start", (events) => events.splice(0, 1)],
+    ["missing End", (events) => events.splice(1, 1)],
+    ["missing native prompt ID", (events) => delete events[0].trace.native_request_id],
+    ["foreign native prompt ID", (events) => events[0].trace.native_request_id = "foreign-prompt"],
+    ["foreign client", (events) => events[0].trace.client = "codex"],
+    ["foreign session", (events) => events[1].trace.session_id = "foreign-session"],
+    ["End borrows another occurrence", (events) => events[1].trace.turn_id = `claude-start:${"b".repeat(64)}`],
+    ["End has another native prompt ID", (events) => events[1].trace.native_request_id = "foreign-prompt"],
+    ["unfinished End", (events) => events[1].outcome = "interrupted"],
+    ["duplicate Start", (events) => events.push(structuredClone(events[0]))],
+    ["duplicate End", (events) => events.push(structuredClone(events[1]))],
+    ["conflicting Start on the same occurrence", (events) => events.push({ ...events[0], request: { prompt: "Another prompt." } })],
+  ];
+  for (const [label, mutate] of cases) {
+    const events = turnTrace();
+    mutate(events);
+    assert.throws(() => assertNativeTurnTrace(events, traceSelection()),
+      { nativeCode: "NATIVE_HOOK_PROMPT_CORRELATION_MISSING" }, label);
+  }
+  for (const turnId of [undefined, "prompt-fixture", "claude-start:invalid"]) {
+    const events = turnTrace();
+    events[0].trace.turn_id = turnId;
+    assert.throws(() => assertNativeTurnTrace(events, traceSelection()), { nativeCode: "NATIVE_HOOK_OCCURRENCE_ID_INVALID" });
+  }
+});
+
+for (const skillType of ["memory_cli_search", "memory_cli_add"]) {
+  test(`Claude trace correlation rejects missing, duplicate or foreign ${skillType} bindings`, () => {
+    for (const [label, mutate] of [
+      ["missing Skill event", (events, event) => events.splice(events.indexOf(event), 1)],
+      ["duplicate Skill event", (events, event) => events.push(structuredClone(event))],
+      ["missing native prompt ID", (events, event) => delete event.trace.native_request_id],
+      ["foreign prompt", (events, event) => event.trace.native_request_id = "foreign-prompt"],
+      ["foreign occurrence", (events, event) => event.trace.turn_id = `claude-start:${"b".repeat(64)}`],
+      ["foreign client", (events, event) => event.trace.client = "codex"],
+      ["foreign session", (events, event) => event.trace.session_id = "foreign-session"],
+      ["failed Skill", (events, event) => event.ok = false],
+    ]) {
+      const events = turnTrace();
+      mutate(events, events.find((event) => event.type === skillType));
+      assert.throws(() => assertNativeTurnTrace(events, traceSelection(), { skillType }),
+        { nativeCode: "NATIVE_SKILL_TRACE_BINDING_MISMATCH" }, label);
+    }
+  });
+}

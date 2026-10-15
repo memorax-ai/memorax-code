@@ -398,6 +398,92 @@ test("Codex rollout reader prefers response_item messages over legacy event mess
   });
 });
 
+test("Codex legacy user events select exact native input before or after its response", () => {
+  for (const eventFirst of [true, false]) {
+    const prompt = "  Explain the native parser.\n\nKeep Unicode 🧪 and trailing space. ";
+    const input = responseItemUserMessage(prompt, "turn-1");
+    input.timestamp = "2026-09-01T08:00:00.000Z";
+    const event = userMessage(prompt);
+    event.timestamp = "2026-09-01T08:00:01.000Z";
+    assertCodexSelectedUser([
+      sessionMeta("session-1"), taskStarted("turn-1"),
+      responseItemUserMessage("<environment_context>Injected workspace.</environment_context>", "turn-1"),
+      turnContext("turn-1"),
+      ...(eventFirst ? [event, input] : [input, event]),
+      responseItemUserMessage("<skill>Injected procedure.</skill>", "turn-1"),
+      responseMessage("assistant", "The parser selects native input.", "final_answer", "provider-turn"),
+      taskComplete("turn-1"),
+    ], input, prompt);
+  }
+});
+
+test("Codex legacy input correlation preserves each input in native archive order", () => {
+  const records = [
+    sessionMeta("session-1"), taskStarted("turn-1"), turnContext("turn-1"),
+    userMessage("Initial input."), responseItemUserMessage("Initial input.", "turn-1"),
+    responseMessage("assistant", "Intermediate update.", "commentary"),
+    responseItemUserMessage("Revised input.", "turn-1"), userMessage("Revised input."),
+    responseItemUserMessage("Injected context.", "turn-1"),
+    responseMessage("assistant", "Final reply.", "final_answer"), taskComplete("turn-1"),
+  ];
+  const identity = { sessionId: "session-1", turnId: "turn-1" };
+  const transcript = jsonLines(records);
+  const qa = codexRolloutTurnFromJsonLines(transcript, identity);
+  const archive = codexCodingSessionTurnFromJsonLines(transcript, identity);
+  assert.equal(qa.ok, true);
+  assert.equal(archive.ok, true);
+  assert.equal(qa.turn.userPrompt, "Revised input.");
+  assert.deepEqual(archive.turn.items.map((item) => item.content[0].text), [
+    "Initial input.", "Intermediate update.", "Revised input.", "Final reply.",
+  ]);
+});
+
+test("Codex legacy identity rejects missing, duplicate, and reordered multiple-response associations", () => {
+  const cases = [
+    { reason: "user_prompt_missing", records: [userMessage("Actual input."), responseItemUserMessage("Injected context.")] },
+    { reason: "user_prompt_missing", records: [userMessage(" Actual input. "), responseItemUserMessage("Actual input.")] },
+    { reason: "user_prompt_ambiguous", records: [userMessage("Actual input."),
+      responseItemUserMessage("Actual input."), responseItemUserMessage("Actual input.")] },
+    { reason: "user_prompt_ambiguous", records: [userMessage("Actual input."),
+      responseItemUserMessage("Actual input."), userMessage("Actual input.")] },
+    { reason: "user_prompt_ambiguous", records: [userMessage("Second."), userMessage("First."),
+      responseItemUserMessage("First."), responseItemUserMessage("Second.")] },
+    ...[{ turn_id: "other-turn" }, { thread_id: "other-session" }].map((identity) => ({
+      reason: "turn_metadata_mismatch", records: [
+        { ...userMessage("Actual input."), payload: { ...userMessage("Actual input.").payload, ...identity } },
+        responseItemUserMessage("Actual input."),
+      ],
+    })),
+  ];
+  for (const { records, reason } of cases) {
+    const transcript = jsonLines([
+      sessionMeta("session-1"), taskStarted("turn-1"), turnContext("turn-1"), ...records,
+      responseItemUserMessage("Unrelated context.", "turn-1"),
+      responseMessage("assistant", "Final reply.", "final_answer"), taskComplete("turn-1"),
+    ]);
+    const identity = { sessionId: "session-1", turnId: "turn-1" };
+    assert.deepEqual(codexRolloutTurnFromJsonLines(transcript, identity), { ok: false, reason });
+    assert.deepEqual(codexCodingSessionTurnFromJsonLines(transcript, identity), { ok: false, reason });
+    assert.deepEqual(codexInterruptedRolloutTurnFromJsonLines(
+      transcript + jsonLines([turnAborted("turn-1")]), identity,
+    ), { ok: false, reason });
+  }
+});
+
+test("Codex legacy input cannot borrow a matching response from another native Turn", () => {
+  const transcript = jsonLines([
+    sessionMeta("session-1"), taskStarted("turn-before"), turnContext("turn-before"),
+    responseItemUserMessage("Actual input.", "turn-before"), taskComplete("turn-before"),
+    taskStarted("turn-1"), turnContext("turn-1"), userMessage("Actual input."),
+    responseItemUserMessage("First context.", "turn-1"), responseItemUserMessage("Second context.", "turn-1"),
+    responseMessage("assistant", "Final reply.", "final_answer"), taskComplete("turn-1"),
+    taskStarted("turn-after"), responseItemUserMessage("Actual input.", "turn-after"),
+  ]);
+  const identity = { sessionId: "session-1", turnId: "turn-1" };
+  assert.deepEqual(codexRolloutTurnFromJsonLines(transcript, identity), { ok: false, reason: "user_prompt_missing" });
+  assert.deepEqual(codexCodingSessionTurnFromJsonLines(transcript, identity), { ok: false, reason: "user_prompt_missing" });
+});
+
 test("Codex user identity keeps later context injections out of QA and archive", () => {
   for (const injected of ["<environment_context>Injected workspace.</environment_context>", "<skill>Injected procedure.</skill>"]) {
     const user = responseItemUserMessage("Explain the native parser.", "turn-1");
@@ -411,6 +497,8 @@ test("Codex user identity keeps later context injections out of QA and archive",
       sessionMeta("session-1"), taskStarted("turn-1"), turnContext("turn-1"),
       earlierContext, user,
       completedUserMessage(["Explain the native parser."], "native-user"),
+      { ...userMessage("Different legacy mirror."), payload: { ...userMessage("Different legacy mirror.").payload,
+        turn_id: "other-turn", thread_id: "other-session" } },
       laterContext,
       responseMessage("assistant", "The parser selects native input.", "final_answer", "provider-turn"),
       taskComplete("turn-1"),
@@ -640,11 +728,6 @@ test("Codex user identity fails closed for missing, conflicting, or ambiguous na
     ] },
     { name: "response-only multiple candidates", reason: "user_prompt_ambiguous", records: [
       responseItemUserMessage("Initial candidate.", "turn-1"),
-      responseItemUserMessage("Later candidate.", "turn-1"),
-    ] },
-    { name: "legacy text cannot repair multiple response candidates", reason: "user_prompt_ambiguous", records: [
-      responseItemUserMessage("Initial candidate.", "turn-1"),
-      userMessage("Initial candidate."),
       responseItemUserMessage("Later candidate.", "turn-1"),
     ] },
   ];
