@@ -406,6 +406,7 @@ config_sections = {
 }
 assert config_sections == {
     "clients",
+    "coding_sessions",
     "jev",
     "memorax",
     "memory.add",

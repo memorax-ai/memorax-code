@@ -28,6 +28,15 @@ import {
 import type { TraceContext } from "../../trace/context.js";
 import { isRecord } from "../../shared/record.js";
 import { parseNativeMessageTimestamp } from "../../shared/message-time.js";
+import {
+  codingSessionsEnabled,
+  defaultMemoraxCodeHome,
+  loadMemoraxCodeConfig,
+} from "../../config/memorax-code.js";
+import {
+  CODING_SESSION_BATCH_MAX_BYTES,
+  type CodingSessionAttachment,
+} from "../../coding-sessions/contracts.js";
 
 const SLOT_RESULT_SCHEMA_VERSION = "slot-invocation-result.preview.v1";
 const FORWARDED_WRITEBACK_METADATA_KEYS = [
@@ -64,6 +73,7 @@ export type MemoraxAdapterOptions = {
   relatedTurns?: MemoryObservabilityRelatedTurn[];
   repositoryScope?: RepositoryMemoryScope;
   traceContext?: TraceContext;
+  codingContext?: CodingSessionAttachment;
   writebackAttempt?: {
     attempt: number;
     maxAttempts: number;
@@ -106,6 +116,7 @@ type MemoraxAddPayload = {
   metadata: Record<string, unknown>;
   async_mode: true;
   timestamp: number;
+  coding_context?: CodingSessionAttachment;
 };
 
 type MemoraxWritebackMessage = {
@@ -321,7 +332,20 @@ async function invokeMemoraxWriteback(
   if (messages.length === 0) return { ok: false, error: "writeback messages are required" };
   const idempotencyKey = writebackIdempotencyKeyFromContext(context);
   if (!idempotencyKey) return { ok: false, error: "writeback idempotency key is required" };
-  const payload = buildMemoraxAddPayload(config, run, messages, context, idempotencyKey, repositoryScope, addOptions.options);
+  if (options.codingContext) {
+    const failure = validateCodingContextAttachment(options.codingContext, run, repositoryScope, addOptions.options, options);
+    if (failure) return failure;
+  }
+  const payload = buildMemoraxAddPayload(config, run, messages, context, idempotencyKey, repositoryScope, addOptions.options, options.codingContext);
+  if (payload.coding_context && Buffer.byteLength(JSON.stringify(payload.coding_context), "utf8") > CODING_SESSION_BATCH_MAX_BYTES) {
+    return {
+      ok: false,
+      error: "Coding Session attachment exceeds its upload byte limit",
+      errorCode: "MEMORAX_CODING_SESSION_BATCH_TOO_LARGE",
+    };
+  }
+  // Local Add observability retains its existing QA contract, not archive bodies.
+  const { coding_context: _codingContext, ...observedPayload } = payload;
   try {
     const { body: raw, quota } = await callMemoAdd(config, payload, options.fetchImpl);
     recordMemoryObservabilityEvent(options, {
@@ -329,7 +353,7 @@ async function invokeMemoraxWriteback(
       ok: true,
       request: {
         slot: request.slot || "state_context",
-        payload,
+        payload: observedPayload,
       },
       response: {
         receiptId: memoraxReceiptId(raw),
@@ -365,7 +389,7 @@ async function invokeMemoraxWriteback(
       ok: false,
       request: {
         slot: request.slot || "state_context",
-        payload,
+        payload: observedPayload,
       },
       error: failure.error,
     });
@@ -381,6 +405,7 @@ function buildMemoraxAddPayload(
   idempotencyKey: string,
   repositoryScope: RepositoryMemoryScope,
   options: MemoraxAddOptions = {},
+  codingContext?: CodingSessionAttachment,
 ): MemoraxAddPayload {
   const now = Date.now();
   const extraMetadata = writebackMetadataFromContext(context);
@@ -406,6 +431,16 @@ function buildMemoraxAddPayload(
     // Acceptance acknowledges task submission, not completed memory extraction.
     async_mode: true,
     timestamp: stamped[0]?.timestamp ?? now,
+    ...(codingContext ? { coding_context: {
+      schema_version: codingContext.schema_version,
+      redaction_version: codingContext.redaction_version,
+      batch_id: codingContext.batch_id,
+      client: codingContext.client,
+      session_id: codingContext.session_id,
+      repository_slug: codingContext.repository_slug,
+      turns: codingContext.turns,
+      items: codingContext.items,
+    } } : {}),
     metadata: {
       source: "memorax-code",
       tags: ["memorax-code"],
@@ -421,6 +456,63 @@ function buildMemoraxAddPayload(
       ...(run.branchId ? { memorax_code_branch_id: run.branchId } : {}),
     },
   };
+}
+
+function validateCodingContextAttachment(
+  attachment: CodingSessionAttachment,
+  run: MemoraxRunContext,
+  scope: RepositoryMemoryScope,
+  addOptions: MemoraxAddOptions,
+  options: MemoraxAdapterOptions,
+): MemoraxInvocationFailure | undefined {
+  const env = options.env ?? process.env;
+  const fileConfig = env.MEMORAX_CODE_CODING_SESSIONS_ENABLED === undefined
+    ? loadMemoraxCodeConfig(defaultMemoraxCodeHome(env))
+    : undefined;
+  const sources: Partial<Record<MemoryObservabilitySource, CodingSessionAttachment["client"]>> = {
+    codex_hook_writeback: "codex",
+    claude_hook_writeback: "claude-code",
+    opencode_plugin_writeback: "opencode",
+    codebuddy_hook_writeback: "codebuddy",
+    workbuddy_hook_writeback: "workbuddy",
+  };
+  const source = options.observabilitySource;
+  if (!codingSessionsEnabled(env, fileConfig)
+    || addOptions.contentType !== "code" || addOptions.mode !== "default"
+    || (source !== "automatic_writeback" && (!source || sources[source] !== attachment.client))) {
+    return {
+      ok: false,
+      error: "Coding Session attachments require enabled automatic code writeback",
+      errorCode: "MEMORAX_CODING_SESSION_ATTACHMENT_NOT_ALLOWED",
+    };
+  }
+  const traceClient = options.traceContext?.client === "claude" ? "claude-code" : options.traceContext?.client;
+  if (attachment.session_id !== run.sessionId
+    || attachment.repository_slug !== scope.repositorySlug
+    || (options.traceContext && traceClient !== attachment.client)) {
+    return {
+      ok: false,
+      error: "Coding Session attachment does not match its writeback scope",
+      errorCode: "MEMORAX_CODING_SESSION_SCOPE_MISMATCH",
+    };
+  }
+  if (attachment.schema_version !== 1 || attachment.redaction_version !== 1
+    || !attachment.batch_id.trim() || !attachment.session_id.trim()
+    || !["codex", "claude-code", "opencode", "codebuddy", "workbuddy"].includes(attachment.client)
+    || attachment.turns.length === 0
+    || new Set(attachment.turns.map((turn) => turn.turn_id)).size !== attachment.turns.length
+    || attachment.turns.some((turn, index) => !turn.turn_id.trim()
+      || !Number.isSafeInteger(turn.turn_index) || turn.turn_index < 1
+      || (index > 0 && turn.turn_index <= attachment.turns[index - 1].turn_index)
+      || !Number.isSafeInteger(turn.item_count) || turn.item_count < 2)
+    || attachment.turns.reduce((count, turn) => count + turn.item_count, 0) !== attachment.items.length) {
+    return {
+      ok: false,
+      error: "Coding Session attachment identity is invalid",
+      errorCode: "MEMORAX_CODING_SESSION_INVALID_BATCH",
+    };
+  }
+  return undefined;
 }
 
 function memoraxScopeVersion(scopeKind: ReturnType<typeof repositoryMemoryScopeKind>): string {

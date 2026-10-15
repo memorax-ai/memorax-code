@@ -253,6 +253,16 @@ Hook 继续提供本地记忆上下文与提醒，不发起 Search 请求。
 该功能使用您配置的 Jev Key，默认关闭；开启后会将限长的本轮请求与上一轮交互文本
 发送给 TypeSafe。调用失败时按原有周期提供 Skill 提醒，Search 仍由 Agent 执行。
 
+新生成的配置还会启用 Codex、Claude Code、OpenCode、CodeBuddy 和 WorkBuddy 的编码会话采集。
+自动 QA Add 会携带可选的 `coding_context` 附件，包含本地脱敏后的已完成 Turn：用户指令、可见助手消息和工具调用／结果，
+不会上传整份原生 session 文件或思维链。这是选定的 OpenAI Responses items 子集，
+需要 MemoraX 服务端支持 QA 与附件合并的协议；仅支持独立 event 请求的服务端需要同步更新。
+Add 回执只确认 QA 已接收，不代表 OSS 已落盘。
+已有配置缺少该设置时保持关闭，详见[采集控制](docs/configuration.md#coding-session-collection)。
+附件沿用 QA 的现有触发规则：默认每 8 轮、达到 QA 字数上限、空闲或正常退出时上报。
+Codex、Claude Code、CodeBuddy 和 WorkBuddy 在 QA 缓冲中保留冻结的原生文件引用，发送前重新读取选定内容；
+OpenCode 将准备好的 SDK items 保留在内存中。这条链路为尽力交付，没有独立归档队列、计时器或重启恢复。
+
 受支持客户端的本地 trace 默认开启。根据客户端能力，`MEMORAX_CODE_HOME` 下保留的 trace
 可能包含用户指令、Agent 回复、召回的 Memory、提醒文本和本地路径。可通过
 [本地 trace 配置](docs/configuration.md#local-traces)改为仅记录元数据，或关闭对应客户端的 trace。

@@ -33,6 +33,8 @@ const reviewedNetworkSources = new Set([
   "packages/ts/memorax-code-backend/src/memory/cli.ts",
   "packages/ts/memorax-code-backend/src/memory/harness-runtime.ts",
   "packages/ts/memorax-code-backend/src/memory/search-guidance.ts",
+  "packages/ts/memorax-code-backend/src/memory/service.ts",
+  "packages/ts/memorax-code-backend/src/memory/turn-coordinator.ts",
   "packages/ts/memorax-code-backend/src/memory/writeback-buffer.ts",
   "packages/ts/memorax-code-backend/src/repo-memory/detect-updates.ts",
   "packages/ts/memorax-code-backend/src/provider/jev/adapter.ts",
