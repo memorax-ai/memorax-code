@@ -21,6 +21,8 @@ export type BackgroundWritebackContext = {
 // Only confirmed failures are listed. Missing/incomplete assistant output,
 // interruptions, subagents, compaction, duplicates and buffering are normal.
 const REJECTIONS: Record<string, { stage: string; error: string }> = {
+  native_content_timeout: { stage: "content-read", error: "The Codex final reply was still unavailable after five delayed reads." },
+  native_retry_capacity: { stage: "content-read", error: "The Codex pending writeback limit was reached." },
   transcript_unavailable: { stage: "content-read", error: "The native transcript could not be read." },
   malformed_transcript: { stage: "content-validation", error: "The native transcript contains malformed records." },
   transcript_session_mismatch: { stage: "correlation", error: "The native transcript belongs to a different session." },

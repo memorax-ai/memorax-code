@@ -26,6 +26,31 @@ const WRITEBACK_TIMEOUT_MS = 5_000;
 const MAX_PENDING_TURNS = 256;
 const MEMORY_SKILL_INVOCATION = "the `memorax-code` skill";
 
+async function nativePromptProvenance(client, directory, sessionId, output) {
+  try {
+    const session = await client.session.get({ path: { id: sessionId }, query: { directory }, throwOnError: true });
+    if (session?.data?.id !== sessionId) return {};
+    // Native session lineage determines agent role. Require an explicit native
+    // non-synthetic text flag before treating this prompt as end-user evidence.
+    const agentRole = session.data.parentID ? "subagent" : "main";
+    const parts = output?.parts;
+    const message = output?.message;
+    const nativePromptVerified = message?.role === "user" && message.sessionID === sessionId
+      && Boolean(stringValue(message.id)) && Array.isArray(parts)
+      && parts.some((part) => part?.type === "text" && stringValue(part.text)
+        && part.sessionID === sessionId && part.messageID === message.id
+        && part.synthetic !== true && part.ignored !== true)
+      && parts.every((part) => part?.sessionID === sessionId && part.messageID === message.id
+        && part.type !== "compaction");
+    const explicitUser = Array.isArray(parts) && parts.some((part) => part?.type === "text" && part.synthetic === false)
+      && !parts.some((part) => part?.synthetic === true || part?.ignored === true || part?.type === "compaction");
+    return { agentRole, ...(explicitUser ? { promptOrigin: "end_user" } : {}),
+      ...(nativePromptVerified ? { nativePromptVerified: true } : {}) };
+  } catch {
+    return {};
+  }
+}
+
 class BackendHttpResponseError extends Error {
   constructor(path, status) {
     super(`Backend ${path} returned HTTP ${status}`);
@@ -128,7 +153,9 @@ export function createMemoraxOpenCodePlugin(options = {}) {
             sessionId,
             userMessageId: turn.userMessageId,
             assistantMessageId: assistant.info.id,
+            turnIndex: sessionTurnIndex(messages, sessionId, turn.userMessageId),
             messages: evidence,
+            ...(turn.provenance ?? {}),
             cwd: workspaceRoot,
             workspaceKind,
           }, WRITEBACK_TIMEOUT_MS);
@@ -203,6 +230,7 @@ export function createMemoraxOpenCodePlugin(options = {}) {
         if (Array.isArray(output?.parts) && output.parts.some((part) => part?.type === "compaction")) return;
         const prompt = textParts(output?.parts);
         if (!sessionId || !userMessageId || !prompt) return;
+        const provenance = await nativePromptProvenance(client, directory, sessionId, output);
         recordOpenCodeWorkspaceEvidence(options, workspaceRoot, "chat.message", sessionId);
         const reminderInput = {
           hookEventName: "UserPromptSubmit",
@@ -234,7 +262,7 @@ export function createMemoraxOpenCodePlugin(options = {}) {
         if (!pluginEnabled(options) || promptSignal.aborted) return;
         const turnStartCommand = {
           version: 1, client: "opencode", sessionId, userMessageId,
-          prompt, cwd: workspaceRoot, workspaceKind,
+          prompt, ...provenance, cwd: workspaceRoot, workspaceKind,
         };
         let repositoryWorktree;
         let turnStartAccepted = false;
@@ -254,7 +282,7 @@ export function createMemoraxOpenCodePlugin(options = {}) {
               nodePath: options.nodePath,
             });
           }
-          const turn = { sessionId, userMessageId };
+          const turn = { sessionId, userMessageId, provenance };
           pendingTurns.set(turnKey(turn), turn);
           while (pendingTurns.size > MAX_PENDING_TURNS) {
             const oldest = pendingTurns.keys().next().value;
@@ -358,12 +386,10 @@ export default MemoraxOpenCodePlugin;
 function terminalTurnFor(messages, sessionId, userMessageId, assistantMessageId) {
   const lineage = turnLineage(messages, sessionId, userMessageId);
   if (!lineage || lineage.awaitingContinuation) return undefined;
-  const assistant = lineage.messages
+  const assistants = lineage.assistants
     .filter((message) => (
       message?.info?.role === "assistant"
       && message.info.sessionID === sessionId
-      && message.info.parentID === lineage.terminalUserMessageId
-      && (!assistantMessageId || message.info.id === assistantMessageId)
       && Number.isFinite(message.info.time?.completed)
       && message.info.summary !== true
       && !message.parts?.some((part) => part?.type === "compaction")
@@ -371,12 +397,18 @@ function terminalTurnFor(messages, sessionId, userMessageId, assistantMessageId)
     .sort((left, right) => (
       Number(left.info.time.completed) - Number(right.info.time.completed)
       || String(left.info.id).localeCompare(String(right.info.id))
-    ))
-    .at(-1);
+    ));
+  const assistant = assistants.filter((message) => (
+    message.info.parentID === lineage.terminalUserMessageId
+    && (!assistantMessageId || message.info.id === assistantMessageId)
+  )).at(-1);
   if (!assistant) return undefined;
   return {
     assistant,
-    evidence: uniqueMessages([...lineage.evidence, assistant]),
+    evidence: uniqueMessages([
+      ...lineage.evidence,
+      ...assistants.slice(0, assistants.indexOf(assistant) + 1),
+    ]),
   };
 }
 
@@ -392,6 +424,7 @@ function turnLineage(messages, sessionId, userMessageId) {
   if (startIndex < 0) return undefined;
   const original = sessionMessages[startIndex];
   const lineageAssistants = new Map();
+  const assistants = [];
   const evidence = [original];
   let terminalUserMessageId = userMessageId;
   let awaitingContinuation = false;
@@ -400,6 +433,7 @@ function turnLineage(messages, sessionId, userMessageId) {
     if (message.info.role === "assistant") {
       if (message.info.parentID === terminalUserMessageId) {
         lineageAssistants.set(message.info.id, message);
+        assistants.push(message);
       }
       continue;
     }
@@ -423,7 +457,7 @@ function turnLineage(messages, sessionId, userMessageId) {
     break;
   }
   return {
-    messages: sessionMessages.slice(startIndex + 1),
+    assistants,
     terminalUserMessageId,
     awaitingContinuation,
     evidence,
@@ -432,6 +466,18 @@ function turnLineage(messages, sessionId, userMessageId) {
 
 function hasCompactionPart(parts) {
   return parts.some((part) => part?.type === "compaction");
+}
+
+function sessionTurnIndex(messages, sessionId, userMessageId) {
+  let index = 0;
+  for (const message of messages) {
+    if (message?.info?.role !== "user" || message.info.sessionID !== sessionId
+      || !stringValue(message.info.id) || !Array.isArray(message.parts)
+      || hasCompactionPart(message.parts) || !textParts(message.parts)) continue;
+    index += 1;
+    if (message.info.id === userMessageId) return index;
+  }
+  return undefined;
 }
 
 function compactionTailStartId(message, sessionId) {

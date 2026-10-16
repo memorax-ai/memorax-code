@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  claudeCodingSessionTurnFromJsonLines,
   claudeTranscriptTurnFromJsonLines,
 } from "../../../dist/clients/claude/transcript-turn.js";
 
@@ -16,7 +17,13 @@ import {
 test("Claude transcript resolves one exact completed prompt branch", () => {
   const transcript = jsonLines([
     userRecord({ uuid: "user-visible", content: "Materialized Claude prompt.", timestamp: "2026-09-01T08:00:00.000Z" }),
-    assistantRecord({ uuid: "assistant-tool", parentUuid: "user-visible", stopReason: "tool_use", content: [{ type: "tool_use", id: "tool-1", name: "Read", input: {} }] }),
+    assistantRecord({
+      uuid: "assistant-tool", parentUuid: "user-visible", stopReason: "tool_use",
+      content: [
+        { type: "text", text: "Working on it." },
+        { type: "tool_use", id: "tool-1", name: "Read", input: {} },
+      ],
+    }),
     userRecord({
       uuid: "user-tool-result",
       parentUuid: "assistant-tool",
@@ -60,6 +67,46 @@ test("Claude transcript resolves one exact completed prompt branch", () => {
       activities: [],
     },
   });
+  const identity = { sessionId: SESSION_ID, promptId: PROMPT_ID };
+  const source = claudeCodingSessionTurnFromJsonLines(transcript, identity);
+  assert.equal(source.ok, true);
+  const { items, closedAt, ...qa } = source.turn;
+  assert.deepEqual(qa, claudeTranscriptTurnFromJsonLines(transcript, identity).turn);
+  assert.equal(closedAt, "2026-09-01T08:03:00.000Z");
+  assert.deepEqual(items, [
+    { type: "message", role: "user", content: [{ type: "input_text", text: "Materialized Claude prompt." }] },
+    { type: "message", role: "assistant", phase: "commentary", content: [{ type: "output_text", text: "Working on it." }] },
+    { type: "function_call", call_id: "tool-1", name: "Read", arguments: "{}" },
+    { type: "function_call_output", call_id: "tool-1", output: "tool output must not become the prompt" },
+    { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: "Materialized Claude answer." }] },
+  ]);
+});
+
+test("Claude archive preserves native tool error flags without inferred response status", () => {
+  const output = [{ type: "text", text: "File was not found." }];
+  const transcript = jsonLines([
+    userRecord({ uuid: "user-visible", content: "Read the configuration." }),
+    assistantRecord({
+      uuid: "assistant-tool", parentUuid: "user-visible", stopReason: "tool_use",
+      content: [{ type: "tool_use", id: "read-config", name: "Read", input: { path: "missing.json" } }],
+    }),
+    userRecord({
+      uuid: "user-tool-result", parentUuid: "assistant-tool",
+      content: [{ type: "tool_result", tool_use_id: "read-config", is_error: true, content: output }],
+    }),
+    assistantRecord({
+      uuid: "assistant-final", parentUuid: "user-tool-result", stopReason: "end_turn",
+      content: [{ type: "text", text: "The configuration is absent." }],
+    }),
+  ]);
+  const result = claudeCodingSessionTurnFromJsonLines(transcript, { sessionId: SESSION_ID, promptId: PROMPT_ID });
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.turn.items.slice(1, -1).map((item) => (
+    item.type === "function_call_output" ? { ...item, output: JSON.parse(item.output) } : item
+  )), [
+    { type: "function_call", call_id: "read-config", name: "Read", arguments: '{"path":"missing.json"}' },
+    { type: "function_call_output", call_id: "read-config", output: { content: output, is_error: true } },
+  ]);
 });
 
 test("Claude transcript aggregates exact-branch usage once per assistant message id", () => {
@@ -500,7 +547,7 @@ test("Claude transcript rejects a foreign session after the requested session be
   }), { ok: false, reason: "transcript_session_mismatch" });
 });
 
-test("Claude transcript counts unique interactive prompt ids and excludes explicit non-turn user records", () => {
+test("Claude transcript counts system-origin prompts but excludes notifications and interruptions", () => {
   const transcript = jsonLines([
     userRecord({
       uuid: "task-notification",
@@ -561,7 +608,7 @@ test("Claude transcript counts unique interactive prompt ids and excludes explic
     turn: {
       sessionId: SESSION_ID,
       promptId: PROMPT_ID,
-      sessionTurnIndex: 2,
+      sessionTurnIndex: 3,
       userPrompt: "Target interactive prompt.",
       assistantReply: "Target interactive answer.",
       activities: [],
@@ -569,7 +616,6 @@ test("Claude transcript counts unique interactive prompt ids and excludes explic
   });
   for (const promptId of [
     "prompt-task-notification",
-    "prompt-system",
     "prompt-interruption",
   ]) {
     assert.deepEqual(claudeTranscriptTurnFromJsonLines(transcript, {
@@ -577,6 +623,9 @@ test("Claude transcript counts unique interactive prompt ids and excludes explic
       promptId,
     }), { ok: false, reason: "turn_not_found" });
   }
+  assert.deepEqual(claudeTranscriptTurnFromJsonLines(transcript, {
+    sessionId: SESSION_ID, promptId: "prompt-system",
+  }), { ok: false, reason: "assistant_message_missing" });
 });
 
 test("Claude transcript ignores an incomplete unterminated JSONL tail", () => {

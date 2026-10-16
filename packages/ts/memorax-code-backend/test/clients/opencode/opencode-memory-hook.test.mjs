@@ -6,7 +6,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { runMemoryCli } from "../../../dist/memory/cli.js";
 import { createOpenCodeMemoryHookRuntime } from "../../../dist/clients/opencode/memory-hook-runtime.js";
-import { openCodeMessageTurn } from "../../../dist/clients/opencode/message-turn.js";
+import { openCodeCodingSessionTurn, openCodeMessageTurn } from "../../../dist/clients/opencode/message-turn.js";
 import { openCodeTracePaths } from "../../../dist/trace/config.js";
 import { createMemoryTurnCoordinator } from "../../../dist/memory/turn-coordinator.js";
 
@@ -105,6 +105,13 @@ test("OpenCode SDK messages materialize only an exact completed normal turn", ()
 
 test("OpenCode SDK messages materialize a completed compaction continuation as the original turn", () => {
   const messages = compactedOpenCodeMessages();
+  messages[1].parts = [
+    textPart("assistant-tail", "Inspecting the implementation."),
+    { ...part("tool", "assistant-tail"), tool: "read", callID: "read-1", state: { status: "completed", input: { filePath: "README.md" }, output: "read result" } },
+    { ...part("tool", "assistant-tail"), tool: "read", callID: "read-2", state: { status: "error", input: { filePath: "missing.json" }, error: "File was not found." } },
+    { ...part("reasoning", "assistant-tail"), text: "hidden reasoning" },
+    { ...textPart("assistant-tail", "unrelated"), sessionID: "other-session" },
+  ];
   assert.deepEqual(openCodeMessageTurn(messages, {
     sessionId: "session-1",
     userMessageId: "user-1",
@@ -128,6 +135,21 @@ test("OpenCode SDK messages materialize a completed compaction continuation as t
     userMessageId: "user-1",
     assistantMessageId: "assistant-tail",
   }), { ok: false, reason: "message_identity_mismatch" });
+
+  const collected = openCodeCodingSessionTurn(messages, {
+    sessionId: "session-1", userMessageId: "user-1", assistantMessageId: "assistant-final", turnIndex: 3,
+  });
+  assert.equal(collected.ok, true);
+  assert.equal(collected.turn.turnIndex, 3);
+  assert.deepEqual(collected.turn.items, [
+    { type: "message", role: "user", content: [{ type: "input_text", text: "OpenCode user prompt." }] },
+    { type: "message", role: "assistant", phase: "commentary", content: [{ type: "output_text", text: "Inspecting the implementation." }] },
+    { type: "function_call", name: "read", call_id: "read-1", arguments: '{"filePath":"README.md"}' },
+    { type: "function_call_output", call_id: "read-1", output: "read result" },
+    { type: "function_call", name: "read", call_id: "read-2", arguments: '{"filePath":"missing.json"}' },
+    { type: "function_call_output", call_id: "read-2", output: '{"error":"File was not found.","status":"error"}' },
+    { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: "OpenCode final reply." }] },
+  ]);
 
   for (const [name, mutate] of [
     ["unknown compaction tail", (input) => { input[2].parts[0].tail_start_id = "assistant-other"; }],
@@ -163,6 +185,125 @@ test("OpenCode SDK messages materialize a completed compaction continuation as t
       outcome: "interrupted",
     },
   });
+});
+
+test("OpenCode archive preserves raw text blocks without repeating terminal text in commentary", () => {
+  const messages = openCodeMessages();
+  messages[0].parts = [
+    textPart("user-1", "  First prompt block.\n"),
+    textPart("user-1", "\tSecond prompt block.  "),
+    { ...textPart("user-1", "synthetic prompt"), synthetic: true },
+    { ...textPart("user-1", "ignored prompt"), ignored: true },
+    { ...textPart("user-1", "unrelated prompt"), sessionID: "other-session" },
+  ];
+  messages[1].parts = [
+    textPart("assistant-1", "  First final block.\n"),
+    textPart("assistant-1", "\tSecond final block.  "),
+    { ...textPart("assistant-1", "synthetic reply"), synthetic: true },
+    { ...textPart("assistant-1", "ignored reply"), ignored: true },
+    { ...textPart("assistant-1", "unrelated reply"), messageID: "other-message" },
+  ];
+  const input = { sessionId: "session-1", userMessageId: "user-1", assistantMessageId: "assistant-1", turnIndex: 1 };
+  const qa = openCodeMessageTurn(messages, input);
+  assert.equal(qa.ok, true);
+  assert.equal(qa.turn.userPrompt, "First prompt block.\n\nSecond prompt block.");
+  assert.equal(qa.turn.assistantReply, "First final block.\n\nSecond final block.");
+
+  const collected = openCodeCodingSessionTurn(messages, input);
+  assert.equal(collected.ok, true);
+  assert.deepEqual(collected.turn.items, [
+    { type: "message", role: "user", content: [
+      { type: "input_text", text: "  First prompt block.\n" },
+      { type: "input_text", text: "\tSecond prompt block.  " },
+    ] },
+    { type: "message", role: "assistant", phase: "final_answer", content: [
+      { type: "output_text", text: "  First final block.\n" },
+      { type: "output_text", text: "\tSecond final block.  " },
+    ] },
+  ]);
+  const { turnIndex, items, closedAt, ...archiveQa } = collected.turn;
+  assert.deepEqual(archiveQa, qa.turn);
+  assert.deepEqual(openCodeMessageTurn(messages, input), qa);
+});
+
+test("OpenCode archive keeps text and tool order and only the last text run is final", () => {
+  const messages = openCodeMessages();
+  const rawInput = '  { "path": "README.md" }\n';
+  messages[1].parts = [
+    textPart("assistant-1", "  Inspecting.\n"),
+    textPart("assistant-1", "\tChecking details.  "),
+    { ...part("tool", "assistant-1"), tool: "read", callID: "read-1", state: {
+      status: "completed", input: rawInput, output: { text: "  file contents\n", metadata: { lines: 2 } },
+    } },
+    textPart("assistant-1", "  Done.\n"),
+    textPart("assistant-1", "\tVerified.  "),
+  ];
+  const input = { sessionId: "session-1", userMessageId: "user-1", assistantMessageId: "assistant-1", turnIndex: 1 };
+  const collected = openCodeCodingSessionTurn(messages, input);
+  assert.equal(collected.ok, true);
+  assert.deepEqual(collected.turn.items, [
+    { type: "message", role: "user", content: [{ type: "input_text", text: "OpenCode user prompt." }] },
+    { type: "message", role: "assistant", phase: "commentary", content: [
+      { type: "output_text", text: "  Inspecting.\n" },
+      { type: "output_text", text: "\tChecking details.  " },
+    ] },
+    { type: "function_call", name: "read", call_id: "read-1", arguments: rawInput },
+    { type: "function_call_output", call_id: "read-1", output: '{"metadata":{"lines":2},"text":"  file contents\\n"}' },
+    { type: "message", role: "assistant", phase: "final_answer", content: [
+      { type: "output_text", text: "  Done.\n" },
+      { type: "output_text", text: "\tVerified.  " },
+    ] },
+  ]);
+  const qa = openCodeMessageTurn(messages, input);
+  assert.equal(qa.ok, true);
+  assert.equal(qa.turn.assistantReply, "Inspecting.\n\nChecking details.\n\nDone.\n\nVerified.");
+  assert.equal(collected.turn.assistantReply, qa.turn.assistantReply);
+});
+
+test("OpenCode archive retains tool error status and complete outputs", () => {
+  const messages = openCodeMessages();
+  const states = [
+    { status: "error", input: {}, error: "  File was not found.\n" },
+    { status: "error", input: {}, error: { message: "failed", code: 5 }, output: { text: "partial result", details: [1, 2] } },
+    { status: "completed", input: {}, output: '  { "result": [1, 2] }\n' },
+    { status: "completed", input: {}, output: [{ type: "text", text: "  result\n", metadata: { count: 2 } }] },
+  ];
+  messages[1].parts = [
+    ...states.map((state, index) => ({ ...part("tool", "assistant-1"), tool: "read", callID: `read-${index}`, state })),
+    textPart("assistant-1", "OpenCode assistant reply."),
+  ];
+  const input = { sessionId: "session-1", userMessageId: "user-1", assistantMessageId: "assistant-1", turnIndex: 1 };
+  const collected = openCodeCodingSessionTurn(messages, input);
+  assert.equal(collected.ok, true);
+  const outputs = collected.turn.items.filter((item) => item.type === "function_call_output");
+  assert.deepEqual(outputs.map((item) => item.call_id), ["read-0", "read-1", "read-2", "read-3"]);
+  assert.deepEqual(JSON.parse(outputs[0].output), { status: "error", error: states[0].error });
+  assert.deepEqual(JSON.parse(outputs[1].output), { status: "error", error: states[1].error, output: states[1].output });
+  assert.equal(outputs[2].output, states[2].output);
+  assert.deepEqual(JSON.parse(outputs[3].output), states[3].output);
+  assert.deepEqual(openCodeMessageTurn(messages, input), openCodeMessageTurn(openCodeMessages(), input));
+});
+
+test("OpenCode archive keeps trailing tools and places the last text run at the end once", () => {
+  const messages = openCodeMessages();
+  messages[1].parts = [
+    textPart("assistant-1", "  Final block one.\n"),
+    textPart("assistant-1", "\tFinal block two.  "),
+    { ...part("tool", "assistant-1"), tool: "read", callID: "read-1", state: { status: "completed", input: {}, output: "result" } },
+  ];
+  const collected = openCodeCodingSessionTurn(messages, {
+    sessionId: "session-1", userMessageId: "user-1", assistantMessageId: "assistant-1", turnIndex: 1,
+  });
+  assert.equal(collected.ok, true);
+  assert.deepEqual(collected.turn.items, [
+    { type: "message", role: "user", content: [{ type: "input_text", text: "OpenCode user prompt." }] },
+    { type: "function_call", name: "read", call_id: "read-1", arguments: "{}" },
+    { type: "function_call_output", call_id: "read-1", output: "result" },
+    { type: "message", role: "assistant", phase: "final_answer", content: [
+      { type: "output_text", text: "  Final block one.\n" },
+      { type: "output_text", text: "\tFinal block two.  " },
+    ] },
+  ]);
 });
 
 test("OpenCode finalizes an explicit MessageAbortedError without writeback", async () => {
@@ -230,12 +371,14 @@ test("OpenCode runtime routes SDK content and carries write quota to the next pr
   const requests = [];
   const runtime = createOpenCodeMemoryHookRuntime({
     memoraxCodeHome,
+    captureCodingTurns: true,
     env: {
       MEMORAX_CODE_HOME: memoraxCodeHome,
       MEMORAX_CODE_OPENCODE_TRACE_ENABLED: "false",
       MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED: "true",
       MEMORAX_CODE_MEMORY_WRITEBACK_ENABLED: "true",
       MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_ENABLED: "false",
+      MEMORAX_CODE_CODING_SESSIONS_ENABLED: "true",
       MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
       MEMORAX_CODE_MEMORAX_API_KEY: "secret",
       MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
@@ -276,6 +419,7 @@ test("OpenCode runtime routes SDK content and carries write quota to the next pr
       sessionId: "session-1",
       userMessageId: "user-1",
       assistantMessageId: "assistant-1",
+      turnIndex: 1,
       messages: openCodeMessages(),
       cwd: TEST_WORKSPACE,
       workspaceKind: "project",
@@ -291,6 +435,14 @@ test("OpenCode runtime routes SDK content and carries write quota to the next pr
     assert.deepEqual(requests[0].body.messages.map(({ timestamp }) => timestamp), [
       1_700_000_000_000,
       1_700_000_060_000,
+    ]);
+    assert.equal(requests[1].body.event, undefined);
+    assert.equal(requests[1].body.coding_context.client, "opencode");
+    assert.equal(requests[1].body.coding_context.turns[0].turn_id, "user-1");
+    assert.equal(requests[1].body.coding_context.turns[0].turn_index, 1);
+    assert.deepEqual(requests[1].body.coding_context.items, [
+      { type: "message", role: "user", content: [{ type: "input_text", text: "OpenCode user prompt." }] },
+      { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: "OpenCode assistant reply." }] },
     ]);
 
     const next = await runtime.recordTurnStart({

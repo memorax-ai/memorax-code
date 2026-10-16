@@ -522,6 +522,9 @@ test("automatic memory writeback never merges clients with the same repository a
   }
 });
 
+// Batch bounds, native dedupe, source rereads and archive acceptance are covered
+// by combined-memory-writeback.test.mjs under the current attachment protocol.
+
 test("automatic memory writeback validates a normalized long decimal before chunking", async () => {
   const requests = [];
   const runtime = createAutomaticMemoryWritebackRuntime();
@@ -547,6 +550,7 @@ test("automatic memory writeback validates a normalized long decimal before chun
     await waitFor(() => requests.length === 3, "automatic writeback chunks were not sent");
     assert.deepEqual(requests.map((request) => request.body.chunk.index), [0, 1, 2]);
     assert.deepEqual(requests.map((request) => request.body.chunk.count), [3, 3, 3]);
+    assert.ok(requests.every(({ body }) => body.coding_context === undefined));
     assert.deepEqual(requests.map((request) => request.body.messages.map((message) => message.content)), [
       ["Summarize", "123456789."],
       ["9.60597461"],
