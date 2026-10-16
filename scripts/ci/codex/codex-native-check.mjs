@@ -10,7 +10,7 @@ import { assertCompleteText, assertNoForeignContent, assertSearchResult, assertS
 
 const report = { status: "FAIL", scope: "native_codex_installed_plugin_mock_memorax", platform: process.platform,
   paidModelRequests: 0, modelQualityEvaluated: false, checks: [],
-  contentContract: "current response-item-first text extraction", allowsAdditionalContent: true,
+  contentContract: "native user identity with response-owned text", allowsAdditionalContent: true,
   rawTrajectoryValidated: false, contentChecks: [] };
 const reasoningCanary = "REASONING_MUST_STAY_LOCAL";
 const commentaryCanary = "COMMENTARY_MUST_STAY_LOCAL";
@@ -275,7 +275,7 @@ async function verifyNativeRollouts() {
     }
     for (const [index, turn] of expected.entries()) {
       const selected = selectNativeTurnContent(records, { sessionId: turn.sessionId, turnId: starts[index].payload.turn_id });
-      if (turn.kind === "ordinary") assertCompleteText(selected.user.content, turn.prompt, "NATIVE_SUBMITTED_PROMPT_INCOMPLETE");
+      assertCompleteText(selected.user.content, turn.prompt, "NATIVE_SUBMITTED_PROMPT_INCOMPLETE");
       assertCompleteText(selected.assistant.content, turn.answer, "NATIVE_FIXTURE_ANSWER_INCOMPLETE");
       const expectedUser = redactExpectedFixtureText(selected.user.content,
         { apiKey: redactionCanary, paths: [harness.root, harness.packageRoot] });
@@ -287,14 +287,11 @@ async function verifyNativeRollouts() {
       check(Array.isArray(timeSources) && timeSources.length === turn.body.messages.length
         && timeSources[0] === "native" && timeSources[1] === "native"
         && timeSources.every((source) => ["native", "observed", "unspecified"].includes(source)), "NATIVE_MESSAGE_TIME_AUTHORITY_MISMATCH");
-      const originalUserPromptIncluded = turn.body.messages.some((message) => {
-        if (message.role !== "user") return false;
-        try { assertCompleteText(message.content, turn.expectedPrompt); return true; } catch { return false; }
-      });
+      assertCompleteText(turn.body.messages[0].content, turn.expectedPrompt, "NATIVE_ORIGINAL_USER_PROMPT_INCOMPLETE");
       report.contentChecks.push({ case: turn.kind, userSource: selected.user.source, assistantSource: selected.assistant.source,
         selectedUserChars: expectedUser.length, sentUserChars: turn.body.messages[0].content.length,
         userRequiredFragments: userCoverage.requiredFragments, assistantRequiredFragments: assistantCoverage.requiredFragments,
-        selectedContentComplete: true, originalUserPromptIncluded,
+        selectedContentComplete: true, originalUserPromptIncluded: true,
         additionalContentObserved: userCoverage.additionalContentObserved || assistantCoverage.additionalContentObserved || turn.body.messages.length > 2 });
     }
   }

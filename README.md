@@ -307,6 +307,21 @@ and previous-turn text to TypeSafe, uses your Jev key, and is disabled by defaul
 Failures fall back to the normal Skill reminder cadence; the agent still
 executes Search.
 
+New configurations also enable coding-session collection for Codex, Claude
+Code, OpenCode, CodeBuddy, and WorkBuddy. Automatic QA Add includes an optional
+`coding_context` attachment with locally redacted completed Turns: prompts, visible
+assistant messages, and tool calls/results. It does not upload whole native
+session files or reasoning. This selected OpenAI Responses items subset requires
+a MemoraX endpoint supporting the combined QA/attachment contract; an event-only
+server needs a matching update. An Add receipt confirms QA acceptance, not OSS storage.
+Existing configurations without this setting remain disabled; see
+[collection controls](docs/configuration.md#coding-session-collection).
+Attachments use the existing QA triggers: eight Turns by default, the QA
+character limit, inactivity, or graceful drain. Codex, Claude Code, CodeBuddy,
+and WorkBuddy keep frozen native-file references in the QA buffer and reread
+selected content at flush; OpenCode keeps prepared SDK items in memory. This
+best-effort path has no separate archive queue, timer, or restart recovery.
+
 Local trace capture is enabled by default for supported clients. Depending on
 client capabilities, retained traces under `MEMORAX_CODE_HOME` may contain
 prompts, responses, recalled memory, reminder text, and local paths. Use the

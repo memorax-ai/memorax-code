@@ -109,10 +109,10 @@ function records() { return [
   event("task_complete", 5, { turn_id: "turn-a", last_agent_message: "Complete final answer" }),
 ]; }
 const identity = { sessionId: "session-a", turnId: "turn-a" };
-test("current contract selects the last user response item and its own timestamp", () => {
+test("legacy native input selects its exact response among context injections", () => {
   const selected = selectNativeTurnContent(records(), identity);
-  assert.equal(selected.user.content, content);
-  assert.equal(selected.user.timestamp, Date.parse(stamp(3)));
+  assert.equal(selected.user.content, "Original prompt");
+  assert.equal(selected.user.timestamp, Date.parse(stamp(2)));
   assert.deepEqual(selected.assistant.timestamps, [Date.parse(stamp(4)), Date.parse(stamp(5))]);
 });
 test("current contract falls back to native user and final assistant events", () => {
@@ -136,7 +136,7 @@ test("content selection accepts provider assistant IDs within local turn boundar
       event("task_complete", 9, { turn_id: "turn-b", last_agent_message: "Foreign answer" }),
     );
     const selected = selectNativeTurnContent(native, identity);
-    assert.deepEqual(selected.user, { content, timestamp: Date.parse(stamp(3)), source: "response_item" });
+    assert.deepEqual(selected.user, { content: "Original prompt", timestamp: Date.parse(stamp(2)), source: "response_item" });
     assert.deepEqual(selected.assistant, {
       content: "Complete final answer", timestamp: Date.parse(stamp(4)), source: "response_item",
       timestamps: [Date.parse(stamp(4)), Date.parse(stamp(5))],
@@ -155,6 +155,78 @@ test("content selection rejects the wrong session or conflicting user message tu
 });
 test("content selection does not borrow a later Turn's text or timestamp", () => {
   const native = [...records(), event("task_started", 6, { turn_id: "turn-b" }), response("user", "Foreign prompt", 7), response("assistant", "Foreign answer", 8)];
-  assert.equal(selectNativeTurnContent(native, identity).user.content, content);
+  assert.equal(selectNativeTurnContent(native, identity).user.content, "Original prompt");
   assert.throws(() => selectNativeTurnContent(native, { ...identity, turnId: "missing" }), /NATIVE_CONTENT_RECORDS_MISSING/);
+});
+
+function modernRecords(prompt = "Original prompt") {
+  return [records()[0], records()[1], response("user", "<environment_context>Injected context</environment_context>", 1),
+    response("user", prompt, 2), event("item_completed", 3, { thread_id: identity.sessionId, turn_id: identity.turnId,
+      item: { type: "UserMessage", id: "native-user", content: [{ type: "text", text: prompt }] } }),
+    response("user", "<skill>Injected procedure</skill>", 4), records()[5], records()[6]];
+}
+
+test("modern native identity selects ordinary and Skill input, including literal context tags", () => {
+  for (const prompt of [content, "$memorax-code Use coding memory search.", "<skill>Explain this literal tag.</skill>"]) {
+    const native = modernRecords(prompt);
+    // A lower-priority legacy mirror never selects or rejects a modern input.
+    native.splice(5, 0, event("user_message", 3, { message: "Different legacy mirror", turn_id: "wrong-turn", thread_id: "wrong-session" }));
+    assert.deepEqual(selectNativeTurnContent(native, identity).user, {
+      content: prompt, timestamp: Date.parse(stamp(2)), source: "response_item",
+    });
+  }
+});
+
+test("modern duplicate identities are idempotent but conflicting content and missing associations fail closed", () => {
+  const duplicate = modernRecords();
+  duplicate.splice(5, 0, structuredClone(duplicate[4]));
+  assert.equal(selectNativeTurnContent(duplicate, identity).user.content, "Original prompt");
+  const mutations = [
+    (native) => { native[4].payload.thread_id = "other-session"; },
+    (native) => { native[4].payload.turn_id = "other-turn"; },
+    (native) => { delete native[4].payload.item.id; },
+    (native) => { native[3].payload.content[0].text = "Different input";
+      native.splice(5, 0, event("user_message", 3, { message: "Original prompt" })); },
+    (native) => { [native[3], native[4]] = [native[4], native[3]]; },
+    (native) => { native.splice(4, 0, structuredClone(native[3])); },
+    (native) => { const changed = structuredClone(native[4]); changed.payload.item.content[0].text = "Changed input";
+      native.splice(5, 0, changed); },
+    (native) => { native[3].payload.content = [{ type: "input_text", text: "First\nSecond" }];
+      native[4].payload.item.content = [{ type: "text", text: "First" }, { type: "text", text: "Second" }]; },
+  ];
+  for (const mutate of mutations) {
+    const native = modernRecords();
+    mutate(native);
+    assert.throws(() => selectNativeTurnContent(native, identity), /NATIVE_CONTENT_(?:TURN_MISMATCH|USER_)/);
+  }
+});
+
+test("legacy event order does not change a unique exact response association", () => {
+  const native = records();
+  const [legacy] = native.splice(2, 1);
+  native.splice(4, 0, legacy);
+  assert.deepEqual(selectNativeTurnContent(native, identity).user, {
+    content: "Original prompt", timestamp: Date.parse(stamp(2)), source: "response_item",
+  });
+  const soleResponse = records().filter((_record, index) => index !== 3);
+  assert.deepEqual(selectNativeTurnContent(soleResponse, identity).user, {
+    content, timestamp: Date.parse(stamp(3)), source: "response_item",
+  });
+});
+
+test("legacy multiple-response association rejects missing, repeated, and conflicting input", () => {
+  const mutations = [
+    (native) => { native[2].payload.message = "Missing input"; },
+    (native) => { native[2].payload.message = " Original prompt "; },
+    (native) => { native[4].payload.content[0].text = "Original prompt"; },
+    (native) => { native.splice(4, 0, structuredClone(native[2])); },
+    (native) => { native[2].payload.turn_id = "other-turn"; },
+    (native) => { native[2].payload.thread_id = "other-session"; },
+    (native) => { native.splice(2, 1); },
+  ];
+  for (const mutate of mutations) {
+    const native = records();
+    mutate(native);
+    assert.throws(() => selectNativeTurnContent(native, identity), /NATIVE_CONTENT_(?:TURN_MISMATCH|USER_)/);
+  }
 });

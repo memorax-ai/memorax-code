@@ -5,7 +5,7 @@ import { basename, isAbsolute, join, relative } from "node:path";
 import { check, createNativeHarness, fixtureKey, fixtureModel, fixtureUser, searchResult, waitFor } from "./claude-native-support.mjs";
 import { assertCompleteText, assertNoForeignContent, assertSearchResult, assertSkillReferenceContract,
   assertWritebackMessages, expectedSearchAnswer } from "../codex/codex-native-content-check.mjs";
-import { assertExactText, assertNativeReadText, selectNativeMemoraxPlugin, selectNativeTurnContent } from "./claude-native-content-check.mjs";
+import { assertExactText, assertNativeReadText, assertNativeTurnTrace, selectNativeMemoraxPlugin, selectNativeTurnContent } from "./claude-native-content-check.mjs";
 import { verifyBackgroundGlobalConfiguration } from "./claude-background-check.mjs";
 
 const report = { status: "FAIL", scope: "native_claude_installed_plugin_mock_memorax", platform: process.platform,
@@ -284,17 +284,9 @@ async function verifyNativeTranscript(expected) {
     "NATIVE_TIMESTAMP_SOURCE_MISMATCH");
   const trace = (await readFile(join(harness.stateHome, "debug", "traces", "claude", "sessions", expected.sessionId, "events.jsonl"), "utf8"))
     .trim().split(/\r?\n/).map(JSON.parse);
-  for (const type of ["turn_start", "turn_end"]) {
-    check(trace.some((event) => event.type === type && event.trace?.client === "claude"
-      && event.trace.session_id === expected.sessionId && event.trace.turn_id === selected.promptId),
-    "NATIVE_HOOK_PROMPT_CORRELATION_MISSING");
-  }
-  if (expected.kind.startsWith("skill-")) {
-    const type = `memory_cli_${expected.kind.slice("skill-".length)}`;
-    const events = trace.filter((event) => event.type === type && event.trace?.client === "claude"
-      && event.trace.session_id === expected.sessionId && event.trace.turn_id === selected.promptId);
-    check(events.length === 1 && events[0].ok === true, "NATIVE_SKILL_TRACE_BINDING_MISMATCH");
-  }
+  assertNativeTurnTrace(trace, selected, {
+    skillType: expected.kind.startsWith("skill-") ? `memory_cli_${expected.kind.slice("skill-".length)}` : undefined,
+  });
   for (const tool of expected.tools) {
     const calls = selected.lineage.flatMap((record) => Array.isArray(record.message?.content) ? record.message.content : [])
       .filter((part) => part.type === "tool_use" && part.id === tool.id && part.name === tool.name);

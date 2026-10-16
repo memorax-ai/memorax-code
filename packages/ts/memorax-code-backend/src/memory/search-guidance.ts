@@ -112,11 +112,13 @@ export function createMemorySearchGuidanceRuntime(options: {
         previousTurn: undefined,
       });
     },
-    async evaluate(command: TurnStartCommand): Promise<MemorySearchGuidanceResult> {
+    async evaluate(command: TurnStartCommand, resolvedKey?: MemoryTurnKey): Promise<MemorySearchGuidanceResult> {
       const enabled = configured();
       if (!enabled.ok) return { ok: false, reason: enabled.reason };
       const unavailable = { ok: false, reason: "context_unavailable" } as const;
-      const identity = commandKey(command);
+      if (resolvedKey && (command.client !== "claude-code" || resolvedKey.client !== command.client
+        || resolvedKey.sessionId !== command.sessionId || resolvedKey.clientTurnId !== command.claudeTurnKey)) return unavailable;
+      const identity = resolvedKey ?? commandKey(command);
       if (!identity || !validKey(identity) || typeof command.prompt !== "string") return unavailable;
       const key = sessionKey(identity);
       const current = turns.get(key);

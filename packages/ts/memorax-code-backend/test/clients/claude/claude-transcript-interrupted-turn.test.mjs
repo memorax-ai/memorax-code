@@ -71,6 +71,7 @@ test("Claude transcript recovers an interrupted turn from the marker parent grap
     turn: {
       sessionId: SESSION_ID,
       promptId: PROMPT_ID,
+      nativeUserUuid: "user-interrupted",
       sessionTurnIndex: 1,
       userPrompt: "Investigate the interruption.",
       assistantReply: "Partial analysis.\n\nPartial conclusion.",
@@ -117,6 +118,7 @@ test("Claude transcript preserves an interrupted turn without assistant material
     turn: {
       sessionId: SESSION_ID,
       promptId: PROMPT_ID,
+      nativeUserUuid: "user-interrupted",
       sessionTurnIndex: 1,
       userPrompt: "Stop immediately.",
       assistantReply: "",

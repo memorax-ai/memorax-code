@@ -433,12 +433,13 @@ allowing appended context. All outgoing messages are also checked against distin
 foreign-workspace fixture text; permission cases reject other threads' fixture
 text. These controls test known source-isolation failures, not arbitrary provenance
 in real transcripts. Model or tool text alone cannot prove delivery.
-The current Codex parser can select an injected Skill response item as user text.
-Reports separately record whether the original user prompt is included; its
-absence does not fail this compatibility check. This is coverage of the existing
-extraction contract, not proof of full raw-trajectory transmission or preservation
-of every user message. Explicit CLI/Skill Search/Add command arguments have
-independent request assertions. Search validates the complete fixture fields and
+The content oracle identifies the real user input from native user events,
+including legacy event layouts, instead of selecting the last user-role response.
+Injected Skill context must not replace the original user prompt in automatic
+Add. Ambiguous native associations fail the check. This verifies the selected
+QA pair, not full raw-trajectory transmission or preservation of every user
+message. Explicit CLI/Skill Search/Add command arguments have independent
+request assertions. Search validates the complete fixture fields and
 both JSON and default text output. Skill command checks validate and invoke the
 platform CLI entrypoint from the installed reference; a simulated model still
 directs the calls, so this is not autonomous natural-language Skill validation.

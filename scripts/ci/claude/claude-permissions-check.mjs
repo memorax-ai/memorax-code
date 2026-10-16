@@ -6,7 +6,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import { check, createNativeHarness, fixtureKey, fixtureModel, fixtureUser, waitFor } from "./claude-native-support.mjs";
 import { assertCompleteText, assertNoForeignContent, assertWritebackMessages } from "../codex/codex-native-content-check.mjs";
-import { selectNativeMemoraxPlugin, selectNativeTurnContent } from "./claude-native-content-check.mjs";
+import { assertNativeTurnTrace, selectNativeMemoraxPlugin, selectNativeTurnContent, selectNativeTurnTrace } from "./claude-native-content-check.mjs";
 import { ClaudeControlSession, inflightScript, permissionArguments, selectInterruptedTurn, summarizePermissionToolResult, textContent } from "./claude-permissions-support.mjs";
 
 const cases = [
@@ -123,8 +123,9 @@ try {
       const interrupted = selectInterruptedTurn(await transcript(marker.uuid), { sessionId: current.sessionId,
         interruptionUuid: marker.uuid, prompt: current.prompt, toolCall: current.tool });
       const initialTrace = await trace();
-      check(initialTrace.some((event) => event.type === "turn_start" && event.trace?.turn_id === interrupted.promptId),
-        "PERMISSION_INTERRUPTED_PROMPT_HOOK_MISSING");
+      const { turnId: interruptedTurnId } = selectNativeTurnTrace(initialTrace, {
+        sessionId: current.sessionId, promptId: interrupted.promptId, user: { content: current.prompt },
+      });
       if (test.inflight) {
         await waitFor(() => !alive(current.toolPid), "PERMISSION_INTERRUPTED_TOOL_PROCESS_REMAINS");
         toolPids.delete(current.toolPid);
@@ -137,7 +138,8 @@ try {
       const recovered = await control.wait((event) => event.type === "result", recoveryIndex);
       assertSuccess(recovered, current.recoveryAnswer);
       result.writeback = await verifyCompleted({ prompt: current.recoveryPrompt, answer: current.recoveryAnswer, after: recoveryIndex });
-      const endEvents = (await trace()).filter((event) => event.type === "turn_end" && event.trace?.turn_id === interrupted.promptId);
+      const endEvents = (await trace()).filter((event) => event.type === "turn_end"
+        && event.trace.turn_id === interruptedTurnId && event.trace.native_request_id === interrupted.promptId);
       Object.assign(result, { nativeInterruptedPromptMatched: true, nativeControlCancelObserved: !test.inflight && test.decision !== "cancel",
         hasInterruptedMessageId: interrupted.hasInterruptedMessageId,
         observedInterruptedTraceEnds: endEvents.filter((event) => event.outcome === "interrupted").length,
@@ -288,9 +290,7 @@ async function verifyCompleted({ prompt, answer, after = 0, tool, denied }) {
     && JSON.stringify(body.metadata.memorax_code_timestamp_sources) === JSON.stringify(["native", "native"]),
   "PERMISSION_NATIVE_TIMESTAMP_MISMATCH");
   const events = await trace();
-  check(events.some((event) => event.type === "turn_start" && event.trace.turn_id === selected.promptId)
-    && events.some((event) => event.type === "turn_end" && event.trace.turn_id === selected.promptId && event.outcome === "completed"),
-  "PERMISSION_COMPLETED_HOOK_CORRELATION_MISSING");
+  assertNativeTurnTrace(events, selected);
   assertNoForeignContent(body.messages, canceledContent);
   return { requestCount: 1, nativeContentAndPromptLineageMatched: true, scopeAndTimestampsMatched: true,
     completedHookCorrelationMatched: true, interruptedContentExcluded: true };

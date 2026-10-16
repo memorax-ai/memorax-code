@@ -1,9 +1,13 @@
 import {
   readCodexInterruptedRolloutTurn,
+  readCodexCodingSessionTurn,
+  readCodexArchiveSource,
   readCodexRolloutTurn,
   readCodexRolloutSessionWorkspace,
   type CodexRolloutTurn,
   type CodexRolloutTurnFailureReason,
+  type CodexCodingSessionTurn,
+  type CodexRolloutTurnResult,
 } from "./rollout-turn.js";
 import type { AutomaticMemoryWritebackRejectionReason } from "../../memory/automatic-writeback.js";
 import {
@@ -77,7 +81,9 @@ type CodexMemoryHookWritebackRequest = Omit<CodexWritebackCommand, "version" | "
   traceContext?: TraceContext;
 };
 
-export type CodexMemoryHookRuntimeOptions = HarnessMemoryRuntimeOptions;
+export type CodexMemoryHookRuntimeOptions = HarnessMemoryRuntimeOptions & {
+  captureCodingTurns?: boolean;
+};
 
 export type CodexMemoryHookRuntime = {
   recordTurnStart(command: CodexTurnStartCommand): Promise<MemoryHookTurnStartResult>;
@@ -96,7 +102,7 @@ export function createCodexMemoryHookRuntime(options: CodexMemoryHookRuntimeOpti
     diagnosticPrefix: "memory_hook",
     traceFailureEvent: "codex_trace.write_failed",
     turnStartTraceSource: "codex-hook",
-  }, options);
+  }, { readCodingSessionTurn: readCodexArchiveSource, ...options });
   const { turnCoordinator } = memory;
 
   return {
@@ -174,11 +180,27 @@ export function createCodexMemoryHookRuntime(options: CodexMemoryHookRuntimeOpti
         turnId: request.turnId,
         transcriptPath,
       }, options.diagnosticLogger);
-      const rollout = await readCodexRolloutTurn({
+      const rolloutInput = {
         transcriptPath,
         sessionId: request.sessionId,
         turnId: request.turnId,
-      });
+      };
+      let codingSessionTurn: CodexCodingSessionTurn | undefined;
+      let rollout: CodexRolloutTurnResult;
+      if (options.captureCodingTurns) {
+        const source = await readCodexCodingSessionTurn(rolloutInput);
+        if (source.ok) {
+          codingSessionTurn = source.turn;
+          rollout = source;
+        } else {
+          // Source collection validates tool identities beyond the QA contract.
+          // Keep rejected source data out while letting the existing QA reader
+          // independently validate its own exact native prompt and final reply.
+          rollout = await readCodexRolloutTurn(rolloutInput);
+        }
+      } else {
+        rollout = await readCodexRolloutTurn(rolloutInput);
+      }
       await recordTurnEnd(
         options,
         traceContext,
@@ -213,6 +235,18 @@ export function createCodexMemoryHookRuntime(options: CodexMemoryHookRuntimeOpti
         assistantText: rollout.turn.assistantReply,
         userTimestamp: rollout.turn.userTimestamp,
         assistantTimestamp: rollout.turn.assistantTimestamp,
+        ...(codingSessionTurn ? {
+          codingTurn: {
+            client: CODEX_MEMORY_TURN_CLIENT,
+            sessionId: codingSessionTurn.sessionId,
+            turnId: codingSessionTurn.turnId,
+            turnIndex: codingSessionTurn.sessionTurnIndex,
+            items: codingSessionTurn.items,
+            outcome: "completed",
+            closedAt: codingSessionTurn.closedAt ?? new Date(now()).toISOString(),
+            source: codingSessionTurn.source,
+          },
+        } : {}),
         traceContext,
       });
       if (!writeback.scheduled) {
