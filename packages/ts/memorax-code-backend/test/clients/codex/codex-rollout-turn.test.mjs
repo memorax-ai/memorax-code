@@ -1,11 +1,38 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  codexCodingSessionTurnFromJsonLines,
   codexInterruptedRolloutTurnFromJsonLines,
   codexRolloutTurnFromJsonLines,
   readCodexInterruptedRolloutTurn,
   readCodexRolloutTurn,
 } from "../../../dist/clients/codex/rollout-turn.js";
+import { codexSessionTurnIndexFromJsonLines } from "../../../dist/clients/codex/session-turn-index.js";
+
+test("Codex native completed item mirrors supply QA and reject conflicting outer identities", () => {
+  const user = {type:"event_msg",payload:{type:"item_completed",thread_id:"session-1",turn_id:"turn-1",
+    item:{id:"user-1",type:"UserMessage",content:[{type:"text",text:"Native prompt."}]}}};
+  const records = [
+    sessionMeta("session-1"),taskStarted("turn-1"),user,user,
+    {type:"event_msg",payload:{type:"item_completed",thread_id:"session-1",turn_id:"turn-1",
+      item:{id:"answer-1",type:"AgentMessage",phase:"final_answer",content:[{type:"Text",text:"Native answer."}]}}},
+    taskComplete("turn-1","Native answer."),
+  ];
+  const input={sessionId:"session-1",turnId:"turn-1"};
+  const turn=codexCodingSessionTurnFromJsonLines(jsonLines(records),input);
+  assert.equal(turn.ok,true);
+  assert.equal(turn.turn.sessionTurnIndex,1);
+  assert.equal(turn.turn.userPrompt,"Native prompt.");
+  assert.equal(turn.turn.assistantReply,"Native answer.");
+  assert.equal(turn.turn.items.length,2);
+  for (const identity of [{ turn_id: "wrong-turn" }, { thread_id: "wrong-session" }]) {
+    const conflict = [...records.slice(0, -1),
+      { ...user, payload: { ...user.payload, ...identity } }, records.at(-1)];
+    for (const parser of [codexRolloutTurnFromJsonLines, codexCodingSessionTurnFromJsonLines]) {
+      assert.deepEqual(parser(jsonLines(conflict), input), { ok: false, reason: "turn_metadata_mismatch" });
+    }
+  }
+});
 
 test("Codex rollout reader selects the exact open turn and preserves prompt and final reply text", () => {
   const transcript = jsonLines([
@@ -37,6 +64,129 @@ test("Codex rollout reader selects the exact open turn and preserves prompt and 
       activities: [],
     },
   });
+  const source = codexCodingSessionTurnFromJsonLines(transcript, {
+    sessionId: "session-1", turnId: "turn-target",
+  });
+  assert.equal(source.ok, true);
+  assert.equal(source.turn.sessionTurnIndex, 2);
+  assert.equal(source.turn.userTimestamp, Date.parse("2026-09-01T08:00:00.000Z"));
+  assert.equal(source.turn.assistantTimestamp, Date.parse("2026-09-01T08:03:00.000Z"));
+  assert.deepEqual(source.turn.items, [
+    { type: "message", role: "user", content: [{ type: "input_text", text: "  Target prompt with trailing newline.\n" }] },
+    { type: "message", role: "assistant", phase: "commentary", content: [{ type: "output_text", text: "Intermediate update." }] },
+    { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: "Target final reply.\n" }] },
+  ]);
+});
+
+test("Codex coding items preserve native fields and text blocks without duplicate mirrors or hidden reasoning", () => {
+  const user = {
+    ...responseItemUserMessage("Inspect the parser.", "turn-1").payload,
+    id: "message-user",
+    content: [
+      { type: "input_text", text: "  Inspect the parser.\n", private_metadata: "omit" },
+      { type: "input_image", image_url: "private-image" },
+      { type: "input_text", text: "\n" },
+      { type: "input_text", text: "Keep its text blocks." },
+    ],
+  };
+  const final = {
+    ...responseMessage("assistant", "The parser is correct.", "final_answer", "turn-1").payload,
+    id: "message-final",
+    content: [
+      { type: "output_text", text: "The parser is correct.", annotations: [{ text: "omit" }] },
+      { type: "output_text", text: "" },
+      { type: "output_text", text: "\nIts fields are preserved.  " },
+    ],
+    status: "completed",
+  };
+  const argumentsText = ' { "z": 2, "cmd": "pwd" }\n';
+  const customInput = "  print('native input')\n";
+  const transcript = jsonLines([
+    sessionMeta("session-1"),
+    taskStarted("turn-1"),
+    turnContext("turn-1"),
+    turnContext("turn-1"),
+    { type: "response_item", payload: user },
+    userMessage("Inspect the parser."),
+    responseMessage("assistant", "Reading the parser.", "commentary", "turn-1"),
+    agentMessage("Reading the parser.", "commentary"),
+    { type: "response_item", payload: { type: "reasoning", content: [{ text: "private reasoning" }] } },
+    responseMessage("assistant", "Private analysis.", "analysis", "turn-1"),
+    { type: "response_item", payload: { type: "unknown_item", content: [{ text: "unknown content" }] } },
+    { type: "response_item", payload: { type: "function_call", id: "function-1", call_id: "call-1", name: "exec_command", namespace: "functions", arguments: argumentsText, status: "completed" } },
+    { type: "response_item", payload: { type: "function_call_output", id: "result-1", call_id: "call-1", output: "  workspace\n", status: "failed" } },
+    { type: "response_item", payload: { type: "custom_tool_call", id: "custom-1", call_id: "call-2", name: "exec", input: customInput } },
+    { type: "response_item", payload: { type: "custom_tool_call_output", id: "custom-result-1", call_id: "call-2", output: { result: "done" }, success: true } },
+    { type: "response_item", payload: final },
+    agentMessage("The parser is correct.", "final_answer"),
+    taskComplete("turn-1"),
+  ]);
+  const identity = { sessionId: "session-1", turnId: "turn-1" };
+  const source = codexCodingSessionTurnFromJsonLines(transcript, identity);
+  assert.equal(source.ok, true);
+  const { items, closedAt, sessionTurnIndex, ...qa } = source.turn;
+  assert.deepEqual(qa, codexRolloutTurnFromJsonLines(transcript, identity).turn);
+  assert.equal(qa.userPrompt, "  Inspect the parser.\n\nKeep its text blocks.");
+  assert.equal(qa.assistantReply, "The parser is correct.\n\nIts fields are preserved.  ");
+  assert.equal(sessionTurnIndex, 1);
+  assert.equal(closedAt, "2026-07-16T00:00:05.000Z");
+  assert.deepEqual(items, [
+    { type: "message", role: "user", id: "message-user", content: [
+      { type: "input_text", text: "  Inspect the parser.\n" },
+      { type: "input_text", text: "\n" },
+      { type: "input_text", text: "Keep its text blocks." },
+    ] },
+    { type: "message", role: "assistant", phase: "commentary", content: [{ type: "output_text", text: "Reading the parser." }] },
+    { type: "function_call", id: "function-1", call_id: "call-1", name: "exec_command", namespace: "functions", arguments: argumentsText },
+    { type: "function_call_output", id: "result-1", call_id: "call-1", output: "  workspace\n" },
+    { type: "custom_tool_call", id: "custom-1", call_id: "call-2", name: "exec", input: customInput },
+    { type: "custom_tool_call_output", id: "custom-result-1", call_id: "call-2", output: '{"result":"done"}' },
+    { type: "message", role: "assistant", phase: "final_answer", id: "message-final", content: [
+      { type: "output_text", text: "The parser is correct." },
+      { type: "output_text", text: "" },
+      { type: "output_text", text: "\nIts fields are preserved.  " },
+    ] },
+  ]);
+
+  const interrupted = transcript + jsonLines([turnAborted("turn-1"), threadRolledBack()]);
+  assert.deepEqual(codexCodingSessionTurnFromJsonLines(interrupted, identity), {
+    ok: false, reason: "turn_not_completed",
+  });
+});
+
+test("Codex turn indexes stay aligned across response-item turns and interrupted boundaries", () => {
+  const transcript = jsonLines([
+    sessionMeta("session-1"),
+    taskStarted("turn-1"),
+    turnContext("turn-1"),
+    turnContext("turn-1"),
+    responseItemUserMessage("Interrupted prompt.", "turn-1"),
+    turnAborted("turn-1"),
+    taskStarted("background-task"),
+    customToolCall("Background work."),
+    responseItemUserMessage("Mismatched prompt.", "other-turn"),
+    turnAborted("background-task"),
+    responseItemUserMessage("Outside a turn."),
+    taskStarted("turn-2"),
+    turnContext("turn-2"),
+    responseItemUserMessage("Second prompt.", "turn-2"),
+    responseMessage("assistant", "Second reply.", "final_answer", "turn-2"),
+    taskComplete("turn-2"),
+    taskStarted("turn-3"),
+    turnContext("turn-3"),
+    responseItemUserMessage("Third prompt.", "turn-3"),
+    responseMessage("assistant", "Third reply.", "final_answer", "turn-3"),
+    taskComplete("turn-3"),
+  ]);
+  for (const [turnId, index] of [["turn-2", 2], ["turn-3", 3]]) {
+    const identity = { sessionId: "session-1", turnId };
+    assert.deepEqual(codexSessionTurnIndexFromJsonLines(transcript, identity), {
+      ok: true, sessionTurnIndex: index,
+    });
+    const result = codexCodingSessionTurnFromJsonLines(transcript, identity);
+    assert.equal(result.ok, true);
+    assert.equal(result.turn.sessionTurnIndex, index);
+  }
 });
 
 test("Codex rollout reader uses task_complete as a completed-turn assistant fallback", () => {
@@ -161,6 +311,46 @@ test("Codex rollout reader prefers response_item messages over legacy event mess
   });
 });
 
+test("Codex rollout readers use outer turns despite provider assistant metadata IDs", () => {
+  const transcript = jsonLines([
+    sessionMeta("session-1"),
+    taskStarted("turn-1"),
+    turnContext("turn-1"),
+    responseItemUserMessage("Current-format prompt.", "turn-1"),
+    responseMessage("assistant", "Current-format final reply.", "final_answer", "other-turn"),
+    agentMessage("Legacy final reply.", "final_answer"),
+    taskComplete("turn-1", "Legacy final reply."),
+  ]);
+
+  for (const parser of [codexRolloutTurnFromJsonLines, codexCodingSessionTurnFromJsonLines]) {
+    const result = parser(transcript, { sessionId: "session-1", turnId: "turn-1" });
+    assert.equal(result.ok, true);
+    assert.equal(result.turn.turnId, "turn-1");
+    assert.equal(result.turn.userPrompt, "Current-format prompt.");
+    assert.equal(result.turn.assistantReply, "Current-format final reply.");
+    if ("items" in result.turn) {
+      assert.equal(result.turn.sessionTurnIndex, 1);
+      assert.equal(result.turn.items.length, 2);
+    }
+  }
+  assert.deepEqual(codexSessionTurnIndexFromJsonLines(transcript, {
+    sessionId: "session-1", turnId: "turn-1",
+  }), { ok: true, sessionTurnIndex: 1 });
+
+  for (const key of ["turn_id", "turnId"]) {
+    const user = responseItemUserMessage("Current-format prompt.", "turn-1");
+    user.payload.internal_chat_message_metadata_passthrough = { [key]: "other-turn" };
+    const conflicting = jsonLines([
+      sessionMeta("session-1"), taskStarted("turn-1"), turnContext("turn-1"), user,
+      responseMessage("assistant", "Current-format final reply.", "final_answer", "provider-turn"),
+      taskComplete("turn-1", "Current-format final reply."),
+    ]);
+    assert.deepEqual(codexRolloutTurnFromJsonLines(conflicting, {
+      sessionId: "session-1", turnId: "turn-1",
+    }), { ok: false, reason: "turn_metadata_mismatch" });
+  }
+});
+
 test("Codex rollout reader fails closed for conflicting user response_item turn metadata", () => {
   const transcript = jsonLines([
     sessionMeta("session-1"),
@@ -172,13 +362,12 @@ test("Codex rollout reader fails closed for conflicting user response_item turn 
     agentMessage("Legacy final reply.", "final_answer"),
     taskComplete("turn-1", "Legacy final reply."),
   ]);
-
   assert.deepEqual(codexRolloutTurnFromJsonLines(transcript, {
     sessionId: "session-1",
     turnId: "turn-1",
   }), { ok: false, reason: "turn_metadata_mismatch" });
 
-  assert.deepEqual(codexInterruptedRolloutTurnFromJsonLines(jsonLines([
+  const interrupted = codexInterruptedRolloutTurnFromJsonLines(jsonLines([
     sessionMeta("session-1"),
     taskStarted("turn-1"),
     turnContext("turn-1"),
@@ -189,7 +378,41 @@ test("Codex rollout reader fails closed for conflicting user response_item turn 
   ]), {
     sessionId: "session-1",
     turnId: "turn-1",
-  }), { ok: false, reason: "turn_metadata_mismatch" });
+  });
+  assert.deepEqual(interrupted, { ok: false, reason: "turn_metadata_mismatch" });
+});
+
+test("Codex passthrough IDs cannot claim another outer turn or messages outside a turn", () => {
+  const transcript = jsonLines([
+    sessionMeta("session-1"),
+    responseItemUserMessage("Before any turn.", "turn-1"),
+    taskStarted("turn-1"),
+    turnContext("turn-1"),
+    responseItemUserMessage("First prompt.", "turn-2"),
+    responseMessage("assistant", "First answer.", "final_answer", "turn-2"),
+    taskComplete("turn-1", "First answer."),
+    responseItemUserMessage("After completion.", "turn-1"),
+    taskStarted("turn-2"),
+    turnContext("turn-2"),
+    responseItemUserMessage("Second prompt.", "turn-1"),
+    responseMessage("assistant", "Second answer.", "final_answer", "turn-1"),
+    taskComplete("turn-2", "Second answer."),
+  ]);
+  for (const [turnId, index, prompt, reply] of [
+    ["turn-1", 1, "First prompt.", "First answer."],
+    ["turn-2", 2, "Second prompt.", "Second answer."],
+  ]) {
+    const input = { sessionId: "session-1", turnId };
+    const result = codexCodingSessionTurnFromJsonLines(transcript, input);
+    assert.deepEqual(result, { ok: false, reason: "turn_metadata_mismatch" });
+    assert.deepEqual(codexSessionTurnIndexFromJsonLines(transcript, input),
+      { ok: true, sessionTurnIndex: index });
+  }
+  assert.deepEqual(codexRolloutTurnFromJsonLines(jsonLines([
+    sessionMeta("session-1"),
+    responseItemUserMessage("Unowned prompt.", "turn-1"),
+    responseMessage("assistant", "Unowned answer.", "final_answer", "turn-1"),
+  ]), { sessionId: "session-1", turnId: "turn-1" }), { ok: false, reason: "turn_not_found" });
 });
 
 test("Codex rollout reader aggregates cumulative token snapshots for the complete turn", () => {

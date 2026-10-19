@@ -349,10 +349,16 @@ test("WorkBuddy provisional turn writeback and nested Skill commands share Gener
       { type: "input_text", text: "<command-name>/memorax-code</command-name>\n# MemoraX Code\nExpanded instructions",
         providerData: { content: prompt } },
     ] },
-    { id: "a-native", type: "message", role: "assistant", parentId: "u-native", status: "completed", timestamp: 1_700_000_060_000, content: [{ type: "output_text", text: "persisted reply" }] },
+    { id: "shared-node", type: "message", role: "assistant", parentId: "u-native", content: [{ type: "output_text", text: "Inspecting the project." }] },
+    { id: "shared-node", type: "function_call", parentId: "u-native", callId: "read-1", name: "Read", arguments: { path: "README.md" } },
+    { id: "shared-node", type: "function_call", parentId: "u-native", callId: "read-2", name: "Read", arguments: { path: "package.json" } },
+    { id: "result-1", type: "function_call_result", parentId: "shared-node", callId: "read-1", output: { type: "text", text: "project introduction" } },
+    { id: "result-2", type: "function_call_result", parentId: "shared-node", callId: "read-2", status: "error", output: "package metadata unavailable" },
+    { id: "a-native", type: "message", role: "assistant", parentId: "result-2", status: "completed", timestamp: 1_700_000_060_000, content: [{ type: "output_text", text: "persisted reply" }] },
+    { id: "late-tool", type: "function_call", parentId: "u-native", callId: "late-1", name: "Read", arguments: "not part of completed turn" },
   ]));
   const requests = [];
-  const env = configuredEnv(home, { MEMORAX_CODE_WORKBUDDY_TRACE_ENABLED: "false" });
+  const env = configuredEnv(home, { MEMORAX_CODE_WORKBUDDY_TRACE_ENABLED: "false", MEMORAX_CODE_CODING_SESSIONS_ENABLED: "true" });
   const fetchImpl = async (url, init) => {
     requests.push({ url: String(url), body: JSON.parse(init.body) });
     const data = String(url).endsWith("/add") ? { task_id: "general-add", status: "queued" } : { data: [] };
@@ -361,7 +367,9 @@ test("WorkBuddy provisional turn writeback and nested Skill commands share Gener
       headers: { "content-type": "application/json" },
     });
   };
-  const runtime = createCodeBuddyMemoryHookRuntime({ env, fetchImpl, client: "workbuddy" });
+  const runtime = createCodeBuddyMemoryHookRuntime({
+    env, fetchImpl, client: "workbuddy", captureCodingTurns: true,
+  });
   try {
     await runtime.recordTurnStart({
       ...command(sessionId, turnId, transcriptPath, prompt),
@@ -382,6 +390,23 @@ test("WorkBuddy provisional turn writeback and nested Skill commands share Gener
     assert.deepEqual(requests[0].body.messages.map(({ role, content, timestamp }) => ({ role, content, timestamp })), [
       { role: "user", content: prompt, timestamp: 1_700_000_000_000 },
       { role: "assistant", content: "persisted reply", timestamp: 1_700_000_060_000 },
+    ]);
+    assert.equal(requests[0].body.event, undefined);
+    assert.equal(requests[0].body.user_id, "user-1@General");
+    const archive = requests[0].body.coding_context;
+    assert.equal(archive.client, "workbuddy");
+    assert.equal(archive.session_id, sessionId);
+    assert.equal(archive.turns[0].turn_id, "u-native");
+    assert.equal(archive.turns[0].turn_index, 1);
+    assert.equal(archive.turns[0].closed_at, new Date(1_700_000_060_000).toISOString());
+    assert.deepEqual(archive.items, [
+      { type: "message", role: "user", content: [{ type: "input_text", text: prompt }] },
+      { type: "message", role: "assistant", phase: "commentary", content: [{ type: "output_text", text: "Inspecting the project." }] },
+      { type: "function_call", call_id: "read-1", name: "Read", arguments: '{"path":"README.md"}' },
+      { type: "function_call", call_id: "read-2", name: "Read", arguments: '{"path":"package.json"}' },
+      { type: "function_call_output", call_id: "read-1", output: '{"text":"project introduction","type":"text"}' },
+      { type: "function_call_output", call_id: "read-2", output: '{"output":"package metadata unavailable","status":"error"}' },
+      { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: "persisted reply" }] },
     ]);
     const options = {
       cwd: nested,

@@ -90,6 +90,7 @@ const rules = [
       "memory/harness-runtime.ts",
       ...clientMemoryRuntimes,
       ...nativeReaders,
+      "memory/coding-context.ts",
       "memory/turn-coordinator.ts",
       "memory/search-guidance.ts",
       "memory/service.ts",

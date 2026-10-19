@@ -1,6 +1,7 @@
 import {
   readCodeBuddyInterruptedTranscriptTurn,
   readCodeBuddyTranscriptTurn,
+  readCodeBuddyArchiveSource,
   type CodeBuddyInterruptedTurn,
   type CodeBuddyTurn,
   type CodeBuddyTurnFailureReason,
@@ -24,6 +25,7 @@ type NativeWritebackCommand = CodeBuddyWritebackCommand | WorkBuddyWritebackComm
 
 type Options = HarnessMemoryRuntimeOptions & {
   client?: "codebuddy" | "workbuddy";
+  captureCodingTurns?: boolean;
   transcriptReadAttempts?: number;
   transcriptRetryDelayMs?: number;
 };
@@ -40,7 +42,7 @@ export function createCodeBuddyMemoryHookRuntime(options: Options = {}): CodeBud
     diagnosticPrefix: `${client}_memory_hook`,
     traceFailureEvent: `${client}_trace.write_failed`,
     turnStartTraceSource: `${client}-hook`,
-  }, options);
+  }, { readCodingSessionTurn: readCodeBuddyArchiveSource, ...options });
   const coordinator = memory.turnCoordinator;
   return {
     async recordTurnStart(command) {
@@ -87,6 +89,20 @@ export function createCodeBuddyMemoryHookRuntime(options: Options = {}): CodeBud
         userTimestamp: transcript.turn.userTimestamp,
         assistantTimestamp: transcript.turn.assistantTimestamp,
         traceContext: traceContextFromCodeBuddyHookBody(command),
+        ...(transcript.turn.items && transcript.turn.sessionTurnIndex && transcript.turn.nativeTurnId ? {
+          codingTurn: {
+            client,
+            sessionId: command.sessionId,
+            turnId: transcript.turn.nativeTurnId,
+            turnIndex: transcript.turn.sessionTurnIndex,
+            items: transcript.turn.items,
+            outcome: "completed",
+            closedAt: new Date(transcript.turn.assistantTimestamp ?? now()).toISOString(),
+            source: transcript.turn.source ? { ...transcript.turn.source, correlationTurnId: command.turnId } : undefined,
+            agent_role: transcript.turn.agent_role,
+            prompt_origin: transcript.turn.prompt_origin,
+          },
+        } : {}),
       });
       await recordCodeBuddyTurnMaterialization(options, traceContext, transcript.turn);
       return completed.scheduled ? { ok: true, scheduled: true } : { ok: true, scheduled: false, reason: completed.reason };
@@ -98,10 +114,11 @@ export function createCodeBuddyMemoryHookRuntime(options: Options = {}): CodeBud
 
 async function readWithRetry(input: { client: "codebuddy" | "workbuddy"; transcriptPath: string; sessionId: string; turnId: string }, options: Options) {
   const attempts = options.transcriptReadAttempts ?? 6;
-  let result = await readCodeBuddyTranscriptTurn(input);
+  const request = { ...input, captureCodingItems: options.captureCodingTurns };
+  let result = await readCodeBuddyTranscriptTurn(request);
   for (let i = 1; i < attempts && !result.ok && ["transcript_unavailable", "turn_not_found", "user_prompt_missing", "assistant_message_missing"].includes(result.reason); i += 1) {
     await new Promise((resolve) => setTimeout(resolve, options.transcriptRetryDelayMs ?? 100));
-    result = await readCodeBuddyTranscriptTurn(input);
+    result = await readCodeBuddyTranscriptTurn(request);
   }
   return result;
 }

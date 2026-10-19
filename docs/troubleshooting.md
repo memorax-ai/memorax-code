@@ -417,6 +417,23 @@ and must not be disabled by `MEMORAX_CODE_MEMORAX_WRITEBACK_ENABLED=false`.
 
 ## Hook ran, but automatic writeback is missing
 
+For Codex only, an exact native read returning `assistant_message_missing` can
+return `{ok:true, scheduled:false, reason:"assistant_message_missing", deferred:true}`.
+This means a background reread was arranged, not that QA or an archive reached
+MemoraX. Missing Hook arguments and other read/validation failures do not qualify.
+The Backend waits 100, 250, 500, 1,000 and 2,000 ms before up to five further reads
+(3.85 seconds of waits, excluding read time). Repeated Hooks for the same pending
+Turn share the attempt budget. At most 256 writebacks can be pending; new work
+is rejected with `native_retry_capacity` when full.
+
+The final native reply must still pass the existing identity and content checks;
+Hook text is not a fallback. `native_content_timeout` means all five delayed reads
+still lacked the reply, not that the reply can never appear. It is saved as a
+terminal diagnostic when writeback is enabled. Pending retries are cancelled at
+shutdown and are not persisted. A process exit or a later native completion can
+still leave a Turn unqueued. `scheduled:true` confirms local acceptance only;
+remote Add acceptance and OSS archival require separate evidence.
+
 `hook-runtime=observed` confirms that a managed Hook loaded. It does not prove
 that a completed turn reached MemoraX. First run `memorax-code logs --diagnostics`
 and use `memorax-code logs --id <diagnostic-id>` for a relevant entry. Known Hook

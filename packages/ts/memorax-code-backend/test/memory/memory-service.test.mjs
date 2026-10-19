@@ -421,6 +421,107 @@ test("memory service discards fallback writeback when turn start upgrades the se
   }
 });
 
+test("eight native Turns share one QA Add with optional Responses items and stable request retries", { timeout: 60_000 }, async (t) => {
+  for (const scenario of [
+    { name: "both enabled", qa: true, archive: true },
+    { name: "QA disabled", qa: false, archive: true },
+    { name: "existing config without collection opt-in", qa: true, archive: false },
+  ]) {
+    await t.test(scenario.name, async (t) => {
+      const root = await mkdtemp(join(tmpdir(), "memorax-service-coding-event-"));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const home = join(root, "state");
+      const workspace = join(root, "workspace");
+      await mkdir(workspace);
+      const sessionId = "independent-upload-session";
+      const turns = Array.from({ length: 8 }, (_, index) => ({
+        turnId: `turn-${index + 1}`, prompt: `Review module ${index + 1}.`,
+        reply: `Module ${index + 1} was reviewed.`, coding: true,
+      }));
+      const transcriptPath = await writeRollout(root, sessionId, turns);
+      const requests = [];
+      const diagnostics = [];
+      const service = createMemoryService({
+        memoraxCodeHome: home,
+        env: {
+          MEMORAX_CODE_HOME: home,
+          MEMORAX_CODE_CODEX_TRACE_ENABLED: "false",
+          MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED: "false",
+          MEMORAX_CODE_MEMORY_WRITEBACK_ENABLED: String(scenario.qa),
+          ...(scenario.archive ? { MEMORAX_CODE_CODING_SESSIONS_ENABLED: "true" } : {}),
+          MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
+          MEMORAX_CODE_MEMORAX_API_KEY: "synthetic-key",
+          MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
+        },
+        diagnosticLogger: (message, fields) => diagnostics.push({ message, fields }),
+        fetchImpl: async (url, init) => {
+          const body = JSON.parse(init.body);
+          assert.equal(String(url), "http://memorax.test/v1/memories/add");
+          requests.push(body);
+          assert.equal(body.event, undefined);
+          assert.equal(body.coding_turns, undefined);
+          assert.equal(body.turns, undefined);
+          assert.equal(body.items, undefined);
+          assert.doesNotMatch(JSON.stringify(body.messages), /Tool-only output|function_call/);
+          if (scenario.archive && requests.length === 1) return new Response("", { status: 503 });
+          return Response.json({ success: true, data: { task_id: "qa-accepted", status: "accepted" } }, { status: 202 });
+        },
+      });
+      t.after(() => service.close());
+      for (const turn of turns) {
+        const command = { version: 1, client: "codex", sessionId, turnId: turn.turnId, cwd: workspace, transcriptPath };
+        await service.recordTurnStart({ ...command, prompt: turn.prompt });
+        const result = await service.writebackTurn({ ...command, lastAssistantMessage: turn.reply });
+        assert.equal(result.scheduled, scenario.qa);
+        if (!scenario.qa) assert.equal(result.reason, "disabled");
+      }
+      if (scenario.qa) await waitForAcceptedWritebacks(diagnostics, 1);
+      await service.drain();
+      assert.equal(requests.length, scenario.qa ? (scenario.archive ? 2 : 1) : 0);
+      const archives = requests.flatMap((request) => request.coding_context ? [request.coding_context] : []);
+      assert.equal(archives.length, scenario.qa && scenario.archive ? 2 : 0);
+      if (scenario.qa && scenario.archive) {
+        assert.deepEqual(requests[1], requests[0], "retry preserves both QA and the exact archive batch");
+        assert.equal(requests[0].messages.length, 16);
+        assert.equal(requests[0].user_id, "user-1@workspace");
+        assert.equal(archives[0].schema_version, 1);
+        assert.equal(archives[0].redaction_version, 1);
+        assert.equal(archives[0].repository_slug, "workspace");
+        assert.deepEqual(archives[0].turns.map((turn) => turn.turn_id), turns.map((turn) => turn.turnId));
+        assert.deepEqual(archives[0].turns.map((turn) => turn.turn_index), [1, 2, 3, 4, 5, 6, 7, 8]);
+        assert.equal(archives[0].items.length, 8 * 7);
+        let offset = 0;
+        for (const [index, metadata] of archives[0].turns.entries()) {
+          assert.deepEqual(Object.keys(metadata).sort(), ["closed_at", "item_count", "prompt_origin", "turn_id", "turn_index"]);
+          assert.equal(metadata.prompt_origin, "end_user");
+          assert.equal(metadata.item_count, 7);
+          const items = archives[0].items.slice(offset, offset + metadata.item_count);
+          offset += metadata.item_count;
+          assert.deepEqual(items.map((item) => item.type), [
+            "message", "message", "function_call", "function_call_output",
+            "custom_tool_call", "custom_tool_call_output", "message",
+          ]);
+          assert.deepEqual(items[0], { type: "message", id: `user-item-${index}`, role: "user",
+            content: [{ type: "input_text", text: turns[index].prompt }] });
+          assert.equal(items[1].phase, "commentary");
+          assert.deepEqual(items[2], { type: "function_call", id: `function-item-${index}`, call_id: `call-${index}`,
+            name: "read_file", namespace: "functions", arguments: '{"path":"src/main.ts"}' });
+          assert.equal(items[3].call_id, items[2].call_id);
+          assert.equal(items[4].input, "*** Begin Patch\n*** End Patch");
+          assert.equal(items[5].call_id, items[4].call_id);
+          assert.deepEqual(items[6], { type: "message", id: `assistant-item-${index}`, role: "assistant",
+            phase: "final_answer", content: [{ type: "output_text", text: turns[index].reply }] });
+          assert.ok(items.every((item) => !("index" in item) && !("status" in item) && !("tool_result" in item)));
+        }
+        assert.equal(offset, archives[0].items.length, "Turn counts partition every collected item");
+        assert.match(JSON.stringify(archives[0]), /Tool-only output/);
+        assert.doesNotMatch(JSON.stringify(archives[0]), /Bearer fake-sensitive-value|internal_metadata|Private reasoning marker/);
+        assert.equal(JSON.stringify(archives[0]).includes(root), false);
+      }
+    });
+  }
+});
+
 async function repairGitMetadata(workspace, repositoryName) {
   const gitDir = join(workspace, ".git");
   await mkdir(join(gitDir, "objects"), { recursive: true });
@@ -461,6 +562,36 @@ async function writeRollout(root, sessionId, turns) {
         type: "event_msg",
         payload: { type: "user_message", message: turn.prompt },
       },
+      ...(turn.coding ? [
+        { timestamp: "2026-07-16T00:00:02.050Z", type: "response_item", payload: {
+          type: "message", id: `user-item-${index}`, role: "user",
+          content: [{ type: "input_text", text: turn.prompt }], internal_metadata: { cwd: root },
+        } },
+        { timestamp: "2026-07-16T00:00:02.060Z", type: "response_item", payload: {
+          type: "message", role: "assistant", phase: "commentary",
+          content: [{ type: "output_text", text: "I will inspect the module." }], status: "completed",
+        } },
+        { timestamp: "2026-07-16T00:00:02.070Z", type: "response_item", payload: {
+          type: "reasoning", summary: [{ type: "summary_text", text: "Private reasoning marker" }],
+        } },
+        { timestamp: "2026-07-16T00:00:02.100Z", type: "response_item", payload: {
+          type: "function_call", id: `function-item-${index}`, call_id: `call-${index}`, name: "read_file",
+          namespace: "functions", arguments: "{\"path\":\"src/main.ts\"}", internal_metadata: { cwd: root },
+        } },
+        { timestamp: "2026-07-16T00:00:02.200Z", type: "response_item", payload: {
+          type: "function_call_output", call_id: `call-${index}`, output: "Tool-only output. Authorization: Bearer fake-sensitive-value",
+        } },
+        { timestamp: "2026-07-16T00:00:02.300Z", type: "response_item", payload: {
+          type: "custom_tool_call", call_id: `custom-${index}`, name: "apply_patch", input: "*** Begin Patch\n*** End Patch",
+        } },
+        { timestamp: "2026-07-16T00:00:02.400Z", type: "response_item", payload: {
+          type: "custom_tool_call_output", call_id: `custom-${index}`, output: "No changes needed.",
+        } },
+        { timestamp: "2026-07-16T00:00:02.500Z", type: "response_item", payload: {
+          type: "message", id: `assistant-item-${index}`, role: "assistant", phase: "final_answer",
+          content: [{ type: "output_text", text: turn.reply }], status: "completed",
+        } },
+      ] : []),
       {
         timestamp: `2026-07-16T00:00:${String(index * 3 + 3).padStart(2, "0")}.000Z`,
         type: "event_msg",
@@ -508,6 +639,7 @@ test("memory service records confirmed completion failures without changing Hook
     { name: "wrong native session", wrongSession: true, reason: "transcript_session_mismatch", stage: "correlation" },
     { name: "unreadable workspace", wrongWorkspace: true, reason: "workspace_scope_unavailable", stage: "scope" },
     { name: "incomplete assistant output", incomplete: true, reason: "assistant_message_missing", quiet: true },
+    { name: "exhausted native reads", incomplete: true, exhaust: true, reason: "assistant_message_missing", stage: "content-read" },
     { name: "disabled writeback", missing: true, disabled: true, reason: "transcript_unavailable", quiet: true },
     { name: "unavailable diagnostic directory", missing: true, blocked: true, reason: "transcript_unavailable" },
   ]) {
@@ -527,7 +659,12 @@ test("memory service records confirmed completion failures without changing Hook
         : await writeRollout(root, scenario.wrongSession ? "different-native-session" : sessionId,
           [{ turnId, prompt: "Private prompt marker.", reply: scenario.incomplete ? "" : "Private answer marker." }]);
       const requests = [];
+      const retryTimers = [];
       const service = createMemoryService({
+        scheduleWritebackRetry: (callback) => {
+          retryTimers.push(callback);
+          return () => { const i = retryTimers.indexOf(callback); if (i >= 0) retryTimers.splice(i, 1); };
+        },
         memoraxCodeHome,
         env: { MEMORAX_CODE_HOME: memoraxCodeHome, MEMORAX_CODE_DEBUG: "false",
           MEMORAX_CODE_CODEX_TRACE_ENABLED: "false",
@@ -541,8 +678,23 @@ test("memory service records confirmed completion failures without changing Hook
       const command = { version: 1, client: "codex", sessionId, turnId, transcriptPath,
         cwd: scenario.wrongWorkspace ? join(root, "missing-workspace") : workspace };
       const result = await service.writebackTurn({ ...command, lastAssistantMessage: "Private answer marker." });
-      assert.deepEqual(result, { ok: true, scheduled: false, reason: scenario.reason });
+      assert.deepEqual(result, { ok: true, scheduled: false, reason: scenario.reason,
+        ...(scenario.incomplete ? { deferred: true } : {}) });
+      if (scenario.exhaust) {
+        const directory = join(memoraxCodeHome, "runtime", "diagnostics");
+        assert.deepEqual(await readdir(directory).catch(() => []), []);
+        for (let attempt = 0; attempt < 5; attempt++) {
+          assert.equal(retryTimers.length, 1);
+          retryTimers.shift()();
+          const deadline = Date.now() + 1000;
+          while (!retryTimers.length && !(await readdir(directory).catch(() => [])).length) {
+            assert.ok(Date.now() < deadline, "background read must settle");
+            await new Promise((resolve) => setTimeout(resolve, 5));
+          }
+        }
+      }
       await service.drain();
+      assert.equal(retryTimers.length, 0);
       assert.equal(requests.length, 0);
       if (scenario.blocked) {
         assert.equal(await readFile(join(memoraxCodeHome, "runtime", "diagnostics"), "utf8"), "occupied");
@@ -554,7 +706,7 @@ test("memory service records confirmed completion failures without changing Hook
       assert.equal(files.length, 1);
       const record = JSON.parse(await readFile(join(directory, files[0]), "utf8"));
       assert.equal(record.source, "automatic-writeback");
-      assert.equal(record.failureReason, scenario.reason);
+      assert.equal(record.failureReason, scenario.exhaust ? "native_content_timeout" : scenario.reason);
       assert.equal(record.stage, scenario.stage);
       assert.equal(record.client, "codex");
       assert.match(record.errorCode, /^WRITEBACK_/);

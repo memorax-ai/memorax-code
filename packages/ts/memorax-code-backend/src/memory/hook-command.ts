@@ -7,6 +7,23 @@ import { parseTraeTurnId, traePromptDigest } from "../clients/trae/turn-id.js";
 export const MEMORY_HOOK_COMMAND_VERSION = 1 as const;
 export const INVALID_MEMORY_HOOK_COMMAND = "invalid memory Hook command";
 
+function validProvenance(value: Record<string, unknown>): boolean {
+  return (value.agentRole === undefined || value.agentRole === "main" || value.agentRole === "subagent")
+    && (value.promptOrigin === undefined || value.promptOrigin === "end_user" || value.promptOrigin === "system")
+    && (value.nativePromptVerified === undefined || typeof value.nativePromptVerified === "boolean");
+}
+
+function nativeProvenance(value: Record<string, unknown>): {
+  agentRole?: "main" | "subagent"; promptOrigin?: "end_user" | "system";
+  nativePromptVerified?: boolean;
+} {
+  return {
+    ...(value.agentRole === "main" || value.agentRole === "subagent" ? { agentRole: value.agentRole } : {}),
+    ...(value.promptOrigin === "end_user" || value.promptOrigin === "system" ? { promptOrigin: value.promptOrigin } : {}),
+    ...(value.nativePromptVerified === true ? { nativePromptVerified: true } : {}),
+  };
+}
+
 export type MemoryHookClient = "codex" | "claude-code" | "opencode" | "dsh" | "codebuddy" | "workbuddy" | "trae" | "cursor";
 
 const BASE_COMMAND_KEYS = [
@@ -19,7 +36,7 @@ const BASE_COMMAND_KEYS = [
 const TURN_START_KEYS: Readonly<Record<MemoryHookClient, ReadonlySet<string>>> = {
   codex: new Set([...BASE_COMMAND_KEYS, "turnId", "prompt", "transcriptPath"]),
   "claude-code": new Set([...BASE_COMMAND_KEYS, "promptId", "prompt", "transcriptPath"]),
-  opencode: new Set([...BASE_COMMAND_KEYS, "userMessageId", "prompt"]),
+  opencode: new Set([...BASE_COMMAND_KEYS, "userMessageId", "prompt", "agentRole", "promptOrigin", "nativePromptVerified"]),
   dsh: new Set(["version", "client", "sessionId", "turn", "startSeq", "cwd", "prompt"]),
   codebuddy: new Set([...BASE_COMMAND_KEYS, "turnId", "prompt", "transcriptPath"]),
   workbuddy: new Set([...BASE_COMMAND_KEYS, "turnId", "prompt", "transcriptPath"]),
@@ -38,7 +55,9 @@ const WRITEBACK_KEYS: Readonly<Record<MemoryHookClient, ReadonlySet<string>>> = 
     ...BASE_COMMAND_KEYS,
     "userMessageId",
     "assistantMessageId",
+    "turnIndex",
     "messages",
+    "agentRole", "promptOrigin", "nativePromptVerified",
   ]),
   dsh: new Set([
     "version",
@@ -93,6 +112,9 @@ export type ClaudeTurnStartCommand = MemoryHookCommandBase<"claude-code"> & Read
 export type OpenCodeTurnStartCommand = MemoryHookCommandBase<"opencode"> & Readonly<{
   userMessageId: string;
   prompt: string;
+  agentRole?: "main" | "subagent";
+  promptOrigin?: "end_user" | "system";
+  nativePromptVerified?: boolean;
 }>;
 
 export type DshTurnStartCommand = MemoryHookCommandBase<"dsh"> & Readonly<{
@@ -165,7 +187,11 @@ export type ClaudeWritebackCommand = MemoryHookCommandBase<"claude-code"> & Read
 export type OpenCodeWritebackCommand = MemoryHookCommandBase<"opencode"> & Readonly<{
   userMessageId: string;
   assistantMessageId: string;
+  turnIndex?: number;
   messages: readonly unknown[];
+  agentRole?: "main" | "subagent";
+  promptOrigin?: "end_user" | "system";
+  nativePromptVerified?: boolean;
 }>;
 
 export type DshWritebackCommand = MemoryHookCommandBase<"dsh"> & Readonly<{
@@ -350,6 +376,7 @@ export function parseTurnStartCommand(
     };
   }
   if (base.client === "opencode") {
+    if (!validProvenance(value)) return invalidCommand();
     const userMessageId = requiredStringField(value, "userMessageId");
     if (!userMessageId) return invalidCommand();
     return {
@@ -359,6 +386,7 @@ export function parseTurnStartCommand(
         client: "opencode",
         userMessageId,
         prompt,
+        ...nativeProvenance(value),
       },
     };
   }
@@ -440,9 +468,12 @@ export function parseWritebackCommand(
     };
   }
   if (base.client === "opencode") {
+    if (!validProvenance(value)) return invalidCommand();
     const userMessageId = requiredStringField(value, "userMessageId");
     const assistantMessageId = requiredStringField(value, "assistantMessageId");
-    if (!userMessageId || !assistantMessageId || !Array.isArray(value.messages)) {
+    const hasTurnIndex = Object.prototype.hasOwnProperty.call(value, "turnIndex");
+    const turnIndex = positiveSafeIntegerField(value, "turnIndex");
+    if (!userMessageId || !assistantMessageId || (hasTurnIndex && turnIndex === undefined) || !Array.isArray(value.messages)) {
       return invalidCommand();
     }
     return {
@@ -452,7 +483,9 @@ export function parseWritebackCommand(
         client: "opencode",
         userMessageId,
         assistantMessageId,
+        ...(turnIndex === undefined ? {} : { turnIndex }),
         messages: value.messages,
+        ...nativeProvenance(value),
       },
     };
   }

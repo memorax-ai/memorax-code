@@ -1,18 +1,130 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import {
   codeBuddyInterruptedTranscriptTurnFromJsonLines,
   codeBuddyTranscriptTurnFromJsonLines,
+  readCodeBuddyArchiveSource,
   readCodeBuddyInterruptedTranscriptTurn,
   readCodeBuddyTranscriptTurn,
 } from "../../../dist/clients/codebuddy/jsonl-history.js";
+import { materializePendingCodingSessionTurn, preparePendingCodingSessionTurn } from "../../../dist/coding-sessions/attachment.js";
+import { prepareCodingSessionTurn } from "../../../dist/coding-sessions/coding-turn.js";
 
 const sessionId = "session-1";
+
+test("archive projection preserves native text blocks and complete tool results without changing QA", async () => {
+  const userContent = [{ type: "input_text", text: "  Read " }, { type: "input_text", text: "\nthese files. \n" }];
+  const commentary = [{ type: "output_text", text: "  Checking. \n" }, { type: "output_text", text: "\nNext.  " }];
+  const finalContent = [{ type: "output_text", text: " \nDone. " }, { type: "output_text", text: " See details.\n " }];
+  const structuredOutput = { text: "  visible  ", exit_code: 1, detail: { reason: "unavailable" } };
+  const arrayOutput = [{ type: "text", text: "text fragment" }, { type: "diagnostic", code: 7 }, 7, "literal", null];
+  const transcript = [
+    { id: "u1", type: "message", role: "user", sessionId, content: userContent },
+    { id: "progress", type: "message", role: "assistant", parentId: "u1", content: commentary },
+    { id: "c1", type: "function_call", parentId: "progress", callId: "call-1", name: "Read", arguments: '  {"b":2,"a":1}\n' },
+    { id: "r1", type: "function_call_result", parentId: "c1", callId: "call-1", status: "error", output: structuredOutput },
+    { id: "c2", type: "function_call", parentId: "r1", callId: "call-2", name: "Read", arguments: { file: "second" } },
+    { id: "r2", type: "function_call_result", parentId: "c2", callId: "call-2", output: arrayOutput },
+    { id: "c3", type: "function_call", parentId: "r2", callId: "call-3", name: "Read", arguments: "  raw arguments\n" },
+    { id: "r3", type: "function_call_result", parentId: "c3", callId: "call-3", output: " \nraw result\t " },
+    { id: "a1", type: "message", role: "assistant", parentId: "r3", status: "completed", content: finalContent },
+  ].map(JSON.stringify).join("\n");
+  const identity = { sessionId, turnId: provisionalTurnId("Read \n\nthese files.") };
+  const ordinary = codeBuddyTranscriptTurnFromJsonLines(transcript, identity);
+  const projected = codeBuddyTranscriptTurnFromJsonLines(transcript, { ...identity, captureCodingItems: true });
+  assert.equal(projected.ok, true);
+  const { items, ...qa } = projected.turn;
+  assert.deepEqual(qa, ordinary.turn);
+  assert.equal(qa.userPrompt, "Read \n\nthese files.");
+  assert.equal(qa.assistantReply, "Done. \n See details.");
+  assert.deepEqual(items[0], { type: "message", role: "user", content: userContent });
+  assert.deepEqual(items[1], { type: "message", role: "assistant", phase: "commentary", content: commentary });
+  assert.deepEqual(items.at(-1), { type: "message", role: "assistant", phase: "final_answer", content: finalContent });
+  assert.deepEqual(items.filter((item) => item.type === "function_call"), [
+    { type: "function_call", call_id: "call-1", name: "Read", arguments: '  {"b":2,"a":1}\n' },
+    { type: "function_call", call_id: "call-2", name: "Read", arguments: '{"file":"second"}' },
+    { type: "function_call", call_id: "call-3", name: "Read", arguments: "  raw arguments\n" },
+  ]);
+  const outputs = items.filter((item) => item.type === "function_call_output");
+  assert.deepEqual(JSON.parse(outputs[0].output), { output: structuredOutput, status: "error" });
+  assert.deepEqual(JSON.parse(outputs[1].output), arrayOutput);
+  assert.deepEqual(outputs[2], { type: "function_call_output", call_id: "call-3", output: " \nraw result\t " });
+  assert.equal(items.length, 9);
+  const directory = await mkdtemp(join(tmpdir(), "memorax-codebuddy-projection-"));
+  try {
+    const transcriptPath = join(directory, "session.jsonl");
+    await writeFile(transcriptPath, transcript);
+    const scope = { repositorySlug: "projection-tests" };
+    const sources = ["codebuddy", "workbuddy"].map((client) => ({
+      ...identity, client, turnIndex: 1, closedAt: "2026-09-20T08:00:00.000Z", outcome: "completed",
+      turnId: "u1",
+      source: { transcriptPath, endBytes: Buffer.byteLength(transcript), correlationTurnId: identity.turnId }, items,
+    }));
+    const pendingTurns = sources.map((source) => preparePendingCodingSessionTurn(source, scope));
+    await appendFile(transcriptPath, "\n" + [
+      { id: "u2", type: "message", role: "user", sessionId, content: userContent },
+      { id: "a2", type: "message", role: "assistant", parentId: "u2", status: "completed", content: "Later answer." },
+    ].map(JSON.stringify).join("\n") + "\n");
+    for (const [index, pending] of pendingTurns.entries()) {
+      assert.ok(pending);
+      assert.equal("projectionVersion" in pending.reference, false);
+      assert.equal(pending.reference.source.endBytes, Buffer.byteLength(transcript));
+      const restored = await readCodeBuddyArchiveSource(pending.reference);
+      assert.deepEqual(restored.items, items);
+      const materialized = await materializePendingCodingSessionTurn(pending, scope, readCodeBuddyArchiveSource);
+      assert.ok(materialized);
+      assert.deepEqual(materialized, prepareCodingSessionTurn({ ...sources[index], repositorySlug: scope.repositorySlug }));
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("archive user text keeps original-input and cross-block user-query authority", () => {
+  for (const { content, expected, prompt } of [
+    {
+      content: [
+        { type: "input_text", text: "expanded instructions", providerData: { content: "  /memorax-code <user_query>literal</user_query> " } },
+        { type: "input_text", text: "more expanded instructions", providerData: { content: "\n original continuation  " } },
+        { type: "input_text", text: "display-only text must stay excluded" },
+      ],
+      expected: ["  /memorax-code <user_query>literal</user_query> ", "\n original continuation  "],
+      prompt: "/memorax-code <user_query>literal</user_query> \n\n original continuation",
+    },
+    {
+      content: [
+        { type: "input_text", text: "hidden prefix<user_query>  first " },
+        { type: "input_text", text: "" },
+        { type: "input_text", text: "\n second  </user_query>hidden suffix" },
+        { type: "output_text", text: "wrong role must stay excluded" },
+      ],
+      expected: ["  first ", "", "\n second  "],
+      prompt: "first \n\n\n second",
+    },
+  ]) {
+    const transcript = [
+      { id: "u1", type: "message", role: "user", sessionId, content },
+      { id: "a1", type: "message", role: "assistant", parentId: "u1", status: "completed", content: [{ type: "output_text", text: "done" }] },
+    ].map(JSON.stringify).join("\n");
+    const identity = { sessionId, turnId: provisionalTurnId(prompt) };
+    const ordinary = codeBuddyTranscriptTurnFromJsonLines(transcript, identity);
+    const archived = codeBuddyTranscriptTurnFromJsonLines(transcript, { ...identity, captureCodingItems: true });
+    assert.equal(archived.ok, true);
+    const { items, ...qa } = archived.turn;
+    assert.deepEqual(qa, ordinary.turn);
+    assert.equal(qa.userPrompt, prompt);
+    assert.deepEqual(items[0], { type: "message", role: "user", content: expected.map((text) => ({ type: "input_text", text })) });
+    assert.deepEqual(codeBuddyTranscriptTurnFromJsonLines(transcript, {
+      ...identity, turnId: provisionalTurnId("expanded instructions"), captureCodingItems: true,
+    }), { ok: false, reason: "user_prompt_missing" });
+  }
+});
+
 test("extracts hidden user query and completed assistant branch", () => {
   const lines = [
     { id: "u1", type: "message", role: "user", sessionId, timestamp: "2026-09-07T08:00:00+08:00", content: [
@@ -232,8 +344,8 @@ test("preserves completed and interrupted replies through a long tool chain", ()
   const callCount = 1000;
   for (let index = 0; index < callCount; index += 1) {
     records.push(
-      { id: `c${index}`, type: "function_call", role: "assistant", parentId: records.at(-1).id, name: "Bash", arguments: "{}" },
-      { id: `r${index}`, type: "function_call_result", parentId: `c${index}`, output: `result ${index}` },
+      { id: `c${index}`, type: "function_call", role: "assistant", parentId: records.at(-1).id, callId: `call-${index}`, name: "Bash", arguments: "{}" },
+      { id: `r${index}`, type: "function_call_result", parentId: `c${index}`, callId: `call-${index}`, output: `result ${index}` },
     );
   }
   const assistant = {
@@ -244,7 +356,7 @@ test("preserves completed and interrupted replies through a long tool chain", ()
   const input = { sessionId, turnId: provisionalTurnId("long task") };
   const transcript = records.map(JSON.stringify).join("\n");
   const startedAt = performance.now();
-  const completed = codeBuddyTranscriptTurnFromJsonLines(transcript, input);
+  const completed = codeBuddyTranscriptTurnFromJsonLines(transcript, { ...input, captureCodingItems: true });
   // Synchronous parsing can block the runner's timeout, so check elapsed time too.
   assert.ok(performance.now() - startedAt < 5000, "Long-chain extraction must avoid repeated transcript scans");
   assert.equal(completed.ok, true);
@@ -253,6 +365,8 @@ test("preserves completed and interrupted replies through a long tool chain", ()
   assert.equal(completed.turn.userTimestamp, undefined);
   assert.equal(completed.turn.assistantTimestamp, undefined);
   assert.equal(completed.turn.activities.length, callCount * 2);
+  assert.equal(completed.turn.items.length, callCount * 2 + 2);
+  assert.equal(completed.turn.items.at(-2).call_id, `call-${callCount - 1}`);
 
   assistant.status = "incomplete";
   assistant.content[0].text = "partial answer";
