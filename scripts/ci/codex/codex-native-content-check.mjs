@@ -1,5 +1,7 @@
-// Independent acceptance oracle for the current response-item-first extraction
-// contract. This intentionally does not import the product rollout parser.
+import { isDeepStrictEqual } from "node:util";
+
+// Independent acceptance oracle for native user identity and response-owned
+// content. This intentionally does not import the product rollout parser.
 function check(condition, code) {
   if (!condition) throw Object.assign(new Error(code), { nativeCode: code });
 }
@@ -79,11 +81,12 @@ export function selectNativeTurnContent(records, { sessionId, turnId }) {
     && records[0].payload?.id === sessionId, "NATIVE_CONTENT_SESSION_MISMATCH");
   check(records.filter((record) => record.type === "session_meta").every((record) => record.payload?.id === sessionId),
     "NATIVE_CONTENT_SESSION_MISMATCH");
-  let activeTurn, seen = false, userResponse, userEvent, assistantResponse, assistantEvent, completion;
+  let activeTurn, seen = false, assistantResponse, assistantEvent, completion;
+  const users = [], legacyUsers = [], modernUsers = [];
   const nativeTime = (value) => Number.isSafeInteger(value) ? value
     : typeof value === "string" && /(?:Z|[+-]\d{2}:\d{2})$/.test(value) ? Date.parse(value) : NaN;
   const selected = (content, record, source) => ({ content, timestamp: nativeTime(record.timestamp), source });
-  for (const record of records) {
+  for (const [index, record] of records.entries()) {
     const payload = record.payload ?? {};
     const nativeTurn = payload.turn_id ?? payload.turnId;
     if (record.type === "turn_context" || (record.type === "event_msg" && payload.type === "task_started")) {
@@ -104,6 +107,12 @@ export function selectNativeTurnContent(records, { sessionId, turnId }) {
       if (nativeTurn === activeTurn) activeTurn = undefined;
       continue;
     }
+    if (record.type === "event_msg" && payload.type === "item_completed" && payload.item?.type === "UserMessage") {
+      if (activeTurn !== turnId && nativeTurn !== turnId) continue;
+      check(activeTurn === turnId && nativeTurn === turnId && payload.thread_id === sessionId, "NATIVE_CONTENT_TURN_MISMATCH");
+      modernUsers.push({ index, item: payload.item });
+      continue;
+    }
     if (activeTurn !== turnId) continue;
     if (record.type === "response_item" && payload.type === "message") {
       const role = payload.role;
@@ -119,14 +128,17 @@ export function selectNativeTurnContent(records, { sessionId, turnId }) {
           "NATIVE_CONTENT_TURN_MISMATCH");
       }
       const value = selected(parts.join("\n"), record, "response_item");
-      if (role === "user") userResponse = value;
+      if (role === "user") users.push({ index, value, blocks: textInputBlocks(payload.content, "input_text") });
       else assistantResponse = value;
     } else if (record.type === "event_msg" && typeof payload.message === "string" && payload.message.trim()) {
-      if (payload.type === "user_message") userEvent = selected(payload.message, record, "user_message");
+      if (payload.type === "user_message") {
+        legacyUsers.push({ value: selected(payload.message, record, "user_message"),
+          identityMatches: (!nativeTurn || nativeTurn === turnId) && (!payload.thread_id || payload.thread_id === sessionId) });
+      }
       if (payload.type === "agent_message" && payload.phase === "final_answer") assistantEvent = selected(payload.message, record, "agent_message");
     }
   }
-  const user = userResponse ?? userEvent;
+  const user = selectUserResponse(users, legacyUsers, modernUsers);
   const assistant = assistantResponse ?? assistantEvent;
   check(seen && user && assistant, "NATIVE_CONTENT_RECORDS_MISSING");
   check(Number.isFinite(user.timestamp), "NATIVE_CONTENT_USER_TIMESTAMP_INVALID");
@@ -135,4 +147,49 @@ export function selectNativeTurnContent(records, { sessionId, turnId }) {
   const timestamps = [...new Set([assistant.timestamp, completion && nativeTime(completion.timestamp)].filter(Number.isFinite))];
   check(timestamps.length > 0, "NATIVE_CONTENT_ASSISTANT_TIMESTAMP_INVALID");
   return { user, assistant: { ...assistant, timestamps } };
+}
+
+function textInputBlocks(content, type) {
+  // Native CI uses text-only model fixtures. Preserve block boundaries and
+  // whitespace when identifying the submitted input, including literal tags.
+  if (!Array.isArray(content) || !content.every((part) => part?.type === type && typeof part.text === "string")) return undefined;
+  const blocks = content.map((part) => part.text);
+  return blocks.some((text) => text.trim()) ? blocks : undefined;
+}
+
+function selectUserResponse(users, legacyUsers, modernUsers) {
+  let selected;
+  if (modernUsers.length) {
+    const observed = new Map();
+    let boundary = -1;
+    for (const { index, item } of modernUsers) {
+      check(typeof item.id === "string" && item.id.trim(), "NATIVE_CONTENT_USER_IDENTITY_MISSING");
+      const blocks = textInputBlocks(item.content, "text");
+      check(blocks, "NATIVE_CONTENT_USER_INPUT_UNSUPPORTED");
+      if (observed.has(item.id)) {
+        check(isDeepStrictEqual(observed.get(item.id), item.content), "NATIVE_CONTENT_USER_AMBIGUOUS");
+        continue;
+      }
+      const matches = users.filter((user) => user.index > boundary && user.index < index
+        && isDeepStrictEqual(user.blocks, blocks));
+      check(matches.length === 1, "NATIVE_CONTENT_USER_ASSOCIATION_INVALID");
+      selected = matches[0].value;
+      observed.set(item.id, item.content);
+      boundary = index;
+    }
+    return selected;
+  }
+  if (users.length > 1 && legacyUsers.length) {
+    let previous = -1;
+    for (const event of legacyUsers) {
+      check(event.identityMatches, "NATIVE_CONTENT_TURN_MISMATCH");
+      const matches = users.filter((user) => user.value.content === event.value.content);
+      check(matches.length === 1 && matches[0].index > previous, "NATIVE_CONTENT_USER_ASSOCIATION_INVALID");
+      previous = matches[0].index;
+      selected = matches[0].value;
+    }
+    return selected;
+  }
+  check(users.length <= 1, "NATIVE_CONTENT_USER_AMBIGUOUS");
+  return users[0]?.value ?? legacyUsers.at(-1)?.value;
 }

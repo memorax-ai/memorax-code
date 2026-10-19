@@ -1,7 +1,49 @@
 import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { parseNativeMessageTimestamp } from "../../shared/message-time.js";
+import { codingEventText, codingToolOutputText, type CodingSessionNativeSource, type CodingSessionSourceTurn, type ResponseItem } from "../../coding-sessions/coding-turn.js";
+import type { NativeCodingSessionTurnRef } from "../../coding-sessions/contracts.js";
+import { readNativeTranscriptSnapshot } from "../../shared/native-transcript-snapshot.js";
 
 type JsonRecord = Record<string, unknown>;
+type ClaudeTranscriptRecords =
+  | { ok: true; records: JsonRecord[]; offsets: Map<JsonRecord, number> }
+  | { ok: false };
+
+export type ClaudeTurnStartCorrelation = Readonly<{
+  // Parse only complete lines, but pin every observed byte, including a partial tail.
+  endBytes: number;
+  observedEndBytes: number;
+  prefixDigest: string;
+  promptDigest: string;
+}>;
+
+export type ClaudeTurnSelection = Readonly<{
+  sessionId: string;
+  promptId?: string;
+  nativeUserUuid?: string;
+  correlation?: ClaudeTurnStartCorrelation;
+}>;
+
+type ClaudeTurnStartInput = Readonly<{ sessionId: string; promptId: string; prompt: string }>;
+
+export type ClaudeTurnStartCorrelationResult =
+  | { ok: true; correlation: ClaudeTurnStartCorrelation }
+  | { ok: false; reason: "transcript_unavailable" | "transcript_session_mismatch"; error?: string };
+
+export type ClaudeTurnStartSnapshot = Readonly<{
+  validate(): { ok: true } | Extract<ClaudeTurnStartCorrelationResult, { ok: false }>;
+  writeback(selection: ClaudeTurnSelection, options?: {
+    captureCodingItems?: boolean;
+    onArchiveSkipped?: () => void;
+  }): ClaudeTranscriptTurnResult | ClaudeCodingSessionTurnResult;
+  interrupted(selection: ClaudeTurnSelection): ClaudeInterruptedTranscriptTurnResult;
+}>;
+
+type ClaudeTurnStartSnapshotResult =
+  | { ok: true; correlation: ClaudeTurnStartCorrelation; snapshot: ClaudeTurnStartSnapshot }
+  | Extract<ClaudeTurnStartCorrelationResult, { ok: false }>;
 
 export type ClaudeTurnTokenUsage = {
   input_tokens: number;
@@ -26,6 +68,7 @@ export type ClaudeTurnActivity = Readonly<{
 export type ClaudeTranscriptTurn = {
   sessionId: string;
   promptId: string;
+  nativeUserUuid: string;
   sessionTurnIndex: number;
   userPrompt: string;
   assistantReply: string;
@@ -40,11 +83,22 @@ export type ClaudeTranscriptTurnFailureReason =
   | "transcript_session_mismatch"
   | "turn_not_found"
   | "turn_ambiguous"
+  | "turn_correlation_invalid"
   | "user_prompt_missing"
   | "assistant_message_missing";
 
 export type ClaudeTranscriptTurnResult =
   | { ok: true; turn: ClaudeTranscriptTurn }
+  | { ok: false; reason: ClaudeTranscriptTurnFailureReason; error?: string };
+
+export type ClaudeCodingSessionTurn = ClaudeTranscriptTurn & {
+  items: ResponseItem[];
+  closedAt?: string;
+  source?: CodingSessionNativeSource;
+};
+
+export type ClaudeCodingSessionTurnResult =
+  | { ok: true; turn: ClaudeCodingSessionTurn }
   | { ok: false; reason: ClaudeTranscriptTurnFailureReason; error?: string };
 
 export type ClaudeInterruptedTranscriptTurn = ClaudeTranscriptTurn & {
@@ -63,14 +117,107 @@ export type ClaudeInterruptedTranscriptTurnResult =
     error?: string;
   };
 
-export async function readClaudeTranscriptTurn(input: {
+export async function captureClaudeTurnStartSnapshot(
+  input: ClaudeTurnStartInput & { transcriptPath: string },
+): Promise<ClaudeTurnStartSnapshotResult> {
+  let bytes: Buffer;
+  try {
+    bytes = await readFile(input.transcriptPath);
+  } catch (error) {
+    if (!isRecord(error) || error.code !== "ENOENT") {
+      return { ok: false, reason: "transcript_unavailable", error: error instanceof Error ? error.message : String(error) };
+    }
+    bytes = Buffer.alloc(0);
+  }
+  return claudeTurnStartSnapshotFromBytes(bytes, input);
+}
+
+export function claudeTurnStartCorrelationFromJsonLines(
+  transcript: string,
+  input: ClaudeTurnStartInput,
+): ClaudeTurnStartCorrelationResult {
+  const result = claudeTurnStartSnapshotFromBytes(Buffer.from(transcript, "utf8"), input);
+  if (!result.ok) return result;
+  const validation = result.snapshot.validate();
+  return validation.ok ? { ok: true, correlation: result.correlation } : validation;
+}
+
+function claudeTurnStartSnapshotFromBytes(
+  bytes: Buffer,
+  input: ClaudeTurnStartInput & { transcriptPath?: string },
+): ClaudeTurnStartSnapshotResult {
+  if (!input.sessionId || !input.promptId || !input.prompt.trim()) {
+    return { ok: false, reason: "transcript_unavailable", error: "Claude Turn start identity is incomplete." };
+  }
+  const endBytes = bytes.lastIndexOf(10) + 1;
+  const correlation = {
+    endBytes, observedEndBytes: bytes.length, prefixDigest: textDigest(bytes), promptDigest: textDigest(input.prompt.trim()),
+  };
+  const { sessionId, transcriptPath } = input;
+  let cached: { ok: true; text: string; parsed: Extract<ClaudeTranscriptRecords, { ok: true }> }
+    | Extract<ClaudeTurnStartCorrelationResult, { ok: false }> | undefined;
+  function parse() {
+    if (cached) return cached;
+    try {
+      const text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes.subarray(0, endBytes));
+      const parsed = transcriptRecords(text);
+      if (!parsed.ok) {
+        return cached = { ok: false, reason: "transcript_unavailable", error: "Claude Turn start contains an invalid completed JSONL record." };
+      }
+      if (parsed.records.some((record) => sessionIdFromRecord(record) === sessionId)
+        && !requestedSessionRecords(parsed.records, sessionId)) {
+        return cached = { ok: false, reason: "transcript_session_mismatch" };
+      }
+      return cached = { ok: true, text, parsed };
+    } catch {
+      return cached = { ok: false, reason: "transcript_unavailable", error: "Claude Turn start contains invalid UTF-8." };
+    } finally {
+      bytes = Buffer.alloc(0);
+    }
+  }
+  return {
+    ok: true,
+    correlation,
+    // Bytes and parsed records stay local to this Start, never in the session cache.
+    snapshot: {
+      validate() {
+        const result = parse();
+        return result.ok ? { ok: true } : result;
+      },
+      writeback(selection, options = {}) {
+        const captured = parse();
+        if (!captured.ok) return captured;
+        try {
+          const result = resolveClaudeCompletedTranscriptTurn(
+            captured.text, selection, options.captureCodingItems === true, () => options.onArchiveSkipped?.(), captured.parsed,
+          );
+          return result.ok && "items" in result.turn && transcriptPath ? {
+            ok: true,
+            turn: { ...result.turn, source: { transcriptPath, endBytes } },
+          } : result;
+        } catch (error) {
+          return { ok: false, reason: "transcript_unavailable", error: error instanceof Error ? error.message : String(error) };
+        }
+      },
+      interrupted(selection) {
+        const captured = parse();
+        if (!captured.ok) return captured;
+        try {
+          return resolveClaudeInterruptedTranscriptTurn(captured.text, selection, captured.parsed);
+        } catch (error) {
+          return { ok: false, reason: "transcript_unavailable", error: error instanceof Error ? error.message : String(error) };
+        }
+      },
+    },
+  };
+}
+
+export async function readClaudeTranscriptTurn(input: ClaudeTurnSelection & {
   transcriptPath: string;
-  sessionId: string;
-  promptId: string;
 }): Promise<ClaudeTranscriptTurnResult> {
   let transcript: string;
   try {
-    transcript = await readFile(input.transcriptPath, "utf8");
+    transcript = (await readNativeTranscriptSnapshot(input)).text;
   } catch (error) {
     return {
       ok: false,
@@ -81,14 +228,13 @@ export async function readClaudeTranscriptTurn(input: {
   return claudeTranscriptTurnFromJsonLines(transcript, input);
 }
 
-export async function readClaudeInterruptedTranscriptTurn(input: {
+export async function readClaudeInterruptedTranscriptTurn(input: ClaudeTurnSelection & {
   transcriptPath: string;
-  sessionId: string;
-  promptId: string;
+  endBytes?: number;
 }): Promise<ClaudeInterruptedTranscriptTurnResult> {
   let transcript: string;
   try {
-    transcript = await readFile(input.transcriptPath, "utf8");
+    transcript = (await readNativeTranscriptSnapshot(input)).text;
   } catch (error) {
     return {
       ok: false,
@@ -101,18 +247,101 @@ export async function readClaudeInterruptedTranscriptTurn(input: {
 
 export function claudeTranscriptTurnFromJsonLines(
   transcript: string,
-  input: { sessionId: string; promptId: string },
+  input: ClaudeTurnSelection,
 ): ClaudeTranscriptTurnResult {
-  const requested = requestedTranscriptRecords(transcript, input.sessionId);
+  return resolveClaudeCompletedTranscriptTurn(transcript, input, false);
+}
+
+export async function readClaudeWritebackTurn(input: ClaudeTurnSelection & {
+  transcriptPath: string;
+  endBytes?: number;
+  captureCodingItems?: boolean;
+  onArchiveSkipped?: () => void;
+}): Promise<ClaudeTranscriptTurnResult | ClaudeCodingSessionTurnResult> {
+  try {
+    const snapshot = await readNativeTranscriptSnapshot(input);
+    const result = resolveClaudeCompletedTranscriptTurn(
+      snapshot.text, input, input.captureCodingItems === true, () => input.onArchiveSkipped?.(),
+    );
+    return result.ok && "items" in result.turn ? {
+      ok: true,
+      turn: { ...result.turn, source: { transcriptPath: input.transcriptPath, endBytes: snapshot.endBytes } },
+    } : result;
+  } catch (error) {
+    return {
+      ok: false,
+      reason: "transcript_unavailable",
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+export async function readClaudeCodingSessionTurn(input: ClaudeTurnSelection & {
+  transcriptPath: string;
+  endBytes?: number;
+}): Promise<ClaudeCodingSessionTurnResult> {
+  try {
+    const snapshot = await readNativeTranscriptSnapshot(input);
+    const result = claudeCodingSessionTurnFromJsonLines(snapshot.text, input);
+    return result.ok ? {
+      ok: true,
+      turn: { ...result.turn, source: { transcriptPath: input.transcriptPath, endBytes: snapshot.endBytes } },
+    } : result;
+  } catch (error) {
+    return {
+      ok: false,
+      reason: "transcript_unavailable",
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+export async function readClaudeArchiveSource(
+  ref: NativeCodingSessionTurnRef,
+): Promise<CodingSessionSourceTurn | undefined> {
+  if (ref.client !== "claude-code") return undefined;
+  const result = await readClaudeCodingSessionTurn({ ...ref.source, sessionId: ref.sessionId, nativeUserUuid: ref.turnId });
+  if (!result.ok || result.turn.nativeUserUuid !== ref.turnId || result.turn.sessionTurnIndex !== ref.turnIndex) return undefined;
+  return { ...ref, items: result.turn.items };
+}
+
+export function claudeCodingSessionTurnFromJsonLines(
+  transcript: string,
+  input: ClaudeTurnSelection,
+): ClaudeCodingSessionTurnResult {
+  return resolveClaudeCompletedTranscriptTurn(transcript, input, true);
+}
+
+function resolveClaudeCompletedTranscriptTurn(
+  transcript: string,
+  input: ClaudeTurnSelection,
+  captureCodingItems: true,
+): ClaudeCodingSessionTurnResult;
+function resolveClaudeCompletedTranscriptTurn(
+  transcript: string,
+  input: ClaudeTurnSelection,
+  captureCodingItems: false,
+): ClaudeTranscriptTurnResult;
+function resolveClaudeCompletedTranscriptTurn(
+  transcript: string,
+  input: ClaudeTurnSelection,
+  captureCodingItems: boolean,
+  onArchiveSkipped: () => void,
+  parsed?: ClaudeTranscriptRecords,
+): ClaudeTranscriptTurnResult | ClaudeCodingSessionTurnResult;
+function resolveClaudeCompletedTranscriptTurn(
+  transcript: string,
+  input: ClaudeTurnSelection,
+  captureCodingItems: boolean,
+  onArchiveSkipped?: () => void,
+  parsed?: ClaudeTranscriptRecords,
+): ClaudeTranscriptTurnResult | ClaudeCodingSessionTurnResult {
+  const requested = requestedTranscriptRecords(transcript, input.sessionId, parsed);
   if (!requested.ok) return requested;
   const records = requested.records;
-
-  const promptRecords = records.filter((record) => (
-    promptIdFromRecord(record) === input.promptId && isInteractiveUserRecord(record)
-  ));
-  if (promptRecords.length === 0) return { ok: false, reason: "turn_not_found" };
-  const sessionTurnIndex = interactivePromptIndex(records, input.promptId);
-  const recordsByUuid = indexRecordsByUuid(records);
+  const { recordsByUuid, conflictsByUuid } = indexRecordsByUuid(records);
+  const selected = selectClaudeUser(transcript, input, records, requested.offsets, recordsByUuid);
+  if (!selected.ok) return selected;
 
   const candidates: Array<{
     branch: ClaudePromptBranch;
@@ -125,13 +354,19 @@ export function claudeTranscriptTurnFromJsonLines(
   let ambiguousBranch = false;
   for (const record of records) {
     if (!isCompletedAssistantRecord(record)) continue;
+    const uuid = stringValue(record.uuid);
+    const indexedRecord = uuid ? recordsByUuid.get(uuid) : undefined;
+    if (indexedRecord && indexedRecord !== record) continue;
     const assistantReply = completedAssistantReply(record);
     const branch = promptBranch(record, recordsByUuid);
     if (branch.ambiguous) {
-      ambiguousBranch = true;
+      if (ambiguousBranchMayAffectPrompt(record, selected.promptId, recordsByUuid, conflictsByUuid, selected.nativeUserUuid)) {
+        ambiguousBranch = true;
+      }
       continue;
     }
-    if (branch.promptId === input.promptId && branch.userPrompt) {
+    if (branch.nativeUserUuid === selected.nativeUserUuid && branch.userPrompt
+      && (input.correlation === undefined || requested.offsets.get(record)! >= input.correlation.observedEndBytes)) {
       const usage = aggregateClaudeUsage(branch.assistantMessages);
       candidates.push({
         branch,
@@ -151,41 +386,54 @@ export function claudeTranscriptTurnFromJsonLines(
     return { ok: false, reason: "turn_ambiguous" };
   }
   const candidate = terminalCandidates[0];
-  if (candidate?.assistantReply && sessionTurnIndex !== undefined) {
-    return {
-      ok: true,
-      turn: {
-        sessionId: input.sessionId,
-        promptId: input.promptId,
-        sessionTurnIndex,
-        userPrompt: candidate.userPrompt,
-        assistantReply: candidate.assistantReply,
-        ...(candidate.branch.userTimestamp === undefined ? {} : { userTimestamp: candidate.branch.userTimestamp }),
-        ...(candidate.assistantTimestamp === undefined ? {} : { assistantTimestamp: candidate.assistantTimestamp }),
-        activities: candidate.activities,
-        ...(candidate.usage ? { usage: candidate.usage } : {}),
-      },
+  if (candidate?.assistantReply) {
+    const turn: ClaudeTranscriptTurn = {
+      sessionId: input.sessionId,
+      promptId: selected.promptId,
+      nativeUserUuid: selected.nativeUserUuid,
+      sessionTurnIndex: selected.sessionTurnIndex,
+      userPrompt: candidate.userPrompt,
+      assistantReply: candidate.assistantReply,
+      ...(candidate.branch.userTimestamp === undefined ? {} : { userTimestamp: candidate.branch.userTimestamp }),
+      ...(candidate.assistantTimestamp === undefined ? {} : { assistantTimestamp: candidate.assistantTimestamp }),
+      activities: candidate.activities,
+      ...(candidate.usage ? { usage: candidate.usage } : {}),
     };
-  }
-  if (!promptRecords.some((record) => visibleUserPrompt(record))) {
-    return { ok: false, reason: "user_prompt_missing" };
+    if (!captureCodingItems) return { ok: true, turn };
+    try {
+      const closedAt = transcriptRecordTimestamp(candidate.branch.records[0]!);
+      return { ok: true, turn: {
+        ...turn,
+        items: completedClaudeResponseItems(candidate.branch, records, recordsByUuid),
+        ...(closedAt ? { closedAt } : {}),
+      } };
+    } catch (error) {
+      if (!onArchiveSkipped) throw error;
+      onArchiveSkipped();
+      return { ok: true, turn };
+    }
   }
   return { ok: false, reason: "assistant_message_missing" };
 }
 
 export function claudeInterruptedTranscriptTurnFromJsonLines(
   transcript: string,
-  input: { sessionId: string; promptId: string },
+  input: ClaudeTurnSelection,
 ): ClaudeInterruptedTranscriptTurnResult {
-  const requested = requestedTranscriptRecords(transcript, input.sessionId);
+  return resolveClaudeInterruptedTranscriptTurn(transcript, input);
+}
+
+function resolveClaudeInterruptedTranscriptTurn(
+  transcript: string,
+  input: ClaudeTurnSelection,
+  parsed?: ClaudeTranscriptRecords,
+): ClaudeInterruptedTranscriptTurnResult {
+  const requested = requestedTranscriptRecords(transcript, input.sessionId, parsed);
   if (!requested.ok) return requested;
   const records = requested.records;
-  const promptRecords = records.filter((record) => (
-    promptIdFromRecord(record) === input.promptId && isInteractiveUserRecord(record)
-  ));
-  if (promptRecords.length === 0) return { ok: false, reason: "turn_not_found" };
-  const sessionTurnIndex = interactivePromptIndex(records, input.promptId);
-  const recordsByUuid = indexRecordsByUuid(records);
+  const { recordsByUuid, conflictsByUuid } = indexRecordsByUuid(records);
+  const selected = selectClaudeUser(transcript, input, records, requested.offsets, recordsByUuid);
+  if (!selected.ok) return selected;
 
   const candidates: Array<{
     userPrompt: string;
@@ -197,9 +445,12 @@ export function claudeInterruptedTranscriptTurnFromJsonLines(
   let ambiguousBranch = false;
   for (const record of records) {
     if (!interruptionMarker(record)) continue;
-    const prompt = promptOnBranch(record, recordsByUuid, input.promptId);
+    if (input.correlation && requested.offsets.get(record)! < input.correlation.observedEndBytes) continue;
+    const prompt = promptOnBranch(record, recordsByUuid, selected.nativeUserUuid);
     if (prompt.ambiguous) {
-      ambiguousBranch = true;
+      if (ambiguousBranchMayAffectPrompt(record, selected.promptId, recordsByUuid, conflictsByUuid, selected.nativeUserUuid)) {
+        ambiguousBranch = true;
+      }
       continue;
     }
     if (!prompt.userPrompt || !prompt.assistantMessages) continue;
@@ -219,34 +470,88 @@ export function claudeInterruptedTranscriptTurnFromJsonLines(
     return { ok: false, reason: "turn_ambiguous" };
   }
   const candidate = candidates[0];
-  if (candidate && sessionTurnIndex !== undefined) {
+  if (candidate) {
     return {
       ok: true,
       turn: {
         sessionId: input.sessionId,
-        promptId: input.promptId,
-        sessionTurnIndex,
+        promptId: selected.promptId,
+        nativeUserUuid: selected.nativeUserUuid,
+        sessionTurnIndex: selected.sessionTurnIndex,
         ...candidate,
       },
     };
   }
-  if (!promptRecords.some((record) => visibleUserPrompt(record))) {
-    return { ok: false, reason: "user_prompt_missing" };
-  }
   return { ok: false, reason: "turn_not_interrupted" };
+}
+
+function selectClaudeUser(
+  transcript: string,
+  input: ClaudeTurnSelection,
+  records: JsonRecord[],
+  offsets: Map<JsonRecord, number>,
+  recordsByUuid: Map<string, JsonRecord | undefined>,
+): { ok: true; nativeUserUuid: string; promptId: string; sessionTurnIndex: number }
+  | { ok: false; reason: Exclude<ClaudeTranscriptTurnFailureReason, "assistant_message_missing"> } {
+  if (!input.promptId && !input.nativeUserUuid) return { ok: false, reason: "turn_not_found" };
+  const correlation = input.correlation;
+  const closedUsers = new Set<string>();
+  if (correlation) {
+    const bytes = Buffer.from(transcript, "utf8");
+    if (!Number.isSafeInteger(correlation.endBytes) || correlation.endBytes < 0
+      || !Number.isSafeInteger(correlation.observedEndBytes) || correlation.observedEndBytes < correlation.endBytes
+      || bytes.length < correlation.observedEndBytes
+      || textDigest(bytes.subarray(0, correlation.observedEndBytes)) !== correlation.prefixDigest
+      || bytes.subarray(0, correlation.observedEndBytes).lastIndexOf(10) + 1 !== correlation.endBytes
+      || !/^[a-f0-9]{64}$/.test(correlation.promptDigest)) {
+      return { ok: false, reason: "turn_correlation_invalid" };
+    }
+    const previousRecords = records.filter((record) => offsets.get(record)! < correlation.endBytes);
+    const previousIndex = indexRecordsByUuid(previousRecords);
+    for (const record of previousRecords) {
+      if (!isCompletedAssistantRecord(record) && !interruptionMarker(record)) continue;
+      const branch = promptBranch(record, previousIndex.recordsByUuid);
+      if (!branch.ambiguous && branch.nativeUserUuid) closedUsers.add(branch.nativeUserUuid);
+    }
+  }
+  const promptRecords = records.filter((record) => isInteractiveUserRecord(record)
+    && (!input.promptId || promptIdFromRecord(record) === input.promptId)
+    && (!input.nativeUserUuid || stringValue(record.uuid) === input.nativeUserUuid));
+  if (promptRecords.length === 0) return { ok: false, reason: "turn_not_found" };
+  const visiblePrompts = promptRecords.filter((record) => visibleUserPrompt(record));
+  if (visiblePrompts.length === 0) return { ok: false, reason: "user_prompt_missing" };
+  // Decide the user before looking for a final. A later completed candidate must
+  // not disambiguate another matching user whose answer has not reached disk.
+  const users = new Map<string, JsonRecord>();
+  for (const record of visiblePrompts) {
+    const prompt = visibleUserPrompt(record);
+    if (correlation && (!prompt || textDigest(prompt) !== correlation.promptDigest)) continue;
+    const uuid = stringValue(record.uuid);
+    if (uuid && closedUsers.has(uuid)) continue;
+    if (!uuid || !recordsByUuid.get(uuid)) return { ok: false, reason: "turn_ambiguous" };
+    users.set(uuid, recordsByUuid.get(uuid)!);
+  }
+  if (users.size > 1) return { ok: false, reason: "turn_ambiguous" };
+  const [nativeUserUuid, user] = [...users.entries()][0] ?? [];
+  if (!user || !nativeUserUuid) return { ok: false, reason: "turn_not_found" };
+  if (!visibleUserPrompt(user)) return { ok: false, reason: "user_prompt_missing" };
+  const promptId = promptIdFromRecord(user);
+  const sessionTurnIndex = interactivePromptIndex(records, nativeUserUuid);
+  if (!promptId || sessionTurnIndex === undefined) return { ok: false, reason: "turn_not_found" };
+  return { ok: true, nativeUserUuid, promptId, sessionTurnIndex };
 }
 
 function requestedTranscriptRecords(
   transcript: string,
   sessionId: string,
+  parsed = transcriptRecords(transcript),
 ):
-  | { ok: true; records: JsonRecord[] }
+  | { ok: true; records: JsonRecord[]; offsets: Map<JsonRecord, number> }
   | {
     ok: false;
     reason: "transcript_unavailable" | "transcript_session_mismatch";
     error?: string;
   } {
-  const parsed = transcriptRecords(transcript);
   if (!parsed.ok) {
     return {
       ok: false,
@@ -256,17 +561,85 @@ function requestedTranscriptRecords(
   }
   const records = requestedSessionRecords(parsed.records, sessionId);
   return records
-    ? { ok: true, records }
+    ? { ok: true, records, offsets: parsed.offsets }
     : { ok: false, reason: "transcript_session_mismatch" };
 }
 
-function indexRecordsByUuid(records: JsonRecord[]): Map<string, JsonRecord> {
-  const indexed = new Map<string, JsonRecord>();
+function indexRecordsByUuid(records: JsonRecord[]): {
+  recordsByUuid: Map<string, JsonRecord | undefined>;
+  conflictsByUuid: Map<string, JsonRecord[]>;
+} {
+  const recordsByUuid = new Map<string, JsonRecord | undefined>();
+  const conflictsByUuid = new Map<string, JsonRecord[]>();
   for (const record of records) {
     const uuid = stringValue(record.uuid);
-    if (uuid) indexed.set(uuid, record);
+    if (!uuid) continue;
+    const conflicts = conflictsByUuid.get(uuid);
+    if (conflicts) {
+      conflicts.push(record);
+    } else if (!recordsByUuid.has(uuid)) {
+      recordsByUuid.set(uuid, record);
+    } else {
+      const previous = recordsByUuid.get(uuid)!;
+      if (!isDeepStrictEqual(recordSnapshot(previous), recordSnapshot(record))) {
+        // Keep every possible parent, without choosing a conflicting snapshot.
+        conflictsByUuid.set(uuid, [previous, record]);
+        recordsByUuid.set(uuid, undefined);
+      }
+    }
   }
-  return indexed;
+  return { recordsByUuid, conflictsByUuid };
+}
+
+function recordSnapshot(record: JsonRecord): JsonRecord {
+  const hasVisiblePrompt = Boolean(visibleUserPrompt(record));
+  return Object.fromEntries(Object.entries(record).filter(([key]) => (
+    !["cwd", "gitBranch", "slug"].includes(key)
+    && !(record.type === "user" && key === "toolUseResult")
+    && !(!hasVisiblePrompt && ["promptId", "prompt_id"].includes(key))
+  )));
+}
+
+function ambiguousBranchMayAffectPrompt(
+  terminal: JsonRecord,
+  promptId: string,
+  recordsByUuid: Map<string, JsonRecord | undefined>,
+  conflictsByUuid: Map<string, JsonRecord[]>,
+  nativeUserUuid?: string,
+): boolean {
+  const pending: Array<{ record: JsonRecord; exit?: boolean }> = [{ record: terminal }];
+  const visiting = new Set<string | JsonRecord>();
+  const visited = new Set<string | JsonRecord>();
+  while (pending.length > 0) {
+    const { record, exit } = pending.pop()!;
+    const uuid = stringValue(record.uuid);
+    const key = uuid ?? record;
+    if (exit) {
+      visiting.delete(key);
+      visited.add(key);
+      continue;
+    }
+    if (visited.has(key)) continue;
+    if (visiting.has(key)) return true;
+    visiting.add(key);
+    pending.push({ record, exit: true });
+    for (const variant of (uuid ? conflictsByUuid.get(uuid) : undefined) ?? [record]) {
+      if (isSystemPromptRecord(variant)) continue;
+      if (visibleUserPrompt(variant)) {
+        const variantUserUuid = stringValue(variant.uuid);
+        if (nativeUserUuid && variantUserUuid && variantUserUuid !== nativeUserUuid) continue;
+        const variantPromptId = promptIdFromRecord(variant);
+        if (!variantPromptId || variantPromptId === promptId) return true;
+        continue;
+      }
+      const parentUuid = stringValue(variant.parentUuid) ?? stringValue(variant.parent_uuid);
+      const parent = parentUuid
+        ? recordsByUuid.get(parentUuid) ?? conflictsByUuid.get(parentUuid)?.[0] : undefined;
+      if (!parent) return true;
+      pending.push({ record: parent });
+    }
+  }
+  return false;
 }
 
 function requestedSessionRecords(
@@ -290,28 +663,32 @@ function requestedSessionRecords(
     : records.slice(requestedSessionStart);
 }
 
-function transcriptRecords(transcript: string):
-  | { ok: true; records: JsonRecord[] }
-  | { ok: false } {
+function transcriptRecords(transcript: string): ClaudeTranscriptRecords {
   const records: JsonRecord[] = [];
-  const lines = transcript.split(/\r?\n/);
+  const offsets = new Map<JsonRecord, number>();
+  const lines = transcript.split("\n");
+  let nextOffset = 0;
   for (const [index, line] of lines.entries()) {
+    const offset = nextOffset;
+    nextOffset += Buffer.byteLength(line, "utf8") + 1;
     if (!line.trim()) continue;
     try {
       const parsed = JSON.parse(line) as unknown;
       if (!isRecord(parsed)) return { ok: false };
       records.push(parsed);
+      offsets.set(parsed, offset);
     } catch {
       // Claude may append while the file is being read; only an unterminated tail can be incomplete.
       if (records.length > 0 && index === lines.length - 1 && !transcript.endsWith("\n")) continue;
       return { ok: false };
     }
   }
-  return { ok: true, records };
+  return { ok: true, records, offsets };
 }
 
 type ClaudePromptBranch = Readonly<{
   promptId?: string;
+  nativeUserUuid?: string;
   userPrompt?: string;
   userTimestamp?: number;
   assistantMessages: JsonRecord[];
@@ -354,7 +731,7 @@ function maximalTerminalLineages<T extends Readonly<{ branch: ClaudePromptBranch
 
 function promptBranch(
   terminal: JsonRecord,
-  recordsByUuid: Map<string, JsonRecord>,
+  recordsByUuid: Map<string, JsonRecord | undefined>,
 ): ClaudePromptBranch {
   const visited = new Set<string>();
   const assistantMessages: JsonRecord[] = [];
@@ -364,15 +741,19 @@ function promptBranch(
     branchRecords.push(current);
     const uuid = stringValue(current.uuid);
     if (uuid) {
-      if (visited.has(uuid)) return { assistantMessages, records: branchRecords, ambiguous: true };
+      if (visited.has(uuid) || (recordsByUuid.has(uuid) && !recordsByUuid.get(uuid))) {
+        return { assistantMessages, records: branchRecords, ambiguous: true };
+      }
       visited.add(uuid);
     }
+    if (isSystemPromptRecord(current)) break;
     const assistantMessage = assistantMessageFromRecord(current);
     if (assistantMessage) assistantMessages.push(assistantMessage);
     const prompt = visibleUserPrompt(current);
     if (prompt) {
       return {
         promptId: promptIdFromRecord(current),
+        nativeUserUuid: stringValue(current.uuid),
         userPrompt: prompt,
         userTimestamp: parseNativeMessageTimestamp(current.timestamp),
         assistantMessages,
@@ -381,6 +762,9 @@ function promptBranch(
       };
     }
     const parentUuid: string | undefined = stringValue(current.parentUuid) ?? stringValue(current.parent_uuid);
+    if (parentUuid && recordsByUuid.has(parentUuid) && !recordsByUuid.get(parentUuid)) {
+      return { assistantMessages, records: branchRecords, ambiguous: true };
+    }
     current = parentUuid ? recordsByUuid.get(parentUuid) : undefined;
   }
   return { assistantMessages, records: branchRecords, ambiguous: false };
@@ -388,12 +772,12 @@ function promptBranch(
 
 function promptOnBranch(
   assistant: JsonRecord,
-  recordsByUuid: Map<string, JsonRecord>,
-  promptId: string,
+  recordsByUuid: Map<string, JsonRecord | undefined>,
+  nativeUserUuid: string,
 ): { userPrompt?: string; assistantMessages?: JsonRecord[]; ambiguous: boolean } {
   const branch = promptBranch(assistant, recordsByUuid);
   if (branch.ambiguous) return { ambiguous: true };
-  return branch.promptId === promptId && branch.userPrompt
+  return branch.nativeUserUuid === nativeUserUuid && branch.userPrompt
     ? {
       userPrompt: branch.userPrompt,
       assistantMessages: branch.assistantMessages,
@@ -417,9 +801,7 @@ function isInteractiveUserRecord(record: JsonRecord): boolean {
     || record.isVisibleInTranscriptOnly === true) {
     return false;
   }
-  const origin = isRecord(record.origin) ? record.origin : undefined;
-  if (stringValue(origin?.kind)?.toLowerCase() === "task-notification"
-    || stringValue(record.promptSource ?? record.prompt_source)?.toLowerCase() === "system"
+  if (isSystemPromptRecord(record)
     || stringValue(record.interruptedMessageId ?? record.interrupted_message_id)) {
     return false;
   }
@@ -427,19 +809,26 @@ function isInteractiveUserRecord(record: JsonRecord): boolean {
   return Boolean(message && message.role === "user");
 }
 
+function isSystemPromptRecord(record: JsonRecord): boolean {
+  if (record.type !== "user") return false;
+  const origin = isRecord(record.origin) ? record.origin : undefined;
+  return stringValue(origin?.kind)?.toLowerCase() === "task-notification"
+    || stringValue(record.promptSource ?? record.prompt_source)?.toLowerCase() === "system";
+}
+
 function interactivePromptIndex(
   records: JsonRecord[],
-  targetPromptId: string,
+  targetUserUuid: string,
 ): number | undefined {
-  const seenPromptIds = new Set<string>();
+  const seenUserUuids = new Set<string>();
   let index = 0;
   for (const record of records) {
     if (!visibleUserPrompt(record)) continue;
-    const promptId = promptIdFromRecord(record);
-    if (!promptId || seenPromptIds.has(promptId)) continue;
-    seenPromptIds.add(promptId);
+    const uuid = stringValue(record.uuid);
+    if (!uuid || seenUserUuids.has(uuid)) continue;
+    seenUserUuids.add(uuid);
     index += 1;
-    if (promptId === targetPromptId) return index;
+    if (uuid === targetUserUuid) return index;
   }
   return undefined;
 }
@@ -465,6 +854,145 @@ function interruptedAssistantReply(assistantMessages: JsonRecord[]): string {
     textSegments.push(text);
   }
   return textSegments.join("\n\n");
+}
+
+function completedClaudeResponseItems(
+  branch: ClaudePromptBranch,
+  records: JsonRecord[],
+  recordsByUuid: Map<string, JsonRecord | undefined>,
+): ResponseItem[] {
+  const items: ResponseItem[] = [];
+  const terminalRecord = branch.records[0];
+  const promptRecord = branch.records[branch.records.length - 1]!;
+  const turnRecords = records.slice(records.indexOf(promptRecord), records.indexOf(terminalRecord!) + 1);
+  const toolResults = completedClaudeToolResults(branch, turnRecords, recordsByUuid);
+  const selectedRecords = new Set(branch.records);
+  for (const result of toolResults.values()) {
+    if (result) selectedRecords.add(result.record);
+  }
+  for (const record of records) {
+    if (!selectedRecords.has(record)) continue;
+    if (record === promptRecord) {
+      items.push({ type: "message", role: "user", content: archiveMessageTextBlocks(record).map((text) => ({ type: "input_text", text })) });
+      continue;
+    }
+    if (visibleUserPrompt(record)) continue;
+    if (record.isSidechain === true || record.isMeta === true
+      || record.isCompactSummary === true || record.isVisibleInTranscriptOnly === true) continue;
+    const message = isRecord(record.message) ? record.message : undefined;
+    if (!message || !Array.isArray(message.content)) {
+      if (message?.role === "assistant" && typeof message.content === "string") {
+        const content = visibleMessageText(message.content);
+        if (content) items.push({ type: "message", role: "assistant", phase: record === terminalRecord ? "final_answer" : "commentary", content: [{ type: "output_text", text: message.content }] });
+      }
+      continue;
+    }
+    if (message.role === "assistant") {
+      let finalContent: { type: "output_text"; text: string }[] = [];
+      const flushFinalText = () => {
+        if (finalContent.length === 0) return;
+        items.push({ type: "message", role: "assistant", phase: "final_answer", content: finalContent });
+        finalContent = [];
+      };
+      for (const block of message.content) {
+        if (!isRecord(block)) continue;
+        if (block.type === "text" && typeof block.text === "string") {
+          if (record === terminalRecord) finalContent.push({ type: "output_text", text: block.text });
+          else if (nonBlankString(block.text)) items.push({ type: "message", role: "assistant", phase: "commentary", content: [{ type: "output_text", text: block.text }] });
+          continue;
+        }
+        if (block.type !== "tool_use") continue;
+        const callId = stringValue(block.id);
+        const tool = stringValue(block.name);
+        if (!callId || !tool) continue;
+        flushFinalText();
+        items.push({ type: "function_call", call_id: callId, name: tool, arguments: codingEventText(block.input) });
+      }
+      flushFinalText();
+      continue;
+    }
+    if (message.role !== "user") continue;
+    for (const block of message.content) {
+      if (!isRecord(block) || block.type !== "tool_result") continue;
+      const callId = stringValue(block.tool_use_id);
+      const result = callId ? toolResults.get(callId) : undefined;
+      if (!callId || !result || result.record !== record) continue;
+      items.push({ type: "function_call_output", call_id: callId, output: result.output });
+      toolResults.delete(callId);
+    }
+  }
+  return items;
+}
+
+function completedClaudeToolResults(
+  branch: ClaudePromptBranch,
+  records: JsonRecord[],
+  recordsByUuid: Map<string, JsonRecord | undefined>,
+): Map<string, { record: JsonRecord; output: string } | undefined> {
+  const calls = new Map<string, JsonRecord | undefined>();
+  const selectedRecords = new Set(branch.records);
+  const positions = new Map(records.map((record, index) => [record, index]));
+  for (const record of branch.records) {
+    const message = assistantMessageFromRecord(record);
+    if (!Array.isArray(message?.content)) continue;
+    for (const block of message.content) {
+      if (!isRecord(block) || block.type !== "tool_use" || !stringValue(block.name)) continue;
+      const callId = stringValue(block.id);
+      if (callId) calls.set(callId, calls.has(callId) ? undefined : record);
+    }
+  }
+  const results = new Map<string, { record: JsonRecord; output: string } | undefined>();
+  for (const [position, record] of records.entries()) {
+    if (record.type !== "user" || visibleUserPrompt(record) || isSystemPromptRecord(record)
+      || record.isSidechain === true || record.isMeta === true
+      || record.isCompactSummary === true || record.isVisibleInTranscriptOnly === true) continue;
+    const message = isRecord(record.message) ? record.message : undefined;
+    if (message?.role !== "user" || !Array.isArray(message.content)) continue;
+    const parentUuid = stringValue(record.parentUuid) ?? stringValue(record.parent_uuid);
+    const parent = parentUuid ? recordsByUuid.get(parentUuid) : undefined;
+    if (!parent) continue;
+    const resultBranch = promptBranch(parent, recordsByUuid);
+    for (const block of message.content) {
+      if (!isRecord(block) || block.type !== "tool_result") continue;
+      const callId = stringValue(block.tool_use_id);
+      const call = callId ? calls.get(callId) : undefined;
+      if (!callId || !call || (!selectedRecords.has(record)
+        && (positions.get(call) ?? position) >= position)) continue;
+      const callIndex = resultBranch.records.indexOf(call);
+      if (resultBranch.ambiguous || callIndex < 0
+        || resultBranch.records[resultBranch.records.length - 1] !== branch.records[branch.records.length - 1]
+        || resultBranch.records.slice(0, callIndex).some((ancestor) => (
+          ancestor.isSidechain === true || ancestor.isMeta === true
+          || ancestor.isCompactSummary === true || ancestor.isVisibleInTranscriptOnly === true
+          || (ancestor.type === "assistant" && !selectedRecords.has(ancestor))
+        ))) continue;
+      const uuid = stringValue(record.uuid);
+      if (uuid && recordsByUuid.has(uuid) && !recordsByUuid.get(uuid)) {
+        results.set(callId, undefined);
+        continue;
+      }
+      const output = codingToolOutputText(typeof block.is_error === "boolean"
+        ? { content: block.content, is_error: block.is_error } : block.content);
+      if (!results.has(callId)) results.set(callId, { record, output });
+      else {
+        const previous = results.get(callId);
+        if (previous?.output !== output) results.set(callId, undefined);
+        else if (selectedRecords.has(record) && !selectedRecords.has(previous.record)) {
+          results.set(callId, { record, output });
+        }
+      }
+    }
+  }
+  return results;
+}
+
+function archiveMessageTextBlocks(record: JsonRecord): string[] {
+  const message = isRecord(record.message) ? record.message : undefined;
+  const content = message?.content;
+  if (typeof content === "string") return [content];
+  return Array.isArray(content) ? content.flatMap((block) => (
+    isRecord(block) && block.type === "text" && typeof block.text === "string" ? [block.text] : []
+  )) : [];
 }
 
 function transcriptRecordTimestamp(record: JsonRecord): string | undefined {
@@ -819,6 +1347,10 @@ function promptIdFromRecord(record: JsonRecord): string | undefined {
 
 function nonBlankString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function textDigest(value: string | Buffer): string {
+  return createHash("sha256").update(value).digest("hex");
 }
 
 function stringValue(value: unknown): string | undefined {

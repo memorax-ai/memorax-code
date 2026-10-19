@@ -12,6 +12,9 @@ import {
 } from "../../../memorax-code-adapter-common/src/memorax-defaults.mjs";
 
 export type MemoraxCodeConfig = Readonly<{
+  coding_sessions?: Readonly<{
+    enabled?: boolean;
+  }>;
   clients?: Readonly<{
     codex?: boolean;
     claude?: boolean;
@@ -138,6 +141,18 @@ export type MemoraxCodeConfig = Readonly<{
   }>;
 }>;
 
+export function codingSessionsEnabled(
+  env: Record<string, string | undefined> = process.env,
+  fileConfig?: MemoraxCodeConfig,
+): boolean {
+  const configured = env.MEMORAX_CODE_CODING_SESSIONS_ENABLED
+    ?? fileConfig?.coding_sessions?.enabled;
+  if (typeof configured === "boolean") return configured;
+  return ["1", "true", "yes", "y", "on"].includes(
+    String(configured ?? "").trim().toLowerCase(),
+  );
+}
+
 export function defaultMemoraxCodeHome(env: Record<string, string | undefined> = process.env): string {
   return env.MEMORAX_CODE_HOME?.trim() || join(homedir(), ".memorax-code");
 }
@@ -152,6 +167,9 @@ export function renderDefaultMemoraxCodeConfig(): string {
     "# This file is read from $MEMORAX_CODE_HOME/config.toml.",
     "# Environment variables still override values written here.",
     "# See docs/configuration.md for advanced tuning fields and effective defaults.",
+    "",
+    "[coding_sessions]",
+    "enabled = true # Attach locally redacted completed coding Turns to automatic QA Add requests.",
     "",
     "# Client integrations managed by `memorax-code start|status|stop|uninstall`.",
     "[clients]",
@@ -287,6 +305,7 @@ export function loadLifecycleMemoraxCodeConfig(
 
 function normalizeMemoraxCodeConfig(value: unknown): MemoraxCodeConfig {
   const root = recordValue(value);
+  const codingSessions = recordValue(root?.coding_sessions);
   const clients = recordValue(root?.clients);
   const memorax = recordValue(root?.memorax);
   const jev = recordValue(root?.jev);
@@ -309,6 +328,9 @@ function normalizeMemoraxCodeConfig(value: unknown): MemoraxCodeConfig {
   const traceCursor = recordValue(trace?.cursor);
 
   return (prune({
+    coding_sessions: prune({
+      enabled: booleanField(codingSessions, "enabled"),
+    }),
     clients: prune({
       codex: booleanField(clients, "codex"),
       claude: booleanField(clients, "claude"),

@@ -145,6 +145,80 @@ test("harness runtimes isolate identical turns and preserve injected resources w
   }
 });
 
+test("harness completion only attaches matching coding data when capture is enabled", async () => {
+  const codingTurn = { client: "codex", sessionId: "session", turnId: "turn" };
+  const scope = {
+    schemaVersion: "workspace-memory-scope.v1",
+    baseUserId: "user-1",
+    effectiveUserId: "user-1@repo",
+    repositoryKey: "key:repo",
+    repositorySlug: "repo",
+    repositoryName: "repo",
+    identitySource: "workspace-directory",
+    scopeKind: "local-directory",
+    boundWorkspaceRoot: "/workspace/repo",
+  };
+  for (const captureCodingTurns of [false, true]) {
+    const writebacks = [];
+    const materialized = [];
+    const runtime = createHarnessMemoryRuntime(definition("codex"), {
+      captureCodingTurns,
+      env: {},
+      searchGuidance: { completeTurn: (turn) => materialized.push(turn) },
+      automaticWriteback(input) {
+        writebacks.push(input);
+        return { accepted: true };
+      },
+    });
+    try {
+      assert.deepEqual(await runtime.completeTurn({
+        sessionId: "session", clientTurnId: "turn",
+        userText: "Keep the matching QA.", assistantText: "Capture remains optional.",
+        searchAssistantText: "Final answer for search guidance.",
+        codingTurn,
+        resolveRepositoryMemory: async () => ({ ok: true, memory: { config: {}, scope } }),
+      }), { scheduled: true, metadataDisposition: "absent" });
+      assert.equal(writebacks.length, 1);
+      assert.strictEqual(writebacks[0].codingTurn, captureCodingTurns ? codingTurn : undefined);
+      assert.equal(writebacks[0].assistantText, "Capture remains optional.");
+      assert.deepEqual(materialized, [{
+        key: { client: "codex", sessionId: "session", clientTurnId: "turn" },
+        repositoryScope: scope, userText: "Keep the matching QA.",
+        assistantText: "Final answer for search guidance.",
+      }]);
+    } finally { runtime.close(); }
+  }
+});
+
+test("harness native archive identity is distinct only for correlated Claude completions", async () => {
+  const scope = { schemaVersion: "workspace-memory-scope.v1", baseUserId: "user-1", effectiveUserId: "user-1-general",
+    repositoryKey: "general", repositorySlug: "General", repositoryName: "General", identitySource: "general", scopeKind: "general" };
+  for (const client of ["claude-code", "codex", "opencode", "codebuddy", "workbuddy"]) {
+    const writebacks = [];
+    const materialized = [];
+    const runtime = createHarnessMemoryRuntime(definition(client), {
+      captureCodingTurns: true,
+      env: {},
+      searchGuidance: { completeTurn: (turn) => materialized.push(turn) },
+      automaticWriteback: (input) => { writebacks.push(input); return { accepted: true }; },
+    });
+    try {
+      for (const mismatch of [{}, { client: "foreign-client" }, { sessionId: "foreign-session" }, { turnId: "foreign-turn" }]) {
+        const codingTurn = { client, sessionId: "session", turnId: "native-user-uuid", ...mismatch };
+        assert.deepEqual(await runtime.completeTurn({
+          sessionId: "session", clientTurnId: "start-occurrence", nativeTurnId: "native-user-uuid",
+          userText: "Keep this occurrence's native QA.", assistantText: "The native reply remains authoritative.", codingTurn,
+          resolveRepositoryMemory: async () => ({ ok: true, memory: { config: {}, scope } }),
+        }), { scheduled: true, metadataDisposition: "absent" });
+        const accepted = writebacks.at(-1);
+        assert.strictEqual(accepted.codingTurn, client === "claude-code" && Object.keys(mismatch).length === 0 ? codingTurn : undefined);
+        assert.equal("nativeTurnId" in accepted, false, "local correlation must not become an Add field");
+        assert.equal(materialized.at(-1).key.clientTurnId, "start-occurrence");
+      }
+    } finally { runtime.close(); }
+  }
+});
+
 function definition(client) {
   const prefix = client === "claude-code" ? "claude" : client;
   return {
@@ -154,4 +228,3 @@ function definition(client) {
     traceFailureEvent: `${prefix}_trace.write_failed`,
   };
 }
-

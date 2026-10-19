@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
@@ -19,6 +19,7 @@ import {
   withEnv,
   writeRollout,
 } from "../../clients/codex/support/memory-hook-fixtures.mjs";
+import { assistantRecord, jsonLines, userRecord } from "../../clients/claude/support/claude-transcript-fixtures.mjs";
 
 const TEST_WORKSPACE = fileURLToPath(new URL("../../..", import.meta.url));
 const TEST_REPO_ROOT = resolve(TEST_WORKSPACE, "../../..");
@@ -153,6 +154,142 @@ test("Backend memory hook endpoints record and write back a turn", async () => {
     await rm(root, { recursive: true, force: true });
   }
 });
+
+for (const codingSessionsEnabled of [true, false]) {
+  test(`Claude HTTP writeback preserves the default eight-turn trigger with coding sessions ${codingSessionsEnabled ? "enabled" : "disabled"}`, async () => {
+    const sessionHome = await mkdtemp(join(tmpdir(), "memorax-code-claude-hook-batch-"));
+    const sessionId = `claude-http-batch-${codingSessionsEnabled}`;
+    const transcriptPath = join(sessionHome, "transcript.jsonl");
+    await writeFile(join(sessionHome, "config.toml"), [
+      "[coding_sessions]",
+      `enabled = ${codingSessionsEnabled}`,
+      "[trace.claude]",
+      "enabled = false",
+      "",
+    ].join("\n"), "utf8");
+    const restoreEnv = withEnv({
+      ...WRITEBACK_ENV,
+      MEMORAX_CODE_HOME: sessionHome,
+      MEMORAX_CODE_CODING_SESSIONS_ENABLED: undefined,
+      MEMORAX_CODE_CLAUDE_TRACE_ENABLED: undefined,
+      MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_ENABLED: undefined,
+      MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_MAX_TURNS: undefined,
+      MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_MAX_AGE_MS: undefined,
+      MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_MAX_CHARS: undefined,
+    });
+    const { fetchImpl, requests } = memoraxAddFetch();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = fetchImpl;
+    const server = createBackendServer(createBackendState("127.0.0.1", { sessionHome }));
+    const url = await listen(server);
+    const records = [];
+    const expectedMessages = [];
+    const expectedItems = [];
+    try {
+      for (let index = 1; index <= 8; index += 1) {
+        const promptId = `prompt-${index}`;
+        const callId = `call-${index}`;
+        const prompt = `Native Claude prompt ${index}.`;
+        const reply = `Native Claude answer ${index}.`;
+        const commentary = `Native Claude commentary ${index}.`;
+        const output = `Native tool output ${index}.`;
+        const timestamp = (seconds) => new Date(Date.UTC(2026, 9, 12, 0, index, seconds)).toISOString();
+        const final = assistantRecord({
+          sessionId, uuid: `final-${index}`, parentUuid: `tool-${index}`,
+          messageId: `message-final-${index}`, stopReason: "end_turn",
+          content: [{ type: "text", text: reply }], timestamp: timestamp(3),
+        });
+        const turnRecords = [
+          userRecord({
+            sessionId, uuid: `user-${index}`, parentUuid: index === 1 ? null : `final-${index - 1}`,
+            promptId, content: prompt, timestamp: timestamp(0),
+          }),
+          assistantRecord({
+            sessionId, uuid: `tool-${index}`, parentUuid: `user-${index}`,
+            messageId: `message-tool-${index}`, stopReason: "tool_use", timestamp: timestamp(1),
+            content: [
+              { type: "text", text: commentary },
+              { type: "tool_use", id: callId, name: "ExampleTool", input: { turn: index } },
+            ],
+          }),
+          userRecord({
+            sessionId, uuid: `result-${index}`, parentUuid: `tool-${index}`, promptId,
+            content: [{ type: "tool_result", tool_use_id: callId, content: output }], timestamp: timestamp(2),
+          }),
+          userRecord({
+            sessionId, uuid: `unselected-result-${index}`, parentUuid: `tool-${index}`, promptId,
+            content: [{ type: "tool_result", tool_use_id: `unselected-call-${index}`, content: "Unselected tool output." }],
+            timestamp: timestamp(2),
+          }),
+          { ...final, gitBranch: "main", slug: "initial-snapshot" },
+          { ...final, gitBranch: "feature", slug: "metadata-snapshot" },
+        ];
+        // Native user records may be written on either side of UserPromptSubmit.
+        const userWrittenAtStart = index % 2 === 0;
+        if (userWrittenAtStart) records.push(turnRecords[0]);
+        await writeFile(transcriptPath, records.length ? `${jsonLines(records)}\n` : "", "utf8");
+        const start = await originalFetch(`${url}/memory/turn-start`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            version: 1, client: "claude-code", sessionId, promptId,
+            prompt, cwd: TEST_WORKSPACE, transcriptPath,
+          }),
+        });
+        assert.equal(start.status, 200);
+        const { claudeTurnKey, ...startResult } = await start.json();
+        assert.match(claudeTurnKey, /^claude-start:[a-f0-9]{64}$/);
+        assert.deepEqual(startResult, GIT_TURN_START_RESULT);
+        const completedRecords = turnRecords.slice(userWrittenAtStart ? 1 : 0);
+        records.push(...completedRecords);
+        await appendFile(transcriptPath, `${jsonLines(completedRecords)}\n`, "utf8");
+        const writeback = await originalFetch(`${url}/memory/writeback`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            version: 1, client: "claude-code", sessionId, promptId,
+            lastAssistantMessage: `Hook diagnostic answer ${index}.`, transcriptPath,
+          }),
+        });
+        assert.equal(writeback.status, 200);
+        assert.deepEqual(await writeback.json(), { ok: true, scheduled: true });
+        if (index < 8) assert.equal(requests.length, 0, `turn ${index} must remain buffered`);
+        expectedMessages.push({ role: "user", content: prompt }, { role: "assistant", content: reply });
+        expectedItems.push(
+          { type: "message", role: "user", content: [{ type: "input_text", text: prompt }] },
+          { type: "message", role: "assistant", phase: "commentary", content: [{ type: "output_text", text: commentary }] },
+          { type: "function_call", call_id: callId, name: "ExampleTool", arguments: JSON.stringify({ turn: index }) },
+          { type: "function_call_output", call_id: callId, output },
+          { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: reply }] },
+        );
+      }
+      await waitFor(() => requests.length > 0, "the eighth Claude turn did not trigger MemoraX Add");
+      await server.shutdown();
+      assert.equal(requests.length, 1, "the default eight-turn batch must produce one Add");
+      assert.equal(requests[0].url, "http://memorax.test/v1/memories/add");
+      const body = requests[0].body;
+      assert.equal(body.session_id, sessionId);
+      assert.equal(body.content_type, "code");
+      assert.equal(body.async_mode, true);
+      assert.deepEqual(body.messages.map(({ role, content }) => ({ role, content })), expectedMessages);
+      assert.doesNotMatch(JSON.stringify(body), /Hook diagnostic|Unselected tool output/);
+      if (codingSessionsEnabled) {
+        assert.equal(body.coding_context.client, "claude-code");
+        assert.equal(body.coding_context.session_id, sessionId);
+        assert.deepEqual(body.coding_context.turns.map(({ turn_id, turn_index, item_count }) => ({ turn_id, turn_index, item_count })),
+          Array.from({ length: 8 }, (_, index) => ({ turn_id: `user-${index + 1}`, turn_index: index + 1, item_count: 5 })));
+        assert.deepEqual(body.coding_context.items, expectedItems);
+      } else {
+        assert.equal(body.coding_context, undefined);
+      }
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+      globalThis.fetch = originalFetch;
+      restoreEnv();
+      await rm(sessionHome, { recursive: true, force: true });
+    }
+  });
+}
 
 test("memory Hook HTTP routes reject invalid commands before dispatch and forward valid commands", async () => {
   const calls = [];

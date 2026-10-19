@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -38,10 +39,10 @@ test("Claude Hook returns the Backend-authorized Git worktree", async () => {
     repositoryMemorySession: repositoryRuntime({}, GIT_SCOPE),
   });
   try {
-    assert.deepEqual(
-      await runtime.recordTurnStart(turnStart("/tmp/claude-git-transcript.jsonl")),
-      { ok: true, repoMemoryWorktree: GIT_SCOPE.boundWorkspaceRoot },
-    );
+    const start = await runtime.recordTurnStart(turnStart("/tmp/claude-git-transcript.jsonl"));
+    assert.equal(start.ok, true);
+    assert.equal(start.repoMemoryWorktree, GIT_SCOPE.boundWorkspaceRoot);
+    assert.match(start.claudeTurnKey, /^claude-start:[a-f0-9]{64}$/);
   } finally {
     runtime.close();
   }
@@ -55,6 +56,7 @@ test("Claude Hook writeback uses exact transcript content and native times", asy
   const writebacks = [];
   const diagnostics = [];
   const runtime = createClaudeMemoryHookRuntime({
+    captureCodingTurns: true,
     automaticWriteback: collectAcceptedWriteback(writebacks),
     diagnosticLogger: (event, fields) => diagnostics.push({ event, fields }),
     env: TRACE_DISABLED_ENV,
@@ -62,7 +64,7 @@ test("Claude Hook writeback uses exact transcript content and native times", asy
     transcriptReadAttempts: 1,
   });
   try {
-    await runtime.recordTurnStart(turnStart(fixture.path));
+    const start = await fixture.start(runtime);
     const result = await runtime.writeback({
       version: 1,
       client: "claude-code",
@@ -79,17 +81,87 @@ test("Claude Hook writeback uses exact transcript content and native times", asy
     assert.equal(writebacks[0].assistantText, "Materialized answer.");
     assert.equal(writebacks[0].userTimestamp, Date.parse("2026-09-01T08:00:00.000Z"));
     assert.equal(writebacks[0].assistantTimestamp, Date.parse("2026-09-01T08:03:00.000Z"));
+    assert.deepEqual(writebacks[0].codingTurn, {
+      client: "claude-code", sessionId: SESSION_ID, turnId: "user-visible", turnIndex: 1,
+      outcome: "completed", closedAt: "2026-09-01T08:03:00.000Z",
+      source: { transcriptPath: fixture.path, endBytes: (await readFile(fixture.path)).length },
+      items: [
+        { type: "message", role: "user", content: [{ type: "input_text", text: "Materialized prompt." }] },
+        { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: "Materialized answer." }] },
+      ],
+    });
     assert.equal(writebacks[0].client, "claude-code");
     assert.equal(writebacks[0].memoryObservabilitySource, "claude_hook_writeback");
     assert.equal(writebacks[0].repositoryScope, SCOPE);
     assert.equal(writebacks[0].traceContext.client, "claude");
     assert.equal(writebacks[0].traceContext.sessionId, SESSION_ID);
-    assert.equal(writebacks[0].traceContext.turnId, PROMPT_ID);
+    assert.equal(writebacks[0].traceContext.turnId, start.claudeTurnKey);
     assert.equal(writebacks[0].traceContext.transcriptPath, fixture.path);
     assert.equal(writebacks[0].traceContext.contextOrigin, "claude-hook-body");
     assert.equal(diagnostics.some(({ event }) => event === "claude_memory_hook.assistant_message_mismatch"), true);
   } finally {
     runtime.close();
+    await fixture.remove();
+  }
+});
+
+test("Claude Hook preserves QA when optional archive projection throws", async () => {
+  const fixture = await transcriptFixture("Preserve this native prompt.", "Preserve this native answer.", {
+    assistantRecords: completedAssistantRecords("Preserve this native answer.").map((record) => ({
+      ...record, timestamp: "2026-09-01T08:03:00.000Z",
+    })),
+  });
+  try {
+    // Module mocking stays in a child process; production readers need no test hook.
+    const script = `
+      import assert from "node:assert/strict";
+      import { mock } from "node:test";
+      import { readFile, writeFile } from "node:fs/promises";
+      const codingUrl = ${JSON.stringify(new URL("../../../dist/coding-sessions/coding-turn.js", import.meta.url).href)};
+      const coding = await import(codingUrl);
+      let projections = 0;
+      mock.module(codingUrl, { namedExports: {
+        ...coding,
+        codingEventText() { projections += 1; throw new Error("synthetic projection failure"); },
+      } });
+      const { createClaudeMemoryHookRuntime } = await import(${JSON.stringify(new URL("../../../dist/clients/claude/memory-hook-runtime.js", import.meta.url).href)});
+      const writebacks = [];
+      const diagnostics = [];
+      const runtime = createClaudeMemoryHookRuntime({
+        captureCodingTurns: true,
+        transcriptReadAttempts: 1,
+        memoraxCodeHome: ${JSON.stringify(join(fixture.root, "state"))},
+        env: { MEMORAX_CODE_CLAUDE_TRACE_ENABLED: "false", MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED: "false" },
+        diagnosticLogger: (event, fields) => diagnostics.push({ event, fields }),
+        automaticWriteback(options) { writebacks.push(options); return { accepted: true }; },
+        repositoryMemorySession: { async resolve() { return { ok: true, memory: { config: {}, scope: ${JSON.stringify(SCOPE)} } }; } },
+      });
+      try {
+        const transcript = await readFile(${JSON.stringify(fixture.path)}, "utf8");
+        await writeFile(${JSON.stringify(fixture.path)}, transcript.split("\\n")[0] + "\\n");
+        await runtime.recordTurnStart(${JSON.stringify({ ...turnStart(fixture.path), prompt: "Preserve this native prompt." })});
+        await writeFile(${JSON.stringify(fixture.path)}, transcript);
+        const result = await runtime.writeback(${JSON.stringify({
+          version: 1, client: "claude-code", sessionId: SESSION_ID, promptId: PROMPT_ID,
+          transcriptPath: fixture.path, cwd: SCOPE.boundWorkspaceRoot, lastAssistantMessage: "Hook diagnostic only.",
+        })});
+        assert.deepEqual(result, { ok: true, scheduled: true });
+        assert.equal(projections, 1);
+        assert.equal(writebacks.length, 1);
+        assert.equal(writebacks[0].userText, "Preserve this native prompt.");
+        assert.equal(writebacks[0].assistantText, "Preserve this native answer.");
+        assert.equal(writebacks[0].codingTurn, undefined);
+        assert.equal(runtime.size(), 0);
+        assert.ok(diagnostics.some(({ event, fields }) => event === "coding_sessions.attachment_skipped"
+          && fields.reason === "projection_failed"));
+        assert.equal(JSON.stringify(diagnostics).includes("synthetic projection failure"), false);
+      } finally { runtime.close(); }
+    `;
+    const result = spawnSync(process.execPath, ["--experimental-test-module-mocks", "--input-type=module", "--eval", script], {
+      encoding: "utf8", timeout: 5000,
+    });
+    assert.equal(result.status, 0, result.stderr || result.error?.message);
+  } finally {
     await fixture.remove();
   }
 });
@@ -120,7 +192,7 @@ test("Claude Hook uses repaired Git scope for same-session automatic writeback",
     transcriptReadAttempts: 1,
   });
   try {
-    await runtime.recordTurnStart(turnStart(fixture.path));
+    const start = await fixture.start(runtime);
     currentScope = repairedScope;
     assert.deepEqual(await runtime.writeback({
       version: 1,
@@ -189,7 +261,7 @@ test("Claude transcript authority survives coordinator metadata expiry", async (
     transcriptReadAttempts: 1,
   });
   try {
-    await runtime.recordTurnStart(turnStart(fixture.path));
+    const start = await fixture.start(runtime);
     now += 11;
     const result = await runtime.writeback({
       version: 1,
@@ -223,7 +295,7 @@ test("Claude Hook writeback performs a bounded retry for transcript materializat
     transcriptRetryDelayMs: 20,
   });
   try {
-    await runtime.recordTurnStart(turnStart(path));
+    await runtime.recordTurnStart({ ...turnStart(path), prompt: user.message.content });
     setTimeout(() => {
       void writeFile(path, [
         JSON.stringify(user),
@@ -281,7 +353,7 @@ test("Claude Hook keeps turn-start scope until a late transcript writeback is ac
     lastAssistantMessage: "Late transcript answer.",
   };
   try {
-    await runtime.recordTurnStart(turnStart(path));
+    await runtime.recordTurnStart({ ...turnStart(path), prompt: user.message.content });
     assert.deepEqual(await runtime.writeback(writeback), {
       ok: true,
       scheduled: false,
@@ -343,7 +415,7 @@ test("Claude Hooks persist the same immediate trace lifecycle as Codex Hooks", a
     transcriptReadAttempts: 1,
   });
   try {
-    await runtime.recordTurnStart(turnStart(fixture.path));
+    const start = await fixture.start(runtime);
 
     const paths = claudeTracePaths(fixture.root);
     const trace = JSON.parse(await readFile(paths.traceJson(SESSION_ID), "utf8"));
@@ -355,7 +427,7 @@ test("Claude Hooks persist the same immediate trace lifecycle as Codex Hooks", a
       allowStale: true,
     });
     assert.equal(open.ok, true);
-    assert.equal(open.traceContext.turnId, PROMPT_ID);
+    assert.equal(open.traceContext.turnId, start.claudeTurnKey);
 
     assert.deepEqual(await runtime.writeback({
       version: 1,
@@ -374,9 +446,9 @@ test("Claude Hooks persist the same immediate trace lifecycle as Codex Hooks", a
     assert.deepEqual(events.map((event) => event.type), ["turn_start", "turn_end"]);
     assert.equal(events[0].source, "claude-hook");
     assert.equal(events[0].trace.client, "claude");
-    assert.equal(events[0].trace.turn_id, PROMPT_ID);
+    assert.equal(events[0].trace.turn_id, start.claudeTurnKey);
     assert.equal(events[0].trace.context_origin, "claude-hook-body");
-    assert.equal(events[0].request.prompt, "Hook prompt.");
+    assert.equal(events[0].request.prompt, "Trace prompt.");
     assert.equal(events[1].source, "claude-hook");
     assert.equal(events[1].outcome, "completed");
     assert.equal(events[1].response.assistantMessage, "Trace Hook answer.");
@@ -393,7 +465,7 @@ test("Claude Hooks persist the same immediate trace lifecycle as Codex Hooks", a
       outcome: "completed",
     });
     assert.equal(writebacks[0].assistantText, "Trace transcript answer.");
-    assert.equal(writebacks[0].traceContext.turnId, PROMPT_ID);
+    assert.equal(writebacks[0].traceContext.turnId, start.claudeTurnKey);
   } finally {
     runtime.close();
     await fixture.remove();
@@ -422,7 +494,7 @@ test("Claude next prompt restores an interrupted trace after runtime restart wit
     repositoryMemorySession: repositoryRuntime(),
     transcriptReadAttempts: 1,
   });
-  await firstRuntime.recordTurnStart(turnStart(transcriptPath, firstPromptId));
+  const firstStart = await firstRuntime.recordTurnStart({ ...turnStart(transcriptPath, firstPromptId), prompt: firstUser.message.content });
   firstRuntime.close();
 
   await writeFile(transcriptPath, [
@@ -481,10 +553,8 @@ test("Claude next prompt restores an interrupted trace after runtime restart wit
     transcriptReadAttempts: 1,
   });
   try {
-    assert.deepEqual(
-      await secondRuntime.recordTurnStart(turnStart(transcriptPath, secondPromptId)),
-      { ok: true },
-    );
+    const secondStart = await secondRuntime.recordTurnStart({ ...turnStart(transcriptPath, secondPromptId), prompt: "Continue after interruption." });
+    assert.equal(secondStart.ok, true);
 
     const events = (await readFile(claudeTracePaths(root).eventsJsonl(SESSION_ID), "utf8"))
       .trim()
@@ -498,7 +568,7 @@ test("Claude next prompt restores an interrupted trace after runtime restart wit
     assert.equal(events[1].source, "claude-transcript");
     assert.equal(events[1].outcome, "interrupted");
     assert.equal(events[1].timestamp, "2026-07-25T08:15:30.000Z");
-    assert.equal(events[1].trace.turn_id, firstPromptId);
+    assert.equal(events[1].trace.turn_id, firstStart.claudeTurnKey);
     assert.equal(events[1].session_turn_index, 1);
     assert.equal(events[1].request.prompt, "Investigate before interruption.");
     assert.equal(events[1].response.assistantMessage, "Partial Claude response.");
@@ -523,7 +593,7 @@ test("Claude next prompt restores an interrupted trace after runtime restart wit
       allowStale: true,
     });
     assert.equal(open.ok, true);
-    assert.equal(open.traceContext.turnId, secondPromptId);
+    assert.equal(open.traceContext.turnId, secondStart.claudeTurnKey);
     assert.equal(writebacks.length, 0);
     assert.equal(
       diagnostics.some(({ event }) => event === "claude_memory_hook.interrupted_turn_reconciled"),
@@ -600,7 +670,7 @@ test("Claude trace write failures do not block Turn tracking or exact-transcript
     transcriptReadAttempts: 1,
   });
   try {
-    assert.deepEqual(await runtime.recordTurnStart(turnStart(fixture.path)), { ok: true });
+    assert.equal((await fixture.start(runtime)).ok, true);
     assert.deepEqual(await runtime.writeback({
       version: 1,
       client: "claude-code",
@@ -635,7 +705,7 @@ test("Claude Hooks deduplicate lifecycle events and append late transcript mater
     repositoryMemorySession: repositoryRuntime(),
     transcriptReadAttempts: 1,
   });
-  const start = turnStart(transcriptPath);
+  const start = { ...turnStart(transcriptPath), prompt: "Exact Claude prompt after materialization." };
   const stop = {
     version: 1,
     client: "claude-code",
@@ -646,8 +716,9 @@ test("Claude Hooks deduplicate lifecycle events and append late transcript mater
     lastAssistantMessage: "Hook answer before transcript materialization.",
   };
   try {
-    assert.deepEqual(await runtime.recordTurnStart(start), { ok: true });
-    assert.deepEqual(await runtime.recordTurnStart(start), { ok: true });
+    const registered = await runtime.recordTurnStart(start);
+    assert.equal(registered.ok, true);
+    assert.deepEqual(await runtime.recordTurnStart(start), registered);
     assert.deepEqual(await runtime.writeback(stop), {
       ok: true,
       scheduled: false,
@@ -723,10 +794,12 @@ test("Claude Turn tracking keeps exact prompt identities without automatic Searc
       sessionId: "session-claude-other",
     });
 
-    assert.deepEqual(first, { ok: true });
-    assert.deepEqual(duplicate, { ok: true });
-    assert.deepEqual(nextPrompt, { ok: true });
-    assert.deepEqual(otherSession, { ok: true });
+    assert.equal(first.ok, true);
+    assert.deepEqual(duplicate, first);
+    assert.equal(nextPrompt.ok, true);
+    assert.equal(otherSession.ok, true);
+    assert.notEqual(first.claudeTurnKey, nextPrompt.claudeTurnKey);
+    assert.notEqual(first.claudeTurnKey, otherSession.claudeTurnKey);
     assert.deepEqual(requests, []);
     assert.equal(runtime.size(), 2);
   } finally {
@@ -778,6 +851,14 @@ async function transcriptFixture(
   return {
     root,
     path,
+    async start(runtime) {
+      const completed = await readFile(path, "utf8");
+      // Start observes the native user before the terminal assistant is persisted.
+      await writeFile(path, completed.split("\n")[0] + "\n");
+      const result = await runtime.recordTurnStart({ ...turnStart(path, promptId), prompt: userPrompt });
+      await writeFile(path, completed);
+      return result;
+    },
     remove: () => rm(root, { recursive: true, force: true }),
   };
 }
