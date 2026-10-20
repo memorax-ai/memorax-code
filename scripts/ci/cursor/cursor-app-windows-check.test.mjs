@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFile } from "node:fs/promises";
-import { win32 } from "node:path";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, win32 } from "node:path";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
 import { classifyCursorAppExecution, collectCursorAppNativeReport, writeCursorAppFinalReport } from "./cursor-app-report.mjs";
 import { projectWindowsInstallerOutcome, runWindowsCheck,
   windowsCheckEnvironment, windowsInstallerCommand } from "./cursor-app-windows-check.mjs";
+import { observeWindowsInstaller, windowsInstallerPhaseMarkers } from "./cursor-app-windows-installer-diagnostics.mjs";
 
 test("Windows wrapper builds a clean environment with only the hosted Git directory added", () => {
   const env = windowsCheckEnvironment("C:\\owned root", "C:\\node\\node.exe", "D:\\Windows");
@@ -62,9 +64,60 @@ ${Buffer.from(args.at(-1), "base64").toString("utf16le")}`;
       { encoding: "utf8", timeout: 10000 });
     assert.equal(result.status, kind === "exited" ? 7 : 1);
     assert.deepEqual(JSON.parse(result.stdout), { status: kind, exitCode: kind === "exited" ? 7 : null, nativeErrorCode: kind === "exited" ? null : 5 });
-    assert.equal(result.stderr, "");
+    assert.deepEqual(result.stderr.trim().split(/\r?\n/), [
+      windowsInstallerPhaseMarkers.powershellStart, windowsInstallerPhaseMarkers.launchStart,
+      ...(kind === "exited" ? [windowsInstallerPhaseMarkers.treeWaitComplete] : []),
+      windowsInstallerPhaseMarkers.jsonComplete,
+    ]);
     assert.equal(result.stdout.includes("private-canary"), false);
   }
+});
+
+test("Windows PowerShell 5.1 installer command still waits for a synthetic descendant after its parent exits", async (t) => {
+  if (process.platform !== "win32") return t.skip("Windows PowerShell 5.1 is required");
+  const root = await mkdtemp(join(tmpdir(), "cursor-installer-tree-"));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }));
+  const powershell = join(process.env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+  const installer = join(root, "Fixture.exe");
+  const quote = (value) => `'${value.replaceAll("'", "''")}'`;
+  const compile = `
+$ErrorActionPreference='Stop'
+if ($PSVersionTable.PSVersion.Major -ne 5 -or $PSVersionTable.PSVersion.Minor -ne 1) { exit 1 }
+Add-Type -OutputAssembly ${quote(installer)} -OutputType ConsoleApplication -TypeDefinition @'
+using System;
+using System.Diagnostics;
+using System.IO;
+using System.Reflection;
+using System.Threading;
+public class Fixture {
+  public static int Main(string[] args) {
+    string executable = Assembly.GetExecutingAssembly().Location;
+    string directory = Path.GetDirectoryName(executable);
+    if (args.Length == 1 && args[0] == "child") {
+      Thread.Sleep(1000);
+      File.WriteAllText(Path.Combine(directory, "descendant-complete"), "complete");
+      return 0;
+    }
+    using (Process child = Process.Start(new ProcessStartInfo(executable, "child") { UseShellExecute = false, CreateNoWindow = true })) {
+      Thread.Sleep(200);
+      File.WriteAllText(Path.Combine(directory, "parent-returning"), "returning");
+    }
+    return 0;
+  }
+}
+'@
+`;
+  const env = { ...process.env, TEMP: root, TMP: root };
+  const built = spawnSync(powershell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand",
+    Buffer.from(compile, "utf16le").toString("base64")], { cwd: root, env, encoding: "utf8", timeout: 20000 });
+  assert.equal(built.status, 0);
+  const result = spawnSync(powershell, windowsInstallerCommand(installer, join(root, "app"), join(root, "installer.log")),
+    { cwd: root, env, encoding: "utf8", timeout: 15000 });
+  assert.equal(result.status, 0);
+  assert.deepEqual(projectWindowsInstallerOutcome(result.stdout), { status: "exited", exitCode: 0, nativeErrorCode: null });
+  assert.deepEqual(result.stderr.trim().split(/\r?\n/), Object.values(windowsInstallerPhaseMarkers));
+  assert.equal(await readFile(join(root, "parent-returning"), "utf8"), "returning");
+  assert.equal(await readFile(join(root, "descendant-complete"), "utf8"), "complete");
 });
 
 test("installer outcome projection accepts only fixed statuses and bounded integers", () => {
@@ -103,7 +156,9 @@ test("Windows controller preserves exit failures and confirms closure only from 
   const body = source.replaceAll("\r\n", "\n").split("export async function runWindowsCheck(")[1].split("\nif (process.argv[1]")[0];
   for (const [kind, retained] of [
     ["success", false], ["candidate", false], ["probe", false], ["smoke", true], ["artifact", false],
-    ["installer-exit-five", false], ["installer-timeout", true], ["installer-aborted", true], ["installer-invalid", true],
+    ["installer-exit-five", false], ["installer-timeout", true], ["installer-timeout-complete-log", true], ["installer-timeout-log-timeout", true],
+    ["installer-aborted", true], ["installer-overflow", true], ["installer-invalid", true],
+    ["log-unreadable", false], ["log-timeout", false], ["log-failure", false], ["receipt-malformed", false],
     ["installed", false], ["installed-cleanup", true], ["native", false], ["native-exit-pass", false],
     ["native-cleanup", true], ["native-timeout-progress", true], ["native-aborted-progress", true],
     ["native-timeout-missing", true], ["native-timeout-pass", false], ["invalid-report", true], ["missing-report", true], ["artifact-cleanup", true], ["state-cleanup", true],
@@ -126,6 +181,13 @@ test("Windows controller preserves exit failures and confirms closure only from 
         dirname: win32.dirname, join: win32.join, resolve: win32.resolve, win32, scripts: "C:\\scripts",
         gitDirectory: "C:\\Program Files\\Git\\cmd", windowsCheckEnvironment, windowsInstallerCommand,
         projectWindowsInstallerOutcome, classifyCursorAppExecution, collectCursorAppNativeReport, writeCursorAppFinalReport,
+        observeWindowsInstaller, async readWindowsInstallerLog() {
+          return { availability: ["log-timeout", "installer-timeout-log-timeout"].includes(kind) ? "timeout"
+            : kind === "log-unreadable" ? "unavailable" : ["installer-timeout-complete-log", "log-failure"].includes(kind) ? "readable" : "missing",
+            sizeBytes: null, sampledBytes: null, truncated: null, changedDuringRead: null,
+            lastRecognizedEvent: kind === "installer-timeout-complete-log" ? "installation-succeeded"
+              : kind === "log-failure" ? "installation-failed" : "unknown", errorObserved: null };
+        },
         check(value, code) { if (!value) throw failure(code); },
         safeCode: (error) => /^CURSOR_(?:APP|CONTAINER)_[A-Z0-9_]{1,100}$/.test(error.code) ? error.code : "CURSOR_APP_WINDOWS_CHECK_FAILED",
         async lstat(path) {
@@ -138,14 +200,19 @@ test("Windows controller preserves exit failures and confirms closure only from 
         async writeFile(path, value) { output.set(path, value); },
         async rm() { calls.push("remove"); if (kind === "state-cleanup") throw failure("EBUSY"); },
         selectCursorWindowsRelease: () => ({ version: "3.21.18" }),
-        async exec(file, args) {
+        async exec(file, args, options) {
           const stage = args[0].endsWith("npm-cli.js") ? win32.basename(args[args.indexOf("--prefix") + 1])
             : args[0].endsWith("cursor-npm-package-smoke.mjs") ? "smoke" : file.endsWith("powershell.exe") ? "installer" : "native";
           calls.push(stage);
           if (stage === "installer") {
+            assert.equal(options.timeout, 300_000);
+            assert.equal(options.maxBuffer, 64 * 1024);
+            assert.equal(options.killSignal, "SIGKILL");
             const stdout = JSON.stringify({ status: "exited", exitCode: kind === "installer-exit-five" ? 5 : 0, nativeErrorCode: null });
             if (kind.startsWith("installer-")) throw Object.assign(failure({
               "installer-exit-five": 5, "installer-timeout": "ETIMEDOUT", "installer-aborted": "ABORT_ERR",
+              "installer-timeout-complete-log": "ETIMEDOUT", "installer-overflow": "ERR_CHILD_PROCESS_STDIO_MAXBUFFER",
+              "installer-timeout-log-timeout": "ETIMEDOUT",
             }[kind] ?? 1), { stdout: kind === "installer-invalid" ? "private-canary" : stdout });
             return { stdout };
           }
@@ -167,6 +234,8 @@ test("Windows controller preserves exit failures and confirms closure only from 
           let confirmed = false, caught;
           try {
             await callback({ installerPath: "C:\\verified\\CursorUserSetup.exe",
+              artifact: kind === "receipt-malformed" ? { observedSha256: "private-canary", bytes: 600000001 }
+                : { observedSha256: "a".repeat(64), bytes: 123, raw: "private-canary" },
               confirmProcessesClosed() { confirmed = true; calls.push("confirmed"); } });
           } catch (error) { caught = error; }
           if (!confirmed || kind === "artifact-cleanup") {
@@ -177,7 +246,7 @@ test("Windows controller preserves exit failures and confirms closure only from 
         },
       });
       const report = await run("C:\\candidate.tgz", "C:\\report", { releaseManifest: {}, channel: "baseline" });
-      assert.equal(report.status, kind === "success" ? "PASS" : "FAIL");
+      assert.equal(report.status, ["success", "log-unreadable", "log-timeout", "log-failure", "receipt-malformed"].includes(kind) ? "PASS" : "FAIL");
       assert.equal(Boolean(report.cleanupError), retained);
       assert.equal(calls.includes("remove"), !retained || kind === "state-cleanup");
       assert.equal(JSON.stringify(report).includes("private-canary"), false);
@@ -198,9 +267,25 @@ test("Windows controller preserves exit failures and confirms closure only from 
         assert.equal(report.errorCode, "CURSOR_APP_WINDOWS_INSTALLER_EXIT");
         assert.equal(calls.includes("confirmed"), kind === "installer-exit-five");
         assert.equal(report.windowsInstaller.status, { "installer-exit-five": "exited", "installer-timeout": "timeout",
+          "installer-timeout-complete-log": "timeout", "installer-overflow": "output-overflow",
+          "installer-timeout-log-timeout": "timeout",
           "installer-aborted": "aborted", "installer-invalid": "powershell-exit" }[kind]);
       }
       if (kind === "installer-exit-five") assert.equal(report.windowsInstaller.exitCode, 5);
+      if (calls.includes("installer")) {
+        assert.equal(report.windows.observedSha256, kind === "receipt-malformed" ? null : "a".repeat(64));
+        assert.equal(report.windows.bytes, kind === "receipt-malformed" ? null : 123);
+        assert.equal(report.windowsInstaller.diagnostics.rootExitObserved, null);
+        assert.equal(report.windowsInstaller.diagnostics.rootExitElapsedMs, null);
+        assert.equal(report.windowsInstaller.diagnostics.log.availability,
+          ["log-timeout", "installer-timeout-log-timeout"].includes(kind) ? "timeout"
+            : kind === "log-unreadable" ? "unavailable" : ["installer-timeout-complete-log", "log-failure"].includes(kind) ? "readable" : "missing");
+        assert.equal(report.windowsInstaller.diagnostics.log.errorObserved, null);
+      }
+      if (kind === "installer-timeout-complete-log") {
+        assert.equal(report.windowsInstaller.diagnostics.log.lastRecognizedEvent, "installation-succeeded");
+        assert.equal(calls.includes("confirmed"), false);
+      }
     });
   }
 });

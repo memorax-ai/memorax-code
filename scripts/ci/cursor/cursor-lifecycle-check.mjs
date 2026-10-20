@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
+import { projectTerminalDisposal } from "../codex/codex-setup-pty-evidence.mjs";
 import { cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
@@ -304,6 +305,8 @@ export async function runCursorLifecycleCheck(candidatePath, reportDirectory, pr
       try {
         const result = JSON.parse(error.stdout);
         if (/^[A-Z][A-Z0-9_]{1,79}$/.test(result.error)) report.terminalError = result.error;
+        const disposal = projectTerminalDisposal(result.terminalDisposal);
+        if (disposal) report.terminalDisposal = disposal;
         if (["ENOENT", "ENOEXEC", "EACCES", "EPERM", "PTY_SPAWN_FAILED"].includes(result.nativeErrorCode)) {
           report.terminalNativeError = result.nativeErrorCode;
         }

@@ -190,7 +190,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
       - name: Verify test assertions reject malformed content and unexpected failures
-        run: node --test scripts/ci/shared/ci-evidence.test.mjs scripts/ci/shared/native-evidence-workflow.test.mjs scripts/ci/shared/native-evidence-wrappers.test.mjs scripts/ci/shared/native-process-cleanup.test.mjs scripts/ci/codex/codex-native-content-check.test.mjs scripts/ci/codex/codex-lifecycle-assertions.test.mjs scripts/ci/codex/codex-writeback-diagnostics.test.mjs scripts/ci/opencode/opencode-native-support.test.mjs scripts/ci/opencode/opencode-initialization-diagnostic.test.mjs scripts/ci/opencode/opencode-initialization-layouts.test.mjs scripts/ci/claude/claude-native-content-check.test.mjs scripts/ci/claude/claude-native-support.test.mjs scripts/ci/claude/claude-permissions-support.test.mjs scripts/ci/claude/claude-lifecycle-assertions.test.mjs scripts/ci/claude/claude-lifecycle-process.test.mjs scripts/ci/claude/claude-background-assertions.test.mjs scripts/ci/claude/claude-install-interruption-driver.test.mjs scripts/ci/codebuddy-workbuddy/codebuddy-native-content-check.test.mjs scripts/ci/codebuddy-workbuddy/codebuddy-native-support.test.mjs scripts/ci/codebuddy-workbuddy/codebuddy-install-cleanup.test.mjs scripts/ci/codebuddy-workbuddy/codebuddy-lifecycle-assertions.test.mjs scripts/ci/codebuddy-workbuddy/codebuddy-install-interruption-driver.test.mjs scripts/ci/codebuddy-workbuddy/codebuddy-permissions-support.test.mjs scripts/ci/codebuddy-workbuddy/codebuddy-background-assertions.test.mjs
+        run: node --test scripts/ci/shared/ci-evidence.test.mjs scripts/ci/shared/native-evidence-workflow.test.mjs scripts/ci/shared/native-evidence-wrappers.test.mjs scripts/ci/shared/native-process-cleanup.test.mjs scripts/ci/codex/codex-native-content-check.test.mjs scripts/ci/codex/codex-lifecycle-assertions.test.mjs scripts/ci/codex/codex-install-interruption-evidence.test.mjs scripts/ci/codex/codex-install-interruption-check.test.mjs scripts/ci/codex/codex-setup-pty.test.mjs scripts/ci/codex/codex-setup-pty-consumers.test.mjs scripts/ci/codex/codex-install-smoke.test.mjs scripts/ci/claude/claude-install-evidence.test.mjs scripts/ci/claude/claude-install-smoke.test.mjs scripts/ci/codex/codex-writeback-diagnostics.test.mjs scripts/ci/opencode/opencode-native-support.test.mjs scripts/ci/opencode/opencode-initialization-diagnostic.test.mjs scripts/ci/opencode/opencode-initialization-layouts.test.mjs scripts/ci/claude/claude-native-content-check.test.mjs scripts/ci/claude/claude-native-support.test.mjs scripts/ci/claude/claude-permissions-support.test.mjs scripts/ci/claude/claude-lifecycle-assertions.test.mjs scripts/ci/claude/claude-lifecycle-process.test.mjs scripts/ci/claude/claude-background-assertions.test.mjs scripts/ci/claude/claude-install-interruption-driver.test.mjs scripts/ci/codebuddy-workbuddy/codebuddy-native-content-check.test.mjs scripts/ci/codebuddy-workbuddy/codebuddy-native-support.test.mjs scripts/ci/codebuddy-workbuddy/codebuddy-install-cleanup.test.mjs scripts/ci/codebuddy-workbuddy/codebuddy-lifecycle-assertions.test.mjs scripts/ci/codebuddy-workbuddy/codebuddy-install-interruption-driver.test.mjs scripts/ci/codebuddy-workbuddy/codebuddy-permissions-support.test.mjs scripts/ci/codebuddy-workbuddy/codebuddy-background-assertions.test.mjs
       - name: Verify shared CodeBuddy and WorkBuddy native and install contracts
         run: node --test scripts/ci/codebuddy-workbuddy/codebuddy-native-memory-support.test.mjs scripts/ci/codebuddy-workbuddy/codebuddy-install-interruption-check.test.mjs scripts/ci/codebuddy-workbuddy/workbuddy-install-entry.test.mjs
       - name: Verify Cursor App canary contracts
@@ -502,24 +502,81 @@ jobs:
         with:
           name: ${{ needs.package.outputs.package-artifact-name }}
           path: dist/npm/tarballs
+      - name: Record native test inputs
+        id: record-inputs
+        continue-on-error: true
+        shell: bash
+        env:
+          CLIENT_CHANNEL: ${{ matrix.channel }}
+          CLIENT_VERSION: ${{ matrix.claude }}
+          MATRIX_OS: ${{ matrix.os }}
+          MATRIX_NODE: ${{ matrix.node }}
+          PACKAGE_ARTIFACT_NAME: ${{ needs.package.outputs.package-artifact-name }}
+          PACKAGE_ARTIFACT_ID: ${{ needs.package.outputs.package-artifact-id }}
+          PACKAGE_ARTIFACT_DIGEST: ${{ needs.package.outputs.package-artifact-digest }}
+          PACKAGE_SHA256: ${{ needs.package.outputs.package-sha256 }}
+        run: |
+          node scripts/ci/shared/ci-evidence.mjs inputs "$RUNNER_TEMP/native-evidence/inputs.json" \
+            --client claude --channel "$CLIENT_CHANNEL" --client-version "$CLIENT_VERSION" \
+            --matrix-os "$MATRIX_OS" --matrix-node "$MATRIX_NODE" --npm-version "$(npm -v)" \
+            --package-dir dist/npm/tarballs --package-artifact-name "$PACKAGE_ARTIFACT_NAME" \
+            --package-artifact-id "$PACKAGE_ARTIFACT_ID" --package-artifact-digest "$PACKAGE_ARTIFACT_DIGEST" \
+            --expected-package-sha256 "$PACKAGE_SHA256"
       - name: Verify Claude lifecycle, interruption, native flows and Repo Memory configuration (macOS/Linux)
+        id: native-posix
         if: runner.os != 'Windows'
         shell: bash
         env:
           CLAUDE_VERSION: ${{ matrix.claude }}
+          MEMORAX_CI_EVIDENCE_DIR: ${{ runner.temp }}/native-evidence/suites
         run: bash scripts/ci/claude/claude-install-check.sh dist/npm/tarballs "$CLAUDE_VERSION"
       - name: Verify shared Windows user PATH cleanup
         if: runner.os == 'Windows'
         shell: pwsh
         run: ./scripts/ci/shared/codex-install-user-path.test.ps1
       - name: Verify Claude lifecycle, interruption, native flows and Repo Memory configuration (Windows)
+        id: native-windows
         if: runner.os == 'Windows'
         shell: pwsh
         env:
           CLAUDE_VERSION: ${{ matrix.claude }}
+          MEMORAX_CI_EVIDENCE_DIR: ${{ runner.temp }}/native-evidence/suites
           TEMP: ${{ runner.temp }}
           TMP: ${{ runner.temp }}
         run: ./scripts/ci/claude/claude-install-check.ps1 -TarballDirectory dist/npm/tarballs -ClaudeVersion $env:CLAUDE_VERSION
+      - name: Summarize first-failure evidence
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          TEST_OUTCOME: ${{ runner.os == 'Windows' && steps.native-windows.outcome || steps.native-posix.outcome }}
+          INPUTS_OUTCOME: ${{ steps.record-inputs.outcome }}
+          CLIENT_CHANNEL: ${{ matrix.channel }}
+          CLIENT_VERSION: ${{ matrix.claude }}
+          MATRIX_OS: ${{ matrix.os }}
+          MATRIX_NODE: ${{ matrix.node }}
+        run: |
+          node scripts/ci/shared/ci-evidence.mjs summarize "$RUNNER_TEMP/native-evidence" --client claude --os "$MATRIX_OS" \
+            --channel "$CLIENT_CHANNEL" --client-version "$CLIENT_VERSION" --node "$MATRIX_NODE" \
+            --test-step-outcome "$TEST_OUTCOME" --inputs-step-outcome "$INPUTS_OUTCOME" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --github-summary "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        id: upload-evidence
+        if: always()
+        continue-on-error: true
+        with:
+          name: native-evidence-claude-${{ matrix.os }}-${{ matrix.channel }}-node-${{ matrix.node }}-attempt${{ github.run_attempt }}
+          path: ${{ runner.temp }}/native-evidence
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Report evidence export
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          UPLOAD_OUTCOME: ${{ steps.upload-evidence.outcome }}
+          ARTIFACT_ID: ${{ steps.upload-evidence.outputs.artifact-id }}
+        run: node scripts/ci/shared/ci-evidence.mjs export-status --outcome "$UPLOAD_OUTCOME" --artifact-id "$ARTIFACT_ID" --github-summary "$GITHUB_STEP_SUMMARY"
 
   codebuddy:
     name: CodeBuddy functional ${{ matrix.channel }} ${{ matrix.codebuddy }} (${{ matrix.os }}, Node ${{ matrix.node }})
@@ -586,6 +643,11 @@ jobs:
         with:
           name: ${{ needs.package.outputs.cursor-releases-artifact-name }}
           path: ${{ runner.temp }}/cursor-app-releases
+      - name: Verify Windows installer wait and diagnostic contracts
+        if: runner.os == 'Windows'
+        timeout-minutes: 5
+        shell: pwsh
+        run: node --test scripts/ci/cursor/cursor-app-windows-check.test.mjs scripts/ci/cursor/cursor-app-windows-installer-diagnostics.test.mjs
       - name: Verify Cursor package lifecycle and saved account
         shell: bash
         run: |

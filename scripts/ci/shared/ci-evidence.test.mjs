@@ -164,6 +164,41 @@ test("collectors run under their own budget, record failures and never replace t
   assert.doesNotMatch(await readFile(join(directory, "fixture-suite", "journal.jsonl"), "utf8"), new RegExp(secret));
 });
 
+test("an awaited collector keeps its deadline alive without other handles and releases it after settling", async (t) => {
+  const root = await workspace(t);
+  const script = [
+    "import { createEvidenceRecorder } from " + JSON.stringify(helperUrl) + ";",
+    'const evidence = createEvidenceRecorder({ suite: "standalone-suite", client: "codex", directory: process.argv[1] });',
+    'const mode = process.argv[2];',
+    'const result = await evidence.collect("fixture", () => {',
+    '  if (mode === "hangs") return new Promise(() => {});',
+    '  if (mode === "throws") throw Object.assign(new Error("private fixture"), { code: "EBUSY" });',
+    '  return { ok: true };',
+    '}, { budgetMs: mode === "hangs" ? 50 : 10000 });',
+    'evidence.finish({ testOutcome: "FAIL", failure: { kind: "functional", code: "PRIMARY_FAILURE" } });',
+    'console.log(JSON.stringify(result));',
+    'process.exitCode = 7;',
+  ].join("\n");
+  for (const [mode, expected] of [["hangs", "TIMEOUT"], ["returns", "OK"], ["throws", "FAILED"]]) {
+    const directory = join(root, mode);
+    await mkdir(directory);
+    // The child has no test-runner handles. Fast collectors must also clear their
+    // ten-second budget so this process exits before the five-second outer limit.
+    const child = spawnSync(process.execPath, ["--input-type=module", "-e", script, directory, mode], {
+      encoding: "utf8", timeout: 5000,
+    });
+    assert.equal(child.error, undefined, mode);
+    assert.equal(child.signal, null, mode);
+    assert.equal(child.status, 7, mode);
+    assert.equal(JSON.parse(child.stdout).status, expected);
+    const result = await resultOf(directory, "standalone-suite");
+    assert.equal(result.testOutcome, "FAIL");
+    assert.equal(result.failure.code, "PRIMARY_FAILURE");
+    assert.deepEqual(journalOf(directory, "standalone-suite").records.filter((record) => record.kind === "collect")
+      .map((record) => record.status), [expected]);
+  }
+});
+
 test("the structural guard rejects control characters and unnamed keys instead of recording them", async (t) => {
   const directory = await workspace(t);
   const evidence = createEvidenceRecorder({ suite: "fixture-suite", client: "codex", directory });
@@ -572,3 +607,23 @@ test("inputs and the manifest record package and client provenance with checksum
   assert.deepEqual(manifest.clients.opencode.versions.map(({ channels, lookup }) => [channels, lookup]), [[["baseline", "latest"], "FAILED"]]);
   assert.equal(manifest.clients.claude, undefined);
 });
+
+for (const [client, suite] of [["codex", "codex-install-interruption-check"], ["claude", "claude-install-smoke"]]) {
+  test(suite + " requires its first-failure evidence and retains the primary failure", async (t) => {
+    const setup = { ledger: [["plan", "", suite], ["phase", "", "suites"], ["start", suite], ["end", suite, "1"]] };
+    const options = { client, os: "windows-2025", testStepOutcome: "failure" };
+    const missing = summarizeEvidence(await evidenceRoot(t, setup), options);
+    assert.equal(missing.testOutcome, "FAIL");
+    assert.equal(missing.evidenceStatus, "PARTIAL");
+    assert.equal(missing.suites[0].evidence, "missing");
+    const recorded = summarizeEvidence(await evidenceRoot(t, { ...setup, suites: {
+      [suite]: { progress: { stage: "recovery" }, result: {
+        schemaVersion: 1, testOutcome: "FAIL", evidenceStatus: "COMPLETE",
+        failure: { kind: "functional+cleanup", stage: "recovery", code: "PRIMARY_FAILURE", cleanupCode: "CLEANUP_FAILURE" },
+      } },
+    } }), options);
+    assert.equal(recorded.evidenceStatus, "COMPLETE");
+    assert.equal(recorded.category, "functional+cleanup");
+    assert.ok(recorded.signature.endsWith("|recovery|PRIMARY_FAILURE"));
+  });
+}

@@ -1,7 +1,7 @@
 import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { projectCursorAppDiagnostics, projectCursorAppLaunchDiagnostics,
+import { projectCursorAppDiagnostics, projectCursorAppLaunchDiagnostics, projectCursorAppDriverDiagnostics,
   projectCursorAppBackendDiagnostics, projectCursorAppSubmissionDiagnostics,
   projectCursorAppShellDiagnostics, projectCursorAppStopDiagnostics, projectCursorAppWindowsStopDiagnostics } from "./cursor-app-diagnostics.mjs";
 import { projectCursorAppHookDiagnostics, projectCursorAppHookTiming } from "./cursor-app-hook-diagnostics.mjs";
@@ -82,6 +82,7 @@ export function projectCursorAppReport(input, { expectedVersion, nodeMajor = "24
   if (input.status === "FAIL" && input.repoMemoryDelegation !== undefined) report.repoMemoryDelegation = projectCursorRepoMemoryDelegation(input.repoMemoryDelegation);
   if (input.status === "FAIL" && input.backendDiagnostics !== undefined) report.backendDiagnostics = projectCursorAppBackendDiagnostics(input.backendDiagnostics);
   if (input.appLaunch !== undefined) report.appLaunch = projectCursorAppLaunchDiagnostics(input.appLaunch);
+  if (input.appDriver !== undefined) report.appDriver = projectCursorAppDriverDiagnostics(input.appDriver);
   if (input.status === "FAIL" && input.candidateStop !== undefined) report.candidateStop = projectCursorAppStopDiagnostics(input.candidateStop);
   if (input.status === "FAIL" && input.shellResult !== undefined) report.shellResult = projectCursorAppShellDiagnostics(input.shellResult);
   if (platform === "win32" && input.windowsProcessAudits !== undefined) {

@@ -121,3 +121,31 @@ test("wrapper report write failures preserve the original test failure and fail 
     assert.equal(JSON.stringify(report).includes(privateCanary), false);
   }
 });
+
+
+test("final and recovered progress reports retain driver readiness evidence on every native platform", async () => {
+  for (const platform of ["linux", "darwin", "win32"]) for (const source of ["final", "progress"]) {
+    const input = { ...fixture(), platform, stage: "app-start", errorCode: "CURSOR_APP_DRIVER",
+      appDriver: { cdpConnected: true, cdpConnectedElapsedMs: 200, elapsedMs: 5200, waitElapsedMs: 5000,
+        probeCount: 1, outcome: "failed", timeoutKind: "predicate",
+        firstProbe: { contextCount: 1, pageCount: 2, workbenchCount: 1, elapsedMs: 200, completedElapsedMs: null,
+          driverState: "unobserved", evaluation: "pending", evaluationFailure: "none", url: privateCanary },
+        lastProbe: { contextCount: 1, pageCount: 2, workbenchCount: 1, elapsedMs: 200, completedElapsedMs: null,
+          driverState: "unobserved", evaluation: "pending", evaluationFailure: "none", title: privateCanary },
+        rawError: privateCanary } };
+    const report = await collectCursorAppNativeReport({ expected: { ...expected, platform },
+      fallback: { status: "FAIL", evidence: {} }, execution: classifyCursorAppExecution({ code: 1 }),
+      exitErrorCode: "CURSOR_APP_NATIVE_EXIT", async readReport(name) {
+        if (source === "progress" && name === "report.json") throw missing();
+        return JSON.stringify(input);
+      } });
+    assert.equal(report.errorCode, "CURSOR_APP_DRIVER");
+    assert.equal(report.appDriver.cdpConnected, true);
+    assert.equal(report.appDriver.timeoutKind, "predicate");
+    assert.equal(report.appDriver.waitElapsedMs, 5000);
+    assert.equal(report.appDriver.lastProbe.evaluation, "pending");
+    assert.equal(report.appDriver.firstProbe.workbenchCount, 1);
+    assert.equal(report.nativeExecution.reportSource, source);
+    assert.equal(JSON.stringify(report).includes(privateCanary), false);
+  }
+});

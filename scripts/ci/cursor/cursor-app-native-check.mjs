@@ -14,7 +14,7 @@ import { assertCursorAppNativeContent, assertCursorAppNativeSubagent, assertCurs
 import { assertCursorAppSkillReference, assertCursorAppMemoryOperation } from "./cursor-app-memory-check.mjs";
 import { readCursorRepoMemoryDelegation, projectCursorRepoMemoryDelegation, parseCursorRepoMemoryClaim, assertCursorRepoMemoryRejected,
   verifyCursorRepoMemoryFailure } from "./cursor-app-repo-memory-check.mjs";
-import { collectCursorAppDiagnostics, collectCursorAppLaunchDiagnostics,
+import { collectCursorAppDiagnostics, collectCursorAppLaunchDiagnostics, createCursorAppDriverDiagnostics,
   collectCursorAppBackendDiagnostics, collectCursorAppSubmissionDiagnostics,
   collectCursorAppShellDiagnostics, collectCursorAppShellOutputDiagnostics,
   projectCursorAppShellDiagnostics, collectCursorAppStopDiagnostics } from "./cursor-app-diagnostics.mjs";
@@ -109,21 +109,25 @@ async function prepareRepoMemoryWorkspace() {
 
 function check(value, code) { if (!value) throw Object.assign(new Error(code), { code }); }
 function safeCode(error) { return /^CURSOR_(?:APP|AGENT|MOCK)_[A-Z0-9_]+$/.test(error?.code) ? error.code : "CURSOR_APP_CHECK_FAILED"; }
-async function bounded(promise, code, timeoutMs = 10000) {
+async function bounded(promise, code, timeoutMs = 10000, onTimeout) {
   let timer;
   try {
     return await Promise.race([promise, new Promise((_, reject) => {
-      timer = setTimeout(() => reject(Object.assign(new Error(code), { code })), timeoutMs);
+      timer = setTimeout(() => {
+        try { onTimeout?.(); } catch { /* Diagnostics cannot replace the timeout. */ }
+        reject(Object.assign(new Error(code), { code }));
+      }, timeoutMs);
     })]);
   } finally { clearTimeout(timer); }
 }
-async function waitFor(predicate, code, timeoutMs = 30000) {
+async function waitFor(predicate, code, timeoutMs = 30000, onTimeout) {
   const deadline = Date.now() + timeoutMs;
   do {
     check(!app || (app.exitCode === null && app.signalCode === null), "CURSOR_APP_EXITED");
-    if (await bounded(Promise.resolve().then(predicate), code, 5000)) return;
+    if (await bounded(Promise.resolve().then(predicate), code, 5000, () => onTimeout?.("predicate"))) return;
     await delay(200);
   } while (Date.now() < deadline);
+  try { onTimeout?.("overall"); } catch { /* Diagnostics cannot replace the timeout. */ }
   check(false, code);
 }
 function beginHookTiming(phase, sessionId, { runIndex = null, resumedSession = false } = {}) {
@@ -370,33 +374,46 @@ async function assertProcessesStopped(options = {}) {
 async function startApp() {
   if (["linux", "darwin"].includes(process.platform)) { appStartedAt = Date.now(); appLaunch += 1; readyHookSessions.clear(); }
   appLaunchLog = ""; appSpawnError = undefined; appDebugEndpointSeen = false;
-  const endpoint = macos?.createDevToolsEndpointReader(debugPort);
-  let endpointError;
-  // Electron on Windows rejects a standalone URL followed by more arguments.
-  app = spawn(appPath, ["--user-data-dir", userData, "--extensions-dir", join(root, "extensions"), "--new-window",
-    "--skip-onboarding", "--skip-welcome", "--skip-release-notes", "--skip-add-to-recently-opened",
-    "--disable-updates", "--disable-telemetry", "--disable-crash-reporter", "--use-inmemory-secretstorage",
-    "--enable-smoke-test-driver", "--smoke-test-use-real-agent-http", `--test-backend-url=${agent.url}`,
-    ...(macos || windows ? ["--force-disable-user-env"] : []),
-    "--remote-debugging-address=127.0.0.1", `--remote-debugging-port=${debugPort}`, workspace],
-  { cwd: workspace, env, stdio: ["ignore", "pipe", "pipe"] });
-  app.stdout.resume();
-  app.stderr.on("data", (chunk) => {
-    appLaunchLog = (appLaunchLog + chunk).slice(-1024 * 1024);
-    try { endpoint?.push(chunk); } catch (error) { endpointError = error; }
-  });
-  app.on("error", (error) => { report.appSpawnFailed = true; appSpawnError = error.code; });
-  await waitFor(async () => {
-    if (endpointError) throw endpointError;
-    if (endpoint) return Boolean(endpoint.get());
-    try { return (await fetch(`http://127.0.0.1:${debugPort}/json/version`, { signal: AbortSignal.timeout(300) })).ok; } catch { return false; }
-  }, "CURSOR_APP_DEBUG_PORT");
-  appDebugEndpointSeen = true;
-  browser = await chromium.connectOverCDP(endpoint?.get() ?? `http://127.0.0.1:${debugPort}`, { timeout: 5000 });
-  await waitFor(async () => {
-    page = browser.contexts().flatMap((context) => context.pages()).find((item) => item.url().includes("workbench.html"));
-    return page && await page.evaluate(() => Boolean(window.driver)).catch(() => false);
-  }, "CURSOR_APP_DRIVER", windows ? 90000 : 30000);
+  const driver = createCursorAppDriverDiagnostics({ onUpdate(value) { report.appDriver = value; } });
+  let driverReady = false;
+  try {
+    const endpoint = macos?.createDevToolsEndpointReader(debugPort);
+    let endpointError;
+    // Electron on Windows rejects a standalone URL followed by more arguments.
+    app = spawn(appPath, ["--user-data-dir", userData, "--extensions-dir", join(root, "extensions"), "--new-window",
+      "--skip-onboarding", "--skip-welcome", "--skip-release-notes", "--skip-add-to-recently-opened",
+      "--disable-updates", "--disable-telemetry", "--disable-crash-reporter", "--use-inmemory-secretstorage",
+      "--enable-smoke-test-driver", "--smoke-test-use-real-agent-http", `--test-backend-url=${agent.url}`,
+      ...(macos || windows ? ["--force-disable-user-env"] : []),
+      "--remote-debugging-address=127.0.0.1", `--remote-debugging-port=${debugPort}`, workspace],
+    { cwd: workspace, env, stdio: ["ignore", "pipe", "pipe"] });
+    app.stdout.resume();
+    app.stderr.on("data", (chunk) => {
+      appLaunchLog = (appLaunchLog + chunk).slice(-1024 * 1024);
+      try { endpoint?.push(chunk); } catch (error) { endpointError = error; }
+    });
+    app.on("error", (error) => { report.appSpawnFailed = true; appSpawnError = error.code; });
+    await waitFor(async () => {
+      if (endpointError) throw endpointError;
+      if (endpoint) return Boolean(endpoint.get());
+      try { return (await fetch(`http://127.0.0.1:${debugPort}/json/version`, { signal: AbortSignal.timeout(300) })).ok; } catch { return false; }
+    }, "CURSOR_APP_DEBUG_PORT");
+    appDebugEndpointSeen = true;
+    browser = await chromium.connectOverCDP(endpoint?.get() ?? `http://127.0.0.1:${debugPort}`, { timeout: 5000 });
+    driver.connected(); driver.beginWait();
+    await waitFor(async () => {
+      const contexts = browser.contexts(), pages = contexts.flatMap((context) => context.pages());
+      page = pages.find((item) => item.url().includes("workbench.html"));
+      let workbenchCount = null;
+      try { workbenchCount = pages.filter((item) => item.url().includes("workbench.html")).length; } catch {}
+      const probe = driver.beginProbe({ contextCount: contexts.length, pageCount: pages.length,
+        workbenchCount, pageSelected: Boolean(page) });
+      return page && await page.evaluate(() => Boolean(window.driver)).then((ready) => {
+        driver.resolved(probe, ready); return ready;
+      }).catch((error) => { driver.rejected(probe, error); return false; });
+    }, "CURSOR_APP_DRIVER", windows ? 90000 : 30000, (kind) => driver.timeout(kind));
+    driverReady = true;
+  } finally { driver.finish(driverReady ? "ready" : "failed"); }
   page.setDefaultTimeout(10000);
   await bounded(page.evaluate(async () => {
     // Keep synthetic login from replacing the IDE window with the Agents window.

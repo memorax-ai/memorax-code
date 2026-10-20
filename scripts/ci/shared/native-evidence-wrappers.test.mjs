@@ -13,6 +13,7 @@ const repo = fileURLToPath(new URL("../../../", import.meta.url));
 const windows = process.platform === "win32";
 const pwsh = spawnSync("pwsh", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "exit 0"]).status === 0;
 const suites = {
+  claude: ["claude-install-smoke", "claude-install-interruption-check", "claude-native-check", "claude-permissions-check"],
   codex: ["codex-install-smoke", "codex-native-check", "codex-permissions-check", "codex-install-interruption-check"],
   opencode: ["opencode-install-smoke", "opencode-native-check", "opencode-permissions-check", "opencode-server-check",
     "opencode-install-interruption-check"],
@@ -53,6 +54,7 @@ if (args.includes("--global")) {
   const bin = windows ? prefix : join(prefix, "bin");
   command(bin, "memorax-code", "");
   command(bin, "codex", "codex-cli 0.0.0");
+  command(bin, "claude", "0.0.0 (Claude Code)");
   const opencode = args.find((arg) => arg.startsWith("opencode-ai@"));
   if (opencode) command(bin, "opencode", opencode.slice("opencode-ai@".length));
 } else {
@@ -101,7 +103,7 @@ function run(fx, { evidence = fx.evidence, failing = {}, failLedger = [] } = {})
   if (windows) {
     // GitHub runs a pwsh step as a dot-sourced script that exits with $LASTEXITCODE.
     const step = join(fx.root, "github-step.ps1");
-    const version = fx.client === "codex" ? "-CodexVersion" : "-OpenCodeVersion";
+    const version = { codex: "-CodexVersion", opencode: "-OpenCodeVersion", claude: "-ClaudeVersion" }[fx.client];
     writeFileSync(step, ["$ErrorActionPreference = 'stop'",
       `& '${fx.wrapper}' -TarballDirectory '${join(fx.root, "tarballs")}' ${version} '0.0.0'`,
       "if ((Test-Path -LiteralPath variable:\\LASTEXITCODE)) { exit $LASTEXITCODE }", ""].join("\r\n"));
@@ -121,9 +123,9 @@ function ledger(evidence) {
 }
 
 const shell = windows ? "PowerShell" : "bash";
-const firstFailure = { codex: /The Codex installation smoke failed/, opencode: /The OpenCode installation smoke failed/ };
+const firstFailure = { codex: /The Codex installation smoke failed/, opencode: /The OpenCode installation smoke failed/, claude: /The Claude installation smoke failed/ };
 
-for (const client of ["codex", "opencode"]) {
+for (const client of ["codex", "opencode", "claude"]) {
   test(`${client} ${shell} wrapper passes, records its phases and hands evidence only to the runners`, (t) => {
     const fx = fixture(t, client);
     const result = run(fx);

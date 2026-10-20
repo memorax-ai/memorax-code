@@ -6,7 +6,7 @@ import { basename, dirname, join, win32 } from "node:path";
 import { PassThrough } from "node:stream";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
-import { collectCursorAppBackendDiagnostics, collectCursorAppShellDiagnostics, collectCursorAppStopDiagnostics, collectCursorAppSubmissionDiagnostics } from "./cursor-app-diagnostics.mjs";
+import { collectCursorAppBackendDiagnostics, collectCursorAppShellDiagnostics, collectCursorAppStopDiagnostics, collectCursorAppSubmissionDiagnostics, createCursorAppDriverDiagnostics } from "./cursor-app-diagnostics.mjs";
 import { projectCursorAppHookTiming } from "./cursor-app-hook-diagnostics.mjs";
 import { collectCursorAppSkillHookContext } from "./cursor-app-hook-context.mjs";
 
@@ -16,7 +16,7 @@ function check(value, code) { if (!value) throw Object.assign(new Error(code), {
 function nativeFunction(name, context = {}) {
   const definition = source.match(new RegExp(`(?:async )?function ${name}\\([\\s\\S]*?(?=\\n(?:async )?function )`))?.[0];
   assert.ok(definition, name);
-  return runInNewContext(`(${definition})`, { check, Buffer, basename, dirname, join, once, collectCursorAppSkillHookContext, projectCursorAppHookTiming, collectCursorAppSubmissionDiagnostics,
+  return runInNewContext(`(${definition})`, { check, Buffer, basename, dirname, join, once, createCursorAppDriverDiagnostics, collectCursorAppSkillHookContext, projectCursorAppHookTiming, collectCursorAppSubmissionDiagnostics,
     process: { platform: "darwin" }, appLaunch: 0, readyHookSessions: new Map(),
     checkpointReport() {}, beginHookTiming() {}, markHookSubmit() {}, async observeHookTiming() {}, finishHookTiming() {}, async waitForHookReady() {}, async recordSubmissionFailure() {}, ...context }, { timeout: 100 });
 }
@@ -802,4 +802,98 @@ test("progress persistence failures preserve the first native failure and privat
   assert.equal(report.errorCode, "CURSOR_APP_DRIVER");
   assert.equal(report.stage, "native-submit");
   assert.equal(JSON.stringify(report).includes(privateCanary), false);
+});
+
+
+test("driver readiness reports absent pages, absent drivers, evaluation rejection and success without changing page selection", async (t) => {
+  for (const mode of ["page-absent", "driver-absent", "evaluation-rejected", "ready", "first-page-only", "cdp-failed"]) {
+    let clock = 0, evaluations = 0;
+    const child = childProcess(), report = { errorCode: "CURSOR_APP_DRIVER" }, selected = [], deadlines = [];
+    t.after(() => { child.stdout.end(); child.stderr.end(); });
+    const first = { url: () => "file:///" + privateCanary + "/workbench.html", setDefaultTimeout() {},
+      async evaluate() {
+        selected.push("first"); evaluations += 1;
+        if (mode === "evaluation-rejected") throw new Error("Execution context was destroyed " + privateCanary);
+        return mode === "ready" && evaluations >= 2;
+      } };
+    const second = { url: () => "file:///workbench.html?" + privateCanary,
+      async evaluate() { selected.push("second"); return true; } };
+    const bounded = nativeFunction("bounded", { setTimeout, clearTimeout });
+    const waitFor = nativeFunction("waitFor", { app: child, bounded, Date: { now: () => clock },
+      async delay(milliseconds) { assert.equal(milliseconds, 200); clock += mode === "ready" ? 200 : 90000; } });
+    const original = Object.assign(new Error(privateCanary), { code: "SYNTHETIC_CDP_FAILURE" });
+    const start = nativeFunction("startApp", {
+      process: { platform: "win32" }, macos: undefined, windows: {}, report, AbortSignal,
+      createCursorAppDriverDiagnostics: options => createCursorAppDriverDiagnostics({ ...options, now: () => clock }),
+      appPath: "/owned/app", userData: "/owned/app-data", root: "/owned", workspace: "/owned/workspace", env: {},
+      agent: { url: "http://127.0.0.1:12345" }, debugPort: 12346, spawn: () => child,
+      fetch: async () => ({ ok: true }), bounded,
+      chromium: { async connectOverCDP() {
+        if (mode === "cdp-failed") throw original;
+        return { contexts: () => [{ pages: () => mode === "page-absent" ? [] : mode === "first-page-only" ? [first, second] : [first] }] };
+      } },
+      async waitFor(predicate, code, deadline, onTimeout) { deadlines.push([code, deadline]); return waitFor(predicate, code, deadline, onTimeout); },
+    });
+    if (mode === "ready") await start();
+    else await assert.rejects(start(), error => mode === "cdp-failed" ? error === original : error.code === "CURSOR_APP_DRIVER");
+    const value = report.appDriver;
+    assert.equal(report.errorCode, "CURSOR_APP_DRIVER");
+    assert.equal(value.cdpConnected, mode !== "cdp-failed");
+    assert.equal(value.outcome, mode === "ready" ? "ready" : "failed");
+    assert.equal(value.timeoutKind, ["ready", "cdp-failed"].includes(mode) ? "none" : "overall");
+    assert.equal(selected.includes("second"), false);
+    if (mode === "cdp-failed") {
+      assert.equal(value.firstProbe, null); assert.equal(value.waitElapsedMs, null); assert.equal(value.probeCount, 0);
+    } else {
+      assert.deepEqual(deadlines.at(-1), ["CURSOR_APP_DRIVER", 90000]);
+      assert.equal(value.lastProbe.contextCount, 1);
+      assert.equal(value.lastProbe.pageCount, mode === "page-absent" ? 0 : mode === "first-page-only" ? 2 : 1);
+      assert.equal(value.lastProbe.workbenchCount, value.lastProbe.pageCount);
+      assert.equal(value.lastProbe.evaluation, mode === "page-absent" ? "not-started" : mode === "evaluation-rejected" ? "rejected" : "resolved");
+      assert.equal(value.lastProbe.driverState, mode === "ready" ? "ready" : ["driver-absent", "first-page-only"].includes(mode) ? "absent" : "unobserved");
+      if (mode === "evaluation-rejected") assert.equal(value.lastProbe.evaluationFailure, "context-destroyed");
+      if (mode === "ready") {
+        assert.equal(value.firstProbe.driverState, "absent"); assert.equal(value.probeCount, 2);
+        assert.equal(value.waitElapsedMs, 200);
+      }
+    }
+    assert.equal(JSON.stringify(report).includes(privateCanary), false);
+  }
+});
+
+test("a stalled driver evaluation retains the 5s predicate timeout and ignores late results", async (t) => {
+  let clock = 0, resolveEvaluation;
+  const child = childProcess(), report = {}, timers = [];
+  t.after(() => { child.stdout.end(); child.stderr.end(); });
+  const bounded = nativeFunction("bounded", { setTimeout(callback, milliseconds) {
+    timers.push(milliseconds); return setImmediate(() => { clock += milliseconds; callback(); });
+  }, clearTimeout: clearImmediate });
+  const waitFor = nativeFunction("waitFor", { app: child, bounded, Date: { now: () => clock }, async delay() { assert.fail("pending evaluation must not poll"); } });
+  const page = { url: () => "file:///workbench.html", evaluate: () => new Promise(resolve => { resolveEvaluation = resolve; }) };
+  const start = nativeFunction("startApp", { process: { platform: "win32" }, macos: undefined, windows: {}, report, AbortSignal,
+    createCursorAppDriverDiagnostics: options => createCursorAppDriverDiagnostics({ ...options, now: () => clock }),
+    appPath: "/owned/app", userData: "/owned/app-data", root: "/owned", workspace: "/owned/workspace", env: {},
+    agent: { url: "http://127.0.0.1:12345" }, debugPort: 12346, spawn: () => child,
+    fetch: async () => ({ ok: true }), bounded, waitFor,
+    chromium: { connectOverCDP: async () => ({ contexts: () => [{ pages: () => [page] }] }) },
+  });
+  await assert.rejects(start(), { code: "CURSOR_APP_DRIVER" });
+  assert.deepEqual(timers, [5000, 5000]);
+  assert.equal(report.appDriver.timeoutKind, "predicate");
+  assert.equal(report.appDriver.waitElapsedMs, 5000);
+  assert.equal(report.appDriver.lastProbe.evaluation, "pending");
+  assert.equal(report.appDriver.lastProbe.completedElapsedMs, null);
+  const before = JSON.stringify(report);
+  resolveEvaluation(true); await new Promise(setImmediate);
+  assert.equal(JSON.stringify(report), before);
+});
+
+test("readiness timeout observers cannot replace predicate or overall timeout errors", async () => {
+  const observer = () => { throw new Error(privateCanary); };
+  const bounded = nativeFunction("bounded", { setTimeout: callback => setImmediate(callback), clearTimeout: clearImmediate });
+  await assert.rejects(bounded(new Promise(() => {}), "CURSOR_APP_DRIVER", 5000, observer), { code: "CURSOR_APP_DRIVER" });
+  let clock = 0;
+  const waitFor = nativeFunction("waitFor", { app: undefined, bounded: promise => promise, Date: { now: () => clock },
+    async delay() { clock = 90000; } });
+  await assert.rejects(waitFor(() => false, "CURSOR_APP_DRIVER", 90000, observer), { code: "CURSOR_APP_DRIVER" });
 });

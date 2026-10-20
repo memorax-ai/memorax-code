@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { collectCursorAppDiagnostics, collectCursorAppLaunchDiagnostics, collectCursorAppShellDiagnostics,
+  createCursorAppDriverDiagnostics, projectCursorAppDriverDiagnostics,
   collectCursorAppBackendDiagnostics, projectCursorAppBackendDiagnostics,
   collectCursorAppSubmissionDiagnostics, projectCursorAppSubmissionDiagnostics,
   collectCursorAppShellOutputDiagnostics, collectCursorAppStopDiagnostics, collectCursorAppWindowsStopDiagnostics,
@@ -371,4 +372,77 @@ test("submission projections preserve only bounded counts, literal booleans and 
   }
   assert.equal(collectCursorAppSubmissionDiagnostics({ error: privateCanary }).failureKind, "other");
   assert.equal(projectCursorAppSubmissionDiagnostics().readStatus, "unavailable");
+});
+
+
+test("driver readiness keeps first and last probes, frozen timings and unavailable versus zero observations", () => {
+  let clock = 100;
+  const snapshots = [], driver = createCursorAppDriverDiagnostics({ now: () => clock, onUpdate: value => snapshots.push(value) });
+  assert.equal(driver.snapshot().cdpConnected, false);
+  assert.equal(driver.snapshot().probeCount, 0);
+  assert.equal(driver.snapshot().waitElapsedMs, null);
+  assert.equal(driver.snapshot().firstProbe, null);
+  clock = 150; driver.connected(); driver.beginWait();
+  const first = driver.beginProbe({ contextCount: 1, pageCount: 0, workbenchCount: 0, pageSelected: false });
+  assert.equal(first.evaluation, "not-started");
+  clock = 350;
+  const second = driver.beginProbe({ contextCount: 1, pageCount: 2, workbenchCount: 1, pageSelected: true });
+  const pending = driver.snapshot();
+  assert.equal(pending.lastProbe.evaluation, "pending");
+  assert.equal(pending.lastProbe.completedElapsedMs, null);
+  clock = 360; driver.resolved(second, true);
+  const result = driver.finish("ready");
+  assert.equal(result.cdpConnectedElapsedMs, 50);
+  assert.equal(result.elapsedMs, 260);
+  assert.equal(result.waitElapsedMs, 210);
+  assert.equal(result.probeCount, 2);
+  assert.equal(result.firstProbe.pageCount, 0);
+  assert.equal(result.lastProbe.driverState, "ready");
+  assert.equal(result.lastProbe.completedElapsedMs, 260);
+  assert.equal(pending.lastProbe.evaluation, "pending");
+  clock = 900000;
+  driver.timeout("overall"); driver.rejected(second, new Error(privateCanary)); driver.resolved(first, true);
+  driver.connected(); driver.beginWait(); driver.beginProbe({ pageSelected: true }); driver.finish("failed");
+  assert.deepEqual(driver.snapshot(), result);
+  assert.deepEqual(snapshots.at(-1), result);
+  const absent = projectCursorAppDriverDiagnostics({});
+  assert.equal(absent.cdpConnected, null);
+  assert.equal(absent.probeCount, null);
+  assert.equal(absent.elapsedMs, null);
+  assert.equal(absent.timeoutKind, "unavailable");
+});
+
+test("driver evaluation failures have fixed categories and retain no error messages, URLs or titles", () => {
+  for (const [message, name, category] of [
+    ["Target page, context or browser has been closed", "Error", "page-closed"],
+    ["Execution context was destroyed, most likely because of a navigation", "Error", "context-destroyed"],
+    ["Timeout 5000ms exceeded", "Error", "timeout"],
+    ["unrecognized", "TimeoutError", "timeout"],
+    ["unrecognized", "Error", "other"],
+  ]) {
+    const driver = createCursorAppDriverDiagnostics({ onUpdate() { throw new Error(privateCanary); } });
+    driver.connected(); driver.beginWait();
+    const probe = driver.beginProbe({ contextCount: 1, pageCount: 1, workbenchCount: 1, pageSelected: true,
+      url: privateCanary, title: privateCanary });
+    driver.rejected(probe, { name, message: message + " " + privateCanary, stack: privateCanary });
+    driver.timeout("overall"); driver.timeout("predicate");
+    const result = driver.finish("failed");
+    assert.equal(result.lastProbe.evaluation, "rejected");
+    assert.equal(result.lastProbe.evaluationFailure, category);
+    assert.equal(result.lastProbe.driverState, "unobserved");
+    assert.equal(result.timeoutKind, "overall");
+    redacted(result);
+  }
+  const result = projectCursorAppDriverDiagnostics({ cdpConnected: "true", cdpConnectedElapsedMs: -1,
+    probeCount: 10001, elapsedMs: Infinity, waitElapsedMs: 600001, outcome: privateCanary, timeoutKind: privateCanary,
+    firstProbe: { elapsedMs: 0, completedElapsedMs: 0, contextCount: 0, pageCount: 10001, workbenchCount: 1.5,
+      driverState: privateCanary, evaluation: privateCanary, evaluationFailure: privateCanary, url: privateCanary },
+    lastProbe: privateCanary, title: privateCanary, rawError: privateCanary });
+  assert.equal(result.cdpConnected, null);
+  for (const key of ["cdpConnectedElapsedMs", "probeCount", "elapsedMs", "waitElapsedMs"]) assert.equal(result[key], null);
+  assert.equal(result.firstProbe.contextCount, 0);
+  assert.equal(result.firstProbe.pageCount, null);
+  assert.equal(result.firstProbe.workbenchCount, null);
+  assert.equal(result.lastProbe, null);
+  redacted(result);
 });
