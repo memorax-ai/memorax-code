@@ -47,7 +47,16 @@ test("Windows installer invocation is silent, prevents automatic App start and w
   }
 });
 
-test("the real encoded installer script distinguishes installer exit from launch error without private output", (t) => {
+async function assertInstallerMarkers(stderr, expected) {
+  const observation = await observeWindowsInstaller(async () => ({ stdout: "", stderr }), "powershell.exe", [], {});
+  const markers = Object.values(windowsInstallerPhaseMarkers);
+  assert.deepEqual(observation.diagnostics.phases, Object.fromEntries(Object.entries(windowsInstallerPhaseMarkers)
+    .map(([name, marker]) => [name, expected.includes(marker)])));
+  // PowerShell 5.1 may interleave CLIXML module progress with Console.Error markers.
+  assert.deepEqual(stderr.split(/\r?\n/).filter((line) => markers.includes(line)), expected);
+}
+
+test("the real encoded installer script distinguishes installer exit from launch error without private output", async (t) => {
   const available = spawnSync("pwsh", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "exit 0"], { encoding: "utf8", timeout: 10000 });
   if (available.error?.code === "ENOENT") return t.skip("PowerShell is not installed");
   assert.equal(available.status, 0);
@@ -64,7 +73,7 @@ ${Buffer.from(args.at(-1), "base64").toString("utf16le")}`;
       { encoding: "utf8", timeout: 10000 });
     assert.equal(result.status, kind === "exited" ? 7 : 1);
     assert.deepEqual(JSON.parse(result.stdout), { status: kind, exitCode: kind === "exited" ? 7 : null, nativeErrorCode: kind === "exited" ? null : 5 });
-    assert.deepEqual(result.stderr.trim().split(/\r?\n/), [
+    await assertInstallerMarkers(result.stderr, [
       windowsInstallerPhaseMarkers.powershellStart, windowsInstallerPhaseMarkers.launchStart,
       ...(kind === "exited" ? [windowsInstallerPhaseMarkers.treeWaitComplete] : []),
       windowsInstallerPhaseMarkers.jsonComplete,
@@ -115,7 +124,7 @@ public class Fixture {
     { cwd: root, env, encoding: "utf8", timeout: 15000 });
   assert.equal(result.status, 0);
   assert.deepEqual(projectWindowsInstallerOutcome(result.stdout), { status: "exited", exitCode: 0, nativeErrorCode: null });
-  assert.deepEqual(result.stderr.trim().split(/\r?\n/), Object.values(windowsInstallerPhaseMarkers));
+  await assertInstallerMarkers(result.stderr, Object.values(windowsInstallerPhaseMarkers));
   assert.equal(await readFile(join(root, "parent-returning"), "utf8"), "returning");
   assert.equal(await readFile(join(root, "descendant-complete"), "utf8"), "complete");
 });
@@ -287,5 +296,15 @@ test("Windows controller preserves exit failures and confirms closure only from 
         assert.equal(calls.includes("confirmed"), false);
       }
     });
+  }
+});
+
+
+test("installer marker assertions allow CLIXML progress while rejecting missing, duplicate or reordered phases", async () => {
+  const expected = Object.values(windowsInstallerPhaseMarkers);
+  const progress = '#< CLIXML\r\n<Objs><Obj S="progress"><AV>Preparing modules for first use.</AV></Obj></Objs>';
+  await assertInstallerMarkers([expected[0], expected[1], progress, ...expected.slice(2), ""].join("\r\n"), expected);
+  for (const markers of [expected.slice(0, -1), [...expected, expected[3]], [...expected].reverse()]) {
+    await assert.rejects(assertInstallerMarkers(markers.join("\n") + "\n" + progress, expected), { code: "ERR_ASSERTION" });
   }
 });

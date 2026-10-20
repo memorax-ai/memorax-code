@@ -218,3 +218,25 @@ test("a late log read stops after timeout, closes once and cannot publish its co
   assert.equal(reads, 1); assert.equal(stats, 1); assert.equal(closes, 1);
   assert.equal(JSON.stringify(result), saved); assert.equal(saved.includes("private-canary"), false);
 });
+
+
+test("PowerShell 5.1 CLIXML progress can surround streamed installer markers without becoming evidence", async () => {
+  const held = heldExecution(); let time = 0;
+  const pending = observeWindowsInstaller(() => held.pending, "powershell.exe", [], {}, { now: () => time });
+  const stderr = [markers.powershellStart, markers.launchStart, "#< CLIXML", markers.treeWaitComplete,
+    markers.jsonComplete, '<Objs><Obj S="progress"><AV>Preparing modules for first use.</AV>'
+      + '<S>private-canary C:\\private\\token ' + markers.launchStart + '</S></Obj></Objs>', ""].join("\r\n");
+  for (let offset = 0; offset < stderr.length; offset += 7) {
+    time += 1; held.child.stderr.emit("data", Buffer.from(stderr.slice(offset, offset + 7)));
+  }
+  held.resolve({ stdout: '{"status":"exited","exitCode":0,"nativeErrorCode":null}', stderr });
+  const { diagnostics } = await pending;
+  assert.deepEqual(diagnostics.phases, Object.fromEntries(Object.keys(markers).map(name => [name, true])));
+  const times = Object.values(diagnostics.phaseElapsedMs);
+  assert.ok(times.every(Number.isInteger));
+  assert.ok(times.every((at, index) => index === 0 || at > times[index - 1]));
+  assert.equal(diagnostics.stderrBytes, Buffer.byteLength(stderr));
+  assert.equal(JSON.stringify(diagnostics).includes("CLIXML"), false);
+  assert.equal(JSON.stringify(diagnostics).includes("private-canary"), false);
+  assert.equal(JSON.stringify(diagnostics).includes("Preparing modules"), false);
+});
