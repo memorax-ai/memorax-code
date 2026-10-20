@@ -7,7 +7,7 @@ import { createServer as createTcpServer } from "node:net";
 import { tmpdir, userInfo } from "node:os";
 import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
-import { verifyBackendReplacementState, assertCredentialNotEchoed, assertSetupInputRejection,
+import { assertBackendReplacement, assertCredentialNotEchoed, assertSetupInputRejection,
   snapshotProtectedConfiguration, assertProtectedConfiguration } from "../codex/codex-lifecycle-assertions.mjs";
 import { startLifecycleCommand } from "./claude-lifecycle-process.mjs";
 import { selectLifecyclePlugin, assertLifecycleMarketplace, snapshotClaudeSettings, assertClaudeSettings,
@@ -642,15 +642,18 @@ async function rememberPid() {
 }
 async function verifyBackendReplacement(before, label) {
   stage = `${label} Backend replacement`;
-  const after = await verifyBackendReplacementState(before, {
-    readAfter: () => readJson(pidPath()), expectedUrl: `http://127.0.0.1:${backendPort}`,
-    observe(diagnostic) {
-      report.backendReplacement = diagnostic;
-    },
-  });
+  const after = await readJson(pidPath());
+  let oldProcessAlive = true;
+  try { process.kill(before.pid, 0); }
+  catch (error) { if (error.code === "ESRCH") oldProcessAlive = false; else throw error; }
+  try { process.kill(after.pid, 0); }
+  catch { check(false, "Updated Backend PID does not identify a live process"); }
+  check(after.url === `http://127.0.0.1:${backendPort}`, "Updated Backend has an unexpected endpoint");
+  const response = await fetch(new URL("/health", after.url), { signal: AbortSignal.timeout(5_000) });
+  check(response.ok, "Updated Backend did not answer its health endpoint successfully");
+  assertBackendReplacement(before, after, await response.json(), oldProcessAlive);
   backendPids.delete(before.pid);
-  backendPids.add(after.pid);
-  report.checks.push(`${label}: Backend instance changed; current process and health identity agree`);
+  report.checks.push(`${label}: old Backend exited; new PID, instance and live health identity agree`);
 }
 async function stopAndVerify() {
   cleanupStage = "pid_record_read";

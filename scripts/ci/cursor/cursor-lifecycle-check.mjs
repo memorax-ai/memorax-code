@@ -7,7 +7,7 @@ import { createServer as createTcpServer } from "node:net";
 import { tmpdir, userInfo } from "node:os";
 import { delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { verifyBackendReplacementState, assertCredentialNotEchoed, assertProtectedConfiguration,
+import { assertBackendReplacement, assertCredentialNotEchoed, assertProtectedConfiguration,
   snapshotProtectedConfiguration } from "../codex/codex-lifecycle-assertions.mjs";
 import { classifyLifecycleRequest } from "../claude/claude-lifecycle-assertions.mjs";
 import { startLifecycleCommand } from "../claude/claude-lifecycle-process.mjs";
@@ -365,13 +365,13 @@ export async function runCursorLifecycleCheck(candidatePath, reportDirectory, pr
     }
   }
   async function replaced(before) {
-    const after = await verifyBackendReplacementState(before, {
-      readAfter: () => json(pidPath()), expectedUrl: `http://127.0.0.1:${port}`,
-      observe(diagnostic) { report.backendReplacement = diagnostic; },
-    });
-    check(!(await exists(transitionPath())), "CURSOR_LIFECYCLE_TRANSITION_REMAINS");
+    const after = await json(pidPath());
+    check(after.url === `http://127.0.0.1:${port}`, "CURSOR_LIFECYCLE_BACKEND_ENDPOINT");
+    const response = await fetch(new URL("/health", after.url), { signal: AbortSignal.timeout(5000) });
+    check(response.ok && alive(after.pid), "CURSOR_LIFECYCLE_BACKEND_HEALTH");
+    assertBackendReplacement(before, after, await response.json(), alive(before.pid));
     backendPids.delete(before.pid);
-    backendPids.add(after.pid);
+    check(!(await exists(transitionPath())), "CURSOR_LIFECYCLE_TRANSITION_REMAINS");
   }
   async function savedAccountSearch() {
     const query = "Verify the retained synthetic Cursor lifecycle account.", before = searches.length;

@@ -18,7 +18,7 @@ function nativeFunction(name, context = {}) {
   assert.ok(definition, name);
   return runInNewContext(`(${definition})`, { check, Buffer, basename, dirname, join, once, collectCursorAppSkillHookContext, projectCursorAppHookTiming, collectCursorAppSubmissionDiagnostics,
     process: { platform: "darwin" }, appLaunch: 0, readyHookSessions: new Map(),
-    checkpointReport() {}, beginHookTiming() {}, markHookSubmit() {}, async observeHookTiming() {}, finishHookTiming() {}, async waitForHookReady() {}, async recordSubmissionFailure() {}, ...context }, { timeout: 100 });
+    beginHookTiming() {}, markHookSubmit() {}, async observeHookTiming() {}, finishHookTiming() {}, async waitForHookReady() {}, async recordSubmissionFailure() {}, ...context }, { timeout: 100 });
 }
 function childProcess() {
   return Object.assign(new EventEmitter(), { pid: 201, exitCode: null, signalCode: null,
@@ -173,10 +173,10 @@ test("native sequence restores the original session after workspace switching wi
   const body = source.split('  report.stage = "app-start";')[1]?.split('  report.stage = "cleanup";')[0];
   const starts = [], stops = [], turns = [], commands = [];
   let sessions = 0;
-  const context = { check, checkpointReport() {}, join, root: "/owned", firstWorkspace: "/owned/workspace", workspace: "/owned/workspace",
+  const context = { check, join, root: "/owned", firstWorkspace: "/owned/workspace", workspace: "/owned/workspace",
     report: { evidence: {} }, recoveryFixture: { prompt: "recovery" },
-    async mkdir() {}, async startApp() { context.app = { pid: 201, exitCode: null, signalCode: null }; starts.push(context.workspace); },
-    async stopApp() { stops.push(context.workspace); context.app.exitCode = 0; context.app = undefined; },
+    async mkdir() {}, async startApp() { context.app = { pid: starts.length + 1 }; starts.push(context.workspace); },
+    async stopApp() { stops.push(context.workspace); context.app = undefined; },
     async assertProcessesStopped(options) { assert.equal(options.includeBackend, false); },
     async openSession(id) { return id ?? ["session-a", "session-b", "session-deny"][sessions++]; },
     async runTurn(sessionId) { turns.push([sessionId, context.workspace]); }, assertWriteback() {}, assertSnapshot() {},
@@ -406,13 +406,13 @@ test("Skill shell steps bind the isolated endpoint, state and session with macOS
 
 test("cleanup captures macOS descendants before closing even when capture fails", async () => {
   for (const failed of [false, true]) {
-    const calls = [], app = childProcess(), observedMacosProcesses = new Map();
-    const stop = nativeFunction("stopApp", { app, observedMacosProcesses, windows: undefined, page: {},
-      macos: { async captureMacosDescendants() { calls.push("capture"); check(!failed, "AUDIT_FAILED"); return new Map([[201, "first"], [202, "second"]]); } },
+    const calls = [], app = childProcess(), observedMacosPids = new Set();
+    const stop = nativeFunction("stopApp", { app, observedMacosPids, windows: undefined, page: {},
+      macos: { async captureMacosDescendants() { calls.push("capture"); check(!failed, "AUDIT_FAILED"); return [201, 202]; } },
       browser: { async close() { calls.push("close"); app.exitCode = 0; } }, bounded: (promise) => promise });
     if (failed) await assert.rejects(stop(), { code: "AUDIT_FAILED" }); else await stop();
     assert.deepEqual(calls, ["capture", "close"]);
-    assert.deepEqual([...observedMacosProcesses], failed ? [] : [[201, "first"], [202, "second"]]);
+    assert.deepEqual([...observedMacosPids], failed ? [] : [201, 202]);
   }
 });
 
@@ -497,7 +497,7 @@ test("preflight rejects unsupported runtimes, Linux root and unowned Windows run
   const body = source.split("\ntry {\n")[1]?.split("  // macOS Unix sockets")[0];
   for (const [platform, node, uid, code] of [["win32", "24.0.0"], ["linux", "24.0.0", 1000],
     ["linux", "24.0.0", 0, "CURSOR_APP_ISOLATION"], ["win32", "22.12.0", undefined, "CURSOR_APP_ARGUMENTS"]]) {
-    const preflight = runInNewContext(`(() => {${body}})`, { check, checkpointReport() {}, expectedNodeMajor: node.split(".")[0],
+    const preflight = runInNewContext(`(() => {${body}})`, { check, expectedNodeMajor: node.split(".")[0],
       process: { platform, versions: { node }, argv: Array(8), getuid() { assert.notEqual(platform, "win32"); return uid; } } });
     if (code) assert.throws(preflight, { code }); else preflight();
   }
@@ -610,7 +610,7 @@ test("Repo Memory timing observes the first submission before reporting its orig
   assert.ok(body);
   const calls = [], agent = { runs: [], errors: [] }, report = { evidence: {} };
   const failure = "CURSOR_APP_REPO_MEMORY_DELEGATION_INVALID";
-  const worker = runInNewContext("(async function () {" + body + ")", { check, checkpointReport() {}, basename, report, agent, turns: [], repoMemory: undefined,
+  const worker = runInNewContext("(async function () {" + body + ")", { check, basename, report, agent, turns: [], repoMemory: undefined,
     async stopApp() {}, async assertProcessesStopped() {}, async prepareRepoMemoryWorkspace() { return { repo: "/owned/repo" }; },
     async startApp() { calls.push("config-ready"); }, async openSession() { calls.push("session-ready"); return "parent-session"; },
     page: { locator(selector) {
@@ -753,53 +753,4 @@ test("the pending-shell interruption fixture also submits only through its sessi
   });
   await assert.rejects(interrupt(), error => error === finished);
   assert.deepEqual(actions, [["fill", "synthetic interruption"], ["press", "Enter"]]);
-});
-
-test("restart identity follows ChildProcess lifetimes and accepts a recycled PID", async () => {
-  const body = source.split('  report.stage = "app-restart";')[1].split('  await openSession(firstSession);')[0];
-  for (const outcome of ["recycled-pid", "old-live", "new-closed", "same-child"]) {
-    const old = { pid: 201, exitCode: null, signalCode: null };
-    const context = { app: old, check, checkpointReport() {}, firstWorkspace: "/owned/workspace", workspace: "/owned/other",
-      async stopApp() { if (outcome !== "old-live") old.exitCode = 0; },
-      async assertProcessesStopped() {}, assertWriteback() {},
-      async startApp() { context.app = outcome === "same-child" ? old
-        : { pid: 201, exitCode: outcome === "new-closed" ? 0 : null, signalCode: null }; },
-    };
-    const run = runInNewContext("(async () => {" + body + "})", context);
-    if (outcome === "recycled-pid") await run();
-    else await assert.rejects(run(), { code: "CURSOR_APP_RESTART_IDENTITY" });
-  }
-});
-
-test("macOS observations retire only after a complete clear audit and can be captured for the next launch", async () => {
-  const observedMacosProcesses = new Map([[201, "first-launch"]]);
-  let remains = true, fails = false;
-  const audit = nativeFunction("assertProcessesStopped", { observedMacosProcesses, windows: undefined, macos: {},
-    async ownedProcessesRemain() { if (fails) throw Object.assign(new Error("unavailable"), { code: "AUDIT_FAILED" }); return remains; },
-    async delay() {},
-  });
-  await assert.rejects(audit(), { code: "CURSOR_APP_CLEANUP_DESCENDANTS" });
-  assert.equal(observedMacosProcesses.get(201), "first-launch");
-  fails = true;
-  await assert.rejects(audit(), { code: "AUDIT_FAILED" });
-  assert.equal(observedMacosProcesses.size, 1);
-  fails = false; remains = false;
-  await audit();
-  assert.equal(observedMacosProcesses.size, 0);
-  observedMacosProcesses.set(201, "second-launch");
-  remains = true;
-  await assert.rejects(audit(), { code: "CURSOR_APP_CLEANUP_DESCENDANTS" });
-  assert.equal(observedMacosProcesses.get(201), "second-launch");
-});
-
-test("progress persistence failures preserve the first native failure and private fields never reach the writer", () => {
-  const report = { status: "FAIL", stage: "native-submit", errorCode: "CURSOR_APP_DRIVER", evidence: {} };
-  const persist = nativeFunction("checkpointReport", { report, memoryRequests: [], agent: undefined, activeHookTiming: undefined,
-    reportDir: "/owned/report", expectedVersion: "3.21.18", expectedNodeMajor: "24",
-    writeCursorAppProgress() { throw new Error(privateCanary); },
-  });
-  persist();
-  assert.equal(report.errorCode, "CURSOR_APP_DRIVER");
-  assert.equal(report.stage, "native-submit");
-  assert.equal(JSON.stringify(report).includes(privateCanary), false);
 });

@@ -8,7 +8,6 @@ import { basename, dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
-import { writeCursorAppProgress } from "./cursor-app-report.mjs";
 import { startCursorAgentMock } from "./cursor-app-mock-server.mjs";
 import { assertCursorAppNativeContent, assertCursorAppNativeSubagent, assertCursorAppWritebacks } from "./cursor-app-native-content-check.mjs";
 import { assertCursorAppSkillReference, assertCursorAppMemoryOperation } from "./cursor-app-memory-check.mjs";
@@ -58,37 +57,9 @@ let interruption, denial, repoMemory, repoMemoryHelper, repoMemoryDefinition;
 let macos, macosPaths, windows, windowsPaths, backendPort = 18787, debugPort = 9222;
 let appStartedAt, appLaunch = 0, activeHookTiming;
 const readyHookSessions = new Map();
-const observedMacosProcesses = new Map();
+const observedMacosPids = new Set();
 const referenceTexts = new Map();
 const exec = promisify(execFile);
-const progressTimer = setInterval(checkpointReport, 1000);
-progressTimer.unref();
-
-function agentReport() {
-  return { runs: agent.runs.length, cancelled: agent.runs.map((run) => run.cancelled === true), writes: agent.runs.map((run) => run.kvWriteCount),
-    acknowledgements: agent.runs.map((run) => run.kvAckCount), ancillaryRequestCount: agent.ancillaryRequestCount,
-    unsupportedRpcCount: agent.unsupportedRpcCount, historyTurns: agent.runs.map((run) => run.turnRefs.length),
-    reads: agent.runs.map((run) => run.kvReadCount), readResults: agent.runs.map((run) => run.kvReadResultCount),
-    execRequests: agent.runs.map((run) => run.execRequestCount), execResults: agent.runs.map((run) => run.execResultCount),
-    execCloses: agent.runs.map((run) => run.execCloseCount),
-    contextRequests: agent.runs.map((run) => run.requestContextRequestCount),
-    contextResults: agent.runs.map((run) => run.requestContextResultCount),
-    contextCloses: agent.runs.map((run) => run.requestContextCloseCount) };
-}
-function checkpointReport() {
-  try {
-    const progress = { ...report, memoryRequestCount: memoryRequests.length };
-    if (agent) {
-      progress.agent = agentReport();
-      progress.agent.errors = [...agent.errors];
-      if (agent.errors.length) progress.errorCode ??= safeCode({ code: agent.errors[0] });
-    }
-    if (activeHookTiming) progress.hookTimings = [...(report.hookTimings ?? []),
-      projectCursorAppHookTiming(activeHookTiming.snapshot ?? activeHookTiming)].slice(0, 32);
-    writeCursorAppProgress(reportDir, progress,
-      { expectedVersion, nodeMajor: expectedNodeMajor, platform: process.platform });
-  } catch { /* Diagnostic persistence must not replace the native failure. */ }
-}
 
 async function prepareRepoMemoryWorkspace() {
   const repo = join(root, "cursor-repo-memory");
@@ -167,7 +138,6 @@ async function waitForHookReady(phase, sessionId) {
   if (!["linux", "darwin"].includes(process.platform)) return;
   beginHookTiming(phase, sessionId);
   report.stage = phase === "config" ? "hook-config-ready" : "hook-session-ready";
-  checkpointReport();
   try {
     // This isolates startup; a later native configuration reload can still race submission.
     await waitFor(async () => {
@@ -202,7 +172,7 @@ async function command(args, code) {
 async function ownedProcessesRemain({ includeBackend = true } = {}) {
   if (macos) return macos.auditMacosProcesses({ appBundle: macosPaths.appBundle, packageRoot,
     stateHome: env.MEMORAX_CODE_HOME, marker: interruption?.marker, includeBackend, selfPid: process.pid,
-    observedProcesses: observedMacosProcesses });
+    observedPids: observedMacosPids });
   if (windows) return windows.auditWindowsProcesses({ appPath, packageRoot, stateHome: env.MEMORAX_CODE_HOME,
     marker: interruption?.marker, encodedCommand: interruption?.encodedCommand, includeBackend, selfPid: process.pid, env });
   for (const entry of await readdir("/proc")) {
@@ -315,7 +285,7 @@ async function stopApp() {
     } finally { app.removeListener("exit", onExit); }
   }
   if (macos && app && app.exitCode === null && app.signalCode === null) {
-    try { for (const [pid, startedAt] of await macos.captureMacosDescendants(app.pid)) observedMacosProcesses.set(pid, startedAt); }
+    try { for (const pid of await macos.captureMacosDescendants(app.pid)) observedMacosPids.add(pid); }
     catch (error) { closeError = error; }
   }
   try { await bounded(browser?.close(), "CURSOR_APP_BROWSER_CLEANUP"); } catch (error) { closeError ??= error; }
@@ -359,10 +329,7 @@ async function assertProcessesStopped(options = {}) {
   }
   // Never kill discovered PIDs; residual descendants fail acceptance for runner/container teardown.
   for (let attempt = 0; attempt < 25; attempt++) {
-    if (!await ownedProcessesRemain(options)) {
-      if (macos) observedMacosProcesses.clear();
-      return;
-    }
+    if (!await ownedProcessesRemain(options)) return;
     await delay(200);
   }
   check(false, "CURSOR_APP_CLEANUP_DESCENDANTS");
@@ -409,7 +376,6 @@ async function startApp() {
 }
 async function openSession(sessionId) {
   report.stage = "session-open";
-  checkpointReport();
   await bounded(page.evaluate((id) => id
     ? window.driver.executeCommand("composer.openComposer", id, { openInNewTab: false })
     : window.driver.executeCommand("workbench.action.chat.open"), sessionId), "CURSOR_APP_CHAT_OPEN_TIMEOUT");
@@ -495,13 +461,11 @@ async function runTurn(sessionId, fixture = fixtures[turns.length]) {
   const decidedTools = new Set();
   turns.push({ sessionId, workspaceName: basename(workspace), ...fixture });
   report.stage = "native-submit";
-  checkpointReport();
   const composer = page.locator(`[data-composer-id="${sessionId}"][data-composer-status]:visible`);
   // Cancellation can open an inline editor; new turns must use the primary input in the same composer.
   const input = composer.locator('.aislash-editor-input[contenteditable="true"][role="textbox"]:visible');
   await submitPrompt(input, fixture, { composer, sessionId });
   report.stage = "agent-transport";
-  checkpointReport();
   await waitFor(async () => {
     await observeHookTiming();
     check(!agent.errors.length, agent.errors[0]);
@@ -537,7 +501,6 @@ async function runTurn(sessionId, fixture = fixtures[turns.length]) {
   check(run.requestContextRequestCount === 1 && run.requestContextResultCount === 1 && run.requestContextCloseCount === 1,
     "CURSOR_APP_SKILL_CONTEXT_COUNT");
   report.stage = "native-persistence";
-  checkpointReport();
   let content;
   await waitFor(() => {
     try { content = assertSnapshot(sessionId); return true; }
@@ -546,7 +509,6 @@ async function runTurn(sessionId, fixture = fixtures[turns.length]) {
   delete report.nativeContentError;
   report.evidence.nativeContent.push(content);
   report.stage = "automatic-add";
-  checkpointReport();
   await waitFor(async () => {
     await observeHookTiming();
     return memoryRequests.length >= turns.length + turns.filter((turn) => turn.operation).length;
@@ -618,7 +580,6 @@ async function interruptPendingShell() {
   const sessionId = await openSession();
   interruption = { sessionId, runIndex: agent.runs.length, marker: join(workspace, "cancelled-shell-marker") };
   report.stage = "pending-shell-interruption";
-  checkpointReport();
   const composer = page.locator(`[data-composer-id="${sessionId}"][data-composer-status]:visible`);
   const input = composer.locator('.aislash-editor-input[contenteditable="true"][role="textbox"]:visible');
   await input.fill(interruptedFixture.prompt); await input.press("Enter");
@@ -736,7 +697,6 @@ function assertRepoMemoryNativeContent() {
 
 async function runRepoMemoryWorker() {
   report.stage = "repo-memory-worker";
-  checkpointReport();
   await stopApp();
   await assertProcessesStopped({ includeBackend: false });
   const fixture = await prepareRepoMemoryWorkspace();
@@ -745,7 +705,6 @@ async function runRepoMemoryWorker() {
   const sessionId = await openSession();
   repoMemory = { ...fixture, sessionId, runIndex: agent.runs.length };
   report.stage = "repo-memory-worker";
-  checkpointReport();
   turns.push({ sessionId, workspaceName: basename(workspace), scope: "repository-name.v1", ...repoMemoryFixture });
   const composer = page.locator(`[data-composer-id="${sessionId}"][data-composer-status]:visible`);
   const input = composer.locator('.aislash-editor-input[contenteditable="true"][role="textbox"]:visible');
@@ -812,7 +771,6 @@ async function runRepoMemoryWorker() {
 }
 
 try {
-  checkpointReport();
   const [nodeMajor, nodeMinor] = process.versions.node.split(".").map(Number);
   check([7, 8].includes(process.argv.length) && ["linux", "darwin", "win32"].includes(process.platform) && ["22", "24"].includes(expectedNodeMajor)
     && nodeMajor === Number(expectedNodeMajor) && (nodeMajor !== 22 || nodeMinor >= 13),
@@ -899,7 +857,6 @@ try {
   cli = (action) => command([action, "--home", env.MEMORAX_CODE_HOME, "--cursor-home", env.CURSOR_HOME,
     "--port", String(backendPort), "--clients", "cursor", "--json"], `CURSOR_APP_CANDIDATE_${action.toUpperCase()}`);
   report.stage = "candidate-install";
-  checkpointReport();
   started = true;
   const installation = (await cli("start")).cursorAdapter;
   check(installation?.enabled === true, "CURSOR_APP_ADAPTER_DISABLED");
@@ -913,7 +870,6 @@ try {
     referenceTexts.set(operation, await readFile(join(skillRoot, "references", `memorax-${operation}.md`), "utf8"));
   }
   report.stage = "app-start";
-  checkpointReport();
   await startApp();
   const firstSession = await openSession();
   await runTurn(firstSession);
@@ -921,7 +877,6 @@ try {
   await runTurn(firstSession);
   report.evidence.sameSessionFollowup = true;
   report.stage = "workspace-switch";
-  checkpointReport();
   await stopApp();
   await assertProcessesStopped({ includeBackend: false });
   assertWriteback();
@@ -932,15 +887,13 @@ try {
   check(secondSession !== firstSession, "CURSOR_APP_SESSION_NOT_ISOLATED");
   await runTurn(secondSession);
   report.stage = "app-restart";
-  checkpointReport();
-  const oldApp = app;
+  const oldPid = app.pid;
   await stopApp();
   await assertProcessesStopped({ includeBackend: false });
   assertWriteback();
   workspace = firstWorkspace;
   await startApp();
-  check(app !== oldApp && (oldApp.exitCode !== null || oldApp.signalCode !== null)
-    && app.exitCode === null && app.signalCode === null, "CURSOR_APP_RESTART_IDENTITY");
+  check(app.pid !== oldPid, "CURSOR_APP_RESTART_IDENTITY");
   await openSession(firstSession);
   assertSnapshot(firstSession);
   assertWriteback();
@@ -967,10 +920,8 @@ try {
   report.evidence.sameSessionRecovered = true;
   await runRepoMemoryWorker();
   report.stage = "cleanup";
-  checkpointReport();
 } catch (error) {
   report.errorCode = safeCode(error);
-  checkpointReport();
   await observeHookTiming().catch(() => {});
   finishHookTiming();
   const shellResult = collectCursorAppShellDiagnostics(agent?.firstShellFailure);
@@ -998,7 +949,15 @@ finally {
   } catch (error) { report.cleanupError ??= safeCode(error); }
   if (agent) {
     await bounded(agent.close(), "CURSOR_APP_AGENT_CLEANUP").catch(() => { report.cleanupError = "CURSOR_APP_AGENT_CLEANUP"; });
-    report.agent = agentReport();
+    report.agent = { runs: agent.runs.length, cancelled: agent.runs.map((run) => run.cancelled === true), writes: agent.runs.map((run) => run.kvWriteCount),
+      acknowledgements: agent.runs.map((run) => run.kvAckCount), ancillaryRequestCount: agent.ancillaryRequestCount,
+      unsupportedRpcCount: agent.unsupportedRpcCount, historyTurns: agent.runs.map((run) => run.turnRefs.length),
+      reads: agent.runs.map((run) => run.kvReadCount), readResults: agent.runs.map((run) => run.kvReadResultCount),
+      execRequests: agent.runs.map((run) => run.execRequestCount), execResults: agent.runs.map((run) => run.execResultCount),
+      execCloses: agent.runs.map((run) => run.execCloseCount),
+      contextRequests: agent.runs.map((run) => run.requestContextRequestCount),
+      contextResults: agent.runs.map((run) => run.requestContextResultCount),
+      contextCloses: agent.runs.map((run) => run.requestContextCloseCount) };
     if (agent.errors.length) {
       report.agent.errors = agent.errors;
       report.errorCode ??= safeCode({ code: agent.errors[0] });
@@ -1033,8 +992,6 @@ finally {
       report.status = "FAIL"; report.cleanupError = "CURSOR_APP_STATE_CLEANUP"; report.evidence.cleanup = false;
     });
   }
-  checkpointReport();
-  clearInterval(progressTimer);
   if (reportDir) {
     await mkdir(reportDir, { recursive: true });
     await writeFile(join(reportDir, "report.json"), `${JSON.stringify(report, null, 2)}\n`);
