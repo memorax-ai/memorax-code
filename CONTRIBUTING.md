@@ -1431,7 +1431,10 @@ audits share a 60-second budget, with at most 30 seconds per query and one retry
 for a query timeout. Every successful snapshot still checks all returned
 processes; only a complete snapshot without owned processes passes. Other query
 errors and exhausted budgets fail. Unconfirmed cleanup fails and retains
-isolated state for runner teardown.
+isolated state for runner teardown. App restart checks distinguish the closed
+former child from the new live child without requiring different PIDs. macOS
+descendant audits correlate observed PIDs with process start times and retire
+observations after a clear audit; indistinguishable start times remain fail-closed.
 
 #### Reproduction and Reports
 
@@ -1457,6 +1460,20 @@ allow only fixed error/status enums, bounded counts and marker booleans; raw
 App/installer logs, command output, transcripts, database files, Hook traces,
 credentials, PIDs and private paths are excluded. Diagnostics never replace the
 original failure or relax acceptance.
+
+The native runner saves atomic, redacted progress snapshots during execution.
+Wrappers recover the last snapshot when the final report is missing or invalid,
+preserve the first native failure, and report timeout, abort and process-exit
+outcomes separately. Linux exports available reports before container cleanup.
+Progress snapshots cannot establish acceptance: a successful native exit and a
+complete final report with every existing assertion are still required.
+
+Windows process-query diagnostics retain the first failed query and the last
+query, live bounded output counts, observed process lifecycle events, termination
+requests, and fixed PowerShell/CIM/JSON phase markers with relative times.
+Unavailable counts and times remain null instead of appearing as observed zeroes.
+No raw process rows or command output are included. Query deadlines, retry limits
+and complete-snapshot ownership checks remain unchanged.
 
 Skill Hook checks read initial, fresh, dynamic, user-message and completed Exec
 contexts from the current native run and its referenced, completed same-session
