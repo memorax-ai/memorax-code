@@ -8,8 +8,9 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 import {
   cleanupDockerResources, cursorAppNodeImage, cursorAppRelease, makeContainerArgs, projectNativeReport,
-  readReleaseManifest, resolveLocalDockerEndpoint, stageCursorAppChecks, verifyCursorAppArtifact,
+  readReleaseManifest, resolveLocalDockerEndpoint, runCursorAppContainerNative, stageCursorAppChecks, verifyCursorAppArtifact,
 } from "./cursor-app-container-check.mjs";
+import { classifyCursorAppExecution } from "./cursor-app-report.mjs";
 import { baselineRelease } from "./cursor-app-release.mjs";
 
 const runId = "11111111-1111-4111-8111-111111111111";
@@ -250,7 +251,9 @@ test("container staging preserves Cursor and Codex relative imports without copy
   await stageCursorAppChecks(root);
   assert.deepEqual((await readdir(root)).sort(), ["codex", "cursor"]);
   assert.deepEqual(await readdir(join(root, "codex")), ["codex-native-content-check.mjs"]);
-  assert.equal((await readdir(join(root, "cursor"))).length, 9);
+  assert.equal((await readdir(join(root, "cursor"))).length, 11);
+  const report = await import(pathToFileURL(join(root, "cursor", "cursor-app-report.mjs")));
+  assert.equal(typeof report.writeCursorAppProgress, "function");
   const staged = await import(pathToFileURL(join(root, "cursor", "cursor-app-memory-check.mjs")));
   assert.equal(typeof staged.assertCursorAppSkillReference, "function");
   assert.equal(typeof staged.assertCursorAppMemoryOperation, "function");
@@ -531,5 +534,60 @@ test("native submission failure reports allow only bounded input diagnostics and
     assert.equal(projectNativeReport(input, { platform }).nativeSubmit, undefined);
     input.evidence.sameSessionRecovered = false;
     assert.throws(() => projectNativeReport(input, { platform }), /CURSOR_CONTAINER_REPORT/);
+  }
+});
+
+
+test("Linux exports final or atomic progress before cleanup and never promotes timeout evidence to PASS", async () => {
+  for (const mode of ["success", "timeout-final-pass", "timeout-progress", "timeout-export-failed", "aborted-progress", "exit-failed", "inspect-failed"]) {
+    const calls = [], abort = new AbortController();
+    if (mode === "aborted-progress") abort.abort();
+    const first = { ...nativeReport(), status: "FAIL", stage: "native-submit", errorCode: "CURSOR_APP_SKILL_HOOK_CONTEXT",
+      evidence: { sameSessionFollowup: true }, raw: "private-canary" };
+    const final = ["success", "timeout-final-pass"].includes(mode) ? nativeReport() : first;
+    const run = async (args, options) => {
+      calls.push(args[0] === "container" ? args.slice(0, 2).join(" ") : args[0]);
+      if (args[0] === "start") {
+        assert.equal(options.timeout, 10 * 60_000);
+        assert.equal(options.signal, abort.signal);
+        if (mode.startsWith("timeout") || mode.startsWith("aborted")) {
+          const execution = classifyCursorAppExecution({ code: mode.startsWith("aborted") ? "ABORT_ERR" : "ETIMEDOUT" });
+          throw Object.assign(new Error("private-canary"), { code: "CURSOR_CONTAINER_COMMAND_TIMEOUT", execution });
+        }
+        return { code: mode === "exit-failed" ? 1 : 0, stdout: "" };
+      }
+      if (args[0] === "container" && args[1] === "inspect") {
+        if (mode === "inspect-failed") throw Object.assign(new Error("private-canary"), { code: "CURSOR_CONTAINER_STATE" });
+        return { code: 0, stdout: JSON.stringify({ Running: false, ExitCode: mode === "exit-failed" ? 1 : 0 }) };
+      }
+      if (args[0] === "cp") {
+        assert.equal(options, undefined);
+        assert.equal(calls.includes("container ls"), false);
+        const missingFinal = args[1].endsWith("/report.json") && ["timeout-progress", "aborted-progress"].includes(mode);
+        return { code: missingFinal || mode === "timeout-export-failed" ? 1 : 0, stdout: "", stderr: "private-canary" };
+      }
+      return { code: 0, stdout: "" };
+    };
+    const report = await runCursorAppContainerNative(containerId, "/owned/export", { expectedVersion: "3.21.18", nodeMajor: "24" }, {
+      signal: abort.signal, run, statReport: async () => ({ size: 100 }),
+      readReportFile: async (path) => JSON.stringify(path.endsWith("progress.json") ? first : final),
+    });
+    await cleanupDockerResources(runId, run);
+    assert.ok(calls.indexOf("cp") >= 0 && calls.indexOf("cp") < calls.indexOf("container ls"));
+    assert.equal(report.status, mode === "success" ? "PASS" : "FAIL");
+    assert.equal(JSON.stringify(report).includes("private-canary"), false);
+    if (mode === "timeout-final-pass") assert.equal(report.errorCode, "CURSOR_APP_NATIVE_TIMEOUT");
+    if (mode === "timeout-export-failed") {
+      assert.equal(report.errorCode, "CURSOR_APP_NATIVE_TIMEOUT");
+      assert.equal(report.nativeExecution.finalReport, "unavailable");
+      assert.equal(report.nativeExecution.progressReport, "unavailable");
+    }
+    if (["timeout-progress", "aborted-progress", "exit-failed", "inspect-failed"].includes(mode)) {
+      assert.equal(report.errorCode, "CURSOR_APP_SKILL_HOOK_CONTEXT");
+      assert.equal(report.stage, "native-submit");
+    }
+    if (mode.endsWith("progress")) assert.equal(report.nativeExecution.reportSource, "progress");
+    if (mode.startsWith("timeout")) assert.equal(report.nativeExecution.status, "timeout");
+    if (mode.startsWith("aborted")) assert.equal(report.nativeExecution.status, "aborted");
   }
 });

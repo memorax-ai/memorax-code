@@ -3,9 +3,11 @@ import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } fro
 import { dirname, join, resolve, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { projectNativeReport, readReleaseManifest } from "./cursor-app-container-check.mjs";
+import { readReleaseManifest } from "./cursor-app-container-check.mjs";
 import { selectCursorWindowsRelease, verifyCursorWindowsInstalledApp, withVerifiedCursorWindowsInstaller } from "./cursor-app-windows-artifact.mjs";
 import { windowsRuntimePaths } from "./cursor-app-windows-runtime.mjs";
+
+import { classifyCursorAppExecution, collectCursorAppNativeReport, writeCursorAppFinalReport } from "./cursor-app-report.mjs";
 
 const exec = promisify(execFile);
 const scripts = dirname(fileURLToPath(import.meta.url));
@@ -140,10 +142,15 @@ export async function runWindowsCheck(candidatePath, reportPath, { releaseManife
             join(appDirectory, "Cursor.exe"), release.version, join(root, "probe", "node_modules", "playwright-core"), nativeOutput, nodeMajor],
           { cwd: root, env, timeout: 10 * 60_000, signal, maxBuffer: 1024 * 1024, killSignal: "SIGKILL", windowsHide: true });
         } catch (error) { executionError = error; }
-        const path = join(nativeOutput, "report.json"), info = await lstat(path);
-        check(info.isFile() && !info.isSymbolicLink() && info.size <= 64 * 1024, "CURSOR_APP_WINDOWS_REPORT");
-        report = projectNativeReport(JSON.parse(await readFile(path, "utf8")),
-          { expectedVersion: release.version, nodeMajor, platform: "win32" });
+        report = await collectCursorAppNativeReport({
+          readReport: async (name) => {
+            const path = join(nativeOutput, name), info = await lstat(path);
+            check(info.isFile() && !info.isSymbolicLink() && info.size <= 64 * 1024, "CURSOR_APP_WINDOWS_REPORT");
+            return readFile(path, "utf8");
+          },
+          expected: { expectedVersion: release.version, nodeMajor, platform: "win32" },
+          fallback: report, execution: classifyCursorAppExecution(executionError), exitErrorCode: "CURSOR_APP_WINDOWS_NATIVE_EXIT",
+        });
         check(!executionError && report.status === "PASS", "CURSOR_APP_WINDOWS_NATIVE_EXIT");
       } catch (error) {
         if (error.cleanupErrorCode) cleanupFailed = true;
@@ -168,7 +175,7 @@ export async function runWindowsCheck(candidatePath, reportPath, { releaseManife
     if (cleanupFailed) { report.status = "FAIL"; report.cleanupError ??= "CURSOR_APP_WINDOWS_CLEANUP"; }
     if (artifact) report.windows = artifact;
     if (installerOutcome) report.windowsInstaller = installerOutcome;
-    if (output) await writeFile(join(output, "report.json"), `${JSON.stringify(report, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+    if (output) await writeCursorAppFinalReport(join(output, "report.json"), report, "CURSOR_APP_WINDOWS_REPORT_WRITE", writeFile);
   }
   return report;
 }

@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import { win32 } from "node:path";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
-import { projectNativeReport } from "./cursor-app-container-check.mjs";
+import { classifyCursorAppExecution, collectCursorAppNativeReport, writeCursorAppFinalReport } from "./cursor-app-report.mjs";
 import { projectWindowsInstallerOutcome, runWindowsCheck,
   windowsCheckEnvironment, windowsInstallerCommand } from "./cursor-app-windows-check.mjs";
 
@@ -105,30 +105,32 @@ test("Windows controller preserves exit failures and confirms closure only from 
     ["success", false], ["candidate", false], ["probe", false], ["smoke", true], ["artifact", false],
     ["installer-exit-five", false], ["installer-timeout", true], ["installer-aborted", true], ["installer-invalid", true],
     ["installed", false], ["installed-cleanup", true], ["native", false], ["native-exit-pass", false],
-    ["native-cleanup", true], ["invalid-report", true], ["missing-report", true], ["artifact-cleanup", true], ["state-cleanup", true],
+    ["native-cleanup", true], ["native-timeout-progress", true], ["native-aborted-progress", true],
+    ["native-timeout-missing", true], ["native-timeout-pass", false], ["invalid-report", true], ["missing-report", true], ["artifact-cleanup", true], ["state-cleanup", true],
   ]) {
     await t.test(kind, async () => {
       const calls = [], output = new Map();
       const failure = (code) => Object.assign(new Error("private-canary"), { code });
       const native = nativeReport();
       native.privateCanary = "private-canary";
-      if (["native", "native-cleanup"].includes(kind)) {
+      if (["native", "native-cleanup", "native-timeout-progress", "native-aborted-progress"].includes(kind)) {
         native.status = "FAIL";
         native.stage = "app-start";
         native.errorCode = "CURSOR_APP_EXITED";
       }
-      if (kind === "native-cleanup") native.evidence.cleanup = false;
+      if (["native-cleanup", "native-timeout-progress", "native-aborted-progress"].includes(kind)) native.evidence.cleanup = false;
       if (kind === "invalid-report") native.platform = "linux";
       const run = runInNewContext("(async function runWindowsCheck(" + body + ")", {
         process: { platform: "win32", arch: "x64", versions: { node: "24.20.0" }, execPath: "C:\\node\\node.exe",
           env: { GITHUB_ACTIONS: "true", RUNNER_OS: "Windows", SystemRoot: "C:\\Windows", RUNNER_TEMP: "C:\\temp" } },
         dirname: win32.dirname, join: win32.join, resolve: win32.resolve, win32, scripts: "C:\\scripts",
         gitDirectory: "C:\\Program Files\\Git\\cmd", windowsCheckEnvironment, windowsInstallerCommand,
-        projectWindowsInstallerOutcome, projectNativeReport,
+        projectWindowsInstallerOutcome, classifyCursorAppExecution, collectCursorAppNativeReport, writeCursorAppFinalReport,
         check(value, code) { if (!value) throw failure(code); },
         safeCode: (error) => /^CURSOR_(?:APP|CONTAINER)_[A-Z0-9_]{1,100}$/.test(error.code) ? error.code : "CURSOR_APP_WINDOWS_CHECK_FAILED",
         async lstat(path) {
-          if (kind === "missing-report" && path.endsWith("report.json")) throw failure("ENOENT");
+          if ((kind === "missing-report" || kind === "native-timeout-missing") && path.endsWith(".json")
+            || kind.endsWith("progress") && path.endsWith("report.json")) throw failure("ENOENT");
           return { isFile: () => true, isDirectory: () => true, isSymbolicLink: () => false, size: 100 };
         },
         async mkdir() {}, async readdir() { return []; }, async realpath(path) { return path; },
@@ -147,6 +149,8 @@ test("Windows controller preserves exit failures and confirms closure only from 
             }[kind] ?? 1), { stdout: kind === "installer-invalid" ? "private-canary" : stdout });
             return { stdout };
           }
+          if (stage === "native" && kind.startsWith("native-timeout")) throw failure("ETIMEDOUT");
+          if (stage === "native" && kind.startsWith("native-aborted")) throw failure("ABORT_ERR");
           if (stage === kind || (stage === "native" && kind.startsWith("native-"))) throw failure(1);
           return { stdout: "" };
         },
@@ -184,6 +188,12 @@ test("Windows controller preserves exit failures and confirms closure only from 
       }
       if (kind === "native") assert.equal(report.errorCode, "CURSOR_APP_EXITED");
       if (kind === "native-exit-pass") assert.equal(report.errorCode, "CURSOR_APP_WINDOWS_NATIVE_EXIT");
+      if (kind.endsWith("progress")) {
+        assert.equal(report.errorCode, "CURSOR_APP_EXITED");
+        assert.equal(report.nativeExecution.reportSource, "progress");
+        assert.equal(report.nativeExecution.status, kind.startsWith("native-aborted") ? "aborted" : "timeout");
+      }
+      if (["native-timeout-missing", "native-timeout-pass"].includes(kind)) assert.equal(report.errorCode, "CURSOR_APP_NATIVE_TIMEOUT");
       if (kind.startsWith("installer-")) {
         assert.equal(report.errorCode, "CURSOR_APP_WINDOWS_INSTALLER_EXIT");
         assert.equal(calls.includes("confirmed"), kind === "installer-exit-five");

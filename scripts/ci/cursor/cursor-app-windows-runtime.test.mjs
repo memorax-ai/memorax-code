@@ -96,6 +96,12 @@ test("Windows process-query diagnostics keep only fixed failure codes", async ()
 const auditOptions = { appPath: paths.appPath, packageRoot: paths.packageRoot, stateHome: "C:\\owned state",
   selfPid: 123, env: windowsRuntimePaths(paths).env };
 const ownedRows = [{ ProcessId: 124, CommandLine: '"C:\\owned app\\Cursor.exe" --type=renderer', ExecutablePath: paths.appPath }];
+const emptyQuery = { elapsedMs: 0, timedOut: false, exitCode: null, signal: "none", stdoutBytes: null, stderrBytes: null,
+  spawnObserved: false, exitObserved: false, closeObserved: false, promiseSettled: false,
+  budgetExpired: false, killRequested: false, killReturned: null, killThrew: false,
+  phases: { start: false, cimStart: false, cimComplete: false, jsonComplete: false },
+  phaseElapsedMs: { start: null, cimStart: null, cimComplete: null, jsonComplete: null } };
+
 
 function auditScenario(t, steps) {
   t.mock.timers.enable({ apis: ["setTimeout"] });
@@ -138,7 +144,8 @@ test("Windows process exit accepts only a complete clear snapshot and retains su
   assert.equal(state.calls, 2);
   assert.deepEqual(state.sleeps, [200]);
   assert.deepEqual(result, { attempts: 2, elapsedMs: 220, timeoutCount: 0, firstFailure: "none", finalStatus: "clear",
-    lastQuery: { elapsedMs: 8, timedOut: false, exitCode: 0, signal: "none", stdoutBytes: 2, stderrBytes: 0 } });
+    firstFailedQuery: null,
+    lastQuery: { ...emptyQuery, elapsedMs: 8, exitCode: 0, stdoutBytes: 2, stderrBytes: 0, promiseSettled: true } });
 });
 
 test("Windows process exit retries one confirmed timeout and retains its history on success", async (t) => {
@@ -339,9 +346,209 @@ test("Windows process audit projection rejects extra, oversized, and malformed d
     lastQuery: { elapsedMs: -1, timedOut: "true", exitCode: 0x100000000, signal: "private-canary",
       stdoutBytes: 4194305, stderrBytes: "12", stdout: "private-canary", rows: ownedRows } });
   assert.deepEqual(projected, { attempts: 0, elapsedMs: 0, timeoutCount: 0, firstFailure: "query-failed", finalStatus: "failed",
-    lastQuery: { elapsedMs: 0, timedOut: false, exitCode: null, signal: "other", stdoutBytes: 0, stderrBytes: 0 } });
+    firstFailedQuery: null, lastQuery: { ...emptyQuery, signal: "other" } });
   assert.deepEqual(projectWindowsProcessAuditDiagnostics(projected), projected);
   assert.doesNotMatch(JSON.stringify(projected), /private-canary|ProcessId|CommandLine/);
+});
+
+function pendingProcessQuery() {
+  const child = new EventEmitter();
+  child.stdout = new EventEmitter(); child.stderr = new EventEmitter();
+  child.exitCode = null; child.signalCode = null;
+  let resolve, reject;
+  const pending = new Promise((done, fail) => { resolve = done; reject = fail; });
+  pending.child = child;
+  return { child, pending, resolve, reject };
+}
+const queryMarker = (phase) => "MEMORAX_CURSOR_PROCESS_QUERY_" + phase;
+
+for (const stalled of ["cim", "json", "close"]) {
+  test("Windows audit retains live streamed diagnostics while waiting for " + stalled, async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const query = pendingProcessQuery();
+    let time = 0, calls = 0;
+    query.child.kill = () => false;
+    const pending = waitForWindowsProcessesExit(auditOptions, { now: () => time,
+      execute: () => { calls++; return query.pending; }, sleep: () => assert.fail("unconfirmed query must not retry") });
+    const failure = pending.catch((error) => error);
+    query.child.emit("spawn");
+    const markers = ["START", "CIM_START", ...(stalled !== "cim" ? ["CIM_COMPLETE"] : []),
+      ...(stalled === "close" ? ["JSON_COMPLETE"] : [])].map(queryMarker);
+    // Include split markers, split CRLF, large private lines and marker-shaped non-markers.
+    const lines = "private-canary " + queryMarker("JSON_COMPLETE") + "\n" + "x".repeat(5000) + "\n"
+      + queryMarker("JSON_COMPLETE") + "-private-canary\n" + markers.join("\r\n") + "\r\n";
+    for (let index = 0; index < lines.length; index += 7) query.child.stderr.emit("data", Buffer.from(lines.slice(index, index + 7)));
+    if (stalled !== "cim") query.child.stdout.emit("data", Buffer.from("[private-canary"));
+    if (stalled === "close") {
+      query.child.emit("exit", 7, null);
+      query.reject(Object.assign(new Error("private-canary"), { code: 7, stderr: "private-canary CimException" }));
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    time = 30000; t.mock.timers.tick(30000);
+    await new Promise((resolve) => setImmediate(resolve));
+    time = 60000; t.mock.timers.tick(30000);
+    const error = await failure, result = error.windowsProcessAudit;
+    assert.equal(calls, 1);
+    assert.equal(error.code, "CURSOR_APP_WINDOWS_PROCESS_" + (stalled === "close" ? "QUERY_CIM_FAILED" : "QUERY_TIMEOUT"));
+    assert.deepEqual(result.firstFailedQuery, result.lastQuery);
+    const diagnostics = result.lastQuery;
+    assert.equal(diagnostics.stdoutBytes, stalled === "cim" ? 0 : Buffer.byteLength("[private-canary"));
+    assert.equal(diagnostics.stderrBytes, Buffer.byteLength(lines));
+    assert.equal(diagnostics.spawnObserved, true);
+    assert.equal(diagnostics.exitObserved, stalled === "close");
+    assert.equal(diagnostics.closeObserved, false);
+    assert.equal(diagnostics.promiseSettled, stalled === "close");
+    assert.equal(diagnostics.budgetExpired, true);
+    assert.equal(diagnostics.killRequested, stalled !== "close");
+    assert.equal(diagnostics.killReturned, stalled === "close" ? null : false);
+    assert.equal(diagnostics.killThrew, false);
+    assert.deepEqual(diagnostics.phases, { start: true, cimStart: true, cimComplete: stalled !== "cim", jsonComplete: stalled === "close" });
+    assert.deepEqual(diagnostics.phaseElapsedMs, { start: 0, cimStart: 0, cimComplete: stalled !== "cim" ? 0 : null, jsonComplete: stalled === "close" ? 0 : null });
+    assert.doesNotMatch(JSON.stringify(result), /private-canary|ProcessId|CommandLine|MEMORAX_CURSOR/);
+    assert.equal(query.child.stdout.listenerCount("data"), 0);
+    assert.equal(query.child.stderr.listenerCount("data"), 0);
+    const before = JSON.stringify(result);
+    query.child.stderr.emit("data", queryMarker("JSON_COMPLETE") + "\n");
+    query.child.emit("close"); query.resolve({ stdout: "[]", stderr: "private-canary" });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(JSON.stringify(result), before, "late settlement cannot rewrite the returned snapshot");
+  });
+}
+
+test("Windows audit keeps the first timed-out query distinct from a later successful snapshot", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let time = 0, calls = 0;
+  const first = pendingProcessQuery();
+  first.child.kill = (signal) => {
+    first.child.signalCode = signal;
+    first.child.emit("exit", null, signal);
+    first.reject(Object.assign(new Error("private-first-query"), { signal }));
+    queueMicrotask(() => first.child.emit("close", null, signal));
+    return true;
+  };
+  const pending = waitForWindowsProcessesExit(auditOptions, { now: () => time,
+    execute: () => ++calls === 1 ? first.pending : Promise.resolve({ stdout: "[]", stderr: "" }),
+    sleep: async (ms) => { time += ms; t.mock.timers.tick(ms); } });
+  first.child.emit("spawn");
+  first.child.stderr.emit("data", queryMarker("START") + "\n" + queryMarker("CIM_START") + "\n");
+  first.child.stdout.emit("data", "private-first-query");
+  time = 30000; t.mock.timers.tick(30000);
+  const result = await pending;
+  assert.equal(result.finalStatus, "clear");
+  assert.equal(result.firstFailure, "timeout");
+  assert.equal(result.firstFailedQuery.timedOut, true);
+  assert.equal(result.firstFailedQuery.killRequested, true);
+  assert.equal(result.firstFailedQuery.killReturned, true);
+  assert.equal(result.firstFailedQuery.promiseSettled, true);
+  assert.equal(result.firstFailedQuery.exitObserved, true);
+  assert.equal(result.firstFailedQuery.closeObserved, true);
+  assert.equal(result.firstFailedQuery.stdoutBytes, Buffer.byteLength("private-first-query"));
+  assert.deepEqual(result.firstFailedQuery.phases, { start: true, cimStart: true, cimComplete: false, jsonComplete: false });
+  assert.deepEqual(result.lastQuery, { ...emptyQuery, exitCode: 0, stdoutBytes: 2, stderrBytes: 0, promiseSettled: true });
+  assert.doesNotMatch(JSON.stringify(result), /private-first-query/);
+});
+
+test("Windows audit distinguishes unavailable output from observed zero bytes and saturates live counters", async (t) => {
+  for (const streams of [false, true]) await t.test(String(streams), async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    let time = 0;
+    const query = pendingProcessQuery();
+    if (!streams) { delete query.child.stdout; delete query.child.stderr; }
+    query.child.kill = () => { throw new Error("private-canary"); };
+    const pending = waitForWindowsProcessesExit(auditOptions, { now: () => time, execute: () => query.pending,
+      sleep: () => assert.fail("unconfirmed query must not retry") }).catch((error) => error);
+    if (streams) query.child.stderr.emit("data", Buffer.alloc(4 * 1024 * 1024 + 1024, 120));
+    time = 30000; t.mock.timers.tick(30000);
+    await new Promise((resolve) => setImmediate(resolve));
+    time = 60000; t.mock.timers.tick(30000);
+    const error = await pending, diagnostics = error.windowsProcessAudit.lastQuery;
+    assert.equal(error.code, "CURSOR_APP_WINDOWS_PROCESS_QUERY_FAILED");
+    assert.equal(diagnostics.stdoutBytes, streams ? 0 : null);
+    assert.equal(diagnostics.stderrBytes, streams ? 4 * 1024 * 1024 : null);
+    assert.equal(diagnostics.killThrew, true);
+    assert.equal(diagnostics.killReturned, null);
+    assert.equal(diagnostics.promiseSettled, false);
+    assert.deepEqual(diagnostics.phases, emptyQuery.phases);
+    assert.doesNotMatch(JSON.stringify(error), /private-canary/);
+    query.child.emit("close"); query.resolve({ stdout: "[]", stderr: "" });
+  });
+});
+
+test("Windows phase markers leave stdout as one full unfiltered process snapshot", async () => {
+  let script;
+  assert.equal(await auditWindowsProcesses(auditOptions, async (file, args) => {
+    script = args.at(-1); return { stdout: JSON.stringify(ownedRows) };
+  }), true);
+  const positions = ["START", "CIM_START", "CIM_COMPLETE", "JSON_COMPLETE"].map((phase) => script.indexOf("'" + queryMarker(phase) + "'"));
+  assert.ok(positions.every((value, index) => value >= 0 && (index === 0 || value > positions[index - 1])));
+  assert.ok(script.indexOf("Get-CimInstance Win32_Process") > positions[1]);
+  assert.ok(script.indexOf("Get-CimInstance Win32_Process") < positions[2]);
+  assert.ok(script.indexOf("ConvertTo-Json -InputObject @($rows) -Compress") > positions[2]);
+  assert.ok(script.indexOf("ConvertTo-Json -InputObject @($rows) -Compress") < positions[3]);
+  assert.equal((script.match(/\[Console\]::Error\.WriteLine\(/g) ?? []).length, 4);
+  assert.doesNotMatch(script, /-Filter|-Query|Where-Object|Stop-Process|taskkill/);
+});
+
+test("Windows query records first phase times and successful process events without exporting stream contents", async () => {
+  const query = pendingProcessQuery();
+  let time = 0;
+  const pending = waitForWindowsProcessesExit(auditOptions, { now: () => time, execute: () => query.pending });
+  query.child.emit("spawn");
+  const start = queryMarker("START");
+  time = 7; query.child.stderr.emit("data", start.slice(0, 4));
+  time = 10; query.child.stderr.emit("data", start.slice(4) + "\r\n");
+  time = 20; query.child.stderr.emit("data", queryMarker("CIM_START") + "\n");
+  time = 100; query.child.stderr.emit("data", start + "\nprivate-canary 记忆🙂\n");
+  time = 18000; query.child.stderr.emit("data", queryMarker("CIM_COMPLETE") + "\n");
+  query.child.stdout.emit("data", "[");
+  time = 18030; query.child.stderr.emit("data", queryMarker("JSON_COMPLETE") + "\n");
+  query.child.stdout.emit("data", "]");
+  time = 18040; query.child.exitCode = 0; query.child.emit("exit", 0, null);
+  time = 18045; query.child.emit("close", 0, null); query.resolve({ stdout: "[]", stderr: "" });
+  const result = await pending;
+  assert.equal(result.finalStatus, "clear");
+  assert.equal(result.firstFailedQuery, null);
+  assert.deepEqual(result.lastQuery, { ...emptyQuery, elapsedMs: 18045, exitCode: 0, stdoutBytes: 2,
+    stderrBytes: Buffer.byteLength(start + "\r\n" + queryMarker("CIM_START") + "\n" + start + "\nprivate-canary 记忆🙂\n"
+      + queryMarker("CIM_COMPLETE") + "\n" + queryMarker("JSON_COMPLETE") + "\n"),
+    spawnObserved: true, exitObserved: true, closeObserved: true, promiseSettled: true,
+    phases: { start: true, cimStart: true, cimComplete: true, jsonComplete: true },
+    phaseElapsedMs: { start: 10, cimStart: 20, cimComplete: 18000, jsonComplete: 18030 } });
+  assert.doesNotMatch(JSON.stringify(result), /private-canary|记忆|MEMORAX_CURSOR/);
+});
+
+test("synchronous query launch errors retain available bytes without claiming a settled promise", async () => {
+  await assert.rejects(waitForWindowsProcessesExit(auditOptions, { execute() {
+    throw Object.assign(new Error("private-canary"), { code: "ENOENT", stdout: "", stderr: "私有\n" });
+  } }), (error) => {
+    const result = error.windowsProcessAudit;
+    assert.equal(result.firstFailure, "query-failed");
+    assert.equal(result.lastQuery.stdoutBytes, 0);
+    assert.equal(result.lastQuery.stderrBytes, Buffer.byteLength("私有\n"));
+    assert.equal(result.lastQuery.spawnObserved, false);
+    assert.equal(result.lastQuery.promiseSettled, false);
+    assert.deepEqual(result.firstFailedQuery, result.lastQuery);
+    assert.doesNotMatch(JSON.stringify(error), /private-canary|私有/);
+    return true;
+  });
+});
+
+test("query snapshots project only bounded typed evidence for both the first failure and the last query", () => {
+  const query = { elapsedMs: 25, exitCode: 0, stdoutBytes: 0, stderrBytes: null,
+    spawnObserved: true, exitObserved: "true", closeObserved: 1, promiseSettled: true,
+    budgetExpired: "true", killRequested: true, killReturned: "true", killThrew: false,
+    phases: { start: true, cimStart: true, cimComplete: "true", jsonComplete: true, private: "private-canary" },
+    phaseElapsedMs: { start: 0, cimStart: 600001, cimComplete: 12, jsonComplete: "12", private: "private-canary" },
+    command: "private-canary", stdout: "private-canary" };
+  const projected = projectWindowsProcessAuditDiagnostics({ firstFailure: "timeout", firstFailedQuery: query, lastQuery: query });
+  const expected = { ...emptyQuery, elapsedMs: 25, exitCode: 0, stdoutBytes: 0,
+    spawnObserved: true, promiseSettled: true, killRequested: true,
+    phases: { start: true, cimStart: true, cimComplete: false, jsonComplete: true },
+    phaseElapsedMs: { start: 0, cimStart: null, cimComplete: null, jsonComplete: null } };
+  assert.deepEqual(projected.firstFailedQuery, expected);
+  assert.deepEqual(projected.lastQuery, expected);
+  assert.deepEqual(projectWindowsProcessAuditDiagnostics(projected), projected);
+  assert.doesNotMatch(JSON.stringify(projected), /private-canary|command|stdout"/);
 });
 
 test("Windows App tree cleanup ignores exited children even if their PID is reused", async () => {

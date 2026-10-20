@@ -7,13 +7,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { baselineRelease, validateLinuxRelease } from "./cursor-app-release.mjs";
-import { projectCursorAppDiagnostics, projectCursorAppLaunchDiagnostics,
-  projectCursorAppBackendDiagnostics, projectCursorAppSubmissionDiagnostics,
-  projectCursorAppShellDiagnostics, projectCursorAppStopDiagnostics, projectCursorAppWindowsStopDiagnostics } from "./cursor-app-diagnostics.mjs";
-import { projectCursorAppHookDiagnostics, projectCursorAppHookTiming } from "./cursor-app-hook-diagnostics.mjs";
-import { projectCursorAppSkillHookContext } from "./cursor-app-hook-context.mjs";
-import { projectCursorRepoMemoryDelegation } from "./cursor-app-repo-memory-check.mjs";
-import { projectWindowsProcessAuditDiagnostics } from "./cursor-app-windows-runtime.mjs";
+import { classifyCursorAppExecution, collectCursorAppNativeReport, projectCursorAppReport, writeCursorAppFinalReport } from "./cursor-app-report.mjs";
 
 const exec = promisify(execFile);
 const scripts = dirname(fileURLToPath(import.meta.url));
@@ -24,23 +18,8 @@ const imagePattern = /^sha256:[a-f0-9]{64}$/;
 const versionPattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const label = "memorax.cursor-app-ci";
 const codePattern = /^CURSOR_(?:APP|MOCK|AGENT|CONTAINER)_[A-Z0-9_]{1,100}$/;
-const stages = new Set(["preflight", "candidate-install", "app-start", "native-submit", "agent-transport",
-  "native-persistence", "automatic-add", "workspace-switch", "app-restart", "session-open", "pending-shell-interruption",
-  "repo-memory-worker", "hook-config-ready", "hook-session-ready", "cleanup", "complete"]);
-const completedEvidence = ["agentTransport", "nativeHooks", "exactAutomaticAdd", "sameSessionFollowup", "sessionIsolation", "workspaceIsolation", "appResume",
-  "skillSearch", "skillAdd", "shellDenied", "pendingShellInterrupted", "sameSessionRecovered", "repoMemoryWorker", "cleanup"];
-const completedCounts = {
-  writes: [3, 3, 3, 3, 6, 6, 4, 0, 3, 4, 5], acknowledgements: [3, 3, 3, 3, 6, 6, 4, 0, 3, 4, 5],
-  historyTurns: [0, 1, 0, 2, 3, 4, 0, 0, 0, 0, 0],
-  reads: [0, 3, 0, 6, 9, 15, 0, 0, 0, 0, 0], readResults: [0, 3, 0, 6, 9, 15, 0, 0, 0, 0, 0],
-  execRequests: [0, 0, 0, 0, 3, 3, 1, 1, 0, 1, 2],
-  execResults: [0, 0, 0, 0, 3, 3, 1, 0, 0, 1, 2], execCloses: [0, 0, 0, 0, 3, 3, 1, 0, 0, 1, 2],
-  contextRequests: Array(11).fill(1), contextResults: Array(11).fill(1), contextCloses: Array(11).fill(1),
-};
-
 function fail(code) { throw Object.assign(new Error(code), { code }); }
 function check(value, code) { if (!value) fail(code); }
-function count(value) { check(Number.isSafeInteger(value) && value >= 0, "CURSOR_CONTAINER_REPORT"); return value; }
 function safeCode(error) { return codePattern.test(error?.code) ? error.code : "CURSOR_CONTAINER_FAILED"; }
 function resourceNames(runId) {
   check(typeof runId === "string" && uuid.test(runId), "CURSOR_CONTAINER_IDENTITY");
@@ -87,85 +66,18 @@ export function makeContainerArgs({ runId, imageId, seccompPath, expectedVersion
 }
 
 export function projectNativeReport(input, { expectedVersion = provenance.cursor.version, nodeMajor = "24", platform = "linux" } = {}) {
-  check(typeof expectedVersion === "string" && versionPattern.test(expectedVersion), "CURSOR_CONTAINER_RELEASE");
-  check(["linux", "darwin", "win32"].includes(platform), "CURSOR_CONTAINER_REPORT");
   cursorAppNodeImage(nodeMajor);
-  const nodeVersion = typeof input?.node === "string" && input.node.match(versionPattern);
-  check(input && ["PASS", "FAIL"].includes(input.status) && input.client === "cursor"
-    && input.kind === "app-native-session-flows" && input.platform === platform
-    && nodeVersion && nodeVersion[1] === nodeMajor && (nodeMajor !== "22" || Number(nodeVersion[2]) >= 13)
-    && stages.has(input.stage), "CURSOR_CONTAINER_REPORT");
-  const report = { status: input.status, client: "cursor", kind: input.kind, platform, node: input.node,
-    stage: input.stage, evidence: {} };
-  if (input.version !== undefined) {
-    check(input.version === expectedVersion, "CURSOR_CONTAINER_REPORT");
-    report.version = input.version;
-  }
-  for (const key of ["errorCode", "cleanupError", "nativeContentError"]) if (input[key] !== undefined) {
-    check(typeof input[key] === "string" && codePattern.test(input[key]), "CURSOR_CONTAINER_REPORT");
-    report[key] = input[key];
-  }
-  for (const key of completedEvidence) if (input.evidence?.[key] !== undefined) {
-    check(typeof input.evidence[key] === "boolean", "CURSOR_CONTAINER_REPORT");
-    report.evidence[key] = input.evidence[key];
-  }
-  const content = input.evidence?.nativeContent;
-  if (content !== undefined) {
-    check(Array.isArray(content), "CURSOR_CONTAINER_REPORT");
-    report.evidence.nativeContent = content.map((item) => {
-      check(item && typeof item.composerMatched === "boolean" && typeof item.stateMatched === "boolean", "CURSOR_CONTAINER_REPORT");
-      return { composerMatched: item.composerMatched, stateMatched: item.stateMatched, blobCount: count(item.blobCount) };
-    });
-  }
-  if (input.agent !== undefined) {
-    const agent = input.agent;
-    check(Array.isArray(agent.errors ?? []) && (agent.errors ?? []).every((value) => typeof value === "string" && codePattern.test(value)), "CURSOR_CONTAINER_REPORT");
-    report.agent = { runs: count(agent.runs), ancillaryRequestCount: count(agent.ancillaryRequestCount),
-      unsupportedRpcCount: count(agent.unsupportedRpcCount), errors: agent.errors ?? [] };
-    for (const key of Object.keys(completedCounts)) {
-      check(Array.isArray(agent[key]), "CURSOR_CONTAINER_REPORT");
-      report.agent[key] = agent[key].map(count);
-    }
-    check(Array.isArray(agent.cancelled) && agent.cancelled.every((value) => typeof value === "boolean"), "CURSOR_CONTAINER_REPORT");
-    report.agent.cancelled = [...agent.cancelled];
-  }
-  if (input.memoryRequestCount !== undefined) report.memoryRequestCount = count(input.memoryRequestCount);
-  if (input.diagnostics !== undefined) report.diagnostics = projectCursorAppDiagnostics(input.diagnostics);
-  if (input.status === "FAIL" && input.nativeHooks !== undefined) report.nativeHooks = projectCursorAppHookDiagnostics(input.nativeHooks);
-  if (input.status === "FAIL" && input.nativeSubmit !== undefined) report.nativeSubmit = projectCursorAppSubmissionDiagnostics(input.nativeSubmit);
-  if (["linux", "darwin"].includes(platform) && input.hookTimings !== undefined) {
-    report.hookTimings = (Array.isArray(input.hookTimings) ? input.hookTimings.slice(0, 32) : []).map(projectCursorAppHookTiming);
-  }
-  if (input.status === "FAIL" && input.skillHookContext !== undefined) report.skillHookContext = projectCursorAppSkillHookContext(input.skillHookContext);
-  if (input.status === "FAIL" && input.repoMemoryDelegation !== undefined) report.repoMemoryDelegation = projectCursorRepoMemoryDelegation(input.repoMemoryDelegation);
-  if (input.status === "FAIL" && input.backendDiagnostics !== undefined) report.backendDiagnostics = projectCursorAppBackendDiagnostics(input.backendDiagnostics);
-  if (input.appLaunch !== undefined) report.appLaunch = projectCursorAppLaunchDiagnostics(input.appLaunch);
-  if (input.status === "FAIL" && input.candidateStop !== undefined) report.candidateStop = projectCursorAppStopDiagnostics(input.candidateStop);
-  if (input.status === "FAIL" && input.shellResult !== undefined) report.shellResult = projectCursorAppShellDiagnostics(input.shellResult);
-  if (platform === "win32" && input.windowsProcessAudits !== undefined) {
-    report.windowsProcessAudits = (Array.isArray(input.windowsProcessAudits) ? input.windowsProcessAudits.slice(0, 5) : [])
-      .map((item) => ({ stage: ["workspace-switch", "app-restart", "repo-memory-worker", "cleanup"].includes(item?.stage) ? item.stage : "other",
-        ...projectWindowsProcessAuditDiagnostics(item) }));
-  }
-  if (input.status === "FAIL" && platform === "win32" && input.windowsAppStop !== undefined) {
-    report.windowsAppStop = projectCursorAppWindowsStopDiagnostics(input.windowsAppStop);
-  }
-  if (report.status === "PASS") check(report.stage === "complete" && report.version === expectedVersion && !report.errorCode && !report.cleanupError && !report.nativeContentError
-    && completedEvidence.every((key) => report.evidence[key] === true)
-    && content?.length === 9 && [3, 6, 3, 9, 15, 21, 4, 3, 4].every((blobs, index) => content[index]?.composerMatched === true
-      && content[index]?.stateMatched === true && content[index]?.blobCount === blobs)
-    && report.agent?.runs === 11 && Object.entries(completedCounts).every(([key, values]) => report.agent[key].length === values.length
-      && values.every((value, index) => report.agent[key][index] === value))
-    && report.agent.cancelled.length === 11 && [false, false, false, false, false, false, false, true, false, false, false].every((value, index) => report.agent.cancelled[index] === value)
-    && report.agent.errors.length === 0 && report.memoryRequestCount === 11, "CURSOR_CONTAINER_REPORT");
-  return report;
+  return projectCursorAppReport(input, { expectedVersion, nodeMajor, platform });
 }
 
 async function command(file, args, { timeout = 60_000, signal, env = process.env } = {}) {
   try { return { code: 0, ...await exec(file, args, { timeout, signal, env, maxBuffer: 4 * 1024 * 1024, killSignal: "SIGKILL" }) }; }
   catch (error) {
     if (typeof error.code === "number" && !error.killed) return { code: error.code, stdout: error.stdout ?? "", stderr: error.stderr ?? "" };
-    fail(error.killed || error.name === "AbortError" ? "CURSOR_CONTAINER_COMMAND_TIMEOUT" : "CURSOR_CONTAINER_COMMAND_FAILED");
+    const execution = classifyCursorAppExecution(error);
+    const code = execution.status === "aborted" ? "CURSOR_CONTAINER_COMMAND_ABORTED"
+      : execution.status === "timeout" ? "CURSOR_CONTAINER_COMMAND_TIMEOUT" : "CURSOR_CONTAINER_COMMAND_FAILED";
+    throw Object.assign(new Error(code), { code, execution });
   }
 }
 const docker = (args, options) => command("docker", args, options);
@@ -250,7 +162,7 @@ export async function readReleaseManifest(path) {
 export async function stageCursorAppChecks(directory) {
   for (const [client, names] of [
     ["cursor", ["cursor-app-native-check.mjs", "cursor-app-protocol.mjs", "cursor-app-mock-server.mjs", "cursor-app-native-content-check.mjs",
-      "cursor-app-memory-check.mjs", "cursor-app-repo-memory-check.mjs", "cursor-app-diagnostics.mjs", "cursor-app-hook-diagnostics.mjs", "cursor-app-hook-context.mjs"]],
+      "cursor-app-memory-check.mjs", "cursor-app-report.mjs", "cursor-app-windows-runtime.mjs", "cursor-app-repo-memory-check.mjs", "cursor-app-diagnostics.mjs", "cursor-app-hook-diagnostics.mjs", "cursor-app-hook-context.mjs"]],
     ["codex", ["codex-native-content-check.mjs"]],
   ]) {
     await mkdir(join(directory, client), { recursive: true });
@@ -260,6 +172,42 @@ export async function stageCursorAppChecks(directory) {
       await copyFile(source, join(directory, client, name));
     }
   }
+}
+
+export async function runCursorAppContainerNative(containerId, root, expected, {
+  signal, run = docker, statReport = regularFile, readReportFile = readFile,
+} = {}) {
+  const checked = (args, options) => checkedDocker(args, options, run);
+  let report = { status: "FAIL", client: "cursor", kind: "app-native-session-flows", stage: "container-native", evidence: {} };
+  let started, executionError, state, stateError;
+  try { started = await run(["start", "--attach", containerId], { timeout: 10 * 60_000, signal }); }
+  catch (error) { executionError = error; }
+  if (!executionError) {
+    try {
+      state = JSON.parse(await checked(["container", "inspect", "--format", "{{json .State}}", containerId], { signal }));
+      check(state.Running === false && Number.isInteger(state.ExitCode), "CURSOR_CONTAINER_STATE");
+    } catch (error) { stateError = error; }
+  }
+  // Export atomically written evidence even while a timed-out container is still running.
+  // An aborted launch signal must not suppress this bounded copy before resource cleanup.
+  report = await collectCursorAppNativeReport({
+    readReport: async (name) => {
+      const path = join(root, name);
+      await checked(["cp", `${containerId}:/artifacts/${name}`, path]);
+      const info = await statReport(path);
+      check(info.size <= 64 * 1024, "CURSOR_CONTAINER_REPORT");
+      return readReportFile(path, "utf8");
+    },
+    expected, fallback: report,
+    execution: executionError?.execution ?? classifyCursorAppExecution(executionError, state?.ExitCode ?? started?.code),
+    exitErrorCode: "CURSOR_CONTAINER_NATIVE_EXIT",
+  });
+  if (stateError) { report.status = "FAIL"; report.errorCode ??= safeCode(stateError); }
+  if (executionError || stateError || started.code !== 0 || state.ExitCode !== 0 || report.status !== "PASS") {
+    report.status = "FAIL";
+    report.errorCode ??= "CURSOR_CONTAINER_NATIVE_EXIT";
+  }
+  return report;
 }
 
 export async function runContainerCheck(candidatePath, reportPath, { releaseManifest, channel = "baseline", nodeMajor = "24", signal } = {}) {
@@ -314,14 +262,7 @@ export async function runContainerCheck(candidatePath, reportPath, { releaseMani
     const containerId = await checked(makeContainerArgs({ runId, imageId, seccompPath: join(root, "seccomp-profile.json"), ...expected }), { signal });
     check(/^[a-f0-9]{64}$/.test(containerId), "CURSOR_CONTAINER_IDENTITY");
     report.stage = "container-native";
-    const started = await runDocker(["start", "--attach", containerId], { timeout: 10 * 60_000, signal });
-    const state = JSON.parse(await checked(["container", "inspect", "--format", "{{json .State}}", containerId], { signal }));
-    check(state.Running === false && Number.isInteger(state.ExitCode), "CURSOR_CONTAINER_STATE");
-    await checked(["cp", `${containerId}:/artifacts/report.json`, join(root, "native-report.json")], { signal });
-    const reportFile = await regularFile(join(root, "native-report.json"));
-    check(reportFile.size <= 64 * 1024, "CURSOR_CONTAINER_REPORT");
-    report = projectNativeReport(JSON.parse(await readFile(join(root, "native-report.json"), "utf8")), expected);
-    check(started.code === 0 && state.ExitCode === 0, "CURSOR_CONTAINER_NATIVE_EXIT");
+    report = await runCursorAppContainerNative(containerId, root, expected, { signal, run: runDocker });
   } catch (error) {
     report.status = "FAIL";
     report.errorCode ??= safeCode(error);
@@ -339,7 +280,7 @@ export async function runContainerCheck(candidatePath, reportPath, { releaseMani
       try { await rm(root, { recursive: true, force: true }); }
       catch { report.status = "FAIL"; report.containerCleanupError = "CURSOR_CONTAINER_LOCAL_CLEANUP"; }
     }
-    if (output) await writeFile(join(output, "report.json"), `${JSON.stringify(report, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+    if (output) await writeCursorAppFinalReport(join(output, "report.json"), report, "CURSOR_CONTAINER_REPORT_WRITE", writeFile);
   }
   return report;
 }
