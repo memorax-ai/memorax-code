@@ -1524,6 +1524,13 @@ Windows process-audit summaries on success and failure, so passing cells can
 serve as controls. Native requests and Backend registration
 remain independently observed; the fixture never supplies a missing Turn start.
 
+On failure, `hookReadinessFailure` distinguishes a single log-read timeout from
+the overall Hook readiness window and preserves the last completed observation.
+Before cleanup, a bounded read records SessionStart requests, owned executions,
+filter counts and fixed response fields for the explicit session, including
+failures before any model request. Session IDs and raw Hook content are excluded;
+failed or late diagnostic reads do not replace the first native failure.
+
 Real login, hosted models, OS credential-store isolation, native Continue/Retry/
 Edit, Backend restart, preauthorized tools, running-tool interruption,
 late-approval races, linked worktrees, cross-workspace Search, successful Repo

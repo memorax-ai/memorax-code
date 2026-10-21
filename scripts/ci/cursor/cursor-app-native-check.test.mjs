@@ -7,8 +7,10 @@ import { PassThrough } from "node:stream";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
 import { collectCursorAppBackendDiagnostics, collectCursorAppShellDiagnostics, collectCursorAppStopDiagnostics, collectCursorAppSubmissionDiagnostics, createCursorAppDriverDiagnostics } from "./cursor-app-diagnostics.mjs";
-import { projectCursorAppHookTiming } from "./cursor-app-hook-diagnostics.mjs";
+import { projectCursorAppHookTiming, collectCursorAppSessionHookDiagnostics, projectCursorAppSessionHookDiagnostics,
+  projectCursorAppHookReadinessFailure } from "./cursor-app-hook-diagnostics.mjs";
 import { collectCursorAppSkillHookContext } from "./cursor-app-hook-context.mjs";
+import { classifyCursorAppExecution, collectCursorAppNativeReport } from "./cursor-app-report.mjs";
 
 const source = (await readFile(new URL("./cursor-app-native-check.mjs", import.meta.url), "utf8")).replaceAll("\r\n", "\n");
 const privateCanary = "private-content-path-token-canary";
@@ -17,7 +19,9 @@ function nativeFunction(name, context = {}) {
   const definition = source.match(new RegExp(`(?:async )?function ${name}\\([\\s\\S]*?(?=\\n(?:async )?function )`))?.[0];
   assert.ok(definition, name);
   return runInNewContext(`(${definition})`, { check, Buffer, basename, dirname, join, once, createCursorAppDriverDiagnostics, collectCursorAppSkillHookContext, projectCursorAppHookTiming, collectCursorAppSubmissionDiagnostics,
-    process: { platform: "darwin" }, appLaunch: 0, readyHookSessions: new Map(),
+    process: { platform: "darwin" }, appLaunch: 0, readyHookSessions: new Map(), activeHookTiming: undefined, appStartedAt: 0, userData: undefined,
+    bounded: promise => promise, collectCursorAppSessionHookDiagnostics, projectCursorAppHookReadinessFailure,
+    safeCode: error => /^CURSOR_(?:APP|AGENT|MOCK)_[A-Z0-9_]+$/.test(error?.code) ? error.code : "CURSOR_APP_CHECK_FAILED",
     checkpointReport() {}, beginHookTiming() {}, markHookSubmit() {}, async observeHookTiming() {}, finishHookTiming() {}, async waitForHookReady() {}, async recordSubmissionFailure() {}, ...context }, { timeout: 100 });
 }
 function childProcess() {
@@ -896,4 +900,152 @@ test("readiness timeout observers cannot replace predicate or overall timeout er
   const waitFor = nativeFunction("waitFor", { app: undefined, bounded: promise => promise, Date: { now: () => clock },
     async delay() { clock = 90000; } });
   await assert.rejects(waitFor(() => false, "CURSOR_APP_DRIVER", 90000, observer), { code: "CURSOR_APP_DRIVER" });
+});
+
+
+async function readinessFailureFixture(options = {}) {
+  const sessionId = "11111111-1111-4111-8111-111111111111";
+  const current = { phase: "session", appLaunch: 1, sessionId, runIndex: null, observedMs: {} };
+  const report = {}, readyHookSessions = new Map(), collected = [], checkpoints = [], deadlines = [], polls = [];
+  let clock = 0, resolveRead, resolveDiagnostics, timerId = 0, reads = 0, predicateTimers = 0;
+  const timers = new Set();
+  const original = Object.assign(new Error(privateCanary), { code: "CURSOR_APP_HOOK_LOG_READ_FAILED" });
+  const bounded = nativeFunction("bounded", {
+    setTimeout(callback, milliseconds) {
+      const id = ++timerId; timers.add(id); deadlines.push(milliseconds);
+      if (milliseconds === 5000) predicateTimers += 1;
+      if (milliseconds === 5000 && (options.predicateTimeout || options.predicateTimeoutAfterObservation && predicateTimers === 2)
+        || options.diagnosticTimeout && milliseconds === 1000) {
+        queueMicrotask(() => { if (timers.has(id)) { clock += milliseconds; callback(); } });
+      }
+      return id;
+    },
+    clearTimeout(id) { timers.delete(id); },
+  });
+  const waitFor = nativeFunction("waitFor", { app: undefined, bounded, Date: { now: () => clock },
+    async delay(milliseconds) { polls.push(milliseconds); clock += 15000; } });
+  const observe = nativeFunction("observeHookTiming", { activeHookTiming: current, appStartedAt: 0,
+    userData: "/owned/app-data", agent: { runs: [] }, readyHookSessions, Date: { now: () => clock },
+    async collectCursorAppHookTiming() {
+      reads += 1;
+      if (options.readRejected) throw original;
+      if (options.predicateTimeout || options.predicateTimeoutAfterObservation && reads === 2) return new Promise(resolve => { resolveRead = resolve; });
+      return projectCursorAppHookTiming({ phase: "session", readStatus: "present", currentLogFiles: 1,
+        requiredUserHooksLoaded: true, sessionStartReady: false });
+    },
+  });
+  const finish = nativeFunction("finishHookTiming", { activeHookTiming: current, report });
+  const gate = nativeFunction("waitForHookReady", { process: { platform: "darwin" }, activeHookTiming: current,
+    appLaunch: 1, appStartedAt: 0, userData: "/owned/app-data", report, bounded, waitFor, Date: { now: () => clock },
+    beginHookTiming(phase, id) { assert.equal(phase, "session"); assert.equal(id, sessionId); },
+    observeHookTiming: observe, finishHookTiming: finish,
+    checkpointReport() { checkpoints.push(JSON.parse(JSON.stringify(report))); },
+    async collectCursorAppSessionHookDiagnostics(input) {
+      collected.push({ ...input });
+      if (options.diagnosticRejected) throw new Error(privateCanary);
+      if (options.diagnosticTimeout) return new Promise(resolve => { resolveDiagnostics = resolve; });
+      return projectCursorAppSessionHookDiagnostics({ readStatus: "present", filesRead: 1, currentLogFiles: 1,
+        unscopedRequests: 1, ownedExecutionBlocks: 1, filteredExecutionBlocks: { parse: 1 }, executions: [] });
+    },
+  });
+  let error;
+  try { await gate("session", sessionId); } catch (caught) { error = caught; }
+  return { report, error, original, current, readyHookSessions, collected, checkpoints, deadlines, polls,
+    sessionId, resolveRead, resolveDiagnostics, timers };
+}
+
+test("first-session overall timeout preserves the last completed observation and collects without a model turn", async () => {
+  const value = await readinessFailureFixture();
+  assert.equal(value.error.code, "CURSOR_APP_SESSION_START_READY_TIMEOUT");
+  const failure = value.report.hookReadinessFailure;
+  assert.equal(failure.timeoutKind, "overall");
+  assert.equal(failure.waitElapsedMs, 30000);
+  assert.equal(failure.lastObservationElapsedMs, 15000);
+  assert.equal(failure.observationPending, false);
+  assert.equal(failure.lastObservation.requiredUserHooksLoaded, true);
+  assert.equal(failure.lastObservation.sessionStartReady, false);
+  assert.equal(failure.sessionDiagnosticsStatus, "completed");
+  assert.equal(failure.sessionStart.filteredExecutionBlocks.parse, 1);
+  assert.deepEqual(value.collected, [{ home: "/owned/app-data", startedAt: 0, sessionId: value.sessionId }]);
+  assert.deepEqual(value.deadlines, [5000, 5000, 1000]);
+  assert.deepEqual(value.polls, [200, 200]);
+  assert.equal(value.checkpoints[1].hookReadinessFailure.sessionDiagnosticsStatus, "not-requested");
+  assert.equal(value.checkpoints[1].errorCode, "CURSOR_APP_SESSION_START_READY_TIMEOUT");
+  assert.equal(value.report.hookTimings.length, 1);
+  assert.equal(value.timers.size, 0);
+  for (const secret of [value.sessionId, "/owned/app-data", privateCanary]) assert.equal(JSON.stringify(value.report).includes(secret), false);
+});
+
+test("a pending readiness read retains its 5s timeout and cannot mutate the frozen failure after resolving", async () => {
+  const value = await readinessFailureFixture({ predicateTimeout: true });
+  assert.equal(value.error.code, "CURSOR_APP_SESSION_START_READY_TIMEOUT");
+  const failure = value.report.hookReadinessFailure;
+  assert.equal(failure.timeoutKind, "predicate");
+  assert.equal(failure.waitElapsedMs, 5000);
+  assert.equal(failure.lastObservationElapsedMs, null);
+  assert.equal(failure.lastObservation, null);
+  assert.equal(failure.observationPending, true);
+  const before = JSON.stringify(value.report);
+  value.resolveRead({ readStatus: "present", currentLogFiles: 1, requiredUserHooksLoaded: true, sessionStartReady: true });
+  await new Promise(setImmediate);
+  assert.equal(JSON.stringify(value.report), before);
+  assert.equal(value.readyHookSessions.size, 0);
+  assert.equal(value.current.snapshot, undefined);
+  assert.equal(value.timers.size, 0);
+});
+
+test("failed or late diagnostic collection cannot replace the first readiness error or infer a turn", async () => {
+  for (const diagnosticTimeout of [false, true]) {
+    const value = await readinessFailureFixture({ readRejected: true, diagnosticRejected: !diagnosticTimeout, diagnosticTimeout });
+    assert.equal(value.error, value.original);
+    const failure = value.report.hookReadinessFailure;
+    assert.equal(failure.code, "CURSOR_APP_HOOK_LOG_READ_FAILED");
+    assert.equal(failure.timeoutKind, "none");
+    assert.equal(failure.observationPending, false);
+    assert.equal(failure.sessionDiagnosticsStatus, diagnosticTimeout ? "timeout" : "failed");
+    assert.equal(failure.sessionStart.readStatus, "unavailable");
+    assert.equal(Object.hasOwn(value.collected[0], "turnId"), false);
+    const before = JSON.stringify(value.report);
+    value.resolveDiagnostics?.({ readStatus: "present", unscopedRequests: 99, raw: privateCanary });
+    await new Promise(setImmediate);
+    assert.equal(JSON.stringify(value.report), before);
+    assert.equal(value.timers.size, 0);
+  }
+});
+
+test("a later pending readiness read preserves the previous completed observation", async () => {
+  const value = await readinessFailureFixture({ predicateTimeoutAfterObservation: true });
+  const failure = value.report.hookReadinessFailure;
+  assert.equal(failure.timeoutKind, "predicate");
+  assert.equal(failure.waitElapsedMs, 20000);
+  assert.equal(failure.lastObservationElapsedMs, 0);
+  assert.equal(failure.lastObservation.requiredUserHooksLoaded, true);
+  assert.equal(failure.lastObservation.sessionStartReady, false);
+  assert.equal(failure.observationPending, true);
+  const before = JSON.stringify(value.report);
+  value.resolveRead({ requiredUserHooksLoaded: true, sessionStartReady: true });
+  await new Promise(setImmediate);
+  assert.equal(JSON.stringify(value.report), before);
+  assert.equal(value.readyHookSessions.size, 0);
+});
+
+test("an outer timeout during session diagnostics recovers the first failure from its earlier checkpoint", async () => {
+  const value = await readinessFailureFixture({ diagnosticTimeout: true });
+  const checkpoint = { status: "FAIL", client: "cursor", kind: "app-native-session-flows", platform: "darwin",
+    node: "24.22.0", version: "3.21.18", evidence: {}, ...value.checkpoints[1] };
+  const output = await collectCursorAppNativeReport({ expected: { expectedVersion: "3.21.18", platform: "darwin" },
+    fallback: { status: "FAIL", evidence: {} }, execution: classifyCursorAppExecution({ code: "ETIMEDOUT" }),
+    exitErrorCode: "CURSOR_APP_NATIVE_EXIT", async readReport(name) {
+      if (name === "report.json") throw Object.assign(new Error(privateCanary), { code: "ENOENT" });
+      return JSON.stringify(checkpoint);
+    } });
+  assert.equal(output.errorCode, "CURSOR_APP_SESSION_START_READY_TIMEOUT");
+  assert.equal(output.hookReadinessFailure.code, output.errorCode);
+  assert.equal(output.hookReadinessFailure.sessionDiagnosticsStatus, "not-requested");
+  assert.equal(output.hookReadinessFailure.lastObservation.requiredUserHooksLoaded, true);
+  assert.equal(output.nativeExecution.status, "timeout");
+  assert.equal(output.nativeExecution.reportSource, "progress");
+  assert.equal(output.nativeExecution.finalReport, "missing");
+  assert.equal(output.stage, "hook-session-ready");
+  assert.equal(JSON.stringify(output).includes(privateCanary), false);
 });

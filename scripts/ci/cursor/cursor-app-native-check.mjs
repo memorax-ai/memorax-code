@@ -18,7 +18,8 @@ import { collectCursorAppDiagnostics, collectCursorAppLaunchDiagnostics, createC
   collectCursorAppBackendDiagnostics, collectCursorAppSubmissionDiagnostics,
   collectCursorAppShellDiagnostics, collectCursorAppShellOutputDiagnostics,
   projectCursorAppShellDiagnostics, collectCursorAppStopDiagnostics } from "./cursor-app-diagnostics.mjs";
-import { collectCursorAppHookDiagnostics, collectCursorAppHookTiming, projectCursorAppHookTiming } from "./cursor-app-hook-diagnostics.mjs";
+import { collectCursorAppHookDiagnostics, collectCursorAppHookTiming, projectCursorAppHookTiming,
+  collectCursorAppSessionHookDiagnostics, projectCursorAppHookReadinessFailure } from "./cursor-app-hook-diagnostics.mjs";
 import { collectCursorAppSkillHookContext } from "./cursor-app-hook-context.mjs";
 
 const [packageRoot, appPath, expectedVersion, playwrightRoot, reportDir, expectedNodeMajor = "24"] = process.argv.slice(2);
@@ -147,6 +148,7 @@ async function observeHookTiming() {
   if (matched) current.observedMs.modelRequest ??= Date.now() - appStartedAt;
   const timing = await collectCursorAppHookTiming({ home: userData, startedAt: appStartedAt,
     sessionId: current.sessionId, ...(matched ? { turnId: run.requestId } : {}) });
+  if (current.finished) return current.snapshot;
   if (timing.sessionStartReady) {
     current.observedMs.sessionStartReady ??= Date.now() - appStartedAt;
     readyHookSessions.set(current.sessionId, current.observedMs.sessionStartReady);
@@ -154,6 +156,7 @@ async function observeHookTiming() {
   if (matched && current.observedMs.turnStart == null) {
     const diagnostics = await collectCursorAppDiagnostics({ home: env.MEMORAX_CODE_HOME,
       sessionId: current.sessionId, turnId: run.requestId });
+    if (current.finished) return current.snapshot;
     if (diagnostics.trace?.readStatus === "present" && diagnostics.trace.turnStartCount === 1) {
       current.observedMs.turnStart = Date.now() - appStartedAt;
     }
@@ -163,6 +166,7 @@ async function observeHookTiming() {
 }
 function finishHookTiming() {
   if (!activeHookTiming) return;
+  activeHookTiming.finished = true;
   const snapshots = report.hookTimings ??= [];
   if (snapshots.length < 32) snapshots.push(projectCursorAppHookTiming(activeHookTiming.snapshot ?? activeHookTiming));
   activeHookTiming = undefined;
@@ -172,13 +176,48 @@ async function waitForHookReady(phase, sessionId) {
   beginHookTiming(phase, sessionId);
   report.stage = phase === "config" ? "hook-config-ready" : "hook-session-ready";
   checkpointReport();
+  const waitStartedAt = Date.now(), timingContext = activeHookTiming;
+  let frozen = false, observationPending = false, timeoutKind = "none";
+  let lastObservation = null, lastObservationElapsedMs = null;
   try {
     // This isolates startup; a later native configuration reload can still race submission.
     await waitFor(async () => {
-      const timing = await observeHookTiming();
+      observationPending = true;
+      let timing;
+      try { timing = await observeHookTiming(); }
+      finally { if (!frozen) observationPending = false; }
+      if (!frozen) {
+        lastObservation = projectCursorAppHookTiming(timing);
+        lastObservationElapsedMs = Date.now() - waitStartedAt;
+      }
       return timing?.requiredUserHooksLoaded && (phase === "config" || timing.sessionStartReady);
-    }, phase === "config" ? "CURSOR_APP_HOOK_CONFIG_READY_TIMEOUT" : "CURSOR_APP_SESSION_START_READY_TIMEOUT");
-  } finally { finishHookTiming(); }
+    }, phase === "config" ? "CURSOR_APP_HOOK_CONFIG_READY_TIMEOUT" : "CURSOR_APP_SESSION_START_READY_TIMEOUT", 30000,
+    (kind) => { if (!frozen && timeoutKind === "none") timeoutKind = kind; });
+  } catch (error) {
+    frozen = true;
+    if (timingContext) timingContext.finished = true;
+    // Freeze the failed observation before another read or cleanup can finish.
+    // The session parameter remains authoritative even when no model run exists.
+    if (!report.hookReadinessFailure) {
+      report.errorCode ??= safeCode(error);
+      report.hookReadinessFailure = projectCursorAppHookReadinessFailure({ phase, appLaunch,
+        code: safeCode(error), timeoutKind, waitElapsedMs: Date.now() - waitStartedAt,
+        lastObservationElapsedMs, observationPending, lastObservation });
+      checkpointReport();
+      if (phase === "session") {
+        let sessionDiagnosticsStatus = "completed", sessionStart;
+        try {
+          sessionStart = await bounded(collectCursorAppSessionHookDiagnostics({ home: userData,
+            startedAt: appStartedAt, sessionId }), "CURSOR_APP_SESSION_START_DIAGNOSTICS_TIMEOUT", 1000,
+          () => { sessionDiagnosticsStatus = "timeout"; });
+        } catch { if (sessionDiagnosticsStatus !== "timeout") sessionDiagnosticsStatus = "failed"; }
+        report.hookReadinessFailure = projectCursorAppHookReadinessFailure({ ...report.hookReadinessFailure,
+          sessionDiagnosticsStatus, sessionStart });
+        checkpointReport();
+      }
+    }
+    throw error;
+  } finally { frozen = true; finishHookTiming(); }
 }
 async function assertMarkerAbsent(marker, code) {
   try { await lstat(marker); check(false, code); }

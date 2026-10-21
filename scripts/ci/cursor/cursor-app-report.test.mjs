@@ -149,3 +149,26 @@ test("final and recovered progress reports retain driver readiness evidence on e
     assert.equal(JSON.stringify(report).includes(privateCanary), false);
   }
 });
+
+
+test("final and progress reports preserve frozen first-session evidence without exporting identity", async () => {
+  for (const source of ["final", "progress"]) {
+    const input = { ...fixture(), stage: "hook-session-ready", errorCode: "CURSOR_APP_SESSION_START_READY_TIMEOUT",
+      hookReadinessFailure: { phase: "session", appLaunch: 1, code: "CURSOR_APP_SESSION_START_READY_TIMEOUT",
+        timeoutKind: "predicate", waitElapsedMs: 5000, lastObservationElapsedMs: 200, observationPending: true,
+        lastObservation: { phase: "session", requiredUserHooksLoaded: true, sessionStartReady: false, sessionId: privateCanary },
+        sessionDiagnosticsStatus: "completed", sessionStart: { readStatus: "present", currentLogFiles: 1,
+          unscopedRequests: 1, ownedExecutionBlocks: 1, filteredExecutionBlocks: { parse: 1 }, executions: [], raw: privateCanary },
+        sessionId: privateCanary, home: privateCanary } };
+    const output = await collect(async name => {
+      if (source === "progress" && name === "report.json") throw missing();
+      return JSON.stringify(input);
+    });
+    assert.equal(output.errorCode, input.errorCode);
+    assert.equal(output.hookReadinessFailure.timeoutKind, "predicate");
+    assert.equal(output.hookReadinessFailure.lastObservationElapsedMs, 200);
+    assert.equal(output.hookReadinessFailure.sessionStart.unscopedRequests, 1);
+    assert.equal(output.hookReadinessFailure.sessionStart.filteredExecutionBlocks.parse, 1);
+    assert.equal(JSON.stringify(output).includes(privateCanary), false);
+  }
+});

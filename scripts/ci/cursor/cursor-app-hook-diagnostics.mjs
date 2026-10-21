@@ -46,10 +46,10 @@ function ownedCommand(command) {
   return text.includes("--memorax-code-cursor-hook-v1");
 }
 
-function collectLog(text, sessionId, turnId, result, observe) {
+function collectLog(text, sessionId, turnId, result, observe, sessionOnly = false) {
   text = text.replaceAll("\r\n", "\n");
   for (const match of text.matchAll(/^\[[0-9T:.Z-]+\] Hook step requested: (\w+)$/gm)) {
-    if (steps.includes(match[1])) {
+    if (steps.includes(match[1]) && (!sessionOnly || match[1] === "sessionStart")) {
       if (result.unscopedRequests[match[1]] >= 4096) throw "oversized";
       result.unscopedRequests[match[1]] += 1;
     }
@@ -58,7 +58,7 @@ function collectLog(text, sessionId, turnId, result, observe) {
   let ownedBlocks = steps.reduce((total, step) => total + result.ownedExecutionBlocks[step], 0);
   for (const match of text.matchAll(executionBlock)) {
     const [, step, command, exit, input, output] = match;
-    if (!steps.includes(step) || !ownedCommand(command)) continue;
+    if (!steps.includes(step) || !ownedCommand(command) || sessionOnly && step !== "sessionStart") continue;
     if (ownedBlocks >= maxExecutionBlocks) throw "oversized";
     ownedBlocks += 1;
     result.ownedExecutionBlocks[step] += 1;
@@ -172,20 +172,11 @@ export async function collectCursorAppHookTiming({ home, startedAt, sessionId, t
   }
   function increment(key) { if (++result.counts[key] > maxExecutionBlocks) throw "oversized"; }
   const status = await readHookLogs(home, (raw) => {
-    const text = raw.replaceAll("\r\n", "\n");
-    // Only native metadata outside complete execution blocks can establish a launch window.
-    // A partial frame may contain arbitrary stderr: discard the remainder for readiness.
-    const unframed = text.replace(executionBlock, ""), partial = unframed.indexOf("\u2550".repeat(87));
-    const metadata = partial < 0 ? unframed : unframed.slice(0, partial);
-    const lines = [...metadata.matchAll(/^\[([0-9T:.Z-]+)\] ([^\n]+)$/gm)];
-    const initial = lines.find((match) => match[2] === "Initializing Cursor Hooks Service..."
-      && Number.isFinite(Date.parse(match[1])) && Date.parse(match[1]) >= startedAt
-      && Date.parse(match[1]) <= Date.now());
-    if (!initial) return;
-    if (partial >= 0 || !text.endsWith("\n")) throw "invalid";
+    const current = currentLaunchLog(raw, startedAt);
+    if (!current) return;
     result.currentLogFiles += 1;
     let loaded = false;
-    for (const match of lines.slice(lines.indexOf(initial))) {
+    for (const match of current.lines) {
       const milliseconds = elapsed(Date.parse(match[1]) - startedAt);
       if (milliseconds === null || Date.parse(match[1]) > Date.now()) continue;
       if (match[2] === "Reloading hooks configuration...") {
@@ -209,14 +200,12 @@ export async function collectCursorAppHookTiming({ home, startedAt, sessionId, t
     result.requiredUserHooksLoaded = loaded;
     if (sessionId) {
       const diagnostic = projectCursorAppHookDiagnostics();
-      collectLog(text.slice(text.indexOf(initial[0])), sessionId, turnId, diagnostic, (request, response, execution) => {
+      collectLog(current.text, sessionId, turnId, diagnostic, (request, response, execution) => {
         if (execution.step === "beforeSubmitPrompt" && execution.scope === "turn") increment("beforeSubmitExecution");
         if (execution.step === "sessionStart" && execution.scope === "session" && execution.sessionAliasMatched
           && (request.generation_id === undefined || request.generation_id === "") && execution.exitCode === 0
           && execution.responseKind === "json" && execution.continue !== "deny" && execution.workspaceKind === "single"
-          && typeof response?.additional_context === "string"
-          && [...response.additional_context.matchAll(/(?:^|[^A-Za-z0-9_])MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT=cursor and MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID=([A-Za-z0-9_-]+)/g)]
-            .some((match) => match[1] === sessionId)) result.sessionStartReady = true;
+          && sessionTraceContextMatched(response, sessionId)) result.sessionStartReady = true;
       });
     }
   });
@@ -225,4 +214,72 @@ export async function collectCursorAppHookTiming({ home, startedAt, sessionId, t
     result.requiredUserHooksLoaded = false; result.sessionStartReady = false;
   }
   return projectCursorAppHookTiming(result);
+}
+
+// Use the same current-launch framing rules for readiness and failure evidence.
+function currentLaunchLog(raw, startedAt) {
+  const text = raw.replaceAll("\r\n", "\n");
+  const unframed = text.replace(executionBlock, ""), partial = unframed.indexOf("\u2550".repeat(87));
+  const metadata = partial < 0 ? unframed : unframed.slice(0, partial);
+  const lines = [...metadata.matchAll(/^\[([0-9T:.Z-]+)\] ([^\n]+)$/gm)];
+  const initial = lines.findIndex((match) => match[2] === "Initializing Cursor Hooks Service..."
+    && Number.isFinite(Date.parse(match[1])) && Date.parse(match[1]) >= startedAt
+    && Date.parse(match[1]) <= Date.now());
+  if (initial < 0) return undefined;
+  if (partial >= 0 || !text.endsWith("\n")) throw "invalid";
+  return { text: text.slice(text.indexOf(lines[initial][0])), lines: lines.slice(initial) };
+}
+
+function sessionTraceContextMatched(response, sessionId) {
+  return typeof response?.additional_context === "string"
+    && [...response.additional_context.matchAll(/(?:^|[^A-Za-z0-9_])MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT=cursor and MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID=([A-Za-z0-9_-]+)/g)]
+      .some((match) => match[1] === sessionId);
+}
+
+export function projectCursorAppSessionHookDiagnostics(value) {
+  const executions = (Array.isArray(value?.executions) ? value.executions.slice(0, maxExecutions) : [])
+    .filter((item) => record(item) && item.step === "sessionStart" && item.scope === "session");
+  return {
+    readStatus: choice(value?.readStatus, statuses, "unavailable"), filesRead: count(value?.filesRead, maxFiles),
+    currentLogFiles: count(value?.currentLogFiles, maxFiles),
+    unscopedRequests: count(value?.unscopedRequests, 4096),
+    ownedExecutionBlocks: count(value?.ownedExecutionBlocks, maxExecutionBlocks),
+    filteredExecutionBlocks: Object.fromEntries(filterReasons.map((reason) =>
+      [reason, count(value?.filteredExecutionBlocks?.[reason], maxExecutionBlocks)])),
+    executions: executions.map((item) => ({ ...projectCursorAppHookDiagnostics({ executions: [item] }).executions[0],
+      generationAllowed: item.generationAllowed === true, traceContextMatched: item.traceContextMatched === true })),
+  };
+}
+
+export async function collectCursorAppSessionHookDiagnostics({ home, startedAt, sessionId } = {}) {
+  const result = { ...projectCursorAppHookDiagnostics(), currentLogFiles: 0 };
+  if (!Number.isSafeInteger(startedAt) || startedAt < 0 || typeof sessionId !== "string" || !uuid.test(sessionId)) {
+    return projectCursorAppSessionHookDiagnostics({ readStatus: "invalid" });
+  }
+  const status = await readHookLogs(home, (raw) => {
+    const current = currentLaunchLog(raw, startedAt);
+    if (!current) return;
+    result.currentLogFiles += 1;
+    // An absent turn is intentional: only this explicit SessionStart identity is observed.
+    collectLog(current.text, sessionId, undefined, result, (request, response, execution) => {
+      execution.generationAllowed = request.generation_id === undefined || request.generation_id === "";
+      execution.traceContextMatched = sessionTraceContextMatched(response, sessionId);
+    }, true);
+  });
+  return projectCursorAppSessionHookDiagnostics({ ...result, ...status,
+    unscopedRequests: result.unscopedRequests.sessionStart, ownedExecutionBlocks: result.ownedExecutionBlocks.sessionStart,
+    filteredExecutionBlocks: result.filteredExecutionBlocks.sessionStart });
+}
+
+export function projectCursorAppHookReadinessFailure(value) {
+  return {
+    phase: choice(value?.phase, ["config", "session"], "config"), appLaunch: count(value?.appLaunch, 16),
+    code: /^CURSOR_(?:APP|AGENT|MOCK)_[A-Z0-9_]{1,100}$/.test(value?.code ?? "") ? value.code : "CURSOR_APP_CHECK_FAILED",
+    timeoutKind: choice(value?.timeoutKind, ["none", "predicate", "overall"], "none"),
+    waitElapsedMs: elapsed(value?.waitElapsedMs), lastObservationElapsedMs: elapsed(value?.lastObservationElapsedMs),
+    observationPending: value?.observationPending === true,
+    lastObservation: record(value?.lastObservation) ? projectCursorAppHookTiming(value.lastObservation) : null,
+    sessionDiagnosticsStatus: choice(value?.sessionDiagnosticsStatus, ["not-requested", "completed", "timeout", "failed"], "not-requested"),
+    sessionStart: projectCursorAppSessionHookDiagnostics(value?.sessionStart),
+  };
 }
